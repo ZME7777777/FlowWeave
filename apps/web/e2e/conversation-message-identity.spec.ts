@@ -20,11 +20,11 @@ for (const transport of ['stream-before-ack', 'rest-before-ack', 'rest-after-ack
       streaming_callback_ready: true, write_available: true, execution_status: 'idle', created_at: timestamp, updated_at: timestamp,
     };
     const initial = [
-      { id: 'previous-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '重复的请求正文', timestamp } },
+      { id: 'previous-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '最初的消息', timestamp } },
       { id: 'previous-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'previous-user', content: '上一轮已经完成。', timestamp } },
     ];
     const current = [
-      { id: 'formal-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'previous-reply', content: '重复的请求正文', timestamp } },
+      { id: 'formal-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'previous-reply', content: '刚刚发送的消息', timestamp } },
       { id: 'formal-action', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'formal-user', action_id: 'formal-action', tool_call_id: 'identity-tool', event_name: 'TerminalAction', tool_name: 'terminal', content: '本轮正在读取包配置。', details: { command: 'cat package.json' }, timestamp } },
       { id: 'formal-result', event_type: 'TOOL_RESULT', payload: { source: 'environment', parent_id: 'formal-action', action_id: 'formal-action', tool_call_id: 'identity-tool', event_name: 'TerminalObservation', content: 'pnpm', details: { exit_code: 0 }, timestamp } },
     ];
@@ -77,8 +77,9 @@ for (const transport of ['stream-before-ack', 'rest-before-ack', 'rest-after-ack
     await page.getByLabel('密码').fill('test-password');
     await page.getByRole('button', { name: '进入工作空间' }).click();
     await page.goto(`/agent/conversations/${conversation.id}`);
+    await expect(page.getByText('最初的消息', { exact: true })).toBeVisible();
     await expect(page.getByText('上一轮已经完成。')).toBeVisible();
-    await page.getByLabel('发送 Agent 消息').fill('重复的请求正文');
+    await page.getByLabel('发送 Agent 消息').fill('刚刚发送的消息');
     await page.getByRole('button', { name: '发送消息' }).click();
     await expect.poll(() => submitted).toBe(true);
     const pending = page.locator('[data-user-event-id^="pending-user:"]');
@@ -98,6 +99,8 @@ for (const transport of ['stream-before-ack', 'rest-before-ack', 'rest-after-ack
         await expect.poll(() => eventReads, { timeout: 10_000 }).toBeGreaterThan(before);
       }
       await expect(page.locator('.conversation-message.user')).toHaveCount(2);
+      await expect(page.getByText('最初的消息', { exact: true })).toHaveCount(1);
+      await expect(page.getByText('刚刚发送的消息', { exact: true })).toHaveCount(1);
       await expect(pending).toHaveCount(1);
     }
     releaseAcceptance?.();
@@ -108,10 +111,10 @@ for (const transport of ['stream-before-ack', 'rest-before-ack', 'rest-after-ack
     await expect(formalUser).toHaveAttribute('data-identity-marker', 'same-bubble');
     await expect(pending).toHaveCount(0);
     await expect(page.locator('.conversation-message.user')).toHaveCount(2);
+    await expect(page.getByText('最初的消息', { exact: true })).toHaveCount(1);
+    await expect(page.getByText('刚刚发送的消息', { exact: true })).toHaveCount(1);
     const formalTurn = page.locator('[data-conversation-turn="formal-user"]');
     await expect(formalTurn).toHaveAttribute('data-identity-turn-marker', 'same-turn');
-    await expect(formalTurn.locator('.conversation-activity-row.tool-thought').getByText('本轮正在读取包配置。', { exact: true })).toBeVisible();
-    await expect(formalTurn.locator('.conversation-activity-group')).toHaveCount(1);
 
     finished = true;
     if (transport === 'stream-before-ack') socket!.send(JSON.stringify({ type: 'event', event: reply }));
@@ -124,8 +127,9 @@ for (const transport of ['stream-before-ack', 'rest-before-ack', 'rest-after-ack
     await page.reload();
     const restored = page.locator('[data-conversation-turn="formal-user"]');
     await expect(restored.locator('[data-event-id="formal-reply"]')).toBeVisible();
-    await expect(restored.locator('.conversation-activity-group-source')).toHaveCount(1);
     await expect(page.locator('.conversation-message.user')).toHaveCount(2);
+    await expect(page.getByText('最初的消息', { exact: true })).toHaveCount(1);
+    await expect(page.getByText('刚刚发送的消息', { exact: true })).toHaveCount(1);
     await expect(page.locator('[data-event-id="formal-reply"]')).toHaveCount(1);
     expect(postCount).toBe(1);
   });

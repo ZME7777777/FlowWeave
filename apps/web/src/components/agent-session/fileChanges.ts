@@ -274,6 +274,10 @@ export function workspaceFileChanges(events: OpenHandsConversationEvent[]): Work
   const fileEditorActions = new Map<string, PendingFileEdit>();
   const terminalActions = new Map<string, string>();
   const changesByPath = new Map<string, WorkspaceFileChange>();
+
+  // Live frames and restored event windows are allowed to arrive out of order.
+  // Index every action before matching successful observations, so a result that
+  // precedes its action in this render is reconciled once both are available.
   for (const event of events) {
     const patches = patchChanges(event);
     if (patches.length) patchActions.set(event.id, patches);
@@ -289,6 +293,9 @@ export function workspaceFileChanges(events: OpenHandsConversationEvent[]): Work
         if (id) terminalActions.set(id, command);
       }
     }
+  }
+
+  for (const event of events) {
     if (appliedPatchOperation(event)) {
       const actionId = detailString(event.payload.action_id);
       for (const patchChange of actionId ? patchActions.get(actionId) ?? [] : []) {

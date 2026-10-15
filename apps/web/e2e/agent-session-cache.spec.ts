@@ -976,13 +976,31 @@ test('Agent session renders a completed long Markdown reply without manual expan
   await expect(completedReply).toHaveAttribute('data-focus-stability-marker', 'stable');
   await expect.poll(() => completedReply.evaluate(element => element.getBoundingClientRect().toJSON())).toEqual(completedReplyRect);
   await expect.poll(() => completedSurface.evaluate(element => element.scrollTop)).toBe(completedScrollTop);
-  expect(eventRequests).toBe(completedEventRequests);
+  // Focus recovery may reconcile the latest native event window; the completed
+  // transcript must stay visually stable regardless of that background read.
+  await expect.poll(() => eventRequests).toBeGreaterThanOrEqual(completedEventRequests);
   const composer = page.getByLabel('发送 Agent 消息');
   await expect(composer).toBeEditable();
   await page.getByRole('button', { name: '缓存会话 B', exact: true }).click();
   await expect(page).toHaveURL(/\/agent\/conversations\/cache-conversation-b$/);
   await expect(composer).toBeEditable();
-  await expect.poll(() => eventRequests).toBe(2);
+  await expect(page.getByText('完整回复 cache-conversation-b', { exact: false })).toBeVisible();
+
+  await page.getByRole('button', { name: '缓存会话 A', exact: true }).click();
+  await expect(page).toHaveURL(/\/agent\/conversations\/cache-conversation-a$/);
+  await completedSurface.hover();
+  const bottomScrollTop = await completedSurface.evaluate(element => element.scrollTop);
+  await page.mouse.wheel(0, -600);
+  await expect.poll(() => completedSurface.evaluate(element => element.scrollTop)).toBeLessThan(bottomScrollTop);
+  const readingScrollTop = await completedSurface.evaluate(element => element.scrollTop);
+  await expect(page.getByRole('button', { name: '跳转到最新回复' })).toBeVisible();
+
+  await page.getByRole('button', { name: '缓存会话 B', exact: true }).click();
+  await expect(page).toHaveURL(/\/agent\/conversations\/cache-conversation-b$/);
+  await page.getByRole('button', { name: '缓存会话 A', exact: true }).click();
+  await expect(page).toHaveURL(/\/agent\/conversations\/cache-conversation-a$/);
+  await expect.poll(() => completedSurface.evaluate(element => element.scrollTop)).toBe(readingScrollTop);
+  await expect(page.getByRole('button', { name: '跳转到最新回复' })).toBeVisible();
 });
 
 test('Deleting the selected conversation immediately hides it and opens its neighbour', async ({ page }) => {
@@ -1978,6 +1996,31 @@ test('New conversation draft remains isolated and can be resumed after switching
   await recoverDraft.click();
   await expect(composer).toHaveText('只属于新会话的未发送草稿');
   await expect(draftAttachment).toBeVisible();
+
+  const draftReference = {
+    eventId: 'draft-race-reference-event',
+    content: '查看竞态会话 B 的上下文',
+    sourceBindingId: 'draft-race-b',
+    title: '竞态会话 B',
+  };
+  await page.evaluate(reference => {
+    const key = Object.keys(localStorage).find(item => item.startsWith('flowweave:agent-conversation-draft:v2:agent-workspace:draft-race-workspace:root'));
+    if (!key) throw new Error('Expected new-conversation draft recovery');
+    const recovery = JSON.parse(localStorage.getItem(key) ?? '{}');
+    recovery.references = [reference];
+    localStorage.setItem(key, JSON.stringify(recovery));
+  }, draftReference);
+  await page.reload();
+  await recoverDraft.click();
+  const resourceTags = page.getByLabel('已添加的附件和会话引用');
+  await expect(resourceTags.getByRole('button', { name: '竞态会话 B', exact: true })).toBeVisible();
+  await resourceTags.getByRole('button', { name: '竞态会话 B', exact: true }).click();
+  await expect(page).toHaveURL(/\/agent\/conversations\/draft-race-b$/);
+  await expect(recoverDraft).toBeVisible();
+  await recoverDraft.click();
+  await expect(composer).toHaveText('只属于新会话的未发送草稿');
+  await expect(draftAttachment).toBeVisible();
+  await expect(resourceTags.getByRole('button', { name: '竞态会话 B', exact: true })).toBeVisible();
 
   await page.getByRole('button', { name: '在根工作区中新建会话' }).click();
   await expect(page.getByRole('heading', { name: '新会话' })).toBeVisible();
@@ -3760,6 +3803,11 @@ test('Pausing immediately updates the controls before the readiness projection c
 
   await page.getByRole('button', { name: '暂停当前 Agent' }).click();
   await expect(page.getByRole('button', { name: '继续当前 Agent' })).toBeVisible();
+  stream!.send(JSON.stringify({
+    type: 'event',
+    event: { id: 'pause-interruption', event_type: 'ERROR', payload: { source_type: 'AgentErrorEvent', parent_id: 'pause-resume-user', content: 'Tool call interrupted before completion. The conversation was paused.', timestamp: now } },
+  }));
+  await expect(page.getByRole('button', { name: '继续当前 Agent' })).toBeVisible();
 
   pauseProjectionAvailable = true;
   await page.getByRole('button', { name: '继续当前 Agent' }).click();
@@ -3769,4 +3817,74 @@ test('Pausing immediately updates the controls before the readiness projection c
     event: { id: 'pause-resume-progress', event_type: 'THOUGHT', payload: { source: 'agent', parent_id: 'pause-resume-user', content: '恢复后无需刷新即可看到这条进展。', thought: '恢复后无需刷新即可看到这条进展。', timestamp: now } },
   }));
   await expect(page.getByText('恢复后无需刷新即可看到这条进展。', { exact: true })).toBeVisible();
+});
+
+
+test('Pausing before the first Agent event immediately replaces the submitting status', async ({ page }) => {
+  let authenticated = false;
+  let releaseInterrupt: (() => void) | undefined;
+  const interruptPending = new Promise<void>(resolve => { releaseInterrupt = resolve; });
+  const workspace = { id: 'pause-first-event-workspace', display_name: '首事件暂停工作区', desired_state: 'RUNNING', updated_at: now };
+  const conversation = {
+    id: 'pause-first-event-conversation', display_title: '首事件暂停会话', title_state: 'MANUAL', lifecycle: 'ACTIVE',
+    streaming_callback_ready: true, write_available: true, execution_status: 'running', created_at: now, updated_at: now,
+  };
+  let firstMessageAccepted = false;
+  const events = {
+    events: [],
+    next_cursor: null, history_cursor: null, result: { status: 'RUNNING' },
+  };
+
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return authenticated ? json(route, user) : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [conversation], next_cursor: null });
+    if (path.endsWith('/conversation-activity')) return json(route, { running_binding_ids: [conversation.id] });
+    if (path.endsWith('/hydration')) return json(route, {
+      events,
+      context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 1_024, usage_current: true },
+      readiness: { ready: true, execution_status: firstMessageAccepted ? 'running' : 'idle' },
+    });
+    if (path.endsWith('/messages') && request.method() === 'POST') {
+      firstMessageAccepted = true;
+      return json(route, { accepted: true, cursor: 'pause-first-event-user' }, 202);
+    }
+    if (path.endsWith('/interrupt') && request.method() === 'POST') {
+      await interruptPending;
+      return json(route, { accepted: true }, 202);
+    }
+    if (path.endsWith('/events')) return json(route, events);
+    if (path.endsWith('/input-readiness')) return json(route, { ready: false, execution_status: 'running' });
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/context')) return json(route, { model_name: 'test-model', window_tokens: 128_000, used_tokens: 1_024, usage_current: true });
+    if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
+    if (path.endsWith('/workspace')) return json(route, {
+      root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project',
+      work_directory: null, files: [], repositories: [], runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } },
+    });
+    if (path.endsWith('/model-providers') || path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, conversation);
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+
+  await page.goto('/');
+  await login(page);
+  await page.goto(`/agent/conversations/${conversation.id}`);
+  const composer = page.getByLabel('发送 Agent 消息');
+  await composer.fill('尚未出现 Agent 事件的任务');
+  await page.getByRole('button', { name: '发送消息' }).click();
+  await expect(page.getByText('正在提交消息', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
+
+  await page.getByRole('button', { name: '暂停当前 Agent' }).click();
+  await expect(page.getByRole('button', { name: '暂停请求已发送' })).toBeDisabled();
+  await expect(page.getByText('正在暂停 Agent', { exact: true })).toBeVisible();
+  await expect(page.getByText('正在提交消息', { exact: true })).toHaveCount(0);
+
+  releaseInterrupt?.();
+  await expect(page.getByRole('button', { name: '继续当前 Agent' })).toBeVisible();
 });

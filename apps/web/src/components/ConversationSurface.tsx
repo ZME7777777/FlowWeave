@@ -6,7 +6,7 @@ import { ConversationTextReveal } from './ConversationTextReveal';
 import { useEscapeClose } from './useEscapeClose';
 import { subagentAvatarSlotForEvent, subagentAvatarSlots, type SubagentAvatarSlot } from '../utils/subagentAvatar';
 import { workspaceFileChanges, workspaceRelativePath, type WorkspaceFileChange } from './agent-session/fileChanges';
-import { isOpenHandsAgentReply, isOpenHandsEmptyResponseRecovery, orderOpenHandsConversationEvents, parseOpenHandsEventTime } from './conversationEvents';
+import { isOpenHandsAgentReply, isOpenHandsConversationTerminalError, isOpenHandsEmptyResponseRecovery, orderOpenHandsConversationEvents, parseOpenHandsEventTime } from './conversationEvents';
 import './conversation-surface.css';
 
 type ItemKind = 'user' | 'assistant' | 'thought' | 'tool' | 'error' | 'condensation';
@@ -422,11 +422,7 @@ function isPauseInterruptionEvent(event: OpenHandsConversationEvent): boolean {
 }
 
 function isConversationTerminalError(event: OpenHandsConversationEvent): boolean {
-  // AgentErrorEvent is often recoverable, but OpenHands does not emit a
-  // separate ConversationErrorEvent when it is the last formal event in a
-  // turn. Keep every non-pause ERROR in the transcript; turnsFor() later
-  // suppresses it when a formal assistant reply proves recovery.
-  return event.event_type === 'ERROR' && !isPauseInterruptionEvent(event);
+  return isOpenHandsConversationTerminalError(event);
 }
 
 function isProcessInterruptionEvent(event: OpenHandsConversationEvent): boolean {
@@ -469,14 +465,11 @@ function itemsFor(event: OpenHandsConversationEvent): Item[] {
     return [{ event, kind: 'error', title: '本轮未能完成', content }];
   }
   if (event.event_type === 'COMPLETED') {
-    // OpenHands has two formal final-response paths: an assistant MessageEvent
-    // and FinishAction.message. A FinishAction may also carry top-level
-    // commentary, so expand that one formal event into process + final UI rows.
-    if (eventName !== 'FinishAction') return [];
-    return [
-      ...(thought ? [{ event, kind: 'thought' as const, title: '分析', content: thought }] : []),
-      ...(content ? [{ event, kind: 'assistant' as const, title: '', content }] : []),
-    ];
+    // FinishAction.message is the formal user-facing delivery. Its top-level
+    // commentary remains available in the event projection for diagnostics,
+    // but is neither a tool step nor a second reply in the transcript.
+    if (eventName !== 'FinishAction' || !content) return [];
+    return [{ event, kind: 'assistant', title: '', content }];
   }
   // STATE is transport progress rather than conversation content. Other empty
   // protocol frames are similarly excluded from the product transcript.
@@ -1102,9 +1095,26 @@ function processBlocksForSegment(segment: ProcessSegment, active: boolean, compl
 function formatMessageTime(raw: unknown): string | undefined {
   const value = parseOpenHandsEventTime(raw);
   if (value === undefined) return undefined;
-  return new Intl.DateTimeFormat('zh-CN', {
-    hour: '2-digit', minute: '2-digit', hour12: false,
-  }).format(value);
+
+  const timestamp = new Date(value);
+  const now = new Date();
+  const time = `${String(timestamp.getHours()).padStart(2, '0')}:${String(timestamp.getMinutes()).padStart(2, '0')}`;
+  const isSameDay = timestamp.getFullYear() === now.getFullYear()
+    && timestamp.getMonth() === now.getMonth()
+    && timestamp.getDate() === now.getDate();
+  if (isSameDay) return time;
+
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const daysSinceMonday = (startOfToday.getDay() + 6) % 7;
+  const startOfWeek = new Date(startOfToday);
+  startOfWeek.setDate(startOfToday.getDate() - daysSinceMonday);
+  const startOfNextWeek = new Date(startOfWeek);
+  startOfNextWeek.setDate(startOfWeek.getDate() + 7);
+  if (timestamp >= startOfWeek && timestamp < startOfNextWeek) {
+    return `星期${'日一二三四五六'[timestamp.getDay()]} ${time}`;
+  }
+
+  return `${timestamp.getFullYear()}年${timestamp.getMonth() + 1}月${timestamp.getDate()}日 ${time}`;
 }
 
 function formatDuration(totalSeconds: number): string {
@@ -1453,23 +1463,15 @@ const ActivityGroup = memo(function ActivityGroup({ items, active, revealEventId
   const summary = <><ChevronRight size={14}/><span className="conversation-activity-meta"><span className="conversation-activity-status"><span>{active && startedAt !== undefined ? <LiveElapsed startedAt={startedAt}/> : active ? '处理中' : label}</span><span className={`conversation-activity-spinner-slot${active ? ' active' : ''}`} aria-hidden="true"><LoaderCircle className="conversation-activity-spin" size={13}/></span></span>{itemCount > 0 && <small>{itemCount} 项</small>}</span></>;
   const hasDetails = itemCount > 0;
   if (!hasDetails) return <div className={`conversation-activity-group summary-only${display === 'summary' ? ' conversation-process-summary' : ''}`}><div className="conversation-activity-summary">{summary}</div></div>;
-  if (display === 'summary') return <details className="conversation-process-summary" open={open} onToggle={event => setOpen(event.currentTarget.open)}>
-    <summary aria-label={`${open ? '收起' : '展开'}工作过程`}>{summary}</summary>
-  </details>;
-  if (display === 'source') return <div className="conversation-activity-group conversation-activity-group-source" hidden={!open}>
-    <div className="conversation-activity-list">
-      {rows.map(row => row.kind === 'progress-group'
-        ? <ProgressActivity key={row.group.id} group={row.group} active={active} revealEventIds={revealEventIds} paused={paused} parentFailed={parentFailed} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>
-        : <ActivityEntryRow key={row.entry.id} entry={row.entry} active={active} reveal={entryHasRevealedText(row.entry, revealEventIds)} paused={paused} parentFailed={parentFailed} hideThought={row.entry.hideThought} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>) }
-    </div>
+  const activityList = <div className="conversation-activity-list">
+    {rows.map(row => row.kind === 'progress-group'
+      ? <ProgressActivity key={row.group.id} group={row.group} active={active} revealEventIds={revealEventIds} paused={paused} parentFailed={parentFailed} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>
+      : <ActivityEntryRow key={row.entry.id} entry={row.entry} active={active} reveal={entryHasRevealedText(row.entry, revealEventIds)} paused={paused} parentFailed={parentFailed} hideThought={row.entry.hideThought} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>) }
   </div>;
-  return <details className={`conversation-activity-group${active ? ' active' : ''}`} open={open} onToggle={event => setOpen(event.currentTarget.open)}>
-    <summary>{summary}</summary>
-    <div className="conversation-activity-list">
-      {rows.map(row => row.kind === 'progress-group'
-        ? <ProgressActivity key={row.group.id} group={row.group} active={active} revealEventIds={revealEventIds} paused={paused} parentFailed={parentFailed} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>
-        : <ActivityEntryRow key={row.entry.id} entry={row.entry} active={active} reveal={entryHasRevealedText(row.entry, revealEventIds)} paused={paused} parentFailed={parentFailed} hideThought={row.entry.hideThought} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>) }
-    </div>
+  const completed = display === 'summary';
+  return <details className={`${completed ? 'conversation-process-summary' : 'conversation-activity-group'}${active && !completed ? ' active' : ''}`} open={open} onToggle={event => setOpen(event.currentTarget.open)}>
+    <summary aria-label={completed ? `${open ? '收起' : '展开'}工作过程` : undefined}>{summary}</summary>
+    {activityList}
   </details>;
 }, (previous, next) => (
   previous.active === next.active
@@ -1752,13 +1754,22 @@ export interface ConversationHistoryPrepend {
   phase: 'capture' | 'restore';
 }
 
-export const ConversationSurface = memo(function ConversationSurface({ events, isGenerating, liveTextReveal = false, isPaused = false, emptyResponseRecoveryActive = false, modelRetryStatus, historyPending = false, cachedHistoryMarkerCount = 0, cachedHistoryUserEventIds = [], hasCachedOlderHistory = false, onRequestOlderHistory, onRevealHistoryThrough, conversationScope, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationPending = false, condensationStartedAt, onRewrite, onFork, onOpenAttachment, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, onOpenImage, workspaceImageUrl, workspaceRoot, onCreateAnnotation, onSidebarQuestion, onLocateAnnotation, conversationName, onOpenConversationReference, taskControl = [], monitoring, connectionState }: {
+export interface ConversationScrollSnapshot {
+  scrollTop: number;
+  bottomOffset: number;
+  followLatest: boolean;
+  savedAt: number;
+}
+
+export const ConversationSurface = memo(function ConversationSurface({ events, isGenerating, liveTextReveal = false, isPaused = false, pausing = false, emptyResponseRecoveryActive = false, modelRetryStatus, historyPending = false, cachedHistoryMarkerCount = 0, cachedHistoryUserEventIds = [], hasCachedOlderHistory = false, onRequestOlderHistory, onRevealHistoryThrough, conversationScope, initialScrollSnapshot, onScrollSnapshotChange, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationPending = false, condensationStartedAt, onRewrite, onFork, onOpenAttachment, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, onOpenImage, workspaceImageUrl, workspaceRoot, onCreateAnnotation, onSidebarQuestion, onLocateAnnotation, conversationName, onOpenConversationReference, taskControl = [], monitoring, connectionState }: {
   events: OpenHandsConversationEvent[];
   isGenerating: boolean;
   /** Strict native running state; unlike visual activity it never animates history reconciliation. */
   liveTextReveal?: boolean;
   /** Formal native conversation pause state, used only to label unfinished Task actions. */
   isPaused?: boolean;
+  /** A pause request is pending confirmation from the native Runtime. */
+  pausing?: boolean;
   /** Transient UI only; the persisted corrective event never enters history. */
   emptyResponseRecoveryActive?: boolean;
   /** Actual non-persistent transport retry progress for this binding only. */
@@ -1775,6 +1786,9 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   onRevealHistoryThrough?: (eventId: string) => Promise<boolean>;
   /** Binding identity that owns this transcript viewport. */
   conversationScope?: string;
+  /** In-memory reading position captured before this scoped viewport unmounted. */
+  initialScrollSnapshot?: ConversationScrollSnapshot;
+  onScrollSnapshotChange?: (scope: string, snapshot: ConversationScrollSnapshot) => void;
   /** Explicitly brackets one scoped historical prepend. */
   historyPrepend?: ConversationHistoryPrepend;
   onHistoryAnchorCaptured?: (transaction: ConversationHistoryPrepend) => void;
@@ -1812,6 +1826,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   const followLatest = useRef(true);
   const userScrolledAway = useRef(false);
   const scrollInteractionStartY = useRef<number | null>(null);
+  const scrollSnapshotFrame = useRef<number | undefined>(undefined);
   const scrollInteractionTowardLatest = useRef(false);
   const scrollbarVisibilityTimer = useRef<number | undefined>(undefined);
   const automaticScrollFrame = useRef<number | undefined>(undefined);
@@ -2294,10 +2309,32 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   useEffect(() => () => {
     if (scrollbarVisibilityTimer.current !== undefined) window.clearTimeout(scrollbarVisibilityTimer.current);
   }, []);
+  const captureScrollSnapshot = useCallback(() => {
+    const element = surface.current;
+    if (!conversationScope || !element) return;
+    onScrollSnapshotChange?.(conversationScope, {
+      scrollTop: element.scrollTop,
+      bottomOffset: element.scrollHeight - element.scrollTop,
+      followLatest: followLatest.current && !userScrolledAway.current,
+      savedAt: Date.now(),
+    });
+  }, [conversationScope, onScrollSnapshotChange]);
+  const scheduleScrollSnapshot = useCallback(() => {
+    if (!conversationScope || !onScrollSnapshotChange || scrollSnapshotFrame.current !== undefined) return;
+    scrollSnapshotFrame.current = window.requestAnimationFrame(() => {
+      scrollSnapshotFrame.current = undefined;
+      captureScrollSnapshot();
+    });
+  }, [captureScrollSnapshot, conversationScope, onScrollSnapshotChange]);
+  useLayoutEffect(() => () => {
+    if (scrollSnapshotFrame.current !== undefined) window.cancelAnimationFrame(scrollSnapshotFrame.current);
+    captureScrollSnapshot();
+  }, [captureScrollSnapshot]);
   const handleScroll = useCallback(() => {
     updateScrollPosition();
     scrollInteractionTowardLatest.current = false;
-  }, [updateScrollPosition]);
+    scheduleScrollSnapshot();
+  }, [scheduleScrollSnapshot, updateScrollPosition]);
   const scheduleLatestAlignment = useCallback(() => {
     if (!followLatest.current || userScrolledAway.current || automaticScrollFrame.current !== undefined) return;
     automaticScrollFrame.current = window.requestAnimationFrame(() => {
@@ -2354,6 +2391,23 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     historyAnchor.current = undefined;
     onHistoryAnchorRestored?.(historyPrepend);
   }, [alignWithLatest, conversationScope, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored]);
+  useLayoutEffect(() => {
+    const element = surface.current;
+    if (!element || initialPositioned.current || !initialScrollSnapshot || !(turns.length || isGenerating)) return;
+    initialPositioned.current = true;
+    if (initialScrollSnapshot.followLatest) {
+      followLatest.current = true;
+      userScrolledAway.current = false;
+      setIsAtLatest(true);
+      alignWithLatest();
+      return;
+    }
+    followLatest.current = false;
+    userScrolledAway.current = true;
+    setIsAtLatest(false);
+    const maxTop = Math.max(0, element.scrollHeight - element.clientHeight);
+    element.scrollTop = Math.min(maxTop, Math.max(0, initialScrollSnapshot.scrollTop));
+  }, [alignWithLatest, initialScrollSnapshot, isGenerating, turns.length]);
   // Formal event rows are committed before this layout effect runs. Correct
   // their bottom offset synchronously so the browser cannot paint one frame at
   // the old scrollTop and then visibly snap to the latest content. Include the
@@ -2581,7 +2635,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
                   event.currentTarget.form?.requestSubmit();
                 }}/><footer><button type="button" onClick={() => setEditingEventId(undefined)}>取消</button><button type="submit" disabled={!editingContent.trim() || rewritePending}>重新思考</button></footer></form>
                 : <article data-user-event-id={message.event.id} data-conversation-event-id={message.event.id} className="conversation-message user"><MessageAttachments attachments={eventAttachments(message.event)} references={message.event.payload.conversation_references} workspaceReferences={message.event.payload.workspace_references} annotations={eventAnnotations(message.event)} onOpen={onOpenAttachment} onOpenReference={reference => { if (onOpenConversationReference) onOpenConversationReference(reference); else setViewingReference(reference); }} onOpenWorkspaceReference={onOpenWorkspaceReference} onOpenAnnotation={locateAnnotation} conversationName={conversationName}/>{message.content && <div className="conversation-message-content"><MessageMarkdown>{message.content}</MessageMarkdown></div>}<footer className="conversation-message-meta user">{messageDeliveryStatus && <small className="conversation-message-delivery-status" role="status">{messageDeliveryStatus}</small>}{messageTimestamp && <time dateTime={typeof message.event.payload.timestamp === 'string' ? message.event.payload.timestamp : undefined}>{messageTimestamp}</time>}<div className={`conversation-message-actions${lastUserEventId === message.event.id ? ' can-rewrite' : ''}`}><button type="button" className="conversation-message-copy" aria-label={copiedEventId === message.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === message.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(message.event.id, message.content)}>{copiedEventId === message.event.id ? <Check size={13}/> : <Copy size={13}/>}</button>{lastUserEventId === message.event.id && <button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(message.event.id); setEditingContent(message.content); }}><Pencil size={13}/></button>}</div></footer></article>}</div>
-              {segmentBlocks.map(block => <ActivityGroup
+              {!completionConfirmed && segmentBlocks.map(block => <ActivityGroup
                 key={`${message.event.id}:${block.id}`}
                 items={block.items}
                 active={block.active}
@@ -2593,13 +2647,11 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
                 finishedAt={block.finishedAt}
                 avatarSlots={avatarSlots}
                 workspaceRoot={workspaceRoot}
-                display={completionConfirmed ? 'source' : 'full'}
-                open={completionConfirmed ? completedProcessExpanded : undefined}
               />)}
             </Fragment>;
           })}
           {isCurrent && !turn.assistant && !failures.length && (
-            <CurrentTurnStatus items={turn.activity} requestSubmitting={requestSubmitting} statusOverride={emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} modelRetryStatus={modelRetryStatus} monitoring={monitoring} connectionState={connectionState}/>
+            <CurrentTurnStatus items={turn.activity} requestSubmitting={requestSubmitting} statusOverride={pausing ? '正在暂停 Agent' : emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} modelRetryStatus={modelRetryStatus} monitoring={monitoring} connectionState={connectionState}/>
           )}
           {processBlocks.length > 0 && turn.assistant && <div className="conversation-process-divider" role="separator" aria-label="工作过程结束"/>}
           {completionConfirmed && processBlocks.map(block => <ActivityGroup
@@ -2622,7 +2674,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
           {failures.map(item => <ConversationFailure key={item.event.id} item={item} taskControl={taskControl} retryStatus={isLatest ? modelRetryStatus : undefined}/>)}
         </section>;
       })}
-      {turns.length === 0 && isGenerating && !condensationPending && <><ActivityGroup items={[]} active revealEventIds={revealEventIds} startedAt={requestStartedAt} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/><CurrentTurnStatus items={[]} requestSubmitting={requestSubmitting} statusOverride={emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} modelRetryStatus={modelRetryStatus} monitoring={monitoring} connectionState={connectionState}/></>}
+      {turns.length === 0 && isGenerating && !condensationPending && <><ActivityGroup items={[]} active revealEventIds={revealEventIds} startedAt={requestStartedAt} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/><CurrentTurnStatus items={[]} requestSubmitting={requestSubmitting} statusOverride={pausing ? '正在暂停 Agent' : emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} modelRetryStatus={modelRetryStatus} monitoring={monitoring} connectionState={connectionState}/></>}
 
       {condensationPending && <article className="conversation-condensation-progress" role="status" aria-label="正在压缩上下文">
         <LoaderCircle className="conversation-activity-spin" size={16}/>

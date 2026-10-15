@@ -17,8 +17,8 @@ import { deploymentBasePath, withoutDeploymentBase } from '../../deploymentPath'
 import { agentWorkspaceSessionHost, type AgentSessionHost } from './session-host';
 import { SidebarConversationPane } from './SidebarConversationPane';
 import { clearConversationSnapshots, readConversationContextSnapshot, writeConversationContextSnapshot } from './conversation-cache';
-import { ConversationSurface, ConversationTaskPlan, type ConversationHistoryPrepend, type ConversationReference, type ModelRetryStatus } from '../ConversationSurface';
-import { isOpenHandsAgentReply, isOpenHandsEmptyResponseRecovery, orderOpenHandsConversationEvents } from '../conversationEvents';
+import { ConversationSurface, ConversationTaskPlan, type ConversationHistoryPrepend, type ConversationReference, type ConversationScrollSnapshot, type ModelRetryStatus } from '../ConversationSurface';
+import { isOpenHandsAgentReply, isOpenHandsConversationTerminalError, isOpenHandsEmptyResponseRecovery, orderOpenHandsConversationEvents } from '../conversationEvents';
 import { useProductDialog } from '../ProductDialogContext';
 import { useEscapeClose } from '../useEscapeClose';
 import { MermaidDiagram } from '../MermaidDiagram';
@@ -1571,7 +1571,7 @@ function hasFinishedTurn(events: OpenHandsConversationEvent[], userEventId: stri
     return false;
   };
   return events.some(event => {
-    const isTerminal = event.event_type === 'ERROR'
+    const isTerminal = isOpenHandsConversationTerminalError(event)
       || (event.event_type === 'COMPLETED' && event.payload.event_name === 'FinishAction')
       || isOpenHandsAgentReply(event);
     return isTerminal && descendsFromActiveUser(event);
@@ -1596,7 +1596,7 @@ function hasAssistantReplyForTurn(events: OpenHandsConversationEvent[], userEven
 function hasNonTerminalRuntimeActivityForTurn(events: OpenHandsConversationEvent[], userEventId: string): boolean {
   const byId = new Map(events.map(event => [event.id, event]));
   return events.some(event => {
-    if (event.id === userEventId || isOpenHandsAgentReply(event) || event.event_type === 'ERROR'
+    if (event.id === userEventId || isOpenHandsAgentReply(event) || isOpenHandsConversationTerminalError(event)
       || (event.event_type === 'COMPLETED' && event.payload.event_name === 'FinishAction')) return false;
     const visited = new Set<string>();
     let parentId = event.payload.parent_id;
@@ -4442,6 +4442,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const historyAbortControllers = useRef(new Map<string, AbortController>());
   const historyFailedCursors = useRef(new Map<string, string>());
   const historyCacheByScope = useRef(new Map<string, { rootCursor: string; expiresAt: number; pages: OpenHandsConversationEventBatch[]; complete: boolean }>());
+  const conversationScrollSnapshots = useRef(new Map<string, ConversationScrollSnapshot>());
+  const updateConversationScrollSnapshot = useCallback((scope: string, snapshot: ConversationScrollSnapshot) => {
+    conversationScrollSnapshots.current.set(scope, snapshot);
+  }, []);
   const revealedHistoryPageCounts = useRef(new Map<string, number>());
   const [historyCacheRevision, setHistoryCacheRevision] = useState(0);
   const contextRefreshTimers = useRef(new Map<string, number>());
@@ -6360,6 +6364,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     historyLoadingScopes.current.delete(bindingId);
     historyFailedCursors.current.delete(bindingId);
     historyCacheByScope.current.delete(bindingId);
+    conversationScrollSnapshots.current.delete(bindingId);
     revealedHistoryPageCounts.current.delete(bindingId);
     trustedHydrations.current.delete(bindingId);
     composerDraftsByScope.current.delete(bindingId);
@@ -6598,7 +6603,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       const formalEvent = event.event;
       if (formalEvent.event_type === 'MESSAGE' && ['user', 'human'].includes(String(formalEvent.payload.source ?? '').toLowerCase())) setModelRetryStatus(undefined);
       appendLiveEvent(scope, formalEvent);
-      const terminal = formalEvent.event_type === 'ERROR'
+      const terminal = isOpenHandsConversationTerminalError(formalEvent)
         || (formalEvent.event_type === 'COMPLETED' && formalEvent.payload.event_name === 'FinishAction')
         || isOpenHandsAgentReply(formalEvent);
       if (terminal) {
@@ -7740,10 +7745,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const conversationInitialLoading = Boolean(
     selected && (selectedHydrationPhase === 'loading' || fallbackHydrationPending),
   );
-  const currentSessionControlState: TurnState = foregroundSubmissionAwaitingFormalEvent
-    ? 'running'
-    : effectiveTurnState === 'pausing' || effectiveTurnState === 'paused' || effectiveTurnState === 'resuming'
-      ? effectiveTurnState
+  const currentSessionControlState: TurnState = effectiveTurnState === 'pausing' || effectiveTurnState === 'paused' || effectiveTurnState === 'resuming'
+    ? effectiveTurnState
+    : foregroundSubmissionAwaitingFormalEvent
+      ? 'running'
       : currentFormalTurnFinished
         ? 'idle'
         : effectiveTurnState;
@@ -8278,6 +8283,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         isGenerating={conversationVisuallyActive}
         liveTextReveal={nativeTurnRunning}
         isPaused={conversationActivity.state === 'paused'}
+        pausing={conversationActivity.state === 'pausing'}
         emptyResponseRecoveryActive={emptyResponseRecoveryActive}
         modelRetryStatus={modelRetryStatus}
         historyPending={Boolean(selected && historyLoadingBindingId === selected.id)}
@@ -8287,6 +8293,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         onRequestOlderHistory={requestNextHistoryPage}
         onRevealHistoryThrough={revealHistoryThrough}
         conversationScope={selected?.id ?? conversationDraft?.id}
+        initialScrollSnapshot={conversationScrollSnapshots.current.get(selected?.id ?? conversationDraft?.id ?? '')}
+        onScrollSnapshotChange={updateConversationScrollSnapshot}
         historyPrepend={historyPrepend}
         onHistoryAnchorCaptured={onHistoryAnchorCaptured}
         onHistoryAnchorRestored={onHistoryAnchorRestored}
@@ -8309,7 +8317,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         workspaceRoot={activeWorkspaceRoot}
         conversationName={bindingId => bindingId ? conversationsById.get(bindingId)?.display_title ?? (bindingId === selected?.id ? conversationName(selected) : undefined) : undefined}
         onOpenConversationReference={reference => {
-          if (reference.source_binding_id) onNavigate(host.conversationPath(reference.source_binding_id));
+          if (reference.source_binding_id) selectConversation(reference.source_binding_id);
         }}
         onCreateAnnotation={selected && canWrite ? anchor => void createAnnotation('CONVERSATION_TEXT', anchor) : undefined}
         onSidebarQuestion={selected ? reference => setSidebarQuestions(current => ({
@@ -8383,7 +8391,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         </section>}
                   <AgentComposerInput key={composerScope ?? 'composer'} ref={composerRef} initialDraft={composerDraftRef.current} scope={composerScope} suggestions={visibleComposerSuggestions} placeholder={pendingConfirmation ? '请先处理上方工具确认…' : composerControlMode === 'condensing' ? '可继续输入，发送后将排队…' : composerControlMode === 'reconciling' ? '正在同步 Agent 状态…' : composerControlMode === 'read-only' ? '当前会话不可编辑…' : '给 Agent 发消息…'} disabled={!composerControl.editable} onDraftChange={setComposerDraft} onContentPresenceChange={onComposerContentPresenceChange} onDraftPersist={persistComposerDraft} onPaste={event => { if (!features.attachments) return; const files = transferredFiles(event.clipboardData); if (!files.length) return; event.preventDefault(); files.forEach(startAttachmentUpload); }} onDropFiles={features.attachments && composerScope ? files => files.forEach(startAttachmentUpload) : undefined} onDropWorkspaceFiles={paths => setWorkspaceReferences(current => [...current, ...paths.flatMap(path => current.some(reference => reference.path === path) ? [] : [{ path, kind: 'file' as const, display_name: path.split('/').filter(Boolean).pop() ?? path }])])} onDropConversationReference={({ bindingId, eventId, title }) => setReferences(current => current.some(reference => reference.sourceBindingId === bindingId) ? current : [...current, { eventId, content: title, sourceBindingId: bindingId, title }])} onSubmit={enqueueDraft} onDirectSubmit={sendDraftDirectly} onManageCapabilities={features.capabilities && (selected || features.draftCapabilitySelection) ? () => setCapabilityManagerOpen(true) : undefined} onNativeAction={action => { if (action === 'CONDENSE' && canCondense && !condense.isPending && workspace && selected) condense.mutate({ workspaceId: workspace.id, bindingId: selected.id }); }} onWorkspaceReferenceSelected={() => { setWorkspaceReferenceQuery(''); setWorkspaceReferencePickerOpen(true); }}/>
         <div className="agent-composer-attachments">
-        {(features.attachments && (attachments.length > 0 || pendingAttachments.some(item => item.scope === composerScope)) || references.length > 0 || composerAnnotations.length > 0) && <div className="agent-attachments" aria-label="已添加的附件和会话引用">{features.attachments && <>{attachments.map((item, index) => <span key={item.path}><button type="button" className="agent-attachment-open" title={`预览附件：${item.filename}`} onClick={() => previewAttachment(item)}>{item.image_data_url && <img src={item.image_data_url} alt=""/>}<em>{item.filename}</em></button><button type="button" className="agent-attachment-alias" aria-label={`引用附件 ${index + 1}`} title={`插入 @附件${index + 1}`} onClick={() => insertAttachmentAlias(item)}>@</button><button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => { setAttachments(all => all.filter(candidate => candidate.path !== item.path)); if (conversationDraft && workspace) void api.deleteDraftAttachments(workspace.id, conversationDraft.id, item.path).catch(() => undefined); }}>×</button></span>)}{pendingAttachments.filter(item => item.scope === composerScope).map(item => <span key={item.id} className={`agent-pending-attachment ${item.state}`} title={item.state === 'failed' ? '附件上传失败，请重试或删除。' : `正在上传 ${item.progress}%`}><span className="agent-attachment-open">{item.previewUrl ? <img src={item.previewUrl} alt=""/> : <FileText size={14}/>}<em>{item.filename}</em>{item.state === 'uploading' && <small>{item.progress}%</small>}{item.state === 'failed' && <span className="agent-attachment-retry-overlay"><button type="button" onClick={() => retryPendingAttachment(item.id)}>重试</button></span>}</span>{item.state === 'uploading' && <i className="agent-attachment-progress" style={{ '--upload-progress': `${item.progress}%` } as CSSProperties}/>}<button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => removePendingAttachment(item.id)}>×</button></span>)}</>}<ComposerConversationReferenceList references={references} onOpen={reference => onNavigate(host.conversationPath(reference.sourceBindingId))} onRemove={reference => setReferences(current => current.filter(item => item !== reference))} onUpdate={updateConversationReference}/>{(selected || conversationDraft) && <ComposerAnnotationList annotations={composerAnnotations} onLocate={locateAnnotation} onRemove={annotation => setComposerAnnotations(current => current.filter(item => item.id !== annotation.id))} onUpdate={(annotation, comment) => void updateAnnotation(annotation, comment)}/>}</div>}
+        {(features.attachments && (attachments.length > 0 || pendingAttachments.some(item => item.scope === composerScope)) || references.length > 0 || composerAnnotations.length > 0) && <div className="agent-attachments" aria-label="已添加的附件和会话引用">{features.attachments && <>{attachments.map((item, index) => <span key={item.path}><button type="button" className="agent-attachment-open" title={`预览附件：${item.filename}`} onClick={() => previewAttachment(item)}>{item.image_data_url && <img src={item.image_data_url} alt=""/>}<em>{item.filename}</em></button><button type="button" className="agent-attachment-alias" aria-label={`引用附件 ${index + 1}`} title={`插入 @附件${index + 1}`} onClick={() => insertAttachmentAlias(item)}>@</button><button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => { setAttachments(all => all.filter(candidate => candidate.path !== item.path)); if (conversationDraft && workspace) void api.deleteDraftAttachments(workspace.id, conversationDraft.id, item.path).catch(() => undefined); }}>×</button></span>)}{pendingAttachments.filter(item => item.scope === composerScope).map(item => <span key={item.id} className={`agent-pending-attachment ${item.state}`} title={item.state === 'failed' ? '附件上传失败，请重试或删除。' : `正在上传 ${item.progress}%`}><span className="agent-attachment-open">{item.previewUrl ? <img src={item.previewUrl} alt=""/> : <FileText size={14}/>}<em>{item.filename}</em>{item.state === 'uploading' && <small>{item.progress}%</small>}{item.state === 'failed' && <span className="agent-attachment-retry-overlay"><button type="button" onClick={() => retryPendingAttachment(item.id)}>重试</button></span>}</span>{item.state === 'uploading' && <i className="agent-attachment-progress" style={{ '--upload-progress': `${item.progress}%` } as CSSProperties}/>}<button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => removePendingAttachment(item.id)}>×</button></span>)}</>}<ComposerConversationReferenceList references={references} onOpen={reference => selectConversation(reference.sourceBindingId)} onRemove={reference => setReferences(current => current.filter(item => item !== reference))} onUpdate={updateConversationReference}/>{(selected || conversationDraft) && <ComposerAnnotationList annotations={composerAnnotations} onLocate={locateAnnotation} onRemove={annotation => setComposerAnnotations(current => current.filter(item => item.id !== annotation.id))} onUpdate={(annotation, comment) => void updateAnnotation(annotation, comment)}/>}</div>}
         {workspaceReferences.length > 0 && <div className="agent-attachments agent-workspace-references" aria-label="已添加的工作区引用">{workspaceReferences.map(reference => <span key={workspaceReferenceKey(reference)} title={reference.path}><span className="agent-attachment-open">{reference.kind === 'directory' ? <Folder size={14}/> : <FileCode2 size={14}/>}<em><b>{reference.display_name}</b><small>{workspaceReferenceLabel(reference)}</small></em></span><button type="button" className="agent-attachment-remove" aria-label={'移除工作区引用 ' + reference.display_name} onClick={() => setWorkspaceReferences(current => current.filter(item => workspaceReferenceKey(item) !== workspaceReferenceKey(reference)))}>×</button></span>)}</div>}
         </div>
         <footer>

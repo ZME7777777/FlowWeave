@@ -455,6 +455,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   let incompleteLiveToolProjection = false;
   let parentTurnFailed = false;
   let recoverableAgentError = false;
+  let recoverableTaskResumeError = false;
   let historyPrefetchEnabled = false;
   let cursorlessEventRecovery = false;
   let emptyResponseRecovery = false;
@@ -462,6 +463,14 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   let historyPageRequests = 0;
   let releaseHistoryPage: (() => void) | undefined;
   const historyPageGate = new Promise<void>(resolve => { releaseHistoryPage = resolve; });
+  const now = new Date();
+  const todayTimestamp = (hour: number, minute = 0) => new Date(now.getFullYear(), now.getMonth(), now.getDate(), hour, minute).toISOString();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const startOfWeek = new Date(startOfToday);
+  startOfWeek.setDate(startOfToday.getDate() - ((startOfToday.getDay() + 6) % 7));
+  const thisWeekDayOffset = startOfToday.getTime() === startOfWeek.getTime() ? 1 : 0;
+  const thisWeekTimestamp = (dayOffset: number, hour: number, minute = 0) => new Date(startOfWeek.getFullYear(), startOfWeek.getMonth(), startOfWeek.getDate() + dayOffset, hour, minute).toISOString();
+  const lastWeekTimestamp = (hour: number, minute = 0) => new Date(startOfWeek.getFullYear(), startOfWeek.getMonth(), startOfWeek.getDate() - 1, hour, minute).toISOString();
   const runningUserTimestamp = new Date(Date.now() - 12_000).toISOString().replace(/Z$/, '');
   let agentStream: WebSocketRoute | undefined;
   let terminalSocket: WebSocketRoute | undefined;
@@ -823,7 +832,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
         return;
       }
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
-        events: (modelIsResponding || parentTurnFailed || recoverableAgentError) ? [
+        events: (modelIsResponding || parentTurnFailed || recoverableAgentError || recoverableTaskResumeError) ? [
           ...(!cursor ? [{ id: 'running-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'agent-reply', content: '正在处理的请求', timestamp: runningUserTimestamp } }] : []),
           ...(runningDirectFormalEventPersisted && !cursor ? [{ id: 'running-direct-stream-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'running-user', content: 'FLOWWEAVE_MESSAGE_CONTEXT_V5:{"current_user_request":{"content":"运行中直接发送消息"}}', display_content: '运行中直接发送消息', timestamp: new Date().toISOString() } }] : []),
           ...(runningDirectAssistantReplyPersisted && !cursor ? [{ id: 'running-direct-stream-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'running-direct-stream-user', content: '延迟事件到达后仍应正常显示这条回复。', timestamp: new Date().toISOString() } }] : []),
@@ -843,14 +852,24 @@ test('top-level Agent workspace creates a direct conversation and restores its U
             { id: 'recoverable-agent-error', event_type: 'ERROR', payload: { source_type: 'AgentErrorEvent', source: 'agent', parent_id: 'recoverable-tool', tool_call_id: 'recoverable-tool-call', content: 'Temporary upstream error; retrying the operation.', timestamp: new Date().toISOString() } },
             { id: 'recoverable-agent-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'recoverable-agent-error', content: '已恢复并完成部署状态查询。', timestamp: new Date().toISOString() } },
           ] : []),
+          ...(recoverableTaskResumeError ? [
+            { id: 'resume-validation-action', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'running-user', action_id: 'resume-validation-action', tool_call_id: 'resume-validation-call', event_name: 'TaskAction', timestamp: new Date().toISOString() } },
+            { id: 'resume-validation-error', event_type: 'ERROR', payload: { source_type: 'AgentErrorEvent', source: 'agent', parent_id: 'resume-validation-action', content: "Error validating tool 'task': TaskAction prompt is required", timestamp: new Date().toISOString() } },
+            { id: 'resumed-task-action', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'resume-validation-error', action_id: 'resumed-task-action', tool_call_id: 'resumed-task-call', event_name: 'TaskAction', runtime_task: { phase: 'REQUESTED', action_event_id: 'resumed-task-action', tool_call_id: 'resumed-task-call', subagent_type: 'code-explorer', description: '继续汇总接口调研', resume_task_id: 'task_00000001' }, timestamp: new Date().toISOString() } },
+            { id: 'resumed-task-result', event_type: 'TOOL_RESULT', payload: { source: 'environment', parent_id: 'resumed-task-action', action_id: 'resumed-task-action', tool_call_id: 'resumed-task-call', event_name: 'TaskObservation', runtime_task: { phase: 'COMPLETED', action_event_id: 'resumed-task-action', observation_event_id: 'resumed-task-result', tool_call_id: 'resumed-task-call', task_id: 'task_00000001', subagent_type: 'code-explorer', status: 'completed', outcome: { is_error: false, content: [{ type: 'text', text: '已恢复任务。' }] } }, timestamp: new Date().toISOString() } },
+          ] : []),
         ] : conversations.length ? [
-          { id: 'user-request', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '检查工作目录', attachments: [{ filename: '最早来源.png', mime_type: 'image/png', byte_size: 96, path: '/runtime/workspace/project/uploads/earliest-source.png', image_data_url: 'data:image/png;base64,iVBORw==' }], timestamp: '2026-08-26T10:00:00Z' } },
+          { id: 'last-week-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '上周的消息', timestamp: lastWeekTimestamp(10) } },
+          { id: 'this-week-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'last-week-user', content: '本周早些时候的消息', timestamp: thisWeekTimestamp(thisWeekDayOffset, 10) } },
+          { id: 'user-request', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'this-week-user', content: '检查工作目录', attachments: [{ filename: '最早来源.png', mime_type: 'image/png', byte_size: 96, path: '/runtime/workspace/project/uploads/earliest-source.png', image_data_url: 'data:image/png;base64,iVBORw==' }], timestamp: todayTimestamp(10) } },
           { id: 'progress-note', event_type: 'THOUGHT', payload: { source: 'agent', parent_id: 'user-request', llm_response_id: 'response-progress-1', content: '我先确认当前工作目录，再根据现有结构判断后续改动范围。', thought: '我先确认当前工作目录，再根据现有结构判断后续改动范围。', timestamp: '2026-08-26T10:00:01Z' } },
           { id: 'progress-note-observation', event_type: 'TOOL_RESULT', payload: { source: 'environment', parent_id: 'progress-note', event_name: 'ThinkObservation', content: 'Your thought has been logged.', timestamp: '2026-08-26T10:00:01.100Z' } },
           { id: 'tool-request', event_type: 'TOOL_CALL', payload: { parent_id: 'progress-note-observation', action_id: 'tool-request', tool_call_id: 'terminal-call', llm_response_id: 'response-tool-1', tool_name: 'terminal', event_name: 'TerminalAction', content: '我先确认当前工作目录，再根据现有结构判断后续改动范围。', thought: '我先确认当前工作目录，再根据现有结构判断后续改动范围。', summary: '检查当前工作目录', details: { command: 'pwd' }, timestamp: '2026-08-26T10:00:02Z' } },
           { id: 'tool-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'unrelated-file-action', action_id: 'tool-request', tool_call_id: 'terminal-call', tool_name: 'terminal', event_name: 'TerminalObservation', content: '/workspace', details: { command: 'pwd', exit_code: 0, is_error: false }, timestamp: '2026-08-26T10:00:03Z' } },
-          { id: 'file-action', event_type: 'TOOL_CALL', payload: { parent_id: 'tool-result', action_id: 'file-action', tool_call_id: 'file-call', llm_response_id: 'response-progress-1', tool_name: 'file_editor', event_name: 'FileEditorAction', summary: '更新运行配置', details: { command: 'str_replace', path: '/runtime/workspace/project/src/config.ts', old_str: 'const mode = "old"', new_str: 'const mode = "new"' }, timestamp: '2026-08-26T10:00:03.200Z' } },
+          // REST recovery can return a tool observation before its action while
+          // the live stream is still being merged. The UI must reconcile them.
           { id: 'file-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'file-action', action_id: 'file-action', tool_call_id: 'file-call', tool_name: 'file_editor', event_name: 'FileEditorObservation', content: 'The file was edited successfully.', details: { command: 'str_replace', path: '/runtime/workspace/project/src/config.ts', is_error: false }, timestamp: '2026-08-26T10:00:03.500Z' } },
+          { id: 'file-action', event_type: 'TOOL_CALL', payload: { parent_id: 'tool-result', action_id: 'file-action', tool_call_id: 'file-call', llm_response_id: 'response-progress-1', tool_name: 'file_editor', event_name: 'FileEditorAction', summary: '更新运行配置', details: { command: 'str_replace', path: '/runtime/workspace/project/src/config.ts', old_str: 'const mode = "old"', new_str: 'const mode = "new"' }, timestamp: '2026-08-26T10:00:03.200Z' } },
           { id: 'unchanged-file-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'file-result', action_id: 'unchanged-file-action', tool_call_id: 'unchanged-file-call', tool_name: 'file_editor', event_name: 'FileEditorObservation', details: { command: 'str_replace', path: '/runtime/workspace/project/src/unchanged.ts', old_content: 'export const unchanged = true;', new_content: 'export const unchanged = true;', is_error: false }, timestamp: '2026-08-26T10:00:03.505Z' } },
           { id: 'progress-note-next', event_type: 'THOUGHT', payload: { source: 'agent', parent_id: 'unchanged-file-result', llm_response_id: 'response-progress-2', content: '接下来检查不同类型的文件。', thought: '接下来检查不同类型的文件。', timestamp: '2026-08-26T10:00:03.510Z' } },
           { id: 'java-read-action', event_type: 'TOOL_CALL', payload: { parent_id: 'progress-note-next', action_id: 'java-read-action', tool_call_id: 'java-read-call', llm_response_id: 'response-progress-2', tool_name: 'file_editor', event_name: 'FileEditorAction', details: { command: 'view', path: '/runtime/workspace/project/src/Main.java', view_range: [12, 36] }, timestamp: '2026-08-26T10:00:03.520Z' } },
@@ -1114,6 +1133,14 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByText('Temporary upstream error; retrying the operation.')).toHaveCount(0);
   await expect(page.getByText('本轮未能完成')).toHaveCount(0);
   recoverableAgentError = false;
+  recoverableTaskResumeError = true;
+  await page.reload();
+  await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
+  await expect(page.locator('.agent-workspace-conversation-running')).toHaveCount(1);
+  await expect(page.getByText('子智能体 code-explorer · 继续汇总接口调研')).toBeVisible();
+  await expect(page.getByText('本轮执行失败')).toHaveCount(0);
+  await expect(page.getByText("Error validating tool 'task': TaskAction prompt is required")).toHaveCount(0);
+  recoverableTaskResumeError = false;
   modelIsResponding = false;
   parentTurnFailed = false;
   await page.reload();
@@ -1428,9 +1455,17 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByRole('status', { name: '压缩完成' })).toBeVisible();
   await expect(page.getByText('/condense', { exact: true })).toHaveCount(0);
   const completedTurn = page.locator('.conversation-turn').filter({ hasText: '工作区已就绪。' });
-  const completedProcess = completedTurn.locator('.conversation-activity-group-source');
-  const completedProcessSummary = completedTurn.locator('.conversation-process-summary');
-  await expect(completedTurn.locator('.conversation-message-meta time')).toHaveText([/\d{2}:\d{2}/, /\d{2}:\d{2}/]);
+  const completedProcess = completedTurn.locator('details.conversation-process-summary');
+  const completedProcessSummary = completedProcess;
+  const time = new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', hour12: false });
+  const todayTime = time.format(new Date(todayTimestamp(10)));
+  const lastWeekTime = time.format(new Date(lastWeekTimestamp(10)));
+  const thisWeekTime = time.format(new Date(thisWeekTimestamp(thisWeekDayOffset, 10)));
+  const date = new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: 'numeric', day: 'numeric' }).format(new Date(lastWeekTimestamp(10))).replaceAll('/', '年').replace(/年(\d+)$/, '月$1日');
+  const weekday = new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', weekday: 'long' }).format(new Date(thisWeekTimestamp(thisWeekDayOffset, 10)));
+  await expect(completedTurn.locator('.conversation-message-meta time')).toHaveText([todayTime, /^\d+年\d+月\d+日 \d{2}:\d{2}$/]);
+  await expect(page.locator('[data-user-event-id="last-week-user"] .conversation-message-meta time')).toHaveText(`${date} ${lastWeekTime}`);
+  await expect(page.locator('[data-user-event-id="this-week-user"] .conversation-message-meta time')).toHaveText(`${weekday} ${thisWeekTime}`);
   const userMessage = completedTurn.locator('.conversation-message.user');
   const userMessageTime = userMessage.locator('.conversation-message-meta time');
   const userMessageActions = userMessage.locator('.conversation-message-actions');
@@ -1480,19 +1515,19 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     return event.defaultPrevented;
   });
   expect(assistantSelection).toBe(false);
-  await expect(completedProcess).toBeHidden();
-  await expect(completedProcessSummary).toHaveJSProperty('open', false);
+  await expect(completedProcess).toHaveJSProperty('open', false);
   await expect(completedProcessSummary.getByText('耗时 2分钟19秒')).toBeVisible();
+  await expect(completedProcess.locator('.conversation-activity-list')).toBeHidden();
   await expect.poll(() => completedTurn.evaluate(turn => {
     const reply = turn.querySelector('.conversation-message.assistant');
-    const summary = turn.querySelector('.conversation-process-summary');
+    const summary = turn.querySelector('details.conversation-process-summary');
     return Boolean(reply && summary && (summary.compareDocumentPosition(reply) & Node.DOCUMENT_POSITION_FOLLOWING));
   })).toBe(true);
   await completedProcessSummary.locator(':scope > summary').click();
   await expect(completedProcessSummary).toHaveJSProperty('open', true);
-  await expect(completedProcess).toBeVisible();
-  await expect(completedProcess).not.toHaveJSProperty('nodeName', 'DETAILS');
-  await expect(completedProcess.locator(':scope > summary')).toHaveCount(0);
+  await expect(completedProcess.locator('.conversation-activity-list')).toBeVisible();
+  await expect(completedProcess).toHaveJSProperty('nodeName', 'DETAILS');
+  await expect(completedProcess.locator(':scope > summary')).toHaveCount(1);
   const firstProgressGroup = completedProcess.locator('[data-progress-event-id="progress-note"]');
   const nextProgressGroup = completedProcess.locator('[data-progress-event-id="progress-note-next"]');
   await expect(firstProgressGroup).toContainText('我先确认当前工作目录，再根据现有结构判断后续改动范围。');
@@ -1509,10 +1544,11 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(nextProgressGroup.locator('.tool-skill')).toHaveCount(0);
   await expect(nextProgressGroup.getByText('子智能体 reviewer · 检查子任务边界')).toHaveCount(0);
   await expect(completedTurn).toHaveJSProperty('nodeName', 'SECTION');
+  await expect(completedTurn.locator('.conversation-activity-group-source')).toHaveCount(0);
   await expect.poll(() => completedTurn.evaluate(turn => {
-    const process = turn.querySelector('.conversation-activity-group-source');
+    const process = turn.querySelector('details.conversation-process-summary');
     const reply = turn.querySelector('.conversation-message.assistant');
-    return Boolean(process && reply && (process.compareDocumentPosition(reply) & Node.DOCUMENT_POSITION_FOLLOWING));
+    return Boolean(process && reply && process.contains(process.querySelector('.conversation-activity-list')) && (process.compareDocumentPosition(reply) & Node.DOCUMENT_POSITION_FOLLOWING));
   })).toBe(true);
   await expect(page.getByText('工作区已就绪。')).toHaveCount(1);
   const replyChanges = completedTurn.getByRole('button', { name: '已编辑 3 个文件' });
@@ -2481,7 +2517,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     type: 'event',
     event: { id: 'live-finish', event_type: 'COMPLETED', payload: { source: 'agent', parent_id: 'live-tool-result', event_name: 'FinishAction', content: longFinalReply, thought: '核对已经完成，下面给出最终结果。', summary: '整理最终结果', timestamp: new Date().toISOString() } },
   }));
-  await expect(page.getByText('核对已经完成，下面给出最终结果。')).toHaveCount(1);
+  await expect(page.getByText('核对已经完成，下面给出最终结果。')).toHaveCount(0);
   await expect(page.getByText(/最终回复第 1 段/)).toHaveCount(1);
   await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
   await expect(activeProcess.getByText('分析中', { exact: true })).toHaveCount(0);

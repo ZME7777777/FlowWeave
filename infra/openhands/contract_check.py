@@ -1100,8 +1100,9 @@ def main() -> None:
         "resume",
         "max_turns",
     }
-    assert task_action_fields["prompt"].is_required()
+    assert not task_action_fields["prompt"].is_required()
     assert _field_default(TaskAction, "description") is None
+    assert _field_default(TaskAction, "prompt") is None
     assert _field_default(TaskAction, "subagent_type") == "general-purpose"
     assert _field_default(TaskAction, "resume") is None
     assert _field_default(TaskAction, "max_turns") is None
