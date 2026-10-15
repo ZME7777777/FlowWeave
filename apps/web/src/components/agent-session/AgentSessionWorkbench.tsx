@@ -7740,10 +7740,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const conversationInitialLoading = Boolean(
     selected && (selectedHydrationPhase === 'loading' || fallbackHydrationPending),
   );
-  const currentSessionControlState: TurnState = foregroundSubmissionAwaitingFormalEvent
-    ? 'running'
-    : effectiveTurnState === 'pausing' || effectiveTurnState === 'paused' || effectiveTurnState === 'resuming'
-      ? effectiveTurnState
+  const currentSessionControlState: TurnState = effectiveTurnState === 'pausing' || effectiveTurnState === 'paused' || effectiveTurnState === 'resuming'
+    ? effectiveTurnState
+    : foregroundSubmissionAwaitingFormalEvent
+      ? 'running'
       : currentFormalTurnFinished
         ? 'idle'
         : effectiveTurnState;
@@ -8278,6 +8278,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         isGenerating={conversationVisuallyActive}
         liveTextReveal={nativeTurnRunning}
         isPaused={conversationActivity.state === 'paused'}
+        pausing={conversationActivity.state === 'pausing'}
         emptyResponseRecoveryActive={emptyResponseRecoveryActive}
         modelRetryStatus={modelRetryStatus}
         historyPending={Boolean(selected && historyLoadingBindingId === selected.id)}

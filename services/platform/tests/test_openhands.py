@@ -1080,6 +1080,30 @@ async def test_openhands_background_search_uses_an_isolated_five_minute_transpor
         await transport.aclose()
 
 
+
+def test_openhands_interrupt_uses_the_dedicated_control_transport(openhands_settings, monkeypatch):
+    runtime = OpenHandsRuntime(openhands_settings)
+    handle = RuntimeHandle(
+        "agent-workspace:workspace-1",
+        "conversation-1",
+        runtime_resource_name="runtime-1",
+    )
+    captured: dict[str, object] = {}
+
+    def request(method: str, path: str, **kwargs: object) -> dict[str, object]:
+        captured.update(method=method, path=path, **kwargs)
+        return {}
+
+    monkeypatch.setattr(runtime, "_request", request)
+
+    runtime.interrupt(handle)
+
+    assert captured["method"] == "POST"
+    assert captured["path"] == "/api/conversations/conversation-1/interrupt"
+    assert captured["control"] is True
+    assert captured["base_url"] == "http://runtime-1:8000"
+    assert captured["json"] == {}
+
 @pytest.mark.parametrize(
     "working_directory",
     [

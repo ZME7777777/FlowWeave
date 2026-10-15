@@ -779,6 +779,7 @@ class OpenHandsRuntime:
         *,
         missing_ok: bool = False,
         background: bool = False,
+        control: bool = False,
         base_url: str,
         session_api_key: str,
         **kwargs: Any,
@@ -789,7 +790,11 @@ class OpenHandsRuntime:
             remaining = hydration_time_left()
             if remaining is not None:
                 kwargs["timeout"] = min(float(kwargs.get("timeout", 30.0)), remaining)
-            client = self._transport().background if background else self._transport().regular
+            client = (
+                self._transport().background if background
+                else self._transport().control if control
+                else self._transport().regular
+            )
             response = client.request(
                 method,
                 f"{base_url.rstrip('/')}{path}",
@@ -5275,6 +5280,7 @@ class OpenHandsRuntime:
         self._request(
             "POST",
             f"/api/conversations/{handle.conversation_id}/interrupt",
+            control=True,
             base_url=self._base_url_for_handle(handle),
             session_api_key=self._session_key_for_handle(handle),
             json={},
