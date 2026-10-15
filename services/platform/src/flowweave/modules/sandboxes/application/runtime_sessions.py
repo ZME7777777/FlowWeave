@@ -17,6 +17,11 @@ from flowweave.modules.sandboxes.infrastructure.models import (
     ManagedSandbox,
     RuntimeGeneration,
 )
+from flowweave.runtime.protocol_profiles import (
+    DEFAULT_FLOW_RUN_PROTOCOL_PROFILE,
+    FlowRunProtocolProfile,
+    require_flow_run_protocol_profile,
+)
 from flowweave.shared.database import uid
 from flowweave.shared.errors import DomainError
 from flowweave.shared.models import FlowRun, NodeAttempt, NodeRun
@@ -66,9 +71,15 @@ def ensure_flow_run_runtime_session(
     environment_version_id: str,
     runtime_image_digest: str,
     workspace_allocation: FlowRunRuntimeAllocation,
+    protocol_profile: FlowRunProtocolProfile | str | None = None,
 ) -> FlowRunRuntime:
     """Create or verify the immutable identity of one FlowRun Runtime Session."""
 
+    requested_profile = (
+        require_flow_run_protocol_profile(protocol_profile)
+        if protocol_profile is not None
+        else None
+    )
     if re.fullmatch(r"sha256:[0-9a-f]{64}", runtime_image_digest) is None:
         raise DomainError(
             "RUNTIME_SESSION_IMAGE_REQUIRED",
@@ -93,11 +104,13 @@ def ensure_flow_run_runtime_session(
         .with_for_update()
     )
     if item is None:
+        resolved_profile = requested_profile or DEFAULT_FLOW_RUN_PROTOCOL_PROFILE
         item = FlowRunRuntime(
             id=uid(),
             flow_run_id=flow_run_id,
             environment_version_id=environment_version_id,
             runtime_image_digest=runtime_image_digest,
+            protocol_profile=resolved_profile.value,
             workspace_allocation_id=workspace_allocation.id,
             status="STARTING",
             row_version=1,
@@ -108,6 +121,7 @@ def ensure_flow_run_runtime_session(
     if (
         item.environment_version_id != environment_version_id
         or item.runtime_image_digest != runtime_image_digest
+        or (requested_profile is not None and item.protocol_profile != requested_profile.value)
         or item.workspace_allocation_id != workspace_allocation.id
     ):
         raise DomainError(
@@ -134,9 +148,15 @@ def ensure_node_attempt_runtime_session(
     environment_version_id: str,
     runtime_image_digest: str,
     workspace_allocation: FlowRunRuntimeAllocation,
+    protocol_profile: FlowRunProtocolProfile | str | None = None,
 ) -> FlowRunRuntime:
     """Create or verify the immutable Runtime Session for one NodeAttempt."""
 
+    requested_profile = (
+        require_flow_run_protocol_profile(protocol_profile)
+        if protocol_profile is not None
+        else None
+    )
     if re.fullmatch(r"sha256:[0-9a-f]{64}", runtime_image_digest) is None:
         raise DomainError(
             "RUNTIME_SESSION_IMAGE_REQUIRED",
@@ -189,12 +209,14 @@ def ensure_node_attempt_runtime_session(
             db.flush()
             item = None
     if item is None:
+        resolved_profile = requested_profile or DEFAULT_FLOW_RUN_PROTOCOL_PROFILE
         item = FlowRunRuntime(
             id=uid(),
             flow_run_id=flow_run_id,
             node_attempt_id=node_attempt_id,
             environment_version_id=environment_version_id,
             runtime_image_digest=runtime_image_digest,
+            protocol_profile=resolved_profile.value,
             workspace_allocation_id=workspace_allocation.id,
             status="STARTING",
             row_version=1,
@@ -206,6 +228,7 @@ def ensure_node_attempt_runtime_session(
         item.flow_run_id != flow_run_id
         or item.environment_version_id != environment_version_id
         or item.runtime_image_digest != runtime_image_digest
+        or (requested_profile is not None and item.protocol_profile != requested_profile.value)
         or item.workspace_allocation_id != workspace_allocation.id
     ):
         raise DomainError(
@@ -277,6 +300,7 @@ def ensure_runtime_generation(
             item.runtime_session_id != session.id
             or item.generation != generation
             or item.runtime_image_digest != session.runtime_image_digest
+            or item.protocol_profile != session.protocol_profile
         ):
             raise DomainError(
                 "RUNTIME_GENERATION_SPEC_CONFLICT",
@@ -311,6 +335,7 @@ def ensure_runtime_generation(
         generation=generation,
         managed_runtime_id=managed_runtime.id,
         runtime_image_digest=session.runtime_image_digest,
+        protocol_profile=session.protocol_profile,
         state="PROVISIONING",
         fence_token=uid(),
         row_version=1,

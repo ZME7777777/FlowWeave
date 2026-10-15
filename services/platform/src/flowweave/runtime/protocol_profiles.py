@@ -1,0 +1,90 @@
+from __future__ import annotations
+
+from enum import StrEnum
+from types import MappingProxyType
+from typing import Final, Protocol
+
+from flowweave.runtime.base import RuntimePort
+from flowweave.shared.errors import DomainError
+
+
+class FlowRunProtocolProfile(StrEnum):
+    """A code-owned OpenHands contract family frozen by a FlowRun Runtime."""
+
+    OH_FW_V1 = "OH_FW_V1"
+
+
+DEFAULT_FLOW_RUN_PROTOCOL_PROFILE: Final = FlowRunProtocolProfile.OH_FW_V1
+
+
+class FlowRunRuntimeAdapter(Protocol):
+    """Binds one frozen FlowRun contract family to the runtime implementation."""
+
+    profile: FlowRunProtocolProfile
+
+    def bind(self, runtime: RuntimePort) -> RuntimePort: ...
+
+
+class OpenHandsV1FlowRunRuntimeAdapter:
+    """The current FlowWeave/OpenHands contract family.
+
+    V1 deliberately delegates to the existing RuntimePort unchanged. Future
+    baselines add another compiled adapter here instead of changing V1 calls.
+    """
+
+    profile = FlowRunProtocolProfile.OH_FW_V1
+
+    def bind(self, runtime: RuntimePort) -> RuntimePort:
+        return runtime
+
+
+FLOW_RUN_RUNTIME_ADAPTERS: Final = MappingProxyType(
+    {
+        FlowRunProtocolProfile.OH_FW_V1: OpenHandsV1FlowRunRuntimeAdapter(),
+    }
+)
+
+
+def require_flow_run_protocol_profile(
+    profile: FlowRunProtocolProfile | str,
+) -> FlowRunProtocolProfile:
+    """Return a supported persisted profile without a latest-version fallback."""
+
+    try:
+        normalized = FlowRunProtocolProfile(profile)
+    except (TypeError, ValueError) as error:
+        raise DomainError(
+            "RUNTIME_PROTOCOL_PROFILE_UNSUPPORTED",
+            "The FlowRun Runtime protocol profile is unsupported",
+            409,
+            {"protocol_profile": str(profile)},
+        ) from error
+    if normalized not in FLOW_RUN_RUNTIME_ADAPTERS:
+        raise DomainError(
+            "RUNTIME_PROTOCOL_PROFILE_UNSUPPORTED",
+            "The FlowRun Runtime protocol profile is unsupported",
+            409,
+            {"protocol_profile": normalized.value},
+        )
+    return normalized
+
+
+def runtime_for_flow_run_protocol_profile(
+    profile: FlowRunProtocolProfile | str,
+    runtime: RuntimePort,
+) -> RuntimePort:
+    """Resolve a persisted FlowRun profile through the static adapter registry."""
+
+    normalized = require_flow_run_protocol_profile(profile)
+    return FLOW_RUN_RUNTIME_ADAPTERS[normalized].bind(runtime)
+
+
+__all__ = (
+    "DEFAULT_FLOW_RUN_PROTOCOL_PROFILE",
+    "FLOW_RUN_RUNTIME_ADAPTERS",
+    "FlowRunProtocolProfile",
+    "FlowRunRuntimeAdapter",
+    "OpenHandsV1FlowRunRuntimeAdapter",
+    "require_flow_run_protocol_profile",
+    "runtime_for_flow_run_protocol_profile",
+)

@@ -16,6 +16,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
+from flowweave.runtime.protocol_profiles import DEFAULT_FLOW_RUN_PROTOCOL_PROFILE
 from flowweave.shared.database import Base, now, uid
 
 
@@ -88,6 +89,10 @@ class FlowRunRuntime(Base):
         CheckConstraint("row_version >= 1", name="ck_flow_run_runtime_row_version"),
         CheckConstraint("runtime_image_digest <> ''", name="ck_flow_run_runtime_image_digest"),
         CheckConstraint(
+            "protocol_profile IN ('OH_FW_V1')",
+            name="ck_flow_run_runtime_protocol_profile",
+        ),
+        CheckConstraint(
             "status IN ('STARTING', 'ACTIVE', 'REPLACING', 'RECONNECTING', "
             "'DEGRADED', 'MAINTENANCE', 'STOPPED', 'DELETING')",
             name="ck_flow_run_runtime_status",
@@ -101,6 +106,10 @@ class FlowRunRuntime(Base):
     node_attempt_id: Mapped[str | None] = mapped_column(String(36), unique=True, index=True)
     environment_version_id: Mapped[str] = mapped_column(String(36), index=True)
     runtime_image_digest: Mapped[str] = mapped_column(String(500))
+    protocol_profile: Mapped[str] = mapped_column(
+        String(40),
+        default=DEFAULT_FLOW_RUN_PROTOCOL_PROFILE.value,
+    )
     workspace_allocation_id: Mapped[str] = mapped_column(
         String(36),
         unique=True,
@@ -136,6 +145,10 @@ class RuntimeGeneration(Base):
         CheckConstraint("row_version >= 1", name="ck_runtime_generation_row_version"),
         CheckConstraint("runtime_image_digest <> ''", name="ck_runtime_generation_image_digest"),
         CheckConstraint(
+            "protocol_profile IN ('OH_FW_V1')",
+            name="ck_runtime_generation_protocol_profile",
+        ),
+        CheckConstraint(
             "state IN ('PROVISIONING', 'READY', 'DRAINING', 'STOPPED', 'DELETED', 'FAILED')",
             name="ck_runtime_generation_state",
         ),
@@ -153,6 +166,10 @@ class RuntimeGeneration(Base):
     )
     instance_id: Mapped[str | None] = mapped_column(String(100))
     runtime_image_digest: Mapped[str] = mapped_column(String(500))
+    protocol_profile: Mapped[str] = mapped_column(
+        String(40),
+        default=DEFAULT_FLOW_RUN_PROTOCOL_PROFILE.value,
+    )
     state: Mapped[str] = mapped_column(String(30), default="PROVISIONING", index=True)
     fence_token: Mapped[str] = mapped_column(String(36), unique=True)
     row_version: Mapped[int] = mapped_column(Integer, default=1)

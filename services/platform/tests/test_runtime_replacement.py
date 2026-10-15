@@ -26,6 +26,7 @@ from flowweave.modules.sandboxes.infrastructure.docker import (
 )
 from flowweave.modules.tasks.public import Lease
 from flowweave.runtime.base import RuntimeConversationIdentity
+from flowweave.runtime.protocol_profiles import DEFAULT_FLOW_RUN_PROTOCOL_PROFILE
 from flowweave.shared.errors import DomainError
 from flowweave.shared.models import (
     EnvironmentVersion,
@@ -92,6 +93,7 @@ def _seed_active_runtime(db: Session, *, with_conversation: bool = True) -> tupl
         flow_run_id=run.id,
         environment_version_id=version.id,
         runtime_image_digest=image_digest,
+        protocol_profile=DEFAULT_FLOW_RUN_PROTOCOL_PROFILE.value,
         workspace_allocation_id=allocation.id,
         status="STARTING",
     )
@@ -233,6 +235,11 @@ def test_replacement_freezes_routes_restores_original_id_and_fences_old_writer(
         assert runtime.active_generation == 2
         assert runtime.replacement_generation is None
         assert [item.state for item in generations] == ["DELETED", "READY"]
+        assert [item.protocol_profile for item in generations] == [
+            DEFAULT_FLOW_RUN_PROTOCOL_PROFILE.value,
+            DEFAULT_FLOW_RUN_PROTOCOL_PROFILE.value,
+        ]
+        assert runtime.protocol_profile == DEFAULT_FLOW_RUN_PROTOCOL_PROFILE.value
         assert current.generation == 2
         assert current.managed_runtime_id != old_connection.managed_runtime_id
         with pytest.raises(DomainError) as caught:

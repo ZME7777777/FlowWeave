@@ -8178,3 +8178,28 @@ health／readiness 通过。未发布平台或 Runtime 镜像、未重启生产�
 首轮最终夹具复用仅供早期 0002 的 FlowEdge seed，因真实 0094 已移除 lark_root_folder_url 而失败；最终脚本改为按正式 0094 schema 植入节点／边，没有修改迁移来迁就夹具，重跑七项全部通过。临时数据库／角色和本次标签的容器／网络已回收，无生产挂载／发布端口／生产数据库连接／服务重启。此前 FR-581 的十二项、八十九项回归及独立空库 head 共 102 项已通过，本轮增加七项跨表最终验收；证据只对应历史迁移与数据库契约，不代替 Runtime／模型／浏览器 E2E，也没有发布生产镜像。
 
 收尾：受影响 Ruff check／format、Python AST、唯一 Alembic head、git diff --check、staged diff 和任务状态清点通过。当前清单 177 个表格状态均 DONE，552 个带状态切片标题均 DONE，无 CURRENT／READY／PENDING／BLOCKED；前部下一切片指针收口为 NONE。用户要求全部切片实现后停止，本轮 FR-578 至 FR-582 分别独立提交，至此无下一可执行切片；不自动部署或开始其他产品工作。
+
+### FR-583 FlowRun Runtime 协议档位静态路由骨架 — DONE
+
+依赖：FR-582。
+
+范围：为 FlowRun Runtime Session 及其每一代 Runtime Generation 增加不可变的、服务端治理的
+`protocol_profile`；初始唯一档位为 `OH_FW_V1`。新增由编译代码静态维护的 profile→adapter
+注册表，未知档位必须拒绝，禁止数据库配置 URL、请求模板、动态导入或“最新版本”回退。本切片不新增
+第二个 OpenHands 适配器，不迁移既有 Conversation 调用点，不改变现有 V1 HTTP 语义，也不部署或构建镜像。
+未显式指定 profile 的既有 Session 校验只读取其已持久化的值；因此未来默认档位更新不会让旧 FlowRun
+在继续创建 NodeRun 时被重解释为新档位。
+
+完成：`flow_run_runtimes` 和 `runtime_generations` 均以非空、受数据库检查约束的
+`protocol_profile` 保存 `OH_FW_V1`，历史行迁移回填为该唯一已发布静态契约。Runtime Session 首次
+创建冻结当前默认档位；后续没有显式档位的 ensure 操作只保留 Session 已持久化的档位，因此未来 V2
+默认值不会重解释旧 FlowRun。每一代 Runtime Generation 复制并校验父 Session 的档位。编译代码中的
+只读注册表目前唯一注册 V1；未知档位以 `RUNTIME_PROTOCOL_PROFILE_UNSUPPORTED` 失败，V1 暂时
+原样绑定既有 `RuntimePort`，没有新增动态配置解释或请求开销。
+
+验收：受影响 Python `py_compile`、Ruff format/check、静态 V1 绑定／未知档位失败闭合断言、唯一
+Alembic head `0147_flow_run_runtime_protocol_profile`、`git diff --check` 和任务状态唯一性通过。
+新增 pytest 与既有 Runtime replacement 回归均受仓库全局 autouse Testcontainers PostgreSQL fixture
+阻断：本机 Docker socket 不存在，测试未进入断言，未记为通过。未执行迁移 upgrade/downgrade、未部署、
+未构建镜像或运行 Runtime。完整 Runtime 路由调用点迁移、V2 适配器和新 Runtime Release 到 profile 的
+显式选择留待后续独立切片。
