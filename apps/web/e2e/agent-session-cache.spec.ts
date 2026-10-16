@@ -2285,7 +2285,7 @@ test('A new conversation stays first after an existing conversation was reordere
 
   await page.getByRole('button', { name: '在根工作区中新建会话' }).click();
   const composer = page.getByLabel('发送 Agent 消息');
-  await source.dragTo(composer);
+  await source.dragTo(page.locator('.agent-workbench-content'));
   await expect(page.getByRole('button', { name: '移除会话 已有会话 B', exact: true })).toBeVisible();
   expect(orderRequests).toBe(3);
   await page.getByRole('button', { name: '移除会话 已有会话 B', exact: true }).click();

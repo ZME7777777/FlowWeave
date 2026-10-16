@@ -1,5 +1,5 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react';
-import { CONVERSATION_REFERENCE_TRANSFER_TYPE, WORKSPACE_FILE_TRANSFER_TYPE, transferredFiles, type ComposerHandle } from './agentComposerInputUtils';
+import { CONVERSATION_REFERENCE_TRANSFER_TYPE, WORKSPACE_FILE_TRANSFER_TYPE, transferredConversationReference, transferredFiles, transferredWorkspacePaths, type ComposerHandle } from './agentComposerInputUtils';
 
 const COMPOSER_DRAFT_PERSIST_DELAY_MS = 400;
 
@@ -14,11 +14,6 @@ export interface ComposerSuggestion {
   detail: string;
   available?: boolean;
   nativeAction?: NativeComposerAction;
-}
-
-function transferredWorkspacePaths(transfer: DataTransfer): string[] {
-  if (!transfer.types.includes(WORKSPACE_FILE_TRANSFER_TYPE)) return [];
-  return transfer.getData(WORKSPACE_FILE_TRANSFER_TYPE).split('\n').map(path => path.trim()).filter(Boolean);
 }
 
 function composerTrigger(value: string): { sigil: '$' | '/' | '@'; query: string; start: number } | undefined {
@@ -213,18 +208,9 @@ export const AgentComposerInput = forwardRef<ComposerHandle, {
     event.preventDefault();
     const workspacePaths = disabled ? [] : transferredWorkspacePaths(event.dataTransfer);
     const files = disabled ? [] : transferredFiles(event.dataTransfer);
-    const rawConversationReference = disabled ? '' : event.dataTransfer.getData(CONVERSATION_REFERENCE_TRANSFER_TYPE);
+    const conversationReference = disabled ? undefined : transferredConversationReference(event.dataTransfer);
     clearFileDrag();
-    if (rawConversationReference) {
-      try {
-        const value = JSON.parse(rawConversationReference) as { bindingId?: unknown; eventId?: unknown; title?: unknown };
-        if (typeof value.bindingId === 'string' && typeof value.eventId === 'string' && typeof value.title === 'string') {
-          onDropConversationReference?.({ bindingId: value.bindingId, eventId: value.eventId, title: value.title });
-        }
-      } catch {
-        // Drag payloads are untrusted browser input; invalid payloads are ignored.
-      }
-    }
+    if (conversationReference) onDropConversationReference?.(conversationReference);
     if (workspacePaths.length) onDropWorkspaceFiles?.(workspacePaths);
     if (files.length) onDropFiles?.(files);
   }}>
