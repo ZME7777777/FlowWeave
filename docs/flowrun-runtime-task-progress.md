@@ -1,9 +1,9 @@
 # FlowRun OpenHands Runtime 重构进度
 
 > 创建日期：2026-08-21
-> 状态：`UPSTREAM BASELINE ADOPTION IN PROGRESS`
+> 状态：`UPSTREAM BASELINE ADOPTION COMPLETE`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-595`
+> 下一可执行切片：`NONE`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -8501,7 +8501,7 @@ Python/JavaScript sandbox 均 PASS。Agent Workspace allocation/replacement 定�
 product flow 和部分 Agent Workbench UI。多项失败为未认证 API request 或顶栏入口缺失；同时工作树存在用户未提交的
 `AgentSessionWorkbench.tsx` 改动，未修改、未暂存或归因于本切片。全量 Web 回归缺口留待独立切片处理；未部署。
 
-### FR-595 受控发布与既有 Runtime 恢复 — PENDING
+### FR-595 受控发布与既有 Runtime 恢复 — DONE
 
 依赖：FR-594。
 
@@ -8509,3 +8509,19 @@ product flow 和部分 Agent Workbench UI。多项失败为未认证 API request
 执行对应 scope 的远端预检、核对活跃会话影响、按 commit-bound 最小上下文发布并同步更新 stream-api，
 最后验证健康、版本、路由及既有 Runtime/Conversation 恢复。未满足远端配置或预检条件时停止，不猜测
 目标、SSH、Compose/env 或部署入口。
+
+完成：在用户明确确认的受管内部服务器执行 Runtime scope 受控发布，未改写远端 Compose 或环境文件，未删除
+任何卷、工作区或持久数据。部署固定 commit
+`de6b1ed44ab3d4f13955616b8a1a7289582c7c97`，其 Git archive SHA-256 为
+`fa8af39bb780290cd71e5b35832d272e7d9737f45bbcb8b5ef553c5fb5c872cb`。只读预检、远端 Compose 拓扑和
+活跃会话门禁均通过；两台既有受管 Agent Runtime 的 native running Conversation 数为 0。归档在远端复核
+SHA-256 后，从该归档构建 Runtime 与 Platform 的 `linux/amd64` 镜像，均带
+`org.opencontainers.image.revision` 的固定 commit 标签；替换活动 tag 前已保留精确 rollback tag。
+
+验收：迁移服务以 exit code 0 完成，随后同步 recreate `runtime-provider`、`api`、`stream-api` 与 `worker`；
+四项服务健康/运行，运行容器镜像均为发布 commit 的 `linux/amd64` 镜像。Provider 重启前后既有 Runtime 的
+资源身份与原生 Conversation ID 集合保持一致，且两个既有 Agent Server 的 `/ready` 均通过。API 与 stream-api
+内部 health/readiness 通过；公网 `/flowweave/`、实际静态资源和 Agent 深层路由均返回 200，带前缀的 API
+路由正确到达 FlowWeave 认证边界（401），FastGPT 根登录页返回 200。FR-594 的全量浏览器结果仍为
+`102 passed, 29 failed, 1 skipped`，本次发布不将其记为全绿。所有本轮切片均已独立提交并完成部署，无
+`CURRENT` 或下一待执行切片。
