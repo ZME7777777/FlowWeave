@@ -1586,6 +1586,87 @@ test('node session entry opens the attempt formal conversation instead of a blan
   await expect(page.locator('.automatic-record-list > article.active')).toContainText('自动记录 1');
 });
 
+test('continuous output registration failures read like the stepwise run', async ({ page }) => {
+  // A malformed FLOWWEAVE_OUTPUTS block blocks both modes with the same cause.
+  // The platform reserves one AgentConversationBinding per Attempt. Entering
+  // the node session must route straight to it, the same as the post-start
+  // navigation, otherwise a completed node opens an empty read-only draft.
+  const boundAttempt = {
+    ...automaticAttempt, binding_id: 'automatic-conversation-1',
+    error_code: 'AUTOMATIC_RUNTIME_DELIVERY_FAILED',
+    error_detail: 'RUNTIME_OUTPUT_MISSING: The Agent completed without returning every required output',
+  };
+  const boundRecord = {
+    ...runningAutomatic,
+    node_runs: [{ ...automaticNodeRun, attempts: [boundAttempt] }],
+  };
+  const runningAutomaticSummary = {
+    id: runningAutomatic.id, flow_run_id: run.id, run_no: runningAutomatic.run_no, name: runningAutomatic.name,
+    state: runningAutomatic.state, row_version: runningAutomatic.row_version,
+    schedule_id: null, schedule_name: null, schedule_occurrence_id: null,
+    started_at: now, finished_at: null,
+    plan: { start_node_key: 'first', reachable_node_count: 2, configured_node_count: 2, readiness: { ready: true, issue_count: 0 } },
+    progress: { node_runs: 1, accepted: 0, terminal: 0, active: 1 },
+    usage: { total_tokens: 0, accumulated_cost: 0, currency: 'USD' },
+  };
+  const conversation = {
+    id: 'automatic-conversation-1', display_title: '自动运行会话', title_state: 'MANUAL', lifecycle: 'ACTIVE',
+    model_provider_id: null, model_name: null, reasoning_effort: null, work_directory_id: null, streaming_callback_ready: true,
+    write_available: true, execution_status: 'idle',
+    created_at: now, updated_at: now, last_connected_at: now, capabilities: [],
+  };
+  await page.routeWebSocket('**/api/v1/flow-runs/**/node-attempts/**/agent-sessions/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(authenticatedUser) });
+    const respond = (body: unknown, status = 200) => route.fulfill({
+      status, contentType: 'application/json', body: JSON.stringify(body),
+    });
+    if (path === '/api/v1/flow-runs' && request.method() === 'GET') return respond([run]);
+    if (path === '/api/v1/flows' && request.method() === 'GET') return respond([definition]);
+    if (path === '/api/v1/terminal-environments' || path === '/api/v1/capabilities'
+      || path === '/api/v1/capability-collections' || path === '/api/v1/model-providers') return respond([]);
+    if (path === `/api/v1/flow-runs/${run.id}`) return respond(run);
+    if (path === `/api/v1/flows/${definition.id}`) return respond(definition);
+    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs/summaries`) return respond([runningAutomaticSummary]);
+    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs/${runningAutomatic.id}`) return respond(boundRecord);
+
+    const sessionBase = `/api/v1/flow-runs/${runningAutomatic.id}/node-attempts/${automaticAttempt.id}/agent-sessions`;
+    if (path === `${sessionBase}/host`) return respond({
+      id: 'automatic-host', display_name: '自动运行节点', desired_state: 'RUNNING', updated_at: now,
+    });
+    if (path === `${sessionBase}/runtime`) return respond({
+      state: 'ACTIVE', write_available: true, message: null, updated_at: now,
+    });
+    if (path === sessionBase && request.method() === 'GET') return respond({ items: [conversation], next_cursor: null });
+    if (path === `${sessionBase}/${conversation.id}` && request.method() === 'GET') return respond(conversation);
+    if (path === `${sessionBase}/work-directories`) return respond({
+      root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [],
+    });
+    if (path === `${sessionBase}/workspace`) return respond({
+      root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' },
+      working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [],
+      runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } },
+    });
+    if (path === `${sessionBase}/${conversation.id}/events`) return respond({ events: [], cursor: null });
+    if (path === `${sessionBase}/${conversation.id}/input-readiness`) return respond({ ready: true, execution_status: 'IDLE' });
+    if (path === `${sessionBase}/${conversation.id}/context`) return respond({});
+    if (path === `${sessionBase}/${conversation.id}/pending-confirmation`) return respond({ pending: false });
+    return respond({ error: { code: 'RESOURCE_NOT_FOUND', message: `未配置测试路由：${path}`, details: {} } }, 404);
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '流程运行', exact: true }).click();
+  await page.locator('.run-open').click();
+  await page.getByRole('tab', { name: '连续运行' }).click();
+  await page.locator('.automatic-record-select').filter({ hasText: '自动记录 1' }).click();
+  const attemptPanel = page.locator('.attempt-control');
+  await expect(attemptPanel).toContainText('节点产物登记失败');
+  await expect(attemptPanel).toContainText('请在节点会话中修订输出后再次提交');
+  await expect(attemptPanel).not.toContainText('连续运行需要人工处理');
+});
+
 test('active direct-launch records can be deleted through background cancellation and cleanup', async ({ page }) => {
   let currentRun = {
     ...run,

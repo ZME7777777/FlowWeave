@@ -504,6 +504,8 @@ function gateResultText(value: unknown) {
   return translations[text] ?? text;
 }
 
+const OUTPUT_PROJECTION_ERROR = /^(RUNTIME_OUTPUT_MISSING|RUNTIME_OUTPUT_INVALID|RUNTIME_OUTPUT_FILE_NOT_FOUND|ARTIFACT_FILE_INVALID|ARTIFACT_FILE_TOO_LARGE):/;
+
 function attemptErrorText(attempt: NodeAttempt): string | undefined {
   if (attempt.error_code === 'RUNTIME_COMPLETION_IDENTITY_MISSING') {
     return 'Agent 已返回结果，但 OpenHands 未提供可核验的正式完成事件标识；为避免将错误会话结果登记为节点产物，平台已暂停流转。可先从当前会话确认候选交付物，再点击“从 OpenHands 对账并补登”。';
@@ -511,7 +513,11 @@ function attemptErrorText(attempt: NodeAttempt): string | undefined {
   if (attempt.error_code === 'RUNTIME_COMPLETION_IDENTITY_UNKNOWN') {
     return '平台尚未能确认当前 OpenHands 活跃分支的正式完成事件标识；为避免错误登记节点产物，平台已暂停流转。可点击“从 OpenHands 对账并补登”。';
   }
-  if (attempt.error_code === 'RUNTIME_OUTPUT_PROJECTION_FAILED') {
+  // Continuous runs record the same native output-projection failure under
+  // their scheduler code; present it exactly like a stepwise run.
+  const outputProjectionFailure = attempt.error_code === 'RUNTIME_OUTPUT_PROJECTION_FAILED'
+    || (attempt.error_code === 'AUTOMATIC_RUNTIME_DELIVERY_FAILED' && OUTPUT_PROJECTION_ERROR.test(attempt.error_detail ?? ''));
+  if (outputProjectionFailure) {
     return `Agent 已结束本轮执行，但平台无法将候选交付物冻结为节点产物：${gateResultText(attempt.error_detail)}。请在节点会话中修订输出后再次提交；当前节点不会自动流转到下游。`;
   }
   return attempt.error_detail ? gateResultText(attempt.error_detail) : undefined;
@@ -1215,6 +1221,14 @@ function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, sessionReturnC
   const automaticGateDeliveryFailed = automaticAttempt && attempt.error_code === 'AUTOMATIC_GATE_DELIVERY_FAILED';
   const automaticGateExecutionFailed = automaticAttempt && attempt.error_code === 'AUTOMATIC_GATE_EXECUTION_FAILED';
   const automaticRemediationDeliveryFailed = automaticAttempt && attempt.error_code === 'AUTOMATIC_OUTPUT_REMEDIATION_DELIVERY_FAILED';
+  // The Agent finished but its delivery block could not be frozen. Both run
+  // modes present it as the same output-registration failure, not a gate FAIL.
+  const automaticOutputProjectionFailed = attempt.state === 'END_BLOCKED' && (
+    attempt.error_code === 'RUNTIME_OUTPUT_PROJECTION_FAILED'
+    || (automaticAttempt
+      && attempt.error_code === 'AUTOMATIC_RUNTIME_DELIVERY_FAILED'
+      && OUTPUT_PROJECTION_ERROR.test(attempt.error_detail ?? ''))
+  );
   const automaticBlockedTitle = completionIdentityFailure
     ? '节点完成信息不完整'
     : runtimeFailed
@@ -1223,6 +1237,8 @@ function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, sessionReturnC
       ? '正在修订输出'
       : runtimeStartCompatibilityRetry
         ? '启动时运行时投递失败可恢复'
+        : automaticOutputProjectionFailed
+        ? '节点产物登记失败'
         : automaticGateExecutionFailed
         ? `自动${automaticGateStage}门禁执行失败`
         : automaticGateDeliveryFailed
@@ -1236,7 +1252,7 @@ function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, sessionReturnC
                 : automaticAttempt
                   ? '连续运行需要人工处理'
                   : '门禁未通过';
-  const automaticBlockedDescription = completionIdentityFailure
+  const automaticBlockedDescription = completionIdentityFailure || automaticOutputProjectionFailed
     ? attemptErrorText(attempt)
     : runtimeStartCompatibilityRetry
       ? '平台会复用当前 FlowRun Runtime 和记录级工作目录重新尝试启动，不会创建新的 Attempt Runtime 或修改已冻结的输入。'
