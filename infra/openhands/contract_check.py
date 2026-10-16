@@ -435,10 +435,29 @@ def _assert_merged_main_capability_contract() -> None:
     security_event = SecurityAnalysisEvent(
         analyzer="flowweave-contract",
         policy="NeverConfirm",
-        risks={},
+        risks={"contract-action": "HIGH"},
+        details={
+            "contract-action": {
+                "rationale": "Analyzer detail is Runtime-private.",
+            }
+        },
     )
     assert security_event.source == "environment"
-    assert security_event.risks == {}
+    assert security_event.risks == {"contract-action": "HIGH"}
+    assert (
+        security_event.details["contract-action"]["rationale"]
+        == "Analyzer detail is Runtime-private."
+    )
+    assert set(SecurityAnalysisEvent.model_fields) == {
+        "id",
+        "timestamp",
+        "source",
+        "parent_id",
+        "analyzer",
+        "policy",
+        "risks",
+        "details",
+    }
     assert "Runtime-only MCP tool materializer." in (MCPToolProvider.__doc__ or "")
 
 

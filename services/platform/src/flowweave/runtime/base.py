@@ -597,6 +597,7 @@ RuntimeEventType = Literal[
     "COMPLETED",
     "CONDENSATION_REQUESTED",
     "CONDENSATION_COMPLETED",
+    "SECURITY_ANALYSIS",
     "UNKNOWN",
 ]
 

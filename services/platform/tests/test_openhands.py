@@ -5882,6 +5882,88 @@ def test_openhands_normalizes_condensation_request_and_completion():
     }
 
 
+def test_openhands_projects_formal_security_analysis_without_analyzer_details():
+    event = {
+        "kind": "SecurityAnalysisEvent",
+        "id": "security-analysis-1",
+        "timestamp": "2026-10-16T10:00:00+00:00",
+        "source": "environment",
+        "parent_id": "tool-action-1",
+        "analyzer": "PolicyAnalyzer",
+        "policy": "NeverConfirm",
+        "risks": {
+            "tool-action-2": "HIGH",
+            "tool-action-1": "LOW",
+        },
+        "details": {
+            "tool-action-1": {
+                "rationale": "Contains Bearer sk-should-not-appear",
+                "endpoint": "https://private.example.test/analyze",
+            }
+        },
+    }
+
+    assert OpenHandsRuntime._event_type(event) == "SECURITY_ANALYSIS"
+    payload = OpenHandsRuntime._event_payload(event)
+
+    assert payload == {
+        "source_type": "SecurityAnalysisEvent",
+        "source": "environment",
+        "content": "",
+        "timestamp": "2026-10-16T10:00:00+00:00",
+        "parent_id": "tool-action-1",
+        "event_name": "SecurityAnalysisEvent",
+        "security_analysis": {
+            "analyzer": "PolicyAnalyzer",
+            "policy": "NeverConfirm",
+            "risks": [
+                {"action_id": "tool-action-1", "security_risk": "LOW"},
+                {"action_id": "tool-action-2", "security_risk": "HIGH"},
+            ],
+        },
+    }
+    serialized = json.dumps(payload)
+    assert "rationale" not in serialized
+    assert "private.example.test" not in serialized
+    assert "sk-should-not-appear" not in serialized
+
+
+@pytest.mark.parametrize(
+    "event",
+    (
+        {
+            "kind": "SecurityAnalysisEvent",
+            "id": "security-analysis-invalid-risk",
+            "source": "environment",
+            "analyzer": "PolicyAnalyzer",
+            "policy": "NeverConfirm",
+            "risks": {"tool-action-1": "CRITICAL"},
+        },
+        {
+            "kind": "SecurityAnalysisEvent",
+            "id": "security-analysis-invalid-action",
+            "source": "environment",
+            "analyzer": "PolicyAnalyzer",
+            "policy": "NeverConfirm",
+            "risks": {"https://private.example.test/action": "HIGH"},
+        },
+        {
+            "kind": "SecurityAnalysisEvent",
+            "id": "security-analysis-invalid-policy",
+            "source": "environment",
+            "analyzer": "PolicyAnalyzer",
+            "policy": "Never Confirm",
+            "risks": {},
+        },
+    ),
+)
+def test_openhands_rejects_invalid_formal_security_analysis(event):
+    with pytest.raises(DomainError) as raised:
+        OpenHandsRuntime._event_payload(event)
+
+    assert raised.value.code == "RUNTIME_SECURITY_ANALYSIS_PROTOCOL_DRIFT"
+
+
 def test_openhands_projects_native_conversation_error_details():
     event = {
         "kind": "ConversationErrorEvent",

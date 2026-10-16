@@ -2945,6 +2945,8 @@ class OpenHandsRuntime:
             return "CONDENSATION_REQUESTED"
         if kind == "Condensation":
             return "CONDENSATION_COMPLETED"
+        if kind == "SecurityAnalysisEvent":
+            return "SECURITY_ANALYSIS"
         if kind == "MessageEvent":
             return "MESSAGE"
         if kind == "ActionEvent":
@@ -2962,6 +2964,61 @@ class OpenHandsRuntime:
         if "error" in kind.lower():
             return "ERROR"
         return "STATE"
+
+    @classmethod
+    def _security_analysis(cls, item: dict[str, Any]) -> dict[str, Any]:
+        """Project only the formal, non-sensitive SecurityAnalysisEvent fields."""
+
+        def label(field: str) -> str:
+            value = item.get(field)
+            if (
+                not isinstance(value, str)
+                or not value
+                or len(value) > 200
+                or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}", value) is None
+            ):
+                raise DomainError(
+                    "RUNTIME_SECURITY_ANALYSIS_PROTOCOL_DRIFT",
+                    "OpenHands SecurityAnalysisEvent metadata is invalid",
+                    502,
+                    {"field": field},
+                )
+            return value
+
+        raw_risks = item.get("risks")
+        if not isinstance(raw_risks, dict):
+            raise DomainError(
+                "RUNTIME_SECURITY_ANALYSIS_PROTOCOL_DRIFT",
+                "OpenHands SecurityAnalysisEvent risks are invalid",
+                502,
+            )
+        risks: list[dict[str, str]] = []
+        for raw_action_id, raw_risk in raw_risks.items():
+            try:
+                action_id = cls._formal_identity(
+                    raw_action_id,
+                    field="action_id",
+                    required=True,
+                )
+            except DomainError as exc:
+                raise DomainError(
+                    "RUNTIME_SECURITY_ANALYSIS_PROTOCOL_DRIFT",
+                    "OpenHands SecurityAnalysisEvent action identity is invalid",
+                    502,
+                ) from exc
+            if action_id is None or raw_risk not in {"UNKNOWN", "LOW", "MEDIUM", "HIGH"}:
+                raise DomainError(
+                    "RUNTIME_SECURITY_ANALYSIS_PROTOCOL_DRIFT",
+                    "OpenHands SecurityAnalysisEvent risk is invalid",
+                    502,
+                )
+            risks.append({"action_id": action_id, "security_risk": raw_risk})
+        risks.sort(key=lambda risk: risk["action_id"])
+        return {
+            "analyzer": label("analyzer"),
+            "policy": label("policy"),
+            "risks": risks,
+        }
 
     @classmethod
     def _critic_result(cls, item: dict[str, Any]) -> dict[str, Any] | None:
@@ -3226,6 +3283,15 @@ class OpenHandsRuntime:
                     "summary": cls._safe_event_detail(item.get("summary")),
                     "summary_offset": item.get("summary_offset"),
                     "llm_response_id": item.get("llm_response_id"),
+                }
+            )
+        elif kind == "SecurityAnalysisEvent":
+            # Native analyzer details can contain arbitrary rationale or
+            # provider data. Preserve only the formal action IDs and verdicts.
+            payload.update(
+                {
+                    "event_name": kind,
+                    "security_analysis": cls._security_analysis(item),
                 }
             )
         elif kind in {"ConversationErrorEvent", "AgentErrorEvent"}:
@@ -4909,6 +4975,7 @@ class OpenHandsRuntime:
             "ObservationEvent",
             "CondensationRequest",
             "Condensation",
+            "SecurityAnalysisEvent",
             "ConversationErrorEvent",
             "MessageEvent",
         }:

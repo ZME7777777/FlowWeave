@@ -530,7 +530,7 @@ export interface FlowRunConversation {
 }
 export interface OpenHandsConversationEvent {
   id: string;
-  event_type: 'MESSAGE' | 'TOOL_CALL' | 'TOOL_RESULT' | 'THOUGHT' | 'STATE' | 'ERROR' | 'COMPLETED' | 'CONDENSATION_REQUESTED' | 'CONDENSATION_COMPLETED';
+  event_type: 'MESSAGE' | 'TOOL_CALL' | 'TOOL_RESULT' | 'THOUGHT' | 'STATE' | 'ERROR' | 'COMPLETED' | 'CONDENSATION_REQUESTED' | 'CONDENSATION_COMPLETED' | 'SECURITY_ANALYSIS';
   payload: {
     source_type?: string;
     source?: string | null;
@@ -547,6 +547,15 @@ export interface OpenHandsConversationEvent {
     timestamp?: string;
     event_name?: string;
     details?: Record<string, unknown>;
+    /** Formal OpenHands analyzer verdicts; analyzer-specific details are never projected. */
+    security_analysis?: {
+      analyzer: string;
+      policy: string;
+      risks: Array<{
+        action_id: string;
+        security_risk: 'UNKNOWN' | 'LOW' | 'MEDIUM' | 'HIGH';
+      }>;
+    };
     /** Safe projection of the formal OpenHands TaskAction/TaskObservation lifecycle. */
     runtime_task?: {
       phase: 'REQUESTED' | 'COMPLETED' | 'ERROR';

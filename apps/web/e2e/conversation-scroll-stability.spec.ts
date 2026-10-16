@@ -135,7 +135,24 @@ test('running transcript keeps a fixed bottom gap while formal text grows', asyn
       details: { command: 'git diff --check' },
     }),
   }));
-  await expect(page.locator('.conversation-progress-current').filter({ hasText: '正在运行 git diff --check' })).toBeVisible();
+  await expect(page.getByText('正在运行 git diff --check', { exact: true })).toBeVisible();
+  await expectStablePaintedGap();
+
+  await startPaintSampling();
+  stream!.send(JSON.stringify({
+    type: 'event',
+    event: event('scroll-stability-security', 'SECURITY_ANALYSIS', {
+      source: 'environment', parent_id: 'scroll-stability-tool', event_name: 'SecurityAnalysisEvent',
+      security_analysis: {
+        analyzer: 'PolicyAnalyzer',
+        policy: 'NeverConfirm',
+        risks: [{ action_id: 'scroll-stability-tool', security_risk: 'LOW' }],
+      },
+    }),
+  }));
+  const securityAnalysis = page.locator('[data-security-analysis-event-id="scroll-stability-security"]');
+  await expect(securityAnalysis).toContainText('安全策略已分析 1 个动作');
+  await expect(securityAnalysis).toContainText('1 项低风险');
   await expectStablePaintedGap();
 
   await surface.hover();

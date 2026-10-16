@@ -1,4 +1,4 @@
-import { BookOpen, Check, ChevronDown, ChevronRight, CircleAlert, ClipboardList, Copy, ExternalLink, Eye, FileCode2, FileCog, FileJson, FilePenLine, FilePlus2, FileText, FileType2, GitFork, Link, LoaderCircle, PanelRightOpen, PanelTop, Pencil, PlugZap, Quote, Search, Sparkles, SquareTerminal, Workflow, Wrench } from 'lucide-react';
+import { BookOpen, Check, ChevronDown, ChevronRight, CircleAlert, ClipboardList, Copy, ExternalLink, Eye, FileCode2, FileCog, FileJson, FilePenLine, FilePlus2, FileText, FileType2, GitFork, Link, LoaderCircle, PanelRightOpen, PanelTop, Pencil, PlugZap, Quote, Search, ShieldCheck, Sparkles, SquareTerminal, Workflow, Wrench } from 'lucide-react';
 import { Fragment, lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from 'react';
 import type { AgentActivitySummary, AgentAttachment, AgentConversationAnnotation, AgentConversationReference, AgentWorkspaceReference, OpenHandsConversationEvent, RuntimeTaskControlSnapshot } from '../types';
 import { SubagentAvatar } from './SubagentAvatar';
@@ -9,7 +9,7 @@ import { workspaceFileChanges, workspaceRelativePath, type WorkspaceFileChange }
 import { isOpenHandsAgentReply, isOpenHandsConversationTerminalError, isOpenHandsEmptyResponseRecovery, orderOpenHandsConversationEvents, parseOpenHandsEventTime } from './conversationEvents';
 import './conversation-surface.css';
 
-type ItemKind = 'user' | 'assistant' | 'thought' | 'tool' | 'error' | 'condensation';
+type ItemKind = 'user' | 'assistant' | 'thought' | 'tool' | 'error' | 'condensation' | 'security';
 
 interface Item {
   event: OpenHandsConversationEvent;
@@ -481,6 +481,7 @@ function itemsFor(event: OpenHandsConversationEvent, taskRetryError = false): It
   }
   if (event.event_type === 'CONDENSATION_REQUESTED') return [{ event, kind: 'condensation', title: '开始压缩上下文', content: '' }];
   if (event.event_type === 'CONDENSATION_COMPLETED') return [{ event, kind: 'condensation', title: '压缩完成', content: '' }];
+  if (event.event_type === 'SECURITY_ANALYSIS') return [{ event, kind: 'security', title: '安全分析', content: '' }];
   if (event.event_type === 'TOOL_CALL') return [{ event, kind: 'tool', title: eventName, content: thought || content }];
   // Its native observation only confirms that text was logged, so rendering it
   // as a generic tool result creates a redundant "Think · 已完成" row.
@@ -899,6 +900,7 @@ function toolVisualPresentation(eventName: string, toolName?: string): ToolVisua
 function activityPresentation(entry: ActivityEntry, active: boolean, workspaceRoot?: string | null, paused = false, parentFailed = false): ActivityPresentation {
   const item = entry.action ?? entry.item;
   if (item.kind === 'condensation') return { title: entry.results.some(result => result.event.event_type === 'CONDENSATION_COMPLETED') || item.event.event_type === 'CONDENSATION_COMPLETED' ? '压缩完成' : '开始压缩上下文', status: '' };
+  if (item.kind === 'security') return { title: '安全分析已记录', status: 'OpenHands 原生安全事件' };
   if (item.kind === 'thought') {
     return {
       title: active ? '正在分析' : '分析',
@@ -1359,6 +1361,32 @@ function taskAvatarStatus(entry: ActivityEntry, item: Item, paused = false, pare
   return paused ? 'paused' : 'running';
 }
 
+function securityAnalysisPresentation(event: OpenHandsConversationEvent): {
+  title: string;
+  summary: string;
+  actionIds: string;
+} {
+  const risks = event.payload.security_analysis?.risks ?? [];
+  const labels: Array<[string, string]> = [
+    ['HIGH', '高风险'],
+    ['MEDIUM', '中风险'],
+    ['LOW', '低风险'],
+    ['UNKNOWN', '未知风险'],
+  ];
+  const summary = labels
+    .map(([risk, label]) => {
+      const count = risks.filter(item => item.security_risk === risk).length;
+      return count ? `${count} 项${label}` : '';
+    })
+    .filter(Boolean)
+    .join(' · ');
+  return {
+    title: risks.length ? `安全策略已分析 ${risks.length} 个动作` : '安全策略未发现待执行动作',
+    summary: summary || '未检测到可显示的风险结论',
+    actionIds: risks.map(item => item.action_id).join(','),
+  };
+}
+
 function ActivityEntryRow({ entry, active, reveal = false, paused = false, parentFailed = false, hideThought = false, avatarSlots, workspaceRoot }: {
   entry: ActivityEntry;
   active: boolean;
@@ -1370,7 +1398,7 @@ function ActivityEntryRow({ entry, active, reveal = false, paused = false, paren
   workspaceRoot?: string | null;
 }) {
   const item = entry.action ?? entry.item;
-  const Icon = item.kind === 'error' ? CircleAlert : item.kind === 'thought' || item.kind === 'condensation' ? Sparkles : Wrench;
+  const Icon = item.kind === 'error' ? CircleAlert : item.kind === 'security' ? ShieldCheck : item.kind === 'thought' || item.kind === 'condensation' ? Sparkles : Wrench;
   const eventName = String(item.event.payload.event_name ?? '');
   const toolName = detailText(item.event.payload.tool_name);
   const toolVisual = toolVisualPresentation(eventName, toolName);
@@ -1394,6 +1422,12 @@ function ActivityEntryRow({ entry, active, reveal = false, paused = false, paren
   if (item.kind === 'condensation') return <article className={`conversation-activity-row tool condensation${condensationRunning ? ' running' : ''}`} role="status" aria-label={presentation.title}>
     <Sparkles size={13}/><div><b>{presentation.title}</b></div>
   </article>;
+  if (item.kind === 'security') {
+    const security = securityAnalysisPresentation(item.event);
+    return <article className="conversation-activity-row security-analysis" role="status" aria-label={security.title} data-security-analysis-event-id={item.event.id} data-security-action-ids={security.actionIds}>
+      <ShieldCheck size={13}/><div className="conversation-activity-content"><b>{security.title}</b><small>{security.summary}</small></div>
+    </article>;
+  }
   if (eventName === 'TaskTrackerAction' || eventName === 'TaskTrackerObservation') return <div className={`conversation-tool-entry semantic tool-${toolVisual}`}>
     {!hideThought && presentation.thought && <article {...thoughtAttributes} className={`conversation-activity-row thought tool-thought tool-${toolVisual}`}><MessageMarkdown reveal={reveal}>{presentation.thought}</MessageMarkdown></article>}
     <TaskTrackerCard entry={entry} presentation={presentation} reveal={reveal} running={toolRunning}/>

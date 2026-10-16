@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`UPSTREAM BASELINE ADOPTION IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-593`
+> 下一可执行切片：`FR-594`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -8440,13 +8440,30 @@ V1/V2 policy 的无数据库直接 probe 通过；受影响 Python `py_compile`�
 但 6 个 profile 测试在 session 级 PostgreSQL Testcontainers 因本机 Docker socket 缺失而未进入断言，
 未记为通过。未构建 Runtime image，未执行数据库迁移、完整 Runtime／安全／恢复验证、E2E 或部署。
 
-### FR-593 SecurityAnalysisEvent 正式安全投影 — PENDING
+### FR-593 SecurityAnalysisEvent 正式安全投影 — DONE
 
 依赖：FR-586。
 
 范围：将上游正式 `SecurityAnalysisEvent` 以 event id/parent id/action id 关联投影到既有安全审计和
 会话过程视图，保留脱敏、用户隔离和 NeverConfirm 行为；不得根据文本、事件顺序或模型输出推断风险，
 不得把风险详情或 Secret 写入普通会话内容。
+
+完成：Runtime adapter 将正式 `SecurityAnalysisEvent` 映射为 `SECURITY_ANALYSIS`，沿用原生 event
+identity 和 `parent_id`，并且只投影有序的 formal `action_id` 与四级风险结论。`analyzer`、`policy`
+仅作为有界 opaque label；风险 map、identity 或 label 漂移均以
+`RUNTIME_SECURITY_ANALYSIS_PROTOCOL_DRIFT` fail closed。原生 `details` 从不进入 REST、WebSocket
+或普通会话 payload，因此分析理由、provider 数据、endpoint 与 Secret 不会由此泄露。浏览器将其展示为
+只读过程行，关联的正式 action ID 可供审计定位；它不会被呈现为模型消息，亦不改变 NeverConfirm 或用户
+隔离语义。
+
+验收：新增 adapter 回归覆盖正式 event/parent/action identity、按 action ID 稳定排序和 `details` 中
+伪造 endpoint／`sk-` 字面量不泄露；invalid risk、action ID 或 policy 均以协议漂移拒绝（`4 passed`）。
+受影响 Python `py_compile`、Ruff F/I 检查、Web TypeScript typecheck、Web ESLint、唯一 Alembic head
+`0150_mcp_oauth_persistence_target_audit`、`git diff --check` 均通过。源码 Vite 上 Playwright
+`conversation-scroll-stability.spec.ts` 通过（`1 passed`），覆盖实时正式安全事件过程行和底部滚动稳定性。
+固定 `baseline` commit `ae178d86f4e0e268cf31f8f9c5deda892f4ebf12`、四包 `1.54.0` 的完整
+`contract_check.py` 以绝对临时 `OH_PERSISTENCE_DIR` 通过；未构建 Runtime image，未执行数据库迁移、
+完整 Runtime／安全／恢复验收或部署，均留给 FR-594/FR-595。
 
 ### FR-594 全量 Runtime 兼容、安全与恢复验收 — PENDING
 
