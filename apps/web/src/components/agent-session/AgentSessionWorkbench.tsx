@@ -69,7 +69,7 @@ const CONTEXT_COMPACTION_TRIGGER_PERCENT = 80;
 const CONTEXT_COMPACTION_TRIGGER_TOKENS = 409_600;
 type StreamStatus = 'connecting' | 'live' | 'recovering' | 'disabled';
 type TurnState = 'idle' | 'running' | 'pausing' | 'paused' | 'resuming';
-type ComposerControlMode = 'idle' | 'running' | 'pausing' | 'paused' | 'resuming' | 'reconciling' | 'read-only' | 'condensing';
+type ComposerControlMode = 'idle' | 'running' | 'pausing' | 'paused' | 'resuming' | 'rewriting' | 'reconciling' | 'read-only' | 'condensing';
 type QueueDeliveryState = 'queued';
 type ConversationOrderSync = { state: 'syncing' | 'failed'; orderedBindingIds: string[] };
 type ConversationPagesByScope = Record<string, AgentConversationPage>;
@@ -286,6 +286,8 @@ interface LocalMessageProjection {
   scope: string;
   renderKey: string;
   canonicalEventId?: string;
+  /** The user event whose branch this projection replaces, if any. */
+  replacedEventId?: string;
   state: LocalMessageProjectionState;
   event: OpenHandsConversationEvent;
   formalEventIdsAtSubmission: Set<string>;
@@ -5933,12 +5935,28 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, [conversationDraft?.id, eventsQuery.data?.events, scopedLiveEvents, selected?.id]);
   const displayedEvents = useMemo(() => {
     const hiddenBranchIds = eventBranchIdsFromRoots(currentFormalEvents, hiddenEventIds);
+    const eventsById = new Map(currentFormalEvents.map(event => [event.id, event]));
+    const belongsToHiddenBranch = (event: OpenHandsConversationEvent): boolean => {
+      if (hiddenEventIds.has(event.id) || hiddenBranchIds.has(event.id)) return true;
+      const visited = new Set<string>();
+      let parentId = event.payload.parent_id;
+      while (parentId && parentId !== '__root__' && !visited.has(parentId)) {
+        if (hiddenEventIds.has(parentId) || hiddenBranchIds.has(parentId)) return true;
+        visited.add(parentId);
+        parentId = eventsById.get(parentId)?.payload.parent_id;
+      }
+      return false;
+    };
     const visibleFormalEvents = currentFormalEvents.filter(event => (
-      !hiddenBranchIds.has(event.id)
+      !belongsToHiddenBranch(event)
       && !deferredRewriteUserEventIds.has(event.id)
     ));
     return projectLocalMessages(visibleFormalEvents, activeLocalMessageProjections);
   }, [activeLocalMessageProjections, currentFormalEvents, deferredRewriteUserEventIds, hiddenEventIds]);
+  const rewriteAwaitingFormalEvent = activeLocalMessageProjections.some(projection => (
+    Boolean(projection.replacedEventId)
+    && (!projection.canonicalEventId || !currentFormalEvents.some(event => event.id === projection.canonicalEventId))
+  ));
   const cachedHistoryUserEventIds = useMemo(() => {
     void historyCacheRevision;
     if (!selected || !eventsQuery.data?.history_cursor) return [];
@@ -7443,6 +7461,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
           submissionId: optimisticEventId,
           scope,
           renderKey: optimisticEventId,
+          replacedEventId: request.eventId,
           state: 'submitting',
           event: { id: optimisticEventId, event_type: 'MESSAGE', payload: {
             source: 'user', content: request.content, parent_id: replacementParentId,
@@ -7778,6 +7797,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     ? 'idle'
     : selectedCondensing
       ? 'condensing'
+      : rewriteAwaitingFormalEvent
+        ? 'rewriting'
       : !selected && !conversationDraft
         ? 'read-only'
         : conversationInitialLoading
@@ -7924,6 +7945,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         return { label: '暂停请求已发送', disabled: true, editable: false, action: 'none' as const };
       case 'resuming':
         return { label: '正在继续 Agent', disabled: true, editable: false, action: 'none' as const };
+      case 'rewriting':
+        return { label: '正在重新思考', disabled: true, editable: false, action: 'none' as const };
       case 'reconciling':
         return { label: '正在同步 Agent 状态', disabled: true, editable: false, action: 'none' as const };
       case 'read-only':
@@ -7945,7 +7968,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     ? (conversationDraft && !newConversationModelName ? '请选择模型' : undefined)
     : bootstrapRecovery
       ? '正在安全核对首条消息'
-      : conversationDraft && !newConversationModelName ? '请选择模型' : persistModel.isPending ? '正在保存模型设置' : pendingConfirmation ? '等待工具确认' : finalReplyAwaitingNativeCompletion ? '回复已生成，正在收尾' : streamStatus === 'recovering' ? '连接恢复中' : composerControlMode === 'reconciling' ? '正在同步 Agent 状态' : composerControlMode === 'read-only' ? '当前会话不可编辑' : composerControlMode === 'condensing' ? '正在压缩上下文' : composerControlMode === 'pausing' ? '正在暂停' : composerControlMode === 'paused' ? '已暂停' : composerControlMode === 'resuming' ? '正在继续' : undefined;
+      : conversationDraft && !newConversationModelName ? '请选择模型' : persistModel.isPending ? '正在保存模型设置' : pendingConfirmation ? '等待工具确认' : finalReplyAwaitingNativeCompletion ? '回复已生成，正在收尾' : streamStatus === 'recovering' ? '连接恢复中' : composerControlMode === 'rewriting' ? '正在重新思考' : composerControlMode === 'reconciling' ? '正在同步 Agent 状态' : composerControlMode === 'read-only' ? '当前会话不可编辑' : composerControlMode === 'condensing' ? '正在压缩上下文' : composerControlMode === 'pausing' ? '正在暂停' : composerControlMode === 'paused' ? '已暂停' : composerControlMode === 'resuming' ? '正在继续' : undefined;
   const runComposerAction = () => {
     if (composerControl.action === 'send') enqueueDraft();
     else if (composerControl.action === 'interrupt') interrupt.mutate();
@@ -8347,6 +8370,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         onHistoryAnchorRestored={onHistoryAnchorRestored}
         requestStartedAt={requestStartedAt}
         requestSubmitting={currentConversationSubmitting}
+        rewritePending={rewriteAwaitingFormalEvent}
         condensationPending={selectedCondensing}
         condensationStartedAt={condensationStatus?.bindingId === selected?.id ? condensationStatus?.startedAt : undefined}
         onRewrite={selected && canWrite && features.rewrite ? requestRewrite : undefined}

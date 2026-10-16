@@ -2664,7 +2664,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
             </Fragment>;
           })}
           {isCurrent && !turn.assistant && !failures.length && (
-            <CurrentTurnStatus items={turn.activity} requestSubmitting={requestSubmitting} statusOverride={pausing ? '正在暂停 Agent' : emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} modelRetryStatus={modelRetryStatus} monitoring={monitoring} connectionState={connectionState}/>
+            <CurrentTurnStatus items={turn.activity} requestSubmitting={requestSubmitting} statusOverride={pausing ? '正在暂停 Agent' : rewritePending ? '正在重新思考' : emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} modelRetryStatus={modelRetryStatus} monitoring={monitoring} connectionState={connectionState}/>
           )}
           {processBlocks.length > 0 && turn.assistant && <div className="conversation-process-divider" role="separator" aria-label="工作过程结束"/>}
           {completionConfirmed && processBlocks.map(block => <ActivityGroup
@@ -2687,7 +2687,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
           {failures.map(item => <ConversationFailure key={item.event.id} item={item} taskControl={taskControl} retryStatus={isLatest ? modelRetryStatus : undefined}/>)}
         </section>;
       })}
-      {turns.length === 0 && isGenerating && !condensationPending && <><ActivityGroup items={[]} active revealEventIds={revealEventIds} startedAt={requestStartedAt} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/><CurrentTurnStatus items={[]} requestSubmitting={requestSubmitting} statusOverride={pausing ? '正在暂停 Agent' : emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} modelRetryStatus={modelRetryStatus} monitoring={monitoring} connectionState={connectionState}/></>}
+      {turns.length === 0 && isGenerating && !condensationPending && <><ActivityGroup items={[]} active revealEventIds={revealEventIds} startedAt={requestStartedAt} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/><CurrentTurnStatus items={[]} requestSubmitting={requestSubmitting} statusOverride={pausing ? '正在暂停 Agent' : rewritePending ? '正在重新思考' : emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} modelRetryStatus={modelRetryStatus} monitoring={monitoring} connectionState={connectionState}/></>}
 
       {condensationPending && <article className="conversation-condensation-progress" role="status" aria-label="正在压缩上下文">
         <LoaderCircle className="conversation-activity-spin" size={16}/>

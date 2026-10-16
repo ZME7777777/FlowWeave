@@ -2771,7 +2771,9 @@ test('editing the latest user message locally replaces only its active branch', 
   ];
   let includeLateOldBranchEvent = false;
   let lateOldBranchEventWasRead = false;
-  const lateOldBranchEvent = { id: 'late-old-continue', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'old-answer', content: '继续', timestamp: '2026-08-28T10:00:04Z' } };
+  // The old branch is omitted from the later bounded window. Its child arrives
+  // alone, so the rewrite tombstone must reject it without rediscovering parent.
+  const lateOldBranchEvent = { id: 'late-old-continue', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'original-user', content: '继续', timestamp: '2026-08-28T10:00:04Z' } };
   await page.route('**/api/v1/auth/me', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id: 'rethink-user', username: 'tester', role: 'USER', is_super_admin: false }) }));
   await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
   await page.route('**/api/v1/agent-workspaces/**', async route => {
