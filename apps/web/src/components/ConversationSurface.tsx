@@ -2,6 +2,7 @@ import { BookOpen, Check, ChevronDown, ChevronRight, CircleAlert, ClipboardList,
 import { Fragment, lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from 'react';
 import type { AgentActivitySummary, AgentAttachment, AgentConversationAnnotation, AgentConversationReference, AgentWorkspaceReference, OpenHandsConversationEvent, RuntimeTaskControlSnapshot } from '../types';
 import { SubagentAvatar } from './SubagentAvatar';
+import { FileTypeIcon } from './FileTypeIcon';
 import { ConversationTextReveal } from './ConversationTextReveal';
 import { useEscapeClose } from './useEscapeClose';
 import { subagentAvatarSlotForEvent, subagentAvatarSlots, type SubagentAvatarSlot } from '../utils/subagentAvatar';
@@ -292,7 +293,7 @@ function isImageAttachment(attachment: AgentAttachment): boolean {
 function MessageAttachmentThumbnail({ attachment, imageUrl }: { attachment: AgentAttachment; imageUrl?: string }) {
   const [failed, setFailed] = useState(false);
   const source = attachment.image_data_url || imageUrl;
-  if (!isImageAttachment(attachment) || !source || failed) return <FileText size={16}/>;
+  if (!isImageAttachment(attachment) || !source || failed) return <FileTypeIcon filename={attachment.filename} mimeType={attachment.mime_type} size={16}/>;
   return <img className="conversation-message-attachment-thumbnail" src={source} alt="" onError={() => setFailed(true)}/>;
 }
 
