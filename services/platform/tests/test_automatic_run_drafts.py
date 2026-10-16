@@ -855,6 +855,25 @@ def test_stepwise_draft_start_accepts_on_end_gate_and_exposes_downstream_draft(
     assert started.status_code == 200, started.text
     assert started.json()["state"] == "ACCEPTED"
 
+    # The node conversation is titled from its first question like a
+    # standalone Agent session, never from the Attempt identity.
+    from flowweave.modules.agent_sessions.public import AgentConversationBinding
+
+    with db_session_factory() as db:
+        binding = db.scalar(
+            select(AgentConversationBinding).where(
+                AgentConversationBinding.node_attempt_id == started.json()["id"]
+            )
+        )
+        assert binding is not None
+        assert binding.display_title == "逐步执行第一个节点"
+        assert db.scalar(
+            select(BackgroundTask.id).where(
+                BackgroundTask.task_type == "GENERATE_AGENT_CONVERSATION_TITLE",
+                BackgroundTask.aggregate_id == binding.id,
+            )
+        )
+
     detail = client.get(f"/api/v1/flow-runs/{record['id']}").json()
     first = detail["node_runs"][0]
     assert first["state"] == "ACCEPTED", (detail["state"], first["attempts"][-1]["state"])

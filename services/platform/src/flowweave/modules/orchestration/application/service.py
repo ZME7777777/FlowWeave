@@ -6008,7 +6008,13 @@ def confirm_start(
         node_attempt_id=attempt.id,
         working_directory=host.session.working_directory,
         create_idempotency_key=f"attempt-runtime:{attempt.id}",
-        display_title=f"运行 {attempt.id}",
+        # The startup prompt is this Conversation's first question; title it
+        # the same way an Agent Workspace session is titled.
+        display_title=(
+            agent_sessions.conversations.normalized_first_sentence(effective_prompt)
+            if effective_prompt
+            else "节点会话"
+        ),
         config=session_config,
     )
     # Starting an attempt must not call a provider or acquire capability credentials.
@@ -6921,6 +6927,23 @@ def _claim_runtime_phase(
     return _attempt(db, attempt_id)
 
 
+def _title_node_conversation(
+    db: Session, binding: AgentConversationBinding, first_message: str | None
+) -> None:
+    """Title the Attempt's first question exactly like an Agent Workspace session.
+
+    The reserved locator carries only a placeholder. Once the startup prompt
+    is the Conversation's first question, show its first sentence and let the
+    shared metadata task generate the title, instead of exposing an ID.
+    """
+
+    if not first_message or not first_message.strip() or binding.title_state != "FALLBACK":
+        return
+    binding.display_title = agent_sessions.conversations.normalized_first_sentence(first_message)
+    binding.title_state = "PENDING"
+    agent_sessions.conversations.enqueue_title_task(db, binding, first_message)
+
+
 def process_start_runtime(
     db: Session,
     attempt_id: str,
@@ -7033,16 +7056,16 @@ def process_start_runtime(
         get_runtime().cancel(handle)
         _require_current_lease(db, lease)
         return
-    agent_sessions.flow_node_locator.bind_openhands_conversation(
+    binding = agent_sessions.flow_node_locator.bind_openhands_conversation(
         db,
         flow_run_id=flow_run_id,
         openhands_conversation_id=handle.conversation_id,
-        display_label=f"运行 {claimed.id}",
         node_run_id=claimed.node_run_id,
         node_attempt_id=claimed.id,
         working_directory=request.runtime_working_directory or request.workspace_ref,
         allow_inactive_session=get_settings().runtime_adapter == "mock",
     )
+    _title_node_conversation(db, binding, claimed.startup_prompt)
     input_event_id = handle.cursor
     if request.input_attachments and not input_event_id:
         input_event_id = get_runtime().reload_conversation(handle).event_id
