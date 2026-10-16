@@ -913,6 +913,7 @@ def publish_setup_session(
     session_id: str,
     description: str = "",
     runtime_capabilities: tuple[str, ...] = ("browser",),
+    runtime_protocol_profile: str | None = None,
     *,
     execute: bool = True,
     retry_on_error: bool = False,
@@ -925,6 +926,9 @@ def publish_setup_session(
             "The requested Runtime capabilities are invalid",
             422,
         ) from exc
+    requested_protocol_profile = require_flow_run_protocol_profile(
+        runtime_protocol_profile or DEFAULT_FLOW_RUN_PROTOCOL_PROFILE
+    )
     db.rollback()
     engine = _control_engine(db)
     with engine.connect() as connection:
@@ -943,9 +947,16 @@ def publish_setup_session(
                         EnvironmentVersion, item.published_version_id
                     )
                     if published_version is not None and published_version.state == "READY":
-                        require_flow_run_protocol_profile(
+                        frozen_protocol_profile = require_flow_run_protocol_profile(
                             published_version.runtime_protocol_profile
                         )
+                        if requested_protocol_profile != frozen_protocol_profile:
+                            raise DomainError(
+                                "ENVIRONMENT_RUNTIME_PROTOCOL_PROFILE_IMMUTABLE",
+                                "The Runtime protocol profile is already frozen for this version",
+                                409,
+                                {"environment_version_id": published_version.id},
+                            )
                         if requested_capabilities != normalize_runtime_capabilities(
                             published_version.runtime_capabilities or []
                         ):
@@ -970,7 +981,16 @@ def publish_setup_session(
                     frozen_capabilities = normalize_runtime_capabilities(
                         version.runtime_capabilities or []
                     )
-                    require_flow_run_protocol_profile(version.runtime_protocol_profile)
+                    frozen_protocol_profile = require_flow_run_protocol_profile(
+                        version.runtime_protocol_profile
+                    )
+                    if requested_protocol_profile != frozen_protocol_profile:
+                        raise DomainError(
+                            "ENVIRONMENT_RUNTIME_PROTOCOL_PROFILE_IMMUTABLE",
+                            "The Runtime protocol profile is already frozen for this version",
+                            409,
+                            {"environment_version_id": version.id},
+                        )
                     if requested_capabilities != frozen_capabilities:
                         raise DomainError(
                             "ENVIRONMENT_RUNTIME_CAPABILITIES_IMMUTABLE",
@@ -1045,7 +1065,7 @@ def publish_setup_session(
                             state="PUBLISHING",
                             base_image_reference=item.base_image_reference,
                             base_image_digest=item.base_image_digest,
-                            runtime_protocol_profile=DEFAULT_FLOW_RUN_PROTOCOL_PROFILE.value,
+                            runtime_protocol_profile=requested_protocol_profile.value,
                             runtime_capabilities=list(requested_capabilities),
                         )
                         control_db.add(version)
@@ -1055,7 +1075,16 @@ def publish_setup_session(
                         frozen_capabilities = normalize_runtime_capabilities(
                             version.runtime_capabilities or []
                         )
-                        require_flow_run_protocol_profile(version.runtime_protocol_profile)
+                        frozen_protocol_profile = require_flow_run_protocol_profile(
+                            version.runtime_protocol_profile
+                        )
+                        if requested_protocol_profile != frozen_protocol_profile:
+                            raise DomainError(
+                                "ENVIRONMENT_RUNTIME_PROTOCOL_PROFILE_IMMUTABLE",
+                                "The Runtime protocol profile is already frozen for this version",
+                                409,
+                                {"environment_version_id": version.id},
+                            )
                         if requested_capabilities != frozen_capabilities:
                             raise DomainError(
                                 "ENVIRONMENT_RUNTIME_CAPABILITIES_IMMUTABLE",
@@ -1089,6 +1118,7 @@ def publish_setup_session(
                         idempotency_key=f"publish-environment-version:{item.id}:{version_id}",
                         payload={
                             "description": version.description,
+                            "runtime_protocol_profile": version.runtime_protocol_profile,
                             "runtime_capabilities": list(frozen_runtime_capabilities),
                         },
                     )
@@ -1211,11 +1241,13 @@ def process_publish_environment_version(
     capabilities = (
         tuple(str(item) for item in raw_capabilities) if isinstance(raw_capabilities, list) else ()
     )
+    protocol_profile = payload.get("runtime_protocol_profile")
     publish_setup_session(
         db,
         session_id,
         str(payload.get("description") or ""),
         capabilities,
+        str(protocol_profile) if protocol_profile is not None else None,
         retry_on_error=True,
     )
 

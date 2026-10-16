@@ -7,6 +7,10 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
+from flowweave.runtime.protocol_profiles import (
+    DEFAULT_FLOW_RUN_PROTOCOL_PROFILE,
+    FlowRunProtocolProfile,
+)
 from flowweave.shared.domain.runtime_capabilities import normalize_runtime_capabilities
 
 
@@ -260,6 +264,9 @@ class CredentialBulkDeleteWrite(ApiModel):
 
 class EnvironmentPublishWrite(ApiModel):
     description: str = Field(default="", max_length=2000)
+    # This is a compiled Runtime adapter choice, not an image tag or a source
+    # revision. The selected value becomes immutable with the Environment Version.
+    runtime_protocol_profile: FlowRunProtocolProfile = DEFAULT_FLOW_RUN_PROTOCOL_PROFILE
     # Browser is part of the product Runtime baseline. Clients can still send
     # an explicit empty list when they intentionally need a minimal image.
     runtime_capabilities: list[str] = Field(default_factory=lambda: ["browser"], max_length=3)

@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`UPSTREAM BASELINE ADOPTION IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-586`
+> 下一可执行切片：`FR-587`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -8266,13 +8266,27 @@ E/F、`uv lock --check`、JSON 解析、`git diff --check` 与切片状态核对
 Alembic CLI 均因当前环境未安装相应可执行文件不可用，未记为通过；未构建镜像、未运行迁移、Runtime 或
 E2E，亦未部署。
 
-### FR-586 增加 OH_FW_V2 静态适配档位 — READY
+### FR-586 增加 OH_FW_V2 静态适配档位 — DONE
 
 依赖：FR-585。
 
 范围：在编译期注册 `OH_FW_V2`，为 1.54 正式路由和类型建立独立 adapter contract，并让新发布的
 Environment Version 可显式冻结 V2；V1 的注册、请求形状和已持久化 Runtime 路由不得改变。禁止使用
 动态 URL、数据库请求模板或“最高版本”回退。
+
+完成：静态只读 profile registry 现在分别注册了 `OpenHandsV1FlowRunRuntimeAdapter` 与
+`OpenHandsV2FlowRunRuntimeAdapter`，默认仍固定为 V1；V2 只由新的 Environment 发布请求中的受限枚举
+显式选择，不能由镜像标签、source commit 或最新档位推断。发布幂等重试和 Worker 任务会复核已冻结的
+profile，若请求与既有 PUBLISHING/READY Version 不同则以
+`ENVIRONMENT_RUNTIME_PROTOCOL_PROFILE_IMMUTABLE` 拒绝，避免重试改写已发布契约。新 migration
+`0149_add_oh_fw_v2_protocol_profile` 仅扩展 Environment Version、FlowRun Runtime Session 与 Runtime
+Generation 的检查约束为 V1/V2；降级若任何 V2 记录存在则 fail closed，不会静默篡改已冻结数据。
+
+验收：profile/schema 定向 pytest `4 passed`，受影响 Python `py_compile`、Ruff check/format、Alembic
+唯一 head `0149_add_oh_fw_v2_protocol_profile`、`git diff --check` 与 CURRENT 唯一性核对通过。全量
+architecture test 在本切片前既有的 ORM FK、Compose digest、旧前端入口、secret projection、SQLite 与
+public-facade 边界断言共 8 项失败，均不涉及此次 profile 变更，未作为通过记录也未混入修复。未执行
+数据库 upgrade/downgrade、镜像构建、Runtime/E2E 或部署。
 
 ### FR-587 run-slot 429 的消息确认与受控重试 — PENDING
 

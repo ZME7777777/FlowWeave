@@ -23,6 +23,7 @@ class FlowRunProtocolProfile(StrEnum):
     """A code-owned OpenHands contract family frozen by a FlowRun Runtime."""
 
     OH_FW_V1 = "OH_FW_V1"
+    OH_FW_V2 = "OH_FW_V2"
 
 
 DEFAULT_FLOW_RUN_PROTOCOL_PROFILE: Final = FlowRunProtocolProfile.OH_FW_V1
@@ -49,9 +50,25 @@ class OpenHandsV1FlowRunRuntimeAdapter:
         return runtime
 
 
+class OpenHandsV2FlowRunRuntimeAdapter:
+    """The additive OpenHands 1.54 contract family.
+
+    V2 is selected only by a new, frozen Environment Version. It deliberately
+    keeps the RuntimePort object intact while later V2 slices add their native
+    route behavior here. This prevents the new contract family from
+    reinterpreting V1 Runtime Sessions or changing their request shape.
+    """
+
+    profile = FlowRunProtocolProfile.OH_FW_V2
+
+    def bind(self, runtime: RuntimePort) -> RuntimePort:
+        return runtime
+
+
 FLOW_RUN_RUNTIME_ADAPTERS: Final = MappingProxyType(
     {
         FlowRunProtocolProfile.OH_FW_V1: OpenHandsV1FlowRunRuntimeAdapter(),
+        FlowRunProtocolProfile.OH_FW_V2: OpenHandsV2FlowRunRuntimeAdapter(),
     }
 )
 
@@ -96,6 +113,7 @@ __all__ = (
     "FlowRunProtocolProfile",
     "FlowRunRuntimeAdapter",
     "OpenHandsV1FlowRunRuntimeAdapter",
+    "OpenHandsV2FlowRunRuntimeAdapter",
     "require_flow_run_protocol_profile",
     "runtime_for_flow_run_protocol_profile",
 )

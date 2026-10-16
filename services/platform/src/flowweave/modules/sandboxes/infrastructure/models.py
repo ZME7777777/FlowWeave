@@ -89,7 +89,7 @@ class FlowRunRuntime(Base):
         CheckConstraint("row_version >= 1", name="ck_flow_run_runtime_row_version"),
         CheckConstraint("runtime_image_digest <> ''", name="ck_flow_run_runtime_image_digest"),
         CheckConstraint(
-            "protocol_profile IN ('OH_FW_V1')",
+            "protocol_profile IN ('OH_FW_V1', 'OH_FW_V2')",
             name="ck_flow_run_runtime_protocol_profile",
         ),
         CheckConstraint(
@@ -145,7 +145,7 @@ class RuntimeGeneration(Base):
         CheckConstraint("row_version >= 1", name="ck_runtime_generation_row_version"),
         CheckConstraint("runtime_image_digest <> ''", name="ck_runtime_generation_image_digest"),
         CheckConstraint(
-            "protocol_profile IN ('OH_FW_V1')",
+            "protocol_profile IN ('OH_FW_V1', 'OH_FW_V2')",
             name="ck_runtime_generation_protocol_profile",
         ),
         CheckConstraint(

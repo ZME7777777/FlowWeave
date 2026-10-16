@@ -89,6 +89,7 @@ async def publish_setup_session(
             session_id,
             payload.description if payload else "",
             tuple(payload.runtime_capabilities) if payload else (),
+            payload.runtime_protocol_profile if payload else None,
             execute=inline,
         ),
     )
