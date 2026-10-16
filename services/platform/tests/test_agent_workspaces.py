@@ -33,6 +33,7 @@ from flowweave.modules.agent_workspaces.application.service import (
     ensure_default_agent_workspace,
     process_agent_workspace_runtime,
     recover_default_agent_workspace_runtime_task,
+    runtime_allocation_for_agent_workspace,
 )
 from flowweave.modules.agent_workspaces.application.session_host import (
     resolve_agent_workspace_session_host,
@@ -55,7 +56,10 @@ from flowweave.modules.sandboxes.infrastructure.docker import (
     DockerSandboxProvider,
 )
 from flowweave.modules.tasks.public import Lease
-from flowweave.modules.users.application.security import user_runtime_project_root
+from flowweave.modules.users.application.security import (
+    FLOWWEAVE_USER_ID,
+    user_runtime_project_root,
+)
 from flowweave.runtime.base import (
     RuntimeConversationActivity,
     RuntimeConversationIdentity,
@@ -658,9 +662,41 @@ def test_default_agent_workspace_has_external_storage_and_no_flow_owner(
         assert runtime is not None
         assert allocation.relative_root == ".agent-workspaces/platform-default"
         assert (settings.workspace_root / allocation.relative_root / "workspace/project").is_dir()
+        runtime_user_root = (
+            settings.workspace_root
+            / allocation.relative_root
+            / "workspace/project/users"
+            / FLOWWEAVE_USER_ID
+        )
+        assert runtime_user_root.is_dir()
+        assert runtime_user_root.stat().st_mode & 0o777 == 0o700
         assert (settings.workspace_root / allocation.relative_root / "state/conversations").is_dir()
         assert runtime.runtime_image_digest == "sha256:" + "0" * 64
         db.commit()
+
+
+def test_existing_agent_workspace_allocation_restores_builtin_runtime_user_root(
+    settings, db_session_factory
+):
+    with settings_context(settings), db_session_factory() as db:
+        workspace = ensure_default_agent_workspace(db)
+        allocation = db.scalar(
+            select(AgentWorkspaceRuntimeAllocation).where(
+                AgentWorkspaceRuntimeAllocation.workspace_id == workspace.id
+            )
+        )
+        assert allocation is not None
+        users_root = (
+            settings.workspace_root / allocation.relative_root / "workspace/project" / "users"
+        )
+        (users_root / FLOWWEAVE_USER_ID).rmdir()
+        users_root.rmdir()
+
+        runtime_allocation_for_agent_workspace(db, workspace.id)
+
+        restored = users_root / FLOWWEAVE_USER_ID
+        assert restored.is_dir()
+        assert restored.stat().st_mode & 0o777 == 0o700
 
 
 def test_agent_workspace_resolves_the_shared_session_host_context(settings, db_session_factory):

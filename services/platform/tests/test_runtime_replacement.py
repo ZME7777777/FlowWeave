@@ -185,7 +185,7 @@ def test_replacement_freezes_routes_restores_original_id_and_fences_old_writer(
         assert conversation_id is not None
 
     routes_frozen_during_drain: list[str] = []
-    probes: list[tuple[str, str, RuntimeConversationIdentity | None, str | None]] = []
+    probes: list[tuple[str, str, RuntimeConversationIdentity | None, str, str | None]] = []
     deleted: list[str] = []
 
     monkeypatch.setattr(runtime_replacement, "_require_task_lease", lambda *_args: None)
@@ -207,8 +207,8 @@ def test_replacement_freezes_routes_restores_original_id_and_fences_old_writer(
             routes_frozen_during_drain.append(caught.value.code)
         return DockerDrainResult(graceful=True, stopped=True)
 
-    def probe(*, resource_name, conversation_id, expected, protocol_profile):
-        probes.append((resource_name, conversation_id, expected, protocol_profile))
+    def probe(*, resource_name, conversation_id, expected, workspace_root, protocol_profile):
+        probes.append((resource_name, conversation_id, expected, workspace_root, protocol_profile))
         identity = _identity(conversation_id)
         if expected is not None:
             assert identity == expected
@@ -268,7 +268,8 @@ def test_replacement_freezes_routes_restores_original_id_and_fences_old_writer(
     assert [item[1] for item in probes] == [conversation_id, conversation_id]
     assert probes[0][2] is None
     assert probes[1][2] == _identity(conversation_id)
-    assert [item[3] for item in probes] == [
+    assert [item[3] for item in probes] == ["", ""]
+    assert [item[4] for item in probes] == [
         FlowRunProtocolProfile.OH_FW_V2.value,
         FlowRunProtocolProfile.OH_FW_V2.value,
     ]
@@ -331,8 +332,9 @@ def test_replacement_probe_ignores_earlier_non_active_reservation(
     )
     monkeypatch.setattr(DockerSandboxProvider, "delete", lambda *_args: None)
 
-    def probe(*, resource_name, conversation_id, expected, protocol_profile):
+    def probe(*, resource_name, conversation_id, expected, workspace_root, protocol_profile):
         del resource_name
+        assert workspace_root == ""
         assert protocol_profile == DEFAULT_FLOW_RUN_PROTOCOL_PROFILE.value
         probes.append(conversation_id)
         identity = _identity(conversation_id)

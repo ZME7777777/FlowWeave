@@ -15,6 +15,8 @@ from alembic.config import Config
 from psycopg import sql
 from psycopg.types.json import Jsonb
 
+from flowweave.shared.domain.openhands import CURRENT_OPENHANDS_SERVER_IDENTITY
+
 LEGACY_IMPORT_ID = "10000000-0000-4000-8000-000000000001"
 LEGACY_DUPLICATE_IMPORT_ID = "10000000-0000-4000-8000-000000000007"
 LEGACY_ASSET_ID = "10000000-0000-4000-8000-000000000002"
@@ -140,15 +142,35 @@ def assert_shared_agent_session_host_schema(connection_url: str) -> None:
         } <= columns
 
 
-def assert_no_database_foreign_keys(connection_url: str) -> None:
+def assert_expected_database_foreign_keys(connection_url: str) -> None:
+    """Reject ungoverned foreign keys while preserving required ledger links."""
+
+    expected = {
+        (
+            "agent_conversation_credential_syncs",
+            "agent_conversation_credential_syncs_binding_id_fkey",
+            "FOREIGN KEY (binding_id) "
+            "REFERENCES agent_conversation_bindings(id) ON DELETE RESTRICT",
+        ),
+        (
+            "agent_workspace_runtime_generations",
+            "fk_agent_workspace_runtime_generations_managed_runtime",
+            "FOREIGN KEY (managed_runtime_id) REFERENCES managed_sandboxes(id) ON DELETE SET NULL",
+        ),
+        (
+            "runtime_generations",
+            "fk_runtime_generations_managed_runtime",
+            "FOREIGN KEY (managed_runtime_id) REFERENCES managed_sandboxes(id) ON DELETE SET NULL",
+        ),
+    }
     with psycopg.connect(connection_url) as connection:
         rows = connection.execute(
-            "SELECT conrelid::regclass::text, conname "
+            "SELECT conrelid::regclass::text, conname, pg_get_constraintdef(oid) "
             "FROM pg_constraint "
             "WHERE contype = 'f' AND connamespace = 'public'::regnamespace "
             "ORDER BY 1, 2"
         ).fetchall()
-        assert rows == [], f"database foreign keys remain: {rows}"
+        assert set(rows) == expected, f"unexpected database foreign keys: {rows}"
 
 
 def insert_legacy_capability_snapshot(connection_url: str) -> None:
@@ -345,7 +367,7 @@ def assert_legacy_capability_snapshot_upgraded(connection_url: str) -> None:
         ).fetchone()
         assert snapshot is not None and len(str(snapshot[1])) == 64
         assert snapshot[0]["schema_version"] == 2
-        assert snapshot[0]["openhands_version"] == "1.44.0"
+        assert snapshot[0]["openhands_version"] == CURRENT_OPENHANDS_SERVER_IDENTITY.package_version
         frozen = snapshot[0]["nodes"]["legacy-node"]["capabilities"][0]
         assert frozen["capability_version_id"] == version_id
         assert frozen["digest"] == digest
@@ -427,19 +449,19 @@ def check(source_url: str) -> None:
         command.upgrade(config, "head")
         assert_native_subagent_schema(target_connection_url)
         assert_shared_agent_session_host_schema(target_connection_url)
-        assert_no_database_foreign_keys(target_connection_url)
+        assert_expected_database_foreign_keys(target_connection_url)
         command.downgrade(config, "0005_execution")
         command.upgrade(config, "head")
         assert_native_subagent_schema(target_connection_url)
         assert_shared_agent_session_host_schema(target_connection_url)
-        assert_no_database_foreign_keys(target_connection_url)
+        assert_expected_database_foreign_keys(target_connection_url)
         command.downgrade(config, "0028_condensation_commands")
         insert_legacy_capability_snapshot(target_connection_url)
         command.upgrade(config, "head")
         assert_legacy_capability_snapshot_upgraded(target_connection_url)
         assert_native_subagent_schema(target_connection_url)
         assert_shared_agent_session_host_schema(target_connection_url)
-        assert_no_database_foreign_keys(target_connection_url)
+        assert_expected_database_foreign_keys(target_connection_url)
     finally:
         with psycopg.connect(**admin_parameters, autocommit=True) as connection:
             connection.execute(

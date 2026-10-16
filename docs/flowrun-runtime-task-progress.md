@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`UPSTREAM BASELINE ADOPTION IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-594`
+> 下一可执行切片：`FR-595`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -8465,13 +8465,41 @@ identity 和 `parent_id`，并且只投影有序的 formal `action_id` 与四级
 `contract_check.py` 以绝对临时 `OH_PERSISTENCE_DIR` 通过；未构建 Runtime image，未执行数据库迁移、
 完整 Runtime／安全／恢复验收或部署，均留给 FR-594/FR-595。
 
-### FR-594 全量 Runtime 兼容、安全与恢复验收 — PENDING
+### FR-594 全量 Runtime 兼容、安全与恢复验收 — DONE
 
 依赖：FR-587、FR-588、FR-589、FR-590、FR-591、FR-592、FR-593。
 
 范围：构建固定 1.54 Runtime image，执行实际 image contract、429、OAuth、condense、timeout、tmux、
 sub-agent、安全事件、generation replacement、数据库迁移及浏览器 E2E 验收；记录不可用本地能力的
 真实阻断，不以 mock 或静态结论替代。
+
+完成：仅在本机 Docker Desktop `desktop-linux` 的隔离 Compose 环境验收；API 仅绑定
+`127.0.0.1:8080`，PostgreSQL 使用 `flowweave_fr594_postgres_data`，Runtime workspace 使用仓库
+`.tmp/fr594-runtime-workspaces`，未读取远端配置、未建立 SSH 连接或触及生产。补齐了 Agent Workspace
+allocation 的 Provider 前置目录：每个 allocation 都会创建并修复 `workspace/project/users/<FLOWWEAVE_USER_ID>`
+普通目录，权限为 `0700`，避免历史 allocation 在 Provider bootstrap 时以
+`SANDBOX_WORKSPACE_SOURCE_INVALID` 重试。通过用户面 `POST /agent-workspaces/{workspace_id}/runtime/replacements`
+实际替换本地 Runtime：generation `128` 受围栏并停止，`129` 变为 `ACTIVE/READY/RUNNING`；binding、原生
+OpenHands Conversation ID、allocation、Secret Reference ID/digest 保持不变，替换后 8 个既有正式 event ID
+均可从新 generation 重载。起始 generation `127` 已在请求前由本地恢复流程停止，故不归因于本次 replacement。
+
+验收：固定 Runtime image 的 `make openhands-contract-check` 通过，provenance 为 baseline
+`ae178d86f4e0e268cf31f8f9c5deda892f4ebf12`、归档 SHA-256
+`cb6e47a264d2704c0ab56b89277a6665de25050e9d4bc113a0237f8918fc99d3`、四包均为 `1.54.0`；实际 probe 覆盖
+V2、429、MCP OAuth discovery、system prompt condensation、stream timeouts、tmux isolation、子 Agent MCP
+边界和 `SecurityAnalysisEvent`。`make openhands-smoke` 通过，真实 Agent Server、持久文件系统重启、native
+condense、Task sub-agent、sandbox pause 与原 Conversation ID reload 均通过。`make migration-check` 以
+Testcontainers PostgreSQL 通过 empty→head、head→`0005_execution`→head、
+`0028_condensation_commands`→head，唯一 Alembic head 为
+`0150_mcp_oauth_persistence_target_audit`；`make compose-check` 和 `make sandbox-smoke` 均通过，后者的
+Python/JavaScript sandbox 均 PASS。Agent Workspace allocation/replacement 定向 pytest `3 passed`，`git diff --check`
+通过。
+
+浏览器全量 `pnpm --filter @flowweave/web e2e` 实际运行结果为 `102 passed, 29 failed, 1 skipped`（43.7 分钟），
+不能记为全绿。会话 hydration、正式 event 认领、断流/前后台恢复、Runtime readiness、FlowRun node-session
+等 FR-594 直接路径通过；失败集中在 account-switch、capability/node/model pagination、terminal-environment
+product flow 和部分 Agent Workbench UI。多项失败为未认证 API request 或顶栏入口缺失；同时工作树存在用户未提交的
+`AgentSessionWorkbench.tsx` 改动，未修改、未暂存或归因于本切片。全量 Web 回归缺口留待独立切片处理；未部署。
 
 ### FR-595 受控发布与既有 Runtime 恢复 — PENDING
 

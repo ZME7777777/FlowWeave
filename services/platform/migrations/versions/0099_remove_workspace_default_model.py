@@ -47,14 +47,8 @@ def downgrade() -> None:
         "agent_workspaces",
         sa.Column("default_model_provider_id", sa.String(length=36), nullable=True),
     )
-    op.create_foreign_key(
-        "fk_agent_workspaces_default_model_provider",
-        "agent_workspaces",
-        "model_providers",
-        ["default_model_provider_id"],
-        ["id"],
-        ondelete="RESTRICT",
-    )
+    # Revision 0088 removed application-owned database foreign keys. The
+    # restored 0098 schema therefore keeps this historical column unlinked.
     op.create_index(
         "ix_agent_workspaces_default_model_provider_id",
         "agent_workspaces",

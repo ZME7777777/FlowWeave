@@ -1395,7 +1395,10 @@ test('Conversation attachments open in a preview dialog before the file sidebar'
   await page.goto('/');
   await login(page);
   await page.goto('/agent/conversations/attachment-preview-conversation');
-  await page.getByRole('button', { name: /需求说明\.txt/ }).click();
+  const attachmentButton = page.getByRole('button', {
+    name: '需求说明.txt text/plain · 24 B',
+  });
+  await attachmentButton.click();
 
   const preview = page.getByRole('dialog', { name: '文件预览' });
   await expect(preview).toBeVisible();
@@ -1407,7 +1410,7 @@ test('Conversation attachments open in a preview dialog before the file sidebar'
   await page.keyboard.press('Escape');
   await expect(preview).toBeHidden();
 
-  await page.getByRole('button', { name: /需求说明\.txt/ }).click();
+  await attachmentButton.click();
   await expect(preview).toBeVisible();
   await preview.getByRole('button', { name: '在文件栏打开' }).click();
   await expect(preview).toBeHidden();
@@ -1461,7 +1464,9 @@ test('Workspace file references open in a preview dialog', async ({ page }) => {
   await page.goto('/');
   await login(page);
   await page.goto('/agent/conversations/workspace-reference-preview-conversation');
-  await page.getByRole('button', { name: 'batch-plan.md', exact: true }).click();
+  await page.getByRole('button', {
+    name: 'batch-plan.md 工作区文件 · 本地路径引用',
+  }).click();
 
   const preview = page.getByRole('dialog', { name: '文件预览' });
   await expect(preview).toBeVisible();
@@ -1806,9 +1811,11 @@ test('Agent transcript keeps scroll ownership through streamed output and histor
   await expectAtLatest();
 
   releaseFirstHistory?.();
+  await expect.poll(() => historyRequests).toBe(2);
+  await surface.hover();
+  await page.mouse.wheel(0, -20_000);
   await expect(page.getByText('第一历史页。', { exact: false })).toBeVisible();
   await expectAtLatest();
-  await expect.poll(() => historyRequests).toBe(2);
 
   await surface.hover();
   const bottomBeforeReading = await surface.evaluate(element => element.scrollTop);
@@ -1824,14 +1831,20 @@ test('Agent transcript keeps scroll ownership through streamed output and histor
       tool_name: 'terminal', event_name: 'TerminalAction', details: { command: 'git diff --check' },
     }),
   }));
-  await expect(page.getByText('正在运行 git diff --check')).toBeVisible();
+  await expect(page.locator('.conversation-tool-detail').filter({
+    has: page.locator('summary[aria-label="查看执行详情：正在运行 git diff --check"]'),
+  })).toBeAttached();
   await expect.poll(() => surface.evaluate(element => element.scrollTop)).toBe(readingPosition);
+  await expect.poll(visibleAnchor).toBe(anchorBeforePrepend);
 
   releaseSecondHistory?.();
-  await expect(page.getByText('第二历史页。', { exact: false })).toBeVisible();
-  await expect.poll(visibleAnchor).toBe(anchorBeforePrepend);
-  await expect(page.getByRole('button', { name: '跳转到正在生成的最新回复' })).toBeVisible();
   await expect.poll(() => historyRequests).toBe(3);
+  await expect.poll(() => surface.evaluate(element => element.scrollTop)).toBe(readingPosition);
+  await expect(page.getByText('第二历史页。', { exact: false })).toHaveCount(0);
+  await surface.hover();
+  await page.mouse.wheel(0, -20_000);
+  await expect(page.getByText('第二历史页。', { exact: false })).toBeVisible();
+  await expect(page.getByRole('button', { name: '跳转到正在生成的最新回复' })).toBeVisible();
 
   await page.getByRole('button', { name: '滚动会话 B', exact: true }).click();
   await expect(page).toHaveURL(/\/agent\/conversations\/scroll-conversation-b$/);
@@ -1858,9 +1871,15 @@ test('Agent composer retains each conversation draft and uploaded attachment acr
     if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
     if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
     if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: conversations, next_cursor: null });
-    if (path.endsWith('/attachments') && request.method() === 'POST') return json(route, {
+    if (path.endsWith('/attachments/uploads') && request.method() === 'POST') return json(route, {
+      upload_id: 'draft-attachment-upload', chunk_size: 262_144, uploaded_parts: [],
+    }, 201);
+    if (path.endsWith('/attachments/uploads/draft-attachment-upload/parts/0') && request.method() === 'PUT') {
+      return route.fulfill({ status: 200 });
+    }
+    if (path.endsWith('/attachments/uploads/draft-attachment-upload/complete') && request.method() === 'POST') return json(route, {
       filename: '保留附件.txt', mime_type: 'text/plain', byte_size: 7, path: '/runtime/workspace/project/uploads/retained.txt',
-    });
+    }, 201);
     if (path.endsWith('/events')) return json(route, { events: [], next_cursor: null, result: { status: 'COMPLETED' } });
     if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
     if (path.endsWith('/workspace')) return json(route, {
@@ -2662,9 +2681,9 @@ test('Terminal Agent error renders its detail and restores older history pages',
         events: [
           { id: 'compressed-history-condensation', event_type: 'CONDENSATION', payload: { parent_id: 'live-user', summary: '早期会话摘要', forgotten_event_ids: ['old-1'], timestamp: now } },
           { id: 'live-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'compressed-history-condensation', content: '当前仍在处理的请求', timestamp: now } },
-          { id: 'terminal-agent-error', event_type: 'ERROR', payload: { source_type: 'AgentErrorEvent', parent_id: 'live-user', event_name: 'AgentErrorEvent', content: 'AgentErrorEvent: context transport failed after the last tool result.', classification: { kind: 'internal' }, timestamp: now } },
+          { id: 'terminal-conversation-error', event_type: 'ERROR', payload: { source_type: 'ConversationErrorEvent', parent_id: 'live-user', event_name: 'ConversationErrorEvent', content: 'ConversationErrorEvent: context transport failed after the last tool result.', classification: { kind: 'internal' }, timestamp: now } },
         ],
-        next_cursor: 'terminal-agent-error', history_cursor: 'compressed-history-page', result: { status: 'COMPLETED' },
+        next_cursor: 'terminal-conversation-error', history_cursor: 'compressed-history-page', result: { status: 'COMPLETED' },
       });
     }
     if (path.endsWith('/work-directories')) return json(route, {
@@ -2687,10 +2706,12 @@ test('Terminal Agent error renders its detail and restores older history pages',
   await login(page);
   await page.goto('/agent/conversations/running-history-conversation');
   await expect(page.getByText('当前仍在处理的请求')).toBeVisible();
-  await expect(page.getByText('AgentErrorEvent: context transport failed after the last tool result.')).toBeVisible();
+  await page.locator('summary[aria-label="本轮执行失败"]').click();
+  await expect(page.getByLabel('原始错误详情')).toHaveText('ConversationErrorEvent: context transport failed after the last tool result.');
   await page.reload();
   await expect(page.getByText('当前仍在处理的请求')).toBeVisible();
-  await expect(page.getByText('AgentErrorEvent: context transport failed after the last tool result.')).toBeVisible();
+  await page.locator('summary[aria-label="本轮执行失败"]').click();
+  await expect(page.getByLabel('原始错误详情')).toHaveText('ConversationErrorEvent: context transport failed after the last tool result.');
   await expect.poll(() => historyRequests).toBeGreaterThan(0);
   await expect(page.getByText('压缩前仍可见的历史会话')).toBeVisible();
   const completedHistoryRequests = historyRequests;
@@ -2849,6 +2870,9 @@ test('Resuming an unread conversation clears its unread marker before it renders
   await page.getByRole('button', { name: '继续当前 Agent' }).click();
 
   await expect.poll(() => unreadWrites).toEqual([{ unread: false }]);
+  // The API has accepted the resume; a fresh workspace activity projection is
+  // authoritative for the shared sidebar row after this control transition.
+  await page.reload();
   await expect(row.locator('.agent-workspace-conversation-running')).toBeVisible();
   await expect(row.locator('.agent-workspace-conversation-unread')).toHaveCount(0);
 });
@@ -3377,7 +3401,6 @@ test('Agent session keeps background activity visible without readiness polling 
   let backgroundRunning = true;
   let inputReadinessReads = 0;
   const activityActiveBindings: Array<string | null> = [];
-  const unreadWrites: Array<{ bindingId: string; unread: boolean }> = [];
   const workspace = {
     id: 'activity-regression-workspace', display_name: '活动回归工作区', desired_state: 'RUNNING', updated_at: now,
   };
@@ -3404,11 +3427,16 @@ test('Agent session keeps background activity visible without readiness polling 
     if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
     if (path.endsWith('/conversation-activity')) {
       activityActiveBindings.push(url.searchParams.get('active_binding_id'));
-      return json(route, { running_binding_ids: backgroundRunning ? [background.id] : [] });
+      return json(route, {
+        running_binding_ids: backgroundRunning ? [background.id] : [],
+        conversations: conversations.map(item => item.id === background.id
+          ? { ...item, unread: !backgroundRunning, unread_origin: !backgroundRunning ? 'MANUAL' : null }
+          : item),
+      });
     }
     if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, {
       items: conversations.map(item => item.id === background.id
-        ? { ...item, execution_status: backgroundRunning ? 'running' : 'idle' }
+        ? { ...item, execution_status: backgroundRunning ? 'running' : 'idle', unread: !backgroundRunning, unread_origin: !backgroundRunning ? 'MANUAL' : null }
         : item),
       next_cursor: null,
     });
@@ -3425,14 +3453,6 @@ test('Agent session keeps background activity visible without readiness polling 
       return json(route, { ready: true, execution_status: 'idle' });
     }
     if (path.endsWith('/events')) return json(route, { events: [], next_cursor: null, history_cursor: null, result: { status: backgroundRunning ? 'RUNNING' : 'COMPLETED' } });
-    if (path.endsWith('/unread') && request.method() === 'PUT') {
-      const bindingId = path.split('/').at(-2)!;
-      const body = request.postDataJSON() as { unread: boolean };
-      unreadWrites.push({ bindingId, unread: body.unread });
-      const conversation = conversations.find(item => item.id === bindingId)!;
-      Object.assign(conversation, { unread: body.unread, unread_origin: body.unread ? 'MANUAL' : null });
-      return json(route, conversation);
-    }
     if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
     if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
     if (path.endsWith('/workspace')) return json(route, {
@@ -3461,8 +3481,9 @@ test('Agent session keeps background activity visible without readiness polling 
   expect(inputReadinessReads).toBeLessThanOrEqual(1);
 
   backgroundRunning = false;
-  await page.waitForTimeout(2_500);
-  await expect.poll(() => unreadWrites).toContainEqual({ bindingId: background.id, unread: true });
+  await page.reload();
+  // The activity projection owns background-completion unread persistence;
+  // the browser only renders the returned server fact.
   await expect(backgroundRow.getByRole('img', { name: '会话已完成，有未读回复' })).toBeVisible();
 });
 
@@ -3835,6 +3856,7 @@ test('Pausing before the first Agent event immediately replaces the submitting s
     next_cursor: null, history_cursor: null, result: { status: 'RUNNING' },
   };
 
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
   await page.route('**/api/v1/**', async route => {
     const request = route.request();
     const path = new URL(request.url()).pathname;

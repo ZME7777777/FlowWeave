@@ -163,6 +163,23 @@ def _upgrade_memory_isolation(allocation: AgentWorkspaceRuntimeAllocation) -> Pa
     return _verify_allocation(allocation)
 
 
+def _ensure_builtin_runtime_user_root(allocation: AgentWorkspaceRuntimeAllocation) -> Path:
+    """Create the Provider-mounted project root before Runtime provisioning."""
+
+    root = _upgrade_memory_isolation(allocation)
+    try:
+        users_root = root / "workspace" / "project" / "users"
+        _ensure_directory(users_root)
+        _ensure_directory(users_root / FLOWWEAVE_USER_ID)
+    except OSError as exc:
+        raise DomainError(
+            "AGENT_WORKSPACE_ALLOCATION_CONFLICT",
+            "The Agent Workspace Runtime user directory is unavailable",
+            409,
+        ) from exc
+    return root
+
+
 def _ensure_allocation(db: Session, workspace: AgentWorkspace) -> AgentWorkspaceRuntimeAllocation:
     allocation = db.scalar(
         select(AgentWorkspaceRuntimeAllocation)
@@ -170,7 +187,7 @@ def _ensure_allocation(db: Session, workspace: AgentWorkspace) -> AgentWorkspace
         .with_for_update()
     )
     if allocation is not None:
-        root = _upgrade_memory_isolation(allocation)
+        _ensure_builtin_runtime_user_root(allocation)
         return allocation
     root = _host_root(_relative_root().as_posix())
     if root.exists() or root.is_symlink():
@@ -211,7 +228,7 @@ def _ensure_allocation(db: Session, workspace: AgentWorkspace) -> AgentWorkspace
         db.flush()
         db.add(allocation)
         db.flush()
-        _verify_allocation(allocation)
+        _ensure_builtin_runtime_user_root(allocation)
         return allocation
     except BaseException:
         # The exclusive root belongs to this attempt; retain no partially valid
@@ -333,7 +350,7 @@ def runtime_allocation_for_agent_workspace(
             "The Agent Workspace external storage has not been allocated",
             409,
         )
-    _upgrade_memory_isolation(allocation)
+    _ensure_builtin_runtime_user_root(allocation)
     return allocation
 
 
