@@ -27,6 +27,7 @@ from websockets.sync.client import connect as sync_connect
 from flowweave.bootstrap.settings import Settings
 from flowweave.runtime.auth import derive_runtime_session_key
 from flowweave.runtime.base import (
+    RuntimeAgentSpec,
     RuntimeAskAgentResult,
     RuntimeCondenser,
     RuntimeContract,
@@ -1938,6 +1939,93 @@ class OpenHandsRuntime:
             )
         return "\n\n".join(sections)
 
+    @staticmethod
+    def _apply_subagent_policy(
+        configured_tools: list[dict[str, Any]], *, spec: RuntimeAgentSpec
+    ) -> None:
+        """Configure only OpenHands' formal delegation-tool scope.
+
+        MCP inheritance itself stays native: the pinned TaskManager replaces a
+        child config with the resolved parent config. The tool parameter limits
+        a child to parent-reachable tools while preserving native exemptions
+        such as TaskTrackerTool's conversation-local state.
+        """
+
+        if spec.subagent_policy is None:
+            return
+        for tool in configured_tools:
+            if tool.get("name") not in {
+                "task_tool_set",
+                "workflow_tool_set",
+                "workflow",
+            }:
+                continue
+            params = tool.get("params")
+            if not isinstance(params, dict):
+                raise DomainError(
+                    "RUNTIME_SUBAGENT_POLICY_INVALID",
+                    "Delegation tool parameters are invalid",
+                    409,
+                )
+            existing_scope = params.get("sub_agent_scope")
+            if existing_scope not in (None, {"tools": True}):
+                raise DomainError(
+                    "RUNTIME_SUBAGENT_POLICY_INVALID",
+                    "Delegation tools must remain scoped to the parent tool set",
+                    409,
+                )
+            params["sub_agent_scope"] = {"tools": True}
+
+    @staticmethod
+    def _validate_subagent_mcp_boundary(agent: dict[str, Any], spec: RuntimeAgentSpec) -> None:
+        """Verify the V2 request exposes one exact initial parent MCP set."""
+
+        if spec.subagent_policy is None:
+            return
+        expected = {server.name: server.config for server in spec.mcp_servers}
+        if any(not name for name in expected) or len(expected) != len(spec.mcp_servers):
+            raise DomainError(
+                "RUNTIME_SUBAGENT_MCP_BOUNDARY_INVALID",
+                "Frozen MCP server names must be unique and non-empty",
+                409,
+            )
+        actual = agent.get("mcp_config")
+        if expected:
+            if not isinstance(actual, dict) or actual != expected:
+                raise DomainError(
+                    "RUNTIME_SUBAGENT_MCP_BOUNDARY_INVALID",
+                    "The initial parent MCP configuration drifted from the frozen spec",
+                    409,
+                )
+        elif actual is not None:
+            raise DomainError(
+                "RUNTIME_SUBAGENT_MCP_BOUNDARY_INVALID",
+                "An unbound MCP server cannot enter the parent request",
+                409,
+            )
+
+        tools = agent.get("tools")
+        if not isinstance(tools, list):
+            raise DomainError(
+                "RUNTIME_SUBAGENT_POLICY_INVALID",
+                "The parent delegation tool set is invalid",
+                409,
+            )
+        for tool in tools:
+            if not isinstance(tool, dict) or tool.get("name") not in {
+                "task_tool_set",
+                "workflow_tool_set",
+                "workflow",
+            }:
+                continue
+            params = tool.get("params")
+            if not isinstance(params, dict) or params.get("sub_agent_scope") != {"tools": True}:
+                raise DomainError(
+                    "RUNTIME_SUBAGENT_POLICY_INVALID",
+                    "Delegation tools must carry the native parent tool scope",
+                    409,
+                )
+
     def _create(self, request: StartAttemptRequest, *, run: bool) -> RuntimeHandle:
         spec = request.agent_spec
         provider = spec.provider
@@ -1982,6 +2070,11 @@ class OpenHandsRuntime:
         configured_tools: list[dict[str, Any]] = [
             {"name": tool.name, "params": dict(tool.params)} for tool in spec.tools
         ]
+        if spec.subagent_policy is not None:
+            self._apply_subagent_policy(
+                configured_tools,
+                spec=spec,
+            )
         structured_finish = next(
             (tool for tool in configured_tools if tool["name"] == "FinishTool"), None
         )
@@ -2051,6 +2144,8 @@ class OpenHandsRuntime:
         }
         if spec.mcp_servers:
             agent["mcp_config"] = {server.name: server.config for server in spec.mcp_servers}
+        if spec.subagent_policy is not None:
+            self._validate_subagent_mcp_boundary(agent, spec)
         payload: dict[str, Any] = {
             "workspace": {
                 "kind": "LocalWorkspace",

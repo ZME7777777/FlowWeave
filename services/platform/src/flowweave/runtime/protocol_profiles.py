@@ -17,8 +17,10 @@ from typing import Final, Protocol
 
 from flowweave.runtime.base import (
     FLOWWEAVE_LLM_TIMEOUT_POLICY,
+    FLOWWEAVE_SUBAGENT_POLICY,
     RuntimeLLMTimeoutPolicy,
     RuntimePort,
+    RuntimeSubagentPolicy,
 )
 from flowweave.shared.errors import DomainError
 
@@ -121,6 +123,16 @@ def llm_timeout_policy_for_flow_run_protocol_profile(
     return None
 
 
+def subagent_policy_for_flow_run_protocol_profile(
+    profile: FlowRunProtocolProfile | str,
+) -> RuntimeSubagentPolicy | None:
+    """Return the additive V2-only native delegation boundary."""
+
+    if require_flow_run_protocol_profile(profile) is FlowRunProtocolProfile.OH_FW_V2:
+        return FLOWWEAVE_SUBAGENT_POLICY
+    return None
+
+
 __all__ = (
     "DEFAULT_FLOW_RUN_PROTOCOL_PROFILE",
     "FLOW_RUN_RUNTIME_ADAPTERS",
@@ -131,4 +143,5 @@ __all__ = (
     "llm_timeout_policy_for_flow_run_protocol_profile",
     "require_flow_run_protocol_profile",
     "runtime_for_flow_run_protocol_profile",
+    "subagent_policy_for_flow_run_protocol_profile",
 )

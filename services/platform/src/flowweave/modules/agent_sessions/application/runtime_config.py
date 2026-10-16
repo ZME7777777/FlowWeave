@@ -30,6 +30,7 @@ from flowweave.runtime.base import (
     RuntimeCondenser,
     RuntimeLLMTimeoutPolicy,
     RuntimeProvider,
+    RuntimeSubagentPolicy,
     RuntimeTool,
 )
 from flowweave.runtime.contract import (
@@ -748,6 +749,7 @@ def build_agent_spec(
     system_message_suffix_append: str = "",
     load_memory: bool = False,
     llm_timeout_policy: RuntimeLLMTimeoutPolicy | None = FLOWWEAVE_LLM_TIMEOUT_POLICY,
+    subagent_policy: RuntimeSubagentPolicy | None = None,
 ) -> RuntimeAgentSpec:
     materialized = tuple(
         item.materialization_config()
@@ -814,6 +816,7 @@ def build_agent_spec(
         mcp_servers=mcp_servers,
         hook_config=hook_config,
         agent_definitions=frozen_agent_definitions(config.capabilities),
+        subagent_policy=subagent_policy,
         runtime_contract=(
             runtime_contract_for_server_identity(
                 runtime_contract_tool_names(), runtime_server_identity

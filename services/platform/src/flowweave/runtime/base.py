@@ -128,6 +128,25 @@ FLOWWEAVE_LLM_TIMEOUT_POLICY = RuntimeLLMTimeoutPolicy()
 
 
 @dataclass(frozen=True, slots=True)
+class RuntimeSubagentPolicy:
+    """Frozen native boundary for delegated OpenHands sub-agents.
+
+    OpenHands owns child creation. FlowWeave only instructs its formal
+    delegation tools to scope child tools to the parent; the fixed upstream
+    TaskManager then gives every child the parent's resolved MCP configuration.
+    """
+
+    restrict_tools_to_parent: bool = True
+
+    def __post_init__(self) -> None:
+        if self.restrict_tools_to_parent is not True:
+            raise ValueError("sub-agent delegation tools must remain parent-scoped")
+
+
+FLOWWEAVE_SUBAGENT_POLICY = RuntimeSubagentPolicy()
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeProvider:
     provider_id: str
     base_url: str
@@ -384,6 +403,7 @@ class RuntimeAgentSpec:
     hook_config: dict[str, list[dict[str, Any]]] = field(default_factory=_empty_hook_config)
     confirmation_policy: Literal["ALWAYS", "NEVER"] = "NEVER"
     llm_timeout_policy: RuntimeLLMTimeoutPolicy | None = None
+    subagent_policy: RuntimeSubagentPolicy | None = None
     condenser: RuntimeCondenser = field(default_factory=RuntimeCondenser)
     condenser_provider: RuntimeProvider | None = None
     critic: RuntimeCritic | None = None

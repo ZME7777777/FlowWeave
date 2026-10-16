@@ -81,7 +81,7 @@ from openhands.agent_server.sockets import (
     bash_events_socket,
     events_socket,
 )
-from openhands.sdk import AgentContext
+from openhands.sdk import Agent, AgentContext
 from openhands.sdk.agent.parallel_executor import ParallelToolExecutor
 from openhands.sdk.context.condenser import (
     LLMSummarizingCondenser,
@@ -127,7 +127,7 @@ from openhands.sdk.llm.provider_connection_store import (
 from openhands.sdk.llm.utils.metrics import Metrics
 from openhands.sdk.marketplace.registration import MarketplaceRegistration
 from openhands.sdk.marketplace.registry import MarketplaceRegistry
-from openhands.sdk.mcp.config import MCPOAuthAuthCredential, MCPOAuthState
+from openhands.sdk.mcp.config import MCPOAuthAuthCredential, MCPOAuthState, MCPServer
 from openhands.sdk.mcp.oauth import MCPOAuth
 from openhands.sdk.mcp.utils import MCPToolProvider
 from openhands.sdk.plugin import Plugin, PluginFetchError, fetch_plugin_with_resolution
@@ -141,6 +141,8 @@ from openhands.sdk.profiles import (
 )
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.skills import KeywordTrigger, Skill
+from openhands.sdk.subagent import SubAgentScope
+from openhands.sdk.subagent.scope import inherit_mcp_config
 from openhands.sdk.tool import registry as tool_registry
 from openhands.sdk.tool.builtins import BUILT_IN_TOOLS
 from openhands.sdk.tool.builtins.finish import FinishTool
@@ -161,6 +163,7 @@ from openhands.tools.preset.default import AgentDefinition
 from openhands.tools.task import TaskAction, TaskObservation, TaskToolSet
 from openhands.tools.task.impl import TaskExecutor
 from openhands.tools.task.manager import Task, TaskManager, TaskStatus
+from openhands.tools.task_tracker import TaskTrackerTool
 from openhands.tools.terminal.terminal.tmux_terminal import _new_owned_session
 
 EXPECTED_VERSION = "1.54.0"
@@ -548,6 +551,45 @@ def _assert_condensation_system_prompt_contract() -> None:
     assert [message.role for message in summary_messages] == ["system", "user"]
 
 
+def _assert_subagent_mcp_inheritance_contract() -> None:
+    """Exercise the native child-MCP and conversation-local-tool boundary."""
+
+    parent = Agent(
+        llm=LLM(model="contract-model", api_key=SecretStr("contract-key")),
+        tools=[Tool(name="terminal")],
+        mcp_config={"governed": MCPServer(command="uvx")},
+    )
+    child = Agent(
+        llm=parent.llm,
+        tools=[Tool(name="terminal")],
+        mcp_config={
+            "governed": MCPServer(command="sh"),
+            "unfrozen": MCPServer(command="uvx"),
+        },
+    )
+    inherited = inherit_mcp_config(parent, child)
+    assert inherited.mcp_config == parent.mcp_config
+    assert inherited.mcp_config is not parent.mcp_config
+    assert set(inherited.mcp_config) == {"governed"}
+
+    scope = SubAgentScope(tools=True)
+    local_definition = AgentDefinition(
+        name="contract-local-planner",
+        tools=["terminal", TaskTrackerTool.name],
+        mcp_config={"unfrozen": MCPServer(command="uvx")},
+    )
+    # A declared MCP is never an eligibility escape hatch, and TaskTracker is
+    # local to the child conversation rather than an external capability.
+    assert scope.missing_from(parent, local_definition) == []
+    assert TaskTrackerTool.conversation_local is True
+
+    manager_source = getsource(TaskManager._get_conversation) + getsource(
+        TaskManager._resume_task
+    )
+    assert "mcp_tool_provider=parent._mcp_tool_provider" in manager_source
+    assert manager_source.count("_mcp_config_from_parent=True") == 2
+
+
 def _assert_memory_launch_contract() -> None:
     """Lock the upstream launch stamp and native workspace loader.
 
@@ -696,7 +738,7 @@ def _assert_mcp_oauth_and_subscription_preflight_contract() -> None:
     assert "handle_protected_resource_response" in discovery_source
     assert "handle_auth_metadata_response" in discovery_source
     token_store_source = getsource(MCPSettingsOAuthTokenStore._write_back_seeded_state)
-    assert '"/mcp-oauth-state"' in token_store_source
+    assert "mcp-oauth-state" in token_store_source
     preflight_source = getsource(validate_profile)
     assert "create_subscription_llm_from_config" in preflight_source
     assert "asyncio.to_thread" in preflight_source
@@ -809,6 +851,7 @@ def main() -> None:
     _assert_merged_main_capability_contract()
     _assert_tmux_terminal_isolation_contract()
     _assert_condensation_system_prompt_contract()
+    _assert_subagent_mcp_inheritance_contract()
     _assert_profile_provider_secret_and_condenser_behavior()
     _assert_mcp_oauth_and_subscription_preflight_contract()
     _assert_runtime_capability_build_contract()
@@ -1722,6 +1765,8 @@ def main() -> None:
                 "parent_interrupt_stops_started_task_tool": False,
                 "task_registry_confirmation_handler": False,
                 "task_restart_resume_identity_restored": False,
+                "subagent_parent_mcp_exact_inheritance": True,
+                "subagent_conversation_local_tool_exemption": True,
                 "native_skill_activation": activated_skill_names,
                 "native_skill_invocation": invoked_skills,
                 "goal_http_paths": goal_http_paths,

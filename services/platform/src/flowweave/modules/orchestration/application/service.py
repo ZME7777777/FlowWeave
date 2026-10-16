@@ -68,6 +68,7 @@ from flowweave.runtime.manifest import (
 )
 from flowweave.runtime.protocol_profiles import (
     llm_timeout_policy_for_flow_run_protocol_profile,
+    subagent_policy_for_flow_run_protocol_profile,
 )
 from flowweave.runtime.request import (
     build_runtime_request,
@@ -6616,6 +6617,9 @@ def _runtime_request(db: Session, attempt: NodeAttempt) -> StartAttemptRequest:
         runtime_server_identity=server_identity,
         load_memory=memory_enabled,
         llm_timeout_policy=llm_timeout_policy_for_flow_run_protocol_profile(
+            environment.runtime_protocol_profile
+        ),
+        subagent_policy=subagent_policy_for_flow_run_protocol_profile(
             environment.runtime_protocol_profile
         ),
     )

@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`UPSTREAM BASELINE ADOPTION IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-592`
+> 下一可执行切片：`FR-593`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -8414,13 +8414,31 @@ replacement V2 Handle profile/policy 传播的无 Docker probe 通过。受影�
 初始化时因本机 Docker socket 缺失而失败，目标断言均未执行，未记为通过。未构建 Runtime image，未执行
 数据库迁移、完整 Runtime／安全／恢复验证、E2E 或部署。
 
-### FR-592 子 Agent MCP 继承边界 — PENDING
+### FR-592 子 Agent MCP 继承边界 — DONE
 
 依赖：FR-586。
 
 范围：冻结子 Agent 对父 Conversation MCP servers 的精确继承，并允许上游定义的 conversation-local
 工具不触发越权判定；将 FlowWeave Agent Definition/Task 的允许能力集与 V2 实际请求做差异验证，未
 冻结 MCP 不得自行进入子 Agent。
+
+完成：新增只读的 `RuntimeSubagentPolicy`，只有显式 `OH_FW_V2` 的 FlowRun Environment 才冻结该策略。
+V2 适配器只向 OpenHands 正式 delegation tools（`task_tool_set`、`workflow_tool_set`、`workflow`）传入
+`sub_agent_scope={"tools": true}`，限制 child 可使用的 tool set 必须属于 parent；V1 请求形状保持不变。
+初始 parent request 的 `mcp_config` 必须与该 Agent Spec 冻结的 MCP servers 精确相等，MCP 名称为空、重复、
+请求漂移或 delegation scope 被改写时均 fail closed。FlowWeave 不向 Agent Definition 写入私有 child MCP
+字段，也不重算原生 child 配置：固定 OpenHands `TaskManager` 原生以 resolved parent MCP config 和同一
+MCP provider 建立／恢复子 Conversation，并明确忽略 child 自带 MCP config；上游声明为
+conversation-local 的 `TaskTrackerTool` 因而不会被误判为 parent 外部能力。
+
+验收：固定 `baseline` commit `ae178d86f4e0e268cf31f8f9c5deda892f4ebf12` 的完整
+`contract_check.py` 在临时 `OH_PERSISTENCE_DIR` 下通过，实际确认 parent MCP 精确继承和
+conversation-local tool exemption；同时将既有 OAuth probe 的端点检查从不再适用的连续字面量修正为
+固定 endpoint 名称，兼容上游的 f-string URL 组装。新增 V2 子 Agent adapter pytest `1 passed`，
+V1/V2 policy 的无数据库直接 probe 通过；受影响 Python `py_compile`、Ruff check/format、`git diff
+--check` 通过。合并的 `test_openhands.py`／`test_runtime_protocol_profiles.py` 运行结果为 `223 passed`，
+但 6 个 profile 测试在 session 级 PostgreSQL Testcontainers 因本机 Docker socket 缺失而未进入断言，
+未记为通过。未构建 Runtime image，未执行数据库迁移、完整 Runtime／安全／恢复验证、E2E 或部署。
 
 ### FR-593 SecurityAnalysisEvent 正式安全投影 — PENDING
 

@@ -3,7 +3,11 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from flowweave.runtime.base import FLOWWEAVE_LLM_TIMEOUT_POLICY, RuntimeHandle
+from flowweave.runtime.base import (
+    FLOWWEAVE_LLM_TIMEOUT_POLICY,
+    FLOWWEAVE_SUBAGENT_POLICY,
+    RuntimeHandle,
+)
 from flowweave.runtime.mock import MockRuntime
 from flowweave.runtime.protocol_profiles import (
     DEFAULT_FLOW_RUN_PROTOCOL_PROFILE,
@@ -13,6 +17,7 @@ from flowweave.runtime.protocol_profiles import (
     OpenHandsV2FlowRunRuntimeAdapter,
     llm_timeout_policy_for_flow_run_protocol_profile,
     runtime_for_flow_run_protocol_profile,
+    subagent_policy_for_flow_run_protocol_profile,
 )
 from flowweave.shared.errors import DomainError
 from flowweave.shared.schemas import EnvironmentPublishWrite
@@ -75,6 +80,14 @@ def test_v2_profile_freezes_native_timeout_policy_without_reinterpreting_v1() ->
             protocol_profile=FlowRunProtocolProfile.OH_FW_V2.value,
         ).llm_timeout_policy
         == FLOWWEAVE_LLM_TIMEOUT_POLICY
+    )
+
+
+def test_v2_profile_freezes_native_subagent_boundary_without_reinterpreting_v1() -> None:
+    assert subagent_policy_for_flow_run_protocol_profile(FlowRunProtocolProfile.OH_FW_V1) is None
+    assert (
+        subagent_policy_for_flow_run_protocol_profile(FlowRunProtocolProfile.OH_FW_V2)
+        == FLOWWEAVE_SUBAGENT_POLICY
     )
 
 

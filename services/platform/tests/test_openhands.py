@@ -53,6 +53,7 @@ from flowweave.runtime.base import (
     RuntimeProvider,
     RuntimeResult,
     RuntimeSkill,
+    RuntimeSubagentPolicy,
     RuntimeTool,
     StartAttemptRequest,
 )
@@ -2055,6 +2056,86 @@ def test_openhands_serializes_governed_agent_definitions(openhands_settings, mon
             "metadata": {},
         }
     ]
+
+
+def test_openhands_v2_scopes_native_subagents_to_the_frozen_parent_mcp_set(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    captured: dict[str, object] = {}
+
+    def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
+        captured.update({"method": method, "path": path, **kwargs})
+        return {"id": "10000000-0000-4000-8000-000000000011", "leaf_event_id": "event-1"}
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+    baseline = _request()
+    request = replace(
+        baseline,
+        agent_spec=replace(
+            baseline.agent_spec,
+            tools=(
+                RuntimeTool(name="terminal"),
+                RuntimeTool(name="task_tool_set"),
+                RuntimeTool(name="workflow_tool_set"),
+            ),
+            agent_definitions=(
+                RuntimeAgentDefinition(
+                    name="reviewer",
+                    description="Review a proposed change",
+                    tools=("terminal", "task_tracker"),
+                    system_prompt="Review the change and report concrete findings.",
+                ),
+            ),
+            subagent_policy=RuntimeSubagentPolicy(),
+        ),
+    )
+
+    runtime.start(request)
+
+    payload = captured["json"]
+    assert isinstance(payload, dict)
+    agent = payload["agent"]
+    assert isinstance(agent, dict)
+    assert agent["mcp_config"] == {"docs": {"url": "https://mcp.example.test", "transport": "http"}}
+    assert agent["tools"] == [
+        {"name": "terminal", "params": {}},
+        {"name": "task_tool_set", "params": {"sub_agent_scope": {"tools": True}}},
+        {"name": "workflow_tool_set", "params": {"sub_agent_scope": {"tools": True}}},
+    ]
+    definitions = payload["agent_definitions"]
+    assert isinstance(definitions, list)
+    assert definitions[0]["tools"] == ["terminal", "task_tracker"]
+    assert "mcp_config" not in definitions[0]
+
+
+def test_openhands_v2_rejects_duplicate_frozen_parent_mcp_names(openhands_settings, monkeypatch):
+    runtime = OpenHandsRuntime(openhands_settings)
+    monkeypatch.setattr(
+        runtime,
+        "_request",
+        lambda *_args, **_kwargs: {
+            "id": "10000000-0000-4000-8000-000000000012",
+            "leaf_event_id": "event-1",
+        },
+    )
+    baseline = _request()
+    request = replace(
+        baseline,
+        agent_spec=replace(
+            baseline.agent_spec,
+            mcp_servers=(
+                RuntimeMCP(name="docs", config={"command": "first"}),
+                RuntimeMCP(name="docs", config={"command": "second"}),
+            ),
+            subagent_policy=RuntimeSubagentPolicy(),
+        ),
+    )
+
+    with pytest.raises(DomainError) as caught:
+        runtime.start(request)
+
+    assert caught.value.code == "RUNTIME_SUBAGENT_MCP_BOUNDARY_INVALID"
 
 
 def test_openhands_sends_frozen_plugins_and_leaves_ambient_discovery_native(
