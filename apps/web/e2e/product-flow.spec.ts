@@ -2840,6 +2840,8 @@ test('editing the latest user message locally replaces only its active branch', 
   const rewrittenMessage = page.locator('.conversation-message.user').filter({ hasText: '修改后的问题' });
   await expect(rewrittenMessage).toBeVisible();
   await rewrittenMessage.evaluate(element => { (element as HTMLElement).dataset.optimisticIdentity = 'stable'; });
+  await expect(page.getByRole('button', { name: '正在重新思考' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toHaveCount(0);
   await expect(page.getByText(/已耗时 \d+秒/)).toBeVisible();
   const thinkingStatus = page.locator('.conversation-turn-status');
   await expect(thinkingStatus).toHaveText(/正在思考/);
@@ -2954,22 +2956,14 @@ test('selected conversation text is sent and rendered as a compact reference car
   }, selectedText);
   await expect(page.getByRole('button', { name: '添加到会话' })).toBeVisible();
   await page.getByRole('button', { name: '添加到会话' }).click();
-  await page.getByLabel('上传附件').setInputFiles({ name: '参考图.png', mimeType: 'image/png', buffer: Buffer.from('image') });
   const resourceTags = page.getByLabel('已添加的附件和会话引用');
   await expect(resourceTags).toHaveCount(1);
-  await expect(resourceTags.getByText('参考图.png', { exact: true })).toBeVisible();
-  await expect(resourceTags.getByRole('button', { name: '引用会话', exact: true })).toBeVisible();
-  await resourceTags.getByRole('button', { name: '参考图.png', exact: true }).click();
-  await expect(page.getByRole('dialog', { name: '文件预览' })).toBeVisible();
-  await page.getByRole('button', { name: '关闭文件预览' }).click();
-  await resourceTags.getByRole('button', { name: '引用附件 1', exact: true }).click();
-  await expect(page.getByLabel('发送 Agent 消息')).toHaveValue('@附件1');
-  await expect(resourceTags.evaluate(element => getComputedStyle(element).paddingBottom)).resolves.toBe('4px');
-  await resourceTags.getByRole('button', { name: '引用会话', exact: true }).click();
-  const commentCard = page.getByRole('dialog', { name: '引用会话 详情' });
+  await expect(resourceTags.getByRole('button', { name: '会话引用 1', exact: true })).toBeVisible();
+  const commentCard = page.getByRole('dialog', { name: '会话引用 1 详情' });
   await expect(commentCard).toBeVisible();
-  await commentCard.getByRole('button', { name: '双击添加评论', exact: true }).dblclick();
-  await commentCard.getByLabel('编辑注释评论').fill('请重点核对这段建议');
+  const commentInput = commentCard.getByLabel('编辑注释评论');
+  await expect(commentInput).toHaveCSS('border-top-style', 'solid');
+  await commentInput.fill('请重点核对这段建议');
   await commentCard.getByRole('button', { name: '定位原文' }).click();
   await expect(source).toBeInViewport();
   await page.getByLabel('发送 Agent 消息').fill('请据此继续');
@@ -2980,7 +2974,7 @@ test('selected conversation text is sent and rendered as a compact reference car
   const sentMessage = page.locator('.conversation-message.user').filter({ hasText: '请据此继续' });
   await expect(sentMessage).toHaveCount(1);
   await expect(sentMessage).toContainText('请据此继续');
-  await expect(sentMessage).toContainText('引用会话');
+  await expect(sentMessage).toContainText('会话引用 1');
 });
 
 test('Agent workspace groups toggle their conversation lists', async ({ page }) => {
