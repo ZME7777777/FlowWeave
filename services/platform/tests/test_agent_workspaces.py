@@ -3235,6 +3235,86 @@ def test_agent_workspace_message_failure_is_ambiguous_and_delete_is_tombstoned(
         assert conversations.list_conversations(db, workspace.id) == []
 
 
+def test_agent_workspace_management_lists_selected_conversations_and_skips_running(
+    settings, db_session_factory, monkeypatch
+):
+    from cryptography.fernet import Fernet
+
+    from flowweave.modules.users.application.security import tenant_user
+
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=kwargs.get("model_name") or "test-model",
+            api_key="x",
+            reasoning_effort=kwargs.get("reasoning_effort"),
+        ),
+    )
+
+    class RunningSecondConversationRuntime(MockRuntime):
+        def input_readiness(self, handle):
+            if handle.conversation_id == running_native_id:
+                return RuntimeInputReadiness(ready=False, execution_status="running")
+            return super().input_readiness(handle)
+
+    running_native_id = ""
+    runtime = RunningSecondConversationRuntime()
+    with (
+        settings_context(settings),
+        tenant_user(FLOWWEAVE_USER_ID),
+        db_session_factory() as db,
+        runtime_context(runtime),
+    ):
+        workspace = _ready_workspace_for_conversation(db)
+        provider = db.get(ModelProvider, workspace.default_model_provider_id)
+        assert provider is not None
+        provider.encrypted_api_key = Fernet(settings.credentials_master_key.encode()).encrypt(
+            b"management-test-api-key"
+        )
+        db.flush()
+        completed = conversations.create_conversation(
+            db,
+            workspace.id,
+            "可清理会话",
+            workspace.default_model_provider_id,
+            "management-completed",
+        )
+        running = conversations.create_conversation(
+            db,
+            workspace.id,
+            "运行中会话",
+            workspace.default_model_provider_id,
+            "management-running",
+        )
+        completed_binding = db.get(AgentConversationBinding, completed["id"])
+        running_binding = db.get(AgentConversationBinding, running["id"])
+        assert completed_binding is not None and running_binding is not None
+        completed_binding.last_message_at = datetime.now(UTC) - timedelta(days=45)
+        running_native_id = running_binding.openhands_conversation_id
+        db.flush()
+
+        listed = conversations.list_management_conversations(db, workspace.id)
+        assert [item["id"] for item in listed["items"]] == [running["id"], completed["id"]]
+        assert listed["items"][1]["last_message_at"] == (
+            completed_binding.last_message_at.isoformat()
+        )
+
+        result = conversations.delete_management_conversations(
+            db,
+            workspace.id,
+            (completed["id"], running["id"], completed["id"]),
+            "management-delete",
+        )
+
+        assert result["deleted_ids"] == [completed["id"]]
+        assert result["skipped"] == [{"id": running["id"], "code": "AGENT_CONVERSATION_RUNNING"}]
+        assert db.get(AgentConversationBinding, completed["id"]) is None
+        assert db.get(AgentConversationBinding, running["id"]) is not None
+
+
 def test_agent_workspace_conversation_order_stays_at_creation_time(
     settings, db_session_factory, monkeypatch
 ):

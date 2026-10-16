@@ -123,3 +123,4 @@ git -C /Users/zhengmengen/WorkSpace/openhands/software-agent-sdk-total-tokens-1.
 - 临时侧边聊天必须由服务端 `AgentSidebarConversation` 以主会话 binding 关联，并在一小时 TTL 到期后由后台任务删除 OpenHands 原生会话、绑定私有记录和附件；浏览器已取得的事件可继续阅读，但后续发送必须以 `AGENT_SIDEBAR_CONVERSATION_EXPIRED` 拒绝。临时 binding 不得出现在普通会话列表、活动列表或搜索投影中；侧栏首条消息可携带主会话的正式事件引用，主会话元数据只作为受限系统上下文。
 - 认证管理、大模型管理，以及 FlowRun 的配置、运行记录和运行时资源按 FlowWeave 用户隔离；流程定义、节点能力和目录保持共享。历史认证、模型提供商和 FlowRun 记录迁移给 `FLOWWEAVE_USER_ID`；流程执行仅可解析当前用户可见的认证和模型提供商，禁止共享流程复用其他用户凭据。
 - 会话列表的整条会话内容区是统一的原生拖拽源：拖入发送框时添加会话引用，拖到同一工作区的其他会话位置时调整顺序；不得使用独立排序把手或拆分拖拽命中区。
+- 账户菜单打开的设置页面由 `App.tsx` 的会话级 `openSettingsViews` 管理；每个设置视图至多一个临时标签，关闭当前标签时优先选择右侧、否则左侧相邻标签，关闭最后一个则回到节点资产。仅当 `.context-tabs` 存在时显示固定导航与临时标签间的分隔线；其布局需保留标题收缩、图标模式与横向滚动能力。

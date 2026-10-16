@@ -467,6 +467,10 @@ export const api = {
     if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
     return request<void>(`/agent-workspaces/${encodeURIComponent(id)}/terminals/${encodeURIComponent(terminalInstanceId)}${query.size ? `?${query}` : ''}`, json('DELETE'));
   },
+  agentConversationManagement: (workspaceId: string) =>
+    request<import('../types').AgentConversationManagementPage>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-management`),
+  deleteManagedAgentConversations: (workspaceId: string, binding_ids: string[]) =>
+    request<import('../types').AgentConversationManagementDeleteResult>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-management/delete`, json('POST', { binding_ids }, crypto.randomUUID())),
   agentConversations: (workspaceId: string, cursor?: string, limit = 3, workDirectoryId?: string) => {
     const query = new URLSearchParams({ limit: String(limit) });
     if (cursor) query.set('cursor', cursor);

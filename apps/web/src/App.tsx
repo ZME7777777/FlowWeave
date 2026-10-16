@@ -1,4 +1,4 @@
-import { Activity, Bot, Boxes, BrainCircuit, CalendarClock, ChevronDown, GitFork, Hexagon, KeyRound, Library, LogOut, PlayCircle, Settings, TerminalSquare, UsersRound } from 'lucide-react';
+import { Activity, Bot, Boxes, BrainCircuit, CalendarClock, ChevronDown, GitFork, Hexagon, KeyRound, Library, LogOut, MessageSquareText, PlayCircle, Settings, TerminalSquare, UsersRound, X } from 'lucide-react';
 import { lazy, Suspense, useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useWorkbenchStore } from './store/workbench';
@@ -19,6 +19,7 @@ const CapabilitiesPage = lazy(() => import('./pages/CapabilitiesPage').then(modu
 const TerminalEnvironmentsPage = lazy(() => import('./pages/TerminalEnvironmentsPage').then(module => ({ default: module.TerminalEnvironmentsPage })));
 const CredentialsPage = lazy(() => import('./pages/CredentialsPage').then(module => ({ default: module.CredentialsPage })));
 const LdapUsersPage = lazy(() => import('./pages/LdapUsersPage').then(module => ({ default: module.LdapUsersPage })));
+const ConversationManagementPage = lazy(() => import('./pages/ConversationManagementPage').then(module => ({ default: module.ConversationManagementPage })));
 const StandaloneAgentTerminal = lazy(() => import('./components/AgentRuntimeSidebar').then(module => ({ default: module.StandaloneAgentTerminal })));
 const AgentWorkbenchPage = lazy(() => import('./pages/AgentWorkbenchPage').then(module => ({ default: module.AgentWorkbenchPage })));
 const FlowNodeSessionPage = lazy(() => import('./pages/FlowNodeSessionPage').then(module => ({ default: module.FlowNodeSessionPage })));
@@ -37,6 +38,7 @@ const nav = [
 ];
 
 const settingsNav = [
+  { view: 'conversation-management' as const, label: '会话管理', description: '批量管理和删除已结束会话', icon: MessageSquareText },
   { view: 'environments' as const, label: '终端环境', description: '管理 Agent 运行环境', icon: TerminalSquare },
   { view: 'credentials' as const, label: '认证管理', description: '维护访问凭据与密钥', icon: KeyRound },
   { view: 'models' as const, label: '大模型配置', description: '配置模型服务与可用模型', icon: BrainCircuit },
@@ -45,6 +47,8 @@ const settingsNav = [
 const superAdminSettingsNav = [
   { view: 'ldap-users' as const, label: '用户管理', description: '管理 LDAP 用户登录授权', icon: UsersRound },
 ];
+
+type SettingsView = (typeof settingsNav)[number]['view'] | (typeof superAdminSettingsNav)[number]['view'];
 
 function clearAgentIdentityStorage() {
   const isAgentStorage = (key: string) => key.startsWith('flowweave.agent.')
@@ -65,6 +69,7 @@ export function App() {
   const [, setRouteVersion] = useState(0);
   const [user, setUser] = useState<AuthUser | null>();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [openSettingsViews, setOpenSettingsViews] = useState<SettingsView[]>([]);
   const settingsMenu = useRef<HTMLDivElement>(null);
   const replaceIdentity = useCallback(async (nextUser: AuthUser | null) => {
     // Unmount authenticated product surfaces before an old request can
@@ -192,6 +197,19 @@ export function App() {
     leaveAgentRoute();
     setView(next);
   };
+  const selectSettingsView = (next: SettingsView) => {
+    setOpenSettingsViews(current => current.includes(next) ? current : [...current, next]);
+    selectView(next);
+  };
+  const closeSettingsView = (closingView: SettingsView) => {
+    const closingIndex = openSettingsViews.indexOf(closingView);
+    const next = openSettingsViews.filter(item => item !== closingView);
+    setOpenSettingsViews(next);
+    if (renderedView !== closingView) return;
+    const replacement = next[closingIndex] ?? next[closingIndex - 1];
+    if (replacement) selectView(replacement);
+    else selectView('nodes');
+  };
   const terminalParams = new URLSearchParams(window.location.search);
   const terminalRunId = terminalParams.get('terminalRun');
   const terminalRunName = terminalParams.get('terminalName');
@@ -207,9 +225,10 @@ export function App() {
     ? [...settingsNav, ...superAdminSettingsNav]
     : settingsNav;
   const activeSettingsItem = !isAgentRoute ? accountSettingsNav.find(item => item.view === renderedView) : undefined;
+  const openSettingsTabs = openSettingsViews.map(view => accountSettingsNav.find(item => item.view === view)).filter((item): item is typeof accountSettingsNav[number] => Boolean(item));
   const settingsActive = Boolean(activeSettingsItem);
   const visibleNav = nav.filter(item => item.view !== 'agent-workbench' || user.can_use_agent_sessions !== false);
-  return <div className={`app-shell${isAgentRoute ? ' agent-workbench-shell' : ''}`}><header className="topbar" onDoubleClick={toggleFullscreenFromTopbar}><button className="brand" onClick={() => selectView('nodes')} aria-label="返回节点资产"><span className="brand-mark"><Hexagon size={22} fill="currentColor"/></span><span>FlowWeave</span></button><nav aria-label="主导航">{visibleNav.map(item => <button key={item.view} className={(nodeSessionRoute ? item.view === 'runs' : isAgentRoute ? item.view === 'agent-workbench' : renderedView === item.view) ? 'active' : ''} onClick={() => selectView(item.view)}><item.icon size={15}/>{item.label}</button>)}</nav>{activeSettingsItem && <div className="context-tab" aria-label={`当前配置：${activeSettingsItem.label}`}><span className="context-tab-divider" aria-hidden="true"/><activeSettingsItem.icon size={14}/><span>{activeSettingsItem.label}</span></div>}<div className="topbar-actions"><span className="kernel-status"><Activity size={14}/>{nodeSessionRoute ? 'FlowRun 节点会话' : isAgentRoute ? 'Agent 工作区' : '产物驱动运行'}</span><div className="account-menu" ref={settingsMenu}><button type="button" className={`account-trigger${settingsActive ? ' active' : ''}`} aria-label="账户与设置" aria-haspopup="menu" aria-expanded={settingsOpen} onClick={() => setSettingsOpen(open => !open)}><span className="account-avatar" aria-hidden="true">{user.username.slice(0, 1).toUpperCase()}</span><span className="account-identity"><b>{user.username}</b><small>{user.is_super_admin ? '超级管理员' : '普通用户'}</small></span><ChevronDown size={13} className={settingsOpen ? 'rotated' : ''}/></button>{settingsOpen && <div className="settings-popover account-popover" role="menu" aria-label="账户与设置"><div className="account-popover-heading"><Settings size={14}/><b>平台设置</b></div>{accountSettingsNav.map(item => <button type="button" role="menuitem" title={item.description} key={item.view} className={renderedView === item.view && !isAgentRoute ? 'active' : ''} onClick={() => selectView(item.view)}><span className="settings-item-icon"><item.icon size={15}/></span><b>{item.label}</b></button>)}<button type="button" role="menuitem" title="结束当前平台会话" className="account-logout" onClick={() => void logout()}><span className="settings-item-icon"><LogOut size={15}/></span><b>退出登录</b></button></div>}</div></div></header>
-    <Suspense fallback={<PageLoading/>}>{isAgentRoute ? nodeSessionRoute ? <FlowNodeSessionPage flowRunId={decodeURIComponent(nodeSessionRoute[1])} nodeRunId={decodeURIComponent(nodeSessionRoute[2])} attemptId={decodeURIComponent(nodeSessionRoute[3])} onNavigate={navigate}/> : <AgentWorkbenchPage onNavigate={navigate}/> : <>{renderedView === 'nodes' && <NodesPage/>}{renderedView === 'capabilities' && <CapabilitiesPage/>}{renderedView === 'environments' && <TerminalEnvironmentsPage/>}{renderedView === 'credentials' && <CredentialsPage/>}{renderedView === 'ldap-users' && user.is_super_admin && <LdapUsersPage/>}{renderedView === 'flows' && <FlowsPage/>}{renderedView === 'runs' && <RunsPage/>}{renderedView === 'schedules' && <SchedulesPage/>}{renderedView === 'models' && <ModelsPage/>}{renderedView === 'workbench' && <WorkbenchPage/>}</>}</Suspense>
+  return <div className={`app-shell${isAgentRoute ? ' agent-workbench-shell' : ''}`}><header className="topbar" onDoubleClick={toggleFullscreenFromTopbar}><button className="brand" onClick={() => selectView('nodes')} aria-label="返回节点资产"><span className="brand-mark"><Hexagon size={22} fill="currentColor"/></span><span>FlowWeave</span></button><nav aria-label="主导航">{visibleNav.map(item => <button key={item.view} className={(nodeSessionRoute ? item.view === 'runs' : isAgentRoute ? item.view === 'agent-workbench' : renderedView === item.view) ? 'active' : ''} onClick={() => selectView(item.view)}><item.icon size={15}/>{item.label}</button>)}</nav>{openSettingsTabs.length > 0 && <div className="context-tabs" aria-label="临时管理标签">{openSettingsTabs.map(item => <div className={`context-tab${renderedView === item.view && !isAgentRoute ? ' active' : ''}`} key={item.view}><button type="button" className="context-tab-select" aria-current={renderedView === item.view && !isAgentRoute ? 'page' : undefined} title={item.label} onClick={() => selectSettingsView(item.view)}><item.icon size={14}/><span>{item.label}</span></button><button type="button" className="context-tab-close" aria-label={`关闭${item.label}`} title={`关闭${item.label}`} onClick={() => closeSettingsView(item.view)}><X size={12}/></button></div>)}</div>}<div className="topbar-actions"><span className="kernel-status"><Activity size={14}/>{nodeSessionRoute ? 'FlowRun 节点会话' : isAgentRoute ? 'Agent 工作区' : '产物驱动运行'}</span><div className="account-menu" ref={settingsMenu}><button type="button" className={`account-trigger${settingsActive ? ' active' : ''}`} aria-label="账户与设置" aria-haspopup="menu" aria-expanded={settingsOpen} onClick={() => setSettingsOpen(open => !open)}><span className="account-avatar" aria-hidden="true">{user.username.slice(0, 1).toUpperCase()}</span><span className="account-identity"><b>{user.username}</b><small>{user.is_super_admin ? '超级管理员' : '普通用户'}</small></span><ChevronDown size={13} className={settingsOpen ? 'rotated' : ''}/></button>{settingsOpen && <div className="settings-popover account-popover" role="menu" aria-label="账户与设置"><div className="account-popover-heading"><Settings size={14}/><b>平台设置</b></div>{accountSettingsNav.map(item => <button type="button" role="menuitem" title={item.description} key={item.view} className={renderedView === item.view && !isAgentRoute ? 'active' : ''} onClick={() => selectSettingsView(item.view)}><span className="settings-item-icon"><item.icon size={15}/></span><b>{item.label}</b></button>)}<button type="button" role="menuitem" title="结束当前平台会话" className="account-logout" onClick={() => void logout()}><span className="settings-item-icon"><LogOut size={15}/></span><b>退出登录</b></button></div>}</div></div></header>
+    <Suspense fallback={<PageLoading/>}>{isAgentRoute ? nodeSessionRoute ? <FlowNodeSessionPage flowRunId={decodeURIComponent(nodeSessionRoute[1])} nodeRunId={decodeURIComponent(nodeSessionRoute[2])} attemptId={decodeURIComponent(nodeSessionRoute[3])} onNavigate={navigate}/> : <AgentWorkbenchPage onNavigate={navigate}/> : <>{renderedView === 'nodes' && <NodesPage/>}{renderedView === 'capabilities' && <CapabilitiesPage/>}{renderedView === 'conversation-management' && <ConversationManagementPage/>}{renderedView === 'environments' && <TerminalEnvironmentsPage/>}{renderedView === 'credentials' && <CredentialsPage/>}{renderedView === 'ldap-users' && user.is_super_admin && <LdapUsersPage/>}{renderedView === 'flows' && <FlowsPage/>}{renderedView === 'runs' && <RunsPage/>}{renderedView === 'schedules' && <SchedulesPage/>}{renderedView === 'models' && <ModelsPage/>}{renderedView === 'workbench' && <WorkbenchPage/>}</>}</Suspense>
   </div>;
 }

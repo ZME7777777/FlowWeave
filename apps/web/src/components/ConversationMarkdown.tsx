@@ -4,6 +4,7 @@ import remarkGfm from 'remark-gfm';
 import { deploymentBasePath } from '../deploymentPath';
 import { MarkdownCodeBlock, MermaidDiagram } from './MermaidDiagram';
 import { ConversationTextReveal } from './ConversationTextReveal';
+import { WebsiteIcon } from './WebsiteIcon';
 import { isMermaidDiagram, markdownCodeText, normalizeNestedMarkdownFences } from './markdownCodeBlock';
 
 const MARKDOWN_SYNTAX = /(^|\n)\s{0,3}(?:#{1,6}\s|[-*+]\s|\d+[.)]\s|>|```)|[`*_~]|!?\[[^\]]*\]\([^)]*\)|\||https?:\/\/[^\s<]+/i;
@@ -50,6 +51,7 @@ function MarkdownLink({ href, onClick, onOpenWorkspaceFile, onOpenImage, workspa
   workspaceImageUrl?: (href: string) => string | undefined;
 }) {
   const isExternal = typeof href === 'string' && /^(?:https?:\/\/|mailto:)/i.test(href);
+  const isWebsite = typeof href === 'string' && /^https?:\/\//i.test(href);
   const imageUrl = typeof href === 'string' && workspaceImageLink(href)
     ? workspaceImageUrl?.(href)
     : undefined;
@@ -62,7 +64,7 @@ function MarkdownLink({ href, onClick, onOpenWorkspaceFile, onOpenImage, workspa
       event.preventDefault();
       return;
     }
-  }}>{children}</a>;
+  }}>{isWebsite && href ? <WebsiteIcon url={href} className="conversation-link-icon"/> : null}{children}</a>;
 }
 
 function MarkdownPre({ children, node: _node, ...props }: ComponentPropsWithoutRef<'pre'> & { node?: unknown }) {

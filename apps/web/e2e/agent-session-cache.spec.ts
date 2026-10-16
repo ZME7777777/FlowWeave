@@ -2186,6 +2186,7 @@ test('A new conversation stays first after an existing conversation was reordere
   let authenticated = false;
   let created = false;
   let orderRequests = 0;
+  let failOrderRequest = false;
   const workspace = { id: 'new-order-workspace', display_name: '会话排序工作区', desired_state: 'RUNNING', updated_at: now };
   const existing = [
     {
@@ -2227,6 +2228,10 @@ test('A new conversation stays first after an existing conversation was reordere
     }
     if (path.endsWith('/order') && request.method() === 'POST') {
       orderRequests += 1;
+      if (failOrderRequest) {
+        failOrderRequest = false;
+        return json(route, { error: { code: 'AGENT_CONVERSATION_ORDER_DENSE', message: '会话排序暂不可保存，请刷新后重试' } }, 409);
+      }
       return json(route, existing[1]);
     }
     if (path.endsWith('/events')) return json(route, {
@@ -2264,15 +2269,44 @@ test('A new conversation stays first after an existing conversation was reordere
   const dataTransfer = await page.evaluateHandle(() => new DataTransfer());
   const targetBounds = await target.boundingBox();
   await source.dispatchEvent('dragstart', { dataTransfer });
-  await target.dispatchEvent('drop', { dataTransfer, clientY: targetBounds!.y + 2 });
+  // Native DnD occasionally omits `drop` while still reporting the final
+  // pointer coordinates to `dragend`; that fallback must commit the order.
+  await source.dispatchEvent('dragend', {
+    dataTransfer,
+    clientX: targetBounds!.x + targetBounds!.width / 2,
+    clientY: targetBounds!.y + 2,
+  });
   await dataTransfer.dispose();
   await expect.poll(() => orderRequests).toBe(1);
+  const orderedRows = page.locator('.agent-workspace-group').filter({ hasText: '根工作区' }).locator('[data-conversation-binding-id]');
+  await expect.poll(() => orderedRows.evaluateAll(rows => rows.map(row => row.getAttribute('data-conversation-binding-id')))).toEqual([
+    'new-order-b', 'new-order-a',
+  ]);
+
+  failOrderRequest = true;
+  const retryTargetBounds = await target.boundingBox();
+  const retryDataTransfer = await page.evaluateHandle(() => new DataTransfer());
+  await source.dispatchEvent('dragstart', { dataTransfer: retryDataTransfer });
+  await source.dispatchEvent('dragend', {
+    dataTransfer: retryDataTransfer,
+    clientX: retryTargetBounds!.x + retryTargetBounds!.width / 2,
+    clientY: retryTargetBounds!.y + 2,
+  });
+  await retryDataTransfer.dispose();
+  await expect.poll(() => orderRequests).toBe(2);
+  await expect(page.getByLabel('排序暂未保存，点击重试')).toBeVisible();
+  await expect.poll(() => orderedRows.evaluateAll(rows => rows.map(row => row.getAttribute('data-conversation-binding-id')))).toEqual([
+    'new-order-b', 'new-order-a',
+  ]);
+  await page.getByLabel('排序暂未保存，点击重试').click();
+  await expect.poll(() => orderRequests).toBe(3);
+  await expect(page.getByLabel('排序暂未保存，点击重试')).toHaveCount(0);
 
   await page.getByRole('button', { name: '在根工作区中新建会话' }).click();
   const composer = page.getByLabel('发送 Agent 消息');
-  await source.dragTo(composer);
+  await source.dragTo(page.locator('.agent-workbench-content'));
   await expect(page.getByRole('button', { name: '移除会话 已有会话 B', exact: true })).toBeVisible();
-  expect(orderRequests).toBe(1);
+  expect(orderRequests).toBe(3);
   await page.getByRole('button', { name: '移除会话 已有会话 B', exact: true }).click();
   await composer.fill('创建最新会话');
   await page.getByLabel('发送消息').click();
@@ -2487,7 +2521,16 @@ test('A formal final reply releases the shared composer state for queued deliver
 
   stream!.send(JSON.stringify({
     type: 'event',
-    event: { id: 'final-reply-queue-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'final-reply-queue-action', content: '当前轮已经完成。', timestamp: now } },
+    event: { id: 'final-reply-queue-progress', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'final-reply-queue-action', content: '正在汇总当前结果。', final_reply: false, timestamp: now } },
+  }));
+
+  await expect(page.getByText('正在汇总当前结果。')).toBeVisible();
+  await expect.poll(() => queuedPosts).toBe(0);
+  await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
+
+  stream!.send(JSON.stringify({
+    type: 'event',
+    event: { id: 'final-reply-queue-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'final-reply-queue-progress', content: '当前轮已经完成。', final_reply: true, timestamp: now } },
   }));
 
   await expect(page.getByText('当前轮已经完成。')).toBeVisible();

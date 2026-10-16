@@ -90,6 +90,27 @@ def test_monitor_does_not_flag_a_completed_assistant_reply_as_stuck():
     assert result["possibly_stuck"] is False
 
 
+def test_monitor_exposes_missing_terminal_event_without_claiming_completion():
+    observed_at = datetime(2026, 9, 8, 12, 0, tzinfo=UTC)
+
+    result = build_activity_summary(
+        [
+            _event(
+                "agent-progress",
+                "MESSAGE",
+                observed_at,
+                source="agent",
+                content="正在汇总结果。",
+            )
+        ],
+        terminal_event_missing=True,
+        now=observed_at,
+    )
+
+    assert result["terminal_event_missing"] is True
+    assert result["possibly_stuck"] is False
+
+
 def test_monitor_measures_only_native_progress_for_formal_tool_batches():
     observed_at = datetime(2026, 9, 8, 12, 0, tzinfo=UTC)
     result = build_activity_summary(

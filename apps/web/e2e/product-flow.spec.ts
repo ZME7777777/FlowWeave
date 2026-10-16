@@ -864,7 +864,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
           ...(recoverableAgentError ? [
             { id: 'recoverable-tool', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'running-user', action_id: 'recoverable-tool', tool_call_id: 'recoverable-tool-call', event_name: 'TerminalAction', details: { command: 'fetch deployment state' }, timestamp: new Date().toISOString() } },
             { id: 'recoverable-agent-error', event_type: 'ERROR', payload: { source_type: 'AgentErrorEvent', source: 'agent', parent_id: 'recoverable-tool', tool_call_id: 'recoverable-tool-call', content: 'Temporary upstream error; retrying the operation.', timestamp: new Date().toISOString() } },
-            { id: 'recoverable-agent-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'recoverable-agent-error', content: '已恢复并完成部署状态查询。', timestamp: new Date().toISOString() } },
+            { id: 'recoverable-agent-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'recoverable-agent-error', content: '已恢复并完成部署状态查询。', final_reply: false, timestamp: new Date().toISOString() } },
           ] : []),
           ...(recoverableTaskResumeError ? [
             { id: 'resume-validation-action', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'running-user', action_id: 'resume-validation-action', tool_call_id: 'resume-validation-call', event_name: 'TaskAction', runtime_task: { phase: 'REQUESTED', action_event_id: 'resume-validation-action', tool_call_id: 'resume-validation-call', subagent_type: 'code-explorer', description: '继续汇总接口调研', resume_task_id: 'task_00000001' }, timestamp: new Date().toISOString() } },
@@ -1144,8 +1144,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   recoverableAgentError = true;
   modelIsResponding = true;
   await page.reload();
-  const recoveredReply = page.getByText('已恢复并完成部署状态查询。');
-  await expect(recoveredReply).toBeVisible();
+  await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
   await expect(page.getByText('执行过程出现可恢复错误')).toHaveCount(0);
   await expect(page.getByText('Temporary upstream error; retrying the operation.')).toHaveCount(0);
   await expect(page.getByText('本轮未能完成')).toHaveCount(0);
@@ -2533,21 +2532,20 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByLabel('工具执行确认')).toHaveCount(0);
   await expect(page.locator('.agent-composer-actions .agent-send')).toHaveCount(1);
   await expect(page.getByText('Agent 正在处理上一条消息或停止请求，请稍候')).toHaveCount(0);
-  // A durable agent MessageEvent is a formal final reply. It must close every
-  // foreground running indicator immediately, even while Runtime readiness
-  // still catches up to the native idle state.
-  agentStream!.send(JSON.stringify({ type: 'delta', item_id: 'live-reply-before-idle', content: '回复已经生成，原生会话仍在收尾。' }));
+  // A running agent MessageEvent is progress, not a final reply. It must
+  // remain inside the active process until FinishAction or a native-confirmed
+  // final MessageEvent arrives through the formal event feed.
+  agentStream!.send(JSON.stringify({ type: 'delta', item_id: 'live-reply-before-idle', content: '回复正在汇总，原生会话仍在运行。' }));
   await expect(page.getByLabel('正在生成的回复')).toBeVisible();
-  await expect(page.locator('.conversation-message.assistant').filter({ hasText: '回复已经生成，原生会话仍在收尾。' })).toHaveCount(0);
+  await expect(page.locator('.conversation-message.assistant').filter({ hasText: '回复正在汇总，原生会话仍在运行。' })).toHaveCount(0);
   agentStream!.send(JSON.stringify({
     type: 'event',
-    event: { id: 'live-reply-before-idle', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'live-tool-result', content: '回复已经生成，原生会话仍在收尾。', timestamp: new Date().toISOString() } },
+    event: { id: 'live-reply-before-idle', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'live-tool-result', content: '回复正在汇总，原生会话仍在运行。', final_reply: false, timestamp: new Date().toISOString() } },
   }));
-  await expect(page.locator('.conversation-message.assistant').filter({ hasText: '回复已经生成，原生会话仍在收尾。' })).toBeVisible();
-  await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
-  await expect(page.getByText('回复已生成，正在收尾')).toHaveCount(0);
-  await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toHaveCount(0);
-  await expect(page.locator('.agent-workspace-conversation-running')).toHaveCount(0);
+  await expect(page.getByText('回复正在汇总，原生会话仍在运行。')).toBeVisible();
+  await expect(page.locator('.conversation-message.assistant').filter({ hasText: '回复正在汇总，原生会话仍在运行。' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
+  await expect(page.locator('.agent-workspace-conversation-running')).toBeVisible();
   agentStream!.send(JSON.stringify({
     type: 'event',
     event: { id: 'live-finish', event_type: 'COMPLETED', payload: { source: 'agent', parent_id: 'live-tool-result', event_name: 'FinishAction', content: longFinalReply, thought: '核对已经完成，下面给出最终结果。', summary: '整理最终结果', timestamp: new Date().toISOString() } },
@@ -2806,7 +2804,9 @@ test('editing the latest user message locally replaces only its active branch', 
   ];
   let includeLateOldBranchEvent = false;
   let lateOldBranchEventWasRead = false;
-  const lateOldBranchEvent = { id: 'late-old-continue', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'old-answer', content: '继续', timestamp: '2026-08-28T10:00:04Z' } };
+  // The old branch is omitted from the later bounded window. Its child arrives
+  // alone, so the rewrite tombstone must reject it without rediscovering parent.
+  const lateOldBranchEvent = { id: 'late-old-continue', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'original-user', content: '继续', timestamp: '2026-08-28T10:00:04Z' } };
   await page.route('**/api/v1/auth/me', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id: 'rethink-user', username: 'tester', role: 'USER', is_super_admin: false }) }));
   await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
   await page.route('**/api/v1/agent-workspaces/**', async route => {
@@ -2875,6 +2875,8 @@ test('editing the latest user message locally replaces only its active branch', 
   const rewrittenMessage = page.locator('.conversation-message.user').filter({ hasText: '修改后的问题' });
   await expect(rewrittenMessage).toBeVisible();
   await rewrittenMessage.evaluate(element => { (element as HTMLElement).dataset.optimisticIdentity = 'stable'; });
+  await expect(page.getByRole('button', { name: '正在重新思考' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toHaveCount(0);
   await expect(page.getByText(/已耗时 \d+秒/)).toBeVisible();
   const thinkingStatus = page.locator('.conversation-turn-status');
   await expect(thinkingStatus).toHaveText(/正在思考/);
@@ -2989,22 +2991,14 @@ test('selected conversation text is sent and rendered as a compact reference car
   }, selectedText);
   await expect(page.getByRole('button', { name: '添加到会话' })).toBeVisible();
   await page.getByRole('button', { name: '添加到会话' }).click();
-  await page.getByLabel('上传附件').setInputFiles({ name: '参考图.png', mimeType: 'image/png', buffer: Buffer.from('image') });
   const resourceTags = page.getByLabel('已添加的附件和会话引用');
   await expect(resourceTags).toHaveCount(1);
-  await expect(resourceTags.getByText('参考图.png', { exact: true })).toBeVisible();
-  await expect(resourceTags.getByRole('button', { name: '引用会话', exact: true })).toBeVisible();
-  await resourceTags.getByRole('button', { name: '参考图.png', exact: true }).click();
-  await expect(page.getByRole('dialog', { name: '文件预览' })).toBeVisible();
-  await page.getByRole('button', { name: '关闭文件预览' }).click();
-  await resourceTags.getByRole('button', { name: '引用附件 1', exact: true }).click();
-  await expect(page.getByLabel('发送 Agent 消息')).toHaveValue('@附件1');
-  await expect(resourceTags.evaluate(element => getComputedStyle(element).paddingBottom)).resolves.toBe('4px');
-  await resourceTags.getByRole('button', { name: '引用会话', exact: true }).click();
-  const commentCard = page.getByRole('dialog', { name: '引用会话 详情' });
+  await expect(resourceTags.getByRole('button', { name: '会话引用 1', exact: true })).toBeVisible();
+  const commentCard = page.getByRole('dialog', { name: '会话引用 1 详情' });
   await expect(commentCard).toBeVisible();
-  await commentCard.getByRole('button', { name: '双击添加评论', exact: true }).dblclick();
-  await commentCard.getByLabel('编辑注释评论').fill('请重点核对这段建议');
+  const commentInput = commentCard.getByLabel('编辑注释评论');
+  await expect(commentInput).toHaveCSS('border-top-style', 'solid');
+  await commentInput.fill('请重点核对这段建议');
   await commentCard.getByRole('button', { name: '定位原文' }).click();
   await expect(source).toBeInViewport();
   await page.getByLabel('发送 Agent 消息').fill('请据此继续');
@@ -3015,7 +3009,7 @@ test('selected conversation text is sent and rendered as a compact reference car
   const sentMessage = page.locator('.conversation-message.user').filter({ hasText: '请据此继续' });
   await expect(sentMessage).toHaveCount(1);
   await expect(sentMessage).toContainText('请据此继续');
-  await expect(sentMessage).toContainText('引用会话');
+  await expect(sentMessage).toContainText('会话引用 1');
 });
 
 test('Agent workspace groups toggle their conversation lists', async ({ page }) => {

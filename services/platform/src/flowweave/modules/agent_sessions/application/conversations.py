@@ -984,6 +984,84 @@ def conversation_activity(
     }
 
 
+def list_management_conversations(db: Session, workspace_id: str) -> dict[str, Any]:
+    """List durable direct conversations for an explicit user-initiated cleanup."""
+
+    _workspace(db, workspace_id)
+    limit = 500
+    items = list(
+        db.scalars(
+            select(AgentConversationBinding)
+            .where(
+                AgentConversationBinding.workspace_id == workspace_id,
+                AgentConversationBinding.lifecycle == "ACTIVE",
+                ~AgentConversationBinding.id.in_(
+                    select(AgentSidebarConversation.sidebar_binding_id)
+                ),
+            )
+            .order_by(
+                AgentConversationBinding.last_message_at.desc(),
+                AgentConversationBinding.created_at.desc(),
+                AgentConversationBinding.id.desc(),
+            )
+            .limit(limit + 1)
+        )
+    )
+    truncated = len(items) > limit
+    return {
+        "items": [
+            {
+                "id": item.id,
+                "display_title": item.display_title,
+                "pinned": item.pinned,
+                "unread": item.unread,
+                "created_at": item.created_at.isoformat(),
+                "updated_at": item.updated_at.isoformat(),
+                "last_message_at": (
+                    item.last_message_at.isoformat() if item.last_message_at else None
+                ),
+            }
+            for item in items[:limit]
+        ],
+        "truncated": truncated,
+    }
+
+
+def delete_management_conversations(
+    db: Session,
+    workspace_id: str,
+    binding_ids: tuple[str, ...],
+    idempotency_key: str,
+) -> dict[str, Any]:
+    """Delete only conversations explicitly selected by the current user.
+
+    Every item deliberately reuses the normal destructive path, including its
+    Runtime readiness check and binding-scoped attachment removal. A running
+    conversation is reported as skipped rather than being interrupted.
+    """
+
+    _workspace(db, workspace_id)
+    deleted_ids: list[str] = []
+    skipped: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for binding_id in binding_ids:
+        if binding_id in seen:
+            continue
+        seen.add(binding_id)
+        try:
+            delete_conversation(
+                db,
+                workspace_id,
+                binding_id,
+                f"{idempotency_key}:{binding_id}",
+            )
+        except DomainError as exc:
+            skipped.append({"id": binding_id, "code": exc.code})
+        else:
+            deleted_ids.append(binding_id)
+    return {"deleted_ids": deleted_ids, "skipped": skipped}
+
+
 def list_conversation_page(
     db: Session,
     workspace_id: str,
@@ -2337,9 +2415,21 @@ def _project_conversation_events(
         attachments_by_event.setdefault(attachment.event_id, []).append(attachment)
 
     reply_annotations_by_event = _structured_reply_annotations(batch.events)
+    final_assistant_message_id = (
+        batch.result.completion_event_id
+        if batch.result is not None
+        and batch.result.status == "COMPLETED"
+        and batch.result.completion_event_kind == "ASSISTANT_MESSAGE"
+        else None
+    )
 
     def projected_event(event: Any) -> dict[str, Any]:
         payload = dict(event.payload)
+        if event.event_type == "MESSAGE" and str(payload.get("source") or "").lower() in {
+            "agent",
+            "assistant",
+        }:
+            payload["final_reply"] = event.cursor == final_assistant_message_id
         content = payload.get("content")
         if isinstance(content, str):
             payload["content"] = _project_sandbox_images(
@@ -2404,10 +2494,16 @@ def _project_conversation_events(
                 ]
         return {"id": event.cursor, "event_type": event.event_type, "payload": payload}
 
+    execution_status = str(
+        getattr(batch.readiness, "execution_status", "") if batch.readiness is not None else ""
+    ).lower()
+    terminal_event_missing = execution_status == "finished" and batch.result is None
+
     return {
         "events": [projected_event(event) for event in batch.events],
         "next_cursor": batch.cursor,
         "history_cursor": batch.history_cursor,
+        "result": batch.result.as_dict() if batch.result is not None else None,
         "task_usage": [
             {
                 "task_id": usage.task_id,
@@ -2429,6 +2525,7 @@ def _project_conversation_events(
         "monitoring": build_activity_summary(
             batch.events,
             conversation_completed=bool(batch.result and batch.result.status == "COMPLETED"),
+            terminal_event_missing=terminal_event_missing,
         ),
     }
 

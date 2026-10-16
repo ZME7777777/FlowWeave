@@ -1,4 +1,4 @@
-export type ViewName = 'nodes' | 'capabilities' | 'environments' | 'credentials' | 'models' | 'ldap-users' | 'flows' | 'runs' | 'schedules' | 'workbench' | 'agent-workbench';
+export type ViewName = 'nodes' | 'capabilities' | 'environments' | 'credentials' | 'models' | 'ldap-users' | 'conversation-management' | 'flows' | 'runs' | 'schedules' | 'workbench' | 'agent-workbench';
 
 export interface NodeDirectory {
   id: string; parent_id?: string | null; name: string; position: number; row_version: number;
@@ -556,6 +556,8 @@ export interface OpenHandsConversationEvent {
         security_risk: 'UNKNOWN' | 'LOW' | 'MEDIUM' | 'HIGH';
       }>;
     };
+    /** Server-confirmed terminal delivery for this assistant MessageEvent. */
+    final_reply?: boolean;
     /** Safe projection of the formal OpenHands TaskAction/TaskObservation lifecycle. */
     runtime_task?: {
       phase: 'REQUESTED' | 'COMPLETED' | 'ERROR';
@@ -614,6 +616,8 @@ export interface AgentActivitySummary {
   seconds_since_event?: number | null;
   stale_after_seconds: number;
   possibly_stuck: boolean;
+  /** Native execution ended without a formal completion or failure event. */
+  terminal_event_missing?: boolean;
   subagent_count: number;
   /** Read-only native-event coverage; tool summaries are deliberately excluded. */
   native_progress_tool_batches?: number;
@@ -787,6 +791,23 @@ export interface AgentConversation {
 export interface AgentConversationPage {
   items: AgentConversation[];
   next_cursor?: string | null;
+}
+export interface ManagedAgentConversation {
+  id: string;
+  display_title?: string | null;
+  pinned: boolean;
+  unread: boolean;
+  created_at: string;
+  updated_at: string;
+  last_message_at?: string | null;
+}
+export interface AgentConversationManagementPage {
+  items: ManagedAgentConversation[];
+  truncated: boolean;
+}
+export interface AgentConversationManagementDeleteResult {
+  deleted_ids: string[];
+  skipped: Array<{ id: string; code: string }>;
 }
 export interface AgentConversationActivity {
   /** Complete summaries for every binding that belongs in the activity panel. */

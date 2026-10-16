@@ -2,6 +2,7 @@ import { BookOpen, Check, ChevronDown, ChevronRight, CircleAlert, ClipboardList,
 import { Fragment, lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from 'react';
 import type { AgentActivitySummary, AgentAttachment, AgentConversationAnnotation, AgentConversationReference, AgentWorkspaceReference, OpenHandsConversationEvent, RuntimeTaskControlSnapshot } from '../types';
 import { SubagentAvatar } from './SubagentAvatar';
+import { FileTypeIcon } from './FileTypeIcon';
 import { ConversationTextReveal } from './ConversationTextReveal';
 import { useEscapeClose } from './useEscapeClose';
 import { subagentAvatarSlotForEvent, subagentAvatarSlots, type SubagentAvatarSlot } from '../utils/subagentAvatar';
@@ -292,7 +293,7 @@ function isImageAttachment(attachment: AgentAttachment): boolean {
 function MessageAttachmentThumbnail({ attachment, imageUrl }: { attachment: AgentAttachment; imageUrl?: string }) {
   const [failed, setFailed] = useState(false);
   const source = attachment.image_data_url || imageUrl;
-  if (!isImageAttachment(attachment) || !source || failed) return <FileText size={16}/>;
+  if (!isImageAttachment(attachment) || !source || failed) return <FileTypeIcon filename={attachment.filename} mimeType={attachment.mime_type} size={16}/>;
   return <img className="conversation-message-attachment-thumbnail" src={source} alt="" onError={() => setFailed(true)}/>;
 }
 
@@ -468,10 +469,8 @@ function itemsFor(event: OpenHandsConversationEvent, taskRetryError = false): It
     if (isUser) return [{ event, kind: 'user', title: '', content: displayContent }];
     if (isOpenHandsAgentReply(event)) return [{ event, kind: 'assistant', title: '', content }];
     if (isOpenHandsEmptyResponseRecovery(event)) return [];
-    // OpenHands persists an empty Agent Message immediately before its
-    // environment corrective nudge. It is neither a reply nor a terminal
-    // event. Other framework messages remain visible as process information,
-    // but never masquerade as a final Agent reply.
+    // A non-terminal agent MessageEvent is formal progress, not a reply. The
+    // server marks the only assistant MessageEvent it has confirmed terminal.
     return content.trim() ? [{ event, kind: 'thought', title: eventName, content }] : [];
   }
   // THOUGHT is the native, non-terminal progress event. Render its safe
@@ -640,7 +639,19 @@ function turnsFor(events: OpenHandsConversationEvent[]): Turn[] {
       }
     }
   }
-  return turns;
+  // Event windows may merge REST recovery with live frames in arrival order.
+  // Keep each event attached to its user ancestor above, then order complete
+  // user turns by their message time so a late frame cannot move an older send
+  // beneath a newer one.
+  return turns
+    .map((turn, index) => ({ turn, index, timestamp: eventTime(turn.user) }))
+    .sort((left, right) => {
+      if (left.timestamp === undefined || right.timestamp === undefined || left.timestamp === right.timestamp) {
+        return left.index - right.index;
+      }
+      return left.timestamp - right.timestamp;
+    })
+    .map(({ turn }) => turn);
 }
 
 function fileChangesForTurn(
@@ -1339,6 +1350,10 @@ function CurrentTurnStatus({ items, requestSubmitting, statusOverride, modelRetr
   connectionState?: ConversationConnectionState;
 }) {
   if (modelRetryStatus) return <RetryStatus status={modelRetryStatus}/>;
+  if (monitoring?.terminal_event_missing) return <div className="conversation-turn-status stalled" role="status" aria-label="运行已结束，但尚未收到最终结果事件">
+    <CircleAlert className="conversation-turn-status-alert" role="img" aria-label="最终结果事件缺失" size={14}/>
+    <span>运行已结束，正在等待最终结果事件</span>
+  </div>;
   const activityLabel = activeActivityLabel(groupedActivities(items), requestSubmitting);
   const label = statusOverride ?? (requestSubmitting
     ? activityLabel
@@ -2732,7 +2747,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
             </Fragment>;
           })}
           {isCurrent && !turn.assistant && !failures.length && (
-            <CurrentTurnStatus items={turn.activity} requestSubmitting={requestSubmitting} statusOverride={pausing ? '正在暂停 Agent' : emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} modelRetryStatus={modelRetryStatus} monitoring={monitoring} connectionState={connectionState}/>
+            <CurrentTurnStatus items={turn.activity} requestSubmitting={requestSubmitting} statusOverride={pausing ? '正在暂停 Agent' : rewritePending ? '正在重新思考' : emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} modelRetryStatus={modelRetryStatus} monitoring={monitoring} connectionState={connectionState}/>
           )}
           {processBlocks.length > 0 && turn.assistant && <div className="conversation-process-divider" role="separator" aria-label="工作过程结束"/>}
           {completionConfirmed && processBlocks.map(block => <ActivityGroup
@@ -2755,7 +2770,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
           {failures.map(item => <ConversationFailure key={item.event.id} item={item} taskControl={taskControl} retryStatus={isLatest ? modelRetryStatus : undefined}/>)}
         </section>;
       })}
-      {turns.length === 0 && isGenerating && !condensationPending && <><ActivityGroup items={[]} active revealEventIds={revealEventIds} startedAt={requestStartedAt} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/><CurrentTurnStatus items={[]} requestSubmitting={requestSubmitting} statusOverride={pausing ? '正在暂停 Agent' : emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} modelRetryStatus={modelRetryStatus} monitoring={monitoring} connectionState={connectionState}/></>}
+      {turns.length === 0 && isGenerating && !condensationPending && <><ActivityGroup items={[]} active revealEventIds={revealEventIds} startedAt={requestStartedAt} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/><CurrentTurnStatus items={[]} requestSubmitting={requestSubmitting} statusOverride={pausing ? '正在暂停 Agent' : rewritePending ? '正在重新思考' : emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} modelRetryStatus={modelRetryStatus} monitoring={monitoring} connectionState={connectionState}/></>}
 
       {condensationPending && <article className="conversation-condensation-progress" role="status" aria-label="正在压缩上下文">
         <LoaderCircle className="conversation-activity-spin" size={16}/>

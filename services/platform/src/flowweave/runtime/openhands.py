@@ -4989,10 +4989,16 @@ class OpenHandsRuntime:
 
         raw = cast(dict[str, Any], event)
         event_id = cls._event_identity(raw)[0]
+        payload = cls._event_payload(raw)
+        # A streamed assistant MessageEvent can be progress while its native
+        # conversation remains running. REST marks the event final only after
+        # the authoritative native completion read confirms it.
+        if kind == "MessageEvent":
+            payload["final_reply"] = False
         projected = {
             "id": event_id,
             "event_type": cls._event_type(raw),
-            "payload": cls._event_payload(raw),
+            "payload": payload,
         }
         return ({"type": "event", "event": projected},)
 

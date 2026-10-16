@@ -101,6 +101,7 @@ def build_activity_summary(
     events: tuple[Any, ...] | list[Any],
     *,
     conversation_completed: bool = False,
+    terminal_event_missing: bool = False,
     now: datetime | None = None,
     stale_after_seconds: int = 60,
 ) -> dict[str, Any]:
@@ -178,6 +179,7 @@ def build_activity_summary(
         "possibly_stuck": bool(
             not terminal and latest_age is not None and latest_age >= stale_after_seconds
         ),
+        "terminal_event_missing": terminal_event_missing,
         "active_subagents": active,
         "subagent_count": len(subagents),
         **_native_progress_coverage(events),
