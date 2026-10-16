@@ -71,6 +71,7 @@ type StreamStatus = 'connecting' | 'live' | 'recovering' | 'disabled';
 type TurnState = 'idle' | 'running' | 'pausing' | 'paused' | 'resuming';
 type ComposerControlMode = 'idle' | 'running' | 'pausing' | 'paused' | 'resuming' | 'reconciling' | 'read-only' | 'condensing';
 type QueueDeliveryState = 'queued';
+type ConversationOrderSync = { state: 'syncing' | 'failed'; orderedBindingIds: string[] };
 type ConversationPagesByScope = Record<string, AgentConversationPage>;
 
 interface OptimisticConversationRemoval {
@@ -813,7 +814,7 @@ function ConversationStreamObserver({
 }
 
 function WorkspaceConversationRow({
-  item, selectedBindingId, workspaceName, running, possiblyStuck, failed, unread, unreadOrigin, pinned, conversationWritable, removing, deleteDisabled, dragging, dropPosition, onDragStart, onDragOver, onDrop, onDragEnd, onSelect, onDoubleClick, onTogglePin, onMarkUnread, onMarkRead, onAcknowledgeAlert, onDelete, reveal,
+  item, selectedBindingId, workspaceName, running, possiblyStuck, failed, unread, unreadOrigin, pinned, conversationWritable, removing, deleteDisabled, dragging, dropPosition, orderSyncState, onDragStart, onDragOver, onDrop, onDragEnd, onRetryOrder, onSelect, onDoubleClick, onTogglePin, onMarkUnread, onMarkRead, onAcknowledgeAlert, onDelete, reveal,
 }: {
   item: AgentConversation;
   selectedBindingId?: string;
@@ -829,10 +830,12 @@ function WorkspaceConversationRow({
   deleteDisabled: boolean;
   dragging?: boolean;
   dropPosition?: 'before' | 'after';
+  orderSyncState?: ConversationOrderSync['state'];
   onDragStart?: (event: React.DragEvent<HTMLButtonElement>) => void;
   onDragOver?: (event: React.DragEvent<HTMLDivElement>) => void;
   onDrop?: (event: React.DragEvent<HTMLDivElement>) => void;
-  onDragEnd?: () => void;
+  onDragEnd?: (event: React.DragEvent<HTMLButtonElement>) => void;
+  onRetryOrder?: () => void;
   onSelect: () => void;
   onDoubleClick?: () => void;
   onTogglePin: () => void;
@@ -862,6 +865,8 @@ function WorkspaceConversationRow({
     <button type="button" draggable={Boolean(onDragStart)} className={`agent-workspace-conversation-select${selected ? ' active' : ''}`} aria-label={conversationName(item)} title={onDragStart ? '拖入发送框以引用此会话，或拖到其他会话以调整顺序' : undefined} onDragStart={onDragStart} onDragEnd={onDragEnd} onClick={onSelect} onDoubleClick={onDoubleClick}>
       <span><b>{conversationName(item)}</b>{workspaceName && <small title={workspaceName}><Folder size={11}/><span>{workspaceName}</span></small>}</span>
     </button>
+    {orderSyncState === 'syncing' && <span className="agent-workspace-conversation-sync" role="status" aria-label="排序正在后台同步" title="排序正在后台同步"><LoaderCircle size={12}/></span>}
+    {orderSyncState === 'failed' && <button type="button" className="agent-workspace-conversation-sync failed" aria-label="排序暂未保存，点击重试" title="排序暂未保存，点击重试" onClick={event => { event.stopPropagation(); onRetryOrder?.(); }}>!</button>}
     {showRunningAlert && <span className="agent-workspace-conversation-alert running" role="img" aria-label="会话正在运行但后台长时间未产生可确认进展" title="会话可能需要暂停后继续，但后续仍可能自行恢复"><CircleAlert aria-hidden="true" size={14}/></span>}
     {showFailedUnreadAlert && <button type="button" className="agent-workspace-conversation-alert" aria-label="确认会话异常已读" title="标记为已读" onClick={event => { event.stopPropagation(); onAcknowledgeAlert?.(); }}><CircleAlert aria-hidden="true" size={14}/></button>}
     {unread && !showAlert && !running && <span className="agent-workspace-conversation-unread" role="img" aria-label="会话已完成，有未读回复" title="会话有未读回复"/>}
@@ -4365,6 +4370,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [draggedBindingId, setDraggedBindingId] = useState<string>();
   const [dragTarget, setDragTarget] = useState<{ bindingId: string; after: boolean }>();
   const [conversationOrder, setConversationOrder] = useState<Record<string, string[]>>({});
+  const [conversationOrderSync, setConversationOrderSync] = useState<Record<string, ConversationOrderSync>>({});
   const [workDirectoryOrder, setWorkDirectoryOrder] = useState<string[]>([]);
   const [draggedWorkDirectoryId, setDraggedWorkDirectoryId] = useState<string>();
   const [workDirectoryDropTarget, setWorkDirectoryDropTarget] = useState<{ id: string; after: boolean }>();
@@ -4477,6 +4483,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const draggedConversationRef = useRef<string | undefined>(undefined);
   const dragTargetRef = useRef<{ bindingId: string; after: boolean } | undefined>(undefined);
   const pointerDragGroupRef = useRef<AgentConversation[] | undefined>(undefined);
+  const conversationOrderRequestRef = useRef(new Map<string, string>());
   const queuedMessagesStorageKeyRef = useRef<string | undefined>(undefined);
   const queuedMessagesRef = useRef<QueuedMessage[]>([]);
   const sendingMessageIds = useRef(new Set<string>());
@@ -7056,7 +7063,29 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   });
   const synchronizeConversationOrder = useCallback((bindingId: string, orderedBindingIds: string[]) => {
     if (!workspace || !api.reorderConversation) return;
-    void api.reorderConversation(workspace.id, bindingId, orderedBindingIds).catch(() => undefined);
+    const requestId = randomId();
+    conversationOrderRequestRef.current.set(bindingId, requestId);
+    setConversationOrderSync(current => ({
+      ...current,
+      [bindingId]: { state: 'syncing', orderedBindingIds },
+    }));
+    void api.reorderConversation(workspace.id, bindingId, orderedBindingIds).then(() => {
+      if (conversationOrderRequestRef.current.get(bindingId) !== requestId) return;
+      conversationOrderRequestRef.current.delete(bindingId);
+      setConversationOrderSync(current => {
+        const next = { ...current };
+        delete next[bindingId];
+        return next;
+      });
+      setOperationError(current => current?.message.startsWith('会话排序未保存') ? undefined : current);
+    }).catch(() => {
+      if (conversationOrderRequestRef.current.get(bindingId) !== requestId) return;
+      setConversationOrderSync(current => ({
+        ...current,
+        [bindingId]: { state: 'failed', orderedBindingIds },
+      }));
+      setOperationError(new Error('会话排序未保存；当前顺序已保留，可点击会话右侧感叹号重试。'));
+    });
   }, [api, workspace]);
   const persistModel = useMutation({
     mutationFn: ({ providerId, modelName, effort }: { providerId: string; modelName: string; effort: string | null }) => api.switchConversationModel(workspace!.id, selected!.id, providerId, modelName, effort),
@@ -8082,8 +8111,18 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     event.dataTransfer.setData(CONVERSATION_REFERENCE_TRANSFER_TYPE, JSON.stringify({ bindingId: item.id, eventId: anchorEventId || '', title: conversationName(item) }));
     event.dataTransfer.setData('text/plain', conversationName(item));
   }
+  function draggedConversationId(event: React.DragEvent<HTMLElement>) {
+    const inMemoryId = draggedConversationRef.current;
+    if (inMemoryId) return inMemoryId;
+    try {
+      const payload = JSON.parse(event.dataTransfer.getData(CONVERSATION_REFERENCE_TRANSFER_TYPE)) as { bindingId?: unknown };
+      return typeof payload.bindingId === 'string' ? payload.bindingId : undefined;
+    } catch {
+      return undefined;
+    }
+  }
   function previewConversationDrop(event: React.DragEvent<HTMLDivElement>, target: AgentConversation, group: AgentConversation[]) {
-    const draggedId = draggedConversationRef.current;
+    const draggedId = draggedConversationId(event);
     if (!draggedId || !group.some(item => item.id === draggedId) || draggedId === target.id) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = 'move';
@@ -8094,12 +8133,27 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     setDragTarget(current => current?.bindingId === target.id && current.after === after ? current : next);
   }
   function dropConversation(event: React.DragEvent<HTMLDivElement>, target: AgentConversation, group: AgentConversation[]) {
-    const draggedId = draggedConversationRef.current;
-    if (!draggedId) return;
+    const draggedId = draggedConversationId(event);
+    if (!draggedId || !group.some(item => item.id === draggedId)) return;
     event.preventDefault();
     const bounds = event.currentTarget.getBoundingClientRect();
     const after = event.clientY >= bounds.top + bounds.height / 2;
     commitConversationDrop(draggedId, target, after, group);
+    clearConversationDrag();
+  }
+  function endConversationDrag(event: React.DragEvent<HTMLButtonElement>) {
+    const draggedId = draggedConversationRef.current;
+    const group = pointerDragGroupRef.current;
+    if (draggedId && group?.some(item => item.id === draggedId)) {
+      const targetElement = document.elementFromPoint(event.clientX, event.clientY)
+        ?.closest<HTMLElement>('[data-conversation-binding-id]');
+      const targetId = targetElement?.dataset.conversationBindingId;
+      const target = targetId ? group.find(item => item.id === targetId) : undefined;
+      if (target && target.id !== draggedId) {
+        const bounds = targetElement!.getBoundingClientRect();
+        commitConversationDrop(draggedId, target, event.clientY >= bounds.top + bounds.height / 2, group);
+      }
+    }
     clearConversationDrag();
   }
   const conversationRow = (item: AgentConversation, group: AgentConversation[], options: { allowDrag?: boolean; workspaceName?: string; onSelect?: () => void; onDoubleClick?: () => void; onMarkRead?: () => void } = {}) => {
@@ -8129,7 +8183,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     const unreadOrigin = item.unread_origin;
     const conversationWritable = Boolean(item.write_available);
     const draggable = options.allowDrag !== false;
-    return <WorkspaceConversationRow key={item.id} item={item} selectedBindingId={selectedBindingId} workspaceName={options.workspaceName} running={running} possiblyStuck={possiblyStuck} failed={failed} unread={unread} unreadOrigin={unreadOrigin} pinned={Boolean(item.pinned)} conversationWritable={conversationWritable} removing={remove.isPending} deleteDisabled={running} dragging={draggable && draggedBindingId === item.id} dropPosition={draggable && dragTarget?.bindingId === item.id ? (dragTarget.after ? 'after' : 'before') : undefined} onDragStart={draggable ? event => startConversationDrag(event, item, group) : undefined} onDragOver={draggable ? event => previewConversationDrop(event, item, group) : undefined} onDrop={draggable ? event => dropConversation(event, item, group) : undefined} onDragEnd={draggable ? clearConversationDrag : undefined} onSelect={options.onSelect ?? (() => selectConversation(item.id))} onDoubleClick={options.onDoubleClick} onTogglePin={() => toggleConversationPin(item.id)} onMarkUnread={() => markConversationUnread(item.id)} onMarkRead={options.onMarkRead} onAcknowledgeAlert={() => markConversationRead(item.id)} onDelete={features.conversationDeletion && conversationWritable ? () => void confirmDeletion('会话', conversationName(item)).then(ok => { if (ok) remove.mutate(item.id); }) : undefined} reveal={sidebarListMode === 'workspaces' && sidebarRevealBindingId === item.id}/>;
+    const orderSync = conversationOrderSync[item.id];
+    return <WorkspaceConversationRow key={item.id} item={item} selectedBindingId={selectedBindingId} workspaceName={options.workspaceName} running={running} possiblyStuck={possiblyStuck} failed={failed} unread={unread} unreadOrigin={unreadOrigin} pinned={Boolean(item.pinned)} conversationWritable={conversationWritable} removing={remove.isPending} deleteDisabled={running} dragging={draggable && draggedBindingId === item.id} dropPosition={draggable && dragTarget?.bindingId === item.id ? (dragTarget.after ? 'after' : 'before') : undefined} orderSyncState={orderSync?.state} onDragStart={draggable ? event => startConversationDrag(event, item, group) : undefined} onDragOver={draggable ? event => previewConversationDrop(event, item, group) : undefined} onDrop={draggable ? event => dropConversation(event, item, group) : undefined} onDragEnd={draggable ? endConversationDrag : undefined} onRetryOrder={orderSync?.state === 'failed' ? () => synchronizeConversationOrder(item.id, orderSync.orderedBindingIds) : undefined} onSelect={options.onSelect ?? (() => selectConversation(item.id))} onDoubleClick={options.onDoubleClick} onTogglePin={() => toggleConversationPin(item.id)} onMarkUnread={() => markConversationUnread(item.id)} onMarkRead={options.onMarkRead} onAcknowledgeAlert={() => markConversationRead(item.id)} onDelete={features.conversationDeletion && conversationWritable ? () => void confirmDeletion('会话', conversationName(item)).then(ok => { if (ok) remove.mutate(item.id); }) : undefined} reveal={sidebarListMode === 'workspaces' && sidebarRevealBindingId === item.id}/>;
   };
   const pendingBootstrapItem = pendingBootstrap
     ? <button className={pendingBootstrap.draft.id === conversationDraft?.id ? 'active' : ''} aria-current={pendingBootstrap.draft.id === conversationDraft?.id ? 'page' : undefined} aria-label={`${pendingConversationName(pendingBootstrap.message)}，正在创建会话`}><LoaderCircle className="conversation-activity-spin" size={13}/><span><b>{pendingConversationName(pendingBootstrap.message)}</b><small>正在创建会话</small></span><ChevronRight size={13}/></button>
