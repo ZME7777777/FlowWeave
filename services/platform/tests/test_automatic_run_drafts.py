@@ -11,6 +11,7 @@ from flowweave.shared.models import (
     FlowRun,
     FlowRunRuntime,
     FlowRunRuntimeAllocation,
+    ModelProvider,
     NodeAttempt,
     NodeRun,
     RunEvent,
@@ -790,6 +791,80 @@ def test_stepwise_node_draft_remains_editable_until_explicit_start(client):
     assert attempt["state"] in {"EXECUTING", "WAITING_ACCEPTANCE"}
     detail = client.get(f"/api/v1/flow-runs/{record['id']}").json()
     assert len(detail["node_runs"]) == 1
+
+
+def test_stepwise_draft_start_accepts_on_end_gate_and_exposes_downstream_draft(
+    client, db_session_factory
+):
+    """A draft-started stepwise node follows the same acceptance boundary as continuous."""
+
+    flow = _create_flow(client)
+    parent = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    ).json()
+    record = client.post(
+        f"/api/v1/flow-runs/{parent['id']}/stepwise-runs",
+        json={"name": "逐步自动接受", "start_node_key": "first"},
+    ).json()
+    input_artifact = client.post(
+        f"/api/v1/flow-runs/{record['id']}/nodes/first/input-artifacts",
+        json={
+            "field_key": "source",
+            "artifact_type": "URL",
+            "uri": "https://example.com/stepwise-accept-input",
+        },
+    )
+    assert input_artifact.status_code == 201, input_artifact.text
+    provider = client.post(
+        "/api/v1/model-providers",
+        json={
+            "name": "逐步自动接受模型",
+            "base_url": "https://models.example.test/v1",
+            "api_key": "stepwise-accept-secret",
+            "models": [{"model_name": "gpt-step", "enabled": True, "is_default": True}],
+        },
+    )
+    assert provider.status_code == 201, provider.text
+    with db_session_factory() as db:
+        db.get(ModelProvider, provider.json()["id"]).connection_state = "CONNECTED"
+        db.commit()
+    saved = client.put(
+        f"/api/v1/flow-runs/{record['id']}/stepwise-node-drafts/first",
+        json={
+            "expected_row_version": 1,
+            "startup_mode": "PROMPT",
+            "startup_prompt": "逐步执行第一个节点",
+            "agent_preset": {
+                "capability_version_ids": [],
+                "model_provider_id": provider.json()["id"],
+                "model_name": "gpt-step",
+                "node_context_enabled": False,
+            },
+            "gates": [],
+            "artifact_ids": {"source": input_artifact.json()["id"]},
+            "input_urls": {},
+        },
+    )
+    assert saved.status_code == 200, saved.text
+    started = client.post(
+        f"/api/v1/flow-runs/{record['id']}/stepwise-node-drafts/first/start",
+        json={"expected_row_version": saved.json()["row_version"]},
+        headers={"Idempotency-Key": "start-stepwise-accept-chain"},
+    )
+    assert started.status_code == 200, started.text
+    assert started.json()["state"] == "ACCEPTED"
+
+    detail = client.get(f"/api/v1/flow-runs/{record['id']}").json()
+    first = detail["node_runs"][0]
+    assert first["state"] == "ACCEPTED", (detail["state"], first["attempts"][-1]["state"])
+    assert first["attempts"][-1]["state"] == "ACCEPTED"
+    # The successor stays stopped: only a draft with the mapped input is exposed.
+    assert [item["flow_node_snapshot_key"] for item in detail["node_runs"]] == ["first"]
+    downstream = detail["stepwise_node_drafts"]["second"]
+    assert [
+        (item["input_field_key"], item["binding_source"]) for item in downstream["input_bindings"]
+    ] == [("source", "PORT_MAPPING")]
 
 
 def test_copy_nested_stepwise_record_preserves_first_configuration_and_human_inputs(client):

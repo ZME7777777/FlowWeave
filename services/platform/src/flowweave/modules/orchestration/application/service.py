@@ -2433,7 +2433,11 @@ def _record_gate_results(
             RunEvent.flow_run_id == run.id,
             RunEvent.node_run_id == node_run.id,
             RunEvent.attempt_id == attempt.id,
-            RunEvent.event_type == "STEP_RUN_CONFIGURATION_SAVED",
+            # Editable stepwise drafts freeze their saved configuration with
+            # STEPWISE_NODE_DRAFT_STARTED; legacy records used the saved event.
+            RunEvent.event_type.in_(
+                ("STEP_RUN_CONFIGURATION_SAVED", "STEPWISE_NODE_DRAFT_STARTED")
+            ),
         )
         .limit(1)
     )
