@@ -1,4 +1,4 @@
-export type ViewName = 'nodes' | 'capabilities' | 'environments' | 'credentials' | 'models' | 'ldap-users' | 'flows' | 'runs' | 'schedules' | 'workbench' | 'agent-workbench';
+export type ViewName = 'nodes' | 'capabilities' | 'environments' | 'credentials' | 'models' | 'ldap-users' | 'conversation-management' | 'flows' | 'runs' | 'schedules' | 'workbench' | 'agent-workbench';
 
 export interface NodeDirectory {
   id: string; parent_id?: string | null; name: string; position: number; row_version: number;
@@ -778,6 +778,23 @@ export interface AgentConversation {
 export interface AgentConversationPage {
   items: AgentConversation[];
   next_cursor?: string | null;
+}
+export interface ManagedAgentConversation {
+  id: string;
+  display_title?: string | null;
+  pinned: boolean;
+  unread: boolean;
+  created_at: string;
+  updated_at: string;
+  last_message_at?: string | null;
+}
+export interface AgentConversationManagementPage {
+  items: ManagedAgentConversation[];
+  truncated: boolean;
+}
+export interface AgentConversationManagementDeleteResult {
+  deleted_ids: string[];
+  skipped: Array<{ id: string; code: string }>;
 }
 export interface AgentConversationActivity {
   /** Complete summaries for every binding that belongs in the activity panel. */

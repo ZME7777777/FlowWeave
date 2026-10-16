@@ -110,6 +110,10 @@ class AgentConversationOrderWrite(_Write):
     ordered_binding_ids: list[str] = Field(min_length=1, max_length=500)
 
 
+class AgentConversationManagementDeleteWrite(_Write):
+    binding_ids: list[str] = Field(min_length=1, max_length=100)
+
+
 class AgentConversationCapabilityAddWrite(_Write):
     capability_version_id: str = Field(min_length=1, max_length=36)
 
@@ -684,6 +688,34 @@ async def delete_agent_work_directory(
         ),
     )
     return Response(status_code=204)
+
+
+@router.get("/agent-workspaces/{workspace_id}/conversation-management")
+async def list_agent_management_conversations(
+    workspace_id: str, container: ContainerDep
+) -> dict[str, Any]:
+    return await run_blocking(
+        container,
+        lambda session: conversations.list_management_conversations(session, workspace_id),
+    )
+
+
+@router.post("/agent-workspaces/{workspace_id}/conversation-management/delete")
+async def delete_agent_management_conversations(
+    workspace_id: str,
+    payload: AgentConversationManagementDeleteWrite,
+    container: ContainerDep,
+    idempotency_key: IdempotencyKey = None,
+) -> dict[str, Any]:
+    return await run_blocking_lifecycle(
+        container,
+        lambda session: conversations.delete_management_conversations(
+            session,
+            workspace_id,
+            tuple(payload.binding_ids),
+            _key(idempotency_key, "delete-agent-conversations", workspace_id),
+        ),
+    )
 
 
 @router.get("/agent-workspaces/{workspace_id}/conversations")
