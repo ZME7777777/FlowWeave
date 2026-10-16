@@ -2413,9 +2413,21 @@ def _project_conversation_events(
         attachments_by_event.setdefault(attachment.event_id, []).append(attachment)
 
     reply_annotations_by_event = _structured_reply_annotations(batch.events)
+    final_assistant_message_id = (
+        batch.result.completion_event_id
+        if batch.result is not None
+        and batch.result.status == "COMPLETED"
+        and batch.result.completion_event_kind == "ASSISTANT_MESSAGE"
+        else None
+    )
 
     def projected_event(event: Any) -> dict[str, Any]:
         payload = dict(event.payload)
+        if event.event_type == "MESSAGE" and str(payload.get("source") or "").lower() in {
+            "agent",
+            "assistant",
+        }:
+            payload["final_reply"] = event.cursor == final_assistant_message_id
         content = payload.get("content")
         if isinstance(content, str):
             payload["content"] = _project_sandbox_images(
@@ -2480,10 +2492,16 @@ def _project_conversation_events(
                 ]
         return {"id": event.cursor, "event_type": event.event_type, "payload": payload}
 
+    execution_status = str(
+        getattr(batch.readiness, "execution_status", "") if batch.readiness is not None else ""
+    ).lower()
+    terminal_event_missing = execution_status == "finished" and batch.result is None
+
     return {
         "events": [projected_event(event) for event in batch.events],
         "next_cursor": batch.cursor,
         "history_cursor": batch.history_cursor,
+        "result": batch.result.as_dict() if batch.result is not None else None,
         "task_usage": [
             {
                 "task_id": usage.task_id,
@@ -2505,6 +2523,7 @@ def _project_conversation_events(
         "monitoring": build_activity_summary(
             batch.events,
             conversation_completed=bool(batch.result and batch.result.status == "COMPLETED"),
+            terminal_event_missing=terminal_event_missing,
         ),
     }
 

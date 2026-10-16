@@ -42,6 +42,7 @@ export function isOpenHandsAgentReply(event: OpenHandsConversationEvent): boolea
   if (event.event_type !== 'MESSAGE') return false;
   const source = String(event.payload.source ?? '').trim().toLowerCase();
   return ['agent', 'assistant'].includes(source)
+    && event.payload.final_reply !== false
     && typeof event.payload.content === 'string'
     && event.payload.content.trim().length > 0;
 }

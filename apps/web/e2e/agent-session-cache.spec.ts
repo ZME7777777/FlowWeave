@@ -2250,8 +2250,8 @@ test('A new conversation stays first after an existing conversation was reordere
   const dataTransfer = await page.evaluateHandle(() => new DataTransfer());
   const targetBounds = await target.boundingBox();
   await source.dispatchEvent('dragstart', { dataTransfer });
-  // Native DnD occasionally omits a drop event while still reporting the final
-  // pointer coordinates to dragend; that fallback must commit the order.
+  // Native DnD occasionally omits `drop` while still reporting the final
+  // pointer coordinates to `dragend`; that fallback must commit the order.
   await source.dispatchEvent('dragend', {
     dataTransfer,
     clientX: targetBounds!.x + targetBounds!.width / 2,
@@ -2502,7 +2502,16 @@ test('A formal final reply releases the shared composer state for queued deliver
 
   stream!.send(JSON.stringify({
     type: 'event',
-    event: { id: 'final-reply-queue-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'final-reply-queue-action', content: '当前轮已经完成。', timestamp: now } },
+    event: { id: 'final-reply-queue-progress', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'final-reply-queue-action', content: '正在汇总当前结果。', final_reply: false, timestamp: now } },
+  }));
+
+  await expect(page.getByText('正在汇总当前结果。')).toBeVisible();
+  await expect.poll(() => queuedPosts).toBe(0);
+  await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
+
+  stream!.send(JSON.stringify({
+    type: 'event',
+    event: { id: 'final-reply-queue-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'final-reply-queue-progress', content: '当前轮已经完成。', final_reply: true, timestamp: now } },
   }));
 
   await expect(page.getByText('当前轮已经完成。')).toBeVisible();

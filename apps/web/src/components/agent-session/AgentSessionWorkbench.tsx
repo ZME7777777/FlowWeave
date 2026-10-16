@@ -177,8 +177,8 @@ function ComposerConversationReferenceList({ references, onOpen, onRemove }: {
 
 function ComposerAnnotationList({ annotations, currentBindingId, onLocate, onRemove, onUpdate }: {
   annotations: AgentConversationAnnotation[];
-  onLocate: (annotation: AgentConversationAnnotation) => void;
   currentBindingId?: string;
+  onLocate: (annotation: AgentConversationAnnotation) => void;
   onRemove: (annotation: AgentConversationAnnotation) => void;
   onUpdate: (annotation: AgentConversationAnnotation, comment: string) => void;
 }) {

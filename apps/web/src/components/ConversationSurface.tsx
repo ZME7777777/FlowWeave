@@ -443,10 +443,8 @@ function itemsFor(event: OpenHandsConversationEvent): Item[] {
     if (isUser) return [{ event, kind: 'user', title: '', content: displayContent }];
     if (isOpenHandsAgentReply(event)) return [{ event, kind: 'assistant', title: '', content }];
     if (isOpenHandsEmptyResponseRecovery(event)) return [];
-    // OpenHands persists an empty Agent Message immediately before its
-    // environment corrective nudge. It is neither a reply nor a terminal
-    // event. Other framework messages remain visible as process information,
-    // but never masquerade as a final Agent reply.
+    // A non-terminal agent MessageEvent is formal progress, not a reply. The
+    // server marks the only assistant MessageEvent it has confirmed terminal.
     return content.trim() ? [{ event, kind: 'thought', title: eventName, content }] : [];
   }
   // THOUGHT is the native, non-terminal progress event. Render its safe
@@ -1303,6 +1301,10 @@ function CurrentTurnStatus({ items, requestSubmitting, statusOverride, modelRetr
   connectionState?: ConversationConnectionState;
 }) {
   if (modelRetryStatus) return <RetryStatus status={modelRetryStatus}/>;
+  if (monitoring?.terminal_event_missing) return <div className="conversation-turn-status stalled" role="status" aria-label="运行已结束，但尚未收到最终结果事件">
+    <CircleAlert className="conversation-turn-status-alert" role="img" aria-label="最终结果事件缺失" size={14}/>
+    <span>运行已结束，正在等待最终结果事件</span>
+  </div>;
   const activityLabel = activeActivityLabel(groupedActivities(items), requestSubmitting);
   const label = statusOverride ?? (requestSubmitting
     ? activityLabel

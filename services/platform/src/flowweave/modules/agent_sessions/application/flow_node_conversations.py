@@ -2738,9 +2738,21 @@ def _event_batch_dict(
     node_run = db.get(NodeRun, attempt.node_run_id)
     if node_run is None or node_run.flow_run_id != binding.flow_run_id:
         raise DomainError("NODE_RUN_NOT_FOUND", "节点执行记录不可用", 409)
+    final_assistant_message_id = (
+        batch.result.completion_event_id
+        if batch.result is not None
+        and batch.result.status == "COMPLETED"
+        and batch.result.completion_event_kind == "ASSISTANT_MESSAGE"
+        else None
+    )
 
     def project(event: Any) -> dict[str, Any]:
         payload = dict(event.payload)
+        if event.event_type == "MESSAGE" and str(payload.get("source") or "").lower() in {
+            "agent",
+            "assistant",
+        }:
+            payload["final_reply"] = event.cursor == final_assistant_message_id
         content = payload.get("content")
         if isinstance(content, str):
             payload["content"] = project_sandbox_images(
@@ -2781,6 +2793,11 @@ def _event_batch_dict(
             payload["display_content"] = display_content
         return {"id": event.cursor, "event_type": event.event_type, "payload": payload}
 
+    execution_status = str(
+        getattr(batch.readiness, "execution_status", "") if batch.readiness is not None else ""
+    ).lower()
+    terminal_event_missing = execution_status == "finished" and batch.result is None
+
     return {
         "events": [project(event) for event in batch.events],
         "next_cursor": batch.cursor,
@@ -2807,6 +2824,7 @@ def _event_batch_dict(
         "monitoring": build_activity_summary(
             batch.events,
             conversation_completed=bool(batch.result and batch.result.status == "COMPLETED"),
+            terminal_event_missing=terminal_event_missing,
         ),
     }
 

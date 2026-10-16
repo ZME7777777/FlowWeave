@@ -547,6 +547,8 @@ export interface OpenHandsConversationEvent {
     timestamp?: string;
     event_name?: string;
     details?: Record<string, unknown>;
+    /** Server-confirmed terminal delivery for this assistant MessageEvent. */
+    final_reply?: boolean;
     /** Safe projection of the formal OpenHands TaskAction/TaskObservation lifecycle. */
     runtime_task?: {
       phase: 'REQUESTED' | 'COMPLETED' | 'ERROR';
@@ -605,6 +607,8 @@ export interface AgentActivitySummary {
   seconds_since_event?: number | null;
   stale_after_seconds: number;
   possibly_stuck: boolean;
+  /** Native execution ended without a formal completion or failure event. */
+  terminal_event_missing?: boolean;
   subagent_count: number;
   /** Read-only native-event coverage; tool summaries are deliberately excluded. */
   native_progress_tool_batches?: number;
