@@ -41,7 +41,12 @@ _PINNED_SOURCE_ROOT = Path(
 if _PINNED_SOURCE_ROOT.is_dir():
     os.chdir(_PINNED_SOURCE_ROOT)
 
-from openhands.agent_server.api import create_app
+from openhands.agent_server.api import (
+    _cleanup_stale_tmux_sessions,
+    _ensure_server_tmux_tmpdir,
+    _reclaim_stale_tmux_sockets,
+    create_app,
+)
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.docker.build import AGENT_SERVER_CAPABILITIES, BuildOptions
 
@@ -434,6 +439,28 @@ def _assert_merged_main_capability_contract() -> None:
     assert "Runtime-only MCP tool materializer." in (MCPToolProvider.__doc__ or "")
 
 
+def _assert_tmux_terminal_isolation_contract() -> None:
+    """Keep terminal cleanup isolated across simultaneous Agent Servers."""
+
+    session_source = getsource(_new_owned_session)
+    assert 'socket_name=f"{TMUX_SOCKET_NAME}-{uuid.uuid4().hex}"' in session_source
+    assert "with _socket_creation_lock()" in session_source
+    assert "mark_socket_owner(server)" in session_source
+
+    cleanup_source = getsource(_cleanup_stale_tmux_sessions)
+    assert "with _socket_creation_lock()" in cleanup_source
+    assert "_reclaim_stale_tmux_sockets(socket_dir)" in cleanup_source
+
+    reclaim_source = getsource(_reclaim_stale_tmux_sockets)
+    assert "_socket_owner_pid(server)" in reclaim_source
+    assert "_is_pid_alive(owner_pid)" in reclaim_source
+    assert "Leaving tmux socket" in reclaim_source
+
+    tmpdir_source = getsource(_ensure_server_tmux_tmpdir)
+    assert "_default_server_tmux_tmpdir()" in tmpdir_source
+    assert 'os.environ["TMUX_TMPDIR"] = str(tmux_tmpdir)' in tmpdir_source
+
+
 def _assert_condensation_system_prompt_contract() -> None:
     """Exercise the frozen summary boundary without making a model request."""
 
@@ -780,6 +807,7 @@ def main() -> None:
     _assert_async_turn_and_stream_idle_contract()
     _assert_async_timeout_termination_contract()
     _assert_merged_main_capability_contract()
+    _assert_tmux_terminal_isolation_contract()
     _assert_condensation_system_prompt_contract()
     _assert_profile_provider_secret_and_condenser_behavior()
     _assert_mcp_oauth_and_subscription_preflight_contract()

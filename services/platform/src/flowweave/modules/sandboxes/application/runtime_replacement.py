@@ -403,12 +403,19 @@ def _renew(control_db: Session, state: _ReplacementState) -> FlowRunRuntime:
     return session
 
 
-def _handle(resource_name: str, conversation_id: str, *, workspace_root: str = "") -> RuntimeHandle:
+def _handle(
+    resource_name: str,
+    conversation_id: str,
+    *,
+    workspace_root: str = "",
+    protocol_profile: str | None = None,
+) -> RuntimeHandle:
     return RuntimeHandle(
         job_id=f"env-chat:{resource_name}",
         conversation_id=conversation_id,
         runtime_resource_name=resource_name,
         workspace_root=workspace_root,
+        protocol_profile=protocol_profile,
     )
 
 
@@ -418,8 +425,14 @@ def _probe_identity(
     conversation_id: str,
     expected: RuntimeConversationIdentity | None,
     workspace_root: str = "",
+    protocol_profile: str | None = None,
 ) -> RuntimeConversationIdentity:
-    handle = _handle(resource_name, conversation_id, workspace_root=workspace_root)
+    handle = _handle(
+        resource_name,
+        conversation_id,
+        workspace_root=workspace_root,
+        protocol_profile=protocol_profile,
+    )
     identity = runtime_for("openhands", handle).reload_conversation(
         handle,
         expected=expected,
@@ -564,6 +577,7 @@ def process_flow_run_runtime_replacement(
                     conversation_id=binding.openhands_conversation_id,
                     expected=None,
                     workspace_root=workspace_root,
+                    protocol_profile=session.protocol_profile,
                 )
             except DomainError as exc:
                 if exc.code in _NON_RETRYABLE_RELOAD_ERRORS:
@@ -647,6 +661,7 @@ def process_flow_run_runtime_replacement(
                 conversation_id=binding.openhands_conversation_id,
                 expected=expected_identity,
                 workspace_root=workspace_root,
+                protocol_profile=session.protocol_profile,
             )
 
         if source_runtime is not None:

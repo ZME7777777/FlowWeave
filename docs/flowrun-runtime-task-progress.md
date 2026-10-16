@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`UPSTREAM BASELINE ADOPTION IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-591`
+> 下一可执行切片：`FR-592`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -8386,13 +8386,33 @@ V2 缺失／漂移 fail-closed、适配器 V1/V2 分流、primary/fallback/conde
 PostgreSQL Testcontainers fixture 初始化时因本机 Docker socket 缺失而失败，目标断言未执行，未记为
 pytest 通过。未构建实际 Runtime image，未执行数据库迁移、完整 Runtime／安全／恢复验证、E2E 或部署。
 
-### FR-591 tmux 隔离与 Runtime replacement 安全 — PENDING
+### FR-591 tmux 隔离与 Runtime replacement 安全 — DONE
 
 依赖：FR-586。
 
 范围：在 V2 Runtime 验收中覆盖每个 terminal 的独立 tmux socket、跨进程创建锁、owner PID 清理与
 generation 交接，防止并发 Agent Server 清理存活 sibling 或旧 terminal 句柄串线。不得改变 FlowWeave
 的 Runtime Provider 所有权、持久工作区或 Conversation identity。
+
+完成：固定 Runtime contract 现在分别验证 OpenHands 为每个 terminal 创建
+`openhands-<uuid>` 独立 socket、在 socket 创建与 owner PID 发布期间持有跨进程 lock、以及 Agent Server
+启动清理仅回收 owner PID 已消失的隔离 socket；legacy socket 仍可清理，非 OpenHands socket 不被接管。
+contract 同时锁定 Agent Server 默认的 per-process `TMUX_TMPDIR` 创建路径。FlowWeave 的受管 Runtime
+命令继续仅挂载每个容器自身的 `/tmp` tmpfs，且不注入共享 `TMUX_TMPDIR`，因此不会把不同 Runtime
+generation 的 tmux socket 放进同一宿主目录。
+
+Runtime replacement 的 source／target Conversation reload Handle 现在显式携带 Runtime Session 已冻结的
+protocol profile。V2 交接因此保持 V2 Handle 与其原生 timeout policy，不会在 N→N+1 reload 期间退回
+未标记 Handle；replacement 仍只使用原有的 Provider、持久 workspace、正式 Conversation ID、generation
+fence 与 identity probe，未改变所有权或创建替代 Conversation。
+
+验收：锁定源码 `baseline` commit
+`ae178d86f4e0e268cf31f8f9c5deda892f4ebf12` 的 tmux isolation contract probe 通过；FlowWeave
+replacement V2 Handle profile/policy 传播的无 Docker probe 通过。受影响 Python Ruff check/format、
+`py_compile` 与 `git diff --check` 通过。上游两项真实 tmux sibling／creation-lock 回归在本机因没有
+`tmux` 可执行文件失败；平台定向 replacement 与 sandbox pytest 在 session 级 PostgreSQL Testcontainers
+初始化时因本机 Docker socket 缺失而失败，目标断言均未执行，未记为通过。未构建 Runtime image，未执行
+数据库迁移、完整 Runtime／安全／恢复验证、E2E 或部署。
 
 ### FR-592 子 Agent MCP 继承边界 — PENDING
 

@@ -26,7 +26,10 @@ from flowweave.modules.sandboxes.infrastructure.docker import (
 )
 from flowweave.modules.tasks.public import Lease
 from flowweave.runtime.base import RuntimeConversationIdentity
-from flowweave.runtime.protocol_profiles import DEFAULT_FLOW_RUN_PROTOCOL_PROFILE
+from flowweave.runtime.protocol_profiles import (
+    DEFAULT_FLOW_RUN_PROTOCOL_PROFILE,
+    FlowRunProtocolProfile,
+)
 from flowweave.shared.errors import DomainError
 from flowweave.shared.models import (
     EnvironmentVersion,
@@ -42,7 +45,12 @@ from flowweave.shared.models import (
 from flowweave.shared.settings import settings_context
 
 
-def _seed_active_runtime(db: Session, *, with_conversation: bool = True) -> tuple[str, str]:
+def _seed_active_runtime(
+    db: Session,
+    *,
+    with_conversation: bool = True,
+    protocol_profile: str = DEFAULT_FLOW_RUN_PROTOCOL_PROFILE.value,
+) -> tuple[str, str]:
     image_digest = "sha256:" + "2" * 64
     environment = TerminalEnvironment(
         name=f"replacement-environment-{uuid4()}",
@@ -93,7 +101,7 @@ def _seed_active_runtime(db: Session, *, with_conversation: bool = True) -> tupl
         flow_run_id=run.id,
         environment_version_id=version.id,
         runtime_image_digest=image_digest,
-        protocol_profile=DEFAULT_FLOW_RUN_PROTOCOL_PROFILE.value,
+        protocol_profile=protocol_profile,
         workspace_allocation_id=allocation.id,
         status="STARTING",
     )
@@ -163,7 +171,10 @@ def test_replacement_freezes_routes_restores_original_id_and_fences_old_writer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     with db_session_factory() as db:
-        flow_run_id, runtime_session_id = _seed_active_runtime(db)
+        flow_run_id, runtime_session_id = _seed_active_runtime(
+            db,
+            protocol_profile=FlowRunProtocolProfile.OH_FW_V2.value,
+        )
         old_connection = active_flow_run_runtime_connection(db, flow_run_id=flow_run_id)
         conversation_id = db.scalar(
             select(AgentConversationBinding.openhands_conversation_id).where(
@@ -174,7 +185,7 @@ def test_replacement_freezes_routes_restores_original_id_and_fences_old_writer(
         assert conversation_id is not None
 
     routes_frozen_during_drain: list[str] = []
-    probes: list[tuple[str, str, RuntimeConversationIdentity | None]] = []
+    probes: list[tuple[str, str, RuntimeConversationIdentity | None, str | None]] = []
     deleted: list[str] = []
 
     monkeypatch.setattr(runtime_replacement, "_require_task_lease", lambda *_args: None)
@@ -196,8 +207,8 @@ def test_replacement_freezes_routes_restores_original_id_and_fences_old_writer(
             routes_frozen_during_drain.append(caught.value.code)
         return DockerDrainResult(graceful=True, stopped=True)
 
-    def probe(*, resource_name, conversation_id, expected):
-        probes.append((resource_name, conversation_id, expected))
+    def probe(*, resource_name, conversation_id, expected, protocol_profile):
+        probes.append((resource_name, conversation_id, expected, protocol_profile))
         identity = _identity(conversation_id)
         if expected is not None:
             assert identity == expected
@@ -236,10 +247,10 @@ def test_replacement_freezes_routes_restores_original_id_and_fences_old_writer(
         assert runtime.replacement_generation is None
         assert [item.state for item in generations] == ["DELETED", "READY"]
         assert [item.protocol_profile for item in generations] == [
-            DEFAULT_FLOW_RUN_PROTOCOL_PROFILE.value,
-            DEFAULT_FLOW_RUN_PROTOCOL_PROFILE.value,
+            FlowRunProtocolProfile.OH_FW_V2.value,
+            FlowRunProtocolProfile.OH_FW_V2.value,
         ]
-        assert runtime.protocol_profile == DEFAULT_FLOW_RUN_PROTOCOL_PROFILE.value
+        assert runtime.protocol_profile == FlowRunProtocolProfile.OH_FW_V2.value
         assert current.generation == 2
         assert current.managed_runtime_id != old_connection.managed_runtime_id
         with pytest.raises(DomainError) as caught:
@@ -257,6 +268,10 @@ def test_replacement_freezes_routes_restores_original_id_and_fences_old_writer(
     assert [item[1] for item in probes] == [conversation_id, conversation_id]
     assert probes[0][2] is None
     assert probes[1][2] == _identity(conversation_id)
+    assert [item[3] for item in probes] == [
+        FlowRunProtocolProfile.OH_FW_V2.value,
+        FlowRunProtocolProfile.OH_FW_V2.value,
+    ]
     assert len(deleted) == 1
 
 
@@ -316,8 +331,9 @@ def test_replacement_probe_ignores_earlier_non_active_reservation(
     )
     monkeypatch.setattr(DockerSandboxProvider, "delete", lambda *_args: None)
 
-    def probe(*, resource_name, conversation_id, expected):
+    def probe(*, resource_name, conversation_id, expected, protocol_profile):
         del resource_name
+        assert protocol_profile == DEFAULT_FLOW_RUN_PROTOCOL_PROFILE.value
         probes.append(conversation_id)
         identity = _identity(conversation_id)
         if expected is not None:

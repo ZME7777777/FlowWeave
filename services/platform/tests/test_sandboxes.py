@@ -804,6 +804,7 @@ def test_runtime_command_is_non_root_read_only_and_has_only_bounded_writable_pat
     assert "HOME=/home/flowweave" in command
     assert "NPM_CONFIG_PREFIX=/home/flowweave/.local" in command
     assert "OPENHANDS_SUPPRESS_BANNER=1" in command
+    assert not any(item.startswith("TMUX_TMPDIR=") for item in command)
     image_index = command.index("sha256:" + "a" * 64)
     assert command[image_index + 1 :] == [
         "sh",
