@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`UPSTREAM BASELINE ADOPTION IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-590`
+> 下一可执行切片：`FR-591`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -8353,13 +8353,38 @@ Web TypeScript typecheck、ESLint 与 `git diff --check` 通过。定向 Product
 供未 mock 请求使用；因此浏览器回归未记为通过。未执行实际 Runtime image contract、数据库迁移、完整
 E2E 或部署。
 
-### FR-590 异步 LLM 硬超时与流空闲超时治理 — PENDING
+### FR-590 异步 LLM 硬超时与流空闲超时治理 — DONE
 
 依赖：FR-586。
 
 范围：将上游 async hard timeout 与 `stream_idle_timeout` 作为 Runtime Manifest/Agent Spec 的冻结配置，
 通过 V2 adapter 和 contract probe 传递并验证停滞流可终止；活动态、watchdog 和恢复投影只读取正式
 OpenHands 状态/事件，不能以浏览器计时器伪造终态。
+
+完成：新增不可变 `RuntimeLLMTimeoutPolicy`，将 FlowWeave 的 native hard timeout 固定为 `120s`、
+stream idle timeout 固定为 `30s`。FlowRun 只有显式 `OH_FW_V2` 才把该策略传给 primary LLM、
+fallback profile、LLM summarizing condenser 与原生 `switch_llm`；V1 继续仅保留其既有 `timeout=120`
+请求形状，不发送新增的 `stream_idle_timeout` 字段。Agent Workspace 使用其既有的受管 Agent Spec
+默认策略，但不借此重解释任何 FlowRun V1 会话。V2 Handle 在 locator 重建、fork/recovery、确认拒绝后
+继续运行时保留策略，防止后续 native switch 丢失 timeout 契约。
+
+Environment 发布的 Runtime Manifest 现在记录 `execution_policy.llm_timeouts`。V2 发布、provision 和
+所有基于 Environment identity 的 FlowRun 路径均会精确校验该字段；缺失、字段畸形或偏离 `120s/30s`
+都会以 `ENVIRONMENT_RUNTIME_INCOMPATIBLE` fail closed。V1 不要求该字段，保持已发布 Version 的兼容性。
+平台没有新增浏览器计时器、watchdog 终态推断或私有事件；运行和恢复投影仍只消费正式 OpenHands
+状态与事件。
+
+固定 baseline contract probe 现在直接构造永不返回的 async operation 与首块后停滞的 async stream，
+确认上游分别在 hard timeout 与 stream idle timeout 后抛出原生 `LiteLLMTimeout`。适配器测试覆盖
+primary、fallback、condenser 与 V2 switch 共享同一策略，以及 V1/V2 Handle 的显式分流。
+
+验收：锁定源码 `baseline` commit
+`ae178d86f4e0e268cf31f8f9c5deda892f4ebf12` 上的 native hard/idle timeout 行为探针通过；Manifest
+V2 缺失／漂移 fail-closed、适配器 V1/V2 分流、primary/fallback/condenser/switch 的无 Docker 直接
+测试均通过。受影响 Python Ruff check/format、`py_compile`、Alembic 唯一 head
+`0150_mcp_oauth_persistence_target_audit` 与 `git diff --check` 通过。定向 pytest 在 session 级
+PostgreSQL Testcontainers fixture 初始化时因本机 Docker socket 缺失而失败，目标断言未执行，未记为
+pytest 通过。未构建实际 Runtime image，未执行数据库迁移、完整 Runtime／安全／恢复验证、E2E 或部署。
 
 ### FR-591 tmux 隔离与 Runtime replacement 安全 — PENDING
 

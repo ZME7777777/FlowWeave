@@ -661,7 +661,9 @@ def create_temporary_runtime(
     from flowweave.modules.environments.public import runtime_server_identity
 
     server_identity = runtime_server_identity(
-        environment.manifest_json, environment_version_id=environment.id
+        environment.manifest_json,
+        environment_version_id=environment.id,
+        runtime_protocol_profile=environment.runtime_protocol_profile,
     )
 
     return _create_managed_runtime(

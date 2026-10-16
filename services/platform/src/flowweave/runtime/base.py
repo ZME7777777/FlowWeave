@@ -77,6 +77,57 @@ class RuntimeCondenser:
 
 
 @dataclass(frozen=True, slots=True)
+class RuntimeLLMTimeoutPolicy:
+    """Immutable native LLM timeout policy for one FlowWeave Runtime session.
+
+    The values are sent directly to OpenHands. They are intentionally not
+    browser timers or platform-generated terminal states.
+    """
+
+    hard_timeout_seconds: int = 120
+    stream_idle_timeout_seconds: int = 30
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.hard_timeout_seconds, bool)
+            or not isinstance(self.hard_timeout_seconds, int)
+            or self.hard_timeout_seconds <= 0
+        ):
+            raise ValueError("hard_timeout_seconds must be a positive integer")
+        if (
+            isinstance(self.stream_idle_timeout_seconds, bool)
+            or not isinstance(self.stream_idle_timeout_seconds, int)
+            or self.stream_idle_timeout_seconds <= 0
+            or self.stream_idle_timeout_seconds > self.hard_timeout_seconds
+        ):
+            raise ValueError(
+                "stream_idle_timeout_seconds must be a positive integer "
+                "no greater than hard_timeout_seconds"
+            )
+
+    def manifest_document(self) -> dict[str, int]:
+        return {
+            "hard_timeout_seconds": self.hard_timeout_seconds,
+            "stream_idle_timeout_seconds": self.stream_idle_timeout_seconds,
+        }
+
+    @classmethod
+    def from_manifest_document(cls, value: object) -> RuntimeLLMTimeoutPolicy:
+        if not isinstance(value, dict):
+            raise ValueError("LLM timeout policy must be an object")
+        keys = set(value)
+        if keys != {"hard_timeout_seconds", "stream_idle_timeout_seconds"}:
+            raise ValueError("LLM timeout policy fields are invalid")
+        return cls(
+            hard_timeout_seconds=value["hard_timeout_seconds"],
+            stream_idle_timeout_seconds=value["stream_idle_timeout_seconds"],
+        )
+
+
+FLOWWEAVE_LLM_TIMEOUT_POLICY = RuntimeLLMTimeoutPolicy()
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeProvider:
     provider_id: str
     base_url: str
@@ -332,6 +383,7 @@ class RuntimeAgentSpec:
     mcp_servers: tuple[RuntimeMCP, ...] = ()
     hook_config: dict[str, list[dict[str, Any]]] = field(default_factory=_empty_hook_config)
     confirmation_policy: Literal["ALWAYS", "NEVER"] = "NEVER"
+    llm_timeout_policy: RuntimeLLMTimeoutPolicy | None = None
     condenser: RuntimeCondenser = field(default_factory=RuntimeCondenser)
     condenser_provider: RuntimeProvider | None = None
     critic: RuntimeCritic | None = None
@@ -406,6 +458,13 @@ class RuntimeHandle:
     # FlowRun sessions carry their immutable adapter profile into the Runtime
     # boundary. Agent Workspace handles deliberately leave this unset.
     protocol_profile: str | None = None
+    # Carries the Agent Spec's immutable LLM policy through later native
+    # switch/fork operations without inventing platform-side timeout states.
+    llm_timeout_policy: RuntimeLLMTimeoutPolicy | None = None
+
+    def __post_init__(self) -> None:
+        if self.llm_timeout_policy is None and self.protocol_profile == "OH_FW_V2":
+            object.__setattr__(self, "llm_timeout_policy", FLOWWEAVE_LLM_TIMEOUT_POLICY)
 
 
 @dataclass(frozen=True, slots=True)

@@ -40,6 +40,7 @@ from flowweave.runtime.base import (
     RuntimeForkResult,
     RuntimeHandle,
     RuntimeInputReadiness,
+    RuntimeLLMTimeoutPolicy,
     RuntimeMCP,
     RuntimeMCPOAuthCallbackRequest,
     RuntimeMCPOAuthJobRequest,
@@ -1424,7 +1425,11 @@ class OpenHandsRuntime:
         return f"openai/{model}"
 
     def _llm_payload(
-        self, provider: RuntimeProvider, *, fallback_profile_names: tuple[str, ...] = ()
+        self,
+        provider: RuntimeProvider,
+        *,
+        timeout_policy: RuntimeLLMTimeoutPolicy | None = None,
+        fallback_profile_names: tuple[str, ...] = (),
     ) -> dict[str, Any]:
         model = self._model_name(provider)
         # FlowWeave stores ``None`` as the product-level "default" choice.
@@ -1461,8 +1466,10 @@ class OpenHandsRuntime:
             "retry_multiplier": 2.0,
             "retry_min_wait": 1,
             "retry_max_wait": 4,
-            "timeout": 120,
+            "timeout": (timeout_policy.hard_timeout_seconds if timeout_policy is not None else 120),
         }
+        if timeout_policy is not None:
+            llm["stream_idle_timeout"] = timeout_policy.stream_idle_timeout_seconds
         # This is pinned Runtime catalog metadata, not a platform estimate.
         # Supplying it before the first request makes OpenHands initialize the
         # zero-token metric with the same bound shown by the product UI.
@@ -1510,6 +1517,7 @@ class OpenHandsRuntime:
         provider: RuntimeProvider,
         *,
         registry_salt: str,
+        timeout_policy: RuntimeLLMTimeoutPolicy | None = None,
         fallback_profile_names: tuple[str, ...] = (),
     ) -> dict[str, Any]:
         """Build a config-scoped primary LLM registry identity.
@@ -1524,7 +1532,11 @@ class OpenHandsRuntime:
         for credentials or headers.
         """
 
-        llm = self._llm_payload(provider, fallback_profile_names=fallback_profile_names)
+        llm = self._llm_payload(
+            provider,
+            timeout_policy=timeout_policy,
+            fallback_profile_names=fallback_profile_names,
+        )
         serialized = json.dumps(llm, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
         digest = hmac.new(registry_salt.encode(), serialized.encode(), hashlib.sha256).hexdigest()[
             :24
@@ -1559,6 +1571,7 @@ class OpenHandsRuntime:
         provider: RuntimeProvider,
         base_url: str,
         session_api_key: str,
+        timeout_policy: RuntimeLLMTimeoutPolicy | None,
     ) -> tuple[str, ...]:
         if not provider.fallback_providers:
             return ()
@@ -1569,12 +1582,19 @@ class OpenHandsRuntime:
                 f"/api/profiles/{name}",
                 base_url=base_url,
                 session_api_key=session_api_key,
-                json={"llm": self._llm_payload(fallback), "include_secrets": True},
+                json={
+                    "llm": self._llm_payload(fallback, timeout_policy=timeout_policy),
+                    "include_secrets": True,
+                },
             )
         return names
 
     def _condenser_payload(
-        self, condenser: RuntimeCondenser, provider: RuntimeProvider | None
+        self,
+        condenser: RuntimeCondenser,
+        provider: RuntimeProvider | None,
+        *,
+        timeout_policy: RuntimeLLMTimeoutPolicy | None,
     ) -> dict[str, Any]:
         if condenser.kind == "NO_OP":
             return {"kind": "NoOpCondenser"}
@@ -1591,7 +1611,7 @@ class OpenHandsRuntime:
                 "LLM summarizing condenser is missing its frozen model provider",
                 422,
             )
-        llm = self._llm_payload(provider)
+        llm = self._llm_payload(provider, timeout_policy=timeout_policy)
         # OpenHands accounts usage by usage_id. Keep summarization separate from
         # the main agent ledger while reusing the frozen provider/model/secret.
         llm["usage_id"] = "condenser"
@@ -1977,13 +1997,19 @@ class OpenHandsRuntime:
             "kind": "Agent",
             "llm": self._llm_payload(
                 provider,
+                timeout_policy=spec.llm_timeout_policy,
                 fallback_profile_names=self._configure_fallback_profiles(
                     provider=provider,
                     base_url=request.runtime_base_url,
                     session_api_key=self._session_key_for_resource(request.runtime_resource_name),
+                    timeout_policy=spec.llm_timeout_policy,
                 ),
             ),
-            "condenser": self._condenser_payload(spec.condenser, spec.condenser_provider),
+            "condenser": self._condenser_payload(
+                spec.condenser,
+                spec.condenser_provider,
+                timeout_policy=spec.llm_timeout_policy,
+            ),
             "tools": configured_tools,
             "tool_concurrency_limit": spec.tool_concurrency_limit,
         }
@@ -2159,6 +2185,7 @@ class OpenHandsRuntime:
             runtime_resource_name=request.runtime_resource_name,
             output_contract={item["field_key"]: item for item in self._contracts[conversation_id]},
             workspace_root=request.workspace_root,
+            llm_timeout_policy=spec.llm_timeout_policy,
         )
         created_agent = created.get("agent")
         created_agent_map = (
@@ -5271,10 +5298,12 @@ class OpenHandsRuntime:
         expected = self._switch_llm_payload(
             provider,
             registry_salt=session_api_key,
+            timeout_policy=handle.llm_timeout_policy,
             fallback_profile_names=self._configure_fallback_profiles(
                 provider=provider,
                 base_url=self._base_url_for_handle(handle),
                 session_api_key=session_api_key,
+                timeout_policy=handle.llm_timeout_policy,
             ),
         )
         self._request(
@@ -5778,6 +5807,7 @@ class OpenHandsRuntime:
             runtime_resource_id=handle.runtime_resource_id,
             runtime_resource_name=handle.runtime_resource_name,
             workspace_root=handle.workspace_root,
+            llm_timeout_policy=handle.llm_timeout_policy,
         )
         completed_event_id = self.resolve_fork_boundary(source_handle, requested_event_id)
         if completed_event_id == requested_event_id:
@@ -5871,6 +5901,7 @@ class OpenHandsRuntime:
             runtime_resource_id=handle.runtime_resource_id,
             runtime_resource_name=handle.runtime_resource_name,
             workspace_root=handle.workspace_root,
+            llm_timeout_policy=handle.llm_timeout_policy,
         )
         source_agent = source_state.get("agent")
         source_agent_map = (

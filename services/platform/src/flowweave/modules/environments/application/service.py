@@ -10,8 +10,13 @@ from sqlalchemy.orm import Session
 from flowweave.modules.environments.infrastructure import docker
 from flowweave.modules.sandboxes import public as sandboxes
 from flowweave.modules.tasks.public import Lease, enqueue, lease_is_current
+from flowweave.runtime.base import (
+    FLOWWEAVE_LLM_TIMEOUT_POLICY,
+    RuntimeLLMTimeoutPolicy,
+)
 from flowweave.runtime.protocol_profiles import (
     DEFAULT_FLOW_RUN_PROTOCOL_PROFILE,
+    FlowRunProtocolProfile,
     require_flow_run_protocol_profile,
 )
 from flowweave.shared.application.transactions import finish
@@ -94,6 +99,7 @@ def validate_runtime_manifest(
     *,
     environment_version_id: str | None = None,
     expected_runtime_capabilities: tuple[str, ...] | None = None,
+    runtime_protocol_profile: str | None = None,
 ) -> None:
     """Validate an Environment Version against its own frozen evidence.
 
@@ -158,6 +164,33 @@ def validate_runtime_manifest(
                 "validation": validation,
             },
         )
+    if runtime_protocol_profile is not None:
+        profile = require_flow_run_protocol_profile(runtime_protocol_profile)
+        if profile is FlowRunProtocolProfile.OH_FW_V2:
+            execution_policy = document.get("execution_policy")
+            execution_policy = (
+                cast(dict[str, object], execution_policy)
+                if isinstance(execution_policy, dict)
+                else {}
+            )
+            try:
+                timeout_policy = RuntimeLLMTimeoutPolicy.from_manifest_document(
+                    execution_policy.get("llm_timeouts")
+                )
+            except ValueError as exc:
+                raise DomainError(
+                    "ENVIRONMENT_RUNTIME_INCOMPATIBLE",
+                    "The V2 Runtime manifest is missing its immutable LLM timeout policy",
+                    409,
+                    {"environment_version_id": environment_version_id},
+                ) from exc
+            if timeout_policy != FLOWWEAVE_LLM_TIMEOUT_POLICY:
+                raise DomainError(
+                    "ENVIRONMENT_RUNTIME_INCOMPATIBLE",
+                    "The V2 Runtime manifest LLM timeout policy differs from FlowWeave",
+                    409,
+                    {"environment_version_id": environment_version_id},
+                )
     raw_install_capabilities = build.get("install_capabilities")
     if raw_install_capabilities is not None:
         try:
@@ -202,12 +235,14 @@ def runtime_server_identity(
     manifest: object,
     *,
     environment_version_id: str | None = None,
+    runtime_protocol_profile: str | None = None,
 ) -> OpenHandsServerIdentity:
     """Return the Agent Server identity frozen by one Environment Version."""
 
     validate_runtime_manifest(
         manifest,
         environment_version_id=environment_version_id,
+        runtime_protocol_profile=runtime_protocol_profile,
     )
     document = cast(dict[str, object], manifest)
     provenance = cast(dict[str, object], document["runtime_provenance"])
@@ -1152,6 +1187,7 @@ def publish_setup_session(
                     published.manifest,
                     environment_version_id=version_id,
                     expected_runtime_capabilities=frozen_runtime_capabilities,
+                    runtime_protocol_profile=requested_protocol_profile.value,
                 )
             except DomainError as exc:
                 with Session(bind=connection) as control_db:

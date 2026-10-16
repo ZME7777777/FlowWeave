@@ -22,11 +22,13 @@ from flowweave.modules.catalog.public import (
 )
 from flowweave.modules.model_providers.application.service import has_connected_default_model
 from flowweave.runtime.base import (
+    FLOWWEAVE_LLM_TIMEOUT_POLICY,
     RuntimeAgentContext,
     RuntimeAgentDefinition,
     RuntimeAgentSpec,
     RuntimeBudgets,
     RuntimeCondenser,
+    RuntimeLLMTimeoutPolicy,
     RuntimeProvider,
     RuntimeTool,
 )
@@ -745,6 +747,7 @@ def build_agent_spec(
     runtime_server_identity: OpenHandsServerIdentity | None = None,
     system_message_suffix_append: str = "",
     load_memory: bool = False,
+    llm_timeout_policy: RuntimeLLMTimeoutPolicy | None = FLOWWEAVE_LLM_TIMEOUT_POLICY,
 ) -> RuntimeAgentSpec:
     materialized = tuple(
         item.materialization_config()
@@ -773,6 +776,7 @@ def build_agent_spec(
     return RuntimeAgentSpec(
         provider=provider,
         confirmation_policy="NEVER",
+        llm_timeout_policy=llm_timeout_policy,
         agent_context=RuntimeAgentContext(
             system_message_suffix="\n\n".join(
                 part

@@ -205,7 +205,9 @@ def resolve_flow_node_session_host(
             409,
         )
     server_identity = runtime_server_identity(
-        environment.manifest_json, environment_version_id=environment.id
+        environment.manifest_json,
+        environment_version_id=environment.id,
+        runtime_protocol_profile=environment.runtime_protocol_profile,
     )
     should_ensure_runtime = (
         workspace.attempt_owned

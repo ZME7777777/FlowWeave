@@ -15,7 +15,11 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import Final, Protocol
 
-from flowweave.runtime.base import RuntimePort
+from flowweave.runtime.base import (
+    FLOWWEAVE_LLM_TIMEOUT_POLICY,
+    RuntimeLLMTimeoutPolicy,
+    RuntimePort,
+)
 from flowweave.shared.errors import DomainError
 
 
@@ -107,6 +111,16 @@ def runtime_for_flow_run_protocol_profile(
     return FLOW_RUN_RUNTIME_ADAPTERS[normalized].bind(runtime)
 
 
+def llm_timeout_policy_for_flow_run_protocol_profile(
+    profile: FlowRunProtocolProfile | str,
+) -> RuntimeLLMTimeoutPolicy | None:
+    """Return the additive V2-only native timeout policy for one FlowRun."""
+
+    if require_flow_run_protocol_profile(profile) is FlowRunProtocolProfile.OH_FW_V2:
+        return FLOWWEAVE_LLM_TIMEOUT_POLICY
+    return None
+
+
 __all__ = (
     "DEFAULT_FLOW_RUN_PROTOCOL_PROFILE",
     "FLOW_RUN_RUNTIME_ADAPTERS",
@@ -114,6 +128,7 @@ __all__ = (
     "FlowRunRuntimeAdapter",
     "OpenHandsV1FlowRunRuntimeAdapter",
     "OpenHandsV2FlowRunRuntimeAdapter",
+    "llm_timeout_policy_for_flow_run_protocol_profile",
     "require_flow_run_protocol_profile",
     "runtime_for_flow_run_protocol_profile",
 )

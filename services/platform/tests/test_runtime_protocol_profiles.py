@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from flowweave.runtime.base import FLOWWEAVE_LLM_TIMEOUT_POLICY, RuntimeHandle
 from flowweave.runtime.mock import MockRuntime
 from flowweave.runtime.protocol_profiles import (
     DEFAULT_FLOW_RUN_PROTOCOL_PROFILE,
@@ -10,6 +11,7 @@ from flowweave.runtime.protocol_profiles import (
     FlowRunProtocolProfile,
     OpenHandsV1FlowRunRuntimeAdapter,
     OpenHandsV2FlowRunRuntimeAdapter,
+    llm_timeout_policy_for_flow_run_protocol_profile,
     runtime_for_flow_run_protocol_profile,
 )
 from flowweave.shared.errors import DomainError
@@ -49,6 +51,30 @@ def test_v2_profile_uses_a_distinct_compiled_adapter_without_reinterpreting_v1()
     assert (
         FLOW_RUN_RUNTIME_ADAPTERS[FlowRunProtocolProfile.OH_FW_V1]
         is not FLOW_RUN_RUNTIME_ADAPTERS[FlowRunProtocolProfile.OH_FW_V2]
+    )
+
+
+def test_v2_profile_freezes_native_timeout_policy_without_reinterpreting_v1() -> None:
+    assert llm_timeout_policy_for_flow_run_protocol_profile(FlowRunProtocolProfile.OH_FW_V1) is None
+    assert (
+        llm_timeout_policy_for_flow_run_protocol_profile(FlowRunProtocolProfile.OH_FW_V2)
+        == FLOWWEAVE_LLM_TIMEOUT_POLICY
+    )
+    assert (
+        RuntimeHandle(
+            job_id="env-exec:test",
+            conversation_id="conversation-v1",
+            protocol_profile=FlowRunProtocolProfile.OH_FW_V1.value,
+        ).llm_timeout_policy
+        is None
+    )
+    assert (
+        RuntimeHandle(
+            job_id="env-exec:test",
+            conversation_id="conversation-v2",
+            protocol_profile=FlowRunProtocolProfile.OH_FW_V2.value,
+        ).llm_timeout_policy
+        == FLOWWEAVE_LLM_TIMEOUT_POLICY
     )
 
 

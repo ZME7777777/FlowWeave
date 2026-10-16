@@ -95,6 +95,9 @@ from flowweave.runtime.base import (
 )
 from flowweave.runtime.dependencies import get_runtime
 from flowweave.runtime.manifest import runtime_node
+from flowweave.runtime.protocol_profiles import (
+    llm_timeout_policy_for_flow_run_protocol_profile,
+)
 from flowweave.runtime.request import (
     build_runtime_request,
     runtime_provider,
@@ -1357,7 +1360,9 @@ def _create_native_conversation(
             {"environment_version_id": run.environment_version_id},
         )
     server_identity = runtime_server_identity(
-        environment.manifest_json, environment_version_id=environment.id
+        environment.manifest_json,
+        environment_version_id=environment.id,
+        runtime_protocol_profile=environment.runtime_protocol_profile,
     )
     if not attempt_id:
         raise DomainError(
@@ -1425,6 +1430,9 @@ def _create_native_conversation(
         host_root=host_root,
         runtime_root=runtime_root,
         runtime_server_identity=server_identity,
+        llm_timeout_policy=llm_timeout_policy_for_flow_run_protocol_profile(
+            environment.runtime_protocol_profile
+        ),
         system_message_suffix_append="\n\n".join(
             part
             for part in (
@@ -1751,7 +1759,9 @@ def _create_or_reload_node_bootstrap(
             {"environment_version_id": run.environment_version_id},
         )
     server_identity = runtime_server_identity(
-        environment.manifest_json, environment_version_id=environment.id
+        environment.manifest_json,
+        environment_version_id=environment.id,
+        runtime_protocol_profile=environment.runtime_protocol_profile,
     )
     if not binding.node_attempt_id:
         raise DomainError(
@@ -1820,6 +1830,9 @@ def _create_or_reload_node_bootstrap(
         host_root=host_root,
         runtime_root=runtime_root,
         runtime_server_identity=server_identity,
+        llm_timeout_policy=llm_timeout_policy_for_flow_run_protocol_profile(
+            environment.runtime_protocol_profile
+        ),
         system_message_suffix_append="\n\n".join(
             part
             for part in (

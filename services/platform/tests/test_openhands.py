@@ -41,6 +41,7 @@ from flowweave.runtime.base import (
     RuntimeCritic,
     RuntimeHandle,
     RuntimeInputReadiness,
+    RuntimeLLMTimeoutPolicy,
     RuntimeMCP,
     RuntimeMCPOAuthCallbackRequest,
     RuntimeMCPOAuthJobRequest,
@@ -1326,6 +1327,63 @@ def test_openhands_starts_real_agent_with_selected_provider_and_skill(
         "timeout": 120,
         "max_input_tokens": 922000,
     }
+
+
+def test_openhands_serializes_one_frozen_timeout_policy_for_primary_fallback_and_condenser(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    captured: list[tuple[str, str, dict[str, object]]] = []
+    request = _request()
+    assert request.agent_spec.provider is not None
+    primary = request.agent_spec.provider
+    fallback = replace(primary, provider_id="fallback-provider", model="gpt-5.6-terra")
+    timeout_policy = RuntimeLLMTimeoutPolicy(
+        hard_timeout_seconds=12,
+        stream_idle_timeout_seconds=4,
+    )
+
+    def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
+        payload = kwargs.get("json")
+        assert isinstance(payload, dict)
+        captured.append((method, path, payload))
+        if path.startswith("/api/profiles/"):
+            return {"name": path.rsplit("/", 1)[-1]}
+        return {
+            "id": "10000000-0000-4000-8000-000000000005",
+            "leaf_event_id": "event-1",
+        }
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+    handle = runtime.start(
+        replace(
+            request,
+            agent_spec=replace(
+                request.agent_spec,
+                provider=replace(primary, fallback_providers=(fallback,)),
+                condenser=RuntimeCondenser(
+                    kind="LLM_SUMMARIZING",
+                    max_size=80,
+                    max_tokens=120_000,
+                    keep_first=4,
+                ),
+                condenser_provider=primary,
+                llm_timeout_policy=timeout_policy,
+            ),
+        )
+    )
+
+    profile_payload = next(
+        payload for _, path, payload in captured if path.startswith("/api/profiles/")
+    )
+    assert profile_payload["llm"]["timeout"] == 12
+    assert profile_payload["llm"]["stream_idle_timeout"] == 4
+    create_payload = next(payload for _, path, payload in captured if path == "/api/conversations")
+    assert create_payload["agent"]["llm"]["timeout"] == 12
+    assert create_payload["agent"]["llm"]["stream_idle_timeout"] == 4
+    assert create_payload["agent"]["condenser"]["llm"]["timeout"] == 12
+    assert create_payload["agent"]["condenser"]["llm"]["stream_idle_timeout"] == 4
+    assert handle.llm_timeout_policy == timeout_policy
 
 
 def test_openhands_initial_user_message_carries_file_and_image_inputs(
@@ -4426,6 +4484,46 @@ def test_openhands_switches_llm_in_place_with_reasoning(openhands_settings, monk
     assert "reasoning_matches=True" in message
     assert "https://chatgpt.com" not in message
     assert "short-lived-access-token" not in message
+
+
+def test_openhands_v2_switch_keeps_the_frozen_stream_idle_timeout(openhands_settings, monkeypatch):
+    runtime = OpenHandsRuntime(openhands_settings)
+    captured: dict[str, object] = {}
+
+    def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
+        if method == "POST":
+            captured.update({"path": path, **kwargs})
+            return {"success": True}
+        payload = captured["json"]
+        assert isinstance(payload, dict)
+        return _state(
+            agent={
+                "llm": {
+                    "usage_id": payload["llm"]["usage_id"],
+                    "model": payload["llm"]["model"],
+                    "base_url": payload["llm"]["base_url"],
+                    "api_mode": payload["llm"]["api_mode"],
+                    "litellm_extra_body": {"reasoning": {"effort": "high"}},
+                }
+            }
+        )
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+    runtime.switch_model(
+        _handle("cursor-1", protocol_profile="OH_FW_V2"),
+        RuntimeProvider(
+            provider_id="chat-api-key",
+            base_url="https://api.example.test/v1",
+            model="gpt-5.6-sol",
+            api_key="configured-secret",
+        ),
+    )
+
+    assert captured["path"] == "/api/conversations/10000000-0000-4000-8000-000000000002/switch_llm"
+    payload = captured["json"]
+    assert isinstance(payload, dict)
+    assert payload["llm"]["timeout"] == 120
+    assert payload["llm"]["stream_idle_timeout"] == 30
 
 
 def test_openhands_switch_usage_id_is_stable_and_scoped_to_effective_config(

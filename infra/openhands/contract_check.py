@@ -21,6 +21,7 @@ from unittest.mock import patch
 from uuid import uuid4
 
 from pydantic import SecretStr
+from litellm.exceptions import Timeout as LiteLLMTimeout
 
 os.environ.setdefault("OPENHANDS_SUPPRESS_BANNER", "1")
 os.environ.setdefault("OH_SECRET_KEY", "flowweave-contract-check-secret-000000000000")
@@ -351,9 +352,57 @@ def _assert_async_turn_and_stream_idle_contract() -> None:
     assert "update_last_execution_time()" in stream_signal_source
     llm_source = getsource(LLM)
     assert "stream_idle_timeout: float | None" in llm_source
-    assert "d[\"stream_idle_timeout\"] = d.get(\"timeout\", 300)" in llm_source
+    assert 'd["stream_idle_timeout"] = d.get("timeout", 300)' in llm_source
     assert "asyncio.timeout(self.timeout)" in llm_source
     assert "asyncio.timeout(timeout)" in llm_source
+
+
+def _assert_async_timeout_termination_contract() -> None:
+    """Exercise native hard and stream-idle termination without an LLM call."""
+
+    async def never_returns() -> None:
+        await asyncio.Event().wait()
+
+    async def stalled_stream():
+        yield "first"
+        await asyncio.Event().wait()
+
+    async def probe() -> None:
+        hard_timeout_llm = LLM(
+            model="openai/test",
+            api_key=SecretStr("contract-only"),
+            usage_id="hard-timeout-probe",
+            stream=False,
+            timeout=1,
+            stream_idle_timeout=1,
+        )
+        try:
+            await hard_timeout_llm._async_hard_timeout_decorator()(never_returns)()
+        except LiteLLMTimeout as exc:
+            assert "hard timeout" in str(exc)
+        else:
+            raise AssertionError(
+                "OpenHands did not terminate a hard-stalled async request"
+            )
+
+        idle_timeout_llm = LLM(
+            model="openai/test",
+            api_key=SecretStr("contract-only"),
+            usage_id="stream-idle-timeout-probe",
+            stream=True,
+            timeout=2,
+            stream_idle_timeout=1,
+        )
+        stream = idle_timeout_llm._aiter_with_idle_timeout(stalled_stream())
+        assert await anext(stream) == "first"
+        try:
+            await anext(stream)
+        except LiteLLMTimeout as exc:
+            assert "stream idle timeout" in str(exc)
+        else:
+            raise AssertionError("OpenHands did not terminate an idle async stream")
+
+    asyncio.run(probe())
 
 
 def _assert_merged_main_capability_contract() -> None:
@@ -362,13 +411,13 @@ def _assert_merged_main_capability_contract() -> None:
     run_slot_source = getsource(RunSlot)
     assert "class RunSlot" in run_slot_source
     assert "Conversation run limit reached. Retry the request later." in run_slot_source
-    assert "def share(self) -> \"RunSlot\"" in run_slot_source
+    assert 'def share(self) -> "RunSlot"' in run_slot_source
 
     condenser_source = getsource(LLMSummarizingCondenser)
     assert "SystemPromptEvent" in condenser_source
     assert "_leading_system_prompt_index(view.events)" in condenser_source
-    assert "Message(role=\"system\"" in condenser_source
-    assert "Message(role=\"user\"" in condenser_source
+    assert 'Message(role="system"' in condenser_source
+    assert 'Message(role="user"' in condenser_source
 
     tmux_source = getsource(_new_owned_session)
     assert "_socket_creation_lock()" in tmux_source
@@ -454,7 +503,9 @@ def _assert_condensation_system_prompt_contract() -> None:
             llm_response_id="hard-reset-condensation-probe",
         )
 
-    with patch.object(condenser, "_generate_condensation", side_effect=capture_hard_reset):
+    with patch.object(
+        condenser, "_generate_condensation", side_effect=capture_hard_reset
+    ):
         hard_reset = condenser.hard_context_reset(view)
     assert isinstance(hard_reset, Condensation)
     assert system_prompt.id not in hard_reset_forgotten_ids
@@ -612,7 +663,9 @@ def _assert_mcp_oauth_and_subscription_preflight_contract() -> None:
     discovery_source = getsource(MCPOAuth._discover_oauth_metadata)
     assert "self._discover_oauth_metadata()" in refresh_source
     assert "build_protected_resource_metadata_discovery_urls" in discovery_source
-    assert "build_oauth_authorization_server_metadata_discovery_urls" in discovery_source
+    assert (
+        "build_oauth_authorization_server_metadata_discovery_urls" in discovery_source
+    )
     assert "handle_protected_resource_response" in discovery_source
     assert "handle_auth_metadata_response" in discovery_source
     token_store_source = getsource(MCPSettingsOAuthTokenStore._write_back_seeded_state)
@@ -725,6 +778,7 @@ def main() -> None:
     asyncio.run(_assert_formal_read_capacity_contract())
     _assert_durable_event_log_sequence()
     _assert_async_turn_and_stream_idle_contract()
+    _assert_async_timeout_termination_contract()
     _assert_merged_main_capability_contract()
     _assert_condensation_system_prompt_contract()
     _assert_profile_provider_secret_and_condenser_behavior()
@@ -1076,9 +1130,7 @@ def main() -> None:
     registered_finish_usability = tool_registry._USABILITY_REG.pop(
         finish_tool_name, None
     )
-    registered_finish_class = tool_registry._TOOL_CLASSES.pop(
-        finish_tool_name, None
-    )
+    registered_finish_class = tool_registry._TOOL_CLASSES.pop(finish_tool_name, None)
     try:
         [structured_finish] = resolve_tool(
             Tool(

@@ -66,6 +66,9 @@ from flowweave.runtime.manifest import (
 from flowweave.runtime.manifest import (
     runtime_node,
 )
+from flowweave.runtime.protocol_profiles import (
+    llm_timeout_policy_for_flow_run_protocol_profile,
+)
 from flowweave.runtime.request import (
     build_runtime_request,
 )
@@ -2666,7 +2669,12 @@ def _prepare_gate_plan(
             host_root=host_root,
             runtime_root=runtime_root,
             runtime_server_identity=runtime_server_identity(
-                environment.manifest_json, environment_version_id=environment.id
+                environment.manifest_json,
+                environment_version_id=environment.id,
+                runtime_protocol_profile=environment.runtime_protocol_profile,
+            ),
+            llm_timeout_policy=llm_timeout_policy_for_flow_run_protocol_profile(
+                environment.runtime_protocol_profile
             ),
         )
         request = build_runtime_request(
@@ -3936,7 +3944,9 @@ def start_flow(
             {"environment_version_id": payload.environment_version_id},
         )
     server_identity = runtime_server_identity(
-        environment.manifest_json, environment_version_id=environment.id
+        environment.manifest_json,
+        environment_version_id=environment.id,
+        runtime_protocol_profile=environment.runtime_protocol_profile,
     )
     definition = _snapshot_definition(db, flow_id, environment_version_id=environment.id)
     run_no = _next_flow_run_number(db, flow_id, top_level=True)
@@ -4735,7 +4745,9 @@ def create_automatic_run_draft(
             {"environment_version_id": payload.environment_version_id},
         )
     server_identity = runtime_server_identity(
-        environment.manifest_json, environment_version_id=environment.id
+        environment.manifest_json,
+        environment_version_id=environment.id,
+        runtime_protocol_profile=environment.runtime_protocol_profile,
     )
     definition = _snapshot_definition(db, flow_id, environment_version_id=environment.id)
     run_no = _next_flow_run_number(db, flow_id, top_level=parent_flow_run_id is None)
@@ -5679,7 +5691,11 @@ def process_provision_flow_run_runtime(
             409,
             {"environment_version_id": run.environment_version_id},
         )
-    validate_runtime_manifest(environment.manifest_json, environment_version_id=environment.id)
+    validate_runtime_manifest(
+        environment.manifest_json,
+        environment_version_id=environment.id,
+        runtime_protocol_profile=environment.runtime_protocol_profile,
+    )
     if not lease_is_current(db, lease):
         raise RuntimeError("task lease was lost before Runtime provisioning")
     # The sandbox provider owns its own short control transactions and can
@@ -5691,7 +5707,9 @@ def process_provision_flow_run_runtime(
     environment_version_id = environment.id
     environment_version_no = environment.version_no
     server_identity = runtime_server_identity(
-        environment.manifest_json, environment_version_id=environment.id
+        environment.manifest_json,
+        environment_version_id=environment.id,
+        runtime_protocol_profile=environment.runtime_protocol_profile,
     )
     _release_worker_read_transaction(db, lease)
     sandboxes.ensure_flow_run_runtime(
@@ -6527,7 +6545,9 @@ def _runtime_request(db: Session, attempt: NodeAttempt) -> StartAttemptRequest:
             {"environment_version_id": run.environment_version_id},
         )
     server_identity = runtime_server_identity(
-        environment.manifest_json, environment_version_id=environment.id
+        environment.manifest_json,
+        environment_version_id=environment.id,
+        runtime_protocol_profile=environment.runtime_protocol_profile,
     )
     preset = attempt.agent_preset_json or {}
     node_context_prompt = preset.get("node_context_prompt")
@@ -6595,6 +6615,9 @@ def _runtime_request(db: Session, attempt: NodeAttempt) -> StartAttemptRequest:
         runtime_root=runtime_root,
         runtime_server_identity=server_identity,
         load_memory=memory_enabled,
+        llm_timeout_policy=llm_timeout_policy_for_flow_run_protocol_profile(
+            environment.runtime_protocol_profile
+        ),
     )
     asset = cast(dict[str, Any], node.get("asset") or {})
     input_contracts = {
@@ -6715,7 +6738,9 @@ def _ensure_attempt_runtime_for_native_observation(db: Session, attempt: NodeAtt
             environment_version_id=environment.id,
             environment_version_no=environment.version_no,
             runtime_server_identity=runtime_server_identity(
-                environment.manifest_json, environment_version_id=environment.id
+                environment.manifest_json,
+                environment_version_id=environment.id,
+                runtime_protocol_profile=environment.runtime_protocol_profile,
             ),
             runtime_protocol_profile=session.protocol_profile,
         )
@@ -6728,7 +6753,9 @@ def _ensure_attempt_runtime_for_native_observation(db: Session, attempt: NodeAtt
         environment_version_id=environment.id,
         environment_version_no=environment.version_no,
         runtime_server_identity=runtime_server_identity(
-            environment.manifest_json, environment_version_id=environment.id
+            environment.manifest_json,
+            environment_version_id=environment.id,
+            runtime_protocol_profile=environment.runtime_protocol_profile,
         ),
         runtime_protocol_profile=session.protocol_profile,
     )
@@ -6930,7 +6957,9 @@ def process_start_runtime(
                 {"environment_version_id": request.environment_version_id},
             )
         server_identity = runtime_server_identity(
-            environment.manifest_json, environment_version_id=environment.id
+            environment.manifest_json,
+            environment_version_id=environment.id,
+            runtime_protocol_profile=environment.runtime_protocol_profile,
         )
         workspace = sandboxes.node_attempt_workspace_context(
             db, flow_run_id=flow_run_id, node_attempt_id=attempt.id
@@ -7997,7 +8026,7 @@ def process_runtime_confirmation(
     # OpenHands 1.40.0 restarts automatically on accept. Reject only appends
     # UserRejectObservation, so continue through the formal run endpoint.
     if not accept:
-        result = runtime.run(RuntimeHandle(handle.job_id, handle.conversation_id, response_cursor))
+        result = runtime.run(replace(handle, cursor=response_cursor))
         response_cursor = result.cursor or response_cursor
     _require_current_lease(db, lease)
 
@@ -9907,7 +9936,9 @@ def sync_snapshot(
             {"environment_version_id": run.environment_version_id},
         )
     server_identity = runtime_server_identity(
-        environment.manifest_json, environment_version_id=environment.id
+        environment.manifest_json,
+        environment_version_id=environment.id,
+        runtime_protocol_profile=environment.runtime_protocol_profile,
     )
     definition = _snapshot_definition(
         db,

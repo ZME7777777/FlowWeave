@@ -17,6 +17,7 @@ from flowweave.modules.sandboxes.infrastructure.docker import (
     DockerObservation,
     DockerSandboxProvider,
 )
+from flowweave.runtime.base import FLOWWEAVE_LLM_TIMEOUT_POLICY
 from flowweave.runtime.contract import OPENHANDS_PACKAGE_VERSIONS
 from flowweave.shared.domain.openhands import (
     OPENHANDS_SOURCE_ARCHIVE_SHA256,
@@ -324,6 +325,41 @@ def test_runtime_manifest_preserves_self_describing_frozen_provenance() -> None:
     }
     with pytest.raises(DomainError, match="immutable Runtime build evidence"):
         environment_service.validate_runtime_manifest(manifest)
+
+
+def test_v2_runtime_manifest_requires_the_frozen_llm_timeout_policy() -> None:
+    manifest = _runtime_manifest()
+    manifest["execution_policy"] = {
+        "llm_timeouts": FLOWWEAVE_LLM_TIMEOUT_POLICY.manifest_document()
+    }
+
+    environment_service.validate_runtime_manifest(
+        manifest,
+        runtime_protocol_profile="OH_FW_V2",
+    )
+
+    missing = dict(manifest)
+    missing.pop("execution_policy")
+    with pytest.raises(DomainError, match="missing its immutable LLM timeout policy"):
+        environment_service.validate_runtime_manifest(
+            missing,
+            runtime_protocol_profile="OH_FW_V2",
+        )
+
+    drifted = dict(manifest)
+    drifted["execution_policy"] = {
+        "llm_timeouts": {
+            "hard_timeout_seconds": 120,
+            "stream_idle_timeout_seconds": 120,
+        }
+    }
+    with pytest.raises(DomainError, match="LLM timeout policy differs"):
+        environment_service.validate_runtime_manifest(
+            drifted,
+            runtime_protocol_profile="OH_FW_V2",
+        )
+
+    environment_service.validate_runtime_manifest(missing, runtime_protocol_profile="OH_FW_V1")
 
 
 def _mock_setup_provider(monkeypatch):
@@ -847,6 +883,9 @@ def test_publish_allows_authentication_files(monkeypatch):
 
     assert committed is False
     assert published.manifest["filesystem_change_count"] == 3
+    assert published.manifest["execution_policy"] == {
+        "llm_timeouts": FLOWWEAVE_LLM_TIMEOUT_POLICY.manifest_document()
+    }
 
 
 def test_terminal_environment_publish_does_not_bind_nodes(client, worker_container, monkeypatch):
