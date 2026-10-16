@@ -46,6 +46,7 @@ from flowweave.runtime.base import (
     RuntimeProvider,
     RuntimeResult,
 )
+from flowweave.runtime.protocol_profiles import FlowRunProtocolProfile
 from flowweave.shared.domain.openhands import OpenHandsServerIdentity
 from flowweave.shared.errors import DomainError
 from flowweave.shared.models import (
@@ -1018,6 +1019,7 @@ def _connection(runtime_session_id: str, flow_run_id: str, *, generation: int = 
         managed_runtime_id=f"runtime-{generation}",
         resource_name=f"fw-sbx-generation-{generation}",
         generation=generation,
+        protocol_profile=FlowRunProtocolProfile.OH_FW_V2,
     )
 
 
@@ -1125,6 +1127,7 @@ def test_route_re_resolves_the_current_generation_without_changing_identity(
         assert handle.runtime_resource_id == "runtime-2"
         assert handle.runtime_resource_name == "fw-sbx-generation-2"
         assert handle.job_id == "env-chat:fw-sbx-generation-2"
+        assert handle.protocol_profile == FlowRunProtocolProfile.OH_FW_V2.value
 
 
 def test_route_rejects_locator_session_drift(

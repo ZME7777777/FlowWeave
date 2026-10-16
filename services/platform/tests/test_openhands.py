@@ -734,7 +734,9 @@ def test_frozen_memory_policy_outside_its_scope_does_not_enable_loader(tmp_path)
 
 
 def _handle(
-    cursor: str | None = None, output_contract: dict[str, dict[str, str]] | None = None
+    cursor: str | None = None,
+    output_contract: dict[str, dict[str, str]] | None = None,
+    protocol_profile: str | None = None,
 ) -> RuntimeHandle:
     return RuntimeHandle(
         "env-exec:fw-sbx-flow-run-1",
@@ -744,6 +746,7 @@ def _handle(
         "fw-sbx-flow-run-1",
         output_contract or {},
         "/runtime/workspace/10000000-0000-4000-8000-000000000001",
+        protocol_profile=protocol_profile,
     )
 
 
@@ -1080,7 +1083,6 @@ async def test_openhands_background_search_uses_an_isolated_five_minute_transpor
         await transport.aclose()
 
 
-
 def test_openhands_interrupt_uses_the_dedicated_control_transport(openhands_settings, monkeypatch):
     runtime = OpenHandsRuntime(openhands_settings)
     handle = RuntimeHandle(
@@ -1103,6 +1105,7 @@ def test_openhands_interrupt_uses_the_dedicated_control_transport(openhands_sett
     assert captured["control"] is True
     assert captured["base_url"] == "http://runtime-1:8000"
     assert captured["json"] == {}
+
 
 @pytest.mark.parametrize(
     "working_directory",
@@ -3473,6 +3476,193 @@ def test_openhands_send_message_logs_redacted_ambiguous_failure(
     assert "secret-private" not in diagnostic
     assert "private.example" not in diagnostic
     assert "prompt-private" not in diagnostic
+
+
+def test_openhands_v2_run_slot_retries_only_native_run_after_saved_user_event(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    requests: list[tuple[str, str, object]] = []
+    states = iter(
+        [
+            _state(
+                execution_status="idle",
+                leaf_event_id="user-event-2",
+                last_user_message_id="user-event-2",
+            ),
+            _state(
+                execution_status="idle",
+                leaf_event_id="user-event-2",
+                last_user_message_id="user-event-2",
+            ),
+            {"success": True},
+        ]
+    )
+
+    def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
+        requests.append((method, path, kwargs.get("json")))
+        if path.endswith("/events"):
+            raise DomainError(
+                "OPENHANDS_REQUEST_FAILED",
+                "OpenHands Agent Server rejected the request",
+                502,
+                {"status_code": 429, "outcome_unknown": False},
+            )
+        return next(states)
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+
+    result = runtime.send_message(
+        _handle("assistant-event-1", protocol_profile="OH_FW_V2"),
+        "继续执行",
+    )
+
+    assert result == RuntimeResult(status="RUNNING", cursor="user-event-2")
+    assert requests == [
+        (
+            "POST",
+            "/api/conversations/10000000-0000-4000-8000-000000000002/events",
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": "继续执行"}],
+                "run": True,
+            },
+        ),
+        ("GET", "/api/conversations/10000000-0000-4000-8000-000000000002", None),
+        ("GET", "/api/conversations/10000000-0000-4000-8000-000000000002", None),
+        ("POST", "/api/conversations/10000000-0000-4000-8000-000000000002/run", {}),
+    ]
+
+
+def test_openhands_v2_run_slot_preserves_saved_cursor_when_run_remains_full(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    requests: list[tuple[str, str]] = []
+    states = iter(
+        [
+            _state(
+                execution_status="idle",
+                leaf_event_id="user-event-2",
+                last_user_message_id="user-event-2",
+            ),
+            _state(
+                execution_status="idle",
+                leaf_event_id="user-event-2",
+                last_user_message_id="user-event-2",
+            ),
+        ]
+    )
+
+    def fake_request(method: str, path: str, **_kwargs: object) -> dict[str, object]:
+        requests.append((method, path))
+        if path.endswith("/events") or path.endswith("/run"):
+            raise DomainError(
+                "OPENHANDS_REQUEST_FAILED",
+                "OpenHands Agent Server rejected the request",
+                502,
+                {"status_code": 429, "outcome_unknown": False},
+            )
+        return next(states)
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+
+    with pytest.raises(DomainError) as raised:
+        runtime.send_message(
+            _handle("assistant-event-1", protocol_profile="OH_FW_V2"),
+            "继续执行",
+        )
+
+    assert raised.value.code == "AGENT_RUN_CAPACITY_EXCEEDED"
+    assert raised.value.status == 429
+    assert raised.value.details == {
+        "event_persisted": True,
+        "cursor": "user-event-2",
+        "retry_operation": "run",
+        "outcome_unknown": False,
+    }
+    assert requests == [
+        ("POST", "/api/conversations/10000000-0000-4000-8000-000000000002/events"),
+        ("GET", "/api/conversations/10000000-0000-4000-8000-000000000002"),
+        ("GET", "/api/conversations/10000000-0000-4000-8000-000000000002"),
+        ("POST", "/api/conversations/10000000-0000-4000-8000-000000000002/run"),
+    ]
+
+
+def test_openhands_v2_run_slot_accepts_a_concurrent_native_run(openhands_settings, monkeypatch):
+    runtime = OpenHandsRuntime(openhands_settings)
+    requests: list[tuple[str, str]] = []
+    states = iter(
+        [
+            _state(
+                execution_status="idle",
+                leaf_event_id="user-event-2",
+                last_user_message_id="user-event-2",
+            ),
+            _state(
+                execution_status="idle",
+                leaf_event_id="user-event-2",
+                last_user_message_id="user-event-2",
+            ),
+        ]
+    )
+
+    def fake_request(method: str, path: str, **_kwargs: object) -> dict[str, object]:
+        requests.append((method, path))
+        if path.endswith("/events"):
+            raise DomainError(
+                "OPENHANDS_REQUEST_FAILED",
+                "OpenHands Agent Server rejected the request",
+                502,
+                {"status_code": 429, "outcome_unknown": False},
+            )
+        if path.endswith("/run"):
+            raise DomainError(
+                "OPENHANDS_REQUEST_FAILED",
+                "OpenHands Agent Server rejected the request",
+                502,
+                {"status_code": 409, "outcome_unknown": False},
+            )
+        return next(states)
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+
+    result = runtime.send_message(
+        _handle("assistant-event-1", protocol_profile="OH_FW_V2"),
+        "继续执行",
+    )
+
+    assert result == RuntimeResult(status="RUNNING", cursor="user-event-2")
+    assert requests == [
+        ("POST", "/api/conversations/10000000-0000-4000-8000-000000000002/events"),
+        ("GET", "/api/conversations/10000000-0000-4000-8000-000000000002"),
+        ("GET", "/api/conversations/10000000-0000-4000-8000-000000000002"),
+        ("POST", "/api/conversations/10000000-0000-4000-8000-000000000002/run"),
+    ]
+
+
+def test_openhands_v1_run_slot_rejection_keeps_legacy_append_failure(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    requests: list[tuple[str, str]] = []
+
+    def fail_request(method: str, path: str, **_kwargs: object) -> dict[str, object]:
+        requests.append((method, path))
+        raise DomainError(
+            "OPENHANDS_REQUEST_FAILED",
+            "OpenHands Agent Server rejected the request",
+            502,
+            {"status_code": 429, "outcome_unknown": False},
+        )
+
+    monkeypatch.setattr(runtime, "_request", fail_request)
+
+    with pytest.raises(DomainError) as raised:
+        runtime.send_message(_handle("assistant-event-1", protocol_profile="OH_FW_V1"), "继续执行")
+
+    assert raised.value.code == "OPENHANDS_REQUEST_FAILED"
+    assert requests == [("POST", "/api/conversations/10000000-0000-4000-8000-000000000002/events")]
 
 
 @pytest.mark.parametrize(

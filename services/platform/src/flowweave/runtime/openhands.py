@@ -13,7 +13,7 @@ import time
 from collections import OrderedDict
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, cast
 from urllib.parse import unquote, urlparse
@@ -791,8 +791,10 @@ class OpenHandsRuntime:
             if remaining is not None:
                 kwargs["timeout"] = min(float(kwargs.get("timeout", 30.0)), remaining)
             client = (
-                self._transport().background if background
-                else self._transport().control if control
+                self._transport().background
+                if background
+                else self._transport().control
+                if control
                 else self._transport().regular
             )
             response = client.request(
@@ -4868,6 +4870,8 @@ class OpenHandsRuntime:
                 },
             )
         except DomainError as exc:
+            if self._is_v2_run_slot_rejection(handle, exc):
+                return self._retry_v2_persisted_user_event_run(handle)
             error_code = self._safe_diagnostic_token(exc.code)
             logger.warning(
                 "native_user_event_append_failed conversation=%s runtime=%s "
@@ -4908,6 +4912,75 @@ class OpenHandsRuntime:
             cursor_source,
             len(content),
             len(image_urls),
+        )
+        return RuntimeResult(status="RUNNING", cursor=cursor)
+
+    @staticmethod
+    def _is_v2_run_slot_rejection(handle: RuntimeHandle, error: DomainError) -> bool:
+        """Recognize the 1.54 guarantee: the user event exists but `/run` did not start."""
+
+        return (
+            handle.protocol_profile == "OH_FW_V2"
+            and error.code == "OPENHANDS_REQUEST_FAILED"
+            and error.details.get("status_code") == 429
+            and error.details.get("outcome_unknown") is False
+        )
+
+    def _retry_v2_persisted_user_event_run(self, handle: RuntimeHandle) -> RuntimeResult:
+        """Confirm the persisted native event, then retry only `/run` once."""
+
+        state = self._conversation_state(handle)
+        cursor = self._formal_identity(
+            state.get("last_user_message_id"),
+            field="last_user_message_id",
+            required=True,
+        )
+        assert cursor is not None
+        try:
+            self.run(replace(handle, cursor=cursor))
+        except DomainError as run_error:
+            run_status = run_error.details.get("status_code")
+            if (
+                run_error.code == "OPENHANDS_REQUEST_FAILED"
+                and run_error.details.get("outcome_unknown") is False
+                and run_status == 409
+            ):
+                # A concurrent `/run` won the race. The persisted event remains
+                # the only user-message identity returned to the browser.
+                return RuntimeResult(status="RUNNING", cursor=cursor)
+            if (
+                run_error.code == "OPENHANDS_REQUEST_FAILED"
+                and run_error.details.get("outcome_unknown") is False
+                and run_status == 429
+            ):
+                logger.warning(
+                    "native_user_event_saved_run_capacity_exceeded conversation=%s runtime=%s "
+                    "cursor=%s",
+                    self._diagnostic_fingerprint(handle.conversation_id),
+                    self._diagnostic_fingerprint(
+                        handle.runtime_resource_name or handle.runtime_resource_id
+                    ),
+                    self._diagnostic_fingerprint(cursor),
+                )
+                raise DomainError(
+                    "AGENT_RUN_CAPACITY_EXCEEDED",
+                    "The user message was saved but the Agent Server has no run capacity",
+                    429,
+                    {
+                        "event_persisted": True,
+                        "cursor": cursor,
+                        "retry_operation": "run",
+                        "outcome_unknown": False,
+                    },
+                ) from run_error
+            raise
+        logger.warning(
+            "native_user_event_saved_run_retried conversation=%s runtime=%s cursor=%s",
+            self._diagnostic_fingerprint(handle.conversation_id),
+            self._diagnostic_fingerprint(
+                handle.runtime_resource_name or handle.runtime_resource_id
+            ),
+            self._diagnostic_fingerprint(cursor),
         )
         return RuntimeResult(status="RUNNING", cursor=cursor)
 

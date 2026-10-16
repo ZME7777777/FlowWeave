@@ -403,6 +403,9 @@ class RuntimeHandle:
     # state for every page; the hydration helper always performs a final HEAD
     # check before accepting the assembled branch.
     active_branch_leaf_event_id: str | None = None
+    # FlowRun sessions carry their immutable adapter profile into the Runtime
+    # boundary. Agent Workspace handles deliberately leave this unset.
+    protocol_profile: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

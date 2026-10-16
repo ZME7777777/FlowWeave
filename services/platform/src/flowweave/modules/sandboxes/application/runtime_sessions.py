@@ -49,6 +49,7 @@ class ActiveRuntimeConnection:
     generation: int
     runtime_fence: RuntimeSessionFence
     project_record_id: str | None
+    protocol_profile: FlowRunProtocolProfile
 
 
 @dataclass(frozen=True, slots=True)
@@ -992,6 +993,7 @@ def active_flow_run_runtime_connection(db: Session, *, flow_run_id: str) -> Acti
         generation=generation.generation,
         runtime_fence=_fence(session, generation),
         project_record_id=(managed_runtime.spec_json or {}).get("project_record_id"),
+        protocol_profile=require_flow_run_protocol_profile(session.protocol_profile),
     )
 
 
@@ -1036,6 +1038,7 @@ def active_node_attempt_runtime_connection(
         generation=generation.generation,
         runtime_fence=_fence(session, generation),
         project_record_id=(managed_runtime.spec_json or {}).get("project_record_id"),
+        protocol_profile=require_flow_run_protocol_profile(session.protocol_profile),
     )
 
 

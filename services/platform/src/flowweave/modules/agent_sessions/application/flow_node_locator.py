@@ -238,6 +238,7 @@ def active_runtime_handle(
         runtime_resource_name=connection.resource_name,
         workspace_root=str(workspace.runtime_working_directory),
         history_cursor=history_cursor,
+        protocol_profile=connection.protocol_profile.value,
     )
 
 

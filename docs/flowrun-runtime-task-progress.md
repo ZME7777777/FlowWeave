@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`UPSTREAM BASELINE ADOPTION IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-587`
+> 下一可执行切片：`FR-588`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -8288,13 +8288,25 @@ architecture test 在本切片前既有的 ORM FK、Compose digest、旧前端�
 public-facade 边界断言共 8 项失败，均不涉及此次 profile 变更，未作为通过记录也未混入修复。未执行
 数据库 upgrade/downgrade、镜像构建、Runtime/E2E 或部署。
 
-### FR-587 run-slot 429 的消息确认与受控重试 — PENDING
+### FR-587 run-slot 429 的消息确认与受控重试 — DONE
 
 依赖：FR-586。
 
 范围：将上游 run-slot admission 的 HTTP 429 接入 V2 投递协议。若正式用户事件已经保存而仅 `/run`
 被拒绝，FlowWeave 只能保留确认的 event/cursor/renderKey 并重试原生 `/run`，绝不重新 append 相同用户
 消息或创建第二个气泡；未确认写入维持现有失败/恢复语义。
+
+完成：FlowRun 的 `RuntimeHandle` 现在从已冻结的 Runtime Session profile 携带协议身份；仅
+`OH_FW_V2` 且上游明确 `outcome_unknown=false` 的 event append 429 会读取正式
+`last_user_message_id`，随后只调用一次原生 `/run`。并发 `/run` 已获胜的 409 收敛为运行中；
+仍然 429 时返回带已持久 event cursor 的 `AGENT_RUN_CAPACITY_EXCEEDED`，前端保留原 renderKey
+气泡、刷新正式事件并转为原生“继续”操作，绝不重投消息。V1 和未确认写入保持既有失败语义。
+
+验收：受影响 Python Ruff check/format、`py_compile`、`test_openhands.py` 与
+`test_runtime_protocol_profiles.py` 共 `223 passed`、Alembic 唯一 head
+`0149_add_oh_fw_v2_protocol_profile`、Web TypeScript typecheck 和 `git diff --check` 通过。
+数据库驱动的 generation handle 回归在 Testcontainers 初始化阶段被本机 Docker socket 缺失阻断，
+未进入断言且未记为通过；未执行镜像构建、Runtime/E2E 或部署。
 
 ### FR-588 MCP OAuth 刷新治理持久化 — PENDING
 

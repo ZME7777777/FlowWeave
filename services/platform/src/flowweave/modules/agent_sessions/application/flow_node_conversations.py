@@ -1785,6 +1785,7 @@ def _create_or_reload_node_bootstrap(
                 db, flow_run_id=run.id, node_attempt_id=binding.node_attempt_id
             ).runtime_working_directory
         ),
+        protocol_profile=connection.protocol_profile.value,
     )
     runtime = get_runtime()
     if allow_existing:
@@ -3338,6 +3339,7 @@ def upload_node_attachment(
                     db, flow_run_id=flow_run_id, node_attempt_id=attempt_id
                 ).runtime_working_directory
             ),
+            protocol_profile=connection.protocol_profile.value,
         )
     path = get_runtime().upload_workspace_file(
         handle,

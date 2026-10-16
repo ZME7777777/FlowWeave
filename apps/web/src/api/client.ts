@@ -68,6 +68,7 @@ async function responseError(response: Response): Promise<ApiError> {
     MODEL_PROVIDER_UPSTREAM_UNAVAILABLE: '模型服务或其上游网关暂时不可用，请稍后重试。',
     MODEL_PROVIDER_RESPONSE_INVALID: '模型服务返回的模型列表无法识别。请检查该服务是否兼容 OpenAI 模型列表接口。',
     EXECUTOR_UNAVAILABLE: '执行服务暂时不可用，请稍后重试。',
+    AGENT_RUN_CAPACITY_EXCEEDED: '消息已保存，但 Agent 暂无可用运行容量。请点击继续，仅重试启动运行。',
     REQUEST_FAILED: '请求处理失败，请稍后重试。',
   };
   const message = /[\u3400-\u9fff]/u.test(backendMessage)

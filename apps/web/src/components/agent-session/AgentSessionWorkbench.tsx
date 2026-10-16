@@ -7200,6 +7200,39 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         reportOperationError(message.bindingId, error);
         return;
       }
+      const persistedCursor = error instanceof ApiError
+        && error.code === 'AGENT_RUN_CAPACITY_EXCEEDED'
+        && error.details.event_persisted === true
+        && typeof error.details.cursor === 'string'
+        ? error.details.cursor
+        : undefined;
+      if (persistedCursor) {
+        updateLocalMessageProjections(current => {
+          const projection = current.get(message.id);
+          if (!projection || projection.scope !== message.bindingId) return;
+          current.set(message.id, {
+            ...projection,
+            canonicalEventId: persistedCursor,
+            state: 'accepted',
+          });
+        });
+        releaseDeferredFormalUserEvents(message.bindingId);
+        if (!context?.nativeGuidance && activeComposerScope.current === message.bindingId) {
+          setActiveTurnEventId(persistedCursor);
+          setPendingSubmissionConfirmation({
+            submissionId: message.id,
+            bindingId: message.bindingId,
+            cursor: persistedCursor,
+            expiresAt: Date.now() + SUBMISSION_EVENT_CONFIRMATION_TIMEOUT_MS,
+          });
+          // The formal event is already durable. Present the existing native
+          // resume action so the next request can only target `/run`.
+          setTurnState('paused');
+        }
+        refresh(message.bindingId);
+        reportOperationError(message.bindingId, error);
+        return;
+      }
       if (context?.nativeGuidance) {
         removeLocalMessageProjection(message.id, message.bindingId);
         reportOperationError(message.bindingId, error);
