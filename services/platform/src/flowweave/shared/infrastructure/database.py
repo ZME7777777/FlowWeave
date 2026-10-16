@@ -115,11 +115,16 @@ class Database:
         self.lifecycle_engine: Engine | None = None
         self.lifecycle_sessions: sessionmaker[Session] | None = None
         if lifecycle_pool_size:
+            # Runtime provisioning inside a lifecycle operation opens one
+            # independent control transaction on the caller's engine while the
+            # caller session still holds its connection. Allow exactly that
+            # nested connection per admitted operation; admission slots still
+            # bound active operations to lifecycle_pool_size.
             self.lifecycle_engine = create_engine(
                 settings.database_url,
                 pool_pre_ping=True,
                 pool_size=lifecycle_pool_size,
-                max_overflow=0,
+                max_overflow=lifecycle_pool_size,
                 pool_timeout=settings.blocking_pool_timeout_seconds,
                 connect_args={"options": f"-c statement_timeout={settings.statement_timeout_ms}"},
             )

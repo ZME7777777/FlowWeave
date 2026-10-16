@@ -509,7 +509,8 @@ async def test_workspace_reservation_preserves_total_budget_and_fallback(role, b
             assert container.lifecycle_executor is not container.blocking_executor
             assert container.lifecycle_io_slots is not container.blocking_io_slots
             assert pools["lifecycle"]["size"] == 1
-            assert container.database.lifecycle_engine.pool._max_overflow == 0
+            # One nested control connection per admitted lifecycle operation.
+            assert container.database.lifecycle_engine.pool._max_overflow == 1
         else:
             assert container.lifecycle_executor is container.blocking_executor
             assert container.lifecycle_io_slots is container.blocking_io_slots
