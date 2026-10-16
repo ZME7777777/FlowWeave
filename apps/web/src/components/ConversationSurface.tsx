@@ -593,7 +593,19 @@ function turnsFor(events: OpenHandsConversationEvent[]): Turn[] {
       }
     }
   }
-  return turns;
+  // Event windows may merge REST recovery with live frames in arrival order.
+  // Keep each event attached to its user ancestor above, then order complete
+  // user turns by their message time so a late frame cannot move an older send
+  // beneath a newer one.
+  return turns
+    .map((turn, index) => ({ turn, index, timestamp: eventTime(turn.user) }))
+    .sort((left, right) => {
+      if (left.timestamp === undefined || right.timestamp === undefined || left.timestamp === right.timestamp) {
+        return left.index - right.index;
+      }
+      return left.timestamp - right.timestamp;
+    })
+    .map(({ turn }) => turn);
 }
 
 function fileChangesForTurn(
