@@ -884,6 +884,8 @@ test('selecting a stepwise record focuses its reached downstream draft like a co
   await expect(second).toHaveClass(/snapshot-selected/);
   await expect(page.getByTestId('node-configuration-panel')).toBeVisible();
   await expect(page.getByRole('button', { name: '完成节点并流转' })).toHaveCount(0);
+  // Like a continuous record, exactly one node is the current flow position.
+  await expect(page.locator('.run-graph-node.flow-active-target')).toHaveCount(1);
 });
 
 test('an accepted legacy step remains readable before configuring its missing downstream node', async ({ page }) => {
