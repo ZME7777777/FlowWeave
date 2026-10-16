@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`UPSTREAM BASELINE ADOPTION IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-588`
+> 下一可执行切片：`FR-589`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -8308,13 +8308,27 @@ public-facade 边界断言共 8 项失败，均不涉及此次 profile 变更，
 数据库驱动的 generation handle 回归在 Testcontainers 初始化阶段被本机 Docker socket 缺失阻断，
 未进入断言且未记为通过；未执行镜像构建、Runtime/E2E 或部署。
 
-### FR-588 MCP OAuth 刷新治理持久化 — PENDING
+### FR-588 MCP OAuth 刷新治理持久化 — DONE
 
 依赖：FR-586。
 
 范围：复用上游 OAuth metadata discovery、刷新与可恢复 MCP 建连行为，但将刷新后的授权状态通过
 FlowWeave OAuth 授权记录、Secret Reference、版本/Runtime/MCP server URL 校验及审计工作流持久化。
 禁止将上游 webhook 写回或 Runtime 内部存储作为 FlowWeave 授权、Secret 或审计事实源。
+
+完成：固定 Runtime contract 现在显式验证上游在 token refresh 前执行 protected-resource／authorization
+server metadata discovery，同时保留上游 webhook 机制仅作为被识别的上游行为；FlowWeave 未配置或暴露
+`/mcp-oauth-state` 写回入口。平台继续只消费正式 MCP probe／OAuth job 返回的 state，并在加密写入
+Secret Reference 前以 CAS 再校验 capability version、Environment version、冻结 MCP server URL 的
+SHA-256 指纹和实际 Runtime resource 指纹。创建、刷新、首次授权和撤销审计均记录这些非敏感目标身份及
+OAuth state digest，绝不记录 URL 原文、OAuth state、token 或回调内容。新 migration
+`0150_mcp_oauth_persistence_target_audit` 保留历史记录兼容性并追加审计字段。
+
+验收：受影响 Python Ruff check、受影响新增／修改文件 format check、`py_compile`、MCP OAuth target
+纯函数校验、`test_mcp_validations.py` 的 `12` 项收集、Alembic 唯一 head
+`0150_mcp_oauth_persistence_target_audit` 和 `git diff --check` 通过。完整
+`test_mcp_validations.py` 在 Testcontainers 初始化阶段因本机 Docker socket 缺失而 `12` 项均未进入断言，
+未记为通过；未执行数据库 upgrade/downgrade、实际 Runtime contract、镜像构建、E2E 或部署。
 
 ### FR-589 原生压缩与系统提示词保留契约 — PENDING
 

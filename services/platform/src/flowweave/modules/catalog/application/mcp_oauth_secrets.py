@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import math
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, cast
 
@@ -33,6 +34,16 @@ _MAX_OAUTH_STATE_BYTES = 256 * 1024
 _OAUTH_STATE_FIELDS = frozenset({"tokens", "client_info", "token_expires_at"})
 
 
+@dataclass(frozen=True, slots=True)
+class MCPOAuthPersistenceTarget:
+    """Non-secret target identity that fences OAuth state persistence."""
+
+    capability_version_id: str
+    environment_version_id: str
+    mcp_server_url_digest: str
+    runtime_resource_digest: str | None = None
+
+
 def _oauth_config(capability_config: dict[str, Any]) -> dict[str, Any] | None:
     auth = capability_config.get("auth")
     if not isinstance(auth, dict):
@@ -48,6 +59,91 @@ def require_oauth_capability(capability_config: dict[str, Any]) -> None:
             "MCP OAuth Secret References require auth.strategy=oauth2",
             422,
         )
+
+
+def oauth_server_url_digest(capability_config: dict[str, Any]) -> str:
+    """Return the immutable MCP server identity without retaining its URL."""
+
+    require_oauth_capability(capability_config)
+    raw_url = capability_config.get("url")
+    if not isinstance(raw_url, str) or not raw_url.strip():
+        raise DomainError(
+            "MCP_OAUTH_SERVER_URL_INVALID",
+            "MCP OAuth requires a remote MCP server URL",
+            422,
+        )
+    return hashlib.sha256(raw_url.strip().encode()).hexdigest()
+
+
+def runtime_resource_digest(runtime_resource_name: str) -> str:
+    """Retain a Runtime audit identity without exposing provider topology."""
+
+    if not runtime_resource_name.strip():
+        raise DomainError(
+            "MCP_OAUTH_RUNTIME_TARGET_INVALID",
+            "MCP OAuth persistence requires a Runtime resource identity",
+            502,
+        )
+    return hashlib.sha256(runtime_resource_name.encode()).hexdigest()
+
+
+def persistence_target(
+    capability_config: dict[str, Any],
+    *,
+    capability_version_id: str,
+    environment_version_id: str,
+    runtime_resource_name: str | None = None,
+) -> MCPOAuthPersistenceTarget:
+    return MCPOAuthPersistenceTarget(
+        capability_version_id=capability_version_id,
+        environment_version_id=environment_version_id,
+        mcp_server_url_digest=oauth_server_url_digest(capability_config),
+        runtime_resource_digest=(
+            runtime_resource_digest(runtime_resource_name)
+            if runtime_resource_name is not None
+            else None
+        ),
+    )
+
+
+def _assert_target(
+    db: Session, item: MCPOAuthSecretReference, target: MCPOAuthPersistenceTarget
+) -> None:
+    if (
+        item.capability_version_id != target.capability_version_id
+        or item.environment_version_id != target.environment_version_id
+    ):
+        raise DomainError(
+            "MCP_OAUTH_SECRET_TARGET_MISMATCH",
+            "MCP OAuth Secret Reference does not match the governed target",
+            422,
+        )
+    expected_url_digest = oauth_server_url_digest(
+        resolve_version(db, item.capability_version_id).runtime_config()
+    )
+    if not hmac.compare_digest(expected_url_digest, target.mcp_server_url_digest):
+        raise DomainError(
+            "MCP_OAUTH_SERVER_TARGET_MISMATCH",
+            "MCP OAuth state returned for a different MCP server target",
+            422,
+        )
+    if item.mcp_server_url_digest is not None and not hmac.compare_digest(
+        item.mcp_server_url_digest, target.mcp_server_url_digest
+    ):
+        raise DomainError(
+            "MCP_OAUTH_SERVER_TARGET_MISMATCH",
+            "MCP OAuth Secret Reference is bound to a different MCP server target",
+            422,
+        )
+
+
+def _audit_target(target: MCPOAuthPersistenceTarget) -> dict[str, str | None]:
+    return {
+        "capability_version_id": target.capability_version_id,
+        "environment_version_id": target.environment_version_id,
+        "runtime_resource_digest": target.runtime_resource_digest,
+        "mcp_server_url_digest": target.mcp_server_url_digest,
+    }
 
 
 def _encoded_state(state: dict[str, Any]) -> bytes:
@@ -108,6 +204,7 @@ def _reference_dict(item: MCPOAuthSecretReference) -> dict[str, Any]:
         "id": item.id,
         "capability_version_id": item.capability_version_id,
         "environment_version_id": item.environment_version_id,
+        "mcp_server_url_digest": item.mcp_server_url_digest,
         "state": item.state,
         "state_version": item.state_version,
         "has_oauth_state": item.encrypted_oauth_state is not None,
@@ -127,7 +224,11 @@ def create_reference(
             "OAuth Secret References require an MCP Capability Version",
             422,
         )
-    require_oauth_capability(capability.runtime_config())
+    target = persistence_target(
+        capability.runtime_config(),
+        capability_version_id=capability.version.id,
+        environment_version_id=payload.environment_version_id,
+    )
     environment = lock_referenceable_version(db, payload.environment_version_id)
     if environment is None:
         raise DomainError(
@@ -153,6 +254,7 @@ def create_reference(
         id=uid(),
         capability_version_id=capability.version.id,
         environment_version_id=environment.id,
+        mcp_server_url_digest=target.mcp_server_url_digest,
         state="ACTIVE",
         state_version=1,
     )
@@ -163,6 +265,7 @@ def create_reference(
             secret_reference_id=item.id,
             action="CREATED",
             state_version=item.state_version,
+            **_audit_target(target),
         )
     )
     db.flush()
@@ -189,6 +292,11 @@ def read_reference(db: Session, secret_reference_id: str) -> dict[str, Any]:
         {
             "id": audit.id,
             "validation_id": audit.validation_id,
+            "authorization_id": audit.authorization_id,
+            "capability_version_id": audit.capability_version_id,
+            "environment_version_id": audit.environment_version_id,
+            "runtime_resource_digest": audit.runtime_resource_digest,
+            "mcp_server_url_digest": audit.mcp_server_url_digest,
             "action": audit.action,
             "state_version": audit.state_version,
             "created_at": audit.created_at.isoformat(),
@@ -203,8 +311,7 @@ def load_state(
     *,
     secret_reference_id: str,
     expected_state_version: int,
-    capability_version_id: str,
-    environment_version_id: str,
+    target: MCPOAuthPersistenceTarget,
 ) -> dict[str, Any] | None:
     item = db.scalar(
         select(MCPOAuthSecretReference)
@@ -217,15 +324,7 @@ def load_state(
             "MCP OAuth Secret Reference was not found",
             404,
         )
-    if (
-        item.capability_version_id != capability_version_id
-        or item.environment_version_id != environment_version_id
-    ):
-        raise DomainError(
-            "MCP_OAUTH_SECRET_TARGET_MISMATCH",
-            "MCP OAuth Secret Reference does not match the validation target",
-            422,
-        )
+    _assert_target(db, item, target)
     if item.state != "ACTIVE":
         raise DomainError(
             "MCP_OAUTH_SECRET_REVOKED",
@@ -282,6 +381,7 @@ def persist_refreshed_state(
     secret_reference_id: str,
     expected_state_version: int,
     validation_id: str | None,
+    target: MCPOAuthPersistenceTarget,
     state: dict[str, Any],
 ) -> int:
     encoded = _encoded_state(state)
@@ -296,6 +396,7 @@ def persist_refreshed_state(
             "MCP OAuth Secret Reference was not found",
             404,
         )
+    _assert_target(db, item, target)
     if item.state != "ACTIVE":
         raise DomainError(
             "MCP_OAUTH_SECRET_REVOKED",
@@ -309,6 +410,12 @@ def persist_refreshed_state(
             409,
             {"expected": expected_state_version, "actual": item.state_version},
         )
+    if target.runtime_resource_digest is None:
+        raise DomainError(
+            "MCP_OAUTH_RUNTIME_TARGET_INVALID",
+            "MCP OAuth refresh has no governed Runtime identity",
+            502,
+        )
     digest = hashlib.sha256(encoded).hexdigest()
     item.encrypted_oauth_state = encrypt_secret(encoded.decode())
     item.oauth_state_digest = digest
@@ -321,6 +428,7 @@ def persist_refreshed_state(
             action="REFRESHED",
             state_version=item.state_version,
             oauth_state_digest=digest,
+            **_audit_target(target),
         )
     )
     db.flush()
@@ -333,6 +441,7 @@ def persist_authorized_state(
     secret_reference_id: str,
     expected_state_version: int,
     authorization_id: str,
+    target: MCPOAuthPersistenceTarget,
     state: dict[str, Any],
 ) -> int:
     """Persist first authorization state with the same Secret CAS boundary."""
@@ -349,6 +458,7 @@ def persist_authorized_state(
             "MCP OAuth Secret Reference was not found",
             404,
         )
+    _assert_target(db, item, target)
     if item.state != "ACTIVE":
         raise DomainError(
             "MCP_OAUTH_SECRET_REVOKED",
@@ -368,6 +478,12 @@ def persist_authorized_state(
             "Initial authorization cannot replace existing OAuth state",
             409,
         )
+    if target.runtime_resource_digest is None:
+        raise DomainError(
+            "MCP_OAUTH_RUNTIME_TARGET_INVALID",
+            "MCP OAuth authorization has no governed Runtime identity",
+            502,
+        )
     digest = hashlib.sha256(encoded).hexdigest()
     item.encrypted_oauth_state = encrypt_secret(encoded.decode())
     item.oauth_state_digest = digest
@@ -380,6 +496,7 @@ def persist_authorized_state(
             action="AUTHORIZED",
             state_version=item.state_version,
             oauth_state_digest=digest,
+            **_audit_target(target),
         )
     )
     db.flush()
@@ -448,6 +565,9 @@ def revoke_reference(
             secret_reference_id=item.id,
             action="REVOKED",
             state_version=item.state_version,
+            capability_version_id=item.capability_version_id,
+            environment_version_id=item.environment_version_id,
+            mcp_server_url_digest=item.mcp_server_url_digest,
         )
     )
     db.flush()

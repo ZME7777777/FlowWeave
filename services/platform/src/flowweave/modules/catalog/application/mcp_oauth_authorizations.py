@@ -349,6 +349,12 @@ def _apply_status(
             secret_reference_id=reference.id,
             expected_state_version=item.expected_secret_version,
             authorization_id=item.id,
+            target=mcp_oauth_secrets.persistence_target(
+                resolve_version(db, item.capability_version_id).runtime_config(),
+                capability_version_id=item.capability_version_id,
+                environment_version_id=item.environment_version_id,
+                runtime_resource_name=item.runtime_resource_name or "",
+            ),
             state=status.oauth_state,
         )
         item.state = "SUCCEEDED"

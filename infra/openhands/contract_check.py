@@ -56,6 +56,7 @@ from openhands.agent_server.mcp_router import (
     MCPTestRequest,
     MCPTestSuccess,
 )
+from openhands.agent_server.mcp_oauth_store import MCPSettingsOAuthTokenStore
 from openhands.agent_server.models import (
     BashEventPage,
     ConfirmationResponseRequest,
@@ -118,6 +119,7 @@ from openhands.sdk.llm.utils.metrics import Metrics
 from openhands.sdk.marketplace.registration import MarketplaceRegistration
 from openhands.sdk.marketplace.registry import MarketplaceRegistry
 from openhands.sdk.mcp.config import MCPOAuthAuthCredential, MCPOAuthState
+from openhands.sdk.mcp.oauth import MCPOAuth
 from openhands.sdk.mcp.utils import MCPToolProvider
 from openhands.sdk.plugin import Plugin, PluginFetchError, fetch_plugin_with_resolution
 from openhands.sdk.plugin.types import PluginSource
@@ -518,6 +520,15 @@ def _assert_mcp_oauth_and_subscription_preflight_contract() -> None:
         int(part) for part in raw_fastmcp_version.split(".")[:2]
     )
     assert fastmcp_major_minor >= MINIMUM_FASTMCP_VERSION, raw_fastmcp_version
+    refresh_source = getsource(MCPOAuth._refresh_token)
+    discovery_source = getsource(MCPOAuth._discover_oauth_metadata)
+    assert "self._discover_oauth_metadata()" in refresh_source
+    assert "build_protected_resource_metadata_discovery_urls" in discovery_source
+    assert "build_oauth_authorization_server_metadata_discovery_urls" in discovery_source
+    assert "handle_protected_resource_response" in discovery_source
+    assert "handle_auth_metadata_response" in discovery_source
+    token_store_source = getsource(MCPSettingsOAuthTokenStore._write_back_seeded_state)
+    assert '"/mcp-oauth-state"' in token_store_source
     preflight_source = getsource(validate_profile)
     assert "create_subscription_llm_from_config" in preflight_source
     assert "asyncio.to_thread" in preflight_source

@@ -30,6 +30,7 @@ from flowweave.shared.models import (
     MCPOAuthSecretReference,
     TerminalEnvironment,
 )
+from flowweave.shared.schemas import MCPProbeWrite
 from flowweave.shared.settings import settings_context
 
 
@@ -123,13 +124,28 @@ def _probe_request(plan: mcp_validations.MCPProbePlan) -> RuntimeMCPProbeRequest
 def _oauth_probe_request(db, plan: mcp_validations.MCPProbePlan) -> RuntimeMCPProbeRequest:
     assert plan.oauth_secret_reference_id is not None
     assert plan.oauth_secret_version is not None
+    target = mcp_oauth_secrets.persistence_target(
+        plan.capability,
+        capability_version_id=str(plan.capability["capability_version_id"]),
+        environment_version_id=plan.environment_version_id,
+        runtime_resource_name="fw-sbx-probe",
+    )
     state = mcp_oauth_secrets.load_state(
         db,
         secret_reference_id=plan.oauth_secret_reference_id,
         expected_state_version=plan.oauth_secret_version,
-        capability_version_id=str(plan.capability["capability_version_id"]),
-        environment_version_id=plan.environment_version_id,
+        target=mcp_oauth_secrets.MCPOAuthPersistenceTarget(
+            capability_version_id=target.capability_version_id,
+            environment_version_id=target.environment_version_id,
+            mcp_server_url_digest=target.mcp_server_url_digest,
+        ),
     )
+    validation = db.get(CapabilityValidation, plan.validation_id)
+    assert validation is not None
+    report = dict(validation.report_json or {})
+    report["oauth_runtime_resource_digest"] = target.runtime_resource_digest
+    validation.report_json = report
+    db.flush()
     return RuntimeMCPProbeRequest(
         server=RuntimeMCP(
             name=plan.capability_key,
@@ -366,6 +382,14 @@ def test_mcp_oauth_secret_reference_refresh_revoke_and_leakage_boundaries(
     assert read.json()["has_oauth_state"] is True
     assert read.json()["state_version"] == 2
     assert [item["action"] for item in read.json()["audit"]] == ["CREATED", "REFRESHED"]
+    refreshed_audit = read.json()["audit"][1]
+    assert refreshed_audit["capability_version_id"] == capability["capability_id"]
+    assert refreshed_audit["environment_version_id"] == environment_version_id
+    assert refreshed_audit["runtime_resource_digest"] == hashlib.sha256(b"fw-sbx-probe").hexdigest()
+    assert (
+        refreshed_audit["mcp_server_url_digest"]
+        == hashlib.sha256(b"https://mcp.example.test/mcp").hexdigest()
+    )
     for secret in ("oauth-access-secret", "oauth-refresh-secret", "oauth-client-secret"):
         assert secret not in read.text
 
@@ -413,12 +437,22 @@ def test_mcp_oauth_refresh_cas_rejects_stale_result(db_session_factory, client, 
         json={"environment_version_id": environment_version_id},
     ).json()
     state = {"tokens": {"access_token": "first-secret"}}
+    target = mcp_oauth_secrets.persistence_target(
+        {
+            "url": "https://mcp.example.test/mcp",
+            "auth": {"strategy": "oauth2"},
+        },
+        capability_version_id=capability["capability_id"],
+        environment_version_id=environment_version_id,
+        runtime_resource_name="fw-sbx-probe",
+    )
     with settings_context(settings), db_session_factory() as db:
         next_version = mcp_oauth_secrets.persist_refreshed_state(
             db,
             secret_reference_id=created["id"],
             expected_state_version=1,
             validation_id=None,
+            target=target,
             state=state,
         )
         db.commit()
@@ -434,9 +468,87 @@ def test_mcp_oauth_refresh_cas_rejects_stale_result(db_session_factory, client, 
             secret_reference_id=created["id"],
             expected_state_version=1,
             validation_id=None,
+            target=target,
             state={"tokens": {"access_token": "stale-secret"}},
         )
     assert raised.value.code == "MCP_OAUTH_SECRET_VERSION_CONFLICT"
+
+
+def test_mcp_oauth_refresh_rejects_a_different_mcp_server_target(
+    db_session_factory, client, settings
+):
+    capability = _oauth_mcp_capability(client)
+    environment_version_id = _environment_version(db_session_factory)
+    created = client.post(
+        f"/api/v1/capabilities/{capability['capability_id']}/mcp-oauth-secret-references",
+        json={"environment_version_id": environment_version_id},
+    ).json()
+    target = mcp_oauth_secrets.persistence_target(
+        {
+            "url": "https://other-mcp.example.test/mcp",
+            "auth": {"strategy": "oauth2"},
+        },
+        capability_version_id=capability["capability_id"],
+        environment_version_id=environment_version_id,
+        runtime_resource_name="fw-sbx-probe",
+    )
+
+    with (
+        settings_context(settings),
+        db_session_factory() as db,
+        pytest.raises(DomainError) as raised,
+    ):
+        mcp_oauth_secrets.persist_refreshed_state(
+            db,
+            secret_reference_id=created["id"],
+            expected_state_version=1,
+            validation_id=None,
+            target=target,
+            state={"tokens": {"access_token": "wrong-target"}},
+        )
+    assert raised.value.code == "MCP_OAUTH_SERVER_TARGET_MISMATCH"
+
+
+def test_mcp_oauth_refresh_rejects_a_different_runtime_target(db_session_factory, client):
+    capability = _oauth_mcp_capability(client)
+    environment_version_id = _environment_version(db_session_factory)
+    reference = client.post(
+        f"/api/v1/capabilities/{capability['capability_id']}/mcp-oauth-secret-references",
+        json={"environment_version_id": environment_version_id},
+    ).json()
+
+    with db_session_factory() as db:
+        plan = mcp_validations.begin_probe(
+            db,
+            capability["capability_id"],
+            MCPProbeWrite(
+                environment_version_id=environment_version_id,
+                oauth_secret_reference_id=reference["id"],
+                expected_oauth_secret_version=1,
+            ),
+        )
+        request = _oauth_probe_request(db, plan)
+        mismatched_request = RuntimeMCPProbeRequest(
+            server=request.server,
+            base_url=request.base_url,
+            runtime_resource_name="fw-sbx-other",
+            timeout=request.timeout,
+            oauth_secret_reference_id=request.oauth_secret_reference_id,
+            oauth_secret_version=request.oauth_secret_version,
+            oauth_state=request.oauth_state,
+        )
+        with pytest.raises(DomainError) as raised:
+            mcp_validations.complete_probe(
+                db,
+                plan.validation_id,
+                mismatched_request,
+                RuntimeMCPProbeResult(
+                    ok=True,
+                    tools=("lookup",),
+                    oauth_state={"tokens": {"access_token": "wrong-runtime"}},
+                ),
+            )
+    assert raised.value.code == "MCP_OAUTH_RUNTIME_TARGET_MISMATCH"
 
 
 def test_mcp_oauth_browser_authorization_persists_state_without_leaking_secrets(
@@ -556,6 +668,16 @@ def test_mcp_oauth_browser_authorization_persists_state_without_leaking_secrets(
         "CREATED",
         "AUTHORIZED",
     ]
+    authorized_audit = read_reference.json()["audit"][1]
+    assert authorized_audit["capability_version_id"] == capability["capability_id"]
+    assert authorized_audit["environment_version_id"] == environment_version_id
+    assert (
+        authorized_audit["runtime_resource_digest"] == hashlib.sha256(b"fw-sbx-oauth").hexdigest()
+    )
+    assert (
+        authorized_audit["mcp_server_url_digest"]
+        == hashlib.sha256(b"https://mcp.example.test/mcp").hexdigest()
+    )
 
     with db_session_factory() as db:
         stored = db.get(MCPOAuthSecretReference, reference["id"])

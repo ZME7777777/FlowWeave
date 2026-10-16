@@ -255,6 +255,7 @@ class MCPOAuthSecretReference(Base):
     # Migration 0039 installs this cross-module FK; historical baseline
     # migrations create catalog metadata before environment tables exist.
     environment_version_id: Mapped[str] = mapped_column(String(36), index=True)
+    mcp_server_url_digest: Mapped[str | None] = mapped_column(String(64))
     state: Mapped[str] = mapped_column(String(20), default="ACTIVE", index=True)
     state_version: Mapped[int] = mapped_column(Integer, default=1)
     encrypted_oauth_state: Mapped[bytes | None] = mapped_column(LargeBinary)
@@ -283,6 +284,10 @@ class MCPOAuthSecretAudit(Base):
     secret_reference_id: Mapped[str] = mapped_column(String(36), index=True)
     validation_id: Mapped[str | None] = mapped_column(String(36), index=True)
     authorization_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    capability_version_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    environment_version_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    runtime_resource_digest: Mapped[str | None] = mapped_column(String(64))
+    mcp_server_url_digest: Mapped[str | None] = mapped_column(String(64))
     action: Mapped[str] = mapped_column(String(20))
     state_version: Mapped[int] = mapped_column(Integer)
     oauth_state_digest: Mapped[str | None] = mapped_column(String(64))

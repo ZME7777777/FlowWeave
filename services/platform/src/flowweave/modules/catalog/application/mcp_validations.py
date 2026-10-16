@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -38,6 +39,7 @@ class MCPProbePlan:
     read_only_tool_call: RuntimeMCPToolCall | None
     oauth_secret_reference_id: str | None
     oauth_secret_version: int | None
+    oauth_server_url_digest: str | None
 
 
 def begin_probe(db: Session, capability_version_id: str, payload: MCPProbeWrite) -> MCPProbePlan:
@@ -57,8 +59,10 @@ def begin_probe(db: Session, capability_version_id: str, payload: MCPProbeWrite)
             {"environment_version_id": payload.environment_version_id},
         )
     runtime_config = capability.runtime_config()
+    oauth_server_url_digest: str | None = None
     if payload.oauth_secret_reference_id is not None:
         mcp_oauth_secrets.require_oauth_capability(runtime_config)
+        oauth_server_url_digest = mcp_oauth_secrets.oauth_server_url_digest(runtime_config)
     elif (
         isinstance(runtime_config.get("auth"), dict)
         and runtime_config["auth"].get("strategy") == "oauth2"
@@ -91,6 +95,7 @@ def begin_probe(db: Session, capability_version_id: str, payload: MCPProbeWrite)
                 "read_only_tool_call": call.name if call is not None else None,
                 "oauth_secret_reference_id": payload.oauth_secret_reference_id,
                 "oauth_secret_version": payload.expected_oauth_secret_version,
+                "oauth_server_url_digest": oauth_server_url_digest,
             },
         )
     )
@@ -107,6 +112,7 @@ def begin_probe(db: Session, capability_version_id: str, payload: MCPProbeWrite)
         read_only_tool_call=call,
         oauth_secret_reference_id=payload.oauth_secret_reference_id,
         oauth_secret_version=payload.expected_oauth_secret_version,
+        oauth_server_url_digest=oauth_server_url_digest,
     )
 
 
@@ -117,8 +123,11 @@ def allocate_probe_runtime(db: Session, plan: MCPProbePlan) -> RuntimeMCPProbeRe
             db,
             secret_reference_id=plan.oauth_secret_reference_id,
             expected_state_version=plan.oauth_secret_version,
-            capability_version_id=str(plan.capability["capability_version_id"]),
-            environment_version_id=plan.environment_version_id,
+            target=mcp_oauth_secrets.persistence_target(
+                plan.capability,
+                capability_version_id=str(plan.capability["capability_version_id"]),
+                environment_version_id=plan.environment_version_id,
+            ),
         )
     server, workspace_relative = materialize_mcp_probe(
         {
@@ -127,6 +136,14 @@ def allocate_probe_runtime(db: Session, plan: MCPProbePlan) -> RuntimeMCPProbeRe
         },
         plan.validation_id,
     )
+    if plan.oauth_server_url_digest is not None and (
+        mcp_oauth_secrets.oauth_server_url_digest(server.config) != plan.oauth_server_url_digest
+    ):
+        raise DomainError(
+            "MCP_OAUTH_SERVER_TARGET_MISMATCH",
+            "Materialized MCP server differs from its governed OAuth target",
+            502,
+        )
     allocation = create_temporary_runtime(
         db,
         owner_type="CAPABILITY_VALIDATION",
@@ -137,6 +154,20 @@ def allocate_probe_runtime(db: Session, plan: MCPProbePlan) -> RuntimeMCPProbeRe
         environment_version_no=plan.environment_version_no,
         workspace_relative=workspace_relative,
     )
+    if plan.oauth_server_url_digest is not None:
+        item = db.get(CapabilityValidation, plan.validation_id)
+        if item is None or item.status != "RUNNING":
+            raise DomainError(
+                "CAPABILITY_VALIDATION_NOT_FOUND",
+                "MCP validation was not found",
+                404,
+            )
+        report = dict(item.report_json or {})
+        report["oauth_runtime_resource_digest"] = mcp_oauth_secrets.runtime_resource_digest(
+            allocation.resource_name
+        )
+        item.report_json = report
+        db.flush()
     return RuntimeMCPProbeRequest(
         server=server,
         base_url=allocation.base_url,
@@ -163,7 +194,10 @@ def _validation_dict(item: CapabilityValidation) -> dict[str, Any]:
 
 
 def complete_probe(
-    db: Session, validation_id: str, result: RuntimeMCPProbeResult
+    db: Session,
+    validation_id: str,
+    request: RuntimeMCPProbeRequest,
+    result: RuntimeMCPProbeResult,
 ) -> dict[str, Any]:
     item = db.get(CapabilityValidation, validation_id)
     if item is None or item.validator != _VALIDATOR:
@@ -182,10 +216,29 @@ def complete_probe(
     oauth_secret_version = item.report_json.get("oauth_secret_version")
     persisted_oauth_version: int | None = None
     if result.oauth_state is not None:
-        if not isinstance(oauth_reference_id, str) or not isinstance(oauth_secret_version, int):
+        oauth_server_url_digest = item.report_json.get("oauth_server_url_digest")
+        runtime_resource_digest = item.report_json.get("oauth_runtime_resource_digest")
+        if (
+            not isinstance(oauth_reference_id, str)
+            or not isinstance(oauth_secret_version, int)
+            or not isinstance(oauth_server_url_digest, str)
+            or not isinstance(runtime_resource_digest, str)
+        ):
             raise DomainError(
                 "MCP_OAUTH_SECRET_REFERENCE_REQUIRED",
                 "OpenHands returned OAuth state without a governed Secret Reference",
+                502,
+            )
+        if not hmac.compare_digest(
+            oauth_server_url_digest,
+            mcp_oauth_secrets.oauth_server_url_digest(request.server.config),
+        ) or not hmac.compare_digest(
+            runtime_resource_digest,
+            mcp_oauth_secrets.runtime_resource_digest(request.runtime_resource_name),
+        ):
+            raise DomainError(
+                "MCP_OAUTH_RUNTIME_TARGET_MISMATCH",
+                "MCP OAuth refresh did not originate from the governed Runtime target",
                 502,
             )
         persisted_oauth_version = mcp_oauth_secrets.persist_refreshed_state(
@@ -193,6 +246,12 @@ def complete_probe(
             secret_reference_id=oauth_reference_id,
             expected_state_version=oauth_secret_version,
             validation_id=item.id,
+            target=mcp_oauth_secrets.MCPOAuthPersistenceTarget(
+                capability_version_id=item.capability_version_id,
+                environment_version_id=item.environment_version_id,
+                mcp_server_url_digest=oauth_server_url_digest,
+                runtime_resource_digest=runtime_resource_digest,
+            ),
             state=result.oauth_state,
         )
     item.status = "PASSED" if result.ok and result.tool_call_is_error is not True else "FAILED"
@@ -213,6 +272,8 @@ def complete_probe(
         "oauth_state_persisted": persisted_oauth_version is not None,
         "oauth_secret_reference_id": oauth_reference_id,
         "oauth_secret_version": persisted_oauth_version or oauth_secret_version,
+        "oauth_server_url_digest": item.report_json.get("oauth_server_url_digest"),
+        "oauth_runtime_resource_digest": item.report_json.get("oauth_runtime_resource_digest"),
     }
     item.completed_at = datetime.now(UTC)
     db.flush()
@@ -236,6 +297,8 @@ def fail_probe(db: Session, validation_id: str, error_code: str) -> dict[str, An
             "oauth_state_persisted": False,
             "oauth_secret_reference_id": previous_report.get("oauth_secret_reference_id"),
             "oauth_secret_version": previous_report.get("oauth_secret_version"),
+            "oauth_server_url_digest": previous_report.get("oauth_server_url_digest"),
+            "oauth_runtime_resource_digest": previous_report.get("oauth_runtime_resource_digest"),
         }
         item.completed_at = datetime.now(UTC)
         db.flush()

@@ -508,7 +508,10 @@ async def probe_mcp_capability(
         )
         result = await asyncio.to_thread(container.runtime.probe_mcp, request)
         return await run_sync(
-            db, lambda session: mcp_validations.complete_probe(session, plan.validation_id, result)
+            db,
+            lambda session: mcp_validations.complete_probe(
+                session, plan.validation_id, request, result
+            ),
         )
     except BaseException as exc:
         error_code = exc.code if isinstance(exc, DomainError) else "MCP_PROBE_FAILED"
