@@ -7475,15 +7475,46 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       reportOperationError(selected?.id, error);
     },
   });
-  const resume = useMutation({ mutationFn: () => api.resumeConversation(workspace!.id, selected!.id), onMutate: () => {
-    setTurnState('resuming');
-  }, onSuccess: value => {
-    if (value.cursor) setActiveTurnEventId(value.cursor);
-    setConversationUnread(selected!.id, false);
-    setTurnState('running');
-    reconcileConversationProjection();
-    onHostStateChanged?.();
-  }, onError: error => { setTurnState('paused'); reportOperationError(selected?.id, error); } });
+  const resume = useMutation({
+    mutationFn: (request: { workspaceId: string; bindingId: string }) => api.resumeConversation(request.workspaceId, request.bindingId),
+    onMutate: request => {
+      const queryKey = sessionQueryKey(host, 'conversation-input-readiness', request.workspaceId, request.bindingId);
+      const previousReadiness = queryClient.getQueryData<AgentConversationInputReadiness>(queryKey);
+      // A cached paused readiness predates this explicit control transition.
+      queryClient.setQueryData<AgentConversationInputReadiness>(queryKey, current => current
+        ? { ...current, ready: false, execution_status: 'resuming' }
+        : current);
+      if (request.bindingId === activeComposerScope.current) {
+        forceReadinessRefresh.current = true;
+        setTurnState('resuming');
+      }
+      return { previousReadiness };
+    },
+    onSuccess: (value, request) => {
+      setConversationUnread(request.bindingId, false);
+      void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-activity', request.workspaceId) });
+      if (request.bindingId !== activeComposerScope.current) {
+        void queryClient.invalidateQueries({
+          queryKey: sessionQueryKey(host, 'conversation-input-readiness', request.workspaceId, request.bindingId),
+          exact: true,
+        });
+        return;
+      }
+      if (value.cursor) setActiveTurnEventId(value.cursor);
+      setTurnState('running');
+      reconcileConversationProjection();
+      onHostStateChanged?.();
+    },
+    onError: (error, request, context) => {
+      const queryKey = sessionQueryKey(host, 'conversation-input-readiness', request.workspaceId, request.bindingId);
+      queryClient.setQueryData<AgentConversationInputReadiness>(queryKey, current => (
+        current?.execution_status === 'resuming' ? context?.previousReadiness : current
+      ));
+      void queryClient.invalidateQueries({ queryKey, exact: true });
+      if (request.bindingId === activeComposerScope.current) setTurnState('paused');
+      reportOperationError(request.bindingId, error);
+    },
+  });
   const decideConfirmation = useMutation({
     mutationFn: (accept: boolean) => api.decideConfirmation(workspace!.id, selected!.id, pendingConfirmation!.pending_actions_digest!, accept, confirmationReason.trim()),
     onSuccess: value => {
@@ -8039,7 +8070,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const runComposerAction = () => {
     if (composerControl.action === 'send') enqueueDraft();
     else if (composerControl.action === 'interrupt') interrupt.mutate();
-    else if (composerControl.action === 'resume') resume.mutate();
+    else if (composerControl.action === 'resume' && workspace && selected) resume.mutate({ workspaceId: workspace.id, bindingId: selected.id });
   };
   // A conversation can predate the explicit work-directory binding while
   // still carrying its authoritative working_directory.  Prefer it over the

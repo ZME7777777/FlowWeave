@@ -8525,3 +8525,28 @@ SHA-256 后，从该归档构建 Runtime 与 Platform 的 `linux/amd64` 镜像�
 路由正确到达 FlowWeave 认证边界（401），FastGPT 根登录页返回 200。FR-594 的全量浏览器结果仍为
 `102 passed, 29 failed, 1 skipped`，本次发布不将其记为全绿。所有本轮切片均已独立提交并完成部署，无
 `CURRENT` 或下一待执行切片。
+
+
+### FR-596 现有工作区改动收口与继续会话隔离 — DONE
+
+依赖：FR-595。
+
+范围：仅收口现有四个未提交文件：继续会话的 readiness／活动列表更新、Admin observer Compose 安全校验和测试、
+逐步运行配置导入导出的公共导出。核对已有调用链，补齐继续请求跨 binding 的迟到成功／失败隔离，
+执行定向浏览器／后端验证后独立提交；按用户已授权的受管服务器发布流程部署该固定提交。
+不改变 OpenHands 源码、Runtime Provider、迁移、服务器 Compose／环境或持久数据。
+
+调查：原始四文件的后端定向验证为 18 passed；现有暂停／继续浏览器用例 2 passed。新增跨 binding
+回归在修改前 2 failed，分别复现旧会话继续成功误改新会话未读及旧会话失败污染新会话错误／暂停状态。
+
+完成：继续请求现在以发起时捕获的 `workspaceId + bindingId` 执行；迟到成功只更新原 binding 的未读投影和
+活动列表，迟到失败只恢复原 binding 的 readiness，且两者均不能更改已经切换到的新会话的 turn state、错误或
+事件投影。新增成功／失败两项 Playwright 跨会话回归。Admin observer 安全检查现在要求两个 observer 服务、
+专用强密钥、最小容器权限和无端口暴露，并拒绝 Runtime 控制凭据泄露；逐步运行配置的既有导入／导出函数已从
+orchestration 公共入口导出。
+
+验收：隔离 Vite 实例上的 `agent-session-resume.spec.ts` 为 `2 passed`；此前针对 Docker 本地旧镜像的
+`5173` 失败未计入本切片。Web TypeScript typecheck、ESLint 和 production build 通过；Compose security
+pytest `15 passed`、受影响 Python Ruff check/format、`py_compile`、逐步配置公共导入 probe 以及
+`git diff --check` 通过。未修改迁移、OpenHands Runtime Provider、远端 Compose／环境或持久数据；无
+`CURRENT` 或下一待执行切片。

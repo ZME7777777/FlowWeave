@@ -58,7 +58,14 @@ def published_ports(service: dict[str, Any]) -> list[dict[str, Any]]:
 
 def check_document(document: dict[str, Any]) -> None:
     services = mapping(document.get("services"), "services")
-    required = {"runtime-provider", "api", "stream-api", "worker"}
+    required = {
+        "runtime-provider",
+        "api",
+        "stream-api",
+        "worker",
+        "admin-api",
+        "admin-metrics",
+    }
     if missing := required - services.keys():
         fail(f"missing services: {', '.join(sorted(missing))}")
 
@@ -66,6 +73,8 @@ def check_document(document: dict[str, Any]) -> None:
     api = mapping(services["api"], "api")
     stream_api = mapping(services["stream-api"], "stream-api")
     worker = mapping(services["worker"], "worker")
+    admin_api = mapping(services["admin-api"], "admin-api")
+    admin_metrics = mapping(services["admin-metrics"], "admin-metrics")
     api_labels = mapping(api.get("labels", {}), "api labels")
     stream_api_labels = mapping(stream_api.get("labels", {}), "stream-api labels")
     worker_labels = mapping(worker.get("labels", {}), "worker labels")
@@ -106,14 +115,16 @@ def check_document(document: dict[str, Any]) -> None:
     }
     if forbidden_static_sandbox_networks:
         fail("disposable sandboxes must not use static shared Compose networks")
-    allowed_control_clients = {"runtime-provider", "api", "stream-api", "worker"}
+    runtime_clients = {"api", "stream-api", "worker"}
+    admin_observers = {"admin-api", "admin-metrics"}
+    allowed_control_clients = {"runtime-provider"} | runtime_clients | admin_observers
     attached_to_control = {
         str(name)
         for name, service in services.items()
         if "docker-control" in network_names(mapping(service, str(name)))
     }
     if attached_to_control != allowed_control_clients:
-        fail("only runtime-provider, api, stream-api, and worker may attach to docker-control")
+        fail("only Runtime clients and dedicated admin observers may attach to docker-control")
     for name, client in (("api", api), ("stream-api", stream_api), ("worker", worker)):
         if str(client.get("user")) != "10001:10001":
             fail(f"{name} must run explicitly as uid/gid 10001")
@@ -130,7 +141,7 @@ def check_document(document: dict[str, Any]) -> None:
     if worker_labels.get("flowweave.runtime-client-role") != "worker":
         fail("worker Runtime client role label is missing")
     for name, raw_service in services.items():
-        if str(name) in {"api", "stream-api", "worker"}:
+        if str(name) in runtime_clients:
             continue
         service = mapping(raw_service, str(name))
         labels = mapping(service.get("labels", {}), f"{name} labels")
@@ -193,6 +204,32 @@ def check_document(document: dict[str, Any]) -> None:
         or "DOCKER_CONTROLLER_WORKER_API_KEY" in worker_env
     ):
         fail("controller dual-key configuration must not leak to clients")
+
+    observer_key = controller_env.get("ADMIN_RUNTIME_OBSERVER_KEY", "")
+    if len(observer_key) < 32 or observer_key in {api_key, worker_key}:
+        fail("runtime-provider must hold a dedicated strong admin observer key")
+    for name, observer in (("admin-api", admin_api), ("admin-metrics", admin_metrics)):
+        observer_env = environment(observer)
+        if str(observer.get("user")) != "10001:10001":
+            fail(f"{name} must run explicitly as uid/gid 10001")
+        if observer.get("read_only") is not True:
+            fail(f"{name} must use a read-only root filesystem")
+        if "ALL" not in {str(item) for item in sequence(observer.get("cap_drop"))}:
+            fail(f"{name} must drop all Linux capabilities")
+        observer_security_opt = {str(item) for item in sequence(observer.get("security_opt"))}
+        if "no-new-privileges:true" not in observer_security_opt:
+            fail(f"{name} must enable no-new-privileges")
+        if observer.get("ports") or observer.get("expose"):
+            fail(f"{name} must not publish or expose ports")
+        if observer_env.get("RUNTIME_PROVIDER_URL") != "http://runtime-provider:8090":
+            fail(f"{name} must use the internal runtime-provider URL")
+        if observer_env.get("ADMIN_RUNTIME_OBSERVER_KEY") != observer_key:
+            fail(f"{name} must receive only the dedicated observer key")
+        if {
+            "DOCKER_CONTROLLER_API_KEY",
+            "DOCKER_CONTROLLER_WORKER_API_KEY",
+        } & observer_env.keys():
+            fail(f"{name} must not receive Runtime controller credentials")
 
     forbidden_controller_secrets = {
         "DATABASE_URL",

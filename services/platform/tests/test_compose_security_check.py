@@ -14,6 +14,7 @@ check_document = _CHECKER["check_document"]
 
 _API_KEY = "compose-api-key-with-at-least-32-characters"
 _WORKER_KEY = "compose-worker-key-with-at-least-32-characters"
+_OBSERVER_KEY = "compose-observer-key-with-at-least-32-characters"
 
 
 def _document() -> dict[str, Any]:
@@ -45,6 +46,7 @@ def _document() -> dict[str, Any]:
                     "SANDBOX_RUNTIME_NETWORK_MODE": "egress",
                     "DOCKER_CONTROLLER_API_KEY": _API_KEY,
                     "DOCKER_CONTROLLER_WORKER_API_KEY": _WORKER_KEY,
+                    "ADMIN_RUNTIME_OBSERVER_KEY": _OBSERVER_KEY,
                 },
             },
             "api": {
@@ -72,6 +74,40 @@ def _document() -> dict[str, Any]:
                     "DOCKER_CONTROLLER_API_KEY": _WORKER_KEY,
                 },
             },
+            "stream-api": {
+                "user": "10001:10001",
+                "labels": {
+                    "flowweave.runtime-client": "true",
+                    "flowweave.runtime-client-role": "api",
+                },
+                "networks": {"default": None, "docker-control": None},
+                "environment": {
+                    **client_environment,
+                    "DOCKER_CONTROLLER_API_KEY": _API_KEY,
+                },
+            },
+            "admin-api": {
+                "user": "10001:10001",
+                "read_only": True,
+                "cap_drop": ["ALL"],
+                "security_opt": ["no-new-privileges:true"],
+                "networks": {"default": None, "docker-control": None},
+                "environment": {
+                    "RUNTIME_PROVIDER_URL": "http://runtime-provider:8090",
+                    "ADMIN_RUNTIME_OBSERVER_KEY": _OBSERVER_KEY,
+                },
+            },
+            "admin-metrics": {
+                "user": "10001:10001",
+                "read_only": True,
+                "cap_drop": ["ALL"],
+                "security_opt": ["no-new-privileges:true"],
+                "networks": {"default": None, "docker-control": None},
+                "environment": {
+                    "RUNTIME_PROVIDER_URL": "http://runtime-provider:8090",
+                    "ADMIN_RUNTIME_OBSERVER_KEY": _OBSERVER_KEY,
+                },
+            },
         },
         "networks": {"default": {}, "docker-control": {"internal": True}},
     }
@@ -93,6 +129,16 @@ def _leak_socket(document: dict[str, Any]) -> None:
 
 def _attach_untrusted_service(document: dict[str, Any]) -> None:
     document["services"]["runtime"] = {"networks": {"docker-control": None}}
+
+
+def _leak_controller_key_to_admin_observer(document: dict[str, Any]) -> None:
+    document["services"]["admin-api"]["environment"]["DOCKER_CONTROLLER_API_KEY"] = _API_KEY
+
+
+def _publish_admin_observer_port(document: dict[str, Any]) -> None:
+    document["services"]["admin-metrics"]["ports"] = [
+        {"host_ip": "127.0.0.1", "published": "8092", "target": 8092}
+    ]
 
 
 def _drift_api_runtime_client_identity(document: dict[str, Any]) -> None:
@@ -145,7 +191,9 @@ def _publish_api_on_all_interfaces(document: dict[str, Any]) -> None:
     ("mutate", "message"),
     (
         (_leak_socket, "only runtime-provider may mount Docker Socket"),
-        (_attach_untrusted_service, "only runtime-provider, api, and worker"),
+        (_attach_untrusted_service, "only Runtime clients and dedicated admin observers"),
+        (_leak_controller_key_to_admin_observer, "must not receive Runtime controller credentials"),
+        (_publish_admin_observer_port, "must not publish or expose ports"),
         (_drift_api_runtime_client_identity, "api Runtime client role label is missing"),
         (_make_controller_privileged, "must not run privileged"),
         (_run_worker_as_root, "worker must run explicitly as uid/gid 10001"),
