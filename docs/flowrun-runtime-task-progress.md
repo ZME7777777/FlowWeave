@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`UPSTREAM BASELINE ADOPTION IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-589`
+> 下一可执行切片：`FR-590`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -8330,13 +8330,28 @@ OAuth state digest，绝不记录 URL 原文、OAuth state、token 或回调内�
 `test_mcp_validations.py` 在 Testcontainers 初始化阶段因本机 Docker socket 缺失而 `12` 项均未进入断言，
 未记为通过；未执行数据库 upgrade/downgrade、实际 Runtime contract、镜像构建、E2E 或部署。
 
-### FR-589 原生压缩与系统提示词保留契约 — PENDING
+### FR-589 原生压缩与系统提示词保留契约 — DONE
 
 依赖：FR-586。
 
 范围：在 V2 contract 中验证系统提示词跨普通压缩与 hard reset 保留、摘要指令/事件负载的 system/user
 角色分离，以及前端只以正式 `CONDENSATION_REQUESTED` / `CONDENSATION_COMPLETED` 收口。不得以平台消息、
 摘要文本或私有事件代替 OpenHands condensation 生命周期。
+
+完成：固定 `baseline` 的 contract probe 现在实际构造带首个 `SystemPromptEvent` 的 View，在
+`keep_first=0` 的普通压缩与 hard reset 两条路径分别应用正式 `Condensation`，确认系统消息仍是下一次
+模型请求的首条消息，且不在 forgotten event 集合中。probe 同时确认摘要指令和序列化事件负载严格使用
+`system`／`user` 两条消息。Agent Workspace 的本地 pending 不再把带 condensation 分类的普通 `ERROR`
+事件视为完成；只有新的正式 `CONDENSATION_COMPLETED` 才结束已接受压缩的 UI，持久任务的明确 `DEAD`
+结果仍仅作为被拒绝请求的安全失败反馈。产品流回归覆盖此 `ERROR` 不能提前结束、正式完成事件才能释放
+composer 队列的边界。
+
+验收：`contract_check.py` 语法编译通过；在 source lock 的固定 `baseline`
+`ae178d86f4e0e268cf31f8f9c5deda892f4ebf12` 上，使用临时持久化目录执行新增的压缩系统提示词行为探针通过；
+Web TypeScript typecheck、ESLint 与 `git diff --check` 通过。定向 Product Flow 在本地 Vite 上实际启动，
+但在新增压缩断言之前即于既有 Git 侧栏“待推送”计数检查失败（预期 `2`、实际 `0`），且本机没有平台 API
+供未 mock 请求使用；因此浏览器回归未记为通过。未执行实际 Runtime image contract、数据库迁移、完整
+E2E 或部署。
 
 ### FR-590 异步 LLM 硬超时与流空闲超时治理 — PENDING
 

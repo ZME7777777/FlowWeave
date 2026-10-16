@@ -6106,25 +6106,23 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const selectedCondensing = Boolean(selected && (
     condensationStatus?.bindingId === selected.id || condensingConversationIds.has(selected.id)
   ));
-  const latestCondensationEvent = useMemo(() => [...displayedEvents].reverse().find(event => (
+  const latestNativeCondensationEvent = useMemo(() => [...displayedEvents].reverse().find(event => (
     event.event_type === 'CONDENSATION_REQUESTED'
       || event.event_type === 'CONDENSATION_COMPLETED'
-      || (event.event_type === 'ERROR'
-        && event.payload.classification
-        && typeof event.payload.classification === 'object'
-        && String((event.payload.classification as Record<string, unknown>).kind ?? '') === 'condensation')
   )), [displayedEvents]);
   useEffect(() => {
     if (!condensationStatus || condensationStatus.bindingId !== selected?.id) return;
-    const hasNewTerminalEvent = Boolean(latestCondensationEvent
-      && !condensationStatus.existingEventIds.has(latestCondensationEvent.id)
-      && (latestCondensationEvent.event_type === 'CONDENSATION_COMPLETED'
-        || latestCondensationEvent.event_type === 'ERROR'));
+    // A native condensation is complete only after its formal Condensation
+    // event arrives. Error events remain ordinary event history; a rejected
+    // request is surfaced by the persisted task result below instead.
+    const hasNewCompletionEvent = Boolean(latestNativeCondensationEvent
+      && !condensationStatus.existingEventIds.has(latestNativeCondensationEvent.id)
+      && latestNativeCondensationEvent.event_type === 'CONDENSATION_COMPLETED');
     const latestTask = condensationTasks.get(selected.id);
     const currentTaskFailed = Boolean(condensationStatus.taskId
       && latestTask?.task_id === condensationStatus.taskId
       && latestTask.state === 'DEAD');
-    if (!hasNewTerminalEvent && !currentTaskFailed) return;
+    if (!hasNewCompletionEvent && !currentTaskFailed) return;
     setCondensationStatus(undefined);
     const condensationFailureMessage: Record<string, string> = {
       runtime_rate_limited: '上下文压缩请求被运行时限流，请稍后重试。',
@@ -6142,7 +6140,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     // provider errors. Prefer the task's independently persisted safe reason
     // whenever it is available, including beside that generic event.
     const failureMessage = condensationFailureMessage[failureReason];
-    if (failureMessage || !hasNewTerminalEvent) {
+    if (failureMessage || !hasNewCompletionEvent) {
       reportOperationError(
         selected.id,
         new Error(failureMessage ?? 'OpenHands 未能完成上下文压缩，请稍后重试。'),
@@ -6150,7 +6148,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-activity', workspace?.id) });
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-context', workspace?.id, selected.id) });
-  }, [condensationStatus, condensationTasks, host, latestCondensationEvent, queryClient, reportOperationError, selected?.id, workspace?.id]);
+  }, [condensationStatus, condensationTasks, host, latestNativeCondensationEvent, queryClient, reportOperationError, selected?.id, workspace?.id]);
   useEffect(() => {
     if (!conversationSearchTargetEventId || !selected) return;
     const targetEventId = conversationSearchTargetEventId;

@@ -87,6 +87,7 @@ from openhands.sdk.context.memory import (
     MEMORY_INDEX_RELPATH,
     load_memory,
 )
+from openhands.sdk.context.view import View
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.conversation.goal import GoalStatus, GoalVerdict
@@ -102,8 +103,10 @@ from openhands.sdk.critic import (
 )
 from openhands.sdk.event import ActionEvent, MessageEvent
 from openhands.sdk.event import Event as OpenHandsEvent
+from openhands.sdk.event.base import LLMConvertibleEvent
 from openhands.sdk.event.condenser import Condensation, CondensationRequest
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
+from openhands.sdk.event.llm_convertible import SystemPromptEvent
 from openhands.sdk.event.security import SecurityAnalysisEvent
 from openhands.sdk.event.streaming_delta import StreamingDeltaEvent
 from openhands.sdk.git.git_changes import get_git_changes
@@ -382,6 +385,91 @@ def _assert_merged_main_capability_contract() -> None:
     assert "Runtime-only MCP tool materializer." in (MCPToolProvider.__doc__ or "")
 
 
+def _assert_condensation_system_prompt_contract() -> None:
+    """Exercise the frozen summary boundary without making a model request."""
+
+    condenser = LLMSummarizingCondenser(
+        llm=LLM(
+            model="openai/test",
+            api_key=SecretStr("contract-only"),
+            usage_id="condensation-system-prompt-probe",
+            stream=False,
+        ),
+        max_size=10,
+        keep_first=0,
+    )
+    system_prompt = SystemPromptEvent(
+        system_prompt=TextContent(text="Governed system instruction."),
+        tools=[],
+    )
+    events = [
+        system_prompt,
+        *[
+            MessageEvent(
+                llm_message=Message(
+                    role="user",
+                    content=[TextContent(text=f"Event {index}")],
+                ),
+                source="user",
+            )
+            for index in range(11)
+        ],
+    ]
+    view = View.from_events(events)
+
+    # Normal condensation must keep the system event, even when keep_first is
+    # zero. Applying the official condensation must therefore still start the
+    # next model request with the original system message.
+    forgotten_events, summary_offset = condenser._get_forgotten_events(view)
+    assert system_prompt.id not in {event.id for event in forgotten_events}
+    normal_condensation = Condensation(
+        forgotten_event_ids={event.id for event in forgotten_events},
+        summary="Governed summary.",
+        summary_offset=summary_offset,
+        llm_response_id="normal-condensation-probe",
+    )
+    normal_messages = LLMConvertibleEvent.events_to_messages(
+        normal_condensation.apply(list(view.events))
+    )
+    assert normal_messages[0].role == "system"
+
+    # Hard reset follows the same rule: it must summarize only the suffix and
+    # insert the summary immediately after the formal system event.
+    hard_reset_forgotten_ids: set[str] = set()
+    hard_reset_summary_offset: int | None = None
+
+    def capture_hard_reset(
+        forgotten_events: list[LLMConvertibleEvent],
+        summary_offset: int,
+        max_event_str_length: int | None = None,
+    ) -> Condensation:
+        nonlocal hard_reset_forgotten_ids, hard_reset_summary_offset
+        assert max_event_str_length is None
+        hard_reset_forgotten_ids = {event.id for event in forgotten_events}
+        hard_reset_summary_offset = summary_offset
+        return Condensation(
+            forgotten_event_ids=hard_reset_forgotten_ids,
+            summary="Hard reset summary.",
+            summary_offset=summary_offset,
+            llm_response_id="hard-reset-condensation-probe",
+        )
+
+    with patch.object(condenser, "_generate_condensation", side_effect=capture_hard_reset):
+        hard_reset = condenser.hard_context_reset(view)
+    assert isinstance(hard_reset, Condensation)
+    assert system_prompt.id not in hard_reset_forgotten_ids
+    assert hard_reset_summary_offset == 1
+    hard_reset_messages = LLMConvertibleEvent.events_to_messages(
+        hard_reset.apply(list(view.events))
+    )
+    assert hard_reset_messages[0].role == "system"
+
+    # Summary policy is a system instruction; serialized event data is input,
+    # so providers cannot receive both in an ambiguous user/system payload.
+    summary_messages = condenser._build_summary_messages(["native event payload"])
+    assert [message.role for message in summary_messages] == ["system", "user"]
+
+
 def _assert_memory_launch_contract() -> None:
     """Lock the upstream launch stamp and native workspace loader.
 
@@ -638,6 +726,7 @@ def main() -> None:
     _assert_durable_event_log_sequence()
     _assert_async_turn_and_stream_idle_contract()
     _assert_merged_main_capability_contract()
+    _assert_condensation_system_prompt_contract()
     _assert_profile_provider_secret_and_condenser_behavior()
     _assert_mcp_oauth_and_subscription_preflight_contract()
     _assert_runtime_capability_build_contract()

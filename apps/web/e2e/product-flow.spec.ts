@@ -1469,6 +1469,23 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await composerAfterReload.press('Enter');
   await expect(page.getByRole('region', { name: '消息投递队列' })).toContainText('压缩完成后再发送');
   expect(sentMessages).toBe(messagesBeforeCondensation);
+  // A generic native error may be part of the event history, but it cannot
+  // complete a manually requested native condensation. Only the formal
+  // Condensation event below may release the pending composer state.
+  agentStream!.send(JSON.stringify({
+    type: 'event',
+    event: {
+      id: 'manual-condensation-unrelated-error',
+      event_type: 'ERROR',
+      payload: {
+        source: 'environment',
+        parent_id: 'manual-condensation-request',
+        classification: { kind: 'condensation' },
+        timestamp: '2026-08-26T10:05:11Z',
+      },
+    },
+  }));
+  await expect(page.getByRole('status', { name: '正在压缩上下文' })).toBeVisible();
   manualCondensationCompleted = true;
   await expect(page.getByRole('status', { name: '压缩完成' })).toBeVisible();
   await expect(page.getByText('/condense', { exact: true })).toHaveCount(0);
