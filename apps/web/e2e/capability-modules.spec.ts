@@ -114,7 +114,12 @@ test('published Context Bundle shows its frozen document directory before compil
   await page.getByRole('navigation', { name: '能力模块' }).getByRole('button', { name: /Context/ }).click();
   const contextCard = page.locator('.capability-card').filter({ hasText: '资料包' });
   await contextCard.getByRole('button', { name: '更多操作：Context 资料包' }).click();
-  await page.getByRole('menu', { name: 'Context 资料包 操作菜单' }).getByRole('menuitem', { name: '查看内容' }).click();
+  const contextMenu = page.getByRole('menu', { name: 'Context 资料包 操作菜单' });
+  await expect(contextMenu).toBeVisible();
+  await expect(contextMenu.getByRole('menuitem', { name: '查看内容' })).toBeVisible();
+  await expect(contextMenu.getByRole('menuitem', { name: '删除能力' })).toBeVisible();
+  expect(await contextMenu.evaluate(menu => menu.parentElement === document.body)).toBe(true);
+  await contextMenu.getByRole('menuitem', { name: '查看内容' }).click();
   const dialog = page.getByRole('dialog', { name: '查看 Context 资料包' });
   await expect(dialog.getByText('资料目录')).toBeVisible();
   await expect(dialog.getByText('入口：README.md · 全部文档均已加载')).toBeVisible();
@@ -261,14 +266,21 @@ test('capability editors overlay the top navigation without clipping their headi
 
   const skillCard = page.locator('.capability-card').filter({ hasText: 'layout-skill' });
   await skillCard.getByRole('button', { name: '更多操作：Skill layout-skill' }).click();
-  await page.getByRole('menu', { name: 'Skill layout-skill 操作菜单' }).getByRole('menuitem', { name: '编辑' }).click();
+  const skillMenu = page.getByRole('menu', { name: 'Skill layout-skill 操作菜单' });
+  await expect(skillMenu).toBeVisible();
+  await skillMenu.getByRole('menuitem', { name: '编辑' }).click();
   await verifyEditor('编辑 Skill layout-skill', '编辑 layout-skill');
   await page.getByRole('dialog', { name: '编辑 Skill layout-skill' }).getByRole('button', { name: '关闭' }).click();
 
   await page.getByRole('navigation', { name: '能力模块' }).getByRole('button', { name: /MCP/ }).click();
   const mcpCard = page.locator('.capability-card').filter({ hasText: 'layout-mcp' });
   await mcpCard.getByRole('button', { name: '更多操作：MCP layout-mcp' }).click();
-  await page.getByRole('menu', { name: 'MCP layout-mcp 操作菜单' }).getByRole('menuitem', { name: '编辑' }).click();
+  const mcpMenu = page.getByRole('menu', { name: 'MCP layout-mcp 操作菜单' });
+  await expect(mcpMenu).toBeVisible();
+  const mcpMenuBounds = await mcpMenu.boundingBox();
+  expect(mcpMenuBounds?.width).toBeGreaterThanOrEqual(156);
+  expect((mcpMenuBounds?.y ?? 0) + (mcpMenuBounds?.height ?? 0)).toBeLessThanOrEqual(720);
+  await mcpMenu.getByRole('menuitem', { name: '编辑' }).click();
   await verifyEditor('编辑 MCP', '编辑 MCP Server');
 });
 
@@ -372,6 +384,13 @@ test('Skill collections use a compact paged grid', async ({ page }) => {
   await expect(collectionSection.getByText('研发交付', { exact: true })).toBeVisible();
   await expect(collectionSection.getByText('质量验证', { exact: true })).toBeVisible();
   await expect(collectionSection.getByText('发布运营', { exact: true })).toHaveCount(0);
+  await collectionSection.getByRole('button', { name: '更多操作：Skill 组合 需求分析' }).click();
+  const collectionMenu = page.getByRole('menu', { name: 'Skill 组合 需求分析 操作菜单' });
+  await expect(collectionMenu.getByRole('menuitem', { name: '编辑' })).toBeVisible();
+  await expect(collectionMenu.getByRole('menuitem', { name: '删除' })).toBeVisible();
+  const collectionMenuBounds = await collectionMenu.boundingBox();
+  expect(collectionMenuBounds?.width).toBeGreaterThanOrEqual(156);
+  expect(collectionMenuBounds?.y).toBeGreaterThanOrEqual(0);
   await collectionSection.getByRole('button', { name: '下一页' }).click();
   await expect(collectionRows).toHaveCount(1);
   await expect(collectionSection.getByText('发布运营', { exact: true })).toBeVisible();

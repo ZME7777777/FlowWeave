@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Braces, CheckSquare, ChevronDown, Download, Ellipsis, Eye, FileArchive, Layers3, LockKeyhole, Pencil, PlugZap, Trash2, Upload, X } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { api, ApiError, capabilityPackageUrl } from '../api/client';
 import { CapabilityCollectionEditorDialog } from '../components/CapabilityCollectionEditorDialog';
 import { Pagination } from '../components/Pagination';
@@ -761,20 +762,53 @@ interface CardProps { group: CapabilityLineage; selected: boolean; onToggle: () 
 
 function CapabilityOverflowMenu({ label, children }: { label: string; children: (close: () => void) => ReactNode }) {
   const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [position, setPosition] = useState<{ top?: number; bottom?: number; right: number }>({ right: 0 });
   useEffect(() => {
     if (!open) return;
     const closeOnOutsidePointer = (event: PointerEvent) => {
-      if (!ref.current?.contains(event.target as Node)) setOpen(false);
+      const target = event.target as Node;
+      if (!triggerRef.current?.contains(target) && !menuRef.current?.contains(target)) setOpen(false);
     };
+    const closeOnScroll = () => setOpen(false);
     document.addEventListener('pointerdown', closeOnOutsidePointer);
-    return () => document.removeEventListener('pointerdown', closeOnOutsidePointer);
+    window.addEventListener('scroll', closeOnScroll, true);
+    window.addEventListener('resize', closeOnScroll);
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutsidePointer);
+      window.removeEventListener('scroll', closeOnScroll, true);
+      window.removeEventListener('resize', closeOnScroll);
+    };
+  }, [open]);
+
+  useLayoutEffect(() => {
+    if (!open || !triggerRef.current || !menuRef.current) return;
+    const bounds = triggerRef.current.getBoundingClientRect();
+    const gap = 6;
+    const right = Math.max(gap, window.innerWidth - bounds.right);
+    const menuHeight = menuRef.current.offsetHeight;
+    const next = bounds.bottom + gap + menuHeight <= window.innerHeight
+      ? { top: bounds.bottom + gap, right }
+      : { bottom: Math.max(gap, window.innerHeight - bounds.top + gap), right };
+    setPosition(current => current.top === next.top && current.bottom === next.bottom && current.right === next.right ? current : next);
   }, [open]);
 
   const close = () => setOpen(false);
-  return <div className="capability-overflow-menu" ref={ref}>
-    <button type="button" className="capability-overflow-trigger" aria-label={`更多操作：${label}`} title="更多操作" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(current => !current)}><Ellipsis size={18}/></button>
-    {open && <div className="capability-overflow-popover" role="menu" aria-label={`${label} 操作菜单`}>{children(close)}</div>}
+  const toggle = () => {
+    if (open) return close();
+    const bounds = triggerRef.current?.getBoundingClientRect();
+    if (!bounds) return;
+    const gap = 6;
+    const estimatedMenuHeight = 112;
+    setPosition(bounds.bottom + gap + estimatedMenuHeight <= window.innerHeight
+      ? { top: bounds.bottom + gap, right: Math.max(gap, window.innerWidth - bounds.right) }
+      : { bottom: window.innerHeight - bounds.top + gap, right: Math.max(gap, window.innerWidth - bounds.right) });
+    setOpen(true);
+  };
+  return <div className="capability-overflow-menu" ref={triggerRef}>
+    <button type="button" className="capability-overflow-trigger" aria-label={`更多操作：${label}`} title="更多操作" aria-haspopup="menu" aria-expanded={open} onClick={toggle}><Ellipsis size={18}/></button>
+    {open && createPortal(<div ref={menuRef} className="capability-overflow-popover" role="menu" aria-label={`${label} 操作菜单`} style={position}>{children(close)}</div>, document.body)}
   </div>;
 }
 
