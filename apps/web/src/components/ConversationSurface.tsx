@@ -1350,10 +1350,7 @@ function CurrentTurnStatus({ items, requestSubmitting, statusOverride, modelRetr
   connectionState?: ConversationConnectionState;
 }) {
   if (modelRetryStatus) return <RetryStatus status={modelRetryStatus}/>;
-  if (monitoring?.terminal_event_missing) return <div className="conversation-turn-status stalled" role="status" aria-label="运行已结束，但尚未收到最终结果事件">
-    <CircleAlert className="conversation-turn-status-alert" role="img" aria-label="最终结果事件缺失" size={14}/>
-    <span>运行已结束，正在等待最终结果事件</span>
-  </div>;
+  if (monitoring?.terminal_event_missing) return null;
   const activityLabel = activeActivityLabel(groupedActivities(items), requestSubmitting);
   const label = statusOverride ?? (requestSubmitting
     ? activityLabel

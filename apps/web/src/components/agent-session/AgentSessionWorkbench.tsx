@@ -6771,6 +6771,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     void reconcile();
     const expiryTimer = window.setTimeout(() => {
       setExpiredTerminalSyncTurnKey(terminalSyncTurnKey);
+      setActiveTurnEventId(undefined);
+      setRequestStartedAt(undefined);
+      setTurnState(current => current === 'running' || current === 'resuming' ? 'idle' : current);
     }, TERMINAL_EVENT_RECONCILIATION_MS);
     return () => {
       cancelled = true;
