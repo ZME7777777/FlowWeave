@@ -166,8 +166,8 @@ export function App() {
     /^\/flow-runs\/([^/]+)\/nodes\/([^/]+)\/attempts\/([^/]+)\/agent-sessions(?:\/([^/]+))?$/,
   );
   const flowRunRouteId = flowRunRoute ? decodeURIComponent(flowRunRoute[1]) : undefined;
-  const registerFlowRunTab = useCallback((run: Pick<FlowRunSummary, 'id' | 'name' | 'run_no'>) => {
-    const label = `Run #${run.run_no} · ${run.name}`;
+  const registerFlowRunTab = useCallback((run: Pick<FlowRunSummary, 'id' | 'run_no'>) => {
+    const label = `Run #${run.run_no}`;
     setOpenFlowRunTabs(current => {
       const existing = current.find(item => item.id === run.id);
       if (!existing) return [...current, { id: run.id, label }];
@@ -233,10 +233,10 @@ export function App() {
     void api.flowRun(flowRunRouteId).then(registerFlowRunTab).catch(() => undefined);
   }, [flowRunRouteId, registerFlowRunTab]);
   useEffect(() => {
-    if (flowRunRouteId || view !== 'workbench' || !selectedRunId) return;
+    if (flowRunRouteId || nodeSessionRoute || view !== 'workbench' || !selectedRunId) return;
     window.history.pushState({}, '', withDeploymentBase(`/flow-runs/${encodeURIComponent(selectedRunId)}`));
     setRouteVersion(value => value + 1);
-  }, [flowRunRouteId, selectedRunId, view]);
+  }, [flowRunRouteId, nodeSessionRoute, selectedRunId, view]);
   const directAgentRoute = routePathname === '/agent' || routePathname.startsWith('/agent/conversations/');
   const canUseAgentSessions = user?.can_use_agent_sessions !== false;
   const isAgentRoute = (directAgentRoute && canUseAgentSessions) || Boolean(nodeSessionRoute);
