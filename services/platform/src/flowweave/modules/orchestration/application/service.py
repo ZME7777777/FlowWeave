@@ -10332,11 +10332,11 @@ def _delete_run_records(db: Session, run_id: str) -> None:
             expected_node_run_id=binding.node_run_id,
             allow_inactive_runtime=True,
         )
-    # Remove every physical generation while the NodeAttempt-owned Runtime
-    # Sessions still identify this FlowRun.  The reconciler intentionally
-    # never TTL-reaps these persistent OpenHands Runtimes, so permanent Run
-    # deletion is their only cleanup authority.
-    sandboxes.delete_flow_run_runtimes_now(db, run.id)
+    # Nested records borrow their parent's physical Runtime and network. Only
+    # the owner may remove those resources; deleting a child must not contact
+    # the Runtime Provider for a network it never created.
+    if sandboxes.runtime_owner_flow_run_id(db, run.id) == run.id:
+        sandboxes.delete_flow_run_runtimes_now(db, run.id)
     task_aggregate_ids = [*attempt_ids, *conversation_ids]
     if task_aggregate_ids:
         db.execute(

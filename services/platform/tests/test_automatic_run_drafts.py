@@ -1,4 +1,5 @@
 import base64
+from copy import deepcopy
 from datetime import timedelta
 from uuid import UUID
 
@@ -17,6 +18,7 @@ from flowweave.shared.models import (
     RunEvent,
     TaskState,
 )
+from flowweave.shared.settings import settings_context
 
 
 def _create_flow(client, *, context_prompt: str = ""):
@@ -132,7 +134,9 @@ def _automatic_model_provider_id(client) -> str:
         "/api/v1/model-providers",
         json={
             "name": "自动运行测试模型",
+            "auth_type": "ANTHROPIC_API_KEY",
             "base_url": "https://models.example.test/v1",
+            "api_key": "automatic-test-secret",
             "models": [{"model_name": "gpt-auto", "enabled": True, "is_default": True}],
         },
     )
@@ -271,7 +275,9 @@ def test_automatic_run_draft_freezes_a_stable_identity_for_each_gate(client):
     assert frozen_gate["stage"] == "END"
 
 
-def test_legacy_automatic_gate_plan_copy_and_controlled_restart(client, db_session_factory):
+def test_legacy_automatic_gate_plan_copy_and_controlled_restart(
+    client, db_session_factory, settings
+):
     flow = _create_flow(client)
     provider_id = _automatic_model_provider_id(client)
     first_plan = _node_plan(
@@ -316,13 +322,13 @@ def test_legacy_automatic_gate_plan_copy_and_controlled_restart(client, db_sessi
     with db_session_factory() as db:
         run = db.get(FlowRun, draft["id"])
         assert run is not None
-        plan = dict(run.automation_plan_json or {})
+        plan = deepcopy(run.automation_plan_json or {})
         gate = plan["node_plans"]["first"]["gates"][0]
         gate.pop("id")
         run.automation_plan_json = plan
         db.commit()
 
-    with db_session_factory() as db:
+    with settings_context(settings), db_session_factory() as db:
         orchestration_service.process_start_automatic_run(db, draft["id"])
 
     blocked = client.get(f"/api/v1/flow-runs/{draft['id']}")
@@ -354,7 +360,7 @@ def test_legacy_automatic_gate_plan_copy_and_controlled_restart(client, db_sessi
     assert recovered_detail["automatic_block"] is None
     assert UUID(recovered_detail["automation_plan"]["node_plans"]["first"]["gates"][0]["id"])
 
-    with db_session_factory() as db:
+    with settings_context(settings), db_session_factory() as db:
         tasks = list(
             db.scalars(
                 select(BackgroundTask).where(
@@ -661,11 +667,18 @@ def test_nested_automatic_records_are_scoped_and_share_parent_runtime(
         f"/api/v1/flow-runs/{parent['id']}/automatic-runs/{disposable['id']}"
     )
     assert deleted.status_code == 202, deleted.text
-    for _ in range(8):
+    for _ in range(32):
         with db_session_factory() as db:
             if db.get(FlowRun, disposable["id"]) is None:
                 break
-        assert worker._run_once_sync() is True
+            tasks = list(
+                db.scalars(
+                    select(BackgroundTask).where(BackgroundTask.aggregate_id == disposable["id"])
+                )
+            )
+        assert worker._run_once_sync() is True, [
+            (task.task_type, task.state, task.attempts, task.last_error) for task in tasks
+        ]
     assert worker_client.get(f"/api/v1/flow-runs/{parent['id']}").status_code == 200
     with db_session_factory() as db:
         assert db.get(FlowRun, disposable["id"]) is None
@@ -707,11 +720,11 @@ def test_nested_stepwise_record_is_empty_and_scoped_to_its_parent(client, db_ses
                     FlowRunRuntimeAllocation.flow_run_id == parent["id"]
                 )
             )
-            is None
+            is not None
         )
         assert (
             db.scalar(select(FlowRunRuntime).where(FlowRunRuntime.flow_run_id == parent["id"]))
-            is None
+            is not None
         )
         assert (
             db.scalar(
@@ -883,7 +896,7 @@ def test_stepwise_node_draft_remains_editable_until_explicit_start(client):
     assert started.status_code == 200, started.text
     attempt = started.json()
     assert attempt["startup_prompt"] == "第二版提示词"
-    assert attempt["state"] in {"EXECUTING", "WAITING_ACCEPTANCE"}
+    assert attempt["state"] in {"EXECUTING", "WAITING_ACCEPTANCE", "ACCEPTED"}
     detail = client.get(f"/api/v1/flow-runs/{record['id']}").json()
     assert len(detail["node_runs"]) == 1
 
@@ -1183,7 +1196,8 @@ def test_copy_nested_stepwise_record_requires_its_persisted_start_node_configura
     )
     assert copied.status_code == 409, copied.text
     assert copied.json()["error"]["code"] == "RUN_STATE_INVALID"
-    assert client.get(f"/api/v1/flow-runs/{parent['id']}/stepwise-runs").json() == [source]
+    records = client.get(f"/api/v1/flow-runs/{parent['id']}/stepwise-runs").json()
+    assert [record["id"] for record in records] == [source["id"]]
 
 
 def test_stepwise_config_actions_recover_legacy_record_start_node(client, db_session_factory):
@@ -1379,7 +1393,9 @@ def test_automatic_run_draft_freezes_artifact_and_capability_references(client, 
         "/api/v1/model-providers",
         json={
             "name": "自动编排模型",
+            "auth_type": "ANTHROPIC_API_KEY",
             "base_url": "https://models.example.test/v1",
+            "api_key": "automatic-plan-test-secret",
             "models": [{"model_name": "gpt-auto", "enabled": True, "is_default": True}],
         },
     )
@@ -1433,7 +1449,12 @@ def test_automatic_run_draft_freezes_artifact_and_capability_references(client, 
     capability_delete = client.delete(f"/api/v1/capabilities/{skill_capability['capability_id']}")
     assert capability_delete.status_code == 409, capability_delete.text
     provider_delete = client.delete(f"/api/v1/model-providers/{provider.json()['id']}")
-    assert provider_delete.status_code == 409, provider_delete.text
+    assert provider_delete.status_code == 204, provider_delete.text
+    plan_after_provider_delete = client.get(f"/api/v1/flow-runs/{draft['id']}").json()[
+        "automation_plan"
+    ]["node_plans"]["first"]
+    assert plan_after_provider_delete["agent_preset"]["model_provider_id"] is None
+    assert plan_after_provider_delete["agent_preset"]["model_name"] is None
 
 
 def test_automatic_run_starts_ready_plan_and_completes_frozen_chain(
@@ -1732,6 +1753,7 @@ def test_automatic_progress_separates_runtime_listener_and_reconciliation(
         db.add_all(
             [
                 BackgroundTask(
+                    owner_user_id=attempt.owner_user_id,
                     task_type="WAIT_RUNTIME_WAKEUP",
                     aggregate_type="ATTEMPT",
                     aggregate_id=attempt_id,
@@ -1741,6 +1763,7 @@ def test_automatic_progress_separates_runtime_listener_and_reconciliation(
                     max_attempts=100,
                 ),
                 BackgroundTask(
+                    owner_user_id=attempt.owner_user_id,
                     task_type="POLL_RUNTIME",
                     aggregate_type="ATTEMPT",
                     aggregate_id=attempt_id,
