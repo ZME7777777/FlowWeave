@@ -1498,12 +1498,39 @@ function projectLocalMessages(
   projections: LocalMessageProjection[],
 ): OpenHandsConversationEvent[] {
   const pendingProjections = projections.filter(item => item.state === 'submitting' && !item.canonicalEventId);
-  // REST can expose the formal user event before its POST acknowledgement.
-  // Defer unclaimed user bubbles just as the live stream does; the returned
-  // cursor will claim the exact identity without matching message text.
-  const projected = formalEvents.filter(event => !(event.event_type === 'MESSAGE'
-    && ['user', 'human'].includes(String(event.payload.source ?? '').toLowerCase())
-    && pendingProjections.some(item => !item.formalEventIdsAtSubmission.has(event.id))));
+  // REST can expose a formal user event and its process descendants before the
+  // POST acknowledgement supplies the exact cursor. Keep that whole branch
+  // hidden until it can replace its own local bubble; otherwise a descendant
+  // without its parent is rendered as an orphan beside the preceding turn.
+  const deferredUserEventIds = new Set(formalEvents.flatMap(event => (
+    event.event_type === 'MESSAGE'
+      && ['user', 'human'].includes(String(event.payload.source ?? '').toLowerCase())
+      && pendingProjections.some(item => !item.formalEventIdsAtSubmission.has(event.id))
+      ? [event.id]
+      : []
+  )));
+  const formalEventsById = new Map(formalEvents.map(event => [event.id, event]));
+  const actionEventsByReference = new Map<string, OpenHandsConversationEvent>();
+  for (const event of formalEvents) {
+    if (event.event_type !== 'TOOL_CALL') continue;
+    actionEventsByReference.set(event.id, event);
+    if (typeof event.payload.action_id === 'string') actionEventsByReference.set(event.payload.action_id, event);
+    if (typeof event.payload.tool_call_id === 'string') actionEventsByReference.set(event.payload.tool_call_id, event);
+  }
+  const belongsToDeferredUserBranch = (event: OpenHandsConversationEvent): boolean => {
+    const visited = new Set<string>();
+    let current: OpenHandsConversationEvent | undefined = event;
+    while (current && !visited.has(current.id)) {
+      if (deferredUserEventIds.has(current.id)) return true;
+      visited.add(current.id);
+      const parentId: unknown = current.payload.parent_id;
+      current = (typeof parentId === 'string' ? formalEventsById.get(parentId) : undefined)
+        ?? (typeof current.payload.action_id === 'string' ? actionEventsByReference.get(current.payload.action_id) : undefined)
+        ?? (typeof current.payload.tool_call_id === 'string' ? actionEventsByReference.get(current.payload.tool_call_id) : undefined);
+    }
+    return false;
+  };
+  const projected = formalEvents.filter(event => !belongsToDeferredUserBranch(event));
 
   for (const local of projections) {
     const formalIndex = !local.canonicalEventId
@@ -6566,7 +6593,18 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     const pendingProjections = [...localMessageProjections.current.values()].filter(item => (
       item.scope === scope && item.state === 'submitting' && !item.canonicalEventId
     ));
-    if (isUserMessage && pendingProjections.some(item => !item.formalEventIdsAtSubmission.has(event.id))) {
+    const deferredEvents = [...deferredFormalUserEvents.current.values()]
+      .filter(item => item.scope === scope)
+      .map(item => item.event);
+    const deferredEventIds = new Set(deferredEvents.map(item => item.id));
+    const deferredActionReferences = new Set(deferredEvents.flatMap(item => [
+      item.payload.action_id,
+      item.payload.tool_call_id,
+    ].filter((reference): reference is string => typeof reference === 'string')));
+    const belongsToDeferredBranch = deferredEventIds.has(String(event.payload.parent_id ?? ''))
+      || deferredActionReferences.has(String(event.payload.action_id ?? ''))
+      || deferredActionReferences.has(String(event.payload.tool_call_id ?? ''));
+    if ((isUserMessage && pendingProjections.some(item => !item.formalEventIdsAtSubmission.has(event.id))) || belongsToDeferredBranch) {
       deferredFormalUserEvents.current.set(event.id, { scope, event });
       return;
     }
