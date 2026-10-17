@@ -8339,10 +8339,15 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       const targetElement = document.elementFromPoint(event.clientX, event.clientY)
         ?.closest<HTMLElement>('[data-conversation-binding-id]');
       const targetId = targetElement?.dataset.conversationBindingId;
-      const target = targetId ? group.find(item => item.id === targetId) : undefined;
+      const hoveredTarget = dragTargetRef.current;
+      const target = targetId
+        ? group.find(item => item.id === targetId)
+        : hoveredTarget ? group.find(item => item.id === hoveredTarget.bindingId) : undefined;
       if (target && target.id !== draggedId) {
-        const bounds = targetElement!.getBoundingClientRect();
-        commitConversationDrop(draggedId, target, event.clientY >= bounds.top + bounds.height / 2, group);
+        const after = targetElement
+          ? event.clientY >= targetElement.getBoundingClientRect().top + targetElement.getBoundingClientRect().height / 2
+          : hoveredTarget?.after;
+        if (after !== undefined) commitConversationDrop(draggedId, target, after, group);
       }
     }
     clearConversationDrag();

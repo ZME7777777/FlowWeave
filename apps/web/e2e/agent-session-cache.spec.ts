@@ -2336,13 +2336,14 @@ test('A new conversation stays first after an existing conversation was reordere
   const dataTransfer = await page.evaluateHandle(() => new DataTransfer());
   const targetBounds = await target.boundingBox();
   await source.dispatchEvent('dragstart', { dataTransfer });
-  // Native DnD occasionally omits `drop` while still reporting the final
-  // pointer coordinates to `dragend`; that fallback must commit the order.
-  await source.dispatchEvent('dragend', {
+  // Some native DnD implementations omit `drop` and report (0, 0) for
+  // `dragend`. The most recent valid hover target must still commit the order.
+  await target.dispatchEvent('dragover', {
     dataTransfer,
     clientX: targetBounds!.x + targetBounds!.width / 2,
     clientY: targetBounds!.y + 2,
   });
+  await source.dispatchEvent('dragend', { dataTransfer, clientX: 0, clientY: 0 });
   await dataTransfer.dispose();
   await expect.poll(() => orderRequests).toBe(1);
   const orderedRows = page.locator('.agent-workspace-group').filter({ hasText: '根工作区' }).locator('[data-conversation-binding-id]');
