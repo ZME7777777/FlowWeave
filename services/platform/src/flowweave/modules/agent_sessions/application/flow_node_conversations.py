@@ -56,6 +56,7 @@ from flowweave.modules.agent_sessions.application.draft_attachments import (
 from flowweave.modules.agent_sessions.application.event_branch import (
     complete_active_branch,
     complete_latest_user_turn,
+    terminal_assistant_message_ids,
 )
 from flowweave.modules.agent_sessions.application.flow_node_locator import (
     active_runtime_handle,
@@ -2752,13 +2753,7 @@ def _event_batch_dict(
     node_run = db.get(NodeRun, attempt.node_run_id)
     if node_run is None or node_run.flow_run_id != binding.flow_run_id:
         raise DomainError("NODE_RUN_NOT_FOUND", "节点执行记录不可用", 409)
-    final_assistant_message_id = (
-        batch.result.completion_event_id
-        if batch.result is not None
-        and batch.result.status == "COMPLETED"
-        and batch.result.completion_event_kind == "ASSISTANT_MESSAGE"
-        else None
-    )
+    terminal_assistant_ids = terminal_assistant_message_ids(batch)
 
     def project(event: Any) -> dict[str, Any]:
         payload = dict(event.payload)
@@ -2766,7 +2761,7 @@ def _event_batch_dict(
             "agent",
             "assistant",
         }:
-            payload["final_reply"] = event.cursor == final_assistant_message_id
+            payload["final_reply"] = event.cursor in terminal_assistant_ids
         content = payload.get("content")
         if isinstance(content, str):
             payload["content"] = project_sandbox_images(

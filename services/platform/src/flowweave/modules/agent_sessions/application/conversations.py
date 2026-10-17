@@ -45,6 +45,7 @@ from flowweave.modules.agent_sessions.application.draft_attachments import (
 from flowweave.modules.agent_sessions.application.event_branch import (
     complete_active_branch,
     complete_latest_user_turn,
+    terminal_assistant_message_ids,
 )
 from flowweave.modules.agent_sessions.application.runtime_config import (
     build_agent_spec,
@@ -2415,13 +2416,7 @@ def _project_conversation_events(
         attachments_by_event.setdefault(attachment.event_id, []).append(attachment)
 
     reply_annotations_by_event = _structured_reply_annotations(batch.events)
-    final_assistant_message_id = (
-        batch.result.completion_event_id
-        if batch.result is not None
-        and batch.result.status == "COMPLETED"
-        and batch.result.completion_event_kind == "ASSISTANT_MESSAGE"
-        else None
-    )
+    terminal_assistant_ids = terminal_assistant_message_ids(batch)
 
     def projected_event(event: Any) -> dict[str, Any]:
         payload = dict(event.payload)
@@ -2429,7 +2424,7 @@ def _project_conversation_events(
             "agent",
             "assistant",
         }:
-            payload["final_reply"] = event.cursor == final_assistant_message_id
+            payload["final_reply"] = event.cursor in terminal_assistant_ids
         content = payload.get("content")
         if isinstance(content, str):
             payload["content"] = _project_sandbox_images(

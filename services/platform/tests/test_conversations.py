@@ -26,6 +26,7 @@ from flowweave.modules.agent_sessions.application import usage as usage_projecti
 from flowweave.modules.agent_sessions.application.event_branch import (
     complete_active_branch,
     complete_latest_user_turn,
+    terminal_assistant_message_ids,
 )
 from flowweave.modules.agent_sessions.application.host import (
     ACCESS_TERMINAL,
@@ -642,6 +643,45 @@ def test_complete_latest_user_turn_keeps_one_page_when_the_turn_is_complete() ->
     assert calls == [(None, None)]
     assert [event.cursor for event in hydrated.events] == ["current-user", "current-reply"]
     assert hydrated.history_cursor == "older-page"
+
+
+def test_terminal_assistant_message_ids_preserve_prior_reply_after_next_user_turn() -> None:
+    batch = RuntimeEventBatch(
+        events=(
+            RuntimeEvent("prior-user", "MESSAGE", {"parent_id": "__root__", "source": "user"}),
+            RuntimeEvent(
+                "prior-reply", "MESSAGE", {"parent_id": "prior-user", "source": "agent"}
+            ),
+            RuntimeEvent(
+                "current-user", "MESSAGE", {"parent_id": "prior-reply", "source": "user"}
+            ),
+            RuntimeEvent(
+                "current-progress",
+                "MESSAGE",
+                {"parent_id": "current-user", "source": "agent"},
+            ),
+        ),
+        result=RuntimeResult(status="RUNNING"),
+    )
+
+    assert terminal_assistant_message_ids(batch) == frozenset({"prior-reply"})
+
+
+def test_terminal_assistant_message_ids_keeps_current_final_and_excludes_progress() -> None:
+    batch = RuntimeEventBatch(
+        events=(
+            RuntimeEvent("user", "MESSAGE", {"parent_id": "__root__", "source": "user"}),
+            RuntimeEvent("progress", "MESSAGE", {"parent_id": "user", "source": "agent"}),
+            RuntimeEvent("final", "MESSAGE", {"parent_id": "progress", "source": "agent"}),
+        ),
+        result=RuntimeResult(
+            status="COMPLETED",
+            completion_event_id="final",
+            completion_event_kind="ASSISTANT_MESSAGE",
+        ),
+    )
+
+    assert terminal_assistant_message_ids(batch) == frozenset({"final"})
 
 
 def test_hydration_defers_formal_current_view_metrics_until_context_refresh(

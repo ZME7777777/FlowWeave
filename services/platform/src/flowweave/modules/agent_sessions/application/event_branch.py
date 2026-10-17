@@ -146,6 +146,52 @@ def complete_latest_user_turn(
     raise ValueError("OpenHands latest user turn exceeds the bounded hydration read budget")
 
 
+def terminal_assistant_message_ids(batch: RuntimeEventBatch) -> frozenset[str]:
+    """Identify durable final assistant messages for every completed visible turn.
+
+    ``batch.result`` can only describe the active turn.  Once the user starts
+    another turn, retain the closest assistant message in the preceding formal
+    parent chain as that completed turn's reply; do not reinterpret it as
+    progress merely because the latest result now belongs to another turn.
+    """
+
+    events_by_id = {event.cursor: event for event in batch.events}
+    terminal_ids: set[str] = set()
+    result = batch.result
+    if (
+        result is not None
+        and result.status == "COMPLETED"
+        and result.completion_event_kind == "ASSISTANT_MESSAGE"
+        and result.completion_event_id in events_by_id
+    ):
+        terminal_ids.add(result.completion_event_id)
+
+    for event in batch.events:
+        if event.event_type != "MESSAGE" or str(event.payload.get("source") or "").lower() not in {
+            "user",
+            "human",
+        }:
+            continue
+        parent_id = event.payload.get("parent_id")
+        visited: set[str] = set()
+        while isinstance(parent_id, str) and parent_id not in {"", "__root__"}:
+            if parent_id in visited:
+                break
+            visited.add(parent_id)
+            ancestor = events_by_id.get(parent_id)
+            if ancestor is None:
+                break
+            source = str(ancestor.payload.get("source") or "").lower()
+            if ancestor.event_type == "MESSAGE" and source in {"agent", "assistant"}:
+                terminal_ids.add(ancestor.cursor)
+                break
+            if ancestor.event_type == "MESSAGE" and source in {"user", "human"}:
+                break
+            parent_id = ancestor.payload.get("parent_id")
+
+    return frozenset(terminal_ids)
+
+
 def latest_user_message_on_active_branch(
     events: tuple[RuntimeEvent, ...], leaf_event_id: str | None
 ) -> RuntimeEvent | None:
