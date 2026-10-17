@@ -241,21 +241,25 @@ def _project_stream_event(
     payload = native_event.get("payload")
     if not isinstance(payload, dict) or not isinstance(payload.get("content"), str):
         return event
-    return {
-        **event,
-        "event": {
-            **native_event,
-            "payload": {
-                **payload,
-                "content": conversations.project_sandbox_images(
-                    payload["content"],
-                    workspace_id=workspace_id,
-                    binding_id=binding_id,
-                    working_directory=working_directory,
-                ),
-            },
-        },
-    }
+    content = conversations.project_sandbox_images(
+        payload["content"],
+        workspace_id=workspace_id,
+        binding_id=binding_id,
+        working_directory=working_directory,
+    )
+    display_content, references, workspace_references, annotations = (
+        conversations.project_conversation_references(content)
+    )
+    projected_payload = {**payload, "content": content}
+    if str(payload.get("source") or "").lower() in {"user", "human"}:
+        projected_payload["display_content"] = display_content
+    if references:
+        projected_payload["conversation_references"] = list(references)
+    if workspace_references:
+        projected_payload["workspace_references"] = list(workspace_references)
+    if annotations:
+        projected_payload["collaboration_annotations"] = list(annotations)
+    return {**event, "event": {**native_event, "payload": projected_payload}}
 
 
 async def _forward_runtime_events(

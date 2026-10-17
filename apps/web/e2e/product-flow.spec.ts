@@ -2305,8 +2305,9 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   runningDirectFormalEventPersisted = true;
   agentStream!.send(JSON.stringify({
     type: 'event',
-    event: { id: 'running-direct-stream-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'running-user', content: 'FLOWWEAVE_MESSAGE_CONTEXT_V5:{"current_user_request":{"content":"运行中直接发送消息"}}', display_content: '运行中直接发送消息', timestamp: new Date().toISOString().replace(/Z$/, '') } },
+    event: { id: 'running-direct-stream-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'running-user', content: 'FlowWeave message context (JSON):\n\n---FLOWWEAVE_MESSAGE_CONTEXT_V5---\n{"version":5,"reference_materials":[],"current_user_request":{"content":"运行中直接发送消息"}}', timestamp: new Date().toISOString().replace(/Z$/, '') } },
   }));
+  await expect(page.getByText('FlowWeave message context (JSON):', { exact: true })).toHaveCount(0);
   agentStream!.send(JSON.stringify({
     type: 'event',
     event: { id: 'running-direct-tool', event_type: 'TOOL_CALL', payload: { parent_id: 'running-direct-stream-user', action_id: 'running-direct-tool', tool_call_id: 'running-direct-call', tool_name: 'terminal', event_name: 'TerminalAction', details: { command: 'git status --short' }, timestamp: new Date().toISOString() } },

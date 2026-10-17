@@ -484,7 +484,66 @@ async def test_prepare_failure_rolls_back_and_never_starts_runtime_or_projection
             engine.dispose()
 
 
-@pytest.mark.parametrize("host", ["workspace", "node", "run"])
+@pytest.mark.parametrize(
+    ("project", "kwargs"),
+    (
+        (
+            workspace_router._project_stream_event,
+            {
+                "workspace_id": "workspace",
+                "binding_id": "binding",
+                "working_directory": "/runtime/workspace/project",
+            },
+        ),
+        (
+            node_router._project_stream_event,
+            {"flow_run_id": "run", "attempt_id": "attempt", "binding_id": "binding"},
+        ),
+        (run_router._project_stream_event, {}),
+    ),
+)
+def test_stream_event_projection_never_exposes_message_context(project, kwargs):
+    prompt, _ = workspace.message_payload(
+        "只显示这条用户消息",
+        (),
+        ({"event_id": "reference-event", "content": "仅作为会话引用"},),
+        annotations=(
+            {
+                "id": "annotation-1",
+                "anchor_kind": "CONVERSATION_TEXT",
+                "anchor": {"event_id": "reference-event", "quote": "仅作为会话引用"},
+                "comment": "请关注这里",
+            },
+        ),
+    )
+
+    projected = project(
+        {
+            "type": "event",
+            "event": {
+                "id": "user-event",
+                "event_type": "MESSAGE",
+                "payload": {"source": "user", "content": prompt},
+            },
+        },
+        **kwargs,
+    )
+
+    payload = projected["event"]["payload"]
+    assert payload["content"] == prompt
+    assert payload["display_content"] == "只显示这条用户消息"
+    assert payload["conversation_references"] == [
+        {"event_id": "reference-event", "content": "仅作为会话引用"}
+    ]
+    assert payload["collaboration_annotations"] == [
+        {
+            "id": "annotation-1",
+            "anchor_kind": "CONVERSATION_TEXT",
+            "anchor": {"event_id": "reference-event", "quote": "仅作为会话引用"},
+            "comment": "请关注这里",
+        }
+    ]
+
 def test_preparation_freezes_ids_and_preserves_entry_authorization(monkeypatch, host):
     locator = _locator("workspace" if host == "workspace" else "node")
     saved = locator.locator if host == "workspace" else locator

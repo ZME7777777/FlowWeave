@@ -7,7 +7,7 @@ import { ConversationTextReveal } from './ConversationTextReveal';
 import { useEscapeClose } from './useEscapeClose';
 import { subagentAvatarSlotForEvent, subagentAvatarSlots, type SubagentAvatarSlot } from '../utils/subagentAvatar';
 import { workspaceFileChanges, workspaceRelativePath, type WorkspaceFileChange } from './agent-session/fileChanges';
-import { isOpenHandsAgentReply, isOpenHandsConversationTerminalError, isOpenHandsEmptyResponseRecovery, orderOpenHandsConversationEvents, parseOpenHandsEventTime } from './conversationEvents';
+import { isFlowWeaveMessageContext, isOpenHandsAgentReply, isOpenHandsConversationTerminalError, isOpenHandsEmptyResponseRecovery, orderOpenHandsConversationEvents, parseOpenHandsEventTime } from './conversationEvents';
 import './conversation-surface.css';
 
 type ItemKind = 'user' | 'assistant' | 'thought' | 'tool' | 'error' | 'condensation' | 'security';
@@ -465,7 +465,7 @@ function itemsFor(event: OpenHandsConversationEvent, taskRetryError = false): It
     const isUser = source === 'user' || source === 'human';
     const displayContent = typeof event.payload.display_content === 'string'
       ? event.payload.display_content
-      : content;
+      : isFlowWeaveMessageContext(content) ? '' : content;
     if (isUser) return [{ event, kind: 'user', title: '', content: displayContent }];
     if (isOpenHandsAgentReply(event)) return [{ event, kind: 'assistant', title: '', content }];
     if (isOpenHandsEmptyResponseRecovery(event)) return [];
