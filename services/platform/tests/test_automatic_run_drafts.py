@@ -903,6 +903,47 @@ def test_stepwise_node_draft_remains_editable_until_explicit_start(client):
     assert len(detail["node_runs"]) == 1
 
 
+def test_stepwise_draft_rejects_missing_agent_model_before_persisting(client):
+    flow = _create_flow(client)
+    parent = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    ).json()
+    record = client.post(
+        f"/api/v1/flow-runs/{parent['id']}/stepwise-runs",
+        json={"name": "缺少模型的逐步草稿", "start_node_key": "first"},
+    ).json()
+    input_artifact = client.post(
+        f"/api/v1/flow-runs/{record['id']}/nodes/first/input-artifacts",
+        json={
+            "field_key": "source",
+            "artifact_type": "URL",
+            "uri": "https://example.com/stepwise-missing-model-input",
+        },
+    )
+    assert input_artifact.status_code == 201, input_artifact.text
+    rejected = client.put(
+        f"/api/v1/flow-runs/{record['id']}/stepwise-node-drafts/first",
+        json={
+            "expected_row_version": 1,
+            "startup_mode": "PROMPT",
+            "startup_prompt": "应在保存时拒绝缺少模型的配置",
+            "agent_preset": {
+                "capability_version_ids": [],
+                "node_context_enabled": False,
+            },
+            "gates": [],
+            "artifact_ids": {"source": input_artifact.json()["id"]},
+            "input_urls": {},
+        },
+    )
+    assert rejected.status_code == 409, rejected.text
+    assert rejected.json()["error"]["code"] == "AGENT_MODEL_CONFIGURATION_REQUIRED"
+    detail = client.get(f"/api/v1/flow-runs/{record['id']}").json()
+    assert detail["node_runs"] == []
+    assert detail["stepwise_node_drafts"] == {}
+
+
 def test_stepwise_draft_start_accepts_on_end_gate_and_exposes_downstream_draft(
     client, db_session_factory
 ):

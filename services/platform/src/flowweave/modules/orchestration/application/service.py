@@ -4383,8 +4383,12 @@ def _stepwise_draft_projection(draft: dict[str, Any]) -> dict[str, Any]:
 def _stepwise_draft_ready(node: dict[str, Any], draft: dict[str, Any]) -> bool:
     if str(draft.get("startup_mode") or "PROMPT") != "PROMPT":
         return False
-    if not str(draft.get("startup_prompt") or "").strip() or not isinstance(
-        draft.get("agent_preset"), dict
+    preset = draft.get("agent_preset")
+    if (
+        not str(draft.get("startup_prompt") or "").strip()
+        or not isinstance(preset, dict)
+        or not str(preset.get("model_provider_id") or "").strip()
+        or not str(preset.get("model_name") or "").strip()
     ):
         return False
     bindings = _stepwise_draft_bindings(draft)
@@ -4515,6 +4519,35 @@ def save_stepwise_node_draft(
             expected=payload.expected_row_version,
             actual=existing_version,
         )
+    # Match continuous plans: reject unavailable model configuration while the
+    # draft is still editable, then persist the resolved immutable identities.
+    preset = _freeze_draft_agent_preset(db, payload.agent_preset.model_dump())
+    frozen_gates: list[dict[str, Any]] = []
+    for gate in payload.gates:
+        gate_config = agent_sessions.resolve_session_config(
+            db,
+            model_provider_id=gate.agent_preset.model_provider_id,
+            model_name=gate.agent_preset.model_name,
+            reasoning_effort=gate.agent_preset.reasoning_effort,
+            fallback_models=(),
+            capability_version_ids=(),
+        )
+        frozen_gates.append(
+            {
+                "id": str(uuid4()),
+                "stage": gate.stage,
+                "position": gate.position,
+                "gate_type": gate.gate_type,
+                "enabled": gate.enabled,
+                "timeout_seconds": gate.timeout_seconds,
+                "config": copy.deepcopy(gate.config),
+                "agent_preset": {
+                    "model_provider_id": gate_config.model_provider_id,
+                    "model_name": gate_config.model_name,
+                    "reasoning_effort": gate_config.reasoning_effort,
+                },
+            }
+        )
     existing_bindings = _stepwise_draft_bindings(existing or {})
     artifact_ids = dict(payload.artifact_ids)
     for field_key, binding in existing_bindings.items():
@@ -4558,7 +4591,6 @@ def save_stepwise_node_draft(
         )
         artifact_ids[field_key] = artifact.id
     _validate_input_bindings(db, run, node, artifact_ids)
-    preset = payload.agent_preset.model_dump()
     executor = cast(dict[str, Any], node.get("asset", {}).get("executor") or {})
     effective_context_prompt = (
         str(preset["node_context_prompt"])
@@ -4570,19 +4602,7 @@ def save_stepwise_node_draft(
         "startup_mode": "PROMPT",
         "startup_prompt": payload.startup_prompt,
         "agent_preset": preset,
-        "gates": [
-            {
-                "id": str(uuid4()),
-                "stage": gate.stage,
-                "position": gate.position,
-                "gate_type": gate.gate_type,
-                "enabled": gate.enabled,
-                "timeout_seconds": gate.timeout_seconds,
-                "config": gate.config,
-                "agent_preset": gate.agent_preset.model_dump(),
-            }
-            for gate in payload.gates
-        ],
+        "gates": frozen_gates,
         "context_ids": (
             [_MANUAL_NODE_CONTEXT_ID]
             if preset["node_context_enabled"] and effective_context_prompt.strip()
