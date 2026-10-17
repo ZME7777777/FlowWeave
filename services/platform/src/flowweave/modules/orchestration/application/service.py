@@ -3450,6 +3450,7 @@ def process_flow_run_schedule_occurrence(
         run = _materialize_scheduled_run(db, schedule, occurrence)
         occurrence.flow_run_id = run.id
         occurrence.state = "STARTED"
+        _finalize_schedule_occurrence(db, run)
         schedule.last_run_at = datetime.now(UTC)
         schedule.has_execution = True
     except DomainError as exc:
@@ -3497,6 +3498,9 @@ def _materialize_scheduled_run(
     )
     db.add(run)
     db.flush()
+    # Automatic execution can finish in this transaction, so establish the
+    # occurrence link before its terminal state is recomputed.
+    occurrence.flow_run_id = run.id
     snapshot = RunSnapshot(
         flow_run_id=run.id,
         version=1,
@@ -8777,6 +8781,7 @@ def _recompute_run(db: Session, run: FlowRun) -> None:
         run.completion_mode = "AUTO"
         run.finished_at = now()
         _event(db, run.id, "FLOW_RUN_COMPLETED", {"mode": "AUTO"})
+        _finalize_schedule_occurrence(db, run)
         _enqueue_terminal_runtime_stop(db, run.id)
     elif any(x.state == NodeRunState.ACTIVE for x in node_runs):
         attempts = list(
@@ -8805,6 +8810,28 @@ def _recompute_run(db: Session, run: FlowRun) -> None:
             run.state = FlowRunState.WAITING_HUMAN
         else:
             run.state = FlowRunState.ACTIVE
+
+
+def _finalize_schedule_occurrence(db: Session, run: FlowRun) -> None:
+    """Keep a generated schedule occurrence aligned with its terminal FlowRun."""
+
+    if not run.schedule_occurrence_id or run.state not in {
+        FlowRunState.COMPLETED,
+        FlowRunState.CANCELLED,
+    }:
+        return
+    db.execute(
+        update(FlowRunScheduleOccurrence)
+        .where(
+            FlowRunScheduleOccurrence.id == run.schedule_occurrence_id,
+            FlowRunScheduleOccurrence.state != "FAILED",
+        )
+        .values(
+            state="COMPLETED" if run.state == FlowRunState.COMPLETED else "CANCELLED",
+            error_detail=None,
+        )
+        .execution_options(synchronize_session=False)
+    )
 
 
 def _enqueue_terminal_runtime_stop(db: Session, flow_run_id: str) -> None:
@@ -10315,6 +10342,7 @@ def cancel_run(db: Session, run_id: str, idempotency_key: str) -> dict[str, Any]
         else:
             attempt.runtime_phase = "CANCELLED"
     _event(db, run.id, "FLOW_RUN_CANCELLED")
+    _finalize_schedule_occurrence(db, run)
     _enqueue_terminal_runtime_stop(db, run.id)
     finish(db)
     return run_detail(db, run.id)

@@ -1407,6 +1407,63 @@ def test_schedule_occurrence_stays_in_original_flow_run_as_continuous_record(
     }
 
 
+def test_completed_schedule_occurrence_reaches_the_same_terminal_state(
+    worker_client, worker_container
+):
+    from flowweave.bootstrap.worker import TaskWorker
+
+    flow = _create_flow(worker_client)
+    parent = worker_client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={
+            "name": "定时任务完成状态所属 FlowRun",
+            "environment_version_id": worker_client.environment_version_id,
+        },
+    ).json()
+    source = worker_client.post(
+        f"/api/v1/flow-runs/{parent['id']}/automatic-runs",
+        json={
+            "name": "定时连续运行完成状态母版",
+            "environment_version_id": worker_client.environment_version_id,
+            "start_node_key": "first",
+            "node_plans": {
+                "first": _node_plan(
+                    worker_client, "执行起点", input_url="https://example.com/scheduled-input"
+                ),
+                "second": _node_plan(worker_client, "执行下游"),
+            },
+        },
+    ).json()
+    created = worker_client.post(
+        "/api/v1/flow-run-schedules",
+        json={
+            "name": "完成状态检查",
+            "source_flow_run_id": source["id"],
+            "cron_expression": "0 * * * *",
+        },
+    )
+    assert created.status_code == 201, created.text
+    schedule = created.json()
+    triggered = worker_client.post(f"/api/v1/flow-run-schedules/{schedule['id']}/trigger")
+    assert triggered.status_code == 202, triggered.text
+
+    worker = TaskWorker(worker_container)
+    occurrence = None
+    for _ in range(24):
+        worker._run_once_sync()
+        occurrences = worker_client.get(
+            f"/api/v1/flow-run-schedules/{schedule['id']}/occurrences?page=1&page_size=10"
+        )
+        assert occurrences.status_code == 200, occurrences.text
+        occurrence = occurrences.json()["items"][0]
+        if occurrence["state"] == "COMPLETED":
+            break
+
+    assert occurrence is not None
+    assert occurrence["state"] == "COMPLETED", occurrence
+    assert occurrence["flow_run"]["state"] == "COMPLETED"
+
+
 def test_automatic_run_draft_rejects_unknown_frozen_nodes(client):
     flow = _create_flow(client)
     unknown_start = client.post(
