@@ -3002,7 +3002,10 @@ test('selected conversation text is sent and rendered as a compact reference car
   await page.getByRole('button', { name: '添加到会话' }).click();
   const resourceTags = page.getByLabel('已添加的附件和会话引用');
   await expect(resourceTags).toHaveCount(1);
-  await expect(resourceTags.getByRole('button', { name: '会话引用 1', exact: true })).toBeVisible();
+  const conversationReference = resourceTags.locator('.agent-conversation-reference');
+  await expect(conversationReference).toHaveCount(1);
+  await expect(conversationReference.getByRole('button', { name: '会话引用 1', exact: true })).toBeVisible();
+  await expect(conversationReference.getByRole('button', { name: '移除会话引用 1', exact: true })).toHaveCSS('border-top-left-radius', '6px');
   const commentCard = page.getByRole('dialog', { name: '会话引用 1 详情' });
   await expect(commentCard).toBeVisible();
   const commentInput = commentCard.getByLabel('编辑注释评论');

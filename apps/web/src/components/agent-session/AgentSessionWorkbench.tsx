@@ -172,7 +172,7 @@ function ComposerConversationReferenceList({ references, onOpen, onRemove }: {
   onRemove: (reference: ConversationReference) => void;
 }) {
   if (!references.length) return null;
-  return <>{references.map(reference => <span key={`${reference.sourceBindingId}:${reference.eventId}`}><button type="button" className="agent-attachment-open" title={`打开会话：${reference.title ?? reference.content}`} onClick={() => onOpen(reference)}><Quote size={14}/><em>{reference.title ?? reference.content}</em></button><button type="button" className="agent-attachment-remove" aria-label={`移除会话 ${reference.title ?? reference.content}`} onClick={() => onRemove(reference)}>×</button></span>)}</>;
+  return <>{references.map(reference => <span key={`${reference.sourceBindingId}:${reference.eventId}`} className="agent-conversation-reference"><button type="button" className="agent-attachment-open" title={`打开会话：${reference.title ?? reference.content}`} onClick={() => onOpen(reference)}><Quote size={14}/><em>{reference.title ?? reference.content}</em></button><button type="button" className="agent-attachment-remove" aria-label={`移除会话 ${reference.title ?? reference.content}`} onClick={() => onRemove(reference)}>×</button></span>)}</>;
 }
 
 function ComposerAnnotationList({ annotations, currentBindingId, onLocate, onRemove, onUpdate }: {
@@ -218,7 +218,7 @@ function ComposerAnnotationList({ annotations, currentBindingId, onLocate, onRem
     {annotations.map((annotation, index) => {
       const file = annotationFileDisplay(annotation);
       const referenceName = annotationReferenceName(annotation, index, currentBindingId);
-      return <span key={annotation.id}>
+      return <span key={annotation.id} className="agent-conversation-reference">
         <button type="button" className="agent-attachment-open" title={file ? `${file.path} · ${file.range}` : '查看、定位或编辑评论'} aria-expanded={openedId === annotation.id} onClick={() => {
           if (openedId === annotation.id) { closeOpened(); return; }
           setComment(annotation.comment);
