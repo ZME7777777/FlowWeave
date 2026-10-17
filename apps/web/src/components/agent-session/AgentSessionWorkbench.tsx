@@ -1013,6 +1013,22 @@ function writeQueuedMessages(storageKey: string | undefined, messages: QueuedMes
   }
 }
 
+function queuedMessageBindings(host: AgentSessionHost, workspaceId: string): string[] {
+  const marker = '__flowweave_queue_binding__';
+  const prefix = host.queuedMessagesStorageKey(workspaceId, marker).slice(0, -marker.length);
+  const bindings = new Set<string>();
+  try {
+    for (let index = 0; index < window.sessionStorage.length; index += 1) {
+      const key = window.sessionStorage.key(index);
+      if (!key?.startsWith(prefix)) continue;
+      for (const message of readQueuedMessages(key)) bindings.add(message.scope);
+    }
+  } catch {
+    // The current conversation remains usable when browser storage is blocked.
+  }
+  return [...bindings];
+}
+
 function readQueueMode(storageKey: string | undefined): boolean {
   if (!storageKey) return true;
   try {
@@ -4533,6 +4549,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const queuedMessagesStorageKeyRef = useRef<string | undefined>(undefined);
   const queuedMessagesRef = useRef<QueuedMessage[]>([]);
   const sendingMessageIds = useRef(new Set<string>());
+  const backgroundQueueDispatches = useRef(new Set<string>());
   const localMessageProjections = useRef(new Map<string, LocalMessageProjection>());
   const updateLocalMessageProjections = useCallback((update: (current: Map<string, LocalMessageProjection>) => void) => {
     update(localMessageProjections.current);
@@ -7404,6 +7421,61 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (immediate) window.setTimeout(() => send.mutate(message), 0);
     else send.mutate(message);
   }, [commitQueuedMessages, send, showOptimisticUserBubble]);
+  const dispatchBackgroundQueuedMessage = useCallback(async (bindingId: string) => {
+    if (!workspace || bindingId === activeComposerScope.current) return;
+    const storageKey = host.queuedMessagesStorageKey(workspace.id, bindingId);
+    if (!readQueueMode(host.queueModeStorageKey(workspace.id, bindingId))) return;
+    const queueHead = readQueuedMessages(storageKey).find(message => message.scope === bindingId);
+    if (!queueHead || backgroundQueueDispatches.current.has(queueHead.id) || sendingMessageIds.current.has(queueHead.id)) return;
+    backgroundQueueDispatches.current.add(queueHead.id);
+    let accepted = false;
+    try {
+      const readiness = await api.inputReadiness(workspace.id, bindingId);
+      if (!readiness.ready || !conversationHasReachedTerminalState(readiness.execution_status)) return;
+      const currentQueue = readQueuedMessages(storageKey);
+      if (currentQueue[0]?.id !== queueHead.id) return;
+      writeQueuedMessages(storageKey, currentQueue.filter(message => message.id !== queueHead.id));
+      sendingMessageIds.current.add(queueHead.id);
+      await api.sendMessage(
+        workspace.id, bindingId, queueHead.content, queueHead.items,
+        queueHead.references.map(item => ({
+          event_id: item.eventId, content: item.content, source_binding_id: item.sourceBindingId,
+          ...(item.compactStart !== undefined && item.compactEnd !== undefined
+            ? { selection: { compact_start: item.compactStart, compact_end: item.compactEnd } }
+            : {}),
+        })),
+        queueHead.workspaceReferences ?? [], messageAnnotations(queueHead.annotations, queueHead.references), queueHead.id,
+      );
+      accepted = true;
+      void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-activity', workspace.id) });
+      void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversations', workspace.id) });
+    } catch (error) {
+      accepted = error instanceof ApiError && error.code === 'AGENT_MESSAGE_DELIVERY_AMBIGUOUS';
+      reportOperationError(bindingId, error instanceof Error ? error : new Error('后台队列消息发送失败'));
+    } finally {
+      if (!accepted) {
+        const currentQueue = readQueuedMessages(storageKey);
+        if (!currentQueue.some(message => message.id === queueHead.id)) writeQueuedMessages(storageKey, [queueHead, ...currentQueue]);
+      }
+      sendingMessageIds.current.delete(queueHead.id);
+      backgroundQueueDispatches.current.delete(queueHead.id);
+    }
+  }, [api, host, queryClient, reportOperationError, workspace]);
+  const onBackgroundQueueStreamEvent = useCallback((bindingId: string, event: AgentStreamEvent) => {
+    if (event.type !== 'event' || !event.event) return;
+    const formalEvent = event.event;
+    if (isOpenHandsConversationTerminalError(formalEvent)
+      || (formalEvent.event_type === 'COMPLETED' && formalEvent.payload.event_name === 'FinishAction')
+      || isOpenHandsAgentReply(formalEvent)) {
+      void dispatchBackgroundQueuedMessage(bindingId);
+    }
+  }, [dispatchBackgroundQueuedMessage]);
+  useEffect(() => {
+    if (!workspace || !conversationActivityQuery.data || !pageVisible) return;
+    for (const bindingId of queuedMessageBindings(host, workspace.id)) {
+      if (bindingId !== activeComposerScope.current && !runningConversationIds.has(bindingId)) void dispatchBackgroundQueuedMessage(bindingId);
+    }
+  }, [conversationActivityQuery.data, dispatchBackgroundQueuedMessage, host, pageVisible, runningConversationIds, workspace]);
   const migrateStreaming = useMutation({
     mutationFn: (_message: QueuedMessage) => {
       void _message;
@@ -8527,6 +8599,16 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   };
   return <main className="agent-workbench-page" style={{ '--conversation-rail-width': `${conversationRailWidth}px` } as CSSProperties}>
     {selected && <ConversationStreamObserver workspaceId={workspace.id} bindingId={selected.id} enabled={streamEnabled} onEvent={onStreamEvent} onStatus={updateStreamStatus} onReconnect={onStreamReconnect}/>}
+    {workspace && queuedMessageBindings(host, workspace.id).filter(bindingId => bindingId !== selected?.id).map(bindingId => (
+      <ConversationStreamObserver
+        key={`queue-dispatch:${bindingId}`}
+        workspaceId={workspace.id}
+        bindingId={bindingId}
+        enabled={Boolean(runtime?.write_available)}
+        onEvent={onBackgroundQueueStreamEvent}
+        onStatus={() => undefined}
+      />
+    ))}
     {conversationSearchOpen && <ConversationSearchDialog search={conversationSearchQuery.data} hits={conversationSearchHits} hasMore={Boolean(conversationSearchQuery.data?.next_cursor)} workDirectories={workDirectories} rootLabel={workDirectoriesQuery.data?.root.display_name ?? '根工作区'} onClose={() => setConversationSearchOpen(false)} onSubmit={startConversationSearch} onLoadMore={() => { if (conversationSearchQuery.data?.next_cursor) setConversationSearchCursor(conversationSearchQuery.data.next_cursor); }} submitting={conversationSearchQuery.isFetching && conversationSearchCursor === undefined} loadingMore={conversationSearchQuery.isFetching && conversationSearchCursor !== undefined} onOpenHit={openConversationSearchHit}/>}{/* Conversation search */}
     {filePreviewRequest && <ConversationFilePreviewDialog
       key={filePreviewRequest.key}
