@@ -70,6 +70,9 @@ def test_end_gate_execution_error_is_distinct_from_business_failure(monkeypatch)
         def add(self, _item):
             return None
 
+        def scalar(self, _statement):
+            return None
+
     monkeypatch.setattr(service, "_current_candidate_output_set", lambda *_args: candidate)
     monkeypatch.setattr(service, "_node_run", lambda *_args: node_run)
     monkeypatch.setattr(service, "_run", lambda *_args: run)

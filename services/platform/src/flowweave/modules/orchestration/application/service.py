@@ -2150,6 +2150,7 @@ def _gate_context(
 
 _PLATFORM_OUTPUT_REVIEW_POLICY_ID = "__platform_output_contract__"
 _PLATFORM_OUTPUT_REVIEW_POSITION = -10_000
+_BUSINESS_RESULT_CONTRACT_POSITION = -9_000
 
 
 def _platform_output_review_policy(_db: Session, _attempt: NodeAttempt) -> dict[str, Any]:
@@ -2171,6 +2172,64 @@ def _platform_output_review_policy(_db: Session, _attempt: NodeAttempt) -> dict[
             "review_kind": "DELIVERY_AND_MAPPING",
         },
     }
+
+
+def _business_result_contract_review_policies(
+    policies: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Derive deterministic, opt-in contract checks from frozen author gates."""
+
+    derived: list[dict[str, Any]] = []
+    for index, policy in enumerate(policies):
+        config = policy.get("config")
+        contract = config.get("business_result_contract") if isinstance(config, dict) else None
+        policy_id = str(policy.get("id") or "")
+        if not isinstance(contract, dict) or not policy_id:
+            continue
+        derived.append(
+            {
+                "id": f"__business_result_contract__:{policy_id}",
+                "stage": "END",
+                "position": _BUSINESS_RESULT_CONTRACT_POSITION + index,
+                "gate_type": "BUSINESS_RESULT_CONTRACT",
+                "enabled": True,
+                "timeout_seconds": 1,
+                "config": {
+                    "system_owned": True,
+                    "source_gate_policy_id": policy_id,
+                    "business_result_contract": copy.deepcopy(contract),
+                },
+            }
+        )
+    return derived
+
+
+def _startup_prompt_with_business_result_contract(
+    startup_prompt: str | None, gate_policies: list[dict[str, Any]]
+) -> str | None:
+    """Tell the execution Agent the exact frozen result envelope it must deliver."""
+
+    prompt = str(startup_prompt or "").strip()
+    if "FLOWWEAVE_BUSINESS_RESULT_CONTRACT_V1" in prompt:
+        return startup_prompt
+    contracts = []
+    for policy in gate_policies:
+        config = policy.get("config")
+        contract = config.get("business_result_contract") if isinstance(config, dict) else None
+        if isinstance(contract, dict):
+            contracts.append(contract)
+    if not contracts:
+        return startup_prompt
+    instruction = (
+        "\n\n[FLOWWEAVE_BUSINESS_RESULT_CONTRACT_V1]\n"
+        "本节点的结束门禁会先对下列业务结果合同做确定性校验。请在每个合同的 "
+        "result_output_keys 指定的文本输出中写入一个完整 JSON 对象，格式为 "
+        '{"flowweave_business_result":{...}}。对象必须包含 schema_version: 1、'
+        "status、node_kind 和 evidence；status 只有在全部证据真实、可追溯且已交付时才能为 "
+        "SUCCESS。不得用 BLOCKED、FAILED、猜测、空数组或报告正文代替必需证据；未完成时如实"
+        "报告，但门禁会阻止下游流转。合同如下：\n" + json.dumps(contracts, ensure_ascii=False)
+    )
+    return f"{prompt}{instruction}".strip()
 
 
 @dataclass(frozen=True, slots=True)
@@ -2267,7 +2326,10 @@ def _record_gate_results(
                 key: preset.get(key)
                 for key in ("model_provider_id", "model_name", "reasoning_effort")
             }
-        if policy.get("gate_type") != "PLATFORM_OUTPUT_CONTRACT":
+        if policy.get("gate_type") not in {
+            "PLATFORM_OUTPUT_CONTRACT",
+            "BUSINESS_RESULT_CONTRACT",
+        }:
             result_json["_gate_review"] = _gate_review_projection(context, policy)
         if prepared.plan.sidecar_binding_id and result.sidecar_available:
             result_json["_gate_conversation_binding_id"] = prepared.plan.sidecar_binding_id
@@ -2494,6 +2556,7 @@ def _prepare_gate_stage(
         # gates.  The latter answer additional policy questions; they cannot
         # substitute for the platform's output-contract decision.
         policies.append(_platform_output_review_policy(db, attempt))
+        policies.extend(_business_result_contract_review_policies(policies))
     policies.sort(key=lambda x: int(x["position"]))
     prepared: list[_PreparedGate] = []
     for policy in policies:
@@ -2543,8 +2606,8 @@ def _prepare_gate_plan(
 
     config = dict(policy.get("config") or {})
     timeout = int(policy.get("timeout_seconds", 30))
-    if str(policy["gate_type"]) == "PLATFORM_OUTPUT_CONTRACT":
-        return GateExecutionPlan("PLATFORM_OUTPUT_CONTRACT", config, timeout)
+    if str(policy["gate_type"]) in {"PLATFORM_OUTPUT_CONTRACT", "BUSINESS_RESULT_CONTRACT"}:
+        return GateExecutionPlan(str(policy["gate_type"]), config, timeout)
     preset = policy.get("agent_preset")
     if not isinstance(preset, dict):
         return GateExecutionPlan(
@@ -3668,6 +3731,9 @@ def _create_node_run(
     allow_existing: bool = False,
     awaiting_start_confirmation: bool = False,
 ) -> tuple[NodeRun, NodeAttempt]:
+    startup_prompt = _startup_prompt_with_business_result_contract(
+        startup_prompt, gate_policies or []
+    )
     snapshot = _active_snapshot(db, run)
     node = _node(snapshot, instance_key)
     asset = cast(dict[str, Any], node.get("asset") or {})

@@ -1178,6 +1178,22 @@ def test_schedule_occurrence_stays_in_original_flow_run_as_continuous_record(
             "environment_version_id": worker_client.environment_version_id,
         },
     ).json()
+    provider_id = _automatic_model_provider_id(worker_client)
+    business_gate = {
+        "stage": "END",
+        "position": 0,
+        "gate_type": "PROMPT",
+        "config": {
+            "prompt": "审查业务结果是否可接受",
+            "business_result_contract": {
+                "schema_version": 1,
+                "node_kind": "COLLECTION",
+                "result_output_keys": ["result"],
+                "required_evidence_paths": ["source", "time_window"],
+            },
+        },
+        "agent_preset": {"model_provider_id": provider_id, "model_name": "gpt-auto"},
+    }
     source = worker_client.post(
         f"/api/v1/flow-runs/{parent['id']}/automatic-runs",
         json={
@@ -1185,9 +1201,12 @@ def test_schedule_occurrence_stays_in_original_flow_run_as_continuous_record(
             "environment_version_id": worker_client.environment_version_id,
             "start_node_key": "first",
             "node_plans": {
-                "first": _node_plan(
-                    worker_client, "执行起点", input_url="https://example.com/scheduled-input"
-                ),
+                "first": {
+                    **_node_plan(
+                        worker_client, "执行起点", input_url="https://example.com/scheduled-input"
+                    ),
+                    "gates": [business_gate],
+                },
                 "second": _node_plan(worker_client, "执行下游"),
             },
         },
@@ -1223,6 +1242,12 @@ def test_schedule_occurrence_stays_in_original_flow_run_as_continuous_record(
     assert record["parent_flow_run_id"] == parent["id"]
     assert record["schedule_id"] == schedule["id"]
     assert record["schedule_name"] == "每小时检查"
+    assert (
+        record["automation_plan"]["node_plans"]["first"]["gates"][0]["config"][
+            "business_result_contract"
+        ]
+        == business_gate["config"]["business_result_contract"]
+    )
     nested = worker_client.get(f"/api/v1/flow-runs/{parent['id']}/automatic-runs").json()
     assert record["id"] in {item["id"] for item in nested}
     assert record["id"] not in {

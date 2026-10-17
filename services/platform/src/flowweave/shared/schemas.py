@@ -495,6 +495,41 @@ class GateWrite(ApiModel):
                 not isinstance(filename, str) or not filename.endswith(".py")
             ):
                 raise ValueError("Python gate script_filename must end in .py")
+        contract = self.config.get("business_result_contract")
+        if contract is not None:
+            if self.stage != "END" or not isinstance(contract, dict):
+                raise ValueError("business_result_contract is only valid for END gates")
+            if contract.get("schema_version") != 1:
+                raise ValueError("business_result_contract schema_version must be 1")
+            if str(contract.get("node_kind") or "").upper() not in {
+                "COLLECTION",
+                "INVESTIGATION",
+                "REPAIR",
+            }:
+                raise ValueError("business_result_contract node_kind is invalid")
+            for name in ("result_output_keys", "required_evidence_paths"):
+                values = contract.get(name)
+                if (
+                    not isinstance(values, list)
+                    or not values
+                    or not all(isinstance(value, str) and value.strip() for value in values)
+                ):
+                    raise ValueError(f"business_result_contract {name} must be non-empty text")
+            statuses = contract.get("allowed_statuses")
+            if statuses is not None and (
+                not isinstance(statuses, list)
+                or not statuses
+                or not all(isinstance(value, str) and value.strip() for value in statuses)
+            ):
+                raise ValueError("business_result_contract allowed_statuses must be non-empty text")
+            normalized_statuses = {str(value).upper() for value in statuses or ["SUCCESS"]}
+            if not normalized_statuses <= {"SUCCESS", "NO_FINDINGS"} or (
+                "NO_FINDINGS" in normalized_statuses
+                and str(contract.get("node_kind") or "").upper() != "COLLECTION"
+            ):
+                raise ValueError(
+                    "business_result_contract only allows SUCCESS; COLLECTION may allow NO_FINDINGS"
+                )
         return self
 
 

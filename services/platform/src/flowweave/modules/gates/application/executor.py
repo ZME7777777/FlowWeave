@@ -18,6 +18,9 @@ from flowweave.shared.application.sandbox import SandboxLanguage
 from flowweave.shared.sandbox import get_sandbox
 
 DECISIONS = {"PASS", "FAIL", "ERROR"}
+_BUSINESS_RESULT_NODE_KINDS = {"COLLECTION", "INVESTIGATION", "REPAIR"}
+_BUSINESS_RESULT_DEFAULT_STATUSES = {"SUCCESS"}
+_BUSINESS_RESULT_ALLOWED_STATUSES = {"SUCCESS", "NO_FINDINGS"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -310,11 +313,161 @@ def execute_gate_plan(plan: GateExecutionPlan, context: dict[str, Any]) -> GateR
         return _sidecar_agent(plan)
     if plan.gate_type == "PLATFORM_OUTPUT_CONTRACT":
         return _platform_output_contract(context)
+    if plan.gate_type == "BUSINESS_RESULT_CONTRACT":
+        return _business_result_contract(plan.config, context)
     if plan.gate_type == "PYTHON":
         return _python(str(plan.config.get("code") or ""), context, plan.timeout)
     if plan.gate_type == "PROMPT":
         return _prompt(plan, context)
     return _error(f"不支持的门禁类型：{plan.gate_type}", code="GATE_CONFIG_INVALID")
+
+
+def _business_result_contract(config: dict[str, Any], context: dict[str, Any]) -> GateResult:
+    """Fail closed unless configured artifacts contain an auditable business result.
+
+    This is intentionally opt-in and only consumes the bounded previews already
+    prepared for an END gate. It validates a machine-readable claim before the
+    isolated Agent performs the author-defined semantic evidence review.
+    """
+
+    contract = config.get("business_result_contract")
+    if not isinstance(contract, dict):
+        return _error("业务结果门禁配置无效", code="GATE_CONFIG_INVALID")
+    node_kind = str(contract.get("node_kind") or "").upper()
+    output_keys = contract.get("result_output_keys")
+    evidence_paths = contract.get("required_evidence_paths")
+    raw_statuses = contract.get("allowed_statuses", list(_BUSINESS_RESULT_DEFAULT_STATUSES))
+    if (
+        contract.get("schema_version") != 1
+        or node_kind not in _BUSINESS_RESULT_NODE_KINDS
+        or not isinstance(output_keys, list)
+        or not output_keys
+        or not all(isinstance(key, str) and key.strip() for key in output_keys)
+        or not isinstance(evidence_paths, list)
+        or not all(isinstance(path, str) and path.strip() for path in evidence_paths)
+        or not isinstance(raw_statuses, list)
+        or not raw_statuses
+    ):
+        return _error("业务结果门禁配置无效", code="GATE_CONFIG_INVALID")
+    allowed_statuses = {str(status).upper() for status in raw_statuses if str(status).strip()}
+    if (
+        not allowed_statuses
+        or not allowed_statuses <= _BUSINESS_RESULT_ALLOWED_STATUSES
+        or ("NO_FINDINGS" in allowed_statuses and node_kind != "COLLECTION")
+    ):
+        return _error("业务结果门禁配置无效", code="GATE_CONFIG_INVALID")
+
+    outputs = {
+        str(item.get("field_key") or ""): cast(dict[str, Any], item)
+        for item in cast(list[object], context.get("outputs") or [])
+        if isinstance(item, dict) and str(item.get("field_key") or "")
+    }
+    reasons: list[str] = []
+    evidence: list[dict[str, Any]] = []
+    artifact_ids: list[str] = []
+    expected_keys = list(dict.fromkeys(str(key).strip() for key in output_keys))
+    for field_key in expected_keys:
+        artifact = outputs.get(field_key)
+        artifact_id = str(artifact.get("id") or "") if artifact else ""
+        if artifact_id:
+            artifact_ids.append(artifact_id)
+        envelope, error = _business_result_envelope(artifact)
+        if error:
+            reasons.append(f"输出 {field_key}：{error}")
+            evidence.append(
+                {
+                    "kind": "BUSINESS_RESULT",
+                    "status": "FAIL",
+                    "field_key": field_key,
+                    "artifact_id": artifact_id,
+                    "reason": error,
+                }
+            )
+            continue
+        assert envelope is not None
+        status = str(envelope.get("status") or "").upper()
+        actual_kind = str(envelope.get("node_kind") or "").upper()
+        missing_paths = [
+            path
+            for path in cast(list[str], evidence_paths)
+            if not _nonempty_path(envelope.get("evidence"), path)
+        ]
+        if status not in allowed_statuses:
+            reason = f"业务状态 {status or '缺失'} 不允许通过"
+        elif actual_kind != node_kind:
+            reason = f"节点类型应为 {node_kind}，实际为 {actual_kind or '缺失'}"
+        elif missing_paths:
+            reason = f"缺少必需证据：{', '.join(missing_paths)}"
+        else:
+            reason = "机器可读业务结果及必需证据完整"
+        passed = reason == "机器可读业务结果及必需证据完整"
+        if not passed:
+            reasons.append(f"输出 {field_key}：{reason}")
+        evidence.append(
+            {
+                "kind": "BUSINESS_RESULT",
+                "status": "PASS" if passed else "FAIL",
+                "field_key": field_key,
+                "artifact_id": artifact_id,
+                "business_status": status,
+                "node_kind": actual_kind,
+                "reason": reason,
+            }
+        )
+    details = {
+        "node_kind": node_kind,
+        "result_output_keys": expected_keys,
+        "selected_output_artifact_ids": artifact_ids,
+    }
+    if reasons:
+        return GateResult("FAIL", "业务结果合同校验未通过", reasons, evidence, details)
+    return GateResult("PASS", "业务结果合同校验通过。", [], evidence, details)
+
+
+def _business_result_envelope(
+    artifact: dict[str, Any] | None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    if artifact is None:
+        return None, "未生成合同要求的输出"
+    preview = artifact.get("review_preview")
+    if not isinstance(preview, dict) or preview.get("kind") != "TEXT":
+        return None, "输出没有可验证的文本预览"
+    content = preview.get("content")
+    if not isinstance(content, str):
+        return None, "输出文本预览无效"
+    decoder = json.JSONDecoder()
+    scanned = 0
+    for offset, character in enumerate(content):
+        if character != "{":
+            continue
+        scanned += 1
+        if scanned > 32:
+            break
+        try:
+            value, _ = decoder.raw_decode(content, offset)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(value, dict):
+            continue
+        result = value.get("flowweave_business_result")
+        if isinstance(result, dict):
+            if result.get("schema_version") != 1:
+                return None, "业务结果 schema_version 必须为 1"
+            return cast(dict[str, Any], result), None
+    return None, "缺少完整的 flowweave_business_result JSON 对象"
+
+
+def _nonempty_path(value: object, path: str) -> bool:
+    current = value
+    for segment in path.split("."):
+        if not isinstance(current, dict) or segment not in current:
+            return False
+        current = current[segment]
+    if isinstance(current, str):
+        return bool(current.strip())
+    if isinstance(current, list | dict | tuple | set):
+        return bool(current)
+    return current is not None
 
 
 def _platform_output_contract(context: dict[str, Any]) -> GateResult:
