@@ -3255,6 +3255,14 @@ test('Conversation sidebar persists pinned sessions, orders activity, and reveal
     id: 'sidebar-directory', display_name: '归属工作区',
     current_version: { working_directory: '/runtime/workspace/project/directory' },
   };
+  const directories = [
+    directory,
+    ...Array.from({ length: 18 }, (_, index) => ({
+      id: `sidebar-extra-directory-${index}`,
+      display_name: `额外工作区 ${index + 1}`,
+      current_version: { working_directory: `/runtime/workspace/project/extra-${index}` },
+    })),
+  ];
   const conversations = [
     {
       id: 'sidebar-root-unread', display_title: '未读根会话', title_state: 'MANUAL', lifecycle: 'ACTIVE',
@@ -3341,7 +3349,7 @@ test('Conversation sidebar persists pinned sessions, orders activity, and reveal
       });
     }
     if (path.endsWith('/work-directories')) return json(route, {
-      root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [directory],
+      root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: directories,
     });
     if (path.endsWith('/workspace')) return json(route, {
       root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project',
@@ -3361,6 +3369,14 @@ test('Conversation sidebar persists pinned sessions, orders activity, and reveal
   await page.goto('/');
   await login(page);
   await page.goto('/agent/conversations/sidebar-root-unread');
+
+  const sidebarList = page.locator('.agent-workbench-list');
+  await expect(sidebarList).toBeVisible();
+  await sidebarList.evaluate(element => { element.scrollTop = element.scrollHeight; });
+  const sidebarScrollTop = await sidebarList.evaluate(element => element.scrollTop);
+  expect(sidebarScrollTop).toBeGreaterThan(0);
+  await page.reload();
+  await expect.poll(() => sidebarList.evaluate(element => element.scrollTop)).toBeGreaterThanOrEqual(sidebarScrollTop);
 
   const pinnedConversation = page.getByRole('button', { name: '归属工作区会话', exact: true });
   await pinnedConversation.click({ button: 'right' });

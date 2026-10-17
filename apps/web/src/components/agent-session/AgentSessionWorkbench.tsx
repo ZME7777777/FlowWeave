@@ -4414,6 +4414,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [dragTarget, setDragTarget] = useState<{ bindingId: string; after: boolean }>();
   const [conversationOrder, setConversationOrder] = useState<Record<string, string[]>>({});
   const [conversationOrderSync, setConversationOrderSync] = useState<Record<string, ConversationOrderSync>>({});
+  const [sidebarScrollTop, setSidebarScrollTop] = useState<number>();
   const [workDirectoryOrder, setWorkDirectoryOrder] = useState<string[]>([]);
   const [draggedWorkDirectoryId, setDraggedWorkDirectoryId] = useState<string>();
   const [workDirectoryDropTarget, setWorkDirectoryDropTarget] = useState<{ id: string; after: boolean }>();
@@ -4618,6 +4619,20 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     : undefined;
   const runtimeQuery = useQuery({ queryKey: sessionQueryKey(host, 'runtime', workspace?.id), queryFn: () => api.runtime(workspace!.id), enabled: Boolean(workspace), refetchInterval: query => query.state.data?.state === 'RECOVERING' ? 5000 : false });
   const workDirectoriesQuery = useQuery({ queryKey: sessionQueryKey(host, 'work-directories', workspace?.id), queryFn: () => api.workDirectories(workspace!.id), enabled: Boolean(workspace && features.workDirectories) });
+  const sidebarScrollStorageKey = workspace ? `flowweave:sidebar-scroll:${host.id}:${workspace.id}` : undefined;
+  const sidebarListRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!sidebarScrollStorageKey) {
+      setSidebarScrollTop(undefined);
+      return;
+    }
+    try {
+      const stored = Number(sessionStorage.getItem(sidebarScrollStorageKey));
+      setSidebarScrollTop(Number.isFinite(stored) && stored > 0 ? stored : undefined);
+    } catch {
+      setSidebarScrollTop(undefined);
+    }
+  }, [sidebarScrollStorageKey]);
   const workDirectoryOrderStorageKey = workspace ? `flowweave:work-directory-order:${host.id}:${workspace.id}` : undefined;
   useEffect(() => {
     if (!workDirectoryOrderStorageKey) {
@@ -4838,6 +4853,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     () => new Map(conversations.map(item => [item.id, item])),
     [conversations],
   );
+  useLayoutEffect(() => {
+    const sidebar = sidebarListRef.current;
+    if (!sidebar || sidebarScrollTop === undefined) return;
+    sidebar.scrollTop = Math.min(sidebar.scrollHeight - sidebar.clientHeight, sidebarScrollTop);
+  }, [conversations, sidebarScrollTop]);
   const pagedPinnedConversations = [...conversationsById.values()].filter(
     item => pendingPinnedUpdates.current.get(item.id)?.pinned ?? item.pinned,
   );
@@ -6075,6 +6095,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       || runningConversationIds.has(selected?.id ?? '')
       || terminalEventReconciliationActive
     ));
+  // A paused snapshot can arrive from an older Runtime read while the batched
+  // activity catalog or formal branch already proves this turn is still live.
+  // Do not make a stale pause authoritative over that newer running evidence.
+  const pausedStateConflictsWithRunningEvidence = Boolean(
+    !currentFormalTurnFinished
+    && (turnState === 'paused' || nativeExecutionStatus?.trim().toLowerCase() === 'paused')
+    && (activeFormalTurnHasRuntimeActivity || runningConversationIds.has(selected?.id ?? '')),
+  );
   // A draft has no native Conversation until its first bootstrap request is
   // actually in flight. Route/query cleanup for the previously selected
   // binding can lag behind opening the draft, so this guard belongs at the
@@ -6085,17 +6113,28 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   );
   const effectiveTurnState: TurnState = idleUncreatedConversationDraft
     ? 'idle'
-    : turnState === 'pausing' || turnState === 'resuming' || turnState === 'paused'
+    : turnState === 'pausing' || turnState === 'resuming'
       ? turnState
       : currentFormalTurnFinished
         ? 'idle'
-        : nativeExecutionStatus?.trim().toLowerCase() === 'paused'
-          ? 'paused'
-          : foregroundTurnStillRunning || nativeTurnRunning
-            ? 'running'
-            : nativeTurnTerminal
-              ? 'idle'
-              : turnState;
+        : pausedStateConflictsWithRunningEvidence
+          ? 'running'
+          : turnState === 'paused' || nativeExecutionStatus?.trim().toLowerCase() === 'paused'
+            ? 'paused'
+            : foregroundTurnStillRunning || nativeTurnRunning
+              ? 'running'
+              : nativeTurnTerminal
+                ? 'idle'
+                : turnState;
+  useEffect(() => {
+    if (!pausedStateConflictsWithRunningEvidence || !selected) return;
+    forceReadinessRefresh.current = true;
+    void queryClient.invalidateQueries({
+      queryKey: sessionQueryKey(host, 'conversation-input-readiness', workspace?.id, selected.id),
+      exact: true,
+    });
+  }, [host, pausedStateConflictsWithRunningEvidence, queryClient, selected, workspace?.id]);
+
   // The browser queue contains only messages that have not started delivery.
   // Once a request starts, the optimistic conversation event owns its display.
   const visibleQueuedMessages = queuedMessages.filter(message => message.scope === selected?.id);
@@ -8502,7 +8541,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     <aside className="agent-workbench-rail">
       <div className="agent-conversation-rail-resizer" role="separator" aria-label="调整会话列表宽度" aria-orientation="vertical" onPointerDown={startConversationRailResize}/>
       <header className={!onReturnToSource && features.workDirectories ? 'agent-workbench-rail-actions-only' : undefined}>{onReturnToSource && <button type="button" className="agent-session-return" aria-label="返回节点执行" title="返回节点执行" onClick={onReturnToSource}><ArrowLeft size={16}/></button>}{(onReturnToSource || !features.workDirectories) && <div className="agent-session-host-heading"><span className="eyebrow">{onReturnToSource ? 'FLOWRUN NODE WORKSPACE' : 'FLOWRUN NODE'}</span><h1>{onReturnToSource ? workspace?.display_name || '节点会话' : '节点会话'}</h1></div>}<div className="agent-workbench-create-actions"><button type="button" className={`agent-workbench-activity-trigger${sidebarListMode === 'activity' ? ' active' : ''}`} aria-label={`查看活动会话${activityConversations.length ? `（${activityConversations.length}）` : ''}`} title="查看活动会话" onClick={toggleSidebarListMode}><Bell size={15}/>{activityConversations.length > 0 && <span aria-hidden="true">{activityConversations.length > 99 ? '99+' : activityConversations.length}</span>}</button><button className="primary" disabled={!conversationSearchSupported} onClick={() => setConversationSearchOpen(true)}>{conversationSearchQuery.data?.state === 'PENDING' || conversationSearchQuery.data?.state === 'RUNNING' ? <LoaderCircle className="conversation-activity-spin" size={15}/> : conversationSearchQuery.data?.state === 'SUCCEEDED' ? <Check size={15}/> : <Search size={15}/>}{conversationSearchQuery.data?.state === 'SUCCEEDED' ? '搜索完成' : '搜索会话'}</button>{features.workDirectories && <button type="button" className="secondary" aria-label="新增工作区" disabled={!runtimeWritable} onClick={() => setWorkDirectoryCreatorOpen(true)}><FolderPlus size={14}/>新增工作区</button>}</div></header>
-      <div className="agent-workbench-list">
+      <div ref={sidebarListRef} className="agent-workbench-list" onScroll={event => {
+        if (!sidebarScrollStorageKey) return;
+        try { sessionStorage.setItem(sidebarScrollStorageKey, String(event.currentTarget.scrollTop)); } catch { /* browser session state only */ }
+      }}>
         {sidebarListMode === 'activity'
           ? <section className="agent-workspace-activity" aria-label="活动会话"><header><div><span className="eyebrow">ACTIVITY</span><b>活动</b></div><button type="button" aria-label="返回工作区列表" title="返回工作区列表" onClick={() => { setActivityPreviewBindingId(undefined); setSidebarListMode('workspaces'); }}><ArrowLeft size={15}/></button></header>{activityConversations.length ? activityConversations.map(item => conversationRow(item, [], { allowDrag: false, workspaceName: activityWorkspaceName(item), onSelect: () => previewActivityConversation(item.id), onDoubleClick: () => openActivityConversation(item.id), onMarkRead: () => markConversationRead(item.id) })) : <p>没有正在运行或未读的会话。</p>}</section>
           : <>{pinnedConversations.length > 0 && <section className="agent-workspace-pinned" aria-label="置顶会话"><header><Pin size={13}/><span>置顶</span></header><div>{pinnedConversations.map(item => conversationRow(item, [], { allowDrag: false }))}</div></section>}

@@ -7,7 +7,7 @@ import { ConversationTextReveal } from './ConversationTextReveal';
 import { useEscapeClose } from './useEscapeClose';
 import { subagentAvatarSlotForEvent, subagentAvatarSlots, type SubagentAvatarSlot } from '../utils/subagentAvatar';
 import { workspaceFileChanges, workspaceRelativePath, type WorkspaceFileChange } from './agent-session/fileChanges';
-import { isFlowWeaveMessageContext, isOpenHandsAgentReply, isOpenHandsConversationTerminalError, isOpenHandsEmptyResponseRecovery, orderOpenHandsConversationEvents, parseOpenHandsEventTime } from './conversationEvents';
+import { isFlowWeaveMessageContext, isOpenHandsAgentReply, isOpenHandsConversationTerminalError, isOpenHandsEmptyResponseRecovery, orderOpenHandsConversationEvents, parseOpenHandsEventTime, projectFlowWeaveMessageContext } from './conversationEvents';
 import './conversation-surface.css';
 
 type ItemKind = 'user' | 'assistant' | 'thought' | 'tool' | 'error' | 'condensation' | 'security';
@@ -1974,7 +1974,10 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   // Pausing a tool makes OpenHands emit one synthetic AgentErrorEvent. Keep
   // it as a formal process boundary, but itemsFor() suppresses its redundant
   // error row from the transcript.
-  const visibleEvents = events;
+  const visibleEvents = useMemo(
+    () => events.map(projectFlowWeaveMessageContext),
+    [events],
+  );
   const visibleEventSignature = useMemo(
     () => visibleEvents.map(event => [event.id, eventRevealSignature(event)] as const),
     [visibleEvents],

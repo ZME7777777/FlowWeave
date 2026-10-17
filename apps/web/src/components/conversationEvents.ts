@@ -2,9 +2,42 @@ import type { OpenHandsConversationEvent } from '../types';
 
 const EMPTY_RESPONSE_CORRECTIVE_NUDGE = 'Your last response did not include a function call or a message. Please use a tool to proceed with the task.';
 
+const MESSAGE_CONTEXT_MARKER = /(?:^|\n)---FLOWWEAVE_MESSAGE_CONTEXT_V([2-5])---\n/;
+
+export function projectFlowWeaveMessageContext(event: OpenHandsConversationEvent): OpenHandsConversationEvent {
+  const content = event.payload.content;
+  if (event.event_type !== 'MESSAGE' || typeof content !== 'string') return event;
+  const marker = MESSAGE_CONTEXT_MARKER.exec(content);
+  if (!marker) return event;
+  const source = String(event.payload.source ?? '').toLowerCase();
+  if ((source !== 'user' && source !== 'human') || typeof event.payload.display_content === 'string') return event;
+  try {
+    const parsed: unknown = JSON.parse(content.slice((marker.index ?? 0) + marker[0].length));
+    if (!parsed || typeof parsed !== 'object') return event;
+    const context = parsed as Record<string, unknown>;
+    const current = marker[1] === '5' || marker[1] === '4'
+      ? context.current_user_request
+      : context.current_message;
+    const request = current && typeof current === 'object' ? current as Record<string, unknown> : undefined;
+    if (typeof request?.content !== 'string') return event;
+    const references = marker[1] === '5' || marker[1] === '4'
+      ? context.reference_materials
+      : context.references;
+    const payload = {
+      ...event.payload,
+      display_content: request.content.trim(),
+      ...(Array.isArray(references) ? { conversation_references: references } : {}),
+      ...(Array.isArray(context.workspace_references) ? { workspace_references: context.workspace_references } : {}),
+      ...(Array.isArray(context.collaboration_annotations) ? { collaboration_annotations: context.collaboration_annotations } : {}),
+    };
+    return { ...event, payload };
+  } catch {
+    return event;
+  }
+}
+
 export function isFlowWeaveMessageContext(value: string): boolean {
-  return value.startsWith('FlowWeave message context (JSON):')
-    || /(?:^|\n)---FLOWWEAVE_MESSAGE_CONTEXT_V[2-5]---(?:\n|$)/.test(value);
+  return value.startsWith('FlowWeave message context (JSON):') || MESSAGE_CONTEXT_MARKER.test(value);
 }
 
 export function parseOpenHandsEventTime(raw: unknown): number | undefined {
