@@ -2958,7 +2958,9 @@ def _cron_values(field: str, lower: int, upper: int) -> set[int]:
 def _parse_cron(expression: str) -> tuple[set[int], set[int], set[int], set[int], set[int]]:
     fields = expression.split()
     if len(fields) != 5:
-        raise ValueError("cron must contain minute, hour, day-of-month, month and day-of-week")
+        raise ValueError(
+            "cron must contain five fields: minute, hour, day-of-month, month and day-of-week"
+        )
     return cast(
         tuple[set[int], set[int], set[int], set[int], set[int]],
         tuple(
