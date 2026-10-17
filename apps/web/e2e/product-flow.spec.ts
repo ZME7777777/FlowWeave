@@ -1335,12 +1335,15 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   const viewport = page.locator('.agent-workspace-terminal .xterm-viewport');
   const terminalLayout = await page.getByLabel('Agent 工作区终端').evaluate(host => {
     const drawer = host.closest('.agent-workspace-drawer');
+    const terminal = host.querySelector('.xterm');
     const screen = host.querySelector('.xterm-screen');
-    if (!drawer || !screen) throw new Error('Expected terminal drawer and screen');
+    if (!drawer || !terminal || !screen) throw new Error('Expected terminal drawer, root, and screen');
     const hostBox = host.getBoundingClientRect();
     const drawerBox = drawer.getBoundingClientRect();
+    const terminalBox = terminal.getBoundingClientRect();
     const screenBox = screen.getBoundingClientRect();
     const hostStyle = getComputedStyle(host);
+    const terminalStyle = getComputedStyle(terminal);
     return {
       hostBottom: hostBox.bottom,
       drawerBottom: drawerBox.bottom,
@@ -1352,9 +1355,15 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       drawerHeight: drawerBox.height,
       hostContentBottom: hostBox.bottom - parseFloat(hostStyle.paddingBottom),
       hostContentRight: hostBox.right - parseFloat(hostStyle.paddingRight),
+      terminalPaddingLeft: parseFloat(terminalStyle.paddingLeft),
+      terminalPaddingRight: parseFloat(terminalStyle.paddingRight),
+      screenOffsetLeft: screenBox.left - terminalBox.left,
     };
   });
   expect(terminalLayout.hostBottom).toBeLessThanOrEqual(terminalLayout.drawerBottom + 1);
+  expect(terminalLayout.terminalPaddingLeft).toBe(0);
+  expect(terminalLayout.terminalPaddingRight).toBe(0);
+  expect(terminalLayout.screenOffsetLeft).toBeLessThanOrEqual(1);
   expect(terminalLayout.screenBottom).toBeLessThanOrEqual(terminalLayout.hostContentBottom + 1);
   expect(terminalLayout.hostHeight).toBeGreaterThan(terminalLayout.drawerHeight - 110);
   expect(terminalLayout.hostRight).toBeLessThanOrEqual(terminalLayout.drawerRight + 1);

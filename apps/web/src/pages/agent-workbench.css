@@ -74,7 +74,7 @@
 .agent-workspace-terminal>header{min-width:0;padding:0 2px;font-size:11px;line-height:24px}
 .agent-workspace-terminal>header>span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .agent-workspace-terminal>div{width:100%;height:100%;min-width:0;min-height:0;border-color:#1d3025;border-radius:8px;box-shadow:inset 0 0 0 1px #ffffff08,0 1px 2px #1020191f}
-.agent-workspace-terminal .xterm{min-width:0;padding:12px 14px}
+.agent-workspace-terminal .xterm{min-width:0;padding:0}
 .agent-workspace-terminal .xterm-viewport,.agent-workspace-terminal .xterm-screen{max-width:100%}
 
 /* FR-60: keep destructive terminal closing inside the product surface. */
@@ -82,7 +82,7 @@
 
 /* Full-screen workspace tools retain the live file/terminal component, so terminal
    dimensions are recalculated by its ResizeObserver rather than opening a second PTY. */
-.agent-workspace-drawer.fullscreen{position:fixed!important;inset:0!important;z-index:85;width:100%!important;max-width:none!important;height:100dvh!important;border:0;box-shadow:none}.agent-workspace-drawer.fullscreen .agent-workspace-resizer{display:none}.agent-workspace-drawer.fullscreen .agent-workspace-tool-shell{grid-template-rows:52px minmax(0,1fr)}.agent-workspace-drawer.fullscreen .agent-workspace-tool-shell>header{height:52px}.agent-workspace-drawer.fullscreen .agent-workspace-files{grid-template-columns:minmax(260px,.75fr) minmax(0,1.75fr);gap:12px;padding:14px}.agent-workspace-drawer.fullscreen .agent-file-tree [role=treeitem]>button{padding-block:8px;font-size:12px}.agent-workspace-drawer.fullscreen .agent-file-preview header{padding:10px 12px;font-size:12px}.agent-workspace-drawer.fullscreen .agent-file-preview pre{padding:16px;font-size:13px;line-height:1.65}.agent-workspace-drawer.fullscreen .agent-workspace-terminal{padding:12px 16px 16px}.agent-workspace-drawer.fullscreen .agent-workspace-terminal .xterm{padding:16px 18px}
+.agent-workspace-drawer.fullscreen{position:fixed!important;inset:0!important;z-index:85;width:100%!important;max-width:none!important;height:100dvh!important;border:0;box-shadow:none}.agent-workspace-drawer.fullscreen .agent-workspace-resizer{display:none}.agent-workspace-drawer.fullscreen .agent-workspace-tool-shell{grid-template-rows:52px minmax(0,1fr)}.agent-workspace-drawer.fullscreen .agent-workspace-tool-shell>header{height:52px}.agent-workspace-drawer.fullscreen .agent-workspace-files{grid-template-columns:minmax(260px,.75fr) minmax(0,1.75fr);gap:12px;padding:14px}.agent-workspace-drawer.fullscreen .agent-file-tree [role=treeitem]>button{padding-block:8px;font-size:12px}.agent-workspace-drawer.fullscreen .agent-file-preview header{padding:10px 12px;font-size:12px}.agent-workspace-drawer.fullscreen .agent-file-preview pre{padding:16px;font-size:13px;line-height:1.65}.agent-workspace-drawer.fullscreen .agent-workspace-terminal{padding:12px 16px 16px}.agent-workspace-drawer.fullscreen .agent-workspace-terminal .xterm{padding:0}
 @media(max-width:680px){.agent-workspace-drawer.fullscreen .agent-workspace-files{grid-template-columns:1fr;grid-template-rows:minmax(180px,.7fr) minmax(0,1.3fr);padding:8px}}
 
 /* Agent Workspace capability manager. */
