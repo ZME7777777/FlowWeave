@@ -1880,6 +1880,7 @@ def _evaluate_readiness(db: Session, attempt: NodeAttempt) -> None:
 def _gate_artifact(item: ArtifactVersion) -> dict[str, Any]:
     return {
         "id": item.id,
+        "producer_attempt_id": item.producer_attempt_id,
         "field_key": item.field_key,
         "version_no": item.version_no,
         "artifact_type": item.artifact_type,
@@ -2020,6 +2021,9 @@ def _gate_review_projection(context: dict[str, Any], policy: dict[str, Any]) -> 
             "downstream_consumers": context.get("downstream_consumers")
             if isinstance(context.get("downstream_consumers"), list)
             else [],
+            "upstream_gate_audit": context.get("upstream_gate_audit")
+            if isinstance(context.get("upstream_gate_audit"), dict)
+            else {"schema_version": 1, "inputs": []},
         },
     }
 
@@ -2086,6 +2090,112 @@ def _downstream_consumers(snapshot: RunSnapshot, source_node_key: str) -> list[d
     return list(consumers.values())
 
 
+def _upstream_gate_audit_capsule(
+    db: Session, flow_run_id: str, input_bindings: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Prove only current-run, passing upstream inputs without exposing content.
+
+    A primary Agent and an author Gate need the same immutable proof when a
+    downstream result cites upstream Artifact or Gate identities.  The proof is
+    derived from the actual input binding, never copied from an editable node
+    prompt, and deliberately contains metadata rather than Artifact bodies.
+    """
+
+    inputs: list[dict[str, Any]] = []
+    for binding in input_bindings:
+        artifact = binding.get("artifact")
+        if not isinstance(artifact, dict):
+            continue
+        item: dict[str, Any] = {
+            "input_field_key": binding.get("input_field_key"),
+            "binding_source": binding.get("binding_source"),
+            "artifact": _gate_review_artifact_projection(artifact),
+        }
+        producer_attempt_id = artifact.get("producer_attempt_id")
+        if not isinstance(producer_attempt_id, str) or not producer_attempt_id:
+            item["verification"] = {"status": "NOT_APPLICABLE"}
+            inputs.append(item)
+            continue
+        producer_attempt = db.get(NodeAttempt, producer_attempt_id)
+        producer_node_run = (
+            db.get(NodeRun, producer_attempt.node_run_id) if producer_attempt is not None else None
+        )
+        if producer_node_run is None or producer_node_run.flow_run_id != flow_run_id:
+            item["verification"] = {"status": "UNAVAILABLE", "reason": "PRODUCER_OUT_OF_SCOPE"}
+            inputs.append(item)
+            continue
+        candidate = _current_candidate_output_set(db, producer_attempt)
+        if (
+            candidate is None
+            or candidate.status != "GATE_PASSED"
+            or str(artifact.get("id") or "") not in candidate.artifact_ids_json
+        ):
+            item["verification"] = {
+                "status": "UNAVAILABLE",
+                "reason": "UPSTREAM_CANDIDATE_NOT_PASSED",
+            }
+            inputs.append(item)
+            continue
+        evaluations = list(
+            db.scalars(
+                select(GateEvaluation).where(
+                    GateEvaluation.attempt_id == producer_attempt.id,
+                    GateEvaluation.candidate_output_set_id == candidate.id,
+                    GateEvaluation.stage == "END",
+                )
+            )
+        )
+        latest_round = max((evaluation.evaluation_attempt for evaluation in evaluations), default=0)
+        latest_evaluations = [
+            evaluation
+            for evaluation in evaluations
+            if evaluation.evaluation_attempt == latest_round
+        ]
+        if not latest_evaluations or any(
+            evaluation.decision != "PASS" for evaluation in latest_evaluations
+        ):
+            item["verification"] = {
+                "status": "UNAVAILABLE",
+                "reason": "UPSTREAM_GATE_DECISION_INCOMPLETE",
+            }
+            inputs.append(item)
+            continue
+        item["verification"] = {
+            "status": "VERIFIED",
+            "producer_attempt_id": producer_attempt.id,
+            "producer_node_key": producer_node_run.flow_node_snapshot_key,
+            "candidate_output_set": {"id": candidate.id, "status": candidate.status},
+            "end_gate_evaluations": [
+                {
+                    "id": evaluation.id,
+                    "policy_snapshot_key": evaluation.policy_snapshot_key,
+                    "evaluation_attempt": evaluation.evaluation_attempt,
+                }
+                for evaluation in latest_evaluations
+            ],
+        }
+        inputs.append(item)
+    return {"schema_version": 1, "inputs": inputs}
+
+
+def _startup_prompt_with_upstream_gate_audit(
+    startup_prompt: str | None, upstream_gate_audit: dict[str, Any]
+) -> str | None:
+    """Append live port-binding evidence without mutating the frozen template."""
+
+    inputs = upstream_gate_audit.get("inputs")
+    if not isinstance(inputs, list) or not inputs:
+        return startup_prompt
+    instruction = (
+        "\n\n[FLOWWEAVE_UPSTREAM_GATE_AUDIT_V1]\n"
+        "以下是本次运行按端口实际绑定的上游审计证据。仅可引用其中 status=VERIFIED "
+        "的 Artifact、候选集和门禁 ID；不得使用节点模板、其他运行或历史会话中的 ID。"
+        " status=UNAVAILABLE 或 NOT_APPLICABLE 不表示上游已通过。\n"
+        + json.dumps(upstream_gate_audit, ensure_ascii=False, sort_keys=True)
+    )
+    return f"{str(startup_prompt or '').rstrip()}{instruction}"
+
+
 def _gate_context(
     db: Session, attempt: NodeAttempt, node_run: NodeRun, node: dict[str, Any], stage: str
 ) -> dict[str, Any]:
@@ -2110,7 +2220,7 @@ def _gate_context(
         if row.artifact_version_id in input_artifacts
     ]
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "stage": stage,
         "attempt": {"id": attempt.id, "attempt_no": attempt.attempt_no},
         "candidate_output_set": (
@@ -2130,6 +2240,7 @@ def _gate_context(
             "outputs": node.get("asset", {}).get("outputs", []),
         },
         "input_bindings": bindings,
+        "upstream_gate_audit": _upstream_gate_audit_capsule(db, node_run.flow_run_id, bindings),
         # Candidate content is exposed only as a bounded local preview. The
         # reviewer never receives a credentialed Artifact-store handle or an
         # unrestricted workspace path.
@@ -6753,6 +6864,11 @@ def _runtime_request(db: Session, attempt: NodeAttempt) -> StartAttemptRequest:
                 "artifact": _artifact_dict(artifact),
             }
         )
+    gate_context = _gate_context(db, attempt, node_run, node, "START")
+    startup_prompt = _startup_prompt_with_upstream_gate_audit(
+        attempt.startup_prompt,
+        cast(dict[str, Any], gate_context["upstream_gate_audit"]),
+    )
     request = build_runtime_request(
         db,
         # ``run.id`` is the Attempt's logical owner even when this nested
@@ -6767,7 +6883,7 @@ def _runtime_request(db: Session, attempt: NodeAttempt) -> StartAttemptRequest:
         node=node,
         bindings=bindings,
         workspace_ref=attempt.workspace_ref or "",
-        startup_prompt=attempt.startup_prompt,
+        startup_prompt=startup_prompt,
         startup_capability_key=attempt.startup_capability_key,
         output_targets=cast(dict[str, dict[str, str]], attempt.output_targets_json or {}),
         environment_image=environment.image_digest,
@@ -9539,6 +9655,10 @@ def _gate_remediation_prompt(
             *(fields or ["- 请按节点冻结输出合同提交全部输出。"]),
         ]
     )
+    if isinstance(getattr(node_run, "flow_run_id", None), str):
+        audit = _gate_context(db, attempt, node_run, node, "START").get("upstream_gate_audit")
+        if isinstance(audit, dict):
+            prompt = _startup_prompt_with_upstream_gate_audit(prompt, audit) or prompt
     return prompt[:16_000], evaluation_ids
 
 

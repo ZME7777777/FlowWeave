@@ -122,3 +122,127 @@ def test_transition_outputs_use_artifacts_from_passing_candidate(monkeypatch):
     monkeypatch.setattr(service, "_candidate_artifacts", lambda *_args: artifacts)
 
     assert service._accepted_transition_outputs(SimpleNamespace(), SimpleNamespace()) == artifacts
+
+
+def test_upstream_gate_audit_capsule_uses_only_current_run_passing_candidate(monkeypatch):
+    artifact = SimpleNamespace(
+        id="artifact-current",
+        producer_attempt_id="producer-attempt",
+        field_key="investigation",
+        version_no=1,
+        artifact_type="FILE",
+        inline_content=None,
+        uri=None,
+        content_hash="hash",
+        byte_size=12,
+        mime_type="text/plain",
+        source="RUNTIME",
+        metadata_json={"filename": "investigation.json"},
+    )
+    producer_attempt = SimpleNamespace(id="producer-attempt", node_run_id="producer-node-run")
+    producer_node_run = SimpleNamespace(flow_run_id="run-current", flow_node_snapshot_key="N2")
+    candidate = SimpleNamespace(
+        id="candidate-current",
+        status="GATE_PASSED",
+        artifact_ids_json=[artifact.id],
+    )
+    evaluation = SimpleNamespace(
+        id="gate-current",
+        evaluation_attempt=2,
+        decision="PASS",
+        policy_snapshot_key="author-end-gate",
+    )
+
+    class Db:
+        def get(self, model, identifier):
+            if model is service.NodeAttempt and identifier == producer_attempt.id:
+                return producer_attempt
+            if model is service.NodeRun and identifier == producer_attempt.node_run_id:
+                return producer_node_run
+            return None
+
+        def scalars(self, _statement):
+            return iter([evaluation])
+
+    monkeypatch.setattr(service, "_current_candidate_output_set", lambda *_args: candidate)
+    monkeypatch.setattr(
+        service,
+        "_gate_review_artifact_projection",
+        lambda value: {"id": value["id"], "content_hash": value["content_hash"]},
+    )
+
+    capsule = service._upstream_gate_audit_capsule(
+        Db(),
+        "run-current",
+        [
+            {
+                "input_field_key": "investigation",
+                "binding_source": "PORT_MAPPING",
+                "artifact": service._gate_artifact(artifact),
+            }
+        ],
+    )
+
+    verification = capsule["inputs"][0]["verification"]
+    assert verification["status"] == "VERIFIED"
+    assert verification["candidate_output_set"] == {
+        "id": "candidate-current",
+        "status": "GATE_PASSED",
+    }
+    assert verification["end_gate_evaluations"] == [
+        {
+            "id": "gate-current",
+            "policy_snapshot_key": "author-end-gate",
+            "evaluation_attempt": 2,
+        }
+    ]
+
+
+def test_upstream_gate_audit_capsule_rejects_cross_run_producer(monkeypatch):
+    artifact = SimpleNamespace(
+        id="artifact-old",
+        producer_attempt_id="producer-attempt",
+        field_key="investigation",
+        version_no=1,
+        artifact_type="FILE",
+        inline_content=None,
+        uri=None,
+        content_hash="hash",
+        byte_size=12,
+        mime_type="text/plain",
+        source="RUNTIME",
+        metadata_json={},
+    )
+    producer_attempt = SimpleNamespace(id="producer-attempt", node_run_id="producer-node-run")
+    producer_node_run = SimpleNamespace(flow_run_id="run-old", flow_node_snapshot_key="N2")
+
+    class Db:
+        def get(self, model, identifier):
+            if model is service.NodeAttempt and identifier == producer_attempt.id:
+                return producer_attempt
+            if model is service.NodeRun and identifier == producer_attempt.node_run_id:
+                return producer_node_run
+            return None
+
+    monkeypatch.setattr(
+        service,
+        "_gate_review_artifact_projection",
+        lambda value: {"id": value["id"], "content_hash": value["content_hash"]},
+    )
+
+    capsule = service._upstream_gate_audit_capsule(
+        Db(),
+        "run-current",
+        [
+            {
+                "input_field_key": "investigation",
+                "binding_source": "PORT_MAPPING",
+                "artifact": service._gate_artifact(artifact),
+            }
+        ],
+    )
+
+    assert capsule["inputs"][0]["verification"] == {
+        "status": "UNAVAILABLE",
+        "reason": "PRODUCER_OUT_OF_SCOPE",
+    }

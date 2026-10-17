@@ -12,6 +12,7 @@ from flowweave.modules.orchestration.application.service import (
     _business_result_contract_review_policies,
     _gate_review_projection,
     _startup_prompt_with_business_result_contract,
+    _startup_prompt_with_upstream_gate_audit,
 )
 from flowweave.runtime.base import (
     RuntimeEventBatch,
@@ -537,6 +538,67 @@ def test_gate_review_projection_retains_criteria_and_evidence_not_artifact_conte
     }
     assert "inline_content" not in candidate
     assert "secret artifact body" not in str(projection)
+
+
+def test_gate_review_projection_includes_only_the_safe_upstream_audit_capsule():
+    projection = _gate_review_projection(
+        {
+            "stage": "END",
+            "node": {"instance_key": "repair"},
+            "input_bindings": [],
+            "outputs": [],
+            "downstream_consumers": [],
+            "upstream_gate_audit": {
+                "schema_version": 1,
+                "inputs": [
+                    {
+                        "input_field_key": "investigation",
+                        "artifact": {"id": "artifact-current", "content_hash": "hash"},
+                        "verification": {
+                            "status": "VERIFIED",
+                            "producer_attempt_id": "attempt-current",
+                            "candidate_output_set": {
+                                "id": "candidate-current",
+                                "status": "GATE_PASSED",
+                            },
+                            "end_gate_evaluations": [{"id": "gate-current"}],
+                        },
+                    }
+                ],
+            },
+        },
+        {"config": {}},
+    )
+
+    audit = projection["review_context"]["upstream_gate_audit"]
+    assert audit["inputs"][0]["verification"]["candidate_output_set"]["id"] == "candidate-current"
+    assert "secret artifact body" not in str(audit)
+
+
+def test_startup_prompt_appends_live_upstream_gate_audit_without_replacing_template():
+    prompt = _startup_prompt_with_upstream_gate_audit(
+        "修复已确认的问题",
+        {
+            "schema_version": 1,
+            "inputs": [
+                {
+                    "input_field_key": "investigation",
+                    "verification": {
+                        "status": "VERIFIED",
+                        "candidate_output_set": {
+                            "id": "candidate-current",
+                            "status": "GATE_PASSED",
+                        },
+                    },
+                }
+            ],
+        },
+    )
+
+    assert prompt is not None
+    assert prompt.startswith("修复已确认的问题")
+    assert "FLOWWEAVE_UPSTREAM_GATE_AUDIT_V1" in prompt
+    assert "candidate-current" in prompt
 
 
 def test_agent_sidecar_gate_accepts_fenced_json_response():
