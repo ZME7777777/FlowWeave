@@ -192,6 +192,9 @@ async function uploadFormData<T = AgentAttachment>(createPath: string, operation
   return complete.json() as Promise<T>;
 }
 
+/** Standalone ZIP of one Skill version, for local editing and re-upload. */
+export const capabilityPackageUrl = (capabilityId: string) =>
+  `${API_BASE}${ROOT}/capabilities/${encodeURIComponent(capabilityId)}/package`;
 export const artifactContentUrl = (artifactId: string, download = false) =>
   `${API_BASE}${ROOT}/artifact-versions/${artifactId}/content${download ? '?download=true' : ''}`;
 

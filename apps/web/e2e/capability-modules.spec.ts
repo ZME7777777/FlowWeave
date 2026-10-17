@@ -451,3 +451,32 @@ test('every capability module supports selecting and bulk deleting capability li
     await expect(page.getByRole('status')).toContainText('已删除 2 条无关联能力记录');
   }
 });
+
+test('Skill list keeps pagination in view on short screens and offers a package download', async ({ page }) => {
+  const now = new Date().toISOString();
+  const skills = Array.from({ length: 20 }, (_, index) => ({
+    id: `skill-${index}`, lineage_id: `lineage-${index}`, revision_number: 1, is_latest: true,
+    capability_type: 'SKILL', capability_key: `skill-${index}`, description: '测试 Skill', version: '',
+    filename: `skill-${index}.zip`, content_hash: `hash-${index}`, digest: `digest-${index}`, byte_size: 1024,
+    import_id: `import-${index}`, created_at: now, reference_count: 0, dependencies: {},
+    dependency_build_state: 'NOT_REQUIRED', dependency_build_error: null, is_builtin: false, document: null,
+  }));
+  await page.route('**/api/v1/capabilities', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(skills) }));
+  await page.route('**/api/v1/capability-collections', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
+  await page.setViewportSize({ width: 1440, height: 600 });
+  await page.goto('/');
+  await page.getByRole('button', { name: '能力仓库' }).click();
+
+  const pager = page.locator('.capabilities-page .pagination');
+  await expect(pager).toBeVisible();
+  const box = await pager.boundingBox();
+  expect(box && box.y + box.height).toBeLessThanOrEqual(600);
+  await expect(page.getByRole('button', { name: '下一页' })).toBeInViewport();
+  // The card grid absorbs the remaining height and scrolls instead of
+  // pushing the last row or the pager below the clipped page.
+  const grid = await page.locator('.capabilities-page .capability-card-grid').boundingBox();
+  expect(grid && box && grid.y + grid.height).toBeLessThanOrEqual(box!.y + 1);
+
+  const download = page.getByRole('link', { name: '下载 Skill skill-0' });
+  await expect(download).toHaveAttribute('href', /\/api\/v1\/capabilities\/skill-0\/package$/);
+});
