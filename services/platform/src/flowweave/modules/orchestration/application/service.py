@@ -2190,6 +2190,8 @@ def _startup_prompt_with_upstream_gate_audit(
         "\n\n[FLOWWEAVE_UPSTREAM_GATE_AUDIT_V1]\n"
         "以下是本次运行按端口实际绑定的上游审计证据。仅可引用其中 status=VERIFIED "
         "的 Artifact、候选集和门禁 ID；不得使用节点模板、其他运行或历史会话中的 ID。"
+        "若基础提示词或历史记录包含不同的上游 ID，以本审计证据为唯一权威；"
+        "那些不同 ID 已失效，绝不得写入本次输出。"
         " status=UNAVAILABLE 或 NOT_APPLICABLE 不表示上游已通过。\n"
         + json.dumps(upstream_gate_audit, ensure_ascii=False, sort_keys=True)
     )

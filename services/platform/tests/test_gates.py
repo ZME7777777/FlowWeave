@@ -576,13 +576,15 @@ def test_gate_review_projection_includes_only_the_safe_upstream_audit_capsule():
 
 
 def test_startup_prompt_appends_live_upstream_gate_audit_without_replacing_template():
+    stale_artifact_id = "artifact-from-an-earlier-run"
     prompt = _startup_prompt_with_upstream_gate_audit(
-        "修复已确认的问题",
+        f"修复已确认的问题；模板中的旧产物 ID 为 {stale_artifact_id}",
         {
             "schema_version": 1,
             "inputs": [
                 {
                     "input_field_key": "investigation",
+                    "artifact": {"id": "artifact-current"},
                     "verification": {
                         "status": "VERIFIED",
                         "candidate_output_set": {
@@ -599,6 +601,9 @@ def test_startup_prompt_appends_live_upstream_gate_audit_without_replacing_templ
     assert prompt.startswith("修复已确认的问题")
     assert "FLOWWEAVE_UPSTREAM_GATE_AUDIT_V1" in prompt
     assert "candidate-current" in prompt
+    assert "artifact-current" in prompt
+    assert stale_artifact_id in prompt
+    assert "那些不同 ID 已失效" in prompt
 
 
 def test_agent_sidecar_gate_accepts_fenced_json_response():
