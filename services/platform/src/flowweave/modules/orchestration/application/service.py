@@ -10059,13 +10059,16 @@ def sync_snapshot(
     )
     db.add(snapshot)
     db.flush()
-    sandboxes.allocate_flow_run_runtime(db, run.id)
+    # Nested stepwise records keep their own snapshots but share the parent's
+    # physical Runtime allocation and Session.
+    runtime_owner_id = sandboxes.runtime_owner_flow_run_id(db, run.id)
+    sandboxes.allocate_flow_run_runtime(db, runtime_owner_id)
     runtime_allocation = sandboxes.runtime_allocation_for_flow_run(
-        db, run.id, manifest_digest=snapshot.runtime_manifest_hash
+        db, runtime_owner_id, manifest_digest=snapshot.runtime_manifest_hash
     )
     sandboxes.ensure_flow_run_runtime_session(
         db,
-        flow_run_id=run.id,
+        flow_run_id=runtime_owner_id,
         environment_version_id=environment.id,
         runtime_image_digest=environment.image_digest,
         workspace_allocation=runtime_allocation,

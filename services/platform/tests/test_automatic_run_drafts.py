@@ -739,6 +739,101 @@ def test_nested_stepwise_record_is_empty_and_scoped_to_its_parent(client, db_ses
     assert client.get(f"/api/v1/flow-runs/{parent['id']}/stepwise-runs").json() == [record]
 
 
+def test_nested_stepwise_record_syncs_a_new_snapshot_on_its_parent_runtime(
+    client, db_session_factory
+):
+    flow = _create_flow(client)
+    parent = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    ).json()
+    record = client.post(
+        f"/api/v1/flow-runs/{parent['id']}/stepwise-runs",
+        json={"name": "同步逐步记录", "start_node_key": "first"},
+    ).json()
+
+    changed = {
+        "name": flow["name"],
+        "description": "逐步记录同步后的流程定义",
+        "row_version": flow["row_version"],
+        "nodes": [
+            {
+                "instance_key": node["instance_key"],
+                "node_asset_id": node["node_asset_id"],
+                "alias": node.get("alias"),
+                "position_x": node.get("position_x", 0),
+                "position_y": node.get("position_y", 0),
+                "gates": [
+                    {
+                        "stage": gate["stage"],
+                        "position": gate["position"],
+                        "gate_type": gate["gate_type"],
+                        "enabled": gate["enabled"],
+                        "timeout_seconds": gate["timeout_seconds"],
+                        "config": gate["config"],
+                    }
+                    for gate in node["gates"]
+                ],
+            }
+            for node in flow["nodes"]
+        ],
+        "edges": [
+            {
+                "source_instance_key": edge["source_instance_key"],
+                "target_instance_key": edge["target_instance_key"],
+                "position": edge["position"],
+            }
+            for edge in flow["edges"]
+        ],
+        "port_mappings": [
+            {
+                "source_instance_key": mapping["source_instance_key"],
+                "source_output_key": mapping["source_output_key"],
+                "target_instance_key": mapping["target_instance_key"],
+                "target_input_key": mapping["target_input_key"],
+            }
+            for mapping in flow["port_mappings"]
+        ],
+    }
+    updated = client.put(f"/api/v1/flows/{flow['id']}", json=changed)
+    assert updated.status_code == 200, updated.text
+
+    synced = client.post(
+        f"/api/v1/flow-runs/{record['id']}/sync-snapshot",
+        json={"expected_active_version": 1},
+        headers={"Idempotency-Key": "sync-stepwise-record-v2"},
+    )
+    assert synced.status_code == 200, synced.text
+    assert synced.json()["active_snapshot_version"] == 2
+    assert synced.json()["snapshots"][-1]["definition"]["description"] == changed["description"]
+
+    with db_session_factory() as db:
+        assert (
+            db.scalar(
+                select(FlowRunRuntimeAllocation).where(
+                    FlowRunRuntimeAllocation.flow_run_id == parent["id"]
+                )
+            )
+            is not None
+        )
+        assert (
+            db.scalar(select(FlowRunRuntime).where(FlowRunRuntime.flow_run_id == parent["id"]))
+            is not None
+        )
+        assert (
+            db.scalar(
+                select(FlowRunRuntimeAllocation).where(
+                    FlowRunRuntimeAllocation.flow_run_id == record["id"]
+                )
+            )
+            is None
+        )
+        assert (
+            db.scalar(select(FlowRunRuntime).where(FlowRunRuntime.flow_run_id == record["id"]))
+            is None
+        )
+
+
 def test_stepwise_node_draft_remains_editable_until_explicit_start(client):
     flow = _create_flow(client)
     parent = client.post(
