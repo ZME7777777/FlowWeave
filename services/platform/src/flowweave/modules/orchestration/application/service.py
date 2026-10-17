@@ -4176,6 +4176,9 @@ def _create_nested_stepwise_run_record(
         run_no=run_no,
         name=(payload.name or "").strip() or f"{parent.name} · 逐步运行 #{run_no}",
         run_mode="MANUAL",
+        # A stepwise record has no execution until a user explicitly starts
+        # its first configured node. Keep its list projection out of ACTIVE.
+        state=FlowRunState.DRAFT,
         environment_version_id=environment.id,
         parent_flow_run_id=parent.id,
         lark_folder_token=None,

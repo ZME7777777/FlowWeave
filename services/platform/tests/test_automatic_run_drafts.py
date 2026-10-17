@@ -708,6 +708,7 @@ def test_nested_stepwise_record_is_empty_and_scoped_to_its_parent(client, db_ses
     record = created_response.json()
     assert record["parent_flow_run_id"] == parent["id"]
     assert record["run_mode"] == "MANUAL"
+    assert record["state"] == "DRAFT"
     assert record["environment_version_id"] == parent["environment_version_id"]
     assert record["start_node_key"] == "second"
     assert record["automation_plan"] == {"start_node_key": "second"}
@@ -898,6 +899,7 @@ def test_stepwise_node_draft_remains_editable_until_explicit_start(client):
     assert attempt["startup_prompt"] == "第二版提示词"
     assert attempt["state"] in {"EXECUTING", "WAITING_ACCEPTANCE", "ACCEPTED"}
     detail = client.get(f"/api/v1/flow-runs/{record['id']}").json()
+    assert detail["state"] != "DRAFT"
     assert len(detail["node_runs"]) == 1
 
 
