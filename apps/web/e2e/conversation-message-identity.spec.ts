@@ -93,7 +93,7 @@ for (const transport of ['stream-before-ack', 'rest-before-ack', 'rest-after-ack
       if (transport === 'stream-before-ack') {
         await expect.poll(() => Boolean(socket)).toBe(true);
         for (const event of current) socket!.send(JSON.stringify({ type: 'event', event }));
-        await expect.poll(() => page.locator('.conversation-turn').count()).toBeGreaterThan(2);
+        await page.waitForTimeout(100);
       } else {
         const before = eventReads;
         await expect.poll(() => eventReads, { timeout: 10_000 }).toBeGreaterThan(before);
@@ -102,6 +102,10 @@ for (const transport of ['stream-before-ack', 'rest-before-ack', 'rest-after-ack
       await expect(page.getByText('最初的消息', { exact: true })).toHaveCount(1);
       await expect(page.getByText('刚刚发送的消息', { exact: true })).toHaveCount(1);
       await expect(pending).toHaveCount(1);
+      // The formal branch is known, but its cursor has not yet identified the
+      // optimistic bubble. Its process must wait rather than attach to the
+      // preceding user turn as an orphan.
+      await expect(page.getByText('本轮正在读取包配置。', { exact: true })).toHaveCount(0);
     }
     releaseAcceptance?.();
     if (transport === 'rest-after-ack') showFormalUser = true;
@@ -115,6 +119,7 @@ for (const transport of ['stream-before-ack', 'rest-before-ack', 'rest-after-ack
     await expect(page.getByText('刚刚发送的消息', { exact: true })).toHaveCount(1);
     const formalTurn = page.locator('[data-conversation-turn="formal-user"]');
     await expect(formalTurn).toHaveAttribute('data-identity-turn-marker', 'same-turn');
+    await expect(formalTurn.getByText('本轮正在读取包配置。', { exact: true })).toBeVisible();
 
     finished = true;
     if (transport === 'stream-before-ack') socket!.send(JSON.stringify({ type: 'event', event: reply }));

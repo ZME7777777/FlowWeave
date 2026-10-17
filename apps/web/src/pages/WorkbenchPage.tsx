@@ -1521,7 +1521,7 @@ function AutomaticLegacyPlanRecoveryPanel({ parentRunId, record, onRecovered }: 
 export function WorkbenchPage() {
   const dialog = useProductDialog();
   const qc = useQueryClient();
-  const { selectedRunId, selectedNodeRunId, selectedAttemptId, selectedWorkbenchMode, selectedAutomaticRecordId, selectedStepwiseRecordId, selectAttempt, selectExecution, setView } = useWorkbenchStore();
+  const { selectedRunId, selectedNodeRunId, selectedAttemptId, selectedWorkbenchMode, selectedAutomaticRecordId, selectedStepwiseRecordId, selectAttempt, selectExecution } = useWorkbenchStore();
   const [selectedNodeKey, setSelectedNodeKey] = useState<string>();
   const [mode, setMode] = useState<WorkbenchMode>(selectedWorkbenchMode ?? 'MANUAL');
   const [selectedAutomaticId, setSelectedAutomaticId] = useState<string | undefined>(selectedAutomaticRecordId);
@@ -1693,7 +1693,11 @@ export function WorkbenchPage() {
       });
     }
   }, [selectedAutomaticRecordId, selectedStepwiseRecordId, selectedWorkbenchMode]);
-  const returnToRuns = () => setView('runs');
+  const returnToRuns = () => {
+    useWorkbenchStore.setState({ view: 'runs', selectedRunId: undefined, selectedNodeRunId: undefined, selectedAttemptId: undefined });
+    window.history.pushState({}, '', withDeploymentBase('/'));
+    window.dispatchEvent(new PopStateEvent('popstate'));
+  };
   if (!selectedRunId) return <div className="empty workbench-fallback"><b>未选择运行</b><button className="secondary" onClick={returnToRuns}><ArrowLeft size={14}/>返回运行列表</button></div>;
   const parentRun = query.data;
   if (query.isError) return <div className="empty workbench-fallback"><b>运行详情加载失败</b><span>{query.error.message}</span><button className="secondary" onClick={returnToRuns}><ArrowLeft size={14}/>返回运行列表</button></div>;
@@ -1847,6 +1851,8 @@ export function WorkbenchPage() {
       qc.removeQueries({ queryKey: ['flow-run', selectedRunId] });
       void qc.invalidateQueries({ queryKey: ['runs'] });
       useWorkbenchStore.setState({ view: 'runs', selectedRunId: undefined, selectedNodeRunId: undefined, selectedAttemptId: undefined });
+      window.history.pushState({}, '', withDeploymentBase('/'));
+      window.dispatchEvent(new PopStateEvent('popstate'));
       return;
     }
     if (kind === 'reject' && result && typeof result === 'object' && 'id' in result && nodeRun) {

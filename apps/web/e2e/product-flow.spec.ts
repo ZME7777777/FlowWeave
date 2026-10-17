@@ -1335,12 +1335,15 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   const viewport = page.locator('.agent-workspace-terminal .xterm-viewport');
   const terminalLayout = await page.getByLabel('Agent 工作区终端').evaluate(host => {
     const drawer = host.closest('.agent-workspace-drawer');
+    const terminal = host.querySelector('.xterm');
     const screen = host.querySelector('.xterm-screen');
-    if (!drawer || !screen) throw new Error('Expected terminal drawer and screen');
+    if (!drawer || !terminal || !screen) throw new Error('Expected terminal drawer, root, and screen');
     const hostBox = host.getBoundingClientRect();
     const drawerBox = drawer.getBoundingClientRect();
+    const terminalBox = terminal.getBoundingClientRect();
     const screenBox = screen.getBoundingClientRect();
     const hostStyle = getComputedStyle(host);
+    const terminalStyle = getComputedStyle(terminal);
     return {
       hostBottom: hostBox.bottom,
       drawerBottom: drawerBox.bottom,
@@ -1352,9 +1355,15 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       drawerHeight: drawerBox.height,
       hostContentBottom: hostBox.bottom - parseFloat(hostStyle.paddingBottom),
       hostContentRight: hostBox.right - parseFloat(hostStyle.paddingRight),
+      terminalPaddingLeft: parseFloat(terminalStyle.paddingLeft),
+      terminalPaddingRight: parseFloat(terminalStyle.paddingRight),
+      screenOffsetLeft: screenBox.left - terminalBox.left,
     };
   });
   expect(terminalLayout.hostBottom).toBeLessThanOrEqual(terminalLayout.drawerBottom + 1);
+  expect(terminalLayout.terminalPaddingLeft).toBe(0);
+  expect(terminalLayout.terminalPaddingRight).toBe(0);
+  expect(terminalLayout.screenOffsetLeft).toBeLessThanOrEqual(1);
   expect(terminalLayout.screenBottom).toBeLessThanOrEqual(terminalLayout.hostContentBottom + 1);
   expect(terminalLayout.hostHeight).toBeGreaterThan(terminalLayout.drawerHeight - 110);
   expect(terminalLayout.hostRight).toBeLessThanOrEqual(terminalLayout.drawerRight + 1);
@@ -2296,8 +2305,9 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   runningDirectFormalEventPersisted = true;
   agentStream!.send(JSON.stringify({
     type: 'event',
-    event: { id: 'running-direct-stream-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'running-user', content: 'FLOWWEAVE_MESSAGE_CONTEXT_V5:{"current_user_request":{"content":"运行中直接发送消息"}}', display_content: '运行中直接发送消息', timestamp: new Date().toISOString().replace(/Z$/, '') } },
+    event: { id: 'running-direct-stream-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'running-user', content: 'FlowWeave message context (JSON):\n\n---FLOWWEAVE_MESSAGE_CONTEXT_V5---\n{"version":5,"reference_materials":[],"current_user_request":{"content":"运行中直接发送消息"}}', timestamp: new Date().toISOString().replace(/Z$/, '') } },
   }));
+  await expect(page.getByText('FlowWeave message context (JSON):', { exact: true })).toHaveCount(0);
   agentStream!.send(JSON.stringify({
     type: 'event',
     event: { id: 'running-direct-tool', event_type: 'TOOL_CALL', payload: { parent_id: 'running-direct-stream-user', action_id: 'running-direct-tool', tool_call_id: 'running-direct-call', tool_name: 'terminal', event_name: 'TerminalAction', details: { command: 'git status --short' }, timestamp: new Date().toISOString() } },
@@ -2993,7 +3003,10 @@ test('selected conversation text is sent and rendered as a compact reference car
   await page.getByRole('button', { name: '添加到会话' }).click();
   const resourceTags = page.getByLabel('已添加的附件和会话引用');
   await expect(resourceTags).toHaveCount(1);
-  await expect(resourceTags.getByRole('button', { name: '会话引用 1', exact: true })).toBeVisible();
+  const conversationReference = resourceTags.locator('.agent-conversation-reference');
+  await expect(conversationReference).toHaveCount(1);
+  await expect(conversationReference.getByRole('button', { name: '会话引用 1', exact: true })).toBeVisible();
+  await expect(conversationReference.getByRole('button', { name: '移除会话引用 1', exact: true })).toHaveCSS('border-top-left-radius', '6px');
   const commentCard = page.getByRole('dialog', { name: '会话引用 1 详情' });
   await expect(commentCard).toBeVisible();
   const commentInput = commentCard.getByLabel('编辑注释评论');

@@ -38,6 +38,28 @@ def _key(value: str | None, action: str, identifier: str) -> str:
     return command_key(value, fallback=f"{action}:{identifier}:{uuid4()}")
 
 
+def _project_stream_event(event: dict[str, Any]) -> dict[str, Any]:
+    if event.get("type") != "event" or not isinstance(event.get("event"), dict):
+        return event
+    native_event = event["event"]
+    payload = native_event.get("payload")
+    if not isinstance(payload, dict) or not isinstance(payload.get("content"), str):
+        return event
+    display_content, references, workspace_references, annotations = (
+        conversations.project_conversation_references(payload["content"])
+    )
+    projected_payload = dict(payload)
+    if str(payload.get("source") or "").lower() in {"user", "human"}:
+        projected_payload["display_content"] = display_content
+    if references:
+        projected_payload["conversation_references"] = list(references)
+    if workspace_references:
+        projected_payload["workspace_references"] = list(workspace_references)
+    if annotations:
+        projected_payload["collaboration_annotations"] = list(annotations)
+    return {**event, "event": {**native_event, "payload": projected_payload}}
+
+
 async def _forward_runtime_events(
     websocket: WebSocket, runtime: Any, handle: Any, *, after_seq: int | None = None
 ) -> None:
@@ -67,7 +89,7 @@ async def _forward_runtime_events(
                     event = event_task.result()
                 except StopAsyncIteration:
                     return
-                await websocket.send_json(event)
+                await websocket.send_json(_project_stream_event(event))
                 event_task = asyncio.create_task(next_event())
     finally:
         for task in (event_task, receive_task):

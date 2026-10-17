@@ -7,7 +7,7 @@ import { ConversationTextReveal } from './ConversationTextReveal';
 import { useEscapeClose } from './useEscapeClose';
 import { subagentAvatarSlotForEvent, subagentAvatarSlots, type SubagentAvatarSlot } from '../utils/subagentAvatar';
 import { workspaceFileChanges, workspaceRelativePath, type WorkspaceFileChange } from './agent-session/fileChanges';
-import { isOpenHandsAgentReply, isOpenHandsConversationTerminalError, isOpenHandsEmptyResponseRecovery, orderOpenHandsConversationEvents, parseOpenHandsEventTime } from './conversationEvents';
+import { isFlowWeaveMessageContext, isOpenHandsAgentReply, isOpenHandsConversationTerminalError, isOpenHandsEmptyResponseRecovery, orderOpenHandsConversationEvents, parseOpenHandsEventTime } from './conversationEvents';
 import './conversation-surface.css';
 
 type ItemKind = 'user' | 'assistant' | 'thought' | 'tool' | 'error' | 'condensation' | 'security';
@@ -465,7 +465,7 @@ function itemsFor(event: OpenHandsConversationEvent, taskRetryError = false): It
     const isUser = source === 'user' || source === 'human';
     const displayContent = typeof event.payload.display_content === 'string'
       ? event.payload.display_content
-      : content;
+      : isFlowWeaveMessageContext(content) ? '' : content;
     if (isUser) return [{ event, kind: 'user', title: '', content: displayContent }];
     if (isOpenHandsAgentReply(event)) return [{ event, kind: 'assistant', title: '', content }];
     if (isOpenHandsEmptyResponseRecovery(event)) return [];
@@ -1350,10 +1350,7 @@ function CurrentTurnStatus({ items, requestSubmitting, statusOverride, modelRetr
   connectionState?: ConversationConnectionState;
 }) {
   if (modelRetryStatus) return <RetryStatus status={modelRetryStatus}/>;
-  if (monitoring?.terminal_event_missing) return <div className="conversation-turn-status stalled" role="status" aria-label="运行已结束，但尚未收到最终结果事件">
-    <CircleAlert className="conversation-turn-status-alert" role="img" aria-label="最终结果事件缺失" size={14}/>
-    <span>运行已结束，正在等待最终结果事件</span>
-  </div>;
+  if (monitoring?.terminal_event_missing) return null;
   const activityLabel = activeActivityLabel(groupedActivities(items), requestSubmitting);
   const label = statusOverride ?? (requestSubmitting
     ? activityLabel

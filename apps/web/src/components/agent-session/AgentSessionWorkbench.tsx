@@ -58,6 +58,7 @@ const HISTORY_PREFETCH_DELAY_MS = 1_500;
 // reconciliation into one bounded refresh instead of invalidating per frame.
 const CONTEXT_REFRESH_MIN_INTERVAL_MS = 60_000;
 const WORKSPACE_PATH_COPIED_DURATION_MS = 1_500;
+const ESC_PAUSE_CONFIRMATION_DURATION_MS = 1_500;
 const SESSION_PERFORMANCE_MARK_PREFIX = 'flowweave.agent-session.';
 // These are the frozen OpenHands/LiteLLM request settings applied by the
 // Runtime payload. They govern each model request made while a Task runs;
@@ -172,7 +173,7 @@ function ComposerConversationReferenceList({ references, onOpen, onRemove }: {
   onRemove: (reference: ConversationReference) => void;
 }) {
   if (!references.length) return null;
-  return <>{references.map(reference => <span key={`${reference.sourceBindingId}:${reference.eventId}`}><button type="button" className="agent-attachment-open" title={`打开会话：${reference.title ?? reference.content}`} onClick={() => onOpen(reference)}><Quote size={14}/><em>{reference.title ?? reference.content}</em></button><button type="button" className="agent-attachment-remove" aria-label={`移除会话 ${reference.title ?? reference.content}`} onClick={() => onRemove(reference)}>×</button></span>)}</>;
+  return <>{references.map(reference => <span key={`${reference.sourceBindingId}:${reference.eventId}`} className="agent-conversation-reference"><button type="button" className="agent-attachment-open" title={`打开会话：${reference.title ?? reference.content}`} onClick={() => onOpen(reference)}><Quote size={14}/><em>{reference.title ?? reference.content}</em></button><button type="button" className="agent-attachment-remove" aria-label={`移除会话 ${reference.title ?? reference.content}`} onClick={() => onRemove(reference)}>×</button></span>)}</>;
 }
 
 function ComposerAnnotationList({ annotations, currentBindingId, onLocate, onRemove, onUpdate }: {
@@ -218,7 +219,7 @@ function ComposerAnnotationList({ annotations, currentBindingId, onLocate, onRem
     {annotations.map((annotation, index) => {
       const file = annotationFileDisplay(annotation);
       const referenceName = annotationReferenceName(annotation, index, currentBindingId);
-      return <span key={annotation.id}>
+      return <span key={annotation.id} className="agent-conversation-reference">
         <button type="button" className="agent-attachment-open" title={file ? `${file.path} · ${file.range}` : '查看、定位或编辑评论'} aria-expanded={openedId === annotation.id} onClick={() => {
           if (openedId === annotation.id) { closeOpened(); return; }
           setComment(annotation.comment);
@@ -1498,12 +1499,39 @@ function projectLocalMessages(
   projections: LocalMessageProjection[],
 ): OpenHandsConversationEvent[] {
   const pendingProjections = projections.filter(item => item.state === 'submitting' && !item.canonicalEventId);
-  // REST can expose the formal user event before its POST acknowledgement.
-  // Defer unclaimed user bubbles just as the live stream does; the returned
-  // cursor will claim the exact identity without matching message text.
-  const projected = formalEvents.filter(event => !(event.event_type === 'MESSAGE'
-    && ['user', 'human'].includes(String(event.payload.source ?? '').toLowerCase())
-    && pendingProjections.some(item => !item.formalEventIdsAtSubmission.has(event.id))));
+  // REST can expose a formal user event and its process descendants before the
+  // POST acknowledgement supplies the exact cursor. Keep that whole branch
+  // hidden until it can replace its own local bubble; otherwise a descendant
+  // without its parent is rendered as an orphan beside the preceding turn.
+  const deferredUserEventIds = new Set(formalEvents.flatMap(event => (
+    event.event_type === 'MESSAGE'
+      && ['user', 'human'].includes(String(event.payload.source ?? '').toLowerCase())
+      && pendingProjections.some(item => !item.formalEventIdsAtSubmission.has(event.id))
+      ? [event.id]
+      : []
+  )));
+  const formalEventsById = new Map(formalEvents.map(event => [event.id, event]));
+  const actionEventsByReference = new Map<string, OpenHandsConversationEvent>();
+  for (const event of formalEvents) {
+    if (event.event_type !== 'TOOL_CALL') continue;
+    actionEventsByReference.set(event.id, event);
+    if (typeof event.payload.action_id === 'string') actionEventsByReference.set(event.payload.action_id, event);
+    if (typeof event.payload.tool_call_id === 'string') actionEventsByReference.set(event.payload.tool_call_id, event);
+  }
+  const belongsToDeferredUserBranch = (event: OpenHandsConversationEvent): boolean => {
+    const visited = new Set<string>();
+    let current: OpenHandsConversationEvent | undefined = event;
+    while (current && !visited.has(current.id)) {
+      if (deferredUserEventIds.has(current.id)) return true;
+      visited.add(current.id);
+      const parentId: unknown = current.payload.parent_id;
+      current = (typeof parentId === 'string' ? formalEventsById.get(parentId) : undefined)
+        ?? (typeof current.payload.action_id === 'string' ? actionEventsByReference.get(current.payload.action_id) : undefined)
+        ?? (typeof current.payload.tool_call_id === 'string' ? actionEventsByReference.get(current.payload.tool_call_id) : undefined);
+    }
+    return false;
+  };
+  const projected = formalEvents.filter(event => !belongsToDeferredUserBranch(event));
 
   for (const local of projections) {
     const formalIndex = !local.canonicalEventId
@@ -4352,6 +4380,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   });
   const [hiddenEventIds, setHiddenEventIds] = useState<Set<string>>(() => new Set());
   const [deferredRewriteUserEventIds, setDeferredRewriteUserEventIds] = useState<Set<string>>(() => new Set());
+  const [escPauseConfirmation, setEscPauseConfirmation] = useState(false);
+  const escPauseConfirmationTimer = useRef<number | undefined>(undefined);
+  const confirmPauseOnEscapeRef = useRef<((event: KeyboardEvent) => void) | undefined>(undefined);
   const [turnState, setTurnState] = useState<TurnState>('idle');
   const [activeTurnEventId, setActiveTurnEventId] = useState<string>();
   const [expiredTerminalSyncTurnKey, setExpiredTerminalSyncTurnKey] = useState<string>();
@@ -6566,7 +6597,18 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     const pendingProjections = [...localMessageProjections.current.values()].filter(item => (
       item.scope === scope && item.state === 'submitting' && !item.canonicalEventId
     ));
-    if (isUserMessage && pendingProjections.some(item => !item.formalEventIdsAtSubmission.has(event.id))) {
+    const deferredEvents = [...deferredFormalUserEvents.current.values()]
+      .filter(item => item.scope === scope)
+      .map(item => item.event);
+    const deferredEventIds = new Set(deferredEvents.map(item => item.id));
+    const deferredActionReferences = new Set(deferredEvents.flatMap(item => [
+      item.payload.action_id,
+      item.payload.tool_call_id,
+    ].filter((reference): reference is string => typeof reference === 'string')));
+    const belongsToDeferredBranch = deferredEventIds.has(String(event.payload.parent_id ?? ''))
+      || deferredActionReferences.has(String(event.payload.action_id ?? ''))
+      || deferredActionReferences.has(String(event.payload.tool_call_id ?? ''));
+    if ((isUserMessage && pendingProjections.some(item => !item.formalEventIdsAtSubmission.has(event.id))) || belongsToDeferredBranch) {
       deferredFormalUserEvents.current.set(event.id, { scope, event });
       return;
     }
@@ -6771,6 +6813,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     void reconcile();
     const expiryTimer = window.setTimeout(() => {
       setExpiredTerminalSyncTurnKey(terminalSyncTurnKey);
+      setActiveTurnEventId(undefined);
+      setRequestStartedAt(undefined);
+      setTurnState(current => current === 'running' || current === 'resuming' ? 'idle' : current);
     }, TERMINAL_EVENT_RECONCILIATION_MS);
     return () => {
       cancelled = true;
@@ -7874,6 +7919,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (queuedMessages.some(message => message.scope === selected?.id && sendingMessageIds.current.has(message.id))) return;
     setTurnState('idle');
   }, [inputReadinessQuery.data?.ready, queuedMessages, selected?.id, turnState]);
+  useEffect(() => {
+    const onEscape = (event: KeyboardEvent) => confirmPauseOnEscapeRef.current?.(event);
+    document.addEventListener('keydown', onEscape);
+    return () => {
+      document.removeEventListener('keydown', onEscape);
+      if (escPauseConfirmationTimer.current !== undefined) window.clearTimeout(escPauseConfirmationTimer.current);
+    };
+  }, []);
 
   const composerHasContent = Boolean(
     composerHasText || attachments.length || pendingAttachments.some(item => item.scope === composerScope) || references.length || workspaceReferences.length || composerAnnotations.length,
@@ -8072,6 +8125,23 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     else if (composerControl.action === 'interrupt') interrupt.mutate();
     else if (composerControl.action === 'resume' && workspace && selected) resume.mutate({ workspaceId: workspace.id, bindingId: selected.id });
   };
+  const confirmPauseOnEscape = (event: KeyboardEvent) => {
+    if (event.key !== 'Escape' || event.defaultPrevented || composerControl.action !== 'interrupt' || composerControl.disabled) return;
+    event.preventDefault();
+    if (escPauseConfirmation) {
+      if (escPauseConfirmationTimer.current !== undefined) window.clearTimeout(escPauseConfirmationTimer.current);
+      escPauseConfirmationTimer.current = undefined;
+      setEscPauseConfirmation(false);
+      interrupt.mutate();
+      return;
+    }
+    setEscPauseConfirmation(true);
+    escPauseConfirmationTimer.current = window.setTimeout(() => {
+      escPauseConfirmationTimer.current = undefined;
+      setEscPauseConfirmation(false);
+    }, ESC_PAUSE_CONFIRMATION_DURATION_MS);
+  };
+  confirmPauseOnEscapeRef.current = confirmPauseOnEscape;
   // A conversation can predate the explicit work-directory binding while
   // still carrying its authoritative working_directory.  Prefer it over the
   // shared project root so paths in its transcript stay relative to the
@@ -8586,7 +8656,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
           </div>
           <div className="agent-composer-actions">
             {features.modelSelection && (selected ? <ComposerModelMenu providers={connectedProviders} providerId={conversationProviderId} modelName={activeConversationModelName} models={availableConversationModels} efforts={supportedEfforts} effort={reasoningEffort ?? selected.reasoning_effort ?? contextQuery.data?.reasoning_effort ?? conversationModel?.default_reasoning_effort ?? ''} disabled={!canWrite || conversationActivity.active || queuedMessages.length > 0 || Boolean(pendingConfirmation) || persistModel.isPending || migrateStreaming.isPending || Boolean(pendingMigratedSend)} onProviderChange={providerId => { const provider = connectedProviders.find(item => item.id === providerId); const model = provider?.models.find(item => item.enabled && item.is_default); if (!provider || !model) return; const effort = model.default_reasoning_effort ?? null; setConversationProviderId(providerId); setConversationModelName(model.model_name); setReasoningEffort(effort); persistModel.mutate({ providerId, modelName: model.model_name, effort }); }} onModelChange={modelName => { const model = availableConversationModels.find(item => item.model_name === modelName); const effort = model?.default_reasoning_effort ?? null; setConversationModelName(modelName); setReasoningEffort(effort); persistModel.mutate({ providerId: conversationProviderId, modelName, effort }); }} onEffortChange={effort => { const nextEffort = effort || null; setReasoningEffort(nextEffort); persistModel.mutate({ providerId: conversationProviderId, modelName: activeConversationModelName, effort }); }}/> : <ComposerModelMenu providers={connectedProviders} providerId={newConversationProviderId} modelName={newConversationModelName} models={availableDraftModels} efforts={supportedDraftEfforts} effort={newConversationReasoningEffort ?? draftConversationModel?.default_reasoning_effort ?? ''} disabled={!canOpenConversation || bootstrap.isPending} onProviderChange={providerId => { const provider = connectedProviders.find(item => item.id === providerId); const model = provider?.models.find(item => item.enabled && item.is_default); if (!provider || !model) return; setNewConversationProviderId(providerId); setNewConversationModelName(model.model_name); setNewConversationReasoningEffort(model.default_reasoning_effort ?? null); }} onModelChange={modelName => { const model = availableDraftModels.find(item => item.model_name === modelName); setNewConversationModelName(modelName); setNewConversationReasoningEffort(model?.default_reasoning_effort ?? null); }} onEffortChange={effort => setNewConversationReasoningEffort(effort || null)}/>) }
-            <button type="button" className={`agent-send${composerControl.action === 'resume' || composerControlMode === 'pausing' ? ' resume' : ''}`} aria-label={composerControl.label} disabled={composerControl.disabled} onClick={runComposerAction}>{pendingConfirmation ? <ShieldAlert size={14}/> : composerControl.action === 'send' ? <Send size={16}/> : composerControl.action === 'resume' || composerControlMode === 'pausing' ? <Play size={12} fill="currentColor"/> : composerControlMode === 'read-only' ? <CircleAlert size={15}/> : composerControl.action === 'interrupt' ? <Square size={10} fill="currentColor"/> : <LoaderCircle className="conversation-activity-spin" size={15}/>}</button>
+            <button type="button" className={`agent-send${composerControl.action === 'resume' || composerControlMode === 'pausing' ? ' resume' : ''}`} aria-label={escPauseConfirmation && composerControl.action === 'interrupt' ? '再次按 Esc 暂停当前 Agent' : composerControl.label} disabled={composerControl.disabled} onClick={runComposerAction}>{escPauseConfirmation && composerControl.action === 'interrupt' ? 'Esc' : pendingConfirmation ? <ShieldAlert size={14}/> : composerControl.action === 'send' ? <Send size={16}/> : composerControl.action === 'resume' || composerControlMode === 'pausing' ? <Play size={12} fill="currentColor"/> : composerControlMode === 'read-only' ? <CircleAlert size={15}/> : composerControl.action === 'interrupt' ? <Square size={10} fill="currentColor"/> : <LoaderCircle className="conversation-activity-spin" size={15}/>}</button>
           </div>
         </footer>
         </div>

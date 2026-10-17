@@ -1,10 +1,10 @@
 import { Activity, Bot, Boxes, BrainCircuit, CalendarClock, ChevronDown, GitFork, Hexagon, KeyRound, Library, LogOut, MessageSquareText, PlayCircle, Settings, TerminalSquare, UsersRound, X } from 'lucide-react';
-import { lazy, Suspense, useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useWorkbenchStore } from './store/workbench';
 import { withDeploymentBase, withoutDeploymentBase } from './deploymentPath';
 import { api } from './api/client';
-import type { AuthUser } from './types';
+import type { AuthUser, FlowRunSummary } from './types';
 import { LoginScreen } from './components/LoginScreen';
 import { useEscapeClose } from './components/useEscapeClose';
 import { clearAgentSessionCacheStorage, setAgentSessionCacheIdentity } from './components/agent-session/conversation-cache';
@@ -50,6 +50,19 @@ const superAdminSettingsNav = [
 
 type SettingsView = (typeof settingsNav)[number]['view'] | (typeof superAdminSettingsNav)[number]['view'];
 
+const RELOAD_VIEW_KEY = 'flowweave:reload-view.v1';
+const reloadableViews = new Set<string>(['nodes', 'capabilities', 'environments', 'credentials', 'models', 'ldap-users', 'conversation-management', 'flows', 'runs', 'schedules']);
+
+function restoredReloadView(): string | undefined {
+  try {
+    const view = window.sessionStorage.getItem(RELOAD_VIEW_KEY) ?? undefined;
+    window.sessionStorage.removeItem(RELOAD_VIEW_KEY);
+    return view && reloadableViews.has(view) ? view : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function clearAgentIdentityStorage() {
   const isAgentStorage = (key: string) => key.startsWith('flowweave.agent.')
     || key.startsWith('flowweave:agent-session-tools:agent-workspace:')
@@ -63,13 +76,31 @@ function clearAgentIdentityStorage() {
   clearAgentSessionCacheStorage();
 }
 
+async function clearSiteDataAndReload(view: string) {
+  try {
+    window.sessionStorage.setItem(RELOAD_VIEW_KEY, view);
+    await Promise.all([
+      typeof caches === 'undefined' ? Promise.resolve() : caches.keys().then(keys => Promise.all(keys.map(key => caches.delete(key)))),
+      typeof navigator.serviceWorker === 'undefined' ? Promise.resolve() : navigator.serviceWorker.getRegistrations().then(registrations => Promise.all(registrations.map(registration => registration.unregister()))),
+    ]);
+  } finally {
+    const reloadView = window.sessionStorage.getItem(RELOAD_VIEW_KEY);
+    window.localStorage.clear();
+    window.sessionStorage.clear();
+    if (reloadView) window.sessionStorage.setItem(RELOAD_VIEW_KEY, reloadView);
+    window.location.reload();
+  }
+}
+
 export function App() {
   const queryClient = useQueryClient();
-  const { view, setView } = useWorkbenchStore();
+  const { view, selectedRunId, setView } = useWorkbenchStore();
+  const reloadView = useRef(restoredReloadView());
   const [, setRouteVersion] = useState(0);
   const [user, setUser] = useState<AuthUser | null>();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [openSettingsViews, setOpenSettingsViews] = useState<SettingsView[]>([]);
+  const [openFlowRunTabs, setOpenFlowRunTabs] = useState<{ id: string; label: string }[]>([]);
   const settingsMenu = useRef<HTMLDivElement>(null);
   const replaceIdentity = useCallback(async (nextUser: AuthUser | null) => {
     // Unmount authenticated product surfaces before an old request can
@@ -91,6 +122,11 @@ export function App() {
     setUser(nextUser);
   }, [queryClient, setView]);
   useEscapeClose(() => setSettingsOpen(false), settingsOpen);
+  useLayoutEffect(() => {
+    if (!reloadView.current) return;
+    setView(reloadView.current as typeof view);
+    reloadView.current = undefined;
+  }, [setView, view]);
   useEffect(() => {
     if (!settingsOpen) return;
     const closeOutside = (event: PointerEvent) => {
@@ -124,6 +160,20 @@ export function App() {
       void document.documentElement.requestFullscreen();
     }
   };
+  const routePathname = withoutDeploymentBase(window.location.pathname);
+  const flowRunRoute = routePathname.match(/^\/flow-runs\/([^/]+)$/);
+  const nodeSessionRoute = routePathname.match(
+    /^\/flow-runs\/([^/]+)\/nodes\/([^/]+)\/attempts\/([^/]+)\/agent-sessions(?:\/([^/]+))?$/,
+  );
+  const flowRunRouteId = flowRunRoute ? decodeURIComponent(flowRunRoute[1]) : undefined;
+  const registerFlowRunTab = useCallback((run: Pick<FlowRunSummary, 'id' | 'name' | 'run_no'>) => {
+    const label = `Run #${run.run_no} · ${run.name}`;
+    setOpenFlowRunTabs(current => {
+      const existing = current.find(item => item.id === run.id);
+      if (!existing) return [...current, { id: run.id, label }];
+      return existing.label === label ? current : current.map(item => item.id === run.id ? { ...item, label } : item);
+    });
+  }, []);
   useEffect(() => {
     const update = (event: PopStateEvent) => {
       const flowRun = event.state?.flowweaveFlowRun;
@@ -149,6 +199,11 @@ export function App() {
             ? flowRun.stepwiseRecordId
             : undefined,
         });
+      } else if (withoutDeploymentBase(window.location.pathname) === '/') {
+        useWorkbenchStore.setState({
+          view: 'runs', selectedRunId: undefined, selectedNodeRunId: undefined, selectedAttemptId: undefined,
+          selectedWorkbenchMode: undefined, selectedAutomaticRecordId: undefined, selectedStepwiseRecordId: undefined,
+        });
       }
       setRouteVersion(value => value + 1);
     };
@@ -166,10 +221,22 @@ export function App() {
     else window.history.pushState(state, '', deployedPath);
     setRouteVersion(value => value + 1);
   };
-  const routePathname = withoutDeploymentBase(window.location.pathname);
-  const nodeSessionRoute = routePathname.match(
-    /^\/flow-runs\/([^/]+)\/nodes\/([^/]+)\/attempts\/([^/]+)\/agent-sessions(?:\/([^/]+))?$/,
-  );
+  useLayoutEffect(() => {
+    if (!flowRunRouteId) return;
+    useWorkbenchStore.setState({
+      view: 'workbench', selectedRunId: flowRunRouteId, selectedNodeRunId: undefined, selectedAttemptId: undefined,
+      selectedWorkbenchMode: undefined, selectedAutomaticRecordId: undefined, selectedStepwiseRecordId: undefined,
+    });
+    setOpenFlowRunTabs(current => current.some(tab => tab.id === flowRunRouteId)
+      ? current
+      : [...current, { id: flowRunRouteId, label: '正在打开运行…' }]);
+    void api.flowRun(flowRunRouteId).then(registerFlowRunTab).catch(() => undefined);
+  }, [flowRunRouteId, registerFlowRunTab]);
+  useEffect(() => {
+    if (flowRunRouteId || view !== 'workbench' || !selectedRunId) return;
+    window.history.pushState({}, '', withDeploymentBase(`/flow-runs/${encodeURIComponent(selectedRunId)}`));
+    setRouteVersion(value => value + 1);
+  }, [flowRunRouteId, selectedRunId, view]);
   const directAgentRoute = routePathname === '/agent' || routePathname.startsWith('/agent/conversations/');
   const canUseAgentSessions = user?.can_use_agent_sessions !== false;
   const isAgentRoute = (directAgentRoute && canUseAgentSessions) || Boolean(nodeSessionRoute);
@@ -182,11 +249,15 @@ export function App() {
   const leaveAgentRoute = () => {
     if (isAgentRoute) navigate('/', true);
   };
+  const leaveFlowRunRoute = () => {
+    if (flowRunRouteId) navigate('/', true);
+  };
   const selectView = (next: typeof view) => {
     setSettingsOpen(false);
     if (next === 'agent-workbench') {
       if (user?.can_use_agent_sessions === false) {
         leaveAgentRoute();
+        leaveFlowRunRoute();
         setView('nodes');
         return;
       }
@@ -195,6 +266,7 @@ export function App() {
       return;
     }
     leaveAgentRoute();
+    leaveFlowRunRoute();
     setView(next);
   };
   const selectSettingsView = (next: SettingsView) => {
@@ -209,6 +281,19 @@ export function App() {
     const replacement = next[closingIndex] ?? next[closingIndex - 1];
     if (replacement) selectView(replacement);
     else selectView('nodes');
+  };
+  const selectFlowRunTab = (runId: string) => navigate(`/flow-runs/${encodeURIComponent(runId)}`);
+  const closeFlowRunTab = (runId: string) => {
+    const closingIndex = openFlowRunTabs.findIndex(tab => tab.id === runId);
+    const next = openFlowRunTabs.filter(tab => tab.id !== runId);
+    setOpenFlowRunTabs(next);
+    if (flowRunRouteId !== runId) return;
+    const replacement = next[closingIndex] ?? next[closingIndex - 1];
+    if (replacement) selectFlowRunTab(replacement.id);
+    else {
+      useWorkbenchStore.setState({ view: 'runs', selectedRunId: undefined, selectedNodeRunId: undefined, selectedAttemptId: undefined });
+      navigate('/', true);
+    }
   };
   const terminalParams = new URLSearchParams(window.location.search);
   const terminalRunId = terminalParams.get('terminalRun');
@@ -228,7 +313,8 @@ export function App() {
   const openSettingsTabs = openSettingsViews.map(view => accountSettingsNav.find(item => item.view === view)).filter((item): item is typeof accountSettingsNav[number] => Boolean(item));
   const settingsActive = Boolean(activeSettingsItem);
   const visibleNav = nav.filter(item => item.view !== 'agent-workbench' || user.can_use_agent_sessions !== false);
-  return <div className={`app-shell${isAgentRoute ? ' agent-workbench-shell' : ''}`}><header className="topbar" onDoubleClick={toggleFullscreenFromTopbar}><button className="brand" onClick={() => selectView('nodes')} aria-label="返回节点资产"><span className="brand-mark"><Hexagon size={22} fill="currentColor"/></span><span>FlowWeave</span></button><nav aria-label="主导航">{visibleNav.map(item => <button key={item.view} className={(nodeSessionRoute ? item.view === 'runs' : isAgentRoute ? item.view === 'agent-workbench' : renderedView === item.view) ? 'active' : ''} onClick={() => selectView(item.view)}><item.icon size={15}/>{item.label}</button>)}</nav>{openSettingsTabs.length > 0 && <div className="context-tabs" aria-label="临时管理标签">{openSettingsTabs.map(item => <div className={`context-tab${renderedView === item.view && !isAgentRoute ? ' active' : ''}`} key={item.view}><button type="button" className="context-tab-select" aria-current={renderedView === item.view && !isAgentRoute ? 'page' : undefined} title={item.label} onClick={() => selectSettingsView(item.view)}><item.icon size={14}/><span>{item.label}</span></button><button type="button" className="context-tab-close" aria-label={`关闭${item.label}`} title={`关闭${item.label}`} onClick={() => closeSettingsView(item.view)}><X size={12}/></button></div>)}</div>}<div className="topbar-actions"><span className="kernel-status"><Activity size={14}/>{nodeSessionRoute ? 'FlowRun 节点会话' : isAgentRoute ? 'Agent 工作区' : '产物驱动运行'}</span><div className="account-menu" ref={settingsMenu}><button type="button" className={`account-trigger${settingsActive ? ' active' : ''}`} aria-label="账户与设置" aria-haspopup="menu" aria-expanded={settingsOpen} onClick={() => setSettingsOpen(open => !open)}><span className="account-avatar" aria-hidden="true">{user.username.slice(0, 1).toUpperCase()}</span><span className="account-identity"><b>{user.username}</b><small>{user.is_super_admin ? '超级管理员' : '普通用户'}</small></span><ChevronDown size={13} className={settingsOpen ? 'rotated' : ''}/></button>{settingsOpen && <div className="settings-popover account-popover" role="menu" aria-label="账户与设置"><div className="account-popover-heading"><Settings size={14}/><b>平台设置</b></div>{accountSettingsNav.map(item => <button type="button" role="menuitem" title={item.description} key={item.view} className={renderedView === item.view && !isAgentRoute ? 'active' : ''} onClick={() => selectSettingsView(item.view)}><span className="settings-item-icon"><item.icon size={15}/></span><b>{item.label}</b></button>)}<button type="button" role="menuitem" title="结束当前平台会话" className="account-logout" onClick={() => void logout()}><span className="settings-item-icon"><LogOut size={15}/></span><b>退出登录</b></button></div>}</div></div></header>
+  const hasContextTabs = openSettingsTabs.length > 0 || openFlowRunTabs.length > 0;
+  return <div className={`app-shell${isAgentRoute ? ' agent-workbench-shell' : ''}`}><header className="topbar" onDoubleClick={toggleFullscreenFromTopbar}><button type="button" className="brand" aria-label="清除缓存并刷新页面" title="清除 FlowWeave 缓存并刷新当前页面" onClick={() => void clearSiteDataAndReload(view)}><span className="brand-mark"><Hexagon size={22} fill="currentColor"/></span><span>FlowWeave</span></button><nav aria-label="主导航">{visibleNav.map(item => <button key={item.view} className={(nodeSessionRoute || flowRunRouteId ? item.view === 'runs' : isAgentRoute ? item.view === 'agent-workbench' : renderedView === item.view) ? 'active' : ''} onClick={() => selectView(item.view)}><item.icon size={15}/>{item.label}</button>)}</nav>{hasContextTabs && <div className="context-tabs" aria-label="临时管理标签">{openSettingsTabs.map(item => <div className={`context-tab${renderedView === item.view && !isAgentRoute && !flowRunRouteId ? ' active' : ''}`} key={item.view}><button type="button" className="context-tab-select" aria-current={renderedView === item.view && !isAgentRoute && !flowRunRouteId ? 'page' : undefined} title={item.label} onClick={() => selectSettingsView(item.view)}><item.icon size={14}/><span>{item.label}</span></button><button type="button" className="context-tab-close" aria-label={`关闭${item.label}`} title={`关闭${item.label}`} onClick={() => closeSettingsView(item.view)}><X size={12}/></button></div>)}{openFlowRunTabs.map(tab => <div className={`context-tab${flowRunRouteId === tab.id ? ' active' : ''}`} key={tab.id}><button type="button" className="context-tab-select" aria-current={flowRunRouteId === tab.id ? 'page' : undefined} title={tab.label} onClick={() => selectFlowRunTab(tab.id)}><PlayCircle size={14}/><span>{tab.label}</span></button><button type="button" className="context-tab-close" aria-label={`关闭${tab.label}`} title={`关闭${tab.label}`} onClick={() => closeFlowRunTab(tab.id)}><X size={12}/></button></div>)}</div>}<div className="topbar-actions"><span className="kernel-status"><Activity size={14}/>{nodeSessionRoute ? 'FlowRun 节点会话' : flowRunRouteId ? 'FlowRun 运行详情' : isAgentRoute ? 'Agent 工作区' : '产物驱动运行'}</span><div className="account-menu" ref={settingsMenu}><button type="button" className={`account-trigger${settingsActive ? ' active' : ''}`} aria-label="账户与设置" aria-haspopup="menu" aria-expanded={settingsOpen} onClick={() => setSettingsOpen(open => !open)}><span className="account-avatar" aria-hidden="true">{user.username.slice(0, 1).toUpperCase()}</span><span className="account-identity"><b>{user.username}</b><small>{user.is_super_admin ? '超级管理员' : '普通用户'}</small></span><ChevronDown size={13} className={settingsOpen ? 'rotated' : ''}/></button>{settingsOpen && <div className="settings-popover account-popover" role="menu" aria-label="账户与设置"><div className="account-popover-heading"><Settings size={14}/><b>平台设置</b></div>{accountSettingsNav.map(item => <button type="button" role="menuitem" title={item.description} key={item.view} className={renderedView === item.view && !isAgentRoute && !flowRunRouteId ? 'active' : ''} onClick={() => selectSettingsView(item.view)}><span className="settings-item-icon"><item.icon size={15}/></span><b>{item.label}</b></button>)}<button type="button" role="menuitem" title="结束当前平台会话" className="account-logout" onClick={() => void logout()}><span className="settings-item-icon"><LogOut size={15}/></span><b>退出登录</b></button></div>}</div></div></header>
     <Suspense fallback={<PageLoading/>}>{isAgentRoute ? nodeSessionRoute ? <FlowNodeSessionPage flowRunId={decodeURIComponent(nodeSessionRoute[1])} nodeRunId={decodeURIComponent(nodeSessionRoute[2])} attemptId={decodeURIComponent(nodeSessionRoute[3])} onNavigate={navigate}/> : <AgentWorkbenchPage onNavigate={navigate}/> : <>{renderedView === 'nodes' && <NodesPage/>}{renderedView === 'capabilities' && <CapabilitiesPage/>}{renderedView === 'conversation-management' && <ConversationManagementPage/>}{renderedView === 'environments' && <TerminalEnvironmentsPage/>}{renderedView === 'credentials' && <CredentialsPage/>}{renderedView === 'ldap-users' && user.is_super_admin && <LdapUsersPage/>}{renderedView === 'flows' && <FlowsPage/>}{renderedView === 'runs' && <RunsPage/>}{renderedView === 'schedules' && <SchedulesPage/>}{renderedView === 'models' && <ModelsPage/>}{renderedView === 'workbench' && <WorkbenchPage/>}</>}</Suspense>
   </div>;
 }

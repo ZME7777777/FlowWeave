@@ -2,6 +2,11 @@ import type { OpenHandsConversationEvent } from '../types';
 
 const EMPTY_RESPONSE_CORRECTIVE_NUDGE = 'Your last response did not include a function call or a message. Please use a tool to proceed with the task.';
 
+export function isFlowWeaveMessageContext(value: string): boolean {
+  return value.startsWith('FlowWeave message context (JSON):')
+    || /(?:^|\n)---FLOWWEAVE_MESSAGE_CONTEXT_V[2-5]---(?:\n|$)/.test(value);
+}
+
 export function parseOpenHandsEventTime(raw: unknown): number | undefined {
   if (typeof raw !== 'string' || !raw) return undefined;
   // OpenHands 1.47 serializes UTC event timestamps without a timezone suffix.
