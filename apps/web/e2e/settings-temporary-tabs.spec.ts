@@ -36,6 +36,16 @@ test('keeps account settings in unique temporary tabs and closes the active tab 
   await expect(page.locator('.context-tab')).toHaveCount(4);
   await expect(page.locator('.context-tab.active')).toContainText('大模型配置');
 
+  // Temporary tabs share the permanent nav tab's anatomy: full topbar
+  // height, label size and the lime underline marking the active tab.
+  const permanent = page.getByRole('button', { name: '节点资产', exact: true });
+  const temporary = page.locator('.context-tab.active');
+  const [permanentBox, temporaryBox] = await Promise.all([permanent.boundingBox(), temporary.boundingBox()]);
+  expect(temporaryBox?.height).toBe(permanentBox?.height);
+  await expect(temporary.locator('.context-tab-select')).toHaveCSS('font-size', await permanent.evaluate(element => getComputedStyle(element).fontSize));
+  await expect(temporary).toHaveCSS('border-bottom-color', 'rgb(216, 242, 86)');
+  await expect(temporary).toHaveCSS('border-top-left-radius', '0px');
+
   await page.getByRole('button', { name: '节点资产', exact: true }).click();
   await expect(page.getByLabel('临时管理标签')).toBeVisible();
   await expect(page.locator('.context-tab')).toHaveCount(4);
