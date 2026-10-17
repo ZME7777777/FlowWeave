@@ -173,6 +173,40 @@ test('FlowRun list opens the shared terminal as an in-page dialog', async ({ pag
   await expect(dialog).toBeHidden();
 });
 
+
+test('FlowRun detail has a restorable route and temporary topbar tab', async ({ page }) => {
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const respond = (body: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
+    if (path.endsWith('/auth/me')) return respond(authenticatedUser);
+    if (path === '/api/v1/flow-runs' && request.method() === 'GET') return respond([run]);
+    if (path === '/api/v1/flows' && request.method() === 'GET') return respond([definition]);
+    if (path === '/api/v1/terminal-environments') return respond([]);
+    if (path === `/api/v1/flow-runs/${run.id}` && request.method() === 'GET') return respond(run);
+    if (path === `/api/v1/flows/${definition.id}` && request.method() === 'GET') return respond(definition);
+    if (path === `/api/v1/flow-runs/${run.id}/stepwise-runs` && request.method() === 'GET') return respond([]);
+    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs/summaries` && request.method() === 'GET') return respond([]);
+    return respond({ error: { code: 'RESOURCE_NOT_FOUND', message: path, details: {} } }, 404);
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '流程运行', exact: true }).click();
+  await page.locator('.run-open').click();
+  await expect(page).toHaveURL(`/flow-runs/${run.id}`);
+  await expect(page.getByLabel('临时管理标签')).toBeVisible();
+  await expect(page.getByRole('button', { name: `Run #${run.run_no} · ${run.name}`, exact: true })).toBeVisible();
+
+  await page.reload();
+  await expect(page).toHaveURL(`/flow-runs/${run.id}`);
+  await expect(page.getByRole('button', { name: '返回运行列表', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: `Run #${run.run_no} · ${run.name}`, exact: true })).toBeVisible();
+
+  await page.getByRole('button', { name: `关闭Run #${run.run_no} · ${run.name}`, exact: true }).click();
+  await expect(page).toHaveURL('/');
+  await expect(page.getByText('1 个流程 · 1 个运行', { exact: true })).toBeVisible();
+});
+
 test('step configuration is saved before start and only continuous and stepwise tabs exist', async ({ page }) => {
   const noInputAsset = { ...asset, inputs: [] };
   const stepDefinition = {
