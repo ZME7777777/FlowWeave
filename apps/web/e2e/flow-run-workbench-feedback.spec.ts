@@ -1278,6 +1278,12 @@ test('run projection stays neutral until record selection and automatic save rep
   expect(automaticCopyBody).toEqual({ name: '自动记录 · 命名副本' });
   await expect(page.locator('.automatic-record-list > article')).toHaveCount(2);
   await expect(page.locator('.automatic-record-list > article.active')).toContainText('自动记录 · 命名副本');
+
+  // A missing live input must block starting, not prevent configuring the
+  // downstream plan that will consume the upstream artifact.
+  await automaticRecord.click();
+  await page.locator('.react-flow__node').filter({ hasText: '测试节点2' }).click();
+  await expect(automaticEditor).toContainText('测试节点2');
 });
 
 test('FR-130 running automatic records show execution facts', async ({ page }) => {

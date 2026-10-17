@@ -329,16 +329,14 @@ function reachableNodeKeys(run: FlowRun, startNodeKey?: string, snapshotId?: str
   return reachable;
 }
 
-/** A draft node becomes configurable only after every in-scope predecessor
- * has a saved plan with no outstanding readiness issue.  This makes the
- * graph follow the same order users see at runtime without changing the
- * batch draft API used by imports and automation. */
+/** A draft node becomes configurable once every in-scope predecessor has a
+ * saved plan. Input readiness remains a start-time concern, so users can
+ * complete and review the whole continuous chain before providing live data. */
 function unlockedAutomaticNodeKeys(run: FlowRun, record: FlowRunAutomaticRecord): Set<string> {
   const snapshot = run.snapshots.find(item => item.id === run.active_snapshot_id) ?? run.snapshots.at(-1);
   if (!snapshot || record.state !== 'DRAFT') return new Set(record.reachable_node_keys);
   const reachable = new Set(record.reachable_node_keys);
-  const incomplete = new Set(record.readiness.issues.map(issue => issue.node_key));
-  const readyPlans = new Set(Object.keys(record.node_plans).filter(key => !incomplete.has(key)));
+  const savedPlans = new Set(Object.keys(record.node_plans));
   const predecessors = new Map<string, string[]>();
   for (const edge of snapshot.definition.edges ?? []) {
     if (!reachable.has(edge.source_instance_key) || !reachable.has(edge.target_instance_key)) continue;
@@ -349,7 +347,7 @@ function unlockedAutomaticNodeKeys(run: FlowRun, record: FlowRunAutomaticRecord)
   const unlocked = new Set<string>();
   for (const key of record.reachable_node_keys) {
     const upstream = predecessors.get(key) ?? [];
-    if (key === record.start_node_key || upstream.every(parent => readyPlans.has(parent))) unlocked.add(key);
+    if (key === record.start_node_key || upstream.every(parent => savedPlans.has(parent))) unlocked.add(key);
   }
   return unlocked;
 }
