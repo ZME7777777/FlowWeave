@@ -173,7 +173,7 @@ test('FlowRun list opens the shared terminal as an in-page dialog', async ({ pag
   await expect(dialog).toBeHidden();
 });
 
-test('step configuration is saved before start and direct launch has its own tab', async ({ page }) => {
+test('step configuration is saved before start and only continuous and stepwise tabs exist', async ({ page }) => {
   const noInputAsset = { ...asset, inputs: [] };
   const stepDefinition = {
     ...definition,
@@ -279,7 +279,8 @@ test('step configuration is saved before start and direct launch has its own tab
   await page.locator('.run-open').click();
   await expect(page.getByRole('tab', { name: '逐步运行' })).toHaveAttribute('aria-selected', 'true');
   await expect(page.getByRole('tab', { name: '连续运行' })).toBeVisible();
-  await expect(page.getByRole('tab', { name: '直接启动' })).toBeVisible();
+  await expect(page.getByRole('tab')).toHaveCount(2);
+  await expect(page.getByRole('tab', { name: '直接启动' })).toHaveCount(0);
   const stepwiseToolbar = page.locator('.manual-record-toolbar');
   await expect(stepwiseToolbar.locator(':scope > button')).toHaveCount(3);
   expect(await stepwiseToolbar.locator(':scope > button').evaluateAll(buttons => {
@@ -1279,9 +1280,8 @@ test('run projection stays neutral until record selection and automatic save rep
   await expect(page.locator('.automatic-record-list > article.active')).toContainText('自动记录 · 命名副本');
 });
 
-test('FR-130 running automatic records show execution facts and chat attempts submit explicit outputs', async ({ page }) => {
-  let currentRun = chatRun;
-  let submittedOutputs: unknown;
+test('FR-130 running automatic records show execution facts', async ({ page }) => {
+  const currentRun = chatRun;
   const runningAutomaticSummary = {
     id: runningAutomatic.id, flow_run_id: run.id, run_no: runningAutomatic.run_no, name: runningAutomatic.name,
     state: runningAutomatic.state, row_version: runningAutomatic.row_version,
@@ -1304,40 +1304,12 @@ test('FR-130 running automatic records show execution facts and chat attempts su
     if (path === `/api/v1/flow-runs/${run.id}/automatic-runs/summaries` && request.method() === 'GET') return respond([runningAutomaticSummary]);
     if (path === `/api/v1/flow-runs/${run.id}/automatic-runs/${runningAutomatic.id}` && request.method() === 'GET') return respond(runningAutomatic);
     if (path === '/api/v1/capabilities' || path === '/api/v1/capability-collections' || path === '/api/v1/model-providers') return respond([]);
-    if (path === `/api/v1/node-attempts/${chatAttempt.id}/manual-outputs` && request.method() === 'POST') {
-      submittedOutputs = request.postDataJSON();
-      const acceptedAttempt = {
-        ...chatAttempt, state: 'WAITING_ACCEPTANCE', state_version: 2, runtime_phase: 'MANUAL_OUTPUTS_SUBMITTED',
-        artifacts: [{
-          id: 'manual-output-1', flow_run_id: run.id, producer_attempt_id: chatAttempt.id, consumer_node_key: null,
-          field_key: 'output_1', version_no: 1, artifact_type: 'URL', storage_key: null,
-          uri: 'https://example.com/result', inline_content: null, content_hash: 'manual-output-hash', byte_size: 26,
-          mime_type: 'text/uri-list', source: 'HUMAN_SESSION', metadata: {}, created_at: now,
-        }],
-      };
-      currentRun = { ...currentRun, current_attempt_state: 'WAITING_ACCEPTANCE', node_runs: [{ ...chatNodeRun, attempts: [acceptedAttempt] }] };
-      return respond(acceptedAttempt);
-    }
     return respond({ error: { code: 'RESOURCE_NOT_FOUND', message: `未配置测试路由：${path}`, details: {} } }, 404);
   });
 
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
   await page.locator('.run-open').click();
-
-  await page.getByRole('tab', { name: '直接启动' }).click();
-  await page.locator('.node-record-list .automatic-record-select').filter({ hasText: '测试节点' }).click();
-  const manualPanel = page.locator('.attempt-control');
-  await expect(manualPanel.getByRole('heading', { name: '提交会话产出' })).toBeVisible();
-  await expect(manualPanel).toContainText('会话回复不会自动成为节点输出');
-  await manualPanel.getByLabel('提交输出 output_1').fill('https://example.com/result');
-  await manualPanel.getByRole('button', { name: '提交候选输出并运行完成门禁' }).click();
-  await expect(manualPanel.getByRole('button', { name: '完成节点并流转' })).toBeVisible();
-  expect(submittedOutputs).toEqual({
-    expected_state_version: 1,
-    force_advance: false,
-    outputs: { output_1: { artifact_type: 'URL', uri: 'https://example.com/result' } },
-  });
 
   await page.getByRole('tab', { name: '连续运行' }).click();
   await page.locator('.automatic-record-select').filter({ hasText: '自动记录 1' }).click();
@@ -1665,149 +1637,6 @@ test('continuous output registration failures read like the stepwise run', async
   await expect(attemptPanel).toContainText('节点产物登记失败');
   await expect(attemptPanel).toContainText('请在节点会话中修订输出后再次提交');
   await expect(attemptPanel).not.toContainText('连续运行需要人工处理');
-});
-
-test('active direct-launch records can be deleted through background cancellation and cleanup', async ({ page }) => {
-  let currentRun = {
-    ...run,
-    node_runs: [{ ...nodeRun, attempts: [{ ...attempt, startup_mode: 'CHAT' }] }],
-  };
-  await page.route('**/api/v1/**', async route => {
-    const request = route.request();
-    const path = new URL(request.url()).pathname;
-    if (path.endsWith('/auth/me')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(authenticatedUser) });
-    const respond = (body: unknown, status = 200) => route.fulfill({
-      status, contentType: 'application/json', body: status === 204 ? undefined : JSON.stringify(body),
-    });
-    if (path === '/api/v1/flow-runs' && request.method() === 'GET') return respond([currentRun]);
-    if (path === '/api/v1/flows' && request.method() === 'GET') return respond([definition]);
-    if (path === '/api/v1/terminal-environments') return respond([]);
-    if (path === `/api/v1/flow-runs/${run.id}` && request.method() === 'GET') return respond(currentRun);
-    if (path === `/api/v1/flows/${definition.id}`) return respond(definition);
-    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs/summaries`) return respond([]);
-    if (path === '/api/v1/capabilities' || path === '/api/v1/capability-collections' || path === '/api/v1/model-providers') return respond([]);
-    if (path === `/api/v1/node-attempts/${attempt.id}/cancel` && request.method() === 'POST') {
-      const cancelledAttempt = { ...attempt, state: 'CANCELLED', state_version: 2, runtime_phase: 'CANCELLED' };
-      currentRun = {
-        ...currentRun, state: 'ACTIVE', completion_mode: null, finished_at: null,
-        progress: { accepted: 0, terminal: 1, active: 0 },
-        node_runs: [{ ...nodeRun, state: 'CANCELLED', attempts: [cancelledAttempt] }],
-      };
-      return respond(cancelledAttempt);
-    }
-    if (path === `/api/v1/flow-runs/${run.id}/nodes/${nodeRun.id}` && request.method() === 'DELETE') {
-      currentRun = {
-        ...currentRun, node_runs: [],
-        progress: { accepted: 0, terminal: 0, active: 0 },
-      };
-      return respond(undefined, 204);
-    }
-    return respond({ error: { code: 'RESOURCE_NOT_FOUND', message: `未配置测试路由：${path}`, details: {} } }, 404);
-  });
-
-  await page.goto('/');
-  await page.getByRole('button', { name: '流程运行', exact: true }).click();
-  await page.locator('.run-open').click();
-  await page.getByRole('tab', { name: '直接启动' }).click();
-
-  const deleteButton = page.locator('.manual-record-toolbar').getByRole('button', { name: '删除' });
-  await expect(deleteButton).toBeDisabled();
-  await expect(page.getByRole('button', { name: '取消整个流程' })).toHaveCount(0);
-
-  await page.locator('.node-record-list .automatic-record-select').filter({ hasText: '测试节点' }).click();
-  await expect(deleteButton).toBeEnabled();
-  await deleteButton.click();
-  const deleteDialog = page.getByRole('alertdialog');
-  await expect(deleteDialog).toContainText('后台会先取消仍在运行的节点');
-  await expect(deleteDialog).toContainText('OpenHands 会话、记录工作区、产物和执行记录');
-  await deleteDialog.getByRole('button', { name: '删除', exact: true }).click();
-
-  await expect(page.locator('.node-record-list .automatic-record-select')).toHaveCount(0);
-  await expect(page.locator('.run-side-panel')).toHaveCount(0);
-  await page.locator('.run-graph-node').filter({ hasText: '测试节点2' }).click();
-  await expect(page.locator('.run-side-panel .node-console')).toBeVisible();
-});
-
-test('waiting-input direct-launch records can be deleted without cancellation', async ({ page }) => {
-  const waitingInputAttempt = { ...attempt, state: 'WAITING_INPUT', runtime_phase: null, startup_mode: 'CHAT' };
-  let currentRun = {
-    ...run,
-    current_attempt_state: 'WAITING_INPUT',
-    node_runs: [{ ...nodeRun, attempts: [waitingInputAttempt] }],
-  };
-  await page.route('**/api/v1/**', async route => {
-    const request = route.request();
-    const path = new URL(request.url()).pathname;
-    const respond = (body: unknown, status = 200) => route.fulfill({
-      status, contentType: 'application/json', body: status === 204 ? undefined : JSON.stringify(body),
-    });
-    if (path.endsWith('/auth/me')) return respond(authenticatedUser);
-    if (path === '/api/v1/flow-runs' && request.method() === 'GET') return respond([currentRun]);
-    if (path === '/api/v1/flows' && request.method() === 'GET') return respond([definition]);
-    if (path === '/api/v1/terminal-environments') return respond([]);
-    if (path === `/api/v1/flow-runs/${run.id}` && request.method() === 'GET') return respond(currentRun);
-    if (path === `/api/v1/flows/${definition.id}`) return respond(definition);
-    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs/summaries`) return respond([]);
-    if (path === '/api/v1/capabilities' || path === '/api/v1/capability-collections' || path === '/api/v1/model-providers') return respond([]);
-    if (path === `/api/v1/flow-runs/${run.id}/nodes/${nodeRun.id}` && request.method() === 'DELETE') {
-      currentRun = { ...currentRun, node_runs: [], progress: { accepted: 0, terminal: 0, active: 0 } };
-      return respond(undefined, 204);
-    }
-    return respond({ error: { code: 'RESOURCE_NOT_FOUND', message: `未配置测试路由：${path}`, details: {} } }, 404);
-  });
-
-  await page.goto('/');
-  await page.getByRole('button', { name: '流程运行', exact: true }).click();
-  await page.locator('.run-open').click();
-  await page.getByRole('tab', { name: '直接启动' }).click();
-  await page.locator('.node-record-list .automatic-record-select').filter({ hasText: '测试节点' }).click();
-
-  const deleteButton = page.locator('.manual-record-toolbar').getByRole('button', { name: '删除' });
-  await expect(deleteButton).toBeEnabled();
-  await deleteButton.click();
-  const deleteDialog = page.getByRole('alertdialog');
-  await expect(deleteDialog).toContainText('OpenHands 会话、记录工作区、产物和执行记录');
-  await deleteDialog.getByRole('button', { name: '删除', exact: true }).click();
-  await expect(page.locator('.node-record-list .automatic-record-select')).toHaveCount(0);
-});
-
-test('unstarted chat records can be deleted without a cancellation round trip', async ({ page }) => {
-  let currentRun = chatRun;
-  await page.route('**/api/v1/**', async route => {
-    const request = route.request();
-    const path = new URL(request.url()).pathname;
-    if (path.endsWith('/auth/me')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(authenticatedUser) });
-    const respond = (body: unknown, status = 200) => route.fulfill({
-      status, contentType: 'application/json', body: status === 204 ? undefined : JSON.stringify(body),
-    });
-    if (path === '/api/v1/flow-runs' && request.method() === 'GET') return respond([currentRun]);
-    if (path === '/api/v1/flows' && request.method() === 'GET') return respond([definition]);
-    if (path === '/api/v1/terminal-environments') return respond([]);
-    if (path === `/api/v1/flow-runs/${run.id}` && request.method() === 'GET') return respond(currentRun);
-    if (path === `/api/v1/flows/${definition.id}`) return respond(definition);
-    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs/summaries`) return respond([]);
-    if (path === '/api/v1/capabilities' || path === '/api/v1/capability-collections' || path === '/api/v1/model-providers') return respond([]);
-    if (path === `/api/v1/flow-runs/${run.id}/nodes/${chatNodeRun.id}` && request.method() === 'DELETE') {
-      currentRun = { ...currentRun, state: 'ACTIVE', progress: { accepted: 0, terminal: 0, active: 0 }, node_runs: [] };
-      return respond(undefined, 204);
-    }
-    return respond({ error: { code: 'RESOURCE_NOT_FOUND', message: `未配置测试路由：${path}`, details: {} } }, 404);
-  });
-
-  await page.goto('/');
-  await page.getByRole('button', { name: '流程运行', exact: true }).click();
-  await page.locator('.run-open').click();
-  await page.getByRole('tab', { name: '直接启动' }).click();
-  await page.locator('.node-record-list .automatic-record-select').filter({ hasText: '测试节点' }).click();
-
-  const deleteButton = page.locator('.manual-record-toolbar').getByRole('button', { name: '删除' });
-  await expect(deleteButton).toBeEnabled();
-  await deleteButton.click();
-  const deleteDialog = page.getByRole('alertdialog');
-  await expect(deleteDialog).toContainText('OpenHands 会话、记录工作区、产物和执行记录');
-  await deleteDialog.getByRole('button', { name: '删除', exact: true }).click();
-
-  await expect(page.locator('.node-record-list .automatic-record-select')).toHaveCount(0);
 });
 
 test('manual and automatic records remain hidden after accepted deletion', async ({ page }) => {
