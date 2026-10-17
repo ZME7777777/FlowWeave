@@ -3623,7 +3623,10 @@ def process_start_automatic_attempt(db: Session, attempt_id: str, *, commit: boo
         AttemptStartWrite(
             expected_state_version=attempt.state_version,
             startup_mode="PROMPT",
-            prompt=str(node_plan.get("startup_prompt") or ""),
+            # The attempt has already frozen the prompt, including any
+            # platform-injected business-result contract. Reuse it rather
+            # than resubmitting the editable plan value at this handoff.
+            prompt=None,
         ),
         f"automatic-start:{attempt.id}:v{attempt.state_version}",
     )

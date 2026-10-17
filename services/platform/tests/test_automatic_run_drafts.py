@@ -1591,6 +1591,80 @@ def test_automatic_run_starts_ready_plan_and_completes_frozen_chain(
     assert again.status_code == 409, again.text
 
 
+def test_automatic_start_reuses_the_frozen_business_contract_prompt(
+    worker_client, worker_container
+):
+    """Automatic handoff must not overwrite the contract-expanded prompt."""
+
+    from flowweave.bootstrap.worker import TaskWorker
+
+    flow = _create_flow(worker_client)
+    business_gate = {
+        "stage": "END",
+        "position": 0,
+        "gate_type": "PROMPT",
+        "config": {
+            "prompt": "审查收集结果",
+            "business_result_contract": {
+                "schema_version": 1,
+                "node_kind": "COLLECTION",
+                "result_output_keys": ["result"],
+                "required_evidence_paths": ["source", "time_window"],
+            },
+        },
+        "agent_preset": {
+            "model_provider_id": _automatic_model_provider_id(worker_client),
+            "model_name": "gpt-auto",
+        },
+    }
+    created = worker_client.post(
+        f"/api/v1/flows/{flow['id']}/automatic-runs",
+        json={
+            "environment_version_id": worker_client.environment_version_id,
+            "start_node_key": "first",
+            "node_plans": {
+                "first": {
+                    **_node_plan(
+                        worker_client,
+                        "执行第一个节点",
+                        input_url="https://example.com/input",
+                    ),
+                    "gates": [business_gate],
+                },
+                "second": _node_plan(worker_client, "执行第二个节点"),
+            },
+        },
+    )
+    assert created.status_code == 201, created.text
+    draft = created.json()
+    started = worker_client.post(
+        f"/api/v1/automatic-runs/{draft['id']}/start",
+        json={"expected_row_version": draft["row_version"]},
+        headers={"Idempotency-Key": f"frozen-contract-prompt:{draft['id']}"},
+    )
+    assert started.status_code == 200, started.text
+
+    worker = TaskWorker(worker_container)
+    assert worker._run_once_sync() is True  # Materialize the first Attempt.
+    detail = worker_client.get(f"/api/v1/flow-runs/{started.json()['id']}").json()
+    attempt = detail["node_runs"][0]["attempts"][0]
+    assert "FLOWWEAVE_BUSINESS_RESULT_CONTRACT_V1" in attempt["startup_prompt"]
+
+    # This eventually executes the real confirm_start immutability check.
+    # Before the regression fix it raised START_CONFIGURATION_IMMUTABLE when
+    # the worker resent the unexpanded plan prompt.
+    for _ in range(8):
+        assert worker._run_once_sync() is True
+        detail = worker_client.get(f"/api/v1/flow-runs/{started.json()['id']}").json()
+        attempt = detail["node_runs"][0]["attempts"][0]
+        if attempt["state"] in {"EXECUTING", "WAITING_ACCEPTANCE", "ACCEPTED"}:
+            break
+    else:
+        raise AssertionError(f"automatic attempt did not start: {attempt['state']}")
+    assert attempt["state"] != "START_BLOCKED"
+    assert "FLOWWEAVE_BUSINESS_RESULT_CONTRACT_V1" in attempt["startup_prompt"]
+
+
 def _import_context_capability(client) -> dict:
     validated = client.post(
         "/api/v1/capability-imports/validate",
