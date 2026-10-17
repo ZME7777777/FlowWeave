@@ -2088,6 +2088,49 @@ def read_skill_source(db: Session, capability_id: str) -> dict[str, Any]:
     }
 
 
+def read_skill_package(db: Session, capability_id: str) -> tuple[str, bytes]:
+    """Return one Skill version as a standalone ZIP for download.
+
+    A governed blob may be a multi-Skill bundle. Export only the directory
+    that owns this version's entry ``SKILL.md`` and root it at the Skill's own
+    folder, so editing it locally and uploading it again creates a new
+    revision of exactly this Skill and never re-imports its bundle siblings.
+    """
+
+    published = resolve_version(db, capability_id)
+    if published.package.capability_type != "SKILL":
+        raise DomainError(
+            "CAPABILITY_NOT_DOWNLOADABLE", "Only Skill packages can be downloaded", 422
+        )
+    normalized = published.version.normalized_config_json or {}
+    entry = PurePosixPath(str(normalized.get("entry") or ""))
+    if entry.name != "SKILL.md":
+        raise DomainError("CAPABILITY_SOURCE_UNAVAILABLE", "Skill package is unavailable", 422)
+    skill_root = entry.parent
+    folder = skill_root.name or published.package.capability_key or "skill"
+    output = io.BytesIO()
+    try:
+        package = get_artifact_store().read(published.blob.storage_key)
+        with (
+            zipfile.ZipFile(io.BytesIO(package)) as archive,
+            zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as exported,
+        ):
+            for info in archive.infolist():
+                member = PurePosixPath(info.filename)
+                if info.is_dir() or (
+                    skill_root.parts and member.parts[: len(skill_root.parts)] != skill_root.parts
+                ):
+                    continue
+                relative = PurePosixPath(*member.parts[len(skill_root.parts) :])
+                exported.writestr(str(PurePosixPath(folder) / relative), archive.read(info))
+    except (FileNotFoundError, KeyError, zipfile.BadZipFile) as exc:
+        raise DomainError(
+            "CAPABILITY_SOURCE_UNAVAILABLE", "Skill package is unavailable", 422
+        ) from exc
+    stem = published.package.capability_key or folder
+    return f"{stem}-v{published.version.version_no}.zip", output.getvalue()
+
+
 def read_context_source(db: Session, capability_id: str) -> dict[str, Any]:
     """Return Context text for read-only repository inspection."""
 

@@ -173,7 +173,9 @@ def delete_directories(db: Session, directory_ids: list[str]) -> dict[str, Any]:
 
     for item_id in requested:
         collect(item_id)
-    db.execute(update(NodeAsset).where(NodeAsset.directory_id.in_(removed)).values(directory_id=None))
+    db.execute(
+        update(NodeAsset).where(NodeAsset.directory_id.in_(removed)).values(directory_id=None)
+    )
     db.execute(delete(NodeDirectory).where(NodeDirectory.id.in_(removed)))
     finish(db)
     return {"deleted_ids": sorted(removed)}

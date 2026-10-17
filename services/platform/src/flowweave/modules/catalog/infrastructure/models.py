@@ -165,9 +165,7 @@ class CapabilityVersion(Base):
     __tablename__ = "capability_versions"
     __table_args__ = (
         UniqueConstraint("package_id", "version_no", name="uq_capability_version_number"),
-        UniqueConstraint(
-            "owner_user_id", "digest", name="uq_capability_version_owner_digest"
-        ),
+        UniqueConstraint("owner_user_id", "digest", name="uq_capability_version_owner_digest"),
         UniqueConstraint(
             "source_import_id",
             "source_position",
@@ -399,9 +397,7 @@ class MemorySource(Base):
             "source_key",
             name="uq_memory_source_owner_scope_identity",
         ),
-        UniqueConstraint(
-            "owner_user_id", "source_key", name="uq_memory_source_owner_key"
-        ),
+        UniqueConstraint("owner_user_id", "source_key", name="uq_memory_source_owner_key"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
@@ -503,9 +499,7 @@ class MemorySourceVersionReference(Base):
 class CapabilityCollection(Base):
     __tablename__ = "capability_collections"
     __table_args__ = (
-        UniqueConstraint(
-            "owner_user_id", "name", name="uq_capability_collection_owner_name"
-        ),
+        UniqueConstraint("owner_user_id", "name", name="uq_capability_collection_owner_name"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)

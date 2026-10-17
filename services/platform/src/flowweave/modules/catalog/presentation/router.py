@@ -1,5 +1,6 @@
 import asyncio
 from typing import Annotated, Any
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Header, Query, Response
 
@@ -558,6 +559,18 @@ async def probe_plugin_capability(
 async def capability_source(capability_id: str, db: Db) -> dict[str, Any]:
     return await run_sync(
         db, lambda session: capability_imports.read_skill_source(session, capability_id)
+    )
+
+
+@router.get("/capabilities/{capability_id}/package")
+async def capability_package(capability_id: str, db: Db) -> Response:
+    filename, content = await run_sync(
+        db, lambda session: capability_imports.read_skill_package(session, capability_id)
+    )
+    return Response(
+        content=content,
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
     )
 
 

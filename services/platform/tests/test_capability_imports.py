@@ -1175,6 +1175,77 @@ def test_editing_one_skill_saves_in_place(client):
     assert unchanged.json()["error"]["code"] == "CAPABILITY_SOURCE_UNCHANGED"
 
 
+def test_skill_package_download_exports_one_skill_for_reupload(client):
+    encoded = _zip_content(
+        {
+            "skills/requirements-analysis/SKILL.md": (
+                "---\nname: requirements-analysis\ndescription: Analyze requirements\n---\n"
+                "# Requirements analysis v1\n"
+            ),
+            "skills/requirements-analysis/scripts/run.py": "print('v1')\n",
+            "skills/technical-design/SKILL.md": (
+                "---\nname: technical-design\ndescription: Create a design\n---\n# Design\n"
+            ),
+        }
+    )
+    validated = client.post(
+        "/api/v1/capability-imports/validate",
+        json={"capability_type": "SKILL", "filename": "team-skills.zip", "content_base64": encoded},
+    )
+    assert validated.status_code == 200, validated.text
+    committed = client.post(
+        "/api/v1/capability-imports", json={"import_token": validated.json()["import_token"]}
+    )
+    assert committed.status_code == 201, committed.text
+    requirements = next(
+        item
+        for item in client.get("/api/v1/capabilities").json()
+        if item["capability_key"] == "requirements-analysis"
+    )
+
+    downloaded = client.get(f"/api/v1/capabilities/{requirements['id']}/package")
+    assert downloaded.status_code == 200, downloaded.text
+    assert downloaded.headers["content-type"] == "application/zip"
+    assert "requirements-analysis-v1.zip" in downloaded.headers["content-disposition"]
+    with zipfile.ZipFile(io.BytesIO(downloaded.content)) as archive:
+        # Only this Skill, rooted at its own folder, without bundle siblings.
+        assert sorted(archive.namelist()) == [
+            "requirements-analysis/SKILL.md",
+            "requirements-analysis/scripts/run.py",
+        ]
+        files = {name: archive.read(name) for name in archive.namelist()}
+
+    files["requirements-analysis/SKILL.md"] = files["requirements-analysis/SKILL.md"].replace(
+        b"v1", b"v2"
+    )
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w") as archive:
+        for name, content in files.items():
+            archive.writestr(name, content)
+    reuploaded = client.post(
+        "/api/v1/capability-imports/validate",
+        json={
+            "capability_type": "SKILL",
+            "filename": "requirements-analysis-v1.zip",
+            "content_base64": base64.b64encode(output.getvalue()).decode(),
+        },
+    )
+    assert reuploaded.status_code == 200, reuploaded.text
+    assert (
+        client.post(
+            "/api/v1/capability-imports", json={"import_token": reuploaded.json()["import_token"]}
+        ).status_code
+        == 201
+    )
+    latest = next(
+        item
+        for item in client.get("/api/v1/capabilities").json()
+        if item["capability_key"] == "requirements-analysis"
+    )
+    assert latest["revision_number"] == 2
+    assert "v2" in client.get(f"/api/v1/capabilities/{latest['id']}/source").json()["content"]
+
+
 def test_skill_zip_rejects_duplicate_skill_names_atomically(client):
     response = client.post(
         "/api/v1/capability-imports/validate",
