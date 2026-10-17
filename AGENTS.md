@@ -105,6 +105,7 @@ git -C /Users/zhengmengen/WorkSpace/openhands/software-agent-sdk-total-tokens-1.
 
 - Token/事件上下文指标允许 Runtime 暂时返回未知；同一 binding 已有可信指标时应保留最近可信值，首次未知仍明确显示待更新，且不得跨 binding 复用。
 - 会话交互态与视觉态必须分离：暂停、继续、发送等操作服从 Runtime readiness；运行中展示按正式事件单调推进，不能因中间轮询回退。首次打开会话且 Runtime 状态未知时只显示明确加载态，不得将历史事件缺口呈现为“正在思考”。自动贴底仅由新事件、历史锚点恢复或用户操作触发，禁止用整个会话树的 ResizeObserver 响应状态文案和动画尺寸变化；已到目标位置时不得重复写 `scrollTop`。
+- 会话运行中的全局 Esc 暂停必须复用既有 interrupt mutation，并采用有界的两次按键确认；首次按键仅在暂停按钮显示 `Esc`，确认超时后复原。弹层的捕获阶段 Esc 关闭逻辑优先，工作台快捷键不得越过已 `preventDefault` 的事件。
 - 会话首屏 hydration 只读取 OpenHands 最新事件窗口及同批 context/readiness；更早历史由浏览器低优先级分页恢复，不能为了首屏串行读取完整分支。
 - API 侧 hydration 缓存必须按用户、宿主、binding、Runtime Session/generation 和 OpenHands Conversation 隔离。不可变正式事件按 event id、分支快照按 leaf 缓存；继续执行只先失效 current/terminal 指针并递增 epoch，保留旧 branch/event。旧 epoch 的迟到请求不得恢复 current；运行中 hydration 只允许 single-flight，不得成为长期 current 缓存。
 - 首次进入、刷新后或可信租约过期的既有会话必须重新取得该 binding 的正式 hydration，并在结果返回前只显示“正在加载会话”；React Query、浏览器持久快照或不完整事件不得抢先渲染，也不得参与“正在思考”判断。当前标签页内刚完成 hydration 的终态会话可短期直接复用完整快照；运行中会话短暂切换回来也应保留快照、立即恢复 WebSocket，并在后台补读最新窗口与 readiness。快速切换时必须合并短时间内的选择，并将 hydration 限制为单飞、完成后只追赶最后选择的 binding；宿主卸载时用 AbortSignal 取消浏览器请求，不能让每次点击都并发占用交互读取池。

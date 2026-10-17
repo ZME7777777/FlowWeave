@@ -58,6 +58,7 @@ const HISTORY_PREFETCH_DELAY_MS = 1_500;
 // reconciliation into one bounded refresh instead of invalidating per frame.
 const CONTEXT_REFRESH_MIN_INTERVAL_MS = 60_000;
 const WORKSPACE_PATH_COPIED_DURATION_MS = 1_500;
+const ESC_PAUSE_CONFIRMATION_DURATION_MS = 1_500;
 const SESSION_PERFORMANCE_MARK_PREFIX = 'flowweave.agent-session.';
 // These are the frozen OpenHands/LiteLLM request settings applied by the
 // Runtime payload. They govern each model request made while a Task runs;
@@ -4379,6 +4380,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   });
   const [hiddenEventIds, setHiddenEventIds] = useState<Set<string>>(() => new Set());
   const [deferredRewriteUserEventIds, setDeferredRewriteUserEventIds] = useState<Set<string>>(() => new Set());
+  const [escPauseConfirmation, setEscPauseConfirmation] = useState(false);
+  const escPauseConfirmationTimer = useRef<number | undefined>(undefined);
+  const confirmPauseOnEscapeRef = useRef<((event: KeyboardEvent) => void) | undefined>(undefined);
   const [turnState, setTurnState] = useState<TurnState>('idle');
   const [activeTurnEventId, setActiveTurnEventId] = useState<string>();
   const [expiredTerminalSyncTurnKey, setExpiredTerminalSyncTurnKey] = useState<string>();
@@ -7915,6 +7919,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (queuedMessages.some(message => message.scope === selected?.id && sendingMessageIds.current.has(message.id))) return;
     setTurnState('idle');
   }, [inputReadinessQuery.data?.ready, queuedMessages, selected?.id, turnState]);
+  useEffect(() => {
+    const onEscape = (event: KeyboardEvent) => confirmPauseOnEscapeRef.current?.(event);
+    document.addEventListener('keydown', onEscape);
+    return () => {
+      document.removeEventListener('keydown', onEscape);
+      if (escPauseConfirmationTimer.current !== undefined) window.clearTimeout(escPauseConfirmationTimer.current);
+    };
+  }, []);
 
   const composerHasContent = Boolean(
     composerHasText || attachments.length || pendingAttachments.some(item => item.scope === composerScope) || references.length || workspaceReferences.length || composerAnnotations.length,
@@ -8113,6 +8125,23 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     else if (composerControl.action === 'interrupt') interrupt.mutate();
     else if (composerControl.action === 'resume' && workspace && selected) resume.mutate({ workspaceId: workspace.id, bindingId: selected.id });
   };
+  const confirmPauseOnEscape = (event: KeyboardEvent) => {
+    if (event.key !== 'Escape' || event.defaultPrevented || composerControl.action !== 'interrupt' || composerControl.disabled) return;
+    event.preventDefault();
+    if (escPauseConfirmation) {
+      if (escPauseConfirmationTimer.current !== undefined) window.clearTimeout(escPauseConfirmationTimer.current);
+      escPauseConfirmationTimer.current = undefined;
+      setEscPauseConfirmation(false);
+      interrupt.mutate();
+      return;
+    }
+    setEscPauseConfirmation(true);
+    escPauseConfirmationTimer.current = window.setTimeout(() => {
+      escPauseConfirmationTimer.current = undefined;
+      setEscPauseConfirmation(false);
+    }, ESC_PAUSE_CONFIRMATION_DURATION_MS);
+  };
+  confirmPauseOnEscapeRef.current = confirmPauseOnEscape;
   // A conversation can predate the explicit work-directory binding while
   // still carrying its authoritative working_directory.  Prefer it over the
   // shared project root so paths in its transcript stay relative to the
@@ -8628,7 +8657,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
           </div>
           <div className="agent-composer-actions">
             {features.modelSelection && (selected ? <ComposerModelMenu providers={connectedProviders} providerId={conversationProviderId} modelName={activeConversationModelName} models={availableConversationModels} efforts={supportedEfforts} effort={reasoningEffort ?? selected.reasoning_effort ?? contextQuery.data?.reasoning_effort ?? conversationModel?.default_reasoning_effort ?? ''} disabled={!canWrite || conversationActivity.active || queuedMessages.length > 0 || Boolean(pendingConfirmation) || persistModel.isPending || migrateStreaming.isPending || Boolean(pendingMigratedSend)} onProviderChange={providerId => { const provider = connectedProviders.find(item => item.id === providerId); const model = provider?.models.find(item => item.enabled && item.is_default); if (!provider || !model) return; const effort = model.default_reasoning_effort ?? null; setConversationProviderId(providerId); setConversationModelName(model.model_name); setReasoningEffort(effort); persistModel.mutate({ providerId, modelName: model.model_name, effort }); }} onModelChange={modelName => { const model = availableConversationModels.find(item => item.model_name === modelName); const effort = model?.default_reasoning_effort ?? null; setConversationModelName(modelName); setReasoningEffort(effort); persistModel.mutate({ providerId: conversationProviderId, modelName, effort }); }} onEffortChange={effort => { const nextEffort = effort || null; setReasoningEffort(nextEffort); persistModel.mutate({ providerId: conversationProviderId, modelName: activeConversationModelName, effort }); }}/> : <ComposerModelMenu providers={connectedProviders} providerId={newConversationProviderId} modelName={newConversationModelName} models={availableDraftModels} efforts={supportedDraftEfforts} effort={newConversationReasoningEffort ?? draftConversationModel?.default_reasoning_effort ?? ''} disabled={!canOpenConversation || bootstrap.isPending} onProviderChange={providerId => { const provider = connectedProviders.find(item => item.id === providerId); const model = provider?.models.find(item => item.enabled && item.is_default); if (!provider || !model) return; setNewConversationProviderId(providerId); setNewConversationModelName(model.model_name); setNewConversationReasoningEffort(model.default_reasoning_effort ?? null); }} onModelChange={modelName => { const model = availableDraftModels.find(item => item.model_name === modelName); setNewConversationModelName(modelName); setNewConversationReasoningEffort(model?.default_reasoning_effort ?? null); }} onEffortChange={effort => setNewConversationReasoningEffort(effort || null)}/>) }
-            <button type="button" className={`agent-send${composerControl.action === 'resume' || composerControlMode === 'pausing' ? ' resume' : ''}`} aria-label={composerControl.label} disabled={composerControl.disabled} onClick={runComposerAction}>{pendingConfirmation ? <ShieldAlert size={14}/> : composerControl.action === 'send' ? <Send size={16}/> : composerControl.action === 'resume' || composerControlMode === 'pausing' ? <Play size={12} fill="currentColor"/> : composerControlMode === 'read-only' ? <CircleAlert size={15}/> : composerControl.action === 'interrupt' ? <Square size={10} fill="currentColor"/> : <LoaderCircle className="conversation-activity-spin" size={15}/>}</button>
+            <button type="button" className={`agent-send${composerControl.action === 'resume' || composerControlMode === 'pausing' ? ' resume' : ''}`} aria-label={escPauseConfirmation && composerControl.action === 'interrupt' ? '再次按 Esc 暂停当前 Agent' : composerControl.label} disabled={composerControl.disabled} onClick={runComposerAction}>{escPauseConfirmation && composerControl.action === 'interrupt' ? 'Esc' : pendingConfirmation ? <ShieldAlert size={14}/> : composerControl.action === 'send' ? <Send size={16}/> : composerControl.action === 'resume' || composerControlMode === 'pausing' ? <Play size={12} fill="currentColor"/> : composerControlMode === 'read-only' ? <CircleAlert size={15}/> : composerControl.action === 'interrupt' ? <Square size={10} fill="currentColor"/> : <LoaderCircle className="conversation-activity-spin" size={15}/>}</button>
           </div>
         </footer>
         </div>
