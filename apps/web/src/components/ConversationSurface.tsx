@@ -7,7 +7,7 @@ import { ConversationTextReveal } from './ConversationTextReveal';
 import { useEscapeClose } from './useEscapeClose';
 import { subagentAvatarSlotForEvent, subagentAvatarSlots, type SubagentAvatarSlot } from '../utils/subagentAvatar';
 import { workspaceFileChanges, workspaceRelativePath, type WorkspaceFileChange } from './agent-session/fileChanges';
-import { isFlowWeaveMessageContext, isOpenHandsAgentReply, isOpenHandsConversationTerminalError, isOpenHandsEmptyResponseRecovery, orderOpenHandsConversationEvents, parseOpenHandsEventTime } from './conversationEvents';
+import { isFlowWeaveMessageContext, isOpenHandsAgentReply, isOpenHandsConversationTerminalError, isOpenHandsEmptyResponseRecovery, orderOpenHandsConversationEvents, parseOpenHandsEventTime, projectFlowWeaveMessageContext } from './conversationEvents';
 import './conversation-surface.css';
 
 type ItemKind = 'user' | 'assistant' | 'thought' | 'tool' | 'error' | 'condensation' | 'security';
@@ -1974,7 +1974,10 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   // Pausing a tool makes OpenHands emit one synthetic AgentErrorEvent. Keep
   // it as a formal process boundary, but itemsFor() suppresses its redundant
   // error row from the transcript.
-  const visibleEvents = events;
+  const visibleEvents = useMemo(
+    () => events.map(projectFlowWeaveMessageContext),
+    [events],
+  );
   const visibleEventSignature = useMemo(
     () => visibleEvents.map(event => [event.id, eventRevealSignature(event)] as const),
     [visibleEvents],
@@ -2573,7 +2576,6 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     if (event.pointerType === 'mouse' && event.button !== 0) return;
     const pointerTarget = event.target instanceof Node ? elementForNode(event.target) : undefined;
     if (pointerTarget?.closest('a,button,input,textarea,select,summary,[contenteditable="true"]')) return;
-    const pointerMessageId = pointerTarget?.closest<HTMLElement>('[data-conversation-event-id]')?.dataset.conversationEventId;
     const selection = window.getSelection();
     if (!selection || selection.isCollapsed || !selection.rangeCount) {
       setSelectedReference(undefined);
@@ -2589,7 +2591,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
         return;
       }
       const reference = conversationAnnotationForSelection(currentSelection, currentSurface, conversationScope);
-      if (!reference || pointerMessageId !== reference.eventId) {
+      if (!reference) {
         setSelectedReference(undefined);
         return;
       }

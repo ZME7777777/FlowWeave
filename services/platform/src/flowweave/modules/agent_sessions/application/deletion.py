@@ -3,6 +3,9 @@
 from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
+from flowweave.modules.agent_sessions.application.resumable_attachments import (
+    delete_attachment_uploads,
+)
 from flowweave.modules.agent_sessions.infrastructure.models import (
     AgentConversationBinding,
     AgentConversationCapability,
@@ -21,6 +24,15 @@ def delete_binding_records(db: Session, binding_id: str) -> None:
     independent audit facts live outside the Conversation locator tables.
     """
 
+    binding = db.get(AgentConversationBinding, binding_id)
+    if binding is not None:
+        delete_attachment_uploads(
+            db,
+            binding_id=binding_id,
+            host_kind=binding.host_kind,
+            host_id=binding.host_id,
+            host_scope_id=binding.node_attempt_id,
+        )
     db.execute(
         delete(RuntimeConfirmationApproval).where(
             RuntimeConfirmationApproval.flow_run_conversation_binding_id == binding_id

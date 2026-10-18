@@ -445,6 +445,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   let modelIsResponding = false;
   let transientIdleReadiness = false;
   let readinessReportsIdle = false;
+  let stalePausedReadiness = false;
+  let stalePausedReadinessReads = 0;
   let interrupted = false;
   let pauseReadinessGate: Promise<void> | undefined;
   let releasePauseReadiness: (() => void) | undefined;
@@ -848,7 +850,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
         events: (modelIsResponding || parentTurnFailed || recoverableAgentError || recoverableTaskResumeError) ? [
           ...(!cursor ? [{ id: 'running-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'agent-reply', content: '正在处理的请求', timestamp: runningUserTimestamp } }] : []),
-          ...(runningDirectFormalEventPersisted && !cursor ? [{ id: 'running-direct-stream-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'running-user', content: 'FLOWWEAVE_MESSAGE_CONTEXT_V5:{"current_user_request":{"content":"运行中直接发送消息"}}', display_content: '运行中直接发送消息', timestamp: new Date().toISOString() } }] : []),
+          ...(runningDirectFormalEventPersisted && !cursor ? [{ id: 'running-direct-stream-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'running-user', content: 'FlowWeave message context (JSON):\n\n---FLOWWEAVE_MESSAGE_CONTEXT_V5---\n{"version":5,"reference_materials":[],"current_user_request":{"content":"运行中直接发送消息"}}', timestamp: new Date().toISOString() } }] : []),
           ...(runningDirectAssistantReplyPersisted && !cursor ? [{ id: 'running-direct-stream-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'running-direct-stream-user', content: '延迟事件到达后仍应正常显示这条回复。', timestamp: new Date().toISOString() } }] : []),
           ...(incompleteLiveToolProjection && !cursor ? [{ id: 'live-tool', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'running-user', action_id: 'live-tool', tool_call_id: 'live-call', event_name: 'TerminalAction', timestamp: new Date().toISOString() } }] : []),
           ...(backfilledTaskAction && (cursor === 'running-user' || (cursorlessEventRecovery && !cursor)) ? [{ id: 'recovered-task-action', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'running-user', action_id: 'recovered-task-action', tool_call_id: 'recovered-task-call', tool_name: 'task', event_name: 'TaskAction', summary: '检查依赖关系', runtime_task: { phase: 'REQUESTED', action_event_id: 'recovered-task-action', tool_call_id: 'recovered-task-call', subagent_type: 'general-purpose', description: '检查依赖关系' }, timestamp: new Date().toISOString() } }] : []),
@@ -1009,6 +1011,18 @@ test('top-level Agent workspace creates a direct conversation and restores its U
         await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ready: true, execution_status: 'idle' }) });
         return;
       }
+      if (stalePausedReadiness) {
+        stalePausedReadinessReads += 1;
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            ready: stalePausedReadinessReads === 1,
+            execution_status: stalePausedReadinessReads === 1 ? 'paused' : 'running',
+          }),
+        });
+        return;
+      }
       if (interrupted && pauseReadinessGate) {
         pauseReadinessRefreshStarted = true;
         await pauseReadinessGate;
@@ -1096,6 +1110,13 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   const stalledStatus = page.locator('.conversation-turn-status').filter({ hasText: '后台长时间未产生可确认进展' });
   await expect(stalledStatus).toBeVisible();
   await expect(stalledStatus.getByRole('img', { name: '会话正在运行但后台长时间未产生可确认进展' })).toBeVisible();
+  stalePausedReadiness = true;
+  stalePausedReadinessReads = 0;
+  await page.reload();
+  await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
+  await expect(page.getByText('已暂停', { exact: true })).toHaveCount(0);
+  await expect.poll(() => stalePausedReadinessReads).toBeGreaterThanOrEqual(2);
+  stalePausedReadiness = false;
   emptyResponseRecovery = true;
   await page.reload();
   // OpenHands 1.47 persists an empty Agent Message and an environment
@@ -2343,8 +2364,11 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   if (!activeConversation) throw new Error('Expected the active conversation to receive the direct message');
   activeConversation.streaming_callback_ready = false;
   await page.reload();
-  await expect(page.locator('[data-user-event-id="running-direct-stream-user"]')).toHaveCount(1);
-  await expect(page.locator('[data-user-event-id="running-direct-stream-user"]')).not.toHaveAttribute('data-optimistic-identity', 'stable');
+  const reloadedDirectMessage = page.locator('[data-user-event-id="running-direct-stream-user"]');
+  await expect(reloadedDirectMessage).toHaveCount(1);
+  await expect(reloadedDirectMessage).not.toHaveAttribute('data-optimistic-identity', 'stable');
+  await expect(reloadedDirectMessage).toContainText('运行中直接发送消息');
+  await expect(reloadedDirectMessage).not.toContainText('FlowWeave message context (JSON):');
   const sentBeforeQueue = sentMessages;
   await composer.fill('待编辑排队消息');
   await composer.press('Enter');
@@ -2991,13 +3015,12 @@ test('selected conversation text is sent and rendered as a compact reference car
   await page.getByRole('button', { name: '关闭文件预览' }).click();
   await source.evaluate((element, text) => {
     const content = [...element.querySelectorAll('p')].find(item => item.textContent === text);
-    if (!content) throw new Error('Expected assistant message content');
+    if (!content?.firstChild || !content.lastChild) throw new Error('Expected assistant message content');
     const selection = window.getSelection();
-    const range = document.createRange();
-    range.selectNodeContents(content);
-    selection?.removeAllRanges();
-    selection?.addRange(range);
-    content.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+    selection?.setBaseAndExtent(content.lastChild, content.lastChild.textContent?.length ?? 0, content.firstChild, 0);
+    const surface = element.closest('.conversation-surface');
+    if (!surface) throw new Error('Expected conversation surface');
+    surface.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
   }, selectedText);
   await expect(page.getByRole('button', { name: '添加到会话' })).toBeVisible();
   await page.getByRole('button', { name: '添加到会话' }).click();

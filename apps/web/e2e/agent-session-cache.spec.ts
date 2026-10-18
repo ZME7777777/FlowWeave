@@ -2336,13 +2336,14 @@ test('A new conversation stays first after an existing conversation was reordere
   const dataTransfer = await page.evaluateHandle(() => new DataTransfer());
   const targetBounds = await target.boundingBox();
   await source.dispatchEvent('dragstart', { dataTransfer });
-  // Native DnD occasionally omits `drop` while still reporting the final
-  // pointer coordinates to `dragend`; that fallback must commit the order.
-  await source.dispatchEvent('dragend', {
+  // Some native DnD implementations omit `drop` and report (0, 0) for
+  // `dragend`. The most recent valid hover target must still commit the order.
+  await target.dispatchEvent('dragover', {
     dataTransfer,
     clientX: targetBounds!.x + targetBounds!.width / 2,
     clientY: targetBounds!.y + 2,
   });
+  await source.dispatchEvent('dragend', { dataTransfer, clientX: 0, clientY: 0 });
   await dataTransfer.dispose();
   await expect.poll(() => orderRequests).toBe(1);
   const orderedRows = page.locator('.agent-workspace-group').filter({ hasText: '根工作区' }).locator('[data-conversation-binding-id]');
@@ -2526,16 +2527,15 @@ test('A dropped running-session stream immediately reconciles formal events', as
 });
 
 
-test('A formal final reply releases the shared composer state for queued delivery', async ({ page }) => {
+test('A durable final reply cannot be downgraded by the same live event', async ({ page }) => {
   let authenticated = false;
   let stream: WebSocketRoute | undefined;
-  let queuedPosts = 0;
   const workspace = { id: 'final-reply-queue-workspace', display_name: '最终回复队列工作区', desired_state: 'RUNNING', updated_at: now };
   const conversation = {
     id: 'final-reply-queue-conversation', display_title: '最终回复队列会话', title_state: 'MANUAL', lifecycle: 'ACTIVE',
     streaming_callback_ready: true, write_available: true, execution_status: 'running', created_at: now, updated_at: now,
   };
-  const runningEvents = {
+  let events = {
     events: [
       { id: 'final-reply-queue-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '请完成当前回复', timestamp: now } },
       { id: 'final-reply-queue-action', event_type: 'TOOL_CALL', payload: { parent_id: 'final-reply-queue-user', action_id: 'final-reply-queue-action', tool_call_id: 'final-reply-queue-call', tool_name: 'terminal', event_name: 'TerminalAction', details: { command: 'pwd' }, timestamp: now } },
@@ -2554,16 +2554,12 @@ test('A formal final reply releases the shared composer state for queued deliver
     if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [conversation], next_cursor: null });
     if (path.endsWith('/conversation-activity')) return json(route, { running_binding_ids: [conversation.id] });
     if (path.endsWith('/hydration')) return json(route, {
-      events: runningEvents,
+      events,
       context: { model_name: 'queue-model', window_tokens: 128_000, used_tokens: 1_024, usage_current: true },
       readiness: { ready: false, execution_status: 'running' },
     });
-    if (path.endsWith('/events')) return json(route, runningEvents);
+    if (path.endsWith('/events')) return json(route, events);
     if (path.endsWith('/input-readiness')) return json(route, { ready: false, execution_status: 'running' });
-    if (path.endsWith('/messages') && request.method() === 'POST') {
-      queuedPosts += 1;
-      return json(route, { accepted: true, cursor: 'final-reply-queued-user' }, 202);
-    }
     if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
     if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
     if (path.endsWith('/workspace')) return json(route, { root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [], runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } } });
@@ -2581,29 +2577,20 @@ test('A formal final reply releases the shared composer state for queued deliver
   await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
   await expect.poll(() => stream).toBeTruthy();
 
-  await composer.fill('最终回复后自动发送');
-  await composer.press('Enter');
-  await expect(page.getByLabel('消息投递队列').getByText('最终回复后自动发送')).toBeVisible();
-  expect(queuedPosts).toBe(0);
-
-  stream!.send(JSON.stringify({
-    type: 'event',
-    event: { id: 'final-reply-queue-progress', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'final-reply-queue-action', content: '正在汇总当前结果。', final_reply: false, timestamp: now } },
-  }));
-
-  await expect(page.getByText('正在汇总当前结果。')).toBeVisible();
-  await expect.poll(() => queuedPosts).toBe(0);
-  await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
-
-  stream!.send(JSON.stringify({
-    type: 'event',
-    event: { id: 'final-reply-queue-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'final-reply-queue-progress', content: '当前轮已经完成。', final_reply: true, timestamp: now } },
-  }));
+  const reply = { id: 'final-reply-queue-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'final-reply-queue-action', content: '当前轮已经完成。', final_reply: false, timestamp: now } };
+  stream!.send(JSON.stringify({ type: 'event', event: reply }));
 
   await expect(page.getByText('当前轮已经完成。')).toBeVisible();
-  await expect.poll(() => queuedPosts).toBe(1);
-  await expect(page.getByLabel('消息投递队列')).toHaveCount(0);
   await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
+
+  events = {
+    events: [...events.events, { ...reply, payload: { ...reply.payload, final_reply: true } }],
+    next_cursor: reply.id, history_cursor: null, result: { status: 'COMPLETED' },
+  };
+  stream!.send(JSON.stringify({ type: 'stream_closed', item_id: reply.id }));
+
+  await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
 });
 
 
@@ -3254,6 +3241,14 @@ test('Conversation sidebar persists pinned sessions, orders activity, and reveal
     id: 'sidebar-directory', display_name: '归属工作区',
     current_version: { working_directory: '/runtime/workspace/project/directory' },
   };
+  const directories = [
+    directory,
+    ...Array.from({ length: 18 }, (_, index) => ({
+      id: `sidebar-extra-directory-${index}`,
+      display_name: `额外工作区 ${index + 1}`,
+      current_version: { working_directory: `/runtime/workspace/project/extra-${index}` },
+    })),
+  ];
   const conversations = [
     {
       id: 'sidebar-root-unread', display_title: '未读根会话', title_state: 'MANUAL', lifecycle: 'ACTIVE',
@@ -3340,7 +3335,7 @@ test('Conversation sidebar persists pinned sessions, orders activity, and reveal
       });
     }
     if (path.endsWith('/work-directories')) return json(route, {
-      root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [directory],
+      root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: directories,
     });
     if (path.endsWith('/workspace')) return json(route, {
       root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project',
@@ -3360,6 +3355,14 @@ test('Conversation sidebar persists pinned sessions, orders activity, and reveal
   await page.goto('/');
   await login(page);
   await page.goto('/agent/conversations/sidebar-root-unread');
+
+  const sidebarList = page.locator('.agent-workbench-list');
+  await expect(sidebarList).toBeVisible();
+  await sidebarList.evaluate(element => { element.scrollTop = element.scrollHeight; });
+  const sidebarScrollTop = await sidebarList.evaluate(element => element.scrollTop);
+  expect(sidebarScrollTop).toBeGreaterThan(0);
+  await page.reload();
+  await expect.poll(() => sidebarList.evaluate(element => element.scrollTop)).toBeGreaterThanOrEqual(sidebarScrollTop);
 
   const pinnedConversation = page.getByRole('button', { name: '归属工作区会话', exact: true });
   await pinnedConversation.click({ button: 'right' });

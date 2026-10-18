@@ -39,6 +39,7 @@ from flowweave.modules.agent_sessions.application.credential_sync import (
 from flowweave.modules.agent_sessions.application.deletion import delete_binding_records
 from flowweave.modules.agent_sessions.application.draft_attachments import (
     assert_attachment_owner_unbound,
+    delete_draft_attachment_cleanup_tasks,
     delete_owned_attachment_files,
     enqueue_draft_attachment_cleanup,
 )
@@ -3590,11 +3591,20 @@ def delete_draft_attachments(db: Session, workspace_id: str, owner_id: str) -> i
     owner = assert_attachment_owner_unbound(
         db, owner_id, host_kind="AGENT_WORKSPACE", host_id=workspace.id
     )
-    return delete_owned_attachment_files(
+    deleted = delete_owned_attachment_files(
         agent_workspace_host.agent_workspace_record_path(db, workspace.id),
         user_runtime_project_root(workspace.id),
         owner,
     )
+    resumable_attachments.delete_attachment_uploads(
+        db,
+        attachment_owner_id=owner,
+        host_kind="AGENT_WORKSPACE",
+        host_id=workspace.id,
+        host_scope_id=None,
+    )
+    delete_draft_attachment_cleanup_tasks(db, owner)
+    return deleted
 
 
 def delete_draft_attachment(db: Session, workspace_id: str, owner_id: str, path: str) -> bool:

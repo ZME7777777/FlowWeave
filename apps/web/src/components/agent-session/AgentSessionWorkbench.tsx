@@ -1013,6 +1013,22 @@ function writeQueuedMessages(storageKey: string | undefined, messages: QueuedMes
   }
 }
 
+function queuedMessageBindings(host: AgentSessionHost, workspaceId: string): string[] {
+  const marker = '__flowweave_queue_binding__';
+  const prefix = host.queuedMessagesStorageKey(workspaceId, marker).slice(0, -marker.length);
+  const bindings = new Set<string>();
+  try {
+    for (let index = 0; index < window.sessionStorage.length; index += 1) {
+      const key = window.sessionStorage.key(index);
+      if (!key?.startsWith(prefix)) continue;
+      for (const message of readQueuedMessages(key)) bindings.add(message.scope);
+    }
+  } catch {
+    // The current conversation remains usable when browser storage is blocked.
+  }
+  return [...bindings];
+}
+
 function readQueueMode(storageKey: string | undefined): boolean {
   if (!storageKey) return true;
   try {
@@ -1422,12 +1438,14 @@ function mergeConversationEvent(
     return next;
   }, []);
   const details = { ...current.payload.details, ...incoming.payload.details };
+  const finalReply = current.payload.final_reply === true || incoming.payload.final_reply === true;
   const merged = {
     ...current,
     ...incoming,
     payload: {
       ...current.payload,
       ...incoming.payload,
+      ...(finalReply ? { final_reply: true } : {}),
       ...(attachments.length ? { attachments } : {}),
       ...(Object.keys(details).length ? { details } : {}),
     },
@@ -4414,6 +4432,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [dragTarget, setDragTarget] = useState<{ bindingId: string; after: boolean }>();
   const [conversationOrder, setConversationOrder] = useState<Record<string, string[]>>({});
   const [conversationOrderSync, setConversationOrderSync] = useState<Record<string, ConversationOrderSync>>({});
+  const [sidebarScrollTop, setSidebarScrollTop] = useState<number>();
   const [workDirectoryOrder, setWorkDirectoryOrder] = useState<string[]>([]);
   const [draggedWorkDirectoryId, setDraggedWorkDirectoryId] = useState<string>();
   const [workDirectoryDropTarget, setWorkDirectoryDropTarget] = useState<{ id: string; after: boolean }>();
@@ -4532,6 +4551,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const queuedMessagesStorageKeyRef = useRef<string | undefined>(undefined);
   const queuedMessagesRef = useRef<QueuedMessage[]>([]);
   const sendingMessageIds = useRef(new Set<string>());
+  const backgroundQueueDispatches = useRef(new Set<string>());
   const localMessageProjections = useRef(new Map<string, LocalMessageProjection>());
   const updateLocalMessageProjections = useCallback((update: (current: Map<string, LocalMessageProjection>) => void) => {
     update(localMessageProjections.current);
@@ -4618,6 +4638,20 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     : undefined;
   const runtimeQuery = useQuery({ queryKey: sessionQueryKey(host, 'runtime', workspace?.id), queryFn: () => api.runtime(workspace!.id), enabled: Boolean(workspace), refetchInterval: query => query.state.data?.state === 'RECOVERING' ? 5000 : false });
   const workDirectoriesQuery = useQuery({ queryKey: sessionQueryKey(host, 'work-directories', workspace?.id), queryFn: () => api.workDirectories(workspace!.id), enabled: Boolean(workspace && features.workDirectories) });
+  const sidebarScrollStorageKey = workspace ? `flowweave:sidebar-scroll:${host.id}:${workspace.id}` : undefined;
+  const sidebarListRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!sidebarScrollStorageKey) {
+      setSidebarScrollTop(undefined);
+      return;
+    }
+    try {
+      const stored = Number(sessionStorage.getItem(sidebarScrollStorageKey));
+      setSidebarScrollTop(Number.isFinite(stored) && stored > 0 ? stored : undefined);
+    } catch {
+      setSidebarScrollTop(undefined);
+    }
+  }, [sidebarScrollStorageKey]);
   const workDirectoryOrderStorageKey = workspace ? `flowweave:work-directory-order:${host.id}:${workspace.id}` : undefined;
   useEffect(() => {
     if (!workDirectoryOrderStorageKey) {
@@ -4838,6 +4872,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     () => new Map(conversations.map(item => [item.id, item])),
     [conversations],
   );
+  useLayoutEffect(() => {
+    const sidebar = sidebarListRef.current;
+    if (!sidebar || sidebarScrollTop === undefined) return;
+    sidebar.scrollTop = Math.min(sidebar.scrollHeight - sidebar.clientHeight, sidebarScrollTop);
+  }, [conversations, sidebarScrollTop]);
   const pagedPinnedConversations = [...conversationsById.values()].filter(
     item => pendingPinnedUpdates.current.get(item.id)?.pinned ?? item.pinned,
   );
@@ -6075,6 +6114,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       || runningConversationIds.has(selected?.id ?? '')
       || terminalEventReconciliationActive
     ));
+  // A paused snapshot can arrive from an older Runtime read while the batched
+  // activity catalog or formal branch already proves this turn is still live.
+  // Do not make a stale pause authoritative over that newer running evidence.
+  const pausedStateConflictsWithRunningEvidence = Boolean(
+    !currentFormalTurnFinished
+    && (turnState === 'paused' || nativeExecutionStatus?.trim().toLowerCase() === 'paused')
+    && (activeFormalTurnHasRuntimeActivity || runningConversationIds.has(selected?.id ?? '')),
+  );
   // A draft has no native Conversation until its first bootstrap request is
   // actually in flight. Route/query cleanup for the previously selected
   // binding can lag behind opening the draft, so this guard belongs at the
@@ -6085,17 +6132,28 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   );
   const effectiveTurnState: TurnState = idleUncreatedConversationDraft
     ? 'idle'
-    : turnState === 'pausing' || turnState === 'resuming' || turnState === 'paused'
+    : turnState === 'pausing' || turnState === 'resuming'
       ? turnState
       : currentFormalTurnFinished
         ? 'idle'
-        : nativeExecutionStatus?.trim().toLowerCase() === 'paused'
-          ? 'paused'
-          : foregroundTurnStillRunning || nativeTurnRunning
-            ? 'running'
-            : nativeTurnTerminal
-              ? 'idle'
-              : turnState;
+        : pausedStateConflictsWithRunningEvidence
+          ? 'running'
+          : turnState === 'paused' || nativeExecutionStatus?.trim().toLowerCase() === 'paused'
+            ? 'paused'
+            : foregroundTurnStillRunning || nativeTurnRunning
+              ? 'running'
+              : nativeTurnTerminal
+                ? 'idle'
+                : turnState;
+  useEffect(() => {
+    if (!pausedStateConflictsWithRunningEvidence || !selected) return;
+    forceReadinessRefresh.current = true;
+    void queryClient.invalidateQueries({
+      queryKey: sessionQueryKey(host, 'conversation-input-readiness', workspace?.id, selected.id),
+      exact: true,
+    });
+  }, [host, pausedStateConflictsWithRunningEvidence, queryClient, selected, workspace?.id]);
+
   // The browser queue contains only messages that have not started delivery.
   // Once a request starts, the optimistic conversation event owns its display.
   const visibleQueuedMessages = queuedMessages.filter(message => message.scope === selected?.id);
@@ -7365,6 +7423,61 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (immediate) window.setTimeout(() => send.mutate(message), 0);
     else send.mutate(message);
   }, [commitQueuedMessages, send, showOptimisticUserBubble]);
+  const dispatchBackgroundQueuedMessage = useCallback(async (bindingId: string) => {
+    if (!workspace || bindingId === activeComposerScope.current) return;
+    const storageKey = host.queuedMessagesStorageKey(workspace.id, bindingId);
+    if (!readQueueMode(host.queueModeStorageKey(workspace.id, bindingId))) return;
+    const queueHead = readQueuedMessages(storageKey).find(message => message.scope === bindingId);
+    if (!queueHead || backgroundQueueDispatches.current.has(queueHead.id) || sendingMessageIds.current.has(queueHead.id)) return;
+    backgroundQueueDispatches.current.add(queueHead.id);
+    let accepted = false;
+    try {
+      const readiness = await api.inputReadiness(workspace.id, bindingId);
+      if (!readiness.ready || !conversationHasReachedTerminalState(readiness.execution_status)) return;
+      const currentQueue = readQueuedMessages(storageKey);
+      if (currentQueue[0]?.id !== queueHead.id) return;
+      writeQueuedMessages(storageKey, currentQueue.filter(message => message.id !== queueHead.id));
+      sendingMessageIds.current.add(queueHead.id);
+      await api.sendMessage(
+        workspace.id, bindingId, queueHead.content, queueHead.items,
+        queueHead.references.map(item => ({
+          event_id: item.eventId, content: item.content, source_binding_id: item.sourceBindingId,
+          ...(item.compactStart !== undefined && item.compactEnd !== undefined
+            ? { selection: { compact_start: item.compactStart, compact_end: item.compactEnd } }
+            : {}),
+        })),
+        queueHead.workspaceReferences ?? [], messageAnnotations(queueHead.annotations, queueHead.references), queueHead.id,
+      );
+      accepted = true;
+      void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-activity', workspace.id) });
+      void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversations', workspace.id) });
+    } catch (error) {
+      accepted = error instanceof ApiError && error.code === 'AGENT_MESSAGE_DELIVERY_AMBIGUOUS';
+      reportOperationError(bindingId, error instanceof Error ? error : new Error('后台队列消息发送失败'));
+    } finally {
+      if (!accepted) {
+        const currentQueue = readQueuedMessages(storageKey);
+        if (!currentQueue.some(message => message.id === queueHead.id)) writeQueuedMessages(storageKey, [queueHead, ...currentQueue]);
+      }
+      sendingMessageIds.current.delete(queueHead.id);
+      backgroundQueueDispatches.current.delete(queueHead.id);
+    }
+  }, [api, host, queryClient, reportOperationError, workspace]);
+  const onBackgroundQueueStreamEvent = useCallback((bindingId: string, event: AgentStreamEvent) => {
+    if (event.type !== 'event' || !event.event) return;
+    const formalEvent = event.event;
+    if (isOpenHandsConversationTerminalError(formalEvent)
+      || (formalEvent.event_type === 'COMPLETED' && formalEvent.payload.event_name === 'FinishAction')
+      || isOpenHandsAgentReply(formalEvent)) {
+      void dispatchBackgroundQueuedMessage(bindingId);
+    }
+  }, [dispatchBackgroundQueuedMessage]);
+  useEffect(() => {
+    if (!workspace || !conversationActivityQuery.data || !pageVisible) return;
+    for (const bindingId of queuedMessageBindings(host, workspace.id)) {
+      if (bindingId !== activeComposerScope.current && !runningConversationIds.has(bindingId)) void dispatchBackgroundQueuedMessage(bindingId);
+    }
+  }, [conversationActivityQuery.data, dispatchBackgroundQueuedMessage, host, pageVisible, runningConversationIds, workspace]);
   const migrateStreaming = useMutation({
     mutationFn: (_message: QueuedMessage) => {
       void _message;
@@ -8339,10 +8452,15 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       const targetElement = document.elementFromPoint(event.clientX, event.clientY)
         ?.closest<HTMLElement>('[data-conversation-binding-id]');
       const targetId = targetElement?.dataset.conversationBindingId;
-      const target = targetId ? group.find(item => item.id === targetId) : undefined;
+      const hoveredTarget = dragTargetRef.current;
+      const target = targetId
+        ? group.find(item => item.id === targetId)
+        : hoveredTarget ? group.find(item => item.id === hoveredTarget.bindingId) : undefined;
       if (target && target.id !== draggedId) {
-        const bounds = targetElement!.getBoundingClientRect();
-        commitConversationDrop(draggedId, target, event.clientY >= bounds.top + bounds.height / 2, group);
+        const after = targetElement
+          ? event.clientY >= targetElement.getBoundingClientRect().top + targetElement.getBoundingClientRect().height / 2
+          : hoveredTarget?.after;
+        if (after !== undefined) commitConversationDrop(draggedId, target, after, group);
       }
     }
     clearConversationDrag();
@@ -8483,6 +8601,16 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   };
   return <main className="agent-workbench-page" style={{ '--conversation-rail-width': `${conversationRailWidth}px` } as CSSProperties}>
     {selected && <ConversationStreamObserver workspaceId={workspace.id} bindingId={selected.id} enabled={streamEnabled} onEvent={onStreamEvent} onStatus={updateStreamStatus} onReconnect={onStreamReconnect}/>}
+    {workspace && queuedMessageBindings(host, workspace.id).filter(bindingId => bindingId !== selected?.id).map(bindingId => (
+      <ConversationStreamObserver
+        key={`queue-dispatch:${bindingId}`}
+        workspaceId={workspace.id}
+        bindingId={bindingId}
+        enabled={Boolean(runtime?.write_available)}
+        onEvent={onBackgroundQueueStreamEvent}
+        onStatus={() => undefined}
+      />
+    ))}
     {conversationSearchOpen && <ConversationSearchDialog search={conversationSearchQuery.data} hits={conversationSearchHits} hasMore={Boolean(conversationSearchQuery.data?.next_cursor)} workDirectories={workDirectories} rootLabel={workDirectoriesQuery.data?.root.display_name ?? '根工作区'} onClose={() => setConversationSearchOpen(false)} onSubmit={startConversationSearch} onLoadMore={() => { if (conversationSearchQuery.data?.next_cursor) setConversationSearchCursor(conversationSearchQuery.data.next_cursor); }} submitting={conversationSearchQuery.isFetching && conversationSearchCursor === undefined} loadingMore={conversationSearchQuery.isFetching && conversationSearchCursor !== undefined} onOpenHit={openConversationSearchHit}/>}{/* Conversation search */}
     {filePreviewRequest && <ConversationFilePreviewDialog
       key={filePreviewRequest.key}
@@ -8497,7 +8625,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     <aside className="agent-workbench-rail">
       <div className="agent-conversation-rail-resizer" role="separator" aria-label="调整会话列表宽度" aria-orientation="vertical" onPointerDown={startConversationRailResize}/>
       <header className={!onReturnToSource && features.workDirectories ? 'agent-workbench-rail-actions-only' : undefined}>{onReturnToSource && <button type="button" className="agent-session-return" aria-label="返回节点执行" title="返回节点执行" onClick={onReturnToSource}><ArrowLeft size={16}/></button>}{(onReturnToSource || !features.workDirectories) && <div className="agent-session-host-heading"><span className="eyebrow">{onReturnToSource ? 'FLOWRUN NODE WORKSPACE' : 'FLOWRUN NODE'}</span><h1>{onReturnToSource ? workspace?.display_name || '节点会话' : '节点会话'}</h1></div>}<div className="agent-workbench-create-actions"><button type="button" className={`agent-workbench-activity-trigger${sidebarListMode === 'activity' ? ' active' : ''}`} aria-label={`查看活动会话${activityConversations.length ? `（${activityConversations.length}）` : ''}`} title="查看活动会话" onClick={toggleSidebarListMode}><Bell size={15}/>{activityConversations.length > 0 && <span aria-hidden="true">{activityConversations.length > 99 ? '99+' : activityConversations.length}</span>}</button><button className="primary" disabled={!conversationSearchSupported} onClick={() => setConversationSearchOpen(true)}>{conversationSearchQuery.data?.state === 'PENDING' || conversationSearchQuery.data?.state === 'RUNNING' ? <LoaderCircle className="conversation-activity-spin" size={15}/> : conversationSearchQuery.data?.state === 'SUCCEEDED' ? <Check size={15}/> : <Search size={15}/>}{conversationSearchQuery.data?.state === 'SUCCEEDED' ? '搜索完成' : '搜索会话'}</button>{features.workDirectories && <button type="button" className="secondary" aria-label="新增工作区" disabled={!runtimeWritable} onClick={() => setWorkDirectoryCreatorOpen(true)}><FolderPlus size={14}/>新增工作区</button>}</div></header>
-      <div className="agent-workbench-list">
+      <div ref={sidebarListRef} className="agent-workbench-list" onScroll={event => {
+        if (!sidebarScrollStorageKey) return;
+        try { sessionStorage.setItem(sidebarScrollStorageKey, String(event.currentTarget.scrollTop)); } catch { /* browser session state only */ }
+      }}>
         {sidebarListMode === 'activity'
           ? <section className="agent-workspace-activity" aria-label="活动会话"><header><div><span className="eyebrow">ACTIVITY</span><b>活动</b></div><button type="button" aria-label="返回工作区列表" title="返回工作区列表" onClick={() => { setActivityPreviewBindingId(undefined); setSidebarListMode('workspaces'); }}><ArrowLeft size={15}/></button></header>{activityConversations.length ? activityConversations.map(item => conversationRow(item, [], { allowDrag: false, workspaceName: activityWorkspaceName(item), onSelect: () => previewActivityConversation(item.id), onDoubleClick: () => openActivityConversation(item.id), onMarkRead: () => markConversationRead(item.id) })) : <p>没有正在运行或未读的会话。</p>}</section>
           : <>{pinnedConversations.length > 0 && <section className="agent-workspace-pinned" aria-label="置顶会话"><header><Pin size={13}/><span>置顶</span></header><div>{pinnedConversations.map(item => conversationRow(item, [], { allowDrag: false }))}</div></section>}
@@ -8656,7 +8787,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
           </div>
           <div className="agent-composer-actions">
             {features.modelSelection && (selected ? <ComposerModelMenu providers={connectedProviders} providerId={conversationProviderId} modelName={activeConversationModelName} models={availableConversationModels} efforts={supportedEfforts} effort={reasoningEffort ?? selected.reasoning_effort ?? contextQuery.data?.reasoning_effort ?? conversationModel?.default_reasoning_effort ?? ''} disabled={!canWrite || conversationActivity.active || queuedMessages.length > 0 || Boolean(pendingConfirmation) || persistModel.isPending || migrateStreaming.isPending || Boolean(pendingMigratedSend)} onProviderChange={providerId => { const provider = connectedProviders.find(item => item.id === providerId); const model = provider?.models.find(item => item.enabled && item.is_default); if (!provider || !model) return; const effort = model.default_reasoning_effort ?? null; setConversationProviderId(providerId); setConversationModelName(model.model_name); setReasoningEffort(effort); persistModel.mutate({ providerId, modelName: model.model_name, effort }); }} onModelChange={modelName => { const model = availableConversationModels.find(item => item.model_name === modelName); const effort = model?.default_reasoning_effort ?? null; setConversationModelName(modelName); setReasoningEffort(effort); persistModel.mutate({ providerId: conversationProviderId, modelName, effort }); }} onEffortChange={effort => { const nextEffort = effort || null; setReasoningEffort(nextEffort); persistModel.mutate({ providerId: conversationProviderId, modelName: activeConversationModelName, effort }); }}/> : <ComposerModelMenu providers={connectedProviders} providerId={newConversationProviderId} modelName={newConversationModelName} models={availableDraftModels} efforts={supportedDraftEfforts} effort={newConversationReasoningEffort ?? draftConversationModel?.default_reasoning_effort ?? ''} disabled={!canOpenConversation || bootstrap.isPending} onProviderChange={providerId => { const provider = connectedProviders.find(item => item.id === providerId); const model = provider?.models.find(item => item.enabled && item.is_default); if (!provider || !model) return; setNewConversationProviderId(providerId); setNewConversationModelName(model.model_name); setNewConversationReasoningEffort(model.default_reasoning_effort ?? null); }} onModelChange={modelName => { const model = availableDraftModels.find(item => item.model_name === modelName); setNewConversationModelName(modelName); setNewConversationReasoningEffort(model?.default_reasoning_effort ?? null); }} onEffortChange={effort => setNewConversationReasoningEffort(effort || null)}/>) }
-            <button type="button" className={`agent-send${composerControl.action === 'resume' || composerControlMode === 'pausing' ? ' resume' : ''}`} aria-label={escPauseConfirmation && composerControl.action === 'interrupt' ? '再次按 Esc 暂停当前 Agent' : composerControl.label} disabled={composerControl.disabled} onClick={runComposerAction}>{escPauseConfirmation && composerControl.action === 'interrupt' ? 'Esc' : pendingConfirmation ? <ShieldAlert size={14}/> : composerControl.action === 'send' ? <Send size={16}/> : composerControl.action === 'resume' || composerControlMode === 'pausing' ? <Play size={12} fill="currentColor"/> : composerControlMode === 'read-only' ? <CircleAlert size={15}/> : composerControl.action === 'interrupt' ? <Square size={10} fill="currentColor"/> : <LoaderCircle className="conversation-activity-spin" size={15}/>}</button>
+            <button type="button" className={`agent-send${escPauseConfirmation && composerControl.action === 'interrupt' ? ' escape-confirmation' : ''}${composerControl.action === 'resume' || composerControlMode === 'pausing' ? ' resume' : ''}`} aria-label={escPauseConfirmation && composerControl.action === 'interrupt' ? '再次按 Esc 暂停当前 Agent' : composerControl.label} disabled={composerControl.disabled} onClick={runComposerAction}>{escPauseConfirmation && composerControl.action === 'interrupt' ? 'Esc' : pendingConfirmation ? <ShieldAlert size={14}/> : composerControl.action === 'send' ? <Send size={16}/> : composerControl.action === 'resume' || composerControlMode === 'pausing' ? <Play size={12} fill="currentColor"/> : composerControlMode === 'read-only' ? <CircleAlert size={15}/> : composerControl.action === 'interrupt' ? <Square size={10} fill="currentColor"/> : <LoaderCircle className="conversation-activity-spin" size={15}/>}</button>
           </div>
         </footer>
         </div>

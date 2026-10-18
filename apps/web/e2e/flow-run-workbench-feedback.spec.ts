@@ -195,14 +195,14 @@ test('FlowRun detail has a restorable route and temporary topbar tab', async ({ 
   await page.locator('.run-open').click();
   await expect(page).toHaveURL(`/flow-runs/${run.id}`);
   await expect(page.getByLabel('临时管理标签')).toBeVisible();
-  await expect(page.getByRole('button', { name: `Run #${run.run_no} · ${run.name}`, exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: `Run #${run.run_no}`, exact: true })).toBeVisible();
 
   await page.reload();
   await expect(page).toHaveURL(`/flow-runs/${run.id}`);
   await expect(page.getByRole('button', { name: '返回运行列表', exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: `Run #${run.run_no} · ${run.name}`, exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: `Run #${run.run_no}`, exact: true })).toBeVisible();
 
-  await page.getByRole('button', { name: `关闭Run #${run.run_no} · ${run.name}`, exact: true }).click();
+  await page.getByRole('button', { name: `关闭Run #${run.run_no}`, exact: true }).click();
   await expect(page).toHaveURL('/');
   await expect(page.getByText('1 个流程 · 1 个运行', { exact: true })).toBeVisible();
 });
@@ -391,6 +391,8 @@ test('step configuration is saved before start and only continuous and stepwise 
   await expect(consolePanel.getByRole('button', { name: '启动', exact: true })).toHaveCount(0);
   await stepwiseRecord.getByRole('button', { name: '启动逐步运行 测试逐步记录' }).click();
   await expect.poll(() => startBody).toEqual({ expected_row_version: 2 });
+  await expect(page).toHaveURL(/\/flow-runs\/stepwise-record-1\/nodes\/saved-node-run\/attempts\/saved-attempt\/agent-sessions\/saved-node-binding$/);
+  await page.waitForTimeout(150);
   await expect(page).toHaveURL(/\/flow-runs\/stepwise-record-1\/nodes\/saved-node-run\/attempts\/saved-attempt\/agent-sessions\/saved-node-binding$/);
 });
 
