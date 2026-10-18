@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArchiveX, Boxes, CheckSquare, ChevronDown, Clock3, MessageSquareText, RefreshCw, ShieldCheck, Trash2 } from 'lucide-react';
+import { ArchiveX, CheckSquare, ChevronDown, Clock3, Folder, MessageSquareText, RefreshCw, ShieldCheck, Trash2 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Pagination } from '../components/Pagination';
 import { api } from '../api/client';
@@ -82,13 +82,33 @@ export function ConversationManagementPage() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [confirming, setConfirming] = useState(false);
   const [page, setPage] = useState(1);
+  const [selectedWorkDirectoryId, setSelectedWorkDirectoryId] = useState<string | undefined>();
 
   const workspace = useQuery({ queryKey: ['agent-workspace', 'default'], queryFn: ({ signal }) => api.defaultAgentWorkspace(signal) });
-  const conversations = useQuery({
-    queryKey: ['agent-conversation-management', workspace.data?.id],
-    queryFn: () => api.agentConversationManagement(workspace.data!.id),
+  const workDirectories = useQuery({
+    queryKey: ['agent-work-directories', workspace.data?.id],
+    queryFn: () => api.agentWorkDirectories(workspace.data!.id),
     enabled: Boolean(workspace.data?.id),
   });
+  const selectedWorkspaceLabel = selectedWorkDirectoryId
+    ? workDirectories.data?.items.find(item => item.id === selectedWorkDirectoryId)?.display_name ?? '工作区'
+    : workDirectories.data?.root.display_name ?? '根工作区';
+  const conversations = useQuery({
+    queryKey: ['agent-conversation-management', workspace.data?.id, selectedWorkDirectoryId ?? 'root'],
+    queryFn: () => api.agentConversationManagement(workspace.data!.id, selectedWorkDirectoryId),
+    enabled: Boolean(workspace.data?.id),
+  });
+
+  useEffect(() => {
+    if (selectedWorkDirectoryId && !workDirectories.data?.items.some(item => item.id === selectedWorkDirectoryId)) {
+      setSelectedWorkDirectoryId(undefined);
+    }
+  }, [selectedWorkDirectoryId, workDirectories.data?.items]);
+
+  useEffect(() => {
+    setSelectedIds(new Set());
+    setConfirming(false);
+  }, [selectedWorkDirectoryId]);
 
   const visible = useMemo(() => {
     const cutoff = period === 'all' ? undefined : Date.now() - Number(period) * DAY;
@@ -108,19 +128,14 @@ export function ConversationManagementPage() {
 
   const visibleIds = useMemo(() => new Set(visible.map(item => item.id)), [visible]);
   const selectedVisible = visible.filter(item => selectedIds.has(item.id));
-  const selectedPaged = paged.filter(item => selectedIds.has(item.id));
-  const selectAllPaged = paged.length > 0 && paged.every(item => selectedIds.has(item.id));
+  const selectAllVisible = visible.length > 0 && visible.every(item => selectedIds.has(item.id));
 
   useEffect(() => {
     setSelectedIds(current => new Set([...current].filter(id => visibleIds.has(id))));
   }, [visibleIds]);
 
-  useEffect(() => {
-    setPage(current => Math.min(current, Math.max(1, Math.ceil(visible.length / PAGE_SIZE))));
-  }, [visible.length]);
-
   const remove = useMutation({
-    mutationFn: () => api.deleteManagedAgentConversations(workspace.data!.id, selectedVisible.map(item => item.id)),
+    mutationFn: () => api.deleteManagedAgentConversations(workspace.data!.id, selectedVisible.map(item => item.id), selectedWorkDirectoryId),
     onSuccess: async result => {
       setSelectedIds(new Set());
       setConfirming(false);
@@ -140,10 +155,10 @@ export function ConversationManagementPage() {
     return next;
   });
 
-  const togglePage = () => setSelectedIds(current => {
+  const toggleVisible = () => setSelectedIds(current => {
     const next = new Set(current);
-    if (selectAllPaged) paged.forEach(item => next.delete(item.id));
-    else paged.forEach(item => next.add(item.id));
+    if (selectAllVisible) visible.forEach(item => next.delete(item.id));
+    else visible.forEach(item => next.add(item.id));
     return next;
   });
 
@@ -154,27 +169,33 @@ export function ConversationManagementPage() {
     </header>
     <div className="conversation-management-notice"><ShieldCheck size={17}/><span>删除会永久移除会话、其专属附件和关联记录；共享工作区文件、工作目录和流程运行记录不会受影响。</span></div>
     {conversations.data?.truncated && <div className="conversation-management-notice warning"><Clock3 size={17}/><span>当前仅显示最近 500 个会话。请先完成本次清理，再继续管理更早的会话。</span></div>}
-    {conversations.isLoading || workspace.isLoading ? <div className="conversation-management-loading empty">正在读取工作区和会话…</div> : conversations.isError || workspace.isError ? <div className="conversation-management-loading empty error">{conversations.error?.message ?? workspace.error?.message}</div> : <div className="conversation-management-layout">
-      <aside className="conversation-management-workspaces" aria-label="工作区">
-        <header><span className="eyebrow">WORKSPACE</span><b>工作区</b><small>会话按所属工作区管理</small></header>
-        <div className="conversation-management-workspace active" aria-current="true">
-          <span className="conversation-management-workspace-icon"><Boxes size={17}/></span>
-          <span><b>{workspace.data!.display_name}</b><small>{workspace.data!.desired_state === 'RUNNING' ? '运行中' : '维护中'}</small></span>
-          <em>{conversations.data!.items.length}</em>
+    <section className="conversation-management-layout">
+      <aside className="conversation-management-workspaces" aria-label="Agent 工作区">
+        <header><span className="eyebrow">WORKSPACE</span><h2>工作区</h2><p>与独立 Agent 的工作区一致</p></header>
+        <div className="conversation-management-workspace-list">
+          <button type="button" className={!selectedWorkDirectoryId ? 'active' : ''} aria-pressed={!selectedWorkDirectoryId} onClick={() => setSelectedWorkDirectoryId(undefined)}>
+            <Folder size={16}/><span><b>{workDirectories.data?.root.display_name ?? '根工作区'}</b><small>根目录会话</small></span>
+          </button>
+          {workDirectories.data?.items.map(directory => <button key={directory.id} type="button" className={selectedWorkDirectoryId === directory.id ? 'active' : ''} aria-pressed={selectedWorkDirectoryId === directory.id} onClick={() => setSelectedWorkDirectoryId(directory.id)}>
+            <Folder size={16}/><span><b>{directory.display_name}</b><small>工作区会话</small></span>
+          </button>)}
         </div>
       </aside>
-      <section className="conversation-management-panel" aria-label={`${workspace.data!.display_name}的会话`}>
-        <div className="conversation-management-toolbar">
-          <label>搜索会话<input value={query} onChange={event => setQuery(event.target.value)} placeholder="按会话标题搜索"/></label>
-          <label>最后活动时间<PeriodDropdown value={period} onChange={setPeriod}/></label>
-          <label className="conversation-management-check"><input type="checkbox" checked={includePinned} onChange={event => setIncludePinned(event.target.checked)}/><span>包含置顶会话</span></label>
-          <label className="conversation-management-check"><input type="checkbox" checked={includeUnread} onChange={event => setIncludeUnread(event.target.checked)}/><span>包含未读会话</span></label>
-        </div>
-        <div className="conversation-management-selection"><label><input type="checkbox" aria-label="选择本页全部会话" checked={selectAllPaged} ref={input => { if (input) input.indeterminate = !selectAllPaged && selectedPaged.length > 0; }} onChange={togglePage}/><CheckSquare size={15}/><span>选择本页</span></label><span>已选 {selectedVisible.length} / {visible.length} 个会话</span><button className="danger" disabled={selectedVisible.length === 0 || remove.isPending} onClick={() => setConfirming(true)}><Trash2 size={14}/>删除已选会话</button></div>
+      <section className="conversation-management-panel">
+        <header className="conversation-management-selected-workspace"><Folder size={16}/><span>当前工作区：<b>{selectedWorkspaceLabel}</b></span></header>
+      <div className="conversation-management-toolbar">
+        <label>搜索会话<input value={query} onChange={event => setQuery(event.target.value)} placeholder="按会话标题搜索"/></label>
+        <label>最后活动时间<PeriodDropdown value={period} onChange={setPeriod}/></label>
+        <label className="conversation-management-check"><input type="checkbox" checked={includePinned} onChange={event => setIncludePinned(event.target.checked)}/><span>包含置顶会话</span></label>
+        <label className="conversation-management-check"><input type="checkbox" checked={includeUnread} onChange={event => setIncludeUnread(event.target.checked)}/><span>包含未读会话</span></label>
+      </div>
+      {conversations.isLoading || workspace.isLoading || workDirectories.isLoading ? <div className="empty">正在读取会话…</div> : conversations.isError || workspace.isError || workDirectories.isError ? <div className="empty error">{conversations.error?.message ?? workspace.error?.message ?? workDirectories.error?.message}</div> : <>
+        <div className="conversation-management-selection"><label><input type="checkbox" aria-label="选择当前筛选结果中的全部会话" checked={selectAllVisible} ref={input => { if (input) input.indeterminate = !selectAllVisible && selectedVisible.length > 0; }} onChange={toggleVisible}/><CheckSquare size={15}/><span>选择当前结果</span></label><span>已选 {selectedVisible.length} / {visible.length} 个会话</span><button className="danger" disabled={selectedVisible.length === 0 || remove.isPending} onClick={() => setConfirming(true)}><Trash2 size={14}/>删除已选会话</button></div>
         <div className="conversation-management-table-wrap"><table className="conversation-management-table"><thead><tr><th>选择</th><th>会话</th><th>最后活动</th><th>创建时间</th><th>状态</th></tr></thead><tbody>{paged.map(item => <tr key={item.id}><td><input type="checkbox" aria-label={`选择会话 ${conversationTitle(item)}`} checked={selectedIds.has(item.id)} onChange={() => toggle(item.id)}/></td><td><b>{conversationTitle(item)}</b><small>{item.last_message_at ? '有消息记录' : '未发送消息'}</small></td><td>{formatTime(activityTime(item))}</td><td>{formatTime(item.created_at)}</td><td><span className="conversation-management-status">{item.pinned && '置顶'}{item.pinned && item.unread && ' · '}{item.unread && '未读'}{!item.pinned && !item.unread && '普通'}</span></td></tr>)}</tbody></table>{visible.length === 0 && <div className="empty compact"><ArchiveX size={25}/><b>没有符合当前条件的会话</b><span>调整筛选条件，或等待正在运行的会话完成。</span></div>}</div>
         <Pagination page={page} pageSize={PAGE_SIZE} total={visible.length} onPageChange={setPage}/>
+      </>}
       </section>
-    </div>}
+    </section>
     {confirming && <div className="modal-backdrop"><section className="modal conversation-management-confirm" role="dialog" aria-modal="true" aria-label="确认删除会话"><header><div><span className="eyebrow">PERMANENT DELETION</span><h2>删除 {selectedVisible.length} 个会话？</h2></div><button className="ghost" disabled={remove.isPending} onClick={() => setConfirming(false)}>取消</button></header><p>此操作不可恢复。系统会在删除时再次检查会话是否仍在运行；状态变化的会话将跳过，不会被强制中断。</p>{remove.isError && <p className="notice error">{remove.error.message}</p>}<footer><button className="secondary" disabled={remove.isPending} onClick={() => setConfirming(false)}>返回</button><button className="danger" disabled={remove.isPending} onClick={() => remove.mutate()}><Trash2 size={14}/>{remove.isPending ? '删除中…' : '确认永久删除'}</button></footer></section></div>}
   </section>;
 }

@@ -7,7 +7,7 @@ import { ConversationTextReveal } from './ConversationTextReveal';
 import { useEscapeClose } from './useEscapeClose';
 import { subagentAvatarSlotForEvent, subagentAvatarSlots, type SubagentAvatarSlot } from '../utils/subagentAvatar';
 import { workspaceFileChanges, workspaceRelativePath, type WorkspaceFileChange } from './agent-session/fileChanges';
-import { isFlowWeaveMessageContext, isOpenHandsAgentReply, isOpenHandsConversationTerminalError, isOpenHandsEmptyResponseRecovery, orderOpenHandsConversationEvents, parseOpenHandsEventTime, projectFlowWeaveMessageContext } from './conversationEvents';
+import { isFlowWeaveInternalProtocolMessage, isFlowWeaveMessageContext, isOpenHandsAgentReply, isOpenHandsConversationTerminalError, isOpenHandsEmptyResponseRecovery, orderOpenHandsConversationEvents, parseOpenHandsEventTime, projectFlowWeaveMessageContext } from './conversationEvents';
 import './conversation-surface.css';
 
 type ItemKind = 'user' | 'assistant' | 'thought' | 'tool' | 'error' | 'condensation' | 'security';
@@ -466,6 +466,7 @@ function itemsFor(event: OpenHandsConversationEvent, taskRetryError = false): It
     const displayContent = typeof event.payload.display_content === 'string'
       ? event.payload.display_content
       : isFlowWeaveMessageContext(content) ? '' : content;
+    if (isUser && isFlowWeaveInternalProtocolMessage(content)) return [];
     if (isUser) return [{ event, kind: 'user', title: '', content: displayContent }];
     if (isOpenHandsAgentReply(event)) return [{ event, kind: 'assistant', title: '', content }];
     if (isOpenHandsEmptyResponseRecovery(event)) return [];
@@ -517,7 +518,12 @@ function userAncestorId(
   while (current && !visited.has(current.id)) {
     visited.add(current.id);
     const source = String(current.payload.source ?? '').toLowerCase();
-    if (current.event_type === 'MESSAGE' && (source === 'user' || source === 'human')) return current.id;
+    const content = typeof current.payload.content === 'string' ? current.payload.content : '';
+    if (
+      current.event_type === 'MESSAGE'
+      && (source === 'user' || source === 'human')
+      && !isFlowWeaveInternalProtocolMessage(content)
+    ) return current.id;
     const parentId: string | null | undefined = current.payload.parent_id;
     current = parentId ? byId.get(parentId) : undefined;
   }

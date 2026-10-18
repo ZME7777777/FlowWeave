@@ -482,6 +482,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   let runningDirectMessagePosts = 0;
   let runningDirectFormalEventPersisted = false;
   let runningDirectAssistantReplyPersisted = false;
+  let upstreamGateAuditEventPersisted = false;
   let gitSyncRequests = 0;
   let gitSynchronizesToRemote = false;
   let pausedDirectMessagePosts = 0;
@@ -851,6 +852,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
         events: (modelIsResponding || parentTurnFailed || recoverableAgentError || recoverableTaskResumeError) ? [
           ...(!cursor ? [{ id: 'running-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'agent-reply', content: '正在处理的请求', timestamp: runningUserTimestamp } }] : []),
           ...(runningDirectFormalEventPersisted && !cursor ? [{ id: 'running-direct-stream-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'running-user', content: 'FlowWeave message context (JSON):\n\n---FLOWWEAVE_MESSAGE_CONTEXT_V5---\n{"version":5,"reference_materials":[],"current_user_request":{"content":"运行中直接发送消息"}}', timestamp: new Date().toISOString() } }] : []),
+          ...(upstreamGateAuditEventPersisted && !cursor ? [{ id: 'upstream-gate-audit', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'running-user', content: '[FLOWWEAVE_UPSTREAM_GATE_AUDIT_V1]\n{"required_evidence_paths":["source.investigation_status"],"allowed_statuses":["SUCCESS"]}', timestamp: new Date().toISOString() } }] : []),
           ...(runningDirectAssistantReplyPersisted && !cursor ? [{ id: 'running-direct-stream-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'running-direct-stream-user', content: '延迟事件到达后仍应正常显示这条回复。', timestamp: new Date().toISOString() } }] : []),
           ...(incompleteLiveToolProjection && !cursor ? [{ id: 'live-tool', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'running-user', action_id: 'live-tool', tool_call_id: 'live-call', event_name: 'TerminalAction', timestamp: new Date().toISOString() } }] : []),
           ...(backfilledTaskAction && (cursor === 'running-user' || (cursorlessEventRecovery && !cursor)) ? [{ id: 'recovered-task-action', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'running-user', action_id: 'recovered-task-action', tool_call_id: 'recovered-task-call', tool_name: 'task', event_name: 'TaskAction', summary: '检查依赖关系', runtime_task: { phase: 'REQUESTED', action_event_id: 'recovered-task-action', tool_call_id: 'recovered-task-call', subagent_type: 'general-purpose', description: '检查依赖关系' }, timestamp: new Date().toISOString() } }] : []),
@@ -2328,6 +2330,12 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     type: 'event',
     event: { id: 'running-direct-stream-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'running-user', content: 'FlowWeave message context (JSON):\n\n---FLOWWEAVE_MESSAGE_CONTEXT_V5---\n{"version":5,"reference_materials":[],"current_user_request":{"content":"运行中直接发送消息"}}', timestamp: new Date().toISOString().replace(/Z$/, '') } },
   }));
+  upstreamGateAuditEventPersisted = true;
+  agentStream!.send(JSON.stringify({
+    type: 'event',
+    event: { id: 'upstream-gate-audit', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'running-user', content: '[FLOWWEAVE_UPSTREAM_GATE_AUDIT_V1]\n{"required_evidence_paths":["source.investigation_status"],"allowed_statuses":["SUCCESS"]}', timestamp: new Date().toISOString().replace(/Z$/, '') } },
+  }));
+  await expect(page.getByText('FLOWWEAVE_UPSTREAM_GATE_AUDIT_V1', { exact: false })).toHaveCount(0);
   await expect(page.getByText('FlowWeave message context (JSON):', { exact: true })).toHaveCount(0);
   agentStream!.send(JSON.stringify({
     type: 'event',
@@ -2368,6 +2376,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(reloadedDirectMessage).toHaveCount(1);
   await expect(reloadedDirectMessage).not.toHaveAttribute('data-optimistic-identity', 'stable');
   await expect(reloadedDirectMessage).toContainText('运行中直接发送消息');
+  await expect(page.getByText('FLOWWEAVE_UPSTREAM_GATE_AUDIT_V1', { exact: false })).toHaveCount(0);
   await expect(reloadedDirectMessage).not.toContainText('FlowWeave message context (JSON):');
   const sentBeforeQueue = sentMessages;
   await composer.fill('待编辑排队消息');

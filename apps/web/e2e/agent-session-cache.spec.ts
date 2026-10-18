@@ -2351,6 +2351,45 @@ test('A new conversation stays first after an existing conversation was reordere
     'new-order-b', 'new-order-a',
   ]);
 
+  const conversationList = page.locator('.agent-workbench-list');
+  await conversationList.evaluate(list => {
+    list.dataset.dragScrollCalls = '0';
+    list.dataset.dragScrollTop = '0';
+    list.scrollBy = options => {
+      const top = typeof options === 'object' ? options.top ?? 0 : 0;
+      list.dataset.dragScrollCalls = String(Number(list.dataset.dragScrollCalls) + 1);
+      list.dataset.dragScrollTop = String(Number(list.dataset.dragScrollTop) + top);
+    };
+  });
+  const listBounds = await conversationList.boundingBox();
+  const edgeDataTransfer = await page.evaluateHandle(() => new DataTransfer());
+  await source.dispatchEvent('dragstart', { dataTransfer: edgeDataTransfer });
+  await conversationList.dispatchEvent('dragover', {
+    dataTransfer: edgeDataTransfer,
+    clientX: listBounds!.x + listBounds!.width / 2,
+    clientY: listBounds!.y + listBounds!.height - 1,
+  });
+  await expect.poll(() => conversationList.evaluate(list => Number(list.dataset.dragScrollCalls))).toBeGreaterThan(0);
+  await expect.poll(() => conversationList.evaluate(list => Number(list.dataset.dragScrollTop))).toBeGreaterThan(0);
+  await source.dispatchEvent('dragend', { dataTransfer: edgeDataTransfer, clientX: 0, clientY: 0 });
+  await edgeDataTransfer.dispose();
+
+  await conversationList.evaluate(list => {
+    list.dataset.dragScrollCalls = '0';
+    list.dataset.dragScrollTop = '0';
+  });
+  const topEdgeDataTransfer = await page.evaluateHandle(() => new DataTransfer());
+  await source.dispatchEvent('dragstart', { dataTransfer: topEdgeDataTransfer });
+  await conversationList.dispatchEvent('dragover', {
+    dataTransfer: topEdgeDataTransfer,
+    clientX: listBounds!.x + listBounds!.width / 2,
+    clientY: listBounds!.y + 1,
+  });
+  await expect.poll(() => conversationList.evaluate(list => Number(list.dataset.dragScrollCalls))).toBeGreaterThan(0);
+  await expect.poll(() => conversationList.evaluate(list => Number(list.dataset.dragScrollTop))).toBeLessThan(0);
+  await source.dispatchEvent('dragend', { dataTransfer: topEdgeDataTransfer, clientX: 0, clientY: 0 });
+  await topEdgeDataTransfer.dispose();
+
   failOrderRequest = true;
   const retryTargetBounds = await target.boundingBox();
   const retryDataTransfer = await page.evaluateHandle(() => new DataTransfer());

@@ -4547,7 +4547,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const draggedConversationRef = useRef<string | undefined>(undefined);
   const dragTargetRef = useRef<{ bindingId: string; after: boolean } | undefined>(undefined);
   const pointerDragGroupRef = useRef<AgentConversation[] | undefined>(undefined);
+  const conversationDragPointerYRef = useRef<number | undefined>(undefined);
+  const conversationDragScrollFrameRef = useRef<number | undefined>(undefined);
   const conversationOrderRequestRef = useRef(new Map<string, string>());
+  useEffect(() => () => {
+    if (conversationDragScrollFrameRef.current !== undefined) window.cancelAnimationFrame(conversationDragScrollFrameRef.current);
+  }, []);
   const queuedMessagesStorageKeyRef = useRef<string | undefined>(undefined);
   const queuedMessagesRef = useRef<QueuedMessage[]>([]);
   const sendingMessageIds = useRef(new Set<string>());
@@ -8398,7 +8403,41 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }));
     synchronizeConversationOrder(draggedId, reordered.map(candidate => candidate.id));
   }
+  function stopConversationDragAutoScroll() {
+    conversationDragPointerYRef.current = undefined;
+    if (conversationDragScrollFrameRef.current !== undefined) {
+      window.cancelAnimationFrame(conversationDragScrollFrameRef.current);
+      conversationDragScrollFrameRef.current = undefined;
+    }
+  }
+  function updateConversationDragAutoScroll(pointerY: number) {
+    conversationDragPointerYRef.current = pointerY;
+    if (conversationDragScrollFrameRef.current !== undefined) return;
+    const scroll = () => {
+      conversationDragScrollFrameRef.current = undefined;
+      const sidebar = sidebarListRef.current;
+      const currentPointerY = conversationDragPointerYRef.current;
+      if (!sidebar || currentPointerY === undefined || !draggedConversationRef.current) return;
+      const bounds = sidebar.getBoundingClientRect();
+      const threshold = Math.min(72, Math.max(40, bounds.height * 0.16));
+      const distanceFromTop = currentPointerY - bounds.top;
+      const distanceFromBottom = bounds.bottom - currentPointerY;
+      const edgeDepth = distanceFromTop < threshold
+        ? distanceFromTop - threshold
+        : distanceFromBottom < threshold ? threshold - distanceFromBottom : 0;
+      if (edgeDepth !== 0) {
+        const direction = Math.sign(edgeDepth);
+        const amount = Math.min(24, Math.max(4, Math.abs(edgeDepth) / threshold * 24));
+        sidebar.scrollBy({ top: direction * amount, behavior: 'auto' });
+      }
+      if (conversationDragPointerYRef.current !== undefined && draggedConversationRef.current) {
+        conversationDragScrollFrameRef.current = window.requestAnimationFrame(scroll);
+      }
+    };
+    conversationDragScrollFrameRef.current = window.requestAnimationFrame(scroll);
+  }
   function clearConversationDrag() {
+    stopConversationDragAutoScroll();
     draggedConversationRef.current = undefined;
     dragTargetRef.current = undefined;
     pointerDragGroupRef.current = undefined;
@@ -8625,7 +8664,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     <aside className="agent-workbench-rail">
       <div className="agent-conversation-rail-resizer" role="separator" aria-label="调整会话列表宽度" aria-orientation="vertical" onPointerDown={startConversationRailResize}/>
       <header className={!onReturnToSource && features.workDirectories ? 'agent-workbench-rail-actions-only' : undefined}>{onReturnToSource && <button type="button" className="agent-session-return" aria-label="返回节点执行" title="返回节点执行" onClick={onReturnToSource}><ArrowLeft size={16}/></button>}{(onReturnToSource || !features.workDirectories) && <div className="agent-session-host-heading"><span className="eyebrow">{onReturnToSource ? 'FLOWRUN NODE WORKSPACE' : 'FLOWRUN NODE'}</span><h1>{onReturnToSource ? workspace?.display_name || '节点会话' : '节点会话'}</h1></div>}<div className="agent-workbench-create-actions"><button type="button" className={`agent-workbench-activity-trigger${sidebarListMode === 'activity' ? ' active' : ''}`} aria-label={`查看活动会话${activityConversations.length ? `（${activityConversations.length}）` : ''}`} title="查看活动会话" onClick={toggleSidebarListMode}><Bell size={15}/>{activityConversations.length > 0 && <span aria-hidden="true">{activityConversations.length > 99 ? '99+' : activityConversations.length}</span>}</button><button className="primary" disabled={!conversationSearchSupported} onClick={() => setConversationSearchOpen(true)}>{conversationSearchQuery.data?.state === 'PENDING' || conversationSearchQuery.data?.state === 'RUNNING' ? <LoaderCircle className="conversation-activity-spin" size={15}/> : conversationSearchQuery.data?.state === 'SUCCEEDED' ? <Check size={15}/> : <Search size={15}/>}{conversationSearchQuery.data?.state === 'SUCCEEDED' ? '搜索完成' : '搜索会话'}</button>{features.workDirectories && <button type="button" className="secondary" aria-label="新增工作区" disabled={!runtimeWritable} onClick={() => setWorkDirectoryCreatorOpen(true)}><FolderPlus size={14}/>新增工作区</button>}</div></header>
-      <div ref={sidebarListRef} className="agent-workbench-list" onScroll={event => {
+      <div ref={sidebarListRef} className="agent-workbench-list" onDragOver={event => {
+        if (draggedConversationRef.current) updateConversationDragAutoScroll(event.clientY);
+      }} onScroll={event => {
         if (!sidebarScrollStorageKey) return;
         try { sessionStorage.setItem(sidebarScrollStorageKey, String(event.currentTarget.scrollTop)); } catch { /* browser session state only */ }
       }}>
