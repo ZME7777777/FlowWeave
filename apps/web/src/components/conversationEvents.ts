@@ -3,6 +3,11 @@ import type { OpenHandsConversationEvent } from '../types';
 const EMPTY_RESPONSE_CORRECTIVE_NUDGE = 'Your last response did not include a function call or a message. Please use a tool to proceed with the task.';
 
 const MESSAGE_CONTEXT_MARKER = /(?:^|\n)---FLOWWEAVE_MESSAGE_CONTEXT_V([2-5])---\n/;
+const INTERNAL_PROTOCOL_MARKER = /(?:^|\n)\[FLOWWEAVE_[A-Z0-9_]+\](?:\r?\n|$)/;
+
+export function isFlowWeaveInternalProtocolMessage(value: string): boolean {
+  return INTERNAL_PROTOCOL_MARKER.test(value);
+}
 
 export function projectFlowWeaveMessageContext(event: OpenHandsConversationEvent): OpenHandsConversationEvent {
   const content = event.payload.content;
