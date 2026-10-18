@@ -26,52 +26,48 @@ test('double-clicking topbar whitespace toggles fullscreen without affecting nav
   await expect.poll(() => page.evaluate(() => document.fullscreenElement === null)).toBe(true);
 });
 
-test('brand control clears browser-managed site data before reloading the current page', async ({ page }) => {
-  let authRequests = 0;
-  await page.route('**/api/v1/auth/me', route => {
-    authRequests += 1;
-    return route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({ id: 'topbar-reload-user', username: 'reload-user', role: 'USER', is_super_admin: false }),
-    });
-  });
+test('brand control reloads current data without navigating or exiting fullscreen', async ({ page }) => {
+  let nodeAssetRequests = 0;
+  await page.route('**/api/v1/auth/me', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ id: 'topbar-reload-user', username: 'reload-user', role: 'USER', is_super_admin: false }),
+  }));
   await page.route('**/api/v1/node-directories', route => route.fulfill({
     status: 200, contentType: 'application/json', body: '[]',
   }));
-  await page.route('**/api/v1/node-assets', route => route.fulfill({
-    status: 200, contentType: 'application/json', body: '[]',
-  }));
+  await page.route('**/api/v1/node-assets', route => {
+    nodeAssetRequests += 1;
+    return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+  });
   await page.goto('/');
   await expect(page.getByRole('button', { name: '节点资产', exact: true })).toBeVisible();
-  await page.evaluate(async () => {
-    localStorage.setItem('reload-local-probe', 'present');
-    sessionStorage.setItem('reload-session-probe', 'present');
-    await caches.open('reload-cache-probe');
-  });
+  const topbar = page.locator('.topbar');
+  await topbar.dblclick({ position: { x: 8, y: 32 } });
+  await expect.poll(() => page.evaluate(() => document.fullscreenElement === document.documentElement)).toBe(true);
+  let navigations = 0;
+  page.on('framenavigated', frame => { if (frame === page.mainFrame()) navigations += 1; });
 
-  const reloaded = page.waitForEvent('framenavigated', frame => frame === page.mainFrame());
-  await page.getByRole('button', { name: '清除缓存并刷新页面' }).click();
-  await reloaded;
+  await page.getByRole('button', { name: '重新加载当前页面数据' }).click();
 
-  await expect.poll(() => authRequests).toBeGreaterThanOrEqual(2);
-  await expect(page.getByRole('button', { name: '节点资产', exact: true })).toBeVisible();
-  await expect.poll(() => page.evaluate(async () => ({
-    local: localStorage.getItem('reload-local-probe'),
-    session: sessionStorage.getItem('reload-session-probe'),
-    cacheExists: (await caches.keys()).includes('reload-cache-probe'),
-  }))).toEqual({ local: null, session: null, cacheExists: false });
+  await expect.poll(() => nodeAssetRequests).toBeGreaterThanOrEqual(2);
+  await expect(page).toHaveURL('/');
+  await expect.poll(() => page.evaluate(() => document.fullscreenElement === document.documentElement)).toBe(true);
+  expect(navigations).toBe(0);
+  await page.evaluate(() => document.exitFullscreen());
 });
 
-test('brand control restores the selected page after clearing cache', async ({ page }) => {
+test('brand control reloads the selected page without changing its route', async ({ page }) => {
+  let capabilityRequests = 0;
   await page.route('**/api/v1/auth/me', route => route.fulfill({
     status: 200,
     contentType: 'application/json',
     body: JSON.stringify({ id: 'topbar-path-user', username: 'path-user', role: 'USER', is_super_admin: false }),
   }));
-  await page.route('**/api/v1/capabilities', route => route.fulfill({
-    status: 200, contentType: 'application/json', body: '[]',
-  }));
+  await page.route('**/api/v1/capabilities', route => {
+    capabilityRequests += 1;
+    return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+  });
   await page.route('**/api/v1/capability-collections', route => route.fulfill({
     status: 200, contentType: 'application/json', body: '[]',
   }));
@@ -79,8 +75,9 @@ test('brand control restores the selected page after clearing cache', async ({ p
   await page.getByRole('button', { name: '能力仓库', exact: true }).click();
   await expect(page.locator('.capabilities-page')).toBeVisible();
 
-  await page.getByRole('button', { name: '清除缓存并刷新页面' }).click();
+  await page.getByRole('button', { name: '重新加载当前页面数据' }).click();
 
+  await expect.poll(() => capabilityRequests).toBeGreaterThanOrEqual(2);
   await expect(page).toHaveURL('/');
   await expect(page.locator('.capabilities-page')).toBeVisible();
 });
