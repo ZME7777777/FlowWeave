@@ -50,6 +50,7 @@ from flowweave.modules.agent_sessions.application.credential_sync import (
 from flowweave.modules.agent_sessions.application.deletion import delete_binding_records
 from flowweave.modules.agent_sessions.application.draft_attachments import (
     assert_attachment_owner_unbound,
+    delete_draft_attachment_cleanup_tasks,
     delete_owned_attachment_files,
     enqueue_draft_attachment_cleanup,
 )
@@ -3273,11 +3274,20 @@ def delete_node_draft_attachments(
     context = sandboxes.node_attempt_workspace_context(
         db, flow_run_id=flow_run_id, node_attempt_id=attempt_id
     )
-    return delete_owned_attachment_files(
+    deleted = delete_owned_attachment_files(
         context.host_working_directory,
         str(context.runtime_working_directory),
         owner,
     )
+    resumable_attachments.delete_attachment_uploads(
+        db,
+        attachment_owner_id=owner,
+        host_kind=_FLOW_NODE,
+        host_id=flow_run_id,
+        host_scope_id=attempt_id,
+    )
+    delete_draft_attachment_cleanup_tasks(db, owner)
+    return deleted
 
 
 def delete_node_draft_attachment(

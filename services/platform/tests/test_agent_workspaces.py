@@ -17,11 +17,18 @@ import pytest
 from sqlalchemy import select
 
 from flowweave.bootstrap.runtime_provider import RuntimeProviderResourceWrite
+from flowweave.modules.agent_sessions.application import (
+    resumable_attachments,
+    sidebar_conversations,
+)
 from flowweave.modules.agent_sessions.application import search as conversation_search
-from flowweave.modules.agent_sessions.application import sidebar_conversations
 from flowweave.modules.agent_sessions.application.host import (
     READ_SESSIONS,
     AgentSessionHostContext,
+)
+from flowweave.modules.agent_sessions.infrastructure.models import (
+    AgentAttachmentUpload,
+    AgentAttachmentUploadPart,
 )
 from flowweave.modules.agent_workspaces.application import (
     conversations,
@@ -2027,6 +2034,39 @@ def test_agent_workspace_allows_only_bound_conversation_attachments_outside_scop
         assert not upload_path.exists()
 
 
+def test_deleting_agent_conversation_deletes_resumable_upload_state(
+    settings, db_session_factory
+):
+    with settings_context(settings), db_session_factory() as db, runtime_context(MockRuntime()):
+        item = _ready_workspace_for_conversation(db)
+        binding = conversations.create_conversation(
+            db, item.id, None, item.default_model_provider_id, "delete-resumable-upload"
+        )
+        upload = resumable_attachments.create_upload(
+            db,
+            host_kind="AGENT_WORKSPACE",
+            host_id=item.id,
+            host_scope_id=None,
+            binding_id=binding["id"],
+            work_directory_id=None,
+            attachment_owner_id=binding["id"],
+            filename="pending.png",
+            mime_type="image/png",
+            total_size=4,
+        )
+        resumable_attachments.put_part(db, upload, part_number=0, content=b"part")
+
+        conversations.delete_conversation(db, item.id, binding["id"], "delete-resumable-upload")
+
+        assert db.get(AgentAttachmentUpload, upload.id) is None
+        assert db.scalar(
+            select(AgentAttachmentUploadPart).where(
+                AgentAttachmentUploadPart.upload_id == upload.id
+            )
+        ) is None
+
+
+
 def test_discarding_agent_workspace_draft_deletes_only_its_private_attachments(
     settings, db_session_factory
 ):
@@ -2046,6 +2086,55 @@ def test_discarding_agent_workspace_draft_deletes_only_its_private_attachments(
         assert not owned.exists()
         assert other.exists()
         assert conversations.delete_draft_attachments(db, item.id, owner_id) == 0
+
+
+def test_discarding_agent_workspace_draft_deletes_resumable_upload_state(
+    settings, db_session_factory
+):
+    with settings_context(settings), db_session_factory() as db:
+        item = _ready_workspace_for_conversation(db)
+        owner_id = str(uuid4())
+        other_owner_id = str(uuid4())
+        owned_upload = resumable_attachments.create_upload(
+            db,
+            host_kind="AGENT_WORKSPACE",
+            host_id=item.id,
+            host_scope_id=None,
+            binding_id=None,
+            work_directory_id=None,
+            attachment_owner_id=owner_id,
+            filename="draft.png",
+            mime_type="image/png",
+            total_size=4,
+        )
+        other_upload = resumable_attachments.create_upload(
+            db,
+            host_kind="AGENT_WORKSPACE",
+            host_id=item.id,
+            host_scope_id=None,
+            binding_id=None,
+            work_directory_id=None,
+            attachment_owner_id=other_owner_id,
+            filename="other.png",
+            mime_type="image/png",
+            total_size=4,
+        )
+        resumable_attachments.put_part(db, owned_upload, part_number=0, content=b"draft")
+        resumable_attachments.put_part(db, other_upload, part_number=0, content=b"other")
+
+        assert conversations.delete_draft_attachments(db, item.id, owner_id) == 0
+        assert db.get(AgentAttachmentUpload, owned_upload.id) is None
+        assert db.scalar(
+            select(AgentAttachmentUploadPart).where(
+                AgentAttachmentUploadPart.upload_id == owned_upload.id
+            )
+        ) is None
+        assert db.get(AgentAttachmentUpload, other_upload.id) is not None
+        assert db.scalar(
+            select(AgentAttachmentUploadPart).where(
+                AgentAttachmentUploadPart.upload_id == other_upload.id
+            )
+        ) is not None
 
 
 def test_discarding_agent_workspace_draft_refuses_a_created_conversation(

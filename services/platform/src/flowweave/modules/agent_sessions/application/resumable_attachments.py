@@ -156,3 +156,39 @@ def assemble(db: Session, upload: AgentAttachmentUpload) -> bytes:
 def close_upload(db: Session, upload: AgentAttachmentUpload, *, status: str) -> None:
     upload.status = status
     db.execute(delete(AgentAttachmentUploadPart).where(AgentAttachmentUploadPart.upload_id == upload.id))
+
+
+def delete_attachment_uploads(
+    db: Session,
+    *,
+    attachment_owner_id: str | None = None,
+    binding_id: str | None = None,
+    host_kind: str | None = None,
+    host_id: str | None = None,
+    host_scope_id: str | None = None,
+) -> int:
+    """Remove resumable attachment state owned by one discarded scope."""
+
+    if attachment_owner_id is None and binding_id is None:
+        raise ValueError("an attachment owner or binding is required")
+    query = select(AgentAttachmentUpload.id).where(
+        AgentAttachmentUpload.upload_kind == "ATTACHMENT"
+    )
+    if attachment_owner_id is not None:
+        query = query.where(AgentAttachmentUpload.attachment_owner_id == attachment_owner_id)
+    if binding_id is not None:
+        query = query.where(AgentAttachmentUpload.binding_id == binding_id)
+    if host_kind is not None:
+        query = query.where(AgentAttachmentUpload.host_kind == host_kind)
+    if host_id is not None:
+        query = query.where(AgentAttachmentUpload.host_id == host_id)
+    if host_scope_id is not None:
+        query = query.where(AgentAttachmentUpload.host_scope_id == host_scope_id)
+    upload_ids = list(db.scalars(query.with_for_update()))
+    if not upload_ids:
+        return 0
+    db.execute(
+        delete(AgentAttachmentUploadPart).where(AgentAttachmentUploadPart.upload_id.in_(upload_ids))
+    )
+    db.execute(delete(AgentAttachmentUpload).where(AgentAttachmentUpload.id.in_(upload_ids)))
+    return len(upload_ids)

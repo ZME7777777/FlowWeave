@@ -8,9 +8,11 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 from uuid import UUID
 
+from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions.infrastructure.models import AgentConversationBinding
+from flowweave.modules.tasks.infrastructure.models import BackgroundTask
 from flowweave.modules.tasks.public import enqueue
 from flowweave.shared.database import now
 from flowweave.shared.errors import DomainError
@@ -134,6 +136,19 @@ def normalize_attachment_owner(owner_id: str) -> str:
         return str(UUID(owner_id))
     except ValueError as exc:
         raise DomainError("AGENT_CONVERSATION_ID_INVALID", "会话标识无效", 422) from exc
+
+
+def delete_draft_attachment_cleanup_tasks(db: Session, owner_id: str) -> None:
+    """Remove deferred cleanup jobs once their draft owner is explicitly discarded."""
+
+    owner = normalize_attachment_owner(owner_id)
+    db.execute(
+        delete(BackgroundTask).where(
+            BackgroundTask.task_type == "CLEANUP_DRAFT_ATTACHMENT",
+            BackgroundTask.aggregate_type == "AGENT_CONVERSATION_DRAFT",
+            BackgroundTask.aggregate_id == owner,
+        )
+    )
 
 
 def delete_owned_attachment_files(
