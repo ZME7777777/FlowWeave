@@ -2576,7 +2576,6 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     if (event.pointerType === 'mouse' && event.button !== 0) return;
     const pointerTarget = event.target instanceof Node ? elementForNode(event.target) : undefined;
     if (pointerTarget?.closest('a,button,input,textarea,select,summary,[contenteditable="true"]')) return;
-    const pointerMessageId = pointerTarget?.closest<HTMLElement>('[data-conversation-event-id]')?.dataset.conversationEventId;
     const selection = window.getSelection();
     if (!selection || selection.isCollapsed || !selection.rangeCount) {
       setSelectedReference(undefined);
@@ -2592,7 +2591,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
         return;
       }
       const reference = conversationAnnotationForSelection(currentSelection, currentSurface, conversationScope);
-      if (!reference || pointerMessageId !== reference.eventId) {
+      if (!reference) {
         setSelectedReference(undefined);
         return;
       }

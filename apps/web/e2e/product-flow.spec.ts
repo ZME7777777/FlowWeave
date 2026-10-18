@@ -3015,13 +3015,12 @@ test('selected conversation text is sent and rendered as a compact reference car
   await page.getByRole('button', { name: '关闭文件预览' }).click();
   await source.evaluate((element, text) => {
     const content = [...element.querySelectorAll('p')].find(item => item.textContent === text);
-    if (!content) throw new Error('Expected assistant message content');
+    if (!content?.firstChild || !content.lastChild) throw new Error('Expected assistant message content');
     const selection = window.getSelection();
-    const range = document.createRange();
-    range.selectNodeContents(content);
-    selection?.removeAllRanges();
-    selection?.addRange(range);
-    content.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+    selection?.setBaseAndExtent(content.lastChild, content.lastChild.textContent?.length ?? 0, content.firstChild, 0);
+    const surface = element.closest('.conversation-surface');
+    if (!surface) throw new Error('Expected conversation surface');
+    surface.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
   }, selectedText);
   await expect(page.getByRole('button', { name: '添加到会话' })).toBeVisible();
   await page.getByRole('button', { name: '添加到会话' }).click();
