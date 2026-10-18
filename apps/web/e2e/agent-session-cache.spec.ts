@@ -2573,7 +2573,6 @@ test('A durable final reply cannot be downgraded by the same live event', async 
   await page.goto('/');
   await login(page);
   await page.goto('/agent/conversations/final-reply-queue-conversation');
-  const composer = page.getByLabel('发送 Agent 消息');
   await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
   await expect.poll(() => stream).toBeTruthy();
 
