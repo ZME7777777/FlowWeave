@@ -986,8 +986,24 @@ def conversation_activity(
     }
 
 
-def list_management_conversations(db: Session, workspace_id: str) -> dict[str, Any]:
-    """List durable direct conversations for an explicit user-initiated cleanup."""
+def _management_conversation_scope(
+    workspace_id: str, work_directory_id: str | None
+) -> Any:
+    if work_directory_id is None:
+        return AgentConversationBinding.work_directory_version_id.is_(None)
+    directory_versions = select(AgentWorkDirectoryVersion.id).where(
+        AgentWorkDirectoryVersion.work_directory_id == work_directory_id,
+        AgentWorkDirectoryVersion.work_directory_id.in_(
+            select(AgentWorkDirectory.id).where(AgentWorkDirectory.workspace_id == workspace_id)
+        ),
+    )
+    return AgentConversationBinding.work_directory_version_id.in_(directory_versions)
+
+
+def list_management_conversations(
+    db: Session, workspace_id: str, *, work_directory_id: str | None = None
+) -> dict[str, Any]:
+    """List durable direct conversations in one user-visible workspace group."""
 
     _workspace(db, workspace_id)
     limit = 500
@@ -1000,6 +1016,7 @@ def list_management_conversations(db: Session, workspace_id: str) -> dict[str, A
                 ~AgentConversationBinding.id.in_(
                     select(AgentSidebarConversation.sidebar_binding_id)
                 ),
+                _management_conversation_scope(workspace_id, work_directory_id),
             )
             .order_by(
                 AgentConversationBinding.last_message_at.desc(),
@@ -1034,8 +1051,10 @@ def delete_management_conversations(
     workspace_id: str,
     binding_ids: tuple[str, ...],
     idempotency_key: str,
+    *,
+    work_directory_id: str | None = None,
 ) -> dict[str, Any]:
-    """Delete only conversations explicitly selected by the current user.
+    """Delete only selected conversations in the current workspace group.
 
     Every item deliberately reuses the normal destructive path, including its
     Runtime readiness check and binding-scoped attachment removal. A running
@@ -1043,6 +1062,19 @@ def delete_management_conversations(
     """
 
     _workspace(db, workspace_id)
+    eligible_binding_ids = set(
+        db.scalars(
+            select(AgentConversationBinding.id).where(
+                AgentConversationBinding.workspace_id == workspace_id,
+                AgentConversationBinding.lifecycle == "ACTIVE",
+                ~AgentConversationBinding.id.in_(
+                    select(AgentSidebarConversation.sidebar_binding_id)
+                ),
+                _management_conversation_scope(workspace_id, work_directory_id),
+                AgentConversationBinding.id.in_(binding_ids),
+            )
+        )
+    )
     deleted_ids: list[str] = []
     skipped: list[dict[str, str]] = []
     seen: set[str] = set()
@@ -1050,6 +1082,9 @@ def delete_management_conversations(
         if binding_id in seen:
             continue
         seen.add(binding_id)
+        if binding_id not in eligible_binding_ids:
+            skipped.append({"id": binding_id, "code": "AGENT_CONVERSATION_SCOPE_MISMATCH"})
+            continue
         try:
             delete_conversation(
                 db,

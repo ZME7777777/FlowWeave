@@ -696,11 +696,15 @@ async def delete_agent_work_directory(
 
 @router.get("/agent-workspaces/{workspace_id}/conversation-management")
 async def list_agent_management_conversations(
-    workspace_id: str, container: ContainerDep
+    workspace_id: str,
+    container: ContainerDep,
+    work_directory_id: str | None = Query(default=None, min_length=1, max_length=36),
 ) -> dict[str, Any]:
     return await run_blocking(
         container,
-        lambda session: conversations.list_management_conversations(session, workspace_id),
+        lambda session: conversations.list_management_conversations(
+            session, workspace_id, work_directory_id=work_directory_id
+        ),
     )
 
 
@@ -710,6 +714,7 @@ async def delete_agent_management_conversations(
     payload: AgentConversationManagementDeleteWrite,
     container: ContainerDep,
     idempotency_key: IdempotencyKey = None,
+    work_directory_id: str | None = Query(default=None, min_length=1, max_length=36),
 ) -> dict[str, Any]:
     return await run_blocking_lifecycle(
         container,
@@ -718,6 +723,7 @@ async def delete_agent_management_conversations(
             workspace_id,
             tuple(payload.binding_ids),
             _key(idempotency_key, "delete-agent-conversations", workspace_id),
+            work_directory_id=work_directory_id,
         ),
     )
 

@@ -65,6 +65,8 @@ from flowweave.modules.sandboxes.infrastructure.docker import (
 from flowweave.modules.tasks.public import Lease
 from flowweave.modules.users.application.security import (
     FLOWWEAVE_USER_ID,
+    USER_USER_ID,
+    tenant_user,
     user_runtime_project_root,
 )
 from flowweave.runtime.base import (
@@ -3402,6 +3404,131 @@ def test_agent_workspace_management_lists_selected_conversations_and_skips_runni
         assert result["skipped"] == [{"id": running["id"], "code": "AGENT_CONVERSATION_RUNNING"}]
         assert db.get(AgentConversationBinding, completed["id"]) is None
         assert db.get(AgentConversationBinding, running["id"]) is not None
+
+
+def test_agent_workspace_management_scopes_to_the_selected_work_directory(
+    settings, db_session_factory, monkeypatch
+):
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=kwargs.get("model_name") or "test-model",
+            api_key="x",
+            reasoning_effort=kwargs.get("reasoning_effort"),
+        ),
+    )
+    with settings_context(settings), db_session_factory() as db, runtime_context(MockRuntime()):
+        workspace = _ready_workspace_for_conversation(db)
+        project_root = _agent_project_root(settings, db, workspace)
+        (project_root / "backend").mkdir()
+        directory = work_directories.create_work_directory(db, workspace.id, "后端", ("backend",))
+        root_conversation = conversations.create_conversation(
+            db, workspace.id, "根目录会话", workspace.default_model_provider_id, "management-root"
+        )
+        directory_conversation = conversations.bootstrap_conversation(
+            db,
+            workspace.id,
+            work_directory_id=directory["id"],
+            model_provider_id=workspace.default_model_provider_id,
+            content="目录会话",
+            idempotency_key="management-directory",
+        )["conversation"]
+
+        root_items = conversations.list_management_conversations(db, workspace.id)["items"]
+        directory_items = conversations.list_management_conversations(
+            db, workspace.id, work_directory_id=directory["id"]
+        )["items"]
+        assert [item["id"] for item in root_items] == [root_conversation["id"]]
+        assert [item["id"] for item in directory_items] == [directory_conversation["id"]]
+
+        mismatch = conversations.delete_management_conversations(
+            db,
+            workspace.id,
+            (directory_conversation["id"],),
+            "management-root-scope",
+        )
+        assert mismatch == {
+            "deleted_ids": [],
+            "skipped": [
+                {
+                    "id": directory_conversation["id"],
+                    "code": "AGENT_CONVERSATION_SCOPE_MISMATCH",
+                }
+            ],
+        }
+        assert db.get(AgentConversationBinding, directory_conversation["id"]) is not None
+
+        deleted = conversations.delete_management_conversations(
+            db,
+            workspace.id,
+            (directory_conversation["id"],),
+            "management-directory-scope",
+            work_directory_id=directory["id"],
+        )
+        assert deleted["deleted_ids"] == [directory_conversation["id"]]
+        assert db.get(AgentConversationBinding, directory_conversation["id"]) is None
+        assert db.get(AgentConversationBinding, root_conversation["id"]) is not None
+
+
+
+def test_agent_workspace_management_respects_user_conversation_isolation(
+    settings, db_session_factory
+):
+    with settings_context(settings), db_session_factory() as db:
+        workspace = _ready_workspace_for_conversation(db)
+        own_conversation = AgentConversationBinding(
+            workspace_id=workspace.id,
+            runtime_session_id="management-runtime",
+            host_kind="AGENT_WORKSPACE",
+            host_id=workspace.id,
+            conversation_scope_id=workspace.id,
+            openhands_conversation_id="management-own-native",
+            display_title="我的会话",
+            lifecycle="ACTIVE",
+            create_idempotency_key="management-own",
+        )
+        db.add(own_conversation)
+        db.flush()
+        with tenant_user(USER_USER_ID):
+            other_conversation = AgentConversationBinding(
+                workspace_id=workspace.id,
+                runtime_session_id="management-runtime",
+                host_kind="AGENT_WORKSPACE",
+                host_id=workspace.id,
+                conversation_scope_id=workspace.id,
+                openhands_conversation_id="management-other-native",
+                display_title="其他用户会话",
+                lifecycle="ACTIVE",
+                create_idempotency_key="management-other",
+            )
+            db.add(other_conversation)
+            db.flush()
+            other_items = conversations.list_management_conversations(db, workspace.id)["items"]
+            assert [item["id"] for item in other_items] == [other_conversation.id]
+
+        own_items = conversations.list_management_conversations(db, workspace.id)["items"]
+        assert [item["id"] for item in own_items] == [own_conversation.id]
+        result = conversations.delete_management_conversations(
+            db,
+            workspace.id,
+            (other_conversation.id,),
+            "management-cross-user",
+        )
+        assert result == {
+            "deleted_ids": [],
+            "skipped": [
+                {
+                    "id": other_conversation.id,
+                    "code": "AGENT_CONVERSATION_SCOPE_MISMATCH",
+                }
+            ],
+        }
+        with tenant_user(USER_USER_ID):
+            assert db.get(AgentConversationBinding, other_conversation.id) is not None
+
 
 
 def test_agent_workspace_conversation_order_stays_at_creation_time(
