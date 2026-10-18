@@ -1438,12 +1438,14 @@ function mergeConversationEvent(
     return next;
   }, []);
   const details = { ...current.payload.details, ...incoming.payload.details };
+  const finalReply = current.payload.final_reply === true || incoming.payload.final_reply === true;
   const merged = {
     ...current,
     ...incoming,
     payload: {
       ...current.payload,
       ...incoming.payload,
+      ...(finalReply ? { final_reply: true } : {}),
       ...(attachments.length ? { attachments } : {}),
       ...(Object.keys(details).length ? { details } : {}),
     },
