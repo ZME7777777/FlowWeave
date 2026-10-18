@@ -1401,6 +1401,48 @@ def test_conversation_search_scopes_to_selected_work_directories_and_serializes_
         assert already_running.value.code == "AGENT_CONVERSATION_SEARCH_IN_PROGRESS"
 
 
+def test_conversation_search_logs_safe_runtime_failure_context(monkeypatch):
+    warnings: list[tuple[object, ...]] = []
+
+    monkeypatch.setattr(
+        conversation_search._logger,
+        "warning",
+        lambda *arguments: warnings.append(arguments),
+    )
+    conversation_search._log_search_failure(
+        "search-id",
+        "workspace-id",
+        "binding-id",
+        DomainError("RUNTIME_BACKGROUND_SEARCH_QUEUE_TIMEOUT", "internal token=secret", 503),
+    )
+    conversation_search._log_search_failure(
+        "search-id",
+        "workspace-id",
+        "binding-id",
+        RuntimeError("https://token:secret@example.test"),
+    )
+
+    assert warnings == [
+        (
+            "agent_conversation_search_failed search_id=%s workspace_id=%s "
+            "binding_id=%s error_code=%s status=%s",
+            "search-id",
+            "workspace-id",
+            "binding-id",
+            "RUNTIME_BACKGROUND_SEARCH_QUEUE_TIMEOUT",
+            503,
+        ),
+        (
+            "agent_conversation_search_failed search_id=%s workspace_id=%s binding_id=%s "
+            "error_type=%s",
+            "search-id",
+            "workspace-id",
+            "binding-id",
+            "RuntimeError",
+        ),
+    ]
+
+
 def test_agent_workspace_conversation_create_is_idempotent_and_uses_external_identity(
     settings, db_session_factory, monkeypatch
 ):

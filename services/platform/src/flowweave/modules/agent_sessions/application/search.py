@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import logging
 from datetime import UTC, datetime
 from typing import Any
 
@@ -25,6 +26,8 @@ from flowweave.modules.agent_workspaces.infrastructure.models import (
 from flowweave.modules.tasks.public import enqueue
 from flowweave.runtime.dependencies import get_runtime
 from flowweave.shared.errors import DomainError, not_found
+
+_logger = logging.getLogger(__name__)
 
 
 def _search(
@@ -316,6 +319,34 @@ def _event_occurred_at(event_timestamp: object) -> datetime | None:
     return value if value.tzinfo is not None else None
 
 
+def _log_search_failure(
+    search_id: str,
+    workspace_id: str,
+    binding_id: str | None,
+    error: Exception,
+) -> None:
+    """Log safe identifiers and a stable error category, never search content."""
+
+    if isinstance(error, DomainError):
+        _logger.warning(
+            "agent_conversation_search_failed search_id=%s workspace_id=%s "
+            "binding_id=%s error_code=%s status=%s",
+            search_id,
+            workspace_id,
+            binding_id,
+            error.code,
+            error.status,
+        )
+        return
+    _logger.warning(
+        "agent_conversation_search_failed search_id=%s workspace_id=%s binding_id=%s error_type=%s",
+        search_id,
+        workspace_id,
+        binding_id,
+        type(error).__name__,
+    )
+
+
 def process(db: Session, search_id: str) -> None:
     search = db.scalar(
         select(AgentConversationSearch)
@@ -334,6 +365,7 @@ def process(db: Session, search_id: str) -> None:
     db.commit()
     # Never retain a database transaction or row lock across unbounded native
     # EventLog scans. The delivery lease keeps this Worker task authoritative.
+    binding_id: str | None = None
     try:
         workspace = conversations._workspace(db, workspace_id)
         statement = select(AgentConversationBinding).where(
@@ -368,13 +400,15 @@ def process(db: Session, search_id: str) -> None:
         )
         hit_keys: list[tuple[str, str, datetime | None]] = []
         for binding in bindings:
+            binding_id = binding.id
             search_result = get_runtime().search_message_events(
                 conversations._handle(db, workspace, binding), query
             )
             for event in search_result.events:
                 occurred_at = _event_occurred_at(event.payload.get("timestamp"))
                 hit_keys.append((binding.id, event.cursor, occurred_at))
-    except DomainError:
+    except DomainError as exc:
+        _log_search_failure(search_id, workspace_id, binding_id, exc)
         search = db.scalar(
             select(AgentConversationSearch)
             .where(AgentConversationSearch.id == search_id)
@@ -385,7 +419,8 @@ def process(db: Session, search_id: str) -> None:
             search.failure_summary = "搜索暂时无法完成，请稍后重新搜索"
             search.completed_at = datetime.now(UTC)
         return
-    except Exception:
+    except Exception as exc:
+        _log_search_failure(search_id, workspace_id, binding_id, exc)
         search = db.scalar(
             select(AgentConversationSearch)
             .where(AgentConversationSearch.id == search_id)
