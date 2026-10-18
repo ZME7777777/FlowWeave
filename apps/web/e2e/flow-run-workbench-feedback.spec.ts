@@ -1501,8 +1501,10 @@ test('returning from an automatic node session preserves the selected automatic 
   await page.locator('.automatic-record-select').filter({ hasText: '自动记录 1' }).click();
   const attemptPanel = page.locator('.attempt-control');
   await expect(attemptPanel).toContainText('END_BLOCKED');
+  await expect(page.locator('.context-tab.active')).toContainText('Run #1');
   await attemptPanel.getByRole('button', { name: '进入节点会话' }).click();
   await expect(page.getByRole('button', { name: '返回节点执行' })).toBeVisible();
+  await expect(page.locator('.context-tab.active')).toContainText('Run #1');
 
   // This pushes a nested node-session URL. Its history state must retain the
   // parent FlowRun and automatic-record identity for the explicit return.
