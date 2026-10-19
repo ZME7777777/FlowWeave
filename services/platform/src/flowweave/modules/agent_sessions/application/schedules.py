@@ -400,8 +400,8 @@ def deliver_occurrence(db: Session, occurrence_id: str) -> None:
         occurrence.error_detail = "schedule was deleted before delivery"
         db.flush()
         return
-    source = _binding(db, schedule.workspace_id, schedule.binding_id)
     try:
+        source = _binding(db, schedule.workspace_id, schedule.binding_id)
         if source.model_provider_id is None:
             raise DomainError("AGENT_SCHEDULE_MODEL_MISSING", "定时任务来源会话未配置模型", 409)
         created = conversations.bootstrap_conversation(

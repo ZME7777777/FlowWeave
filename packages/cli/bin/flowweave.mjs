@@ -40,7 +40,7 @@ function usage() {
   run <list|get|start|delete|runtime|replace|pause|resume|cancel|complete|events|node|node-copy|node-delete|pin|unpin|stepwise-draft|stepwise-start|workspace-details|workspace-directory|workspace-git-repositories|workspace-git-log|workspace-git-commit|workspace-git-diff|workspace-entry-create|workspace-delete|work-directory-delete|hydration|head|automatic-config-export|automatic-config-import|reconcile-runtime-completion> ...
   schedule <list|templates|occurrences|create|pause|resume|trigger|delete> ...
   model <list|create|update|delete|discover|usage|test|oauth-start|oauth-poll|oauth-status|oauth-revoke> ...
-  agent <default|workspace|runtime|runtime-replace|conversations|pinned-conversations|conversation-management|conversation-management-delete|conversation|create|send|interrupt|resume|pin|unpin|sidebar-create|sidebar|sidebar-close|work-directories|work-directory-create|work-directory-delete|workspace-details|workspace-directory|workspace-git-repositories|workspace-git-log|workspace-git-commit|workspace-git-diff|workspace-entry-create|file-delete|hydration|head> ...
+  agent <default|workspace|runtime|runtime-replace|conversations|pinned-conversations|conversation-management|conversation-management-delete|schedules|schedule-create|schedule-update|schedule-pause|schedule-resume|schedule-trigger|schedule-delete|schedule-occurrences|conversation|create|send|interrupt|resume|pin|unpin|sidebar-create|sidebar|sidebar-close|work-directories|work-directory-create|work-directory-delete|workspace-details|workspace-directory|workspace-git-repositories|workspace-git-log|workspace-git-commit|workspace-git-diff|workspace-entry-create|file-delete|hydration|head> ...
 
 所有写入操作都可加 --dry-run 仅查看最终请求。运行 flowweave <命令> --help 查看该命令说明。`;
 }
@@ -747,6 +747,37 @@ async function agent(args) {
       query: workDirectoryId ? [['work_directory_id', workDirectoryId]] : [],
     });
   }
+  if (action === 'schedules') {
+    if (binding) throw new CliError('agent schedules 不接受调度 ID');
+    return request('GET', `${base}/conversation-schedules`, args);
+  }
+  if (action === 'schedule-create') {
+    if (binding) throw new CliError('agent schedule-create 不接受调度 ID');
+    return request('POST', `${base}/conversation-schedules`, args);
+  }
+  if (action.startsWith('schedule-')) {
+    if (!binding) throw new CliError(`agent ${action} 需要调度 ID`);
+    const scheduleBase = `${base}/conversation-schedules/${binding}`;
+    if (action === 'schedule-occurrences') return request('GET', `${scheduleBase}/occurrences`, args);
+    if (action === 'schedule-update') {
+      const body = await objectPayload(args);
+      if (!Number.isSafeInteger(body.expected_row_version) || body.expected_row_version < 1) {
+        throw new CliError('agent schedule-update 需要 --data 或 --data-file，且必须包含正整数 expected_row_version');
+      }
+      return request('PUT', scheduleBase, args, { body });
+    }
+    if (action === 'schedule-pause' || action === 'schedule-resume') {
+      const expected = Number(option(args, '--expected-row-version'));
+      if (!Number.isSafeInteger(expected) || expected < 1) {
+        throw new CliError(`agent ${action} 需要正整数 --expected-row-version`);
+      }
+      return request('PUT', `${scheduleBase}/state`, args, {
+        body: { expected_row_version: expected, status: action === 'schedule-pause' ? 'PAUSED' : 'ACTIVE' },
+      });
+    }
+    if (action === 'schedule-trigger') return request('POST', `${scheduleBase}/trigger`, args, { body: {} });
+    if (action === 'schedule-delete') return request('DELETE', scheduleBase, args);
+  }
   if (action === 'work-directories') return request('GET', `${base}/work-directories`, args);
   if (action === 'work-directory-create') {
     return request('POST', `${base}/work-directories`, args);
@@ -803,7 +834,7 @@ async function agent(args) {
   if (action === 'send') return request('POST', `${base}/conversations/${binding}/messages`, args);
   if (action === 'interrupt') return request('POST', `${base}/conversations/${binding}/interrupt`, args, { body: {} });
   if (action === 'resume') return request('POST', `${base}/conversations/${binding}/resume`, args, { body: {} });
-  throw new CliError('agent 支持 default|workspace|runtime|runtime-replace|conversations|pinned-conversations|conversation-management|conversation-management-delete|conversation|create|send|interrupt|resume|pin|unpin|sidebar-create|sidebar|sidebar-close|work-directories|work-directory-create|work-directory-delete|workspace-details|workspace-directory|workspace-git-repositories|workspace-git-log|workspace-git-commit|workspace-git-diff|workspace-entry-create|file-delete|hydration|head');
+  throw new CliError('agent 支持 default|workspace|runtime|runtime-replace|conversations|pinned-conversations|conversation-management|conversation-management-delete|schedules|schedule-create|schedule-update|schedule-pause|schedule-resume|schedule-trigger|schedule-delete|schedule-occurrences|conversation|create|send|interrupt|resume|pin|unpin|sidebar-create|sidebar|sidebar-close|work-directories|work-directory-create|work-directory-delete|workspace-details|workspace-directory|workspace-git-repositories|workspace-git-log|workspace-git-commit|workspace-git-diff|workspace-entry-create|file-delete|hydration|head');
 }
 
 async function upload(args) {
