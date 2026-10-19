@@ -4142,14 +4142,20 @@ test('Pausing immediately updates the controls before the readiness projection c
   await expect.poll(() => Boolean(stream)).toBe(true);
 
   await page.getByRole('button', { name: '暂停当前 Agent' }).click();
-  await expect(page.getByRole('button', { name: '继续当前 Agent' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '暂停请求已发送' })).toBeDisabled();
+  await expect(page.getByText('正在暂停 Agent', { exact: true })).toBeVisible();
   stream!.send(JSON.stringify({
     type: 'event',
     event: { id: 'pause-interruption', event_type: 'ERROR', payload: { source_type: 'AgentErrorEvent', parent_id: 'pause-resume-user', content: 'Tool call interrupted before completion. The conversation was paused.', timestamp: now } },
   }));
-  await expect(page.getByRole('button', { name: '继续当前 Agent' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '暂停请求已发送' })).toBeDisabled();
+  stream!.send(JSON.stringify({
+    type: 'event',
+    event: { id: 'pause-interrupt', event_type: 'STATE', payload: { source_type: 'InterruptEvent', source: 'user', parent_id: 'pause-interruption', timestamp: now } },
+  }));
 
   pauseProjectionAvailable = true;
+  await expect(page.getByRole('button', { name: '继续当前 Agent' })).toBeVisible();
   await page.getByRole('button', { name: '继续当前 Agent' }).click();
   await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
   stream!.send(JSON.stringify({

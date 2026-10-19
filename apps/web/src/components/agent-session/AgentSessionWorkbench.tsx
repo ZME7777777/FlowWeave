@@ -37,6 +37,7 @@ import '../../pages/agent-workbench-layout.css';
 const ACTIVE_EVENT_RECOVERY_INTERVAL_MS = 4_000;
 const ACTIVE_EVENT_LATEST_RECHECK_INTERVAL_MS = 30_000;
 const INPUT_READINESS_MIN_REQUEST_INTERVAL_MS = 2_000;
+const PAUSE_CONFIRMATION_RETRY_INTERVAL_MS = 500;
 const SUBMISSION_EVENT_CONFIRMATION_TIMEOUT_MS = 60_000;
 const SUBMISSION_EVENT_CONFIRMATION_RETRY_WINDOW_MS = 5_000;
 const SUBMISSION_EVENT_CONFIRMATION_RETRY_INTERVAL_MS = 250;
@@ -6899,13 +6900,13 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }
   }, [connectedProviders, newConversationModelName, newConversationProviderId]);
   useEffect(() => {
-    if (turnState === 'pausing' && nativeExecutionStatus?.toLowerCase() === 'paused') {
-      setTurnState('paused');
-    }
-  }, [nativeExecutionStatus, turnState]);
+    if (turnState !== 'pausing' || nativeExecutionStatus?.toLowerCase() === 'paused') return;
+    const timer = window.setInterval(() => reconcileConversationProjection(), PAUSE_CONFIRMATION_RETRY_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [nativeExecutionStatus, reconcileConversationProjection, turnState]);
   useEffect(() => {
     if (!selected || inputReadinessQuery.data?.execution_status?.toLowerCase() !== 'paused') return;
-    setTurnState(current => current === 'idle' ? 'paused' : current);
+    setTurnState(current => current === 'idle' || current === 'pausing' ? 'paused' : current);
   }, [inputReadinessQuery.data?.execution_status, selected]);
   useEffect(() => {
     if (!terminalSyncTurnKey) {
@@ -7689,7 +7690,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     mutationFn: () => api.interruptConversation(workspace!.id, selected!.id),
     onMutate: () => setTurnState('pausing'),
     onSuccess: () => {
-      setTurnState('paused');
       reconcileConversationProjection();
       onHostStateChanged?.();
     },
