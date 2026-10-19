@@ -2490,7 +2490,9 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByLabel('消息投递队列')).toHaveCount(0);
   const restoredOptimisticMessage = page.locator('.conversation-message.user').filter({ hasText: '网络不确定消息' });
   await expect(restoredOptimisticMessage).toBeVisible();
-  await expect(restoredOptimisticMessage.getByLabel('消息附件').getByText('即时附件.png', { exact: true })).toBeVisible();
+  const restoredAttachment = restoredOptimisticMessage.getByLabel('消息附件').getByText('即时附件.png', { exact: true });
+  await expect(restoredAttachment).toBeVisible();
+  await expect(restoredAttachment.locator('.conversation-message-attachment-thumbnail')).toBeVisible();
   expect(ambiguousMessagePosts).toBe(1);
   const liveToolDetail = activeProcess.locator('.conversation-tool-detail').filter({ hasText: '已运行 pwd' });
   await expect(liveToolDetail).toHaveJSProperty('open', false);
