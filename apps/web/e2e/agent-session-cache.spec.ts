@@ -93,6 +93,72 @@ test('Agent session hydrates the first screen without parallel Runtime snapshot 
   expect(fallbackReads).toBe(0);
 });
 
+test('Agent session retries older history after a temporary Runtime failure', async ({ page }) => {
+  let authenticated = false;
+  let historyRequests = 0;
+  const workspace = {
+    id: 'history-retry-workspace', display_name: '历史重试工作区', desired_state: 'RUNNING', updated_at: now,
+  };
+  const conversation = {
+    id: 'history-retry-conversation', display_title: '历史重试会话', title_state: 'MANUAL', lifecycle: 'ACTIVE',
+    streaming_callback_ready: true, write_available: true, execution_status: 'idle', created_at: now, updated_at: now,
+  };
+  const hydration = {
+    events: {
+      events: [
+        { id: 'history-retry-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '当前消息', timestamp: now } },
+        { id: 'history-retry-agent', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'history-retry-user', content: '当前回复', final_reply: true, timestamp: now } },
+      ],
+      next_cursor: 'history-retry-agent', history_cursor: 'history-retry-page', result: { status: 'COMPLETED' },
+    },
+    context: { model_name: 'history-retry-model', window_tokens: 128_000, used_tokens: 2_048, usage_current: true },
+    readiness: { ready: true, execution_status: 'idle' },
+  };
+
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const path = url.pathname;
+    if (path.endsWith('/auth/me')) return authenticated
+      ? json(route, user)
+      : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [conversation], next_cursor: null });
+    if (path.endsWith('/hydration')) return json(route, hydration);
+    if (path.endsWith('/events')) {
+      if (url.searchParams.get('history_cursor') !== 'history-retry-page') return json(route, hydration.events);
+      historyRequests += 1;
+      if (historyRequests === 1) return json(route, { error: { code: 'AGENT_RUNTIME_UNAVAILABLE', message: '历史页暂时不可用' } }, 503);
+      return json(route, {
+        events: [{ id: 'history-retry-old-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '临时故障后恢复的更早消息', timestamp: now } }],
+        next_cursor: 'history-retry-agent', history_cursor: null,
+      });
+    }
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/work-directories')) return json(route, {
+      root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [],
+    });
+    if (path.endsWith('/workspace')) return json(route, {
+      root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' },
+      working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [],
+      runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } },
+    });
+    if (path.endsWith('/model-providers') || path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, conversation);
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+
+  await page.goto('/');
+  await login(page);
+  await page.goto('/agent/conversations/history-retry-conversation');
+  await expect(page.getByText('当前回复')).toBeVisible();
+  await expect.poll(() => historyRequests).toBe(2);
+  await expect(page.getByText('临时故障后恢复的更早消息')).toBeVisible();
+});
+
 test('Agent session keeps its conversation URL while refreshing a deep link', async ({ page }) => {
   let authenticated = false;
   let releaseConversation: (() => void) | undefined;

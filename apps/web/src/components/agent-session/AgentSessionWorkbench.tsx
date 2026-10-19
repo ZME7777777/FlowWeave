@@ -54,6 +54,8 @@ const INITIAL_HYDRATION_STALE_TIME_MS = 30_000;
 // monopolize the dedicated backend history lane after a session is selected.
 const HISTORY_MEMORY_CACHE_TTL_MS = 5 * 60 * 1000;
 const HISTORY_PREFETCH_DELAY_MS = 1_500;
+const HISTORY_RETRY_MAX_ATTEMPTS = 3;
+const HISTORY_RETRY_BASE_DELAY_MS = 1_500;
 // Exact Context metrics are deferred from hydration. Merge bursts of event
 // reconciliation into one bounded refresh instead of invalidating per frame.
 const CONTEXT_REFRESH_MIN_INTERVAL_MS = 60_000;
@@ -4507,7 +4509,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const deferredFormalUserEvents = useRef(new Map<string, ScopedConversationEvent>());
   const historyLoadingScopes = useRef(new Set<string>());
   const historyAbortControllers = useRef(new Map<string, AbortController>());
-  const historyFailedCursors = useRef(new Map<string, string>());
+  const historyFailedCursors = useRef(new Map<string, { rootCursor: string; attempts: number; retryAt: number }>());
   const historyCacheByScope = useRef(new Map<string, { rootCursor: string; expiresAt: number; pages: OpenHandsConversationEventBatch[]; complete: boolean }>());
   const conversationScrollSnapshots = useRef(new Map<string, ConversationScrollSnapshot>());
   const updateConversationScrollSnapshot = useCallback((scope: string, snapshot: ConversationScrollSnapshot) => {
@@ -5887,6 +5889,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     setHistoryLoadingBindingId(scope);
     let historyCursor: string | null | undefined = cache.pages.at(-1)?.history_cursor ?? historyRootCursor;
     const seenHistoryCursors = new Set<string>();
+    let historyCursorLoop = false;
     try {
       // Fetch serially and yield between pages. This keeps the selected
       // transcript responsive while retaining the complete history in RAM.
@@ -5899,13 +5902,17 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
           if (!scopeIsActive() || controller.signal.aborted || document.visibilityState !== 'visible') return;
         }
         const cursor = historyCursor;
-        if (seenHistoryCursors.has(cursor)) throw new Error('读取更早会话记录时，历史分页游标没有推进。');
+        if (seenHistoryCursors.has(cursor)) {
+          historyCursorLoop = true;
+          throw new Error('读取更早会话记录时，历史分页游标没有推进。');
+        }
         seenHistoryCursors.add(cursor);
         const older = await api.conversationEvents(workspace.id, scope, undefined, cursor, undefined, controller.signal);
         if (!scopeIsActive() || controller.signal.aborted) return;
         cache.pages.push(older);
         cache.expiresAt = Date.now() + HISTORY_MEMORY_CACHE_TTL_MS;
         historyCursor = older.history_cursor;
+        historyFailedCursors.current.delete(scope);
         setHistoryCacheRevision(current => current + 1);
         if (historyCursor) await new Promise<void>(resolve => window.setTimeout(resolve, historyPrefetchDelayMs));
       }
@@ -5915,7 +5922,17 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       }
     } catch (error) {
       if (controller.signal.aborted) return;
-      historyFailedCursors.current.set(scope, historyRootCursor);
+      if (historyCursorLoop) {
+        cache.complete = true;
+      } else {
+        const previous = historyFailedCursors.current.get(scope);
+        const attempts = previous?.rootCursor === historyRootCursor ? previous.attempts + 1 : 1;
+        historyFailedCursors.current.set(scope, {
+          rootCursor: historyRootCursor,
+          attempts,
+          retryAt: Date.now() + HISTORY_RETRY_BASE_DELAY_MS * 2 ** Math.min(attempts - 1, 2),
+        });
+      }
       reportOperationError(scope, error instanceof Error ? error : new Error('读取更早会话记录失败'));
     } finally {
       historyLoadingScopes.current.delete(scope);
@@ -5996,12 +6013,16 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (!pageVisible || !bindingId || !historyCursor || historyLoadingScopes.current.has(bindingId)) return;
     const cache = historyCacheByScope.current.get(bindingId);
     const cacheExpired = !cache || cache.rootCursor !== historyCursor || (!cache.complete && cache.expiresAt <= Date.now());
-    if (!cacheExpired && historyFailedCursors.current.get(bindingId) === historyCursor) return;
+    const failure = historyFailedCursors.current.get(bindingId);
+    if (!cacheExpired && failure?.rootCursor === historyCursor && failure.attempts >= HISTORY_RETRY_MAX_ATTEMPTS) return;
     // Exhausted history stays exhausted for this entry cursor. A visibility
     // change or a latest-window refresh must not scan the same branch again.
     if (cache?.rootCursor === historyCursor && cache.complete) return;
-    const delay = historyPrefetchDelayMs;
-    const timer = window.setTimeout(() => { void loadAllHistory(); }, delay);
+    const delay = Math.max(
+      historyPrefetchDelayMs,
+      failure?.rootCursor === historyCursor ? failure.retryAt - Date.now() : 0,
+    );
+    const timer = window.setTimeout(() => { void loadAllHistory(); }, Math.max(0, delay));
     return () => window.clearTimeout(timer);
   }, [eventsQuery.data?.history_cursor, historyCacheRevision, historyPrefetchDelayMs, loadAllHistory, pageVisible, selected?.id]);
   const activeScope = selected?.id ?? conversationDraft?.id;
