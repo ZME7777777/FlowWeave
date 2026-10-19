@@ -2057,6 +2057,72 @@ test('Agent composer retains each conversation draft and uploaded attachment acr
 });
 
 
+test('Agent composer keeps an uploading attachment visible across conversation switches', async ({ page }) => {
+  let authenticated = false;
+  let releaseUpload: (() => void) | undefined;
+  const uploadPending = new Promise<void>(resolve => { releaseUpload = resolve; });
+  let uploadPartRequested = false;
+  const workspace = { id: 'pending-upload-workspace', display_name: '进行中上传工作区', desired_state: 'RUNNING', updated_at: now };
+  const conversations = ['pending-upload-a', 'pending-upload-b'].map((id, index) => ({
+    id, display_title: `进行中上传会话 ${String.fromCharCode(65 + index)}`, title_state: 'MANUAL', lifecycle: 'ACTIVE',
+    streaming_callback_ready: true, write_available: true, execution_status: 'idle', created_at: now, updated_at: now,
+  }));
+
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return authenticated ? json(route, user) : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: conversations, next_cursor: null });
+    if (path.endsWith('/attachments/uploads') && request.method() === 'POST') return json(route, { upload_id: 'pending-upload', chunk_size: 262_144, uploaded_parts: [] }, 201);
+    if (path.endsWith('/attachments/uploads/pending-upload/parts/0') && request.method() === 'PUT') {
+      uploadPartRequested = true;
+      await uploadPending;
+      return route.fulfill({ status: 200 });
+    }
+    if (path.endsWith('/attachments/uploads/pending-upload/complete') && request.method() === 'POST') return json(route, {
+      filename: '正在上传.png', mime_type: 'image/png', byte_size: 8, path: '/runtime/workspace/project/uploads/pending-upload-a.png',
+    }, 201);
+    if (path.endsWith('/events')) return json(route, { events: [], next_cursor: null, history_cursor: null, result: { status: 'COMPLETED' } });
+    if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
+    if (path.endsWith('/workspace')) return json(route, {
+      root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [], runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } },
+    });
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/input-readiness')) return json(route, { ready: true, execution_status: 'idle' });
+    if (path.endsWith('/context')) return json(route, { model_name: 'test-model', window_tokens: 128_000, used_tokens: 1_024, usage_current: true });
+    if (path.endsWith('/model-providers') || path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, conversations.find(item => item.id === path.split('/').at(-1)));
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+
+  await page.goto('/');
+  await login(page);
+  await page.goto('/agent');
+  await expect(page.getByRole('heading', { name: '新会话' })).toBeVisible();
+  const attachment = page.locator('.agent-composer .agent-attachments').getByText('正在上传.png', { exact: true });
+  await page.getByLabel('上传附件').setInputFiles({ name: '正在上传.png', mimeType: 'image/png', buffer: Buffer.from([1, 2, 3, 4, 5, 6, 7, 8]) });
+  await expect.poll(() => uploadPartRequested).toBe(true);
+  await expect(attachment).toBeVisible();
+
+  await page.getByRole('button', { name: '进行中上传会话 B', exact: true }).click();
+  await expect(page).toHaveURL(/\/agent\/conversations\/pending-upload-b$/);
+  await expect(attachment).toHaveCount(0);
+  const recoverDraft = page.getByRole('button', { name: '恢复根工作区的未发送草稿' });
+  await expect(recoverDraft).toBeVisible();
+
+  releaseUpload?.();
+  await expect.poll(() => page.locator('.agent-pending-attachment').count()).toBe(0);
+  await recoverDraft.click();
+  await expect(page.getByRole('heading', { name: '新会话' })).toBeVisible();
+  await expect(attachment).toBeVisible();
+});
+
+
+
 test('New conversation draft remains isolated and can be resumed after switching', async ({ page }) => {
   let authenticated = false;
   let uploadedDraftId: string | null = null;

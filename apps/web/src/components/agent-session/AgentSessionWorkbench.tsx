@@ -4509,6 +4509,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const attachmentInput = useRef<HTMLInputElement>(null);
   const discardedDraftScopes = useRef(new Set<string>());
   const removedPendingAttachmentIds = useRef(new Set<string>());
+  const pendingAttachmentIdsByScope = useRef(new Map<string, Set<string>>());
   const titleInput = useRef<HTMLInputElement>(null);
   const workspacePathCopyTimer = useRef<number | undefined>(undefined);
   const pendingLiveEvents = useRef<ScopedConversationEvent[]>([]);
@@ -5335,10 +5336,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       modelName: draftPersistence.modelName,
       reasoningEffort: draftPersistence.reasoningEffort,
     };
-    writeConversationDraft(draftPersistence.storageKey, recovery);
+    const hasPendingAttachments = Boolean(pendingAttachmentIdsByScope.current.get(scope)?.size);
+    const recoverable = conversationDraftHasContent(recovery) || hasPendingAttachments;
+    writeConversationDraft(draftPersistence.storageKey, recoverable ? recovery : undefined);
     const draftKey = draftPersistence.draft.workDirectoryId ?? 'root';
     setRecoverableConversationDrafts(current => {
-      if (conversationDraftHasContent(recovery)) return { ...current, [draftKey]: recovery };
+      if (recoverable) return { ...current, [draftKey]: recovery };
       if (!current[draftKey]) return current;
       const updated = { ...current };
       delete updated[draftKey];
@@ -6819,7 +6822,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       ...(workDirectoriesQuery.data?.items ?? []).map(directory => (
         readConversationDraft(conversationDraftStorageKey(host.id, workspace.id, directory.id))
       )),
-    ].filter((recovery): recovery is ConversationDraftRecovery => Boolean(recovery && conversationDraftHasContent(recovery)));
+    ].filter((recovery): recovery is ConversationDraftRecovery => Boolean(recovery && (
+      conversationDraftHasContent(recovery)
+      || pendingAttachmentIdsByScope.current.get(recovery.draft.id)?.size
+    )));
     setRecoverableConversationDrafts(Object.fromEntries(recoveries.map(recovery => [recovery.draft.workDirectoryId ?? 'root', recovery])));
   }, [composerScope, host.id, workspace, workDirectoriesQuery.data?.items]);
   useEffect(() => {
@@ -7535,6 +7541,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     discardedDraftScopes.current.add(scope);
     void api.deleteDraftAttachments(workspace.id, scope).catch(() => undefined);
   }, [api, workspace]);
+  const removePendingAttachmentFromScope = useCallback((id: string, scope: string) => {
+    const ids = pendingAttachmentIdsByScope.current.get(scope);
+    if (!ids) return;
+    ids.delete(id);
+    if (!ids.size) pendingAttachmentIdsByScope.current.delete(scope);
+  }, []);
   const upload = useMutation({ mutationFn: ({ file, id, scope, bindingId, workDirectoryId }: { file: File; id: string; scope: string; bindingId?: string; workDirectoryId?: string }) => {
     const onProgress = (progress: number) => setPendingAttachments(current => current.map(item => item.id === id ? { ...item, progress } : item));
     return bindingId
@@ -7542,6 +7554,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       : api.uploadDraftAttachment(workspace!.id, file, workDirectoryId, scope, onProgress);
   }, onSuccess: (value, request) => {
     const removed = removedPendingAttachmentIds.current.delete(request.id);
+    removePendingAttachmentFromScope(request.id, request.scope);
     setPendingAttachments(current => {
       const pending = current.find(item => item.id === request.id);
       if (pending?.previewUrl) URL.revokeObjectURL(pending.previewUrl);
@@ -7551,24 +7564,30 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       if (workspace && !request.bindingId) void api.deleteDraftAttachments(workspace.id, request.scope, value.path).catch(() => undefined);
       return;
     }
-    const snapshot = composerDraftsByScope.current.get(request.scope);
-    if (snapshot) {
-      const attachments = [...snapshot.attachments, value];
-      composerDraftsByScope.current.set(request.scope, { ...snapshot, attachments });
-      if (activeComposerScope.current === request.scope) setAttachments(attachments);
-      persistComposerDraft(request.scope);
-    } else if (activeComposerScope.current === request.scope) setAttachments(items => [...items, value]);
+    const snapshot = composerDraftsByScope.current.get(request.scope) ?? { content: '', attachments: [], references: [], workspaceReferences: [], annotations: [] };
+    const attachments = [...snapshot.attachments, value];
+    composerDraftsByScope.current.set(request.scope, { ...snapshot, attachments });
+    if (activeComposerScope.current === request.scope) setAttachments(attachments);
+    persistComposerDraft(request.scope);
   }, onError: (_error, request) => {
-    if (removedPendingAttachmentIds.current.delete(request.id) || discardedDraftScopes.current.has(request.scope)) return;
+    if (removedPendingAttachmentIds.current.delete(request.id) || discardedDraftScopes.current.has(request.scope)) {
+      removePendingAttachmentFromScope(request.id, request.scope);
+      return;
+    }
     setPendingAttachments(current => current.map(item => item.id === request.id ? { ...item, state: 'failed', progress: 100 } : item));
   } });
   const startAttachmentUpload = useCallback((file: File) => {
     if (!composerScope) return;
     const id = randomId();
     const previewUrl = file.type.startsWith('image/') ? URL.createObjectURL(file) : undefined;
-    setPendingAttachments(current => [...current, { id, scope: composerScope, file, filename: file.name, mimeType: file.type, previewUrl, progress: 0, state: 'uploading' }]);
+    const pending = { id, scope: composerScope, file, filename: file.name, mimeType: file.type, previewUrl, progress: 0, state: 'uploading' as const };
+    const scopePendingIds = pendingAttachmentIdsByScope.current.get(composerScope) ?? new Set<string>();
+    scopePendingIds.add(id);
+    pendingAttachmentIdsByScope.current.set(composerScope, scopePendingIds);
+    setPendingAttachments(current => [...current, pending]);
+    persistComposerDraft(composerScope);
     upload.mutate({ file, id, scope: composerScope, bindingId: selected?.id, workDirectoryId: conversationDraft?.workDirectoryId });
-  }, [composerScope, conversationDraft?.workDirectoryId, selected?.id, upload]);
+  }, [composerScope, conversationDraft?.workDirectoryId, persistComposerDraft, selected?.id, upload]);
   const addWorkspaceReferences = useCallback((paths: string[]) => {
     setWorkspaceReferences(current => [...current, ...paths.flatMap(path => current.some(reference => reference.path === path) ? [] : [{ path, kind: 'file' as const, display_name: path.split('/').filter(Boolean).pop() ?? path }])]);
   }, []);
@@ -7604,9 +7623,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     setPendingAttachments(current => {
       const pending = current.find(item => item.id === id);
       if (pending?.previewUrl) URL.revokeObjectURL(pending.previewUrl);
+      if (pending) removePendingAttachmentFromScope(id, pending.scope);
       return current.filter(item => item.id !== id);
     });
-  }, []);
+  }, [removePendingAttachmentFromScope]);
   const fork = useMutation({ mutationFn: (eventId: string) => api.forkConversation(workspace!.id, selected!.id, eventId), onSuccess: value => {
     if (!workspace) return;
     setPendingCreatedId(value.id);
