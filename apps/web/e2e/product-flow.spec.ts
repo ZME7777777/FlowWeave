@@ -3708,8 +3708,9 @@ test('run keeps attempts, snapshots, gates and artifact lineage visible', async 
   await expect(page).toHaveURL(nodeSessionUrl);
   await expect(page.getByRole('heading', { name: '首轮方案', exact: true })).toBeVisible();
   await expect(page.getByRole('heading', { name: '新会话', exact: true })).toHaveCount(0);
-  await expect(page.getByRole('navigation').getByRole('button', { name: '流程运行' })).toHaveClass(/active/);
+  await expect(page.getByRole('navigation').getByRole('button', { name: '流程运行' })).not.toHaveClass(/active/);
   await expect(page.getByRole('navigation').getByRole('button', { name: 'Agent 会话' })).not.toHaveClass(/active/);
+  await expect(page.getByLabel('临时管理标签').getByRole('button', { name: `Run #${createdRun.run_no}` })).toHaveAttribute('aria-current', 'page');
   await expect(page.getByRole('button', { name: '返回节点执行' })).toBeVisible();
   await expect(page.getByText('FlowRun 会话工作台', { exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: '新增工作区' })).toBeVisible();
