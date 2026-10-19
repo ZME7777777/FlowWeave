@@ -3572,6 +3572,14 @@ test('Conversation sidebar opens an activity session without changing its scroll
   await pinnedConversation.click({ button: 'right' });
   await page.getByRole('menuitem', { name: '置顶' }).click();
   const pinnedSection = page.getByRole('region', { name: '置顶会话' });
+  const pinnedSectionToggle = pinnedSection.getByRole('button', { name: '收起置顶会话' });
+  await expect(pinnedSection.getByRole('button', { name: '归属工作区会话', exact: true })).toBeVisible();
+  await expect(pinnedSectionToggle).toHaveAttribute('aria-expanded', 'true');
+  await pinnedSectionToggle.click();
+  await expect(pinnedSection.getByRole('button', { name: '归属工作区会话', exact: true })).toBeHidden();
+  const expandPinnedSection = pinnedSection.getByRole('button', { name: '展开置顶会话' });
+  await expect(expandPinnedSection).toHaveAttribute('aria-expanded', 'false');
+  await expandPinnedSection.click();
   await expect(pinnedSection.getByRole('button', { name: '归属工作区会话', exact: true })).toBeVisible();
   await expect.poll(() => pinnedWrites).toEqual([{ id: 'sidebar-directory-pinned', pinned: true }]);
   await expect(page.locator('.agent-workspace-group').filter({ hasText: '归属工作区' }).getByRole('button', { name: '归属工作区会话', exact: true })).toHaveCount(0);
