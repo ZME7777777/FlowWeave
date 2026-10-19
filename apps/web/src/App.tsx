@@ -73,6 +73,7 @@ export function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [openSettingsViews, setOpenSettingsViews] = useState<SettingsView[]>([]);
   const [openFlowRunTabs, setOpenFlowRunTabs] = useState<FlowRunTab[]>([]);
+  const lastStandaloneAgentPath = useRef('/agent');
   const settingsMenu = useRef<HTMLDivElement>(null);
   const replaceIdentity = useCallback(async (nextUser: AuthUser | null) => {
     // Unmount authenticated product surfaces before an old request can
@@ -228,6 +229,9 @@ export function App() {
   const canUseAgentSessions = user?.can_use_agent_sessions !== false;
   const isAgentRoute = (directAgentRoute && canUseAgentSessions) || Boolean(nodeSessionRoute);
   useEffect(() => {
+    if (directAgentRoute) lastStandaloneAgentPath.current = `${routePathname}${window.location.search}${window.location.hash}`;
+  }, [directAgentRoute, routePathname]);
+  useEffect(() => {
     if (!directAgentRoute || user?.can_use_agent_sessions !== false) return;
     window.history.replaceState({}, '', withDeploymentBase('/'));
     setView('nodes');
@@ -248,7 +252,7 @@ export function App() {
         setView('nodes');
         return;
       }
-      navigate('/agent');
+      navigate(lastStandaloneAgentPath.current);
       setView(next);
       return;
     }

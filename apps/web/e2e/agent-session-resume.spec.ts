@@ -90,3 +90,61 @@ for (const outcome of ['success', 'failure'] as const) {
     await expect(target.locator('.agent-workspace-conversation-running')).toHaveCount(0);
   });
 }
+
+test('Agent navigation restores the last standalone conversation after leaving the page', async ({ page }) => {
+  let authenticated = false;
+  const workspace = { id: 'navigation-restore-workspace', display_name: '导航恢复工作区', desired_state: 'RUNNING', updated_at: now };
+  const conversation = {
+    id: 'navigation-restore-conversation', display_title: '切换后恢复的会话', title_state: 'MANUAL', lifecycle: 'ACTIVE',
+    streaming_callback_ready: true, write_available: true, execution_status: 'idle', created_at: now, updated_at: now,
+  };
+  const hydration = {
+    events: {
+      events: [
+        { id: 'navigation-restore-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '新会话已经发送消息', timestamp: now } },
+        { id: 'navigation-restore-agent', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'navigation-restore-user', content: '切换页面后仍应看到这条回复。', final_reply: true, timestamp: now } },
+      ],
+      next_cursor: 'navigation-restore-agent', history_cursor: null, result: { status: 'COMPLETED' },
+    },
+    context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 100, usage_current: true },
+    readiness: { ready: true, execution_status: 'idle' },
+  };
+
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return authenticated
+      ? json(route, { id: 'navigation-restore-user', username: 'navigation-restore-user', role: 'USER', can_use_agent_sessions: true })
+      : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login')) {
+      authenticated = true;
+      return json(route, { id: 'navigation-restore-user', username: 'navigation-restore-user', role: 'USER', can_use_agent_sessions: true });
+    }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [conversation], next_cursor: null });
+    if (path.endsWith('/hydration')) return json(route, hydration);
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
+    if (path.endsWith('/workspace')) return json(route, { root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [], runtime: {}, ide: { gateway: { supported: false } } });
+    if (path.endsWith('/model-providers') || path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, conversation);
+    if (path.endsWith('/node-directories') || path.endsWith('/node-assets')) return json(route, []);
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+
+  await page.goto('/');
+  await page.getByLabel('账号').fill('navigation-restore-user');
+  await page.getByLabel('密码').fill('test-password');
+  await page.getByRole('button', { name: '进入工作空间' }).click();
+  await page.goto('/agent/conversations/navigation-restore-conversation');
+  await expect(page.getByText('切换页面后仍应看到这条回复。')).toBeVisible();
+
+  await page.getByRole('button', { name: '节点资产', exact: true }).click();
+  await expect(page).toHaveURL(/\/$/);
+  await page.getByRole('button', { name: 'Agent 会话', exact: true }).click();
+
+  await expect(page).toHaveURL(/\/agent\/conversations\/navigation-restore-conversation$/);
+  await expect(page.getByText('切换页面后仍应看到这条回复。')).toBeVisible();
+});
