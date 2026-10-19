@@ -192,7 +192,7 @@ html{-webkit-text-size-adjust:100%;text-rendering:optimizeLegibility}body{font-s
 .flow-run-inner-rail .run-history-title{flex:0 0 auto;margin-top:16px;padding:0 9px}
 .flow-run-inner-rail .run-history-scroll{min-height:0;flex:1 1 auto;overflow:auto;overscroll-behavior:contain;margin-right:-16px;padding:0 1px}
 .flow-run-inner-rail .run-history-scroll>.automatic-record-list{padding-bottom:8px}
-.flow-run-inner-rail .run-history-panel>.pagination{flex:0 0 auto;margin:0;padding-bottom:0}
+.flow-run-inner-rail .run-history-panel>.pagination{flex:0 0 auto;margin:0;padding-bottom:0}.flow-run-inner-rail .run-history-panel>.pagination-arrows{display:flex;width:100%;align-items:center;justify-content:space-between;gap:8px;padding:8px 0 0}.flow-run-inner-rail .pagination-arrow-actions{display:flex;flex:0 0 auto;gap:5px}.flow-run-inner-rail .pagination-arrow{display:grid;width:32px;height:30px;place-items:center;border:1px solid #cbd8d0;border-radius:6px;background:#fff;color:var(--green)}.flow-run-inner-rail .pagination-arrow:hover:not(:disabled){border-color:#75a88a;background:#edf7ef}.flow-run-inner-rail .pagination-arrow:disabled{cursor:not-allowed;opacity:.45}.flow-run-inner-rail .pagination-page-status{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .inner-run-mode-tabs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px;margin:0 0 6px;padding:3px;border:1px solid var(--line);border-radius:7px;background:#eaf0eb}
 .inner-run-mode-tabs button{border:0;border-radius:5px;background:transparent;padding:8px 4px;color:var(--muted);font-size:10px;font-weight:600}
 .inner-run-mode-tabs button.active{background:#fff;color:var(--green);box-shadow:0 1px 4px #17342618}

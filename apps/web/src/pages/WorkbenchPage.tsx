@@ -16,7 +16,7 @@ import { withDeploymentBase } from '../deploymentPath';
 import { selectCapabilityVersion, selectCapabilityVersions } from '../utils/capabilitySelection';
 
 const attemptState = (run: NodeRun) => run.attempts.at(-1)?.state ?? run.state;
-const RUN_RAIL_PAGE_SIZE = 5;
+const RUN_RAIL_PAGE_SIZE = 10;
 
 const ATTEMPT_STATE_LABELS: Record<AttemptState, string> = {
   WAITING_INPUT: '等待补充输入',
@@ -268,7 +268,7 @@ function RunRail({ mode, manualRecords, automaticRecords, automaticError, select
       <div className="run-history-scroll">
         {mode === 'MANUAL' ? <div className="automatic-record-list node-record-list">{visibleManualRecords.map(manualRecordItem)}{!manualRecords.length && <p>暂无逐步运行记录，请点击“新增”创建。</p>}</div> : <div className="automatic-record-list">{standaloneAutomaticRecords.map(automaticRecordItem)}{scheduleGroups.map(group => { const open = !collapsedScheduleIds.has(group.id); return <section className="automatic-schedule-directory" key={group.id}><button type="button" className="automatic-schedule-directory-toggle" aria-expanded={open} onClick={() => setCollapsedScheduleIds(current => { const next = new Set(current); if (next.has(group.id)) next.delete(group.id); else next.add(group.id); return next; })}>{open ? <ChevronDown size={13}/> : <ChevronRight size={13}/>}<FolderClosed size={13}/><span><b>{group.name}</b><small>{group.records.length} 条定时连续运行记录</small></span></button>{open && <div className="automatic-schedule-directory-records">{group.records.map(automaticRecordItem)}</div>}</section>; })}{automaticError ? <p className="error">连续运行记录加载失败：{automaticError}</p> : !automaticRecords.length && <p>暂无连续运行记录。</p>}</div>}
       </div>
-      <Pagination page={recordPage} pageSize={RUN_RAIL_PAGE_SIZE} total={records.length} onPageChange={setRecordPage}/>
+      <Pagination page={recordPage} pageSize={RUN_RAIL_PAGE_SIZE} total={records.length} onPageChange={setRecordPage} variant="arrows"/>
     </section>
   </aside>;
 }
