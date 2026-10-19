@@ -3484,6 +3484,7 @@ test('Conversation sidebar opens an activity session without changing its scroll
   ];
   const unreadWrites: Array<{ id: string; unread: boolean }> = [];
   const pinnedWrites: Array<{ id: string; pinned: boolean }> = [];
+  const workDirectoryRenameWrites: Array<{ id: string; display_name: string }> = [];
   const search = {
     id: 'sidebar-search', query: '精准定位', state: 'SUCCEEDED',
     hits: [{
@@ -3538,6 +3539,11 @@ test('Conversation sidebar opens an activity session without changing its scroll
         next_cursor: null, history_cursor: null, result: { status: bindingId === 'sidebar-directory-running' ? 'RUNNING' : 'COMPLETED' },
       });
     }
+    if (path.endsWith(`/work-directories/${directory.id}`) && request.method() === 'PATCH') {
+      directory.display_name = String(request.postDataJSON().display_name);
+      workDirectoryRenameWrites.push({ id: directory.id, display_name: directory.display_name });
+      return json(route, directory);
+    }
     if (path.endsWith('/work-directories')) return json(route, {
       root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: directories,
     });
@@ -3562,6 +3568,20 @@ test('Conversation sidebar opens an activity session without changing its scroll
 
   const sidebarList = page.locator('.agent-workbench-list');
   await expect(sidebarList).toBeVisible();
+  const rootGroup = page.locator('.agent-workspace-group').filter({ hasText: '根工作区' });
+  await expect(rootGroup.getByRole('button', { name: '编辑工作区 根工作区' })).toHaveCount(0);
+  await expect(rootGroup.getByRole('button', { name: '删除工作区 根工作区' })).toHaveCount(0);
+  const workspaceGroup = page.locator('.agent-workspace-group').filter({ hasText: '归属工作区' });
+  await expect(workspaceGroup.getByRole('button', { name: '编辑工作区 归属工作区' })).toBeVisible();
+  await expect(workspaceGroup.locator('.agent-workspace-group-actions')).toHaveCSS('opacity', '0');
+  await workspaceGroup.hover();
+  await expect(workspaceGroup.locator('.agent-workspace-group-actions')).toHaveCSS('opacity', '1');
+  await workspaceGroup.getByRole('button', { name: '编辑工作区 归属工作区' }).click();
+  const editor = page.getByRole('dialog', { name: '编辑工作区' });
+  await editor.getByLabel('工作区名称').fill('改名后的工作区');
+  await editor.getByRole('button', { name: '保存' }).click();
+  await expect.poll(() => workDirectoryRenameWrites).toEqual([{ id: directory.id, display_name: '改名后的工作区' }]);
+  await expect(page.locator('.agent-workspace-group').filter({ hasText: '改名后的工作区' }).getByRole('button', { name: '收起工作区 改名后的工作区' })).toBeVisible();
   await sidebarList.evaluate(element => { element.scrollTop = element.scrollHeight; });
   const sidebarScrollTop = await sidebarList.evaluate(element => element.scrollTop);
   expect(sidebarScrollTop).toBeGreaterThan(0);
@@ -3582,7 +3602,7 @@ test('Conversation sidebar opens an activity session without changing its scroll
   await expandPinnedSection.click();
   await expect(pinnedSection.getByRole('button', { name: '归属工作区会话', exact: true })).toBeVisible();
   await expect.poll(() => pinnedWrites).toEqual([{ id: 'sidebar-directory-pinned', pinned: true }]);
-  await expect(page.locator('.agent-workspace-group').filter({ hasText: '归属工作区' }).getByRole('button', { name: '归属工作区会话', exact: true })).toHaveCount(0);
+  await expect(page.locator('.agent-workspace-group').filter({ hasText: '改名后的工作区' }).getByRole('button', { name: '归属工作区会话', exact: true })).toHaveCount(0);
 
   await page.reload();
   const persistedPinnedConversation = page.getByRole('region', { name: '置顶会话' }).getByRole('button', { name: '归属工作区会话', exact: true });
@@ -3594,12 +3614,12 @@ test('Conversation sidebar opens an activity session without changing its scroll
     { id: 'sidebar-directory-pinned', pinned: true },
     { id: 'sidebar-directory-pinned', pinned: false },
   ]);
-  await expect(page.locator('.agent-workspace-group').filter({ hasText: '归属工作区' }).getByRole('button', { name: '归属工作区会话', exact: true })).toBeVisible();
+  await expect(page.locator('.agent-workspace-group').filter({ hasText: '改名后的工作区' }).getByRole('button', { name: '归属工作区会话', exact: true })).toBeVisible();
 
   await page.reload();
-  const directoryGroup = page.locator('.agent-workspace-group').filter({ hasText: '归属工作区' });
-  await directoryGroup.getByRole('button', { name: '收起工作区 归属工作区' }).click();
-  await expect(directoryGroup.getByRole('button', { name: '展开工作区 归属工作区' })).toBeVisible();
+  const directoryGroup = page.locator('.agent-workspace-group').filter({ hasText: '改名后的工作区' });
+  await directoryGroup.getByRole('button', { name: '收起工作区 改名后的工作区' }).click();
+  await expect(directoryGroup.getByRole('button', { name: '展开工作区 改名后的工作区' })).toBeVisible();
   const rootConversation = page.getByRole('button', { name: '未读根会话', exact: true });
   await rootConversation.click();
   await expect.poll(() => unreadWrites).toEqual([{ id: 'sidebar-root-unread', unread: false }]);
@@ -3630,7 +3650,7 @@ test('Conversation sidebar opens an activity session without changing its scroll
   await expect(page).toHaveURL(/\/agent\/conversations\/sidebar-directory-running$/);
   await expect(activity).toHaveCount(0);
   await expect.poll(() => sidebarList.evaluate(element => element.scrollTop)).toBe(sidebarScrollTopBeforeActivity);
-  await expect(directoryGroup.getByRole('button', { name: '展开工作区 归属工作区' })).toBeVisible();
+  await expect(directoryGroup.getByRole('button', { name: '展开工作区 改名后的工作区' })).toBeVisible();
   await expect(runningRowInWorkspaceList).toHaveCount(0);
   await expect(page.getByText('会话 sidebar-directory-running', { exact: true })).toBeVisible();
   await expect.poll(() => unreadWrites).toEqual([
