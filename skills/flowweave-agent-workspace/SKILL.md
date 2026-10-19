@@ -1,6 +1,6 @@
 ---
 name: flowweave-agent-workspace
-description: 管理 FlowWeave Agent Workspace、会话、消息、运行状态、工作目录、附件或能力绑定；FlowRun 节点会话转 flowweave-flowrun-workbench。
+description: 管理 FlowWeave Agent Workspace、会话、消息、运行状态、工作目录、附件或能力绑定；会话定时任务转 flowweave-agent-schedules，FlowRun 节点会话转 flowweave-flowrun-workbench。
 ---
 
 # FlowWeave Agent 工作台
@@ -36,29 +36,6 @@ flowweave agent conversations <workspace-id>
    ```
 
 4. 只有用户明确要求时才中断/恢复：`agent interrupt`、`agent resume`；操作后重新读取会话确认状态。
-
-## 会话定时任务
-
-会话定时任务与顶层 `schedule` 的 FlowRun 调度是两类独立资源。先读取 Workspace 和候选会话，只能把活动的顶层 Agent Workspace conversation binding 作为来源：
-
-```bash
-flowweave agent conversations <workspace-id>
-flowweave agent schedules <workspace-id>
-flowweave agent schedule-create <workspace-id> --data-file ./.tmp/agent-schedule.json --dry-run
-```
-
-创建体仅使用公开 schema 的 `name`、`binding_id`、`prompt` 和 `cron_expression`。Cron 是五段表达式、按 UTC 执行。来源会话仅提供冻结的模型、能力和工作目录配置；每次定时或手动触发都会创建一条新的独立会话并投递保存的提示词，绝不能把它理解为向来源会话追加消息。
-
-更新、暂停和恢复前先重新读取任务，使用返回的 `row_version`：
-
-```bash
-flowweave agent schedule-update <workspace-id> <schedule-id> --data-file ./.tmp/agent-schedule.json --dry-run
-flowweave agent schedule-pause <workspace-id> <schedule-id> --expected-row-version <row-version> --dry-run
-flowweave agent schedule-resume <workspace-id> <schedule-id> --expected-row-version <row-version> --dry-run
-flowweave agent schedule-occurrences <workspace-id> <schedule-id>
-```
-
-Occurrence 才是投递状态与新会话 binding ID 的事实源；仅使用其返回的 ID 打开新会话。`agent schedule-trigger` 和 `agent schedule-delete` 会改变平台状态，必须先取得用户对精确 schedule ID 的明确授权并先审阅 `--dry-run`。不要通过 FlowRun 调度、Docker、数据库、Runtime Provider 或 OpenHands 私有端点替代这些接口。
 
 ## 工作目录、附件、能力与高级操作
 
