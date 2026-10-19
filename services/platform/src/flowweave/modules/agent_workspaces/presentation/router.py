@@ -127,6 +127,14 @@ class AgentConversationScheduleStateWrite(_Write):
     status: Literal["ACTIVE", "PAUSED"]
 
 
+class AgentConversationSchedulePatchWrite(_Write):
+    expected_row_version: int = Field(ge=1)
+    name: str = Field(min_length=1, max_length=220)
+    binding_id: str = Field(min_length=1, max_length=36)
+    prompt: str = Field(min_length=1, max_length=200_000)
+    cron_expression: str = Field(min_length=9, max_length=120)
+
+
 class AgentConversationCapabilityAddWrite(_Write):
     capability_version_id: str = Field(min_length=1, max_length=36)
 
@@ -777,6 +785,25 @@ async def set_agent_conversation_schedule_state(
             schedule_id,
             expected_row_version=payload.expected_row_version,
             status=payload.status,
+        ),
+    )
+
+
+@router.put("/agent-workspaces/{workspace_id}/conversation-schedules/{schedule_id}")
+async def update_agent_conversation_schedule(
+    workspace_id: str, schedule_id: str, payload: AgentConversationSchedulePatchWrite, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: conversation_schedules.update_schedule(
+            session,
+            workspace_id,
+            schedule_id,
+            expected_row_version=payload.expected_row_version,
+            name=payload.name.strip(),
+            binding_id=payload.binding_id,
+            prompt=payload.prompt.strip(),
+            cron_expression=" ".join(payload.cron_expression.split()),
         ),
     )
 

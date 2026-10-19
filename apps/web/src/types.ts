@@ -809,6 +809,8 @@ export interface AgentConversationScheduleOccurrence {
   scheduled_for?: string | null;
   trigger_kind: 'SCHEDULED' | 'MANUAL';
   state: 'PENDING' | 'STARTED' | 'FAILED';
+  binding_id: string;
+  conversation_title?: string | null;
   message_cursor?: string | null;
   error_detail?: string | null;
   created_at: string;

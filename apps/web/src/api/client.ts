@@ -482,6 +482,8 @@ export const api = {
     request<AgentConversationSchedule[]>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-schedules`),
   createAgentConversationSchedule: (workspaceId: string, body: { name: string; binding_id: string; prompt: string; cron_expression: string }) =>
     request<AgentConversationSchedule>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-schedules`, json('POST', body)),
+  updateAgentConversationSchedule: (workspaceId: string, scheduleId: string, body: { expected_row_version: number; name: string; binding_id: string; prompt: string; cron_expression: string }) =>
+    request<AgentConversationSchedule>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-schedules/${encodeURIComponent(scheduleId)}`, json('PUT', body)),
   setAgentConversationScheduleState: (workspaceId: string, scheduleId: string, expected_row_version: number, status: 'ACTIVE' | 'PAUSED') =>
     request<AgentConversationSchedule>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-schedules/${encodeURIComponent(scheduleId)}/state`, json('PUT', { expected_row_version, status })),
   triggerAgentConversationSchedule: (workspaceId: string, scheduleId: string) =>

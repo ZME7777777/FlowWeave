@@ -77,20 +77,22 @@ def test_agent_conversation_schedule_scans_and_enqueues_one_occurrence(
         assert schedule.next_run_at > now()
 
 
-def test_agent_conversation_schedule_delivery_uses_native_message_service(
+def test_agent_conversation_schedule_delivery_creates_a_distinct_native_conversation(
     settings, db_session_factory, monkeypatch
 ):
-    delivered: list[tuple[str, str, str]] = []
+    created_runs: list[dict[str, object]] = []
 
-    def send_message(db, workspace_id: str, binding_id: str, content: str):
+    def bootstrap_conversation(db, workspace_id: str, **kwargs):
         del db
-        delivered.append((workspace_id, binding_id, content))
-        return {"accepted": True, "cursor": "scheduled-user-event"}
+        created_runs.append({"workspace_id": workspace_id, **kwargs})
+        return {"conversation": {"id": kwargs["conversation_id"]}, "cursor": "scheduled-user-event"}
 
-    monkeypatch.setattr(schedules.conversations, "message", send_message)
+    monkeypatch.setattr(schedules.conversations, "bootstrap_conversation", bootstrap_conversation)
     with db_session_factory() as db:
         workspace = ensure_default_agent_workspace(db)
         binding = _active_binding(db, workspace.id)
+        binding.model_provider_id = "provider-1"
+        binding.model_name = "model-1"
         created = schedules.create_schedule(
             db,
             workspace.id,
@@ -106,9 +108,24 @@ def test_agent_conversation_schedule_delivery_uses_native_message_service(
             )
         )
         assert occurrence is not None
+        run_binding_id = occurrence.binding_id
 
         schedules.deliver_occurrence(db, occurrence.id)
 
-        assert delivered == [(workspace.id, binding.id, "生成今天的项目报告。")]
+        assert created_runs == [
+            {
+                "workspace_id": workspace.id,
+                "work_directory_id": None,
+                "model_provider_id": "provider-1",
+                "model_name": "model-1",
+                "reasoning_effort": None,
+                "fallback_models": (),
+                "content": "生成今天的项目报告。",
+                "capability_version_ids": (),
+                "conversation_id": run_binding_id,
+                "idempotency_key": f"schedule:{created['id']}:{occurrence.id}",
+            }
+        ]
+        assert occurrence.binding_id != binding.id
         assert occurrence.state == "STARTED"
         assert occurrence.message_cursor == "scheduled-user-event"

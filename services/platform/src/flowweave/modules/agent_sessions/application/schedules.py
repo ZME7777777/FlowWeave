@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
@@ -11,9 +12,11 @@ from sqlalchemy.orm import Session
 from flowweave.modules.agent_sessions.application import conversations
 from flowweave.modules.agent_sessions.infrastructure.models import (
     AgentConversationBinding,
+    AgentConversationCapability,
     AgentConversationSchedule,
     AgentConversationScheduleOccurrence,
 )
+from flowweave.modules.agent_workspaces.infrastructure.models import AgentWorkDirectoryVersion
 from flowweave.modules.tasks.application.service import enqueue
 from flowweave.modules.tasks.infrastructure.models import BackgroundTask
 from flowweave.modules.users.application.security import tenant_user
@@ -117,12 +120,15 @@ def _schedule_dict(db: Session, schedule: AgentConversationSchedule) -> dict[str
     }
 
 
-def _occurrence_dict(item: AgentConversationScheduleOccurrence) -> dict[str, Any]:
+def _occurrence_dict(db: Session, item: AgentConversationScheduleOccurrence) -> dict[str, Any]:
+    binding = db.get(AgentConversationBinding, item.binding_id)
     return {
         "id": item.id,
         "scheduled_for": item.scheduled_for.isoformat() if item.scheduled_for else None,
         "trigger_kind": item.trigger_kind,
         "state": item.state,
+        "binding_id": item.binding_id,
+        "conversation_title": binding.display_title if binding else None,
         "message_cursor": item.message_cursor,
         "error_detail": item.error_detail,
         "created_at": item.created_at.isoformat(),
@@ -161,6 +167,47 @@ def create_schedule(
         next_run_at=next_run_at,
     )
     db.add(schedule)
+    finish(db)
+    return _schedule_dict(db, schedule)
+
+
+def update_schedule(
+    db: Session,
+    workspace_id: str,
+    schedule_id: str,
+    *,
+    expected_row_version: int,
+    name: str,
+    binding_id: str,
+    prompt: str,
+    cron_expression: str,
+) -> dict[str, Any]:
+    schedule = db.scalar(
+        select(AgentConversationSchedule)
+        .where(
+            AgentConversationSchedule.id == schedule_id,
+            AgentConversationSchedule.workspace_id == workspace_id,
+        )
+        .with_for_update()
+    )
+    if schedule is None:
+        raise not_found("agent_conversation_schedule", schedule_id)
+    if schedule.row_version != expected_row_version:
+        raise conflict(
+            "schedule was modified", expected=expected_row_version, actual=schedule.row_version
+        )
+    _binding(db, workspace_id, binding_id)
+    try:
+        next_run_at = _next_cron_at(cron_expression, now())
+    except ValueError as exc:
+        raise DomainError("AGENT_SCHEDULE_CRON_INVALID", str(exc), 422) from exc
+    schedule.name = name
+    schedule.binding_id = binding_id
+    schedule.prompt = prompt
+    schedule.cron_expression = cron_expression
+    schedule.row_version += 1
+    if schedule.status == "ACTIVE":
+        schedule.next_run_at = next_run_at
     finish(db)
     return _schedule_dict(db, schedule)
 
@@ -205,7 +252,7 @@ def _enqueue_occurrence(
 ) -> AgentConversationScheduleOccurrence:
     occurrence = AgentConversationScheduleOccurrence(
         schedule_id=schedule.id,
-        binding_id=schedule.binding_id,
+        binding_id=str(uuid4()),
         scheduled_for=scheduled_for,
         trigger_kind=trigger_kind,
         state="PENDING",
@@ -277,7 +324,7 @@ def list_occurrences(db: Session, workspace_id: str, schedule_id: str) -> list[d
     if schedule is None:
         raise not_found("agent_conversation_schedule", schedule_id)
     return [
-        _occurrence_dict(item)
+        _occurrence_dict(db, item)
         for item in db.scalars(
             select(AgentConversationScheduleOccurrence)
             .where(AgentConversationScheduleOccurrence.schedule_id == schedule.id)
@@ -312,6 +359,33 @@ def scan_due_schedules(db: Session) -> int:
     return len(schedules)
 
 
+def _run_binding_id(
+    schedule: AgentConversationSchedule, occurrence: AgentConversationScheduleOccurrence
+) -> str:
+    return f"schedule:{schedule.id}:{occurrence.id}"
+
+
+def _copy_source_capabilities(db: Session, source_binding_id: str) -> tuple[str, ...]:
+    source_capabilities = list(
+        db.scalars(
+            select(AgentConversationCapability)
+            .where(AgentConversationCapability.binding_id == source_binding_id)
+            .order_by(AgentConversationCapability.position)
+        )
+    )
+    return tuple(item.capability_version_id for item in source_capabilities)
+
+
+def _work_directory_id(db: Session, binding: AgentConversationBinding) -> str | None:
+    if binding.work_directory_version_id is None:
+        return None
+    return db.scalar(
+        select(AgentWorkDirectoryVersion.work_directory_id).where(
+            AgentWorkDirectoryVersion.id == binding.work_directory_version_id
+        )
+    )
+
+
 def deliver_occurrence(db: Session, occurrence_id: str) -> None:
     occurrence = db.scalar(
         select(AgentConversationScheduleOccurrence)
@@ -326,12 +400,27 @@ def deliver_occurrence(db: Session, occurrence_id: str) -> None:
         occurrence.error_detail = "schedule was deleted before delivery"
         db.flush()
         return
+    source = _binding(db, schedule.workspace_id, schedule.binding_id)
     try:
-        result = conversations.message(
-            db, schedule.workspace_id, schedule.binding_id, schedule.prompt
+        if source.model_provider_id is None:
+            raise DomainError("AGENT_SCHEDULE_MODEL_MISSING", "定时任务来源会话未配置模型", 409)
+        created = conversations.bootstrap_conversation(
+            db,
+            schedule.workspace_id,
+            work_directory_id=_work_directory_id(db, source),
+            model_provider_id=source.model_provider_id,
+            model_name=source.model_name,
+            reasoning_effort=source.reasoning_effort,
+            fallback_models=tuple(source.fallback_models_json),
+            content=schedule.prompt,
+            capability_version_ids=_copy_source_capabilities(db, source.id),
+            conversation_id=occurrence.binding_id,
+            idempotency_key=_run_binding_id(schedule, occurrence),
         )
+        run_binding = created["conversation"]
+        occurrence.binding_id = str(run_binding["id"])
         occurrence.state = "STARTED"
-        occurrence.message_cursor = result.get("cursor")
+        occurrence.message_cursor = created.get("cursor")
         schedule.last_run_at = now()
     except DomainError as exc:
         occurrence.state = "FAILED"

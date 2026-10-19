@@ -3,13 +3,14 @@ import { Terminal as XTerm } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import { type InfiniteData, useQueries, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import hljs from 'highlight.js/lib/common';
-import { ArrowDown, ArrowLeft, ArrowUp, Bell, Bot, Boxes, CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, CircleDot, Copy, CornerDownRight, Download, Ellipsis, FileCode2, FileText, Folder, FolderOpen, FolderPlus, GitBranch, GripVertical, ImageIcon, Layers3, Link2, ListRestart, LoaderCircle, Maximize2, Minimize2, MonitorCog, PanelRightOpen, Pencil, Pin, PinOff, Play, Plus, Quote, RefreshCw, Search, Send, ShieldAlert, Square, Trash2, X } from 'lucide-react';
+import { ArrowDown, ArrowLeft, ArrowUp, Bell, Bot, Boxes, CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, CircleDot, Copy, CornerDownRight, Download, Ellipsis, FileCode2, FileText, Folder, FolderOpen, FolderPlus, GitBranch, GripVertical, Home, ImageIcon, Layers3, Link2, ListRestart, LoaderCircle, Maximize2, Minimize2, MessageSquareText, MonitorCog, PanelRightOpen, Pencil, Pin, PinOff, Play, Plus, Quote, RefreshCw, Search, Send, ShieldAlert, Square, Trash2, X } from 'lucide-react';
 import { createContext, isValidElement, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type WheelEvent as ReactWheelEvent } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
 import { ComposerModelMenu } from './ComposerModelMenu';
 import { AgentComposerInput, type ComposerSuggestion } from './AgentComposerInput';
 import { AgentConversationSchedulesPanel } from './AgentConversationSchedulesPanel';
+import { ConversationManagementPage } from '../../pages/ConversationManagementPage';
 import { CONVERSATION_REFERENCE_TRANSFER_TYPE, WORKSPACE_FILE_TRANSFER_TYPE, transferredConversationReference, transferredFiles, transferredWorkspacePaths, type ComposerHandle } from './agentComposerInputUtils';
 import remarkGfm from 'remark-gfm';
 import { api as agentWorkspaceApi, ApiError, randomId, type AgentStreamEvent } from '../../api/client';
@@ -4454,7 +4455,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [conversationOrder, setConversationOrder] = useState<Record<string, string[]>>({});
   const [conversationOrderSync, setConversationOrderSync] = useState<Record<string, ConversationOrderSync>>({});
   const [sidebarScrollTop, setSidebarScrollTop] = useState<number>();
-  const [conversationSchedulesOpen, setConversationSchedulesOpen] = useState(false);
+  const [agentWorkspaceView, setAgentWorkspaceView] = useState<'home' | 'schedules' | 'management'>('home');
   const workspaceSidebarScrollTop = useRef<number | undefined>(undefined);
   const workspaceSidebarScrollTopBeforeActivity = useRef<number | undefined>(undefined);
   const restoringWorkspaceSidebarScrollTop = useRef<number | undefined>(undefined);
@@ -8712,8 +8713,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     window.addEventListener('pointerup', stop, { once: true });
     window.addEventListener('pointercancel', stop, { once: true });
   };
-  return <main className="agent-workbench-page" style={{ '--conversation-rail-width': `${conversationRailWidth}px` } as CSSProperties}>
-    {conversationSchedulesOpen && workspace && <AgentConversationSchedulesPanel workspaceId={workspace.id} conversations={conversations} selectedBindingId={selected?.id} onClose={() => setConversationSchedulesOpen(false)} onOpenConversation={bindingId => { setConversationSchedulesOpen(false); selectConversation(bindingId); }}/>}
+  return <main className={`agent-workbench-page${!onReturnToSource ? ' agent-workbench-app-shell' : ''}`} style={{ '--conversation-rail-width': `${conversationRailWidth}px` } as CSSProperties}>
+    {!onReturnToSource && <nav className="agent-workbench-app-nav" aria-label="Agent 工作区导航"><button type="button" className={agentWorkspaceView === 'home' ? 'active' : ''} aria-current={agentWorkspaceView === 'home' ? 'page' : undefined} aria-label="主页" title="主页" onClick={() => setAgentWorkspaceView('home')}><Home size={17}/></button><button type="button" className={agentWorkspaceView === 'schedules' ? 'active' : ''} aria-current={agentWorkspaceView === 'schedules' ? 'page' : undefined} aria-label="定时任务" title="定时任务" onClick={() => setAgentWorkspaceView('schedules')}><CalendarClock size={17}/></button><button type="button" className={agentWorkspaceView === 'management' ? 'active' : ''} aria-current={agentWorkspaceView === 'management' ? 'page' : undefined} aria-label="会话管理" title="会话管理" onClick={() => setAgentWorkspaceView('management')}><MessageSquareText size={17}/></button></nav>}
+    {agentWorkspaceView === 'schedules' && workspace && <AgentConversationSchedulesPanel workspaceId={workspace.id} conversations={conversations} selectedBindingId={selected?.id} onOpenConversation={bindingId => { setAgentWorkspaceView('home'); selectConversation(bindingId); }}/>}
+    {agentWorkspaceView === 'management' && <section className="agent-conversation-management-page" aria-label="会话管理"><ConversationManagementPage/></section>}
     {selected && <ConversationStreamObserver workspaceId={workspace.id} bindingId={selected.id} enabled={streamEnabled} onEvent={onStreamEvent} onStatus={updateStreamStatus} onReconnect={onStreamReconnect}/>}
     {workspace && queuedMessageBindings(host, workspace.id).filter(bindingId => bindingId !== selected?.id).map(bindingId => (
       <ConversationStreamObserver
@@ -8736,9 +8739,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       onOpenInFiles={openPreviewInFiles}
       onOpenWorkspaceFile={openWorkspaceFileLink}
     />}
-    <aside className="agent-workbench-rail">
+    {agentWorkspaceView === 'home' && <aside className="agent-workbench-rail">
       <div className="agent-conversation-rail-resizer" role="separator" aria-label="调整会话列表宽度" aria-orientation="vertical" onPointerDown={startConversationRailResize}/>
-      <header className={!onReturnToSource && features.workDirectories ? 'agent-workbench-rail-actions-only' : undefined}>{onReturnToSource && <button type="button" className="agent-session-return" aria-label="返回节点执行" title="返回节点执行" onClick={onReturnToSource}><ArrowLeft size={16}/></button>}{(onReturnToSource || !features.workDirectories) && <div className="agent-session-host-heading"><span className="eyebrow">{onReturnToSource ? 'FLOWRUN NODE WORKSPACE' : 'FLOWRUN NODE'}</span><h1>{onReturnToSource ? workspace?.display_name || '节点会话' : '节点会话'}</h1></div>}<div className="agent-workbench-create-actions">{!onReturnToSource && <button type="button" className={`agent-workbench-schedule-trigger${conversationSchedulesOpen ? ' active' : ''}`} aria-label="会话定时任务" title="会话定时任务" onClick={() => setConversationSchedulesOpen(true)}><CalendarClock size={15}/></button>}<button type="button" className={`agent-workbench-activity-trigger${sidebarListMode === 'activity' ? ' active' : ''}`} aria-label={`查看活动会话${activityConversations.length ? `（${activityConversations.length}）` : ''}`} title="查看活动会话" onClick={toggleSidebarListMode}><Bell size={15}/>{activityConversations.length > 0 && <span aria-hidden="true">{activityConversations.length > 99 ? '99+' : activityConversations.length}</span>}</button><button className="primary" disabled={!conversationSearchSupported} onClick={() => setConversationSearchOpen(true)}>{conversationSearchQuery.data?.state === 'PENDING' || conversationSearchQuery.data?.state === 'RUNNING' ? <LoaderCircle className="conversation-activity-spin" size={15}/> : conversationSearchQuery.data?.state === 'SUCCEEDED' ? <Check size={15}/> : <Search size={15}/>}{conversationSearchQuery.data?.state === 'SUCCEEDED' ? '搜索完成' : '搜索会话'}</button>{features.workDirectories && <button type="button" className="secondary" aria-label="新增工作区" disabled={!runtimeWritable} onClick={() => setWorkDirectoryCreatorOpen(true)}><FolderPlus size={14}/>新增工作区</button>}</div></header>
+      <header className={!onReturnToSource && features.workDirectories ? 'agent-workbench-rail-actions-only' : undefined}>{onReturnToSource && <button type="button" className="agent-session-return" aria-label="返回节点执行" title="返回节点执行" onClick={onReturnToSource}><ArrowLeft size={16}/></button>}{(onReturnToSource || !features.workDirectories) && <div className="agent-session-host-heading"><span className="eyebrow">{onReturnToSource ? 'FLOWRUN NODE WORKSPACE' : 'FLOWRUN NODE'}</span><h1>{onReturnToSource ? workspace?.display_name || '节点会话' : '节点会话'}</h1></div>}<div className="agent-workbench-create-actions"><button type="button" className={`agent-workbench-activity-trigger${sidebarListMode === 'activity' ? ' active' : ''}`} aria-label={`查看活动会话${activityConversations.length ? `（${activityConversations.length}）` : ''}`} title="查看活动会话" onClick={toggleSidebarListMode}><Bell size={15}/>{activityConversations.length > 0 && <span aria-hidden="true">{activityConversations.length > 99 ? '99+' : activityConversations.length}</span>}</button><button className="primary" disabled={!conversationSearchSupported} onClick={() => setConversationSearchOpen(true)}>{conversationSearchQuery.data?.state === 'PENDING' || conversationSearchQuery.data?.state === 'RUNNING' ? <LoaderCircle className="conversation-activity-spin" size={15}/> : conversationSearchQuery.data?.state === 'SUCCEEDED' ? <Check size={15}/> : <Search size={15}/>}{conversationSearchQuery.data?.state === 'SUCCEEDED' ? '搜索完成' : '搜索会话'}</button>{features.workDirectories && <button type="button" className="secondary" aria-label="新增工作区" disabled={!runtimeWritable} onClick={() => setWorkDirectoryCreatorOpen(true)}><FolderPlus size={14}/>新增工作区</button>}</div></header>
       <div ref={sidebarListRef} className="agent-workbench-list" onDragOver={event => {
         if (draggedConversationRef.current) updateConversationDragAutoScroll(event.clientY);
       }} onScroll={event => {
@@ -8766,8 +8769,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
             </WorkspaceConversationGroup>)}</>}
       </div>
       {features.capabilities && (selected || features.draftCapabilitySelection) && <footer className="agent-workbench-rail-footer"><button type="button" disabled={selected ? !canWrite : !runtimeWritable} onClick={() => setCapabilityManagerOpen(true)}><Boxes size={15}/><span><b>会话配置</b><small>{selected ? '管理当前会话配置' : '为新会话配置能力'}</small></span><ChevronRight size={14}/></button></footer>}
-    </aside>
-    <section className="agent-workbench-main">
+    </aside>}
+    {agentWorkspaceView === 'home' && <section className="agent-workbench-main">
       <header className="agent-workbench-header"><div>{editing ? <div className="agent-title-edit"><input ref={titleInput} aria-label="会话标题" value={title} onChange={event => setTitle(event.target.value)} onBlur={() => { if (!rename.isPending) { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }} onKeyDown={event => { if (event.key === 'Enter' && title.trim()) { event.preventDefault(); rename.mutate(); } if (event.key === 'Escape') { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }}/></div> : !(hideDraftTitle && conversationDraft) && <h2 className="agent-session-title" title={selected ? conversationName(selected) : undefined} aria-label={selected && canWrite ? '双击修改标题' : undefined} onDoubleClick={() => { if (!selected || !canWrite) return; setTitle(conversationName(selected)); setEditing(true); }}><span>{selected ? conversationName(selected) : conversationDraft ? '新会话' : '开始一个新的会话'}</span></h2>}{features.modelSelection && (selected || conversationDraft) && <small className="agent-session-provider">当前供应商：{selected ? boundProviderInfo?.name ?? '未配置' : draftProviderInfo?.name ?? '请选择模型供应商'}{conversationDraft ? ` · ${conversationDraft.displayName}` : ''}</small>}</div></header>
       <div className={`agent-workbench-content${conversationDropActive ? ' conversation-drop-active' : ''}`} onDragEnter={event => {
         if (!acceptsConversationDrop(event)) return;
@@ -8932,8 +8935,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
           <ConversationTaskPlan events={displayedEvents} isGenerating={taskPlanLayoutActive} conversationScope={selected?.id ?? conversationDraft?.id}/>
         </div>
       </div>}
-    </section>
-    <WorkspaceDrawer
+    </section>}
+    {agentWorkspaceView === 'home' && <WorkspaceDrawer
       open={drawerOpen}
       onOpen={() => setDrawerOpen(true)}
       onClose={() => {
@@ -8983,7 +8986,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
           return next;
         });
       }}
-    />
+    />}
     {workspaceReferencePickerOpen && <WorkspaceReferencePicker
       entries={workspaceReferenceIndexQuery.data?.files ?? []}
       root={workspaceReferenceIndexQuery.data?.working_directory ?? activeWorkspaceRoot ?? ''}
