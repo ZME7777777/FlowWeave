@@ -1217,11 +1217,11 @@ test('Deleting the selected conversation immediately hides it and opens its neig
   await expect(page.getByRole('button', { name: '待删除会话', exact: true })).toHaveCount(0);
   await expect(page.getByText('开始一个新的会话', { exact: true })).toHaveCount(0);
 
+  releaseDelete?.();
   // The first refresh after DELETE can still contain the old page while the
   // server-side list projection catches up. A confirmed deletion stays hidden.
   await expect.poll(() => postDeleteListRequests).toBeGreaterThan(0);
   await expect(page.getByRole('button', { name: '待删除会话', exact: true })).toHaveCount(0);
-  releaseDelete?.();
 });
 
 test('Existing conversation composers keep text and attachments isolated', async ({ page }) => {
