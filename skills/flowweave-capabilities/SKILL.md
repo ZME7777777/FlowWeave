@@ -48,6 +48,8 @@ flowweave capability plugin-publish <resolution-id> \
 
 Agent Definition 仅接受 UTF-8 `.md`/`.markdown` 文件：必须包含 YAML frontmatter 和 Markdown 正文，`<example>…</example>` 用于触发示例；正文冻结为系统提示词。不要提交 JSON、分离脚本、嵌套 Skill/MCP/Hook 配置、显式模型或非治理权限／压缩设置。平台会将未声明的权限和压缩分别冻结为 `never_confirm` 与 `NoOpCondenser`。
 
+需要取回已发布 Skill 时，先读取能力确认其精确 ID 和版本，再下载冻结 ZIP：`flowweave capability download <capability-id> --output ./skill.zip --dry-run`。实际下载不会覆盖已存在的本地文件；下载产物只用于审阅、归档或后续受治理导入，不等于把它直接安装到 Runtime。
+
 Hook 创建时只上传一个 UTF-8 文件：`PROMPT` 接受 `.md`、`.markdown` 或 `.txt`，`SCRIPT` 只接受 `.sh`；二者均不超过 1 MiB。请求必须提供名称、一个 OpenHands 生命周期事件和执行方式；`pre_tool_use`、`post_tool_use` 可另提供精确名称、`*`、正则或 `/正则/` 形式的工具 matcher，其他事件固定为 `*`。先验证，再由用户决定是否提交：
 
 ```bash

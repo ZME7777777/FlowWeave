@@ -8550,3 +8550,13 @@ orchestration 公共入口导出。
 pytest `15 passed`、受影响 Python Ruff check/format、`py_compile`、逐步配置公共导入 probe 以及
 `git diff --check` 通过。未修改迁移、OpenHands Runtime Provider、远端 Compose／环境或持久数据；无
 `CURRENT` 或下一待执行切片。
+
+### FR-597 CLI、Skill 与 OpenAPI 契约同步 — DONE
+
+依赖：FR-596。
+
+范围：审计 `feat/refactor` 自 FR-556 后新增或变更的公开控制面契约，同步可发布 CLI、仓库页面 Skill 和 OpenAPI 基线。优先覆盖会话管理、置顶、冻结 Skill 下载及临时侧栏/跨会话引用的请求模型；低频或管理型接口继续经通用 `api`／`upload`／`ws` 入口访问。不得暴露 Docker、Runtime Provider、数据库、OpenHands 私有 API 或内部 admin-control 入口。
+
+完成：`@flowweave-ai/cli` 升级至 `0.7.0`。新增 Agent Workspace 会话管理读取/批量删除、置顶列表与 `agent pin|unpin`，以及 FlowRun 节点会话 `run pin|unpin`；批量删除仍要求调用方逐个提供 binding ID。`capability download <capability-id> --output <zip>` 下载服务端冻结的 Skill ZIP，拒绝覆盖既有本地文件。临时侧栏会话请求不再传已移除的模型字段，模型配置继承主会话；页面 Skill 同步为 source binding、可选正式 event 和可选选区的跨会话引用契约。OpenAPI 基线从当前应用工厂重新生成，由 251 条路径更新至 261 条，纳入会话管理、两类置顶、Skill package 下载和现有 LDAP 管理路由。
+
+验收：CLI `npm test` 为 `15 passed`，`npm run lint` 与 `npm pack --dry-run` 通过；12 个仓库 FlowWeave Skill frontmatter、OpenAPI 261 路径/新增 schema 静态断言和 `git diff --check` 通过。平台 `tests/contract/test_contracts.py` 已尝试，但全部 4 项在 Testcontainers PostgreSQL fixture 初始化时因本机 Docker socket 不可用而未进入断言，未记为通过；改以当前应用工厂直接生成的 OpenAPI 与静态路径/schema 断言验证该快照。未运行数据库迁移、Runtime 镜像、E2E 或远端部署；无 `CURRENT` 或下一待执行切片。

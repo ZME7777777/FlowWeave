@@ -49,7 +49,7 @@ flowweave config show
 
 ## 统一调用方式
 
-页面高频操作有快捷命令：`node`、`node-directory`、`capability`、`event-trigger`、`environment`、`credential`、`flow`、`run`、`schedule`、`model`、`agent`。`credential` 是网站凭据资源，不是 `auth` 用户登录。`agent` 与 `run` 还覆盖各自范围内的工作区目录、Git 历史、条目创建和会话原生状态读取；当前 CLI 还提供 Agent Runtime replacement、临时侧栏会话与逐步节点草稿的安全快捷命令。`credential` 不等于 `auth` 用户登录。它们之外的原子操作并未缺失：按以下优先级使用通用入口。
+页面高频操作有快捷命令：`node`、`node-directory`、`capability`、`event-trigger`、`environment`、`credential`、`flow`、`run`、`schedule`、`model`、`agent`。`credential` 是网站凭据资源，不是 `auth` 用户登录。`agent` 与 `run` 还覆盖各自范围内的工作区目录、Git 历史、条目创建、会话原生状态读取及服务器端置顶；Agent 还提供会话管理批量读取/删除，`capability download` 可取回已冻结的 Skill ZIP。当前 CLI 还提供 Agent Runtime replacement、临时侧栏会话与逐步节点草稿的安全快捷命令。它们之外的原子操作并未缺失：按以下优先级使用通用入口。
 
 ```bash
 # 先查看当前服务真正暴露的路径和 schema

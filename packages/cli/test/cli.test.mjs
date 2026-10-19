@@ -416,3 +416,44 @@ test('new runtime, sidebar, and stepwise draft shortcuts preserve contract paths
   assert.equal(invoke(config, 'run', 'stepwise-start', 'run-1', '--node-key', 'review', '--data', '{"expected_row_version":4}', '--dry-run').status, 2);
   assert.equal(invoke(config, 'run', 'stepwise-draft', 'run-1', '--dry-run').status, 2);
 });
+
+test('会话管理、置顶与 Skill 下载快捷命令映射最新公开接口', async () => {
+  const config = await configured();
+  const initialized = invoke(config, 'config', 'init', '--base-url', 'https://example.test/flowweave');
+  assert.equal(initialized.status, 0, initialized.stderr);
+
+  const management = invoke(config, 'agent', 'conversation-management', 'workspace-1', '--work-directory', 'directory-1', '--dry-run');
+  assert.equal(management.status, 0, management.stderr);
+  assert.equal(JSON.parse(management.stdout).url, 'https://example.test/flowweave/api/v1/agent-workspaces/workspace-1/conversation-management?work_directory_id=directory-1');
+  const deleted = invoke(config, 'agent', 'conversation-management-delete', 'workspace-1', '--id', 'binding-1', '--id', 'binding-2', '--dry-run');
+  assert.equal(deleted.status, 0, deleted.stderr);
+  assert.deepEqual(JSON.parse(deleted.stdout), {
+    method: 'POST',
+    payload: { binding_ids: ['binding-1', 'binding-2'] },
+    url: 'https://example.test/flowweave/api/v1/agent-workspaces/workspace-1/conversation-management/delete',
+  });
+  const pinned = invoke(config, 'agent', 'pinned-conversations', 'workspace-1', '--dry-run');
+  assert.equal(pinned.status, 0, pinned.stderr);
+  assert.equal(JSON.parse(pinned.stdout).url, 'https://example.test/flowweave/api/v1/agent-workspaces/workspace-1/pinned-conversations');
+  const pin = invoke(config, 'agent', 'pin', 'workspace-1', 'binding-1', '--dry-run');
+  assert.equal(pin.status, 0, pin.stderr);
+  assert.deepEqual(JSON.parse(pin.stdout).payload, { pinned: true });
+  const unpin = invoke(config, 'run', 'unpin', 'run-1', '--attempt', 'attempt-1', '--binding', 'binding-1', '--dry-run');
+  assert.equal(unpin.status, 0, unpin.stderr);
+  assert.deepEqual(JSON.parse(unpin.stdout), {
+    method: 'PUT',
+    payload: { pinned: false },
+    url: 'https://example.test/flowweave/api/v1/flow-runs/run-1/node-attempts/attempt-1/agent-sessions/binding-1/pinned',
+  });
+  const download = invoke(config, 'capability', 'download', 'capability-1', '--output', './skill.zip', '--dry-run');
+  assert.equal(download.status, 0, download.stderr);
+  assert.deepEqual(JSON.parse(download.stdout), {
+    method: 'GET',
+    output: `${process.cwd()}/skill.zip`,
+    url: 'https://example.test/flowweave/api/v1/capabilities/capability-1/package',
+  });
+
+  assert.equal(invoke(config, 'agent', 'conversation-management-delete', 'workspace-1', '--dry-run').status, 2);
+  assert.equal(invoke(config, 'capability', 'download', 'capability-1', '--dry-run').status, 2);
+  assert.equal(invoke(config, 'run', 'pin', 'run-1', '--attempt', 'attempt-1', '--dry-run').status, 2);
+});

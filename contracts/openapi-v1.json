@@ -127,6 +127,137 @@
         }
       }
     },
+    "/api/v1/auth/ldap-users": {
+      "get": {
+        "summary": "Ldap Users",
+        "operationId": "ldap_users_api_v1_auth_ldap_users_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Ldap Users Api V1 Auth Ldap Users Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/ldap-users/enabled": {
+      "put": {
+        "summary": "Set Ldap User Enabled",
+        "operationId": "set_ldap_user_enabled_api_v1_auth_ldap_users_enabled_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LdapUserEnabledWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Set Ldap User Enabled Api V1 Auth Ldap Users Enabled Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/ldap-users/agent-session-access": {
+      "put": {
+        "summary": "Set Ldap User Agent Session Access",
+        "operationId": "set_ldap_user_agent_session_access_api_v1_auth_ldap_users_agent_session_access_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LdapAgentSessionUserAccessWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Set Ldap User Agent Session Access Api V1 Auth Ldap Users Agent Session Access Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/ldap-organizations/agent-session-access": {
+      "put": {
+        "summary": "Set Ldap Organization Agent Session Access",
+        "operationId": "set_ldap_organization_agent_session_access_api_v1_auth_ldap_organizations_agent_session_access_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LdapAgentSessionOrganizationAccessWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/auth/logout": {
       "post": {
         "summary": "Logout",
@@ -2022,6 +2153,150 @@
         }
       }
     },
+    "/api/v1/agent-workspaces/{workspace_id}/conversation-management": {
+      "get": {
+        "summary": "List Agent Management Conversations",
+        "operationId": "list_agent_management_conversations_api_v1_agent_workspaces__workspace_id__conversation_management_get",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "name": "work_directory_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 36
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Work Directory Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response List Agent Management Conversations Api V1 Agent Workspaces  Workspace Id  Conversation Management Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agent-workspaces/{workspace_id}/conversation-management/delete": {
+      "post": {
+        "summary": "Delete Agent Management Conversations",
+        "operationId": "delete_agent_management_conversations_api_v1_agent_workspaces__workspace_id__conversation_management_delete_post",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "name": "work_directory_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 36
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Work Directory Id"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentConversationManagementDeleteWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Delete Agent Management Conversations Api V1 Agent Workspaces  Workspace Id  Conversation Management Delete Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/agent-workspaces/{workspace_id}/conversations": {
       "get": {
         "summary": "List Agent Conversations",
@@ -2158,6 +2433,50 @@
                   "type": "object",
                   "additionalProperties": true,
                   "title": "Response Create Agent Conversation Api V1 Agent Workspaces  Workspace Id  Conversations Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agent-workspaces/{workspace_id}/pinned-conversations": {
+      "get": {
+        "summary": "List Agent Pinned Conversations",
+        "operationId": "list_agent_pinned_conversations_api_v1_agent_workspaces__workspace_id__pinned_conversations_get",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Workspace Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  "title": "Response List Agent Pinned Conversations Api V1 Agent Workspaces  Workspace Id  Pinned Conversations Get"
                 }
               }
             }
@@ -2548,6 +2867,66 @@
         "responses": {
           "204": {
             "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agent-workspaces/{workspace_id}/conversations/{binding_id}/pinned": {
+      "put": {
+        "summary": "Set Agent Conversation Pinned",
+        "operationId": "set_agent_conversation_pinned_api_v1_agent_workspaces__workspace_id__conversations__binding_id__pinned_put",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "name": "binding_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Binding Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentConversationPinnedWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Set Agent Conversation Pinned Api V1 Agent Workspaces  Workspace Id  Conversations  Binding Id  Pinned Put"
+                }
+              }
+            }
           },
           "422": {
             "description": "Validation Error",
@@ -7201,6 +7580,75 @@
         }
       }
     },
+    "/api/v1/flow-runs/{flow_run_id}/node-attempts/{attempt_id}/agent-sessions/{binding_id}/pinned": {
+      "put": {
+        "summary": "Set Node Session Pinned",
+        "operationId": "set_node_session_pinned_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions__binding_id__pinned_put",
+        "parameters": [
+          {
+            "name": "flow_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Run Id"
+            }
+          },
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attempt Id"
+            }
+          },
+          {
+            "name": "binding_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Binding Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NodeSessionPinnedWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Set Node Session Pinned Api V1 Flow Runs  Flow Run Id  Node Attempts  Attempt Id  Agent Sessions  Binding Id  Pinned Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/flow-runs/{flow_run_id}/node-attempts/{attempt_id}/agent-sessions/{binding_id}/unread": {
       "put": {
         "summary": "Set Node Session Unread",
@@ -11199,6 +11647,43 @@
                   "additionalProperties": true,
                   "title": "Response Update Capability Source Api V1 Capabilities  Capability Id  Source Put"
                 }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/capabilities/{capability_id}/package": {
+      "get": {
+        "summary": "Capability Package",
+        "operationId": "capability_package_api_v1_capabilities__capability_id__package_get",
+        "parameters": [
+          {
+            "name": "capability_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Capability Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
               }
             }
           },
@@ -17465,6 +17950,25 @@
         ],
         "title": "AgentConversationForkWrite"
       },
+      "AgentConversationManagementDeleteWrite": {
+        "properties": {
+          "binding_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Binding Ids"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "binding_ids"
+        ],
+        "title": "AgentConversationManagementDeleteWrite"
+      },
       "AgentConversationModelWrite": {
         "properties": {
           "model_provider_id": {
@@ -17535,19 +18039,60 @@
         ],
         "title": "AgentConversationPatchWrite"
       },
-      "AgentConversationReference": {
+      "AgentConversationPinnedWrite": {
         "properties": {
-          "event_id": {
-            "type": "string",
-            "maxLength": 200,
-            "minLength": 1,
-            "title": "Event Id"
+          "pinned": {
+            "type": "boolean",
+            "title": "Pinned"
           }
         },
         "additionalProperties": false,
         "type": "object",
         "required": [
-          "event_id"
+          "pinned"
+        ],
+        "title": "AgentConversationPinnedWrite"
+      },
+      "AgentConversationReference": {
+        "properties": {
+          "source_binding_id": {
+            "type": "string",
+            "maxLength": 36,
+            "minLength": 1,
+            "title": "Source Binding Id"
+          },
+          "source_event_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Event Id"
+          },
+          "selection": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selection"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "source_binding_id"
         ],
         "title": "AgentConversationReference"
       },
@@ -17803,30 +18348,6 @@
             "minLength": 36,
             "title": "Conversation Id"
           },
-          "model_provider_id": {
-            "type": "string",
-            "maxLength": 36,
-            "minLength": 1,
-            "title": "Model Provider Id"
-          },
-          "model_name": {
-            "type": "string",
-            "maxLength": 240,
-            "minLength": 1,
-            "title": "Model Name"
-          },
-          "reasoning_effort": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 30
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Reasoning Effort"
-          },
           "content": {
             "type": "string",
             "maxLength": 200000,
@@ -17853,8 +18374,6 @@
         "type": "object",
         "required": [
           "conversation_id",
-          "model_provider_id",
-          "model_name",
           "content"
         ],
         "title": "AgentSidebarConversationWrite"
@@ -19188,6 +19707,10 @@
             "title": "Description",
             "default": ""
           },
+          "runtime_protocol_profile": {
+            "$ref": "#/components/schemas/FlowRunProtocolProfile",
+            "default": "OH_FW_V1"
+          },
           "runtime_capabilities": {
             "items": {
               "type": "string"
@@ -19467,6 +19990,15 @@
           "node_attempt_id"
         ],
         "title": "FlowRunConversationCreateWrite"
+      },
+      "FlowRunProtocolProfile": {
+        "type": "string",
+        "enum": [
+          "OH_FW_V1",
+          "OH_FW_V2"
+        ],
+        "title": "FlowRunProtocolProfile",
+        "description": "A code-owned OpenHands contract family frozen by a FlowRun Runtime."
       },
       "FlowRunScheduleStateWrite": {
         "properties": {
@@ -19907,6 +20439,69 @@
           "field_key"
         ],
         "title": "IOFieldWrite"
+      },
+      "LdapAgentSessionOrganizationAccessWrite": {
+        "properties": {
+          "organization_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Organization Id"
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "organization_id",
+          "enabled"
+        ],
+        "title": "LdapAgentSessionOrganizationAccessWrite"
+      },
+      "LdapAgentSessionUserAccessWrite": {
+        "properties": {
+          "external_subject": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "External Subject"
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "external_subject",
+          "enabled"
+        ],
+        "title": "LdapAgentSessionUserAccessWrite"
+      },
+      "LdapUserEnabledWrite": {
+        "properties": {
+          "external_subject": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "External Subject"
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "external_subject",
+          "enabled"
+        ],
+        "title": "LdapUserEnabledWrite"
       },
       "LoginWrite": {
         "properties": {
@@ -21338,6 +21933,20 @@
           "model_name"
         ],
         "title": "NodeSessionModelWrite"
+      },
+      "NodeSessionPinnedWrite": {
+        "properties": {
+          "pinned": {
+            "type": "boolean",
+            "title": "Pinned"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "pinned"
+        ],
+        "title": "NodeSessionPinnedWrite"
       },
       "NodeSessionUnreadWrite": {
         "properties": {

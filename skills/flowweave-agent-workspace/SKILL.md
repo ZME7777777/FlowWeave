@@ -45,7 +45,7 @@ flowweave agent conversations <workspace-id>
 
 大附件采用公开的可恢复上传协议：先以 `api post /agent-workspaces/<workspace-id>/attachments/uploads --data-file ./.tmp/upload.json` 创建（工作区文件用 `/workspace/uploads`，既有 binding 附件用 `/conversations/<binding-id>/attachments/uploads`）；只用响应返回的 upload ID 和未完成分片号调用 `upload put .../parts/<part-number> --file file=./part.bin`，再 `api post .../complete`。用 `api get .../uploads/<upload-id>` 读取状态，只有用户明确放弃时才 DELETE；草稿附件清理由平台 draft UUID owner 约束，不能用别的 binding 或路径代替。
 
-临时侧栏聊天是主 binding 的受限、一小时 TTL 子会话，不会出现在普通会话列表。先读取主 binding 和被引用的正式事件，再使用 `agent sidebar-create <workspace-id> <source-binding-id> -H 'Idempotency-Key: <uuid>' --data-file ./.tmp/sidebar.json --dry-run`。请求体中的 conversation、模型、内容、附件及正式事件引用均必须来自公开读取结果；用 `agent sidebar` 读取、`agent sidebar-close` 显式关闭，过期后不得重试发送。
+临时侧栏聊天是主 binding 的受限、一小时 TTL 子会话，不会出现在普通会话列表。先读取主 binding 和被引用的正式事件，再使用 `agent sidebar-create <workspace-id> <source-binding-id> -H 'Idempotency-Key: <uuid>' --data-file ./.tmp/sidebar.json --dry-run`。请求体中的 `conversation_id`、内容、附件及正式事件引用均必须来自公开读取结果；模型配置继承主会话，不得再传模型供应商、模型名称或推理程度字段。用 `agent sidebar` 读取、`agent sidebar-close` 显式关闭，过期后不得重试发送。
 
 Runtime replacement 会替换该 Workspace 的受管计算载体。先读取 `agent runtime <workspace-id>` 并取得用户对精确 Workspace 的明确确认，才执行 `agent runtime-replace <workspace-id> -H 'Idempotency-Key: <uuid>' --dry-run`；收到 `202` 后轮询 Runtime，绝不通过 Docker、Runtime Provider 或私有 OpenHands 路由替代该操作。
 
@@ -65,7 +65,9 @@ flowweave agent workspace-git-diff <workspace-id> --repository-path <returned-re
 
 对确认、附件、删除、停止或 fork 等改变状态的操作，先核对真实 workspace/binding ID 与用户意图；不得直接使用 Docker、Runtime Provider 或 OpenHands 私有接口。
 
-需要引用既有对话时，先读取该 binding 的正式事件，再在创建或发送消息的 `references` 数组中传 `{"event_id": "…", "content": "…"}`。引用是用户选择的上下文，不会授予其他 Workspace 的访问权限；不可按页面文本、历史 URL 或猜测 event ID 构造引用。
+需要引用既有对话时，先读取来源 binding 与正式事件，再在创建或发送消息的 `references` 数组中传 `{"source_binding_id": "…", "source_event_id": "…", "selection": {"start": 0, "end": 10}}`；`source_event_id` 和 `selection` 均可省略。引用是用户选择的上下文，不会授予其他 Workspace 的访问权限；不可按页面文本、历史 URL 或猜测 binding/event ID 构造引用。
+
+置顶列表使用 `agent pinned-conversations <workspace-id>`；对明确读取到的会话使用 `agent pin <workspace-id> <binding-id>` 或 `agent unpin <workspace-id> <binding-id>`。批量会话管理先用 `agent conversation-management <workspace-id> [--work-directory <directory-id>]` 读取候选；永久删除只能在用户确认每个 binding 后使用 `agent conversation-management-delete <workspace-id> --id <binding-id> [--id <binding-id> ...] --dry-run`，运行中的会话会由平台安全跳过。
 
 删除逻辑工作目录前，先用 `flowweave agent work-directories <workspace-id>` 读取真实 ID，再执行 `flowweave agent work-directory-delete <workspace-id> <work-directory-id> --dry-run`。删除会物理级联清理该分组所有历史版本关联的会话、私有附件与目录版本，属于不可恢复操作；必须先得到用户对精确目录 ID 的明确授权。不得把“会话仍引用”当作绕过删除的理由，也不得改用 Runtime 或数据库直接删除。
 

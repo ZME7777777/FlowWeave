@@ -27,7 +27,7 @@ flowweave health --ready
 
 周期任务使用 `schedule list/templates/occurrences/create/pause/resume/trigger/delete`。先用 `schedule templates` 读取可作为冻结母版的已就绪连续运行记录；创建请求必须使用在线 `FlowRunScheduleWrite` schema：只提交任务名称、母版 `source_flow_run_id` 和五段 `cron_expression`，节点、环境、输入和启动提示词均来自该记录的冻结母版。`schedule occurrences <schedule-id> --page 1 --page-size 10` 按需读取该调度的执行历史及其 FlowRun/NodeRun，而不预加载所有记录。暂停或恢复前从 `schedule list` 读取当前 `row_version`，再传入 `--expected-row-version`。手动触发会新增一次 occurrence，不会改写既有运行；删除生成的 FlowRun 不会删除调度，而有生成记录的调度删除会被平台拒绝。环境发布现在会返回 `202`：发布后读取对应 Environment，等待新版本进入 `READY`，不要重复提交同一 Setup Session。
 
-能力命令还支持受治理的 OpenHands Plugin Marketplace：`capability marketplace` 读取服务端固定到完整 commit 的公开目录；使用返回的 `source`、`commit`、`repo_path` 与插件名称调用 `capability marketplace-resolve --data-file ./marketplace-plugin.json`，随后读取 `capability plugin-resolution <resolution-id>`，并以当前 `state_version` 调用 `capability plugin-publish <resolution-id> --data '{"expected_state_version": 1}'`。自定义受信任 Marketplace 可先用 `capability marketplace-preview --data-file ./marketplace.json` 审阅目录。Agent Definition 只能以 UTF-8 `.md`/`.markdown` 的 OpenHands YAML frontmatter + Markdown 正文通过 `capability validate|import --type AGENT_DEFINITION --file <file>` 导入。Hook 使用受控表单参数：`capability validate --type HOOK --file ./hook.md --hook-name <name> --hook-event <event> --hook-mode <PROMPT|SCRIPT>`；可选 `--hook-description` 与工具事件的 `--hook-matcher` 会被编译为 OpenHands 原生 `hook_config`，不能提交任意 Hook JSON。
+能力命令还支持受治理的 OpenHands Plugin Marketplace：`capability marketplace` 读取服务端固定到完整 commit 的公开目录；使用返回的 `source`、`commit`、`repo_path` 与插件名称调用 `capability marketplace-resolve --data-file ./marketplace-plugin.json`，随后读取 `capability plugin-resolution <resolution-id>`，并以当前 `state_version` 调用 `capability plugin-publish <resolution-id> --data '{"expected_state_version": 1}'`。自定义受信任 Marketplace 可先用 `capability marketplace-preview --data-file ./marketplace.json` 审阅目录。Skill 的已冻结 ZIP 使用 `capability download <capability-id> --output ./skill.zip` 下载；输出文件不能已存在，避免覆盖本地审计产物。Agent Definition 只能以 UTF-8 `.md`/`.markdown` 的 OpenHands YAML frontmatter + Markdown 正文通过 `capability validate|import --type AGENT_DEFINITION --file <file>` 导入。Hook 使用受控表单参数：`capability validate --type HOOK --file ./hook.md --hook-name <name> --hook-event <event> --hook-mode <PROMPT|SCRIPT>`；可选 `--hook-description` 与工具事件的 `--hook-matcher` 会被编译为 OpenHands 原生 `hook_config`，不能提交任意 Hook JSON。
 
 事件触发器是用户拥有的不可变版本：先 `event-trigger list` 或 `event-trigger get <trigger-key>` 读取，再用 `event-trigger create --data-file ./trigger.json --dry-run` 创建，或用 `event-trigger version <trigger-key> --data-file ./trigger.json --dry-run` 新建版本。请求体必须使用在线 `EventTriggerWrite` schema；`actions[].config` 不得包含 token、password、secret 等明文凭据，Webhook/OAuth 等凭据应通过平台受控引用提供。
 
@@ -40,6 +40,10 @@ npx skills add ZME7777777/FlowWeave -g -y
 ```
 
 仓库尚未发布该 npm 包前，进入 `packages/cli` 后运行 `npm pack` 生成 tarball，并以 `npm install -g ./flowweave-ai-cli-*.tgz` 安装。发布到 npm registry 需要拥有 `@flowweave-ai` scope 的发布权限；本仓库不会自动发布。
+
+## 0.7.0：会话管理、置顶与 Skill 下载
+
+`agent conversation-management` 按工作目录读取可管理会话，`agent conversation-management-delete <workspace-id> --id <binding-id>` 只删除用户明确选定的会话，`agent pinned-conversations` 和 `agent pin|unpin` 管理 Agent Workspace 会话置顶。FlowRun 节点会话使用 `run pin|unpin <run-id> --attempt <attempt-id> --binding <binding-id>`。临时侧栏会话的模型配置继承主会话，创建请求不再接受模型供应商、模型名称或推理程度字段；跨会话引用使用来源 binding、可选正式 event 与可选选区，均须来自公开读取结果。
 
 ## 0.6.0：Runtime、临时侧栏与逐步草稿
 
