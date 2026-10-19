@@ -134,6 +134,52 @@ class AgentConversationBinding(Base):
     )
 
 
+class AgentConversationSchedule(Base):
+    __tablename__ = "agent_conversation_schedules"
+    __table_args__ = (
+        CheckConstraint("status IN ('ACTIVE', 'PAUSED')", name="ck_agent_schedule_status"),
+        CheckConstraint("length(cron_expression) > 0", name="ck_agent_schedule_cron_present"),
+        CheckConstraint("row_version >= 1", name="ck_agent_schedule_row_version"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    workspace_id: Mapped[str] = mapped_column(String(36), index=True)
+    binding_id: Mapped[str] = mapped_column(String(36), index=True)
+    name: Mapped[str] = mapped_column(String(220))
+    prompt: Mapped[str] = mapped_column(Text)
+    cron_expression: Mapped[str] = mapped_column(String(120))
+    status: Mapped[str] = mapped_column(String(20), default="ACTIVE", index=True)
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    row_version: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class AgentConversationScheduleOccurrence(Base):
+    __tablename__ = "agent_conversation_schedule_occurrences"
+    __table_args__ = (
+        UniqueConstraint("schedule_id", "scheduled_for", name="uq_agent_schedule_occurrence_slot"),
+        CheckConstraint(
+            "trigger_kind IN ('SCHEDULED', 'MANUAL')", name="ck_agent_schedule_occurrence_trigger"
+        ),
+        CheckConstraint(
+            "state IN ('PENDING', 'STARTED', 'FAILED')", name="ck_agent_schedule_occurrence_state"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    schedule_id: Mapped[str] = mapped_column(String(36), index=True)
+    binding_id: Mapped[str] = mapped_column(String(36), index=True)
+    scheduled_for: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    trigger_kind: Mapped[str] = mapped_column(String(20), default="SCHEDULED")
+    state: Mapped[str] = mapped_column(String(20), default="PENDING", index=True)
+    message_cursor: Mapped[str | None] = mapped_column(String(200))
+    error_detail: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
 class AgentSidebarConversation(Base):
     """A short-lived side conversation linked to one authorized source binding."""
 
