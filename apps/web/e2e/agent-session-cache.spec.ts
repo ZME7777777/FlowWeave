@@ -2355,10 +2355,20 @@ test('A new conversation stays first after an existing conversation was reordere
   await conversationList.evaluate(list => {
     list.dataset.dragScrollCalls = '0';
     list.dataset.dragScrollTop = '0';
+    list.dataset.dragScrollPosition = '200';
+    list.dataset.dragScrollLastAmount = '0';
+    Object.defineProperties(list, {
+      clientHeight: { configurable: true, get: () => 400 },
+      scrollHeight: { configurable: true, get: () => 1_200 },
+      scrollTop: { configurable: true, get: () => Number(list.dataset.dragScrollPosition) },
+    });
     list.scrollBy = options => {
       const top = typeof options === 'object' ? options.top ?? 0 : 0;
+      const position = Math.max(0, Math.min(800, Number(list.dataset.dragScrollPosition) + top));
       list.dataset.dragScrollCalls = String(Number(list.dataset.dragScrollCalls) + 1);
       list.dataset.dragScrollTop = String(Number(list.dataset.dragScrollTop) + top);
+      list.dataset.dragScrollLastAmount = String(top);
+      list.dataset.dragScrollPosition = String(position);
     };
   });
   const listBounds = await conversationList.boundingBox();
@@ -2367,28 +2377,46 @@ test('A new conversation stays first after an existing conversation was reordere
   await conversationList.dispatchEvent('dragover', {
     dataTransfer: edgeDataTransfer,
     clientX: listBounds!.x + listBounds!.width / 2,
-    clientY: listBounds!.y + listBounds!.height - 1,
+    clientY: listBounds!.y + 100,
   });
   await expect.poll(() => conversationList.evaluate(list => Number(list.dataset.dragScrollCalls))).toBeGreaterThan(0);
-  await expect.poll(() => conversationList.evaluate(list => Number(list.dataset.dragScrollTop))).toBeGreaterThan(0);
+  await expect.poll(() => conversationList.evaluate(list => Number(list.dataset.dragScrollTop))).toBeLessThan(0);
+  await expect.poll(() => conversationList.evaluate(list => Math.abs(Number(list.dataset.dragScrollLastAmount)))).toBeLessThan(2);
   await source.dispatchEvent('dragend', { dataTransfer: edgeDataTransfer, clientX: 0, clientY: 0 });
   await edgeDataTransfer.dispose();
 
   await conversationList.evaluate(list => {
     list.dataset.dragScrollCalls = '0';
     list.dataset.dragScrollTop = '0';
+    list.dataset.dragScrollPosition = '200';
   });
-  const topEdgeDataTransfer = await page.evaluateHandle(() => new DataTransfer());
-  await source.dispatchEvent('dragstart', { dataTransfer: topEdgeDataTransfer });
+  const bottomEdgeDataTransfer = await page.evaluateHandle(() => new DataTransfer());
+  await source.dispatchEvent('dragstart', { dataTransfer: bottomEdgeDataTransfer });
   await conversationList.dispatchEvent('dragover', {
-    dataTransfer: topEdgeDataTransfer,
+    dataTransfer: bottomEdgeDataTransfer,
+    clientX: listBounds!.x + listBounds!.width / 2,
+    clientY: listBounds!.y + listBounds!.height - 1,
+  });
+  await expect.poll(() => conversationList.evaluate(list => Number(list.dataset.dragScrollCalls))).toBeGreaterThan(0);
+  await expect.poll(() => conversationList.evaluate(list => Number(list.dataset.dragScrollTop))).toBeGreaterThan(0);
+  await source.dispatchEvent('dragend', { dataTransfer: bottomEdgeDataTransfer, clientX: 0, clientY: 0 });
+  await bottomEdgeDataTransfer.dispose();
+
+  await conversationList.evaluate(list => {
+    list.dataset.dragScrollCalls = '0';
+    list.dataset.dragScrollPosition = '0';
+  });
+  const topBoundaryDataTransfer = await page.evaluateHandle(() => new DataTransfer());
+  await source.dispatchEvent('dragstart', { dataTransfer: topBoundaryDataTransfer });
+  await conversationList.dispatchEvent('dragover', {
+    dataTransfer: topBoundaryDataTransfer,
     clientX: listBounds!.x + listBounds!.width / 2,
     clientY: listBounds!.y + 1,
   });
-  await expect.poll(() => conversationList.evaluate(list => Number(list.dataset.dragScrollCalls))).toBeGreaterThan(0);
-  await expect.poll(() => conversationList.evaluate(list => Number(list.dataset.dragScrollTop))).toBeLessThan(0);
-  await source.dispatchEvent('dragend', { dataTransfer: topEdgeDataTransfer, clientX: 0, clientY: 0 });
-  await topEdgeDataTransfer.dispose();
+  await page.waitForTimeout(100);
+  await expect(conversationList.evaluate(list => Number(list.dataset.dragScrollCalls))).resolves.toBe(0);
+  await source.dispatchEvent('dragend', { dataTransfer: topBoundaryDataTransfer, clientX: 0, clientY: 0 });
+  await topBoundaryDataTransfer.dispose();
 
   failOrderRequest = true;
   const retryTargetBounds = await target.boundingBox();

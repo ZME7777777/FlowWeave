@@ -8419,18 +8419,25 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       const currentPointerY = conversationDragPointerYRef.current;
       if (!sidebar || currentPointerY === undefined || !draggedConversationRef.current) return;
       const bounds = sidebar.getBoundingClientRect();
-      const threshold = Math.min(72, Math.max(40, bounds.height * 0.16));
+      const threshold = Math.min(120, Math.max(72, bounds.height * 0.22));
       const distanceFromTop = currentPointerY - bounds.top;
       const distanceFromBottom = bounds.bottom - currentPointerY;
       const edgeDepth = distanceFromTop < threshold
         ? distanceFromTop - threshold
         : distanceFromBottom < threshold ? threshold - distanceFromBottom : 0;
+      let canContinueScrolling = false;
       if (edgeDepth !== 0) {
         const direction = Math.sign(edgeDepth);
-        const amount = Math.min(24, Math.max(4, Math.abs(edgeDepth) / threshold * 24));
-        sidebar.scrollBy({ top: direction * amount, behavior: 'auto' });
+        const maxScrollTop = Math.max(0, sidebar.scrollHeight - sidebar.clientHeight);
+        const canScroll = direction < 0 ? sidebar.scrollTop > 0 : sidebar.scrollTop < maxScrollTop;
+        if (canScroll) {
+          const progress = Math.abs(edgeDepth) / threshold;
+          const amount = 0.5 + progress * progress * 7.5;
+          sidebar.scrollBy({ top: direction * amount, behavior: 'auto' });
+          canContinueScrolling = true;
+        }
       }
-      if (conversationDragPointerYRef.current !== undefined && draggedConversationRef.current) {
+      if (canContinueScrolling && conversationDragPointerYRef.current !== undefined && draggedConversationRef.current) {
         conversationDragScrollFrameRef.current = window.requestAnimationFrame(scroll);
       }
     };
