@@ -608,7 +608,8 @@ interface WorkspaceConversationGroupProps {
   dragging?: boolean;
   dropPosition?: 'before' | 'after';
   onPointerDragStart?: (event: React.PointerEvent<HTMLElement>) => void;
-  forceExpanded?: boolean;
+  collapsed?: boolean;
+  onCollapsedChange?: (collapsed: boolean) => void;
   canCreateConversation?: boolean;
   onCreateConversation?: () => void;
   onDelete?: () => void;
@@ -655,17 +656,11 @@ function useAgentSessionHost(): AgentSessionHost {
   return useContext(AgentSessionHostContext);
 }
 
-function WorkspaceConversationGroup({ groupId, label, children, conversationCount, hasMore = false, loadingMore = false, onLoadMore, draggable = false, dragging = false, dropPosition, onPointerDragStart, forceExpanded = false, canCreateConversation = false, onCreateConversation, onDelete }: WorkspaceConversationGroupProps) {
-  const [collapsed, setCollapsed] = useState(false);
+function WorkspaceConversationGroup({ groupId, label, children, conversationCount, hasMore = false, loadingMore = false, onLoadMore, draggable = false, dragging = false, dropPosition, onPointerDragStart, collapsed = false, onCollapsedChange, canCreateConversation = false, onCreateConversation, onDelete }: WorkspaceConversationGroupProps) {
   const [visibleCount, setVisibleCount] = useState(3);
   const initializedItemCount = useRef(false);
   const previousConversationCount = useRef(conversationCount);
   const contentId = `agent-workspace-group-${groupId}`;
-  useEffect(() => {
-    if (!forceExpanded) return;
-    setCollapsed(false);
-    setVisibleCount(current => Math.max(current, conversationCount));
-  }, [conversationCount, forceExpanded]);
   useEffect(() => {
     if (!initializedItemCount.current) {
       if (conversationCount > 0) initializedItemCount.current = true;
@@ -682,10 +677,10 @@ function WorkspaceConversationGroup({ groupId, label, children, conversationCoun
 
   return <section data-work-directory-id={draggable ? groupId : undefined} className={`agent-workspace-group${collapsed ? ' collapsed' : ''}${dragging ? ' dragging' : ''}${dropPosition ? ` drop-${dropPosition}` : ''}`}>
     <header onPointerDown={draggable ? onPointerDragStart : undefined}>
-      <button type="button" className="agent-workspace-group-toggle" aria-label={`${collapsed ? '展开' : '收起'}工作区 ${label}`} aria-expanded={!collapsed} aria-controls={contentId} onClick={() => setCollapsed(current => {
-        if (!current) setVisibleCount(3);
-        return !current;
-      })}>
+      <button type="button" className="agent-workspace-group-toggle" aria-label={`${collapsed ? '展开' : '收起'}工作区 ${label}`} aria-expanded={!collapsed} aria-controls={contentId} onClick={() => {
+        if (!collapsed) setVisibleCount(3);
+        onCollapsedChange?.(!collapsed);
+      }}>
         <Folder size={14}/><span>{label}</span><ChevronDown size={13}/>
       </button>
       <div className="agent-workspace-group-actions">{onCreateConversation && <button type="button" aria-label={`在${label}中新建会话`} disabled={!canCreateConversation} onClick={onCreateConversation}><Plus size={13}/></button>}
@@ -837,7 +832,7 @@ function ConversationStreamObserver({
 }
 
 function WorkspaceConversationRow({
-  item, selectedBindingId, workspaceName, running, possiblyStuck, failed, unread, unreadOrigin, pinned, conversationWritable, removing, deleteDisabled, dragging, dropPosition, orderSyncState, onDragStart, onDragOver, onDrop, onDragEnd, onRetryOrder, onSelect, onDoubleClick, onTogglePin, onMarkUnread, onMarkRead, onAcknowledgeAlert, onDelete, reveal,
+  item, selectedBindingId, workspaceName, running, possiblyStuck, failed, unread, unreadOrigin, pinned, conversationWritable, removing, deleteDisabled, dragging, dropPosition, orderSyncState, onDragStart, onDragOver, onDrop, onDragEnd, onRetryOrder, onSelect, onDoubleClick, onTogglePin, onMarkUnread, onMarkRead, onAcknowledgeAlert, onDelete,
 }: {
   item: AgentConversation;
   selectedBindingId?: string;
@@ -866,7 +861,6 @@ function WorkspaceConversationRow({
   onMarkRead?: () => void;
   onAcknowledgeAlert?: () => void;
   onDelete?: () => void;
-  reveal?: boolean;
 }) {
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number }>();
   const showRunningAlert = possiblyStuck && running && !failed;
@@ -881,7 +875,7 @@ function WorkspaceConversationRow({
     return () => { window.removeEventListener('pointerdown', close); window.removeEventListener('resize', close); };
   }, [contextMenu]);
   const selected = item.id === selectedBindingId;
-  return <div data-conversation-binding-id={item.id} className={`agent-workspace-conversation${selected ? ' active' : ''}${dragging ? ' dragging' : ''}${dropPosition ? ` drop-${dropPosition}` : ''}${reveal ? ' sidebar-reveal' : ''}`} onDragOver={onDragOver} onDrop={onDrop} onContextMenu={event => {
+  return <div data-conversation-binding-id={item.id} className={`agent-workspace-conversation${selected ? ' active' : ''}${dragging ? ' dragging' : ''}${dropPosition ? ` drop-${dropPosition}` : ''}`} onDragOver={onDragOver} onDrop={onDrop} onContextMenu={event => {
     event.preventDefault();
     setContextMenu({ x: Math.min(event.clientX, window.innerWidth - 180), y: Math.min(event.clientY, window.innerHeight - 52) });
   }}>
@@ -4458,6 +4452,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [conversationOrder, setConversationOrder] = useState<Record<string, string[]>>({});
   const [conversationOrderSync, setConversationOrderSync] = useState<Record<string, ConversationOrderSync>>({});
   const [sidebarScrollTop, setSidebarScrollTop] = useState<number>();
+  const workspaceSidebarScrollTop = useRef<number | undefined>(undefined);
+  const workspaceSidebarScrollTopBeforeActivity = useRef<number | undefined>(undefined);
+  const restoringWorkspaceSidebarScrollTop = useRef<number | undefined>(undefined);
+  const [collapsedConversationGroups, setCollapsedConversationGroups] = useState<Set<string>>(() => new Set());
   const [workDirectoryOrder, setWorkDirectoryOrder] = useState<string[]>([]);
   const [draggedWorkDirectoryId, setDraggedWorkDirectoryId] = useState<string>();
   const [workDirectoryDropTarget, setWorkDirectoryDropTarget] = useState<{ id: string; after: boolean }>();
@@ -4521,7 +4519,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [conversationSearchTargetEventId, setConversationSearchTargetEventId] = useState<string>();
   const [sidebarListMode, setSidebarListMode] = useState<'workspaces' | 'activity'>('workspaces');
   const [activityPreviewBindingId, setActivityPreviewBindingId] = useState<string>();
-  const [sidebarRevealBindingId, setSidebarRevealBindingId] = useState<string>();
   const attachmentInput = useRef<HTMLInputElement>(null);
   const discardedDraftScopes = useRef(new Set<string>());
   const removedPendingAttachmentIds = useRef(new Set<string>());
@@ -4673,13 +4670,21 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const sidebarListRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!sidebarScrollStorageKey) {
+      workspaceSidebarScrollTop.current = undefined;
+      workspaceSidebarScrollTopBeforeActivity.current = undefined;
+      restoringWorkspaceSidebarScrollTop.current = undefined;
       setSidebarScrollTop(undefined);
       return;
     }
     try {
       const stored = Number(sessionStorage.getItem(sidebarScrollStorageKey));
-      setSidebarScrollTop(Number.isFinite(stored) && stored > 0 ? stored : undefined);
+      const scrollTop = Number.isFinite(stored) && stored > 0 ? stored : undefined;
+      workspaceSidebarScrollTop.current = scrollTop;
+      setSidebarScrollTop(scrollTop);
     } catch {
+      workspaceSidebarScrollTop.current = undefined;
+      workspaceSidebarScrollTopBeforeActivity.current = undefined;
+      restoringWorkspaceSidebarScrollTop.current = undefined;
       setSidebarScrollTop(undefined);
     }
   }, [sidebarScrollStorageKey]);
@@ -4906,9 +4911,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   );
   useLayoutEffect(() => {
     const sidebar = sidebarListRef.current;
-    if (!sidebar || sidebarScrollTop === undefined) return;
-    sidebar.scrollTop = Math.min(sidebar.scrollHeight - sidebar.clientHeight, sidebarScrollTop);
-  }, [conversations, sidebarScrollTop]);
+    const scrollTop = workspaceSidebarScrollTopBeforeActivity.current ?? workspaceSidebarScrollTop.current;
+    if (!sidebar || sidebarListMode !== 'workspaces' || scrollTop === undefined) return;
+    const target = Math.min(sidebar.scrollHeight - sidebar.clientHeight, scrollTop);
+    if (sidebar.scrollTop !== target) {
+      restoringWorkspaceSidebarScrollTop.current = target;
+      sidebar.scrollTop = target;
+    }
+  }, [conversations, sidebarListMode, sidebarScrollTop]);
   const pagedPinnedConversations = [...conversationsById.values()].filter(
     item => pendingPinnedUpdates.current.get(item.id)?.pinned ?? item.pinned,
   );
@@ -4930,38 +4940,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         return rightUpdatedAt - leftUpdatedAt || right.id.localeCompare(left.id);
       });
   }, [condensingConversationIds, conversationActivityQuery.data?.conversations, conversations, runningConversationIds, unreadConversationIds]);
-  const revealedConversation = sidebarRevealBindingId
-    ? activityConversations.find(item => item.id === sidebarRevealBindingId)
-      ?? conversations.find(item => item.id === sidebarRevealBindingId)
-    : undefined;
-  const revealedUnpinnedConversation = revealedConversation && !revealedConversation.pinned
-    ? revealedConversation
-    : undefined;
-  useEffect(() => {
-    if (!revealedUnpinnedConversation || conversations.some(item => item.id === revealedUnpinnedConversation.id)) return;
-    const scopeKey = revealedUnpinnedConversation.work_directory_id ?? '__root__';
-    if (loadingConversationScope || !conversationPagesByScope[scopeKey]?.next_cursor) return;
-    void loadMoreConversations(scopeKey);
-  }, [conversationPagesByScope, conversations, loadMoreConversations, loadingConversationScope, revealedUnpinnedConversation]);
-  useEffect(() => {
-    if (sidebarListMode !== 'workspaces' || !sidebarRevealBindingId) return;
-    let frame: number | undefined;
-    let timer: number | undefined;
-    frame = window.requestAnimationFrame(() => {
-      frame = window.requestAnimationFrame(() => {
-        const row = sidebarListRef.current?.querySelector<HTMLElement>(`[data-conversation-binding-id="${sidebarRevealBindingId}"]`);
-        if (!row) return;
-        row.scrollIntoView({ block: 'center', behavior: 'smooth' });
-        timer = window.setTimeout(() => {
-          setSidebarRevealBindingId(current => current === sidebarRevealBindingId ? undefined : current);
-        }, 2_600);
-      });
-    });
-    return () => {
-      if (frame !== undefined) window.cancelAnimationFrame(frame);
-      if (timer !== undefined) window.clearTimeout(timer);
-    };
-  }, [conversations, pinnedConversations, sidebarListMode, sidebarRevealBindingId]);
   const selectedConversationQuery = useQuery({
     queryKey: sessionQueryKey(host, 'conversation', workspace?.id, selectedBindingId),
     queryFn: () => api.conversation(workspace!.id, selectedBindingId!),
@@ -8619,7 +8597,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     const conversationWritable = Boolean(item.write_available);
     const draggable = options.allowDrag !== false;
     const orderSync = conversationOrderSync[item.id];
-    return <WorkspaceConversationRow key={item.id} item={item} selectedBindingId={selectedBindingId} workspaceName={options.workspaceName} running={running} possiblyStuck={possiblyStuck} failed={failed} unread={unread} unreadOrigin={unreadOrigin} pinned={Boolean(item.pinned)} conversationWritable={conversationWritable} removing={remove.isPending} deleteDisabled={running} dragging={draggable && draggedBindingId === item.id} dropPosition={draggable && dragTarget?.bindingId === item.id ? (dragTarget.after ? 'after' : 'before') : undefined} orderSyncState={orderSync?.state} onDragStart={draggable ? event => startConversationDrag(event, item, group) : undefined} onDragOver={draggable ? event => previewConversationDrop(event, item, group) : undefined} onDrop={draggable ? event => dropConversation(event, item, group) : undefined} onDragEnd={draggable ? endConversationDrag : undefined} onRetryOrder={orderSync?.state === 'failed' ? () => synchronizeConversationOrder(item.id, orderSync.orderedBindingIds) : undefined} onSelect={options.onSelect ?? (() => selectConversation(item.id))} onDoubleClick={options.onDoubleClick} onTogglePin={() => toggleConversationPin(item.id)} onMarkUnread={() => markConversationUnread(item.id)} onMarkRead={options.onMarkRead} onAcknowledgeAlert={() => markConversationRead(item.id)} onDelete={features.conversationDeletion && conversationWritable ? () => void confirmDeletion('会话', conversationName(item)).then(ok => { if (ok) remove.mutate(item.id); }) : undefined} reveal={sidebarListMode === 'workspaces' && sidebarRevealBindingId === item.id}/>;
+    return <WorkspaceConversationRow key={item.id} item={item} selectedBindingId={selectedBindingId} workspaceName={options.workspaceName} running={running} possiblyStuck={possiblyStuck} failed={failed} unread={unread} unreadOrigin={unreadOrigin} pinned={Boolean(item.pinned)} conversationWritable={conversationWritable} removing={remove.isPending} deleteDisabled={running} dragging={draggable && draggedBindingId === item.id} dropPosition={draggable && dragTarget?.bindingId === item.id ? (dragTarget.after ? 'after' : 'before') : undefined} orderSyncState={orderSync?.state} onDragStart={draggable ? event => startConversationDrag(event, item, group) : undefined} onDragOver={draggable ? event => previewConversationDrop(event, item, group) : undefined} onDrop={draggable ? event => dropConversation(event, item, group) : undefined} onDragEnd={draggable ? endConversationDrag : undefined} onRetryOrder={orderSync?.state === 'failed' ? () => synchronizeConversationOrder(item.id, orderSync.orderedBindingIds) : undefined} onSelect={options.onSelect ?? (() => selectConversation(item.id))} onDoubleClick={options.onDoubleClick} onTogglePin={() => toggleConversationPin(item.id)} onMarkUnread={() => markConversationUnread(item.id)} onMarkRead={options.onMarkRead} onAcknowledgeAlert={() => markConversationRead(item.id)} onDelete={features.conversationDeletion && conversationWritable ? () => void confirmDeletion('会话', conversationName(item)).then(ok => { if (ok) remove.mutate(item.id); }) : undefined}/>;
   };
   const pendingBootstrapItem = pendingBootstrap
     ? <button className={pendingBootstrap.draft.id === conversationDraft?.id ? 'active' : ''} aria-current={pendingBootstrap.draft.id === conversationDraft?.id ? 'page' : undefined} aria-label={`${pendingConversationName(pendingBootstrap.message)}，正在创建会话`}><LoaderCircle className="conversation-activity-spin" size={13}/><span><b>{pendingConversationName(pendingBootstrap.message)}</b><small>正在创建会话</small></span><ChevronRight size={13}/></button>
@@ -8643,6 +8621,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const conversationsForDirectory = (workDirectoryId: string) => unpinnedConversations.filter(
     item => item.work_directory_id === workDirectoryId,
   );
+  const setConversationGroupCollapsed = (groupId: string, collapsed: boolean) => {
+    setCollapsedConversationGroups(current => {
+      const next = new Set(current);
+      if (collapsed) next.add(groupId);
+      else next.delete(groupId);
+      return next;
+    });
+  };
   const selectConversation = (bindingId: string) => {
     const outgoingScope = activeComposerScope.current;
     if (outgoingScope) persistComposerDraft(outgoingScope);
@@ -8653,6 +8639,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   };
   const toggleSidebarListMode = () => {
     if (sidebarListMode === 'activity') setActivityPreviewBindingId(undefined);
+    else workspaceSidebarScrollTopBeforeActivity.current = sidebarListRef.current?.scrollTop;
     setSidebarListMode(current => current === 'activity' ? 'workspaces' : 'activity');
   };
   const previewActivityConversation = (bindingId: string) => {
@@ -8663,7 +8650,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   };
   const openActivityConversation = (bindingId: string) => {
     setSidebarListMode('workspaces');
-    setSidebarRevealBindingId(bindingId);
     selectConversation(bindingId);
   };
   const activityWorkspaceName = (item: AgentConversation) => item.work_directory_id
@@ -8754,16 +8740,26 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       <div ref={sidebarListRef} className="agent-workbench-list" onDragOver={event => {
         if (draggedConversationRef.current) updateConversationDragAutoScroll(event.clientY);
       }} onScroll={event => {
+        if (sidebarListMode !== 'workspaces') return;
+        const scrollTop = event.currentTarget.scrollTop;
+        if (restoringWorkspaceSidebarScrollTop.current === scrollTop) {
+          restoringWorkspaceSidebarScrollTop.current = undefined;
+          workspaceSidebarScrollTopBeforeActivity.current = undefined;
+          return;
+        }
+        restoringWorkspaceSidebarScrollTop.current = undefined;
+        workspaceSidebarScrollTopBeforeActivity.current = undefined;
+        workspaceSidebarScrollTop.current = scrollTop;
         if (!sidebarScrollStorageKey) return;
-        try { sessionStorage.setItem(sidebarScrollStorageKey, String(event.currentTarget.scrollTop)); } catch { /* browser session state only */ }
+        try { sessionStorage.setItem(sidebarScrollStorageKey, String(scrollTop)); } catch { /* browser session state only */ }
       }}>
         {sidebarListMode === 'activity'
           ? <section className="agent-workspace-activity" aria-label="活动会话"><header><div><span className="eyebrow">ACTIVITY</span><b>活动</b></div><button type="button" aria-label="返回工作区列表" title="返回工作区列表" onClick={() => { setActivityPreviewBindingId(undefined); setSidebarListMode('workspaces'); }}><ArrowLeft size={15}/></button></header>{activityConversations.length ? activityConversations.map(item => conversationRow(item, [], { allowDrag: false, workspaceName: activityWorkspaceName(item), onSelect: () => previewActivityConversation(item.id), onDoubleClick: () => openActivityConversation(item.id), onMarkRead: () => markConversationRead(item.id) })) : <p>没有正在运行或未读的会话。</p>}</section>
           : <>{pinnedConversations.length > 0 && <section className="agent-workspace-pinned" aria-label="置顶会话"><header><Pin size={13}/><span>置顶</span></header><div>{pinnedConversations.map(item => conversationRow(item, [], { allowDrag: false }))}</div></section>}
-            <WorkspaceConversationGroup groupId="root" label="根工作区" conversationCount={rootConversations.length} hasMore={Boolean(conversationPagesByScope.__root__?.next_cursor)} loadingMore={loadingConversationScope === '__root__'} onLoadMore={() => loadMoreConversations('__root__')} forceExpanded={Boolean(revealedUnpinnedConversation && !revealedUnpinnedConversation.work_directory_id)} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ displayName: '根工作区' })}>
+            <WorkspaceConversationGroup groupId="root" label="根工作区" conversationCount={rootConversations.length} hasMore={Boolean(conversationPagesByScope.__root__?.next_cursor)} loadingMore={loadingConversationScope === '__root__'} onLoadMore={() => loadMoreConversations('__root__')} collapsed={collapsedConversationGroups.has('root')} onCollapsedChange={collapsed => setConversationGroupCollapsed('root', collapsed)} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ displayName: '根工作区' })}>
               {visibleCount => <>{pendingBootstrapItem && !pendingBootstrap?.draft.workDirectoryId ? pendingBootstrapItem : recoverableDraftItem(undefined, '根工作区')}{rootConversations.slice(0, visibleCount).map(item => conversationRow(item, rootConversations))}</>}
             </WorkspaceConversationGroup>
-            {features.workDirectories && workDirectories.map(directory => <WorkspaceConversationGroup key={directory.id} groupId={directory.id} label={directory.display_name} conversationCount={conversationsForDirectory(directory.id).length} hasMore={Boolean(conversationPagesByScope[directory.id]?.next_cursor)} loadingMore={loadingConversationScope === directory.id} onLoadMore={() => loadMoreConversations(directory.id)} draggable dragging={draggedWorkDirectoryId === directory.id} dropPosition={workDirectoryDropTarget?.id === directory.id ? (workDirectoryDropTarget.after ? 'after' : 'before') : undefined} onPointerDragStart={event => startPointerWorkDirectoryDrag(event, directory.id)} forceExpanded={revealedUnpinnedConversation?.work_directory_id === directory.id} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ workDirectoryId: directory.id, displayName: directory.display_name })} onDelete={api.deleteWorkDirectory && runtimeWritable ? () => void removeWorkDirectory(directory) : undefined}>
+            {features.workDirectories && workDirectories.map(directory => <WorkspaceConversationGroup key={directory.id} groupId={directory.id} label={directory.display_name} conversationCount={conversationsForDirectory(directory.id).length} hasMore={Boolean(conversationPagesByScope[directory.id]?.next_cursor)} loadingMore={loadingConversationScope === directory.id} onLoadMore={() => loadMoreConversations(directory.id)} draggable dragging={draggedWorkDirectoryId === directory.id} dropPosition={workDirectoryDropTarget?.id === directory.id ? (workDirectoryDropTarget.after ? 'after' : 'before') : undefined} onPointerDragStart={event => startPointerWorkDirectoryDrag(event, directory.id)} collapsed={collapsedConversationGroups.has(directory.id)} onCollapsedChange={collapsed => setConversationGroupCollapsed(directory.id, collapsed)} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ workDirectoryId: directory.id, displayName: directory.display_name })} onDelete={api.deleteWorkDirectory && runtimeWritable ? () => void removeWorkDirectory(directory) : undefined}>
               {visibleCount => { const group = conversationsForDirectory(directory.id); return <>{pendingBootstrapItem && pendingBootstrap?.draft.workDirectoryId === directory.id ? pendingBootstrapItem : recoverableDraftItem(directory.id, directory.display_name)}{group.slice(0, visibleCount).map(item => conversationRow(item, group))}</>}}
             </WorkspaceConversationGroup>)}</>}
       </div>

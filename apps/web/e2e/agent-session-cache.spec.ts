@@ -3431,7 +3431,7 @@ test('Opening an unread conversation keeps it read when an older list request fi
   await expect(unreadMarker).toHaveCount(0);
 });
 
-test('Conversation sidebar locates an activity session hidden in a collapsed workspace group', async ({ page }) => {
+test('Conversation sidebar opens an activity session without changing its scroll position or groups', async ({ page }) => {
   let authenticated = false;
   const runningConversationPossiblyStuck = true;
   const workspace = { id: 'sidebar-workspace', display_name: '侧栏工作区', desired_state: 'RUNNING', updated_at: now };
@@ -3591,6 +3591,7 @@ test('Conversation sidebar locates an activity session hidden in a collapsed wor
   await expect.poll(() => unreadWrites).toEqual([{ id: 'sidebar-root-unread', unread: false }]);
   const runningRowInWorkspaceList = page.locator('[data-conversation-binding-id="sidebar-directory-running"]');
   await expect(runningRowInWorkspaceList).toHaveCount(0);
+  const sidebarScrollTopBeforeActivity = await sidebarList.evaluate(element => element.scrollTop);
 
   await page.getByRole('button', { name: /查看活动会话/ }).click();
   const activity = page.getByRole('region', { name: '活动会话' });
@@ -3614,11 +3615,10 @@ test('Conversation sidebar locates an activity session hidden in a collapsed wor
   await runningConversation.dblclick();
   await expect(page).toHaveURL(/\/agent\/conversations\/sidebar-directory-running$/);
   await expect(activity).toHaveCount(0);
-  const selectedRunningRow = page.locator('[data-conversation-binding-id="sidebar-directory-running"]');
-  await expect(selectedRunningRow).toHaveClass(/sidebar-reveal/);
-  await expect(selectedRunningRow.getByRole('button', { name: '运行中目标会话', exact: true })).toHaveClass(/active/);
-  await expect(directoryGroup.getByRole('button', { name: '收起工作区 归属工作区' })).toBeVisible();
-  await expect(selectedRunningRow.getByRole('img', { name: '会话正在运行但后台长时间未产生可确认进展' })).toBeVisible();
+  await expect.poll(() => sidebarList.evaluate(element => element.scrollTop)).toBe(sidebarScrollTopBeforeActivity);
+  await expect(directoryGroup.getByRole('button', { name: '展开工作区 归属工作区' })).toBeVisible();
+  await expect(runningRowInWorkspaceList).toHaveCount(0);
+  await expect(page.getByText('会话 sidebar-directory-running', { exact: true })).toBeVisible();
   await expect.poll(() => unreadWrites).toEqual([
     { id: 'sidebar-root-unread', unread: false },
     { id: 'sidebar-directory-running', unread: false },
