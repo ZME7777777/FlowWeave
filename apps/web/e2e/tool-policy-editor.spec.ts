@@ -43,6 +43,11 @@ test('Tool Policy is configured visually and published as an immutable version',
     await expect(preview).toContainText(policyName);
     await expect(preview).toContainText('"terminal_type": "subprocess"');
     await expect(preview).toContainText('"task_tracker"');
+    await page.evaluate(async () => {
+      await document.fonts.load('16px "Noto Sans SC"', '中文截图验证');
+      await document.fonts.ready;
+    });
+    await expect.poll(() => page.evaluate(() => document.fonts.check('16px "Noto Sans SC"', '中文截图验证'))).toBe(true);
     await page.screenshot({ path: '/tmp/flowweave-tool-policy-editor.png', fullPage: true });
 
     await dialog.getByRole('button', { name: '可视化配置' }).click();
