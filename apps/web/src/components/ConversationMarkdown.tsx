@@ -1,4 +1,4 @@
-import { isValidElement, useMemo, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
+import { createContext, isValidElement, useContext, useMemo, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { deploymentBasePath } from '../deploymentPath';
@@ -9,8 +9,17 @@ import { isMermaidDiagram, markdownCodeText, normalizeNestedMarkdownFences } fro
 
 const MARKDOWN_SYNTAX = /(^|\n)\s{0,3}(?:#{1,6}\s|[-*+]\s|\d+[.)]\s|>|```)|[`*_~]|!?\[[^\]]*\]\([^)]*\)|\||https?:\/\/[^\s<]+/i;
 
+interface MarkdownRenderOptions {
+  onOpenWorkspaceFile?: (href: string) => boolean;
+  onOpenImage?: (src: string, alt?: string) => void;
+  workspaceImageUrl?: (href: string) => string | undefined;
+}
 
-function MarkdownImage({ src, alt, onOpenImage, ...props }: ComponentPropsWithoutRef<'img'> & { onOpenImage?: (src: string, alt?: string) => void }) {
+const MarkdownRenderOptionsContext = createContext<MarkdownRenderOptions>({});
+
+function MarkdownImage({ src, alt, onOpenImage: imageOpenHandler, ...props }: ComponentPropsWithoutRef<'img'> & { onOpenImage?: (src: string, alt?: string) => void }) {
+  const { onOpenImage } = useContext(MarkdownRenderOptionsContext);
+  const openImage = imageOpenHandler ?? onOpenImage;
   const [failed, setFailed] = useState(false);
   // Runtime message projection deliberately produces API-root paths so the
   // backend does not need to know where the web app is mounted.
@@ -27,8 +36,8 @@ function MarkdownImage({ src, alt, onOpenImage, ...props }: ComponentPropsWithou
     </span>;
   }
   const image = <img {...props} loading="lazy" decoding="async" className={`conversation-markdown-image${props.className ? ` ${props.className}` : ''}`} src={resolvedSource} alt={alt ?? ''} onError={() => setFailed(true)}/>;
-  return onOpenImage && typeof resolvedSource === 'string'
-    ? <button type="button" className="conversation-markdown-image-button" aria-label={`预览图片：${alt || '会话图片'}`} onClick={() => onOpenImage(resolvedSource, alt ?? undefined)}>{image}</button>
+  return openImage && typeof resolvedSource === 'string'
+    ? <button type="button" className="conversation-markdown-image-button" aria-label={`预览图片：${alt || '会话图片'}`} onClick={() => openImage(resolvedSource, alt ?? undefined)}>{image}</button>
     : image;
 }
 
@@ -45,11 +54,8 @@ function workspaceImageLink(href: string): boolean {
   }
 }
 
-function MarkdownLink({ href, onClick, onOpenWorkspaceFile, onOpenImage, workspaceImageUrl, children, ...props }: ComponentPropsWithoutRef<'a'> & {
-  onOpenWorkspaceFile?: (href: string) => boolean;
-  onOpenImage?: (src: string, alt?: string) => void;
-  workspaceImageUrl?: (href: string) => string | undefined;
-}) {
+function MarkdownLink({ href, onClick, children, ...props }: ComponentPropsWithoutRef<'a'>) {
+  const { onOpenWorkspaceFile, onOpenImage, workspaceImageUrl } = useContext(MarkdownRenderOptionsContext);
   const isExternal = typeof href === 'string' && /^(?:https?:\/\/|mailto:)/i.test(href);
   const isWebsite = typeof href === 'string' && /^https?:\/\//i.test(href);
   const imageUrl = typeof href === 'string' && workspaceImageLink(href)
@@ -85,11 +91,11 @@ function MarkdownTable({ children, node: _node, ...props }: ComponentPropsWithou
 
 export function ConversationMarkdown({ children, reveal = false, onOpenWorkspaceFile, onOpenImage, workspaceImageUrl }: { children: string; reveal?: boolean; onOpenWorkspaceFile?: (href: string) => boolean; onOpenImage?: (src: string, alt?: string) => void; workspaceImageUrl?: (href: string) => string | undefined }) {
   const markdown = useMemo(() => normalizeNestedMarkdownFences(children), [children]);
+  const renderOptions = useMemo(() => ({ onOpenWorkspaceFile, onOpenImage, workspaceImageUrl }), [onOpenWorkspaceFile, onOpenImage, workspaceImageUrl]);
   if (!MARKDOWN_SYNTAX.test(markdown)) return <p><ConversationTextReveal reveal={reveal}>{markdown}</ConversationTextReveal></p>;
-  return <div key={reveal ? markdown : undefined} className={reveal ? 'conversation-text-reveal-block' : undefined}>
-    <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
-      a: props => <MarkdownLink {...props} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl}/>,
-      img: props => <MarkdownImage {...props} onOpenImage={onOpenImage}/>, pre: MarkdownPre, table: MarkdownTable,
-    }}>{markdown}</ReactMarkdown>
-  </div>;
+  return <MarkdownRenderOptionsContext value={renderOptions}>
+    <div className={reveal ? 'conversation-text-reveal-block' : undefined}>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: MarkdownLink, img: MarkdownImage, pre: MarkdownPre, table: MarkdownTable }}>{markdown}</ReactMarkdown>
+    </div>
+  </MarkdownRenderOptionsContext>;
 }
