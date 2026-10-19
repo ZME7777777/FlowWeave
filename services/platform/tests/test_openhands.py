@@ -1687,6 +1687,100 @@ def test_openhands_reads_one_formal_event_by_id_without_history_search(
     ]
 
 
+def test_openhands_projects_initial_message_role_when_event_source_is_environment() -> None:
+    payload = OpenHandsRuntime._event_payload(
+        {
+            "kind": "MessageEvent",
+            "id": "initial-user-event",
+            "parent_id": "__root__",
+            "source": "environment",
+            "llm_message": {
+                "role": "user",
+                "content": "执行节点：生成修复结果\n\n本次节点输入：\n- 需求文档 [prd · URL]: https://example.test/prd",
+            },
+        }
+    )
+
+    assert payload["source"] == "user"
+    assert payload["content"] == (
+        "执行节点：生成修复结果\n\n本次节点输入：\n- 需求文档 [prd · URL]: https://example.test/prd"
+    )
+
+
+def test_openhands_projects_message_role_over_environment_source_for_assistant_reply() -> None:
+    payload = OpenHandsRuntime._event_payload(
+        {
+            "kind": "MessageEvent",
+            "id": "assistant-reply-event",
+            "parent_id": "initial-user-event",
+            "source": "environment",
+            "llm_message": {"role": "assistant", "content": "已完成节点处理。"},
+        }
+    )
+
+    assert payload["source"] == "assistant"
+    assert payload["content"] == "已完成节点处理。"
+
+
+def test_openhands_keeps_initial_message_and_process_events_on_active_branch(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    initial = {
+        "kind": "MessageEvent",
+        "id": "initial-user-event",
+        "parent_id": "__root__",
+        "source": "environment",
+        "llm_message": {"role": "user", "content": "执行节点：生成修复结果"},
+    }
+    thought = {
+        "kind": "ActionEvent",
+        "id": "thought-event",
+        "parent_id": "initial-user-event",
+        "source": "agent",
+        "action": {"kind": "ThinkAction", "thought": "先检查现有实现。"},
+    }
+    tool = {
+        "kind": "ActionEvent",
+        "id": "tool-event",
+        "parent_id": "thought-event",
+        "source": "agent",
+        "action": {"kind": "TerminalAction", "command": "pwd"},
+    }
+    reply = {
+        "kind": "MessageEvent",
+        "id": "assistant-reply-event",
+        "parent_id": "tool-event",
+        "source": "environment",
+        "llm_message": {"role": "assistant", "content": "已完成节点处理。"},
+    }
+    monkeypatch.setattr(
+        runtime,
+        "_conversation_state",
+        lambda *_args, **_kwargs: _state(leaf_event_id="assistant-reply-event"),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_active_event_window",
+        lambda *_args, **_kwargs: ([initial, thought, tool, reply], None),
+    )
+
+    batch = runtime.read_active_events(_handle())
+
+    assert [event.cursor for event in batch.events] == [
+        "initial-user-event",
+        "thought-event",
+        "tool-event",
+        "assistant-reply-event",
+    ]
+    assert [event.payload["source"] for event in batch.events] == [
+        "user",
+        "agent",
+        "agent",
+        "assistant",
+    ]
+
+
 def test_openhands_searches_native_message_events_with_body_pagination(
     openhands_settings, monkeypatch
 ):

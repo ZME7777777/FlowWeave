@@ -3210,9 +3210,32 @@ class OpenHandsRuntime:
     def _event_payload(cls, item: dict[str, Any]) -> dict[str, Any]:
         kind = str(item.get("kind") or "UNKNOWN")
         event_text = cls._event_text(item)
+        source = item.get("source")
+        if kind == "MessageEvent":
+            message = item.get("llm_message")
+            role = (
+                str(cast(dict[str, object], message).get("role") or "").lower()
+                if isinstance(message, dict)
+                else ""
+            )
+            # The initial message accepted during conversation creation can be
+            # recorded as an environment event. Fall back to its LLM role only
+            # then; a native user/agent source remains authoritative.
+            if str(source or "").lower() not in {
+                "user",
+                "human",
+                "assistant",
+                "agent",
+            } and role in {
+                "user",
+                "human",
+                "assistant",
+                "agent",
+            }:
+                source = role
         payload: dict[str, Any] = {
             "source_type": kind,
-            "source": item.get("source"),
+            "source": source,
             "content": redact_secret_text(event_text),
         }
         timestamp = item.get("timestamp")
