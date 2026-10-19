@@ -1314,6 +1314,12 @@ test('run projection stays neutral until record selection and automatic save rep
   expect(automaticCopyBody).toEqual({ name: '自动记录 · 命名副本' });
   await expect(page.locator('.automatic-record-list > article')).toHaveCount(2);
   await expect(page.locator('.automatic-record-list > article.active')).toContainText('自动记录 · 命名副本');
+
+  // A missing live input must block starting, not prevent configuring the
+  // downstream plan that will consume the upstream artifact.
+  await automaticRecord.click();
+  await page.locator('.react-flow__node').filter({ hasText: '测试节点2' }).click();
+  await expect(automaticEditor).toContainText('测试节点2');
 });
 
 test('FR-130 running automatic records show execution facts', async ({ page }) => {
@@ -2386,7 +2392,7 @@ test('completed continuous node sessions can create and fork writable conversati
   });
 
   await page.goto(sourcePath);
-  await expect(page.getByText('节点会话已切换为只读')).toBeVisible();
+  await expect(page.getByText('节点会话已切换为只读')).toHaveCount(0);
   await expect(page.getByRole('button', { name: '从此处分叉会话' })).toBeVisible();
   const createConversation = page.getByRole('button', { name: '在根工作区中新建会话' });
   await expect(createConversation).toBeEnabled();

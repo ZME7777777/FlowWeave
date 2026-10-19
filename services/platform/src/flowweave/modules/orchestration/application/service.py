@@ -1880,6 +1880,7 @@ def _evaluate_readiness(db: Session, attempt: NodeAttempt) -> None:
 def _gate_artifact(item: ArtifactVersion) -> dict[str, Any]:
     return {
         "id": item.id,
+        "producer_attempt_id": item.producer_attempt_id,
         "field_key": item.field_key,
         "version_no": item.version_no,
         "artifact_type": item.artifact_type,
@@ -2020,6 +2021,9 @@ def _gate_review_projection(context: dict[str, Any], policy: dict[str, Any]) -> 
             "downstream_consumers": context.get("downstream_consumers")
             if isinstance(context.get("downstream_consumers"), list)
             else [],
+            "upstream_gate_audit": context.get("upstream_gate_audit")
+            if isinstance(context.get("upstream_gate_audit"), dict)
+            else {"schema_version": 1, "inputs": []},
         },
     }
 
@@ -2086,6 +2090,114 @@ def _downstream_consumers(snapshot: RunSnapshot, source_node_key: str) -> list[d
     return list(consumers.values())
 
 
+def _upstream_gate_audit_capsule(
+    db: Session, flow_run_id: str, input_bindings: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Prove only current-run, passing upstream inputs without exposing content.
+
+    A primary Agent and an author Gate need the same immutable proof when a
+    downstream result cites upstream Artifact or Gate identities.  The proof is
+    derived from the actual input binding, never copied from an editable node
+    prompt, and deliberately contains metadata rather than Artifact bodies.
+    """
+
+    inputs: list[dict[str, Any]] = []
+    for binding in input_bindings:
+        artifact = binding.get("artifact")
+        if not isinstance(artifact, dict):
+            continue
+        item: dict[str, Any] = {
+            "input_field_key": binding.get("input_field_key"),
+            "binding_source": binding.get("binding_source"),
+            "artifact": _gate_review_artifact_projection(artifact),
+        }
+        producer_attempt_id = artifact.get("producer_attempt_id")
+        if not isinstance(producer_attempt_id, str) or not producer_attempt_id:
+            item["verification"] = {"status": "NOT_APPLICABLE"}
+            inputs.append(item)
+            continue
+        producer_attempt = db.get(NodeAttempt, producer_attempt_id)
+        producer_node_run = (
+            db.get(NodeRun, producer_attempt.node_run_id) if producer_attempt is not None else None
+        )
+        if producer_node_run is None or producer_node_run.flow_run_id != flow_run_id:
+            item["verification"] = {"status": "UNAVAILABLE", "reason": "PRODUCER_OUT_OF_SCOPE"}
+            inputs.append(item)
+            continue
+        candidate = _current_candidate_output_set(db, producer_attempt)
+        if (
+            candidate is None
+            or candidate.status != "GATE_PASSED"
+            or str(artifact.get("id") or "") not in candidate.artifact_ids_json
+        ):
+            item["verification"] = {
+                "status": "UNAVAILABLE",
+                "reason": "UPSTREAM_CANDIDATE_NOT_PASSED",
+            }
+            inputs.append(item)
+            continue
+        evaluations = list(
+            db.scalars(
+                select(GateEvaluation).where(
+                    GateEvaluation.attempt_id == producer_attempt.id,
+                    GateEvaluation.candidate_output_set_id == candidate.id,
+                    GateEvaluation.stage == "END",
+                )
+            )
+        )
+        latest_round = max((evaluation.evaluation_attempt for evaluation in evaluations), default=0)
+        latest_evaluations = [
+            evaluation
+            for evaluation in evaluations
+            if evaluation.evaluation_attempt == latest_round
+        ]
+        if not latest_evaluations or any(
+            evaluation.decision != "PASS" for evaluation in latest_evaluations
+        ):
+            item["verification"] = {
+                "status": "UNAVAILABLE",
+                "reason": "UPSTREAM_GATE_DECISION_INCOMPLETE",
+            }
+            inputs.append(item)
+            continue
+        item["verification"] = {
+            "status": "VERIFIED",
+            "producer_attempt_id": producer_attempt.id,
+            "producer_node_key": producer_node_run.flow_node_snapshot_key,
+            "candidate_output_set": {"id": candidate.id, "status": candidate.status},
+            "end_gate_evaluations": [
+                {
+                    "id": evaluation.id,
+                    "policy_snapshot_key": evaluation.policy_snapshot_key,
+                    "evaluation_attempt": evaluation.evaluation_attempt,
+                }
+                for evaluation in latest_evaluations
+            ],
+        }
+        inputs.append(item)
+    return {"schema_version": 1, "inputs": inputs}
+
+
+def _startup_prompt_with_upstream_gate_audit(
+    startup_prompt: str | None, upstream_gate_audit: dict[str, Any]
+) -> str | None:
+    """Append live port-binding evidence without mutating the frozen template."""
+
+    inputs = upstream_gate_audit.get("inputs")
+    if not isinstance(inputs, list) or not inputs:
+        return startup_prompt
+    instruction = (
+        "\n\n[FLOWWEAVE_UPSTREAM_GATE_AUDIT_V1]\n"
+        "以下是本次运行按端口实际绑定的上游审计证据。仅可引用其中 status=VERIFIED "
+        "的 Artifact、候选集和门禁 ID；不得使用节点模板、其他运行或历史会话中的 ID。"
+        "若基础提示词或历史记录包含不同的上游 ID，以本审计证据为唯一权威；"
+        "那些不同 ID 已失效，绝不得写入本次输出。"
+        " status=UNAVAILABLE 或 NOT_APPLICABLE 不表示上游已通过。\n"
+        + json.dumps(upstream_gate_audit, ensure_ascii=False, sort_keys=True)
+    )
+    return f"{str(startup_prompt or '').rstrip()}{instruction}"
+
+
 def _gate_context(
     db: Session, attempt: NodeAttempt, node_run: NodeRun, node: dict[str, Any], stage: str
 ) -> dict[str, Any]:
@@ -2110,7 +2222,7 @@ def _gate_context(
         if row.artifact_version_id in input_artifacts
     ]
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "stage": stage,
         "attempt": {"id": attempt.id, "attempt_no": attempt.attempt_no},
         "candidate_output_set": (
@@ -2130,6 +2242,7 @@ def _gate_context(
             "outputs": node.get("asset", {}).get("outputs", []),
         },
         "input_bindings": bindings,
+        "upstream_gate_audit": _upstream_gate_audit_capsule(db, node_run.flow_run_id, bindings),
         # Candidate content is exposed only as a bounded local preview. The
         # reviewer never receives a credentialed Artifact-store handle or an
         # unrestricted workspace path.
@@ -2150,6 +2263,7 @@ def _gate_context(
 
 _PLATFORM_OUTPUT_REVIEW_POLICY_ID = "__platform_output_contract__"
 _PLATFORM_OUTPUT_REVIEW_POSITION = -10_000
+_BUSINESS_RESULT_CONTRACT_POSITION = -9_000
 
 
 def _platform_output_review_policy(_db: Session, _attempt: NodeAttempt) -> dict[str, Any]:
@@ -2171,6 +2285,64 @@ def _platform_output_review_policy(_db: Session, _attempt: NodeAttempt) -> dict[
             "review_kind": "DELIVERY_AND_MAPPING",
         },
     }
+
+
+def _business_result_contract_review_policies(
+    policies: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Derive deterministic, opt-in contract checks from frozen author gates."""
+
+    derived: list[dict[str, Any]] = []
+    for index, policy in enumerate(policies):
+        config = policy.get("config")
+        contract = config.get("business_result_contract") if isinstance(config, dict) else None
+        policy_id = str(policy.get("id") or "")
+        if not isinstance(contract, dict) or not policy_id:
+            continue
+        derived.append(
+            {
+                "id": f"__business_result_contract__:{policy_id}",
+                "stage": "END",
+                "position": _BUSINESS_RESULT_CONTRACT_POSITION + index,
+                "gate_type": "BUSINESS_RESULT_CONTRACT",
+                "enabled": True,
+                "timeout_seconds": 1,
+                "config": {
+                    "system_owned": True,
+                    "source_gate_policy_id": policy_id,
+                    "business_result_contract": copy.deepcopy(contract),
+                },
+            }
+        )
+    return derived
+
+
+def _startup_prompt_with_business_result_contract(
+    startup_prompt: str | None, gate_policies: list[dict[str, Any]]
+) -> str | None:
+    """Tell the execution Agent the exact frozen result envelope it must deliver."""
+
+    prompt = str(startup_prompt or "").strip()
+    if "FLOWWEAVE_BUSINESS_RESULT_CONTRACT_V1" in prompt:
+        return startup_prompt
+    contracts = []
+    for policy in gate_policies:
+        config = policy.get("config")
+        contract = config.get("business_result_contract") if isinstance(config, dict) else None
+        if isinstance(contract, dict):
+            contracts.append(contract)
+    if not contracts:
+        return startup_prompt
+    instruction = (
+        "\n\n[FLOWWEAVE_BUSINESS_RESULT_CONTRACT_V1]\n"
+        "本节点的结束门禁会先对下列业务结果合同做确定性校验。请在每个合同的 "
+        "result_output_keys 指定的文本输出中写入一个完整 JSON 对象，格式为 "
+        '{"flowweave_business_result":{...}}。对象必须包含 schema_version: 1、'
+        "status、node_kind 和 evidence；status 只有在全部证据真实、可追溯且已交付时才能为 "
+        "SUCCESS。不得用 BLOCKED、FAILED、猜测、空数组或报告正文代替必需证据；未完成时如实"
+        "报告，但门禁会阻止下游流转。合同如下：\n" + json.dumps(contracts, ensure_ascii=False)
+    )
+    return f"{prompt}{instruction}".strip()
 
 
 @dataclass(frozen=True, slots=True)
@@ -2267,7 +2439,10 @@ def _record_gate_results(
                 key: preset.get(key)
                 for key in ("model_provider_id", "model_name", "reasoning_effort")
             }
-        if policy.get("gate_type") != "PLATFORM_OUTPUT_CONTRACT":
+        if policy.get("gate_type") not in {
+            "PLATFORM_OUTPUT_CONTRACT",
+            "BUSINESS_RESULT_CONTRACT",
+        }:
             result_json["_gate_review"] = _gate_review_projection(context, policy)
         if prepared.plan.sidecar_binding_id and result.sidecar_available:
             result_json["_gate_conversation_binding_id"] = prepared.plan.sidecar_binding_id
@@ -2494,6 +2669,7 @@ def _prepare_gate_stage(
         # gates.  The latter answer additional policy questions; they cannot
         # substitute for the platform's output-contract decision.
         policies.append(_platform_output_review_policy(db, attempt))
+        policies.extend(_business_result_contract_review_policies(policies))
     policies.sort(key=lambda x: int(x["position"]))
     prepared: list[_PreparedGate] = []
     for policy in policies:
@@ -2543,8 +2719,8 @@ def _prepare_gate_plan(
 
     config = dict(policy.get("config") or {})
     timeout = int(policy.get("timeout_seconds", 30))
-    if str(policy["gate_type"]) == "PLATFORM_OUTPUT_CONTRACT":
-        return GateExecutionPlan("PLATFORM_OUTPUT_CONTRACT", config, timeout)
+    if str(policy["gate_type"]) in {"PLATFORM_OUTPUT_CONTRACT", "BUSINESS_RESULT_CONTRACT"}:
+        return GateExecutionPlan(str(policy["gate_type"]), config, timeout)
     preset = policy.get("agent_preset")
     if not isinstance(preset, dict):
         return GateExecutionPlan(
@@ -2895,7 +3071,9 @@ def _cron_values(field: str, lower: int, upper: int) -> set[int]:
 def _parse_cron(expression: str) -> tuple[set[int], set[int], set[int], set[int], set[int]]:
     fields = expression.split()
     if len(fields) != 5:
-        raise ValueError("cron must contain minute, hour, day-of-month, month and day-of-week")
+        raise ValueError(
+            "cron must contain five fields: minute, hour, day-of-month, month and day-of-week"
+        )
     return cast(
         tuple[set[int], set[int], set[int], set[int], set[int]],
         tuple(
@@ -3274,6 +3452,7 @@ def process_flow_run_schedule_occurrence(
         run = _materialize_scheduled_run(db, schedule, occurrence)
         occurrence.flow_run_id = run.id
         occurrence.state = "STARTED"
+        _finalize_schedule_occurrence(db, run)
         schedule.last_run_at = datetime.now(UTC)
         schedule.has_execution = True
     except DomainError as exc:
@@ -3321,6 +3500,9 @@ def _materialize_scheduled_run(
     )
     db.add(run)
     db.flush()
+    # Automatic execution can finish in this transaction, so establish the
+    # occurrence link before its terminal state is recomputed.
+    occurrence.flow_run_id = run.id
     snapshot = RunSnapshot(
         flow_run_id=run.id,
         version=1,
@@ -3558,7 +3740,10 @@ def process_start_automatic_attempt(db: Session, attempt_id: str, *, commit: boo
         AttemptStartWrite(
             expected_state_version=attempt.state_version,
             startup_mode="PROMPT",
-            prompt=str(node_plan.get("startup_prompt") or ""),
+            # The attempt has already frozen the prompt, including any
+            # platform-injected business-result contract. Reuse it rather
+            # than resubmitting the editable plan value at this handoff.
+            prompt=None,
         ),
         f"automatic-start:{attempt.id}:v{attempt.state_version}",
     )
@@ -3668,6 +3853,9 @@ def _create_node_run(
     allow_existing: bool = False,
     awaiting_start_confirmation: bool = False,
 ) -> tuple[NodeRun, NodeAttempt]:
+    startup_prompt = _startup_prompt_with_business_result_contract(
+        startup_prompt, gate_policies or []
+    )
     snapshot = _active_snapshot(db, run)
     node = _node(snapshot, instance_key)
     asset = cast(dict[str, Any], node.get("asset") or {})
@@ -4108,6 +4296,9 @@ def _create_nested_stepwise_run_record(
         run_no=run_no,
         name=(payload.name or "").strip() or f"{parent.name} · 逐步运行 #{run_no}",
         run_mode="MANUAL",
+        # A stepwise record has no execution until a user explicitly starts
+        # its first configured node. Keep its list projection out of ACTIVE.
+        state=FlowRunState.DRAFT,
         environment_version_id=environment.id,
         parent_flow_run_id=parent.id,
         lark_folder_token=None,
@@ -4312,8 +4503,12 @@ def _stepwise_draft_projection(draft: dict[str, Any]) -> dict[str, Any]:
 def _stepwise_draft_ready(node: dict[str, Any], draft: dict[str, Any]) -> bool:
     if str(draft.get("startup_mode") or "PROMPT") != "PROMPT":
         return False
-    if not str(draft.get("startup_prompt") or "").strip() or not isinstance(
-        draft.get("agent_preset"), dict
+    preset = draft.get("agent_preset")
+    if (
+        not str(draft.get("startup_prompt") or "").strip()
+        or not isinstance(preset, dict)
+        or not str(preset.get("model_provider_id") or "").strip()
+        or not str(preset.get("model_name") or "").strip()
     ):
         return False
     bindings = _stepwise_draft_bindings(draft)
@@ -4444,6 +4639,35 @@ def save_stepwise_node_draft(
             expected=payload.expected_row_version,
             actual=existing_version,
         )
+    # Match continuous plans: reject unavailable model configuration while the
+    # draft is still editable, then persist the resolved immutable identities.
+    preset = _freeze_draft_agent_preset(db, payload.agent_preset.model_dump())
+    frozen_gates: list[dict[str, Any]] = []
+    for gate in payload.gates:
+        gate_config = agent_sessions.resolve_session_config(
+            db,
+            model_provider_id=gate.agent_preset.model_provider_id,
+            model_name=gate.agent_preset.model_name,
+            reasoning_effort=gate.agent_preset.reasoning_effort,
+            fallback_models=(),
+            capability_version_ids=(),
+        )
+        frozen_gates.append(
+            {
+                "id": str(uuid4()),
+                "stage": gate.stage,
+                "position": gate.position,
+                "gate_type": gate.gate_type,
+                "enabled": gate.enabled,
+                "timeout_seconds": gate.timeout_seconds,
+                "config": copy.deepcopy(gate.config),
+                "agent_preset": {
+                    "model_provider_id": gate_config.model_provider_id,
+                    "model_name": gate_config.model_name,
+                    "reasoning_effort": gate_config.reasoning_effort,
+                },
+            }
+        )
     existing_bindings = _stepwise_draft_bindings(existing or {})
     artifact_ids = dict(payload.artifact_ids)
     for field_key, binding in existing_bindings.items():
@@ -4487,7 +4711,6 @@ def save_stepwise_node_draft(
         )
         artifact_ids[field_key] = artifact.id
     _validate_input_bindings(db, run, node, artifact_ids)
-    preset = payload.agent_preset.model_dump()
     executor = cast(dict[str, Any], node.get("asset", {}).get("executor") or {})
     effective_context_prompt = (
         str(preset["node_context_prompt"])
@@ -4499,19 +4722,7 @@ def save_stepwise_node_draft(
         "startup_mode": "PROMPT",
         "startup_prompt": payload.startup_prompt,
         "agent_preset": preset,
-        "gates": [
-            {
-                "id": str(uuid4()),
-                "stage": gate.stage,
-                "position": gate.position,
-                "gate_type": gate.gate_type,
-                "enabled": gate.enabled,
-                "timeout_seconds": gate.timeout_seconds,
-                "config": gate.config,
-                "agent_preset": gate.agent_preset.model_dump(),
-            }
-            for gate in payload.gates
-        ],
+        "gates": frozen_gates,
         "context_ids": (
             [_MANUAL_NODE_CONTEXT_ID]
             if preset["node_context_enabled"] and effective_context_prompt.strip()
@@ -6659,6 +6870,11 @@ def _runtime_request(db: Session, attempt: NodeAttempt) -> StartAttemptRequest:
                 "artifact": _artifact_dict(artifact),
             }
         )
+    gate_context = _gate_context(db, attempt, node_run, node, "START")
+    startup_prompt = _startup_prompt_with_upstream_gate_audit(
+        attempt.startup_prompt,
+        cast(dict[str, Any], gate_context["upstream_gate_audit"]),
+    )
     request = build_runtime_request(
         db,
         # ``run.id`` is the Attempt's logical owner even when this nested
@@ -6673,7 +6889,7 @@ def _runtime_request(db: Session, attempt: NodeAttempt) -> StartAttemptRequest:
         node=node,
         bindings=bindings,
         workspace_ref=attempt.workspace_ref or "",
-        startup_prompt=attempt.startup_prompt,
+        startup_prompt=startup_prompt,
         startup_capability_key=attempt.startup_capability_key,
         output_targets=cast(dict[str, dict[str, str]], attempt.output_targets_json or {}),
         environment_image=environment.image_digest,
@@ -8567,6 +8783,7 @@ def _recompute_run(db: Session, run: FlowRun) -> None:
         run.completion_mode = "AUTO"
         run.finished_at = now()
         _event(db, run.id, "FLOW_RUN_COMPLETED", {"mode": "AUTO"})
+        _finalize_schedule_occurrence(db, run)
         _enqueue_terminal_runtime_stop(db, run.id)
     elif any(x.state == NodeRunState.ACTIVE for x in node_runs):
         attempts = list(
@@ -8595,6 +8812,28 @@ def _recompute_run(db: Session, run: FlowRun) -> None:
             run.state = FlowRunState.WAITING_HUMAN
         else:
             run.state = FlowRunState.ACTIVE
+
+
+def _finalize_schedule_occurrence(db: Session, run: FlowRun) -> None:
+    """Keep a generated schedule occurrence aligned with its terminal FlowRun."""
+
+    if not run.schedule_occurrence_id or run.state not in {
+        FlowRunState.COMPLETED,
+        FlowRunState.CANCELLED,
+    }:
+        return
+    db.execute(
+        update(FlowRunScheduleOccurrence)
+        .where(
+            FlowRunScheduleOccurrence.id == run.schedule_occurrence_id,
+            FlowRunScheduleOccurrence.state != "FAILED",
+        )
+        .values(
+            state="COMPLETED" if run.state == FlowRunState.COMPLETED else "CANCELLED",
+            error_detail=None,
+        )
+        .execution_options(synchronize_session=False)
+    )
 
 
 def _enqueue_terminal_runtime_stop(db: Session, flow_run_id: str) -> None:
@@ -9445,6 +9684,10 @@ def _gate_remediation_prompt(
             *(fields or ["- 请按节点冻结输出合同提交全部输出。"]),
         ]
     )
+    if isinstance(getattr(node_run, "flow_run_id", None), str):
+        audit = _gate_context(db, attempt, node_run, node, "START").get("upstream_gate_audit")
+        if isinstance(audit, dict):
+            prompt = _startup_prompt_with_upstream_gate_audit(prompt, audit) or prompt
     return prompt[:16_000], evaluation_ids
 
 
@@ -9993,13 +10236,16 @@ def sync_snapshot(
     )
     db.add(snapshot)
     db.flush()
-    sandboxes.allocate_flow_run_runtime(db, run.id)
+    # Nested stepwise records keep their own snapshots but share the parent's
+    # physical Runtime allocation and Session.
+    runtime_owner_id = sandboxes.runtime_owner_flow_run_id(db, run.id)
+    sandboxes.allocate_flow_run_runtime(db, runtime_owner_id)
     runtime_allocation = sandboxes.runtime_allocation_for_flow_run(
-        db, run.id, manifest_digest=snapshot.runtime_manifest_hash
+        db, runtime_owner_id, manifest_digest=snapshot.runtime_manifest_hash
     )
     sandboxes.ensure_flow_run_runtime_session(
         db,
-        flow_run_id=run.id,
+        flow_run_id=runtime_owner_id,
         environment_version_id=environment.id,
         runtime_image_digest=environment.image_digest,
         workspace_allocation=runtime_allocation,
@@ -10098,6 +10344,7 @@ def cancel_run(db: Session, run_id: str, idempotency_key: str) -> dict[str, Any]
         else:
             attempt.runtime_phase = "CANCELLED"
     _event(db, run.id, "FLOW_RUN_CANCELLED")
+    _finalize_schedule_occurrence(db, run)
     _enqueue_terminal_runtime_stop(db, run.id)
     finish(db)
     return run_detail(db, run.id)
@@ -10261,11 +10508,11 @@ def _delete_run_records(db: Session, run_id: str) -> None:
             expected_node_run_id=binding.node_run_id,
             allow_inactive_runtime=True,
         )
-    # Remove every physical generation while the NodeAttempt-owned Runtime
-    # Sessions still identify this FlowRun.  The reconciler intentionally
-    # never TTL-reaps these persistent OpenHands Runtimes, so permanent Run
-    # deletion is their only cleanup authority.
-    sandboxes.delete_flow_run_runtimes_now(db, run.id)
+    # Nested records borrow their parent's physical Runtime and network. Only
+    # the owner may remove those resources; deleting a child must not contact
+    # the Runtime Provider for a network it never created.
+    if sandboxes.runtime_owner_flow_run_id(db, run.id) == run.id:
+        sandboxes.delete_flow_run_runtimes_now(db, run.id)
     task_aggregate_ids = [*attempt_ids, *conversation_ids]
     if task_aggregate_ids:
         db.execute(

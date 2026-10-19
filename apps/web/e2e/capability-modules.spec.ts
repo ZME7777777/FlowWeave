@@ -112,7 +112,14 @@ test('published Context Bundle shows its frozen document directory before compil
   await page.goto('/');
   await page.getByRole('button', { name: '能力仓库' }).click();
   await page.getByRole('navigation', { name: '能力模块' }).getByRole('button', { name: /Context/ }).click();
-  await page.getByRole('button', { name: '查看内容' }).click();
+  const contextCard = page.locator('.capability-card').filter({ hasText: '资料包' });
+  await contextCard.getByRole('button', { name: '更多操作：Context 资料包' }).click();
+  const contextMenu = page.getByRole('menu', { name: 'Context 资料包 操作菜单' });
+  await expect(contextMenu).toBeVisible();
+  await expect(contextMenu.getByRole('menuitem', { name: '查看内容' })).toBeVisible();
+  await expect(contextMenu.getByRole('menuitem', { name: '删除能力' })).toBeVisible();
+  expect(await contextMenu.evaluate(menu => menu.parentElement === document.body)).toBe(true);
+  await contextMenu.getByRole('menuitem', { name: '查看内容' }).click();
   const dialog = page.getByRole('dialog', { name: '查看 Context 资料包' });
   await expect(dialog.getByText('资料目录')).toBeVisible();
   await expect(dialog.getByText('入口：README.md · 全部文档均已加载')).toBeVisible();
@@ -149,7 +156,7 @@ test('capability repository exposes module-specific menus and actions', async ({
 
   await modules.getByRole('button', { name: /Plugin/ }).click();
   await expect(actions.getByText('上传 Plugin ZIP', { exact: true })).toBeVisible();
-  await expect(actions.getByRole('button', { name: '浏览 Marketplace' })).toBeVisible();
+  await expect(actions.getByRole('button', { name: 'OpenHands Marketplace' })).toBeVisible();
   await expect(actions.getByRole('button', { name: 'Git Plugin' })).toBeVisible();
   await expect(actions.getByText('上传 Skill ZIP', { exact: true })).toHaveCount(0);
   await expect(page.locator('.skill-collection-section')).toHaveCount(0);
@@ -157,13 +164,16 @@ test('capability repository exposes module-specific menus and actions', async ({
   const moduleActions = [
     ['MCP', '新建 MCP'],
     ['Hook', '新建 Hook'],
-    ['Agent Definition', '新建 Agent Definition'],
   ] as const;
   for (const [module, action] of moduleActions) {
     await modules.getByRole('button', { name: new RegExp(module) }).click();
     await expect(actions.getByRole('button')).toHaveCount(1);
     await expect(actions.getByRole('button', { name: action })).toBeVisible();
   }
+
+  await modules.getByRole('button', { name: /Agent Definition/ }).click();
+  await expect(actions.locator('input[type="file"]')).toHaveCount(1);
+  await expect(actions.getByText('上传 Agent Definition Markdown', { exact: true })).toBeVisible();
 
   await modules.getByRole('button', { name: /Context/ }).click();
   await expect(actions.getByRole('button', { name: '新增 Context' })).toBeVisible();
@@ -254,12 +264,23 @@ test('capability editors overlay the top navigation without clipping their headi
     await expect(dialog.getByRole('button', { name: '关闭' })).toBeVisible();
   };
 
-  await page.getByRole('button', { name: /编辑/ }).first().click();
+  const skillCard = page.locator('.capability-card').filter({ hasText: 'layout-skill' });
+  await skillCard.getByRole('button', { name: '更多操作：Skill layout-skill' }).click();
+  const skillMenu = page.getByRole('menu', { name: 'Skill layout-skill 操作菜单' });
+  await expect(skillMenu).toBeVisible();
+  await skillMenu.getByRole('menuitem', { name: '编辑' }).click();
   await verifyEditor('编辑 Skill layout-skill', '编辑 layout-skill');
   await page.getByRole('dialog', { name: '编辑 Skill layout-skill' }).getByRole('button', { name: '关闭' }).click();
 
   await page.getByRole('navigation', { name: '能力模块' }).getByRole('button', { name: /MCP/ }).click();
-  await page.getByRole('button', { name: /编辑/ }).first().click();
+  const mcpCard = page.locator('.capability-card').filter({ hasText: 'layout-mcp' });
+  await mcpCard.getByRole('button', { name: '更多操作：MCP layout-mcp' }).click();
+  const mcpMenu = page.getByRole('menu', { name: 'MCP layout-mcp 操作菜单' });
+  await expect(mcpMenu).toBeVisible();
+  const mcpMenuBounds = await mcpMenu.boundingBox();
+  expect(mcpMenuBounds?.width).toBeGreaterThanOrEqual(156);
+  expect((mcpMenuBounds?.y ?? 0) + (mcpMenuBounds?.height ?? 0)).toBeLessThanOrEqual(720);
+  await mcpMenu.getByRole('menuitem', { name: '编辑' }).click();
   await verifyEditor('编辑 MCP', '编辑 MCP Server');
 });
 
@@ -363,6 +384,13 @@ test('Skill collections use a compact paged grid', async ({ page }) => {
   await expect(collectionSection.getByText('研发交付', { exact: true })).toBeVisible();
   await expect(collectionSection.getByText('质量验证', { exact: true })).toBeVisible();
   await expect(collectionSection.getByText('发布运营', { exact: true })).toHaveCount(0);
+  await collectionSection.getByRole('button', { name: '更多操作：Skill 组合 需求分析' }).click();
+  const collectionMenu = page.getByRole('menu', { name: 'Skill 组合 需求分析 操作菜单' });
+  await expect(collectionMenu.getByRole('menuitem', { name: '编辑' })).toBeVisible();
+  await expect(collectionMenu.getByRole('menuitem', { name: '删除' })).toBeVisible();
+  const collectionMenuBounds = await collectionMenu.boundingBox();
+  expect(collectionMenuBounds?.width).toBeGreaterThanOrEqual(156);
+  expect(collectionMenuBounds?.y).toBeGreaterThanOrEqual(0);
   await collectionSection.getByRole('button', { name: '下一页' }).click();
   await expect(collectionRows).toHaveCount(1);
   await expect(collectionSection.getByText('发布运营', { exact: true })).toBeVisible();
@@ -477,6 +505,8 @@ test('Skill list keeps pagination in view on short screens and offers a package 
   const grid = await page.locator('.capabilities-page .capability-card-grid').boundingBox();
   expect(grid && box && grid.y + grid.height).toBeLessThanOrEqual(box!.y + 1);
 
-  const download = page.getByRole('link', { name: '下载 Skill skill-0' });
+  const skillCard = page.locator('.capability-card').filter({ hasText: 'skill-0' });
+  await skillCard.getByRole('button', { name: '更多操作：Skill skill-0' }).click();
+  const download = page.getByRole('menu', { name: 'Skill skill-0 操作菜单' }).getByRole('menuitem', { name: '下载 Skill skill-0' });
   await expect(download).toHaveAttribute('href', /\/api\/v1\/capabilities\/skill-0\/package$/);
 });

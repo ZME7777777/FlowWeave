@@ -544,6 +544,8 @@ def test_stream_event_projection_never_exposes_message_context(project, kwargs):
         }
     ]
 
+
+@pytest.mark.parametrize("host", ["workspace", "node", "run"])
 def test_preparation_freezes_ids_and_preserves_entry_authorization(monkeypatch, host):
     locator = _locator("workspace" if host == "workspace" else "node")
     saved = locator.locator if host == "workspace" else locator

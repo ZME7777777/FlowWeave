@@ -1,20 +1,28 @@
 from __future__ import annotations
 
+import json
+
 from flowweave.modules.gates.application.executor import (
     GateExecutionPlan,
     _normalize,
     execute_gate,
     execute_gate_plan,
 )
-from flowweave.modules.orchestration.application.service import _gate_review_projection
+from flowweave.modules.orchestration.application.service import (
+    _business_result_contract_review_policies,
+    _gate_review_projection,
+    _startup_prompt_with_business_result_contract,
+    _startup_prompt_with_upstream_gate_audit,
+)
 from flowweave.runtime.base import (
-    RuntimeAskAgentResult,
     RuntimeEventBatch,
+    RuntimeResult,
     RuntimeUsageSnapshot,
     StartAttemptRequest,
 )
 from flowweave.runtime.dependencies import runtime_context
 from flowweave.runtime.mock import MockRuntime
+from flowweave.shared.schemas import GateWrite
 
 
 def test_python_gate_executes_in_restricted_runner(db_session_factory):
@@ -128,6 +136,234 @@ def test_platform_output_contract_rejects_an_unbindable_mapping():
 
     assert result.decision == "FAIL"
     assert "类型不匹配" in result.reasons[0]
+
+
+def _business_contract(node_kind: str, output_key: str, paths: list[str]):
+    return {
+        "business_result_contract": {
+            "schema_version": 1,
+            "node_kind": node_kind,
+            "result_output_keys": [output_key],
+            "required_evidence_paths": paths,
+        }
+    }
+
+
+def _business_output(output_key: str, result: dict[str, object]):
+    return {
+        "id": f"artifact-{output_key}",
+        "field_key": output_key,
+        "artifact_type": "FILE",
+        "review_preview": {
+            "kind": "TEXT",
+            "content": '{"flowweave_business_result": ' + json.dumps(result) + "}",
+        },
+    }
+
+
+def test_business_result_contract_rejects_blocked_repair_report():
+    result = execute_gate_plan(
+        GateExecutionPlan(
+            "BUSINESS_RESULT_CONTRACT",
+            _business_contract("REPAIR", "repair_summary", ["fingerprints", "repository"]),
+            1,
+        ),
+        {
+            "outputs": [
+                _business_output(
+                    "repair_summary",
+                    {
+                        "schema_version": 1,
+                        "status": "BLOCKED",
+                        "node_kind": "REPAIR",
+                        "evidence": {"fingerprints": ["fp-1"], "repository": "repo"},
+                    },
+                )
+            ]
+        },
+    )
+
+    assert result.decision == "FAIL"
+    assert "不允许通过" in result.reasons[0]
+
+
+def test_business_result_contract_rejects_missing_or_malformed_evidence():
+    missing = execute_gate_plan(
+        GateExecutionPlan(
+            "BUSINESS_RESULT_CONTRACT",
+            _business_contract("INVESTIGATION", "investigation", ["fingerprints", "trace_ids"]),
+            1,
+        ),
+        {
+            "outputs": [
+                _business_output(
+                    "investigation",
+                    {
+                        "schema_version": 1,
+                        "status": "SUCCESS",
+                        "node_kind": "INVESTIGATION",
+                        "evidence": {"fingerprints": ["fp-1"]},
+                    },
+                )
+            ]
+        },
+    )
+    malformed = execute_gate_plan(
+        GateExecutionPlan(
+            "BUSINESS_RESULT_CONTRACT",
+            _business_contract("COLLECTION", "collection", ["source", "time_window"]),
+            1,
+        ),
+        {
+            "outputs": [
+                {
+                    "id": "artifact-collection",
+                    "field_key": "collection",
+                    "artifact_type": "FILE",
+                    "review_preview": {"kind": "TEXT", "content": "# a Markdown report"},
+                }
+            ]
+        },
+    )
+
+    assert missing.decision == "FAIL"
+    assert "trace_ids" in missing.reasons[0]
+    assert malformed.decision == "FAIL"
+    assert "flowweave_business_result" in malformed.reasons[0]
+
+
+def test_business_result_contract_accepts_collection_investigation_and_repair():
+    cases = [
+        ("COLLECTION", "collection", ["source", "time_window"]),
+        ("INVESTIGATION", "investigation", ["fingerprints", "trace_ids"]),
+        ("REPAIR", "repair", ["fingerprints", "repository", "changed_files", "tests", "delivery"]),
+    ]
+    for node_kind, output_key, paths in cases:
+        evidence = {path: [path] for path in paths}
+        result = execute_gate_plan(
+            GateExecutionPlan(
+                "BUSINESS_RESULT_CONTRACT",
+                _business_contract(node_kind, output_key, paths),
+                1,
+            ),
+            {
+                "outputs": [
+                    _business_output(
+                        output_key,
+                        {
+                            "schema_version": 1,
+                            "status": "SUCCESS",
+                            "node_kind": node_kind,
+                            "evidence": evidence,
+                        },
+                    )
+                ]
+            },
+        )
+
+        assert result.decision == "PASS"
+
+
+def test_business_result_contract_allows_explicit_no_findings_only_when_configured():
+    output = _business_output(
+        "collection",
+        {
+            "schema_version": 1,
+            "status": "NO_FINDINGS",
+            "node_kind": "COLLECTION",
+            "evidence": {"source": "logs", "time_window": "2026-10-17T00:00Z"},
+        },
+    )
+    default_result = execute_gate_plan(
+        GateExecutionPlan(
+            "BUSINESS_RESULT_CONTRACT",
+            _business_contract("COLLECTION", "collection", ["source", "time_window"]),
+            1,
+        ),
+        {"outputs": [output]},
+    )
+    configured = _business_contract("COLLECTION", "collection", ["source", "time_window"])
+    configured["business_result_contract"]["allowed_statuses"] = ["SUCCESS", "NO_FINDINGS"]
+    no_findings_result = execute_gate_plan(
+        GateExecutionPlan("BUSINESS_RESULT_CONTRACT", configured, 1), {"outputs": [output]}
+    )
+
+    assert default_result.decision == "FAIL"
+    assert no_findings_result.decision == "PASS"
+
+
+def test_business_result_contract_never_allows_blocked_or_repair_no_findings():
+    blocked = _business_contract("REPAIR", "repair", ["fingerprints"])
+    blocked["business_result_contract"]["allowed_statuses"] = ["SUCCESS", "BLOCKED"]
+    repair_no_findings = _business_contract("REPAIR", "repair", ["fingerprints"])
+    repair_no_findings["business_result_contract"]["allowed_statuses"] = ["NO_FINDINGS"]
+    base = {
+        "stage": "END",
+        "position": 0,
+        "gate_type": "PROMPT",
+        "agent_preset": {"model_provider_id": "provider", "model_name": "model"},
+        "config": {"prompt": "审查"},
+    }
+
+    assert (
+        execute_gate_plan(GateExecutionPlan("BUSINESS_RESULT_CONTRACT", blocked, 1), {}).decision
+        == "ERROR"
+    )
+    assert (
+        execute_gate_plan(
+            GateExecutionPlan("BUSINESS_RESULT_CONTRACT", repair_no_findings, 1), {}
+        ).decision
+        == "ERROR"
+    )
+    for contract in (blocked, repair_no_findings):
+        try:
+            GateWrite.model_validate({**base, "config": {"prompt": "审查", **contract}})
+        except ValueError:
+            continue
+        raise AssertionError("invalid business status configuration must be rejected")
+
+
+def test_business_result_contract_is_injected_into_the_frozen_execution_prompt_once():
+    gates = [
+        {
+            "config": _business_contract("REPAIR", "repair", ["fingerprints", "tests"]),
+        }
+    ]
+
+    prompt = _startup_prompt_with_business_result_contract("修复异常", gates)
+
+    assert prompt is not None
+    assert "FLOWWEAVE_BUSINESS_RESULT_CONTRACT_V1" in prompt
+    assert '"node_kind": "REPAIR"' in prompt
+    assert _startup_prompt_with_business_result_contract(prompt, gates) == prompt
+
+
+def test_business_result_contract_runs_between_platform_and_author_end_gate():
+    author_policy = {
+        "id": "author-end-gate",
+        "stage": "END",
+        "position": 0,
+        "gate_type": "PROMPT",
+        "config": _business_contract("REPAIR", "repair", ["fingerprints", "tests"]),
+    }
+
+    derived = _business_result_contract_review_policies([author_policy])
+
+    assert derived == [
+        {
+            "id": "__business_result_contract__:author-end-gate",
+            "stage": "END",
+            "position": -9000,
+            "gate_type": "BUSINESS_RESULT_CONTRACT",
+            "enabled": True,
+            "timeout_seconds": 1,
+            "config": {
+                "system_owned": True,
+                "source_gate_policy_id": "author-end-gate",
+                "business_result_contract": author_policy["config"]["business_result_contract"],
+            },
+        }
+    ]
 
 
 def test_agent_sidecar_gate_uses_isolated_conversation_and_json_result():
@@ -304,16 +540,83 @@ def test_gate_review_projection_retains_criteria_and_evidence_not_artifact_conte
     assert "secret artifact body" not in str(projection)
 
 
+def test_gate_review_projection_includes_only_the_safe_upstream_audit_capsule():
+    projection = _gate_review_projection(
+        {
+            "stage": "END",
+            "node": {"instance_key": "repair"},
+            "input_bindings": [],
+            "outputs": [],
+            "downstream_consumers": [],
+            "upstream_gate_audit": {
+                "schema_version": 1,
+                "inputs": [
+                    {
+                        "input_field_key": "investigation",
+                        "artifact": {"id": "artifact-current", "content_hash": "hash"},
+                        "verification": {
+                            "status": "VERIFIED",
+                            "producer_attempt_id": "attempt-current",
+                            "candidate_output_set": {
+                                "id": "candidate-current",
+                                "status": "GATE_PASSED",
+                            },
+                            "end_gate_evaluations": [{"id": "gate-current"}],
+                        },
+                    }
+                ],
+            },
+        },
+        {"config": {}},
+    )
+
+    audit = projection["review_context"]["upstream_gate_audit"]
+    assert audit["inputs"][0]["verification"]["candidate_output_set"]["id"] == "candidate-current"
+    assert "secret artifact body" not in str(audit)
+
+
+def test_startup_prompt_appends_live_upstream_gate_audit_without_replacing_template():
+    stale_artifact_id = "artifact-from-an-earlier-run"
+    prompt = _startup_prompt_with_upstream_gate_audit(
+        f"修复已确认的问题；模板中的旧产物 ID 为 {stale_artifact_id}",
+        {
+            "schema_version": 1,
+            "inputs": [
+                {
+                    "input_field_key": "investigation",
+                    "artifact": {"id": "artifact-current"},
+                    "verification": {
+                        "status": "VERIFIED",
+                        "candidate_output_set": {
+                            "id": "candidate-current",
+                            "status": "GATE_PASSED",
+                        },
+                    },
+                }
+            ],
+        },
+    )
+
+    assert prompt is not None
+    assert prompt.startswith("修复已确认的问题")
+    assert "FLOWWEAVE_UPSTREAM_GATE_AUDIT_V1" in prompt
+    assert "candidate-current" in prompt
+    assert "artifact-current" in prompt
+    assert stale_artifact_id in prompt
+    assert "那些不同 ID 已失效" in prompt
+
+
 def test_agent_sidecar_gate_accepts_fenced_json_response():
     class FencedRuntime(MockRuntime):
-        def ask_agent(self, handle, question, *, timeout_seconds):
-            del handle, question, timeout_seconds
-            return RuntimeAskAgentResult(
-                response=(
+        def send_message(self, handle, content, image_urls=()):
+            del content, image_urls
+            self._results[handle.job_id] = RuntimeResult(
+                status="COMPLETED",
+                final_message=(
                     "The gate result is:\n```json\n"
                     '{"decision":"PASS","summary":"checked",'
                     '"reasons":[],"evidence":[],"details":{}}\n```'
-                )
+                ),
             )
 
     request = StartAttemptRequest(
@@ -345,17 +648,17 @@ def test_agent_sidecar_gate_retries_once_for_malformed_json():
             super().__init__()
             self.questions: list[str] = []
 
-        def ask_agent(self, handle, question, *, timeout_seconds):
-            del handle, timeout_seconds
-            self.questions.append(question)
+        def send_message(self, handle, content, image_urls=()):
+            del image_urls
+            self.questions.append(content)
             if len(self.questions) == 1:
-                return RuntimeAskAgentResult(response='{"decision": "PASS", "summary": invalid}')
-            return RuntimeAskAgentResult(
-                response=(
+                answer = '{"decision": "PASS", "summary": invalid}'
+            else:
+                answer = (
                     '{"decision":"PASS","summary":"checked",'
                     '"reasons":[],"evidence":[],"details":{}}'
                 )
-            )
+            self._results[handle.job_id] = RuntimeResult(status="COMPLETED", final_message=answer)
 
     runtime = CorrectingRuntime()
     request = StartAttemptRequest(
@@ -388,22 +691,20 @@ def test_agent_sidecar_gate_retries_once_for_unsupported_decision():
             super().__init__()
             self.questions: list[str] = []
 
-        def ask_agent(self, handle, question, *, timeout_seconds):
-            del handle, timeout_seconds
-            self.questions.append(question)
+        def send_message(self, handle, content, image_urls=()):
+            del image_urls
+            self.questions.append(content)
             if len(self.questions) == 1:
-                return RuntimeAskAgentResult(
-                    response=(
-                        '{"decision":"INSUFFICIENT_EVIDENCE","summary":"证据不足",'
-                        '"reasons":[],"evidence":[],"details":{}}'
-                    )
+                answer = (
+                    '{"decision":"INSUFFICIENT_EVIDENCE","summary":"证据不足",'
+                    '"reasons":[],"evidence":[],"details":{}}'
                 )
-            return RuntimeAskAgentResult(
-                response=(
+            else:
+                answer = (
                     '{"decision":"FAIL","summary":"证据不足，未通过",'
                     '"reasons":["缺少可验证证据"],"evidence":[],"details":{}}'
                 )
-            )
+            self._results[handle.job_id] = RuntimeResult(status="COMPLETED", final_message=answer)
 
     runtime = CorrectingRuntime()
     request = StartAttemptRequest(
@@ -442,7 +743,8 @@ def test_python_gate_rejects_imports_and_host_access(db_session_factory):
             2,
         )
     assert result.decision == "ERROR"
-    assert "Import" in result.summary or "syntax" in result.summary
+    assert result.summary == "门禁脚本执行失败"
+    assert result.error_code == "GATE_ERROR"
 
 
 def test_javascript_gate_is_rejected(db_session_factory):

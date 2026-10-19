@@ -1,4 +1,5 @@
 import base64
+from copy import deepcopy
 from datetime import timedelta
 from uuid import UUID
 
@@ -17,6 +18,7 @@ from flowweave.shared.models import (
     RunEvent,
     TaskState,
 )
+from flowweave.shared.settings import settings_context
 
 
 def _create_flow(client, *, context_prompt: str = ""):
@@ -132,7 +134,9 @@ def _automatic_model_provider_id(client) -> str:
         "/api/v1/model-providers",
         json={
             "name": "自动运行测试模型",
+            "auth_type": "ANTHROPIC_API_KEY",
             "base_url": "https://models.example.test/v1",
+            "api_key": "automatic-test-secret",
             "models": [{"model_name": "gpt-auto", "enabled": True, "is_default": True}],
         },
     )
@@ -271,7 +275,9 @@ def test_automatic_run_draft_freezes_a_stable_identity_for_each_gate(client):
     assert frozen_gate["stage"] == "END"
 
 
-def test_legacy_automatic_gate_plan_copy_and_controlled_restart(client, db_session_factory):
+def test_legacy_automatic_gate_plan_copy_and_controlled_restart(
+    client, db_session_factory, settings
+):
     flow = _create_flow(client)
     provider_id = _automatic_model_provider_id(client)
     first_plan = _node_plan(
@@ -316,13 +322,13 @@ def test_legacy_automatic_gate_plan_copy_and_controlled_restart(client, db_sessi
     with db_session_factory() as db:
         run = db.get(FlowRun, draft["id"])
         assert run is not None
-        plan = dict(run.automation_plan_json or {})
+        plan = deepcopy(run.automation_plan_json or {})
         gate = plan["node_plans"]["first"]["gates"][0]
         gate.pop("id")
         run.automation_plan_json = plan
         db.commit()
 
-    with db_session_factory() as db:
+    with settings_context(settings), db_session_factory() as db:
         orchestration_service.process_start_automatic_run(db, draft["id"])
 
     blocked = client.get(f"/api/v1/flow-runs/{draft['id']}")
@@ -354,7 +360,7 @@ def test_legacy_automatic_gate_plan_copy_and_controlled_restart(client, db_sessi
     assert recovered_detail["automatic_block"] is None
     assert UUID(recovered_detail["automation_plan"]["node_plans"]["first"]["gates"][0]["id"])
 
-    with db_session_factory() as db:
+    with settings_context(settings), db_session_factory() as db:
         tasks = list(
             db.scalars(
                 select(BackgroundTask).where(
@@ -661,11 +667,18 @@ def test_nested_automatic_records_are_scoped_and_share_parent_runtime(
         f"/api/v1/flow-runs/{parent['id']}/automatic-runs/{disposable['id']}"
     )
     assert deleted.status_code == 202, deleted.text
-    for _ in range(8):
+    for _ in range(32):
         with db_session_factory() as db:
             if db.get(FlowRun, disposable["id"]) is None:
                 break
-        assert worker._run_once_sync() is True
+            tasks = list(
+                db.scalars(
+                    select(BackgroundTask).where(BackgroundTask.aggregate_id == disposable["id"])
+                )
+            )
+        assert worker._run_once_sync() is True, [
+            (task.task_type, task.state, task.attempts, task.last_error) for task in tasks
+        ]
     assert worker_client.get(f"/api/v1/flow-runs/{parent['id']}").status_code == 200
     with db_session_factory() as db:
         assert db.get(FlowRun, disposable["id"]) is None
@@ -695,6 +708,7 @@ def test_nested_stepwise_record_is_empty_and_scoped_to_its_parent(client, db_ses
     record = created_response.json()
     assert record["parent_flow_run_id"] == parent["id"]
     assert record["run_mode"] == "MANUAL"
+    assert record["state"] == "DRAFT"
     assert record["environment_version_id"] == parent["environment_version_id"]
     assert record["start_node_key"] == "second"
     assert record["automation_plan"] == {"start_node_key": "second"}
@@ -707,11 +721,11 @@ def test_nested_stepwise_record_is_empty_and_scoped_to_its_parent(client, db_ses
                     FlowRunRuntimeAllocation.flow_run_id == parent["id"]
                 )
             )
-            is None
+            is not None
         )
         assert (
             db.scalar(select(FlowRunRuntime).where(FlowRunRuntime.flow_run_id == parent["id"]))
-            is None
+            is not None
         )
         assert (
             db.scalar(
@@ -737,6 +751,101 @@ def test_nested_stepwise_record_is_empty_and_scoped_to_its_parent(client, db_ses
     )
     assert invalid.status_code == 404, invalid.text
     assert client.get(f"/api/v1/flow-runs/{parent['id']}/stepwise-runs").json() == [record]
+
+
+def test_nested_stepwise_record_syncs_a_new_snapshot_on_its_parent_runtime(
+    client, db_session_factory
+):
+    flow = _create_flow(client)
+    parent = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    ).json()
+    record = client.post(
+        f"/api/v1/flow-runs/{parent['id']}/stepwise-runs",
+        json={"name": "同步逐步记录", "start_node_key": "first"},
+    ).json()
+
+    changed = {
+        "name": flow["name"],
+        "description": "逐步记录同步后的流程定义",
+        "row_version": flow["row_version"],
+        "nodes": [
+            {
+                "instance_key": node["instance_key"],
+                "node_asset_id": node["node_asset_id"],
+                "alias": node.get("alias"),
+                "position_x": node.get("position_x", 0),
+                "position_y": node.get("position_y", 0),
+                "gates": [
+                    {
+                        "stage": gate["stage"],
+                        "position": gate["position"],
+                        "gate_type": gate["gate_type"],
+                        "enabled": gate["enabled"],
+                        "timeout_seconds": gate["timeout_seconds"],
+                        "config": gate["config"],
+                    }
+                    for gate in node["gates"]
+                ],
+            }
+            for node in flow["nodes"]
+        ],
+        "edges": [
+            {
+                "source_instance_key": edge["source_instance_key"],
+                "target_instance_key": edge["target_instance_key"],
+                "position": edge["position"],
+            }
+            for edge in flow["edges"]
+        ],
+        "port_mappings": [
+            {
+                "source_instance_key": mapping["source_instance_key"],
+                "source_output_key": mapping["source_output_key"],
+                "target_instance_key": mapping["target_instance_key"],
+                "target_input_key": mapping["target_input_key"],
+            }
+            for mapping in flow["port_mappings"]
+        ],
+    }
+    updated = client.put(f"/api/v1/flows/{flow['id']}", json=changed)
+    assert updated.status_code == 200, updated.text
+
+    synced = client.post(
+        f"/api/v1/flow-runs/{record['id']}/sync-snapshot",
+        json={"expected_active_version": 1},
+        headers={"Idempotency-Key": "sync-stepwise-record-v2"},
+    )
+    assert synced.status_code == 200, synced.text
+    assert synced.json()["active_snapshot_version"] == 2
+    assert synced.json()["snapshots"][-1]["definition"]["description"] == changed["description"]
+
+    with db_session_factory() as db:
+        assert (
+            db.scalar(
+                select(FlowRunRuntimeAllocation).where(
+                    FlowRunRuntimeAllocation.flow_run_id == parent["id"]
+                )
+            )
+            is not None
+        )
+        assert (
+            db.scalar(select(FlowRunRuntime).where(FlowRunRuntime.flow_run_id == parent["id"]))
+            is not None
+        )
+        assert (
+            db.scalar(
+                select(FlowRunRuntimeAllocation).where(
+                    FlowRunRuntimeAllocation.flow_run_id == record["id"]
+                )
+            )
+            is None
+        )
+        assert (
+            db.scalar(select(FlowRunRuntime).where(FlowRunRuntime.flow_run_id == record["id"]))
+            is None
+        )
 
 
 def test_stepwise_node_draft_remains_editable_until_explicit_start(client):
@@ -788,9 +897,51 @@ def test_stepwise_node_draft_remains_editable_until_explicit_start(client):
     assert started.status_code == 200, started.text
     attempt = started.json()
     assert attempt["startup_prompt"] == "第二版提示词"
-    assert attempt["state"] in {"EXECUTING", "WAITING_ACCEPTANCE"}
+    assert attempt["state"] in {"EXECUTING", "WAITING_ACCEPTANCE", "ACCEPTED"}
     detail = client.get(f"/api/v1/flow-runs/{record['id']}").json()
+    assert detail["state"] != "DRAFT"
     assert len(detail["node_runs"]) == 1
+
+
+def test_stepwise_draft_rejects_missing_agent_model_before_persisting(client):
+    flow = _create_flow(client)
+    parent = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    ).json()
+    record = client.post(
+        f"/api/v1/flow-runs/{parent['id']}/stepwise-runs",
+        json={"name": "缺少模型的逐步草稿", "start_node_key": "first"},
+    ).json()
+    input_artifact = client.post(
+        f"/api/v1/flow-runs/{record['id']}/nodes/first/input-artifacts",
+        json={
+            "field_key": "source",
+            "artifact_type": "URL",
+            "uri": "https://example.com/stepwise-missing-model-input",
+        },
+    )
+    assert input_artifact.status_code == 201, input_artifact.text
+    rejected = client.put(
+        f"/api/v1/flow-runs/{record['id']}/stepwise-node-drafts/first",
+        json={
+            "expected_row_version": 1,
+            "startup_mode": "PROMPT",
+            "startup_prompt": "应在保存时拒绝缺少模型的配置",
+            "agent_preset": {
+                "capability_version_ids": [],
+                "node_context_enabled": False,
+            },
+            "gates": [],
+            "artifact_ids": {"source": input_artifact.json()["id"]},
+            "input_urls": {},
+        },
+    )
+    assert rejected.status_code == 409, rejected.text
+    assert rejected.json()["error"]["code"] == "AGENT_MODEL_CONFIGURATION_REQUIRED"
+    detail = client.get(f"/api/v1/flow-runs/{record['id']}").json()
+    assert detail["node_runs"] == []
+    assert detail["stepwise_node_drafts"] == {}
 
 
 def test_stepwise_draft_start_accepts_on_end_gate_and_exposes_downstream_draft(
@@ -1088,7 +1239,8 @@ def test_copy_nested_stepwise_record_requires_its_persisted_start_node_configura
     )
     assert copied.status_code == 409, copied.text
     assert copied.json()["error"]["code"] == "RUN_STATE_INVALID"
-    assert client.get(f"/api/v1/flow-runs/{parent['id']}/stepwise-runs").json() == [source]
+    records = client.get(f"/api/v1/flow-runs/{parent['id']}/stepwise-runs").json()
+    assert [record["id"] for record in records] == [source["id"]]
 
 
 def test_stepwise_config_actions_recover_legacy_record_start_node(client, db_session_factory):
@@ -1178,6 +1330,22 @@ def test_schedule_occurrence_stays_in_original_flow_run_as_continuous_record(
             "environment_version_id": worker_client.environment_version_id,
         },
     ).json()
+    provider_id = _automatic_model_provider_id(worker_client)
+    business_gate = {
+        "stage": "END",
+        "position": 0,
+        "gate_type": "PROMPT",
+        "config": {
+            "prompt": "审查业务结果是否可接受",
+            "business_result_contract": {
+                "schema_version": 1,
+                "node_kind": "COLLECTION",
+                "result_output_keys": ["result"],
+                "required_evidence_paths": ["source", "time_window"],
+            },
+        },
+        "agent_preset": {"model_provider_id": provider_id, "model_name": "gpt-auto"},
+    }
     source = worker_client.post(
         f"/api/v1/flow-runs/{parent['id']}/automatic-runs",
         json={
@@ -1185,9 +1353,12 @@ def test_schedule_occurrence_stays_in_original_flow_run_as_continuous_record(
             "environment_version_id": worker_client.environment_version_id,
             "start_node_key": "first",
             "node_plans": {
-                "first": _node_plan(
-                    worker_client, "执行起点", input_url="https://example.com/scheduled-input"
-                ),
+                "first": {
+                    **_node_plan(
+                        worker_client, "执行起点", input_url="https://example.com/scheduled-input"
+                    ),
+                    "gates": [business_gate],
+                },
                 "second": _node_plan(worker_client, "执行下游"),
             },
         },
@@ -1223,11 +1394,74 @@ def test_schedule_occurrence_stays_in_original_flow_run_as_continuous_record(
     assert record["parent_flow_run_id"] == parent["id"]
     assert record["schedule_id"] == schedule["id"]
     assert record["schedule_name"] == "每小时检查"
+    assert (
+        record["automation_plan"]["node_plans"]["first"]["gates"][0]["config"][
+            "business_result_contract"
+        ]
+        == business_gate["config"]["business_result_contract"]
+    )
     nested = worker_client.get(f"/api/v1/flow-runs/{parent['id']}/automatic-runs").json()
     assert record["id"] in {item["id"] for item in nested}
     assert record["id"] not in {
         item["id"] for item in worker_client.get("/api/v1/flow-runs").json()
     }
+
+
+def test_completed_schedule_occurrence_reaches_the_same_terminal_state(
+    worker_client, worker_container
+):
+    from flowweave.bootstrap.worker import TaskWorker
+
+    flow = _create_flow(worker_client)
+    parent = worker_client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={
+            "name": "定时任务完成状态所属 FlowRun",
+            "environment_version_id": worker_client.environment_version_id,
+        },
+    ).json()
+    source = worker_client.post(
+        f"/api/v1/flow-runs/{parent['id']}/automatic-runs",
+        json={
+            "name": "定时连续运行完成状态母版",
+            "environment_version_id": worker_client.environment_version_id,
+            "start_node_key": "first",
+            "node_plans": {
+                "first": _node_plan(
+                    worker_client, "执行起点", input_url="https://example.com/scheduled-input"
+                ),
+                "second": _node_plan(worker_client, "执行下游"),
+            },
+        },
+    ).json()
+    created = worker_client.post(
+        "/api/v1/flow-run-schedules",
+        json={
+            "name": "完成状态检查",
+            "source_flow_run_id": source["id"],
+            "cron_expression": "0 * * * *",
+        },
+    )
+    assert created.status_code == 201, created.text
+    schedule = created.json()
+    triggered = worker_client.post(f"/api/v1/flow-run-schedules/{schedule['id']}/trigger")
+    assert triggered.status_code == 202, triggered.text
+
+    worker = TaskWorker(worker_container)
+    occurrence = None
+    for _ in range(24):
+        worker._run_once_sync()
+        occurrences = worker_client.get(
+            f"/api/v1/flow-run-schedules/{schedule['id']}/occurrences?page=1&page_size=10"
+        )
+        assert occurrences.status_code == 200, occurrences.text
+        occurrence = occurrences.json()["items"][0]
+        if occurrence["state"] == "COMPLETED":
+            break
+
+    assert occurrence is not None
+    assert occurrence["state"] == "COMPLETED", occurrence
+    assert occurrence["flow_run"]["state"] == "COMPLETED"
 
 
 def test_automatic_run_draft_rejects_unknown_frozen_nodes(client):
@@ -1259,7 +1493,9 @@ def test_automatic_run_draft_freezes_artifact_and_capability_references(client, 
         "/api/v1/model-providers",
         json={
             "name": "自动编排模型",
+            "auth_type": "ANTHROPIC_API_KEY",
             "base_url": "https://models.example.test/v1",
+            "api_key": "automatic-plan-test-secret",
             "models": [{"model_name": "gpt-auto", "enabled": True, "is_default": True}],
         },
     )
@@ -1313,7 +1549,12 @@ def test_automatic_run_draft_freezes_artifact_and_capability_references(client, 
     capability_delete = client.delete(f"/api/v1/capabilities/{skill_capability['capability_id']}")
     assert capability_delete.status_code == 409, capability_delete.text
     provider_delete = client.delete(f"/api/v1/model-providers/{provider.json()['id']}")
-    assert provider_delete.status_code == 409, provider_delete.text
+    assert provider_delete.status_code == 204, provider_delete.text
+    plan_after_provider_delete = client.get(f"/api/v1/flow-runs/{draft['id']}").json()[
+        "automation_plan"
+    ]["node_plans"]["first"]
+    assert plan_after_provider_delete["agent_preset"]["model_provider_id"] is None
+    assert plan_after_provider_delete["agent_preset"]["model_name"] is None
 
 
 def test_automatic_run_starts_ready_plan_and_completes_frozen_chain(
@@ -1405,6 +1646,80 @@ def test_automatic_run_starts_ready_plan_and_completes_frozen_chain(
         json={"expected_row_version": draft["row_version"]},
     )
     assert again.status_code == 409, again.text
+
+
+def test_automatic_start_reuses_the_frozen_business_contract_prompt(
+    worker_client, worker_container
+):
+    """Automatic handoff must not overwrite the contract-expanded prompt."""
+
+    from flowweave.bootstrap.worker import TaskWorker
+
+    flow = _create_flow(worker_client)
+    business_gate = {
+        "stage": "END",
+        "position": 0,
+        "gate_type": "PROMPT",
+        "config": {
+            "prompt": "审查收集结果",
+            "business_result_contract": {
+                "schema_version": 1,
+                "node_kind": "COLLECTION",
+                "result_output_keys": ["result"],
+                "required_evidence_paths": ["source", "time_window"],
+            },
+        },
+        "agent_preset": {
+            "model_provider_id": _automatic_model_provider_id(worker_client),
+            "model_name": "gpt-auto",
+        },
+    }
+    created = worker_client.post(
+        f"/api/v1/flows/{flow['id']}/automatic-runs",
+        json={
+            "environment_version_id": worker_client.environment_version_id,
+            "start_node_key": "first",
+            "node_plans": {
+                "first": {
+                    **_node_plan(
+                        worker_client,
+                        "执行第一个节点",
+                        input_url="https://example.com/input",
+                    ),
+                    "gates": [business_gate],
+                },
+                "second": _node_plan(worker_client, "执行第二个节点"),
+            },
+        },
+    )
+    assert created.status_code == 201, created.text
+    draft = created.json()
+    started = worker_client.post(
+        f"/api/v1/automatic-runs/{draft['id']}/start",
+        json={"expected_row_version": draft["row_version"]},
+        headers={"Idempotency-Key": f"frozen-contract-prompt:{draft['id']}"},
+    )
+    assert started.status_code == 200, started.text
+
+    worker = TaskWorker(worker_container)
+    assert worker._run_once_sync() is True  # Materialize the first Attempt.
+    detail = worker_client.get(f"/api/v1/flow-runs/{started.json()['id']}").json()
+    attempt = detail["node_runs"][0]["attempts"][0]
+    assert "FLOWWEAVE_BUSINESS_RESULT_CONTRACT_V1" in attempt["startup_prompt"]
+
+    # This eventually executes the real confirm_start immutability check.
+    # Before the regression fix it raised START_CONFIGURATION_IMMUTABLE when
+    # the worker resent the unexpanded plan prompt.
+    for _ in range(8):
+        assert worker._run_once_sync() is True
+        detail = worker_client.get(f"/api/v1/flow-runs/{started.json()['id']}").json()
+        attempt = detail["node_runs"][0]["attempts"][0]
+        if attempt["state"] in {"EXECUTING", "WAITING_ACCEPTANCE", "ACCEPTED"}:
+            break
+    else:
+        raise AssertionError(f"automatic attempt did not start: {attempt['state']}")
+    assert attempt["state"] != "START_BLOCKED"
+    assert "FLOWWEAVE_BUSINESS_RESULT_CONTRACT_V1" in attempt["startup_prompt"]
 
 
 def _import_context_capability(client) -> dict:
@@ -1612,6 +1927,7 @@ def test_automatic_progress_separates_runtime_listener_and_reconciliation(
         db.add_all(
             [
                 BackgroundTask(
+                    owner_user_id=attempt.owner_user_id,
                     task_type="WAIT_RUNTIME_WAKEUP",
                     aggregate_type="ATTEMPT",
                     aggregate_id=attempt_id,
@@ -1621,6 +1937,7 @@ def test_automatic_progress_separates_runtime_listener_and_reconciliation(
                     max_attempts=100,
                 ),
                 BackgroundTask(
+                    owner_user_id=attempt.owner_user_id,
                     task_type="POLL_RUNTIME",
                     aggregate_type="ATTEMPT",
                     aggregate_id=attempt_id,

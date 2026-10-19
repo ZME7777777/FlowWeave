@@ -329,16 +329,14 @@ function reachableNodeKeys(run: FlowRun, startNodeKey?: string, snapshotId?: str
   return reachable;
 }
 
-/** A draft node becomes configurable only after every in-scope predecessor
- * has a saved plan with no outstanding readiness issue.  This makes the
- * graph follow the same order users see at runtime without changing the
- * batch draft API used by imports and automation. */
+/** A draft node becomes configurable once every in-scope predecessor has a
+ * saved plan. Input readiness remains a start-time concern, so users can
+ * complete and review the whole continuous chain before providing live data. */
 function unlockedAutomaticNodeKeys(run: FlowRun, record: FlowRunAutomaticRecord): Set<string> {
   const snapshot = run.snapshots.find(item => item.id === run.active_snapshot_id) ?? run.snapshots.at(-1);
   if (!snapshot || record.state !== 'DRAFT') return new Set(record.reachable_node_keys);
   const reachable = new Set(record.reachable_node_keys);
-  const incomplete = new Set(record.readiness.issues.map(issue => issue.node_key));
-  const readyPlans = new Set(Object.keys(record.node_plans).filter(key => !incomplete.has(key)));
+  const savedPlans = new Set(Object.keys(record.node_plans));
   const predecessors = new Map<string, string[]>();
   for (const edge of snapshot.definition.edges ?? []) {
     if (!reachable.has(edge.source_instance_key) || !reachable.has(edge.target_instance_key)) continue;
@@ -349,7 +347,7 @@ function unlockedAutomaticNodeKeys(run: FlowRun, record: FlowRunAutomaticRecord)
   const unlocked = new Set<string>();
   for (const key of record.reachable_node_keys) {
     const upstream = predecessors.get(key) ?? [];
-    if (key === record.start_node_key || upstream.every(parent => readyPlans.has(parent))) unlocked.add(key);
+    if (key === record.start_node_key || upstream.every(parent => savedPlans.has(parent))) unlocked.add(key);
   }
   return unlocked;
 }
@@ -763,9 +761,52 @@ function GateContentDialog({ kind, initial, readOnly, onClose, onSave }: { kind:
   return <div className="modal-backdrop"><section className="modal gate-content-dialog" role="dialog" aria-modal="true" aria-label={`编辑${label}`}><header><div><span className="eyebrow">GATE CONTENT</span><h2>{readOnly ? `查看${label}` : `编辑${label}`}</h2></div><button type="button" className="ghost" onClick={onClose}><X size={17}/></button></header><label>{label}<textarea aria-label={label} className={kind === 'python' ? 'code' : ''} readOnly={readOnly} value={content} onChange={event => setContent(event.target.value)}/></label>{!readOnly && <label className="gate-file-import"><span><Upload size={15}/>从文件导入</span><small>{kind === 'prompt' ? '支持 .md 或 .txt 文件' : '仅支持 .py 文件'}</small><input aria-label={`导入${label}`} type="file" accept={kind === 'prompt' ? '.md,.txt,text/markdown,text/plain' : '.py,text/x-python'} onChange={event => void importFile(event.target.files?.[0])}/></label>}{error && <p className="error">{error}</p>}<footer>{!readOnly && <button type="button" className="ghost" onClick={onClose}>取消</button>}<button type="button" className="primary" onClick={() => { if (!readOnly) onSave(content); onClose(); }}>{readOnly ? '完成' : '保存'}</button></footer></section></div>;
 }
 
+type BusinessResultContractDraft = {
+  schema_version: 1;
+  node_kind: 'COLLECTION' | 'INVESTIGATION' | 'REPAIR';
+  result_output_keys: string[];
+  required_evidence_paths: string[];
+  allowed_statuses?: string[];
+};
+
+const businessResultContract = (value: unknown): BusinessResultContractDraft | undefined => {
+  if (!value || typeof value !== 'object') return undefined;
+  const raw = value as Record<string, unknown>;
+  if (!['COLLECTION', 'INVESTIGATION', 'REPAIR'].includes(String(raw.node_kind))) return undefined;
+  return {
+    schema_version: 1,
+    node_kind: raw.node_kind as BusinessResultContractDraft['node_kind'],
+    result_output_keys: Array.isArray(raw.result_output_keys) ? raw.result_output_keys.filter((item): item is string => typeof item === 'string') : [],
+    required_evidence_paths: Array.isArray(raw.required_evidence_paths) ? raw.required_evidence_paths.filter((item): item is string => typeof item === 'string') : [],
+    ...(Array.isArray(raw.allowed_statuses) ? { allowed_statuses: raw.allowed_statuses.filter((item): item is string => typeof item === 'string') } : {}),
+  };
+};
+
+function BusinessResultContractDialog({ initial, readOnly, onClose, onSave }: { initial: unknown; readOnly: boolean; onClose: () => void; onSave: (contract?: BusinessResultContractDraft) => void }) {
+  const existing = businessResultContract(initial);
+  const [enabled, setEnabled] = useState(Boolean(existing));
+  const [nodeKind, setNodeKind] = useState<BusinessResultContractDraft['node_kind']>(existing?.node_kind ?? 'COLLECTION');
+  const [outputKeys, setOutputKeys] = useState((existing?.result_output_keys ?? []).join(', '));
+  const [evidencePaths, setEvidencePaths] = useState((existing?.required_evidence_paths ?? []).join(', '));
+  const [allowedStatuses, setAllowedStatuses] = useState((existing?.allowed_statuses ?? ['SUCCESS']).join(', '));
+  const [error, setError] = useState('');
+  useEscapeClose(onClose);
+  const values = (value: string) => value.split(',').map(item => item.trim()).filter(Boolean);
+  const save = () => {
+    if (!enabled) { onSave(undefined); onClose(); return; }
+    const result_output_keys = values(outputKeys);
+    const required_evidence_paths = values(evidencePaths);
+    const allowed_statuses = values(allowedStatuses);
+    if (!result_output_keys.length || !required_evidence_paths.length || !allowed_statuses.length) { setError('请填写至少一个结果输出、必需证据路径和允许状态。'); return; }
+    onSave({ schema_version: 1, node_kind: nodeKind, result_output_keys, required_evidence_paths, allowed_statuses });
+    onClose();
+  };
+  return <div className="modal-backdrop"><section className="modal gate-content-dialog" role="dialog" aria-modal="true" aria-label="配置业务结果合同"><header><div><span className="eyebrow">BUSINESS RESULT</span><h2>{readOnly ? '查看业务结果合同' : '配置业务结果合同'}</h2></div><button type="button" className="ghost" onClick={onClose}><X size={17}/></button></header>{readOnly ? <div className="gate-config-lines"><article><span><b>节点类型</b><small>{existing?.node_kind || '未启用'}</small></span></article><article><span><b>结果输出</b><small>{existing?.result_output_keys.join(', ') || '未配置'}</small></span></article><article><span><b>必需证据</b><small>{existing?.required_evidence_paths.join(', ') || '未配置'}</small></span></article></div> : <div className="node-input-dialog-body"><label><span><b>启用确定性业务结果校验</b><small>会在独立 Agent 语义审查前拒绝 BLOCKED、缺证据或无结构化结果的输出。</small></span><input aria-label="启用业务结果合同" type="checkbox" checked={enabled} onChange={event => setEnabled(event.target.checked)}/></label>{enabled && <><label>节点类型<select aria-label="业务节点类型" value={nodeKind} onChange={event => setNodeKind(event.target.value as BusinessResultContractDraft['node_kind'])}><option value="COLLECTION">COLLECTION</option><option value="INVESTIGATION">INVESTIGATION</option><option value="REPAIR">REPAIR</option></select></label><label>结果输出 field_key（逗号分隔）<input aria-label="业务结果输出" value={outputKeys} onChange={event => setOutputKeys(event.target.value)} placeholder="repair_summary"/></label><label>必需 evidence 路径（逗号分隔）<input aria-label="业务必需证据" value={evidencePaths} onChange={event => setEvidencePaths(event.target.value)} placeholder="fingerprints, repository, tests, delivery"/></label><label>允许状态（逗号分隔）<input aria-label="业务允许状态" value={allowedStatuses} onChange={event => setAllowedStatuses(event.target.value)} placeholder="SUCCESS"/></label></>}</div>}{error && <p className="error">{error}</p>}<footer>{!readOnly && <button type="button" className="ghost" onClick={onClose}>取消</button>}<button type="button" className="primary" onClick={readOnly ? onClose : save}>{readOnly ? '完成' : '保存'}</button></footer></section></div>;
+}
+
 function GateDraftDialog({ draft, onClose, onSave }: { draft: GateDraftDialog; onClose: () => void; onSave: (gate: GatePolicy) => void }) {
   const [gate, setGate] = useState(draft.gate);
-  const [editor, setEditor] = useState<'prompt' | 'python' | 'model'>();
+  const [editor, setEditor] = useState<'prompt' | 'python' | 'model' | 'business'>();
   const [error, setError] = useState('');
   useEscapeClose(() => { if (editor) setEditor(undefined); else onClose(); });
   const editable = !draft.readOnly;
@@ -776,7 +817,7 @@ function GateDraftDialog({ draft, onClose, onSave }: { draft: GateDraftDialog; o
   };
   const gatePreset = gate.agent_preset ?? emptyGateAgentPreset();
   const summary = (text: unknown, empty: string) => String(text || '').trim().replace(/\s+/g, ' ').slice(0, 64) || empty;
-  return <div className="modal-backdrop"><section className="modal gate-draft-dialog" role="dialog" aria-modal="true" aria-label="配置门禁"><header><div><span className="eyebrow">{gate.stage === 'START' ? 'START GATE' : 'END GATE'}</span><h2>配置门禁</h2></div><button type="button" className="ghost" aria-label="关闭门禁弹窗" onClick={onClose}><X size={17}/></button></header><div className="gate-config-lines"><article><span><b>判定提示词</b><small>{summary(gate.config.prompt, '尚未填写')}</small></span><button type="button" className="secondary" onClick={() => setEditor('prompt')}>{editable ? '编辑' : '查看'}</button></article><article><span><b>可选 Python 脚本</b><small>{summary(gate.config.code, '未配置')}</small></span><button type="button" className="secondary" onClick={() => setEditor('python')}>{String(gate.config.code || '').trim() ? (editable ? '编辑' : '查看') : '添加'}</button></article><article><span><b>配置大模型</b><small>{gatePreset.model_name || '未选择模型'}{gatePreset.reasoning_effort ? ` · ${gatePreset.reasoning_effort}` : ''}</small></span><button type="button" className="secondary" onClick={() => setEditor('model')}>{editable ? '配置' : '查看'}</button></article></div>{error && <p className="error">{error}</p>}<footer>{editable ? <><button type="button" className="ghost" onClick={onClose}>取消</button><button type="button" className="primary" onClick={save}>保存门禁</button></> : <button type="button" className="primary" onClick={onClose}>完成</button>}</footer></section>{editor === 'prompt' && <GateContentDialog kind="prompt" initial={String(gate.config.prompt || '')} readOnly={!editable} onClose={() => setEditor(undefined)} onSave={(prompt, filename) => { setGate(current => ({ ...current, config: { ...current.config, prompt, ...(filename ? { source_filename: filename } : {}) } })); setError(''); }}/>} {editor === 'python' && <GateContentDialog kind="python" initial={String(gate.config.code || '')} readOnly={!editable} onClose={() => setEditor(undefined)} onSave={(code, filename) => setGate(current => ({ ...current, config: { ...current.config, code, ...(filename ? { script_filename: filename } : {}) } }))}/>} {editor === 'model' && <div className="modal-backdrop"><section className="modal agent-preset-model-dialog" role="dialog" aria-modal="true" aria-label="配置大模型"><header><div><span className="eyebrow">GATE MODEL</span><h2>配置大模型</h2><p>门禁独立运行，不继承主 Agent 的能力或上下文。</p></div><button type="button" className="ghost" onClick={() => setEditor(undefined)}><X size={17}/></button></header><ModelPresetFields label="门禁" preset={gatePreset} readOnly={!editable} onChange={agent_preset => setGate(current => ({ ...current, agent_preset }))}/><footer><button type="button" className="primary" onClick={() => setEditor(undefined)}>完成</button></footer></section></div>}</div>;
+  return <div className="modal-backdrop"><section className="modal gate-draft-dialog" role="dialog" aria-modal="true" aria-label="配置门禁"><header><div><span className="eyebrow">{gate.stage === 'START' ? 'START GATE' : 'END GATE'}</span><h2>配置门禁</h2></div><button type="button" className="ghost" aria-label="关闭门禁弹窗" onClick={onClose}><X size={17}/></button></header><div className="gate-config-lines"><article><span><b>判定提示词</b><small>{summary(gate.config.prompt, '尚未填写')}</small></span><button type="button" className="secondary" onClick={() => setEditor('prompt')}>{editable ? '编辑' : '查看'}</button></article><article><span><b>可选 Python 脚本</b><small>{summary(gate.config.code, '未配置')}</small></span><button type="button" className="secondary" onClick={() => setEditor('python')}>{String(gate.config.code || '').trim() ? (editable ? '编辑' : '查看') : '添加'}</button></article>{gate.stage === 'END' && <article><span><b>业务结果合同</b><small>{businessResultContract(gate.config.business_result_contract) ? '已启用确定性结果与证据校验' : '未启用'}</small></span><button type="button" className="secondary" onClick={() => setEditor('business')}>{editable ? '配置' : '查看'}</button></article>}<article><span><b>配置大模型</b><small>{gatePreset.model_name || '未选择模型'}{gatePreset.reasoning_effort ? ` · ${gatePreset.reasoning_effort}` : ''}</small></span><button type="button" className="secondary" onClick={() => setEditor('model')}>{editable ? '配置' : '查看'}</button></article></div>{error && <p className="error">{error}</p>}<footer>{editable ? <><button type="button" className="ghost" onClick={onClose}>取消</button><button type="button" className="primary" onClick={save}>保存门禁</button></> : <button type="button" className="primary" onClick={onClose}>完成</button>}</footer></section>{editor === 'prompt' && <GateContentDialog kind="prompt" initial={String(gate.config.prompt || '')} readOnly={!editable} onClose={() => setEditor(undefined)} onSave={(prompt, filename) => { setGate(current => ({ ...current, config: { ...current.config, prompt, ...(filename ? { source_filename: filename } : {}) } })); setError(''); }}/>} {editor === 'python' && <GateContentDialog kind="python" initial={String(gate.config.code || '')} readOnly={!editable} onClose={() => setEditor(undefined)} onSave={(code, filename) => setGate(current => ({ ...current, config: { ...current.config, code, ...(filename ? { script_filename: filename } : {}) } }))}/>} {editor === 'business' && <BusinessResultContractDialog initial={gate.config.business_result_contract} readOnly={!editable} onClose={() => setEditor(undefined)} onSave={contract => setGate(current => { const config = { ...current.config }; if (contract) config.business_result_contract = contract; else delete config.business_result_contract; return { ...current, config }; })}/>} {editor === 'model' && <div className="modal-backdrop"><section className="modal agent-preset-model-dialog" role="dialog" aria-modal="true" aria-label="配置大模型"><header><div><span className="eyebrow">GATE MODEL</span><h2>配置大模型</h2><p>门禁独立运行，不继承主 Agent 的能力或上下文。</p></div><button type="button" className="ghost" onClick={() => setEditor(undefined)}><X size={17}/></button></header><ModelPresetFields label="门禁" preset={gatePreset} readOnly={!editable} onChange={agent_preset => setGate(current => ({ ...current, agent_preset }))}/><footer><button type="button" className="primary" onClick={() => setEditor(undefined)}>完成</button></footer></section></div>}</div>;
 }
 
 function GateDraftEditor({ gates, onChange }: { gates: GatePolicy[]; onChange: (gates: GatePolicy[]) => void }) {
@@ -1059,15 +1100,16 @@ function NodeConsole({ run, node, startupMode, stepwiseDraft, initialBindings, l
     onSuccess: result => { if ('draft' in result && result.draft) { onDraftSaved?.(result.draft); refresh(); return; } onActivated(result.created); refresh(); if (result.openDraft) { const attempt = result.created.attempts.at(-1); if (attempt) openNodeSession(run.id, result.created.id, attempt.id); } },
   });
   const invalidMode = startupMode === 'PROMPT' && !prompt.trim();
+  const invalidModel = startupMode === 'PROMPT' && (!agentPreset.model_provider_id || !agentPreset.model_name);
   const invalidGates = startupMode === 'PROMPT' && gates.some(gate => !String(gate.config.prompt || '').trim());
   const missingInputs = node.asset.inputs.some(field => !bindings[field.field_key]);
   const nodeRuns = run.node_runs.filter(item => item.flow_node_snapshot_key === node.instance_key && isDirectNodeRun(item) === (startupMode === 'CHAT'));
   const visits = nodeRuns.length;
-  const saveDisabled = terminal || invalidMode || invalidGates || mutation.isPending;
+  const saveDisabled = terminal || invalidMode || invalidModel || invalidGates || mutation.isPending;
   const runAction = <button className="primary node-run-button" disabled={saveDisabled} onClick={() => startupMode === 'PROMPT' && missingInputs ? setPromptTab('inputs') : mutation.mutate(bindings)}><Play size={15}/>{mutation.isPending ? '保存中…' : startupMode === 'PROMPT' && missingInputs ? '请先填写节点输入' : startupMode === 'CHAT' ? '启动节点会话' : '保存配置'}</button>;
   const historyRun = { ...run, node_runs: run.node_runs.filter(item => isDirectNodeRun(item) === (startupMode === 'CHAT')) };
   const history = <NodeExecutionHistory run={historyRun} node={node} onSelectExecution={onSelectExecution}/>;
-  return <><NodeConfigurationPanel className={startupMode === 'PROMPT' ? 'automatic-record-editor' : undefined} title={node.alias || node.asset.name} subtitle={`节点控制台 · 已执行 ${visits} 次`} mode={startupMode} fixedModeLabel={startupMode === 'CHAT' ? '直接启动' : '逐步运行'} onModeChange={() => undefined} recordControl={recordControl} promptTab={promptTab} onPromptTabChange={setPromptTab} action={runAction} promptContent={<>{(stepwiseDraft || Object.keys(initialBindings ?? {}).length > 0) && <p className="field-hint">上游节点的映射产物已自动填入当前节点输入；保存后仍可继续编辑，点击启动时才冻结为本轮 Attempt。</p>}<InputSummary fields={node.asset.inputs} bindings={bindings} artifacts={inputArtifacts}/>{node.asset.inputs.length > 0 && <button className="secondary full" onClick={() => setInputDialogOpen(true)}><Upload size={14}/>填写节点输入</button>}<StartupPromptSummary prompt={prompt} freezeHint="点击启动时才会随 Attempt 冻结。" onEdit={() => setPromptDialogOpen(true)}/></>} agentContent={<AgentPresetEditor preset={agentPreset} nodeContext={node.asset.executor?.context_prompt ?? ''} onChange={setAgentPreset}/>} gateContent={<GateDraftEditor gates={gates} onChange={setGates}/>} historyContent={history} chatContent={history} belowContent={<>{invalidGates && <p className="error">每个门禁都需要填写判定提示词。</p>}{terminal && <p className="field-hint">流程已结束，不能创建新的节点执行。</p>}{mutation.error && <p className="error"><AlertTriangle size={14}/>{mutation.error.message}</p>}</>}/>{inputDialogOpen && <NodeInputDialog run={{ ...run, artifacts: inputArtifacts }} node={node} initialBindings={bindings} onClose={() => setInputDialogOpen(false)} onSubmit={({ bindings: nextBindings, artifacts }) => { setBindings(nextBindings); setInputArtifacts(current => mergeArtifacts(current, artifacts)); setInputDialogOpen(false); }}/>} {promptDialogOpen && <StartupPromptDialog prompt={prompt} onChange={setPrompt} onClose={() => setPromptDialogOpen(false)}/>}</>;
+  return <><NodeConfigurationPanel className={startupMode === 'PROMPT' ? 'automatic-record-editor' : undefined} title={node.alias || node.asset.name} subtitle={`节点控制台 · 已执行 ${visits} 次`} mode={startupMode} fixedModeLabel={startupMode === 'CHAT' ? '直接启动' : '逐步运行'} onModeChange={() => undefined} recordControl={recordControl} promptTab={promptTab} onPromptTabChange={setPromptTab} action={runAction} promptContent={<>{(stepwiseDraft || Object.keys(initialBindings ?? {}).length > 0) && <p className="field-hint">上游节点的映射产物已自动填入当前节点输入；保存后仍可继续编辑，点击启动时才冻结为本轮 Attempt。</p>}<InputSummary fields={node.asset.inputs} bindings={bindings} artifacts={inputArtifacts}/>{node.asset.inputs.length > 0 && <button className="secondary full" onClick={() => setInputDialogOpen(true)}><Upload size={14}/>填写节点输入</button>}<StartupPromptSummary prompt={prompt} freezeHint="点击启动时才会随 Attempt 冻结。" onEdit={() => setPromptDialogOpen(true)}/></>} agentContent={<AgentPresetEditor preset={agentPreset} nodeContext={node.asset.executor?.context_prompt ?? ''} onChange={setAgentPreset}/>} gateContent={<GateDraftEditor gates={gates} onChange={setGates}/>} historyContent={history} chatContent={history} belowContent={<>{invalidModel && <p className="error">请选择 Agent 模型供应商和模型后再保存配置。</p>}{invalidGates && <p className="error">每个门禁都需要填写判定提示词。</p>}{terminal && <p className="field-hint">流程已结束，不能创建新的节点执行。</p>}{mutation.error && <p className="error"><AlertTriangle size={14}/>{mutation.error.message}</p>}</>}/>{inputDialogOpen && <NodeInputDialog run={{ ...run, artifacts: inputArtifacts }} node={node} initialBindings={bindings} onClose={() => setInputDialogOpen(false)} onSubmit={({ bindings: nextBindings, artifacts }) => { setBindings(nextBindings); setInputArtifacts(current => mergeArtifacts(current, artifacts)); setInputDialogOpen(false); }}/>} {promptDialogOpen && <StartupPromptDialog prompt={prompt} onChange={setPrompt} onClose={() => setPromptDialogOpen(false)}/>}</>;
 }
 
 const AUTOMATIC_STAGE_ORDER = ['INPUT_READINESS', 'START_GATES', 'START_HANDOFF', 'RUNTIME_START', 'AGENT_RUNNING', 'END_GATES', 'FLOW_ADVANCE'];
@@ -1379,6 +1421,8 @@ function stepwiseDraftReady(node?: SnapshotFlowNode, draft?: StepwiseNodeDraft):
     && draft
     && draft.startup_prompt?.trim()
     && draft.agent_preset
+    && draft.agent_preset.model_provider_id
+    && draft.agent_preset.model_name
     && node.asset.inputs.every(field => draft.input_bindings.some(binding => binding.input_field_key === field.field_key)),
   );
 }

@@ -24,7 +24,9 @@ from flowweave.modules.users.infrastructure.models import (
 from flowweave.shared.errors import DomainError
 
 SESSION_COOKIE = "flowweave_session"
-SESSION_TTL = timedelta(hours=12)
+# CLI credentials and browser cookies should survive normal long-running use.
+# A password rotation still revokes every persisted session for that user.
+SESSION_TTL = timedelta(days=3650)
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +61,7 @@ def ensure_builtin_users(db: Session, *, admin_password: str, user_password: str
         if not verify_password(password, existing.password_hash):
             existing.password_hash = hash_password(password)
             existing.updated_at = datetime.now(UTC)
+            db.execute(delete(UserSession).where(UserSession.user_id == existing.id))
         existing.is_active = True
     db.flush()
 

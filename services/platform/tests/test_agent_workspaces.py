@@ -85,6 +85,7 @@ from flowweave.runtime.base import (
 from flowweave.runtime.dependencies import runtime_context
 from flowweave.runtime.mock import MockRuntime
 from flowweave.shared.artifact_store import artifact_store_context
+from flowweave.shared.credentials_crypto import encrypt_secret
 from flowweave.shared.errors import DomainError
 from flowweave.shared.models import BackgroundTask, ManagedSandbox, TaskState
 from flowweave.shared.settings import settings_context
@@ -1254,6 +1255,7 @@ def _ready_workspace_for_conversation(db):
         name=f"agent-workspace-provider-{workspace.id}",
         base_url="https://models.example.test/v1",
         connection_state="CONNECTED",
+        encrypted_api_key=encrypt_secret("test-key"),
     )
     db.add(provider)
     db.flush()
@@ -2036,10 +2038,13 @@ def test_agent_workspace_allows_only_bound_conversation_attachments_outside_scop
         assert not upload_path.exists()
 
 
-def test_deleting_agent_conversation_deletes_resumable_upload_state(
-    settings, db_session_factory
-):
-    with settings_context(settings), db_session_factory() as db, runtime_context(MockRuntime()):
+def test_deleting_agent_conversation_deletes_resumable_upload_state(settings, db_session_factory):
+    with (
+        settings_context(settings),
+        tenant_user(FLOWWEAVE_USER_ID),
+        db_session_factory() as db,
+        runtime_context(MockRuntime()),
+    ):
         item = _ready_workspace_for_conversation(db)
         binding = conversations.create_conversation(
             db, item.id, None, item.default_model_provider_id, "delete-resumable-upload"
@@ -2058,15 +2063,21 @@ def test_deleting_agent_conversation_deletes_resumable_upload_state(
         )
         resumable_attachments.put_part(db, upload, part_number=0, content=b"part")
 
-        conversations.delete_conversation(db, item.id, binding["id"], "delete-resumable-upload")
+        conversations.delete_conversation(
+            db, item.id, binding["id"], "delete-resumable-upload-command"
+        )
+        db.flush()
+        db.expire_all()
 
         assert db.get(AgentAttachmentUpload, upload.id) is None
-        assert db.scalar(
-            select(AgentAttachmentUploadPart).where(
-                AgentAttachmentUploadPart.upload_id == upload.id
+        assert (
+            db.scalar(
+                select(AgentAttachmentUploadPart).where(
+                    AgentAttachmentUploadPart.upload_id == upload.id
+                )
             )
-        ) is None
-
+            is None
+        )
 
 
 def test_discarding_agent_workspace_draft_deletes_only_its_private_attachments(
@@ -2107,7 +2118,7 @@ def test_discarding_agent_workspace_draft_deletes_resumable_upload_state(
             attachment_owner_id=owner_id,
             filename="draft.png",
             mime_type="image/png",
-            total_size=4,
+            total_size=5,
         )
         other_upload = resumable_attachments.create_upload(
             db,
@@ -2119,30 +2130,38 @@ def test_discarding_agent_workspace_draft_deletes_resumable_upload_state(
             attachment_owner_id=other_owner_id,
             filename="other.png",
             mime_type="image/png",
-            total_size=4,
+            total_size=5,
         )
         resumable_attachments.put_part(db, owned_upload, part_number=0, content=b"draft")
         resumable_attachments.put_part(db, other_upload, part_number=0, content=b"other")
 
         assert conversations.delete_draft_attachments(db, item.id, owner_id) == 0
+        db.flush()
+        db.expire_all()
         assert db.get(AgentAttachmentUpload, owned_upload.id) is None
-        assert db.scalar(
-            select(AgentAttachmentUploadPart).where(
-                AgentAttachmentUploadPart.upload_id == owned_upload.id
+        assert (
+            db.scalar(
+                select(AgentAttachmentUploadPart).where(
+                    AgentAttachmentUploadPart.upload_id == owned_upload.id
+                )
             )
-        ) is None
+            is None
+        )
         assert db.get(AgentAttachmentUpload, other_upload.id) is not None
-        assert db.scalar(
-            select(AgentAttachmentUploadPart).where(
-                AgentAttachmentUploadPart.upload_id == other_upload.id
+        assert (
+            db.scalar(
+                select(AgentAttachmentUploadPart).where(
+                    AgentAttachmentUploadPart.upload_id == other_upload.id
+                )
             )
-        ) is not None
+            is not None
+        )
 
 
 def test_discarding_agent_workspace_draft_refuses_a_created_conversation(
     settings, db_session_factory
 ):
-    with settings_context(settings), db_session_factory() as db:
+    with settings_context(settings), db_session_factory() as db, runtime_context(MockRuntime()):
         item = _ready_workspace_for_conversation(db)
         created = conversations.create_conversation(
             db, item.id, None, item.default_model_provider_id, "created-draft-owner"
@@ -2970,7 +2989,12 @@ def test_agent_workspace_bootstrap_rejects_reuse_of_deleted_draft_id(
             api_key="x",
         ),
     )
-    with settings_context(settings), db_session_factory() as db, runtime_context(MockRuntime()):
+    with (
+        settings_context(settings),
+        tenant_user(FLOWWEAVE_USER_ID),
+        db_session_factory() as db,
+        runtime_context(MockRuntime()),
+    ):
         workspace = _ready_workspace_for_conversation(db)
         created = conversations.bootstrap_conversation(
             db,
@@ -3420,58 +3444,74 @@ def test_agent_workspace_management_scopes_to_the_selected_work_directory(
             reasoning_effort=kwargs.get("reasoning_effort"),
         ),
     )
-    with settings_context(settings), db_session_factory() as db, runtime_context(MockRuntime()):
+    with (
+        settings_context(settings),
+        tenant_user(FLOWWEAVE_USER_ID),
+        db_session_factory() as db,
+        runtime_context(MockRuntime()),
+    ):
         workspace = _ready_workspace_for_conversation(db)
-        project_root = _agent_project_root(settings, db, workspace)
+        project_root = _agent_project_root(settings, db, workspace) / "users" / FLOWWEAVE_USER_ID
+        project_root.mkdir(mode=0o700, exist_ok=True)
         (project_root / "backend").mkdir()
         directory = work_directories.create_work_directory(db, workspace.id, "后端", ("backend",))
         root_conversation = conversations.create_conversation(
             db, workspace.id, "根目录会话", workspace.default_model_provider_id, "management-root"
         )
-        directory_conversation = conversations.bootstrap_conversation(
-            db,
-            workspace.id,
-            work_directory_id=directory["id"],
-            model_provider_id=workspace.default_model_provider_id,
-            content="目录会话",
-            idempotency_key="management-directory",
-        )["conversation"]
+        runtime = db.scalar(
+            select(AgentWorkspaceRuntime).where(AgentWorkspaceRuntime.workspace_id == workspace.id)
+        )
+        assert runtime is not None
+        directory_conversation = AgentConversationBinding(
+            workspace_id=workspace.id,
+            runtime_session_id=runtime.id,
+            host_kind="AGENT_WORKSPACE",
+            host_id=workspace.id,
+            conversation_scope_id=workspace.id,
+            work_directory_version_id=directory["current_version"]["id"],
+            working_directory=f"{user_runtime_project_root(workspace.id)}/backend",
+            openhands_conversation_id=str(uuid4()),
+            display_title="目录会话",
+            lifecycle="ACTIVE",
+            create_idempotency_key="management-directory",
+        )
+        db.add(directory_conversation)
+        db.flush()
 
         root_items = conversations.list_management_conversations(db, workspace.id)["items"]
         directory_items = conversations.list_management_conversations(
             db, workspace.id, work_directory_id=directory["id"]
         )["items"]
         assert [item["id"] for item in root_items] == [root_conversation["id"]]
-        assert [item["id"] for item in directory_items] == [directory_conversation["id"]]
+        assert [item["id"] for item in directory_items] == [directory_conversation.id]
 
         mismatch = conversations.delete_management_conversations(
             db,
             workspace.id,
-            (directory_conversation["id"],),
+            (directory_conversation.id,),
             "management-root-scope",
         )
         assert mismatch == {
             "deleted_ids": [],
             "skipped": [
                 {
-                    "id": directory_conversation["id"],
+                    "id": directory_conversation.id,
                     "code": "AGENT_CONVERSATION_SCOPE_MISMATCH",
                 }
             ],
         }
-        assert db.get(AgentConversationBinding, directory_conversation["id"]) is not None
+        assert db.get(AgentConversationBinding, directory_conversation.id) is not None
 
         deleted = conversations.delete_management_conversations(
             db,
             workspace.id,
-            (directory_conversation["id"],),
+            (directory_conversation.id,),
             "management-directory-scope",
             work_directory_id=directory["id"],
         )
-        assert deleted["deleted_ids"] == [directory_conversation["id"]]
-        assert db.get(AgentConversationBinding, directory_conversation["id"]) is None
+        assert deleted["deleted_ids"] == [directory_conversation.id]
+        assert db.get(AgentConversationBinding, directory_conversation.id) is None
         assert db.get(AgentConversationBinding, root_conversation["id"]) is not None
-
 
 
 def test_agent_workspace_management_respects_user_conversation_isolation(
@@ -3528,7 +3568,6 @@ def test_agent_workspace_management_respects_user_conversation_isolation(
         }
         with tenant_user(USER_USER_ID):
             assert db.get(AgentConversationBinding, other_conversation.id) is not None
-
 
 
 def test_agent_workspace_conversation_order_stays_at_creation_time(

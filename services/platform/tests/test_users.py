@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -51,6 +53,47 @@ def test_login_me_and_logout(anonymous_client, settings):
     logged_out = anonymous_client.post("/api/v1/auth/logout")
     assert logged_out.status_code == 204
     assert anonymous_client.get("/api/v1/auth/me").status_code == 401
+
+
+def test_login_session_is_long_lived(anonymous_client, db_session_factory, settings):
+    from flowweave.modules.users.application import service
+
+    logged_in = anonymous_client.post(
+        "/api/v1/auth/login",
+        json={"username": "flowweave", "password": settings.flowweave_admin_password},
+    )
+
+    assert logged_in.status_code == 200
+    assert "Max-Age=315360000" in logged_in.headers["set-cookie"]
+    with db_session_factory() as db:
+        session = db.scalar(select(UserSession))
+        assert session is not None
+        assert session.expires_at - session.created_at >= service.SESSION_TTL - timedelta(seconds=1)
+
+
+def test_builtin_password_rotation_revokes_existing_sessions(db_session_factory, settings):
+    from flowweave.modules.users.application import service
+
+    rotated_password = "rotated-flowweave-test-password"
+    with db_session_factory() as db:
+        service.ensure_builtin_users(
+            db,
+            admin_password=settings.flowweave_admin_password,
+            user_password=settings.flowweave_user_password,
+        )
+        existing = service.login(db, "flowweave", settings.flowweave_admin_password)
+        service.ensure_builtin_users(
+            db,
+            admin_password=rotated_password,
+            user_password=settings.flowweave_user_password,
+        )
+
+        assert service.authenticate(db, existing.token) is None
+        with pytest.raises(DomainError, match="用户名或密码错误"):
+            service.login(db, "flowweave", settings.flowweave_admin_password)
+        assert (
+            service.login(db, "flowweave", rotated_password).principal.user_id == FLOWWEAVE_USER_ID
+        )
 
 
 def test_ldap_users_are_authorized_before_login_and_revoked_sessions(db_session_factory):

@@ -986,9 +986,7 @@ def conversation_activity(
     }
 
 
-def _management_conversation_scope(
-    workspace_id: str, work_directory_id: str | None
-) -> Any:
+def _management_conversation_scope(workspace_id: str, work_directory_id: str | None) -> Any:
     if work_directory_id is None:
         return AgentConversationBinding.work_directory_version_id.is_(None)
     directory_versions = select(AgentWorkDirectoryVersion.id).where(

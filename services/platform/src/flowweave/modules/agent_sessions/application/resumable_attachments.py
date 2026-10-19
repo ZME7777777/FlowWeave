@@ -47,7 +47,11 @@ def create_upload(
     max_size = MAX_ATTACHMENT_SIZE if upload_kind == "ATTACHMENT" else MAX_WORKSPACE_FILE_SIZE
     if total_size <= 0 or total_size > max_size:
         label = "附件" if upload_kind == "ATTACHMENT" else "工作区文件"
-        raise DomainError("AGENT_ATTACHMENT_TOO_LARGE", f"单个{label}不能超过 {max_size // 1024 // 1024} MiB", 422)
+        raise DomainError(
+            "AGENT_ATTACHMENT_TOO_LARGE",
+            f"单个{label}不能超过 {max_size // 1024 // 1024} MiB",
+            422,
+        )
     normalized_mime_type = mime_type.lower().strip() or "application/octet-stream"
     if len(normalized_mime_type) > 200:
         raise DomainError("AGENT_ATTACHMENT_INVALID", "上传文件类型无效", 422)
@@ -97,12 +101,18 @@ def upload_for_host(
         raise DomainError("AGENT_ATTACHMENT_UPLOAD_CLOSED", "上传会话已结束", 409)
     if upload.expires_at <= now():
         upload.status = "CANCELLED"
-        db.execute(delete(AgentAttachmentUploadPart).where(AgentAttachmentUploadPart.upload_id == upload.id))
+        db.execute(
+            delete(AgentAttachmentUploadPart).where(
+                AgentAttachmentUploadPart.upload_id == upload.id
+            )
+        )
         raise DomainError("AGENT_ATTACHMENT_UPLOAD_EXPIRED", "上传会话已过期，请重新上传", 410)
     return upload
 
 
-def upload_status(upload: AgentAttachmentUpload, parts: list[AgentAttachmentUploadPart]) -> dict[str, object]:
+def upload_status(
+    upload: AgentAttachmentUpload, parts: list[AgentAttachmentUploadPart]
+) -> dict[str, object]:
     return {
         "upload_id": upload.id,
         "chunk_size": upload.chunk_size,
@@ -122,11 +132,17 @@ def list_parts(db: Session, upload: AgentAttachmentUpload) -> list[AgentAttachme
     )
 
 
-def put_part(db: Session, upload: AgentAttachmentUpload, *, part_number: int, content: bytes) -> None:
+def put_part(
+    db: Session, upload: AgentAttachmentUpload, *, part_number: int, content: bytes
+) -> None:
     part_count = (upload.total_size + upload.chunk_size - 1) // upload.chunk_size
     if part_number < 0 or part_number >= part_count:
         raise DomainError("AGENT_ATTACHMENT_PART_INVALID", "附件分片序号无效", 422)
-    expected_size = upload.chunk_size if part_number < part_count - 1 else upload.total_size - part_number * upload.chunk_size
+    expected_size = (
+        upload.chunk_size
+        if part_number < part_count - 1
+        else upload.total_size - part_number * upload.chunk_size
+    )
     if len(content) != expected_size:
         raise DomainError("AGENT_ATTACHMENT_PART_INVALID", "附件分片大小无效", 422)
     existing = db.scalar(
@@ -136,7 +152,9 @@ def put_part(db: Session, upload: AgentAttachmentUpload, *, part_number: int, co
         )
     )
     if existing is None:
-        db.add(AgentAttachmentUploadPart(upload_id=upload.id, part_number=part_number, content=content))
+        db.add(
+            AgentAttachmentUploadPart(upload_id=upload.id, part_number=part_number, content=content)
+        )
         return
     if existing.content != content:
         raise DomainError("AGENT_ATTACHMENT_PART_CONFLICT", "附件分片与已上传内容不一致", 409)
@@ -155,7 +173,9 @@ def assemble(db: Session, upload: AgentAttachmentUpload) -> bytes:
 
 def close_upload(db: Session, upload: AgentAttachmentUpload, *, status: str) -> None:
     upload.status = status
-    db.execute(delete(AgentAttachmentUploadPart).where(AgentAttachmentUploadPart.upload_id == upload.id))
+    db.execute(
+        delete(AgentAttachmentUploadPart).where(AgentAttachmentUploadPart.upload_id == upload.id)
+    )
 
 
 def delete_attachment_uploads(
