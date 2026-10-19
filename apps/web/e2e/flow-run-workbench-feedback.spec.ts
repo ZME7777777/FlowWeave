@@ -202,6 +202,11 @@ test('FlowRun detail has a restorable route and temporary topbar tab', async ({ 
   await expect(page.getByRole('button', { name: '返回运行列表', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: `Run #${run.run_no}`, exact: true })).toBeVisible();
 
+  await page.getByRole('button', { name: '账户与设置' }).click();
+  await page.getByRole('menuitem', { name: '终端环境', exact: true }).click();
+  await expect(page.locator('.context-tab')).toHaveText([`Run #${run.run_no}`, '终端环境']);
+
+  await page.getByRole('button', { name: `Run #${run.run_no}`, exact: true }).click();
   await page.getByRole('button', { name: `关闭Run #${run.run_no}`, exact: true }).click();
   await expect(page).toHaveURL('/');
   await expect(page.getByText('1 个流程 · 1 个运行', { exact: true })).toBeVisible();
