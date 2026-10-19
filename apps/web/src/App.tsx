@@ -49,6 +49,7 @@ const superAdminSettingsNav = [
 ];
 
 type SettingsView = (typeof settingsNav)[number]['view'] | (typeof superAdminSettingsNav)[number]['view'];
+type FlowRunTab = { id: string; label: string; path: string; state: unknown };
 
 function clearAgentIdentityStorage() {
   const isAgentStorage = (key: string) => key.startsWith('flowweave.agent.')
@@ -71,7 +72,7 @@ export function App() {
   const [user, setUser] = useState<AuthUser | null>();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [openSettingsViews, setOpenSettingsViews] = useState<SettingsView[]>([]);
-  const [openFlowRunTabs, setOpenFlowRunTabs] = useState<{ id: string; label: string }[]>([]);
+  const [openFlowRunTabs, setOpenFlowRunTabs] = useState<FlowRunTab[]>([]);
   const settingsMenu = useRef<HTMLDivElement>(null);
   const replaceIdentity = useCallback(async (nextUser: AuthUser | null) => {
     // Unmount authenticated product surfaces before an old request can
@@ -148,7 +149,7 @@ export function App() {
     const label = `Run #${run.run_no}`;
     setOpenFlowRunTabs(current => {
       const existing = current.find(item => item.id === run.id);
-      if (!existing) return [...current, { id: run.id, label }];
+      if (!existing) return [...current, { id: run.id, label, path: `/flow-runs/${encodeURIComponent(run.id)}`, state: {} }];
       return existing.label === label ? current : current.map(item => item.id === run.id ? { ...item, label } : item);
     });
   }, []);
@@ -207,11 +208,17 @@ export function App() {
         selectedWorkbenchMode: undefined, selectedAutomaticRecordId: undefined, selectedStepwiseRecordId: undefined,
       });
     }
-    setOpenFlowRunTabs(current => current.some(tab => tab.id === activeFlowRunTabId)
-      ? current
-      : [...current, { id: activeFlowRunTabId, label: '正在打开运行…' }]);
+    const path = `${routePathname}${window.location.search}${window.location.hash}`;
+    const state = window.history.state ?? {};
+    setOpenFlowRunTabs(current => {
+      const existing = current.find(tab => tab.id === activeFlowRunTabId);
+      if (!existing) return [...current, { id: activeFlowRunTabId, label: '正在打开运行…', path, state }];
+      return existing.path === path && existing.state === state
+        ? current
+        : current.map(tab => tab.id === activeFlowRunTabId ? { ...tab, path, state } : tab);
+    });
     void api.flowRun(activeFlowRunTabId).then(registerFlowRunTab).catch(() => undefined);
-  }, [activeFlowRunTabId, flowRunRouteId, registerFlowRunTab]);
+  }, [activeFlowRunTabId, flowRunRouteId, registerFlowRunTab, routePathname]);
   useEffect(() => {
     if (flowRunRouteId || nodeSessionRoute || view !== 'workbench' || !selectedRunId) return;
     window.history.pushState({}, '', withDeploymentBase(`/flow-runs/${encodeURIComponent(selectedRunId)}`));
@@ -262,7 +269,15 @@ export function App() {
     if (replacement) selectView(replacement);
     else selectView('nodes');
   };
-  const selectFlowRunTab = (runId: string) => navigate(`/flow-runs/${encodeURIComponent(runId)}`);
+  const selectFlowRunTab = (runId: string) => {
+    const tab = openFlowRunTabs.find(item => item.id === runId);
+    if (!tab) {
+      navigate(`/flow-runs/${encodeURIComponent(runId)}`);
+      return;
+    }
+    window.history.pushState(tab.state, '', withDeploymentBase(tab.path));
+    setRouteVersion(value => value + 1);
+  };
   const closeFlowRunTab = (runId: string) => {
     const closingIndex = openFlowRunTabs.findIndex(tab => tab.id === runId);
     const next = openFlowRunTabs.filter(tab => tab.id !== runId);

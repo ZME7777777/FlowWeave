@@ -1505,6 +1505,12 @@ test('returning from an automatic node session preserves the selected automatic 
   await page.locator('.run-open').click();
   await page.getByRole('tab', { name: '连续运行' }).click();
   await page.locator('.automatic-record-select').filter({ hasText: '自动记录 1' }).click();
+  await expect(page).toHaveURL(new RegExp(`/flow-runs/${run.id}$`));
+  await page.getByRole('button', { name: '节点资产', exact: true }).click();
+  await page.getByRole('button', { name: 'Run #1', exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`/flow-runs/${run.id}$`));
+  await page.getByRole('tab', { name: '连续运行' }).click();
+  await page.locator('.automatic-record-select').filter({ hasText: '自动记录 1' }).click();
   const attemptPanel = page.locator('.attempt-control');
   await expect(attemptPanel).toContainText('END_BLOCKED');
   await expect(page.locator('.context-tab.active')).toContainText('Run #1');
@@ -1515,6 +1521,9 @@ test('returning from an automatic node session preserves the selected automatic 
   // This pushes a nested node-session URL. Its history state must retain the
   // parent FlowRun and automatic-record identity for the explicit return.
   await page.getByRole('button', { name: /自动运行会话/ }).click();
+  await expect(page).toHaveURL(new RegExp(`/agent-sessions/${conversation.id}$`));
+  await page.getByRole('button', { name: '节点资产', exact: true }).click();
+  await page.getByRole('button', { name: 'Run #1', exact: true }).click();
   await expect(page).toHaveURL(new RegExp(`/agent-sessions/${conversation.id}$`));
   await page.getByRole('button', { name: '返回节点执行' }).click();
 
