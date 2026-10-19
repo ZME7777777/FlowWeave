@@ -1352,6 +1352,24 @@ async def agent_attachment(
     )
 
 
+@router.delete(
+    "/agent-workspaces/{workspace_id}/conversations/{binding_id}/attachments", status_code=204
+)
+async def delete_agent_pending_attachment(
+    workspace_id: str,
+    binding_id: str,
+    container: ContainerDep,
+    path: str = Query(min_length=1, max_length=300),
+) -> Response:
+    await run_blocking_mutation(
+        container,
+        lambda session: conversations.delete_pending_attachment(
+            session, workspace_id, binding_id, path
+        ),
+    )
+    return Response(status_code=204)
+
+
 class ResumableAttachmentUploadWrite(_Write):
     filename: str = Field(min_length=1, max_length=240)
     mime_type: str = Field(default="application/octet-stream", max_length=200)

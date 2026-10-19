@@ -153,6 +153,7 @@ export interface AgentSessionApi {
   readonly uploadConversationAttachment: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, file: File, onProgress?: UploadProgressHandler) => Promise<AgentAttachment>;
   readonly uploadDraftAttachment: (hostId: AgentSessionHostId, file: File, workDirectoryId?: AgentSessionWorkDirectoryId, conversationId?: string, onProgress?: UploadProgressHandler) => Promise<AgentAttachment>;
   readonly uploadWorkspaceFile?: (hostId: AgentSessionHostId, file: File, options?: { parentPath?: string; workDirectoryId?: AgentSessionWorkDirectoryId; conversationId?: string }, onProgress?: UploadProgressHandler) => Promise<AgentWorkspaceReference>;
+  readonly deletePendingAttachment: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, path: string) => Promise<void>;
   readonly deleteDraftAttachments: (hostId: AgentSessionHostId, conversationId: string, path?: string) => Promise<void>;
   readonly forkConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, eventId: string) => Promise<AgentConversation>;
   /** Requests native context condensation without appending a user message. */
@@ -238,6 +239,7 @@ export const agentWorkspaceSessionGateway: AgentSessionGateway = {
     uploadConversationAttachment: api.uploadAgentAttachment,
     uploadDraftAttachment: api.uploadAgentWorkspaceAttachment,
     uploadWorkspaceFile: api.uploadAgentWorkspaceFile,
+    deletePendingAttachment: api.deleteAgentPendingAttachment,
     deleteDraftAttachments: api.deleteAgentWorkspaceDraftAttachments,
     forkConversation: api.forkAgentConversation,
     condenseConversation: api.condenseAgentConversation,
@@ -360,6 +362,8 @@ export function flowNodeSessionGateway(
         nodeSessionApi.uploadAttachment(flowRunId, attemptId, bindingId, file, onProgress),
       uploadDraftAttachment: (_hostId, file, workDirectoryId, conversationId, onProgress) =>
         nodeSessionApi.uploadDraftAttachment(flowRunId, attemptId, file, workDirectoryId, conversationId, onProgress),
+      deletePendingAttachment: (_hostId, bindingId, path) =>
+        nodeSessionApi.deletePendingAttachment(flowRunId, attemptId, bindingId, path),
       deleteDraftAttachments: (_hostId, conversationId, path) =>
         nodeSessionApi.deleteDraftAttachments(flowRunId, attemptId, conversationId, path),
       forkConversation: (_hostId, bindingId, eventId) => nodeSessionApi.fork(flowRunId, attemptId, bindingId, eventId),

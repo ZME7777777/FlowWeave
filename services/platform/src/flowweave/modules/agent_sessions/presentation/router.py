@@ -1408,6 +1408,27 @@ async def upload_node_attachment(
     )
 
 
+@router.delete(f"{_BASE}/{{binding_id}}/attachments", status_code=204)
+async def delete_pending_node_attachment(
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str,
+    container: ContainerDep,
+    path: str = Query(min_length=1, max_length=300),
+) -> Response:
+    await run_blocking_mutation(
+        container,
+        lambda session: agent_sessions.flow_node_conversations.delete_pending_node_attachment(
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            binding_id=binding_id,
+            path=path,
+        ),
+    )
+    return Response(status_code=204)
+
+
 @router.post(f"{_BASE}/attachments", status_code=201)
 async def upload_node_draft_attachment(
     flow_run_id: str,

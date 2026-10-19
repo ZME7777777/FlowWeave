@@ -554,6 +554,8 @@ export const api = {
     uploadFormData(`/agent-workspaces/${encodeURIComponent(workspaceId)}/attachments/uploads`, `/agent-workspaces/${encodeURIComponent(workspaceId)}/attachments/uploads`, file, { filename: file.name, mime_type: file.type, total_size: file.size, work_directory_id: workDirectoryId, conversation_id: conversationId }, onProgress),
   uploadAgentWorkspaceFile: (workspaceId: string, file: File, options: { parentPath?: string; workDirectoryId?: string; conversationId?: string } = {}, onProgress?: UploadProgressHandler): Promise<AgentWorkspaceReference> =>
     uploadFormData<AgentAttachment>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/workspace/uploads`, `/agent-workspaces/${encodeURIComponent(workspaceId)}/workspace/uploads`, file, { filename: file.name, mime_type: file.type, total_size: file.size, parent_path: options.parentPath, work_directory_id: options.workDirectoryId, conversation_id: options.conversationId }, onProgress).then(item => ({ path: item.path, kind: 'file', display_name: item.filename })),
+  deleteAgentPendingAttachment: (workspaceId: string, bindingId: string, path: string) =>
+    request<void>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/attachments?${new URLSearchParams({ path })}`, json('DELETE', undefined, true)),
   deleteAgentWorkspaceDraftAttachments: (workspaceId: string, conversationId: string, path?: string) => {
     const query = new URLSearchParams();
     if (path) query.set('path', path);
@@ -1101,6 +1103,8 @@ export const nodeSessionApi = {
     uploadFormData(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/attachments/uploads`, `${nodeSessionBase(flowRunId, attemptId)}/attachments/uploads`, file, { filename: file.name, mime_type: file.type, total_size: file.size }, onProgress, bindingId),
   uploadDraftAttachment: (flowRunId: string, attemptId: string, file: File, _workDirectoryId?: string, conversationId?: string, onProgress?: UploadProgressHandler): Promise<AgentAttachment> =>
     uploadFormData(`${nodeSessionBase(flowRunId, attemptId)}/attachments/uploads`, `${nodeSessionBase(flowRunId, attemptId)}/attachments/uploads`, file, { filename: file.name, mime_type: file.type, total_size: file.size, conversation_id: conversationId }, onProgress),
+  deletePendingAttachment: (flowRunId: string, attemptId: string, bindingId: string, path: string) =>
+    request<void>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/attachments?${new URLSearchParams({ path })}`, json('DELETE', undefined, true)),
   deleteDraftAttachments: (flowRunId: string, attemptId: string, conversationId: string, path?: string) => {
     const query = new URLSearchParams();
     if (path) query.set('path', path);

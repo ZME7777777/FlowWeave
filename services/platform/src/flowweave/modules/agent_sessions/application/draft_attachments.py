@@ -8,10 +8,13 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from flowweave.modules.agent_sessions.infrastructure.models import AgentConversationBinding
+from flowweave.modules.agent_sessions.infrastructure.models import (
+    AgentConversationBinding,
+    AgentConversationMessageAttachment,
+)
 from flowweave.modules.tasks.infrastructure.models import BackgroundTask
 from flowweave.modules.tasks.public import enqueue
 from flowweave.shared.database import now
@@ -167,7 +170,7 @@ def delete_owned_attachment_files(
             or matched.group("owner") != owner
             or matched.group("workspace_root") != runtime_root
         ):
-            raise DomainError("AGENT_ATTACHMENT_INVALID", "附件不属于当前草稿", 422)
+            raise DomainError("AGENT_ATTACHMENT_INVALID", "附件不属于当前会话", 422)
         relative = PurePosixPath(path).relative_to(PurePosixPath(runtime_root))
         candidates = [host_root.joinpath(*relative.parts)]
     else:
@@ -200,3 +203,40 @@ def delete_owned_attachment_files(
                 "AGENT_ATTACHMENT_CLEANUP_FAILED", "草稿附件暂时无法清理，请稍后重试", 503
             ) from exc
     return deleted
+
+
+def delete_pending_attachment(
+    db: Session,
+    host_root: Path,
+    runtime_root: str,
+    binding_id: str,
+    path: str,
+) -> bool:
+    """Delete one unsubmitted attachment owned by an existing conversation."""
+
+    pending = list(
+        db.scalars(
+            select(AgentConversationMessageAttachment)
+            .where(
+                AgentConversationMessageAttachment.binding_id == binding_id,
+                AgentConversationMessageAttachment.path == path,
+            )
+            .with_for_update()
+        )
+    )
+    if not pending:
+        raise DomainError("AGENT_ATTACHMENT_NOT_FOUND", "附件不存在或已发送", 404)
+    if any(not item.event_id.startswith("pending:") for item in pending):
+        raise DomainError("AGENT_ATTACHMENT_ALREADY_SENT", "已发送的附件不能删除", 409)
+    deleted = delete_owned_attachment_files(
+        host_root,
+        runtime_root,
+        binding_id,
+        path=path,
+    )
+    db.execute(
+        delete(AgentConversationMessageAttachment).where(
+            AgentConversationMessageAttachment.id.in_([item.id for item in pending])
+        )
+    )
+    return bool(deleted)

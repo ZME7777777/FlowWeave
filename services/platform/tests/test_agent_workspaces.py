@@ -29,6 +29,7 @@ from flowweave.modules.agent_sessions.application.host import (
 from flowweave.modules.agent_sessions.infrastructure.models import (
     AgentAttachmentUpload,
     AgentAttachmentUploadPart,
+    AgentConversationMessageAttachment,
 )
 from flowweave.modules.agent_workspaces.application import (
     conversations,
@@ -2036,6 +2037,117 @@ def test_agent_workspace_allows_only_bound_conversation_attachments_outside_scop
             workspace.download(db, item.id, str(attachment["path"]), binding_id=other["id"])
         conversations.delete_conversation(db, item.id, owner["id"], "delete-attachment-owner")
         assert not upload_path.exists()
+
+
+
+def test_deleting_pending_agent_attachment_removes_its_file_and_projection(
+    settings, db_session_factory, monkeypatch
+):
+    class UploadRuntime(MockRuntime):
+        def upload_workspace_file(
+            self, handle, *, filename, content_type, content, attachment_owner_id=None
+        ):
+            del handle, filename, content_type, content
+            assert attachment_owner_id is not None
+            return f"/runtime/workspace/project/uploads/{attachment_owner_id}-{uuid4().hex}--draft.png"
+
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **_kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model="test-model",
+            api_key="test-key",
+        ),
+    )
+    with settings_context(settings), db_session_factory() as db, runtime_context(UploadRuntime()):
+        item = _ready_workspace_for_conversation(db)
+        binding = conversations.create_conversation(
+            db, item.id, None, item.default_model_provider_id, "delete-pending-attachment"
+        )
+        attachment = conversations.upload_attachment(
+            db,
+            item.id,
+            binding["id"],
+            filename="draft.png",
+            content_type="image/png",
+            content=b"image",
+        )
+        upload_path = (
+            _agent_project_root(settings, db, item)
+            / "uploads"
+            / str(attachment["path"]).rsplit("/", 1)[-1]
+        )
+        upload_path.parent.mkdir(exist_ok=True)
+        upload_path.write_bytes(b"image")
+
+        assert conversations.delete_pending_attachment(
+            db, item.id, binding["id"], str(attachment["path"])
+        )
+        assert not upload_path.exists()
+        assert (
+            db.scalar(
+                select(AgentConversationMessageAttachment).where(
+                    AgentConversationMessageAttachment.binding_id == binding["id"],
+                    AgentConversationMessageAttachment.path == attachment["path"],
+                )
+            )
+            is None
+        )
+
+
+def test_deleting_sent_agent_attachment_is_rejected(settings, db_session_factory, monkeypatch):
+    class UploadRuntime(MockRuntime):
+        def upload_workspace_file(
+            self, handle, *, filename, content_type, content, attachment_owner_id=None
+        ):
+            del handle, filename, content_type, content
+            assert attachment_owner_id is not None
+            return f"/runtime/workspace/project/uploads/{attachment_owner_id}-{uuid4().hex}--sent.png"
+
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **_kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model="test-model",
+            api_key="test-key",
+        ),
+    )
+    with settings_context(settings), db_session_factory() as db, runtime_context(UploadRuntime()):
+        item = _ready_workspace_for_conversation(db)
+        binding = conversations.create_conversation(
+            db, item.id, None, item.default_model_provider_id, "reject-sent-attachment-delete"
+        )
+        attachment = conversations.upload_attachment(
+            db,
+            item.id,
+            binding["id"],
+            filename="sent.png",
+            content_type="image/png",
+            content=b"image",
+        )
+        conversations.message(
+            db,
+            item.id,
+            binding["id"],
+            "",
+            (
+                {
+                    "path": str(attachment["path"]),
+                    "filename": "sent.png",
+                    "mime_type": "image/png",
+                    "byte_size": 5,
+                },
+            ),
+        )
+
+        with pytest.raises(DomainError, match="已发送的附件不能删除"):
+            conversations.delete_pending_attachment(
+                db, item.id, binding["id"], str(attachment["path"])
+            )
 
 
 def test_deleting_agent_conversation_deletes_resumable_upload_state(settings, db_session_factory):

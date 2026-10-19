@@ -52,6 +52,7 @@ from flowweave.modules.agent_sessions.application.draft_attachments import (
     assert_attachment_owner_unbound,
     delete_draft_attachment_cleanup_tasks,
     delete_owned_attachment_files,
+    delete_pending_attachment as delete_pending_attachment_file,
     enqueue_draft_attachment_cleanup,
 )
 from flowweave.modules.agent_sessions.application.event_branch import (
@@ -3320,6 +3321,33 @@ def delete_node_draft_attachment(
             path=path,
         )
     )
+
+
+def delete_pending_node_attachment(
+    db: Session,
+    *,
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str,
+    path: str,
+) -> bool:
+    _assert_node_session_writable(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
+    )
+    binding = _binding_for_attempt(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
+    )
+    context = sandboxes.node_attempt_workspace_context(
+        db, flow_run_id=flow_run_id, node_attempt_id=attempt_id
+    )
+    return delete_pending_attachment_file(
+        db,
+        context.host_working_directory,
+        str(context.runtime_working_directory),
+        binding.id,
+        path,
+    )
+
 
 
 def upload_node_attachment(
