@@ -3431,9 +3431,9 @@ test('Opening an unread conversation keeps it read when an older list request fi
   await expect(unreadMarker).toHaveCount(0);
 });
 
-test('Conversation sidebar persists pinned sessions and opens activity sessions without scrolling the list', async ({ page }) => {
+test('Conversation sidebar locates an activity session hidden in a collapsed workspace group', async ({ page }) => {
   let authenticated = false;
-  let runningConversationPossiblyStuck = true;
+  const runningConversationPossiblyStuck = true;
   const workspace = { id: 'sidebar-workspace', display_name: '侧栏工作区', desired_state: 'RUNNING', updated_at: now };
   const directory = {
     id: 'sidebar-directory', display_name: '归属工作区',
@@ -3583,6 +3583,9 @@ test('Conversation sidebar persists pinned sessions and opens activity sessions 
   await expect(page.locator('.agent-workspace-group').filter({ hasText: '归属工作区' }).getByRole('button', { name: '归属工作区会话', exact: true })).toBeVisible();
 
   await page.reload();
+  const directoryGroup = page.locator('.agent-workspace-group').filter({ hasText: '归属工作区' });
+  await directoryGroup.getByRole('button', { name: '收起工作区 归属工作区' }).click();
+  await expect(directoryGroup.getByRole('button', { name: '展开工作区 归属工作区' })).toBeVisible();
   const rootConversation = page.getByRole('button', { name: '未读根会话', exact: true });
   await rootConversation.click();
   await expect.poll(() => unreadWrites).toEqual([{ id: 'sidebar-root-unread', unread: false }]);
@@ -3611,8 +3614,11 @@ test('Conversation sidebar persists pinned sessions and opens activity sessions 
   await runningConversation.dblclick();
   await expect(page).toHaveURL(/\/agent\/conversations\/sidebar-directory-running$/);
   await expect(activity).toHaveCount(0);
-  await expect.poll(() => sidebarList.evaluate(element => element.scrollTop)).toBe(sidebarScrollTop);
-  await expect(page.getByText('会话 sidebar-directory-running', { exact: true })).toBeVisible();
+  const selectedRunningRow = page.locator('[data-conversation-binding-id="sidebar-directory-running"]');
+  await expect(selectedRunningRow).toHaveClass(/sidebar-reveal/);
+  await expect(selectedRunningRow.getByRole('button', { name: '运行中目标会话', exact: true })).toHaveClass(/active/);
+  await expect(directoryGroup.getByRole('button', { name: '收起工作区 归属工作区' })).toBeVisible();
+  await expect(selectedRunningRow.getByRole('img', { name: '会话正在运行但后台长时间未产生可确认进展' })).toBeVisible();
   await expect.poll(() => unreadWrites).toEqual([
     { id: 'sidebar-root-unread', unread: false },
     { id: 'sidebar-directory-running', unread: false },
@@ -3704,6 +3710,7 @@ test('Agent session keeps background activity visible without readiness polling 
   let authenticated = false;
   let backgroundRunning = true;
   let inputReadinessReads = 0;
+  let pinnedConversationReads = 0;
   const activityActiveBindings: Array<string | null> = [];
   const workspace = {
     id: 'activity-regression-workspace', display_name: '活动回归工作区', desired_state: 'RUNNING', updated_at: now,
@@ -3713,7 +3720,7 @@ test('Agent session keeps background activity visible without readiness polling 
     streaming_callback_ready: true, write_available: true, execution_status: 'idle', created_at: now, updated_at: now,
   };
   const background = {
-    id: 'activity-background', display_title: '后台运行会话', title_state: 'MANUAL', lifecycle: 'ACTIVE',
+    id: 'activity-background', display_title: '后台运行会话', title_state: 'MANUAL', lifecycle: 'ACTIVE', pinned: true,
     streaming_callback_ready: true, write_available: true, execution_status: 'idle', created_at: now, updated_at: now,
   };
   const conversations = [foreground, background];
@@ -3729,6 +3736,12 @@ test('Agent session keeps background activity visible without readiness polling 
     if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
     if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
     if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/pinned-conversations')) {
+      pinnedConversationReads += 1;
+      return json(route, conversations.filter(item => item.pinned).map(item => item.id === background.id
+        ? { ...item, unread: !backgroundRunning, unread_origin: !backgroundRunning ? 'MANUAL' : null }
+        : item));
+    }
     if (path.endsWith('/conversation-activity')) {
       activityActiveBindings.push(url.searchParams.get('active_binding_id'));
       return json(route, {
@@ -3771,7 +3784,7 @@ test('Agent session keeps background activity visible without readiness polling 
   await page.goto('/');
   await login(page);
   await page.goto(`/agent/conversations/${foreground.id}`);
-  const backgroundRow = page.locator(`[data-conversation-binding-id="${background.id}"]`);
+  const backgroundRow = page.getByLabel('置顶会话').locator(`[data-conversation-binding-id="${background.id}"]`);
   await expect(backgroundRow.getByRole('img', { name: '会话正在运行' })).toBeVisible();
 
   await page.getByRole('button', { name: /查看活动会话/ }).click();
@@ -3784,10 +3797,12 @@ test('Agent session keeps background activity visible without readiness polling 
   await page.waitForTimeout(2_500);
   expect(inputReadinessReads).toBeLessThanOrEqual(1);
 
+  await activity.getByRole('button', { name: '返回工作区列表' }).click();
   backgroundRunning = false;
-  await page.reload();
   // The activity projection owns background-completion unread persistence;
-  // the browser only renders the returned server fact.
+  // the browser must refresh the separate pinned projection as well.
+  await page.waitForTimeout(16_000);
+  await expect.poll(() => pinnedConversationReads).toBeGreaterThanOrEqual(2);
   await expect(backgroundRow.getByRole('img', { name: '会话已完成，有未读回复' })).toBeVisible();
 });
 

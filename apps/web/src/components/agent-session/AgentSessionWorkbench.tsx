@@ -207,7 +207,11 @@ function ComposerAnnotationList({ annotations, currentBindingId, onLocate, onRem
     setEditingId(undefined);
     setOpenedId(undefined);
   }, [comment, editingId, onUpdate, opened]);
-  useEscapeClose(closeOpened, Boolean(opened));
+  const cancelOpened = useCallback(() => {
+    setEditingId(undefined);
+    setOpenedId(undefined);
+  }, []);
+  useEscapeClose(cancelOpened, Boolean(opened));
   useEffect(() => {
     if (!opened) return;
     const closeWhenPointerLeavesCard = (event: PointerEvent) => {
@@ -235,7 +239,11 @@ function ComposerAnnotationList({ annotations, currentBindingId, onLocate, onRem
       <header><span>{openedFile ? <FileText size={13}/> : <Quote size={13}/>}{annotationReferenceName(opened, openedIndex, currentBindingId)}</span><button type="button" aria-label="关闭引用并保存评论" onClick={closeOpened}>×</button></header>
       <small title={openedFile?.path}>{openedFile ? `文件内容 · ${openedFile.filename} · ${openedFile.range}` : '会话文本'}</small>
       {typeof opened.anchor.quote === 'string' && opened.anchor.quote && <blockquote>{opened.anchor.quote}</blockquote>}
-      {editingId === opened.id ? <textarea className="agent-composer-annotation-comment" aria-label="编辑注释评论" placeholder="可选：写下你的评论…" value={comment} onChange={event => { setComment(event.target.value); onUpdate(opened, event.target.value); }}/> : <button type="button" className="agent-composer-annotation-comment-display" title="双击编辑评论" onDoubleClick={() => { setComment(opened.comment); setEditingId(opened.id); }}>{opened.comment || '双击添加评论'}</button>}
+      {editingId === opened.id ? <textarea className="agent-composer-annotation-comment" aria-label="编辑注释评论" placeholder="可选：写下你的评论…" value={comment} onChange={event => setComment(event.target.value)} onKeyDown={event => {
+        if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return;
+        event.preventDefault();
+        closeOpened();
+      }}/> : <button type="button" className="agent-composer-annotation-comment-display" title="双击编辑评论" onDoubleClick={() => { setComment(opened.comment); setEditingId(opened.id); }}>{opened.comment || '双击添加评论'}</button>}
       <footer><button type="button" onClick={() => { if (editingId === opened.id) onUpdate(opened, comment); onLocate(opened); }}>定位原文</button></footer>
     </article>}
   </div>;
@@ -600,6 +608,7 @@ interface WorkspaceConversationGroupProps {
   dragging?: boolean;
   dropPosition?: 'before' | 'after';
   onPointerDragStart?: (event: React.PointerEvent<HTMLElement>) => void;
+  forceExpanded?: boolean;
   canCreateConversation?: boolean;
   onCreateConversation?: () => void;
   onDelete?: () => void;
@@ -646,12 +655,17 @@ function useAgentSessionHost(): AgentSessionHost {
   return useContext(AgentSessionHostContext);
 }
 
-function WorkspaceConversationGroup({ groupId, label, children, conversationCount, hasMore = false, loadingMore = false, onLoadMore, draggable = false, dragging = false, dropPosition, onPointerDragStart, canCreateConversation = false, onCreateConversation, onDelete }: WorkspaceConversationGroupProps) {
+function WorkspaceConversationGroup({ groupId, label, children, conversationCount, hasMore = false, loadingMore = false, onLoadMore, draggable = false, dragging = false, dropPosition, onPointerDragStart, forceExpanded = false, canCreateConversation = false, onCreateConversation, onDelete }: WorkspaceConversationGroupProps) {
   const [collapsed, setCollapsed] = useState(false);
   const [visibleCount, setVisibleCount] = useState(3);
   const initializedItemCount = useRef(false);
   const previousConversationCount = useRef(conversationCount);
   const contentId = `agent-workspace-group-${groupId}`;
+  useEffect(() => {
+    if (!forceExpanded) return;
+    setCollapsed(false);
+    setVisibleCount(current => Math.max(current, conversationCount));
+  }, [conversationCount, forceExpanded]);
   useEffect(() => {
     if (!initializedItemCount.current) {
       if (conversationCount > 0) initializedItemCount.current = true;
@@ -823,7 +837,7 @@ function ConversationStreamObserver({
 }
 
 function WorkspaceConversationRow({
-  item, selectedBindingId, workspaceName, running, possiblyStuck, failed, unread, unreadOrigin, pinned, conversationWritable, removing, deleteDisabled, dragging, dropPosition, orderSyncState, onDragStart, onDragOver, onDrop, onDragEnd, onRetryOrder, onSelect, onDoubleClick, onTogglePin, onMarkUnread, onMarkRead, onAcknowledgeAlert, onDelete,
+  item, selectedBindingId, workspaceName, running, possiblyStuck, failed, unread, unreadOrigin, pinned, conversationWritable, removing, deleteDisabled, dragging, dropPosition, orderSyncState, onDragStart, onDragOver, onDrop, onDragEnd, onRetryOrder, onSelect, onDoubleClick, onTogglePin, onMarkUnread, onMarkRead, onAcknowledgeAlert, onDelete, reveal,
 }: {
   item: AgentConversation;
   selectedBindingId?: string;
@@ -852,6 +866,7 @@ function WorkspaceConversationRow({
   onMarkRead?: () => void;
   onAcknowledgeAlert?: () => void;
   onDelete?: () => void;
+  reveal?: boolean;
 }) {
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number }>();
   const showRunningAlert = possiblyStuck && running && !failed;
@@ -866,7 +881,7 @@ function WorkspaceConversationRow({
     return () => { window.removeEventListener('pointerdown', close); window.removeEventListener('resize', close); };
   }, [contextMenu]);
   const selected = item.id === selectedBindingId;
-  return <div data-conversation-binding-id={item.id} className={`agent-workspace-conversation${selected ? ' active' : ''}${dragging ? ' dragging' : ''}${dropPosition ? ` drop-${dropPosition}` : ''}`} onDragOver={onDragOver} onDrop={onDrop} onContextMenu={event => {
+  return <div data-conversation-binding-id={item.id} className={`agent-workspace-conversation${selected ? ' active' : ''}${dragging ? ' dragging' : ''}${dropPosition ? ` drop-${dropPosition}` : ''}${reveal ? ' sidebar-reveal' : ''}`} onDragOver={onDragOver} onDrop={onDrop} onContextMenu={event => {
     event.preventDefault();
     setContextMenu({ x: Math.min(event.clientX, window.innerWidth - 180), y: Math.min(event.clientY, window.innerHeight - 52) });
   }}>
@@ -4506,6 +4521,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [conversationSearchTargetEventId, setConversationSearchTargetEventId] = useState<string>();
   const [sidebarListMode, setSidebarListMode] = useState<'workspaces' | 'activity'>('workspaces');
   const [activityPreviewBindingId, setActivityPreviewBindingId] = useState<string>();
+  const [sidebarRevealBindingId, setSidebarRevealBindingId] = useState<string>();
   const attachmentInput = useRef<HTMLInputElement>(null);
   const discardedDraftScopes = useRef(new Set<string>());
   const removedPendingAttachmentIds = useRef(new Set<string>());
@@ -4833,6 +4849,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (!completedInBackground || !workspace) return;
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-activity', workspace.id) });
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversations', workspace.id) });
+    void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'pinned-conversations', workspace.id) });
   }, [conversationActivityQuery.data, conversationActivityQuery.isPlaceholderData, host, queryClient, routeBindingId, runningConversationIds, workspace]);
   const condensingConversationIds = useMemo(
     () => new Set(conversationActivityQuery.data?.condensing_binding_ids ?? []),
@@ -4913,6 +4930,38 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         return rightUpdatedAt - leftUpdatedAt || right.id.localeCompare(left.id);
       });
   }, [condensingConversationIds, conversationActivityQuery.data?.conversations, conversations, runningConversationIds, unreadConversationIds]);
+  const revealedConversation = sidebarRevealBindingId
+    ? activityConversations.find(item => item.id === sidebarRevealBindingId)
+      ?? conversations.find(item => item.id === sidebarRevealBindingId)
+    : undefined;
+  const revealedUnpinnedConversation = revealedConversation && !revealedConversation.pinned
+    ? revealedConversation
+    : undefined;
+  useEffect(() => {
+    if (!revealedUnpinnedConversation || conversations.some(item => item.id === revealedUnpinnedConversation.id)) return;
+    const scopeKey = revealedUnpinnedConversation.work_directory_id ?? '__root__';
+    if (loadingConversationScope || !conversationPagesByScope[scopeKey]?.next_cursor) return;
+    void loadMoreConversations(scopeKey);
+  }, [conversationPagesByScope, conversations, loadMoreConversations, loadingConversationScope, revealedUnpinnedConversation]);
+  useEffect(() => {
+    if (sidebarListMode !== 'workspaces' || !sidebarRevealBindingId) return;
+    let frame: number | undefined;
+    let timer: number | undefined;
+    frame = window.requestAnimationFrame(() => {
+      frame = window.requestAnimationFrame(() => {
+        const row = sidebarListRef.current?.querySelector<HTMLElement>(`[data-conversation-binding-id="${sidebarRevealBindingId}"]`);
+        if (!row) return;
+        row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        timer = window.setTimeout(() => {
+          setSidebarRevealBindingId(current => current === sidebarRevealBindingId ? undefined : current);
+        }, 2_600);
+      });
+    });
+    return () => {
+      if (frame !== undefined) window.cancelAnimationFrame(frame);
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [conversations, pinnedConversations, sidebarListMode, sidebarRevealBindingId]);
   const selectedConversationQuery = useQuery({
     queryKey: sessionQueryKey(host, 'conversation', workspace?.id, selectedBindingId),
     queryFn: () => api.conversation(workspace!.id, selectedBindingId!),
@@ -8570,7 +8619,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     const conversationWritable = Boolean(item.write_available);
     const draggable = options.allowDrag !== false;
     const orderSync = conversationOrderSync[item.id];
-    return <WorkspaceConversationRow key={item.id} item={item} selectedBindingId={selectedBindingId} workspaceName={options.workspaceName} running={running} possiblyStuck={possiblyStuck} failed={failed} unread={unread} unreadOrigin={unreadOrigin} pinned={Boolean(item.pinned)} conversationWritable={conversationWritable} removing={remove.isPending} deleteDisabled={running} dragging={draggable && draggedBindingId === item.id} dropPosition={draggable && dragTarget?.bindingId === item.id ? (dragTarget.after ? 'after' : 'before') : undefined} orderSyncState={orderSync?.state} onDragStart={draggable ? event => startConversationDrag(event, item, group) : undefined} onDragOver={draggable ? event => previewConversationDrop(event, item, group) : undefined} onDrop={draggable ? event => dropConversation(event, item, group) : undefined} onDragEnd={draggable ? endConversationDrag : undefined} onRetryOrder={orderSync?.state === 'failed' ? () => synchronizeConversationOrder(item.id, orderSync.orderedBindingIds) : undefined} onSelect={options.onSelect ?? (() => selectConversation(item.id))} onDoubleClick={options.onDoubleClick} onTogglePin={() => toggleConversationPin(item.id)} onMarkUnread={() => markConversationUnread(item.id)} onMarkRead={options.onMarkRead} onAcknowledgeAlert={() => markConversationRead(item.id)} onDelete={features.conversationDeletion && conversationWritable ? () => void confirmDeletion('会话', conversationName(item)).then(ok => { if (ok) remove.mutate(item.id); }) : undefined}/>;
+    return <WorkspaceConversationRow key={item.id} item={item} selectedBindingId={selectedBindingId} workspaceName={options.workspaceName} running={running} possiblyStuck={possiblyStuck} failed={failed} unread={unread} unreadOrigin={unreadOrigin} pinned={Boolean(item.pinned)} conversationWritable={conversationWritable} removing={remove.isPending} deleteDisabled={running} dragging={draggable && draggedBindingId === item.id} dropPosition={draggable && dragTarget?.bindingId === item.id ? (dragTarget.after ? 'after' : 'before') : undefined} orderSyncState={orderSync?.state} onDragStart={draggable ? event => startConversationDrag(event, item, group) : undefined} onDragOver={draggable ? event => previewConversationDrop(event, item, group) : undefined} onDrop={draggable ? event => dropConversation(event, item, group) : undefined} onDragEnd={draggable ? endConversationDrag : undefined} onRetryOrder={orderSync?.state === 'failed' ? () => synchronizeConversationOrder(item.id, orderSync.orderedBindingIds) : undefined} onSelect={options.onSelect ?? (() => selectConversation(item.id))} onDoubleClick={options.onDoubleClick} onTogglePin={() => toggleConversationPin(item.id)} onMarkUnread={() => markConversationUnread(item.id)} onMarkRead={options.onMarkRead} onAcknowledgeAlert={() => markConversationRead(item.id)} onDelete={features.conversationDeletion && conversationWritable ? () => void confirmDeletion('会话', conversationName(item)).then(ok => { if (ok) remove.mutate(item.id); }) : undefined} reveal={sidebarListMode === 'workspaces' && sidebarRevealBindingId === item.id}/>;
   };
   const pendingBootstrapItem = pendingBootstrap
     ? <button className={pendingBootstrap.draft.id === conversationDraft?.id ? 'active' : ''} aria-current={pendingBootstrap.draft.id === conversationDraft?.id ? 'page' : undefined} aria-label={`${pendingConversationName(pendingBootstrap.message)}，正在创建会话`}><LoaderCircle className="conversation-activity-spin" size={13}/><span><b>{pendingConversationName(pendingBootstrap.message)}</b><small>正在创建会话</small></span><ChevronRight size={13}/></button>
@@ -8614,6 +8663,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   };
   const openActivityConversation = (bindingId: string) => {
     setSidebarListMode('workspaces');
+    setSidebarRevealBindingId(bindingId);
     selectConversation(bindingId);
   };
   const activityWorkspaceName = (item: AgentConversation) => item.work_directory_id
@@ -8710,10 +8760,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         {sidebarListMode === 'activity'
           ? <section className="agent-workspace-activity" aria-label="活动会话"><header><div><span className="eyebrow">ACTIVITY</span><b>活动</b></div><button type="button" aria-label="返回工作区列表" title="返回工作区列表" onClick={() => { setActivityPreviewBindingId(undefined); setSidebarListMode('workspaces'); }}><ArrowLeft size={15}/></button></header>{activityConversations.length ? activityConversations.map(item => conversationRow(item, [], { allowDrag: false, workspaceName: activityWorkspaceName(item), onSelect: () => previewActivityConversation(item.id), onDoubleClick: () => openActivityConversation(item.id), onMarkRead: () => markConversationRead(item.id) })) : <p>没有正在运行或未读的会话。</p>}</section>
           : <>{pinnedConversations.length > 0 && <section className="agent-workspace-pinned" aria-label="置顶会话"><header><Pin size={13}/><span>置顶</span></header><div>{pinnedConversations.map(item => conversationRow(item, [], { allowDrag: false }))}</div></section>}
-            <WorkspaceConversationGroup groupId="root" label="根工作区" conversationCount={rootConversations.length} hasMore={Boolean(conversationPagesByScope.__root__?.next_cursor)} loadingMore={loadingConversationScope === '__root__'} onLoadMore={() => loadMoreConversations('__root__')} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ displayName: '根工作区' })}>
+            <WorkspaceConversationGroup groupId="root" label="根工作区" conversationCount={rootConversations.length} hasMore={Boolean(conversationPagesByScope.__root__?.next_cursor)} loadingMore={loadingConversationScope === '__root__'} onLoadMore={() => loadMoreConversations('__root__')} forceExpanded={Boolean(revealedUnpinnedConversation && !revealedUnpinnedConversation.work_directory_id)} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ displayName: '根工作区' })}>
               {visibleCount => <>{pendingBootstrapItem && !pendingBootstrap?.draft.workDirectoryId ? pendingBootstrapItem : recoverableDraftItem(undefined, '根工作区')}{rootConversations.slice(0, visibleCount).map(item => conversationRow(item, rootConversations))}</>}
             </WorkspaceConversationGroup>
-            {features.workDirectories && workDirectories.map(directory => <WorkspaceConversationGroup key={directory.id} groupId={directory.id} label={directory.display_name} conversationCount={conversationsForDirectory(directory.id).length} hasMore={Boolean(conversationPagesByScope[directory.id]?.next_cursor)} loadingMore={loadingConversationScope === directory.id} onLoadMore={() => loadMoreConversations(directory.id)} draggable dragging={draggedWorkDirectoryId === directory.id} dropPosition={workDirectoryDropTarget?.id === directory.id ? (workDirectoryDropTarget.after ? 'after' : 'before') : undefined} onPointerDragStart={event => startPointerWorkDirectoryDrag(event, directory.id)} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ workDirectoryId: directory.id, displayName: directory.display_name })} onDelete={api.deleteWorkDirectory && runtimeWritable ? () => void removeWorkDirectory(directory) : undefined}>
+            {features.workDirectories && workDirectories.map(directory => <WorkspaceConversationGroup key={directory.id} groupId={directory.id} label={directory.display_name} conversationCount={conversationsForDirectory(directory.id).length} hasMore={Boolean(conversationPagesByScope[directory.id]?.next_cursor)} loadingMore={loadingConversationScope === directory.id} onLoadMore={() => loadMoreConversations(directory.id)} draggable dragging={draggedWorkDirectoryId === directory.id} dropPosition={workDirectoryDropTarget?.id === directory.id ? (workDirectoryDropTarget.after ? 'after' : 'before') : undefined} onPointerDragStart={event => startPointerWorkDirectoryDrag(event, directory.id)} forceExpanded={revealedUnpinnedConversation?.work_directory_id === directory.id} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ workDirectoryId: directory.id, displayName: directory.display_name })} onDelete={api.deleteWorkDirectory && runtimeWritable ? () => void removeWorkDirectory(directory) : undefined}>
               {visibleCount => { const group = conversationsForDirectory(directory.id); return <>{pendingBootstrapItem && pendingBootstrap?.draft.workDirectoryId === directory.id ? pendingBootstrapItem : recoverableDraftItem(directory.id, directory.display_name)}{group.slice(0, visibleCount).map(item => conversationRow(item, group))}</>}}
             </WorkspaceConversationGroup>)}</>}
       </div>
