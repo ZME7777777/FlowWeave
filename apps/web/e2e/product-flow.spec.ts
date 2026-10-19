@@ -689,7 +689,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({
-          running_binding_ids: modelIsResponding ? ['agent-conversation-1'] : [],
+          running_binding_ids: modelIsResponding && !interrupted ? ['agent-conversation-1'] : [],
           condensing_binding_ids: [],
           condensation_failed_binding_ids: [],
           possibly_stuck_binding_ids: [],
@@ -862,7 +862,10 @@ test('top-level Agent workspace creates a direct conversation and restores its U
             { id: 'empty-response-nudge', event_type: 'MESSAGE', payload: { source: 'environment', parent_id: 'empty-agent-response', content: 'Your last response did not include a function call or a message. Please use a tool to proceed with the task.', timestamp: new Date().toISOString() } },
             ...(emptyResponseFollowup ? [{ id: 'empty-response-followup', event_type: 'THOUGHT', payload: { source: 'agent', parent_id: 'empty-response-nudge', content: '已恢复，继续检查工作区。', thought: '已恢复，继续检查工作区。', timestamp: new Date().toISOString() } }] : []),
           ] : []),
-          ...(interrupted ? [{ id: 'paused-tool-error', event_type: 'ERROR', payload: { source_type: 'AgentErrorEvent', parent_id: 'running-user', content: 'Tool call interrupted before completion. The conversation was paused.' } }] : []),
+          ...(interrupted ? [
+            { id: 'paused-tool-error', event_type: 'ERROR', payload: { source_type: 'AgentErrorEvent', parent_id: 'running-user', content: 'Tool call interrupted before completion. The conversation was paused.' } },
+            { id: 'paused-interrupt', event_type: 'STATE', payload: { source_type: 'InterruptEvent', source: 'user', parent_id: 'paused-tool-error', timestamp: new Date().toISOString() } },
+          ] : []),
           ...(pauseBufferedEvent ? [{ id: 'pause-buffered-event', event_type: 'THOUGHT', payload: { source: 'agent', parent_id: 'running-user', content: '暂停请求确认前到达的正式事件。', thought: '暂停请求确认前到达的正式事件。', timestamp: new Date().toISOString() } }] : []),
           ...(parentTurnFailed ? [{ id: 'running-parent-error', event_type: 'ERROR', payload: { source_type: 'ConversationErrorEvent', source: 'environment', parent_id: backfilledTaskAction ? 'recovered-task-action' : 'running-user', content: '模型服务暂时不可用，本轮已停止', error_code: 'LLMServiceUnavailableError', timestamp: new Date().toISOString() } }] : []),
           ...(recoverableAgentError ? [

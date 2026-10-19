@@ -95,6 +95,11 @@ export function isOpenHandsConversationTerminalError(event: OpenHandsConversatio
     && String(event.payload.source_type ?? '') === 'ConversationErrorEvent';
 }
 
+export function isOpenHandsConversationInterrupt(event: OpenHandsConversationEvent): boolean {
+  return event.event_type === 'STATE'
+    && String(event.payload.source_type ?? event.payload.event_name ?? '') === 'InterruptEvent';
+}
+
 export function isOpenHandsEmptyResponseRecovery(event: OpenHandsConversationEvent): boolean {
   return event.event_type === 'MESSAGE'
     && String(event.payload.source ?? '').trim().toLowerCase() === 'environment'

@@ -18,7 +18,7 @@ import { agentWorkspaceSessionHost, type AgentSessionHost } from './session-host
 import { SidebarConversationPane } from './SidebarConversationPane';
 import { clearConversationSnapshots, readConversationContextSnapshot, writeConversationContextSnapshot } from './conversation-cache';
 import { ConversationSurface, ConversationTaskPlan, type ConversationHistoryPrepend, type ConversationReference, type ConversationScrollSnapshot, type ModelRetryStatus } from '../ConversationSurface';
-import { isOpenHandsAgentReply, isOpenHandsConversationTerminalError, isOpenHandsEmptyResponseRecovery, orderOpenHandsConversationEvents } from '../conversationEvents';
+import { isOpenHandsAgentReply, isOpenHandsConversationInterrupt, isOpenHandsConversationTerminalError, isOpenHandsEmptyResponseRecovery, orderOpenHandsConversationEvents } from '../conversationEvents';
 import { useProductDialog } from '../ProductDialogContext';
 import { useEscapeClose } from '../useEscapeClose';
 import { MermaidDiagram } from '../MermaidDiagram';
@@ -1636,6 +1636,21 @@ function hasFinishedTurn(events: OpenHandsConversationEvent[], userEventId: stri
       || (event.event_type === 'COMPLETED' && event.payload.event_name === 'FinishAction')
       || isOpenHandsAgentReply(event);
     return isTerminal && descendsFromActiveUser(event);
+  });
+}
+
+function hasInterruptedTurn(events: OpenHandsConversationEvent[], userEventId: string): boolean {
+  const byId = new Map(events.map(event => [event.id, event]));
+  return events.some(event => {
+    if (!isOpenHandsConversationInterrupt(event)) return false;
+    const visited = new Set<string>();
+    let parentId = event.payload.parent_id;
+    while (parentId && parentId !== '__root__' && !visited.has(parentId)) {
+      if (parentId === userEventId) return true;
+      visited.add(parentId);
+      parentId = byId.get(parentId)?.payload.parent_id;
+    }
+    return false;
   });
 }
 
@@ -6119,6 +6134,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const activeFormalTurnUnfinished = Boolean(
     activeFormalTurnId && !activeFormalTurnFinished,
   );
+  const activeFormalTurnInterrupted = Boolean(
+    activeFormalTurnId && hasInterruptedTurn(currentFormalEvents, activeFormalTurnId),
+  );
   const currentFormalTurnFinished = !foregroundSubmissionAwaitingFormalEvent && (activeFormalTurnId
     ? activeFormalTurnFinished
     : selectedFormalTurnFinished);
@@ -6142,9 +6160,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     ));
   // A paused snapshot can arrive from an older Runtime read while the batched
   // activity catalog or formal branch already proves this turn is still live.
-  // Do not make a stale pause authoritative over that newer running evidence.
+  // A formal InterruptEvent is stronger evidence: it is emitted by OpenHands
+  // only after it has transitioned the Conversation to PAUSED.
   const pausedStateConflictsWithRunningEvidence = Boolean(
-    !currentFormalTurnFinished
+    !activeFormalTurnInterrupted
+    && !currentFormalTurnFinished
     && (turnState === 'paused' || nativeExecutionStatus?.trim().toLowerCase() === 'paused')
     && (activeFormalTurnHasRuntimeActivity || runningConversationIds.has(selected?.id ?? '')),
   );
