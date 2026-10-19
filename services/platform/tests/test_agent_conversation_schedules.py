@@ -3,6 +3,7 @@ from uuid import uuid4
 
 from sqlalchemy import select
 
+from flowweave.bootstrap.worker import _DELIVERY_TASK_TYPES
 from flowweave.modules.agent_sessions.application import schedules
 from flowweave.modules.agent_sessions.infrastructure.models import (
     AgentConversationBinding,
@@ -75,6 +76,10 @@ def test_agent_conversation_schedule_scans_and_enqueues_one_occurrence(
         assert task.owner_user_id == schedule.owner_user_id
         assert schedule.next_run_at is not None
         assert schedule.next_run_at > now()
+
+
+def test_agent_conversation_schedule_delivery_is_claimed_by_worker() -> None:
+    assert "DELIVER_AGENT_CONVERSATION_SCHEDULE" in _DELIVERY_TASK_TYPES
 
 
 def test_agent_conversation_schedule_delivery_creates_a_distinct_native_conversation(

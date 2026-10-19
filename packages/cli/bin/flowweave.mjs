@@ -32,15 +32,15 @@ function usage() {
 页面域原子操作：
   node <list|get|create|update|delete> [ID] [--data JSON|--data-file FILE]
   node-directory <list|create|delete|delete-many> [ID] [--id ID ...]
-  capability <list|validate|commit|import|marketplace|marketplace-preview|marketplace-resolve|plugin-resolution|plugin-publish> ...
+  capability <list|validate|commit|import|download|marketplace|marketplace-preview|marketplace-resolve|plugin-resolution|plugin-publish> ...
   event-trigger <list|get|create|version> ...
   environment <list|get|create|update|delete|setup|publish|stop|version-delete> ...
   credential <list|create|update|delete|delete-many> ...
   flow <list|get|create|update|validate|delete> ...
-  run <list|get|start|delete|runtime|replace|pause|resume|cancel|complete|events|node|node-copy|node-delete|stepwise-draft|stepwise-start|workspace-details|workspace-directory|workspace-git-repositories|workspace-git-log|workspace-git-commit|workspace-git-diff|workspace-entry-create|workspace-delete|work-directory-delete|hydration|head|automatic-config-export|automatic-config-import|reconcile-runtime-completion> ...
+  run <list|get|start|delete|runtime|replace|pause|resume|cancel|complete|events|node|node-copy|node-delete|pin|unpin|stepwise-draft|stepwise-start|workspace-details|workspace-directory|workspace-git-repositories|workspace-git-log|workspace-git-commit|workspace-git-diff|workspace-entry-create|workspace-delete|work-directory-delete|hydration|head|automatic-config-export|automatic-config-import|reconcile-runtime-completion> ...
   schedule <list|templates|occurrences|create|pause|resume|trigger|delete> ...
   model <list|create|update|delete|discover|usage|test|oauth-start|oauth-poll|oauth-status|oauth-revoke> ...
-  agent <default|workspace|runtime|runtime-replace|conversations|conversation|create|send|interrupt|resume|sidebar-create|sidebar|sidebar-close|work-directories|work-directory-create|work-directory-delete|workspace-details|workspace-directory|workspace-git-repositories|workspace-git-log|workspace-git-commit|workspace-git-diff|workspace-entry-create|file-delete|hydration|head> ...
+  agent <default|workspace|runtime|runtime-replace|conversations|pinned-conversations|conversation-management|conversation-management-delete|schedules|schedule-create|schedule-update|schedule-pause|schedule-resume|schedule-trigger|schedule-delete|schedule-occurrences|conversation|create|send|interrupt|resume|pin|unpin|sidebar-create|sidebar|sidebar-close|work-directories|work-directory-create|work-directory-delete|workspace-details|workspace-directory|workspace-git-repositories|workspace-git-log|workspace-git-commit|workspace-git-diff|workspace-entry-create|file-delete|hydration|head> ...
 
 所有写入操作都可加 --dry-run 仅查看最终请求。运行 flowweave <命令> --help 查看该命令说明。`;
 }
@@ -208,6 +208,28 @@ async function request(method, path, args, {
   return captureSession ? { value, sessionToken: sessionTokenFrom(response), baseUrl } : value;
 }
 
+async function download(path, output, args) {
+  const { baseUrl } = await loadConfig();
+  const url = pathUrl(baseUrl, path, { query: queries(args) });
+  if (flag(args, '--dry-run')) return { method: 'GET', url: url.toString(), output };
+  const suppliedHeaders = headers(args);
+  if (Object.keys(suppliedHeaders).some((name) => name.toLowerCase() === 'cookie')) {
+    throw new CliError('不要用 --header 传入 Cookie；请执行 flowweave auth login');
+  }
+  const response = await fetch(url, {
+    headers: { Accept: 'application/zip', ...suppliedHeaders, Cookie: `${SESSION_COOKIE}=${await loadAuth(baseUrl)}` },
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    let value;
+    try { value = text ? JSON.parse(text) : { status: response.status }; } catch { value = { status: response.status, body: text }; }
+    throw new CliError(`HTTP ${response.status}: ${JSON.stringify(value)}`);
+  }
+  await mkdir(dirname(output), { recursive: true, mode: 0o700 });
+  await writeFile(output, Buffer.from(await response.arrayBuffer()), { flag: 'wx', mode: 0o600 });
+  return { downloaded: true, output, url: url.toString() };
+}
+
 async function promptText(label) {
   if (!process.stdin.isTTY) throw new CliError(`${label.replace(/[:：]\s*$/, '')} 缺少值`);
   const reader = createInterface({ input: process.stdin, output: process.stderr });
@@ -341,6 +363,12 @@ async function nodeDirectory(args) {
 async function capability(args) {
   const [action, id] = positional(args);
   if (action === 'list') return request('GET', '/capabilities', args);
+  if (action === 'download') {
+    if (!id) throw new CliError('capability download 需要能力 ID');
+    const output = option(args, '--output');
+    if (!output) throw new CliError('capability download 需要 --output <ZIP 文件>');
+    return download(`/capabilities/${id}/package`, resolve(output), args);
+  }
   if (action === 'marketplace') {
     if (id) throw new CliError('capability marketplace 不接受 ID');
     return request('GET', '/plugin-marketplace-catalogs/openhands', args);
@@ -398,7 +426,7 @@ async function capability(args) {
     if (!token) throw new CliError('capability commit 需要 --import-token');
     return request('POST', '/capability-imports', args, { body: { import_token: token } });
   }
-  throw new CliError('capability 支持 list|validate|commit|import|marketplace|marketplace-preview|marketplace-resolve|plugin-resolution|plugin-publish');
+  throw new CliError('capability 支持 list|validate|commit|import|download|marketplace|marketplace-preview|marketplace-resolve|plugin-resolution|plugin-publish');
 }
 
 async function eventTrigger(args) {
@@ -552,6 +580,14 @@ async function run(args) {
   const workspaceBase = attemptId
     ? `/flow-runs/${id}/node-attempts/${attemptId}/agent-sessions`
     : null;
+  if (action === 'pin' || action === 'unpin') {
+    if (!workspaceBase) throw new CliError(`run ${action} 需要 --attempt <attempt-id>`);
+    const bindingId = option(args, '--binding');
+    if (!bindingId) throw new CliError(`run ${action} 需要 --binding <binding-id>`);
+    return request('PUT', `${workspaceBase}/${bindingId}/pinned`, args, {
+      body: { pinned: action === 'pin' },
+    });
+  }
   if (['workspace-details', 'workspace-directory', 'workspace-git-repositories', 'workspace-git-log', 'workspace-git-commit', 'workspace-git-diff', 'workspace-entry-create'].includes(action)) {
     if (!workspaceBase) throw new CliError(`run ${action} 需要 --attempt <attempt-id>`);
     if (action === 'workspace-details') {
@@ -614,7 +650,7 @@ async function run(args) {
   if (action === 'cancel') return request('POST', `/flow-runs/${id}/cancel`, args, { body: {} });
   if (action === 'complete') return request('POST', `/flow-runs/${id}/complete`, args, { body: {} });
   if (action === 'events') return request('GET', `/flow-runs/${id}/events`, args);
-  throw new CliError('run 支持 list|get|start|delete|runtime|replace|pause|resume|cancel|complete|events|node|node-copy|node-delete|stepwise-draft|stepwise-start|workspace-details|workspace-directory|workspace-git-repositories|workspace-git-log|workspace-git-commit|workspace-git-diff|workspace-entry-create|workspace-delete|work-directory-delete|hydration|head|automatic-config-export|automatic-config-import|reconcile-runtime-completion');
+  throw new CliError('run 支持 list|get|start|delete|runtime|replace|pause|resume|cancel|complete|events|node|node-copy|node-delete|pin|unpin|stepwise-draft|stepwise-start|workspace-details|workspace-directory|workspace-git-repositories|workspace-git-log|workspace-git-commit|workspace-git-diff|workspace-entry-create|workspace-delete|work-directory-delete|hydration|head|automatic-config-export|automatic-config-import|reconcile-runtime-completion');
 }
 
 async function schedule(args) {
@@ -695,6 +731,53 @@ async function agent(args) {
     return request('POST', `${base}/runtime/replacements`, args, { body: {} });
   }
   if (action === 'conversations') return request('GET', `${base}/conversations`, args);
+  if (action === 'pinned-conversations') return request('GET', `${base}/pinned-conversations`, args);
+  if (action === 'conversation-management') {
+    const workDirectoryId = option(args, '--work-directory');
+    return request('GET', `${base}/conversation-management`, args, {
+      query: workDirectoryId ? [['work_directory_id', workDirectoryId]] : [],
+    });
+  }
+  if (action === 'conversation-management-delete') {
+    const bindingIds = optionValues(args, '--id');
+    if (!bindingIds.length) throw new CliError('agent conversation-management-delete 至少需要一个 --id');
+    const workDirectoryId = option(args, '--work-directory');
+    return request('POST', `${base}/conversation-management/delete`, args, {
+      body: { binding_ids: bindingIds },
+      query: workDirectoryId ? [['work_directory_id', workDirectoryId]] : [],
+    });
+  }
+  if (action === 'schedules') {
+    if (binding) throw new CliError('agent schedules 不接受调度 ID');
+    return request('GET', `${base}/conversation-schedules`, args);
+  }
+  if (action === 'schedule-create') {
+    if (binding) throw new CliError('agent schedule-create 不接受调度 ID');
+    return request('POST', `${base}/conversation-schedules`, args);
+  }
+  if (action.startsWith('schedule-')) {
+    if (!binding) throw new CliError(`agent ${action} 需要调度 ID`);
+    const scheduleBase = `${base}/conversation-schedules/${binding}`;
+    if (action === 'schedule-occurrences') return request('GET', `${scheduleBase}/occurrences`, args);
+    if (action === 'schedule-update') {
+      const body = await objectPayload(args);
+      if (!Number.isSafeInteger(body.expected_row_version) || body.expected_row_version < 1) {
+        throw new CliError('agent schedule-update 需要 --data 或 --data-file，且必须包含正整数 expected_row_version');
+      }
+      return request('PUT', scheduleBase, args, { body });
+    }
+    if (action === 'schedule-pause' || action === 'schedule-resume') {
+      const expected = Number(option(args, '--expected-row-version'));
+      if (!Number.isSafeInteger(expected) || expected < 1) {
+        throw new CliError(`agent ${action} 需要正整数 --expected-row-version`);
+      }
+      return request('PUT', `${scheduleBase}/state`, args, {
+        body: { expected_row_version: expected, status: action === 'schedule-pause' ? 'PAUSED' : 'ACTIVE' },
+      });
+    }
+    if (action === 'schedule-trigger') return request('POST', `${scheduleBase}/trigger`, args, { body: {} });
+    if (action === 'schedule-delete') return request('DELETE', scheduleBase, args);
+  }
   if (action === 'work-directories') return request('GET', `${base}/work-directories`, args);
   if (action === 'work-directory-create') {
     return request('POST', `${base}/work-directories`, args);
@@ -739,6 +822,11 @@ async function agent(args) {
     return request('POST', `${base}/conversations/${binding}/sidebar`, args, { body: await objectPayload(args) });
   }
   if (!binding) throw new CliError(`agent ${action || ''} 需要会话 binding ID`);
+  if (action === 'pin' || action === 'unpin') {
+    return request('PUT', `${base}/conversations/${binding}/pinned`, args, {
+      body: { pinned: action === 'pin' },
+    });
+  }
   if (action === 'sidebar') return request('GET', `${base}/sidebars/${binding}`, args);
   if (action === 'sidebar-close') return request('DELETE', `${base}/sidebars/${binding}`, args);
   if (action === 'conversation') return request('GET', `${base}/conversations/${binding}`, args);
@@ -746,7 +834,7 @@ async function agent(args) {
   if (action === 'send') return request('POST', `${base}/conversations/${binding}/messages`, args);
   if (action === 'interrupt') return request('POST', `${base}/conversations/${binding}/interrupt`, args, { body: {} });
   if (action === 'resume') return request('POST', `${base}/conversations/${binding}/resume`, args, { body: {} });
-  throw new CliError('agent 支持 default|workspace|runtime|runtime-replace|conversations|conversation|create|send|interrupt|resume|sidebar-create|sidebar|sidebar-close|work-directories|work-directory-create|work-directory-delete|workspace-details|workspace-directory|workspace-git-repositories|workspace-git-log|workspace-git-commit|workspace-git-diff|workspace-entry-create|file-delete|hydration|head');
+  throw new CliError('agent 支持 default|workspace|runtime|runtime-replace|conversations|pinned-conversations|conversation-management|conversation-management-delete|schedules|schedule-create|schedule-update|schedule-pause|schedule-resume|schedule-trigger|schedule-delete|schedule-occurrences|conversation|create|send|interrupt|resume|pin|unpin|sidebar-create|sidebar|sidebar-close|work-directories|work-directory-create|work-directory-delete|workspace-details|workspace-directory|workspace-git-repositories|workspace-git-log|workspace-git-commit|workspace-git-diff|workspace-entry-create|file-delete|hydration|head');
 }
 
 async function upload(args) {

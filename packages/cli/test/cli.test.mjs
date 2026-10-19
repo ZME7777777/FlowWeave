@@ -280,6 +280,42 @@ test('周期调度快捷命令保持母版、执行详情、创建、fencing、�
   assert.equal(invoke(config, 'schedule', 'occurrences', 'schedule-1', '--page-size', '101', '--dry-run').status, 2);
 });
 
+test('Agent 会话定时快捷命令使用 Workspace 范围并保留并发版本', async () => {
+  const config = await configured();
+  invoke(config, 'config', 'init', '--base-url', 'https://example.test/flowweave');
+  const listed = invoke(config, 'agent', 'schedules', 'workspace-1', '--dry-run');
+  assert.equal(listed.status, 0, listed.stderr);
+  assert.equal(JSON.parse(listed.stdout).url, 'https://example.test/flowweave/api/v1/agent-workspaces/workspace-1/conversation-schedules');
+  const created = invoke(config, 'agent', 'schedule-create', 'workspace-1', '--data', '{"name":"每日检查","binding_id":"binding-1","prompt":"检查状态","cron_expression":"0 9 * * 1-5"}', '--dry-run');
+  assert.equal(created.status, 0, created.stderr);
+  assert.deepEqual(JSON.parse(created.stdout), {
+    method: 'POST',
+    payload: { name: '每日检查', binding_id: 'binding-1', prompt: '检查状态', cron_expression: '0 9 * * 1-5' },
+    url: 'https://example.test/flowweave/api/v1/agent-workspaces/workspace-1/conversation-schedules',
+  });
+  const updated = invoke(config, 'agent', 'schedule-update', 'workspace-1', 'schedule-1', '--data', '{"expected_row_version":2,"name":"每日报告","binding_id":"binding-2","prompt":"生成报告","cron_expression":"0 10 * * *"}', '--dry-run');
+  assert.equal(updated.status, 0, updated.stderr);
+  assert.equal(JSON.parse(updated.stdout).method, 'PUT');
+  const paused = invoke(config, 'agent', 'schedule-pause', 'workspace-1', 'schedule-1', '--expected-row-version', '3', '--dry-run');
+  assert.equal(paused.status, 0, paused.stderr);
+  assert.deepEqual(JSON.parse(paused.stdout), {
+    method: 'PUT',
+    payload: { expected_row_version: 3, status: 'PAUSED' },
+    url: 'https://example.test/flowweave/api/v1/agent-workspaces/workspace-1/conversation-schedules/schedule-1/state',
+  });
+  const occurrences = invoke(config, 'agent', 'schedule-occurrences', 'workspace-1', 'schedule-1', '--dry-run');
+  assert.equal(occurrences.status, 0, occurrences.stderr);
+  assert.equal(JSON.parse(occurrences.stdout).url, 'https://example.test/flowweave/api/v1/agent-workspaces/workspace-1/conversation-schedules/schedule-1/occurrences');
+  const triggered = invoke(config, 'agent', 'schedule-trigger', 'workspace-1', 'schedule-1', '--dry-run');
+  assert.equal(triggered.status, 0, triggered.stderr);
+  assert.equal(JSON.parse(triggered.stdout).method, 'POST');
+  const deleted = invoke(config, 'agent', 'schedule-delete', 'workspace-1', 'schedule-1', '--dry-run');
+  assert.equal(deleted.status, 0, deleted.stderr);
+  assert.equal(JSON.parse(deleted.stdout).method, 'DELETE');
+  assert.equal(invoke(config, 'agent', 'schedule-pause', 'workspace-1', 'schedule-1', '--dry-run').status, 2);
+  assert.equal(invoke(config, 'agent', 'schedule-update', 'workspace-1', 'schedule-1', '--data', '{"expected_row_version":0}', '--dry-run').status, 2);
+});
+
 test('能力快捷命令映射 OpenHands Marketplace 的冻结浏览、解析与发布', async () => {
   const config = await configured();
   invoke(config, 'config', 'init', '--base-url', 'https://example.test/flowweave');
@@ -415,4 +451,45 @@ test('new runtime, sidebar, and stepwise draft shortcuts preserve contract paths
   assert.equal(invoke(config, 'agent', 'sidebar-create', 'workspace-1', 'binding-1', '--data', '{}', '--dry-run').status, 2);
   assert.equal(invoke(config, 'run', 'stepwise-start', 'run-1', '--node-key', 'review', '--data', '{"expected_row_version":4}', '--dry-run').status, 2);
   assert.equal(invoke(config, 'run', 'stepwise-draft', 'run-1', '--dry-run').status, 2);
+});
+
+test('会话管理、置顶与 Skill 下载快捷命令映射最新公开接口', async () => {
+  const config = await configured();
+  const initialized = invoke(config, 'config', 'init', '--base-url', 'https://example.test/flowweave');
+  assert.equal(initialized.status, 0, initialized.stderr);
+
+  const management = invoke(config, 'agent', 'conversation-management', 'workspace-1', '--work-directory', 'directory-1', '--dry-run');
+  assert.equal(management.status, 0, management.stderr);
+  assert.equal(JSON.parse(management.stdout).url, 'https://example.test/flowweave/api/v1/agent-workspaces/workspace-1/conversation-management?work_directory_id=directory-1');
+  const deleted = invoke(config, 'agent', 'conversation-management-delete', 'workspace-1', '--id', 'binding-1', '--id', 'binding-2', '--dry-run');
+  assert.equal(deleted.status, 0, deleted.stderr);
+  assert.deepEqual(JSON.parse(deleted.stdout), {
+    method: 'POST',
+    payload: { binding_ids: ['binding-1', 'binding-2'] },
+    url: 'https://example.test/flowweave/api/v1/agent-workspaces/workspace-1/conversation-management/delete',
+  });
+  const pinned = invoke(config, 'agent', 'pinned-conversations', 'workspace-1', '--dry-run');
+  assert.equal(pinned.status, 0, pinned.stderr);
+  assert.equal(JSON.parse(pinned.stdout).url, 'https://example.test/flowweave/api/v1/agent-workspaces/workspace-1/pinned-conversations');
+  const pin = invoke(config, 'agent', 'pin', 'workspace-1', 'binding-1', '--dry-run');
+  assert.equal(pin.status, 0, pin.stderr);
+  assert.deepEqual(JSON.parse(pin.stdout).payload, { pinned: true });
+  const unpin = invoke(config, 'run', 'unpin', 'run-1', '--attempt', 'attempt-1', '--binding', 'binding-1', '--dry-run');
+  assert.equal(unpin.status, 0, unpin.stderr);
+  assert.deepEqual(JSON.parse(unpin.stdout), {
+    method: 'PUT',
+    payload: { pinned: false },
+    url: 'https://example.test/flowweave/api/v1/flow-runs/run-1/node-attempts/attempt-1/agent-sessions/binding-1/pinned',
+  });
+  const download = invoke(config, 'capability', 'download', 'capability-1', '--output', './skill.zip', '--dry-run');
+  assert.equal(download.status, 0, download.stderr);
+  assert.deepEqual(JSON.parse(download.stdout), {
+    method: 'GET',
+    output: `${process.cwd()}/skill.zip`,
+    url: 'https://example.test/flowweave/api/v1/capabilities/capability-1/package',
+  });
+
+  assert.equal(invoke(config, 'agent', 'conversation-management-delete', 'workspace-1', '--dry-run').status, 2);
+  assert.equal(invoke(config, 'capability', 'download', 'capability-1', '--dry-run').status, 2);
+  assert.equal(invoke(config, 'run', 'pin', 'run-1', '--attempt', 'attempt-1', '--dry-run').status, 2);
 });
