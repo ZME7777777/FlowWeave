@@ -788,6 +788,34 @@ export interface AgentConversation {
   sort_key?: string;
   usage?: TokenUsageSummary;
 }
+
+export interface AgentConversationSchedule {
+  id: string;
+  workspace_id: string;
+  binding_id: string;
+  conversation_title?: string | null;
+  name: string;
+  prompt: string;
+  cron_expression: string;
+  status: 'ACTIVE' | 'PAUSED';
+  next_run_at?: string | null;
+  last_run_at?: string | null;
+  row_version: number;
+  created_at: string;
+  updated_at: string;
+}
+export interface AgentConversationScheduleOccurrence {
+  id: string;
+  scheduled_for?: string | null;
+  trigger_kind: 'SCHEDULED' | 'MANUAL';
+  state: 'PENDING' | 'STARTED' | 'FAILED';
+  binding_id: string;
+  conversation_title?: string | null;
+  message_cursor?: string | null;
+  error_detail?: string | null;
+  created_at: string;
+}
+
 export interface AgentConversationPage {
   items: AgentConversation[];
   next_cursor?: string | null;

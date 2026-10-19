@@ -280,6 +280,42 @@ test('周期调度快捷命令保持母版、执行详情、创建、fencing、�
   assert.equal(invoke(config, 'schedule', 'occurrences', 'schedule-1', '--page-size', '101', '--dry-run').status, 2);
 });
 
+test('Agent 会话定时快捷命令使用 Workspace 范围并保留并发版本', async () => {
+  const config = await configured();
+  invoke(config, 'config', 'init', '--base-url', 'https://example.test/flowweave');
+  const listed = invoke(config, 'agent', 'schedules', 'workspace-1', '--dry-run');
+  assert.equal(listed.status, 0, listed.stderr);
+  assert.equal(JSON.parse(listed.stdout).url, 'https://example.test/flowweave/api/v1/agent-workspaces/workspace-1/conversation-schedules');
+  const created = invoke(config, 'agent', 'schedule-create', 'workspace-1', '--data', '{"name":"每日检查","binding_id":"binding-1","prompt":"检查状态","cron_expression":"0 9 * * 1-5"}', '--dry-run');
+  assert.equal(created.status, 0, created.stderr);
+  assert.deepEqual(JSON.parse(created.stdout), {
+    method: 'POST',
+    payload: { name: '每日检查', binding_id: 'binding-1', prompt: '检查状态', cron_expression: '0 9 * * 1-5' },
+    url: 'https://example.test/flowweave/api/v1/agent-workspaces/workspace-1/conversation-schedules',
+  });
+  const updated = invoke(config, 'agent', 'schedule-update', 'workspace-1', 'schedule-1', '--data', '{"expected_row_version":2,"name":"每日报告","binding_id":"binding-2","prompt":"生成报告","cron_expression":"0 10 * * *"}', '--dry-run');
+  assert.equal(updated.status, 0, updated.stderr);
+  assert.equal(JSON.parse(updated.stdout).method, 'PUT');
+  const paused = invoke(config, 'agent', 'schedule-pause', 'workspace-1', 'schedule-1', '--expected-row-version', '3', '--dry-run');
+  assert.equal(paused.status, 0, paused.stderr);
+  assert.deepEqual(JSON.parse(paused.stdout), {
+    method: 'PUT',
+    payload: { expected_row_version: 3, status: 'PAUSED' },
+    url: 'https://example.test/flowweave/api/v1/agent-workspaces/workspace-1/conversation-schedules/schedule-1/state',
+  });
+  const occurrences = invoke(config, 'agent', 'schedule-occurrences', 'workspace-1', 'schedule-1', '--dry-run');
+  assert.equal(occurrences.status, 0, occurrences.stderr);
+  assert.equal(JSON.parse(occurrences.stdout).url, 'https://example.test/flowweave/api/v1/agent-workspaces/workspace-1/conversation-schedules/schedule-1/occurrences');
+  const triggered = invoke(config, 'agent', 'schedule-trigger', 'workspace-1', 'schedule-1', '--dry-run');
+  assert.equal(triggered.status, 0, triggered.stderr);
+  assert.equal(JSON.parse(triggered.stdout).method, 'POST');
+  const deleted = invoke(config, 'agent', 'schedule-delete', 'workspace-1', 'schedule-1', '--dry-run');
+  assert.equal(deleted.status, 0, deleted.stderr);
+  assert.equal(JSON.parse(deleted.stdout).method, 'DELETE');
+  assert.equal(invoke(config, 'agent', 'schedule-pause', 'workspace-1', 'schedule-1', '--dry-run').status, 2);
+  assert.equal(invoke(config, 'agent', 'schedule-update', 'workspace-1', 'schedule-1', '--data', '{"expected_row_version":0}', '--dry-run').status, 2);
+});
+
 test('能力快捷命令映射 OpenHands Marketplace 的冻结浏览、解析与发布', async () => {
   const config = await configured();
   invoke(config, 'config', 'init', '--base-url', 'https://example.test/flowweave');

@@ -16,6 +16,7 @@ from sqlalchemy.pool import NullPool
 
 from flowweave.bootstrap.container import Container, build_container
 from flowweave.bootstrap.settings import Settings
+from flowweave.modules.agent_sessions.application import schedules as conversation_schedules
 from flowweave.modules.agent_sessions.application import usage_reconciliation
 from flowweave.modules.agent_workspaces.application.service import (
     ensure_default_agent_workspace,
@@ -105,6 +106,7 @@ _DELIVERY_TASK_TYPES = frozenset(
         "START_AUTOMATIC_RUN",
         "START_AUTOMATIC_ATTEMPT",
         "ADVANCE_AUTOMATIC_ATTEMPT",
+        "DELIVER_AGENT_CONVERSATION_SCHEDULE",
         "WATCH_AGENT_TASK_TIMEOUT",
         "CONFIRM_AGENT_TASK_TIMEOUT",
         "RESUME_AGENT_TASK_TIMEOUT",
@@ -269,6 +271,7 @@ class TaskWorker:
             "SEARCH_AGENT_CONVERSATIONS",
             "CONDENSE_AGENT_CONVERSATION",
             "CLEANUP_DRAFT_ATTACHMENT",
+            "DELIVER_AGENT_CONVERSATION_SCHEDULE",
             "WATCH_AGENT_TASK_TIMEOUT",
             "CONFIRM_AGENT_TASK_TIMEOUT",
             "RESUME_AGENT_TASK_TIMEOUT",
@@ -295,6 +298,12 @@ class TaskWorker:
                         )
                         await session.run_sync(
                             lambda db: (mark_uow_owned(db), scan_due_flow_run_schedules(db))[1]
+                        )
+                        await session.run_sync(
+                            lambda db: (
+                                mark_uow_owned(db),
+                                conversation_schedules.scan_due_schedules(db),
+                            )[1]
                         )
                         await session.run_sync(
                             lambda db: (
@@ -504,6 +513,12 @@ class TaskWorker:
                         )
                         await session.run_sync(
                             lambda db: (mark_uow_owned(db), scan_due_flow_run_schedules(db))[1]
+                        )
+                        await session.run_sync(
+                            lambda db: (
+                                mark_uow_owned(db),
+                                conversation_schedules.scan_due_schedules(db),
+                            )[1]
                         )
                         now = datetime.now(UTC)
                         if now >= self._next_terminal_task_cleanup_at:

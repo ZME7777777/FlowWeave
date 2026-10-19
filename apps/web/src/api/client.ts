@@ -2,7 +2,7 @@ import type {
   AuthUser, LdapDirectory, LdapUser,
   AgentProfileVersion, ArtifactInput, ArtifactVersion, ArtifactVersionPage, RuntimeArtifactAuditPage, CapabilityAsset, CapabilityImportResult, FlowDefinition, FlowRun, FlowRunAutomaticRecord, FlowRunAutomaticRecordUpdate, FlowRunAutomaticRecordWrite, FlowRunConversation, FlowRunRuntimeOverview, FlowRunRuntimeResource, FlowRunSummary, FlowWrite, MessageAttachmentInput, OpenHandsConversationEventBatch, McpSource, SkillSource,
   BlockedNodeDelete, BulkDeleteResult, CapabilityBulkDeleteResult, CodexDeviceAuthorization, CodexOAuthStatus, GateRemediationResult, ModelProvider, ModelProviderDiscoveryWrite, ModelProviderUsage, ModelProviderWrite, NodeAsset, NodeAssetWrite, NodeAttempt, FlowRunAutomaticRecordSummary, ProviderBulkDeleteResult,
-  AgentAttachment, AgentConversation, AgentConversationAnnotation, AgentConversationContext, AgentConversationHead, AgentConversationInputReadiness, AgentConversationReference, AgentPendingConfirmation, AgentWorkDirectory, AgentWorkDirectoryList, AgentWorkspace, AgentWorkspaceCapability, AgentWorkspaceDetails, AgentWorkspaceMcpReadiness, AgentWorkspaceReference, AgentWorkspaceRuntime, AutomaticRecordConfigDocument, CapabilityCollection, CapabilityCollectionWrite, ContextBundleManifest, MarketplaceCatalog, NodeDirectory, NodeRun, OpenHandsConversationEvent, PluginSourceResolution, RunEvent, RuntimeConfirmationBatch, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, GatePolicy, WebsiteCredential, WebsiteCredentialWrite, FlowRunSchedule, FlowRunScheduleOccurrencePage, FlowRunScheduleWrite, FlowRunScheduleTemplate, FlowRunStepwiseRecord, FlowRunStepwiseRecordWrite, StepwiseNodeDraft, StepwiseRecordConfigDocument,
+  AgentAttachment, AgentConversation, AgentConversationAnnotation, AgentConversationContext, AgentConversationHead, AgentConversationInputReadiness, AgentConversationReference, AgentConversationSchedule, AgentConversationScheduleOccurrence, AgentPendingConfirmation, AgentWorkDirectory, AgentWorkDirectoryList, AgentWorkspace, AgentWorkspaceCapability, AgentWorkspaceDetails, AgentWorkspaceMcpReadiness, AgentWorkspaceReference, AgentWorkspaceRuntime, AutomaticRecordConfigDocument, CapabilityCollection, CapabilityCollectionWrite, ContextBundleManifest, MarketplaceCatalog, NodeDirectory, NodeRun, OpenHandsConversationEvent, PluginSourceResolution, RunEvent, RuntimeConfirmationBatch, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, GatePolicy, WebsiteCredential, WebsiteCredentialWrite, FlowRunSchedule, FlowRunScheduleOccurrencePage, FlowRunScheduleWrite, FlowRunScheduleTemplate, FlowRunStepwiseRecord, FlowRunStepwiseRecordWrite, StepwiseNodeDraft, StepwiseRecordConfigDocument,
 } from '../types';
 import { deploymentBasePath } from '../deploymentPath';
 
@@ -478,6 +478,20 @@ export const api = {
     const query = workDirectoryId ? `?work_directory_id=${encodeURIComponent(workDirectoryId)}` : '';
     return request<import('../types').AgentConversationManagementDeleteResult>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-management/delete${query}`, json('POST', { binding_ids }, crypto.randomUUID()));
   },
+  agentConversationSchedules: (workspaceId: string) =>
+    request<AgentConversationSchedule[]>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-schedules`),
+  createAgentConversationSchedule: (workspaceId: string, body: { name: string; binding_id: string; prompt: string; cron_expression: string }) =>
+    request<AgentConversationSchedule>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-schedules`, json('POST', body)),
+  updateAgentConversationSchedule: (workspaceId: string, scheduleId: string, body: { expected_row_version: number; name: string; binding_id: string; prompt: string; cron_expression: string }) =>
+    request<AgentConversationSchedule>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-schedules/${encodeURIComponent(scheduleId)}`, json('PUT', body)),
+  setAgentConversationScheduleState: (workspaceId: string, scheduleId: string, expected_row_version: number, status: 'ACTIVE' | 'PAUSED') =>
+    request<AgentConversationSchedule>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-schedules/${encodeURIComponent(scheduleId)}/state`, json('PUT', { expected_row_version, status })),
+  triggerAgentConversationSchedule: (workspaceId: string, scheduleId: string) =>
+    request<AgentConversationSchedule>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-schedules/${encodeURIComponent(scheduleId)}/trigger`, json('POST')),
+  deleteAgentConversationSchedule: (workspaceId: string, scheduleId: string) =>
+    request<void>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-schedules/${encodeURIComponent(scheduleId)}`, json('DELETE')),
+  agentConversationScheduleOccurrences: (workspaceId: string, scheduleId: string) =>
+    request<AgentConversationScheduleOccurrence[]>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-schedules/${encodeURIComponent(scheduleId)}/occurrences`),
   agentConversations: (workspaceId: string, cursor?: string, limit = 3, workDirectoryId?: string) => {
     const query = new URLSearchParams({ limit: String(limit) });
     if (cursor) query.set('cursor', cursor);
@@ -542,6 +556,8 @@ export const api = {
     uploadFormData(`/agent-workspaces/${encodeURIComponent(workspaceId)}/attachments/uploads`, `/agent-workspaces/${encodeURIComponent(workspaceId)}/attachments/uploads`, file, { filename: file.name, mime_type: file.type, total_size: file.size, work_directory_id: workDirectoryId, conversation_id: conversationId }, onProgress),
   uploadAgentWorkspaceFile: (workspaceId: string, file: File, options: { parentPath?: string; workDirectoryId?: string; conversationId?: string } = {}, onProgress?: UploadProgressHandler): Promise<AgentWorkspaceReference> =>
     uploadFormData<AgentAttachment>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/workspace/uploads`, `/agent-workspaces/${encodeURIComponent(workspaceId)}/workspace/uploads`, file, { filename: file.name, mime_type: file.type, total_size: file.size, parent_path: options.parentPath, work_directory_id: options.workDirectoryId, conversation_id: options.conversationId }, onProgress).then(item => ({ path: item.path, kind: 'file', display_name: item.filename })),
+  deleteAgentPendingAttachment: (workspaceId: string, bindingId: string, path: string) =>
+    request<void>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/attachments?${new URLSearchParams({ path })}`, json('DELETE', undefined, true)),
   deleteAgentWorkspaceDraftAttachments: (workspaceId: string, conversationId: string, path?: string) => {
     const query = new URLSearchParams();
     if (path) query.set('path', path);
@@ -1089,6 +1105,8 @@ export const nodeSessionApi = {
     uploadFormData(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/attachments/uploads`, `${nodeSessionBase(flowRunId, attemptId)}/attachments/uploads`, file, { filename: file.name, mime_type: file.type, total_size: file.size }, onProgress, bindingId),
   uploadDraftAttachment: (flowRunId: string, attemptId: string, file: File, _workDirectoryId?: string, conversationId?: string, onProgress?: UploadProgressHandler): Promise<AgentAttachment> =>
     uploadFormData(`${nodeSessionBase(flowRunId, attemptId)}/attachments/uploads`, `${nodeSessionBase(flowRunId, attemptId)}/attachments/uploads`, file, { filename: file.name, mime_type: file.type, total_size: file.size, conversation_id: conversationId }, onProgress),
+  deletePendingAttachment: (flowRunId: string, attemptId: string, bindingId: string, path: string) =>
+    request<void>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/attachments?${new URLSearchParams({ path })}`, json('DELETE', undefined, true)),
   deleteDraftAttachments: (flowRunId: string, attemptId: string, conversationId: string, path?: string) => {
     const query = new URLSearchParams();
     if (path) query.set('path', path);

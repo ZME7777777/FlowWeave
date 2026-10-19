@@ -1,6 +1,6 @@
 """Application-owned physical deletion for Agent session records."""
 
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions.application.resumable_attachments import (
@@ -12,6 +12,8 @@ from flowweave.modules.agent_sessions.infrastructure.models import (
     AgentConversationCommand,
     AgentConversationCredentialSync,
     AgentConversationMessageAttachment,
+    AgentConversationSchedule,
+    AgentConversationScheduleOccurrence,
 )
 from flowweave.shared.models import BackgroundTask, RuntimeConfirmationApproval
 
@@ -39,6 +41,27 @@ def delete_binding_records(db: Session, binding_id: str) -> None:
         )
     )
     db.execute(delete(BackgroundTask).where(BackgroundTask.aggregate_id == binding_id))
+    schedule_ids = select(AgentConversationSchedule.id).where(
+        AgentConversationSchedule.binding_id == binding_id
+    )
+    db.execute(
+        delete(BackgroundTask).where(
+            BackgroundTask.aggregate_type == "AGENT_CONVERSATION_SCHEDULE_OCCURRENCE",
+            BackgroundTask.aggregate_id.in_(
+                select(AgentConversationScheduleOccurrence.id).where(
+                    AgentConversationScheduleOccurrence.schedule_id.in_(schedule_ids)
+                )
+            ),
+        )
+    )
+    db.execute(
+        delete(AgentConversationScheduleOccurrence).where(
+            AgentConversationScheduleOccurrence.schedule_id.in_(schedule_ids)
+        )
+    )
+    db.execute(
+        delete(AgentConversationSchedule).where(AgentConversationSchedule.binding_id == binding_id)
+    )
     db.execute(
         delete(AgentConversationMessageAttachment).where(
             AgentConversationMessageAttachment.binding_id == binding_id
