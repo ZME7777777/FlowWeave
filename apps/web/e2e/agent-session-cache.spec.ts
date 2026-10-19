@@ -1140,6 +1140,7 @@ test('Deleting the selected conversation immediately hides it and opens its neig
   let authenticated = false;
   let deleteRequested = false;
   let deleted = false;
+  let postDeleteListRequests = 0;
   let releaseDelete: (() => void) | undefined;
   const deleteGate = new Promise<void>(resolve => { releaseDelete = resolve; });
   const workspace = {
@@ -1163,7 +1164,8 @@ test('Deleting the selected conversation immediately hides it and opens its neig
     if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
     if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
     if (path.endsWith('/conversations') && request.method() === 'GET') {
-      return json(route, { items: deleted ? conversations.filter(item => item.id !== 'optimistic-delete-a') : conversations, next_cursor: null });
+      if (deleted) postDeleteListRequests += 1;
+      return json(route, { items: conversations, next_cursor: null });
     }
     if (path.endsWith('/conversations/optimistic-delete-a') && request.method() === 'DELETE') {
       deleteRequested = true;
@@ -1215,6 +1217,10 @@ test('Deleting the selected conversation immediately hides it and opens its neig
   await expect(page.getByRole('button', { name: '待删除会话', exact: true })).toHaveCount(0);
   await expect(page.getByText('开始一个新的会话', { exact: true })).toHaveCount(0);
 
+  // The first refresh after DELETE can still contain the old page while the
+  // server-side list projection catches up. A confirmed deletion stays hidden.
+  await expect.poll(() => postDeleteListRequests).toBeGreaterThan(0);
+  await expect(page.getByRole('button', { name: '待删除会话', exact: true })).toHaveCount(0);
   releaseDelete?.();
 });
 

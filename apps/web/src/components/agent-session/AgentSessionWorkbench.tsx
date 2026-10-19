@@ -7208,11 +7208,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       return context;
     },
     onSuccess: (_value, bindingId) => {
-      setOptimisticallyRemovedConversationIds(current => {
-        const next = new Set(current);
-        next.delete(bindingId);
-        return next;
-      });
+      // Keep the binding locally excluded after a successful DELETE. The
+      // per-scope cache intentionally retains earlier pages, so a stale list
+      // response must not reinsert a conversation the server deleted.
       composerDraftsByScope.current.delete(bindingId);
       conversationDraftsByScope.current.delete(bindingId);
       if (workspace) clearConversationComposerDraft(host.id, workspace.id, bindingId);
