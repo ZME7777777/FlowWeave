@@ -60,20 +60,28 @@ test('schedule rows expand across their full width and immediate trigger reports
     return respond([]);
   });
 
+  const pageErrors: string[] = [];
+  page.on('pageerror', error => pageErrors.push(error.message));
+  page.on('console', message => { if (message.type() === 'error') pageErrors.push(message.text()); });
   await page.goto('/');
   await page.getByRole('button', { name: '定时任务', exact: true }).click();
-  const schedulesPageBox = await page.locator('.schedules-page').boundingBox();
-  expect(schedulesPageBox?.width).toBeGreaterThanOrEqual((page.viewportSize()?.width ?? 0) - 1);
-  const flowToggle = page.locator('.schedule-flow-group > header .schedule-tree-toggle');
-  const flowHeader = page.locator('.schedule-flow-group > header');
-  await expect(flowToggle).toHaveAttribute('aria-expanded', 'false');
-  const [buttonBox, headerBox] = await Promise.all([flowToggle.boundingBox(), flowHeader.boundingBox()]);
-  expect(buttonBox?.width).toBeGreaterThan((headerBox?.width ?? 0) - 2);
-  await flowToggle.click({ position: { x: (buttonBox?.width ?? 20) - 8, y: 8 } });
-  await expect(flowToggle).toHaveAttribute('aria-expanded', 'true');
-  const masterToggle = page.locator('.schedule-master-group > header .schedule-tree-toggle');
-  await masterToggle.click({ position: { x: (await masterToggle.boundingBox())!.width - 8, y: 8 } });
-
+  const workspace = page.locator('.schedule-workspace');
+  const recovery = page.getByRole('alert');
+  await Promise.race([
+    workspace.waitFor({ state: 'visible', timeout: 5_000 }),
+    recovery.waitFor({ state: 'visible', timeout: 5_000 }),
+  ]).catch(() => undefined);
+  if (await recovery.isVisible()) throw new Error(`Schedule page render failed: ${pageErrors.join(' | ')}`);
+  await expect(workspace).toBeVisible();
+  const [listBox, workspaceBox] = await Promise.all([
+    page.locator('.schedule-list-panel').boundingBox(),
+    workspace.boundingBox(),
+  ]);
+  expect(listBox?.width).toBeGreaterThan(200);
+  expect(workspaceBox?.width).toBeGreaterThan((page.viewportSize()?.width ?? 0) * .6);
+  await expect(page.locator('.schedule-task-list button.active')).toContainText('每小时检查');
+  await expect(page.getByRole('heading', { name: '每小时检查', exact: true })).toBeVisible();
+  await expect(page.getByText('任务会话与执行记录', { exact: true })).toBeVisible();
   const trigger = page.getByRole('button', { name: '立即运行', exact: true });
   await trigger.click();
   await expect(page.getByRole('button', { name: '启动中…', exact: true })).toBeDisabled();

@@ -1,9 +1,8 @@
-import { CalendarClock, Check, ChevronDown, ChevronRight, CircleDot, Clock3, Pause, Play, Plus, Send, X } from 'lucide-react';
+import { CalendarClock, Check, ChevronDown, ChevronRight, CircleDot, MoreHorizontal, Pause, Play, Plus, Send, X } from 'lucide-react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../api/client';
 import { useProductDialog } from '../components/ProductDialogContext';
-import { Pagination } from '../components/Pagination';
 import { useEscapeClose } from '../components/useEscapeClose';
 import { useWorkbenchStore } from '../store/workbench';
 import type { FlowRunSchedule, FlowRunScheduleTemplate } from '../types';
@@ -46,48 +45,51 @@ function ScheduleCreateDialog({ templates, onClose, onCreated }: { templates: Fl
   return <div className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget && !busy) onClose(); }}><form className="modal schedule-create-dialog" onSubmit={submit}><header><div><span className="eyebrow">CREATE SCHEDULE</span><h2>新建定时任务</h2><p>从一条已满足启动条件的连续运行记录复制母版；以后每次触发都只按这份冻结配置执行。</p></div><button type="button" className="ghost product-dialog-close" aria-label="关闭" onClick={onClose}><X size={17}/></button></header><div className="schedule-form-grid"><label>任务名称<input value={name} maxLength={220} placeholder="例如：每小时数据检查" onChange={event => setName(event.target.value)}/></label><label>配置母版<ChoiceMenu label="选择配置母版" value={sourceFlowRunId} options={templateOptions} onChange={setSourceFlowRunId}/><small>仅显示已配置完整的连续运行记录；记录是否已启动不影响选择。</small></label><label className="schedule-form-wide">Cron 表达式<input value={cronExpression} spellCheck={false} placeholder="0 * * * *" onChange={event => setCronExpression(event.target.value)}/><small>标准五段 Cron：分 时 日 月 周（按 UTC 计算）。例如 <code>0 * * * *</code> 表示每小时整点。</small></label></div>{error && <p className="error">{error}</p>}<footer><button type="button" className="secondary" disabled={busy} onClick={onClose}>取消</button><button className="primary" disabled={busy || !templates.length}>{busy ? '创建中…' : '创建定时任务'}</button></footer></form></div>;
 }
 
-function ScheduleDetailDialog({ schedule, onClose }: { schedule: FlowRunSchedule; onClose: () => void }) {
+function ScheduleRecordList({ schedule }: { schedule: FlowRunSchedule }) {
   const openAutomaticRecord = useWorkbenchStore(state => state.openAutomaticRecord);
-  const [page, setPage] = useState(1);
-  const pageSize = 10;
-  useEscapeClose(onClose);
-  const { data, isLoading } = useQuery({ queryKey: ['flow-run-schedule-occurrences', schedule.id, page], queryFn: () => api.flowRunScheduleOccurrences(schedule.id, page, pageSize) });
-  return <div className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><section className="modal schedule-detail-dialog" role="dialog" aria-modal="true" aria-label={`定时任务 ${schedule.name} 的执行记录`}><header><div><span className="eyebrow">SCHEDULE RUNS</span><h2>{schedule.name}</h2><p>按触发时间倒序。点击 NodeRun 会回到原 FlowRun 的连续运行记录。</p></div><button type="button" className="ghost product-dialog-close" aria-label="关闭" onClick={onClose}><X size={17}/></button></header><div className="schedule-occurrence-list">{isLoading ? <div className="empty compact">加载执行记录…</div> : data?.items.length ? data.items.map(occurrence => { const run = occurrence.flow_run; return <article className="schedule-occurrence-record" key={occurrence.id}><header><Clock3 size={15}/><span><b>{occurrence.trigger_kind === 'MANUAL' ? '手动触发' : '计划触发'} · {formatTime(occurrence.scheduled_for)}</b><small>{run ? `连续运行 #${run.run_no} · ${run.name}` : occurrence.state === 'FAILED' ? occurrence.error_detail || '启动失败' : '正在创建连续运行记录'}</small></span></header>{run?.node_runs.length ? <div className="schedule-occurrence-nodes">{run.node_runs.map(node => <button type="button" key={node.id} disabled={!run.parent_flow_run_id} onClick={() => run.parent_flow_run_id && openAutomaticRecord(run.parent_flow_run_id, run.id, node.id, node.attempts.at(-1)?.id)}><CircleDot size={13}/><span><b>{node.name || node.flow_node_snapshot_key}</b><small>{node.state} · {node.attempts.length} 次 Attempt</small></span><ChevronRight size={14}/></button>)}</div> : run ? <p>此连续运行记录正在准备运行环境，尚未生成 NodeRun。</p> : null}</article>; }) : <div className="schedule-no-runs">尚未产生执行记录。</div>}</div>{data && <Pagination page={page} pageSize={pageSize} total={data.total} onPageChange={setPage}/>}</section></div>;
+  const { data, isLoading } = useQuery({
+    queryKey: ['flow-run-schedule-occurrences', schedule.id],
+    queryFn: () => api.flowRunScheduleOccurrences(schedule.id, 1, 12),
+    refetchInterval: 3000,
+  });
+  if (isLoading) return <div className="schedule-record-empty">正在加载该任务的执行记录…</div>;
+  const occurrences = data?.items ?? [];
+  if (!occurrences.length) return <div className="schedule-record-empty">尚未产生执行记录。任务首次触发后，记录会出现在这里。</div>;
+  return <div className="schedule-record-list">{occurrences.map(occurrence => {
+    const run = occurrence.flow_run;
+    return <article className="schedule-record" key={occurrence.id}><div className="schedule-record-timeline"><i/><span/></div><div className="schedule-record-body"><header><div><span className="schedule-record-kicker">{occurrence.trigger_kind === 'MANUAL' ? '手动执行' : '计划执行'}</span><b>{formatTime(occurrence.scheduled_for)}</b></div><em className={`schedule-record-state ${occurrence.state.toLowerCase()}`}>{occurrence.state === 'STARTED' ? '已启动' : occurrence.state === 'FAILED' ? '失败' : '准备中'}</em></header><p>{run ? `连续运行 #${run.run_no} · ${run.name}` : occurrence.error_detail || '正在创建连续运行记录'}</p>{run?.node_runs.length ? <div className="schedule-record-nodes">{run.node_runs.map(node => <button type="button" key={node.id} disabled={!run.parent_flow_run_id} onClick={() => run.parent_flow_run_id && openAutomaticRecord(run.parent_flow_run_id, run.id, node.id, node.attempts.at(-1)?.id)}><CircleDot size={14}/><span><b>{node.name || node.flow_node_snapshot_key}</b><small>{node.state} · {node.attempts.length} 次 Attempt</small></span><ChevronRight size={14}/></button>)}</div> : null}</div></article>;
+  })}</div>;
 }
 
 export function SchedulesPage() {
   const dialog = useProductDialog();
   const qc = useQueryClient();
   const [creating, setCreating] = useState(false);
-  const [expandedFlows, setExpandedFlows] = useState<Set<string>>(new Set());
-  const [expandedMasters, setExpandedMasters] = useState<Set<string>>(new Set());
-  const [detailSchedule, setDetailSchedule] = useState<FlowRunSchedule | null>(null);
+  const [selectedScheduleId, setSelectedScheduleId] = useState<string>();
   const [triggerBusyId, setTriggerBusyId] = useState<string>();
   const [triggerFeedback, setTriggerFeedback] = useState<{ scheduleId: string; tone: 'success' | 'error'; message: string }>();
   const { data: schedules = [] } = useQuery({ queryKey: ['flow-run-schedules'], queryFn: api.flowRunSchedules, refetchInterval: 3000 });
-  const { data: flows = [] } = useQuery({ queryKey: ['flows'], queryFn: api.flows });
   const { data: templates = [] } = useQuery({ queryKey: ['flow-run-schedule-templates'], queryFn: api.flowRunScheduleTemplates });
   const refresh = async () => { await qc.invalidateQueries({ queryKey: ['flow-run-schedules'] }); };
-  const toggle = (setter: React.Dispatch<React.SetStateAction<Set<string>>>, id: string) => setter(old => { const next = new Set(old); if (next.has(id)) next.delete(id); else next.add(id); return next; });
+  useEffect(() => {
+    if (!selectedScheduleId && schedules[0]) setSelectedScheduleId(schedules[0].id);
+  }, [schedules, selectedScheduleId]);
+  const selectedSchedule = schedules.find(item => item.id === selectedScheduleId) ?? schedules[0];
   const setState = async (schedule: FlowRunSchedule) => { await api.setFlowRunScheduleState(schedule.id, schedule.row_version, schedule.status === 'ACTIVE' ? 'PAUSED' : 'ACTIVE'); await refresh(); };
   const trigger = async (schedule: FlowRunSchedule) => {
-    setTriggerBusyId(schedule.id);
-    setTriggerFeedback(undefined);
-    try {
-      await api.triggerFlowRunSchedule(schedule.id);
-      setTriggerFeedback({ scheduleId: schedule.id, tone: 'success', message: '已创建连续运行记录，后台正在启动。' });
-      await refresh();
-    } catch (reason) {
-      setTriggerFeedback({ scheduleId: schedule.id, tone: 'error', message: reason instanceof Error ? reason.message : '立即运行失败，请稍后重试。' });
-    } finally {
-      setTriggerBusyId(undefined);
+    setTriggerBusyId(schedule.id); setTriggerFeedback(undefined);
+    try { await api.triggerFlowRunSchedule(schedule.id); setTriggerFeedback({ scheduleId: schedule.id, tone: 'success', message: '已创建连续运行记录，后台正在启动。' }); await refresh(); }
+    catch (reason) { setTriggerFeedback({ scheduleId: schedule.id, tone: 'error', message: reason instanceof Error ? reason.message : '立即运行失败，请稍后重试。' }); }
+    finally { setTriggerBusyId(undefined); }
+  };
+  const remove = async (schedule: FlowRunSchedule) => {
+    if (await dialog.confirm({ title: `删除定时任务“${schedule.name}”？`, message: '仅无执行记录的任务可以直接删除；已有 FlowRun 请先按运行记录的删除规则处理。', confirmLabel: '删除任务', tone: 'danger' })) {
+      await api.deleteFlowRunSchedule(schedule.id); if (selectedScheduleId === schedule.id) setSelectedScheduleId(undefined); await refresh();
     }
   };
-  const remove = async (schedule: FlowRunSchedule) => { if (await dialog.confirm({ title: `删除定时任务“${schedule.name}”？`, message: '仅无执行记录的任务可以直接删除；已有 FlowRun 请先按运行记录的删除规则处理。', confirmLabel: '删除任务', tone: 'danger' })) { await api.deleteFlowRunSchedule(schedule.id); await refresh(); } };
   const openCreate = () => {
     if (templates.length) { setCreating(true); return; }
     void dialog.confirm({ title: '暂时不能新建定时任务', message: '当前没有可用的连续运行母版。请先进入“流程运行”→“连续运行”，新建一条记录并补齐所有节点配置；显示“草稿已就绪”后即可新建定时任务。', confirmLabel: '我知道了', cancelLabel: '关闭' });
   };
-  const flowIds = [...new Set([...flows.map(flow => flow.id), ...schedules.map(schedule => schedule.flow_definition_id)])];
-  return <section className="page schedules-page"><div className="page-head"><div><span className="eyebrow">SCHEDULE DIRECTORY</span><h1>定时任务</h1><p>按流程、FlowRun 母版和定时任务名称分层查看；定时运行记录与手动启动记录明确区分。</p></div><button className="primary" onClick={openCreate}><Plus size={15}/>新建定时任务</button></div>{!schedules.length && <div className="schedule-empty"><CalendarClock size={28}/><b>暂无定时任务</b><span>从已就绪的连续运行记录复制配置母版后，平台会按 Cron 在原 FlowRun 内生成连续运行记录。</span></div>}<div className="schedule-flow-groups">{flowIds.map(flowId => { const flow = flows.find(item => item.id === flowId); const items = schedules.filter(item => item.flow_definition_id === flowId); const open = expandedFlows.has(flowId); const masterIds = [...new Set(items.map(item => item.source_flow_run_id || 'legacy'))]; return <section className="schedule-flow-group" key={flowId}><header><button className="schedule-tree-toggle" type="button" aria-expanded={open} onClick={() => toggle(setExpandedFlows, flowId)}>{open ? <ChevronDown size={16}/> : <ChevronRight size={16}/>}<span><b>{flow?.name ?? '已删除的流程'}</b><small>{items.length} 个定时任务</small></span><em className="schedule-flow-meta">{items.filter(item => item.status === 'ACTIVE').length} 已启用</em></button></header>{open && <div className="schedule-directory">{masterIds.map(masterId => { const masterSchedules = items.filter(item => (item.source_flow_run_id || 'legacy') === masterId); const master = masterSchedules[0]?.source_flow_run; const masterOpen = expandedMasters.has(masterId); return <section className="schedule-master-group" key={masterId}><header><button className="schedule-tree-toggle" type="button" aria-expanded={masterOpen} onClick={() => toggle(setExpandedMasters, masterId)}>{masterOpen ? <ChevronDown size={15}/> : <ChevronRight size={15}/>}<span><b>{master ? `FlowRun #${master.run_no} · ${master.name}` : '历史定时任务母版不可用'}</b><small>配置母版 · {master?.state ?? '已暂停'}</small></span></button></header>{masterOpen && <div className="schedule-directory">{masterSchedules.map(schedule => <section className="schedule-directory-item" key={schedule.id}><header><span className="schedule-name"><CalendarClock size={15}/><span><b>{schedule.name}</b><small>连续运行 · Cron {schedule.cron_expression || '旧任务（已暂停）'} · 下次 {formatTime(schedule.next_run_at)}</small></span></span><div className="schedule-actions"><button type="button" title="查看详情" onClick={() => setDetailSchedule(schedule)}>查看详情</button><button type="button" title="立即运行" disabled={triggerBusyId === schedule.id} onClick={() => void trigger(schedule)}><Send size={14}/>{triggerBusyId === schedule.id ? '启动中…' : '立即运行'}</button><button type="button" title={schedule.status === 'ACTIVE' ? '暂停' : '恢复'} onClick={() => void setState(schedule)}>{schedule.status === 'ACTIVE' ? <Pause size={14}/> : <Play size={14}/>} {schedule.status === 'ACTIVE' ? '暂停' : '恢复'}</button><button type="button" className="danger" title="删除任务" onClick={() => void remove(schedule)}><X size={14}/></button></div></header>{triggerFeedback?.scheduleId === schedule.id && <p className={`schedule-trigger-feedback ${triggerFeedback.tone}`} role={triggerFeedback.tone === 'error' ? 'alert' : 'status'}>{triggerFeedback.message}</p>}</section>)}</div>}</section>; })}</div>}</section>; })}</div>{creating && <ScheduleCreateDialog templates={templates} onClose={() => setCreating(false)} onCreated={refresh}/>} {detailSchedule && <ScheduleDetailDialog schedule={detailSchedule} onClose={() => setDetailSchedule(null)}/>}</section>;
+  return <section className="schedule-workspace"><aside className="schedule-list-panel"><header><div><h1>定时任务</h1><span>{schedules.filter(item => item.status === 'ACTIVE').length} 个正在执行</span></div><button type="button" className="schedule-create-button" onClick={openCreate}><Plus size={17}/>新建任务</button></header><div className="schedule-list-label"><span>即将执行</span><MoreHorizontal size={16}/></div><div className="schedule-task-list">{schedules.length ? schedules.map(schedule => <button type="button" className={schedule.id === selectedSchedule?.id ? 'active' : ''} key={schedule.id} onClick={() => setSelectedScheduleId(schedule.id)}><span className={`schedule-status-dot ${schedule.status.toLowerCase()}`}/><span><b>{schedule.name}</b><small>{schedule.status === 'ACTIVE' ? `下次：${formatTime(schedule.next_run_at)}` : '已暂停'}</small></span><ChevronRight size={15}/></button>) : <div className="schedule-list-empty"><CalendarClock size={22}/><b>暂无定时任务</b><span>从已就绪的连续运行记录创建第一项任务。</span></div>}</div></aside><main className="schedule-conversation">{selectedSchedule ? <><header className="schedule-conversation-head"><div><span className="eyebrow">AUTOMATION</span><h2>{selectedSchedule.name}</h2><p>连续运行母版：{selectedSchedule.source_flow_run ? `#${selectedSchedule.source_flow_run.run_no} · ${selectedSchedule.source_flow_run.name}` : '历史任务母版不可用'}</p></div><div className="schedule-head-actions"><button type="button" className="secondary" onClick={() => void setState(selectedSchedule)}>{selectedSchedule.status === 'ACTIVE' ? <Pause size={15}/> : <Play size={15}/>} {selectedSchedule.status === 'ACTIVE' ? '暂停' : '恢复'}</button><button type="button" className="primary" disabled={triggerBusyId === selectedSchedule.id} onClick={() => void trigger(selectedSchedule)}><Send size={15}/>{triggerBusyId === selectedSchedule.id ? '启动中…' : '立即运行'}</button><button type="button" className="schedule-delete-button" aria-label="删除定时任务" title="删除定时任务" onClick={() => void remove(selectedSchedule)}><X size={17}/></button></div></header><div className="schedule-conversation-content">{triggerFeedback?.scheduleId === selectedSchedule.id && <p className={`schedule-trigger-feedback ${triggerFeedback.tone}`} role={triggerFeedback.tone === 'error' ? 'alert' : 'status'}>{triggerFeedback.message}</p>}<section className="schedule-summary-card"><div><span>重复</span><b>Cron · {selectedSchedule.cron_expression || '旧任务（已暂停）'}</b></div><div><span>状态</span><b>{selectedSchedule.status === 'ACTIVE' ? '正在执行' : '已暂停'}</b></div><div><span>下次执行</span><b>{formatTime(selectedSchedule.next_run_at)}</b></div><div><span>上次执行</span><b>{formatTime(selectedSchedule.last_run_at)}</b></div></section><section className="schedule-history"><header><div><span className="eyebrow">RUN HISTORY</span><h3>任务会话与执行记录</h3><p>按触发时间倒序展示；点击节点可打开对应的 Agent 会话。</p></div></header><ScheduleRecordList schedule={selectedSchedule}/></section></div></> : <div className="schedule-empty-state"><CalendarClock size={36}/><h2>创建你的第一个定时任务</h2><p>任务会在设定的 Cron 时间自动从冻结的连续运行母版启动，所有运行记录将集中保留在此页面。</p><button type="button" className="primary" onClick={openCreate}><Plus size={15}/>新建定时任务</button></div>}</main>{creating && <ScheduleCreateDialog templates={templates} onClose={() => setCreating(false)} onCreated={refresh}/>}</section>;
 }
