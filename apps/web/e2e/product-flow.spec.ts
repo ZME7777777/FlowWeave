@@ -2971,7 +2971,10 @@ test('selected conversation text is sent and rendered as a compact reference car
   const events = () => [
     { id: 'reference-source-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '请给出可引用的建议', timestamp: now } },
     { id: 'reference-source-assistant', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'reference-source-user', content: `${selectedText}\n\n[${generatedImageLabel}](assets/attachment-interaction-preview.svg)`, timestamp: now } },
-    ...(sentPayload ? [{ id: 'reference-target-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'reference-source-assistant', content: '请据此继续', collaboration_annotations: sentPayload.annotations, timestamp: now } }] : []),
+    ...(sentPayload ? (() => {
+      const content = `FlowWeave message context (JSON):\n\n---FLOWWEAVE_MESSAGE_CONTEXT_V5---\n${JSON.stringify({ version: 5, reference_materials: sentPayload.references ?? [], collaboration_annotations: sentPayload.annotations ?? [], current_user_request: { content: '请据此继续' } })}`;
+      return [{ id: 'reference-target-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'reference-source-assistant', content, display_content: content, timestamp: now } }];
+    })() : []),
   ];
   await page.route('**/api/v1/auth/me', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id: 'reference-user', username: 'tester', role: 'USER', is_super_admin: false }) }));
   await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);

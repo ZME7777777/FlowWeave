@@ -15,7 +15,11 @@ export function projectFlowWeaveMessageContext(event: OpenHandsConversationEvent
   const marker = MESSAGE_CONTEXT_MARKER.exec(content);
   if (!marker) return event;
   const source = String(event.payload.source ?? '').toLowerCase();
-  if ((source !== 'user' && source !== 'human') || typeof event.payload.display_content === 'string') return event;
+  const displayContent = event.payload.display_content;
+  if (
+    (source !== 'user' && source !== 'human')
+    || (typeof displayContent === 'string' && !isFlowWeaveMessageContext(displayContent))
+  ) return event;
   try {
     const parsed: unknown = JSON.parse(content.slice((marker.index ?? 0) + marker[0].length));
     if (!parsed || typeof parsed !== 'object') return event;
