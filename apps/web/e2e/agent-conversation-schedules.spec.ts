@@ -46,6 +46,7 @@ test('standalone Agent Workspace exposes a separate conversation schedule panel'
   await expect(page.getByRole('menuitem', { name: '会话管理' })).toHaveCount(0);
   await page.getByRole('button', { name: '账户与设置' }).click();
   await page.getByRole('button', { name: 'Agent 会话', exact: true }).click();
+  await expect(page.getByRole('button', { name: '打开工作区工具' })).toBeVisible();
   await page.getByRole('navigation', { name: 'Agent 工作区导航' }).getByRole('button', { name: '定时任务' }).click();
 
   await expect(page.getByRole('region', { name: '会话定时任务' })).toBeVisible();
@@ -61,4 +62,5 @@ test('standalone Agent Workspace exposes a separate conversation schedule panel'
   await page.getByRole('navigation', { name: 'Agent 工作区导航' }).getByRole('button', { name: '会话管理' }).click();
   await expect(page.getByRole('region', { name: '会话管理' })).toBeVisible();
   await expect(page.getByRole('heading', { name: '会话管理', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '会话管理', exact: true })).toHaveCSS('font-size', '21px');
 });

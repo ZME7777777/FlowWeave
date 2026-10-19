@@ -615,6 +615,7 @@ interface WorkspaceConversationGroupProps {
   onCollapsedChange?: (collapsed: boolean) => void;
   canCreateConversation?: boolean;
   onCreateConversation?: () => void;
+  onEdit?: () => void;
   onDelete?: () => void;
 }
 
@@ -659,7 +660,7 @@ function useAgentSessionHost(): AgentSessionHost {
   return useContext(AgentSessionHostContext);
 }
 
-function WorkspaceConversationGroup({ groupId, label, children, conversationCount, hasMore = false, loadingMore = false, onLoadMore, draggable = false, dragging = false, dropPosition, onPointerDragStart, collapsed = false, onCollapsedChange, canCreateConversation = false, onCreateConversation, onDelete }: WorkspaceConversationGroupProps) {
+function WorkspaceConversationGroup({ groupId, label, children, conversationCount, hasMore = false, loadingMore = false, onLoadMore, draggable = false, dragging = false, dropPosition, onPointerDragStart, collapsed = false, onCollapsedChange, canCreateConversation = false, onCreateConversation, onEdit, onDelete }: WorkspaceConversationGroupProps) {
   const [visibleCount, setVisibleCount] = useState(3);
   const initializedItemCount = useRef(false);
   const previousConversationCount = useRef(conversationCount);
@@ -686,8 +687,9 @@ function WorkspaceConversationGroup({ groupId, label, children, conversationCoun
       }}>
         <Folder size={14}/><span>{label}</span><ChevronDown size={13}/>
       </button>
-      <div className="agent-workspace-group-actions">{onCreateConversation && <button type="button" aria-label={`在${label}中新建会话`} disabled={!canCreateConversation} onClick={onCreateConversation}><Plus size={13}/></button>}
-      {onDelete && <button type="button" className="danger" aria-label={`删除工作区 ${label}`} onClick={onDelete}><Trash2 size={13}/></button>}</div>
+      <div className="agent-workspace-group-actions">{onCreateConversation && <button type="button" aria-label={`在${label}中新建会话`} title="新建会话" disabled={!canCreateConversation} onClick={onCreateConversation}><Plus size={13}/></button>}
+      {onEdit && <button type="button" aria-label={`编辑工作区 ${label}`} title="编辑工作区" onClick={onEdit}><Pencil size={13}/></button>}
+      {onDelete && <button type="button" className="danger" aria-label={`删除工作区 ${label}`} title="删除工作区" onClick={onDelete}><Trash2 size={13}/></button>}</div>
     </header>
     <div id={contentId} className="agent-workspace-group-content" hidden={collapsed}>
       {children(visibleCount)}
@@ -8768,7 +8770,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
               {visibleCount => { const group = conversationsForDirectory(directory.id); return <>{pendingBootstrapItem && pendingBootstrap?.draft.workDirectoryId === directory.id ? pendingBootstrapItem : recoverableDraftItem(directory.id, directory.display_name)}{group.slice(0, visibleCount).map(item => conversationRow(item, group))}</>}}
             </WorkspaceConversationGroup>)}</>}
       </div>
-      {features.capabilities && (selected || features.draftCapabilitySelection) && <footer className="agent-workbench-rail-footer"><button type="button" disabled={selected ? !canWrite : !runtimeWritable} onClick={() => setCapabilityManagerOpen(true)}><Boxes size={15}/><span><b>会话配置</b><small>{selected ? '管理当前会话配置' : '为新会话配置能力'}</small></span><ChevronRight size={14}/></button></footer>}
+      {features.capabilities && (selected || features.draftCapabilitySelection) && <footer className="agent-workbench-rail-footer"><button type="button" title={selected ? '会话配置' : '新会话配置'} aria-label={selected ? '会话配置' : '新会话配置'} disabled={selected ? !canWrite : !runtimeWritable} onClick={() => setCapabilityManagerOpen(true)}><Boxes size={13}/><span><b>会话配置</b></span><ChevronRight size={12}/></button></footer>}
     </aside>}
     {agentWorkspaceView === 'home' && <section className="agent-workbench-main">
       <header className="agent-workbench-header"><div>{editing ? <div className="agent-title-edit"><input ref={titleInput} aria-label="会话标题" value={title} onChange={event => setTitle(event.target.value)} onBlur={() => { if (!rename.isPending) { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }} onKeyDown={event => { if (event.key === 'Enter' && title.trim()) { event.preventDefault(); rename.mutate(); } if (event.key === 'Escape') { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }}/></div> : !(hideDraftTitle && conversationDraft) && <h2 className="agent-session-title" title={selected ? conversationName(selected) : undefined} aria-label={selected && canWrite ? '双击修改标题' : undefined} onDoubleClick={() => { if (!selected || !canWrite) return; setTitle(conversationName(selected)); setEditing(true); }}><span>{selected ? conversationName(selected) : conversationDraft ? '新会话' : '开始一个新的会话'}</span></h2>}{features.modelSelection && (selected || conversationDraft) && <small className="agent-session-provider">当前供应商：{selected ? boundProviderInfo?.name ?? '未配置' : draftProviderInfo?.name ?? '请选择模型供应商'}{conversationDraft ? ` · ${conversationDraft.displayName}` : ''}</small>}</div></header>
