@@ -94,7 +94,7 @@ export function ConversationMarkdown({ children, reveal = false, onOpenWorkspace
   const renderOptions = useMemo(() => ({ onOpenWorkspaceFile, onOpenImage, workspaceImageUrl }), [onOpenWorkspaceFile, onOpenImage, workspaceImageUrl]);
   if (!MARKDOWN_SYNTAX.test(markdown)) return <p><ConversationTextReveal reveal={reveal}>{markdown}</ConversationTextReveal></p>;
   return <MarkdownRenderOptionsContext value={renderOptions}>
-    <div className={reveal ? 'conversation-text-reveal-block' : undefined}>
+    <div className={reveal ? 'conversation-text-reveal-block conversation-text-reveal-shimmer' : undefined}>
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: MarkdownLink, img: MarkdownImage, pre: MarkdownPre, table: MarkdownTable }}>{markdown}</ReactMarkdown>
     </div>
   </MarkdownRenderOptionsContext>;
