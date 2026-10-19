@@ -1140,6 +1140,7 @@ test('Deleting the selected conversation immediately hides it and opens its neig
   let authenticated = false;
   let deleteRequested = false;
   let deleted = false;
+  let postDeleteListRequests = 0;
   let releaseDelete: (() => void) | undefined;
   const deleteGate = new Promise<void>(resolve => { releaseDelete = resolve; });
   const workspace = {
@@ -1163,7 +1164,8 @@ test('Deleting the selected conversation immediately hides it and opens its neig
     if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
     if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
     if (path.endsWith('/conversations') && request.method() === 'GET') {
-      return json(route, { items: deleted ? conversations.filter(item => item.id !== 'optimistic-delete-a') : conversations, next_cursor: null });
+      if (deleted) postDeleteListRequests += 1;
+      return json(route, { items: conversations, next_cursor: null });
     }
     if (path.endsWith('/conversations/optimistic-delete-a') && request.method() === 'DELETE') {
       deleteRequested = true;
@@ -1216,6 +1218,10 @@ test('Deleting the selected conversation immediately hides it and opens its neig
   await expect(page.getByText('开始一个新的会话', { exact: true })).toHaveCount(0);
 
   releaseDelete?.();
+  // The first refresh after DELETE can still contain the old page while the
+  // server-side list projection catches up. A confirmed deletion stays hidden.
+  await expect.poll(() => postDeleteListRequests).toBeGreaterThan(0);
+  await expect(page.getByRole('button', { name: '待删除会话', exact: true })).toHaveCount(0);
 });
 
 test('Existing conversation composers keep text and attachments isolated', async ({ page }) => {
@@ -3431,7 +3437,7 @@ test('Opening an unread conversation keeps it read when an older list request fi
   await expect(unreadMarker).toHaveCount(0);
 });
 
-test('Conversation sidebar locates an activity session hidden in a collapsed workspace group', async ({ page }) => {
+test('Conversation sidebar opens an activity session without changing its scroll position or groups', async ({ page }) => {
   let authenticated = false;
   const runningConversationPossiblyStuck = true;
   const workspace = { id: 'sidebar-workspace', display_name: '侧栏工作区', desired_state: 'RUNNING', updated_at: now };
@@ -3566,6 +3572,14 @@ test('Conversation sidebar locates an activity session hidden in a collapsed wor
   await pinnedConversation.click({ button: 'right' });
   await page.getByRole('menuitem', { name: '置顶' }).click();
   const pinnedSection = page.getByRole('region', { name: '置顶会话' });
+  const pinnedSectionToggle = pinnedSection.getByRole('button', { name: '收起置顶会话' });
+  await expect(pinnedSection.getByRole('button', { name: '归属工作区会话', exact: true })).toBeVisible();
+  await expect(pinnedSectionToggle).toHaveAttribute('aria-expanded', 'true');
+  await pinnedSectionToggle.click();
+  await expect(pinnedSection.getByRole('button', { name: '归属工作区会话', exact: true })).toBeHidden();
+  const expandPinnedSection = pinnedSection.getByRole('button', { name: '展开置顶会话' });
+  await expect(expandPinnedSection).toHaveAttribute('aria-expanded', 'false');
+  await expandPinnedSection.click();
   await expect(pinnedSection.getByRole('button', { name: '归属工作区会话', exact: true })).toBeVisible();
   await expect.poll(() => pinnedWrites).toEqual([{ id: 'sidebar-directory-pinned', pinned: true }]);
   await expect(page.locator('.agent-workspace-group').filter({ hasText: '归属工作区' }).getByRole('button', { name: '归属工作区会话', exact: true })).toHaveCount(0);
@@ -3591,6 +3605,7 @@ test('Conversation sidebar locates an activity session hidden in a collapsed wor
   await expect.poll(() => unreadWrites).toEqual([{ id: 'sidebar-root-unread', unread: false }]);
   const runningRowInWorkspaceList = page.locator('[data-conversation-binding-id="sidebar-directory-running"]');
   await expect(runningRowInWorkspaceList).toHaveCount(0);
+  const sidebarScrollTopBeforeActivity = await sidebarList.evaluate(element => element.scrollTop);
 
   await page.getByRole('button', { name: /查看活动会话/ }).click();
   const activity = page.getByRole('region', { name: '活动会话' });
@@ -3614,11 +3629,10 @@ test('Conversation sidebar locates an activity session hidden in a collapsed wor
   await runningConversation.dblclick();
   await expect(page).toHaveURL(/\/agent\/conversations\/sidebar-directory-running$/);
   await expect(activity).toHaveCount(0);
-  const selectedRunningRow = page.locator('[data-conversation-binding-id="sidebar-directory-running"]');
-  await expect(selectedRunningRow).toHaveClass(/sidebar-reveal/);
-  await expect(selectedRunningRow.getByRole('button', { name: '运行中目标会话', exact: true })).toHaveClass(/active/);
-  await expect(directoryGroup.getByRole('button', { name: '收起工作区 归属工作区' })).toBeVisible();
-  await expect(selectedRunningRow.getByRole('img', { name: '会话正在运行但后台长时间未产生可确认进展' })).toBeVisible();
+  await expect.poll(() => sidebarList.evaluate(element => element.scrollTop)).toBe(sidebarScrollTopBeforeActivity);
+  await expect(directoryGroup.getByRole('button', { name: '展开工作区 归属工作区' })).toBeVisible();
+  await expect(runningRowInWorkspaceList).toHaveCount(0);
+  await expect(page.getByText('会话 sidebar-directory-running', { exact: true })).toBeVisible();
   await expect.poll(() => unreadWrites).toEqual([
     { id: 'sidebar-root-unread', unread: false },
     { id: 'sidebar-directory-running', unread: false },
@@ -4142,14 +4156,20 @@ test('Pausing immediately updates the controls before the readiness projection c
   await expect.poll(() => Boolean(stream)).toBe(true);
 
   await page.getByRole('button', { name: '暂停当前 Agent' }).click();
-  await expect(page.getByRole('button', { name: '继续当前 Agent' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '暂停请求已发送' })).toBeDisabled();
+  await expect(page.getByText('正在暂停 Agent', { exact: true })).toBeVisible();
   stream!.send(JSON.stringify({
     type: 'event',
     event: { id: 'pause-interruption', event_type: 'ERROR', payload: { source_type: 'AgentErrorEvent', parent_id: 'pause-resume-user', content: 'Tool call interrupted before completion. The conversation was paused.', timestamp: now } },
   }));
-  await expect(page.getByRole('button', { name: '继续当前 Agent' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '暂停请求已发送' })).toBeDisabled();
+  stream!.send(JSON.stringify({
+    type: 'event',
+    event: { id: 'pause-interrupt', event_type: 'STATE', payload: { source_type: 'InterruptEvent', source: 'user', parent_id: 'pause-interruption', timestamp: now } },
+  }));
 
   pauseProjectionAvailable = true;
+  await expect(page.getByRole('button', { name: '继续当前 Agent' })).toBeVisible();
   await page.getByRole('button', { name: '继续当前 Agent' }).click();
   await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
   stream!.send(JSON.stringify({

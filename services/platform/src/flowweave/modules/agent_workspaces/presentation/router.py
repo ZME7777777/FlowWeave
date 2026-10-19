@@ -21,6 +21,7 @@ from fastapi import (
 from pydantic import BaseModel, ConfigDict, Field
 
 from flowweave.bootstrap.container import Container
+from flowweave.modules.agent_sessions.application import schedules as conversation_schedules
 from flowweave.modules.agent_sessions.application import search as conversation_search
 from flowweave.modules.agent_sessions.application import sidebar_conversations
 from flowweave.modules.agent_sessions.public import conversations
@@ -112,6 +113,26 @@ class AgentConversationOrderWrite(_Write):
 
 class AgentConversationManagementDeleteWrite(_Write):
     binding_ids: list[str] = Field(min_length=1, max_length=100)
+
+
+class AgentConversationScheduleWrite(_Write):
+    name: str = Field(min_length=1, max_length=220)
+    binding_id: str = Field(min_length=1, max_length=36)
+    prompt: str = Field(min_length=1, max_length=200_000)
+    cron_expression: str = Field(min_length=9, max_length=120)
+
+
+class AgentConversationScheduleStateWrite(_Write):
+    expected_row_version: int = Field(ge=1)
+    status: Literal["ACTIVE", "PAUSED"]
+
+
+class AgentConversationSchedulePatchWrite(_Write):
+    expected_row_version: int = Field(ge=1)
+    name: str = Field(min_length=1, max_length=220)
+    binding_id: str = Field(min_length=1, max_length=36)
+    prompt: str = Field(min_length=1, max_length=200_000)
+    cron_expression: str = Field(min_length=9, max_length=120)
 
 
 class AgentConversationCapabilityAddWrite(_Write):
@@ -728,6 +749,100 @@ async def delete_agent_management_conversations(
     )
 
 
+@router.get("/agent-workspaces/{workspace_id}/conversation-schedules")
+async def list_agent_conversation_schedules(workspace_id: str, db: Db) -> list[dict[str, Any]]:
+    return await run_sync(
+        db, lambda session: conversation_schedules.list_schedules(session, workspace_id)
+    )
+
+
+@router.post("/agent-workspaces/{workspace_id}/conversation-schedules", status_code=201)
+async def create_agent_conversation_schedule(
+    workspace_id: str, payload: AgentConversationScheduleWrite, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: conversation_schedules.create_schedule(
+            session,
+            workspace_id,
+            name=payload.name.strip(),
+            binding_id=payload.binding_id,
+            prompt=payload.prompt.strip(),
+            cron_expression=" ".join(payload.cron_expression.split()),
+        ),
+    )
+
+
+@router.put("/agent-workspaces/{workspace_id}/conversation-schedules/{schedule_id}/state")
+async def set_agent_conversation_schedule_state(
+    workspace_id: str, schedule_id: str, payload: AgentConversationScheduleStateWrite, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: conversation_schedules.set_schedule_state(
+            session,
+            workspace_id,
+            schedule_id,
+            expected_row_version=payload.expected_row_version,
+            status=payload.status,
+        ),
+    )
+
+
+@router.put("/agent-workspaces/{workspace_id}/conversation-schedules/{schedule_id}")
+async def update_agent_conversation_schedule(
+    workspace_id: str, schedule_id: str, payload: AgentConversationSchedulePatchWrite, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: conversation_schedules.update_schedule(
+            session,
+            workspace_id,
+            schedule_id,
+            expected_row_version=payload.expected_row_version,
+            name=payload.name.strip(),
+            binding_id=payload.binding_id,
+            prompt=payload.prompt.strip(),
+            cron_expression=" ".join(payload.cron_expression.split()),
+        ),
+    )
+
+
+@router.post(
+    "/agent-workspaces/{workspace_id}/conversation-schedules/{schedule_id}/trigger", status_code=202
+)
+async def trigger_agent_conversation_schedule(
+    workspace_id: str, schedule_id: str, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: conversation_schedules.trigger_schedule(session, workspace_id, schedule_id),
+    )
+
+
+@router.delete(
+    "/agent-workspaces/{workspace_id}/conversation-schedules/{schedule_id}", status_code=204
+)
+async def delete_agent_conversation_schedule(
+    workspace_id: str, schedule_id: str, db: Db
+) -> Response:
+    await run_sync(
+        db,
+        lambda session: conversation_schedules.delete_schedule(session, workspace_id, schedule_id),
+    )
+    return Response(status_code=204)
+
+
+@router.get("/agent-workspaces/{workspace_id}/conversation-schedules/{schedule_id}/occurrences")
+async def list_agent_conversation_schedule_occurrences(
+    workspace_id: str, schedule_id: str, db: Db
+) -> list[dict[str, Any]]:
+    return await run_sync(
+        db,
+        lambda session: conversation_schedules.list_occurrences(session, workspace_id, schedule_id),
+    )
+
+
 @router.get("/agent-workspaces/{workspace_id}/conversations")
 async def list_agent_conversations(
     workspace_id: str,
@@ -1262,6 +1377,24 @@ async def agent_attachment(
             content=content,
         ),
     )
+
+
+@router.delete(
+    "/agent-workspaces/{workspace_id}/conversations/{binding_id}/attachments", status_code=204
+)
+async def delete_agent_pending_attachment(
+    workspace_id: str,
+    binding_id: str,
+    container: ContainerDep,
+    path: str = Query(min_length=1, max_length=300),
+) -> Response:
+    await run_blocking_mutation(
+        container,
+        lambda session: conversations.delete_pending_attachment(
+            session, workspace_id, binding_id, path
+        ),
+    )
+    return Response(status_code=204)
 
 
 class ResumableAttachmentUploadWrite(_Write):

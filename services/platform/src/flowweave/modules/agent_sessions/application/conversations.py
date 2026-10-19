@@ -41,6 +41,7 @@ from flowweave.modules.agent_sessions.application.draft_attachments import (
     assert_attachment_owner_unbound,
     delete_draft_attachment_cleanup_tasks,
     delete_owned_attachment_files,
+    delete_pending_attachment as delete_pending_attachment_file,
     enqueue_draft_attachment_cleanup,
 )
 from flowweave.modules.agent_sessions.application.event_branch import (
@@ -3652,6 +3653,21 @@ def delete_draft_attachment(db: Session, workspace_id: str, owner_id: str, path:
             owner,
             path=path,
         )
+    )
+
+
+
+def delete_pending_attachment(
+    db: Session, workspace_id: str, binding_id: str, path: str
+) -> bool:
+    workspace = _workspace(db, workspace_id)
+    binding = _binding(db, workspace_id, binding_id, lock=True)
+    return delete_pending_attachment_file(
+        db,
+        agent_workspace_host.agent_workspace_record_path(db, workspace.id),
+        user_runtime_project_root(workspace.id),
+        binding.id,
+        path,
     )
 
 

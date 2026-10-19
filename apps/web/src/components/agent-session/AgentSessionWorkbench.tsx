@@ -3,12 +3,14 @@ import { Terminal as XTerm } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import { type InfiniteData, useQueries, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import hljs from 'highlight.js/lib/common';
-import { ArrowDown, ArrowLeft, ArrowUp, Bell, Bot, Boxes, Check, ChevronDown, ChevronRight, CircleAlert, CircleDot, Copy, CornerDownRight, Download, Ellipsis, FileCode2, FileText, Folder, FolderOpen, FolderPlus, GitBranch, GripVertical, ImageIcon, Layers3, Link2, ListRestart, LoaderCircle, Maximize2, Minimize2, MonitorCog, PanelRightOpen, Pencil, Pin, PinOff, Play, Plus, Quote, RefreshCw, Search, Send, ShieldAlert, Square, Trash2, X } from 'lucide-react';
+import { ArrowDown, ArrowLeft, ArrowUp, Bell, Bot, Boxes, CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, CircleDot, Copy, CornerDownRight, Download, Ellipsis, FileCode2, FileText, Folder, FolderOpen, FolderPlus, GitBranch, GripVertical, Home, ImageIcon, Layers3, Link2, ListRestart, LoaderCircle, Maximize2, Minimize2, MessageSquareText, MonitorCog, PanelRightOpen, Pencil, Pin, PinOff, Play, Plus, Quote, RefreshCw, Search, Send, ShieldAlert, Square, Trash2, X } from 'lucide-react';
 import { createContext, isValidElement, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type WheelEvent as ReactWheelEvent } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
 import { ComposerModelMenu } from './ComposerModelMenu';
 import { AgentComposerInput, type ComposerSuggestion } from './AgentComposerInput';
+import { AgentConversationSchedulesPanel } from './AgentConversationSchedulesPanel';
+import { ConversationManagementPage } from '../../pages/ConversationManagementPage';
 import { CONVERSATION_REFERENCE_TRANSFER_TYPE, WORKSPACE_FILE_TRANSFER_TYPE, transferredConversationReference, transferredFiles, transferredWorkspacePaths, type ComposerHandle } from './agentComposerInputUtils';
 import remarkGfm from 'remark-gfm';
 import { api as agentWorkspaceApi, ApiError, randomId, type AgentStreamEvent } from '../../api/client';
@@ -36,6 +38,7 @@ import '../../pages/agent-workbench-layout.css';
 const ACTIVE_EVENT_RECOVERY_INTERVAL_MS = 4_000;
 const ACTIVE_EVENT_LATEST_RECHECK_INTERVAL_MS = 30_000;
 const INPUT_READINESS_MIN_REQUEST_INTERVAL_MS = 2_000;
+const PAUSE_CONFIRMATION_RETRY_INTERVAL_MS = 500;
 const SUBMISSION_EVENT_CONFIRMATION_TIMEOUT_MS = 60_000;
 const SUBMISSION_EVENT_CONFIRMATION_RETRY_WINDOW_MS = 5_000;
 const SUBMISSION_EVENT_CONFIRMATION_RETRY_INTERVAL_MS = 250;
@@ -608,7 +611,8 @@ interface WorkspaceConversationGroupProps {
   dragging?: boolean;
   dropPosition?: 'before' | 'after';
   onPointerDragStart?: (event: React.PointerEvent<HTMLElement>) => void;
-  forceExpanded?: boolean;
+  collapsed?: boolean;
+  onCollapsedChange?: (collapsed: boolean) => void;
   canCreateConversation?: boolean;
   onCreateConversation?: () => void;
   onDelete?: () => void;
@@ -655,17 +659,11 @@ function useAgentSessionHost(): AgentSessionHost {
   return useContext(AgentSessionHostContext);
 }
 
-function WorkspaceConversationGroup({ groupId, label, children, conversationCount, hasMore = false, loadingMore = false, onLoadMore, draggable = false, dragging = false, dropPosition, onPointerDragStart, forceExpanded = false, canCreateConversation = false, onCreateConversation, onDelete }: WorkspaceConversationGroupProps) {
-  const [collapsed, setCollapsed] = useState(false);
+function WorkspaceConversationGroup({ groupId, label, children, conversationCount, hasMore = false, loadingMore = false, onLoadMore, draggable = false, dragging = false, dropPosition, onPointerDragStart, collapsed = false, onCollapsedChange, canCreateConversation = false, onCreateConversation, onDelete }: WorkspaceConversationGroupProps) {
   const [visibleCount, setVisibleCount] = useState(3);
   const initializedItemCount = useRef(false);
   const previousConversationCount = useRef(conversationCount);
   const contentId = `agent-workspace-group-${groupId}`;
-  useEffect(() => {
-    if (!forceExpanded) return;
-    setCollapsed(false);
-    setVisibleCount(current => Math.max(current, conversationCount));
-  }, [conversationCount, forceExpanded]);
   useEffect(() => {
     if (!initializedItemCount.current) {
       if (conversationCount > 0) initializedItemCount.current = true;
@@ -682,10 +680,10 @@ function WorkspaceConversationGroup({ groupId, label, children, conversationCoun
 
   return <section data-work-directory-id={draggable ? groupId : undefined} className={`agent-workspace-group${collapsed ? ' collapsed' : ''}${dragging ? ' dragging' : ''}${dropPosition ? ` drop-${dropPosition}` : ''}`}>
     <header onPointerDown={draggable ? onPointerDragStart : undefined}>
-      <button type="button" className="agent-workspace-group-toggle" aria-label={`${collapsed ? '展开' : '收起'}工作区 ${label}`} aria-expanded={!collapsed} aria-controls={contentId} onClick={() => setCollapsed(current => {
-        if (!current) setVisibleCount(3);
-        return !current;
-      })}>
+      <button type="button" className="agent-workspace-group-toggle" aria-label={`${collapsed ? '展开' : '收起'}工作区 ${label}`} aria-expanded={!collapsed} aria-controls={contentId} onClick={() => {
+        if (!collapsed) setVisibleCount(3);
+        onCollapsedChange?.(!collapsed);
+      }}>
         <Folder size={14}/><span>{label}</span><ChevronDown size={13}/>
       </button>
       <div className="agent-workspace-group-actions">{onCreateConversation && <button type="button" aria-label={`在${label}中新建会话`} disabled={!canCreateConversation} onClick={onCreateConversation}><Plus size={13}/></button>}
@@ -837,7 +835,7 @@ function ConversationStreamObserver({
 }
 
 function WorkspaceConversationRow({
-  item, selectedBindingId, workspaceName, running, possiblyStuck, failed, unread, unreadOrigin, pinned, conversationWritable, removing, deleteDisabled, dragging, dropPosition, orderSyncState, onDragStart, onDragOver, onDrop, onDragEnd, onRetryOrder, onSelect, onDoubleClick, onTogglePin, onMarkUnread, onMarkRead, onAcknowledgeAlert, onDelete, reveal,
+  item, selectedBindingId, workspaceName, running, possiblyStuck, failed, unread, unreadOrigin, pinned, conversationWritable, removing, deleteDisabled, dragging, dropPosition, orderSyncState, onDragStart, onDragOver, onDrop, onDragEnd, onRetryOrder, onSelect, onDoubleClick, onTogglePin, onMarkUnread, onMarkRead, onAcknowledgeAlert, onDelete,
 }: {
   item: AgentConversation;
   selectedBindingId?: string;
@@ -866,7 +864,6 @@ function WorkspaceConversationRow({
   onMarkRead?: () => void;
   onAcknowledgeAlert?: () => void;
   onDelete?: () => void;
-  reveal?: boolean;
 }) {
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number }>();
   const showRunningAlert = possiblyStuck && running && !failed;
@@ -881,7 +878,7 @@ function WorkspaceConversationRow({
     return () => { window.removeEventListener('pointerdown', close); window.removeEventListener('resize', close); };
   }, [contextMenu]);
   const selected = item.id === selectedBindingId;
-  return <div data-conversation-binding-id={item.id} className={`agent-workspace-conversation${selected ? ' active' : ''}${dragging ? ' dragging' : ''}${dropPosition ? ` drop-${dropPosition}` : ''}${reveal ? ' sidebar-reveal' : ''}`} onDragOver={onDragOver} onDrop={onDrop} onContextMenu={event => {
+  return <div data-conversation-binding-id={item.id} className={`agent-workspace-conversation${selected ? ' active' : ''}${dragging ? ' dragging' : ''}${dropPosition ? ` drop-${dropPosition}` : ''}`} onDragOver={onDragOver} onDrop={onDrop} onContextMenu={event => {
     event.preventDefault();
     setContextMenu({ x: Math.min(event.clientX, window.innerWidth - 180), y: Math.min(event.clientY, window.innerHeight - 52) });
   }}>
@@ -4458,6 +4455,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [conversationOrder, setConversationOrder] = useState<Record<string, string[]>>({});
   const [conversationOrderSync, setConversationOrderSync] = useState<Record<string, ConversationOrderSync>>({});
   const [sidebarScrollTop, setSidebarScrollTop] = useState<number>();
+  const [agentWorkspaceView, setAgentWorkspaceView] = useState<'home' | 'schedules' | 'management'>('home');
+  const workspaceSidebarScrollTop = useRef<number | undefined>(undefined);
+  const workspaceSidebarScrollTopBeforeActivity = useRef<number | undefined>(undefined);
+  const restoringWorkspaceSidebarScrollTop = useRef<number | undefined>(undefined);
+  const [pinnedConversationsCollapsed, setPinnedConversationsCollapsed] = useState(false);
+  const [collapsedConversationGroups, setCollapsedConversationGroups] = useState<Set<string>>(() => new Set());
   const [workDirectoryOrder, setWorkDirectoryOrder] = useState<string[]>([]);
   const [draggedWorkDirectoryId, setDraggedWorkDirectoryId] = useState<string>();
   const [workDirectoryDropTarget, setWorkDirectoryDropTarget] = useState<{ id: string; after: boolean }>();
@@ -4521,7 +4524,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [conversationSearchTargetEventId, setConversationSearchTargetEventId] = useState<string>();
   const [sidebarListMode, setSidebarListMode] = useState<'workspaces' | 'activity'>('workspaces');
   const [activityPreviewBindingId, setActivityPreviewBindingId] = useState<string>();
-  const [sidebarRevealBindingId, setSidebarRevealBindingId] = useState<string>();
   const attachmentInput = useRef<HTMLInputElement>(null);
   const discardedDraftScopes = useRef(new Set<string>());
   const removedPendingAttachmentIds = useRef(new Set<string>());
@@ -4673,13 +4675,21 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const sidebarListRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!sidebarScrollStorageKey) {
+      workspaceSidebarScrollTop.current = undefined;
+      workspaceSidebarScrollTopBeforeActivity.current = undefined;
+      restoringWorkspaceSidebarScrollTop.current = undefined;
       setSidebarScrollTop(undefined);
       return;
     }
     try {
       const stored = Number(sessionStorage.getItem(sidebarScrollStorageKey));
-      setSidebarScrollTop(Number.isFinite(stored) && stored > 0 ? stored : undefined);
+      const scrollTop = Number.isFinite(stored) && stored > 0 ? stored : undefined;
+      workspaceSidebarScrollTop.current = scrollTop;
+      setSidebarScrollTop(scrollTop);
     } catch {
+      workspaceSidebarScrollTop.current = undefined;
+      workspaceSidebarScrollTopBeforeActivity.current = undefined;
+      restoringWorkspaceSidebarScrollTop.current = undefined;
       setSidebarScrollTop(undefined);
     }
   }, [sidebarScrollStorageKey]);
@@ -4906,9 +4916,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   );
   useLayoutEffect(() => {
     const sidebar = sidebarListRef.current;
-    if (!sidebar || sidebarScrollTop === undefined) return;
-    sidebar.scrollTop = Math.min(sidebar.scrollHeight - sidebar.clientHeight, sidebarScrollTop);
-  }, [conversations, sidebarScrollTop]);
+    const scrollTop = workspaceSidebarScrollTopBeforeActivity.current ?? workspaceSidebarScrollTop.current;
+    if (!sidebar || sidebarListMode !== 'workspaces' || scrollTop === undefined) return;
+    const target = Math.min(sidebar.scrollHeight - sidebar.clientHeight, scrollTop);
+    if (sidebar.scrollTop !== target) {
+      restoringWorkspaceSidebarScrollTop.current = target;
+      sidebar.scrollTop = target;
+    }
+  }, [conversations, sidebarListMode, sidebarScrollTop]);
   const pagedPinnedConversations = [...conversationsById.values()].filter(
     item => pendingPinnedUpdates.current.get(item.id)?.pinned ?? item.pinned,
   );
@@ -4930,38 +4945,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         return rightUpdatedAt - leftUpdatedAt || right.id.localeCompare(left.id);
       });
   }, [condensingConversationIds, conversationActivityQuery.data?.conversations, conversations, runningConversationIds, unreadConversationIds]);
-  const revealedConversation = sidebarRevealBindingId
-    ? activityConversations.find(item => item.id === sidebarRevealBindingId)
-      ?? conversations.find(item => item.id === sidebarRevealBindingId)
-    : undefined;
-  const revealedUnpinnedConversation = revealedConversation && !revealedConversation.pinned
-    ? revealedConversation
-    : undefined;
-  useEffect(() => {
-    if (!revealedUnpinnedConversation || conversations.some(item => item.id === revealedUnpinnedConversation.id)) return;
-    const scopeKey = revealedUnpinnedConversation.work_directory_id ?? '__root__';
-    if (loadingConversationScope || !conversationPagesByScope[scopeKey]?.next_cursor) return;
-    void loadMoreConversations(scopeKey);
-  }, [conversationPagesByScope, conversations, loadMoreConversations, loadingConversationScope, revealedUnpinnedConversation]);
-  useEffect(() => {
-    if (sidebarListMode !== 'workspaces' || !sidebarRevealBindingId) return;
-    let frame: number | undefined;
-    let timer: number | undefined;
-    frame = window.requestAnimationFrame(() => {
-      frame = window.requestAnimationFrame(() => {
-        const row = sidebarListRef.current?.querySelector<HTMLElement>(`[data-conversation-binding-id="${sidebarRevealBindingId}"]`);
-        if (!row) return;
-        row.scrollIntoView({ block: 'center', behavior: 'smooth' });
-        timer = window.setTimeout(() => {
-          setSidebarRevealBindingId(current => current === sidebarRevealBindingId ? undefined : current);
-        }, 2_600);
-      });
-    });
-    return () => {
-      if (frame !== undefined) window.cancelAnimationFrame(frame);
-      if (timer !== undefined) window.clearTimeout(timer);
-    };
-  }, [conversations, pinnedConversations, sidebarListMode, sidebarRevealBindingId]);
   const selectedConversationQuery = useQuery({
     queryKey: sessionQueryKey(host, 'conversation', workspace?.id, selectedBindingId),
     queryFn: () => api.conversation(workspace!.id, selectedBindingId!),
@@ -6919,13 +6902,13 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }
   }, [connectedProviders, newConversationModelName, newConversationProviderId]);
   useEffect(() => {
-    if (turnState === 'pausing' && nativeExecutionStatus?.toLowerCase() === 'paused') {
-      setTurnState('paused');
-    }
-  }, [nativeExecutionStatus, turnState]);
+    if (turnState !== 'pausing' || nativeExecutionStatus?.toLowerCase() === 'paused') return;
+    const timer = window.setInterval(() => reconcileConversationProjection(), PAUSE_CONFIRMATION_RETRY_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [nativeExecutionStatus, reconcileConversationProjection, turnState]);
   useEffect(() => {
     if (!selected || inputReadinessQuery.data?.execution_status?.toLowerCase() !== 'paused') return;
-    setTurnState(current => current === 'idle' ? 'paused' : current);
+    setTurnState(current => current === 'idle' || current === 'pausing' ? 'paused' : current);
   }, [inputReadinessQuery.data?.execution_status, selected]);
   useEffect(() => {
     if (!terminalSyncTurnKey) {
@@ -7227,11 +7210,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       return context;
     },
     onSuccess: (_value, bindingId) => {
-      setOptimisticallyRemovedConversationIds(current => {
-        const next = new Set(current);
-        next.delete(bindingId);
-        return next;
-      });
+      // Keep the binding locally excluded after a successful DELETE. The
+      // per-scope cache intentionally retains earlier pages, so a stale list
+      // response must not reinsert a conversation the server deleted.
       composerDraftsByScope.current.delete(bindingId);
       conversationDraftsByScope.current.delete(bindingId);
       if (workspace) clearConversationComposerDraft(host.id, workspace.id, bindingId);
@@ -7709,7 +7690,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     mutationFn: () => api.interruptConversation(workspace!.id, selected!.id),
     onMutate: () => setTurnState('pausing'),
     onSuccess: () => {
-      setTurnState('paused');
       reconcileConversationProjection();
       onHostStateChanged?.();
     },
@@ -8619,7 +8599,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     const conversationWritable = Boolean(item.write_available);
     const draggable = options.allowDrag !== false;
     const orderSync = conversationOrderSync[item.id];
-    return <WorkspaceConversationRow key={item.id} item={item} selectedBindingId={selectedBindingId} workspaceName={options.workspaceName} running={running} possiblyStuck={possiblyStuck} failed={failed} unread={unread} unreadOrigin={unreadOrigin} pinned={Boolean(item.pinned)} conversationWritable={conversationWritable} removing={remove.isPending} deleteDisabled={running} dragging={draggable && draggedBindingId === item.id} dropPosition={draggable && dragTarget?.bindingId === item.id ? (dragTarget.after ? 'after' : 'before') : undefined} orderSyncState={orderSync?.state} onDragStart={draggable ? event => startConversationDrag(event, item, group) : undefined} onDragOver={draggable ? event => previewConversationDrop(event, item, group) : undefined} onDrop={draggable ? event => dropConversation(event, item, group) : undefined} onDragEnd={draggable ? endConversationDrag : undefined} onRetryOrder={orderSync?.state === 'failed' ? () => synchronizeConversationOrder(item.id, orderSync.orderedBindingIds) : undefined} onSelect={options.onSelect ?? (() => selectConversation(item.id))} onDoubleClick={options.onDoubleClick} onTogglePin={() => toggleConversationPin(item.id)} onMarkUnread={() => markConversationUnread(item.id)} onMarkRead={options.onMarkRead} onAcknowledgeAlert={() => markConversationRead(item.id)} onDelete={features.conversationDeletion && conversationWritable ? () => void confirmDeletion('会话', conversationName(item)).then(ok => { if (ok) remove.mutate(item.id); }) : undefined} reveal={sidebarListMode === 'workspaces' && sidebarRevealBindingId === item.id}/>;
+    return <WorkspaceConversationRow key={item.id} item={item} selectedBindingId={selectedBindingId} workspaceName={options.workspaceName} running={running} possiblyStuck={possiblyStuck} failed={failed} unread={unread} unreadOrigin={unreadOrigin} pinned={Boolean(item.pinned)} conversationWritable={conversationWritable} removing={remove.isPending} deleteDisabled={running} dragging={draggable && draggedBindingId === item.id} dropPosition={draggable && dragTarget?.bindingId === item.id ? (dragTarget.after ? 'after' : 'before') : undefined} orderSyncState={orderSync?.state} onDragStart={draggable ? event => startConversationDrag(event, item, group) : undefined} onDragOver={draggable ? event => previewConversationDrop(event, item, group) : undefined} onDrop={draggable ? event => dropConversation(event, item, group) : undefined} onDragEnd={draggable ? endConversationDrag : undefined} onRetryOrder={orderSync?.state === 'failed' ? () => synchronizeConversationOrder(item.id, orderSync.orderedBindingIds) : undefined} onSelect={options.onSelect ?? (() => selectConversation(item.id))} onDoubleClick={options.onDoubleClick} onTogglePin={() => toggleConversationPin(item.id)} onMarkUnread={() => markConversationUnread(item.id)} onMarkRead={options.onMarkRead} onAcknowledgeAlert={() => markConversationRead(item.id)} onDelete={features.conversationDeletion && conversationWritable ? () => void confirmDeletion('会话', conversationName(item)).then(ok => { if (ok) remove.mutate(item.id); }) : undefined}/>;
   };
   const pendingBootstrapItem = pendingBootstrap
     ? <button className={pendingBootstrap.draft.id === conversationDraft?.id ? 'active' : ''} aria-current={pendingBootstrap.draft.id === conversationDraft?.id ? 'page' : undefined} aria-label={`${pendingConversationName(pendingBootstrap.message)}，正在创建会话`}><LoaderCircle className="conversation-activity-spin" size={13}/><span><b>{pendingConversationName(pendingBootstrap.message)}</b><small>正在创建会话</small></span><ChevronRight size={13}/></button>
@@ -8643,6 +8623,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const conversationsForDirectory = (workDirectoryId: string) => unpinnedConversations.filter(
     item => item.work_directory_id === workDirectoryId,
   );
+  const setConversationGroupCollapsed = (groupId: string, collapsed: boolean) => {
+    setCollapsedConversationGroups(current => {
+      const next = new Set(current);
+      if (collapsed) next.add(groupId);
+      else next.delete(groupId);
+      return next;
+    });
+  };
   const selectConversation = (bindingId: string) => {
     const outgoingScope = activeComposerScope.current;
     if (outgoingScope) persistComposerDraft(outgoingScope);
@@ -8653,6 +8641,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   };
   const toggleSidebarListMode = () => {
     if (sidebarListMode === 'activity') setActivityPreviewBindingId(undefined);
+    else workspaceSidebarScrollTopBeforeActivity.current = sidebarListRef.current?.scrollTop;
     setSidebarListMode(current => current === 'activity' ? 'workspaces' : 'activity');
   };
   const previewActivityConversation = (bindingId: string) => {
@@ -8663,7 +8652,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   };
   const openActivityConversation = (bindingId: string) => {
     setSidebarListMode('workspaces');
-    setSidebarRevealBindingId(bindingId);
     selectConversation(bindingId);
   };
   const activityWorkspaceName = (item: AgentConversation) => item.work_directory_id
@@ -8725,7 +8713,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     window.addEventListener('pointerup', stop, { once: true });
     window.addEventListener('pointercancel', stop, { once: true });
   };
-  return <main className="agent-workbench-page" style={{ '--conversation-rail-width': `${conversationRailWidth}px` } as CSSProperties}>
+  return <main className={`agent-workbench-page${!onReturnToSource ? ' agent-workbench-app-shell' : ''}`} style={{ '--conversation-rail-width': `${conversationRailWidth}px` } as CSSProperties}>
+    {!onReturnToSource && <nav className="agent-workbench-app-nav" aria-label="Agent 工作区导航"><button type="button" className={agentWorkspaceView === 'home' ? 'active' : ''} aria-current={agentWorkspaceView === 'home' ? 'page' : undefined} aria-label="主页" title="主页" onClick={() => setAgentWorkspaceView('home')}><Home size={17}/></button><button type="button" className={agentWorkspaceView === 'schedules' ? 'active' : ''} aria-current={agentWorkspaceView === 'schedules' ? 'page' : undefined} aria-label="定时任务" title="定时任务" onClick={() => setAgentWorkspaceView('schedules')}><CalendarClock size={17}/></button><button type="button" className={agentWorkspaceView === 'management' ? 'active' : ''} aria-current={agentWorkspaceView === 'management' ? 'page' : undefined} aria-label="会话管理" title="会话管理" onClick={() => setAgentWorkspaceView('management')}><MessageSquareText size={17}/></button></nav>}
+    {agentWorkspaceView === 'schedules' && workspace && <AgentConversationSchedulesPanel workspaceId={workspace.id} conversations={conversations} selectedBindingId={selected?.id} onOpenConversation={bindingId => { setAgentWorkspaceView('home'); selectConversation(bindingId); }}/>}
+    {agentWorkspaceView === 'management' && <section className="agent-conversation-management-page" aria-label="会话管理"><ConversationManagementPage/></section>}
     {selected && <ConversationStreamObserver workspaceId={workspace.id} bindingId={selected.id} enabled={streamEnabled} onEvent={onStreamEvent} onStatus={updateStreamStatus} onReconnect={onStreamReconnect}/>}
     {workspace && queuedMessageBindings(host, workspace.id).filter(bindingId => bindingId !== selected?.id).map(bindingId => (
       <ConversationStreamObserver
@@ -8748,28 +8739,38 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       onOpenInFiles={openPreviewInFiles}
       onOpenWorkspaceFile={openWorkspaceFileLink}
     />}
-    <aside className="agent-workbench-rail">
+    {agentWorkspaceView === 'home' && <aside className="agent-workbench-rail">
       <div className="agent-conversation-rail-resizer" role="separator" aria-label="调整会话列表宽度" aria-orientation="vertical" onPointerDown={startConversationRailResize}/>
       <header className={!onReturnToSource && features.workDirectories ? 'agent-workbench-rail-actions-only' : undefined}>{onReturnToSource && <button type="button" className="agent-session-return" aria-label="返回节点执行" title="返回节点执行" onClick={onReturnToSource}><ArrowLeft size={16}/></button>}{(onReturnToSource || !features.workDirectories) && <div className="agent-session-host-heading"><span className="eyebrow">{onReturnToSource ? 'FLOWRUN NODE WORKSPACE' : 'FLOWRUN NODE'}</span><h1>{onReturnToSource ? workspace?.display_name || '节点会话' : '节点会话'}</h1></div>}<div className="agent-workbench-create-actions"><button type="button" className={`agent-workbench-activity-trigger${sidebarListMode === 'activity' ? ' active' : ''}`} aria-label={`查看活动会话${activityConversations.length ? `（${activityConversations.length}）` : ''}`} title="查看活动会话" onClick={toggleSidebarListMode}><Bell size={15}/>{activityConversations.length > 0 && <span aria-hidden="true">{activityConversations.length > 99 ? '99+' : activityConversations.length}</span>}</button><button className="primary" disabled={!conversationSearchSupported} onClick={() => setConversationSearchOpen(true)}>{conversationSearchQuery.data?.state === 'PENDING' || conversationSearchQuery.data?.state === 'RUNNING' ? <LoaderCircle className="conversation-activity-spin" size={15}/> : conversationSearchQuery.data?.state === 'SUCCEEDED' ? <Check size={15}/> : <Search size={15}/>}{conversationSearchQuery.data?.state === 'SUCCEEDED' ? '搜索完成' : '搜索会话'}</button>{features.workDirectories && <button type="button" className="secondary" aria-label="新增工作区" disabled={!runtimeWritable} onClick={() => setWorkDirectoryCreatorOpen(true)}><FolderPlus size={14}/>新增工作区</button>}</div></header>
       <div ref={sidebarListRef} className="agent-workbench-list" onDragOver={event => {
         if (draggedConversationRef.current) updateConversationDragAutoScroll(event.clientY);
       }} onScroll={event => {
+        if (sidebarListMode !== 'workspaces') return;
+        const scrollTop = event.currentTarget.scrollTop;
+        if (restoringWorkspaceSidebarScrollTop.current === scrollTop) {
+          restoringWorkspaceSidebarScrollTop.current = undefined;
+          workspaceSidebarScrollTopBeforeActivity.current = undefined;
+          return;
+        }
+        restoringWorkspaceSidebarScrollTop.current = undefined;
+        workspaceSidebarScrollTopBeforeActivity.current = undefined;
+        workspaceSidebarScrollTop.current = scrollTop;
         if (!sidebarScrollStorageKey) return;
-        try { sessionStorage.setItem(sidebarScrollStorageKey, String(event.currentTarget.scrollTop)); } catch { /* browser session state only */ }
+        try { sessionStorage.setItem(sidebarScrollStorageKey, String(scrollTop)); } catch { /* browser session state only */ }
       }}>
         {sidebarListMode === 'activity'
           ? <section className="agent-workspace-activity" aria-label="活动会话"><header><div><span className="eyebrow">ACTIVITY</span><b>活动</b></div><button type="button" aria-label="返回工作区列表" title="返回工作区列表" onClick={() => { setActivityPreviewBindingId(undefined); setSidebarListMode('workspaces'); }}><ArrowLeft size={15}/></button></header>{activityConversations.length ? activityConversations.map(item => conversationRow(item, [], { allowDrag: false, workspaceName: activityWorkspaceName(item), onSelect: () => previewActivityConversation(item.id), onDoubleClick: () => openActivityConversation(item.id), onMarkRead: () => markConversationRead(item.id) })) : <p>没有正在运行或未读的会话。</p>}</section>
-          : <>{pinnedConversations.length > 0 && <section className="agent-workspace-pinned" aria-label="置顶会话"><header><Pin size={13}/><span>置顶</span></header><div>{pinnedConversations.map(item => conversationRow(item, [], { allowDrag: false }))}</div></section>}
-            <WorkspaceConversationGroup groupId="root" label="根工作区" conversationCount={rootConversations.length} hasMore={Boolean(conversationPagesByScope.__root__?.next_cursor)} loadingMore={loadingConversationScope === '__root__'} onLoadMore={() => loadMoreConversations('__root__')} forceExpanded={Boolean(revealedUnpinnedConversation && !revealedUnpinnedConversation.work_directory_id)} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ displayName: '根工作区' })}>
+          : <>{pinnedConversations.length > 0 && <section className={`agent-workspace-pinned${pinnedConversationsCollapsed ? ' collapsed' : ''}`} aria-label="置顶会话"><header><button type="button" aria-label={`${pinnedConversationsCollapsed ? '展开' : '收起'}置顶会话`} aria-expanded={!pinnedConversationsCollapsed} aria-controls="agent-workspace-pinned-content" onClick={() => setPinnedConversationsCollapsed(current => !current)}><Pin size={13}/><span>置顶</span>{pinnedConversationsCollapsed ? <ChevronRight size={13}/> : <ChevronDown size={13}/>}</button></header><div id="agent-workspace-pinned-content" hidden={pinnedConversationsCollapsed}>{pinnedConversations.map(item => conversationRow(item, [], { allowDrag: false }))}</div></section>}
+            <WorkspaceConversationGroup groupId="root" label="根工作区" conversationCount={rootConversations.length} hasMore={Boolean(conversationPagesByScope.__root__?.next_cursor)} loadingMore={loadingConversationScope === '__root__'} onLoadMore={() => loadMoreConversations('__root__')} collapsed={collapsedConversationGroups.has('root')} onCollapsedChange={collapsed => setConversationGroupCollapsed('root', collapsed)} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ displayName: '根工作区' })}>
               {visibleCount => <>{pendingBootstrapItem && !pendingBootstrap?.draft.workDirectoryId ? pendingBootstrapItem : recoverableDraftItem(undefined, '根工作区')}{rootConversations.slice(0, visibleCount).map(item => conversationRow(item, rootConversations))}</>}
             </WorkspaceConversationGroup>
-            {features.workDirectories && workDirectories.map(directory => <WorkspaceConversationGroup key={directory.id} groupId={directory.id} label={directory.display_name} conversationCount={conversationsForDirectory(directory.id).length} hasMore={Boolean(conversationPagesByScope[directory.id]?.next_cursor)} loadingMore={loadingConversationScope === directory.id} onLoadMore={() => loadMoreConversations(directory.id)} draggable dragging={draggedWorkDirectoryId === directory.id} dropPosition={workDirectoryDropTarget?.id === directory.id ? (workDirectoryDropTarget.after ? 'after' : 'before') : undefined} onPointerDragStart={event => startPointerWorkDirectoryDrag(event, directory.id)} forceExpanded={revealedUnpinnedConversation?.work_directory_id === directory.id} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ workDirectoryId: directory.id, displayName: directory.display_name })} onDelete={api.deleteWorkDirectory && runtimeWritable ? () => void removeWorkDirectory(directory) : undefined}>
+            {features.workDirectories && workDirectories.map(directory => <WorkspaceConversationGroup key={directory.id} groupId={directory.id} label={directory.display_name} conversationCount={conversationsForDirectory(directory.id).length} hasMore={Boolean(conversationPagesByScope[directory.id]?.next_cursor)} loadingMore={loadingConversationScope === directory.id} onLoadMore={() => loadMoreConversations(directory.id)} draggable dragging={draggedWorkDirectoryId === directory.id} dropPosition={workDirectoryDropTarget?.id === directory.id ? (workDirectoryDropTarget.after ? 'after' : 'before') : undefined} onPointerDragStart={event => startPointerWorkDirectoryDrag(event, directory.id)} collapsed={collapsedConversationGroups.has(directory.id)} onCollapsedChange={collapsed => setConversationGroupCollapsed(directory.id, collapsed)} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ workDirectoryId: directory.id, displayName: directory.display_name })} onDelete={api.deleteWorkDirectory && runtimeWritable ? () => void removeWorkDirectory(directory) : undefined}>
               {visibleCount => { const group = conversationsForDirectory(directory.id); return <>{pendingBootstrapItem && pendingBootstrap?.draft.workDirectoryId === directory.id ? pendingBootstrapItem : recoverableDraftItem(directory.id, directory.display_name)}{group.slice(0, visibleCount).map(item => conversationRow(item, group))}</>}}
             </WorkspaceConversationGroup>)}</>}
       </div>
       {features.capabilities && (selected || features.draftCapabilitySelection) && <footer className="agent-workbench-rail-footer"><button type="button" disabled={selected ? !canWrite : !runtimeWritable} onClick={() => setCapabilityManagerOpen(true)}><Boxes size={15}/><span><b>会话配置</b><small>{selected ? '管理当前会话配置' : '为新会话配置能力'}</small></span><ChevronRight size={14}/></button></footer>}
-    </aside>
-    <section className="agent-workbench-main">
+    </aside>}
+    {agentWorkspaceView === 'home' && <section className="agent-workbench-main">
       <header className="agent-workbench-header"><div>{editing ? <div className="agent-title-edit"><input ref={titleInput} aria-label="会话标题" value={title} onChange={event => setTitle(event.target.value)} onBlur={() => { if (!rename.isPending) { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }} onKeyDown={event => { if (event.key === 'Enter' && title.trim()) { event.preventDefault(); rename.mutate(); } if (event.key === 'Escape') { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }}/></div> : !(hideDraftTitle && conversationDraft) && <h2 className="agent-session-title" title={selected ? conversationName(selected) : undefined} aria-label={selected && canWrite ? '双击修改标题' : undefined} onDoubleClick={() => { if (!selected || !canWrite) return; setTitle(conversationName(selected)); setEditing(true); }}><span>{selected ? conversationName(selected) : conversationDraft ? '新会话' : '开始一个新的会话'}</span></h2>}{features.modelSelection && (selected || conversationDraft) && <small className="agent-session-provider">当前供应商：{selected ? boundProviderInfo?.name ?? '未配置' : draftProviderInfo?.name ?? '请选择模型供应商'}{conversationDraft ? ` · ${conversationDraft.displayName}` : ''}</small>}</div></header>
       <div className={`agent-workbench-content${conversationDropActive ? ' conversation-drop-active' : ''}`} onDragEnter={event => {
         if (!acceptsConversationDrop(event)) return;
@@ -8902,7 +8903,15 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         </section>}
                   <AgentComposerInput key={composerScope ?? 'composer'} ref={composerRef} initialDraft={composerDraftRef.current} scope={composerScope} suggestions={visibleComposerSuggestions} placeholder={pendingConfirmation ? '请先处理上方工具确认…' : composerControlMode === 'condensing' ? '可继续输入，发送后将排队…' : composerControlMode === 'reconciling' ? '正在同步 Agent 状态…' : composerControlMode === 'read-only' ? '当前会话不可编辑…' : '给 Agent 发消息…'} disabled={!composerControl.editable} onDraftChange={setComposerDraft} onContentPresenceChange={onComposerContentPresenceChange} onDraftPersist={persistComposerDraft} onPaste={event => { if (!features.attachments) return; const files = transferredFiles(event.clipboardData); if (!files.length) return; event.preventDefault(); files.forEach(startAttachmentUpload); }} onDropFiles={features.attachments && composerScope ? files => files.forEach(startAttachmentUpload) : undefined} onDropWorkspaceFiles={addWorkspaceReferences} onDropConversationReference={addConversationReference} onSubmit={enqueueDraft} onDirectSubmit={sendDraftDirectly} onManageCapabilities={features.capabilities && (selected || features.draftCapabilitySelection) ? () => setCapabilityManagerOpen(true) : undefined} onNativeAction={action => { if (action === 'CONDENSE' && canCondense && !condense.isPending && workspace && selected) condense.mutate({ workspaceId: workspace.id, bindingId: selected.id }); }} onWorkspaceReferenceSelected={() => { setWorkspaceReferenceQuery(''); setWorkspaceReferencePickerOpen(true); }}/>
         <div className="agent-composer-attachments">
-        {(features.attachments && (attachments.length > 0 || pendingAttachments.some(item => item.scope === composerScope)) || references.length > 0 || composerAnnotations.length > 0) && <div className="agent-attachments" aria-label="已添加的附件和会话引用">{features.attachments && <>{attachments.map((item, index) => <span key={item.path}><button type="button" className="agent-attachment-open" title={`预览附件：${item.filename}`} onClick={() => previewAttachment(item)}>{item.image_data_url ? <img src={item.image_data_url} alt=""/> : <FileTypeIcon filename={item.filename} mimeType={item.mime_type} size={16}/>}<em>{item.filename}</em></button><button type="button" className="agent-attachment-alias" aria-label={`引用附件 ${index + 1}`} title={`插入 @附件${index + 1}`} onClick={() => insertAttachmentAlias(item)}>@</button><button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => { setAttachments(all => all.filter(candidate => candidate.path !== item.path)); if (conversationDraft && workspace) void api.deleteDraftAttachments(workspace.id, conversationDraft.id, item.path).catch(() => undefined); }}>×</button></span>)}{pendingAttachments.filter(item => item.scope === composerScope).map(item => <span key={item.id} className={`agent-pending-attachment ${item.state}`} title={item.state === 'failed' ? '附件上传失败，请重试或删除。' : `正在上传 ${item.progress}%`}><span className="agent-attachment-open">{item.previewUrl ? <img src={item.previewUrl} alt=""/> : <FileTypeIcon filename={item.filename} mimeType={item.mimeType} size={16}/>}<em>{item.filename}</em>{item.state === 'uploading' && <small>{item.progress}%</small>}{item.state === 'failed' && <span className="agent-attachment-retry-overlay"><button type="button" onClick={() => retryPendingAttachment(item.id)}>重试</button></span>}</span>{item.state === 'uploading' && <i className="agent-attachment-progress" style={{ '--upload-progress': `${item.progress}%` } as CSSProperties}/>}<button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => removePendingAttachment(item.id)}>×</button></span>)}</>}<ComposerConversationReferenceList references={references} onOpen={reference => selectConversation(reference.sourceBindingId)} onRemove={reference => setReferences(current => current.filter(item => item !== reference))}/>{(selected || conversationDraft) && <ComposerAnnotationList annotations={composerAnnotations} currentBindingId={selected?.id ?? conversationDraft?.id} onLocate={locateAnnotation} onRemove={annotation => setComposerAnnotations(current => current.filter(item => item.id !== annotation.id))} onUpdate={(annotation, comment) => void updateAnnotation(annotation, comment)}/>}</div>}
+        {(features.attachments && (attachments.length > 0 || pendingAttachments.some(item => item.scope === composerScope)) || references.length > 0 || composerAnnotations.length > 0) && <div className="agent-attachments" aria-label="已添加的附件和会话引用">{features.attachments && <>{attachments.map((item, index) => <span key={item.path}><button type="button" className="agent-attachment-open" title={`预览附件：${item.filename}`} onClick={() => previewAttachment(item)}>{item.image_data_url ? <img src={item.image_data_url} alt=""/> : <FileTypeIcon filename={item.filename} mimeType={item.mime_type} size={16}/>}<em>{item.filename}</em></button><button type="button" className="agent-attachment-alias" aria-label={`引用附件 ${index + 1}`} title={`插入 @附件${index + 1}`} onClick={() => insertAttachmentAlias(item)}>@</button><button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => {
+  const remove = () => setAttachments(all => all.filter(candidate => candidate.path !== item.path));
+  if (selected && workspace) {
+    void api.deletePendingAttachment(workspace.id, selected.id, item.path).then(remove).catch(error => reportOperationError(selected.id, error));
+  } else {
+    remove();
+    if (conversationDraft && workspace) void api.deleteDraftAttachments(workspace.id, conversationDraft.id, item.path).catch(() => undefined);
+  }
+}}>×</button></span>)}{pendingAttachments.filter(item => item.scope === composerScope).map(item => <span key={item.id} className={`agent-pending-attachment ${item.state}`} title={item.state === 'failed' ? '附件上传失败，请重试或删除。' : `正在上传 ${item.progress}%`}><span className="agent-attachment-open">{item.previewUrl ? <img src={item.previewUrl} alt=""/> : <FileTypeIcon filename={item.filename} mimeType={item.mimeType} size={16}/>}<em>{item.filename}</em>{item.state === 'uploading' && <small>{item.progress}%</small>}{item.state === 'failed' && <span className="agent-attachment-retry-overlay"><button type="button" onClick={() => retryPendingAttachment(item.id)}>重试</button></span>}</span>{item.state === 'uploading' && <i className="agent-attachment-progress" style={{ '--upload-progress': `${item.progress}%` } as CSSProperties}/>}<button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => removePendingAttachment(item.id)}>×</button></span>)}</>}<ComposerConversationReferenceList references={references} onOpen={reference => selectConversation(reference.sourceBindingId)} onRemove={reference => setReferences(current => current.filter(item => item !== reference))}/>{(selected || conversationDraft) && <ComposerAnnotationList annotations={composerAnnotations} currentBindingId={selected?.id ?? conversationDraft?.id} onLocate={locateAnnotation} onRemove={annotation => setComposerAnnotations(current => current.filter(item => item.id !== annotation.id))} onUpdate={(annotation, comment) => void updateAnnotation(annotation, comment)}/>}</div>}
         {workspaceReferences.length > 0 && <div className="agent-attachments agent-workspace-references" aria-label="已添加的工作区引用">{workspaceReferences.map(reference => <span key={workspaceReferenceKey(reference)} title={reference.path}><span className="agent-attachment-open">{reference.kind === 'directory' ? <Folder size={14}/> : <FileCode2 size={14}/>}<em><b>{reference.display_name}</b><small>{workspaceReferenceLabel(reference)}</small></em></span><button type="button" className="agent-attachment-remove" aria-label={'移除工作区引用 ' + reference.display_name} onClick={() => setWorkspaceReferences(current => current.filter(item => workspaceReferenceKey(item) !== workspaceReferenceKey(reference)))}>×</button></span>)}</div>}
         </div>
         <footer>
@@ -8926,8 +8935,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
           <ConversationTaskPlan events={displayedEvents} isGenerating={taskPlanLayoutActive} conversationScope={selected?.id ?? conversationDraft?.id}/>
         </div>
       </div>}
-    </section>
-    <WorkspaceDrawer
+    </section>}
+    {agentWorkspaceView === 'home' && <WorkspaceDrawer
       open={drawerOpen}
       onOpen={() => setDrawerOpen(true)}
       onClose={() => {
@@ -8977,7 +8986,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
           return next;
         });
       }}
-    />
+    />}
     {workspaceReferencePickerOpen && <WorkspaceReferencePicker
       entries={workspaceReferenceIndexQuery.data?.files ?? []}
       root={workspaceReferenceIndexQuery.data?.working_directory ?? activeWorkspaceRoot ?? ''}

@@ -2490,7 +2490,9 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByLabel('消息投递队列')).toHaveCount(0);
   const restoredOptimisticMessage = page.locator('.conversation-message.user').filter({ hasText: '网络不确定消息' });
   await expect(restoredOptimisticMessage).toBeVisible();
-  await expect(restoredOptimisticMessage.getByLabel('消息附件').getByText('即时附件.png', { exact: true })).toBeVisible();
+  const restoredAttachment = restoredOptimisticMessage.getByLabel('消息附件').getByText('即时附件.png', { exact: true });
+  await expect(restoredAttachment).toBeVisible();
+  await expect(restoredAttachment.locator('.conversation-message-attachment-thumbnail')).toBeVisible();
   expect(ambiguousMessagePosts).toBe(1);
   const liveToolDetail = activeProcess.locator('.conversation-tool-detail').filter({ hasText: '已运行 pwd' });
   await expect(liveToolDetail).toHaveJSProperty('open', false);
@@ -3708,8 +3710,9 @@ test('run keeps attempts, snapshots, gates and artifact lineage visible', async 
   await expect(page).toHaveURL(nodeSessionUrl);
   await expect(page.getByRole('heading', { name: '首轮方案', exact: true })).toBeVisible();
   await expect(page.getByRole('heading', { name: '新会话', exact: true })).toHaveCount(0);
-  await expect(page.getByRole('navigation').getByRole('button', { name: '流程运行' })).toHaveClass(/active/);
+  await expect(page.getByRole('navigation').getByRole('button', { name: '流程运行' })).not.toHaveClass(/active/);
   await expect(page.getByRole('navigation').getByRole('button', { name: 'Agent 会话' })).not.toHaveClass(/active/);
+  await expect(page.getByLabel('临时管理标签').getByRole('button', { name: `Run #${createdRun.run_no}` })).toHaveAttribute('aria-current', 'page');
   await expect(page.getByRole('button', { name: '返回节点执行' })).toBeVisible();
   await expect(page.getByText('FlowRun 会话工作台', { exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: '新增工作区' })).toBeVisible();
