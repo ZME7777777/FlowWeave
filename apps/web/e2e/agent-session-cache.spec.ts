@@ -3365,7 +3365,7 @@ test('Opening an unread conversation keeps it read when an older list request fi
   await expect(unreadMarker).toHaveCount(0);
 });
 
-test('Conversation sidebar persists pinned sessions, orders activity, and reveals the selected source row', async ({ page }) => {
+test('Conversation sidebar persists pinned sessions and opens activity sessions without scrolling the list', async ({ page }) => {
   let authenticated = false;
   let runningConversationPossiblyStuck = true;
   const workspace = { id: 'sidebar-workspace', display_name: '侧栏工作区', desired_state: 'RUNNING', updated_at: now };
@@ -3545,19 +3545,12 @@ test('Conversation sidebar persists pinned sessions, orders activity, and reveal
   await runningConversation.dblclick();
   await expect(page).toHaveURL(/\/agent\/conversations\/sidebar-directory-running$/);
   await expect(activity).toHaveCount(0);
-  const selectedRunningRow = page.locator('[data-conversation-binding-id="sidebar-directory-running"]');
-  await expect(selectedRunningRow).toHaveClass(/sidebar-reveal/);
-  await expect(selectedRunningRow.getByRole('button', { name: '运行中目标会话', exact: true })).toHaveClass(/active/);
-  await expect(selectedRunningRow.getByRole('img', { name: '会话正在运行但后台长时间未产生可确认进展' })).toBeVisible();
+  await expect.poll(() => sidebarList.evaluate(element => element.scrollTop)).toBe(sidebarScrollTop);
+  await expect(page.getByText('会话 sidebar-directory-running', { exact: true })).toBeVisible();
   await expect.poll(() => unreadWrites).toEqual([
     { id: 'sidebar-root-unread', unread: false },
     { id: 'sidebar-directory-running', unread: false },
   ]);
-
-  runningConversationPossiblyStuck = false;
-  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
-  await expect(selectedRunningRow.getByRole('img', { name: '会话正在运行但后台长时间未产生可确认进展' })).toHaveCount(0);
-  await expect(selectedRunningRow.getByRole('img', { name: '会话正在运行' })).toBeVisible();
 
   await page.getByRole('button', { name: '搜索会话' }).click();
   await page.getByLabel('搜索会话内容').fill('精准定位');
