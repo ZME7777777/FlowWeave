@@ -3038,6 +3038,8 @@ test('A normal background conversation completion persists a regular unread mark
   let completed = false;
   const unreadWrites: Array<{ id: string; unread: boolean; unread_origin?: string }> = [];
   let backgroundHydrationReads = 0;
+  let releaseBackgroundHydration: (() => void) | undefined;
+  const backgroundHydration = new Promise<void>(resolve => { releaseBackgroundHydration = resolve; });
   const workspace = { id: 'completed-unread-workspace', display_name: '完成未读工作区', desired_state: 'RUNNING', updated_at: now };
   const conversations = [
     {
@@ -3063,6 +3065,7 @@ test('A normal background conversation completion persists a regular unread mark
       if (completed) {
         conversation.unread = true;
         conversation.unread_origin = 'MANUAL';
+        conversation.final_reply_preview = { event_id: 'completed-unread-final', content: '后台预览的最终回复。' };
       }
       return json(route, {
         conversations: completed ? [conversation] : [],
@@ -3081,11 +3084,14 @@ test('A normal background conversation completion persists a regular unread mark
     }
     if (path.endsWith('/hydration')) {
       const bindingId = path.split('/').at(-2)!;
-      if (bindingId === 'completed-unread-background') backgroundHydrationReads += 1;
+      if (bindingId === 'completed-unread-background') {
+        backgroundHydrationReads += 1;
+        await backgroundHydration;
+      }
       return json(route, {
         events: {
           events: bindingId === 'completed-unread-background'
-            ? [{ id: 'completed-unread-final', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: '__root__', content: '后台预热的最终回复。', timestamp: now } }]
+            ? [{ id: 'completed-unread-final', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: '__root__', content: '后台预览的最终回复。', final_reply: true, timestamp: now } }]
             : [],
           next_cursor: bindingId === 'completed-unread-background' ? 'completed-unread-final' : null,
           history_cursor: null,
@@ -3127,9 +3133,10 @@ test('A normal background conversation completion persists a regular unread mark
   await expect.poll(() => backgroundHydrationReads).toBe(1);
 
   await backgroundRow.getByRole('button', { name: '后台完成会话', exact: true }).click();
-  await expect(page.getByText('后台预热的最终回复。', { exact: true })).toBeVisible();
+  await expect(page.getByText('后台预览的最终回复。', { exact: true })).toBeVisible();
   expect(backgroundHydrationReads).toBe(1);
 
+  releaseBackgroundHydration?.();
   await expect.poll(() => unreadWrites).toEqual([{ id: 'completed-unread-background', unread: false }]);
 });
 

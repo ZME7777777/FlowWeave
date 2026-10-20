@@ -29,6 +29,7 @@ from flowweave.modules.agent_sessions.application.conversation_diagnostics impor
 from flowweave.modules.agent_sessions.application.conversations import (
     ATTACHMENT_PATH,
     enqueue_title_task,
+    final_reply_preview,
     frozen_runtime_capability,
     hydration_context_snapshot,
     initial_user_event_id,
@@ -613,6 +614,7 @@ def _node_session_dict(db: Session, item: AgentConversationBinding) -> dict[str,
         "pinned": item.pinned,
         "unread": item.unread,
         "unread_origin": item.unread_origin,
+        "final_reply_preview": final_reply_preview(item),
         "lifecycle": item.lifecycle,
         "created_at": item.created_at.isoformat(),
         "updated_at": item.updated_at.isoformat(),
@@ -987,6 +989,8 @@ def node_session_activity(
                     item.unread = True
                     item.unread_origin = "MANUAL"
                     item.last_notified_completion_event_id = result.completion_event_id
+                    item.final_reply_preview_event_id = result.completion_event_id
+                    item.final_reply_preview_content = result.final_message
             elif result is not None and result.status in {"COMPLETED", "FAILED", "PAUSED"}:
                 item.terminal_reconciliation_pending = False
                 item.activity_was_running = False
@@ -1174,7 +1178,13 @@ def set_node_session_unread(
     db.execute(
         update(AgentConversationBinding)
         .where(AgentConversationBinding.id == item.id)
-        .values(unread=unread, unread_origin=origin, updated_at=item.updated_at)
+        .values(
+            unread=unread,
+            unread_origin=origin,
+            final_reply_preview_event_id=None,
+            final_reply_preview_content=None,
+            updated_at=item.updated_at,
+        )
     )
     db.refresh(item)
     return _node_session_dict(db, item)
@@ -3347,7 +3357,6 @@ def delete_pending_node_attachment(
         binding.id,
         path,
     )
-
 
 
 def upload_node_attachment(

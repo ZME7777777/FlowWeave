@@ -4679,6 +4679,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const pendingUnreadUpdates = useRef(new Map<string, { id: number; unread: boolean; unreadOrigin?: AgentConversation['unread_origin'] }>());
   const nextUnreadUpdateId = useRef(0);
   const [unreadConversationIds, setUnreadConversationIds] = useState<Set<string>>(() => new Set());
+  const [immediateFinalReplyPreview, setImmediateFinalReplyPreview] = useState<{
+    bindingId: string;
+    event: OpenHandsConversationEvent;
+  }>();
   const [backgroundHydrationPrefetchCandidates, setBackgroundHydrationPrefetchCandidates] = useState<string[]>([]);
   const [backgroundHydrationPrefetchRevision, setBackgroundHydrationPrefetchRevision] = useState(0);
   const backgroundHydrationPrefetchControllers = useRef(new Map<string, AbortController>());
@@ -6193,11 +6197,19 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, [activeScope, localMessageProjectionRevision]);
   const currentFormalEvents = useMemo(() => {
     const activeScope = selected?.id ?? conversationDraft?.id;
+    const preview = immediateFinalReplyPreview;
+    const immediatePreview = preview && preview.bindingId === activeScope
+      ? [preview.event]
+      : [];
     return mergeConversationEvents(
       eventsQuery.data?.events ?? [],
-      scopedLiveEvents.filter(item => item.scope === activeScope).map(item => item.event),
+      [...scopedLiveEvents.filter(item => item.scope === activeScope).map(item => item.event), ...immediatePreview],
     );
-  }, [conversationDraft?.id, eventsQuery.data?.events, scopedLiveEvents, selected?.id]);
+  }, [conversationDraft?.id, eventsQuery.data?.events, immediateFinalReplyPreview, scopedLiveEvents, selected?.id]);
+  useEffect(() => {
+    if (!immediateFinalReplyPreview || immediateFinalReplyPreview.bindingId !== selected?.id) return;
+    if (selectedHydrationPhase === 'ready' && eventsQuery.data) setImmediateFinalReplyPreview(undefined);
+  }, [eventsQuery.data, immediateFinalReplyPreview, selected?.id, selectedHydrationPhase]);
   const displayedEvents = useMemo(() => {
     const hiddenBranchIds = eventBranchIdsFromRoots(currentFormalEvents, hiddenEventIds);
     const eventsById = new Map(currentFormalEvents.map(event => [event.id, event]));
@@ -8261,9 +8273,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   );
   const fallbackHydrationPending = selectedHydrationPhase === 'fallback'
     && (eventsQuery.isPending || inputReadinessQuery.isPending || contextQuery.isPending);
-  const conversationInitialLoading = Boolean(
+  const immediatePreviewVisible = immediateFinalReplyPreview?.bindingId === selected?.id;
+  const hydrationInteractionPending = Boolean(
     selected && (selectedHydrationPhase === 'loading' || fallbackHydrationPending),
   );
+  const conversationInitialLoading = hydrationInteractionPending && !immediatePreviewVisible;
   const currentSessionControlState: TurnState = effectiveTurnState === 'pausing' || effectiveTurnState === 'paused' || effectiveTurnState === 'resuming'
     ? effectiveTurnState
     : foregroundSubmissionAwaitingFormalEvent
@@ -8280,7 +8294,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         ? 'rewriting'
       : !selected && !conversationDraft
         ? 'read-only'
-        : conversationInitialLoading
+        : hydrationInteractionPending
         ? 'reconciling'
         : currentSessionControlState === 'pausing'
           ? 'pausing'
@@ -8789,7 +8803,30 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const selectConversation = (bindingId: string) => {
     const outgoingScope = activeComposerScope.current;
     if (outgoingScope) persistComposerDraft(outgoingScope);
-    if (unreadConversationIds.has(bindingId) || conversationsById.get(bindingId)?.unread || activityConversations.some(item => item.id === bindingId && item.unread)) markConversationRead(bindingId);
+    const activityConversation = activityConversations.find(item => item.id === bindingId);
+    const conversation = activityConversation?.final_reply_preview
+      ? activityConversation
+      : conversationsById.get(bindingId) ?? activityConversation;
+    const preview = conversation?.final_reply_preview;
+    setImmediateFinalReplyPreview(
+      preview && conversation?.unread && conversation.unread_origin === 'MANUAL'
+        ? {
+            bindingId,
+            event: {
+              id: preview.event_id,
+              event_type: 'MESSAGE',
+              payload: {
+                source: 'agent',
+                parent_id: '__root__',
+                content: preview.content,
+                final_reply: true,
+                timestamp: conversation.updated_at,
+              },
+            },
+          }
+        : undefined,
+    );
+    if (unreadConversationIds.has(bindingId) || conversation?.unread) markConversationRead(bindingId);
     setActivityPreviewBindingId(undefined);
     setConversationDraft(undefined);
     onNavigate(host.conversationPath(bindingId));

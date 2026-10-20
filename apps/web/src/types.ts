@@ -780,6 +780,8 @@ export interface AgentConversation {
   pinned?: boolean;
   unread?: boolean;
   unread_origin?: 'MANUAL' | 'SYSTEM' | null;
+  /** Server-confirmed terminal assistant MESSAGE for a newly unread conversation. */
+  final_reply_preview?: { event_id: string; content: string } | null;
   lifecycle: 'PROVISIONING' | 'ACTIVE' | 'DELETE_PENDING' | 'FAILED';
   created_at: string;
   updated_at: string;

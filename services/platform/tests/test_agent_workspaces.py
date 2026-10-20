@@ -4394,13 +4394,21 @@ def test_agent_workspace_activity_marks_background_unread_only_after_formal_fina
             completion_event_id="assistant-final",
             completion_event_kind="ASSISTANT_MESSAGE",
         )
-        conversations.conversation_activity(db, workspace.id)
+        activity = conversations.conversation_activity(db, workspace.id)
         assert binding.unread is True
         assert binding.unread_origin == "MANUAL"
         assert binding.terminal_reconciliation_pending is False
         assert binding.last_notified_completion_event_id == "assistant-final"
+        assert len(activity["conversations"]) == 1
+        assert activity["conversations"][0]["id"] == binding.id
+        assert activity["conversations"][0]["final_reply_preview"] == {
+            "event_id": "assistant-final",
+            "content": "正式最终回复",
+        }
 
         conversations.set_conversation_unread(db, workspace.id, binding.id, unread=False)
+        assert binding.final_reply_preview_event_id is None
+        assert binding.final_reply_preview_content is None
         conversations.conversation_activity(db, workspace.id)
         assert binding.unread is False
 

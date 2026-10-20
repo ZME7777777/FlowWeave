@@ -113,6 +113,8 @@ class AgentConversationBinding(Base):
     activity_was_running: Mapped[bool] = mapped_column(Boolean, default=False)
     terminal_reconciliation_pending: Mapped[bool] = mapped_column(Boolean, default=False)
     last_notified_completion_event_id: Mapped[str | None] = mapped_column(String(200))
+    final_reply_preview_event_id: Mapped[str | None] = mapped_column(String(200))
+    final_reply_preview_content: Mapped[str | None] = mapped_column(Text)
     pinned: Mapped[bool] = mapped_column(Boolean, default=False)
     unread: Mapped[bool] = mapped_column(Boolean, default=False)
     # The unread bit remains the server-owned fact. SYSTEM with unread=False

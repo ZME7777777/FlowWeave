@@ -112,6 +112,7 @@ git -C /Users/zhengmengen/WorkSpace/openhands/software-agent-sdk-total-tokens-1.
 - API 侧 hydration 缓存必须按用户、宿主、binding、Runtime Session/generation 和 OpenHands Conversation 隔离。不可变正式事件按 event id、分支快照按 leaf 缓存；继续执行只先失效 current/terminal 指针并递增 epoch，保留旧 branch/event。旧 epoch 的迟到请求不得恢复 current；运行中 hydration 只允许 single-flight，不得成为长期 current 缓存。
 - 首次进入、刷新后或可信租约过期的既有会话必须重新取得该 binding 的正式 hydration，并在结果返回前只显示“正在加载会话”；React Query、浏览器持久快照或不完整事件不得抢先渲染，也不得参与“正在思考”判断。当前标签页内刚完成 hydration 的终态会话可短期直接复用完整快照；运行中会话短暂切换回来也应保留快照、立即恢复 WebSocket，并在后台补读最新窗口与 readiness。快速切换时必须合并短时间内的选择，并将 hydration 限制为单飞、完成后只追赶最后选择的 binding；宿主卸载时用 AbortSignal 取消浏览器请求，不能让每次点击都并发占用交互读取池。
 - 后台会话仅在活动投影确认“刚从运行转为终态、普通 `MANUAL` 未读且有正式 assistant 最终回复”后，才可静默预热其正式 hydration。预热必须低优先级、单并发、可在宿主卸载时通过 `AbortSignal` 取消；其完整 events/readiness/context 可进入当前标签页可信终态快照，以便用户点击时复用。不得预热 `SYSTEM`/手工未读、运行中、暂停或异常会话，且前台 hydration 始终优先。
+- 普通后台完成未读可持久化该 completion event id 对应的正式 assistant `MESSAGE` 最小预览；点击时仅可按相同 event id 立即渲染该预览，且输入/控制必须保持 hydration 同步门控。正式 hydration 返回后必须以其事件树为准并移除预览；用户标记已读/未读、继续会话或出现非普通未读时不得保留或展示该预览。
 - 浏览器从后台恢复可见或窗口重新获得焦点时，活动会话必须立即从无 cursor 的最新 OpenHands 事件窗口对账，并刷新会话与 readiness 投影；不能仅等待受后台节流的定时轮询或 WebSocket 重连。`visibilitychange` 与 `focus` 可能连续触发，应合并同一轮恢复。
 - 运行中 REST 事件恢复必须由单一协调器串行调度：有 `next_cursor` 时优先增量追赶，定期或在 `message_complete`、断流、WebSocket 重连、前台恢复时读取无 cursor 最新窗口；不得让 React Query 定时器与自建定时器并行轮询同一会话。强制最新窗口信号发生在增量请求期间时必须排队补读，不能被 in-flight 去重吞掉。
 - 历史分页完成后必须记住已耗尽的入口 `history_cursor`，避免最新窗口刷新重新激活同一分页链；若服务端返回新的入口游标，仍必须允许读取新增历史。
