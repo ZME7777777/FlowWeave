@@ -1366,6 +1366,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     if (!drawer || !terminal || !screen) throw new Error('Expected terminal drawer, root, and screen');
     const hostBox = host.getBoundingClientRect();
     const drawerBox = drawer.getBoundingClientRect();
+    const appShellBox = drawer.closest('.agent-workbench-app-shell')?.getBoundingClientRect();
     const terminalBox = terminal.getBoundingClientRect();
     const screenBox = screen.getBoundingClientRect();
     const hostStyle = getComputedStyle(host);
@@ -1376,6 +1377,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       screenBottom: screenBox.bottom,
       hostRight: hostBox.right,
       drawerRight: drawerBox.right,
+      appShellRight: appShellBox?.right,
       screenRight: screenBox.right,
       hostHeight: hostBox.height,
       drawerHeight: drawerBox.height,
@@ -1387,6 +1389,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     };
   });
   expect(terminalLayout.hostBottom).toBeLessThanOrEqual(terminalLayout.drawerBottom + 1);
+  expect(terminalLayout.appShellRight).toBeDefined();
+  expect(terminalLayout.drawerRight).toBeCloseTo(terminalLayout.appShellRight!, 0);
   expect(terminalLayout.terminalPaddingLeft).toBe(0);
   expect(terminalLayout.terminalPaddingRight).toBe(0);
   expect(terminalLayout.screenOffsetLeft).toBeLessThanOrEqual(1);

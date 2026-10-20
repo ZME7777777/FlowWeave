@@ -1334,7 +1334,8 @@ test('Sidebar chat tabs stay isolated to their source conversation', async ({ pa
   await page.goto('/');
   await login(page);
   await page.goto('/agent/conversations/sidebar-chat-scope-a');
-  await page.locator('.agent-workspace-summary').getByRole('button', { name: '侧边聊天', exact: true }).click();
+  await page.getByLabel('更多工作区工具').click();
+  await page.getByRole('menu').getByRole('menuitem', { name: '侧边聊天', exact: true }).click();
   await expect(page.getByRole('region', { name: '侧边聊天' })).toBeVisible();
   await expect(page.getByText('向主会话追问', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '打开侧边聊天', exact: true })).toHaveCount(0);
@@ -1400,7 +1401,8 @@ test('Sidebar chat accepts selected and pasted attachments before its first mess
   await page.goto('/');
   await login(page);
   await page.goto(`/agent/conversations/${source.id}`);
-  await page.locator('.agent-workspace-summary').getByRole('button', { name: '侧边聊天', exact: true }).click();
+  await page.getByLabel('更多工作区工具').click();
+  await page.getByRole('menu').getByRole('menuitem', { name: '侧边聊天', exact: true }).click();
   const sidebarPane = page.getByRole('region', { name: '侧边聊天' });
   await expect(sidebarPane.getByLabel('添加附件')).toBeEnabled();
   await sidebarPane.getByLabel('上传侧边聊天附件').setInputFiles({ name: 'selected.txt', mimeType: 'text/plain', buffer: Buffer.from('file') });
@@ -1478,7 +1480,8 @@ test('Sidebar chat recognizes its optimistic message and reuses the send button 
   await page.goto('/');
   await login(page);
   await page.goto(`/agent/conversations/${source.id}`);
-  await page.locator('.agent-workspace-summary').getByRole('button', { name: '侧边聊天', exact: true }).click();
+  await page.getByLabel('更多工作区工具').click();
+  await page.getByRole('menu').getByRole('menuitem', { name: '侧边聊天', exact: true }).click();
   const sidebarPane = page.getByRole('region', { name: '侧边聊天' });
   await sidebarPane.getByRole('textbox', { name: '发送侧边聊天消息' }).fill('你好');
   await sidebarPane.getByRole('button', { name: '发送侧边聊天消息' }).click();
