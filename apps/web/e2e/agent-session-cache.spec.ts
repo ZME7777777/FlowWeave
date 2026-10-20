@@ -3680,7 +3680,7 @@ test('Conversation sidebar opens an activity session without changing its scroll
   const directoryGroup = page.locator('.agent-workspace-group').filter({ hasText: '改名后的工作区' });
   await directoryGroup.getByRole('button', { name: '收起工作区 改名后的工作区' }).click();
   await expect(directoryGroup.getByRole('button', { name: '展开工作区 改名后的工作区' })).toBeVisible();
-  const rootConversation = page.getByRole('button', { name: '未读根会话', exact: true });
+  const rootConversation = sidebarList.getByRole('button', { name: '未读根会话', exact: true });
   await rootConversation.click();
   await expect.poll(() => unreadWrites).toEqual([{ id: 'sidebar-root-unread', unread: false }]);
   const runningRowInWorkspaceList = page.locator('[data-conversation-binding-id="sidebar-directory-running"]');
