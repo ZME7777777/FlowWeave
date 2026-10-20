@@ -138,13 +138,26 @@ class AgentConversationSchedule(Base):
     __tablename__ = "agent_conversation_schedules"
     __table_args__ = (
         CheckConstraint("status IN ('ACTIVE', 'PAUSED')", name="ck_agent_schedule_status"),
+        CheckConstraint(
+            "workspace_mode IN ('AUTOMATION', 'EXISTING')", name="ck_agent_schedule_workspace_mode"
+        ),
+        CheckConstraint(
+            "conversation_mode IN ('NEW', 'CONTINUE')", name="ck_agent_schedule_conversation_mode"
+        ),
         CheckConstraint("length(cron_expression) > 0", name="ck_agent_schedule_cron_present"),
         CheckConstraint("row_version >= 1", name="ck_agent_schedule_row_version"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     workspace_id: Mapped[str] = mapped_column(String(36), index=True)
-    binding_id: Mapped[str] = mapped_column(String(36), index=True)
+    # Only CONTINUE mode owns a durable conversation. NEW mode creates one per occurrence.
+    binding_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    work_directory_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    workspace_mode: Mapped[str] = mapped_column(String(20), default="AUTOMATION")
+    conversation_mode: Mapped[str] = mapped_column(String(20), default="NEW")
+    model_provider_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    model_name: Mapped[str | None] = mapped_column(String(240))
+    reasoning_effort: Mapped[str | None] = mapped_column(String(30))
     name: Mapped[str] = mapped_column(String(220))
     prompt: Mapped[str] = mapped_column(Text)
     cron_expression: Mapped[str] = mapped_column(String(120))

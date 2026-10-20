@@ -792,8 +792,15 @@ export interface AgentConversation {
 export interface AgentConversationSchedule {
   id: string;
   workspace_id: string;
-  binding_id: string;
+  binding_id?: string | null;
   conversation_title?: string | null;
+  work_directory_id?: string | null;
+  work_directory_name?: string | null;
+  workspace_mode: 'AUTOMATION' | 'EXISTING';
+  conversation_mode: 'NEW' | 'CONTINUE';
+  model_provider_id?: string | null;
+  model_name?: string | null;
+  reasoning_effort?: string | null;
   name: string;
   prompt: string;
   cron_expression: string;

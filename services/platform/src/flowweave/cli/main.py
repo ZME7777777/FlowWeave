@@ -261,41 +261,29 @@ def add_request_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "-H", "--header", action="append", default=[], help="HTTP 请求头（Name: value）"
     )
-    parser.add_argument(
-        "-q", "--query", action="append", default=[], help="查询参数（name=value）"
-    )
+    parser.add_argument("-q", "--query", action="append", default=[], help="查询参数（name=value）")
     parser.add_argument("--timeout", type=float, default=30.0, help="请求超时秒数")
-    parser.add_argument(
-        "--dry-run", action="store_true", help="只打印请求，不发送"
-    )
+    parser.add_argument("--dry-run", action="store_true", help="只打印请求，不发送")
 
 
 def add_transport_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("-H", "--header", action="append", default=[], help="WebSocket HTTP 请求头")
-    parser.add_argument(
-        "-q", "--query", action="append", default=[], help="查询参数（name=value）"
-    )
+    parser.add_argument("-q", "--query", action="append", default=[], help="查询参数（name=value）")
     parser.add_argument("--timeout", type=float, default=30.0, help="连接超时秒数")
-    parser.add_argument(
-        "--dry-run", action="store_true", help="只打印连接信息，不建立连接"
-    )
+    parser.add_argument("--dry-run", action="store_true", help="只打印连接信息，不建立连接")
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="flowweave",
-        description=(
-            "FlowWeave 平台 API 命令行工具。当前平台无需登录。"
-        ),
+        description=("FlowWeave 平台 API 命令行工具。当前平台无需登录。"),
     )
     subcommands = parser.add_subparsers(dest="command", required=True)
 
     config = subcommands.add_parser("config", help="管理本地 CLI 配置")
     config_commands = config.add_subparsers(dest="config_command", required=True)
     init = config_commands.add_parser("init", help="设置 FlowWeave 基础 URL")
-    init.add_argument(
-        "--base-url", required=True, help="平台根地址，例如 https://host/flowweave"
-    )
+    init.add_argument("--base-url", required=True, help="平台根地址，例如 https://host/flowweave")
     init.add_argument("--force", action="store_true", help="覆盖已有配置")
     config_commands.add_parser("show", help="显示当前 CLI 配置")
 
@@ -315,9 +303,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_request_arguments(api)
 
-    upload = subcommands.add_parser(
-        "upload", help="向任意 FlowWeave REST 接口发送 multipart 请求"
-    )
+    upload = subcommands.add_parser("upload", help="向任意 FlowWeave REST 接口发送 multipart 请求")
     upload.add_argument("method", choices=("post", "put", "patch"))
     upload.add_argument("path", help="API 路径，例如 /agent-workspaces/<id>/attachments")
     upload.add_argument(
@@ -329,13 +315,9 @@ def build_parser() -> argparse.ArgumentParser:
     upload.add_argument(
         "-H", "--header", action="append", default=[], help="HTTP 请求头（Name: value）"
     )
-    upload.add_argument(
-        "-q", "--query", action="append", default=[], help="查询参数（name=value）"
-    )
+    upload.add_argument("-q", "--query", action="append", default=[], help="查询参数（name=value）")
     upload.add_argument("--timeout", type=float, default=30.0, help="请求超时秒数")
-    upload.add_argument(
-        "--dry-run", action="store_true", help="只打印请求，不发送"
-    )
+    upload.add_argument("--dry-run", action="store_true", help="只打印请求，不发送")
 
     websocket = subcommands.add_parser("ws", help="连接 FlowWeave WebSocket 接口")
     websocket.add_argument("path", help="API 路径，例如 /agent-workspaces/<id>/runtime/stream")
@@ -350,9 +332,34 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_transport_arguments(websocket)
 
-    resource = subcommands.add_parser(
-        "resource", help="常用平台资源的 CRUD 快捷路径"
-    )
+    agent = subcommands.add_parser("agent", help="管理顶层 Agent Workspace")
+    agent_commands = agent.add_subparsers(dest="agent_command", required=True)
+    for command, help_text in (
+        ("workspace", "读取 Agent Workspace"),
+        ("work-directories", "列出 Agent 工作区目录"),
+        ("schedules", "列出 Agent 自动化模板"),
+    ):
+        item = agent_commands.add_parser(command, help=help_text)
+        item.add_argument("workspace_id")
+        add_request_arguments(item)
+    for command, help_text, schedule_id_required in (
+        ("schedule-create", "创建 Agent 自动化模板", False),
+        ("schedule-update", "更新 Agent 自动化模板", True),
+        ("schedule-occurrences", "读取模板运行记录", True),
+        ("schedule-trigger", "立即触发模板", True),
+        ("schedule-delete", "删除模板", True),
+        ("schedule-pause", "暂停模板", True),
+        ("schedule-resume", "恢复模板", True),
+    ):
+        item = agent_commands.add_parser(command, help=help_text)
+        item.add_argument("workspace_id")
+        if schedule_id_required:
+            item.add_argument("schedule_id")
+        if command in {"schedule-pause", "schedule-resume"}:
+            item.add_argument("--expected-row-version", type=int, required=True)
+        add_request_arguments(item)
+
+    resource = subcommands.add_parser("resource", help="常用平台资源的 CRUD 快捷路径")
     resource.add_argument("kind", choices=sorted(RESOURCE_PATHS))
     resource.add_argument("action", choices=("list", "get", "create", "update", "delete"))
     resource.add_argument("identifier", nargs="?", help="get/update/delete 所需的资源标识")
@@ -496,6 +503,60 @@ def run(args: argparse.Namespace) -> int:
         )
         if args.dry_run:
             payload["payload"] = summary
+    elif args.command == "agent":
+        workspace_path = f"/agent-workspaces/{args.workspace_id}"
+        schedule_id = getattr(args, "schedule_id", "")
+        routes = {
+            "workspace": ("GET", workspace_path),
+            "work-directories": ("GET", f"{workspace_path}/work-directories"),
+            "schedules": ("GET", f"{workspace_path}/conversation-schedules"),
+            "schedule-create": ("POST", f"{workspace_path}/conversation-schedules"),
+            "schedule-update": (
+                "PUT",
+                f"{workspace_path}/conversation-schedules/{schedule_id}",
+            ),
+            "schedule-occurrences": (
+                "GET",
+                f"{workspace_path}/conversation-schedules/{schedule_id}/occurrences",
+            ),
+            "schedule-trigger": (
+                "POST",
+                f"{workspace_path}/conversation-schedules/{schedule_id}/trigger",
+            ),
+            "schedule-delete": (
+                "DELETE",
+                f"{workspace_path}/conversation-schedules/{schedule_id}",
+            ),
+            "schedule-pause": (
+                "PUT",
+                f"{workspace_path}/conversation-schedules/{schedule_id}/state",
+            ),
+            "schedule-resume": (
+                "PUT",
+                f"{workspace_path}/conversation-schedules/{schedule_id}/state",
+            ),
+        }
+        method, path = routes[args.agent_command]
+        if args.agent_command in {"schedule-pause", "schedule-resume"}:
+            payload = {
+                "expected_row_version": args.expected_row_version,
+                "status": "PAUSED" if args.agent_command == "schedule-pause" else "ACTIVE",
+            }
+        elif method in {"POST", "PUT"}:
+            payload = data_from_args(args)
+        else:
+            payload = None
+        payload = request_api(
+            config,
+            method,
+            path,
+            payload=payload,
+            headers=headers_from_args(args.header),
+            raw=False,
+            query=query_from_args(args.query),
+            timeout=args.timeout,
+            dry_run=args.dry_run,
+        )
     elif args.command == "ws":
         return run_websocket(config, args)
     else:

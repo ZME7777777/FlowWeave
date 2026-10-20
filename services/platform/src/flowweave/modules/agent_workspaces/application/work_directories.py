@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import stat
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -448,6 +449,84 @@ def create_work_directory(
     return _dict(db, item)
 
 
+def create_automation_work_directory(
+    db: Session, workspace_id: str, automation_id: str, display_name: str
+) -> dict[str, Any]:
+    root = _project_root(db, workspace_id)
+    relative_path = f".flowweave/automations/{automation_id}"
+    target = root / relative_path
+    try:
+        target.mkdir(mode=0o700, parents=True, exist_ok=False)
+    except FileExistsError as exc:
+        raise DomainError(
+            "AGENT_AUTOMATION_WORKSPACE_CONFLICT", "定时任务工作区已存在", 409
+        ) from exc
+    except OSError as exc:
+        raise DomainError(
+            "AGENT_AUTOMATION_WORKSPACE_UNAVAILABLE", "无法创建定时任务工作区", 503
+        ) from exc
+    try:
+        return create_work_directory(db, workspace_id, display_name, (relative_path,))
+    except Exception:
+        try:
+            target.rmdir()
+        except OSError:
+            pass
+        raise
+
+
+def write_automation_files(
+    db: Session,
+    workspace_id: str,
+    work_directory_id: str,
+    *,
+    automation_id: str,
+    name: str,
+    prompt: str,
+    cron_expression: str,
+    workspace_mode: str,
+    conversation_mode: str,
+    model_provider_id: str,
+    model_name: str,
+    reasoning_effort: str | None,
+) -> None:
+    item = _directory(db, workspace_id, work_directory_id)
+    version = _version(db, item)
+    root = _project_root(db, workspace_id) / version.working_path
+    automation_root = (
+        root
+        if workspace_mode == "AUTOMATION"
+        else root / ".flowweave" / "automations" / automation_id
+    )
+    try:
+        automation_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        config = "\n".join(
+            [
+                "version = 1",
+                f'id = "{automation_id}"',
+                f"name = {json.dumps(name, ensure_ascii=False)}",
+                f"cron_expression = {json.dumps(cron_expression)}",
+                f"workspace_mode = {json.dumps(workspace_mode)}",
+                f"conversation_mode = {json.dumps(conversation_mode)}",
+                f"model_provider_id = {json.dumps(model_provider_id)}",
+                f"model_name = {json.dumps(model_name)}",
+                f"reasoning_effort = {json.dumps(reasoning_effort or '')}",
+                "",
+                "[prompt]",
+                f"business = {json.dumps(prompt, ensure_ascii=False)}",
+                "",
+            ]
+        )
+        (automation_root / "automation.toml").write_text(config, encoding="utf-8")
+        memory = automation_root / "memory.md"
+        if not memory.exists():
+            memory.write_text(f"# {name} 自动化记忆\n\n", encoding="utf-8")
+    except OSError as exc:
+        raise DomainError(
+            "AGENT_AUTOMATION_METADATA_UNAVAILABLE", "无法写入定时任务配置文件", 503
+        ) from exc
+
+
 def update_work_directory(
     db: Session,
     workspace_id: str,
@@ -511,9 +590,7 @@ def delete_work_directory(db: Session, workspace_id: str, work_directory_id: str
         # Conversation must be stopped first, otherwise a later rejection
         # could leave the work-directory only partially deleted.
         for binding_id in binding_ids:
-            conversations.assert_conversation_stopped(
-                db, workspace_id, binding_id, lock=False
-            )
+            conversations.assert_conversation_stopped(db, workspace_id, binding_id, lock=False)
         for binding_id in binding_ids:
             conversations.delete_conversation(
                 db,

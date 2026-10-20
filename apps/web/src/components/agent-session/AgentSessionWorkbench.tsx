@@ -3,7 +3,7 @@ import { Terminal as XTerm } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import { type InfiniteData, useQueries, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import hljs from 'highlight.js/lib/common';
-import { ArrowDown, ArrowLeft, ArrowUp, Bell, Bot, Boxes, CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, CircleDot, Copy, CornerDownRight, Download, Ellipsis, FileCode2, FileText, Folder, FolderOpen, FolderPlus, GitBranch, GripVertical, Home, ImageIcon, Layers3, Link2, ListRestart, LoaderCircle, Maximize2, Minimize2, MessageSquareText, MonitorCog, PanelRightOpen, Pencil, Pin, PinOff, Play, Plus, Quote, RefreshCw, Search, Send, ShieldAlert, Square, Trash2, X } from 'lucide-react';
+import { ArrowDown, ArrowLeft, ArrowUp, Bell, Bot, Boxes, CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, CircleDot, Copy, CornerDownRight, Download, Ellipsis, FileCode2, FileText, Folder, FolderOpen, FolderPlus, GitBranch, GripVertical, Home, ImageIcon, Layers3, Link2, ListRestart, LoaderCircle, Maximize2, Minimize2, MessageSquareText, MonitorCog, PanelRightOpen, Pencil, Pin, PinOff, Play, Plus, Quote, RefreshCw, Search, Send, Settings, ShieldAlert, Square, Trash2, X } from 'lucide-react';
 import { createContext, isValidElement, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type WheelEvent as ReactWheelEvent } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
@@ -31,7 +31,7 @@ import { FileTypeIcon } from '../FileTypeIcon';
 import { WebsiteIcon } from '../WebsiteIcon';
 import { subagentAvatarSlots, type SubagentAvatarSlot } from '../../utils/subagentAvatar';
 import { workspaceFileChanges, workspaceRelativePath, type WorkspaceFileChange } from './fileChanges';
-import type { AgentAttachment, AgentConversation, AgentConversationActivity, AgentConversationAnnotation, AgentConversationContext, AgentConversationCredentialSyncEntry, AgentConversationInputReadiness, AgentConversationPage, AgentConversationReference, AgentConversationSearch, AgentPendingConfirmationAction, AgentSessionCapability, AgentSessionMcpReadiness, AgentSessionWorkDirectory, AgentSessionWorkDirectoryList, AgentSessionWorkspaceDetails, AgentWorkspaceReference, CapabilityAsset, CapabilityCollection, ModelProvider, OpenHandsConversationEvent, OpenHandsConversationEventBatch, RuntimeTaskControlSnapshot, RuntimeTaskUsageSnapshot, WorkspaceGitChangeKind, WorkspaceGitChangedFile, WorkspaceGitChanges, WorkspaceGitCommitDetails, WorkspaceGitFileDiff } from '../../types';
+import type { AgentAttachment, AgentConversation, AgentConversationActivity, AgentConversationAnnotation, AgentConversationContext, AgentConversationCredentialSyncEntry, AgentConversationHydration, AgentConversationInputReadiness, AgentConversationPage, AgentConversationReference, AgentConversationSearch, AgentPendingConfirmationAction, AgentSessionCapability, AgentSessionMcpReadiness, AgentSessionWorkDirectory, AgentSessionWorkDirectoryList, AgentSessionWorkspaceDetails, AgentWorkspaceReference, CapabilityAsset, CapabilityCollection, ModelProvider, OpenHandsConversationEvent, OpenHandsConversationEventBatch, RuntimeTaskControlSnapshot, RuntimeTaskUsageSnapshot, WorkspaceGitChangeKind, WorkspaceGitChangedFile, WorkspaceGitChanges, WorkspaceGitCommitDetails, WorkspaceGitFileDiff } from '../../types';
 import '../../pages/agent-workbench.css';
 import '../../pages/agent-workbench-layout.css';
 
@@ -45,6 +45,8 @@ const SUBMISSION_EVENT_CONFIRMATION_RETRY_INTERVAL_MS = 250;
 const CONVERSATION_HYDRATION_SELECTION_DELAY_MS = 120;
 const HYDRATION_UI_DEADLINE_MS = 12_000;
 const MAX_UNAVAILABLE_HYDRATION_RETRIES = 2;
+const BACKGROUND_HYDRATION_PREFETCH_DELAY_MS = 250;
+const BACKGROUND_HYDRATION_PREFETCH_LIMIT = 1;
 const EMPTY_TASK_CONTROL: RuntimeTaskControlSnapshot[] = [];
 const TERMINAL_CONVERSATION_CACHE_TTL_MS = 5 * 60 * 1000;
 const ACTIVE_CONVERSATION_CACHE_TTL_MS = 30_000;
@@ -615,6 +617,7 @@ interface WorkspaceConversationGroupProps {
   onCollapsedChange?: (collapsed: boolean) => void;
   canCreateConversation?: boolean;
   onCreateConversation?: () => void;
+  onEdit?: () => void;
   onDelete?: () => void;
 }
 
@@ -659,11 +662,14 @@ function useAgentSessionHost(): AgentSessionHost {
   return useContext(AgentSessionHostContext);
 }
 
-function WorkspaceConversationGroup({ groupId, label, children, conversationCount, hasMore = false, loadingMore = false, onLoadMore, draggable = false, dragging = false, dropPosition, onPointerDragStart, collapsed = false, onCollapsedChange, canCreateConversation = false, onCreateConversation, onDelete }: WorkspaceConversationGroupProps) {
+function WorkspaceConversationGroup({ groupId, label, children, conversationCount, hasMore = false, loadingMore = false, onLoadMore, draggable = false, dragging = false, dropPosition, onPointerDragStart, collapsed = false, onCollapsedChange, canCreateConversation = false, onCreateConversation, onEdit, onDelete }: WorkspaceConversationGroupProps) {
   const [visibleCount, setVisibleCount] = useState(3);
+  const [actionsOpen, setActionsOpen] = useState(false);
+  const actionsRef = useRef<HTMLDivElement>(null);
   const initializedItemCount = useRef(false);
   const previousConversationCount = useRef(conversationCount);
   const contentId = `agent-workspace-group-${groupId}`;
+  useEscapeClose(() => setActionsOpen(false), actionsOpen);
   useEffect(() => {
     if (!initializedItemCount.current) {
       if (conversationCount > 0) initializedItemCount.current = true;
@@ -677,17 +683,37 @@ function WorkspaceConversationGroup({ groupId, label, children, conversationCoun
     // same when its page arrives.
     if (added > 0 && !collapsed) setVisibleCount(current => current + added);
   }, [collapsed, conversationCount]);
+  useEffect(() => {
+    if (!actionsOpen) return;
+    const close = (event: PointerEvent) => {
+      if (event.target instanceof Node && !actionsRef.current?.contains(event.target)) setActionsOpen(false);
+    };
+    window.addEventListener('pointerdown', close);
+    return () => window.removeEventListener('pointerdown', close);
+  }, [actionsOpen]);
 
-  return <section data-work-directory-id={draggable ? groupId : undefined} className={`agent-workspace-group${collapsed ? ' collapsed' : ''}${dragging ? ' dragging' : ''}${dropPosition ? ` drop-${dropPosition}` : ''}`}>
+  const toggleCollapsed = () => {
+    if (!collapsed) setVisibleCount(3);
+    onCollapsedChange?.(!collapsed);
+  };
+  const toggleLabel = `${collapsed ? '展开' : '收起'}工作区 ${label}`;
+  const hasActions = Boolean(onCreateConversation || onEdit || onDelete);
+  const hasOverflowActions = Boolean(onEdit || onDelete);
+  return <section data-workspace-group-id={groupId} data-work-directory-id={draggable ? groupId : undefined} className={`agent-workspace-group${collapsed ? ' collapsed' : ''}${dragging ? ' dragging' : ''}${dropPosition ? ` drop-${dropPosition}` : ''}`}>
     <header onPointerDown={draggable ? onPointerDragStart : undefined}>
-      <button type="button" className="agent-workspace-group-toggle" aria-label={`${collapsed ? '展开' : '收起'}工作区 ${label}`} aria-expanded={!collapsed} aria-controls={contentId} onClick={() => {
-        if (!collapsed) setVisibleCount(3);
-        onCollapsedChange?.(!collapsed);
-      }}>
-        <Folder size={14}/><span>{label}</span><ChevronDown size={13}/>
+      <button type="button" className="agent-workspace-group-toggle" aria-label={toggleLabel} aria-expanded={!collapsed} aria-controls={contentId} onClick={toggleCollapsed}>
+        <Folder size={14}/><span>{label}</span>
       </button>
-      <div className="agent-workspace-group-actions">{onCreateConversation && <button type="button" aria-label={`在${label}中新建会话`} disabled={!canCreateConversation} onClick={onCreateConversation}><Plus size={13}/></button>}
-      {onDelete && <button type="button" className="danger" aria-label={`删除工作区 ${label}`} onClick={onDelete}><Trash2 size={13}/></button>}</div>
+      {hasActions && <div ref={actionsRef} className="agent-workspace-group-actions" onPointerDown={event => event.stopPropagation()}>
+        {onCreateConversation && <button type="button" className="agent-workspace-group-create" aria-label={`在${label}中新建会话`} title="新建会话" disabled={!canCreateConversation} onClick={onCreateConversation}><Pencil size={15}/></button>}
+        {hasOverflowActions && <div className="agent-workspace-group-overflow">
+          <button type="button" className="agent-workspace-group-actions-trigger" aria-label={`工作区操作 ${label}`} title="工作区操作" aria-expanded={actionsOpen} onClick={() => setActionsOpen(current => !current)}><Ellipsis size={15}/></button>
+          {actionsOpen && <div role="menu" aria-label={`工作区操作菜单：${label}`} onPointerDown={event => event.stopPropagation()}>
+            {onEdit && <button type="button" role="menuitem" onClick={() => { onEdit(); setActionsOpen(false); }}><Settings size={13}/>编辑</button>}
+            {onDelete && <button type="button" className="danger" role="menuitem" onClick={() => { onDelete(); setActionsOpen(false); }}><Trash2 size={13}/>删除</button>}
+          </div>}
+        </div>}
+      </div>}
     </header>
     <div id={contentId} className="agent-workspace-group-content" hidden={collapsed}>
       {children(visibleCount)}
@@ -2828,6 +2854,30 @@ function WorkDirectoryCreator({ workspaceId, onClose, onCreated }: {
   </div>;
 }
 
+function WorkDirectoryEditor({ directory, workspaceId, onClose, onUpdated }: {
+  directory: AgentSessionWorkDirectory;
+  workspaceId: string;
+  onClose: () => void;
+  onUpdated: (directory: AgentSessionWorkDirectory) => void;
+}) {
+  const { api } = useAgentSessionGateway();
+  const [displayName, setDisplayName] = useState(directory.display_name);
+  const update = useMutation({
+    mutationFn: () => api.updateWorkDirectory!(workspaceId, directory.id, displayName.trim()),
+    onSuccess: updated => { onUpdated(updated); onClose(); },
+  });
+  useEscapeClose(() => { if (!update.isPending) onClose(); });
+  const canSubmit = Boolean(displayName.trim() && displayName.trim() !== directory.display_name && !update.isPending);
+  return <div className="agent-work-directory-backdrop" onPointerDown={event => { if (event.target === event.currentTarget && !update.isPending) onClose(); }}>
+    <section role="dialog" aria-modal="true" aria-labelledby="agent-work-directory-edit-title" className="agent-work-directory-dialog agent-work-directory-edit-dialog">
+      <header><div><span className="eyebrow">AGENT WORKSPACE</span><h2 id="agent-work-directory-edit-title">编辑工作区</h2></div><button type="button" aria-label="关闭编辑工作区" disabled={update.isPending} onClick={onClose}><X size={16}/></button></header>
+      <label className="agent-work-directory-name"><span>工作区名称</span><input autoFocus value={displayName} maxLength={160} onChange={event => setDisplayName(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && canSubmit) update.mutate(); }}/></label>
+      {update.error && <p className="agent-work-directory-error">{update.error instanceof Error ? update.error.message : '工作区更新失败，请稍后重试。'}</p>}
+      <footer><button type="button" className="secondary" disabled={update.isPending} onClick={onClose}>取消</button><button type="button" className="primary" disabled={!canSubmit} onClick={() => update.mutate()}>{update.isPending ? '正在保存…' : '保存'}</button></footer>
+    </section>
+  </div>;
+}
+
 function selectedGitRepository(repositories: AgentSessionWorkspaceDetails['repositories'], selectedPath?: string) {
   return repositories
     // A repository may be exactly the selected work-directory root.  It is a
@@ -3410,7 +3460,7 @@ function clampConversationRailWidth(value: number): number {
 
 
 type ConversationFilePreviewRequest =
-  | { key: string; kind: 'workspace'; path: string; filename: string; mimeType?: string; imageDataUrl?: string | null; attachment?: AgentAttachment; previewBindingId?: string }
+  | { key: string; kind: 'workspace'; path: string; filename: string; mimeType?: string; imageDataUrl?: string | null; attachment?: AgentAttachment; previewBindingId?: string; draftAttachmentOwnerId?: string }
   | { key: string; kind: 'directory'; path: string; filename: string }
   | { key: string; kind: 'candidate'; filename: string; url: string; fieldKey: string; relativePath: string }
   | { key: string; kind: 'image'; filename: string; url: string };
@@ -3438,10 +3488,15 @@ function ConversationFilePreviewDialog({ request, workspaceId, bindingId, workDi
 
   const workspaceRequest = request.kind === 'workspace' ? request : undefined;
   const previewBindingId = workspaceRequest?.previewBindingId ?? bindingId;
+  const draftAttachmentOwnerId = workspaceRequest?.draftAttachmentOwnerId;
+  const fileOptions = useMemo(
+    () => ({ bindingId: previewBindingId, workDirectoryId, draftAttachmentOwnerId }),
+    [previewBindingId, workDirectoryId, draftAttachmentOwnerId],
+  );
   const textPreviewable = Boolean(workspaceRequest && isTextPreviewable(workspaceRequest.path, workspaceRequest.mimeType));
   const previewQuery = useQuery({
-    queryKey: sessionQueryKey(host, 'conversation-file-preview', workspaceId, previewBindingId, workspaceRequest?.path),
-    queryFn: ({ signal }) => api.filePreview(workspaceId, workspaceRequest!.path, { bindingId: previewBindingId, workDirectoryId }, undefined, signal),
+    queryKey: sessionQueryKey(host, 'conversation-file-preview', workspaceId, previewBindingId, draftAttachmentOwnerId, workspaceRequest?.path),
+    queryFn: ({ signal }) => api.filePreview(workspaceId, workspaceRequest!.path, fileOptions, undefined, signal),
     enabled: textPreviewable,
     retry: false,
   });
@@ -3456,7 +3511,7 @@ function ConversationFilePreviewDialog({ request, workspaceId, bindingId, workDi
     if (!workspaceRequest || previewState?.nextOffset === undefined || previewMoreLoading) return;
     setPreviewMoreLoading(true);
     try {
-      const next = await api.filePreview(workspaceId, workspaceRequest.path, { bindingId: previewBindingId, workDirectoryId }, previewState.nextOffset);
+      const next = await api.filePreview(workspaceId, workspaceRequest.path, fileOptions, previewState.nextOffset);
       setPreviewState(current => current?.path === workspaceRequest.path ? {
         path: workspaceRequest.path,
         content: current.content + next.content,
@@ -3466,13 +3521,13 @@ function ConversationFilePreviewDialog({ request, workspaceId, bindingId, workDi
     } finally {
       setPreviewMoreLoading(false);
     }
-  }, [api, previewBindingId, previewMoreLoading, previewState, workDirectoryId, workspaceId, workspaceRequest]);
+  }, [api, fileOptions, previewMoreLoading, previewState, workspaceId, workspaceRequest]);
 
   const path = request.kind === 'workspace' || request.kind === 'directory' ? request.path : request.kind === 'candidate' ? request.relativePath : request.url;
   const sourceUrl = request.kind === 'workspace'
-    ? request.imageDataUrl || fileUrl(workspaceId, request.path, { bindingId: previewBindingId, workDirectoryId, download: false })
+    ? request.imageDataUrl || fileUrl(workspaceId, request.path, { ...fileOptions, download: false })
     : request.kind === 'directory' ? '' : request.url;
-  const downloadUrl = workspaceRequest ? fileUrl(workspaceId, workspaceRequest.path, { bindingId: previewBindingId, workDirectoryId, download: true }) : undefined;
+  const downloadUrl = workspaceRequest ? fileUrl(workspaceId, workspaceRequest.path, { ...fileOptions, download: true }) : undefined;
   const canPreviewImage = Boolean(workspaceRequest && (workspaceRequest.mimeType?.startsWith('image/') || /\.(?:avif|gif|jpe?g|png|svg|webp)$/i.test(workspaceRequest.path)));
   const canPreviewPdf = Boolean(workspaceRequest && (workspaceRequest.mimeType === 'application/pdf' || /\.pdf$/i.test(workspaceRequest.path)));
   const lightweightPreview = Boolean(previewState && (previewState.totalBytes > 128 * 1024 || previewState.content.length > 128 * 1024));
@@ -3552,6 +3607,8 @@ function WorkspaceDrawer({
   const [sshAccessOpen, setSshAccessOpen] = useState(false);
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
   const toolMenuRef = useRef<HTMLDivElement>(null);
+  const summaryToolMenuRef = useRef<HTMLDivElement>(null);
+  const summaryOpenTimer = useRef<number | undefined>(undefined);
   useEscapeClose(() => {
     if (pendingTerminalClose && !closingTerminalId) setPendingTerminalClose(undefined);
   }, Boolean(pendingTerminalClose) && !closingTerminalId);
@@ -3624,7 +3681,7 @@ function WorkspaceDrawer({
   useEffect(() => {
     if (!toolMenuOpen) return;
     const closeWhenPointerLeavesMenu = (event: PointerEvent) => {
-      if (event.target instanceof Node && !toolMenuRef.current?.contains(event.target)) setToolMenuOpen(false);
+      if (event.target instanceof Node && !toolMenuRef.current?.contains(event.target) && !summaryToolMenuRef.current?.contains(event.target)) setToolMenuOpen(false);
     };
     document.addEventListener('pointerdown', closeWhenPointerLeavesMenu, true);
     return () => document.removeEventListener('pointerdown', closeWhenPointerLeavesMenu, true);
@@ -4325,15 +4382,14 @@ function WorkspaceDrawer({
   return <><aside className={`agent-workspace-drawer ${open ? 'tools-open' : 'summary-open'}${fullScreen ? ' fullscreen' : ''}`} style={{ width: fullScreen ? undefined : open ? panelWidth : summaryWidth }} role={fullScreen ? 'dialog' : undefined} aria-modal={fullScreen || undefined} aria-label={fullScreen ? '全屏工作区工具' : undefined}>
     <div className="agent-workspace-resizer" role="separator" aria-label="调整工作区工具宽度" aria-orientation="vertical" onPointerDown={startResize}/>
     <section className={`agent-workspace-summary ${open ? 'panel-hidden' : ''}`}>
-      <header><div><span className="eyebrow">WORKSPACE</span><b>环境信息</b></div><button type="button" aria-label="打开工作区工具" onClick={onOpen}><PanelRightOpen size={16}/></button></header>
-      <div className="agent-workspace-quick-actions"><button type="button" className="agent-workspace-quick-files" onClick={() => openFiles()}><FileCode2 size={14}/>文件</button><button type="button" className="agent-workspace-quick-terminal" disabled={!runtimeAvailable} onClick={openTerminal}><Plus size={14}/>新终端</button>{onOpenSidebarQuestion && <button type="button" className="agent-workspace-quick-sidebar-chat" onClick={onOpenSidebarQuestion}><PanelRightOpen size={14}/>侧边聊天</button>}</div>
+      <header onClick={event => { if (event.target !== event.currentTarget) return; summaryOpenTimer.current = window.setTimeout(onOpen, 200); }} onDoubleClick={event => { if (event.target !== event.currentTarget) return; if (summaryOpenTimer.current !== undefined) window.clearTimeout(summaryOpenTimer.current); summaryOpenTimer.current = undefined; setFullScreen(true); onOpen(); }}><div><span className="eyebrow">WORKSPACE</span><b>环境信息</b></div><div className="agent-workspace-summary-actions"><div ref={summaryToolMenuRef} className="agent-workspace-tool-menu"><button type="button" className="agent-workspace-tool-menu-trigger" aria-label="更多工作区工具" aria-expanded={toolMenuOpen} aria-haspopup="menu" onClick={() => setToolMenuOpen(current => !current)}><Ellipsis size={16}/></button>{toolMenuOpen && !open && <div role="menu"><button type="button" role="menuitem" onClick={() => { openFiles(); setToolMenuOpen(false); }}><FileCode2 size={13}/>文件</button>{onOpenSidebarQuestion && <button type="button" role="menuitem" onClick={() => { onOpenSidebarQuestion(); setToolMenuOpen(false); }}><PanelRightOpen size={13}/>侧边聊天</button>}<button type="button" role="menuitem" onClick={() => { openGitHistory(); setToolMenuOpen(false); }}><GitBranch size={13}/>Git 历史</button>{reviewChanges.length > 0 && <button type="button" role="menuitem" onClick={() => { openChanges(); setToolMenuOpen(false); }}><FileText size={13}/>审查改动</button>}{sources.length > 0 && <button type="button" role="menuitem" onClick={() => { openSources(); setToolMenuOpen(false); }}><Link2 size={13}/>来源</button>}{runtimeTasks.length > 0 && <button type="button" role="menuitem" onClick={() => { openRuntimeTasks(); setToolMenuOpen(false); }}><Bot size={13}/>子智能体</button>}<button type="button" role="menuitem" disabled={!runtimeAvailable} onClick={() => { openTerminal(); setToolMenuOpen(false); }}><Plus size={13}/>终端</button></div>}</div></div></header>
       {loadingOrError || summary}
     </section>
     <section className={`agent-workspace-tool-shell ${open ? '' : 'panel-hidden'}`}>
       <header><nav className="agent-workspace-tabs" aria-label="工作区工具页签">{scopeState.tabs.map(tab => <div key={tab.id} className={scopeState.activeTabId === tab.id ? 'active' : ''}><button type="button" className="agent-workspace-tab-select" onClick={() => updateScope(current => ({ ...current, activeTabId: tab.id }))}><span>{tab.kind === 'files' ? '文件' : tab.kind === 'changes' ? `审查${reviewChanges.length ? ` · ${reviewChanges.length}` : ''}` : tab.kind === 'sources' ? `来源${sources.length ? ` · ${sources.length}` : ''}` : tab.kind === 'git' ? `提交 · ${tab.details.commit.short_id}` : tab.kind === 'git-working' ? `${tab.changeKind === 'STAGED' ? '暂存' : '本地'} · ${tab.file.path.split('/').at(-1)}` : tab.kind === 'subagents' ? '子智能体' : tab.kind === 'sidebar-chat' ? '侧边聊天' : details?.runtime.container_id || (details?.runtime.write_available ? '终端' : '连接中…')}</span></button><button type="button" className="agent-workspace-tab-close" aria-label={`关闭${tab.kind === 'files' ? '文件' : tab.kind === 'changes' ? '改动审查' : tab.kind === 'sources' ? '来源' : tab.kind === 'git' ? '提交审查' : tab.kind === 'git-working' ? '本地改动 Diff' : tab.kind === 'subagents' ? '子智能体' : tab.kind === 'sidebar-chat' ? '侧边聊天' : `终端 ${details?.runtime.container_id || ''}`}页签`} disabled={tab.kind === 'terminal' && closingTerminalId === tab.terminalInstanceId} onClick={() => { if (tab.kind !== 'terminal' || closingTerminalId !== tab.terminalInstanceId) requestCloseTab(tab); }}><X size={12}/></button></div>)}</nav><div className="agent-workspace-tool-actions"><div ref={toolMenuRef} className="agent-workspace-tool-menu"><button type="button" className="agent-workspace-tool-menu-trigger" aria-label="新增工作区工具" aria-expanded={toolMenuOpen} aria-haspopup="menu" onClick={() => setToolMenuOpen(current => !current)}><Plus size={15}/></button>{toolMenuOpen && <div role="menu"><button type="button" role="menuitem" onClick={() => { openFiles(); setToolMenuOpen(false); }}><FileCode2 size={13}/>文件</button>{onOpenSidebarQuestion && <button type="button" role="menuitem" onClick={() => { onOpenSidebarQuestion(); setToolMenuOpen(false); }}><PanelRightOpen size={13}/>侧边聊天</button>}<button type="button" role="menuitem" onClick={() => { openGitHistory(); setToolMenuOpen(false); }}><GitBranch size={13}/>Git 历史</button>{reviewChanges.length > 0 && <button type="button" role="menuitem" onClick={() => { openChanges(); setToolMenuOpen(false); }}><FileText size={13}/>审查改动</button>}{sources.length > 0 && <button type="button" role="menuitem" onClick={() => { openSources(); setToolMenuOpen(false); }}><Link2 size={13}/>来源</button>}{runtimeTasks.length > 0 && <button type="button" role="menuitem" onClick={() => { openRuntimeTasks(); setToolMenuOpen(false); }}><Bot size={13}/>子智能体</button>}<button type="button" role="menuitem" disabled={!runtimeAvailable} onClick={() => { openTerminal(); setToolMenuOpen(false); }}><Plus size={13}/>终端</button></div>}</div><button type="button" aria-label={fullScreen ? '退出全屏' : '全屏查看工作区工具'} title={fullScreen ? '退出全屏（Esc）' : '全屏查看'} onClick={() => setFullScreen(current => !current)}>{fullScreen ? <Minimize2 size={16}/> : <Maximize2 size={16}/>}</button><button type="button" aria-label="关闭工作区工具" onClick={() => void closeWorkspaceTools()}><X size={16}/></button></div></header>
       <div className="agent-workspace-tool-body">
         {panelError && <p className="agent-workspace-panel-error" role="alert"><span>{panelError}</span><button type="button" aria-label="关闭错误提示" onClick={() => setPanelError('')}><X size={13}/></button></p>}
-        {loadingOrError || (!scopeState.tabs.length ? <div className="agent-drawer-empty"><b>选择工作区工具</b><span>文件仅打开一个页签；终端可按需打开多个独立实例。</span><div><button type="button" className="secondary" onClick={() => openFiles()}>打开文件</button><button type="button" className="secondary" disabled={!runtimeAvailable} onClick={openTerminal}>新建终端</button></div></div> : details && <div className={`agent-workspace-tool-content${gitSidebarVisible ? ' fullscreen-git-layout' : ''}`}>
+        {loadingOrError || (!scopeState.tabs.length ? <div className="agent-drawer-empty"><b>选择工作区工具</b><span>文件仅打开一个页签；终端可按需打开多个独立实例。</span><div className="agent-workspace-empty-actions"><button type="button" className="secondary" onClick={() => openFiles()}><FileCode2 size={14}/>文件</button><button type="button" className="secondary" disabled={!runtimeAvailable} onClick={openTerminal}><Plus size={14}/>终端</button>{onOpenSidebarQuestion && <button type="button" className="secondary" onClick={onOpenSidebarQuestion}><PanelRightOpen size={14}/>侧边聊天</button>}</div></div> : details && <div className={`agent-workspace-tool-content${gitSidebarVisible ? ' fullscreen-git-layout' : ''}`}>
           {scopeState.tabs.some(tab => tab.kind === 'files') && <section className={`agent-workspace-files ${scopeState.activeTabId === 'files' ? 'active' : ''}${gitSidebarVisible ? ' fullscreen-git' : ''}`} style={{ '--file-tree-width': `${fileTreeWidth}px` } as CSSProperties}>
             <div className="agent-file-tree-pane">
               <header className="agent-file-tree-toolbar"><span>{selectedEntryPaths.size ? `已选 ${selectedEntryPaths.size} 项` : '文件'}</span><div className="agent-file-tree-actions"><input ref={workspaceUploadInput} type="file" multiple hidden onChange={event => { Array.from(event.target.files ?? []).forEach(file => startWorkspaceUpload(file)); event.currentTarget.value = ''; }}/><button type="button" title="上传文件" aria-label="上传文件" disabled={!api.uploadWorkspaceFile} onClick={() => workspaceUploadInput.current?.click()}><ArrowUp size={13}/></button><button type="button" title="新建文件" aria-label="新建文件" onClick={() => createAtActiveDirectory('FILE')}><FileCode2 size={13}/></button><button type="button" title="新建目录" aria-label="新建目录" onClick={() => createAtActiveDirectory('DIRECTORY')}><FolderPlus size={13}/></button><button type="button" className={`agent-file-tree-expand-toggle${expandAllFileDirectories ? ' expanded' : ''}`} title={expandAllFileDirectories ? '全部收起' : '全部展开'} aria-label={expandAllFileDirectories ? '全部收起目录' : '全部展开目录'} disabled={!fileDirectoryPaths.length} onClick={toggleAllFileDirectories}>{expandAllFileDirectories ? <ChevronRight size={13}/> : <ChevronDown size={13}/>}</button><button type="button" className="danger" title="删除选中项" aria-label="删除选中项" disabled={!selectedEntryRoots.length} onClick={() => void removeEntries(selectedEntryRoots.map(path => ({ path, kind: visibleFiles.find(item => item.path === path)?.kind ?? 'directory' })))}><Trash2 size={13}/></button></div></header>
@@ -4368,7 +4424,7 @@ function WorkspaceDrawer({
 }
 
 export interface AgentSessionWorkbenchProps {
-  onNavigate: (path: string, replace?: boolean) => void;
+  onNavigate: (path: string, replace?: boolean, options?: { standaloneAgentReturnTarget?: 'root' }) => void;
   /** Provided by scoped hosts whose conversation page has a product parent. */
   onReturnToSource?: () => void;
   /** Refresh the parent product projection after a native session state change. */
@@ -4515,6 +4571,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [bootstrapRecovery, setBootstrapRecovery] = useState<BootstrapRecovery | undefined>(() => initialBootstrapRecovery.current);
   const [workspaceScopeMigration, setWorkspaceScopeMigration] = useState<string>();
   const [workDirectoryCreatorOpen, setWorkDirectoryCreatorOpen] = useState(false);
+  const [workDirectoryEditor, setWorkDirectoryEditor] = useState<AgentSessionWorkDirectory>();
   const [capabilityManagerOpen, setCapabilityManagerOpen] = useState(false);
   const [workspacePathCopied, setWorkspacePathCopied] = useState(false);
   const [conversationSearchOpen, setConversationSearchOpen] = useState(false);
@@ -4593,6 +4650,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   useEffect(() => () => {
     for (const controller of historyAbortControllers.current.values()) controller.abort();
     historyAbortControllers.current.clear();
+    for (const controller of backgroundHydrationPrefetchControllers.current.values()) controller.abort();
+    backgroundHydrationPrefetchControllers.current.clear();
     for (const timer of contextRefreshTimers.current.values()) window.clearTimeout(timer);
     contextRefreshTimers.current.clear();
     for (const resource of [
@@ -4623,6 +4682,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const pendingUnreadUpdates = useRef(new Map<string, { id: number; unread: boolean; unreadOrigin?: AgentConversation['unread_origin'] }>());
   const nextUnreadUpdateId = useRef(0);
   const [unreadConversationIds, setUnreadConversationIds] = useState<Set<string>>(() => new Set());
+  const [backgroundHydrationPrefetchCandidates, setBackgroundHydrationPrefetchCandidates] = useState<string[]>([]);
+  const [backgroundHydrationPrefetchRevision, setBackgroundHydrationPrefetchRevision] = useState(0);
+  const backgroundHydrationPrefetchControllers = useRef(new Map<string, AbortController>());
   const previousRunningConversationIds = useRef<Set<string>>(new Set());
   const pendingPinnedUpdates = useRef(new Map<string, { id: number; pinned: boolean }>());
   const nextPinnedUpdateId = useRef(0);
@@ -4673,11 +4735,13 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const workDirectoriesQuery = useQuery({ queryKey: sessionQueryKey(host, 'work-directories', workspace?.id), queryFn: () => api.workDirectories(workspace!.id), enabled: Boolean(workspace && features.workDirectories) });
   const sidebarScrollStorageKey = workspace ? `flowweave:sidebar-scroll:${host.id}:${workspace.id}` : undefined;
   const sidebarListRef = useRef<HTMLDivElement>(null);
+  const pendingWorkspaceGroupAnchor = useRef<{ groupId: string; top: number } | undefined>(undefined);
   useEffect(() => {
     if (!sidebarScrollStorageKey) {
       workspaceSidebarScrollTop.current = undefined;
       workspaceSidebarScrollTopBeforeActivity.current = undefined;
       restoringWorkspaceSidebarScrollTop.current = undefined;
+      pendingWorkspaceGroupAnchor.current = undefined;
       setSidebarScrollTop(undefined);
       return;
     }
@@ -4852,11 +4916,19 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   useEffect(() => {
     if (!conversationActivityQuery.data || conversationActivityQuery.isPlaceholderData) return;
     const previous = previousRunningConversationIds.current;
-    const completedInBackground = [...previous].some(
+    const completedInBackground = [...previous].filter(
       bindingId => !runningConversationIds.has(bindingId) && bindingId !== routeBindingId,
     );
     previousRunningConversationIds.current = runningConversationIds;
-    if (!completedInBackground || !workspace) return;
+    if (!completedInBackground.length || !workspace) return;
+    const activityById = new Map((conversationActivityQuery.data.conversations ?? []).map(item => [item.id, item]));
+    const completedUnread = completedInBackground.filter(bindingId => {
+      const item = activityById.get(bindingId);
+      return item?.unread === true && item.unread_origin === 'MANUAL' && !conversationIsRunning(item.execution_status);
+    });
+    if (completedUnread.length) {
+      setBackgroundHydrationPrefetchCandidates(current => [...new Set([...current, ...completedUnread])]);
+    }
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-activity', workspace.id) });
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversations', workspace.id) });
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'pinned-conversations', workspace.id) });
@@ -4914,6 +4986,21 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     () => new Map(conversations.map(item => [item.id, item])),
     [conversations],
   );
+  useLayoutEffect(() => {
+    const sidebar = sidebarListRef.current;
+    const anchor = pendingWorkspaceGroupAnchor.current;
+    if (!sidebar || !anchor) return;
+    pendingWorkspaceGroupAnchor.current = undefined;
+    const group = sidebar.querySelector<HTMLElement>(`[data-workspace-group-id="${CSS.escape(anchor.groupId)}"]`);
+    if (!group) return;
+    const delta = group.getBoundingClientRect().top - anchor.top;
+    if (!delta) return;
+    const target = Math.min(sidebar.scrollHeight - sidebar.clientHeight, Math.max(0, sidebar.scrollTop + delta));
+    if (sidebar.scrollTop !== target) {
+      restoringWorkspaceSidebarScrollTop.current = target;
+      sidebar.scrollTop = target;
+    }
+  }, [collapsedConversationGroups]);
   useLayoutEffect(() => {
     const sidebar = sidebarListRef.current;
     const scrollTop = workspaceSidebarScrollTopBeforeActivity.current ?? workspaceSidebarScrollTop.current;
@@ -5455,6 +5542,27 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     hydratedAt: number;
     running: boolean;
   }>());
+  const backgroundHydrationPrefetches = useRef(new Map<string, Promise<AgentConversationHydration>>());
+  const publishHydration = useCallback((workspaceId: string, bindingId: string, hydration: AgentConversationHydration) => {
+    queryClient.setQueryData<OpenHandsConversationEventBatch>(
+      sessionQueryKey(host, 'conversation-events', workspaceId, bindingId), hydration.events,
+    );
+    queryClient.setQueryData<AgentConversationInputReadiness>(
+      sessionQueryKey(host, 'conversation-input-readiness', workspaceId, bindingId), hydration.readiness,
+    );
+    queryClient.setQueryData<AgentConversationContext>(
+      sessionQueryKey(host, 'conversation-context', workspaceId, bindingId), hydration.context,
+    );
+    trustedHydrations.current.set(bindingId, {
+      hydratedAt: Date.now(),
+      running: conversationIsRunning(hydration.readiness.execution_status),
+    });
+    const currentSelection = hydrationSelection.current;
+    if (currentSelection?.workspaceId === workspaceId && currentSelection.bindingId === bindingId) {
+      setHydrationPhase({ bindingId, state: 'ready' });
+    }
+    return hydration;
+  }, [host, queryClient]);
   // Keep the observer mounted across binding changes: cancelling a browser
   // fetch does not release the backend's synchronous read worker.
   const hydrationQueryKey = sessionQueryKey(host, 'conversation-hydration-request');
@@ -5469,24 +5577,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       // Publish the coherent snapshot together. The presentation gate remains
       // closed until this request resolves, so none of these cache writes can
       // expose an older or partially refreshed transcript.
-      queryClient.setQueryData<OpenHandsConversationEventBatch>(
-        sessionQueryKey(host, 'conversation-events', workspaceId, bindingId), hydration.events,
-      );
-      queryClient.setQueryData<AgentConversationInputReadiness>(
-        sessionQueryKey(host, 'conversation-input-readiness', workspaceId, bindingId), hydration.readiness,
-      );
-      queryClient.setQueryData<AgentConversationContext>(
-        sessionQueryKey(host, 'conversation-context', workspaceId, bindingId), hydration.context,
-      );
-      trustedHydrations.current.set(bindingId, {
-        hydratedAt: Date.now(),
-        running: conversationIsRunning(hydration.readiness.execution_status),
-      });
-      const currentSelection = hydrationSelection.current;
-      if (currentSelection?.workspaceId === workspaceId && currentSelection.bindingId === bindingId) {
-        setHydrationPhase({ bindingId, state: 'ready' });
-      }
-      return hydration;
+      return publishHydration(workspaceId, bindingId, hydration);
     },
     // Each selection explicitly refreshes below. Keeping this query disabled
     // prevents cached success data from becoming authoritative on re-entry.
@@ -5587,7 +5678,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       && queryClient.getQueryData(sessionQueryKey(host, 'conversation-input-readiness', workspaceId, bindingId))
       && queryClient.getQueryData(sessionQueryKey(host, 'conversation-context', workspaceId, bindingId)),
     );
-    hydrationPendingSelection.current = !reusable;
+    const prefetchInFlight = backgroundHydrationPrefetches.current.has(bindingId);
+    hydrationPendingSelection.current = !reusable && !prefetchInFlight;
     setHydrationPhase({ bindingId, state: reusable ? 'ready' : 'loading' });
 
     if (hydrationSelectionTimer.current !== undefined) {
@@ -5625,6 +5717,54 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const selectedHydrationPhase = hydrationPhase && hydrationPhase.bindingId === selected?.id
     ? hydrationPhase.state
     : 'loading';
+  useEffect(() => {
+    if (
+      !workspace
+      || !pageVisible
+      || hydrationRequestInFlight.current
+      || backgroundHydrationPrefetches.current.size >= BACKGROUND_HYDRATION_PREFETCH_LIMIT
+      || !backgroundHydrationPrefetchCandidates.length
+    ) return;
+    const bindingId = backgroundHydrationPrefetchCandidates.find(candidate => (
+      candidate !== selected?.id
+      && !backgroundHydrationPrefetches.current.has(candidate)
+      && !trustedHydrations.current.has(candidate)
+    ));
+    if (!bindingId) return;
+    const timer = window.setTimeout(() => {
+      if (
+        hydrationRequestInFlight.current
+        || hydrationSelection.current?.bindingId === bindingId
+        || backgroundHydrationPrefetches.current.size >= BACKGROUND_HYDRATION_PREFETCH_LIMIT
+      ) return;
+      setBackgroundHydrationPrefetchCandidates(current => current.filter(candidate => candidate !== bindingId));
+      const controller = new AbortController();
+      backgroundHydrationPrefetchControllers.current.set(bindingId, controller);
+      const request = api.conversationHydration(workspace.id, bindingId, controller.signal)
+        .then(hydration => publishHydration(workspace.id, bindingId, hydration));
+      backgroundHydrationPrefetches.current.set(bindingId, request);
+      void request.then(
+        () => {
+          if (backgroundHydrationPrefetches.current.get(bindingId) !== request) return;
+          backgroundHydrationPrefetches.current.delete(bindingId);
+          backgroundHydrationPrefetchControllers.current.delete(bindingId);
+          setBackgroundHydrationPrefetchRevision(current => current + 1);
+        },
+        () => {
+          if (backgroundHydrationPrefetches.current.get(bindingId) !== request) return;
+          backgroundHydrationPrefetches.current.delete(bindingId);
+          backgroundHydrationPrefetchControllers.current.delete(bindingId);
+          if (hydrationSelection.current?.workspaceId === workspace.id && hydrationSelection.current.bindingId === bindingId) {
+            hydrationPendingSelection.current = true;
+            void runSelectedHydrationRef.current();
+          }
+          setBackgroundHydrationPrefetchRevision(current => current + 1);
+        },
+      );
+    }, BACKGROUND_HYDRATION_PREFETCH_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [api, backgroundHydrationPrefetchCandidates, backgroundHydrationPrefetchRevision, pageVisible, publishHydration, selected?.id, workspace]);
+
   useEffect(() => {
     const workspaceId = workspace?.id;
     const bindingId = selected?.id;
@@ -6449,8 +6589,19 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       imageDataUrl: attachment.image_data_url,
       attachment,
       previewBindingId,
+      draftAttachmentOwnerId: previewBindingId ? undefined : conversationDraft?.id,
     });
-  }, []);
+  }, [conversationDraft?.id]);
+  const composerAttachmentImageUrl = useCallback((attachment: AgentAttachment) => {
+    if (attachment.image_data_url) return attachment.image_data_url;
+    if (!workspace) return undefined;
+    return fileUrl(workspace.id, attachment.path, {
+      bindingId: selected?.id,
+      workDirectoryId: selected ? undefined : conversationDraft?.workDirectoryId,
+      draftAttachmentOwnerId: selected ? undefined : conversationDraft?.id,
+      download: false,
+    });
+  }, [conversationDraft?.id, conversationDraft?.workDirectoryId, fileUrl, selected, workspace]);
   const insertAttachmentAlias = useCallback((attachment: AgentAttachment) => {
     const index = attachments.findIndex(item => item.path === attachment.path);
     if (index < 0) return;
@@ -7878,7 +8029,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   ) || (
     bootstrap.isPending && pendingBootstrap?.draft.id === conversationDraft?.id
   ) || submissionConfirmationPending;
-  const openConversationDraft = useCallback((next: Omit<ConversationDraft, 'id'>, options: { restoreRecovery?: boolean } = {}) => {
+  const openConversationDraft = useCallback((next: Omit<ConversationDraft, 'id'>, options: { restoreRecovery?: boolean; selectStandaloneRoot?: boolean } = {}) => {
     const outgoingScope = activeComposerScope.current;
     if (outgoingScope) persistComposerDraft(outgoingScope);
     setForegroundTurn(undefined);
@@ -7940,7 +8091,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     deferredFormalUserEvents.current.clear();
     setHiddenEventIds(new Set());
     setTurnState('idle');
-    onNavigate(host.rootPath);
+    onNavigate(host.rootPath, false, options.selectStandaloneRoot && host.id === 'agent-workspace'
+      ? { standaloneAgentReturnTarget: 'root' }
+      : undefined);
   }, [clearBootstrapRecovery, conversationDraft, discardDraftAttachments, host.id, host.rootPath, onNavigate, persistComposerDraft, recoverableConversationDrafts, replaceComposerDraft, updateLocalMessageProjections, workspace]);
   useEffect(() => {
     if (!autoOpenDraft || !workspace || selectedBindingId || conversationDraft) return;
@@ -8624,6 +8777,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     item => item.work_directory_id === workDirectoryId,
   );
   const setConversationGroupCollapsed = (groupId: string, collapsed: boolean) => {
+    const sidebar = sidebarListRef.current;
+    const group = sidebar?.querySelector<HTMLElement>(`[data-workspace-group-id="${CSS.escape(groupId)}"]`);
+    pendingWorkspaceGroupAnchor.current = sidebar && group && sidebarListMode === 'workspaces'
+      ? { groupId, top: group.getBoundingClientRect().top }
+      : undefined;
     setCollapsedConversationGroups(current => {
       const next = new Set(current);
       if (collapsed) next.add(groupId);
@@ -8715,7 +8873,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   };
   return <main className={`agent-workbench-page${!onReturnToSource ? ' agent-workbench-app-shell' : ''}`} style={{ '--conversation-rail-width': `${conversationRailWidth}px` } as CSSProperties}>
     {!onReturnToSource && <nav className="agent-workbench-app-nav" aria-label="Agent 工作区导航"><button type="button" className={agentWorkspaceView === 'home' ? 'active' : ''} aria-current={agentWorkspaceView === 'home' ? 'page' : undefined} aria-label="主页" title="主页" onClick={() => setAgentWorkspaceView('home')}><Home size={17}/></button><button type="button" className={agentWorkspaceView === 'schedules' ? 'active' : ''} aria-current={agentWorkspaceView === 'schedules' ? 'page' : undefined} aria-label="定时任务" title="定时任务" onClick={() => setAgentWorkspaceView('schedules')}><CalendarClock size={17}/></button><button type="button" className={agentWorkspaceView === 'management' ? 'active' : ''} aria-current={agentWorkspaceView === 'management' ? 'page' : undefined} aria-label="会话管理" title="会话管理" onClick={() => setAgentWorkspaceView('management')}><MessageSquareText size={17}/></button></nav>}
-    {agentWorkspaceView === 'schedules' && workspace && <AgentConversationSchedulesPanel workspaceId={workspace.id} conversations={conversations} selectedBindingId={selected?.id} onOpenConversation={bindingId => { setAgentWorkspaceView('home'); selectConversation(bindingId); }}/>}
+    {agentWorkspaceView === 'schedules' && workspace && <AgentConversationSchedulesPanel workspaceId={workspace.id} onOpenConversation={bindingId => { setAgentWorkspaceView('home'); selectConversation(bindingId); }}/>}
     {agentWorkspaceView === 'management' && <section className="agent-conversation-management-page" aria-label="会话管理"><ConversationManagementPage/></section>}
     {selected && <ConversationStreamObserver workspaceId={workspace.id} bindingId={selected.id} enabled={streamEnabled} onEvent={onStreamEvent} onStatus={updateStreamStatus} onReconnect={onStreamReconnect}/>}
     {workspace && queuedMessageBindings(host, workspace.id).filter(bindingId => bindingId !== selected?.id).map(bindingId => (
@@ -8760,15 +8918,15 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       }}>
         {sidebarListMode === 'activity'
           ? <section className="agent-workspace-activity" aria-label="活动会话"><header><div><span className="eyebrow">ACTIVITY</span><b>活动</b></div><button type="button" aria-label="返回工作区列表" title="返回工作区列表" onClick={() => { setActivityPreviewBindingId(undefined); setSidebarListMode('workspaces'); }}><ArrowLeft size={15}/></button></header>{activityConversations.length ? activityConversations.map(item => conversationRow(item, [], { allowDrag: false, workspaceName: activityWorkspaceName(item), onSelect: () => previewActivityConversation(item.id), onDoubleClick: () => openActivityConversation(item.id), onMarkRead: () => markConversationRead(item.id) })) : <p>没有正在运行或未读的会话。</p>}</section>
-          : <>{pinnedConversations.length > 0 && <section className={`agent-workspace-pinned${pinnedConversationsCollapsed ? ' collapsed' : ''}`} aria-label="置顶会话"><header><button type="button" aria-label={`${pinnedConversationsCollapsed ? '展开' : '收起'}置顶会话`} aria-expanded={!pinnedConversationsCollapsed} aria-controls="agent-workspace-pinned-content" onClick={() => setPinnedConversationsCollapsed(current => !current)}><Pin size={13}/><span>置顶</span>{pinnedConversationsCollapsed ? <ChevronRight size={13}/> : <ChevronDown size={13}/>}</button></header><div id="agent-workspace-pinned-content" hidden={pinnedConversationsCollapsed}>{pinnedConversations.map(item => conversationRow(item, [], { allowDrag: false }))}</div></section>}
-            <WorkspaceConversationGroup groupId="root" label="根工作区" conversationCount={rootConversations.length} hasMore={Boolean(conversationPagesByScope.__root__?.next_cursor)} loadingMore={loadingConversationScope === '__root__'} onLoadMore={() => loadMoreConversations('__root__')} collapsed={collapsedConversationGroups.has('root')} onCollapsedChange={collapsed => setConversationGroupCollapsed('root', collapsed)} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ displayName: '根工作区' })}>
+          : <>{pinnedConversations.length > 0 && <section className={`agent-workspace-pinned${pinnedConversationsCollapsed ? ' collapsed' : ''}`} aria-label="置顶会话"><header><button type="button" aria-label={`${pinnedConversationsCollapsed ? '展开' : '收起'}置顶会话`} aria-expanded={!pinnedConversationsCollapsed} aria-controls="agent-workspace-pinned-content" onClick={() => setPinnedConversationsCollapsed(current => !current)}><Pin size={13}/><span>置顶</span></button></header><div id="agent-workspace-pinned-content" hidden={pinnedConversationsCollapsed}>{pinnedConversations.map(item => conversationRow(item, [], { allowDrag: false }))}</div></section>}
+            <WorkspaceConversationGroup groupId="root" label="根工作区" conversationCount={rootConversations.length} hasMore={Boolean(conversationPagesByScope.__root__?.next_cursor)} loadingMore={loadingConversationScope === '__root__'} onLoadMore={() => loadMoreConversations('__root__')} collapsed={collapsedConversationGroups.has('root')} onCollapsedChange={collapsed => setConversationGroupCollapsed('root', collapsed)} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ displayName: '根工作区' }, { selectStandaloneRoot: true })}>
               {visibleCount => <>{pendingBootstrapItem && !pendingBootstrap?.draft.workDirectoryId ? pendingBootstrapItem : recoverableDraftItem(undefined, '根工作区')}{rootConversations.slice(0, visibleCount).map(item => conversationRow(item, rootConversations))}</>}
             </WorkspaceConversationGroup>
-            {features.workDirectories && workDirectories.map(directory => <WorkspaceConversationGroup key={directory.id} groupId={directory.id} label={directory.display_name} conversationCount={conversationsForDirectory(directory.id).length} hasMore={Boolean(conversationPagesByScope[directory.id]?.next_cursor)} loadingMore={loadingConversationScope === directory.id} onLoadMore={() => loadMoreConversations(directory.id)} draggable dragging={draggedWorkDirectoryId === directory.id} dropPosition={workDirectoryDropTarget?.id === directory.id ? (workDirectoryDropTarget.after ? 'after' : 'before') : undefined} onPointerDragStart={event => startPointerWorkDirectoryDrag(event, directory.id)} collapsed={collapsedConversationGroups.has(directory.id)} onCollapsedChange={collapsed => setConversationGroupCollapsed(directory.id, collapsed)} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ workDirectoryId: directory.id, displayName: directory.display_name })} onDelete={api.deleteWorkDirectory && runtimeWritable ? () => void removeWorkDirectory(directory) : undefined}>
+            {features.workDirectories && workDirectories.map(directory => <WorkspaceConversationGroup key={directory.id} groupId={directory.id} label={directory.display_name} conversationCount={conversationsForDirectory(directory.id).length} hasMore={Boolean(conversationPagesByScope[directory.id]?.next_cursor)} loadingMore={loadingConversationScope === directory.id} onLoadMore={() => loadMoreConversations(directory.id)} draggable dragging={draggedWorkDirectoryId === directory.id} dropPosition={workDirectoryDropTarget?.id === directory.id ? (workDirectoryDropTarget.after ? 'after' : 'before') : undefined} onPointerDragStart={event => startPointerWorkDirectoryDrag(event, directory.id)} collapsed={collapsedConversationGroups.has(directory.id)} onCollapsedChange={collapsed => setConversationGroupCollapsed(directory.id, collapsed)} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ workDirectoryId: directory.id, displayName: directory.display_name })} onEdit={api.updateWorkDirectory && runtimeWritable ? () => setWorkDirectoryEditor(directory) : undefined} onDelete={api.deleteWorkDirectory && runtimeWritable ? () => void removeWorkDirectory(directory) : undefined}>
               {visibleCount => { const group = conversationsForDirectory(directory.id); return <>{pendingBootstrapItem && pendingBootstrap?.draft.workDirectoryId === directory.id ? pendingBootstrapItem : recoverableDraftItem(directory.id, directory.display_name)}{group.slice(0, visibleCount).map(item => conversationRow(item, group))}</>}}
             </WorkspaceConversationGroup>)}</>}
       </div>
-      {features.capabilities && (selected || features.draftCapabilitySelection) && <footer className="agent-workbench-rail-footer"><button type="button" disabled={selected ? !canWrite : !runtimeWritable} onClick={() => setCapabilityManagerOpen(true)}><Boxes size={15}/><span><b>会话配置</b><small>{selected ? '管理当前会话配置' : '为新会话配置能力'}</small></span><ChevronRight size={14}/></button></footer>}
+      {features.capabilities && (selected || features.draftCapabilitySelection) && <footer className="agent-workbench-rail-footer"><button type="button" title={selected ? '会话配置' : '新会话配置'} aria-label={selected ? '会话配置' : '新会话配置'} disabled={selected ? !canWrite : !runtimeWritable} onClick={() => setCapabilityManagerOpen(true)}><Boxes size={13}/><span><b>会话配置</b></span><ChevronRight size={12}/></button></footer>}
     </aside>}
     {agentWorkspaceView === 'home' && <section className="agent-workbench-main">
       <header className="agent-workbench-header"><div>{editing ? <div className="agent-title-edit"><input ref={titleInput} aria-label="会话标题" value={title} onChange={event => setTitle(event.target.value)} onBlur={() => { if (!rename.isPending) { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }} onKeyDown={event => { if (event.key === 'Enter' && title.trim()) { event.preventDefault(); rename.mutate(); } if (event.key === 'Escape') { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }}/></div> : !(hideDraftTitle && conversationDraft) && <h2 className="agent-session-title" title={selected ? conversationName(selected) : undefined} aria-label={selected && canWrite ? '双击修改标题' : undefined} onDoubleClick={() => { if (!selected || !canWrite) return; setTitle(conversationName(selected)); setEditing(true); }}><span>{selected ? conversationName(selected) : conversationDraft ? '新会话' : '开始一个新的会话'}</span></h2>}{features.modelSelection && (selected || conversationDraft) && <small className="agent-session-provider">当前供应商：{selected ? boundProviderInfo?.name ?? '未配置' : draftProviderInfo?.name ?? '请选择模型供应商'}{conversationDraft ? ` · ${conversationDraft.displayName}` : ''}</small>}</div></header>
@@ -8849,7 +9007,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         taskControl={eventsQuery.data?.task_control ?? EMPTY_TASK_CONTROL}
         monitoring={eventsQuery.data?.monitoring}
         connectionState={inputReadinessQuery.isError ? 'unavailable' : streamStatus === 'recovering' ? 'recovering' : streamStatus === 'connecting' ? 'checking' : inputReadinessQuery.isFetching && !inputReadinessQuery.data ? 'checking' : 'connected'}
-      /> : <div className="agent-workbench-empty"><Bot size={32}/><b>新建会话开始协作</b><span>{features.workDirectories ? '每个会话共享同一工作区，但保留独立的对话与事件记录。' : '会话固定在当前节点 Attempt 的隔离工作目录。'}</span><button className="primary" disabled={!canOpenConversation} onClick={() => openConversationDraft({ displayName: features.workDirectories ? '根工作区' : '节点工作目录' })}><Plus size={15}/>新建会话</button></div>}
+      /> : <div className="agent-workbench-empty"><Bot size={32}/><b>新建会话开始协作</b><span>{features.workDirectories ? '每个会话共享同一工作区，但保留独立的对话与事件记录。' : '会话固定在当前节点 Attempt 的隔离工作目录。'}</span><button className="primary" disabled={!canOpenConversation} onClick={() => openConversationDraft({ displayName: features.workDirectories ? '根工作区' : '节点工作目录' }, { selectStandaloneRoot: features.workDirectories })}><Plus size={15}/>新建会话</button></div>}
       {visibleError && <section className="agent-workbench-error" role="alert"><CircleAlert size={17}/><div><b>{hydrationError ? '会话暂时无法读取' : '操作未完成'}</b><span>{visibleError.message}</span></div>{hydrationError && <button type="button" className="secondary" onClick={retryConversationHydration}><RefreshCw size={14}/>重新读取会话</button>}</section>}
       {conversationDropActive && <div className="agent-workbench-drop-overlay" role="status" aria-live="polite"><div><Plus size={22}/><b>松开以添加到当前会话</b><span>支持附件、工作区文件和会话引用</span></div></div>}
       </div>
@@ -8903,7 +9061,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         </section>}
                   <AgentComposerInput key={composerScope ?? 'composer'} ref={composerRef} initialDraft={composerDraftRef.current} scope={composerScope} suggestions={visibleComposerSuggestions} placeholder={pendingConfirmation ? '请先处理上方工具确认…' : composerControlMode === 'condensing' ? '可继续输入，发送后将排队…' : composerControlMode === 'reconciling' ? '正在同步 Agent 状态…' : composerControlMode === 'read-only' ? '当前会话不可编辑…' : '给 Agent 发消息…'} disabled={!composerControl.editable} onDraftChange={setComposerDraft} onContentPresenceChange={onComposerContentPresenceChange} onDraftPersist={persistComposerDraft} onPaste={event => { if (!features.attachments) return; const files = transferredFiles(event.clipboardData); if (!files.length) return; event.preventDefault(); files.forEach(startAttachmentUpload); }} onDropFiles={features.attachments && composerScope ? files => files.forEach(startAttachmentUpload) : undefined} onDropWorkspaceFiles={addWorkspaceReferences} onDropConversationReference={addConversationReference} onSubmit={enqueueDraft} onDirectSubmit={sendDraftDirectly} onManageCapabilities={features.capabilities && (selected || features.draftCapabilitySelection) ? () => setCapabilityManagerOpen(true) : undefined} onNativeAction={action => { if (action === 'CONDENSE' && canCondense && !condense.isPending && workspace && selected) condense.mutate({ workspaceId: workspace.id, bindingId: selected.id }); }} onWorkspaceReferenceSelected={() => { setWorkspaceReferenceQuery(''); setWorkspaceReferencePickerOpen(true); }}/>
         <div className="agent-composer-attachments">
-        {(features.attachments && (attachments.length > 0 || pendingAttachments.some(item => item.scope === composerScope)) || references.length > 0 || composerAnnotations.length > 0) && <div className="agent-attachments" aria-label="已添加的附件和会话引用">{features.attachments && <>{attachments.map((item, index) => <span key={item.path}><button type="button" className="agent-attachment-open" title={`预览附件：${item.filename}`} onClick={() => previewAttachment(item)}>{item.image_data_url ? <img src={item.image_data_url} alt=""/> : <FileTypeIcon filename={item.filename} mimeType={item.mime_type} size={16}/>}<em>{item.filename}</em></button><button type="button" className="agent-attachment-alias" aria-label={`引用附件 ${index + 1}`} title={`插入 @附件${index + 1}`} onClick={() => insertAttachmentAlias(item)}>@</button><button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => {
+        {(features.attachments && (attachments.length > 0 || pendingAttachments.some(item => item.scope === composerScope)) || references.length > 0 || composerAnnotations.length > 0) && <div className="agent-attachments" aria-label="已添加的附件和会话引用">{features.attachments && <>{attachments.map((item, index) => <span key={item.path}><button type="button" className="agent-attachment-open" title={`预览附件：${item.filename}`} onClick={() => previewAttachment(item)}>{composerAttachmentImageUrl(item) ? <img src={composerAttachmentImageUrl(item)} alt=""/> : <FileTypeIcon filename={item.filename} mimeType={item.mime_type} size={16}/>}<em>{item.filename}</em></button><button type="button" className="agent-attachment-alias" aria-label={`引用附件 ${index + 1}`} title={`插入 @附件${index + 1}`} onClick={() => insertAttachmentAlias(item)}>@</button><button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => {
   const remove = () => setAttachments(all => all.filter(candidate => candidate.path !== item.path));
   if (selected && workspace) {
     void api.deletePendingAttachment(workspace.id, selected.id, item.path).then(remove).catch(error => reportOperationError(selected.id, error));
@@ -9008,6 +9166,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       queryClient.setQueryData<AgentSessionWorkDirectoryList>(sessionQueryKey(host, 'work-directories', workspace.id), current => current ? { ...current, items: [directory, ...current.items.filter(item => item.id !== directory.id)] } : current);
       void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'work-directories', workspace.id) });
     }}/>}
+        {workDirectoryEditor && api.updateWorkDirectory && <WorkDirectoryEditor directory={workDirectoryEditor} workspaceId={workspace.id} onClose={() => setWorkDirectoryEditor(undefined)} onUpdated={directory => {
+      queryClient.setQueryData<AgentSessionWorkDirectoryList>(sessionQueryKey(host, 'work-directories', workspace.id), current => current ? { ...current, items: current.items.map(item => item.id === directory.id ? directory : item) } : current);
+      void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'work-directories', workspace.id) });
+    }}/>}
     {capabilityManagerOpen && (selected || features.draftCapabilitySelection) && <CapabilityManager workspaceId={workspace.id} bindingId={selected?.id} conversationCapabilities={selected?.capabilities} draftCapabilityIds={conversationDraft?.capabilityVersionIds} onClose={() => setCapabilityManagerOpen(false)} onCreateEnhancedConversation={capabilityVersionIds => { const directory = selected?.work_directory_id ? workDirectories.find(item => item.id === selected.work_directory_id) : undefined; setCapabilityManagerOpen(false); if (conversationDraft) setConversationDraft(current => current ? { ...current, capabilityVersionIds } : current); else openConversationDraft({ workDirectoryId: directory?.id, displayName: directory?.display_name ?? '根工作区', capabilityVersionIds }); }}/>}
+
   </main>;
 }

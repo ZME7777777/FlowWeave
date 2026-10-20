@@ -1976,6 +1976,13 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     editor.focus();
     editor.setSelectionRange(editor.value.length, editor.value.length);
   }, [editingEventId]);
+  useLayoutEffect(() => {
+    if (!editingEventId) return;
+    const editor = rewriteEditor.current;
+    if (!editor) return;
+    editor.style.height = 'auto';
+    editor.style.height = `${Math.min(editor.scrollHeight, 160)}px`;
+  }, [editingContent, editingEventId]);
 
   // Pausing a tool makes OpenHands emit one synthetic AgentErrorEvent. Keep
   // it as a formal process boundary, but itemsFor() suppresses its redundant

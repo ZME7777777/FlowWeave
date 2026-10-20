@@ -2040,6 +2040,42 @@ def test_agent_workspace_allows_only_bound_conversation_attachments_outside_scop
 
 
 
+
+def test_agent_workspace_allows_only_own_uncreated_draft_attachment(
+    settings, db_session_factory
+):
+    with settings_context(settings), db_session_factory() as db, runtime_context(MockRuntime()):
+        item = _ready_workspace_for_conversation(db)
+        project_root = _agent_project_root(settings, db, item)
+        (project_root / "service").mkdir()
+        directory = work_directories.create_work_directory(db, item.id, "服务", ("service",))
+        owner_id = str(uuid4())
+        other_owner_id = str(uuid4())
+        uploads = project_root / "uploads"
+        uploads.mkdir()
+        owned_path = f"{user_runtime_project_root(item.id)}/uploads/{owner_id}-{'a' * 32}--draft.png"
+        other_path = f"{user_runtime_project_root(item.id)}/uploads/{other_owner_id}-{'b' * 32}--other.png"
+        (uploads / owned_path.rsplit("/", 1)[-1]).write_bytes(b"draft-image")
+        (uploads / other_path.rsplit("/", 1)[-1]).write_bytes(b"other-image")
+
+        preview = workspace.download(
+            db,
+            item.id,
+            owned_path,
+            work_directory_id=directory["id"],
+            draft_attachment_owner_id=owner_id,
+        )
+        assert preview.content == b"draft-image"
+        with pytest.raises(DomainError, match="当前工作目录范围"):
+            workspace.download(
+                db,
+                item.id,
+                other_path,
+                work_directory_id=directory["id"],
+                draft_attachment_owner_id=owner_id,
+            )
+
+
 def test_deleting_pending_agent_attachment_removes_its_file_and_projection(
     settings, db_session_factory, monkeypatch
 ):

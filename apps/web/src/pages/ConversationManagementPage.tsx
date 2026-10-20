@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArchiveX, CheckSquare, ChevronDown, Clock3, Folder, MessageSquareText, RefreshCw, ShieldCheck, Trash2 } from 'lucide-react';
+import { ArchiveX, CheckSquare, ChevronDown, Clock3, Folder, MessageSquareText, RefreshCw, Trash2 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Pagination } from '../components/Pagination';
 import { api } from '../api/client';
@@ -164,14 +164,13 @@ export function ConversationManagementPage() {
 
   return <section className="page conversation-management-page">
     <header className="conversation-management-header">
-      <div><span className="eyebrow">AGENT CONVERSATION MANAGEMENT</span><h1>会话管理</h1><p>仅在你确认后删除已选择的会话。系统不会自动清理，运行中的会话会被安全跳过。</p></div>
+      <h1>会话管理</h1>
       <div className="conversation-management-metrics"><span><MessageSquareText size={15}/>{conversations.data?.items.length ?? 0} 个会话</span><button className="secondary" disabled={conversations.isFetching} onClick={() => void conversations.refetch()}><RefreshCw size={14} className={conversations.isFetching ? 'spin' : ''}/>刷新</button></div>
     </header>
-    <div className="conversation-management-notice"><ShieldCheck size={17}/><span>删除会永久移除会话、其专属附件和关联记录；共享工作区文件、工作目录和流程运行记录不会受影响。</span></div>
     {conversations.data?.truncated && <div className="conversation-management-notice warning"><Clock3 size={17}/><span>当前仅显示最近 500 个会话。请先完成本次清理，再继续管理更早的会话。</span></div>}
     <section className="conversation-management-layout">
       <aside className="conversation-management-workspaces" aria-label="Agent 工作区">
-        <header><span className="eyebrow">WORKSPACE</span><h2>工作区</h2><p>与独立 Agent 的工作区一致</p></header>
+        <header><b>工作区</b></header>
         <div className="conversation-management-workspace-list">
           <button type="button" className={!selectedWorkDirectoryId ? 'active' : ''} aria-pressed={!selectedWorkDirectoryId} onClick={() => setSelectedWorkDirectoryId(undefined)}>
             <Folder size={16}/><span><b>{workDirectories.data?.root.display_name ?? '根工作区'}</b><small>根目录会话</small></span>
@@ -182,12 +181,11 @@ export function ConversationManagementPage() {
         </div>
       </aside>
       <section className="conversation-management-panel">
-        <header className="conversation-management-selected-workspace"><Folder size={16}/><span>当前工作区：<b>{selectedWorkspaceLabel}</b></span></header>
       <div className="conversation-management-toolbar">
-        <label>搜索会话<input value={query} onChange={event => setQuery(event.target.value)} placeholder="按会话标题搜索"/></label>
+        <label>搜索会话<input value={query} onChange={event => setQuery(event.target.value)} placeholder={`搜索 ${selectedWorkspaceLabel} 会话`}/></label>
         <label>最后活动时间<PeriodDropdown value={period} onChange={setPeriod}/></label>
-        <label className="conversation-management-check"><input type="checkbox" checked={includePinned} onChange={event => setIncludePinned(event.target.checked)}/><span>包含置顶会话</span></label>
-        <label className="conversation-management-check"><input type="checkbox" checked={includeUnread} onChange={event => setIncludeUnread(event.target.checked)}/><span>包含未读会话</span></label>
+        <label className="conversation-management-check"><input type="checkbox" checked={includePinned} onChange={event => setIncludePinned(event.target.checked)}/><span>置顶</span></label>
+        <label className="conversation-management-check"><input type="checkbox" checked={includeUnread} onChange={event => setIncludeUnread(event.target.checked)}/><span>未读</span></label>
       </div>
       {conversations.isLoading || workspace.isLoading || workDirectories.isLoading ? <div className="empty">正在读取会话…</div> : conversations.isError || workspace.isError || workDirectories.isError ? <div className="empty error">{conversations.error?.message ?? workspace.error?.message ?? workDirectories.error?.message}</div> : <>
         <div className="conversation-management-selection"><label><input type="checkbox" aria-label="选择当前筛选结果中的全部会话" checked={selectAllVisible} ref={input => { if (input) input.indeterminate = !selectAllVisible && selectedVisible.length > 0; }} onChange={toggleVisible}/><CheckSquare size={15}/><span>选择当前结果</span></label><span>已选 {selectedVisible.length} / {visible.length} 个会话</span><button className="danger" disabled={selectedVisible.length === 0 || remove.isPending} onClick={() => setConfirming(true)}><Trash2 size={14}/>删除已选会话</button></div>

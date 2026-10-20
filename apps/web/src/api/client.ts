@@ -370,6 +370,8 @@ export const api = {
   agentWorkDirectories: (id: string) => request<AgentWorkDirectoryList>(`/agent-workspaces/${encodeURIComponent(id)}/work-directories`),
   createAgentWorkDirectory: (id: string, display_name: string, selected_paths: string[]) =>
     request<AgentWorkDirectory>(`/agent-workspaces/${encodeURIComponent(id)}/work-directories`, json('POST', { display_name, selected_paths })),
+  updateAgentWorkDirectory: (id: string, directoryId: string, display_name: string) =>
+    request<AgentWorkDirectory>(`/agent-workspaces/${encodeURIComponent(id)}/work-directories/${encodeURIComponent(directoryId)}`, json('PATCH', { display_name })),
   deleteAgentWorkDirectory: (id: string, directoryId: string) =>
     request<void>(`/agent-workspaces/${encodeURIComponent(id)}/work-directories/${encodeURIComponent(directoryId)}`, json('DELETE')),
   agentWorkspaceDetails: (id: string, options: { bindingId?: string; workDirectoryId?: string; fullIndex?: boolean } = {}) => {
@@ -429,10 +431,11 @@ export const api = {
     if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
     return request<import('../types').WorkspaceGitFileDiff>(`/agent-workspaces/${encodeURIComponent(id)}/workspace/git/diff?${query}`);
   },
-  agentWorkspaceFilePreview: async (id: string, path: string, options: { bindingId?: string; workDirectoryId?: string } = {}, offset = 0, signal?: AbortSignal) => {
+  agentWorkspaceFilePreview: async (id: string, path: string, options: { bindingId?: string; workDirectoryId?: string; draftAttachmentOwnerId?: string } = {}, offset = 0, signal?: AbortSignal) => {
     const query = new URLSearchParams({ path });
     if (options.bindingId) query.set('binding_id', options.bindingId);
     if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
+    if (options.draftAttachmentOwnerId) query.set('draft_attachment_owner_id', options.draftAttachmentOwnerId);
     query.set('preview', 'true');
     query.set('offset', String(offset));
     let response: Response;
@@ -480,9 +483,9 @@ export const api = {
   },
   agentConversationSchedules: (workspaceId: string) =>
     request<AgentConversationSchedule[]>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-schedules`),
-  createAgentConversationSchedule: (workspaceId: string, body: { name: string; binding_id: string; prompt: string; cron_expression: string }) =>
+  createAgentConversationSchedule: (workspaceId: string, body: { name: string; prompt: string; cron_expression: string; workspace_mode: 'AUTOMATION' | 'EXISTING'; work_directory_id?: string; conversation_mode: 'NEW' | 'CONTINUE'; model_provider_id: string; model_name: string; reasoning_effort?: string | null }) =>
     request<AgentConversationSchedule>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-schedules`, json('POST', body)),
-  updateAgentConversationSchedule: (workspaceId: string, scheduleId: string, body: { expected_row_version: number; name: string; binding_id: string; prompt: string; cron_expression: string }) =>
+  updateAgentConversationSchedule: (workspaceId: string, scheduleId: string, body: { expected_row_version: number; name: string; prompt: string; cron_expression: string; conversation_mode: 'NEW' | 'CONTINUE'; model_provider_id: string; model_name: string; reasoning_effort?: string | null }) =>
     request<AgentConversationSchedule>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-schedules/${encodeURIComponent(scheduleId)}`, json('PUT', body)),
   setAgentConversationScheduleState: (workspaceId: string, scheduleId: string, expected_row_version: number, status: 'ACTIVE' | 'PAUSED') =>
     request<AgentConversationSchedule>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-schedules/${encodeURIComponent(scheduleId)}/state`, json('PUT', { expected_row_version, status })),
@@ -971,11 +974,12 @@ export function agentWorkspaceTerminalUrl(workspaceId: string, rows = 24, column
   return url.toString();
 }
 
-export function agentWorkspaceFileUrl(workspaceId: string, path: string, options: { bindingId?: string; workDirectoryId?: string; download?: boolean } = {}): string {
+export function agentWorkspaceFileUrl(workspaceId: string, path: string, options: { bindingId?: string; workDirectoryId?: string; draftAttachmentOwnerId?: string; download?: boolean } = {}): string {
   const url = absoluteApiUrl(`/agent-workspaces/${encodeURIComponent(workspaceId)}/workspace/file`);
   url.searchParams.set('path', path);
   if (options.bindingId) url.searchParams.set('binding_id', options.bindingId);
   if (options.workDirectoryId) url.searchParams.set('work_directory_id', options.workDirectoryId);
+  if (options.draftAttachmentOwnerId) url.searchParams.set('draft_attachment_owner_id', options.draftAttachmentOwnerId);
   if (options.download ?? true) url.searchParams.set('download', 'true');
   return url.toString();
 }
@@ -1199,10 +1203,11 @@ export const nodeSessionApi = {
     if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
     return request<void>(`${nodeSessionBase(flowRunId, attemptId)}/workspace/entries${query.size ? `?${query}` : ''}`, json('POST', { parent_path, name, kind }));
   },
-  file: (flowRunId: string, attemptId: string, path: string, bindingId?: string, workDirectoryId?: string, download = false, preview = false, offset = 0) => {
+  file: (flowRunId: string, attemptId: string, path: string, bindingId?: string, workDirectoryId?: string, draftAttachmentOwnerId?: string, download = false, preview = false, offset = 0) => {
     const query = new URLSearchParams({ path });
     if (bindingId) query.set('binding_id', bindingId);
     if (workDirectoryId) query.set('work_directory_id', workDirectoryId);
+    if (draftAttachmentOwnerId) query.set('draft_attachment_owner_id', draftAttachmentOwnerId);
     if (download) query.set('download', 'true');
     if (preview) {
       query.set('preview', 'true');

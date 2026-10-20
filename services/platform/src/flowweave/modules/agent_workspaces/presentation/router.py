@@ -117,9 +117,14 @@ class AgentConversationManagementDeleteWrite(_Write):
 
 class AgentConversationScheduleWrite(_Write):
     name: str = Field(min_length=1, max_length=220)
-    binding_id: str = Field(min_length=1, max_length=36)
     prompt: str = Field(min_length=1, max_length=200_000)
     cron_expression: str = Field(min_length=9, max_length=120)
+    workspace_mode: Literal["AUTOMATION", "EXISTING"] = "AUTOMATION"
+    work_directory_id: str | None = Field(default=None, min_length=1, max_length=36)
+    conversation_mode: Literal["NEW", "CONTINUE"] = "NEW"
+    model_provider_id: str = Field(min_length=1, max_length=36)
+    model_name: str = Field(min_length=1, max_length=240)
+    reasoning_effort: str | None = Field(default=None, max_length=30)
 
 
 class AgentConversationScheduleStateWrite(_Write):
@@ -130,9 +135,12 @@ class AgentConversationScheduleStateWrite(_Write):
 class AgentConversationSchedulePatchWrite(_Write):
     expected_row_version: int = Field(ge=1)
     name: str = Field(min_length=1, max_length=220)
-    binding_id: str = Field(min_length=1, max_length=36)
     prompt: str = Field(min_length=1, max_length=200_000)
     cron_expression: str = Field(min_length=9, max_length=120)
+    conversation_mode: Literal["NEW", "CONTINUE"]
+    model_provider_id: str = Field(min_length=1, max_length=36)
+    model_name: str = Field(min_length=1, max_length=240)
+    reasoning_effort: str | None = Field(default=None, max_length=30)
 
 
 class AgentConversationCapabilityAddWrite(_Write):
@@ -478,6 +486,7 @@ async def download_agent_workspace_file(
     path: str = Query(...),
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
+    draft_attachment_owner_id: str | None = Query(default=None, min_length=36, max_length=36),
     download: bool = Query(default=False),
     preview: bool = Query(default=False),
     offset: int = Query(default=0, ge=0),
@@ -490,6 +499,7 @@ async def download_agent_workspace_file(
             path,
             binding_id,
             work_directory_id,
+            draft_attachment_owner_id,
             preview=preview and not download,
             offset=offset,
         ),
@@ -766,9 +776,14 @@ async def create_agent_conversation_schedule(
             session,
             workspace_id,
             name=payload.name.strip(),
-            binding_id=payload.binding_id,
             prompt=payload.prompt.strip(),
             cron_expression=" ".join(payload.cron_expression.split()),
+            workspace_mode=payload.workspace_mode,
+            work_directory_id=payload.work_directory_id,
+            conversation_mode=payload.conversation_mode,
+            model_provider_id=payload.model_provider_id,
+            model_name=payload.model_name,
+            reasoning_effort=payload.reasoning_effort,
         ),
     )
 
@@ -801,9 +816,12 @@ async def update_agent_conversation_schedule(
             schedule_id,
             expected_row_version=payload.expected_row_version,
             name=payload.name.strip(),
-            binding_id=payload.binding_id,
             prompt=payload.prompt.strip(),
             cron_expression=" ".join(payload.cron_expression.split()),
+            conversation_mode=payload.conversation_mode,
+            model_provider_id=payload.model_provider_id,
+            model_name=payload.model_name,
+            reasoning_effort=payload.reasoning_effort,
         ),
     )
 

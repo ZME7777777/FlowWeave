@@ -1366,6 +1366,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     if (!drawer || !terminal || !screen) throw new Error('Expected terminal drawer, root, and screen');
     const hostBox = host.getBoundingClientRect();
     const drawerBox = drawer.getBoundingClientRect();
+    const appShellBox = drawer.closest('.agent-workbench-app-shell')?.getBoundingClientRect();
     const terminalBox = terminal.getBoundingClientRect();
     const screenBox = screen.getBoundingClientRect();
     const hostStyle = getComputedStyle(host);
@@ -1376,6 +1377,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       screenBottom: screenBox.bottom,
       hostRight: hostBox.right,
       drawerRight: drawerBox.right,
+      appShellRight: appShellBox?.right,
       screenRight: screenBox.right,
       hostHeight: hostBox.height,
       drawerHeight: drawerBox.height,
@@ -1387,6 +1389,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     };
   });
   expect(terminalLayout.hostBottom).toBeLessThanOrEqual(terminalLayout.drawerBottom + 1);
+  expect(terminalLayout.appShellRight).toBeDefined();
+  expect(terminalLayout.drawerRight).toBeCloseTo(terminalLayout.appShellRight!, 0);
   expect(terminalLayout.terminalPaddingLeft).toBe(0);
   expect(terminalLayout.terminalPaddingRight).toBe(0);
   expect(terminalLayout.screenOffsetLeft).toBeLessThanOrEqual(1);
@@ -2896,7 +2900,11 @@ test('editing the latest user message locally replaces only its active branch', 
     start: (editor as HTMLTextAreaElement).selectionStart,
     end: (editor as HTMLTextAreaElement).selectionEnd,
   }))).toEqual({ start: '需要重新思考的问题'.length, end: '需要重新思考的问题'.length });
-  await rewriteEditor.fill('不应提交的问题');
+  await rewriteEditor.fill('第一行\n第二行\n第三行\n第四行\n第五行');
+  await expect.poll(() => rewriteEditor.evaluate(editor => {
+    const textarea = editor as HTMLTextAreaElement;
+    return textarea.clientHeight > 100 && textarea.clientHeight === textarea.scrollHeight;
+  })).toBe(true);
   await rewriteEditor.press('Escape');
   await expect(page.locator('.conversation-message-edit')).toHaveCount(0);
   await expect(page.getByText('需要重新思考的问题', { exact: true })).toBeVisible();
@@ -3074,10 +3082,14 @@ test('Agent workspace groups toggle their conversation lists', async ({ page }) 
     const path = new URL(request.url()).pathname;
     if (path.endsWith('/default')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id: 'collapsible-workspace', display_name: 'Agent 工作区', desired_state: 'RUNNING', updated_at: now }) });
     if (path.endsWith('/runtime')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ state: 'ACTIVE', write_available: true, updated_at: now }) });
-    if (path.endsWith('/conversations') && request.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([
-      { id: 'root-conversation', display_title: '根会话', lifecycle: 'ACTIVE', streaming_callback_ready: true, created_at: now, updated_at: now },
-      { id: 'project-conversation', display_title: '项目会话', lifecycle: 'ACTIVE', streaming_callback_ready: true, work_directory_id: 'project-directory', created_at: now, updated_at: now },
-    ]) });
+    if (path.endsWith('/conversations') && request.method() === 'GET') {
+      const workDirectoryId = new URL(request.url()).searchParams.get('work_directory_id');
+      const items = [
+        { id: 'root-conversation', display_title: '根会话', lifecycle: 'ACTIVE', streaming_callback_ready: true, created_at: now, updated_at: now },
+        { id: 'project-conversation', display_title: '项目会话', lifecycle: 'ACTIVE', streaming_callback_ready: true, work_directory_id: 'project-directory', created_at: now, updated_at: now },
+      ].filter(item => (item.work_directory_id ?? null) === workDirectoryId);
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items, next_cursor: null }) });
+    }
     if (path.endsWith('/work-directories')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [{ id: 'project-directory', display_name: 'ai-playbook', state: 'ACTIVE', current_version: { id: 'project-directory-v1', version: 1, selected_paths: ['ai-playbook'], working_directory: '/runtime/workspace/project/ai-playbook' } }] }) });
     if (path.endsWith('/workspace')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [], runtime: { container_id: 'single-runtime' }, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '未配置', note: '' } } }) });
     if (path.endsWith('/capabilities')) return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
@@ -3093,19 +3105,11 @@ test('Agent workspace groups toggle their conversation lists', async ({ page }) 
   const projectToggle = projectGroup.locator('.agent-workspace-group-toggle');
 
   const rootConversation = rootGroup.getByRole('button', { name: '根会话' });
-  const rootCreateConversation = rootGroup.getByRole('button', { name: '在根工作区中新建会话' });
-  const projectDelete = projectGroup.getByRole('button', { name: '删除工作区 ai-playbook' });
   await expect(rootConversation).toBeVisible();
   await expect(rootConversation).toHaveCSS('height', '38px');
-  await expect(rootCreateConversation).toHaveCSS('border-top-width', '0px');
-  await expect(rootCreateConversation).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
-  await expect(projectDelete).toHaveCSS('border-top-width', '0px');
-  await expect(projectDelete).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
-  await expect(projectDelete).toHaveCSS('color', 'rgb(66, 107, 85)');
   await rootToggle.click();
   await expect(rootToggle).toHaveAttribute('aria-expanded', 'false');
   await expect(rootGroup.getByRole('button', { name: '根会话' })).toBeHidden();
-  await expect(rootGroup.getByRole('button', { name: '在根工作区中新建会话' })).toBeVisible();
   await rootToggle.click();
   await expect(rootGroup.getByRole('button', { name: '根会话' })).toBeVisible();
 
@@ -3113,9 +3117,38 @@ test('Agent workspace groups toggle their conversation lists', async ({ page }) 
   await projectToggle.click();
   await expect(projectToggle).toHaveAttribute('aria-expanded', 'false');
   await expect(projectGroup.getByRole('button', { name: '项目会话' })).toBeHidden();
-  await expect(projectGroup.getByRole('button', { name: '在ai-playbook中新建会话' })).toBeVisible();
   await projectToggle.click();
   await expect(projectGroup.getByRole('button', { name: '项目会话' })).toBeVisible();
+
+  const sidebar = page.locator('.agent-workbench-list');
+  await sidebar.evaluate(element => {
+    const root = element.querySelector<HTMLElement>('[data-workspace-group-id="root"]');
+    if (!root) throw new Error('Expected root workspace group');
+    for (let index = 0; index < 40; index += 1) {
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.textContent = `额外会话 ${index + 1}`;
+      row.style.height = '38px';
+      root.querySelector('.agent-workspace-group-content')?.append(row);
+    }
+    const spacer = document.createElement('div');
+    spacer.style.height = '800px';
+    element.append(spacer);
+  });
+  await sidebar.evaluate(element => {
+    const project = element.querySelector<HTMLElement>('[data-workspace-group-id="project-directory"]');
+    if (!project) throw new Error('Expected project workspace group');
+    element.scrollTop = Math.max(0, project.offsetTop - element.offsetTop - 300);
+  });
+  await expect.poll(() => sidebar.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+  await expect(projectToggle).toBeInViewport();
+  const topBeforeCollapse = await projectGroup.evaluate(element => element.getBoundingClientRect().top);
+  await projectToggle.click();
+  await expect(projectToggle).toHaveAttribute('aria-expanded', 'false');
+  await expect.poll(() => projectGroup.evaluate(element => element.getBoundingClientRect().top)).toBeCloseTo(topBeforeCollapse, 0);
+  await projectToggle.click();
+  await expect(projectToggle).toHaveAttribute('aria-expanded', 'true');
+  await expect.poll(() => projectGroup.evaluate(element => element.getBoundingClientRect().top)).toBeCloseTo(topBeforeCollapse, 0);
 });
 
 test('Agent new session keeps full capabilities and can create an explicit workspace', async ({ page }) => {

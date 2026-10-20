@@ -1334,7 +1334,8 @@ test('Sidebar chat tabs stay isolated to their source conversation', async ({ pa
   await page.goto('/');
   await login(page);
   await page.goto('/agent/conversations/sidebar-chat-scope-a');
-  await page.locator('.agent-workspace-summary').getByRole('button', { name: '侧边聊天', exact: true }).click();
+  await page.getByLabel('更多工作区工具').click();
+  await page.getByRole('menu').getByRole('menuitem', { name: '侧边聊天', exact: true }).click();
   await expect(page.getByRole('region', { name: '侧边聊天' })).toBeVisible();
   await expect(page.getByText('向主会话追问', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '打开侧边聊天', exact: true })).toHaveCount(0);
@@ -1400,7 +1401,8 @@ test('Sidebar chat accepts selected and pasted attachments before its first mess
   await page.goto('/');
   await login(page);
   await page.goto(`/agent/conversations/${source.id}`);
-  await page.locator('.agent-workspace-summary').getByRole('button', { name: '侧边聊天', exact: true }).click();
+  await page.getByLabel('更多工作区工具').click();
+  await page.getByRole('menu').getByRole('menuitem', { name: '侧边聊天', exact: true }).click();
   const sidebarPane = page.getByRole('region', { name: '侧边聊天' });
   await expect(sidebarPane.getByLabel('添加附件')).toBeEnabled();
   await sidebarPane.getByLabel('上传侧边聊天附件').setInputFiles({ name: 'selected.txt', mimeType: 'text/plain', buffer: Buffer.from('file') });
@@ -1478,7 +1480,8 @@ test('Sidebar chat recognizes its optimistic message and reuses the send button 
   await page.goto('/');
   await login(page);
   await page.goto(`/agent/conversations/${source.id}`);
-  await page.locator('.agent-workspace-summary').getByRole('button', { name: '侧边聊天', exact: true }).click();
+  await page.getByLabel('更多工作区工具').click();
+  await page.getByRole('menu').getByRole('menuitem', { name: '侧边聊天', exact: true }).click();
   const sidebarPane = page.getByRole('region', { name: '侧边聊天' });
   await sidebarPane.getByRole('textbox', { name: '发送侧边聊天消息' }).fill('你好');
   await sidebarPane.getByRole('button', { name: '发送侧边聊天消息' }).click();
@@ -2038,14 +2041,15 @@ test('Agent composer retains each conversation draft and uploaded attachment acr
   const composer = page.getByLabel('发送 Agent 消息');
   await composer.fill('会话 A 的未发送内容');
   await page.getByLabel('上传附件').setInputFiles({ name: '保留附件.txt', mimeType: 'text/plain', buffer: Buffer.from('retained') });
-  await expect(page.locator('.agent-composer .agent-attachments').getByText('保留附件.txt', { exact: true })).toBeVisible();
+  const draftAttachment = page.locator('.agent-composer .agent-attachments').getByText('保留附件.txt', { exact: true });
+  await expect(draftAttachment).toBeVisible();
 
   await page.getByRole('button', { name: '草稿会话 B', exact: true }).click();
   await expect(composer).toHaveValue('');
   await composer.fill('会话 B 的未发送内容');
   await page.getByRole('button', { name: '草稿会话 A', exact: true }).click();
   await expect(composer).toHaveValue('会话 A 的未发送内容');
-  await expect(page.locator('.agent-composer .agent-attachments').getByText('保留附件.txt', { exact: true })).toBeVisible();
+  await expect(draftAttachment).toBeVisible();
 
   // Exercise the fast A -> B -> A path before either debounce timer can
   // settle. The newly selected conversation must not inherit the old draft.
@@ -2056,7 +2060,7 @@ test('Agent composer retains each conversation draft and uploaded attachment acr
 
   await page.reload();
   await expect(composer).toHaveValue('会话 A 的未发送内容');
-  await expect(page.locator('.agent-composer .agent-attachments').getByText('保留附件.txt', { exact: true })).toBeVisible();
+  await expect(draftAttachment).toBeVisible();
   await page.getByRole('button', { name: '草稿会话 B', exact: true }).click();
   await expect(composer).toHaveValue('会话 B 的未发送内容');
   await expect(page.locator('.agent-composer .agent-attachments').getByText('保留附件.txt', { exact: true })).toHaveCount(0);
@@ -2153,9 +2157,12 @@ test('New conversation draft remains isolated and can be resumed after switching
     }
     if (path.includes('/attachments/uploads/draft-race-upload') && request.method() === 'PUT') return route.fulfill({ status: 200 });
     if (path.includes('/attachments/uploads/draft-race-upload/complete') && request.method() === 'POST') return json(route, {
-      filename: '新会话附件.txt', mime_type: 'text/plain', byte_size: 9,
-      path: `/runtime/workspace/project/uploads/${uploadedDraftId}-attachment--新会话附件.txt`,
+      filename: '新会话附件.png', mime_type: 'image/png', byte_size: 9,
+      path: `/runtime/workspace/project/uploads/${uploadedDraftId}-attachment--新会话附件.png`,
     }, 201);
+    if (path.endsWith('/workspace/file') && new URL(request.url()).searchParams.get('path') === `/runtime/workspace/project/uploads/${uploadedDraftId}-attachment--新会话附件.png`) {
+      return route.fulfill({ status: 200, contentType: 'image/png', body: Buffer.from('image-preview') });
+    }
     if (path.includes('/draft-attachments/') && request.method() === 'DELETE') {
       discardedDraftId = decodeURIComponent(path.split('/').at(-1)!);
       return route.fulfill({ status: 204, body: '' });
@@ -2184,10 +2191,10 @@ test('New conversation draft remains isolated and can be resumed after switching
   await expect(page.getByText('正在同步 Agent 状态', { exact: true })).toHaveCount(0);
   await expect(page.getByText('正在提交消息', { exact: true })).toHaveCount(0);
   const composer = page.getByLabel('发送 Agent 消息');
-  const draftAttachment = page.locator('.agent-composer .agent-attachments').getByText('新会话附件.txt', { exact: true });
-  await page.getByLabel('上传附件').setInputFiles({ name: '新会话附件.txt', mimeType: 'text/plain', buffer: Buffer.from('new-draft') });
+  const draftAttachment = page.locator('.agent-composer .agent-attachments').getByText('新会话附件.png', { exact: true });
+  await page.getByLabel('上传附件').setInputFiles({ name: '新会话附件.png', mimeType: 'image/png', buffer: Buffer.from('new-draft') });
   await expect(draftAttachment).toBeVisible();
-  await expect.poll(() => page.evaluate(() => JSON.stringify(Object.entries(localStorage)))).toContain('新会话附件.txt');
+  await expect.poll(() => page.evaluate(() => JSON.stringify(Object.entries(localStorage)))).toContain('新会话附件.png');
   const recoverDraft = page.getByRole('button', { name: '恢复根工作区的未发送草稿' });
   await page.reload();
   await expect(recoverDraft).toBeVisible();
@@ -2195,6 +2202,11 @@ test('New conversation draft remains isolated and can be resumed after switching
   await expect(page.getByRole('heading', { name: '新会话' })).toBeVisible();
   await expect(composer).toHaveText('');
   await expect(draftAttachment).toBeVisible();
+  const restoredImage = page.locator('.agent-composer .agent-attachment-open img');
+  await expect(restoredImage).toHaveAttribute('src', /draft_attachment_owner_id=/);
+  await draftAttachment.click();
+  await expect(page.getByRole('dialog', { name: '文件预览' }).locator('img')).toHaveAttribute('src', /draft_attachment_owner_id=/);
+  await page.getByRole('button', { name: '关闭文件预览' }).click();
   await composer.fill('只属于新会话的未发送草稿');
 
   await page.getByRole('button', { name: '竞态会话 B', exact: true }).click();
@@ -2208,7 +2220,7 @@ test('New conversation draft remains isolated and can be resumed after switching
   await expect(draftAttachment).toHaveCount(0);
   await expect.poll(() => page.evaluate(() => Object.entries(localStorage)
     .filter(([key]) => key.includes('draft-race-workspace:draft-race-'))
-    .every(([, value]) => !value.includes('只属于新会话的未发送草稿') && !value.includes('新会话附件.txt')))).toBe(true);
+    .every(([, value]) => !value.includes('只属于新会话的未发送草稿') && !value.includes('新会话附件.png')))).toBe(true);
 
   await recoverDraft.click();
   await expect(page.getByRole('heading', { name: '新会话' })).toBeVisible();
@@ -3025,6 +3037,7 @@ test('A normal background conversation completion persists a regular unread mark
   let authenticated = false;
   let completed = false;
   const unreadWrites: Array<{ id: string; unread: boolean; unread_origin?: string }> = [];
+  let backgroundHydrationReads = 0;
   const workspace = { id: 'completed-unread-workspace', display_name: '完成未读工作区', desired_state: 'RUNNING', updated_at: now };
   const conversations = [
     {
@@ -3046,12 +3059,15 @@ test('A normal background conversation completion persists a regular unread mark
     if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
     if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
     if (path.endsWith('/conversation-activity')) {
+      const conversation = conversations.find(item => item.id === 'completed-unread-background')!;
       if (completed) {
-        const conversation = conversations.find(item => item.id === 'completed-unread-background')!;
         conversation.unread = true;
         conversation.unread_origin = 'MANUAL';
       }
-      return json(route, { running_binding_ids: completed ? [] : ['completed-unread-background'] });
+      return json(route, {
+        conversations: completed ? [conversation] : [],
+        running_binding_ids: completed ? [] : ['completed-unread-background'],
+      });
     }
     if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: conversations, next_cursor: null });
     if (path.endsWith('/unread') && request.method() === 'PUT') {
@@ -3063,11 +3079,22 @@ test('A normal background conversation completion persists a regular unread mark
       unreadWrites.push({ id, ...body });
       return json(route, conversation);
     }
-    if (path.endsWith('/hydration')) return json(route, {
-      events: { events: [], next_cursor: null, history_cursor: null, result: { status: 'COMPLETED' } },
-      context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 1_024, usage_current: true },
-      readiness: { ready: true, execution_status: 'idle' },
-    });
+    if (path.endsWith('/hydration')) {
+      const bindingId = path.split('/').at(-2)!;
+      if (bindingId === 'completed-unread-background') backgroundHydrationReads += 1;
+      return json(route, {
+        events: {
+          events: bindingId === 'completed-unread-background'
+            ? [{ id: 'completed-unread-final', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: '__root__', content: '后台预热的最终回复。', timestamp: now } }]
+            : [],
+          next_cursor: bindingId === 'completed-unread-background' ? 'completed-unread-final' : null,
+          history_cursor: null,
+          result: { status: 'COMPLETED' },
+        },
+        context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 1_024, usage_current: true },
+        readiness: { ready: true, execution_status: 'idle' },
+      });
+    }
     if (path.endsWith('/events')) return json(route, { events: [], next_cursor: null, history_cursor: null, result: { status: 'COMPLETED' } });
     if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
     if (path.endsWith('/input-readiness')) return json(route, { ready: true, execution_status: 'idle' });
@@ -3097,11 +3124,13 @@ test('A normal background conversation completion persists a regular unread mark
   await expect(backgroundRow.locator('.agent-workspace-conversation-running')).toHaveCount(0);
   await expect(backgroundRow.getByRole('img', { name: '会话已完成，有未读回复' })).toBeVisible();
   await expect(backgroundRow.locator('.agent-workspace-conversation-alert')).toHaveCount(0);
+  await expect.poll(() => backgroundHydrationReads).toBe(1);
 
-  await page.reload();
-  await expect(page.locator('[data-conversation-binding-id="completed-unread-background"]')
-    .getByRole('img', { name: '会话已完成，有未读回复' })).toBeVisible();
-  expect(unreadWrites).toHaveLength(0);
+  await backgroundRow.getByRole('button', { name: '后台完成会话', exact: true }).click();
+  await expect(page.getByText('后台预热的最终回复。', { exact: true })).toBeVisible();
+  expect(backgroundHydrationReads).toBe(1);
+
+  await expect.poll(() => unreadWrites).toEqual([{ id: 'completed-unread-background', unread: false }]);
 });
 
 
@@ -3484,6 +3513,7 @@ test('Conversation sidebar opens an activity session without changing its scroll
   ];
   const unreadWrites: Array<{ id: string; unread: boolean }> = [];
   const pinnedWrites: Array<{ id: string; pinned: boolean }> = [];
+  const workDirectoryRenameWrites: Array<{ id: string; display_name: string }> = [];
   const search = {
     id: 'sidebar-search', query: '精准定位', state: 'SUCCEEDED',
     hits: [{
@@ -3538,6 +3568,11 @@ test('Conversation sidebar opens an activity session without changing its scroll
         next_cursor: null, history_cursor: null, result: { status: bindingId === 'sidebar-directory-running' ? 'RUNNING' : 'COMPLETED' },
       });
     }
+    if (path.endsWith(`/work-directories/${directory.id}`) && request.method() === 'PATCH') {
+      directory.display_name = String(request.postDataJSON().display_name);
+      workDirectoryRenameWrites.push({ id: directory.id, display_name: directory.display_name });
+      return json(route, directory);
+    }
     if (path.endsWith('/work-directories')) return json(route, {
       root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: directories,
     });
@@ -3562,6 +3597,30 @@ test('Conversation sidebar opens an activity session without changing its scroll
 
   const sidebarList = page.locator('.agent-workbench-list');
   await expect(sidebarList).toBeVisible();
+  const rootGroup = page.locator('.agent-workspace-group').filter({ hasText: '根工作区' });
+  const rootCreate = rootGroup.getByRole('button', { name: '在根工作区中新建会话' });
+  await expect(rootCreate).toBeVisible();
+  await expect(rootGroup.getByRole('button', { name: '工作区操作 根工作区' })).toHaveCount(0);
+  const workspaceGroup = page.locator('.agent-workspace-group').filter({ hasText: '归属工作区' });
+  const workspaceCreate = workspaceGroup.getByRole('button', { name: '在归属工作区中新建会话' });
+  const workspaceActions = workspaceGroup.getByRole('button', { name: '工作区操作 归属工作区' });
+  await expect(workspaceCreate).toBeVisible();
+  await expect(workspaceActions).toBeVisible();
+  await expect(workspaceGroup.locator('.agent-workspace-group-actions')).toHaveCSS('opacity', '0');
+  await workspaceGroup.hover();
+  await expect(workspaceGroup.locator('.agent-workspace-group-actions')).toHaveCSS('opacity', '1');
+  await expect(workspaceGroup.locator('header')).toHaveCSS('background-color', 'rgb(229, 236, 231)');
+  await workspaceActions.click();
+  const workspaceMenu = page.getByRole('menu', { name: '工作区操作菜单：归属工作区' });
+  await expect(workspaceMenu.getByRole('menuitem', { name: '编辑' })).toBeVisible();
+  await expect(workspaceMenu.getByRole('menuitem', { name: '新建会话' })).toHaveCount(0);
+  await expect(workspaceMenu.getByRole('menuitem', { name: '删除' })).toBeVisible();
+  await workspaceMenu.getByRole('menuitem', { name: '编辑' }).click();
+  const editor = page.getByRole('dialog', { name: '编辑工作区' });
+  await editor.getByLabel('工作区名称').fill('改名后的工作区');
+  await editor.getByRole('button', { name: '保存' }).click();
+  await expect.poll(() => workDirectoryRenameWrites).toEqual([{ id: directory.id, display_name: '改名后的工作区' }]);
+  await expect(page.locator('.agent-workspace-group').filter({ hasText: '改名后的工作区' }).getByRole('button', { name: '收起工作区 改名后的工作区' })).toBeVisible();
   await sidebarList.evaluate(element => { element.scrollTop = element.scrollHeight; });
   const sidebarScrollTop = await sidebarList.evaluate(element => element.scrollTop);
   expect(sidebarScrollTop).toBeGreaterThan(0);
@@ -3582,7 +3641,7 @@ test('Conversation sidebar opens an activity session without changing its scroll
   await expandPinnedSection.click();
   await expect(pinnedSection.getByRole('button', { name: '归属工作区会话', exact: true })).toBeVisible();
   await expect.poll(() => pinnedWrites).toEqual([{ id: 'sidebar-directory-pinned', pinned: true }]);
-  await expect(page.locator('.agent-workspace-group').filter({ hasText: '归属工作区' }).getByRole('button', { name: '归属工作区会话', exact: true })).toHaveCount(0);
+  await expect(page.locator('.agent-workspace-group').filter({ hasText: '改名后的工作区' }).getByRole('button', { name: '归属工作区会话', exact: true })).toHaveCount(0);
 
   await page.reload();
   const persistedPinnedConversation = page.getByRole('region', { name: '置顶会话' }).getByRole('button', { name: '归属工作区会话', exact: true });
@@ -3594,12 +3653,12 @@ test('Conversation sidebar opens an activity session without changing its scroll
     { id: 'sidebar-directory-pinned', pinned: true },
     { id: 'sidebar-directory-pinned', pinned: false },
   ]);
-  await expect(page.locator('.agent-workspace-group').filter({ hasText: '归属工作区' }).getByRole('button', { name: '归属工作区会话', exact: true })).toBeVisible();
+  await expect(page.locator('.agent-workspace-group').filter({ hasText: '改名后的工作区' }).getByRole('button', { name: '归属工作区会话', exact: true })).toBeVisible();
 
   await page.reload();
-  const directoryGroup = page.locator('.agent-workspace-group').filter({ hasText: '归属工作区' });
-  await directoryGroup.getByRole('button', { name: '收起工作区 归属工作区' }).click();
-  await expect(directoryGroup.getByRole('button', { name: '展开工作区 归属工作区' })).toBeVisible();
+  const directoryGroup = page.locator('.agent-workspace-group').filter({ hasText: '改名后的工作区' });
+  await directoryGroup.getByRole('button', { name: '收起工作区 改名后的工作区' }).click();
+  await expect(directoryGroup.getByRole('button', { name: '展开工作区 改名后的工作区' })).toBeVisible();
   const rootConversation = page.getByRole('button', { name: '未读根会话', exact: true });
   await rootConversation.click();
   await expect.poll(() => unreadWrites).toEqual([{ id: 'sidebar-root-unread', unread: false }]);
@@ -3630,7 +3689,7 @@ test('Conversation sidebar opens an activity session without changing its scroll
   await expect(page).toHaveURL(/\/agent\/conversations\/sidebar-directory-running$/);
   await expect(activity).toHaveCount(0);
   await expect.poll(() => sidebarList.evaluate(element => element.scrollTop)).toBe(sidebarScrollTopBeforeActivity);
-  await expect(directoryGroup.getByRole('button', { name: '展开工作区 归属工作区' })).toBeVisible();
+  await expect(directoryGroup.getByRole('button', { name: '展开工作区 改名后的工作区' })).toBeVisible();
   await expect(runningRowInWorkspaceList).toHaveCount(0);
   await expect(page.getByText('会话 sidebar-directory-running', { exact: true })).toBeVisible();
   await expect.poll(() => unreadWrites).toEqual([

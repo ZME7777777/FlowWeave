@@ -104,6 +104,10 @@ _DIAGNOSTIC_EVENT_CACHE_LIMIT = 2_048
 _SAFE_DIAGNOSTIC_TOKEN = re.compile(r"^[A-Za-z0-9_.:-]{1,200}$")
 _SAFE_DIAGNOSTIC_MODEL = re.compile(r"^[A-Za-z0-9_.:/-]{1,200}$")
 _SAFE_ERROR_CODE = re.compile(r"^(?:[A-Z][A-Za-z0-9]*(?:Error|Exception)|[A-Z][A-Z0-9_]{2,80})$")
+_EMPTY_RESPONSE_CORRECTIVE_NUDGE = (
+    "Your last response did not include a function call or a message. "
+    "Please use a tool to proceed with the task."
+)
 
 
 def _codex_model_canonical_name(model: str) -> str:
@@ -3218,20 +3222,15 @@ class OpenHandsRuntime:
                 if isinstance(message, dict)
                 else ""
             )
-            # The initial message accepted during conversation creation can be
-            # recorded as an environment event. Fall back to its LLM role only
-            # then; a native user/agent source remains authoritative.
-            if str(source or "").lower() not in {
-                "user",
-                "human",
-                "assistant",
-                "agent",
-            } and role in {
-                "user",
-                "human",
-                "assistant",
-                "agent",
-            }:
+            # The initial bootstrap input can be recorded as an environment
+            # event. Do not apply that role fallback to the native empty-response
+            # recovery nudge: it is a silent runtime control signal, not user
+            # input, even when OpenHands assigns its LLM message a user role.
+            if (
+                str(source or "").lower() not in {"user", "human", "assistant", "agent"}
+                and role in {"user", "human", "assistant", "agent"}
+                and event_text != _EMPTY_RESPONSE_CORRECTIVE_NUDGE
+            ):
                 source = role
         payload: dict[str, Any] = {
             "source_type": kind,

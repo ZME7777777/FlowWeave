@@ -50,6 +50,21 @@ type SettingsView = (typeof settingsNav)[number]['view'] | (typeof superAdminSet
 type FlowRunTab = { id: string; label: string; path: string; state: unknown };
 type ContextTab = { kind: 'settings'; view: SettingsView } | { kind: 'flow-run'; id: string };
 
+const LAST_STANDALONE_AGENT_PATH_KEY = 'flowweave.agent.last-standalone-path.v1';
+
+function isStandaloneAgentPath(path: string): boolean {
+  return /^\/agent$/.test(path) || /^\/agent\/conversations\/[^/]+$/.test(path);
+}
+
+function readLastStandaloneAgentPath(): string {
+  try {
+    const path = sessionStorage.getItem(LAST_STANDALONE_AGENT_PATH_KEY);
+    return path && isStandaloneAgentPath(path) ? path : '/agent';
+  } catch {
+    return '/agent';
+  }
+}
+
 function clearAgentIdentityStorage() {
   const isAgentStorage = (key: string) => key.startsWith('flowweave.agent.')
     || key.startsWith('flowweave:agent-session-tools:agent-workspace:')
@@ -73,8 +88,21 @@ export function App() {
   const [openSettingsViews, setOpenSettingsViews] = useState<SettingsView[]>([]);
   const [openFlowRunTabs, setOpenFlowRunTabs] = useState<FlowRunTab[]>([]);
   const [openContextTabs, setOpenContextTabs] = useState<ContextTab[]>([]);
-  const lastStandaloneAgentPath = useRef('/agent');
+  const lastStandaloneAgentPath = useRef(readLastStandaloneAgentPath());
   const settingsMenu = useRef<HTMLDivElement>(null);
+  const setLastStandaloneAgentPath = useCallback((path: string) => {
+    lastStandaloneAgentPath.current = path;
+    try { sessionStorage.setItem(LAST_STANDALONE_AGENT_PATH_KEY, path); } catch { /* browser session state only */ }
+  }, []);
+  const rememberStandaloneAgentConversation = useCallback((path: string) => {
+    if (/^\/agent\/conversations\/[^/]+$/.test(path)) setLastStandaloneAgentPath(path);
+  }, [setLastStandaloneAgentPath]);
+  const restoreStandaloneAgentPath = useCallback((path: string) => {
+    if (isStandaloneAgentPath(path)) setLastStandaloneAgentPath(path);
+  }, [setLastStandaloneAgentPath]);
+  const selectStandaloneAgentRootDraft = useCallback(() => {
+    setLastStandaloneAgentPath('/agent');
+  }, [setLastStandaloneAgentPath]);
   const replaceIdentity = useCallback(async (nextUser: AuthUser | null) => {
     // Unmount authenticated product surfaces before an old request can
     // finish under the newly authenticated browser session. The default
@@ -179,18 +207,24 @@ export function App() {
             ? flowRun.stepwiseRecordId
             : undefined,
         });
-      } else if (withoutDeploymentBase(window.location.pathname) === '/') {
-        useWorkbenchStore.setState({
-          view: 'runs', selectedRunId: undefined, selectedNodeRunId: undefined, selectedAttemptId: undefined,
-          selectedWorkbenchMode: undefined, selectedAutomaticRecordId: undefined, selectedStepwiseRecordId: undefined,
-        });
+      } else {
+        const path = withoutDeploymentBase(window.location.pathname);
+        if (path === '/') {
+          useWorkbenchStore.setState({
+            view: 'runs', selectedRunId: undefined, selectedNodeRunId: undefined, selectedAttemptId: undefined,
+            selectedWorkbenchMode: undefined, selectedAutomaticRecordId: undefined, selectedStepwiseRecordId: undefined,
+          });
+        }
+        restoreStandaloneAgentPath(path);
       }
       setRouteVersion(value => value + 1);
     };
     window.addEventListener('popstate', update);
     return () => window.removeEventListener('popstate', update);
-  }, []);
-  const navigate = (path: string, replace = false) => {
+  }, [restoreStandaloneAgentPath]);
+  const navigate = (path: string, replace = false, options?: { standaloneAgentReturnTarget?: 'root' }) => {
+    if (options?.standaloneAgentReturnTarget === 'root' && path === '/agent') selectStandaloneAgentRootDraft();
+    else rememberStandaloneAgentConversation(path);
     const deployedPath = withDeploymentBase(path);
     // Conversations may push their own binding URL. Keep the source Workbench
     // selection on those entries so an explicit return works after switching
@@ -231,9 +265,9 @@ export function App() {
   const directAgentRoute = routePathname === '/agent' || routePathname.startsWith('/agent/conversations/');
   const canUseAgentSessions = user?.can_use_agent_sessions !== false;
   const isAgentRoute = (directAgentRoute && canUseAgentSessions) || Boolean(nodeSessionRoute);
-  useEffect(() => {
-    if (directAgentRoute) lastStandaloneAgentPath.current = `${routePathname}${window.location.search}${window.location.hash}`;
-  }, [directAgentRoute, routePathname]);
+  useLayoutEffect(() => {
+    if (directAgentRoute) rememberStandaloneAgentConversation(routePathname);
+  }, [directAgentRoute, rememberStandaloneAgentConversation, routePathname]);
   useEffect(() => {
     if (!directAgentRoute || user?.can_use_agent_sessions !== false) return;
     window.history.replaceState({}, '', withDeploymentBase('/'));

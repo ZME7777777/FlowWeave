@@ -20,6 +20,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions.application import flow_node_conversations
+from flowweave.modules.agent_sessions.application.draft_attachments import (
+    ATTACHMENT_PATH,
+    assert_attachment_owner_unbound,
+)
 from flowweave.modules.agent_sessions.application.flow_node_host import (
     resolve_flow_node_session_host,
 )
@@ -771,6 +775,7 @@ def read_file(
     binding_id: str | None,
     work_directory_id: str | None,
     path: str,
+    draft_attachment_owner_id: str | None = None,
     preview: bool = False,
     offset: int = 0,
 ) -> tuple[bytes, str, str, int | None, int | None]:
@@ -786,7 +791,23 @@ def read_file(
         runtime_root=runtime_root,
     )
     _validate_scope_roots(project_root, runtime_root, roots)
-    candidate = _host_file(project_root, runtime_root, path, roots)
+    is_draft_attachment = False
+    if draft_attachment_owner_id is not None:
+        owner = assert_attachment_owner_unbound(
+            db,
+            draft_attachment_owner_id,
+            host_kind="FLOW_NODE",
+            host_id=flow_run_id,
+            host_scope_id=attempt_id,
+        )
+        matched = ATTACHMENT_PATH.fullmatch(path)
+        is_draft_attachment = matched is not None and matched.group("owner") == owner
+    candidate = _host_file(
+        project_root,
+        runtime_root,
+        path,
+        (str(runtime_root / "uploads"),) if is_draft_attachment else roots,
+    )
     try:
         size = candidate.stat().st_size
     except OSError as exc:

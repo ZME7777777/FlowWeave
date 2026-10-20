@@ -1707,6 +1707,26 @@ def test_openhands_projects_initial_message_role_when_event_source_is_environmen
     )
 
 
+def test_openhands_keeps_empty_response_nudge_as_environment_message() -> None:
+    payload = OpenHandsRuntime._event_payload(
+        {
+            "kind": "MessageEvent",
+            "id": "empty-response-nudge",
+            "parent_id": "empty-agent-response",
+            "source": "environment",
+            "llm_message": {
+                "role": "user",
+                "content": (
+                    "Your last response did not include a function call or a message. "
+                    "Please use a tool to proceed with the task."
+                ),
+            },
+        }
+    )
+
+    assert payload["source"] == "environment"
+
+
 def test_openhands_projects_message_role_over_environment_source_for_assistant_reply() -> None:
     payload = OpenHandsRuntime._event_payload(
         {
