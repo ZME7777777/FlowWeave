@@ -333,4 +333,29 @@
 .agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-new-tab,.agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-tool-actions{height:24px;align-self:center}
 .agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-new-tab,.agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-tool-actions>button{width:24px;height:24px;border:0!important;border-radius:6px!important;background:transparent!important;color:#63736a!important;box-shadow:none!important}
 .agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-new-tab:hover,.agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-tool-actions>button:hover{background:#edf3ef!important;color:#245f3c!important}
+
+/* Keep the environment card in the layout flow when workspace tools are open.
+   The conversation therefore gives both surfaces their own horizontal space. */
+.agent-workbench-page{--agent-environment-card-width:clamp(220px,18vw,340px)}
+.agent-workspace-drawer.tools-open.environment-open:not(.fullscreen){display:grid;grid-template-columns:calc(var(--agent-environment-card-width) + 12px) minmax(0,1fr);grid-template-rows:minmax(0,1fr)}
+.agent-workspace-drawer.tools-open.environment-open:not(.fullscreen)>.agent-workspace-summary{position:static!important;display:grid!important;width:var(--agent-environment-card-width);height:calc(100% - 24px);max-height:none;margin:12px 0 12px 12px;overflow:auto;border:1px solid #e2e9e4;border-radius:14px;background:#fff;box-shadow:0 12px 32px #16241c1a}
+.agent-workspace-drawer.tools-open.environment-open:not(.fullscreen)>.agent-workspace-tool-shell{grid-column:2;min-width:0}
+.agent-workspace-drawer.tools-open .agent-workbench-top-actions{right:calc(var(--agent-workspace-tool-width,400px) + 12px)}
+.agent-workspace-drawer.fullscreen.conversation-active>.agent-workspace-summary{position:absolute;z-index:20;top:64px;right:12px;display:grid!important;width:min(var(--agent-environment-card-width),calc(100vw - 36px));height:auto;max-height:calc(100% - 76px);overflow:auto;border:1px solid #e2e9e4;border-radius:14px;background:#fff;box-shadow:0 12px 32px #16241c1a}
+.agent-workspace-drawer.fullscreen.conversation-active.environment-hidden>.agent-workspace-summary{display:none!important}
+.agent-workbench-page:has(.agent-workspace-drawer.fullscreen.conversation-active.environment-open) .agent-workbench-main.fullscreen-conversation-active{padding-right:calc(min(var(--agent-environment-card-width),calc(100vw - 36px)) + 24px)}
+.agent-workspace-drawer.fullscreen.conversation-active .agent-workbench-top-actions{right:12px}
+.agent-workspace-drawer.fullscreen.conversation-active .agent-workspace-tool-actions{display:none}
+.agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-tool-actions{flex:0 0 auto;gap:2px;border-radius:999px;background:#edf3f0!important;padding:2px;box-shadow:inset 0 0 0 1px #dbe5df}
+.agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-tool-actions>button{display:grid;width:26px!important;height:26px!important;place-items:center;border-radius:50%!important}
+.agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-tool-actions>button:hover{background:#d9e6de!important;color:#245f3c!important}
+
+/* Title editing shares the header's right-side action clearance. */
+.agent-workbench-header .agent-title-edit{right:76px}
+@media(max-width:680px){.agent-workbench-header .agent-title-edit{right:68px}}
+
+
+
+@media(max-width:1100px){.agent-workspace-drawer.tools-open.environment-open:not(.fullscreen){display:block}.agent-workspace-drawer.tools-open.environment-open:not(.fullscreen)>.agent-workspace-summary{display:none!important}}
+
 .agent-workspace-browser-tab-panel{position:absolute;inset:0;display:none;min-width:0;min-height:0;overflow:hidden}.agent-workspace-browser-tab-panel.active{display:block}.agent-workspace-browser{display:grid;width:100%;height:100%;min-height:0;grid-template-rows:auto auto minmax(0,1fr);background:#f7faf8}.agent-workspace-browser-toolbar{display:flex;align-items:center;gap:6px;border-bottom:1px solid #dfe7e1;background:#fff;padding:8px 10px}.agent-workspace-browser-toolbar>button{display:grid;width:28px;height:28px;flex:0 0 28px;place-items:center;border:0;border-radius:6px;background:#edf3ef;color:#4c6253}.agent-workspace-browser-toolbar>button:hover:not(:disabled){background:#dcece1;color:#286140}.agent-workspace-browser-toolbar>button:disabled{opacity:.45}.agent-workspace-browser-toolbar>label{display:flex;min-width:0;flex:1;align-items:center;gap:7px;border:1px solid #dbe5df;border-radius:8px;background:#fbfdfb;padding:0 9px;color:#6c7d72}.agent-workspace-browser-toolbar input{width:100%;min-width:0;height:28px;border:0;outline:0;background:transparent;color:#35473b;font:11px inherit}.agent-workspace-browser-toolbar>button[type=submit]{width:auto;padding:0 10px;font-size:10px;font-weight:600}.agent-workspace-browser-notice{margin:0;border-bottom:1px solid #e3ece6;background:#eff7f1;padding:6px 12px;color:#4e6c58;font-size:10px;line-height:1.4}.agent-workspace-browser-frame{width:100%;height:100%;min-height:0;border:0;background:#fff}.agent-workspace-browser-empty{display:grid;place-content:center;justify-items:center;gap:8px;padding:30px;color:#6b7a70;text-align:center}.agent-workspace-browser-empty svg{color:#4a8b62}.agent-workspace-browser-empty b{color:#43564a;font-size:12px}.agent-workspace-browser-empty span{max-width:260px;font-size:10px;line-height:1.5}
