@@ -33,7 +33,7 @@ export function ComposerModelMenu({
   const selectEffort = (value: string) => { onEffortChange(value); close(); };
   const currentProvider = providers.find(provider => provider.id === providerId)?.name ?? '选择供应商';
   const choices = [effort, ...efforts].filter((value, index, all): value is string => Boolean(value) && all.indexOf(value) === index);
-  const compactSummary = [currentProvider, modelName || '选择模型', effort ? reasoningEffortLabel(effort) : '默认'].join(' / ');
+  const compactSummary = [currentProvider, modelName || '选择模型', effort ? reasoningEffortLabel(effort) : '默认'].join(' ');
   const rootRow = (key: 'provider' | 'model' | 'effort', label: string, value: string, unavailable = false) => <button type="button" className="agent-model-picker-row" aria-label={`${label} ${value}`} disabled={disabled || unavailable} onClick={() => setPanel(key)}><span>{label}</span><em>{value}</em><ChevronRight size={15}/></button>;
   const option = (key: string, label: string, selected: boolean, action: () => void) => <button type="button" key={key} className={`agent-model-picker-option${selected ? ' selected' : ''}`} onClick={action}><span>{label}</span>{selected && <Check size={15}/>}</button>;
   const panelTitle = panel === 'provider' ? '选择供应商' : panel === 'model' ? '选择模型' : '选择思考程度';
