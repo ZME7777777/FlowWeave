@@ -17,6 +17,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions import public as agent_sessions
+from flowweave.modules.agent_sessions.application.draft_attachments import (
+    ATTACHMENT_PATH,
+    assert_attachment_owner_unbound,
+)
 from flowweave.modules.agent_workspaces.application import service, work_directories
 from flowweave.modules.agent_workspaces.infrastructure.models import (
     AgentConversationBinding,
@@ -1093,6 +1097,21 @@ def _is_bound_attachment(db: Session, binding_id: str | None, path: str) -> bool
     )
 
 
+def _is_draft_attachment(
+    db: Session, workspace_id: str, owner_id: str | None, path: str
+) -> bool:
+    if owner_id is None:
+        return False
+    owner = assert_attachment_owner_unbound(
+        db,
+        owner_id,
+        host_kind="AGENT_WORKSPACE",
+        host_id=workspace_id,
+    )
+    matched = ATTACHMENT_PATH.fullmatch(path)
+    return matched is not None and matched.group("owner") == owner
+
+
 def _subtree_has_bound_attachment(db: Session, workspace_id: str, path: str) -> bool:
     """Keep every conversation attachment out of recursive removal.
 
@@ -1401,6 +1420,7 @@ def download(
     path: str,
     binding_id: str | None = None,
     work_directory_id: str | None = None,
+    draft_attachment_owner_id: str | None = None,
     *,
     preview: bool = False,
     offset: int = 0,
@@ -1420,7 +1440,11 @@ def download(
     in_workspace_scope = any(
         path == root or path.startswith(root.rstrip("/") + "/") for root in file_roots
     )
-    if not in_workspace_scope and not _is_bound_attachment(db, binding_id, path):
+    if (
+        not in_workspace_scope
+        and not _is_bound_attachment(db, binding_id, path)
+        and not _is_draft_attachment(db, workspace_id, draft_attachment_owner_id, path)
+    ):
         raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "文件路径不在当前工作目录范围内", 422)
     host_path = _host_path(_project_root(db, workspace_id), runtime_root, path, require_file=True)
     try:

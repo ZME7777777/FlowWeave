@@ -49,6 +49,8 @@ export type AgentSessionWorkDirectoryId = string;
 export type AgentSessionFileOptions = {
   bindingId?: AgentSessionBindingId;
   workDirectoryId?: AgentSessionWorkDirectoryId;
+  /** UUID of an uncreated draft that owns a private attachment. */
+  draftAttachmentOwnerId?: string;
   download?: boolean;
 };
 export type AgentSessionFilePreview = {
@@ -316,7 +318,7 @@ export function flowNodeSessionGateway(
         nodeSessionApi.createWorkDirectory(flowRunId, attemptId, displayName, selectedPaths),
       filePreview: async (_hostId, path, options, offset = 0, signal) => {
         const response = await fetch(nodeSessionApi.file(
-          flowRunId, attemptId, path, options?.bindingId, options?.workDirectoryId, false, true, offset,
+          flowRunId, attemptId, path, options?.bindingId, options?.workDirectoryId, options?.draftAttachmentOwnerId, false, true, offset,
         ), { signal });
         if (!response.ok) throw new Error('Node workspace file preview is unavailable');
         const nextOffset = response.headers.get('X-Preview-Next-Offset');
@@ -387,7 +389,7 @@ export function flowNodeSessionGateway(
       return nodeSessionApi.terminal(flowRunId, attemptId, options.bindingId, rows, columns);
     },
     fileUrl: (_hostId, path, options) =>
-      nodeSessionApi.file(flowRunId, attemptId, path, options?.bindingId, options?.workDirectoryId, options?.download),
+      nodeSessionApi.file(flowRunId, attemptId, path, options?.bindingId, options?.workDirectoryId, options?.draftAttachmentOwnerId, options?.download),
     candidateOutputUrl: (_hostId, fieldKey, relativePath) =>
       nodeSessionApi.candidateOutputFile(flowRunId, attemptId, fieldKey, relativePath),
     subscribe: (_hostId, bindingId, onEvent, onStatus) =>

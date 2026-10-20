@@ -2038,14 +2038,15 @@ test('Agent composer retains each conversation draft and uploaded attachment acr
   const composer = page.getByLabel('发送 Agent 消息');
   await composer.fill('会话 A 的未发送内容');
   await page.getByLabel('上传附件').setInputFiles({ name: '保留附件.txt', mimeType: 'text/plain', buffer: Buffer.from('retained') });
-  await expect(page.locator('.agent-composer .agent-attachments').getByText('保留附件.txt', { exact: true })).toBeVisible();
+  const draftAttachment = page.locator('.agent-composer .agent-attachments').getByText('保留附件.txt', { exact: true });
+  await expect(draftAttachment).toBeVisible();
 
   await page.getByRole('button', { name: '草稿会话 B', exact: true }).click();
   await expect(composer).toHaveValue('');
   await composer.fill('会话 B 的未发送内容');
   await page.getByRole('button', { name: '草稿会话 A', exact: true }).click();
   await expect(composer).toHaveValue('会话 A 的未发送内容');
-  await expect(page.locator('.agent-composer .agent-attachments').getByText('保留附件.txt', { exact: true })).toBeVisible();
+  await expect(draftAttachment).toBeVisible();
 
   // Exercise the fast A -> B -> A path before either debounce timer can
   // settle. The newly selected conversation must not inherit the old draft.
@@ -2056,7 +2057,7 @@ test('Agent composer retains each conversation draft and uploaded attachment acr
 
   await page.reload();
   await expect(composer).toHaveValue('会话 A 的未发送内容');
-  await expect(page.locator('.agent-composer .agent-attachments').getByText('保留附件.txt', { exact: true })).toBeVisible();
+  await expect(draftAttachment).toBeVisible();
   await page.getByRole('button', { name: '草稿会话 B', exact: true }).click();
   await expect(composer).toHaveValue('会话 B 的未发送内容');
   await expect(page.locator('.agent-composer .agent-attachments').getByText('保留附件.txt', { exact: true })).toHaveCount(0);
@@ -2153,9 +2154,12 @@ test('New conversation draft remains isolated and can be resumed after switching
     }
     if (path.includes('/attachments/uploads/draft-race-upload') && request.method() === 'PUT') return route.fulfill({ status: 200 });
     if (path.includes('/attachments/uploads/draft-race-upload/complete') && request.method() === 'POST') return json(route, {
-      filename: '新会话附件.txt', mime_type: 'text/plain', byte_size: 9,
-      path: `/runtime/workspace/project/uploads/${uploadedDraftId}-attachment--新会话附件.txt`,
+      filename: '新会话附件.png', mime_type: 'image/png', byte_size: 9,
+      path: `/runtime/workspace/project/uploads/${uploadedDraftId}-attachment--新会话附件.png`,
     }, 201);
+    if (path.endsWith('/workspace/file') && new URL(request.url()).searchParams.get('path') === `/runtime/workspace/project/uploads/${uploadedDraftId}-attachment--新会话附件.png`) {
+      return route.fulfill({ status: 200, contentType: 'image/png', body: Buffer.from('image-preview') });
+    }
     if (path.includes('/draft-attachments/') && request.method() === 'DELETE') {
       discardedDraftId = decodeURIComponent(path.split('/').at(-1)!);
       return route.fulfill({ status: 204, body: '' });
@@ -2184,10 +2188,10 @@ test('New conversation draft remains isolated and can be resumed after switching
   await expect(page.getByText('正在同步 Agent 状态', { exact: true })).toHaveCount(0);
   await expect(page.getByText('正在提交消息', { exact: true })).toHaveCount(0);
   const composer = page.getByLabel('发送 Agent 消息');
-  const draftAttachment = page.locator('.agent-composer .agent-attachments').getByText('新会话附件.txt', { exact: true });
-  await page.getByLabel('上传附件').setInputFiles({ name: '新会话附件.txt', mimeType: 'text/plain', buffer: Buffer.from('new-draft') });
+  const draftAttachment = page.locator('.agent-composer .agent-attachments').getByText('新会话附件.png', { exact: true });
+  await page.getByLabel('上传附件').setInputFiles({ name: '新会话附件.png', mimeType: 'image/png', buffer: Buffer.from('new-draft') });
   await expect(draftAttachment).toBeVisible();
-  await expect.poll(() => page.evaluate(() => JSON.stringify(Object.entries(localStorage)))).toContain('新会话附件.txt');
+  await expect.poll(() => page.evaluate(() => JSON.stringify(Object.entries(localStorage)))).toContain('新会话附件.png');
   const recoverDraft = page.getByRole('button', { name: '恢复根工作区的未发送草稿' });
   await page.reload();
   await expect(recoverDraft).toBeVisible();
@@ -2195,6 +2199,11 @@ test('New conversation draft remains isolated and can be resumed after switching
   await expect(page.getByRole('heading', { name: '新会话' })).toBeVisible();
   await expect(composer).toHaveText('');
   await expect(draftAttachment).toBeVisible();
+  const restoredImage = page.locator('.agent-composer .agent-attachment-open img');
+  await expect(restoredImage).toHaveAttribute('src', /draft_attachment_owner_id=/);
+  await draftAttachment.click();
+  await expect(page.getByRole('dialog', { name: '文件预览' }).locator('img')).toHaveAttribute('src', /draft_attachment_owner_id=/);
+  await page.getByRole('button', { name: '关闭文件预览' }).click();
   await composer.fill('只属于新会话的未发送草稿');
 
   await page.getByRole('button', { name: '竞态会话 B', exact: true }).click();
@@ -2208,7 +2217,7 @@ test('New conversation draft remains isolated and can be resumed after switching
   await expect(draftAttachment).toHaveCount(0);
   await expect.poll(() => page.evaluate(() => Object.entries(localStorage)
     .filter(([key]) => key.includes('draft-race-workspace:draft-race-'))
-    .every(([, value]) => !value.includes('只属于新会话的未发送草稿') && !value.includes('新会话附件.txt')))).toBe(true);
+    .every(([, value]) => !value.includes('只属于新会话的未发送草稿') && !value.includes('新会话附件.png')))).toBe(true);
 
   await recoverDraft.click();
   await expect(page.getByRole('heading', { name: '新会话' })).toBeVisible();

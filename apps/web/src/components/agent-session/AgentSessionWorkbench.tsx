@@ -3458,7 +3458,7 @@ function clampConversationRailWidth(value: number): number {
 
 
 type ConversationFilePreviewRequest =
-  | { key: string; kind: 'workspace'; path: string; filename: string; mimeType?: string; imageDataUrl?: string | null; attachment?: AgentAttachment; previewBindingId?: string }
+  | { key: string; kind: 'workspace'; path: string; filename: string; mimeType?: string; imageDataUrl?: string | null; attachment?: AgentAttachment; previewBindingId?: string; draftAttachmentOwnerId?: string }
   | { key: string; kind: 'directory'; path: string; filename: string }
   | { key: string; kind: 'candidate'; filename: string; url: string; fieldKey: string; relativePath: string }
   | { key: string; kind: 'image'; filename: string; url: string };
@@ -3486,10 +3486,12 @@ function ConversationFilePreviewDialog({ request, workspaceId, bindingId, workDi
 
   const workspaceRequest = request.kind === 'workspace' ? request : undefined;
   const previewBindingId = workspaceRequest?.previewBindingId ?? bindingId;
+  const draftAttachmentOwnerId = workspaceRequest?.draftAttachmentOwnerId;
+  const fileOptions = { bindingId: previewBindingId, workDirectoryId, draftAttachmentOwnerId };
   const textPreviewable = Boolean(workspaceRequest && isTextPreviewable(workspaceRequest.path, workspaceRequest.mimeType));
   const previewQuery = useQuery({
-    queryKey: sessionQueryKey(host, 'conversation-file-preview', workspaceId, previewBindingId, workspaceRequest?.path),
-    queryFn: ({ signal }) => api.filePreview(workspaceId, workspaceRequest!.path, { bindingId: previewBindingId, workDirectoryId }, undefined, signal),
+    queryKey: sessionQueryKey(host, 'conversation-file-preview', workspaceId, previewBindingId, draftAttachmentOwnerId, workspaceRequest?.path),
+    queryFn: ({ signal }) => api.filePreview(workspaceId, workspaceRequest!.path, fileOptions, undefined, signal),
     enabled: textPreviewable,
     retry: false,
   });
@@ -3504,7 +3506,7 @@ function ConversationFilePreviewDialog({ request, workspaceId, bindingId, workDi
     if (!workspaceRequest || previewState?.nextOffset === undefined || previewMoreLoading) return;
     setPreviewMoreLoading(true);
     try {
-      const next = await api.filePreview(workspaceId, workspaceRequest.path, { bindingId: previewBindingId, workDirectoryId }, previewState.nextOffset);
+      const next = await api.filePreview(workspaceId, workspaceRequest.path, fileOptions, previewState.nextOffset);
       setPreviewState(current => current?.path === workspaceRequest.path ? {
         path: workspaceRequest.path,
         content: current.content + next.content,
@@ -3514,13 +3516,13 @@ function ConversationFilePreviewDialog({ request, workspaceId, bindingId, workDi
     } finally {
       setPreviewMoreLoading(false);
     }
-  }, [api, previewBindingId, previewMoreLoading, previewState, workDirectoryId, workspaceId, workspaceRequest]);
+  }, [api, fileOptions, previewMoreLoading, previewState, workspaceId, workspaceRequest]);
 
   const path = request.kind === 'workspace' || request.kind === 'directory' ? request.path : request.kind === 'candidate' ? request.relativePath : request.url;
   const sourceUrl = request.kind === 'workspace'
-    ? request.imageDataUrl || fileUrl(workspaceId, request.path, { bindingId: previewBindingId, workDirectoryId, download: false })
+    ? request.imageDataUrl || fileUrl(workspaceId, request.path, { ...fileOptions, download: false })
     : request.kind === 'directory' ? '' : request.url;
-  const downloadUrl = workspaceRequest ? fileUrl(workspaceId, workspaceRequest.path, { bindingId: previewBindingId, workDirectoryId, download: true }) : undefined;
+  const downloadUrl = workspaceRequest ? fileUrl(workspaceId, workspaceRequest.path, { ...fileOptions, download: true }) : undefined;
   const canPreviewImage = Boolean(workspaceRequest && (workspaceRequest.mimeType?.startsWith('image/') || /\.(?:avif|gif|jpe?g|png|svg|webp)$/i.test(workspaceRequest.path)));
   const canPreviewPdf = Boolean(workspaceRequest && (workspaceRequest.mimeType === 'application/pdf' || /\.pdf$/i.test(workspaceRequest.path)));
   const lightweightPreview = Boolean(previewState && (previewState.totalBytes > 128 * 1024 || previewState.content.length > 128 * 1024));
@@ -6515,8 +6517,19 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       imageDataUrl: attachment.image_data_url,
       attachment,
       previewBindingId,
+      draftAttachmentOwnerId: previewBindingId ? undefined : conversationDraft?.id,
     });
-  }, []);
+  }, [conversationDraft?.id]);
+  const composerAttachmentImageUrl = useCallback((attachment: AgentAttachment) => {
+    if (attachment.image_data_url) return attachment.image_data_url;
+    if (!workspace) return undefined;
+    return fileUrl(workspace.id, attachment.path, {
+      bindingId: selected?.id,
+      workDirectoryId: selected ? undefined : conversationDraft?.workDirectoryId,
+      draftAttachmentOwnerId: selected ? undefined : conversationDraft?.id,
+      download: false,
+    });
+  }, [conversationDraft?.id, conversationDraft?.workDirectoryId, fileUrl, selected?.id, workspace]);
   const insertAttachmentAlias = useCallback((attachment: AgentAttachment) => {
     const index = attachments.findIndex(item => item.path === attachment.path);
     if (index < 0) return;
@@ -8974,7 +8987,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         </section>}
                   <AgentComposerInput key={composerScope ?? 'composer'} ref={composerRef} initialDraft={composerDraftRef.current} scope={composerScope} suggestions={visibleComposerSuggestions} placeholder={pendingConfirmation ? '请先处理上方工具确认…' : composerControlMode === 'condensing' ? '可继续输入，发送后将排队…' : composerControlMode === 'reconciling' ? '正在同步 Agent 状态…' : composerControlMode === 'read-only' ? '当前会话不可编辑…' : '给 Agent 发消息…'} disabled={!composerControl.editable} onDraftChange={setComposerDraft} onContentPresenceChange={onComposerContentPresenceChange} onDraftPersist={persistComposerDraft} onPaste={event => { if (!features.attachments) return; const files = transferredFiles(event.clipboardData); if (!files.length) return; event.preventDefault(); files.forEach(startAttachmentUpload); }} onDropFiles={features.attachments && composerScope ? files => files.forEach(startAttachmentUpload) : undefined} onDropWorkspaceFiles={addWorkspaceReferences} onDropConversationReference={addConversationReference} onSubmit={enqueueDraft} onDirectSubmit={sendDraftDirectly} onManageCapabilities={features.capabilities && (selected || features.draftCapabilitySelection) ? () => setCapabilityManagerOpen(true) : undefined} onNativeAction={action => { if (action === 'CONDENSE' && canCondense && !condense.isPending && workspace && selected) condense.mutate({ workspaceId: workspace.id, bindingId: selected.id }); }} onWorkspaceReferenceSelected={() => { setWorkspaceReferenceQuery(''); setWorkspaceReferencePickerOpen(true); }}/>
         <div className="agent-composer-attachments">
-        {(features.attachments && (attachments.length > 0 || pendingAttachments.some(item => item.scope === composerScope)) || references.length > 0 || composerAnnotations.length > 0) && <div className="agent-attachments" aria-label="已添加的附件和会话引用">{features.attachments && <>{attachments.map((item, index) => <span key={item.path}><button type="button" className="agent-attachment-open" title={`预览附件：${item.filename}`} onClick={() => previewAttachment(item)}>{item.image_data_url ? <img src={item.image_data_url} alt=""/> : <FileTypeIcon filename={item.filename} mimeType={item.mime_type} size={16}/>}<em>{item.filename}</em></button><button type="button" className="agent-attachment-alias" aria-label={`引用附件 ${index + 1}`} title={`插入 @附件${index + 1}`} onClick={() => insertAttachmentAlias(item)}>@</button><button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => {
+        {(features.attachments && (attachments.length > 0 || pendingAttachments.some(item => item.scope === composerScope)) || references.length > 0 || composerAnnotations.length > 0) && <div className="agent-attachments" aria-label="已添加的附件和会话引用">{features.attachments && <>{attachments.map((item, index) => <span key={item.path}><button type="button" className="agent-attachment-open" title={`预览附件：${item.filename}`} onClick={() => previewAttachment(item)}>{composerAttachmentImageUrl(item) ? <img src={composerAttachmentImageUrl(item)} alt=""/> : <FileTypeIcon filename={item.filename} mimeType={item.mime_type} size={16}/>}<em>{item.filename}</em></button><button type="button" className="agent-attachment-alias" aria-label={`引用附件 ${index + 1}`} title={`插入 @附件${index + 1}`} onClick={() => insertAttachmentAlias(item)}>@</button><button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => {
   const remove = () => setAttachments(all => all.filter(candidate => candidate.path !== item.path));
   if (selected && workspace) {
     void api.deletePendingAttachment(workspace.id, selected.id, item.path).then(remove).catch(error => reportOperationError(selected.id, error));
