@@ -59,10 +59,13 @@ test('standalone Agent Workspace exposes a separate conversation schedule panel'
   await expect(page.getByRole('menuitem', { name: '编辑' })).toBeVisible();
   await page.getByRole('region', { name: '会话定时任务' }).getByRole('button', { name: '新建', exact: true }).click();
   await expect(page.getByRole('heading', { name: '新建定时任务' })).toBeVisible();
-  await expect(page.getByLabel('工作区模式')).toHaveValue('AUTOMATION');
-  await expect(page.getByLabel('运行方式')).toHaveValue('NEW');
-  await expect(page.getByLabel('模型供应商')).toHaveValue('provider-1');
-  await expect(page.getByLabel('模型名称')).toHaveValue('model-1');
+  await expect(page.getByLabel('工作区模式')).toContainText('自动创建专属工作区');
+  await expect(page.getByLabel('运行方式')).toContainText('每次创建新会话');
+  await expect(page.getByLabel('模型供应商')).toContainText('测试供应商');
+  await expect(page.getByLabel('模型名称')).toContainText('model-1');
+  await page.getByLabel('工作区模式').click();
+  await expect(page.getByRole('listbox', { name: '工作区模式' })).toBeVisible();
+  await expect(page.getByRole('option', { name: /绑定已有工作区/ })).toBeVisible();
   await page.getByRole('navigation', { name: 'Agent 工作区导航' }).getByRole('button', { name: '会话管理' }).click();
   await expect(page.getByRole('region', { name: '会话管理' })).toBeVisible();
   await expect(page.getByRole('heading', { name: '会话管理', exact: true })).toBeVisible();
