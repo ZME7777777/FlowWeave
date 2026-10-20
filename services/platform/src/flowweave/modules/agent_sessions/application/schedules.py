@@ -12,11 +12,11 @@ from sqlalchemy.orm import Session
 from flowweave.modules.agent_sessions.application import conversations
 from flowweave.modules.agent_sessions.infrastructure.models import (
     AgentConversationBinding,
-    AgentConversationCapability,
     AgentConversationSchedule,
     AgentConversationScheduleOccurrence,
 )
-from flowweave.modules.agent_workspaces.infrastructure.models import AgentWorkDirectoryVersion
+from flowweave.modules.agent_workspaces.application import work_directories
+from flowweave.modules.agent_workspaces.infrastructure.models import AgentWorkDirectory
 from flowweave.modules.tasks.application.service import enqueue
 from flowweave.modules.tasks.infrastructure.models import BackgroundTask
 from flowweave.modules.users.application.security import tenant_user
@@ -87,27 +87,43 @@ def _next_cron_at(expression: str, after: datetime) -> datetime:
     raise ValueError("cron has no matching time in the next year")
 
 
-def _binding(db: Session, workspace_id: str, binding_id: str) -> AgentConversationBinding:
-    binding = db.scalar(
-        select(AgentConversationBinding).where(
-            AgentConversationBinding.id == binding_id,
-            AgentConversationBinding.workspace_id == workspace_id,
-            AgentConversationBinding.host_kind == "AGENT_WORKSPACE",
-            AgentConversationBinding.lifecycle == "ACTIVE",
+def _schedule_binding(
+    db: Session, schedule: AgentConversationSchedule
+) -> AgentConversationBinding | None:
+    return db.get(AgentConversationBinding, schedule.binding_id) if schedule.binding_id else None
+
+
+def _work_directory(db: Session, workspace_id: str, work_directory_id: str) -> AgentWorkDirectory:
+    item = db.scalar(
+        select(AgentWorkDirectory).where(
+            AgentWorkDirectory.id == work_directory_id,
+            AgentWorkDirectory.workspace_id == workspace_id,
         )
     )
-    if binding is None:
-        raise DomainError("AGENT_SCHEDULE_CONVERSATION_INVALID", "请选择可用的独立 Agent 会话", 409)
-    return binding
+    if item is None:
+        raise DomainError("AGENT_SCHEDULE_WORKSPACE_INVALID", "请选择可用的工作区", 409)
+    return item
 
 
 def _schedule_dict(db: Session, schedule: AgentConversationSchedule) -> dict[str, Any]:
-    binding = db.get(AgentConversationBinding, schedule.binding_id)
+    binding = _schedule_binding(db, schedule)
+    directory = (
+        db.get(AgentWorkDirectory, schedule.work_directory_id)
+        if schedule.work_directory_id
+        else None
+    )
     return {
         "id": schedule.id,
         "workspace_id": schedule.workspace_id,
         "binding_id": schedule.binding_id,
         "conversation_title": binding.display_title if binding else None,
+        "work_directory_id": schedule.work_directory_id,
+        "work_directory_name": directory.display_name if directory else None,
+        "workspace_mode": schedule.workspace_mode,
+        "conversation_mode": schedule.conversation_mode,
+        "model_provider_id": schedule.model_provider_id,
+        "model_name": schedule.model_name,
+        "reasoning_effort": schedule.reasoning_effort,
         "name": schedule.name,
         "prompt": schedule.prompt,
         "cron_expression": schedule.cron_expression,
@@ -144,29 +160,94 @@ def list_schedules(db: Session, workspace_id: str) -> list[dict[str, Any]]:
     return [_schedule_dict(db, item) for item in db.scalars(query)]
 
 
+def _automation_prefix(schedule: AgentConversationSchedule) -> str:
+    last_run = schedule.last_run_at.isoformat() if schedule.last_run_at else "never"
+    metadata_root = (
+        "." if schedule.workspace_mode == "AUTOMATION" else f".flowweave/automations/{schedule.id}"
+    )
+    config_path = "automation.toml" if metadata_root == "." else f"{metadata_root}/automation.toml"
+    memory_path = "memory.md" if metadata_root == "." else f"{metadata_root}/memory.md"
+    return (
+        f"Automation: {schedule.name}\n"
+        f"Automation ID: {schedule.id}\n"
+        f"Automation config: {config_path}\n"
+        f"Automation memory: {memory_path}\n"
+        f"Last run: {last_run}\n\n"
+        f"仅在当前自动化工作区中工作。先读取 {config_path} 和 {memory_path}；"
+        f"完成后更新 {memory_path}。所有新建文件、报告和日志必须写入当前工作区。\n\n"
+    )
+
+
+def _automation_prompt(schedule: AgentConversationSchedule) -> str:
+    return _automation_prefix(schedule) + schedule.prompt
+
+
+def _write_automation_files(db: Session, schedule: AgentConversationSchedule) -> None:
+    if not schedule.work_directory_id or not schedule.model_provider_id or not schedule.model_name:
+        raise DomainError("AGENT_SCHEDULE_CONFIGURATION_INCOMPLETE", "定时任务配置不完整", 409)
+    work_directories.write_automation_files(
+        db,
+        schedule.workspace_id,
+        schedule.work_directory_id,
+        automation_id=schedule.id,
+        name=schedule.name,
+        prompt=schedule.prompt,
+        cron_expression=schedule.cron_expression,
+        workspace_mode=schedule.workspace_mode,
+        conversation_mode=schedule.conversation_mode,
+        model_provider_id=schedule.model_provider_id,
+        model_name=schedule.model_name,
+        reasoning_effort=schedule.reasoning_effort,
+    )
+
+
 def create_schedule(
     db: Session,
     workspace_id: str,
     *,
     name: str,
-    binding_id: str,
     prompt: str,
     cron_expression: str,
+    workspace_mode: str,
+    work_directory_id: str | None,
+    conversation_mode: str,
+    model_provider_id: str,
+    model_name: str,
+    reasoning_effort: str | None,
 ) -> dict[str, Any]:
-    _binding(db, workspace_id, binding_id)
     try:
         next_run_at = _next_cron_at(cron_expression, now())
     except ValueError as exc:
         raise DomainError("AGENT_SCHEDULE_CRON_INVALID", str(exc), 422) from exc
+    if workspace_mode == "EXISTING":
+        if not work_directory_id:
+            raise DomainError("AGENT_SCHEDULE_WORKSPACE_REQUIRED", "请选择已有工作区", 422)
+        _work_directory(db, workspace_id, work_directory_id)
+    elif workspace_mode != "AUTOMATION":
+        raise DomainError("AGENT_SCHEDULE_WORKSPACE_MODE_INVALID", "工作区模式无效", 422)
+    if conversation_mode not in {"NEW", "CONTINUE"}:
+        raise DomainError("AGENT_SCHEDULE_CONVERSATION_MODE_INVALID", "会话模式无效", 422)
     schedule = AgentConversationSchedule(
         workspace_id=workspace_id,
-        binding_id=binding_id,
+        work_directory_id=work_directory_id,
+        workspace_mode=workspace_mode,
+        conversation_mode=conversation_mode,
+        model_provider_id=model_provider_id,
+        model_name=model_name,
+        reasoning_effort=reasoning_effort,
         name=name,
         prompt=prompt,
         cron_expression=cron_expression,
         next_run_at=next_run_at,
     )
     db.add(schedule)
+    db.flush()
+    if schedule.workspace_mode == "AUTOMATION":
+        directory = work_directories.create_automation_work_directory(
+            db, workspace_id, schedule.id, f"自动化 · {schedule.name}"
+        )
+        schedule.work_directory_id = str(directory["id"])
+    _write_automation_files(db, schedule)
     finish(db)
     return _schedule_dict(db, schedule)
 
@@ -178,9 +259,12 @@ def update_schedule(
     *,
     expected_row_version: int,
     name: str,
-    binding_id: str,
     prompt: str,
     cron_expression: str,
+    conversation_mode: str,
+    model_provider_id: str,
+    model_name: str,
+    reasoning_effort: str | None,
 ) -> dict[str, Any]:
     schedule = db.scalar(
         select(AgentConversationSchedule)
@@ -196,18 +280,25 @@ def update_schedule(
         raise conflict(
             "schedule was modified", expected=expected_row_version, actual=schedule.row_version
         )
-    _binding(db, workspace_id, binding_id)
+    if conversation_mode not in {"NEW", "CONTINUE"}:
+        raise DomainError("AGENT_SCHEDULE_CONVERSATION_MODE_INVALID", "会话模式无效", 422)
     try:
         next_run_at = _next_cron_at(cron_expression, now())
     except ValueError as exc:
         raise DomainError("AGENT_SCHEDULE_CRON_INVALID", str(exc), 422) from exc
     schedule.name = name
-    schedule.binding_id = binding_id
     schedule.prompt = prompt
     schedule.cron_expression = cron_expression
+    schedule.conversation_mode = conversation_mode
+    schedule.model_provider_id = model_provider_id
+    schedule.model_name = model_name
+    schedule.reasoning_effort = reasoning_effort
+    if conversation_mode == "NEW":
+        schedule.binding_id = None
     schedule.row_version += 1
     if schedule.status == "ACTIVE":
         schedule.next_run_at = next_run_at
+    _write_automation_files(db, schedule)
     finish(db)
     return _schedule_dict(db, schedule)
 
@@ -365,24 +456,25 @@ def _run_binding_id(
     return f"schedule:{schedule.id}:{occurrence.id}"
 
 
-def _copy_source_capabilities(db: Session, source_binding_id: str) -> tuple[str, ...]:
-    source_capabilities = list(
-        db.scalars(
-            select(AgentConversationCapability)
-            .where(AgentConversationCapability.binding_id == source_binding_id)
-            .order_by(AgentConversationCapability.position)
-        )
-    )
-    return tuple(item.capability_version_id for item in source_capabilities)
-
-
-def _work_directory_id(db: Session, binding: AgentConversationBinding) -> str | None:
-    if binding.work_directory_version_id is None:
-        return None
-    return db.scalar(
-        select(AgentWorkDirectoryVersion.work_directory_id).where(
-            AgentWorkDirectoryVersion.id == binding.work_directory_version_id
-        )
+def _bootstrap_run(
+    db: Session,
+    schedule: AgentConversationSchedule,
+    occurrence: AgentConversationScheduleOccurrence,
+) -> dict[str, Any]:
+    if not schedule.work_directory_id:
+        raise DomainError("AGENT_SCHEDULE_WORKSPACE_MISSING", "定时任务工作区不可用", 409)
+    if not schedule.model_provider_id or not schedule.model_name:
+        raise DomainError("AGENT_SCHEDULE_MODEL_MISSING", "定时任务未配置模型", 409)
+    return conversations.bootstrap_conversation(
+        db,
+        schedule.workspace_id,
+        work_directory_id=schedule.work_directory_id,
+        model_provider_id=schedule.model_provider_id,
+        model_name=schedule.model_name,
+        reasoning_effort=schedule.reasoning_effort,
+        content=_automation_prompt(schedule),
+        conversation_id=occurrence.binding_id,
+        idempotency_key=_run_binding_id(schedule, occurrence),
     )
 
 
@@ -401,26 +493,20 @@ def deliver_occurrence(db: Session, occurrence_id: str) -> None:
         db.flush()
         return
     try:
-        source = _binding(db, schedule.workspace_id, schedule.binding_id)
-        if source.model_provider_id is None:
-            raise DomainError("AGENT_SCHEDULE_MODEL_MISSING", "定时任务来源会话未配置模型", 409)
-        created = conversations.bootstrap_conversation(
-            db,
-            schedule.workspace_id,
-            work_directory_id=_work_directory_id(db, source),
-            model_provider_id=source.model_provider_id,
-            model_name=source.model_name,
-            reasoning_effort=source.reasoning_effort,
-            fallback_models=tuple(source.fallback_models_json),
-            content=schedule.prompt,
-            capability_version_ids=_copy_source_capabilities(db, source.id),
-            conversation_id=occurrence.binding_id,
-            idempotency_key=_run_binding_id(schedule, occurrence),
-        )
-        run_binding = created["conversation"]
-        occurrence.binding_id = str(run_binding["id"])
+        if schedule.conversation_mode == "CONTINUE" and schedule.binding_id:
+            delivered = conversations.message(
+                db, schedule.workspace_id, schedule.binding_id, _automation_prompt(schedule)
+            )
+            occurrence.binding_id = schedule.binding_id
+            occurrence.message_cursor = delivered.get("cursor")
+        else:
+            created = _bootstrap_run(db, schedule, occurrence)
+            run_binding = created["conversation"]
+            occurrence.binding_id = str(run_binding["id"])
+            occurrence.message_cursor = created.get("cursor")
+            if schedule.conversation_mode == "CONTINUE":
+                schedule.binding_id = occurrence.binding_id
         occurrence.state = "STARTED"
-        occurrence.message_cursor = created.get("cursor")
         schedule.last_run_at = now()
     except DomainError as exc:
         occurrence.state = "FAILED"

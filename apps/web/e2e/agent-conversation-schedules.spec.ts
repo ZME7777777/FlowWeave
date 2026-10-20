@@ -13,7 +13,7 @@ test('standalone Agent Workspace exposes a separate conversation schedule panel'
     id: 'scheduled-conversation', display_title: '日报会话', title_state: 'MANUAL', lifecycle: 'ACTIVE',
     streaming_callback_ready: true, write_available: true, execution_status: 'idle', created_at: now, updated_at: now,
   };
-  const schedules = [{ id: 'daily-schedule', workspace_id: workspace.id, binding_id: conversation.id, conversation_title: conversation.display_title, name: '每日项目检查', prompt: '请检查项目状态。', cron_expression: '0 9 * * 1-5', status: 'ACTIVE', next_run_at: '2026-10-20T01:00:00Z', last_run_at: now, row_version: 1, created_at: now, updated_at: now }];
+  const schedules = [{ id: 'daily-schedule', workspace_id: workspace.id, binding_id: null, work_directory_id: 'automation-directory', work_directory_name: '自动化 · 每日项目检查', workspace_mode: 'AUTOMATION', conversation_mode: 'NEW', model_provider_id: 'provider-1', model_name: 'model-1', reasoning_effort: 'medium', name: '每日项目检查', prompt: '请检查项目状态。', cron_expression: '0 9 * * 1-5', status: 'ACTIVE', next_run_at: '2026-10-20T01:00:00Z', last_run_at: now, row_version: 1, created_at: now, updated_at: now }];
   await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
   await page.route('**/api/v1/**', async route => {
     const request = route.request();
@@ -31,9 +31,10 @@ test('standalone Agent Workspace exposes a separate conversation schedule panel'
     if (path.endsWith('/conversation-activity')) return json(route, { running_binding_ids: [] });
     if (path.endsWith('/hydration')) return json(route, { events: { events: [], next_cursor: null, history_cursor: null, result: { status: 'COMPLETED' } }, context: {}, readiness: { ready: true, execution_status: 'idle' } });
     if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
-    if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
+    if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [{ id: 'existing-directory', display_name: '已有项目目录' }] });
     if (path.endsWith('/workspace')) return json(route, { root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', files: [], repositories: [], runtime: {}, ide: { gateway: { supported: false } } });
-    if (path.endsWith('/model-providers') || path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.endsWith('/model-providers')) return json(route, [{ id: 'provider-1', name: '测试供应商', connection_state: 'CONNECTED', models: [{ model_name: 'model-1', enabled: true, is_default: true, default_reasoning_effort: 'medium', supported_reasoning_efforts: ['low', 'medium', 'high'] }] }]);
+    if (path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
     if (path.includes('/conversations/') && request.method() === 'GET') return json(route, conversation);
     return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
   });
@@ -57,8 +58,11 @@ test('standalone Agent Workspace exposes a separate conversation schedule panel'
   await expect(page.getByRole('menuitem', { name: '立即运行' })).toBeVisible();
   await expect(page.getByRole('menuitem', { name: '编辑' })).toBeVisible();
   await page.getByRole('region', { name: '会话定时任务' }).getByRole('button', { name: '新建', exact: true }).click();
-  await expect(page.getByRole('heading', { name: '新建会话定时任务' })).toBeVisible();
-  await expect(page.getByLabel('来源会话')).toHaveValue('scheduled-conversation');
+  await expect(page.getByRole('heading', { name: '新建定时任务' })).toBeVisible();
+  await expect(page.getByLabel('工作区模式')).toHaveValue('AUTOMATION');
+  await expect(page.getByLabel('运行方式')).toHaveValue('NEW');
+  await expect(page.getByLabel('模型供应商')).toHaveValue('provider-1');
+  await expect(page.getByLabel('模型名称')).toHaveValue('model-1');
   await page.getByRole('navigation', { name: 'Agent 工作区导航' }).getByRole('button', { name: '会话管理' }).click();
   await expect(page.getByRole('region', { name: '会话管理' })).toBeVisible();
   await expect(page.getByRole('heading', { name: '会话管理', exact: true })).toBeVisible();

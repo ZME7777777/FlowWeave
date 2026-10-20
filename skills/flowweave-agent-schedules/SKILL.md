@@ -1,29 +1,58 @@
 ---
 name: flowweave-agent-schedules
-description: 创建、查询、更新、暂停、恢复、手动触发或删除 FlowWeave Agent Workspace 会话定时任务，并读取运行 occurrence；FlowRun 调度转 flowweave-schedules。
+description: 创建、查询、更新、暂停、恢复、手动触发或删除 FlowWeave Agent 自动化模板，并读取其运行 occurrence；FlowRun 调度转 flowweave-schedules。
 ---
 
-# FlowWeave Agent 会话定时任务
+# FlowWeave Agent 定时自动化
 
-**开始前先完整阅读 `../flowweave/SKILL.md`。** 本 Skill 只处理顶层 Agent Workspace 的会话定时任务，不处理 FlowRun 周期调度；后者转 `flowweave-schedules`。
+**开始前先完整阅读 `../flowweave/SKILL.md`。** 本 Skill 只处理顶层 Agent Workspace 自动化模板，不处理 FlowRun 周期调度；后者转 `flowweave-schedules`。
 
-## 对象与边界
+## 模板边界
 
-会话定时任务保存一个活动的顶层 Agent Workspace conversation binding、提示词和五段 UTC Cron。来源会话只提供冻结的模型、能力和工作目录配置；每次定时或手动触发均创建一条新的独立会话并投递提示词，绝不向来源会话追加消息。
+一个自动化模板保存业务提示词、五段 UTC Cron、模型配置、工作区模式和会话模式。它不绑定或复制任意来源会话。
 
-只能使用平台公开的 `agent schedules` 和 `agent schedule-*` 接口。不得用顶层 `schedule`、外部 cron、Docker、数据库、Runtime Provider 或 OpenHands 私有端点替代，以免绕过 occurrence、状态和审计。
+- `AUTOMATION` 工作区模式为默认值：平台创建一个固定的模板专属工作区，后续每次运行持续使用它。
+- `EXISTING` 工作区模式绑定用户选择的已有工作区；定时详情仍只显示该模板的运行会话和关联产物，不能把它当作该物理工作区的完整视图。
+- `NEW` 会话模式为默认值：每次触发创建完整独立 Agent 会话。
+- `CONTINUE` 会话模式由模板持有一个平台管理的持续会话，后续 occurrence 向该会话追加自动化消息。
+
+平台在模板创建时自动写入配置与记忆文件。用户和本 Skill **只能描述业务目标**，不得手写或伪造平台前缀、任务 ID、配置文件路径、记忆文件路径或上次运行信息。
+
+每次投递会在业务提示词开头自动加入：
+
+```text
+Automation: <模板名称>
+Automation ID: <平台生成 ID>
+Automation memory: <平台管理的 memory.md>
+Last run: <平台状态>
+```
+
+随后平台加入“仅在当前自动化工作区内工作”“读取并更新配置与记忆文件”“产物必须写入工作区”的固定约束。
+
+## 生成业务提示词草案
+
+接到用户的自然语言自动化需求时，先将其整理为一份**仅包含业务内容**的可编辑提示词：
+
+1. 明确本次任务目标、输入、处理步骤和最终摘要；
+2. 指明需要生成、检查或更新的业务产物及其相对路径；
+3. 对数据证据、输出语言、条数、格式和异常说明提出具体要求；
+4. 明确用户禁止的业务修改、外部访问或资源使用；
+5. 不要重复 Automation、工作区、memory、Last run 或平台安全前缀；这些由平台注入。
+
+例如用户要求“每天生成项目日报”时，业务提示词可要求读取已有报告、生成 `reports/latest.html`、列出管理摘要并验证产物存在；不要写入机器绝对路径，不要要求绕过登录、限制、付费墙、robots 或限额。
 
 ## 操作闭环
 
-1. 读取 Workspace、活动候选会话和已有定时任务，确认真实 ID：
+1. 读取 Workspace、工作区目录、模型提供商和已有自动化，确认真实 ID：
 
    ```bash
    flowweave agent workspace <workspace-id>
-   flowweave agent conversations <workspace-id>
+   flowweave agent work-directories <workspace-id>
+   flowweave resource model-providers list
    flowweave agent schedules <workspace-id>
    ```
 
-2. 创建时使用 `name`、`binding_id`、`prompt` 和 `cron_expression`；Cron 必须为五段 UTC 表达式。先审阅请求：
+2. 生成业务提示词草案后，创建请求必须包含：`name`、`prompt`、`cron_expression`、`workspace_mode`、`conversation_mode`、`model_provider_id`、`model_name` 和可选 `reasoning_effort`。仅在 `workspace_mode=EXISTING` 时填写 `work_directory_id`。先审阅请求：
 
    ```bash
    flowweave agent schedule-create <workspace-id> \
@@ -41,7 +70,7 @@ description: 创建、查询、更新、暂停、恢复、手动触发或删除 
      --expected-row-version <row-version> --dry-run
    ```
 
-4. 运行状态和新会话 binding ID 只以 occurrence 为准；仅使用其返回 ID 打开产生的会话：
+4. 运行状态和会话 binding ID 只以 occurrence 为准；仅使用其返回 ID 打开产生或续用的会话：
 
    ```bash
    flowweave agent schedule-occurrences <workspace-id> <schedule-id>
