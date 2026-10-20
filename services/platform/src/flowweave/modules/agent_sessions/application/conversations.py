@@ -41,8 +41,10 @@ from flowweave.modules.agent_sessions.application.draft_attachments import (
     assert_attachment_owner_unbound,
     delete_draft_attachment_cleanup_tasks,
     delete_owned_attachment_files,
-    delete_pending_attachment as delete_pending_attachment_file,
     enqueue_draft_attachment_cleanup,
+)
+from flowweave.modules.agent_sessions.application.draft_attachments import (
+    delete_pending_attachment as delete_pending_attachment_file,
 )
 from flowweave.modules.agent_sessions.application.event_branch import (
     complete_active_branch,
@@ -63,7 +65,7 @@ from flowweave.modules.agent_sessions.infrastructure.models import (
 )
 from flowweave.modules.agent_workspaces import public as agent_workspace_host
 from flowweave.modules.catalog.public import resolve_version
-from flowweave.modules.credentials.application.service import credentials_for_agent
+from flowweave.modules.credentials.application.service import resolve_credentials_for_agent
 from flowweave.modules.model_providers.public import has_connected_default_model
 from flowweave.modules.sandboxes.public import ManagedSandbox
 from flowweave.modules.tasks.public import enqueue
@@ -1462,6 +1464,7 @@ def _create_native_conversation(
     *,
     allow_existing: bool = False,
     system_message_suffix_append: str = "",
+    credential_ids: tuple[str, ...] | None = None,
 ) -> RuntimeHandle:
     ensure_credential_sync_schema(db)
     runtime = db.scalar(
@@ -1500,7 +1503,9 @@ def _create_native_conversation(
         runtime_root=runtime_root,
         system_message_suffix_append=system_message_suffix_append,
     )
-    conversation_secrets, credential_context = credentials_for_agent(db)
+    conversation_secrets, credential_context, _credential_summaries = resolve_credentials_for_agent(
+        db, credential_ids
+    )
     if credential_context:
         agent_spec = replace(
             agent_spec,
@@ -1546,7 +1551,7 @@ def _create_native_conversation(
         raise DomainError("AGENT_CONVERSATION_IDENTITY_DRIFT", "会话持久化身份校验失败", 409)
     if identity.workspace_working_dir != working_directory:
         raise DomainError("AGENT_WORK_DIRECTORY_IDENTITY_DRIFT", "会话工作目录校验失败", 409)
-    record_initial_credential_sync(db, binding)
+    record_initial_credential_sync(db, binding, credential_ids)
     return replace(handle, conversation_id=binding.openhands_conversation_id)
 
 
@@ -1906,6 +1911,7 @@ def bootstrap_conversation(
     workspace_references: tuple[dict[str, str], ...] = (),
     annotations: tuple[dict[str, Any], ...] = (),
     capability_version_ids: tuple[str, ...] = (),
+    credential_ids: tuple[str, ...] | None = None,
     idempotency_key: str,
     sidebar_source_binding_id: str | None = None,
     system_message_suffix_append: str = "",
@@ -2074,6 +2080,7 @@ def bootstrap_conversation(
             binding.working_directory,
             allow_existing=command.attempt_count > 1,
             system_message_suffix_append=system_message_suffix_append,
+            credential_ids=credential_ids,
         )
         previous_event_id = get_runtime().reload_conversation(handle).event_id
         binding.bootstrap_parent_event_id = previous_event_id
@@ -3680,9 +3687,7 @@ def delete_draft_attachment(db: Session, workspace_id: str, owner_id: str, path:
     )
 
 
-def delete_pending_attachment(
-    db: Session, workspace_id: str, binding_id: str, path: str
-) -> bool:
+def delete_pending_attachment(db: Session, workspace_id: str, binding_id: str, path: str) -> bool:
     workspace = _workspace(db, workspace_id)
     binding = _binding(db, workspace_id, binding_id, lock=True)
     return delete_pending_attachment_file(

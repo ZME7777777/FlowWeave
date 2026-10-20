@@ -31,7 +31,7 @@ import { FileTypeIcon } from '../FileTypeIcon';
 import { WebsiteIcon } from '../WebsiteIcon';
 import { subagentAvatarSlots, type SubagentAvatarSlot } from '../../utils/subagentAvatar';
 import { workspaceFileChanges, workspaceRelativePath, type WorkspaceFileChange } from './fileChanges';
-import type { AgentAttachment, AgentConversation, AgentConversationActivity, AgentConversationAnnotation, AgentConversationContext, AgentConversationCredentialSyncEntry, AgentConversationHydration, AgentConversationInputReadiness, AgentConversationPage, AgentConversationReference, AgentConversationSearch, AgentPendingConfirmationAction, AgentSessionCapability, AgentSessionMcpReadiness, AgentSessionWorkDirectory, AgentSessionWorkDirectoryList, AgentSessionWorkspaceDetails, AgentWorkspaceReference, CapabilityAsset, CapabilityCollection, ModelProvider, OpenHandsConversationEvent, OpenHandsConversationEventBatch, RuntimeTaskControlSnapshot, RuntimeTaskUsageSnapshot, WorkspaceGitChangeKind, WorkspaceGitChangedFile, WorkspaceGitChanges, WorkspaceGitCommitDetails, WorkspaceGitFileDiff } from '../../types';
+import type { AgentAttachment, AgentConversation, AgentConversationActivity, AgentConversationAnnotation, AgentConversationContext, AgentConversationCredentialSyncEntry, AgentConversationHydration, AgentConversationInputReadiness, AgentConversationPage, AgentConversationReference, AgentConversationSearch, AgentPendingConfirmationAction, AgentSessionCapability, AgentSessionMcpReadiness, AgentSessionWorkDirectory, AgentSessionWorkDirectoryList, AgentSessionWorkspaceDetails, AgentWorkspaceReference, CapabilityAsset, CapabilityCollection, ModelProvider, OpenHandsConversationEvent, OpenHandsConversationEventBatch, RuntimeTaskControlSnapshot, RuntimeTaskUsageSnapshot, WebsiteCredential, WorkspaceGitChangeKind, WorkspaceGitChangedFile, WorkspaceGitChanges, WorkspaceGitCommitDetails, WorkspaceGitFileDiff } from '../../types';
 import '../../pages/agent-workbench.css';
 import '../../pages/agent-workbench-layout.css';
 
@@ -1238,9 +1238,14 @@ function stringValues(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0) : [];
 }
 
-function CapabilityManager({ workspaceId, bindingId, conversationCapabilities, draftCapabilityIds, onClose, onCreateEnhancedConversation }: {
+type DraftCredentialEntry = WebsiteCredential & { sync_state?: AgentConversationCredentialSyncEntry['sync_state'] };
+
+
+export function CapabilityManager({ workspaceId, bindingId, conversationCapabilities, draftCapabilityIds, draftCredentialIds, onClose, onCreateEnhancedConversation, onDraftCredentialIdsChange }: {
   workspaceId: string; bindingId?: string; conversationCapabilities?: AgentSessionCapability[]; onClose: () => void;
-  draftCapabilityIds?: string[]; onCreateEnhancedConversation?: (capabilityVersionIds: string[]) => void;
+  draftCapabilityIds?: string[]; draftCredentialIds?: string[];
+  onCreateEnhancedConversation?: (capabilityVersionIds: string[]) => void;
+  onDraftCredentialIdsChange?: (credentialIds: string[]) => void;
 }) {
   const { api } = useAgentSessionGateway();
   const host = useAgentSessionHost();
@@ -1270,17 +1275,27 @@ function CapabilityManager({ workspaceId, bindingId, conversationCapabilities, d
     queryFn: () => api.credentialSync(workspaceId, bindingId!),
     enabled: Boolean(bindingId && managerTab === 'CREDENTIALS'),
   });
+  const credentialCatalogQuery = useQuery({
+    queryKey: ['website-credentials'],
+    queryFn: agentWorkspaceApi.websiteCredentials,
+    enabled: Boolean(!bindingId && managerTab === 'CREDENTIALS'),
+  });
   useEffect(() => {
     const current = bindingId ? conversationCapabilities : draftCapabilityIds?.map(id => ({ id }));
     if (current) setSelectedIds(current.map(item => item.id));
   }, [bindingId, conversationCapabilities, draftCapabilityIds]);
   useEffect(() => {
-    if (!credentialQuery.data || credentialSelectionInitialized.current) return;
-    credentialSelectionInitialized.current = true;
-    setSelectedCredentialIds(credentialQuery.data.credentials
-      .filter(item => item.sync_state === 'NEW' || item.sync_state === 'MODIFIED')
-      .map(item => item.id));
-  }, [credentialQuery.data]);
+    if (credentialSelectionInitialized.current) return;
+    if (bindingId && credentialQuery.data) {
+      credentialSelectionInitialized.current = true;
+      setSelectedCredentialIds(credentialQuery.data.credentials
+        .filter(item => item.sync_state === 'NEW' || item.sync_state === 'MODIFIED')
+        .map(item => item.id));
+    } else if (!bindingId && credentialCatalogQuery.data) {
+      credentialSelectionInitialized.current = true;
+      setSelectedCredentialIds(draftCredentialIds ?? []);
+    }
+  }, [bindingId, credentialCatalogQuery.data, credentialQuery.data, draftCredentialIds]);
   useEffect(() => {
     if (!collectionMenuOpen) return;
     const closeOnOutsidePointer = (event: PointerEvent) => {
@@ -1359,7 +1374,10 @@ function CapabilityManager({ workspaceId, bindingId, conversationCapabilities, d
       return latest;
     },
     onSuccess: value => {
-      if (!bindingId) onCreateEnhancedConversation?.(value as string[]);
+      if (!bindingId) {
+        onCreateEnhancedConversation?.(value as string[]);
+        onDraftCredentialIdsChange?.(selectedCredentialIds);
+      }
       if (bindingId && value) {
         void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversations', workspaceId) });
         queryClient.setQueryData<AgentConversation>(sessionQueryKey(host, 'conversation', workspaceId, bindingId), value as AgentConversation);
@@ -1404,28 +1422,31 @@ function CapabilityManager({ workspaceId, bindingId, conversationCapabilities, d
     else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
   };
   const busy = save.isPending || credentialSync.isPending;
-  const toggleCredential = (credential: AgentConversationCredentialSyncEntry) => setSelectedCredentialIds(current => current.includes(credential.id) ? current.filter(id => id !== credential.id) : [...current, credential.id]);
+  const credentialEntries = (bindingId ? credentialQuery.data?.credentials : credentialCatalogQuery.data) as DraftCredentialEntry[] | undefined;
+  const credentialLoading = bindingId ? credentialQuery.isLoading : credentialCatalogQuery.isLoading;
+  const credentialError = bindingId ? credentialQuery.error : credentialCatalogQuery.error;
+  const toggleCredential = (credential: DraftCredentialEntry) => setSelectedCredentialIds(current => current.includes(credential.id) ? current.filter(id => id !== credential.id) : [...current, credential.id]);
   return <div className="agent-capability-backdrop" role="presentation" onPointerDown={event => { if (event.target === event.currentTarget && !busy) onClose(); }}>
     <section ref={dialog} className={`agent-capability-manager${bindingId ? ' has-session-tabs' : ''}${managerTab === 'CREDENTIALS' ? ' credentials-tab' : ''}`} role="dialog" aria-modal="true" aria-labelledby="agent-capability-title" onKeyDown={trapFocus}>
       <header><h2 id="agent-capability-title">会话配置</h2><button ref={closeButton} type="button" aria-label="关闭会话配置" disabled={busy} onClick={onClose}><X size={18}/></button></header>
-      {bindingId && <div className="agent-session-config-tabs"><button type="button" className={managerTab === 'CAPABILITIES' ? 'active' : ''} onClick={() => setManagerTab('CAPABILITIES')}>能力</button><button type="button" className={managerTab === 'CREDENTIALS' ? 'active' : ''} onClick={() => setManagerTab('CREDENTIALS')}>认证</button></div>}
+      <div className="agent-session-config-tabs"><button type="button" className={managerTab === 'CAPABILITIES' ? 'active' : ''} onClick={() => setManagerTab('CAPABILITIES')}>能力</button><button type="button" className={managerTab === 'CREDENTIALS' ? 'active' : ''} onClick={() => setManagerTab('CREDENTIALS')}>认证</button></div>
       {managerTab === 'CREDENTIALS' ? <div className="agent-credential-sync">
         <section className="agent-credential-sync-intro">
           <span className="agent-credential-sync-intro-icon"><ShieldAlert size={16}/></span>
-          <span><b>认证同步</b><small>{credentialQuery.data?.initialized_at ? '仅同步标记为新增或修改的认证；点击条目可调整本次同步范围。' : '此会话尚未记录认证同步状态；请按需选择后同步。'}</small></span>
+          <span><b>{bindingId ? '认证同步' : '默认认证'}</b><small>{bindingId ? (credentialQuery.data?.initialized_at ? '仅同步标记为新增或修改的认证；点击条目可调整本次同步范围。' : '此会话尚未记录认证同步状态；请按需选择后同步。') : '选择后将作为此定时任务后续运行会话的默认认证。'}</small></span>
         </section>
         <div className="agent-credential-sync-content">
-          <div className="agent-credential-sync-heading"><span>认证名称</span><span>状态</span><span>本次同步</span></div>
-          <div className="agent-capability-list">{credentialQuery.isLoading ? <p>正在读取认证信息…</p> : credentialQuery.error ? <p>{credentialQuery.error instanceof Error ? credentialQuery.error.message : '认证信息暂不可用。'}</p> : credentialQuery.data?.credentials.length ? credentialQuery.data.credentials.map(credential => {
+          <div className="agent-credential-sync-heading"><span>认证名称</span><span>状态</span><span>{bindingId ? '本次同步' : '默认启用'}</span></div>
+          <div className="agent-capability-list">{credentialLoading ? <p>正在读取认证信息…</p> : credentialError ? <p>{credentialError instanceof Error ? credentialError.message : '认证信息暂不可用。'}</p> : credentialEntries?.length ? credentialEntries.map(credential => {
             const selected = selectedCredentialIds.includes(credential.id);
-            const current = credential.sync_state === 'CURRENT';
-            const state = credential.sync_state === 'CURRENT' ? '已同步' : credential.sync_state === 'NEW' ? '有新增' : credential.sync_state === 'MODIFIED' ? '有修改' : '未记录';
-            const stateClass = credential.sync_state.toLocaleLowerCase();
+            const current = Boolean(bindingId && credential.sync_state === 'CURRENT');
+            const state = !bindingId ? '默认' : credential.sync_state === 'CURRENT' ? '已同步' : credential.sync_state === 'NEW' ? '有新增' : credential.sync_state === 'MODIFIED' ? '有修改' : '未记录';
+            const stateClass = bindingId ? credential.sync_state?.toLocaleLowerCase() ?? 'unrecorded' : 'default';
             return <button type="button" key={credential.id} className={`${selected ? 'selected' : ''}${current ? ' locked' : ''}`} disabled={current} aria-label={current ? `${credential.name}（已同步）` : undefined} title={current ? '该认证已同步到当前会话。' : undefined} onClick={() => toggleCredential(credential)}><span className="agent-capability-icon plugin"><ShieldAlert size={17}/></span><span><b>{credential.name}</b><small>{credential.target_host}{credential.target_path} · {credential.auth_type === 'TOKEN' ? 'Token' : '用户名密码'}</small></span><em className={`agent-credential-sync-state ${stateClass}`}>{state}</em><i aria-hidden="true">{selected || current ? <Check size={15}/> : null}</i></button>;
-          }) : <p>当前没有可同步的认证信息。</p>}</div>
+          }) : <p>当前没有可用认证信息。</p>}</div>
         </div>
         {credentialSync.error && <div className="agent-capability-error"><p>{credentialSync.error.message}</p></div>}
-        <footer><span className="agent-credential-sync-count">已选择 <b>{selectedCredentialIds.length}</b> 项认证</span><button type="button" className="secondary" disabled={busy} onClick={onClose}>关闭</button><button type="button" className="primary" disabled={busy || credentialQuery.isLoading || selectedCredentialIds.length === 0} onClick={() => credentialSync.mutate()}><RefreshCw size={14}/>{credentialSync.isPending ? '正在同步…' : '同步认证'}</button></footer>
+        <footer><span className="agent-credential-sync-count">已选择 <b>{selectedCredentialIds.length}</b> 项认证</span><button type="button" className="secondary" disabled={busy} onClick={onClose}>{bindingId ? '关闭' : '取消'}</button>{bindingId ? <button type="button" className="primary" disabled={busy || credentialLoading || selectedCredentialIds.length === 0} onClick={() => credentialSync.mutate()}><RefreshCw size={14}/>{credentialSync.isPending ? '正在同步…' : '同步认证'}</button> : <button type="button" className="primary" disabled={busy || credentialLoading} onClick={() => { onDraftCredentialIdsChange?.(selectedCredentialIds); onClose(); }}>保存认证配置</button>}</footer>
       </div> : <>
       <div className="agent-capability-toolbar"><div className="agent-capability-tabs">{([['ALL', 'all'], ['PLUGIN', 'plugin'], ['MCP', 'MCP'], ['SKILL', 'skill'], ['CONTEXT', 'context'], ['AGENT_DEFINITION', 'agent'], ['HOOK', 'hook']] as const).map(([value, label]) => <button type="button" key={value} className={kind === value ? 'active' : ''} onClick={() => { setKind(value); setCollectionMenuOpen(false); }}>{label}</button>)}</div><div className="agent-capability-toolbar-actions">{(kind === 'ALL' || kind === 'SKILL') && collectionsQuery.data?.length ? <div ref={collectionMenu} className="agent-capability-collection-menu"><button type="button" className="agent-capability-collection-trigger" aria-label="Skill 组合" title="Skill 组合" aria-expanded={collectionMenuOpen} onClick={() => setCollectionMenuOpen(current => !current)}><Layers3 size={15}/></button>{collectionMenuOpen && <div className="agent-capability-collection-popover" role="menu" aria-label="Skill 组合">{collectionsQuery.data.map(collection => { const memberIds = collection.members.map(member => member.id).filter(id => byId.has(id)); const selected = memberIds.length > 0 && memberIds.every(id => selectedIds.includes(id)); return <button type="button" role="menuitemcheckbox" aria-checked={selected} key={collection.id} className={selected ? 'selected' : ''} onClick={() => toggleCollection(collection)}><span><b>{collection.name}</b><small>{memberIds.length} 项能力</small></span>{selected && <Check size={14}/>}</button>; })}</div>}</div> : null}{!readonlyCreationOnly && <button type="button" className="agent-capability-select-visible" disabled={!selectableVisibleIds.length} onClick={toggleVisible}>{allVisibleSelected ? '取消选择筛选结果' : `选择筛选结果 (${selectableVisibleIds.length})`}</button>}<label className="agent-capability-search"><Search size={15}/><input value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索名称、说明或文件…"/></label></div></div>
       <div className="agent-capability-summary"><span>{readonlyCreationOnly ? <>已装配 <b>{kind === 'CONTEXT' ? frozenContextCount : kind === 'HOOK' ? frozenHookCount : frozenAgentCount}</b> 个 {kind === 'CONTEXT' ? 'Context' : kind === 'HOOK' ? 'Hook' : 'Agent'}</> : <>{bindingId ? '已注册' : '已选择'} <b>{selectedIds.length}</b> 项</>}</span><span>{readonlyCreationOnly ? `${kind === 'CONTEXT' ? 'Context' : kind === 'HOOK' ? 'Hook' : 'Agent'} 在创建会话时冻结，仅供查看，不能新增、编辑、取消或删除。` : bindingId ? '可继续注册新能力；已注册能力已锁定，不能取消或删除。' : '选择只作用于本次新会话，不会改变工作区或其他会话。'}</span></div>

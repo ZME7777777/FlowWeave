@@ -30,6 +30,8 @@ def test_agent_conversation_schedule_scans_and_enqueues_one_occurrence(
             model_provider_id="provider-1",
             model_name="model-1",
             reasoning_effort=None,
+            capability_version_ids=(),
+            credential_ids=(),
         )
         schedule = db.get(AgentConversationSchedule, created["id"])
         assert schedule is not None
@@ -86,6 +88,8 @@ def test_agent_conversation_schedule_delivery_creates_a_distinct_native_conversa
             model_provider_id="provider-1",
             model_name="model-1",
             reasoning_effort=None,
+            capability_version_ids=(),
+            credential_ids=(),
         )
         schedule = db.get(AgentConversationSchedule, created["id"])
         assert schedule is not None

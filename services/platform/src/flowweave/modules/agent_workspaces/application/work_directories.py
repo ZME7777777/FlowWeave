@@ -489,6 +489,8 @@ def write_automation_files(
     model_provider_id: str,
     model_name: str,
     reasoning_effort: str | None,
+    capability_version_ids: tuple[str, ...],
+    credential_ids: tuple[str, ...],
 ) -> None:
     item = _directory(db, workspace_id, work_directory_id)
     version = _version(db, item)
@@ -511,6 +513,8 @@ def write_automation_files(
                 f"model_provider_id = {json.dumps(model_provider_id)}",
                 f"model_name = {json.dumps(model_name)}",
                 f"reasoning_effort = {json.dumps(reasoning_effort or '')}",
+                f"capability_version_ids = {json.dumps(list(capability_version_ids))}",
+                f"credential_ids = {json.dumps(list(credential_ids))}",
                 "",
                 "[prompt]",
                 f"business = {json.dumps(prompt, ensure_ascii=False)}",

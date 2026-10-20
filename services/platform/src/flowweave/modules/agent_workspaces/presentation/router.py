@@ -125,6 +125,8 @@ class AgentConversationScheduleWrite(_Write):
     model_provider_id: str = Field(min_length=1, max_length=36)
     model_name: str = Field(min_length=1, max_length=240)
     reasoning_effort: str | None = Field(default=None, max_length=30)
+    capability_version_ids: list[str] = Field(default_factory=list, max_length=100)
+    credential_ids: list[str] = Field(default_factory=list, max_length=100)
 
 
 class AgentConversationScheduleStateWrite(_Write):
@@ -141,6 +143,8 @@ class AgentConversationSchedulePatchWrite(_Write):
     model_provider_id: str = Field(min_length=1, max_length=36)
     model_name: str = Field(min_length=1, max_length=240)
     reasoning_effort: str | None = Field(default=None, max_length=30)
+    capability_version_ids: list[str] = Field(default_factory=list, max_length=100)
+    credential_ids: list[str] = Field(default_factory=list, max_length=100)
 
 
 class AgentConversationCapabilityAddWrite(_Write):
@@ -784,6 +788,8 @@ async def create_agent_conversation_schedule(
             model_provider_id=payload.model_provider_id,
             model_name=payload.model_name,
             reasoning_effort=payload.reasoning_effort,
+            capability_version_ids=tuple(payload.capability_version_ids),
+            credential_ids=tuple(payload.credential_ids),
         ),
     )
 
@@ -822,6 +828,8 @@ async def update_agent_conversation_schedule(
             model_provider_id=payload.model_provider_id,
             model_name=payload.model_name,
             reasoning_effort=payload.reasoning_effort,
+            capability_version_ids=tuple(payload.capability_version_ids),
+            credential_ids=tuple(payload.credential_ids),
         ),
     )
 

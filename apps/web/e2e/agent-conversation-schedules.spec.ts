@@ -13,7 +13,7 @@ test('standalone Agent Workspace exposes a separate conversation schedule panel'
     id: 'scheduled-conversation', display_title: '日报会话', title_state: 'MANUAL', lifecycle: 'ACTIVE',
     streaming_callback_ready: true, write_available: true, execution_status: 'idle', created_at: now, updated_at: now,
   };
-  const schedules = [{ id: 'daily-schedule', workspace_id: workspace.id, binding_id: null, work_directory_id: 'automation-directory', work_directory_name: '自动化 · 每日项目检查', workspace_mode: 'AUTOMATION', conversation_mode: 'NEW', model_provider_id: 'provider-1', model_name: 'model-1', reasoning_effort: 'medium', name: '每日项目检查', prompt: '请检查项目状态。', cron_expression: '0 9 * * 1-5', status: 'ACTIVE', next_run_at: '2026-10-20T01:00:00Z', last_run_at: now, row_version: 1, created_at: now, updated_at: now }];
+  const schedules = [{ id: 'daily-schedule', workspace_id: workspace.id, binding_id: null, work_directory_id: 'automation-directory', work_directory_name: '自动化 · 每日项目检查', workspace_mode: 'AUTOMATION', conversation_mode: 'NEW', model_provider_id: 'provider-1', model_name: 'model-1', reasoning_effort: 'medium', capability_version_ids: [], credential_ids: [], name: '每日项目检查', prompt: '请检查项目状态。', cron_expression: '0 9 * * 1-5', status: 'ACTIVE', next_run_at: '2026-10-20T01:00:00Z', last_run_at: now, row_version: 1, created_at: now, updated_at: now }];
   await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
   await page.route('**/api/v1/**', async route => {
     const request = route.request();
@@ -34,6 +34,7 @@ test('standalone Agent Workspace exposes a separate conversation schedule panel'
     if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [{ id: 'existing-directory', display_name: '已有项目目录' }] });
     if (path.endsWith('/workspace')) return json(route, { root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', files: [], repositories: [], runtime: {}, ide: { gateway: { supported: false } } });
     if (path.endsWith('/model-providers')) return json(route, [{ id: 'provider-1', name: '测试供应商', connection_state: 'CONNECTED', models: [{ model_name: 'model-1', enabled: true, is_default: true, default_reasoning_effort: 'medium', supported_reasoning_efforts: ['low', 'medium', 'high'] }] }]);
+    if (path.endsWith('/website-credentials')) return json(route, [{ id: 'credential-1', name: '测试认证', target_host: 'example.test', target_path: '/', include_subdomains: false, auth_type: 'TOKEN', has_username: false, has_secret: true, row_version: 1, environment_names: { token: 'TEST_TOKEN' }, created_at: now, updated_at: now }]);
     if (path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
     if (path.includes('/conversations/') && request.method() === 'GET') return json(route, conversation);
     return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
@@ -66,6 +67,12 @@ test('standalone Agent Workspace exposes a separate conversation schedule panel'
   await page.getByLabel('工作区模式').click();
   await expect(page.getByRole('listbox', { name: '工作区模式' })).toBeVisible();
   await expect(page.getByRole('option', { name: /绑定已有工作区/ })).toBeVisible();
+  await page.getByRole('button', { name: /配置会话/ }).click();
+  await expect(page.getByRole('dialog', { name: '会话配置' })).toBeVisible();
+  await page.getByRole('button', { name: '认证' }).click();
+  await expect(page.getByText('默认认证', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '测试认证' })).toBeVisible();
+  await page.getByRole('button', { name: '关闭会话配置' }).click();
   await page.getByRole('navigation', { name: 'Agent 工作区导航' }).getByRole('button', { name: '会话管理' }).click();
   await expect(page.getByRole('region', { name: '会话管理' })).toBeVisible();
   await expect(page.getByRole('heading', { name: '会话管理', exact: true })).toBeVisible();

@@ -803,6 +803,8 @@ export interface AgentConversationSchedule {
   model_provider_id?: string | null;
   model_name?: string | null;
   reasoning_effort?: string | null;
+  capability_version_ids: string[];
+  credential_ids: string[];
   name: string;
   prompt: string;
   cron_expression: string;

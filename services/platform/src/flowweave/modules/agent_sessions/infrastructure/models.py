@@ -160,6 +160,8 @@ class AgentConversationSchedule(Base):
     model_provider_id: Mapped[str | None] = mapped_column(String(36), index=True)
     model_name: Mapped[str | None] = mapped_column(String(240))
     reasoning_effort: Mapped[str | None] = mapped_column(String(30))
+    capability_version_ids_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    credential_ids_json: Mapped[list[str]] = mapped_column(JSON, default=list)
     name: Mapped[str] = mapped_column(String(220))
     prompt: Mapped[str] = mapped_column(Text)
     cron_expression: Mapped[str] = mapped_column(String(120))

@@ -100,7 +100,9 @@ def list_credential_sync_state(db: Session, binding: AgentConversationBinding) -
                         "CURRENT"
                         if (record := synced.get(str(credential["id"])))
                         and record.credential_row_version == credential["row_version"]
-                        else "MODIFIED" if record else "NEW"
+                        else "MODIFIED"
+                        if record
+                        else "NEW"
                     )
                 ),
             }
@@ -135,10 +137,13 @@ def _record_versions(
     db.flush()
 
 
-def record_initial_credential_sync(db: Session, binding: AgentConversationBinding) -> None:
-    """Record the all-current set only after native creation has succeeded."""
+def record_initial_credential_sync(
+    db: Session, binding: AgentConversationBinding, credential_ids: Iterable[str] | None = None
+) -> None:
+    """Record the selected credential set only after native creation has succeeded."""
 
-    _record_versions(db, binding, list_credentials(db))
+    _values, _instructions, summaries = resolve_credentials_for_agent(db, credential_ids)
+    _record_versions(db, binding, summaries)
 
 
 def synchronize_credentials(

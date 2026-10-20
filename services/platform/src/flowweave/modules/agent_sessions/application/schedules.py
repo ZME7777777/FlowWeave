@@ -17,6 +17,7 @@ from flowweave.modules.agent_sessions.infrastructure.models import (
 )
 from flowweave.modules.agent_workspaces.application import work_directories
 from flowweave.modules.agent_workspaces.infrastructure.models import AgentWorkDirectory
+from flowweave.modules.credentials.application.service import resolve_credentials_for_agent
 from flowweave.modules.tasks.application.service import enqueue
 from flowweave.modules.tasks.infrastructure.models import BackgroundTask
 from flowweave.modules.users.application.security import tenant_user
@@ -105,6 +106,23 @@ def _work_directory(db: Session, workspace_id: str, work_directory_id: str) -> A
     return item
 
 
+def _normalized_ids(values: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(value for value in values if value))
+
+
+def _validated_template_configuration(
+    db: Session, capability_version_ids: tuple[str, ...], credential_ids: tuple[str, ...]
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    capabilities = _normalized_ids(capability_version_ids)
+    # Resolve through the same creation contract used by native conversations.
+    conversations._validated_capabilities(
+        db, capabilities, allowed_types=conversations._CREATION_CAPABILITY_TYPES
+    )
+    credentials = _normalized_ids(credential_ids)
+    resolve_credentials_for_agent(db, credentials)
+    return capabilities, credentials
+
+
 def _schedule_dict(db: Session, schedule: AgentConversationSchedule) -> dict[str, Any]:
     binding = _schedule_binding(db, schedule)
     directory = (
@@ -124,6 +142,8 @@ def _schedule_dict(db: Session, schedule: AgentConversationSchedule) -> dict[str
         "model_provider_id": schedule.model_provider_id,
         "model_name": schedule.model_name,
         "reasoning_effort": schedule.reasoning_effort,
+        "capability_version_ids": list(schedule.capability_version_ids_json or []),
+        "credential_ids": list(schedule.credential_ids_json or []),
         "name": schedule.name,
         "prompt": schedule.prompt,
         "cron_expression": schedule.cron_expression,
@@ -198,6 +218,8 @@ def _write_automation_files(db: Session, schedule: AgentConversationSchedule) ->
         model_provider_id=schedule.model_provider_id,
         model_name=schedule.model_name,
         reasoning_effort=schedule.reasoning_effort,
+        capability_version_ids=tuple(schedule.capability_version_ids_json or []),
+        credential_ids=tuple(schedule.credential_ids_json or []),
     )
 
 
@@ -214,7 +236,12 @@ def create_schedule(
     model_provider_id: str,
     model_name: str,
     reasoning_effort: str | None,
+    capability_version_ids: tuple[str, ...],
+    credential_ids: tuple[str, ...],
 ) -> dict[str, Any]:
+    capabilities, credentials = _validated_template_configuration(
+        db, capability_version_ids, credential_ids
+    )
     try:
         next_run_at = _next_cron_at(cron_expression, now())
     except ValueError as exc:
@@ -235,6 +262,8 @@ def create_schedule(
         model_provider_id=model_provider_id,
         model_name=model_name,
         reasoning_effort=reasoning_effort,
+        capability_version_ids_json=list(capabilities),
+        credential_ids_json=list(credentials),
         name=name,
         prompt=prompt,
         cron_expression=cron_expression,
@@ -265,7 +294,12 @@ def update_schedule(
     model_provider_id: str,
     model_name: str,
     reasoning_effort: str | None,
+    capability_version_ids: tuple[str, ...],
+    credential_ids: tuple[str, ...],
 ) -> dict[str, Any]:
+    capabilities, credentials = _validated_template_configuration(
+        db, capability_version_ids, credential_ids
+    )
     schedule = db.scalar(
         select(AgentConversationSchedule)
         .where(
@@ -293,6 +327,8 @@ def update_schedule(
     schedule.model_provider_id = model_provider_id
     schedule.model_name = model_name
     schedule.reasoning_effort = reasoning_effort
+    schedule.capability_version_ids_json = list(capabilities)
+    schedule.credential_ids_json = list(credentials)
     if conversation_mode == "NEW":
         schedule.binding_id = None
     schedule.row_version += 1
@@ -473,6 +509,8 @@ def _bootstrap_run(
         model_name=schedule.model_name,
         reasoning_effort=schedule.reasoning_effort,
         content=_automation_prompt(schedule),
+        capability_version_ids=tuple(schedule.capability_version_ids_json or []),
+        credential_ids=tuple(schedule.credential_ids_json or []),
         conversation_id=occurrence.binding_id,
         idempotency_key=_run_binding_id(schedule, occurrence),
     )
