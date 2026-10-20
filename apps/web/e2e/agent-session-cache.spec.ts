@@ -3658,6 +3658,13 @@ test('Conversation sidebar opens an activity session without changing its scroll
   const pinnedSectionToggle = pinnedSection.getByRole('button', { name: '收起置顶会话' });
   await expect(pinnedSection.getByRole('button', { name: '归属工作区会话', exact: true })).toBeVisible();
   await expect(pinnedSectionToggle).toHaveAttribute('aria-expanded', 'true');
+  const [pinnedHeaderBounds, pinnedToggleBounds] = await Promise.all([
+    pinnedSection.locator('header').boundingBox(),
+    pinnedSectionToggle.boundingBox(),
+  ]);
+  expect(pinnedHeaderBounds).not.toBeNull();
+  expect(pinnedToggleBounds).not.toBeNull();
+  expect(pinnedToggleBounds!.width).toBe(pinnedHeaderBounds!.width);
   await pinnedSectionToggle.click();
   await expect(pinnedSection.getByRole('button', { name: '归属工作区会话', exact: true })).toBeHidden();
   const expandPinnedSection = pinnedSection.getByRole('button', { name: '展开置顶会话' });
