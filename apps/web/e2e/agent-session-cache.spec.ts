@@ -3037,6 +3037,7 @@ test('A normal background conversation completion persists a regular unread mark
   let authenticated = false;
   let completed = false;
   const unreadWrites: Array<{ id: string; unread: boolean; unread_origin?: string }> = [];
+  let backgroundHydrationReads = 0;
   const workspace = { id: 'completed-unread-workspace', display_name: '完成未读工作区', desired_state: 'RUNNING', updated_at: now };
   const conversations = [
     {
@@ -3058,12 +3059,15 @@ test('A normal background conversation completion persists a regular unread mark
     if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
     if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
     if (path.endsWith('/conversation-activity')) {
+      const conversation = conversations.find(item => item.id === 'completed-unread-background')!;
       if (completed) {
-        const conversation = conversations.find(item => item.id === 'completed-unread-background')!;
         conversation.unread = true;
         conversation.unread_origin = 'MANUAL';
       }
-      return json(route, { running_binding_ids: completed ? [] : ['completed-unread-background'] });
+      return json(route, {
+        conversations: completed ? [conversation] : [],
+        running_binding_ids: completed ? [] : ['completed-unread-background'],
+      });
     }
     if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: conversations, next_cursor: null });
     if (path.endsWith('/unread') && request.method() === 'PUT') {
@@ -3075,11 +3079,22 @@ test('A normal background conversation completion persists a regular unread mark
       unreadWrites.push({ id, ...body });
       return json(route, conversation);
     }
-    if (path.endsWith('/hydration')) return json(route, {
-      events: { events: [], next_cursor: null, history_cursor: null, result: { status: 'COMPLETED' } },
-      context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 1_024, usage_current: true },
-      readiness: { ready: true, execution_status: 'idle' },
-    });
+    if (path.endsWith('/hydration')) {
+      const bindingId = path.split('/').at(-2)!;
+      if (bindingId === 'completed-unread-background') backgroundHydrationReads += 1;
+      return json(route, {
+        events: {
+          events: bindingId === 'completed-unread-background'
+            ? [{ id: 'completed-unread-final', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: '__root__', content: '后台预热的最终回复。', timestamp: now } }]
+            : [],
+          next_cursor: bindingId === 'completed-unread-background' ? 'completed-unread-final' : null,
+          history_cursor: null,
+          result: { status: 'COMPLETED' },
+        },
+        context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 1_024, usage_current: true },
+        readiness: { ready: true, execution_status: 'idle' },
+      });
+    }
     if (path.endsWith('/events')) return json(route, { events: [], next_cursor: null, history_cursor: null, result: { status: 'COMPLETED' } });
     if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
     if (path.endsWith('/input-readiness')) return json(route, { ready: true, execution_status: 'idle' });
@@ -3109,11 +3124,13 @@ test('A normal background conversation completion persists a regular unread mark
   await expect(backgroundRow.locator('.agent-workspace-conversation-running')).toHaveCount(0);
   await expect(backgroundRow.getByRole('img', { name: '会话已完成，有未读回复' })).toBeVisible();
   await expect(backgroundRow.locator('.agent-workspace-conversation-alert')).toHaveCount(0);
+  await expect.poll(() => backgroundHydrationReads).toBe(1);
 
-  await page.reload();
-  await expect(page.locator('[data-conversation-binding-id="completed-unread-background"]')
-    .getByRole('img', { name: '会话已完成，有未读回复' })).toBeVisible();
-  expect(unreadWrites).toHaveLength(0);
+  await backgroundRow.getByRole('button', { name: '后台完成会话', exact: true }).click();
+  await expect(page.getByText('后台预热的最终回复。', { exact: true })).toBeVisible();
+  expect(backgroundHydrationReads).toBe(1);
+
+  await expect.poll(() => unreadWrites).toEqual([{ id: 'completed-unread-background', unread: false }]);
 });
 
 

@@ -31,7 +31,7 @@ import { FileTypeIcon } from '../FileTypeIcon';
 import { WebsiteIcon } from '../WebsiteIcon';
 import { subagentAvatarSlots, type SubagentAvatarSlot } from '../../utils/subagentAvatar';
 import { workspaceFileChanges, workspaceRelativePath, type WorkspaceFileChange } from './fileChanges';
-import type { AgentAttachment, AgentConversation, AgentConversationActivity, AgentConversationAnnotation, AgentConversationContext, AgentConversationCredentialSyncEntry, AgentConversationInputReadiness, AgentConversationPage, AgentConversationReference, AgentConversationSearch, AgentPendingConfirmationAction, AgentSessionCapability, AgentSessionMcpReadiness, AgentSessionWorkDirectory, AgentSessionWorkDirectoryList, AgentSessionWorkspaceDetails, AgentWorkspaceReference, CapabilityAsset, CapabilityCollection, ModelProvider, OpenHandsConversationEvent, OpenHandsConversationEventBatch, RuntimeTaskControlSnapshot, RuntimeTaskUsageSnapshot, WorkspaceGitChangeKind, WorkspaceGitChangedFile, WorkspaceGitChanges, WorkspaceGitCommitDetails, WorkspaceGitFileDiff } from '../../types';
+import type { AgentAttachment, AgentConversation, AgentConversationActivity, AgentConversationAnnotation, AgentConversationContext, AgentConversationCredentialSyncEntry, AgentConversationHydration, AgentConversationInputReadiness, AgentConversationPage, AgentConversationReference, AgentConversationSearch, AgentPendingConfirmationAction, AgentSessionCapability, AgentSessionMcpReadiness, AgentSessionWorkDirectory, AgentSessionWorkDirectoryList, AgentSessionWorkspaceDetails, AgentWorkspaceReference, CapabilityAsset, CapabilityCollection, ModelProvider, OpenHandsConversationEvent, OpenHandsConversationEventBatch, RuntimeTaskControlSnapshot, RuntimeTaskUsageSnapshot, WorkspaceGitChangeKind, WorkspaceGitChangedFile, WorkspaceGitChanges, WorkspaceGitCommitDetails, WorkspaceGitFileDiff } from '../../types';
 import '../../pages/agent-workbench.css';
 import '../../pages/agent-workbench-layout.css';
 
@@ -45,6 +45,8 @@ const SUBMISSION_EVENT_CONFIRMATION_RETRY_INTERVAL_MS = 250;
 const CONVERSATION_HYDRATION_SELECTION_DELAY_MS = 120;
 const HYDRATION_UI_DEADLINE_MS = 12_000;
 const MAX_UNAVAILABLE_HYDRATION_RETRIES = 2;
+const BACKGROUND_HYDRATION_PREFETCH_DELAY_MS = 250;
+const BACKGROUND_HYDRATION_PREFETCH_LIMIT = 1;
 const EMPTY_TASK_CONTROL: RuntimeTaskControlSnapshot[] = [];
 const TERMINAL_CONVERSATION_CACHE_TTL_MS = 5 * 60 * 1000;
 const ACTIVE_CONVERSATION_CACHE_TTL_MS = 30_000;
@@ -4645,6 +4647,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   useEffect(() => () => {
     for (const controller of historyAbortControllers.current.values()) controller.abort();
     historyAbortControllers.current.clear();
+    for (const controller of backgroundHydrationPrefetchControllers.current.values()) controller.abort();
+    backgroundHydrationPrefetchControllers.current.clear();
     for (const timer of contextRefreshTimers.current.values()) window.clearTimeout(timer);
     contextRefreshTimers.current.clear();
     for (const resource of [
@@ -4675,6 +4679,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const pendingUnreadUpdates = useRef(new Map<string, { id: number; unread: boolean; unreadOrigin?: AgentConversation['unread_origin'] }>());
   const nextUnreadUpdateId = useRef(0);
   const [unreadConversationIds, setUnreadConversationIds] = useState<Set<string>>(() => new Set());
+  const [backgroundHydrationPrefetchCandidates, setBackgroundHydrationPrefetchCandidates] = useState<string[]>([]);
+  const [backgroundHydrationPrefetchRevision, setBackgroundHydrationPrefetchRevision] = useState(0);
+  const backgroundHydrationPrefetchControllers = useRef(new Map<string, AbortController>());
   const previousRunningConversationIds = useRef<Set<string>>(new Set());
   const pendingPinnedUpdates = useRef(new Map<string, { id: number; pinned: boolean }>());
   const nextPinnedUpdateId = useRef(0);
@@ -4906,11 +4913,19 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   useEffect(() => {
     if (!conversationActivityQuery.data || conversationActivityQuery.isPlaceholderData) return;
     const previous = previousRunningConversationIds.current;
-    const completedInBackground = [...previous].some(
+    const completedInBackground = [...previous].filter(
       bindingId => !runningConversationIds.has(bindingId) && bindingId !== routeBindingId,
     );
     previousRunningConversationIds.current = runningConversationIds;
-    if (!completedInBackground || !workspace) return;
+    if (!completedInBackground.length || !workspace) return;
+    const activityById = new Map((conversationActivityQuery.data.conversations ?? []).map(item => [item.id, item]));
+    const completedUnread = completedInBackground.filter(bindingId => {
+      const item = activityById.get(bindingId);
+      return item?.unread === true && item.unread_origin === 'MANUAL' && !conversationIsRunning(item.execution_status);
+    });
+    if (completedUnread.length) {
+      setBackgroundHydrationPrefetchCandidates(current => [...new Set([...current, ...completedUnread])]);
+    }
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-activity', workspace.id) });
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversations', workspace.id) });
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'pinned-conversations', workspace.id) });
@@ -5524,6 +5539,27 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     hydratedAt: number;
     running: boolean;
   }>());
+  const backgroundHydrationPrefetches = useRef(new Map<string, Promise<AgentConversationHydration>>());
+  const publishHydration = useCallback((workspaceId: string, bindingId: string, hydration: AgentConversationHydration) => {
+    queryClient.setQueryData<OpenHandsConversationEventBatch>(
+      sessionQueryKey(host, 'conversation-events', workspaceId, bindingId), hydration.events,
+    );
+    queryClient.setQueryData<AgentConversationInputReadiness>(
+      sessionQueryKey(host, 'conversation-input-readiness', workspaceId, bindingId), hydration.readiness,
+    );
+    queryClient.setQueryData<AgentConversationContext>(
+      sessionQueryKey(host, 'conversation-context', workspaceId, bindingId), hydration.context,
+    );
+    trustedHydrations.current.set(bindingId, {
+      hydratedAt: Date.now(),
+      running: conversationIsRunning(hydration.readiness.execution_status),
+    });
+    const currentSelection = hydrationSelection.current;
+    if (currentSelection?.workspaceId === workspaceId && currentSelection.bindingId === bindingId) {
+      setHydrationPhase({ bindingId, state: 'ready' });
+    }
+    return hydration;
+  }, [host, queryClient]);
   // Keep the observer mounted across binding changes: cancelling a browser
   // fetch does not release the backend's synchronous read worker.
   const hydrationQueryKey = sessionQueryKey(host, 'conversation-hydration-request');
@@ -5538,24 +5574,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       // Publish the coherent snapshot together. The presentation gate remains
       // closed until this request resolves, so none of these cache writes can
       // expose an older or partially refreshed transcript.
-      queryClient.setQueryData<OpenHandsConversationEventBatch>(
-        sessionQueryKey(host, 'conversation-events', workspaceId, bindingId), hydration.events,
-      );
-      queryClient.setQueryData<AgentConversationInputReadiness>(
-        sessionQueryKey(host, 'conversation-input-readiness', workspaceId, bindingId), hydration.readiness,
-      );
-      queryClient.setQueryData<AgentConversationContext>(
-        sessionQueryKey(host, 'conversation-context', workspaceId, bindingId), hydration.context,
-      );
-      trustedHydrations.current.set(bindingId, {
-        hydratedAt: Date.now(),
-        running: conversationIsRunning(hydration.readiness.execution_status),
-      });
-      const currentSelection = hydrationSelection.current;
-      if (currentSelection?.workspaceId === workspaceId && currentSelection.bindingId === bindingId) {
-        setHydrationPhase({ bindingId, state: 'ready' });
-      }
-      return hydration;
+      return publishHydration(workspaceId, bindingId, hydration);
     },
     // Each selection explicitly refreshes below. Keeping this query disabled
     // prevents cached success data from becoming authoritative on re-entry.
@@ -5656,7 +5675,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       && queryClient.getQueryData(sessionQueryKey(host, 'conversation-input-readiness', workspaceId, bindingId))
       && queryClient.getQueryData(sessionQueryKey(host, 'conversation-context', workspaceId, bindingId)),
     );
-    hydrationPendingSelection.current = !reusable;
+    const prefetchInFlight = backgroundHydrationPrefetches.current.has(bindingId);
+    hydrationPendingSelection.current = !reusable && !prefetchInFlight;
     setHydrationPhase({ bindingId, state: reusable ? 'ready' : 'loading' });
 
     if (hydrationSelectionTimer.current !== undefined) {
@@ -5694,6 +5714,54 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const selectedHydrationPhase = hydrationPhase && hydrationPhase.bindingId === selected?.id
     ? hydrationPhase.state
     : 'loading';
+  useEffect(() => {
+    if (
+      !workspace
+      || !pageVisible
+      || hydrationRequestInFlight.current
+      || backgroundHydrationPrefetches.current.size >= BACKGROUND_HYDRATION_PREFETCH_LIMIT
+      || !backgroundHydrationPrefetchCandidates.length
+    ) return;
+    const bindingId = backgroundHydrationPrefetchCandidates.find(candidate => (
+      candidate !== selected?.id
+      && !backgroundHydrationPrefetches.current.has(candidate)
+      && !trustedHydrations.current.has(candidate)
+    ));
+    if (!bindingId) return;
+    const timer = window.setTimeout(() => {
+      if (
+        hydrationRequestInFlight.current
+        || hydrationSelection.current?.bindingId === bindingId
+        || backgroundHydrationPrefetches.current.size >= BACKGROUND_HYDRATION_PREFETCH_LIMIT
+      ) return;
+      setBackgroundHydrationPrefetchCandidates(current => current.filter(candidate => candidate !== bindingId));
+      const controller = new AbortController();
+      backgroundHydrationPrefetchControllers.current.set(bindingId, controller);
+      const request = api.conversationHydration(workspace.id, bindingId, controller.signal)
+        .then(hydration => publishHydration(workspace.id, bindingId, hydration));
+      backgroundHydrationPrefetches.current.set(bindingId, request);
+      void request.then(
+        () => {
+          if (backgroundHydrationPrefetches.current.get(bindingId) !== request) return;
+          backgroundHydrationPrefetches.current.delete(bindingId);
+          backgroundHydrationPrefetchControllers.current.delete(bindingId);
+          setBackgroundHydrationPrefetchRevision(current => current + 1);
+        },
+        () => {
+          if (backgroundHydrationPrefetches.current.get(bindingId) !== request) return;
+          backgroundHydrationPrefetches.current.delete(bindingId);
+          backgroundHydrationPrefetchControllers.current.delete(bindingId);
+          if (hydrationSelection.current?.workspaceId === workspace.id && hydrationSelection.current.bindingId === bindingId) {
+            hydrationPendingSelection.current = true;
+            void runSelectedHydrationRef.current();
+          }
+          setBackgroundHydrationPrefetchRevision(current => current + 1);
+        },
+      );
+    }, BACKGROUND_HYDRATION_PREFETCH_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [api, backgroundHydrationPrefetchCandidates, backgroundHydrationPrefetchRevision, pageVisible, publishHydration, selected?.id, workspace]);
+
   useEffect(() => {
     const workspaceId = workspace?.id;
     const bindingId = selected?.id;
