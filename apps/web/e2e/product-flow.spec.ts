@@ -2896,7 +2896,11 @@ test('editing the latest user message locally replaces only its active branch', 
     start: (editor as HTMLTextAreaElement).selectionStart,
     end: (editor as HTMLTextAreaElement).selectionEnd,
   }))).toEqual({ start: '需要重新思考的问题'.length, end: '需要重新思考的问题'.length });
-  await rewriteEditor.fill('不应提交的问题');
+  await rewriteEditor.fill('第一行\n第二行\n第三行\n第四行\n第五行');
+  await expect.poll(() => rewriteEditor.evaluate(editor => {
+    const textarea = editor as HTMLTextAreaElement;
+    return textarea.clientHeight > 100 && textarea.clientHeight === textarea.scrollHeight;
+  })).toBe(true);
   await rewriteEditor.press('Escape');
   await expect(page.locator('.conversation-message-edit')).toHaveCount(0);
   await expect(page.getByText('需要重新思考的问题', { exact: true })).toBeVisible();
