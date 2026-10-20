@@ -3114,7 +3114,7 @@ function WorkspaceGitSidebar({ details, repository, mode, onModeChange, selected
 
 type WorkspaceToolTab =
   | { id: string; kind: 'launcher'; url?: string; title?: string }
-  | { id: string; kind: 'browser'; url: string; title?: string; agentControlled?: boolean }
+  | { id: string; kind: 'browser'; url: string; title?: string }
   | { id: 'files'; kind: 'files' }
   | { id: 'changes'; kind: 'changes' }
   | { id: 'sources'; kind: 'sources' }
@@ -3782,7 +3782,7 @@ function WorkspaceBrowser({ tab, workspaceId, bindingId, workDirectoryId, browse
 function WorkspaceDrawer({
   open, onOpen, onClose, onFullScreenConversationActiveChange, onAnnotateFileSelection, highlightedFileSelection, workspaceId, scopeKey, migrateFromScopeKey, bindingId, workDirectoryId, conversation, conversationCumulativeTokens, attachments, sources, attachmentRequest, candidatePreviewRequest, markdownFileRequest, browserRequest, reviewChanges = [], reviewRequestId, sessionChanges = [], onReviewChanges, runtimeAvailable, runtimeTasks, agentDefinitions, sessionStopped, sidebarQuestion, onSidebarBindingCreated, onOpenSidebarQuestion, onCloseSidebarQuestion, onPreviewAttachment,
 }: {
-  open: boolean; onOpen: () => void; onClose: () => void; onFullScreenConversationActiveChange: (active: boolean) => void; onAnnotateFileSelection?: (path: string, selection: FileSelection, quote: string) => void; highlightedFileSelection?: { path: string; selection: FileSelection }; workspaceId: string; scopeKey: string; migrateFromScopeKey?: string; bindingId?: string; workDirectoryId?: string; conversation?: AgentConversation; conversationCumulativeTokens?: number | null; attachments: AgentAttachment[]; sources: ConversationSource[]; attachmentRequest?: { key: string; attachment?: AgentAttachment }; candidatePreviewRequest?: CandidateFilePreviewRequest; markdownFileRequest?: MarkdownFileRequest; browserRequest?: { key: string; url: string; agentControlled?: boolean }; reviewChanges?: WorkspaceFileChange[]; reviewRequestId?: string; sessionChanges?: WorkspaceFileChange[]; onReviewChanges?: (changes: WorkspaceFileChange[]) => void; runtimeAvailable: boolean; runtimeTasks: RuntimeTaskProjection[]; agentDefinitions: CapabilityAsset[]; sessionStopped: boolean; sidebarQuestion?: { sourceBindingId: string; reference?: AgentConversationReference; sidebarBindingId?: string }; onSidebarBindingCreated: (sourceBindingId: string, sidebarBindingId: string) => void; onOpenSidebarQuestion?: () => void; onCloseSidebarQuestion: () => void; onPreviewAttachment: (attachment: AgentAttachment, previewBindingId?: string) => void;
+  open: boolean; onOpen: () => void; onClose: () => void; onFullScreenConversationActiveChange: (active: boolean) => void; onAnnotateFileSelection?: (path: string, selection: FileSelection, quote: string) => void; highlightedFileSelection?: { path: string; selection: FileSelection }; workspaceId: string; scopeKey: string; migrateFromScopeKey?: string; bindingId?: string; workDirectoryId?: string; conversation?: AgentConversation; conversationCumulativeTokens?: number | null; attachments: AgentAttachment[]; sources: ConversationSource[]; attachmentRequest?: { key: string; attachment?: AgentAttachment }; candidatePreviewRequest?: CandidateFilePreviewRequest; markdownFileRequest?: MarkdownFileRequest; browserRequest?: { key: string; url: string }; reviewChanges?: WorkspaceFileChange[]; reviewRequestId?: string; sessionChanges?: WorkspaceFileChange[]; onReviewChanges?: (changes: WorkspaceFileChange[]) => void; runtimeAvailable: boolean; runtimeTasks: RuntimeTaskProjection[]; agentDefinitions: CapabilityAsset[]; sessionStopped: boolean; sidebarQuestion?: { sourceBindingId: string; reference?: AgentConversationReference; sidebarBindingId?: string }; onSidebarBindingCreated: (sourceBindingId: string, sidebarBindingId: string) => void; onOpenSidebarQuestion?: () => void; onCloseSidebarQuestion: () => void; onPreviewAttachment: (attachment: AgentAttachment, previewBindingId?: string) => void;
 }) {
   const { api, browserUrl, fileUrl } = useAgentSessionGateway();
   const host = useAgentSessionHost();
@@ -4159,44 +4159,8 @@ function WorkspaceDrawer({
   }, [onOpen, updateScope]);
   useEffect(() => {
     if (!browserRequest) return;
-    const normalized = normalizeBrowserUrl(browserRequest.url);
-    if (!normalized) return;
-    if (!browserRequest.agentControlled) {
-      openBrowser(normalized);
-      return;
-    }
-    updateScope(current => {
-      const activeLauncher = current.tabs.find(tab => tab.id === current.activeTabId && tab.kind === 'launcher');
-      if (activeLauncher) {
-        return {
-          ...current,
-          tabs: current.tabs.map(tab => tab.id === activeLauncher.id ? { ...tab, url: normalized, title: new URL(normalized).hostname } : tab),
-        };
-      }
-      const existing = current.tabs.find((tab): tab is Extract<WorkspaceToolTab, { kind: 'browser' }> => (
-        tab.kind === 'browser' && tab.agentControlled === true
-      ));
-      if (existing) {
-        return {
-          ...current,
-          tabs: current.tabs.map(tab => tab.id === existing.id
-            ? { ...tab, url: normalized, title: new URL(normalized).hostname }
-            : tab),
-          activeTabId: current.activeTabId ?? existing.id,
-        };
-      }
-      const tab = {
-        id: `browser:agent:${randomId()}`,
-        kind: 'browser' as const,
-        url: normalized,
-        title: new URL(normalized).hostname,
-        agentControlled: true,
-      };
-      return { ...current, tabs: [...current.tabs, tab], activeTabId: tab.id };
-    });
-    setFullScreenView('tool');
-    onOpen();
-  }, [browserRequest, onOpen, openBrowser, updateScope]);
+    openBrowser(browserRequest.url);
+  }, [browserRequest, openBrowser]);
   useEffect(() => {
     if (!highlightedFileSelection) return;
     openFiles(highlightedFileSelection.path);
@@ -4846,7 +4810,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [workspaceReferencePickerOpen, setWorkspaceReferencePickerOpen] = useState(false);
   const [workspaceReferenceQuery, setWorkspaceReferenceQuery] = useState('');
   const [filePreviewRequest, setFilePreviewRequest] = useState<ConversationFilePreviewRequest>();
-  const [browserRequest, setBrowserRequest] = useState<{ key: string; url: string; agentControlled?: boolean }>();
+  const [browserRequest, setBrowserRequest] = useState<{ key: string; url: string }>();
   const [attachmentRequest, setAttachmentRequest] = useState<{ key: string; attachment?: AgentAttachment }>();
   const [fileSelectionReference, setFileSelectionReference] = useState<{ path: string; selection: FileSelection }>();
   const [candidatePreviewRequest, setCandidatePreviewRequest] = useState<CandidateFilePreviewRequest>();
@@ -6541,21 +6505,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (!immediateFinalReplyPreview || immediateFinalReplyPreview.bindingId !== selected?.id) return;
     if (selectedHydrationPhase === 'ready' && eventsQuery.data) setImmediateFinalReplyPreview(undefined);
   }, [eventsQuery.data, immediateFinalReplyPreview, selected?.id, selectedHydrationPhase]);
-  const handledAgentBrowserNavigationIds = useRef(new Set<string>());
-  useEffect(() => {
-    const navigation = [...currentFormalEvents].reverse().find(event => (
-      event.event_type === 'TOOL_CALL'
-      && event.payload.tool_name === 'browser_navigate'
-      && event.payload.event_name === 'BrowserNavigateAction'
-      && typeof event.payload.details?.url === 'string'
-      && normalizeBrowserUrl(event.payload.details.url)
-    ));
-    const url = navigation?.payload.details?.url;
-    if (!navigation || typeof url !== 'string' || handledAgentBrowserNavigationIds.current.has(navigation.id)) return;
-    handledAgentBrowserNavigationIds.current.add(navigation.id);
-    setBrowserRequest({ key: navigation.id, url, agentControlled: true });
-    setDrawerOpen(true);
-  }, [currentFormalEvents]);
   const displayedEvents = useMemo(() => {
     const hiddenBranchIds = eventBranchIdsFromRoots(currentFormalEvents, hiddenEventIds);
     const eventsById = new Map(currentFormalEvents.map(event => [event.id, event]));
