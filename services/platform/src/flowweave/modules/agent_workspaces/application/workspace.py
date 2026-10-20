@@ -144,17 +144,31 @@ def _runtime_root(workspace_id: str) -> str:
 
 
 def _host_path(
-    project_root: Path, runtime_root: str, runtime_path: str, *, require_file: bool
+    project_root: Path,
+    runtime_root: str,
+    runtime_path: str,
+    *,
+    require_file: bool,
+    allow_automation_workspace: bool = False,
 ) -> Path:
     parsed = PurePosixPath(runtime_path)
+    root = PurePosixPath(runtime_root)
     if (
         not runtime_path.startswith(runtime_root + "/")
         or parsed.as_posix() != runtime_path
         or ".." in parsed.parts
-        or any(part.startswith(".") and part != ".tmp" for part in parsed.parts)
     ):
         raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "文件路径不在工作区范围内", 422)
-    relative = parsed.relative_to(PurePosixPath(runtime_root))
+    relative = parsed.relative_to(root)
+    hidden_parts = tuple(part for part in relative.parts if part.startswith("."))
+    automation_workspace = (
+        allow_automation_workspace
+        and hidden_parts == (".flowweave",)
+        and relative.parts[:2] == (".flowweave", "automations")
+        and len(relative.parts) >= 3
+    )
+    if hidden_parts and not automation_workspace:
+        raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "文件路径不在工作区范围内", 422)
     candidate = project_root.joinpath(*relative.parts)
     try:
         metadata = candidate.lstat()
@@ -251,10 +265,20 @@ def _authorized_directory(
         parent_path == root or parent_path.startswith(root.rstrip("/") + "/") for root in file_roots
     ):
         raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "目录不在当前工作区范围内", 422)
+    automation_workspace = any(
+        root != runtime_root and root.startswith(runtime_root + "/.flowweave/automations/")
+        for root in file_roots
+    )
     candidate = (
         project_root
         if parent_path == runtime_root
-        else _host_path(project_root, runtime_root, parent_path, require_file=False)
+        else _host_path(
+            project_root,
+            runtime_root,
+            parent_path,
+            require_file=False,
+            allow_automation_workspace=automation_workspace,
+        )
     )
     try:
         resolved = candidate.resolve(strict=True)
@@ -263,7 +287,13 @@ def _authorized_directory(
             (
                 project_root
                 if root == runtime_root
-                else _host_path(project_root, runtime_root, root, require_file=False)
+                else _host_path(
+                    project_root,
+                    runtime_root,
+                    root,
+                    require_file=False,
+                    allow_automation_workspace=automation_workspace,
+                )
             ).resolve(strict=True)
             for root in file_roots
         )
@@ -1460,7 +1490,17 @@ def download(
         and not _is_draft_attachment(db, workspace_id, draft_attachment_owner_id, path)
     ):
         raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "文件路径不在当前工作目录范围内", 422)
-    host_path = _host_path(_project_root(db, workspace_id), runtime_root, path, require_file=True)
+    automation_workspace = any(
+        root != runtime_root and root.startswith(runtime_root + "/.flowweave/automations/")
+        for root in file_roots
+    )
+    host_path = _host_path(
+        _project_root(db, workspace_id),
+        runtime_root,
+        path,
+        require_file=True,
+        allow_automation_workspace=automation_workspace,
+    )
     try:
         size = host_path.stat().st_size
     except OSError as exc:

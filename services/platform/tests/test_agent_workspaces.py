@@ -1870,6 +1870,46 @@ def test_agent_workspace_text_preview_is_paged_and_download_remains_complete(
         assert downloaded.next_offset is None
 
 
+
+def test_automation_workspace_files_are_readable_only_inside_its_frozen_scope(
+    settings, db_session_factory
+):
+    with settings_context(settings), db_session_factory() as db, runtime_context(MockRuntime()):
+        item = _ready_workspace_for_conversation(db)
+        directory = work_directories.create_automation_work_directory(
+            db, item.id, "11111111-1111-4111-8111-111111111111", "自动化日报"
+        )
+        project_root = _agent_project_root(settings, db, item)
+        automation_id = "11111111-1111-4111-8111-111111111111"
+        automation_relative_path = f".flowweave/automations/{automation_id}"
+        automation_root = project_root / automation_relative_path
+        report = automation_root / "reports" / "daily.html"
+        report.parent.mkdir()
+        report.write_text("<!doctype html><h1>日报</h1>", encoding="utf-8")
+        (project_root / ".flowweave" / "private.txt").write_text("private", encoding="utf-8")
+
+        runtime_root = user_runtime_project_root(item.id)
+        report_path = f"{runtime_root}/{automation_relative_path}/reports/daily.html"
+        directory_path = f"{runtime_root}/{automation_relative_path}/reports"
+        listing = workspace.list_directory(
+            db, item.id, parent_path=directory_path, work_directory_id=directory["id"]
+        )
+        assert listing["entries"] == [
+            {"path": report_path, "kind": "file", "size": len(report.read_bytes())}
+        ]
+        assert workspace.download(
+            db, item.id, report_path, work_directory_id=directory["id"], preview=True
+        ).content == report.read_bytes()
+
+        with pytest.raises(DomainError, match="当前工作目录范围"):
+            workspace.download(
+                db,
+                item.id,
+                f"{runtime_root}/.flowweave/private.txt",
+                work_directory_id=directory["id"],
+            )
+
+
 def test_agent_workspace_creates_entries_at_the_authorized_root_and_subdirectory(
     settings, db_session_factory
 ):
