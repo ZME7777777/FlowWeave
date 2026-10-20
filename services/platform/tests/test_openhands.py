@@ -3699,6 +3699,27 @@ def test_openhands_send_message_advances_cursor_to_user_event(
     assert "读取当前输入" not in diagnostic
 
 
+def test_openhands_send_message_ignores_stale_leaf_event_for_user_cursor(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    responses = iter(
+        (
+            {"leaf_event_id": "previous-assistant-event"},
+            _state(
+                last_user_message_id="new-user-event",
+                leaf_event_id="previous-assistant-event",
+            ),
+        )
+    )
+
+    monkeypatch.setattr(runtime, "_request", lambda *_args, **_kwargs: next(responses))
+
+    result = runtime.send_message(_handle("previous-assistant-event"), "附带图片的新消息")
+
+    assert result == RuntimeResult(status="RUNNING", cursor="new-user-event")
+
+
 def test_openhands_send_message_logs_redacted_ambiguous_failure(
     openhands_settings, monkeypatch, caplog
 ):

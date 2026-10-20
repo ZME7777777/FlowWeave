@@ -5108,7 +5108,12 @@ class OpenHandsRuntime:
             raise
         cursor_value: object | None = None
         cursor_source = "missing"
-        for field in ("id", "event_id", "last_user_message_id", "leaf_event_id"):
+        # A conversation leaf may still name the preceding assistant/tool event
+        # while the new user event has already been persisted. It is never a
+        # safe substitute for the user MessageEvent identity used by attachment
+        # projections. Older Agent Server versions return Success() here, so
+        # resolve the formal latest-user anchor from state in that case.
+        for field in ("id", "event_id", "last_user_message_id"):
             if created.get(field):
                 cursor_value = created[field]
                 cursor_source = field
