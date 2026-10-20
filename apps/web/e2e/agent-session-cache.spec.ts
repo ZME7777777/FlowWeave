@@ -3617,11 +3617,12 @@ test('Conversation sidebar opens an activity session without changing its scroll
   await expect(workspaceGroup.locator('.agent-workspace-group-actions')).toHaveCSS('opacity', '0');
   await workspaceConversation.hover();
   await expect(workspaceGroup.locator('.agent-workspace-group-actions')).toHaveCSS('opacity', '0');
+  await expect(workspaceGroup).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
   await expect(workspaceGroup.locator('header')).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
   await workspaceGroup.locator('header').hover();
   await expect(workspaceGroup.locator('.agent-workspace-group-actions')).toHaveCSS('opacity', '1');
-  await expect(workspaceGroup.locator('header')).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
-  await expect(workspaceGroup).toHaveCSS('background-color', 'rgb(229, 242, 233)');
+  await expect(workspaceGroup).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+  await expect(workspaceGroup.locator('header')).toHaveCSS('background-color', 'rgb(229, 242, 233)');
   await workspaceActions.click();
   const workspaceMenu = page.getByRole('menu', { name: '工作区操作菜单：归属工作区' });
   await expect(workspaceMenu.getByRole('menuitem', { name: '编辑' })).toBeVisible();
@@ -3629,10 +3630,12 @@ test('Conversation sidebar opens an activity session without changing its scroll
     workspaceActions.boundingBox(),
     workspaceMenu.boundingBox(),
   ]);
+  const workspaceHeaderBounds = await workspaceGroup.locator('header').boundingBox();
   expect(workspaceActionBounds).not.toBeNull();
   expect(workspaceMenuBounds).not.toBeNull();
-  expect(workspaceMenuBounds!.x).toBe(workspaceActionBounds!.x);
-  expect(workspaceMenuBounds!.y).toBeGreaterThan(workspaceActionBounds!.y);
+  expect(workspaceHeaderBounds).not.toBeNull();
+  expect(workspaceMenuBounds!.x).toBe(workspaceHeaderBounds!.x);
+  expect(workspaceMenuBounds!.y).toBeGreaterThan(workspaceHeaderBounds!.y);
   await expect(workspaceMenu).toHaveCSS('z-index', '1000');
   await expect(workspaceMenu.getByRole('menuitem', { name: '新建会话' })).toHaveCount(0);
   await expect(workspaceMenu.getByRole('menuitem', { name: '删除' })).toBeVisible();

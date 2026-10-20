@@ -691,7 +691,8 @@ function WorkspaceConversationGroup({ groupId, label, children, conversationCoun
     const updateMenuPosition = () => {
       const trigger = actionsTriggerRef.current;
       if (!trigger) return;
-      const bounds = trigger.getBoundingClientRect();
+      const anchor = trigger.closest('header') ?? trigger;
+      const bounds = anchor.getBoundingClientRect();
       setMenuPosition({ left: bounds.left, top: bounds.bottom + 3 });
     };
     const close = (event: PointerEvent) => {
