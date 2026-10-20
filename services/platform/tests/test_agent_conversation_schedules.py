@@ -8,6 +8,7 @@ from flowweave.modules.agent_sessions.infrastructure.models import (
     AgentConversationSchedule,
     AgentConversationScheduleOccurrence,
 )
+from flowweave.modules.agent_workspaces.application import work_directories
 from flowweave.modules.agent_workspaces.application.service import ensure_default_agent_workspace
 from flowweave.modules.tasks.infrastructure.models import BackgroundTask
 from flowweave.shared.database import now
@@ -59,6 +60,30 @@ def test_agent_conversation_schedule_scans_and_enqueues_one_occurrence(
         assert schedule.next_run_at is not None
         assert schedule.next_run_at > now()
 
+
+def test_automation_work_directory_is_hidden_from_conversation_workspace_list(
+    settings, db_session_factory
+):
+    with db_session_factory() as db:
+        workspace = ensure_default_agent_workspace(db)
+        created = schedules.create_schedule(
+            db,
+            workspace.id,
+            name="每日检查",
+            prompt="检查昨日结果并给出摘要。",
+            cron_expression="0 9 * * 1-5",
+            workspace_mode="AUTOMATION",
+            work_directory_id=None,
+            conversation_mode="NEW",
+            model_provider_id="provider-1",
+            model_name="model-1",
+            reasoning_effort=None,
+            capability_version_ids=(),
+            credential_ids=(),
+        )
+
+        assert created["work_directory_id"] is not None
+        assert work_directories.list_work_directories(db, workspace.id)["items"] == []
 
 def test_agent_conversation_schedule_delivery_is_claimed_by_worker() -> None:
     assert "DELIVER_AGENT_CONVERSATION_SCHEDULE" in _DELIVERY_TASK_TYPES

@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
+from flowweave.modules.agent_sessions.infrastructure.models import AgentConversationSchedule
 from flowweave.modules.agent_sessions.public import AgentConversationBinding
 from flowweave.modules.agent_workspaces.application.service import (
     runtime_allocation_for_agent_workspace,
@@ -398,9 +399,17 @@ def frozen_conversation_context(
 
 def list_work_directories(db: Session, workspace_id: str) -> dict[str, Any]:
     _workspace(db, workspace_id)
+    automation_directory_ids = select(AgentConversationSchedule.work_directory_id).where(
+        AgentConversationSchedule.workspace_id == workspace_id,
+        AgentConversationSchedule.workspace_mode == "AUTOMATION",
+        AgentConversationSchedule.work_directory_id.is_not(None),
+    )
     items = db.scalars(
         select(AgentWorkDirectory)
-        .where(AgentWorkDirectory.workspace_id == workspace_id)
+        .where(
+            AgentWorkDirectory.workspace_id == workspace_id,
+            ~AgentWorkDirectory.id.in_(automation_directory_ids),
+        )
         .order_by(AgentWorkDirectory.updated_at.desc(), AgentWorkDirectory.created_at.desc())
     )
     return {
