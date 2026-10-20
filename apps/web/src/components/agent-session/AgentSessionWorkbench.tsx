@@ -696,7 +696,7 @@ function WorkspaceConversationGroup({ groupId, label, children, conversationCoun
   };
   const toggleLabel = `${collapsed ? '展开' : '收起'}工作区 ${label}`;
   const hasActions = Boolean(onCreateConversation || onEdit || onDelete);
-  return <section data-work-directory-id={draggable ? groupId : undefined} className={`agent-workspace-group${collapsed ? ' collapsed' : ''}${dragging ? ' dragging' : ''}${dropPosition ? ` drop-${dropPosition}` : ''}`}>
+  return <section data-workspace-group-id={groupId} data-work-directory-id={draggable ? groupId : undefined} className={`agent-workspace-group${collapsed ? ' collapsed' : ''}${dragging ? ' dragging' : ''}${dropPosition ? ` drop-${dropPosition}` : ''}`}>
     <header onPointerDown={draggable ? onPointerDragStart : undefined}>
       <button type="button" className="agent-workspace-group-toggle" aria-label={toggleLabel} aria-expanded={!collapsed} aria-controls={contentId} onClick={toggleCollapsed}>
         <Folder size={14}/><span>{label}</span>
@@ -4719,11 +4719,13 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const workDirectoriesQuery = useQuery({ queryKey: sessionQueryKey(host, 'work-directories', workspace?.id), queryFn: () => api.workDirectories(workspace!.id), enabled: Boolean(workspace && features.workDirectories) });
   const sidebarScrollStorageKey = workspace ? `flowweave:sidebar-scroll:${host.id}:${workspace.id}` : undefined;
   const sidebarListRef = useRef<HTMLDivElement>(null);
+  const pendingWorkspaceGroupAnchor = useRef<{ groupId: string; top: number } | undefined>(undefined);
   useEffect(() => {
     if (!sidebarScrollStorageKey) {
       workspaceSidebarScrollTop.current = undefined;
       workspaceSidebarScrollTopBeforeActivity.current = undefined;
       restoringWorkspaceSidebarScrollTop.current = undefined;
+      pendingWorkspaceGroupAnchor.current = undefined;
       setSidebarScrollTop(undefined);
       return;
     }
@@ -4960,6 +4962,21 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     () => new Map(conversations.map(item => [item.id, item])),
     [conversations],
   );
+  useLayoutEffect(() => {
+    const sidebar = sidebarListRef.current;
+    const anchor = pendingWorkspaceGroupAnchor.current;
+    if (!sidebar || !anchor) return;
+    pendingWorkspaceGroupAnchor.current = undefined;
+    const group = sidebar.querySelector<HTMLElement>(`[data-workspace-group-id="${CSS.escape(anchor.groupId)}"]`);
+    if (!group) return;
+    const delta = group.getBoundingClientRect().top - anchor.top;
+    if (!delta) return;
+    const target = Math.min(sidebar.scrollHeight - sidebar.clientHeight, Math.max(0, sidebar.scrollTop + delta));
+    if (sidebar.scrollTop !== target) {
+      restoringWorkspaceSidebarScrollTop.current = target;
+      sidebar.scrollTop = target;
+    }
+  }, [collapsedConversationGroups]);
   useLayoutEffect(() => {
     const sidebar = sidebarListRef.current;
     const scrollTop = workspaceSidebarScrollTopBeforeActivity.current ?? workspaceSidebarScrollTop.current;
@@ -8670,6 +8687,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     item => item.work_directory_id === workDirectoryId,
   );
   const setConversationGroupCollapsed = (groupId: string, collapsed: boolean) => {
+    const sidebar = sidebarListRef.current;
+    const group = sidebar?.querySelector<HTMLElement>(`[data-workspace-group-id="${CSS.escape(groupId)}"]`);
+    pendingWorkspaceGroupAnchor.current = sidebar && group && sidebarListMode === 'workspaces'
+      ? { groupId, top: group.getBoundingClientRect().top }
+      : undefined;
     setCollapsedConversationGroups(current => {
       const next = new Set(current);
       if (collapsed) next.add(groupId);
