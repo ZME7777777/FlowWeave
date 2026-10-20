@@ -138,3 +138,87 @@ test('history prefetch yields on hidden tabs, resumes fully, and does not retry 
     'older-1', 'older-2', 'older-3', 'older-4',
   ]);
 });
+
+
+test('initial hydration bridges a missing parent reply before rendering later turns', async ({ page }) => {
+  let authenticated = false;
+  let releaseBridge: (() => void) | undefined;
+  const bridge = new Promise<void>(resolve => { releaseBridge = resolve; });
+  const workspace = {
+    id: 'history-bridge-workspace', display_name: '历史桥接工作区', desired_state: 'RUNNING', updated_at: now,
+  };
+  const conversation = {
+    id: 'history-bridge-conversation', display_title: '历史桥接会话', title_state: 'MANUAL',
+    lifecycle: 'ACTIVE', streaming_callback_ready: true, write_available: true, execution_status: 'idle',
+    created_at: now, updated_at: now,
+  };
+  const initialEvents = [
+    { id: 'later-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'missing-reply', content: '后续用户消息', timestamp: now } },
+    { id: 'later-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'later-user', content: '后续回复', timestamp: now } },
+  ];
+  const initialBatch = {
+    events: initialEvents, next_cursor: 'later-reply', history_cursor: 'missing-reply', result: { status: 'COMPLETED' },
+  };
+
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const path = url.pathname;
+    if (path.endsWith('/auth/me')) return authenticated
+      ? json(route, user)
+      : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [conversation], next_cursor: null });
+    if (path.endsWith('/hydration')) return json(route, {
+      events: initialBatch,
+      context: { model_name: 'history-model', window_tokens: 128_000, used_tokens: 100, usage_current: true },
+      readiness: { ready: true, execution_status: 'idle' },
+    });
+    if (path.endsWith('/events')) {
+      if (url.searchParams.get('history_cursor') !== 'missing-reply') return json(route, initialBatch);
+      await bridge;
+      return json(route, {
+        events: [
+          { id: 'first-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '最初用户消息', timestamp: now } },
+          { id: 'missing-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'first-user', content: '中间回复', timestamp: now } },
+        ],
+        next_cursor: 'later-reply', history_cursor: null,
+      });
+    }
+    if (path.endsWith('/conversation-activity')) return json(route, {
+      running_binding_ids: [], condensing_binding_ids: [], condensation_failed_binding_ids: [], possibly_stuck_binding_ids: [], failed_binding_ids: [],
+    });
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/work-directories')) return json(route, {
+      root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [],
+    });
+    if (path.endsWith('/workspace')) return json(route, {
+      root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project',
+      work_directory: null, files: [], repositories: [], runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } },
+    });
+    if (path.endsWith('/model-providers')) return json(route, [{
+      id: 'history-provider', name: '历史模型', connection_state: 'CONNECTED', models: [{ model_name: 'history-model', enabled: true, is_default: true }],
+    }]);
+    if (path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, conversation);
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+
+  await page.goto('/');
+  await login(page);
+  await page.goto(`/agent/conversations/${conversation.id}`);
+  await expect(page.getByText('正在加载会话')).toBeVisible();
+  await expect(page.getByText('后续用户消息', { exact: true })).toHaveCount(0);
+
+  releaseBridge?.();
+  await expect(page.getByText('最初用户消息', { exact: true })).toBeVisible();
+  await expect(page.getByText('中间回复', { exact: true })).toBeVisible();
+  await expect(page.getByText('后续用户消息', { exact: true })).toBeVisible();
+  await expect(page.getByText('后续回复', { exact: true })).toBeVisible();
+  await expect.poll(() => page.locator('.conversation-turn [data-user-event-id]').evaluateAll(messages => messages.map(message => message.getAttribute('data-user-event-id')))).toEqual([
+    'first-user', 'later-user',
+  ]);
+});

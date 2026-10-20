@@ -45,9 +45,10 @@ function defaultModel(providers: ModelProvider[]) {
   return { providerId: provider?.id ?? '', modelName: model?.model_name ?? '', effort: model?.default_reasoning_effort ?? '' };
 }
 
-export function AgentConversationSchedulesPanel({ workspaceId, onOpenConversation }: {
+export function AgentConversationSchedulesPanel({ workspaceId, onOpenConversation, embedded = false }: {
   workspaceId: string;
   onOpenConversation: (bindingId: string) => void;
+  embedded?: boolean;
 }) {
   const queryClient = useQueryClient();
   const [formMode, setFormMode] = useState<FormMode>();
@@ -186,7 +187,7 @@ export function AgentConversationSchedulesPanel({ workspaceId, onOpenConversatio
     finally { setBusyId(undefined); }
   };
   const filterLabel: Record<ScheduleFilter, string> = { ALL: '全部状态', ACTIVE: '已开启', PAUSED: '已暂停', COMPLETED: '已完成' };
-  return <section className="agent-schedule-page" role="region" aria-label="会话定时任务">
+  return <section className={`agent-schedule-page${embedded ? ' embedded' : ''}`} role="region" aria-label="会话定时任务">
     <header className="agent-schedule-page-head"><h2>定时任务</h2></header>
     <div className="agent-schedule-layout">
       <aside className="agent-schedule-rail"><div className="agent-schedule-list-head"><div><b>定时任务</b><small>{visibleSchedules.length} 个任务</small></div><div className="agent-schedule-rail-actions"><div className="agent-schedule-filter"><button type="button" aria-label="筛选定时任务" aria-expanded={filterOpen} onClick={() => setFilterOpen(value => !value)}><Filter size={14}/></button>{filterOpen && <div role="menu"><span>筛选依据</span>{(['ALL', 'ACTIVE', 'PAUSED', 'COMPLETED'] as const).map(value => <button type="button" role="menuitemradio" aria-checked={filter === value} key={value} onClick={() => { setFilter(value); setFilterOpen(false); }}>{filterLabel[value]}{filter === value && <b>✓</b>}</button>)}</div>}</div><button type="button" className="agent-schedule-new" onClick={openCreate}><Plus size={14}/>新建</button></div></div>

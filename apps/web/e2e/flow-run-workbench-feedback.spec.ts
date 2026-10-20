@@ -2216,6 +2216,8 @@ test('workspace Markdown links open the referenced node-session file without nav
   const sourcePath = `${root}/filtered_business_exceptions.md`;
   const reportDirectory = `${root}/filtered_business_exception_reports`;
   const targetPath = `${reportDirectory}/hq-admin.md`;
+  const htmlPath = `${reportDirectory}/daily.html`;
+  const htmlImagePath = `${reportDirectory}/chart.svg`;
   const imagePath = `${root}/.tmp/panel-top-preview.png`;
   const sessionBase = `/api/v1/flow-runs/${flowRunId}/node-attempts/${attemptId}/agent-sessions`;
   const sessionPath = `/flow-runs/${flowRunId}/nodes/${nodeRunId}/attempts/${attemptId}/agent-sessions/${conversation.id}`;
@@ -2261,19 +2263,28 @@ test('workspace Markdown links open the referenced node-session file without nav
         previewPaths.push(requestedPath);
         const content = requestedPath === sourcePath
           ? '# 筛选后业务异常日志汇总\n\n```mermaid\nflowchart LR\n  A[开始] --> B[结束]\n```\n\n[越界路径](../../outside.md)\n\n| 文档 |\n| --- |\n| [hq-admin](filtered_business_exception_reports/hq-admin.md) |'
-          : requestedPath === targetPath ? '# HQ Admin report\n\n已正确打开目标文件。' : 'unexpected file';
+          : requestedPath === targetPath ? '# HQ Admin report\n\n已正确打开目标文件。'
+            : requestedPath === htmlPath ? '<!doctype html><html><head><style>.report{color:rgb(12, 94, 56)}</style></head><body><h1 class="report">HTML 日报已渲染</h1><img src="chart.svg" alt="日报图表"><form><input name="unsafe"><button>不应显示</button></form><script>document.body.dataset.scriptRan = "true"</script></body></html>'
+              : 'unexpected file';
         return route.fulfill({
           status: 200,
-          contentType: 'text/markdown',
+          contentType: requestedPath === htmlPath ? 'text/html' : 'text/markdown',
           headers: { 'X-Preview-Total-Bytes': String(content.length) },
           body: content,
+        });
+      }
+      if (requestedPath === htmlImagePath) {
+        return route.fulfill({
+          status: 200,
+          contentType: 'image/svg+xml',
+          body: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><rect width="16" height="16" fill="#0c5e38"/></svg>',
         });
       }
     }
     if (path === `${sessionBase}/${conversation.id}/events`) return respond({
       events: [
         { id: 'markdown-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '查看异常报告', timestamp: now } },
-        { id: 'markdown-agent', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'markdown-user', content: '[打开汇总](filtered_business_exceptions.md) · [打开工作目录](.)\n\n![会话图片](/api/v1/flow-runs/markdown-link-run/node-attempts/markdown-link-attempt/agent-sessions/workspace/file?path=%2Fruntime%2Fworkspace%2Fproject%2F.tmp%2Fpanel-top-preview.png&binding_id=markdown-link-conversation)', timestamp: now } },
+        { id: 'markdown-agent', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'markdown-user', content: '[打开汇总](filtered_business_exceptions.md) · [打开 HTML 日报](filtered_business_exception_reports/daily.html) · [打开工作目录](.)\n\n![会话图片](/api/v1/flow-runs/markdown-link-run/node-attempts/markdown-link-attempt/agent-sessions/workspace/file?path=%2Fruntime%2Fworkspace%2Fproject%2F.tmp%2Fpanel-top-preview.png&binding_id=markdown-link-conversation)', timestamp: now } },
       ],
       next_cursor: 'markdown-agent', history_cursor: null, result: { status: 'COMPLETED' },
     });
@@ -2316,6 +2327,16 @@ test('workspace Markdown links open the referenced node-session file without nav
   await expect(page.locator('.agent-file-markdown-preview')).toContainText('已正确打开目标文件');
   await expect(page).toHaveURL(new RegExp(`${sessionPath}$`));
 
+  await page.getByRole('dialog', { name: '文件预览' }).getByRole('button', { name: '关闭', exact: true }).click();
+  await page.getByRole('link', { name: '打开 HTML 日报' }).click();
+  const htmlPreview = page.getByTitle('daily.html HTML 预览');
+  await expect(htmlPreview).toBeVisible();
+  const htmlFrame = htmlPreview.contentFrame();
+  await expect(htmlFrame.getByRole('heading', { name: 'HTML 日报已渲染' })).toBeVisible();
+  await expect(htmlFrame.getByRole('img', { name: '日报图表' })).toBeVisible();
+  await expect(htmlFrame.getByRole('button', { name: '不应显示' })).toHaveCount(0);
+  await expect(htmlFrame.locator('body')).not.toHaveAttribute('data-script-ran', 'true');
+  await expect(page).toHaveURL(new RegExp(`${sessionPath}$`));
   await page.getByRole('dialog', { name: '文件预览' }).getByRole('button', { name: '关闭', exact: true }).click();
   await page.getByRole('link', { name: '打开工作目录' }).click();
   const directoryPreview = page.getByRole('dialog', { name: '文件预览' });

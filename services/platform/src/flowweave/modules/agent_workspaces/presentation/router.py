@@ -616,6 +616,13 @@ async def download_agent_workspace_file(
     )
     disposition = "attachment" if download else "inline"
     headers = {"Content-Disposition": f"{disposition}; filename*=UTF-8''{quote(item.filename)}"}
+    if item.content_type.split(";", 1)[0].lower() == "text/html":
+        headers.update(
+            {
+                "Content-Security-Policy": "sandbox; default-src 'none'",
+                "X-Content-Type-Options": "nosniff",
+            }
+        )
     if preview:
         headers["X-Preview-Total-Bytes"] = str(item.total_size or 0)
         if item.next_offset is not None:

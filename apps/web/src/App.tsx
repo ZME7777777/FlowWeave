@@ -53,7 +53,7 @@ type ContextTab = { kind: 'settings'; view: SettingsView } | { kind: 'flow-run';
 const LAST_STANDALONE_AGENT_PATH_KEY = 'flowweave.agent.last-standalone-path.v1';
 
 function isStandaloneAgentPath(path: string): boolean {
-  return /^\/agent$/.test(path) || /^\/agent\/conversations\/[^/]+$/.test(path);
+  return /^\/agent(?:\/schedules)?$/.test(path) || /^\/agent\/(?:conversations|schedules\/conversations)\/[^/]+$/.test(path);
 }
 
 function readLastStandaloneAgentPath(): string {
@@ -95,7 +95,7 @@ export function App() {
     try { sessionStorage.setItem(LAST_STANDALONE_AGENT_PATH_KEY, path); } catch { /* browser session state only */ }
   }, []);
   const rememberStandaloneAgentConversation = useCallback((path: string) => {
-    if (/^\/agent\/conversations\/[^/]+$/.test(path)) setLastStandaloneAgentPath(path);
+    if (/^\/agent\/(?:conversations|schedules\/conversations)\/[^/]+$/.test(path)) setLastStandaloneAgentPath(path);
   }, [setLastStandaloneAgentPath]);
   const restoreStandaloneAgentPath = useCallback((path: string) => {
     if (isStandaloneAgentPath(path)) setLastStandaloneAgentPath(path);
@@ -114,7 +114,7 @@ export function App() {
     queryClient.clear();
     clearAgentIdentityStorage();
     const pathname = withoutDeploymentBase(window.location.pathname);
-    if (pathname.startsWith('/agent/conversations/')) {
+    if (pathname.startsWith('/agent/conversations/') || pathname.startsWith('/agent/schedules/conversations/')) {
       window.history.replaceState({}, '', withDeploymentBase('/agent'));
       setView('agent-workbench');
       setRouteVersion(value => value + 1);
@@ -262,7 +262,7 @@ export function App() {
     window.history.pushState({}, '', withDeploymentBase(`/flow-runs/${encodeURIComponent(selectedRunId)}`));
     setRouteVersion(value => value + 1);
   }, [flowRunRouteId, nodeSessionRoute, selectedRunId, view]);
-  const directAgentRoute = routePathname === '/agent' || routePathname.startsWith('/agent/conversations/');
+  const directAgentRoute = routePathname === '/agent' || routePathname === '/agent/schedules' || routePathname.startsWith('/agent/conversations/') || routePathname.startsWith('/agent/schedules/conversations/');
   const canUseAgentSessions = user?.can_use_agent_sessions !== false;
   const isAgentRoute = (directAgentRoute && canUseAgentSessions) || Boolean(nodeSessionRoute);
   useLayoutEffect(() => {

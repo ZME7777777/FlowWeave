@@ -39,7 +39,7 @@ export const agentWorkspaceSessionHost: AgentSessionHost = {
   workspaceToolsStorageKey: hostId => `flowweave:agent-session-tools:agent-workspace:${hostId}`,
   conversationPath: bindingId => `/agent/conversations/${encodeURIComponent(bindingId)}`,
   bindingIdFromPathname: pathname => {
-    const match = pathname.match(/^\/agent\/conversations\/([^/]+)$/);
+    const match = pathname.match(/^\/agent\/(?:conversations|schedules\/conversations)\/([^/]+)$/);
     return match ? decodeURIComponent(match[1]) : undefined;
   },
 };

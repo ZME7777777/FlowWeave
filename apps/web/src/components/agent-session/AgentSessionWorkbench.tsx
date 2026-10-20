@@ -2012,6 +2012,59 @@ function isTextPreviewable(path: string, mimeType = ''): boolean {
     || /\.(?:md|mdx|txt|json|ya?ml|toml|ini|conf|properties|xml|html?|css|scss|less|tsx?|jsx?|py|java|kt|go|rs|rb|php|sh|zsh|sql|graphql|vue|svelte)$/i.test(path);
 }
 
+function isHtmlPreviewable(path: string, mimeType = ''): boolean {
+  return mimeType.toLowerCase().split(';', 1)[0] === 'text/html' || /\.html?$/i.test(path);
+}
+
+function sandboxedHtmlPreviewDocument(content: string, sourcePath: string, workspaceFileUrl: (path: string) => string): string {
+  const document = new DOMParser().parseFromString(content, 'text/html');
+  const resourceUrl = (value: string): string | undefined => {
+    const source = value.trim();
+    if (!source || source.startsWith('#') || /^(?:data|blob):/i.test(source)) return source;
+    if (/^[a-z][a-z\d+.-]*:/i.test(source) || source.startsWith('//')) return undefined;
+    try {
+      const sourceDirectory = sourcePath.slice(0, sourcePath.lastIndexOf('/') + 1);
+      const resolved = new URL(source, `https://workspace.invalid${sourceDirectory}`).pathname;
+      return workspaceFileUrl(decodeURIComponent(resolved));
+    } catch {
+      return undefined;
+    }
+  };
+  const rewriteCssUrls = (css: string) => css.replace(/url\(\s*(['"]?)([^'")]+)\1\s*\)/gi, (match, _quote, value: string) => {
+    const resolved = resourceUrl(value);
+    return resolved ? `url("${resolved}")` : match;
+  });
+  const rewriteAttribute = (element: Element, name: string) => {
+    const value = element.getAttribute(name);
+    if (value === null) return;
+    const resolved = resourceUrl(value);
+    if (resolved === undefined) element.removeAttribute(name);
+    else element.setAttribute(name, resolved);
+  };
+
+  document.querySelectorAll('script, base, object, embed, iframe, form, button, input, select, textarea').forEach(element => element.remove());
+  document.querySelectorAll('meta[http-equiv]').forEach(element => element.remove());
+  document.querySelectorAll<HTMLElement>('*').forEach(element => {
+    for (const attribute of [...element.attributes]) {
+      if (attribute.name.toLowerCase().startsWith('on')) element.removeAttribute(attribute.name);
+    }
+    if (element.hasAttribute('style')) element.setAttribute('style', rewriteCssUrls(element.getAttribute('style') ?? ''));
+  });
+  document.querySelectorAll('img[src], audio[src], video[src], source[src], track[src], input[src], image[href], image[xlink\\:href]').forEach(element => {
+    rewriteAttribute(element, element.hasAttribute('src') ? 'src' : element.hasAttribute('href') ? 'href' : 'xlink:href');
+  });
+  document.querySelectorAll('video[poster]').forEach(element => rewriteAttribute(element, 'poster'));
+  document.querySelectorAll('link[rel~="stylesheet"][href]').forEach(element => rewriteAttribute(element, 'href'));
+  document.querySelectorAll('style').forEach(element => { element.textContent = rewriteCssUrls(element.textContent ?? ''); });
+
+  const origin = window.location.origin;
+  const csp = document.createElement('meta');
+  csp.httpEquiv = 'Content-Security-Policy';
+  csp.content = `default-src 'none'; base-uri 'none'; script-src 'none'; connect-src 'none'; form-action 'none'; frame-src 'none'; object-src 'none'; style-src 'unsafe-inline' ${origin}; img-src data: blob: ${origin}; font-src data: ${origin}; media-src ${origin}`;
+  (document.head || document.documentElement).prepend(csp);
+  return `<!doctype html>\n${document.documentElement.outerHTML}`;
+}
+
 function filePreviewLanguage(path: string): string | undefined {
   const extension = path.split('.').pop()?.toLowerCase();
   switch (extension) {
@@ -3534,9 +3587,21 @@ function ConversationFilePreviewDialog({ request, workspaceId, bindingId, workDi
     [previewBindingId, workDirectoryId, draftAttachmentOwnerId],
   );
   const textPreviewable = Boolean(workspaceRequest && isTextPreviewable(workspaceRequest.path, workspaceRequest.mimeType));
+  const htmlPreviewable = Boolean(workspaceRequest && isHtmlPreviewable(workspaceRequest.path, workspaceRequest.mimeType));
   const previewQuery = useQuery({
     queryKey: sessionQueryKey(host, 'conversation-file-preview', workspaceId, previewBindingId, draftAttachmentOwnerId, workspaceRequest?.path),
-    queryFn: ({ signal }) => api.filePreview(workspaceId, workspaceRequest!.path, fileOptions, undefined, signal),
+    queryFn: async ({ signal }) => {
+      let preview = await api.filePreview(workspaceId, workspaceRequest!.path, fileOptions, undefined, signal);
+      while (htmlPreviewable && preview.nextOffset !== undefined) {
+        const next = await api.filePreview(workspaceId, workspaceRequest!.path, fileOptions, preview.nextOffset, signal);
+        preview = {
+          content: preview.content + next.content,
+          totalBytes: next.totalBytes || preview.totalBytes,
+          nextOffset: next.nextOffset,
+        };
+      }
+      return preview;
+    },
     enabled: textPreviewable,
     retry: false,
   });
@@ -3570,6 +3635,14 @@ function ConversationFilePreviewDialog({ request, workspaceId, bindingId, workDi
   const downloadUrl = workspaceRequest ? fileUrl(workspaceId, workspaceRequest.path, { ...fileOptions, download: true }) : undefined;
   const canPreviewImage = Boolean(workspaceRequest && (workspaceRequest.mimeType?.startsWith('image/') || /\.(?:avif|gif|jpe?g|png|svg|webp)$/i.test(workspaceRequest.path)));
   const canPreviewPdf = Boolean(workspaceRequest && (workspaceRequest.mimeType === 'application/pdf' || /\.pdf$/i.test(workspaceRequest.path)));
+  const canPreviewHtml = Boolean(workspaceRequest && isHtmlPreviewable(workspaceRequest.path, workspaceRequest.mimeType));
+  const htmlPreviewDocument = useMemo(() => previewState && canPreviewHtml && workspaceRequest
+    ? sandboxedHtmlPreviewDocument(
+      previewState.content,
+      workspaceRequest.path,
+      path => fileUrl(workspaceId, path, { ...fileOptions, download: false }),
+    )
+    : undefined, [canPreviewHtml, fileOptions, fileUrl, previewState, workspaceId, workspaceRequest]);
   const lightweightPreview = Boolean(previewState && (previewState.totalBytes > 128 * 1024 || previewState.content.length > 128 * 1024));
   const imagePreviewable = request.kind === 'image' || canPreviewImage;
   const handleImageWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
@@ -3629,15 +3702,23 @@ function ConversationFilePreviewDialog({ request, workspaceId, bindingId, workDi
             ? imagePreview
             : canPreviewPdf
               ? <iframe className="agent-file-media-preview" title={`${request.filename} PDF 预览`} src={sourceUrl}/>
-              : textPreviewable
+              : canPreviewHtml
                 ? previewQuery.isLoading
-                  ? <p>正在读取文件…</p>
+                  ? <p>正在加载 HTML 页面…</p>
                   : previewQuery.isError
-                    ? <p>文件预览不可用，请在文件栏中查看或下载。</p>
-                    : previewState
-                      ? <div className="agent-file-preview-paged"><WorkspaceTextPreview path={previewState.path} content={previewState.content} lightweight={lightweightPreview} onOpenWorkspaceFile={href => onOpenWorkspaceFile(href, previewState.path)}/>{previewState.nextOffset !== undefined && <footer><span>已加载 {formatFileSize(previewState.nextOffset)} / {formatFileSize(previewState.totalBytes)}</span><button type="button" onClick={() => void loadMorePreview()} disabled={previewMoreLoading}>{previewMoreLoading ? '正在加载…' : '加载更多'}</button></footer>}</div>
+                    ? <p>HTML 页面无法读取，请在文件栏中查看或下载。</p>
+                    : htmlPreviewDocument
+                      ? <iframe className="agent-file-html-preview" sandbox="" title={`${request.filename} HTML 预览`} srcDoc={htmlPreviewDocument}/>
                       : null
-                : <p>此文件不提供浏览器预览，请在文件栏中查看或下载。</p>}
+                : textPreviewable
+                  ? previewQuery.isLoading
+                    ? <p>正在读取文件…</p>
+                    : previewQuery.isError
+                      ? <p>文件预览不可用，请在文件栏中查看或下载。</p>
+                      : previewState
+                        ? <div className="agent-file-preview-paged"><WorkspaceTextPreview path={previewState.path} content={previewState.content} lightweight={lightweightPreview} onOpenWorkspaceFile={href => onOpenWorkspaceFile(href, previewState.path)}/>{previewState.nextOffset !== undefined && <footer><span>已加载 {formatFileSize(previewState.nextOffset)} / {formatFileSize(previewState.totalBytes)}</span><button type="button" onClick={() => void loadMorePreview()} disabled={previewMoreLoading}>{previewMoreLoading ? '正在加载…' : '加载更多'}</button></footer>}</div>
+                        : null
+                  : <p>此文件不提供浏览器预览，请在文件栏中查看或下载。</p>}
       </div>
       <footer><button type="button" className="secondary" onClick={onClose}>关闭</button>{request.kind !== 'image' && <button type="button" className="primary" onClick={() => onOpenInFiles(request)}><PanelRightOpen size={14}/>{request.kind === 'directory' ? '在文件栏查看目录' : '在文件栏打开'}</button>}</footer>
     </section>
@@ -4693,7 +4774,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [conversationOrder, setConversationOrder] = useState<Record<string, string[]>>({});
   const [conversationOrderSync, setConversationOrderSync] = useState<Record<string, ConversationOrderSync>>({});
   const [sidebarScrollTop, setSidebarScrollTop] = useState<number>();
-  const [agentWorkspaceView, setAgentWorkspaceView] = useState<'home' | 'schedules' | 'management'>('home');
+  const [agentWorkspaceView, setAgentWorkspaceView] = useState<'home' | 'schedules' | 'management'>(() => withoutDeploymentBase(window.location.pathname).startsWith('/agent/schedules') ? 'schedules' : 'home');
   const workspaceSidebarScrollTop = useRef<number | undefined>(undefined);
   const workspaceSidebarScrollTopBeforeActivity = useRef<number | undefined>(undefined);
   const restoringWorkspaceSidebarScrollTop = useRef<number | undefined>(undefined);
@@ -4859,8 +4940,17 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     return () => window.removeEventListener('resize', clamp);
   }, []);
   const bootstrapTransitionScope = useRef<string | undefined>(undefined);
-  const routeBindingId = host.bindingIdFromPathname(withoutDeploymentBase(window.location.pathname));
+  const pathname = withoutDeploymentBase(window.location.pathname);
+  const scheduleRoute = pathname === '/agent/schedules' || pathname.startsWith('/agent/schedules/conversations/');
+  const routeBindingId = host.bindingIdFromPathname(pathname);
   const selectedBindingId = activityPreviewBindingId ?? routeBindingId;
+  const conversationPath = useCallback((bindingId: string) => scheduleRoute
+    ? `/agent/schedules/conversations/${encodeURIComponent(bindingId)}`
+    : host.conversationPath(bindingId), [host, scheduleRoute]);
+  useEffect(() => {
+    if (scheduleRoute) setAgentWorkspaceView('schedules');
+    else if (pathname.startsWith('/agent/conversations/')) setAgentWorkspaceView('home');
+  }, [pathname, scheduleRoute]);
   const previousComposerScope = useRef<string | undefined>(undefined);
   const pendingUnreadUpdates = useRef(new Map<string, { id: number; unread: boolean; unreadOrigin?: AgentConversation['unread_origin'] }>());
   const nextUnreadUpdateId = useRef(0);
@@ -5316,7 +5406,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (annotation.anchor_kind === 'CONVERSATION_TEXT') {
       const sourceBindingId = annotation.anchor.source_binding_id;
       if (typeof sourceBindingId === 'string' && sourceBindingId && sourceBindingId !== selected?.id) {
-        onNavigate(host.conversationPath(sourceBindingId));
+        onNavigate(conversationPath(sourceBindingId));
         return;
       }
       window.dispatchEvent(new CustomEvent('flowweave:locate-conversation-annotation', { detail: annotation }));
@@ -5328,7 +5418,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     // annotation repeatedly, and each click must re-open/reveal its range.
     setFileSelectionReference({ path: file.path, selection: { ...file.selection } });
     setDrawerOpen(true);
-  }, [host, onNavigate, selected?.id]);
+  }, [conversationPath, onNavigate, selected?.id]);
   useEffect(() => {
     const listener = (event: Event) => void createAnnotation('CONVERSATION_TEXT', (event as CustomEvent<Record<string, unknown>>).detail);
     window.addEventListener('flowweave:create-conversation-annotation', listener);
@@ -5764,10 +5854,22 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       const { workspaceId, bindingId } = request;
       const hydration = await api.conversationHydration(workspaceId, bindingId, signal);
       signal.throwIfAborted();
-      // Publish the coherent snapshot together. The presentation gate remains
-      // closed until this request resolves, so none of these cache writes can
-      // expose an older or partially refreshed transcript.
-      return publishHydration(workspaceId, bindingId, hydration);
+      const historyCursor = hydration.events.history_cursor;
+      const bridge = historyCursor
+        ? await api.conversationEvents(workspaceId, bindingId, undefined, historyCursor, undefined, signal)
+        : undefined;
+      signal.throwIfAborted();
+      const events = bridge
+        ? {
+            ...hydration.events,
+            events: mergeConversationEvents(bridge.events, hydration.events.events),
+            history_cursor: bridge.history_cursor,
+          }
+        : hydration.events;
+      // The native latest window can begin just after an assistant reply.
+      // Bridge its formal parent once before first paint so adjacent turns
+      // never appear to have a missing reply; deeper history stays deferred.
+      return publishHydration(workspaceId, bindingId, { ...hydration, events });
     },
     // Each selection explicitly refreshes below. Keeping this query disabled
     // prevents cached success data from becoming authoritative on re-entry.
@@ -6911,11 +7013,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (activityPreviewBindingId === bindingId) setActivityPreviewBindingId(undefined);
     if (selectedBindingId === bindingId) {
       setDrawerOpen(false);
-      onNavigate(nextConversation ? host.conversationPath(nextConversation.id) : host.rootPath, true);
+      onNavigate(nextConversation ? conversationPath(nextConversation.id) : (scheduleRoute ? '/agent/schedules' : host.rootPath), true);
     }
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversations', workspace.id) });
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-activity', workspace.id) });
-  }, [activityPreviewBindingId, conversations, host, onNavigate, queryClient, selectedBindingId, updateLocalMessageProjections, workspace]);
+  }, [activityPreviewBindingId, conversationPath, conversations, host, onNavigate, queryClient, scheduleRoute, selectedBindingId, updateLocalMessageProjections, workspace]);
   reconcileMissingConversationRef.current = reconcileMissingConversation;
   const missingConversationError = [
     selectedConversationQuery.error,
@@ -7159,9 +7261,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, [streamEnabled]);
 
   useEffect(() => {
-    if (!conversationDraft && !routeBindingId && conversations.length) onNavigate(host.conversationPath(conversations[0].id), true);
-    if (routeBindingId && conversations.length && !selected && pendingCreatedId !== routeBindingId && !initialConversationQueries.some(query => query.isFetching) && selectedConversationQuery.isError) onNavigate(host.rootPath, true);
-  }, [conversationDraft, conversations, host, initialConversationQueries, onNavigate, pendingCreatedId, routeBindingId, selected, selectedConversationQuery.isError]);
+    if (!conversationDraft && !routeBindingId && conversations.length) onNavigate(conversationPath(conversations[0].id), true);
+    if (routeBindingId && conversations.length && !selected && pendingCreatedId !== routeBindingId && !initialConversationQueries.some(query => query.isFetching) && selectedConversationQuery.isError) onNavigate(scheduleRoute ? '/agent/schedules' : host.rootPath, true);
+  }, [conversationDraft, conversationPath, conversations, host.rootPath, initialConversationQueries, onNavigate, pendingCreatedId, routeBindingId, scheduleRoute, selected, selectedConversationQuery.isError]);
   useEffect(() => { if (selected?.id === pendingCreatedId) setPendingCreatedId(undefined); }, [pendingCreatedId, selected?.id]);
   useEffect(() => setPausePreflightPending(false), [selected?.id]);
   useLayoutEffect(() => {
@@ -7429,7 +7531,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     clearBootstrapRecovery();
     setOperationError(undefined);
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversations', workspace.id) });
-    onNavigate(host.conversationPath(conversation.id));
+    onNavigate(conversationPath(conversation.id));
   }, onError: (error, message) => {
     if (isBootstrapAmbiguous(error)) {
       // React Query can retain a mutation observer from the render that
@@ -7555,7 +7657,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       if (selected?.id === bindingId) {
         setDrawerOpen(false);
         setActivityPreviewBindingId(undefined);
-        onNavigate(nextConversation ? host.conversationPath(nextConversation.id) : host.rootPath, true);
+        onNavigate(nextConversation ? conversationPath(nextConversation.id) : (scheduleRoute ? '/agent/schedules' : host.rootPath), true);
       }
       return context;
     },
@@ -7906,7 +8008,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       setPendingCreatedId(value.id);
       setPendingMigratedSend({ ...nextScopeMessage, bindingId: value.id });
       void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversations', workspace.id) });
-      onNavigate(host.conversationPath(value.id));
+      onNavigate(conversationPath(value.id));
     },
     onError: (error, message) => {
       // A failed streaming migration never proves delivery. Keep the browser
@@ -8011,7 +8113,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (!workspace) return;
     setPendingCreatedId(value.id);
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversations', workspace.id) });
-    onNavigate(host.conversationPath(value.id));
+    onNavigate(conversationPath(value.id));
   }, onError: error => reportOperationError(selected?.id, error) });
   const condense = useMutation({
     mutationFn: ({ workspaceId, bindingId }: { workspaceId: string; bindingId: string }) => api.condenseConversation(workspaceId, bindingId),
@@ -9082,7 +9184,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (unreadConversationIds.has(bindingId) || conversation?.unread) markConversationRead(bindingId);
     setActivityPreviewBindingId(undefined);
     setConversationDraft(undefined);
-    onNavigate(host.conversationPath(bindingId));
+    onNavigate(conversationPath(bindingId));
   };
   const toggleSidebarListMode = () => {
     if (sidebarListMode === 'activity') setActivityPreviewBindingId(undefined);
@@ -9159,8 +9261,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     window.addEventListener('pointercancel', stop, { once: true });
   };
   return <main className={`agent-workbench-page${!onReturnToSource ? ' agent-workbench-app-shell' : ''}`} style={{ '--conversation-rail-width': `${conversationRailWidth}px` } as CSSProperties}>
-    {!onReturnToSource && <nav className="agent-workbench-app-nav" aria-label="Agent 工作区导航"><button type="button" className={agentWorkspaceView === 'home' ? 'active' : ''} aria-current={agentWorkspaceView === 'home' ? 'page' : undefined} aria-label="主页" title="主页" onClick={() => setAgentWorkspaceView('home')}><Home size={17}/></button><button type="button" className={agentWorkspaceView === 'schedules' ? 'active' : ''} aria-current={agentWorkspaceView === 'schedules' ? 'page' : undefined} aria-label="定时任务" title="定时任务" onClick={() => setAgentWorkspaceView('schedules')}><CalendarClock size={17}/></button><button type="button" className={agentWorkspaceView === 'management' ? 'active' : ''} aria-current={agentWorkspaceView === 'management' ? 'page' : undefined} aria-label="会话管理" title="会话管理" onClick={() => setAgentWorkspaceView('management')}><MessageSquareText size={17}/></button></nav>}
-    {agentWorkspaceView === 'schedules' && workspace && <AgentConversationSchedulesPanel workspaceId={workspace.id} onOpenConversation={bindingId => { setAgentWorkspaceView('home'); selectConversation(bindingId); }}/>}
+    {!onReturnToSource && <nav className="agent-workbench-app-nav" aria-label="Agent 工作区导航"><button type="button" className={agentWorkspaceView === 'home' ? 'active' : ''} aria-current={agentWorkspaceView === 'home' ? 'page' : undefined} aria-label="主页" title="主页" onClick={() => { setAgentWorkspaceView('home'); onNavigate('/agent'); }}><Home size={17}/></button><button type="button" className={agentWorkspaceView === 'schedules' ? 'active' : ''} aria-current={agentWorkspaceView === 'schedules' ? 'page' : undefined} aria-label="定时任务" title="定时任务" onClick={() => { setAgentWorkspaceView('schedules'); onNavigate('/agent/schedules'); }}><CalendarClock size={17}/></button><button type="button" className={agentWorkspaceView === 'management' ? 'active' : ''} aria-current={agentWorkspaceView === 'management' ? 'page' : undefined} aria-label="会话管理" title="会话管理" onClick={() => setAgentWorkspaceView('management')}><MessageSquareText size={17}/></button></nav>}
+    {agentWorkspaceView === 'schedules' && workspace && <AgentConversationSchedulesPanel workspaceId={workspace.id} embedded onOpenConversation={selectConversation}/>}
     {agentWorkspaceView === 'management' && <section className="agent-conversation-management-page" aria-label="会话管理"><ConversationManagementPage/></section>}
     {selected && <ConversationStreamObserver workspaceId={workspace.id} bindingId={selected.id} enabled={streamEnabled} onEvent={onStreamEvent} onStatus={updateStreamStatus} onReconnect={onStreamReconnect}/>}
     {workspace && queuedMessageBindings(host, workspace.id).filter(bindingId => bindingId !== selected?.id).map(bindingId => (
@@ -9215,7 +9317,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       </div>
       {features.capabilities && (selected || features.draftCapabilitySelection) && <footer className="agent-workbench-rail-footer"><button type="button" title={selected ? '会话配置' : '新会话配置'} aria-label={selected ? '会话配置' : '新会话配置'} disabled={selected ? !canWrite : !runtimeWritable} onClick={() => setCapabilityManagerOpen(true)}><Boxes size={13}/><span><b>会话配置</b></span><ChevronRight size={12}/></button></footer>}
     </aside>}
-    {agentWorkspaceView === 'home' && <section className={`agent-workbench-main${fullScreenConversationActive ? ' fullscreen-conversation-active' : ''}`}>
+    {(agentWorkspaceView === 'home' || agentWorkspaceView === 'schedules') && <section className={`agent-workbench-main${fullScreenConversationActive ? ' fullscreen-conversation-active' : ''}`}>
       <header className="agent-workbench-header"><div><nav className="agent-conversation-tabs" aria-label="会话页签"><button type="button" className="active" aria-current="page" title={selected ? conversationName(selected) : undefined} onDoubleClick={() => { if (!selected || !canWrite) return; setTitle(conversationName(selected)); setEditing(true); }}><MessageSquareText size={14}/><span>{selected ? conversationName(selected) : conversationDraft ? '新会话' : '开始一个新的会话'}</span></button></nav>{editing && <div className="agent-title-edit"><input ref={titleInput} aria-label="会话标题" value={title} onChange={event => setTitle(event.target.value)} onBlur={() => { if (!rename.isPending) { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }} onKeyDown={event => { if (event.key === 'Enter' && title.trim()) { event.preventDefault(); rename.mutate(); } if (event.key === 'Escape') { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }}/></div>}</div></header>
       <div className={`agent-workbench-content${conversationDropActive ? ' conversation-drop-active' : ''}`} onDragEnter={event => {
         if (!acceptsConversationDrop(event)) return;
@@ -9381,7 +9483,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         </div>
       </div>}
     </section>}
-    {agentWorkspaceView === 'home' && <WorkspaceDrawer
+    {(agentWorkspaceView === 'home' || agentWorkspaceView === 'schedules') && <WorkspaceDrawer
       open={drawerOpen}
       onOpen={() => setDrawerOpen(true)}
       onFullScreenConversationActiveChange={setFullScreenConversationActive}
