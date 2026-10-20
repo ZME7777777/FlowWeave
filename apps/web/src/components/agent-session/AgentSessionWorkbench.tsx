@@ -662,9 +662,12 @@ function useAgentSessionHost(): AgentSessionHost {
 
 function WorkspaceConversationGroup({ groupId, label, children, conversationCount, hasMore = false, loadingMore = false, onLoadMore, draggable = false, dragging = false, dropPosition, onPointerDragStart, collapsed = false, onCollapsedChange, canCreateConversation = false, onCreateConversation, onEdit, onDelete }: WorkspaceConversationGroupProps) {
   const [visibleCount, setVisibleCount] = useState(3);
+  const [actionsOpen, setActionsOpen] = useState(false);
+  const actionsRef = useRef<HTMLDivElement>(null);
   const initializedItemCount = useRef(false);
   const previousConversationCount = useRef(conversationCount);
   const contentId = `agent-workspace-group-${groupId}`;
+  useEscapeClose(() => setActionsOpen(false), actionsOpen);
   useEffect(() => {
     if (!initializedItemCount.current) {
       if (conversationCount > 0) initializedItemCount.current = true;
@@ -678,20 +681,34 @@ function WorkspaceConversationGroup({ groupId, label, children, conversationCoun
     // same when its page arrives.
     if (added > 0 && !collapsed) setVisibleCount(current => current + added);
   }, [collapsed, conversationCount]);
+  useEffect(() => {
+    if (!actionsOpen) return;
+    const close = (event: PointerEvent) => {
+      if (event.target instanceof Node && !actionsRef.current?.contains(event.target)) setActionsOpen(false);
+    };
+    window.addEventListener('pointerdown', close);
+    return () => window.removeEventListener('pointerdown', close);
+  }, [actionsOpen]);
 
   const toggleCollapsed = () => {
     if (!collapsed) setVisibleCount(3);
     onCollapsedChange?.(!collapsed);
   };
   const toggleLabel = `${collapsed ? '展开' : '收起'}工作区 ${label}`;
+  const hasActions = Boolean(onCreateConversation || onEdit || onDelete);
   return <section data-work-directory-id={draggable ? groupId : undefined} className={`agent-workspace-group${collapsed ? ' collapsed' : ''}${dragging ? ' dragging' : ''}${dropPosition ? ` drop-${dropPosition}` : ''}`}>
     <header onPointerDown={draggable ? onPointerDragStart : undefined}>
       <button type="button" className="agent-workspace-group-toggle" aria-label={toggleLabel} aria-expanded={!collapsed} aria-controls={contentId} onClick={toggleCollapsed}>
         <Folder size={14}/><span>{label}</span>
       </button>
-      <div className="agent-workspace-group-actions">{onCreateConversation && <button type="button" aria-label={`在${label}中新建会话`} title="新建会话" disabled={!canCreateConversation} onClick={onCreateConversation}><Plus size={13}/></button>}
-      {onEdit && <button type="button" aria-label={`编辑工作区 ${label}`} title="编辑工作区" onClick={onEdit}><Pencil size={13}/></button>}
-      {onDelete && <button type="button" className="danger" aria-label={`删除工作区 ${label}`} title="删除工作区" onClick={onDelete}><Trash2 size={13}/></button>}</div>
+      {hasActions && <div ref={actionsRef} className="agent-workspace-group-actions" onPointerDown={event => event.stopPropagation()}>
+        <button type="button" className="agent-workspace-group-actions-trigger" aria-label={`工作区操作 ${label}`} title="工作区操作" aria-expanded={actionsOpen} onClick={() => setActionsOpen(current => !current)}><Ellipsis size={15}/></button>
+        {actionsOpen && <div role="menu" aria-label={`工作区操作菜单：${label}`} onPointerDown={event => event.stopPropagation()}>
+          {onCreateConversation && <button type="button" role="menuitem" disabled={!canCreateConversation} onClick={() => { onCreateConversation(); setActionsOpen(false); }}><Plus size={13}/>新建会话</button>}
+          {onEdit && <button type="button" role="menuitem" onClick={() => { onEdit(); setActionsOpen(false); }}><Pencil size={13}/>编辑工作区</button>}
+          {onDelete && <button type="button" className="danger" role="menuitem" onClick={() => { onDelete(); setActionsOpen(false); }}><Trash2 size={13}/>删除工作区</button>}
+        </div>}
+      </div>}
     </header>
     <div id={contentId} className="agent-workspace-group-content" hidden={collapsed}>
       {children(visibleCount)}
