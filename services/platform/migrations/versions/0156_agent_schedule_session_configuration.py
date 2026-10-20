@@ -1,7 +1,7 @@
 """add default session configuration to Agent schedules.
 
 Revision ID: 0156_agent_schedule_session_configuration
-Revises: 0155_agent_conversation_final_reply_preview
+Revises: 0155_agent_final_reply_preview
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "0156_agent_schedule_session_configuration"
-down_revision = "0155_agent_conversation_final_reply_preview"
+down_revision = "0155_agent_final_reply_preview"
 branch_labels = None
 depends_on = None
 

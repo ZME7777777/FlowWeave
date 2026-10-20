@@ -54,6 +54,7 @@ def test_agent_conversation_schedule_scans_and_enqueues_one_occurrence(
             )
         )
         assert task is not None
+        assert task.aggregate_type == "AGENT_CONVERSATION_SCHEDULE_OCCURRENCE"
         assert task.owner_user_id == schedule.owner_user_id
         assert schedule.next_run_at is not None
         assert schedule.next_run_at > now()

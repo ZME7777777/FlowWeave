@@ -13,7 +13,8 @@ from fastapi import Depends, FastAPI, Request, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, PlainTextResponse
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DataError, IntegrityError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from flowweave.bootstrap.container import Container, build_container
 from flowweave.bootstrap.settings import Settings
@@ -290,11 +291,68 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             message = "提交的数据与现有记录冲突，请检查是否存在重名或重复关联。"
         return JSONResponse(
             status_code=409,
+            content=error_body(code, message, _request_id(request)),
+        )
+
+    async def data_error(request: Request, exc: Exception) -> Response:
+        if not isinstance(exc, DataError):
+            raise exc
+        request_id = _request_id(request)
+        logger.warning(
+            "database data error method=%s path=%s request_id=%s",
+            request.method,
+            request.url.path,
+            request_id,
+            exc_info=exc,
+        )
+        return JSONResponse(
+            status_code=422,
             content=error_body(
-                code,
-                message,
-                _request_id(request),
+                "DATA_INVALID",
+                "提交的数据格式、长度或取值无效，请检查后重试。",
+                request_id,
             ),
+            headers={"X-Request-ID": request_id},
+        )
+
+    async def http_error(request: Request, exc: Exception) -> Response:
+        if not isinstance(exc, StarletteHTTPException):
+            raise exc
+        request_id = _request_id(request)
+        if exc.status_code == 404:
+            code = "ROUTE_NOT_FOUND"
+            message = "请求的接口不存在。"
+        elif exc.status_code == 405:
+            code = "METHOD_NOT_ALLOWED"
+            message = "当前接口不支持该请求方法。"
+        else:
+            code = "HTTP_ERROR"
+            message = "请求无法处理。"
+        headers = dict(exc.headers or {})
+        headers["X-Request-ID"] = request_id
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=error_body(code, message, request_id, {"status": exc.status_code}),
+            headers=headers,
+        )
+
+    async def unhandled_error(request: Request, exc: Exception) -> Response:
+        request_id = _request_id(request)
+        logger.error(
+            "unhandled API exception method=%s path=%s request_id=%s",
+            request.method,
+            request.url.path,
+            request_id,
+            exc_info=exc,
+        )
+        return JSONResponse(
+            status_code=500,
+            content=error_body(
+                "INTERNAL_SERVER_ERROR",
+                "服务器处理请求时发生异常，请使用请求标识联系管理员。",
+                request_id,
+            ),
+            headers={"X-Request-ID": request_id},
         )
 
     async def liveness() -> dict[str, str]:
@@ -360,6 +418,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_exception_handler(DomainError, domain_error)
     app.add_exception_handler(RequestValidationError, validation_error)
     app.add_exception_handler(IntegrityError, integrity_error)
+    app.add_exception_handler(DataError, data_error)
+    app.add_exception_handler(StarletteHTTPException, http_error)
+    app.add_exception_handler(Exception, unhandled_error)
     app.add_api_route("/health/live", liveness, methods=["GET"])
     app.add_api_route("/health/ready", readiness, methods=["GET"])
     app.add_api_route("/health", health, methods=["GET"])
