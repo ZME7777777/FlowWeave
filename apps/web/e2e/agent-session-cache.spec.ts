@@ -3599,8 +3599,8 @@ test('Conversation sidebar opens an activity session without changing its scroll
   await expect(sidebarList).toBeVisible();
   const rootGroup = page.locator('.agent-workspace-group').filter({ hasText: '根工作区' });
   const rootCreate = rootGroup.getByRole('button', { name: '在根工作区中新建会话' });
-  await expect(rootCreate).toBeVisible();
   await expect(rootGroup.getByRole('button', { name: '工作区操作 根工作区' })).toHaveCount(0);
+  await expect(rootCreate).toBeVisible();
   const workspaceGroup = page.locator('.agent-workspace-group').filter({ hasText: '归属工作区' });
   const workspaceCreate = workspaceGroup.getByRole('button', { name: '在归属工作区中新建会话' });
   const workspaceActions = workspaceGroup.getByRole('button', { name: '工作区操作 归属工作区' });
@@ -3610,10 +3610,11 @@ test('Conversation sidebar opens an activity session without changing its scroll
   await expect(workspaceGroup.locator('.agent-workspace-group-actions')).toHaveCSS('opacity', '0');
   await workspaceConversation.hover();
   await expect(workspaceGroup.locator('.agent-workspace-group-actions')).toHaveCSS('opacity', '0');
-  await expect(workspaceGroup.locator('header')).toHaveCSS('background-color', 'rgb(241, 242, 243)');
+  await expect(workspaceGroup.locator('header')).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
   await workspaceGroup.locator('header').hover();
   await expect(workspaceGroup.locator('.agent-workspace-group-actions')).toHaveCSS('opacity', '1');
-  await expect(workspaceGroup.locator('header')).toHaveCSS('background-color', 'rgb(241, 242, 243)');
+  await expect(workspaceGroup.locator('header')).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+  await expect(workspaceGroup).toHaveCSS('background-color', 'rgb(229, 242, 233)');
   await workspaceActions.click();
   const workspaceMenu = page.getByRole('menu', { name: '工作区操作菜单：归属工作区' });
   await expect(workspaceMenu.getByRole('menuitem', { name: '编辑' })).toBeVisible();
@@ -3625,6 +3626,7 @@ test('Conversation sidebar opens an activity session without changing its scroll
   expect(workspaceMenuBounds).not.toBeNull();
   expect(workspaceMenuBounds!.x).toBe(workspaceActionBounds!.x);
   expect(workspaceMenuBounds!.y).toBeGreaterThan(workspaceActionBounds!.y);
+  await expect(workspaceMenu).toHaveCSS('z-index', '1000');
   await expect(workspaceMenu.getByRole('menuitem', { name: '新建会话' })).toHaveCount(0);
   await expect(workspaceMenu.getByRole('menuitem', { name: '删除' })).toBeVisible();
   await workspaceMenu.getByRole('menuitem', { name: '编辑' }).click();

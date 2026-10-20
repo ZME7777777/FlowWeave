@@ -666,6 +666,9 @@ function WorkspaceConversationGroup({ groupId, label, children, conversationCoun
   const [visibleCount, setVisibleCount] = useState(3);
   const [actionsOpen, setActionsOpen] = useState(false);
   const actionsRef = useRef<HTMLDivElement>(null);
+  const actionsMenuRef = useRef<HTMLDivElement>(null);
+  const actionsTriggerRef = useRef<HTMLButtonElement>(null);
+  const [menuPosition, setMenuPosition] = useState<{ left: number; top: number }>();
   const initializedItemCount = useRef(false);
   const previousConversationCount = useRef(conversationCount);
   const contentId = `agent-workspace-group-${groupId}`;
@@ -685,11 +688,24 @@ function WorkspaceConversationGroup({ groupId, label, children, conversationCoun
   }, [collapsed, conversationCount]);
   useEffect(() => {
     if (!actionsOpen) return;
-    const close = (event: PointerEvent) => {
-      if (event.target instanceof Node && !actionsRef.current?.contains(event.target)) setActionsOpen(false);
+    const updateMenuPosition = () => {
+      const trigger = actionsTriggerRef.current;
+      if (!trigger) return;
+      const bounds = trigger.getBoundingClientRect();
+      setMenuPosition({ left: bounds.left, top: bounds.bottom + 3 });
     };
+    const close = (event: PointerEvent) => {
+      if (event.target instanceof Node && !actionsRef.current?.contains(event.target) && !actionsMenuRef.current?.contains(event.target)) setActionsOpen(false);
+    };
+    updateMenuPosition();
     window.addEventListener('pointerdown', close);
-    return () => window.removeEventListener('pointerdown', close);
+    window.addEventListener('resize', updateMenuPosition);
+    window.addEventListener('scroll', updateMenuPosition, true);
+    return () => {
+      window.removeEventListener('pointerdown', close);
+      window.removeEventListener('resize', updateMenuPosition);
+      window.removeEventListener('scroll', updateMenuPosition, true);
+    };
   }, [actionsOpen]);
 
   const toggleCollapsed = () => {
@@ -697,24 +713,22 @@ function WorkspaceConversationGroup({ groupId, label, children, conversationCoun
     onCollapsedChange?.(!collapsed);
   };
   const toggleLabel = `${collapsed ? '展开' : '收起'}工作区 ${label}`;
-  const hasActions = Boolean(onCreateConversation || onEdit || onDelete);
   const hasOverflowActions = Boolean(onEdit || onDelete);
+  const menu = actionsOpen && menuPosition && createPortal(<div ref={actionsMenuRef} role="menu" className="agent-workspace-group-actions-menu" aria-label={`工作区操作菜单：${label}`} style={menuPosition} onPointerDown={event => event.stopPropagation()}>
+    {onEdit && <button type="button" role="menuitem" onClick={() => { onEdit(); setActionsOpen(false); }}><Settings size={13}/>编辑</button>}
+    {onDelete && <button type="button" className="danger" role="menuitem" onClick={() => { onDelete(); setActionsOpen(false); }}><Trash2 size={13}/>删除</button>}
+  </div>, document.body);
   return <section data-workspace-group-id={groupId} data-work-directory-id={draggable ? groupId : undefined} className={`agent-workspace-group${collapsed ? ' collapsed' : ''}${dragging ? ' dragging' : ''}${dropPosition ? ` drop-${dropPosition}` : ''}`}>
     <header onPointerDown={draggable ? onPointerDragStart : undefined}>
       <button type="button" className="agent-workspace-group-toggle" aria-label={toggleLabel} aria-expanded={!collapsed} aria-controls={contentId} onClick={toggleCollapsed}>
         <Folder size={14}/><span>{label}</span>
       </button>
-      {hasActions && <div ref={actionsRef} className="agent-workspace-group-actions" onPointerDown={event => event.stopPropagation()}>
-        {hasOverflowActions && <div className="agent-workspace-group-overflow">
-          <button type="button" className="agent-workspace-group-actions-trigger" aria-label={`工作区操作 ${label}`} title="工作区操作" aria-expanded={actionsOpen} onClick={() => setActionsOpen(current => !current)}><Ellipsis size={15}/></button>
-          {actionsOpen && <div role="menu" aria-label={`工作区操作菜单：${label}`} onPointerDown={event => event.stopPropagation()}>
-            {onEdit && <button type="button" role="menuitem" onClick={() => { onEdit(); setActionsOpen(false); }}><Settings size={13}/>编辑</button>}
-            {onDelete && <button type="button" className="danger" role="menuitem" onClick={() => { onDelete(); setActionsOpen(false); }}><Trash2 size={13}/>删除</button>}
-          </div>}
-        </div>}
+      {(hasOverflowActions || onCreateConversation) && <div ref={actionsRef} className="agent-workspace-group-actions" onPointerDown={event => event.stopPropagation()}>
+        {hasOverflowActions && <button ref={actionsTriggerRef} type="button" className="agent-workspace-group-actions-trigger" aria-label={`工作区操作 ${label}`} title="工作区操作" aria-expanded={actionsOpen} onClick={() => setActionsOpen(current => !current)}><Ellipsis size={15}/></button>}
         {onCreateConversation && <button type="button" className="agent-workspace-group-create" aria-label={`在${label}中新建会话`} title="新建会话" disabled={!canCreateConversation} onClick={onCreateConversation}><Pencil size={15}/></button>}
       </div>}
     </header>
+    {menu}
     <div id={contentId} className="agent-workspace-group-content" hidden={collapsed}>
       {children(visibleCount)}
       {hasMore && <button type="button" className="agent-workspace-group-more" disabled={loadingMore} onClick={() => void onLoadMore?.()}>{loadingMore ? '正在加载…' : '展开显示'}</button>}
@@ -4362,7 +4376,7 @@ function WorkspaceDrawer({
     <article className="agent-workspace-ide"><MonitorCog size={16}/><div><small>IDEA / Gateway</small><b>{details.ide.gateway.status}</b>{sshRemoteReady ? <button type="button" className="agent-ssh-access-trigger" onClick={() => setSshAccessOpen(true)}>SSH 接入说明<ChevronRight size={13}/></button> : <code>{details.ide.workspace_path}</code>}<p>{details.ide.gateway.note}</p></div></article>
     <article className="agent-workspace-sources"><Link2 size={16}/><div><small>来源</small>{sources.length ? <><div className="agent-workspace-source-list">{visibleSources.map(source => <button type="button" key={source.id} title={`查看来源详情：${source.label}`} onClick={openSources}><span className="agent-workspace-source-glyph"><ConversationSourceGlyph source={source} size={12}/></span><span><b>{source.label}</b><em>{conversationSourceKind(source)}</em></span></button>)}</div>{sources.length > visibleSources.length && <button type="button" className="agent-workspace-view-all-sources" onClick={openSources}><Link2 size={12}/><span>查看全部</span><em>{sources.length}</em><ChevronRight size={13}/></button>}</> : <p>用户输入的链接、文件和图片会集中显示在这里。</p>}</div></article>
   </section>;
-  return <><aside className={`agent-workspace-drawer ${open ? 'tools-open' : 'summary-open'}${fullScreen ? ' fullscreen' : ''}`} style={{ width: fullScreen ? undefined : panelWidth }} role={fullScreen ? 'dialog' : undefined} aria-modal={fullScreen || undefined} aria-label={fullScreen ? '全屏工作区工具' : undefined}>
+      return <><aside className={`agent-workspace-drawer ${open ? 'tools-open' : 'summary-open'}${fullScreen ? ' fullscreen' : ''}`} style={{ width: fullScreen ? undefined : panelWidth }} aria-label={fullScreen ? '全屏工作区工具' : undefined}>
     <div className="agent-workspace-resizer" role="separator" aria-label="调整工作区工具宽度" aria-orientation="vertical" onPointerDown={startResize}/>
     <section className={`agent-workspace-summary ${open ? 'panel-hidden' : ''}`}>
       <header onClick={event => { if (event.target !== event.currentTarget) return; summaryOpenTimer.current = window.setTimeout(onOpen, 200); }} onDoubleClick={event => { if (event.target !== event.currentTarget) return; if (summaryOpenTimer.current !== undefined) window.clearTimeout(summaryOpenTimer.current); summaryOpenTimer.current = undefined; setFullScreen(true); onOpen(); }}><div><span className="eyebrow">WORKSPACE</span><b>环境信息</b></div><div className="agent-workspace-summary-actions"><div ref={summaryToolMenuRef} className="agent-workspace-tool-menu"><button type="button" className="agent-workspace-tool-menu-trigger" aria-label="更多工作区工具" aria-expanded={toolMenuOpen} aria-haspopup="menu" onClick={() => setToolMenuOpen(current => !current)}><Ellipsis size={16}/></button>{toolMenuOpen && !open && <div role="menu"><button type="button" role="menuitem" onClick={() => { openFiles(); setToolMenuOpen(false); }}><FileCode2 size={13}/>文件</button>{onOpenSidebarQuestion && <button type="button" role="menuitem" onClick={() => { onOpenSidebarQuestion(); setToolMenuOpen(false); }}><PanelRightOpen size={13}/>侧边聊天</button>}<button type="button" role="menuitem" onClick={() => { openGitHistory(); setToolMenuOpen(false); }}><GitBranch size={13}/>Git 历史</button>{reviewChanges.length > 0 && <button type="button" role="menuitem" onClick={() => { openChanges(); setToolMenuOpen(false); }}><FileText size={13}/>审查改动</button>}{sources.length > 0 && <button type="button" role="menuitem" onClick={() => { openSources(); setToolMenuOpen(false); }}><Link2 size={13}/>来源</button>}{runtimeTasks.length > 0 && <button type="button" role="menuitem" onClick={() => { openRuntimeTasks(); setToolMenuOpen(false); }}><Bot size={13}/>子智能体</button>}<button type="button" role="menuitem" disabled={!runtimeAvailable} onClick={() => { openTerminal(); setToolMenuOpen(false); }}><Plus size={13}/>终端</button></div>}</div></div></header>
