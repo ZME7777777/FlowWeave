@@ -3489,7 +3489,10 @@ function ConversationFilePreviewDialog({ request, workspaceId, bindingId, workDi
   const workspaceRequest = request.kind === 'workspace' ? request : undefined;
   const previewBindingId = workspaceRequest?.previewBindingId ?? bindingId;
   const draftAttachmentOwnerId = workspaceRequest?.draftAttachmentOwnerId;
-  const fileOptions = { bindingId: previewBindingId, workDirectoryId, draftAttachmentOwnerId };
+  const fileOptions = useMemo(
+    () => ({ bindingId: previewBindingId, workDirectoryId, draftAttachmentOwnerId }),
+    [previewBindingId, workDirectoryId, draftAttachmentOwnerId],
+  );
   const textPreviewable = Boolean(workspaceRequest && isTextPreviewable(workspaceRequest.path, workspaceRequest.mimeType));
   const previewQuery = useQuery({
     queryKey: sessionQueryKey(host, 'conversation-file-preview', workspaceId, previewBindingId, draftAttachmentOwnerId, workspaceRequest?.path),
@@ -6598,7 +6601,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       draftAttachmentOwnerId: selected ? undefined : conversationDraft?.id,
       download: false,
     });
-  }, [conversationDraft?.id, conversationDraft?.workDirectoryId, fileUrl, selected?.id, workspace]);
+  }, [conversationDraft?.id, conversationDraft?.workDirectoryId, fileUrl, selected, workspace]);
   const insertAttachmentAlias = useCallback((attachment: AgentAttachment) => {
     const index = attachments.findIndex(item => item.path === attachment.path);
     if (index < 0) return;
