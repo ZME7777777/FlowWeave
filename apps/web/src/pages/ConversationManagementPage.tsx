@@ -11,9 +11,9 @@ const PAGE_SIZE = 20;
 type InactivePeriod = 'all' | '30' | '90';
 
 const PERIOD_OPTIONS: { value: InactivePeriod; label: string }[] = [
+  { value: 'all', label: '全部时间' },
   { value: '30', label: '30 天前' },
   { value: '90', label: '90 天前' },
-  { value: 'all', label: '全部时间' },
 ];
 
 function conversationTitle(item: ManagedAgentConversation) {
@@ -76,7 +76,7 @@ function PeriodDropdown({ value, onChange }: { value: InactivePeriod; onChange: 
 export function ConversationManagementPage() {
   const client = useQueryClient();
   const [query, setQuery] = useState('');
-  const [period, setPeriod] = useState<InactivePeriod>('30');
+  const [period, setPeriod] = useState<InactivePeriod>('all');
   const [includePinned, setIncludePinned] = useState(false);
   const [includeUnread, setIncludeUnread] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -173,10 +173,10 @@ export function ConversationManagementPage() {
         <header><b>工作区</b></header>
         <div className="conversation-management-workspace-list">
           <button type="button" className={!selectedWorkDirectoryId ? 'active' : ''} aria-pressed={!selectedWorkDirectoryId} onClick={() => setSelectedWorkDirectoryId(undefined)}>
-            <Folder size={16}/><span><b>{workDirectories.data?.root.display_name ?? '根工作区'}</b><small>根目录会话</small></span>
+            <Folder size={16}/><span>{workDirectories.data?.root.display_name ?? '根工作区'}</span>
           </button>
           {workDirectories.data?.items.map(directory => <button key={directory.id} type="button" className={selectedWorkDirectoryId === directory.id ? 'active' : ''} aria-pressed={selectedWorkDirectoryId === directory.id} onClick={() => setSelectedWorkDirectoryId(directory.id)}>
-            <Folder size={16}/><span><b>{directory.display_name}</b><small>工作区会话</small></span>
+            <Folder size={16}/><span>{directory.display_name}</span>
           </button>)}
         </div>
       </aside>
@@ -189,7 +189,7 @@ export function ConversationManagementPage() {
       </div>
       {conversations.isLoading || workspace.isLoading || workDirectories.isLoading ? <div className="empty">正在读取会话…</div> : conversations.isError || workspace.isError || workDirectories.isError ? <div className="empty error">{conversations.error?.message ?? workspace.error?.message ?? workDirectories.error?.message}</div> : <>
         <div className="conversation-management-selection"><label><input type="checkbox" aria-label="选择当前筛选结果中的全部会话" checked={selectAllVisible} ref={input => { if (input) input.indeterminate = !selectAllVisible && selectedVisible.length > 0; }} onChange={toggleVisible}/><CheckSquare size={15}/><span>选择当前结果</span></label><span>已选 {selectedVisible.length} / {visible.length} 个会话</span><button className="danger" disabled={selectedVisible.length === 0 || remove.isPending} onClick={() => setConfirming(true)}><Trash2 size={14}/>删除已选会话</button></div>
-        <div className="conversation-management-table-wrap"><table className="conversation-management-table"><thead><tr><th>选择</th><th>会话</th><th>最后活动</th><th>创建时间</th><th>状态</th></tr></thead><tbody>{paged.map(item => <tr key={item.id}><td><input type="checkbox" aria-label={`选择会话 ${conversationTitle(item)}`} checked={selectedIds.has(item.id)} onChange={() => toggle(item.id)}/></td><td><b>{conversationTitle(item)}</b><small>{item.last_message_at ? '有消息记录' : '未发送消息'}</small></td><td>{formatTime(activityTime(item))}</td><td>{formatTime(item.created_at)}</td><td><span className="conversation-management-status">{item.pinned && '置顶'}{item.pinned && item.unread && ' · '}{item.unread && '未读'}{!item.pinned && !item.unread && '普通'}</span></td></tr>)}</tbody></table>{visible.length === 0 && <div className="empty compact"><ArchiveX size={25}/><b>没有符合当前条件的会话</b><span>调整筛选条件，或等待正在运行的会话完成。</span></div>}</div>
+        <div className="conversation-management-table-wrap"><table className="conversation-management-table"><thead><tr><th>选择</th><th>会话</th><th>最后活动</th><th>创建时间</th><th>状态</th></tr></thead><tbody>{paged.map(item => <tr key={item.id}><td><input type="checkbox" aria-label={`选择会话 ${conversationTitle(item)}`} checked={selectedIds.has(item.id)} onChange={() => toggle(item.id)}/></td><td><b>{conversationTitle(item)}</b></td><td>{formatTime(activityTime(item))}</td><td>{formatTime(item.created_at)}</td><td><span className="conversation-management-status">{item.pinned && '置顶'}{item.pinned && item.unread && ' · '}{item.unread && '未读'}{!item.pinned && !item.unread && '普通'}</span></td></tr>)}</tbody></table>{visible.length === 0 && <div className="empty compact"><ArchiveX size={25}/><b>没有符合当前条件的会话</b><span>调整筛选条件，或等待正在运行的会话完成。</span></div>}</div>
         <Pagination page={page} pageSize={PAGE_SIZE} total={visible.length} onPageChange={setPage}/>
       </>}
       </section>
