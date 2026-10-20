@@ -679,13 +679,15 @@ function WorkspaceConversationGroup({ groupId, label, children, conversationCoun
     if (added > 0 && !collapsed) setVisibleCount(current => current + added);
   }, [collapsed, conversationCount]);
 
+  const toggleCollapsed = () => {
+    if (!collapsed) setVisibleCount(3);
+    onCollapsedChange?.(!collapsed);
+  };
+  const toggleLabel = `${collapsed ? '展开' : '收起'}工作区 ${label}`;
   return <section data-work-directory-id={draggable ? groupId : undefined} className={`agent-workspace-group${collapsed ? ' collapsed' : ''}${dragging ? ' dragging' : ''}${dropPosition ? ` drop-${dropPosition}` : ''}`}>
     <header onPointerDown={draggable ? onPointerDragStart : undefined}>
-      <button type="button" className="agent-workspace-group-toggle" aria-label={`${collapsed ? '展开' : '收起'}工作区 ${label}`} aria-expanded={!collapsed} aria-controls={contentId} onClick={() => {
-        if (!collapsed) setVisibleCount(3);
-        onCollapsedChange?.(!collapsed);
-      }}>
-        <Folder size={14}/><span>{label}</span><ChevronDown size={13}/>
+      <button type="button" className="agent-workspace-group-toggle" aria-label={toggleLabel} aria-expanded={!collapsed} aria-controls={contentId} onClick={toggleCollapsed}>
+        <Folder size={14}/><span>{label}</span>
       </button>
       <div className="agent-workspace-group-actions">{onCreateConversation && <button type="button" aria-label={`在${label}中新建会话`} title="新建会话" disabled={!canCreateConversation} onClick={onCreateConversation}><Plus size={13}/></button>}
       {onEdit && <button type="button" aria-label={`编辑工作区 ${label}`} title="编辑工作区" onClick={onEdit}><Pencil size={13}/></button>}
@@ -8787,7 +8789,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       }}>
         {sidebarListMode === 'activity'
           ? <section className="agent-workspace-activity" aria-label="活动会话"><header><div><span className="eyebrow">ACTIVITY</span><b>活动</b></div><button type="button" aria-label="返回工作区列表" title="返回工作区列表" onClick={() => { setActivityPreviewBindingId(undefined); setSidebarListMode('workspaces'); }}><ArrowLeft size={15}/></button></header>{activityConversations.length ? activityConversations.map(item => conversationRow(item, [], { allowDrag: false, workspaceName: activityWorkspaceName(item), onSelect: () => previewActivityConversation(item.id), onDoubleClick: () => openActivityConversation(item.id), onMarkRead: () => markConversationRead(item.id) })) : <p>没有正在运行或未读的会话。</p>}</section>
-          : <>{pinnedConversations.length > 0 && <section className={`agent-workspace-pinned${pinnedConversationsCollapsed ? ' collapsed' : ''}`} aria-label="置顶会话"><header><button type="button" aria-label={`${pinnedConversationsCollapsed ? '展开' : '收起'}置顶会话`} aria-expanded={!pinnedConversationsCollapsed} aria-controls="agent-workspace-pinned-content" onClick={() => setPinnedConversationsCollapsed(current => !current)}><Pin size={13}/><span>置顶</span>{pinnedConversationsCollapsed ? <ChevronRight size={13}/> : <ChevronDown size={13}/>}</button></header><div id="agent-workspace-pinned-content" hidden={pinnedConversationsCollapsed}>{pinnedConversations.map(item => conversationRow(item, [], { allowDrag: false }))}</div></section>}
+          : <>{pinnedConversations.length > 0 && <section className={`agent-workspace-pinned${pinnedConversationsCollapsed ? ' collapsed' : ''}`} aria-label="置顶会话"><header><button type="button" aria-label={`${pinnedConversationsCollapsed ? '展开' : '收起'}置顶会话`} aria-expanded={!pinnedConversationsCollapsed} aria-controls="agent-workspace-pinned-content" onClick={() => setPinnedConversationsCollapsed(current => !current)}><Pin size={13}/><span>置顶</span></button></header><div id="agent-workspace-pinned-content" hidden={pinnedConversationsCollapsed}>{pinnedConversations.map(item => conversationRow(item, [], { allowDrag: false }))}</div></section>}
             <WorkspaceConversationGroup groupId="root" label="根工作区" conversationCount={rootConversations.length} hasMore={Boolean(conversationPagesByScope.__root__?.next_cursor)} loadingMore={loadingConversationScope === '__root__'} onLoadMore={() => loadMoreConversations('__root__')} collapsed={collapsedConversationGroups.has('root')} onCollapsedChange={collapsed => setConversationGroupCollapsed('root', collapsed)} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ displayName: '根工作区' })}>
               {visibleCount => <>{pendingBootstrapItem && !pendingBootstrap?.draft.workDirectoryId ? pendingBootstrapItem : recoverableDraftItem(undefined, '根工作区')}{rootConversations.slice(0, visibleCount).map(item => conversationRow(item, rootConversations))}</>}
             </WorkspaceConversationGroup>
