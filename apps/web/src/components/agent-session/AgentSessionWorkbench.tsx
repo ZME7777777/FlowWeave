@@ -3770,9 +3770,8 @@ function WorkspaceBrowser({ tab, workspaceId, bindingId, workDirectoryId, browse
   useEffect(() => { setAddress(tab.url); }, [tab.url]);
   return <section className="agent-workspace-browser" aria-label="内置浏览器">
     <form className="agent-workspace-browser-toolbar" onSubmit={event => { event.preventDefault(); navigate(); }}>
-      <button type="button" aria-label="刷新当前页面" title="刷新" disabled={!source} onClick={() => setRefreshKey(current => current + 1)}><RefreshCw size={14}/></button>
-      <label><span className="sr-only">网页地址</span><input aria-label="网页地址" value={address} placeholder="输入网址" onChange={event => setAddress(event.target.value)} onBlur={navigate}/></label>
-      <button type="submit" aria-label="打开网页" title="打开" disabled={!normalizeBrowserUrl(address)}><ArrowRight size={14}/></button>
+      <div className="agent-workspace-browser-navigation" aria-label="浏览器导航"><button type="button" aria-label="后退" title="后退" disabled><ArrowLeft size={14}/></button><button type="button" aria-label="前进" title="前进" disabled><ArrowRight size={14}/></button><i aria-hidden="true"/><button type="button" aria-label="刷新当前页面" title="刷新" disabled={!source} onClick={() => setRefreshKey(current => current + 1)}><RefreshCw size={14}/></button></div>
+      <label><span className="sr-only">网页地址</span><input aria-label="网页地址" value={address} placeholder="搜索或输入网址" onChange={event => setAddress(event.target.value)} onBlur={navigate}/></label>
     </form>
     {!source ? startPage ?? <div className="agent-workspace-browser-empty"><Globe2 size={28}/><b>安全内置浏览器</b><span>输入 HTTP 或 HTTPS 地址以在隔离页面中打开。</span></div> : <iframe key={`${source}:${refreshKey}`} className="agent-workspace-browser-frame" title={tab.title || '内置浏览器页面'} src={source} sandbox="allow-scripts allow-forms allow-modals allow-popups allow-downloads" referrerPolicy="no-referrer"/>}
   </section>;
@@ -3874,9 +3873,6 @@ function WorkspaceDrawer({
     onFullScreenConversationActiveChange(fullScreenConversationActive);
     return () => onFullScreenConversationActiveChange(false);
   }, [fullScreenConversationActive, onFullScreenConversationActiveChange]);
-  useEffect(() => {
-    if (fullScreenConversationActive) setEnvironmentOpen(true);
-  }, [fullScreenConversationActive]);
   useEffect(() => {
     if (open) {
       setEnvironmentOpen(false);
@@ -4649,7 +4645,7 @@ function WorkspaceDrawer({
       {fullScreenConversationActive && <button type="button" aria-label="退出全屏" title="退出全屏（Esc）" onClick={() => setFullScreen(false)}><Minimize2 size={16}/></button>}
     </div>}
     <section className={`agent-workspace-tool-shell ${open ? '' : 'panel-hidden'}`}>
-              <header><nav className="agent-workspace-tabs" aria-label="工作区页签">{fullScreen && <div className={fullScreenView === 'conversation' ? 'active fixed' : 'fixed'}><button type="button" className="agent-workspace-tab-select" title={conversationTabLabel} onClick={() => setFullScreenView('conversation')}><span>{conversationTabLabel}</span></button></div>}{scopeState.tabs.map(tab => <div key={tab.id} className={!fullScreen || fullScreenView === 'tool' && scopeState.activeTabId === tab.id ? 'active' : ''}><button type="button" className="agent-workspace-tab-select" onClick={() => { setFullScreenView('tool'); updateScope(current => ({ ...current, activeTabId: tab.id })); }}><i className="agent-workspace-tab-icon">{workspaceTabIcon(tab)}</i><span>{workspaceTabLabel(tab)}</span></button><button type="button" className="agent-workspace-tab-close" aria-label={`关闭${workspaceTabLabel(tab)}页签`} disabled={tab.kind === 'terminal' && closingTerminalId === tab.terminalInstanceId} onClick={() => { if (tab.kind !== 'terminal' || closingTerminalId !== tab.terminalInstanceId) requestCloseTab(tab); }}><X size={12}/></button></div>)}<button type="button" className="agent-workspace-new-tab" aria-label="新建工作区页签" title="新建页签" onClick={openLauncher}><Plus size={15}/></button></nav><div className="agent-workspace-tool-actions">{fullScreen ? <><button type="button" aria-label={environmentOpen ? '隐藏悬浮信息卡' : '显示悬浮信息卡'} title={environmentOpen ? '隐藏悬浮信息卡' : '显示悬浮信息卡'} aria-pressed={environmentOpen} onClick={() => setEnvironmentOpen(current => !current)}>{environmentOpen ? <MonitorOff size={15}/> : <MonitorCog size={15}/>}</button><button type="button" aria-label="退出全屏" title="退出全屏（Esc）" onClick={() => setFullScreen(false)}><Minimize2 size={16}/></button></> : <><button type="button" aria-label="全屏查看工作区工具" title="全屏查看" onClick={() => { setFullScreen(true); setFullScreenView('conversation'); }}><Maximize2 size={16}/></button><button type="button" aria-label="关闭工作区工具" onClick={() => void closeWorkspaceTools()}><X size={16}/></button></>}</div></header>
+              <header><nav className="agent-workspace-tabs" aria-label="工作区页签">{fullScreen && <div className={fullScreenView === 'conversation' ? 'active fixed' : 'fixed'}><button type="button" className="agent-workspace-tab-select" title={conversationTabLabel} onClick={() => setFullScreenView('conversation')}><span>{conversationTabLabel}</span></button></div>}{scopeState.tabs.map(tab => <div key={tab.id} className={!fullScreen || fullScreenView === 'tool' && scopeState.activeTabId === tab.id ? 'active' : ''}><button type="button" className="agent-workspace-tab-select" onClick={() => { setFullScreenView('tool'); updateScope(current => ({ ...current, activeTabId: tab.id })); }}><i className="agent-workspace-tab-icon">{workspaceTabIcon(tab)}</i><span>{workspaceTabLabel(tab)}</span></button><button type="button" className="agent-workspace-tab-close" aria-label={`关闭${workspaceTabLabel(tab)}页签`} disabled={tab.kind === 'terminal' && closingTerminalId === tab.terminalInstanceId} onClick={() => { if (tab.kind !== 'terminal' || closingTerminalId !== tab.terminalInstanceId) requestCloseTab(tab); }}><X size={12}/></button></div>)}<button type="button" className="agent-workspace-new-tab" aria-label="新建工作区页签" title="新建页签" onClick={openLauncher}><Plus size={15}/></button></nav><div className="agent-workspace-tool-actions">{fullScreen ? <><button type="button" aria-label={environmentOpen ? '隐藏悬浮信息卡' : '显示悬浮信息卡'} title={environmentOpen ? '隐藏悬浮信息卡' : '显示悬浮信息卡'} aria-pressed={environmentOpen} onClick={() => setEnvironmentOpen(current => !current)}>{environmentOpen ? <MonitorOff size={15}/> : <MonitorCog size={15}/>}</button><button type="button" aria-label="退出全屏" title="退出全屏（Esc）" onClick={() => setFullScreen(false)}><Minimize2 size={16}/></button></> : <><button type="button" aria-label="全屏查看工作区工具" title="全屏查看" onClick={() => { setFullScreenView('tool'); setFullScreen(true); }}><Maximize2 size={16}/></button><button type="button" aria-label="关闭工作区工具" onClick={() => void closeWorkspaceTools()}><X size={16}/></button></>}</div></header>
       <div className="agent-workspace-tool-body">
         {panelError && <p className="agent-workspace-panel-error" role="alert"><span>{panelError}</span><button type="button" aria-label="关闭错误提示" onClick={() => setPanelError('')}><X size={13}/></button></p>}
         {scopeState.tabs.filter((tab): tab is Extract<WorkspaceToolTab, { kind: 'launcher' }> => tab.kind === 'launcher').map(tab => <section key={tab.id} className={`agent-workspace-tab-launcher ${scopeState.activeTabId === tab.id ? 'active' : ''}`}><WorkspaceBrowser tab={{ url: tab.url ?? '', title: tab.title }} workspaceId={workspaceId} bindingId={bindingId} workDirectoryId={workDirectoryId} browserUrl={browserUrl} onUrlChange={(url, title) => navigateLauncherBrowser(tab.id, url, title)} startPage={<div className="agent-workspace-tab-launcher-cards"><p>工具</p><button type="button" onClick={() => openBrowser()}><Globe2 size={16}/>浏览器</button><button type="button" onClick={() => chooseLauncherTool(tab.id, () => openFiles())}><FileCode2 size={16}/>文件</button><button type="button" disabled={!runtimeAvailable} onClick={() => chooseLauncherTool(tab.id, openTerminal)}><SquareTerminal size={16}/>终端</button>{onOpenSidebarQuestion && <button type="button" onClick={() => chooseLauncherTool(tab.id, onOpenSidebarQuestion)}><PanelRightOpen size={16}/>侧边聊天</button>}<button type="button" onClick={() => chooseLauncherTool(tab.id, openGitHistory)}><GitBranch size={16}/>Git 历史</button>{reviewChanges.length > 0 && <button type="button" onClick={() => chooseLauncherTool(tab.id, () => openChanges())}><FileText size={16}/>审查改动</button>}{sources.length > 0 && <button type="button" onClick={() => chooseLauncherTool(tab.id, () => openSources)}><Link2 size={16}/>来源</button>}{runtimeTasks.length > 0 && <button type="button" onClick={() => chooseLauncherTool(tab.id, () => openRuntimeTasks())}><Bot size={16}/>子智能体</button>}</div>}/></section>)}
@@ -7265,7 +7261,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, [streamEnabled]);
 
   useEffect(() => {
-    if (!conversationDraft && !routeBindingId && conversations.length) onNavigate(conversationPath(conversations[0].id), true);
+    if (!scheduleRoute && !conversationDraft && !routeBindingId && conversations.length) onNavigate(conversationPath(conversations[0].id), true);
     if (routeBindingId && conversations.length && !selected && pendingCreatedId !== routeBindingId && !initialConversationQueries.some(query => query.isFetching) && selectedConversationQuery.isError) onNavigate(scheduleRoute ? '/agent/schedules' : host.rootPath, true);
   }, [conversationDraft, conversationPath, conversations, host.rootPath, initialConversationQueries, onNavigate, pendingCreatedId, routeBindingId, scheduleRoute, selected, selectedConversationQuery.isError]);
   useEffect(() => { if (selected?.id === pendingCreatedId) setPendingCreatedId(undefined); }, [pendingCreatedId, selected?.id]);
@@ -8455,9 +8451,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       : undefined);
   }, [clearBootstrapRecovery, conversationDraft, discardDraftAttachments, host.id, host.rootPath, onNavigate, persistComposerDraft, recoverableConversationDrafts, replaceComposerDraft, updateLocalMessageProjections, workspace]);
   useEffect(() => {
-    if (!autoOpenDraft || !workspace || selectedBindingId || conversationDraft) return;
+    if (!autoOpenDraft || scheduleRoute || !workspace || selectedBindingId || conversationDraft) return;
     openConversationDraft({ displayName: '根工作区' }, { restoreRecovery: true });
-  }, [autoOpenDraft, conversationDraft, openConversationDraft, selectedBindingId, workspace]);
+  }, [autoOpenDraft, conversationDraft, openConversationDraft, scheduleRoute, selectedBindingId, workspace]);
   const enqueueDraft = useCallback((draftContent = composerDraftRef.current) => {
     const scopePendingAttachments = pendingAttachments.filter(item => item.scope === composerScope);
     if (scopePendingAttachments.some(item => item.state === 'failed')) {
@@ -9266,7 +9262,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   };
   return <main className={`agent-workbench-page${!onReturnToSource ? ' agent-workbench-app-shell' : ''}`} style={{ '--conversation-rail-width': `${conversationRailWidth}px` } as CSSProperties}>
     {!onReturnToSource && <nav className="agent-workbench-app-nav" aria-label="Agent 工作区导航"><button type="button" className={agentWorkspaceView === 'home' ? 'active' : ''} aria-current={agentWorkspaceView === 'home' ? 'page' : undefined} aria-label="主页" title="主页" onClick={() => { setAgentWorkspaceView('home'); onNavigate('/agent'); }}><Home size={17}/></button><button type="button" className={agentWorkspaceView === 'schedules' ? 'active' : ''} aria-current={agentWorkspaceView === 'schedules' ? 'page' : undefined} aria-label="定时任务" title="定时任务" onClick={() => { setAgentWorkspaceView('schedules'); onNavigate('/agent/schedules'); }}><CalendarClock size={17}/></button><button type="button" className={agentWorkspaceView === 'management' ? 'active' : ''} aria-current={agentWorkspaceView === 'management' ? 'page' : undefined} aria-label="会话管理" title="会话管理" onClick={() => setAgentWorkspaceView('management')}><MessageSquareText size={17}/></button></nav>}
-    {agentWorkspaceView === 'schedules' && workspace && <AgentConversationSchedulesPanel workspaceId={workspace.id} embedded onOpenConversation={selectConversation}/>}
+    {agentWorkspaceView === 'schedules' && workspace && <AgentConversationSchedulesPanel workspaceId={workspace.id} embedded showDetail={!routeBindingId && !activityPreviewBindingId} onOpenConversation={selectConversation}/>}
     {agentWorkspaceView === 'management' && <section className="agent-conversation-management-page" aria-label="会话管理"><ConversationManagementPage/></section>}
     {selected && <ConversationStreamObserver workspaceId={workspace.id} bindingId={selected.id} enabled={streamEnabled} onEvent={onStreamEvent} onStatus={updateStreamStatus} onReconnect={onStreamReconnect}/>}
     {workspace && queuedMessageBindings(host, workspace.id).filter(bindingId => bindingId !== selected?.id).map(bindingId => (
@@ -9321,7 +9317,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       </div>
       {features.capabilities && (selected || features.draftCapabilitySelection) && <footer className="agent-workbench-rail-footer"><button type="button" title={selected ? '会话配置' : '新会话配置'} aria-label={selected ? '会话配置' : '新会话配置'} disabled={selected ? !canWrite : !runtimeWritable} onClick={() => setCapabilityManagerOpen(true)}><Boxes size={13}/><span><b>会话配置</b></span><ChevronRight size={12}/></button></footer>}
     </aside>}
-    {(agentWorkspaceView === 'home' || agentWorkspaceView === 'schedules') && <section className={`agent-workbench-main${fullScreenConversationActive ? ' fullscreen-conversation-active' : ''}`}>
+    {(agentWorkspaceView === 'home' || (agentWorkspaceView === 'schedules' && Boolean(routeBindingId || activityPreviewBindingId))) && <section className={`agent-workbench-main${fullScreenConversationActive ? ' fullscreen-conversation-active' : ''}`}>
       <header className="agent-workbench-header"><div><nav className="agent-conversation-tabs" aria-label="会话页签"><button type="button" className="active" aria-current="page" title={selected ? conversationName(selected) : undefined} onDoubleClick={() => { if (!selected || !canWrite) return; setTitle(conversationName(selected)); setEditing(true); }}><MessageSquareText size={14}/><span>{selected ? conversationName(selected) : conversationDraft ? '新会话' : '开始一个新的会话'}</span></button></nav>{editing && <div className="agent-title-edit"><input ref={titleInput} aria-label="会话标题" value={title} onChange={event => setTitle(event.target.value)} onBlur={() => { if (!rename.isPending) { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }} onKeyDown={event => { if (event.key === 'Enter' && title.trim()) { event.preventDefault(); rename.mutate(); } if (event.key === 'Escape') { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }}/></div>}</div></header>
       <div className={`agent-workbench-content${conversationDropActive ? ' conversation-drop-active' : ''}`} onDragEnter={event => {
         if (!acceptsConversationDrop(event)) return;
@@ -9487,7 +9483,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         </div>
       </div>}
     </section>}
-    {(agentWorkspaceView === 'home' || agentWorkspaceView === 'schedules') && <WorkspaceDrawer
+    {(agentWorkspaceView === 'home' || (agentWorkspaceView === 'schedules' && Boolean(routeBindingId || activityPreviewBindingId))) && <WorkspaceDrawer
       open={drawerOpen}
       onOpen={() => setDrawerOpen(true)}
       onFullScreenConversationActiveChange={setFullScreenConversationActive}
