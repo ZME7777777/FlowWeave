@@ -3399,7 +3399,17 @@ test('Agent new session keeps full capabilities and can create an explicit works
   await expect(environmentSummary.getByRole('button', { name: '复制 SSH 与目录', exact: true })).toBeVisible();
   expect(workspaceScopeRequests.at(-1)).toEqual({ bindingId: null, workDirectoryId: 'fr58-frontend' });
   await expect(page.getByText('2fae71c74c89', { exact: true })).toBeVisible();
-  await page.locator('.agent-workspace-drawer').evaluate(drawer => { drawer.style.width = '294px'; });
+  const workspaceDrawer = page.locator('.agent-workspace-drawer');
+  await workspaceDrawer.evaluate(drawer => { drawer.style.width = '294px'; });
+  const summaryWidth = await workspaceDrawer.evaluate(drawer => drawer.getBoundingClientRect().width);
+  await page.getByLabel('更多工作区工具').click();
+  await expect(page.getByRole('menu').getByRole('menuitem', { name: 'Git 历史', exact: true })).toBeVisible();
+  await page.getByRole('menu').getByRole('menuitem', { name: '文件', exact: true }).click();
+  await expect(workspaceDrawer).toHaveClass(/tools-open/);
+  await expect.poll(() => workspaceDrawer.evaluate(drawer => drawer.getBoundingClientRect().width)).toBe(summaryWidth);
+  await page.locator('.agent-workspace-tool-actions').getByLabel('关闭工作区工具').click();
+  await expect(page.getByText('环境信息', { exact: true })).toBeVisible();
+  await expect.poll(() => workspaceDrawer.evaluate(drawer => drawer.getBoundingClientRect().width)).toBe(summaryWidth);
   await expect(environmentSummary.getByRole('button', { name: '新终端', exact: true })).toBeVisible();
   await page.getByRole('button', { name: '新终端', exact: true }).click();
   await page.getByLabel('新增工作区工具').click();

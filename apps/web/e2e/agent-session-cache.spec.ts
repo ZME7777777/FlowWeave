@@ -3606,13 +3606,25 @@ test('Conversation sidebar opens an activity session without changing its scroll
   const workspaceActions = workspaceGroup.getByRole('button', { name: '工作区操作 归属工作区' });
   await expect(workspaceCreate).toBeVisible();
   await expect(workspaceActions).toBeVisible();
+  const workspaceConversation = page.getByRole('button', { name: '归属工作区会话', exact: true });
   await expect(workspaceGroup.locator('.agent-workspace-group-actions')).toHaveCSS('opacity', '0');
-  await workspaceGroup.hover();
+  await workspaceConversation.hover();
+  await expect(workspaceGroup.locator('.agent-workspace-group-actions')).toHaveCSS('opacity', '0');
+  await expect(workspaceGroup.locator('header')).toHaveCSS('background-color', 'rgb(241, 242, 243)');
+  await workspaceGroup.locator('header').hover();
   await expect(workspaceGroup.locator('.agent-workspace-group-actions')).toHaveCSS('opacity', '1');
-  await expect(workspaceGroup.locator('header')).toHaveCSS('background-color', 'rgb(229, 236, 231)');
+  await expect(workspaceGroup.locator('header')).toHaveCSS('background-color', 'rgb(241, 242, 243)');
   await workspaceActions.click();
   const workspaceMenu = page.getByRole('menu', { name: '工作区操作菜单：归属工作区' });
   await expect(workspaceMenu.getByRole('menuitem', { name: '编辑' })).toBeVisible();
+  const [workspaceActionBounds, workspaceMenuBounds] = await Promise.all([
+    workspaceActions.boundingBox(),
+    workspaceMenu.boundingBox(),
+  ]);
+  expect(workspaceActionBounds).not.toBeNull();
+  expect(workspaceMenuBounds).not.toBeNull();
+  expect(workspaceMenuBounds!.x).toBe(workspaceActionBounds!.x);
+  expect(workspaceMenuBounds!.y).toBeGreaterThan(workspaceActionBounds!.y);
   await expect(workspaceMenu.getByRole('menuitem', { name: '新建会话' })).toHaveCount(0);
   await expect(workspaceMenu.getByRole('menuitem', { name: '删除' })).toBeVisible();
   await workspaceMenu.getByRole('menuitem', { name: '编辑' }).click();
