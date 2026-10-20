@@ -1232,9 +1232,24 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(gitSummary).toContainText('本地 +0');
   await expect(gitSummary).toContainText('远端 +0');
   await gitSummary.getByTitle('在全屏文件栏中查看 Git 信息').click();
-  await expect(page.getByLabel('全屏工作区工具')).toBeVisible();
+  const fullscreenWorkspace = page.getByLabel('全屏工作区工具');
+  await expect(fullscreenWorkspace).toBeVisible();
+  await expect(page.locator('.agent-workbench-app-nav')).toBeVisible();
+  await expect(compactConversationItem).toBeVisible();
+  await expect.poll(async () => {
+    const [drawer, main] = await Promise.all([
+      fullscreenWorkspace.boundingBox(),
+      page.locator('.agent-workbench-main').boundingBox(),
+    ]);
+    return drawer && main && Math.abs(drawer.x - main.x) < 1 && Math.abs(drawer.y - main.y) < 1;
+  }).toBe(true);
   await expect(page.getByRole('complementary', { name: 'Git' })).toBeVisible();
   await expect(page.getByRole('button', { name: '本地改动', exact: true })).toHaveClass(/active/);
+  await fullscreenWorkspace.getByRole('button', { name: '会话', exact: true }).click();
+  await expect(page.locator('.agent-workbench-main')).toHaveClass(/fullscreen-conversation-active/);
+  await expect(fullscreenWorkspace.getByRole('button', { name: '会话', exact: true })).toBeVisible();
+  await fullscreenWorkspace.getByRole('button', { name: '文件', exact: true }).click();
+  await expect(page.locator('.agent-workbench-main')).not.toHaveClass(/fullscreen-conversation-active/);
   await page.getByLabel('退出全屏').click();
   await page.getByLabel('关闭工作区工具').click();
   await page.getByRole('button', { name: '文件', exact: true }).click();

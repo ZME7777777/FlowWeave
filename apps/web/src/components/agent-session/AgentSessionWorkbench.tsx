@@ -3586,9 +3586,9 @@ function readWorkspaceToolState(storageKey: string): Record<string, WorkspaceToo
 }
 
 function WorkspaceDrawer({
-  open, onOpen, onClose, onAnnotateFileSelection, highlightedFileSelection, workspaceId, scopeKey, migrateFromScopeKey, bindingId, workDirectoryId, conversation, conversationCumulativeTokens, attachments, sources, attachmentRequest, candidatePreviewRequest, markdownFileRequest, reviewChanges = [], reviewRequestId, sessionChanges = [], onReviewChanges, runtimeAvailable, runtimeTasks, agentDefinitions, sessionStopped, sidebarQuestion, onSidebarBindingCreated, onOpenSidebarQuestion, onCloseSidebarQuestion, onPreviewAttachment,
+  open, onOpen, onClose, onFullScreenConversationActiveChange, onAnnotateFileSelection, highlightedFileSelection, workspaceId, scopeKey, migrateFromScopeKey, bindingId, workDirectoryId, conversation, conversationCumulativeTokens, attachments, sources, attachmentRequest, candidatePreviewRequest, markdownFileRequest, reviewChanges = [], reviewRequestId, sessionChanges = [], onReviewChanges, runtimeAvailable, runtimeTasks, agentDefinitions, sessionStopped, sidebarQuestion, onSidebarBindingCreated, onOpenSidebarQuestion, onCloseSidebarQuestion, onPreviewAttachment,
 }: {
-  open: boolean; onOpen: () => void; onClose: () => void; onAnnotateFileSelection?: (path: string, selection: FileSelection, quote: string) => void; highlightedFileSelection?: { path: string; selection: FileSelection }; workspaceId: string; scopeKey: string; migrateFromScopeKey?: string; bindingId?: string; workDirectoryId?: string; conversation?: AgentConversation; conversationCumulativeTokens?: number | null; attachments: AgentAttachment[]; sources: ConversationSource[]; attachmentRequest?: { key: string; attachment?: AgentAttachment }; candidatePreviewRequest?: CandidateFilePreviewRequest; markdownFileRequest?: MarkdownFileRequest; reviewChanges?: WorkspaceFileChange[]; reviewRequestId?: string; sessionChanges?: WorkspaceFileChange[]; onReviewChanges?: (changes: WorkspaceFileChange[]) => void; runtimeAvailable: boolean; runtimeTasks: RuntimeTaskProjection[]; agentDefinitions: CapabilityAsset[]; sessionStopped: boolean; sidebarQuestion?: { sourceBindingId: string; reference?: AgentConversationReference; sidebarBindingId?: string }; onSidebarBindingCreated: (sourceBindingId: string, sidebarBindingId: string) => void; onOpenSidebarQuestion?: () => void; onCloseSidebarQuestion: () => void; onPreviewAttachment: (attachment: AgentAttachment, previewBindingId?: string) => void;
+  open: boolean; onOpen: () => void; onClose: () => void; onFullScreenConversationActiveChange: (active: boolean) => void; onAnnotateFileSelection?: (path: string, selection: FileSelection, quote: string) => void; highlightedFileSelection?: { path: string; selection: FileSelection }; workspaceId: string; scopeKey: string; migrateFromScopeKey?: string; bindingId?: string; workDirectoryId?: string; conversation?: AgentConversation; conversationCumulativeTokens?: number | null; attachments: AgentAttachment[]; sources: ConversationSource[]; attachmentRequest?: { key: string; attachment?: AgentAttachment }; candidatePreviewRequest?: CandidateFilePreviewRequest; markdownFileRequest?: MarkdownFileRequest; reviewChanges?: WorkspaceFileChange[]; reviewRequestId?: string; sessionChanges?: WorkspaceFileChange[]; onReviewChanges?: (changes: WorkspaceFileChange[]) => void; runtimeAvailable: boolean; runtimeTasks: RuntimeTaskProjection[]; agentDefinitions: CapabilityAsset[]; sessionStopped: boolean; sidebarQuestion?: { sourceBindingId: string; reference?: AgentConversationReference; sidebarBindingId?: string }; onSidebarBindingCreated: (sourceBindingId: string, sidebarBindingId: string) => void; onOpenSidebarQuestion?: () => void; onCloseSidebarQuestion: () => void; onPreviewAttachment: (attachment: AgentAttachment, previewBindingId?: string) => void;
 }) {
   const { api, fileUrl } = useAgentSessionGateway();
   const host = useAgentSessionHost();
@@ -3608,11 +3608,11 @@ function WorkspaceDrawer({
   const [closingTerminalId, setClosingTerminalId] = useState<string>();
   const [pendingTerminalClose, setPendingTerminalClose] = useState<Extract<WorkspaceToolTab, { kind: 'terminal' }>>();
   const [fullScreen, setFullScreen] = useState(false);
+  const [fullScreenView, setFullScreenView] = useState<'conversation' | 'tool'>('conversation');
+  const [environmentOpen, setEnvironmentOpen] = useState(true);
   const [sshAccessOpen, setSshAccessOpen] = useState(false);
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
   const toolMenuRef = useRef<HTMLDivElement>(null);
-  const summaryToolMenuRef = useRef<HTMLDivElement>(null);
-  const summaryOpenTimer = useRef<number | undefined>(undefined);
   useEscapeClose(() => {
     if (pendingTerminalClose && !closingTerminalId) setPendingTerminalClose(undefined);
   }, Boolean(pendingTerminalClose) && !closingTerminalId);
@@ -3671,15 +3671,20 @@ function WorkspaceDrawer({
     return () => window.removeEventListener('keydown', exitOnEscape);
   }, [fullScreen]);
   useEffect(() => {
+    onFullScreenConversationActiveChange(fullScreen && fullScreenView === 'conversation');
+    return () => onFullScreenConversationActiveChange(false);
+  }, [fullScreen, fullScreenView, onFullScreenConversationActiveChange]);
+  useEffect(() => {
     if (!open) {
       setFullScreen(false);
+      setFullScreenView('conversation');
       setToolMenuOpen(false);
     }
   }, [open]);
   useEffect(() => {
     if (!toolMenuOpen) return;
     const closeWhenPointerLeavesMenu = (event: PointerEvent) => {
-      if (event.target instanceof Node && !toolMenuRef.current?.contains(event.target) && !summaryToolMenuRef.current?.contains(event.target)) setToolMenuOpen(false);
+      if (event.target instanceof Node && !toolMenuRef.current?.contains(event.target)) setToolMenuOpen(false);
     };
     document.addEventListener('pointerdown', closeWhenPointerLeavesMenu, true);
     return () => document.removeEventListener('pointerdown', closeWhenPointerLeavesMenu, true);
@@ -4000,6 +4005,7 @@ function WorkspaceDrawer({
       gitMode: 'changes',
     }));
     setFullScreen(true);
+    setFullScreenView('tool');
     onOpen();
   }, [details?.working_directory, onOpen, updateScope]);
   useEffect(() => {
@@ -4254,7 +4260,12 @@ function WorkspaceDrawer({
       window.removeEventListener('pointerup', stop);
       window.removeEventListener('pointercancel', stop);
       if (frame !== undefined) window.cancelAnimationFrame(frame);
-      applyWidth();
+      const width = clampWorkspaceToolWidth(nextWidth);
+      setPanelWidth(width);
+      if (width >= clampWorkspaceToolWidth(Number.MAX_SAFE_INTEGER) - 2) {
+        setFullScreen(true);
+        setFullScreenView('tool');
+      }
       document.body.classList.remove('agent-workspace-resizing');
       document.body.style.removeProperty('cursor');
       document.body.style.removeProperty('user-select');
@@ -4363,6 +4374,7 @@ function WorkspaceDrawer({
   const sessionChangeAdditions = sessionChanges.reduce((total, change) => total + change.additions, 0);
   const sessionChangeDeletions = sessionChanges.reduce((total, change) => total + change.deletions, 0);
   const visibleSources = sources.slice(0, 3);
+  const workspaceTabLabel = (tab: WorkspaceToolTab) => tab.kind === 'files' ? '文件' : tab.kind === 'changes' ? `审查${reviewChanges.length ? ` · ${reviewChanges.length}` : ''}` : tab.kind === 'sources' ? `来源${sources.length ? ` · ${sources.length}` : ''}` : tab.kind === 'git' ? `提交 · ${tab.details.commit.short_id}` : tab.kind === 'git-working' ? `${tab.changeKind === 'STAGED' ? '暂存' : '本地'} · ${tab.file.path.split('/').at(-1)}` : tab.kind === 'subagents' ? '子智能体' : tab.kind === 'sidebar-chat' ? '侧边聊天' : details?.runtime.container_id || (details?.runtime.write_available ? '终端' : '连接中…');
   const summary = details && <section className="agent-workspace-overview">
     {conversation && <article className="agent-workspace-conversation-config"><Bot size={16}/><div><small>会话用量</small><p className="agent-workspace-usage-line"><span>{`累计 ${conversationTotalTokens.toLocaleString('zh-CN')} Token`}</span><span>{`$${(conversationUsage?.accumulated_cost ?? 0).toFixed(6)}`}</span></p></div></article>}
     {workspaceGitRepository && <article className="agent-workspace-git-summary"><GitBranch size={16}/><div><span className="agent-workspace-git-summary-title"><small>Git 信息</small><button type="button" className="agent-workspace-git-summary-refresh" aria-label="刷新 Git 信息" title="刷新本地改动、提交和远端状态" disabled={gitSummaryRefreshing} onClick={() => void refreshGitSummary()}><RefreshCw className={gitSummaryRefreshing ? 'spin' : undefined} size={12}/></button></span><button type="button" onClick={openGitSummary} title="在全屏文件栏中查看 Git 信息"><span><b>{workspaceGitRepository.branch || '未命名分支'}</b><em>{workspaceGitChangesQuery.isLoading || gitSummaryRefreshing ? '正在刷新本地改动…' : `${gitChangedFileCount(workspaceGitChangesQuery.data)} 个文件已改动`}</em></span><ChevronRight size={13}/></button><p>{workspaceGitRepository.upstream ? <><span>{`本地 +${workspaceGitRepository.ahead ?? 0}`}</span><span>{`远端 +${workspaceGitRepository.behind ?? 0}`}</span></> : '未设置远程跟踪分支'}</p>{gitSummaryRefreshError && <p className="agent-workspace-git-summary-error" role="alert">{gitSummaryRefreshError}</p>}</div></article>}
@@ -4376,14 +4388,17 @@ function WorkspaceDrawer({
     <article className="agent-workspace-ide"><MonitorCog size={16}/><div><small>IDEA / Gateway</small><b>{details.ide.gateway.status}</b>{sshRemoteReady ? <button type="button" className="agent-ssh-access-trigger" onClick={() => setSshAccessOpen(true)}>SSH 接入说明<ChevronRight size={13}/></button> : <code>{details.ide.workspace_path}</code>}<p>{details.ide.gateway.note}</p></div></article>
     <article className="agent-workspace-sources"><Link2 size={16}/><div><small>来源</small>{sources.length ? <><div className="agent-workspace-source-list">{visibleSources.map(source => <button type="button" key={source.id} title={`查看来源详情：${source.label}`} onClick={openSources}><span className="agent-workspace-source-glyph"><ConversationSourceGlyph source={source} size={12}/></span><span><b>{source.label}</b><em>{conversationSourceKind(source)}</em></span></button>)}</div>{sources.length > visibleSources.length && <button type="button" className="agent-workspace-view-all-sources" onClick={openSources}><Link2 size={12}/><span>查看全部</span><em>{sources.length}</em><ChevronRight size={13}/></button>}</> : <p>用户输入的链接、文件和图片会集中显示在这里。</p>}</div></article>
   </section>;
-      return <><aside className={`agent-workspace-drawer ${open ? 'tools-open' : 'summary-open'}${fullScreen ? ' fullscreen' : ''}`} style={{ width: fullScreen ? undefined : panelWidth }} aria-label={fullScreen ? '全屏工作区工具' : undefined}>
-    <div className="agent-workspace-resizer" role="separator" aria-label="调整工作区工具宽度" aria-orientation="vertical" onPointerDown={startResize}/>
-    <section className={`agent-workspace-summary ${open ? 'panel-hidden' : ''}`}>
-      <header onClick={event => { if (event.target !== event.currentTarget) return; summaryOpenTimer.current = window.setTimeout(onOpen, 200); }} onDoubleClick={event => { if (event.target !== event.currentTarget) return; if (summaryOpenTimer.current !== undefined) window.clearTimeout(summaryOpenTimer.current); summaryOpenTimer.current = undefined; setFullScreen(true); onOpen(); }}><div><span className="eyebrow">WORKSPACE</span><b>环境信息</b></div><div className="agent-workspace-summary-actions"><div ref={summaryToolMenuRef} className="agent-workspace-tool-menu"><button type="button" className="agent-workspace-tool-menu-trigger" aria-label="更多工作区工具" aria-expanded={toolMenuOpen} aria-haspopup="menu" onClick={() => setToolMenuOpen(current => !current)}><Ellipsis size={16}/></button>{toolMenuOpen && !open && <div role="menu"><button type="button" role="menuitem" onClick={() => { openFiles(); setToolMenuOpen(false); }}><FileCode2 size={13}/>文件</button>{onOpenSidebarQuestion && <button type="button" role="menuitem" onClick={() => { onOpenSidebarQuestion(); setToolMenuOpen(false); }}><PanelRightOpen size={13}/>侧边聊天</button>}<button type="button" role="menuitem" onClick={() => { openGitHistory(); setToolMenuOpen(false); }}><GitBranch size={13}/>Git 历史</button>{reviewChanges.length > 0 && <button type="button" role="menuitem" onClick={() => { openChanges(); setToolMenuOpen(false); }}><FileText size={13}/>审查改动</button>}{sources.length > 0 && <button type="button" role="menuitem" onClick={() => { openSources(); setToolMenuOpen(false); }}><Link2 size={13}/>来源</button>}{runtimeTasks.length > 0 && <button type="button" role="menuitem" onClick={() => { openRuntimeTasks(); setToolMenuOpen(false); }}><Bot size={13}/>子智能体</button>}<button type="button" role="menuitem" disabled={!runtimeAvailable} onClick={() => { openTerminal(); setToolMenuOpen(false); }}><Plus size={13}/>终端</button></div>}</div></div></header>
+      return <><aside className={`agent-workspace-drawer ${open ? 'tools-open' : 'summary-open'}${fullScreen ? ' fullscreen' : ''}${fullScreenView === 'conversation' ? ' conversation-active' : ''}${environmentOpen ? '' : ' environment-hidden'}`} style={{ width: fullScreen ? undefined : panelWidth }} aria-label={fullScreen ? '全屏工作区工具' : undefined}>
+    {open && <div className="agent-workspace-resizer" role="separator" aria-label="调整工作区工具宽度" aria-orientation="vertical" onPointerDown={startResize}/>}
+    <section className={`agent-workspace-summary ${open || !environmentOpen ? 'panel-hidden' : ''}`}>
       {loadingOrError || summary}
     </section>
+    <div className="agent-workbench-top-actions" aria-label="工作台操作">
+      <button type="button" aria-label={environmentOpen ? '隐藏环境信息' : '显示环境信息'} title={environmentOpen ? '隐藏环境信息' : '显示环境信息'} onClick={() => setEnvironmentOpen(current => !current)}>{environmentOpen ? <Minimize2 size={15}/> : <MonitorCog size={15}/>}</button>
+      <button type="button" aria-label={open ? '关闭工作区工具' : '打开工作区工具'} title={open ? '关闭工作区工具' : '打开工作区工具'} onClick={() => open ? void closeWorkspaceTools() : openFiles()}>{open ? <X size={16}/> : <PanelRightOpen size={16}/>}</button>
+    </div>
     <section className={`agent-workspace-tool-shell ${open ? '' : 'panel-hidden'}`}>
-      <header><nav className="agent-workspace-tabs" aria-label="工作区工具页签">{scopeState.tabs.map(tab => <div key={tab.id} className={scopeState.activeTabId === tab.id ? 'active' : ''}><button type="button" className="agent-workspace-tab-select" onClick={() => updateScope(current => ({ ...current, activeTabId: tab.id }))}><span>{tab.kind === 'files' ? '文件' : tab.kind === 'changes' ? `审查${reviewChanges.length ? ` · ${reviewChanges.length}` : ''}` : tab.kind === 'sources' ? `来源${sources.length ? ` · ${sources.length}` : ''}` : tab.kind === 'git' ? `提交 · ${tab.details.commit.short_id}` : tab.kind === 'git-working' ? `${tab.changeKind === 'STAGED' ? '暂存' : '本地'} · ${tab.file.path.split('/').at(-1)}` : tab.kind === 'subagents' ? '子智能体' : tab.kind === 'sidebar-chat' ? '侧边聊天' : details?.runtime.container_id || (details?.runtime.write_available ? '终端' : '连接中…')}</span></button><button type="button" className="agent-workspace-tab-close" aria-label={`关闭${tab.kind === 'files' ? '文件' : tab.kind === 'changes' ? '改动审查' : tab.kind === 'sources' ? '来源' : tab.kind === 'git' ? '提交审查' : tab.kind === 'git-working' ? '本地改动 Diff' : tab.kind === 'subagents' ? '子智能体' : tab.kind === 'sidebar-chat' ? '侧边聊天' : `终端 ${details?.runtime.container_id || ''}`}页签`} disabled={tab.kind === 'terminal' && closingTerminalId === tab.terminalInstanceId} onClick={() => { if (tab.kind !== 'terminal' || closingTerminalId !== tab.terminalInstanceId) requestCloseTab(tab); }}><X size={12}/></button></div>)}</nav><div className="agent-workspace-tool-actions"><div ref={toolMenuRef} className="agent-workspace-tool-menu"><button type="button" className="agent-workspace-tool-menu-trigger" aria-label="新增工作区工具" aria-expanded={toolMenuOpen} aria-haspopup="menu" onClick={() => setToolMenuOpen(current => !current)}><Plus size={15}/></button>{toolMenuOpen && <div role="menu"><button type="button" role="menuitem" onClick={() => { openFiles(); setToolMenuOpen(false); }}><FileCode2 size={13}/>文件</button>{onOpenSidebarQuestion && <button type="button" role="menuitem" onClick={() => { onOpenSidebarQuestion(); setToolMenuOpen(false); }}><PanelRightOpen size={13}/>侧边聊天</button>}<button type="button" role="menuitem" onClick={() => { openGitHistory(); setToolMenuOpen(false); }}><GitBranch size={13}/>Git 历史</button>{reviewChanges.length > 0 && <button type="button" role="menuitem" onClick={() => { openChanges(); setToolMenuOpen(false); }}><FileText size={13}/>审查改动</button>}{sources.length > 0 && <button type="button" role="menuitem" onClick={() => { openSources(); setToolMenuOpen(false); }}><Link2 size={13}/>来源</button>}{runtimeTasks.length > 0 && <button type="button" role="menuitem" onClick={() => { openRuntimeTasks(); setToolMenuOpen(false); }}><Bot size={13}/>子智能体</button>}<button type="button" role="menuitem" disabled={!runtimeAvailable} onClick={() => { openTerminal(); setToolMenuOpen(false); }}><Plus size={13}/>终端</button></div>}</div><button type="button" aria-label={fullScreen ? '退出全屏' : '全屏查看工作区工具'} title={fullScreen ? '退出全屏（Esc）' : '全屏查看'} onClick={() => setFullScreen(current => !current)}>{fullScreen ? <Minimize2 size={16}/> : <Maximize2 size={16}/>}</button><button type="button" aria-label="关闭工作区工具" onClick={() => void closeWorkspaceTools()}><X size={16}/></button></div></header>
+      <header><nav className="agent-workspace-tabs" aria-label="工作区页签">{fullScreen && <div className={fullScreenView === 'conversation' ? 'active fixed' : 'fixed'}><button type="button" className="agent-workspace-tab-select" title={conversation ? conversationName(conversation) : '会话'} onClick={() => setFullScreenView('conversation')}><span>{conversation ? conversationName(conversation) : '会话'}</span></button></div>}{scopeState.tabs.map(tab => <div key={tab.id} className={!fullScreen || fullScreenView === 'tool' && scopeState.activeTabId === tab.id ? 'active' : ''}><button type="button" className="agent-workspace-tab-select" onClick={() => { setFullScreenView('tool'); updateScope(current => ({ ...current, activeTabId: tab.id })); }}><span>{workspaceTabLabel(tab)}</span></button><button type="button" className="agent-workspace-tab-close" aria-label={`关闭${workspaceTabLabel(tab)}页签`} disabled={tab.kind === 'terminal' && closingTerminalId === tab.terminalInstanceId} onClick={() => { if (tab.kind !== 'terminal' || closingTerminalId !== tab.terminalInstanceId) requestCloseTab(tab); }}><X size={12}/></button></div>)}</nav><div className="agent-workspace-tool-actions"><div ref={toolMenuRef} className="agent-workspace-tool-menu"><button type="button" className="agent-workspace-tool-menu-trigger" aria-label="新增工作区工具" aria-expanded={toolMenuOpen} aria-haspopup="menu" onClick={() => setToolMenuOpen(current => !current)}><Plus size={15}/></button>{toolMenuOpen && <div role="menu"><button type="button" role="menuitem" onClick={() => { openFiles(); setToolMenuOpen(false); }}><FileCode2 size={13}/>文件</button>{onOpenSidebarQuestion && <button type="button" role="menuitem" onClick={() => { onOpenSidebarQuestion(); setToolMenuOpen(false); }}><PanelRightOpen size={13}/>侧边聊天</button>}<button type="button" role="menuitem" onClick={() => { openGitHistory(); setToolMenuOpen(false); }}><GitBranch size={13}/>Git 历史</button>{reviewChanges.length > 0 && <button type="button" role="menuitem" onClick={() => { openChanges(); setToolMenuOpen(false); }}><FileText size={13}/>审查改动</button>}{sources.length > 0 && <button type="button" role="menuitem" onClick={() => { openSources(); setToolMenuOpen(false); }}><Link2 size={13}/>来源</button>}{runtimeTasks.length > 0 && <button type="button" role="menuitem" onClick={() => { openRuntimeTasks(); setToolMenuOpen(false); }}><Bot size={13}/>子智能体</button>}<button type="button" role="menuitem" disabled={!runtimeAvailable} onClick={() => { openTerminal(); setToolMenuOpen(false); }}><Plus size={13}/>终端</button></div>}</div><button type="button" aria-label={fullScreen ? '退出全屏' : '全屏查看工作区工具'} title={fullScreen ? '退出全屏（Esc）' : '全屏查看'} onClick={() => { setFullScreen(current => !current); setFullScreenView('conversation'); }}>{fullScreen ? <Minimize2 size={16}/> : <Maximize2 size={16}/>}</button><button type="button" aria-label="关闭工作区工具" onClick={() => void closeWorkspaceTools()}><X size={16}/></button></div></header>
       <div className="agent-workspace-tool-body">
         {panelError && <p className="agent-workspace-panel-error" role="alert"><span>{panelError}</span><button type="button" aria-label="关闭错误提示" onClick={() => setPanelError('')}><X size={13}/></button></p>}
         {loadingOrError || (!scopeState.tabs.length ? <div className="agent-drawer-empty"><b>选择工作区工具</b><span>文件仅打开一个页签；终端可按需打开多个独立实例。</span><div className="agent-workspace-empty-actions"><button type="button" className="secondary" onClick={() => openFiles()}><FileCode2 size={14}/>文件</button><button type="button" className="secondary" disabled={!runtimeAvailable} onClick={openTerminal}><Plus size={14}/>终端</button>{onOpenSidebarQuestion && <button type="button" className="secondary" onClick={onOpenSidebarQuestion}><PanelRightOpen size={14}/>侧边聊天</button>}</div></div> : details && <div className={`agent-workspace-tool-content${gitSidebarVisible ? ' fullscreen-git-layout' : ''}`}>
@@ -4448,7 +4463,7 @@ export function AgentSessionWorkbench({
   </AgentSessionGatewayContext.Provider>;
 }
 
-function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStateChanged, autoOpenDraft = false, hideDraftTitle = false }: Omit<AgentSessionWorkbenchProps, 'gateway' | 'host'>) {
+function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStateChanged, autoOpenDraft = false }: Omit<AgentSessionWorkbenchProps, 'gateway' | 'host'>) {
   const { api, features, candidateOutputUrl, fileUrl } = useAgentSessionGateway();
   const dialog = useProductDialog();
   const host = useAgentSessionHost();
@@ -4500,6 +4515,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, [queuedMessageMenuId]);
 
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [fullScreenConversationActive, setFullScreenConversationActive] = useState(false);
   const [reviewChanges, setReviewChanges] = useState<WorkspaceFileChange[]>([]);
   const [reviewRequestId, setReviewRequestId] = useState<string>();
   const [editing, setEditing] = useState(false);
@@ -8347,7 +8363,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const availableDraftModels = draftProviderInfo?.models.filter(model => model.enabled) ?? [];
   const supportedDraftEfforts = draftConversationModel?.supported_reasoning_efforts ?? [];
   const conversationProviderInfo = connectedProviders.find(item => item.id === conversationProviderId);
-  const boundProviderInfo = connectedProviders.find(item => item.id === selected?.model_provider_id);
   const activeConversationModelName = conversationModelName
     || selected?.model_name
     || configuredModelName(conversationProviderInfo, contextQuery.data?.model_name)
@@ -8962,8 +8977,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       </div>
       {features.capabilities && (selected || features.draftCapabilitySelection) && <footer className="agent-workbench-rail-footer"><button type="button" title={selected ? '会话配置' : '新会话配置'} aria-label={selected ? '会话配置' : '新会话配置'} disabled={selected ? !canWrite : !runtimeWritable} onClick={() => setCapabilityManagerOpen(true)}><Boxes size={13}/><span><b>会话配置</b></span><ChevronRight size={12}/></button></footer>}
     </aside>}
-    {agentWorkspaceView === 'home' && <section className="agent-workbench-main">
-      <header className="agent-workbench-header"><div>{editing ? <div className="agent-title-edit"><input ref={titleInput} aria-label="会话标题" value={title} onChange={event => setTitle(event.target.value)} onBlur={() => { if (!rename.isPending) { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }} onKeyDown={event => { if (event.key === 'Enter' && title.trim()) { event.preventDefault(); rename.mutate(); } if (event.key === 'Escape') { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }}/></div> : !(hideDraftTitle && conversationDraft) && <h2 className="agent-session-title" title={selected ? conversationName(selected) : undefined} aria-label={selected && canWrite ? '双击修改标题' : undefined} onDoubleClick={() => { if (!selected || !canWrite) return; setTitle(conversationName(selected)); setEditing(true); }}><span>{selected ? conversationName(selected) : conversationDraft ? '新会话' : '开始一个新的会话'}</span></h2>}{features.modelSelection && (selected || conversationDraft) && <small className="agent-session-provider">当前供应商：{selected ? boundProviderInfo?.name ?? '未配置' : draftProviderInfo?.name ?? '请选择模型供应商'}{conversationDraft ? ` · ${conversationDraft.displayName}` : ''}</small>}</div></header>
+    {agentWorkspaceView === 'home' && <section className={`agent-workbench-main${fullScreenConversationActive ? ' fullscreen-conversation-active' : ''}`}>
+      <header className="agent-workbench-header"><div><nav className="agent-conversation-tabs" aria-label="会话页签"><button type="button" className="active" aria-current="page" title={selected ? conversationName(selected) : undefined} onDoubleClick={() => { if (!selected || !canWrite) return; setTitle(conversationName(selected)); setEditing(true); }}><MessageSquareText size={14}/><span>{selected ? conversationName(selected) : conversationDraft ? '新会话' : '开始一个新的会话'}</span></button></nav>{editing && <div className="agent-title-edit"><input ref={titleInput} aria-label="会话标题" value={title} onChange={event => setTitle(event.target.value)} onBlur={() => { if (!rename.isPending) { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }} onKeyDown={event => { if (event.key === 'Enter' && title.trim()) { event.preventDefault(); rename.mutate(); } if (event.key === 'Escape') { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }}/></div>}</div></header>
       <div className={`agent-workbench-content${conversationDropActive ? ' conversation-drop-active' : ''}`} onDragEnter={event => {
         if (!acceptsConversationDrop(event)) return;
         event.preventDefault();
@@ -9131,6 +9146,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     {agentWorkspaceView === 'home' && <WorkspaceDrawer
       open={drawerOpen}
       onOpen={() => setDrawerOpen(true)}
+      onFullScreenConversationActiveChange={setFullScreenConversationActive}
       onClose={() => {
         const scopeKey = selected?.id ?? pendingCreatedId ?? conversationDraft?.id ?? 'workspace-root';
         setFileSelectionReference(undefined);
