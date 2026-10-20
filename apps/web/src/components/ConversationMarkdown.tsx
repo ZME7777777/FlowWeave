@@ -11,6 +11,7 @@ const MARKDOWN_SYNTAX = /(^|\n)\s{0,3}(?:#{1,6}\s|[-*+]\s|\d+[.)]\s|>|```)|[`*_~
 
 interface MarkdownRenderOptions {
   onOpenWorkspaceFile?: (href: string) => boolean;
+  onOpenBrowser?: (href: string) => boolean;
   onOpenImage?: (src: string, alt?: string) => void;
   workspaceImageUrl?: (href: string) => string | undefined;
 }
@@ -55,7 +56,7 @@ function workspaceImageLink(href: string): boolean {
 }
 
 function MarkdownLink({ href, onClick, children, ...props }: ComponentPropsWithoutRef<'a'>) {
-  const { onOpenWorkspaceFile, onOpenImage, workspaceImageUrl } = useContext(MarkdownRenderOptionsContext);
+  const { onOpenWorkspaceFile, onOpenBrowser, onOpenImage, workspaceImageUrl } = useContext(MarkdownRenderOptionsContext);
   const isExternal = typeof href === 'string' && /^(?:https?:\/\/|mailto:)/i.test(href);
   const isWebsite = typeof href === 'string' && /^https?:\/\//i.test(href);
   const imageUrl = typeof href === 'string' && workspaceImageLink(href)
@@ -66,7 +67,7 @@ function MarkdownLink({ href, onClick, children, ...props }: ComponentPropsWitho
   return <a {...props} href={href} {...(isExternal ? { target: '_blank', rel: 'noopener noreferrer' } : {})} onClick={event => {
     onClick?.(event);
     if (event.defaultPrevented || !href) return;
-    if (onOpenWorkspaceFile?.(href)) {
+    if (onOpenWorkspaceFile?.(href) || (isWebsite && onOpenBrowser?.(href))) {
       event.preventDefault();
       return;
     }
@@ -89,9 +90,9 @@ function MarkdownTable({ children, node: _node, ...props }: ComponentPropsWithou
   return <div className="conversation-markdown-table-scroll"><table {...props}>{children}</table></div>;
 }
 
-export function ConversationMarkdown({ children, reveal = false, onOpenWorkspaceFile, onOpenImage, workspaceImageUrl }: { children: string; reveal?: boolean; onOpenWorkspaceFile?: (href: string) => boolean; onOpenImage?: (src: string, alt?: string) => void; workspaceImageUrl?: (href: string) => string | undefined }) {
+export function ConversationMarkdown({ children, reveal = false, onOpenWorkspaceFile, onOpenBrowser, onOpenImage, workspaceImageUrl }: { children: string; reveal?: boolean; onOpenWorkspaceFile?: (href: string) => boolean; onOpenBrowser?: (href: string) => boolean; onOpenImage?: (src: string, alt?: string) => void; workspaceImageUrl?: (href: string) => string | undefined }) {
   const markdown = useMemo(() => normalizeNestedMarkdownFences(children), [children]);
-  const renderOptions = useMemo(() => ({ onOpenWorkspaceFile, onOpenImage, workspaceImageUrl }), [onOpenWorkspaceFile, onOpenImage, workspaceImageUrl]);
+  const renderOptions = useMemo(() => ({ onOpenWorkspaceFile, onOpenBrowser, onOpenImage, workspaceImageUrl }), [onOpenWorkspaceFile, onOpenBrowser, onOpenImage, workspaceImageUrl]);
   if (!MARKDOWN_SYNTAX.test(markdown)) return <p><ConversationTextReveal reveal={reveal}>{markdown}</ConversationTextReveal></p>;
   return <MarkdownRenderOptionsContext value={renderOptions}>
     <div className={reveal ? 'conversation-text-reveal-block conversation-text-reveal-shimmer' : undefined}>

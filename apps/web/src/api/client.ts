@@ -984,6 +984,16 @@ export function agentWorkspaceFileUrl(workspaceId: string, path: string, options
   return url.toString();
 }
 
+export function agentWorkspaceBrowserUrl(workspaceId: string, target: string, options: { bindingId?: string; workDirectoryId?: string } = {}): string {
+  const parsed = new URL(target);
+  const port = parsed.port || (parsed.protocol === 'https:' ? '443' : '80');
+  const url = absoluteApiUrl(`/agent-workspaces/${encodeURIComponent(workspaceId)}/browser/${parsed.protocol.slice(0, -1)}/${port}${parsed.pathname}`);
+  url.search = parsed.search;
+  if (options.bindingId) url.searchParams.set('binding_id', options.bindingId);
+  if (options.workDirectoryId) url.searchParams.set('work_directory_id', options.workDirectoryId);
+  return url.toString();
+}
+
 export function agentWorkspaceStreamUrl(workspaceId: string, bindingId: string, afterSeq?: number): string {
   const url = absoluteApiUrl(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/stream`);
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';

@@ -1,6 +1,7 @@
 import {
   type AgentStreamEvent,
   type UploadProgressHandler,
+  agentWorkspaceBrowserUrl,
   agentWorkspaceFileUrl,
   agentWorkspaceTerminalUrl,
   api,
@@ -68,6 +69,7 @@ export type AgentSessionDirectoryOptions = Omit<AgentSessionFileOptions, 'downlo
 export type AgentSessionTerminalOptions = Omit<AgentSessionFileOptions, 'download'> & {
   terminalInstanceId: string;
 };
+export type AgentSessionBrowserOptions = Omit<AgentSessionFileOptions, 'download'>;
 export type AgentSessionStreamStatus = 'connecting' | 'live' | 'recovering' | 'disabled';
 
 /** Product capabilities deliberately supplied by each session host. */
@@ -178,6 +180,7 @@ export interface AgentSessionGateway {
   readonly features: AgentSessionFeatures;
   readonly api: AgentSessionApi;
   readonly terminalUrl: (hostId: AgentSessionHostId, rows: number | undefined, columns: number | undefined, options: AgentSessionTerminalOptions) => string;
+  readonly browserUrl: (hostId: AgentSessionHostId, target: string, options?: AgentSessionBrowserOptions) => string;
   readonly fileUrl: (hostId: AgentSessionHostId, path: string, options?: AgentSessionFileOptions) => string;
   /** A host-authorized inline URL for one unaccepted execution FILE output. */
   readonly candidateOutputUrl?: (hostId: AgentSessionHostId, fieldKey: string, relativePath: string) => string;
@@ -254,6 +257,7 @@ export const agentWorkspaceSessionGateway: AgentSessionGateway = {
     switchConversationModel: api.switchAgentConversationModel,
   },
   terminalUrl: agentWorkspaceTerminalUrl,
+  browserUrl: agentWorkspaceBrowserUrl,
   fileUrl: agentWorkspaceFileUrl,
   subscribe: subscribeToAgentWorkspaceStream,
 };
@@ -388,6 +392,7 @@ export function flowNodeSessionGateway(
     terminalUrl: (_hostId, rows, columns, options) => {
       return nodeSessionApi.terminal(flowRunId, attemptId, options.bindingId, rows, columns);
     },
+    browserUrl: (_hostId, target) => target,
     fileUrl: (_hostId, path, options) =>
       nodeSessionApi.file(flowRunId, attemptId, path, options?.bindingId, options?.workDirectoryId, options?.draftAttachmentOwnerId, options?.download),
     candidateOutputUrl: (_hostId, fieldKey, relativePath) =>

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
+import re
 from typing import Annotated, Any, Literal
-from urllib.parse import quote
+from urllib.parse import parse_qsl, quote, urlencode
 from uuid import UUID, uuid4
 
 from fastapi import (
@@ -13,6 +15,7 @@ from fastapi import (
     File,
     HTTPException,
     Query,
+    Request,
     Response,
     UploadFile,
     WebSocket,
@@ -53,6 +56,10 @@ from flowweave.shared.http import (
     run_sync,
     run_terminal_control,
     run_terminal_stream,
+)
+from flowweave.shared.infrastructure.docker_controller import (
+    DockerControllerClient,
+    DockerControllerError,
 )
 from flowweave.shared.settings import bind_settings, reset_settings
 
@@ -439,6 +446,105 @@ async def get_agent_workspace_details(
             binding_id=binding_id,
             full_index=full_index,
         ),
+    )
+
+
+@router.get("/agent-workspaces/{workspace_id}/browser/{scheme}/{port}/{path:path}")
+async def proxy_agent_workspace_browser(
+    workspace_id: str,
+    scheme: Literal["http", "https"],
+    port: int,
+    path: str,
+    request: Request,
+    container: ContainerDep,
+    binding_id: str | None = Query(default=None),
+    work_directory_id: str | None = Query(default=None),
+) -> Response:
+    """Serve one user-authorized Agent Runtime loopback page through the platform."""
+
+    normalized_path = f"/{path.lstrip('/')}"
+    if (
+        "//" in normalized_path
+        or "\\" in normalized_path
+        or any(part in {".", ".."} for part in normalized_path.split("/"))
+    ):
+        raise DomainError("AGENT_BROWSER_PATH_INVALID", "浏览器路径无效", 422)
+    query = urlencode(
+        [
+            (key, value)
+            for key, value in parse_qsl(request.url.query, keep_blank_values=True)
+            if key not in {"binding_id", "work_directory_id"}
+        ],
+        doseq=True,
+    )
+    resource_name, resource_id = await run_blocking_auxiliary(
+        container,
+        lambda session: workspace.browser_resource_details(
+            session,
+            workspace_id,
+            work_directory_id=work_directory_id,
+            binding_id=binding_id,
+        ),
+    )
+    try:
+        result: dict[str, Any] = await run_terminal_control(
+            container,
+            lambda: DockerControllerClient(container.settings).browser_fetch(
+                resource_name=resource_name,
+                resource_id=resource_id,
+                scheme=scheme,
+                port=port,
+                path=normalized_path,
+                query=query,
+            ),
+        )
+    except DockerControllerError as exc:
+        raise DomainError(
+            "AGENT_BROWSER_BACKEND_UNAVAILABLE",
+            "内置浏览器代理暂不可用",
+            503,
+        ) from exc
+    try:
+        content = base64.b64decode(str(result.get("content_base64") or ""), validate=True)
+    except ValueError as exc:
+        raise DomainError("AGENT_BROWSER_RESPONSE_INVALID", "浏览器代理响应无效", 502) from exc
+    response_headers = result.get("headers")
+    headers = (
+        {str(key).lower(): str(value) for key, value in response_headers.items()}
+        if isinstance(response_headers, dict)
+        else {}
+    )
+    content_type = headers.get("content-type", "application/octet-stream")
+    status = int(result.get("status") or 502)
+    if content_type.lower().split(";", 1)[0] in {"text/html", "application/xhtml+xml"}:
+        try:
+            html = content.decode("utf-8")
+        except UnicodeDecodeError:
+            html = content.decode("utf-8", errors="replace")
+        prefix = f"/api/v1/agent-workspaces/{workspace_id}/browser/{scheme}/{port}/"
+        base = f'<base href="{prefix}">'
+        rendered_html = (
+            html.replace("<head>", f"<head>{base}", 1)
+            if "<head>" in html.lower()
+            else f"{base}{html}"
+        )
+        content = re.sub(
+            r'(?P<attribute>\b(?:src|href|action)=["\'])/(?P<path>(?!/)[^"\']*)',
+            lambda match: f"{match.group('attribute')}{prefix}{match.group('path')}",
+            rendered_html,
+            flags=re.IGNORECASE,
+        ).encode()
+    safe_headers = {"Cache-Control": str(headers.get("cache-control") or "no-store")}
+    location = headers.get("location")
+    if 300 <= status < 400 and isinstance(location, str) and location.startswith("/"):
+        safe_headers["Location"] = (
+            f"/api/v1/agent-workspaces/{workspace_id}/browser/{scheme}/{port}{location}"
+        )
+    return Response(
+        content=content,
+        status_code=status,
+        media_type=content_type,
+        headers=safe_headers,
     )
 
 

@@ -1213,6 +1213,20 @@ def delete_bound_attachment_files(db: Session, workspace_id: str, binding_id: st
     db.flush()
 
 
+def browser_resource_details(
+    db: Session,
+    workspace_id: str,
+    *,
+    work_directory_id: str | None = None,
+    binding_id: str | None = None,
+) -> tuple[str, str]:
+    """Authorize the current workspace scope before exposing its Runtime proxy."""
+
+    _workspace(db, workspace_id)
+    _working_directory(db, workspace_id, work_directory_id, binding_id)
+    return agent_sessions.conversations.terminal_resource_details(db, workspace_id)
+
+
 def terminal_details(
     db: Session,
     workspace_id: str,

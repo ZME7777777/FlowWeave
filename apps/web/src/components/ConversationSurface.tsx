@@ -363,8 +363,8 @@ function ConversationReferencePreview({ reference, title, onClose, onLocate }: {
 
 const ConversationMarkdown = lazy(() => import('./ConversationMarkdown').then(module => ({ default: module.ConversationMarkdown })));
 
-function MessageMarkdown({ children, reveal = false, onOpenWorkspaceFile, onOpenImage, workspaceImageUrl }: { children: string; reveal?: boolean; onOpenWorkspaceFile?: (href: string) => boolean; onOpenImage?: (src: string, alt?: string) => void; workspaceImageUrl?: (href: string) => string | undefined }) {
-  return <Suspense fallback={<div className="conversation-markdown-loading">正在渲染消息…</div>}><ConversationMarkdown reveal={reveal} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl}>{children}</ConversationMarkdown></Suspense>;
+function MessageMarkdown({ children, reveal = false, onOpenWorkspaceFile, onOpenBrowser, onOpenImage, workspaceImageUrl }: { children: string; reveal?: boolean; onOpenWorkspaceFile?: (href: string) => boolean; onOpenBrowser?: (href: string) => boolean; onOpenImage?: (src: string, alt?: string) => void; workspaceImageUrl?: (href: string) => string | undefined }) {
+  return <Suspense fallback={<div className="conversation-markdown-loading">正在渲染消息…</div>}><ConversationMarkdown reveal={reveal} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenBrowser={onOpenBrowser} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl}>{children}</ConversationMarkdown></Suspense>;
 }
 
 interface CandidateOutput { fieldKey: string; artifactType: 'URL' | 'FILE'; value: string }
@@ -1588,13 +1588,14 @@ const ActivityGroup = memo(function ActivityGroup({ items, active, revealEventId
   && sameActivityItems(previous.items, next.items)
 ));
 
-function AnnotationReplyContent({ content, reveal = false, annotations, structured = false, onLocateAnnotation, onOpenWorkspaceFile, onOpenImage, workspaceImageUrl }: {
+function AnnotationReplyContent({ content, reveal = false, annotations, structured = false, onLocateAnnotation, onOpenWorkspaceFile, onOpenBrowser, onOpenImage, workspaceImageUrl }: {
   content: string;
   reveal?: boolean;
   annotations: AgentConversationAnnotation[];
   structured?: boolean;
   onLocateAnnotation?: (annotation: AgentConversationAnnotation) => void;
   onOpenWorkspaceFile?: (href: string) => boolean;
+  onOpenBrowser?: (href: string) => boolean;
   onOpenImage?: (src: string, alt?: string) => void;
   workspaceImageUrl?: (href: string) => string | undefined;
 }) {
@@ -1611,7 +1612,7 @@ function AnnotationReplyContent({ content, reveal = false, annotations, structur
   if (structured) {
     const visibleContent = content.replace(markerLikeText, '');
     return <>
-      {visibleContent && <MessageMarkdown reveal={reveal} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl}>{visibleContent}</MessageMarkdown>}
+      {visibleContent && <MessageMarkdown reveal={reveal} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenBrowser={onOpenBrowser} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl}>{visibleContent}</MessageMarkdown>}
       {annotations.map(markerButton)}
     </>;
   }
@@ -1627,7 +1628,7 @@ function AnnotationReplyContent({ content, reveal = false, annotations, structur
   return <>
     {parts.map((part, index) => part.annotation
       ? markerButton(part.annotation, index)
-      : part.content && <MessageMarkdown key={index} reveal={reveal} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl}>{part.content}</MessageMarkdown>)}
+      : part.content && <MessageMarkdown key={index} reveal={reveal} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenBrowser={onOpenBrowser} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl}>{part.content}</MessageMarkdown>)}
   </>;
 }
 
@@ -1644,7 +1645,7 @@ function ConversationFileChanges({ changes, onReviewChanges, workspaceRoot }: {
   </section>;
 }
 
-function AgentReply({ event, content, reveal = false, changes = [], onFork, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, onOpenImage, workspaceImageUrl, workspaceRoot, annotations = [], onLocateAnnotation }: {
+function AgentReply({ event, content, reveal = false, changes = [], onFork, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, onOpenBrowser, onOpenImage, workspaceImageUrl, workspaceRoot, annotations = [], onLocateAnnotation }: {
   event: OpenHandsConversationEvent;
   content: string;
   reveal?: boolean;
@@ -1653,6 +1654,7 @@ function AgentReply({ event, content, reveal = false, changes = [], onFork, onPr
   onPreviewCandidateFile?: (fieldKey: string, relativePath: string) => void;
   onReviewChanges?: (changes: WorkspaceFileChange[]) => void;
   onOpenWorkspaceFile?: (href: string) => boolean;
+  onOpenBrowser?: (href: string) => boolean;
   onOpenImage?: (src: string, alt?: string) => void;
   workspaceImageUrl?: (href: string) => string | undefined;
   workspaceRoot?: string | null;
@@ -1670,7 +1672,7 @@ function AgentReply({ event, content, reveal = false, changes = [], onFork, onPr
   const candidateMessage = candidateOutputMessage(content);
   const structuredAnnotations = event.payload.collaboration_annotation_ids !== undefined;
   return <article className="conversation-message assistant" data-conversation-event-id={eventId} data-turn-terminal="true" data-event-id={eventId}>
-    {candidateMessage.businessConclusion ? <AnnotationReplyContent content={candidateMessage.businessConclusion} reveal={reveal} annotations={annotations} structured={structuredAnnotations} onLocateAnnotation={onLocateAnnotation} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl}/> : !candidateMessage.outputs && content ? <MessageMarkdown reveal={reveal} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl}>{content}</MessageMarkdown> : null}
+    {candidateMessage.businessConclusion ? <AnnotationReplyContent content={candidateMessage.businessConclusion} reveal={reveal} annotations={annotations} structured={structuredAnnotations} onLocateAnnotation={onLocateAnnotation} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenBrowser={onOpenBrowser} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl}/> : !candidateMessage.outputs && content ? <MessageMarkdown reveal={reveal} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenBrowser={onOpenBrowser} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl}>{content}</MessageMarkdown> : null}
     {candidateMessage.outputs && <CandidateOutputReply outputs={candidateMessage.outputs} onPreviewFile={onPreviewCandidateFile ? output => onPreviewCandidateFile(output.fieldKey, output.value) : undefined}/>}
     {!candidateMessage.businessConclusion && !candidateMessage.outputs && !content && <span className="conversation-typing"><i/><i/><i/></span>}
     <ConversationFileChanges changes={changes} onReviewChanges={onReviewChanges} workspaceRoot={workspaceRoot}/>
@@ -1861,7 +1863,7 @@ export interface ConversationScrollSnapshot {
   savedAt: number;
 }
 
-export const ConversationSurface = memo(function ConversationSurface({ events, isGenerating, isPaused = false, pausing = false, emptyResponseRecoveryActive = false, modelRetryStatus, historyPending = false, cachedHistoryMarkerCount = 0, cachedHistoryUserEventIds = [], hasCachedOlderHistory = false, onRequestOlderHistory, onRevealHistoryThrough, conversationScope, initialScrollSnapshot, onScrollSnapshotChange, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationPending = false, condensationStartedAt, onRewrite, onFork, onOpenAttachment, attachmentImageUrl, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, onOpenImage, workspaceImageUrl, workspaceRoot, onCreateAnnotation, onSidebarQuestion, onLocateAnnotation, conversationName, onOpenConversationReference, taskControl = [], monitoring, connectionState }: {
+export const ConversationSurface = memo(function ConversationSurface({ events, isGenerating, isPaused = false, pausing = false, emptyResponseRecoveryActive = false, modelRetryStatus, historyPending = false, cachedHistoryMarkerCount = 0, cachedHistoryUserEventIds = [], hasCachedOlderHistory = false, onRequestOlderHistory, onRevealHistoryThrough, conversationScope, initialScrollSnapshot, onScrollSnapshotChange, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationPending = false, condensationStartedAt, onRewrite, onFork, onOpenAttachment, attachmentImageUrl, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, onOpenBrowser, onOpenImage, workspaceImageUrl, workspaceRoot, onCreateAnnotation, onSidebarQuestion, onLocateAnnotation, conversationName, onOpenConversationReference, taskControl = [], monitoring, connectionState }: {
   events: OpenHandsConversationEvent[];
   isGenerating: boolean;
   /** Formal native conversation pause state, used only to label unfinished Task actions. */
@@ -1905,6 +1907,8 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   onReviewChanges?: (changes: WorkspaceFileChange[]) => void;
   /** Returns true only when a Markdown link was handled by the file preview. */
   onOpenWorkspaceFile?: (href: string) => boolean;
+  /** Returns true only when a web URL was opened in the workspace browser. */
+  onOpenBrowser?: (href: string) => boolean;
   onOpenImage?: (src: string, alt?: string) => void;
   workspaceImageUrl?: (href: string) => string | undefined;
   workspaceRoot?: string | null;
@@ -2759,7 +2763,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
             open={completedProcessExpanded}
             onOpenChange={setCompletedProcessExpanded}
           />)}
-          {turn.assistant && <AgentReply event={turn.assistant.event} content={turn.assistant.content} reveal={revealEventIds.has(turn.assistant.event.id)} changes={fileChanges} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile} onReviewChanges={onReviewChanges} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl} workspaceRoot={workspaceRoot} annotations={turn.assistant.event.payload.collaboration_annotation_ids !== undefined ? eventAnnotations(turn.assistant.event) : turn.user ? eventAnnotations(turn.user.event) : []} onLocateAnnotation={locateAnnotation}/>}
+          {turn.assistant && <AgentReply event={turn.assistant.event} content={turn.assistant.content} reveal={revealEventIds.has(turn.assistant.event.id)} changes={fileChanges} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile} onReviewChanges={onReviewChanges} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenBrowser={onOpenBrowser} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl} workspaceRoot={workspaceRoot} annotations={turn.assistant.event.payload.collaboration_annotation_ids !== undefined ? eventAnnotations(turn.assistant.event) : turn.user ? eventAnnotations(turn.user.event) : []} onLocateAnnotation={locateAnnotation}/>}
           {failures.map(item => <ConversationFailure key={item.event.id} item={item} taskControl={taskControl} retryStatus={isLatest ? modelRetryStatus : undefined}/>)}
         </section>;
       })}

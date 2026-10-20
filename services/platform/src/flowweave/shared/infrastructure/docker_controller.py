@@ -229,6 +229,29 @@ class DockerControllerClient:
     def post(self, path: str, payload: dict[str, Any], *, timeout: float = 60) -> dict[str, Any]:
         return self._request(path, payload, timeout=timeout)
 
+    def browser_fetch(
+        self,
+        *,
+        resource_name: str,
+        resource_id: str,
+        scheme: Literal["http", "https"],
+        port: int,
+        path: str,
+        query: str,
+    ) -> dict[str, Any]:
+        return self._request(
+            "/v1/browser/fetch",
+            {
+                "resource_name": resource_name,
+                "resource_id": resource_id,
+                "scheme": scheme,
+                "port": port,
+                "path": path,
+                "query": query,
+            },
+            timeout=20,
+        )
+
     def start_terminal(
         self,
         *,

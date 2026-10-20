@@ -403,6 +403,19 @@ class MarketplaceCatalogWrite(PluginResolveWrite):
     pass
 
 
+class BrowserFetchWrite(SandboxDeleteWrite):
+    scheme: Literal["http", "https"]
+    port: int = Field(ge=1, le=65_535)
+    path: str = Field(default="/", min_length=1, max_length=2_000)
+    query: str = Field(default="", max_length=4_000)
+
+    @model_validator(mode="after")
+    def validate_target(self) -> BrowserFetchWrite:
+        if not self.path.startswith("/") or "\\" in self.path or "//" in self.path:
+            raise ValueError("browser path must be a normalized absolute path")
+        return self
+
+
 class TerminalStartWrite(SandboxDeleteWrite):
     environment_id: UUID | None = None
     session_name: str | None = Field(default=None, max_length=64)
@@ -1836,6 +1849,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 # Runtime ownership before it reaches a container.
                 "/v1/runtimes/events": frozenset({"api", "worker"}),
                 "/v1/runtimes/validate-plugin": frozenset({"api"}),
+                "/v1/browser/fetch": frozenset({"api"}),
                 "/v1/terminals/start": frozenset({"api"}),
                 "/v1/terminals/read": frozenset({"api"}),
                 "/v1/terminals/write": frozenset({"api"}),
@@ -2292,6 +2306,119 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             plugin_path=payload.plugin_path,
         )
 
+    @app.post("/v1/browser/fetch")
+    async def browser_fetch(payload: BrowserFetchWrite) -> dict[str, Any]:
+        check_scope(payload.manager_scope)
+
+        def fetch() -> dict[str, Any]:
+            try:
+                container_id = inspect_owned_container(
+                    configured.docker_binary,
+                    payload.resource_name,
+                    str(payload.resource_id),
+                    expected_manager_scope=configured.sandbox_manager_scope,
+                    expected_kind="agent-runtime",
+                    timeout=30,
+                )
+            except DockerOwnershipError as exc:
+                raise DomainError(
+                    "AGENT_BROWSER_OWNERSHIP_MISMATCH",
+                    "The Agent Runtime container is owned by another resource",
+                    409,
+                ) from exc
+            except DockerControlError as exc:
+                raise DomainError(
+                    "AGENT_BROWSER_BACKEND_UNAVAILABLE",
+                    "The Agent Runtime container could not be verified",
+                    503,
+                ) from exc
+            if container_id is None:
+                raise DomainError(
+                    "AGENT_BROWSER_UNAVAILABLE",
+                    "The Agent Runtime container no longer exists",
+                    409,
+                )
+            target = f"{payload.scheme}://127.0.0.1:{payload.port}{payload.path}"
+            if payload.query:
+                target = f"{target}?{payload.query}"
+            script = """
+import base64
+import json
+import sys
+import urllib.error
+import urllib.request
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+opener = urllib.request.build_opener(NoRedirect)
+request = urllib.request.Request(sys.argv[1], headers={"Accept-Encoding": "identity"})
+try:
+    response = opener.open(request, timeout=10)
+except urllib.error.HTTPError as error:
+    response = error
+content = response.read(2_097_153)
+if len(content) > 2_097_152:
+    raise ValueError("response too large")
+headers = {
+    key: value
+    for key, value in response.headers.items()
+    if key.lower() in {"content-type", "cache-control", "location"}
+}
+print(json.dumps({
+    "status": response.status,
+    "headers": headers,
+    "content_base64": base64.b64encode(content).decode(),
+}))
+"""
+            completed = subprocess.run(
+                [
+                    configured.docker_binary,
+                    "exec",
+                    container_id,
+                    "/runtime/.venv/bin/python",
+                    "-c",
+                    script,
+                    target,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+            if completed.returncode:
+                raise DomainError(
+                    "AGENT_BROWSER_TARGET_UNAVAILABLE",
+                    "The local service is unavailable in this Agent Runtime",
+                    502,
+                )
+            try:
+                result = cast(dict[str, Any], json.loads(completed.stdout))
+                content = base64.b64decode(str(result["content_base64"]), validate=True)
+            except (KeyError, ValueError, json.JSONDecodeError) as exc:
+                raise DomainError(
+                    "AGENT_BROWSER_RESPONSE_INVALID",
+                    "The local service returned an invalid browser response",
+                    502,
+                ) from exc
+            if len(content) > 2 * 1024 * 1024:
+                raise DomainError(
+                    "AGENT_BROWSER_RESPONSE_TOO_LARGE",
+                    "The local service response is too large to preview",
+                    413,
+                )
+            headers = result.get("headers")
+            return {
+                "status": int(result.get("status") or 502),
+                "headers": headers if isinstance(headers, dict) else {},
+                "content_base64": base64.b64encode(content).decode(),
+            }
+
+        return await run_control(fetch)
+
     @app.post("/v1/terminals/start")
     async def terminal_start(payload: TerminalStartWrite) -> dict[str, str]:
         check_scope(payload.manager_scope)
@@ -2459,6 +2586,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         health,
         ensure,
         inspect,
+        browser_fetch,
         delete,
         _drain,
         list_sandboxes,
