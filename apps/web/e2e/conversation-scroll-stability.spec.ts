@@ -124,6 +124,7 @@ test('running transcript keeps a fixed bottom gap while formal text grows', asyn
     }),
   }));
   await expect(page.getByText(/正式思考扩展段 24/)).toBeVisible();
+  expect(await page.locator('.conversation-text-reveal-block').count()).toBe(0);
   await expectStablePaintedGap();
 
   await startPaintSampling();

@@ -55,6 +55,7 @@ interface UserMessageNavigationItem {
 
 const HISTORY_REVEAL_WINDOW_MIN_PX = 360;
 const HISTORY_REVEAL_WINDOW_VIEWPORT_RATIO = 0.75;
+const EMPTY_EVENT_IDS: ReadonlySet<string> = new Set();
 
 export interface ConversationReference {
   eventId: string;
@@ -688,7 +689,7 @@ function fileLineLocation(details: Record<string, unknown>, resultDetails: Recor
   return typeof insertLine === 'number' && Number.isInteger(insertLine) && insertLine > 0 ? `第 ${insertLine} 行` : undefined;
 }
 
-function eventRevealSignature(event: OpenHandsConversationEvent): string {
+function eventContentSignature(event: OpenHandsConversationEvent): string {
   const { content, thought, summary, event_name: eventName, tool_name: toolName, details, runtime_skill: runtimeSkill, runtime_task: runtimeTask } = event.payload;
   return JSON.stringify({ content, thought, summary, eventName, toolName, details, runtimeSkill, runtimeTask });
 }
@@ -1860,11 +1861,9 @@ export interface ConversationScrollSnapshot {
   savedAt: number;
 }
 
-export const ConversationSurface = memo(function ConversationSurface({ events, isGenerating, liveTextReveal = false, isPaused = false, pausing = false, emptyResponseRecoveryActive = false, modelRetryStatus, historyPending = false, cachedHistoryMarkerCount = 0, cachedHistoryUserEventIds = [], hasCachedOlderHistory = false, onRequestOlderHistory, onRevealHistoryThrough, conversationScope, initialScrollSnapshot, onScrollSnapshotChange, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationPending = false, condensationStartedAt, onRewrite, onFork, onOpenAttachment, attachmentImageUrl, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, onOpenImage, workspaceImageUrl, workspaceRoot, onCreateAnnotation, onSidebarQuestion, onLocateAnnotation, conversationName, onOpenConversationReference, taskControl = [], monitoring, connectionState }: {
+export const ConversationSurface = memo(function ConversationSurface({ events, isGenerating, isPaused = false, pausing = false, emptyResponseRecoveryActive = false, modelRetryStatus, historyPending = false, cachedHistoryMarkerCount = 0, cachedHistoryUserEventIds = [], hasCachedOlderHistory = false, onRequestOlderHistory, onRevealHistoryThrough, conversationScope, initialScrollSnapshot, onScrollSnapshotChange, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationPending = false, condensationStartedAt, onRewrite, onFork, onOpenAttachment, attachmentImageUrl, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, onOpenImage, workspaceImageUrl, workspaceRoot, onCreateAnnotation, onSidebarQuestion, onLocateAnnotation, conversationName, onOpenConversationReference, taskControl = [], monitoring, connectionState }: {
   events: OpenHandsConversationEvent[];
   isGenerating: boolean;
-  /** Strict native running state; unlike visual activity it never animates history reconciliation. */
-  liveTextReveal?: boolean;
   /** Formal native conversation pause state, used only to label unfinished Task actions. */
   isPaused?: boolean;
   /** A pause request is pending confirmation from the native Runtime. */
@@ -1991,30 +1990,12 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     () => events.map(projectFlowWeaveMessageContext),
     [events],
   );
-  const visibleEventSignature = useMemo(
-    () => visibleEvents.map(event => [event.id, eventRevealSignature(event)] as const),
+  const turns = useMemo(() => turnsFor(visibleEvents), [visibleEvents]);
+  const revealEventIds = EMPTY_EVENT_IDS;
+  const contentGrowthSignal = useMemo(
+    () => visibleEvents.map(event => [event.id, eventContentSignature(event)] as const),
     [visibleEvents],
   );
-  const revealedEventContent = useRef(new Map<string, string>());
-  const revealScope = useRef<string | undefined>(undefined);
-  const [revealEventIds, setRevealEventIds] = useState<ReadonlySet<string>>(() => new Set());
-  useLayoutEffect(() => {
-    const current = new Map(visibleEventSignature);
-    if (revealScope.current !== conversationScope || !liveTextReveal) {
-      revealScope.current = conversationScope;
-      revealedEventContent.current = current;
-      setRevealEventIds(new Set());
-      return;
-    }
-    const newlyRendered = new Set<string>();
-    for (const [id, text] of current) {
-      if (revealedEventContent.current.get(id) !== text) newlyRendered.add(id);
-    }
-    revealedEventContent.current = current;
-    setRevealEventIds(newlyRendered);
-  }, [conversationScope, liveTextReveal, visibleEventSignature]);
-  const turns = useMemo(() => turnsFor(visibleEvents), [visibleEvents]);
-  const contentGrowthSignal = visibleEventSignature;
   const avatarSlots = useMemo(() => subagentAvatarSlots(visibleEvents), [visibleEvents]);
   const userMessageNavigation = useMemo<UserMessageNavigationItem[]>(() => [
     ...cachedHistoryUserEventIds.map(id => ({

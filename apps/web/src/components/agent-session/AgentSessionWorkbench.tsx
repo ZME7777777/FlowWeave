@@ -8998,7 +8998,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         key={selected?.id ?? conversationDraft?.id}
         events={displayedEvents}
         isGenerating={conversationVisuallyActive}
-        liveTextReveal={nativeTurnRunning}
         isPaused={conversationActivity.state === 'paused'}
         pausing={conversationActivity.state === 'pausing'}
         emptyResponseRecoveryActive={emptyResponseRecoveryActive}
