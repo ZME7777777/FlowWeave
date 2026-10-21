@@ -331,8 +331,8 @@
 /* The card floats beside the conversation. Reserve space only while visible,
    so hiding it lets the transcript and composer use the full width. */
 .agent-workbench-page{--agent-environment-card-width:clamp(220px,18vw,340px);--agent-composer-empty-height:176px}
+.agent-workbench-page:has(>.agent-workspace-drawer.environment-open)>.agent-workbench-main>.agent-workbench-content{--agent-composer-center-offset:calc((var(--agent-environment-card-width) + 24px)/-2)}
 .agent-workbench-page:has(>.agent-workspace-drawer.environment-open)>.agent-workbench-main>.agent-workbench-content .conversation-surface{padding-right:calc(var(--agent-environment-card-width) + 40px)}
-.agent-workbench-page:has(>.agent-workspace-drawer.environment-open)>.agent-workbench-main>.agent-workbench-content .conversation-surface-shell{--conversation-jump-latest-center-offset:calc((var(--agent-environment-card-width) + 24px)/-2)}
 .agent-workbench-page:has(>.agent-workspace-drawer.environment-open)>.agent-workbench-main>.agent-composer-dock{margin-right:calc(var(--agent-environment-card-width) + 24px)}
 .agent-workbench-page:has(>.agent-workspace-drawer)>.agent-workbench-main>.agent-workbench-content .conversation-surface{transition:padding-right .24s cubic-bezier(.2,.8,.2,1)}
 .agent-workbench-page:has(>.agent-workspace-drawer)>.agent-workbench-main>.agent-composer-dock{transition:margin-right .24s cubic-bezier(.2,.8,.2,1)}
