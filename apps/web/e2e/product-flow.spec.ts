@@ -1235,6 +1235,12 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(gitSummary).toContainText('3 个文件已改动');
   await expect(gitSummary).toContainText('本地 +2');
   await expect(gitSummary).toContainText('远端 +1');
+  const gitSummaryLayout = await gitSummary.locator('button[title="在全屏文件栏中查看 Git 信息"]').evaluate(button => {
+    const branch = button.querySelector<HTMLElement>('.agent-workspace-git-summary-content > b')!;
+    const status = button.querySelector<HTMLElement>('.agent-workspace-git-summary-status')!;
+    return { branchBottom: branch.getBoundingClientRect().bottom, statusTop: status.getBoundingClientRect().top };
+  });
+  expect(gitSummaryLayout.statusTop).toBeGreaterThan(gitSummaryLayout.branchBottom);
   const gitSummaryChangesRequestsBeforeRefresh = workspaceGitChangesRequests;
   await gitSummary.getByRole('button', { name: '刷新 Git 信息' }).click();
   await expect.poll(() => gitSyncRequests).toBe(1);

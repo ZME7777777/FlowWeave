@@ -9,6 +9,8 @@
 .agent-workspace-tabs{display:flex;gap:3px;padding:8px 12px;border-bottom:1px solid var(--line);background:#fff}
 .agent-workspace-tabs button{border:0;border-radius:7px;background:transparent;padding:6px 9px;color:#66716a;font-size:11px}
 .agent-workspace-tabs button:hover,.agent-workspace-tabs button.active{background:#e8f1eb;color:#286140}
+.agent-workspace-git-summary>div>button>.agent-workspace-git-summary-content{display:grid!important;min-width:0;gap:4px!important}.agent-workspace-git-summary-status{display:flex!important;flex-wrap:wrap;align-items:baseline;gap:5px 7px!important;min-width:0}.agent-workspace-git-sync-status{flex-wrap:wrap;overflow:visible}.agent-workspace-git-sync-status span{white-space:nowrap}
+
 .agent-workspace-overview,.agent-workspace-files{min-height:0;overflow:auto;padding:12px}
 .agent-workspace-overview{display:grid;align-content:start;gap:9px}
 .agent-workspace-overview article{display:flex;gap:9px;border:1px solid #dfe7e1;border-radius:9px;background:#fff;padding:10px;color:#52625a}
