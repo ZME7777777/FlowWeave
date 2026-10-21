@@ -1759,7 +1759,7 @@ test('A delayed message response never renders in another conversation', async (
   await expect(page.getByText('正在提交消息', { exact: true })).toHaveCount(0);
 });
 
-test('A running-session Enter queues without rendering, while Meta+Enter renders and sends', async ({ page }) => {
+test('A running-session Enter queues without rendering, while Command or Alt+Enter renders and sends', async ({ page }) => {
   let authenticated = false;
   let sentMessages = 0;
   const workspace = { id: 'queue-semantics-workspace', display_name: '队列语义工作区', desired_state: 'RUNNING', updated_at: now };
@@ -1808,7 +1808,7 @@ test('A running-session Enter queues without rendering, while Meta+Enter renders
   await expect(page.getByLabel('消息投递队列').getByText('先排队，再调整方向')).toBeVisible();
   expect(sentMessages).toBe(0);
 
-  await composer.press('Meta+Enter');
+  await composer.press('Alt+Enter');
   await expect(page.getByLabel('消息投递队列').getByText('先排队，再调整方向')).toHaveCount(0);
   await expect(message).toBeVisible();
   await expect.poll(() => sentMessages).toBe(1);

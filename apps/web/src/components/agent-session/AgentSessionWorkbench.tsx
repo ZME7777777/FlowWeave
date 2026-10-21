@@ -7603,7 +7603,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, [displayedEvents, inputReadinessQuery.data, selected]);
   useEffect(() => {
     if (nativeTurnTerminal && (turnState === 'running' || turnState === 'resuming') && activeTurnEventId && hasFinishedTurn(displayedEvents, activeTurnEventId)) {
-      // OpenHands may already have accepted a Command/Ctrl+Enter guidance
+      // OpenHands may already have accepted a Command/Alt+Enter guidance
       // message while the previous turn finishes. Follow that formal user
       // event instead of briefly reporting idle and releasing the Enter queue.
       const nextUserEventId = latestUnfinishedUserEventId(displayedEvents);
@@ -8720,7 +8720,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (!hasComposerMessage) {
       const queuedMessage = queuedMessages.find(message => message.deliveryState === 'queued' && message.scope === selected?.id);
       if (!queueModeEnabled || !queuedMessage || !canWrite || conversationDraft || migrateStreaming.isPending || pendingMigratedSend || !selected) return;
-      // With an empty composer, Command/Ctrl+Enter promotes the queue head to
+      // With an empty composer, Command/Alt+Enter promotes the queue head to
       // an immediate send. Historical conversations first receive the required
       // streaming migration; the queued item remains editable until it completes.
       if (!selected.streaming_callback_ready) {
