@@ -8692,10 +8692,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       createdAt: Date.now(),
     };
     if (shouldQueue) {
-      flushSync(() => {
-        commitQueuedMessages(items => [...items, queuedMessage]);
-        showOptimisticUserBubble(queuedMessage, 'pending-user', 'queued');
-      });
+      commitQueuedMessages(items => [...items, queuedMessage]);
       return;
     }
     if (!selected.streaming_callback_ready) {
