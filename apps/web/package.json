@@ -18,12 +18,15 @@
     "@xyflow/react": "12.8.2",
     "clsx": "2.1.1",
     "highlight.js": "11.11.1",
+    "katex": "0.16.47",
     "lucide-react": "0.468.0",
     "mermaid": "11.12.1",
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "react-markdown": "10.1.0",
+    "rehype-katex": "7.0.1",
     "remark-gfm": "4.0.1",
+    "remark-math": "6.0.0",
     "zustand": "5.0.5"
   },
   "devDependencies": {

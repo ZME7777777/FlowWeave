@@ -379,6 +379,27 @@ test('hiding the floating card applies to every conversation and survives a relo
   await expect(card).toBeVisible();
 });
 
+test('assistant messages render inline and display LaTex formulas', async ({ page }) => {
+  await openWorkspace(page, [
+    { id: 'formula-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '计算盘前涨跌幅', timestamp: now } },
+    { id: 'formula-answer', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'formula-user', content: '行内公式 $E = mc^2$。\n\n$$\n\\frac{\\text{盘前最新价} - \\text{preClose}}{\\text{preClose}}\n$$', final_reply: true, timestamp: now } },
+  ]);
+  await page.goto('/agent/conversations/scheduled-conversation');
+
+  const answer = page.locator('.conversation-message.assistant');
+  await expect(answer.locator('.katex')).toHaveCount(2);
+  await expect(answer.locator('.katex-display')).toBeVisible();
+  await expect(answer).toContainText('行内公式');
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+  const copyButtons = answer.getByRole('button', { name: '复制公式' });
+  await expect(copyButtons).toHaveCount(2);
+  await copyButtons.nth(0).click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('$E = mc^2$');
+  await copyButtons.nth(1).click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('$$\n\\frac{\\text{盘前最新价} - \\text{preClose}}{\\text{preClose}}\n$$');
+});
+
+
 test('summary toggles keep the card in place and reverse the conversation transition continuously', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 1080 });
   await openWorkspace(page, [

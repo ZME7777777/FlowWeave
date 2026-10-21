@@ -192,6 +192,12 @@ MARKDOWN_FENCE_CONTEXT = "\n".join(
         "除此情形外，保持正常 Markdown 输出。",
     )
 )
+MATH_MARKDOWN_CONTEXT = "\n".join(
+    (
+        "数学公式输出规则：行内公式必须使用 `$...$`；独立公式必须使用 `$$` 包裹的块级公式。",
+        "不得输出没有 `$` 或 `$$` 定界符的裸 LaTeX；不要使用 `\\(...\\)` 或 `\\[...\\]` 作为公式定界符。",
+    )
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -788,6 +794,7 @@ def build_agent_spec(
                     COLLABORATION_ANNOTATION_CONTEXT,
                     CONVERSATION_COLLABORATION_CONTEXT,
                     MARKDOWN_FENCE_CONTEXT,
+                    MATH_MARKDOWN_CONTEXT,
                     frozen_context_suffix(config.capabilities),
                     system_message_suffix_append.strip(),
                 )

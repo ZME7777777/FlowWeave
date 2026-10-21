@@ -118,6 +118,9 @@ def test_agent_context_is_compiled_only_into_openhands_system_suffix(settings):
     assert "应主动、持续使用 ThinkTool 向用户同步进展" not in suffix
     assert "外层必须使用比所有内层更长的围栏" in suffix
     assert "不得让外层 Markdown 源码块与其中的代码块共用三个反引号" in suffix
+    assert "数学公式输出规则：行内公式必须使用 `$...$`" in suffix
+    assert "不得输出没有 `$` 或 `$$` 定界符的裸 LaTeX" in suffix
+
 
 
 def test_agent_context_is_allowed_only_during_conversation_creation(monkeypatch):
