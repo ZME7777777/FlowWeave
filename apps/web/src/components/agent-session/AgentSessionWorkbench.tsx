@@ -3170,7 +3170,7 @@ type WorkspaceToolTab =
   | { id: 'sidebar-chat'; kind: 'sidebar-chat' }
   | { id: string; kind: 'terminal'; terminalInstanceId: string };
 type WorkspaceToolScopeState = { tabs: WorkspaceToolTab[]; activeTabId?: string; selectedFile?: string; selectedChangeId?: string; selectedGitFile?: string; selectedGitCommit?: string; selectedGitRepositoryPath?: string; gitMode?: 'history' | 'changes'; selectedRuntimeTaskId?: string };
-type MarkdownFileRequest = { key: string; path: string };
+type MarkdownFileRequest = { key: string; path: string; line?: number };
 
 type ChangedFileTreeNode<T> = { name: string; path: string; value?: T; children: ChangedFileTreeNode<T>[] };
 type CollapsibleTreeNode = { name: string; path: string; children: CollapsibleTreeNode[] };
@@ -4421,7 +4421,7 @@ function WorkspaceDrawer({
   useEffect(() => {
     if (!markdownFileRequest || handledMarkdownFileRequestKey.current === markdownFileRequest.key) return;
     handledMarkdownFileRequestKey.current = markdownFileRequest.key;
-    openSourcePath(markdownFileRequest.path, 1);
+    openSourcePath(markdownFileRequest.path, markdownFileRequest.line ?? 1);
   }, [markdownFileRequest, openSourcePath]);
   const selectedEntryRoots = useMemo(() => [...selectedEntryPaths].filter(path => ![...selectedEntryPaths].some(other => other !== path && path.startsWith(`${other}/`))), [selectedEntryPaths]);
   const removeEntries = async (items: Array<{ path: string; kind: 'file' | 'directory' }>) => {
@@ -4879,6 +4879,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [attachmentRequest, setAttachmentRequest] = useState<{ key: string; attachment?: AgentAttachment }>();
   const [fileSelectionReference, setFileSelectionReference] = useState<{ path: string; selection: FileSelection }>();
   const [candidatePreviewRequest, setCandidatePreviewRequest] = useState<CandidateFilePreviewRequest>();
+  const [sourceLocationRequest, setSourceLocationRequest] = useState<MarkdownFileRequest>();
   const [sidebarQuestions, setSidebarQuestions] = useState<Record<string, { sourceBindingId: string; reference?: AgentConversationReference; sidebarBindingId?: string }>>({});
   const [conversationRailWidth, setConversationRailWidth] = useState(() => {
     const stored = Number(localStorage.getItem('flowweave:conversation-rail-width'));
@@ -6952,6 +6953,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (!changes.length) return;
     setReviewChanges(changes);
     setReviewRequestId(randomId());
+    setDrawerOpen(true);
+  }, []);
+  const openSourceLocation = useCallback((path: string, line: number) => {
+    setSourceLocationRequest({ key: randomId(), path, line });
     setDrawerOpen(true);
   }, []);
   const runtimeTasks = useMemo(
@@ -9500,6 +9505,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         onOpenWorkspaceReference={previewWorkspaceReference}
         onPreviewCandidateFile={candidateOutputUrl && workspace ? previewCandidateFile : undefined}
         onReviewChanges={openChangesReview}
+        onOpenSourceLocation={openSourceLocation}
         onOpenWorkspaceFile={openWorkspaceFileLink}
         onOpenBrowser={openBrowserLink}
         onOpenImage={previewMarkdownImage}
@@ -9645,6 +9651,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       sources={drawerSources}
       attachmentRequest={attachmentRequest}
       candidatePreviewRequest={candidatePreviewRequest}
+      markdownFileRequest={sourceLocationRequest}
       browserRequest={browserRequest}
       htmlPreviewRequest={htmlPreviewRequest}
       reviewChanges={reviewChanges}

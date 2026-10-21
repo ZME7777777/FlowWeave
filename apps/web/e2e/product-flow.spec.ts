@@ -672,12 +672,16 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       return;
     }
     if (path.endsWith('/workspace/file')) {
-      workspaceFilePreviewRequests.push(new URL(request.url()).searchParams.get('path') ?? '');
+      const requestedPath = new URL(request.url()).searchParams.get('path') ?? '';
+      workspaceFilePreviewRequests.push(requestedPath);
+      const content = requestedPath === '/runtime/workspace/project/src/Main.java'
+        ? Array.from({ length: 48 }, (_, index) => `line-${index + 1}`).join('\n')
+        : 'workspace file preview\n';
       await route.fulfill({
         status: 200,
         contentType: 'text/plain',
-        headers: { 'X-Preview-Total-Bytes': '23' },
-        body: 'workspace file preview\n',
+        headers: { 'X-Preview-Total-Bytes': String(content.length) },
+        body: content,
       });
       return;
     }
@@ -1643,6 +1647,21 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(nextProgressGroup.locator(':scope > summary')).toHaveCount(0);
   await expect(nextProgressGroup.getByText('已读取 工作区/src/Main.java · 第 12–36 行')).toBeVisible();
   await expect(nextProgressGroup.getByText('已读取 工作区/config/application.properties')).toBeVisible();
+  const javaFileDetail = nextProgressGroup.locator('.conversation-tool-detail[data-file-operation="read"][data-file-kind="code"]');
+  await javaFileDetail.locator(':scope > summary').click();
+  const sourceLocation = javaFileDetail.getByRole('button', { name: 'Main.java:12-36' });
+  await expect(sourceLocation).toBeVisible();
+  await sourceLocation.click();
+  await expect(page.locator('.agent-workspace-drawer')).toHaveClass(/tools-open/);
+  await expect(page.getByText('line-12', { exact: true })).toBeVisible();
+  await expect(page.locator('.agent-file-line-highlight')).toHaveCSS('--source-line', '12');
+  expect(workspaceFilePreviewRequests.at(-1)).toBe('/runtime/workspace/project/src/Main.java');
+  await expect.poll(() => workspaceDirectoryRequests.slice(-2)).toEqual([
+    '/runtime/workspace/project',
+    '/runtime/workspace/project/src',
+  ]);
+  await expect(page.locator('.agent-file-line-highlight')).toHaveCount(0, { timeout: 3_000 });
+  await page.getByRole('button', { name: '关闭工作区工具' }).click();
   await expect(nextProgressGroup.getByText('已创建 工作区/README.md')).toBeVisible();
   await expect(nextProgressGroup.locator('.tool-skill')).toHaveCount(0);
   await expect(nextProgressGroup.getByText('子智能体 reviewer · 检查子任务边界')).toHaveCount(0);
