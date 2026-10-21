@@ -417,6 +417,8 @@
 .agent-schedule-page.embedded .agent-schedule-tree-group{border-radius:7px}
 .agent-schedule-page.embedded .agent-schedule-tree-select{padding:9px 7px}
 .agent-schedule-page.embedded .agent-schedule-run-list{margin-bottom:7px}
+.agent-schedule-page.embedded .agent-schedule-run-toggle{margin:2px 5px 2px 0;border:0;background:transparent;padding:5px;color:#327a52;font-size:9px;text-align:left}.agent-schedule-page.embedded .agent-schedule-run-toggle:hover{background:#e3f1e6;color:#245f3c}.agent-schedule-page.embedded .agent-schedule-rail:has(.agent-schedule-session-footer){grid-template-rows:auto minmax(0,1fr) auto}.agent-schedule-page.embedded .agent-schedule-session-footer{border-top:1px solid var(--line);padding:7px}
+
 @media(max-width:1100px){.agent-workbench-app-shell>.agent-schedule-page.embedded{grid-column:2}.agent-schedule-page.embedded .agent-schedule-layout>aside{max-height:none}}
 @media(max-width:680px){.agent-workbench-app-shell>.agent-schedule-page.embedded{grid-column:2}.agent-schedule-page.embedded{min-height:0}.agent-schedule-page.embedded .agent-schedule-layout>aside{max-height:none}}
 

@@ -137,3 +137,4 @@ git -C /Users/zhengmengen/WorkSpace/openhands/software-agent-sdk-total-tokens-1.
 - 账户菜单打开的设置页面由 `App.tsx` 的会话级 `openSettingsViews` 管理；每个设置视图至多一个临时标签，关闭当前标签时优先选择右侧、否则左侧相邻标签，关闭最后一个则回到节点资产。仅当 `.context-tabs` 存在时显示固定导航与临时标签间的分隔线；其布局需保留标题收缩、图标模式与横向滚动能力。
 - OpenHands interruption has a distinct formal `STATE` / `InterruptEvent` emitted after the native conversation transitions to `PAUSED`; synthetic `AgentErrorEvent` records only repair unmatched tool calls. In `AgentSessionWorkbench`, an `InterruptEvent` descended from the active user turn must take precedence over residual tool activity when resolving a native `paused` readiness state. Do not treat arbitrary `AgentErrorEvent` values as terminal because they are recoverable.
 - 在嵌入式会话定时任务页，打开运行会话后点击任务块必须显式返回 `/agent/schedules` 并保留面板选择状态；会话路由存在时主工作台会隐藏任务详情，不能只更新任务面板内部的 `selectedScheduleId`。
+- 嵌入式定时会话路由也必须保留与主页会话列表一致的底部“会话配置”入口，并将当前 hydration 后的正式 capabilities 传入；每个定时任务下的运行会话默认只展示前三项，其余由该任务自身的展开控件显示。

@@ -42,7 +42,7 @@ async function openWorkspace(page: Page, events: unknown[] = []) {
       return json(route, schedules[index]);
     }
     if (path.endsWith('/conversation-schedules')) return json(route, schedules);
-    if (path.includes('/conversation-schedules/') && path.endsWith('/occurrences')) return json(route, [{ id: 'delivery-1', binding_id: 'scheduled-run-1', conversation_title: '每日项目检查 · 2026-10-19 09:00', scheduled_for: now, trigger_kind: 'SCHEDULED', state: 'STARTED', message_cursor: 'event-1', created_at: now }]);
+    if (path.includes('/conversation-schedules/') && path.endsWith('/occurrences')) return json(route, Array.from({ length: 5 }, (_, index) => ({ id: `delivery-${index + 1}`, binding_id: index === 0 ? 'scheduled-run-1' : `scheduled-run-${index + 1}`, conversation_title: `每日项目检查 · 2026-10-${19 - index} 09:00`, scheduled_for: now, trigger_kind: 'SCHEDULED', state: 'STARTED', message_cursor: `event-${index + 1}`, created_at: now })));
     if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
     if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [conversation], next_cursor: null });
     if (path.endsWith('/conversation-activity')) return json(route, { running_binding_ids: [] });
@@ -78,6 +78,24 @@ test('selecting a task after opening its run returns to that task detail', async
   await expect(page).toHaveURL(/\/agent\/schedules$/);
   await expect(page.getByRole('heading', { name: '每周复核', exact: true })).toBeVisible();
   await expect(page.getByRole('textbox', { name: '发送 Agent 消息' })).toHaveCount(0);
+});
+
+test('scheduled session shows session configuration and expands additional runs', async ({ page }) => {
+  await openWorkspace(page);
+  await page.getByRole('navigation', { name: 'Agent 工作区导航' }).getByRole('button', { name: '定时任务' }).click();
+
+  const tasks = page.getByRole('region', { name: '会话定时任务' });
+  await expect(tasks.locator('.agent-schedule-run')).toHaveCount(6);
+  const firstSchedule = tasks.locator('.agent-schedule-tree-group').first();
+  await expect(firstSchedule.getByRole('button', { name: '展开其余 2 个会话', exact: true })).toBeVisible();
+  await firstSchedule.getByRole('button', { name: '展开其余 2 个会话', exact: true }).click();
+  await expect(tasks.locator('.agent-schedule-run')).toHaveCount(8);
+  await expect(firstSchedule.getByRole('button', { name: '收起会话', exact: true })).toBeVisible();
+
+  await tasks.locator('.agent-schedule-run').first().click();
+  await expect(page.getByRole('button', { name: '会话配置', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '会话配置', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: '会话配置' })).toBeVisible();
 });
 
 test('internal navigation returns from schedules and management to the active conversation', async ({ page }) => {
