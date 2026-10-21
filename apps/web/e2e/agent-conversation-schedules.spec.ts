@@ -120,48 +120,94 @@ test('scheduled conversations keep their route and draft while creating or editi
   await expect(page).toHaveURL(/\/agent\/schedules$/);
 });
 
-test('the responsive information card reserves conversation space and tools retain their fullscreen tab', async ({ page }) => {
+test('the floating card occupies conversation whitespace without resizing it or splitting its header', async ({ page }) => {
   await openWorkspace(page);
   await page.goto('/agent/conversations/scheduled-conversation');
   const card = page.locator('.agent-workspace-summary');
   await expect(card).toContainText('IDEA / Gateway');
   const geometry = () => page.evaluate(() => {
-    const card = document.querySelector('.agent-workspace-summary')!.getBoundingClientRect();
-    const main = document.querySelector('.agent-workbench-main')!.getBoundingClientRect();
-    const composer = document.querySelector('[aria-label="发送 Agent 消息"]')!.getBoundingClientRect();
-    return { cardLeft: card.left, cardRight: card.right, cardTop: card.top, cardWidth: card.width, mainRight: main.right, mainBottom: main.bottom, mainWidth: main.width, composerRight: composer.right };
+    const rect = (selector: string) => { const r = document.querySelector(selector)!.getBoundingClientRect(); return { left:r.left, right:r.right, top:r.top, bottom:r.bottom, width:r.width, height:r.height }; };
+    const style=getComputedStyle(document.querySelector('.agent-workspace-summary article')!);
+    return { main:rect('.agent-workbench-main'), header:rect('.agent-workbench-header'), content:rect('.agent-workbench-content'), composer:rect('.agent-composer'), drawer:rect('.agent-workspace-drawer'), card:rect('.agent-workspace-summary'), cardPresentation:{padding:style.padding,borderBottom:style.borderBottom} };
   });
-  for (const width of [1024, 1280, 1920, 2560]) {
+  for (const width of [1280, 1920, 2560]) {
     await page.setViewportSize({ width, height: 1080 });
-    await expect.poll(async () => { const box = await geometry(); return box.cardLeft - box.mainRight; }).toBeGreaterThanOrEqual(0);
-    await expect.poll(async () => (await geometry()).cardWidth).toBeCloseTo(Math.max(220, Math.min(340, width * .18)), 0);
-    const box = await geometry();
-    expect(box.composerRight).toBeLessThanOrEqual(box.mainRight);
+    await expect.poll(async () => { const g=await geometry(); return Math.abs(g.header.right-g.main.right); }).toBeLessThanOrEqual(1);
+    const before=await geometry();
+    expect(before.card.left).toBeGreaterThanOrEqual(before.composer.right);
+    expect(before.card.top).toBeGreaterThanOrEqual(before.header.bottom);
+    expect(before.card.right).toBeLessThanOrEqual(before.main.right);
+    expect(before.drawer.width).toBeLessThanOrEqual(1);
+    expect(before.card.height).toBeLessThan(before.main.height-100);
+    await expect(card.getByText('IDEA / Gateway')).toBeInViewport();
+    await page.getByRole('button', { name:'隐藏悬浮信息卡', exact:true }).click();
+    await expect(card).toBeHidden();
+    const hidden=await geometry();
+    expect(hidden.composer).toEqual(before.composer);
+    expect(hidden.content).toEqual(before.content);
+    await page.getByRole('button', { name:'显示悬浮信息卡', exact:true }).click();
+    await expect(card).toBeVisible();
   }
-  const before = await geometry();
-  await page.getByRole('button', { name: '隐藏悬浮信息卡', exact: true }).click();
+  const summaryPresentation=(await geometry()).cardPresentation;
+  await page.getByRole('button', { name:'新建工作区页签', exact:true }).first().click();
   await expect(card).toBeHidden();
-  await expect.poll(async () => (await geometry()).mainWidth).toBeGreaterThan(before.mainWidth + 200);
-  await page.getByRole('button', { name: '显示悬浮信息卡', exact: true }).click();
+  const before=await geometry();
+  await page.getByRole('button', { name:'显示悬浮信息卡', exact:true }).click();
   await expect(card).toBeVisible();
-  await page.getByRole('button', { name: '新建工作区页签', exact: true }).first().click();
-  await expect(card).toBeHidden();
-  await page.getByRole('button', { name: '全屏查看工作区工具', exact: true }).click();
-  await expect(page.locator('.agent-workspace-drawer.fullscreen.conversation-active')).toHaveCount(0);
-  const launcher = page.locator('.agent-workspace-tab-launcher.active');
-  await expect(launcher).toBeVisible();
-  expect(await launcher.evaluate(element => Math.abs(element.getBoundingClientRect().height - element.parentElement!.getBoundingClientRect().height))).toBeLessThan(1);
-  await page.getByRole('button', { name: '退出全屏', exact: true }).click();
-  await page.getByRole('button', { name: '关闭工作区工具', exact: true }).click();
-  await expect(card).toBeVisible();
-  await expect.poll(async () => { const box = await geometry(); return box.cardLeft - box.mainRight; }).toBeGreaterThanOrEqual(0);
-  await page.setViewportSize({ width: 390, height: 844 });
-  await expect.poll(async () => { const box = await geometry(); return box.cardTop - box.mainBottom; }).toBeGreaterThanOrEqual(0);
-  const mobile = await geometry();
-  expect(mobile.cardRight).toBeLessThanOrEqual(390);
-  expect(mobile.cardWidth).toBeGreaterThan(280);
-  expect(mobile.mainWidth).toBeGreaterThan(300);
-  expect(mobile.composerRight).toBeLessThanOrEqual(mobile.mainRight);
+  const after=await geometry();
+  expect(after.cardPresentation).toEqual(summaryPresentation);
+  expect(after.main).toEqual(before.main);
+  expect(after.composer).toEqual(before.composer);
+  expect(after.card.right).toBeLessThanOrEqual(after.main.right);
+  expect(after.card.left).toBeGreaterThanOrEqual(after.composer.right);
+  expect(after.card.height).toBeLessThan(after.main.height-100);
+  await expect(card.getByText('IDEA / Gateway')).toBeInViewport();
+});
+
+test('fullscreen tools occupy the entire workbench region and restore the conversation without extra grid rows', async ({page}) => {
+  await openWorkspace(page);
+  await page.goto('/agent/conversations/scheduled-conversation');
+  const composer=page.getByRole('textbox',{name:'发送 Agent 消息'});
+  await composer.fill('全屏切换时保留草稿');
+  await page.getByRole('button',{name:'新建工作区页签',exact:true}).first().click();
+  await page.getByRole('button',{name:'全屏查看工作区工具',exact:true}).click();
+  const main=page.locator('.agent-workbench-main');
+  await expect(main).toBeHidden();
+  await expect(page.locator('.agent-workspace-tab-launcher.active')).toBeVisible();
+  const bounds=() => page.evaluate(() => {
+    const root=document.querySelector('.agent-workbench-page')!.getBoundingClientRect();
+    const rail=document.querySelector('.agent-workbench-rail')!.getBoundingClientRect();
+    const drawer=document.querySelector('.agent-workspace-drawer')!.getBoundingClientRect();
+    return Math.max(Math.abs(drawer.top-root.top),Math.abs(drawer.bottom-root.bottom),Math.abs(drawer.left-rail.right),Math.abs(drawer.right-root.right));
+  });
+  for (const width of [1024,1440,1920]) {
+    await page.setViewportSize({width,height:1080});
+    await expect.poll(bounds).toBeLessThanOrEqual(1);
+  }
+  const tabs=page.getByRole('navigation',{name:'工作区页签'});
+  await tabs.getByRole('button',{name:'日报会话',exact:true}).click();
+  await expect(main).toBeVisible();
+  await expect(composer).toHaveValue('全屏切换时保留草稿');
+  await expect.poll(() => page.evaluate(() => {
+    const main=document.querySelector('.agent-workbench-main')!.getBoundingClientRect();
+    const content=document.querySelector('.agent-workbench-content')!.getBoundingClientRect();
+    return content.top-main.top;
+  })).toBe(52);
+  const contentWidth=await page.locator('.agent-workbench-content').evaluate(element=>element.getBoundingClientRect().width);
+  await page.getByRole('button',{name:'显示悬浮信息卡',exact:true}).click();
+  await expect(page.locator('.agent-workspace-summary')).toBeVisible();
+  expect(await page.locator('.agent-workbench-content').evaluate(element=>element.getBoundingClientRect().width)).toBe(contentWidth);
+  await expect(page.locator('.agent-workspace-summary').getByText('IDEA / Gateway')).toBeInViewport();
+  await expect(page.locator('.agent-workspace-tab-launcher.active')).toBeHidden();
+  await tabs.getByRole('button',{name:'新标签页',exact:true}).click();
+  await expect(main).toBeHidden();
+  await expect.poll(bounds).toBeLessThanOrEqual(1);
+  await page.getByRole('button',{name:'退出全屏',exact:true}).click();
+  await expect(main).toBeVisible();
+  await expect(composer).toHaveValue('全屏切换时保留草稿');
+  await page.getByRole('button',{name:'关闭工作区工具',exact:true}).click();
+  await expect(page.locator('.agent-workspace-summary')).toBeVisible();
+  await expect(composer).toHaveValue('全屏切换时保留草稿');
 });
 
 
@@ -220,4 +266,33 @@ test('expanded tools squeeze and reflow the transcript and composer without cove
   })).toBeLessThanOrEqual(1);
   await expect.poll(async () => (await geometry()).overflow).toBeLessThanOrEqual(1);
   await expect(composer).toHaveValue('保留这段较长的输入草稿，展开侧栏后输入框应弹性收缩。'.repeat(4));
+});
+
+
+test('message scale hides when the conversation gutter collapses and returns after resizing tools', async ({page}) => {
+  await page.setViewportSize({width:1920,height:1080});
+  await openWorkspace(page,[
+    {id:'scale-user',event_type:'MESSAGE',payload:{source:'user',parent_id:'__root__',content:'检查刻度条是否遮挡正文',timestamp:now}},
+    {id:'scale-agent',event_type:'MESSAGE',payload:{source:'agent',parent_id:'scale-user',content:'会话区收窄后，刻度条应该自动隐藏。'.repeat(15),final_reply:true,timestamp:now}},
+  ]);
+  await page.goto('/agent/conversations/scheduled-conversation');
+  const scale=page.getByRole('navigation',{name:'用户消息导航'});
+  await expect(scale).toBeVisible();
+  await page.getByRole('button',{name:'新建工作区页签',exact:true}).first().click();
+  await expect(scale).toBeVisible();
+  const resize=async (delta:number) => {
+    const box=await page.getByRole('separator',{name:'调整工作区工具宽度'}).boundingBox();
+    await page.mouse.move(box!.x+box!.width-1,box!.y+100);
+    await page.mouse.down();
+    await page.mouse.move(box!.x+delta,box!.y+100,{steps:12});
+    await page.mouse.up();
+  };
+  await resize(-160);
+  await expect(scale).toBeHidden();
+  await expect(page.locator('.conversation-message-index-tooltip')).toBeHidden();
+  await expect(page.locator('.conversation-message.assistant')).toContainText('会话区收窄后');
+  await resize(170);
+  await expect(scale).toBeVisible();
+  const gap=await page.evaluate(() => document.querySelector('.conversation-message.assistant p')!.getBoundingClientRect().left-document.querySelector('.conversation-message-index')!.getBoundingClientRect().right);
+  expect(gap).toBeGreaterThanOrEqual(8);
 });

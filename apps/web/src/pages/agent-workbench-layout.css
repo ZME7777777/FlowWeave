@@ -53,9 +53,12 @@
 .agent-workbench-list>.agent-workspace-group>.agent-workspace-group-content>.agent-workspace-group-more:hover:not(:disabled){background:#e9efeb!important;color:#527360!important}
 .agent-workbench-list>.agent-workspace-group>.agent-workspace-group-content>.agent-workspace-group-more:focus-visible{outline:2px solid #83aa92;outline-offset:1px}
 .agent-workbench-list>.agent-workspace-group>.agent-workspace-group-content>.agent-workspace-group-more:disabled{cursor:wait;opacity:.6}
-/* The workbench must always have exactly these three regions. Optional Runtime
+/* The regular workbench has exactly these three regions. Optional Runtime
    notices and empty states live inside `content`, never in an implicit grid row. */
 .agent-workbench-main,.agent-workbench-shell .agent-workbench-main{position:relative;display:grid!important;height:100%;min-height:0;overflow:hidden;grid-template-areas:'header' 'content' 'composer';grid-template-columns:minmax(0,1fr);grid-template-rows:52px minmax(0,1fr) auto!important}
+/* Fullscreen conversation tabs replace the regular header instead of keeping
+   a second empty header track beneath the tool tab bar. */
+.agent-workbench-main.fullscreen-conversation-active,.agent-workbench-shell .agent-workbench-main.fullscreen-conversation-active{grid-template-areas:'content' 'composer';grid-template-rows:minmax(0,1fr) auto!important}
 .agent-workbench-header{grid-area:header!important;min-height:0}.agent-workbench-content{position:relative;grid-area:content!important;display:flex;min-width:0;min-height:0;flex-direction:column;overflow:hidden}.agent-workbench-content>:is(.conversation-surface-shell,.conversation-surface-empty,.agent-workbench-empty){min-height:0;flex:1 1 auto}.agent-workbench-drop-overlay{position:absolute;z-index:5;inset:14px;display:grid;place-items:center;border:2px dashed #2d8655;border-radius:16px;background:#eff9f2e8;pointer-events:none}.agent-workbench-drop-overlay>div{display:grid;justify-items:center;gap:5px;color:#245f3c;text-align:center}.agent-workbench-drop-overlay svg{color:#2d8655}.agent-workbench-drop-overlay b{font-size:14px}.agent-workbench-drop-overlay span{color:#527360;font-size:11px}
 .agent-composer-dock{position:relative;grid-area:composer!important;min-height:0;inset:auto;z-index:2;padding-bottom:0;pointer-events:none}.agent-composer-dock:has(.agent-composer-annotation-card){z-index:80}
 .agent-composer-dock>*{pointer-events:auto}
@@ -79,3 +82,11 @@
 .agent-composer-actions .agent-send{flex:0 0 31px}
 .agent-composer-bottom{min-width:0;flex-wrap:wrap}
 .agent-composer-bottom>.conversation-live-task-plan{min-width:0;max-width:100%}
+
+/* The transcript is centered at 860px. The index needs 44px of left whitespace
+   (17px inset + 19px hit area + 8px gap), so hide it below 860 + 2 * 44px.
+   Container width responds to both split-pane and window resizing. */
+.agent-workbench-content>.conversation-surface-shell,.agent-sidebar-chat-content>.conversation-surface-shell{container:agent-transcript / inline-size}
+@container agent-transcript (max-width:948px){
+  .conversation-message-index,.conversation-message-index-tooltip{display:none!important}
+}
