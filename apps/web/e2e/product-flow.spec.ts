@@ -2869,7 +2869,7 @@ test('editing the latest user message locally replaces only its active branch', 
   let rerunPayload: Record<string, unknown> | undefined;
   const attachedReport = { filename: '审计报告.pdf', mime_type: 'application/pdf', byte_size: 128, path: '/runtime/workspace/project/uploads/rethink-report.pdf' };
   const referencedFile = { path: '/runtime/workspace/project/审计报告.md', kind: 'file', display_name: '审计报告.md' };
-  const events = () => rewritten ? [
+  const events = (currentRewrite = rewritten) => currentRewrite ? [
     { id: 'earlier-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '更早的问题', timestamp: '2026-08-28T10:00:00Z' } },
     { id: 'earlier-answer', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'earlier-user', content: '更早的回答', timestamp: '2026-08-28T10:00:01Z' } },
     { id: 'rethink-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'earlier-answer', content: '修改后的问题', attachments: [attachedReport], workspace_references: [referencedFile], timestamp: '2026-08-28T10:00:03Z' } },
@@ -2882,6 +2882,7 @@ test('editing the latest user message locally replaces only its active branch', 
   ];
   let includeLateOldBranchEvent = false;
   let lateOldBranchEventWasRead = false;
+  let eventsReadAfterRewrite = false;
   // The old branch is omitted from the later bounded window. Its child arrives
   // alone, so the rewrite tombstone must reject it without rediscovering parent.
   const lateOldBranchEvent = { id: 'late-old-continue', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'original-user', content: '继续', timestamp: '2026-08-28T10:00:04Z' } };
@@ -2894,7 +2895,10 @@ test('editing the latest user message locally replaces only its active branch', 
     if (path.endsWith('/runtime')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ state: 'ACTIVE', write_available: true, message: null, updated_at: new Date().toISOString() }) });
     if (path.endsWith('/conversations') && request.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([{ id: 'rethink-conversation', display_title: '重新思考', lifecycle: 'ACTIVE', streaming_callback_ready: true, model_provider_id: null, model_name: null, reasoning_effort: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() }]) });
     if (path.endsWith('/events')) {
-      const projectedEvents = includeLateOldBranchEvent ? [...events(), lateOldBranchEvent] : events();
+      const staleAfterRewrite = rewritten && !eventsReadAfterRewrite;
+      const currentEvents = events(staleAfterRewrite ? false : undefined);
+      const projectedEvents = includeLateOldBranchEvent ? [...currentEvents, lateOldBranchEvent] : currentEvents;
+      eventsReadAfterRewrite ||= rewritten;
       lateOldBranchEventWasRead ||= includeLateOldBranchEvent;
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ events: projectedEvents, next_cursor: null }) });
     }
@@ -2987,6 +2991,7 @@ test('editing the latest user message locally replaces only its active branch', 
   if (!releaseRewrite) throw new Error('Expected rerun request');
   releaseRewrite();
   await expect(page.getByText('新的回答', { exact: true })).toBeVisible();
+  await expect.poll(() => eventsReadAfterRewrite).toBe(true);
   await expect(rewrittenMessage).toHaveCount(1);
   await expect(rewrittenMessage).toHaveAttribute('data-optimistic-identity', 'stable');
   includeLateOldBranchEvent = true;
