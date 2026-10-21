@@ -662,7 +662,7 @@ function useAgentSessionHost(): AgentSessionHost {
   return useContext(AgentSessionHostContext);
 }
 
-function WorkspaceConversationGroup({ groupId, label, children, conversationCount, hasMore = false, loadingMore = false, onLoadMore, draggable = false, dragging = false, dropPosition, onPointerDragStart, collapsed = false, onCollapsedChange, canCreateConversation = false, onCreateConversation, onEdit, onDelete }: WorkspaceConversationGroupProps) {
+function WorkspaceConversationGroup({ groupId, label, children, conversationCount, hasMore = false, loadingMore = false, onLoadMore, draggable = false, dragging = false, dropPosition, onPointerDragStart, collapsed = false, onCollapsedChange, canCreateConversation = false, onCreateConversation, onEdit, onDelete, revealConversationIndex }: WorkspaceConversationGroupProps & { revealConversationIndex?: number }) {
   const [visibleCount, setVisibleCount] = useState(3);
   const [actionsOpen, setActionsOpen] = useState(false);
   const actionsRef = useRef<HTMLDivElement>(null);
@@ -686,6 +686,11 @@ function WorkspaceConversationGroup({ groupId, label, children, conversationCoun
     // same when its page arrives.
     if (added > 0 && !collapsed) setVisibleCount(current => current + added);
   }, [collapsed, conversationCount]);
+  useEffect(() => {
+    if (revealConversationIndex === undefined) return;
+    if (collapsed) onCollapsedChange?.(false);
+    setVisibleCount(current => Math.max(current, revealConversationIndex + 1));
+  }, [collapsed, onCollapsedChange, revealConversationIndex]);
   useEffect(() => {
     if (!actionsOpen) return;
     const updateMenuPosition = () => {
@@ -4793,7 +4798,7 @@ function WorkspaceDrawer({
       {fullScreenConversationActive && <button type="button" aria-label="退出全屏" title="退出全屏（Esc）" onClick={() => setFullScreen(false)}><Minimize2 size={16}/></button>}
     </div>}
     <section className={`agent-workspace-tool-shell ${drawerToolsOpen ? '' : 'panel-hidden'}`}>
-              <header><nav className="agent-workspace-tabs" aria-label="工作区页签">{fullScreen && <div className={fullScreenView === 'conversation' ? 'active fixed' : 'fixed'}><button type="button" className="agent-workspace-tab-select" title={conversationTabLabel} onClick={() => setFullScreenView('conversation')}><span>{conversationTabLabel}</span></button></div>}{scopeState.tabs.map(tab => <div key={tab.id} className={!fullScreen || fullScreenView === 'tool' && scopeState.activeTabId === tab.id ? 'active' : ''}><button type="button" className="agent-workspace-tab-select" onClick={() => { setFullScreenView('tool'); updateScope(current => ({ ...current, activeTabId: tab.id })); }}><i className="agent-workspace-tab-icon">{workspaceTabIcon(tab)}</i><span>{workspaceTabLabel(tab)}</span></button><button type="button" className="agent-workspace-tab-close" aria-label={`关闭${workspaceTabLabel(tab)}页签`} disabled={tab.kind === 'terminal' && closingTerminalId === tab.terminalInstanceId} onClick={() => { if (tab.kind !== 'terminal' || closingTerminalId !== tab.terminalInstanceId) requestCloseTab(tab); }}><X size={12}/></button></div>)}<button type="button" className="agent-workspace-new-tab" aria-label="新建工作区页签" title="新建页签" onClick={openLauncher}><Plus size={15}/></button></nav><div className="agent-workspace-tool-actions">{fullScreen ? <><button type="button" aria-label={environmentOpen ? '隐藏悬浮信息卡' : '显示悬浮信息卡'} title={environmentOpen ? '隐藏悬浮信息卡' : '显示悬浮信息卡'} aria-pressed={environmentOpen} onClick={() => setEnvironmentOpen(current => !current)}>{environmentOpen ? <MonitorOff size={15}/> : <MonitorCog size={15}/>}</button><button type="button" aria-label="退出全屏" title="退出全屏（Esc）" onClick={() => setFullScreen(false)}><Minimize2 size={16}/></button><button type="button" aria-label="关闭工作区工具" title="关闭工作区工具并返回会话" onClick={() => void closeWorkspaceTools()}><X size={16}/></button></> : <><button type="button" aria-label="全屏查看工作区工具" title="全屏查看" onClick={() => { setFullScreenView('tool'); setFullScreen(true); }}><Maximize2 size={16}/></button><button type="button" aria-label="关闭工作区工具" onClick={() => void closeWorkspaceTools()}><X size={16}/></button></>}</div></header>
+              <header><nav className="agent-workspace-tabs" aria-label="工作区页签">{fullScreen && <div className={fullScreenView === 'conversation' ? 'active fixed' : 'fixed'}><button type="button" className="agent-workspace-tab-select" title={conversationTabLabel} onClick={() => setFullScreenView('conversation')} onDoubleClick={() => setFullScreen(false)}><span>{conversationTabLabel}</span></button></div>}{scopeState.tabs.map(tab => <div key={tab.id} className={!fullScreen || fullScreenView === 'tool' && scopeState.activeTabId === tab.id ? 'active' : ''}><button type="button" className="agent-workspace-tab-select" onClick={() => { setFullScreenView('tool'); updateScope(current => ({ ...current, activeTabId: tab.id })); }} onDoubleClick={() => setFullScreen(current => !current)}><i className="agent-workspace-tab-icon">{workspaceTabIcon(tab)}</i><span>{workspaceTabLabel(tab)}</span></button><button type="button" className="agent-workspace-tab-close" aria-label={`关闭${workspaceTabLabel(tab)}页签`} disabled={tab.kind === 'terminal' && closingTerminalId === tab.terminalInstanceId} onClick={() => { if (tab.kind !== 'terminal' || closingTerminalId !== tab.terminalInstanceId) requestCloseTab(tab); }}><X size={12}/></button></div>)}<button type="button" className="agent-workspace-new-tab" aria-label="新建工作区页签" title="新建页签" onClick={openLauncher}><Plus size={15}/></button></nav><div className="agent-workspace-tool-actions">{fullScreen ? <><button type="button" aria-label={environmentOpen ? '隐藏悬浮信息卡' : '显示悬浮信息卡'} title={environmentOpen ? '隐藏悬浮信息卡' : '显示悬浮信息卡'} aria-pressed={environmentOpen} onClick={() => setEnvironmentOpen(current => !current)}>{environmentOpen ? <MonitorOff size={15}/> : <MonitorCog size={15}/>}</button><button type="button" aria-label="退出全屏" title="退出全屏（Esc）" onClick={() => setFullScreen(false)}><Minimize2 size={16}/></button><button type="button" aria-label="关闭工作区工具" title="关闭工作区工具并返回会话" onClick={() => void closeWorkspaceTools()}><X size={16}/></button></> : <><button type="button" aria-label="全屏查看工作区工具" title="全屏查看" onClick={() => { setFullScreenView('tool'); setFullScreen(true); }}><Maximize2 size={16}/></button><button type="button" aria-label="关闭工作区工具" onClick={() => void closeWorkspaceTools()}><X size={16}/></button></>}</div></header>
       <div className="agent-workspace-tool-body">
         {panelError && <p className="agent-workspace-panel-error" role="alert"><span>{panelError}</span><button type="button" aria-label="关闭错误提示" onClick={() => setPanelError('')}><X size={13}/></button></p>}
         {scopeState.tabs.filter((tab): tab is Extract<WorkspaceToolTab, { kind: 'launcher' }> => tab.kind === 'launcher').map(tab => <section key={tab.id} className={`agent-workspace-tab-launcher ${scopeState.activeTabId === tab.id ? 'active' : ''}`}><WorkspaceBrowser tab={{ url: tab.url ?? '', title: tab.title }} workspaceId={workspaceId} bindingId={bindingId} workDirectoryId={workDirectoryId} browserUrl={browserUrl} onUrlChange={(url, title) => navigateLauncherBrowser(tab.id, url, title)} startPage={<div className="agent-workspace-tab-launcher-cards"><p>工具</p><button type="button" onClick={() => chooseLauncherTool(tab.id, () => openFiles())}><FileCode2 size={16}/>文件</button><button type="button" disabled={!runtimeAvailable} onClick={() => chooseLauncherTool(tab.id, openTerminal)}><SquareTerminal size={16}/>终端</button>{onOpenSidebarQuestion && <button type="button" onClick={() => chooseLauncherTool(tab.id, onOpenSidebarQuestion)}><PanelRightOpen size={16}/>侧边聊天</button>}<button type="button" onClick={() => chooseLauncherTool(tab.id, openGitHistory)}><GitBranch size={16}/>Git 历史</button>{reviewChanges.length > 0 && <button type="button" onClick={() => chooseLauncherTool(tab.id, () => openChanges())}><FileText size={16}/>审查改动</button>}{sources.length > 0 && <button type="button" onClick={() => chooseLauncherTool(tab.id, () => openSources)}><Link2 size={16}/>来源</button>}{runtimeTasks.length > 0 && <button type="button" onClick={() => chooseLauncherTool(tab.id, () => openRuntimeTasks())}><Bot size={16}/>子智能体</button>}</div>}/></section>)}
@@ -5446,6 +5451,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       sidebar.scrollTop = target;
     }
   }, [conversations, sidebarListMode, sidebarScrollTop]);
+  useLayoutEffect(() => {
+    if (scheduleRoute || !routeBindingId || !sidebarListRef.current) return;
+    const row = sidebarListRef.current.querySelector<HTMLElement>(`[data-conversation-binding-id="${CSS.escape(routeBindingId)}"]`);
+    row?.scrollIntoView({ block: 'nearest' });
+  }, [collapsedConversationGroups, conversationPagesByScope, routeBindingId, scheduleRoute]);
   const pagedPinnedConversations = [...conversationsById.values()].filter(
     item => pendingPinnedUpdates.current.get(item.id)?.pinned ?? item.pinned,
   );
@@ -5499,6 +5509,13 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       };
     });
   }, [conversations, host, queryClient, selectedBindingId, workspace]);
+  useEffect(() => {
+    if (scheduleRoute || !routeBindingId || !selected || selected.pinned) return;
+    const scopeKey = selected.work_directory_id ?? '__root__';
+    const page = conversationPagesByScope[scopeKey];
+    if (!page || page.items.some(item => item.id === routeBindingId) || !page.next_cursor) return;
+    void loadMoreConversations(scopeKey);
+  }, [conversationPagesByScope, loadMoreConversations, routeBindingId, scheduleRoute, selected]);
   const workspaceToolScopeKey = selected?.id ?? pendingCreatedId ?? conversationDraft?.id ?? 'workspace-root';
   const drawerOpen = drawerOpenByScope[workspaceToolScopeKey] ?? false;
   const setDrawerOpen = useCallback((open: boolean) => {
@@ -8851,8 +8868,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   );
   const fallbackHydrationPending = selectedHydrationPhase === 'fallback'
     && (eventsQuery.isPending || inputReadinessQuery.isPending || contextQuery.isPending);
+  const routedConversationResolving = Boolean(
+    routeBindingId && !selected && !selectedConversationQuery.isError,
+  );
   const hydrationInteractionPending = Boolean(
-    selected && (selectedHydrationPhase === 'loading' || fallbackHydrationPending),
+    routedConversationResolving
+    || (selected && (selectedHydrationPhase === 'loading' || fallbackHydrationPending)),
   );
   // A final-reply preview is only a compact sidebar projection. Keep it behind
   // the same gate as every other transcript until formal hydration is complete.
@@ -9391,6 +9412,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     return <button type="button" className={active ? 'active' : ''} aria-current={active ? 'page' : undefined} aria-label={`恢复${displayName}的未发送草稿`} onClick={() => openConversationDraft({ workDirectoryId, displayName }, { restoreRecovery: true })}><FileText size={13}/><span><b>未发送草稿</b><small>{summary}</small></span><ChevronRight size={13}/></button>;
   };
   const rootConversations = unpinnedConversations.filter(item => !item.work_directory_id);
+  const routedRootConversationIndex = rootConversations.findIndex(item => item.id === routeBindingId);
   const conversationsForDirectory = (workDirectoryId: string) => unpinnedConversations.filter(
     item => item.work_directory_id === workDirectoryId,
   );
@@ -9560,12 +9582,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         {sidebarListMode === 'activity'
           ? <section className="agent-workspace-activity" aria-label="活动会话"><header><div><span className="eyebrow">ACTIVITY</span><b>活动</b></div><button type="button" aria-label="返回工作区列表" title="返回工作区列表" onClick={() => { setActivityPreviewBindingId(undefined); setSidebarListMode('workspaces'); }}><ArrowLeft size={15}/></button></header>{activityConversations.length ? activityConversations.map(item => conversationRow(item, [], { allowDrag: false, workspaceName: activityWorkspaceName(item), onSelect: () => previewActivityConversation(item.id), onDoubleClick: () => openActivityConversation(item.id), onMarkRead: () => markConversationRead(item.id) })) : <p>没有正在运行或未读的会话。</p>}</section>
           : <>{pinnedConversations.length > 0 && <section className={`agent-workspace-pinned${pinnedConversationsCollapsed ? ' collapsed' : ''}`} aria-label="置顶会话"><header><button type="button" aria-label={`${pinnedConversationsCollapsed ? '展开' : '收起'}置顶会话`} aria-expanded={!pinnedConversationsCollapsed} aria-controls="agent-workspace-pinned-content" onClick={() => setPinnedConversationsCollapsed(current => !current)}><Pin size={13}/><span>置顶</span></button></header><div id="agent-workspace-pinned-content" hidden={pinnedConversationsCollapsed}>{pinnedConversations.map(item => conversationRow(item, [], { allowDrag: false }))}</div></section>}
-            <WorkspaceConversationGroup groupId="root" label="根工作区" conversationCount={rootConversations.length} hasMore={Boolean(conversationPagesByScope.__root__?.next_cursor)} loadingMore={loadingConversationScope === '__root__'} onLoadMore={() => loadMoreConversations('__root__')} collapsed={collapsedConversationGroups.has('root')} onCollapsedChange={collapsed => setConversationGroupCollapsed('root', collapsed)} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ displayName: '根工作区' }, { selectStandaloneRoot: true })}>
+            <WorkspaceConversationGroup groupId="root" label="根工作区" conversationCount={rootConversations.length} hasMore={Boolean(conversationPagesByScope.__root__?.next_cursor)} loadingMore={loadingConversationScope === '__root__'} onLoadMore={() => loadMoreConversations('__root__')} collapsed={collapsedConversationGroups.has('root')} onCollapsedChange={collapsed => setConversationGroupCollapsed('root', collapsed)} revealConversationIndex={routedRootConversationIndex >= 0 ? routedRootConversationIndex : undefined} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ displayName: '根工作区' }, { selectStandaloneRoot: true })}>
               {visibleCount => <>{pendingBootstrapItem && !pendingBootstrap?.draft.workDirectoryId ? pendingBootstrapItem : recoverableDraftItem(undefined, '根工作区')}{rootConversations.slice(0, visibleCount).map(item => conversationRow(item, rootConversations))}</>}
             </WorkspaceConversationGroup>
-            {features.workDirectories && workDirectories.map(directory => <WorkspaceConversationGroup key={directory.id} groupId={directory.id} label={directory.display_name} conversationCount={conversationsForDirectory(directory.id).length} hasMore={Boolean(conversationPagesByScope[directory.id]?.next_cursor)} loadingMore={loadingConversationScope === directory.id} onLoadMore={() => loadMoreConversations(directory.id)} draggable dragging={draggedWorkDirectoryId === directory.id} dropPosition={workDirectoryDropTarget?.id === directory.id ? (workDirectoryDropTarget.after ? 'after' : 'before') : undefined} onPointerDragStart={event => startPointerWorkDirectoryDrag(event, directory.id)} collapsed={collapsedConversationGroups.has(directory.id)} onCollapsedChange={collapsed => setConversationGroupCollapsed(directory.id, collapsed)} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ workDirectoryId: directory.id, displayName: directory.display_name })} onEdit={api.updateWorkDirectory && runtimeWritable ? () => setWorkDirectoryEditor(directory) : undefined} onDelete={api.deleteWorkDirectory && runtimeWritable ? () => void removeWorkDirectory(directory) : undefined}>
-              {visibleCount => { const group = conversationsForDirectory(directory.id); return <>{pendingBootstrapItem && pendingBootstrap?.draft.workDirectoryId === directory.id ? pendingBootstrapItem : recoverableDraftItem(directory.id, directory.display_name)}{group.slice(0, visibleCount).map(item => conversationRow(item, group))}</>}}
-            </WorkspaceConversationGroup>)}</>}
+            {features.workDirectories && workDirectories.map(directory => { const group = conversationsForDirectory(directory.id); const routeIndex = group.findIndex(item => item.id === routeBindingId); return <WorkspaceConversationGroup key={directory.id} groupId={directory.id} label={directory.display_name} conversationCount={group.length} hasMore={Boolean(conversationPagesByScope[directory.id]?.next_cursor)} loadingMore={loadingConversationScope === directory.id} onLoadMore={() => loadMoreConversations(directory.id)} draggable dragging={draggedWorkDirectoryId === directory.id} dropPosition={workDirectoryDropTarget?.id === directory.id ? (workDirectoryDropTarget.after ? 'after' : 'before') : undefined} onPointerDragStart={event => startPointerWorkDirectoryDrag(event, directory.id)} collapsed={collapsedConversationGroups.has(directory.id)} onCollapsedChange={collapsed => setConversationGroupCollapsed(directory.id, collapsed)} revealConversationIndex={routeIndex >= 0 ? routeIndex : undefined} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ workDirectoryId: directory.id, displayName: directory.display_name })} onEdit={api.updateWorkDirectory && runtimeWritable ? () => setWorkDirectoryEditor(directory) : undefined} onDelete={api.deleteWorkDirectory && runtimeWritable ? () => void removeWorkDirectory(directory) : undefined}>
+              {visibleCount => <>{pendingBootstrapItem && pendingBootstrap?.draft.workDirectoryId === directory.id ? pendingBootstrapItem : recoverableDraftItem(directory.id, directory.display_name)}{group.slice(0, visibleCount).map(item => conversationRow(item, group))}</>}
+            </WorkspaceConversationGroup>; })}</>}
       </div>
       {features.capabilities && (selected || features.draftCapabilitySelection) && <footer className="agent-workbench-rail-footer"><button type="button" title={selected ? '会话配置' : '新会话配置'} aria-label={selected ? '会话配置' : '新会话配置'} disabled={selected ? !canWrite : !runtimeWritable} onClick={() => setCapabilityManagerOpen(true)}><Boxes size={13}/><span><b>会话配置</b></span><ChevronRight size={12}/></button></footer>}
     </aside>}
@@ -9731,13 +9753,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       onOpen={() => setDrawerOpen(true)}
       onFullScreenConversationActiveChange={setFullScreenConversationActive}
       onClose={() => {
-        const scopeKey = selected?.id ?? pendingCreatedId ?? conversationDraft?.id ?? 'workspace-root';
         setFileSelectionReference(undefined);
-        const sidebarBindingId = sidebarQuestions[scopeKey]?.sidebarBindingId;
+        const sidebarBindingId = sidebarQuestions[workspaceToolScopeKey]?.sidebarBindingId;
         setSidebarQuestions(current => {
-          if (!current[scopeKey]) return current;
+          if (!current[workspaceToolScopeKey]) return current;
           const next = { ...current };
-          delete next[scopeKey];
+          delete next[workspaceToolScopeKey];
           return next;
         });
         setDrawerOpen(false);
@@ -9767,16 +9788,15 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       runtimeTasks={runtimeTasks}
       agentDefinitions={agentDefinitionAssets}
       sessionStopped={sessionStopped}
-      sidebarQuestion={sidebarQuestions[selected?.id ?? pendingCreatedId ?? conversationDraft?.id ?? 'workspace-root']}
+      sidebarQuestion={sidebarQuestions[workspaceToolScopeKey]}
       onSidebarBindingCreated={(sourceBindingId, sidebarBindingId) => setSidebarQuestions(current => current[sourceBindingId] ? { ...current, [sourceBindingId]: { ...current[sourceBindingId], sidebarBindingId } } : current)}
       onOpenSidebarQuestion={selected ? () => setSidebarQuestions(current => ({ ...current, [selected.id]: { sourceBindingId: selected.id } })) : undefined}
       onPreviewAttachment={previewAttachment}
       onCloseSidebarQuestion={() => {
-        const scopeKey = selected?.id ?? pendingCreatedId ?? conversationDraft?.id ?? 'workspace-root';
         setSidebarQuestions(current => {
-          if (!current[scopeKey]) return current;
+          if (!current[workspaceToolScopeKey]) return current;
           const next = { ...current };
-          delete next[scopeKey];
+          delete next[workspaceToolScopeKey];
           return next;
         });
       }}

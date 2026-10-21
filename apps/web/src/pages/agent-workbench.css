@@ -321,9 +321,11 @@
 .agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-tool-shell{grid-template-rows:52px minmax(0,1fr);overflow:hidden}
 .agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-tool-shell>header{height:52px;box-sizing:border-box;gap:14px;background:#f7faf8;padding:6px 14px}
 .agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-tabs{height:auto;align-self:center;gap:4px;overflow:visible;padding:0}
-.agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-tabs>div{height:24px;min-width:0;max-width:min(180px,calc(100vw - 290px));border-radius:7px;background:#fff;box-shadow:0 1px 2px #17302212}
-.agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-tab-select{height:24px;padding:0 2px 0 8px!important;color:#27382f!important}
-.agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-tab-close{width:18px!important;height:24px!important;background:transparent!important;color:#63736a!important}
+.agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-tabs>div{height:24px;min-width:0;max-width:min(180px,calc(100vw - 290px));border-radius:7px;background:transparent;box-shadow:none;color:#718077}
+.agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-tabs>div:not(.active):hover{background:#f3f7f4;box-shadow:0 1px 2px #1730220a;color:#405248}
+.agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-tabs>div:not(.active):hover .agent-workspace-tab-select{background:transparent!important;color:inherit!important}
+.agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-tab-select{height:24px;padding:0 2px 0 8px!important;color:inherit!important}
+.agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-tab-close{width:18px!important;height:24px!important;background:transparent!important;color:inherit!important}
 .agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-new-tab,.agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-tool-actions{height:24px;align-self:center}
 .agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-new-tab,.agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-tool-actions>button{width:24px;height:24px;border:0!important;border-radius:6px!important;background:transparent!important;color:#63736a!important;box-shadow:none!important}
 .agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-new-tab:hover,.agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-tool-actions>button:hover{background:#edf3ef!important;color:#245f3c!important}
@@ -378,6 +380,12 @@
 .agent-workspace-drawer.fullscreen.conversation-active .agent-workspace-tool-actions{display:none}
 .agent-workspace-drawer.fullscreen .agent-workspace-tool-shell>header{background:#f7faf8}
 .agent-workspace-drawer.fullscreen .agent-workspace-tabs{border:0;background:transparent}
+.agent-workspace-drawer.fullscreen .agent-workspace-tabs>div{background:transparent;box-shadow:none;color:#718077}
+.agent-workspace-drawer.fullscreen .agent-workspace-tabs>div:not(.active):hover{background:#f3f7f4;box-shadow:0 1px 2px #1730220a;color:#405248}
+.agent-workspace-drawer.fullscreen .agent-workspace-tabs>div.active{background:#fff;color:#27382f;box-shadow:0 1px 2px #17302212}
+.agent-workspace-drawer.fullscreen .agent-workspace-tabs>div.fixed{width:min(15em,100%);min-width:0;max-width:15em;flex:0 1 15em}
+.agent-workspace-drawer.fullscreen .agent-workspace-tabs>div.fixed .agent-workspace-tab-select{width:100%}
+.agent-workspace-drawer.fullscreen .agent-workspace-tabs>div.fixed .agent-workspace-tab-select>span{flex:1}
 @media(max-width:680px){
   .agent-workbench-page:has(>.agent-workspace-drawer){max-width:100vw;min-width:0}
   .agent-workbench-app-shell:has(>.agent-workspace-drawer){grid-template-columns:48px minmax(0,1fr)}

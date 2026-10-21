@@ -233,7 +233,18 @@ test('Agent session keeps its conversation URL while refreshing a deep link', as
     if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
     if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
     if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
-    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [listedConversation], next_cursor: null });
+    if (path.endsWith('/conversations') && request.method() === 'GET') {
+      return new URL(request.url()).searchParams.get('cursor')
+        ? json(route, { items: [restoredConversation], next_cursor: null })
+        : json(route, {
+            items: [
+              listedConversation,
+              { ...listedConversation, id: 'another-conversation-2', display_title: '列表中的第二个会话' },
+              { ...listedConversation, id: 'another-conversation-3', display_title: '列表中的第三个会话' },
+            ],
+            next_cursor: 'refresh-target-page',
+          });
+    }
     if (path.endsWith('/conversations/refresh-target-conversation') && request.method() === 'GET') {
       await conversationRead;
       return json(route, restoredConversation);
@@ -266,6 +277,7 @@ test('Agent session keeps its conversation URL while refreshing a deep link', as
   await expect(page).toHaveURL(/\/agent\/conversations\/refresh-target-conversation$/);
   releaseConversation?.();
   await expect(page.getByText('已恢复刷新前的会话。')).toBeVisible();
+  await expect(page.locator('[data-conversation-binding-id="refresh-target-conversation"]').getByRole('button', { name: '刷新后恢复的会话', exact: true })).toBeVisible();
   await expect(page).toHaveURL(/\/agent\/conversations\/refresh-target-conversation$/);
 });
 
@@ -459,6 +471,8 @@ test('Generated conversation title updates both the sidebar and current header',
 test('Completed conversation shows an explicit loading state without appearing to think', async ({ page }) => {
   let authenticated = false;
   const unreadWrites: Array<{ unread: boolean; unread_origin?: string }> = [];
+  let releaseConversation: (() => void) | undefined;
+  const conversationGate = new Promise<void>(resolve => { releaseConversation = resolve; });
   let releaseHydration: (() => void) | undefined;
   const hydrationGate = new Promise<void>(resolve => { releaseHydration = resolve; });
   const workspace = {
@@ -511,7 +525,10 @@ test('Completed conversation shows an explicit loading state without appearing t
       runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } },
     });
     if (path.endsWith('/model-providers') || path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
-    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, conversation);
+    if (path.includes('/conversations/') && request.method() === 'GET') {
+      await conversationGate;
+      return json(route, conversation);
+    }
     return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
   });
 
@@ -519,11 +536,13 @@ test('Completed conversation shows an explicit loading state without appearing t
   await login(page);
   await page.goto('/agent/conversations/completed-loading-conversation');
   await expect(page.getByRole('status').filter({ hasText: '正在加载会话' })).toBeVisible();
+  await expect(page.getByText('会话已就绪', { exact: true })).toHaveCount(0);
   await expect(page.locator('.conversation-turn-status')).toHaveCount(0);
   await expect(page.getByText('正在思考', { exact: true })).toHaveCount(0);
   await expect(page.locator('.conversation-live-task-plan')).toHaveCount(0);
   await expect.poll(() => unreadWrites).toEqual([]);
 
+  releaseConversation?.();
   releaseHydration?.();
   await expect(page.getByText('历史回复', { exact: true })).toBeVisible();
   await expect(page.getByRole('status').filter({ hasText: '正在加载会话' })).toHaveCount(0);

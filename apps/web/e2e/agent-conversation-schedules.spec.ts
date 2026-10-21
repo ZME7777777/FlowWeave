@@ -14,12 +14,12 @@ async function settleWorkspaceLayout(page: Page) {
   });
 }
 
-async function openWorkspace(page: Page, events: unknown[] = [], includeSecondConversation = false) {
+async function openWorkspace(page: Page, events: unknown[] = [], includeSecondConversation = false, conversationTitle = '日报会话') {
   const writes: { method: string; id?: string; body: Record<string, unknown> }[] = [];
   let authenticated = false;
   const workspace = { id: 'schedule-workspace', display_name: 'Agent 工作区', desired_state: 'RUNNING', updated_at: now };
   const conversation = {
-    id: 'scheduled-conversation', display_title: '日报会话', title_state: 'MANUAL', lifecycle: 'ACTIVE',
+    id: 'scheduled-conversation', display_title: conversationTitle, title_state: 'MANUAL', lifecycle: 'ACTIVE',
     streaming_callback_ready: true, write_available: true, execution_status: 'idle', model_provider_id: 'provider-1', model_name: 'model-1', reasoning_effort: 'high', created_at: now, updated_at: now,
   };
   const conversations = includeSecondConversation ? [conversation, { ...conversation, id: 'scheduled-conversation-2', display_title: '周报会话' }] : [conversation];
@@ -69,7 +69,7 @@ async function openWorkspace(page: Page, events: unknown[] = [], includeSecondCo
     if (path.endsWith('/capability-collections')) return json(route, []);
     if (path.includes('/conversations/') && request.method() === 'GET') {
       const bindingId = path.match(/\/conversations\/([^/]+)/)?.[1];
-      return json(route, conversations.find(item => item.id === bindingId) ?? conversation);
+      return json(route, conversations.find(item => item.id === bindingId) ?? { ...conversation, id: bindingId });
     }
     return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
   });
@@ -130,9 +130,14 @@ test('scheduled session shows session configuration and expands additional runs'
   await expect(tasks.locator('.agent-schedule-run')).toHaveCount(6);
   const firstSchedule = tasks.locator('.agent-schedule-tree-group').first();
   await expect(firstSchedule.getByRole('button', { name: '展开其余 2 个会话', exact: true })).toBeVisible();
-  await firstSchedule.getByRole('button', { name: '展开其余 2 个会话', exact: true }).click();
-  await expect(tasks.locator('.agent-schedule-run')).toHaveCount(8);
+
+  await page.goto('/agent/schedules/conversations/scheduled-run-5');
+  await expect(page).toHaveURL(/\/agent\/schedules\/conversations\/scheduled-run-5$/);
+  await expect(firstSchedule.locator('[data-binding-id="scheduled-run-5"]')).toBeVisible();
   await expect(firstSchedule.getByRole('button', { name: '收起会话', exact: true })).toBeVisible();
+  await page.reload();
+  await expect(firstSchedule.locator('[data-binding-id="scheduled-run-5"]')).toBeVisible();
+  await expect(tasks.locator('.agent-schedule-run')).toHaveCount(8);
 
   await tasks.locator('.agent-schedule-run').first().click();
   await expect(page.getByRole('button', { name: '会话配置', exact: true })).toBeVisible();
@@ -454,6 +459,40 @@ test('summary toggles keep the card in place and reverse the conversation transi
   expect(await page.locator('.agent-composer-dock').evaluate(element => element.getAnimations().length)).toBe(0);
   const composerHidden = await page.locator('.agent-composer').boundingBox();
   expect(middle.composerRight).toBeLessThan(composerHidden!.x + composerHidden!.width);
+});
+
+test('double-clicking a workspace tab toggles fullscreen tools', async ({ page }) => {
+  await openWorkspace(page);
+  await page.goto('/agent/conversations/scheduled-conversation');
+  await page.getByRole('button', { name: '新建工作区页签', exact: true }).first().click();
+
+  const tabs = page.getByRole('navigation', { name: '工作区页签' });
+  const launcherTab = tabs.getByRole('button', { name: '新标签页', exact: true });
+  await launcherTab.dblclick();
+  await expect(page.locator('.agent-workbench-main')).toBeHidden();
+  await expect(page.getByRole('button', { name: '退出全屏', exact: true })).toBeVisible();
+
+  await launcherTab.dblclick();
+  await expect(page.locator('.agent-workbench-main')).toBeVisible();
+  await expect(page.getByRole('button', { name: '全屏查看工作区工具', exact: true })).toBeVisible();
+});
+
+test('fullscreen conversation tabs cap long titles and shrink with available space', async ({ page }) => {
+  const title = '这是一个超过十五个汉字容量的会话标题用于验证省略显示';
+  await openWorkspace(page, [], false, title);
+  await page.goto('/agent/conversations/scheduled-conversation');
+  await page.getByRole('button', { name: '新建工作区页签', exact: true }).first().click();
+  await page.getByRole('button', { name: '全屏查看工作区工具', exact: true }).click();
+
+  const tab = page.getByRole('navigation', { name: '工作区页签' }).getByRole('button', { name: title, exact: true });
+  await expect(tab).toHaveAttribute('title', title);
+  const maximumWidth = await tab.evaluate(element => element.getBoundingClientRect().width);
+  const configuredMaximum = await tab.evaluate(element => parseFloat(getComputedStyle(element.parentElement!).maxWidth));
+  expect(maximumWidth).toBeLessThanOrEqual(configuredMaximum);
+  await expect(tab.locator('span')).toHaveCSS('text-overflow', 'ellipsis');
+
+  await page.setViewportSize({ width: 360, height: 900 });
+  await expect.poll(() => tab.evaluate(element => element.getBoundingClientRect().width)).toBeLessThan(maximumWidth);
 });
 
 test('fullscreen tools occupy the entire workbench region and restore the conversation without extra grid rows', async ({page}) => {
