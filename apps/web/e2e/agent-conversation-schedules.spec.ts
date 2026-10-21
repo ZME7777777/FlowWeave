@@ -296,7 +296,7 @@ test('new workspace tabs embed a compact browser without a duplicate browser car
   await expect(launcher.getByRole('textbox', { name: '网页地址', exact: true })).toBeVisible();
   await expect(launcher.getByRole('button', { name: '浏览器', exact: true })).toHaveCount(0);
   await expect(launcher.getByRole('button', { name: '文件', exact: true })).toBeVisible();
-  await expect.poll(() => launcher.locator('.agent-workspace-browser-toolbar').evaluate(element => element.getBoundingClientRect().height)).toBeLessThanOrEqual(60);
+  await expect.poll(() => launcher.locator('.agent-workspace-browser-toolbar').evaluate(element => element.getBoundingClientRect().height)).toBeLessThanOrEqual(48);
 });
 
 

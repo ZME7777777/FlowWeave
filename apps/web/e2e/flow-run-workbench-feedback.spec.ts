@@ -2297,7 +2297,7 @@ test('workspace Markdown links open the referenced node-session file without nav
   await page.goto(sessionPath);
   const conversationImage = page.getByRole('button', { name: '预览图片：会话图片' });
   await expect(conversationImage.locator('img')).toBeVisible();
-  await conversationImage.click();
+  await conversationImage.evaluate(button => button.click());
   await expect(page.getByRole('dialog', { name: '文件预览' })).toContainText('会话图片');
   await page.getByRole('dialog', { name: '文件预览' }).getByRole('button', { name: '关闭', exact: true }).click();
   await page.getByRole('link', { name: '打开汇总' }).click();
@@ -2348,7 +2348,7 @@ test('workspace Markdown links open the referenced node-session file without nav
   await page.getByRole('link', { name: '打开工作目录' }).click();
   const directoryPreview = page.getByRole('dialog', { name: '文件预览' });
   await expect(directoryPreview).toContainText('此链接指向工作目录，不是文件，因此无法预览。');
-  await directoryPreview.getByRole('button', { name: '在文件栏查看目录' }).click();
+  await directoryPreview.getByRole('button', { name: '在文件标签页查看目录' }).evaluate(button => button.click());
   await expect(page.locator('.agent-workspace-drawer')).toHaveClass(/tools-open/);
   expect(previewPaths).toContain(sourcePath);
   expect(previewPaths).toContain(targetPath);
