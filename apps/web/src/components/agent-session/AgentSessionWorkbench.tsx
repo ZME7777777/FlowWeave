@@ -4912,7 +4912,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     return () => document.removeEventListener('pointerdown', closeOnOutsidePointer, true);
   }, [queuedMessageMenuId]);
 
-  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [drawerOpenByScope, setDrawerOpenByScope] = useState<Record<string, boolean>>({});
   const [fullScreenConversationActive, setFullScreenConversationActive] = useState(false);
   const [reviewChanges, setReviewChanges] = useState<WorkspaceFileChange[]>([]);
   const [reviewRequestId, setReviewRequestId] = useState<string>();
@@ -5499,6 +5499,23 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       };
     });
   }, [conversations, host, queryClient, selectedBindingId, workspace]);
+  const workspaceToolScopeKey = selected?.id ?? pendingCreatedId ?? conversationDraft?.id ?? 'workspace-root';
+  const drawerOpen = drawerOpenByScope[workspaceToolScopeKey] ?? false;
+  const setDrawerOpen = useCallback((open: boolean) => {
+    setDrawerOpenByScope(current => current[workspaceToolScopeKey] === open
+      ? current
+      : { ...current, [workspaceToolScopeKey]: open });
+  }, [workspaceToolScopeKey]);
+  useEffect(() => {
+    if (!workspaceScopeMigration || workspaceScopeMigration === workspaceToolScopeKey) return;
+    setDrawerOpenByScope(current => {
+      if (!Object.prototype.hasOwnProperty.call(current, workspaceScopeMigration)
+        || Object.prototype.hasOwnProperty.call(current, workspaceToolScopeKey)) return current;
+      const next = { ...current, [workspaceToolScopeKey]: current[workspaceScopeMigration] };
+      delete next[workspaceScopeMigration];
+      return next;
+    });
+  }, [workspaceScopeMigration, workspaceToolScopeKey]);
   const activeHistoryScope = useRef<string | undefined>(selected?.id);
   activeHistoryScope.current = selected?.id;
   useEffect(() => {
@@ -9718,7 +9735,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       onAnnotateFileSelection={(selected && canWrite) || conversationDraft ? (path, selection, quote) => void createAnnotation('WORKSPACE_FILE_RANGE', { path, selection, quote }) : undefined}
       highlightedFileSelection={fileSelectionReference}
       workspaceId={workspace.id}
-      scopeKey={selected?.id ?? pendingCreatedId ?? conversationDraft?.id ?? 'workspace-root'}
+      scopeKey={workspaceToolScopeKey}
       migrateFromScopeKey={workspaceScopeMigration}
       bindingId={selected?.id}
       workDirectoryId={selected ? undefined : conversationDraft?.workDirectoryId}
