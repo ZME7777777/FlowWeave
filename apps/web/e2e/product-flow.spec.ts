@@ -3591,9 +3591,12 @@ test('Agent workspace drawer remains available while Runtime is recovering', asy
   await expect(
     workspaceDrawer.getByRole('article').filter({ hasText: '当前工作区' }).getByRole('code'),
   ).toHaveText('/runtime/workspace/project');
-  await expect(workspaceDrawer.getByRole('button', { name: 'SSH 接入说明', exact: true })).toBeVisible();
+  const ideSummary = workspaceDrawer.getByRole('article').filter({ hasText: 'IDEA / Gateway' });
+  await expect(ideSummary.getByText('可通过 SSH 连接', { exact: true })).toHaveCount(0);
+  await expect(ideSummary.getByText('在 JetBrains Gateway 中选择 SSH，并打开以下宿主机目录。', { exact: true })).toHaveCount(0);
+  await expect(ideSummary.getByRole('button', { name: 'SSH 接入说明', exact: true })).toBeVisible();
   await expect(workspaceDrawer.getByText('用户名', { exact: true })).not.toBeVisible();
-  await workspaceDrawer.getByRole('button', { name: 'SSH 接入说明', exact: true }).click();
+  await ideSummary.getByRole('button', { name: 'SSH 接入说明', exact: true }).click();
   const sshGuide = page.getByRole('dialog', { name: 'SSH 接入说明' });
   await expect(sshGuide.getByText('主机 / IP', { exact: true })).toBeVisible();
   await expect(sshGuide.getByText('dev.flowweave.test', { exact: true })).toBeVisible();
