@@ -3177,7 +3177,10 @@ test('A normal background conversation completion persists a regular unread mark
       return json(route, {
         events: {
           events: bindingId === 'completed-unread-background'
-            ? [{ id: 'completed-unread-final', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: '__root__', content: '后台预览的最终回复。', final_reply: true, timestamp: now } }]
+            ? [
+                { id: 'completed-unread-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '后台预览对应的历史问题。', timestamp: now } },
+                { id: 'completed-unread-final', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'completed-unread-user', content: '后台预览的最终回复。', final_reply: true, timestamp: now } },
+              ]
             : [],
           next_cursor: bindingId === 'completed-unread-background' ? 'completed-unread-final' : null,
           history_cursor: null,
@@ -3219,10 +3222,14 @@ test('A normal background conversation completion persists a regular unread mark
   await expect.poll(() => backgroundHydrationReads).toBe(1);
 
   await backgroundRow.getByRole('button', { name: '后台完成会话', exact: true }).click();
-  await expect(page.getByText('后台预览的最终回复。', { exact: true })).toBeVisible();
+  await expect(page.getByRole('status').filter({ hasText: '正在加载会话' })).toBeVisible();
+  await expect(page.getByText('后台预览的最终回复。', { exact: true })).toHaveCount(0);
   expect(backgroundHydrationReads).toBe(1);
 
   releaseBackgroundHydration?.();
+  await expect(page.getByText('后台预览对应的历史问题。', { exact: true })).toBeVisible();
+  await expect(page.getByText('后台预览的最终回复。', { exact: true })).toBeVisible();
+  await expect(page.getByRole('status').filter({ hasText: '正在加载会话' })).toHaveCount(0);
   await expect.poll(() => unreadWrites).toEqual([{ id: 'completed-unread-background', unread: false }]);
 });
 

@@ -8727,11 +8727,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   );
   const fallbackHydrationPending = selectedHydrationPhase === 'fallback'
     && (eventsQuery.isPending || inputReadinessQuery.isPending || contextQuery.isPending);
-  const immediatePreviewVisible = immediateFinalReplyPreview?.bindingId === selected?.id;
   const hydrationInteractionPending = Boolean(
     selected && (selectedHydrationPhase === 'loading' || fallbackHydrationPending),
   );
-  const conversationInitialLoading = hydrationInteractionPending && !immediatePreviewVisible;
+  // A final-reply preview is only a compact sidebar projection. Keep it behind
+  // the same gate as every other transcript until formal hydration is complete.
+  const conversationInitialLoading = hydrationInteractionPending;
   const currentSessionControlState: TurnState = effectiveTurnState === 'pausing' || effectiveTurnState === 'paused' || effectiveTurnState === 'resuming'
     ? effectiveTurnState
     : foregroundSubmissionAwaitingFormalEvent
