@@ -8634,3 +8634,25 @@ pytest `15 passed`、受影响 Python Ruff check/format、`py_compile`、逐步�
 git diff --check、唯一 Alembic head `0157_background_task_aggregate_type_length`、任务状态唯一性通过。
 未修改迁移、数据库或 Runtime；未推送或部署。原有 Skill ZIP 暂存／删除状态保留。
 当前及下一可执行切片均为 NONE。
+
+### FR-601 拉取版本的浏览器布局与预览回归收口 — DONE
+
+依赖：FR-600 DONE；已快进合入远端 `e1536cd2`。
+
+范围：部署前修复定向浏览器验证发现的地址栏辅助文案占位和悬浮卡可见时消息刻度遮挡；
+更新相关回归的登录、正式 hydration 与当前工具页签入口夹具，补验 HTML 预览显式打开隔离页签。
+仅涉及 Web；不修改数据库、迁移、Runtime、服务器 Compose／环境或用户原有 Skill ZIP 状态。
+
+完成：浏览器地址输入继续使用正式 aria-label，移除未定义隐藏样式的重复文字，地址栏恢复紧凑高度。
+保留右侧全宽滚动条，消息刻度的 CSS container query 在信息卡可见时额外计入响应式预留宽度，
+避免覆盖正文和图片；信息卡隐藏时沿用原有正文容器阈值。拖动回归分别验证两种卡片状态。
+恢复态工作区测试补齐用户身份、分页会话列表、正式 hydration 和目录分页响应，使用现有页签入口；
+Markdown／HTML 回归验证显式打开新标签后图片可见、sandbox 保持空权限且脚本不执行，原路由保持。
+
+验收：本地独立 Vite 的 Chromium 定向 E2E `10 passed`，覆盖远端新增的导航、定时任务、卡片／全屏／
+侧栏布局、紧凑浏览器、刻度显隐、Markdown／HTML 预览及 Runtime 恢复态工作区。
+Web typecheck、ESLint、production build、git diff --check、唯一 Alembic head
+`0157_background_task_aggregate_type_length` 与 CURRENT 唯一性通过。
+以上浏览器使用受控接口数据，未声称完整业务／生产 E2E 全绿。随后按用户本次明确授权，
+从包含本修复的固定提交执行独立 Web 预检、最小上下文构建、定向发布与验收；原有 Skill ZIP
+暂存／删除状态不纳入提交或部署。当前及下一可执行切片均为 NONE。

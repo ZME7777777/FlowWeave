@@ -348,10 +348,16 @@ test('message scale hides when the conversation gutter collapses and returns aft
     await page.mouse.move(box!.x+delta,box!.y+100,{steps:12});
     await page.mouse.up();
   };
-  await resize(-160);
+  await resize(-400);
   await expect(scale).toBeHidden();
   await expect(page.locator('.conversation-message-index-tooltip')).toBeHidden();
   await expect(page.locator('.conversation-message.assistant')).toContainText('会话区收窄后');
+  await resize(410);
+  await expect(scale).toBeVisible();
+  await page.getByRole('button', { name: '显示悬浮信息卡', exact: true }).click();
+  await expect(scale).toBeVisible();
+  await resize(-160);
+  await expect(scale).toBeHidden();
   await resize(170);
   await expect(scale).toBeVisible();
   const gap=await page.evaluate(() => document.querySelector('.conversation-message.assistant p')!.getBoundingClientRect().left-document.querySelector('.conversation-message-index')!.getBoundingClientRect().right);

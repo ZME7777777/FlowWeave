@@ -98,3 +98,11 @@
 @container agent-transcript (max-width:948px){
   .conversation-message-index,.conversation-message-index-tooltip{display:none!important}
 }
+
+/* A visible floating card also consumes transcript whitespace while the
+   scrollbar remains at the outer edge. Include that reserved width when
+   deciding whether the message index still fits beside the centered text. */
+@container agent-transcript (max-width:calc(972px + clamp(220px,18vw,340px))){
+  .agent-workbench-page:has(>.agent-workspace-drawer.environment-open)>.agent-workbench-main .conversation-message-index,
+  .agent-workbench-page:has(>.agent-workspace-drawer.environment-open)>.agent-workbench-main .conversation-message-index-tooltip{display:none!important}
+}
