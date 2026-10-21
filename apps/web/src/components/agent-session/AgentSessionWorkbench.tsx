@@ -3531,7 +3531,6 @@ function SshAccessGuide({
 }
 
 function clampWorkspaceToolWidth(value: number): number {
-  if (window.innerWidth <= 1100) return Math.max(300, Math.min(720, value));
   const viewportMaximum = Math.max(300, window.innerWidth - 700);
   return Math.max(300, Math.min(720, viewportMaximum, value));
 }

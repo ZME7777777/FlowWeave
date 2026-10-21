@@ -6,13 +6,13 @@ async function json(route: Route, body: unknown, status = 200) {
   await route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
 }
 
-async function openWorkspace(page: Page) {
+async function openWorkspace(page: Page, events: unknown[] = []) {
   const writes: { method: string; id?: string; body: Record<string, unknown> }[] = [];
   let authenticated = false;
   const workspace = { id: 'schedule-workspace', display_name: 'Agent 工作区', desired_state: 'RUNNING', updated_at: now };
   const conversation = {
     id: 'scheduled-conversation', display_title: '日报会话', title_state: 'MANUAL', lifecycle: 'ACTIVE',
-    streaming_callback_ready: true, write_available: true, execution_status: 'idle', created_at: now, updated_at: now,
+    streaming_callback_ready: true, write_available: true, execution_status: 'idle', model_provider_id: 'provider-1', model_name: 'model-1', reasoning_effort: 'high', created_at: now, updated_at: now,
   };
   const schedules = [{ id: 'daily-schedule', workspace_id: workspace.id, binding_id: null, work_directory_id: 'automation-directory', work_directory_name: '自动化 · 每日项目检查', workspace_mode: 'AUTOMATION', conversation_mode: 'NEW', model_provider_id: 'provider-1', model_name: 'model-1', reasoning_effort: 'medium', capability_version_ids: [], credential_ids: [], name: '每日项目检查', prompt: '请检查项目状态。', cron_expression: '0 9 * * 1-5', status: 'ACTIVE', next_run_at: '2026-10-20T01:00:00Z', last_run_at: now, row_version: 1, created_at: now, updated_at: now }];
   schedules.push({ ...schedules[0], id: 'weekly-schedule', name: '每周复核', prompt: '复核周报。', row_version: 7 });
@@ -46,7 +46,7 @@ async function openWorkspace(page: Page) {
     if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
     if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [conversation], next_cursor: null });
     if (path.endsWith('/conversation-activity')) return json(route, { running_binding_ids: [] });
-    if (path.endsWith('/hydration')) return json(route, { events: { events: [], next_cursor: null, history_cursor: null, result: { status: 'COMPLETED' } }, context: {}, readiness: { ready: true, execution_status: 'idle' } });
+    if (path.endsWith('/hydration')) return json(route, { events: { events, next_cursor: null, history_cursor: null, result: { status: 'COMPLETED' } }, context: { used_tokens: 136664, window_tokens: 512000, view_event_count: 68, condenser_max_size: 50 }, readiness: { ready: true, execution_status: 'idle' } });
     if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
     if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [{ id: 'existing-directory', display_name: '已有项目目录' }] });
     if (path.endsWith('/workspace')) return json(route, { root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', files: [], repositories: [], runtime: {}, ide: { gateway: { supported: false } } });
@@ -162,4 +162,62 @@ test('the responsive information card reserves conversation space and tools reta
   expect(mobile.cardWidth).toBeGreaterThan(280);
   expect(mobile.mainWidth).toBeGreaterThan(300);
   expect(mobile.composerRight).toBeLessThanOrEqual(mobile.mainRight);
+});
+
+
+test('expanded tools squeeze and reflow the transcript and composer without covering them', async ({ page }) => {
+  const prose = '这是一段用于验证侧栏挤压效果的完整回复，展开和拖动工具栏后应自动换行，发送框与按钮必须始终位于会话区域内。'.repeat(10);
+  await openWorkspace(page, [
+    { id: 'layout-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '检查侧栏展开后的弹性布局', timestamp: now } },
+    { id: 'layout-agent', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'layout-user', content: prose + '\n\n```text\n' + 'long_command_'.repeat(80) + '\n```', final_reply: true, timestamp: now } },
+  ]);
+  await page.goto('/agent/conversations/scheduled-conversation');
+  const composer = page.getByRole('textbox', { name: '发送 Agent 消息' });
+  await composer.fill('保留这段较长的输入草稿，展开侧栏后输入框应弹性收缩。'.repeat(4));
+  await expect(page.locator('.conversation-message.assistant')).toContainText(prose);
+  await page.getByRole('button', { name: '新建工作区页签', exact: true }).first().click();
+  const geometry = () => page.evaluate(() => {
+    const main = document.querySelector('.agent-workbench-main')!.getBoundingClientRect();
+    const drawer = document.querySelector('.agent-workspace-drawer')!.getBoundingClientRect();
+    const paragraph = document.querySelector('.conversation-message.assistant p')!.getBoundingClientRect();
+    const composer = document.querySelector('.agent-composer')!.getBoundingClientRect();
+    const elements = [...document.querySelectorAll('.agent-composer, .agent-composer textarea, .agent-composer footer, .agent-composer footer button, .agent-composer-bottom, .conversation-message, .conversation-message.assistant p, .conversation-message.assistant pre')];
+    return {
+      mainWidth: main.width, composerWidth: composer.width, paragraphHeight: paragraph.height,
+      overlap: main.right - drawer.left,
+      overflow: Math.max(...elements.map(element => { const box = element.getBoundingClientRect(); return Math.max(main.left - box.left, box.right - main.right); })),
+      composerOverflow: document.querySelector('.agent-composer')!.scrollWidth - document.querySelector('.agent-composer')!.clientWidth,
+    };
+  });
+  for (const width of [1920, 1440, 1280, 1024, 900]) {
+    await page.setViewportSize({ width, height: 1080 });
+    await expect.poll(async () => (await geometry()).overlap, `sidebar overlap at ${width}px`).toBeLessThanOrEqual(1);
+    await expect.poll(async () => (await geometry()).overflow, `conversation overflow at ${width}px`).toBeLessThanOrEqual(1);
+    await expect.poll(async () => (await geometry()).composerOverflow, `composer overflow at ${width}px`).toBeLessThanOrEqual(1);
+  }
+  await page.setViewportSize({ width: 1440, height: 1080 });
+  const before = await geometry();
+  const resizer = await page.getByRole('separator', { name: '调整工作区工具宽度' }).boundingBox();
+  await page.mouse.move(resizer!.x + resizer!.width - 1, resizer!.y + 100);
+  await page.mouse.down();
+  await page.mouse.move(resizer!.x - 130, resizer!.y + 100, { steps: 12 });
+  await page.mouse.up();
+  await expect.poll(async () => (await geometry()).mainWidth).toBeLessThan(before.mainWidth - 100);
+  const after = await geometry();
+  expect(after.composerWidth).toBeLessThan(before.composerWidth - 100);
+  expect(after.paragraphHeight).toBeGreaterThan(before.paragraphHeight);
+  expect(after.overflow).toBeLessThanOrEqual(1);
+  expect(after.composerOverflow).toBeLessThanOrEqual(1);
+  await page.getByRole('button', { name: '显示悬浮信息卡', exact: true }).click();
+  await expect(page.locator('.agent-workspace-summary')).toBeVisible();
+  await expect.poll(async () => (await geometry()).overflow).toBeLessThanOrEqual(1);
+  await expect.poll(async () => (await geometry()).composerOverflow).toBeLessThanOrEqual(1);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect.poll(() => page.evaluate(() => {
+    const main = document.querySelector('.agent-workbench-main')!.getBoundingClientRect();
+    const drawer = document.querySelector('.agent-workspace-drawer')!.getBoundingClientRect();
+    return main.bottom - drawer.top;
+  })).toBeLessThanOrEqual(1);
+  await expect.poll(async () => (await geometry()).overflow).toBeLessThanOrEqual(1);
+  await expect(composer).toHaveValue('保留这段较长的输入草稿，展开侧栏后输入框应弹性收缩。'.repeat(4));
 });
