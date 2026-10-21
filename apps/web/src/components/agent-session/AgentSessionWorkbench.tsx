@@ -4527,6 +4527,7 @@ function WorkspaceDrawer({
     if (tab.kind === 'sidebar-chat') onCloseSidebarQuestion();
     if (tab.kind === 'git' || tab.kind === 'git-working') setClosedGitDiffEpoch(current => current + 1);
     if (scopeState.tabs.length === 1 && scopeState.tabs[0]?.id === tab.id) {
+      setEnvironmentOpen(false);
       setFullScreen(false);
       onClose();
     }

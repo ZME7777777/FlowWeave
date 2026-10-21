@@ -258,6 +258,22 @@ test('the floating card occupies conversation whitespace without resizing it or 
   await expect(card.getByText('IDEA / Gateway')).toBeInViewport();
 });
 
+test('closing a workspace tab does not reveal the hidden floating card', async ({ page }) => {
+  await openWorkspace(page);
+  await page.goto('/agent/conversations/scheduled-conversation');
+
+  const card = page.locator('.agent-workspace-summary');
+  await page.getByRole('button', { name: '新建工作区页签', exact: true }).first().click();
+  await expect(card).toBeHidden();
+  await page.getByRole('button', { name: '显示悬浮信息卡', exact: true }).click();
+  await expect(card).toBeVisible();
+  await page.getByRole('button', { name: '关闭新标签页页签', exact: true }).click();
+
+  await expect(page.locator('.agent-workspace-drawer')).toHaveClass(/summary-open/);
+  await expect(card).toBeHidden();
+  await expect(page.getByRole('button', { name: '显示悬浮信息卡', exact: true })).toBeVisible();
+});
+
 
 test('the floating workspace card remains absent until workspace details load', async ({ page }) => {
   let releaseWorkspaceDetails: (() => void) | undefined;
