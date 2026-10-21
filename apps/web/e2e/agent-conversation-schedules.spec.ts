@@ -303,6 +303,55 @@ test('fullscreen tools occupy the entire workbench region and restore the conver
   await expect(composer).toHaveValue('全屏切换时保留草稿');
 });
 
+test('HTML reports use a same-origin viewer URL that copied tabs reopen without Runtime proxying', async ({ page }) => {
+  const reportPath = '/runtime/workspace/project/reports/daily.html';
+  let browserProxyRequests = 0;
+  await openWorkspace(page, [
+    { id: 'report-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '查看日报', timestamp: now } },
+    { id: 'report-agent', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'report-user', content: '[打开 HTML 日报](reports/daily.html)', timestamp: now } },
+  ]);
+  await page.route('**/api/v1/agent-workspaces/schedule-workspace/browser/**', async route => {
+    browserProxyRequests += 1;
+    await json(route, { error: { code: 'UNEXPECTED_BROWSER_PROXY', message: '同源查看链接不应由 Runtime 代理' } }, 500);
+  });
+  await page.route('**/api/v1/agent-workspaces/schedule-workspace/workspace/file**', async route => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.get('path') !== reportPath) return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+    await route.fulfill({
+      status: 200,
+      contentType: 'text/html',
+      headers: { 'X-Preview-Total-Bytes': '105' },
+      body: '<!doctype html><html><body><h1>会话日报</h1><script>document.body.dataset.scriptRan="true"</script></body></html>',
+    });
+  });
+
+  await page.goto('/agent/conversations/scheduled-conversation');
+  await page.getByRole('link', { name: '打开 HTML 日报' }).click();
+  await expect(page.getByTitle('daily.html HTML 预览').contentFrame().getByRole('heading', { name: '会话日报' })).toBeVisible();
+  await page.getByRole('dialog', { name: '文件预览' }).getByRole('button', { name: '在新标签页打开', exact: true }).click();
+
+  const browserPanel = page.locator('.agent-workspace-browser-tab-panel.active');
+  const address = browserPanel.getByRole('textbox', { name: '网页地址', exact: true });
+  await expect(address).toHaveValue(/\/workspace-files\/view\?/);
+  const viewerUrl = await address.inputValue();
+  const viewerFrame = browserPanel.getByTitle('daily.html').contentFrame();
+  await expect(viewerFrame.getByRole('heading', { name: 'daily.html' })).toBeVisible();
+  await expect(viewerFrame.getByTitle('daily.html').contentFrame().getByRole('heading', { name: '会话日报' })).toBeVisible();
+  await expect(viewerFrame.getByTitle('daily.html').contentFrame().locator('body')).not.toHaveAttribute('data-scriptRan', 'true');
+
+  await page.getByRole('button', { name: '新建工作区页签', exact: true }).click();
+  const launcher = page.locator('.agent-workspace-tab-launcher.active');
+  const copiedAddress = launcher.getByRole('textbox', { name: '网页地址', exact: true });
+  await copiedAddress.fill(viewerUrl);
+  await copiedAddress.press('Enter');
+  await expect(launcher.getByRole('textbox', { name: '网页地址', exact: true })).toHaveValue(viewerUrl);
+  expect(browserProxyRequests).toBe(0);
+
+  await page.goto(viewerUrl);
+  await expect(page.getByRole('heading', { name: 'daily.html' })).toBeVisible();
+  await expect(page.getByTitle('daily.html').contentFrame().getByRole('heading', { name: '会话日报' })).toBeVisible();
+});
+
 
 
 test('new workspace tabs embed a compact browser without a duplicate browser card', async ({ page }) => {
