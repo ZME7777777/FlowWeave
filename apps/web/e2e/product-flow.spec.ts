@@ -4127,8 +4127,8 @@ test('Agent new-session capability selection is not truncated at 30 items', asyn
   const commandMenu = page.getByRole('listbox', { name: '选择命令或 MCP' });
   await expect(commandMenu.getByRole('option', { name: /压缩上下文/ })).toHaveCount(0);
   await expect(commandMenu).toContainText('当前会话还没有加载命令或 MCP');
-  await expect(commandMenu.getByRole('button', { name: '管理' })).toBeVisible();
-  await commandMenu.getByRole('button', { name: '管理' }).click();
+  await expect(commandMenu.getByRole('button', { name: '会话配置' })).toBeVisible();
+  await commandMenu.getByRole('button', { name: '会话配置' }).click();
   const manager = page.getByRole('dialog', { name: '能力' });
   await manager.getByRole('button', { name: '选择筛选结果 (31)' }).click();
   await expect(manager).toContainText('已选择 31 项');
@@ -4216,12 +4216,13 @@ test('current Agent conversation can select a 31st capability and keeps frozen C
   await composer.fill('/');
   const commandMenu = page.getByRole('listbox', { name: '选择 OpenHands 原生能力、命令或 MCP' });
   await expect(commandMenu.getByRole('option', { name: /压缩上下文/ })).toBeVisible();
-  await expect(commandMenu.getByRole('button', { name: '管理' })).toBeVisible();
+  await expect(commandMenu.getByRole('button', { name: '会话配置' })).toBeVisible();
   await composer.fill('$');
   const skillMenu = page.getByRole('listbox', { name: '选择技能' });
   await expect(skillMenu.getByRole('option', { name: /^\$history-skill history-skill / })).toBeVisible();
-  await expect(skillMenu.getByText('管理当前会话能力')).toBeVisible();
-  await skillMenu.getByRole('button', { name: '管理' }).click();
+  await expect(skillMenu.getByText('管理当前会话能力')).toHaveCount(0);
+  await expect(skillMenu.getByRole('button', { name: '会话配置' })).toBeVisible();
+  await skillMenu.getByRole('button', { name: '会话配置' }).click();
   const manager = page.getByRole('dialog', { name: '能力' });
   await expect(manager).toContainText('已注册 30 项');
   const lockedSkill = manager.getByRole('button', { name: 'history-skill（已注册，不能取消）' });
