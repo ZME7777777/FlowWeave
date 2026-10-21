@@ -4613,9 +4613,8 @@ function WorkspaceDrawer({
   };
   const loadingOrError = detailsQuery.isError
     ? <div className="agent-drawer-empty"><b>工作区读取失败</b><span>{detailsQuery.error instanceof Error ? detailsQuery.error.message : '暂时无法读取工作区，请稍后重试。'}</span><button type="button" className="secondary" onClick={() => void detailsQuery.refetch()}>重试</button></div>
-    : !details
-      ? <div className="agent-drawer-empty"><LoaderCircle className="agent-drawer-spinner" size={20}/><span>正在读取工作区…</span></div>
-      : null;
+    : null;
+  const workspaceDetailsLoaded = Boolean(details);
   const selectedFileUrl = selectedFile
     ? fileUrl(workspaceId, selectedFile, { bindingId, workDirectoryId, download: false })
     : '';
@@ -4706,10 +4705,10 @@ function WorkspaceDrawer({
   </section>;
       return <><aside className={`agent-workspace-drawer ${open ? 'tools-open' : 'summary-open'}${fullScreen ? ' fullscreen' : ''}${fullScreenConversationActive ? ' conversation-active' : ''}${environmentOpen ? ' environment-open' : ' environment-hidden'}`} style={{ width: fullScreen ? undefined : panelWidth, '--agent-workspace-tool-width': `${panelWidth}px` } as CSSProperties} aria-label={fullScreen ? '全屏工作区工具' : undefined}>
     {open && !workspaceDrawerAtMaximumWidth && <div className="agent-workspace-resizer" role="separator" aria-label="调整工作区工具宽度" aria-orientation="vertical" onPointerDown={startResize}/>}
-    <section className={`agent-workspace-summary ${environmentOpen ? '' : 'panel-hidden'}`}>
+    {workspaceDetailsLoaded && <section className={`agent-workspace-summary ${environmentOpen ? '' : 'panel-hidden'}`}>
       {loadingOrError || summary}
-    </section>
-    {(!fullScreen || fullScreenConversationActive) && <div className="agent-workbench-top-actions" aria-label="工作台操作">
+    </section>}
+    {workspaceDetailsLoaded && (!fullScreen || fullScreenConversationActive) && <div className="agent-workbench-top-actions" aria-label="工作台操作">
       <button type="button" aria-label={environmentOpen ? '隐藏悬浮信息卡' : '显示悬浮信息卡'} title={environmentOpen ? '隐藏悬浮信息卡' : '显示悬浮信息卡'} aria-pressed={environmentOpen} onClick={() => setEnvironmentOpen(current => !current)}>{environmentOpen ? <MonitorOff size={15}/> : <MonitorCog size={15}/>}</button>
       {!open && <button type="button" className="agent-workspace-new-tab-trigger" aria-label="新建工作区页签" title="新建工作区页签" onClick={() => { ensureLauncherTab(); onOpen(); }}><SquarePlus size={16}/></button>}
       {fullScreenConversationActive && <button type="button" aria-label="退出全屏" title="退出全屏（Esc）" onClick={() => setFullScreen(false)}><Minimize2 size={16}/></button>}

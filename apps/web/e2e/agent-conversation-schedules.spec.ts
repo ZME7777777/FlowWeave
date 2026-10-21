@@ -235,8 +235,8 @@ test('the floating card occupies conversation whitespace without resizing it or 
     await expect(card.getByText('IDEA / Gateway')).toBeInViewport();
     await page.getByRole('button', { name:'隐藏悬浮信息卡', exact:true }).click();
     await expect(card).toBeHidden();
+    await expect.poll(async () => (await geometry()).composer.right).toBeGreaterThan(before.composer.right);
     const hidden=await geometry();
-    expect(hidden.composer.right).toBeGreaterThan(before.composer.right);
     expect(hidden.content.left).toBe(before.content.left);
     expect(hidden.content.right).toBe(before.content.right);
     await page.getByRole('button', { name:'显示悬浮信息卡', exact:true }).click();
@@ -248,16 +248,36 @@ test('the floating card occupies conversation whitespace without resizing it or 
   const before=await geometry();
   await page.getByRole('button', { name:'显示悬浮信息卡', exact:true }).click();
   await expect(card).toBeVisible();
+  await expect.poll(async () => (await geometry()).composer.right).toBeLessThan(before.composer.right);
   const after=await geometry();
   expect(after.cardPresentation).toEqual(summaryPresentation);
   expect(after.main).toEqual(before.main);
-  expect(after.composer.right).toBeLessThan(before.composer.right);
   expect(after.card.right).toBeLessThanOrEqual(after.main.right);
   expect(after.card.left).toBeGreaterThanOrEqual(after.composer.right);
   expect(after.card.height).toBeLessThan(after.main.height-100);
   await expect(card.getByText('IDEA / Gateway')).toBeInViewport();
 });
 
+
+test('the floating workspace card remains absent until workspace details load', async ({ page }) => {
+  let releaseWorkspaceDetails: (() => void) | undefined;
+  const workspaceDetailsReady = new Promise<void>(resolve => { releaseWorkspaceDetails = resolve; });
+
+  await openWorkspace(page);
+  await page.route('**/agent-workspaces/schedule-workspace/workspace', async route => {
+    await workspaceDetailsReady;
+    await json(route, { root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', files: [], repositories: [], runtime: {}, ide: { gateway: { supported: false } } });
+  });
+  await page.goto('/agent/conversations/scheduled-conversation');
+
+  await expect(page.locator('.agent-workspace-summary')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /悬浮信息卡/ })).toHaveCount(0);
+  await expect(page.getByText('正在读取工作区…')).toHaveCount(0);
+
+  releaseWorkspaceDetails?.();
+  await expect(page.locator('.agent-workspace-summary')).toBeVisible();
+  await expect(page.getByRole('button', { name: '隐藏悬浮信息卡', exact: true })).toBeVisible();
+});
 
 test('hiding the floating card applies to every conversation and survives a reload', async ({ page }) => {
   await openWorkspace(page, [], true);
