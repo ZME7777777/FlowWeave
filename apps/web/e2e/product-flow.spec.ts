@@ -1356,6 +1356,17 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(filesTab).toBeVisible();
   await filesTab.click();
   await expect(page.getByRole('tree', { name: '工作区目录树' })).toBeVisible();
+  const fileTreeLayout = await page.locator('.agent-file-tree-pane').evaluate(pane => {
+    const toolbar = pane.querySelector<HTMLElement>('.agent-file-tree-toolbar');
+    const tree = pane.querySelector<HTMLElement>('.agent-file-tree');
+    if (!toolbar || !tree) throw new Error('Expected file tree toolbar and scroll container');
+    const paneBox = pane.getBoundingClientRect();
+    const toolbarBox = toolbar.getBoundingClientRect();
+    const treeBox = tree.getBoundingClientRect();
+    return { paneBottom: paneBox.bottom, toolbarBottom: toolbarBox.bottom, treeTop: treeBox.top, treeBottom: treeBox.bottom };
+  });
+  expect(fileTreeLayout.treeTop).toBeGreaterThanOrEqual(fileTreeLayout.toolbarBottom - 1);
+  expect(fileTreeLayout.treeBottom).toBeLessThanOrEqual(fileTreeLayout.paneBottom + 1);
   const sourceDirectory = page.locator('.agent-file-tree-row').filter({ hasText: 'src' });
   await sourceDirectory.locator('.agent-file-tree-item.directory').click();
   await expect(page.getByText('config.ts', { exact: true })).toBeVisible();
