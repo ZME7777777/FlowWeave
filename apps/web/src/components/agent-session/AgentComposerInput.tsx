@@ -136,7 +136,7 @@ export const AgentComposerInput = forwardRef<ComposerHandle, {
     textarea.style.setProperty('overflow-y', contentHeight > maxHeight + 1 ? 'auto' : 'hidden', 'important');
     const overflowing = contentHeight > maxHeight + 1;
     setInputOverflowing(current => current === overflowing ? current : overflowing);
-  }, [inputMultiline]);
+  }, []);
   useLayoutEffect(() => { resizeInput(); }, [draft, resizeInput]);
   useEffect(() => {
     window.addEventListener('resize', resizeInput);

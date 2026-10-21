@@ -6,6 +6,14 @@ async function json(route: Route, body: unknown, status = 200) {
   await route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
 }
 
+async function settleWorkspaceLayout(page: Page) {
+  await page.evaluate(async () => {
+    await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    const elements = document.querySelectorAll('.agent-workspace-drawer, .agent-workspace-summary, .conversation-surface, .agent-composer-dock');
+    await Promise.all([...elements].flatMap(element => element.getAnimations()).map(animation => animation.finished.catch(() => undefined)));
+  });
+}
+
 async function openWorkspace(page: Page, events: unknown[] = [], includeSecondConversation = false) {
   const writes: { method: string; id?: string; body: Record<string, unknown> }[] = [];
   let authenticated = false;
@@ -68,6 +76,31 @@ async function openWorkspace(page: Page, events: unknown[] = [], includeSecondCo
   await page.getByRole('button', { name: 'Agent 会话', exact: true }).click();
   return writes;
 }
+
+test('workspace directory search filters nested paths and restores the tree', async ({ page }) => {
+  await openWorkspace(page);
+  await page.route('**/api/v1/agent-workspaces/*/workspace?**', route => json(route, {
+    root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' },
+    working_directory: '/runtime/workspace/project', repositories: [], runtime: {},
+    files: [
+      { path: '/runtime/workspace/project/backend', kind: 'directory', size: 0 },
+      { path: '/runtime/workspace/project/frontend', kind: 'directory', size: 0 },
+      { path: '/runtime/workspace/project/frontend/src', kind: 'directory', size: 0 },
+    ],
+    ide: { gateway: { supported: false } },
+  }));
+  await page.getByRole('button', { name: '新增工作区', exact: true }).click();
+  const creator = page.getByRole('dialog', { name: '新增工作区' });
+  const search = creator.getByRole('searchbox', { name: '搜索目录' });
+  await search.fill('frontend/src');
+  await expect(creator.getByRole('checkbox', { name: 'frontend/src', exact: true })).toBeVisible();
+  await expect(creator.getByRole('checkbox', { name: 'backend', exact: true })).toHaveCount(0);
+  await search.fill('missing-directory');
+  await expect(creator.getByText('没有匹配的目录。')).toBeVisible();
+  await search.fill('');
+  await expect(creator.getByRole('checkbox', { name: 'backend', exact: true })).toBeVisible();
+  await creator.getByRole('button', { name: '关闭新增工作区' }).click();
+});
 
 test('selecting a task after opening its run returns to that task detail', async ({ page }) => {
   await openWorkspace(page);
@@ -140,17 +173,19 @@ test('internal navigation restores a draft in its originating work directory', a
   await directoryGroup.getByRole('button', { name: '在已有项目目录中新建会话' }).click({ force: true });
   const composer = page.getByRole('textbox', { name: '发送 Agent 消息' });
   await composer.fill('保留已有项目目录中的草稿');
+  const recoverDraft = directoryGroup.getByRole('button', { name: '恢复已有项目目录的未发送草稿' });
+  await expect(recoverDraft).toHaveAttribute('aria-current', 'page');
 
   const navigation = page.getByRole('navigation', { name: 'Agent 工作区导航' });
   await navigation.getByRole('button', { name: '定时任务' }).click();
   await navigation.getByRole('button', { name: '主页' }).click();
   await expect(composer).toHaveValue('保留已有项目目录中的草稿');
-  await expect(directoryGroup.getByRole('button', { name: '恢复已有项目目录的未发送草稿' })).toHaveCount(0);
+  await expect(recoverDraft).toHaveAttribute('aria-current', 'page');
 
   await navigation.getByRole('button', { name: '会话管理' }).click();
   await navigation.getByRole('button', { name: '主页' }).click();
   await expect(composer).toHaveValue('保留已有项目目录中的草稿');
-  await expect(directoryGroup.getByRole('button', { name: '恢复已有项目目录的未发送草稿' })).toHaveCount(0);
+  await expect(recoverDraft).toHaveAttribute('aria-current', 'page');
 });
 
 
@@ -225,6 +260,7 @@ test('the floating card occupies conversation whitespace without resizing it or 
   });
   for (const width of [1280, 1920, 2560]) {
     await page.setViewportSize({ width, height: 1080 });
+    await settleWorkspaceLayout(page);
     await expect.poll(async () => { const g=await geometry(); return Math.abs(g.header.right-g.main.right); }).toBeLessThanOrEqual(1);
     const before=await geometry();
     expect(before.card.left).toBeGreaterThanOrEqual(before.composer.right);
@@ -235,19 +271,23 @@ test('the floating card occupies conversation whitespace without resizing it or 
     await expect(card.getByText('IDEA / Gateway')).toBeInViewport();
     await page.getByRole('button', { name:'隐藏悬浮信息卡', exact:true }).click();
     await expect(card).toBeHidden();
+    await settleWorkspaceLayout(page);
     await expect.poll(async () => (await geometry()).composer.right).toBeGreaterThan(before.composer.right);
     const hidden=await geometry();
     expect(hidden.content.left).toBe(before.content.left);
     expect(hidden.content.right).toBe(before.content.right);
     await page.getByRole('button', { name:'显示悬浮信息卡', exact:true }).click();
     await expect(card).toBeVisible();
+    await settleWorkspaceLayout(page);
   }
   const summaryPresentation=(await geometry()).cardPresentation;
   await page.getByRole('button', { name:'新建工作区页签', exact:true }).first().click();
   await expect(card).toBeHidden();
+  await settleWorkspaceLayout(page);
   const before=await geometry();
   await page.getByRole('button', { name:'显示悬浮信息卡', exact:true }).click();
   await expect(card).toBeVisible();
+  await settleWorkspaceLayout(page);
   await expect.poll(async () => (await geometry()).composer.right).toBeLessThan(before.composer.right);
   const after=await geometry();
   expect(after.cardPresentation).toEqual(summaryPresentation);
@@ -273,7 +313,6 @@ test('closing a workspace tab does not reveal the hidden floating card', async (
   await expect(card).toBeHidden();
   await expect(page.getByRole('button', { name: '显示悬浮信息卡', exact: true })).toBeVisible();
 });
-
 
 test('the floating workspace card remains absent until workspace details load', async ({ page }) => {
   let releaseWorkspaceDetails: (() => void) | undefined;
@@ -311,6 +350,62 @@ test('hiding the floating card applies to every conversation and survives a relo
   await expect(card).toBeHidden();
   await page.getByRole('button', { name: '显示悬浮信息卡', exact: true }).click();
   await expect(card).toBeVisible();
+});
+
+test('summary toggles keep the card in place and reverse the conversation transition continuously', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 1080 });
+  await openWorkspace(page, [
+    { id: 'motion-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '查看布局', timestamp: now } },
+    { id: 'motion-answer', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'motion-user', content: '显示和隐藏信息卡时，会话正文与输入草稿应保持原位并自然伸缩。'.repeat(12), final_reply: true, timestamp: now } },
+  ]);
+  await page.goto('/agent/conversations/scheduled-conversation');
+  const composer = page.getByRole('textbox', { name: '发送 Agent 消息' });
+  await composer.fill('切换期间保留草稿');
+  await expect(page.locator('.conversation-message.assistant')).toContainText('自然伸缩');
+  await settleWorkspaceLayout(page);
+  const card = page.locator('.agent-workspace-summary');
+  const before = await card.boundingBox();
+  const composerBefore = await page.locator('.agent-composer').boundingBox();
+  await page.getByRole('button', { name: '隐藏悬浮信息卡', exact: true }).click();
+  const middle = await page.evaluate(() => {
+    const card = document.querySelector('.agent-workspace-summary')!;
+    const animations = [...document.querySelectorAll('.agent-workspace-summary, .agent-composer-dock, .conversation-surface')].flatMap(element => element.getAnimations());
+    animations.forEach(animation => { animation.pause(); animation.currentTime = 90; });
+    return {
+      display: getComputedStyle(card).display, top: card.getBoundingClientRect().top, opacity: Number(getComputedStyle(card).opacity),
+      padding: parseFloat(getComputedStyle(document.querySelector('.conversation-surface')!).paddingRight),
+      margin: parseFloat(getComputedStyle(document.querySelector('.agent-composer-dock')!).marginRight),
+      composerRight: document.querySelector('.agent-composer')!.getBoundingClientRect().right,
+    };
+  });
+  expect(middle.display).not.toBe('none');
+  expect(middle.top).toBe(before!.y);
+  expect(middle.opacity).toBeGreaterThan(0);
+  expect(middle.opacity).toBeLessThan(1);
+  expect(middle.margin).toBeGreaterThan(0);
+  expect(middle.padding - middle.margin).toBeCloseTo(16, 0);
+  expect(middle.composerRight).toBeGreaterThan(composerBefore!.x + composerBefore!.width);
+  await page.screenshot({ path: test.info().outputPath('summary-midpoint.png') });
+  await page.evaluate(() => {
+    document.querySelector('.conversation-message.assistant')!.setAttribute('data-motion-identity', 'preserved');
+    document.getAnimations().forEach(animation => animation.play());
+  });
+  await page.getByRole('button', { name: '显示悬浮信息卡', exact: true }).click();
+  await settleWorkspaceLayout(page);
+  await expect(card).toBeVisible();
+  const after = await card.boundingBox();
+  expect(after!.x).toBeCloseTo(before!.x, 0);
+  expect(after!.y).toBe(before!.y);
+  await expect(page.locator('[data-motion-identity="preserved"]')).toHaveCount(1);
+  await expect(composer).toHaveValue('切换期间保留草稿');
+  await page.screenshot({ path: test.info().outputPath('summary-restored.png') });
+
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.getByRole('button', { name: '隐藏悬浮信息卡', exact: true }).click();
+  await expect(card).toBeHidden();
+  expect(await page.locator('.agent-composer-dock').evaluate(element => element.getAnimations().length)).toBe(0);
+  const composerHidden = await page.locator('.agent-composer').boundingBox();
+  expect(middle.composerRight).toBeLessThan(composerHidden!.x + composerHidden!.width);
 });
 
 test('fullscreen tools occupy the entire workbench region and restore the conversation without extra grid rows', async ({page}) => {
@@ -459,6 +554,7 @@ test('expanded tools squeeze and reflow the transcript and composer without cove
     await expect.poll(async () => (await geometry()).composerOverflow, `composer overflow at ${width}px`).toBeLessThanOrEqual(1);
   }
   await page.setViewportSize({ width: 1440, height: 1080 });
+  await settleWorkspaceLayout(page);
   const before = await geometry();
   const resizer = await page.getByRole('separator', { name: '调整工作区工具宽度' }).boundingBox();
   await page.mouse.move(resizer!.x + resizer!.width - 1, resizer!.y + 100);
@@ -466,6 +562,7 @@ test('expanded tools squeeze and reflow the transcript and composer without cove
   await page.mouse.move(resizer!.x - 130, resizer!.y + 100, { steps: 12 });
   await page.mouse.up();
   await expect.poll(async () => (await geometry()).mainWidth).toBeLessThan(before.mainWidth - 100);
+  await settleWorkspaceLayout(page);
   const after = await geometry();
   expect(after.composerWidth).toBeLessThan(before.composerWidth - 100);
   expect(after.paragraphHeight).toBeGreaterThan(before.paragraphHeight);
@@ -486,6 +583,146 @@ test('expanded tools squeeze and reflow the transcript and composer without cove
 });
 
 
+async function splitGeometry(page: Page) {
+  return page.evaluate(() => {
+    const drawer = document.querySelector('.agent-workspace-drawer')!.getBoundingClientRect();
+    const rail = document.querySelector('.agent-workbench-rail')!.getBoundingClientRect();
+    const parent = document.querySelector('.agent-workspace-drawer')!.parentElement!.getBoundingClientRect();
+    return { width: drawer.width, available: parent.right - rail.right };
+  });
+}
+
+async function dragToolTo(page: Page, width: number) {
+  await settleWorkspaceLayout(page);
+  const resizer = page.getByRole('separator', { name: '调整工作区工具宽度' });
+  const box = await resizer.boundingBox();
+  const current = await splitGeometry(page);
+  const x = box!.x + box!.width / 2;
+  const y = box!.y + 240;
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x + current.width - width, y, { steps: 12 });
+  await page.mouse.up();
+  await expect(page.locator('body')).not.toHaveClass(/agent-workspace-resizing/);
+}
+
+test('tool boundaries follow available space and small boundary movements keep the split', async ({ page }) => {
+  await openWorkspace(page);
+  await page.goto('/agent/conversations/scheduled-conversation');
+  await page.getByRole('button', { name: '新建工作区页签', exact: true }).first().click();
+  const drawer = page.locator('.agent-workspace-drawer');
+  const resizer = page.getByRole('separator', { name: '调整工作区工具宽度' });
+  const maxima: number[] = [], minima: number[] = [];
+  for (const viewport of [1024, 1440, 1920, 2560]) {
+    await page.setViewportSize({ width: viewport, height: 1080 });
+    await settleWorkspaceLayout(page);
+    const { available } = await splitGeometry(page);
+    await dragToolTo(page, available * .75);
+    await expect.poll(async () => Math.abs((await splitGeometry(page)).width - available * .75)).toBeLessThan(1);
+    maxima.push((await splitGeometry(page)).width);
+    await resizer.click();
+    await dragToolTo(page, available * .75 + 12);
+    await expect(drawer).not.toHaveClass(/fullscreen/);
+    await dragToolTo(page, available * .25);
+    await expect.poll(async () => Math.abs((await splitGeometry(page)).width - available * .25)).toBeLessThan(1);
+    minima.push((await splitGeometry(page)).width);
+    await resizer.click();
+    await dragToolTo(page, available * .25 - 12);
+    await expect(drawer).toHaveClass(/tools-open/);
+  }
+  expect(maxima[3]).toBeGreaterThan(maxima[0] * 2);
+  expect(minima[3]).toBeGreaterThan(minima[0] * 2);
+  const beforeRail = await splitGeometry(page);
+  const railHandle = page.getByRole('separator', { name: '调整会话列表宽度' });
+  const railBox = await railHandle.boundingBox();
+  await page.mouse.move(railBox!.x + 1, railBox!.y + 180);
+  await page.mouse.down();
+  await page.mouse.move(railBox!.x + 140, railBox!.y + 180, { steps: 12 });
+  await page.mouse.up();
+  await expect.poll(async () => (await splitGeometry(page)).available).toBeLessThan(beforeRail.available - 100);
+  const afterRail = await splitGeometry(page);
+  await dragToolTo(page, afterRail.available * .75);
+  await expect.poll(async () => Math.abs((await splitGeometry(page)).width - afterRail.available * .75)).toBeLessThan(1);
+});
+
+test('hidden preview remains hidden on same-direction release and capture or focus ending', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1080 });
+  await openWorkspace(page);
+  await page.goto('/agent/conversations/scheduled-conversation');
+  const composer = page.getByRole('textbox', { name: '发送 Agent 消息' });
+  await composer.fill('松手后保持隐藏');
+  const shell = page.locator('.agent-workspace-tool-shell');
+  const resizer = page.getByRole('separator', { name: '调整工作区工具宽度' });
+  for (const ending of ['pointerup', 'blur', 'lostpointercapture']) {
+    await page.getByRole('button', { name: '新建工作区页签', exact: true }).first().click();
+    await settleWorkspaceLayout(page);
+    const { available, width: initialWidth } = await splitGeometry(page);
+    const delta = initialWidth - available * .18;
+    const box = await resizer.boundingBox();
+    const x = box!.x + box!.width / 2, y = box!.y + 240;
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x + delta, y, { steps: 12 });
+    await expect(shell).toBeHidden();
+    await page.mouse.move(x + delta + available * .02, y, { steps: 8 });
+    await page.mouse.move(x + delta + available * .02 - 2, y);
+    await expect(shell).toBeHidden();
+    if (ending === 'blur') await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+    if (ending === 'lostpointercapture') await resizer.evaluate(element => element.dispatchEvent(new PointerEvent('lostpointercapture', { pointerId: 1 })));
+    await page.mouse.up();
+    await expect(shell).toBeHidden();
+    await expect(page.locator('.agent-workspace-summary')).toBeHidden();
+    await expect(resizer).toHaveCount(0);
+    await expect(page.locator('body')).not.toHaveClass(/agent-workspace-resizing/);
+    await expect(composer).toHaveValue('松手后保持隐藏');
+  }
+});
+
+test('held tool drags require deliberate reversal and keep iframe capture across both modes', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1080 });
+  await openWorkspace(page);
+  await page.route('**/browser/**', route => route.fulfill({ contentType: 'text/html; charset=utf-8', body: '<html><body style="margin:0;height:100vh">可拖过的网页</body></html>' }));
+  await page.goto('/agent/conversations/scheduled-conversation');
+  const composer = page.getByRole('textbox', { name: '发送 Agent 消息' });
+  await composer.fill('两端拖回继续编辑');
+  await page.getByRole('button', { name: '新建工作区页签', exact: true }).first().click();
+  const address = page.getByRole('textbox', { name: '网页地址', exact: true });
+  await address.fill('https://resize-frame.test/');
+  await address.press('Enter');
+  await expect(page.locator('.agent-workspace-browser-frame').contentFrame().getByText('可拖过的网页')).toBeVisible();
+  const drawer = page.locator('.agent-workspace-drawer');
+  const shell = page.locator('.agent-workspace-tool-shell');
+  const resizer = page.getByRole('separator', { name: '调整工作区工具宽度' });
+  const { available } = await splitGeometry(page);
+  for (const mode of ['fullscreen', 'hidden']) {
+    await dragToolTo(page, available * (mode === 'fullscreen' ? .75 : .25));
+    const box = await resizer.boundingBox();
+    const x = box!.x + box!.width / 2, y = box!.y + 240;
+    const direction = mode === 'fullscreen' ? -1 : 1;
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x + direction * available * .07, y, { steps: 12 });
+    if (mode === 'fullscreen') await expect(drawer).toHaveClass(/fullscreen/);
+    else await expect(shell).toBeHidden();
+    await page.mouse.move(x + direction * available * .06, y, { steps: 6 });
+    if (mode === 'fullscreen') await expect(drawer).toHaveClass(/fullscreen/);
+    else await expect(shell).toBeHidden();
+    await page.mouse.move(x - direction * available * .05, y, { steps: 12 });
+    await expect(drawer).not.toHaveClass(/fullscreen/);
+    await expect(shell).toBeVisible();
+    await expect(page.locator('body')).toHaveClass(/agent-workspace-resizing/);
+    await page.mouse.up();
+    await expect(drawer).toHaveClass(/tools-open/);
+    await expect(composer).toHaveValue('两端拖回继续编辑');
+  }
+  await dragToolTo(page, available * .85);
+  await expect(drawer).toHaveClass(/fullscreen/);
+  await page.getByRole('button', { name: '退出全屏', exact: true }).click();
+  await expect(resizer).toBeVisible();
+  await resizer.click();
+  await expect(drawer).not.toHaveClass(/fullscreen/);
+});
+
 test('message scale hides when the conversation gutter collapses and returns after resizing tools', async ({page}) => {
   await page.setViewportSize({width:1920,height:1080});
   await openWorkspace(page,[
@@ -497,18 +734,24 @@ test('message scale hides when the conversation gutter collapses and returns aft
   await expect(scale).toBeVisible();
   await page.getByRole('button',{name:'新建工作区页签',exact:true}).first().click();
   await expect(scale).toBeVisible();
-  const resize=async (delta:number) => {
-    const box=await page.getByRole('separator',{name:'调整工作区工具宽度'}).boundingBox();
-    await page.mouse.move(box!.x+box!.width-1,box!.y+100);
-    await page.mouse.down();
-    await page.mouse.move(box!.x+delta,box!.y+100,{steps:12});
-    await page.mouse.up();
-  };
-  await resize(-160);
+  const resizeTo = (targetWidth: number) => dragToolTo(page, targetWidth);
+  const { available } = await splitGeometry(page);
+  // Keep these layout assertions below the threshold that intentionally opens fullscreen.
+  await resizeTo(available * .43);
   await expect(scale).toBeHidden();
   await expect(page.locator('.conversation-message-index-tooltip')).toBeHidden();
   await expect(page.locator('.conversation-message.assistant')).toContainText('会话区收窄后');
-  await resize(170);
+  await resizeTo(available * .25);
+  await expect(scale).toBeVisible();
+  await page.setViewportSize({ width: 2560, height: 1080 });
+  await settleWorkspaceLayout(page);
+  const wide = (await splitGeometry(page)).available;
+  await resizeTo(wide * .25);
+  await page.getByRole('button', { name: '显示悬浮信息卡', exact: true }).click();
+  await expect(scale).toBeVisible();
+  await resizeTo(wide * .5);
+  await expect(scale).toBeHidden();
+  await resizeTo(wide * .25);
   await expect(scale).toBeVisible();
   const gap=await page.evaluate(() => document.querySelector('.conversation-message.assistant p')!.getBoundingClientRect().left-document.querySelector('.conversation-message-index')!.getBoundingClientRect().right);
   expect(gap).toBeGreaterThanOrEqual(8);

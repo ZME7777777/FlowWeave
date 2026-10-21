@@ -2411,6 +2411,7 @@ test('New conversation draft remains isolated and can be resumed after switching
   await expect(draftAttachment).toBeVisible();
   await expect(resourceTags.getByRole('button', { name: '竞态会话 B', exact: true })).toBeVisible();
 
+  await page.getByRole('button', { name: '收起工作区 根工作区' }).hover();
   await page.getByRole('button', { name: '在根工作区中新建会话' }).click();
   await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeVisible();
   await expect(composer).toHaveText('');

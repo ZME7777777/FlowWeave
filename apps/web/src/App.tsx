@@ -6,7 +6,7 @@ import { withDeploymentBase, withoutDeploymentBase } from './deploymentPath';
 import { api } from './api/client';
 import type { AuthUser, FlowRunSummary } from './types';
 import { LoginScreen } from './components/LoginScreen';
-import { workspaceFileViewerRoute } from './pages/WorkspaceFileViewerPage';
+import { workspaceFileViewerRoute } from './pages/workspace-file-viewer-route';
 import { useEscapeClose } from './components/useEscapeClose';
 import { clearAgentSessionCacheStorage, setAgentSessionCacheIdentity } from './components/agent-session/conversation-cache';
 

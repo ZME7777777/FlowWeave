@@ -3581,6 +3581,7 @@ test('Agent workspace drawer remains available while Runtime is recovering', asy
     model_provider_id: null, model_name: null, reasoning_effort: null,
     created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
   };
+  await page.route('**/api/v1/auth/me', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id: 'recovering-user', username: 'recovering-user', role: 'USER', can_use_agent_sessions: true }) }));
   await page.route('**/api/v1/agent-workspaces/**', async route => {
     const path = new URL(route.request().url()).pathname;
     if (path.endsWith('/default')) {
@@ -3596,7 +3597,19 @@ test('Agent workspace drawer remains available while Runtime is recovering', asy
       return;
     }
     if (path.endsWith('/conversations')) {
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([conversation]) });
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [conversation], next_cursor: null }) });
+      return;
+    }
+    if (path.endsWith(`/conversations/${conversation.id}`)) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(conversation) });
+      return;
+    }
+    if (path.endsWith('/hydration')) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+        events: { events: [{ id: 'recovering-user-event', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '这条历史消息必须保留可见', timestamp: new Date().toISOString() } }], next_cursor: null, history_cursor: null },
+        context: { model_name: null, reasoning_effort: null },
+        readiness: { ready: false, execution_status: 'paused' },
+      }) });
       return;
     }
     if (path.endsWith('/events')) {
@@ -3620,6 +3633,12 @@ test('Agent workspace drawer remains available while Runtime is recovering', asy
       }) });
       return;
     }
+    if (path.endsWith('/workspace/directory')) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+        parent_path: '/runtime/workspace/project', entries: [{ path: '/runtime/workspace/project/README.md', kind: 'file', size: 12 }], next_cursor: null,
+      }) });
+      return;
+    }
     if (path.endsWith('/workspace')) {
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
         root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project',
@@ -3636,10 +3655,7 @@ test('Agent workspace drawer remains available while Runtime is recovering', asy
   await page.goto('/agent/conversations/recovering-conversation');
   await expect(page.getByText('这条历史消息必须保留可见')).toBeVisible();
   await expect(page.getByText('运行环境正在恢复', { exact: true })).toBeVisible();
-  const workspaceDrawer = page.getByRole('complementary').filter({ hasText: 'WORKSPACE' });
-  await expect(
-    workspaceDrawer.getByRole('article').filter({ hasText: '当前工作区' }).getByRole('code'),
-  ).toHaveText('/runtime/workspace/project');
+  const workspaceDrawer = page.locator('.agent-workspace-drawer');
   const ideSummary = workspaceDrawer.getByRole('article').filter({ hasText: 'IDEA / Gateway' });
   await expect(ideSummary.getByText('可通过 SSH 连接', { exact: true })).toHaveCount(0);
   await expect(ideSummary.getByText('在 JetBrains Gateway 中选择 SSH，并打开以下宿主机目录。', { exact: true })).toHaveCount(0);
@@ -3659,8 +3675,10 @@ test('Agent workspace drawer remains available while Runtime is recovering', asy
   await expect(sshGuide.getByRole('button', { name: '复制当前会话工作目录', exact: true })).toBeVisible();
   await sshGuide.getByRole('button', { name: '我已了解', exact: true }).click();
   await expect(sshGuide).toBeHidden();
-  await expect(workspaceDrawer.getByRole('button', { name: '新终端', exact: true })).toBeDisabled();
-  await workspaceDrawer.getByRole('button', { name: '文件', exact: true }).click();
+  await workspaceDrawer.getByRole('button', { name: '新建工作区页签', exact: true }).click();
+  const launcher = workspaceDrawer.locator('.agent-workspace-tab-launcher.active');
+  await expect(launcher.getByRole('button', { name: '终端', exact: true })).toBeDisabled();
+  await launcher.getByRole('button', { name: '文件', exact: true }).click();
   await expect(page.getByText('README.md', { exact: true })).toBeVisible();
 });
 
@@ -4138,6 +4156,7 @@ test('node assets, flows and runs support single and filtered bulk deletion', as
 });
 
 test('Agent new-session capability selection is not truncated at 30 items', async ({ page }) => {
+  await page.route('**/api/v1/auth/me', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id: 'capability-test-user', username: 'capability-test-user', role: 'USER', can_use_agent_sessions: true }) }));
   const catalog = Array.from({ length: 31 }, (_, index) => ({
     id: `unlimited-skill-${index}`, capability_type: 'SKILL', capability_key: `unlimited-skill-${index}`,
     description: `能力 ${index}`, filename: `unlimited-skill-${index}.zip`, is_latest: true, document: {},
@@ -4159,7 +4178,7 @@ test('Agent new-session capability selection is not truncated at 30 items', asyn
       return;
     }
     if (path.endsWith('/conversations') || path.endsWith('/work-directories')) {
-      await route.fulfill({ status: 200, contentType: 'application/json', body: path.endsWith('/conversations') ? '[]' : JSON.stringify({ root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] }) });
+      await route.fulfill({ status: 200, contentType: 'application/json', body: path.endsWith('/conversations') ? JSON.stringify({ items: [], next_cursor: null }) : JSON.stringify({ root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] }) });
       return;
     }
     await route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }) });
@@ -4170,7 +4189,8 @@ test('Agent new-session capability selection is not truncated at 30 items', asyn
   ]) }));
 
   await page.goto('/agent');
-  await page.getByRole('button', { name: '新建会话' }).first().click();
+  await page.getByRole('button', { name: '收起工作区 根工作区' }).hover();
+  await page.getByRole('button', { name: '在根工作区中新建会话', exact: true }).click();
   const composer = page.getByLabel('发送 Agent 消息');
   await composer.fill('/');
   const commandMenu = page.getByRole('listbox', { name: '选择命令或 MCP' });
@@ -4178,16 +4198,20 @@ test('Agent new-session capability selection is not truncated at 30 items', asyn
   await expect(commandMenu).toContainText('当前会话还没有加载命令或 MCP');
   await expect(commandMenu.getByRole('button', { name: '会话配置' })).toBeVisible();
   await commandMenu.getByRole('button', { name: '会话配置' }).click();
-  const manager = page.getByRole('dialog', { name: '能力' });
+  const manager = page.getByRole('dialog', { name: '会话配置' });
   await manager.getByRole('button', { name: '选择筛选结果 (31)' }).click();
   await expect(manager).toContainText('已选择 31 项');
   await expect(manager.locator('.agent-capability-summary')).toBeVisible();
   await expect(manager.locator('.agent-capability-list')).toBeVisible();
-  await expect(manager.locator('.agent-capability-summary')).toHaveCSS('grid-row-start', '4');
-  await expect(manager.locator('.agent-capability-list')).toHaveCSS('grid-row-start', '5');
+  const summaryBounds = await manager.locator('.agent-capability-summary').boundingBox();
+  const listBounds = await manager.locator('.agent-capability-list').boundingBox();
+  expect(summaryBounds).toBeTruthy();
+  expect(listBounds).toBeTruthy();
+  expect(listBounds!.y).toBeGreaterThanOrEqual(summaryBounds!.y + summaryBounds!.height);
 });
 
 test('current Agent conversation can select a 31st capability and keeps frozen Context', async ({ page }) => {
+  await page.route('**/api/v1/auth/me', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id: 'capability-test-user', username: 'capability-test-user', role: 'USER', can_use_agent_sessions: true }) }));
   const loadedSkills = Array.from({ length: 29 }, (_, index) => ({
     id: index === 0 ? 'history-skill' : `history-skill-${index}`,
     capability_type: 'SKILL',
@@ -4199,7 +4223,7 @@ test('current Agent conversation can select a 31st capability and keeps frozen C
     external_conversation_id: 'history-capability-openhands', display_title: '历史会话', title_state: 'FALLBACK', lifecycle: 'ACTIVE',
     working_directory: '/runtime/workspace/project', work_directory_id: null,
     model_provider_id: 'history-provider', model_name: 'history-model', reasoning_effort: null,
-    streaming_callback_ready: true, capabilities: [
+    write_available: true, execution_status: 'idle', streaming_callback_ready: true, capabilities: [
       ...loadedSkills,
       { id: 'history-context-v1', capability_type: 'CONTEXT', capability_key: '历史上下文', digest: 'history-context-v1-digest' },
     ],
@@ -4230,11 +4254,19 @@ test('current Agent conversation can select a 31st capability and keeps frozen C
       return;
     }
     if (path.endsWith('/conversations')) {
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([historicalConversation]) });
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [historicalConversation], next_cursor: null }) });
       return;
     }
     if (path.endsWith('/work-directories')) {
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] }) });
+      return;
+    }
+    if (path.endsWith('/hydration')) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ events: { events: [], next_cursor: null, history_cursor: null, result: { status: 'COMPLETED' } }, context: { model_name: 'history-model', reasoning_effort: null }, readiness: { ready: true, execution_status: 'idle' } }) });
+      return;
+    }
+    if (path.endsWith(`/conversations/${historicalConversation.id}`)) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(historicalConversation) });
       return;
     }
     if (path.endsWith('/events')) {
@@ -4243,6 +4275,10 @@ test('current Agent conversation can select a 31st capability and keeps frozen C
     }
     if (path.endsWith('/context')) {
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ model_name: 'history-model', reasoning_effort: null }) });
+      return;
+    }
+    if (path.endsWith('/input-readiness')) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ready: true, execution_status: 'idle' }) });
       return;
     }
     if (path.endsWith('/pending-confirmation')) {
@@ -4276,14 +4312,14 @@ test('current Agent conversation can select a 31st capability and keeps frozen C
   await expect(skillMenu.getByText('管理当前会话能力')).toHaveCount(0);
   await expect(skillMenu.getByRole('button', { name: '会话配置' })).toBeVisible();
   await skillMenu.getByRole('button', { name: '会话配置' }).click();
-  const manager = page.getByRole('dialog', { name: '能力' });
+  const manager = page.getByRole('dialog', { name: '会话配置' });
   await expect(manager).toContainText('已注册 30 项');
   const lockedSkill = manager.getByRole('button', { name: 'history-skill（已注册，不能取消）' });
   await expect(lockedSkill).toBeDisabled();
   await expect(lockedSkill).toHaveClass(/locked/);
   await manager.getByRole('button', { name: /history-new-skill/ }).click();
   await expect(manager).toContainText('已注册 31 项');
-  await manager.getByRole('button', { name: 'Context', exact: true }).click();
+  await manager.getByRole('button', { name: 'context', exact: true }).click();
   await expect(manager).toContainText('已装配 1 个 Context');
   const lockedContext = manager.getByRole('button', { name: '历史上下文（创建时已装配，只读）' });
   await expect(lockedContext).toBeDisabled();
