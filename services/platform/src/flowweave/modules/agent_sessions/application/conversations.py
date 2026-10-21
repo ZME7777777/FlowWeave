@@ -1913,7 +1913,6 @@ def bootstrap_conversation(
     capability_version_ids: tuple[str, ...] = (),
     credential_ids: tuple[str, ...] | None = None,
     idempotency_key: str,
-    sidebar_source_binding_id: str | None = None,
     system_message_suffix_append: str = "",
 ) -> dict[str, Any]:
     """Create a native conversation only while accepting its first user event.
@@ -1925,11 +1924,7 @@ def bootstrap_conversation(
     """
 
     message_text = content.strip()
-    if (
-        references
-        and sidebar_source_binding_id is None
-        and any(not isinstance(item.get("source_binding_id"), str) for item in references)
-    ):
+    if references and any(not isinstance(item.get("source_binding_id"), str) for item in references):
         raise DomainError(
             "AGENT_CONVERSATION_REFERENCE_UNAVAILABLE",
             "新会话首条消息只能引用已授权的来源会话",
@@ -2036,13 +2031,7 @@ def bootstrap_conversation(
         binding_id=binding.id,
         allow_provisioning=True,
     )
-    source_references = _resolve_message_references(
-        db,
-        workspace,
-        binding,
-        references,
-        default_source_binding_id=sidebar_source_binding_id,
-    )
+    source_references = _resolve_message_references(db, workspace, binding, references)
     prompt, image_urls = _message_payload(
         message_text, attachments, source_references, normalized_workspace_references, annotations
     )
@@ -3362,8 +3351,6 @@ def _resolve_message_references(
     workspace: AgentWorkspace,
     target: AgentConversationBinding,
     references: tuple[dict[str, Any], ...],
-    *,
-    default_source_binding_id: str | None = None,
 ) -> tuple[dict[str, str], ...]:
     """Resolve browser IDs before native delivery; never accept reference text."""
 
@@ -3390,12 +3377,6 @@ def _resolve_message_references(
                 source_binding_id.strip(),
                 source_event_id.strip() if isinstance(source_event_id, str) else None,
                 typing_cast(dict[str, Any] | None, selection),
-            )
-        )
-    if default_source_binding_id is not None and not resolved:
-        resolved.append(
-            _resolve_source_conversation_reference(
-                db, workspace, default_source_binding_id, None, None
             )
         )
     return _validated_conversation_references(tuple(resolved))

@@ -12,7 +12,6 @@ import { ComposerModelMenu } from './ComposerModelMenu';
 interface SidebarConversationPaneProps {
   workspaceId: string;
   sourceBindingId: string;
-  initialReference?: AgentConversationReference;
   sidebarBindingId?: string;
   onBindingCreated: (bindingId: string) => void;
   onPreviewAttachment: (attachment: AgentAttachment, bindingId?: string) => void;
@@ -71,7 +70,7 @@ function sidebarComposerSuggestions(capabilities: AgentSessionCapability[] | und
   });
 }
 
-export function SidebarConversationPane({ workspaceId, sourceBindingId, initialReference, sidebarBindingId, onBindingCreated, onPreviewAttachment }: SidebarConversationPaneProps) {
+export function SidebarConversationPane({ workspaceId, sourceBindingId, sidebarBindingId, onBindingCreated, onPreviewAttachment }: SidebarConversationPaneProps) {
   const queryClient = useQueryClient();
   const attachmentInput = useRef<HTMLInputElement>(null);
   const composerInput = useRef<ComposerHandle>(null);
@@ -79,7 +78,7 @@ export function SidebarConversationPane({ workspaceId, sourceBindingId, initialR
   const [bindingId, setBindingId] = useState<string | undefined>(sidebarBindingId);
   const bindingIdRef = useRef(bindingId);
   const [draftConversationId] = useState(randomId);
-  const [reference, setReference] = useState<AgentConversationReference | undefined>(initialReference);
+  const [reference, setReference] = useState<AgentConversationReference>();
   const [content, setContent] = useState('');
   const [attachments, setAttachments] = useState<AgentAttachment[]>([]);
   const [pendingAttachments, setPendingAttachments] = useState<PendingSidebarAttachment[]>([]);
@@ -277,7 +276,6 @@ export function SidebarConversationPane({ workspaceId, sourceBindingId, initialR
       setError(reason instanceof Error ? reason.message : '保存模型设置失败');
     }
   };
-  useEffect(() => setReference(initialReference), [initialReference]);
   useEffect(() => () => {
     if (!bindingIdRef.current) void api.deleteAgentWorkspaceDraftAttachments(workspaceId, draftConversationId).catch(() => undefined);
   }, [draftConversationId, workspaceId]);
@@ -300,6 +298,12 @@ export function SidebarConversationPane({ workspaceId, sourceBindingId, initialR
   const updateDraft = useCallback((_scope: string | undefined, value: string) => setContent(value), []);
   const updateContentPresence = useCallback(() => undefined, []);
   const persistDraft = useCallback(() => undefined, []);
+  const addConversationReference = useCallback(({ bindingId: sourceBindingId, eventId, title }: { bindingId: string; eventId: string; title: string }) => {
+    if (!eventId) return;
+    setReference(current => current?.source_binding_id === sourceBindingId && current.event_id === eventId
+      ? current
+      : { source_binding_id: sourceBindingId, event_id: eventId, content: title });
+  }, []);
   return <section className="agent-sidebar-conversation" aria-label="侧边聊天">
     <div className="agent-sidebar-chat-content">
       {hydrationQuery.isLoading && bindingId ? <div className="conversation-surface-empty"><LoaderCircle className="conversation-activity-spin" size={16}/><b>正在加载会话</b></div>
@@ -319,7 +323,7 @@ export function SidebarConversationPane({ workspaceId, sourceBindingId, initialR
           if (!files.length) return;
           event.preventDefault();
           files.forEach(startAttachmentUpload);
-        }} onDropFiles={files => files.forEach(startAttachmentUpload)} onSubmit={() => void send()} onDirectSubmit={() => void send()} onNativeAction={action => { if (action === 'CONDENSE') void condense(); }}/>
+        }} onDropFiles={files => files.forEach(startAttachmentUpload)} onDropConversationReference={transfer => addConversationReference(transfer)} onSubmit={() => void send()} onDirectSubmit={() => void send()} onNativeAction={action => { if (action === 'CONDENSE') void condense(); }}/>
         <footer><div className="agent-composer-context"><input ref={attachmentInput} aria-label="上传侧边聊天附件" type="file" multiple hidden onChange={event => { Array.from(event.currentTarget.files ?? []).forEach(startAttachmentUpload); event.currentTarget.value = ''; }}/><button type="button" aria-label="添加附件" disabled={composerDisabled} onClick={() => attachmentInput.current?.click()}><Plus size={17}/></button></div><div className="agent-composer-actions"><ComposerModelMenu providers={connectedProviders} providerId={currentModel?.providerId ?? ''} modelName={currentModel?.modelName ?? ''} models={availableModels} efforts={efforts} effort={currentModel?.reasoningEffort ?? ''} disabled={composerDisabled || pendingAttachments.length > 0} onProviderChange={providerId => { const nextProvider = connectedProviders.find(item => item.id === providerId); const nextModel = nextProvider?.models.find(item => item.enabled && item.is_default) ?? nextProvider?.models.find(item => item.enabled); if (nextModel) { if (bindingId) void updateModel(providerId, nextModel.model_name, nextModel.default_reasoning_effort ?? null); else setSelectedModelKey(`${providerId}:${nextModel.model_name}`); } }} onModelChange={modelName => { const model = availableModels.find(item => item.model_name === modelName); if (bindingId && currentModel) void updateModel(currentModel.providerId, modelName, model?.default_reasoning_effort ?? null); else if (currentModel) setSelectedModelKey(`${currentModel.providerId}:${modelName}`); }} onEffortChange={effort => { if (bindingId && currentModel) void updateModel(currentModel.providerId, currentModel.modelName, effort || null); }}/><button type="button" className={`agent-send${composerControl?.action === 'resume' ? ' resume' : ''}`} aria-label={composerControl?.label ?? '发送侧边聊天消息'} disabled={composerControl ? sending || expired : (!content.trim() && !attachments.length) || composerDisabled || pendingAttachments.length > 0} onClick={() => { if (composerControl) void control(); else void send(); }}>{composerControl?.action === 'interrupt' ? <Square size={10} fill="currentColor"/> : composerControl?.action === 'resume' ? <Play size={12} fill="currentColor"/> : sending ? <LoaderCircle className="conversation-activity-spin" size={15}/> : <Send size={16}/>}</button></div></footer>
       </div>
       <div className="agent-sidebar-composer-bottom" aria-hidden="true"/>

@@ -3847,7 +3847,7 @@ function WorkspaceBrowser({ tab, workspaceId, bindingId, workDirectoryId, browse
 function WorkspaceDrawer({
   open, onOpen, onClose, onFullScreenConversationActiveChange, onAnnotateFileSelection, highlightedFileSelection, workspaceId, scopeKey, migrateFromScopeKey, bindingId, workDirectoryId, conversation, conversationCumulativeTokens, attachments, sources, attachmentRequest, candidatePreviewRequest, markdownFileRequest, browserRequest, htmlPreviewRequest, reviewChanges = [], reviewRequestId, sessionChanges = [], onReviewChanges, runtimeAvailable, runtimeTasks, agentDefinitions, sessionStopped, sidebarQuestion, onSidebarBindingCreated, onOpenSidebarQuestion, onCloseSidebarQuestion, onPreviewAttachment,
 }: {
-  open: boolean; onOpen: () => void; onClose: () => void; onFullScreenConversationActiveChange: (active: boolean) => void; onAnnotateFileSelection?: (path: string, selection: FileSelection, quote: string) => void; highlightedFileSelection?: { path: string; selection: FileSelection }; workspaceId: string; scopeKey: string; migrateFromScopeKey?: string; bindingId?: string; workDirectoryId?: string; conversation?: AgentConversation; conversationCumulativeTokens?: number | null; attachments: AgentAttachment[]; sources: ConversationSource[]; attachmentRequest?: { key: string; attachment?: AgentAttachment }; candidatePreviewRequest?: CandidateFilePreviewRequest; markdownFileRequest?: MarkdownFileRequest; browserRequest?: { key: string; url: string }; htmlPreviewRequest?: { key: string; filename: string; document?: string; sourceUrl?: string }; reviewChanges?: WorkspaceFileChange[]; reviewRequestId?: string; sessionChanges?: WorkspaceFileChange[]; onReviewChanges?: (changes: WorkspaceFileChange[]) => void; runtimeAvailable: boolean; runtimeTasks: RuntimeTaskProjection[]; agentDefinitions: CapabilityAsset[]; sessionStopped: boolean; sidebarQuestion?: { sourceBindingId: string; reference?: AgentConversationReference; sidebarBindingId?: string }; onSidebarBindingCreated: (sourceBindingId: string, sidebarBindingId: string) => void; onOpenSidebarQuestion?: () => void; onCloseSidebarQuestion: () => void; onPreviewAttachment: (attachment: AgentAttachment, previewBindingId?: string) => void;
+  open: boolean; onOpen: () => void; onClose: () => void; onFullScreenConversationActiveChange: (active: boolean) => void; onAnnotateFileSelection?: (path: string, selection: FileSelection, quote: string) => void; highlightedFileSelection?: { path: string; selection: FileSelection }; workspaceId: string; scopeKey: string; migrateFromScopeKey?: string; bindingId?: string; workDirectoryId?: string; conversation?: AgentConversation; conversationCumulativeTokens?: number | null; attachments: AgentAttachment[]; sources: ConversationSource[]; attachmentRequest?: { key: string; attachment?: AgentAttachment }; candidatePreviewRequest?: CandidateFilePreviewRequest; markdownFileRequest?: MarkdownFileRequest; browserRequest?: { key: string; url: string }; htmlPreviewRequest?: { key: string; filename: string; document?: string; sourceUrl?: string }; reviewChanges?: WorkspaceFileChange[]; reviewRequestId?: string; sessionChanges?: WorkspaceFileChange[]; onReviewChanges?: (changes: WorkspaceFileChange[]) => void; runtimeAvailable: boolean; runtimeTasks: RuntimeTaskProjection[]; agentDefinitions: CapabilityAsset[]; sessionStopped: boolean; sidebarQuestion?: { sourceBindingId: string; sidebarBindingId?: string }; onSidebarBindingCreated: (sourceBindingId: string, sidebarBindingId: string) => void; onOpenSidebarQuestion?: () => void; onCloseSidebarQuestion: () => void; onPreviewAttachment: (attachment: AgentAttachment, previewBindingId?: string) => void;
 }) {
   const { api, browserUrl, fileUrl } = useAgentSessionGateway();
   const host = useAgentSessionHost();
@@ -4819,7 +4819,7 @@ function WorkspaceDrawer({
           {scopeState.tabs.filter((tab): tab is Extract<WorkspaceToolTab, { kind: 'git' }> => tab.kind === 'git').map(tab => <div key={tab.id} className={`agent-changes-tab-panel agent-git-commit-tab ${scopeState.activeTabId === tab.id ? 'active' : ''}`}><WorkspaceGitCommitReview key={`${tab.details.commit.id}:${tab.diff.path}`} details={tab.details} initialDiff={tab.diff} loadDiff={path => api.gitDiff(workspaceId, tab.details.repository.path, tab.details.commit.id, path, gitOptions)} onOpenSource={openSourcePath}/></div>)}
           {scopeState.tabs.filter((tab): tab is Extract<WorkspaceToolTab, { kind: 'git-working' }> => tab.kind === 'git-working').map(tab => <div key={tab.id} className={`agent-changes-tab-panel agent-git-commit-tab ${scopeState.activeTabId === tab.id ? 'active' : ''}`}><WorkspaceGitWorkingDiffReview tab={tab} onOpenSource={openSourcePath} onSelectFile={(kind, file) => openGitWorkingDiff(tab.repository, kind, file, tab.changes)}/></div>)}
           {scopeState.tabs.some(tab => tab.kind === 'subagents') && <div className={`agent-subagent-tab-panel ${scopeState.activeTabId === 'subagents' ? 'active' : ''}`}><RuntimeTaskTab tasks={runtimeTasks} definitions={agentDefinitions} selectedTaskId={scopeState.selectedRuntimeTaskId} onSelect={taskId => updateScope(current => ({ ...current, selectedRuntimeTaskId: taskId }))} sessionStopped={sessionStopped}/></div>}
-          {sidebarQuestion && scopeState.tabs.some(tab => tab.kind === 'sidebar-chat') && <div className={`agent-sidebar-chat-tab-panel ${scopeState.activeTabId === 'sidebar-chat' ? 'active' : ''}`}><SidebarConversationPane key={sidebarQuestion.sourceBindingId} workspaceId={workspaceId} sourceBindingId={sidebarQuestion.sourceBindingId} initialReference={sidebarQuestion.reference} sidebarBindingId={sidebarQuestion.sidebarBindingId} onBindingCreated={sidebarBindingId => onSidebarBindingCreated(sidebarQuestion.sourceBindingId, sidebarBindingId)} onPreviewAttachment={onPreviewAttachment}/></div>}
+          {sidebarQuestion && scopeState.tabs.some(tab => tab.kind === 'sidebar-chat') && <div className={`agent-sidebar-chat-tab-panel ${scopeState.activeTabId === 'sidebar-chat' ? 'active' : ''}`}><SidebarConversationPane key={sidebarQuestion.sourceBindingId} workspaceId={workspaceId} sourceBindingId={sidebarQuestion.sourceBindingId} sidebarBindingId={sidebarQuestion.sidebarBindingId} onBindingCreated={sidebarBindingId => onSidebarBindingCreated(sidebarQuestion.sourceBindingId, sidebarBindingId)} onPreviewAttachment={onPreviewAttachment}/></div>}
           {scopeState.tabs.filter((tab): tab is Extract<WorkspaceToolTab, { kind: 'terminal' }> => tab.kind === 'terminal').map(tab => <div key={tab.id} className={`agent-terminal-tab-panel ${scopeState.activeTabId === tab.id ? 'active' : ''}`}>{runtimeAvailable ? <WorkspaceTerminal workspaceId={workspaceId} terminalInstanceId={tab.terminalInstanceId} bindingId={bindingId} workDirectoryId={workDirectoryId} workingDirectory={details.working_directory}/> : <div className="agent-drawer-empty"><LoaderCircle className="agent-drawer-spinner" size={20}/><b>终端正在恢复</b><span>文件仍可使用；运行环境恢复后终端会自动可用。</span></div>}</div>)}
           {gitSidebarVisible && gitRepository && <WorkspaceGitSidebar details={details} repository={gitRepository} mode={scopeState.gitMode ?? 'history'} onModeChange={mode => updateScope(current => ({ ...current, gitMode: mode }))} selectedCommit={scopeState.selectedGitRepositoryPath === gitRepository.path ? scopeState.selectedGitCommit : undefined} onSelectCommit={commit => updateScope(current => ({
             ...current,
@@ -4960,7 +4960,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [fileSelectionReference, setFileSelectionReference] = useState<{ path: string; selection: FileSelection }>();
   const [candidatePreviewRequest, setCandidatePreviewRequest] = useState<CandidateFilePreviewRequest>();
   const [sourceLocationRequest, setSourceLocationRequest] = useState<MarkdownFileRequest>();
-  const [sidebarQuestions, setSidebarQuestions] = useState<Record<string, { sourceBindingId: string; reference?: AgentConversationReference; sidebarBindingId?: string }>>({});
+  const [sidebarQuestions, setSidebarQuestions] = useState<Record<string, { sourceBindingId: string; sidebarBindingId?: string }>>({});
   const [conversationRailWidth, setConversationRailWidth] = useState(() => {
     const stored = Number(localStorage.getItem('flowweave:conversation-rail-width'));
     return clampConversationRailWidth(Number.isFinite(stored) ? stored : 240);
@@ -9631,19 +9631,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
           if (reference.source_binding_id) selectConversation(reference.source_binding_id);
         }}
         onCreateAnnotation={selected && canWrite ? anchor => void createAnnotation('CONVERSATION_TEXT', anchor) : undefined}
-        onSidebarQuestion={selected ? reference => setSidebarQuestions(current => ({
+        onSidebarQuestion={selected ? () => setSidebarQuestions(current => ({
           ...current,
-          [selected.id]: {
-            sourceBindingId: selected.id,
-            reference: {
-              event_id: reference.eventId,
-              content: reference.content,
-              source_binding_id: reference.sourceBindingId,
-              ...(reference.compactStart !== undefined && reference.compactEnd !== undefined
-                ? { selection: { compact_start: reference.compactStart, compact_end: reference.compactEnd } }
-                : {}),
-            },
-          },
+          [selected.id]: { sourceBindingId: selected.id },
         })) : undefined}
         onLocateAnnotation={locateAnnotation}
         taskControl={eventsQuery.data?.task_control ?? EMPTY_TASK_CONTROL}

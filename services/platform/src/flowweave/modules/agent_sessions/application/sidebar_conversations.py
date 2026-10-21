@@ -50,9 +50,10 @@ def _source_binding(db: Session, workspace_id: str, binding_id: str) -> AgentCon
 def _source_context(source: AgentConversationBinding) -> str:
     return "\n".join(
         (
-            "这是一个临时侧边聊天会话，已关联到用户当前打开的主会话。",
-            "主会话元数据仅用于回答当前问题；不要声称拥有未提供的完整主会话历史。",
-            "若当前消息包含引用，请优先基于引用内容回答，并明确区分引用与元数据。",
+            "这是一个临时侧边聊天会话，已隐式关联到用户当前打开的主会话，但不是主会话的续写。",
+            "以下主会话信息是受限关联元数据，不是主会话消息或完整历史；不得据此推断主会话正文。",
+            "仅当用户主动添加会话引用时，引用的正式事件内容才可作为主会话上下文；应明确区分引用内容与关联元数据。",
+            "需要了解主会话内容时，只能通过已授权的会话查询能力取得结果，或请用户明确添加会话引用；不得假装已读取主会话。",
             f"主会话标题：{source.display_title or '未命名会话'}",
             f"主会话绑定标识：{source.id}",
             f"主会话模型：{source.model_name or '未记录'}",
@@ -95,7 +96,6 @@ def create_sidebar_conversation(
         references=references,
         capability_version_ids=capability_version_ids,
         idempotency_key=idempotency_key,
-        sidebar_source_binding_id=source.id,
         system_message_suffix_append=_source_context(source),
     )
     binding_id = str(result["conversation"]["id"])

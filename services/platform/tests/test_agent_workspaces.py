@@ -2679,10 +2679,15 @@ def test_sidebar_conversation_inherits_source_configuration_and_appends_context(
 ):
     class CapturingRuntime(MockRuntime):
         requests = []
+        messages = []
 
         def create_conversation(self, request):
             self.requests.append(request)
             return super().create_conversation(request)
+
+        def send_message(self, handle, content, image_urls=()):
+            self.messages.append(content)
+            return super().send_message(handle, content, image_urls)
 
     monkeypatch.setattr(
         conversations,
@@ -2741,8 +2746,11 @@ def test_sidebar_conversation_inherits_source_configuration_and_appends_context(
         ]
         assert child.working_directory == source["working_directory"]
         assert len(runtime.requests) == 2
+        assert runtime.messages[-1] == "侧边追问"
         suffix = runtime.requests[-1].agent_spec.agent_context.system_message_suffix
-        assert "这是一个临时侧边聊天会话" in suffix
+        assert "已隐式关联到用户当前打开的主会话" in suffix
+        assert "不是主会话消息或完整历史" in suffix
+        assert "仅当用户主动添加会话引用时" in suffix
         assert f"主会话绑定标识：{source['id']}" in suffix
 
 
