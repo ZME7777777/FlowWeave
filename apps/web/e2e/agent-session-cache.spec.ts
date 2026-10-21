@@ -93,6 +93,56 @@ test('Agent session hydrates the first screen without parallel Runtime snapshot 
   expect(fallbackReads).toBe(0);
 });
 
+
+test('Agent session exports complete conversation history as Markdown from its context menu', async ({ page }) => {
+  let authenticated = false;
+  const workspace = { id: 'markdown-export-workspace', display_name: 'Markdown 导出工作区', desired_state: 'RUNNING', updated_at: now };
+  const conversation = {
+    id: 'markdown-export-conversation', display_title: '导出：会话 / 记录', title_state: 'MANUAL', lifecycle: 'ACTIVE',
+    streaming_callback_ready: true, write_available: true, execution_status: 'idle', created_at: now, updated_at: now,
+  };
+  const latestEvents = {
+    events: [{ id: 'export-agent', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'export-user', content: '这是最新回复。', timestamp: now } }],
+    next_cursor: 'export-agent', history_cursor: 'export-history', result: { status: 'COMPLETED' },
+  };
+
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const path = url.pathname;
+    if (path.endsWith('/auth/me')) return authenticated ? json(route, user) : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [conversation], next_cursor: null });
+    if (path.endsWith('/hydration')) return json(route, { events: latestEvents, context: { model_name: 'export-model', window_tokens: 128_000, used_tokens: 2_048, usage_current: true }, readiness: { ready: true, execution_status: 'idle' } });
+    if (path.endsWith('/events')) return url.searchParams.get('history_cursor') === 'export-history'
+      ? json(route, { events: [{ id: 'export-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '这是更早的提问。', timestamp: now } }], next_cursor: 'export-agent', history_cursor: null })
+      : json(route, latestEvents);
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
+    if (path.endsWith('/workspace')) return json(route, { root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [], runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } } });
+    if (path.endsWith('/model-providers') || path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, conversation);
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+
+  await page.goto('/');
+  await login(page);
+  await page.goto('/agent/conversations/markdown-export-conversation');
+  const conversationRow = page.locator(`[data-conversation-binding-id="${conversation.id}"]`).getByRole('button', { name: conversation.display_title, exact: true });
+  await conversationRow.click({ button: 'right' });
+  const downloadPromise = page.waitForEvent('download');
+  await page.getByRole('menuitem', { name: '导出' }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toMatch(/^导出：会话 - 记录-\d{4}-\d{2}-\d{2}\.md$/);
+  const stream = await download.createReadStream();
+  expect(stream).toBeTruthy();
+  const markdown = await new Response(stream).text();
+  expect(markdown).toBe('# 导出：会话 / 记录\n\n## 用户\n\n这是更早的提问。\n\n## 助手\n\n这是最新回复。\n');
+});
+
 test('Agent session retries older history after a temporary Runtime failure', async ({ page }) => {
   let authenticated = false;
   let historyRequests = 0;
@@ -1709,6 +1759,73 @@ test('A delayed message response never renders in another conversation', async (
   await expect(page.getByText('正在提交消息', { exact: true })).toHaveCount(0);
 });
 
+test('A queued running-session message appears in the transcript before delivery', async ({ page }) => {
+  let authenticated = false;
+  let sentMessages = 0;
+  const workspace = {
+    id: 'queued-transcript-workspace', display_name: '运行中队列消息工作区', desired_state: 'RUNNING', updated_at: now,
+  };
+  const conversation = {
+    id: 'queued-transcript-conversation', display_title: '运行中会话', title_state: 'MANUAL', lifecycle: 'ACTIVE',
+    streaming_callback_ready: true, write_available: true, execution_status: 'running', created_at: now, updated_at: now,
+  };
+  const events = {
+    events: [{ id: 'queued-transcript-active-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '正在处理的任务', timestamp: now } }],
+    next_cursor: 'queued-transcript-active-user', history_cursor: null, result: { status: 'RUNNING' },
+  };
+
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return authenticated
+      ? json(route, user)
+      : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [conversation], next_cursor: null });
+    if (path.endsWith('/hydration')) return json(route, {
+      events,
+      context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 1_024, usage_current: true },
+      readiness: { ready: false, execution_status: 'running' },
+    });
+    if (path.endsWith('/messages') && request.method() === 'POST') { sentMessages += 1; return json(route, { accepted: true, cursor: 'queued-transcript-sent-user' }); }
+    if (path.endsWith('/events')) return json(route, events);
+    if (path.endsWith('/input-readiness')) return json(route, { ready: false, execution_status: 'running' });
+    if (path.endsWith('/conversation-activity')) return json(route, { running_binding_ids: [conversation.id] });
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/work-directories')) return json(route, {
+      root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [],
+    });
+    if (path.endsWith('/workspace')) return json(route, {
+      root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' },
+      working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [],
+      runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } },
+    });
+    if (path.endsWith('/context')) return json(route, { model_name: 'test-model', window_tokens: 128_000, used_tokens: 1_024, usage_current: true });
+    if (path.endsWith('/model-providers') || path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, conversation);
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+
+  await page.goto('/');
+  await login(page);
+  await page.goto('/agent/conversations/queued-transcript-conversation');
+  await expect(page.getByText('正在处理的任务')).toBeVisible();
+
+  const composer = page.getByLabel('发送 Agent 消息');
+  await composer.fill('这条消息应立即渲染');
+  await composer.press('Enter');
+
+  const queuedTranscriptMessage = page.locator('.conversation-message.user').filter({ hasText: '这条消息应立即渲染' });
+  await expect(queuedTranscriptMessage).toBeVisible();
+  await expect(queuedTranscriptMessage.getByText('等待发送', { exact: true })).toBeVisible();
+  await expect(page.getByLabel('消息投递队列').getByText('这条消息应立即渲染')).toBeVisible();
+  expect(sentMessages).toBe(0);
+});
+
+
 test('Agent transcript keeps scroll ownership through streamed output and historical paging', async ({ page }) => {
   let authenticated = false;
   let activeEventRequests = 0;
@@ -2132,6 +2249,42 @@ test('Agent composer keeps an uploading attachment visible across conversation s
 });
 
 
+test('Empty Agent workspace creates a recoverable draft while editing a new session', async ({ page }) => {
+  let authenticated = false;
+  const workspace = { id: 'empty-draft-workspace', display_name: '空工作区', desired_state: 'RUNNING', updated_at: now };
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return authenticated ? json(route, user) : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [], next_cursor: null });
+    if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
+    if (path.endsWith('/workspace')) return json(route, { root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [], runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } } });
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/input-readiness')) return json(route, { ready: true, execution_status: 'idle' });
+    if (path.endsWith('/context')) return json(route, { model_name: 'test-model', window_tokens: 128_000, used_tokens: 0, usage_current: true });
+    if (path.endsWith('/model-providers') || path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+
+  await page.goto('/');
+  await login(page);
+  await page.goto('/agent');
+  const composer = page.getByLabel('发送 Agent 消息');
+  await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeVisible();
+  await composer.fill('空工作区中的未发送草稿');
+  const storageValue = await page.evaluate(() => Object.entries(localStorage).find(([key]) => key.startsWith('flowweave:agent-conversation-draft:v2:agent-workspace:empty-draft-workspace:root'))?.[1] ?? '');
+  expect(storageValue).toContain('空工作区中的未发送草稿');
+
+  await page.reload();
+  const recoverDraft = page.getByRole('button', { name: '恢复根工作区的未发送草稿' });
+  await expect(recoverDraft).toBeVisible();
+  await recoverDraft.click();
+  await expect(composer).toHaveValue('空工作区中的未发送草稿');
+});
 
 test('New conversation draft remains isolated and can be resumed after switching', async ({ page }) => {
   let authenticated = false;
@@ -2183,7 +2336,7 @@ test('New conversation draft remains isolated and can be resumed after switching
   await page.goto('/');
   await login(page);
   await page.goto('/agent');
-  await expect(page.getByRole('heading', { name: '新会话' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeVisible();
   // An unsubmitted draft owns no native Conversation. Even if the previous
   // selected binding is still unwinding, it must remain editable and idle.
   await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
@@ -2199,7 +2352,7 @@ test('New conversation draft remains isolated and can be resumed after switching
   await page.reload();
   await expect(recoverDraft).toBeVisible();
   await recoverDraft.click();
-  await expect(page.getByRole('heading', { name: '新会话' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeVisible();
   await expect(composer).toHaveText('');
   await expect(draftAttachment).toBeVisible();
   const restoredImage = page.locator('.agent-composer .agent-attachment-open img');
@@ -2223,7 +2376,7 @@ test('New conversation draft remains isolated and can be resumed after switching
     .every(([, value]) => !value.includes('只属于新会话的未发送草稿') && !value.includes('新会话附件.png')))).toBe(true);
 
   await recoverDraft.click();
-  await expect(page.getByRole('heading', { name: '新会话' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeVisible();
   await expect(composer).toHaveText('只属于新会话的未发送草稿');
   await expect(draftAttachment).toBeVisible();
 
@@ -2258,8 +2411,9 @@ test('New conversation draft remains isolated and can be resumed after switching
   await expect(draftAttachment).toBeVisible();
   await expect(resourceTags.getByRole('button', { name: '竞态会话 B', exact: true })).toBeVisible();
 
+  await page.getByRole('button', { name: '收起工作区 根工作区' }).hover();
   await page.getByRole('button', { name: '在根工作区中新建会话' }).click();
-  await expect(page.getByRole('heading', { name: '新会话' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeVisible();
   await expect(composer).toHaveText('');
   await expect(draftAttachment).toHaveCount(0);
   await expect(recoverDraft).toHaveCount(0);
@@ -3091,7 +3245,10 @@ test('A normal background conversation completion persists a regular unread mark
       return json(route, {
         events: {
           events: bindingId === 'completed-unread-background'
-            ? [{ id: 'completed-unread-final', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: '__root__', content: '后台预览的最终回复。', final_reply: true, timestamp: now } }]
+            ? [
+                { id: 'completed-unread-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '后台预览对应的历史问题。', timestamp: now } },
+                { id: 'completed-unread-final', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'completed-unread-user', content: '后台预览的最终回复。', final_reply: true, timestamp: now } },
+              ]
             : [],
           next_cursor: bindingId === 'completed-unread-background' ? 'completed-unread-final' : null,
           history_cursor: null,
@@ -3133,10 +3290,14 @@ test('A normal background conversation completion persists a regular unread mark
   await expect.poll(() => backgroundHydrationReads).toBe(1);
 
   await backgroundRow.getByRole('button', { name: '后台完成会话', exact: true }).click();
-  await expect(page.getByText('后台预览的最终回复。', { exact: true })).toBeVisible();
+  await expect(page.getByRole('status').filter({ hasText: '正在加载会话' })).toBeVisible();
+  await expect(page.getByText('后台预览的最终回复。', { exact: true })).toHaveCount(0);
   expect(backgroundHydrationReads).toBe(1);
 
   releaseBackgroundHydration?.();
+  await expect(page.getByText('后台预览对应的历史问题。', { exact: true })).toBeVisible();
+  await expect(page.getByText('后台预览的最终回复。', { exact: true })).toBeVisible();
+  await expect(page.getByRole('status').filter({ hasText: '正在加载会话' })).toHaveCount(0);
   await expect.poll(() => unreadWrites).toEqual([{ id: 'completed-unread-background', unread: false }]);
 });
 

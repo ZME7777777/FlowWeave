@@ -73,6 +73,31 @@ async function openWorkspace(page: Page, events: unknown[] = []) {
   return writes;
 }
 
+test('workspace directory search filters nested paths and restores the tree', async ({ page }) => {
+  await openWorkspace(page);
+  await page.route('**/api/v1/agent-workspaces/*/workspace?**', route => json(route, {
+    root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' },
+    working_directory: '/runtime/workspace/project', repositories: [], runtime: {},
+    files: [
+      { path: '/runtime/workspace/project/backend', kind: 'directory', size: 0 },
+      { path: '/runtime/workspace/project/frontend', kind: 'directory', size: 0 },
+      { path: '/runtime/workspace/project/frontend/src', kind: 'directory', size: 0 },
+    ],
+    ide: { gateway: { supported: false } },
+  }));
+  await page.getByRole('button', { name: '新增工作区', exact: true }).click();
+  const creator = page.getByRole('dialog', { name: '新增工作区' });
+  const search = creator.getByRole('searchbox', { name: '搜索目录' });
+  await search.fill('frontend/src');
+  await expect(creator.getByRole('checkbox', { name: 'frontend/src', exact: true })).toBeVisible();
+  await expect(creator.getByRole('checkbox', { name: 'backend', exact: true })).toHaveCount(0);
+  await search.fill('missing-directory');
+  await expect(creator.getByText('没有匹配的目录。')).toBeVisible();
+  await search.fill('');
+  await expect(creator.getByRole('checkbox', { name: 'backend', exact: true })).toBeVisible();
+  await creator.getByRole('button', { name: '关闭新增工作区' }).click();
+});
+
 test('selecting a task after opening its run returns to that task detail', async ({ page }) => {
   await openWorkspace(page);
   await page.getByRole('navigation', { name: 'Agent 工作区导航' }).getByRole('button', { name: '定时任务' }).click();
@@ -144,17 +169,19 @@ test('internal navigation restores a draft in its originating work directory', a
   await directoryGroup.getByRole('button', { name: '在已有项目目录中新建会话' }).click({ force: true });
   const composer = page.getByRole('textbox', { name: '发送 Agent 消息' });
   await composer.fill('保留已有项目目录中的草稿');
+  const recoverDraft = directoryGroup.getByRole('button', { name: '恢复已有项目目录的未发送草稿' });
+  await expect(recoverDraft).toHaveAttribute('aria-current', 'page');
 
   const navigation = page.getByRole('navigation', { name: 'Agent 工作区导航' });
   await navigation.getByRole('button', { name: '定时任务' }).click();
   await navigation.getByRole('button', { name: '主页' }).click();
   await expect(composer).toHaveValue('保留已有项目目录中的草稿');
-  await expect(directoryGroup.getByRole('button', { name: '恢复已有项目目录的未发送草稿' })).toHaveCount(0);
+  await expect(recoverDraft).toHaveAttribute('aria-current', 'page');
 
   await navigation.getByRole('button', { name: '会话管理' }).click();
   await navigation.getByRole('button', { name: '主页' }).click();
   await expect(composer).toHaveValue('保留已有项目目录中的草稿');
-  await expect(directoryGroup.getByRole('button', { name: '恢复已有项目目录的未发送草稿' })).toHaveCount(0);
+  await expect(recoverDraft).toHaveAttribute('aria-current', 'page');
 });
 
 
@@ -407,6 +434,8 @@ test('HTML reports use a same-origin viewer URL that copied tabs reopen without 
   await expect(viewerFrame.getByRole('heading', { name: 'daily.html' })).toBeVisible();
   await expect(viewerFrame.getByTitle('daily.html').contentFrame().getByRole('heading', { name: '会话日报' })).toBeVisible();
   await expect(viewerFrame.getByTitle('daily.html').contentFrame().locator('body')).not.toHaveAttribute('data-scriptRan', 'true');
+  await expect(page.locator('.agent-workspace-tab-launcher')).toHaveCount(0);
+  await expect(page.locator('.agent-workspace-browser-tab-panel')).toHaveCount(1);
 
   await page.getByRole('button', { name: '新建工作区页签', exact: true }).click();
   const launcher = page.locator('.agent-workspace-tab-launcher.active');

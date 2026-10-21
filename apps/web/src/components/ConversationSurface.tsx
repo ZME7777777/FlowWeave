@@ -679,14 +679,28 @@ function detailContent(value: unknown): string {
   return typeof value === 'string' ? value.trim().slice(0, 12_000) : '';
 }
 
-function fileLineLocation(details: Record<string, unknown>, resultDetails: Record<string, unknown>): string | undefined {
+interface FileLineRange { start: number; end: number; }
+
+function fileLineRange(details: Record<string, unknown>, resultDetails: Record<string, unknown>): FileLineRange | undefined {
   const viewRange = details.view_range ?? resultDetails.view_range;
   if (Array.isArray(viewRange) && viewRange.length === 2 && viewRange.every(value => typeof value === 'number' && Number.isInteger(value) && value > 0)) {
     const [start, end] = viewRange;
-    return start === end ? `第 ${start} 行` : `第 ${start}–${end} 行`;
+    return { start, end };
   }
   const insertLine = details.insert_line ?? resultDetails.insert_line;
-  return typeof insertLine === 'number' && Number.isInteger(insertLine) && insertLine > 0 ? `第 ${insertLine} 行` : undefined;
+  return typeof insertLine === 'number' && Number.isInteger(insertLine) && insertLine > 0
+    ? { start: insertLine, end: insertLine }
+    : undefined;
+}
+
+function fileLineLocation(details: Record<string, unknown>, resultDetails: Record<string, unknown>): string | undefined {
+  const range = fileLineRange(details, resultDetails);
+  return range ? range.start === range.end ? `第 ${range.start} 行` : `第 ${range.start}–${range.end} 行` : undefined;
+}
+
+function fileLocationLabel(path: string, range: FileLineRange): string {
+  const filename = path.split('/').filter(Boolean).at(-1) || path;
+  return `${filename}:${range.start}${range.end === range.start ? '' : `-${range.end}`}`;
 }
 
 function eventContentSignature(event: OpenHandsConversationEvent): string {
@@ -858,6 +872,8 @@ interface ActivityPresentation {
   thought?: string;
   command?: string;
   path?: string;
+  sourcePath?: string;
+  sourceRange?: FileLineRange;
   operation?: string;
   fileOperation?: FileOperationKind;
   fileKind?: FileKind;
@@ -958,11 +974,13 @@ function activityPresentation(entry: ActivityEntry, active: boolean, workspaceRo
           : ['str_replace', 'insert', 'append'].includes(operation) ? (failed ? '编辑失败' : completed ? '已编辑' : '正在编辑')
             : failed ? '文件操作失败' : completed ? '已完成文件操作' : '正在处理文件';
     const displayPath = path ? workspacePath(path, workspaceRoot) : '';
+    const sourceRange = fileLineRange(details, resultDetails);
     const lineLocation = fileLineLocation(details, resultDetails);
     return {
       title: displayPath ? `${verb} ${displayPath}${lineLocation ? ` · ${lineLocation}` : ''}` : actionTitle(verb),
       status: failed ? '文件编辑器 · 失败' : completed ? '文件编辑器 · 已完成' : '文件编辑器',
-      path: displayPath || undefined, operation: workspaceRelativeText(command, workspaceRoot) || undefined, fileOperation, fileKind, thought, actionDetails: details, resultDetails,
+      path: displayPath || undefined, sourcePath: path || undefined, sourceRange,
+      operation: workspaceRelativeText(command, workspaceRoot) || undefined, fileOperation, fileKind, thought, actionDetails: details, resultDetails,
     };
   }
   if (eventName === 'TaskTrackerAction') {
@@ -1011,7 +1029,7 @@ function displayDetails(details: Record<string, unknown>, workspaceRoot?: string
   return Object.keys(visible).length ? workspaceRelativeText(JSON.stringify(visible, null, 2), workspaceRoot).slice(0, 12_000) : '';
 }
 
-function ToolDetailPanel({ presentation, eventName, toolName, toolVisual, results, reveal = false, workspaceRoot }: {
+function ToolDetailPanel({ presentation, eventName, toolName, toolVisual, results, reveal = false, workspaceRoot, onOpenSourceLocation }: {
   presentation: ActivityPresentation;
   eventName: string;
   toolName?: string;
@@ -1019,6 +1037,7 @@ function ToolDetailPanel({ presentation, eventName, toolName, toolVisual, result
   results: Item[];
   reveal?: boolean;
   workspaceRoot?: string | null;
+  onOpenSourceLocation?: (path: string, line: number) => void;
 }) {
   const details = presentation.actionDetails ?? {};
   const resultDetails = presentation.resultDetails ?? {};
@@ -1043,10 +1062,11 @@ function ToolDetailPanel({ presentation, eventName, toolName, toolVisual, result
     toolName={toolName}
     reveal={reveal}
     workspaceRoot={workspaceRoot}
+    onOpenSourceLocation={onOpenSourceLocation}
   /></div>;
 }
 
-function ToolDetailContent({ details, resultDetails, results, presentation, isTerminal, isFile, isTaskTracker, eventName, toolName, reveal = false, workspaceRoot }: {
+function ToolDetailContent({ details, resultDetails, results, presentation, isTerminal, isFile, isTaskTracker, eventName, toolName, reveal = false, workspaceRoot, onOpenSourceLocation }: {
   details: Record<string, unknown>;
   resultDetails: Record<string, unknown>;
   results: Item[];
@@ -1058,6 +1078,7 @@ function ToolDetailContent({ details, resultDetails, results, presentation, isTe
   toolName?: string;
   reveal?: boolean;
   workspaceRoot?: string | null;
+  onOpenSourceLocation?: (path: string, line: number) => void;
 }) {
   const taskSnapshot = isTaskTracker ? taskListSnapshot(details, resultDetails, presentation.resultTimestamp) : undefined;
   const structured = displayDetails(details, workspaceRoot);
@@ -1083,6 +1104,7 @@ function ToolDetailContent({ details, resultDetails, results, presentation, isTe
       {isFile && <dl>
         {presentation.operation && <><dt>操作</dt><dd><ConversationTextReveal reveal={reveal}>{presentation.operation}</ConversationTextReveal></dd></>}
         {presentation.path && <><dt>路径</dt><dd><ConversationTextReveal reveal={reveal}>{presentation.path}</ConversationTextReveal></dd></>}
+        {presentation.sourcePath && presentation.sourceRange && onOpenSourceLocation && <><dt>定位</dt><dd><button type="button" className="conversation-source-location" title={`在文件标签页定位 ${fileLocationLabel(presentation.sourcePath, presentation.sourceRange)}`} onClick={() => onOpenSourceLocation(presentation.sourcePath!, presentation.sourceRange!.start)}>{fileLocationLabel(presentation.sourcePath, presentation.sourceRange)}</button></dd></>}
         {Array.isArray(details.view_range) && <><dt>行范围</dt><dd><ConversationTextReveal reveal={reveal}>{details.view_range.join(' - ')}</ConversationTextReveal></dd></>}
         {typeof details.insert_line === 'number' && <><dt>插入行</dt><dd><ConversationTextReveal reveal={reveal}>{String(details.insert_line)}</ConversationTextReveal></dd></>}
       </dl>}
@@ -1406,7 +1428,7 @@ function securityAnalysisPresentation(event: OpenHandsConversationEvent): {
   };
 }
 
-function ActivityEntryRow({ entry, active, reveal = false, paused = false, parentFailed = false, hideThought = false, avatarSlots, workspaceRoot }: {
+function ActivityEntryRow({ entry, active, reveal = false, paused = false, parentFailed = false, hideThought = false, avatarSlots, workspaceRoot, onOpenSourceLocation }: {
   entry: ActivityEntry;
   active: boolean;
   reveal?: boolean;
@@ -1415,6 +1437,7 @@ function ActivityEntryRow({ entry, active, reveal = false, paused = false, paren
   hideThought?: boolean;
   avatarSlots: ReadonlyMap<string, SubagentAvatarSlot>;
   workspaceRoot?: string | null;
+  onOpenSourceLocation?: (path: string, line: number) => void;
 }) {
   const item = entry.action ?? entry.item;
   const Icon = item.kind === 'error' ? CircleAlert : item.kind === 'security' ? ShieldCheck : item.kind === 'thought' || item.kind === 'condensation' ? Sparkles : Wrench;
@@ -1428,7 +1451,7 @@ function ActivityEntryRow({ entry, active, reveal = false, paused = false, paren
   const ToolIcon = toolVisual === 'terminal' ? SquareTerminal : toolVisual === 'file' ? fileToolIcon(presentation) : toolVisual === 'browser' ? PanelTop : toolVisual === 'mcp' ? PlugZap : toolVisual === 'workflow' ? Workflow : Icon;
   const taskAvatar = avatarSlot && <SubagentAvatar slot={avatarSlot} status={taskAvatarStatus(entry, item, paused, parentFailed)} size={13}/>;
   const toolDetail = item.kind === 'tool'
-    ? <ToolDetailPanel presentation={presentation} eventName={eventName} toolName={toolName || undefined} toolVisual={toolVisual} results={entry.results} reveal={reveal} workspaceRoot={workspaceRoot}/>
+    ? <ToolDetailPanel presentation={presentation} eventName={eventName} toolName={toolName || undefined} toolVisual={toolVisual} results={entry.results} reveal={reveal} workspaceRoot={workspaceRoot} onOpenSourceLocation={onOpenSourceLocation}/>
     : null;
   const condensationRunning = active && !paused && !parentFailed && item.kind === 'condensation' && item.event.event_type === 'CONDENSATION_REQUESTED' && entry.results.length === 0;
   const isNativeThink = item.event.event_type === 'THOUGHT';
@@ -1471,7 +1494,7 @@ function ActivityEntryRow({ entry, active, reveal = false, paused = false, paren
   </article>;
 }
 
-function ProgressActivity({ group, active, revealEventIds, paused, parentFailed, avatarSlots, workspaceRoot }: {
+function ProgressActivity({ group, active, revealEventIds, paused, parentFailed, avatarSlots, workspaceRoot, onOpenSourceLocation }: {
   group: ProgressActivityGroup;
   active: boolean;
   revealEventIds: ReadonlySet<string>;
@@ -1479,6 +1502,7 @@ function ProgressActivity({ group, active, revealEventIds, paused, parentFailed,
   parentFailed: boolean;
   avatarSlots: ReadonlyMap<string, SubagentAvatarSlot>;
   workspaceRoot?: string | null;
+  onOpenSourceLocation?: (path: string, line: number) => void;
 }) {
   return <section className="conversation-progress-group" data-progress-event-id={group.progress.event.id}>
     <article className="conversation-activity-row thought native-think">
@@ -1496,7 +1520,7 @@ function ProgressActivity({ group, active, revealEventIds, paused, parentFailed,
         const hideThought = entry.hideThought || isProgressAction || (group.progress.kind === 'thought'
           && group.progress.event.id !== entry.action?.event.id
           && isSameVisibleProgressText(progressText(group.progress), actionText));
-        return <ActivityEntryRow key={entry.id} entry={entry} active={active} reveal={entryHasRevealedText(entry, revealEventIds)} paused={paused} parentFailed={parentFailed} hideThought={hideThought} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>;
+        return <ActivityEntryRow key={entry.id} entry={entry} active={active} reveal={entryHasRevealedText(entry, revealEventIds)} paused={paused} parentFailed={parentFailed} hideThought={hideThought} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot} onOpenSourceLocation={onOpenSourceLocation}/>;
       })}
     </div>
   </section>;
@@ -1513,6 +1537,7 @@ interface ActivityGroupProps {
   finishedAt?: number;
   avatarSlots: ReadonlyMap<string, SubagentAvatarSlot>;
   workspaceRoot?: string | null;
+  onOpenSourceLocation?: (path: string, line: number) => void;
   display?: 'full' | 'source' | 'summary';
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
@@ -1530,7 +1555,7 @@ function entryHasRevealedText(entry: ActivityEntry, revealEventIds: ReadonlySet<
     || entry.results.some(result => revealEventIds.has(result.event.id));
 }
 
-const ActivityGroup = memo(function ActivityGroup({ items, active, revealEventIds, completionConfirmed = false, paused = false, parentFailed = false, startedAt, finishedAt, avatarSlots, workspaceRoot, display = 'full', open: controlledOpen, onOpenChange }: ActivityGroupProps) {
+const ActivityGroup = memo(function ActivityGroup({ items, active, revealEventIds, completionConfirmed = false, paused = false, parentFailed = false, startedAt, finishedAt, avatarSlots, workspaceRoot, onOpenSourceLocation, display = 'full', open: controlledOpen, onOpenChange }: ActivityGroupProps) {
   const elapsed = elapsedSeconds(startedAt, finishedAt);
   const entries = groupedActivities(items);
   const rows = activityRows(entries);
@@ -1565,8 +1590,8 @@ const ActivityGroup = memo(function ActivityGroup({ items, active, revealEventId
   if (!hasDetails) return <div className={`conversation-activity-group summary-only${display === 'summary' ? ' conversation-process-summary' : ''}`}><div className="conversation-activity-summary">{summary}</div></div>;
   const activityList = <div className="conversation-activity-list">
     {rows.map(row => row.kind === 'progress-group'
-      ? <ProgressActivity key={row.group.id} group={row.group} active={active} revealEventIds={revealEventIds} paused={paused} parentFailed={parentFailed} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>
-      : <ActivityEntryRow key={row.entry.id} entry={row.entry} active={active} reveal={entryHasRevealedText(row.entry, revealEventIds)} paused={paused} parentFailed={parentFailed} hideThought={row.entry.hideThought} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>) }
+      ? <ProgressActivity key={row.group.id} group={row.group} active={active} revealEventIds={revealEventIds} paused={paused} parentFailed={parentFailed} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot} onOpenSourceLocation={onOpenSourceLocation}/>
+      : <ActivityEntryRow key={row.entry.id} entry={row.entry} active={active} reveal={entryHasRevealedText(row.entry, revealEventIds)} paused={paused} parentFailed={parentFailed} hideThought={row.entry.hideThought} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot} onOpenSourceLocation={onOpenSourceLocation}/>) }
   </div>;
   const completed = display === 'summary';
   return <details className={`${completed ? 'conversation-process-summary' : 'conversation-activity-group'}${active && !completed ? ' active' : ''}`} open={open} onToggle={event => setOpen(event.currentTarget.open)}>
@@ -1582,6 +1607,7 @@ const ActivityGroup = memo(function ActivityGroup({ items, active, revealEventId
   && previous.startedAt === next.startedAt
   && previous.finishedAt === next.finishedAt
   && previous.workspaceRoot === next.workspaceRoot
+  && previous.onOpenSourceLocation === next.onOpenSourceLocation
   && previous.display === next.display
   && previous.open === next.open
   && previous.onOpenChange === next.onOpenChange
@@ -1863,7 +1889,7 @@ export interface ConversationScrollSnapshot {
   savedAt: number;
 }
 
-export const ConversationSurface = memo(function ConversationSurface({ events, isGenerating, isPaused = false, pausing = false, emptyResponseRecoveryActive = false, modelRetryStatus, historyPending = false, cachedHistoryMarkerCount = 0, cachedHistoryUserEventIds = [], hasCachedOlderHistory = false, onRequestOlderHistory, onRevealHistoryThrough, conversationScope, initialScrollSnapshot, onScrollSnapshotChange, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationPending = false, condensationStartedAt, onRewrite, onFork, onOpenAttachment, attachmentImageUrl, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, onOpenBrowser, onOpenImage, workspaceImageUrl, workspaceRoot, onCreateAnnotation, onSidebarQuestion, onLocateAnnotation, conversationName, onOpenConversationReference, taskControl = [], monitoring, connectionState }: {
+export const ConversationSurface = memo(function ConversationSurface({ events, isGenerating, isPaused = false, pausing = false, emptyResponseRecoveryActive = false, modelRetryStatus, historyPending = false, cachedHistoryMarkerCount = 0, cachedHistoryUserEventIds = [], hasCachedOlderHistory = false, onRequestOlderHistory, onRevealHistoryThrough, conversationScope, initialScrollSnapshot, onScrollSnapshotChange, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationPending = false, condensationStartedAt, onRewrite, onFork, onOpenAttachment, attachmentImageUrl, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenSourceLocation, onOpenWorkspaceFile, onOpenBrowser, onOpenImage, workspaceImageUrl, workspaceRoot, onCreateAnnotation, onSidebarQuestion, onLocateAnnotation, conversationName, onOpenConversationReference, taskControl = [], monitoring, connectionState }: {
   events: OpenHandsConversationEvent[];
   isGenerating: boolean;
   /** Formal native conversation pause state, used only to label unfinished Task actions. */
@@ -1905,6 +1931,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   onOpenWorkspaceReference?: (reference: AgentWorkspaceReference) => void;
   onPreviewCandidateFile?: (fieldKey: string, relativePath: string) => void;
   onReviewChanges?: (changes: WorkspaceFileChange[]) => void;
+  onOpenSourceLocation?: (path: string, line: number) => void;
   /** Returns true only when a Markdown link was handled by the file preview. */
   onOpenWorkspaceFile?: (href: string) => boolean;
   /** Returns true only when a web URL was opened in the workspace browser. */
@@ -2742,6 +2769,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
                 finishedAt={block.finishedAt}
                 avatarSlots={avatarSlots}
                 workspaceRoot={workspaceRoot}
+                onOpenSourceLocation={onOpenSourceLocation}
               />)}
             </Fragment>;
           })}
@@ -2761,6 +2789,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
             finishedAt={block.finishedAt}
             avatarSlots={avatarSlots}
             workspaceRoot={workspaceRoot}
+            onOpenSourceLocation={onOpenSourceLocation}
             display="summary"
             open={completedProcessExpanded}
             onOpenChange={setCompletedProcessExpanded}
@@ -2769,7 +2798,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
           {failures.map(item => <ConversationFailure key={item.event.id} item={item} taskControl={taskControl} retryStatus={isLatest ? modelRetryStatus : undefined}/>)}
         </section>;
       })}
-      {turns.length === 0 && isGenerating && !condensationPending && <><ActivityGroup items={[]} active revealEventIds={revealEventIds} startedAt={requestStartedAt} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/><CurrentTurnStatus items={[]} requestSubmitting={requestSubmitting} statusOverride={pausing ? '正在暂停 Agent' : rewritePending ? '正在重新思考' : emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} modelRetryStatus={modelRetryStatus} monitoring={monitoring} connectionState={connectionState}/></>}
+      {turns.length === 0 && isGenerating && !condensationPending && <><ActivityGroup items={[]} active revealEventIds={revealEventIds} startedAt={requestStartedAt} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot} onOpenSourceLocation={onOpenSourceLocation}/><CurrentTurnStatus items={[]} requestSubmitting={requestSubmitting} statusOverride={pausing ? '正在暂停 Agent' : rewritePending ? '正在重新思考' : emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} modelRetryStatus={modelRetryStatus} monitoring={monitoring} connectionState={connectionState}/></>}
 
       {condensationPending && <article className="conversation-condensation-progress" role="status" aria-label="正在压缩上下文">
         <LoaderCircle className="conversation-activity-spin" size={16}/>

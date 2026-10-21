@@ -68,6 +68,24 @@ _logger = logging.getLogger(__name__)
 ContainerDep = Annotated[Container, Depends(get_container)]
 
 
+def _browser_target_unavailable_response() -> Response:
+    return Response(
+        content="""<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>内置浏览器说明</title></head>
+<body>
+  <main>
+    <h1>内置浏览器说明</h1>
+    <p>仅支持访问当前服务内部的文件和网站。</p>
+  </main>
+</body>
+</html>""",
+        status_code=502,
+        media_type="text/html",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 class _Write(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -498,6 +516,10 @@ async def proxy_agent_workspace_browser(
                 query=query,
             ),
         )
+    except DomainError as exc:
+        if exc.code == "AGENT_BROWSER_TARGET_UNAVAILABLE":
+            return _browser_target_unavailable_response()
+        raise
     except DockerControllerError as exc:
         raise DomainError(
             "AGENT_BROWSER_BACKEND_UNAVAILABLE",

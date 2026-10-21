@@ -58,6 +58,7 @@ export const AgentComposerInput = forwardRef<ComposerHandle, {
   const [activeIndex, setActiveIndex] = useState(0);
   const [fileDragActive, setFileDragActive] = useState(false);
   const [inputOverflowing, setInputOverflowing] = useState(false);
+  const [inputMultiline, setInputMultiline] = useState(false);
   const replaceDraft = useCallback((value: string) => {
     draftRef.current = value;
     setDraft(current => current === value ? current : value);
@@ -125,8 +126,11 @@ export const AgentComposerInput = forwardRef<ComposerHandle, {
     measurement.style.setProperty('overflow-wrap', 'anywhere', 'important');
     measurement.style.setProperty('word-break', 'break-word', 'important');
     document.body.append(measurement);
-    const contentHeight = measurement.getBoundingClientRect().height + verticalPadding;
+    const measuredContentHeight = measurement.getBoundingClientRect().height;
     measurement.remove();
+    const isMultiline = measuredContentHeight > lineHeight + 1;
+    setInputMultiline(current => current === isMultiline ? current : isMultiline);
+    const contentHeight = measuredContentHeight + verticalPadding;
     const height = Math.min(Math.max(contentHeight, minHeight), maxHeight);
     textarea.style.height = `${height}px`;
     textarea.style.setProperty('overflow-y', contentHeight > maxHeight + 1 ? 'auto' : 'hidden', 'important');
@@ -215,7 +219,7 @@ export const AgentComposerInput = forwardRef<ComposerHandle, {
     if (workspacePaths.length) onDropWorkspaceFiles?.(workspacePaths);
     if (files.length) onDropFiles?.(files);
   }}>
-    <textarea ref={input} data-overflowing={inputOverflowing || undefined} aria-label={ariaLabel} aria-autocomplete="list" aria-controls={hasMenu ? 'agent-composer-capabilities' : undefined} aria-expanded={hasMenu} value={draft} maxLength={200_000} placeholder={placeholder} disabled={disabled} onChange={event => updateDraft(event.target.value)} onPaste={onPaste} onKeyDown={event => {
+    <textarea ref={input} data-multiline={inputMultiline || undefined} data-overflowing={inputOverflowing || undefined} aria-label={ariaLabel} aria-autocomplete="list" aria-controls={hasMenu ? 'agent-composer-capabilities' : undefined} aria-expanded={hasMenu} value={draft} maxLength={200_000} placeholder={placeholder} disabled={disabled} onChange={event => updateDraft(event.target.value)} onPaste={onPaste} onKeyDown={event => {
       if (isImeComposition(event)) return;
       if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.shiftKey) { event.preventDefault(); onDirectSubmit?.(draftRef.current); return; }
       if (hasMenu && event.key === 'Escape') { updateDraft(draft.slice(0, -trigger!.query.length - 1)); return; }

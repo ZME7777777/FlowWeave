@@ -3,7 +3,7 @@ import { Terminal as XTerm } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import { type InfiniteData, useQueries, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import hljs from 'highlight.js/lib/common';
-import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bell, Bot, Boxes, CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, CircleDot, Copy, CornerDownRight, Download, Ellipsis, FileCode2, FileText, Folder, FolderOpen, FolderPlus, GitBranch, Globe2, GripVertical, Home, ImageIcon, Layers3, Link2, ListRestart, LoaderCircle, Maximize2, Minimize2, MessageSquareText, MonitorCog, MonitorOff, PanelRightOpen, Pencil, Pin, PinOff, Play, Plus, Quote, RefreshCw, Search, Send, Settings, ShieldAlert, Square, SquarePlus, SquareTerminal, Trash2, X } from 'lucide-react';
+import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bell, Bot, Boxes, CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, CircleDot, Copy, CornerDownRight, Download, Ellipsis, FileCode2, FileText, Folder, FolderOpen, FolderPlus, Gauge, GitBranch, Globe2, GripVertical, Home, ImageIcon, Layers3, Link2, ListRestart, LoaderCircle, Maximize2, Minimize2, MessageSquareText, MonitorCog, MonitorOff, PanelRightOpen, Pencil, Pin, PinOff, Play, Plus, Quote, RefreshCw, Search, Send, Settings, ShieldAlert, Square, SquarePlus, SquareTerminal, Trash2, X } from 'lucide-react';
 import { createContext, isValidElement, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type WheelEvent as ReactWheelEvent } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
@@ -20,7 +20,7 @@ import { agentWorkspaceSessionHost, type AgentSessionHost } from './session-host
 import { SidebarConversationPane } from './SidebarConversationPane';
 import { clearConversationSnapshots, readConversationContextSnapshot, writeConversationContextSnapshot } from './conversation-cache';
 import { ConversationSurface, ConversationTaskPlan, type ConversationHistoryPrepend, type ConversationReference, type ConversationScrollSnapshot, type ModelRetryStatus } from '../ConversationSurface';
-import { isOpenHandsAgentReply, isOpenHandsConversationInterrupt, isOpenHandsConversationTerminalError, isOpenHandsEmptyResponseRecovery, orderOpenHandsConversationEvents } from '../conversationEvents';
+import { isOpenHandsAgentReply, isOpenHandsConversationInterrupt, isOpenHandsConversationTerminalError, isOpenHandsEmptyResponseRecovery, orderOpenHandsConversationEvents, projectFlowWeaveMessageContext } from '../conversationEvents';
 import { useProductDialog } from '../ProductDialogContext';
 import { useEscapeClose } from '../useEscapeClose';
 import { MermaidDiagram } from '../MermaidDiagram';
@@ -876,7 +876,7 @@ function ConversationStreamObserver({
 }
 
 function WorkspaceConversationRow({
-  item, selectedBindingId, workspaceName, running, possiblyStuck, failed, unread, unreadOrigin, pinned, conversationWritable, removing, deleteDisabled, dragging, dropPosition, orderSyncState, onDragStart, onDragOver, onDrop, onDragEnd, onRetryOrder, onSelect, onDoubleClick, onTogglePin, onMarkUnread, onMarkRead, onAcknowledgeAlert, onDelete,
+  item, selectedBindingId, workspaceName, running, possiblyStuck, failed, unread, unreadOrigin, pinned, conversationWritable, removing, deleteDisabled, dragging, dropPosition, orderSyncState, onDragStart, onDragOver, onDrop, onDragEnd, onRetryOrder, onSelect, onDoubleClick, onTogglePin, onExport, onMarkUnread, onMarkRead, onAcknowledgeAlert, onDelete,
 }: {
   item: AgentConversation;
   selectedBindingId?: string;
@@ -901,6 +901,7 @@ function WorkspaceConversationRow({
   onSelect: () => void;
   onDoubleClick?: () => void;
   onTogglePin: () => void;
+  onExport: () => void;
   onMarkUnread: () => void;
   onMarkRead?: () => void;
   onAcknowledgeAlert?: () => void;
@@ -937,6 +938,7 @@ function WorkspaceConversationRow({
       {pinned
         ? <button type="button" role="menuitem" onClick={() => { onTogglePin(); setContextMenu(undefined); }}><PinOff size={13}/>取消置顶</button>
         : <button type="button" role="menuitem" onClick={() => { onTogglePin(); setContextMenu(undefined); }}><Pin size={13}/>置顶</button>}
+      <button type="button" role="menuitem" onClick={() => { onExport(); setContextMenu(undefined); }}><Download size={13}/>导出</button>
       {onMarkRead
         ? unread && <button type="button" role="menuitem" onClick={() => { onMarkRead(); setContextMenu(undefined); }}><CircleDot size={13}/>标记为已读</button>
         : <button type="button" role="menuitem" onClick={() => { onMarkUnread(); setContextMenu(undefined); }}><CircleDot size={13}/>标记为未读</button>}
@@ -1491,6 +1493,38 @@ function pendingConversationName(message: QueuedMessage | undefined) {
   const firstLine = message?.content.trim().split(/\r?\n/, 1)[0]?.trim();
   if (!firstLine) return message?.items.length ? '附件会话' : '新会话';
   return firstLine.length > 36 ? `${firstLine.slice(0, 36)}…` : firstLine;
+}
+
+function conversationMarkdownFilename(conversation: AgentConversation): string {
+  const safeTitle = conversationName(conversation)
+    .replace(/[<>:"/\\|?*\p{Cc}]/gu, '-')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 80) || '会话记录';
+  return `${safeTitle}-${new Date().toISOString().slice(0, 10)}.md`;
+}
+
+function conversationMarkdownDocument(conversation: AgentConversation, events: OpenHandsConversationEvent[]): string {
+  const messages = orderOpenHandsConversationEvents(events)
+    .map(projectFlowWeaveMessageContext)
+    .flatMap(event => {
+      if (event.event_type !== 'MESSAGE' || typeof event.payload.content !== 'string') return [];
+      const source = String(event.payload.source ?? '').toLowerCase();
+      const author = ['user', 'human'].includes(source) ? '用户' : ['agent', 'assistant'].includes(source) ? '助手' : undefined;
+      if (!author) return [];
+      const content = (typeof event.payload.display_content === 'string' ? event.payload.display_content : event.payload.content).trim();
+      return content ? [`## ${author}\n\n${content}`] : [];
+    });
+  return [`# ${conversationName(conversation)}`, ...messages].join('\n\n').concat('\n');
+}
+
+function downloadConversationMarkdown(conversation: AgentConversation, events: OpenHandsConversationEvent[]): void {
+  const url = URL.createObjectURL(new Blob([conversationMarkdownDocument(conversation, events)], { type: 'text/markdown;charset=utf-8' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = conversationMarkdownFilename(conversation);
+  link.click();
+  URL.revokeObjectURL(url);
 }
 
 function mergeConversationEvent(
@@ -2872,6 +2906,7 @@ function WorkDirectoryCreator({ workspaceId, onClose, onCreated }: {
   const host = useAgentSessionHost();
   const [displayName, setDisplayName] = useState('');
   const [selectedPaths, setSelectedPaths] = useState<string[]>([]);
+  const [directorySearch, setDirectorySearch] = useState('');
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   useEscapeClose(() => { if (!create.isPending) onClose(); });
   const detailsQuery = useQuery({
@@ -2896,6 +2931,16 @@ function WorkDirectoryCreator({ workspaceId, onClose, onCreated }: {
   useEffect(() => {
     setExpanded(new Set(directoryNodes.map(node => node.path)));
   }, [directoryNodes]);
+  const normalizedDirectorySearch = directorySearch.trim().toLocaleLowerCase();
+  const visibleDirectoryNodes = useMemo(() => {
+    if (!normalizedDirectorySearch || !details) return directoryNodes;
+    const filterNodes = (nodes: WorkspaceTreeNode[]): WorkspaceTreeNode[] => nodes.flatMap(node => {
+      const children = filterNodes(node.children);
+      const relativePath = relativeWorkspacePath(node.path, details.root).toLocaleLowerCase();
+      return relativePath.includes(normalizedDirectorySearch) || children.length ? [{ ...node, children }] : [];
+    });
+    return filterNodes(directoryNodes);
+  }, [details, directoryNodes, normalizedDirectorySearch]);
   const togglePath = (path: string) => {
     setSelectedPaths(current => {
       if (current.includes(path)) return current.filter(item => item !== path);
@@ -2906,7 +2951,7 @@ function WorkDirectoryCreator({ workspaceId, onClose, onCreated }: {
   };
   const renderDirectories = (nodes: WorkspaceTreeNode[], depth = 0): ReactNode => nodes.map(node => {
     const relativePath = relativeWorkspacePath(node.path, details!.root);
-    const open = expanded.has(node.path);
+    const open = Boolean(normalizedDirectorySearch) || expanded.has(node.path);
     const checked = selectedPaths.includes(relativePath);
     const hasChildren = node.children.length > 0;
     return <div key={node.path} role="treeitem" aria-expanded={hasChildren ? open : undefined}>
@@ -2928,12 +2973,13 @@ function WorkDirectoryCreator({ workspaceId, onClose, onCreated }: {
       <header><div><span className="eyebrow">AGENT WORKSPACE</span><h2 id="agent-work-directory-title">新增工作区</h2></div><button type="button" aria-label="关闭新增工作区" disabled={create.isPending} onClick={onClose}><X size={16}/></button></header>
       <label className="agent-work-directory-name"><span>工作区名称</span><input autoFocus value={displayName} maxLength={160} placeholder="例如：后端服务" onChange={event => setDisplayName(event.target.value)}/></label>
       <section className="agent-work-directory-picker" aria-label="选择工作区目录">
-        <header><div><b>选择目录</b><span>从 {details?.root ?? '当前用户工作区'} 中选择一个或多个子目录</span></div><em>{selectedPaths.length}/20</em></header>
+        <header><div><b>选择目录</b><span>从 {details?.root ?? '当前用户工作区'} 中选择一个或多个子目录</span><label className="agent-work-directory-search"><Search size={13}/><input type="search" aria-label="搜索目录" value={directorySearch} placeholder="搜索目录名称或路径" onChange={event => setDirectorySearch(event.target.value)}/></label></div><em>{selectedPaths.length}/20</em></header>
         <div>
           {detailsQuery.isLoading && <p>正在读取项目目录…</p>}
           {detailsQuery.isError && <p className="error">{detailsQuery.error instanceof Error ? detailsQuery.error.message : '项目目录读取失败，请稍后重试。'}</p>}
           {!detailsQuery.isLoading && !detailsQuery.isError && !directoryNodes.length && <p>项目根目录中还没有可选择的子目录。</p>}
-          {details && directoryNodes.length > 0 && <div role="tree" aria-label="项目目录树">{renderDirectories(directoryNodes)}</div>}
+          {details && directoryNodes.length > 0 && !visibleDirectoryNodes.length && <p>没有匹配的目录。</p>}
+          {details && visibleDirectoryNodes.length > 0 && <div role="tree" aria-label="项目目录树">{renderDirectories(visibleDirectoryNodes)}</div>}
         </div>
       </section>
       <p className="agent-work-directory-note">选择多个目录时，它们属于同一个逻辑工作区；Agent 仍复用当前唯一 Runtime 容器。</p>
@@ -3124,7 +3170,7 @@ type WorkspaceToolTab =
   | { id: 'sidebar-chat'; kind: 'sidebar-chat' }
   | { id: string; kind: 'terminal'; terminalInstanceId: string };
 type WorkspaceToolScopeState = { tabs: WorkspaceToolTab[]; activeTabId?: string; selectedFile?: string; selectedChangeId?: string; selectedGitFile?: string; selectedGitCommit?: string; selectedGitRepositoryPath?: string; gitMode?: 'history' | 'changes'; selectedRuntimeTaskId?: string };
-type MarkdownFileRequest = { key: string; path: string };
+type MarkdownFileRequest = { key: string; path: string; line?: number };
 
 type ChangedFileTreeNode<T> = { name: string; path: string; value?: T; children: ChangedFileTreeNode<T>[] };
 type CollapsibleTreeNode = { name: string; path: string; children: CollapsibleTreeNode[] };
@@ -3918,14 +3964,13 @@ function WorkspaceDrawer({
     if (open) {
       resizeCollapsed.current = false;
       setEnvironmentOpen(false);
-      ensureLauncherTab();
     } else {
       setEnvironmentOpen(!resizeCollapsed.current);
       resizeCollapsed.current = false;
       setFullScreen(false);
       setFullScreenView('conversation');
     }
-  }, [ensureLauncherTab, open]);
+  }, [open]);
   useEffect(() => {
     if (!entryMenu) return;
     const close = () => setEntryMenu(undefined);
@@ -4404,7 +4449,7 @@ function WorkspaceDrawer({
   useEffect(() => {
     if (!markdownFileRequest || handledMarkdownFileRequestKey.current === markdownFileRequest.key) return;
     handledMarkdownFileRequestKey.current = markdownFileRequest.key;
-    openSourcePath(markdownFileRequest.path, 1);
+    openSourcePath(markdownFileRequest.path, markdownFileRequest.line ?? 1);
   }, [markdownFileRequest, openSourcePath]);
   const selectedEntryRoots = useMemo(() => [...selectedEntryPaths].filter(path => ![...selectedEntryPaths].some(other => other !== path && path.startsWith(`${other}/`))), [selectedEntryPaths]);
   const removeEntries = async (items: Array<{ path: string; kind: 'file' | 'directory' }>) => {
@@ -4721,10 +4766,10 @@ function WorkspaceDrawer({
   const workspaceTabIcon = (tab: WorkspaceToolTab) => tab.kind === 'files' ? <FileCode2 size={13}/> : tab.kind === 'browser' ? <Globe2 size={13}/> : tab.kind === 'terminal' ? <Square size={13}/> : tab.kind === 'sidebar-chat' ? <PanelRightOpen size={13}/> : tab.kind === 'sources' ? <Link2 size={13}/> : tab.kind === 'changes' ? <FileText size={13}/> : tab.kind === 'git' || tab.kind === 'git-working' ? <GitBranch size={13}/> : tab.kind === 'subagents' ? <Bot size={13}/> : <Plus size={13}/>;
   const conversationTabLabel = conversation ? conversationName(conversation) : '新会话';
   const summary = details && <section className="agent-workspace-overview">
-    {conversation && <article className="agent-workspace-conversation-config"><Bot size={16}/><div><small>会话用量</small><p className="agent-workspace-usage-line"><span>{`累计 ${conversationTotalTokens.toLocaleString('zh-CN')} Token`}</span><span>{`$${(conversationUsage?.accumulated_cost ?? 0).toFixed(6)}`}</span></p></div></article>}
-    {workspaceGitRepository && <article className="agent-workspace-git-summary"><GitBranch size={16}/><div><span className="agent-workspace-git-summary-title"><small>Git 信息</small><span className="agent-workspace-git-sync-status">{workspaceGitRepository.upstream ? <><span>{`本地 +${workspaceGitRepository.ahead ?? 0}`}</span><span>{`远端 +${workspaceGitRepository.behind ?? 0}`}</span></> : '未设置远程跟踪分支'}</span><button type="button" className="agent-workspace-git-summary-refresh" aria-label="刷新 Git 信息" title="刷新本地改动、提交和远端状态" disabled={gitSummaryRefreshing} onClick={() => void refreshGitSummary()}><RefreshCw className={gitSummaryRefreshing ? 'spin' : undefined} size={12}/></button></span><button type="button" onClick={openGitSummary} title="在全屏文件标签页中查看 Git 信息"><span><b>{workspaceGitRepository.branch || '未命名分支'}</b><em>{workspaceGitChangesQuery.isLoading || gitSummaryRefreshing ? '正在刷新本地改动…' : `${gitChangedFileCount(workspaceGitChangesQuery.data)} 个文件已改动`}</em></span><ChevronRight size={13}/></button>{gitSummaryRefreshError && <p className="agent-workspace-git-summary-error" role="alert">{gitSummaryRefreshError}</p>}</div></article>}
+    {conversation && <article className="agent-workspace-conversation-config"><Gauge size={16}/><div><small>会话用量</small><p className="agent-workspace-usage-line"><span>{`累计 ${conversationTotalTokens.toLocaleString('zh-CN')} Token`}</span><span>{`$${(conversationUsage?.accumulated_cost ?? 0).toFixed(6)}`}</span></p></div></article>}
+    {workspaceGitRepository && <article className="agent-workspace-git-summary"><GitBranch size={16}/><div><span className="agent-workspace-git-summary-title"><small>Git 信息</small><button type="button" className="agent-workspace-git-summary-refresh" aria-label="刷新 Git 信息" title="刷新本地改动、提交和远端状态" disabled={gitSummaryRefreshing} onClick={() => void refreshGitSummary()}><RefreshCw className={gitSummaryRefreshing ? 'spin' : undefined} size={12}/></button></span><button type="button" onClick={openGitSummary} title="在全屏文件标签页中查看 Git 信息"><span><b>{workspaceGitRepository.branch || '未命名分支'}</b><em>{workspaceGitChangesQuery.isLoading || gitSummaryRefreshing ? '正在刷新本地改动…' : `改动 +${gitChangedFileCount(workspaceGitChangesQuery.data)}`}</em><span className="agent-workspace-git-sync-status">{workspaceGitRepository.upstream ? <><span>{`本地 +${workspaceGitRepository.ahead ?? 0}`}</span><span>{`远端 +${workspaceGitRepository.behind ?? 0}`}</span></> : '未设置远程跟踪分支'}</span></span><ChevronRight size={13}/></button>{gitSummaryRefreshError && <p className="agent-workspace-git-summary-error" role="alert">{gitSummaryRefreshError}</p>}</div></article>}
     {conversation && <article className="agent-workspace-changes"><FileText size={16}/><div><small>变更</small><button type="button" disabled={!sessionChanges.length} onClick={() => onReviewChanges?.(sessionChanges)}><span><b>{sessionChanges.length ? `${sessionChanges.length} 个文件已更改` : '暂无变更'}</b>{sessionChanges.length > 0 && <em><ins>{`+${sessionChangeAdditions}`}</ins><del>{`-${sessionChangeDeletions}`}</del></em>}</span><ChevronRight size={13}/></button></div></article>}
-    {runtimeTasks.length > 0 && <article className="agent-workspace-subagents"><Bot size={16}/><div><small>子智能体</small><button type="button" onClick={() => openRuntimeTasks()}><span className="agent-workspace-subagent-summary" aria-label={`${runtimeTasks.length} 个子智能体任务`}>{runtimeTasks.slice(0, 2).map(task => <RuntimeTaskGlyph key={task.id} task={task} size={13} sessionStopped={sessionStopped}/>)}<b>{runtimeTasks.filter(task => runtimeTaskIsActive(task, sessionStopped)).length ? `${runtimeTasks.filter(task => runtimeTaskIsActive(task, sessionStopped)).length} 个运行中` : `${runtimeTasks.length} 完成`}</b></span><ChevronRight size={13}/></button></div></article>}
+    {runtimeTasks.length > 0 && <article className="agent-workspace-subagents"><Bot size={16}/><div><small>子智能体</small><button type="button" onClick={() => openRuntimeTasks()}><span className="agent-workspace-subagent-summary" aria-label={`${runtimeTasks.length} 个子智能体任务`}><span className="agent-workspace-subagent-avatars">{runtimeTasks.map(task => <RuntimeTaskGlyph key={task.id} task={task} size={13} sessionStopped={sessionStopped}/>)}</span><b>{runtimeTasks.filter(task => runtimeTaskIsActive(task, sessionStopped)).length ? `${runtimeTasks.filter(task => runtimeTaskIsActive(task, sessionStopped)).length} 个运行中` : `${runtimeTasks.length} 完成`}</b></span><ChevronRight size={13}/></button></div></article>}
     {/*
       Git 仓库概览暂时隐藏：当前仅罗列工作区中的仓库路径、分支、提交与远端地址，
       对用户的下一步操作帮助有限。保留原始实现，待补充状态、差异和常用 Git 操作后再恢复。
@@ -4910,6 +4955,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [attachmentRequest, setAttachmentRequest] = useState<{ key: string; attachment?: AgentAttachment }>();
   const [fileSelectionReference, setFileSelectionReference] = useState<{ path: string; selection: FileSelection }>();
   const [candidatePreviewRequest, setCandidatePreviewRequest] = useState<CandidateFilePreviewRequest>();
+  const [sourceLocationRequest, setSourceLocationRequest] = useState<MarkdownFileRequest>();
   const [sidebarQuestions, setSidebarQuestions] = useState<Record<string, { sourceBindingId: string; reference?: AgentConversationReference; sidebarBindingId?: string }>>({});
   const [conversationRailWidth, setConversationRailWidth] = useState(() => {
     const stored = Number(localStorage.getItem('flowweave:conversation-rail-width'));
@@ -5796,11 +5842,41 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       : { content, attachments: [], references: [], workspaceReferences: [], annotations: [] });
     return true;
   }, []);
+  const persistUncreatedDraftText = useCallback((scope: string | undefined, content: string) => {
+    if (!workspace || !scope || conversationDraft?.id !== scope
+      || pendingBootstrap?.draft.id === scope || bootstrapRecovery?.draft.id === scope) return;
+    const recovery = {
+      draft: conversationDraft,
+      content,
+      attachments,
+      references,
+      workspaceReferences,
+      annotations: composerAnnotations,
+      providerId: newConversationProviderId,
+      modelName: newConversationModelName,
+      reasoningEffort: newConversationReasoningEffort,
+    };
+    const recoverable = conversationDraftHasContent(recovery)
+      || Boolean(pendingAttachmentIdsByScope.current.get(scope)?.size);
+    writeConversationDraft(
+      conversationDraftStorageKey(host.id, workspace.id, conversationDraft.workDirectoryId),
+      recoverable ? recovery : undefined,
+    );
+    const draftKey = conversationDraft.workDirectoryId ?? 'root';
+    setRecoverableConversationDrafts(current => {
+      if (recoverable) return { ...current, [draftKey]: recovery };
+      if (!current[draftKey]) return current;
+      const updated = { ...current };
+      delete updated[draftKey];
+      return updated;
+    });
+  }, [attachments, bootstrapRecovery, composerAnnotations, conversationDraft, host.id, newConversationModelName, newConversationProviderId, newConversationReasoningEffort, pendingBootstrap, references, workspace, workspaceReferences]);
   const setComposerDraft = useCallback((scope: string | undefined, value: string) => {
     if (!updateComposerText(scope, value)) return;
+    persistUncreatedDraftText(scope, value);
     const hasText = Boolean(value.trim());
     setComposerHasText(current => current === hasText ? current : hasText);
-  }, [updateComposerText]);
+  }, [persistUncreatedDraftText, updateComposerText]);
   const replaceComposerDraft = useCallback((value: string, scope = activeComposerScope.current) => {
     composerDraftRef.current = value;
     composerRef.current?.replace(value);
@@ -6953,6 +7029,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (!changes.length) return;
     setReviewChanges(changes);
     setReviewRequestId(randomId());
+    setDrawerOpen(true);
+  }, []);
+  const openSourceLocation = useCallback((path: string, line: number) => {
+    setSourceLocationRequest({ key: randomId(), path, line });
     setDrawerOpen(true);
   }, []);
   const runtimeTasks = useMemo(
@@ -8608,7 +8688,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       createdAt: Date.now(),
     };
     if (shouldQueue) {
-      commitQueuedMessages(items => [...items, queuedMessage]);
+      flushSync(() => {
+        commitQueuedMessages(items => [...items, queuedMessage]);
+        showOptimisticUserBubble(queuedMessage, 'pending-user', 'queued');
+      });
       return;
     }
     if (!selected.streaming_callback_ready) {
@@ -8729,11 +8812,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   );
   const fallbackHydrationPending = selectedHydrationPhase === 'fallback'
     && (eventsQuery.isPending || inputReadinessQuery.isPending || contextQuery.isPending);
-  const immediatePreviewVisible = immediateFinalReplyPreview?.bindingId === selected?.id;
   const hydrationInteractionPending = Boolean(
     selected && (selectedHydrationPhase === 'loading' || fallbackHydrationPending),
   );
-  const conversationInitialLoading = hydrationInteractionPending && !immediatePreviewVisible;
+  // A final-reply preview is only a compact sidebar projection. Keep it behind
+  // the same gate as every other transcript until formal hydration is complete.
+  const conversationInitialLoading = hydrationInteractionPending;
   const currentSessionControlState: TurnState = effectiveTurnState === 'pausing' || effectiveTurnState === 'paused' || effectiveTurnState === 'resuming'
     ? effectiveTurnState
     : foregroundSubmissionAwaitingFormalEvent
@@ -9200,6 +9284,25 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }
     clearConversationDrag();
   }
+  async function exportConversation(conversation: AgentConversation): Promise<void> {
+    if (!workspace) return;
+    try {
+      const latest = await api.conversationEvents(workspace.id, conversation.id);
+      const seenHistoryCursors = new Set<string>();
+      let events = latest.events;
+      let historyCursor = latest.history_cursor;
+      while (historyCursor) {
+        if (seenHistoryCursors.has(historyCursor)) throw new Error('导出会话记录时，历史分页游标没有推进。');
+        seenHistoryCursors.add(historyCursor);
+        const older = await api.conversationEvents(workspace.id, conversation.id, undefined, historyCursor);
+        events = mergeConversationEvents(older.events, events);
+        historyCursor = older.history_cursor;
+      }
+      downloadConversationMarkdown(conversation, events);
+    } catch (error) {
+      reportOperationError(conversation.id, error instanceof Error ? error : new Error('导出会话记录失败'));
+    }
+  }
   const conversationRow = (item: AgentConversation, group: AgentConversation[], options: { allowDrag?: boolean; workspaceName?: string; onSelect?: () => void; onDoubleClick?: () => void; onMarkRead?: () => void } = {}) => {
     // The batched native activity snapshot is the sidebar's authority for
     // every row. A selected transcript may temporarily show its local send /
@@ -9228,7 +9331,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     const conversationWritable = Boolean(item.write_available);
     const draggable = options.allowDrag !== false;
     const orderSync = conversationOrderSync[item.id];
-    return <WorkspaceConversationRow key={item.id} item={item} selectedBindingId={selectedBindingId} workspaceName={options.workspaceName} running={running} possiblyStuck={possiblyStuck} failed={failed} unread={unread} unreadOrigin={unreadOrigin} pinned={Boolean(item.pinned)} conversationWritable={conversationWritable} removing={remove.isPending} deleteDisabled={running} dragging={draggable && draggedBindingId === item.id} dropPosition={draggable && dragTarget?.bindingId === item.id ? (dragTarget.after ? 'after' : 'before') : undefined} orderSyncState={orderSync?.state} onDragStart={draggable ? event => startConversationDrag(event, item, group) : undefined} onDragOver={draggable ? event => previewConversationDrop(event, item, group) : undefined} onDrop={draggable ? event => dropConversation(event, item, group) : undefined} onDragEnd={draggable ? endConversationDrag : undefined} onRetryOrder={orderSync?.state === 'failed' ? () => synchronizeConversationOrder(item.id, orderSync.orderedBindingIds) : undefined} onSelect={options.onSelect ?? (() => selectConversation(item.id))} onDoubleClick={options.onDoubleClick} onTogglePin={() => toggleConversationPin(item.id)} onMarkUnread={() => markConversationUnread(item.id)} onMarkRead={options.onMarkRead} onAcknowledgeAlert={() => markConversationRead(item.id)} onDelete={features.conversationDeletion && conversationWritable ? () => void confirmDeletion('会话', conversationName(item)).then(ok => { if (ok) remove.mutate(item.id); }) : undefined}/>;
+    return <WorkspaceConversationRow key={item.id} item={item} selectedBindingId={selectedBindingId} workspaceName={options.workspaceName} running={running} possiblyStuck={possiblyStuck} failed={failed} unread={unread} unreadOrigin={unreadOrigin} pinned={Boolean(item.pinned)} conversationWritable={conversationWritable} removing={remove.isPending} deleteDisabled={running} dragging={draggable && draggedBindingId === item.id} dropPosition={draggable && dragTarget?.bindingId === item.id ? (dragTarget.after ? 'after' : 'before') : undefined} orderSyncState={orderSync?.state} onDragStart={draggable ? event => startConversationDrag(event, item, group) : undefined} onDragOver={draggable ? event => previewConversationDrop(event, item, group) : undefined} onDrop={draggable ? event => dropConversation(event, item, group) : undefined} onDragEnd={draggable ? endConversationDrag : undefined} onRetryOrder={orderSync?.state === 'failed' ? () => synchronizeConversationOrder(item.id, orderSync.orderedBindingIds) : undefined} onSelect={options.onSelect ?? (() => selectConversation(item.id))} onDoubleClick={options.onDoubleClick} onTogglePin={() => toggleConversationPin(item.id)} onExport={() => { void exportConversation(item); }} onMarkUnread={() => markConversationUnread(item.id)} onMarkRead={options.onMarkRead} onAcknowledgeAlert={() => markConversationRead(item.id)} onDelete={features.conversationDeletion && conversationWritable ? () => void confirmDeletion('会话', conversationName(item)).then(ok => { if (ok) remove.mutate(item.id); }) : undefined}/>;
   };
   const pendingBootstrapItem = pendingBootstrap
     ? <button className={pendingBootstrap.draft.id === conversationDraft?.id ? 'active' : ''} aria-current={pendingBootstrap.draft.id === conversationDraft?.id ? 'page' : undefined} aria-label={`${pendingConversationName(pendingBootstrap.message)}，正在创建会话`}><LoaderCircle className="conversation-activity-spin" size={13}/><span><b>{pendingConversationName(pendingBootstrap.message)}</b><small>正在创建会话</small></span><ChevronRight size={13}/></button>
@@ -9478,6 +9581,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         onOpenWorkspaceReference={previewWorkspaceReference}
         onPreviewCandidateFile={candidateOutputUrl && workspace ? previewCandidateFile : undefined}
         onReviewChanges={openChangesReview}
+        onOpenSourceLocation={openSourceLocation}
         onOpenWorkspaceFile={openWorkspaceFileLink}
         onOpenBrowser={openBrowserLink}
         onOpenImage={previewMarkdownImage}
@@ -9623,6 +9727,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       sources={drawerSources}
       attachmentRequest={attachmentRequest}
       candidatePreviewRequest={candidatePreviewRequest}
+      markdownFileRequest={sourceLocationRequest}
       browserRequest={browserRequest}
       htmlPreviewRequest={htmlPreviewRequest}
       reviewChanges={reviewChanges}

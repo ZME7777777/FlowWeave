@@ -672,12 +672,16 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       return;
     }
     if (path.endsWith('/workspace/file')) {
-      workspaceFilePreviewRequests.push(new URL(request.url()).searchParams.get('path') ?? '');
+      const requestedPath = new URL(request.url()).searchParams.get('path') ?? '';
+      workspaceFilePreviewRequests.push(requestedPath);
+      const content = requestedPath === '/runtime/workspace/project/src/Main.java'
+        ? Array.from({ length: 48 }, (_, index) => `line-${index + 1}`).join('\n')
+        : 'workspace file preview\n';
       await route.fulfill({
         status: 200,
         contentType: 'text/plain',
-        headers: { 'X-Preview-Total-Bytes': '23' },
-        body: 'workspace file preview\n',
+        headers: { 'X-Preview-Total-Bytes': String(content.length) },
+        body: content,
       });
       return;
     }
@@ -1643,6 +1647,21 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(nextProgressGroup.locator(':scope > summary')).toHaveCount(0);
   await expect(nextProgressGroup.getByText('已读取 工作区/src/Main.java · 第 12–36 行')).toBeVisible();
   await expect(nextProgressGroup.getByText('已读取 工作区/config/application.properties')).toBeVisible();
+  const javaFileDetail = nextProgressGroup.locator('.conversation-tool-detail[data-file-operation="read"][data-file-kind="code"]');
+  await javaFileDetail.locator(':scope > summary').click();
+  const sourceLocation = javaFileDetail.getByRole('button', { name: 'Main.java:12-36' });
+  await expect(sourceLocation).toBeVisible();
+  await sourceLocation.click();
+  await expect(page.locator('.agent-workspace-drawer')).toHaveClass(/tools-open/);
+  await expect(page.getByText('line-12', { exact: true })).toBeVisible();
+  await expect(page.locator('.agent-file-line-highlight')).toHaveCSS('--source-line', '12');
+  expect(workspaceFilePreviewRequests.at(-1)).toBe('/runtime/workspace/project/src/Main.java');
+  await expect.poll(() => workspaceDirectoryRequests.slice(-2)).toEqual([
+    '/runtime/workspace/project',
+    '/runtime/workspace/project/src',
+  ]);
+  await expect(page.locator('.agent-file-line-highlight')).toHaveCount(0, { timeout: 3_000 });
+  await page.getByRole('button', { name: '关闭工作区工具' }).click();
   await expect(nextProgressGroup.getByText('已创建 工作区/README.md')).toBeVisible();
   await expect(nextProgressGroup.locator('.tool-skill')).toHaveCount(0);
   await expect(nextProgressGroup.getByText('子智能体 reviewer · 检查子任务边界')).toHaveCount(0);
@@ -2351,7 +2370,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await composer.fill('运行中直接发送消息');
   await composer.press('Enter');
   const runningDirectMessage = page.locator('.conversation-message.user').filter({ hasText: '运行中直接发送消息' });
-  await expect(runningDirectMessage).toHaveCount(0);
+  await expect(runningDirectMessage).toBeVisible();
+  await expect(runningDirectMessage.getByText('等待发送', { exact: true })).toBeVisible();
   await expect(page.getByLabel('消息投递队列').getByText('运行中直接发送消息')).toBeVisible();
   expect(runningDirectMessagePosts).toBe(0);
   await composer.press('Meta+Enter');
@@ -2420,8 +2440,10 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await composer.press('Enter');
   const queuedMessage = page.getByLabel('消息投递队列');
   const editableQueuedMessage = queuedMessage.locator('article').filter({ hasText: '待编辑排队消息' });
+  const queuedTranscriptMessage = page.locator('.conversation-message.user').filter({ hasText: '待编辑排队消息' });
   await expect(editableQueuedMessage).toBeVisible();
-  await expect(page.locator('.conversation-message.user').filter({ hasText: '待编辑排队消息' })).toHaveCount(0);
+  await expect(queuedTranscriptMessage).toBeVisible();
+  await expect(queuedTranscriptMessage.getByText('等待发送', { exact: true })).toBeVisible();
   expect(sentMessages).toBe(sentBeforeQueue);
   await page.reload();
   await expect(page.getByLabel('消息投递队列').getByText('待编辑排队消息')).toBeVisible();
@@ -3152,6 +3174,17 @@ test('Agent workspace groups toggle their conversation lists', async ({ page }) 
   await rootToggle.click();
   await expect(rootToggle).toHaveAttribute('aria-expanded', 'false');
   await expect(rootGroup.getByRole('button', { name: '根会话' })).toBeHidden();
+  await expect(projectGroup).not.toHaveCSS('transition-property', /margin/);
+  const projectToggleBounds = await projectToggle.boundingBox();
+  if (!projectToggleBounds) throw new Error('Expected visible project workspace toggle');
+  await page.mouse.click(
+    projectToggleBounds.x + projectToggleBounds.width / 2,
+    projectToggleBounds.y + projectToggleBounds.height / 2,
+  );
+  await expect(projectToggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(projectGroup.getByRole('button', { name: '项目会话' })).toBeHidden();
+  await projectToggle.click();
+  await expect(projectGroup.getByRole('button', { name: '项目会话' })).toBeVisible();
   await rootToggle.click();
   await expect(rootGroup.getByRole('button', { name: '根会话' })).toBeVisible();
 
@@ -3367,6 +3400,11 @@ test('Agent new session keeps full capabilities and can create an explicit works
   const creator = page.getByRole('dialog', { name: '新增工作区' });
   await expect(creator).toBeVisible();
   await expect(creator.getByRole('tree', { name: '项目目录树' })).toBeVisible();
+  const directorySearch = creator.getByRole('searchbox', { name: '搜索目录' });
+  await directorySearch.fill('frontend/src');
+  await expect(creator.getByRole('checkbox', { name: 'frontend/src', exact: true })).toBeVisible();
+  await expect(creator.getByRole('checkbox', { name: 'backend', exact: true })).toBeHidden();
+  await directorySearch.fill('');
   await expect(creator.getByRole('checkbox', { name: 'frontend/src', exact: true })).toBeVisible();
   await creator.getByRole('button', { name: '收起目录 frontend', exact: true }).click();
   await expect(creator.getByRole('checkbox', { name: 'frontend/src', exact: true })).toBeHidden();
@@ -4163,6 +4201,13 @@ test('Agent new-session capability selection is not truncated at 30 items', asyn
   const manager = page.getByRole('dialog', { name: '会话配置' });
   await manager.getByRole('button', { name: '选择筛选结果 (31)' }).click();
   await expect(manager).toContainText('已选择 31 项');
+  await expect(manager.locator('.agent-capability-summary')).toBeVisible();
+  await expect(manager.locator('.agent-capability-list')).toBeVisible();
+  const summaryBounds = await manager.locator('.agent-capability-summary').boundingBox();
+  const listBounds = await manager.locator('.agent-capability-list').boundingBox();
+  expect(summaryBounds).toBeTruthy();
+  expect(listBounds).toBeTruthy();
+  expect(listBounds!.y).toBeGreaterThanOrEqual(summaryBounds!.y + summaryBounds!.height);
 });
 
 test('current Agent conversation can select a 31st capability and keeps frozen Context', async ({ page }) => {
