@@ -1220,10 +1220,12 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.locator('h2.agent-session-title')).toHaveText('检查工作目录');
   expect(renameRequests).toBe(0);
   await page.locator('h2.agent-session-title').dblclick();
+  await page.getByLabel('会话标题').fill('同步后的会话标题');
   await page.getByLabel('会话标题').press('Enter');
   await expect.poll(() => renameRequests).toBe(1);
-  await expect(page.locator('h2.agent-session-title')).toHaveText('检查工作目录');
-  const compactConversationItem = page.getByRole('button', { name: /检查工作目录/ }).first();
+  await expect(page.locator('h2.agent-session-title')).toHaveText('同步后的会话标题');
+  await expect(page.getByRole('button', { name: /同步后的会话标题/ }).first()).toBeVisible();
+  const compactConversationItem = page.getByRole('button', { name: /同步后的会话标题/ }).first();
   await expect.poll(() => compactConversationItem.evaluate(element => element.getBoundingClientRect().height)).toBeLessThanOrEqual(40);
   await expect(page.getByText('工作区已就绪。')).toBeVisible();
   await expect(page.getByText('需要部署 Gateway', { exact: true })).toBeVisible();

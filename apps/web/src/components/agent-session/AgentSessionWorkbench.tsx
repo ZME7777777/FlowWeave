@@ -7809,9 +7809,30 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     return () => window.clearTimeout(timer);
   }, [bootstrap, bootstrapRecovery, workspace]);
   const rename = useMutation({ mutationFn: () => api.updateConversation(workspace!.id, selected!.id, title.trim()), onSuccess: conversation => {
+    if (workspace) {
+      queryClient.setQueryData<AgentConversation>(
+        sessionQueryKey(host, 'conversation', workspace.id, conversation.id),
+        conversation,
+      );
+      setConversationPagesByScope(current => Object.fromEntries(Object.entries(current).map(([scope, page]) => [scope, {
+        ...page,
+        items: page.items.map(item => item.id === conversation.id ? conversation : item),
+      }])));
+      queryClient.setQueriesData<AgentConversationActivity>(
+        { queryKey: sessionQueryKey(host, 'conversation-activity', workspace.id) },
+        current => current ? {
+          ...current,
+          conversations: current.conversations?.map(item => item.id === conversation.id ? conversation : item),
+        } : current,
+      );
+      queryClient.setQueryData<AgentConversation[]>(
+        sessionQueryKey(host, 'pinned-conversations', workspace.id),
+        current => current?.map(item => item.id === conversation.id ? conversation : item),
+      );
+    }
     setTitle(conversationName(conversation));
     setEditing(false);
-    refresh();
+    refresh(conversation.id);
   }, onError: error => reportOperationError(selected?.id, error) });
   const confirmDeletion = async (kind: '会话' | '工作区', name: string): Promise<boolean> => {
     return dialog.confirm({
