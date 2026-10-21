@@ -6562,7 +6562,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const foregroundTurnPending = Boolean(
     currentForegroundTurn && (!currentForegroundTurn.cursor || !hasFinishedTurn(currentFormalEvents, currentForegroundTurn.cursor)),
   );
-  const foregroundSubmissionAwaitingFormalEvent = foregroundTurnPending || Boolean(
+  const foregroundSubmissionAwaitingFormalEvent = foregroundTurnPending || rewriteAwaitingFormalEvent || Boolean(
     activeLocalMessageProjections.some(projection => projection.state === 'submitting')
     || (
       pendingSubmissionConfirmation?.bindingId === selected?.id
