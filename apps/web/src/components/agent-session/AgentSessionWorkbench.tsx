@@ -3530,9 +3530,13 @@ function SshAccessGuide({
   </div>;
 }
 
-function clampWorkspaceToolWidth(value: number): number {
-  const viewportMaximum = Math.max(300, window.innerWidth - 700);
-  return Math.max(300, Math.min(720, viewportMaximum, value));
+function workspaceToolBounds(available: number) {
+  return { minimum: available * .25, maximum: available * .75, activation: available * .045, reversal: available * .04 };
+}
+
+function clampWorkspaceToolWidth(value: number, available = window.innerWidth): number {
+  const { minimum, maximum } = workspaceToolBounds(available);
+  return Math.max(minimum, Math.min(maximum, value));
 }
 
 function clampConversationRailWidth(value: number): number {
@@ -3802,6 +3806,14 @@ function WorkspaceDrawer({
   const dialog = useProductDialog();
   const queryClient = useQueryClient();
   const toolsStorageKey = host.workspaceToolsStorageKey(workspaceId);
+  const drawerRef = useRef<HTMLElement>(null);
+  const availableToolWidth = useCallback(() => {
+    const parent = drawerRef.current?.parentElement;
+    if (!parent) return window.innerWidth;
+    const rail = parent.querySelector<HTMLElement>(':scope > .agent-workbench-rail');
+    return Math.max(1, parent.getBoundingClientRect().right - (rail?.getBoundingClientRect().right ?? parent.getBoundingClientRect().left));
+  }, []);
+  const clampPanelWidth = useCallback((value: number) => clampWorkspaceToolWidth(value, availableToolWidth()), [availableToolWidth]);
   const [scopeStates, setScopeStates] = useState<Record<string, WorkspaceToolScopeState>>(() => readWorkspaceToolState(toolsStorageKey));
   const [panelWidth, setPanelWidth] = useState(() => {
     const stored = Number(localStorage.getItem('flowweave:workspace-tool-width'));
@@ -3817,6 +3829,7 @@ function WorkspaceDrawer({
   const [fullScreen, setFullScreen] = useState(false);
   const [fullScreenView, setFullScreenView] = useState<'conversation' | 'tool'>('conversation');
   const [environmentOpen, setEnvironmentOpen] = useState(true);
+  const resizeCollapsed = useRef(false);
   const [resizePreview, setResizePreview] = useState<'fullscreen' | 'hidden'>();
   const drawerFullScreen = fullScreen || resizePreview === 'fullscreen';
   const drawerToolsOpen = open && resizePreview !== 'hidden';
@@ -3878,10 +3891,18 @@ function WorkspaceDrawer({
     localStorage.setItem('flowweave:workspace-file-tree-width', String(fileTreeWidth));
   }, [fileTreeWidth]);
   useEffect(() => {
-    const clamp = () => setPanelWidth(current => clampWorkspaceToolWidth(current));
+    const clamp = () => setPanelWidth(current => clampPanelWidth(current));
+    const observer = new ResizeObserver(clamp);
+    const parent = drawerRef.current?.parentElement;
+    if (parent) {
+      observer.observe(parent);
+      const rail = parent.querySelector(':scope > .agent-workbench-rail');
+      if (rail) observer.observe(rail);
+    }
+    clamp();
     window.addEventListener('resize', clamp);
-    return () => window.removeEventListener('resize', clamp);
-  }, []);
+    return () => { observer.disconnect(); window.removeEventListener('resize', clamp); };
+  }, [clampPanelWidth]);
   useEffect(() => {
     if (!fullScreen) return;
     const exitOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') setFullScreen(false); };
@@ -3895,10 +3916,12 @@ function WorkspaceDrawer({
   }, [fullScreenConversationActive, onFullScreenConversationActiveChange]);
   useEffect(() => {
     if (open) {
+      resizeCollapsed.current = false;
       setEnvironmentOpen(false);
       ensureLauncherTab();
     } else {
-      setEnvironmentOpen(true);
+      setEnvironmentOpen(!resizeCollapsed.current);
+      resizeCollapsed.current = false;
       setFullScreen(false);
       setFullScreenView('conversation');
     }
@@ -4517,29 +4540,39 @@ function WorkspaceDrawer({
     const handle = event.currentTarget;
     const pointerId = event.pointerId;
     const startX = event.clientX;
-    const startWidth = panelWidth;
-    const minimum = clampWorkspaceToolWidth(0);
-    const maximum = clampWorkspaceToolWidth(Number.MAX_SAFE_INTEGER);
+    let anchorX = startX;
+    const startWidth = drawerRef.current?.getBoundingClientRect().width ?? panelWidth;
+    let anchorWidth = startWidth;
+    const available = availableToolWidth();
+    const { minimum, maximum, activation, reversal } = workspaceToolBounds(available);
+    const clampWidth = (value: number) => Math.max(minimum, Math.min(maximum, value));
+    let extremeX = startX;
     let moved = false;
     let preview: 'fullscreen' | 'hidden' | undefined;
     let frame: number | undefined;
     let nextWidth = startWidth;
     const applyWidth = () => {
       frame = undefined;
-      setPanelWidth(clampWorkspaceToolWidth(nextWidth));
+      setPanelWidth(clampWidth(nextWidth));
       setResizePreview(preview);
     };
     const move = (moveEvent: PointerEvent) => {
       if (moveEvent.pointerId !== pointerId) return;
-      nextWidth = startWidth + startX - moveEvent.clientX;
-      moved ||= Math.abs(moveEvent.clientX - startX) >= 4;
-      // A small overdrag activates a mode; a separate return edge avoids flicker.
-      if (moved) {
-        if (preview === 'fullscreen' && nextWidth >= maximum - 8) preview = 'fullscreen';
-        else if (preview === 'hidden' && nextWidth <= minimum + 8) preview = 'hidden';
-        else if (nextWidth >= maximum + 12) preview = 'fullscreen';
-        else if (nextWidth <= minimum - 12) preview = 'hidden';
-        else preview = undefined;
+      const x = moveEvent.clientX;
+      nextWidth = anchorWidth + anchorX - x;
+      moved ||= Math.abs(x - startX) >= available * .005;
+      if (moved && preview) {
+        extremeX = preview === 'fullscreen' ? Math.min(extremeX, x) : Math.max(extremeX, x);
+        const reversed = preview === 'fullscreen' ? x - extremeX : extremeX - x;
+        if (reversed >= reversal) {
+          nextWidth = preview === 'fullscreen' ? maximum - (reversed - reversal) : minimum + (reversed - reversal);
+          anchorWidth = nextWidth;
+          anchorX = x;
+          preview = undefined;
+        }
+      } else if (moved && (nextWidth >= maximum + activation || nextWidth <= minimum - activation)) {
+        preview = nextWidth >= maximum + activation ? 'fullscreen' : 'hidden';
+        extremeX = x;
       }
       if (frame === undefined) frame = window.requestAnimationFrame(applyWidth);
     };
@@ -4562,13 +4595,16 @@ function WorkspaceDrawer({
     const stop = (stopEvent: Event) => {
       if (stopEvent instanceof PointerEvent && stopEvent.pointerId !== pointerId) return;
       cleanup();
-      const width = clampWorkspaceToolWidth(nextWidth);
+      const width = clampPanelWidth(nextWidth);
       setPanelWidth(width);
-      if (stopEvent.type === 'pointerup' && moved) {
+      if (moved && stopEvent.type !== 'resize') {
         if (preview === 'fullscreen') {
           setFullScreen(true);
           setFullScreenView('tool');
-        } else if (preview === 'hidden') onClose();
+        } else if (preview === 'hidden') {
+          resizeCollapsed.current = true;
+          onClose();
+        }
       }
     };
     workspaceResizeCleanup.current = cleanup;
@@ -4697,7 +4733,7 @@ function WorkspaceDrawer({
     <article className="agent-workspace-ide"><MonitorCog size={16}/><div><small>IDEA / Gateway</small><button type="button" className="agent-ssh-access-trigger" disabled={!sshRemoteReady} onClick={() => setSshAccessOpen(true)}>SSH 接入说明<ChevronRight size={13}/></button></div></article>
     <article className="agent-workspace-sources"><Link2 size={16}/><div><small>来源</small>{sources.length ? <><div className="agent-workspace-source-list">{visibleSources.map(source => <button type="button" key={source.id} title={`查看来源详情：${source.label}`} onClick={openSources}><span className="agent-workspace-source-glyph"><ConversationSourceGlyph source={source} size={12}/></span><span><b>{source.label}</b><em>{conversationSourceKind(source)}</em></span></button>)}</div>{sources.length > visibleSources.length && <button type="button" className="agent-workspace-view-all-sources" onClick={openSources}><Link2 size={12}/><span>查看全部</span><em>{sources.length}</em><ChevronRight size={13}/></button>}</> : <p>用户输入的链接、文件和图片会集中显示在这里。</p>}</div></article>
   </section>;
-      return <><aside className={`agent-workspace-drawer ${drawerToolsOpen ? 'tools-open' : 'summary-open'}${drawerFullScreen ? ' fullscreen' : ''}${fullScreenConversationActive ? ' conversation-active' : ''}${environmentOpen ? ' environment-open' : ' environment-hidden'}`} style={{ width: drawerFullScreen ? undefined : panelWidth, '--agent-workspace-tool-width': `${panelWidth}px` } as CSSProperties} aria-label={drawerFullScreen ? '全屏工作区工具' : undefined}>
+      return <><aside ref={drawerRef} className={`agent-workspace-drawer ${drawerToolsOpen ? 'tools-open' : 'summary-open'}${drawerFullScreen ? ' fullscreen' : ''}${fullScreenConversationActive ? ' conversation-active' : ''}${environmentOpen ? ' environment-open' : ' environment-hidden'}`} style={{ width: drawerFullScreen ? undefined : panelWidth, '--agent-workspace-tool-width': `${panelWidth}px` } as CSSProperties} aria-label={drawerFullScreen ? '全屏工作区工具' : undefined}>
     {open && !fullScreen && <div className="agent-workspace-resizer" role="separator" aria-label="调整工作区工具宽度" aria-orientation="vertical" onPointerDown={startResize}/>}
     <section className="agent-workspace-summary" aria-hidden={!environmentOpen} inert={!environmentOpen}>
       {loadingOrError || summary}
