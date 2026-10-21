@@ -8656,3 +8656,17 @@ Web typecheck、ESLint、production build、git diff --check、唯一 Alembic he
 以上浏览器使用受控接口数据，未声称完整业务／生产 E2E 全绿。随后按用户本次明确授权，
 从包含本修复的固定提交执行独立 Web 预检、最小上下文构建、定向发布与验收；原有 Skill ZIP
 暂存／删除状态不纳入提交或部署。当前及下一可执行切片均为 NONE。
+
+
+### 2026-10-21 远程 Web 改动合并与发布准备
+
+从干净的 `feat/refactor` 拉取远端并合并 `16416412`、`29634b3e`、`524dfd04`，保留本地
+FR-601 的地址栏与消息刻度修复。HTML 预览测试冲突同时保留两边的地址显示、全屏高度、
+沙箱空权限、图片渲染、脚本禁用及原路由断言。远端新增过渡动画后，两项布局测试需等正式
+动画结束再采样几何；未放宽既有布局断言。
+
+验收：Chromium 定向 E2E `10 passed`；Web typecheck、定向 ESLint、production build、
+`git diff --check`、唯一 Alembic head `0157_background_task_aggregate_type_length` 和
+CURRENT 唯一性通过。浏览器回归使用受控接口，不等于生产业务 E2E。本次拉取仅影响 Web，
+将按用户明确授权从合并后的固定提交执行 Web 预检、最小上下文构建、定向发布及容量收尾。
+当前及下一可执行切片保持 NONE。

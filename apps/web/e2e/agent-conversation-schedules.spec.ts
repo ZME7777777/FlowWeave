@@ -6,6 +6,13 @@ async function json(route: Route, body: unknown, status = 200) {
   await route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
 }
 
+async function settleWorkspaceLayout(page: Page) {
+  await page.evaluate(async () => {
+    const elements = document.querySelectorAll('.agent-workspace-drawer, .agent-workspace-summary, .conversation-surface, .agent-composer-dock');
+    await Promise.all([...elements].flatMap(element => element.getAnimations()).map(animation => animation.finished.catch(() => undefined)));
+  });
+}
+
 async function openWorkspace(page: Page, events: unknown[] = []) {
   const writes: { method: string; id?: string; body: Record<string, unknown> }[] = [];
   let authenticated = false;
@@ -48,7 +55,7 @@ async function openWorkspace(page: Page, events: unknown[] = []) {
     if (path.endsWith('/conversation-activity')) return json(route, { running_binding_ids: [] });
     if (path.endsWith('/hydration')) return json(route, { events: { events, next_cursor: null, history_cursor: null, result: { status: 'COMPLETED' } }, context: { used_tokens: 136664, window_tokens: 512000, view_event_count: 68, condenser_max_size: 50 }, readiness: { ready: true, execution_status: 'idle' } });
     if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
-    if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [{ id: 'existing-directory', display_name: '已有项目目录' }] });
+    if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [{ id: 'existing-directory', display_name: '已有项目目录', current_version: { working_directory: '/runtime/workspace/project/existing-directory' } }] });
     if (path.endsWith('/workspace')) return json(route, { root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', files: [], repositories: [], runtime: {}, ide: { gateway: { supported: false } } });
     if (path.endsWith('/model-providers')) return json(route, [{ id: 'provider-1', name: '测试供应商', connection_state: 'CONNECTED', models: [{ model_name: 'model-1', enabled: true, is_default: true, default_reasoning_effort: 'medium', supported_reasoning_efforts: ['low', 'medium', 'high'] }] }]);
     if (path.endsWith('/website-credentials')) return json(route, [{ id: 'credential-1', name: '测试认证', target_host: 'example.test', target_path: '/', include_subdomains: false, auth_type: 'TOKEN', has_username: false, has_secret: true, row_version: 1, environment_names: { token: 'TEST_TOKEN' }, created_at: now, updated_at: now }]);
@@ -109,6 +116,28 @@ test('internal navigation returns from schedules and management to the active co
   await expect(page.getByRole('textbox', { name: '发送 Agent 消息' })).toBeVisible();
   await expect(drawer).toHaveClass(/tools-open/);
 });
+
+test('internal navigation restores a draft in its originating work directory', async ({ page }) => {
+  await openWorkspace(page);
+  await page.goto('/agent/conversations/scheduled-conversation');
+
+  const directoryGroup = page.locator('.agent-workspace-group').filter({ hasText: '已有项目目录' });
+  await directoryGroup.getByRole('button', { name: '在已有项目目录中新建会话' }).click({ force: true });
+  const composer = page.getByRole('textbox', { name: '发送 Agent 消息' });
+  await composer.fill('保留已有项目目录中的草稿');
+
+  const navigation = page.getByRole('navigation', { name: 'Agent 工作区导航' });
+  await navigation.getByRole('button', { name: '定时任务' }).click();
+  await navigation.getByRole('button', { name: '主页' }).click();
+  await expect(composer).toHaveValue('保留已有项目目录中的草稿');
+  await expect(directoryGroup.getByRole('button', { name: '恢复已有项目目录的未发送草稿' })).toHaveCount(0);
+
+  await navigation.getByRole('button', { name: '会话管理' }).click();
+  await navigation.getByRole('button', { name: '主页' }).click();
+  await expect(composer).toHaveValue('保留已有项目目录中的草稿');
+  await expect(directoryGroup.getByRole('button', { name: '恢复已有项目目录的未发送草稿' })).toHaveCount(0);
+});
+
 
 
 test('scheduled conversations keep their route and draft while creating or editing a task', async ({ page }) => {
@@ -171,6 +200,9 @@ test('the floating card occupies conversation whitespace without resizing it or 
   await page.goto('/agent/conversations/scheduled-conversation');
   const card = page.locator('.agent-workspace-summary');
   await expect(card).toContainText('IDEA / Gateway');
+  const cardTransition = await card.evaluate(element => getComputedStyle(element).transitionProperty);
+  expect(cardTransition).toContain('opacity');
+  expect(cardTransition).toContain('transform');
   const geometry = () => page.evaluate(() => {
     const rect = (selector: string) => { const r = document.querySelector(selector)!.getBoundingClientRect(); return { left:r.left, right:r.right, top:r.top, bottom:r.bottom, width:r.width, height:r.height }; };
     const style=getComputedStyle(document.querySelector('.agent-workspace-summary article')!);
@@ -178,6 +210,7 @@ test('the floating card occupies conversation whitespace without resizing it or 
   });
   for (const width of [1280, 1920, 2560]) {
     await page.setViewportSize({ width, height: 1080 });
+    await settleWorkspaceLayout(page);
     await expect.poll(async () => { const g=await geometry(); return Math.abs(g.header.right-g.main.right); }).toBeLessThanOrEqual(1);
     const before=await geometry();
     expect(before.card.left).toBeGreaterThanOrEqual(before.composer.right);
@@ -188,19 +221,23 @@ test('the floating card occupies conversation whitespace without resizing it or 
     await expect(card.getByText('IDEA / Gateway')).toBeInViewport();
     await page.getByRole('button', { name:'隐藏悬浮信息卡', exact:true }).click();
     await expect(card).toBeHidden();
+    await settleWorkspaceLayout(page);
     const hidden=await geometry();
     expect(hidden.composer.right).toBeGreaterThan(before.composer.right);
     expect(hidden.content.left).toBe(before.content.left);
     expect(hidden.content.right).toBe(before.content.right);
     await page.getByRole('button', { name:'显示悬浮信息卡', exact:true }).click();
     await expect(card).toBeVisible();
+    await settleWorkspaceLayout(page);
   }
   const summaryPresentation=(await geometry()).cardPresentation;
   await page.getByRole('button', { name:'新建工作区页签', exact:true }).first().click();
   await expect(card).toBeHidden();
+  await settleWorkspaceLayout(page);
   const before=await geometry();
   await page.getByRole('button', { name:'显示悬浮信息卡', exact:true }).click();
   await expect(card).toBeVisible();
+  await settleWorkspaceLayout(page);
   const after=await geometry();
   expect(after.cardPresentation).toEqual(summaryPresentation);
   expect(after.main).toEqual(before.main);
@@ -220,6 +257,11 @@ test('fullscreen tools occupy the entire workbench region and restore the conver
   await page.getByRole('button',{name:'全屏查看工作区工具',exact:true}).click();
   const main=page.locator('.agent-workbench-main');
   await expect(main).toBeHidden();
+  const controls=page.locator('.agent-workspace-tool-actions');
+  await expect(controls.getByRole('button')).toHaveCount(3);
+  await expect(controls.getByRole('button',{name:/^(显示|隐藏)悬浮信息卡$/})).toBeVisible();
+  await expect(controls.getByRole('button',{name:'退出全屏',exact:true})).toBeVisible();
+  await expect(controls.getByRole('button',{name:'关闭工作区工具',exact:true})).toBeVisible();
   await expect(page.locator('.agent-workspace-tab-launcher.active')).toBeVisible();
   const bounds=() => page.evaluate(() => {
     const root=document.querySelector('.agent-workbench-page')!.getBoundingClientRect();
@@ -249,10 +291,8 @@ test('fullscreen tools occupy the entire workbench region and restore the conver
   await tabs.getByRole('button',{name:'新标签页',exact:true}).click();
   await expect(main).toBeHidden();
   await expect.poll(bounds).toBeLessThanOrEqual(1);
-  await page.getByRole('button',{name:'退出全屏',exact:true}).click();
+  await controls.getByRole('button',{name:'关闭工作区工具',exact:true}).click();
   await expect(main).toBeVisible();
-  await expect(composer).toHaveValue('全屏切换时保留草稿');
-  await page.getByRole('button',{name:'关闭工作区工具',exact:true}).click();
   await expect(page.locator('.agent-workspace-summary')).toBeVisible();
   await expect(composer).toHaveValue('全屏切换时保留草稿');
 });
@@ -303,6 +343,7 @@ test('expanded tools squeeze and reflow the transcript and composer without cove
     await expect.poll(async () => (await geometry()).composerOverflow, `composer overflow at ${width}px`).toBeLessThanOrEqual(1);
   }
   await page.setViewportSize({ width: 1440, height: 1080 });
+  await settleWorkspaceLayout(page);
   const before = await geometry();
   const resizer = await page.getByRole('separator', { name: '调整工作区工具宽度' }).boundingBox();
   await page.mouse.move(resizer!.x + resizer!.width - 1, resizer!.y + 100);
@@ -310,6 +351,7 @@ test('expanded tools squeeze and reflow the transcript and composer without cove
   await page.mouse.move(resizer!.x - 130, resizer!.y + 100, { steps: 12 });
   await page.mouse.up();
   await expect.poll(async () => (await geometry()).mainWidth).toBeLessThan(before.mainWidth - 100);
+  await settleWorkspaceLayout(page);
   const after = await geometry();
   expect(after.composerWidth).toBeLessThan(before.composerWidth - 100);
   expect(after.paragraphHeight).toBeGreaterThan(before.paragraphHeight);

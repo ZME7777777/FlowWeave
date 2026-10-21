@@ -3114,7 +3114,7 @@ function WorkspaceGitSidebar({ details, repository, mode, onModeChange, selected
 
 type WorkspaceToolTab =
   | { id: string; kind: 'launcher'; url?: string; title?: string }
-  | { id: string; kind: 'browser'; url?: string; title?: string; document?: string }
+  | { id: string; kind: 'browser'; url?: string; address?: string; title?: string; document?: string }
   | { id: 'files'; kind: 'files' }
   | { id: 'changes'; kind: 'changes' }
   | { id: 'sources'; kind: 'sources' }
@@ -3555,7 +3555,7 @@ function ConversationFilePreviewDialog({ request, workspaceId, bindingId, workDi
   bindingId?: string;
   workDirectoryId?: string;
   onClose: () => void;
-  onOpenInTab: (request: ConversationFilePreviewRequest, htmlDocument?: string) => void;
+  onOpenInTab: (request: ConversationFilePreviewRequest, htmlDocument?: string, sourceUrl?: string) => void;
   onOpenWorkspaceFile: (href: string, sourcePath: string) => boolean;
 }) {
   const { api, fileUrl } = useAgentSessionGateway();
@@ -3719,7 +3719,7 @@ function ConversationFilePreviewDialog({ request, workspaceId, bindingId, workDi
                         : null
                   : <p>此文件不提供浏览器预览，请在文件标签页中查看或下载。</p>}
       </div>
-      <footer><button type="button" className="secondary" onClick={onClose}>关闭</button>{request.kind !== 'image' && <button type="button" className="primary" disabled={canPreviewHtml && !htmlPreviewDocument} onClick={() => onOpenInTab(request, htmlPreviewDocument)}>{canPreviewHtml ? <Globe2 size={14}/> : <PanelRightOpen size={14}/>}{canPreviewHtml ? '在新标签页打开' : request.kind === 'directory' ? '在文件标签页查看目录' : '在文件标签页打开'}</button>}</footer>
+      <footer><button type="button" className="secondary" onClick={onClose}>关闭</button>{request.kind !== 'image' && <button type="button" className="primary" disabled={canPreviewHtml && !htmlPreviewDocument} onClick={() => onOpenInTab(request, htmlPreviewDocument, sourceUrl)}>{canPreviewHtml ? <Globe2 size={14}/> : <PanelRightOpen size={14}/>}{canPreviewHtml ? '在新标签页打开' : request.kind === 'directory' ? '在文件标签页查看目录' : '在文件标签页打开'}</button>}</footer>
     </section>
   </div>, document.body);
 }
@@ -3746,7 +3746,7 @@ function normalizeBrowserUrl(value: string): string | undefined {
 }
 
 function WorkspaceBrowser({ tab, workspaceId, bindingId, workDirectoryId, browserUrl, onUrlChange, startPage }: {
-  tab: { url?: string; title?: string; document?: string };
+  tab: { url?: string; address?: string; title?: string; document?: string };
   workspaceId: string;
   bindingId?: string;
   workDirectoryId?: string;
@@ -3754,7 +3754,7 @@ function WorkspaceBrowser({ tab, workspaceId, bindingId, workDirectoryId, browse
   onUrlChange: (url: string, title?: string) => void;
   startPage?: ReactNode;
 }) {
-  const [address, setAddress] = useState(tab.url ?? '');
+  const [address, setAddress] = useState(tab.address ?? tab.url ?? '');
   const [refreshKey, setRefreshKey] = useState(0);
   const normalized = normalizeBrowserUrl(tab.url ?? '');
   const source = normalized
@@ -3766,7 +3766,7 @@ function WorkspaceBrowser({ tab, workspaceId, bindingId, workDirectoryId, browse
     setAddress(next);
     onUrlChange(next, new URL(next).hostname);
   };
-  useEffect(() => { setAddress(tab.url ?? ''); }, [tab.url]);
+  useEffect(() => { setAddress(tab.address ?? tab.url ?? ''); }, [tab.address, tab.url]);
   return <section className="agent-workspace-browser" aria-label="内置浏览器">
     <form className="agent-workspace-browser-toolbar" onSubmit={event => { event.preventDefault(); navigate(); }}>
       <div className="agent-workspace-browser-navigation" aria-label="浏览器导航"><button type="button" aria-label="后退" title="后退" disabled><ArrowLeft size={14}/></button><button type="button" aria-label="前进" title="前进" disabled><ArrowRight size={14}/></button><i aria-hidden="true"/><button type="button" aria-label="刷新当前页面" title="刷新" disabled={!source && !tab.document} onClick={() => setRefreshKey(current => current + 1)}><RefreshCw size={14}/></button></div>
@@ -3780,7 +3780,7 @@ function WorkspaceBrowser({ tab, workspaceId, bindingId, workDirectoryId, browse
 function WorkspaceDrawer({
   open, onOpen, onClose, onFullScreenConversationActiveChange, onAnnotateFileSelection, highlightedFileSelection, workspaceId, scopeKey, migrateFromScopeKey, bindingId, workDirectoryId, conversation, conversationCumulativeTokens, attachments, sources, attachmentRequest, candidatePreviewRequest, markdownFileRequest, browserRequest, htmlPreviewRequest, reviewChanges = [], reviewRequestId, sessionChanges = [], onReviewChanges, runtimeAvailable, runtimeTasks, agentDefinitions, sessionStopped, sidebarQuestion, onSidebarBindingCreated, onOpenSidebarQuestion, onCloseSidebarQuestion, onPreviewAttachment,
 }: {
-  open: boolean; onOpen: () => void; onClose: () => void; onFullScreenConversationActiveChange: (active: boolean) => void; onAnnotateFileSelection?: (path: string, selection: FileSelection, quote: string) => void; highlightedFileSelection?: { path: string; selection: FileSelection }; workspaceId: string; scopeKey: string; migrateFromScopeKey?: string; bindingId?: string; workDirectoryId?: string; conversation?: AgentConversation; conversationCumulativeTokens?: number | null; attachments: AgentAttachment[]; sources: ConversationSource[]; attachmentRequest?: { key: string; attachment?: AgentAttachment }; candidatePreviewRequest?: CandidateFilePreviewRequest; markdownFileRequest?: MarkdownFileRequest; browserRequest?: { key: string; url: string }; htmlPreviewRequest?: { key: string; filename: string; document: string }; reviewChanges?: WorkspaceFileChange[]; reviewRequestId?: string; sessionChanges?: WorkspaceFileChange[]; onReviewChanges?: (changes: WorkspaceFileChange[]) => void; runtimeAvailable: boolean; runtimeTasks: RuntimeTaskProjection[]; agentDefinitions: CapabilityAsset[]; sessionStopped: boolean; sidebarQuestion?: { sourceBindingId: string; reference?: AgentConversationReference; sidebarBindingId?: string }; onSidebarBindingCreated: (sourceBindingId: string, sidebarBindingId: string) => void; onOpenSidebarQuestion?: () => void; onCloseSidebarQuestion: () => void; onPreviewAttachment: (attachment: AgentAttachment, previewBindingId?: string) => void;
+  open: boolean; onOpen: () => void; onClose: () => void; onFullScreenConversationActiveChange: (active: boolean) => void; onAnnotateFileSelection?: (path: string, selection: FileSelection, quote: string) => void; highlightedFileSelection?: { path: string; selection: FileSelection }; workspaceId: string; scopeKey: string; migrateFromScopeKey?: string; bindingId?: string; workDirectoryId?: string; conversation?: AgentConversation; conversationCumulativeTokens?: number | null; attachments: AgentAttachment[]; sources: ConversationSource[]; attachmentRequest?: { key: string; attachment?: AgentAttachment }; candidatePreviewRequest?: CandidateFilePreviewRequest; markdownFileRequest?: MarkdownFileRequest; browserRequest?: { key: string; url: string }; htmlPreviewRequest?: { key: string; filename: string; document: string; sourceUrl?: string }; reviewChanges?: WorkspaceFileChange[]; reviewRequestId?: string; sessionChanges?: WorkspaceFileChange[]; onReviewChanges?: (changes: WorkspaceFileChange[]) => void; runtimeAvailable: boolean; runtimeTasks: RuntimeTaskProjection[]; agentDefinitions: CapabilityAsset[]; sessionStopped: boolean; sidebarQuestion?: { sourceBindingId: string; reference?: AgentConversationReference; sidebarBindingId?: string }; onSidebarBindingCreated: (sourceBindingId: string, sidebarBindingId: string) => void; onOpenSidebarQuestion?: () => void; onCloseSidebarQuestion: () => void; onPreviewAttachment: (attachment: AgentAttachment, previewBindingId?: string) => void;
 }) {
   const { api, browserUrl, fileUrl } = useAgentSessionGateway();
   const host = useAgentSessionHost();
@@ -4160,7 +4160,7 @@ function WorkspaceDrawer({
   useEffect(() => {
     if (!htmlPreviewRequest || handledHtmlPreviewRequestKey.current === htmlPreviewRequest.key) return;
     handledHtmlPreviewRequestKey.current = htmlPreviewRequest.key;
-    const tab = { id: `browser:${randomId()}`, kind: 'browser' as const, title: htmlPreviewRequest.filename, document: htmlPreviewRequest.document };
+    const tab = { id: `browser:${randomId()}`, kind: 'browser' as const, title: htmlPreviewRequest.filename, address: htmlPreviewRequest.sourceUrl, document: htmlPreviewRequest.document };
     updateScope(current => ({ ...current, tabs: [...current.tabs, tab], activeTabId: tab.id }));
     setFullScreenView('tool');
     onOpen();
@@ -4650,12 +4650,12 @@ function WorkspaceDrawer({
       {fullScreenConversationActive && <button type="button" aria-label="退出全屏" title="退出全屏（Esc）" onClick={() => setFullScreen(false)}><Minimize2 size={16}/></button>}
     </div>}
     <section className={`agent-workspace-tool-shell ${open ? '' : 'panel-hidden'}`}>
-              <header><nav className="agent-workspace-tabs" aria-label="工作区页签">{fullScreen && <div className={fullScreenView === 'conversation' ? 'active fixed' : 'fixed'}><button type="button" className="agent-workspace-tab-select" title={conversationTabLabel} onClick={() => setFullScreenView('conversation')}><span>{conversationTabLabel}</span></button></div>}{scopeState.tabs.map(tab => <div key={tab.id} className={!fullScreen || fullScreenView === 'tool' && scopeState.activeTabId === tab.id ? 'active' : ''}><button type="button" className="agent-workspace-tab-select" onClick={() => { setFullScreenView('tool'); updateScope(current => ({ ...current, activeTabId: tab.id })); }}><i className="agent-workspace-tab-icon">{workspaceTabIcon(tab)}</i><span>{workspaceTabLabel(tab)}</span></button><button type="button" className="agent-workspace-tab-close" aria-label={`关闭${workspaceTabLabel(tab)}页签`} disabled={tab.kind === 'terminal' && closingTerminalId === tab.terminalInstanceId} onClick={() => { if (tab.kind !== 'terminal' || closingTerminalId !== tab.terminalInstanceId) requestCloseTab(tab); }}><X size={12}/></button></div>)}<button type="button" className="agent-workspace-new-tab" aria-label="新建工作区页签" title="新建页签" onClick={openLauncher}><Plus size={15}/></button></nav><div className="agent-workspace-tool-actions">{fullScreen ? <><button type="button" aria-label={environmentOpen ? '隐藏悬浮信息卡' : '显示悬浮信息卡'} title={environmentOpen ? '隐藏悬浮信息卡' : '显示悬浮信息卡'} aria-pressed={environmentOpen} onClick={() => setEnvironmentOpen(current => !current)}>{environmentOpen ? <MonitorOff size={15}/> : <MonitorCog size={15}/>}</button><button type="button" aria-label="退出全屏" title="退出全屏（Esc）" onClick={() => setFullScreen(false)}><Minimize2 size={16}/></button></> : <><button type="button" aria-label="全屏查看工作区工具" title="全屏查看" onClick={() => { setFullScreenView('tool'); setFullScreen(true); }}><Maximize2 size={16}/></button><button type="button" aria-label="关闭工作区工具" onClick={() => void closeWorkspaceTools()}><X size={16}/></button></>}</div></header>
+              <header><nav className="agent-workspace-tabs" aria-label="工作区页签">{fullScreen && <div className={fullScreenView === 'conversation' ? 'active fixed' : 'fixed'}><button type="button" className="agent-workspace-tab-select" title={conversationTabLabel} onClick={() => setFullScreenView('conversation')}><span>{conversationTabLabel}</span></button></div>}{scopeState.tabs.map(tab => <div key={tab.id} className={!fullScreen || fullScreenView === 'tool' && scopeState.activeTabId === tab.id ? 'active' : ''}><button type="button" className="agent-workspace-tab-select" onClick={() => { setFullScreenView('tool'); updateScope(current => ({ ...current, activeTabId: tab.id })); }}><i className="agent-workspace-tab-icon">{workspaceTabIcon(tab)}</i><span>{workspaceTabLabel(tab)}</span></button><button type="button" className="agent-workspace-tab-close" aria-label={`关闭${workspaceTabLabel(tab)}页签`} disabled={tab.kind === 'terminal' && closingTerminalId === tab.terminalInstanceId} onClick={() => { if (tab.kind !== 'terminal' || closingTerminalId !== tab.terminalInstanceId) requestCloseTab(tab); }}><X size={12}/></button></div>)}<button type="button" className="agent-workspace-new-tab" aria-label="新建工作区页签" title="新建页签" onClick={openLauncher}><Plus size={15}/></button></nav><div className="agent-workspace-tool-actions">{fullScreen ? <><button type="button" aria-label={environmentOpen ? '隐藏悬浮信息卡' : '显示悬浮信息卡'} title={environmentOpen ? '隐藏悬浮信息卡' : '显示悬浮信息卡'} aria-pressed={environmentOpen} onClick={() => setEnvironmentOpen(current => !current)}>{environmentOpen ? <MonitorOff size={15}/> : <MonitorCog size={15}/>}</button><button type="button" aria-label="退出全屏" title="退出全屏（Esc）" onClick={() => setFullScreen(false)}><Minimize2 size={16}/></button><button type="button" aria-label="关闭工作区工具" title="关闭工作区工具并返回会话" onClick={() => void closeWorkspaceTools()}><X size={16}/></button></> : <><button type="button" aria-label="全屏查看工作区工具" title="全屏查看" onClick={() => { setFullScreenView('tool'); setFullScreen(true); }}><Maximize2 size={16}/></button><button type="button" aria-label="关闭工作区工具" onClick={() => void closeWorkspaceTools()}><X size={16}/></button></>}</div></header>
       <div className="agent-workspace-tool-body">
         {panelError && <p className="agent-workspace-panel-error" role="alert"><span>{panelError}</span><button type="button" aria-label="关闭错误提示" onClick={() => setPanelError('')}><X size={13}/></button></p>}
         {scopeState.tabs.filter((tab): tab is Extract<WorkspaceToolTab, { kind: 'launcher' }> => tab.kind === 'launcher').map(tab => <section key={tab.id} className={`agent-workspace-tab-launcher ${scopeState.activeTabId === tab.id ? 'active' : ''}`}><WorkspaceBrowser tab={{ url: tab.url ?? '', title: tab.title }} workspaceId={workspaceId} bindingId={bindingId} workDirectoryId={workDirectoryId} browserUrl={browserUrl} onUrlChange={(url, title) => navigateLauncherBrowser(tab.id, url, title)} startPage={<div className="agent-workspace-tab-launcher-cards"><p>工具</p><button type="button" onClick={() => chooseLauncherTool(tab.id, () => openFiles())}><FileCode2 size={16}/>文件</button><button type="button" disabled={!runtimeAvailable} onClick={() => chooseLauncherTool(tab.id, openTerminal)}><SquareTerminal size={16}/>终端</button>{onOpenSidebarQuestion && <button type="button" onClick={() => chooseLauncherTool(tab.id, onOpenSidebarQuestion)}><PanelRightOpen size={16}/>侧边聊天</button>}<button type="button" onClick={() => chooseLauncherTool(tab.id, openGitHistory)}><GitBranch size={16}/>Git 历史</button>{reviewChanges.length > 0 && <button type="button" onClick={() => chooseLauncherTool(tab.id, () => openChanges())}><FileText size={16}/>审查改动</button>}{sources.length > 0 && <button type="button" onClick={() => chooseLauncherTool(tab.id, () => openSources)}><Link2 size={16}/>来源</button>}{runtimeTasks.length > 0 && <button type="button" onClick={() => chooseLauncherTool(tab.id, () => openRuntimeTasks())}><Bot size={16}/>子智能体</button>}</div>}/></section>)}
-        {loadingOrError || (scopeState.tabs.some(tab => tab.kind === 'launcher' && tab.id === scopeState.activeTabId) ? null : !scopeState.tabs.filter(tab => tab.kind !== 'launcher').length ? <div className="agent-drawer-empty"><b>选择工作区工具</b><span>点击顶部“新建页签”，再选择文件、终端或其他工具。</span></div> : details && <div className={`agent-workspace-tool-content${gitSidebarVisible ? ' fullscreen-git-layout' : ''}`}>
-          {scopeState.tabs.filter((tab): tab is Extract<WorkspaceToolTab, { kind: 'browser' }> => tab.kind === 'browser').map(tab => <div key={tab.id} className={`agent-workspace-browser-tab-panel ${scopeState.activeTabId === tab.id ? 'active' : ''}`}><WorkspaceBrowser tab={tab} workspaceId={workspaceId} bindingId={bindingId} workDirectoryId={workDirectoryId} browserUrl={browserUrl} onUrlChange={(url, title) => updateScope(current => ({ ...current, tabs: current.tabs.map(candidate => candidate.id === tab.id && candidate.kind === 'browser' ? { ...candidate, url, title, document: undefined } : candidate) }))}/></div>)}
+        {scopeState.tabs.filter((tab): tab is Extract<WorkspaceToolTab, { kind: 'browser' }> => tab.kind === 'browser').map(tab => <div key={tab.id} className={`agent-workspace-browser-tab-panel ${scopeState.activeTabId === tab.id ? 'active' : ''}`}><WorkspaceBrowser tab={tab} workspaceId={workspaceId} bindingId={bindingId} workDirectoryId={workDirectoryId} browserUrl={browserUrl} onUrlChange={(url, title) => updateScope(current => ({ ...current, tabs: current.tabs.map(candidate => candidate.id === tab.id && candidate.kind === 'browser' ? { ...candidate, url, address: url, title, document: undefined } : candidate) }))}/></div>)}
+        {loadingOrError || (scopeState.tabs.some(tab => (tab.kind === 'launcher' || tab.kind === 'browser') && tab.id === scopeState.activeTabId) ? null : !scopeState.tabs.filter(tab => tab.kind !== 'launcher').length ? <div className="agent-drawer-empty"><b>选择工作区工具</b><span>点击顶部“新建页签”，再选择文件、终端或其他工具。</span></div> : details && <div className={`agent-workspace-tool-content${gitSidebarVisible ? ' fullscreen-git-layout' : ''}`}>
           {scopeState.tabs.some(tab => tab.kind === 'files') && <section className={`agent-workspace-files ${scopeState.activeTabId === 'files' ? 'active' : ''}${gitSidebarVisible ? ' fullscreen-git' : ''}`} style={{ '--file-tree-width': `${fileTreeWidth}px` } as CSSProperties}>
             <div className="agent-file-tree-pane">
               <header className="agent-file-tree-toolbar"><span>{selectedEntryPaths.size ? `已选 ${selectedEntryPaths.size} 项` : '文件'}</span><div className="agent-file-tree-actions"><input ref={workspaceUploadInput} type="file" multiple hidden onChange={event => { Array.from(event.target.files ?? []).forEach(file => startWorkspaceUpload(file)); event.currentTarget.value = ''; }}/><button type="button" title="上传文件" aria-label="上传文件" disabled={!api.uploadWorkspaceFile} onClick={() => workspaceUploadInput.current?.click()}><ArrowUp size={13}/></button><button type="button" title="新建文件" aria-label="新建文件" onClick={() => createAtActiveDirectory('FILE')}><FileCode2 size={13}/></button><button type="button" title="新建目录" aria-label="新建目录" onClick={() => createAtActiveDirectory('DIRECTORY')}><FolderPlus size={13}/></button><button type="button" className={`agent-file-tree-expand-toggle${expandAllFileDirectories ? ' expanded' : ''}`} title={expandAllFileDirectories ? '全部收起' : '全部展开'} aria-label={expandAllFileDirectories ? '全部收起目录' : '全部展开目录'} disabled={!fileDirectoryPaths.length} onClick={toggleAllFileDirectories}>{expandAllFileDirectories ? <ChevronRight size={13}/> : <ChevronDown size={13}/>}</button><button type="button" className="danger" title="删除选中项" aria-label="删除选中项" disabled={!selectedEntryRoots.length} onClick={() => void removeEntries(selectedEntryRoots.map(path => ({ path, kind: visibleFiles.find(item => item.path === path)?.kind ?? 'directory' })))}><Trash2 size={13}/></button></div></header>
@@ -4812,7 +4812,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [workspaceReferenceQuery, setWorkspaceReferenceQuery] = useState('');
   const [filePreviewRequest, setFilePreviewRequest] = useState<ConversationFilePreviewRequest>();
   const [browserRequest, setBrowserRequest] = useState<{ key: string; url: string }>();
-  const [htmlPreviewRequest, setHtmlPreviewRequest] = useState<{ key: string; filename: string; document: string }>();
+  const [htmlPreviewRequest, setHtmlPreviewRequest] = useState<{ key: string; filename: string; document: string; sourceUrl?: string }>();
   const [attachmentRequest, setAttachmentRequest] = useState<{ key: string; attachment?: AgentAttachment }>();
   const [fileSelectionReference, setFileSelectionReference] = useState<{ path: string; selection: FileSelection }>();
   const [candidatePreviewRequest, setCandidatePreviewRequest] = useState<CandidateFilePreviewRequest>();
@@ -6940,11 +6940,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       relativePath,
     });
   }, [candidateOutputUrl, workspace]);
-  const openPreviewInTab = useCallback((request: ConversationFilePreviewRequest, htmlDocument?: string) => {
+  const openPreviewInTab = useCallback((request: ConversationFilePreviewRequest, htmlDocument?: string, sourceUrl?: string) => {
     if (request.kind === 'image') return;
     setFilePreviewRequest(undefined);
     if (request.kind === 'workspace' && isHtmlPreviewable(request.path, request.mimeType) && htmlDocument) {
-      setHtmlPreviewRequest({ key: randomId(), filename: request.filename, document: htmlDocument });
+      setHtmlPreviewRequest({ key: randomId(), filename: request.filename, document: htmlDocument, sourceUrl });
     } else if (request.kind === 'candidate') {
       setCandidatePreviewRequest({ key: randomId(), filename: request.filename, url: request.url });
     } else if (request.kind === 'directory') {

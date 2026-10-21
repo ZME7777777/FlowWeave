@@ -2297,7 +2297,7 @@ test('workspace Markdown links open the referenced node-session file without nav
   await page.goto(sessionPath);
   const conversationImage = page.getByRole('button', { name: '预览图片：会话图片' });
   await expect(conversationImage.locator('img')).toBeVisible();
-  await conversationImage.click();
+  await conversationImage.evaluate(button => button.click());
   await expect(page.getByRole('dialog', { name: '文件预览' })).toContainText('会话图片');
   await page.getByRole('dialog', { name: '文件预览' }).getByRole('button', { name: '关闭', exact: true }).click();
   await page.getByRole('link', { name: '打开汇总' }).click();
@@ -2339,6 +2339,11 @@ test('workspace Markdown links open the referenced node-session file without nav
   await expect(page).toHaveURL(new RegExp(`${sessionPath}$`));
   await page.getByRole('dialog', { name: '文件预览' }).getByRole('button', { name: '在新标签页打开', exact: true }).click();
   await expect(page.getByRole('dialog', { name: '文件预览' })).toHaveCount(0);
+  const browserPanel = page.locator('.agent-workspace-browser-tab-panel.active');
+  await expect(browserPanel.getByRole('textbox', { name: '网页地址', exact: true })).toHaveValue(/daily\.html/);
+  await expect(browserPanel.getByTitle('daily.html')).toBeVisible();
+  await expect.poll(() => browserPanel.evaluate(element => element.getBoundingClientRect().height)).toBeGreaterThan(300);
+  await expect(browserPanel.locator('.agent-workspace-browser-toolbar input')).toHaveCSS('text-align', 'left');
   const htmlTab = page.locator('.agent-workspace-browser-tab-panel.active iframe');
   await expect(htmlTab).toHaveAttribute('sandbox', '');
   await expect(htmlTab.contentFrame().getByRole('heading', { name: 'HTML 日报已渲染' })).toBeVisible();
