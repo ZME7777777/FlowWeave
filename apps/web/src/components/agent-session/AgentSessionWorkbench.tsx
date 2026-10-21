@@ -5753,11 +5753,41 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       : { content, attachments: [], references: [], workspaceReferences: [], annotations: [] });
     return true;
   }, []);
+  const persistUncreatedDraftText = useCallback((scope: string | undefined, content: string) => {
+    if (!workspace || !scope || conversationDraft?.id !== scope
+      || pendingBootstrap?.draft.id === scope || bootstrapRecovery?.draft.id === scope) return;
+    const recovery = {
+      draft: conversationDraft,
+      content,
+      attachments,
+      references,
+      workspaceReferences,
+      annotations: composerAnnotations,
+      providerId: newConversationProviderId,
+      modelName: newConversationModelName,
+      reasoningEffort: newConversationReasoningEffort,
+    };
+    const recoverable = conversationDraftHasContent(recovery)
+      || Boolean(pendingAttachmentIdsByScope.current.get(scope)?.size);
+    writeConversationDraft(
+      conversationDraftStorageKey(host.id, workspace.id, conversationDraft.workDirectoryId),
+      recoverable ? recovery : undefined,
+    );
+    const draftKey = conversationDraft.workDirectoryId ?? 'root';
+    setRecoverableConversationDrafts(current => {
+      if (recoverable) return { ...current, [draftKey]: recovery };
+      if (!current[draftKey]) return current;
+      const updated = { ...current };
+      delete updated[draftKey];
+      return updated;
+    });
+  }, [attachments, bootstrapRecovery, composerAnnotations, conversationDraft, host.id, newConversationModelName, newConversationProviderId, newConversationReasoningEffort, pendingBootstrap, references, workspace, workspaceReferences]);
   const setComposerDraft = useCallback((scope: string | undefined, value: string) => {
     if (!updateComposerText(scope, value)) return;
+    persistUncreatedDraftText(scope, value);
     const hasText = Boolean(value.trim());
     setComposerHasText(current => current === hasText ? current : hasText);
-  }, [updateComposerText]);
+  }, [persistUncreatedDraftText, updateComposerText]);
   const replaceComposerDraft = useCallback((value: string, scope = activeComposerScope.current) => {
     composerDraftRef.current = value;
     composerRef.current?.replace(value);
