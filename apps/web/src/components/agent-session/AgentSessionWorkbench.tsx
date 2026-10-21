@@ -20,7 +20,7 @@ import { agentWorkspaceSessionHost, type AgentSessionHost } from './session-host
 import { SidebarConversationPane } from './SidebarConversationPane';
 import { clearConversationSnapshots, readConversationContextSnapshot, writeConversationContextSnapshot } from './conversation-cache';
 import { ConversationSurface, ConversationTaskPlan, type ConversationHistoryPrepend, type ConversationReference, type ConversationScrollSnapshot, type ModelRetryStatus } from '../ConversationSurface';
-import { isOpenHandsAgentReply, isOpenHandsConversationInterrupt, isOpenHandsConversationTerminalError, isOpenHandsEmptyResponseRecovery, orderOpenHandsConversationEvents } from '../conversationEvents';
+import { isOpenHandsAgentReply, isOpenHandsConversationInterrupt, isOpenHandsConversationTerminalError, isOpenHandsEmptyResponseRecovery, orderOpenHandsConversationEvents, projectFlowWeaveMessageContext } from '../conversationEvents';
 import { useProductDialog } from '../ProductDialogContext';
 import { useEscapeClose } from '../useEscapeClose';
 import { MermaidDiagram } from '../MermaidDiagram';
@@ -876,7 +876,7 @@ function ConversationStreamObserver({
 }
 
 function WorkspaceConversationRow({
-  item, selectedBindingId, workspaceName, running, possiblyStuck, failed, unread, unreadOrigin, pinned, conversationWritable, removing, deleteDisabled, dragging, dropPosition, orderSyncState, onDragStart, onDragOver, onDrop, onDragEnd, onRetryOrder, onSelect, onDoubleClick, onTogglePin, onMarkUnread, onMarkRead, onAcknowledgeAlert, onDelete,
+  item, selectedBindingId, workspaceName, running, possiblyStuck, failed, unread, unreadOrigin, pinned, conversationWritable, removing, deleteDisabled, dragging, dropPosition, orderSyncState, onDragStart, onDragOver, onDrop, onDragEnd, onRetryOrder, onSelect, onDoubleClick, onTogglePin, onExport, onMarkUnread, onMarkRead, onAcknowledgeAlert, onDelete,
 }: {
   item: AgentConversation;
   selectedBindingId?: string;
@@ -901,6 +901,7 @@ function WorkspaceConversationRow({
   onSelect: () => void;
   onDoubleClick?: () => void;
   onTogglePin: () => void;
+  onExport: () => void;
   onMarkUnread: () => void;
   onMarkRead?: () => void;
   onAcknowledgeAlert?: () => void;
@@ -937,6 +938,7 @@ function WorkspaceConversationRow({
       {pinned
         ? <button type="button" role="menuitem" onClick={() => { onTogglePin(); setContextMenu(undefined); }}><PinOff size={13}/>取消置顶</button>
         : <button type="button" role="menuitem" onClick={() => { onTogglePin(); setContextMenu(undefined); }}><Pin size={13}/>置顶</button>}
+      <button type="button" role="menuitem" onClick={() => { onExport(); setContextMenu(undefined); }}><Download size={13}/>导出</button>
       {onMarkRead
         ? unread && <button type="button" role="menuitem" onClick={() => { onMarkRead(); setContextMenu(undefined); }}><CircleDot size={13}/>标记为已读</button>
         : <button type="button" role="menuitem" onClick={() => { onMarkUnread(); setContextMenu(undefined); }}><CircleDot size={13}/>标记为未读</button>}
@@ -1491,6 +1493,38 @@ function pendingConversationName(message: QueuedMessage | undefined) {
   const firstLine = message?.content.trim().split(/\r?\n/, 1)[0]?.trim();
   if (!firstLine) return message?.items.length ? '附件会话' : '新会话';
   return firstLine.length > 36 ? `${firstLine.slice(0, 36)}…` : firstLine;
+}
+
+function conversationMarkdownFilename(conversation: AgentConversation): string {
+  const safeTitle = conversationName(conversation)
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 80) || '会话记录';
+  return `${safeTitle}-${new Date().toISOString().slice(0, 10)}.md`;
+}
+
+function conversationMarkdownDocument(conversation: AgentConversation, events: OpenHandsConversationEvent[]): string {
+  const messages = orderOpenHandsConversationEvents(events)
+    .map(projectFlowWeaveMessageContext)
+    .flatMap(event => {
+      if (event.event_type !== 'MESSAGE' || typeof event.payload.content !== 'string') return [];
+      const source = String(event.payload.source ?? '').toLowerCase();
+      const author = ['user', 'human'].includes(source) ? '用户' : ['agent', 'assistant'].includes(source) ? '助手' : undefined;
+      if (!author) return [];
+      const content = (typeof event.payload.display_content === 'string' ? event.payload.display_content : event.payload.content).trim();
+      return content ? [`## ${author}\n\n${content}`] : [];
+    });
+  return [`# ${conversationName(conversation)}`, ...messages].join('\n\n').concat('\n');
+}
+
+function downloadConversationMarkdown(conversation: AgentConversation, events: OpenHandsConversationEvent[]): void {
+  const url = URL.createObjectURL(new Blob([conversationMarkdownDocument(conversation, events)], { type: 'text/markdown;charset=utf-8' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = conversationMarkdownFilename(conversation);
+  link.click();
+  URL.revokeObjectURL(url);
 }
 
 function mergeConversationEvent(
@@ -9123,6 +9157,25 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }
     clearConversationDrag();
   }
+  async function exportConversation(conversation: AgentConversation): Promise<void> {
+    if (!workspace) return;
+    try {
+      const latest = await api.conversationEvents(workspace.id, conversation.id);
+      const seenHistoryCursors = new Set<string>();
+      let events = latest.events;
+      let historyCursor = latest.history_cursor;
+      while (historyCursor) {
+        if (seenHistoryCursors.has(historyCursor)) throw new Error('导出会话记录时，历史分页游标没有推进。');
+        seenHistoryCursors.add(historyCursor);
+        const older = await api.conversationEvents(workspace.id, conversation.id, undefined, historyCursor);
+        events = mergeConversationEvents(older.events, events);
+        historyCursor = older.history_cursor;
+      }
+      downloadConversationMarkdown(conversation, events);
+    } catch (error) {
+      reportOperationError(conversation.id, error instanceof Error ? error : new Error('导出会话记录失败'));
+    }
+  }
   const conversationRow = (item: AgentConversation, group: AgentConversation[], options: { allowDrag?: boolean; workspaceName?: string; onSelect?: () => void; onDoubleClick?: () => void; onMarkRead?: () => void } = {}) => {
     // The batched native activity snapshot is the sidebar's authority for
     // every row. A selected transcript may temporarily show its local send /
@@ -9151,7 +9204,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     const conversationWritable = Boolean(item.write_available);
     const draggable = options.allowDrag !== false;
     const orderSync = conversationOrderSync[item.id];
-    return <WorkspaceConversationRow key={item.id} item={item} selectedBindingId={selectedBindingId} workspaceName={options.workspaceName} running={running} possiblyStuck={possiblyStuck} failed={failed} unread={unread} unreadOrigin={unreadOrigin} pinned={Boolean(item.pinned)} conversationWritable={conversationWritable} removing={remove.isPending} deleteDisabled={running} dragging={draggable && draggedBindingId === item.id} dropPosition={draggable && dragTarget?.bindingId === item.id ? (dragTarget.after ? 'after' : 'before') : undefined} orderSyncState={orderSync?.state} onDragStart={draggable ? event => startConversationDrag(event, item, group) : undefined} onDragOver={draggable ? event => previewConversationDrop(event, item, group) : undefined} onDrop={draggable ? event => dropConversation(event, item, group) : undefined} onDragEnd={draggable ? endConversationDrag : undefined} onRetryOrder={orderSync?.state === 'failed' ? () => synchronizeConversationOrder(item.id, orderSync.orderedBindingIds) : undefined} onSelect={options.onSelect ?? (() => selectConversation(item.id))} onDoubleClick={options.onDoubleClick} onTogglePin={() => toggleConversationPin(item.id)} onMarkUnread={() => markConversationUnread(item.id)} onMarkRead={options.onMarkRead} onAcknowledgeAlert={() => markConversationRead(item.id)} onDelete={features.conversationDeletion && conversationWritable ? () => void confirmDeletion('会话', conversationName(item)).then(ok => { if (ok) remove.mutate(item.id); }) : undefined}/>;
+    return <WorkspaceConversationRow key={item.id} item={item} selectedBindingId={selectedBindingId} workspaceName={options.workspaceName} running={running} possiblyStuck={possiblyStuck} failed={failed} unread={unread} unreadOrigin={unreadOrigin} pinned={Boolean(item.pinned)} conversationWritable={conversationWritable} removing={remove.isPending} deleteDisabled={running} dragging={draggable && draggedBindingId === item.id} dropPosition={draggable && dragTarget?.bindingId === item.id ? (dragTarget.after ? 'after' : 'before') : undefined} orderSyncState={orderSync?.state} onDragStart={draggable ? event => startConversationDrag(event, item, group) : undefined} onDragOver={draggable ? event => previewConversationDrop(event, item, group) : undefined} onDrop={draggable ? event => dropConversation(event, item, group) : undefined} onDragEnd={draggable ? endConversationDrag : undefined} onRetryOrder={orderSync?.state === 'failed' ? () => synchronizeConversationOrder(item.id, orderSync.orderedBindingIds) : undefined} onSelect={options.onSelect ?? (() => selectConversation(item.id))} onDoubleClick={options.onDoubleClick} onTogglePin={() => toggleConversationPin(item.id)} onExport={() => { void exportConversation(item); }} onMarkUnread={() => markConversationUnread(item.id)} onMarkRead={options.onMarkRead} onAcknowledgeAlert={() => markConversationRead(item.id)} onDelete={features.conversationDeletion && conversationWritable ? () => void confirmDeletion('会话', conversationName(item)).then(ok => { if (ok) remove.mutate(item.id); }) : undefined}/>;
   };
   const pendingBootstrapItem = pendingBootstrap
     ? <button className={pendingBootstrap.draft.id === conversationDraft?.id ? 'active' : ''} aria-current={pendingBootstrap.draft.id === conversationDraft?.id ? 'page' : undefined} aria-label={`${pendingConversationName(pendingBootstrap.message)}，正在创建会话`}><LoaderCircle className="conversation-activity-spin" size={13}/><span><b>{pendingConversationName(pendingBootstrap.message)}</b><small>正在创建会话</small></span><ChevronRight size={13}/></button>
