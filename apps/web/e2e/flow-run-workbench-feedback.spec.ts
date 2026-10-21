@@ -2337,7 +2337,14 @@ test('workspace Markdown links open the referenced node-session file without nav
   await expect(htmlFrame.getByRole('button', { name: '不应显示' })).toHaveCount(0);
   await expect(htmlFrame.locator('body')).not.toHaveAttribute('data-script-ran', 'true');
   await expect(page).toHaveURL(new RegExp(`${sessionPath}$`));
-  await page.getByRole('dialog', { name: '文件预览' }).getByRole('button', { name: '关闭', exact: true }).click();
+  await page.getByRole('dialog', { name: '文件预览' }).getByRole('button', { name: '在新标签页打开', exact: true }).click();
+  const browserPanel = page.locator('.agent-workspace-browser-tab-panel.active');
+  await expect(browserPanel.getByRole('textbox', { name: '网页地址', exact: true })).toHaveValue(/daily\.html/);
+  await expect(browserPanel.getByTitle('daily.html')).toBeVisible();
+  await expect.poll(() => browserPanel.evaluate(element => element.getBoundingClientRect().height)).toBeGreaterThan(300);
+  await expect(browserPanel.locator('.agent-workspace-browser-toolbar input')).toHaveCSS('text-align', 'left');
+  const tabFrame = browserPanel.getByTitle('daily.html').contentFrame();
+  await expect(tabFrame.getByRole('heading', { name: 'HTML 日报已渲染' })).toBeVisible();
   await page.getByRole('link', { name: '打开工作目录' }).click();
   const directoryPreview = page.getByRole('dialog', { name: '文件预览' });
   await expect(directoryPreview).toContainText('此链接指向工作目录，不是文件，因此无法预览。');

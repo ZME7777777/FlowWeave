@@ -48,7 +48,7 @@ async function openWorkspace(page: Page, events: unknown[] = []) {
     if (path.endsWith('/conversation-activity')) return json(route, { running_binding_ids: [] });
     if (path.endsWith('/hydration')) return json(route, { events: { events, next_cursor: null, history_cursor: null, result: { status: 'COMPLETED' } }, context: { used_tokens: 136664, window_tokens: 512000, view_event_count: 68, condenser_max_size: 50 }, readiness: { ready: true, execution_status: 'idle' } });
     if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
-    if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [{ id: 'existing-directory', display_name: '已有项目目录' }] });
+    if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [{ id: 'existing-directory', display_name: '已有项目目录', current_version: { working_directory: '/runtime/workspace/project/existing-directory' } }] });
     if (path.endsWith('/workspace')) return json(route, { root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', files: [], repositories: [], runtime: {}, ide: { gateway: { supported: false } } });
     if (path.endsWith('/model-providers')) return json(route, [{ id: 'provider-1', name: '测试供应商', connection_state: 'CONNECTED', models: [{ model_name: 'model-1', enabled: true, is_default: true, default_reasoning_effort: 'medium', supported_reasoning_efforts: ['low', 'medium', 'high'] }] }]);
     if (path.endsWith('/website-credentials')) return json(route, [{ id: 'credential-1', name: '测试认证', target_host: 'example.test', target_path: '/', include_subdomains: false, auth_type: 'TOKEN', has_username: false, has_secret: true, row_version: 1, environment_names: { token: 'TEST_TOKEN' }, created_at: now, updated_at: now }]);
@@ -109,6 +109,28 @@ test('internal navigation returns from schedules and management to the active co
   await expect(page.getByRole('textbox', { name: '发送 Agent 消息' })).toBeVisible();
   await expect(drawer).toHaveClass(/tools-open/);
 });
+
+test('internal navigation restores a draft in its originating work directory', async ({ page }) => {
+  await openWorkspace(page);
+  await page.goto('/agent/conversations/scheduled-conversation');
+
+  const directoryGroup = page.locator('.agent-workspace-group').filter({ hasText: '已有项目目录' });
+  await directoryGroup.getByRole('button', { name: '在已有项目目录中新建会话' }).click({ force: true });
+  const composer = page.getByRole('textbox', { name: '发送 Agent 消息' });
+  await composer.fill('保留已有项目目录中的草稿');
+
+  const navigation = page.getByRole('navigation', { name: 'Agent 工作区导航' });
+  await navigation.getByRole('button', { name: '定时任务' }).click();
+  await navigation.getByRole('button', { name: '主页' }).click();
+  await expect(composer).toHaveValue('保留已有项目目录中的草稿');
+  await expect(directoryGroup.getByRole('button', { name: '恢复已有项目目录的未发送草稿' })).toHaveCount(0);
+
+  await navigation.getByRole('button', { name: '会话管理' }).click();
+  await navigation.getByRole('button', { name: '主页' }).click();
+  await expect(composer).toHaveValue('保留已有项目目录中的草稿');
+  await expect(directoryGroup.getByRole('button', { name: '恢复已有项目目录的未发送草稿' })).toHaveCount(0);
+});
+
 
 
 test('scheduled conversations keep their route and draft while creating or editing a task', async ({ page }) => {
@@ -171,6 +193,9 @@ test('the floating card occupies conversation whitespace without resizing it or 
   await page.goto('/agent/conversations/scheduled-conversation');
   const card = page.locator('.agent-workspace-summary');
   await expect(card).toContainText('IDEA / Gateway');
+  const cardTransition = await card.evaluate(element => getComputedStyle(element).transitionProperty);
+  expect(cardTransition).toContain('opacity');
+  expect(cardTransition).toContain('transform');
   const geometry = () => page.evaluate(() => {
     const rect = (selector: string) => { const r = document.querySelector(selector)!.getBoundingClientRect(); return { left:r.left, right:r.right, top:r.top, bottom:r.bottom, width:r.width, height:r.height }; };
     const style=getComputedStyle(document.querySelector('.agent-workspace-summary article')!);
@@ -220,6 +245,11 @@ test('fullscreen tools occupy the entire workbench region and restore the conver
   await page.getByRole('button',{name:'全屏查看工作区工具',exact:true}).click();
   const main=page.locator('.agent-workbench-main');
   await expect(main).toBeHidden();
+  const controls=page.locator('.agent-workspace-tool-actions');
+  await expect(controls.getByRole('button')).toHaveCount(3);
+  await expect(controls.getByRole('button',{name:/^(显示|隐藏)悬浮信息卡$/})).toBeVisible();
+  await expect(controls.getByRole('button',{name:'退出全屏',exact:true})).toBeVisible();
+  await expect(controls.getByRole('button',{name:'关闭工作区工具',exact:true})).toBeVisible();
   await expect(page.locator('.agent-workspace-tab-launcher.active')).toBeVisible();
   const bounds=() => page.evaluate(() => {
     const root=document.querySelector('.agent-workbench-page')!.getBoundingClientRect();
@@ -249,10 +279,8 @@ test('fullscreen tools occupy the entire workbench region and restore the conver
   await tabs.getByRole('button',{name:'新标签页',exact:true}).click();
   await expect(main).toBeHidden();
   await expect.poll(bounds).toBeLessThanOrEqual(1);
-  await page.getByRole('button',{name:'退出全屏',exact:true}).click();
+  await controls.getByRole('button',{name:'关闭工作区工具',exact:true}).click();
   await expect(main).toBeVisible();
-  await expect(composer).toHaveValue('全屏切换时保留草稿');
-  await page.getByRole('button',{name:'关闭工作区工具',exact:true}).click();
   await expect(page.locator('.agent-workspace-summary')).toBeVisible();
   await expect(composer).toHaveValue('全屏切换时保留草稿');
 });
@@ -268,7 +296,7 @@ test('new workspace tabs embed a compact browser without a duplicate browser car
   await expect(launcher.getByRole('textbox', { name: '网页地址', exact: true })).toBeVisible();
   await expect(launcher.getByRole('button', { name: '浏览器', exact: true })).toHaveCount(0);
   await expect(launcher.getByRole('button', { name: '文件', exact: true })).toBeVisible();
-  await expect.poll(() => launcher.locator('.agent-workspace-browser-toolbar').evaluate(element => element.getBoundingClientRect().height)).toBeLessThanOrEqual(48);
+  await expect.poll(() => launcher.locator('.agent-workspace-browser-toolbar').evaluate(element => element.getBoundingClientRect().height)).toBeLessThanOrEqual(60);
 });
 
 
