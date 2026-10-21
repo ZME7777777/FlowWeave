@@ -6,6 +6,7 @@ import { withDeploymentBase, withoutDeploymentBase } from './deploymentPath';
 import { api } from './api/client';
 import type { AuthUser, FlowRunSummary } from './types';
 import { LoginScreen } from './components/LoginScreen';
+import { workspaceFileViewerRoute } from './pages/workspace-file-viewer-route';
 import { useEscapeClose } from './components/useEscapeClose';
 import { clearAgentSessionCacheStorage, setAgentSessionCacheIdentity } from './components/agent-session/conversation-cache';
 
@@ -22,6 +23,7 @@ const LdapUsersPage = lazy(() => import('./pages/LdapUsersPage').then(module => 
 const StandaloneAgentTerminal = lazy(() => import('./components/AgentRuntimeSidebar').then(module => ({ default: module.StandaloneAgentTerminal })));
 const AgentWorkbenchPage = lazy(() => import('./pages/AgentWorkbenchPage').then(module => ({ default: module.AgentWorkbenchPage })));
 const FlowNodeSessionPage = lazy(() => import('./pages/FlowNodeSessionPage').then(module => ({ default: module.FlowNodeSessionPage })));
+const WorkspaceFileViewerPage = lazy(() => import('./pages/WorkspaceFileViewerPage').then(module => ({ default: module.WorkspaceFileViewerPage })));
 
 function PageLoading() {
   return <main className="auth-loading" role="status"><Hexagon size={30} fill="currentColor"/><span>正在加载页面…</span></main>;
@@ -163,6 +165,7 @@ export function App() {
     }
   };
   const routePathname = withoutDeploymentBase(window.location.pathname);
+  const fileViewerRoute = workspaceFileViewerRoute();
   const flowRunRoute = routePathname.match(/^\/flow-runs\/([^/]+)$/);
   const nodeSessionRoute = routePathname.match(
     /^\/flow-runs\/([^/]+)\/nodes\/([^/]+)\/attempts\/([^/]+)\/agent-sessions(?:\/([^/]+))?$/,
@@ -342,6 +345,7 @@ export function App() {
   const terminalConversationId = terminalParams.get('terminalConversation');
   if (user === undefined) return <div className="auth-loading"><Hexagon size={30} fill="currentColor"/><span>正在验证登录状态…</span></div>;
   if (user === null) return <LoginScreen onLogin={replaceIdentity}/>;
+  if (fileViewerRoute) return <Suspense fallback={<PageLoading/>}><WorkspaceFileViewerPage route={fileViewerRoute}/></Suspense>;
   const logout = async () => {
     try { await api.logout(); } finally { await replaceIdentity(null); }
   };

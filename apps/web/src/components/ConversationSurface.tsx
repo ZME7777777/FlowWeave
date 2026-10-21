@@ -2656,8 +2656,10 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     }} onPointerMoveCapture={event => {
       if (scrollInteractionStartY.current === null) return;
       if (event.pointerType === 'mouse') showScrollbarTemporarily();
-      if (event.clientY - scrollInteractionStartY.current > 3 && (surface.current?.scrollTop ?? 0) > 0) stopFollowingLatest();
-      else if (scrollInteractionStartY.current - event.clientY > 3) scrollInteractionTowardLatest.current = true;
+      // Dragging the native scrollbar thumb downward moves the transcript
+      // toward newer content; its pointer direction is opposite to touch.
+      if (event.clientY - scrollInteractionStartY.current > 3) scrollInteractionTowardLatest.current = true;
+      else if (scrollInteractionStartY.current - event.clientY > 3 && (surface.current?.scrollTop ?? 0) > 0) stopFollowingLatest();
     }} onPointerUp={event => { scrollInteractionStartY.current = null; offerSelectedReference(event); }} onPointerCancel={() => { scrollInteractionStartY.current = null; }} onKeyDown={event => {
       if (['ArrowUp', 'PageUp', 'Home'].includes(event.key) && (surface.current?.scrollTop ?? 0) > 0) stopFollowingLatest();
       else if (['ArrowDown', 'PageDown', 'End'].includes(event.key)) scrollInteractionTowardLatest.current = true;

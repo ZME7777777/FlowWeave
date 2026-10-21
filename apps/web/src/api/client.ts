@@ -984,6 +984,16 @@ export function agentWorkspaceFileUrl(workspaceId: string, path: string, options
   return url.toString();
 }
 
+export function agentWorkspaceFileViewerUrl(workspaceId: string, path: string, options: { bindingId?: string; workDirectoryId?: string; draftAttachmentOwnerId?: string } = {}): string {
+  const url = new URL(`${deploymentBasePath}/workspace-files/view`, window.location.origin);
+  url.searchParams.set('workspace_id', workspaceId);
+  url.searchParams.set('path', path);
+  if (options.bindingId) url.searchParams.set('binding_id', options.bindingId);
+  if (options.workDirectoryId) url.searchParams.set('work_directory_id', options.workDirectoryId);
+  if (options.draftAttachmentOwnerId) url.searchParams.set('draft_attachment_owner_id', options.draftAttachmentOwnerId);
+  return url.toString();
+}
+
 export function agentWorkspaceBrowserUrl(workspaceId: string, target: string, options: { bindingId?: string; workDirectoryId?: string } = {}): string {
   const parsed = new URL(target);
   const port = parsed.port || (parsed.protocol === 'https:' ? '443' : '80');

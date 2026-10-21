@@ -49,7 +49,7 @@ async function openWorkspace(page: Page, events: unknown[] = []) {
       return json(route, schedules[index]);
     }
     if (path.endsWith('/conversation-schedules')) return json(route, schedules);
-    if (path.includes('/conversation-schedules/') && path.endsWith('/occurrences')) return json(route, [{ id: 'delivery-1', binding_id: 'scheduled-run-1', conversation_title: '每日项目检查 · 2026-10-19 09:00', scheduled_for: now, trigger_kind: 'SCHEDULED', state: 'STARTED', message_cursor: 'event-1', created_at: now }]);
+    if (path.includes('/conversation-schedules/') && path.endsWith('/occurrences')) return json(route, Array.from({ length: 5 }, (_, index) => ({ id: `delivery-${index + 1}`, binding_id: index === 0 ? 'scheduled-run-1' : `scheduled-run-${index + 1}`, conversation_title: `每日项目检查 · 2026-10-${19 - index} 09:00`, scheduled_for: now, trigger_kind: 'SCHEDULED', state: 'STARTED', message_cursor: `event-${index + 1}`, created_at: now })));
     if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
     if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [conversation], next_cursor: null });
     if (path.endsWith('/conversation-activity')) return json(route, { running_binding_ids: [] });
@@ -85,6 +85,24 @@ test('selecting a task after opening its run returns to that task detail', async
   await expect(page).toHaveURL(/\/agent\/schedules$/);
   await expect(page.getByRole('heading', { name: '每周复核', exact: true })).toBeVisible();
   await expect(page.getByRole('textbox', { name: '发送 Agent 消息' })).toHaveCount(0);
+});
+
+test('scheduled session shows session configuration and expands additional runs', async ({ page }) => {
+  await openWorkspace(page);
+  await page.getByRole('navigation', { name: 'Agent 工作区导航' }).getByRole('button', { name: '定时任务' }).click();
+
+  const tasks = page.getByRole('region', { name: '会话定时任务' });
+  await expect(tasks.locator('.agent-schedule-run')).toHaveCount(6);
+  const firstSchedule = tasks.locator('.agent-schedule-tree-group').first();
+  await expect(firstSchedule.getByRole('button', { name: '展开其余 2 个会话', exact: true })).toBeVisible();
+  await firstSchedule.getByRole('button', { name: '展开其余 2 个会话', exact: true }).click();
+  await expect(tasks.locator('.agent-schedule-run')).toHaveCount(8);
+  await expect(firstSchedule.getByRole('button', { name: '收起会话', exact: true })).toBeVisible();
+
+  await tasks.locator('.agent-schedule-run').first().click();
+  await expect(page.getByRole('button', { name: '会话配置', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '会话配置', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: '会话配置' })).toBeVisible();
 });
 
 test('internal navigation returns from schedules and management to the active conversation', async ({ page }) => {
@@ -351,6 +369,55 @@ test('fullscreen tools occupy the entire workbench region and restore the conver
   await expect(main).toBeVisible();
   await expect(page.locator('.agent-workspace-summary')).toBeVisible();
   await expect(composer).toHaveValue('全屏切换时保留草稿');
+});
+
+test('HTML reports use a same-origin viewer URL that copied tabs reopen without Runtime proxying', async ({ page }) => {
+  const reportPath = '/runtime/workspace/project/reports/daily.html';
+  let browserProxyRequests = 0;
+  await openWorkspace(page, [
+    { id: 'report-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '查看日报', timestamp: now } },
+    { id: 'report-agent', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'report-user', content: '[打开 HTML 日报](reports/daily.html)', timestamp: now } },
+  ]);
+  await page.route('**/api/v1/agent-workspaces/schedule-workspace/browser/**', async route => {
+    browserProxyRequests += 1;
+    await json(route, { error: { code: 'UNEXPECTED_BROWSER_PROXY', message: '同源查看链接不应由 Runtime 代理' } }, 500);
+  });
+  await page.route('**/api/v1/agent-workspaces/schedule-workspace/workspace/file**', async route => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.get('path') !== reportPath) return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+    await route.fulfill({
+      status: 200,
+      contentType: 'text/html',
+      headers: { 'X-Preview-Total-Bytes': '105' },
+      body: '<!doctype html><html><body><h1>会话日报</h1><script>document.body.dataset.scriptRan="true"</script></body></html>',
+    });
+  });
+
+  await page.goto('/agent/conversations/scheduled-conversation');
+  await page.getByRole('link', { name: '打开 HTML 日报' }).click();
+  await expect(page.getByTitle('daily.html HTML 预览').contentFrame().getByRole('heading', { name: '会话日报' })).toBeVisible();
+  await page.getByRole('dialog', { name: '文件预览' }).getByRole('button', { name: '在新标签页打开', exact: true }).click();
+
+  const browserPanel = page.locator('.agent-workspace-browser-tab-panel.active');
+  const address = browserPanel.getByRole('textbox', { name: '网页地址', exact: true });
+  await expect(address).toHaveValue(/\/workspace-files\/view\?/);
+  const viewerUrl = await address.inputValue();
+  const viewerFrame = browserPanel.getByTitle('daily.html').contentFrame();
+  await expect(viewerFrame.getByRole('heading', { name: 'daily.html' })).toBeVisible();
+  await expect(viewerFrame.getByTitle('daily.html').contentFrame().getByRole('heading', { name: '会话日报' })).toBeVisible();
+  await expect(viewerFrame.getByTitle('daily.html').contentFrame().locator('body')).not.toHaveAttribute('data-scriptRan', 'true');
+
+  await page.getByRole('button', { name: '新建工作区页签', exact: true }).click();
+  const launcher = page.locator('.agent-workspace-tab-launcher.active');
+  const copiedAddress = launcher.getByRole('textbox', { name: '网页地址', exact: true });
+  await copiedAddress.fill(viewerUrl);
+  await copiedAddress.press('Enter');
+  await expect(launcher.getByRole('textbox', { name: '网页地址', exact: true })).toHaveValue(viewerUrl);
+  expect(browserProxyRequests).toBe(0);
+
+  await page.goto(viewerUrl);
+  await expect(page.getByRole('heading', { name: 'daily.html' })).toBeVisible();
+  await expect(page.getByTitle('daily.html').contentFrame().getByRole('heading', { name: '会话日报' })).toBeVisible();
 });
 
 
