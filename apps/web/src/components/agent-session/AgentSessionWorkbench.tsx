@@ -5610,7 +5610,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     // annotation repeatedly, and each click must re-open/reveal its range.
     setFileSelectionReference({ path: file.path, selection: { ...file.selection } });
     setDrawerOpen(true);
-  }, [conversationPath, onNavigate, selected?.id]);
+  }, [conversationPath, onNavigate, selected?.id, setDrawerOpen]);
   useEffect(() => {
     const listener = (event: Event) => void createAnnotation('CONVERSATION_TEXT', (event as CustomEvent<Record<string, unknown>>).detail);
     window.addEventListener('flowweave:create-conversation-annotation', listener);
@@ -7068,11 +7068,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     setReviewChanges(changes);
     setReviewRequestId(randomId());
     setDrawerOpen(true);
-  }, []);
+  }, [setDrawerOpen]);
   const openSourceLocation = useCallback((path: string, line: number) => {
     setSourceLocationRequest({ key: randomId(), path, line });
     setDrawerOpen(true);
-  }, []);
+  }, [setDrawerOpen]);
   const runtimeTasks = useMemo(
     () => runtimeTasksFromEvents(displayedEvents, eventsQuery.data?.task_usage ?? [], eventsQuery.data?.task_control ?? []),
     [displayedEvents, eventsQuery.data?.task_control, eventsQuery.data?.task_usage],
@@ -7167,7 +7167,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         : { key: randomId(), attachment: { filename: request.filename, mime_type: request.mimeType ?? '', byte_size: 0, path: request.path } });
     }
     setDrawerOpen(true);
-  }, []);
+  }, [setDrawerOpen]);
   const reconcileMissingConversation = useCallback((bindingId: string) => {
     if (!workspace || reconciledMissingConversationIds.current.has(bindingId)) return;
     reconciledMissingConversationIds.current.add(bindingId);
@@ -7245,7 +7245,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversations', workspace.id) });
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-activity', workspace.id) });
-  }, [activityPreviewBindingId, conversationPath, conversations, host, onNavigate, queryClient, scheduleRoute, selectedBindingId, updateLocalMessageProjections, workspace]);
+  }, [activityPreviewBindingId, conversationPath, conversations, host, onNavigate, queryClient, scheduleRoute, selectedBindingId, setDrawerOpen, updateLocalMessageProjections, workspace]);
   reconcileMissingConversationRef.current = reconcileMissingConversation;
   const missingConversationError = [
     selectedConversationQuery.error,

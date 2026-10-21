@@ -8819,3 +8819,23 @@ pytest 默认公共夹具需要本机 Docker／测试 PostgreSQL，因 Docker �
 唯一 Alembic head 仍为 `0157_background_task_aggregate_type_length`，没有 CURRENT 或待实施切片。
 按用户本次明确授权从本合并固定提交执行 Web 和普通 platform 预检、最小上下文构建、迁移、
 api／stream-api／worker 同版本发布以及健康／路由和容量收尾；保留 Runtime Provider 与服务器配置。
+
+### 2026-10-21 第二轮远端会话交互集成与发布准备
+
+从 `a628dfc8` 快进合入远端 `3ea75d33` 的十五个提交；工作树原先干净，无分叉或文本冲突。
+范围包括工作区标签与浮卡、会话标题同步、侧边聊天受限元数据、能力筛选、公式展示及复制、
+发送快捷键和队列交互。按本次同步远端改动的发布范围沿用远端已提交的队列呈现。
+不含迁移、Runtime Provider 或 OpenHands 镜像变化。
+
+发布前补全工作区工具回调的 scope setter Hook 依赖，定时任务定位 effect 直接使用已有查询依赖；
+修复两处新增 Python 行长错误。更新旧标题栏、侧边聊天入口及文件预览按钮的测试定位，
+并为预览回归提供正式 hydration 夹具；预览请求断言仍要求路径一致，允许合法重复读取。
+
+验收：定时任务／布局／公式等 23 项 Chromium 回归通过，Hook 修复后相关 7 项再次通过；
+会话标题／删除／侧边聊天等 6 项和文件预览／发送隔离／队列／创建交接等 5 项最终分组通过。
+Web typecheck、受影响 ESLint、production build、Python AST 与 7 项直接调用的纯能力领域检查通过。
+受影响 Python 文件剩余九处 E501 均来自既有代码，本次新增两处已消除。
+pytest 公共数据库夹具因本机 Docker 不可用而在初始化失败，不记为数据库测试通过。
+Alembic 唯一 head 仍为 `0157_background_task_aggregate_type_length`；没有 CURRENT 或待实施切片。
+使用本次明确授权的受控目标执行 web／platform 正式预检、commit-bound 最小上下文构建、
+迁移、api／stream-api／worker 同版本更新、健康／公网路由验收与受管容量收尾。

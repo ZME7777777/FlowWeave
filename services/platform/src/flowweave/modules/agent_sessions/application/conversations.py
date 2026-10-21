@@ -1924,7 +1924,9 @@ def bootstrap_conversation(
     """
 
     message_text = content.strip()
-    if references and any(not isinstance(item.get("source_binding_id"), str) for item in references):
+    if references and any(
+        not isinstance(item.get("source_binding_id"), str) for item in references
+    ):
         raise DomainError(
             "AGENT_CONVERSATION_REFERENCE_UNAVAILABLE",
             "新会话首条消息只能引用已授权的来源会话",

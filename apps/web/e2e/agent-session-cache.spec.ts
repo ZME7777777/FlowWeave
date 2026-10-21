@@ -452,7 +452,7 @@ test('Generated conversation title updates both the sidebar and current header',
   await login(page);
   await page.goto('/agent/conversations/generated-title-conversation');
   const sidebarConversation = page.locator('[data-conversation-binding-id="generated-title-conversation"]');
-  const headerTitle = page.locator('.agent-session-title');
+  const headerTitle = page.getByRole('navigation', { name: '会话页签', exact: true }).getByRole('button');
   await expect(sidebarConversation).toContainText('原始标题');
   await expect(headerTitle).toHaveText('原始标题');
 
@@ -461,7 +461,7 @@ test('Generated conversation title updates both the sidebar and current header',
   await expect(headerTitle).toHaveText('自动生成的标题');
 
   await page.locator('[data-conversation-binding-id="generated-title-alternate-conversation"]').dblclick();
-  await expect(page.locator('.agent-session-title')).toHaveText('另一条会话');
+  await expect(headerTitle).toHaveText('另一条会话');
   await page.locator('[data-conversation-binding-id="generated-title-conversation"]').dblclick();
   await expect(sidebarConversation).toContainText('自动生成的标题');
   await expect(headerTitle).toHaveText('自动生成的标题');
@@ -1268,7 +1268,7 @@ test('Deleting the selected conversation immediately hides it and opens its neig
   await page.goto('/');
   await login(page);
   await page.goto('/agent/conversations/optimistic-delete-a');
-  await expect(page.locator('h2.agent-session-title')).toHaveText('待删除会话');
+  await expect(page.getByRole('navigation', { name: '会话页签', exact: true })).toContainText('待删除会话');
   const deletingRow = page.locator('[data-conversation-binding-id="optimistic-delete-a"]');
   await deletingRow.hover();
   await expect(deletingRow.getByRole('button', { name: '删除会话 待删除会话' })).toBeVisible();
@@ -1282,7 +1282,7 @@ test('Deleting the selected conversation immediately hides it and opens its neig
   // screen. The next existing session becomes visible in the same frame.
   await expect.poll(() => deleteRequested).toBe(true);
   await expect(page).toHaveURL(/\/agent\/conversations\/optimistic-delete-b$/);
-  await expect(page.locator('h2.agent-session-title')).toHaveText('下一会话');
+  await expect(page.getByRole('navigation', { name: '会话页签', exact: true })).toContainText('下一会话');
   await expect(page.getByRole('button', { name: '待删除会话', exact: true })).toHaveCount(0);
   await expect(page.getByText('开始一个新的会话', { exact: true })).toHaveCount(0);
 
@@ -1472,8 +1472,8 @@ test('Sidebar chat accepts selected and pasted attachments before its first mess
   await page.goto('/');
   await login(page);
   await page.goto(`/agent/conversations/${source.id}`);
-  await page.getByLabel('更多工作区工具').click();
-  await page.getByRole('menu').getByRole('menuitem', { name: '侧边聊天', exact: true }).click();
+  await page.locator('.agent-workspace-new-tab-trigger').click();
+  await page.locator('.agent-workspace-tab-launcher.active').getByRole('button', { name: '侧边聊天', exact: true }).click();
   const sidebarPane = page.getByRole('region', { name: '侧边聊天' });
   await expect(sidebarPane.getByLabel('添加附件')).toBeEnabled();
   await sidebarPane.getByLabel('上传侧边聊天附件').setInputFiles({ name: 'selected.txt', mimeType: 'text/plain', buffer: Buffer.from('file') });
@@ -1551,8 +1551,8 @@ test('Sidebar chat recognizes its optimistic message and reuses the send button 
   await page.goto('/');
   await login(page);
   await page.goto(`/agent/conversations/${source.id}`);
-  await page.getByLabel('更多工作区工具').click();
-  await page.getByRole('menu').getByRole('menuitem', { name: '侧边聊天', exact: true }).click();
+  await page.locator('.agent-workspace-new-tab-trigger').click();
+  await page.locator('.agent-workspace-tab-launcher.active').getByRole('button', { name: '侧边聊天', exact: true }).click();
   const sidebarPane = page.getByRole('region', { name: '侧边聊天' });
   await sidebarPane.getByRole('textbox', { name: '发送侧边聊天消息' }).fill('你好');
   await sidebarPane.getByRole('button', { name: '发送侧边聊天消息' }).click();
@@ -1587,10 +1587,13 @@ test('Conversation attachments open in a preview dialog before the file sidebar'
     if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
     if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
     if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [conversation], next_cursor: null });
-    if (path.endsWith('/events')) return json(route, {
+    if (path.endsWith('/events') || path.endsWith('/hydration')) {
+      const eventPage = {
       events: [{ id: 'attachment-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '请查看附件', attachments: [attachment], timestamp: now } }],
       next_cursor: 'attachment-user', history_cursor: null, result: { status: 'COMPLETED' },
-    });
+      };
+      return json(route, path.endsWith('/hydration') ? { events: eventPage, context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 1_024, usage_current: true }, readiness: { ready: true, execution_status: 'idle' } } : eventPage);
+    }
     if (path.endsWith('/file') && url.searchParams.get('preview') === 'true') return route.fulfill({ status: 200, contentType: 'text/plain', headers: { 'X-Preview-Total-Bytes': '36' }, body: '弹窗内可直接阅读附件内容' });
     if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
     if (path.endsWith('/workspace')) return json(route, {
@@ -1625,7 +1628,7 @@ test('Conversation attachments open in a preview dialog before the file sidebar'
 
   await attachmentButton.click();
   await expect(preview).toBeVisible();
-  await preview.getByRole('button', { name: '在文件栏打开' }).click();
+  await preview.getByRole('button', { name: '在文件标签页打开' }).click();
   await expect(preview).toBeHidden();
   await expect(page.locator('.agent-workspace-drawer')).toHaveClass(/tools-open/);
 });
@@ -1653,10 +1656,13 @@ test('Workspace file references open in a preview dialog', async ({ page }) => {
     if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
     if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
     if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [conversation], next_cursor: null });
-    if (path.endsWith('/events')) return json(route, {
+    if (path.endsWith('/events') || path.endsWith('/hydration')) {
+      const eventPage = {
       events: [{ id: 'workspace-reference-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '请查看本地方案', workspace_references: [reference], timestamp: now } }],
       next_cursor: 'workspace-reference-user', history_cursor: null, result: { status: 'COMPLETED' },
-    });
+      };
+      return json(route, path.endsWith('/hydration') ? { events: eventPage, context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 1_024, usage_current: true }, readiness: { ready: true, execution_status: 'idle' } } : eventPage);
+    }
     if (path.endsWith('/file') && url.searchParams.get('preview') === 'true') {
       previewPaths.push(url.searchParams.get('path') ?? '');
       return route.fulfill({ status: 200, contentType: 'text/markdown', headers: { 'X-Preview-Total-Bytes': '21' }, body: '# 批次方案\n\n预览成功。' });
@@ -1685,7 +1691,8 @@ test('Workspace file references open in a preview dialog', async ({ page }) => {
   await expect(preview).toBeVisible();
   await expect(preview).toContainText('batch-plan.md');
   await expect(preview).toContainText('预览成功。');
-  expect(previewPaths).toEqual([reference.path]);
+  expect(previewPaths.length).toBeGreaterThan(0);
+  expect([...new Set(previewPaths)]).toEqual([reference.path]);
 });
 
 
@@ -2556,7 +2563,7 @@ test('First message keeps the new conversation visible while its routed read is 
   await expect(page).toHaveURL(/\/agent\/conversations\/handoff-conversation$/);
   // The exact-route request remains blocked. The returned create projection
   // must bridge the URL update, rather than briefly rendering the empty state.
-  await expect(page.locator('h2.agent-session-title')).toHaveText('无闪烁的新会话');
+  await expect(page.getByRole('navigation', { name: '会话页签', exact: true })).toContainText('无闪烁的新会话');
   await expect(page.locator('.agent-workbench-empty')).toHaveCount(0);
 
   releaseConversationRead?.();

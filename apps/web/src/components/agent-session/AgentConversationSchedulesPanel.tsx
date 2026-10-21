@@ -116,9 +116,10 @@ export function AgentConversationSchedulesPanel({ workspaceId, onOpenConversatio
   const selectedSchedule = schedules.find(item => item.id === selectedScheduleId) ?? schedules[0];
   useEffect(() => {
     if (!activeBindingId) return;
-    const schedule = schedules.find(item => (occurrencesBySchedule.get(item.id) ?? []).some(occurrence => occurrence.binding_id === activeBindingId));
+    const scheduleIndex = schedules.findIndex((_, index) => (occurrenceQueries[index]?.data ?? []).some(occurrence => occurrence.binding_id === activeBindingId));
+    const schedule = schedules[scheduleIndex];
     if (!schedule) return;
-    const occurrenceIndex = (occurrencesBySchedule.get(schedule.id) ?? []).findIndex(occurrence => occurrence.binding_id === activeBindingId);
+    const occurrenceIndex = (occurrenceQueries[scheduleIndex]?.data ?? []).findIndex(occurrence => occurrence.binding_id === activeBindingId);
     if (occurrenceIndex >= 3) {
       setExpandedScheduleIds(current => current.has(schedule.id) ? current : new Set(current).add(schedule.id));
     }
