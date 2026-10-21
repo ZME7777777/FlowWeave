@@ -382,9 +382,10 @@
   .agent-workbench-app-shell .agent-workspace-drawer.fullscreen,.agent-workbench-app-shell .agent-workbench-main.fullscreen-conversation-active{grid-column:2 / -1}
 }
 
-.agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-tool-actions{flex:0 0 auto;gap:2px;border-radius:999px;background:#edf3f0!important;padding:2px;box-shadow:inset 0 0 0 1px #dbe5df}
-.agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-tool-actions>button{display:grid;width:26px!important;height:26px!important;place-items:center;border-radius:50%!important}
+.agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-tool-actions{flex:0 0 auto;gap:8px;background:transparent!important;padding:0;box-shadow:none}
+.agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-tool-actions>button{display:grid;width:40px!important;height:40px!important;place-items:center;border:0!important;border-radius:14px!important;background:#edf3f0!important;color:#63736a!important;box-shadow:none!important}
 .agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-tool-actions>button:hover{background:#d9e6de!important;color:#245f3c!important}
+.agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-tool-actions>button:focus-visible{outline:2px solid #83aa92;outline-offset:2px}
 
 .agent-workbench-top-actions .agent-workspace-new-tab-trigger{width:26px;min-width:26px;height:26px;min-height:26px;flex:0 0 26px;padding:0}
 
