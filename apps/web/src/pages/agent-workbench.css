@@ -328,11 +328,11 @@
 .agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-new-tab,.agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-tool-actions>button{width:24px;height:24px;border:0!important;border-radius:6px!important;background:transparent!important;color:#63736a!important;box-shadow:none!important}
 .agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-new-tab:hover,.agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-tool-actions>button:hover{background:#edf3ef!important;color:#245f3c!important}
 
-/* The card floats in permanent conversation whitespace. The transcript keeps
-   the viewport-wide scroller, while its content and composer reserve card space. */
+/* The card floats beside the conversation. Reserve space only while visible,
+   so hiding it lets the transcript and composer use the full width. */
 .agent-workbench-page{--agent-environment-card-width:clamp(220px,18vw,340px)}
-.agent-workbench-page:has(>.agent-workspace-drawer)>.agent-workbench-main>.agent-workbench-content .conversation-surface{padding-right:calc(var(--agent-environment-card-width) + 40px)}
-.agent-workbench-page:has(>.agent-workspace-drawer)>.agent-workbench-main>.agent-composer-dock{margin-right:calc(var(--agent-environment-card-width) + 24px)}
+.agent-workbench-page:has(>.agent-workspace-drawer.environment-open)>.agent-workbench-main>.agent-workbench-content .conversation-surface{padding-right:calc(var(--agent-environment-card-width) + 40px)}
+.agent-workbench-page:has(>.agent-workspace-drawer.environment-open)>.agent-workbench-main>.agent-composer-dock{margin-right:calc(var(--agent-environment-card-width) + 24px)}
 .agent-workspace-drawer:is(.summary-open,.tools-open):not(.fullscreen){position:relative;inset:auto;overflow:visible;box-shadow:none}
 .agent-workspace-drawer.summary-open{width:0!important;min-width:0;max-width:0;border:0;background:transparent}
 .agent-workspace-drawer.tools-open:not(.fullscreen){width:var(--agent-workspace-tool-width,400px)!important;max-width:60vw}

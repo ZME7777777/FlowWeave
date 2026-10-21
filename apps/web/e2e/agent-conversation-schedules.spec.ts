@@ -143,8 +143,9 @@ test('the floating card occupies conversation whitespace without resizing it or 
     await page.getByRole('button', { name:'隐藏悬浮信息卡', exact:true }).click();
     await expect(card).toBeHidden();
     const hidden=await geometry();
-    expect(hidden.composer).toEqual(before.composer);
-    expect(hidden.content).toEqual(before.content);
+    expect(hidden.composer.right).toBeGreaterThan(before.composer.right);
+    expect(hidden.content.left).toBe(before.content.left);
+    expect(hidden.content.right).toBe(before.content.right);
     await page.getByRole('button', { name:'显示悬浮信息卡', exact:true }).click();
     await expect(card).toBeVisible();
   }
@@ -157,7 +158,7 @@ test('the floating card occupies conversation whitespace without resizing it or 
   const after=await geometry();
   expect(after.cardPresentation).toEqual(summaryPresentation);
   expect(after.main).toEqual(before.main);
-  expect(after.composer).toEqual(before.composer);
+  expect(after.composer.right).toBeLessThan(before.composer.right);
   expect(after.card.right).toBeLessThanOrEqual(after.main.right);
   expect(after.card.left).toBeGreaterThanOrEqual(after.composer.right);
   expect(after.card.height).toBeLessThan(after.main.height-100);
