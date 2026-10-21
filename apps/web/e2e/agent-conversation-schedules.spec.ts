@@ -248,6 +248,62 @@ test('the floating card occupies conversation whitespace without resizing it or 
   await expect(card.getByText('IDEA / Gateway')).toBeInViewport();
 });
 
+test('summary toggles keep the card in place and reverse the conversation transition continuously', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 1080 });
+  await openWorkspace(page, [
+    { id: 'motion-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '查看布局', timestamp: now } },
+    { id: 'motion-answer', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'motion-user', content: '显示和隐藏信息卡时，会话正文与输入草稿应保持原位并自然伸缩。'.repeat(12), final_reply: true, timestamp: now } },
+  ]);
+  await page.goto('/agent/conversations/scheduled-conversation');
+  const composer = page.getByRole('textbox', { name: '发送 Agent 消息' });
+  await composer.fill('切换期间保留草稿');
+  await expect(page.locator('.conversation-message.assistant')).toContainText('自然伸缩');
+  await settleWorkspaceLayout(page);
+  const card = page.locator('.agent-workspace-summary');
+  const before = await card.boundingBox();
+  const composerBefore = await page.locator('.agent-composer').boundingBox();
+  await page.getByRole('button', { name: '隐藏悬浮信息卡', exact: true }).click();
+  const middle = await page.evaluate(() => {
+    const card = document.querySelector('.agent-workspace-summary')!;
+    const animations = [...document.querySelectorAll('.agent-workspace-summary, .agent-composer-dock, .conversation-surface')].flatMap(element => element.getAnimations());
+    animations.forEach(animation => { animation.pause(); animation.currentTime = 90; });
+    return {
+      display: getComputedStyle(card).display, top: card.getBoundingClientRect().top, opacity: Number(getComputedStyle(card).opacity),
+      padding: parseFloat(getComputedStyle(document.querySelector('.conversation-surface')!).paddingRight),
+      margin: parseFloat(getComputedStyle(document.querySelector('.agent-composer-dock')!).marginRight),
+      composerRight: document.querySelector('.agent-composer')!.getBoundingClientRect().right,
+    };
+  });
+  expect(middle.display).not.toBe('none');
+  expect(middle.top).toBe(before!.y);
+  expect(middle.opacity).toBeGreaterThan(0);
+  expect(middle.opacity).toBeLessThan(1);
+  expect(middle.margin).toBeGreaterThan(0);
+  expect(middle.padding - middle.margin).toBeCloseTo(16, 0);
+  expect(middle.composerRight).toBeGreaterThan(composerBefore!.x + composerBefore!.width);
+  await page.screenshot({ path: test.info().outputPath('summary-midpoint.png') });
+  await page.evaluate(() => {
+    document.querySelector('.conversation-message.assistant')!.setAttribute('data-motion-identity', 'preserved');
+    document.getAnimations().forEach(animation => animation.play());
+  });
+  await page.getByRole('button', { name: '显示悬浮信息卡', exact: true }).click();
+  await settleWorkspaceLayout(page);
+  await expect(card).toBeVisible();
+  const after = await card.boundingBox();
+  expect(after!.x).toBeCloseTo(before!.x, 0);
+  expect(after!.y).toBe(before!.y);
+  await expect(page.locator('[data-motion-identity="preserved"]')).toHaveCount(1);
+  await expect(composer).toHaveValue('切换期间保留草稿');
+  await page.screenshot({ path: test.info().outputPath('summary-restored.png') });
+
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.getByRole('button', { name: '隐藏悬浮信息卡', exact: true }).click();
+  await expect(card).toBeHidden();
+  expect(await page.locator('.agent-composer-dock').evaluate(element => element.getAnimations().length)).toBe(0);
+  const composerHidden = await page.locator('.agent-composer').boundingBox();
+  expect(middle.composerRight).toBeLessThan(composerHidden!.x + composerHidden!.width);
+});
+
 test('fullscreen tools occupy the entire workbench region and restore the conversation without extra grid rows', async ({page}) => {
   await openWorkspace(page);
   await page.goto('/agent/conversations/scheduled-conversation');

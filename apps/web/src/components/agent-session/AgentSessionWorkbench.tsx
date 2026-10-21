@@ -4641,7 +4641,7 @@ function WorkspaceDrawer({
   </section>;
       return <><aside className={`agent-workspace-drawer ${open ? 'tools-open' : 'summary-open'}${fullScreen ? ' fullscreen' : ''}${fullScreenConversationActive ? ' conversation-active' : ''}${environmentOpen ? ' environment-open' : ' environment-hidden'}`} style={{ width: fullScreen ? undefined : panelWidth, '--agent-workspace-tool-width': `${panelWidth}px` } as CSSProperties} aria-label={fullScreen ? '全屏工作区工具' : undefined}>
     {open && !workspaceDrawerAtMaximumWidth && <div className="agent-workspace-resizer" role="separator" aria-label="调整工作区工具宽度" aria-orientation="vertical" onPointerDown={startResize}/>}
-    <section className={`agent-workspace-summary ${environmentOpen ? '' : 'panel-hidden'}`}>
+    <section className="agent-workspace-summary" aria-hidden={!environmentOpen} inert={!environmentOpen}>
       {loadingOrError || summary}
     </section>
     {(!fullScreen || fullScreenConversationActive) && <div className="agent-workbench-top-actions" aria-label="工作台操作">
