@@ -8560,3 +8560,27 @@ pytest `15 passed`、受影响 Python Ruff check/format、`py_compile`、逐步�
 完成：`@flowweave-ai/cli` 升级至 `0.7.0`。新增 Agent Workspace 会话管理读取/批量删除、置顶列表与 `agent pin|unpin`，以及 FlowRun 节点会话 `run pin|unpin`；批量删除仍要求调用方逐个提供 binding ID。`capability download <capability-id> --output <zip>` 下载服务端冻结的 Skill ZIP，拒绝覆盖既有本地文件。临时侧栏会话请求不再传已移除的模型字段，模型配置继承主会话；页面 Skill 同步为 source binding、可选正式 event 和可选选区的跨会话引用契约。OpenAPI 基线从当前应用工厂重新生成，由 251 条路径更新至 261 条，纳入会话管理、两类置顶、Skill package 下载和现有 LDAP 管理路由。
 
 验收：CLI `npm test` 为 `15 passed`，`npm run lint` 与 `npm pack --dry-run` 通过；12 个仓库 FlowWeave Skill frontmatter、OpenAPI 261 路径/新增 schema 静态断言和 `git diff --check` 通过。平台 `tests/contract/test_contracts.py` 已尝试，但全部 4 项在 Testcontainers PostgreSQL fixture 初始化时因本机 Docker socket 不可用而未进入断言，未记为通过；改以当前应用工厂直接生成的 OpenAPI 与静态路径/schema 断言验证该快照。未运行数据库迁移、Runtime 镜像、E2E 或远端部署；无 `CURRENT` 或下一待执行切片。
+
+
+### FR-598 会话工作台遗留回归修复 — DONE
+
+依赖：FR-597；基于已合入的 `9e6a1e9a` 和 `8cca7e7f`。
+
+范围：修复用户本轮确认的三项遗留：恢复 `.tmp` 文件读取且保持自动化冻结目录和隐藏路径边界；
+任务会话已打开时仍可新建／编辑定时任务；普通悬浮信息卡按响应式宽度预留会话空间。
+补齐路径安全与真实 Chromium 交互回归，独立提交；本轮不部署、不改迁移或 Runtime。
+
+完成：路径守卫恢复 `.tmp` 单级名称例外，并保留其他隐藏路径、路径穿越和符号链接拒绝。
+已打开任务会话时通过 Portal 展示新建／编辑弹窗，关闭或保存后保持会话路由和输入草稿；
+编辑菜单显式选择目标任务，避免将非当前任务的修改写入错误 ID／版本。
+普通信息卡使用响应式宽度参与工作台网格，隐藏时释放空间；390px 窄屏改为上下布局并限制工作台宽度，
+避免旧侧栏网格和页面最小宽度继续挤压会话；会话内网格轨道允许收缩，输入框也保持在可用宽度内。
+全屏仍保持工具页和新标签页完整高度。
+
+验收：新增路径 pytest `12 passed`；更新的定时任务／布局 Chromium E2E `2 passed`，覆盖任务列表和任务会话视图、
+任务创建／编辑保存、嵌套配置弹窗 Esc、路由／刷新／草稿保持、1024／1280／1920／2560px 信息卡空间与显隐、
+390px 纵向布局，以及工具全屏页签。临时截图视觉复核通过。Web typecheck、ESLint、production build、
+新增测试 Ruff、受影响函数范围 Ruff format、git diff --check 和 CURRENT 唯一性核对通过。
+整份 workspace.py 的 Ruff 仍有六个与 HEAD 基线完全相同的既有 E501，未纳入本切片；没有新增诊断。
+路径测试不依赖数据库；未运行生产数据库／真实 Runtime 或生产 E2E，未推送或部署。
+下一可执行切片为 NONE；原有 Skill ZIP 暂存／删除状态保留，不纳入本切片提交。

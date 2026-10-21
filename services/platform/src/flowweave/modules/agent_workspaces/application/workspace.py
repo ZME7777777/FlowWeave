@@ -160,7 +160,7 @@ def _host_path(
     ):
         raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "文件路径不在工作区范围内", 422)
     relative = parsed.relative_to(root)
-    hidden_parts = tuple(part for part in relative.parts if part.startswith("."))
+    hidden_parts = tuple(part for part in relative.parts if part.startswith(".") and part != ".tmp")
     automation_workspace = (
         allow_automation_workspace
         and hidden_parts == (".flowweave",)
