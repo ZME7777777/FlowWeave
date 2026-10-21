@@ -2370,7 +2370,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await composer.fill('运行中直接发送消息');
   await composer.press('Enter');
   const runningDirectMessage = page.locator('.conversation-message.user').filter({ hasText: '运行中直接发送消息' });
-  await expect(runningDirectMessage).toHaveCount(0);
+  await expect(runningDirectMessage).toBeVisible();
+  await expect(runningDirectMessage.getByText('等待发送', { exact: true })).toBeVisible();
   await expect(page.getByLabel('消息投递队列').getByText('运行中直接发送消息')).toBeVisible();
   expect(runningDirectMessagePosts).toBe(0);
   await composer.press('Meta+Enter');
@@ -2439,8 +2440,10 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await composer.press('Enter');
   const queuedMessage = page.getByLabel('消息投递队列');
   const editableQueuedMessage = queuedMessage.locator('article').filter({ hasText: '待编辑排队消息' });
+  const queuedTranscriptMessage = page.locator('.conversation-message.user').filter({ hasText: '待编辑排队消息' });
   await expect(editableQueuedMessage).toBeVisible();
-  await expect(page.locator('.conversation-message.user').filter({ hasText: '待编辑排队消息' })).toHaveCount(0);
+  await expect(queuedTranscriptMessage).toBeVisible();
+  await expect(queuedTranscriptMessage.getByText('等待发送', { exact: true })).toBeVisible();
   expect(sentMessages).toBe(sentBeforeQueue);
   await page.reload();
   await expect(page.getByLabel('消息投递队列').getByText('待编辑排队消息')).toBeVisible();
@@ -4178,6 +4181,10 @@ test('Agent new-session capability selection is not truncated at 30 items', asyn
   const manager = page.getByRole('dialog', { name: '能力' });
   await manager.getByRole('button', { name: '选择筛选结果 (31)' }).click();
   await expect(manager).toContainText('已选择 31 项');
+  await expect(manager.locator('.agent-capability-summary')).toBeVisible();
+  await expect(manager.locator('.agent-capability-list')).toBeVisible();
+  await expect(manager.locator('.agent-capability-summary')).toHaveCSS('grid-row-start', '4');
+  await expect(manager.locator('.agent-capability-list')).toHaveCSS('grid-row-start', '5');
 });
 
 test('current Agent conversation can select a 31st capability and keeps frozen Context', async ({ page }) => {

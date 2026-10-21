@@ -2336,7 +2336,7 @@ test('New conversation draft remains isolated and can be resumed after switching
   await page.goto('/');
   await login(page);
   await page.goto('/agent');
-  await expect(page.getByRole('heading', { name: '新会话' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeVisible();
   // An unsubmitted draft owns no native Conversation. Even if the previous
   // selected binding is still unwinding, it must remain editable and idle.
   await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
@@ -2352,7 +2352,7 @@ test('New conversation draft remains isolated and can be resumed after switching
   await page.reload();
   await expect(recoverDraft).toBeVisible();
   await recoverDraft.click();
-  await expect(page.getByRole('heading', { name: '新会话' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeVisible();
   await expect(composer).toHaveText('');
   await expect(draftAttachment).toBeVisible();
   const restoredImage = page.locator('.agent-composer .agent-attachment-open img');
@@ -2376,7 +2376,7 @@ test('New conversation draft remains isolated and can be resumed after switching
     .every(([, value]) => !value.includes('只属于新会话的未发送草稿') && !value.includes('新会话附件.png')))).toBe(true);
 
   await recoverDraft.click();
-  await expect(page.getByRole('heading', { name: '新会话' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeVisible();
   await expect(composer).toHaveText('只属于新会话的未发送草稿');
   await expect(draftAttachment).toBeVisible();
 
@@ -2412,7 +2412,7 @@ test('New conversation draft remains isolated and can be resumed after switching
   await expect(resourceTags.getByRole('button', { name: '竞态会话 B', exact: true })).toBeVisible();
 
   await page.getByRole('button', { name: '在根工作区中新建会话' }).click();
-  await expect(page.getByRole('heading', { name: '新会话' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeVisible();
   await expect(composer).toHaveText('');
   await expect(draftAttachment).toHaveCount(0);
   await expect(recoverDraft).toHaveCount(0);
