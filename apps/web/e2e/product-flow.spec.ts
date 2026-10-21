@@ -3367,6 +3367,11 @@ test('Agent new session keeps full capabilities and can create an explicit works
   const creator = page.getByRole('dialog', { name: '新增工作区' });
   await expect(creator).toBeVisible();
   await expect(creator.getByRole('tree', { name: '项目目录树' })).toBeVisible();
+  const directorySearch = creator.getByRole('searchbox', { name: '搜索目录' });
+  await directorySearch.fill('frontend/src');
+  await expect(creator.getByRole('checkbox', { name: 'frontend/src', exact: true })).toBeVisible();
+  await expect(creator.getByRole('checkbox', { name: 'backend', exact: true })).toBeHidden();
+  await directorySearch.fill('');
   await expect(creator.getByRole('checkbox', { name: 'frontend/src', exact: true })).toBeVisible();
   await creator.getByRole('button', { name: '收起目录 frontend', exact: true }).click();
   await expect(creator.getByRole('checkbox', { name: 'frontend/src', exact: true })).toBeHidden();

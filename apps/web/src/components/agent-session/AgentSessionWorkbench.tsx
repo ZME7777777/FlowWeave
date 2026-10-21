@@ -2906,6 +2906,7 @@ function WorkDirectoryCreator({ workspaceId, onClose, onCreated }: {
   const host = useAgentSessionHost();
   const [displayName, setDisplayName] = useState('');
   const [selectedPaths, setSelectedPaths] = useState<string[]>([]);
+  const [directorySearch, setDirectorySearch] = useState('');
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   useEscapeClose(() => { if (!create.isPending) onClose(); });
   const detailsQuery = useQuery({
@@ -2930,6 +2931,16 @@ function WorkDirectoryCreator({ workspaceId, onClose, onCreated }: {
   useEffect(() => {
     setExpanded(new Set(directoryNodes.map(node => node.path)));
   }, [directoryNodes]);
+  const normalizedDirectorySearch = directorySearch.trim().toLocaleLowerCase();
+  const visibleDirectoryNodes = useMemo(() => {
+    if (!normalizedDirectorySearch || !details) return directoryNodes;
+    const filterNodes = (nodes: WorkspaceTreeNode[]): WorkspaceTreeNode[] => nodes.flatMap(node => {
+      const children = filterNodes(node.children);
+      const relativePath = relativeWorkspacePath(node.path, details.root).toLocaleLowerCase();
+      return relativePath.includes(normalizedDirectorySearch) || children.length ? [{ ...node, children }] : [];
+    });
+    return filterNodes(directoryNodes);
+  }, [details, directoryNodes, normalizedDirectorySearch]);
   const togglePath = (path: string) => {
     setSelectedPaths(current => {
       if (current.includes(path)) return current.filter(item => item !== path);
@@ -2940,7 +2951,7 @@ function WorkDirectoryCreator({ workspaceId, onClose, onCreated }: {
   };
   const renderDirectories = (nodes: WorkspaceTreeNode[], depth = 0): ReactNode => nodes.map(node => {
     const relativePath = relativeWorkspacePath(node.path, details!.root);
-    const open = expanded.has(node.path);
+    const open = Boolean(normalizedDirectorySearch) || expanded.has(node.path);
     const checked = selectedPaths.includes(relativePath);
     const hasChildren = node.children.length > 0;
     return <div key={node.path} role="treeitem" aria-expanded={hasChildren ? open : undefined}>
