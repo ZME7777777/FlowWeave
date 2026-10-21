@@ -6,7 +6,7 @@ async function json(route: Route, body: unknown, status = 200) {
   await route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
 }
 
-async function openWorkspace(page: Page, events: unknown[] = []) {
+async function openWorkspace(page: Page, events: unknown[] = [], includeSecondConversation = false) {
   const writes: { method: string; id?: string; body: Record<string, unknown> }[] = [];
   let authenticated = false;
   const workspace = { id: 'schedule-workspace', display_name: 'Agent 工作区', desired_state: 'RUNNING', updated_at: now };
@@ -14,6 +14,7 @@ async function openWorkspace(page: Page, events: unknown[] = []) {
     id: 'scheduled-conversation', display_title: '日报会话', title_state: 'MANUAL', lifecycle: 'ACTIVE',
     streaming_callback_ready: true, write_available: true, execution_status: 'idle', model_provider_id: 'provider-1', model_name: 'model-1', reasoning_effort: 'high', created_at: now, updated_at: now,
   };
+  const conversations = includeSecondConversation ? [conversation, { ...conversation, id: 'scheduled-conversation-2', display_title: '周报会话' }] : [conversation];
   const schedules = [{ id: 'daily-schedule', workspace_id: workspace.id, binding_id: null, work_directory_id: 'automation-directory', work_directory_name: '自动化 · 每日项目检查', workspace_mode: 'AUTOMATION', conversation_mode: 'NEW', model_provider_id: 'provider-1', model_name: 'model-1', reasoning_effort: 'medium', capability_version_ids: [], credential_ids: [], name: '每日项目检查', prompt: '请检查项目状态。', cron_expression: '0 9 * * 1-5', status: 'ACTIVE', next_run_at: '2026-10-20T01:00:00Z', last_run_at: now, row_version: 1, created_at: now, updated_at: now }];
   schedules.push({ ...schedules[0], id: 'weekly-schedule', name: '每周复核', prompt: '复核周报。', row_version: 7 });
   await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
@@ -44,7 +45,7 @@ async function openWorkspace(page: Page, events: unknown[] = []) {
     if (path.endsWith('/conversation-schedules')) return json(route, schedules);
     if (path.includes('/conversation-schedules/') && path.endsWith('/occurrences')) return json(route, Array.from({ length: 5 }, (_, index) => ({ id: `delivery-${index + 1}`, binding_id: index === 0 ? 'scheduled-run-1' : `scheduled-run-${index + 1}`, conversation_title: `每日项目检查 · 2026-10-${19 - index} 09:00`, scheduled_for: now, trigger_kind: 'SCHEDULED', state: 'STARTED', message_cursor: `event-${index + 1}`, created_at: now })));
     if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
-    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [conversation], next_cursor: null });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: conversations, next_cursor: null });
     if (path.endsWith('/conversation-activity')) return json(route, { running_binding_ids: [] });
     if (path.endsWith('/hydration')) return json(route, { events: { events, next_cursor: null, history_cursor: null, result: { status: 'COMPLETED' } }, context: { used_tokens: 136664, window_tokens: 512000, view_event_count: 68, condenser_max_size: 50 }, readiness: { ready: true, execution_status: 'idle' } });
     if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
@@ -53,7 +54,10 @@ async function openWorkspace(page: Page, events: unknown[] = []) {
     if (path.endsWith('/model-providers')) return json(route, [{ id: 'provider-1', name: '测试供应商', connection_state: 'CONNECTED', models: [{ model_name: 'model-1', enabled: true, is_default: true, default_reasoning_effort: 'medium', supported_reasoning_efforts: ['low', 'medium', 'high'] }] }]);
     if (path.endsWith('/website-credentials')) return json(route, [{ id: 'credential-1', name: '测试认证', target_host: 'example.test', target_path: '/', include_subdomains: false, auth_type: 'TOKEN', has_username: false, has_secret: true, row_version: 1, environment_names: { token: 'TEST_TOKEN' }, created_at: now, updated_at: now }]);
     if (path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
-    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, conversation);
+    if (path.includes('/conversations/') && request.method() === 'GET') {
+      const bindingId = path.match(/\/conversations\/([^/]+)/)?.[1];
+      return json(route, conversations.find(item => item.id === bindingId) ?? conversation);
+    }
     return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
   });
 
@@ -252,6 +256,25 @@ test('the floating card occupies conversation whitespace without resizing it or 
   expect(after.card.left).toBeGreaterThanOrEqual(after.composer.right);
   expect(after.card.height).toBeLessThan(after.main.height-100);
   await expect(card.getByText('IDEA / Gateway')).toBeInViewport();
+});
+
+
+test('hiding the floating card applies to every conversation and survives a reload', async ({ page }) => {
+  await openWorkspace(page, [], true);
+  await page.goto('/agent/conversations/scheduled-conversation');
+  const card = page.locator('.agent-workspace-summary');
+
+  await page.getByRole('button', { name: '隐藏悬浮信息卡', exact: true }).click();
+  await expect(card).toBeHidden();
+  await page.getByRole('button', { name: '周报会话', exact: true }).click();
+  await expect(page).toHaveURL(/\/agent\/conversations\/scheduled-conversation-2$/);
+  await expect(card).toBeHidden();
+  await expect(page.getByRole('button', { name: '显示悬浮信息卡', exact: true })).toBeVisible();
+
+  await page.reload();
+  await expect(card).toBeHidden();
+  await page.getByRole('button', { name: '显示悬浮信息卡', exact: true }).click();
+  await expect(card).toBeVisible();
 });
 
 test('fullscreen tools occupy the entire workbench region and restore the conversation without extra grid rows', async ({page}) => {

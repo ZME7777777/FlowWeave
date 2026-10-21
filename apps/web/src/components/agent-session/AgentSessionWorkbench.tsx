@@ -3862,7 +3862,7 @@ function WorkspaceDrawer({
   const [pendingTerminalClose, setPendingTerminalClose] = useState<Extract<WorkspaceToolTab, { kind: 'terminal' }>>();
   const [fullScreen, setFullScreen] = useState(false);
   const [fullScreenView, setFullScreenView] = useState<'conversation' | 'tool'>('conversation');
-  const [environmentOpen, setEnvironmentOpen] = useState(true);
+  const [environmentOpen, setEnvironmentOpen] = useState(() => localStorage.getItem('flowweave:environment-card-open') !== 'false');
   const [sshAccessOpen, setSshAccessOpen] = useState(false);
   useEscapeClose(() => {
     if (pendingTerminalClose && !closingTerminalId) setPendingTerminalClose(undefined);
@@ -3935,10 +3935,12 @@ function WorkspaceDrawer({
     return () => onFullScreenConversationActiveChange(false);
   }, [fullScreenConversationActive, onFullScreenConversationActiveChange]);
   useEffect(() => {
+    localStorage.setItem('flowweave:environment-card-open', String(environmentOpen));
+  }, [environmentOpen]);
+  useEffect(() => {
     if (open) {
       setEnvironmentOpen(false);
     } else {
-      setEnvironmentOpen(true);
       setFullScreen(false);
       setFullScreenView('conversation');
     }
