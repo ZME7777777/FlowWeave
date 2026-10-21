@@ -1759,6 +1759,73 @@ test('A delayed message response never renders in another conversation', async (
   await expect(page.getByText('正在提交消息', { exact: true })).toHaveCount(0);
 });
 
+test('A queued running-session message appears in the transcript before delivery', async ({ page }) => {
+  let authenticated = false;
+  let sentMessages = 0;
+  const workspace = {
+    id: 'queued-transcript-workspace', display_name: '运行中队列消息工作区', desired_state: 'RUNNING', updated_at: now,
+  };
+  const conversation = {
+    id: 'queued-transcript-conversation', display_title: '运行中会话', title_state: 'MANUAL', lifecycle: 'ACTIVE',
+    streaming_callback_ready: true, write_available: true, execution_status: 'running', created_at: now, updated_at: now,
+  };
+  const events = {
+    events: [{ id: 'queued-transcript-active-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '正在处理的任务', timestamp: now } }],
+    next_cursor: 'queued-transcript-active-user', history_cursor: null, result: { status: 'RUNNING' },
+  };
+
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return authenticated
+      ? json(route, user)
+      : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [conversation], next_cursor: null });
+    if (path.endsWith('/hydration')) return json(route, {
+      events,
+      context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 1_024, usage_current: true },
+      readiness: { ready: false, execution_status: 'running' },
+    });
+    if (path.endsWith('/messages') && request.method() === 'POST') { sentMessages += 1; return json(route, { accepted: true, cursor: 'queued-transcript-sent-user' }); }
+    if (path.endsWith('/events')) return json(route, events);
+    if (path.endsWith('/input-readiness')) return json(route, { ready: false, execution_status: 'running' });
+    if (path.endsWith('/conversation-activity')) return json(route, { running_binding_ids: [conversation.id] });
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/work-directories')) return json(route, {
+      root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [],
+    });
+    if (path.endsWith('/workspace')) return json(route, {
+      root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' },
+      working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [],
+      runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } },
+    });
+    if (path.endsWith('/context')) return json(route, { model_name: 'test-model', window_tokens: 128_000, used_tokens: 1_024, usage_current: true });
+    if (path.endsWith('/model-providers') || path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, conversation);
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+
+  await page.goto('/');
+  await login(page);
+  await page.goto('/agent/conversations/queued-transcript-conversation');
+  await expect(page.getByText('正在处理的任务')).toBeVisible();
+
+  const composer = page.getByLabel('发送 Agent 消息');
+  await composer.fill('这条消息应立即渲染');
+  await composer.press('Enter');
+
+  const queuedTranscriptMessage = page.locator('.conversation-message.user').filter({ hasText: '这条消息应立即渲染' });
+  await expect(queuedTranscriptMessage).toBeVisible();
+  await expect(queuedTranscriptMessage.getByText('等待发送', { exact: true })).toBeVisible();
+  await expect(page.getByLabel('消息投递队列').getByText('这条消息应立即渲染')).toBeVisible();
+  expect(sentMessages).toBe(0);
+});
+
+
 test('Agent transcript keeps scroll ownership through streamed output and historical paging', async ({ page }) => {
   let authenticated = false;
   let activeEventRequests = 0;

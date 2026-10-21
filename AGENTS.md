@@ -108,6 +108,7 @@ git -C /Users/zhengmengen/WorkSpace/openhands/software-agent-sdk-total-tokens-1.
 
 - 侧栏红色异常标识仅在 `unread_origin === 'SYSTEM'` 且服务端活动投影为 `possibly_stuck` 或 `failed` 时显示；后台会话进入这两种投影应自动写入系统未读。`possibly_stuck` 在 native running 状态显示心跳动画，`error`/`stuck` 终态显示静态标识；用户手动未读必须覆盖为普通蓝点。
 - Composer 草稿的文本、附件、引用和注释必须作为带 `scope` 的同一快照读写；会话切换先持久化 outgoing scope，再恢复 incoming scope。子组件卸载 cleanup 不得从共享 ref 读取内容后写入捕获的旧 scope。未创建草稿切换后必须保留可发现的恢复入口；用户显式新建会话仍须创建全新的空 scope，仅页面自动进入或用户点击草稿入口时才允许恢复同工作区的未创建草稿。
+- 运行中的会话按 Enter 产生的排队消息也必须立刻以稳定 `renderKey` 渲染在当前 transcript，并显示“等待发送”；它仍可在队列中编辑，直到实际投递时由同一投影升级为提交态并由正式 OpenHands 事件认领。不得只将该消息写入浏览器队列后等待后续事件、轮询或刷新才显示。
 - 会话运行中的视觉状态不能只依赖可能短暂抖动的 Runtime readiness；只要正式事件树仍存在未完成用户轮次且未超过终态同步期限，就必须保持会话活动和底部任务计划的 DOM、动画与布局稳定。
 - 未创建会话的附件以草稿 UUID 为 owner 写入当前宿主的 `uploads/`；用户显式放弃草稿或移除附件时必须调用宿主级安全清理，且上传晚于放弃时由上传完成回调补偿。服务端只能删除 UUID owner 前缀、规范路径内的普通文件，并在同 UUID 已存在正式 `AgentConversationBinding` 时拒绝删除；每个草稿上传还必须登记延迟兜底回收，以覆盖页面关闭、断网和客户端清理失败。
 
