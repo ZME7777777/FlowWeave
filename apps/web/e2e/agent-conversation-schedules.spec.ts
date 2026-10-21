@@ -338,6 +338,8 @@ test('HTML reports use a same-origin viewer URL that copied tabs reopen without 
   await expect(viewerFrame.getByRole('heading', { name: 'daily.html' })).toBeVisible();
   await expect(viewerFrame.getByTitle('daily.html').contentFrame().getByRole('heading', { name: '会话日报' })).toBeVisible();
   await expect(viewerFrame.getByTitle('daily.html').contentFrame().locator('body')).not.toHaveAttribute('data-scriptRan', 'true');
+  await expect(page.locator('.agent-workspace-tab-launcher')).toHaveCount(0);
+  await expect(page.locator('.agent-workspace-browser-tab-panel')).toHaveCount(1);
 
   await page.getByRole('button', { name: '新建工作区页签', exact: true }).click();
   const launcher = page.locator('.agent-workspace-tab-launcher.active');

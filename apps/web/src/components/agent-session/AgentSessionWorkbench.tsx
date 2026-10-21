@@ -3891,13 +3891,12 @@ function WorkspaceDrawer({
   useEffect(() => {
     if (open) {
       setEnvironmentOpen(false);
-      ensureLauncherTab();
     } else {
       setEnvironmentOpen(true);
       setFullScreen(false);
       setFullScreenView('conversation');
     }
-  }, [ensureLauncherTab, open]);
+  }, [open]);
   useEffect(() => {
     if (!entryMenu) return;
     const close = () => setEntryMenu(undefined);
