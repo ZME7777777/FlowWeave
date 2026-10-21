@@ -24,6 +24,10 @@ async function openWorkspace(page: Page, events: unknown[] = [], includeSecondCo
   };
   const conversations = includeSecondConversation ? [conversation, { ...conversation, id: 'scheduled-conversation-2', display_title: '周报会话' }] : [conversation];
   const schedules = [{ id: 'daily-schedule', workspace_id: workspace.id, binding_id: null, work_directory_id: 'automation-directory', work_directory_name: '自动化 · 每日项目检查', workspace_mode: 'AUTOMATION', conversation_mode: 'NEW', model_provider_id: 'provider-1', model_name: 'model-1', reasoning_effort: 'medium', capability_version_ids: [], credential_ids: [], name: '每日项目检查', prompt: '请检查项目状态。', cron_expression: '0 9 * * 1-5', status: 'ACTIVE', next_run_at: '2026-10-20T01:00:00Z', last_run_at: now, row_version: 1, created_at: now, updated_at: now }];
+  const capabilities = [
+    { id: 'capability-1', capability_key: '日报技能', capability_type: 'SKILL', description: '汇总每日检查结果', filename: 'daily.md', is_latest: true },
+    { id: 'capability-2', capability_key: '周报技能', capability_type: 'SKILL', description: '汇总每周检查结果', filename: 'weekly.md', is_latest: true },
+  ];
   schedules.push({ ...schedules[0], id: 'weekly-schedule', name: '每周复核', prompt: '复核周报。', row_version: 7 });
   await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
   await page.route('**/api/v1/**', async route => {
@@ -61,7 +65,8 @@ async function openWorkspace(page: Page, events: unknown[] = [], includeSecondCo
     if (path.endsWith('/workspace')) return json(route, { root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', files: [], repositories: [], runtime: {}, ide: { gateway: { supported: false } } });
     if (path.endsWith('/model-providers')) return json(route, [{ id: 'provider-1', name: '测试供应商', connection_state: 'CONNECTED', models: [{ model_name: 'model-1', enabled: true, is_default: true, default_reasoning_effort: 'medium', supported_reasoning_efforts: ['low', 'medium', 'high'] }] }]);
     if (path.endsWith('/website-credentials')) return json(route, [{ id: 'credential-1', name: '测试认证', target_host: 'example.test', target_path: '/', include_subdomains: false, auth_type: 'TOKEN', has_username: false, has_secret: true, row_version: 1, environment_names: { token: 'TEST_TOKEN' }, created_at: now, updated_at: now }]);
-    if (path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.endsWith('/capabilities')) return json(route, capabilities);
+    if (path.endsWith('/capability-collections')) return json(route, []);
     if (path.includes('/conversations/') && request.method() === 'GET') {
       const bindingId = path.match(/\/conversations\/([^/]+)/)?.[1];
       return json(route, conversations.find(item => item.id === bindingId) ?? conversation);
@@ -133,6 +138,28 @@ test('scheduled session shows session configuration and expands additional runs'
   await expect(page.getByRole('button', { name: '会话配置', exact: true })).toBeVisible();
   await page.getByRole('button', { name: '会话配置', exact: true }).click();
   await expect(page.getByRole('dialog', { name: '会话配置' })).toBeVisible();
+});
+
+test('capability configuration toggles visible selections and filters to selected capabilities', async ({ page }) => {
+  await openWorkspace(page);
+  await page.getByRole('navigation', { name: 'Agent 工作区导航' }).getByRole('button', { name: '定时任务' }).click();
+  await page.getByRole('region', { name: '会话定时任务' }).getByRole('button', { name: '新建', exact: true }).click();
+  await page.getByRole('button', { name: /配置会话/ }).click();
+
+  const dialog = page.getByRole('dialog', { name: '会话配置' });
+  const selectVisible = dialog.getByRole('button', { name: '选择筛选结果（2）', exact: true });
+  await selectVisible.click();
+  await expect(dialog.getByText('已选择 2 项', { exact: true })).toBeVisible();
+  await expect(dialog.getByRole('button', { name: '取消选择筛选结果', exact: true })).toBeVisible();
+
+  await dialog.getByRole('button', { name: '只看已选', exact: true }).click();
+  await expect(dialog.getByRole('button', { name: '显示全部能力', exact: true })).toBeVisible();
+  await expect(dialog.getByText('日报技能', { exact: true })).toBeVisible();
+  await expect(dialog.getByText('周报技能', { exact: true })).toBeVisible();
+
+  await dialog.getByRole('button', { name: '取消选择筛选结果', exact: true }).click();
+  await expect(dialog.getByText('没有匹配的已发布能力。')).toBeVisible();
+  await expect(dialog.getByRole('button', { name: '显示全部能力', exact: true })).toBeVisible();
 });
 
 test('internal navigation returns from schedules and management to the active conversation', async ({ page }) => {
