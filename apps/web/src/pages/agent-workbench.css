@@ -361,6 +361,10 @@
   .agent-workspace-drawer>.agent-workspace-summary{transition:none!important}
 }
 @media(min-width:961px){.agent-workspace-drawer.tools-open:not(.fullscreen)>.agent-workspace-resizer{display:block}}
+/* Keep the original capture target mounted and visible throughout both previews. */
+.agent-workspace-resizing .agent-workspace-drawer>.agent-workspace-resizer{position:fixed;inset:0 auto 0 var(--agent-workspace-resize-left);display:block!important}
+.agent-workspace-resizing .agent-workspace-drawer>.agent-workspace-resizer::after{display:none}
+
 /* A tool view replaces the main region without unmounting the live conversation.
    Explicit tracks prevent the hidden conversation from creating implicit rows. */
 .agent-workbench-page:has(>.agent-workspace-drawer.fullscreen){grid-template-columns:var(--conversation-rail-width,220px) minmax(0,1fr)}

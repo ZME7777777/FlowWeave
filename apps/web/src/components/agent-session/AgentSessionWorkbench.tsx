@@ -3802,6 +3802,9 @@ function WorkspaceDrawer({
   const [fullScreen, setFullScreen] = useState(false);
   const [fullScreenView, setFullScreenView] = useState<'conversation' | 'tool'>('conversation');
   const [environmentOpen, setEnvironmentOpen] = useState(true);
+  const [resizePreview, setResizePreview] = useState<'fullscreen' | 'hidden'>();
+  const drawerFullScreen = fullScreen || resizePreview === 'fullscreen';
+  const drawerToolsOpen = open && resizePreview !== 'hidden';
   const workspaceResizeCleanup = useRef<(() => void) | undefined>(undefined);
   useEffect(() => () => workspaceResizeCleanup.current?.(), [open, fullScreen, scopeKey]);
   const [sshAccessOpen, setSshAccessOpen] = useState(false);
@@ -4497,15 +4500,29 @@ function WorkspaceDrawer({
     const pointerId = event.pointerId;
     const startX = event.clientX;
     const startWidth = panelWidth;
+    const minimum = clampWorkspaceToolWidth(0);
+    const maximum = clampWorkspaceToolWidth(Number.MAX_SAFE_INTEGER);
+    let moved = false;
+    let preview: 'fullscreen' | 'hidden' | undefined;
     let frame: number | undefined;
     let nextWidth = startWidth;
     const applyWidth = () => {
       frame = undefined;
       setPanelWidth(clampWorkspaceToolWidth(nextWidth));
+      setResizePreview(preview);
     };
     const move = (moveEvent: PointerEvent) => {
       if (moveEvent.pointerId !== pointerId) return;
       nextWidth = startWidth + startX - moveEvent.clientX;
+      moved ||= Math.abs(moveEvent.clientX - startX) >= 4;
+      // A small overdrag activates a mode; a separate return edge avoids flicker.
+      if (moved) {
+        if (preview === 'fullscreen' && nextWidth >= maximum - 8) preview = 'fullscreen';
+        else if (preview === 'hidden' && nextWidth <= minimum + 8) preview = 'hidden';
+        else if (nextWidth >= maximum + 12) preview = 'fullscreen';
+        else if (nextWidth <= minimum - 12) preview = 'hidden';
+        else preview = undefined;
+      }
       if (frame === undefined) frame = window.requestAnimationFrame(applyWidth);
     };
     const cleanup = () => {
@@ -4513,10 +4530,13 @@ function WorkspaceDrawer({
       window.removeEventListener('pointerup', stop);
       window.removeEventListener('pointercancel', stop);
       window.removeEventListener('blur', stop);
+      window.removeEventListener('resize', stop);
       handle.removeEventListener('lostpointercapture', stop);
       if (frame !== undefined) window.cancelAnimationFrame(frame);
       if (handle.hasPointerCapture(pointerId)) handle.releasePointerCapture(pointerId);
       workspaceResizeCleanup.current = undefined;
+      setResizePreview(undefined);
+      handle.style.removeProperty('--agent-workspace-resize-left');
       document.body.classList.remove('agent-workspace-resizing');
       document.body.style.removeProperty('cursor');
       document.body.style.removeProperty('user-select');
@@ -4526,12 +4546,15 @@ function WorkspaceDrawer({
       cleanup();
       const width = clampWorkspaceToolWidth(nextWidth);
       setPanelWidth(width);
-      if (stopEvent.type === 'pointerup' && width >= clampWorkspaceToolWidth(Number.MAX_SAFE_INTEGER) - 2) {
-        setFullScreen(true);
-        setFullScreenView('tool');
+      if (stopEvent.type === 'pointerup' && moved) {
+        if (preview === 'fullscreen') {
+          setFullScreen(true);
+          setFullScreenView('tool');
+        } else if (preview === 'hidden') onClose();
       }
     };
     workspaceResizeCleanup.current = cleanup;
+    handle.style.setProperty('--agent-workspace-resize-left', `${handle.getBoundingClientRect().left}px`);
     handle.setPointerCapture(pointerId);
     document.body.classList.add('agent-workspace-resizing');
     document.body.style.cursor = 'col-resize';
@@ -4540,6 +4563,7 @@ function WorkspaceDrawer({
     window.addEventListener('pointerup', stop);
     window.addEventListener('pointercancel', stop);
     window.addEventListener('blur', stop);
+    window.addEventListener('resize', stop);
     handle.addEventListener('lostpointercapture', stop);
   };
   const startFileTreeResize = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -4655,17 +4679,17 @@ function WorkspaceDrawer({
     <article className="agent-workspace-ide"><MonitorCog size={16}/><div><small>IDEA / Gateway</small><button type="button" className="agent-ssh-access-trigger" disabled={!sshRemoteReady} onClick={() => setSshAccessOpen(true)}>SSH 接入说明<ChevronRight size={13}/></button></div></article>
     <article className="agent-workspace-sources"><Link2 size={16}/><div><small>来源</small>{sources.length ? <><div className="agent-workspace-source-list">{visibleSources.map(source => <button type="button" key={source.id} title={`查看来源详情：${source.label}`} onClick={openSources}><span className="agent-workspace-source-glyph"><ConversationSourceGlyph source={source} size={12}/></span><span><b>{source.label}</b><em>{conversationSourceKind(source)}</em></span></button>)}</div>{sources.length > visibleSources.length && <button type="button" className="agent-workspace-view-all-sources" onClick={openSources}><Link2 size={12}/><span>查看全部</span><em>{sources.length}</em><ChevronRight size={13}/></button>}</> : <p>用户输入的链接、文件和图片会集中显示在这里。</p>}</div></article>
   </section>;
-      return <><aside className={`agent-workspace-drawer ${open ? 'tools-open' : 'summary-open'}${fullScreen ? ' fullscreen' : ''}${fullScreenConversationActive ? ' conversation-active' : ''}${environmentOpen ? ' environment-open' : ' environment-hidden'}`} style={{ width: fullScreen ? undefined : panelWidth, '--agent-workspace-tool-width': `${panelWidth}px` } as CSSProperties} aria-label={fullScreen ? '全屏工作区工具' : undefined}>
+      return <><aside className={`agent-workspace-drawer ${drawerToolsOpen ? 'tools-open' : 'summary-open'}${drawerFullScreen ? ' fullscreen' : ''}${fullScreenConversationActive ? ' conversation-active' : ''}${environmentOpen ? ' environment-open' : ' environment-hidden'}`} style={{ width: drawerFullScreen ? undefined : panelWidth, '--agent-workspace-tool-width': `${panelWidth}px` } as CSSProperties} aria-label={drawerFullScreen ? '全屏工作区工具' : undefined}>
     {open && !fullScreen && <div className="agent-workspace-resizer" role="separator" aria-label="调整工作区工具宽度" aria-orientation="vertical" onPointerDown={startResize}/>}
     <section className="agent-workspace-summary" aria-hidden={!environmentOpen} inert={!environmentOpen}>
       {loadingOrError || summary}
     </section>
-    {(!fullScreen || fullScreenConversationActive) && <div className="agent-workbench-top-actions" aria-label="工作台操作">
+    {(!drawerFullScreen || fullScreenConversationActive) && <div className="agent-workbench-top-actions" aria-label="工作台操作">
       <button type="button" aria-label={environmentOpen ? '隐藏悬浮信息卡' : '显示悬浮信息卡'} title={environmentOpen ? '隐藏悬浮信息卡' : '显示悬浮信息卡'} aria-pressed={environmentOpen} onClick={() => setEnvironmentOpen(current => !current)}>{environmentOpen ? <MonitorOff size={15}/> : <MonitorCog size={15}/>}</button>
       {!open && <button type="button" className="agent-workspace-new-tab-trigger" aria-label="新建工作区页签" title="新建工作区页签" onClick={() => { ensureLauncherTab(); onOpen(); }}><SquarePlus size={16}/></button>}
       {fullScreenConversationActive && <button type="button" aria-label="退出全屏" title="退出全屏（Esc）" onClick={() => setFullScreen(false)}><Minimize2 size={16}/></button>}
     </div>}
-    <section className={`agent-workspace-tool-shell ${open ? '' : 'panel-hidden'}`}>
+    <section className={`agent-workspace-tool-shell ${drawerToolsOpen ? '' : 'panel-hidden'}`}>
               <header><nav className="agent-workspace-tabs" aria-label="工作区页签">{fullScreen && <div className={fullScreenView === 'conversation' ? 'active fixed' : 'fixed'}><button type="button" className="agent-workspace-tab-select" title={conversationTabLabel} onClick={() => setFullScreenView('conversation')}><span>{conversationTabLabel}</span></button></div>}{scopeState.tabs.map(tab => <div key={tab.id} className={!fullScreen || fullScreenView === 'tool' && scopeState.activeTabId === tab.id ? 'active' : ''}><button type="button" className="agent-workspace-tab-select" onClick={() => { setFullScreenView('tool'); updateScope(current => ({ ...current, activeTabId: tab.id })); }}><i className="agent-workspace-tab-icon">{workspaceTabIcon(tab)}</i><span>{workspaceTabLabel(tab)}</span></button><button type="button" className="agent-workspace-tab-close" aria-label={`关闭${workspaceTabLabel(tab)}页签`} disabled={tab.kind === 'terminal' && closingTerminalId === tab.terminalInstanceId} onClick={() => { if (tab.kind !== 'terminal' || closingTerminalId !== tab.terminalInstanceId) requestCloseTab(tab); }}><X size={12}/></button></div>)}<button type="button" className="agent-workspace-new-tab" aria-label="新建工作区页签" title="新建页签" onClick={openLauncher}><Plus size={15}/></button></nav><div className="agent-workspace-tool-actions">{fullScreen ? <><button type="button" aria-label={environmentOpen ? '隐藏悬浮信息卡' : '显示悬浮信息卡'} title={environmentOpen ? '隐藏悬浮信息卡' : '显示悬浮信息卡'} aria-pressed={environmentOpen} onClick={() => setEnvironmentOpen(current => !current)}>{environmentOpen ? <MonitorOff size={15}/> : <MonitorCog size={15}/>}</button><button type="button" aria-label="退出全屏" title="退出全屏（Esc）" onClick={() => setFullScreen(false)}><Minimize2 size={16}/></button><button type="button" aria-label="关闭工作区工具" title="关闭工作区工具并返回会话" onClick={() => void closeWorkspaceTools()}><X size={16}/></button></> : <><button type="button" aria-label="全屏查看工作区工具" title="全屏查看" onClick={() => { setFullScreenView('tool'); setFullScreen(true); }}><Maximize2 size={16}/></button><button type="button" aria-label="关闭工作区工具" onClick={() => void closeWorkspaceTools()}><X size={16}/></button></>}</div></header>
       <div className="agent-workspace-tool-body">
         {panelError && <p className="agent-workspace-panel-error" role="alert"><span>{panelError}</span><button type="button" aria-label="关闭错误提示" onClick={() => setPanelError('')}><X size={13}/></button></p>}
