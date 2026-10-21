@@ -72,16 +72,24 @@
 .agent-attachments>.agent-conversation-reference{gap:0;border-color:#b8d9c4;background:linear-gradient(135deg,#f4faf5,#eaf5ed);box-shadow:inset 0 1px #ffffffc7;color:#286141}.agent-attachments .agent-conversation-reference .agent-attachment-open{gap:6px;padding-right:5px;color:#286141}.agent-attachments .agent-conversation-reference .agent-attachment-open svg{color:#367b51}.agent-attachments .agent-conversation-reference .agent-attachment-open:hover{background:#dcefe1;color:#1f5d39}.agent-attachments .agent-conversation-reference .agent-attachment-remove{width:22px;height:22px;margin:0 3px 0 1px;border:1px solid transparent;border-radius:6px;background:transparent;color:#5b8068;font-size:18px;transition:border-color .15s ease,background .15s ease,color .15s ease}.agent-attachments .agent-conversation-reference .agent-attachment-remove:hover{border-color:#b4d3bd;background:#fff;color:#276340}.agent-attachments .agent-conversation-reference .agent-attachment-remove:focus-visible{border-color:#79ad8a;outline:2px solid #79ad8a;outline-offset:1px}
 
 
-/* Split panes can be narrow even on a wide viewport. Wrap controls by available
-   space, keeping the model picker and send button inside the composer. */
-.agent-composer footer{flex-wrap:wrap}
-.agent-composer-context{flex-wrap:wrap}
-.agent-composer-actions{min-width:0;max-width:100%;margin-left:auto}
+/* Keep context metrics and send controls on the composer baseline. Empty
+   status slots must not consume the width needed by those controls. */
+.agent-composer{container:agent-composer / inline-size}
+.agent-composer footer{min-width:0;flex-wrap:nowrap}
+.agent-composer-context{min-width:0;flex:1 1 auto;flex-wrap:nowrap;overflow:hidden}
+.agent-composer-actions{min-width:0;max-width:100%;flex:0 1 auto;margin-left:auto}
+.agent-composer-status-slot:empty,.agent-composer-note-slot:empty{display:none!important}
+.agent-context-progress{flex:0 1 auto}
+.agent-context-progress em{min-width:0}
 .agent-composer-model-menu{min-width:0}
 .agent-composer-model-trigger{max-width:100%}
 .agent-composer-actions .agent-send{flex:0 0 31px}
 .agent-composer-bottom{min-width:0;flex-wrap:wrap}
 .agent-composer-bottom>.conversation-live-task-plan{min-width:0;max-width:100%}
+@container agent-composer (max-width:620px){
+  .agent-context-progress.events{display:none!important}
+  .agent-composer-status-slot,.agent-composer-note-slot{display:none!important}
+}
 
 /* The transcript is centered at 860px. The index needs 44px of left whitespace
    (17px inset + 19px hit area + 8px gap), so hide it below 860 + 2 * 44px.

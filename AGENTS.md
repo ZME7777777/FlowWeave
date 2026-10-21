@@ -3,6 +3,12 @@
 本文件适用于整个 FlowWeave 仓库，并补充上级
 `/Users/zhengmengen/WorkSpace/AGENTS.md`。若目标目录存在更近的 `AGENTS.md`，优先遵守离目标文件最近的说明。
 
+
+## Agent 工作区浏览器界面
+
+- 浏览器地址栏由 `apps/web/src/components/agent-session/AgentSessionWorkbench.tsx` 的 `WorkspaceBrowser` 渲染；新工作区标签页本身就是浏览器，不要在启动页重复提供“浏览器”工具卡片。
+- 浏览器与启动页视觉样式集中于 `apps/web/src/pages/agent-workbench.css`；修改后至少运行 `pnpm --filter @flowweave/web typecheck`，并运行 `agent-conversation-schedules.spec.ts` 中对应的定向端到端用例。
+
 ## 远程部署与私有配置
 
 生产服务器地址、域名、账号、SSH 配置、部署根目录、网络拓扑和运行时路径都不得提交到 Git，亦不得写入公开文档、Issue、PR、聊天记录或构建日志。将此类信息仅保存在本机受权限保护且被 Git 忽略的 `.local/remote-deploy.env` 中；从 `deploy/remote-deploy.env.example` 创建该文件。
@@ -130,3 +136,4 @@ git -C /Users/zhengmengen/WorkSpace/openhands/software-agent-sdk-total-tokens-1.
 - 会话列表的整条会话内容区是统一的原生拖拽源：拖入发送框时添加会话引用，拖到同一工作区的其他会话位置时调整顺序；不得使用独立排序把手或拆分拖拽命中区。
 - 账户菜单打开的设置页面由 `App.tsx` 的会话级 `openSettingsViews` 管理；每个设置视图至多一个临时标签，关闭当前标签时优先选择右侧、否则左侧相邻标签，关闭最后一个则回到节点资产。仅当 `.context-tabs` 存在时显示固定导航与临时标签间的分隔线；其布局需保留标题收缩、图标模式与横向滚动能力。
 - OpenHands interruption has a distinct formal `STATE` / `InterruptEvent` emitted after the native conversation transitions to `PAUSED`; synthetic `AgentErrorEvent` records only repair unmatched tool calls. In `AgentSessionWorkbench`, an `InterruptEvent` descended from the active user turn must take precedence over residual tool activity when resolving a native `paused` readiness state. Do not treat arbitrary `AgentErrorEvent` values as terminal because they are recoverable.
+- 在嵌入式会话定时任务页，打开运行会话后点击任务块必须显式返回 `/agent/schedules` 并保留面板选择状态；会话路由存在时主工作台会隐藏任务详情，不能只更新任务面板内部的 `selectedScheduleId`。

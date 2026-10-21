@@ -65,6 +65,52 @@ async function openWorkspace(page: Page, events: unknown[] = []) {
   return writes;
 }
 
+test('selecting a task after opening its run returns to that task detail', async ({ page }) => {
+  await openWorkspace(page);
+  await page.getByRole('navigation', { name: 'Agent 工作区导航' }).getByRole('button', { name: '定时任务' }).click();
+
+  const tasks = page.getByRole('region', { name: '会话定时任务' });
+  await tasks.locator('.agent-schedule-run').first().click();
+  await expect(page).toHaveURL(/\/agent\/schedules\/conversations\/scheduled-run-1$/);
+  await expect(page.getByRole('textbox', { name: '发送 Agent 消息' })).toBeVisible();
+
+  await tasks.locator('.agent-schedule-tree-select').filter({ hasText: '每周复核' }).click();
+  await expect(page).toHaveURL(/\/agent\/schedules$/);
+  await expect(page.getByRole('heading', { name: '每周复核', exact: true })).toBeVisible();
+  await expect(page.getByRole('textbox', { name: '发送 Agent 消息' })).toHaveCount(0);
+});
+
+test('internal navigation returns from schedules and management to the active conversation', async ({ page }) => {
+  await openWorkspace(page, [
+    { id: 'active-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '保留当前会话', timestamp: now } },
+    { id: 'active-agent', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'active-user', content: '返回时应恢复这条回复。', final_reply: true, timestamp: now } },
+  ]);
+  await page.goto('/agent/conversations/scheduled-conversation');
+  await expect(page.getByText('返回时应恢复这条回复。', { exact: true })).toBeVisible();
+
+  const navigation = page.getByRole('navigation', { name: 'Agent 工作区导航' });
+  const drawer = page.locator('.agent-workspace-drawer');
+  await expect(drawer).not.toHaveClass(/tools-open/);
+  await navigation.getByRole('button', { name: '定时任务' }).click();
+  await expect(page).toHaveURL(/\/agent\/schedules$/);
+  await navigation.getByRole('button', { name: '主页' }).click();
+  await expect(page).toHaveURL(/\/agent\/conversations\/scheduled-conversation$/);
+  await expect(page.getByText('返回时应恢复这条回复。', { exact: true })).toBeVisible();
+  await expect(page.getByRole('textbox', { name: '发送 Agent 消息' })).toBeVisible();
+  await expect(drawer).not.toHaveClass(/tools-open/);
+
+  await page.getByRole('button', { name: '新建工作区页签', exact: true }).first().click();
+  await expect(drawer).toHaveClass(/tools-open/);
+  await navigation.getByRole('button', { name: '会话管理' }).click();
+  await expect(page.getByRole('heading', { name: '会话管理', exact: true })).toBeVisible();
+  await navigation.getByRole('button', { name: '主页' }).click();
+  await expect(page).toHaveURL(/\/agent\/conversations\/scheduled-conversation$/);
+  await expect(page.getByText('返回时应恢复这条回复。', { exact: true })).toBeVisible();
+  await expect(page.getByRole('textbox', { name: '发送 Agent 消息' })).toBeVisible();
+  await expect(drawer).toHaveClass(/tools-open/);
+});
+
+
 test('scheduled conversations keep their route and draft while creating or editing a task', async ({ page }) => {
   const writes = await openWorkspace(page);
   await page.getByRole('navigation', { name: 'Agent 工作区导航' }).getByRole('button', { name: '定时任务' }).click();
@@ -209,6 +255,20 @@ test('fullscreen tools occupy the entire workbench region and restore the conver
   await page.getByRole('button',{name:'关闭工作区工具',exact:true}).click();
   await expect(page.locator('.agent-workspace-summary')).toBeVisible();
   await expect(composer).toHaveValue('全屏切换时保留草稿');
+});
+
+
+
+test('new workspace tabs embed a compact browser without a duplicate browser card', async ({ page }) => {
+  await openWorkspace(page);
+  await page.goto('/agent/conversations/scheduled-conversation');
+  await page.getByRole('button', { name: '新建工作区页签', exact: true }).first().click();
+
+  const launcher = page.locator('.agent-workspace-tab-launcher.active');
+  await expect(launcher.getByRole('textbox', { name: '网页地址', exact: true })).toBeVisible();
+  await expect(launcher.getByRole('button', { name: '浏览器', exact: true })).toHaveCount(0);
+  await expect(launcher.getByRole('button', { name: '文件', exact: true })).toBeVisible();
+  await expect.poll(() => launcher.locator('.agent-workspace-browser-toolbar').evaluate(element => element.getBoundingClientRect().height)).toBeLessThanOrEqual(48);
 });
 
 
