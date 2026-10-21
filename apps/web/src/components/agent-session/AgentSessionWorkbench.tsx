@@ -3802,6 +3802,8 @@ function WorkspaceDrawer({
   const [fullScreen, setFullScreen] = useState(false);
   const [fullScreenView, setFullScreenView] = useState<'conversation' | 'tool'>('conversation');
   const [environmentOpen, setEnvironmentOpen] = useState(true);
+  const workspaceResizeCleanup = useRef<(() => void) | undefined>(undefined);
+  useEffect(() => () => workspaceResizeCleanup.current?.(), [open, fullScreen, scopeKey]);
   const [sshAccessOpen, setSshAccessOpen] = useState(false);
   useEscapeClose(() => {
     if (pendingTerminalClose && !closingTerminalId) setPendingTerminalClose(undefined);
@@ -4488,10 +4490,11 @@ function WorkspaceDrawer({
     setFullScreen(false);
     onClose();
   };
-  const workspaceDrawerAtMaximumWidth = !fullScreen && window.innerWidth > 960 && panelWidth >= clampWorkspaceToolWidth(Number.MAX_SAFE_INTEGER) - 2;
   const startResize = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (window.innerWidth <= 960) return;
+    if (window.innerWidth <= 960 || event.button !== 0 || !event.isPrimary || workspaceResizeCleanup.current) return;
     event.preventDefault();
+    const handle = event.currentTarget;
+    const pointerId = event.pointerId;
     const startX = event.clientX;
     const startWidth = panelWidth;
     let frame: number | undefined;
@@ -4501,30 +4504,43 @@ function WorkspaceDrawer({
       setPanelWidth(clampWorkspaceToolWidth(nextWidth));
     };
     const move = (moveEvent: PointerEvent) => {
+      if (moveEvent.pointerId !== pointerId) return;
       nextWidth = startWidth + startX - moveEvent.clientX;
       if (frame === undefined) frame = window.requestAnimationFrame(applyWidth);
     };
-    const stop = () => {
+    const cleanup = () => {
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', stop);
       window.removeEventListener('pointercancel', stop);
+      window.removeEventListener('blur', stop);
+      handle.removeEventListener('lostpointercapture', stop);
       if (frame !== undefined) window.cancelAnimationFrame(frame);
-      const width = clampWorkspaceToolWidth(nextWidth);
-      setPanelWidth(width);
-      if (width >= clampWorkspaceToolWidth(Number.MAX_SAFE_INTEGER) - 2) {
-        setFullScreen(true);
-        setFullScreenView('tool');
-      }
+      if (handle.hasPointerCapture(pointerId)) handle.releasePointerCapture(pointerId);
+      workspaceResizeCleanup.current = undefined;
       document.body.classList.remove('agent-workspace-resizing');
       document.body.style.removeProperty('cursor');
       document.body.style.removeProperty('user-select');
     };
+    const stop = (stopEvent: Event) => {
+      if (stopEvent instanceof PointerEvent && stopEvent.pointerId !== pointerId) return;
+      cleanup();
+      const width = clampWorkspaceToolWidth(nextWidth);
+      setPanelWidth(width);
+      if (stopEvent.type === 'pointerup' && width >= clampWorkspaceToolWidth(Number.MAX_SAFE_INTEGER) - 2) {
+        setFullScreen(true);
+        setFullScreenView('tool');
+      }
+    };
+    workspaceResizeCleanup.current = cleanup;
+    handle.setPointerCapture(pointerId);
     document.body.classList.add('agent-workspace-resizing');
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
     window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', stop, { once: true });
-    window.addEventListener('pointercancel', stop, { once: true });
+    window.addEventListener('pointerup', stop);
+    window.addEventListener('pointercancel', stop);
+    window.addEventListener('blur', stop);
+    handle.addEventListener('lostpointercapture', stop);
   };
   const startFileTreeResize = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (window.innerWidth <= 680) return;
@@ -4640,7 +4656,7 @@ function WorkspaceDrawer({
     <article className="agent-workspace-sources"><Link2 size={16}/><div><small>来源</small>{sources.length ? <><div className="agent-workspace-source-list">{visibleSources.map(source => <button type="button" key={source.id} title={`查看来源详情：${source.label}`} onClick={openSources}><span className="agent-workspace-source-glyph"><ConversationSourceGlyph source={source} size={12}/></span><span><b>{source.label}</b><em>{conversationSourceKind(source)}</em></span></button>)}</div>{sources.length > visibleSources.length && <button type="button" className="agent-workspace-view-all-sources" onClick={openSources}><Link2 size={12}/><span>查看全部</span><em>{sources.length}</em><ChevronRight size={13}/></button>}</> : <p>用户输入的链接、文件和图片会集中显示在这里。</p>}</div></article>
   </section>;
       return <><aside className={`agent-workspace-drawer ${open ? 'tools-open' : 'summary-open'}${fullScreen ? ' fullscreen' : ''}${fullScreenConversationActive ? ' conversation-active' : ''}${environmentOpen ? ' environment-open' : ' environment-hidden'}`} style={{ width: fullScreen ? undefined : panelWidth, '--agent-workspace-tool-width': `${panelWidth}px` } as CSSProperties} aria-label={fullScreen ? '全屏工作区工具' : undefined}>
-    {open && !workspaceDrawerAtMaximumWidth && <div className="agent-workspace-resizer" role="separator" aria-label="调整工作区工具宽度" aria-orientation="vertical" onPointerDown={startResize}/>}
+    {open && !fullScreen && <div className="agent-workspace-resizer" role="separator" aria-label="调整工作区工具宽度" aria-orientation="vertical" onPointerDown={startResize}/>}
     <section className="agent-workspace-summary" aria-hidden={!environmentOpen} inert={!environmentOpen}>
       {loadingOrError || summary}
     </section>

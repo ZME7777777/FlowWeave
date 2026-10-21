@@ -428,6 +428,72 @@ test('expanded tools squeeze and reflow the transcript and composer without cove
 });
 
 
+test('tool boundaries remain draggable after automatic fullscreen and across an embedded browser', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1080 });
+  await page.addInitScript(() => {
+    if (!localStorage.getItem('flowweave:workspace-tool-width')) localStorage.setItem('flowweave:workspace-tool-width', '720');
+  });
+  await openWorkspace(page);
+  await page.route('**/browser/**', route => route.fulfill({ contentType: 'text/html; charset=utf-8', body: '<html><body style="margin:0;height:100vh;background:#eef5ef">可拖过的浏览器页面</body></html>' }));
+  await page.goto('/agent/conversations/scheduled-conversation');
+  const composer = page.getByRole('textbox', { name: '发送 Agent 消息' });
+  await composer.fill('调整工具宽度时保留草稿');
+  await page.getByRole('button', { name: '新建工作区页签', exact: true }).first().click();
+  const drawer = page.locator('.agent-workspace-drawer');
+  const resizer = page.getByRole('separator', { name: '调整工作区工具宽度' });
+  const width = () => drawer.evaluate(element => element.getBoundingClientRect().width);
+  await expect(resizer).toBeVisible();
+  await expect.poll(width).toBe(720);
+  const address = page.getByRole('textbox', { name: '网页地址', exact: true });
+  await address.fill('https://resize-frame.test/');
+  await address.press('Enter');
+  await expect(page.locator('.agent-workspace-browser-frame').contentFrame().getByText('可拖过的浏览器页面')).toBeVisible();
+  const drag = async (delta: number) => {
+    const box = await resizer.boundingBox();
+    await page.mouse.move(box!.x + box!.width / 2, box!.y + 240);
+    await page.mouse.down();
+    await expect(page.locator('body')).toHaveClass(/agent-workspace-resizing/);
+    await page.mouse.move(box!.x + box!.width / 2 + delta, box!.y + 240, { steps: 12 });
+    await page.mouse.up();
+    await expect(page.locator('body')).not.toHaveClass(/agent-workspace-resizing/);
+  };
+  await drag(160);
+  await expect.poll(width).toBe(560);
+  await drag(-260);
+  await expect(drawer).toHaveClass(/fullscreen/);
+  await page.getByRole('button', { name: '退出全屏', exact: true }).click();
+  await expect.poll(width).toBe(720);
+  await expect(drawer).not.toHaveClass(/fullscreen/);
+  await expect(resizer).toBeVisible();
+  await drag(500);
+  await expect.poll(width).toBe(300);
+  await drag(-100);
+  await expect.poll(width).toBe(400);
+  await expect(composer).toHaveValue('调整工具宽度时保留草稿');
+  const box = await resizer.boundingBox();
+  await page.mouse.move(box!.x + 4, box!.y + 240);
+  await page.mouse.down();
+  await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+  await expect(page.locator('body')).not.toHaveClass(/agent-workspace-resizing/);
+  await page.mouse.up();
+  expect(await page.locator('body').evaluate(element => element.style.cursor)).toBe('');
+  await page.mouse.move(box!.x + 4, box!.y + 240);
+  await page.mouse.down();
+  await expect(page.locator('body')).toHaveClass(/agent-workspace-resizing/);
+  await page.getByRole('button', { name: '关闭工作区工具', exact: true }).evaluate(button => button.click());
+  await expect(resizer).toHaveCount(0);
+  await expect(page.locator('body')).not.toHaveClass(/agent-workspace-resizing/);
+  await page.mouse.up();
+  expect(await page.locator('body').evaluate(element => element.style.userSelect)).toBe('');
+  await page.getByRole('button', { name: '新建工作区页签', exact: true }).first().click();
+  await page.setViewportSize({ width: 1024, height: 1080 });
+  await expect.poll(width).toBe(324);
+  await expect(resizer).toBeVisible();
+  await drag(20);
+  await expect.poll(width).toBe(304);
+  await expect(composer).toHaveValue('调整工具宽度时保留草稿');
+});
+
 test('message scale hides when the conversation gutter collapses and returns after resizing tools', async ({page}) => {
   await page.setViewportSize({width:1920,height:1080});
   await openWorkspace(page,[
@@ -439,24 +505,27 @@ test('message scale hides when the conversation gutter collapses and returns aft
   await expect(scale).toBeVisible();
   await page.getByRole('button',{name:'新建工作区页签',exact:true}).first().click();
   await expect(scale).toBeVisible();
-  const resize=async (delta:number) => {
+  const resizeTo=async (targetWidth:number) => {
     const box=await page.getByRole('separator',{name:'调整工作区工具宽度'}).boundingBox();
-    await page.mouse.move(box!.x+box!.width-1,box!.y+100);
+    const currentWidth=await page.locator('.agent-workspace-drawer').evaluate(element=>element.getBoundingClientRect().width);
+    const startX=box!.x+box!.width/2;
+    await page.mouse.move(startX,box!.y+100);
     await page.mouse.down();
-    await page.mouse.move(box!.x+delta,box!.y+100,{steps:12});
+    await page.mouse.move(startX+currentWidth-targetWidth,box!.y+100,{steps:12});
     await page.mouse.up();
   };
-  await resize(-400);
+  // Keep these layout assertions below the threshold that intentionally opens fullscreen.
+  await resizeTo(700);
   await expect(scale).toBeHidden();
   await expect(page.locator('.conversation-message-index-tooltip')).toBeHidden();
   await expect(page.locator('.conversation-message.assistant')).toContainText('会话区收窄后');
-  await resize(410);
+  await resizeTo(310);
   await expect(scale).toBeVisible();
   await page.getByRole('button', { name: '显示悬浮信息卡', exact: true }).click();
   await expect(scale).toBeVisible();
-  await resize(-160);
+  await resizeTo(470);
   await expect(scale).toBeHidden();
-  await resize(170);
+  await resizeTo(310);
   await expect(scale).toBeVisible();
   const gap=await page.evaluate(() => document.querySelector('.conversation-message.assistant p')!.getBoundingClientRect().left-document.querySelector('.conversation-message-index')!.getBoundingClientRect().right);
   expect(gap).toBeGreaterThanOrEqual(8);
