@@ -139,3 +139,8 @@ git -C /Users/zhengmengen/WorkSpace/openhands/software-agent-sdk-total-tokens-1.
 - 在嵌入式会话定时任务页，打开运行会话后点击任务块必须显式返回 `/agent/schedules` 并保留面板选择状态；会话路由存在时主工作台会隐藏任务详情，不能只更新任务面板内部的 `selectedScheduleId`。
 - 嵌入式定时会话路由也必须保留与主页会话列表一致的底部“会话配置”入口，并将当前 hydration 后的正式 capabilities 传入；每个定时任务下的运行会话默认只展示前三项，其余由该任务自身的展开控件显示。
 - Git 提交 Diff 与工作区文件 Diff 共用 `DiffChangeNavigation` 的 `scrollIntoView({ block: 'center' })` 导航机制。每种统一/并排渲染模式都必须保留 `.agent-diff-scroll-end-spacer`（高度为可视区的 50%，且至少 120px），否则最后一个变更没有足够滚动范围进入视觉中心。Git Diff 有意只渲染补丁 hunk 中的新增、删除和有限上下文；文件末尾未改动的行应通过“查看源文件”查看，而不是补进 Diff。
+
+## Case 控制面
+
+- `cases`、`case_stages` 和 `case_agent_tasks` 是用户隔离的控制面元数据；迁移必须同步加入 PostgreSQL RLS 策略及 `shared/database.py` 的 `_USER_ISOLATED_TABLES`。
+- 现有 `AgentWorkspace` 使用平台级固定 `scope_key`，不能直接作为按 Case 隔离的长期控制会话宿主。Case 会话接入前须复用 OpenHands 正式会话能力并设计独立宿主/隔离边界，禁止用平台私有对话执行器替代。
