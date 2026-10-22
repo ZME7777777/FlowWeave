@@ -5228,6 +5228,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (sidebarScrollbarTimer.current !== undefined) window.clearTimeout(sidebarScrollbarTimer.current);
   }, []);
   const pendingWorkspaceGroupAnchor = useRef<{ groupId: string; top: number } | undefined>(undefined);
+  const workspaceGroupAnchorSpacer = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!sidebarScrollStorageKey) {
       workspaceSidebarScrollTop.current = undefined;
@@ -5485,9 +5486,17 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     pendingWorkspaceGroupAnchor.current = undefined;
     const group = sidebar.querySelector<HTMLElement>(`[data-workspace-group-id="${CSS.escape(anchor.groupId)}"]`);
     if (!group) return;
+    // Keep the clicked header in place even if collapsing leaves too little
+    // content below it for the previous scroll offset. Release this space as
+    // the user scrolls upward or another group is toggled.
+    const spacer = workspaceGroupAnchorSpacer.current;
+    if (spacer) spacer.style.height = '0px';
     const delta = group.getBoundingClientRect().top - anchor.top;
-    if (!delta) return;
-    const target = Math.min(sidebar.scrollHeight - sidebar.clientHeight, Math.max(0, sidebar.scrollTop + delta));
+    const target = Math.max(0, sidebar.scrollTop + delta);
+    const extra = Math.max(0, target - (sidebar.scrollHeight - sidebar.clientHeight));
+    if (spacer) spacer.style.height = `${extra}px`;
+    workspaceSidebarScrollTop.current = target;
+    workspaceSidebarScrollTopBeforeActivity.current = undefined;
     if (sidebar.scrollTop !== target) {
       restoringWorkspaceSidebarScrollTop.current = target;
       sidebar.scrollTop = target;
@@ -5505,12 +5514,13 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, [conversations, sidebarListMode, sidebarScrollTop]);
   const completeSidebarReveal = useCallback(() => {
     const sidebar = sidebarListRef.current;
-    if (scheduleRoute || sidebarListMode !== 'workspaces' || !pendingSidebarRevealBindingId || !sidebar) return;
+    if (scheduleRoute || sidebarListMode !== 'workspaces' || !pendingSidebarRevealBindingId || !sidebar || pendingWorkspaceGroupAnchor.current) return;
     const row = sidebar.querySelector<HTMLElement>(`[data-conversation-binding-id="${CSS.escape(pendingSidebarRevealBindingId)}"]`);
     if (!row || row.closest('[hidden]')) return;
     const bounds = row.getBoundingClientRect();
     const viewport = sidebar.getBoundingClientRect();
     if (bounds.top < viewport.top || bounds.bottom > viewport.bottom) row.scrollIntoView({ block: 'nearest' });
+    workspaceSidebarScrollTop.current = sidebar.scrollTop;
     setSidebarRevealBindingId(current => current === pendingSidebarRevealBindingId ? undefined : current);
   }, [pendingSidebarRevealBindingId, scheduleRoute, sidebarListMode]);
   useLayoutEffect(() => {
@@ -9478,6 +9488,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   );
   const setConversationGroupCollapsed = (groupId: string, collapsed: boolean) => {
     if (collapsed) setSidebarRevealBindingId(undefined);
+    else if (routeBindingId && unpinnedConversations.some(item => item.id === routeBindingId && (item.work_directory_id ?? 'root') === groupId)) {
+      setSidebarRevealBindingId(routeBindingId);
+    }
     const sidebar = sidebarListRef.current;
     const group = sidebar?.querySelector<HTMLElement>(`[data-workspace-group-id="${CSS.escape(groupId)}"]`);
     pendingWorkspaceGroupAnchor.current = sidebar && group && sidebarListMode === 'workspaces'
@@ -9638,6 +9651,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         }
         restoringWorkspaceSidebarScrollTop.current = undefined;
         workspaceSidebarScrollTopBeforeActivity.current = undefined;
+        const spacer = workspaceGroupAnchorSpacer.current;
+        if (spacer) {
+          const height = parseFloat(spacer.style.height) || 0;
+          const required = Math.max(0, scrollTop - (event.currentTarget.scrollHeight - event.currentTarget.clientHeight - height));
+          if (required < height) spacer.style.height = `${required}px`;
+        }
         workspaceSidebarScrollTop.current = scrollTop;
         if (!sidebarScrollStorageKey) return;
         try { sessionStorage.setItem(sidebarScrollStorageKey, String(scrollTop)); } catch { /* browser session state only */ }
@@ -9650,7 +9669,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
             </WorkspaceConversationGroup>
             {features.workDirectories && workDirectories.map(directory => { const group = conversationsForDirectory(directory.id); const routeIndex = group.findIndex(item => item.id === pendingSidebarRevealBindingId); return <WorkspaceConversationGroup key={directory.id} groupId={directory.id} label={directory.display_name} conversationCount={group.length} hasMore={Boolean(conversationPagesByScope[directory.id]?.next_cursor)} loadingMore={loadingConversationScope === directory.id} onLoadMore={() => loadMoreConversations(directory.id)} draggable dragging={draggedWorkDirectoryId === directory.id} dropPosition={workDirectoryDropTarget?.id === directory.id ? (workDirectoryDropTarget.after ? 'after' : 'before') : undefined} onPointerDragStart={event => startPointerWorkDirectoryDrag(event, directory.id)} collapsed={collapsedConversationGroups.has(directory.id)} onCollapsedChange={collapsed => setConversationGroupCollapsed(directory.id, collapsed)} revealConversationIndex={routeIndex >= 0 ? routeIndex : undefined} onRevealConversation={completeSidebarReveal} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ workDirectoryId: directory.id, displayName: directory.display_name })} onEdit={api.updateWorkDirectory && runtimeWritable ? () => setWorkDirectoryEditor(directory) : undefined} onDelete={api.deleteWorkDirectory && runtimeWritable ? () => void removeWorkDirectory(directory) : undefined}>
               {visibleCount => <>{pendingBootstrapItem && pendingBootstrap?.draft.workDirectoryId === directory.id ? pendingBootstrapItem : recoverableDraftItem(directory.id, directory.display_name)}{group.slice(0, visibleCount).map(item => conversationRow(item, group))}</>}
-            </WorkspaceConversationGroup>; })}</>}
+            </WorkspaceConversationGroup>; })}<div ref={workspaceGroupAnchorSpacer} aria-hidden="true"/></>}
       </div>
       {features.capabilities && (selected || features.draftCapabilitySelection) && <footer className="agent-workbench-rail-footer"><button type="button" title={selected ? '会话配置' : '新会话配置'} aria-label={selected ? '会话配置' : '新会话配置'} disabled={selected ? !canWrite : !runtimeWritable} onClick={() => setCapabilityManagerOpen(true)}><Boxes size={13}/><span><b>会话配置</b></span><ChevronRight size={12}/></button></footer>}
     </aside>}

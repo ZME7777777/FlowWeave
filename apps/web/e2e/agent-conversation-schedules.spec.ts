@@ -198,6 +198,7 @@ test('manual transcript scrolling hides the latest-reply button when the final m
 
 for (const scope of ['root', 'directory'] as const) {
   test(`workspace group stays collapsed after route reveal and list refresh (${scope})`, async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 600 });
     await openWorkspace(page);
     const groups = Object.fromEntries(['root', 'directory'].map(group => [group, Array.from({ length: 6 }, (_, index) => ({
       id: `${group}-reveal-${index}`, display_title: `${group} 会话 ${index}`, title_state: index === 0 ? 'PENDING' : 'MANUAL', lifecycle: 'ACTIVE',
@@ -243,6 +244,11 @@ for (const scope of ['root', 'directory'] as const) {
     await page.getByRole('button', { name: '返回工作区列表', exact: true }).click();
     await expect(expand).toHaveAttribute('aria-expanded', 'false');
     await expand.click();
+    await expect(targetRow).toBeInViewport();
+    await expect(targetRow.getByRole('button', { name: target.display_title, exact: true })).toHaveClass(/active/);
+    const readsAfterExpand = reads[scope];
+    await expect.poll(() => reads[scope]).toBeGreaterThan(readsAfterExpand + 1);
+    await expect(targetRow).toBeInViewport();
     await expect(group.getByRole('button', { name: `收起工作区 ${label}`, exact: true })).toBeVisible();
     await group.getByRole('button', { name: `收起工作区 ${label}`, exact: true }).click();
     await expect(expand).toBeVisible();
@@ -253,6 +259,59 @@ for (const scope of ['root', 'directory'] as const) {
     await expect(expand).toBeVisible();
   });
 }
+
+test('collapsing a workspace near the viewport top preserves its header anchor', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 800 });
+  await openWorkspace(page, [], true);
+  await page.route('**/api/v1/agent-workspaces/schedule-workspace/work-directories', route => json(route, {
+    root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' },
+    items: Array.from({ length: 6 }, (_, index) => ({ id: `anchor-directory-${index}`, display_name: `锚点工作区 ${index}`, current_version: { working_directory: `/runtime/workspace/project/anchor-${index}` } })),
+  }));
+  await page.route('**/api/v1/agent-workspaces/schedule-workspace/conversations?**', async route => {
+    const directory = new URL(route.request().url()).searchParams.get('work_directory_id');
+    return json(route, { items: Array.from({ length: 3 }, (_, index) => ({
+      id: `${directory ?? 'root'}-anchor-${index}`, display_title: `${directory ?? 'root'} 会话 ${index}`, title_state: 'MANUAL', lifecycle: 'ACTIVE',
+      work_directory_id: directory, streaming_callback_ready: true, write_available: true, execution_status: 'idle', created_at: now, updated_at: now,
+    })), next_cursor: null });
+  });
+  await page.goto('/agent/conversations/scheduled-conversation');
+  const sidebar = page.locator('.agent-workbench-list');
+  const group = page.locator('[data-workspace-group-id="anchor-directory-2"]');
+  const header = group.locator(':scope > header');
+  await expect(group.locator('[data-conversation-binding-id]')).toHaveCount(3);
+  await sidebar.evaluate(element => {
+    const group = element.querySelector('[data-workspace-group-id="anchor-directory-2"]')!;
+    element.scrollTop += group.getBoundingClientRect().top - element.getBoundingClientRect().top - 12;
+  });
+  await settleWorkspaceLayout(page);
+  const top = await header.evaluate(element => element.getBoundingClientRect().top);
+  const toggleBounds = await group.getByRole('button', { name: '收起工作区 锚点工作区 2', exact: true }).boundingBox();
+  await page.mouse.click(toggleBounds!.x + 30, toggleBounds!.y + toggleBounds!.height / 2);
+  await expect(group.getByRole('button', { name: '展开工作区 锚点工作区 2', exact: true })).toBeVisible();
+  await settleWorkspaceLayout(page);
+  await expect.poll(() => header.evaluate(element => element.getBoundingClientRect().top)).toBe(top);
+  // Keep sampling after native scroll anchoring and subsequent renders settle.
+  expect(await sidebar.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+  const tops = await header.evaluate(async element => {
+    const values: number[] = [];
+    for (let i = 0; i < 8; i += 1) {
+      await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+      values.push(element.getBoundingClientRect().top);
+    }
+    return values;
+  });
+  expect(tops.every(value => Math.abs(value - top) <= 1)).toBe(true);
+  await group.getByRole('button', { name: '展开工作区 锚点工作区 2', exact: true }).click();
+  await settleWorkspaceLayout(page);
+  await expect.poll(() => header.evaluate(element => element.getBoundingClientRect().top)).toBe(top);
+  // Repeated collapse near the old scroll limit must not accumulate blank tail.
+  await group.getByRole('button', { name: '收起工作区 锚点工作区 2', exact: true }).click();
+  await expect.poll(() => header.evaluate(element => element.getBoundingClientRect().top)).toBe(top);
+  await sidebar.hover();
+  await page.mouse.wheel(0, -2000);
+  await expect.poll(() => sidebar.evaluate(element => element.scrollTop)).toBe(0);
+  expect(await sidebar.locator(':scope > [aria-hidden="true"]').evaluate(element => element.getBoundingClientRect().height)).toBe(0);
+});
 
 test('workspace directory search browses one level at a time independently of checkbox selection', async ({ page }) => {
   await openWorkspace(page);
