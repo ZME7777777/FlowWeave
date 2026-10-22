@@ -487,6 +487,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   let upstreamGateAuditEventPersisted = false;
   let gitSyncRequests = 0;
   let gitSynchronizesToRemote = false;
+  let gitSyncGate: Promise<void> | undefined;
+  let releaseGitSync: (() => void) | undefined;
   let pausedDirectMessagePosts = 0;
   let pausedAnnotationMessagePosts = 0;
   let releaseRunningDirectDelivery: (() => void) | undefined;
@@ -618,6 +620,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     }
     if (path.endsWith('/workspace/git/sync')) {
       gitSyncRequests += 1;
+      if (gitSyncGate) await gitSyncGate;
       gitSynchronizesToRemote = true;
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({}) });
       return;
@@ -1242,9 +1245,18 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   });
   expect(gitSummaryLayout.statusTop).toBeGreaterThan(gitSummaryLayout.branchBottom);
   const gitSummaryChangesRequestsBeforeRefresh = workspaceGitChangesRequests;
-  await gitSummary.getByRole('button', { name: '刷新 Git 信息' }).click();
+  gitSyncGate = new Promise<void>(resolve => { releaseGitSync = resolve; });
+  const gitSummaryRefresh = gitSummary.getByRole('button', { name: '刷新 Git 信息' });
+  await gitSummaryRefresh.click();
   await expect.poll(() => gitSyncRequests).toBe(1);
+  await expect(gitSummaryRefresh).toBeDisabled();
+  await expect(gitSummaryRefresh.locator('svg')).toHaveClass(/spin/);
+  await expect(gitSummary).toContainText('改动 +3');
+  await expect(gitSummary).not.toContainText('正在刷新本地改动…');
+  releaseGitSync?.();
   await expect.poll(() => workspaceGitChangesRequests).toBe(gitSummaryChangesRequestsBeforeRefresh + 1);
+  await expect(gitSummaryRefresh).toBeEnabled();
+  await expect(gitSummaryRefresh.locator('svg')).not.toHaveClass(/spin/);
   await expect(gitSummary).toContainText('本地 +0');
   await expect(gitSummary).toContainText('远端 +0');
   await gitSummary.getByTitle('在全屏文件栏中查看 Git 信息').click();
