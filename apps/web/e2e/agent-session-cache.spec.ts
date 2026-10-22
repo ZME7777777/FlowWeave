@@ -1433,12 +1433,17 @@ test('Sidebar chat keeps a selected conversation reference on its first message'
     id: 'sidebar-reference-source', display_title: '引用来源会话', title_state: 'MANUAL', lifecycle: 'ACTIVE', streaming_callback_ready: true, write_available: true,
     execution_status: 'idle', created_at: now, updated_at: now,
   };
+  const other = { ...source, id: 'sidebar-reference-other', display_title: '其他引用来源会话' };
   const sidebar = { ...source, id: 'sidebar-reference-draft', display_title: '侧边临时聊天' };
   const selectedText = '这段文字应作为侧边提问的会话引用。';
   const sourceHydration = {
     events: {
-      events: [{ id: 'sidebar-reference-source-event', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: '__root__', content: selectedText, timestamp: now } }],
-      next_cursor: 'sidebar-reference-source-event', history_cursor: null, result: { status: 'COMPLETED' },
+      events: [
+        { id: 'sidebar-reference-source-event', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: '__root__', content: selectedText, timestamp: now } },
+        { id: 'sidebar-reference-followup', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'sidebar-reference-source-event', content: '继续展开', timestamp: now } },
+        { id: 'sidebar-reference-latest', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'sidebar-reference-followup', content: Array.from({ length: 240 }, (_, index) => `后续内容 ${index}：这是一段足够长的正式回复，用来确保引用来源已经滚出可视区域。`).join('\n\n'), timestamp: now } },
+      ],
+      next_cursor: 'sidebar-reference-latest', history_cursor: null, result: { status: 'COMPLETED' },
     },
     context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 0, usage_current: true },
     readiness: { ready: true, execution_status: 'idle' },
@@ -1452,8 +1457,9 @@ test('Sidebar chat keeps a selected conversation reference on its first message'
     if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
     if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
     if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
-    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [source], next_cursor: null });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [source, other], next_cursor: null });
     if (path.endsWith('/model-providers')) return json(route, [{ id: 'test-provider', name: '测试模型', connection_state: 'CONNECTED', models: [{ model_name: 'test-model', enabled: true, is_default: true, supported_reasoning_efforts: [] }] }]);
+    if (path.includes(other.id) && path.endsWith('/hydration')) return json(route, { ...sourceHydration, events: { ...sourceHydration.events, events: [{ id: 'other-reference-event', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: '__root__', content: '另一个会话的正式回复。', timestamp: now } }] } });
     if (path.endsWith('/hydration')) return json(route, path.includes(sidebar.id) ? { ...sourceHydration, events: { ...sourceHydration.events, events: [] } } : sourceHydration);
     if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
     if (path.endsWith('/workspace')) return json(route, { root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [], runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } } });
@@ -1464,7 +1470,7 @@ test('Sidebar chat keeps a selected conversation reference on its first message'
       return json(route, { conversation: sidebar, accepted: true, cursor: 'sidebar-reference-first-event', expires_at: new Date(Date.now() + 3_600_000).toISOString() }, 201);
     }
     if (path.includes('/sidebars/')) return json(route, { binding_id: sidebar.id, source_binding_id: source.id, expires_at: new Date(Date.now() + 3_600_000).toISOString(), expired: false });
-    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, path.includes(sidebar.id) ? sidebar : source);
+    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, path.includes(sidebar.id) ? sidebar : path.includes(other.id) ? other : source);
     return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
   });
 
@@ -1473,6 +1479,7 @@ test('Sidebar chat keeps a selected conversation reference on its first message'
   await page.goto(`/agent/conversations/${source.id}`);
   const sourceMessage = page.locator('[data-conversation-event-id="sidebar-reference-source-event"]');
   await expect(sourceMessage).toContainText(selectedText);
+  await sourceMessage.scrollIntoViewIfNeeded();
   await sourceMessage.evaluate(element => {
     const content = element.querySelector('p');
     if (!content) throw new Error('Expected assistant message content');
@@ -1489,7 +1496,22 @@ test('Sidebar chat keeps a selected conversation reference on its first message'
 
   const sidebarPane = page.getByRole('region', { name: '侧边聊天' });
   await expect(sidebarPane.getByLabel('已添加的会话引用')).toContainText('会话引用');
-  await sidebarPane.getByRole('textbox', { name: '发送侧边聊天消息' }).fill('请解释这段内容');
+  const sidebarComposer = sidebarPane.getByRole('textbox', { name: '发送侧边聊天消息' });
+  await sidebarComposer.fill('请解释这段内容');
+  const mainSurface = page.locator('.agent-workbench-main .conversation-surface');
+  await mainSurface.evaluate(element => { element.scrollTop = element.scrollHeight; });
+  await expect(sourceMessage).not.toBeInViewport();
+  await page.getByRole('button', { name: '全屏查看工作区工具', exact: true }).click();
+  await sidebarPane.getByRole('button', { name: '定位引用来源会话', exact: true }).click();
+  await expect(page.locator('.agent-workspace-drawer')).not.toHaveClass(/fullscreen/);
+  await expect(sourceMessage).toBeInViewport();
+  await expect(page.locator('.agent-workbench-main .conversation-reference-highlights i').first()).toBeVisible();
+  await expect(sidebarComposer).toHaveValue('请解释这段内容');
+  await expect(sidebarPane.getByLabel('已添加的会话引用')).toContainText('会话引用');
+  await sidebarPane.getByRole('button', { name: '定位引用来源会话', exact: true }).focus();
+  await page.keyboard.press('Enter');
+  await expect(sourceMessage).toBeInViewport();
+
   await sidebarPane.getByRole('button', { name: '发送侧边聊天消息' }).click();
 
   await expect.poll(() => firstMessage).toMatchObject({
@@ -1497,6 +1519,24 @@ test('Sidebar chat keeps a selected conversation reference on its first message'
     references: [{ source_binding_id: source.id, source_event_id: 'sidebar-reference-source-event', selection: { compact_start: 0, compact_end: selectedText.replace(/\s+/g, '').length } }],
   });
   await expect(sidebarPane.locator('.conversation-message-reference')).toHaveCount(1);
+  await mainSurface.evaluate(element => { element.scrollTop = element.scrollHeight; });
+  await expect(sourceMessage).not.toBeInViewport();
+  await sidebarPane.locator('.conversation-message-reference').click();
+  await expect(sourceMessage).toBeInViewport();
+  await expect(page.locator('.agent-workbench-main .conversation-reference-highlights i').first()).toBeVisible();
+  await expect(page).toHaveURL(new RegExp(`/agent/conversations/${source.id}$`));
+  await page.screenshot({ path: test.info().outputPath('sidebar-reference-location.png') });
+  // Dropped references can point to another binding and contain its title.
+  await sidebarComposer.evaluate((element, target) => {
+    const dataTransfer = new DataTransfer();
+    dataTransfer.setData('application/x-flowweave-conversation-reference', JSON.stringify(target));
+    element.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer }));
+  }, { bindingId: other.id, eventId: 'other-reference-event', title: other.display_title });
+  await sidebarPane.getByRole('button', { name: '定位引用来源会话', exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`/agent/conversations/${other.id}$`));
+  await expect(page.locator('[data-conversation-event-id="other-reference-event"]')).toBeInViewport();
+  await expect(page.locator('.agent-workbench-main .conversation-reference-highlights i').first()).toBeVisible();
+  await expect(sourceMessage).toHaveCount(0);
 });
 
 test('Sidebar chat accepts selected and pasted attachments before its first message', async ({ page }) => {

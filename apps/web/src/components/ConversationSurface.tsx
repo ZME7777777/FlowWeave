@@ -77,6 +77,7 @@ interface ConversationAnnotationReference extends ConversationReference {
 }
 
 interface ConversationTextHighlight {
+  fallbackToEvent?: boolean;
   eventId: string;
   quote: string;
   compactStart?: number;
@@ -1889,7 +1890,7 @@ export interface ConversationScrollSnapshot {
   savedAt: number;
 }
 
-export const ConversationSurface = memo(function ConversationSurface({ events, isGenerating, isPaused = false, pausing = false, emptyResponseRecoveryActive = false, modelRetryStatus, historyPending = false, cachedHistoryMarkerCount = 0, cachedHistoryUserEventIds = [], hasCachedOlderHistory = false, onRequestOlderHistory, onRevealHistoryThrough, conversationScope, initialScrollSnapshot, onScrollSnapshotChange, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationPending = false, condensationStartedAt, onRewrite, onFork, onOpenAttachment, attachmentImageUrl, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenSourceLocation, onOpenWorkspaceFile, onOpenBrowser, onOpenImage, workspaceImageUrl, workspaceRoot, onCreateAnnotation, onSidebarQuestion, onLocateAnnotation, conversationName, onOpenConversationReference, taskControl = [], monitoring, connectionState }: {
+export const ConversationSurface = memo(function ConversationSurface({ events, isGenerating, isPaused = false, pausing = false, emptyResponseRecoveryActive = false, modelRetryStatus, historyPending = false, cachedHistoryMarkerCount = 0, cachedHistoryUserEventIds = [], hasCachedOlderHistory = false, onRequestOlderHistory, onRevealHistoryThrough, conversationScope, referenceLocation, initialScrollSnapshot, onScrollSnapshotChange, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationPending = false, condensationStartedAt, onRewrite, onFork, onOpenAttachment, attachmentImageUrl, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenSourceLocation, onOpenWorkspaceFile, onOpenBrowser, onOpenImage, workspaceImageUrl, workspaceRoot, onCreateAnnotation, onSidebarQuestion, onLocateAnnotation, conversationName, onOpenConversationReference, taskControl = [], monitoring, connectionState }: {
   events: OpenHandsConversationEvent[];
   isGenerating: boolean;
   /** Formal native conversation pause state, used only to label unfinished Task actions. */
@@ -1912,6 +1913,8 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   onRevealHistoryThrough?: (eventId: string) => Promise<boolean>;
   /** Binding identity that owns this transcript viewport. */
   conversationScope?: string;
+  /** Explicit user navigation, scoped to the referenced binding and formal event. */
+  referenceLocation?: AgentConversationReference;
   /** In-memory reading position captured before this scoped viewport unmounted. */
   initialScrollSnapshot?: ConversationScrollSnapshot;
   onScrollSnapshotChange?: (scope: string, snapshot: ConversationScrollSnapshot) => void;
@@ -2170,6 +2173,16 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     setReferenceHighlightRects([]);
     setHighlightedReference(highlight);
   }, []);
+  useLayoutEffect(() => {
+    if (!referenceLocation || referenceLocation.source_binding_id !== conversationScope) return;
+    stopFollowingLatest();
+    highlightReferenceText({
+      eventId: referenceLocation.event_id,
+      quote: referenceLocation.content,
+      compactStart: referenceLocation.selection?.compact_start,
+      fallbackToEvent: true,
+    });
+  }, [conversationScope, highlightReferenceText, referenceLocation, stopFollowingLatest]);
   const updateReferenceHighlight = useCallback(() => {
     const element = surface.current;
     const highlightRoot = content.current;
@@ -2178,7 +2191,13 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
       .find(item => item.dataset.conversationEventId === highlightedReference.eventId);
     if (!target) return false;
     for (let parent = target.parentElement?.closest('details'); parent; parent = parent.parentElement?.closest('details')) parent.open = true;
-    const range = conversationQuoteRange(target, highlightedReference.quote, highlightedReference.compactStart);
+    let range = conversationQuoteRange(target, highlightedReference.quote, highlightedReference.compactStart);
+    if (!range && highlightedReference.fallbackToEvent) {
+      // Whole-conversation drag references carry a title rather than a quote.
+      // Their explicit formal event ID still provides an exact navigation target.
+      range = document.createRange();
+      range.selectNodeContents(target);
+    }
     if (!range) return false;
     const rects = conversationHighlightRects(range, highlightRoot);
     if (!rects.length) return false;
@@ -2194,10 +2213,11 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     selection?.removeAllRanges();
     selection?.addRange(range);
     if (!referenceHighlightTimer.current) {
+      const selectedText = range.toString();
       referenceHighlightTimer.current = window.setTimeout(() => {
         setHighlightedReference(current => current === highlightedReference ? undefined : current);
         setReferenceHighlightRects([]);
-        if (window.getSelection()?.toString() === highlightedReference.quote) window.getSelection()?.removeAllRanges();
+        if (window.getSelection()?.toString() === selectedText) window.getSelection()?.removeAllRanges();
         referenceHighlightTimer.current = undefined;
       }, 1_500);
     }

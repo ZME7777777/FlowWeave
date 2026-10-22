@@ -15,6 +15,7 @@ interface SidebarConversationPaneProps {
   sidebarBindingId?: string;
   initialReference?: AgentConversationReference;
   onBindingCreated: (bindingId: string) => void;
+  onOpenConversationReference: (reference: AgentConversationReference) => void;
   onPreviewAttachment: (attachment: AgentAttachment, bindingId?: string) => void;
 }
 
@@ -71,7 +72,7 @@ function sidebarComposerSuggestions(capabilities: AgentSessionCapability[] | und
   });
 }
 
-export function SidebarConversationPane({ workspaceId, sourceBindingId, sidebarBindingId, initialReference, onBindingCreated, onPreviewAttachment }: SidebarConversationPaneProps) {
+export function SidebarConversationPane({ workspaceId, sourceBindingId, sidebarBindingId, initialReference, onBindingCreated, onOpenConversationReference, onPreviewAttachment }: SidebarConversationPaneProps) {
   const queryClient = useQueryClient();
   const attachmentInput = useRef<HTMLInputElement>(null);
   const composerInput = useRef<ComposerHandle>(null);
@@ -308,7 +309,7 @@ export function SidebarConversationPane({ workspaceId, sourceBindingId, sidebarB
   return <section className="agent-sidebar-conversation" aria-label="侧边聊天">
     <div className="agent-sidebar-chat-content">
       {hydrationQuery.isLoading && bindingId ? <div className="conversation-surface-empty"><LoaderCircle className="conversation-activity-spin" size={16}/><b>正在加载会话</b></div>
-        : bindingId ? <ConversationSurface events={events} isGenerating={running || sending} isPaused={paused} conversationScope={bindingId} requestSubmitting={sending} condensationPending={condensing} onOpenAttachment={attachment => onPreviewAttachment(attachment, bindingId)} taskControl={hydrationQuery.data?.events.task_control} monitoring={hydrationQuery.data?.events.monitoring} connectionState={hydrationQuery.isError ? 'unavailable' : hydrationQuery.isFetching && !hydrationQuery.data ? 'checking' : 'connected'}/>
+        : bindingId ? <ConversationSurface events={events} isGenerating={running || sending} isPaused={paused} conversationScope={bindingId} requestSubmitting={sending} condensationPending={condensing} onOpenAttachment={attachment => onPreviewAttachment(attachment, bindingId)} onOpenConversationReference={onOpenConversationReference} taskControl={hydrationQuery.data?.events.task_control} monitoring={hydrationQuery.data?.events.monitoring} connectionState={hydrationQuery.isError ? 'unavailable' : hydrationQuery.isFetching && !hydrationQuery.data ? 'checking' : 'connected'}/>
           : <div className="agent-workbench-empty"><MessageSquarePlus size={28}/><b>向主会话追问</b><span>这是临时聊天：关闭后会删除，最长保留一小时。</span></div>}
       {expired && <section className="agent-sidebar-expired" role="status"><Clock3 size={16}/><span>侧边聊天会话已过期。已显示的内容仍可阅读，但不能继续发送消息。</span></section>}
       {error && <section className="agent-workbench-error" role="alert"><CircleAlert size={17}/><div><b>操作未完成</b><span>{error}</span></div></section>}
@@ -316,7 +317,7 @@ export function SidebarConversationPane({ workspaceId, sourceBindingId, sidebarB
     <div className="agent-sidebar-chat-composer">
       <div className="agent-composer agent-sidebar-composer">
         <div className="agent-composer-attachments">
-          {reference && <div className="agent-attachments agent-conversation-references" aria-label="已添加的会话引用"><span><span className="agent-attachment-open" title={reference.content}><Quote size={14}/><em>会话引用</em></span><button type="button" className="agent-attachment-remove" onClick={() => setReference(undefined)} aria-label="移除引用">×</button></span></div>}
+          {reference && <div className="agent-attachments agent-conversation-references" aria-label="已添加的会话引用"><span><button type="button" className="agent-attachment-open" aria-label="定位引用来源会话" title={reference.content} onClick={() => onOpenConversationReference(reference)}><Quote size={14}/><em>会话引用</em></button><button type="button" className="agent-attachment-remove" onClick={() => setReference(undefined)} aria-label="移除引用">×</button></span></div>}
           {(attachments.length > 0 || pendingAttachments.length > 0) && <div className="agent-attachments" aria-label="已添加的附件">{attachments.map(item => <span key={item.path}><button type="button" className="agent-attachment-open" title={`预览附件：${item.filename}`} onClick={() => onPreviewAttachment(item, bindingId)}>{item.image_data_url ? <img src={item.image_data_url} alt=""/> : <FileTypeIcon filename={item.filename} mimeType={item.mime_type} size={16}/>}<em>{item.filename}</em></button><button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => setAttachments(current => current.filter(candidate => candidate.path !== item.path))}>×</button></span>)}{pendingAttachments.map(item => <span key={item.id} className={`agent-pending-attachment ${item.state}`} title={item.state === 'failed' ? '附件上传失败，请重试或删除。' : `正在上传 ${item.progress}%`}><span className="agent-attachment-open">{item.previewUrl ? <img src={item.previewUrl} alt=""/> : <FileTypeIcon filename={item.file.name} mimeType={item.file.type} size={16}/>}<em>{item.file.name}</em>{item.state === 'uploading' && <small>{item.progress}%</small>}{item.state === 'failed' && <span className="agent-attachment-retry-overlay"><button type="button" onClick={() => retryPendingAttachment(item.id)}>重试</button></span>}</span>{item.state === 'uploading' && <i className="agent-attachment-progress" style={{ '--upload-progress': `${item.progress}%` } as CSSProperties}/>}<button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.file.name}`} onClick={() => removePendingAttachment(item.id)}>×</button></span>)}</div>}
         </div>
         <AgentComposerInput ref={composerInput} ariaLabel="发送侧边聊天消息" initialDraft={content} scope={bindingId ?? draftConversationId} suggestions={composerSuggestions} disabled={composerDisabled} placeholder={expired ? '侧边聊天会话已过期' : running ? '当前回复完成后可继续发送' : '给 Agent 发消息…'} onDraftChange={updateDraft} onContentPresenceChange={updateContentPresence} onDraftPersist={persistDraft} onPaste={event => {

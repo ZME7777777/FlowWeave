@@ -9351,3 +9351,24 @@ Web typecheck、定向 ESLint、production build、git diff --check、唯一 Ale
 0157_background_task_aggregate_type_length 与 CURRENT 唯一性通过。
 当前及下一可执行切片均为 NONE；沿用当前会话授权仅发布 Web，并执行健康、版本、
 路由及受管发布收尾。
+
+
+### FR-633 侧边聊天引用返回来源会话与原文定位 — DONE
+
+依赖：FR-632 DONE。侧边输入框引用原为没有点击处理的 span，发送后也未将来源
+导航传给消息组件。现改为可键盘操作的按钮，输入框／发送后的引用共用宿主导航，
+使用正式 source binding／event ID 返回会话并滚动、高亮引用原文。工具全屏时恢复
+主会话可见，保留当前侧边聊天页签及未发送内容，不创建额外消息或会话。
+
+定位请求与目标 binding 绑定，等待正式 hydration，按既有历史缓存恢复接口揭示目标
+事件；传给主正文的请求再次校验 scope，不影响侧边临时会话。重复点击重新定位；
+拖入的整会话引用正文为标题时，仅以显式 event ID 定位该事件，不按标题猜测事件。
+沿用原生事件正文及已有短时高亮；结束后只清理本次仍保留的浏览器选区。
+
+修复前 Chromium 复现引用缺少可操作入口。6 项定向回归通过，覆盖首次发送引用、
+原文已滚出视口后的输入／消息引用定位、键盘 Enter、工具全屏恢复、侧边草稿保留、
+跨 binding 拖入引用及标题回退、侧边会话隔离、附件与控制按钮；截图验收通过。
+Web typecheck、定向 ESLint、production build、git diff --check、唯一 Alembic head
+0157_background_task_aggregate_type_length 与 CURRENT 唯一性通过。
+当前及下一可执行切片均为 NONE；沿用会话授权仅发布 Web，执行健康、版本、路由与
+受管发布收尾。
