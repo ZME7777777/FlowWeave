@@ -7015,7 +7015,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const conversationVisuallyActive = !uncreatedConversationDraft && (
     conversationActivity.active
     || (
-      !nativeTurnTerminal
+      effectiveTurnState !== 'paused'
+      && !nativeTurnTerminal
       && runningConversationIds.has(selected?.id ?? '')
       && !latestFormalTurnFinished
     )

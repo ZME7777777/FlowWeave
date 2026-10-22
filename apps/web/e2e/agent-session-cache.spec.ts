@@ -4388,7 +4388,8 @@ test('Pausing immediately updates the controls before the readiness projection c
     if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
     if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
     if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [{ ...conversation, execution_status: status }], next_cursor: null });
-    if (path.endsWith('/conversation-activity')) return json(route, { running_binding_ids: status === 'running' ? [conversation.id] : [] });
+    // The activity catalog may lag the formal pause readiness transition.
+    if (path.endsWith('/conversation-activity')) return json(route, { running_binding_ids: [conversation.id] });
     if (path.endsWith('/hydration')) return json(route, {
       events: { ...events, result: { status: status === 'running' ? 'RUNNING' : 'PAUSED' } },
       context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 1_024, usage_current: true },
@@ -4431,6 +4432,7 @@ test('Pausing immediately updates the controls before the readiness projection c
 
   pauseProjectionAvailable = true;
   await expect(page.getByRole('button', { name: '继续当前 Agent' })).toBeVisible();
+  await expect(page.getByText('正在思考', { exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: '继续当前 Agent' }).click();
   await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
   stream!.send(JSON.stringify({
