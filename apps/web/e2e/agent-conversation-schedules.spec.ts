@@ -169,6 +169,52 @@ test('workspace Git settings show only confirmed identity and save with readback
   await page.screenshot({ path: '../../.tmp/fr623-git-settings-narrow.png' });
 });
 
+test('settings toggle returns to the preceding navigation view without changing the route or draft', async ({ page }) => {
+  await openWorkspace(page);
+  await page.route('**/api/v1/agent-workspaces/schedule-workspace/settings/git', route => json(route, { author: '', email: '', configured: false }));
+  await page.goto('/agent/conversations/scheduled-conversation');
+  const navigation = page.getByRole('navigation', { name: 'Agent 工作区导航' });
+  const trigger = navigation.getByRole('button', { name: '工作区设置', exact: true });
+  const settings = page.getByRole('region', { name: '工作区设置' });
+  const composer = page.getByRole('textbox', { name: '发送 Agent 消息' });
+  await composer.fill('设置切换保留的草稿');
+
+  const toggleBack = async (view: string) => {
+    const route = page.url();
+    await trigger.click();
+    await expect(settings).toBeVisible();
+    await expect(trigger).toHaveAttribute('aria-current', 'page');
+    await expect(navigation.getByRole('button', { name: view, exact: true })).not.toHaveAttribute('aria-current', 'page');
+    await expect(page).toHaveURL(route);
+    await trigger.click();
+    await expect(settings).toHaveCount(0);
+    await expect(trigger).not.toHaveAttribute('aria-current', 'page');
+    await expect(navigation.getByRole('button', { name: view, exact: true })).toHaveAttribute('aria-current', 'page');
+    await expect(page).toHaveURL(route);
+  };
+
+  await toggleBack('主页');
+  await expect(composer).toHaveValue('设置切换保留的草稿');
+  await toggleBack('主页');
+  await navigation.getByRole('button', { name: '定时任务', exact: true }).click();
+  await toggleBack('定时任务');
+  await expect(page.getByRole('region', { name: '会话定时任务' })).toBeVisible();
+  await page.locator('.agent-schedule-run').first().click();
+  await expect(page).toHaveURL(/\/agent\/schedules\/conversations\/scheduled-run-1$/);
+  await expect(composer).toBeVisible();
+  await composer.fill('定时会话草稿');
+  await toggleBack('定时任务');
+  await expect(composer).toHaveValue('定时会话草稿');
+  await navigation.getByRole('button', { name: '会话管理', exact: true }).click();
+  await toggleBack('会话管理');
+  await expect(page.getByRole('heading', { name: '会话管理', exact: true })).toBeVisible();
+  // A direct navigation choice while settings is open becomes the next return view.
+  await trigger.click();
+  await navigation.getByRole('button', { name: '主页', exact: true }).click();
+  await toggleBack('主页');
+  await expect(composer).toHaveValue('设置切换保留的草稿');
+});
+
 test('workspace Git settings keep failed reads empty and allow retry from schedules', async ({ page }) => {
   await openWorkspace(page);
   let fail = true;

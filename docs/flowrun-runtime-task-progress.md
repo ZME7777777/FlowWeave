@@ -9182,3 +9182,16 @@ build、git diff --check、唯一 Alembic head 0157_background_task_aggregate_ty
 通过。当前及下一可执行切片均为 NONE。沿用会话授权发布 platform 与 web，并在已验证
 目标对既有受影响仓库应用同一固定修复、核对实际有效身份；不重启现有 Agent Runtime，
 不创建用户提交，不改写历史或服务器 Compose／env，完成健康／路由验收与受管收尾。
+
+
+### FR-627 工作区设置按钮再次点击返回原导航 — DONE
+
+依赖：FR-626 DONE。打开设置时记住此前的主页、定时任务或会话管理视图；再次点击
+设置按钮取消选中并恢复该视图。设置切换不改变路由，保留普通／定时会话及其发送框草稿；
+设置中主动选择其他导航后，下一次打开设置使用新的来源视图，不复用旧来源。
+
+5 项 Chromium 定向回归通过，覆盖重复切换、三种来源导航、定时会话路由和两种会话草稿
+恢复，以及既有 Git 配置查看／编辑行为。Web typecheck、定向 ESLint、production build、
+git diff --check 和唯一 Alembic head 0157_background_task_aggregate_type_length 通过。
+当前及下一可执行切片均为 NONE。沿用会话授权仅发布 Web，执行正式预检、健康／路由
+验收与受管发布收尾，保留其余平台和 Runtime 服务。
