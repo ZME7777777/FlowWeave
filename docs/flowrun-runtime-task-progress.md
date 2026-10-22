@@ -8897,3 +8897,11 @@ production build、git diff --check 与唯一 Alembic head
 修复后连同标签三态和全屏布局共 3 passed。Web typecheck、定向 ESLint、production build、
 git diff --check、唯一 Alembic head `0157_background_task_aggregate_type_length` 及
 CURRENT 唯一性核对通过；下一切片为 NONE。沿用会话部署授权，仅发布 Web 并完成受管收尾。
+
+### FR-611 新标签页标题使用浏览器图标 — DONE
+
+依赖：FR-610 DONE。launcher 与 browser 标签复用既有 Globe2 浏览器图标，右侧新增标签按钮
+仍使用 Plus；分栏与全屏复用同一映射。Web typecheck、定向 ESLint、production build、
+既有新标签浏览器／双击全屏／三态定向 E2E 共 3 passed，git diff --check 与 CURRENT 唯一性通过。
+唯一 Alembic head 仍为 `0157_background_task_aggregate_type_length`；下一切片为 NONE。
+沿用会话部署授权，仅发布 Web 并完成正式预检、健康／路由验收与受管收尾。
