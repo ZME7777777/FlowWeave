@@ -7018,7 +7018,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     Boolean(projection.replacedEventId)
     && (!projection.canonicalEventId || !currentFormalEvents.some(event => event.id === projection.canonicalEventId))
   ));
-  const cachedHistoryUserEventIds = useMemo(() => {
+  const cachedHistoryUserEvents = useMemo(() => {
     void historyCacheRevision;
     if (!selected || !eventsQuery.data?.history_cursor) return [];
     const cache = historyCacheByScope.current.get(selected.id);
@@ -7026,11 +7026,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     const revealed = revealedHistoryPageCounts.current.get(selected.id) ?? 0;
     return cache.pages.slice(revealed).reverse().flatMap(page => page.events).flatMap(event => (
       event.event_type === 'MESSAGE' && ['user', 'human'].includes(String(event.payload.source ?? '').toLowerCase())
-        ? [event.id]
+        ? [event]
         : []
     ));
   }, [eventsQuery.data?.history_cursor, historyCacheRevision, selected]);
-  const cachedHistoryMarkerCount = cachedHistoryUserEventIds.length;
+  const cachedHistoryMarkerCount = cachedHistoryUserEvents.length;
   const hasCachedOlderHistory = useMemo(() => {
     void historyCacheRevision;
     if (!selected || !eventsQuery.data?.history_cursor) return false;
@@ -9925,7 +9925,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         modelRetryStatus={modelRetryStatus}
         historyPending={Boolean(selected && historyLoadingBindingId === selected.id)}
         cachedHistoryMarkerCount={cachedHistoryMarkerCount}
-        cachedHistoryUserEventIds={cachedHistoryUserEventIds}
+        cachedHistoryUserEvents={cachedHistoryUserEvents}
         hasCachedOlderHistory={hasCachedOlderHistory}
         onRequestOlderHistory={requestNextHistoryPage}
         onRevealHistoryThrough={revealHistoryThrough}

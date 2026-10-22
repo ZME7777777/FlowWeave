@@ -1890,7 +1890,7 @@ export interface ConversationScrollSnapshot {
   savedAt: number;
 }
 
-export const ConversationSurface = memo(function ConversationSurface({ events, isGenerating, isPaused = false, pausing = false, emptyResponseRecoveryActive = false, modelRetryStatus, historyPending = false, cachedHistoryMarkerCount = 0, cachedHistoryUserEventIds = [], hasCachedOlderHistory = false, onRequestOlderHistory, onRevealHistoryThrough, conversationScope, referenceLocation, initialScrollSnapshot, onScrollSnapshotChange, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationPending = false, condensationStartedAt, onRewrite, onFork, onOpenAttachment, attachmentImageUrl, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenSourceLocation, onOpenWorkspaceFile, onOpenBrowser, onOpenImage, workspaceImageUrl, workspaceRoot, onCreateAnnotation, onSidebarQuestion, onLocateAnnotation, conversationName, onOpenConversationReference, taskControl = [], monitoring, connectionState }: {
+export const ConversationSurface = memo(function ConversationSurface({ events, isGenerating, isPaused = false, pausing = false, emptyResponseRecoveryActive = false, modelRetryStatus, historyPending = false, cachedHistoryMarkerCount = 0, cachedHistoryUserEvents = [], hasCachedOlderHistory = false, onRequestOlderHistory, onRevealHistoryThrough, conversationScope, referenceLocation, initialScrollSnapshot, onScrollSnapshotChange, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationPending = false, condensationStartedAt, onRewrite, onFork, onOpenAttachment, attachmentImageUrl, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenSourceLocation, onOpenWorkspaceFile, onOpenBrowser, onOpenImage, workspaceImageUrl, workspaceRoot, onCreateAnnotation, onSidebarQuestion, onLocateAnnotation, conversationName, onOpenConversationReference, taskControl = [], monitoring, connectionState }: {
   events: OpenHandsConversationEvent[];
   isGenerating: boolean;
   /** Formal native conversation pause state, used only to label unfinished Task actions. */
@@ -1905,8 +1905,8 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   historyPending?: boolean;
   /** Lightweight ruler ticks for historical user messages held outside the rendered transcript. */
   cachedHistoryMarkerCount?: number;
-  /** Formal user-event identities for cached ruler ticks, oldest to newest. */
-  cachedHistoryUserEventIds?: readonly string[];
+  /** Cached formal user messages for ruler previews only, oldest to newest. */
+  cachedHistoryUserEvents?: OpenHandsConversationEvent[];
   hasCachedOlderHistory?: boolean;
   onRequestOlderHistory?: () => void | Promise<void>;
   /** Reveals cached pages until the requested formal user event is rendered. */
@@ -2031,18 +2031,22 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     [visibleEvents],
   );
   const avatarSlots = useMemo(() => subagentAvatarSlots(visibleEvents), [visibleEvents]);
-  const userMessageNavigation = useMemo<UserMessageNavigationItem[]>(() => [
-    ...cachedHistoryUserEventIds.map(id => ({
-      id,
-      content: '更早的历史消息',
-      cached: true,
-    })),
-    ...turns.flatMap(turn => turn.user ? [{
+  const userMessageNavigation = useMemo<UserMessageNavigationItem[]>(() => {
+    const rendered = turns.flatMap(turn => turn.user ? [{
       id: turn.user.event.id,
       content: turn.user.content,
       cached: false,
-    }] : []),
-  ], [cachedHistoryUserEventIds, turns]);
+    }] : []);
+    const renderedIds = new Set(rendered.map(message => message.id));
+    // Project only user-message previews. Older process/reply DOM stays deferred,
+    // and overlapping pages must not duplicate already-rendered formal messages.
+    const cached = orderOpenHandsConversationEvents(cachedHistoryUserEvents).flatMap(event => (
+      renderedIds.has(event.id) ? [] : itemsFor(projectFlowWeaveMessageContext(event)).flatMap(item => (
+        item.kind === 'user' ? [{ id: event.id, content: item.content, cached: true }] : []
+      ))
+    ));
+    return [...cached, ...rendered];
+  }, [cachedHistoryUserEvents, turns]);
   useLayoutEffect(() => {
     const navigation = messageNavigation.current;
     if (!navigation) return;

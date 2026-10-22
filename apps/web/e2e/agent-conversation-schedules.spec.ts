@@ -1812,6 +1812,97 @@ test('held tool drags require deliberate reversal and keep iframe capture across
   await expect(drawer).not.toHaveClass(/fullscreen/);
 });
 
+for (const interaction of ['pointer', 'keyboard'] as const) {
+  test(`message scale previews cached history before rendering and locates it by formal identity (${interaction})`, async ({ page }) => {
+    await page.setViewportSize({ width: 1920, height: 1080 });
+    const latest = [
+      { id: 'scale-latest-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '当前提问', timestamp: now } },
+      { id: 'scale-latest-agent', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'scale-latest-user', content: '当前已渲染的最新回复需要保持足够滚动高度。 '.repeat(1_000), final_reply: true, timestamp: now } },
+    ];
+    const message = (id: string, content: string, extra: Record<string, unknown> = {}) => ({
+      id, event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content, timestamp: now, ...extra },
+    });
+    const displayMessage = message('scale-history-display', '不应展示的原始上下文', { display_content: '历史展示正文' });
+    const oldest = message('scale-history-oldest', '最早的真实提问\n保留第二行内容', { source: 'human' });
+    const contextMessage = message('scale-history-context', `上下文前言\n---FLOWWEAVE_MESSAGE_CONTEXT_V5---\n${JSON.stringify({ current_user_request: { content: '带引用的真实历史提问' }, reference_materials: [{ content: '不应显示的引用原文' }] })}`);
+    const emptyMessage = message('scale-history-empty', '', { attachments: [] });
+    const other = [message('scale-other-user', '另一个会话的提问')];
+    let historyReads = 0;
+    let latestReads = 0;
+    await openWorkspace(page, latest, true);
+    await page.route('**/api/v1/agent-workspaces/schedule-workspace/conversations/*/hydration', route => {
+      const isOther = new URL(route.request().url()).pathname.includes('/scheduled-conversation-2/');
+      return json(route, {
+        events: { events: isOther ? other : latest, next_cursor: null, history_cursor: isOther ? null : 'scale-bridge', result: { status: 'COMPLETED' } },
+        readiness: { ready: true, execution_status: 'idle' }, context: {},
+      });
+    });
+    await page.route('**/api/v1/agent-workspaces/schedule-workspace/conversations/*/events*', route => {
+      const url = new URL(route.request().url());
+      if (url.pathname.includes('/scheduled-conversation-2/')) return json(route, { events: other, history_cursor: null, next_cursor: null });
+      const cursor = url.searchParams.get('history_cursor');
+      if (cursor === 'scale-bridge') return json(route, { events: [], history_cursor: 'scale-page-1', next_cursor: null });
+      if (cursor) historyReads += 1;
+      else latestReads += 1;
+      if (cursor === 'scale-page-1') return json(route, { events: [displayMessage, ...latest], history_cursor: 'scale-page-2', next_cursor: null });
+      if (cursor === 'scale-page-2') return json(route, {
+        events: [oldest, contextMessage, emptyMessage, message('scale-protocol', '[FLOWWEAVE_INTERNAL]\n内部协议'), displayMessage],
+        history_cursor: null, next_cursor: null,
+      });
+      return json(route, { events: latest, history_cursor: 'scale-page-1', next_cursor: null });
+    });
+    await page.goto('/agent/conversations/scheduled-conversation');
+    const surface = page.locator('.conversation-surface');
+    const scale = page.getByRole('navigation', { name: '用户消息导航' });
+    const tooltip = page.getByRole('tooltip');
+    await expect.poll(() => historyReads).toBe(2);
+    // Older cached messages are still absent from the transcript DOM, but
+    // must already have distinct, accurate navigation previews.
+    await expect(surface.locator('[data-user-event-id="scale-history-oldest"]')).toHaveCount(0);
+    await expect(scale.getByRole('button')).toHaveCount(5);
+    expect(await scale.getByRole('button').evaluateAll(buttons => buttons.map(button => button.getAttribute('aria-label')))).toEqual([
+      '定位到用户消息：最早的真实提问 保留第二行内容',
+      '定位到用户消息：带引用的真实历史提问',
+      '定位到用户消息：空消息',
+      '定位到用户消息：历史展示正文',
+      '定位到用户消息：当前提问',
+    ]);
+    const requestsBeforePreview = { historyReads, latestReads };
+    const scrollBeforePreview = await surface.evaluate(element => element.scrollTop);
+    for (const [label, content] of [
+      ['最早的真实提问 保留第二行内容', oldest.payload.content],
+      ['带引用的真实历史提问', '带引用的真实历史提问'],
+      ['空消息', '（空消息）'],
+      ['历史展示正文', '历史展示正文'],
+    ]) {
+      const tick = scale.getByRole('button', { name: `定位到用户消息：${label}`, exact: true });
+      if (interaction === 'pointer') await tick.hover();
+      else await tick.focus();
+      await expect(tooltip).toHaveText(content);
+      await expect(surface.locator('[data-user-event-id="scale-history-oldest"]')).toHaveCount(0);
+    }
+    expect({ historyReads, latestReads }).toEqual(requestsBeforePreview);
+    expect(await surface.evaluate(element => element.scrollTop)).toBe(scrollBeforePreview);
+    if (interaction === 'pointer') await page.screenshot({ path: '../../.tmp/fr639-cached-message-preview.png' });
+    const target = scale.getByRole('button', { name: '定位到用户消息：最早的真实提问 保留第二行内容', exact: true });
+    if (interaction === 'pointer') await target.click();
+    else { await target.focus(); await target.press('Enter'); }
+    const revealed = surface.locator('[data-user-event-id="scale-history-oldest"]');
+    await expect(revealed).toBeInViewport();
+    await expect(scale.getByRole('button')).toHaveCount(5);
+    await expect(surface.locator('[data-user-event-id="scale-history-display"]')).toHaveCount(1);
+    if (interaction === 'pointer') await target.hover();
+    else await target.focus();
+    await expect(tooltip).toHaveText(oldest.payload.content);
+    expect({ historyReads, latestReads }).toEqual(requestsBeforePreview);
+    await page.getByRole('button', { name: '周报会话', exact: true }).click();
+    await expect(scale.getByRole('button')).toHaveCount(1);
+    await expect(scale.getByRole('button')).toHaveAccessibleName('定位到用户消息：另一个会话的提问');
+    await expect(tooltip).toHaveCount(0);
+    await expect(surface).not.toContainText('最早的真实提问');
+  });
+}
+
 test('message scale hides when the conversation gutter collapses and returns after resizing tools', async ({page}) => {
   await page.setViewportSize({width:1920,height:1080});
   await openWorkspace(page,[
