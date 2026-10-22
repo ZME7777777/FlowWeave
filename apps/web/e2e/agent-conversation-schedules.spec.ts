@@ -206,6 +206,7 @@ test('settings toggle returns to the preceding navigation view without changing 
   await toggleBack('定时任务');
   await expect(page.getByRole('region', { name: '会话定时任务' })).toBeVisible();
   await page.locator('.agent-schedule-tree-select').first().click();
+  await page.locator('.agent-schedule-tree-toggle').first().click();
   await page.locator('.agent-schedule-run').first().click();
   await expect(page).toHaveURL(/\/agent\/schedules\/conversations\/scheduled-run-1$/);
   await expect(composer).toBeVisible();
@@ -655,6 +656,7 @@ test('selecting a task after opening its run returns to that task detail', async
 
   const tasks = page.getByRole('region', { name: '会话定时任务' });
   await tasks.locator('.agent-schedule-tree-select').first().click();
+  await tasks.locator('.agent-schedule-tree-toggle').first().click();
   await tasks.locator('.agent-schedule-run').first().click();
   await expect(page).toHaveURL(/\/agent\/schedules\/conversations\/scheduled-run-1$/);
   await expect(page.getByRole('textbox', { name: '发送 Agent 消息' })).toBeVisible();
@@ -665,47 +667,81 @@ test('selecting a task after opening its run returns to that task detail', async
   await expect(page.getByRole('textbox', { name: '发送 Agent 消息' })).toHaveCount(0);
 });
 
-test('task rows expand on demand and action menus close outside', async ({ page }) => {
+test('task selection and arrow expansion are independent without action menus', async ({ page }) => {
   await openWorkspace(page);
-  await page.getByRole('navigation', { name: 'Agent 工作区导航' }).getByRole('button', { name: '定时任务' }).click();
-
+  await page.goto('/agent/schedules');
   const tasks = page.getByRole('region', { name: '会话定时任务' });
-  const firstTask = tasks.locator('.agent-schedule-tree-group').first();
-  const firstTaskButton = firstTask.locator('.agent-schedule-tree-select');
-  await expect(tasks.locator('.agent-schedule-run')).toHaveCount(0);
-  await firstTaskButton.click();
-  await expect(firstTaskButton).toHaveAttribute('aria-expanded', 'true');
-  await expect(tasks.locator('.agent-schedule-run')).toHaveCount(3);
-  await firstTaskButton.click();
-  await expect(firstTaskButton).toHaveAttribute('aria-expanded', 'false');
-  await expect(tasks.locator('.agent-schedule-run')).toHaveCount(0);
-
-  await firstTask.getByRole('button', { name: '每日项目检查 操作', exact: true }).click();
-  await expect(firstTask.getByRole('menu')).toBeVisible();
-  await page.getByRole('navigation', { name: 'Agent 工作区导航' }).click();
-  await expect(firstTask.getByRole('menu')).toHaveCount(0);
+  const first = tasks.locator('.agent-schedule-tree-group').first();
+  const second = tasks.locator('.agent-schedule-tree-group').nth(1);
+  const select = first.locator('.agent-schedule-tree-select');
+  const arrow = first.locator('.agent-schedule-tree-toggle');
+  const detail = tasks.locator('.agent-schedule-detail');
+  await expect(arrow).toHaveAttribute('aria-expanded', 'false');
+  await expect(tasks.locator('.agent-schedule-menu')).toHaveCount(0);
+  // Clicking the row, including its title and status, only opens details.
+  await select.locator('b').click();
+  await expect(detail.getByRole('heading', { name: '每日项目检查', exact: true })).toBeVisible();
+  await expect(select).toHaveAttribute('aria-current', 'true');
+  await select.locator('small').click();
+  await expect(arrow).toHaveAttribute('aria-expanded', 'false');
+  await expect(first.locator('.agent-schedule-run')).toHaveCount(0);
+  await arrow.click();
+  await expect(arrow).toHaveAttribute('aria-expanded', 'true');
+  await expect(first.locator('.agent-schedule-run')).toHaveCount(3);
+  await arrow.click();
+  await expect(arrow).toHaveAttribute('aria-expanded', 'false');
+  await expect(detail.getByRole('heading', { name: '每日项目检查', exact: true })).toBeVisible();
+  // The other task's arrow changes only that task's expansion, not selection.
+  await second.locator('.agent-schedule-tree-toggle').click();
+  await expect(second.locator('.agent-schedule-run')).toHaveCount(3);
+  await expect(second.locator('.agent-schedule-tree-select')).not.toHaveAttribute('aria-current', 'true');
+  await expect(detail.getByRole('heading', { name: '每日项目检查', exact: true })).toBeVisible();
+  await second.locator('.agent-schedule-tree-select').click();
+  await expect(detail.getByRole('heading', { name: '每周复核', exact: true })).toBeVisible();
+  await expect(arrow).toHaveAttribute('aria-expanded', 'false');
+  await expect(second.locator('.agent-schedule-run')).toHaveCount(3);
+  await arrow.focus();
+  await arrow.press('Enter');
+  await expect(first.locator('.agent-schedule-run')).toHaveCount(3);
+  await arrow.press('Space');
+  await expect(first.locator('.agent-schedule-run')).toHaveCount(0);
+  await select.focus();
+  await select.press('Enter');
+  await expect(detail.getByRole('heading', { name: '每日项目检查', exact: true })).toBeVisible();
+  await expect(arrow).toHaveAttribute('aria-expanded', 'false');
+  await detail.getByRole('button', { name: '编辑', exact: true }).click();
+  await expect(page.getByLabel('任务名称', { exact: true })).toHaveValue('每日项目检查');
 });
 
-test('schedule tasks expand independently when selecting details and opening runs', async ({ page }) => {
+test('schedule arrows expand independently and stay collapsed during active-session polling', async ({ page }) => {
+  let reads = 0;
+  page.on('request', request => { if (new URL(request.url()).pathname.endsWith('/conversation-schedules')) reads += 1; });
   await openWorkspace(page);
   await page.goto('/agent/schedules');
   const tasks = page.getByRole('region', { name: '会话定时任务' });
   const first = tasks.locator('.agent-schedule-tree-group').first();
   const second = tasks.locator('.agent-schedule-tree-group').nth(1);
   await first.locator('.agent-schedule-tree-select').click();
-  await second.locator('.agent-schedule-tree-select').click();
-  await expect(first.locator('.agent-schedule-tree-select')).toHaveAttribute('aria-expanded', 'true');
-  await expect(second.locator('.agent-schedule-tree-select')).toHaveAttribute('aria-expanded', 'true');
+  await first.locator('.agent-schedule-tree-toggle').click();
+  await second.locator('.agent-schedule-tree-toggle').click();
   await expect(tasks.locator('.agent-schedule-run')).toHaveCount(6);
-  await expect(tasks.getByRole('heading', { name: '每周复核', exact: true })).toBeVisible();
-  await second.locator('.agent-schedule-tree-select').click();
-  await expect(first.locator('.agent-schedule-run')).toHaveCount(3);
-  await expect(second.locator('.agent-schedule-run')).toHaveCount(0);
-  await second.locator('.agent-schedule-tree-select').click();
   await first.locator('.agent-schedule-run').first().click();
   await expect(page).toHaveURL(/\/agent\/schedules\/conversations\/scheduled-run-1$/);
-  await expect(second.locator('.agent-schedule-tree-select')).toHaveAttribute('aria-expanded', 'true');
-  await expect(first.locator('.agent-schedule-tree-select')).toHaveAttribute('aria-expanded', 'true');
+  await expect(second.locator('.agent-schedule-tree-toggle')).toHaveAttribute('aria-expanded', 'true');
+  await first.locator('.agent-schedule-tree-toggle').click();
+  await expect(first.locator('.agent-schedule-run')).toHaveCount(0);
+  await expect(page.getByRole('textbox', { name: '发送 Agent 消息' })).toBeVisible();
+  await expect(page).toHaveURL(/\/agent\/schedules\/conversations\/scheduled-run-1$/);
+  const initialReads = reads;
+  await expect.poll(() => reads).toBeGreaterThan(initialReads);
+  await expect(first.locator('.agent-schedule-tree-toggle')).toHaveAttribute('aria-expanded', 'false');
+  // Selecting an already collapsed task returns from a run to its detail.
+  await first.locator('.agent-schedule-tree-select').click();
+  await expect(page).toHaveURL(/\/agent\/schedules$/);
+  await expect(tasks.getByRole('heading', { name: '每日项目检查', exact: true })).toBeVisible();
+  await expect(first.locator('.agent-schedule-run')).toHaveCount(0);
+  await expect(second.locator('.agent-schedule-run')).toHaveCount(3);
+  await tasks.screenshot({ path: test.info().outputPath('schedule-selection.png') });
 });
 
 test('schedule detail keeps long prompts and run scrolling inside a single screen', async ({ page }) => {
@@ -756,6 +792,7 @@ test('scheduled session shows session configuration and expands additional runs'
   const tasks = page.getByRole('region', { name: '会话定时任务' });
   const firstSchedule = tasks.locator('.agent-schedule-tree-group').first();
   await firstSchedule.locator('.agent-schedule-tree-select').click();
+  await firstSchedule.locator('.agent-schedule-tree-toggle').click();
   await expect(tasks.locator('.agent-schedule-run')).toHaveCount(3);
   await expect(firstSchedule.getByRole('button', { name: '展开其余 2 个会话', exact: true })).toBeVisible();
 
@@ -956,8 +993,7 @@ test.describe('China-time scheduling', () => {
     await page.locator('.agent-schedule-tree-select').first().click();
     const summary = page.locator('.agent-schedule-summary');
     await expect(summary).toContainText('2026/10/20 09:00:00');
-    await page.getByRole('button', { name: '每日项目检查 操作', exact: true }).click();
-    await page.getByRole('menuitem', { name: '编辑', exact: true }).click();
+    await page.locator('.agent-schedule-detail').getByRole('button', { name: '编辑', exact: true }).click();
     const editor = page.locator('.agent-schedule-create');
     await expect(editor.getByLabel('Cron 表达式')).toHaveValue('0 9 * * 1-5');
     await editor.getByLabel('Cron 表达式').fill('0 10 * * *');
@@ -967,7 +1003,7 @@ test.describe('China-time scheduling', () => {
   });
 });
 
-test('scheduled conversations keep their route and draft while creating or editing a task', async ({ page }) => {
+test('scheduled conversation drafts survive creating tasks and editing from task details', async ({ page }) => {
   const writes = await openWorkspace(page);
   await page.getByRole('navigation', { name: 'Agent 工作区导航' }).getByRole('button', { name: '定时任务' }).click();
   await page.locator('.agent-schedule-tree-select').first().click();
@@ -977,6 +1013,7 @@ test('scheduled conversations keep their route and draft while creating or editi
   await tasks.getByRole('button', { name: '新建', exact: true }).click();
   await expect(page.getByRole('heading', { name: '新建定时任务' })).toBeVisible();
   await page.locator('.agent-schedule-create').getByRole('button', { name: '取消', exact: true }).click();
+  await page.locator('.agent-schedule-tree-toggle').first().click();
   await page.locator('.agent-schedule-run').first().click();
   await expect(page).toHaveURL(/\/agent\/schedules\/conversations\/scheduled-run-1$/);
   const composer = page.getByRole('textbox', { name: '发送 Agent 消息' });
@@ -1004,15 +1041,17 @@ test('scheduled conversations keep their route and draft while creating or editi
   expect(writes[0]).toMatchObject({ method: 'POST', body: { name: '新增巡检', prompt: '检查新增工作区', workspace_mode: 'AUTOMATION' } });
 
   // Editing a different task must save its own ID/version, even after creating another task.
-  await page.getByRole('button', { name: '每周复核 操作', exact: true }).click();
-  await page.getByRole('menuitem', { name: '编辑', exact: true }).click();
-  const edit = page.getByRole('dialog', { name: '编辑定时任务', exact: true });
+  await tasks.locator('.agent-schedule-tree-select').filter({ hasText: '每周复核' }).click();
+  await expect(page).toHaveURL(/\/agent\/schedules$/);
+  await page.locator('.agent-schedule-detail').getByRole('button', { name: '编辑', exact: true }).click();
+  const edit = page.locator('.agent-schedule-create');
   await expect(edit).toBeVisible();
   await expect(edit.getByRole('textbox', { name: '任务名称', exact: true })).toHaveValue('每周复核');
   await edit.getByLabel('业务提示词').fill('更新后的周报复核');
   await edit.getByRole('button', { name: '保存任务', exact: true }).click();
   await expect(edit).toHaveCount(0);
   expect(writes[1]).toMatchObject({ method: 'PUT', id: 'weekly-schedule', body: { prompt: '更新后的周报复核', expected_row_version: 7 } });
+  await page.locator('.agent-schedule-run').first().click();
   await expect(composer).toHaveValue('保留当前会话草稿');
   await expect(page).toHaveURL(/\/agent\/schedules\/conversations\/scheduled-run-1$/);
   await page.reload();

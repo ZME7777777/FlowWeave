@@ -9533,3 +9533,17 @@ remote-release-finish 完成健康／revision 门禁与受管发布收尾，仅�
 Web typecheck、定向 ESLint、git diff --check、CURRENT 唯一性及依赖核对通过。
 Alembic 唯一 head 仍为 0158_schedule_china_timezone。仅修改 Web 与协作文档，
 当前及下一可执行切片均为 NONE；未部署。
+
+### FR-640 定时任务详情选择与箭头折叠解耦 — DONE
+
+依赖：FR-639 DONE。点击任务内容只选择并显示详情；只有箭头切换运行会话列表
+展开状态，收起不清空详情选择。移除任务行更多操作菜单，沿用详情操作入口，保持
+行内统一视觉。保留直接进入运行会话时的初次定位，不让轮询重新展开手动收起任务。
+验证 Web typecheck、定向 ESLint、定向 Chromium 回归与 diff／任务状态核对。
+
+验收：8 项定向 Chromium 回归通过，覆盖标题／状态点击、折叠时详情、箭头独立
+切换、多任务展开、Enter／Space 键盘操作、活动会话轮询不重新展开、从收起任务
+返回详情及详情编辑；同时回归单屏／提示词弹窗、深层运行会话配置、草稿恢复、
+设置导航与北京时间展示。截图确认统一行样式和菜单移除。Web typecheck、定向
+ESLint、git diff --check、任务状态唯一性与依赖核对通过。Alembic 唯一 head 仍为
+0158_schedule_china_timezone；当前及下一可执行切片均为 NONE，未部署。
