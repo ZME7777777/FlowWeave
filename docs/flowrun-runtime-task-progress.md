@@ -9393,3 +9393,22 @@ Web typecheck、定向 ESLint、production build、git diff --check、任务状�
 依赖核对通过；构建仅有既有大 chunk 提示。Alembic 唯一 head 仍为
 0157_background_task_aggregate_type_length。仅修改 Web 与协作文档，未部署，未改变
 Runtime、API、数据库或正式事件。当前及下一可执行切片均为 NONE。
+
+FR-634 发布补记（2026-10-23）：用户明确授权部署后，以已提交版本
+`63f2389bb55da4989dfca1a739e39791945a98ec` 通过 Web 正式预检，使用
+remote-release-prepare 的最小上下文，归档 SHA-256 为
+`35c089a4d955315df9921941bd4ec828a72fedd392172073649631faad64f0d2`。
+保留原 Web 精确回滚镜像后构建并仅重建 Web，新镜像为 linux/amd64，OCI revision
+与该提交一致；镜像 ID 为
+`sha256:545b4cf8cca1142f5446a0819242caacf5d2b1e425bf64b5a99ae3afd402df63`。
+其余运行容器的身份和镜像保持一致，API／stream-api 的 health 与 readiness 通过。
+
+在当前用户实际访问入口的新 Chromium 上验证登录页、Agent 深层路由、带前缀 API
+请求及未认证边界；公网工作台模块 SHA-256 与容器内文件一致。5 项竞态回归使用线上
+实际静态资源及受控 API／WebSocket 全部通过，未向真实会话发送测试消息；该结果不
+冒充真实 Runtime 并发投递验收。根入口 FastGPT 登录页可见。本机部署配置中的历史
+访问入口返回 502，故公网验收使用当前 CLI 与用户会话入口，且以资源哈希确认同一版本。
+
+remote-release-finish 完成健康／revision 门禁及受管容量收尾：上下文删除候选为零，
+仅移除工具判定的一个过期精确 Web rollback tag，保留当前与最近三个回滚镜像及
+引用版本；未修改服务器 Compose／env、Runtime、数据库、卷或工作区。
