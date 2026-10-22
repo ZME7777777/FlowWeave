@@ -269,6 +269,96 @@ def test_copy_node_run_preserves_launch_configuration_without_execution_results(
     )
 
 
+def test_runtime_revision_draft_creates_and_applies_a_new_snapshot(client, skill_capability):
+    asset = create_asset(client, skill_capability, "运行时修订节点")
+    flow = create_flow(client, asset["id"])
+    started = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    )
+    assert started.status_code == 201, started.text
+    run = started.json()
+
+    created = client.post(
+        f"/api/v1/flow-runs/{run['id']}/revision-drafts",
+        json={"reason": "补充本次运行的临时审查节点"},
+    )
+    assert created.status_code == 201, created.text
+    draft = created.json()
+    assert draft["state"] == "DRAFT"
+    assert draft["base_snapshot_version"] == 1
+
+    definition = draft["definition"]
+    definition["description"] = "本次运行的修订定义"
+    updated = client.put(
+        f"/api/v1/flow-runs/{run['id']}/revision-drafts/{draft['id']}",
+        json={
+            "expected_row_version": draft["row_version"],
+            "definition": definition,
+            "reason": "加入本次运行的审查说明",
+        },
+    )
+    assert updated.status_code == 200, updated.text
+    draft = updated.json()
+    assert draft["row_version"] == 2
+
+    applied = client.post(
+        f"/api/v1/flow-runs/{run['id']}/revision-drafts/{draft['id']}/apply",
+        json={"expected_row_version": draft["row_version"]},
+        headers={"Idempotency-Key": "apply-runtime-revision"},
+    )
+    assert applied.status_code == 200, applied.text
+    revised = applied.json()
+    assert revised["active_snapshot_version"] == 2
+    assert revised["snapshots"][-1]["definition"]["description"] == "本次运行的修订定义"
+    revision = next(item for item in revised["revision_drafts"] if item["id"] == draft["id"])
+    assert revision["state"] == "APPLIED"
+    assert revision["applied_snapshot_id"] == revised["active_snapshot_id"]
+
+
+def test_runtime_revision_cannot_change_started_node(client, skill_capability):
+    asset = create_asset(client, skill_capability, "运行时修订锁定节点")
+    flow = create_flow(client, asset["id"])
+    run = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    ).json()
+    artifact = client.post(
+        f"/api/v1/flow-runs/{run['id']}/nodes/design_a/input-artifacts",
+        json={
+            "field_key": "prd",
+            "artifact_type": "URL",
+            "uri": "https://example.test/revision-input",
+        },
+    )
+    assert artifact.status_code == 201, artifact.text
+    activated = client.post(
+        f"/api/v1/flow-runs/{run['id']}/nodes/design_a/runs",
+        json=prompt_node_start(artifact_ids={"prd": artifact.json()["id"]}),
+    )
+    assert activated.status_code == 201, activated.text
+    created = client.post(f"/api/v1/flow-runs/{run['id']}/revision-drafts", json={})
+    assert created.status_code == 201, created.text
+    draft = created.json()
+    definition = draft["definition"]
+    definition["nodes"][0]["alias"] = "不允许修改已启动节点"
+    updated = client.put(
+        f"/api/v1/flow-runs/{run['id']}/revision-drafts/{draft['id']}",
+        json={
+            "expected_row_version": draft["row_version"],
+            "definition": definition,
+        },
+    )
+    assert updated.status_code == 200, updated.text
+    rejected = client.post(
+        f"/api/v1/flow-runs/{run['id']}/revision-drafts/{draft['id']}/apply",
+        json={"expected_row_version": updated.json()["row_version"]},
+        headers={"Idempotency-Key": "reject-started-node-revision"},
+    )
+    assert rejected.status_code == 409, rejected.text
+    assert rejected.json()["code"] == "RUN_REVISION_STARTED_NODE_IMMUTABLE"
+
+
 def test_copied_start_blocked_node_provisions_runtime_for_agent_workbench(client, skill_capability):
     asset = create_asset(client, skill_capability, "可处理启动门禁的副本节点")
     payload = flow_payload(asset["id"], environment_version_id=client.environment_version_id)

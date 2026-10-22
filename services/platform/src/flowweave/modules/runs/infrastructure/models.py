@@ -148,6 +148,37 @@ class RunSnapshot(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
+class FlowRunRevisionDraft(Base):
+    __tablename__ = "flow_run_revision_drafts"
+    __table_args__ = (
+        Index(
+            "uq_flow_run_revision_draft_active_base",
+            "flow_run_id",
+            "base_snapshot_id",
+            unique=True,
+            postgresql_where=text("state = 'DRAFT'"),
+            sqlite_where=text("state = 'DRAFT'"),
+        ),
+        CheckConstraint(
+            "state IN ('DRAFT', 'APPLIED', 'REJECTED')",
+            name="ck_flow_run_revision_draft_state",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    flow_run_id: Mapped[str] = mapped_column(String(36), index=True)
+    base_snapshot_id: Mapped[str] = mapped_column(String(36))
+    base_snapshot_version: Mapped[int] = mapped_column(Integer)
+    definition_json: Mapped[dict[str, Any]] = mapped_column(JSON)
+    definition_hash: Mapped[str] = mapped_column(String(64))
+    row_version: Mapped[int] = mapped_column(Integer, default=1)
+    state: Mapped[str] = mapped_column(String(20), default="DRAFT")
+    applied_snapshot_id: Mapped[str | None] = mapped_column(String(36))
+    reason: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
 class NodeRun(Base):
     __tablename__ = "node_runs"
     __table_args__ = (
@@ -347,6 +378,7 @@ class RunEvent(Base):
 
 __all__ = (
     "FlowRun",
+    "FlowRunRevisionDraft",
     "RunSnapshot",
     "NodeRun",
     "NodeAttempt",

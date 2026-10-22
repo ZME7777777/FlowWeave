@@ -776,6 +776,24 @@ class NodeRunCopyWrite(ApiModel):
     """Create a fresh manual record from a prior record's launch configuration."""
 
     name: str | None = Field(default=None, max_length=220)
+    source_version: Literal["TEMPLATE", "RUNTIME"] = "RUNTIME"
+    artifact_mode: Literal["RULES_ONLY", "CANDIDATE_BINDINGS", "REUSE_BINDINGS"] = (
+        "CANDIDATE_BINDINGS"
+    )
+
+
+class FlowRunRevisionDraftCreateWrite(ApiModel):
+    reason: str = Field(default="", max_length=2_000)
+
+
+class FlowRunRevisionDraftWrite(ApiModel):
+    expected_row_version: int = Field(ge=1)
+    definition: dict[str, Any]
+    reason: str = Field(default="", max_length=2_000)
+
+
+class FlowRunRevisionDraftApplyWrite(ApiModel):
+    expected_row_version: int = Field(ge=1)
 
 
 class NodeRunStart(ApiModel):

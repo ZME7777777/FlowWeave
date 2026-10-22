@@ -749,8 +749,16 @@ export const api = {
   nodeRun: (runId: string, nodeRunId: string) => request<NodeRun>(`/flow-runs/${runId}/nodes/${nodeRunId}`),
   deleteNodeRun: (runId: string, nodeRunId: string) =>
     request<void>(`/flow-runs/${encodeURIComponent(runId)}/nodes/${encodeURIComponent(nodeRunId)}`, json('DELETE')),
-  copyNodeRun: (runId: string, nodeRunId: string, name: string) =>
-    request<NodeRun>(`/flow-runs/${encodeURIComponent(runId)}/nodes/${encodeURIComponent(nodeRunId)}/copy`, json('POST', { name })),
+  copyNodeRun: (runId: string, nodeRunId: string, name: string, source_version: 'TEMPLATE' | 'RUNTIME' = 'RUNTIME', artifact_mode: 'RULES_ONLY' | 'CANDIDATE_BINDINGS' | 'REUSE_BINDINGS' = 'CANDIDATE_BINDINGS') =>
+    request<NodeRun>(`/flow-runs/${encodeURIComponent(runId)}/nodes/${encodeURIComponent(nodeRunId)}/copy`, json('POST', { name, source_version, artifact_mode })),
+  createRevisionDraft: (runId: string, reason = '') =>
+    request<import('../types').FlowRunRevisionDraft>(`/flow-runs/${encodeURIComponent(runId)}/revision-drafts`, json('POST', { reason })),
+  revisionDraft: (runId: string, draftId: string) =>
+    request<import('../types').FlowRunRevisionDraft>(`/flow-runs/${encodeURIComponent(runId)}/revision-drafts/${encodeURIComponent(draftId)}`),
+  updateRevisionDraft: (runId: string, draftId: string, body: { expected_row_version: number; definition: import('../types').SnapshotDefinition; reason?: string }) =>
+    request<import('../types').FlowRunRevisionDraft>(`/flow-runs/${encodeURIComponent(runId)}/revision-drafts/${encodeURIComponent(draftId)}`, json('PUT', body)),
+  applyRevisionDraft: (runId: string, draftId: string, expected_row_version: number) =>
+    request<FlowRun>(`/flow-runs/${encodeURIComponent(runId)}/revision-drafts/${encodeURIComponent(draftId)}/apply`, json('POST', { expected_row_version }, true)),
   addArtifact: (runId: string, body: ArtifactInput) => request<ArtifactVersion>(`/flow-runs/${runId}/artifacts`, json('POST', body)),
   addNodeInputArtifact: (runId: string, nodeKey: string, body: ArtifactInput) =>
     request<ArtifactVersion>(`/flow-runs/${encodeURIComponent(runId)}/nodes/${encodeURIComponent(nodeKey)}/input-artifacts`, json('POST', body)),

@@ -458,6 +458,12 @@ export interface RunSnapshot {
   definition: SnapshotDefinition;
   created_at: string;
 }
+export interface FlowRunRevisionDraft {
+  id: string; flow_run_id: string; base_snapshot_id: string; base_snapshot_version: number;
+  definition: SnapshotDefinition; definition_hash: string; row_version: number;
+  state: 'DRAFT' | 'APPLIED' | 'REJECTED'; applied_snapshot_id?: string | null;
+  reason: string; created_at: string; updated_at: string;
+}
 export interface FlowRunSummary {
   id: string; flow_definition_id: string; flow_name?: string | null;
   flow_row_version?: number | null; run_no: number; name: string; state: string;
@@ -481,6 +487,7 @@ export interface FlowRun extends FlowRunSummary {
     gates: Array<{ node_key: string; position: number }>;
   } | null;
   progress: { accepted: number; terminal: number; active: number };
+  revision_drafts: FlowRunRevisionDraft[];
   snapshots: RunSnapshot[]; node_runs: NodeRun[]; artifacts: ArtifactVersion[];
 }
 export interface FlowRunScheduleOccurrence {
