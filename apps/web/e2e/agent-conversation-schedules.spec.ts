@@ -860,20 +860,65 @@ test('the floating card occupies conversation whitespace without resizing it or 
   await expect(card.getByText('IDEA / Gateway')).toBeInViewport();
 });
 
-test('closing a workspace tab does not reveal the hidden floating card', async ({ page }) => {
-  await openWorkspace(page);
-  await page.goto('/agent/conversations/scheduled-conversation');
+for (const initiallyOpen of [true, false]) {
+  test(`workspace tools temporarily hide the card without changing the ${initiallyOpen ? 'enabled' : 'disabled'} global preference`, async ({ page }) => {
+    await openWorkspace(page, [], true);
+    await page.goto('/agent/conversations/scheduled-conversation');
+    const card = page.locator('.agent-workspace-summary');
+    if (!initiallyOpen) await page.getByRole('button', { name: '隐藏悬浮信息卡', exact: true }).click();
+    const preference = () => page.evaluate(() => localStorage.getItem('flowweave:environment-card-open') !== 'false');
+    const expectRestored = async () => {
+      await expect(card).toHaveAttribute('aria-hidden', String(!initiallyOpen));
+      if (initiallyOpen) await expect(card).toBeVisible(); else await expect(card).toBeHidden();
+      expect(await preference()).toBe(initiallyOpen);
+    };
+    await expectRestored();
+    for (const close of ['last-tab', 'panel', 'fullscreen']) {
+      await page.getByRole('button', { name: '新建工作区页签', exact: true }).first().click();
+      await expect(card).toBeHidden();
+      expect(await preference()).toBe(initiallyOpen);
+      if (close === 'last-tab') {
+        await page.getByRole('button', { name: '周报会话', exact: true }).click();
+        await expect(page).toHaveURL(/scheduled-conversation-2$/);
+        await expectRestored();
+        await page.getByRole('button', { name: '日报会话', exact: true }).click();
+        await expect(page).toHaveURL(/scheduled-conversation$/);
+        await expect(page.locator('.agent-workspace-drawer')).toHaveClass(/tools-open/);
+        await expect(card).toBeHidden();
+        await page.getByRole('button', { name: '关闭新标签页页签', exact: true }).click();
+      } else {
+        if (close === 'fullscreen') await page.getByRole('button', { name: '全屏查看工作区工具', exact: true }).click();
+        await page.getByRole('button', { name: '关闭工作区工具', exact: true }).click();
+      }
+      await expect(page.locator('.agent-workspace-drawer')).toHaveClass(/summary-open/);
+      await expectRestored();
+    }
+    await page.reload();
+    await expectRestored();
+  });
+}
 
+test('manual card toggles while workspace tools are open still update the global preference', async ({ page }) => {
+  await openWorkspace(page, [], true);
+  await page.goto('/agent/conversations/scheduled-conversation');
   const card = page.locator('.agent-workspace-summary');
   await page.getByRole('button', { name: '新建工作区页签', exact: true }).first().click();
   await expect(card).toBeHidden();
   await page.getByRole('button', { name: '显示悬浮信息卡', exact: true }).click();
   await expect(card).toBeVisible();
+  await page.getByRole('button', { name: '隐藏悬浮信息卡', exact: true }).click();
   await page.getByRole('button', { name: '关闭新标签页页签', exact: true }).click();
-
-  await expect(page.locator('.agent-workspace-drawer')).toHaveClass(/summary-open/);
   await expect(card).toBeHidden();
-  await expect(page.getByRole('button', { name: '显示悬浮信息卡', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '周报会话', exact: true }).click();
+  await expect(card).toBeHidden();
+  await page.getByRole('button', { name: '显示悬浮信息卡', exact: true }).click();
+  await expect(card).toBeVisible();
+  await page.getByRole('button', { name: '日报会话', exact: true }).click();
+  await expect(card).toBeVisible();
+  await page.getByRole('button', { name: '新建工作区页签', exact: true }).first().click();
+  await page.getByRole('button', { name: '显示悬浮信息卡', exact: true }).click();
+  await page.getByRole('button', { name: '关闭新标签页页签', exact: true }).click();
+  await expect(card).toBeVisible();
 });
 
 test('the floating workspace card remains absent until workspace details load', async ({ page }) => {

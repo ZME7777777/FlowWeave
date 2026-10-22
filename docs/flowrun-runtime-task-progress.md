@@ -9195,3 +9195,19 @@ build、git diff --check、唯一 Alembic head 0157_background_task_aggregate_ty
 git diff --check 和唯一 Alembic head 0157_background_task_aggregate_type_length 通过。
 当前及下一可执行切片均为 NONE。沿用会话授权仅发布 Web，执行正式预检、健康／路由
 验收与受管发布收尾，保留其余平台和 Runtime 服务。
+
+
+### FR-628 侧边工具临时隐藏悬浮卡与全局偏好分离 — DONE
+
+依赖：FR-627 DONE。原先打开工具及关闭最后一个页签会把悬浮卡设为关闭，并通过
+持久化 effect 覆盖全局偏好，导致切换会话后也保持关闭。现在分别保存用户手动偏好
+与当前 scope 的工具展示覆盖；展开工具仅临时隐藏当前卡片，关闭页签／工具后按全局
+偏好恢复。只有用户手动切换按钮才写全局偏好，工具导航与会话切换均不写入。
+工具打开期间仍可手动显示／隐藏卡片，显式修改继续作用于其他会话和刷新后状态。
+
+6 项 Chromium 定向回归通过：全局开启／关闭两种状态下关闭末页签、关闭面板、
+全屏关闭后的恢复；侧栏展开期间切换其他会话不受污染；手动开关、刷新持久化、
+工作区加载门控与既有大屏卡片布局。Web typecheck、定向 ESLint、production build、
+git diff --check 和唯一 Alembic head 0157_background_task_aggregate_type_length 通过。
+当前及下一可执行切片均为 NONE。沿用会话授权仅发布 Web，完成正式预检、健康／路由
+验收和受管收尾，不重启平台 API 或 Agent Runtime。

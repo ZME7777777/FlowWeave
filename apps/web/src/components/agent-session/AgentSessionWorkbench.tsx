@@ -3914,11 +3914,23 @@ function WorkspaceDrawer({
   const [pendingTerminalClose, setPendingTerminalClose] = useState<Extract<WorkspaceToolTab, { kind: 'terminal' }>>();
   const [fullScreen, setFullScreen] = useState(false);
   const [fullScreenView, setFullScreenView] = useState<'conversation' | 'tool'>('conversation');
-  const [environmentOpen, setEnvironmentOpen] = useState(() => localStorage.getItem('flowweave:environment-card-open') !== 'false');
+  const [environmentPreferredOpen, setEnvironmentPreferredOpen] = useState(() => localStorage.getItem('flowweave:environment-card-open') !== 'false');
+  const [environmentToolOverride, setEnvironmentToolOverride] = useState<{ scopeKey: string; open: boolean }>();
   const resizeCollapsed = useRef(false);
   const [resizePreview, setResizePreview] = useState<'fullscreen' | 'hidden'>();
   const drawerFullScreen = fullScreen || resizePreview === 'fullscreen';
   const drawerToolsOpen = open && resizePreview !== 'hidden';
+  // Tool navigation only suppresses this scope's card; only a manual toggle
+  // changes the shared preference used when tools are closed or scopes change.
+  const environmentOpen = drawerToolsOpen
+    ? environmentToolOverride?.scopeKey === scopeKey && environmentToolOverride.open
+    : environmentPreferredOpen;
+  const toggleEnvironment = () => {
+    const next = !environmentOpen;
+    setEnvironmentPreferredOpen(next);
+    localStorage.setItem('flowweave:environment-card-open', String(next));
+    if (drawerToolsOpen) setEnvironmentToolOverride({ scopeKey, open: next });
+  };
   const workspaceResizeCleanup = useRef<(() => void) | undefined>(undefined);
   useEffect(() => () => workspaceResizeCleanup.current?.(), [open, fullScreen, scopeKey]);
   const [sshAccessOpen, setSshAccessOpen] = useState(false);
@@ -4002,18 +4014,15 @@ function WorkspaceDrawer({
     return () => onFullScreenConversationActiveChange(false);
   }, [fullScreenConversationActive, onFullScreenConversationActiveChange]);
   useEffect(() => {
-    localStorage.setItem('flowweave:environment-card-open', String(environmentOpen));
-  }, [environmentOpen]);
-  useEffect(() => {
+    setEnvironmentToolOverride(undefined);
     if (open) {
       resizeCollapsed.current = false;
-      setEnvironmentOpen(false);
     } else {
       resizeCollapsed.current = false;
       setFullScreen(false);
       setFullScreenView('conversation');
     }
-  }, [open]);
+  }, [open, scopeKey]);
   useEffect(() => {
     if (!entryMenu) return;
     const close = () => setEntryMenu(undefined);
@@ -4599,7 +4608,6 @@ function WorkspaceDrawer({
     if (tab.kind === 'sidebar-chat') onCloseSidebarQuestion();
     if (tab.kind === 'git' || tab.kind === 'git-working') setClosedGitDiffEpoch(current => current + 1);
     if (scopeState.tabs.length === 1 && scopeState.tabs[0]?.id === tab.id) {
-      setEnvironmentOpen(false);
       setFullScreen(false);
       onClose();
     }
@@ -4830,12 +4838,12 @@ function WorkspaceDrawer({
       {loadingOrError || summary}
     </section>}
     {workspaceDetailsLoaded && (!drawerFullScreen || fullScreenConversationActive) && <div className="agent-workbench-top-actions" aria-label="工作台操作">
-      <button type="button" aria-label={environmentOpen ? '隐藏悬浮信息卡' : '显示悬浮信息卡'} title={environmentOpen ? '隐藏悬浮信息卡' : '显示悬浮信息卡'} aria-pressed={environmentOpen} onClick={() => setEnvironmentOpen(current => !current)}>{environmentOpen ? <MonitorOff size={15}/> : <MonitorCog size={15}/>}</button>
+      <button type="button" aria-label={environmentOpen ? '隐藏悬浮信息卡' : '显示悬浮信息卡'} title={environmentOpen ? '隐藏悬浮信息卡' : '显示悬浮信息卡'} aria-pressed={environmentOpen} onClick={toggleEnvironment}>{environmentOpen ? <MonitorOff size={15}/> : <MonitorCog size={15}/>}</button>
       {!open && <button type="button" className="agent-workspace-new-tab-trigger" aria-label="新建工作区页签" title="新建工作区页签" onClick={() => { ensureLauncherTab(); onOpen(); }}><SquarePlus size={16}/></button>}
       {fullScreenConversationActive && <button type="button" aria-label="退出全屏" title="退出全屏（Esc）" onClick={() => setFullScreen(false)}><Minimize size={16} strokeWidth={1.7}/></button>}
     </div>}
     <section className={`agent-workspace-tool-shell ${drawerToolsOpen ? '' : 'panel-hidden'}`}>
-              <header><nav className="agent-workspace-tabs" aria-label="工作区页签">{fullScreen && <div className={fullScreenView === 'conversation' ? 'active fixed' : 'fixed'}><button type="button" className="agent-workspace-tab-select" title={conversationTabLabel} onClick={() => setFullScreenView('conversation')} onDoubleClick={() => setFullScreen(false)}><span>{conversationTabLabel}</span></button></div>}{scopeState.tabs.map(tab => <div key={tab.id} className={scopeState.activeTabId === tab.id && (!fullScreen || fullScreenView === 'tool') ? 'active' : ''}><button type="button" className="agent-workspace-tab-select" onClick={() => { setFullScreenView('tool'); updateScope(current => ({ ...current, activeTabId: tab.id })); }} onDoubleClick={() => setFullScreen(current => !current)}><i className="agent-workspace-tab-icon">{workspaceTabIcon(tab)}</i><span>{workspaceTabLabel(tab)}</span></button><button type="button" className="agent-workspace-tab-close" aria-label={`关闭${workspaceTabLabel(tab)}页签`} disabled={tab.kind === 'terminal' && closingTerminalId === tab.terminalInstanceId} onClick={() => { if (tab.kind !== 'terminal' || closingTerminalId !== tab.terminalInstanceId) requestCloseTab(tab); }}><X size={12}/></button></div>)}<button type="button" className="agent-workspace-new-tab" aria-label="新建工作区页签" title="新建页签" onClick={openLauncher}><Plus size={15}/></button></nav><div className="agent-workspace-tool-actions">{fullScreen ? <><button type="button" aria-label={environmentOpen ? '隐藏悬浮信息卡' : '显示悬浮信息卡'} title={environmentOpen ? '隐藏悬浮信息卡' : '显示悬浮信息卡'} aria-pressed={environmentOpen} onClick={() => setEnvironmentOpen(current => !current)}>{environmentOpen ? <MonitorOff size={15}/> : <MonitorCog size={15}/>}</button><button type="button" aria-label="退出全屏" title="退出全屏（Esc）" onClick={() => setFullScreen(false)}><Minimize size={16} strokeWidth={1.7}/></button><button type="button" aria-label="关闭工作区工具" title="关闭工作区工具并返回会话" onClick={() => void closeWorkspaceTools()}><PanelRight size={16} strokeWidth={1.7}/></button></> : <><button type="button" aria-label="全屏查看工作区工具" title="全屏查看" onClick={() => { setFullScreenView('tool'); setFullScreen(true); }}><Maximize size={16} strokeWidth={1.7}/></button><button type="button" aria-label="关闭工作区工具" onClick={() => void closeWorkspaceTools()}><PanelRight size={16} strokeWidth={1.7}/></button></>}</div></header>
+              <header><nav className="agent-workspace-tabs" aria-label="工作区页签">{fullScreen && <div className={fullScreenView === 'conversation' ? 'active fixed' : 'fixed'}><button type="button" className="agent-workspace-tab-select" title={conversationTabLabel} onClick={() => setFullScreenView('conversation')} onDoubleClick={() => setFullScreen(false)}><span>{conversationTabLabel}</span></button></div>}{scopeState.tabs.map(tab => <div key={tab.id} className={scopeState.activeTabId === tab.id && (!fullScreen || fullScreenView === 'tool') ? 'active' : ''}><button type="button" className="agent-workspace-tab-select" onClick={() => { setFullScreenView('tool'); updateScope(current => ({ ...current, activeTabId: tab.id })); }} onDoubleClick={() => setFullScreen(current => !current)}><i className="agent-workspace-tab-icon">{workspaceTabIcon(tab)}</i><span>{workspaceTabLabel(tab)}</span></button><button type="button" className="agent-workspace-tab-close" aria-label={`关闭${workspaceTabLabel(tab)}页签`} disabled={tab.kind === 'terminal' && closingTerminalId === tab.terminalInstanceId} onClick={() => { if (tab.kind !== 'terminal' || closingTerminalId !== tab.terminalInstanceId) requestCloseTab(tab); }}><X size={12}/></button></div>)}<button type="button" className="agent-workspace-new-tab" aria-label="新建工作区页签" title="新建页签" onClick={openLauncher}><Plus size={15}/></button></nav><div className="agent-workspace-tool-actions">{fullScreen ? <><button type="button" aria-label={environmentOpen ? '隐藏悬浮信息卡' : '显示悬浮信息卡'} title={environmentOpen ? '隐藏悬浮信息卡' : '显示悬浮信息卡'} aria-pressed={environmentOpen} onClick={toggleEnvironment}>{environmentOpen ? <MonitorOff size={15}/> : <MonitorCog size={15}/>}</button><button type="button" aria-label="退出全屏" title="退出全屏（Esc）" onClick={() => setFullScreen(false)}><Minimize size={16} strokeWidth={1.7}/></button><button type="button" aria-label="关闭工作区工具" title="关闭工作区工具并返回会话" onClick={() => void closeWorkspaceTools()}><PanelRight size={16} strokeWidth={1.7}/></button></> : <><button type="button" aria-label="全屏查看工作区工具" title="全屏查看" onClick={() => { setFullScreenView('tool'); setFullScreen(true); }}><Maximize size={16} strokeWidth={1.7}/></button><button type="button" aria-label="关闭工作区工具" onClick={() => void closeWorkspaceTools()}><PanelRight size={16} strokeWidth={1.7}/></button></>}</div></header>
       <div className="agent-workspace-tool-body">
         {panelError && <p className="agent-workspace-panel-error" role="alert"><span>{panelError}</span><button type="button" aria-label="关闭错误提示" onClick={() => setPanelError('')}><X size={13}/></button></p>}
         {scopeState.tabs.filter((tab): tab is Extract<WorkspaceToolTab, { kind: 'launcher' }> => tab.kind === 'launcher').map(tab => <section key={tab.id} className={`agent-workspace-tab-launcher ${scopeState.activeTabId === tab.id ? 'active' : ''}`}><WorkspaceBrowser tab={{ url: tab.url ?? '', title: tab.title }} workspaceId={workspaceId} bindingId={bindingId} workDirectoryId={workDirectoryId} browserUrl={browserUrl} onUrlChange={(url, title) => navigateLauncherBrowser(tab.id, url, title)} startPage={<div className="agent-workspace-tab-launcher-cards"><p>工具</p><button type="button" onClick={() => chooseLauncherTool(tab.id, () => openFiles())}><FileCode2 size={16}/>文件</button><button type="button" disabled={!runtimeAvailable} onClick={() => chooseLauncherTool(tab.id, openTerminal)}><SquareTerminal size={16}/>终端</button>{onOpenSidebarQuestion && <button type="button" onClick={() => chooseLauncherTool(tab.id, onOpenSidebarQuestion)}><PanelRightOpen size={16}/>侧边聊天</button>}<button type="button" onClick={() => chooseLauncherTool(tab.id, openGitHistory)}><GitBranch size={16}/>Git 历史</button>{reviewChanges.length > 0 && <button type="button" onClick={() => chooseLauncherTool(tab.id, () => openChanges())}><FileText size={16}/>审查改动</button>}{sources.length > 0 && <button type="button" onClick={() => chooseLauncherTool(tab.id, () => openSources)}><Link2 size={16}/>来源</button>}{runtimeTasks.length > 0 && <button type="button" onClick={() => chooseLauncherTool(tab.id, () => openRuntimeTasks())}><Bot size={16}/>子智能体</button>}</div>}/></section>)}
