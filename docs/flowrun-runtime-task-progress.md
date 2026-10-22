@@ -8928,3 +8928,12 @@ Web typecheck、定向 ESLint、production build、git diff --check、唯一 Ale
 连同关闭和双击全屏回归共 3 passed。Web typecheck、定向 ESLint、production build、
 git diff --check、唯一 Alembic head `0157_background_task_aggregate_type_length` 与
 CURRENT 唯一性通过；下一切片为 NONE。沿用会话授权仅发布 Web 并完成受管验收与收尾。
+
+### FR-614 能力批量选择图标反映实际选中状态 — DONE
+
+依赖：FR-613 DONE。“选择筛选结果”按钮在当前可选结果全部选中时显示勾选方框，
+否则显示空方框；增加 aria-pressed 同步状态，沿用既有选择／取消行为。扩展能力配置
+回归覆盖初始空框、全选勾选框与取消后的空框，1 passed。Web typecheck、定向 ESLint、
+production build、git diff --check、唯一 Alembic head
+`0157_background_task_aggregate_type_length` 与 CURRENT 唯一性通过；下一切片为 NONE。
+沿用会话授权仅发布 Web 并完成正式预检、健康／路由验收与受管收尾。

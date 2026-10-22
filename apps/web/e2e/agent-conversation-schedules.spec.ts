@@ -203,9 +203,13 @@ test('capability configuration toggles visible selections and filters to selecte
 
   const dialog = page.getByRole('dialog', { name: '会话配置' });
   const selectVisible = dialog.getByRole('button', { name: '选择筛选结果（2）', exact: true });
+  await expect(selectVisible).toHaveAttribute('aria-pressed','false');
+  await expect(selectVisible.locator('svg')).toHaveClass(/lucide-square$/);
   await selectVisible.click();
   await expect(dialog.getByText('已选择 2 项', { exact: true })).toBeVisible();
   await expect(dialog.getByRole('button', { name: '取消选择筛选结果', exact: true })).toBeVisible();
+  await expect(dialog.getByRole('button', { name: '取消选择筛选结果', exact: true })).toHaveAttribute('aria-pressed','true');
+  await expect(dialog.getByRole('button', { name: '取消选择筛选结果', exact: true }).locator('svg')).toHaveClass(/lucide-square-check/);
 
   await dialog.getByRole('button', { name: '只看已选', exact: true }).click();
   await expect(dialog.getByRole('button', { name: '显示全部能力', exact: true })).toBeVisible();
@@ -214,6 +218,8 @@ test('capability configuration toggles visible selections and filters to selecte
 
   await dialog.getByRole('button', { name: '取消选择筛选结果', exact: true }).click();
   await expect(dialog.getByText('没有匹配的已发布能力。')).toBeVisible();
+  await expect(dialog.locator('.agent-capability-select-visible')).toHaveAttribute('aria-pressed','false');
+  await expect(dialog.locator('.agent-capability-select-visible svg')).toHaveClass(/lucide-square$/);
   await expect(dialog.getByRole('button', { name: '显示全部能力', exact: true })).toBeVisible();
 });
 
