@@ -304,6 +304,8 @@ interface LocalMessageProjection {
   scope: string;
   renderKey: string;
   canonicalEventId?: string;
+  confirmationExpiresAt?: number;
+  formalEventObserved?: boolean;
   /** The user event whose branch this projection replaces, if any. */
   replacedEventId?: string;
   state: LocalMessageProjectionState;
@@ -5172,10 +5174,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const sendingMessageIds = useRef(new Set<string>());
   const backgroundQueueDispatches = useRef(new Set<string>());
   const localMessageProjections = useRef(new Map<string, LocalMessageProjection>());
-  const updateLocalMessageProjections = useCallback((update: (current: Map<string, LocalMessageProjection>) => void) => {
-    update(localMessageProjections.current);
-    setLocalMessageProjectionRevision(current => current + 1);
-  }, []);
   useEffect(() => () => {
     for (const controller of historyAbortControllers.current.values()) controller.abort();
     historyAbortControllers.current.clear();
@@ -5273,6 +5271,39 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     refetchOnWindowFocus: true,
   });
   const workspace = workspaceQuery.data;
+  // The HTTP mutation can outlive this workbench when a top-level tab opens.
+  // Keep only the browser's submitted-bubble identities in Query memory so its
+  // ACK updates the same projection observed by a newly mounted workbench.
+  const projectionIdentity = getAgentSessionCacheIdentity();
+  const localProjectionQueryKey = useMemo(
+    () => sessionQueryKey(host, 'local-message-projections', projectionIdentity, workspace?.id),
+    [host, projectionIdentity, workspace?.id],
+  );
+  const localProjectionQuery = useQuery<Map<string, LocalMessageProjection>>({
+    queryKey: localProjectionQueryKey,
+    enabled: false,
+    initialData: () => new Map(),
+    staleTime: Infinity,
+    gcTime: TERMINAL_CONVERSATION_CACHE_TTL_MS,
+  });
+  localMessageProjections.current = localProjectionQuery.data!;
+  const updateLocalMessageProjections = useCallback((update: (current: Map<string, LocalMessageProjection>) => void) => {
+    // A late ACK after logout must not recreate another user's presentation.
+    if (getAgentSessionCacheIdentity() !== projectionIdentity) return;
+    queryClient.setQueryData<Map<string, LocalMessageProjection>>(localProjectionQueryKey, current => {
+      const next = new Map(current);
+      update(next);
+      localMessageProjections.current = next;
+      return next;
+    });
+    setLocalMessageProjectionRevision(current => current + 1);
+  }, [localProjectionQueryKey, projectionIdentity, queryClient]);
+  useEffect(() => () => {
+    if (getAgentSessionCacheIdentity() !== projectionIdentity) return;
+    queryClient.setQueryData<Map<string, LocalMessageProjection>>(localProjectionQueryKey, current => (
+      current ? new Map([...current].filter(([, projection]) => !projection.formalEventObserved)) : undefined
+    ));
+  }, [localProjectionQueryKey, projectionIdentity, queryClient]);
   useQuery({
     queryKey: ['agent-workspace-git-settings', workspace?.id],
     queryFn: () => agentWorkspaceApi.agentGitIdentity(workspace!.id),
@@ -6388,6 +6419,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       return;
     }
     hydrationSelection.current = { workspaceId, bindingId };
+    hotReentryHydrationKey.current = undefined;
     hydrationAttemptCount.current = 0;
     const trusted = trustedHydrations.current.get(bindingId);
     const ttl = trusted?.running
@@ -6555,7 +6587,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     selected?.id && (
       pendingSubmissionConfirmation?.bindingId === selected.id
       || [...localMessageProjections.current.values()].some(projection => (
-        projection.scope === selected.id && projection.state === 'submitting'
+        projection.scope === selected.id && (projection.state === 'submitting'
+          || (projection.state === 'accepted' && projection.canonicalEventId
+            && !queryClient.getQueryData<OpenHandsConversationEventBatch>(eventQueryKey)?.events.some(event => event.id === projection.canonicalEventId)
+            && (projection.confirmationExpiresAt ?? 0) > Date.now()))
       ))
     ),
   );
@@ -6718,16 +6753,16 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const synchronizeConversationEventsRef = useRef(synchronizeConversationEvents);
   synchronizeConversationEventsRef.current = synchronizeConversationEvents;
   useEffect(() => {
-    if (!selected?.id || !trustedHydration?.running || selectedHydrationPhase !== 'ready') return;
+    if (!selected?.id || (!trustedHydration?.running && !selectedSubmissionNeedsReadiness) || selectedHydrationPhase !== 'ready') return;
     // `synchronizeConversationEvents` is intentionally rebuilt as the event
     // projection changes. Run this recovery once per successful hydration,
     // rather than turning those normal renders into repeated latest-window
     // reads (and indirect readiness refetches).
-    const hydrationKey = `${selected.id}:${trustedHydration.hydratedAt}`;
+    const hydrationKey = `${selected.id}:${trustedHydration?.hydratedAt}`;
     if (hotReentryHydrationKey.current === hydrationKey) return;
     hotReentryHydrationKey.current = hydrationKey;
     void synchronizeConversationEvents(true, 'hot_reentry');
-  }, [selected?.id, selectedHydrationPhase, synchronizeConversationEvents, trustedHydration?.hydratedAt, trustedHydration?.running]);
+  }, [selected?.id, selectedHydrationPhase, selectedSubmissionNeedsReadiness, synchronizeConversationEvents, trustedHydration?.hydratedAt, trustedHydration?.running]);
   useEffect(() => {
     if (!foregroundRecoverySignal || !pageVisible || !workspace || !selected || !hydrationFallbackAllowed
       || foregroundRecoverySignal === handledForegroundRecoverySignal.current) return;
@@ -6908,14 +6943,26 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     return () => window.clearTimeout(timer);
   }, [eventsQuery.data?.history_cursor, historyCacheRevision, historyPrefetchDelayMs, loadAllHistory, pageVisible, selected?.id]);
   const activeScope = selected?.id ?? conversationDraft?.id;
+  useEffect(() => {
+    if (!selected?.id || !eventsQuery.data) return;
+    const formalIds = new Set(eventsQuery.data.events.map(event => event.id));
+    const observed = [...localMessageProjections.current.values()].filter(projection => (
+      projection.scope === selected.id && !projection.formalEventObserved
+      && projection.canonicalEventId && formalIds.has(projection.canonicalEventId)
+    ));
+    if (!observed.length) return;
+    updateLocalMessageProjections(current => {
+      for (const projection of observed) current.set(projection.submissionId, { ...projection, formalEventObserved: true });
+    });
+  }, [eventsQuery.data, localProjectionQuery.data, selected?.id, updateLocalMessageProjections]);
   const activeLocalMessageProjections = useMemo(() => {
     void localMessageProjectionRevision;
     return activeScope
-      ? [...localMessageProjections.current.values()]
+      ? [...(localProjectionQuery.data?.values() ?? [])]
         .filter(item => item.scope === activeScope)
         .map(item => ({ ...item, formalEventIdsAtSubmission: new Set(item.formalEventIdsAtSubmission) }))
       : [];
-  }, [activeScope, localMessageProjectionRevision]);
+  }, [activeScope, localMessageProjectionRevision, localProjectionQuery.data]);
   const currentFormalEvents = useMemo(() => {
     const activeScope = selected?.id ?? conversationDraft?.id;
     const preview = immediateFinalReplyPreview;
@@ -6927,6 +6974,19 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       [...scopedLiveEvents.filter(item => item.scope === activeScope).map(item => item.event), ...immediatePreview],
     );
   }, [conversationDraft?.id, eventsQuery.data?.events, immediateFinalReplyPreview, scopedLiveEvents, selected?.id]);
+  useEffect(() => {
+    if (!selected?.id || pendingSubmissionConfirmation?.bindingId === selected.id) return;
+    const projection = [...localMessageProjections.current.values()].reverse().find(item => (
+      item.scope === selected.id && item.state === 'accepted' && item.canonicalEventId
+      && (item.confirmationExpiresAt ?? 0) > Date.now()
+      && !currentFormalEvents.some(event => event.id === item.canonicalEventId)
+    ));
+    if (!projection?.canonicalEventId || !projection.confirmationExpiresAt) return;
+    setPendingSubmissionConfirmation({
+      submissionId: projection.submissionId, bindingId: selected.id,
+      cursor: projection.canonicalEventId, expiresAt: projection.confirmationExpiresAt,
+    });
+  }, [currentFormalEvents, localProjectionQuery.data, pendingSubmissionConfirmation?.bindingId, selected?.id]);
   useEffect(() => {
     if (!immediateFinalReplyPreview || immediateFinalReplyPreview.bindingId !== selected?.id) return;
     if (selectedHydrationPhase === 'ready' && eventsQuery.data) setImmediateFinalReplyPreview(undefined);
@@ -7939,6 +7999,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         ...projection,
         scope: conversation.id,
         canonicalEventId: value.cursor ?? undefined,
+        confirmationExpiresAt: Date.now() + SUBMISSION_EVENT_CONFIRMATION_TIMEOUT_MS,
         state: value.cursor ? 'accepted' : 'ambiguous',
       });
     });
@@ -8209,6 +8270,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         ...existing,
         scope: message.scope,
         state,
+        confirmationExpiresAt: Date.now() + SUBMISSION_EVENT_CONFIRMATION_TIMEOUT_MS,
         formalEventIdsAtSubmission: snapshotFormalEventIds(message.scope),
         event: {
           ...existing.event,
@@ -8243,6 +8305,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       scope: message.scope,
       renderKey,
       state,
+      confirmationExpiresAt: Date.now() + SUBMISSION_EVENT_CONFIRMATION_TIMEOUT_MS,
       event,
       formalEventIdsAtSubmission: snapshotFormalEventIds(message.scope),
     }));
@@ -8275,7 +8338,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         updateLocalMessageProjections(current => {
           const projection = current.get(message.id);
           if (!projection || projection.scope !== message.bindingId) return;
-          current.set(message.id, { ...projection, canonicalEventId: cursor, state: 'accepted' });
+          current.set(message.id, { ...projection, canonicalEventId: cursor, state: 'accepted', confirmationExpiresAt: Date.now() + SUBMISSION_EVENT_CONFIRMATION_TIMEOUT_MS });
         });
         releaseDeferredFormalUserEvents(message.bindingId);
       }
@@ -8321,6 +8384,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
             ...projection,
             canonicalEventId: persistedCursor,
             state: 'accepted',
+            confirmationExpiresAt: Date.now() + SUBMISSION_EVENT_CONFIRMATION_TIMEOUT_MS,
           });
         });
         releaseDeferredFormalUserEvents(message.bindingId);
@@ -8774,7 +8838,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         updateLocalMessageProjections(current => {
           const projection = current.get(context.optimisticEventId);
           if (!projection) return;
-          current.set(context.optimisticEventId, { ...projection, canonicalEventId: cursor, state: 'accepted' });
+          current.set(context.optimisticEventId, { ...projection, canonicalEventId: cursor, state: 'accepted', confirmationExpiresAt: Date.now() + SUBMISSION_EVENT_CONFIRMATION_TIMEOUT_MS });
         });
         setDeferredRewriteUserEventIds(current => new Set([...current, cursor]));
         releaseDeferredFormalUserEvents(context.scope);
@@ -8844,7 +8908,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     rewrite.isPending && rewrite.variables?.bindingId === selected?.id
   ) || (
     bootstrap.isPending && pendingBootstrap?.draft.id === conversationDraft?.id
-  ) || submissionConfirmationPending;
+  ) || submissionConfirmationPending || activeLocalMessageProjections.some(projection => projection.state === 'submitting');
   const openConversationDraft = useCallback((next: Omit<ConversationDraft, 'id'>, options: { restoreRecovery?: boolean; selectStandaloneRoot?: boolean } = {}) => {
     const outgoingScope = activeComposerScope.current;
     if (outgoingScope) persistComposerDraft(outgoingScope);
