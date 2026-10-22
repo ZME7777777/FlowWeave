@@ -19,7 +19,7 @@ async function settleWorkspaceLayout(page: Page) {
   });
 }
 
-async function openWorkspace(page: Page, events: unknown[] = [], includeSecondConversation = false, conversationTitle = '日报会话') {
+async function openWorkspace(page: Page, events: unknown[] = [], includeSecondConversation = false, conversationTitle = '日报会话', scheduleOptions: { prompt?: string; occurrenceCount?: number } = {}) {
   const writes: { method: string; id?: string; body: Record<string, unknown> }[] = [];
   let authenticated = false;
   const workspace = { id: 'schedule-workspace', display_name: 'Agent 工作区', desired_state: 'RUNNING', updated_at: now };
@@ -33,6 +33,7 @@ async function openWorkspace(page: Page, events: unknown[] = [], includeSecondCo
     { id: 'capability-1', capability_key: '日报技能', capability_type: 'SKILL', description: '汇总每日检查结果', filename: 'daily.md', is_latest: true },
     { id: 'capability-2', capability_key: '周报技能', capability_type: 'SKILL', description: '汇总每周检查结果', filename: 'weekly.md', is_latest: true },
   ];
+  schedules[0].prompt = scheduleOptions.prompt ?? schedules[0].prompt;
   schedules.push({ ...schedules[0], id: 'weekly-schedule', name: '每周复核', prompt: '复核周报。', row_version: 7 });
   await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
   await page.route('**/api/v1/**', async route => {
@@ -60,7 +61,7 @@ async function openWorkspace(page: Page, events: unknown[] = [], includeSecondCo
       return json(route, schedules[index]);
     }
     if (path.endsWith('/conversation-schedules')) return json(route, schedules);
-    if (path.includes('/conversation-schedules/') && path.endsWith('/occurrences')) return json(route, Array.from({ length: 5 }, (_, index) => ({ id: `delivery-${index + 1}`, binding_id: index === 0 ? 'scheduled-run-1' : `scheduled-run-${index + 1}`, conversation_title: `每日项目检查 · 2026-10-${19 - index} 09:00`, scheduled_for: now, trigger_kind: 'SCHEDULED', state: 'STARTED', message_cursor: `event-${index + 1}`, created_at: now })));
+    if (path.includes('/conversation-schedules/') && path.endsWith('/occurrences')) return json(route, Array.from({ length: scheduleOptions.occurrenceCount ?? 5 }, (_, index) => ({ id: `delivery-${index + 1}`, binding_id: index === 0 ? 'scheduled-run-1' : `scheduled-run-${index + 1}`, conversation_title: `每日项目检查 · 2026-10-${19 - index} 09:00`, scheduled_for: now, trigger_kind: 'SCHEDULED', state: 'STARTED', message_cursor: `event-${index + 1}`, created_at: now })));
     if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
     if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: conversations, next_cursor: null });
     if (path.endsWith('/conversation-activity')) return json(route, { running_binding_ids: [] });
@@ -161,7 +162,7 @@ test('workspace Git settings show only confirmed identity and save with readback
   identity = { author: '终端修改后的作者', email: 'changed@example.test', configured: true };
   await settings.getByRole('button', { name: '重新读取', exact: true }).click();
   await expect(author).toHaveValue(identity.author);
-  await page.setViewportSize({ width: 800, height: 700 });
+  await page.setViewportSize({ width: 1024, height: 700 });
   expect(await settings.evaluate(element => element.scrollWidth - element.clientWidth)).toBe(0);
   await expect(settings.getByRole('button', { name: '编辑', exact: true })).toBeInViewport();
   await settings.getByRole('button', { name: '编辑', exact: true }).click();
@@ -683,6 +684,69 @@ test('task rows expand on demand and action menus close outside', async ({ page 
   await expect(firstTask.getByRole('menu')).toBeVisible();
   await page.getByRole('navigation', { name: 'Agent 工作区导航' }).click();
   await expect(firstTask.getByRole('menu')).toHaveCount(0);
+});
+
+test('schedule tasks expand independently when selecting details and opening runs', async ({ page }) => {
+  await openWorkspace(page);
+  await page.goto('/agent/schedules');
+  const tasks = page.getByRole('region', { name: '会话定时任务' });
+  const first = tasks.locator('.agent-schedule-tree-group').first();
+  const second = tasks.locator('.agent-schedule-tree-group').nth(1);
+  await first.locator('.agent-schedule-tree-select').click();
+  await second.locator('.agent-schedule-tree-select').click();
+  await expect(first.locator('.agent-schedule-tree-select')).toHaveAttribute('aria-expanded', 'true');
+  await expect(second.locator('.agent-schedule-tree-select')).toHaveAttribute('aria-expanded', 'true');
+  await expect(tasks.locator('.agent-schedule-run')).toHaveCount(6);
+  await expect(tasks.getByRole('heading', { name: '每周复核', exact: true })).toBeVisible();
+  await second.locator('.agent-schedule-tree-select').click();
+  await expect(first.locator('.agent-schedule-run')).toHaveCount(3);
+  await expect(second.locator('.agent-schedule-run')).toHaveCount(0);
+  await second.locator('.agent-schedule-tree-select').click();
+  await first.locator('.agent-schedule-run').first().click();
+  await expect(page).toHaveURL(/\/agent\/schedules\/conversations\/scheduled-run-1$/);
+  await expect(second.locator('.agent-schedule-tree-select')).toHaveAttribute('aria-expanded', 'true');
+  await expect(first.locator('.agent-schedule-tree-select')).toHaveAttribute('aria-expanded', 'true');
+});
+
+test('schedule detail keeps long prompts and run scrolling inside a single screen', async ({ page }) => {
+  const prompt = Array.from({ length: 30 }, (_, index) => `第 ${index + 1} 段业务要求：检查项目状态，汇总运行结果并生成完整报告。`).join('\n\n');
+  await openWorkspace(page, [], false, '日报会话', { prompt, occurrenceCount: 40 });
+  await page.goto('/agent/schedules');
+  await page.locator('.agent-schedule-tree-select').first().click();
+  const detail = page.locator('.agent-schedule-detail');
+  const list = detail.getByRole('region', { name: '运行会话列表' });
+  for (const viewport of [{ width: 1440, height: 1000 }, { width: 1440, height: 600 }, { width: 1024, height: 700 }]) {
+    await page.setViewportSize(viewport);
+    await expect(detail.getByRole('button', { name: '查看全文' })).toBeVisible();
+    await expect(list.locator('.agent-schedule-history-run')).toHaveCount(40);
+    await expect.poll(() => page.evaluate(() => {
+      const main = document.querySelector<HTMLElement>('.agent-schedule-detail-main')!;
+      const list = document.querySelector<HTMLElement>('.agent-schedule-history-list')!;
+      const rect = list.getBoundingClientRect();
+      return { mainOverflowY: Math.max(0, main.scrollHeight - main.clientHeight), mainOverflowX: Math.max(0, main.scrollWidth - main.clientWidth), documentOverflow: Math.max(0, document.documentElement.scrollHeight - innerHeight), listBottom: Math.max(0, rect.bottom - innerHeight), listVisible: list.clientHeight > 40, listScrollable: list.scrollHeight > list.clientHeight };
+    })).toEqual({ mainOverflowY: 0, mainOverflowX: 0, documentOverflow: 0, listBottom: 0, listVisible: true, listScrollable: true });
+    await list.hover();
+    await page.mouse.wheel(0, 800);
+    await expect.poll(() => list.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+    await expect(page.locator('.agent-schedule-detail-main')).toHaveJSProperty('scrollTop', 0);
+    await detail.getByRole('button', { name: '查看全文' }).click();
+    const dialog = page.getByRole('dialog', { name: '业务提示词全文' });
+    await expect(dialog).toBeVisible();
+    await expect(dialog.locator('p')).toHaveText(prompt);
+    await expect.poll(() => dialog.locator('p').evaluate(element => element.scrollHeight > element.clientHeight)).toBe(true);
+    await page.keyboard.press('Escape');
+    await expect(dialog).not.toBeVisible();
+    await expect(detail.getByRole('button', { name: '查看全文' })).toBeFocused();
+  }
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await detail.screenshot({ path: test.info().outputPath('schedule-detail.png') });
+  await detail.getByRole('button', { name: '查看全文' }).click();
+  await page.getByRole('button', { name: '关闭业务提示词' }).click();
+  await page.locator('.agent-schedule-tree-select').nth(1).click();
+  await expect(detail.locator('.agent-schedule-prompt')).toContainText('复核周报。');
+  await expect(detail.getByRole('button', { name: '查看全文' })).toHaveCount(0);
+  await detail.locator('.agent-schedule-history-run').first().click();
+  await expect(page).toHaveURL(/\/agent\/schedules\/conversations\/scheduled-run-1$/);
 });
 
 test('scheduled session shows session configuration and expands additional runs', async ({ page }) => {
