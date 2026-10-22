@@ -536,10 +536,18 @@ test('fullscreen tools occupy the entire workbench region and restore the conver
   const composer=page.getByRole('textbox',{name:'发送 Agent 消息'});
   await composer.fill('全屏切换时保留草稿');
   await page.getByRole('button',{name:'新建工作区页签',exact:true}).first().click();
+  const controls=page.locator('.agent-workspace-tool-actions');
+  const controlSizes=() => controls.getByRole('button').evaluateAll(buttons => buttons.slice(-2).map(button => {
+    const {width,height}=button.getBoundingClientRect();
+    return {width,height};
+  }));
+  const splitControlSizes=await controlSizes();
+  await controls.screenshot({path:test.info().outputPath('split-controls.png')});
   await page.getByRole('button',{name:'全屏查看工作区工具',exact:true}).click();
   const main=page.locator('.agent-workbench-main');
   await expect(main).toBeHidden();
-  const controls=page.locator('.agent-workspace-tool-actions');
+  expect(splitControlSizes).toEqual(await controlSizes());
+  await controls.screenshot({path:test.info().outputPath('fullscreen-controls.png')});
   await expect(controls.getByRole('button')).toHaveCount(3);
   await expect(controls.getByRole('button',{name:/^(显示|隐藏)悬浮信息卡$/})).toBeVisible();
   await expect(controls.getByRole('button',{name:'退出全屏',exact:true})).toBeVisible();

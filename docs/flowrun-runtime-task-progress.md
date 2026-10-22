@@ -8855,3 +8855,18 @@ production build、git diff --check 与唯一 Alembic head
 `0157_background_task_aggregate_type_length` 通过；无 CURRENT，下一可执行切片为 NONE。
 回归使用受控浏览器接口；沿用本会话明确授权，仅从独立提交发布 Web，执行正式预检、
 最小上下文构建、健康／路由验证和受管容量收尾，不更新平台或 Runtime。
+
+### FR-608 工作区操作按钮尺寸与分栏图标 — DONE
+
+依赖：FR-607 DONE。
+
+分栏工具栏操作按钮从 40×40 调整为与全屏一致的 28×28，圆角从 14 缩至 6，
+间距由 8 缩至 2。展开／退出全屏使用无箭头四角图标，关闭工作区使用分栏轮廓图标，
+沿用既有可访问名称与行为，图标线宽统一为 1.7。
+
+扩展既有 Chromium 全屏回归，直接比较分栏与全屏操作按钮的真实几何尺寸；旧源码明确
+失败为 40×40 对 28×28，修复后定向 4 passed。已检查两种模式截图，另覆盖标签三态、
+双击全屏与关闭标签行为。Web typecheck、定向 ESLint、production build、git diff --check
+及唯一 Alembic head `0157_background_task_aggregate_type_length` 通过；无 CURRENT，
+下一可执行切片为 NONE。沿用本会话部署授权，仅更新 Web 并执行正式预检、受管最小
+上下文构建、健康／路由验收与发布收尾；不更新平台或 Runtime。
