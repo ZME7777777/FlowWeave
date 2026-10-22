@@ -8937,3 +8937,16 @@ CURRENT 唯一性通过；下一切片为 NONE。沿用会话授权仅发布 Web
 production build、git diff --check、唯一 Alembic head
 `0157_background_task_aggregate_type_length` 与 CURRENT 唯一性通过；下一切片为 NONE。
 沿用会话授权仅发布 Web 并完成正式预检、健康／路由验收与受管收尾。
+
+### FR-615 能力筛选保持弹窗与底部按钮位置 — DONE
+
+依赖：FR-614 DONE。能力页弹窗固定为不超过 680px 且适配动态视口的高度，内容列表在
+剩余区域内部滚动，不再随“只看已选”、空结果或搜索而收缩。窄屏保留 20px 总边距，
+桌面保留 48px 总边距，列表允许缩小以保持底部按钮可见；认证页现有布局不变。
+
+新增 30 条能力的 Chromium 几何回归：旧代码切换眼睛按钮后从 680px 缩至 403px；修复后
+在 1000px 和 600px 高窗口中，切换只看已选、显示全部、搜索无结果及清空时，弹窗 top、
+height 与 footer top 保持一致，长列表内部滚动且底部按钮可见。新增回归 1 passed，既有
+能力选择与定时会话配置另 2 passed。Web typecheck、定向 ESLint、production build、
+git diff --check、唯一 Alembic head `0157_background_task_aggregate_type_length` 与
+CURRENT 唯一性通过；下一切片为 NONE。沿用会话授权仅发布 Web 并完成受管验收与收尾。

@@ -223,6 +223,37 @@ test('capability configuration toggles visible selections and filters to selecte
   await expect(dialog.getByRole('button', { name: '显示全部能力', exact: true })).toBeVisible();
 });
 
+test('capability filtering keeps dialog and footer geometry stable', async ({ page }) => {
+  await openWorkspace(page);
+  await page.route('**/api/v1/capabilities', route => json(route,Array.from({length:30},(_,index)=>({id:`fixed-cap-${index}`,capability_key:`技能 ${index}`,capability_type:'SKILL',description:'用于验证列表内部滚动',filename:`skill-${index}.md`,is_latest:true}))));
+  await page.getByRole('navigation',{name:'Agent 工作区导航'}).getByRole('button',{name:'定时任务'}).click();
+  await page.getByRole('region',{name:'会话定时任务'}).getByRole('button',{name:'新建',exact:true}).click();
+  await page.getByRole('button',{name:/配置会话/}).click();
+  const dialog=page.getByRole('dialog',{name:'会话配置'});
+  const geometry=()=>dialog.evaluate(element=>{
+    const box=element.getBoundingClientRect();
+    const footer=element.querySelector(':scope > footer')!.getBoundingClientRect();
+    return {top:box.top,height:box.height,footer:footer.top};
+  });
+  for(const height of [1000,600]){
+    await page.setViewportSize({width:1440,height});
+    const before=await geometry();
+    await expect.poll(()=>dialog.locator('.agent-capability-list').evaluate(element=>element.scrollHeight>element.clientHeight)).toBe(true);
+    await dialog.getByRole('button',{name:'只看已选',exact:true}).click();
+    await expect(dialog.getByText('没有匹配的已发布能力。')).toBeVisible();
+    expect(await geometry()).toEqual(before);
+    await dialog.getByRole('button',{name:'显示全部能力',exact:true}).click();
+    expect(await geometry()).toEqual(before);
+    const search=dialog.getByPlaceholder('搜索名称、说明或文件…');
+    await search.fill('不存在的能力');
+    await expect(dialog.getByText('没有匹配的已发布能力。')).toBeVisible();
+    expect(await geometry()).toEqual(before);
+    await search.fill('');
+    await expect(dialog.locator('.agent-capability-list > button')).toHaveCount(30);
+    await expect(dialog.getByRole('button',{name:'用于新建会话',exact:true})).toBeInViewport();
+  }
+});
+
 test('internal navigation returns from schedules and management to the active conversation', async ({ page }) => {
   await openWorkspace(page, [
     { id: 'active-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '保留当前会话', timestamp: now } },

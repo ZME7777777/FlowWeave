@@ -404,6 +404,11 @@
   .agent-workbench-app-shell .agent-workspace-drawer.fullscreen,.agent-workbench-app-shell .agent-workbench-main.fullscreen-conversation-active{grid-column:2 / -1}
 }
 
+/* Filtering changes list contents without moving the dialog or its footer. */
+.agent-capability-manager:not(.credentials-tab){box-sizing:border-box;height:min(680px,calc(100dvh - 48px));max-height:min(680px,calc(100dvh - 48px))}
+.agent-capability-manager:not(.credentials-tab)>.agent-capability-list{min-height:0}
+@media(max-width:680px){.agent-capability-manager:not(.credentials-tab){height:min(680px,calc(100dvh - 20px));max-height:min(680px,calc(100dvh - 20px))}}
+
 /* Keep close controls discoverable on active, hovered and keyboard-focused tabs. */
 .agent-workspace-tabs>div:not(.active):not(:hover)>.agent-workspace-tab-close:not(:focus-visible){opacity:0;pointer-events:none}
 /* Keep the rail resize target outside the list's scrollbar gutter and unclipped. */
