@@ -11,7 +11,7 @@ import { useProductDialog } from '../components/ProductDialogContext';
 import { RuntimeConfirmationPanel } from '../components/RuntimeConfirmationPanel';
 import { useEscapeClose } from '../components/useEscapeClose';
 import { useWorkbenchStore } from '../store/workbench';
-import type { AgentPreset, ArtifactVersion, AttemptState, AutomaticNodePlan, AutomaticRecordConfigDocument, CapabilityAsset, CapabilityCollection, FlowRun, FlowRunAutomaticRecord, FlowRunAutomaticRecordSummary, FlowRunStepwiseRecord, GateAgentPreset, GateEvaluation, GatePolicy, GateRemediationResult, IOField, NodeAttempt, NodeRun, OpenHandsConversationEvent, OpenHandsConversationEventBatch, RecordConfigDocument, SnapshotFlowNode, StepwiseNodeDraft, TokenUsageSummary } from '../types';
+import type { AgentPreset, ArtifactVersion, AttemptState, AutomaticNodePlan, AutomaticRecordConfigDocument, CapabilityAsset, CapabilityCollection, FlowRun, FlowRunAutomaticRecord, FlowRunAutomaticRecordSummary, FlowRunRevisionDraft, FlowRunStepwiseRecord, GateAgentPreset, GateEvaluation, GatePolicy, GateRemediationResult, IOField, NodeAsset, NodeAttempt, NodeRun, OpenHandsConversationEvent, OpenHandsConversationEventBatch, RecordConfigDocument, SnapshotDefinition, SnapshotFlowNode, StepwiseNodeDraft, TokenUsageSummary } from '../types';
 import { withDeploymentBase } from '../deploymentPath';
 import { selectCapabilityVersion, selectCapabilityVersions } from '../utils/capabilitySelection';
 
@@ -370,12 +370,11 @@ function readyAutomaticPlanKeys(record?: FlowRunAutomaticRecord): Set<string> {
   return new Set(Object.keys(record.node_plans).filter(key => !incomplete.has(key)));
 }
 
-function SnapshotGraph({ run, snapshotId, selectedKey, activeNodeRunId, activeNodeKey, onSelect, onClearSelection, reachableKeys, selectableKeys, configuredPlanKeys, executionRun, missingPlanKeys, showExecutionState = true, neutralHelp, neutralView = false }: { run: FlowRun; snapshotId?: string; selectedKey?: string; activeNodeRunId?: string; activeNodeKey?: string; onSelect: (key: string) => void; onClearSelection?: () => void; reachableKeys?: Iterable<string>; selectableKeys?: Iterable<string>; configuredPlanKeys?: Iterable<string>; executionRun?: FlowRun; missingPlanKeys?: Iterable<string>; showExecutionState?: boolean; neutralHelp?: string; neutralView?: boolean }) {
+function SnapshotGraph({ run, snapshotId, draftDefinition, selectedKey, activeNodeRunId, activeNodeKey, onSelect, onClearSelection, reachableKeys, selectableKeys, configuredPlanKeys, executionRun, missingPlanKeys, showExecutionState = true, neutralHelp, neutralView = false }: { run: FlowRun; snapshotId?: string; draftDefinition?: SnapshotDefinition; selectedKey?: string; activeNodeRunId?: string; activeNodeKey?: string; onSelect: (key: string) => void; onClearSelection?: () => void; reachableKeys?: Iterable<string>; selectableKeys?: Iterable<string>; configuredPlanKeys?: Iterable<string>; executionRun?: FlowRun; missingPlanKeys?: Iterable<string>; showExecutionState?: boolean; neutralHelp?: string; neutralView?: boolean }) {
   const [linkMode, setLinkMode] = useState<'flow' | 'data'>('flow');
-  // A NodeAttempt executes against its immutable snapshot.  Its facts and the
-  // graph shown beside them must therefore come from the same definition; the
-  // active snapshot is only the neutral/new-configuration fallback.
-  const snapshot = (snapshotId ? run.snapshots.find(item => item.id === snapshotId) : undefined)
+  // A NodeAttempt executes against its immutable snapshot. A runtime draft is
+  // previewed separately and is never substituted for an Attempt's history.
+  const snapshot = draftDefinition ? { id: 'runtime-revision-draft', definition: draftDefinition, definition_hash: 'draft' } : (snapshotId ? run.snapshots.find(item => item.id === snapshotId) : undefined)
     ?? run.snapshots.find(item => item.id === run.active_snapshot_id)
     ?? run.snapshots.at(-1);
   const reachable = useMemo(() => new Set(reachableKeys ?? (snapshot?.definition.nodes ?? []).map(node => node.instance_key)), [reachableKeys, snapshot]);
@@ -1350,6 +1349,67 @@ const emptyAutomaticNodePlan = (node: SnapshotFlowNode): AutomaticNodePlan => ({
   gates: [], artifact_ids: {}, input_urls: {},
 });
 
+function RuntimeRevisionPanel({ run, assets, onDraft, onApplied }: { run: FlowRun; assets: NodeAsset[]; onDraft: (draft: FlowRunRevisionDraft) => void; onApplied: (run: FlowRun) => void }) {
+  const [draft, setDraft] = useState<FlowRunRevisionDraft | undefined>(() => run.revision_drafts.find(item => item.state === 'DRAFT'));
+  const [reason, setReason] = useState('');
+  const [error, setError] = useState('');
+  useEffect(() => setDraft(run.revision_drafts.find(item => item.state === 'DRAFT')), [run.revision_drafts]);
+  const mutation = useMutation({
+    mutationFn: async (operation: 'create' | 'add-node' | 'add-observation' | 'save' | 'apply') => {
+      if (operation === 'create') return { draft: await api.createRevisionDraft(run.id, reason) };
+      if (!draft) throw new Error('请先创建运行时修订草稿。');
+      if (operation === 'apply') return { applied: await api.applyRevisionDraft(run.id, draft.id, draft.row_version) };
+      const definition = structuredClone(draft.definition) as SnapshotDefinition;
+      if (operation === 'add-node') {
+        const asset = assets[0];
+        if (!asset) throw new Error('当前没有可用于临时节点的节点资产。');
+        const suffix = definition.nodes.filter(node => node.instance_key.startsWith('runtime_')).length + 1;
+        const instance_key = `runtime_${asset.id.slice(0, 8)}_${suffix}`;
+        definition.nodes.push({
+          instance_key,
+          node_asset_id: asset.id,
+          alias: `${asset.name}（本次运行）`,
+          position_x: 120 + definition.nodes.length * 40,
+          position_y: 120 + definition.nodes.length * 30,
+          config_override: {},
+          gates: [],
+          asset,
+          runtime_port_overrides: { inputs: [], outputs: [] },
+        });
+      }
+      if (operation === 'add-observation') {
+        const selected = definition.nodes.find(node => node.instance_key === definition.default_entry_key) ?? definition.nodes[0];
+        if (!selected) throw new Error('运行时修订没有可调整的节点。');
+        const outputs = selected.runtime_port_overrides?.outputs ?? [];
+        const key = `case_observation_${outputs.length + 1}`;
+        selected.runtime_port_overrides = {
+          ...(selected.runtime_port_overrides ?? {}),
+          outputs: [...outputs, {
+            field_key: key,
+            display_name: `Case 观察 ${outputs.length + 1}`,
+            data_type: 'URL',
+            description: '仅供本次运行的协调与复盘读取。',
+            runtime_port: true,
+            output_scope: 'OBSERVATION',
+          }],
+        };
+      }
+      return { draft: await api.updateRevisionDraft(run.id, draft.id, { expected_row_version: draft.row_version, definition, reason }) };
+    },
+    onSuccess: result => {
+      setError('');
+      if ('applied' in result && result.applied) onApplied(result.applied);
+      else if (result.draft) {
+        setDraft(result.draft);
+        onDraft(result.draft);
+      }
+    },
+    onError: reason => setError(reason instanceof Error ? reason.message : '运行时修订操作失败。'),
+  });
+  const canEdit = run.state !== 'COMPLETED' && run.state !== 'CANCELLED' && run.run_mode !== 'AUTOMATIC';
+  return <section className="runtime-revision-panel" aria-label="本次运行调整"><header><div><span className="eyebrow">RUN REVISION</span><h3>本次运行调整</h3><p>变更只写入新的运行快照；已开始节点和流程模板不会改变。</p></div>{draft && <span className="runtime-revision-state">草稿 v{draft.row_version}</span>}</header>{!draft ? <><label>调整原因<textarea aria-label="运行时调整原因" value={reason} onChange={event => setReason(event.target.value)} placeholder="例如：补充安全审查、增加Case观察输出。"/></label><button className="secondary full" disabled={!canEdit || mutation.isPending} onClick={() => mutation.mutate('create')}><Layers3 size={14}/>{mutation.isPending ? '创建中…' : '创建运行时草稿'}</button></> : <><p className="field-hint">基于 Snapshot v{draft.base_snapshot_version} · {draft.definition.nodes.length} 个节点 · {draft.definition.port_mappings.length} 条数据连线</p><div className="runtime-revision-actions"><button className="secondary" disabled={!canEdit || mutation.isPending || !assets.length} onClick={() => mutation.mutate('add-node')}><Plus size={14}/>临时节点</button><button className="secondary" disabled={!canEdit || mutation.isPending} onClick={() => mutation.mutate('add-observation')}><Eye size={14}/>观察输出</button></div><label>调整原因<textarea aria-label="更新运行时调整原因" value={reason || draft.reason} onChange={event => setReason(event.target.value)} placeholder="说明本次运行调整的原因。"/></label><div className="runtime-revision-actions"><button className="secondary" disabled={!canEdit || mutation.isPending} onClick={() => mutation.mutate('save')}><RefreshCw size={14}/>保存草稿</button><button className="primary" disabled={!canEdit || mutation.isPending} onClick={() => mutation.mutate('apply')}><Check size={14}/>{mutation.isPending ? '处理中…' : '应用到本次运行'}</button></div></>}{error && <p className="error">{error}</p>}</section>;
+}
+
 function AutomaticRecordDialog({ run, onClose, onCreated, onImport }: { run: FlowRun; onClose: () => void; onCreated: (record: FlowRunAutomaticRecord) => void; onImport: () => void }) {
   const snapshot = run.snapshots.find(item => item.id === run.active_snapshot_id) ?? run.snapshots.at(-1);
   const nodes = snapshot?.definition.nodes ?? [];
@@ -1560,6 +1620,8 @@ export function WorkbenchPage() {
   const [stepwiseDialogOpen, setStepwiseDialogOpen] = useState(false);
   const [automaticImportDialogOpen, setAutomaticImportDialogOpen] = useState(false);
   const [stepwiseImportDialogOpen, setStepwiseImportDialogOpen] = useState(false);
+  const [runtimeRevisionDraft, setRuntimeRevisionDraft] = useState<FlowRunRevisionDraft>();
+
   const [automaticExportRecordIds, setAutomaticExportRecordIds] = useState<string[]>();
   const [stepwiseExportRecordIds, setStepwiseExportRecordIds] = useState<string[]>();
   const [copyTarget, setCopyTarget] = useState<CopyTarget>();
@@ -1568,6 +1630,8 @@ export function WorkbenchPage() {
   const [railWidth, setRailWidth] = useState(250);
   const [sidePanelWidth, setSidePanelWidth] = useState(390);
   const query = useQuery({ queryKey: ['flow-run', selectedRunId], queryFn: () => api.flowRun(selectedRunId!), enabled: Boolean(selectedRunId), refetchInterval: 5000 });
+  const assets = useQuery({ queryKey: ['node-assets'], queryFn: () => api.nodes() });
+
   const flowId = query.data?.flow_definition_id;
   const flow = useQuery({ queryKey: ['flow', flowId], queryFn: () => api.flow(flowId!), enabled: Boolean(flowId), refetchInterval: 5000 });
   const automatic = useQuery({ queryKey: ['flow-run-automatic-records', selectedRunId], queryFn: () => api.automaticRecordSummaries(selectedRunId!), enabled: Boolean(selectedRunId), refetchInterval: selectedAutomaticId ? false : 5000 });
@@ -1575,6 +1639,8 @@ export function WorkbenchPage() {
   const stepwise = useQuery({ queryKey: ['flow-run-stepwise-records', selectedRunId], queryFn: () => api.stepwiseRecords(selectedRunId!), enabled: Boolean(selectedRunId), refetchInterval: selectedStepwiseId ? false : 5000 });
   const stepwiseDetail = useQuery({ queryKey: ['flow-run-stepwise-record', selectedRunId, selectedStepwiseId], queryFn: () => api.stepwiseRecord(selectedRunId!, selectedStepwiseId!), enabled: Boolean(selectedRunId && selectedStepwiseId && selectedStepwiseId !== selectedRunId), refetchInterval: 5000 });
   // The stepwise rail endpoint already returns the complete frozen execution
+  useEffect(() => setRuntimeRevisionDraft(query.data?.revision_drafts.find(item => item.state === 'DRAFT')), [query.data?.id, query.data?.revision_drafts]);
+
   // record. Reuse it as the immediate detail projection while the independently
   // polled detail request is in flight, just as continuous execution resolves
   // its current node from the selected record rather than from request timing.
@@ -1944,9 +2010,14 @@ export function WorkbenchPage() {
   const graphRun = selectedExecutionRecord ?? run;
   const selectedExecutionSnapshotId = selectedExecutionAttempt?.snapshot_id ?? attempt?.snapshot_id;
   const graphSnapshotId = selectedExecutionSnapshotId;
-  const graphReachableKeys = mode === 'AUTOMATIC' && selectedAutomatic
-      ? selectedAutomatic.reachable_node_keys
-      : reachableNodeKeys(graphRun, undefined, graphSnapshotId);
+  const previewRuntimeRevision: FlowRunRevisionDraft | undefined = mode === 'MANUAL' && !selectedExecutionAttempt
+    ? runtimeRevisionDraft
+    : undefined;
+  const graphReachableKeys = previewRuntimeRevision
+      ? previewRuntimeRevision.definition.nodes.map(node => node.instance_key)
+      : mode === 'AUTOMATIC' && selectedAutomatic
+        ? selectedAutomatic.reachable_node_keys
+        : reachableNodeKeys(graphRun, undefined, graphSnapshotId);
   // A new manual run still begins from the graph. Once an execution is selected,
   // however, clicking a never-run node must not discard that selection.
   const graphSelectableKeys = mode === 'AUTOMATIC'
@@ -2393,8 +2464,8 @@ export function WorkbenchPage() {
           <button type="button" className="run-workbench-toolbar-clear" aria-label="取消当前选择" onClick={clearSelection}/>
           {(run.state === 'COMPLETED' || run.state === 'CANCELLED') && <TerminalRunDelete run={run} onDeleted={() => navigate(undefined, 'delete')}/>}
         </div>
-        {mode !== 'AUTOMATIC' && run.state !== 'COMPLETED' && run.state !== 'CANCELLED' && <SnapshotSync run={run} currentVersion={flow.data?.row_version} onSynced={updated => navigate(updated, 'sync')}/>}
-        <SnapshotGraph run={graphRun} snapshotId={graphSnapshotId} selectedKey={graphSelectedKey} activeNodeRunId={activeStepwiseDraftKey ? undefined : activeExecutionNodeRun?.id} activeNodeKey={activeStepwiseDraftKey} reachableKeys={graphReachableKeys} selectableKeys={graphSelectableKeys} configuredPlanKeys={configuredAutomaticPlanKeys} executionRun={selectedExecutionRecord ?? directExecutionRun} missingPlanKeys={missingAutomaticPlanKeys} showExecutionState={showExecutionState} neutralHelp={neutralGraphHelp} neutralView={automaticNeutralView} onClearSelection={clearSelection} onSelect={selectGraphNode}/>
+        {mode !== 'AUTOMATIC' && run.state !== 'COMPLETED' && run.state !== 'CANCELLED' && <><SnapshotSync run={run} currentVersion={flow.data?.row_version} onSynced={updated => navigate(updated, 'sync')}/><RuntimeRevisionPanel run={run} assets={assets.data ?? []} onDraft={setRuntimeRevisionDraft} onApplied={updated => { setRuntimeRevisionDraft(undefined); navigate(updated, 'runtime-revision'); }}/></>}
+        <SnapshotGraph run={graphRun} snapshotId={graphSnapshotId} draftDefinition={previewRuntimeRevision?.definition} selectedKey={graphSelectedKey} activeNodeRunId={activeStepwiseDraftKey ? undefined : activeExecutionNodeRun?.id} activeNodeKey={activeStepwiseDraftKey} reachableKeys={graphReachableKeys} selectableKeys={graphSelectableKeys} configuredPlanKeys={configuredAutomaticPlanKeys} executionRun={selectedExecutionRecord ?? directExecutionRun} missingPlanKeys={missingAutomaticPlanKeys} showExecutionState={showExecutionState} neutralHelp={neutralGraphHelp} neutralView={automaticNeutralView} onClearSelection={clearSelection} onSelect={selectGraphNode}/>
       </main>
       {hasPanel && <aside className="run-side-panel">
         <div className="run-side-resizer" role="separator" aria-label="调整右侧栏宽度" aria-orientation="vertical" onPointerDown={beginSideResize}/>
