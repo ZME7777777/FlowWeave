@@ -9498,3 +9498,23 @@ remote-release-finish 完成健康／revision 门禁和受管发布收尾，仅�
 Web typecheck、定向 ESLint、git diff --check 与任务状态唯一性／依赖核对通过。
 Alembic 唯一 head 仍为 0158_schedule_china_timezone。本切片仅修改 Web 与协作
 文档，当前及下一可执行切片均为 NONE；未部署。
+
+
+FR-638 发布补记（2026-10-23）：用户授权部署后，以已提交版本
+`acf2b86176dee66f11819870c2e32155a5743a35` 通过 Web 正式预检，使用
+remote-release-prepare 的最小上下文，归档 SHA-256 为
+`c961edad0b2760ca000184ed8ad3a3a2e389026b4d3d5f557571d8d51130e5e5`。
+保留原 Web 精确回滚镜像后，仅构建并重建 Web。新镜像 linux/amd64 与 OCI revision
+核对通过，镜像 ID 为
+`sha256:2ddc7c9d822050113e2fedf3f07e51065e7a173bf253cbf9bab88477239a9c50`。
+其余 37 个运行容器的身份、镜像与启动时间保持一致，API／stream-api 的 health 与
+readiness 通过；未修改远端 Compose／env、Runtime、数据库、卷或工作区。
+
+实际公网入口的新浏览器验证登录页、Agent 深层路由、API 前缀、未认证边界和根
+登录入口，页面脚本错误为零；线上工作台模块 SHA-256 与容器内文件一致。使用线上
+实际静态资源及受控 API／WebSocket 的 7 项回归通过，覆盖详情单屏、40 条运行记录
+在区块内滚动、提示词弹窗、多任务独立展开及既有编辑／路由／会话配置／时区展示。
+未向真实会话发送测试消息，不将其记为真实 Runtime 业务验收。
+
+remote-release-finish 完成健康／revision 门禁与受管发布收尾，仅回收工具判定的
+一份过期成功 Web 上下文，保留最近三份及所有引用版本；镜像删除候选为零。
