@@ -1647,11 +1647,12 @@ function mergeConversationBatch(
   });
 }
 
-function projectLocalMessages(
+function deferredUserBranchIds(
   formalEvents: OpenHandsConversationEvent[],
   projections: LocalMessageProjection[],
-): OpenHandsConversationEvent[] {
+): Set<string> {
   const pendingProjections = projections.filter(item => item.state === 'submitting' && !item.canonicalEventId);
+  const claimedUserEventIds = new Set(projections.flatMap(item => item.canonicalEventId ? [item.canonicalEventId] : []));
   // REST can expose a formal user event and its process descendants before the
   // POST acknowledgement supplies the exact cursor. Keep that whole branch
   // hidden until it can replace its own local bubble; otherwise a descendant
@@ -1659,10 +1660,12 @@ function projectLocalMessages(
   const deferredUserEventIds = new Set(formalEvents.flatMap(event => (
     event.event_type === 'MESSAGE'
       && ['user', 'human'].includes(String(event.payload.source ?? '').toLowerCase())
+      && !claimedUserEventIds.has(event.id)
       && pendingProjections.some(item => !item.formalEventIdsAtSubmission.has(event.id))
       ? [event.id]
       : []
   )));
+  if (!deferredUserEventIds.size) return new Set();
   const formalEventsById = new Map(formalEvents.map(event => [event.id, event]));
   const actionEventsByReference = new Map<string, OpenHandsConversationEvent>();
   for (const event of formalEvents) {
@@ -1676,6 +1679,10 @@ function projectLocalMessages(
     let current: OpenHandsConversationEvent | undefined = event;
     while (current && !visited.has(current.id)) {
       if (deferredUserEventIds.has(current.id)) return true;
+      // A known or acknowledged user event owns its own turn, even when its
+      // native parent belongs to an earlier submission still awaiting its ACK.
+      if (current.event_type === 'MESSAGE'
+        && ['user', 'human'].includes(String(current.payload.source ?? '').toLowerCase())) return false;
       visited.add(current.id);
       const parentId: unknown = current.payload.parent_id;
       current = (typeof parentId === 'string' ? formalEventsById.get(parentId) : undefined)
@@ -1684,7 +1691,15 @@ function projectLocalMessages(
     }
     return false;
   };
-  const projected = formalEvents.filter(event => !belongsToDeferredUserBranch(event));
+  return new Set(formalEvents.filter(belongsToDeferredUserBranch).map(event => event.id));
+}
+
+function projectLocalMessages(
+  formalEvents: OpenHandsConversationEvent[],
+  projections: LocalMessageProjection[],
+): OpenHandsConversationEvent[] {
+  const deferredIds = deferredUserBranchIds(formalEvents, projections);
+  const projected = formalEvents.filter(event => !deferredIds.has(event.id));
 
   for (const local of projections) {
     const formalIndex = !local.canonicalEventId
@@ -7517,23 +7532,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-confirmation', workspace.id, selected.id) });
   }, [host, queryClient, selected, synchronizeConversationEvents, workspace]);
   const appendLiveEvent = useCallback((scope: string, event: OpenHandsConversationEvent) => {
-    const isUserMessage = event.event_type === 'MESSAGE'
-      && ['user', 'human'].includes(String(event.payload.source ?? '').toLowerCase());
-    const pendingProjections = [...localMessageProjections.current.values()].filter(item => (
-      item.scope === scope && item.state === 'submitting' && !item.canonicalEventId
-    ));
+    const projections = [...localMessageProjections.current.values()].filter(item => item.scope === scope);
     const deferredEvents = [...deferredFormalUserEvents.current.values()]
       .filter(item => item.scope === scope)
       .map(item => item.event);
-    const deferredEventIds = new Set(deferredEvents.map(item => item.id));
-    const deferredActionReferences = new Set(deferredEvents.flatMap(item => [
-      item.payload.action_id,
-      item.payload.tool_call_id,
-    ].filter((reference): reference is string => typeof reference === 'string')));
-    const belongsToDeferredBranch = deferredEventIds.has(String(event.payload.parent_id ?? ''))
-      || deferredActionReferences.has(String(event.payload.action_id ?? ''))
-      || deferredActionReferences.has(String(event.payload.tool_call_id ?? ''));
-    if ((isUserMessage && pendingProjections.some(item => !item.formalEventIdsAtSubmission.has(event.id))) || belongsToDeferredBranch) {
+    if (deferredUserBranchIds([...deferredEvents, event], projections).has(event.id)) {
       deferredFormalUserEvents.current.set(event.id, { scope, event });
       return;
     }
@@ -7553,13 +7556,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     });
   }, []);
   const releaseDeferredFormalUserEvents = useCallback((scope: string, force = false) => {
-    const hasPendingSubmission = [...localMessageProjections.current.values()].some(item => (
-      item.scope === scope && item.state === 'submitting' && !item.canonicalEventId
-    ));
-    if (!force && hasPendingSubmission) return;
     const events = [...deferredFormalUserEvents.current.entries()].filter(([, item]) => item.scope === scope);
-    for (const [eventId] of events) deferredFormalUserEvents.current.delete(eventId);
-    for (const [, item] of events) appendLiveEvent(scope, item.event);
+    const projections = [...localMessageProjections.current.values()].filter(item => item.scope === scope);
+    // Each acknowledgement releases its own formal branch. A newer in-flight
+    // send must not hold an earlier, already-identified branch hostage.
+    const deferredIds = force ? new Set<string>() : deferredUserBranchIds(events.map(([, item]) => item.event), projections);
+    const released = events.filter(([eventId]) => !deferredIds.has(eventId));
+    for (const [eventId] of released) deferredFormalUserEvents.current.delete(eventId);
+    for (const [, item] of released) appendLiveEvent(scope, item.event);
   }, [appendLiveEvent]);
   const removeLocalMessageProjection = useCallback((submissionId: string, scope: string) => {
     updateLocalMessageProjections(current => { current.delete(submissionId); });
@@ -8124,6 +8128,16 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       reportOperationError(selected?.id, persistModel.error as Error);
     },
   });
+  const snapshotFormalEventIds = useCallback((scope: string) => new Set([
+    // The REST window may trail the stream. A later send must recognize every
+    // already-known formal identity, including frames awaiting the next paint
+    // and earlier POST acknowledgements whose event has not arrived yet.
+    ...(activeScope === scope ? currentFormalEvents.map(event => event.id) : []),
+    ...pendingLiveEvents.current.filter(item => item.scope === scope).map(item => item.event.id),
+    ...[...localMessageProjections.current.values()].flatMap(item => (
+      item.scope === scope && item.canonicalEventId ? [item.canonicalEventId] : []
+    )),
+  ]), [activeScope, currentFormalEvents]);
   const showOptimisticUserBubble = useCallback((
     message: QueuedMessage,
     idPrefix = 'pending-user',
@@ -8135,6 +8149,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         ...existing,
         scope: message.scope,
         state,
+        formalEventIdsAtSubmission: snapshotFormalEventIds(message.scope),
         event: {
           ...existing.event,
           payload: {
@@ -8169,10 +8184,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       renderKey,
       state,
       event,
-      formalEventIdsAtSubmission: new Set((eventsQuery.data?.events ?? []).map(item => item.id)),
+      formalEventIdsAtSubmission: snapshotFormalEventIds(message.scope),
     }));
     return renderKey;
-  }, [eventsQuery.data?.events, updateLocalMessageProjections]);
+  }, [snapshotFormalEventIds, updateLocalMessageProjections]);
   const send = useMutation({
     mutationFn: (message: BoundQueuedMessage) => api.sendMessage(workspace!.id, message.bindingId, message.content, message.items, message.references.map(item => ({ event_id: item.eventId, content: item.content, source_binding_id: item.sourceBindingId, ...(item.compactStart !== undefined && item.compactEnd !== undefined ? { selection: { compact_start: item.compactStart, compact_end: item.compactEnd } } : {}) })), message.workspaceReferences ?? [], messageAnnotations(message.annotations, message.references), message.id),
     onMutate: message => ({
@@ -8683,7 +8698,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
             workspace_references: request.workspaceReferences,
             collaboration_annotations: request.annotations,
           } },
-          formalEventIdsAtSubmission: new Set((eventsQuery.data?.events ?? []).map(item => item.id)),
+          formalEventIdsAtSubmission: snapshotFormalEventIds(scope),
         });
       });
       setHiddenEventIds(current => new Set([...current, ...branch]));
