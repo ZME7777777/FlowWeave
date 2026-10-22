@@ -8839,3 +8839,19 @@ pytest 公共数据库夹具因本机 Docker 不可用而在初始化失败，�
 Alembic 唯一 head 仍为 `0157_background_task_aggregate_type_length`；没有 CURRENT 或待实施切片。
 使用本次明确授权的受控目标执行 web／platform 正式预检、commit-bound 最小上下文构建、
 迁移、api／stream-api／worker 同版本更新、健康／公网路由验收与受管容量收尾。
+
+### FR-607 分栏与全屏工作区标签三态一致 — DONE
+
+依赖：FR-606 DONE；远端标签交互已集成至 `de4f5b97`。
+
+修正分栏模式将全部工具标签判为 active 的条件，始终仅以当前工具标签 ID 确认选中；
+全屏会话视图仍保持会话标签独立选中。分栏标签默认透明、悬停浅底、选中白底，
+修正旧高优先级样式覆盖，并同步底轨与选中文字／关闭图标颜色。
+
+新增 Chromium 回归在旧源码实测失败，明确收到两个 active 标签；修复后比较三种状态的
+背景、阴影、文字与按钮背景，覆盖分栏→全屏→分栏及标签切换。最终定向 4 passed，
+另覆盖双击全屏、全屏返回会话与关闭标签不恢复隐藏浮卡。Web typecheck、定向 ESLint、
+production build、git diff --check 与唯一 Alembic head
+`0157_background_task_aggregate_type_length` 通过；无 CURRENT，下一可执行切片为 NONE。
+回归使用受控浏览器接口；沿用本会话明确授权，仅从独立提交发布 Web，执行正式预检、
+最小上下文构建、健康／路由验证和受管容量收尾，不更新平台或 Runtime。

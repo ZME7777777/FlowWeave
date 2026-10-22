@@ -319,12 +319,14 @@
 
 .agent-workbench-rail-footer button{padding-block:8px}.agent-workbench-rail-footer b{font-size:12px;line-height:1.2}
 
-/* Split tools reuse the conversation tab bar: a 52px muted rail with compact white tabs. */
+/* Split tools share the fullscreen default, hover and active tab states. */
 .agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-tool-shell{grid-template-rows:52px minmax(0,1fr);overflow:hidden}
-.agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-tool-shell>header{height:52px;box-sizing:border-box;gap:14px;background:#f7faf8;padding:6px 14px}
+.agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-tool-shell>header{height:52px;box-sizing:border-box;gap:14px;background:#f7faf8!important;padding:6px 14px}
 .agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-tabs{height:auto;align-self:center;gap:4px;overflow:visible;padding:0}
-.agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-tabs>div{height:24px;min-width:0;max-width:min(180px,calc(100vw - 290px));border-radius:7px;background:transparent;box-shadow:none;color:#718077}
-.agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-tabs>div:not(.active):hover{background:#f3f7f4;box-shadow:0 1px 2px #1730220a;color:#405248}
+.agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-tabs>div{height:24px;min-width:0;max-width:min(180px,calc(100vw - 290px));border-radius:7px;background:transparent!important;box-shadow:none!important;color:#718077}
+.agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-tabs>div.active{color:#27382f}
+.agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-tabs>div.active .agent-workspace-tab-close{color:inherit!important}
+.agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-tabs>div:not(.active):hover{background:#f3f7f4!important;box-shadow:0 1px 2px #1730220a!important;color:#405248}
 .agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-tabs>div:not(.active):hover .agent-workspace-tab-select{background:transparent!important;color:inherit!important}
 .agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-tab-select{height:24px;padding:0 2px 0 8px!important;color:inherit!important}
 .agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-tab-close{width:18px!important;height:24px!important;background:transparent!important;color:inherit!important}

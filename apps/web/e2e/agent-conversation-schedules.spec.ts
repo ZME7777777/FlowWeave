@@ -477,6 +477,41 @@ test('double-clicking a workspace tab toggles fullscreen tools', async ({ page }
   await expect(page.getByRole('button', { name: '全屏查看工作区工具', exact: true })).toBeVisible();
 });
 
+test('workspace tabs share default hover and active states in split and fullscreen views', async ({ page }) => {
+  await openWorkspace(page);
+  await page.goto('/agent/conversations/scheduled-conversation');
+  await page.getByRole('button', { name: '新建工作区页签', exact: true }).first().click();
+  const tabs = page.getByRole('navigation', { name: '工作区页签' });
+  await tabs.getByRole('button', { name: '新建工作区页签', exact: true }).click();
+  const launchers = tabs.getByRole('button', { name: '新标签页', exact: true });
+  const appearance = (index: number) => launchers.nth(index).evaluate(button => {
+    const tab = getComputedStyle(button.parentElement!);
+    return { background: tab.backgroundColor, shadow: tab.boxShadow, color: tab.color, buttonBackground: getComputedStyle(button).backgroundColor };
+  });
+  let reference: Record<string, Awaited<ReturnType<typeof appearance>>> | undefined;
+  for (const mode of ['split', 'fullscreen', 'split']) {
+    if (mode === 'fullscreen') await page.getByRole('button', { name: '全屏查看工作区工具', exact: true }).click();
+    else if (reference) await page.getByRole('button', { name: '退出全屏', exact: true }).click();
+    await expect(tabs.locator(':scope > div.active')).toHaveCount(1);
+    await page.mouse.move(20, 300);
+    const idle = await appearance(0);
+    const active = await appearance(1);
+    expect(idle.background).toBe('rgba(0, 0, 0, 0)');
+    expect(active.background).toBe('rgb(255, 255, 255)');
+    await launchers.nth(0).hover();
+    const hover = await appearance(0);
+    expect(hover.background).toBe('rgb(243, 247, 244)');
+    expect(hover.buttonBackground).toBe('rgba(0, 0, 0, 0)');
+    const states = { idle, hover, active };
+    if (reference) expect(states).toEqual(reference);
+    else reference = states;
+    await launchers.nth(0).click();
+    await expect(launchers.nth(0).locator('..')).toHaveClass('active');
+    await expect(launchers.nth(1).locator('..')).not.toHaveClass('active');
+    await launchers.nth(1).click();
+  }
+});
+
 test('fullscreen conversation tabs cap long titles and shrink with available space', async ({ page }) => {
   const title = '这是一个超过十五个汉字容量的会话标题用于验证省略显示';
   await openWorkspace(page, [], false, title);
