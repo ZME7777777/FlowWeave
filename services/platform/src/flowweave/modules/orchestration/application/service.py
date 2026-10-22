@@ -818,6 +818,10 @@ def _register_artifact(
         {"artifact_id": item.id, "field_key": item.field_key, "version_no": version},
         attempt_id=attempt_id,
     )
+    if source == "RUNTIME" and attempt_id is not None:
+        from flowweave.modules.cases.public import project_flow_run_observations
+
+        project_flow_run_observations(db, run_id)
     return item
 
 

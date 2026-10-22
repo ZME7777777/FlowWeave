@@ -9,6 +9,7 @@ from flowweave.shared.http import Db, IdempotencyKey, command_key, run_sync
 from flowweave.shared.schemas import (
     CaseControlConversationWrite,
     CaseCreateWrite,
+    CaseFlowRunWrite,
     CaseStageStateWrite,
 )
 
@@ -37,6 +38,18 @@ async def set_case_stage_state(
     return await run_sync(
         db, lambda session: service.set_case_stage_state(session, case_id, stage_id, payload)
     )
+
+
+@router.post("/cases/{case_id}/flow-runs")
+async def attach_flow_run(case_id: str, payload: CaseFlowRunWrite, db: Db) -> dict[str, Any]:
+    return await run_sync(
+        db, lambda session: service.attach_case_flow_run(session, case_id, payload)
+    )
+
+
+@router.post("/cases/{case_id}/observation-projection")
+async def project_observations(case_id: str, db: Db) -> dict[str, Any]:
+    return await run_sync(db, lambda session: service.project_case_observations(session, case_id))
 
 
 @router.post("/cases/{case_id}/control-conversation", status_code=201)

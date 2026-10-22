@@ -7,12 +7,19 @@ from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions.public import conversations
 from flowweave.modules.agent_workspaces import public as agent_workspaces
-from flowweave.modules.cases.infrastructure.models import Case, CaseAgentTask, CaseStage
+from flowweave.modules.cases.infrastructure.models import (
+    Case,
+    CaseAgentTask,
+    CaseFlowRun,
+    CaseStage,
+)
+from flowweave.modules.runs.infrastructure.models import ArtifactVersion, FlowRun, NodeAttempt
 from flowweave.shared.application.transactions import finish
 from flowweave.shared.errors import conflict, illegal, not_found
 from flowweave.shared.schemas import (
     CaseControlConversationWrite,
     CaseCreateWrite,
+    CaseFlowRunWrite,
     CaseStageStateWrite,
 )
 
@@ -62,6 +69,16 @@ def _task_dict(item: CaseAgentTask) -> dict[str, Any]:
     }
 
 
+def _case_flow_runs(db: Session, case_id: str) -> list[str]:
+    return list(
+        db.scalars(
+            select(CaseFlowRun.flow_run_id)
+            .where(CaseFlowRun.case_id == case_id)
+            .order_by(CaseFlowRun.created_at)
+        )
+    )
+
+
 def _case_dict(db: Session, item: Case) -> dict[str, Any]:
     stages = db.scalars(
         select(CaseStage).where(CaseStage.case_id == item.id).order_by(CaseStage.position)
@@ -80,6 +97,7 @@ def _case_dict(db: Session, item: Case) -> dict[str, Any]:
         "control_work_directory_id": item.control_work_directory_id,
         "row_version": item.row_version,
         "stages": [_stage_dict(stage) for stage in stages],
+        "flow_run_ids": _case_flow_runs(db, item.id),
         "tasks": [_task_dict(task) for task in tasks],
         "created_at": item.created_at.isoformat(),
         "updated_at": item.updated_at.isoformat(),
@@ -141,6 +159,96 @@ def set_case_stage_state(
     item.row_version += 1
     finish(db)
     return _case_dict(db, item)
+
+
+def project_case_observations(db: Session, case_id: str, *, commit: bool = True) -> dict[str, Any]:
+    """Project linked Run observation outputs into idempotent Case tasks."""
+
+    item = _case(db, case_id)
+    flow_run_ids = _case_flow_runs(db, item.id)
+    if not flow_run_ids:
+        return _case_dict(db, item)
+    artifacts = db.execute(
+        select(ArtifactVersion, NodeAttempt)
+        .join(NodeAttempt, NodeAttempt.id == ArtifactVersion.producer_attempt_id)
+        .where(
+            ArtifactVersion.flow_run_id.in_(flow_run_ids),
+            ArtifactVersion.source == "RUNTIME",
+        )
+        .order_by(ArtifactVersion.created_at)
+    ).all()
+    for artifact, attempt in artifacts:
+        target = (attempt.output_targets_json or {}).get(artifact.field_key)
+        if not isinstance(target, dict):
+            continue
+        scope = str(target.get("output_scope") or "FLOW")
+        if scope not in {"OBSERVATION", "CASE"}:
+            continue
+        task_key = f"observation:{artifact.id}"
+        if (
+            db.scalar(
+                select(CaseAgentTask.id).where(
+                    CaseAgentTask.case_id == item.id,
+                    CaseAgentTask.task_key == task_key,
+                )
+            )
+            is not None
+        ):
+            continue
+        db.add(
+            CaseAgentTask(
+                case_id=item.id,
+                task_key=task_key,
+                task_type="OBSERVE",
+                flow_run_id=artifact.flow_run_id,
+                node_attempt_id=attempt.id,
+                input_context_json={
+                    "artifact_id": artifact.id,
+                    "field_key": artifact.field_key,
+                    "display_name": str(target.get("display_name") or artifact.field_key),
+                    "output_scope": scope,
+                    "artifact_type": artifact.artifact_type,
+                    "mime_type": artifact.mime_type,
+                    "content_hash": artifact.content_hash,
+                    "byte_size": artifact.byte_size,
+                    "uri": artifact.uri,
+                    "storage_key": artifact.storage_key,
+                    "metadata": artifact.metadata_json or {},
+                },
+            )
+        )
+    if commit:
+        finish(db)
+    else:
+        db.flush()
+    return _case_dict(db, item)
+
+
+def project_flow_run_observations(db: Session, flow_run_id: str) -> None:
+    case_ids = db.scalars(
+        select(CaseFlowRun.case_id).where(CaseFlowRun.flow_run_id == flow_run_id)
+    ).all()
+    for case_id in case_ids:
+        project_case_observations(db, case_id, commit=False)
+
+
+def attach_case_flow_run(db: Session, case_id: str, payload: CaseFlowRunWrite) -> dict[str, Any]:
+    item = _case(db, case_id)
+    run = db.get(FlowRun, payload.flow_run_id)
+    if run is None or run.parent_flow_run_id is not None:
+        raise not_found("flow_run", payload.flow_run_id)
+    if item.state in {"COMPLETED", "ARCHIVED"}:
+        raise illegal("terminal case cannot attach flow runs", state=item.state)
+    existing = db.scalar(
+        select(CaseFlowRun).where(
+            CaseFlowRun.case_id == item.id,
+            CaseFlowRun.flow_run_id == run.id,
+        )
+    )
+    if existing is None:
+        db.add(CaseFlowRun(case_id=item.id, flow_run_id=run.id))
+        db.flush()
+    return project_case_observations(db, item.id)
 
 
 def create_case_control_conversation(

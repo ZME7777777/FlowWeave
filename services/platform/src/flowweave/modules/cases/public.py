@@ -1,17 +1,23 @@
 """Stable public facade for Case control-plane services."""
 
 from flowweave.modules.cases.application.service import (
+    attach_case_flow_run,
     create_case,
     create_case_control_conversation,
     get_case,
     list_cases,
+    project_case_observations,
+    project_flow_run_observations,
     set_case_stage_state,
 )
 
 __all__ = (
+    "attach_case_flow_run",
     "create_case",
     "create_case_control_conversation",
     "get_case",
     "list_cases",
+    "project_case_observations",
+    "project_flow_run_observations",
     "set_case_stage_state",
 )

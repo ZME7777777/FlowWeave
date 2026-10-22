@@ -24,7 +24,12 @@ from flowweave.modules.agent_workspaces.infrastructure.models import (
     AgentWorkspaceRuntimeGeneration,
     AgentWorkspaceRuntimeSecretReference,
 )
-from flowweave.modules.cases.infrastructure.models import Case, CaseAgentTask, CaseStage
+from flowweave.modules.cases.infrastructure.models import (
+    Case,
+    CaseAgentTask,
+    CaseFlowRun,
+    CaseStage,
+)
 from flowweave.modules.catalog.infrastructure.models import (
     CapabilityBlob,
     CapabilityCollection,
@@ -140,6 +145,7 @@ __all__ = (
     "CapabilityBlob",
     "Case",
     "CaseAgentTask",
+    "CaseFlowRun",
     "CaseStage",
     "CapabilityCollection",
     "CapabilityCollectionItem",

@@ -846,6 +846,10 @@ class CaseControlConversationWrite(ApiModel):
     capability_version_ids: list[str] = Field(default_factory=list, max_length=100)
 
 
+class CaseFlowRunWrite(ApiModel):
+    flow_run_id: str = Field(min_length=1, max_length=36)
+
+
 class StepwiseNodeDraftWrite(NodeRunStart):
     """Editable node configuration for one stepwise record.
 

@@ -30,6 +30,16 @@ class Case(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
 
+class CaseFlowRun(Base):
+    __tablename__ = "case_flow_runs"
+    __table_args__ = (UniqueConstraint("case_id", "flow_run_id", name="uq_case_flow_run"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    case_id: Mapped[str] = mapped_column(String(36), index=True)
+    flow_run_id: Mapped[str] = mapped_column(String(36), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
 class CaseStage(Base):
     __tablename__ = "case_stages"
     __table_args__ = (
@@ -81,4 +91,4 @@ class CaseAgentTask(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
 
-__all__ = ("Case", "CaseAgentTask", "CaseStage")
+__all__ = ("Case", "CaseAgentTask", "CaseFlowRun", "CaseStage")

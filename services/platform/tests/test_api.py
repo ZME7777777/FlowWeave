@@ -123,6 +123,31 @@ def test_case_control_plane_creates_stages_and_changes_stage_state(client):
     assert stale.json()["code"] == "VERSION_CONFLICT"
 
 
+def test_case_attaches_top_level_flow_run_and_projects_idempotently(client, skill_capability):
+    asset = create_asset(client, skill_capability, "事项观察节点")
+    flow = create_flow(client, asset["id"])
+    run = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    )
+    assert run.status_code == 201, run.text
+    case = client.post("/api/v1/cases", json={"name": "事项观察"})
+    assert case.status_code == 201, case.text
+
+    attached = client.post(
+        f"/api/v1/cases/{case.json()['id']}/flow-runs",
+        json={"flow_run_id": run.json()["id"]},
+    )
+    assert attached.status_code == 200, attached.text
+    assert attached.json()["flow_run_ids"] == [run.json()["id"]]
+    assert attached.json()["tasks"] == []
+
+    replayed = client.post(f"/api/v1/cases/{case.json()['id']}/observation-projection")
+    assert replayed.status_code == 200, replayed.text
+    assert replayed.json()["flow_run_ids"] == [run.json()["id"]]
+    assert replayed.json()["tasks"] == []
+
+
 def test_node_asset_can_be_saved_without_skill(client):
     response = client.post("/api/v1/node-assets", json=asset_payload("无 Skill 节点"))
     assert response.status_code == 201, response.text
