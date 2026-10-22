@@ -82,6 +82,8 @@ async function openWorkspace(page: Page, events: unknown[] = [], includeSecondCo
   return writes;
 }
 
+// Keep native scrollbar thumbs visible so pointer dragging exercises the scrollbar.
+test.use({launchOptions:{ignoreDefaultArgs:['--hide-scrollbars']}});
 test('conversation list scrollbar stays thin and borderless while hovered and dragged', async ({ page }) => {
   await page.setViewportSize({width:1440,height:800});
   await openWorkspace(page);
@@ -105,15 +107,29 @@ test('conversation list scrollbar stays thin and borderless while hovered and dr
   expect(before.border).toBe('0px');
   expect(before.shadow).toBe('none');
   const box=(await list.boundingBox())!;
-  await page.mouse.move(box.x+box.width-5,box.y+20);
+  for(const inset of [1,3,5]){
+    expect(await page.evaluate(({x,y})=>Boolean(document.elementFromPoint(x,y)?.closest('.agent-conversation-rail-resizer')),{x:box.x+box.width-inset,y:box.y+20})).toBe(false);
+  }
+  const rail=page.locator('.agent-workbench-rail');
+  const railWidth=await rail.evaluate(element=>element.getBoundingClientRect().width);
+  await page.mouse.move(box.x+box.width-2,box.y+20);
   expect(await appearance()).toEqual(before);
   await page.mouse.down();
-  await page.mouse.move(box.x+box.width-5,box.y+80,{steps:5});
+  await page.mouse.move(box.x+box.width+4,box.y+80,{steps:5});
   expect(await appearance()).toEqual(before);
   await page.mouse.up();
+  await expect.poll(()=>rail.evaluate(element=>element.getBoundingClientRect().width)).toBe(railWidth);
+  await expect.poll(()=>list.evaluate(element=>element.scrollTop)).toBeGreaterThan(0);
   await list.hover({position:{x:40,y:100}});
   await page.mouse.wheel(0,350);
   await expect.poll(()=>list.evaluate(element=>element.scrollTop)).toBeGreaterThan(0);
+  const handle=page.getByRole('separator',{name:'调整会话列表宽度'});
+  const handleBox=(await handle.boundingBox())!;
+  await page.mouse.move(handleBox.x+handleBox.width/2,handleBox.y+100);
+  await page.mouse.down();
+  await page.mouse.move(handleBox.x+handleBox.width/2+48,handleBox.y+100,{steps:5});
+  await page.mouse.up();
+  await expect.poll(()=>rail.evaluate(element=>element.getBoundingClientRect().width)).toBeGreaterThan(railWidth+30);
 });
 
 test('workspace directory search filters nested paths and restores the tree', async ({ page }) => {

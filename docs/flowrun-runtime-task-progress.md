@@ -8905,3 +8905,17 @@ CURRENT 唯一性核对通过；下一切片为 NONE。沿用会话部署授权�
 既有新标签浏览器／双击全屏／三态定向 E2E 共 3 passed，git diff --check 与 CURRENT 唯一性通过。
 唯一 Alembic head 仍为 `0157_background_task_aggregate_type_length`；下一切片为 NONE。
 沿用会话部署授权，仅发布 Web 并完成正式预检、健康／路由验收与受管收尾。
+
+### FR-612 会话滚动条与侧栏调宽命中隔离 — DONE
+
+依赖：FR-611 DONE。修正 8px 侧栏调宽热区向列表内部覆盖 4px 的布局，将整个热区移至
+侧栏外侧，并允许其在宿主边界外命中；列表自身继续独立裁剪和滚动。调宽悬停线位于分栏
+边界，滚动条区域不再触发调宽光标或高亮。
+
+扩展 FR-610 回归：滚动条内侧 1／3／5px 均不命中调宽热区；拖动真实滑块并带 6px 横向
+抖动时，scrollTop 增加且侧栏宽度不变；在明确的边界热区拖动仍可调宽。旧源码实测命中
+重叠而失败。原无头浏览器默认隐藏原生滚动条，现移除该隐藏参数后执行真实滑块拖动，
+不使用脚本写入 scrollTop 代替拖动。最终 Chromium 3 passed，另覆盖多视口工具边界和全屏。
+Web typecheck、定向 ESLint、production build、git diff --check、唯一 Alembic head
+`0157_background_task_aggregate_type_length` 与 CURRENT 唯一性通过；下一切片为 NONE。
+沿用会话部署授权，仅发布 Web 并执行正式预检、健康／路由验收与受管收尾。
