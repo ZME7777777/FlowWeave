@@ -404,6 +404,8 @@
   .agent-workbench-app-shell .agent-workspace-drawer.fullscreen,.agent-workbench-app-shell .agent-workbench-main.fullscreen-conversation-active{grid-column:2 / -1}
 }
 
+/* Keep close controls discoverable on active, hovered and keyboard-focused tabs. */
+.agent-workspace-tabs>div:not(.active):not(:hover)>.agent-workspace-tab-close:not(:focus-visible){opacity:0;pointer-events:none}
 /* Keep the rail resize target outside the list's scrollbar gutter and unclipped. */
 .agent-workbench-shell .agent-workbench-rail{overflow:visible}
 /* Keep the conversation list scrollbar thin without native hover expansion. */

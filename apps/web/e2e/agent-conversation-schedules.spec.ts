@@ -548,7 +548,15 @@ test('workspace tabs share default hover and active states in split and fullscre
     const active = await appearance(1);
     expect(idle.background).toBe('rgba(0, 0, 0, 0)');
     expect(active.background).toBe('rgb(255, 255, 255)');
+    const inactiveClose=launchers.nth(0).locator('..').locator('.agent-workspace-tab-close');
+    const activeClose=launchers.nth(1).locator('..').locator('.agent-workspace-tab-close');
+    await expect(inactiveClose).toHaveCSS('opacity','0');
+    await expect(inactiveClose).toHaveCSS('pointer-events','none');
+    await expect(activeClose).toHaveCSS('opacity','1');
+    const inactiveWidth=await launchers.nth(0).locator('..').evaluate(element=>element.getBoundingClientRect().width);
     await launchers.nth(0).hover();
+    await expect(inactiveClose).toHaveCSS('opacity','1');
+    expect(await launchers.nth(0).locator('..').evaluate(element=>element.getBoundingClientRect().width)).toBe(inactiveWidth);
     const hover = await appearance(0);
     expect(hover.background).toBe('rgb(243, 247, 244)');
     expect(hover.buttonBackground).toBe('rgba(0, 0, 0, 0)');

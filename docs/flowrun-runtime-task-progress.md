@@ -8919,3 +8919,12 @@ CURRENT 唯一性核对通过；下一切片为 NONE。沿用会话部署授权�
 Web typecheck、定向 ESLint、production build、git diff --check、唯一 Alembic head
 `0157_background_task_aggregate_type_length` 与 CURRENT 唯一性通过；下一切片为 NONE。
 沿用会话部署授权，仅发布 Web 并执行正式预检、健康／路由验收与受管收尾。
+
+### FR-613 工具标签关闭按钮按状态显示 — DONE
+
+依赖：FR-612 DONE。工具标签未选中且未悬停时隐藏关闭按钮并禁止鼠标命中，选中或悬停时
+显示；键盘聚焦关闭按钮仍显示以保留可访问操作。隐藏时保留原占位，避免标题及标签宽度跳变。
+分栏与全屏复用同一规则。扩展既有三态回归核对隐藏／显示、隐藏不可命中及悬停前后宽度不变，
+连同关闭和双击全屏回归共 3 passed。Web typecheck、定向 ESLint、production build、
+git diff --check、唯一 Alembic head `0157_background_task_aggregate_type_length` 与
+CURRENT 唯一性通过；下一切片为 NONE。沿用会话授权仅发布 Web 并完成受管验收与收尾。
