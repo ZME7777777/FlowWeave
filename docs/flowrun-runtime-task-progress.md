@@ -8870,3 +8870,16 @@ production build、git diff --check 与唯一 Alembic head
 及唯一 Alembic head `0157_background_task_aggregate_type_length` 通过；无 CURRENT，
 下一可执行切片为 NONE。沿用本会话部署授权，仅更新 Web 并执行正式预检、受管最小
 上下文构建、健康／路由验收与发布收尾；不更新平台或 Runtime。
+
+### FR-609 标签栏新增按钮固定正方形 — DONE
+
+依赖：FR-608 DONE。
+
+标签栏“＋”新增按钮独立限定为 28×28，清除普通标签按钮最小 88px 宽与 padding 的继承影响，
+禁止 flex 拉伸，并让图标双向居中；分栏模式同步覆盖旧的 24px 宽度，不改变标签内容宽度。
+
+扩展既有全屏回归，核对分栏与全屏新增按钮的宽高相等、紧凑尺寸与图标居中。旧源码实测
+88×28 失败，修复后定向 4 passed，覆盖标签三态、双击全屏及关闭行为。Web typecheck、
+定向 ESLint、production build、git diff --check、唯一 Alembic head
+`0157_background_task_aggregate_type_length` 与 CURRENT 唯一性核对通过；下一切片为 NONE。
+沿用会话部署授权，仅发布 Web，完成正式预检、最小上下文构建、健康／路由验收及受管收尾。

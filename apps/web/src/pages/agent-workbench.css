@@ -404,6 +404,9 @@
   .agent-workbench-app-shell .agent-workspace-drawer.fullscreen,.agent-workbench-app-shell .agent-workbench-main.fullscreen-conversation-active{grid-column:2 / -1}
 }
 
+.agent-workspace-tabs>.agent-workspace-new-tab{display:grid;box-sizing:border-box;width:28px;height:28px;min-width:28px;max-width:28px;flex:0 0 28px;place-items:center;padding:0}
+.agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-tabs>.agent-workspace-new-tab{width:28px!important;flex:0 0 28px}
+
 .agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-tool-actions{flex:0 0 auto;gap:2px;background:transparent!important;padding:0;box-shadow:none}
 .agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-tool-actions>button{display:grid;width:28px!important;height:28px!important;place-items:center;border:0!important;border-radius:6px!important;background:#edf3f0!important;padding:0;color:#63736a!important;box-shadow:none!important}
 .agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-tool-actions>button:hover{background:#d9e6de!important;color:#245f3c!important}

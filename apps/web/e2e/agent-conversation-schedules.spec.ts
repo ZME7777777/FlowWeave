@@ -542,11 +542,25 @@ test('fullscreen tools occupy the entire workbench region and restore the conver
     return {width,height};
   }));
   const splitControlSizes=await controlSizes();
+  const newTab=page.getByRole('navigation',{name:'工作区页签'}).getByRole('button',{name:'新建工作区页签',exact:true});
+  const expectSquareNewTab=async () => {
+    const geometry=await newTab.evaluate(button => {
+      const rect=button.getBoundingClientRect();
+      const icon=button.querySelector('svg')!.getBoundingClientRect();
+      return {width:rect.width,height:rect.height,offsetX:icon.x+icon.width/2-rect.x-rect.width/2,offsetY:icon.y+icon.height/2-rect.y-rect.height/2};
+    });
+    expect(geometry.width).toBe(geometry.height);
+    expect(geometry.width).toBeLessThanOrEqual(32);
+    expect(Math.abs(geometry.offsetX)).toBeLessThanOrEqual(1);
+    expect(Math.abs(geometry.offsetY)).toBeLessThanOrEqual(1);
+  };
+  await expectSquareNewTab();
   await controls.screenshot({path:test.info().outputPath('split-controls.png')});
   await page.getByRole('button',{name:'全屏查看工作区工具',exact:true}).click();
   const main=page.locator('.agent-workbench-main');
   await expect(main).toBeHidden();
   expect(splitControlSizes).toEqual(await controlSizes());
+  await expectSquareNewTab();
   await controls.screenshot({path:test.info().outputPath('fullscreen-controls.png')});
   await expect(controls.getByRole('button')).toHaveCount(3);
   await expect(controls.getByRole('button',{name:/^(显示|隐藏)悬浮信息卡$/})).toBeVisible();
