@@ -9308,3 +9308,31 @@ Python 子进程代替 Docker exec（未连接生产或 Docker daemon）；旧�
 网络及生产负载，不作为线上耗时承诺。当前及下一可执行切片均为 NONE；未部署，
 未更改 Runtime 镜像、OpenHands、数据库或服务器配置。发布涉及 Provider，须按
 runtime 范围预检并核对活跃会话门禁，不能作为普通 platform 发布。
+
+
+FR-631 发布补记（2026-10-22）：用户明确授权部署后，以已提交版本
+`b6685822c83c501910c00fa4f24c72bbc3bfcdb3` 通过 runtime／web 正式预检，
+分别准备受管 platform／web 最小上下文，其归档 SHA-256 为
+`729fb345ae6b4aff29c806a9efefb6a815ecc2ab2c78f0f19601c8e4948da1ae`、
+`47d967344033c24a1cb426eec9464cec16206754c1123e80e4ed68a5e0908ee3`。
+保留原平台、Provider 与 Web 镜像的精确回滚标签；构建后及迁移后再次通过原生
+Conversation 分页目录核对两个受管 Runtime，运行中会话数均为零，再执行服务切换。
+正式 migration 退出码为 0，同步更新 runtime-provider／api／stream-api／worker／web，
+五项服务运行同一提交的 linux/amd64 镜像并通过健康／revision 核验。两个既有 Agent
+Runtime 的容器、镜像及原生 Conversation ID 集合保持一致，原生 ready 通过。
+未构建或替换 Agent Runtime 镜像，未修改服务器 Compose／env、工作区或持久数据。
+
+真实 Chromium 通过正式代理加载原问题容器的 5186 页面，登录页可见、opaque origin
+保持、34 个资源响应具有 CORS 头，脚本异常为零。全新公网浏览器的 Agent 深层路由
+显示登录页，API 请求保留部署前缀；公网健康／readiness、根登录入口及带前缀的未认证
+API 边界通过。另读取线上工作台静态模块，核对新的加载握手及资源加载提示已发布；
+覆盖层行为沿用该提交的八项定向浏览器回归，不将手工 iframe 探针记为完整工作台操作。
+
+停止并行冒烟后，同一实际容器页面独立测量三次：首次根内容 945／894／962ms，
+登录页 DOM 1051／1006／1104ms，可见等待 1327／1309／1310ms；初始 HTML 请求
+（含 CLI 开销）250／127／136ms。合并初始请求与可见等待约 1.44–1.58 秒；此前同一
+代理页面登录 DOM 约 2.9–3.3 秒，本次约 1 秒。这是本机浏览器访问真实远端服务的
+小样本，不代表所有网络或负载。该临时 Vite 前端自身的认证 GET 仍返回 500，未记为
+登录成功。platform／web 的 remote-release-finish 完成，仅回收五份工具判定的过期
+成功上下文，保留最近三份和引用版本，镜像删除候选为零。唯一 Alembic head 仍为
+0157_background_task_aggregate_type_length，当前及下一可执行切片均为 NONE。
