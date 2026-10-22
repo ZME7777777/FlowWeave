@@ -146,3 +146,4 @@ git -C /Users/zhengmengen/WorkSpace/openhands/software-agent-sdk-total-tokens-1.
 - Case 控制会话参照定时 Agent 会话：复用用户级 Agent Workspace Runtime/容器，但为每个 Case 在当前用户项目根创建 `.flowweave/cases/<case_id>` 工作目录，并将 OpenHands 原生会话 Binding 与该目录版本冻结关联。不得使用平台私有对话执行器。
 - `case_flow_runs` 和 `case_decision_proposals` 同样属于用户隔离控制面，必须维护 RLS 与 `_USER_ISOLATED_TABLES`。Case 决策按当前产品要求自主执行，但只可走白名单动作与既有编排服务：逐步运行可继续、停止、复制节点重跑或为未启动部分应用 Revision；连续运行只能复制为独立自动运行草稿，绝不能修改已启动自动运行。所有决策必须引用已关联 FlowRun，并持久记录输入、执行结果和失败码；不得把 Case Agent 的文本输出当作可执行私有控制协议。
 - Case 阶段路线以 `CaseStage.flow_run_id` 表示：每个阶段最多绑定一个顶层 FlowRun，并显式标记 `STEPWISE` 或 `CONTINUOUS`；FlowRun 内可有多个 NodeRun。逐步节点重跑必须创建新的 NodeRun/Attempt 和新的原生会话 Binding，但重用同一 FlowRun 节点工作目录；旧 Binding、会话事件、工作区内容和执行记录必须保留，绝不可覆盖或删除。
+- 逐步运行的前驱节点重跑窗口只在其所有直接后继仍是未物化的待启动草稿时开放；后继一旦已有 NodeRun 即不可回退。工作台通过双击符合条件的已接受前驱节点重新进入编辑，保存草稿后左侧记录按钮必须显示“重跑”；实际重跑继续创建新的 NodeRun/Attempt/Binding，保留原会话和工作区历史。

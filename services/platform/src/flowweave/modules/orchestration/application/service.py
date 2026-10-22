@@ -4761,6 +4761,7 @@ def _stepwise_draft_projection(draft: dict[str, Any]) -> dict[str, Any]:
     bindings = _stepwise_draft_bindings(draft)
     return {
         "row_version": int(draft.get("row_version") or 1),
+        "rerun_source_node_run_id": draft.get("rerun_source_node_run_id"),
         "startup_mode": str(draft.get("startup_mode") or "PROMPT"),
         "startup_prompt": draft.get("startup_prompt"),
         "agent_preset": draft.get("agent_preset"),
@@ -4996,6 +4997,8 @@ def save_stepwise_node_draft(
     )
     drafts[instance_key] = {
         "row_version": existing_version + 1,
+        "rerun_source_node_run_id": (existing or {}).get("rerun_source_node_run_id"),
+        "rerun_workspace_ref": (existing or {}).get("rerun_workspace_ref"),
         "startup_mode": "PROMPT",
         "startup_prompt": payload.startup_prompt,
         "agent_preset": preset,
@@ -5028,6 +5031,84 @@ def save_stepwise_node_draft(
     )
     finish(db)
     return _stepwise_draft_projection(drafts[instance_key])
+
+
+def reactivate_stepwise_node_for_rerun(
+    db: Session,
+    run_id: str,
+    instance_key: str,
+    source_node_run_id: str,
+) -> dict[str, Any]:
+    """Reopen one accepted predecessor while its direct successor is still unstarted."""
+
+    run = _locked_run(db, run_id)
+    if run.run_mode != "MANUAL" or run.parent_flow_run_id is None:
+        raise illegal("only a stepwise record can rerun a node", state=run.state)
+    if run.state in {FlowRunState.COMPLETED, FlowRunState.CANCELLED}:
+        raise illegal("terminal stepwise record cannot rerun a node", state=run.state)
+    source = _node_run(db, source_node_run_id)
+    if source.flow_run_id != run.id or source.flow_node_snapshot_key != instance_key:
+        raise not_found("node_run", source_node_run_id)
+    if source.state != NodeRunState.ACCEPTED or source.accepted_attempt_id is None:
+        raise illegal("only an accepted node can be rerun", state=source.state)
+    snapshot = _active_snapshot(db, run)
+    successors = _successor_keys(snapshot, instance_key)
+    if not successors:
+        raise conflict("final node cannot be rerun", flow_node_key=instance_key)
+    drafts = _stepwise_node_drafts(run)
+    unstarted_successors = [
+        key
+        for key in successors
+        if key in drafts
+        and db.scalar(
+            select(NodeRun.id).where(
+                NodeRun.flow_run_id == run.id,
+                NodeRun.flow_node_snapshot_key == key,
+            )
+        )
+        is None
+    ]
+    if len(unstarted_successors) != len(successors):
+        raise conflict(
+            "node can rerun only before its next node starts", flow_node_key=instance_key
+        )
+    attempt = _attempt(db, source.accepted_attempt_id)
+    draft = {
+        "row_version": 1,
+        "startup_mode": "PROMPT",
+        "startup_prompt": attempt.startup_prompt,
+        "agent_preset": copy.deepcopy(attempt.agent_preset_json),
+        "gates": copy.deepcopy(attempt.gate_policies_json or []),
+        "context_ids": copy.deepcopy(attempt.context_ids_json or []),
+        "input_bindings": {
+            binding.input_field_key: {
+                "artifact_version_id": binding.artifact_version_id,
+                "binding_source": binding.binding_source,
+            }
+            for binding in _bindings(db, attempt.id)
+        },
+        "rerun_source_node_run_id": source.id,
+        "rerun_workspace_ref": attempt.workspace_ref,
+    }
+    for successor_key in successors:
+        drafts.pop(successor_key, None)
+    drafts[instance_key] = draft
+    _save_stepwise_node_drafts(run, drafts)
+    run.row_version += 1
+    _event(
+        db,
+        run.id,
+        "STEPWISE_NODE_RERUN_EDITABLE",
+        {
+            "flow_node_key": instance_key,
+            "source_node_run_id": source.id,
+            "unstarted_successor_keys": unstarted_successors,
+        },
+        source.id,
+        attempt.id,
+    )
+    finish(db)
+    return _stepwise_draft_projection(draft)
 
 
 def start_stepwise_node_draft(
@@ -5095,6 +5176,9 @@ def start_stepwise_node_draft(
         agent_preset=copy.deepcopy(cast(dict[str, Any], draft["agent_preset"])),
         startup_prompt=str(draft["startup_prompt"]),
         awaiting_start_confirmation=True,
+        reuse_workspace_ref=(
+            str(draft["rerun_workspace_ref"]) if draft.get("rerun_workspace_ref") else None
+        ),
     )
     for binding in _bindings(db, attempt.id):
         binding.binding_source = bindings[binding.input_field_key]["binding_source"]
@@ -5103,7 +5187,11 @@ def start_stepwise_node_draft(
         run.id,
         "START_STEPWISE_NODE_DRAFT",
         idempotency_key,
-        {"flow_node_key": instance_key, "draft_row_version": draft_version},
+        {
+            "flow_node_key": instance_key,
+            "draft_row_version": draft_version,
+            "rerun_source_node_run_id": draft.get("rerun_source_node_run_id"),
+        },
         node_run.id,
         attempt.id,
     )
@@ -5111,7 +5199,11 @@ def start_stepwise_node_draft(
         db,
         run.id,
         "STEPWISE_NODE_DRAFT_STARTED",
-        {"flow_node_key": instance_key, "draft_row_version": draft_version},
+        {
+            "flow_node_key": instance_key,
+            "draft_row_version": draft_version,
+            "rerun_source_node_run_id": draft.get("rerun_source_node_run_id"),
+        },
         node_run.id,
         attempt.id,
     )

@@ -186,6 +186,32 @@ def test_node_asset_can_be_saved_without_skill(client):
     assert "capabilities" not in response.json()
 
 
+def test_stepwise_rerun_edit_rejects_final_node(client, skill_capability):
+    asset = create_asset(client, skill_capability, "重跑边界节点")
+    flow = create_flow(client, asset["id"])
+    parent = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    )
+    assert parent.status_code == 201, parent.text
+    record = client.post(
+        f"/api/v1/flow-runs/{parent.json()['id']}/stepwise-runs",
+        json={"start_node_key": flow["nodes"][0]["instance_key"]},
+    )
+    assert record.status_code == 201, record.text
+    activated = client.post(
+        f"/api/v1/flow-runs/{record.json()['id']}/nodes/{flow['nodes'][0]['instance_key']}/runs",
+        json={"startup_mode": "CHAT"},
+    )
+    assert activated.status_code == 201, activated.text
+
+    rejected = client.post(
+        f"/api/v1/flow-runs/{record.json()['id']}/stepwise-node-drafts/{flow['nodes'][0]['instance_key']}/rerun-edit",
+        json={"node_run_id": activated.json()["id"]},
+    )
+    assert rejected.status_code == 409, rejected.text
+
+
 def test_case_autonomously_stops_linked_flow_run(client, skill_capability):
     asset = create_asset(client, skill_capability, "事项自动停止节点")
     flow = create_flow(client, asset["id"])

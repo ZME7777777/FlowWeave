@@ -723,6 +723,8 @@ export const api = {
     request<StepwiseNodeDraft>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-node-drafts/${encodeURIComponent(nodeKey)}`, json('PUT', body)),
   startStepwiseNodeDraft: (runId: string, nodeKey: string, expected_row_version: number) =>
     request<NodeAttempt>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-node-drafts/${encodeURIComponent(nodeKey)}/start`, json('POST', { expected_row_version }, true)),
+  reactivateStepwiseNodeForRerun: (runId: string, nodeKey: string, node_run_id: string) =>
+    request<StepwiseNodeDraft>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-node-drafts/${encodeURIComponent(nodeKey)}/rerun-edit`, json('POST', { node_run_id })),
   automaticRecords: async (runId: string) =>
     (await request<AutomaticRunResponse[]>(`/flow-runs/${encodeURIComponent(runId)}/automatic-runs`)).map(automaticRecord),
   automaticRecordSummaries: (runId: string) =>

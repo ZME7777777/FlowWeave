@@ -888,6 +888,10 @@ class StepwiseNodeDraftStartWrite(ApiModel):
     expected_row_version: int = Field(ge=1)
 
 
+class StepwiseNodeRerunEditWrite(ApiModel):
+    node_run_id: str = Field(min_length=1, max_length=36)
+
+
 class FlowRunScheduleWrite(ApiModel):
     """A recurring execution frozen from one ready continuous-run record."""
 

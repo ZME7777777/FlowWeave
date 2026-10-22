@@ -223,7 +223,7 @@ function RunRail({ mode, manualRecords, automaticRecords, automaticError, select
   mode: WorkbenchMode; manualRecords: FlowRunStepwiseRecord[]; automaticRecords: FlowRunAutomaticRecordSummary[]; selected?: string; selectedStepwiseId?: string; canCopyManualRecord: boolean; canDeleteManualRecords: boolean;
   automaticError?: string; stepwiseSelectedIds: Set<string>; automaticSelectedIds: Set<string>;
   manualBusyId?: string;
-  selectedAutomaticId?: string; automaticBusyId?: string; stepwiseLaunch?: { recordId: string; ready: boolean; busy: boolean; onStart: () => void }; onModeChange: (mode: WorkbenchMode) => void;
+  selectedAutomaticId?: string; automaticBusyId?: string; stepwiseLaunch?: { recordId: string; ready: boolean; busy: boolean; rerun?: boolean; onStart: () => void }; onModeChange: (mode: WorkbenchMode) => void;
   onSelectManualRecord: (id: string, modifiers: SelectionModifiers) => void; onCreateManualRecord: () => void; onCopyManual: () => void; onExportManual: () => void; onDeleteManualRecord: () => void; onSelectAutomatic: (id: string, modifiers: SelectionModifiers) => void; onCreateAutomatic: () => void;
   onClearSelection: () => void; onDeleteAutomatic: () => void; onCopyAutomatic: () => void; onExportAutomatic: () => void; onStartAutomatic: (record: FlowRunAutomaticRecordSummary) => void;
 }) {
@@ -267,7 +267,7 @@ function RunRail({ mode, manualRecords, automaticRecords, automaticError, select
     const launch = stepwiseLaunch?.recordId === record.id ? stepwiseLaunch : undefined;
     return <article key={record.id} className={stepwiseSelectedIds.has(record.id) ? 'active' : ''} data-record-state={record.state.toLowerCase()}>
       <button type="button" className="automatic-record-select" aria-pressed={stepwiseSelectedIds.has(record.id)} onClick={event => onSelectManualRecord(record.id, modifiers(event))}><i title={stateLabel} aria-label={stateLabel}/><span><b>{record.name}</b></span></button>
-      {launch && <button type="button" className="automatic-record-start" aria-label={`启动逐步运行 ${record.name}`} disabled={!launch.ready || launch.busy} onClick={launch.onStart}><Play size={12}/>{launch.busy ? '启动中…' : '启动'}</button>}
+      {launch && <button type="button" className="automatic-record-start" aria-label={`${launch.rerun ? '重跑' : '启动'}逐步运行 ${record.name}`} disabled={!launch.ready || launch.busy} onClick={launch.onStart}><Play size={12}/>{launch.busy ? `${launch.rerun ? '重跑' : '启动'}中…` : launch.rerun ? '重跑' : '启动'}</button>}
     </article>;
   };
   return <aside className="run-rail flow-run-inner-rail" onClick={event => { if (!isInteractiveClick(event.target)) onClearSelection(); }}>
@@ -370,7 +370,7 @@ function readyAutomaticPlanKeys(record?: FlowRunAutomaticRecord): Set<string> {
   return new Set(Object.keys(record.node_plans).filter(key => !incomplete.has(key)));
 }
 
-function SnapshotGraph({ run, snapshotId, draftDefinition, selectedKey, activeNodeRunId, activeNodeKey, onSelect, onClearSelection, reachableKeys, selectableKeys, configuredPlanKeys, executionRun, missingPlanKeys, showExecutionState = true, neutralHelp, neutralView = false }: { run: FlowRun; snapshotId?: string; draftDefinition?: SnapshotDefinition; selectedKey?: string; activeNodeRunId?: string; activeNodeKey?: string; onSelect: (key: string) => void; onClearSelection?: () => void; reachableKeys?: Iterable<string>; selectableKeys?: Iterable<string>; configuredPlanKeys?: Iterable<string>; executionRun?: FlowRun; missingPlanKeys?: Iterable<string>; showExecutionState?: boolean; neutralHelp?: string; neutralView?: boolean }) {
+function SnapshotGraph({ run, snapshotId, draftDefinition, selectedKey, activeNodeRunId, activeNodeKey, onSelect, onDoubleSelect, onClearSelection, reachableKeys, selectableKeys, configuredPlanKeys, executionRun, missingPlanKeys, showExecutionState = true, neutralHelp, neutralView = false }: { run: FlowRun; snapshotId?: string; draftDefinition?: SnapshotDefinition; selectedKey?: string; activeNodeRunId?: string; activeNodeKey?: string; onSelect: (key: string) => void; onDoubleSelect?: (key: string) => void; onClearSelection?: () => void; reachableKeys?: Iterable<string>; selectableKeys?: Iterable<string>; configuredPlanKeys?: Iterable<string>; executionRun?: FlowRun; missingPlanKeys?: Iterable<string>; showExecutionState?: boolean; neutralHelp?: string; neutralView?: boolean }) {
   const [linkMode, setLinkMode] = useState<'flow' | 'data'>('flow');
   // A NodeAttempt executes against its immutable snapshot. A runtime draft is
   // previewed separately and is never substituted for an Attempt's history.
@@ -436,7 +436,7 @@ function SnapshotGraph({ run, snapshotId, draftDefinition, selectedKey, activeNo
   }, [graphNodes, setNodes]);
   const graphKey = `${GRAPH_RENDER_REVISION}:${snapshot?.id ?? 'snapshot'}:${snapshot?.definition_hash ?? ''}`;
   const help = neutralView ? neutralHelp ?? '选择一条运行记录后查看执行状态。' : selectable.size < reachable.size ? '灰色节点需先完成上游配置；红色节点仍需补齐当前配置。' : missingPlans.size ? '红色节点尚未完成连续运行配置；点击节点可单独配置。' : showExecutionState ? '灰色节点尚未激活；实线表示流程走向，蓝线表示产物映射。可拖拽节点调整当前视图。' : `${neutralHelp ?? '选择一条运行记录后查看执行状态。'} 可拖拽节点调整当前视图。`;
-  return <section className="run-graph" data-graph-render-revision={GRAPH_RENDER_REVISION}><header><div><small>{help}</small></div><div className="flow-link-mode run-link-mode" aria-label="运行图连线模式"><button type="button" className={linkMode === 'flow' ? 'active' : ''} aria-pressed={linkMode === 'flow'} onClick={() => setLinkMode('flow')}>流程走向</button><button type="button" className={linkMode === 'data' ? 'active' : ''} aria-pressed={linkMode === 'data'} onClick={() => setLinkMode('data')}>产物流转</button></div><span>定义 Hash {snapshot?.definition_hash.slice(0, 8)}</span></header><div className="run-graph-canvas"><ReactFlow key={graphKey} nodeTypes={runSnapshotNodeTypes} edgeTypes={flowMappingEdgeTypes} nodes={nodes} edges={edges} onNodesChange={onNodesChange} nodesConnectable={false} fitView onPaneClick={onClearSelection} onNodeClick={(_, node) => { if (selectable.has(node.id)) onSelect(node.id); }}><Background/><Controls showInteractive={false}/></ReactFlow></div></section>;
+  return <section className="run-graph" data-graph-render-revision={GRAPH_RENDER_REVISION}><header><div><small>{help}</small></div><div className="flow-link-mode run-link-mode" aria-label="运行图连线模式"><button type="button" className={linkMode === 'flow' ? 'active' : ''} aria-pressed={linkMode === 'flow'} onClick={() => setLinkMode('flow')}>流程走向</button><button type="button" className={linkMode === 'data' ? 'active' : ''} aria-pressed={linkMode === 'data'} onClick={() => setLinkMode('data')}>产物流转</button></div><span>定义 Hash {snapshot?.definition_hash.slice(0, 8)}</span></header><div className="run-graph-canvas"><ReactFlow key={graphKey} nodeTypes={runSnapshotNodeTypes} edgeTypes={flowMappingEdgeTypes} nodes={nodes} edges={edges} onNodesChange={onNodesChange} nodesConnectable={false} fitView onPaneClick={onClearSelection} onNodeClick={(_, node) => { if (selectable.has(node.id)) onSelect(node.id); }} onNodeDoubleClick={(_, node) => { if (selectable.has(node.id)) onDoubleSelect?.(node.id); }}><Background/><Controls showInteractive={false}/></ReactFlow></div></section>;
 }
 type GateHistoryGroup = {
   key: string;
@@ -2103,6 +2103,35 @@ export function WorkbenchPage() {
       : nodeRun
       ? { name: nodeRunName(run, nodeRun), label: '当前逐步运行记录', state: attemptStateLabel(nodeRun) }
       : undefined;
+  const reactivatePredecessorForRerun = (key: string) => {
+    if (mode !== 'MANUAL' || !selectedStepwiseRecord) return;
+    const source = [...nodeRecords].reverse().find(item =>
+      item.flow_node_snapshot_key === key && item.state === 'ACCEPTED',
+    );
+    if (!source) return;
+    const successors = (snapshot?.definition.edges ?? [])
+      .filter(edge => edge.source_instance_key === key)
+      .map(edge => edge.target_instance_key);
+    const hasOnlyUnstartedSuccessors = successors.length > 0 && successors.every(successorKey =>
+      Boolean(selectedStepwiseRecord.stepwise_node_drafts?.[successorKey])
+      && !nodeRecords.some(item => item.flow_node_snapshot_key === successorKey),
+    );
+    if (!hasOnlyUnstartedSuccessors) return;
+    setManualBusyId(source.id);
+    void api.reactivateStepwiseNodeForRerun(selectedStepwiseRecord.id, key, source.id).then(draft => {
+      qc.setQueryData<FlowRunStepwiseRecord>(['flow-run-stepwise-record', parentRun.id, selectedStepwiseRecord.id], current => current ? {
+        ...current,
+        stepwise_node_drafts: { ...(current.stepwise_node_drafts ?? {}), [key]: draft },
+      } : current);
+      setSelectedNodeKey(key);
+      useWorkbenchStore.setState({ selectedNodeRunId: undefined, selectedAttemptId: undefined });
+    }).catch(reason => {
+      window.alert(reason instanceof Error ? reason.message : '无法重新激活该节点。');
+    }).finally(() => {
+      setManualBusyId(undefined);
+      void stepwiseDetail.refetch();
+    });
+  };
   const selectGraphNode = (key: string) => {
     if (mode === 'AUTOMATIC' && selectedAutomatic) {
       setSelectedNodeKey(key);
@@ -2393,10 +2422,14 @@ export function WorkbenchPage() {
     ? selectedExecutionNodeRun && selectedExecutionAttempt?.state === 'WAITING_START_CONFIRMATION'
       ? { recordId: selectedStepwise.id, ready: true, busy: manualBusyId === selectedExecutionNodeRun.id, onStart: () => startStepwiseNode(selectedExecutionNodeRun) }
       : selectedNode && selectedNodeKey && savedStepwiseDraft && stepwiseDraftReady(selectedNode, savedStepwiseDraft)
-        ? { recordId: selectedStepwise.id, ready: true, busy: manualBusyId === selectedNodeKey, onStart: () => startStepwiseDraft(selectedNodeKey, savedStepwiseDraft) }
+        ? { recordId: selectedStepwise.id, ready: true, busy: manualBusyId === selectedNodeKey, rerun: Boolean(savedStepwiseDraft.rerun_source_node_run_id), onStart: () => startStepwiseDraft(selectedNodeKey, savedStepwiseDraft) }
         : undefined
     : undefined;
-  const executionDetailPanel = selectedExecutionRecord && selectedExecutionNodeRun && selectedExecutionAttempt
+  const executionDetailPanel = !(
+    mode === 'MANUAL'
+    && savedStepwiseDraft?.rerun_source_node_run_id
+    && selectedNodeKey === selectedExecutionNodeRun?.flow_node_snapshot_key
+  ) && selectedExecutionRecord && selectedExecutionNodeRun && selectedExecutionAttempt
     ? <AttemptPanel
         run={selectedExecutionRecord}
         nodeRun={selectedExecutionNodeRun}
@@ -2511,7 +2544,7 @@ export function WorkbenchPage() {
           {(run.state === 'COMPLETED' || run.state === 'CANCELLED') && <TerminalRunDelete run={run} onDeleted={() => navigate(undefined, 'delete')}/>}
         </div>
         {mode !== 'AUTOMATIC' && run.state !== 'COMPLETED' && run.state !== 'CANCELLED' && <><SnapshotSync run={run} currentVersion={flow.data?.row_version} onSynced={updated => navigate(updated, 'sync')}/><RuntimeRevisionPanel run={run} assets={assets.data ?? []} selectedNodeKey={selectedNodeKey} linkSourceKey={runtimeRevisionLinkSource} onDraft={setRuntimeRevisionDraft} onSetLinkSource={setRuntimeRevisionLinkSource} onApplied={updated => { setRuntimeRevisionDraft(undefined); navigate(updated, 'runtime-revision'); }}/></>}
-        <SnapshotGraph run={graphRun} snapshotId={graphSnapshotId} draftDefinition={previewRuntimeRevision?.definition} selectedKey={graphSelectedKey} activeNodeRunId={activeStepwiseDraftKey ? undefined : activeExecutionNodeRun?.id} activeNodeKey={activeStepwiseDraftKey} reachableKeys={graphReachableKeys} selectableKeys={graphSelectableKeys} configuredPlanKeys={configuredAutomaticPlanKeys} executionRun={selectedExecutionRecord ?? directExecutionRun} missingPlanKeys={missingAutomaticPlanKeys} showExecutionState={showExecutionState} neutralHelp={neutralGraphHelp} neutralView={automaticNeutralView} onClearSelection={clearSelection} onSelect={selectGraphNode}/>
+        <SnapshotGraph run={graphRun} snapshotId={graphSnapshotId} draftDefinition={previewRuntimeRevision?.definition} selectedKey={graphSelectedKey} activeNodeRunId={activeStepwiseDraftKey ? undefined : activeExecutionNodeRun?.id} activeNodeKey={activeStepwiseDraftKey} reachableKeys={graphReachableKeys} selectableKeys={graphSelectableKeys} configuredPlanKeys={configuredAutomaticPlanKeys} executionRun={selectedExecutionRecord ?? directExecutionRun} missingPlanKeys={missingAutomaticPlanKeys} showExecutionState={showExecutionState} neutralHelp={neutralGraphHelp} neutralView={automaticNeutralView} onClearSelection={clearSelection} onSelect={selectGraphNode} onDoubleSelect={reactivatePredecessorForRerun}/>
       </main>
       {hasPanel && <aside className="run-side-panel">
         <div className="run-side-resizer" role="separator" aria-label="调整右侧栏宽度" aria-orientation="vertical" onPointerDown={beginSideResize}/>

@@ -387,6 +387,7 @@ export interface FlowRunAutomaticRecord extends FlowRun {
 }
 export interface StepwiseNodeDraft {
   row_version: number;
+  rerun_source_node_run_id?: string | null;
   startup_mode: 'PROMPT';
   startup_prompt?: string | null;
   agent_preset?: AgentPreset | null;
