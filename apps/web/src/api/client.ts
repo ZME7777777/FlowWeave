@@ -1007,6 +1007,7 @@ export function agentWorkspaceBrowserUrl(workspaceId: string, target: string, op
   url.search = parsed.search;
   if (options.bindingId) url.searchParams.set('binding_id', options.bindingId);
   if (options.workDirectoryId) url.searchParams.set('work_directory_id', options.workDirectoryId);
+  url.searchParams.set('deployment_base_path', deploymentBasePath);
   return url.toString();
 }
 

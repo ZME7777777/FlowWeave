@@ -1,3 +1,8 @@
+import { spawn } from 'node:child_process';
+import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:net';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { expect, test, type Page, type Route } from '@playwright/test';
 
 const now = '2026-10-19T00:00:00Z';
@@ -1575,4 +1580,113 @@ test('message scale hides when the conversation gutter collapses and returns aft
   await expect(scale).toBeVisible();
   const gap=await page.evaluate(() => document.querySelector('.conversation-message.assistant p')!.getBoundingClientRect().left-document.querySelector('.conversation-message-index')!.getBoundingClientRect().right);
   expect(gap).toBeGreaterThanOrEqual(8);
+});
+
+
+test('isolated workspace browser renders real Vite modules through a deployment prefix', async ({ page, context }) => {
+  const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
+  await mkdir(path.join(repository, '.tmp'), {recursive:true});
+  const scratch = await mkdtemp(path.join(repository, '.tmp/browser-vite-'));
+  const freePort = async () => {
+    const server = createServer();
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('No test port');
+    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    return address.port;
+  };
+  const vitePort = await freePort();
+  const apiPort = await freePort();
+  await mkdir(path.join(scratch, 'src'));
+  await writeFile(path.join(scratch, 'index.html'), '<!doctype html><HEAD><title>Vite preview</title></HEAD><body><div id="root"></div><script type="module" src="/src/main.jsx"></script></body>');
+  await writeFile(path.join(scratch, 'src/main.jsx'), `import React from 'react';
+import { createRoot } from 'react-dom/client';
+import './style.css';
+import { message } from './message.js';
+createRoot(document.getElementById('root')).render(<h1 id="preview-ready">{message}</h1>);
+import('./lazy.js').then(({value})=>document.body.dataset.lazy=value);
+fetch('/data.json',{credentials:'include',headers:{'Content-Type':'application/json'}}).then(r=>r.json()).then(data=>document.body.dataset.fetched=data.value);
+localStorage.setItem('preview-key','isolated');
+sessionStorage.setItem('preview-key','temporary');
+document.body.dataset.storage=localStorage.getItem('preview-key')+'/'+sessionStorage.getItem('preview-key');
+const xhr=new XMLHttpRequest();xhr.open('GET','/data.json');xhr.withCredentials=true;xhr.setRequestHeader('Content-Type','application/json');xhr.onload=()=>document.body.dataset.xhr=JSON.parse(xhr.responseText).value;xhr.send();
+try { window.parent.document.body.dataset.escaped='yes'; } catch { document.body.dataset.isolated='yes'; }
+`);
+  await writeFile(path.join(scratch, 'src/message.js'), `export {message} from './nested.js';`);
+  await writeFile(path.join(scratch, 'src/nested.js'), `export const message='Vite 模块加载成功';`);
+  await writeFile(path.join(scratch, 'src/lazy.js'), `export const value='loaded';`);
+  await writeFile(path.join(scratch, 'src/style.css'), `@import './theme.css'; #preview-ready{color:rgb(12, 34, 56);background-image:url('../pixel.svg')}`);
+  await writeFile(path.join(scratch, 'src/theme.css'), `body{margin:13px}`);
+  await writeFile(path.join(scratch, 'pixel.svg'), '<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><!--'+'x'.repeat(5000)+'--></svg>');
+  await writeFile(path.join(scratch, 'data.json'), JSON.stringify({value:'runtime'}));
+  const config = path.join(scratch, 'vite.config.mjs');
+  await writeFile(config, `import {defineConfig} from ${JSON.stringify(path.join(repository, 'apps/web/node_modules/vite/dist/node/index.js'))};
+import react from ${JSON.stringify(path.join(repository, 'apps/web/node_modules/@vitejs/plugin-react/dist/index.mjs'))};
+export default defineConfig({root:${JSON.stringify(scratch)}, plugins:[react()], resolve:{alias:{react:${JSON.stringify(path.join(repository, 'apps/web/node_modules/react'))},'react-dom':${JSON.stringify(path.join(repository, 'apps/web/node_modules/react-dom'))}}},server:{host:'127.0.0.1',port:${vitePort},strictPort:true}});`);
+  const vite = spawn(process.execPath, [path.join(repository, 'apps/web/node_modules/vite/bin/vite.js'), '--config', config, '--configLoader', 'native'], {cwd:repository,stdio:'pipe'});
+  const apiServer = spawn(path.join(repository, 'services/platform/.venv/bin/python'), [path.join(repository, 'apps/web/e2e/fixtures/browser_preview_server.py')], {
+    cwd:repository, stdio:'pipe', env:{...process.env, PYTHONPATH:path.join(repository,'services/platform/src'), PREVIEW_VITE_PORT:String(vitePort), PREVIEW_API_PORT:String(apiPort)},
+  });
+  let diagnostics = '';
+  for (const child of [vite, apiServer]) {
+    child.stdout?.on('data', data => { diagnostics += data.toString(); });
+    child.stderr?.on('data', data => { diagnostics += data.toString(); });
+  }
+  const origin = `http://127.0.0.1:${apiPort}`;
+  try {
+    await expect.poll(async () => {
+      try { return (await fetch(`http://127.0.0.1:${vitePort}/`)).status; } catch { return 0; }
+    }, {message:'Vite starts',timeout:30_000}).toBe(200);
+    await expect.poll(async () => {
+      try { return (await fetch(origin+'/host')).status; } catch { return 0; }
+    }, {message:'Preview API starts',timeout:30_000}).toBe(200);
+    await openWorkspace(page, [
+      {id:'preview-user',event_type:'MESSAGE',payload:{source:'user',parent_id:'__root__',content:'预览页面',timestamp:now}},
+      {id:'preview-agent',event_type:'MESSAGE',payload:{source:'agent',parent_id:'preview-user',content:`[本地预览](http://localhost:${vitePort}/)`,timestamp:now}},
+    ]);
+    await context.addCookies([{name:'flowweave_session',value:'isolated-browser-preview-test-session',url:origin,sameSite:'Lax'}]);
+    await page.route(`**/api/v1/agent-workspaces/schedule-workspace/browser/http/${vitePort}/**`, async route => {
+      const url = new URL(route.request().url());
+      url.searchParams.set('deployment_base_path','/flowweave');
+      const response = await context.request.get(origin+'/flowweave'+url.pathname+url.search);
+      // The test API is a separate local origin; production shares the host.
+      const body = (await response.text()).replaceAll('"/flowweave/api/', `"${origin}/flowweave/api/`);
+      await route.fulfill({response,body});
+    });
+    // Fixture requests bypass the product API mocks installed by openWorkspace.
+    await page.route(origin+'/**', route => route.continue());
+    const resources: {path:string;status:number}[] = [];
+    page.on('response', response=>{
+      if(response.url().startsWith(origin))resources.push({path:decodeURI(new URL(response.url()).pathname),status:response.status()});
+    });
+    await page.goto('/agent/conversations/scheduled-conversation');
+    await page.getByRole('link',{name:'本地预览',exact:true}).click();
+    const iframe = page.locator('.agent-workspace-browser-tab-panel.active iframe');
+    const frame = iframe.contentFrame();
+    await expect(frame.getByRole('heading',{name:'Vite 模块加载成功'})).toBeVisible();
+    await expect(frame.locator('body')).toHaveAttribute('data-lazy','loaded');
+    await expect(frame.locator('body')).toHaveAttribute('data-fetched','runtime');
+    await expect(frame.locator('body')).toHaveAttribute('data-xhr','runtime');
+    await expect(frame.locator('body')).toHaveAttribute('data-isolated','yes');
+    await expect(frame.locator('body')).toHaveAttribute('data-storage','isolated/temporary');
+    expect(await page.evaluate(()=>localStorage.getItem('preview-key'))).toBeNull();
+    await expect(frame.locator('#preview-ready')).toHaveCSS('color','rgb(12, 34, 56)');
+    await expect(frame.locator('body')).toHaveCSS('margin','13px');
+    expect(await page.locator('body').getAttribute('data-escaped')).toBeNull();
+    expect(await iframe.getAttribute('sandbox')).not.toContain('allow-same-origin');
+    expect(await frame.locator('body').evaluate(()=>window.origin)).toBe('null');
+    expect(resources.filter(resource=>resource.status>=400)).toEqual([]);
+    expect(resources.every(resource=>resource.path.startsWith('/flowweave/api/v1/agent-workspaces/'))).toBe(true);
+    expect(resources.some(resource=>resource.path.endsWith('/@react-refresh')), 'Vite React preamble loads').toBe(true);
+    await expect.poll(()=>resources.some(resource=>resource.path.endsWith('/pixel.svg')), {message:'CSS background image loads through the proxy'}).toBe(true);
+    await page.screenshot({path:path.join(scratch,'preview.png')});
+  } catch (error) {
+    // Redact scoped grant URLs from fixture diagnostics as well.
+    throw new Error(String(error)+'\n'+diagnostics.replace(/fwpreview_[A-Za-z0-9_=-]+/g,'[preview-grant]'));
+  } finally {
+    for (const child of [vite,apiServer]) child.kill('SIGTERM');
+    await Promise.all([vite,apiServer].map(child=>new Promise<void>(resolve=>{
+      if(child.exitCode!==null)resolve();else child.once('exit',()=>resolve());
+    })));
+  }
 });

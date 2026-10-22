@@ -405,12 +405,18 @@ def login(db: Session, username: str, password: str) -> LoginResult:
 def authenticate(db: Session, token: str | None) -> Principal | None:
     if not token:
         return None
+    return authenticate_session_digest(db, digest_session_token(token))
+
+
+def authenticate_session_digest(db: Session, session_digest: str) -> Principal | None:
+    """Revalidate a scoped preview against the original, revocable login session."""
+
     now = datetime.now(UTC)
     row = db.execute(
         select(UserSession, User)
         .join(User, User.id == UserSession.user_id)
         .where(
-            UserSession.token_digest == digest_session_token(token),
+            UserSession.token_digest == session_digest,
             UserSession.expires_at > now,
             User.is_active.is_(True),
         )

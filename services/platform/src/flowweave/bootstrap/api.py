@@ -40,11 +40,13 @@ from flowweave.modules.users.application.security import (
 from flowweave.modules.users.presentation.router import router as users_router
 from flowweave.runtime.dependencies import bind_runtime, reset_runtime
 from flowweave.shared.artifact_store import bind_artifact_store, reset_artifact_store
+from flowweave.shared.browser_preview import PREVIEW_PATH, read_preview
 from flowweave.shared.errors import DomainError
 from flowweave.shared.http import require_agent_session_access, require_authenticated_connection
 from flowweave.shared.observability import bind_metrics, reset_metrics
 from flowweave.shared.plugin_resolver import bind_plugin_resolver, reset_plugin_resolver
 from flowweave.shared.sandbox import bind_sandbox, reset_sandbox
+from flowweave.shared.secret_redaction import SecretRedactionFilter, redact_secret_text
 from flowweave.shared.settings import bind_settings, reset_settings
 
 logger = logging.getLogger(__name__)
@@ -134,6 +136,9 @@ def _metric_route(request: Request) -> str:
 def create_app(settings: Settings | None = None) -> FastAPI:
     configured = settings or Settings()
     container = build_container(configured, role="api")
+    access_logger = logging.getLogger("uvicorn.access")
+    if not any(isinstance(item, SecretRedactionFilter) for item in access_logger.filters):
+        access_logger.addFilter(SecretRedactionFilter())
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -164,15 +169,38 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         request.state.request_id = request_id
         started_at = monotonic()
         principal = None
+        preview = None
+        if PREVIEW_PATH.match(request.url.path):
+            try:
+                preview_settings_token = bind_settings(configured)
+                try:
+                    preview = read_preview(request.url.path)
+                finally:
+                    reset_settings(preview_settings_token)
+                if request.method not in {"GET", "OPTIONS"}:
+                    raise DomainError("AGENT_BROWSER_PREVIEW_READ_ONLY", "预览仅支持读取", 405)
+            except DomainError as exc:
+                return JSONResponse(
+                    status_code=exc.status,
+                    content=error_body(exc.code, exc.message, request_id),
+                )
         if request.url.path.startswith("/api/v1/"):
             async with container.database.session() as auth_session:
                 principal = await auth_session.run_sync(
-                    lambda db: users.authenticate(db, request.cookies.get(users.SESSION_COOKIE))
+                    lambda db: (
+                        users.authenticate_session_digest(db, preview.session_digest)
+                        if preview is not None
+                        else users.authenticate(db, request.cookies.get(users.SESSION_COOKIE))
+                    )
                 )
+                if preview is not None and principal is not None:
+                    if preview.user_id != principal.user_id:
+                        principal = None
                 if principal is not None:
                     await auth_session.commit()
                 else:
                     await auth_session.rollback()
+        request.state.browser_preview = preview
         is_public = (
             request.url.path.startswith("/health")
             or request.url.path.startswith("/internal/admin-control/")
@@ -234,7 +262,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         request_id=request_id,
                         method=request.method,
                         route=(
-                            matched_route.path if matched_route is not None else request.url.path
+                            matched_route.path
+                            if matched_route is not None
+                            else redact_secret_text(request.url.path)
                         ),
                         status_code=response.status_code,
                         duration_ms=max(0, int((monotonic() - started_at) * 1000)),
@@ -301,7 +331,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         logger.warning(
             "database data error method=%s path=%s request_id=%s",
             request.method,
-            request.url.path,
+            redact_secret_text(request.url.path),
             request_id,
             exc_info=exc,
         )
@@ -341,7 +371,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         logger.error(
             "unhandled API exception method=%s path=%s request_id=%s",
             request.method,
-            request.url.path,
+            redact_secret_text(request.url.path),
             request_id,
             exc_info=exc,
         )
@@ -403,7 +433,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             if duration >= _SLOW_REQUEST_SECONDS:
                 route = request.scope.get("route")
-                route_path = route.path if route is not None else request.url.path
+                route_path = (
+                    route.path if route is not None else redact_secret_text(request.url.path)
+                )
                 logger.warning(
                     "slow API request method=%s route=%s status=%d duration_ms=%d request_id=%s",
                     request.method,

@@ -699,3 +699,93 @@ def test_platform_directory_works_without_ldap_and_during_directory_outage(
     assert "ldap_warning" not in result.json()
     assert result.json()["users"] == []
     assert result.json()["platform_users"][0]["username"] == "flowweave"
+
+
+def test_preview_uses_revocable_session_and_cannot_authenticate_platform_api(
+    isolated_http, monkeypatch
+):
+    import base64
+    import re
+    from dataclasses import replace
+    from time import time
+
+    from flowweave.modules.agent_workspaces.presentation import router as browser
+    from flowweave.modules.users.application.security import digest_session_token
+    from flowweave.shared.browser_preview import BrowserPreview
+    from flowweave.shared.settings import settings_context
+
+    client, engine, _ = isolated_http
+    login(client, "flowweave")
+    session_cookie = client.cookies.get(users.SESSION_COOKIE)
+    preview = BrowserPreview(
+        FLOWWEAVE_USER_ID,
+        digest_session_token(session_cookie),
+        "workspace",
+        "http",
+        5186,
+        "binding",
+        "directory",
+        "/flowweave",
+        int(time()) + 60,
+    )
+    scopes = []
+    fetches = []
+
+    async def auxiliary(_container, operation):
+        return operation(None)
+
+    async def control(_container, operation):
+        return operation()
+
+    def authorize(_db, workspace_id, **scope):
+        scopes.append((workspace_id, scope))
+        return "runtime", "resource"
+
+    def fetch(**kwargs):
+        fetches.append(kwargs)
+        return {
+            "status": 200,
+            "headers": {"Content-Type": "text/javascript"},
+            "content_base64": base64.b64encode(b'export default "ok"').decode(),
+        }
+
+    monkeypatch.setattr(browser, "run_blocking_auxiliary", auxiliary)
+    monkeypatch.setattr(browser, "run_terminal_control", control)
+    monkeypatch.setattr(browser.workspace, "browser_resource_details", authorize)
+    monkeypatch.setattr(
+        browser, "DockerControllerClient", lambda _: SimpleNamespace(browser_fetch=fetch)
+    )
+    with settings_context(client.app.state.container.settings):
+        token = preview.encode()
+        expired_token = replace(preview, expires_at=int(time()) - 1).encode()
+    path = f"/api/v1/agent-workspaces/workspace/browser/http/5186/_preview/{token}/app.js"
+    client.cookies.clear()
+    result = client.get(path + "?binding_id=other&work_directory_id=other&v=1")
+    assert result.status_code == 200
+    assert result.headers["access-control-allow-origin"] == "*"
+    assert "allow-same-origin" not in result.headers["content-security-policy"]
+    assert scopes == [("workspace", {"binding_id": "binding", "work_directory_id": "directory"})]
+    assert fetches[0]["query"] == "v=1"
+    assert fetches[0]["path"] == "/app.js"
+    assert client.get("/api/v1/auth/me?preview_token=" + token).json().get("id") is None
+    assert client.get("/api/v1/model-providers?preview_token=" + token).status_code == 401
+    assert client.get(path.replace("/5186/", "/3000/")).status_code == 401
+    assert client.get(path.replace(token, expired_token)).status_code == 401
+    assert client.post(path).status_code == 405
+    assert (
+        client.options(
+            path, headers={"Origin": "null", "Access-Control-Request-Headers": "content-type"}
+        ).status_code
+        == 204
+    )
+    assert len(fetches) == 1
+    with Session(engine) as db:
+        db.execute(
+            delete(UserSession).where(
+                UserSession.token_digest == digest_session_token(session_cookie)
+            )
+        )
+        db.commit()
+    assert client.get(path).status_code == 401
+    assert len(fetches) == 1
+    assert not re.search(r"fwpreview_", result.text)

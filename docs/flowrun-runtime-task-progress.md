@@ -9227,3 +9227,31 @@ git diff --check 和唯一 Alembic head 0157_background_task_aggregate_type_leng
 重排回归共 2 项通过，截图验收通过。Web typecheck、定向 ESLint、git diff --check
 和唯一 Alembic head 0157_background_task_aggregate_type_length 通过。当前及下一
 可执行切片均为 NONE；未进行远端发布。
+
+
+### FR-630 内置浏览器隔离预览的资源代理 — DONE
+
+依赖：FR-629 DONE。修复部署前缀丢失、base 重复改写及 Vite 模块／样式资源绕过
+Runtime 代理的问题。HTML、模块 import／export／动态字面量 import、Vite 注入样式、
+CSS url／import 和本地重定向统一保留代理范围及原查询参数，二进制响应保持原样。
+入口 HTML 由宿主携登录 Cookie 获取，再以 srcDoc 放入 opaque-origin sandbox；
+模块与资源使用 15 分钟、绑定用户登录会话／工作区／binding／端口的加密读取授权，
+每次请求重新核验原登录会话与工作区权限。授权不能用于平台 API，不能跨端口或工作区，
+用户退出登录／禁用／会话撤销后失效。预览内 fetch／XHR 不携带平台凭据，允许受控
+GET 预检；不新增 POST 或 WebSocket／HMR 代理。存储不可用时仅提供当前文档生命周期
+的独立内存存储，不共享宿主的 localStorage／sessionStorage。主站同源权限不开放。
+
+预览授权不会传给 Runtime；响应禁止缓存及 Referer，应用 Nginx 不记录浏览器代理 URL，
+API 访问／异常日志脱敏授权字面量。异步加载按 source（含 binding）隔离，切换／关闭
+取消旧请求并忽略迟到响应。同步更新两条浏览器 OpenAPI 契约，不混入既有其他契约漂移。
+
+22 项 Python 单测通过，含真实登录会话撤销、权限范围、过期、篡改、读取限制及
+内容转换；4 项 Chromium 定向回归通过，新增真实 Vite／React 服务与正式 Python
+代理管线，覆盖部署前缀、模块依赖、动态 import、CSS／图片、带 JSON 请求头与
+credentials 的 GET／XHR、opaque origin、父页面及临时存储隔离，并检查截图。
+Web typecheck、定向 ESLint、production build、定向 Ruff、新增模块 Pyright、Python
+解析、浏览器 OpenAPI 对照、git diff --check、唯一 Alembic head
+0157_background_task_aggregate_type_length 与状态唯一性通过。额外尝试的
+8 项 tests/test_domain.py 因本机 Docker socket 不可用，在数据库 fixture 初始化阶段
+受阻，未记为通过；既有全量 OpenAPI 快照仍有其他历史漂移，本次只核对浏览器路由。
+当前及下一可执行切片均为 NONE；未修改 Runtime、数据库或远端环境，未部署。

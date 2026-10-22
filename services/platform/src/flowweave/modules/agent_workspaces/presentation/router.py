@@ -4,7 +4,7 @@ import asyncio
 import base64
 import json
 import logging
-import re
+from time import time
 from typing import Annotated, Any, Literal
 from urllib.parse import parse_qsl, quote, urlencode
 from uuid import UUID, uuid4
@@ -29,11 +29,14 @@ from flowweave.modules.agent_sessions.application import search as conversation_
 from flowweave.modules.agent_sessions.application import sidebar_conversations
 from flowweave.modules.agent_sessions.public import conversations
 from flowweave.modules.agent_workspaces.application import git_settings, work_directories, workspace
+from flowweave.modules.agent_workspaces.presentation.browser_content import BrowserContent
 from flowweave.modules.environments import public as environments
-from flowweave.modules.users.application.security import current_principal
+from flowweave.modules.users.application.security import current_principal, digest_session_token
+from flowweave.modules.users.application.service import SESSION_COOKIE
 from flowweave.runtime.dependencies import runtime_context
 from flowweave.runtime.read_budget import hydration_response_budget
 from flowweave.runtime.routing import runtime_for
+from flowweave.shared.browser_preview import PREVIEW_TTL_SECONDS, BrowserPreview, deployment_path
 from flowweave.shared.errors import DomainError
 from flowweave.shared.http import (
     Db,
@@ -497,6 +500,39 @@ async def get_agent_workspace_details(
     )
 
 
+@router.get(
+    "/agent-workspaces/{workspace_id}/browser/{scheme}/{port}/_preview/{preview_token}/{path:path}"
+)
+@router.options(
+    "/agent-workspaces/{workspace_id}/browser/{scheme}/{port}/_preview/{preview_token}/{path:path}",
+    include_in_schema=False,
+)
+async def proxy_agent_workspace_preview(
+    workspace_id: str,
+    scheme: Literal["http", "https"],
+    port: int,
+    preview_token: str,
+    path: str,
+    request: Request,
+    container: ContainerDep,
+) -> Response:
+    preview = getattr(request.state, "browser_preview", None)
+    if not isinstance(preview, BrowserPreview):
+        raise DomainError("AUTHENTICATION_REQUIRED", "请先登录", 401)
+    return await _proxy_agent_workspace_browser(
+        workspace_id,
+        scheme,
+        port,
+        path,
+        request,
+        container,
+        binding_id=preview.binding_id,
+        work_directory_id=preview.work_directory_id,
+        deployment_base_path=preview.deployment_base_path,
+        preview_token=preview_token,
+    )
+
+
 @router.get("/agent-workspaces/{workspace_id}/browser/{scheme}/{port}/{path:path}")
 async def proxy_agent_workspace_browser(
     workspace_id: str,
@@ -507,12 +543,45 @@ async def proxy_agent_workspace_browser(
     container: ContainerDep,
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
+    deployment_base_path: str = Query(default=""),
+) -> Response:
+    return await _proxy_agent_workspace_browser(
+        workspace_id,
+        scheme,
+        port,
+        path,
+        request,
+        container,
+        binding_id=binding_id,
+        work_directory_id=work_directory_id,
+        deployment_base_path=deployment_base_path,
+    )
+
+
+async def _proxy_agent_workspace_browser(
+    workspace_id: str,
+    scheme: Literal["http", "https"],
+    port: int,
+    path: str,
+    request: Request,
+    container: ContainerDep,
+    *,
+    binding_id: str | None,
+    work_directory_id: str | None,
+    deployment_base_path: str,
+    preview_token: str | None = None,
 ) -> Response:
     """Serve one user-authorized Agent Runtime loopback page through the platform."""
 
     normalized_path = f"/{path.lstrip('/')}"
+    if preview_token is not None and not isinstance(
+        getattr(request.state, "browser_preview", None), BrowserPreview
+    ):
+        raise DomainError("AUTHENTICATION_REQUIRED", "请先登录", 401)
+    deployment_base_path = deployment_path(deployment_base_path)
     if (
-        "//" in normalized_path
+        not 1 <= port <= 65535
+        or "//" in normalized_path
         or "\\" in normalized_path
         or any(part in {".", ".."} for part in normalized_path.split("/"))
     ):
@@ -521,7 +590,8 @@ async def proxy_agent_workspace_browser(
         [
             (key, value)
             for key, value in parse_qsl(request.url.query, keep_blank_values=True)
-            if key not in {"binding_id", "work_directory_id"}
+            if key
+            not in {"binding_id", "work_directory_id", "deployment_base_path", "preview_token"}
         ],
         doseq=True,
     )
@@ -534,6 +604,16 @@ async def proxy_agent_workspace_browser(
             binding_id=binding_id,
         ),
     )
+    if request.method == "OPTIONS":
+        return Response(
+            status_code=204,
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, OPTIONS",
+                "Access-Control-Allow-Headers": "Content-Type, X-Requested-With",
+                "Cache-Control": "no-store",
+            },
+        )
     try:
         result: dict[str, Any] = await run_terminal_control(
             container,
@@ -568,30 +648,40 @@ async def proxy_agent_workspace_browser(
     )
     content_type = headers.get("content-type", "application/octet-stream")
     status = int(result.get("status") or 502)
-    if content_type.lower().split(";", 1)[0] in {"text/html", "application/xhtml+xml"}:
-        try:
-            html = content.decode("utf-8")
-        except UnicodeDecodeError:
-            html = content.decode("utf-8", errors="replace")
-        prefix = f"/api/v1/agent-workspaces/{workspace_id}/browser/{scheme}/{port}/"
-        base = f'<base href="{prefix}">'
-        rendered_html = (
-            html.replace("<head>", f"<head>{base}", 1)
-            if "<head>" in html.lower()
-            else f"{base}{html}"
-        )
-        content = re.sub(
-            r'(?P<attribute>\b(?:src|href|action)=["\'])/(?P<path>(?!/)[^"\']*)',
-            lambda match: f"{match.group('attribute')}{prefix}{match.group('path')}",
-            rendered_html,
-            flags=re.IGNORECASE,
+    if preview_token is None:
+        principal = current_principal()
+        session_token = request.cookies.get(SESSION_COOKIE)
+        if principal is None or session_token is None:
+            raise DomainError("AUTHENTICATION_REQUIRED", "请先登录", 401)
+        preview_token = BrowserPreview(
+            user_id=principal.user_id,
+            session_digest=digest_session_token(session_token),
+            workspace_id=workspace_id,
+            scheme=scheme,
+            port=port,
+            binding_id=binding_id,
+            work_directory_id=work_directory_id,
+            deployment_base_path=deployment_base_path,
+            expires_at=int(time()) + PREVIEW_TTL_SECONDS,
         ).encode()
-    safe_headers = {"Cache-Control": str(headers.get("cache-control") or "no-store")}
+    prefix = (
+        f"{deployment_base_path}/api/v1/agent-workspaces/{workspace_id}"
+        f"/browser/{scheme}/{port}/_preview/{preview_token}/"
+    )
+    renderer = BrowserContent(prefix, scheme, port, normalized_path)
+    content = renderer.rewrite(content, content_type)
+    safe_headers = {
+        "Cache-Control": "no-store",
+        "Referrer-Policy": "no-referrer",
+        "Access-Control-Allow-Origin": "*",
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": (
+            "sandbox allow-scripts allow-forms allow-modals allow-popups allow-downloads"
+        ),
+    }
     location = headers.get("location")
-    if 300 <= status < 400 and isinstance(location, str) and location.startswith("/"):
-        safe_headers["Location"] = (
-            f"/api/v1/agent-workspaces/{workspace_id}/browser/{scheme}/{port}{location}"
-        )
+    if 300 <= status < 400 and isinstance(location, str):
+        safe_headers["Location"] = renderer.url(location)
     return Response(
         content=content,
         status_code=status,

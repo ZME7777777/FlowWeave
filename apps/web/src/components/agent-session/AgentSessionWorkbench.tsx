@@ -10,6 +10,7 @@ import ReactMarkdown from 'react-markdown';
 import { ComposerModelMenu } from './ComposerModelMenu';
 import { AgentComposerInput, type ComposerSuggestion } from './AgentComposerInput';
 import { AgentWorkspaceSettings } from './AgentWorkspaceSettings';
+import { RuntimeBrowserFrame } from './RuntimeBrowserFrame';
 import { AgentConversationSchedulesPanel } from './AgentConversationSchedulesPanel';
 import { ConversationManagementPage } from '../../pages/ConversationManagementPage';
 import { CONVERSATION_REFERENCE_TRANSFER_TYPE, WORKSPACE_FILE_TRANSFER_TYPE, transferredConversationReference, transferredFiles, transferredWorkspacePaths, type ComposerHandle } from './agentComposerInputUtils';
@@ -3877,7 +3878,7 @@ function WorkspaceBrowser({ tab, workspaceId, bindingId, workDirectoryId, browse
       <div className="agent-workspace-browser-navigation" aria-label="浏览器导航"><button type="button" aria-label="后退" title="后退" disabled><ArrowLeft size={14}/></button><button type="button" aria-label="前进" title="前进" disabled><ArrowRight size={14}/></button><i aria-hidden="true"/><button type="button" aria-label="刷新当前页面" title="刷新" disabled={!source && !tab.document} onClick={() => setRefreshKey(current => current + 1)}><RefreshCw size={14}/></button></div>
       <label><input aria-label="网页地址" value={address} placeholder="搜索或输入网址" onChange={event => setAddress(event.target.value)} onBlur={navigate}/></label>
     </form>
-    {tab.document ? <iframe key={`document:${refreshKey}`} className="agent-workspace-browser-frame" sandbox="" title={tab.title || 'HTML 页面'} srcDoc={tab.document}/> : source ? <iframe key={`${source}:${refreshKey}`} className="agent-workspace-browser-frame" title={tab.title || '内置浏览器页面'} src={source} {...(!platformFileViewer ? { sandbox: 'allow-scripts allow-forms allow-modals allow-popups allow-downloads', referrerPolicy: 'no-referrer' } : {})}/> : startPage ?? <div className="agent-workspace-browser-empty"><Globe2 size={28}/><b>安全内置浏览器</b><span>输入 HTTP 或 HTTPS 地址以在隔离页面中打开。</span></div>}
+    {tab.document ? <iframe key={`document:${refreshKey}`} className="agent-workspace-browser-frame" sandbox="" title={tab.title || 'HTML 页面'} srcDoc={tab.document}/> : source ? platformFileViewer ? <iframe key={`${source}:${refreshKey}`} className="agent-workspace-browser-frame" title={tab.title || '内置浏览器页面'} src={source}/> : <RuntimeBrowserFrame key={`${source}:${refreshKey}`} source={source} title={tab.title || '内置浏览器页面'}/> : startPage ?? <div className="agent-workspace-browser-empty"><Globe2 size={28}/><b>安全内置浏览器</b><span>输入 HTTP 或 HTTPS 地址以在隔离页面中打开。</span></div>}
   </section>;
 }
 
