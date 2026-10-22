@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -1624,8 +1624,12 @@ try { window.parent.document.body.dataset.escaped='yes'; } catch { document.body
 import react from ${JSON.stringify(path.join(repository, 'apps/web/node_modules/@vitejs/plugin-react/dist/index.mjs'))};
 export default defineConfig({root:${JSON.stringify(scratch)}, plugins:[react()], resolve:{alias:{react:${JSON.stringify(path.join(repository, 'apps/web/node_modules/react'))},'react-dom':${JSON.stringify(path.join(repository, 'apps/web/node_modules/react-dom'))}}},server:{host:'127.0.0.1',port:${vitePort},strictPort:true}});`);
   const vite = spawn(process.execPath, [path.join(repository, 'apps/web/node_modules/vite/bin/vite.js'), '--config', config, '--configLoader', 'native'], {cwd:repository,stdio:'pipe'});
+  const docker = path.join(scratch, 'docker');
+  const python = path.join(repository, 'services/platform/.venv/bin/python');
+  await writeFile(docker, `#!${python}\nimport os,sys\nassert sys.argv[1:3]==['exec','-i']\nos.execv(sys.executable,[sys.executable,*sys.argv[5:]])\n`);
+  await chmod(docker, 0o700);
   const apiServer = spawn(path.join(repository, 'services/platform/.venv/bin/python'), [path.join(repository, 'apps/web/e2e/fixtures/browser_preview_server.py')], {
-    cwd:repository, stdio:'pipe', env:{...process.env, PYTHONPATH:path.join(repository,'services/platform/src'), PREVIEW_VITE_PORT:String(vitePort), PREVIEW_API_PORT:String(apiPort)},
+    cwd:repository, stdio:'pipe', env:{...process.env, PYTHONPATH:path.join(repository,'services/platform/src'), PREVIEW_VITE_PORT:String(vitePort), PREVIEW_API_PORT:String(apiPort), PREVIEW_DOCKER_BINARY:docker},
   });
   let diagnostics = '';
   for (const child of [vite, apiServer]) {
@@ -1689,4 +1693,109 @@ export default defineConfig({root:${JSON.stringify(scratch)}, plugins:[react()],
       if(child.exitCode!==null)resolve();else child.once('exit',()=>resolve());
     })));
   }
+});
+
+
+test('Runtime browser loading covers delayed module rendering and rejects unrelated readiness messages', async ({ page }) => {
+  await openWorkspace(page, [
+    { id:'loading-user',event_type:'MESSAGE',payload:{source:'user',parent_id:'__root__',content:'预览',timestamp:now} },
+    { id:'loading-agent',event_type:'MESSAGE',payload:{source:'agent',parent_id:'loading-user',content:'[延迟预览](http://localhost:3000/)',timestamp:now} },
+  ]);
+  let release:()=>void=()=>undefined;
+  const gate=new Promise<void>(resolve=>{release=resolve;});
+  await page.route('**/browser/http/3000/**',route=>route.fulfill({contentType:'text/html',body:'<html><head></head><body><div id="root"></div><script type="module" src="/preview-delayed-entry.js"></script></body></html>'}));
+  await page.route('**/preview-delayed-entry.js',async route=>{
+    await gate;
+    await route.fulfill({contentType:'text/javascript',headers:{'Access-Control-Allow-Origin':'*'},body:'document.getElementById("root").innerHTML="<h1>异步页面已显示</h1>";'});
+  });
+  await page.goto('/agent/conversations/scheduled-conversation');
+  await page.getByRole('link',{name:'延迟预览',exact:true}).click();
+  const panel=page.locator('.agent-workspace-browser-tab-panel.active');
+  const loading=panel.getByRole('status');
+  await expect(loading).toContainText('正在加载页面资源');
+  const iframe=panel.locator('iframe');
+  await iframe.evaluate(element=>{
+    const iframe=element as HTMLIFrameElement;
+    const id=iframe.srcdoc.match(/const id="([^"]+)"/)?.[1];
+    window.dispatchEvent(new MessageEvent('message',{origin:'null',source:window,data:{kind:'flowweave-browser-preview-load',id,phase:'ready'}}));
+    window.dispatchEvent(new MessageEvent('message',{origin:'null',source:iframe.contentWindow,data:{kind:'flowweave-browser-preview-load',id:'wrong-load',phase:'ready'}}));
+  });
+  await expect(loading).toBeVisible();
+  await page.screenshot({path:path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../.tmp/fr631-loading.png')});
+  release();
+  await expect(iframe.contentFrame().getByRole('heading',{name:'异步页面已显示'})).toBeVisible();
+  await expect(loading).toBeHidden();
+  await expect(panel.locator('.agent-workspace-browser-content')).toHaveAttribute('aria-busy','false');
+});
+
+
+test('Runtime browser shows script failure and reloads with a fresh frame', async ({ page }) => {
+  await openWorkspace(page,[{id:'broken-agent',event_type:'MESSAGE',payload:{source:'agent',parent_id:'__root__',content:'[故障预览](http://localhost:3000/)',timestamp:now}}]);
+  let reads=0;
+  let failStartup=true;
+  await page.route('**/browser/http/3000/**',route=>{
+    reads++;
+    return route.fulfill({contentType:'text/html',body:failStartup?'<html><head></head><body><div id="root"></div><script>throw new Error("broken startup")</script></body></html>':'<html><body><h1>重新加载成功</h1></body></html>'});
+  });
+  await page.goto('/agent/conversations/scheduled-conversation');
+  await page.getByRole('link',{name:'故障预览',exact:true}).click();
+  const panel=page.locator('.agent-workspace-browser-tab-panel.active');
+  await expect(panel.getByRole('alert')).toContainText('页面加载失败');
+  failStartup=false;
+  await panel.getByRole('button',{name:'重新加载页面',exact:true}).click();
+  await expect(panel.locator('iframe').contentFrame().getByRole('heading',{name:'重新加载成功'})).toBeVisible();
+  await expect(panel.getByRole('alert')).toHaveCount(0);
+  expect(reads).toBeGreaterThanOrEqual(2);
+});
+
+
+test('Runtime browser slow loading remains recoverable when the delayed app finally renders', async ({ page }) => {
+  await page.clock.install();
+  await openWorkspace(page,[{id:'slow-agent',event_type:'MESSAGE',payload:{source:'agent',parent_id:'__root__',content:'[缓慢预览](http://localhost:3000/)',timestamp:now}}]);
+  let release:()=>void=()=>undefined;
+  const gate=new Promise<void>(resolve=>{release=resolve;});
+  await page.route('**/browser/http/3000/**',route=>route.fulfill({contentType:'text/html',body:'<html><head></head><body><div id="root"></div><script type="module" src="/preview-slow-entry.js"></script></body></html>'}));
+  await page.route('**/preview-slow-entry.js',async route=>{
+    await gate;
+    await route.fulfill({contentType:'text/javascript',headers:{'Access-Control-Allow-Origin':'*'},body:'document.getElementById("root").innerHTML="<h1>缓慢页面已恢复</h1>";'});
+  });
+  await page.goto('/agent/conversations/scheduled-conversation');
+  await page.getByRole('link',{name:'缓慢预览',exact:true}).click();
+  const panel=page.locator('.agent-workspace-browser-tab-panel.active');
+  await expect(panel.getByRole('status')).toContainText('正在加载页面资源');
+  await page.clock.fastForward(25_001);
+  await expect(panel.getByRole('alert')).toContainText('页面加载较慢');
+  release();
+  await page.clock.resume();
+  await expect(panel.locator('iframe').contentFrame().getByRole('heading',{name:'缓慢页面已恢复'})).toBeVisible();
+  await expect(panel.getByRole('alert')).toHaveCount(0);
+});
+
+
+test('Runtime browser ignores an outgoing session response after switching bindings', async ({ page }) => {
+  const user={id:'switch-user',event_type:'MESSAGE',payload:{source:'user',parent_id:'__root__',content:'切换预览',timestamp:now}};
+  const reply={id:'switch-agent',event_type:'MESSAGE',payload:{source:'agent',parent_id:'switch-user',content:'[会话预览](http://localhost:3000/)',timestamp:now}};
+  await openWorkspace(page,[user,reply],true);
+  let release:()=>void=()=>undefined;
+  const gate=new Promise<void>(resolve=>{release=resolve;});
+  let oldStarted=false;
+  await page.route('**/browser/http/3000/**',async route=>{
+    const binding=new URL(route.request().url()).searchParams.get('binding_id');
+    if(binding==='scheduled-conversation'){
+      oldStarted=true;
+      await gate;
+    }
+    await route.fulfill({contentType:'text/html',body:`<html><body><h1>${binding==='scheduled-conversation'?'旧会话内容':'新会话内容'}</h1></body></html>`}).catch(()=>undefined);
+  });
+  await page.goto('/agent/conversations/scheduled-conversation');
+  await page.getByRole('link',{name:'会话预览',exact:true}).click();
+  await expect.poll(()=>oldStarted).toBe(true);
+  await page.getByRole('button',{name:'周报会话',exact:true}).dblclick();
+  await page.getByRole('link',{name:'会话预览',exact:true}).click();
+  const iframe=page.locator('.agent-workspace-browser-tab-panel.active iframe');
+  await expect(iframe.contentFrame().getByRole('heading',{name:'新会话内容'})).toBeVisible();
+  release();
+  await page.evaluate(()=>new Promise<void>(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve()))));
+  await expect(iframe.contentFrame().getByRole('heading',{name:'新会话内容'})).toBeVisible();
+  await expect(iframe.contentFrame().getByRole('heading',{name:'旧会话内容'})).toHaveCount(0);
 });

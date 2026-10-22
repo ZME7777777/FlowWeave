@@ -9273,3 +9273,38 @@ iframe 中加载；页面成功显示 FlowWeave 登录界面，31 项预览响�
 正常显示登录页，API 请求保留 /flowweave 前缀。platform／web 的 remote-release-finish
 均完成，只回收工具判定的三份过期成功上下文，保留最近三份和所有引用版本，镜像删除
 候选为零；未修改服务器 Compose／env、Runtime、工作区或持久数据。
+
+
+### FR-631 内置浏览器资源连接复用与完整加载反馈 — DONE
+
+依赖：FR-630 DONE。Runtime Provider 的浏览器资源请求从两个通用控制线程移到独立
+四线程读取池，避免静态模块请求排队或占用终端／生命周期控制容量。按经逐请求所有权
+校验的不可变容器 ID 复用最多八条短时 stdio HTTP 连接；容器内仍只执行固定的回环
+GET 传输脚本，无新监听端口、Runtime 文件、Agent 控制协议或镜像变更。空闲十五秒／
+最长两分钟后退出，Provider 回收或关闭时释放连接；读失败、管道断开、进程退出后
+移除连接，容器 ID 变化不能复用旧连接。保留查询、二进制响应、重定向不跟随、2 MiB
+大小限制和 HTTP 头白名单，禁用环境代理；不缓存权限、generation 或资源内容。
+
+浏览器在获取 HTML 和加载模块两个阶段持续展示覆盖层，经过两帧确认 body 中有文字
+或可见媒体后才收起。消息验证当前 WindowProxy、opaque origin 与加载 nonce；切换
+source／binding、关闭及重试均取消旧请求并忽略迟到消息。脚本启动失败提供重试，
+二十五秒未显示提示加载较慢，迟到渲染仍可正常收口。保留 iframe sandbox 隔离和当前
+原生浏览器地址栏／文件查看器行为；检查加载反馈截图。
+
+29 项 Python 回归通过，包括真实子进程／回环 HTTP 的连接复用、四路并发结果隔离、
+容器身份切换、进程故障／空闲／寿命回收、关闭、超大响应与非法目标，以及 Provider
+逐请求所有权校验和 API／Worker 角色限制。8 项 Chromium 回归通过，包括真实 Vite
+配合正式 Python 内容改写和新传输池、延迟模块加载覆盖层、伪造消息拒绝、脚本失败
+重试、慢页面恢复及跨 binding 迟到响应隔离。Web typecheck、定向 ESLint、production
+build、Ruff、传输模块 Pyright、Python AST、git diff --check、唯一 Alembic head
+0157_background_task_aggregate_type_length 与 CURRENT 唯一性通过。Provider 严格
+Pyright 的四个未访问路由函数诊断与 HEAD 隔离源码一致，没有新增诊断。
+
+本地同一 FlowWeave Vite 页面与正式 API／内容改写链路的 Chromium 对比，使用本机
+Python 子进程代替 Docker exec（未连接生产或 Docker daemon）；旧逐请求启动／双线程
+与新四线程池均读取实时资源。预热后连续三次旧页面显示为 1355／1353／1351ms，新为
+303／307／313ms，中位数从 1353ms 降到 307ms，约减少 77%。旧方案每次约 36 个
+进程，新方案首次四个连接，后续三次零新增进程。该本地结果不含真实 Docker、远端
+网络及生产负载，不作为线上耗时承诺。当前及下一可执行切片均为 NONE；未部署，
+未更改 Runtime 镜像、OpenHands、数据库或服务器配置。发布涉及 Provider，须按
+runtime 范围预检并核对活跃会话门禁，不能作为普通 platform 发布。

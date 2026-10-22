@@ -3,10 +3,9 @@
 No database, production session, Docker socket or running Agent is used.
 """
 
-import base64
+import asyncio
 import os
-import urllib.error
-import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -20,9 +19,12 @@ from flowweave.bootstrap.settings import Settings
 from flowweave.modules.agent_workspaces.presentation import router as browser
 from flowweave.modules.users.application import service as users
 from flowweave.modules.users.application.security import Principal, digest_session_token
+from flowweave.shared.infrastructure.browser_proxy import BrowserFetchPool
 
 PRINCIPAL = Principal("preview-user", "preview-user", "USER", True)
 COOKIE = "isolated-browser-preview-test-session"
+executor = ThreadPoolExecutor(max_workers=4)
+pool = BrowserFetchPool(os.environ["PREVIEW_DOCKER_BINARY"])
 
 
 class Session:
@@ -46,7 +48,7 @@ async def auxiliary(_container, operation):
 
 
 async def control(_container, operation):
-    return operation()
+    return await asyncio.get_running_loop().run_in_executor(executor, operation)
 
 
 def authorize(_db, workspace_id, **scope):
@@ -57,19 +59,13 @@ def authorize(_db, workspace_id, **scope):
 
 def fetch(**payload):
     assert payload["port"] == int(os.environ["PREVIEW_VITE_PORT"])
-    path = payload["path"] + ("?" + payload["query"] if payload["query"] else "")
-    try:
-        response = urllib.request.urlopen(
-            f"http://127.0.0.1:{payload['port']}{path}", timeout=10
-        )
-    except urllib.error.HTTPError as error:
-        response = error
-    with response:
-        return {
-            "status": response.status,
-            "headers": dict(response.headers.items()),
-            "content_base64": base64.b64encode(response.read()).decode(),
-        }
+    return pool.fetch(
+        "preview-runtime",
+        scheme=payload["scheme"],
+        port=payload["port"],
+        path=payload["path"],
+        query=payload["query"],
+    )
 
 
 settings = Settings(_env_file=None, runtime_adapter="mock")
@@ -118,6 +114,13 @@ def host():
     return HTMLResponse("<h1>Isolated preview host</h1>")
 
 
-uvicorn.run(
-    ingress, host="127.0.0.1", port=int(os.environ["PREVIEW_API_PORT"]), lifespan="off"
-)
+try:
+    uvicorn.run(
+        ingress,
+        host="127.0.0.1",
+        port=int(os.environ["PREVIEW_API_PORT"]),
+        lifespan="off",
+    )
+finally:
+    executor.shutdown(wait=True, cancel_futures=True)
+    pool.close()

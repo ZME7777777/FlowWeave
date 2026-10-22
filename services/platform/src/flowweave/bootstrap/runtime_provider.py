@@ -38,6 +38,7 @@ from flowweave.shared.application.plugin_resolver import (
     PluginResolveRequest,
 )
 from flowweave.shared.errors import DomainError
+from flowweave.shared.infrastructure.browser_proxy import BrowserFetchPool
 from flowweave.shared.infrastructure.dependency_builder import DockerDependencyBuilder
 from flowweave.shared.infrastructure.docker_control import (
     DockerControlError,
@@ -1719,12 +1720,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         hard_ttl_seconds=configured.docker_controller_terminal_hard_ttl_seconds,
     )
     relay_hubs = _RuntimeEventRelayHubs(configured)
+    browser_pool = BrowserFetchPool(configured.docker_binary)
     metrics = Metrics()
     # Docker control, image/dependency builds and best-effort observation have
     # materially different latency and failure modes. Never run them through
     # asyncio's shared default executor.
     control_executor = ThreadPoolExecutor(
         max_workers=2, thread_name_prefix="flowweave-runtime-provider-control"
+    )
+    browser_executor = ThreadPoolExecutor(
+        max_workers=4, thread_name_prefix="flowweave-runtime-provider-browser"
     )
     build_executor = ThreadPoolExecutor(
         max_workers=1, thread_name_prefix="flowweave-runtime-provider-build"
@@ -1760,6 +1765,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             while True:
                 await asyncio.sleep(30)
                 await run_control(terminals.reap)
+                await run_in_lane(browser_executor, browser_pool.reap)
 
         async def restore_runtime_client_networks() -> None:
             while True:
@@ -1785,6 +1791,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await asyncio.gather(reaper_task, network_task, return_exceptions=True)
             await relay_hubs.close()
             await asyncio.to_thread(terminals.close_all)
+            await asyncio.to_thread(browser_executor.shutdown, wait=True, cancel_futures=True)
+            await asyncio.to_thread(browser_pool.close)
             await asyncio.to_thread(control_executor.shutdown, wait=True, cancel_futures=True)
             await asyncio.to_thread(build_executor.shutdown, wait=True, cancel_futures=True)
             await asyncio.to_thread(observe_executor.shutdown, wait=True, cancel_futures=True)
@@ -2338,86 +2346,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "The Agent Runtime container no longer exists",
                     409,
                 )
-            target = f"{payload.scheme}://127.0.0.1:{payload.port}{payload.path}"
-            if payload.query:
-                target = f"{target}?{payload.query}"
-            script = """
-import base64
-import json
-import sys
-import urllib.error
-import urllib.request
-
-
-class NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, *args, **kwargs):
-        return None
-
-
-opener = urllib.request.build_opener(NoRedirect)
-request = urllib.request.Request(sys.argv[1], headers={"Accept-Encoding": "identity"})
-try:
-    response = opener.open(request, timeout=10)
-except urllib.error.HTTPError as error:
-    response = error
-content = response.read(2_097_153)
-if len(content) > 2_097_152:
-    raise ValueError("response too large")
-headers = {
-    key: value
-    for key, value in response.headers.items()
-    if key.lower() in {"content-type", "cache-control", "location"}
-}
-print(json.dumps({
-    "status": response.status,
-    "headers": headers,
-    "content_base64": base64.b64encode(content).decode(),
-}))
-"""
-            completed = subprocess.run(
-                [
-                    configured.docker_binary,
-                    "exec",
-                    container_id,
-                    "/runtime/.venv/bin/python",
-                    "-c",
-                    script,
-                    target,
-                ],
-                capture_output=True,
-                text=True,
-                timeout=15,
-                check=False,
+            return browser_pool.fetch(
+                container_id,
+                scheme=payload.scheme,
+                port=payload.port,
+                path=payload.path,
+                query=payload.query,
             )
-            if completed.returncode:
-                raise DomainError(
-                    "AGENT_BROWSER_TARGET_UNAVAILABLE",
-                    "The local service is unavailable in this Agent Runtime",
-                    502,
-                )
-            try:
-                result = cast(dict[str, Any], json.loads(completed.stdout))
-                content = base64.b64decode(str(result["content_base64"]), validate=True)
-            except (KeyError, ValueError, json.JSONDecodeError) as exc:
-                raise DomainError(
-                    "AGENT_BROWSER_RESPONSE_INVALID",
-                    "The local service returned an invalid browser response",
-                    502,
-                ) from exc
-            if len(content) > 2 * 1024 * 1024:
-                raise DomainError(
-                    "AGENT_BROWSER_RESPONSE_TOO_LARGE",
-                    "The local service response is too large to preview",
-                    413,
-                )
-            headers = result.get("headers")
-            return {
-                "status": int(result.get("status") or 502),
-                "headers": headers if isinstance(headers, dict) else {},
-                "content_base64": base64.b64encode(content).decode(),
-            }
 
-        return await run_control(fetch)
+        return await run_in_lane(browser_executor, fetch)
 
     @app.post("/v1/terminals/start")
     async def terminal_start(payload: TerminalStartWrite) -> dict[str, str]:
