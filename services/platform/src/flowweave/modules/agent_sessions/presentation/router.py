@@ -153,6 +153,10 @@ class NodeCapabilityAddWrite(_Write):
     capability_version_id: str = Field(min_length=1, max_length=36)
 
 
+class NodeCapabilityBatchWrite(_Write):
+    capability_version_ids: list[str] = Field(min_length=1, max_length=100)
+
+
 class NodeCredentialSyncWrite(_Write):
     credential_ids: list[str] = Field(default_factory=list, max_length=100)
 
@@ -335,6 +339,28 @@ async def add_node_session_capability(
             attempt_id=attempt_id,
             binding_id=binding_id,
             capability_version_id=payload.capability_version_id,
+        ),
+    )
+
+
+@router.post(f"{_BASE}/{{binding_id}}/capabilities/batch")
+async def register_node_session_capabilities(
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str,
+    payload: NodeCapabilityBatchWrite,
+    container: ContainerDep,
+) -> dict[str, Any]:
+    return await run_blocking_lifecycle(
+        container,
+        lambda session: (
+            agent_sessions.flow_node_conversations.register_node_conversation_capabilities(
+                session,
+                flow_run_id=flow_run_id,
+                attempt_id=attempt_id,
+                binding_id=binding_id,
+                capability_version_ids=tuple(payload.capability_version_ids),
+            )
         ),
     )
 

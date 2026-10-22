@@ -1645,6 +1645,88 @@ def test_agent_workspace_loads_capability_through_native_marketplace(
         assert runtime.plugin_refs[0].endswith(f"@flowweave-{created['id']}")
 
 
+
+def test_agent_workspace_registers_capabilities_as_one_ordered_batch(
+    settings, client, container, db_session_factory, monkeypatch, skill_capability
+):
+    """A batch preserves selection order and commits acknowledged native loads."""
+
+    class CapturingRuntime(MockRuntime):
+        plugin_refs: list[str]
+
+        def __init__(self):
+            super().__init__()
+            self.plugin_refs = []
+
+        def can_accept_input(self, handle):
+            del handle
+            return True
+
+        def load_plugin(self, handle, plugin_ref):
+            del handle
+            self.plugin_refs.append(plugin_ref)
+            if len(self.plugin_refs) == 2:
+                raise DomainError("PLUGIN_LOAD_FAILED", "第二项能力加载失败", 502)
+
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as package:
+        package.writestr("second-skill/SKILL.md", "# Second Skill\n")
+    validated = client.post(
+        "/api/v1/capability-imports/validate",
+        json={
+            "capability_type": "SKILL",
+            "filename": "second-skill.zip",
+            "content_base64": base64.b64encode(archive.getvalue()).decode(),
+        },
+    )
+    assert validated.status_code == 200, validated.text
+    committed = client.post(
+        "/api/v1/capability-imports", json={"import_token": validated.json()["import_token"]}
+    )
+    assert committed.status_code == 201, committed.text
+    second_skill = committed.json()["capabilities"][0]["capability_id"]
+
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=kwargs.get("model_name") or "test-model",
+            api_key="x",
+        ),
+    )
+    runtime = CapturingRuntime()
+    with (
+        settings_context(settings),
+        artifact_store_context(container.artifact_store),
+        db_session_factory() as db,
+        runtime_context(runtime),
+    ):
+        workspace = _ready_workspace_for_conversation(db)
+        created = conversations.create_conversation(
+            db, workspace.id, "批量 Skill", workspace.default_model_provider_id, "batch-skill-key"
+        )
+        result = conversations.register_conversation_capabilities(
+            db,
+            workspace.id,
+            created["id"],
+            (skill_capability["capability_id"], second_skill),
+        )
+
+        assert result["completed"] is False
+        assert result["loaded_capability_version_ids"] == [skill_capability["capability_id"]]
+        assert result["failure"] == {
+            "capability_version_id": second_skill,
+            "code": "PLUGIN_LOAD_FAILED",
+            "message": "第二项能力加载失败",
+        }
+        assert [item["id"] for item in result["conversation"]["capabilities"]] == [
+            skill_capability["capability_id"]
+        ]
+        assert len(runtime.plugin_refs) == 2
+
+
 def test_agent_workspace_selected_plugin_and_mcp_are_mounted(
     settings, client, container, db_session_factory, monkeypatch
 ):

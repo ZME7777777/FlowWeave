@@ -3586,15 +3586,15 @@ def cancel_resumable_node_attachment_upload(
     resumable_attachments.close_upload(db, upload, status="CANCELLED")
 
 
-def add_node_conversation_capability(
+def register_node_conversation_capabilities(
     db: Session,
     *,
     flow_run_id: str,
     attempt_id: str,
     binding_id: str,
-    capability_version_id: str,
+    capability_version_ids: tuple[str, ...],
 ) -> dict[str, Any]:
-    """Load a governed capability through the same native marketplace lifecycle."""
+    """Register node-session capabilities in one ordered native lifecycle operation."""
 
     _assert_node_session_writable(
         db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
@@ -3604,29 +3604,60 @@ def add_node_conversation_capability(
     )
     if binding.lifecycle != "ACTIVE" or not binding.working_directory:
         raise DomainError("AGENT_CONVERSATION_NOT_READY", "会话当前无法加载能力", 409)
-    existing = db.scalar(
-        select(AgentConversationCapability).where(
-            AgentConversationCapability.binding_id == binding.id,
-            AgentConversationCapability.capability_version_id == capability_version_id,
+
+    seen_versions: set[str] = set()
+    seen_names: set[tuple[str, str]] = set()
+    selected: list[tuple[Any, str]] = []
+    for version_id in capability_version_ids:
+        if version_id in seen_versions:
+            raise DomainError("AGENT_CONVERSATION_CAPABILITY_DUPLICATE", "能力不能重复选择", 422)
+        published = resolve_version(db, version_id)
+        capability_type = published.package.capability_type
+        if capability_type not in {"SKILL", "MCP", "PLUGIN"}:
+            raise DomainError("AGENT_CAPABILITY_INVALID", "该能力不能加载到 Agent 会话", 422)
+        identity = (capability_type, published.package.capability_key)
+        if identity in seen_names:
+            raise DomainError(
+                "AGENT_CONVERSATION_CAPABILITY_CONFLICT", "同类型同名称能力只能选择一个版本", 422
+            )
+        seen_versions.add(version_id)
+        seen_names.add(identity)
+        selected.append((published, capability_type))
+
+    existing = tuple(
+        db.scalars(
+            select(AgentConversationCapability).where(
+                AgentConversationCapability.binding_id == binding.id
+            )
         )
     )
-    if existing is not None:
-        return _node_session_dict(db, binding)
-    published = resolve_version(db, capability_version_id)
-    capability_type = published.package.capability_type
-    if capability_type not in {"SKILL", "MCP", "PLUGIN"}:
-        raise DomainError("AGENT_CAPABILITY_INVALID", "该能力不能加载到 Agent 会话", 422)
-    same_name = db.scalar(
-        select(AgentConversationCapability).where(
-            AgentConversationCapability.binding_id == binding.id,
-            AgentConversationCapability.capability_type == capability_type,
-            AgentConversationCapability.capability_key == published.package.capability_key,
-        )
-    )
-    if same_name is not None:
-        raise DomainError(
-            "AGENT_CONVERSATION_CAPABILITY_CONFLICT", "同类型同名称能力已加载其他版本", 409
-        )
+    existing_versions = {reference.capability_version_id for reference in existing}
+    existing_names = {
+        (reference.capability_type, reference.capability_key) for reference in existing
+    }
+    pending: list[tuple[Any, str]] = []
+    already_loaded: list[str] = []
+    for published, capability_type in selected:
+        version_id = published.version.id
+        if version_id in existing_versions:
+            already_loaded.append(version_id)
+            continue
+        if (capability_type, published.package.capability_key) in existing_names:
+            raise DomainError(
+                "AGENT_CONVERSATION_CAPABILITY_CONFLICT", "同类型同名称能力已加载其他版本", 409
+            )
+        pending.append((published, capability_type))
+        existing_names.add((capability_type, published.package.capability_key))
+
+    if not pending:
+        return {
+            "conversation": _node_session_dict(db, binding),
+            "completed": True,
+            "loaded_capability_version_ids": [],
+            "already_loaded_capability_version_ids": already_loaded,
+            "failure": None,
+        }
+
     handle = _node_handle(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id)
     runtime = get_runtime()
     if not runtime.can_accept_input(handle):
@@ -3646,34 +3677,70 @@ def add_node_conversation_capability(
         )
     )
     marketplace_name = agent_workspace_capability_marketplace_name(binding.id)
-    plugin_name = materialize_agent_workspace_capability_marketplace(
-        frozen_runtime_capability(db, published, capability_type),
-        host_root=host_root,
-        runtime_root=runtime_root,
-        marketplace_name=marketplace_name,
-    )
-    if plugin_name is None:
-        raise DomainError("RUNTIME_CAPABILITY_UNAVAILABLE", "能力插件物化失败", 409)
-    runtime.load_plugin(handle, f"{plugin_name}@{marketplace_name}")
-    position = db.scalar(
-        select(AgentConversationCapability.position)
-        .where(AgentConversationCapability.binding_id == binding.id)
-        .order_by(AgentConversationCapability.position.desc())
-        .limit(1)
-    )
-    db.add(
-        AgentConversationCapability(
-            binding_id=binding.id,
-            capability_version_id=published.version.id,
-            capability_type=capability_type,
-            capability_key=published.package.capability_key,
-            digest=published.version.digest,
-            position=(position + 1) if position is not None else 0,
+    position = max((reference.position for reference in existing), default=-1)
+    loaded: list[str] = []
+    failure: dict[str, str] | None = None
+    for published, capability_type in pending:
+        version_id = published.version.id
+        try:
+            plugin_name = materialize_agent_workspace_capability_marketplace(
+                frozen_runtime_capability(db, published, capability_type),
+                host_root=host_root,
+                runtime_root=runtime_root,
+                marketplace_name=marketplace_name,
+            )
+            if plugin_name is None:
+                raise DomainError("RUNTIME_CAPABILITY_UNAVAILABLE", "能力插件物化失败", 409)
+            runtime.load_plugin(handle, f"{plugin_name}@{marketplace_name}")
+        except DomainError as exc:
+            failure = {
+                "capability_version_id": version_id,
+                "code": exc.code,
+                "message": exc.message,
+            }
+            break
+        position += 1
+        db.add(
+            AgentConversationCapability(
+                binding_id=binding.id,
+                capability_version_id=version_id,
+                capability_type=capability_type,
+                capability_key=published.package.capability_key,
+                digest=published.version.digest,
+                position=position,
+            )
         )
-    )
-    binding.updated_at = now()
+        loaded.append(version_id)
+
+    if loaded:
+        binding.updated_at = now()
     db.flush()
-    return _node_session_dict(db, binding)
+    return {
+        "conversation": _node_session_dict(db, binding),
+        "completed": failure is None,
+        "loaded_capability_version_ids": loaded,
+        "already_loaded_capability_version_ids": already_loaded,
+        "failure": failure,
+    }
+
+
+def add_node_conversation_capability(
+    db: Session,
+    *,
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str,
+    capability_version_id: str,
+) -> dict[str, Any]:
+    """Compatibility wrapper for the original single-capability endpoint."""
+
+    return register_node_conversation_capabilities(
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        binding_id=binding_id,
+        capability_version_ids=(capability_version_id,),
+    )["conversation"]
 
 
 def node_pending_confirmation(

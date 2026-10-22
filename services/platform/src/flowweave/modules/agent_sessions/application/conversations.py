@@ -1636,85 +1636,128 @@ def create_conversation(
     return _dict(db, binding)
 
 
-def add_conversation_capability(
+def register_conversation_capabilities(
     db: Session,
     workspace_id: str,
     binding_id: str,
-    capability_version_id: str,
+    capability_version_ids: tuple[str, ...],
 ) -> dict[str, Any]:
-    """Dynamically add one governed capability through native Plugin loading.
+    """Register capabilities in one lifecycle operation, preserving request order.
 
-    The catalog reference is written only after OpenHands acknowledges the
-    formal ``load_plugin`` request.  This prevents a control-plane checkbox
-    from claiming a Skill/MCP/Plugin is active when the native runtime rejected
-    it.
+    OpenHands serializes lifecycle changes for a Conversation, so this command
+    validates the complete batch once and activates each plugin in order.  A
+    failed native load leaves earlier acknowledged capabilities persisted and
+    reports the first item that was not activated.
     """
 
     workspace = _workspace(db, workspace_id)
     binding = _binding(db, workspace.id, binding_id, lock=True)
     if binding.lifecycle != "ACTIVE" or not binding.working_directory:
         raise DomainError("AGENT_CONVERSATION_NOT_READY", "会话当前无法加载能力", 409)
-    existing = db.scalar(
-        select(AgentConversationCapability).where(
-            AgentConversationCapability.binding_id == binding.id,
-            AgentConversationCapability.capability_version_id == capability_version_id,
+
+    selected = _validated_capabilities(db, capability_version_ids)
+    existing = tuple(
+        db.scalars(
+            select(AgentConversationCapability).where(
+                AgentConversationCapability.binding_id == binding.id
+            )
         )
     )
-    if existing is not None:
-        return _dict(db, binding)
-    selected = _validated_capabilities(db, (capability_version_id,))
-    published, capability_type = selected[0]
-    conflict = db.scalar(
-        select(AgentConversationCapability).where(
-            AgentConversationCapability.binding_id == binding.id,
-            AgentConversationCapability.capability_type == capability_type,
-            AgentConversationCapability.capability_key == published.package.capability_key,
-        )
-    )
-    if conflict is not None:
-        raise DomainError(
-            "AGENT_CONVERSATION_CAPABILITY_CONFLICT",
-            "同类型同名称能力已在此会话加载其他版本",
-            409,
-            {"capability_key": published.package.capability_key},
-        )
+    existing_versions = {reference.capability_version_id for reference in existing}
+    existing_names = {
+        (reference.capability_type, reference.capability_key) for reference in existing
+    }
+    pending: list[tuple[Any, str]] = []
+    already_loaded: list[str] = []
+    for published, capability_type in selected:
+        version_id = published.version.id
+        if version_id in existing_versions:
+            already_loaded.append(version_id)
+            continue
+        if (capability_type, published.package.capability_key) in existing_names:
+            raise DomainError(
+                "AGENT_CONVERSATION_CAPABILITY_CONFLICT",
+                "同类型同名称能力已在此会话加载其他版本",
+                409,
+                {"capability_key": published.package.capability_key},
+            )
+        pending.append((published, capability_type))
+        existing_names.add((capability_type, published.package.capability_key))
+
+    if not pending:
+        return {
+            "conversation": _dict(db, binding),
+            "completed": True,
+            "loaded_capability_version_ids": [],
+            "already_loaded_capability_version_ids": already_loaded,
+            "failure": None,
+        }
+
     handle = _handle(db, workspace, binding)
-    if not get_runtime().can_accept_input(handle):
+    runtime = get_runtime()
+    if not runtime.can_accept_input(handle):
         raise DomainError("AGENT_CONVERSATION_RUNNING", "会话运行中，完成当前回复后再加载能力", 409)
     host_root, runtime_root, marketplace_name = _capability_marketplace_paths(
         db, workspace, binding
     )
-    plugin_name = materialize_agent_workspace_capability_marketplace(
-        _frozen_runtime_capability(db, published, capability_type),
-        host_root=host_root,
-        runtime_root=runtime_root,
-        marketplace_name=marketplace_name,
-    )
-    if plugin_name is None:
-        raise DomainError("RUNTIME_CAPABILITY_UNAVAILABLE", "能力插件物化失败", 409)
-    # This is the formal OpenHands conversation lifecycle endpoint.  Existing
-    # pre-registration conversations fail here rather than receiving a fake
-    # FlowWeave-only capability record.
-    get_runtime().load_plugin(handle, f"{plugin_name}@{marketplace_name}")
-    position = db.scalar(
-        select(AgentConversationCapability.position)
-        .where(AgentConversationCapability.binding_id == binding.id)
-        .order_by(AgentConversationCapability.position.desc())
-        .limit(1)
-    )
-    db.add(
-        AgentConversationCapability(
-            binding_id=binding.id,
-            capability_version_id=published.version.id,
-            capability_type=capability_type,
-            capability_key=published.package.capability_key,
-            digest=published.version.digest,
-            position=(position + 1) if position is not None else 0,
+    position = max((reference.position for reference in existing), default=-1)
+    loaded: list[str] = []
+    failure: dict[str, str] | None = None
+    for published, capability_type in pending:
+        version_id = published.version.id
+        try:
+            plugin_name = materialize_agent_workspace_capability_marketplace(
+                _frozen_runtime_capability(db, published, capability_type),
+                host_root=host_root,
+                runtime_root=runtime_root,
+                marketplace_name=marketplace_name,
+            )
+            if plugin_name is None:
+                raise DomainError("RUNTIME_CAPABILITY_UNAVAILABLE", "能力插件物化失败", 409)
+            runtime.load_plugin(handle, f"{plugin_name}@{marketplace_name}")
+        except DomainError as exc:
+            failure = {
+                "capability_version_id": version_id,
+                "code": exc.code,
+                "message": exc.message,
+            }
+            break
+        position += 1
+        db.add(
+            AgentConversationCapability(
+                binding_id=binding.id,
+                capability_version_id=version_id,
+                capability_type=capability_type,
+                capability_key=published.package.capability_key,
+                digest=published.version.digest,
+                position=position,
+            )
         )
-    )
-    binding.updated_at = now()
+        loaded.append(version_id)
+
+    if loaded:
+        binding.updated_at = now()
     db.flush()
-    return _dict(db, binding)
+    return {
+        "conversation": _dict(db, binding),
+        "completed": failure is None,
+        "loaded_capability_version_ids": loaded,
+        "already_loaded_capability_version_ids": already_loaded,
+        "failure": failure,
+    }
+
+
+def add_conversation_capability(
+    db: Session,
+    workspace_id: str,
+    binding_id: str,
+    capability_version_id: str,
+) -> dict[str, Any]:
+    """Compatibility wrapper for the original single-capability endpoint."""
+
+    return register_conversation_capabilities(
+        db, workspace_id, binding_id, (capability_version_id,)
+    )["conversation"]
 
 
 def conversation_credential_sync_state(

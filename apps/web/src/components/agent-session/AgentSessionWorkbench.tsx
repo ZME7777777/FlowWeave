@@ -1261,14 +1261,15 @@ export function CapabilityManager({ workspaceId, bindingId, conversationCapabili
   const [kind, setKind] = useState<AgentCapabilityType | 'ALL'>('ALL');
   const [showSelectedOnly, setShowSelectedOnly] = useState(false);
   const [managerTab, setManagerTab] = useState<'CAPABILITIES' | 'CREDENTIALS'>('CAPABILITIES');
-  const [collectionMenuOpen, setCollectionMenuOpen] = useState(false);
+  const [collectionFilterOpen, setCollectionFilterOpen] = useState(false);
+  const [selectedCollectionIds, setSelectedCollectionIds] = useState<string[]>([]);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [selectedCredentialIds, setSelectedCredentialIds] = useState<string[]>([]);
   const [mcpReadiness, setMcpReadiness] = useState<Record<string, AgentSessionMcpReadiness | undefined>>({});
   const [checkingMcpIds, setCheckingMcpIds] = useState<Set<string>>(new Set());
+  const [registrationFailure, setRegistrationFailure] = useState<string | null>(null);
   const dialog = useRef<HTMLElement>(null);
   const closeButton = useRef<HTMLButtonElement>(null);
-  const collectionMenu = useRef<HTMLDivElement>(null);
   const returnFocus = useRef<HTMLElement | null>(document.activeElement instanceof HTMLElement ? document.activeElement : null);
   const credentialSelectionInitialized = useRef(false);
   useEffect(() => {
@@ -1304,16 +1305,6 @@ export function CapabilityManager({ workspaceId, bindingId, conversationCapabili
       setSelectedCredentialIds(draftCredentialIds ?? []);
     }
   }, [bindingId, credentialCatalogQuery.data, credentialQuery.data, draftCredentialIds]);
-  useEffect(() => {
-    if (!collectionMenuOpen) return;
-    const closeOnOutsidePointer = (event: PointerEvent) => {
-      if (event.target instanceof Node && !collectionMenu.current?.contains(event.target)) {
-        setCollectionMenuOpen(false);
-      }
-    };
-    document.addEventListener('pointerdown', closeOnOutsidePointer, true);
-    return () => document.removeEventListener('pointerdown', closeOnOutsidePointer, true);
-  }, [collectionMenuOpen]);
   const frozenCreationOnlyIds = useMemo(() => new Set(
     (conversationCapabilities ?? [])
       .filter(item => item.capability_type === 'CONTEXT' || item.capability_type === 'AGENT_DEFINITION' || item.capability_type === 'HOOK')
@@ -1327,16 +1318,22 @@ export function CapabilityManager({ workspaceId, bindingId, conversationCapabili
     && (item.is_latest || frozenCreationOnlyIds.has(item.id))
     && (!bindingId || !['CONTEXT', 'AGENT_DEFINITION', 'HOOK'].includes(item.capability_type) || frozenCreationOnlyIds.has(item.id)),
   ), [bindingId, catalogQuery.data, frozenCreationOnlyIds]);
+  const byId = useMemo(() => new Map(capabilities.map(item => [item.id, item])), [capabilities]);
+  const selectedCollectionMemberIds = useMemo(() => new Set(
+    (collectionsQuery.data ?? [])
+      .filter(collection => selectedCollectionIds.includes(collection.id))
+      .flatMap(collection => collection.members.map(member => member.id).filter(id => byId.has(id))),
+  ), [byId, collectionsQuery.data, selectedCollectionIds]);
   const visible = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase();
     return capabilities.filter(item =>
       (kind === 'ALL' || item.capability_type === kind)
       && (!bindingId || !['CONTEXT', 'AGENT_DEFINITION', 'HOOK'].includes(item.capability_type) || kind === item.capability_type)
       && (!showSelectedOnly || selectedIds.includes(item.id))
+      && (!selectedCollectionIds.length || selectedCollectionMemberIds.has(item.id))
       && (!needle || `${item.capability_key} ${item.description} ${item.filename}`.toLocaleLowerCase().includes(needle)),
     );
-  }, [bindingId, capabilities, kind, query, selectedIds, showSelectedOnly]);
-  const byId = useMemo(() => new Map(capabilities.map(item => [item.id, item])), [capabilities]);
+  }, [bindingId, capabilities, kind, query, selectedCollectionIds.length, selectedCollectionMemberIds, selectedIds, showSelectedOnly]);
   const selectedMcpIds = useMemo(() => selectedIds.filter(id => byId.get(id)?.capability_type === 'MCP'), [byId, selectedIds]);
   const readonlyCreationOnly = Boolean(bindingId && (kind === 'CONTEXT' || kind === 'AGENT_DEFINITION' || kind === 'HOOK'));
   const selectableVisibleIds = useMemo(() => visible
@@ -1376,22 +1373,31 @@ export function CapabilityManager({ workspaceId, bindingId, conversationCapabili
       }
       if (!bindingId) return selectedIds;
       const loaded = new Set((conversationCapabilities ?? []).map(item => item.id));
-      let latest: AgentConversation | undefined;
-      for (const capabilityVersionId of selectedIds.filter(id => !loaded.has(id))) {
-        latest = await api.addConversationCapability(workspaceId, bindingId, capabilityVersionId);
-      }
-      return latest;
+      const pending = selectedIds.filter(id => !loaded.has(id));
+      if (!pending.length) return undefined;
+      return api.registerConversationCapabilities(workspaceId, bindingId, pending);
     },
+    onMutate: () => setRegistrationFailure(null),
     onSuccess: value => {
       if (!bindingId) {
         onCreateEnhancedConversation?.(value as string[]);
         onDraftCredentialIdsChange?.(selectedCredentialIds);
+        onClose();
+        return;
       }
-      if (bindingId && value) {
-        void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversations', workspaceId) });
-        queryClient.setQueryData<AgentConversation>(sessionQueryKey(host, 'conversation', workspaceId, bindingId), value as AgentConversation);
+      if (!value) {
+        onClose();
+        return;
       }
-      onClose();
+      const registration = value as Awaited<ReturnType<typeof api.registerConversationCapabilities>>;
+      void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversations', workspaceId) });
+      queryClient.setQueryData<AgentConversation>(sessionQueryKey(host, 'conversation', workspaceId, bindingId), registration.conversation);
+      if (registration.completed) {
+        onClose();
+        return;
+      }
+      const failed = byId.get(registration.failure?.capability_version_id ?? '');
+      setRegistrationFailure(`已注册 ${registration.loaded_capability_version_ids.length} 项能力；${failed?.capability_key ?? '后续能力'} 未注册：${registration.failure?.message ?? '加载失败。'}`);
     },
   });
   const credentialSync = useMutation({
@@ -1415,13 +1421,9 @@ export function CapabilityManager({ workspaceId, bindingId, conversationCapabili
     if (allVisibleSelected) return current.filter(id => !selectableVisibleIds.includes(id));
     return selectCapabilityVersions(current, selectableVisibleIds.map(id => byId.get(id)).filter((item): item is CapabilityAsset => Boolean(item)), byId);
   });
-  const toggleCollection = (collection: CapabilityCollection) => setSelectedIds(current => {
-    const memberIds = collection.members.map(member => member.id).filter(id => byId.has(id));
-    if (!memberIds.length) return current;
-    const isSelected = memberIds.every(id => current.includes(id));
-    if (isSelected) return current.filter(id => !memberIds.includes(id) || (bindingId && (conversationCapabilities ?? []).some(item => item.id === id)));
-    return selectCapabilityVersions(current, memberIds.map(id => byId.get(id)).filter((item): item is CapabilityAsset => Boolean(item)), byId);
-  });
+  const toggleCollectionFilter = (collectionId: string) => setSelectedCollectionIds(current => current.includes(collectionId)
+    ? current.filter(id => id !== collectionId)
+    : [...current, collectionId]);
   const trapFocus = (event: ReactKeyboardEvent<HTMLElement>) => {
     if (event.key !== 'Tab') return;
     const focusable = [...(dialog.current?.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), [href], [tabindex]:not([tabindex="-1"])') ?? [])].filter(item => item.offsetParent !== null);
@@ -1457,10 +1459,11 @@ export function CapabilityManager({ workspaceId, bindingId, conversationCapabili
         {credentialSync.error && <div className="agent-capability-error"><p>{credentialSync.error.message}</p></div>}
         <footer><span className="agent-credential-sync-count">已选择 <b>{selectedCredentialIds.length}</b> 项认证</span><button type="button" className="secondary" disabled={busy} onClick={onClose}>{bindingId ? '关闭' : '取消'}</button>{bindingId ? <button type="button" className="primary" disabled={busy || credentialLoading || selectedCredentialIds.length === 0} onClick={() => credentialSync.mutate()}><RefreshCw size={14}/>{credentialSync.isPending ? '正在同步…' : '同步认证'}</button> : <button type="button" className="primary" disabled={busy || credentialLoading} onClick={() => { onDraftCredentialIdsChange?.(selectedCredentialIds); onClose(); }}>保存认证配置</button>}</footer>
       </div> : <>
-      <div className="agent-capability-toolbar"><div className="agent-capability-tabs">{([['ALL', 'all'], ['PLUGIN', 'plugin'], ['MCP', 'MCP'], ['SKILL', 'skill'], ['CONTEXT', 'context'], ['AGENT_DEFINITION', 'agent'], ['HOOK', 'hook']] as const).map(([value, label]) => <button type="button" key={value} className={kind === value ? 'active' : ''} onClick={() => { setKind(value); setCollectionMenuOpen(false); }}>{label}</button>)}</div><div className="agent-capability-toolbar-actions">{(kind === 'ALL' || kind === 'SKILL') && collectionsQuery.data?.length ? <div ref={collectionMenu} className="agent-capability-collection-menu"><button type="button" className="agent-capability-collection-trigger" aria-label="Skill 组合" title="Skill 组合" aria-expanded={collectionMenuOpen} onClick={() => setCollectionMenuOpen(current => !current)}><Layers3 size={15}/></button>{collectionMenuOpen && <div className="agent-capability-collection-popover" role="menu" aria-label="Skill 组合">{collectionsQuery.data.map(collection => { const memberIds = collection.members.map(member => member.id).filter(id => byId.has(id)); const selected = memberIds.length > 0 && memberIds.every(id => selectedIds.includes(id)); return <button type="button" role="menuitemcheckbox" aria-checked={selected} key={collection.id} className={selected ? 'selected' : ''} onClick={() => toggleCollection(collection)}><span><b>{collection.name}</b><small>{memberIds.length} 项能力</small></span>{selected && <Check size={14}/>}</button>; })}</div>}</div> : null}{!readonlyCreationOnly && <button type="button" className="agent-capability-select-visible" aria-label={allVisibleSelected ? '取消选择筛选结果' : `选择筛选结果（${selectableVisibleIds.length}）`} title={allVisibleSelected ? '取消选择筛选结果' : `选择筛选结果（${selectableVisibleIds.length}）`} disabled={!selectableVisibleIds.length} onClick={toggleVisible}>{allVisibleSelected ? <Square size={16}/> : <SquareCheck size={16}/>}</button>}<button type="button" className={`agent-capability-show-selected${showSelectedOnly ? ' active' : ''}`} aria-label={showSelectedOnly ? '显示全部能力' : '只看已选'} title={showSelectedOnly ? '显示全部能力' : '只看已选'} aria-pressed={showSelectedOnly} onClick={() => setShowSelectedOnly(current => !current)}>{showSelectedOnly ? <Eye size={16}/> : <EyeOff size={16}/>}</button><label className="agent-capability-search"><Search size={15}/><input value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索名称、说明或文件…"/></label></div></div>
+      <div className="agent-capability-toolbar"><div className="agent-capability-tabs">{([['ALL', 'all'], ['PLUGIN', 'plugin'], ['MCP', 'MCP'], ['SKILL', 'skill'], ['CONTEXT', 'context'], ['AGENT_DEFINITION', 'agent'], ['HOOK', 'hook']] as const).map(([value, label]) => <button type="button" key={value} className={kind === value ? 'active' : ''} onClick={() => { setKind(value); setCollectionFilterOpen(false); }}>{label}</button>)}</div><div className="agent-capability-toolbar-actions">{(kind === 'ALL' || kind === 'SKILL') && collectionsQuery.data?.length ? <button type="button" className={`agent-capability-collection-trigger${collectionFilterOpen ? ' active' : ''}`} aria-label="筛选 Skill 组合" title="筛选 Skill 组合" aria-pressed={collectionFilterOpen} onClick={() => setCollectionFilterOpen(current => !current)}><Layers3 size={15}/></button> : null}{!readonlyCreationOnly && <button type="button" className="agent-capability-select-visible" aria-label={allVisibleSelected ? '取消选择筛选结果' : `选择筛选结果（${selectableVisibleIds.length}）`} title={allVisibleSelected ? '取消选择筛选结果' : `选择筛选结果（${selectableVisibleIds.length}）`} disabled={!selectableVisibleIds.length} onClick={toggleVisible}>{allVisibleSelected ? <Square size={16}/> : <SquareCheck size={16}/>}</button>}<button type="button" className={`agent-capability-show-selected${showSelectedOnly ? ' active' : ''}`} aria-label={showSelectedOnly ? '显示全部能力' : '只看已选'} title={showSelectedOnly ? '显示全部能力' : '只看已选'} aria-pressed={showSelectedOnly} onClick={() => setShowSelectedOnly(current => !current)}>{showSelectedOnly ? <Eye size={16}/> : <EyeOff size={16}/>}</button><label className="agent-capability-search"><Search size={15}/><input value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索名称、说明或文件…"/></label></div></div>
+      {collectionFilterOpen && (kind === 'ALL' || kind === 'SKILL') && <section className="agent-capability-collection-filters" aria-label="Skill 组合筛选"><header><span><Layers3 size={14}/><b>Skill 组合</b><small>可多选；下方仅展示组合内去重后的 Skill。</small></span>{selectedCollectionIds.length > 0 && <button type="button" onClick={() => setSelectedCollectionIds([])}>清除筛选</button>}</header><div>{collectionsQuery.data?.map(collection => { const memberCount = new Set(collection.members.map(member => member.id).filter(id => byId.has(id))).size; const selected = selectedCollectionIds.includes(collection.id); return <button type="button" key={collection.id} className={selected ? 'selected' : ''} aria-pressed={selected} onClick={() => toggleCollectionFilter(collection.id)}><i aria-hidden="true">{selected && <Check size={12}/>}</i><span><b>{collection.name}</b><small>{collection.category || '未分类'} · {memberCount} 项 Skill</small></span></button>; })}</div></section>}
       <div className="agent-capability-summary"><span>{readonlyCreationOnly ? <>已装配 <b>{kind === 'CONTEXT' ? frozenContextCount : kind === 'HOOK' ? frozenHookCount : frozenAgentCount}</b> 个 {kind === 'CONTEXT' ? 'Context' : kind === 'HOOK' ? 'Hook' : 'Agent'}</> : <>{bindingId ? '已注册' : '已选择'} <b>{selectedIds.length}</b> 项</>}</span><span>{readonlyCreationOnly ? `${kind === 'CONTEXT' ? 'Context' : kind === 'HOOK' ? 'Hook' : 'Agent'} 在创建会话时冻结，仅供查看，不能新增、编辑、取消或删除。` : bindingId ? '可继续注册新能力；已注册能力已锁定，不能取消或删除。' : '选择只作用于本次新会话，不会改变工作区或其他会话。'}</span></div>
       <div className="agent-capability-list">{catalogQuery.isLoading ? <p>正在读取能力仓库…</p> : visible.length === 0 ? <p>{readonlyCreationOnly ? `此会话创建时没有装配 ${kind === 'CONTEXT' ? 'Context' : kind === 'HOOK' ? 'Hook' : 'Agent'}。` : '没有匹配的已发布能力。'}</p> : visible.map(item => { const checked = selectedIds.includes(item.id); const isFrozenCreationOnly = Boolean(bindingId && ['CONTEXT', 'AGENT_DEFINITION', 'HOOK'].includes(item.capability_type) && frozenCreationOnlyIds.has(item.id)); const locked = Boolean(bindingId && (conversationCapabilities ?? []).some(enabled => enabled.id === item.id)); const isMcp = item.capability_type === 'MCP'; const readiness = mcpReadiness[item.id]; const checking = isMcp && checkingMcpIds.has(item.id); const readinessLabel = item.capability_type === 'CONTEXT' ? '系统上下文' : item.capability_type === 'AGENT_DEFINITION' ? 'Agent' : item.capability_type === 'HOOK' ? 'Hook' : !isMcp ? (item.capability_type === 'SKILL' ? '技能' : item.capability_type) : !checked ? 'MCP' : checking ? '检测中' : readiness?.state === 'READY' ? '已连接' : readiness?.error_kind === 'timeout' ? '连接超时' : readiness?.error_kind === 'connection' ? '连接失败' : '不可用'; const detail = isFrozenCreationOnly ? '创建会话时已装配，仅供查看，不能编辑或删除。' : locked ? '已注册到当前会话，不能取消或删除。' : item.capability_type === 'CONTEXT' ? '创建会话时冻结，并追加到 OpenHands 系统提示词后缀。' : item.capability_type === 'AGENT_DEFINITION' ? '创建会话时冻结为 OpenHands 原生子 Agent 定义。' : item.capability_type === 'HOOK' ? '创建会话时冻结，并通过 OpenHands 官方 hook_config 注册。' : isMcp && checked && readiness?.state === 'UNAVAILABLE' ? `MCP ${readinessLabel}；不会保存为新会话默认能力。` : item.description || item.filename; const lockedLabel = isFrozenCreationOnly ? `${item.capability_key}（创建时已装配，只读）` : `${item.capability_key}（已注册，不能取消）`; const lockedTitle = isFrozenCreationOnly ? '该能力在创建会话时已装配，仅供查看，不能新增、编辑或删除。' : '该能力已注册到当前会话，不能取消或删除。'; return <button type="button" key={item.id} className={`${checked ? 'selected' : ''}${locked ? ' locked' : ''}`} disabled={locked} aria-label={locked ? lockedLabel : undefined} title={locked ? lockedTitle : undefined} onClick={() => toggle(item)}><span className={`agent-capability-icon ${item.capability_type.toLowerCase()}`}><Boxes size={17}/></span><span><b>{item.capability_key}</b><small>{detail}</small><em className={isMcp && checked ? `mcp-status ${readiness?.state === 'READY' ? 'ready' : readiness?.state === 'UNAVAILABLE' ? 'unavailable' : 'checking'}` : undefined}>{readinessLabel}</em></span><i aria-hidden="true">{checked ? <Check size={15}/> : null}</i></button>; })}</div>
-      {save.error && <div className="agent-capability-error"><p>{save.error.message}</p>{save.error instanceof ApiError && save.error.code === 'AGENT_CONVERSATION_MARKETPLACE_UNAVAILABLE' && onCreateEnhancedConversation && <div className="agent-capability-migration"><span>这条历史会话未在创建时注册原生能力市场。可新建一个空能力会话后，再按需选择要挂载的能力；此会话的历史内容会保留不变。</span><button type="button" className="secondary" disabled={save.isPending} onClick={() => onCreateEnhancedConversation([])}><Plus size={13}/>新建可使用能力的会话</button></div>}</div>}
+      {(save.error || registrationFailure) && <div className="agent-capability-error"><p>{registrationFailure ?? save.error?.message}</p>{save.error instanceof ApiError && save.error.code === 'AGENT_CONVERSATION_MARKETPLACE_UNAVAILABLE' && onCreateEnhancedConversation && <div className="agent-capability-migration"><span>这条历史会话未在创建时注册原生能力市场。可新建一个空能力会话后，再按需选择要挂载的能力；此会话的历史内容会保留不变。</span><button type="button" className="secondary" disabled={save.isPending} onClick={() => onCreateEnhancedConversation([])}><Plus size={13}/>新建可使用能力的会话</button></div>}</div>}
       <footer>{!readonlyCreationOnly && selectedMcpIds.length > 0 && <button type="button" className="secondary" disabled={save.isPending || checkingMcpIds.size > 0} onClick={() => void checkMcpReadiness(selectedMcpIds)}>重新检测 MCP</button>}<button type="button" className="secondary" disabled={save.isPending} onClick={onClose}>{readonlyCreationOnly ? '关闭' : '取消'}</button>{!readonlyCreationOnly && <button type="button" className="primary" disabled={save.isPending || checkingMcpIds.size > 0} onClick={() => save.mutate()}>{save.isPending ? '正在注册…' : bindingId ? '注册到当前会话' : '用于新建会话'}</button>}</footer></>}
     </section>
   </div>;

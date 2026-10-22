@@ -1,6 +1,6 @@
 import { Background, Controls, Handle, Position, ReactFlow, useNodesState, type Edge, type Node, type NodeProps } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { AlertTriangle, ArrowLeft, Bot, Boxes, Check, ChevronDown, ChevronRight, Copy, Download, ExternalLink, Eye, FileText, FolderClosed, GripVertical, Layers3, Play, Plus, RefreshCw, Send, StopCircle, Trash2, Upload, X } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, Bot, Boxes, Check, ChevronDown, ChevronRight, Copy, Download, ExternalLink, Eye, FileText, FolderClosed, GripVertical, Layers3, Play, Plus, RefreshCw, Search, Send, StopCircle, Trash2, Upload, X } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { ApiError, api, artifactContentUrl, subscribeToRun } from '../api/client';
@@ -907,15 +907,24 @@ function CapabilityPresetDialog({ selectedIds, onClose, onChange }: { selectedId
   const catalog = useQuery({ queryKey: ['capabilities'], queryFn: api.capabilities });
   const collections = useQuery({ queryKey: ['capability-collections'], queryFn: api.capabilityCollections });
   const [query, setQuery] = useState('');
+  const [collectionFilterOpen, setCollectionFilterOpen] = useState(false);
+  const [selectedCollectionIds, setSelectedCollectionIds] = useState<string[]>([]);
   const [kind, setKind] = useState<'ALL' | CapabilityAsset['capability_type']>('ALL');
   const [draft, setDraft] = useState(selectedIds);
   useEscapeClose(onClose);
   const capabilities = useMemo(() => (catalog.data ?? []).filter(item => ['SKILL', 'MCP', 'PLUGIN', 'CONTEXT', 'AGENT_DEFINITION', 'HOOK'].includes(item.capability_type) && item.is_latest), [catalog.data]);
   const capabilitiesById = useMemo(() => new Map(capabilities.map(item => [item.id, item])), [capabilities]);
+  const selectedCollectionMemberIds = useMemo(() => new Set(
+    (collections.data ?? [])
+      .filter(collection => selectedCollectionIds.includes(collection.id))
+      .flatMap(collection => collection.members.map(member => member.id).filter(id => capabilitiesById.has(id))),
+  ), [capabilitiesById, collections.data, selectedCollectionIds]);
   const visible = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase();
-    return capabilities.filter(item => (kind === 'ALL' || item.capability_type === kind) && (!needle || `${item.capability_key} ${item.description} ${item.filename}`.toLocaleLowerCase().includes(needle)));
-  }, [capabilities, kind, query]);
+    return capabilities.filter(item => (kind === 'ALL' || item.capability_type === kind)
+      && (!selectedCollectionIds.length || selectedCollectionMemberIds.has(item.id))
+      && (!needle || `${item.capability_key} ${item.description} ${item.filename}`.toLocaleLowerCase().includes(needle)));
+  }, [capabilities, kind, query, selectedCollectionIds.length, selectedCollectionMemberIds]);
   const updateDraft = (next: string[]) => {
     setDraft(next);
     onChange(next);
@@ -923,13 +932,11 @@ function CapabilityPresetDialog({ selectedIds, onClose, onChange }: { selectedId
   const toggle = (item: CapabilityAsset) => updateDraft(
     draft.includes(item.id) ? draft.filter(id => id !== item.id) : selectCapabilityVersion(draft, item, capabilitiesById),
   );
-  const toggleCollection = (collection: CapabilityCollection) => {
-    const members = collection.members.filter(item => capabilities.some(candidate => candidate.id === item.id));
-    const ids = members.map(item => item.id);
-    if (!ids.length) return;
-    updateDraft(ids.every(id => draft.includes(id)) ? draft.filter(id => !ids.includes(id)) : selectCapabilityVersions(draft, members, capabilitiesById));
-  };
-  return <div className="modal-backdrop"><section className="modal agent-preset-capability-dialog" role="dialog" aria-modal="true" aria-label="配置能力"><header><div><span className="eyebrow">LAUNCH CAPABILITIES</span><h2>配置能力</h2><p>选择这次自动启动首个会话可用的能力；取消或关闭会保留当前节点的前端草稿，点击“保存配置”后才会提交。</p></div><button type="button" className="ghost" onClick={onClose}><X size={17}/></button></header><div className="agent-capability-toolbar"><nav className="agent-capability-tabs" aria-label="能力类型">{(['ALL', 'SKILL', 'MCP', 'PLUGIN', 'CONTEXT', 'AGENT_DEFINITION', 'HOOK'] as const).map(value => <button type="button" key={value} className={kind === value ? 'active' : ''} onClick={() => setKind(value)}>{value === 'ALL' ? 'all' : value === 'SKILL' ? 'skill' : value === 'MCP' ? 'MCP' : value === 'PLUGIN' ? 'plugin' : value === 'CONTEXT' ? 'context' : value === 'AGENT_DEFINITION' ? 'agent' : 'hook'}</button>)}</nav><label className="agent-capability-search"><input aria-label="搜索能力" value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索能力"/></label></div>{(kind === 'ALL' || kind === 'SKILL') && collections.data?.length ? <section className="agent-capability-collections"><span>Skill 组合</span><div>{collections.data.map(collection => { const ids = collection.members.map(item => item.id).filter(id => capabilities.some(item => item.id === id)); const selected = ids.length > 0 && ids.every(id => draft.includes(id)); return <button type="button" key={collection.id} className={selected ? 'selected' : ''} onClick={() => toggleCollection(collection)}><Layers3 size={13}/><b>{collection.name}</b><em>{ids.length}</em>{selected && <Check size={13}/>}</button>; })}</div></section> : null}<div className="agent-capability-summary"><span>已选 <b>{draft.length}</b> 项</span><span>仅加载已发布的最新版本</span></div><div className="agent-capability-list">{catalog.isLoading ? <p>正在读取能力目录…</p> : visible.length ? visible.map(item => <button type="button" key={item.id} className={draft.includes(item.id) ? 'selected' : ''} aria-pressed={draft.includes(item.id)} onClick={() => toggle(item)}><span className={`agent-capability-icon ${item.capability_type.toLowerCase()}`}>{item.capability_type.slice(0, 1)}</span><span><b>{item.capability_key}</b><small>{item.description || item.filename || '未填写说明'}</small><em>{item.capability_type === 'AGENT_DEFINITION' ? 'Agent' : item.capability_type}</em></span><i aria-hidden="true">{draft.includes(item.id) ? '✓' : ''}</i></button>) : <p>没有匹配的能力。</p>}</div><footer><button type="button" className="ghost" onClick={onClose}>取消</button><button type="button" className="primary" onClick={onClose}>保存能力</button></footer></section></div>;
+  const toggleCollectionFilter = (collectionId: string) => setSelectedCollectionIds(current => current.includes(collectionId)
+    ? current.filter(id => id !== collectionId)
+    : [...current, collectionId]);
+  const canBrowseCollections = (kind === 'ALL' || kind === 'SKILL') && Boolean(collections.data?.length);
+  return <div className="modal-backdrop"><section className="modal agent-preset-capability-dialog" role="dialog" aria-modal="true" aria-label="配置能力"><header><div><span className="eyebrow">LAUNCH CAPABILITIES</span><h2>配置能力</h2><p>选择这次自动启动首个会话可用的能力；取消或关闭会保留当前节点的前端草稿，点击“保存配置”后才会提交。</p></div><button type="button" className="ghost" onClick={onClose}><X size={17}/></button></header><div className="agent-capability-toolbar"><nav className="agent-capability-tabs" aria-label="能力类型">{(['ALL', 'SKILL', 'MCP', 'PLUGIN', 'CONTEXT', 'AGENT_DEFINITION', 'HOOK'] as const).map(value => <button type="button" key={value} className={kind === value ? 'active' : ''} onClick={() => { setKind(value); setCollectionFilterOpen(false); }}>{value === 'ALL' ? 'all' : value === 'SKILL' ? 'skill' : value === 'MCP' ? 'MCP' : value === 'PLUGIN' ? 'plugin' : value === 'CONTEXT' ? 'context' : value === 'AGENT_DEFINITION' ? 'agent' : 'hook'}</button>)}</nav><div className="agent-preset-capability-toolbar-actions">{canBrowseCollections && <button type="button" className={`agent-preset-collection-trigger${collectionFilterOpen ? ' active' : ''}`} aria-label="筛选 Skill 组合" aria-pressed={collectionFilterOpen} onClick={() => setCollectionFilterOpen(current => !current)}><Layers3 size={15}/></button>}<label className="agent-capability-search"><input aria-label="搜索能力" value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索能力"/></label></div></div>{collectionFilterOpen && canBrowseCollections ? <section className="agent-preset-collection-filters" aria-label="Skill 组合筛选"><header><span><Layers3 size={14}/><b>Skill 组合</b><small>可多选；下方仅展示组合内去重后的 Skill。</small></span>{selectedCollectionIds.length > 0 && <button type="button" onClick={() => setSelectedCollectionIds([])}>清除筛选</button>}</header><div>{collections.data?.map(collection => { const memberCount = new Set(collection.members.map(member => member.id).filter(id => capabilitiesById.has(id))).size; const selected = selectedCollectionIds.includes(collection.id); return <button type="button" key={collection.id} className={selected ? 'selected' : ''} aria-pressed={selected} onClick={() => toggleCollectionFilter(collection.id)}><i aria-hidden="true">{selected && <Check size={12}/>}</i><span><b>{collection.name}</b><small>{collection.category || '未分类'} · {memberCount} 项 Skill</small></span></button>; })}</div></section> : null}<div className="agent-capability-summary"><span>已选 <b>{draft.length}</b> 项</span><span>仅加载已发布的最新版本</span></div><div className="agent-capability-list">{catalog.isLoading ? <p>正在读取能力目录…</p> : visible.length ? visible.map(item => <button type="button" key={item.id} className={draft.includes(item.id) ? 'selected' : ''} aria-pressed={draft.includes(item.id)} onClick={() => toggle(item)}><span className={`agent-capability-icon ${item.capability_type.toLowerCase()}`}>{item.capability_type.slice(0, 1)}</span><span><b>{item.capability_key}</b><small>{item.description || item.filename || '未填写说明'}</small><em>{item.capability_type === 'AGENT_DEFINITION' ? 'Agent' : item.capability_type}</em></span><i aria-hidden="true">{draft.includes(item.id) ? '✓' : ''}</i></button>) : <p>没有匹配的能力。</p>}</div><footer><button type="button" className="ghost" onClick={onClose}>取消</button><button type="button" className="primary" onClick={onClose}>保存能力</button></footer></section></div>;
 }
 
 function FallbackModelDialog({ initial, primary, onClose, onSave }: { initial: NonNullable<AgentPreset['fallback_models']>; primary: GateAgentPreset; onClose: () => void; onSave: (models: NonNullable<AgentPreset['fallback_models']>) => void }) {

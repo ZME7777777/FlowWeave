@@ -720,8 +720,10 @@ def test_audited_lifecycle_routes_keep_confirmation_and_message_lanes_separate()
         "agent_workspaces": {
             "patch_agent_conversation",
             "add_agent_conversation_capability",
+            "register_agent_conversation_capabilities",
             "synchronize_agent_conversation_credentials",
             "delete_agent_conversation",
+            "delete_agent_management_conversations",
             "agent_conversation_model",
             "agent_streaming_migration",
             "agent_fork_conversation",
@@ -729,6 +731,7 @@ def test_audited_lifecycle_routes_keep_confirmation_and_message_lanes_separate()
         "agent_sessions": {
             "node_session_host",
             "add_node_session_capability",
+            "register_node_session_capabilities",
             "synchronize_node_session_credentials",
             "create_node_session",
             "delete_node_session",
