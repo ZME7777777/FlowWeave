@@ -8929,6 +8929,21 @@ Web typecheck、定向 ESLint、production build、git diff --check、唯一 Ale
 git diff --check、唯一 Alembic head `0157_background_task_aggregate_type_length` 与
 CURRENT 唯一性通过；下一切片为 NONE。沿用会话授权仅发布 Web 并完成受管验收与收尾。
 
+### FR-616 新增工作区弹窗压缩辅助区域 — DONE
+
+依赖：FR-615 DONE。创建弹窗移除英文眉题，标题压为单行；名称标签和输入框同排。
+目录标题、搜索与已选数量同排，完整根路径移至标题悬停说明；底部缩短的多选提示与
+取消／创建按钮同行，去掉面向用户的 Runtime 实现说明。弹窗高度按视口固定且不超过
+720px，目录树占据剩余空间并内部滚动；仅影响新增工作区，不修改编辑弹窗。
+
+扩展目录搜索回归，35 个额外目录产生真实溢出，在 1440／800／390px 宽窗口验证目录
+列表超过弹窗高度 55%、目录工具栏不超过 44px、名称区域不超过 56px、无横向溢出且
+创建按钮可见。检查桌面及窄屏截图；搜索嵌套路径、空结果恢复、目录勾选、自动名称和
+计数／提交可用状态均通过。最终 Chromium 1 passed，Web typecheck、定向 ESLint、
+production build、git diff --check、唯一 Alembic head
+`0157_background_task_aggregate_type_length` 及 CURRENT 唯一性通过；下一切片为 NONE。
+沿用会话授权仅发布 Web，执行正式预检、健康／路由验收与受管收尾。
+
 ### FR-614 能力批量选择图标反映实际选中状态 — DONE
 
 依赖：FR-613 DONE。“选择筛选结果”按钮在当前可选结果全部选中时显示勾选方框，

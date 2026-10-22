@@ -2976,11 +2976,11 @@ function WorkDirectoryCreator({ workspaceId, onClose, onCreated }: {
   });
   const canSubmit = Boolean(displayName.trim() && selectedPaths.length && !create.isPending);
   return <div className="agent-work-directory-backdrop" onPointerDown={event => { if (event.target === event.currentTarget && !create.isPending) onClose(); }}>
-    <section role="dialog" aria-modal="true" aria-labelledby="agent-work-directory-title" className="agent-work-directory-dialog">
-      <header><div><span className="eyebrow">AGENT WORKSPACE</span><h2 id="agent-work-directory-title">新增工作区</h2></div><button type="button" aria-label="关闭新增工作区" disabled={create.isPending} onClick={onClose}><X size={16}/></button></header>
+    <section role="dialog" aria-modal="true" aria-labelledby="agent-work-directory-title" className="agent-work-directory-dialog agent-work-directory-create-dialog">
+      <header><h2 id="agent-work-directory-title">新增工作区</h2><button type="button" aria-label="关闭新增工作区" disabled={create.isPending} onClick={onClose}><X size={16}/></button></header>
       <label className="agent-work-directory-name"><span>工作区名称</span><input autoFocus value={displayName} maxLength={160} placeholder="例如：后端服务" onChange={event => setDisplayName(event.target.value)}/></label>
       <section className="agent-work-directory-picker" aria-label="选择工作区目录">
-        <header><div><b>选择目录</b><span>从 {details?.root ?? '当前用户工作区'} 中选择一个或多个子目录</span><label className="agent-work-directory-search"><Search size={13}/><input type="search" aria-label="搜索目录" value={directorySearch} placeholder="搜索目录名称或路径" onChange={event => setDirectorySearch(event.target.value)}/></label></div><em>{selectedPaths.length}/20</em></header>
+        <header><b title={`从 ${details?.root ?? '当前用户工作区'} 中选择一个或多个子目录`}>选择目录</b><label className="agent-work-directory-search"><Search size={13}/><input type="search" aria-label="搜索目录" value={directorySearch} placeholder="搜索目录名称或路径" onChange={event => setDirectorySearch(event.target.value)}/></label><em aria-label={`已选择 ${selectedPaths.length} 个目录，最多 20 个`}>{selectedPaths.length}/20</em></header>
         <div>
           {detailsQuery.isLoading && <p>正在读取项目目录…</p>}
           {detailsQuery.isError && <p className="error">{detailsQuery.error instanceof Error ? detailsQuery.error.message : '项目目录读取失败，请稍后重试。'}</p>}
@@ -2989,9 +2989,8 @@ function WorkDirectoryCreator({ workspaceId, onClose, onCreated }: {
           {details && visibleDirectoryNodes.length > 0 && <div role="tree" aria-label="项目目录树">{renderDirectories(visibleDirectoryNodes)}</div>}
         </div>
       </section>
-      <p className="agent-work-directory-note">选择多个目录时，它们属于同一个逻辑工作区；Agent 仍复用当前唯一 Runtime 容器。</p>
       {create.error && <p className="agent-work-directory-error">{create.error.message}</p>}
-      <footer><button type="button" className="secondary" disabled={create.isPending} onClick={onClose}>取消</button><button type="button" className="primary" disabled={!canSubmit} onClick={() => create.mutate()}>{create.isPending ? '正在创建…' : '创建工作区'}</button></footer>
+      <footer><span className="agent-work-directory-note">可多选，所选目录归入同一工作区</span><button type="button" className="secondary" disabled={create.isPending} onClick={onClose}>取消</button><button type="button" className="primary" disabled={!canSubmit} onClick={() => create.mutate()}>{create.isPending ? '正在创建…' : '创建工作区'}</button></footer>
     </section>
   </div>;
 }

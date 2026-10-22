@@ -141,14 +141,37 @@ test('workspace directory search filters nested paths and restores the tree', as
       { path: '/runtime/workspace/project/backend', kind: 'directory', size: 0 },
       { path: '/runtime/workspace/project/frontend', kind: 'directory', size: 0 },
       { path: '/runtime/workspace/project/frontend/src', kind: 'directory', size: 0 },
+      ...Array.from({length:35},(_,index)=>({path:`/runtime/workspace/project/project-${index}`,kind:'directory',size:0})),
     ],
     ide: { gateway: { supported: false } },
   }));
   await page.getByRole('button', { name: '新增工作区', exact: true }).click();
   const creator = page.getByRole('dialog', { name: '新增工作区' });
   const search = creator.getByRole('searchbox', { name: '搜索目录' });
+  for(const viewport of [{width:1440,height:1000},{width:800,height:700},{width:390,height:760}]){
+    await page.setViewportSize(viewport);
+    const geometry=await creator.evaluate(element=>{
+      const dialog=element.getBoundingClientRect();
+      const picker=element.querySelector('.agent-work-directory-picker')!;
+      const header=picker.querySelector('header')!.getBoundingClientRect();
+      const list=picker.querySelector(':scope > div')!;
+      const name=element.querySelector('.agent-work-directory-name')!.getBoundingClientRect();
+      return {ratio:list.getBoundingClientRect().height/dialog.height,toolbar:header.height,name:name.height,overflow:element.scrollWidth-element.clientWidth,listScrollable:list.scrollHeight>list.clientHeight};
+    });
+    expect(geometry.ratio).toBeGreaterThan(.55);
+    expect(geometry.toolbar).toBeLessThanOrEqual(44);
+    expect(geometry.name).toBeLessThanOrEqual(56);
+    expect(geometry.overflow).toBe(0);
+    expect(geometry.listScrollable).toBe(true);
+    await expect(creator.getByRole('button',{name:'创建工作区',exact:true})).toBeInViewport();
+    await creator.screenshot({path:test.info().outputPath(`create-workspace-${viewport.width}.png`)});
+  }
   await search.fill('frontend/src');
   await expect(creator.getByRole('checkbox', { name: 'frontend/src', exact: true })).toBeVisible();
+  await creator.getByRole('checkbox',{name:'frontend/src',exact:true}).check();
+  await expect(creator.getByLabel('工作区名称')).toHaveValue('src');
+  await expect(creator.getByLabel('已选择 1 个目录，最多 20 个')).toHaveText('1/20');
+  await expect(creator.getByRole('button',{name:'创建工作区',exact:true})).toBeEnabled();
   await expect(creator.getByRole('checkbox', { name: 'backend', exact: true })).toHaveCount(0);
   await search.fill('missing-directory');
   await expect(creator.getByText('没有匹配的目录。')).toBeVisible();
