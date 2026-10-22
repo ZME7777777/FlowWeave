@@ -8965,3 +8965,20 @@ height 与 footer top 保持一致，长列表内部滚动且底部按钮可见�
 能力选择与定时会话配置另 2 passed。Web typecheck、定向 ESLint、production build、
 git diff --check、唯一 Alembic head `0157_background_task_aggregate_type_length` 与
 CURRENT 唯一性通过；下一切片为 NONE。沿用会话授权仅发布 Web 并完成受管验收与收尾。
+
+
+### FR-617 会话链接分流与浏览器开页请求单次消费 — DONE
+
+依赖：FR-616 DONE。修复浏览器开页 effect 未消费请求导致父组件更新时重复新建、关闭后
+再次弹出的缺陷。请求携带所属会话工具 scope，按稳定 key 只处理一次并清除父级待处理
+请求，旧 scope 的迟到请求不能进入新会话。外部 HTTP／HTTPS 链接沿用原生安全新标签
+导航，不再进入只代理 Runtime 回环端口的内置浏览器；工作区回环服务与同源文件查看页
+继续内部打开，工作区 HTML 文件仍先预览后显式开内部标签。私网网站不等同于工作区服务。
+
+新增受控 Chromium 回归，旧 effect 在编辑草稿／焦点对账更新后真实复现 1 个标签变为
+4 个；修复后覆盖外部真实 popup 且不发 Runtime 代理请求、两种回环服务、重复更新不
+增页、关闭后不重开、显式重开及会话切换隔离。连同 HTML 同源查看／复制地址和启动页
+回归共 3 passed。Web typecheck、定向 ESLint、production build、git diff --check、
+唯一 Alembic head `0157_background_task_aggregate_type_length` 与任务状态唯一性通过。
+当前及下一可执行切片均为 NONE。沿用会话授权仅发布 Web，执行正式预检、健康／路由
+验收及受管收尾，不变更平台服务、服务器配置或持久数据。

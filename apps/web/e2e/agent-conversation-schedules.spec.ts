@@ -719,6 +719,60 @@ test('fullscreen tools occupy the entire workbench region and restore the conver
   await expect(composer).toHaveValue('全屏切换时保留草稿');
 });
 
+test('conversation website links open external browser tabs while internal service requests are consumed once', async ({ page, context }) => {
+  const externalUrl = 'https://external.example.test/reviews/1';
+  await context.route('https://external.example.test/**', route => route.fulfill({ contentType: 'text/html', body: '<h1>External review</h1>' }));
+  await openWorkspace(page, [
+    { id: 'links-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '查看链接', timestamp: now } },
+    { id: 'links-agent', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'links-user', content: `[外部评审](${externalUrl})\n\n[工作区服务](http://localhost:3000/report)\n\n[回环服务](http://127.0.0.1:8080/)`, timestamp: now } },
+  ], true);
+  let browserProxyRequests = 0;
+  await page.route('**/api/v1/agent-workspaces/schedule-workspace/browser/**', async route => {
+    browserProxyRequests += 1;
+    await route.fulfill({ contentType: 'text/html', body: '<h1>Workspace service</h1>' });
+  });
+  await page.goto('/agent/conversations/scheduled-conversation');
+  const popupPromise = page.waitForEvent('popup');
+  await page.getByRole('link', { name: '外部评审' }).click();
+  const popup = await popupPromise;
+  await expect(popup).toHaveURL(externalUrl);
+  await expect(popup.getByRole('heading', { name: 'External review' })).toBeVisible();
+  await expect(page.locator('.agent-workspace-browser-tab-panel')).toHaveCount(0);
+  expect(browserProxyRequests).toBe(0);
+  await popup.close();
+
+  const panels = page.locator('.agent-workspace-browser-tab-panel');
+  const composer = page.getByRole('textbox', { name: '发送 Agent 消息' });
+  for (const [label, hostname] of [['工作区服务', 'localhost'], ['回环服务', '127.0.0.1']]) {
+    await page.getByRole('link', { name: label, exact: true }).click();
+    await expect(panels).toHaveCount(1);
+    await expect(panels.locator('iframe').contentFrame().getByRole('heading', { name: 'Workspace service' })).toBeVisible();
+    // Draft edits and focus reconciliation rerender the parent, just like polling.
+    // Neither may replay the last open command, including after its tab is closed.
+    for (let i = 0; i < 3; i += 1) {
+      await composer.fill(`保留草稿 ${i}`);
+      await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+      await settleWorkspaceLayout(page);
+      await expect(panels).toHaveCount(1);
+    }
+    await page.getByRole('button', { name: `关闭${hostname}页签`, exact: true }).click();
+    await expect(panels).toHaveCount(0);
+    await composer.fill('关闭后继续编辑');
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await settleWorkspaceLayout(page);
+    await expect(panels).toHaveCount(0);
+  }
+  // An explicit click may reopen it once; switching sessions must not replay it.
+  await page.getByRole('link', { name: '工作区服务', exact: true }).click();
+  await expect(panels).toHaveCount(1);
+  await page.getByRole('button', { name: '周报会话', exact: true }).dblclick();
+  await expect(page).toHaveURL(/scheduled-conversation-2$/);
+  await expect(panels).toHaveCount(0);
+  await page.getByRole('button', { name: '日报会话', exact: true }).dblclick();
+  await expect(page).toHaveURL(/scheduled-conversation$/);
+  await expect(panels).toHaveCount(1);
+});
+
 test('HTML reports use a same-origin viewer URL that copied tabs reopen without Runtime proxying', async ({ page }) => {
   const reportPath = '/runtime/workspace/project/reports/daily.html';
   let browserProxyRequests = 0;

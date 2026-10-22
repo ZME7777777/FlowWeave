@@ -3813,6 +3813,15 @@ function isWorkspaceFileViewerUrl(value: string): boolean {
   }
 }
 
+function isWorkspaceBrowserUrl(value: string): boolean {
+  if (isWorkspaceFileViewerUrl(value)) return true;
+  const { hostname } = new URL(value);
+  // The workspace proxy serves Runtime loopback ports; a private-network
+  // website is still an external website, not a service in this workspace.
+  return hostname === 'localhost' || hostname === '0.0.0.0' || hostname === '[::1]'
+    || /^127\.\d+\.\d+\.\d+$/.test(hostname);
+}
+
 function WorkspaceBrowser({ tab, workspaceId, bindingId, workDirectoryId, browserUrl, onUrlChange, startPage }: {
   tab: { url?: string; address?: string; title?: string; document?: string };
   workspaceId: string;
@@ -3849,9 +3858,9 @@ function WorkspaceBrowser({ tab, workspaceId, bindingId, workDirectoryId, browse
 
 
 function WorkspaceDrawer({
-  open, onOpen, onClose, onFullScreenConversationActiveChange, onAnnotateFileSelection, highlightedFileSelection, workspaceId, scopeKey, migrateFromScopeKey, bindingId, workDirectoryId, conversation, conversationCumulativeTokens, attachments, sources, attachmentRequest, candidatePreviewRequest, markdownFileRequest, browserRequest, htmlPreviewRequest, reviewChanges = [], reviewRequestId, sessionChanges = [], onReviewChanges, runtimeAvailable, runtimeTasks, agentDefinitions, sessionStopped, sidebarQuestion, onSidebarBindingCreated, onOpenSidebarQuestion, onCloseSidebarQuestion, onPreviewAttachment,
+  open, onOpen, onClose, onFullScreenConversationActiveChange, onAnnotateFileSelection, highlightedFileSelection, workspaceId, scopeKey, migrateFromScopeKey, bindingId, workDirectoryId, conversation, conversationCumulativeTokens, attachments, sources, attachmentRequest, candidatePreviewRequest, markdownFileRequest, browserRequest, onBrowserRequestHandled, htmlPreviewRequest, reviewChanges = [], reviewRequestId, sessionChanges = [], onReviewChanges, runtimeAvailable, runtimeTasks, agentDefinitions, sessionStopped, sidebarQuestion, onSidebarBindingCreated, onOpenSidebarQuestion, onCloseSidebarQuestion, onPreviewAttachment,
 }: {
-  open: boolean; onOpen: () => void; onClose: () => void; onFullScreenConversationActiveChange: (active: boolean) => void; onAnnotateFileSelection?: (path: string, selection: FileSelection, quote: string) => void; highlightedFileSelection?: { path: string; selection: FileSelection }; workspaceId: string; scopeKey: string; migrateFromScopeKey?: string; bindingId?: string; workDirectoryId?: string; conversation?: AgentConversation; conversationCumulativeTokens?: number | null; attachments: AgentAttachment[]; sources: ConversationSource[]; attachmentRequest?: { key: string; attachment?: AgentAttachment }; candidatePreviewRequest?: CandidateFilePreviewRequest; markdownFileRequest?: MarkdownFileRequest; browserRequest?: { key: string; url: string }; htmlPreviewRequest?: { key: string; filename: string; document?: string; sourceUrl?: string }; reviewChanges?: WorkspaceFileChange[]; reviewRequestId?: string; sessionChanges?: WorkspaceFileChange[]; onReviewChanges?: (changes: WorkspaceFileChange[]) => void; runtimeAvailable: boolean; runtimeTasks: RuntimeTaskProjection[]; agentDefinitions: CapabilityAsset[]; sessionStopped: boolean; sidebarQuestion?: { sourceBindingId: string; sidebarBindingId?: string }; onSidebarBindingCreated: (sourceBindingId: string, sidebarBindingId: string) => void; onOpenSidebarQuestion?: () => void; onCloseSidebarQuestion: () => void; onPreviewAttachment: (attachment: AgentAttachment, previewBindingId?: string) => void;
+  open: boolean; onOpen: () => void; onClose: () => void; onFullScreenConversationActiveChange: (active: boolean) => void; onAnnotateFileSelection?: (path: string, selection: FileSelection, quote: string) => void; highlightedFileSelection?: { path: string; selection: FileSelection }; workspaceId: string; scopeKey: string; migrateFromScopeKey?: string; bindingId?: string; workDirectoryId?: string; conversation?: AgentConversation; conversationCumulativeTokens?: number | null; attachments: AgentAttachment[]; sources: ConversationSource[]; attachmentRequest?: { key: string; attachment?: AgentAttachment }; candidatePreviewRequest?: CandidateFilePreviewRequest; markdownFileRequest?: MarkdownFileRequest; browserRequest?: { key: string; scopeKey: string; url: string }; onBrowserRequestHandled: (key: string) => void; htmlPreviewRequest?: { key: string; filename: string; document?: string; sourceUrl?: string }; reviewChanges?: WorkspaceFileChange[]; reviewRequestId?: string; sessionChanges?: WorkspaceFileChange[]; onReviewChanges?: (changes: WorkspaceFileChange[]) => void; runtimeAvailable: boolean; runtimeTasks: RuntimeTaskProjection[]; agentDefinitions: CapabilityAsset[]; sessionStopped: boolean; sidebarQuestion?: { sourceBindingId: string; sidebarBindingId?: string }; onSidebarBindingCreated: (sourceBindingId: string, sidebarBindingId: string) => void; onOpenSidebarQuestion?: () => void; onCloseSidebarQuestion: () => void; onPreviewAttachment: (attachment: AgentAttachment, previewBindingId?: string) => void;
 }) {
   const { api, browserUrl, fileUrl } = useAgentSessionGateway();
   const host = useAgentSessionHost();
@@ -3894,6 +3903,7 @@ function WorkspaceDrawer({
   const handledAttachmentRequestKey = useRef<string | undefined>(undefined);
   const handledCandidatePreviewRequestKey = useRef<string | undefined>(undefined);
   const handledMarkdownFileRequestKey = useRef<string | undefined>(undefined);
+  const handledBrowserRequestKey = useRef<string | undefined>(undefined);
   const handledHtmlPreviewRequestKey = useRef<string | undefined>(undefined);
   const handledReviewRequestId = useRef<string | undefined>(undefined);
   const [candidatePreview, setCandidatePreview] = useState<CandidateFilePreviewRequest>();
@@ -4250,9 +4260,12 @@ function WorkspaceDrawer({
     onOpen();
   }, [onOpen, updateScope]);
   useEffect(() => {
-    if (!browserRequest) return;
+    if (!browserRequest || handledBrowserRequestKey.current === browserRequest.key) return;
+    handledBrowserRequestKey.current = browserRequest.key;
+    onBrowserRequestHandled(browserRequest.key);
+    if (browserRequest.scopeKey !== scopeKey) return;
     openBrowser(browserRequest.url);
-  }, [browserRequest, openBrowser]);
+  }, [browserRequest, onBrowserRequestHandled, openBrowser, scopeKey]);
   useEffect(() => {
     if (!htmlPreviewRequest || handledHtmlPreviewRequestKey.current === htmlPreviewRequest.key) return;
     handledHtmlPreviewRequestKey.current = htmlPreviewRequest.key;
@@ -4958,7 +4971,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [workspaceReferencePickerOpen, setWorkspaceReferencePickerOpen] = useState(false);
   const [workspaceReferenceQuery, setWorkspaceReferenceQuery] = useState('');
   const [filePreviewRequest, setFilePreviewRequest] = useState<ConversationFilePreviewRequest>();
-  const [browserRequest, setBrowserRequest] = useState<{ key: string; url: string }>();
+  const [browserRequest, setBrowserRequest] = useState<{ key: string; scopeKey: string; url: string }>();
   const [htmlPreviewRequest, setHtmlPreviewRequest] = useState<{ key: string; filename: string; document?: string; sourceUrl?: string }>();
   const [attachmentRequest, setAttachmentRequest] = useState<{ key: string; attachment?: AgentAttachment }>();
   const [fileSelectionReference, setFileSelectionReference] = useState<{ path: string; selection: FileSelection }>();
@@ -9123,8 +9136,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   };
   const openBrowserLink = (href: string) => {
     const url = normalizeBrowserUrl(href);
-    if (!url) return false;
-    setBrowserRequest({ key: randomId(), url });
+    if (!url || !isWorkspaceBrowserUrl(url)) return false;
+    setBrowserRequest({ key: randomId(), scopeKey: workspaceToolScopeKey, url });
     setDrawerOpen(true);
     return true;
   };
@@ -9778,6 +9791,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       candidatePreviewRequest={candidatePreviewRequest}
       markdownFileRequest={sourceLocationRequest}
       browserRequest={browserRequest}
+      onBrowserRequestHandled={key => setBrowserRequest(current => current?.key === key ? undefined : current)}
       htmlPreviewRequest={htmlPreviewRequest}
       reviewChanges={reviewChanges}
       reviewRequestId={reviewRequestId}
