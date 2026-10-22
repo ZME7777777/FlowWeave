@@ -175,4 +175,17 @@ test('running transcript keeps a fixed bottom gap while formal text grows', asyn
   }));
   await expect(page.getByTitle('已运行 git diff --check')).toHaveCount(1);
   await expect.poll(() => surface.evaluate(element => element.scrollTop)).toBe(readingPosition);
+
+  // The running variant must also disappear when manual scrolling reaches the
+  // bottom through several scroll frames from a single downward gesture.
+  await surface.hover();
+  await page.mouse.wheel(0, 100);
+  await expect.poll(() => surface.evaluate(element => element.scrollTop)).toBeGreaterThan(readingPosition);
+  await surface.evaluate(async element => {
+    for (const remaining of [100, 0]) {
+      element.scrollTop = element.scrollHeight - element.clientHeight - remaining;
+      await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    }
+  });
+  await expect(page.getByRole('button', { name: '跳转到正在生成的最新回复' })).toBeHidden();
 });

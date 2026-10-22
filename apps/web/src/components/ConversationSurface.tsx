@@ -2132,16 +2132,16 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     const revealWindow = Math.max(HISTORY_REVEAL_WINDOW_MIN_PX, element.clientHeight * HISTORY_REVEAL_WINDOW_VIEWPORT_RATIO);
     if (element.scrollTop <= revealWindow) requestOlderHistory();
     const atLatest = element.scrollHeight - element.scrollTop - element.clientHeight <= 16;
+    // Button visibility reflects geometry independently of scroll ownership:
+    // one gesture can emit many scroll events after its capture handler ran.
+    setIsAtLatest(atLatest);
     // Scroll events also occur when layout and direct scrollTop assignments
     // settle. They do not establish reading intent. Only the capture handlers
     // below can leave or resume follow mode.
     if (atLatest && (!userScrolledAway.current || scrollInteractionTowardLatest.current)) {
       userScrolledAway.current = false;
       followLatest.current = true;
-      setIsAtLatest(true);
-      return;
     }
-    if (!followLatest.current) setIsAtLatest(false);
   }, [requestOlderHistory]);
   useEffect(() => {
     // Short transcripts may never emit a meaningful scroll event. Re-evaluate
@@ -2161,7 +2161,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     }
     userScrolledAway.current = true;
     followLatest.current = false;
-    setIsAtLatest(false);
+    if (element) setIsAtLatest(element.scrollHeight - element.scrollTop - element.clientHeight <= 16);
   }, []);
   const highlightReferenceText = useCallback((highlight: ConversationTextHighlight) => {
     if (referenceHighlightTimer.current) window.clearTimeout(referenceHighlightTimer.current);

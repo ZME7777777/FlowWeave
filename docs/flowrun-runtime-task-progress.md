@@ -9040,3 +9040,20 @@ Web typecheck、定向 ESLint、production build、git diff --check、唯一 Ale
 build、git diff --check、唯一 Alembic head `0157_background_task_aggregate_type_length`
 与任务状态唯一性通过。当前及下一可执行切片均为 NONE。沿用会话授权仅发布 Web，
 完成正式预检、健康／路由验收及受管收尾，不修改平台服务、服务器配置或持久数据。
+
+
+### FR-621 手动滚动到底部自动隐藏跳转按钮 — DONE
+
+依赖：FR-620 DONE。修复跳转最新回复按钮将显隐绑定到 followLatest／滚动输入意图，
+导致一次触控板手势的后续 scroll 事件到底时仍保持显示的问题。isAtLatest 始终按真实
+剩余滚动距离和既有 16px 容差更新；停止自动跟随时也测量当前位置，避免尚未离开底部
+就显示按钮。自动贴底仍服从原有阅读意图，不用布局或程序滚动伪造用户的跟随选择。
+
+新增已完成长回复回归，先实际滚轮上翻／下翻，再以多个原生滚动位置帧模拟同一向下
+手势的惯性阶段，确认到底后无需点击即隐藏、向上离开后重新显示、普通滚轮到底也隐藏；
+扩展运行中滚动稳定性回归验证运行态按钮同样收口。旧源码实测剩余距离不超过 2px 时
+按钮仍显示而失败；修复后连同流式输出／历史前插／跨会话滚动归属回归共 3 passed。
+Web typecheck、定向 ESLint、production build、git diff --check、唯一 Alembic head
+`0157_background_task_aggregate_type_length` 与任务状态唯一性通过。当前及下一可执行
+切片均为 NONE。沿用会话授权仅发布 Web，执行正式预检、健康／路由验收及受管收尾，
+不修改平台服务、服务器配置或持久数据。

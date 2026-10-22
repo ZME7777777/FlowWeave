@@ -156,6 +156,46 @@ test('conversation list scrollbar appears during scrolling, hides after 1s and s
   await expect.poll(()=>rail.evaluate(element=>element.getBoundingClientRect().width)).toBeGreaterThan(railWidth+30);
 });
 
+test('manual transcript scrolling hides the latest-reply button when the final momentum scroll reaches bottom', async ({ page }) => {
+  const reply = Array.from({ length: 90 }, (_, index) => `**回复段落 ${index + 1}**：手动滑到最后一段时应该自动隐藏回到底部按钮。`).join('\n\n');
+  await openWorkspace(page, [
+    { id: 'bottom-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '查看长回复', timestamp: now } },
+    { id: 'bottom-agent', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'bottom-user', content: reply, timestamp: now } },
+  ]);
+  await page.goto('/agent/conversations/scheduled-conversation');
+  const surface = page.locator('.conversation-surface');
+  const jump = page.getByRole('button', { name: '跳转到最新回复', exact: true });
+  const gap = () => surface.evaluate(element => element.scrollHeight - element.scrollTop - element.clientHeight);
+  await expect(surface.locator('.conversation-message.assistant')).toContainText('回复段落 90');
+  await surface.evaluate(element => { element.scrollTop = element.scrollHeight; });
+  await expect.poll(gap).toBeLessThanOrEqual(16);
+  await surface.hover();
+  await page.mouse.wheel(0, -800);
+  await expect.poll(gap).toBeGreaterThan(600);
+  await expect(jump).toBeVisible();
+  const readingGap = await gap();
+  await page.mouse.wheel(0, 120);
+  await expect.poll(gap).toBeLessThan(readingGap);
+  await expect(jump).toBeVisible();
+  // A trackpad gesture continues emitting native scroll events after its last
+  // wheel input. Advance the remaining scroll frames without another input.
+  await surface.evaluate(async element => {
+    for (const remaining of [120, 2, 0]) {
+      element.scrollTop = element.scrollHeight - element.clientHeight - remaining;
+      await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    }
+  });
+  await expect.poll(gap).toBeLessThanOrEqual(2);
+  await expect(jump).toBeHidden();
+  // Ordinary wheel scrolling works again without using the jump button.
+  await page.mouse.wheel(0, -400);
+  await expect.poll(gap).toBeGreaterThan(300);
+  await expect(jump).toBeVisible();
+  await page.mouse.wheel(0, 20_000);
+  await expect.poll(gap).toBeLessThanOrEqual(2);
+  await expect(jump).toBeHidden();
+});
+
 for (const scope of ['root', 'directory'] as const) {
   test(`workspace group stays collapsed after route reveal and list refresh (${scope})`, async ({ page }) => {
     await openWorkspace(page);
