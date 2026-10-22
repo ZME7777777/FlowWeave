@@ -112,6 +112,7 @@ test('selecting a task after opening its run returns to that task detail', async
   await page.getByRole('navigation', { name: 'Agent 工作区导航' }).getByRole('button', { name: '定时任务' }).click();
 
   const tasks = page.getByRole('region', { name: '会话定时任务' });
+  await tasks.locator('.agent-schedule-tree-select').first().click();
   await tasks.locator('.agent-schedule-run').first().click();
   await expect(page).toHaveURL(/\/agent\/schedules\/conversations\/scheduled-run-1$/);
   await expect(page.getByRole('textbox', { name: '发送 Agent 消息' })).toBeVisible();
@@ -122,13 +123,35 @@ test('selecting a task after opening its run returns to that task detail', async
   await expect(page.getByRole('textbox', { name: '发送 Agent 消息' })).toHaveCount(0);
 });
 
+test('task rows expand on demand and action menus close outside', async ({ page }) => {
+  await openWorkspace(page);
+  await page.getByRole('navigation', { name: 'Agent 工作区导航' }).getByRole('button', { name: '定时任务' }).click();
+
+  const tasks = page.getByRole('region', { name: '会话定时任务' });
+  const firstTask = tasks.locator('.agent-schedule-tree-group').first();
+  const firstTaskButton = firstTask.locator('.agent-schedule-tree-select');
+  await expect(tasks.locator('.agent-schedule-run')).toHaveCount(0);
+  await firstTaskButton.click();
+  await expect(firstTaskButton).toHaveAttribute('aria-expanded', 'true');
+  await expect(tasks.locator('.agent-schedule-run')).toHaveCount(3);
+  await firstTaskButton.click();
+  await expect(firstTaskButton).toHaveAttribute('aria-expanded', 'false');
+  await expect(tasks.locator('.agent-schedule-run')).toHaveCount(0);
+
+  await firstTask.getByRole('button', { name: '每日项目检查 操作', exact: true }).click();
+  await expect(firstTask.getByRole('menu')).toBeVisible();
+  await page.getByRole('navigation', { name: 'Agent 工作区导航' }).click();
+  await expect(firstTask.getByRole('menu')).toHaveCount(0);
+});
+
 test('scheduled session shows session configuration and expands additional runs', async ({ page }) => {
   await openWorkspace(page);
   await page.getByRole('navigation', { name: 'Agent 工作区导航' }).getByRole('button', { name: '定时任务' }).click();
 
   const tasks = page.getByRole('region', { name: '会话定时任务' });
-  await expect(tasks.locator('.agent-schedule-run')).toHaveCount(6);
   const firstSchedule = tasks.locator('.agent-schedule-tree-group').first();
+  await firstSchedule.locator('.agent-schedule-tree-select').click();
+  await expect(tasks.locator('.agent-schedule-run')).toHaveCount(3);
   await expect(firstSchedule.getByRole('button', { name: '展开其余 2 个会话', exact: true })).toBeVisible();
 
   await page.goto('/agent/schedules/conversations/scheduled-run-5');
@@ -137,7 +160,7 @@ test('scheduled session shows session configuration and expands additional runs'
   await expect(firstSchedule.getByRole('button', { name: '收起会话', exact: true })).toBeVisible();
   await page.reload();
   await expect(firstSchedule.locator('[data-binding-id="scheduled-run-5"]')).toBeVisible();
-  await expect(tasks.locator('.agent-schedule-run')).toHaveCount(8);
+  await expect(tasks.locator('.agent-schedule-run')).toHaveCount(5);
 
   await tasks.locator('.agent-schedule-run').first().click();
   await expect(page.getByRole('button', { name: '会话配置', exact: true })).toBeVisible();
