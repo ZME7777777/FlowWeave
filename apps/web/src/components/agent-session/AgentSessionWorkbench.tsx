@@ -1624,6 +1624,23 @@ function retainConversationPresentation(
   return sameConversationPresentation(current, next) ? current : next;
 }
 
+function mergeConversationBatch(
+  current: OpenHandsConversationEventBatch | undefined,
+  incoming: OpenHandsConversationEventBatch,
+  prefetchedHistory: OpenHandsConversationEventBatch[] = [],
+): OpenHandsConversationEventBatch {
+  if (!current) return incoming;
+  const mergedEvents = mergeConversationEvents(current.events, incoming.events);
+  const incomingContainsCurrentCursor = !current.next_cursor || incoming.events.some(event => event.id === current.next_cursor);
+  return retainConversationPresentation(current, {
+    ...current,
+    ...incoming,
+    events: mergedEvents,
+    next_cursor: incomingContainsCurrentCursor ? (incoming.next_cursor ?? current.next_cursor) : current.next_cursor,
+    history_cursor: latestHistoryCursor(current, incoming, prefetchedHistory),
+  });
+}
+
 function projectLocalMessages(
   formalEvents: OpenHandsConversationEvent[],
   projections: LocalMessageProjection[],
@@ -6050,8 +6067,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }>());
   const backgroundHydrationPrefetches = useRef(new Map<string, Promise<AgentConversationHydration>>());
   const publishHydration = useCallback((workspaceId: string, bindingId: string, hydration: AgentConversationHydration) => {
+    const eventKey = sessionQueryKey(host, 'conversation-events', workspaceId, bindingId);
     queryClient.setQueryData<OpenHandsConversationEventBatch>(
-      sessionQueryKey(host, 'conversation-events', workspaceId, bindingId), hydration.events,
+      eventKey,
+      current => mergeConversationBatch(
+        current,
+        hydration.events,
+        historyCacheByScope.current.get(bindingId)?.pages,
+      ),
     );
     queryClient.setQueryData<AgentConversationInputReadiness>(
       sessionQueryKey(host, 'conversation-input-readiness', workspaceId, bindingId), hydration.readiness,
