@@ -632,6 +632,38 @@ test('new workspace tabs embed a compact browser without a duplicate browser car
   await expect.poll(() => launcher.locator('.agent-workspace-browser-toolbar').evaluate(element => element.getBoundingClientRect().height)).toBeLessThanOrEqual(48);
 });
 
+test('launcher opens Git history without closing the workspace tools', async ({ page }) => {
+  await openWorkspace(page);
+  const repository = { path: '/runtime/workspace/project', branch: 'main', head: 'abcdef123456', upstream: 'origin/main', ahead: 0, behind: 0 };
+  await page.route('**/api/v1/agent-workspaces/schedule-workspace/workspace?**', route => json(route, {
+    root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' },
+    working_directory: '/runtime/workspace/project', files: [], repositories: [repository], runtime: {}, ide: { gateway: { supported: false } },
+  }));
+  await page.route('**/api/v1/agent-workspaces/schedule-workspace/workspace/git/repositories?**', route => json(route, { repositories: [repository] }));
+  await page.route('**/api/v1/agent-workspaces/schedule-workspace/workspace/git/log?**', route => json(route, {
+    repository,
+    commits: [{ id: 'abcdef123456', short_id: 'abcdef123456', author: 'FlowWeave', date: now, subject: 'Initial commit' }],
+  }));
+
+  await page.goto('/agent/conversations/scheduled-conversation');
+  await page.getByRole('button', { name: '新建工作区页签', exact: true }).first().click();
+  await page.locator('.agent-workspace-tab-launcher.active').getByRole('button', { name: 'Git 历史', exact: true }).click();
+
+  await expect(page.locator('.agent-workspace-tab-launcher')).toHaveCount(0);
+  await expect(page.getByRole('navigation', { name: '工作区页签' }).getByRole('button', { name: '文件', exact: true })).toBeVisible();
+  await expect(page.getByRole('complementary', { name: 'Git' })).toBeVisible();
+  await expect(page.getByRole('navigation', { name: 'Git 视图' }).getByRole('button', { name: '提交记录', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByText('Initial commit', { exact: true })).toBeVisible();
+});
+
+test('terminal tabs use the terminal icon', async ({ page }) => {
+  await openWorkspace(page);
+  await page.goto('/agent/conversations/scheduled-conversation');
+  await page.getByRole('button', { name: '新建工作区页签', exact: true }).first().click();
+  await page.locator('.agent-workspace-tab-launcher.active').getByRole('button', { name: '终端', exact: true }).click();
+
+  await expect(page.locator('.agent-workspace-tabs > .active .lucide-square-terminal')).toBeVisible();
+});
 
 test('expanded tools squeeze and reflow the transcript and composer without covering them', async ({ page }) => {
   const prose = '这是一段用于验证侧栏挤压效果的完整回复，展开和拖动工具栏后应自动换行，发送框与按钮必须始终位于会话区域内。'.repeat(10);

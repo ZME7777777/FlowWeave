@@ -4360,9 +4360,19 @@ function WorkspaceDrawer({
     });
   }, [api, bindingId, onOpen, updateScope, workDirectoryId, workspaceId]);
   const openGitHistory = useCallback(() => {
-    if (!gitContextPath) return;
+    if (!details?.working_directory) return;
+    setGitContextPath(details.working_directory);
     setGitSidebarRequested(true);
-  }, [gitContextPath]);
+    updateScope(current => ({
+      ...current,
+      tabs: current.tabs.some(tab => tab.kind === 'files') ? current.tabs : [...current.tabs, { id: 'files', kind: 'files' }],
+      activeTabId: 'files',
+      gitMode: 'history',
+    }));
+    setFullScreen(true);
+    setFullScreenView('tool');
+    onOpen();
+  }, [details?.working_directory, onOpen, updateScope]);
   const openGitSummary = useCallback(() => {
     if (!details?.working_directory) return;
     setGitContextPath(details.working_directory);
@@ -4793,7 +4803,7 @@ function WorkspaceDrawer({
   const sessionChangeDeletions = sessionChanges.reduce((total, change) => total + change.deletions, 0);
   const visibleSources = sources.slice(0, 3);
   const workspaceTabLabel = (tab: WorkspaceToolTab) => tab.kind === 'launcher' ? tab.title || '新标签页' : tab.kind === 'browser' ? tab.title || (() => { try { return tab.url ? new URL(tab.url).hostname : 'HTML 页面'; } catch { return '浏览器'; } })() : tab.kind === 'files' ? '文件' : tab.kind === 'changes' ? `审查${reviewChanges.length ? ` · ${reviewChanges.length}` : ''}` : tab.kind === 'sources' ? `来源${sources.length ? ` · ${sources.length}` : ''}` : tab.kind === 'git' ? `提交 · ${tab.details.commit.short_id}` : tab.kind === 'git-working' ? `${tab.changeKind === 'STAGED' ? '暂存' : '本地'} · ${tab.file.path.split('/').at(-1)}` : tab.kind === 'subagents' ? '子智能体' : tab.kind === 'sidebar-chat' ? '侧边聊天' : details?.runtime.container_id || (details?.runtime.write_available ? '终端' : '连接中…');
-  const workspaceTabIcon = (tab: WorkspaceToolTab) => tab.kind === 'files' ? <FileCode2 size={13}/> : tab.kind === 'browser' ? <Globe2 size={13}/> : tab.kind === 'terminal' ? <Square size={13}/> : tab.kind === 'sidebar-chat' ? <PanelRightOpen size={13}/> : tab.kind === 'sources' ? <Link2 size={13}/> : tab.kind === 'changes' ? <FileText size={13}/> : tab.kind === 'git' || tab.kind === 'git-working' ? <GitBranch size={13}/> : tab.kind === 'subagents' ? <Bot size={13}/> : <Plus size={13}/>;
+  const workspaceTabIcon = (tab: WorkspaceToolTab) => tab.kind === 'files' ? <FileCode2 size={13}/> : tab.kind === 'browser' ? <Globe2 size={13}/> : tab.kind === 'terminal' ? <SquareTerminal size={13}/> : tab.kind === 'sidebar-chat' ? <PanelRightOpen size={13}/> : tab.kind === 'sources' ? <Link2 size={13}/> : tab.kind === 'changes' ? <FileText size={13}/> : tab.kind === 'git' || tab.kind === 'git-working' ? <GitBranch size={13}/> : tab.kind === 'subagents' ? <Bot size={13}/> : <Plus size={13}/>;
   const conversationTabLabel = conversation ? conversationName(conversation) : '新会话';
   const summary = details && <section className="agent-workspace-overview">
     {conversation && <article className="agent-workspace-conversation-config"><Gauge size={16}/><div><small>会话用量</small><p className="agent-workspace-usage-line"><span>{`累计 ${conversationTotalTokens.toLocaleString('zh-CN')} Token`}</span><span>{`$${(conversationUsage?.accumulated_cost ?? 0).toFixed(6)}`}</span></p></div></article>}
