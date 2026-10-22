@@ -82,6 +82,86 @@ async function openWorkspace(page: Page, events: unknown[] = [], includeSecondCo
   return writes;
 }
 
+test('workspace Git settings show only confirmed identity and save with readback', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 800 });
+  await openWorkspace(page);
+  let identity = { author: 'Login Profile', email: 'login@example.test', configured: false };
+  let reads = 0;
+  let failSave = true;
+  let releaseRead: () => void = () => undefined;
+  const firstRead = new Promise<void>(resolve => { releaseRead = resolve; });
+  await page.route('**/api/v1/agent-workspaces/schedule-workspace/settings/git', async route => {
+    if (route.request().method() === 'GET') {
+      reads += 1;
+      if (reads === 1) await firstRead;
+      return json(route, identity);
+    }
+    if (failSave) return json(route, { error: { code: 'GIT_FAILED', message: '写入未完成' } }, 503);
+    identity = { ...route.request().postDataJSON(), configured: true };
+    return json(route, identity);
+  });
+  await page.goto('/agent/conversations/scheduled-conversation');
+  await page.getByRole('textbox', { name: '发送 Agent 消息' }).fill('设置前保留草稿');
+  const trigger = page.getByRole('button', { name: '工作区设置', exact: true });
+  const nav = page.getByRole('navigation', { name: 'Agent 工作区导航' });
+  expect(await trigger.evaluate(element => {
+    const button = element.getBoundingClientRect();
+    return element.parentElement!.getBoundingClientRect().bottom - button.bottom;
+  })).toBeLessThan(20);
+  await trigger.click();
+  const settings = page.getByRole('region', { name: '工作区设置' });
+  const author = settings.getByRole('textbox', { name: 'Git 作者' });
+  const email = settings.getByRole('textbox', { name: 'Git 邮箱' });
+  await expect(author).toBeDisabled();
+  await expect(author).toHaveValue('');
+  releaseRead();
+  await expect(author).toBeEnabled();
+  await expect(author).toHaveValue('');
+  await expect(email).toHaveValue('');
+  await author.fill('工作区作者');
+  await email.fill('author@example.test');
+  await settings.getByRole('button', { name: '保存', exact: true }).click();
+  await expect(settings.getByRole('alert')).toContainText('写入未完成');
+  await expect(settings.getByText('已保存并生效')).toHaveCount(0);
+  await expect(author).toHaveValue('工作区作者');
+  failSave = false;
+  await settings.getByRole('button', { name: '保存', exact: true }).click();
+  await expect(settings.getByRole('status')).toHaveText('已保存并生效');
+  expect(identity).toEqual({ author: '工作区作者', email: 'author@example.test', configured: true });
+  await page.screenshot({ path: '../../.tmp/fr623-git-settings-desktop.png' });
+  await nav.getByRole('button', { name: '主页', exact: true }).click();
+  await expect(page).toHaveURL(/scheduled-conversation$/);
+  await expect(page.getByRole('textbox', { name: '发送 Agent 消息' })).toHaveValue('设置前保留草稿');
+  // Reopening must re-read Runtime configuration rather than show stale cache.
+  identity = { author: '终端修改后的作者', email: 'changed@example.test', configured: true };
+  await trigger.click();
+  await expect(author).toHaveValue(identity.author);
+  await expect(email).toHaveValue(identity.email);
+  await page.setViewportSize({ width: 800, height: 700 });
+  expect(await settings.evaluate(element => element.scrollWidth - element.clientWidth)).toBe(0);
+  await expect(settings.getByRole('button', { name: '保存', exact: true })).toBeInViewport();
+  await page.screenshot({ path: '../../.tmp/fr623-git-settings-narrow.png' });
+});
+
+test('workspace Git settings keep failed reads empty and allow retry from schedules', async ({ page }) => {
+  await openWorkspace(page);
+  let fail = true;
+  await page.route('**/api/v1/agent-workspaces/schedule-workspace/settings/git', route => fail
+    ? json(route, { error: { code: 'UNAVAILABLE', message: '读取失败' } }, 503)
+    : json(route, { author: '已有作者', email: 'existing@example.test', configured: true }));
+  await page.getByRole('navigation', { name: 'Agent 工作区导航' }).getByRole('button', { name: '定时任务', exact: true }).click();
+  await page.getByRole('button', { name: '工作区设置', exact: true }).click();
+  const settings = page.getByRole('region', { name: '工作区设置' });
+  const author = settings.getByRole('textbox', { name: 'Git 作者' });
+  await expect(settings.getByRole('alert')).toContainText('无法读取');
+  await expect(author).toHaveValue('');
+  await expect(author).toBeDisabled();
+  fail = false;
+  await settings.getByRole('button', { name: '重新读取', exact: true }).click();
+  await expect(author).toBeEnabled();
+  await expect(author).toHaveValue('已有作者');
+});
+
 // Keep native scrollbar thumbs visible so pointer dragging exercises the scrollbar.
 test.use({launchOptions:{ignoreDefaultArgs:['--hide-scrollbars']}});
 test('conversation list scrollbar appears during scrolling, hides after 1s and stays thin while dragged', async ({ page }) => {

@@ -7245,3 +7245,58 @@ def test_formal_slot_wait_consumes_http_budget_and_records_pressure(
     finally:
         release.set()
         reset_metrics(token)
+
+
+def test_git_identity_uses_native_bash_without_conversation_or_user_message(
+    openhands_settings, monkeypatch
+):
+    import shlex
+
+    from flowweave.runtime.git_identity import GIT_IDENTITY_SCRIPT
+
+    runtime = OpenHandsRuntime(openhands_settings)
+    calls = []
+    expected = {"author": "User Name", "email": "user@example.test", "configured": True}
+
+    def fake_request(method, path, **kwargs):
+        calls.append((method, path, kwargs))
+        return {"exit_code": 0, "stdout": json.dumps(expected)}
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+    handle = RuntimeHandle(
+        job_id="env-exec:owned-runtime",
+        conversation_id="",
+        runtime_resource_name="owned-runtime",
+        workspace_root="/runtime/workspace/project/users/user-a",
+    )
+    assert (
+        runtime.workspace_git_identity(handle, identity=(expected["author"], expected["email"]))
+        == expected
+    )
+    method, path, kwargs = calls[0]
+    assert (method, path) == ("POST", "/api/bash/execute_bash_command")
+    arguments = shlex.split(kwargs["json"]["command"])
+    assert arguments[:3] == ["python3", "-c", GIT_IDENTITY_SCRIPT]
+    assert json.loads(arguments[3]) == {
+        "root": handle.workspace_root,
+        "author": expected["author"],
+        "email": expected["email"],
+    }
+    assert kwargs["base_url"] == "http://owned-runtime:8000"
+    assert "cwd" not in kwargs["json"]
+    assert runtime.workspace_git_identity(handle) == expected
+    assert json.loads(shlex.split(calls[-1][2]["json"]["command"])[3]) == {
+        "root": handle.workspace_root
+    }
+
+
+@pytest.mark.parametrize("response", [{"exit_code": 1}, {"exit_code": 0, "stdout": "not JSON"}])
+def test_git_identity_does_not_claim_success_after_native_failure(
+    openhands_settings, monkeypatch, response
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    monkeypatch.setattr(runtime, "_request", lambda *args, **kwargs: response)
+    with pytest.raises(DomainError, match="无法确认工作区 Git 配置"):
+        runtime.workspace_git_identity(
+            RuntimeHandle("env-exec:owned", "", runtime_resource_name="owned")
+        )

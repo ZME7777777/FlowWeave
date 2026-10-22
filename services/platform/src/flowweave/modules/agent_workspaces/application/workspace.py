@@ -139,6 +139,11 @@ def _project_root(db: Session, workspace_id: str) -> Path:
     return resolved_user_root
 
 
+def ensure_user_project_root(db: Session, workspace_id: str) -> Path:
+    """Ensure only the authenticated user's persistent project root exists."""
+    return _project_root(db, workspace_id)
+
+
 def _runtime_root(workspace_id: str) -> str:
     return user_runtime_project_root(workspace_id)
 

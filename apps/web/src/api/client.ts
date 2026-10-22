@@ -13,6 +13,7 @@ import { deploymentBasePath } from '../deploymentPath';
 const API_BASE = import.meta.env.VITE_API_BASE_URL || deploymentBasePath;
 const ROOT = '/api/v1';
 const INTERACTIVE_REQUEST_TIMEOUT_MS = 15_000;
+export type AgentGitIdentity = { author: string; email: string; configured: boolean };
 const absoluteApiUrl = (path: string) => new URL(`${API_BASE}${ROOT}${path}`, window.location.origin);
 const notifyAuthenticationRequired = () => window.dispatchEvent(new Event('flowweave:auth-required'));
 export const randomId = () => {
@@ -367,6 +368,8 @@ export const api = {
   agentWorkspaceMcpReadiness: (id: string, capabilityVersionId: string) =>
     request<AgentWorkspaceMcpReadiness>(`/agent-workspaces/${encodeURIComponent(id)}/capabilities/${encodeURIComponent(capabilityVersionId)}/mcp-readiness`, json('POST')),
   agentWorkspaceRuntime: (id: string) => request<AgentWorkspaceRuntime>(`/agent-workspaces/${encodeURIComponent(id)}/runtime`),
+  agentGitIdentity: (id: string) => request<AgentGitIdentity>(`/agent-workspaces/${encodeURIComponent(id)}/settings/git`),
+  saveAgentGitIdentity: (id: string, identity: { author: string; email: string }) => request<AgentGitIdentity>(`/agent-workspaces/${encodeURIComponent(id)}/settings/git`, { method: 'PUT', body: JSON.stringify(identity) }),
   agentWorkDirectories: (id: string) => request<AgentWorkDirectoryList>(`/agent-workspaces/${encodeURIComponent(id)}/work-directories`),
   createAgentWorkDirectory: (id: string, display_name: string, selected_paths: string[]) =>
     request<AgentWorkDirectory>(`/agent-workspaces/${encodeURIComponent(id)}/work-directories`, json('POST', { display_name, selected_paths })),

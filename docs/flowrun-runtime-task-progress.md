@@ -9076,3 +9076,27 @@ Web typecheck、定向 ESLint、production build、git diff --check、唯一 Ale
 ESLint、production build、git diff --check、唯一 Alembic head
 `0157_background_task_aggregate_type_length` 与任务状态唯一性通过。当前及下一可执行
 切片均为 NONE。沿用会话授权仅发布 Web，执行正式预检、健康／版本／路由验收与受管收尾。
+
+### FR-623 Agent 工作区设置与用户目录 Git 身份 — DONE
+
+依赖：FR-622 DONE。在 Agent 左侧导航底部提供设置入口，设置页采用分类／内容双栏，
+首项为 Git 作者与邮箱。初次加载、读取失败及尚未应用配置时留空，不以登录资料或缓存
+偏好冒充已生效配置；保存以 Runtime 回读结果为准，失败保留输入并允许重试。返回会话
+仍保留原路由与草稿。
+
+新增受既有 Agent 授权保护的 GET／PUT 设置接口，只按当前用户派生根目录，不接受用户 ID
+或文件路径。通过固定 OpenHands source lock 已确认的原生 Bash API 执行 Git 配置命令，
+不创建 Conversation 或用户消息。用户配置文件原子更新，目录条件 include 只作用于该用户
+根目录中的仓库；原有全局身份及仓库显式覆盖保留。每用户锁保护作者／邮箱配对，注册锁
+避免并发用户争用共享 Git 配置；拒绝符号链接／硬链接，失败恢复原配置。读回时以临时
+bare 仓库实跑条件继承及优先级，验证不通过就不展示为已配置。使用持久项目及 HOME，
+不重启或改造现有 Runtime。
+
+235 项 adapter 回归、11 项真实 Git／租户边界／校验回归、5 项 Chromium 定向回归通过。
+覆盖两个用户隔离、并发注册、新建子目录仓库继承、已有仓库覆盖、配置缺失／断开／被
+覆盖时留空、写入失败恢复、注入／链接拒绝、表单失败重试、桌面／窄屏布局和原导航。
+Web typecheck、定向 ESLint、production build、定向 Ruff、新模块 Pyright、git diff --check
+及唯一 Alembic head `0157_background_task_aggregate_type_length` 通过。全量 Pyright 与 HEAD
+隔离源码对比均为既有 489 项，新增诊断为零。当前及下一可执行切片均为 NONE。
+沿用会话授权发布同一提交的 platform 与 web，平台同步更新 api／stream-api／worker，
+发布期执行隔离 Runtime 原生 Bash 探针、健康／版本／路由验收与受管收尾。

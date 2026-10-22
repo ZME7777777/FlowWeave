@@ -9,6 +9,7 @@ import { createPortal, flushSync } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
 import { ComposerModelMenu } from './ComposerModelMenu';
 import { AgentComposerInput, type ComposerSuggestion } from './AgentComposerInput';
+import { AgentWorkspaceSettings } from './AgentWorkspaceSettings';
 import { AgentConversationSchedulesPanel } from './AgentConversationSchedulesPanel';
 import { ConversationManagementPage } from '../../pages/ConversationManagementPage';
 import { CONVERSATION_REFERENCE_TRANSFER_TYPE, WORKSPACE_FILE_TRANSFER_TYPE, transferredConversationReference, transferredFiles, transferredWorkspacePaths, type ComposerHandle } from './agentComposerInputUtils';
@@ -4963,7 +4964,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [conversationOrder, setConversationOrder] = useState<Record<string, string[]>>({});
   const [conversationOrderSync, setConversationOrderSync] = useState<Record<string, ConversationOrderSync>>({});
   const [sidebarScrollTop, setSidebarScrollTop] = useState<number>();
-  const [agentWorkspaceView, setAgentWorkspaceView] = useState<'home' | 'schedules' | 'management'>(() => withoutDeploymentBase(window.location.pathname).startsWith('/agent/schedules') ? 'schedules' : 'home');
+  const [agentWorkspaceView, setAgentWorkspaceView] = useState<'home' | 'schedules' | 'management' | 'settings'>(() => withoutDeploymentBase(window.location.pathname).startsWith('/agent/schedules') ? 'schedules' : 'home');
   const workspaceSidebarScrollTop = useRef<number | undefined>(undefined);
   const workspaceSidebarScrollTopBeforeActivity = useRef<number | undefined>(undefined);
   const restoringWorkspaceSidebarScrollTop = useRef<number | undefined>(undefined);
@@ -9610,7 +9611,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     window.addEventListener('pointercancel', stop, { once: true });
   };
   return <main className={`agent-workbench-page${!onReturnToSource ? ' agent-workbench-app-shell' : ''}`} style={{ '--conversation-rail-width': `${conversationRailWidth}px` } as CSSProperties}>
-    {!onReturnToSource && <nav className="agent-workbench-app-nav" aria-label="Agent 工作区导航"><button type="button" className={agentWorkspaceView === 'home' ? 'active' : ''} aria-current={agentWorkspaceView === 'home' ? 'page' : undefined} aria-label="主页" title="主页" onClick={returnToHome}><Home size={17}/></button><button type="button" className={agentWorkspaceView === 'schedules' ? 'active' : ''} aria-current={agentWorkspaceView === 'schedules' ? 'page' : undefined} aria-label="定时任务" title="定时任务" onClick={() => { rememberHomeRoute(); setAgentWorkspaceView('schedules'); onNavigate('/agent/schedules'); }}><CalendarClock size={17}/></button><button type="button" className={agentWorkspaceView === 'management' ? 'active' : ''} aria-current={agentWorkspaceView === 'management' ? 'page' : undefined} aria-label="会话管理" title="会话管理" onClick={() => { rememberHomeRoute(); setAgentWorkspaceView('management'); }}><MessageSquareText size={17}/></button></nav>}
+    {!onReturnToSource && <nav className="agent-workbench-app-nav" aria-label="Agent 工作区导航"><button type="button" className={agentWorkspaceView === 'home' ? 'active' : ''} aria-current={agentWorkspaceView === 'home' ? 'page' : undefined} aria-label="主页" title="主页" onClick={returnToHome}><Home size={17}/></button><button type="button" className={agentWorkspaceView === 'schedules' ? 'active' : ''} aria-current={agentWorkspaceView === 'schedules' ? 'page' : undefined} aria-label="定时任务" title="定时任务" onClick={() => { rememberHomeRoute(); setAgentWorkspaceView('schedules'); onNavigate('/agent/schedules'); }}><CalendarClock size={17}/></button><button type="button" className={agentWorkspaceView === 'management' ? 'active' : ''} aria-current={agentWorkspaceView === 'management' ? 'page' : undefined} aria-label="会话管理" title="会话管理" onClick={() => { rememberHomeRoute(); setAgentWorkspaceView('management'); }}><MessageSquareText size={17}/></button><button type="button" className={`agent-workbench-settings-trigger${agentWorkspaceView === 'settings' ? ' active' : ''}`} aria-current={agentWorkspaceView === 'settings' ? 'page' : undefined} aria-label="工作区设置" title="设置" onClick={() => { rememberHomeRoute(); setAgentWorkspaceView('settings'); }}><Settings size={17}/></button></nav>}
+    {agentWorkspaceView === 'settings' && <AgentWorkspaceSettings workspaceId={workspace.id}/>}
     {agentWorkspaceView === 'schedules' && workspace && <AgentConversationSchedulesPanel workspaceId={workspace.id} activeBindingId={selected?.id} activeConversationCapabilities={selected?.capabilities} embedded showDetail={!routeBindingId && !activityPreviewBindingId} onOpenConversation={selectConversation} onSelectSchedule={() => { setActivityPreviewBindingId(undefined); onNavigate('/agent/schedules'); }}/>}
     {agentWorkspaceView === 'management' && <section className="agent-conversation-management-page" aria-label="会话管理"><ConversationManagementPage/></section>}
     {selected && <ConversationStreamObserver workspaceId={workspace.id} bindingId={selected.id} enabled={streamEnabled} onEvent={onStreamEvent} onStatus={updateStreamStatus} onReconnect={onStreamReconnect}/>}

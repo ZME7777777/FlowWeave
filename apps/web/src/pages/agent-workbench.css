@@ -493,3 +493,22 @@
 .agent-work-directory-browse>svg{flex:0 0 auto;color:#71917e}
 .agent-work-directory-browse>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .agent-work-directory-browse:focus-visible{outline:2px solid #79a78f;outline-offset:2px}
+
+.agent-workbench-app-nav .agent-workbench-settings-trigger{margin-top:auto}
+.agent-workspace-settings{grid-column:2 / -1;display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden;background:#fff}
+.agent-workspace-settings>header{display:flex;align-items:center;min-height:52px;flex:0 0 52px;border-bottom:1px solid var(--line);padding:0 22px}
+.agent-workspace-settings h2{margin:0;font-size:16px}
+.agent-workspace-settings-layout{display:grid;grid-template-columns:180px minmax(0,1fr);flex:1;min-height:0}
+.agent-workspace-settings-layout>nav{border-right:1px solid var(--line);background:#f7faf8;padding:14px 10px}
+.agent-workspace-settings-layout>nav button{display:flex;align-items:center;gap:8px;width:100%;border:0;border-radius:7px;background:#e5eee8;padding:10px 12px;text-align:left;color:#173f2b;font-size:12px;font-weight:600}
+.agent-workspace-settings-layout>main{min-width:0;overflow:auto;padding:26px clamp(18px,4vw,48px)}
+.agent-workspace-settings h3{margin:0 0 8px;font-size:17px}
+.agent-workspace-settings main>p{max-width:600px;margin:0 0 22px;color:#728077;font-size:12px;line-height:1.7}
+.agent-workspace-settings [role=status]{display:flex;align-items:center;gap:6px}
+.agent-workspace-settings form{display:grid;gap:18px;max-width:520px}
+.agent-workspace-settings label{display:grid;gap:7px;font-size:12px;font-weight:600}
+.agent-workspace-settings input{width:100%;height:36px;min-width:0;border:1px solid #cbd9d0;border-radius:7px;padding:7px 10px;font-size:13px}
+.agent-workspace-settings footer{display:flex;align-items:center;gap:12px}
+.agent-workspace-settings footer span{color:#31764c;font-size:12px}
+.agent-workspace-settings [role=alert]{color:#a3443d;font-size:12px}
+@media(max-width:680px){.agent-workspace-settings-layout{grid-template-columns:112px minmax(0,1fr)}.agent-workspace-settings-layout>nav{padding:12px 6px}.agent-workspace-settings-layout>nav button{padding:9px 8px}.agent-workspace-settings-layout>main{padding:20px 14px}.agent-workspace-settings>header{padding:0 16px}}

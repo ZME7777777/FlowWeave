@@ -7,6 +7,7 @@ import json
 import logging
 import math
 import re
+import shlex
 import tarfile
 import threading
 import time
@@ -65,6 +66,7 @@ from flowweave.runtime.base import (
     StartAttemptRequest,
 )
 from flowweave.runtime.contract import OPTIONAL_HTTP_OPERATIONS
+from flowweave.runtime.git_identity import GIT_IDENTITY_SCRIPT
 from flowweave.runtime.model_catalog import declared_context_window
 from flowweave.runtime.read_budget import formal_read_budget, hydration_time_left
 from flowweave.shared.errors import DomainError
@@ -5252,6 +5254,56 @@ class OpenHandsRuntime:
                 "EXECUTOR_UNAVAILABLE", "OpenHands 工作区文件上传不可用", 503
             ) from exc
         return target
+
+    def workspace_git_identity(
+        self, handle: RuntimeHandle, *, identity: tuple[str, str] | None = None
+    ) -> dict[str, str | bool]:
+        values: dict[str, str] = {"root": handle.workspace_root}
+        if identity is not None:
+            values.update(author=identity[0], email=identity[1])
+        result = self._request(
+            "POST",
+            "/api/bash/execute_bash_command",
+            base_url=self._base_url_for_handle(handle),
+            session_api_key=self._session_key_for_handle(handle),
+            json={
+                "command": "python3 -c "
+                + shlex.quote(GIT_IDENTITY_SCRIPT)
+                + " "
+                + shlex.quote(json.dumps(values)),
+                "timeout": 12,
+            },
+            timeout=15,
+        )
+        try:
+            if result.get("exit_code") != 0:
+                raise ValueError("Git operation failed")
+            raw = json.loads(str(result.get("stdout") or ""))
+            if not isinstance(raw, dict):
+                raise ValueError("Invalid Git configuration response")
+            data = cast(dict[str, object], raw)
+            author, email, configured = (
+                data.get("author"),
+                data.get("email"),
+                data.get("configured"),
+            )
+            if (
+                not isinstance(author, str)
+                or not isinstance(email, str)
+                or not isinstance(configured, bool)
+            ):
+                raise ValueError("Invalid Git identity")
+            if identity is not None and (not configured or (author, email) != identity):
+                raise ValueError("Git write was not confirmed")
+            return {
+                "author": author if configured else "",
+                "email": email if configured else "",
+                "configured": configured,
+            }
+        except (ValueError, TypeError) as exc:
+            raise DomainError(
+                "AGENT_GIT_CONFIG_UNAVAILABLE", "无法确认工作区 Git 配置，请稍后重试", 503
+            ) from exc
 
     def workspace_snapshot(self, handle: RuntimeHandle, path: str) -> RuntimeWorkspaceSnapshot:
         base_url = self._base_url_for_handle(handle)

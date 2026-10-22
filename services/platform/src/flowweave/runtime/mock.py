@@ -45,6 +45,15 @@ class MockRuntime:
         self._events: dict[str, list[RuntimeEvent]] = {}
         self._conversation_condensers: dict[str, RuntimeCondenser] = {}
         self._conversation_secrets: dict[str, dict[str, str]] = {}
+        self._git_identities: dict[str, tuple[str, str]] = {}
+
+    def workspace_git_identity(
+        self, handle: RuntimeHandle, *, identity: tuple[str, str] | None = None
+    ) -> dict[str, str | bool]:
+        if identity is not None:
+            self._git_identities[handle.workspace_root] = identity
+        author, email = self._git_identities.get(handle.workspace_root, ("", ""))
+        return {"author": author, "email": email, "configured": bool(author and email)}
 
     def probe_mcp(self, request: RuntimeMCPProbeRequest) -> RuntimeMCPProbeResult:
         del request

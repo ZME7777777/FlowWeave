@@ -28,7 +28,7 @@ from flowweave.modules.agent_sessions.application import schedules as conversati
 from flowweave.modules.agent_sessions.application import search as conversation_search
 from flowweave.modules.agent_sessions.application import sidebar_conversations
 from flowweave.modules.agent_sessions.public import conversations
-from flowweave.modules.agent_workspaces.application import work_directories, workspace
+from flowweave.modules.agent_workspaces.application import git_settings, work_directories, workspace
 from flowweave.modules.environments import public as environments
 from flowweave.modules.users.application.security import current_principal
 from flowweave.runtime.dependencies import runtime_context
@@ -92,6 +92,36 @@ class _Write(BaseModel):
 
 class AgentWorkspaceCapabilitiesWrite(_Write):
     capability_version_ids: list[str] = Field(default_factory=list)
+
+
+class AgentGitIdentityWrite(_Write):
+    author: str = Field(min_length=1, max_length=200, pattern=r"^[^\x00-\x1f\x7f<>]+$")
+    email: str = Field(
+        min_length=3, max_length=320, pattern=r"^[^\x00-\x1f\x7f\s@<>]+@[^\x00-\x1f\x7f\s@<>]+$"
+    )
+
+
+@router.get("/agent-workspaces/{workspace_id}/settings/git")
+async def get_agent_git_identity(
+    workspace_id: str, container: ContainerDep
+) -> dict[str, str | bool]:
+    return await run_blocking_auxiliary(
+        container, lambda db: git_settings.git_identity(db, workspace_id)
+    )
+
+
+@router.put("/agent-workspaces/{workspace_id}/settings/git")
+async def put_agent_git_identity(
+    workspace_id: str, payload: AgentGitIdentityWrite, container: ContainerDep
+) -> dict[str, str | bool]:
+    if not payload.author.strip():
+        raise DomainError("AGENT_GIT_AUTHOR_REQUIRED", "请填写 Git 作者", 422)
+    return await run_blocking_mutation(
+        container,
+        lambda db: git_settings.git_identity(
+            db, workspace_id, identity=(payload.author.strip(), payload.email)
+        ),
+    )
 
 
 AgentWorkDirectoryPathWrite = Annotated[str, Field(min_length=1, max_length=500)]
