@@ -34,12 +34,9 @@ interface Props {
   onClose: () => void;
 }
 
-const tabs = ['基础信息', '提示词', '输入输出定义'];
-
 export function NodeEditor({ node, onSave, onClose }: Props) {
   useEscapeClose(onClose);
   const [form, setForm] = useState<NodeAssetWrite>(emptyNode());
-  const [tab, setTab] = useState(0);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
   const submitting = useRef(false);
@@ -96,28 +93,25 @@ export function NodeEditor({ node, onSave, onClose }: Props) {
   };
 
   return <div className="modal-backdrop"><form className="modal editor asset-editor" onSubmit={submit}>
-    <header><div><span className="eyebrow">NODE ASSET</span><h2>{node ? '编辑节点资产' : '新建节点资产'}</h2></div><button type="button" className="ghost" onClick={onClose}>关闭</button></header>
-    <div className="step-tabs">{tabs.map((label, index) => <button type="button" key={label} className={tab === index ? 'active' : ''} onClick={() => setTab(index)}><span>{index + 1}</span>{label}</button>)}</div>
-    {tab === 0 && <section className="form-grid form-pane">
-      <label>节点名称<input aria-label="节点名称" required value={form.name} onChange={event => setForm({ ...form, name: event.target.value })}/></label>
-      <label>所属目录<select aria-label="所属目录" value={form.directory_id ?? ''} onChange={event => setForm({ ...form, directory_id: event.target.value || null })}><option value="">未分类</option>{directories.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
-      <label className="wide">节点说明<textarea aria-label="节点说明" value={form.description} onChange={event => setForm({ ...form, description: event.target.value })}/></label>
-    </section>}
-    {tab === 1 && <section className="form-grid form-pane">
-      <label className="wide">启动触发提示词<textarea aria-label="启动触发提示词" value={form.executor.startup_prompt} onChange={event => setForm({ ...form, executor: { ...form.executor, startup_prompt: event.target.value } })}/></label>
-      <label className="wide">上下文提示词<textarea aria-label="上下文提示词" value={form.executor.context_prompt} onChange={event => setForm({ ...form, executor: { ...form.executor, context_prompt: event.target.value } })}/></label>
-    </section>}
-    {tab === 2 && <section className="form-pane io-editor"><div className="io-intro"><b>定义输入输出</b><span>这里只定义运行时表单的数据槽位和类型。URL 接受安全 HTTP(S) 链接，文件以平台附件样式上传。</span></div>{(['inputs', 'outputs'] as const).map(direction => {
-      const input = direction === 'inputs';
-      return <section className={`io-section ${input ? 'input' : 'output'}`} key={direction}><header><div><span>{input ? 'INPUT' : 'OUTPUT'}</span><h3>{input ? '输入定义' : '输出定义'}</h3><p>{input ? '运行时严格按这里的字段生成一对一输入表单。' : 'Agent 按类型返回 URL，或返回本次工作区内创建的文件。'}</p></div><button type="button" className="secondary" onClick={() => setForm(old => ({ ...old, [direction]: [...old[direction], emptyField(input ? 'input' : 'output', old[direction].length)] }))}><Plus size={13}/>添加{input ? '输入' : '输出'}</button></header>{form[direction].length > 0 && <div className="io-column-head lark-doc-head" aria-hidden="true"><span>字段标识</span><span>展示名称</span><span>类型</span><span>说明</span><span>操作</span></div>}{form[direction].map((field, index) => <div className="io-row lark-doc-row" key={index}><input required pattern="[A-Za-z][A-Za-z0-9_]{0,99}" aria-label={`${direction} key ${index}`} value={field.field_key} placeholder={input ? 'requirement' : 'result'} title="以字母开头，只能包含字母、数字和下划线" onChange={event => updateField(direction, index, { field_key: event.target.value })}/><input aria-label={`${direction} name ${index}`} value={field.display_name} onChange={event => updateField(direction, index, { display_name: event.target.value })}/><div className="io-type-toggle" role="radiogroup" aria-label={`${direction} type ${index}`}><button type="button" role="radio" aria-checked={field.data_type === 'URL'} className={field.data_type === 'URL' ? 'active' : ''} onClick={() => updateField(direction, index, { data_type: 'URL' })}>URL</button><button type="button" role="radio" aria-checked={field.data_type === 'FILE'} className={field.data_type === 'FILE' ? 'active' : ''} onClick={() => updateField(direction, index, { data_type: 'FILE' })}>文件</button></div><input aria-label={`${direction} description ${index}`} value={field.description} placeholder={input ? '说明 Agent 如何使用输入' : '说明输出内容与验收要求'} onChange={event => updateField(direction, index, { description: event.target.value })}/><button type="button" className="ghost" aria-label={`移除 ${direction} 字段 ${field.field_key}`} onClick={() => removeField(direction, index)}><Trash2 size={14}/></button></div>)}{form[direction].length === 0 && <div className="io-empty">暂未定义{input ? '输入' : '输出'}。</div>}</section>;
-    })}</section>}
+    <header className="asset-editor-header"><div><span className="eyebrow">NODE ASSET</span><h2>{node ? '编辑节点资产' : '新建节点资产'}</h2><p>在一个页面中完成节点说明、提示词以及输入输出字段配置。</p></div><button type="button" className="ghost" onClick={onClose}>关闭</button></header>
+    <div className="asset-editor-columns">
+      <div className="asset-editor-left">
+        <section className="asset-editor-section"><header><span>01</span><div><h3>基础信息</h3><p>名称和目录用于资产检索与流程编排。</p></div></header><div className="form-grid">
+          <label>节点名称<input aria-label="节点名称" required value={form.name} onChange={event => setForm({ ...form, name: event.target.value })}/></label>
+          <label>所属目录<select aria-label="所属目录" value={form.directory_id ?? ''} onChange={event => setForm({ ...form, directory_id: event.target.value || null })}><option value="">未分类</option>{directories.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+          <label className="wide">节点说明<textarea aria-label="节点说明" value={form.description} onChange={event => setForm({ ...form, description: event.target.value })}/></label>
+        </div></section>
+        <section className="asset-editor-section prompt-section"><header><span>02</span><div><h3>提示词与上下文</h3><p>提示词在运行时注入，不作为普通用户消息发送。</p></div></header>
+          <label>启动触发提示词<textarea aria-label="启动触发提示词" value={form.executor.startup_prompt} onChange={event => setForm({ ...form, executor: { ...form.executor, startup_prompt: event.target.value } })}/></label>
+          <label>上下文提示词<textarea aria-label="上下文提示词" value={form.executor.context_prompt} onChange={event => setForm({ ...form, executor: { ...form.executor, context_prompt: event.target.value } })}/></label>
+        </section>
+      </div>
+      <section className="asset-editor-right"><header className="io-editor-heading"><div><h3>输入输出定义</h3><p>运行时会严格按这里的字段生成表单并校验交付结果。</p></div></header><div className="io-editor-scroll">{(['inputs', 'outputs'] as const).map(direction => {
+        const input = direction === 'inputs';
+        return <section className={`io-section ${input ? 'input' : 'output'}`} key={direction}><header><div><span>{input ? 'INPUT' : 'OUTPUT'}</span><h3>{input ? '输入定义' : '输出定义'}</h3><p>{input ? '运行时严格按这里的字段生成一对一输入表单。' : 'Agent 按类型返回 URL，或返回本次工作区内创建的文件。'}</p></div><button type="button" className="secondary" onClick={() => setForm(old => ({ ...old, [direction]: [...old[direction], emptyField(input ? 'input' : 'output', old[direction].length)] }))}><Plus size={13}/>添加{input ? '输入' : '输出'}</button></header>{form[direction].length > 0 && <div className="io-column-head lark-doc-head" aria-hidden="true"><span>字段标识</span><span>展示名称</span><span>类型</span><span>说明</span><span>操作</span></div>}{form[direction].map((field, index) => <div className="io-row lark-doc-row" key={index}><input required pattern="[A-Za-z][A-Za-z0-9_]{0,99}" aria-label={`${direction} key ${index}`} value={field.field_key} placeholder={input ? 'requirement' : 'result'} title="以字母开头，只能包含字母、数字和下划线" onChange={event => updateField(direction, index, { field_key: event.target.value })}/><input aria-label={`${direction} name ${index}`} value={field.display_name} onChange={event => updateField(direction, index, { display_name: event.target.value })}/><div className="io-type-toggle" role="radiogroup" aria-label={`${direction} type ${index}`}><button type="button" role="radio" aria-checked={field.data_type === 'URL'} className={field.data_type === 'URL' ? 'active' : ''} onClick={() => updateField(direction, index, { data_type: 'URL' })}>URL</button><button type="button" role="radio" aria-checked={field.data_type === 'FILE'} className={field.data_type === 'FILE' ? 'active' : ''} onClick={() => updateField(direction, index, { data_type: 'FILE' })}>文件</button></div><input aria-label={`${direction} description ${index}`} value={field.description} placeholder={input ? '说明 Agent 如何使用输入' : '说明输出内容与验收要求'} onChange={event => updateField(direction, index, { description: event.target.value })}/><button type="button" className="ghost" aria-label={`移除 ${direction} 字段 ${field.field_key}`} onClick={() => removeField(direction, index)}><Trash2 size={14}/></button></div>)}{form[direction].length === 0 && <div className="io-empty">暂未定义{input ? '输入' : '输出'}。</div>}</section>;
+      })}</div></section>
+    </div>
     {error && <p className="error">{error}</p>}
-    <footer><button type="button" className="ghost" onClick={onClose}>取消</button>{tab > 0 && <button type="button" className="secondary" onClick={() => setTab(tab - 1)}>上一步</button>}{tab < tabs.length - 1 ? <button type="button" className="primary" onClick={event => {
-      // Moving onto the final step replaces this keyed position with the
-      // submit button during the same click dispatch. Prevent the browser's
-      // post-dispatch default action from submitting that reused DOM node.
-      event.preventDefault();
-      setTab(current => current + 1);
-    }}>下一步</button> : <button type="submit" className="primary" disabled={saving}>{saving ? '保存中…' : '保存节点资产'}</button>}</footer>
+    <footer><button type="button" className="ghost" onClick={onClose}>取消</button><button type="submit" className="primary" disabled={saving}>{saving ? '保存中…' : '保存节点资产'}</button></footer>
   </form></div>;
 }

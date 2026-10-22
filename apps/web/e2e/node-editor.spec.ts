@@ -17,7 +17,23 @@ const node = {
   updated_at: '2026-08-30T00:00:00Z',
 };
 
-test('next opens input/output step without saving or closing', async ({ page }) => {
+test('clicking a node card opens the editor directly', async ({ page }) => {
+  await page.route('**/api/v1/node-directories', route => route.fulfill({
+    status: 200, contentType: 'application/json', body: '[]',
+  }));
+  await page.route('**/api/v1/node-assets**', route => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify([node]),
+  }));
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '节点资产', exact: true }).click();
+  await page.getByTestId('node-card').filter({ hasText: node.name }).click();
+
+  await expect(page.getByRole('heading', { name: '编辑节点资产' })).toBeVisible();
+  await expect(page.getByRole('dialog', { name: `节点详情 ${node.name}` })).toHaveCount(0);
+});
+
+test('editor shows all configuration sections without saving', async ({ page }) => {
   let updateCount = 0;
   await page.route('**/api/v1/node-directories', route => route.fulfill({
     status: 200, contentType: 'application/json', body: '[]',
@@ -33,57 +49,29 @@ test('next opens input/output step without saving or closing', async ({ page }) 
   await page.goto('/');
   await page.getByRole('button', { name: '节点资产', exact: true }).click();
   await page.getByTestId('node-card').filter({ hasText: node.name }).getByTitle('编辑').click();
-  await page.getByRole('button', { name: /提示词/ }).click();
+
+  await expect(page.getByLabel('节点名称')).toBeVisible();
   await expect(page.getByLabel('启动触发提示词')).toBeVisible();
-
-  await page.getByRole('button', { name: '下一步', exact: true }).click();
-
-  await expect(page.getByRole('heading', { name: '编辑节点资产' })).toBeVisible();
-  await expect(page.getByText('定义输入输出', { exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '输入输出定义' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '保存节点资产' })).toBeVisible();
   expect(updateCount).toBe(0);
 });
 
-test('node prompt keeps free text and selected Context versions together', async ({ page }) => {
+test('node prompt stays editable in the single-page editor', async ({ page }) => {
   await page.route('**/api/v1/node-directories', route => route.fulfill({
     status: 200, contentType: 'application/json', body: '[]',
   }));
   await page.route('**/api/v1/node-assets**', route => route.fulfill({
     status: 200, contentType: 'application/json', body: JSON.stringify([node]),
   }));
-  await page.route('**/api/v1/capabilities', route => route.fulfill({
-    status: 200,
-    contentType: 'application/json',
-    body: JSON.stringify([{
-      id: 'context-version-1',
-      lineage_id: 'context-lineage-1',
-      revision_number: 1,
-      is_latest: true,
-      capability_type: 'CONTEXT',
-      capability_key: '产品背景',
-      description: '固定背景',
-      filename: 'product.md',
-      content_hash: 'a'.repeat(64),
-      byte_size: 16,
-      created_at: '2026-08-31T00:00:00Z',
-      reference_count: 0,
-      is_builtin: false,
-      dependencies: {},
-      dependency_build_state: 'NOT_REQUIRED',
-      dependency_build_error: null,
-    }]),
-  }));
 
   await page.goto('/');
   await page.getByRole('button', { name: '节点资产', exact: true }).click();
   await page.getByTestId('node-card').filter({ hasText: node.name }).getByTitle('编辑').click();
-  await page.getByRole('button', { name: /提示词/ }).click();
 
   const contextPrompt = page.getByLabel('上下文提示词');
-  const contextSelect = page.getByLabel('Context 能力');
   await contextPrompt.fill('同时保留这段自由上下文');
-  await contextSelect.selectOption('context-version-1');
 
   await expect(contextPrompt).toHaveValue('同时保留这段自由上下文');
-  await expect(contextSelect.locator('option:checked')).toHaveAttribute('value', 'context-version-1');
-  await expect(page.getByText('不作为普通用户消息发送。')).toBeVisible();
+  await expect(page.getByText('提示词在运行时注入，不作为普通用户消息发送。')).toBeVisible();
 });
