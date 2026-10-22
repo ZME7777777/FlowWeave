@@ -82,6 +82,40 @@ async function openWorkspace(page: Page, events: unknown[] = [], includeSecondCo
   return writes;
 }
 
+test('conversation list scrollbar stays thin and borderless while hovered and dragged', async ({ page }) => {
+  await page.setViewportSize({width:1440,height:800});
+  await openWorkspace(page);
+  await page.route('**/api/v1/agent-workspaces/schedule-workspace/work-directories', route => json(route, {
+    root:{kind:'ROOT',display_name:'根工作区',working_directory:'/runtime/workspace/project'},
+    items:Array.from({length:35},(_,index)=>({id:`scroll-directory-${index}`,display_name:`滚动工作区 ${index}`,current_version:{working_directory:`/runtime/workspace/project/directory-${index}`}})),
+  }));
+  await page.goto('/agent/conversations/scheduled-conversation');
+  const list=page.locator('.agent-workbench-list');
+  await expect.poll(()=>list.evaluate(element=>element.scrollHeight>element.clientHeight)).toBe(true);
+  const appearance=()=>list.evaluate(element=>{
+    const bar=getComputedStyle(element,'::-webkit-scrollbar');
+    const track=getComputedStyle(element,'::-webkit-scrollbar-track');
+    const thumb=getComputedStyle(element,'::-webkit-scrollbar-thumb');
+    return {width:bar.width,gutter:element.getBoundingClientRect().width-element.clientWidth,track:track.backgroundColor,border:track.borderRightWidth,shadow:track.boxShadow,thumb:thumb.backgroundColor};
+  });
+  await page.mouse.move(800,300);
+  const before=await appearance();
+  expect(parseFloat(before.width)).toBeLessThanOrEqual(8);
+  expect(before.track).toBe('rgba(0, 0, 0, 0)');
+  expect(before.border).toBe('0px');
+  expect(before.shadow).toBe('none');
+  const box=(await list.boundingBox())!;
+  await page.mouse.move(box.x+box.width-5,box.y+20);
+  expect(await appearance()).toEqual(before);
+  await page.mouse.down();
+  await page.mouse.move(box.x+box.width-5,box.y+80,{steps:5});
+  expect(await appearance()).toEqual(before);
+  await page.mouse.up();
+  await list.hover({position:{x:40,y:100}});
+  await page.mouse.wheel(0,350);
+  await expect.poll(()=>list.evaluate(element=>element.scrollTop)).toBeGreaterThan(0);
+});
+
 test('workspace directory search filters nested paths and restores the tree', async ({ page }) => {
   await openWorkspace(page);
   await page.route('**/api/v1/agent-workspaces/*/workspace?**', route => json(route, {

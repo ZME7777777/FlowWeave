@@ -8883,3 +8883,17 @@ production build、git diff --check 与唯一 Alembic head
 定向 ESLint、production build、git diff --check、唯一 Alembic head
 `0157_background_task_aggregate_type_length` 与 CURRENT 唯一性核对通过；下一切片为 NONE。
 沿用会话部署授权，仅发布 Web，完成正式预检、最小上下文构建、健康／路由验收及受管收尾。
+
+### FR-610 会话列表滚动条悬停几何稳定 — DONE
+
+依赖：FR-609 DONE。
+
+会话列表使用固定 6px 的自定义细滚动条，默认、悬停及按下时保持同一滑块颜色与宽度；
+轨道及角落透明、无边框／阴影，不显示原生滚动箭头。仅作用于会话列表，未改变会话正文、
+文件树或其他滚动容器；不支持 WebKit 滚动条伪元素的浏览器保留标准 thin／透明轨道回退。
+
+新增 Chromium 回归使用 35 个工作区形成真实列表溢出，验证默认／悬停／拖动时样式与
+占用宽度一致、轨道无边框，并确认滚轮仍可滚动。旧源码因没有固定细条宽度而失败；
+修复后连同标签三态和全屏布局共 3 passed。Web typecheck、定向 ESLint、production build、
+git diff --check、唯一 Alembic head `0157_background_task_aggregate_type_length` 及
+CURRENT 唯一性核对通过；下一切片为 NONE。沿用会话部署授权，仅发布 Web 并完成受管收尾。
