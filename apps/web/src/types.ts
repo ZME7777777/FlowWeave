@@ -483,12 +483,20 @@ export interface CaseAgentTask {
   input_context: Record<string, unknown>; result: Record<string, unknown>;
   created_at: string; updated_at: string;
 }
+export interface CaseDecisionProposal {
+  id: string; case_id: string; flow_run_id: string; node_run_id?: string | null;
+  node_attempt_id?: string | null; proposal_key: string;
+  action: 'CONTINUE_STEPWISE' | 'STOP_FLOW_RUN' | 'RERUN_STEPWISE_NODE' | 'REVISE_UNSTARTED_RUNTIME' | 'COPY_AUTOMATIC_RUN';
+  state: 'PROPOSED' | 'EXECUTED' | 'FAILED' | 'SUPERSEDED'; reason: string;
+  payload: Record<string, unknown>; result: Record<string, unknown>; created_at: string; executed_at?: string | null;
+}
 export interface Case {
   id: string; name: string; objective: string;
   state: 'DRAFT' | 'ACTIVE' | 'PAUSED' | 'COMPLETED' | 'ARCHIVED';
   control_conversation_binding_id?: string | null;
   control_work_directory_id?: string | null;
-  row_version: number; stages: CaseStage[]; tasks: CaseAgentTask[];
+  row_version: number; stages: CaseStage[]; flow_run_ids: string[]; tasks: CaseAgentTask[];
+  decision_proposals: CaseDecisionProposal[];
   created_at: string; updated_at: string;
 }
 

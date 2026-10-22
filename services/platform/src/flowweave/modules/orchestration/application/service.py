@@ -221,6 +221,22 @@ def _event(
     db.add(event)
     db.flush()
     enqueue_matching_deliveries(db, event)
+    if event_type in {
+        "NODE_RUN_COMPLETED",
+        "RUNTIME_FAILED",
+        "FLOW_RUN_COMPLETED",
+        "FLOW_RUN_CANCELLED",
+    }:
+        from flowweave.modules.cases.public import project_flow_run_event
+
+        project_flow_run_event(
+            db,
+            run_id,
+            event_type,
+            node_run_id=node_run_id,
+            node_attempt_id=attempt_id,
+            payload=event.payload_json,
+        )
 
 
 def _action(

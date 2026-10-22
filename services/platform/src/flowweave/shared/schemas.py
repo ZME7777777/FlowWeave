@@ -850,6 +850,23 @@ class CaseFlowRunWrite(ApiModel):
     flow_run_id: str = Field(min_length=1, max_length=36)
 
 
+class CaseDecisionProposalWrite(ApiModel):
+    flow_run_id: str = Field(min_length=1, max_length=36)
+    proposal_key: str = Field(pattern=r"^[a-z][a-z0-9._-]{0,119}$")
+    action: Literal[
+        "CONTINUE_STEPWISE",
+        "STOP_FLOW_RUN",
+        "RERUN_STEPWISE_NODE",
+        "REVISE_UNSTARTED_RUNTIME",
+        "COPY_AUTOMATIC_RUN",
+    ]
+    reason: str = Field(min_length=1, max_length=2_000)
+    node_run_id: str | None = Field(default=None, min_length=1, max_length=36)
+    node_attempt_id: str | None = Field(default=None, min_length=1, max_length=36)
+    source_task_id: str | None = Field(default=None, min_length=1, max_length=36)
+    payload: dict[str, Any] = Field(default_factory=_empty_any_dict)
+
+
 class StepwiseNodeDraftWrite(NodeRunStart):
     """Editable node configuration for one stepwise record.
 

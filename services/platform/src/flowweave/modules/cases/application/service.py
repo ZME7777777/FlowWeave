@@ -10,17 +10,32 @@ from flowweave.modules.agent_workspaces import public as agent_workspaces
 from flowweave.modules.cases.infrastructure.models import (
     Case,
     CaseAgentTask,
+    CaseDecisionProposal,
     CaseFlowRun,
     CaseStage,
 )
-from flowweave.modules.runs.infrastructure.models import ArtifactVersion, FlowRun, NodeAttempt
+from flowweave.modules.orchestration import public as orchestration
+from flowweave.modules.runs.infrastructure.models import (
+    ArtifactVersion,
+    FlowRun,
+    NodeAttempt,
+    NodeRun,
+)
 from flowweave.shared.application.transactions import finish
+from flowweave.shared.database import now
 from flowweave.shared.errors import conflict, illegal, not_found
 from flowweave.shared.schemas import (
+    AttemptStartWrite,
+    AutomaticRunCopyWrite,
     CaseControlConversationWrite,
     CaseCreateWrite,
+    CaseDecisionProposalWrite,
     CaseFlowRunWrite,
     CaseStageStateWrite,
+    FlowRunRevisionDraftApplyWrite,
+    FlowRunRevisionDraftCreateWrite,
+    FlowRunRevisionDraftWrite,
+    NodeRunCopyWrite,
 )
 
 
@@ -69,6 +84,47 @@ def _task_dict(item: CaseAgentTask) -> dict[str, Any]:
     }
 
 
+def _proposal_dict(item: CaseDecisionProposal) -> dict[str, Any]:
+    return {
+        "id": item.id,
+        "case_id": item.case_id,
+        "flow_run_id": item.flow_run_id,
+        "node_run_id": item.node_run_id,
+        "node_attempt_id": item.node_attempt_id,
+        "proposal_key": item.proposal_key,
+        "source_task_id": item.source_task_id,
+        "action": item.action,
+        "state": item.state,
+        "reason": item.reason,
+        "payload": item.payload_json,
+        "result": item.result_json,
+        "created_at": item.created_at.isoformat(),
+        "executed_at": item.executed_at.isoformat() if item.executed_at else None,
+    }
+
+
+def _case_linked_run(db: Session, case_id: str, flow_run_id: str) -> FlowRun:
+    linked = db.scalar(
+        select(CaseFlowRun.id).where(
+            CaseFlowRun.case_id == case_id,
+            CaseFlowRun.flow_run_id == flow_run_id,
+        )
+    )
+    if linked is None:
+        raise conflict("FlowRun is not linked to this Case", flow_run_id=flow_run_id)
+    run = db.get(FlowRun, flow_run_id)
+    if run is None:
+        raise not_found("flow_run", flow_run_id)
+    return run
+
+
+def _proposal(db: Session, case_id: str, proposal_id: str) -> CaseDecisionProposal:
+    item = db.get(CaseDecisionProposal, proposal_id)
+    if item is None or item.case_id != case_id:
+        raise not_found("case_decision_proposal", proposal_id)
+    return item
+
+
 def _case_flow_runs(db: Session, case_id: str) -> list[str]:
     return list(
         db.scalars(
@@ -88,6 +144,11 @@ def _case_dict(db: Session, item: Case) -> dict[str, Any]:
         .where(CaseAgentTask.case_id == item.id)
         .order_by(CaseAgentTask.created_at.desc())
     ).all()
+    proposals = db.scalars(
+        select(CaseDecisionProposal)
+        .where(CaseDecisionProposal.case_id == item.id)
+        .order_by(CaseDecisionProposal.created_at.desc())
+    ).all()
     return {
         "id": item.id,
         "name": item.name,
@@ -99,6 +160,7 @@ def _case_dict(db: Session, item: Case) -> dict[str, Any]:
         "stages": [_stage_dict(stage) for stage in stages],
         "flow_run_ids": _case_flow_runs(db, item.id),
         "tasks": [_task_dict(task) for task in tasks],
+        "decision_proposals": [_proposal_dict(proposal) for proposal in proposals],
         "created_at": item.created_at.isoformat(),
         "updated_at": item.updated_at.isoformat(),
     }
@@ -232,6 +294,57 @@ def project_flow_run_observations(db: Session, flow_run_id: str) -> None:
         project_case_observations(db, case_id, commit=False)
 
 
+def project_flow_run_event(
+    db: Session,
+    flow_run_id: str,
+    event_type: str,
+    *,
+    node_run_id: str | None = None,
+    node_attempt_id: str | None = None,
+    payload: dict[str, Any] | None = None,
+) -> None:
+    """Expose terminal runtime facts to Case coordination without executing decisions."""
+
+    if event_type not in {
+        "NODE_RUN_COMPLETED",
+        "RUNTIME_FAILED",
+        "FLOW_RUN_COMPLETED",
+        "FLOW_RUN_CANCELLED",
+    }:
+        return
+    case_ids = db.scalars(
+        select(CaseFlowRun.case_id).where(CaseFlowRun.flow_run_id == flow_run_id)
+    ).all()
+    for case_id in case_ids:
+        task_key = f"event:{event_type}:{node_attempt_id or flow_run_id}"
+        if (
+            db.scalar(
+                select(CaseAgentTask.id).where(
+                    CaseAgentTask.case_id == case_id,
+                    CaseAgentTask.task_key == task_key,
+                )
+            )
+            is not None
+        ):
+            continue
+        db.add(
+            CaseAgentTask(
+                case_id=case_id,
+                task_key=task_key,
+                task_type="REVIEW",
+                flow_run_id=flow_run_id,
+                node_attempt_id=node_attempt_id,
+                input_context_json={
+                    "event_type": event_type,
+                    "node_run_id": node_run_id,
+                    "node_attempt_id": node_attempt_id,
+                    "event": payload or {},
+                },
+            )
+        )
+    db.flush()
+
+
 def attach_case_flow_run(db: Session, case_id: str, payload: CaseFlowRunWrite) -> dict[str, Any]:
     item = _case(db, case_id)
     run = db.get(FlowRun, payload.flow_run_id)
@@ -249,6 +362,144 @@ def attach_case_flow_run(db: Session, case_id: str, payload: CaseFlowRunWrite) -
         db.add(CaseFlowRun(case_id=item.id, flow_run_id=run.id))
         db.flush()
     return project_case_observations(db, item.id)
+
+
+def create_case_decision_proposal(
+    db: Session, case_id: str, payload: CaseDecisionProposalWrite
+) -> dict[str, Any]:
+    item = _case(db, case_id)
+    if item.state in {"COMPLETED", "ARCHIVED"}:
+        raise illegal("terminal case cannot create decisions", state=item.state)
+    existing = db.scalar(
+        select(CaseDecisionProposal).where(
+            CaseDecisionProposal.case_id == item.id,
+            CaseDecisionProposal.proposal_key == payload.proposal_key,
+        )
+    )
+    if existing is not None:
+        return _proposal_dict(existing)
+    run = _case_linked_run(db, item.id, payload.flow_run_id)
+    if payload.source_task_id:
+        task = db.get(CaseAgentTask, payload.source_task_id)
+        if task is None or task.case_id != item.id:
+            raise not_found("case_agent_task", payload.source_task_id)
+    node_run = None
+    if payload.node_run_id:
+        node_run = db.get(NodeRun, payload.node_run_id)
+        if node_run is None or node_run.flow_run_id != run.id:
+            raise not_found("node_run", payload.node_run_id)
+    manual_actions = {"CONTINUE_STEPWISE", "RERUN_STEPWISE_NODE", "REVISE_UNSTARTED_RUNTIME"}
+    if payload.action in manual_actions and run.run_mode != "MANUAL":
+        raise illegal("decision is only available for stepwise FlowRuns", state=run.state)
+    if payload.action == "COPY_AUTOMATIC_RUN" and run.run_mode != "AUTOMATIC":
+        raise illegal("copy decision is only available for continuous FlowRuns", state=run.state)
+    if payload.action in {"CONTINUE_STEPWISE", "RERUN_STEPWISE_NODE"} and node_run is None:
+        raise conflict("decision requires a node run", action=payload.action)
+    proposal = CaseDecisionProposal(
+        case_id=item.id,
+        flow_run_id=run.id,
+        node_run_id=node_run.id if node_run else None,
+        node_attempt_id=payload.node_attempt_id,
+        proposal_key=payload.proposal_key,
+        source_task_id=payload.source_task_id,
+        action=payload.action,
+        reason=payload.reason.strip(),
+        payload_json=payload.payload,
+    )
+    db.add(proposal)
+    finish(db)
+    return execute_case_decision_proposal(db, item.id, proposal.id)
+
+
+def execute_case_decision_proposal(db: Session, case_id: str, proposal_id: str) -> dict[str, Any]:
+    proposal = _proposal(db, _case(db, case_id).id, proposal_id)
+    if proposal.state != "PROPOSED":
+        raise illegal("Case decision has already executed", state=proposal.state)
+    run = _case_linked_run(db, proposal.case_id, proposal.flow_run_id)
+    try:
+        if proposal.action == "CONTINUE_STEPWISE":
+            if proposal.node_attempt_id is None:
+                raise conflict("continue decision has no node attempt")
+            attempt = db.get(NodeAttempt, proposal.node_attempt_id)
+            if attempt is None or (
+                proposal.node_run_id is not None and attempt.node_run_id != proposal.node_run_id
+            ):
+                raise not_found("node_attempt", proposal.node_attempt_id)
+            start_payload = AttemptStartWrite.model_validate(proposal.payload_json or {})
+            result: dict[str, Any] = {
+                "attempt": orchestration.confirm_start(
+                    db,
+                    attempt.id,
+                    start_payload,
+                    f"case-continue:{proposal.id}",
+                )
+            }
+        elif proposal.action == "STOP_FLOW_RUN":
+            result = {"flow_run": orchestration.cancel_run(db, run.id, f"case-stop:{proposal.id}")}
+        elif proposal.action == "RERUN_STEPWISE_NODE":
+            if proposal.node_run_id is None:
+                raise conflict("rerun decision has no node run")
+            copy_payload = NodeRunCopyWrite.model_validate(proposal.payload_json or {})
+            result = {
+                "node_run": orchestration.copy_node_run(
+                    db, run.id, proposal.node_run_id, copy_payload
+                )
+            }
+        elif proposal.action == "REVISE_UNSTARTED_RUNTIME":
+            definition = proposal.payload_json.get("definition")
+            if not isinstance(definition, dict):
+                raise conflict("runtime revision decision requires a definition")
+            draft = orchestration.create_flow_run_revision_draft(
+                db,
+                run.id,
+                FlowRunRevisionDraftCreateWrite(reason=proposal.reason),
+            )
+            updated = orchestration.update_flow_run_revision_draft(
+                db,
+                run.id,
+                str(draft["id"]),
+                FlowRunRevisionDraftWrite(
+                    expected_row_version=int(draft["row_version"]),
+                    definition=definition,
+                    reason=proposal.reason,
+                ),
+            )
+            result = {
+                "revision": orchestration.apply_flow_run_revision_draft(
+                    db,
+                    run.id,
+                    str(updated["id"]),
+                    FlowRunRevisionDraftApplyWrite(
+                        expected_row_version=int(updated["row_version"])
+                    ),
+                    f"case-revision:{proposal.id}",
+                )
+            }
+        elif proposal.action == "COPY_AUTOMATIC_RUN":
+            copy_payload = AutomaticRunCopyWrite.model_validate(proposal.payload_json or {})
+            copied = orchestration.copy_automatic_run_draft(db, run.id, copy_payload)
+            if (
+                db.scalar(
+                    select(CaseFlowRun.id).where(
+                        CaseFlowRun.case_id == proposal.case_id,
+                        CaseFlowRun.flow_run_id == copied["id"],
+                    )
+                )
+                is None
+            ):
+                db.add(CaseFlowRun(case_id=proposal.case_id, flow_run_id=copied["id"]))
+            result = {"flow_run": copied}
+    except Exception as exc:
+        proposal.state = "FAILED"
+        proposal.result_json = {"code": getattr(exc, "code", "CASE_DECISION_EXECUTION_FAILED")}
+        proposal.executed_at = now()
+        finish(db)
+        raise
+    proposal.state = "EXECUTED"
+    proposal.result_json = result
+    proposal.executed_at = now()
+    finish(db)
+    return _proposal_dict(proposal)
 
 
 def create_case_control_conversation(

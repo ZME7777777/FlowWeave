@@ -63,6 +63,38 @@ class CaseStage(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
 
+class CaseDecisionProposal(Base):
+    __tablename__ = "case_decision_proposals"
+    __table_args__ = (
+        UniqueConstraint("case_id", "proposal_key", name="uq_case_decision_proposal_key"),
+        CheckConstraint(
+            "action IN ('CONTINUE_STEPWISE', 'STOP_FLOW_RUN', 'RERUN_STEPWISE_NODE', "
+            "'REVISE_UNSTARTED_RUNTIME', 'COPY_AUTOMATIC_RUN')",
+            name="ck_case_decision_proposal_action",
+        ),
+        CheckConstraint(
+            "state IN ('PROPOSED', 'EXECUTED', 'FAILED', 'SUPERSEDED')",
+            name="ck_case_decision_proposal_state",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    case_id: Mapped[str] = mapped_column(String(36), index=True)
+    flow_run_id: Mapped[str] = mapped_column(String(36), index=True)
+    node_run_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    node_attempt_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    proposal_key: Mapped[str] = mapped_column(String(120))
+    source_task_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    source_binding_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    action: Mapped[str] = mapped_column(String(40))
+    state: Mapped[str] = mapped_column(String(20), default="PROPOSED", index=True)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    result_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    executed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class CaseAgentTask(Base):
     __tablename__ = "case_agent_tasks"
     __table_args__ = (
@@ -91,4 +123,10 @@ class CaseAgentTask(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
 
-__all__ = ("Case", "CaseAgentTask", "CaseFlowRun", "CaseStage")
+__all__ = (
+    "Case",
+    "CaseAgentTask",
+    "CaseDecisionProposal",
+    "CaseFlowRun",
+    "CaseStage",
+)

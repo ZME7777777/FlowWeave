@@ -159,6 +159,40 @@ def test_node_asset_can_be_saved_without_skill(client):
     assert "capabilities" not in response.json()
 
 
+def test_case_autonomously_stops_linked_flow_run(client, skill_capability):
+    asset = create_asset(client, skill_capability, "事项自动停止节点")
+    flow = create_flow(client, asset["id"])
+    run = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    )
+    assert run.status_code == 201, run.text
+    case = client.post("/api/v1/cases", json={"name": "自主纠偏事项"})
+    assert case.status_code == 201, case.text
+    attached = client.post(
+        f"/api/v1/cases/{case.json()['id']}/flow-runs",
+        json={"flow_run_id": run.json()["id"]},
+    )
+    assert attached.status_code == 200, attached.text
+
+    decision = client.post(
+        f"/api/v1/cases/{case.json()['id']}/decision-proposals",
+        json={
+            "flow_run_id": run.json()["id"],
+            "proposal_key": "stop-after-risk",
+            "action": "STOP_FLOW_RUN",
+            "reason": "事项风险已满足停止条件。",
+        },
+    )
+    assert decision.status_code == 201, decision.text
+    assert decision.json()["state"] == "EXECUTED"
+    assert decision.json()["result"]["flow_run"]["state"] == "CANCELLED"
+
+    case_detail = client.get(f"/api/v1/cases/{case.json()['id']}")
+    assert case_detail.status_code == 200, case_detail.text
+    assert case_detail.json()["decision_proposals"][0]["id"] == decision.json()["id"]
+
+
 def test_confirm_start_rejects_attempt_model_override(client):
     rejected = client.post(
         "/api/v1/node-attempts/missing-attempt/confirm-start",

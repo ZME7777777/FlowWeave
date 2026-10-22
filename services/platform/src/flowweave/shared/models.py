@@ -27,6 +27,7 @@ from flowweave.modules.agent_workspaces.infrastructure.models import (
 from flowweave.modules.cases.infrastructure.models import (
     Case,
     CaseAgentTask,
+    CaseDecisionProposal,
     CaseFlowRun,
     CaseStage,
 )
@@ -145,6 +146,7 @@ __all__ = (
     "CapabilityBlob",
     "Case",
     "CaseAgentTask",
+    "CaseDecisionProposal",
     "CaseFlowRun",
     "CaseStage",
     "CapabilityCollection",

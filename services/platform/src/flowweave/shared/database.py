@@ -83,6 +83,7 @@ _USER_ISOLATED_TABLES = frozenset(
         "artifact_versions",
         "candidate_output_sets",
         "case_agent_tasks",
+        "case_decision_proposals",
         "case_flow_runs",
         "case_stages",
         "cases",
