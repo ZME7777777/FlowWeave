@@ -3975,16 +3975,19 @@ function WorkspaceDrawer({
   const [resizePreview, setResizePreview] = useState<'fullscreen' | 'hidden'>();
   const drawerFullScreen = fullScreen || resizePreview === 'fullscreen';
   const drawerToolsOpen = open && resizePreview !== 'hidden';
-  // Tool navigation only suppresses this scope's card; only a manual toggle
-  // changes the shared preference used when tools are closed or scopes change.
+  // While tools are open, card toggles only affect this scope. Keep the shared
+  // preference for the conversation-only layout unchanged.
   const environmentOpen = drawerToolsOpen
     ? environmentToolOverride?.scopeKey === scopeKey && environmentToolOverride.open
     : environmentPreferredOpen;
   const toggleEnvironment = () => {
     const next = !environmentOpen;
+    if (drawerToolsOpen) {
+      setEnvironmentToolOverride({ scopeKey, open: next });
+      return;
+    }
     setEnvironmentPreferredOpen(next);
     localStorage.setItem('flowweave:environment-card-open', String(next));
-    if (drawerToolsOpen) setEnvironmentToolOverride({ scopeKey, open: next });
   };
   const workspaceResizeCleanup = useRef<(() => void) | undefined>(undefined);
   useEffect(() => () => workspaceResizeCleanup.current?.(), [open, fullScreen, scopeKey]);

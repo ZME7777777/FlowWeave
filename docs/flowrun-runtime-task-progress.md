@@ -9453,3 +9453,15 @@ Alembic 唯一 head 为 0157_background_task_aggregate_type_length。当前及�
 git diff --check 与 CURRENT 唯一性／依赖核对通过；构建仅有既有大 chunk 提示。
 当前源码 Alembic 唯一 head 为 0158_schedule_china_timezone，本切片未修改数据库迁移、
 API 或 Runtime。当前及下一可执行切片均为 NONE；未部署。
+
+### FR-637 分屏悬浮卡手动开关与全局偏好隔离 — DONE
+
+依赖：FR-636 DONE。侧边工作区工具打开时，悬浮卡按钮只修改当前 scope 的临时状态，
+不写入全局偏好；关闭末页签或工具面板后恢复全局状态。补充全局开启／关闭、分屏
+手动切换、跨会话隔离和关闭恢复的定向浏览器验证。本切片仅修改 Web，不部署。
+
+验收：7 项 Chromium 定向回归通过，覆盖全局开启／关闭时分屏反复手动切换、
+关闭末页签／面板／工具全屏后的恢复、跨会话与刷新偏好、工作区加载门控及既有卡片
+布局。Web typecheck、定向 ESLint、git diff --check 通过；Alembic 唯一 head 仍为
+0158_schedule_china_timezone。CURRENT 唯一性与依赖核对通过，当前及下一可执行
+切片均为 NONE。未部署。
