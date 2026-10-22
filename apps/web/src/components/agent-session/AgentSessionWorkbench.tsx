@@ -4876,6 +4876,8 @@ export interface AgentSessionWorkbenchProps {
   onHostStateChanged?: () => void;
   autoOpenDraft?: boolean;
   hideDraftTitle?: boolean;
+  /** Restrict the workbench to one server-authorized logical work directory. */
+  scopeWorkDirectoryId?: string;
   gateway?: AgentSessionGateway;
   host?: AgentSessionHost;
 }
@@ -4896,7 +4898,7 @@ export function AgentSessionWorkbench({
   </AgentSessionGatewayContext.Provider>;
 }
 
-function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStateChanged, autoOpenDraft = false }: Omit<AgentSessionWorkbenchProps, 'gateway' | 'host'>) {
+function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStateChanged, autoOpenDraft = false, scopeWorkDirectoryId }: Omit<AgentSessionWorkbenchProps, 'gateway' | 'host'>) {
   const { api, features, candidateOutputUrl, fileUrl } = useAgentSessionGateway();
   const dialog = useProductDialog();
   const host = useAgentSessionHost();
@@ -5242,7 +5244,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }
   }, [workDirectoryOrderStorageKey]);
   const workDirectories = useMemo(() => {
-    const items = workDirectoriesQuery.data?.items ?? [];
+    const items = (workDirectoriesQuery.data?.items ?? []).filter(item => (
+      scopeWorkDirectoryId === undefined || item.id === scopeWorkDirectoryId
+    ));
     const byId = new Map(items.map(item => [item.id, item]));
     const ordered = workDirectoryOrder.flatMap(id => {
       const item = byId.get(id);
@@ -5250,16 +5254,19 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     });
     const known = new Set(ordered.map(item => item.id));
     return [...ordered, ...items.filter(item => !known.has(item.id))];
-  }, [workDirectoriesQuery.data?.items, workDirectoryOrder]);
+  }, [scopeWorkDirectoryId, workDirectoriesQuery.data?.items, workDirectoryOrder]);
   const persistWorkDirectoryOrder = useCallback((orderedIds: string[]) => {
     setWorkDirectoryOrder(orderedIds);
     if (!workDirectoryOrderStorageKey) return;
     try { localStorage.setItem(workDirectoryOrderStorageKey, JSON.stringify(orderedIds)); } catch { /* browser preference only */ }
   }, [workDirectoryOrderStorageKey]);
-  const conversationScopes = useMemo(() => [
-    { key: '__root__', workDirectoryId: undefined as string | undefined },
-    ...(features.workDirectories ? (workDirectoriesQuery.data?.items ?? []).map(directory => ({ key: directory.id, workDirectoryId: directory.id })) : []),
-  ], [features.workDirectories, workDirectoriesQuery.data?.items]);
+  const conversationScopes = useMemo(() => scopeWorkDirectoryId
+    ? [{ key: scopeWorkDirectoryId, workDirectoryId: scopeWorkDirectoryId }]
+    : [
+      { key: '__root__', workDirectoryId: undefined as string | undefined },
+      ...(features.workDirectories ? workDirectories.map(directory => ({ key: directory.id, workDirectoryId: directory.id })) : []),
+    ],
+  [features.workDirectories, scopeWorkDirectoryId, workDirectories]);
   const initialConversationQueries = useQueries({
     queries: conversationScopes.map(scope => ({
       queryKey: sessionQueryKey(host, 'conversations', workspace?.id, scope.key),
@@ -5361,7 +5368,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const pinnedConversationsQuery = useQuery({
     queryKey: pinnedConversationsQueryKey,
     queryFn: () => api.pinnedConversations!(workspace!.id),
-    enabled: Boolean(workspace && api.pinnedConversations),
+    enabled: Boolean(workspace && api.pinnedConversations && scopeWorkDirectoryId === undefined),
     staleTime: Infinity,
     refetchOnWindowFocus: false,
     retry: false,
@@ -5490,7 +5497,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const pagedPinnedConversations = [...conversationsById.values()].filter(
     item => pendingPinnedUpdates.current.get(item.id)?.pinned ?? item.pinned,
   );
-  const pinnedConversations = api.pinnedConversations
+  const pinnedConversations = scopeWorkDirectoryId === undefined && api.pinnedConversations
     ? pinnedConversationsQuery.data ?? pagedPinnedConversations
     : pagedPinnedConversations;
   const unpinnedConversations = conversations.filter(
@@ -5501,13 +5508,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     for (const item of conversations) byId.set(item.id, item);
     for (const item of conversationActivityQuery.data?.conversations ?? []) byId.set(item.id, item);
     return [...byId.values()]
+      .filter(item => scopeWorkDirectoryId === undefined || item.work_directory_id === scopeWorkDirectoryId)
       .filter(item => runningConversationIds.has(item.id) || condensingConversationIds.has(item.id) || conversationIsRunning(item.execution_status) || unreadConversationIds.has(item.id) || Boolean(item.unread))
       .sort((left, right) => {
         const leftUpdatedAt = Date.parse(left.updated_at) || Date.parse(left.created_at) || 0;
         const rightUpdatedAt = Date.parse(right.updated_at) || Date.parse(right.created_at) || 0;
         return rightUpdatedAt - leftUpdatedAt || right.id.localeCompare(left.id);
       });
-  }, [condensingConversationIds, conversationActivityQuery.data?.conversations, conversations, runningConversationIds, unreadConversationIds]);
+  }, [condensingConversationIds, conversationActivityQuery.data?.conversations, conversations, runningConversationIds, scopeWorkDirectoryId, unreadConversationIds]);
   const selectedConversationQuery = useQuery({
     queryKey: sessionQueryKey(host, 'conversation', workspace?.id, selectedBindingId),
     queryFn: () => api.conversation(workspace!.id, selectedBindingId!),
@@ -9600,7 +9608,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     />}
     {agentWorkspaceView === 'home' && <aside className="agent-workbench-rail">
       <div className="agent-conversation-rail-resizer" role="separator" aria-label="调整会话列表宽度" aria-orientation="vertical" onPointerDown={startConversationRailResize}/>
-      <header className={!onReturnToSource && features.workDirectories ? 'agent-workbench-rail-actions-only' : undefined}>{onReturnToSource && <button type="button" className="agent-session-return" aria-label="返回节点执行" title="返回节点执行" onClick={onReturnToSource}><ArrowLeft size={16}/></button>}{(onReturnToSource || !features.workDirectories) && <div className="agent-session-host-heading"><span className="eyebrow">{onReturnToSource ? 'FLOWRUN NODE WORKSPACE' : 'FLOWRUN NODE'}</span><h1>{onReturnToSource ? workspace?.display_name || '节点会话' : '节点会话'}</h1></div>}<div className="agent-workbench-create-actions"><button type="button" className={`agent-workbench-activity-trigger${sidebarListMode === 'activity' ? ' active' : ''}`} aria-label={`查看活动会话${activityConversations.length ? `（${activityConversations.length}）` : ''}`} title="查看活动会话" onClick={toggleSidebarListMode}><Bell size={15}/>{activityConversations.length > 0 && <span aria-hidden="true">{activityConversations.length > 99 ? '99+' : activityConversations.length}</span>}</button><button className="primary" disabled={!conversationSearchSupported} onClick={() => setConversationSearchOpen(true)}>{conversationSearchQuery.data?.state === 'PENDING' || conversationSearchQuery.data?.state === 'RUNNING' ? <LoaderCircle className="conversation-activity-spin" size={15}/> : conversationSearchQuery.data?.state === 'SUCCEEDED' ? <Check size={15}/> : <Search size={15}/>}{conversationSearchQuery.data?.state === 'SUCCEEDED' ? '搜索完成' : '搜索会话'}</button>{features.workDirectories && <button type="button" className="secondary" aria-label="新增工作区" disabled={!runtimeWritable} onClick={() => setWorkDirectoryCreatorOpen(true)}><FolderPlus size={14}/>新增工作区</button>}</div></header>
+      <header className={!onReturnToSource && features.workDirectories ? 'agent-workbench-rail-actions-only' : undefined}>{onReturnToSource && <button type="button" className="agent-session-return" aria-label="返回来源" title="返回来源" onClick={onReturnToSource}><ArrowLeft size={16}/></button>}{(onReturnToSource || !features.workDirectories) && <div className="agent-session-host-heading"><span className="eyebrow">{scopeWorkDirectoryId ? 'CASE CONTROL CONVERSATION' : onReturnToSource ? 'FLOWRUN NODE WORKSPACE' : 'FLOWRUN NODE'}</span><h1>{scopeWorkDirectoryId ? '事项协调会话' : onReturnToSource ? workspace?.display_name || '节点会话' : '节点会话'}</h1></div>}<div className="agent-workbench-create-actions"><button type="button" className={`agent-workbench-activity-trigger${sidebarListMode === 'activity' ? ' active' : ''}`} aria-label={`查看活动会话${activityConversations.length ? `（${activityConversations.length}）` : ''}`} title="查看活动会话" onClick={toggleSidebarListMode}><Bell size={15}/>{activityConversations.length > 0 && <span aria-hidden="true">{activityConversations.length > 99 ? '99+' : activityConversations.length}</span>}</button>{scopeWorkDirectoryId === undefined && <button className="primary" disabled={!conversationSearchSupported} onClick={() => setConversationSearchOpen(true)}>{conversationSearchQuery.data?.state === 'PENDING' || conversationSearchQuery.data?.state === 'RUNNING' ? <LoaderCircle className="conversation-activity-spin" size={15}/> : conversationSearchQuery.data?.state === 'SUCCEEDED' ? <Check size={15}/> : <Search size={15}/>}{conversationSearchQuery.data?.state === 'SUCCEEDED' ? '搜索完成' : '搜索会话'}</button>}{features.workDirectories && scopeWorkDirectoryId === undefined && <button type="button" className="secondary" aria-label="新增工作区" disabled={!runtimeWritable} onClick={() => setWorkDirectoryCreatorOpen(true)}><FolderPlus size={14}/>新增工作区</button>}</div></header>
       <div ref={sidebarListRef} className="agent-workbench-list" onDragOver={event => {
         if (draggedConversationRef.current) updateConversationDragAutoScroll(event.clientY);
       }} onScroll={event => {
