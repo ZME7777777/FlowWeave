@@ -148,6 +148,33 @@ def test_case_attaches_top_level_flow_run_and_projects_idempotently(client, skil
     assert replayed.json()["tasks"] == []
 
 
+def test_case_stage_binds_one_matching_flow_run_mode(client, skill_capability):
+    asset = create_asset(client, skill_capability, "阶段流程节点")
+    flow = create_flow(client, asset["id"])
+    run = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    )
+    assert run.status_code == 201, run.text
+    case = client.post(
+        "/api/v1/cases",
+        json={
+            "name": "阶段路径事项",
+            "stages": [{"stage_key": "discover", "name": "梳理"}],
+        },
+    )
+    assert case.status_code == 201, case.text
+    stage = case.json()["stages"][0]
+
+    bound = client.put(
+        f"/api/v1/cases/{case.json()['id']}/stages/{stage['id']}/flow-run",
+        json={"flow_run_id": run.json()["id"], "execution_mode": "STEPWISE"},
+    )
+    assert bound.status_code == 200, bound.text
+    assert bound.json()["stages"][0]["flow_run_id"] == run.json()["id"]
+    assert bound.json()["stages"][0]["execution_mode"] == "STEPWISE"
+
+
 def test_node_asset_can_be_saved_without_skill(client):
     response = client.post("/api/v1/node-assets", json=asset_payload("无 Skill 节点"))
     assert response.status_code == 201, response.text

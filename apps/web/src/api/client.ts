@@ -600,6 +600,8 @@ export const api = {
   case: (id: string) => request<Case>(`/cases/${encodeURIComponent(id)}`),
   setCaseStageState: (caseId: string, stageId: string, expected_case_row_version: number, state: import('../types').CaseStage['state']) =>
     request<Case>(`/cases/${encodeURIComponent(caseId)}/stages/${encodeURIComponent(stageId)}/state`, json('PUT', { expected_case_row_version, state })),
+  bindCaseStageFlowRun: (caseId: string, stageId: string, flow_run_id: string, execution_mode: 'STEPWISE' | 'CONTINUOUS') =>
+    request<Case>(`/cases/${encodeURIComponent(caseId)}/stages/${encodeURIComponent(stageId)}/flow-run`, json('PUT', { flow_run_id, execution_mode })),
   createCaseControlConversation: (caseId: string, body: { model_provider_id: string; model_name: string; reasoning_effort?: string | null; capability_version_ids?: string[] }, idempotencyKey = randomId()) =>
     request<Case>(`/cases/${encodeURIComponent(caseId)}/control-conversation`, json('POST', body, idempotencyKey)),
 

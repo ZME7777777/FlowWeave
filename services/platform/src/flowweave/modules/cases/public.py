@@ -2,6 +2,7 @@
 
 from flowweave.modules.cases.application.service import (
     attach_case_flow_run,
+    bind_case_stage_flow_run,
     create_case,
     create_case_control_conversation,
     create_case_decision_proposal,
@@ -16,6 +17,7 @@ from flowweave.modules.cases.application.service import (
 
 __all__ = (
     "attach_case_flow_run",
+    "bind_case_stage_flow_run",
     "create_case",
     "create_case_control_conversation",
     "create_case_decision_proposal",

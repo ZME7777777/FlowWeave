@@ -839,6 +839,11 @@ class CaseStageStateWrite(ApiModel):
     state: Literal["PENDING", "ACTIVE", "COMPLETED", "SKIPPED"]
 
 
+class CaseStageFlowRunWrite(ApiModel):
+    flow_run_id: str = Field(min_length=1, max_length=36)
+    execution_mode: Literal["STEPWISE", "CONTINUOUS"]
+
+
 class CaseControlConversationWrite(ApiModel):
     model_provider_id: str = Field(min_length=1, max_length=36)
     model_name: str = Field(min_length=1, max_length=240)

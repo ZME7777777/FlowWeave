@@ -11,6 +11,7 @@ from flowweave.shared.schemas import (
     CaseCreateWrite,
     CaseDecisionProposalWrite,
     CaseFlowRunWrite,
+    CaseStageFlowRunWrite,
     CaseStageStateWrite,
 )
 
@@ -38,6 +39,16 @@ async def set_case_stage_state(
 ) -> dict[str, Any]:
     return await run_sync(
         db, lambda session: service.set_case_stage_state(session, case_id, stage_id, payload)
+    )
+
+
+@router.put("/cases/{case_id}/stages/{stage_id}/flow-run")
+async def bind_stage_flow_run(
+    case_id: str, stage_id: str, payload: CaseStageFlowRunWrite, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: service.bind_case_stage_flow_run(session, case_id, stage_id, payload),
     )
 
 

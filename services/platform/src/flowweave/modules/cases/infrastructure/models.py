@@ -50,6 +50,10 @@ class CaseStage(Base):
             name="ck_case_stage_state",
         ),
         CheckConstraint("position >= 0", name="ck_case_stage_position"),
+        CheckConstraint(
+            "execution_mode IN ('STEPWISE', 'CONTINUOUS')",
+            name="ck_case_stage_execution_mode",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
@@ -58,6 +62,8 @@ class CaseStage(Base):
     name: Mapped[str] = mapped_column(String(220))
     objective: Mapped[str] = mapped_column(Text, default="")
     position: Mapped[int] = mapped_column(Integer)
+    flow_run_id: Mapped[str | None] = mapped_column(String(36), unique=True, index=True)
+    execution_mode: Mapped[str] = mapped_column(String(20), default="STEPWISE")
     state: Mapped[str] = mapped_column(String(20), default="PENDING")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)

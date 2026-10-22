@@ -31,6 +31,7 @@ from flowweave.shared.schemas import (
     CaseCreateWrite,
     CaseDecisionProposalWrite,
     CaseFlowRunWrite,
+    CaseStageFlowRunWrite,
     CaseStageStateWrite,
     FlowRunRevisionDraftApplyWrite,
     FlowRunRevisionDraftCreateWrite,
@@ -61,6 +62,8 @@ def _stage_dict(item: CaseStage) -> dict[str, Any]:
         "name": item.name,
         "objective": item.objective,
         "position": item.position,
+        "flow_run_id": item.flow_run_id,
+        "execution_mode": item.execution_mode,
         "state": item.state,
         "created_at": item.created_at.isoformat(),
         "updated_at": item.updated_at.isoformat(),
@@ -218,6 +221,40 @@ def set_case_stage_state(
             .values(state="PENDING")
         )
     stage.state = payload.state
+    item.row_version += 1
+    finish(db)
+    return _case_dict(db, item)
+
+
+def bind_case_stage_flow_run(
+    db: Session, case_id: str, stage_id: str, payload: CaseStageFlowRunWrite
+) -> dict[str, Any]:
+    item = _case(db, case_id)
+    if item.state in {"COMPLETED", "ARCHIVED"}:
+        raise illegal("terminal case cannot bind stage FlowRuns", state=item.state)
+    stage = _stage(db, item, stage_id)
+    run = db.get(FlowRun, payload.flow_run_id)
+    if run is None or run.parent_flow_run_id is not None:
+        raise not_found("flow_run", payload.flow_run_id)
+    expected_mode = "MANUAL" if payload.execution_mode == "STEPWISE" else "AUTOMATIC"
+    if run.run_mode != expected_mode:
+        raise conflict(
+            "FlowRun mode does not match Case stage execution mode",
+            expected=expected_mode,
+            actual=run.run_mode,
+        )
+    if stage.flow_run_id and stage.flow_run_id != run.id:
+        raise conflict("Case stage is already bound to a FlowRun", flow_run_id=stage.flow_run_id)
+    stage.flow_run_id = run.id
+    stage.execution_mode = payload.execution_mode
+    existing = db.scalar(
+        select(CaseFlowRun).where(
+            CaseFlowRun.case_id == item.id,
+            CaseFlowRun.flow_run_id == run.id,
+        )
+    )
+    if existing is None:
+        db.add(CaseFlowRun(case_id=item.id, flow_run_id=run.id))
     item.row_version += 1
     finish(db)
     return _case_dict(db, item)

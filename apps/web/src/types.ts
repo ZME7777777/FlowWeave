@@ -472,7 +472,8 @@ export interface FlowRunRevisionDraft {
 
 export interface CaseStage {
   id: string; case_id: string; stage_key: string; name: string; objective: string;
-  position: number; state: 'PENDING' | 'ACTIVE' | 'COMPLETED' | 'SKIPPED';
+  position: number; flow_run_id?: string | null; execution_mode: 'STEPWISE' | 'CONTINUOUS';
+  state: 'PENDING' | 'ACTIVE' | 'COMPLETED' | 'SKIPPED';
   created_at: string; updated_at: string;
 }
 export interface CaseAgentTask {

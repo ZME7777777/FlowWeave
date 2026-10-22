@@ -4054,6 +4054,7 @@ def _create_node_run(
     allow_existing: bool = False,
     awaiting_start_confirmation: bool = False,
     frozen_snapshot: RunSnapshot | None = None,
+    reuse_workspace_ref: str | None = None,
 ) -> tuple[NodeRun, NodeAttempt]:
     startup_prompt = _startup_prompt_with_business_result_contract(
         startup_prompt, gate_policies or []
@@ -4175,7 +4176,7 @@ def _create_node_run(
     )
     db.add(attempt)
     db.flush()
-    attempt.workspace_ref = str(
+    attempt.workspace_ref = reuse_workspace_ref or str(
         ensure_node_attempt_workspace(
             db,
             flow_run_id=run.id,
@@ -4261,6 +4262,7 @@ def _copy_initial_node_configuration(
         agent_preset=copy.deepcopy(initial.agent_preset_json),
         allow_existing=True,
         awaiting_start_confirmation=initial.startup_mode == "PROMPT",
+        reuse_workspace_ref=initial.workspace_ref if source_run.id == target_run.id else None,
     )
     copied_attempt.startup_mode = initial.startup_mode
     copied_attempt.startup_prompt = initial.startup_prompt
