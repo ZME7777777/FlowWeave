@@ -9153,3 +9153,32 @@ Web typecheck、定向 ESLint／Ruff、production build、git diff --check 与�
 0157_background_task_aggregate_type_length 通过；Pyright 保持既有 489 项，新增诊断零。
 当前及下一可执行切片均为 NONE。沿用会话授权发布同一提交的 platform 与 web，同步更新
 api／stream-api／worker，执行健康、版本、路由验收和受管收尾，不重建现有 Runtime。
+
+### FR-626 遗留 Git 默认覆盖修复与目录配置查看／编辑分离 — DONE
+
+依赖：FR-625 DONE。只读实机核对确认用户目录的条件 include 已存在，但多个既有仓库
+仍以本地 user.name／user.email 的完整 OpenHands 默认组合覆盖目录配置。此前仅以临时
+新仓库核对继承，不能证明这些既有仓库的实际提交身份；本次补齐对应回归及修复。
+
+确认目录默认配置后，在写入／自动应用边界执行一次有标记的遗留修复，只移除完整
+openhands / openhands@all-hands.dev 默认对，保留其他仓库自定义身份及无关 Git 配置。
+路径校验限制元数据在当前用户根内，不跟随外部工作树、目录 symlink 或非普通文件；
+使用 Git config.lock 原子替换姓名／邮箱对，锁冲突保留原文件。显式保存根目录时同步
+清除根仓库本身的旧覆盖，让该目录提交身份与保存值一致，子仓库其他自定义身份保留。
+自动配置增加已应用资料摘要，检测用户外部修改配置后转为手动优先，后续发送不反写。
+
+GET 设置只读 Runtime 文件及 Git 实际回读，不应用账户资料，也不执行遗留修复；根目录
+本身有仓库时展示该仓库的有效身份，不再以临时探针结果冒充它。界面默认查看态，未配置
+或读取失败留空，标明目录实读／未配置／失败状态并支持重新读取；查看期间定时及焦点
+刷新。点击编辑才为无配置／遗留默认身份补入账户姓名邮箱，已有目录自定义值及未保存
+用户输入不被覆盖，保存后回到查看并使用 Runtime 确认值。编辑期间后台读取不覆盖草稿。
+
+269 项真实 Git／资料／记录／adapter 回归通过，新增既有根及子仓库默认对修复、真实
+提交作者、手动目录配置回读及后续自动应用保留、外部链接隔离和 Git config.lock 冲突。
+固定实际 Runtime 镜像的隔离原生 Bash 探针通过遗留仓库修复、真实提交、并发用户与目录
+继承。2 项 Chromium 回归通过查看只读、空值、编辑默认资料、保存失败重试、终端改值
+重读、取消后自定义草稿保留及窄屏布局。Web typecheck、定向 ESLint／Ruff、production
+build、git diff --check、唯一 Alembic head 0157_background_task_aggregate_type_length
+通过。当前及下一可执行切片均为 NONE。沿用会话授权发布 platform 与 web，并在已验证
+目标对既有受影响仓库应用同一固定修复、核对实际有效身份；不重启现有 Agent Runtime，
+不创建用户提交，不改写历史或服务器 Compose／env，完成健康／路由验收与受管收尾。

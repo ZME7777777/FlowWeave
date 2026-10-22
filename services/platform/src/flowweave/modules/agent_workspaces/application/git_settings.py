@@ -39,5 +39,4 @@ def git_identity(
         runtime_resource_name=resource_name,
         workspace_root=user_runtime_project_root(workspace_id),
     )
-    profile = profile_identity(db) if identity is None else None
-    return get_runtime().workspace_git_identity(handle, identity=identity, profile=profile)
+    return get_runtime().workspace_git_identity(handle, identity=identity)

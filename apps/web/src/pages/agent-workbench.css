@@ -512,3 +512,6 @@
 .agent-workspace-settings footer span{color:#31764c;font-size:12px}
 .agent-workspace-settings [role=alert]{color:#a3443d;font-size:12px}
 @media(max-width:680px){.agent-workspace-settings-layout{grid-template-columns:112px minmax(0,1fr)}.agent-workspace-settings-layout>nav{padding:12px 6px}.agent-workspace-settings-layout>nav button{padding:9px 8px}.agent-workspace-settings-layout>main{padding:20px 14px}.agent-workspace-settings>header{padding:0 16px}}
+.agent-git-settings-status{display:flex;align-items:center;justify-content:space-between;gap:12px;max-width:520px;margin:16px 0;color:var(--muted);font-size:12px}
+.agent-git-settings-status b{font-weight:500}.agent-git-settings-status button{display:flex;align-items:center;gap:5px;font-size:12px}
+.agent-workspace-settings input[readonly]{background:#f5f8f6;color:#526058;cursor:default}

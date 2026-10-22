@@ -89,3 +89,26 @@ def test_profile_is_written_through_native_adapter_before_conversation_work(prof
             RuntimeHandle("env-exec:runtime", "", workspace_root="ldap-user-root"),
         )
     assert calls == [("ldap-user-root", {"profile": ("LDAP 姓名", "ldap@example.test")})]
+
+
+def test_settings_read_does_not_apply_profile_or_change_directory_identity(profiles, monkeypatch):
+    from flowweave.modules.agent_sessions.application import conversations
+
+    calls = []
+    monkeypatch.setattr(workspace, "ensure_user_project_root", lambda *args: None)
+    monkeypatch.setattr(conversations, "terminal_resource_details", lambda *args: ("runtime", "id"))
+    monkeypatch.setattr(
+        git_settings,
+        "get_runtime",
+        lambda: SimpleNamespace(
+            workspace_git_identity=lambda handle, **kwargs: calls.append(kwargs)
+            or {
+                "author": "",
+                "email": "",
+                "configured": False,
+            }
+        ),
+    )
+    with tenant_user("local"):
+        assert git_settings.git_identity(profiles, "workspace")["configured"] is False
+    assert calls == [{"identity": None}]

@@ -85,6 +85,7 @@ async function openWorkspace(page: Page, events: unknown[] = [], includeSecondCo
 test('workspace Git settings show only confirmed identity and save with readback', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 800 });
   await openWorkspace(page);
+  await page.route('**/api/v1/auth/profile', route => json(route, { display_name: '账户姓名', email: 'account@example.test' }));
   let identity = { author: 'Login Profile', email: 'login@example.test', configured: false };
   let reads = 0;
   let failSave = true;
@@ -112,12 +113,16 @@ test('workspace Git settings show only confirmed identity and save with readback
   const settings = page.getByRole('region', { name: '工作区设置' });
   const author = settings.getByRole('textbox', { name: 'Git 作者' });
   const email = settings.getByRole('textbox', { name: 'Git 邮箱' });
-  await expect(author).toBeDisabled();
+  await expect(author).toHaveAttribute('readonly', '');
   await expect(author).toHaveValue('');
   releaseRead();
   await expect(author).toBeEnabled();
   await expect(author).toHaveValue('');
   await expect(email).toHaveValue('');
+  await expect(settings.getByRole('button', { name: '保存', exact: true })).toHaveCount(0);
+  await settings.getByRole('button', { name: '编辑', exact: true }).click();
+  await expect(author).toHaveValue('账户姓名');
+  await expect(email).toHaveValue('account@example.test');
   await author.fill('工作区作者');
   await email.fill('author@example.test');
   await settings.getByRole('button', { name: '保存', exact: true }).click();
@@ -126,7 +131,8 @@ test('workspace Git settings show only confirmed identity and save with readback
   await expect(author).toHaveValue('工作区作者');
   failSave = false;
   await settings.getByRole('button', { name: '保存', exact: true }).click();
-  await expect(settings.getByRole('status')).toHaveText('已保存并生效');
+  await expect(settings.getByRole('status')).toHaveText('已保存并从目录确认');
+  await expect(author).toHaveAttribute('readonly', '');
   expect(identity).toEqual({ author: '工作区作者', email: 'author@example.test', configured: true });
   await page.screenshot({ path: '../../.tmp/fr623-git-settings-desktop.png' });
   await nav.getByRole('button', { name: '主页', exact: true }).click();
@@ -137,9 +143,29 @@ test('workspace Git settings show only confirmed identity and save with readback
   await trigger.click();
   await expect(author).toHaveValue(identity.author);
   await expect(email).toHaveValue(identity.email);
+  identity = { author: '', email: '', configured: false };
+  await settings.getByRole('button', { name: '重新读取', exact: true }).click();
+  await expect(author).toHaveValue('');
+  await expect(email).toHaveValue('');
+  await expect(settings.getByText('未配置', { exact: true })).toBeVisible();
+  await settings.getByRole('button', { name: '编辑', exact: true }).click();
+  await expect(author).toHaveValue('账户姓名');
+  await expect(email).toHaveValue('account@example.test');
+  await settings.getByRole('button', { name: '取消', exact: true }).click();
+  await expect(author).toHaveValue('');
+  identity = { author: '终端修改后的作者', email: 'changed@example.test', configured: true };
+  await settings.getByRole('button', { name: '重新读取', exact: true }).click();
+  await expect(author).toHaveValue(identity.author);
   await page.setViewportSize({ width: 800, height: 700 });
   expect(await settings.evaluate(element => element.scrollWidth - element.clientWidth)).toBe(0);
-  await expect(settings.getByRole('button', { name: '保存', exact: true })).toBeInViewport();
+  await expect(settings.getByRole('button', { name: '编辑', exact: true })).toBeInViewport();
+  await settings.getByRole('button', { name: '编辑', exact: true }).click();
+  await expect(author).toHaveValue(identity.author);
+  await author.fill('未保存自定义作者');
+  await settings.getByRole('button', { name: '取消', exact: true }).click();
+  await expect(author).toHaveValue(identity.author);
+  await settings.getByRole('button', { name: '编辑', exact: true }).click();
+  await expect(author).toHaveValue('未保存自定义作者');
   await page.screenshot({ path: '../../.tmp/fr623-git-settings-narrow.png' });
 });
 
@@ -155,7 +181,7 @@ test('workspace Git settings keep failed reads empty and allow retry from schedu
   const author = settings.getByRole('textbox', { name: 'Git 作者' });
   await expect(settings.getByRole('alert')).toContainText('无法读取');
   await expect(author).toHaveValue('');
-  await expect(author).toBeDisabled();
+  await expect(author).toHaveAttribute('readonly', '');
   fail = false;
   await settings.getByRole('button', { name: '重新读取', exact: true }).click();
   await expect(author).toBeEnabled();
