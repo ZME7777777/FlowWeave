@@ -1,4 +1,4 @@
-export type ViewName = 'nodes' | 'capabilities' | 'environments' | 'credentials' | 'models' | 'ldap-users' | 'conversation-management' | 'flows' | 'runs' | 'schedules' | 'workbench' | 'agent-workbench';
+export type ViewName = 'nodes' | 'capabilities' | 'environments' | 'credentials' | 'models' | 'ldap-users' | 'conversation-management' | 'flows' | 'runs' | 'cases' | 'schedules' | 'workbench' | 'agent-workbench';
 
 export interface NodeDirectory {
   id: string; parent_id?: string | null; name: string; position: number; row_version: number;
@@ -468,6 +468,30 @@ export interface FlowRunRevisionDraft {
   state: 'DRAFT' | 'APPLIED' | 'REJECTED'; applied_snapshot_id?: string | null;
   reason: string; created_at: string; updated_at: string;
 }
+
+
+export interface CaseStage {
+  id: string; case_id: string; stage_key: string; name: string; objective: string;
+  position: number; state: 'PENDING' | 'ACTIVE' | 'COMPLETED' | 'SKIPPED';
+  created_at: string; updated_at: string;
+}
+export interface CaseAgentTask {
+  id: string; case_id: string; stage_id?: string | null; task_key: string;
+  task_type: 'OBSERVE' | 'PROPOSE_REVISION' | 'REVIEW';
+  state: 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED';
+  flow_run_id?: string | null; node_attempt_id?: string | null;
+  input_context: Record<string, unknown>; result: Record<string, unknown>;
+  created_at: string; updated_at: string;
+}
+export interface Case {
+  id: string; name: string; objective: string;
+  state: 'DRAFT' | 'ACTIVE' | 'PAUSED' | 'COMPLETED' | 'ARCHIVED';
+  control_conversation_binding_id?: string | null;
+  control_work_directory_id?: string | null;
+  row_version: number; stages: CaseStage[]; tasks: CaseAgentTask[];
+  created_at: string; updated_at: string;
+}
+
 export interface FlowRunSummary {
   id: string; flow_definition_id: string; flow_name?: string | null;
   flow_row_version?: number | null; run_no: number; name: string; state: string;
