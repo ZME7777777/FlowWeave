@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
 from uuid import UUID, uuid4
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.orm import Session
@@ -3090,7 +3091,9 @@ def _parse_cron(expression: str) -> tuple[set[int], set[int], set[int], set[int]
 
 def _next_cron_at(expression: str, after: datetime) -> datetime:
     minute, hour, day, month, weekday = _parse_cron(expression)
-    candidate = after.astimezone(UTC).replace(second=0, microsecond=0) + timedelta(minutes=1)
+    candidate = after.astimezone(ZoneInfo("Asia/Shanghai")).replace(
+        second=0, microsecond=0
+    ) + timedelta(minutes=1)
     # A one-year bound prevents a malformed but syntactically valid expression
     # from turning a Worker scan into an unbounded loop.
     for _ in range(366 * 24 * 60):
@@ -3110,7 +3113,7 @@ def _next_cron_at(expression: str, after: datetime) -> datetime:
             and candidate.month in month
             and calendar_matches
         ):
-            return candidate
+            return candidate.astimezone(UTC)
         candidate += timedelta(minutes=1)
     raise ValueError("cron has no matching time in the next year")
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
@@ -67,14 +68,16 @@ def _next_cron_at(expression: str, after: datetime) -> datetime:
     minute, hour, day, month, weekday = tuple(
         _cron_values(field, *bounds) for field, bounds in zip(fields, _CRON_BOUNDS, strict=True)
     )
-    candidate = after.astimezone(UTC).replace(second=0, microsecond=0) + timedelta(minutes=1)
+    candidate = after.astimezone(ZoneInfo("Asia/Shanghai")).replace(
+        second=0, microsecond=0
+    ) + timedelta(minutes=1)
     for _ in range(366 * 24 * 60):
         cron_weekday = (candidate.weekday() + 1) % 7
         day_matches = candidate.day in day
         weekday_matches = cron_weekday in weekday
         calendar_matches = (
             day_matches and weekday_matches
-            if len(day) != 31 and len(weekday) != 7
+            if len(day) == 31 or len(weekday) == 7
             else day_matches or weekday_matches
         )
         if (
@@ -83,7 +86,7 @@ def _next_cron_at(expression: str, after: datetime) -> datetime:
             and candidate.month in month
             and calendar_matches
         ):
-            return candidate
+            return candidate.astimezone(UTC)
         candidate += timedelta(minutes=1)
     raise ValueError("cron has no matching time in the next year")
 

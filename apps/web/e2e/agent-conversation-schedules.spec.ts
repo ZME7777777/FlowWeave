@@ -883,6 +883,26 @@ test('internal navigation restores a draft in its originating work directory', a
 
 
 
+test.describe('China-time scheduling', () => {
+  test.use({ timezoneId: 'America/New_York' });
+
+  test('schedule times stay in China time and cron fields are saved unchanged', async ({ page }) => {
+    const writes = await openWorkspace(page);
+    await page.goto('/agent/schedules');
+    await page.locator('.agent-schedule-tree-select').first().click();
+    const summary = page.locator('.agent-schedule-summary');
+    await expect(summary).toContainText('2026/10/20 09:00:00');
+    await page.getByRole('button', { name: '每日项目检查 操作', exact: true }).click();
+    await page.getByRole('menuitem', { name: '编辑', exact: true }).click();
+    const editor = page.locator('.agent-schedule-create');
+    await expect(editor.getByLabel('Cron 表达式')).toHaveValue('0 9 * * 1-5');
+    await editor.getByLabel('Cron 表达式').fill('0 10 * * *');
+    await editor.getByRole('button', { name: '保存任务', exact: true }).click();
+    expect(writes[0]).toMatchObject({ method: 'PUT', id: 'daily-schedule', body: { cron_expression: '0 10 * * *', expected_row_version: 1 } });
+    await expect(summary).toContainText('Cron · 0 10 * * *');
+  });
+});
+
 test('scheduled conversations keep their route and draft while creating or editing a task', async ({ page }) => {
   const writes = await openWorkspace(page);
   await page.getByRole('navigation', { name: 'Agent 工作区导航' }).getByRole('button', { name: '定时任务' }).click();
