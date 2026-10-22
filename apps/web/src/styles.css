@@ -1051,3 +1051,27 @@ body:has(.login-page){min-width:0}
 .conversation-management-selected-workspace svg{color:#367a55}
 .conversation-management-selected-workspace b{color:var(--ink)}
 @media(max-width:820px){.conversation-management-workspace-list{grid-template-columns:repeat(auto-fit,minmax(180px,1fr))}}
+
+/* Keep run content inside the viewport; each pane owns its overflow. */
+.flow-run-inner-workbench{height:calc(var(--app-content-height) - 30px);min-height:0;min-width:0;overflow:hidden;grid-template-rows:minmax(0,1fr)}
+.flow-run-inner-workbench>.run-main{min-width:0;min-height:0;padding:16px 24px}
+.flow-run-inner-workbench .run-main>.run-graph{min-height:0;overflow:hidden}
+.flow-run-inner-workbench .run-side-panel{min-height:0;overflow:hidden}
+.flow-run-inner-workbench .run-side-panel>.action-panel{display:flex;min-height:0;flex-direction:column;overflow:hidden}
+.flow-run-inner-workbench .action-panel>header,.flow-run-inner-workbench .attempt-detail-tabs{flex:0 0 auto}
+.flow-run-inner-workbench .action-panel>.action-content{min-height:0;flex:1 1 auto;overflow:auto}
+.run-workbench-toolbar:has(.run-record-git-identity){min-height:58px}
+.run-record-git-identity{display:block;max-width:100%;overflow:hidden;margin-top:4px;color:var(--muted);font-size:11px;line-height:1.4;text-overflow:ellipsis;white-space:nowrap}
+.record-create-dialog{padding:16px 20px;max-height:calc(100dvh - 32px);overflow:auto}
+.record-create-dialog>header{display:flex;min-height:28px;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}
+.record-create-dialog>header h2{margin:0;font-size:16px;line-height:1.4}
+.record-create-dialog>header>button{display:grid;width:28px;height:28px;min-height:0;flex:0 0 28px;place-items:center;padding:0}
+.record-create-dialog>label{margin:10px 0;font-size:12px}
+.record-create-dialog input{height:36px;min-width:0;font-size:12px}
+.record-create-dialog>footer{margin-top:14px}
+.record-git-fields{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px}
+.record-git-fields>label{display:grid;min-width:0;gap:6px;margin:4px 0 0;font-size:12px}
+@media(max-width:680px){.record-git-fields{grid-template-columns:minmax(0,1fr)}}
+.flow-run-inner-workbench .run-side-panel{display:flex;min-width:0;flex-direction:column}
+.flow-run-inner-workbench .run-side-panel>.action-panel{height:auto;flex:1 1 auto}
+.flow-run-inner-workbench .stepwise-record-launch-bar{flex:0 0 auto}

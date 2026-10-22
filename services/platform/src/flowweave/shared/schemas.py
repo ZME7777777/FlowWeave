@@ -627,6 +627,22 @@ class RunStart(ApiModel):
     input_bindings: dict[str, str] = Field(default_factory=_empty_str_dict)
 
 
+class GitIdentityWrite(ApiModel):
+    author: str = Field(min_length=1, max_length=200, pattern=r"^[^\x00-\x1f\x7f<>]+$")
+    email: str = Field(
+        min_length=3,
+        max_length=320,
+        pattern=r"^[^\x00-\x1f\x7f\s@<>]+@[^\x00-\x1f\x7f\s@<>]+$",
+    )
+
+    @model_validator(mode="after")
+    def normalize_identity(self) -> GitIdentityWrite:
+        self.author = self.author.strip()
+        if not self.author:
+            raise ValueError("请填写 Git 用户")
+        return self
+
+
 class StepwiseRunRecordWrite(ApiModel):
     """Create one manually advanced execution record below a FlowRun.
 
@@ -636,6 +652,7 @@ class StepwiseRunRecordWrite(ApiModel):
     """
 
     name: str | None = Field(default=None, max_length=220)
+    git_identity: GitIdentityWrite | None = None
     start_node_key: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9_-]{0,99}$")
 
 
@@ -666,6 +683,7 @@ class AutomaticNodePlanWrite(ApiModel):
 class AutomaticRunDraftWrite(ApiModel):
     name: str | None = Field(default=None, max_length=220)
     environment_version_id: str = Field(min_length=1, max_length=36)
+    git_identity: GitIdentityWrite | None = None
     start_node_key: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9_-]{0,99}$")
     node_plans: dict[str, AutomaticNodePlanWrite] = Field(default_factory=dict, max_length=200)
 
@@ -711,6 +729,7 @@ class AutomaticRecordConfigWrite(ApiModel):
     """Portable metadata, deliberately without Environment or Runtime state."""
 
     name: str | None = Field(default=None, max_length=220)
+    git_identity: GitIdentityWrite | None = None
     start_node_key: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9_-]{0,99}$")
     node_plans: dict[str, AutomaticNodePlanWrite] = Field(default_factory=dict, max_length=200)
 
@@ -758,6 +777,7 @@ class StepwiseRecordConfigWrite(ApiModel):
     """Portable metadata for one stepwise record."""
 
     name: str | None = Field(default=None, max_length=220)
+    git_identity: GitIdentityWrite | None = None
     start_node_key: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9_-]{0,99}$")
     initial_configuration: StepwiseInitialConfigurationWrite
 

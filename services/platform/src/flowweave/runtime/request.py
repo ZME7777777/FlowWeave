@@ -16,6 +16,8 @@ from flowweave.modules.model_providers.application.service import (
     provider_auth_headers,
 )
 from flowweave.modules.model_providers.infrastructure.codex_oauth import CODEX_BASE_URL
+from flowweave.modules.runs.application.git_settings import record_git_identity
+from flowweave.modules.runs.infrastructure.models import FlowRun
 from flowweave.modules.sandboxes.application.runtime_allocation import (
     capability_materialization_lock,
     node_attempt_workspace_context,
@@ -403,6 +405,9 @@ def build_runtime_request(
     # parent owns the one shared physical Runtime.  Keep those identities
     # separate: workspace validation must use the logical record, whereas
     # allocation and capability materialization must use the Runtime owner.
+    record = db.get(FlowRun, flow_run_id)
+    identity = record_git_identity(record) if record is not None else None
+    git_identity = (identity["author"], identity["email"]) if identity else None
     runtime_owner_id = runtime_owner_flow_run_id or flow_run_id
     workspace_context = (
         node_attempt_workspace_context(db, flow_run_id=flow_run_id, node_attempt_id=node_attempt_id)
@@ -451,6 +456,7 @@ def build_runtime_request(
             agent_spec=agent_spec,
             node_workspace_ref="",
             workspace_root=workspace_root,
+            git_identity=git_identity,
             interaction_mode="COLLABORATION",
             startup_prompt=None,
             startup_capability_key=None,
@@ -533,6 +539,7 @@ def build_runtime_request(
             agent_spec=agent_spec,
             node_workspace_ref=node_workspace_ref,
             workspace_root=workspace_root,
+            git_identity=git_identity,
             interaction_mode=interaction_mode,
             startup_prompt=startup_prompt,
             startup_capability_key=startup_capability_key,
@@ -861,6 +868,7 @@ def build_runtime_request(
         agent_spec=agent_spec,
         node_workspace_ref=node_workspace_ref,
         workspace_root=workspace_root,
+        git_identity=git_identity,
         interaction_mode=interaction_mode,
         startup_prompt=startup_prompt,
         startup_capability_key=startup_capability_key,

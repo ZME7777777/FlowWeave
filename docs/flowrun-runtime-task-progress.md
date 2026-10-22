@@ -9125,3 +9125,31 @@ Web typecheck、定向 ESLint／Ruff、production build、git diff --check 与�
 新增诊断零。当前及下一可执行切片均为 NONE。沿用会话授权发布同一提交的 platform 与 web，
 同步更新 api／stream-api／worker，保留现有 Runtime Provider 与 Agent Runtime，并完成健康、
 版本、路由验收和受管发布收尾。
+
+### FR-625 运行记录紧凑创建、Git 身份与视口内分区滚动 — DONE
+
+依赖：FR-624 DONE。连续／逐步运行新建弹窗删除说明和英文眉题，使用紧凑小标题及
+右上角独立关闭按钮；新增并排的 Git 用户、邮箱输入，默认读取当前已认证用户数据库
+姓名／邮箱，允许本记录覆盖，不以登录账号代替姓名。连续运行起始节点沿用可访问的
+自定义菜单，移除该弹窗残留的原生 select。异步资料加载不覆盖用户已编辑字段。
+
+Git 身份作为逻辑运行记录的 automation_plan_json 元数据保存，无新增数据库列或迁移；
+后续节点配置保存、拷贝与便携配置导入／导出保留该值。通过服务端记录 ID 解析进入
+StartAttemptRequest，在原生 OpenHands Conversation 创建／执行之前对该记录独立根目录
+实跑已验证的 Git 配置和读回；多个记录共用物理 Runtime 时不写同一个目录身份。旧记录
+没有该字段时保持原执行路径；不修改提示词、OpenHands 源码或持久消息。
+
+已保存身份在中间记录标题旁以单行显示。工作台高度扣除顶部运行标题条，网格列允许
+收缩、内容行使用 minmax(0,1fr)；记录栏、节点详情／配置内容各自内部滚动，画布占据剩余
+空间。节点详情标题、切换栏和操作区保持固定，草稿及完成态都不再撑高整个页面。
+
+6 项 Chromium 回归通过：紧凑头部几何／关闭位置、资料默认及手动覆盖、提交和重读展示、
+连续／逐步两种模式的长草稿及完成态详情滚动、1440×900／1280×640 视口下文档无溢出、
+记录分页固定操作、拷贝和配置保存／显式启动流程。同步修正相关旧 fixture 缺少正式模型
+选择及分页仍断言五条的问题，当前既有策略为每页十条。截图验收通过。275 项后端定向
+回归通过，包含真实 Git 提交作者、资料／租户隔离、记录默认及覆盖持久化、后续保存和
+拷贝／导入导出保留、Runtime 请求根目录绑定、原生创建前配置确认与失败拒绝。
+Web typecheck、定向 ESLint／Ruff、production build、git diff --check 与唯一 Alembic head
+0157_background_task_aggregate_type_length 通过；Pyright 保持既有 489 项，新增诊断零。
+当前及下一可执行切片均为 NONE。沿用会话授权发布同一提交的 platform 与 web，同步更新
+api／stream-api／worker，执行健康、版本、路由验收和受管收尾，不重建现有 Runtime。

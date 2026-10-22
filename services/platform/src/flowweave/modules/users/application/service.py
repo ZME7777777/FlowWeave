@@ -88,6 +88,13 @@ def _principal(db: Session, user: User) -> Principal:
     )
 
 
+def user_profile(db: Session, user_id: str) -> dict[str, str | None]:
+    user = db.get(User, user_id)
+    if user is None:
+        raise DomainError("AUTHENTICATION_REQUIRED", "请先登录", 401)
+    return {"display_name": user.display_name, "email": user.email}
+
+
 def _create_session(db: Session, user: User) -> LoginResult:
     token = secrets.token_urlsafe(48)
     db.add(

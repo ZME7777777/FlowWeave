@@ -402,10 +402,12 @@ export interface FlowRunStepwiseRecord extends FlowRun {
   stepwise_node_drafts?: Record<string, StepwiseNodeDraft>;
 }
 export interface FlowRunStepwiseRecordWrite {
+  git_identity?: GitIdentity | null;
   name?: string;
   start_node_key: string;
 }
 export interface FlowRunAutomaticRecordSummary {
+  git_identity?: GitIdentity | null;
   id: string; flow_run_id?: string | null; run_no: number; name: string; state: FlowRun['state'];
   row_version: number; schedule_id?: string | null; schedule_name?: string | null;
   schedule_occurrence_id?: string | null; started_at: string; finished_at?: string | null;
@@ -415,6 +417,7 @@ export interface FlowRunAutomaticRecordSummary {
   usage?: TokenUsageSummary;
 }
 export interface FlowRunAutomaticRecordWrite {
+  git_identity?: GitIdentity | null;
   name?: string; environment_version_id: string; start_node_key: string;
   node_plans?: Record<string, AutomaticNodePlan>;
 }
@@ -423,6 +426,7 @@ export interface FlowRunAutomaticRecordUpdate {
   node_plans: Record<string, AutomaticNodePlan>;
 }
 export interface AutomaticRecordConfig {
+  git_identity?: GitIdentity | null;
   name?: string | null; start_node_key: string;
   node_plans: Record<string, AutomaticNodePlan>;
 }
@@ -438,6 +442,7 @@ export interface StepwiseInitialConfiguration {
   input_urls: Record<string, string>;
 }
 export interface StepwiseRecordConfig {
+  git_identity?: GitIdentity | null;
   name?: string | null;
   start_node_key: string;
   initial_configuration: StepwiseInitialConfiguration;
@@ -469,7 +474,9 @@ export interface FlowRunSummary {
   usage?: TokenUsageSummary;
   started_at: string; updated_at: string; finished_at?: string | null;
 }
+export interface GitIdentity { author: string; email: string }
 export interface FlowRun extends FlowRunSummary {
+  git_identity?: GitIdentity | null;
   row_version: number; active_snapshot_id: string; active_snapshot_version: number;
   parent_flow_run_id?: string | null;
   schedule_id?: string | null; schedule_name?: string | null;

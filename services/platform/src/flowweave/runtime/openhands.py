@@ -2240,6 +2240,17 @@ class OpenHandsRuntime:
             }
         target_base_url = request.runtime_base_url
         target_session_key = self._session_key_for_resource(request.runtime_resource_name)
+        if request.git_identity is not None:
+            self.workspace_git_identity(
+                RuntimeHandle(
+                    job_id=f"env-exec:{request.runtime_resource_name}",
+                    conversation_id="",
+                    runtime_resource_id=request.runtime_sandbox_id,
+                    runtime_resource_name=request.runtime_resource_name,
+                    workspace_root=request.workspace_root,
+                ),
+                identity=request.git_identity,
+            )
         self._negotiate_runtime_contract(
             spec.runtime_contract,
             required_tools=(

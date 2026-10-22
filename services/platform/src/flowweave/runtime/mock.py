@@ -119,6 +119,8 @@ class MockRuntime:
             cursor="1",
             workspace_root=request.workspace_root,
         )
+        if request.git_identity is not None:
+            self.workspace_git_identity(handle, identity=request.git_identity)
         self._results[handle.job_id] = RuntimeResult(status="RUNNING", cursor="1")
         self._events[handle.job_id] = []
         self._conversation_secrets[handle.job_id] = dict(request.conversation_secrets)
@@ -146,6 +148,8 @@ class MockRuntime:
             cursor="1",
             workspace_root=request.workspace_root,
         )
+        if request.git_identity is not None:
+            self.workspace_git_identity(handle, identity=request.git_identity)
         if request.node.get("config_override", {}).get("mock_human_required"):
             result = RuntimeResult(
                 status="HUMAN_INPUT_REQUIRED",

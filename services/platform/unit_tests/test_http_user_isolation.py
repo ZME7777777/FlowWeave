@@ -626,6 +626,9 @@ def test_platform_users_are_listed_and_only_profile_fields_are_editable(isolated
         json={"display_name": "平台姓名", "email": "platform@example.test"},
     )
     assert response.status_code == 200, response.text
+    assert client.get("/api/v1/auth/profile").json() == {
+        "display_name": "平台姓名", "email": "platform@example.test"
+    }
     assert response.json()["display_name"] == "平台姓名"
     assert response.json()["email"] == "platform@example.test"
     assert response.json()["agent_session_access"]

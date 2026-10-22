@@ -269,7 +269,7 @@ def test_collaboration_request_keeps_host_scoped_credentials_without_node_execut
     )
 
     request = build_runtime_request(
-        None,  # type: ignore[arg-type]
+        SimpleNamespace(get=lambda *_args: None),  # type: ignore[arg-type]
         flow_run_id="flow-run-1",
         runtime_manifest_hash="manifest-1",
         attempt_id="attempt-1",
@@ -563,7 +563,7 @@ def test_shared_flow_run_runtime_uses_attempt_record_workspace(
     monkeypatch.setattr("flowweave.runtime.request.credentials_for_agent", lambda _db: ({}, ""))
 
     request = build_runtime_request(
-        None,  # type: ignore[arg-type]
+        SimpleNamespace(get=lambda *_args: None),  # type: ignore[arg-type]
         flow_run_id="nested-flow-run",
         runtime_owner_flow_run_id="parent-flow-run",
         runtime_manifest_hash="manifest-1",
@@ -7308,3 +7308,28 @@ def test_git_identity_does_not_claim_success_after_native_failure(
         runtime.workspace_git_identity(
             RuntimeHandle("env-exec:owned", "", runtime_resource_name="owned")
         )
+
+
+@pytest.mark.parametrize("execute", [True, False])
+def test_record_git_identity_is_confirmed_before_native_conversation_start(
+    openhands_settings, monkeypatch, execute
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    request = replace(_request(), git_identity=("Record Author", "record@example.test"))
+    calls = []
+
+    def native(method, path, **kwargs):
+        calls.append((method, path))
+        if path == "/api/bash/execute_bash_command":
+            return {"exit_code": 0, "stdout": json.dumps({
+                "author": "Record Author", "email": "record@example.test", "configured": True,
+            })}
+        return {"id": "10000000-0000-4000-8000-000000000002"}
+
+    monkeypatch.setattr(runtime, "_request", native)
+    (runtime.start if execute else runtime.create_conversation)(request)
+    assert calls == [("POST", "/api/bash/execute_bash_command"), ("POST", "/api/conversations")]
+    calls.clear()
+    monkeypatch.setattr(runtime, "_request", lambda *args, **kwargs: {"exit_code": 1})
+    with pytest.raises(DomainError, match="无法确认工作区 Git 配置"):
+        (runtime.start if execute else runtime.create_conversation)(request)

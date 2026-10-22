@@ -426,6 +426,7 @@ class StartAttemptRequest:
     workspace_root: str = ""
     # Private Runtime parser state for relative FILE candidates. It never
     # enters the Agent-visible output contract.
+    git_identity: tuple[str, str] | None = None
     output_workspace_root: str = ""
     interaction_mode: Literal["EXECUTION", "COLLABORATION"] = "EXECUTION"
     startup_prompt: str | None = None

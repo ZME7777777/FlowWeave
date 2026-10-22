@@ -2,32 +2,14 @@
 
 from __future__ import annotations
 
-import re
-
 from sqlalchemy.orm import Session
 
+from flowweave.modules.users.application.git_identity import profile_identity
 from flowweave.modules.users.application.security import (
-    FLOWWEAVE_USER_ID,
-    current_user_id,
     user_runtime_project_root,
 )
-from flowweave.modules.users.infrastructure.models import User
 from flowweave.runtime.base import RuntimeHandle
 from flowweave.runtime.dependencies import get_runtime
-
-
-def profile_identity(db: Session) -> tuple[str, str] | None:
-    user = db.get(User, current_user_id(default=FLOWWEAVE_USER_ID))
-    if user is None or not isinstance(user.display_name, str) or not isinstance(user.email, str):
-        return None
-    name, email = user.display_name.strip(), user.email.strip()
-    if not name or len(name) > 200 or re.search(r"[\x00-\x1f\x7f<>]", name):
-        return None
-    if len(email) > 320 or not re.fullmatch(
-        r"[^\x00-\x1f\x7f\s@<>]+@[^\x00-\x1f\x7f\s@<>]+", email
-    ):
-        return None
-    return name, email
 
 
 def apply_profile_identity(db: Session, workspace_id: str, handle: RuntimeHandle) -> None:

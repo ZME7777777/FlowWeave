@@ -349,6 +349,7 @@ const conversationReferencePayload = (references: AgentConversationReference[]) 
 });
 export const api = {
   authMe: () => request<AuthUser>('/auth/me'),
+  currentUserProfile: () => request<{ display_name: string | null; email: string | null }>('/auth/profile'),
   login: (username: string, password: string) =>
     request<AuthUser>('/auth/login', json('POST', { username, password })),
   logout: () => request<void>('/auth/logout', json('POST')),

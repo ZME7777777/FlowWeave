@@ -245,8 +245,10 @@ test('step configuration is saved before start and only continuous and stepwise 
       contentType: 'application/json',
       body: JSON.stringify(body),
     });
+    if (path.endsWith('/auth/profile')) return respond({ display_name: null, email: null });
     if (path === '/api/v1/flow-runs' && request.method() === 'GET') return respond([currentRun]);
     if (path === '/api/v1/flows' && request.method() === 'GET') return respond([stepDefinition]);
+    if (path === '/api/v1/model-providers') return respond([{ id: 'provider-1', name: 'Test', available_for_nodes: true, models: [{ id: 'model-1', model_name: 'test-model', enabled: true, is_default: true }], is_default: true }]);
     if (path === '/api/v1/terminal-environments' || path === '/api/v1/capabilities'
       || path === '/api/v1/capability-collections' || path === '/api/v1/model-providers') return respond([]);
     if (path === `/api/v1/flow-runs/${run.id}` && request.method() === 'GET') return respond(currentRun);
@@ -274,7 +276,7 @@ test('step configuration is saved before start and only continuous and stepwise 
             row_version: 1,
             startup_mode: 'PROMPT',
             startup_prompt: '导入的逐步启动提示词',
-            agent_preset: { capability_version_ids: [], node_context_enabled: false },
+            agent_preset: { model_provider_id: 'provider-1', model_name: 'test-model', capability_version_ids: [], node_context_enabled: false },
             gates: [],
             context_ids: [],
             input_bindings: [],
@@ -337,7 +339,7 @@ test('step configuration is saved before start and only continuous and stepwise 
     version: 1,
     records: [{ name: '导入逐步记录', start_node_key: 'second', initial_configuration: {
       startup_prompt: '导入的逐步启动提示词',
-      agent_preset: { capability_version_ids: [], node_context_enabled: false },
+      agent_preset: { model_provider_id: 'provider-1', model_name: 'test-model', capability_version_ids: [], node_context_enabled: false },
       gates: [], input_urls: {},
     } }],
   }));
@@ -380,6 +382,13 @@ test('step configuration is saved before start and only continuous and stepwise 
   await expect(consolePanel).toContainText('取消选中后仍应保留的前端草稿');
   expect(savedBody).toBeUndefined();
   await expect(page.getByRole('button', { name: '启动逐步运行 测试逐步记录' })).toHaveCount(0);
+  await consolePanel.getByRole('button', { name: 'Agent 配置', exact: true }).click();
+  await consolePanel.getByRole('button', { name: /大模型.*配置/ }).click();
+  const modelDialog = page.getByRole('dialog', { name: '配置大模型', exact: true });
+  await modelDialog.getByRole('button', { name: '首会话模型供应商', exact: true }).click();
+  await modelDialog.getByRole('option', { name: 'Test', exact: true }).click();
+  await modelDialog.getByRole('button', { name: '完成', exact: true }).click();
+  await expect(consolePanel.getByRole('button', { name: '保存配置' })).toBeEnabled();
   await consolePanel.getByRole('button', { name: '保存配置' }).click();
   await expect.poll(() => savedBody).toBeTruthy();
   expect(savedBody).toEqual(expect.objectContaining({
@@ -423,6 +432,7 @@ test('stepwise record copy reuses the record selection and first-node configurat
     node_run_id: 'source-stepwise-node',
     state: 'WAITING_START_CONFIRMATION',
     startup_prompt: '复制首节点的初始配置',
+    agent_preset: { ...attempt.agent_preset, model_provider_id: 'provider-1', model_name: 'test-model' },
   };
   const sourceNode = {
     ...nodeRun,
@@ -1008,8 +1018,8 @@ test('an accepted legacy step remains readable before configuring its missing do
   await expect(page.getByRole('button', { name: '启动逐步运行 历史逐步记录' })).toBeVisible();
 });
 
-test('run rail keeps its controls fixed and pages records five at a time', async ({ page }) => {
-  const pagedStepwiseRecords = Array.from({ length: 6 }, (_, index) => ({
+test('run rail keeps its controls fixed and pages records ten at a time', async ({ page }) => {
+  const pagedStepwiseRecords = Array.from({ length: 16 }, (_, index) => ({
     ...run,
     id: `paged-stepwise-record-${index + 1}`,
     name: `分页记录 ${index + 1}`,
@@ -1047,17 +1057,17 @@ test('run rail keeps its controls fixed and pages records five at a time', async
   const fixed = rail.locator('.run-rail-fixed');
   const history = rail.locator('.run-history-scroll');
   await expect(history).toHaveCSS('overflow-y', 'auto');
-  await expect(rail.locator('.node-record-list > article')).toHaveCount(5);
-  await expect(rail).toContainText('共 6 项，第 1 / 2 页');
-  await expect(rail.getByText('分页记录 6', { exact: true })).toHaveCount(0);
+  await expect(rail.locator('.node-record-list > article')).toHaveCount(10);
+  await expect(rail).toContainText('共 16 项，第 1 / 2 页');
+  await expect(rail.getByText('分页记录 16', { exact: true })).toHaveCount(0);
   const fixedBox = await fixed.boundingBox();
   await history.evaluate(element => { element.scrollTop = 100; });
   expect(await fixed.boundingBox()).toEqual(fixedBox);
 
   await rail.getByRole('button', { name: '下一页' }).click();
-  await expect(rail.locator('.node-record-list > article')).toHaveCount(1);
-  await expect(rail.getByText('分页记录 6', { exact: true })).toBeVisible();
-  await expect(rail).toContainText('共 6 项，第 2 / 2 页');
+  await expect(rail.locator('.node-record-list > article')).toHaveCount(6);
+  await expect(rail.getByText('分页记录 16', { exact: true })).toBeVisible();
+  await expect(rail).toContainText('共 16 项，第 2 / 2 页');
 });
 
 test('run projection stays neutral until record selection and automatic save reports its result', async ({ page }) => {
@@ -2516,3 +2526,88 @@ test('node sessions keep terminal reconciliation non-blocking when the formal re
   await expect(page.locator('.conversation-message.user').filter({ hasText: '节点同步期间不得自动发送' })).toHaveCount(0);
   await expect.poll(() => messagePosts).toBe(0);
 });
+
+for (const kind of ['stepwise', 'automatic'] as const) {
+  test(`${kind} creation uses compact header, freezes editable Git identity, and confines scrolling to panes`, async ({ page }) => {
+    const endpoint = kind === 'stepwise' ? 'stepwise-runs' : 'automatic-runs';
+    const title = kind === 'stepwise' ? '新增逐步运行记录' : '新增连续运行';
+    const longDefinition = { ...definition, nodes: definition.nodes.map(node => ({ ...node, asset: { ...node.asset, inputs: Array.from({ length: 24 }, (_, index) => ({ field_key: `field_${index}`, display_name: `输入 ${index}`, data_type: 'URL', description: '用于验证详情区内部滚动' })) } })) };
+    const parent = { ...run, snapshots: [{ ...snapshot, definition: longDefinition }], node_runs: [] };
+    let created: Record<string, unknown> | undefined;
+    let submitted: Record<string, unknown> | undefined;
+    await page.route('**/api/v1/**', async route => {
+      const request = route.request();
+      const path = new URL(request.url()).pathname;
+      const respond = (body: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
+      if (path.endsWith('/auth/me')) return respond(authenticatedUser);
+      if (path.endsWith('/auth/profile')) return respond({ display_name: '当前用户姓名', email: 'current@example.test' });
+      if (path === '/api/v1/flow-runs') return respond([parent]);
+      if (path === '/api/v1/flows') return respond([longDefinition]);
+      if (path === `/api/v1/flows/${definition.id}`) return respond(longDefinition);
+      if (path === `/api/v1/flow-runs/${run.id}`) return respond(parent);
+      if (path === `/api/v1/flow-runs/${run.id}/${endpoint}` && request.method() === 'POST') {
+        submitted = request.postDataJSON();
+        created = { ...(kind === 'automatic' ? automaticBase : parent), snapshots: parent.snapshots,
+          id: 'created-record', name: '新的运行记录', parent_flow_run_id: run.id,
+          state: 'DRAFT', git_identity: submitted!.git_identity, start_node_key: 'first',
+          reachable_node_keys: ['first', 'second'], node_plans: {}, readiness: { ready: false, issues: [] },
+          stepwise_node_drafts: {}, node_runs: [], artifacts: [], progress: { accepted: 0, terminal: 0, active: 0 },
+        };
+        return respond(created, 201);
+      }
+      if (path === `/api/v1/flow-runs/${run.id}/${endpoint}/created-record`) return respond(created);
+      if (path === `/api/v1/flow-runs/${run.id}/stepwise-runs`) return respond(kind === 'stepwise' && created ? [created] : []);
+      if (path === `/api/v1/flow-runs/${run.id}/automatic-runs/summaries`) return respond(kind === 'automatic' && created ? [{ ...created, plan: { start_node_key: 'first', reachable_node_count: 2, configured_node_count: 0, readiness: { ready: false, issue_count: 0 } } }] : []);
+      if (['/node-assets', '/node-directories', '/capabilities', '/capability-collections', '/model-providers', '/terminal-environments'].some(suffix => path.endsWith(suffix))) return respond([]);
+      return respond({ error: { code: 'NOT_FOUND', message: path } }, 404);
+    });
+    await page.goto(`/flow-runs/${run.id}`);
+    await page.getByRole('tab', { name: kind === 'automatic' ? '连续运行' : '逐步运行', exact: true }).click();
+    await page.getByRole('button', { name: '新增', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: title, exact: true });
+    await expect(dialog.getByRole('textbox', { name: 'Git 用户', exact: true })).toHaveValue('当前用户姓名');
+    await expect(dialog.getByRole('textbox', { name: 'Git 邮箱', exact: true })).toHaveValue('current@example.test');
+    await expect(dialog.locator(':scope > header p, :scope > header .eyebrow')).toHaveCount(0);
+    const header = await dialog.locator(':scope > header').boundingBox();
+    const close = await dialog.getByRole('button', { name: `关闭${title}`, exact: true }).boundingBox();
+    expect(header!.height).toBeLessThanOrEqual(36);
+    expect(close!.x + close!.width).toBeGreaterThan(header!.x + header!.width - 2);
+    await dialog.getByRole('textbox', { name: 'Git 用户', exact: true }).fill('本记录作者');
+    await dialog.getByRole('textbox', { name: 'Git 邮箱', exact: true }).fill('record@example.test');
+    await page.screenshot({ path: `../../.tmp/fr625-${kind}-dialog.png` });
+    await dialog.getByRole('button', { name: kind === 'automatic' ? '创建草稿' : '创建记录', exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    expect(submitted?.git_identity).toEqual({ author: '本记录作者', email: 'record@example.test' });
+    await expect(page.locator('.run-record-git-identity')).toHaveText('Git · 本记录作者 · record@example.test');
+    await page.reload();
+    await page.getByRole('tab', { name: kind === 'automatic' ? '连续运行' : '逐步运行', exact: true }).click();
+    await page.locator('.automatic-record-select').filter({ hasText: '新的运行记录' }).click();
+    await expect(page.locator('.run-record-git-identity')).toContainText('record@example.test');
+    for (const size of [{ width: 1440, height: 900 }, { width: 1280, height: 640 }]) {
+      await page.setViewportSize(size);
+      await expect.poll(() => page.evaluate(() => document.documentElement.scrollHeight - window.innerHeight)).toBeLessThanOrEqual(1);
+      const pane = page.locator('.run-side-panel .action-content');
+      await expect(pane).toBeVisible();
+      await expect.poll(() => pane.evaluate(element => element.scrollHeight - element.clientHeight)).toBeGreaterThan(50);
+      await pane.hover();
+      await page.mouse.wheel(0, 600);
+      await expect.poll(() => pane.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+      expect(await page.evaluate(() => window.scrollY)).toBe(0);
+      const canvas = await page.locator('.run-graph-canvas').boundingBox();
+      expect(canvas!.y + canvas!.height).toBeLessThanOrEqual(size.height + 1);
+      await page.screenshot({ path: `../../.tmp/fr625-${kind}-${size.width}.png` });
+    }
+    created = { ...created, state: 'COMPLETED', node_runs: [{ ...nodeRun, flow_run_id: 'created-record', state: 'ACCEPTED', attempts: [{ ...attempt, state: 'ACCEPTED' }] }] };
+    await page.reload();
+    await page.getByRole('tab', { name: kind === 'automatic' ? '连续运行' : '逐步运行', exact: true }).click();
+    await page.locator('.automatic-record-select').filter({ hasText: '新的运行记录' }).click();
+    const detail = page.locator('.run-side-panel .attempt-control .action-content');
+    await expect(detail).toBeVisible();
+    await detail.hover();
+    await page.mouse.wheel(0, 600);
+    await expect.poll(() => detail.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+    expect(await page.evaluate(() => document.documentElement.scrollHeight - window.innerHeight)).toBeLessThanOrEqual(1);
+    expect(await page.evaluate(() => window.scrollY)).toBe(0);
+    await page.screenshot({ path: `../../.tmp/fr625-${kind}-completed.png` });
+  });
+}

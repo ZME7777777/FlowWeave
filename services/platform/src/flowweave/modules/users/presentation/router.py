@@ -231,4 +231,12 @@ async def me() -> dict[str, Any]:
     return service.principal_dict(principal)
 
 
+@router.get("/profile")
+async def profile(db: Db) -> dict[str, str | None]:
+    principal = current_principal()
+    if principal is None:
+        raise DomainError("AUTHENTICATION_REQUIRED", "请先登录", 401)
+    return await run_sync(db, lambda session: service.user_profile(session, principal.user_id))
+
+
 __all__ = ("router",)
