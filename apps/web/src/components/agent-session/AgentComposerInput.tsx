@@ -58,7 +58,6 @@ export const AgentComposerInput = forwardRef<ComposerHandle, {
   const [activeIndex, setActiveIndex] = useState(0);
   const [fileDragActive, setFileDragActive] = useState(false);
   const [inputOverflowing, setInputOverflowing] = useState(false);
-  const [inputMultiline, setInputMultiline] = useState(false);
   const replaceDraft = useCallback((value: string) => {
     draftRef.current = value;
     setDraft(current => current === value ? current : value);
@@ -105,16 +104,18 @@ export const AgentComposerInput = forwardRef<ComposerHandle, {
     const styles = window.getComputedStyle(textarea);
     const lineHeight = Number.parseFloat(styles.lineHeight);
     const verticalPadding = Number.parseFloat(styles.paddingTop) + Number.parseFloat(styles.paddingBottom);
+    const horizontalPadding = Number.parseFloat(styles.paddingLeft) + Number.parseFloat(styles.paddingRight);
     const minHeight = Math.max(Number.parseFloat(styles.minHeight), lineHeight + verticalPadding);
     const maxHeight = lineHeight * 10 + verticalPadding;
     const measurement = document.createElement('div');
-    measurement.textContent = textarea.value || ' ';
+    // A div drops its trailing empty line; the textarea still needs room for its caret.
+    measurement.textContent = `${textarea.value}\u200b`;
     measurement.setAttribute('aria-hidden', 'true');
     measurement.style.setProperty('position', 'fixed', 'important');
     measurement.style.setProperty('visibility', 'hidden', 'important');
     measurement.style.setProperty('pointer-events', 'none', 'important');
     measurement.style.setProperty('box-sizing', 'content-box', 'important');
-    measurement.style.setProperty('width', `${Math.max(0, textarea.clientWidth - verticalPadding)}px`, 'important');
+    measurement.style.setProperty('width', `${Math.max(0, textarea.clientWidth - horizontalPadding)}px`, 'important');
     measurement.style.setProperty('margin', '0', 'important');
     measurement.style.setProperty('padding', '0', 'important');
     measurement.style.setProperty('border', '0', 'important');
@@ -128,13 +129,12 @@ export const AgentComposerInput = forwardRef<ComposerHandle, {
     document.body.append(measurement);
     const measuredContentHeight = measurement.getBoundingClientRect().height;
     measurement.remove();
-    const isMultiline = measuredContentHeight > lineHeight + 1;
-    setInputMultiline(current => current === isMultiline ? current : isMultiline);
     const contentHeight = measuredContentHeight + verticalPadding;
     const height = Math.min(Math.max(contentHeight, minHeight), maxHeight);
     textarea.style.height = `${height}px`;
     textarea.style.setProperty('overflow-y', contentHeight > maxHeight + 1 ? 'auto' : 'hidden', 'important');
     const overflowing = contentHeight > maxHeight + 1;
+    if (!overflowing && textarea.scrollTop !== 0) textarea.scrollTop = 0;
     setInputOverflowing(current => current === overflowing ? current : overflowing);
   }, []);
   useLayoutEffect(() => { resizeInput(); }, [draft, resizeInput]);
@@ -219,7 +219,7 @@ export const AgentComposerInput = forwardRef<ComposerHandle, {
     if (workspacePaths.length) onDropWorkspaceFiles?.(workspacePaths);
     if (files.length) onDropFiles?.(files);
   }}>
-    <textarea ref={input} data-multiline={inputMultiline || undefined} data-overflowing={inputOverflowing || undefined} aria-label={ariaLabel} aria-autocomplete="list" aria-controls={hasMenu ? 'agent-composer-capabilities' : undefined} aria-expanded={hasMenu} value={draft} maxLength={200_000} placeholder={placeholder} disabled={disabled} onChange={event => updateDraft(event.target.value)} onPaste={onPaste} onKeyDown={event => {
+    <textarea ref={input} data-overflowing={inputOverflowing || undefined} aria-label={ariaLabel} aria-autocomplete="list" aria-controls={hasMenu ? 'agent-composer-capabilities' : undefined} aria-expanded={hasMenu} value={draft} maxLength={200_000} placeholder={placeholder} disabled={disabled} onChange={event => updateDraft(event.target.value)} onPaste={onPaste} onKeyDown={event => {
       if (isImeComposition(event)) return;
       if (event.key === 'Enter' && (event.metaKey || event.altKey) && !event.shiftKey) { event.preventDefault(); onDirectSubmit?.(draftRef.current); return; }
       if (hasMenu && event.key === 'Escape') { updateDraft(draft.slice(0, -trigger!.query.length - 1)); return; }

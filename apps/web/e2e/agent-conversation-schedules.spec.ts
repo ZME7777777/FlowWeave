@@ -959,6 +959,45 @@ test('hiding the floating card applies to every conversation and survives a relo
   await expect(card).toBeVisible();
 });
 
+test('composer newlines keep the first line at the single-line top inset', async ({ page }) => {
+  await openWorkspace(page);
+  await page.goto('/agent/conversations/scheduled-conversation');
+  const composer = page.getByRole('textbox', { name: '发送 Agent 消息' });
+  const geometry = () => composer.evaluate(element => {
+    const textarea = element as HTMLTextAreaElement;
+    const styles = getComputedStyle(textarea);
+    return {
+      topInset: textarea.getBoundingClientRect().top - textarea.closest('.agent-composer')!.getBoundingClientRect().top
+        + parseFloat(styles.paddingTop) - textarea.scrollTop,
+      height: textarea.clientHeight,
+      lineHeight: parseFloat(styles.lineHeight),
+      padding: parseFloat(styles.paddingTop) + parseFloat(styles.paddingBottom),
+      scrollTop: textarea.scrollTop,
+      overflowY: styles.overflowY,
+    };
+  });
+  await composer.fill('1');
+  const single = await geometry();
+  for (let lines = 2; lines <= 10; lines += 1) {
+    await composer.press('Shift+Enter');
+    await expect(composer).toHaveValue(`1${'\n'.repeat(lines - 1)}`);
+    await expect.poll(async () => (await geometry()).height).toBeGreaterThanOrEqual(single.lineHeight * lines + single.padding - 1);
+    await expect.poll(async () => (await geometry()).topInset).toBeCloseTo(single.topInset, 0);
+    expect((await geometry()).scrollTop).toBe(0);
+  }
+  await composer.press('Shift+Enter');
+  await expect.poll(async () => (await geometry()).overflowY).toBe('auto');
+  await composer.fill('1\n第二行');
+  await expect.poll(async () => (await geometry()).topInset).toBeCloseTo(single.topInset, 0);
+  expect((await geometry()).scrollTop).toBe(0);
+  await composer.fill('自动换行的文字'.repeat(45));
+  await expect.poll(async () => (await geometry()).height).toBeGreaterThan(single.height);
+  expect((await geometry()).topInset).toBeCloseTo(single.topInset, 0);
+  await composer.fill('1');
+  await composer.press('Shift+Enter');
+  await page.screenshot({ path: '../../.tmp/composer-newline.png' });
+});
+
 test('assistant messages render inline and display LaTex formulas', async ({ page }) => {
   await openWorkspace(page, [
     { id: 'formula-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '计算盘前涨跌幅', timestamp: now } },

@@ -9211,3 +9211,19 @@ git diff --check 和唯一 Alembic head 0157_background_task_aggregate_type_leng
 git diff --check 和唯一 Alembic head 0157_background_task_aggregate_type_length 通过。
 当前及下一可执行切片均为 NONE。沿用会话授权仅发布 Web，完成正式预检、健康／路由
 验收和受管收尾，不重启平台 API 或 Agent Runtime。
+
+
+### FR-629 输入框换行保持首行上边距 — DONE
+
+依赖：FR-628 DONE。修复末尾空行未纳入输入框高度测量造成的光标滚动，
+并使单行、多行和自动折行使用一致的首行上边距。仅涉及共享 Web 发送框及定向浏览器回归。
+
+隐藏测量节点追加仅用于测量的零宽占位符，以保留末尾空行；测量宽度按左右内边距
+扣除，不再误用上下内边距。移除多行专属 padding 与状态，让所有未溢出的输入使用
+相同上边距，并在内容缩回十行内时清除残留内部滚动。真实草稿内容不加入占位符。
+
+新增 Chromium 回归在修改前复现第二行高度仍为 42px，修复后通过；覆盖连续末尾
+换行至十行、超过十行滚动、缩回短文本和自动折行的首行位置。连同既有侧栏挤压
+重排回归共 2 项通过，截图验收通过。Web typecheck、定向 ESLint、git diff --check
+和唯一 Alembic head 0157_background_task_aggregate_type_length 通过。当前及下一
+可执行切片均为 NONE；未进行远端发布。
