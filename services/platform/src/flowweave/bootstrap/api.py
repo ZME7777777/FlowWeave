@@ -21,6 +21,7 @@ from flowweave.bootstrap.settings import Settings
 from flowweave.modules.admin_control.router import router as admin_control_router
 from flowweave.modules.agent_sessions.presentation.router import router as agent_sessions_router
 from flowweave.modules.agent_workspaces.presentation.router import router as agent_workspaces_router
+from flowweave.modules.cases.presentation.router import router as cases_router
 from flowweave.modules.catalog.presentation.router import router as catalog_router
 from flowweave.modules.conversations.presentation.router import router as conversations_router
 from flowweave.modules.credentials.presentation.router import router as credentials_router
@@ -82,9 +83,7 @@ class RateLimitPolicy:
     error_message: str
 
 
-def _rate_limit_policy(
-    method: str, path: str, user_id: str, settings: Settings
-) -> RateLimitPolicy:
+def _rate_limit_policy(method: str, path: str, user_id: str, settings: Settings) -> RateLimitPolicy:
     message_match = _MESSAGE_BINDING_PATH.match(path)
     if message_match is not None:
         return RateLimitPolicy(
@@ -440,6 +439,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     for router in (
         agent_sessions_router,
         catalog_router,
+        cases_router,
         environments_router,
         event_automations_router,
         providers_router,

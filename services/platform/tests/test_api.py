@@ -86,6 +86,43 @@ def create_asset(client, skill, name="方案生成"):
     return response.json()
 
 
+def test_case_control_plane_creates_stages_and_changes_stage_state(client):
+    created = client.post(
+        "/api/v1/cases",
+        json={
+            "name": "客户迁移事项",
+            "objective": "协调迁移准备与复盘。",
+            "stages": [
+                {"stage_key": "discover", "name": "发现", "objective": "确认现状"},
+                {"stage_key": "execute", "name": "执行", "objective": "完成迁移"},
+            ],
+        },
+    )
+    assert created.status_code == 201, created.text
+    item = created.json()
+    assert item["state"] == "ACTIVE"
+    assert [stage["state"] for stage in item["stages"]] == ["ACTIVE", "PENDING"]
+    assert item["tasks"] == []
+
+    listed = client.get("/api/v1/cases")
+    assert listed.status_code == 200, listed.text
+    assert [case["id"] for case in listed.json()] == [item["id"]]
+
+    updated = client.put(
+        f"/api/v1/cases/{item['id']}/stages/{item['stages'][1]['id']}/state",
+        json={"expected_case_row_version": item["row_version"], "state": "ACTIVE"},
+    )
+    assert updated.status_code == 200, updated.text
+    assert [stage["state"] for stage in updated.json()["stages"]] == ["PENDING", "ACTIVE"]
+
+    stale = client.put(
+        f"/api/v1/cases/{item['id']}/stages/{item['stages'][0]['id']}/state",
+        json={"expected_case_row_version": item["row_version"], "state": "COMPLETED"},
+    )
+    assert stale.status_code == 409, stale.text
+    assert stale.json()["code"] == "VERSION_CONFLICT"
+
+
 def test_node_asset_can_be_saved_without_skill(client):
     response = client.post("/api/v1/node-assets", json=asset_payload("无 Skill 节点"))
     assert response.status_code == 201, response.text

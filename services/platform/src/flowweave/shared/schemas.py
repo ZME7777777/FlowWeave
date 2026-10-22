@@ -815,6 +815,30 @@ class NodeRunStart(ApiModel):
         return self
 
 
+class CaseStageWrite(ApiModel):
+    stage_key: str = Field(pattern=r"^[a-z][a-z0-9._-]{0,99}$")
+    name: str = Field(min_length=1, max_length=220)
+    objective: str = Field(default="", max_length=10_000)
+
+
+class CaseCreateWrite(ApiModel):
+    name: str = Field(min_length=1, max_length=220)
+    objective: str = Field(default="", max_length=20_000)
+    stages: list[CaseStageWrite] = Field(default_factory=list, max_length=50)
+
+    @model_validator(mode="after")
+    def validate_stages(self) -> CaseCreateWrite:
+        keys = [stage.stage_key for stage in self.stages]
+        if len(keys) != len(set(keys)):
+            raise ValueError("case stage keys must be unique")
+        return self
+
+
+class CaseStageStateWrite(ApiModel):
+    expected_case_row_version: int = Field(ge=1)
+    state: Literal["PENDING", "ACTIVE", "COMPLETED", "SKIPPED"]
+
+
 class StepwiseNodeDraftWrite(NodeRunStart):
     """Editable node configuration for one stepwise record.
 
