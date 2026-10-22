@@ -9255,3 +9255,21 @@ Web typecheck、定向 ESLint、production build、定向 Ruff、新增模块 Py
 8 项 tests/test_domain.py 因本机 Docker socket 不可用，在数据库 fixture 初始化阶段
 受阻，未记为通过；既有全量 OpenAPI 快照仍有其他历史漂移，本次只核对浏览器路由。
 当前及下一可执行切片均为 NONE；未修改 Runtime、数据库或远端环境，未部署。
+
+
+FR-630 发布补记（2026-10-22）：用户明确授权部署后，以已提交版本
+`c39622db69f7f1817e4fc20481208641f06d8263` 分别通过 platform／web 正式预检，
+使用受管最小 git archive 上下文构建 linux/amd64 镜像；平台／Web 归档 SHA-256 分别为
+`44ef1264b3286d0675b63ba6b2ea55f2d7801e90206966569193a9057a81b14a`、
+`86de9b92999bc9c20b1a54fe29b04ad8f0e0adb72ab0cd596a6dad5bc198b4d3`。
+保留旧镜像回滚标签，正式 migration 退出码为 0，api／stream-api／worker／web 均以
+同一提交的 OCI revision 运行并通过健康检查；Runtime Provider 容器身份保持不变。
+公网健康／readiness、前缀静态资源、Agent 深层路由及宿主登录入口均返回 200。
+
+使用正式浏览器代理读取问题会话对应的实际容器服务，并在真实 Chromium 的 opaque
+iframe 中加载；页面成功显示 FlowWeave 登录界面，31 项预览响应带 CORS 头，未发生
+浏览器脚本异常，模块／样式资源正常。该临时前端自身的认证 GET 接口仍返回 500，
+属于后续登录的独立服务问题，没有将其记为认证成功。全新公网浏览器上下文的深层路由
+正常显示登录页，API 请求保留 /flowweave 前缀。platform／web 的 remote-release-finish
+均完成，只回收工具判定的三份过期成功上下文，保留最近三份和所有引用版本，镜像删除
+候选为零；未修改服务器 Compose／env、Runtime、工作区或持久数据。
