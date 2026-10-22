@@ -1545,6 +1545,38 @@ def _validate_input_bindings(
             )
 
 
+def _validate_runtime_direction_graph(definition: dict[str, Any]) -> None:
+    nodes = {
+        str(node.get("instance_key") or "")
+        for node in definition.get("nodes", [])
+        if isinstance(node, dict) and str(node.get("instance_key") or "")
+    }
+    adjacency: dict[str, set[str]] = {node: set() for node in nodes}
+    for edge in definition.get("edges", []):
+        if not isinstance(edge, dict):
+            continue
+        source = str(edge.get("source_instance_key") or "")
+        target = str(edge.get("target_instance_key") or "")
+        if source in adjacency and target in adjacency:
+            adjacency[source].add(target)
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(node: str) -> None:
+        if node in visiting:
+            raise DomainError("RUN_REVISION_INVALID", "runtime graph cannot contain cycles", 422)
+        if node in visited:
+            return
+        visiting.add(node)
+        for target in adjacency[node]:
+            visit(target)
+        visiting.remove(node)
+        visited.add(node)
+
+    for node in nodes:
+        visit(node)
+
+
 _MANUAL_NODE_CONTEXT_ID = "__node_context_prompt__"
 
 
@@ -10537,6 +10569,7 @@ def update_flow_run_revision_draft(
                 "RUN_REVISION_INVALID", "runtime port mapping endpoint is invalid", 422
             )
     _validate_runtime_definition_ports(definition)
+    _validate_runtime_direction_graph(definition)
     item.definition_json = definition
     item.definition_hash = _hash(definition)
     item.reason = payload.reason.strip()

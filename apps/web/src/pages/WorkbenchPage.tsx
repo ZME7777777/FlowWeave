@@ -1349,13 +1349,13 @@ const emptyAutomaticNodePlan = (node: SnapshotFlowNode): AutomaticNodePlan => ({
   gates: [], artifact_ids: {}, input_urls: {},
 });
 
-function RuntimeRevisionPanel({ run, assets, onDraft, onApplied }: { run: FlowRun; assets: NodeAsset[]; onDraft: (draft: FlowRunRevisionDraft) => void; onApplied: (run: FlowRun) => void }) {
+function RuntimeRevisionPanel({ run, assets, selectedNodeKey, linkSourceKey, onDraft, onSetLinkSource, onApplied }: { run: FlowRun; assets: NodeAsset[]; selectedNodeKey?: string; linkSourceKey?: string; onDraft: (draft: FlowRunRevisionDraft) => void; onSetLinkSource: (key?: string) => void; onApplied: (run: FlowRun) => void }) {
   const [draft, setDraft] = useState<FlowRunRevisionDraft | undefined>(() => run.revision_drafts.find(item => item.state === 'DRAFT'));
   const [reason, setReason] = useState('');
   const [error, setError] = useState('');
   useEffect(() => setDraft(run.revision_drafts.find(item => item.state === 'DRAFT')), [run.revision_drafts]);
   const mutation = useMutation({
-    mutationFn: async (operation: 'create' | 'add-node' | 'add-observation' | 'save' | 'apply') => {
+    mutationFn: async (operation: 'create' | 'add-node' | 'add-input' | 'add-observation' | 'link' | 'save' | 'apply') => {
       if (operation === 'create') return { draft: await api.createRevisionDraft(run.id, reason) };
       if (!draft) throw new Error('请先创建运行时修订草稿。');
       if (operation === 'apply') return { applied: await api.applyRevisionDraft(run.id, draft.id, draft.row_version) };
@@ -1377,8 +1377,49 @@ function RuntimeRevisionPanel({ run, assets, onDraft, onApplied }: { run: FlowRu
           runtime_port_overrides: { inputs: [], outputs: [] },
         });
       }
+      if (operation === 'link') {
+        const source = definition.nodes.find(node => node.instance_key === linkSourceKey);
+        const target = definition.nodes.find(node => node.instance_key === selectedNodeKey);
+        if (!source || !target || source.instance_key === target.instance_key) {
+          throw new Error('请先选择不同的上游和下游节点。');
+        }
+        const position = definition.edges.length;
+        if (!definition.edges.some(edge => edge.source_instance_key === source.instance_key && edge.target_instance_key === target.instance_key)) {
+          definition.edges.push({ source_instance_key: source.instance_key, target_instance_key: target.instance_key, position });
+        }
+        const mappedTargets = new Set(definition.port_mappings
+          .filter(mapping => mapping.target_instance_key === target.instance_key)
+          .map(mapping => mapping.target_input_key));
+        const mapping = runtimeNodeOutputs(source).flatMap(output => runtimeNodeInputs(target)
+          .filter(input => !mappedTargets.has(input.field_key) && input.data_type === output.data_type)
+          .map(input => ({ source_output_key: output.field_key, target_input_key: input.field_key })),
+        )[0];
+        if (mapping) definition.port_mappings.push({
+          source_instance_key: source.instance_key,
+          target_instance_key: target.instance_key,
+          ...mapping,
+        });
+      }
+      if (operation === 'add-input') {
+        const selected = definition.nodes.find(node => node.instance_key === selectedNodeKey) ?? definition.nodes[0];
+        if (!selected) throw new Error('运行时修订没有可调整的节点。');
+        const inputs = selected.runtime_port_overrides?.inputs ?? [];
+        selected.runtime_port_overrides = {
+          ...(selected.runtime_port_overrides ?? {}),
+          inputs: [...inputs, {
+            field_key: `runtime_input_${inputs.length + 1}`,
+            display_name: `临时输入 ${inputs.length + 1}`,
+            data_type: 'URL',
+            description: '可手工绑定，未连接时不阻塞本次节点启动。',
+            runtime_port: true,
+            required: false,
+          }],
+        };
+      }
       if (operation === 'add-observation') {
-        const selected = definition.nodes.find(node => node.instance_key === definition.default_entry_key) ?? definition.nodes[0];
+        const selected = definition.nodes.find(node => node.instance_key === selectedNodeKey)
+          ?? definition.nodes.find(node => node.instance_key === definition.default_entry_key)
+          ?? definition.nodes[0];
         if (!selected) throw new Error('运行时修订没有可调整的节点。');
         const outputs = selected.runtime_port_overrides?.outputs ?? [];
         const key = `case_observation_${outputs.length + 1}`;
@@ -1396,8 +1437,9 @@ function RuntimeRevisionPanel({ run, assets, onDraft, onApplied }: { run: FlowRu
       }
       return { draft: await api.updateRevisionDraft(run.id, draft.id, { expected_row_version: draft.row_version, definition, reason }) };
     },
-    onSuccess: result => {
+    onSuccess: (result, operation) => {
       setError('');
+      if (operation === 'link') onSetLinkSource(undefined);
       if ('applied' in result && result.applied) onApplied(result.applied);
       else if (result.draft) {
         setDraft(result.draft);
@@ -1407,7 +1449,9 @@ function RuntimeRevisionPanel({ run, assets, onDraft, onApplied }: { run: FlowRu
     onError: reason => setError(reason instanceof Error ? reason.message : '运行时修订操作失败。'),
   });
   const canEdit = run.state !== 'COMPLETED' && run.state !== 'CANCELLED' && run.run_mode !== 'AUTOMATIC';
-  return <section className="runtime-revision-panel" aria-label="本次运行调整"><header><div><span className="eyebrow">RUN REVISION</span><h3>本次运行调整</h3><p>变更只写入新的运行快照；已开始节点和流程模板不会改变。</p></div>{draft && <span className="runtime-revision-state">草稿 v{draft.row_version}</span>}</header>{!draft ? <><label>调整原因<textarea aria-label="运行时调整原因" value={reason} onChange={event => setReason(event.target.value)} placeholder="例如：补充安全审查、增加Case观察输出。"/></label><button className="secondary full" disabled={!canEdit || mutation.isPending} onClick={() => mutation.mutate('create')}><Layers3 size={14}/>{mutation.isPending ? '创建中…' : '创建运行时草稿'}</button></> : <><p className="field-hint">基于 Snapshot v{draft.base_snapshot_version} · {draft.definition.nodes.length} 个节点 · {draft.definition.port_mappings.length} 条数据连线</p><div className="runtime-revision-actions"><button className="secondary" disabled={!canEdit || mutation.isPending || !assets.length} onClick={() => mutation.mutate('add-node')}><Plus size={14}/>临时节点</button><button className="secondary" disabled={!canEdit || mutation.isPending} onClick={() => mutation.mutate('add-observation')}><Eye size={14}/>观察输出</button></div><label>调整原因<textarea aria-label="更新运行时调整原因" value={reason || draft.reason} onChange={event => setReason(event.target.value)} placeholder="说明本次运行调整的原因。"/></label><div className="runtime-revision-actions"><button className="secondary" disabled={!canEdit || mutation.isPending} onClick={() => mutation.mutate('save')}><RefreshCw size={14}/>保存草稿</button><button className="primary" disabled={!canEdit || mutation.isPending} onClick={() => mutation.mutate('apply')}><Check size={14}/>{mutation.isPending ? '处理中…' : '应用到本次运行'}</button></div></>}{error && <p className="error">{error}</p>}</section>;
+  const selectedLabel = draft?.definition.nodes.find(node => node.instance_key === selectedNodeKey)?.alias
+    ?? draft?.definition.nodes.find(node => node.instance_key === selectedNodeKey)?.asset.name;
+  return <section className="runtime-revision-panel" aria-label="本次运行调整"><header><div><span className="eyebrow">RUN REVISION</span><h3>本次运行调整</h3><p>变更只写入新的运行快照；已开始节点和流程模板不会改变。</p></div>{draft && <span className="runtime-revision-state">草稿 v{draft.row_version}</span>}</header>{!draft ? <><label>调整原因<textarea aria-label="运行时调整原因" value={reason} onChange={event => setReason(event.target.value)} placeholder="例如：补充安全审查、增加Case观察输出。"/></label><button className="secondary full" disabled={!canEdit || mutation.isPending} onClick={() => mutation.mutate('create')}><Layers3 size={14}/>{mutation.isPending ? '创建中…' : '创建运行时草稿'}</button></> : <><p className="field-hint">基于 Snapshot v{draft.base_snapshot_version} · {draft.definition.nodes.length} 个节点 · {draft.definition.port_mappings.length} 条数据连线</p><p className="field-hint">{selectedLabel ? `当前画布选择：${selectedLabel}` : '先在画布选择节点，可将临时端口添加到该节点。'}</p><p className="field-hint">{linkSourceKey ? `连线起点：${draft.definition.nodes.find(node => node.instance_key === linkSourceKey)?.alias ?? linkSourceKey}` : '点击“设为连线起点”，再选择另一节点即可添加本次运行的流程连线。'}</p><div className="runtime-revision-actions"><button className="secondary" disabled={!canEdit || mutation.isPending || !assets.length} onClick={() => mutation.mutate('add-node')}><Plus size={14}/>临时节点</button><button className="secondary" disabled={!canEdit || mutation.isPending || !selectedNodeKey} onClick={() => onSetLinkSource(selectedNodeKey)}><Boxes size={14}/>设为连线起点</button><button className="secondary" disabled={!canEdit || mutation.isPending || !linkSourceKey || !selectedNodeKey || linkSourceKey === selectedNodeKey} onClick={() => mutation.mutate('link')}><Plus size={14}/>连到当前节点</button><button className="secondary" disabled={!canEdit || mutation.isPending} onClick={() => mutation.mutate('add-input')}><Plus size={14}/>临时输入</button><button className="secondary" disabled={!canEdit || mutation.isPending} onClick={() => mutation.mutate('add-observation')}><Eye size={14}/>观察输出</button></div><label>调整原因<textarea aria-label="更新运行时调整原因" value={reason || draft.reason} onChange={event => setReason(event.target.value)} placeholder="说明本次运行调整的原因。"/></label><div className="runtime-revision-actions"><button className="secondary" disabled={!canEdit || mutation.isPending} onClick={() => mutation.mutate('save')}><RefreshCw size={14}/>保存草稿</button><button className="primary" disabled={!canEdit || mutation.isPending} onClick={() => mutation.mutate('apply')}><Check size={14}/>{mutation.isPending ? '处理中…' : '应用到本次运行'}</button></div></>}{error && <p className="error">{error}</p>}</section>;
 }
 
 function AutomaticRecordDialog({ run, onClose, onCreated, onImport }: { run: FlowRun; onClose: () => void; onCreated: (record: FlowRunAutomaticRecord) => void; onImport: () => void }) {
@@ -1625,6 +1669,8 @@ export function WorkbenchPage() {
   const [automaticExportRecordIds, setAutomaticExportRecordIds] = useState<string[]>();
   const [stepwiseExportRecordIds, setStepwiseExportRecordIds] = useState<string[]>();
   const [copyTarget, setCopyTarget] = useState<CopyTarget>();
+  const [runtimeRevisionLinkSource, setRuntimeRevisionLinkSource] = useState<string>();
+
   const [automaticBusyId, setAutomaticBusyId] = useState<string>();
   const [manualBusyId, setManualBusyId] = useState<string>();
   const [railWidth, setRailWidth] = useState(250);
@@ -2464,7 +2510,7 @@ export function WorkbenchPage() {
           <button type="button" className="run-workbench-toolbar-clear" aria-label="取消当前选择" onClick={clearSelection}/>
           {(run.state === 'COMPLETED' || run.state === 'CANCELLED') && <TerminalRunDelete run={run} onDeleted={() => navigate(undefined, 'delete')}/>}
         </div>
-        {mode !== 'AUTOMATIC' && run.state !== 'COMPLETED' && run.state !== 'CANCELLED' && <><SnapshotSync run={run} currentVersion={flow.data?.row_version} onSynced={updated => navigate(updated, 'sync')}/><RuntimeRevisionPanel run={run} assets={assets.data ?? []} onDraft={setRuntimeRevisionDraft} onApplied={updated => { setRuntimeRevisionDraft(undefined); navigate(updated, 'runtime-revision'); }}/></>}
+        {mode !== 'AUTOMATIC' && run.state !== 'COMPLETED' && run.state !== 'CANCELLED' && <><SnapshotSync run={run} currentVersion={flow.data?.row_version} onSynced={updated => navigate(updated, 'sync')}/><RuntimeRevisionPanel run={run} assets={assets.data ?? []} selectedNodeKey={selectedNodeKey} linkSourceKey={runtimeRevisionLinkSource} onDraft={setRuntimeRevisionDraft} onSetLinkSource={setRuntimeRevisionLinkSource} onApplied={updated => { setRuntimeRevisionDraft(undefined); navigate(updated, 'runtime-revision'); }}/></>}
         <SnapshotGraph run={graphRun} snapshotId={graphSnapshotId} draftDefinition={previewRuntimeRevision?.definition} selectedKey={graphSelectedKey} activeNodeRunId={activeStepwiseDraftKey ? undefined : activeExecutionNodeRun?.id} activeNodeKey={activeStepwiseDraftKey} reachableKeys={graphReachableKeys} selectableKeys={graphSelectableKeys} configuredPlanKeys={configuredAutomaticPlanKeys} executionRun={selectedExecutionRecord ?? directExecutionRun} missingPlanKeys={missingAutomaticPlanKeys} showExecutionState={showExecutionState} neutralHelp={neutralGraphHelp} neutralView={automaticNeutralView} onClearSelection={clearSelection} onSelect={selectGraphNode}/>
       </main>
       {hasPanel && <aside className="run-side-panel">
