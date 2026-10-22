@@ -2914,11 +2914,10 @@ function WorkDirectoryCreator({ workspaceId, onClose, onCreated }: {
   const [displayName, setDisplayName] = useState('');
   const [selectedPaths, setSelectedPaths] = useState<string[]>([]);
   const [directorySearch, setDirectorySearch] = useState('');
-  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   useEscapeClose(() => { if (!create.isPending) onClose(); });
   const detailsQuery = useQuery({
     queryKey: sessionQueryKey(host, 'work-directory-creation', workspaceId),
-    queryFn: () => api.workspaceDetails(workspaceId, { fullIndex: true }),
+    queryFn: () => api.workspaceDetails(workspaceId),
     retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
   });
   const create = useMutation({
@@ -2931,23 +2930,49 @@ function WorkDirectoryCreator({ workspaceId, onClose, onCreated }: {
     },
   });
   const details = detailsQuery.data;
-  const directoryNodes = useMemo(
-    () => details ? workspaceTree(details.files.filter(entry => entry.kind === 'directory'), details.root) : [],
-    [details],
-  );
-  useEffect(() => {
-    setExpanded(new Set(directoryNodes.map(node => node.path)));
-  }, [directoryNodes]);
-  const normalizedDirectorySearch = directorySearch.trim().toLocaleLowerCase();
-  const visibleDirectoryNodes = useMemo(() => {
-    if (!normalizedDirectorySearch || !details) return directoryNodes;
-    const filterNodes = (nodes: WorkspaceTreeNode[]): WorkspaceTreeNode[] => nodes.flatMap(node => {
-      const children = filterNodes(node.children);
-      const relativePath = relativeWorkspacePath(node.path, details.root).toLocaleLowerCase();
-      return relativePath.includes(normalizedDirectorySearch) || children.length ? [{ ...node, children }] : [];
-    });
-    return filterNodes(directoryNodes);
-  }, [details, directoryNodes, normalizedDirectorySearch]);
+  const searchParts = directorySearch.trim().split('/');
+  const directoryNameFilter = searchParts.pop()!.toLocaleLowerCase();
+  const validSearchPath = searchParts.every(segment => segment && segment !== '.' && segment !== '..' && !segment.includes('\\'));
+  const parentPaths = details && validSearchPath
+    ? [details.root, ...searchParts.map((_, index) => `${details.root}/${searchParts.slice(0, index + 1).join('/')}`)]
+    : [];
+  const directoryQueries = useQueries({
+    queries: parentPaths.map(parentPath => ({
+      queryKey: sessionQueryKey(host, 'work-directory-creation-level', workspaceId, parentPath),
+      queryFn: async () => {
+        const entries: WorkspaceEntry[] = [];
+        let cursor: string | undefined;
+        const seenCursors = new Set<string>();
+        do {
+          const page = await api.workspaceDirectory(workspaceId, { parentPath, cursor });
+          entries.push(...page.entries.filter(entry => entry.kind === 'directory'));
+          cursor = page.next_cursor ?? undefined;
+          if (cursor && seenCursors.has(cursor)) throw new Error('目录分页未能继续，请稍后重试。');
+          if (cursor) seenCursors.add(cursor);
+        } while (cursor);
+        return entries;
+      },
+      staleTime: 30_000,
+      retry: (count: number, error: Error) => !(error instanceof ApiError && error.status < 500) && count < 2,
+    })),
+  });
+  const ancestors: WorkspaceEntry[] = [];
+  for (let index = 0; index < searchParts.length; index += 1) {
+    const entry = directoryQueries[index]?.data?.find(item => item.path === parentPaths[index + 1]);
+    if (!entry) break;
+    ancestors.push(entry);
+  }
+  const directoryLoading = detailsQuery.isLoading || directoryQueries.some(query => query.isLoading);
+  const directoryError = detailsQuery.error ?? directoryQueries.find(query => query.error)?.error;
+  const validAncestors = ancestors.length === searchParts.length;
+  const visibleDirectories = validAncestors
+    ? (directoryQueries.at(-1)?.data ?? []).filter(entry => entry.path.split('/').pop()!.toLocaleLowerCase().includes(directoryNameFilter))
+    : [];
+  const browseDirectory = (path: string, open: boolean) => {
+    const relativePath = relativeWorkspacePath(path, details!.root);
+    const parent = relativePath.includes('/') ? relativePath.slice(0, relativePath.lastIndexOf('/')) : '';
+    setDirectorySearch(open ? parent ? `${parent}/` : '' : `${relativePath}/`);
+  };
   const togglePath = (path: string) => {
     setSelectedPaths(current => {
       if (current.includes(path)) return current.filter(item => item !== path);
@@ -2956,22 +2981,18 @@ function WorkDirectoryCreator({ workspaceId, onClose, onCreated }: {
     });
     if (!displayName.trim()) setDisplayName(path.split('/').pop() || path);
   };
-  const renderDirectories = (nodes: WorkspaceTreeNode[], depth = 0): ReactNode => nodes.map(node => {
+  const renderDirectories = (nodes: WorkspaceEntry[], depth = 0): ReactNode => nodes.map(node => {
     const relativePath = relativeWorkspacePath(node.path, details!.root);
-    const open = Boolean(normalizedDirectorySearch) || expanded.has(node.path);
+    const open = ancestors[depth]?.path === node.path;
     const checked = selectedPaths.includes(relativePath);
-    const hasChildren = node.children.length > 0;
-    return <div key={node.path} role="treeitem" aria-expanded={hasChildren ? open : undefined}>
+    const children = ancestors[depth + 1] ? [ancestors[depth + 1]] : visibleDirectories;
+    return <div key={node.path} role="treeitem" aria-expanded={open} aria-level={depth + 1}>
       <div className="agent-work-directory-row" style={{ '--directory-depth': depth } as CSSProperties}>
-        {hasChildren ? <button type="button" aria-label={(open ? '收起目录 ' : '展开目录 ') + relativePath} onClick={() => setExpanded(current => {
-          const next = new Set(current);
-          if (next.has(node.path)) next.delete(node.path); else next.add(node.path);
-          return next;
-        })}>{open ? <ChevronDown size={13}/> : <ChevronRight size={13}/>}</button> : <span className="agent-work-directory-spacer"/>}
+        <button type="button" aria-label={(open ? '收起目录 ' : '展开目录 ') + relativePath} onClick={() => browseDirectory(node.path, open)}>{open ? <ChevronDown size={13}/> : <ChevronRight size={13}/>}</button>
         <input type="checkbox" aria-label={relativePath} checked={checked} disabled={!checked && selectedPaths.length >= 20} onChange={() => togglePath(relativePath)}/>
-        {open ? <FolderOpen size={14}/> : <Folder size={14}/>}<span title={relativePath}>{node.name}</span>
+        <button type="button" className="agent-work-directory-browse" aria-label={`浏览目录 ${relativePath}`} title={relativePath} onClick={() => browseDirectory(node.path, open)}>{open ? <FolderOpen size={14}/> : <Folder size={14}/>}<span>{node.path.split('/').pop()}</span></button>
       </div>
-      {hasChildren && open && <div role="group">{renderDirectories(node.children, depth + 1)}</div>}
+      {open && <div role="group">{renderDirectories(children, depth + 1)}</div>}
     </div>;
   });
   const canSubmit = Boolean(displayName.trim() && selectedPaths.length && !create.isPending);
@@ -2980,13 +3001,12 @@ function WorkDirectoryCreator({ workspaceId, onClose, onCreated }: {
       <header><h2 id="agent-work-directory-title">新增工作区</h2><button type="button" aria-label="关闭新增工作区" disabled={create.isPending} onClick={onClose}><X size={16}/></button></header>
       <label className="agent-work-directory-name"><span>工作区名称</span><input autoFocus value={displayName} maxLength={160} placeholder="例如：后端服务" onChange={event => setDisplayName(event.target.value)}/></label>
       <section className="agent-work-directory-picker" aria-label="选择工作区目录">
-        <header><b title={`从 ${details?.root ?? '当前用户工作区'} 中选择一个或多个子目录`}>选择目录</b><label className="agent-work-directory-search"><Search size={13}/><input type="search" aria-label="搜索目录" value={directorySearch} placeholder="搜索目录名称或路径" onChange={event => setDirectorySearch(event.target.value)}/></label><em aria-label={`已选择 ${selectedPaths.length} 个目录，最多 20 个`}>{selectedPaths.length}/20</em></header>
+        <header><b title={`从 ${details?.root ?? '当前用户工作区'} 中选择一个或多个子目录`}>选择目录</b><label className="agent-work-directory-search"><Search size={13}/><input type="search" aria-label="搜索目录" value={directorySearch} placeholder="按路径搜索，例如 adjust/aaa" onChange={event => setDirectorySearch(event.target.value)}/></label><em aria-label={`已选择 ${selectedPaths.length} 个目录，最多 20 个`}>{selectedPaths.length}/20</em></header>
         <div>
-          {detailsQuery.isLoading && <p>正在读取项目目录…</p>}
-          {detailsQuery.isError && <p className="error">{detailsQuery.error instanceof Error ? detailsQuery.error.message : '项目目录读取失败，请稍后重试。'}</p>}
-          {!detailsQuery.isLoading && !detailsQuery.isError && !directoryNodes.length && <p>项目根目录中还没有可选择的子目录。</p>}
-          {details && directoryNodes.length > 0 && !visibleDirectoryNodes.length && <p>没有匹配的目录。</p>}
-          {details && visibleDirectoryNodes.length > 0 && <div role="tree" aria-label="项目目录树">{renderDirectories(visibleDirectoryNodes)}</div>}
+          {directoryLoading && <p>正在读取项目目录…</p>}
+          {directoryError && <p className="error">{directoryError.message || '项目目录读取失败，请稍后重试。'}</p>}
+          {!directoryLoading && !directoryError && !visibleDirectories.length && <p>{!directorySearch ? '项目根目录中还没有可选择的子目录。' : directorySearch.endsWith('/') && validAncestors ? '此目录没有子目录。' : '没有匹配的目录。'}</p>}
+          {details && (ancestors.length > 0 || visibleDirectories.length > 0) && <div role="tree" aria-label="项目目录树">{renderDirectories(ancestors.length ? [ancestors[0]] : visibleDirectories)}</div>}
         </div>
       </section>
       {create.error && <p className="agent-work-directory-error">{create.error.message}</p>}

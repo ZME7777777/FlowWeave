@@ -156,22 +156,34 @@ test('conversation list scrollbar appears during scrolling, hides after 1s and s
   await expect.poll(()=>rail.evaluate(element=>element.getBoundingClientRect().width)).toBeGreaterThan(railWidth+30);
 });
 
-test('workspace directory search filters nested paths and restores the tree', async ({ page }) => {
+test('workspace directory search browses one level at a time independently of checkbox selection', async ({ page }) => {
   await openWorkspace(page);
-  await page.route('**/api/v1/agent-workspaces/*/workspace?**', route => json(route, {
-    root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' },
-    working_directory: '/runtime/workspace/project', repositories: [], runtime: {},
-    files: [
-      { path: '/runtime/workspace/project/backend', kind: 'directory', size: 0 },
-      { path: '/runtime/workspace/project/frontend', kind: 'directory', size: 0 },
-      { path: '/runtime/workspace/project/frontend/src', kind: 'directory', size: 0 },
-      ...Array.from({length:35},(_,index)=>({path:`/runtime/workspace/project/project-${index}`,kind:'directory',size:0})),
-    ],
-    ide: { gateway: { supported: false } },
-  }));
+  const root = '/runtime/workspace/project';
+  const paths = [
+    'adjust', 'adjust/aaa', 'adjust/aaa/deep', 'adjust/bbb', 'adjust/bbb/aaa-hidden',
+    'batch-adjust', 'batch-adjust/aaa-other', 'backend', 'backend/aaa',
+    'frontend', 'frontend/src', 'frontend/src/nested',
+    ...Array.from({ length: 35 }, (_, index) => `project-${index}`),
+  ];
+  const directoryReads: string[] = [];
+  let fullIndexRequests = 0;
+  page.on('request', request => {
+    if (new URL(request.url()).searchParams.get('full_index') === 'true') fullIndexRequests += 1;
+  });
+  await page.route('**/api/v1/agent-workspaces/*/workspace/directory**', async route => {
+    const url = new URL(route.request().url());
+    const parent = url.searchParams.get('parent_path') ?? root;
+    directoryReads.push(parent);
+    const entries = paths.map(path => ({ path: `${root}/${path}`, kind: 'directory', size: 0 }))
+      .filter(entry => entry.path.slice(0, entry.path.lastIndexOf('/')) === parent);
+    const offset = Number(url.searchParams.get('cursor') ?? 0);
+    const pageSize = 20;
+    await json(route, { parent_path: parent, entries: entries.slice(offset, offset + pageSize), next_cursor: offset + pageSize < entries.length ? String(offset + pageSize) : null });
+  });
   await page.getByRole('button', { name: '新增工作区', exact: true }).click();
   const creator = page.getByRole('dialog', { name: '新增工作区' });
   const search = creator.getByRole('searchbox', { name: '搜索目录' });
+  await expect(creator.getByRole('checkbox', { name: 'backend', exact: true })).toBeVisible();
   for(const viewport of [{width:1440,height:1000},{width:800,height:700},{width:390,height:760}]){
     await page.setViewportSize(viewport);
     const geometry=await creator.evaluate(element=>{
@@ -190,18 +202,93 @@ test('workspace directory search filters nested paths and restores the tree', as
     await expect(creator.getByRole('button',{name:'创建工作区',exact:true})).toBeInViewport();
     await creator.screenshot({path:test.info().outputPath(`create-workspace-${viewport.width}.png`)});
   }
-  await search.fill('frontend/src');
-  await expect(creator.getByRole('checkbox', { name: 'frontend/src', exact: true })).toBeVisible();
-  await creator.getByRole('checkbox',{name:'frontend/src',exact:true}).check();
-  await expect(creator.getByLabel('工作区名称')).toHaveValue('src');
-  await expect(creator.getByLabel('已选择 1 个目录，最多 20 个')).toHaveText('1/20');
-  await expect(creator.getByRole('button',{name:'创建工作区',exact:true})).toBeEnabled();
-  await expect(creator.getByRole('checkbox', { name: 'backend', exact: true })).toHaveCount(0);
-  await search.fill('missing-directory');
+  const checkbox = (name: string) => creator.getByRole('checkbox', { name, exact: true });
+  const browse = (name: string) => creator.getByRole('button', { name: `浏览目录 ${name}`, exact: true });
+  await expect(checkbox('adjust')).toBeVisible();
+  await expect(checkbox('adjust/aaa')).toHaveCount(0);
+  await expect(checkbox('frontend/src')).toHaveCount(0);
+  expect(new Set(directoryReads)).toEqual(new Set([root]));
+  expect(directoryReads.filter(path => path === root)).toHaveLength(2); // direct-level pagination
+  expect(fullIndexRequests).toBe(0);
+
+  await search.fill('adjust');
+  await expect(checkbox('adjust')).toBeVisible();
+  await expect(checkbox('batch-adjust')).toBeVisible();
+  await expect(checkbox('adjust/aaa')).toHaveCount(0);
+  await expect(creator.getByRole('treeitem', { expanded: true })).toHaveCount(0);
+  expect(new Set(directoryReads)).toEqual(new Set([root]));
+  await checkbox('adjust').check();
+  await expect(search).toHaveValue('adjust');
+  await expect(checkbox('adjust/aaa')).toHaveCount(0);
+  await expect(creator.getByLabel('工作区名称')).toHaveValue('adjust');
+  await checkbox('adjust').uncheck();
+  await expect(search).toHaveValue('adjust');
+
+  await browse('adjust').click();
+  await expect(search).toHaveValue('adjust/');
+  await expect(checkbox('adjust/aaa')).toBeVisible();
+  await expect(checkbox('adjust/bbb')).toBeVisible();
+  await expect(checkbox('adjust/aaa/deep')).toHaveCount(0);
+  await expect(checkbox('adjust')).not.toBeChecked();
+  await expect(checkbox('batch-adjust')).toHaveCount(0);
+  await browse('adjust').click();
+  await expect(search).toHaveValue('');
+  await expect(checkbox('adjust/aaa')).toHaveCount(0);
+  await expect(checkbox('backend')).toBeVisible();
+
+  await search.fill('adjust/aaa');
+  await expect(checkbox('adjust/aaa')).toBeVisible();
+  await expect(checkbox('adjust/bbb')).toHaveCount(0);
+  await expect(checkbox('backend/aaa')).toHaveCount(0);
+  await expect(checkbox('adjust/aaa/deep')).toHaveCount(0);
+  await expect(checkbox('adjust/bbb/aaa-hidden')).toHaveCount(0);
+  expect(new Set(directoryReads)).toEqual(new Set([root, `${root}/adjust`]));
+  await browse('adjust/aaa').click();
+  await expect(search).toHaveValue('adjust/aaa/');
+  await expect(checkbox('adjust/aaa/deep')).toBeVisible();
+  await creator.getByRole('button', { name: '收起目录 adjust/aaa', exact: true }).click();
+  await expect(search).toHaveValue('adjust/');
+  await expect(checkbox('adjust/aaa/deep')).toHaveCount(0);
+  await creator.getByRole('button', { name: '收起目录 adjust', exact: true }).click();
+  await expect(search).toHaveValue('');
+
+  await search.fill('aaa');
   await expect(creator.getByText('没有匹配的目录。')).toBeVisible();
+  await search.fill('project-34');
+  await expect(checkbox('project-34')).toBeVisible(); // matches from later root pages
+  await search.fill('frontend/src');
+  await expect(checkbox('frontend/src')).toBeVisible();
+  await expect(checkbox('frontend/src/nested')).toHaveCount(0);
+  await checkbox('frontend/src').check();
+  await expect(search).toHaveValue('frontend/src');
+  await expect(creator.getByLabel('已选择 1 个目录，最多 20 个')).toHaveText('1/20');
+  await expect(creator.getByRole('button', { name: '创建工作区', exact: true })).toBeEnabled();
+  await browse('frontend/src').click();
+  await expect(search).toHaveValue('frontend/src/');
+  await expect(checkbox('frontend/src/nested')).toBeVisible();
+  await creator.screenshot({ path: test.info().outputPath('directory-path-browsing.png') });
+  await browse('frontend/src/nested').click();
+  await expect(search).toHaveValue('frontend/src/nested/');
+  await expect(creator.getByText('此目录没有子目录。')).toBeVisible();
+  await browse('frontend/src/nested').click();
+  await expect(search).toHaveValue('frontend/src/');
+  await checkbox('frontend/src').uncheck();
+  await expect(search).toHaveValue('frontend/src/');
+  await browse('frontend/src').click();
+  await expect(search).toHaveValue('frontend/');
   await search.fill('');
-  await expect(creator.getByRole('checkbox', { name: 'backend', exact: true })).toBeVisible();
+  await expect(checkbox('backend')).toBeVisible();
+  await expect(checkbox('frontend/src')).toHaveCount(0);
+  expect(fullIndexRequests).toBe(0);
+  expect(directoryReads).not.toContain(`${root}/backend`);
+  expect(directoryReads).not.toContain(`${root}/batch-adjust`);
+  expect(directoryReads).not.toContain(`${root}/adjust/bbb`);
+  await page.setViewportSize({ width: 1440, height: 1000 });
   await creator.getByRole('button', { name: '关闭新增工作区' }).click();
+  await page.getByRole('button', { name: '新增工作区', exact: true }).click();
+  await expect(search).toHaveValue('');
+  await expect(checkbox('frontend/src')).toHaveCount(0);
+  await expect(creator.getByRole('treeitem', { expanded: true })).toHaveCount(0);
 });
 
 test('selecting a task after opening its run returns to that task detail', async ({ page }) => {

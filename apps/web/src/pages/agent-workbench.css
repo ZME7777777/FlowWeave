@@ -486,3 +486,10 @@
 .agent-workspace-tool-body>.agent-workspace-tab-launcher{grid-row:2;min-height:0}
 .agent-workspace-tool-body>.agent-workspace-tab-launcher.active{display:block;height:100%}
 .agent-workspace-drawer.fullscreen.conversation-active>.agent-workspace-summary{right:auto;left:calc(100% - min(var(--agent-environment-card-width),calc(100vw - 36px)) - 12px)}
+
+/* Directory names navigate independently from the workspace selection checkboxes. */
+.agent-work-directory-row{grid-template-columns:15px 15px minmax(0,1fr)}
+.agent-work-directory-row>button.agent-work-directory-browse{display:flex;width:100%;min-width:0;height:auto;align-items:center;gap:5px;color:inherit;font:inherit;text-align:left}
+.agent-work-directory-browse>svg{flex:0 0 auto;color:#71917e}
+.agent-work-directory-browse>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.agent-work-directory-browse:focus-visible{outline:2px solid #79a78f;outline-offset:2px}
