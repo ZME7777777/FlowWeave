@@ -156,6 +156,64 @@ test('conversation list scrollbar appears during scrolling, hides after 1s and s
   await expect.poll(()=>rail.evaluate(element=>element.getBoundingClientRect().width)).toBeGreaterThan(railWidth+30);
 });
 
+for (const scope of ['root', 'directory'] as const) {
+  test(`workspace group stays collapsed after route reveal and list refresh (${scope})`, async ({ page }) => {
+    await openWorkspace(page);
+    const groups = Object.fromEntries(['root', 'directory'].map(group => [group, Array.from({ length: 6 }, (_, index) => ({
+      id: `${group}-reveal-${index}`, display_title: `${group} 会话 ${index}`, title_state: index === 0 ? 'PENDING' : 'MANUAL', lifecycle: 'ACTIVE',
+      work_directory_id: group === 'directory' ? 'existing-directory' : null,
+      streaming_callback_ready: true, write_available: true, execution_status: 'idle',
+      model_provider_id: 'provider-1', model_name: 'model-1', reasoning_effort: 'high',
+      sort_key: 100 - index, created_at: now, updated_at: now,
+    }))]));
+    const reads = { root: 0, directory: 0 };
+    await page.route('**/api/v1/agent-workspaces/schedule-workspace/conversations**', async route => {
+      const url = new URL(route.request().url());
+      if (url.pathname.endsWith('/conversations') && route.request().method() === 'GET') {
+        const group = url.searchParams.get('work_directory_id') === 'existing-directory' ? 'directory' : 'root';
+        if (url.searchParams.has('cursor')) return json(route, { items: groups[group].slice(3), next_cursor: null });
+        reads[group] += 1;
+        const items = groups[group].slice(0, 3).map((item, index) => index === 0
+          ? { ...item, updated_at: new Date(Date.parse(now) + reads[group] * 1000).toISOString() }
+          : item);
+        return json(route, { items, next_cursor: `${group}-later-page` });
+      }
+      const item = Object.values(groups).flat().find(item => url.pathname.endsWith(`/conversations/${item.id}`));
+      if (item && route.request().method() === 'GET') return json(route, item);
+      return route.fallback();
+    });
+    const target = groups[scope][5];
+    await page.goto(`/agent/conversations/${target.id}`);
+    const groupId = scope === 'root' ? 'root' : 'existing-directory';
+    const label = scope === 'root' ? '根工作区' : '已有项目目录';
+    const group = page.locator(`[data-workspace-group-id="${groupId}"]`);
+    const targetRow = group.locator(`[data-conversation-binding-id="${target.id}"]`);
+    await expect(targetRow).toBeInViewport(); // page 2 and beyond the default three rows
+    await group.getByRole('button', { name: `收起工作区 ${label}`, exact: true }).click();
+    const expand = group.getByRole('button', { name: `展开工作区 ${label}`, exact: true });
+    await expect(expand).toHaveAttribute('aria-expanded', 'false');
+    await expect(targetRow).not.toBeVisible();
+    const readsAfterCollapse = reads[scope];
+    await page.getByRole('textbox', { name: '发送 Agent 消息' }).fill('手动收起后保留草稿');
+    await expect.poll(() => reads[scope]).toBeGreaterThan(readsAfterCollapse + 1);
+    await expect(expand).toHaveAttribute('aria-expanded', 'false');
+    await expect(targetRow).not.toBeVisible();
+    // Switching the sidebar surface must preserve the user's collapsed group.
+    await page.getByRole('button', { name: /查看活动会话/ }).click();
+    await page.getByRole('button', { name: '返回工作区列表', exact: true }).click();
+    await expect(expand).toHaveAttribute('aria-expanded', 'false');
+    await expand.click();
+    await expect(group.getByRole('button', { name: `收起工作区 ${label}`, exact: true })).toBeVisible();
+    await group.getByRole('button', { name: `收起工作区 ${label}`, exact: true }).click();
+    await expect(expand).toBeVisible();
+    // A full page refresh still performs a new, one-time route reveal.
+    await page.reload();
+    await expect(targetRow).toBeInViewport();
+    await group.getByRole('button', { name: `收起工作区 ${label}`, exact: true }).click();
+    await expect(expand).toBeVisible();
+  });
+}
+
 test('workspace directory search browses one level at a time independently of checkbox selection', async ({ page }) => {
   await openWorkspace(page);
   const root = '/runtime/workspace/project';
