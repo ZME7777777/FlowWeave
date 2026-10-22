@@ -9412,3 +9412,22 @@ remote-release-prepare 的最小上下文，归档 SHA-256 为
 remote-release-finish 完成健康／revision 门禁及受管容量收尾：上下文删除候选为零，
 仅移除工具判定的一个过期精确 Web rollback tag，保留当前与最近三个回滚镜像及
 引用版本；未修改服务器 Compose／env、Runtime、数据库、卷或工作区。
+
+### FR-635 工作区与置顶区折叠偏好持久化 — DONE
+
+依赖：FR-634 DONE。根工作区、各目录和置顶区的折叠状态改为浏览器本地偏好，
+按已认证用户、会话宿主和工作区隔离。授权工作区尚未返回或 scope 变化时不将默认值、
+旧 scope 状态写入新 scope；损坏的存储内容安全回退。退出后同账户再次登录恢复自身
+偏好，其他账户和工作区保持独立。
+
+刷新或自动选中会话尊重已保存的折叠状态，显式跳转及活动会话双击仍按正式 binding
+展开、加载分页并定位。用户展开当前会话所在分组时仍揭示超出前三项的目标，手动
+折叠继续保留标题滚动锚点。置顶会话的显式定位也会展开置顶区。
+
+5 项定向 Chromium 回归通过：根／目录的轮询与刷新恢复、深分页目标定位、活动会话
+双击、置顶持久化、离开后重进、工作区隔离、账号切换和滚动锚点。同步更新账号测试
+中已过期的列表响应和导航预期。Web typecheck、定向 ESLint、production build、
+git diff --check、CURRENT 唯一性与依赖检查通过；构建仅有既有大 chunk 提示。
+Alembic 唯一 head 为 0157_background_task_aggregate_type_length。当前及下一
+可执行切片均为 NONE。用户已授权提交并部署，仅发布 Web，按正式预检、受管最小
+上下文、健康／版本／路由验收和 remote-release-finish 完成发布。

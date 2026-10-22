@@ -410,13 +410,55 @@ for (const scope of ['root', 'directory'] as const) {
     await expect(group.getByRole('button', { name: `收起工作区 ${label}`, exact: true })).toBeVisible();
     await group.getByRole('button', { name: `收起工作区 ${label}`, exact: true }).click();
     await expect(expand).toBeVisible();
-    // A full page refresh still performs a new, one-time route reveal.
+    // Refresh restores even the active conversation's collapsed group.
+    await page.reload();
+    await expect(expand).toBeVisible();
+    await expect(targetRow).not.toBeVisible();
+    await expand.click();
+    await expect(targetRow).toBeInViewport();
     await page.reload();
     await expect(targetRow).toBeInViewport();
     await group.getByRole('button', { name: `收起工作区 ${label}`, exact: true }).click();
-    await expect(expand).toBeVisible();
+    await page.route('**/api/v1/agent-workspaces/schedule-workspace/conversation-activity**', route => json(route, {
+      running_binding_ids: [], conversations: [{ ...target, unread: true, unread_origin: 'MANUAL' }],
+    }));
+    await page.getByRole('button', { name: /查看活动会话/ }).click();
+    const activityRow = page.locator('.agent-workspace-activity').locator(`[data-conversation-binding-id="${target.id}"]`);
+    await activityRow.dblclick();
+    await expect(targetRow).toBeInViewport();
+    await expect(group.getByRole('button', { name: `收起工作区 ${label}`, exact: true })).toBeVisible();
   });
 }
+
+test('workspace and pinned collapse preferences survive reopening with independent scopes', async ({ page }) => {
+  await openWorkspace(page, [], true);
+  const preferenceKey = 'flowweave:sidebar-collapse:v1:schedule-user:agent-workspace:schedule-workspace';
+  await page.route('**/api/v1/agent-workspaces/schedule-workspace/pinned-conversations', route => json(route, [{
+    id: 'pinned-conversation', display_title: '置顶的测试会话', title_state: 'MANUAL', lifecycle: 'ACTIVE', pinned: true,
+    execution_status: 'idle', streaming_callback_ready: true, write_available: true, created_at: now, updated_at: now,
+  }]));
+  await page.reload();
+  await page.getByRole('button', { name: '收起工作区 根工作区', exact: true }).click();
+  await page.getByRole('button', { name: '收起工作区 已有项目目录', exact: true }).click();
+  await page.getByRole('button', { name: '收起置顶会话', exact: true }).click();
+  await page.reload();
+  for (const label of ['根工作区', '已有项目目录']) {
+    await expect(page.getByRole('button', { name: `展开工作区 ${label}`, exact: true })).toHaveAttribute('aria-expanded', 'false');
+  }
+  await expect(page.getByRole('button', { name: '展开置顶会话', exact: true })).toHaveAttribute('aria-expanded', 'false');
+  await page.getByRole('button', { name: '节点资产', exact: true }).click();
+  await page.getByRole('button', { name: 'Agent 会话', exact: true }).click();
+  await expect(page.getByRole('button', { name: '展开工作区 根工作区', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '展开工作区 根工作区', exact: true }).click();
+  await expect(page.getByRole('button', { name: '展开工作区 已有项目目录', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '展开置顶会话', exact: true })).toBeVisible();
+  // A different workspace must neither read nor overwrite the saved state.
+  await page.route('**/api/v1/agent-workspaces/default', route => json(route, { id: 'other-workspace', display_name: '其他工作区', desired_state: 'RUNNING', updated_at: now }));
+  await page.reload();
+  await expect(page.getByRole('button', { name: '收起工作区 已有项目目录', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '收起工作区 根工作区', exact: true }).click();
+  expect(await page.evaluate(key => JSON.parse(localStorage.getItem(key)!), preferenceKey)).toEqual({ groups: ['existing-directory'], pinned: true });
+});
 
 test('collapsing a workspace near the viewport top preserves its header anchor', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 800 });

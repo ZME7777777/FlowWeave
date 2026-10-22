@@ -73,7 +73,7 @@ test('switching accounts immediately replaces isolated Agent session state', asy
     }
     if (path.endsWith('/conversations') && request.method() === 'GET') {
       conversationRequests.push(currentUser?.username ?? 'anonymous');
-      return json(route, currentUser?.username === 'flowweave' ? [{
+      return json(route, { items: currentUser?.username === 'flowweave' ? [{
         id: 'admin-conversation',
         display_title: '管理员专属会话',
         title_state: 'MANUAL',
@@ -81,7 +81,10 @@ test('switching accounts immediately replaces isolated Agent session state', asy
         streaming_callback_ready: true,
         created_at: now,
         updated_at: now,
-      }] : []);
+      }] : [], next_cursor: null });
+    }
+    if (path.endsWith('/conversations/admin-conversation')) {
+      return json(route, { id: 'admin-conversation', display_title: '管理员专属会话', title_state: 'MANUAL', lifecycle: 'ACTIVE', execution_status: 'idle', streaming_callback_ready: true, write_available: true, created_at: now, updated_at: now });
     }
     if (path.endsWith('/work-directories')) {
       return json(route, {
@@ -112,12 +115,15 @@ test('switching accounts immediately replaces isolated Agent session state', asy
   await expect(page).toHaveURL(/\/agent$/);
   await expect(page.getByText('管理员专属会话', { exact: true })).toHaveCount(0);
   await expect.poll(() => conversationRequests).toEqual(['user']);
+  await page.getByRole('button', { name: '收起工作区 根工作区', exact: true }).click();
 
   await logout(page);
   await login(page, 'flowweave');
-  await expect(page.getByRole('button', { name: '管理员专属会话 可继续会话' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '管理员专属会话', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '管理员专属会话', exact: true }).click();
   await expect(page).toHaveURL(/\/agent\/conversations\/admin-conversation$/);
   await expect.poll(() => conversationRequests).toEqual(['user', 'flowweave']);
+  await expect(page.getByRole('button', { name: '收起工作区 根工作区', exact: true })).toBeVisible();
 
   await page.evaluate(() => {
     sessionStorage.setItem('flowweave.agent.conversation-draft.v1', '{"content":"admin draft"}');
@@ -133,6 +139,7 @@ test('switching accounts immediately replaces isolated Agent session state', asy
   await expect(page).toHaveURL(/\/agent$/);
   await expect(page.getByText('管理员专属会话', { exact: true })).toHaveCount(0);
   await expect.poll(() => conversationRequests).toEqual(['user', 'flowweave', 'user']);
+  await expect(page.getByRole('button', { name: '展开工作区 根工作区', exact: true })).toBeVisible();
   await expect.poll(() => page.evaluate(() => {
     const tools = sessionStorage.getItem('flowweave:agent-session-tools:agent-workspace:shared-default-workspace');
     return {
