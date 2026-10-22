@@ -36,6 +36,15 @@ test('keeps account settings in unique temporary tabs and closes the active tab 
   await expect(page.locator('.context-tab')).toHaveCount(4);
   await expect(page.locator('.context-tab.active')).toContainText('大模型配置');
 
+  await page.reload();
+  await expect(page.locator('.context-tab')).toHaveCount(1);
+  await expect(page.locator('.context-tab.active')).toContainText('大模型配置');
+
+  await openSettings('终端环境');
+  await openSettings('认证管理');
+  await openSettings('用户管理');
+  await expect(page.locator('.context-tab')).toHaveCount(4);
+
   // Temporary tabs share the permanent nav tab's anatomy: full topbar
   // height, label size and the lime underline marking the active tab.
   const permanent = page.getByRole('button', { name: '节点资产', exact: true });
@@ -53,7 +62,7 @@ test('keeps account settings in unique temporary tabs and closes the active tab 
   await page.getByRole('button', { name: '大模型配置', exact: true }).click();
   await page.getByRole('button', { name: '关闭大模型配置', exact: true }).click();
   await expect(page.locator('.context-tab')).toHaveCount(3);
-  await expect(page.locator('.context-tab.active')).toContainText('用户管理');
+  await expect(page.locator('.context-tab.active')).toContainText('终端环境');
 
   for (const label of ['用户管理', '认证管理', '终端环境']) {
     await page.getByRole('button', { name: `关闭${label}`, exact: true }).click();

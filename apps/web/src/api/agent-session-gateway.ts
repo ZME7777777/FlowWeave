@@ -14,6 +14,7 @@ import type {
   AgentConversationAnnotation,
   AgentConversation,
   AgentConversationActivity,
+  AgentConversationCapabilityRegistration,
   AgentConversationHead,
   AgentConversationHydration,
   AgentConversationPage,
@@ -116,6 +117,7 @@ export interface AgentSessionApi {
   readonly mcpReadiness: (hostId: AgentSessionHostId, capabilityVersionId: string) => Promise<AgentSessionMcpReadiness>;
   readonly replaceHostCapabilities: (hostId: AgentSessionHostId, capabilityVersionIds: string[]) => Promise<AgentSessionCapability[]>;
   readonly addConversationCapability: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, capabilityVersionId: string) => Promise<AgentConversation>;
+  readonly registerConversationCapabilities: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, capabilityVersionIds: string[]) => Promise<AgentConversationCapabilityRegistration>;
   readonly workspaceDetails: (hostId: AgentSessionHostId, options?: AgentSessionWorkspaceOptions) => Promise<AgentSessionWorkspaceDetails>;
   readonly workspaceDirectory: (hostId: AgentSessionHostId, options?: AgentSessionDirectoryOptions) => Promise<AgentSessionWorkspaceDirectory>;
   readonly gitRepositories: (hostId: AgentSessionHostId, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<AgentSessionWorkspaceGitRepositories>;
@@ -212,6 +214,7 @@ export const agentWorkspaceSessionGateway: AgentSessionGateway = {
     mcpReadiness: api.agentWorkspaceMcpReadiness,
     replaceHostCapabilities: api.replaceAgentWorkspaceCapabilities,
     addConversationCapability: api.addAgentConversationCapability,
+    registerConversationCapabilities: api.registerAgentConversationCapabilities,
     workspaceDetails: api.agentWorkspaceDetails,
     workspaceDirectory: api.agentWorkspaceDirectory,
     gitRepositories: api.agentWorkspaceGitRepositories,
@@ -293,6 +296,7 @@ export function flowNodeSessionGateway(
       mcpReadiness: (_hostId, capabilityVersionId) => nodeSessionApi.mcpReadiness(flowRunId, attemptId, capabilityVersionId),
       replaceHostCapabilities: () => Promise.resolve([]),
       addConversationCapability: (_hostId, bindingId, capabilityVersionId) => nodeSessionApi.addCapability(flowRunId, attemptId, bindingId, capabilityVersionId),
+      registerConversationCapabilities: (_hostId, bindingId, capabilityVersionIds) => nodeSessionApi.registerCapabilities(flowRunId, attemptId, bindingId, capabilityVersionIds),
       workspaceDetails: (_hostId, options) =>
         nodeSessionApi.workspace(flowRunId, attemptId, options?.bindingId, options?.workDirectoryId, options?.fullIndex),
       workspaceDirectory: (_hostId, options) =>

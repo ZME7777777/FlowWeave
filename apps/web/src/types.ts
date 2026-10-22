@@ -715,6 +715,18 @@ export interface AgentSessionCapability {
 }
 export type AgentWorkspaceCapability = AgentSessionCapability;
 
+export interface AgentConversationCapabilityRegistration {
+  conversation: AgentConversation;
+  completed: boolean;
+  loaded_capability_version_ids: string[];
+  already_loaded_capability_version_ids: string[];
+  failure?: {
+    capability_version_id: string;
+    code: string;
+    message: string;
+  } | null;
+}
+
 export interface AgentSessionMcpReadiness {
   state: 'READY' | 'UNAVAILABLE';
   error_kind: 'timeout' | 'connection' | 'unknown' | null;

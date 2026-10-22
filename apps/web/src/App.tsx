@@ -283,6 +283,18 @@ export function App() {
   const leaveFlowRunRoute = () => {
     if (flowRunRouteId) navigate('/', true);
   };
+  useLayoutEffect(() => {
+    if (!user || isAgentRoute || flowRunRouteId) return;
+    const availableSettings = user.is_super_admin
+      ? [...settingsNav, ...superAdminSettingsNav]
+      : settingsNav;
+    if (!availableSettings.some(item => item.view === view)) return;
+    const settingsView = view as SettingsView;
+    setOpenSettingsViews(current => current.includes(settingsView) ? current : [...current, settingsView]);
+    setOpenContextTabs(tabs => tabs.some(tab => tab.kind === 'settings' && tab.view === settingsView)
+      ? tabs
+      : [...tabs, { kind: 'settings', view: settingsView }]);
+  }, [flowRunRouteId, isAgentRoute, user, view]);
   const selectView = (next: typeof view) => {
     setSettingsOpen(false);
     if (next === 'agent-workbench') {

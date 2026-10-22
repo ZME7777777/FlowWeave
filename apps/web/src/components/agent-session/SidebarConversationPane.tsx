@@ -13,6 +13,7 @@ interface SidebarConversationPaneProps {
   workspaceId: string;
   sourceBindingId: string;
   sidebarBindingId?: string;
+  initialReference?: AgentConversationReference;
   onBindingCreated: (bindingId: string) => void;
   onPreviewAttachment: (attachment: AgentAttachment, bindingId?: string) => void;
 }
@@ -70,7 +71,7 @@ function sidebarComposerSuggestions(capabilities: AgentSessionCapability[] | und
   });
 }
 
-export function SidebarConversationPane({ workspaceId, sourceBindingId, sidebarBindingId, onBindingCreated, onPreviewAttachment }: SidebarConversationPaneProps) {
+export function SidebarConversationPane({ workspaceId, sourceBindingId, sidebarBindingId, initialReference, onBindingCreated, onPreviewAttachment }: SidebarConversationPaneProps) {
   const queryClient = useQueryClient();
   const attachmentInput = useRef<HTMLInputElement>(null);
   const composerInput = useRef<ComposerHandle>(null);
@@ -78,7 +79,7 @@ export function SidebarConversationPane({ workspaceId, sourceBindingId, sidebarB
   const [bindingId, setBindingId] = useState<string | undefined>(sidebarBindingId);
   const bindingIdRef = useRef(bindingId);
   const [draftConversationId] = useState(randomId);
-  const [reference, setReference] = useState<AgentConversationReference>();
+  const [reference, setReference] = useState<AgentConversationReference | undefined>(initialReference);
   const [content, setContent] = useState('');
   const [attachments, setAttachments] = useState<AgentAttachment[]>([]);
   const [pendingAttachments, setPendingAttachments] = useState<PendingSidebarAttachment[]>([]);

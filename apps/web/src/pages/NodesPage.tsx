@@ -1,4 +1,4 @@
-import { CheckSquare, ChevronDown, ChevronRight, Copy, Folder, FolderOpen, Pencil, Plus, Search, Trash2, X } from 'lucide-react';
+import { CheckSquare, ChevronDown, ChevronRight, Copy, Folder, FolderOpen, Pencil, Plus, Search, Trash2 } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useState, type MouseEvent } from 'react';
 import { api, ApiError } from '../api/client';
@@ -55,18 +55,6 @@ function FolderRow({ item, directories, nodes, selected, depth, onSelect, select
   </>;
 }
 
-function NodeDetail({ node, directories, onClose, onEdit }: { node: NodeAsset; directories: NodeDirectory[]; onClose: () => void; onEdit: () => void }) {
-  useEscapeClose(onClose);
-  return <div className="detail-drawer-backdrop" onClick={onClose}><aside className="node-detail-drawer" role="dialog" aria-modal="true" aria-label={`节点详情 ${node.name}`} onClick={event => event.stopPropagation()}>
-    <header><span className="node-icon">{node.icon_value.slice(0, 2).toUpperCase()}</span><div><h2>{node.name}</h2><small>节点资产 · AGENT</small></div><button className="ghost" aria-label="关闭节点详情" onClick={onClose}><X size={17}/></button></header>
-    <section><h3>资产摘要</h3><p>{node.description || '暂无说明'}</p><dl><dt>分类</dt><dd>{directories.find(item => item.id === node.directory_id)?.name || '未分类'}</dd><dt>最近更新</dt><dd>{new Date(node.updated_at).toLocaleString()}</dd></dl></section>
-    <section><h3>运行方式</h3><dl><dt>Agent 配置</dt><dd>使用默认 Agent 工作区配置</dd><dt>宿主工作区</dt><dd>{node.workspace_ref ? `var/workspaces/${node.workspace_ref}` : '创建后生成'}</dd></dl></section>
-    <section><h3>提示词上下文</h3><p><b>启动入口：</b>{node.executor?.startup_prompt || '未配置'}</p><p><b>上下文：</b>{node.executor?.context_prompt || '未配置'}</p></section>
-    <section><h3>输入输出定义</h3><div className="detail-capability"><b>输入定义</b><span>{node.inputs.length} 项</span><small>{node.inputs.map(item => `${item.field_key} · ${item.data_type}`).join('、') || '无'}</small></div><div className="detail-capability"><b>输出定义</b><span>{node.outputs.length} 项</span><small>{node.outputs.map(item => `${item.field_key} · ${item.data_type}`).join('、') || '无'}</small></div></section>
-    <footer><button className="secondary" onClick={onClose}>关闭</button><button className="primary" onClick={onEdit}><Pencil size={14}/>编辑节点</button></footer>
-  </aside></div>;
-}
-
 export function NodesPage() {
   const dialog = useProductDialog();
   const qc = useQueryClient();
@@ -76,7 +64,6 @@ export function NodesPage() {
   const [directory, setDirectory] = useState('all');
   const [search, setSearch] = useState('');
   const [editing, setEditing] = useState<NodeAsset | null | undefined>();
-  const [detail, setDetail] = useState<NodeAsset>();
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [selectedDirectoryIds, setSelectedDirectoryIds] = useState<Set<string>>(new Set());
   const [expandedDirectoryIds, setExpandedDirectoryIds] = useState<Set<string>>(new Set());
@@ -98,7 +85,7 @@ export function NodesPage() {
 
   const save = useMutation({
     mutationFn: ({ node, data }: { node?: NodeAsset; data: NodeAssetWrite }) => node ? api.updateNode(node.id, data) : api.createNode(data),
-    onSuccess: () => { void qc.invalidateQueries({ queryKey: ['nodes'] }); setEditing(undefined); setDetail(undefined); },
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ['nodes'] }); setEditing(undefined); },
   });
   const action = (event: MouseEvent, callback: () => void) => { event.stopPropagation(); callback(); };
   const toggle = (id: string) => setSelectedIds(old => { const next = new Set(old); if (next.has(id)) next.delete(id); else next.add(id); return next; });
@@ -115,7 +102,6 @@ export function NodesPage() {
       const result = await api.deleteNodes(ids);
       setSelectedIds(new Set(result.blocked.map(item => item.id)));
       setBlockedAssets(result.blocked);
-      if (detail && result.deleted_ids.includes(detail.id)) setDetail(undefined);
       if (result.deleted_ids.length) setNotice(`已删除 ${result.deleted_ids.length} 个节点资产。`);
       if (result.blocked.length) setError(`有 ${result.blocked.length} 个节点仍绑定有效流程，已跳过；其他节点已正常删除。`);
       await qc.invalidateQueries({ queryKey: ['nodes'] });
@@ -156,9 +142,9 @@ export function NodesPage() {
     {error && <div className="notice error" role="alert">{error}</div>}{notice && <div className="notice success" role="status">{notice}</div>}
     <div className="asset-layout"><aside className="directory-panel"><header><b>节点目录</b><div><button title="删除选中目录" className="danger" disabled={!selectedDirectoryIds.size} onClick={() => void removeSelectedDirectories()}><Trash2 size={14}/></button><button title="新建目录" onClick={() => void createDirectory()}><Plus size={14}/></button></div></header><button className={`folder-row all ${directory === 'all' ? 'active' : ''}`} onClick={() => setDirectory('all')}><span/><Folder size={14}/><span>全部节点</span><small>{nodes.length}</small></button>{roots.map(item => <FolderRow key={item.id} item={item} directories={directories} nodes={nodes} selected={directory} depth={0} onSelect={setDirectory} selectedIds={selectedDirectoryIds} onToggle={toggleDirectory} expandedIds={expandedDirectoryIds} onExpand={toggleExpandedDirectory}/>)}</aside>
       <main className="asset-content"><div className="asset-tools"><div><span>节点资产</span><strong>{currentDirectory}</strong><small>{visible.length} 个节点</small></div><div className="bulk-actions"><button className="secondary" disabled={!visible.length || deleting} onClick={toggleVisible}><CheckSquare size={14}/>{allVisibleSelected ? '取消全选' : '全选当前结果'}</button><button className="danger" disabled={!selectedIds.size || deleting} onClick={() => void removeMany([...selectedIds], `选中的 ${selectedIds.size} 个节点`)}><Trash2 size={14}/>{deleting ? '删除中…' : `批量删除 (${selectedIds.size})`}</button></div><label><Search size={14}/><input aria-label="搜索节点" value={search} placeholder={`搜索 ${currentDirectory}`} onChange={event => setSearch(event.target.value)}/></label></div>
-        {isLoading ? <div className="empty">加载中…</div> : <><div className="card-grid compact-node-list">{pagedVisible.map(node => <article tabIndex={0} className={`node-card product-card ${selectedIds.has(node.id) ? 'selected' : ''}`} data-testid="node-card" key={node.id} onClick={() => setDetail(node)} onKeyDown={event => { if (event.key === 'Enter') setDetail(node); }}><div className="node-card-head"><label className="resource-check" onClick={event => event.stopPropagation()}><input type="checkbox" aria-label={`选择节点 ${node.name}`} checked={selectedIds.has(node.id)} onChange={() => toggle(node.id)}/><span className="node-icon">{node.icon_value.slice(0, 2).toUpperCase()}</span></label><div className="card-actions"><button title="复制" onClick={event => action(event, () => setEditing({ ...node, id: '', name: `${node.name} 副本`, row_version: 1 }))}><Copy size={15}/></button><button title="编辑" onClick={event => action(event, () => setEditing(node))}><Pencil size={15}/></button></div></div><div className="node-list-summary"><h3>{node.name}</h3><p>{node.description || '暂无说明'}</p></div></article>)}</div><Pagination page={page} pageSize={pageSize} total={visible.length} onPageChange={setPage}/></>}
+        {isLoading ? <div className="empty">加载中…</div> : <><div className="card-grid compact-node-list">{pagedVisible.map(node => <article tabIndex={0} className={`node-card product-card ${selectedIds.has(node.id) ? 'selected' : ''}`} data-testid="node-card" key={node.id} onClick={() => setEditing(node)} onKeyDown={event => { if (event.key === 'Enter') setEditing(node); }}><div className="node-card-head"><label className="resource-check" onClick={event => event.stopPropagation()}><input type="checkbox" aria-label={`选择节点 ${node.name}`} checked={selectedIds.has(node.id)} onChange={() => toggle(node.id)}/><span className="node-icon">{node.icon_value.slice(0, 2).toUpperCase()}</span></label><div className="card-actions"><button title="复制" onClick={event => action(event, () => setEditing({ ...node, id: '', name: `${node.name} 副本`, row_version: 1 }))}><Copy size={15}/></button><button title="编辑" onClick={event => action(event, () => setEditing(node))}><Pencil size={15}/></button></div></div><div className="node-list-summary"><h3>{node.name}</h3><p>{node.description || '暂无说明'}</p></div></article>)}</div><Pagination page={page} pageSize={pageSize} total={visible.length} onPageChange={setPage}/></>}
         {!isLoading && !visible.length && <div className="empty">当前目录没有匹配节点。</div>}
       </main></div>
     {blockedAssets.length > 0 && <DeleteBlockedDialog assets={blockedAssets} onClose={() => setBlockedAssets([])} onOpenFlows={() => { setBlockedAssets([]); setView('flows'); }}/>}
-    {detail && <NodeDetail node={detail} directories={directories} onClose={() => setDetail(undefined)} onEdit={() => { setEditing(detail); setDetail(undefined); }}/>} {editing !== undefined && <NodeEditor node={editing?.id ? editing : undefined} onClose={() => setEditing(undefined)} onSave={data => save.mutateAsync({ node: editing?.id ? editing : undefined, data }).then(() => undefined)}/>} </section>;
+    {editing !== undefined && <NodeEditor node={editing?.id ? editing : undefined} onClose={() => setEditing(undefined)} onSave={data => save.mutateAsync({ node: editing?.id ? editing : undefined, data }).then(() => undefined)}/>} </section>;
 }

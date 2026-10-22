@@ -1425,6 +1425,80 @@ test('Sidebar chat tabs stay isolated to their source conversation', async ({ pa
 });
 
 
+test('Sidebar chat keeps a selected conversation reference on its first message', async ({ page }) => {
+  let authenticated = false;
+  let firstMessage: Record<string, unknown> | undefined;
+  const workspace = { id: 'sidebar-reference-workspace', display_name: '侧边引用工作区', desired_state: 'RUNNING', updated_at: now };
+  const source = {
+    id: 'sidebar-reference-source', display_title: '引用来源会话', title_state: 'MANUAL', lifecycle: 'ACTIVE', streaming_callback_ready: true, write_available: true,
+    execution_status: 'idle', created_at: now, updated_at: now,
+  };
+  const sidebar = { ...source, id: 'sidebar-reference-draft', display_title: '侧边临时聊天' };
+  const selectedText = '这段文字应作为侧边提问的会话引用。';
+  const sourceHydration = {
+    events: {
+      events: [{ id: 'sidebar-reference-source-event', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: '__root__', content: selectedText, timestamp: now } }],
+      next_cursor: 'sidebar-reference-source-event', history_cursor: null, result: { status: 'COMPLETED' },
+    },
+    context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 0, usage_current: true },
+    readiness: { ready: true, execution_status: 'idle' },
+  };
+
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return authenticated ? json(route, user) : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [source], next_cursor: null });
+    if (path.endsWith('/model-providers')) return json(route, [{ id: 'test-provider', name: '测试模型', connection_state: 'CONNECTED', models: [{ model_name: 'test-model', enabled: true, is_default: true, supported_reasoning_efforts: [] }] }]);
+    if (path.endsWith('/hydration')) return json(route, path.includes(sidebar.id) ? { ...sourceHydration, events: { ...sourceHydration.events, events: [] } } : sourceHydration);
+    if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
+    if (path.endsWith('/workspace')) return json(route, { root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [], runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } } });
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.endsWith('/sidebar') && request.method() === 'POST') {
+      firstMessage = request.postDataJSON() as Record<string, unknown>;
+      return json(route, { conversation: sidebar, accepted: true, cursor: 'sidebar-reference-first-event', expires_at: new Date(Date.now() + 3_600_000).toISOString() }, 201);
+    }
+    if (path.includes('/sidebars/')) return json(route, { binding_id: sidebar.id, source_binding_id: source.id, expires_at: new Date(Date.now() + 3_600_000).toISOString(), expired: false });
+    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, path.includes(sidebar.id) ? sidebar : source);
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+
+  await page.goto('/');
+  await login(page);
+  await page.goto(`/agent/conversations/${source.id}`);
+  const sourceMessage = page.locator('[data-conversation-event-id="sidebar-reference-source-event"]');
+  await expect(sourceMessage).toContainText(selectedText);
+  await sourceMessage.evaluate(element => {
+    const content = element.querySelector('p');
+    if (!content) throw new Error('Expected assistant message content');
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(content);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    const surface = element.closest('.conversation-surface');
+    if (!surface) throw new Error('Expected conversation surface');
+    surface.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+  });
+  await page.getByRole('button', { name: '在侧边聊天提问' }).click();
+
+  const sidebarPane = page.getByRole('region', { name: '侧边聊天' });
+  await expect(sidebarPane.getByLabel('已添加的会话引用')).toContainText('会话引用');
+  await sidebarPane.getByRole('textbox', { name: '发送侧边聊天消息' }).fill('请解释这段内容');
+  await sidebarPane.getByRole('button', { name: '发送侧边聊天消息' }).click();
+
+  await expect.poll(() => firstMessage).toMatchObject({
+    content: '请解释这段内容',
+    references: [{ source_binding_id: source.id, source_event_id: 'sidebar-reference-source-event', selection: { compact_start: 0, compact_end: selectedText.replace(/\s+/g, '').length } }],
+  });
+  await expect(sidebarPane.locator('.conversation-message-reference')).toHaveCount(1);
+});
+
 test('Sidebar chat accepts selected and pasted attachments before its first message', async ({ page }) => {
   let authenticated = false;
   const workspace = { id: 'sidebar-attachments-workspace', display_name: '侧边附件工作区', desired_state: 'RUNNING', updated_at: now };
@@ -4395,7 +4469,8 @@ test('Pausing immediately updates the controls before the readiness projection c
     if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
     if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
     if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [{ ...conversation, execution_status: status }], next_cursor: null });
-    if (path.endsWith('/conversation-activity')) return json(route, { running_binding_ids: status === 'running' ? [conversation.id] : [] });
+    // The activity catalog may lag the formal pause readiness transition.
+    if (path.endsWith('/conversation-activity')) return json(route, { running_binding_ids: [conversation.id] });
     if (path.endsWith('/hydration')) return json(route, {
       events: { ...events, result: { status: status === 'running' ? 'RUNNING' : 'PAUSED' } },
       context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 1_024, usage_current: true },
@@ -4438,6 +4513,7 @@ test('Pausing immediately updates the controls before the readiness projection c
 
   pauseProjectionAvailable = true;
   await expect(page.getByRole('button', { name: '继续当前 Agent' })).toBeVisible();
+  await expect(page.getByText('正在思考', { exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: '继续当前 Agent' }).click();
   await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
   stream!.send(JSON.stringify({

@@ -209,6 +209,10 @@ class AgentConversationCapabilityAddWrite(_Write):
     capability_version_id: str = Field(min_length=1, max_length=36)
 
 
+class AgentConversationCapabilityBatchWrite(_Write):
+    capability_version_ids: list[str] = Field(min_length=1, max_length=100)
+
+
 class AgentConversationCredentialSyncWrite(_Write):
     credential_ids: list[str] = Field(default_factory=list, max_length=100)
 
@@ -1362,6 +1366,21 @@ async def add_agent_conversation_capability(
         container,
         lambda session: conversations.add_conversation_capability(
             session, workspace_id, binding_id, payload.capability_version_id
+        ),
+    )
+
+
+@router.post("/agent-workspaces/{workspace_id}/conversations/{binding_id}/capabilities/batch")
+async def register_agent_conversation_capabilities(
+    workspace_id: str,
+    binding_id: str,
+    payload: AgentConversationCapabilityBatchWrite,
+    container: ContainerDep,
+) -> dict[str, Any]:
+    return await run_blocking_lifecycle(
+        container,
+        lambda session: conversations.register_conversation_capabilities(
+            session, workspace_id, binding_id, tuple(payload.capability_version_ids)
         ),
     )
 

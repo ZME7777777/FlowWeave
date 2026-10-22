@@ -487,6 +487,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   let upstreamGateAuditEventPersisted = false;
   let gitSyncRequests = 0;
   let gitSynchronizesToRemote = false;
+  let gitSyncGate: Promise<void> | undefined;
+  let releaseGitSync: (() => void) | undefined;
   let pausedDirectMessagePosts = 0;
   let pausedAnnotationMessagePosts = 0;
   let releaseRunningDirectDelivery: (() => void) | undefined;
@@ -618,6 +620,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     }
     if (path.endsWith('/workspace/git/sync')) {
       gitSyncRequests += 1;
+      if (gitSyncGate) await gitSyncGate;
       gitSynchronizesToRemote = true;
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({}) });
       return;
@@ -1242,9 +1245,18 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   });
   expect(gitSummaryLayout.statusTop).toBeGreaterThan(gitSummaryLayout.branchBottom);
   const gitSummaryChangesRequestsBeforeRefresh = workspaceGitChangesRequests;
-  await gitSummary.getByRole('button', { name: '刷新 Git 信息' }).click();
+  gitSyncGate = new Promise<void>(resolve => { releaseGitSync = resolve; });
+  const gitSummaryRefresh = gitSummary.getByRole('button', { name: '刷新 Git 信息' });
+  await gitSummaryRefresh.click();
   await expect.poll(() => gitSyncRequests).toBe(1);
+  await expect(gitSummaryRefresh).toBeDisabled();
+  await expect(gitSummaryRefresh.locator('svg')).toHaveClass(/spin/);
+  await expect(gitSummary).toContainText('改动 +3');
+  await expect(gitSummary).not.toContainText('正在刷新本地改动…');
+  releaseGitSync?.();
   await expect.poll(() => workspaceGitChangesRequests).toBe(gitSummaryChangesRequestsBeforeRefresh + 1);
+  await expect(gitSummaryRefresh).toBeEnabled();
+  await expect(gitSummaryRefresh.locator('svg')).not.toHaveClass(/spin/);
   await expect(gitSummary).toContainText('本地 +0');
   await expect(gitSummary).toContainText('远端 +0');
   await gitSummary.getByTitle('在全屏文件栏中查看 Git 信息').click();
@@ -3696,10 +3708,8 @@ test('node asset editor and repeated flow-node canvas match the product model', 
   await page.getByRole('button', { name: '新建节点' }).click();
   const editor = page.locator('form.asset-editor');
   await editor.getByLabel('节点名称').fill(assetName);
-  await editor.getByLabel('节点说明').fill('四步节点资产编辑器验收');
-  await editor.getByRole('button', { name: '下一步' }).click();
+  await editor.getByLabel('节点说明').fill('单页节点资产编辑器验收');
   await editor.getByLabel('启动触发提示词').fill('读取输入并执行节点任务');
-  await editor.getByRole('button', { name: '下一步' }).click();
   await expect(editor.getByRole('heading', { name: '输入定义' })).toBeVisible();
   await expect(editor.getByRole('heading', { name: '输出定义' })).toBeVisible();
   await expect(editor.locator('.io-empty')).toHaveCount(2);
@@ -3707,23 +3717,22 @@ test('node asset editor and repeated flow-node canvas match the product model', 
   await editor.getByRole('button', { name: '添加输出' }).click();
   await expect(editor.getByLabel('inputs key 0')).toHaveValue('input_1');
   await expect(editor.getByLabel('outputs key 0')).toHaveValue('output_1');
-  await expect(editor.getByLabel('inputs type 0')).toHaveValue('URL');
-  await editor.getByLabel('inputs type 0').selectOption('FILE');
-  await expect(editor.getByLabel('inputs type 0')).toHaveValue('FILE');
-  await editor.getByLabel('inputs type 0').selectOption('URL');
-  await expect(editor.getByLabel('outputs type 0')).toHaveValue('URL');
+  await expect(editor.getByRole('radio', { name: 'URL' }).first()).toHaveAttribute('aria-checked', 'true');
+  await editor.getByRole('radio', { name: '文件' }).first().click();
+  await expect(editor.getByRole('radio', { name: '文件' }).first()).toHaveAttribute('aria-checked', 'true');
+  await editor.getByRole('radio', { name: 'URL' }).first().click();
+  await expect(editor.getByRole('radio', { name: 'URL' }).first()).toHaveAttribute('aria-checked', 'true');
   await editor.getByLabel('inputs name 0').fill('输入产物');
   await editor.getByLabel('outputs name 0').fill('输出产物');
   const card = page.getByTestId('node-card').filter({ hasText: assetName }).last();
   const saved = page.waitForResponse(response => response.url().endsWith('/api/v1/node-assets') && response.request().method() === 'POST');
-  await editor.evaluate((form: HTMLFormElement) => form.requestSubmit());
+  await editor.getByRole('button', { name: '保存节点资产' }).click();
   const savedResponse = await saved;
   expect(savedResponse.ok()).toBeTruthy();
   await expect(card).toBeVisible();
   await card.click();
-  const detail = page.getByRole('dialog', { name: `节点详情 ${assetName}` });
-  await expect(detail).toContainText('读取输入并执行节点任务');
-  await detail.getByRole('button', { name: '关闭节点详情' }).click();
+  await expect(page.locator('form.asset-editor').getByLabel('启动触发提示词')).toHaveValue('读取输入并执行节点任务');
+  await page.locator('form.asset-editor').getByRole('button', { name: '关闭' }).click();
 
   await page.getByRole('button', { name: '流程编排' }).click();
   await page.getByRole('button', { name: '新建流程' }).click();
