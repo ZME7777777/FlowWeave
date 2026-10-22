@@ -9336,3 +9336,18 @@ API 边界通过。另读取线上工作台静态模块，核对新的加载握�
 登录成功。platform／web 的 remote-release-finish 完成，仅回收五份工具判定的过期
 成功上下文，保留最近三份和引用版本，镜像删除候选为零。唯一 Alembic head 仍为
 0157_background_task_aggregate_type_length，当前及下一可执行切片均为 NONE。
+
+
+### FR-632 会话配置筛选栏与能力列表防遮挡 — DONE
+
+依赖：FR-631 DONE。Skill 组合筛选新增一行后，固定 Grid 行数将统计栏压缩，
+列表首项与统计说明重叠。能力页改用纵向 Flex，标题、页签、筛选、统计、错误提示
+和底部操作保留自身高度，仅能力列表占用剩余空间并内部滚动；认证页保留原布局。
+
+新增既有会话／新建草稿两项 Chromium 回归，修复前复现统计栏与列表重叠 13px，
+修复后连同三项既有回归共 5 项通过。覆盖 1440×1000、1440×600、640×640，
+组合筛选出现／消失、首项实际命中与选择、列表滚动及底部操作可见；截图验收通过。
+Web typecheck、定向 ESLint、production build、git diff --check、唯一 Alembic head
+0157_background_task_aggregate_type_length 与 CURRENT 唯一性通过。
+当前及下一可执行切片均为 NONE；沿用当前会话授权仅发布 Web，并执行健康、版本、
+路由及受管发布收尾。

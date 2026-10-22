@@ -726,6 +726,66 @@ test('capability filtering keeps dialog and footer geometry stable', async ({ pa
   }
 });
 
+for (const mode of ['existing', 'draft'] as const) {
+  test(`capability collections keep the summary and first item unobstructed in ${mode} sessions`, async ({ page }) => {
+    await openWorkspace(page);
+    const capabilities = Array.from({ length: 30 }, (_, index) => ({
+      id: `layout-cap-${index}`, capability_key: `布局技能 ${index}`, capability_type: 'SKILL',
+      description: '验证统计栏下方的能力条目完整可见并能正常选择', filename: `layout-${index}.md`, is_latest: true,
+    }));
+    await page.route('**/api/v1/capabilities', route => json(route, capabilities));
+    await page.route('**/api/v1/capability-collections', route => json(route, [
+      { id: 'layout-collection', name: '常用技能组合', members: capabilities },
+    ]));
+    if (mode === 'existing') {
+      await page.goto('/agent/conversations/scheduled-conversation');
+      await page.getByRole('button', { name: '会话配置', exact: true }).click();
+    } else {
+      await page.getByRole('navigation', { name: 'Agent 工作区导航' }).getByRole('button', { name: '定时任务' }).click();
+      await page.getByRole('region', { name: '会话定时任务' }).getByRole('button', { name: '新建', exact: true }).click();
+      await page.getByRole('button', { name: /配置会话/ }).click();
+    }
+    const dialog = page.getByRole('dialog', { name: '会话配置' });
+    await expect(dialog.getByRole('button', { name: '常用技能组合', exact: true })).toBeVisible();
+    const assertLayout = async () => {
+      const layout = await dialog.evaluate(element => {
+        const bounds = (selector: string) => element.querySelector<HTMLElement>(selector)!.getBoundingClientRect();
+        const summary = bounds('.agent-capability-summary');
+        const list = bounds(':scope > .agent-capability-list');
+        const first = bounds('.agent-capability-list > button');
+        const footer = bounds(':scope > footer');
+        const summaryText = element.querySelector('.agent-capability-summary > span:last-child')!.getBoundingClientRect();
+        const firstButton = element.querySelector('.agent-capability-list > button')!;
+        const hit = document.elementFromPoint(first.x + first.width / 2, first.y + first.height / 2);
+        return { summaryBottom: summary.bottom, summaryTextBottom: summaryText.bottom, listTop: list.top,
+          firstTop: first.top, listBottom: list.bottom, footerTop: footer.top,
+          firstClickable: hit !== null && firstButton.contains(hit),
+          scrollable: element.querySelector('.agent-capability-list')!.scrollHeight > list.height };
+      });
+      expect(layout.summaryTextBottom).toBeLessThanOrEqual(layout.summaryBottom + 1);
+      expect(layout.summaryBottom).toBeLessThanOrEqual(layout.listTop + 1);
+      expect(layout.summaryTextBottom).toBeLessThanOrEqual(layout.firstTop);
+      expect(layout.listBottom).toBeLessThanOrEqual(layout.footerTop + 1);
+      expect(layout.firstClickable).toBe(true);
+      expect(layout.scrollable).toBe(true);
+      await expect(dialog.locator(':scope > footer')).toBeInViewport();
+    };
+    for (const viewport of [{ width: 1440, height: 1000 }, { width: 1440, height: 600 }, { width: 640, height: 640 }]) {
+      await page.setViewportSize(viewport);
+      await assertLayout();
+      await dialog.getByRole('button', { name: 'MCP', exact: true }).click();
+      await expect(dialog.locator('.agent-capability-collection-filters')).toHaveCount(0);
+      await dialog.getByRole('button', { name: 'all', exact: true }).click();
+      await assertLayout();
+    }
+    await dialog.getByRole('button', { name: '常用技能组合', exact: true }).click();
+    await dialog.locator('.agent-capability-list > button').first().click();
+    await expect(dialog.locator('.agent-capability-list > button').first()).toHaveClass(/selected/);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await dialog.screenshot({ path: test.info().outputPath(`capability-layout-${mode}.png`) });
+  });
+}
+
 test('internal navigation returns from schedules and management to the active conversation', async ({ page }) => {
   await openWorkspace(page, [
     { id: 'active-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '保留当前会话', timestamp: now } },
