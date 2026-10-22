@@ -359,6 +359,74 @@ def test_runtime_revision_cannot_change_started_node(client, skill_capability):
     assert rejected.json()["code"] == "RUN_REVISION_STARTED_NODE_IMMUTABLE"
 
 
+def test_runtime_revision_supports_optional_input_and_observation_output(client, skill_capability):
+    asset = create_asset(client, skill_capability, "运行时端口节点")
+    flow = create_flow(client, asset["id"])
+    run = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    ).json()
+    draft_response = client.post(f"/api/v1/flow-runs/{run['id']}/revision-drafts", json={})
+    assert draft_response.status_code == 201, draft_response.text
+    draft = draft_response.json()
+    definition = draft["definition"]
+    node = next(item for item in definition["nodes"] if item["instance_key"] == "design_a")
+    node["runtime_port_overrides"] = {
+        "inputs": [
+            {
+                "field_key": "failure_evidence",
+                "display_name": "失败证据",
+                "data_type": "URL",
+                "required": False,
+            }
+        ],
+        "outputs": [
+            {
+                "field_key": "risk_summary",
+                "display_name": "风险摘要",
+                "data_type": "URL",
+                "output_scope": "OBSERVATION",
+            }
+        ],
+    }
+    updated = client.put(
+        f"/api/v1/flow-runs/{run['id']}/revision-drafts/{draft['id']}",
+        json={"expected_row_version": draft["row_version"], "definition": definition},
+    )
+    assert updated.status_code == 200, updated.text
+    applied = client.post(
+        f"/api/v1/flow-runs/{run['id']}/revision-drafts/{draft['id']}/apply",
+        json={"expected_row_version": updated.json()["row_version"]},
+        headers={"Idempotency-Key": "apply-runtime-ports"},
+    )
+    assert applied.status_code == 200, applied.text
+
+    primary_input = client.post(
+        f"/api/v1/flow-runs/{run['id']}/nodes/design_a/input-artifacts",
+        json={
+            "field_key": "prd",
+            "artifact_type": "URL",
+            "uri": "https://example.test/runtime-port-input",
+        },
+    )
+    assert primary_input.status_code == 201, primary_input.text
+    activated = client.post(
+        f"/api/v1/flow-runs/{run['id']}/nodes/design_a/runs",
+        json=prompt_node_start(artifact_ids={"prd": primary_input.json()["id"]}),
+    )
+    assert activated.status_code == 201, activated.text
+    attempt = activated.json()["attempts"][-1]
+    assert attempt["state"] == "WAITING_START_CONFIRMATION"
+    assert "failure_evidence" not in str(attempt["input_bindings"])
+    started = client.post(
+        f"/api/v1/node-attempts/{attempt['id']}/confirm-start",
+        json={"expected_state_version": attempt["state_version"], "prompt": "处理需求"},
+        headers={"Idempotency-Key": "start-runtime-port-node"},
+    )
+    assert started.status_code == 200, started.text
+    assert started.json()["output_targets"]["risk_summary"]["output_scope"] == "OBSERVATION"
+
+
 def test_copied_start_blocked_node_provisions_runtime_for_agent_workbench(client, skill_capability):
     asset = create_asset(client, skill_capability, "可处理启动门禁的副本节点")
     payload = flow_payload(asset["id"], environment_version_id=client.environment_version_id)

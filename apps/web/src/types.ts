@@ -6,7 +6,8 @@ export interface NodeDirectory {
 export type ArtifactDataType = 'URL' | 'FILE';
 export interface IOField {
   id?: string; field_key: string; display_name: string; data_type: ArtifactDataType;
-  description: string; position?: number;
+  description: string; position?: number; required?: boolean;
+  runtime_port?: boolean; output_scope?: 'FLOW' | 'OBSERVATION' | 'CASE';
 }
 export interface ExecutorConfig {
   startup_prompt: string; context_prompt: string; context_capability_ids: string[];
@@ -448,7 +449,10 @@ export interface StepwiseRecordConfigDocument {
   records: StepwiseRecordConfig[];
 }
 export type RecordConfigDocument = AutomaticRecordConfigDocument | StepwiseRecordConfigDocument;
-export interface SnapshotFlowNode extends FlowNode { asset: NodeAsset }
+export interface SnapshotFlowNode extends FlowNode {
+  asset: NodeAsset;
+  runtime_port_overrides?: { inputs?: IOField[]; outputs?: IOField[] };
+}
 export interface SnapshotDefinition extends Omit<FlowDefinition, 'nodes'> {
   nodes: SnapshotFlowNode[];
 }

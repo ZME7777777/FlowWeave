@@ -1349,8 +1349,153 @@ def read_artifact_content(reference: ArtifactContentReference) -> tuple[bytes, s
     return content, reference.mime_type, reference.filename
 
 
+def _runtime_input_fields(node: dict[str, Any]) -> list[dict[str, Any]]:
+    asset = cast(dict[str, Any], node.get("asset") or {})
+    fields = [
+        dict(field)
+        for field in cast(list[object], asset.get("inputs") or [])
+        if isinstance(field, dict)
+    ]
+    extensions = node.get("runtime_port_overrides")
+    if not isinstance(extensions, dict):
+        return fields
+    for raw in extensions.get("inputs", []):
+        if not isinstance(raw, dict):
+            continue
+        field_key = str(raw.get("field_key") or "")
+        data_type = str(raw.get("data_type") or "")
+        if not field_key or data_type not in {"URL", "FILE"}:
+            continue
+        fields = [field for field in fields if str(field.get("field_key") or "") != field_key]
+        fields.append(
+            {
+                "field_key": field_key,
+                "display_name": str(raw.get("display_name") or field_key),
+                "data_type": data_type,
+                "description": str(raw.get("description") or ""),
+                "required": bool(raw.get("required", False)),
+                "runtime_port": True,
+            }
+        )
+    return fields
+
+
 def _input_fields(node: dict[str, Any]) -> tuple[InputField, ...]:
-    return tuple(InputField(x["field_key"], x["data_type"]) for x in node["asset"]["inputs"])
+    return tuple(
+        InputField(
+            str(field["field_key"]),
+            str(field["data_type"]),
+            bool(field.get("required", True)),
+        )
+        for field in _runtime_input_fields(node)
+    )
+
+
+def _effective_input_fields(snapshot: RunSnapshot, node: dict[str, Any]) -> tuple[InputField, ...]:
+    node_key = str(node.get("instance_key") or "")
+    mapped_inputs = {
+        str(mapping.get("target_input_key") or "")
+        for mapping in snapshot.definition_json.get("port_mappings", [])
+        if isinstance(mapping, dict) and str(mapping.get("target_instance_key") or "") == node_key
+    }
+    return tuple(
+        InputField(
+            str(field["field_key"]),
+            str(field["data_type"]),
+            bool(field.get("required", False))
+            or str(field.get("field_key") or "") in mapped_inputs,
+        )
+        for field in _runtime_input_fields(node)
+    )
+
+
+def _runtime_output_fields(node: dict[str, Any]) -> list[dict[str, Any]]:
+    asset = cast(dict[str, Any], node.get("asset") or {})
+    fields = [
+        dict(field)
+        for field in cast(list[object], asset.get("outputs") or [])
+        if isinstance(field, dict)
+    ]
+    extensions = node.get("runtime_port_overrides")
+    if not isinstance(extensions, dict):
+        return fields
+    for raw in extensions.get("outputs", []):
+        if not isinstance(raw, dict):
+            continue
+        field_key = str(raw.get("field_key") or "")
+        data_type = str(raw.get("data_type") or "")
+        if not field_key or data_type not in {"URL", "FILE"}:
+            continue
+        fields = [field for field in fields if str(field.get("field_key") or "") != field_key]
+        fields.append(
+            {
+                "field_key": field_key,
+                "display_name": str(raw.get("display_name") or field_key),
+                "data_type": data_type,
+                "description": str(raw.get("description") or ""),
+                "output_scope": str(raw.get("output_scope") or "FLOW"),
+                "runtime_port": True,
+            }
+        )
+    return fields
+
+
+def _validate_runtime_definition_ports(definition: dict[str, Any]) -> None:
+    nodes = {
+        str(node.get("instance_key") or ""): node
+        for node in definition.get("nodes", [])
+        if isinstance(node, dict) and str(node.get("instance_key") or "")
+    }
+    targets: set[tuple[str, str]] = set()
+    for mapping in definition.get("port_mappings", []):
+        if not isinstance(mapping, dict):
+            continue
+        source_key = str(mapping.get("source_instance_key") or "")
+        target_key = str(mapping.get("target_instance_key") or "")
+        source_output = str(mapping.get("source_output_key") or "")
+        target_input = str(mapping.get("target_input_key") or "")
+        source = nodes.get(source_key)
+        target = nodes.get(target_key)
+        source_types = {
+            str(field.get("field_key") or ""): str(field.get("data_type") or "")
+            for field in _runtime_output_fields(source or {})
+        }
+        target_types = {
+            str(field.get("field_key") or ""): str(field.get("data_type") or "")
+            for field in _runtime_input_fields(target or {})
+        }
+        if not source_output or source_types.get(source_output) is None:
+            raise DomainError("RUN_REVISION_INVALID", "runtime source output is invalid", 422)
+        if not target_input or target_types.get(target_input) is None:
+            raise DomainError("RUN_REVISION_INVALID", "runtime target input is invalid", 422)
+        if source_types[source_output] != target_types[target_input]:
+            raise DomainError("RUN_REVISION_INVALID", "runtime port types are incompatible", 422)
+        identity = (target_key, target_input)
+        if identity in targets:
+            raise DomainError(
+                "RUN_REVISION_INVALID", "runtime target input has multiple mappings", 422
+            )
+        targets.add(identity)
+    for node in nodes.values():
+        overrides = node.get("runtime_port_overrides")
+        if not isinstance(overrides, dict):
+            continue
+        for direction, fields in (
+            ("inputs", _runtime_input_fields(node)),
+            ("outputs", _runtime_output_fields(node)),
+        ):
+            keys = [str(field.get("field_key") or "") for field in fields]
+            if not all(keys) or len(keys) != len(set(keys)):
+                raise DomainError(
+                    "RUN_REVISION_INVALID",
+                    f"runtime {direction} must have unique field keys",
+                    422,
+                )
+        for field in overrides.get("outputs", []):
+            if not isinstance(field, dict):
+                continue
+            if str(field.get("output_scope") or "FLOW") not in {"FLOW", "OBSERVATION", "CASE"}:
+                raise DomainError("RUN_REVISION_INVALID", "runtime output scope is invalid", 422)
 
 
 def _validate_input_bindings(
@@ -1857,7 +2002,7 @@ def _evaluate_readiness(db: Session, attempt: NodeAttempt) -> None:
         for x in db.scalars(select(ArtifactVersion).where(ArtifactVersion.id.in_(ids)))
     }
     result = evaluate_readiness(
-        _input_fields(node),
+        _effective_input_fields(snapshot, node),
         tuple(Binding(x.input_field_key, x.artifact_version_id) for x in rows),
         artifacts,
     )
@@ -4590,7 +4735,7 @@ def _stepwise_draft_ready(node: dict[str, Any], draft: dict[str, Any]) -> bool:
     ):
         return False
     bindings = _stepwise_draft_bindings(draft)
-    return all(str(field.get("field_key") or "") in bindings for field in node["asset"]["inputs"])
+    return all(not field.required or field.key in bindings for field in _input_fields(node))
 
 
 def _stepwise_node_draft(record: FlowRun, node_key: str) -> dict[str, Any] | None:
@@ -6341,15 +6486,12 @@ def _create_output_targets(
     del db, attempt
 
     asset = cast(dict[str, Any], node.get("asset") or {})
-    raw_outputs = cast(list[object], asset.get("outputs") or [])
+    raw_outputs = _runtime_output_fields(node)
     if not raw_outputs:
         return {}
     targets: dict[str, dict[str, str]] = {}
     node_name = str(node.get("alias") or asset.get("name") or "Node")
-    for raw in raw_outputs:
-        if not isinstance(raw, dict):
-            continue
-        output = cast(dict[str, Any], raw)
+    for output in raw_outputs:
         field_key = str(output.get("field_key") or "")
         if not field_key:
             continue
@@ -6361,6 +6503,7 @@ def _create_output_targets(
             "display_name": display_name,
             "description": str(output.get("description") or ""),
             "artifact_type": str(output.get("data_type") or "URL"),
+            "output_scope": str(output.get("output_scope") or "FLOW"),
         }
     return targets
 
@@ -7522,18 +7665,33 @@ def _prepare_runtime_outputs(
 ) -> list[PreparedArtifact]:
     if result.status != "COMPLETED":
         return []
-    missing = sorted(set(output_targets) - set(result.outputs))
+    required_outputs = {
+        field_key
+        for field_key, target in output_targets.items()
+        if str(cast(dict[str, Any], target).get("output_scope") or "FLOW") == "FLOW"
+    }
+    missing = sorted(required_outputs - set(result.outputs))
     if missing:
         raise DomainError(
             "RUNTIME_OUTPUT_MISSING",
-            "The Agent completed without returning every required output",
+            "The Agent completed without returning every required flow output",
             422,
             {"fields": missing},
         )
     prepared: list[PreparedArtifact] = []
     try:
-        for field_key in output_targets:
-            artifact_type, content = result.outputs[field_key]
+        for field_key, target in output_targets.items():
+            raw_output = result.outputs.get(field_key)
+            if raw_output is None:
+                if str(cast(dict[str, Any], target).get("output_scope") or "FLOW") != "FLOW":
+                    continue
+                raise DomainError(
+                    "RUNTIME_OUTPUT_MISSING",
+                    "The Agent completed without returning a required flow output",
+                    422,
+                    {"fields": [field_key]},
+                )
+            artifact_type, content = raw_output
             expected_type = str(
                 cast(dict[str, Any], output_targets.get(field_key) or {}).get("artifact_type")
                 or "URL"
@@ -10378,6 +10536,7 @@ def update_flow_run_revision_draft(
             raise DomainError(
                 "RUN_REVISION_INVALID", "runtime port mapping endpoint is invalid", 422
             )
+    _validate_runtime_definition_ports(definition)
     item.definition_json = definition
     item.definition_hash = _hash(definition)
     item.reason = payload.reason.strip()

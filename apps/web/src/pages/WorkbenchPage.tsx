@@ -11,7 +11,7 @@ import { useProductDialog } from '../components/ProductDialogContext';
 import { RuntimeConfirmationPanel } from '../components/RuntimeConfirmationPanel';
 import { useEscapeClose } from '../components/useEscapeClose';
 import { useWorkbenchStore } from '../store/workbench';
-import type { AgentPreset, ArtifactVersion, AttemptState, AutomaticNodePlan, AutomaticRecordConfigDocument, CapabilityAsset, CapabilityCollection, FlowRun, FlowRunAutomaticRecord, FlowRunAutomaticRecordSummary, FlowRunStepwiseRecord, GateAgentPreset, GateEvaluation, GatePolicy, GateRemediationResult, NodeAttempt, NodeRun, OpenHandsConversationEvent, OpenHandsConversationEventBatch, RecordConfigDocument, SnapshotFlowNode, StepwiseNodeDraft, TokenUsageSummary } from '../types';
+import type { AgentPreset, ArtifactVersion, AttemptState, AutomaticNodePlan, AutomaticRecordConfigDocument, CapabilityAsset, CapabilityCollection, FlowRun, FlowRunAutomaticRecord, FlowRunAutomaticRecordSummary, FlowRunStepwiseRecord, GateAgentPreset, GateEvaluation, GatePolicy, GateRemediationResult, IOField, NodeAttempt, NodeRun, OpenHandsConversationEvent, OpenHandsConversationEventBatch, RecordConfigDocument, SnapshotFlowNode, StepwiseNodeDraft, TokenUsageSummary } from '../types';
 import { withDeploymentBase } from '../deploymentPath';
 import { selectCapabilityVersion, selectCapabilityVersions } from '../utils/capabilitySelection';
 
@@ -41,6 +41,18 @@ const usageLabel = (usage?: TokenUsageSummary) => `累计 ${(usage?.total_tokens
 // deployment produces a new content-hashed bundle instead of reusing an
 // immutable asset cached by an earlier graph renderer.
 const GRAPH_RENDER_REVISION = '2026-09-09.1';
+
+const runtimeNodeInputs = (node: SnapshotFlowNode): IOField[] => {
+  const overrides = node.runtime_port_overrides?.inputs ?? [];
+  const overridden = new Set(overrides.map(field => field.field_key));
+  return [...node.asset.inputs.filter(field => !overridden.has(field.field_key)), ...overrides];
+};
+
+const runtimeNodeOutputs = (node: SnapshotFlowNode): IOField[] => {
+  const overrides = node.runtime_port_overrides?.outputs ?? [];
+  const overridden = new Set(overrides.map(field => field.field_key));
+  return [...node.asset.outputs.filter(field => !overridden.has(field.field_key)), ...overrides];
+};
 
 const nodeForRun = (run: FlowRun, nodeRun: NodeRun) => {
   const snapshotId = nodeRun.attempts.at(-1)?.snapshot_id;
@@ -289,8 +301,8 @@ type SnapshotGraphNodeData = {
   stateLabel?: string;
   activeFlowTarget: boolean;
   visits: number;
-  inputs: SnapshotFlowNode['asset']['inputs'];
-  outputs: SnapshotFlowNode['asset']['outputs'];
+  inputs: IOField[];
+  outputs: IOField[];
 };
 
 function SnapshotGraphNode({ data, selected }: NodeProps<Node<SnapshotGraphNodeData>>) {
@@ -299,8 +311,8 @@ function SnapshotGraphNode({ data, selected }: NodeProps<Node<SnapshotGraphNodeD
     <Handle id="flow-target" className="flow-direction-handle run-flow-handle" type="target" position={Position.Left} isConnectable={false}/>
     <div className="flow-node-head"><span className="flow-node-kind">AGENT</span>{data.activeFlowTarget && <span className="flow-active-target-marker">当前流转节点</span>}<span className="snapshot-selected-marker" aria-hidden={!selected}>已选中</span>{execution && <small className="run-node-execution">{execution}{data.stateLabel && data.visits ? ` · 运行 ${data.visits} 次` : ''}</small>}</div>
     <strong>{data.label}</strong>
-    <small>标准端口来自节点资产</small>
-    <div className="flow-port-groups"><section aria-label="输入端口"><span>INPUTS</span>{data.inputs.length ? data.inputs.map(field => <div className="flow-port-row flow-port-input" key={field.field_key}><Handle id={`input:${field.field_key}`} className="data-port-handle run-data-handle input" type="target" position={Position.Left} isConnectable={false}/><b>{field.display_name || field.field_key}</b><small>{field.data_type}</small></div>) : <div className="flow-port-row flow-port-input"><em>无输入</em></div>}</section><section aria-label="输出端口"><span>OUTPUTS</span>{data.outputs.length ? data.outputs.map(field => <div className="flow-port-row flow-port-output" key={field.field_key}><b>{field.display_name || field.field_key}</b><small>{field.data_type}</small><Handle id={`output:${field.field_key}`} className="data-port-handle run-data-handle output" type="source" position={Position.Right} isConnectable={false}/></div>) : <div className="flow-port-row flow-port-output"><em>无输出</em></div>}</section></div>
+    <small>{[...data.inputs, ...data.outputs].some(field => field.runtime_port) ? '包含本次运行临时端口' : '标准端口来自节点资产'}</small>
+    <div className="flow-port-groups"><section aria-label="输入端口"><span>INPUTS</span>{data.inputs.length ? data.inputs.map(field => <div className={`flow-port-row flow-port-input${field.runtime_port ? ' runtime-port' : ''}`} key={field.field_key}><Handle id={`input:${field.field_key}`} className="data-port-handle run-data-handle input" type="target" position={Position.Left} isConnectable={false}/><b>{field.display_name || field.field_key}</b><small>{field.data_type}{field.runtime_port ? ' · 本次运行' : ''}</small></div>) : <div className="flow-port-row flow-port-input"><em>无输入</em></div>}</section><section aria-label="输出端口"><span>OUTPUTS</span>{data.outputs.length ? data.outputs.map(field => <div className={`flow-port-row flow-port-output${field.runtime_port ? ' runtime-port' : ''}`} key={field.field_key}><b>{field.display_name || field.field_key}</b><small>{field.data_type}{field.output_scope && field.output_scope !== 'FLOW' ? ` · ${field.output_scope === 'CASE' ? 'Case' : '观察'}` : ''}{field.runtime_port ? ' · 本次运行' : ''}</small><Handle id={`output:${field.field_key}`} className="data-port-handle run-data-handle output" type="source" position={Position.Right} isConnectable={false}/></div>) : <div className="flow-port-row flow-port-output"><em>无输出</em></div>}</section></div>
     <Handle id="flow-source" className="flow-direction-handle run-flow-handle" type="source" position={Position.Right} isConnectable={false}/>
   </article>;
 }
@@ -395,7 +407,7 @@ function SnapshotGraph({ run, snapshotId, selectedKey, activeNodeRunId, activeNo
           : status === 'waiting' || status === 'failed' ? (latestAttempt ? ATTEMPT_STATE_LABELS[latestAttempt.state] : undefined)
             : status === 'accepted' ? '已完成' : status === 'cancelled' ? '已取消' : undefined
         : undefined;
-      return { id: item.instance_key, type: 'snapshotNode', selected: item.instance_key === selectedKey, selectable: selectable.has(item.instance_key), position: { x: item.position_x, y: item.position_y }, data: { label: item.alias || item.asset.name, status, stateLabel, activeFlowTarget, visits: showExecutionState ? visits.length : 0, inputs: item.asset.inputs, outputs: item.asset.outputs } };
+      return { id: item.instance_key, type: 'snapshotNode', selected: item.instance_key === selectedKey, selectable: selectable.has(item.instance_key), position: { x: item.position_x, y: item.position_y }, data: { label: item.alias || item.asset.name, status, stateLabel, activeFlowTarget, visits: showExecutionState ? visits.length : 0, inputs: runtimeNodeInputs(item), outputs: runtimeNodeOutputs(item) } };
     });
     const directionEdges: Edge[] = (snapshot?.definition.edges ?? []).map((item, index) => ({ id: `flow-${item.id ?? index}`, source: item.source_instance_key, sourceHandle: 'flow-source', target: item.target_instance_key, targetHandle: 'flow-target', type: 'bezier', className: 'flow-direction-edge' }));
     const mappingEdges = withMappingLabelOffsets((snapshot?.definition.port_mappings ?? []).map((item, index) => ({
@@ -662,7 +674,7 @@ function mergeArtifacts(current: ArtifactVersion[], incoming: ArtifactVersion[])
 
 function NodeInputDialog({ run, node, initialBindings = {}, initialUrls = {}, onClose, onSubmit }: { run: FlowRun; node: SnapshotFlowNode; initialBindings?: Record<string, string>; initialUrls?: Record<string, string>; onClose: () => void; onSubmit: (result: NodeInputResult) => void }) {
   useEscapeClose(onClose);
-  const fields = node.asset.inputs;
+  const fields = runtimeNodeInputs(node);
   const [urls, setUrls] = useState<Record<string, string>>(() => Object.fromEntries(fields.filter(field => field.data_type === 'URL').map(field => {
     const artifact = run.artifacts.find(item => item.id === initialBindings[field.field_key]);
     return [field.field_key, artifact?.uri ?? initialUrls[field.field_key] ?? ''];
@@ -1108,14 +1120,14 @@ function NodeConsole({ run, node, startupMode, stepwiseDraft, initialBindings, l
   const invalidMode = startupMode === 'PROMPT' && !prompt.trim();
   const invalidModel = startupMode === 'PROMPT' && (!agentPreset.model_provider_id || !agentPreset.model_name);
   const invalidGates = startupMode === 'PROMPT' && gates.some(gate => !String(gate.config.prompt || '').trim());
-  const missingInputs = node.asset.inputs.some(field => !bindings[field.field_key]);
+  const missingInputs = runtimeNodeInputs(node).some(field => field.required !== false && !bindings[field.field_key]);
   const nodeRuns = run.node_runs.filter(item => item.flow_node_snapshot_key === node.instance_key && isDirectNodeRun(item) === (startupMode === 'CHAT'));
   const visits = nodeRuns.length;
   const saveDisabled = terminal || invalidMode || invalidModel || invalidGates || mutation.isPending;
   const runAction = <button className="primary node-run-button" disabled={saveDisabled} onClick={() => startupMode === 'PROMPT' && missingInputs ? setPromptTab('inputs') : mutation.mutate(bindings)}><Play size={15}/>{mutation.isPending ? '保存中…' : startupMode === 'PROMPT' && missingInputs ? '请先填写节点输入' : startupMode === 'CHAT' ? '启动节点会话' : '保存配置'}</button>;
   const historyRun = { ...run, node_runs: run.node_runs.filter(item => isDirectNodeRun(item) === (startupMode === 'CHAT')) };
   const history = <NodeExecutionHistory run={historyRun} node={node} onSelectExecution={onSelectExecution}/>;
-  return <><NodeConfigurationPanel className={startupMode === 'PROMPT' ? 'automatic-record-editor' : undefined} title={node.alias || node.asset.name} subtitle={`节点控制台 · 已执行 ${visits} 次`} mode={startupMode} fixedModeLabel={startupMode === 'CHAT' ? '直接启动' : '逐步运行'} onModeChange={() => undefined} recordControl={recordControl} promptTab={promptTab} onPromptTabChange={setPromptTab} action={runAction} promptContent={<>{(stepwiseDraft || Object.keys(initialBindings ?? {}).length > 0) && <p className="field-hint">上游节点的映射产物已自动填入当前节点输入；保存后仍可继续编辑，点击启动时才冻结为本轮 Attempt。</p>}<InputSummary fields={node.asset.inputs} bindings={bindings} artifacts={inputArtifacts}/>{node.asset.inputs.length > 0 && <button className="secondary full" onClick={() => setInputDialogOpen(true)}><Upload size={14}/>填写节点输入</button>}<StartupPromptSummary prompt={prompt} freezeHint="点击启动时才会随 Attempt 冻结。" onEdit={() => setPromptDialogOpen(true)}/></>} agentContent={<AgentPresetEditor preset={agentPreset} nodeContext={node.asset.executor?.context_prompt ?? ''} onChange={setAgentPreset}/>} gateContent={<GateDraftEditor gates={gates} onChange={setGates}/>} historyContent={history} chatContent={history} belowContent={<>{invalidModel && <p className="error">请选择 Agent 模型供应商和模型后再保存配置。</p>}{invalidGates && <p className="error">每个门禁都需要填写判定提示词。</p>}{terminal && <p className="field-hint">流程已结束，不能创建新的节点执行。</p>}{mutation.error && <p className="error"><AlertTriangle size={14}/>{mutation.error.message}</p>}</>}/>{inputDialogOpen && <NodeInputDialog run={{ ...run, artifacts: inputArtifacts }} node={node} initialBindings={bindings} onClose={() => setInputDialogOpen(false)} onSubmit={({ bindings: nextBindings, artifacts }) => { setBindings(nextBindings); setInputArtifacts(current => mergeArtifacts(current, artifacts)); setInputDialogOpen(false); }}/>} {promptDialogOpen && <StartupPromptDialog prompt={prompt} onChange={setPrompt} onClose={() => setPromptDialogOpen(false)}/>}</>;
+  return <><NodeConfigurationPanel className={startupMode === 'PROMPT' ? 'automatic-record-editor' : undefined} title={node.alias || node.asset.name} subtitle={`节点控制台 · 已执行 ${visits} 次`} mode={startupMode} fixedModeLabel={startupMode === 'CHAT' ? '直接启动' : '逐步运行'} onModeChange={() => undefined} recordControl={recordControl} promptTab={promptTab} onPromptTabChange={setPromptTab} action={runAction} promptContent={<>{(stepwiseDraft || Object.keys(initialBindings ?? {}).length > 0) && <p className="field-hint">上游节点的映射产物已自动填入当前节点输入；保存后仍可继续编辑，点击启动时才冻结为本轮 Attempt。</p>}<InputSummary fields={runtimeNodeInputs(node)} bindings={bindings} artifacts={inputArtifacts}/>{runtimeNodeInputs(node).length > 0 && <button className="secondary full" onClick={() => setInputDialogOpen(true)}><Upload size={14}/>填写节点输入</button>}<StartupPromptSummary prompt={prompt} freezeHint="点击启动时才会随 Attempt 冻结。" onEdit={() => setPromptDialogOpen(true)}/></>} agentContent={<AgentPresetEditor preset={agentPreset} nodeContext={node.asset.executor?.context_prompt ?? ''} onChange={setAgentPreset}/>} gateContent={<GateDraftEditor gates={gates} onChange={setGates}/>} historyContent={history} chatContent={history} belowContent={<>{invalidModel && <p className="error">请选择 Agent 模型供应商和模型后再保存配置。</p>}{invalidGates && <p className="error">每个门禁都需要填写判定提示词。</p>}{terminal && <p className="field-hint">流程已结束，不能创建新的节点执行。</p>}{mutation.error && <p className="error"><AlertTriangle size={14}/>{mutation.error.message}</p>}</>}/>{inputDialogOpen && <NodeInputDialog run={{ ...run, artifacts: inputArtifacts }} node={node} initialBindings={bindings} onClose={() => setInputDialogOpen(false)} onSubmit={({ bindings: nextBindings, artifacts }) => { setBindings(nextBindings); setInputArtifacts(current => mergeArtifacts(current, artifacts)); setInputDialogOpen(false); }}/>} {promptDialogOpen && <StartupPromptDialog prompt={prompt} onChange={setPrompt} onClose={() => setPromptDialogOpen(false)}/>}</>;
 }
 
 const AUTOMATIC_STAGE_ORDER = ['INPUT_READINESS', 'START_GATES', 'START_HANDOFF', 'RUNTIME_START', 'AGENT_RUNNING', 'END_GATES', 'FLOW_ADVANCE'];
@@ -1216,7 +1228,7 @@ function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, sessionReturnC
   const act = (kind: string, body?: unknown) => mutation.mutate({ kind, body });
   const remediationPending = mutation.isPending && mutation.variables?.kind === 'remediate-gate-failure';
   const attemptTerminal = attempt.state === 'ACCEPTED' || attempt.state === 'REJECTED' || attempt.state === 'CANCELLED';
-  const nodeInputBindings = Object.fromEntries((attemptNode?.asset.inputs ?? []).map(field => [field.field_key, currentBinding(field.field_key)]).filter(([, value]) => value));
+  const nodeInputBindings = Object.fromEntries((attemptNode ? runtimeNodeInputs(attemptNode) : []).map(field => [field.field_key, currentBinding(field.field_key)]).filter(([, value]) => value));
   // Attempts created before runtime gate freezing retain their legacy gates in
   // the immutable snapshot. Prefer the frozen Attempt contract, but render the
   // snapshot contract as a read-only historical fallback so users still see
@@ -1306,7 +1318,7 @@ function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, sessionReturnC
     : automaticRemediationDeliveryFailed
       ? '完成门禁已记录未通过，但平台未能创建输出修订会话。请恢复服务后重试当前阶段，或进入节点会话人工处理。'
       : undefined;
-  return <aside className="action-panel attempt-control"><header><div><b>{nodeRunName(run, nodeRun)}</b><small>第 {nodeVisitNumber(run, nodeRun)} 次执行 / 第 {attempt.attempt_no} 轮</small></div><small className="attempt-token-usage">{usageLabel(attempt.usage)}</small></header><nav className="attempt-detail-tabs" aria-label="执行详情"><button className={tab === 'overview' ? 'active' : ''} onClick={() => setTab('overview')}>概览</button><button className={tab === 'gates' ? 'active' : ''} onClick={() => setTab('gates')}>门禁结果</button><button className={tab === 'outputs' ? 'active' : ''} onClick={() => setTab('outputs')}>输出</button>{automaticArtifactScope && <button className={tab === 'audit' ? 'active' : ''} onClick={() => setTab('audit')}>历史审计</button>}</nav><div className="action-content">{tab === 'overview' && <><div className="state-banner"><span>当前轮次状态</span><b>{runtimeFailed ? '节点执行失败' : ATTEMPT_STATE_LABELS[attempt.state] ?? attempt.state}</b><small><span data-testid="attempt-state">{attempt.state}</span> · 状态版本 {attempt.state_version}</small></div>{automaticAttempt && attempt.automatic_progress && <AutomaticProgressPanel progress={attempt.automatic_progress}/>} {attemptNode && <NodeContextSummary node={attemptNode} contextIds={attempt.context_ids ?? null} frozenSessionContexts={attempt.frozen_session_contexts} frozenAgentCapabilities={attempt.frozen_agent_capabilities} agentPreset={attempt.agent_preset} mode={attempt.startup_mode === 'CHAT' ? 'CHAT' : 'PROMPT'}/>}<InputSummary fields={attemptNode?.asset.inputs ?? []} bindings={nodeInputBindings} artifacts={resolvedInputArtifacts}/>{automaticArtifactScope && automaticInputArtifacts.isError && <p className="error">读取本轮输入失败：{automaticInputArtifacts.error.message}</p>}<p className="field-hint">输入已随本轮创建冻结，仅供查看。</p>
+  return <aside className="action-panel attempt-control"><header><div><b>{nodeRunName(run, nodeRun)}</b><small>第 {nodeVisitNumber(run, nodeRun)} 次执行 / 第 {attempt.attempt_no} 轮</small></div><small className="attempt-token-usage">{usageLabel(attempt.usage)}</small></header><nav className="attempt-detail-tabs" aria-label="执行详情"><button className={tab === 'overview' ? 'active' : ''} onClick={() => setTab('overview')}>概览</button><button className={tab === 'gates' ? 'active' : ''} onClick={() => setTab('gates')}>门禁结果</button><button className={tab === 'outputs' ? 'active' : ''} onClick={() => setTab('outputs')}>输出</button>{automaticArtifactScope && <button className={tab === 'audit' ? 'active' : ''} onClick={() => setTab('audit')}>历史审计</button>}</nav><div className="action-content">{tab === 'overview' && <><div className="state-banner"><span>当前轮次状态</span><b>{runtimeFailed ? '节点执行失败' : ATTEMPT_STATE_LABELS[attempt.state] ?? attempt.state}</b><small><span data-testid="attempt-state">{attempt.state}</span> · 状态版本 {attempt.state_version}</small></div>{automaticAttempt && attempt.automatic_progress && <AutomaticProgressPanel progress={attempt.automatic_progress}/>} {attemptNode && <NodeContextSummary node={attemptNode} contextIds={attempt.context_ids ?? null} frozenSessionContexts={attempt.frozen_session_contexts} frozenAgentCapabilities={attempt.frozen_agent_capabilities} agentPreset={attempt.agent_preset} mode={attempt.startup_mode === 'CHAT' ? 'CHAT' : 'PROMPT'}/>}<InputSummary fields={attemptNode ? runtimeNodeInputs(attemptNode) : []} bindings={nodeInputBindings} artifacts={resolvedInputArtifacts}/>{automaticArtifactScope && automaticInputArtifacts.isError && <p className="error">读取本轮输入失败：{automaticInputArtifacts.error.message}</p>}<p className="field-hint">输入已随本轮创建冻结，仅供查看。</p>
     {attempt.runtime_phase === 'CANCEL_FAILED' && <section className="terminal-run-panel"><h4>Agent 停止状态未确认</h4><p>{attempt.error_detail || '运行时停止失败，需要重新对账。FlowRun Runtime 的健康、替换和诊断入口位于会话工作台。'}</p>{attempt.runtime_cancel_recovery_modes.includes('RECONCILE_PARENT') && <button className="secondary full" disabled={mutation.isPending} onClick={() => act('retry-cancel')}>重新对账并重试停止</button>}</section>}
     {terminal ? <button className="secondary full node-session-entry" onClick={() => openNodeSession(run.id, nodeRun.id, attempt.id, attempt.binding_id ?? undefined, sessionReturnContext)}><Send size={15}/>查看节点会话（只读）</button> : (attempt.startup_mode === 'PROMPT' && attempt.state === 'WAITING_START_CONFIRMATION' ? automaticAttempt ? !attempt.automatic_progress && <section className="terminal-run-panel"><h4>正在自动启动</h4><p>连续运行已通过启动条件；平台正在启动当前节点，并会在完成后自动流转至后继节点。</p></section> : <section className="terminal-run-panel"><h4>配置已保存</h4><p>请在左侧当前逐步运行记录上启动该节点；完成后会停在下一个节点。</p></section> : <button className="secondary full node-session-entry" onClick={() => openNodeSession(run.id, nodeRun.id, attempt.id, attempt.binding_id ?? undefined, sessionReturnContext)}><Send size={15}/>进入节点会话</button>)}
     {nodeRun.attempts.length > 1 && <section className="attempt-switcher"><h4>修订轮次</h4><div>{nodeRun.attempts.map(item => <button key={item.id} className={item.id === attempt.id ? 'active' : ''} onClick={() => useWorkbenchStore.getState().selectAttempt(item.id)}>第 {item.attempt_no} 轮</button>)}</div></section>}
@@ -1429,7 +1441,9 @@ function stepwiseDraftReady(node?: SnapshotFlowNode, draft?: StepwiseNodeDraft):
     && draft.agent_preset
     && draft.agent_preset.model_provider_id
     && draft.agent_preset.model_name
-    && node.asset.inputs.every(field => draft.input_bindings.some(binding => binding.input_field_key === field.field_key)),
+    && runtimeNodeInputs(node)
+      .filter(field => field.required !== false)
+      .every(field => draft.input_bindings.some(binding => binding.input_field_key === field.field_key)),
   );
 }
 
