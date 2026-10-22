@@ -84,7 +84,7 @@ async function openWorkspace(page: Page, events: unknown[] = [], includeSecondCo
 
 // Keep native scrollbar thumbs visible so pointer dragging exercises the scrollbar.
 test.use({launchOptions:{ignoreDefaultArgs:['--hide-scrollbars']}});
-test('conversation list scrollbar stays thin and borderless while hovered and dragged', async ({ page }) => {
+test('conversation list scrollbar appears during scrolling, hides after 1s and stays thin while dragged', async ({ page }) => {
   await page.setViewportSize({width:1440,height:800});
   await openWorkspace(page);
   await page.route('**/api/v1/agent-workspaces/schedule-workspace/work-directories', route => json(route, {
@@ -101,6 +101,12 @@ test('conversation list scrollbar stays thin and borderless while hovered and dr
     return {width:bar.width,gutter:element.getBoundingClientRect().width-element.clientWidth,track:track.backgroundColor,border:track.borderRightWidth,shadow:track.boxShadow,thumb:thumb.backgroundColor};
   });
   await page.mouse.move(800,300);
+  await expect.poll(async () => (await appearance()).thumb).toBe('rgba(0, 0, 0, 0)');
+  const hidden=await appearance();
+  await list.hover({position:{x:40,y:100}});
+  expect(await appearance()).toEqual(hidden);
+  await page.mouse.wheel(0,120);
+  await expect.poll(async () => (await appearance()).thumb).toBe('rgb(165, 176, 168)');
   const before=await appearance();
   expect(parseFloat(before.width)).toBeLessThanOrEqual(8);
   expect(before.track).toBe('rgba(0, 0, 0, 0)');
@@ -112,17 +118,35 @@ test('conversation list scrollbar stays thin and borderless while hovered and dr
   }
   const rail=page.locator('.agent-workbench-rail');
   const railWidth=await rail.evaluate(element=>element.getBoundingClientRect().width);
-  await page.mouse.move(box.x+box.width-2,box.y+20);
+  const thumbTop=await list.evaluate(element=>element.scrollTop/element.scrollHeight*element.clientHeight);
+  await page.mouse.move(box.x+box.width-2,box.y+thumbTop+20);
   expect(await appearance()).toEqual(before);
   await page.mouse.down();
-  await page.mouse.move(box.x+box.width+4,box.y+80,{steps:5});
+  const scrollBeforeDrag=await list.evaluate(element=>element.scrollTop);
+  await page.mouse.move(box.x+box.width+4,box.y+thumbTop+80,{steps:5});
   expect(await appearance()).toEqual(before);
   await page.mouse.up();
   await expect.poll(()=>rail.evaluate(element=>element.getBoundingClientRect().width)).toBe(railWidth);
-  await expect.poll(()=>list.evaluate(element=>element.scrollTop)).toBeGreaterThan(0);
+  await expect.poll(()=>list.evaluate(element=>element.scrollTop)).toBeGreaterThan(scrollBeforeDrag);
   await list.hover({position:{x:40,y:100}});
   await page.mouse.wheel(0,350);
   await expect.poll(()=>list.evaluate(element=>element.scrollTop)).toBeGreaterThan(0);
+  // Verify the exact inactivity delay independently of native scroll animation.
+  await expect.poll(async () => (await appearance()).thumb).toBe('rgba(0, 0, 0, 0)');
+  await page.clock.install();
+  await page.clock.pauseAt(new Date());
+  await list.dispatchEvent('scroll');
+  await page.clock.runFor(800);
+  expect((await appearance()).thumb).toBe('rgb(165, 176, 168)');
+  // A new scroll restarts the full 1s delay, even with the pointer on the track.
+  await list.dispatchEvent('scroll');
+  await page.mouse.move(box.x+box.width-2,box.y+100);
+  await page.clock.runFor(999);
+  expect((await appearance()).thumb).toBe('rgb(165, 176, 168)');
+  await page.clock.runFor(1);
+  expect((await appearance()).thumb).toBe('rgba(0, 0, 0, 0)');
+  expect(await appearance()).toEqual({...before,thumb:'rgba(0, 0, 0, 0)'});
+  await page.clock.resume();
   const handle=page.getByRole('separator',{name:'调整会话列表宽度'});
   const handleBox=(await handle.boundingBox())!;
   await page.mouse.move(handleBox.x+handleBox.width/2,handleBox.y+100);

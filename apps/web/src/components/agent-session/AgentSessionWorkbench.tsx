@@ -5187,6 +5187,18 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const workDirectoriesQuery = useQuery({ queryKey: sessionQueryKey(host, 'work-directories', workspace?.id), queryFn: () => api.workDirectories(workspace!.id), enabled: Boolean(workspace && features.workDirectories) });
   const sidebarScrollStorageKey = workspace ? `flowweave:sidebar-scroll:${host.id}:${workspace.id}` : undefined;
   const sidebarListRef = useRef<HTMLDivElement>(null);
+  const sidebarScrollbarTimer = useRef<number | undefined>(undefined);
+  const showSidebarScrollbar = (element: HTMLDivElement) => {
+    element.classList.add('scrollbar-visible');
+    if (sidebarScrollbarTimer.current !== undefined) window.clearTimeout(sidebarScrollbarTimer.current);
+    sidebarScrollbarTimer.current = window.setTimeout(() => {
+      element.classList.remove('scrollbar-visible');
+      sidebarScrollbarTimer.current = undefined;
+    }, 1000);
+  };
+  useEffect(() => () => {
+    if (sidebarScrollbarTimer.current !== undefined) window.clearTimeout(sidebarScrollbarTimer.current);
+  }, []);
   const pendingWorkspaceGroupAnchor = useRef<{ groupId: string; top: number } | undefined>(undefined);
   useEffect(() => {
     if (!sidebarScrollStorageKey) {
@@ -9578,6 +9590,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       <div ref={sidebarListRef} className="agent-workbench-list" onDragOver={event => {
         if (draggedConversationRef.current) updateConversationDragAutoScroll(event.clientY);
       }} onScroll={event => {
+        showSidebarScrollbar(event.currentTarget);
         if (sidebarListMode !== 'workspaces') return;
         const scrollTop = event.currentTarget.scrollTop;
         if (restoringWorkspaceSidebarScrollTop.current === scrollTop) {
