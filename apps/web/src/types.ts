@@ -1043,4 +1043,16 @@ export interface LdapOrganization {
 export interface LdapDirectory {
   organizations: LdapOrganization[];
   users: LdapUser[];
+  platform_users?: PlatformUser[];
+  ldap_warning?: string;
+}
+
+export interface PlatformUser {
+  id: string;
+  username: string;
+  display_name: string | null;
+  email: string | null;
+  role: 'SUPER_ADMIN' | 'USER';
+  enabled: boolean;
+  agent_session_access: boolean;
 }

@@ -46,12 +46,24 @@ class MockRuntime:
         self._conversation_condensers: dict[str, RuntimeCondenser] = {}
         self._conversation_secrets: dict[str, dict[str, str]] = {}
         self._git_identities: dict[str, tuple[str, str]] = {}
+        self._profile_git_roots: set[str] = set()
 
     def workspace_git_identity(
-        self, handle: RuntimeHandle, *, identity: tuple[str, str] | None = None
+        self,
+        handle: RuntimeHandle,
+        *,
+        identity: tuple[str, str] | None = None,
+        profile: tuple[str, str] | None = None,
     ) -> dict[str, str | bool]:
+        if profile is not None and (
+            handle.workspace_root not in self._git_identities
+            or handle.workspace_root in self._profile_git_roots
+        ):
+            self._git_identities[handle.workspace_root] = profile
+            self._profile_git_roots.add(handle.workspace_root)
         if identity is not None:
             self._git_identities[handle.workspace_root] = identity
+            self._profile_git_roots.discard(handle.workspace_root)
         author, email = self._git_identities.get(handle.workspace_root, ("", ""))
         return {"author": author, "email": email, "configured": bool(author and email)}
 

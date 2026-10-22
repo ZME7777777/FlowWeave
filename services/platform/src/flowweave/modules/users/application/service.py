@@ -183,8 +183,14 @@ def _sync_ldap_organization_ids(db: Session, identities: list[LdapIdentity]) -> 
         if identity is None:
             continue
         organization_ids = list(identity.organization_ids)
-        if user.ldap_organization_ids != organization_ids:
+        if (
+            user.ldap_organization_ids != organization_ids
+            or user.display_name != identity.display_name
+            or user.email != identity.email
+        ):
             user.ldap_organization_ids = organization_ids
+            user.display_name = identity.display_name
+            user.email = identity.email
             user.updated_at = datetime.now(UTC)
 
 
@@ -219,7 +225,42 @@ def ldap_directory(db: Session, snapshot: LdapDirectorySnapshot) -> dict[str, ob
             for item in snapshot.organizations
         ],
         "users": list_ldap_users(db, snapshot.users),
+        "platform_users": list_platform_users(db),
     }
+
+
+def _platform_user_dict(db: Session, user: User) -> dict[str, object]:
+    return {
+        "id": user.id,
+        "username": user.username,
+        "display_name": user.display_name,
+        "email": user.email,
+        "role": user.role,
+        "enabled": user.is_active,
+        "agent_session_access": _can_use_agent_sessions(db, user),
+    }
+
+
+def list_platform_users(db: Session) -> list[dict[str, object]]:
+    return [
+        _platform_user_dict(db, user)
+        for user in db.scalars(
+            select(User).where(User.auth_source != "LDAP").order_by(User.username)
+        )
+    ]
+
+
+def update_platform_user_profile(
+    db: Session, user_id: str, *, display_name: str, email: str
+) -> dict[str, object]:
+    user = db.get(User, user_id)
+    if user is None or user.auth_source == "LDAP":
+        raise DomainError("PLATFORM_USER_NOT_FOUND", "平台账户不存在", 404)
+    user.display_name = display_name.strip()
+    user.email = email.strip()
+    user.updated_at = datetime.now(UTC)
+    db.flush()
+    return _platform_user_dict(db, user)
 
 
 def set_ldap_user_enabled(

@@ -5180,6 +5180,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     refetchOnWindowFocus: true,
   });
   const workspace = workspaceQuery.data;
+  useQuery({
+    queryKey: ['agent-workspace-git-settings', workspace?.id],
+    queryFn: () => agentWorkspaceApi.agentGitIdentity(workspace!.id),
+    enabled: host.id === 'agent-workspace' && Boolean(workspace),
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+    retry: false,
+  });
   const conversationSearchSupported = Boolean(api.startConversationSearch && api.conversationSearch);
   const conversationSearchQuery = useQuery<AgentConversationSearch>({
     queryKey: sessionQueryKey(host, 'conversation-search', workspace?.id, conversationSearchId, conversationSearchCursor),

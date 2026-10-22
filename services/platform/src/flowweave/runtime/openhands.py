@@ -5256,9 +5256,15 @@ class OpenHandsRuntime:
         return target
 
     def workspace_git_identity(
-        self, handle: RuntimeHandle, *, identity: tuple[str, str] | None = None
+        self,
+        handle: RuntimeHandle,
+        *,
+        identity: tuple[str, str] | None = None,
+        profile: tuple[str, str] | None = None,
     ) -> dict[str, str | bool]:
-        values: dict[str, str] = {"root": handle.workspace_root}
+        values: dict[str, object] = {"root": handle.workspace_root}
+        if profile is not None:
+            values["profile"] = list(profile)
         if identity is not None:
             values.update(author=identity[0], email=identity[1])
         result = self._request(

@@ -7288,6 +7288,14 @@ def test_git_identity_uses_native_bash_without_conversation_or_user_message(
     assert json.loads(shlex.split(calls[-1][2]["json"]["command"])[3]) == {
         "root": handle.workspace_root
     }
+    assert (
+        runtime.workspace_git_identity(handle, profile=("Profile Name", "profile@example.test"))
+        == expected
+    )
+    assert json.loads(shlex.split(calls[-1][2]["json"]["command"])[3]) == {
+        "root": handle.workspace_root,
+        "profile": ["Profile Name", "profile@example.test"],
+    }
 
 
 @pytest.mark.parametrize("response", [{"exit_code": 1}, {"exit_code": 0, "stdout": "not JSON"}])

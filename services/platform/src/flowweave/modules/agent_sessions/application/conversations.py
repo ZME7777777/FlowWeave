@@ -64,6 +64,10 @@ from flowweave.modules.agent_sessions.infrastructure.models import (
     AgentSidebarConversation,
 )
 from flowweave.modules.agent_workspaces import public as agent_workspace_host
+from flowweave.modules.agent_workspaces.application.git_settings import (
+    apply_profile_identity,
+    profile_identity,
+)
 from flowweave.modules.catalog.public import resolve_version
 from flowweave.modules.credentials.application.service import resolve_credentials_for_agent
 from flowweave.modules.model_providers.public import has_connected_default_model
@@ -1473,6 +1477,7 @@ def _create_native_conversation(
     if runtime is None:
         raise DomainError("AGENT_RUNTIME_RECOVERING", "Agent 运行环境正在恢复，数据已保留", 503)
     handle = _handle(db, workspace, binding)
+    apply_profile_identity(db, workspace.id, handle)
     if allow_existing:
         try:
             identity = get_runtime().reload_conversation(handle)
@@ -1785,6 +1790,7 @@ class PreparedRunningMessage:
     references: tuple[dict[str, str], ...]
     workspace_references: tuple[dict[str, str], ...]
     annotations: tuple[dict[str, Any], ...]
+    git_profile: tuple[str, str] | None = None
 
 
 def normalized_first_sentence(content: str) -> str:
@@ -2754,6 +2760,7 @@ def prepare_running_message(
         references=resolved_references,
         workspace_references=validated_workspace_references,
         annotations=annotations,
+        git_profile=profile_identity(db),
     )
 
 
@@ -2780,6 +2787,8 @@ def dispatch_running_message(prepared: PreparedRunningMessage) -> RuntimeResult 
         prepared.workspace_references,
         prepared.annotations,
     )
+    if prepared.git_profile is not None:
+        runtime.workspace_git_identity(prepared.handle, profile=prepared.git_profile)
     try:
         return runtime.send_message(prepared.handle, prompt, image_urls)
     except DomainError as exc:
@@ -2872,6 +2881,7 @@ def message(
     # attachment/activity projection happens only after the native result.
     binding = _binding(db, workspace_id, binding_id)
     handle = _handle(db, workspace, binding)
+    apply_profile_identity(db, workspace.id, handle)
     _validate_attachment_owners(binding.id, attachments, workspace_root=handle.workspace_root)
     workspace_references = agent_workspace_host.validate_message_workspace_references(
         db,
@@ -4568,6 +4578,7 @@ def rewrite_message(
     workspace = _workspace(db, workspace_id)
     binding = _binding(db, workspace_id, binding_id, lock=True)
     handle = _handle(db, workspace, binding)
+    apply_profile_identity(db, workspace.id, handle)
     runtime = get_runtime()
     if not runtime.can_accept_input(handle):
         raise DomainError("AGENT_CONVERSATION_BUSY", "请先暂停当前回复", 409)
@@ -4621,6 +4632,7 @@ def resume(db: Session, workspace_id: str, binding_id: str) -> dict[str, Any]:
     runtime = get_runtime()
     binding = _binding(db, workspace_id, binding_id)
     handle = _handle(db, workspace, binding)
+    apply_profile_identity(db, workspace.id, handle)
     log_conversation_diagnostic(
         operation="resume_requested",
         host_kind="agent_workspace",

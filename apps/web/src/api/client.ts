@@ -1,5 +1,5 @@
 import type {
-  AuthUser, LdapDirectory, LdapUser,
+  AuthUser, LdapDirectory, LdapUser, PlatformUser,
   AgentProfileVersion, ArtifactInput, ArtifactVersion, ArtifactVersionPage, RuntimeArtifactAuditPage, CapabilityAsset, CapabilityImportResult, FlowDefinition, FlowRun, FlowRunAutomaticRecord, FlowRunAutomaticRecordUpdate, FlowRunAutomaticRecordWrite, FlowRunConversation, FlowRunRuntimeOverview, FlowRunRuntimeResource, FlowRunSummary, FlowWrite, MessageAttachmentInput, OpenHandsConversationEventBatch, McpSource, SkillSource,
   BlockedNodeDelete, BulkDeleteResult, CapabilityBulkDeleteResult, CodexDeviceAuthorization, CodexOAuthStatus, GateRemediationResult, ModelProvider, ModelProviderDiscoveryWrite, ModelProviderUsage, ModelProviderWrite, NodeAsset, NodeAssetWrite, NodeAttempt, FlowRunAutomaticRecordSummary, ProviderBulkDeleteResult,
   AgentAttachment, AgentConversation, AgentConversationAnnotation, AgentConversationContext, AgentConversationHead, AgentConversationInputReadiness, AgentConversationReference, AgentConversationSchedule, AgentConversationScheduleOccurrence, AgentPendingConfirmation, AgentWorkDirectory, AgentWorkDirectoryList, AgentWorkspace, AgentWorkspaceCapability, AgentWorkspaceDetails, AgentWorkspaceMcpReadiness, AgentWorkspaceReference, AgentWorkspaceRuntime, AutomaticRecordConfigDocument, CapabilityCollection, CapabilityCollectionWrite, ContextBundleManifest, MarketplaceCatalog, NodeDirectory, NodeRun, OpenHandsConversationEvent, PluginSourceResolution, RunEvent, RuntimeConfirmationBatch, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, GatePolicy, WebsiteCredential, WebsiteCredentialWrite, FlowRunSchedule, FlowRunScheduleOccurrencePage, FlowRunScheduleWrite, FlowRunScheduleTemplate, FlowRunStepwiseRecord, FlowRunStepwiseRecordWrite, StepwiseNodeDraft, StepwiseRecordConfigDocument,
@@ -353,6 +353,8 @@ export const api = {
     request<AuthUser>('/auth/login', json('POST', { username, password })),
   logout: () => request<void>('/auth/logout', json('POST')),
   ldapDirectory: () => request<LdapDirectory>('/auth/ldap-users'),
+  updatePlatformUserProfile: (id: string, profile: { display_name: string; email: string }) =>
+    request<PlatformUser>(`/auth/platform-users/${encodeURIComponent(id)}/profile`, json('PUT', profile)),
   setLdapUserEnabled: (external_subject: string, enabled: boolean) =>
     request<LdapUser>('/auth/ldap-users/enabled', json('PUT', { external_subject, enabled })),
   setLdapUserAgentSessionAccess: (external_subject: string, enabled: boolean) =>

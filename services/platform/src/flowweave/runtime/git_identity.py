@@ -58,7 +58,7 @@ def read():
             "email": email if confirmed else "", "configured": confirmed}
 
 plain(config)
-if "author" in request:
+if "author" in request or "profile" in request:
     # A per-user lock protects the pair; Git independently locks the shared
     # global config when registering a directory condition.
     lock = root / ".flowweave-git-settings.lock"
@@ -70,12 +70,27 @@ if "author" in request:
             raise ValueError("Invalid user configuration lock")
         fcntl.flock(handle, fcntl.LOCK_EX)
         plain(config)
+        automatic = "profile" in request
+        if automatic and config.exists():
+            source = git("--file", str(config), "--get", "flowweave.identitySource", missing=True)
+            if source != "profile":
+                print(json.dumps(read()))
+                sys.exit(0)
+            current = read()
+            if (current["configured"]
+                    and [current["author"], current["email"]] == request["profile"]):
+                print(json.dumps(current))
+                sys.exit(0)
+        if automatic:
+            request["author"], request["email"] = request["profile"]
         previous = config.read_bytes() if config.exists() else None
         descriptor, temporary = tempfile.mkstemp(prefix=".flowweave-gitconfig-", dir=root)
         os.close(descriptor)
         try:
             git("--file", temporary, "user.name", request["author"])
             git("--file", temporary, "user.email", request["email"])
+            git("--file", temporary, "flowweave.identitySource",
+                "profile" if automatic else "manual")
             os.replace(temporary, config)
             registry_lock = Path.home() / ".flowweave-git-registry.lock"
             plain(registry_lock)

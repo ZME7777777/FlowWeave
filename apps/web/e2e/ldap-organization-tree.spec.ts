@@ -72,7 +72,7 @@ test('browses LDAP users by nested organization and preserves authorization cont
   await page.getByRole('button', { name: '账户与设置' }).click();
   await page.getByRole('menuitem', { name: '用户管理' }).click();
   await expect(page.getByRole('heading', { name: '用户管理' })).toBeVisible();
-  await expect(page.getByText('4', { exact: true }).first()).toBeVisible();
+  await expect(page.locator('.ldap-org-panel-title')).toContainText('5');
 
   await page.locator('button.ldap-org-select[title="Engineering"]').click();
   await expect(page.getByText('alice', { exact: true })).toBeVisible();
@@ -122,4 +122,71 @@ test('hides and rejects the direct Agent session entry for an unapproved user', 
   await expect(page.getByRole('button', { name: 'Agent 会话' })).toHaveCount(0);
   await expect(page).not.toHaveURL(/\/agent$/);
   await expect(page.getByText('节点资产', { exact: true }).first()).toBeVisible();
+});
+
+
+test('platform directory edits local account profile without permission switches and supplies confirmed Git identity', async ({ page }) => {
+  let profile = { id: 'local-admin', username: 'flowweave', display_name: '', email: '', role: 'SUPER_ADMIN', enabled: true, agent_session_access: true };
+  const writes: Array<{ display_name: string; email: string }> = [];
+  let failSave = true;
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return json(route, { ...profile, is_super_admin: true, can_use_agent_sessions: true });
+    if (path.endsWith('/auth/ldap-users')) return json(route, { organizations: [], users: [], platform_users: [profile] });
+    if (path.endsWith('/auth/platform-users/local-admin/profile') && request.method() === 'PUT') {
+      const payload = request.postDataJSON();
+      writes.push(payload);
+      if (failSave) return json(route, { error: { code: 'WRITE_FAILED', message: '资料保存失败' } }, 503);
+      profile = { ...profile, ...payload };
+      return json(route, profile);
+    }
+    if (path.endsWith('/settings/git')) return json(route, { author: profile.display_name, email: profile.email, configured: true });
+    if (path.endsWith('/agent-workspaces/default')) return json(route, { id: 'workspace', display_name: 'Agent 工作区', desired_state: 'RUNNING' });
+    if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true });
+    if (path.endsWith('/conversation-activity')) return json(route, { running_binding_ids: [] });
+    if (path.endsWith('/conversations')) return json(route, { items: [], next_cursor: null });
+    if (['/node-directories', '/node-assets', '/capabilities', '/capability-collections', '/model-providers'].some(suffix => path.endsWith(suffix))) return json(route, []);
+    return json(route, { error: { code: 'NOT_FOUND', message: '不存在' } }, 404);
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: '账户与设置' }).click();
+  await page.getByRole('menuitem', { name: '用户管理' }).click();
+  await page.locator('button.ldap-org-select[title="FlowWeave 平台"]').click();
+  const table = page.locator('.ldap-user-table');
+  await expect(table).toContainText('flowweave');
+  await expect(table.getByRole('checkbox')).toHaveCount(0);
+  await expect(table.getByText('默认允许')).toHaveCount(2);
+  await expect(page.getByRole('button', { name: /展开 FlowWeave/ })).toHaveCount(0);
+  await page.getByRole('button', { name: '编辑 flowweave 的资料' }).click();
+  const dialog = page.getByRole('dialog', { name: '编辑账户资料' });
+  await expect(dialog.getByRole('textbox', { name: '姓名', exact: true })).toHaveValue('');
+  await dialog.getByRole('textbox', { name: '姓名', exact: true }).fill('平台用户姓名');
+  await dialog.getByRole('textbox', { name: '邮箱', exact: true }).fill('platform@example.test');
+  await dialog.getByRole('button', { name: '保存', exact: true }).click();
+  await expect(dialog.getByRole('alert')).toHaveText('资料保存失败');
+  await expect(dialog.getByRole('textbox', { name: '姓名', exact: true })).toHaveValue('平台用户姓名');
+  failSave = false;
+  const geometry = await dialog.evaluate(element => ({
+    background: getComputedStyle(element).backgroundColor,
+    closeWidth: element.querySelector('header button')!.getBoundingClientRect().width,
+    inputWidth: element.querySelector('input')!.getBoundingClientRect().width,
+  }));
+  expect(geometry.background).toBe('rgb(255, 255, 255)');
+  expect(geometry.closeWidth).toBeLessThanOrEqual(40);
+  expect(geometry.inputWidth).toBeGreaterThan(260);
+  await page.screenshot({ path: '../../.tmp/fr624-profile-editor.png' });
+  await dialog.getByRole('button', { name: '保存', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(table).toContainText('平台用户姓名');
+  await expect(table).toContainText('platform@example.test');
+  expect(writes.at(-1)).toEqual({ display_name: '平台用户姓名', email: 'platform@example.test' });
+  await page.getByRole('textbox', { name: '搜索用户' }).fill('平台用户姓名');
+  await expect(table.getByRole('row')).toHaveCount(2);
+  await page.screenshot({ path: '../../.tmp/fr624-platform-users.png' });
+  await page.getByRole('button', { name: 'Agent 会话', exact: true }).click();
+  await page.getByRole('button', { name: '工作区设置', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: 'Git 作者' })).toHaveValue('平台用户姓名');
+  await expect(page.getByRole('textbox', { name: 'Git 邮箱' })).toHaveValue('platform@example.test');
 });

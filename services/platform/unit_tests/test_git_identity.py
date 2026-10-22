@@ -111,19 +111,20 @@ def test_git_identity_failed_registration_restores_previous_configuration(tmp_pa
 
 
 def test_git_settings_targets_only_authenticated_user_directory(monkeypatch):
-    from flowweave.modules.agent_workspaces.application import git_settings
+    from flowweave.modules.agent_sessions.application import conversations
+    from flowweave.modules.agent_workspaces.application import git_settings, workspace
     from flowweave.modules.users.application.security import tenant_user
 
     calls = []
-    monkeypatch.setattr(git_settings.workspace, "ensure_user_project_root", lambda *args: None)
+    monkeypatch.setattr(workspace, "ensure_user_project_root", lambda *args: None)
     monkeypatch.setattr(
-        git_settings.agent_sessions.conversations,
+        conversations,
         "terminal_resource_details",
         lambda *args: ("owned", "resource-id"),
     )
 
     class Runtime:
-        def workspace_git_identity(self, handle, *, identity):
+        def workspace_git_identity(self, handle, *, identity, profile=None):
             calls.append((handle.workspace_root, identity))
             return {}
 
@@ -187,3 +188,52 @@ def test_simultaneous_users_register_independent_directory_defaults(tmp_path):
     assert all(result.returncode == 0 for result in results), [r.stderr for r in results]
     for root in roots:
         assert identity(repository(root / "repo"), home) == (root.name, f"{root.name}@example.test")
+
+
+def test_profile_identity_auto_applies_and_tracks_profile_but_preserves_manual_choice(tmp_path):
+    home, root = tmp_path / "home", tmp_path / "user"
+    home.mkdir()
+    root.mkdir()
+    assert operation(root, home, profile=["用户姓名", "name@example.test"]).returncode == 0
+    repo = repository(root / "project" / "nested")
+    assert identity(repo, home) == ("用户姓名", "name@example.test")
+    assert operation(root, home, profile=["新姓名", "new@example.test"]).returncode == 0
+    assert identity(repo, home) == ("新姓名", "new@example.test")
+    environment = {"PATH": os.environ["PATH"], "HOME": str(home), "GIT_CONFIG_NOSYSTEM": "1"}
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "--allow-empty", "-qm", "Verify profile author"],
+        env=environment,
+        check=True,
+    )
+    actual = subprocess.run(
+        ["git", "-C", str(repo), "log", "-1", "--format=%an%n%ae"],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.splitlines()
+    assert actual == ["新姓名", "new@example.test"]
+    assert operation(root, home, author="Manual", email="manual@example.test").returncode == 0
+    assert operation(root, home, profile=["再次更新", "latest@example.test"]).returncode == 0
+    assert identity(repo, home) == ("Manual", "manual@example.test")
+
+
+def test_existing_git_configuration_is_not_misclassified_as_profile_default(tmp_path):
+    home, root = tmp_path / "home", tmp_path / "user"
+    home.mkdir()
+    root.mkdir()
+    assert operation(root, home, author="Existing", email="existing@example.test").returncode == 0
+    subprocess.run(
+        [
+            "git",
+            "config",
+            "--file",
+            str(root / ".flowweave-gitconfig"),
+            "--unset",
+            "flowweave.identitySource",
+        ],
+        check=True,
+    )
+    result = operation(root, home, profile=["Profile", "profile@example.test"])
+    assert result.returncode == 0
+    assert json.loads(result.stdout)["author"] == "Existing"

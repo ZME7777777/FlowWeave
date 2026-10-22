@@ -9100,3 +9100,28 @@ Web typecheck、定向 ESLint、production build、定向 Ruff、新模块 Pyrig
 隔离源码对比均为既有 489 项，新增诊断为零。当前及下一可执行切片均为 NONE。
 沿用会话授权发布同一提交的 platform 与 web，平台同步更新 api／stream-api／worker，
 发布期执行隔离 Runtime 原生 Bash 探针、健康／版本／路由验收与受管收尾。
+
+
+### FR-624 平台账户目录与资料驱动的 Git 默认身份 — DONE
+
+依赖：FR-623 DONE。用户目录合并 LDAP 与数据库非 LDAP 账户，新增一级虚拟“FlowWeave 平台”
+目录；本地账户可由超级管理员编辑姓名、邮箱，既有角色、密码和访问权限保持不变，内置
+超级管理员显示默认允许且不提供权限开关。目录在 local 认证模式或 LDAP 暂不可用时仍可
+管理平台账户；LDAP 目录同步同时更新已开通账户的姓名、邮箱，确保与目录展示一致。
+
+默认 Git 作者严格取当前用户的 display_name，邮箱取 email；资料缺失或非法时不以登录账号
+补全。进入 Agent 工作区、创建会话及后续发送／继续前，经既有原生 Bash API 应用用户目录
+配置；运行中消息在短事务内捕获用户资料，事务外执行仍保持租户身份。自动配置跟踪资料
+变化，手动配置及旧版无来源标记配置保持优先；界面只展示 Runtime 实际确认的生效值。
+沿用每用户锁、原子写、目录条件继承与安全回读，不新增 Conversation 或用户消息。
+
+32 项真实 Git／用户资料／HTTP 授权回归及 248 项 Git／OpenHands adapter 回归通过（包含
+重复运行的 Git 用例）；覆盖姓名而非账号、资料缺失、资料更新、手动优先、目录继承、真实
+提交作者、权限字段拒绝、普通用户拒绝和 LDAP 故障降级。3 项用户目录 Chromium 回归及
+工作区 Git 设置定向回归通过；编辑弹窗几何与截图验收通过。固定实际 Runtime 镜像的隔离
+原生 Bash 探针验证并发用户、资料更新、真实提交作者和手动优先，不挂载生产目录。
+Web typecheck、定向 ESLint／Ruff、production build、git diff --check 与唯一 Alembic head
+0157_background_task_aggregate_type_length 通过；全量 Pyright 与 HEAD 基线均为既有 489 项，
+新增诊断零。当前及下一可执行切片均为 NONE。沿用会话授权发布同一提交的 platform 与 web，
+同步更新 api／stream-api／worker，保留现有 Runtime Provider 与 Agent Runtime，并完成健康、
+版本、路由验收和受管发布收尾。

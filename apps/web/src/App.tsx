@@ -45,7 +45,7 @@ const settingsNav = [
 ];
 
 const superAdminSettingsNav = [
-  { view: 'ldap-users' as const, label: '用户管理', description: '管理 LDAP 用户登录授权', icon: UsersRound },
+  { view: 'ldap-users' as const, label: '用户管理', description: '管理 LDAP 授权和平台账户资料', icon: UsersRound },
 ];
 
 type SettingsView = (typeof settingsNav)[number]['view'] | (typeof superAdminSettingsNav)[number]['view'];

@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from flowweave.bootstrap.container import Container
 from flowweave.modules.users.application import service
-from flowweave.modules.users.application.ldap import LdapDirectory
+from flowweave.modules.users.application.ldap import LdapDirectory, LdapDirectorySnapshot
 from flowweave.modules.users.application.security import FLOWWEAVE_USER_ID, current_principal
 from flowweave.shared.errors import DomainError
 from flowweave.shared.http import Db, get_container, run_sync
@@ -29,6 +29,17 @@ class LdapUserEnabledWrite(BaseModel):
 
     external_subject: str = Field(min_length=1, max_length=200)
     enabled: bool
+
+
+class PlatformUserProfileWrite(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    display_name: str = Field(min_length=1, max_length=200, pattern=r"^[^\x00-\x1f\x7f<>]+$")
+    email: str = Field(
+        min_length=3,
+        max_length=320,
+        pattern=r"^[^\x00-\x1f\x7f\s@<>]+@[^\x00-\x1f\x7f\s@<>]+$",
+    )
 
 
 class LdapAgentSessionUserAccessWrite(BaseModel):
@@ -106,8 +117,32 @@ async def login(
 @router.get("/ldap-users")
 async def ldap_users(db: Db, container: ContainerDep) -> dict[str, object]:
     _require_super_admin()
-    snapshot = await asyncio.to_thread(_ldap_directory(container).directory_snapshot)
-    return await run_sync(db, lambda session: service.ldap_directory(session, snapshot))
+    snapshot = LdapDirectorySnapshot(users=[], organizations=[])
+    warning = None
+    if container.settings.auth_provider == "ldap":
+        try:
+            snapshot = await asyncio.to_thread(_ldap_directory(container).directory_snapshot)
+        except DomainError:
+            warning = "LDAP 目录暂不可用，仍可管理平台账户。"
+    result = await run_sync(db, lambda session: service.ldap_directory(session, snapshot))
+    if warning:
+        result["ldap_warning"] = warning
+    return result
+
+
+@router.put("/platform-users/{user_id}/profile")
+async def update_platform_user_profile(
+    user_id: str, payload: PlatformUserProfileWrite, db: Db
+) -> dict[str, object]:
+    _require_super_admin()
+    if not payload.display_name.strip():
+        raise DomainError("USER_DISPLAY_NAME_REQUIRED", "请填写姓名", 422)
+    return await run_sync(
+        db,
+        lambda session: service.update_platform_user_profile(
+            session, user_id, display_name=payload.display_name, email=payload.email
+        ),
+    )
 
 
 @router.put("/ldap-users/enabled")

@@ -893,7 +893,11 @@ class RuntimePort(Protocol):
     def workspace_snapshot(self, handle: RuntimeHandle, path: str) -> RuntimeWorkspaceSnapshot: ...
 
     def workspace_git_identity(
-        self, handle: RuntimeHandle, *, identity: tuple[str, str] | None = None
+        self,
+        handle: RuntimeHandle,
+        *,
+        identity: tuple[str, str] | None = None,
+        profile: tuple[str, str] | None = None,
     ) -> dict[str, str | bool]: ...
 
     def download_workspace_file(self, handle: RuntimeHandle, path: str) -> RuntimeWorkspaceFile: ...
