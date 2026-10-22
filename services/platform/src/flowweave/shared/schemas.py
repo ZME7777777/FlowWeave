@@ -839,6 +839,13 @@ class CaseStageStateWrite(ApiModel):
     state: Literal["PENDING", "ACTIVE", "COMPLETED", "SKIPPED"]
 
 
+class CaseControlConversationWrite(ApiModel):
+    model_provider_id: str = Field(min_length=1, max_length=36)
+    model_name: str = Field(min_length=1, max_length=240)
+    reasoning_effort: str | None = Field(default=None, max_length=30)
+    capability_version_ids: list[str] = Field(default_factory=list, max_length=100)
+
+
 class StepwiseNodeDraftWrite(NodeRunStart):
     """Editable node configuration for one stepwise record.
 

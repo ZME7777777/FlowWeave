@@ -5,8 +5,12 @@ from typing import Any
 from fastapi import APIRouter
 
 from flowweave.modules.cases import public as service
-from flowweave.shared.http import Db, run_sync
-from flowweave.shared.schemas import CaseCreateWrite, CaseStageStateWrite
+from flowweave.shared.http import Db, IdempotencyKey, command_key, run_sync
+from flowweave.shared.schemas import (
+    CaseControlConversationWrite,
+    CaseCreateWrite,
+    CaseStageStateWrite,
+)
 
 router = APIRouter()
 
@@ -32,4 +36,21 @@ async def set_case_stage_state(
 ) -> dict[str, Any]:
     return await run_sync(
         db, lambda session: service.set_case_stage_state(session, case_id, stage_id, payload)
+    )
+
+
+@router.post("/cases/{case_id}/control-conversation", status_code=201)
+async def create_control_conversation(
+    case_id: str,
+    payload: CaseControlConversationWrite,
+    db: Db,
+    idempotency_key: IdempotencyKey = None,
+) -> dict[str, Any]:
+    key = command_key(
+        idempotency_key,
+        fallback=f"case-control-conversation:{case_id}",
+    )
+    return await run_sync(
+        db,
+        lambda session: service.create_case_control_conversation(session, case_id, payload, key),
     )

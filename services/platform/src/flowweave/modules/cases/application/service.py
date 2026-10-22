@@ -5,10 +5,16 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from flowweave.modules.agent_sessions.public import conversations
+from flowweave.modules.agent_workspaces import public as agent_workspaces
 from flowweave.modules.cases.infrastructure.models import Case, CaseAgentTask, CaseStage
 from flowweave.shared.application.transactions import finish
 from flowweave.shared.errors import conflict, illegal, not_found
-from flowweave.shared.schemas import CaseCreateWrite, CaseStageStateWrite
+from flowweave.shared.schemas import (
+    CaseControlConversationWrite,
+    CaseCreateWrite,
+    CaseStageStateWrite,
+)
 
 
 def _case(db: Session, case_id: str) -> Case:
@@ -71,6 +77,7 @@ def _case_dict(db: Session, item: Case) -> dict[str, Any]:
         "objective": item.objective,
         "state": item.state,
         "control_conversation_binding_id": item.control_conversation_binding_id,
+        "control_work_directory_id": item.control_work_directory_id,
         "row_version": item.row_version,
         "stages": [_stage_dict(stage) for stage in stages],
         "tasks": [_task_dict(task) for task in tasks],
@@ -131,6 +138,44 @@ def set_case_stage_state(
             .values(state="PENDING")
         )
     stage.state = payload.state
+    item.row_version += 1
+    finish(db)
+    return _case_dict(db, item)
+
+
+def create_case_control_conversation(
+    db: Session,
+    case_id: str,
+    payload: CaseControlConversationWrite,
+    idempotency_key: str,
+) -> dict[str, Any]:
+    item = _case(db, case_id)
+    if item.control_conversation_binding_id:
+        return _case_dict(db, item)
+    workspace = agent_workspaces.ensure_default_agent_workspace(db)
+    if item.control_work_directory_id is None:
+        directory = agent_workspaces.create_case_work_directory(
+            db, workspace.id, item.id, f"事项 · {item.name}"
+        )
+        item.control_work_directory_id = str(directory["id"])
+    created = conversations.bootstrap_conversation(
+        db,
+        workspace.id,
+        work_directory_id=item.control_work_directory_id,
+        model_provider_id=payload.model_provider_id,
+        model_name=payload.model_name,
+        reasoning_effort=payload.reasoning_effort,
+        capability_version_ids=tuple(payload.capability_version_ids),
+        content=(
+            f"你是事项“{item.name}”的协调 Agent。\n\n"
+            f"事项目标：{item.objective or '尚未填写'}\n\n"
+            "仅在当前事项工作目录中工作。基于可审计事实协助梳理阶段、风险和后续建议；"
+            "不得直接修改流程模板或已启动的流程节点。"
+        ),
+        idempotency_key=idempotency_key,
+    )
+    item = _case(db, case_id)
+    item.control_conversation_binding_id = str(created["conversation"]["id"])
     item.row_version += 1
     finish(db)
     return _case_dict(db, item)

@@ -24,6 +24,7 @@ class Case(Base):
     objective: Mapped[str] = mapped_column(Text, default="")
     state: Mapped[str] = mapped_column(String(20), default="DRAFT", index=True)
     control_conversation_binding_id: Mapped[str | None] = mapped_column(String(36), unique=True)
+    control_work_directory_id: Mapped[str | None] = mapped_column(String(36), unique=True)
     row_version: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)

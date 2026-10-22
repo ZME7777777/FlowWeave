@@ -143,4 +143,4 @@ git -C /Users/zhengmengen/WorkSpace/openhands/software-agent-sdk-total-tokens-1.
 ## Case 控制面
 
 - `cases`、`case_stages` 和 `case_agent_tasks` 是用户隔离的控制面元数据；迁移必须同步加入 PostgreSQL RLS 策略及 `shared/database.py` 的 `_USER_ISOLATED_TABLES`。
-- 现有 `AgentWorkspace` 使用平台级固定 `scope_key`，不能直接作为按 Case 隔离的长期控制会话宿主。Case 会话接入前须复用 OpenHands 正式会话能力并设计独立宿主/隔离边界，禁止用平台私有对话执行器替代。
+- Case 控制会话参照定时 Agent 会话：复用用户级 Agent Workspace Runtime/容器，但为每个 Case 在当前用户项目根创建 `.flowweave/cases/<case_id>` 工作目录，并将 OpenHands 原生会话 Binding 与该目录版本冻结关联。不得使用平台私有对话执行器。

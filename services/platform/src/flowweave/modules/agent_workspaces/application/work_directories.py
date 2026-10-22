@@ -484,6 +484,30 @@ def create_automation_work_directory(
         raise
 
 
+def create_case_work_directory(
+    db: Session, workspace_id: str, case_id: str, display_name: str
+) -> dict[str, Any]:
+    """Create a user-scoped Case directory within the shared Agent Runtime."""
+
+    root = _project_root(db, workspace_id)
+    relative_path = f".flowweave/cases/{case_id}"
+    target = root / relative_path
+    try:
+        target.mkdir(mode=0o700, parents=True, exist_ok=False)
+    except FileExistsError as exc:
+        raise DomainError("CASE_WORKSPACE_CONFLICT", "事项工作目录已存在", 409) from exc
+    except OSError as exc:
+        raise DomainError("CASE_WORKSPACE_UNAVAILABLE", "无法创建事项工作目录", 503) from exc
+    try:
+        return create_work_directory(db, workspace_id, display_name, (relative_path,))
+    except Exception:
+        try:
+            target.rmdir()
+        except OSError:
+            pass
+        raise
+
+
 def write_automation_files(
     db: Session,
     workspace_id: str,

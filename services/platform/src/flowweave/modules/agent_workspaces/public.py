@@ -52,6 +52,16 @@ def frozen_conversation_work_directory_context(
     return work_directories.frozen_conversation_context(db, workspace_id, version_id)
 
 
+def create_case_work_directory(
+    db: Session, workspace_id: str, case_id: str, display_name: str
+) -> dict[str, Any]:
+    """Create one Case-specific directory below the current user's project root."""
+
+    from flowweave.modules.agent_workspaces.application import work_directories
+
+    return work_directories.create_case_work_directory(db, workspace_id, case_id, display_name)
+
+
 def list_flow_run_work_directories(
     db: Session, flow_run_id: str, node_attempt_id: str
 ) -> dict[str, Any]:
