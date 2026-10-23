@@ -9,6 +9,7 @@ default-value drift.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 from importlib.metadata import distribution, version
@@ -157,6 +158,8 @@ from openhands.sdk.tool.tool import DeclaredResources, ToolExecutor
 from openhands.sdk.utils.command import sanitized_env
 from openhands.sdk.utils.path import get_user_persistence_dir
 from openhands.sdk.utils.redact import redact_api_key_literals, redact_text_secrets
+from openhands.tools.browser_use.definition import BrowserGetStateAction, BrowserObservation
+from openhands.tools.browser_use.impl import BrowserToolExecutor
 from openhands.tools.file_editor.editor import FileEditor
 from openhands.tools.file_editor.exceptions import FileValidationError
 from openhands.tools.preset.default import AgentDefinition
@@ -168,9 +171,9 @@ from openhands.tools.terminal.terminal.tmux_terminal import _new_owned_session
 
 EXPECTED_VERSION = "1.54.0"
 EXPECTED_UPSTREAM_BASE = "f0206428306db687ac9c8d833ece4fb82b015eba"
-EXPECTED_SOURCE_COMMIT = "73e3cd8e4d74ff30c9ed794baf72d977800509d7"
+EXPECTED_SOURCE_COMMIT = "680013269c1852af8670aec19bbdcd396dcdd614"
 EXPECTED_SOURCE_ARCHIVE_SHA256 = (
-    "5fcd3fc5e628572a7e223c954e8fd792b78d768f1d8eba9419a4d88d6490308a"
+    "77de1e6ad3ac15ffc6c68b8f31670e2bd47e544b21e4ae4345bb99defcddc02d"
 )
 PACKAGES = (
     "openhands-agent-server",
@@ -837,6 +840,48 @@ def _assert_quota_fallback_contract() -> None:
     assert strategy.fallback_llms == ["flowweave-fallback"]
 
 
+def _assert_browser_workspace_output_contract() -> None:
+    """Exercise native output ownership with controlled screenshot data, without LLM/Chromium."""
+    image = b"\x89PNG\r\n\x1a\nworkspace-output-contract"
+    native = BrowserObservation.from_text(
+        text="Screenshot taken",
+        screenshot_data=base64.b64encode(image).decode(),
+        full_output_save_dir="/runtime/state/conversations/other/observations",
+    )
+    executor = BrowserToolExecutor.__new__(BrowserToolExecutor)
+    executor._cleanup_initiated = True
+    executor._consecutive_failures = 0
+    executor._action_timeout_seconds = 30.0
+    executor._async_executor = SimpleNamespace(run_async=lambda *_args, **_kwargs: native)
+    with TemporaryDirectory() as directory:
+        outputs = []
+        for user in ("user-a", "user-b", "user-a"):
+            root = (Path(directory) / user / "selected-project").resolve()
+            root.mkdir(parents=True, exist_ok=True)
+            conversation_id = uuid4()
+            observation = executor(
+                BrowserGetStateAction(include_screenshot=True),
+                conversation=SimpleNamespace(
+                    state=SimpleNamespace(
+                        id=conversation_id,
+                        workspace=SimpleNamespace(working_dir=str(root)),
+                    )
+                ),
+            )
+            restored = BrowserObservation.model_validate_json(observation.model_dump_json())
+            saved = next(
+                part.text.removeprefix("Screenshot saved to: ")
+                for part in restored.to_llm_content
+                if isinstance(part, TextContent) and part.text.startswith("Screenshot saved to: ")
+            )
+            target = Path(saved)
+            assert target.parent == root / "artifacts" / "browser" / str(conversation_id)
+            assert target.read_bytes() == image
+            outputs.append(target)
+        assert len(set(outputs)) == 3
+    assert native.full_output_save_dir == "/runtime/state/conversations/other/observations"
+
+
 def main() -> None:
     versions = {package: version(package) for package in PACKAGES}
     assert set(versions.values()) == {EXPECTED_VERSION}, versions
@@ -886,6 +931,7 @@ def main() -> None:
     assert "conversation_runtime_routes_v1" in server_info.capabilities
     assert "conversation_dynamic_context_v1" in server_info.capabilities
     _assert_credential_dynamic_context_contract()
+    _assert_browser_workspace_output_contract()
     _assert_memory_launch_contract()
     event_socket_source = getsource(events_socket)
     bash_socket_source = getsource(bash_events_socket)
@@ -1807,6 +1853,7 @@ def main() -> None:
                 "start_field_count": len(start_fields),
                 "usable_tool_count": len(server_info.usable_tools),
                 "streaming_delta_delivery_is_subscriber_scoped": True,
+                "browser_output_owned_by_calling_workspace": True,
                 "event_log_append_returns_durable_sequence": True,
                 "async_step_consumes_mid_turn_user_message": True,
                 "streaming_delta_refreshes_runtime_idle_timer": True,

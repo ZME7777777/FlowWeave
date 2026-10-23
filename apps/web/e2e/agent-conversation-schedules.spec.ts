@@ -88,6 +88,52 @@ async function openWorkspace(page: Page, events: unknown[] = [], includeSecondCo
   return writes;
 }
 
+test('conversation images resolve in the bound user project and preview with the current binding', async ({ page }) => {
+  const root = '/runtime/workspace/project/users/00000000-0000-0000-0000-000000000001/my-project';
+  const relative = 'artifacts/browser/native-conversation/前端截图.png';
+  const imagePath = `${root}/${relative}`;
+  const fileRoute = '/api/v1/agent-workspaces/schedule-workspace/workspace/file';
+  const staleUrl = `${fileRoute}?path=${encodeURIComponent(imagePath)}&binding_id=stale-binding`;
+  await openWorkspace(page, [
+    { id: 'image-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '查看截图', timestamp: now } },
+    { id: 'image-agent', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'image-user', content: [
+      `![相对截图](${relative})`,
+      `![沙箱截图](sandbox:${imagePath})`,
+      `![绝对截图](${imagePath})`,
+      `![历史接口截图](${staleUrl})`,
+      '![其他用户](sandbox:/runtime/workspace/project/users/00000000-0000-0000-0000-000000000002/secret.png)',
+      '![内部状态](sandbox:/runtime/state/conversations/private.png)',
+      '![越界截图](../../outside.png)',
+    ].join('\n\n'), timestamp: now } },
+  ]);
+  await page.route('**/work-directories', route => json(route, { root: { kind: 'ROOT', display_name: '用户工作区', working_directory: root }, items: [] }));
+  await page.route(/\/workspace(?:\?.*)?$/, route => json(route, { root, scope: { kind: 'ROOT', display_name: '当前项目' }, working_directory: root, files: [], repositories: [], runtime: {}, ide: { gateway: { supported: false } } }));
+  const requests: { path: string | null; binding: string | null }[] = [];
+  await page.route('**/workspace/file?**', route => {
+    const url = new URL(route.request().url());
+    requests.push({ path: url.searchParams.get('path'), binding: url.searchParams.get('binding_id') });
+    return route.fulfill({ contentType: 'image/png', body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL6HwAAAABJRU5ErkJggg==', 'base64') });
+  });
+  await page.goto('/agent/conversations/scheduled-conversation');
+  for (const label of ['相对截图', '沙箱截图', '绝对截图', '历史接口截图']) {
+    const image = page.getByRole('img', { name: label, exact: true });
+    await expect(image).toBeVisible();
+    await expect.poll(() => image.evaluate(element => (element as HTMLImageElement).naturalWidth)).toBe(1);
+    const src = new URL((await image.getAttribute('src'))!, test.info().project.use.baseURL);
+    expect(src.pathname).toBe(fileRoute);
+    expect(src.searchParams.get('path')).toBe(imagePath);
+    expect(src.searchParams.get('binding_id')).toBe('scheduled-conversation');
+  }
+  await expect(page.locator('.conversation-image-unavailable')).toHaveCount(3);
+  await page.getByRole('button', { name: '预览图片：沙箱截图', exact: true }).click();
+  const preview = page.getByRole('dialog', { name: '文件预览' });
+  await expect(preview).toBeVisible();
+  await expect(preview.getByRole('img', { name: '沙箱截图', exact: true })).toBeVisible();
+  expect(requests.length).toBeGreaterThan(0);
+  expect(requests.every(item => item.path === imagePath && item.binding === 'scheduled-conversation')).toBe(true);
+  await page.screenshot({ path: '../../.tmp/fr666-workspace-image-preview.png' });
+});
+
 test('workspace Git settings show only confirmed identity and save with readback', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 800 });
   await openWorkspace(page);

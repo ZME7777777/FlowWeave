@@ -187,7 +187,12 @@ def _key(value: str | None, action: str, identifier: str) -> str:
 
 
 def _project_stream_event(
-    event: dict[str, Any], *, flow_run_id: str, attempt_id: str, binding_id: str
+    event: dict[str, Any],
+    *,
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str,
+    working_directory: str,
 ) -> dict[str, Any]:
     if event.get("type") != "event" or not isinstance(event.get("event"), dict):
         return event
@@ -200,6 +205,7 @@ def _project_stream_event(
         flow_run_id=flow_run_id,
         attempt_id=attempt_id,
         binding_id=binding_id,
+        working_directory=working_directory,
     )
     display_content, references, workspace_references, annotations = (
         agent_sessions.flow_node_conversations.project_conversation_references(content)
@@ -256,6 +262,7 @@ async def _forward_runtime_events(
                         flow_run_id=flow_run_id,
                         attempt_id=attempt_id,
                         binding_id=binding_id,
+                        working_directory=handle.workspace_root,
                     )
                 )
                 event_task = asyncio.create_task(next_event())

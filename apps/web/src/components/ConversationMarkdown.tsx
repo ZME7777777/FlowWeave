@@ -2,7 +2,7 @@ import { createContext, isValidElement, useContext, useEffect, useMemo, useRef, 
 import { Check, Copy } from 'lucide-react';
 import 'katex/dist/katex.min.css';
 import rehypeKatex from 'rehype-katex';
-import ReactMarkdown from 'react-markdown';
+import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import { deploymentBasePath } from '../deploymentPath';
@@ -194,7 +194,7 @@ export function ConversationMarkdown({ children, reveal = false, onOpenWorkspace
   if (!MARKDOWN_SYNTAX.test(markdown)) return <p><ConversationTextReveal reveal={reveal}>{markdown}</ConversationTextReveal></p>;
   return <MarkdownRenderOptionsContext value={renderOptions}>
     <div className={reveal ? 'conversation-text-reveal-block conversation-text-reveal-shimmer' : undefined}>
-      <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex, rehypeFormulaMetadata]} components={{ a: MarkdownLink, img: MarkdownImage, pre: MarkdownPre, span: MarkdownSpan, table: MarkdownTable }}>{markdown}</ReactMarkdown>
+      <ReactMarkdown urlTransform={(url, key) => (key === 'src' ? workspaceImageUrl?.(url) : undefined) ?? defaultUrlTransform(url)} remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex, rehypeFormulaMetadata]} components={{ a: MarkdownLink, img: MarkdownImage, pre: MarkdownPre, span: MarkdownSpan, table: MarkdownTable }}>{markdown}</ReactMarkdown>
     </div>
   </MarkdownRenderOptionsContext>;
 }

@@ -2368,7 +2368,7 @@ test('workspace Markdown links open the referenced node-session file without nav
   await expect.poll(() => browserPanel.evaluate(element => element.getBoundingClientRect().height)).toBeGreaterThan(300);
   await expect(browserPanel.locator('.agent-workspace-browser-toolbar input')).toHaveCSS('text-align', 'left');
   const htmlTab = page.locator('.agent-workspace-browser-tab-panel.active iframe');
-  await expect(htmlTab).toHaveAttribute('sandbox', '');
+  await expect(htmlTab).toHaveAttribute('sandbox', 'allow-popups allow-popups-to-escape-sandbox');
   await expect(htmlTab.contentFrame().getByRole('heading', { name: 'HTML 日报已渲染' })).toBeVisible();
   await expect(htmlTab.contentFrame().getByRole('img', { name: '日报图表' })).toBeVisible();
   await expect(htmlTab.contentFrame().locator('body')).not.toHaveAttribute('data-script-ran', 'true');

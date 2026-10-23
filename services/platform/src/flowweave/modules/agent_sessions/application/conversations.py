@@ -57,6 +57,7 @@ from flowweave.modules.agent_sessions.application.runtime_config import (
     provider_for_config,
 )
 from flowweave.modules.agent_sessions.application.workspace_file_links import (
+    is_runtime_workspace_directory,
     project_sandbox_file_links,
 )
 from flowweave.modules.agent_sessions.infrastructure.models import (
@@ -200,7 +201,7 @@ def _project_sandbox_images(
         parts = relative_path.split("/")
         if any(part in {"", ".", ".."} or part.startswith(".") for part in parts):
             return match.group(0)
-        if re.fullmatch(_RUNTIME_WORKSPACE_PATH, working_directory) is None:
+        if not is_runtime_workspace_directory(working_directory):
             return match.group(0)
         return f"{match.group(1)}{file_url(f'{working_directory}/{relative_path}')}{match.group(3)}"
 

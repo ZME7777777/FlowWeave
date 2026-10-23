@@ -2708,7 +2708,7 @@ function workspaceFileApiPath(href: string): string | undefined {
   try {
     const url = new URL(href, window.location.origin);
     return url.origin === window.location.origin
-      && /^\/api\/v1\/(?:agent-workspaces\/[^/]+|flow-runs\/[^/]+\/attempts\/[^/]+\/agent-sessions)\/workspace\/file$/.test(withoutDeploymentBase(url.pathname))
+      && /^\/api\/v1\/(?:agent-workspaces\/[^/]+|flow-runs\/[^/]+\/(?:node-attempts|attempts)\/[^/]+\/agent-sessions)\/workspace\/file$/.test(withoutDeploymentBase(url.pathname))
       ? url.searchParams.get('path') ?? undefined
       : undefined;
   } catch { return undefined; }
@@ -2739,7 +2739,7 @@ function workspaceMarkdownLinkPath(href: string, workingDirectory?: string, sour
 }
 
 function workspaceMarkdownImagePath(src: string, workingDirectory?: string): string | undefined {
-  return workspaceMarkdownLinkPath(src, workingDirectory);
+  return workspaceMarkdownLinkPath(src.replace(/^sandbox:(?=\/)/i, ''), workingDirectory);
 }
 
 
@@ -9492,15 +9492,16 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     });
   };
   const workspaceMarkdownImageUrl = (href: string) => {
-    if (href.startsWith('/api/v1/')) {
-      return `${import.meta.env.VITE_API_BASE_URL || deploymentBasePath}${href}`;
-    }
     const path = workspaceMarkdownImagePath(href, activeWorkspaceRoot);
-    return workspace && path ? fileUrl(workspace.id, path, {
+    if (workspace && path) return fileUrl(workspace.id, path, {
       bindingId: selected?.id,
       workDirectoryId: selected ? undefined : conversationDraft?.workDirectoryId,
       download: false,
-    }) : undefined;
+    });
+    // Invalid local targets must not fall through to an unscoped browser URL
+    // or retain a stale API URL carrying another conversation's binding.
+    return /^(?:https?:\/\/|data:image\/|blob:)/i.test(href) && workspaceFileApiPath(href) === undefined
+      ? undefined : '';
   };
   const currentWorkspaceName = activeWorkspaceDetailsQuery.data?.scope.display_name
     ?? (selected?.work_directory_id

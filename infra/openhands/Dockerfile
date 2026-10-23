@@ -50,7 +50,7 @@ COPY infra/openhands/pyproject.toml infra/openhands/uv.lock ./
 ENV UV_PROJECT_ENV=/runtime/.venv
 RUN uv sync --frozen --no-dev
 COPY infra/openhands/source.lock.json /runtime/openhands-source.lock.json
-COPY infra/openhands/vendor/openhands-source-73e3cd8e4d74ff30c9ed794baf72d977800509d7.tar.gz /runtime/openhands-source-73e3cd8e4d74ff30c9ed794baf72d977800509d7.tar.gz
+COPY infra/openhands/vendor/openhands-source-680013269c1852af8670aec19bbdcd396dcdd614.tar.gz /runtime/openhands-source-680013269c1852af8670aec19bbdcd396dcdd614.tar.gz
 COPY infra/openhands/fetch_source.py /runtime/fetch_openhands_source.py
 RUN /usr/local/bin/python /runtime/fetch_openhands_source.py \
       --lock /runtime/openhands-source.lock.json \
@@ -89,8 +89,8 @@ COPY infra/openhands/contract_check.py \
      /opt/openhands-source/openhands-agent-server/openhands/agent_server/flowweave_contract_check.py
 COPY infra/openhands/plugin_resolver.py /runtime/plugin_resolver.py
 ENV PATH="/runtime/.venv/bin:/usr/local/bin:$PATH"
-ENV OPENHANDS_BUILD_GIT_SHA="73e3cd8e4d74ff30c9ed794baf72d977800509d7" \
-    OPENHANDS_BUILD_GIT_REF="73e3cd8e4d74ff30c9ed794baf72d977800509d7"
+ENV OPENHANDS_BUILD_GIT_SHA="680013269c1852af8670aec19bbdcd396dcdd614" \
+    OPENHANDS_BUILD_GIT_REF="680013269c1852af8670aec19bbdcd396dcdd614"
 RUN /runtime/.venv/bin/python /runtime/contract_check.py
 RUN uv pip install --python /runtime/.venv/bin/python pip==25.1.1 \
  && ln -sf /runtime/.venv/bin/pip /usr/local/bin/pip \

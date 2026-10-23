@@ -353,7 +353,11 @@ def test_sandbox_file_links_preserve_unicode_paths_and_binding(
         route = "/api/v1/agent-workspaces/workspace-1/workspace/file"
     else:
         projected = flow_node_conversations.project_sandbox_images(
-            content, flow_run_id="flow-run-1", attempt_id="attempt-1", binding_id="binding-1"
+            content,
+            flow_run_id="flow-run-1",
+            attempt_id="attempt-1",
+            binding_id="binding-1",
+            working_directory=root,
         )
         route = "/api/v1/flow-runs/flow-run-1/node-attempts/attempt-1/agent-sessions/workspace/file"
 
@@ -417,6 +421,60 @@ def test_workspace_generated_images_project_svg_and_preserve_untrusted_paths() -
     )
 
 
+@pytest.mark.parametrize("host", ["workspace", "flow-node"])
+@pytest.mark.parametrize(
+    "root",
+    [
+        "/runtime/workspace/project/users/00000000-0000-0000-0000-000000000001/my-project",
+        "/runtime/workspace/project/users/00000000-0000-0000-0000-000000000002/other-project",
+        "/runtime/workspace/project/00000000-0000-0000-0000-000000000003/record-project",
+    ],
+)
+def test_browser_images_resolve_from_the_bound_workspace(host: str, root: str) -> None:
+    relative = "artifacts/browser/native-conversation/browser_screenshot_12345678.png"
+    content = f"![截图]({relative})"
+    if host == "workspace":
+        projected = session_conversations.project_sandbox_images(
+            content, workspace_id="workspace", binding_id="binding", working_directory=root
+        )
+    else:
+        projected = flow_node_conversations.project_sandbox_images(
+            content,
+            flow_run_id="run",
+            attempt_id="attempt",
+            binding_id="binding",
+            working_directory=root,
+        )
+    href = projected.removeprefix("![截图](").removesuffix(")")
+    assert parse_qs(urlsplit(href).query) == {
+        "path": [f"{root}/{relative}"],
+        "binding_id": ["binding"],
+    }
+
+
+@pytest.mark.parametrize("host", ["workspace", "flow-node"])
+@pytest.mark.parametrize(
+    "root", ["", "/tmp", "/runtime/workspace/project/../other", "/runtime/workspace/project//a"]
+)
+def test_browser_image_projection_does_not_fallback_from_invalid_workspace(
+    host: str, root: str
+) -> None:
+    content = "![截图](artifacts/browser/screenshot.png)"
+    if host == "workspace":
+        result = session_conversations.project_sandbox_images(
+            content, workspace_id="workspace", binding_id="binding", working_directory=root
+        )
+    else:
+        result = flow_node_conversations.project_sandbox_images(
+            content,
+            flow_run_id="run",
+            attempt_id="attempt",
+            binding_id="binding",
+            working_directory=root,
+        )
+    assert result == content
+
+
 def test_node_workspace_generated_images_project_svg_and_preserve_untrusted_paths() -> None:
     content = "\n".join(
         (
@@ -432,6 +490,7 @@ def test_node_workspace_generated_images_project_svg_and_preserve_untrusted_path
         flow_run_id="flow-run-1",
         attempt_id="attempt-1",
         binding_id="binding-1",
+        working_directory="/runtime/workspace/project",
     )
 
     file_url = (

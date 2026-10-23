@@ -77,6 +77,7 @@ from flowweave.modules.agent_sessions.application.runtime_config import (
     reserve_flow_node_binding,
 )
 from flowweave.modules.agent_sessions.application.workspace_file_links import (
+    is_runtime_workspace_directory,
     project_sandbox_file_links,
 )
 from flowweave.modules.agent_sessions.public import (
@@ -330,7 +331,12 @@ _ABSOLUTE_WORKSPACE_MARKDOWN_IMAGE = re.compile(
 
 
 def project_sandbox_images(
-    content: str, *, flow_run_id: str, attempt_id: str, binding_id: str
+    content: str,
+    *,
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str,
+    working_directory: str,
 ) -> str:
     """Map Runtime-local files and safe relative images to the scoped FlowRun endpoint.
 
@@ -350,7 +356,9 @@ def project_sandbox_images(
         parts = relative_path.split("/")
         if any(part in {"", ".", ".."} or part.startswith(".") for part in parts):
             return match.group(0)
-        return f"{match.group(1)}{file_url(f'{_RUNTIME_PROJECT}/{relative_path}')}{match.group(3)}"
+        if not is_runtime_workspace_directory(working_directory):
+            return match.group(0)
+        return f"{match.group(1)}{file_url(f'{working_directory}/{relative_path}')}{match.group(3)}"
 
     def replace_absolute_workspace_url(match: re.Match[str]) -> str:
         return f"{match.group(1)}{file_url(match.group(2))}{match.group(3)}"
@@ -2780,6 +2788,7 @@ def _event_batch_dict(
                 flow_run_id=node_run.flow_run_id,
                 attempt_id=attempt.id,
                 binding_id=binding.id,
+                working_directory=binding.working_directory or "",
             )
         display_content, references, workspace_references, annotations = (
             project_conversation_references(str(payload.get("content") or ""))

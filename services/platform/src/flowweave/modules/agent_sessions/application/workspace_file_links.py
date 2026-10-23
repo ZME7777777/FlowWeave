@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
+from pathlib import PurePosixPath
 from urllib.parse import unquote
 
 # A sandbox URL is a complete destination, not an ASCII filename prefix.
@@ -11,6 +12,17 @@ _SANDBOX_WORKSPACE_FILE = re.compile(
     r"""sandbox:(/runtime/workspace/(?:project|[0-9a-f-]{36})/"""
     r"""(?:[^\s<>"'`()\\]|\([^\s<>"'`()\\]*\))+)(?=$|[\s<>"'`)])"""
 )
+
+
+def is_runtime_workspace_directory(path: str) -> bool:
+    """Accept a binding's canonical working directory, including nested projects."""
+    parsed = PurePosixPath(path)
+    return (
+        parsed.as_posix() == path
+        and ".." not in parsed.parts
+        and re.fullmatch(r"/runtime/workspace/(?:project|[0-9a-f-]{36})(?:/[^/]+)*", path)
+        is not None
+    )
 
 
 def project_sandbox_file_links(content: str, file_url: Callable[[str], str]) -> str:

@@ -92,6 +92,40 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 
 ## 6. 任务清单
 
+### FR-666 浏览器截图归属当前会话工作区 — DONE
+
+依赖：FR-665 DONE。固定 OpenHands 浏览器在每次原生 Tool 调用返回时，以正式
+conversation.state.workspace.working_dir 和 conversation ID 冻结本次 Observation 的
+输出目录为 `<当前工作区>/artifacts/browser/<原生会话 ID>/`；不修改共享执行器的目录，
+截图与长输出不再沿用首个会话的内部 observations 路径。阻止输出目录及截图文件符号
+链接；事件序列化／恢复保留当次目录。OpenHands baseline 独立提交
+`680013269c1852af8670aec19bbdcd396dcdd614`，同步 source lock、不可变归档、Dockerfile、
+provenance 和平台／镜像契约，归档 SHA-256 为
+`77de1e6ad3ac15ffc6c68b8f31670e2bd47e544b21e4ae4345bb99defcddc02d`。
+
+Agent Workspace 相对图片支持绑定的任意规范子工作区；FlowRun 的 REST 和 WebSocket
+图片投影显式使用绑定／已授权 handle 的工作目录，不再回退共享 project 根。
+Markdown 图片在 URL 清洗前解析为当前 binding 的文件接口，支持相对、绝对、sandbox
+及历史 API 图片地址；拒绝其他用户目录、内部状态与越界地址，保留中央预览。
+不改变工作区绑定、共享浏览器生命周期，也不迁移历史内部文件或部署。
+
+验收：原生浏览器输出／Observation／ToolSet 36 项、平台图片投影 36 项、源码供应链与
+固定归档架构检查 5 项、既有图片投影接口 1 项通过。新归档经正式 fetch_source 校验和
+解包，四包版本一致，使用该归档模块执行新增原生输出探针通过；覆盖两个用户、同工作区
+多会话、实际截图字节落盘、事件恢复和符号链接拒绝。Web typecheck、受影响 ESLint、
+Pyright 新路径模块零错误、受影响 Ruff／Python AST、diff／依赖／状态核对通过。
+Chromium 两项定向 E2E 通过，覆盖子工作区中文图片、旧 binding 重绑定、越界拒绝、
+中央图片预览及 FlowRun 文件预览；同步修正既有 HTML 预览测试过时的 sandbox 断言，
+与已有 popup 约定一致，产品 sandbox 行为未变。实际预览截图已核对。
+
+扩展检查为 112 passed／28 failed；在修改前提交的隔离源码与测试中逐项复现相同 28 个
+失败（会话夹具 18、既有架构检查 10），无新增失败。额外目录／文件作用域检查为
+1 passed／3 failed，三个旧夹具失败亦在修改前提交逐项复现。原生 executor 扩展套件因
+既有浏览器初始化超时中止（16 passed、3 setup errors），不将其计为通过；独立输出、
+Observation 和 ToolSet 的上述 36 项全部完成。未执行模型、重建完整 Runtime 镜像或
+生产会话验收；新镜像构建时仍须运行完整 contract_check。Alembic 唯一 head 保持
+0162_merge_history_credential，无迁移。当前与下一可执行切片均为 NONE。
+
 ### 稳定性审计修复清单（2026-09-12）
 
 | 切片 | 风险 | 状态 | 范围 |
