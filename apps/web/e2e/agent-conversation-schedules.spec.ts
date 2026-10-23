@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { chmod, mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -2746,5 +2746,54 @@ test('scheduled conversation API file links preview and download with the active
   await preview.getByRole('link', { name: '下载', exact: true }).click();
   expect((await downloadEvent).suggestedFilename()).toBe('report.xlsx');
   expect(downloaded).toBe(true);
+  await expect(page).toHaveURL(/\/agent\/schedules\/conversations\/scheduled-run-1$/);
+});
+
+test('scheduled Chinese text file links keep the complete path for preview and download', async ({ page }) => {
+  const root = '/runtime/workspace/project/users/00000000-0000-0000-0000-000000000001/.flowweave/automations/00000000-0000-0000-0000-000000000002';
+  const filename = '2026-10-23_美股估值增量任务受影响证券摘要.txt';
+  const report = `${root}/${filename}`;
+  const content = '受影响证券文本摘要\n这是用于验证中文文件预览和下载的测试文本。\n';
+  const query = new URLSearchParams({ path: report, binding_id: 'scheduled-run-1' });
+  const apiLink = `/api/v1/agent-workspaces/schedule-workspace/workspace/file?${query}`;
+  await openWorkspace(page, [
+    { id: 'file-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '导出文本', timestamp: now } },
+    { id: 'file-agent', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'file-user', content: `[下载受影响证券文本摘要](${apiLink})`, timestamp: now } },
+  ]);
+  await page.route('**/api/v1/agent-workspaces/*/conversations/scheduled-run-1', route => json(route, { id: 'scheduled-run-1', display_title: '定时报告', lifecycle: 'ACTIVE', streaming_callback_ready: true, write_available: true, working_directory: root, created_at: now, updated_at: now }));
+  await page.route('**/schedule-workspace/workspace?**', route => json(route, { root, working_directory: root, scope: { kind: 'WORK_DIRECTORY', display_name: '定时报告' }, files: [], repositories: [], runtime: {}, ide: { gateway: { supported: false } } }));
+  const reads: string[] = [];
+  await page.route('**/schedule-workspace/workspace/file?**', async route => {
+    const url = new URL(route.request().url());
+    expect(url.searchParams.get('path')).toBe(report);
+    expect(url.searchParams.get('binding_id')).toBe('scheduled-run-1');
+    const download = url.searchParams.get('download') === 'true';
+    reads.push(download ? 'download' : 'preview');
+    if (!download) expect(url.searchParams.get('preview')).toBe('true');
+    await route.fulfill({
+      contentType: 'text/plain; charset=utf-8',
+      headers: {
+        'Content-Disposition': `${download ? 'attachment' : 'inline'}; filename*=UTF-8''${encodeURIComponent(filename)}`,
+        'X-Preview-Total-Bytes': String(Buffer.byteLength(content)),
+      },
+      body: content,
+    });
+  });
+  await page.goto('/agent/schedules/conversations/scheduled-run-1');
+  await page.getByRole('link', { name: '下载受影响证券文本摘要' }).click();
+  const preview = page.getByRole('dialog', { name: '文件预览' });
+  await expect(preview.getByRole('heading', { name: filename, exact: true })).toBeVisible();
+  await expect(preview.locator('.agent-file-preview-dialog-content')).toContainText('这是用于验证中文文件预览和下载的测试文本。');
+  expect(reads).toContain('preview');
+  expect(reads).not.toContain('download');
+  await page.screenshot({ path: '../../.tmp/fr654-chinese-text-preview.png' });
+  const downloadEvent = page.waitForEvent('download');
+  await preview.getByRole('link', { name: '下载', exact: true }).click();
+  const download = await downloadEvent;
+  expect(download.suggestedFilename()).toBe(filename);
+  const output = path.resolve('../../.tmp/fr654-text-download.txt');
+  await download.saveAs(output);
+  expect(await readFile(output, 'utf8')).toBe(content);
+  expect(reads.filter(read => read === 'download')).toHaveLength(1);
   await expect(page).toHaveURL(/\/agent\/schedules\/conversations\/scheduled-run-1$/);
 });

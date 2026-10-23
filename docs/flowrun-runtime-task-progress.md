@@ -10022,3 +10022,24 @@ platform／web 的 remote-release-finish 均通过健康、版本门禁并完成
 回收三份过期受管成功上下文及两个过期精确 rollback tags，保留每个 scope 最近
 三份成功上下文和所有引用版本，未清理共享 BuildKit、容器、卷、Workspace 或备份。
 发布包仅来自上述固定提交，发布过程中出现的其他在途改动完整保留且未纳入发布。
+
+
+### FR-654 中文工作区文件链接完整投影 — DONE
+
+依赖：FR-653 DONE。修复 sandbox 文件链接投影在中文文件名处截断、污染 binding_id，
+进而丢失文本预览后缀的问题；Agent Workspace 与 FlowRun 节点会话共用完整目标解析。
+保留文件接口的宿主授权与路径隔离，验证中文文本、图片、编码路径及既有图片投影，
+运行定向 Python／浏览器回归、静态检查和任务状态核对；不部署。
+
+验收：旧代码下新增中文与编码路径的 12 项回归全部复现路径截断与 binding_id 污染。
+修复后 24 项 PostgreSQL 定向测试通过，覆盖两个宿主的中文目录／文件名、emoji、
+括号、URL 编码、既有图片投影，以及定时任务真实隔离工作区的预览、完整下载和
+跨工作目录访问拒绝。两个宿主使用共享 sandbox 文件链接投影，完整编码 path 与
+binding_id；原生事件不变，不通过消息标签猜测文件身份。
+
+2 项 Chromium 定向回归通过，覆盖既有 Excel 下载和中文文本预览、中文下载文件名、
+下载字节内容与当前会话 binding。截图核对中文 .txt 标题与正文正常显示；浏览器
+使用受控 API，服务端使用隔离测试文件，未读取线上文件或发送真实消息。
+Web typecheck、受影响 E2E ESLint、Python Ruff 和新增共享模块 Pyright 通过；
+git diff --check、CURRENT 唯一性与依赖核对通过，Alembic 唯一 head 仍为
+0158_schedule_china_timezone，无迁移。当前及下一可执行切片均为 NONE，未部署。

@@ -1,4 +1,5 @@
 from datetime import timedelta
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from sqlalchemy import select
@@ -258,11 +259,27 @@ def test_continue_mode_reuses_latest_run_after_switch_and_repeated_delivery(
         assert rows[0]["conversation"]["unread_origin"] == "MANUAL"
 
 
+@pytest.mark.parametrize(
+    ("filename", "content", "content_type"),
+    [
+        (
+            "report.xlsx",
+            b"xlsx-fixture",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ),
+        (
+            "2026-10-23_美股估值增量任务受影响证券摘要.txt",
+            "受影响证券文本摘要\n测试内容。\n".encode(),
+            "text/plain",
+        ),
+    ],
+)
 def test_scheduled_files_download_in_bound_scope_without_exposing_other_automations(
-    settings, db_session_factory
+    settings, db_session_factory, filename, content, content_type
 ):
     from uuid import uuid4
 
+    from flowweave.modules.agent_sessions.application.conversations import project_sandbox_images
     from flowweave.modules.agent_workspaces.application import workspace as workspace_files
 
     with db_session_factory() as db:
@@ -273,8 +290,8 @@ def test_scheduled_files_download_in_bound_scope_without_exposing_other_automati
         version = directory["current_version"]
         root = workspace_files.ensure_user_project_root(db, workspace.id)
         relative_path = version["selected_paths"][0]
-        report = root / relative_path / "report.xlsx"
-        report.write_bytes(b"xlsx-fixture")
+        report = root / relative_path / filename
+        report.write_bytes(content)
         binding = AgentConversationBinding(
             workspace_id=workspace.id,
             runtime_session_id=str(uuid4()),
@@ -288,11 +305,26 @@ def test_scheduled_files_download_in_bound_scope_without_exposing_other_automati
         )
         db.add(binding)
         db.flush()
-        runtime_path = f"{version['working_directory']}/report.xlsx"
-        downloaded = workspace_files.download(db, workspace.id, runtime_path, binding_id=binding.id)
-        assert downloaded.content == b"xlsx-fixture"
-        assert downloaded.filename == "report.xlsx"
-        assert downloaded.content_type.endswith("spreadsheetml.sheet")
+        runtime_path = f"{version['working_directory']}/{filename}"
+        projected = project_sandbox_images(
+            f"[下载](sandbox:{runtime_path})",
+            workspace_id=workspace.id,
+            binding_id=binding.id,
+            working_directory=version["working_directory"],
+        )
+        query = parse_qs(urlsplit(projected.removeprefix("[下载](").removesuffix(")")).query)
+        assert query == {"path": [runtime_path], "binding_id": [binding.id]}
+        for preview in (False, True):
+            downloaded = workspace_files.download(
+                db,
+                workspace.id,
+                query["path"][0],
+                binding_id=query["binding_id"][0],
+                preview=preview,
+            )
+            assert downloaded.content == content
+            assert downloaded.filename == filename
+            assert downloaded.content_type == content_type
         with pytest.raises(DomainError):
             workspace_files.download(db, workspace.id, runtime_path)
         other = work_directories.create_automation_work_directory(

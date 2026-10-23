@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import parse_qs, quote, urlsplit
 from uuid import uuid4
 
 import pytest
@@ -32,6 +33,9 @@ from flowweave.modules.agent_sessions.application.host import (
     ACCESS_TERMINAL,
     CREATE_SESSIONS,
     READ_SESSIONS,
+)
+from flowweave.modules.agent_sessions.application.workspace_file_links import (
+    project_sandbox_file_links,
 )
 from flowweave.modules.agent_sessions.infrastructure.models import AgentConversationUsageBucket
 from flowweave.modules.agent_sessions.public import AgentConversationBinding
@@ -319,6 +323,58 @@ def test_plain_message_bypasses_context_envelope() -> None:
     assert references == ()
     assert annotations == ()
     assert workspace_references == ()
+
+
+@pytest.mark.parametrize("host", ["workspace", "flow-node"])
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "2026-10-23_美股估值增量任务受影响证券摘要.txt",
+        "中文目录/报告📄.txt",
+        "图表/收益变化.svg",
+        "报告(最终版).txt",
+    ],
+)
+@pytest.mark.parametrize("encoded", [False, True])
+def test_sandbox_file_links_preserve_unicode_paths_and_binding(
+    host: str, filename: str, encoded: bool
+) -> None:
+    root = (
+        "/runtime/workspace/project/users/00000000-0000-0000-0000-000000000001"
+        "/.flowweave/automations/00000000-0000-0000-0000-000000000002"
+    )
+    path = f"{root}/{filename}"
+    target = quote(path) if encoded else path
+    content = f"[下载受影响证券文本摘要](sandbox:{target})"
+    if host == "workspace":
+        projected = session_conversations.project_sandbox_images(
+            content, workspace_id="workspace-1", binding_id="binding-1", working_directory=root
+        )
+        route = "/api/v1/agent-workspaces/workspace-1/workspace/file"
+    else:
+        projected = flow_node_conversations.project_sandbox_images(
+            content, flow_run_id="flow-run-1", attempt_id="attempt-1", binding_id="binding-1"
+        )
+        route = "/api/v1/flow-runs/flow-run-1/node-attempts/attempt-1/agent-sessions/workspace/file"
+
+    href = projected.removeprefix("[下载受影响证券文本摘要](").removesuffix(")")
+    url = urlsplit(href)
+    assert url.path == route
+    assert parse_qs(url.query) == {"path": [path], "binding_id": ["binding-1"]}
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "/etc/passwd",
+        "/runtime/state/conversations/secret.json",
+        "/runtime/workspace/project-other/report.txt",
+        "/runtime/workspace/project/report%FF.txt",
+    ],
+)
+def test_sandbox_file_links_leave_unsupported_destinations_intact(target: str) -> None:
+    content = f"[文件](sandbox:{target})"
+    assert project_sandbox_file_links(content, lambda path: f"/file?{path}") == content
 
 
 def test_workspace_generated_images_project_svg_and_preserve_untrusted_paths() -> None:

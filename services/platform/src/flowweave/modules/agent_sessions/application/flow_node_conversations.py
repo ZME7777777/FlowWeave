@@ -76,6 +76,9 @@ from flowweave.modules.agent_sessions.application.runtime_config import (
     provider_for_config,
     reserve_flow_node_binding,
 )
+from flowweave.modules.agent_sessions.application.workspace_file_links import (
+    project_sandbox_file_links,
+)
 from flowweave.modules.agent_sessions.public import (
     AgentConversationBinding,
     AgentConversationCapability,
@@ -316,9 +319,6 @@ _UNREADY_EXECUTION_STATUSES = (
 )
 _RUNTIME_PROJECT = PurePosixPath("/runtime/workspace/project")
 _RUNTIME_WORKSPACE_PATH = r"/runtime/workspace/(?:project(?:/users/[0-9a-f-]{36})?|[0-9a-f-]{36})"
-_SANDBOX_PROJECT_IMAGE = re.compile(
-    rf"sandbox:({_RUNTIME_WORKSPACE_PATH}/[A-Za-z0-9][A-Za-z0-9._/-]*)"
-)
 _RELATIVE_MARKDOWN_IMAGE = re.compile(
     r"(!\[[^\]\r\n]*\]\()([A-Za-z0-9][A-Za-z0-9._/-]*\.(?:avif|gif|jpe?g|png|svg|webp))(\))",
     re.IGNORECASE,
@@ -332,7 +332,7 @@ _ABSOLUTE_WORKSPACE_MARKDOWN_IMAGE = re.compile(
 def project_sandbox_images(
     content: str, *, flow_run_id: str, attempt_id: str, binding_id: str
 ) -> str:
-    """Map Runtime-local and safe relative images to the scoped FlowRun file endpoint.
+    """Map Runtime-local files and safe relative images to the scoped FlowRun endpoint.
 
     Only node-workspace paths are projected. The endpoint still validates the
     FlowRun, Attempt and Conversation before returning the inline image.
@@ -345,9 +345,6 @@ def project_sandbox_images(
             f"/agent-sessions/workspace/file?{query}"
         )
 
-    def replace_sandbox_url(match: re.Match[str]) -> str:
-        return file_url(match.group(1))
-
     def replace_relative_url(match: re.Match[str]) -> str:
         relative_path = match.group(2)
         parts = relative_path.split("/")
@@ -358,7 +355,7 @@ def project_sandbox_images(
     def replace_absolute_workspace_url(match: re.Match[str]) -> str:
         return f"{match.group(1)}{file_url(match.group(2))}{match.group(3)}"
 
-    projected = _SANDBOX_PROJECT_IMAGE.sub(replace_sandbox_url, content)
+    projected = project_sandbox_file_links(content, file_url)
     projected = _ABSOLUTE_WORKSPACE_MARKDOWN_IMAGE.sub(replace_absolute_workspace_url, projected)
     return _RELATIVE_MARKDOWN_IMAGE.sub(replace_relative_url, projected)
 
