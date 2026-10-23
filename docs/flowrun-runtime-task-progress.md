@@ -9876,3 +9876,18 @@ SHA-256 与运行镜像一致；未向真实会话发送测试消息，不将受
 remote-release-finish 完成健康、版本门禁与受管收尾，回收一份过期成功 Web 上下文
 和一个过期精确 rollback tag，保留最近三份成功上下文、回滚版本和所有引用版本。
 未修改远端 Compose／env、Runtime、数据库、卷或工作区，未清理共享 BuildKit。
+
+
+### FR-650 能力上传按钮共享样式恢复 — DONE
+
+依赖：FR-649 DONE。追溯到 `a83b5612`（2026-10-22，节点资产编辑器整合）在替换
+旧编辑器样式时连带删除共享 `.file-button` 定位与透明输入规则，导致 Skill、Plugin、
+Agent Definition 和 MCP 脚本上传显示原生文件控件。恢复原有两条共享规则并独立放置，
+验证按钮外观、文件选择与既有能力编辑入口；仅修改 Web 与协作文档，不部署。
+
+验收：Web typecheck、2 项既有 Chromium 定向回归（Context 上传表单与 Skill 短屏
+分页／下载）通过。1440px／1024px 下四类上传入口的透明覆盖、按钮边界、真实文件
+选择器均通过；Skill 文件选择后进入上传中禁用状态，取消导入后恢复可用。截图确认
+恢复原有图标和文字按钮，不再显示原生文件控件；1024px Plugin 工具栏沿用原有换行。
+git diff --check、CURRENT 唯一性与依赖核对通过，Alembic 唯一 head 仍为
+0158_schedule_china_timezone。当前及下一可执行切片均为 NONE；未部署。
