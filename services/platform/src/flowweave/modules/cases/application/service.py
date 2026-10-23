@@ -59,7 +59,79 @@ def _stage(db: Session, item: Case, stage_id: str) -> CaseStage:
     return stage
 
 
-def _stage_dict(item: CaseStage) -> dict[str, Any]:
+def _stage_execution_summary(db: Session, stage: CaseStage) -> dict[str, Any] | None:
+    if not stage.current_execution_flow_run_id:
+        return None
+    run = db.get(FlowRun, stage.current_execution_flow_run_id)
+    if run is None:
+        return {"state": "MISSING", "message": "当前执行副本已不可用"}
+    detail = orchestration.run_detail(db, run.id, include_artifacts=False)
+    active_snapshot = next(
+        (
+            snapshot
+            for snapshot in detail["snapshots"]
+            if snapshot["id"] == detail["active_snapshot_id"]
+        ),
+        detail["snapshots"][-1] if detail["snapshots"] else None,
+    )
+    nodes = {
+        str(node.get("instance_key") or ""): node
+        for node in (active_snapshot or {}).get("definition", {}).get("nodes", [])
+    }
+    node_runs = list(detail["node_runs"])
+    accepted_keys = {
+        str(node_run["flow_node_snapshot_key"])
+        for node_run in node_runs
+        if node_run["state"] == "ACCEPTED"
+    }
+    terminal_attempt_states = {"ACCEPTED", "REJECTED", "CANCELLED"}
+    active_node = next(
+        (
+            node_run
+            for node_run in reversed(node_runs)
+            if not node_run["attempts"]
+            or node_run["attempts"][-1]["state"] not in terminal_attempt_states
+        ),
+        None,
+    )
+    active = None
+    if active_node is not None:
+        key = str(active_node["flow_node_snapshot_key"])
+        node = nodes.get(key, {})
+        attempt = active_node["attempts"][-1] if active_node["attempts"] else None
+        active = {
+            "node_key": key,
+            "node_name": str(node.get("alias") or node.get("instance_key") or key),
+            "state": attempt["state"] if attempt else active_node["state"],
+            "error_code": attempt.get("error_code") if attempt else None,
+        }
+    ready_node_keys: list[str] = []
+    if stage.execution_mode == "STEPWISE" and detail["state"] not in {"COMPLETED", "CANCELLED"}:
+        definition = (active_snapshot or {}).get("definition", {})
+        drafts = detail.get("stepwise_node_drafts") or {}
+        started_keys = {str(node_run["flow_node_snapshot_key"]) for node_run in node_runs}
+        for node_key in drafts:
+            if node_key in started_keys:
+                continue
+            predecessors = {
+                str(edge.get("source_instance_key") or "")
+                for edge in definition.get("edges", [])
+                if str(edge.get("target_instance_key") or "") == node_key
+            }
+            if predecessors.issubset(accepted_keys):
+                ready_node_keys.append(node_key)
+    return {
+        "flow_run_id": run.id,
+        "state": detail["state"],
+        "progress": detail["progress"],
+        "active_node": active,
+        "ready_node_keys": sorted(ready_node_keys),
+        "automatic_block": detail["automatic_block"],
+        "finished_at": detail.get("finished_at"),
+    }
+
+
+def _stage_dict(db: Session, item: CaseStage) -> dict[str, Any]:
     return {
         "id": item.id,
         "case_id": item.case_id,
@@ -71,6 +143,7 @@ def _stage_dict(item: CaseStage) -> dict[str, Any]:
         "current_execution_flow_run_id": item.current_execution_flow_run_id,
         "execution_mode": item.execution_mode,
         "state": item.state,
+        "execution": _stage_execution_summary(db, item),
         "created_at": item.created_at.isoformat(),
         "updated_at": item.updated_at.isoformat(),
     }
@@ -198,7 +271,7 @@ def _case_dict(db: Session, item: Case) -> dict[str, Any]:
         "control_conversation_binding_id": item.control_conversation_binding_id,
         "control_work_directory_id": item.control_work_directory_id,
         "row_version": item.row_version,
-        "stages": [_stage_dict(stage) for stage in stages],
+        "stages": [_stage_dict(db, stage) for stage in stages],
         "flow_run_ids": _case_flow_runs(db, item.id),
         "tasks": [_task_dict(task) for task in tasks],
         "decision_proposals": [_proposal_dict(proposal) for proposal in proposals],

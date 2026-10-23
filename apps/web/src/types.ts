@@ -471,10 +471,18 @@ export interface FlowRunRevisionDraft {
 }
 
 
+export interface CaseStageExecution {
+  flow_run_id?: string; state: string; message?: string;
+  progress?: { accepted: number; terminal: number; active: number };
+  active_node?: { node_key: string; node_name: string; state: AttemptState; error_code?: string | null } | null;
+  ready_node_keys?: string[];
+  automatic_block?: FlowRun['automatic_block'];
+  finished_at?: string | null;
+}
 export interface CaseStage {
   id: string; case_id: string; stage_key: string; name: string; objective: string;
   position: number; flow_run_id?: string | null; current_execution_flow_run_id?: string | null; execution_mode: 'STEPWISE' | 'CONTINUOUS';
-  state: 'PENDING' | 'ACTIVE' | 'COMPLETED' | 'SKIPPED';
+  state: 'PENDING' | 'ACTIVE' | 'COMPLETED' | 'SKIPPED'; execution?: CaseStageExecution | null;
   created_at: string; updated_at: string;
 }
 export interface CaseStageTemplate {

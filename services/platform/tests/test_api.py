@@ -251,6 +251,12 @@ def test_case_stage_launch_copies_configured_continuous_template(client, skill_c
         == launched_stage["current_execution_flow_run_id"]
     )
     assert started.json()["result"]["flow_run"]["state"] == "ACTIVE"
+    case_detail = client.get(f"/api/v1/cases/{case.json()['id']}")
+    assert case_detail.status_code == 200, case_detail.text
+    summary = case_detail.json()["stages"][0]["execution"]
+    assert summary["flow_run_id"] == launched_stage["current_execution_flow_run_id"]
+    assert summary["state"] == "ACTIVE"
+    assert summary["progress"]["accepted"] == 0
 
 
 def test_node_asset_can_be_saved_without_skill(client):
