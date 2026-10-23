@@ -97,6 +97,28 @@ def _schedule_binding(
     return db.get(AgentConversationBinding, schedule.binding_id) if schedule.binding_id else None
 
 
+def _latest_run_binding_id(db: Session, schedule: AgentConversationSchedule) -> str | None:
+    """Reuse an explicitly recorded run, never an unrelated workspace conversation."""
+    return db.scalar(
+        select(AgentConversationBinding.id)
+        .join(
+            AgentConversationScheduleOccurrence,
+            AgentConversationScheduleOccurrence.binding_id == AgentConversationBinding.id,
+        )
+        .where(
+            AgentConversationScheduleOccurrence.schedule_id == schedule.id,
+            AgentConversationScheduleOccurrence.state == "STARTED",
+            AgentConversationBinding.workspace_id == schedule.workspace_id,
+            AgentConversationBinding.lifecycle == "ACTIVE",
+        )
+        .order_by(
+            AgentConversationScheduleOccurrence.created_at.desc(),
+            AgentConversationScheduleOccurrence.id.desc(),
+        )
+        .limit(1)
+    )
+
+
 def _work_directory(db: Session, workspace_id: str, work_directory_id: str) -> AgentWorkDirectory:
     item = db.scalar(
         select(AgentWorkDirectory).where(
@@ -169,6 +191,18 @@ def _occurrence_dict(db: Session, item: AgentConversationScheduleOccurrence) -> 
         "binding_id": item.binding_id,
         "conversation_title": binding.display_title if binding else None,
         "message_cursor": item.message_cursor,
+        "conversation": {
+            "id": binding.id,
+            "display_title": binding.display_title,
+            "lifecycle": binding.lifecycle,
+            "streaming_callback_ready": binding.streaming_callback_ready,
+            "unread": binding.unread,
+            "unread_origin": binding.unread_origin,
+            "created_at": binding.created_at.isoformat(),
+            "updated_at": binding.updated_at.isoformat(),
+        }
+        if binding
+        else None,
         "error_detail": item.error_detail,
         "created_at": item.created_at.isoformat(),
     }
@@ -334,6 +368,8 @@ def update_schedule(
     schedule.credential_ids_json = list(credentials)
     if conversation_mode == "NEW":
         schedule.binding_id = None
+    elif not schedule.binding_id:
+        schedule.binding_id = _latest_run_binding_id(db, schedule)
     schedule.row_version += 1
     if schedule.status == "ACTIVE":
         schedule.next_run_at = next_run_at
@@ -380,9 +416,12 @@ def _enqueue_occurrence(
     trigger_kind: str,
     scheduled_for: datetime | None,
 ) -> AgentConversationScheduleOccurrence:
+    if schedule.conversation_mode == "CONTINUE" and not schedule.binding_id:
+        schedule.binding_id = _latest_run_binding_id(db, schedule)
     occurrence = AgentConversationScheduleOccurrence(
         schedule_id=schedule.id,
-        binding_id=str(uuid4()),
+        binding_id=(schedule.binding_id if schedule.conversation_mode == "CONTINUE" else None)
+        or str(uuid4()),
         scheduled_for=scheduled_for,
         trigger_kind=trigger_kind,
         state="PENDING",
@@ -534,6 +573,9 @@ def deliver_occurrence(db: Session, occurrence_id: str) -> None:
         db.flush()
         return
     try:
+        # Also reconcile templates saved by older clients before the mode-switch fix.
+        if schedule.conversation_mode == "CONTINUE" and not schedule.binding_id:
+            schedule.binding_id = _latest_run_binding_id(db, schedule)
         if schedule.conversation_mode == "CONTINUE" and schedule.binding_id:
             delivered = conversations.message(
                 db, schedule.workspace_id, schedule.binding_id, _automation_prompt(schedule)

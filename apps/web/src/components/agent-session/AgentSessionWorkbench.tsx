@@ -34,7 +34,7 @@ import { WebsiteIcon } from '../WebsiteIcon';
 import { sandboxedWorkspaceHtmlDocument as sandboxedHtmlPreviewDocument } from '../workspace-file-preview';
 import { subagentAvatarSlots, type SubagentAvatarSlot } from '../../utils/subagentAvatar';
 import { workspaceFileChanges, workspaceRelativePath, type WorkspaceFileChange } from './fileChanges';
-import type { AgentAttachment, AgentConversation, AgentConversationActivity, AgentConversationAnnotation, AgentConversationContext, AgentConversationCredentialSyncEntry, AgentConversationHydration, AgentConversationInputReadiness, AgentConversationPage, AgentConversationReference, AgentConversationSearch, AgentPendingConfirmationAction, AgentSessionCapability, AgentSessionMcpReadiness, AgentSessionWorkDirectory, AgentSessionWorkDirectoryList, AgentSessionWorkspaceDetails, AgentWorkspaceReference, CapabilityAsset, ModelProvider, OpenHandsConversationEvent, OpenHandsConversationEventBatch, RuntimeTaskControlSnapshot, RuntimeTaskUsageSnapshot, WebsiteCredential, WorkspaceGitChangeKind, WorkspaceGitChangedFile, WorkspaceGitChanges, WorkspaceGitCommitDetails, WorkspaceGitFileDiff } from '../../types';
+import type { AgentAttachment, AgentConversation, AgentConversationActivity, AgentConversationScheduleOccurrence, AgentConversationAnnotation, AgentConversationContext, AgentConversationCredentialSyncEntry, AgentConversationHydration, AgentConversationInputReadiness, AgentConversationPage, AgentConversationReference, AgentConversationSearch, AgentPendingConfirmationAction, AgentSessionCapability, AgentSessionMcpReadiness, AgentSessionWorkDirectory, AgentSessionWorkDirectoryList, AgentSessionWorkspaceDetails, AgentWorkspaceReference, CapabilityAsset, ModelProvider, OpenHandsConversationEvent, OpenHandsConversationEventBatch, RuntimeTaskControlSnapshot, RuntimeTaskUsageSnapshot, WebsiteCredential, WorkspaceGitChangeKind, WorkspaceGitChangedFile, WorkspaceGitChanges, WorkspaceGitCommitDetails, WorkspaceGitFileDiff } from '../../types';
 import '../../pages/agent-workbench.css';
 import '../../pages/agent-workbench-layout.css';
 
@@ -939,7 +939,7 @@ function WorkspaceConversationRow({
   onDelete?: () => void;
 }) {
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number }>();
-  const showRunningAlert = possiblyStuck && running && !failed;
+  const showRunningAlert = unread && unreadOrigin === 'SYSTEM' && possiblyStuck && running && !failed;
   const showFailedUnreadAlert = unread && unreadOrigin === 'SYSTEM' && failed;
   const showAlert = showRunningAlert || showFailedUnreadAlert;
   useEscapeClose(() => setContextMenu(undefined), Boolean(contextMenu));
@@ -2688,17 +2688,29 @@ function normalizedWorkspacePath(path: string): string {
 }
 
 function workspaceMarkdownFileHref(href: string): boolean {
+  // Existing Agent replies can contain absolute API links. Route these through
+  // the active binding's preview instead of opening an unscoped download URL.
+  if (workspaceFileApiPath(href) !== undefined) return true;
   return Boolean(href && !/^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(href) && href.split(/[?#]/, 1)[0]);
+}
+
+function workspaceFileApiPath(href: string): string | undefined {
+  try {
+    const url = new URL(href, window.location.origin);
+    return url.origin === window.location.origin
+      && /^\/api\/v1\/(?:agent-workspaces\/[^/]+|flow-runs\/[^/]+\/attempts\/[^/]+\/agent-sessions)\/workspace\/file$/.test(withoutDeploymentBase(url.pathname))
+      ? url.searchParams.get('path') ?? undefined
+      : undefined;
+  } catch { return undefined; }
 }
 
 function workspaceMarkdownLinkPath(href: string, workingDirectory?: string, sourcePath?: string): string | undefined {
   const root = workingDirectory ? normalizedWorkspacePath(workingDirectory.replace(/\\/g, '/')) : '';
   if (!root) return undefined;
   try {
-    const url = new URL(href, window.location.origin);
-    if (url.origin === window.location.origin && url.pathname.endsWith('/workspace/file')) {
-      const path = url.searchParams.get('path');
-      return path ? workspaceMarkdownLinkPath(path, workingDirectory, sourcePath) : undefined;
+    const path = workspaceFileApiPath(href);
+    if (path !== undefined) {
+      return workspaceMarkdownLinkPath(path, workingDirectory, sourcePath);
     }
   } catch {
     return undefined;
@@ -5882,6 +5894,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     const queryKey = sessionQueryKey(host, 'conversations', workspace.id);
     const updateId = nextUnreadUpdateId.current += 1;
     const updateCachedConversation = (value: boolean, origin?: AgentConversation['unread_origin']) => {
+      queryClient.setQueriesData<AgentConversationScheduleOccurrence[]>(
+        { queryKey: ['agent-conversation-schedule-occurrences', workspace.id] },
+        items => items?.map(item => item.binding_id === bindingId && item.conversation
+          ? { ...item, conversation: { ...item.conversation, unread: value, unread_origin: value ? origin ?? item.conversation.unread_origin ?? 'MANUAL' : origin ?? null } }
+          : item),
+      );
       setConversationPagesByScope(current => Object.fromEntries(Object.entries(current).map(([scope, page]) => [scope, {
         ...page,
         items: page.items.map(item => item.id === bindingId
@@ -9848,7 +9866,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   return <main className={`agent-workbench-page${!onReturnToSource ? ' agent-workbench-app-shell' : ''}`} style={{ '--conversation-rail-width': `${conversationRailWidth}px` } as CSSProperties}>
     {!onReturnToSource && <nav className="agent-workbench-app-nav" aria-label="Agent 工作区导航"><button type="button" className={agentWorkspaceView === 'home' ? 'active' : ''} aria-current={agentWorkspaceView === 'home' ? 'page' : undefined} aria-label="主页" title="主页" onClick={returnToHome}><Home size={17}/></button><button type="button" className={agentWorkspaceView === 'schedules' ? 'active' : ''} aria-current={agentWorkspaceView === 'schedules' ? 'page' : undefined} aria-label="定时任务" title="定时任务" onClick={() => { rememberHomeRoute(); setAgentWorkspaceView('schedules'); onNavigate('/agent/schedules'); }}><CalendarClock size={17}/></button><button type="button" className={agentWorkspaceView === 'management' ? 'active' : ''} aria-current={agentWorkspaceView === 'management' ? 'page' : undefined} aria-label="会话管理" title="会话管理" onClick={() => { rememberHomeRoute(); setAgentWorkspaceView('management'); }}><MessageSquareText size={17}/></button><button type="button" className={`agent-workbench-settings-trigger${agentWorkspaceView === 'settings' ? ' active' : ''}`} aria-current={agentWorkspaceView === 'settings' ? 'page' : undefined} aria-label="工作区设置" title="设置" onClick={toggleSettings}><Settings size={17}/></button></nav>}
     {agentWorkspaceView === 'settings' && <AgentWorkspaceSettings workspaceId={workspace.id}/>}
-    {agentWorkspaceView === 'schedules' && workspace && <AgentConversationSchedulesPanel workspaceId={workspace.id} activeBindingId={selected?.id} activeConversationCapabilities={selected?.capabilities} embedded showDetail={!routeBindingId && !activityPreviewBindingId} onOpenConversation={selectConversation} onSelectSchedule={() => { setActivityPreviewBindingId(undefined); onNavigate('/agent/schedules'); }}/>}
+    {agentWorkspaceView === 'schedules' && workspace && <AgentConversationSchedulesPanel workspaceId={workspace.id} activeBindingId={selected?.id} activeConversationCapabilities={selected?.capabilities} embedded showDetail={!routeBindingId && !activityPreviewBindingId} renderConversation={occurrence => {
+      const item = occurrence.conversation ?? { id: occurrence.binding_id, display_title: occurrence.conversation_title, lifecycle: 'ACTIVE', streaming_callback_ready: true, created_at: occurrence.created_at, updated_at: occurrence.created_at };
+      const current = item.id === selected?.id ? selected : undefined;
+      const activity = conversationActivityQuery.data?.conversations?.find(value => value.id === item.id);
+      const pendingUnread = pendingUnreadUpdates.current.get(item.id);
+      const latest = activity && Date.parse(activity.updated_at) >= Date.parse(item.updated_at) ? { ...item, ...activity } : item;
+      return conversationRow({ ...latest, ...current, ...(pendingUnread ? { unread: pendingUnread.unread, unread_origin: pendingUnread.unreadOrigin } : {}) }, [], { allowDrag: false });
+    }} onSelectSchedule={() => { setActivityPreviewBindingId(undefined); onNavigate('/agent/schedules'); }}/>}
     {agentWorkspaceView === 'management' && <section className="agent-conversation-management-page" aria-label="会话管理"><ConversationManagementPage/></section>}
     {selected && <ConversationStreamObserver workspaceId={workspace.id} bindingId={selected.id} enabled={streamEnabled} onEvent={onStreamEvent} onStatus={updateStreamStatus} onReconnect={onStreamReconnect}/>}
     {workspace && queuedMessageBindings(host, workspace.id).filter(bindingId => bindingId !== selected?.id).map(bindingId => (

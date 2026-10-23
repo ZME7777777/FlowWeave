@@ -841,6 +841,7 @@ export interface AgentConversationScheduleOccurrence {
   state: 'PENDING' | 'STARTED' | 'FAILED';
   binding_id: string;
   conversation_title?: string | null;
+  conversation?: AgentConversation | null;
   message_cursor?: string | null;
   error_detail?: string | null;
   created_at: string;

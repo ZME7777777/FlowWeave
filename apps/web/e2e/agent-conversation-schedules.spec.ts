@@ -2670,3 +2670,81 @@ test('Runtime browser ignores an outgoing session response after switching bindi
   await expect(iframe.contentFrame().getByRole('heading',{name:'新会话内容'})).toBeVisible();
   await expect(iframe.contentFrame().getByRole('heading',{name:'旧会话内容'})).toHaveCount(0);
 });
+
+test('schedule configuration aligns its external label and control with the form fields', async ({ page }) => {
+  await openWorkspace(page);
+  await page.goto('/agent/schedules');
+  await page.locator('.agent-schedule-tree-select').first().click();
+  await page.getByRole('button', { name: '编辑', exact: true }).click();
+  for (const viewport of [{ width: 1440, height: 900 }, { width: 1024, height: 800 }, { width: 640, height: 900 }]) {
+    await page.setViewportSize(viewport);
+    const config = page.locator('.agent-schedule-session-config');
+    await expect(config).toBeVisible();
+    expect(await config.evaluate(element => {
+      const field = element.getBoundingClientRect();
+      const effort = document.querySelector<HTMLButtonElement>('[aria-label="思考程度"]')!.getBoundingClientRect();
+      const title = element.parentElement!.firstChild!.textContent;
+      return { height: field.height, effortHeight: effort.height, aligned: innerWidth <= 760 || field.top === effort.top, title, overflow: element.scrollWidth > element.clientWidth };
+    })).toEqual({ height: 56, effortHeight: 56, aligned: true, title: '会话配置', overflow: false });
+    await page.screenshot({ path: `../../.tmp/fr653-form-${viewport.width}.png` });
+  }
+});
+
+test('schedule runs deduplicate continued conversations and share selection and native status indicators', async ({ page }) => {
+  await openWorkspace(page);
+  const titles = ['执行中', '普通未读', '系统异常', '手工未读', '运行异常'];
+  const items = titles.map((display_title, index) => ({ id: `scheduled-run-${index + 1}`, display_title, lifecycle: 'ACTIVE', streaming_callback_ready: true, created_at: now, updated_at: now, unread: index > 0, unread_origin: index === 2 || index === 4 ? 'SYSTEM' : 'MANUAL' }));
+  await page.route('**/conversation-schedules/*/occurrences', route => json(route, [
+    { id: 'pending-duplicate', binding_id: items[0].id, state: 'PENDING', created_at: now },
+    ...items.map((conversation, index) => ({ id: `occurrence-${index}`, binding_id: conversation.id, conversation_title: conversation.display_title, conversation, state: 'STARTED', trigger_kind: 'SCHEDULED', created_at: now })),
+    { id: 'old-duplicate', binding_id: items[0].id, conversation: items[0], state: 'STARTED', created_at: now },
+  ]));
+  await page.route('**/conversation-activity*', route => json(route, { conversations: items, running_binding_ids: [items[0].id, items[4].id], failed_binding_ids: [items[2].id, items[3].id], possibly_stuck_binding_ids: [items[0].id, items[4].id] }));
+  await page.goto('/agent/schedules');
+  const group = page.locator('.agent-schedule-tree-group').first();
+  await group.locator('.agent-schedule-tree-select').click();
+  await expect(page.locator('.agent-schedule-history-run')).toHaveCount(5);
+  await group.locator('.agent-schedule-tree-toggle').click();
+  await group.getByRole('button', { name: '展开其余 2 个会话' }).click();
+  await expect(group.locator('.agent-schedule-run')).toHaveCount(5);
+  await expect(group.getByRole('img', { name: '会话正在运行', exact: true })).toHaveCount(1);
+  await expect(group.getByRole('img', { name: '会话已完成，有未读回复' })).toHaveCount(2);
+  await expect(group.getByRole('button', { name: '确认会话异常已读' })).toHaveCount(1);
+  await expect(group.locator('.agent-workspace-conversation-alert.running')).toHaveCount(1);
+  await expect(group.locator('em')).toHaveCount(0);
+  await group.getByRole('button', { name: '执行中', exact: true }).click();
+  await expect(group.locator('[data-binding-id="scheduled-run-1"]')).toHaveClass(/ active/);
+  await expect(group.locator('[data-binding-id="scheduled-run-2"]')).not.toHaveClass(/ active/);
+  await page.screenshot({ path: '../../.tmp/fr653-schedule-states.png' });
+});
+
+test('scheduled conversation API file links preview and download with the active binding', async ({ page }) => {
+  const root = '/runtime/workspace/project/users/test-user/.flowweave/automations/daily';
+  const report = `${root}/report.xlsx`;
+  const apiLink = `http://127.0.0.1:5173/api/v1/agent-workspaces/schedule-workspace/workspace/file?path=${encodeURIComponent(report)}`;
+  await openWorkspace(page, [
+    { id: 'file-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '导出表格', timestamp: now } },
+    { id: 'file-agent', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'file-user', content: `[下载 Excel 明细表](${apiLink})`, timestamp: now } },
+  ]);
+  await page.route('**/api/v1/agent-workspaces/*/conversations/scheduled-run-1', route => json(route, { id: 'scheduled-run-1', display_title: '定时报告', lifecycle: 'ACTIVE', streaming_callback_ready: true, write_available: true, working_directory: root, created_at: now, updated_at: now }));
+  await page.route('**/schedule-workspace/workspace?**', route => json(route, { root, working_directory: root, scope: { kind: 'WORK_DIRECTORY', display_name: '定时报告' }, files: [], repositories: [], runtime: {}, ide: { gateway: { supported: false } } }));
+  let downloaded = false;
+  await page.route('**/schedule-workspace/workspace/file?**', async route => {
+    const url = new URL(route.request().url());
+    expect(url.searchParams.get('path')).toBe(report);
+    expect(url.searchParams.get('binding_id')).toBe('scheduled-run-1');
+    expect(url.searchParams.get('download')).toBe('true');
+    downloaded = true;
+    await route.fulfill({ contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', headers: { 'Content-Disposition': 'attachment; filename="report.xlsx"' }, body: 'xlsx-fixture' });
+  });
+  await page.goto('/agent/schedules/conversations/scheduled-run-1');
+  await page.getByRole('link', { name: '下载 Excel 明细表' }).click();
+  const preview = page.getByRole('dialog', { name: '文件预览' });
+  await expect(preview).toBeVisible();
+  expect(downloaded).toBe(false);
+  const downloadEvent = page.waitForEvent('download');
+  await preview.getByRole('link', { name: '下载', exact: true }).click();
+  expect((await downloadEvent).suggestedFilename()).toBe('report.xlsx');
+  expect(downloaded).toBe(true);
+  await expect(page).toHaveURL(/\/agent\/schedules\/conversations\/scheduled-run-1$/);
+});
