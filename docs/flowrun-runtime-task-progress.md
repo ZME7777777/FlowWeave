@@ -9623,3 +9623,25 @@ remote-release-finish 完成版本和健康门禁及受管发布收尾，上下�
 重试、慢加载恢复、迟到会话响应与既有正文链接处理。Web typecheck、定向 ESLint、
 git diff --check、CURRENT 唯一性与依赖核对通过；Alembic 源码唯一 head 仍为
 0158_schedule_china_timezone。当前及下一可执行切片均为 NONE；未部署。
+
+
+FR-642 发布补记（2026-10-23）：用户授权部署后，以已提交版本
+`4d311c2b0170ea6b22ca0db4f606cc916cf57c18` 通过 Web 正式预检，并使用
+remote-release-prepare 最小上下文；源归档 SHA-256 为
+`6f84f1bed0ad8b0f5cec5ea46abb0bf8dd2c64ce85f0042b2ff047586a77fa35`。
+保留旧 Web 精确回滚镜像后，仅构建并重建 Web；linux/amd64 与 OCI revision
+核对通过，新镜像 ID 为
+`sha256:cdde32ac59f4ed98b7eb575e03deacf4903d9cdf563e30de04593e205a0faedb`。
+其余 37 个运行容器的身份、镜像与启动时间保持一致，API／stream-api health 与
+readiness 通过；未修改远端 Compose／env、Runtime、数据库、卷或工作区。
+
+全新浏览器验证实际入口的登录页、Agent 深层路由、带前缀 API、未认证边界及根
+登录入口通过，页面脚本错误为零；入口脚本与工作台模块 SHA-256 均与容器内文件
+一致。使用线上实际静态资源及受控 API／WebSocket 的 9 项 Chromium 回归通过，
+覆盖独立预览、中央弹窗与内置页签外链新开原生浏览器标签、动态链接与地址栏、
+opener 隔离，以及既有服务加载／失败重试／慢加载／会话隔离；未向真实会话发送
+测试消息，不将其记为真实 Runtime 业务验收。
+
+remote-release-finish 完成版本、健康门禁与受管发布收尾，仅回收工具判定的一份
+过期成功 Web 上下文与一个过期精确 rollback tag，保留最近三份成功上下文、回滚
+版本和所有引用版本；未清理共享 BuildKit、容器、卷、Workspace 或数据库备份。
