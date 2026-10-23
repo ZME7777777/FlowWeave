@@ -112,6 +112,32 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 Web typecheck、受影响 ESLint、追加迁移 Ruff、Python AST、diff 与状态唯一性核对通过。
 发布执行仍按用户授权继续；部署验收另追加实际结果，不提前声明线上成功。
 
+FR-668 发布补记（2026-10-23）：合并代码提交为
+`46d6bd203b70b5fa2adc74fa513ccf755526076f`，远程 36 个提交均已成为其祖先；
+未推送。使用正式预检与 commit-bound 最小上下文发布 platform／web，归档 SHA-256
+分别为 `f5e9535963529af5d6bca7605988fdae65683b06ee1aea1fe6a19c743ad74bf6`、
+`45ae8873dc446e27b373f4845e31da765ea30b44b0ea6151e6771a3b3c65177a`。
+最终平台和 Web 镜像分别为
+`sha256:264a82c280fc740e7591a526c287ec8cee20dfc972a5f2c8352fb52dcf17eb09`、
+`sha256:b6a813df1c1f028d4a0f885501ac7ec9577ff790274457a4afacca3207684dcb`；
+均校验 linux/amd64 和 OCI revision。保存旧镜像精确回滚标签后，先正式 migration，
+再同步 recreate api／stream-api／worker 和 Web；四个服务均运行同一提交，health／
+readiness、Web HTTP 及上线后日志检查通过，错误标记为零。线上唯一 head 为
+0170_revision_draft_owner；只读核对七张表强制 RLS、草稿 owner 非空及用户唯一键通过。
+已有会话 binding 身份摘要保持一致；服务器 Compose／env 内容未变，其他 34 个容器的
+镜像与启动时间未变。未更新或替换 Runtime Provider／OpenHands Runtime。
+
+公网 FlowWeave 登录页、Agent 深层路由及根登录页在服务器侧实际 Chromium 通过；
+公网无凭据 API 返回 401。浏览器经已验证 Web 入口的 SSH 转发核对 API 部署前缀、
+授权边界与零页面错误；不将其描述为本机公网直连。按需转发大型 JS 曾导致测试加载
+超时，后改为提取运行 Web 容器的实际 JS／CSS，缓存同锁定版本字体，并逐项与该容器
+比对 SHA-256，51 项一致。基于这些实际产物和受控 API／WebSocket 的 11 项回归全部
+通过；临时测试按部署前缀调整路径期望，未修改发布代码或访问业务会话内容。
+
+platform／web remote-release-finish 均通过版本和健康门禁；按既定策略回收一份过期
+受管成功上下文与精确 rollback tags，保留最近三份成功上下文和所有引用版本。
+未清理共享 BuildKit、卷、Workspace 或业务数据库。当前与下一可执行切片均为 NONE。
+
 
 ### FR-667 撤回 Runtime 扩展并收敛工作区文件交付 — DONE
 
