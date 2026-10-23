@@ -462,6 +462,171 @@ test('workspace and pinned collapse preferences survive reopening with independe
   expect(await page.evaluate(key => JSON.parse(localStorage.getItem(key)!), preferenceKey)).toEqual({ groups: ['existing-directory'], pinned: true });
 });
 
+
+const pinnedOrderPreferenceKey = 'flowweave:pinned-conversation-order:v1:schedule-user:agent-workspace:schedule-workspace';
+
+async function mockPinnedSidebar(page: Page) {
+  await openWorkspace(page);
+  const items = Array.from({ length: 3 }, (_, index) => ({
+    id: `pinned-${index}`, display_title: `置顶会话 ${index}`, title_state: 'MANUAL', lifecycle: 'ACTIVE', pinned: true,
+    work_directory_id: index === 1 ? 'existing-directory' : null, sort_key: 100 - index,
+    execution_status: 'idle', streaming_callback_ready: true, write_available: true, created_at: now, updated_at: now,
+  }));
+  const orderWrites: unknown[] = [];
+  await page.route('**/api/v1/agent-workspaces/schedule-workspace/pinned-conversations', route => json(route, items.filter(item => item.pinned)));
+  await page.route('**/api/v1/agent-workspaces/schedule-workspace/conversations/*/order', route => {
+    orderWrites.push(route.request().postDataJSON());
+    return json(route, items[0]);
+  });
+  await page.reload();
+  await expect(page.getByRole('region', { name: '置顶会话', exact: true })).toBeVisible();
+  return { items, orderWrites };
+}
+
+test('pinned conversations reorder across workspaces and restore their independent browser preference', async ({ page }) => {
+  const { orderWrites } = await mockPinnedSidebar(page);
+  const pinned = page.getByRole('region', { name: '置顶会话', exact: true });
+  const titles = () => pinned.locator('.agent-workspace-conversation-select b').allTextContents();
+  const source = pinned.getByRole('button', { name: '置顶会话 1', exact: true });
+  await expect(source).toHaveAttribute('draggable', 'true');
+  const target = pinned.getByRole('button', { name: '置顶会话 0', exact: true });
+  await source.dragTo(target, { targetPosition: { x: 20, y: 2 } });
+  await expect.poll(titles).toEqual(['置顶会话 1', '置顶会话 0', '置顶会话 2']);
+  expect(await page.evaluate(key => JSON.parse(localStorage.getItem(key)!), pinnedOrderPreferenceKey)).toEqual(['pinned-1', 'pinned-0', 'pinned-2']);
+  expect(orderWrites).toEqual([]); // Original workspace ordering is untouched.
+  await page.reload();
+  await expect.poll(titles).toEqual(['置顶会话 1', '置顶会话 0', '置顶会话 2']);
+  await page.getByRole('button', { name: '节点资产', exact: true }).click();
+  await page.getByRole('button', { name: 'Agent 会话', exact: true }).click();
+  await expect.poll(titles).toEqual(['置顶会话 1', '置顶会话 0', '置顶会话 2']);
+  await pinned.getByRole('button', { name: '置顶会话 1', exact: true }).dragTo(page.locator('.agent-workbench-content'));
+  await expect(page.getByRole('button', { name: '移除会话 置顶会话 1', exact: true })).toBeVisible();
+  await expect.poll(titles).toEqual(['置顶会话 1', '置顶会话 0', '置顶会话 2']);
+  // A different identity scope must neither read nor overwrite this preference.
+  await page.route('**/api/v1/auth/me', route => json(route, { id: 'other-user', username: 'other-user', role: 'USER', can_use_agent_sessions: true }));
+  await page.reload();
+  await expect.poll(titles).toEqual(['置顶会话 0', '置顶会话 1', '置顶会话 2']);
+  expect(await page.evaluate(key => JSON.parse(localStorage.getItem(key)!), pinnedOrderPreferenceKey)).toEqual(['pinned-1', 'pinned-0', 'pinned-2']);
+});
+
+test('pinned drag rejects ordinary workspace rows while ordinary ordering still persists', async ({ page }) => {
+  const { items, orderWrites } = await mockPinnedSidebar(page);
+  const ordinary = ['a', 'b'].map((id, index) => ({ ...items[0], id: `ordinary-${id}`, display_title: `普通会话 ${id}`, pinned: false, sort_key: 20 - index }));
+  await page.route('**/api/v1/agent-workspaces/schedule-workspace/conversations?*', route => json(route, { items: ordinary, next_cursor: null }));
+  await page.reload();
+  const pinned = page.getByRole('region', { name: '置顶会话', exact: true });
+  const root = page.locator('[data-workspace-group-id="root"]');
+  await pinned.getByRole('button', { name: '置顶会话 0', exact: true }).dragTo(root.getByRole('button', { name: '普通会话 a', exact: true }), { targetPosition: { x: 20, y: 2 } });
+  expect(orderWrites).toEqual([]);
+  await expect(pinned.locator('.agent-workspace-conversation-select b')).toHaveText(['置顶会话 0', '置顶会话 1', '置顶会话 2']);
+  await root.getByRole('button', { name: '普通会话 b', exact: true }).dragTo(root.getByRole('button', { name: '普通会话 a', exact: true }), { targetPosition: { x: 20, y: 2 } });
+  await expect(root.locator('.agent-workspace-conversation-select b')).toHaveText(['普通会话 b', '普通会话 a']);
+  await expect.poll(() => orderWrites).toEqual([{ ordered_binding_ids: ['ordinary-b', 'ordinary-a'] }]);
+  await expect(pinned.locator('.agent-workspace-conversation-select b')).toHaveText(['置顶会话 0', '置顶会话 1', '置顶会话 2']);
+});
+
+test('pinned order tolerates stale duplicate ids, corrupt storage and unavailable persistence', async ({ page }) => {
+  await mockPinnedSidebar(page);
+  const pinned = page.getByRole('region', { name: '置顶会话', exact: true });
+  const titles = () => pinned.locator('.agent-workspace-conversation-select b').allTextContents();
+  await page.evaluate(key => localStorage.setItem(key, JSON.stringify(['missing', 'pinned-2', 'pinned-2', 42])), pinnedOrderPreferenceKey);
+  await page.reload();
+  await expect.poll(titles).toEqual(['置顶会话 2', '置顶会话 0', '置顶会话 1']);
+  await page.evaluate(key => localStorage.setItem(key, '{invalid'), pinnedOrderPreferenceKey);
+  await page.reload();
+  await expect.poll(titles).toEqual(['置顶会话 0', '置顶会话 1', '置顶会话 2']);
+  await page.evaluate(() => {
+    const original = Storage.prototype.setItem;
+    Storage.prototype.setItem = function(key, value) {
+      if (key.startsWith('flowweave:pinned-conversation-order:')) throw new DOMException('Blocked', 'SecurityError');
+      return original.call(this, key, value);
+    };
+  });
+  await pinned.getByRole('button', { name: '置顶会话 2', exact: true }).dragTo(pinned.getByRole('button', { name: '置顶会话 0', exact: true }), { targetPosition: { x: 20, y: 2 } });
+  await expect.poll(titles).toEqual(['置顶会话 2', '置顶会话 0', '置顶会话 1']);
+});
+
+test('a late unpin response preserves navigation and manually collapsed groups', async ({ page }) => {
+  const { items } = await mockPinnedSidebar(page);
+  const target = items[0];
+  let release: () => void = () => undefined;
+  const responseGate = new Promise<void>(resolve => { release = resolve; });
+  await page.route(`**/api/v1/agent-workspaces/schedule-workspace/conversations/${target.id}/pinned`, async route => {
+    await responseGate;
+    target.pinned = false;
+    return json(route, target);
+  });
+  const pinned = page.getByRole('region', { name: '置顶会话', exact: true });
+  const row = pinned.locator(`[data-conversation-binding-id="${target.id}"]`);
+  await row.click({ button: 'right' });
+  await page.getByRole('menuitem', { name: '取消置顶', exact: true }).click();
+  await expect(row).toHaveCount(0);
+  const root = page.locator('[data-workspace-group-id="root"]');
+  await root.getByRole('button', { name: '日报会话', exact: true }).click();
+  await expect(page).toHaveURL(/\/agent\/conversations\/scheduled-conversation$/);
+  await page.getByRole('textbox', { name: '发送 Agent 消息' }).fill('切换后的草稿');
+  await root.getByRole('button', { name: '收起工作区 根工作区', exact: true }).click();
+  release();
+  await expect.poll(() => target.pinned).toBe(false);
+  await expect(root.getByRole('button', { name: '展开工作区 根工作区', exact: true })).toBeVisible();
+  await expect(page.getByRole('textbox', { name: '发送 Agent 消息' })).toHaveValue('切换后的草稿');
+  await expect(row).toHaveCount(0);
+});
+
+for (const scope of ['root', 'directory', 'active'] as const) {
+  test(`unpin reveals the original collapsed workspace through multiple pages (${scope})`, async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 600 });
+    const { items } = await mockPinnedSidebar(page);
+    const target = items[scope === 'directory' ? 1 : 0];
+    const groupId = target.work_directory_id ?? 'root';
+    const groupLabel = scope === 'directory' ? '已有项目目录' : '根工作区';
+    const originalGroup = Array.from({ length: 8 }, (_, index) => ({ ...target, id: `original-${index}`, display_title: `原会话 ${index}`, pinned: false, sort_key: 200 - index }));
+    const all = [...originalGroup, target];
+    const pageReads: string[] = [];
+    let failUnpin = true;
+    await page.route('**/api/v1/agent-workspaces/schedule-workspace/conversations**', route => {
+      const url = new URL(route.request().url());
+      if (url.pathname.endsWith(`/conversations/${target.id}/pinned`)) {
+        if (failUnpin) return json(route, { error: { code: 'SAVE_FAILED', message: '暂时无法保存' } }, 503);
+        target.pinned = false;
+        return json(route, target);
+      }
+      if (url.pathname.endsWith(`/conversations/${target.id}`)) return json(route, target);
+      if (!url.pathname.endsWith('/conversations')) return route.fallback();
+      const sameScope = scope === 'directory' ? url.searchParams.get('work_directory_id') === groupId : !url.searchParams.has('work_directory_id');
+      if (!sameScope) return json(route, { items: [], next_cursor: null });
+      const offset = Number(url.searchParams.get('cursor') ?? 0);
+      if (offset) pageReads.push(String(offset));
+      return json(route, { items: all.slice(offset, offset + 3), next_cursor: offset + 3 < all.length ? String(offset + 3) : null });
+    });
+    await page.goto(`/agent/conversations/${scope === 'active' ? target.id : scope === 'root' ? 'original-0' : 'scheduled-conversation'}`);
+    await page.getByRole('textbox', { name: '发送 Agent 消息' }).fill('保留当前草稿');
+    const group = page.locator(`[data-workspace-group-id="${groupId}"]`);
+    await group.getByRole('button', { name: `收起工作区 ${groupLabel}`, exact: true }).click();
+    const pinned = page.getByRole('region', { name: '置顶会话', exact: true });
+    const pinnedRow = pinned.locator(`[data-conversation-binding-id="${target.id}"]`);
+    await pinnedRow.click({ button: 'right' });
+    await page.getByRole('menuitem', { name: '取消置顶', exact: true }).click();
+    await expect(pinnedRow).toBeVisible(); // Failed persistence restores the pin.
+    await expect(group.getByRole('button', { name: `展开工作区 ${groupLabel}`, exact: true })).toBeVisible();
+    expect(pageReads).toEqual([]);
+    failUnpin = false;
+    await pinnedRow.click({ button: 'right' });
+    await page.getByRole('menuitem', { name: '取消置顶', exact: true }).click();
+    const restoredRow = group.locator(`[data-conversation-binding-id="${target.id}"]`);
+    await expect(restoredRow).toBeInViewport();
+    if (scope === 'directory') await page.screenshot({ path: test.info().outputPath('unpin-revealed.png') });
+    await expect(pinnedRow).toHaveCount(0);
+    await expect(group.getByRole('button', { name: `收起工作区 ${groupLabel}`, exact: true })).toBeVisible();
+    expect(pageReads).toEqual(['3', '6']);
+    await expect(page).toHaveURL(new RegExp(`/agent/conversations/${scope === 'active' ? target.id : scope === 'root' ? 'original-0' : 'scheduled-conversation'}$`));
+    await expect(page.getByRole('textbox', { name: '发送 Agent 消息' })).toHaveValue('保留当前草稿');
+    await expect(restoredRow.getByRole('button', { name: target.display_title, exact: true })).toHaveAttribute('draggable', 'true');
+    await page.reload();
+    await expect(pinnedRow).toHaveCount(0);
+  });
+}
+
 test('collapsing a workspace near the viewport top preserves its header anchor', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 800 });
   await openWorkspace(page, [], true);

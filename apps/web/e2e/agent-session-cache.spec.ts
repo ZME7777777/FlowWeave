@@ -2872,6 +2872,7 @@ test('A new conversation stays first after an existing conversation was reordere
   await expect.poll(() => orderRequests).toBe(3);
   await expect(page.getByLabel('排序暂未保存，点击重试')).toHaveCount(0);
 
+  await page.locator('[data-workspace-group-id="root"] > header').hover();
   await page.getByRole('button', { name: '在根工作区中新建会话' }).click();
   const composer = page.getByLabel('发送 Agent 消息');
   await source.dragTo(page.locator('.agent-workbench-content'));
