@@ -10070,3 +10070,21 @@ Web typecheck、定向 E2E ESLint、Python Ruff 和 git diff --check 通过。
 当前改动无新增诊断。Alembic 唯一 head 仍为 0158_schedule_china_timezone，
 无迁移、Runtime 源码／镜像变更。当前及下一执行切片均为 NONE，待按既有授权
 发布 platform；不重启 Runtime Provider 或已运行的 Runtime。
+
+FR-655 发布补记（2026-10-23）：依既有部署授权，以固定提交
+`14838e27df4250cd6f76d4b828aa0b68c1375635` 通过 platform 正式预检，
+remote-release-prepare 归档 SHA-256 为
+`87e9e90076c05aa321464801a49350352ca3dc4bb2d7a73b5e542383046f7bbb`。
+保留旧镜像精确 rollback tags 后，从受管最小上下文构建 linux/amd64 镜像
+`sha256:04a26acf2487f47c52a9dc2ba250a7d4bf50e8157629b9bb0402cc193713fcd4`，
+核对 OCI revision，迁移成功后同步 recreate api／stream-api／worker。
+三者均健康，消息适配器源码 SHA-256 与固定提交一致；Alembic head 仍为
+0158_schedule_china_timezone。其他 35 个容器（包括 Web 与现有 Runtime）
+镜像和启动时间未变；服务器 Compose／env 的 SHA-256 保持一致。
+
+全新 Chromium 上下文验证线上登录入口和 Agent 深层路由 HTTP 200，API 前缀
+正确、未认证边界 401、根登录入口正常，页面脚本错误为零。消息行为验收使用
+上述锁定 SDK 本地探针、适配器及受控浏览器回归；未向生产会话发送测试消息。
+platform remote-release-finish 已通过版本／健康门禁并完成收尾，本次没有
+过期受管上下文或精确 rollback tag 候选需要删除。未修改 Runtime 源码、镜像、
+Provider、运行中 Runtime、卷或工作区，未扩大清理范围。
