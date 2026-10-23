@@ -9743,3 +9743,23 @@ remote-release-finish 完成版本、健康门禁及受管收尾，回收一份�
 换行。实际页面短消息、长消息四角计算样式均为 18px，截图核对通过；背景、文字与
 宽高保持原值。git diff --check、CURRENT 唯一性和依赖核对通过；Alembic 唯一 head
 仍为 0158_schedule_china_timezone。当前及下一可执行切片均为 NONE；本圆角改动未部署。
+
+
+FR-646 发布补记（2026-10-23）：用户在部署过程中补充四角统一圆角要求，沿用本次
+部署授权，以已提交版本 `763dbaef7b6ec3c3fe1385f3831928d6b13f7e37` 通过 Web
+正式预检，使用 remote-release-prepare 的受管最小上下文；归档 SHA-256 为
+`4ed7d65878ced81d0bfb0ec79a0c1d22cd741a78a54765e1a83caa145af90bca`。
+保留旧 Web 精确回滚镜像后，仅构建并重建 Web，linux/amd64 与 OCI revision
+核对通过。新镜像 ID 为
+`sha256:74021af531c812e930eea8bb52e9b3a097de4fa13699ccf90b4ca6a7750cd8f0`。
+其他 37 个运行容器身份、镜像和启动时间保持一致，Web HTTP、API／stream-api
+health 与 readiness 通过，未修改服务器配置、Runtime、数据库、卷或工作区；
+共享工作区内其他未提交改动未进入发布包。
+
+全新浏览器检查登录、Agent 深层路由、API 前缀、未认证边界及根登录入口通过，
+页面脚本错误为零。线上实际静态资源与受控 API／WebSocket 的 2 项 Chromium
+回归通过；短消息、长消息均验证四角为 18px、青雾白背景与透明边框。浏览器加载
+的 39 个 JavaScript 文件 SHA-256 与运行镜像一致；未向真实会话发送测试消息。
+remote-release-finish 完成健康与版本门禁，并回收一份过期成功 Web 上下文及一个
+过期精确 rollback tag，保留最近三份成功上下文、回滚版本与所有引用版本，未清理
+共享 BuildKit、容器、卷、Workspace 或数据库备份。
