@@ -100,6 +100,13 @@ def openhands_settings(tmp_path) -> Settings:
     )
 
 
+@pytest.fixture
+def formal_user_event_windows(monkeypatch):
+    """Keep payload/run tests independent of EventLog transport reconciliation."""
+    windows = iter((frozenset({"previous-user"}), frozenset({"previous-user", "user-event-2"})))
+    monkeypatch.setattr(OpenHandsRuntime, "_message_user_event_ids", lambda *_: next(windows))
+
+
 def _request() -> StartAttemptRequest:
     return StartAttemptRequest(
         attempt_id="attempt-1",
@@ -2677,7 +2684,7 @@ def test_openhands_environment_cancel_only_interrupts_agent(openhands_settings, 
 
 
 def test_openhands_human_conversation_uses_dynamic_capability_selection(
-    openhands_settings, monkeypatch
+    openhands_settings, monkeypatch, formal_user_event_windows
 ):
     runtime = OpenHandsRuntime(openhands_settings)
     requests: list[dict[str, object]] = []
@@ -3626,7 +3633,7 @@ def test_openhands_active_finished_branch_uses_assistant_message_identity(
 
 
 def test_openhands_resume_interrupts_the_active_turn_before_steering(
-    openhands_settings, monkeypatch
+    openhands_settings, monkeypatch, formal_user_event_windows
 ):
     runtime = OpenHandsRuntime(openhands_settings)
     requests: list[tuple[str, str, object]] = []
@@ -3659,12 +3666,11 @@ def test_openhands_resume_interrupts_the_active_turn_before_steering(
                 "run": True,
             },
         ),
-        ("GET", "/api/conversations/10000000-0000-4000-8000-000000000002", None),
     ]
 
 
 def test_openhands_send_message_advances_cursor_to_user_event(
-    openhands_settings, monkeypatch, caplog
+    openhands_settings, monkeypatch, caplog, formal_user_event_windows
 ):
     runtime = OpenHandsRuntime(openhands_settings)
     requests: list[dict[str, object]] = []
@@ -3699,29 +3705,43 @@ def test_openhands_send_message_advances_cursor_to_user_event(
     assert "读取当前输入" not in diagnostic
 
 
-def test_openhands_send_message_ignores_stale_leaf_event_for_user_cursor(
-    openhands_settings, monkeypatch
+@pytest.mark.parametrize("stale_anchor", [None, "previous-user", "previous-assistant-event"])
+def test_openhands_send_message_ignores_stale_snapshot_for_user_cursor(
+    openhands_settings, monkeypatch, stale_anchor
 ):
     runtime = OpenHandsRuntime(openhands_settings)
-    responses = iter(
-        (
-            {"leaf_event_id": "previous-assistant-event"},
-            _state(
-                last_user_message_id="new-user-event",
-                leaf_event_id="previous-assistant-event",
-            ),
-        )
-    )
+    appended = False
+    requests = []
 
-    monkeypatch.setattr(runtime, "_request", lambda *_args, **_kwargs: next(responses))
+    def fake_request(method, path, **kwargs):
+        nonlocal appended
+        requests.append((method, path, kwargs.get("params")))
+        if method == "POST":
+            appended = True
+            return {"success": True}
+        if path.endswith("/events/search"):
+            ids = ["previous-user", *(["new-user-event"] if appended else [])]
+            return {
+                "items": [
+                    {"id": identity, "kind": "MessageEvent", "source": "user"} for identity in ids
+                ]
+            }
+        return _state(last_user_message_id=stale_anchor, leaf_event_id="previous-assistant-event")
 
+    monkeypatch.setattr(runtime, "_request", fake_request)
     result = runtime.send_message(_handle("previous-assistant-event"), "附带图片的新消息")
-
     assert result == RuntimeResult(status="RUNNING", cursor="new-user-event")
+    assert [method for method, _, _ in requests] == ["GET", "POST", "GET"]
+    assert requests[0][2] == {
+        "kind": "MessageEvent",
+        "source": "user",
+        "sort_order": "TIMESTAMP_DESC",
+        "limit": 100,
+    }
 
 
 def test_openhands_send_message_logs_redacted_ambiguous_failure(
-    openhands_settings, monkeypatch, caplog
+    openhands_settings, monkeypatch, caplog, formal_user_event_windows
 ):
     runtime = OpenHandsRuntime(openhands_settings)
 
@@ -3753,17 +3773,12 @@ def test_openhands_send_message_logs_redacted_ambiguous_failure(
 
 
 def test_openhands_v2_run_slot_retries_only_native_run_after_saved_user_event(
-    openhands_settings, monkeypatch
+    openhands_settings, monkeypatch, formal_user_event_windows
 ):
     runtime = OpenHandsRuntime(openhands_settings)
     requests: list[tuple[str, str, object]] = []
     states = iter(
         [
-            _state(
-                execution_status="idle",
-                leaf_event_id="user-event-2",
-                last_user_message_id="user-event-2",
-            ),
             _state(
                 execution_status="idle",
                 leaf_event_id="user-event-2",
@@ -3803,23 +3818,17 @@ def test_openhands_v2_run_slot_retries_only_native_run_after_saved_user_event(
             },
         ),
         ("GET", "/api/conversations/10000000-0000-4000-8000-000000000002", None),
-        ("GET", "/api/conversations/10000000-0000-4000-8000-000000000002", None),
         ("POST", "/api/conversations/10000000-0000-4000-8000-000000000002/run", {}),
     ]
 
 
 def test_openhands_v2_run_slot_preserves_saved_cursor_when_run_remains_full(
-    openhands_settings, monkeypatch
+    openhands_settings, monkeypatch, formal_user_event_windows
 ):
     runtime = OpenHandsRuntime(openhands_settings)
     requests: list[tuple[str, str]] = []
     states = iter(
         [
-            _state(
-                execution_status="idle",
-                leaf_event_id="user-event-2",
-                last_user_message_id="user-event-2",
-            ),
             _state(
                 execution_status="idle",
                 leaf_event_id="user-event-2",
@@ -3858,21 +3867,17 @@ def test_openhands_v2_run_slot_preserves_saved_cursor_when_run_remains_full(
     assert requests == [
         ("POST", "/api/conversations/10000000-0000-4000-8000-000000000002/events"),
         ("GET", "/api/conversations/10000000-0000-4000-8000-000000000002"),
-        ("GET", "/api/conversations/10000000-0000-4000-8000-000000000002"),
         ("POST", "/api/conversations/10000000-0000-4000-8000-000000000002/run"),
     ]
 
 
-def test_openhands_v2_run_slot_accepts_a_concurrent_native_run(openhands_settings, monkeypatch):
+def test_openhands_v2_run_slot_accepts_a_concurrent_native_run(
+    openhands_settings, monkeypatch, formal_user_event_windows
+):
     runtime = OpenHandsRuntime(openhands_settings)
     requests: list[tuple[str, str]] = []
     states = iter(
         [
-            _state(
-                execution_status="idle",
-                leaf_event_id="user-event-2",
-                last_user_message_id="user-event-2",
-            ),
             _state(
                 execution_status="idle",
                 leaf_event_id="user-event-2",
@@ -3910,13 +3915,12 @@ def test_openhands_v2_run_slot_accepts_a_concurrent_native_run(openhands_setting
     assert requests == [
         ("POST", "/api/conversations/10000000-0000-4000-8000-000000000002/events"),
         ("GET", "/api/conversations/10000000-0000-4000-8000-000000000002"),
-        ("GET", "/api/conversations/10000000-0000-4000-8000-000000000002"),
         ("POST", "/api/conversations/10000000-0000-4000-8000-000000000002/run"),
     ]
 
 
 def test_openhands_v1_run_slot_rejection_keeps_legacy_append_failure(
-    openhands_settings, monkeypatch
+    openhands_settings, monkeypatch, formal_user_event_windows
 ):
     runtime = OpenHandsRuntime(openhands_settings)
     requests: list[tuple[str, str]] = []
@@ -4995,34 +4999,62 @@ def test_openhands_rejects_stale_codex_llm_after_api_key_switch(
     assert "https://chatgpt.com" not in message
 
 
-def test_openhands_send_message_reads_user_anchor_when_endpoint_returns_success(
-    openhands_settings, monkeypatch
+@pytest.mark.parametrize("added_ids", [[], ["request-a", "request-b"]])
+def test_openhands_send_message_keeps_uncertain_native_identity_without_resending(
+    openhands_settings, monkeypatch, added_ids
 ):
     runtime = OpenHandsRuntime(openhands_settings)
-    responses = iter(
-        [
-            {"success": True},
-            _state(
-                last_user_message_id="user-event-current",
-                leaf_event_id="state-running",
-            ),
-        ]
-    )
-    requests: list[tuple[str, str]] = []
+    appended = False
+    post_count = 0
 
-    def fake_request(method: str, path: str, **_kwargs: object) -> dict[str, object]:
-        requests.append((method, path))
-        return next(responses)
+    def fake_request(method, path, **_kwargs):
+        nonlocal appended, post_count
+        if method == "POST":
+            appended = True
+            post_count += 1
+            return {"success": True}
+        if path.endswith("/events/search"):
+            ids = ["old-user", *(added_ids if appended else [])]
+            return {
+                "items": [
+                    {"id": identity, "kind": "MessageEvent", "source": "user"} for identity in ids
+                ]
+            }
+        return _state(last_user_message_id="old-user")
 
     monkeypatch.setattr(runtime, "_request", fake_request)
-    result = runtime.send_message(_handle("old-finish"), "你好")
+    with pytest.raises(DomainError) as raised:
+        runtime.send_message(_handle("old-finish"), "你好")
+    assert raised.value.code == "AGENT_MESSAGE_DELIVERY_AMBIGUOUS"
+    assert raised.value.details["outcome_unknown"] is True
+    assert post_count == 1
 
-    assert result.status == "RUNNING"
-    assert result.cursor == "user-event-current"
-    assert requests == [
-        ("POST", "/api/conversations/10000000-0000-4000-8000-000000000002/events"),
-        ("GET", "/api/conversations/10000000-0000-4000-8000-000000000002"),
-    ]
+
+@pytest.mark.parametrize("fail_after_append", [False, True])
+def test_openhands_user_identity_read_failure_never_replays_message(
+    openhands_settings, monkeypatch, fail_after_append
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    post_count = 0
+
+    def fake_request(method, path, **_kwargs):
+        nonlocal post_count
+        if method == "POST":
+            post_count += 1
+            return {"success": True}
+        if fail_after_append and not post_count:
+            return {"items": []}
+        return {"items": [{"kind": "MessageEvent", "source": "agent", "id": "wrong-role"}]}
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+    with pytest.raises(DomainError) as raised:
+        runtime.send_message(_handle("previous-reply"), "new message")
+    assert post_count == int(fail_after_append)
+    assert raised.value.code == (
+        "AGENT_MESSAGE_DELIVERY_AMBIGUOUS"
+        if fail_after_append
+        else "RUNTIME_MESSAGE_IDENTITY_UNAVAILABLE"
+    )
 
 
 def test_openhands_projects_and_decides_native_confirmation_batch(openhands_settings, monkeypatch):
@@ -7321,9 +7353,16 @@ def test_record_git_identity_is_confirmed_before_native_conversation_start(
     def native(method, path, **kwargs):
         calls.append((method, path))
         if path == "/api/bash/execute_bash_command":
-            return {"exit_code": 0, "stdout": json.dumps({
-                "author": "Record Author", "email": "record@example.test", "configured": True,
-            })}
+            return {
+                "exit_code": 0,
+                "stdout": json.dumps(
+                    {
+                        "author": "Record Author",
+                        "email": "record@example.test",
+                        "configured": True,
+                    }
+                ),
+            }
         return {"id": "10000000-0000-4000-8000-000000000002"}
 
     monkeypatch.setattr(runtime, "_request", native)

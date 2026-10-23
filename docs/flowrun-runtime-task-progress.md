@@ -10043,3 +10043,30 @@ binding_id；原生事件不变，不通过消息标签猜测文件身份。
 Web typecheck、受影响 E2E ESLint、Python Ruff 和新增共享模块 Pyright 通过；
 git diff --check、CURRENT 唯一性与依赖核对通过，Alembic 唯一 head 仍为
 0158_schedule_china_timezone，无迁移。当前及下一可执行切片均为 NONE，未部署。
+
+
+### FR-655 发送受理回执使用正式事件身份差集 — DONE
+
+依赖：FR-654 DONE。普通消息发送不再用可能滞后的 Conversation 快照或旧 handle cursor
+认领本地消息。原生追加前后读取有界正式 user MessageEvent ID 集合，仅在差集唯一时返回
+该正式 ID；原生响应直接提供事件 ID 时仍使用该正式契约。并发或身份缺失时保留投递不确定
+语义，不按正文、时间相似度或事件顺序猜测，也不重发。覆盖停留会话和切换后的消息保留，
+运行定向 Python／Chromium、静态检查与发布验证。
+
+验收：锁定 SDK `ae178d86f4e0e268cf31f8f9c5deda892f4ebf12` 的本地隔离探针
+证实运行步骤临时释放状态锁时，新 user MessageEvent 已写入 EventLog，而
+base_state.json 的 last_user_message_id 仍为旧值，直到外层状态上下文退出。
+Chromium 实验复现旧 assistant cursor 使本地新消息无提示消失；旧实现下三项
+旧快照／缺失 anchor 回归全部失败。修复只比较有界正式 user MessageEvent ID
+集合，不比较文本、时间或候选位置；原生 Success() 不再回退到 state／handle。
+原生已保存但 run capacity 拒绝时也复用相同正式身份，仅重试 /run 一次。
+
+242 项 OpenHands adapter 测试通过，覆盖缺失／陈旧快照、唯一身份、并发身份
+不确定、前后身份读取失败不重发、capacity 与 resume；27 项 Chromium 回归
+通过，覆盖两种宿主停留／切换、顶部标签、正式消息 DOM 身份、连续发送和读取
+协调。浏览器使用受控 API／WebSocket，未向真实会话发送测试消息。
+Web typecheck、定向 E2E ESLint、Python Ruff 和 git diff --check 通过。
+定向 Pyright 仅有原有的第 237 行可空字典 key 诊断，HEAD 源码复现相同诊断；
+当前改动无新增诊断。Alembic 唯一 head 仍为 0158_schedule_china_timezone，
+无迁移、Runtime 源码／镜像变更。当前及下一执行切片均为 NONE，待按既有授权
+发布 platform；不重启 Runtime Provider 或已运行的 Runtime。

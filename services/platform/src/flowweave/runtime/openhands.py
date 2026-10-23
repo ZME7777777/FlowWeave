@@ -5074,6 +5074,69 @@ class OpenHandsRuntime:
             )
         return RuntimeResult(status="RUNNING", cursor=cursor)
 
+    def _message_user_event_ids(self, handle: RuntimeHandle) -> frozenset[str]:
+        """Read a bounded native identity window, without inspecting message text."""
+
+        page = self._request(
+            "GET",
+            f"/api/conversations/{handle.conversation_id}/events/search",
+            base_url=self._base_url_for_handle(handle),
+            session_api_key=self._session_key_for_handle(handle),
+            params={
+                "kind": "MessageEvent",
+                "source": "user",
+                "sort_order": "TIMESTAMP_DESC",
+                "limit": 100,
+            },
+        )
+        items = page.get("items")
+        if not isinstance(items, list):
+            raise DomainError(
+                "RUNTIME_MESSAGE_IDENTITY_UNAVAILABLE",
+                "OpenHands did not return a formal user event identity window",
+                502,
+            )
+        identities: set[str] = set()
+        for item in items:
+            if (
+                not isinstance(item, dict)
+                or item.get("kind") != "MessageEvent"
+                or item.get("source") != "user"
+            ):
+                raise DomainError(
+                    "RUNTIME_MESSAGE_IDENTITY_UNAVAILABLE",
+                    "OpenHands returned an invalid formal user event identity",
+                    502,
+                )
+            identity = self._formal_identity(item.get("id"), field="id", required=True)
+            assert identity is not None
+            identities.add(identity)
+        return frozenset(identities)
+
+    def _appended_user_event_id(self, handle: RuntimeHandle, before: frozenset[str]) -> str:
+        # A running native step can defer base_state.json autosave even though
+        # the MessageEvent is already durable. Never claim an old state/handle
+        # cursor. Set membership is independent of page order and content. If
+        # concurrent writers add several events, preserve uncertainty instead
+        # of assigning another request's event to this message.
+        try:
+            added = self._message_user_event_ids(handle) - before
+        except DomainError as exc:
+            raise DomainError(
+                "AGENT_MESSAGE_DELIVERY_AMBIGUOUS",
+                "The message was accepted but its formal identity could not be read",
+                504,
+                {"outcome_unknown": True},
+            ) from exc
+        if len(added) != 1:
+            raise DomainError(
+                "AGENT_MESSAGE_DELIVERY_AMBIGUOUS",
+                "The message was accepted but its formal identity is not unique",
+                504,
+                {"outcome_unknown": True},
+            )
+        return next(iter(added))
+
     def send_message(
         self, handle: RuntimeHandle, content: str, image_urls: tuple[str, ...] = ()
     ) -> RuntimeResult:
@@ -5082,6 +5145,7 @@ class OpenHandsRuntime:
             parts.append({"type": "text", "text": content})
         if image_urls:
             parts.append({"type": "image", "image_urls": list(image_urls)})
+        before = self._message_user_event_ids(handle)
         try:
             created = self._request(
                 "POST",
@@ -5101,7 +5165,9 @@ class OpenHandsRuntime:
             )
         except DomainError as exc:
             if self._is_v2_run_slot_rejection(handle, exc):
-                return self._retry_v2_persisted_user_event_run(handle)
+                return self._retry_v2_persisted_user_event_run(
+                    handle, self._appended_user_event_id(handle, before)
+                )
             error_code = self._safe_diagnostic_token(exc.code)
             logger.warning(
                 "native_user_event_append_failed conversation=%s runtime=%s "
@@ -5121,20 +5187,16 @@ class OpenHandsRuntime:
             raise
         cursor_value: object | None = None
         cursor_source = "missing"
-        # A conversation leaf may still name the preceding assistant/tool event
-        # while the new user event has already been persisted. It is never a
-        # safe substitute for the user MessageEvent identity used by attachment
-        # projections. Older Agent Server versions return Success() here, so
-        # resolve the formal latest-user anchor from state in that case.
-        for field in ("id", "event_id", "last_user_message_id"):
+        # Newer native responses can provide the exact appended event ID.
+        # Success-only responses require formal EventLog identity reconciliation.
+        for field in ("event_id", "id"):
             if created.get(field):
                 cursor_value = created[field]
                 cursor_source = field
                 break
         if not cursor_value:
-            state = self._conversation_state(handle)
-            cursor_value = state.get("last_user_message_id") or handle.cursor
-            cursor_source = "state_last_user" if state.get("last_user_message_id") else "handle"
+            cursor_value = self._appended_user_event_id(handle, before)
+            cursor_source = "formal_event_identity_delta"
         cursor = str(cursor_value) if cursor_value else None
         logger.warning(
             "native_user_event_append_accepted conversation=%s runtime=%s cursor=%s "
@@ -5161,16 +5223,11 @@ class OpenHandsRuntime:
             and error.details.get("outcome_unknown") is False
         )
 
-    def _retry_v2_persisted_user_event_run(self, handle: RuntimeHandle) -> RuntimeResult:
+    def _retry_v2_persisted_user_event_run(
+        self, handle: RuntimeHandle, cursor: str
+    ) -> RuntimeResult:
         """Confirm the persisted native event, then retry only `/run` once."""
 
-        state = self._conversation_state(handle)
-        cursor = self._formal_identity(
-            state.get("last_user_message_id"),
-            field="last_user_message_id",
-            required=True,
-        )
-        assert cursor is not None
         try:
             self.run(replace(handle, cursor=cursor))
         except DomainError as run_error:
