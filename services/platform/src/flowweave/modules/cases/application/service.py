@@ -202,6 +202,7 @@ def _control_plan_dict(item: CaseControlPlan) -> dict[str, Any]:
         "action": item.action,
         "state": item.state,
         "idempotency_key": item.idempotency_key,
+        "retry_of_plan_id": item.retry_of_plan_id,
         "reason": item.reason,
         "input_snapshot": item.input_snapshot_json,
         "result": item.result_json,
@@ -809,6 +810,7 @@ def _create_case_control_plan(
     payload: CaseControlPlanWrite,
     *,
     source_binding_id: str | None,
+    retry_of_plan_id: str | None = None,
 ) -> dict[str, Any]:
     existing = db.scalar(
         select(CaseControlPlan).where(
@@ -832,6 +834,7 @@ def _create_case_control_plan(
         node_attempt_id=payload.node_attempt_id,
         action=payload.action,
         idempotency_key=payload.idempotency_key,
+        retry_of_plan_id=retry_of_plan_id,
         reason=payload.reason.strip(),
         input_snapshot_json={
             "case_state": item.state,
@@ -876,20 +879,16 @@ def execute_case_control_plan(db: Session, case_id: str, plan_id: str) -> dict[s
         elif plan.action == "START_EXECUTION":
             result = {
                 "decision": start_case_stage_execution(
-                    db,
-                    item.id,
-                    stage.id,
-                    CaseStageExecutionStartWrite(reason=plan.reason),
+                    db, item.id, stage.id, CaseStageExecutionStartWrite(reason=plan.reason)
                 )
             }
         elif plan.action == "START_STEPWISE_NODE":
             if not stage.current_execution_flow_run_id:
                 raise conflict("Case stage has no execution copy", stage_id=stage.id)
             run = _case_linked_run(db, item.id, stage.current_execution_flow_run_id)
-            node_key = str(plan.input_snapshot_json.get("requested", {}).get("flow_node_key") or "")
-            draft_row_version = plan.input_snapshot_json.get("requested", {}).get(
-                "draft_row_version"
-            )
+            requested = plan.input_snapshot_json.get("requested", {})
+            node_key = str(requested.get("flow_node_key") or "")
+            draft_row_version = requested.get("draft_row_version")
             if not node_key or not isinstance(draft_row_version, int):
                 raise conflict("stepwise plan lacks a frozen node draft reference", plan_id=plan.id)
             result = {
@@ -926,6 +925,59 @@ def execute_case_control_plan(db: Session, case_id: str, plan_id: str) -> dict[s
     _write_case_files(db, item)
     finish(db)
     return _control_plan_dict(plan)
+
+
+def retry_case_control_plan(db: Session, case_id: str, plan_id: str) -> dict[str, Any]:
+    """Create a new auditable attempt for one failed, still-authorized plan."""
+
+    item = _case(db, case_id)
+    failed = db.get(CaseControlPlan, plan_id)
+    if failed is None or failed.case_id != item.id:
+        raise not_found("case_control_plan", plan_id)
+    if failed.state != "FAILED":
+        raise conflict("only failed Case control plans can be retried", state=failed.state)
+    if failed.action not in {
+        "CREATE_EXECUTION_COPY",
+        "START_EXECUTION",
+        "START_STEPWISE_NODE",
+        "STOP_EXECUTION",
+    }:
+        raise illegal("failed plan action is not eligible for human retry", action=failed.action)
+    if failed.action == "CREATE_EXECUTION_COPY":
+        stage = _stage(db, item, failed.stage_id)
+        if stage.state != "ACTIVE" or stage.current_execution_flow_run_id is not None:
+            raise conflict("copy retry no longer targets an unstarted active Case stage")
+    else:
+        stage = _current_stage_execution(
+            db, item, _case_linked_run(db, item.id, str(failed.execution_flow_run_id or ""))
+        )
+    retry_number = (
+        len(
+            list(
+                db.scalars(
+                    select(CaseControlPlan.id).where(CaseControlPlan.retry_of_plan_id == failed.id)
+                )
+            )
+        )
+        + 1
+    )
+    requested = failed.input_snapshot_json.get("requested")
+    return _create_case_control_plan(
+        db,
+        item,
+        stage,
+        CaseControlPlanWrite(
+            stage_id=stage.id,
+            action=failed.action,
+            idempotency_key=f"retry:{failed.id}:{retry_number}",
+            reason=failed.reason,
+            node_run_id=failed.node_run_id,
+            node_attempt_id=failed.node_attempt_id,
+            input_snapshot=requested if isinstance(requested, dict) else {},
+        ),
+        source_binding_id=failed.source_binding_id,
+        retry_of_plan_id=failed.id,
+    )
 
 
 def advance_case_stepwise_execution(db: Session, flow_run_id: str) -> None:

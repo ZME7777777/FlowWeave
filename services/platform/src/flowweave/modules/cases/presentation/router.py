@@ -151,6 +151,13 @@ async def create_control_conversation(
     )
 
 
+@router.post("/cases/{case_id}/control-plans/{plan_id}/retry", status_code=201)
+async def retry_control_plan(case_id: str, plan_id: str, db: Db) -> dict[str, Any]:
+    return await run_sync(
+        db, lambda session: service.retry_case_control_plan(session, case_id, plan_id)
+    )
+
+
 @router.post("/case-control-bindings/{binding_id}/suggestions", status_code=201)
 async def ingest_control_suggestion(
     binding_id: str, payload: CaseControlSuggestionWrite, db: Db

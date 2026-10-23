@@ -159,6 +159,7 @@ class CaseControlPlan(Base):
     action: Mapped[str] = mapped_column(String(40))
     state: Mapped[str] = mapped_column(String(20), default="PENDING", index=True)
     idempotency_key: Mapped[str] = mapped_column(String(140))
+    retry_of_plan_id: Mapped[str | None] = mapped_column(String(36), index=True)
     reason: Mapped[str] = mapped_column(Text, default="")
     input_snapshot_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     result_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)

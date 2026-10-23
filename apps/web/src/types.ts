@@ -514,7 +514,7 @@ export interface CaseControlPlan {
   execution_flow_run_id?: string | null; node_run_id?: string | null; node_attempt_id?: string | null;
   action: 'CREATE_EXECUTION_COPY' | 'START_EXECUTION' | 'START_STEPWISE_NODE' | 'STOP_EXECUTION' | 'RERUN_STEPWISE_NODE' | 'REVISE_UNSTARTED_RUNTIME';
   state: 'PENDING' | 'VALIDATED' | 'EXECUTING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED';
-  idempotency_key: string; reason: string; input_snapshot: Record<string, unknown>; result: Record<string, unknown>;
+  idempotency_key: string; retry_of_plan_id?: string | null; reason: string; input_snapshot: Record<string, unknown>; result: Record<string, unknown>;
   error_code?: string | null; created_at: string; validated_at?: string | null; executed_at?: string | null;
 }
 export interface CaseDecisionProposal {
