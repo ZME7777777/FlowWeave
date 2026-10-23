@@ -464,3 +464,14 @@ def test_failed_bootstrap_discards_committed_history_authority(setup, monkeypatc
     assert deleted == [command, g.target]
     assert g.db.scalar(select(AgentHistorySession)) is None
     assert g.db.scalar(select(AgentConversationCapability)) is None
+
+
+def test_builtin_mcp_cannot_be_manually_registered_or_replaced(setup):
+    g = setup
+    with pytest.raises(DomainError) as caught:
+        conversations._validated_capabilities(g.db, (g.version.id,))
+    assert caught.value.code == "AGENT_HISTORY_CAPABILITY_PLATFORM_MANAGED"
+    # Default enablement never authorizes an implicit source.
+    assert integration.ensure(g.db, g.workspace, g.target, ())
+    assert g.db.scalar(select(AgentHistorySession)) is None
+    assert integration.ensure(g.db, g.workspace, g.target, g.refs)

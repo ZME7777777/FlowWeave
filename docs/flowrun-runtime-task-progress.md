@@ -9987,5 +9987,30 @@ FR-655 必须覆盖到期／撤销／分叉恢复及并发实证。当前 NONE�
 
 ### FR-655 历史查询真实数据库与固定 Runtime 验收 — READY
 
-依赖：FR-654 DONE。完成真实 PostgreSQL 授权迁移 upgrade／downgrade、RLS、租约
+依赖：FR-654 DONE、FR-656 DONE。完成真实 PostgreSQL 授权迁移 upgrade／downgrade、RLS、租约
 与并发验收，以及固定 Runtime 镜像上的新建／既有会话、撤销与恢复验证后再考虑发布。
+
+### FR-656 默认历史 MCP 配置展示与显式用户隔离 — DONE
+
+依赖：FR-654 DONE。按用户追加需求，在 Agent Workspace 新建、既有会话和定时预设
+配置中展示默认勾选且不可取消的历史 MCP，名称旁仅增加独立“内置”标签；沿用引用时
+自动接入，不伪造原生已连接状态。
+平台默认项不进入用户可选版本载荷，通用能力入口禁止替换该保留 MCP。历史两端 binding
+查询增加显式用户／宿主条件，并用持久化双用户记录验证跨用户引用、授权和查询拒绝。
+本片完成定向服务测试、Web typecheck 和配置 E2E；真实 PostgreSQL／完整 Runtime
+验收继续留在 FR-655，不修改 OpenHands、不部署。
+
+
+验收：历史／授权／MCP／集成主套件 158 passed、4 skipped；补充真实 binding 双用户
+读取前后拒绝后，用户隔离套件 6 passed（4 项已包含主套件，共 160 个不同用例通过）。
+两名 SUPER_ADMIN 在同一 Workspace、相同原生定位下仍不能跨用户签发、续租、引用
+或选择历史来源；SQL 显式 owner 过滤在受信 tenant bypass 中仍有效。未引用时不产生
+租约，通用注册入口拒绝手动替换内置 MCP。测试使用 SQLite 持久化用户／binding／
+租约／白名单，未替代 PostgreSQL RLS／行锁或真实 Runtime 验收。
+
+Web typecheck、受影响 ESLint、7 项 Chromium 定向回归通过；覆盖新建／既有／定时
+预设的默认锁定、独立内置标签、同名版本去重、批量取消、搜索、只看已选、保存不注册
+以及现有六类能力／认证预设与筛选布局。实际截图已核对。Ruff、定向 format、diff／
+任务状态及依赖检查通过；conversations.py 的 Pyright 与 HEAD 基线诊断一致（既存
+46 项错误，本片零新增）。Alembic 唯一 head 仍为 0161_agent_history_capability。
+未修改 OpenHands、source lock、迁移或部署；当前 NONE，下一可执行切片 FR-655。

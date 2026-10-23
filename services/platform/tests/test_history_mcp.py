@@ -74,7 +74,14 @@ def access(monkeypatch):
         return item
 
     monkeypatch.setattr(conversations, "_workspace", workspace)
-    monkeypatch.setattr(conversations, "_binding", binding)
+    monkeypatch.setattr(
+        conversations,
+        "history_reference_bindings",
+        lambda db, workspace_id, target_id, source_id: (
+            binding(db, workspace_id, target_id),
+            binding(db, workspace_id, source_id),
+        ),
+    )
     engine = create_engine("sqlite://")
 
     @event.listens_for(engine, "connect")

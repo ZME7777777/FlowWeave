@@ -75,6 +75,7 @@ from flowweave.modules.sandboxes.public import ManagedSandbox
 from flowweave.modules.tasks.public import enqueue
 from flowweave.modules.users.application.security import (
     current_principal,
+    current_user_id,
     user_runtime_project_root,
 )
 from flowweave.runtime.base import (
@@ -248,12 +249,24 @@ def history_reference_bindings(
     """Authorize both ends of an explicit history reference without reading Runtime."""
 
     workspace = _workspace(db, workspace_id)
-    target = (
-        _binding(db, workspace.id, target_id, lock=True)
-        if lock_target
-        else _binding(db, workspace.id, target_id)
-    )
-    return target, _binding(db, workspace.id, source_id)
+    # History tools never inherit an administrator's broader platform access.
+    # Keep explicit owner/host predicates even with ORM isolation and RLS.
+    def owned_binding(identity: str, *, lock: bool = False) -> AgentConversationBinding:
+        query = select(AgentConversationBinding).where(
+            AgentConversationBinding.id == identity,
+            AgentConversationBinding.owner_user_id == current_user_id(),
+            AgentConversationBinding.workspace_id == workspace.id,
+            AgentConversationBinding.host_kind == "AGENT_WORKSPACE",
+            AgentConversationBinding.host_id == workspace.id,
+        )
+        if lock:
+            query = query.with_for_update()
+        binding = db.scalar(query)
+        if binding is None:
+            raise DomainError("AGENT_CONVERSATION_NOT_FOUND", "会话不存在或已删除", 404)
+        return binding
+
+    return owned_binding(target_id, lock=lock_target), owned_binding(source_id)
 
 
 def _work_directory_id(db: Session, item: AgentConversationBinding) -> str | None:
@@ -512,6 +525,15 @@ def _validated_capabilities(
             raise DomainError("AGENT_CONVERSATION_CAPABILITY_DUPLICATE", "能力不能重复选择", 422)
         published = resolve_version(db, version_id)
         capability_type = published.package.capability_type
+        if (
+            capability_type == "MCP"
+            and published.package.capability_key == "flowweave-reference-history"
+        ):
+            raise DomainError(
+                "AGENT_HISTORY_CAPABILITY_PLATFORM_MANAGED",
+                "会话历史查询为平台默认能力，引用会话时自动连接，不能手动替换",
+                422,
+            )
         identity = (capability_type, published.package.capability_key)
         if capability_type not in allowed_types:
             raise DomainError(

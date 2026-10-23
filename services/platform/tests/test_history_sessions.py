@@ -311,15 +311,21 @@ def test_target_lock_is_requested_only_for_control_plane_changes(monkeypatch):
     calls = []
     monkeypatch.setattr(conversations, "_workspace", lambda *_args: SimpleNamespace(id="workspace"))
 
-    def binding(_db, _workspace, identity, **kwargs):
-        calls.append((identity, kwargs))
-        return identity
+    def scalar(query):
+        calls.append(query)
+        return SimpleNamespace(id="binding")
 
-    monkeypatch.setattr(conversations, "_binding", binding)
-    conversations.history_reference_bindings(
-        None, "workspace", "target", "source", lock_target=True
-    )
-    assert calls == [("target", {"lock": True}), ("source", {})]
+    with tenant_user(str(uuid4())):
+        conversations.history_reference_bindings(
+            SimpleNamespace(scalar=scalar), "workspace", "target", "source", lock_target=True
+        )
+    assert calls[0]._for_update_arg is not None
+    assert calls[1]._for_update_arg is None
+    for query in calls:
+        statement = str(query)
+        assert "agent_conversation_bindings.owner_user_id =" in statement
+        assert "agent_conversation_bindings.host_kind =" in statement
+        assert "agent_conversation_bindings.host_id =" in statement
 
 
 def test_session_migration_postgres_sql(monkeypatch):
