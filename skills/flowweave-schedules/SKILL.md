@@ -18,7 +18,11 @@ flowweave schedule create --data-file ./schedule.json
 flowweave schedule list
 ```
 
-`schedule.json` 只包含 `name`、从 `schedule templates` 返回的 `source_flow_run_id`，以及标准五段 `cron_expression`。请求字段和枚举以在线 OpenAPI 为准。创建成功后从 `schedule list` 核对 ID、母版、`config_version`、`row_version`、`next_run_at` 和 occurrence；不要根据名称或页面顺序猜 ID。Cron 按 UTC 计算，旧分钟间隔配置不会被当作完整 Cron 继续运行。
+`schedule.json` 只包含 `name`、从 `schedule templates` 返回的 `source_flow_run_id`，以及标准五段 `cron_expression`。请求字段和枚举以在线 OpenAPI 为准。创建成功后从 `schedule list` 核对 ID、母版、`config_version`、`row_version`、`next_run_at` 和 occurrence；不要根据名称或页面顺序猜 ID。旧分钟间隔配置不会被当作完整 Cron 继续运行。
+
+## 调度时间
+
+`cron_expression` 的顺序为分、时、日、月、周，按北京时间（`Asia/Shanghai`）匹配；每天北京时间 10:00 填 `0 10 * * *`，工作日 09:00 填 `0 9 * * 1-5`，不要先减 8 小时换算成 UTC。读取 `next_run_at`、`scheduled_for` 等绝对时间时按其时区解析，再转为北京时间核对。已有任务已由平台迁移为北京时间表达式，更新时直接使用当前读取值，不重复加 8 小时。
 
 ## 执行历史
 
