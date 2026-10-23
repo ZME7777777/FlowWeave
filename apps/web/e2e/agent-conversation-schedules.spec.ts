@@ -3029,6 +3029,75 @@ for (const unavailable of [false, true]) {
   });
 }
 
+for (const width of [1440, 1024]) {
+  test(`conversation error notice is compact and dismissible at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 1000 });
+    await openWorkspace(page);
+    const input = page.getByRole('textbox', { name: '发送 Agent 消息', exact: true });
+    await expect(input).toBeEnabled();
+    await page.route('**/agent-workspaces/schedule-workspace/conversations', route => route.request().method() === 'POST'
+      ? json(route, { error: { code: 'AGENT_BOOTSTRAP_DELIVERY_AMBIGUOUS', message: '首条消息待核对' } }, 504)
+      : route.fallback());
+    await input.fill('保留这条草稿');
+    await input.press('Enter');
+    const notice = page.getByRole('alert');
+    await expect(notice).toContainText('首条消息核对超时');
+    await expect(notice).not.toContainText('操作未完成');
+    const box = await notice.boundingBox();
+    expect(box!.height).toBeLessThanOrEqual(42);
+    expect(box!.width).toBeLessThanOrEqual(720);
+    expect(await notice.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+    await page.screenshot({ path: path.resolve('../../.tmp/fr670-error-notice', `notice-${width}.png`) });
+    await notice.getByRole('button', { name: '关闭错误提示' }).click();
+    await expect(notice).toHaveCount(0);
+    await expect(input).toHaveValue('保留这条草稿');
+    await expect(input).toBeEnabled();
+  });
+}
+
+test('conversation error notice expires safely and resets on retry and conversation switch', async ({ page }) => {
+  await openWorkspace(page, [], true);
+  await page.goto('/agent/conversations/scheduled-conversation');
+  const input = page.getByRole('textbox', { name: '发送 Agent 消息', exact: true });
+  await expect(input).toBeEnabled();
+  await page.clock.install();
+  let requests = 0;
+  await page.route('**/conversations/scheduled-conversation/messages', route => {
+    requests += 1;
+    return json(route, { error: { code: 'AGENT_HISTORY_CAPABILITY_UNAVAILABLE', message: '发送暂未完成，草稿已保留。' } }, 409);
+  });
+  await input.fill('自动收起不应清空草稿');
+  await input.press('Enter');
+  const notice = page.getByRole('alert');
+  await expect(notice).toBeVisible();
+  await page.clock.fastForward(4_000);
+  await input.press('Enter');
+  await expect.poll(() => requests).toBe(2);
+  await expect(notice).toBeVisible();
+  await page.clock.fastForward(4_500);
+  await expect(notice).toBeVisible();
+  await notice.hover();
+  await page.clock.fastForward(9_000);
+  await expect(notice).toBeVisible();
+  await notice.getByRole('button', { name: '关闭错误提示' }).focus();
+  await page.mouse.move(0, 0);
+  await page.clock.fastForward(9_000);
+  await expect(notice).toBeVisible();
+  await input.focus();
+  await page.clock.fastForward(8_100);
+  await expect(notice).toHaveCount(0);
+  await expect(input).toHaveValue('自动收起不应清空草稿');
+  await input.press('Enter');
+  await expect(notice).toBeVisible();
+  await page.getByRole('button', { name: '周报会话', exact: true }).dblclick();
+  await expect(page).toHaveURL(/scheduled-conversation-2$/);
+  await expect(input).toBeEnabled();
+  await expect(notice).toHaveCount(0);
+  await input.fill('新会话独立草稿');
+  await page.clock.fastForward(8_100);
+  await expect(input).toHaveValue('新会话独立草稿');
+});
+
 test('late history capability failure restores only its outgoing conversation draft', async ({ page }) => {
   await openWorkspace(page, [], true);
   await page.goto('/agent/conversations/scheduled-conversation');

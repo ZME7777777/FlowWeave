@@ -4095,6 +4095,9 @@ test('Agent session exits the first-screen gate when hydration never settles', a
   await expect(page.getByRole('status').filter({ hasText: '正在加载会话' })).toHaveCount(0);
   expect(hydrationReads).toBe(1);
 
+  await page.clock.install();
+  await page.clock.fastForward(8_100);
+  await expect(timeoutAlert.getByRole('button', { name: '重新读取会话' })).toBeVisible();
   await timeoutAlert.getByRole('button', { name: '重新读取会话' }).click();
   await expect(page.getByText('已重新读取会话。', { exact: true })).toBeVisible();
   expect(releaseHydration).toBeDefined();

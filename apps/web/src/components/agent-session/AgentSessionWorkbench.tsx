@@ -8,6 +8,7 @@ import { createContext, isValidElement, useCallback, useContext, useEffect, useL
 import { createPortal, flushSync } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
 import { ComposerModelMenu } from './ComposerModelMenu';
+import { ConversationErrorNotice } from './ConversationErrorNotice';
 import { AgentComposerInput, type ComposerSuggestion } from './AgentComposerInput';
 import { AgentWorkspaceSettings } from './AgentWorkspaceSettings';
 import { RuntimeBrowserFrame } from './RuntimeBrowserFrame';
@@ -6199,6 +6200,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const reportOperationError = useCallback((scope: string | undefined, error: Error) => {
     if (scope && activeComposerScope.current === scope) setOperationError(error);
   }, []);
+  const dismissOperationError = useCallback((error: Error) => {
+    setOperationError(current => current === error ? undefined : current);
+  }, []);
   const clearBootstrapRecovery = useCallback(() => {
     setBootstrapRecovery(undefined);
     writeBootstrapRecovery(host.bootstrapRecoveryStorageKey, undefined);
@@ -10066,7 +10070,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         monitoring={eventsQuery.data?.monitoring}
         connectionState={inputReadinessQuery.isError ? 'unavailable' : streamStatus === 'recovering' ? 'recovering' : streamStatus === 'connecting' ? 'checking' : inputReadinessQuery.isFetching && !inputReadinessQuery.data ? 'checking' : 'connected'}
       /> : <div className="agent-workbench-empty"><Bot size={32}/><b>新建会话开始协作</b><span>{features.workDirectories ? '每个会话共享同一工作区，但保留独立的对话与事件记录。' : '会话固定在当前节点 Attempt 的隔离工作目录。'}</span><button className="primary" disabled={!canOpenConversation} onClick={() => openConversationDraft({ displayName: features.workDirectories ? '根工作区' : '节点工作目录' }, { selectStandaloneRoot: features.workDirectories })}><Plus size={15}/>新建会话</button></div>}
-      {visibleError && <section className="agent-workbench-error" role="alert"><CircleAlert size={17}/><div><b>{hydrationError ? '会话暂时无法读取' : '操作未完成'}</b><span>{visibleError.message}</span></div>{hydrationError && <button type="button" className="secondary" onClick={retryConversationHydration}><RefreshCw size={14}/>重新读取会话</button>}</section>}
+      {visibleError && <ConversationErrorNotice key={composerScope} error={visibleError} onDismiss={dismissOperationError} transient={visibleError === operationError} onRetry={visibleError === hydrationError ? retryConversationHydration : undefined}/>}
       </div>
       {(selected || conversationDraft) && runtime?.state !== 'RECOVERING' && <div className="agent-composer-dock">
         <div className={`agent-composer ${conversationVisuallyActive || pendingConfirmation ? 'busy' : ''}`}>
