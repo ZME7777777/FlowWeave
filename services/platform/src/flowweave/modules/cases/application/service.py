@@ -667,6 +667,40 @@ def project_flow_run_event(
                 },
             )
         )
+    reconcile_case_execution_state(db, flow_run_id)
+    db.flush()
+
+
+def reconcile_case_execution_state(db: Session, flow_run_id: str) -> None:
+    """Advance only the owning active Case stage from durable execution facts."""
+
+    stages = list(
+        db.scalars(select(CaseStage).where(CaseStage.current_execution_flow_run_id == flow_run_id))
+    )
+    for stage in stages:
+        item = _case(db, stage.case_id)
+        run = db.get(FlowRun, flow_run_id)
+        if run is None or item.state in {"COMPLETED", "ARCHIVED"}:
+            continue
+        changed = False
+        if run.state == "COMPLETED" and stage.state == "ACTIVE":
+            stage.state = "COMPLETED"
+            changed = True
+            next_stage = db.scalar(
+                select(CaseStage)
+                .where(CaseStage.case_id == item.id, CaseStage.position > stage.position)
+                .order_by(CaseStage.position)
+            )
+            if next_stage is None:
+                item.state = "COMPLETED"
+            elif next_stage.state == "PENDING":
+                next_stage.state = "ACTIVE"
+        elif run.state == "CANCELLED" and stage.state == "ACTIVE":
+            item.state = "PAUSED"
+            changed = True
+        if changed:
+            item.row_version += 1
+            _write_case_files(db, item)
     db.flush()
 
 

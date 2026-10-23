@@ -18,6 +18,7 @@ from flowweave.modules.cases.application.service import (
     project_case_observations,
     project_flow_run_event,
     project_flow_run_observations,
+    reconcile_case_execution_state,
     set_case_stage_state,
     start_case_stage_execution,
 )
@@ -40,6 +41,7 @@ __all__ = (
     "project_case_observations",
     "project_flow_run_event",
     "project_flow_run_observations",
+    "reconcile_case_execution_state",
     "set_case_stage_state",
     "start_case_stage_execution",
 )
