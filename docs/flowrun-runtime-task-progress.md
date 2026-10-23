@@ -9815,3 +9815,26 @@ Web typecheck、定向 ESLint、diff 与状态唯一性；不部署。
 状态唯一性和依赖核对通过，Alembic 唯一 head 为 0158_schedule_china_timezone。
 本切片在独立工作树基于 FR-646 已完成代码实施，未混入主工作树 FR-647 的在途
 改动；当前及下一可执行切片均为 NONE，未部署。
+
+
+FR-648 合并及发布补记（2026-10-23）：按用户授权，将独立分支修复提交
+`6ec9f3ce` 合入 `feat/refactor`，形成固定提交
+`0982f9d3dffa767c7fabae99f3ecc2b5d7b72d9b`；保留并核对原工作区的三项未提交
+改动，未将其纳入发布。通过 Web 正式预检，使用 remote-release-prepare 受管
+最小上下文，归档 SHA-256 为
+`1c0043ba6c1bf0f24ca3a744216462c6b3ad9347d1f5aacdb99bd60708a37e1d`。
+保留旧 Web 精确回滚镜像后，仅构建并重建 Web，linux/amd64 与 OCI revision
+核对通过，新镜像 ID 为
+`sha256:3112d09a3f3f17efe77dc717b31ddf15145dfa10c83589a625123d681994b8f0`。
+其余 37 个运行容器身份、镜像与启动时间保持一致，Web HTTP、API／stream-api
+health 和 readiness 均通过；未修改服务器配置、Runtime、数据库、卷或工作区。
+
+合并版本 Web typecheck、定向 ESLint 与本地 9 项 Chromium 回归通过；全新公网
+浏览器检查登录、深层路由、API 前缀、未认证边界与根登录入口通过，页面脚本错误
+为零。线上实际静态资源配合受控 API／WebSocket 的 9 项回归全部通过，覆盖六类
+能力预配置、组合筛选隔离、旧版本替换、双页保存、认证全选／取消与同步锁定。
+实际加载的 37 个 JavaScript 文件 SHA-256 与运行镜像一致，未向真实会话发送测试消息。
+remote-release-finish 完成健康、版本门禁和受管收尾，回收一份过期成功 Web 上下文
+及一个过期精确 rollback tag，保留最近三份成功上下文、回滚版本和所有引用版本。
+未清理共享 BuildKit、容器、卷、Workspace 或数据库备份。对应独立工作树已归档
+并移除 checkout，`codex/schedule-session-config` 分支已删除；原工作区改动完整保留。
