@@ -19,7 +19,7 @@ async function settleWorkspaceLayout(page: Page) {
   });
 }
 
-async function openWorkspace(page: Page, events: unknown[] = [], includeSecondConversation = false, conversationTitle = '日报会话', scheduleOptions: { prompt?: string; occurrenceCount?: number } = {}) {
+async function openWorkspace(page: Page, events: unknown[] = [], includeSecondConversation = false, conversationTitle = '日报会话', scheduleOptions: { prompt?: string; occurrenceCount?: number; capabilityVersionIds?: string[]; credentialIds?: string[] } = {}) {
   const writes: { method: string; id?: string; body: Record<string, unknown> }[] = [];
   let authenticated = false;
   const workspace = { id: 'schedule-workspace', display_name: 'Agent 工作区', desired_state: 'RUNNING', updated_at: now };
@@ -28,7 +28,7 @@ async function openWorkspace(page: Page, events: unknown[] = [], includeSecondCo
     streaming_callback_ready: true, write_available: true, execution_status: 'idle', model_provider_id: 'provider-1', model_name: 'model-1', reasoning_effort: 'high', created_at: now, updated_at: now,
   };
   const conversations = includeSecondConversation ? [conversation, { ...conversation, id: 'scheduled-conversation-2', display_title: '周报会话' }] : [conversation];
-  const schedules = [{ id: 'daily-schedule', workspace_id: workspace.id, binding_id: null, work_directory_id: 'automation-directory', work_directory_name: '自动化 · 每日项目检查', workspace_mode: 'AUTOMATION', conversation_mode: 'NEW', model_provider_id: 'provider-1', model_name: 'model-1', reasoning_effort: 'medium', capability_version_ids: [], credential_ids: [], name: '每日项目检查', prompt: '请检查项目状态。', cron_expression: '0 9 * * 1-5', status: 'ACTIVE', next_run_at: '2026-10-20T01:00:00Z', last_run_at: now, row_version: 1, created_at: now, updated_at: now }];
+  const schedules = [{ id: 'daily-schedule', workspace_id: workspace.id, binding_id: null, work_directory_id: 'automation-directory', work_directory_name: '自动化 · 每日项目检查', workspace_mode: 'AUTOMATION', conversation_mode: 'NEW', model_provider_id: 'provider-1', model_name: 'model-1', reasoning_effort: 'medium', capability_version_ids: scheduleOptions.capabilityVersionIds ?? [], credential_ids: scheduleOptions.credentialIds ?? [], name: '每日项目检查', prompt: '请检查项目状态。', cron_expression: '0 9 * * 1-5', status: 'ACTIVE', next_run_at: '2026-10-20T01:00:00Z', last_run_at: now, row_version: 1, created_at: now, updated_at: now }];
   const capabilities = [
     { id: 'capability-1', capability_key: '日报技能', capability_type: 'SKILL', description: '汇总每日检查结果', filename: 'daily.md', is_latest: true },
     { id: 'capability-2', capability_key: '周报技能', capability_type: 'SKILL', description: '汇总每周检查结果', filename: 'weekly.md', is_latest: true },
@@ -1003,6 +1003,100 @@ test('capability configuration toggles visible selections and filters to selecte
   await expect(dialog.getByRole('button', { name: '显示全部能力', exact: true })).toBeVisible();
 });
 
+for (const mode of ['create', 'edit'] as const) {
+  test(`schedule ${mode} configures all capability types and credentials before runtime starts`, async ({ page }) => {
+    const types = ['MCP', 'CONTEXT', 'PLUGIN', 'SKILL', 'AGENT_DEFINITION', 'HOOK'];
+    const ids = types.map(type => `preset-${type}`);
+    const writes = await openWorkspace(page, [], false, '日报会话', { capabilityVersionIds: mode === 'edit' ? ['old-MCP', 'old-CONTEXT'] : [], credentialIds: ['credential-1'] });
+    const catalog = types.map(type => ({ id: `preset-${type}`, capability_key: `预设${type}`, capability_type: type, description: '可预设的能力', filename: 'preset.json', is_latest: true, revision_number: 2 }));
+    await page.route('**/api/v1/capabilities', route => json(route, [...catalog, ...['MCP', 'CONTEXT'].map(type => ({ ...catalog.find(item => item.capability_type === type)!, id: `old-${type}`, is_latest: false, revision_number: 1 }))]));
+    await page.route('**/api/v1/capability-collections', route => json(route, [{ id: 'skills-only', name: '技能组合', members: [catalog.find(item => item.capability_type === 'SKILL')] }]));
+    let readinessRequests = 0;
+    await page.route('**/mcp-readiness**', route => { readinessRequests += 1; return json(route, { state: 'UNAVAILABLE', error_kind: 'connection' }); });
+    await page.route('**/website-credentials', route => json(route, [1, 2].map(n => ({ id: `credential-${n}`, name: `认证${n}`, target_host: 'example.test', target_path: '/', auth_type: 'TOKEN' }))));
+    await page.getByRole('navigation', { name: 'Agent 工作区导航' }).getByRole('button', { name: '定时任务' }).click();
+    const tasks = page.getByRole('region', { name: '会话定时任务' });
+    if (mode === 'edit') {
+      await tasks.locator('.agent-schedule-tree-select').first().click();
+      await page.getByRole('button', { name: '编辑', exact: true }).click();
+    } else {
+      await tasks.getByRole('button', { name: '新建', exact: true }).click();
+      await page.getByLabel('任务名称', { exact: true }).fill('完整预配置');
+      await page.getByLabel('业务提示词').fill('按预设运行');
+    }
+    await page.getByRole('button', { name: /配置会话/ }).click();
+    const dialog = page.getByRole('dialog', { name: '会话配置', exact: true });
+    await dialog.getByRole('button', { name: '技能组合', exact: true }).click();
+    for (const [type, tab] of types.map((type, index) => [type, ['MCP', 'context', 'plugin', 'skill', 'agent', 'hook'][index]])) {
+      await dialog.getByRole('button', { name: tab, exact: true }).click();
+      if (mode === 'edit' && ['MCP', 'CONTEXT'].includes(type)) {
+        const old = dialog.getByRole('button', { name: new RegExp(`预设${type} · 已选版本 v1`) });
+        await expect(old).toHaveClass(/selected/);
+        await expect(old).toBeEnabled();
+        await old.click();
+        await expect(old).not.toHaveClass(/selected/);
+      }
+      await dialog.locator('.agent-capability-list > button').filter({ has: page.locator('b', { hasText: new RegExp(`^预设${type}$`) }) }).click();
+    }
+    await dialog.getByRole('button', { name: '认证', exact: true }).click();
+    await dialog.getByRole('button', { name: '全选认证', exact: true }).click();
+    await expect(dialog.getByText('已选择 2 项认证', { exact: true })).toBeVisible();
+    await dialog.getByRole('button', { name: '取消全选认证', exact: true }).click();
+    await expect(dialog.getByText('已选择 0 项认证', { exact: true })).toBeVisible();
+    await dialog.getByRole('button', { name: /认证1/ }).click();
+    const credentialMark = dialog.locator('.agent-capability-list > button i').first();
+    expect(await credentialMark.evaluate(element => { const s = getComputedStyle(element); return [s.width, s.height, s.borderRadius]; })).toEqual(['20px', '20px', '50%']);
+    await dialog.screenshot({ path: `../../.tmp/fr648-${mode}-credentials.png` });
+    await page.setViewportSize({ width: 640, height: 640 });
+    await expect(dialog.getByRole('button', { name: '全选认证', exact: true })).toBeInViewport();
+    await expect(dialog.getByRole('button', { name: '保存认证配置', exact: true })).toBeInViewport();
+    expect(await credentialMark.evaluate(element => getComputedStyle(element).width)).toBe('20px');
+    await dialog.screenshot({ path: `../../.tmp/fr648-${mode}-credentials-mobile.png` });
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    // Saving from the authentication tab must preserve edits on both tabs.
+    await dialog.getByRole('button', { name: '保存认证配置', exact: true }).click();
+    await page.getByRole('button', { name: /配置会话/ }).click();
+    await expect(dialog.getByText('已选择 6 项', { exact: true })).toBeVisible();
+    await dialog.getByRole('button', { name: '保存会话配置', exact: true }).click();
+    await page.getByRole('button', { name: '保存任务', exact: true }).click();
+    await expect.poll(() => writes.length).toBe(1);
+    expect(writes[0]).toMatchObject({ method: mode === 'edit' ? 'PUT' : 'POST', body: { capability_version_ids: ids, credential_ids: ['credential-1'] } });
+    expect(readinessRequests).toBe(0);
+    await page.getByRole('button', { name: '编辑', exact: true }).click();
+    await page.getByRole('button', { name: /配置会话/ }).click();
+    await expect(dialog.getByText('已选择 6 项', { exact: true })).toBeVisible();
+    await dialog.getByRole('button', { name: '认证', exact: true }).click();
+    await expect(dialog.getByText('已选择 1 项认证', { exact: true })).toBeVisible();
+  });
+}
+
+test('credential select all excludes synced credentials and disables itself when nothing remains', async ({ page }) => {
+  await openWorkspace(page);
+  let entries = ['CURRENT', 'NEW', 'MODIFIED', 'UNRECORDED'].map((state, index) => ({ id: `credential-${index}`, name: `同步认证${index}`, target_host: 'example.test', target_path: '/', auth_type: 'TOKEN', sync_state: state }));
+  const syncWrites: unknown[] = [];
+  await page.route('**/credential-sync', route => {
+    if (route.request().method() === 'POST') {
+      syncWrites.push(route.request().postDataJSON());
+      entries = entries.map(item => ({ ...item, sync_state: 'CURRENT' }));
+    }
+    return json(route, { initialized_at: now, credentials: entries });
+  });
+  await page.goto('/agent/conversations/scheduled-conversation');
+  await page.getByRole('button', { name: '会话配置', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: '会话配置' });
+  await dialog.getByRole('button', { name: '认证', exact: true }).click();
+  await expect(dialog.getByRole('button', { name: '同步认证0（已同步）', exact: true })).toBeDisabled();
+  await expect(dialog.getByText('已选择 2 项认证', { exact: true })).toBeVisible();
+  await dialog.getByRole('button', { name: '全选认证', exact: true }).click();
+  await expect(dialog.getByText('已选择 3 项认证', { exact: true })).toBeVisible();
+  await dialog.getByRole('button', { name: '取消全选认证', exact: true }).click();
+  await expect(dialog.getByText('已选择 0 项认证', { exact: true })).toBeVisible();
+  await dialog.getByRole('button', { name: '全选认证', exact: true }).click();
+  await dialog.getByRole('button', { name: '同步认证', exact: true }).click();
+  await expect(dialog.getByRole('button', { name: '全选认证', exact: true })).toBeDisabled();
+  expect(syncWrites).toEqual([{ credential_ids: ['credential-1', 'credential-2', 'credential-3'] }]);
+});
+
 test('capability filtering keeps dialog and footer geometry stable', async ({ page }) => {
   await openWorkspace(page);
   await page.route('**/api/v1/capabilities', route => json(route,Array.from({length:30},(_,index)=>({id:`fixed-cap-${index}`,capability_key:`技能 ${index}`,capability_type:'SKILL',description:'用于验证列表内部滚动',filename:`skill-${index}.md`,is_latest:true}))));
@@ -1030,7 +1124,7 @@ test('capability filtering keeps dialog and footer geometry stable', async ({ pa
     expect(await geometry()).toEqual(before);
     await search.fill('');
     await expect(dialog.locator('.agent-capability-list > button')).toHaveCount(30);
-    await expect(dialog.getByRole('button',{name:'用于新建会话',exact:true})).toBeInViewport();
+    await expect(dialog.getByRole('button',{name:'保存会话配置',exact:true})).toBeInViewport();
   }
 });
 

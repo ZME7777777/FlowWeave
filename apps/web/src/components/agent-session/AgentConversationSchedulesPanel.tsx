@@ -286,7 +286,7 @@ export function AgentConversationSchedulesPanel({ workspaceId, onOpenConversatio
     {editorInDialog && createPortal(<div className="agent-schedule-editor-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) closeEditor(); }}>
       <section className="agent-schedule-editor-dialog" role="dialog" aria-modal="true" aria-label={formMode === 'edit' ? '编辑定时任务' : '新建定时任务'}>{editor}</section>
     </div>, document.body)}
-    {sessionConfigOpen && <CapabilityManager workspaceId={workspaceId} draftCapabilityIds={capabilityVersionIds} draftCredentialIds={credentialIds} onClose={() => setSessionConfigOpen(false)} onCreateEnhancedConversation={setCapabilityVersionIds} onDraftCredentialIdsChange={setCredentialIds}/>}
+    {sessionConfigOpen && <CapabilityManager configurationPreset workspaceId={workspaceId} draftCapabilityIds={capabilityVersionIds} draftCredentialIds={credentialIds} onClose={() => setSessionConfigOpen(false)} onCreateEnhancedConversation={setCapabilityVersionIds} onDraftCredentialIdsChange={setCredentialIds}/>}
     {activeSessionConfigOpen && activeBindingId && <CapabilityManager workspaceId={workspaceId} bindingId={activeBindingId} conversationCapabilities={activeConversationCapabilities} onClose={() => setActiveSessionConfigOpen(false)}/>}
   </section>;
 }
