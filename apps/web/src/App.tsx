@@ -33,11 +33,11 @@ function PageLoading() {
 
 const nav = [
   { view: 'nodes' as const, label: '节点中心', icon: Component },
-  { view: 'capabilities' as const, label: '能力仓库', icon: Library },
   { view: 'flows' as const, label: '流程编排', icon: GitFork },
   { view: 'runs' as const, label: '流程运行', icon: AudioLines },
-  { view: 'cases' as const, label: '场景空间', icon: Box },
   { view: 'schedules' as const, label: '定时调度', icon: CalendarClock },
+  { view: 'cases' as const, label: '场景空间', icon: Box },
+  { view: 'capabilities' as const, label: '能力仓库', icon: Library },
   { view: 'agent-workbench' as const, label: '自由对话', icon: MessagesSquare },
 ];
 
