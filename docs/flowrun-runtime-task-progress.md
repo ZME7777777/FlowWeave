@@ -10022,3 +10022,35 @@ platform／web 的 remote-release-finish 均通过健康、版本门禁并完成
 回收三份过期受管成功上下文及两个过期精确 rollback tags，保留每个 scope 最近
 三份成功上下文和所有引用版本，未清理共享 BuildKit、容器、卷、Workspace 或备份。
 发布包仅来自上述固定提交，发布过程中出现的其他在途改动完整保留且未纳入发布。
+
+
+### FR-655 定时认证默认全选与既有会话认证上下文同步 — DONE
+
+依赖：FR-653 DONE。在独立工作树处理本切片，避开主工作树 FR-654 在途修复。
+新建定时任务默认选择全部当前用户认证，能力保持手选；保存与编辑保留显式取消。
+既有会话通过原生 StaticSecret.description 同步安全认证元数据，固定 OpenHands baseline
+在后续模型请求与压缩输入中刷新动态上下文，保留历史事件不变，并更新不可变源码锁。
+验证定向 SDK／平台／Chromium 回归、静态检查与状态唯一性；不部署。
+
+
+验收：6 项定向 Chromium 回归通过，覆盖新建默认全选、只保存能力时保留认证、
+显式取消全部、编辑回显及既有同步锁定；Web typecheck、受影响 TSX／E2E ESLint
+通过。35 项平台定向回归通过，包含 0159 迁移至唯一 head、认证说明传输与旧账本
+重同步、同步失败不写账本、定时投递及源码供应链校验。受影响 Python Ruff 通过；
+Pyright 与 HEAD 基线均为 31 项既有诊断，新增为零。扩展检查中的三个既有节点
+Fork／宿主命名空间测试失败在独立 HEAD 源码副本复现；一个 Fork 日志测试在
+组合运行失败、单独运行通过，本切片未改动其逻辑，未宣称全套测试通过。
+
+OpenHands baseline 独立提交 `73e3cd8e4d74ff30c9ed794baf72d977800509d7`，
+64 项 SDK／服务信息／真实 HTTP 回归通过，覆盖同步与异步后续请求、说明轮换、
+密钥加密恢复和历史事件不变；SDK Ruff／定向 Pyright 通过。源码锁、Dockerfile、
+provenance 与正式归档同步更新，SHA-256 为
+`5fcd3fc5e628572a7e223c954e8fd792b78d768f1d8eba9419a4d88d6490308a`。
+新增认证动态上下文契约探针在固定 SDK 环境执行通过；未构建实际 Runtime 镜像，
+不将本地 SDK／HTTP 检查记为镜像或线上验收。旧 Runtime 缺少
+`conversation_dynamic_context_v1` 时拒绝目录同步并保留账本；旧值同步记录默认
+context_version=0，允许用户显式补同步。历史会话不自动注入或修改。
+
+当前与下一可执行切片均为 NONE，git diff --check 与状态唯一性通过。
+本切片仅在独立工作树提交，未合入主工作树 FR-654 在途修复，未部署；正式生效
+需要平台迁移、Web 和固定 Runtime 版本发布，并按生命周期更新需要修复的 Runtime。

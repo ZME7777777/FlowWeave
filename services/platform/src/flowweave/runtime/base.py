@@ -765,7 +765,11 @@ class RuntimePort(Protocol):
     def create_conversation(self, request: StartAttemptRequest) -> RuntimeHandle: ...
 
     def update_conversation_secrets(
-        self, handle: RuntimeHandle, secrets: dict[str, str]
+        self,
+        handle: RuntimeHandle,
+        secrets: dict[str, str],
+        *,
+        descriptions: dict[str, str] | None = None,
     ) -> None: ...
 
     def conversation_title(self, handle: RuntimeHandle) -> str | None: ...

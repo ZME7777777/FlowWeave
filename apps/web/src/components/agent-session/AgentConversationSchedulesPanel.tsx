@@ -110,7 +110,7 @@ export function AgentConversationSchedulesPanel({ workspaceId, onSelectSchedule,
   const [modelName, setModelName] = useState('');
   const [reasoningEffort, setReasoningEffort] = useState('');
   const [capabilityVersionIds, setCapabilityVersionIds] = useState<string[]>([]);
-  const [credentialIds, setCredentialIds] = useState<string[]>([]);
+  const [credentialIds, setCredentialIds] = useState<string[]>();
   const [sessionConfigOpen, setSessionConfigOpen] = useState(false);
   const [activeSessionConfigOpen, setActiveSessionConfigOpen] = useState(false);
   const [selectedScheduleId, setSelectedScheduleId] = useState<string | null>();
@@ -131,6 +131,11 @@ export function AgentConversationSchedulesPanel({ workspaceId, onSelectSchedule,
   });
   const directoriesQuery = useQuery({ queryKey: ['agent-work-directories', workspaceId], queryFn: () => api.agentWorkDirectories(workspaceId) });
   const providersQuery = useQuery({ queryKey: ['model-providers'], queryFn: api.providers });
+  const credentialsQuery = useQuery({
+    queryKey: ['website-credentials'], queryFn: api.websiteCredentials,
+    enabled: formMode === 'create', refetchOnMount: 'always',
+  });
+  const selectedCredentialIds = credentialIds ?? (credentialsQuery.data ?? []).map(item => item.id);
   const providers = useMemo(() => (providersQuery.data ?? []).filter(item => item.connection_state === 'CONNECTED' && item.models.some(model => model.enabled)), [providersQuery.data]);
   const models = useMemo(() => providers.find(item => item.id === modelProviderId)?.models.filter(item => item.enabled) ?? [], [modelProviderId, providers]);
   const workspaceOptions = useMemo<ScheduleChoiceOption[]>(() => [
@@ -225,7 +230,7 @@ export function AgentConversationSchedulesPanel({ workspaceId, onSelectSchedule,
     setWorkDirectoryId('');
     setConversationMode('NEW');
     setCapabilityVersionIds([]);
-    setCredentialIds([]);
+    setCredentialIds(undefined);
     resetModel();
     setError('');
   };
@@ -252,10 +257,15 @@ export function AgentConversationSchedulesPanel({ workspaceId, onSelectSchedule,
       return;
     }
     if (formMode === 'edit' && !selectedSchedule) return;
+    if (formMode === 'create' && credentialIds === undefined && !credentialsQuery.isSuccess) {
+      setError(credentialsQuery.isError ? '读取认证配置失败，请重试后保存。' : '正在读取认证配置，请稍后保存。');
+      void credentialsQuery.refetch();
+      return;
+    }
     setBusyId(formMode === 'edit' ? selectedSchedule!.id : 'create');
     setError('');
     try {
-      const base = { name: name.trim(), prompt: prompt.trim(), cron_expression: cronExpression.trim(), conversation_mode: conversationMode, model_provider_id: modelProviderId, model_name: modelName, reasoning_effort: reasoningEffort || null, capability_version_ids: capabilityVersionIds, credential_ids: credentialIds };
+      const base = { name: name.trim(), prompt: prompt.trim(), cron_expression: cronExpression.trim(), conversation_mode: conversationMode, model_provider_id: modelProviderId, model_name: modelName, reasoning_effort: reasoningEffort || null, capability_version_ids: capabilityVersionIds, credential_ids: selectedCredentialIds };
       const schedule = formMode === 'edit'
         ? await api.updateAgentConversationSchedule(workspaceId, selectedSchedule!.id, { ...base, expected_row_version: selectedSchedule!.row_version })
         : await api.createAgentConversationSchedule(workspaceId, { ...base, workspace_mode: workspaceMode, work_directory_id: workspaceMode === 'EXISTING' ? workDirectoryId : undefined });
@@ -289,7 +299,7 @@ export function AgentConversationSchedulesPanel({ workspaceId, onSelectSchedule,
     {item.state === 'STARTED' ? renderConversation(item) : <span><b>{occurrenceLabel(item)}</b><small>{item.error_detail || (item.state === 'FAILED' ? '运行失败' : '正在创建会话')}</small></span>}
   </div>;
   const filterLabel: Record<ScheduleFilter, string> = { ALL: '全部状态', ACTIVE: '已开启', PAUSED: '已暂停', COMPLETED: '已完成' };
-  const editor = <form className="agent-schedule-create" onSubmit={save}><div><span className="eyebrow">{formMode === 'edit' ? 'EDIT AUTOMATION' : 'NEW AUTOMATION'}</span><h3>{formMode === 'edit' ? '编辑定时任务' : '新建定时任务'}</h3><p>只填写业务提示词；平台会自动创建配置、记忆文件与运行上下文。</p></div><label>任务名称<input autoFocus value={name} maxLength={220} onChange={event => setName(event.target.value)}/></label>{formMode === 'create' && <label>工作区模式<ScheduleChoice label="工作区模式" value={workspaceMode} options={workspaceOptions} onChange={value => setWorkspaceMode(value as WorkspaceMode)}/></label>}{formMode === 'create' && workspaceMode === 'EXISTING' && <label>已有工作区<ScheduleChoice label="已有工作区" value={workDirectoryId} options={directoryOptions} onChange={setWorkDirectoryId}/></label>}<label>运行方式<ScheduleChoice label="运行方式" value={conversationMode} options={conversationOptions} onChange={value => setConversationMode(value as ConversationMode)}/></label><label>模型供应商<ScheduleChoice label="模型供应商" value={modelProviderId} options={providerOptions} onChange={value => { const provider = providers.find(item => item.id === value); const model = provider?.models.find(item => item.enabled && item.is_default) ?? provider?.models.find(item => item.enabled); setModelProviderId(value); setModelName(model?.model_name ?? ''); setReasoningEffort(model?.default_reasoning_effort ?? ''); }}/></label><label>模型名称<ScheduleChoice label="模型名称" value={modelName} options={modelOptions} onChange={value => { const model = models.find(item => item.model_name === value); setModelName(value); setReasoningEffort(model?.default_reasoning_effort ?? ''); }}/></label><label>思考程度<ScheduleChoice label="思考程度" value={reasoningEffort} options={effortOptions} onChange={setReasoningEffort}/></label><label>会话配置<div className="agent-schedule-session-config"><small>默认加载的能力与认证</small><button type="button" className="secondary" aria-label="配置会话" onClick={() => setSessionConfigOpen(true)}><Boxes size={14}/>配置会话<span>{capabilityVersionIds.length + credentialIds.length}</span></button></div></label><label>业务提示词<textarea value={prompt} maxLength={200000} placeholder="例如：检查昨日运行结果，并总结需要我关注的异常。" onChange={event => setPrompt(event.target.value)}/><small>运行时会自动加入任务名称、任务 ID、memory.md、上次运行和工作区约束。</small></label><label>Cron 表达式<input value={cronExpression} spellCheck={false} placeholder="0 9 * * 1-5" onChange={event => setCronExpression(event.target.value)}/><small>标准五段 Cron，按北京时间执行：分 时 日 月 周。</small></label>{error && <p className="agent-schedule-error">{error}</p>}<footer><button type="button" className="secondary" onClick={() => setFormMode(undefined)}>取消</button><button className="primary" disabled={Boolean(busyId)}>{busyId ? '保存中…' : '保存任务'}</button></footer></form>;
+  const editor = <form className="agent-schedule-create" onSubmit={save}><div><span className="eyebrow">{formMode === 'edit' ? 'EDIT AUTOMATION' : 'NEW AUTOMATION'}</span><h3>{formMode === 'edit' ? '编辑定时任务' : '新建定时任务'}</h3><p>只填写业务提示词；平台会自动创建配置、记忆文件与运行上下文。</p></div><label>任务名称<input autoFocus value={name} maxLength={220} onChange={event => setName(event.target.value)}/></label>{formMode === 'create' && <label>工作区模式<ScheduleChoice label="工作区模式" value={workspaceMode} options={workspaceOptions} onChange={value => setWorkspaceMode(value as WorkspaceMode)}/></label>}{formMode === 'create' && workspaceMode === 'EXISTING' && <label>已有工作区<ScheduleChoice label="已有工作区" value={workDirectoryId} options={directoryOptions} onChange={setWorkDirectoryId}/></label>}<label>运行方式<ScheduleChoice label="运行方式" value={conversationMode} options={conversationOptions} onChange={value => setConversationMode(value as ConversationMode)}/></label><label>模型供应商<ScheduleChoice label="模型供应商" value={modelProviderId} options={providerOptions} onChange={value => { const provider = providers.find(item => item.id === value); const model = provider?.models.find(item => item.enabled && item.is_default) ?? provider?.models.find(item => item.enabled); setModelProviderId(value); setModelName(model?.model_name ?? ''); setReasoningEffort(model?.default_reasoning_effort ?? ''); }}/></label><label>模型名称<ScheduleChoice label="模型名称" value={modelName} options={modelOptions} onChange={value => { const model = models.find(item => item.model_name === value); setModelName(value); setReasoningEffort(model?.default_reasoning_effort ?? ''); }}/></label><label>思考程度<ScheduleChoice label="思考程度" value={reasoningEffort} options={effortOptions} onChange={setReasoningEffort}/></label><label>会话配置<div className="agent-schedule-session-config"><small>默认加载的能力与认证</small><button type="button" className="secondary" aria-label="配置会话" onClick={() => setSessionConfigOpen(true)}><Boxes size={14}/>配置会话<span>{capabilityVersionIds.length + selectedCredentialIds.length}</span></button></div></label><label>业务提示词<textarea value={prompt} maxLength={200000} placeholder="例如：检查昨日运行结果，并总结需要我关注的异常。" onChange={event => setPrompt(event.target.value)}/><small>运行时会自动加入任务名称、任务 ID、memory.md、上次运行和工作区约束。</small></label><label>Cron 表达式<input value={cronExpression} spellCheck={false} placeholder="0 9 * * 1-5" onChange={event => setCronExpression(event.target.value)}/><small>标准五段 Cron，按北京时间执行：分 时 日 月 周。</small></label>{error && <p className="agent-schedule-error">{error}</p>}<footer><button type="button" className="secondary" onClick={() => setFormMode(undefined)}>取消</button><button className="primary" disabled={Boolean(busyId)}>{busyId ? '保存中…' : '保存任务'}</button></footer></form>;
   return <section className={`agent-schedule-page${embedded ? ' embedded' : ''}${showDetail && (!embedded || Boolean(selectedSchedule) || Boolean(formMode)) ? ' detail-visible' : ''}`} role="region" aria-label="会话定时任务">
     <header className="agent-schedule-page-head"><h2>定时任务</h2></header>
     <div className="agent-schedule-layout">
@@ -300,7 +310,7 @@ export function AgentConversationSchedulesPanel({ workspaceId, onSelectSchedule,
     {editorInDialog && createPortal(<div className="agent-schedule-editor-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) closeEditor(); }}>
       <section className="agent-schedule-editor-dialog" role="dialog" aria-modal="true" aria-label={formMode === 'edit' ? '编辑定时任务' : '新建定时任务'}>{editor}</section>
     </div>, document.body)}
-    {sessionConfigOpen && <CapabilityManager configurationPreset workspaceId={workspaceId} draftCapabilityIds={capabilityVersionIds} draftCredentialIds={credentialIds} onClose={() => setSessionConfigOpen(false)} onCreateEnhancedConversation={setCapabilityVersionIds} onDraftCredentialIdsChange={setCredentialIds}/>}
+    {sessionConfigOpen && <CapabilityManager configurationPreset workspaceId={workspaceId} draftCapabilityIds={capabilityVersionIds} draftCredentialIds={selectedCredentialIds} onClose={() => setSessionConfigOpen(false)} onCreateEnhancedConversation={setCapabilityVersionIds} onDraftCredentialIdsChange={setCredentialIds}/>}
     {activeSessionConfigOpen && activeBindingId && <CapabilityManager workspaceId={workspaceId} bindingId={activeBindingId} conversationCapabilities={activeConversationCapabilities} onClose={() => setActiveSessionConfigOpen(false)}/>}
   </section>;
 }

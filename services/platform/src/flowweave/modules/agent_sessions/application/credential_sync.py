@@ -14,6 +14,7 @@ from flowweave.modules.agent_sessions.infrastructure.models import (
     AgentConversationCredentialSync,
 )
 from flowweave.modules.credentials.application.service import (
+    credential_secret_descriptions,
     list_credentials,
     resolve_credentials_for_agent,
 )
@@ -56,6 +57,7 @@ def ensure_credential_sync_schema(db: Session) -> None:
         )
         db.execute(text("SELECT binding_id FROM agent_conversation_credential_syncs LIMIT 1"))
         db.execute(text("SELECT owner_user_id FROM agent_conversation_credential_syncs LIMIT 1"))
+        db.execute(text("SELECT context_version FROM agent_conversation_credential_syncs LIMIT 1"))
     except DBAPIError as error:
         if not _is_missing_credential_sync_schema(error):
             raise
@@ -100,6 +102,7 @@ def list_credential_sync_state(db: Session, binding: AgentConversationBinding) -
                         "CURRENT"
                         if (record := synced.get(str(credential["id"])))
                         and record.credential_row_version == credential["row_version"]
+                        and record.context_version >= 1
                         else "MODIFIED"
                         if record
                         else "NEW"
@@ -127,11 +130,13 @@ def _record_versions(
                     binding_id=binding.id,
                     credential_id=credential_id,
                     credential_row_version=int(credential["row_version"]),
+                    context_version=1,
                     synced_at=timestamp,
                 )
             )
         else:
             record.credential_row_version = int(credential["row_version"])
+            record.context_version = 1
             record.synced_at = timestamp
     binding.credential_sync_initialized_at = timestamp
     db.flush()
@@ -156,7 +161,9 @@ def synchronize_credentials(
     """Send selected values first, then persist their versions on success only."""
 
     values, _prompt, summaries = resolve_credentials_for_agent(db, _normalized_ids(credential_ids))
-    runtime.update_conversation_secrets(handle, values)
+    runtime.update_conversation_secrets(
+        handle, values, descriptions=credential_secret_descriptions(summaries)
+    )
     _record_versions(db, binding, summaries)
     return list_credential_sync_state(db, binding)
 
