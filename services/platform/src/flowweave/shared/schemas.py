@@ -880,6 +880,22 @@ class CaseFlowRunWrite(ApiModel):
     flow_run_id: str = Field(min_length=1, max_length=36)
 
 
+class CaseControlSuggestionWrite(ApiModel):
+    suggestion_key: str = Field(pattern=r"^[a-z][a-z0-9._:-]{0,119}$")
+    action: Literal[
+        "CREATE_EXECUTION_COPY",
+        "START_EXECUTION",
+        "START_STEPWISE_NODE",
+        "STOP_EXECUTION",
+        "RERUN_STEPWISE_NODE",
+        "REVISE_UNSTARTED_RUNTIME",
+    ]
+    reason: str = Field(min_length=1, max_length=2_000)
+    node_run_id: str | None = Field(default=None, min_length=1, max_length=36)
+    node_attempt_id: str | None = Field(default=None, min_length=1, max_length=36)
+    evidence: dict[str, Any] = Field(default_factory=_empty_any_dict)
+
+
 class CaseDecisionProposalWrite(ApiModel):
     flow_run_id: str = Field(min_length=1, max_length=36)
     proposal_key: str = Field(pattern=r"^[a-z][a-z0-9._-]{0,119}$")

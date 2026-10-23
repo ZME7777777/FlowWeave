@@ -9,6 +9,7 @@ from flowweave.shared.http import Db, IdempotencyKey, command_key, run_sync
 from flowweave.shared.schemas import (
     CaseControlConversationWrite,
     CaseControlPlanWrite,
+    CaseControlSuggestionWrite,
     CaseCreateWrite,
     CaseDecisionProposalWrite,
     CaseFlowRunWrite,
@@ -147,4 +148,13 @@ async def create_control_conversation(
     return await run_sync(
         db,
         lambda session: service.create_case_control_conversation(session, case_id, payload, key),
+    )
+
+
+@router.post("/case-control-bindings/{binding_id}/suggestions", status_code=201)
+async def ingest_control_suggestion(
+    binding_id: str, payload: CaseControlSuggestionWrite, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db, lambda session: service.ingest_case_control_suggestion(session, binding_id, payload)
     )

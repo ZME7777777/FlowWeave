@@ -33,6 +33,7 @@ from flowweave.shared.schemas import (
     AutomaticRunStartWrite,
     CaseControlConversationWrite,
     CaseControlPlanWrite,
+    CaseControlSuggestionWrite,
     CaseCreateWrite,
     CaseDecisionProposalWrite,
     CaseFlowRunWrite,
@@ -748,6 +749,37 @@ def create_case_control_plan(
         raise illegal("terminal case cannot create control plans", state=item.state)
     return _create_case_control_plan(
         db, item, _stage(db, item, payload.stage_id), payload, source_binding_id=None
+    )
+
+
+def ingest_case_control_suggestion(
+    db: Session, binding_id: str, payload: CaseControlSuggestionWrite
+) -> dict[str, Any]:
+    """Translate a bounded control-session suggestion into one platform plan."""
+
+    scope = resolve_case_control_binding_scope(db, binding_id)
+    item = scope["case"]
+    stage = scope["stage"]
+    if not isinstance(item, Case) or not isinstance(stage, CaseStage):
+        raise conflict("Case control Binding has no active stage")
+    if payload.action in {"RERUN_STEPWISE_NODE", "REVISE_UNSTARTED_RUNTIME"}:
+        raise illegal("suggested remediation action requires explicit human plan creation")
+    if payload.action == "START_STEPWISE_NODE":
+        raise illegal("stepwise continuation is derived from predecessor acceptance")
+    return _create_case_control_plan(
+        db,
+        item,
+        stage,
+        CaseControlPlanWrite(
+            stage_id=stage.id,
+            action=payload.action,
+            idempotency_key=f"suggestion:{binding_id}:{payload.suggestion_key}",
+            reason=payload.reason,
+            node_run_id=payload.node_run_id,
+            node_attempt_id=payload.node_attempt_id,
+            input_snapshot={"suggestion_key": payload.suggestion_key, "evidence": payload.evidence},
+        ),
+        source_binding_id=binding_id,
     )
 
 
