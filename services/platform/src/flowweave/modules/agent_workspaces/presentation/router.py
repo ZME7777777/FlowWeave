@@ -26,7 +26,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from flowweave.bootstrap.container import Container
 from flowweave.modules.agent_sessions.application import history as conversation_history
-from flowweave.modules.agent_sessions.application import history_access, sidebar_conversations
+from flowweave.modules.agent_sessions.application import (
+    history_access,
+    history_sessions,
+    sidebar_conversations,
+)
 from flowweave.modules.agent_sessions.application import schedules as conversation_schedules
 from flowweave.modules.agent_sessions.application import search as conversation_search
 from flowweave.modules.agent_sessions.public import conversations
@@ -1442,6 +1446,57 @@ class HistoryGrantWrite(_Write):
     ttl_seconds: int = Field(default=900, ge=60, le=3600)
 
 
+class HistorySessionWrite(_Write):
+    source_binding_ids: list[Annotated[str, Field(min_length=36, max_length=36)]] = Field(
+        min_length=1, max_length=10
+    )
+    ttl_seconds: int = Field(default=900, ge=60, le=3600, strict=True)
+
+
+@router.post("/agent-workspaces/{workspace_id}/conversations/{binding_id}/history-session")
+async def renew_history_session(
+    workspace_id: str, binding_id: str, payload: HistorySessionWrite, db: Db
+) -> JSONResponse:
+    def renew(session: Any) -> dict[str, Any]:
+        lease, token = history_sessions.renew(
+            session,
+            workspace_id,
+            binding_id,
+            tuple(payload.source_binding_ids),
+            payload.ttl_seconds,
+        )
+        return {
+            "session_id": lease.id,
+            "access_token": token,
+            "token_type": "Bearer",
+            "expires_at": lease.expires_at.isoformat(),
+            "source_binding_ids": payload.source_binding_ids,
+        }
+
+    return JSONResponse(await run_sync(db, renew), headers={"Cache-Control": "no-store"})
+
+
+@router.delete("/agent-workspaces/{workspace_id}/conversations/{binding_id}/history-session")
+async def revoke_history_session(workspace_id: str, binding_id: str, db: Db) -> Response:
+    await run_sync(db, lambda session: history_sessions.revoke(session, workspace_id, binding_id))
+    return Response(status_code=204, headers={"Cache-Control": "no-store"})
+
+
+@router.delete(
+    "/agent-workspaces/{workspace_id}/conversations/{binding_id}/history-session/sources/{source_binding_id}"
+)
+async def revoke_history_source(
+    workspace_id: str, binding_id: str, source_binding_id: str, db: Db
+) -> Response:
+    await run_sync(
+        db,
+        lambda session: history_sessions.revoke(
+            session, workspace_id, binding_id, source_binding_id
+        ),
+    )
+    return Response(status_code=204, headers={"Cache-Control": "no-store"})
+
+
 @router.post("/agent-workspaces/{workspace_id}/conversations/{binding_id}/history-grants")
 async def create_history_grant(
     workspace_id: str, binding_id: str, payload: HistoryGrantWrite, db: Db
@@ -1463,7 +1518,9 @@ async def create_history_grant(
     )
 
 
-@router.delete("/agent-workspaces/{workspace_id}/conversations/{binding_id}/history-grants/{grant_id}")
+@router.delete(
+    "/agent-workspaces/{workspace_id}/conversations/{binding_id}/history-grants/{grant_id}"
+)
 async def revoke_history_grant(
     workspace_id: str, binding_id: str, grant_id: str, db: Db
 ) -> Response:

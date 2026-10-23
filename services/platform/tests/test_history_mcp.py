@@ -110,6 +110,8 @@ def test_grant_stores_only_hash_and_revokes(access):
     assert a.token not in redact_secret_text(f"unexpected tool output: {a.token}")
     assert a.token not in str(redact_secret_value({"debug": {"content": a.token}}))
     assert history_access.authorize(a.db, a.token).id == a.grant.id
+    with pytest.raises(DomainError):
+        history_access.authorize(a.db, a.token, source_binding_id=a.source.id)
     history_access.revoke(a.db, "workspace", a.target.id, a.grant.id)
     with pytest.raises(DomainError) as error:
         history_access.authorize(a.db, a.token)
@@ -241,7 +243,7 @@ def test_mcp_handshake_tool_schema_and_read(client):
     assert initialized.json()["result"]["protocolVersion"] == "2025-03-26"
     tool = rpc("tools/list").json()["result"]["tools"][0]
     assert tool["annotations"]["readOnlyHint"] is True
-    assert "source_binding_id" not in tool["inputSchema"]["properties"]
+    assert "source_binding_id" in tool["inputSchema"]["properties"]
     result = rpc("tools/call", {"name": tool["name"], "arguments": {}})
     assert result.headers["cache-control"] == "no-store"
     assert json.loads(result.json()["result"]["content"][0]["text"])["history_cursor"] == "older"
@@ -321,9 +323,10 @@ print("official MCP transport client passed")
         listener.close()
 
 
-def test_restricted_bearer_is_not_a_platform_login():
+@pytest.mark.parametrize("prefix", ["fwh1", "fwh2"])
+def test_restricted_bearer_is_not_a_platform_login(prefix):
     app = create_app(Settings(runtime_adapter="mock", seed_demo=False))
-    token = f"fwh1.{uuid4()}.{uuid4()}." + "a" * 43
+    token = f"{prefix}.{uuid4()}.{uuid4()}." + "a" * 43
     # Do not start the PostgreSQL-backed lifespan for a middleware-only check.
     client = TestClient(app)
     try:

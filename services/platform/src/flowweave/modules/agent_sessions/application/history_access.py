@@ -1,18 +1,27 @@
 """Restricted history credentials, independent of platform login sessions."""
 
+from __future__ import annotations
+
 import hashlib
 import hmac
 import secrets
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions.application import conversations
-from flowweave.modules.agent_sessions.infrastructure.models import AgentConversationHistoryGrant
+from flowweave.modules.agent_sessions.infrastructure.models import (
+    AgentConversationHistoryGrant,
+    AgentHistorySession,
+)
 from flowweave.modules.users.application.security import current_user_id, tenant_user
 from flowweave.modules.users.application.service import agent_session_principal
 from flowweave.shared.errors import DomainError
+
+if TYPE_CHECKING:
+    from flowweave.modules.agent_sessions.application.history_sessions import AuthorizedSource
 
 
 def denied() -> DomainError:
@@ -24,7 +33,7 @@ def token_identity(token: str) -> tuple[str, str]:
 
     try:
         prefix, owner, grant_id, nonce = token.split(".")
-        if prefix != "fwh1" or not 40 <= len(nonce) <= 64:
+        if prefix not in {"fwh1", "fwh2"} or not 40 <= len(nonce) <= 64:
             raise ValueError("invalid token")
         if str(UUID(owner)) != owner or str(UUID(grant_id)) != grant_id:
             raise ValueError("invalid identity")
@@ -70,7 +79,26 @@ def issue(
     return grant, token
 
 
-def authorize(db: Session, token: str) -> AgentConversationHistoryGrant:
+def authenticate(
+    db: Session, token: str
+) -> AgentConversationHistoryGrant | AgentHistorySession | AuthorizedSource:
+    """Authenticate the credential for MCP setup without selecting a source."""
+    if token.startswith("fwh2."):
+        from flowweave.modules.agent_sessions.application import history_sessions
+
+        return history_sessions.authenticate(db, token)
+    return authorize(db, token)
+
+
+def authorize(
+    db: Session, token: str, *, source_binding_id: str | None = None
+) -> AgentConversationHistoryGrant | AuthorizedSource:
+    if token.startswith("fwh2."):
+        from flowweave.modules.agent_sessions.application import history_sessions
+
+        return history_sessions.authorize_source(db, token, source_binding_id)
+    if source_binding_id is not None:
+        raise denied()
     owner, grant_id = token_identity(token)
     with tenant_user(owner):
         grant = db.get(AgentConversationHistoryGrant, grant_id)

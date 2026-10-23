@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`UPSTREAM BASELINE ADOPTION COMPLETE`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-653`
+> 下一可执行切片：`FR-654`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -9931,9 +9931,35 @@ commit `ae178d86f4e0e268cf31f8f9c5deda892f4ebf12` 的 SDK 1.54.0 与 frozen 依�
 Alembic 唯一 head 仍为 0159_agent_history_grants。未实跑 PostgreSQL 迁移，未部署。
 当前 NONE，下一可执行切片 FR-653；整会话引用发送仍沿用旧行为。
 
-### FR-653 受治理 MCP 会话接入与整会话元数据引用 — READY
+### FR-653 会话级历史凭据租约与多来源授权 — DONE
 
-依赖：FR-652 DONE。冻结 MCP version／digest 与 Manifest，设计会话级受限凭据、
-来源授权集合及续期／撤销，避免原生客户端认证头快照与重复工具冲突；完成新建／既有
-会话接入后再切换整会话元数据引用，保留片段引用与旧消息投影、可点击来源和失败
-降级。完成真实 PostgreSQL 0159 upgrade／downgrade 与固定 Runtime 镜像验收后再考虑发布。
+依赖：FR-652 DONE。将原接入计划按授权服务与产品接入边界拆分。本片实现单目标
+会话稳定受限凭据的加密保存、登录用户显式续租和撤销，以及逐来源白名单、正式身份
+复核与单来源撤销；MCP 接受白名单内来源 ID，旧单来源凭据保持兼容。续租不更换
+客户端认证头，也不重新加载原生工具。未授权来源、已撤销授权不得被查询自动恢复。
+仅完成服务与测试，不自动注册能力或切换消息发送。
+
+验收：历史／MCP／分阶段读取／脱敏主套件 132 passed，补充凭据边界 7 passed（其中
+新增 1 项，共 133 个不同用例）。覆盖加密持久化与哈希鉴权、同令牌续租、多来源独立
+过期／撤销、不可由查询续租、伪造路由身份、用户停用／权限收回、宿主与正式身份漂移、
+密文损坏／跨目标密文替换、删除清理、投影前撤销、旧单来源兼容和两类受限 Bearer
+均不能登录平台。真实 HTTP 用例使用 SQLite 权限记录及受控 Runtime 读取；固定
+SDK 1.54.0 探针以实际本地 TCP、平台正式能力物化和原生 executor 查询两个显式来源，
+期间验证加密保存／恢复与同一凭据可用；无模型调用，未修改 OpenHands 或 source lock。
+新增 0160 两表迁移的 PostgreSQL 离线 upgrade／downgrade SQL、用户隔离注册、唯一
+约束、强制 RLS 策略与删除顺序核对通过。行锁并发、真实 PostgreSQL RLS／迁移和完整
+Runtime 镜像仍由 FR-655 验收，不能用 SQLite 或 SDK 探针代替。受影响 Ruff／AST、
+新增模块及探针／测试 format、授权与 MCP 模块 Pyright（零错误）、diff／任务状态和
+依赖检查通过；Alembic 唯一 head 为 0160_agent_history_sessions。未部署，拖拽引用
+发送尚未切换；当前 NONE，下一可执行切片 FR-654。
+
+### FR-654 受治理 MCP 自动接入与整会话元数据引用 — READY
+
+依赖：FR-653 DONE。冻结 MCP version／digest 与 Manifest，将会话租约和来源授权
+接入新建／既有会话，随后切换整会话元数据引用；保留片段引用、旧消息投影、可点击
+来源与能力不可用时的明确失败。处理并发发送／重试／恢复，不能只靠提示词替代工具。
+
+### FR-655 历史查询真实数据库与固定 Runtime 验收 — PENDING
+
+依赖：FR-654 DONE。完成真实 PostgreSQL 授权迁移 upgrade／downgrade、RLS、租约
+与并发验收，以及固定 Runtime 镜像上的新建／既有会话、撤销与恢复验证后再考虑发布。

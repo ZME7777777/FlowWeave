@@ -1,10 +1,10 @@
-# 受限会话历史 MCP（FR-651／FR-652）
+# 受限会话历史 MCP（FR-651–FR-653）
 
 FlowWeave 提供只读历史服务；OpenHands 使用其正式远程 MCP 机制调用服务，无须修改
 OpenHands 源码。当前已实现授权、分页和长正文读取，并验证固定 SDK 的原生加载／恢复；
 尚未自动注册 Runtime 能力或改变拖拽引用发送。
 
-## 授权
+## 单来源授权（兼容接口）
 
 已登录且有 Agent 会话权限的用户通过下列公开 API 显式授权：
 
@@ -19,6 +19,39 @@ OpenHands 源码。当前已实现授权、分页和长正文读取，并验证�
 授权独立于登录 Cookie；令牌不能调用普通平台 API，平台 Cookie 不能代替 MCP Bearer。
 每次查询重新检查用户启用状态和当前 Agent 权限，不继承历史管理员权限。
 
+## 会话级租约与来源白名单
+
+为避免续期时重建已初始化的 MCP 客户端，新增稳定凭据 `fwh2`，仅授权一个目标会话。
+平台使用既有 `credentials_master_key` 加密保存令牌，同时保存 SHA-256 供鉴权；
+令牌不写入能力包、消息或普通配置。新凭据只能调用历史 MCP，不能登录平台或访问
+其他 API。Runtime 接入时仍须经正式 Secret Registry 注入，使用原生 Cipher 加密持久化。
+
+已登录且保有当前 Agent 权限的用户调用：
+
+`POST /api/v1/agent-workspaces/{workspace_id}/conversations/{target_binding_id}/history-session`
+
+请求为 `{"source_binding_ids":["来源binding UUID"],"ttl_seconds":900}`，每次显式提供
+1–10 个不同来源，时长范围 60–3600 秒。两端仍须是同用户、同工作区的 ACTIVE 普通
+会话；冻结目标及每个来源的正式 Conversation／Runtime Session 身份。响应 200 包含
+`session_id`、`access_token`、`token_type=Bearer`、`expires_at` 和本次来源 ID；禁止缓存。
+后续续租返回同一令牌，只延长目标租约及本次显式列出的来源租约，不能通过列出一个
+来源自动恢复其他已过期来源。服务对目标 binding 加行锁，串行化签发、续期与撤销，
+数据库唯一约束保证每个用户／目标至多一条会话租约、每个租约／来源至多一条来源授权。
+
+MCP 初始化及列工具仅验证目标凭据；每次工具查询必须另带 `source_binding_id`，且该
+来源在有效白名单中。查询不会续期，也不能新增来源；读取后再次检查目标租约、来源
+租约、撤销、用户权限和正式身份，读取期间发生的撤销不会返回历史正文。
+
+撤销目标凭据使用同一路径的 DELETE；只撤销一个来源使用
+`DELETE .../history-session/sources/{source_binding_id}`。撤销为永久拒绝，续租不能自动
+复活；当前没有凭据旋转／重新授权接口，撤销后如需重新建立授权须使用新的目标会话。
+正常过期允许原登录用户显式续租。删除来源只清理它的授权，删除目标清理整条租约与
+所有来源。凭据或来源身份漂移时拒绝查询／续租，不悄悄改绑到新会话。
+
+该接口目前由登录用户显式调用；自动能力注册、续租触发和消息引用协议接入属于 FR-654，
+不能将本片服务完成视为拖拽引用已经切换。新增迁移 `0160_agent_history_sessions` 为两表
+启用用户隔离与强制 RLS；真实 PostgreSQL 行锁／RLS 验收留在 FR-655。
+
 ## MCP
 
 部署前缀之后的端点为 `/api/v1/agent-history-mcp`，认证仅使用 Authorization Bearer，
@@ -31,12 +64,13 @@ HTTP：POST 的 JSON-RPC 初始化、ping、tools/list、tools/call 返回 JSON�
 | 参数 | 含义 |
 | --- | --- |
 | `history_cursor` | 上一页返回的正式历史游标；首次省略 |
+| `source_binding_id` | 会话级凭据必填，仅可选择白名单来源；旧单来源凭据必须省略 |
 | `query` | 可选的页内关键词，不是全会话全文搜索 |
 | `max_content_chars` | 单条正文预览上限，默认 2000，范围 1–10000 |
 | `event_id` | 可选的正式消息事件 ID，启用单条正文分段读取 |
 | `content_offset` | 可见正文中的 Unicode 码点位置，默认 0；非零时必须提供 event_id |
 
-来源会话由授权记录确定，参数不能替换来源 ID。输出包括 `source_binding_id`、
+来源会话由授权记录确定；会话级凭据只能在其白名单中选择来源。分页输出包括 `source_binding_id`、
 `messages`、`next_cursor`、`history_cursor`、`query_scope=current_page` 和长度上限；
 空匹配页仍保留历史游标。消息含正式 event ID、来源角色、可见正文、原始长度及
 `truncated`。工具结果、系统消息与隐藏引用传输背景不进入输出。
@@ -85,13 +119,17 @@ Secret Registry 展开，实际令牌不写入能力包。恢复时 `agent=None`
 agent，传入全新 agent 会替换原有配置，不能用于证明能力恢复。
 
 认证头在插件加载时展开为客户端快照；仅更新 Secret Registry 不保证既有客户端换用
-新凭据。重复加载同名插件也可能因不同 MCPClient 的重名工具冲突失败。下一片必须先
-解决会话级凭据和来源授权的生命周期，不能简单轮换短期令牌并反复加载插件。
+新凭据。重复加载同名插件也可能因不同 MCPClient 的重名工具冲突失败。因此 FR-653
+采用服务端续租与来源白名单，复用同一受限令牌；接入时不能反复加载插件来模拟续期。
 
-FR-653 必须先完成受治理 MCP version／digest／Manifest、受限凭据续期与撤销和既有
-会话接入，再切换整会话引用为元数据。不得将短期令牌
+FR-653 使用相同固定 SDK 探针，以真实 SQLite 租约鉴权和受控历史读取通过本地 TCP
+查询两个显式来源；中间执行原生加密保存／恢复，原令牌与原生工具保持可用。该证据
+不验证 PostgreSQL 行锁或完整 Runtime 镜像，不执行 LLM。
+
+FR-654 必须先完成受治理 MCP version／digest／Manifest、续租触发和既有
+会话接入，再切换整会话引用为元数据。不得将受限令牌
 直接嵌入 Plugin 文件或用户消息，也不得在能力不可用时悄悄丢掉来源上下文。
 
-数据库新增迁移 `0159_agent_history_grants`，启用强制用户 RLS。现有验证包含 SQLite
-授权持久化与 PostgreSQL 离线迁移 SQL；真实 PostgreSQL upgrade／downgrade、固定
+数据库新增迁移 `0159_agent_history_grants` 和 `0160_agent_history_sessions`，启用强制用户 RLS。
+现有验证包含 SQLite 授权持久化与 PostgreSQL 离线迁移 SQL；真实 PostgreSQL upgrade／downgrade、固定
 Runtime 验收及部署仍需后续执行。

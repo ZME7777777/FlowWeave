@@ -49,7 +49,13 @@ def verify_source() -> str:
     return str(lock["source_commit"])
 
 
-def check(marketplace: Path, plugin_name: str, state_dir: Path) -> dict[str, object]:
+def check(
+    marketplace: Path,
+    plugin_name: str,
+    state_dir: Path,
+    source_binding_id: str | None = None,
+    restored_source_binding_id: str | None = None,
+) -> dict[str, object]:
     os.environ["OPENHANDS_SUPPRESS_BANNER"] = "1"
     logging.disable(logging.CRITICAL)
     state_dir.mkdir(parents=True, exist_ok=False)
@@ -123,8 +129,11 @@ def check(marketplace: Path, plugin_name: str, state_dir: Path) -> dict[str, obj
         ]
         assert len(tools) == 1
         tool = tools[0]
+        arguments = (
+            {"source_binding_id": source_binding_id} if source_binding_id else {}
+        )
         result = tool.as_executable().executor(
-            tool.action_from_arguments({}), conversation
+            tool.action_from_arguments(arguments), conversation
         )
         assert not result.is_error, "Native MCP invocation failed"
         identity = conversation.id
@@ -166,7 +175,11 @@ def check(marketplace: Path, plugin_name: str, state_dir: Path) -> dict[str, obj
         ]
         assert len(restored_tools) == 1
         tool = restored_tools[0]
-        result = tool.as_executable().executor(tool.action_from_arguments({}), restored)
+        restored_source = restored_source_binding_id or source_binding_id
+        arguments = {"source_binding_id": restored_source} if restored_source else {}
+        result = tool.as_executable().executor(
+            tool.action_from_arguments(arguments), restored
+        )
         assert not result.is_error, "Restored native MCP invocation failed"
     finally:
         restored.close()
@@ -189,11 +202,17 @@ if __name__ == "__main__":
     parser.add_argument("--marketplace", type=Path, required=True)
     parser.add_argument("--plugin-name", required=True)
     parser.add_argument("--state-dir", type=Path, required=True)
+    parser.add_argument("--source-binding-id")
+    parser.add_argument("--restored-source-binding-id")
     args = parser.parse_args()
     print(
         json.dumps(
             check(
-                args.marketplace.resolve(), args.plugin_name, args.state_dir.resolve()
+                args.marketplace.resolve(),
+                args.plugin_name,
+                args.state_dir.resolve(),
+                args.source_binding_id,
+                args.restored_source_binding_id,
             )
         )
     )
