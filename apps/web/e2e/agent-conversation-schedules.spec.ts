@@ -1151,6 +1151,11 @@ test('scheduled session shows session configuration and expands additional runs'
   await expect(tasks.locator('.agent-schedule-run')).toHaveCount(3);
   await expect(firstSchedule.getByRole('button', { name: '展开其余 2 个会话', exact: true })).toBeVisible();
 
+  const firstRun = firstSchedule.locator('.agent-schedule-run').first();
+  await firstRun.hover();
+  await expect(firstRun).toHaveCSS('background-color', 'rgb(227, 241, 230)');
+  await expect(firstRun.locator('.agent-workspace-conversation-select')).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+
   await page.goto('/agent/schedules/conversations/scheduled-run-5');
   await expect(page).toHaveURL(/\/agent\/schedules\/conversations\/scheduled-run-5$/);
   await expect(firstSchedule.locator('[data-binding-id="scheduled-run-5"]')).toBeVisible();
