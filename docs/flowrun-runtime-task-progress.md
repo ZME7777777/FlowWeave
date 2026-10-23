@@ -9732,3 +9732,14 @@ health 和 readiness 通过，未修改远端 Compose／env、Runtime、数据�
 remote-release-finish 完成版本、健康门禁及受管收尾，回收一份过期成功 Web 上下文
 和一个过期精确 rollback tag，保留最近三份成功上下文、回滚版本和所有引用版本；
 未清理共享 BuildKit、容器、卷、Workspace 或数据库备份。
+
+
+### FR-646 用户消息气泡四角统一圆角 — DONE
+
+依赖：FR-645 DONE。按用户要求，将共享用户消息气泡四角统一为 18px，保留青雾白
+底色、透明边框和原有尺寸。验证短消息、长消息与分屏布局；仅修改 Web 与协作文档。
+
+验收：Web typecheck 和 2 项既有 Chromium 定向回归通过，覆盖消息正文／公式与分屏
+换行。实际页面短消息、长消息四角计算样式均为 18px，截图核对通过；背景、文字与
+宽高保持原值。git diff --check、CURRENT 唯一性和依赖核对通过；Alembic 唯一 head
+仍为 0158_schedule_china_timezone。当前及下一可执行切片均为 NONE；本圆角改动未部署。
