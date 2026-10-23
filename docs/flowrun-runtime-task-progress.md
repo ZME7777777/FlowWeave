@@ -9993,3 +9993,32 @@ Web typecheck、受影响 TSX／E2E ESLint、Python Ruff 通过。定向 Pyright
 git diff --check、CURRENT 唯一性和依赖核对通过；Alembic 唯一 head 仍为
 0158_schedule_china_timezone，无迁移。当前及下一可执行切片均为 NONE，未部署。
 浏览器下载使用受控 API，服务端下载使用隔离测试工作区，未读取线上文件或发送真实消息。
+
+
+FR-653 发布补记（2026-10-23）：按用户部署授权，以固定提交
+`ba9a4979e300fd5cc711bf2cbc9cce3fdf543b2b` 分别通过 platform／web 正式预检，
+使用 remote-release-prepare 的受管最小上下文。Platform 归档 SHA-256 为
+`6e5b57a59e2ca38be5b2a990b6621eb59c0ac29dc6d3b363d9488245c265ec6c`，
+Web 归档 SHA-256 为
+`ac13520def2d619b70c977b8d216a3183fb9ce2bef42c93ac4bdebb2f2785fe2`。
+保留旧镜像的精确 rollback tags 后，构建并核对 linux/amd64 与 OCI revision，
+迁移成功后同步重建 api／stream-api／worker，随后更新 Web。平台新镜像 ID 为
+`sha256:37a9a6b92ee5aeee6732361d562a577ad8511b9712fcf49e10cb8146a976e251`，
+Web 新镜像 ID 为
+`sha256:05fc664c34a28ee4bdfc9a4e0094d14acb5a62c060836cfad636a550351ccdbc`。
+四个服务版本与健康检查通过，三个平台服务的调度源码哈希与固定提交一致，
+Alembic head 仍为 0158_schedule_china_timezone；34 个其他运行容器的身份、镜像
+与启动时间保持一致。未修改服务器 Compose／env、Runtime Provider、运行中的
+Runtime、卷或工作区。
+
+全新公网浏览器验证登录入口、Agent 深层路由、API 前缀、401 未认证边界和根登录入口，
+页面脚本错误为零。线上实际静态资源配合受控 API／WebSocket 的 7 项 Chromium
+回归全部通过，覆盖持续会话去重、选中和状态标识、任务详情与展开、配置布局、
+草稿与编辑弹窗，以及定时会话文件预览下载。浏览器加载的 39 个 JavaScript 文件
+SHA-256 与新 Web 镜像一致；未读取线上私有文件或向真实会话发送测试消息，不将
+受控接口检查记为真实 Runtime 业务验收。
+
+platform／web 的 remote-release-finish 均通过健康、版本门禁并完成收尾，
+回收三份过期受管成功上下文及两个过期精确 rollback tags，保留每个 scope 最近
+三份成功上下文和所有引用版本，未清理共享 BuildKit、容器、卷、Workspace 或备份。
+发布包仅来自上述固定提交，发布过程中出现的其他在途改动完整保留且未纳入发布。
