@@ -1412,6 +1412,70 @@ test('scheduled conversation drafts survive creating tasks and editing from task
   await expect(page).toHaveURL(/\/agent\/schedules$/);
 });
 
+test('many subagents stay inside the floating card without scrolling it', async ({ page }) => {
+  const tasks = Array.from({ length: 37 }, (_, index) => {
+    const actionId = `card-task-${index}`;
+    const toolCallId = `card-task-call-${index}`;
+    return [
+      { id: actionId, event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'card-user', action_id: actionId, tool_call_id: toolCallId, event_name: 'TaskAction', runtime_task: { phase: 'REQUESTED', action_event_id: actionId, tool_call_id: toolCallId, subagent_type: 'general-purpose', description: `卡片任务 ${index + 1}` }, timestamp: now } },
+      { id: `${actionId}-result`, event_type: 'TOOL_RESULT', payload: { source: 'environment', parent_id: actionId, action_id: actionId, tool_call_id: toolCallId, event_name: 'TaskObservation', runtime_task: { phase: 'COMPLETED', action_event_id: actionId, tool_call_id: toolCallId, task_id: `task-${index}`, status: 'completed' }, timestamp: now } },
+    ];
+  }).flat();
+  await openWorkspace(page, [
+    { id: 'card-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '检查子智能体卡片', timestamp: now } },
+    ...tasks,
+    { id: 'card-answer', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: tasks.at(-1)!.id, content: '检查完成。', final_reply: true, timestamp: now } },
+  ]);
+  await page.goto('/agent/conversations/scheduled-conversation');
+  const card = page.locator('.agent-workspace-summary');
+  const avatars = card.locator('.agent-workspace-subagent-avatars');
+  const summary = card.locator('.agent-workspace-subagent-summary');
+  const geometry = () => card.evaluate(element => {
+    const cardRect = element.getBoundingClientRect();
+    const overview = element.querySelector('.agent-workspace-overview')!;
+    const row = element.querySelector('.agent-workspace-subagents')!;
+    const targets = [overview, row, row.querySelector('button')!, row.querySelector('b')!, row.querySelector('button > svg')!];
+    return {
+      overflow: Math.max(0, ...targets.map(target => { const rect = target.getBoundingClientRect(); return Math.max(cardRect.left - rect.left, rect.right - cardRect.right); })),
+      horizontalOverflow: element.scrollWidth - element.clientWidth,
+      overflowStyles: [element, overview].map(target => { const style = getComputedStyle(target); return [style.overflowX, style.overflowY]; }),
+      scroll: [element.scrollLeft, element.scrollTop, overview.scrollLeft, overview.scrollTop],
+    };
+  });
+  const expectContained = async () => {
+    await settleWorkspaceLayout(page);
+    await expect(summary).toHaveAccessibleName('37 个子智能体任务');
+    await expect(summary.locator('b')).toHaveText('37 完成');
+    await expect.poll(async () => (await geometry()).overflow).toBeLessThanOrEqual(1);
+    expect((await geometry()).horizontalOverflow).toBe(0);
+    expect((await geometry()).overflowStyles.flat().every(value => value === 'clip')).toBe(true);
+    expect(await avatars.evaluate(element => element.scrollWidth > element.clientWidth)).toBe(true);
+    await card.evaluate(element => {
+      element.scrollTo(999, 999);
+      element.querySelector('.agent-workspace-overview')!.scrollTo(999, 999);
+    });
+    expect((await geometry()).scroll).toEqual([0, 0, 0, 0]);
+  };
+  await expect(avatars.locator('.subagent-avatar')).toHaveCount(37);
+  for (const [width, height] of [[1920, 1080], [1440, 900], [1024, 640], [390, 844]]) {
+    await page.setViewportSize({ width, height });
+    await expectContained();
+    await page.screenshot({ path: `../../.tmp/fr-651-card-${width}.png` });
+    if (width === 390) await card.screenshot({ path: '../../.tmp/fr-651-card-mobile.png' });
+  }
+  await page.setViewportSize({ width: 1920, height: 1080 });
+  await page.getByRole('button', { name: '新建工作区页签', exact: true }).first().click();
+  await page.getByRole('button', { name: '显示悬浮信息卡', exact: true }).first().click();
+  await expectContained();
+  await page.getByRole('button', { name: '全屏查看工作区工具', exact: true }).click();
+  await page.getByRole('button', { name: '日报会话', exact: true }).last().click();
+  await expectContained();
+  await page.screenshot({ path: '../../.tmp/fr-651-card-fullscreen.png' });
+  await card.getByRole('button', { name: /37 个子智能体任务/ }).click();
+  await expect(page.locator('.agent-subagent-task-list button')).toHaveCount(37);
+  await expect(page.locator('.agent-subagent-record')).toContainText('卡片任务 1');
+});
+
 test('the floating card occupies conversation whitespace without resizing it or splitting its header', async ({ page }) => {
   await openWorkspace(page);
   await page.goto('/agent/conversations/scheduled-conversation');
@@ -1551,7 +1615,8 @@ test('the floating workspace card remains absent until workspace details load', 
   const workspaceDetailsReady = new Promise<void>(resolve => { releaseWorkspaceDetails = resolve; });
 
   await openWorkspace(page);
-  await page.route('**/agent-workspaces/schedule-workspace/workspace', async route => {
+  // Conversation workspace reads include binding_id; delay both forms.
+  await page.route(/\/agent-workspaces\/schedule-workspace\/workspace(?:\?.*)?$/, async route => {
     await workspaceDetailsReady;
     await json(route, { root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', files: [], repositories: [], runtime: {}, ide: { gateway: { supported: false } } });
   });

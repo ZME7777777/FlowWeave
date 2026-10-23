@@ -9913,3 +9913,21 @@ health 与 readiness 均通过；未修改服务器配置、Runtime、数据库�
 remote-release-finish 完成版本、健康门禁与受管收尾，回收一份过期成功 Web 上下文
 及一个过期精确 rollback tag，保留最近三份成功上下文、回滚版本和所有引用版本；
 未清理共享 BuildKit、容器、卷、Workspace 或数据库备份。当前及下一可执行切片均为 NONE。
+
+
+### FR-651 悬浮卡子智能体宽度约束与禁止滚动 — DONE
+
+依赖：FR-650 DONE。修复大量子智能体头像通过网格最小内容宽度撑出悬浮卡的问题，
+将摘要、数量及详情入口限制在卡片内，多余头像裁切，悬浮卡及概览不允许横向或纵向
+滚动。验证大量正式 Task 事件下的桌面／紧凑／窄屏、分屏与全屏会话布局及详情入口，
+运行 Web typecheck、定向 ESLint／Chromium 回归与 diff／状态检查；仅修改 Web 与
+协作文档，不部署。
+
+验收：新增 37 个正式 Task 的 Chromium 回归先在旧样式复现内容越界约 582px；修复后
+1920／1440／1024／390px、分屏及全屏会话均验证头像裁切、数量和箭头不越界、卡片
+与概览横纵向均为不可滚动的 clip，程序滚动位置保持零，详情仍显示全部 37 个任务。
+桌面、紧凑、窄屏卡片及全屏截图核对通过。修正既有工作区加载夹具漏拦 binding_id
+查询参数的问题；连同显隐、偏好隔离及加载门控共 8 项定向 Chromium 回归通过。
+Web typecheck、受影响 E2E ESLint、git diff --check、CURRENT 唯一性和依赖核对通过；
+Alembic 唯一 head 仍为 0158_schedule_china_timezone。仅修改 Web 与协作文档，当前及
+下一可执行切片均为 NONE，未部署。
