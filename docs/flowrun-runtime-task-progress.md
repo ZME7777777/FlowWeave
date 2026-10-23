@@ -114,7 +114,8 @@ Web typecheck、受影响 ESLint、追加迁移 Ruff、Python AST、diff 与状�
 
 FR-668 发布补记（2026-10-23）：合并代码提交为
 `46d6bd203b70b5fa2adc74fa513ccf755526076f`，远程 36 个提交均已成为其祖先；
-未推送。使用正式预检与 commit-bound 最小上下文发布 platform／web，归档 SHA-256
+发布收尾时远程跟踪分支也已指向该合并提交。使用正式预检与 commit-bound 最小上下文
+发布 platform／web，归档 SHA-256
 分别为 `f5e9535963529af5d6bca7605988fdae65683b06ee1aea1fe6a19c743ad74bf6`、
 `45ae8873dc446e27b373f4845e31da765ea30b44b0ea6151e6771a3b3c65177a`。
 最终平台和 Web 镜像分别为
