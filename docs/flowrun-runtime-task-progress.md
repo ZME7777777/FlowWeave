@@ -92,7 +92,32 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 
 ## 6. 任务清单
 
+### FR-667 撤回 Runtime 扩展并收敛工作区文件交付 — DONE
+
+依赖：FR-666 DONE。用户明确要求不修改 OpenHands 后，撤回 FR-666 的原生工具扩展，
+恢复先前 source lock、归档／provenance、Dockerfile 和平台契约。保留 FlowWeave 的
+当前工作区相对图片解析、binding 授权及预览修复；将工具自动输出的真实复制／存在核验
+纳入平台交付上下文。工作目录只决定默认相对路径，交付指令不声称能强制模型或工具的
+任意写入位置；不把模型生成的错误路径改写成不存在的文件，也不开放内部状态目录。
+原发布在只读预检、上下文准备和 rollback tag 保存后停止，未构建镜像、迁移或重启服务。
+新发布仅使用修正后的 platform／web commit，旧 Runtime 上下文不会用于构建或发布。
+
+验收：OpenHands 撤回提交 `2c8025f` 的整棵源码树与原锁定 `73e3cd8e` 无差异，
+FlowWeave 的六个 Runtime 输入／契约文件均逐字节恢复到本任务前版本，删除未发布的新 SDK
+归档。工作区文件路径／符号链接边界及 Runtime 工作目录适配 14 项、图片投影 36 项、
+源码供应链与固定归档 5 项通过；交付上下文 AST 通过，Ruff 与提交前基线相同
+（六项既存 E501、零新增）。FR-666 的两项浏览器 E2E 和 Web 静态检查仍覆盖保留的
+前端变更，本片未再次修改 Web。diff／staged scope／状态唯一性检查通过，迁移未改。
+
+原准备的两个受管发布上下文已标记失败／被替代，Runtime 上下文标记取消；服务运行
+版本未变，Runtime 镜像构建和服务替换均未开始。不删除上下文、工作区或任何业务数据。
+本片完成后按仓库切片规则提交并停止，尚未执行修正后 platform／web 发布。
+当前与下一可执行代码切片均为 NONE。
+
 ### FR-666 浏览器截图归属当前会话工作区 — DONE
+
+后续纠正：本片原生工具扩展及新 Runtime source lock 已按用户要求在 FR-667 撤回；
+下述记录保留为历史审计，不表示当前版本仍包含该 OpenHands 改动。
 
 依赖：FR-665 DONE。固定 OpenHands 浏览器在每次原生 Tool 调用返回时，以正式
 conversation.state.workspace.working_dir 和 conversation ID 冻结本次 Observation 的
