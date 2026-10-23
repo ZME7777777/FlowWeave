@@ -18,6 +18,9 @@ from sqlalchemy.orm import Session
 from flowweave.modules.agent_sessions import public as agent_sessions
 from flowweave.modules.agent_sessions.application import resumable_attachments
 from flowweave.modules.agent_sessions.application import usage as usage_projection
+from flowweave.modules.agent_sessions.application.activity_reconciliation import (
+    read_activity_completion,
+)
 from flowweave.modules.agent_sessions.application.condensation import (
     condensation_task_failure_reason,
     enqueue_manual_condensation,
@@ -982,7 +985,7 @@ def node_session_activity(
             else:
                 item.activity_was_running = False
         if item.terminal_reconciliation_pending and is_background and not is_running:
-            result = runtime.read_active_events(_handle(db, item)).result
+            result = read_activity_completion(runtime, _handle(db, item))
             if (
                 result is not None
                 and result.status == "COMPLETED"

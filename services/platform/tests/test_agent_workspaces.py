@@ -4494,8 +4494,17 @@ def test_agent_workspace_conversation_activity_maps_native_unready_ids(
     assert runtime.calls == 1
 
 
+@pytest.mark.parametrize(
+    "completion_failure",
+    [
+        None,
+        ("RUNTIME_READ_PER_RUNTIME_SATURATED", 503),
+        ("RUNTIME_BUSINESS_READ_TIMEOUT", 504),
+        ("EXECUTOR_UNAVAILABLE", 503),
+    ],
+)
 def test_agent_workspace_activity_marks_background_unread_only_after_formal_final_reply(
-    settings, db_session_factory, monkeypatch
+    settings, db_session_factory, monkeypatch, completion_failure
 ):
     monkeypatch.setattr(
         conversations,
@@ -4511,26 +4520,38 @@ def test_agent_workspace_activity_marks_background_unread_only_after_formal_fina
 
     class ActivityRuntime(MockRuntime):
         conversation_id = ""
+        active_id = ""
         visible = True
         status = "running"
         final_result: RuntimeResult | None = None
+        failure: DomainError | None = None
 
         def conversation_activity_snapshot(self, _handle):
-            if not self.visible:
-                return {}
+            identities = ([self.conversation_id] if self.visible else []) + (
+                [self.active_id] if self.active_id else []
+            )
             return {
-                self.conversation_id: RuntimeConversationActivity(
-                    conversation_id=self.conversation_id,
-                    execution_status=self.status,
+                identity: RuntimeConversationActivity(
+                    conversation_id=identity,
+                    execution_status="running"
+                    if identity == self.active_id
+                    else self.status,
                     updated_at="2999-01-01T00:00:00+00:00",
                 )
+                for identity in identities
             }
 
         def read_active_events(self, _handle):
+            if self.failure is not None:
+                raise self.failure
             return RuntimeEventBatch(result=self.final_result)
 
     runtime = ActivityRuntime()
-    with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
+    with (
+        settings_context(settings),
+        db_session_factory() as db,
+        runtime_context(runtime),
+    ):
         workspace = _ready_workspace_for_conversation(db)
         created = conversations.create_conversation(
             db,
@@ -4551,6 +4572,31 @@ def test_agent_workspace_activity_marks_background_unread_only_after_formal_fina
         assert binding.unread is False
         assert binding.terminal_reconciliation_pending is True
 
+        if completion_failure:
+            other = conversations.create_conversation(
+                db,
+                workspace.id,
+                "仍在运行的会话",
+                workspace.default_model_provider_id,
+                "other-running",
+            )
+            runtime.active_id = db.get(
+                AgentConversationBinding, other["id"]
+            ).openhands_conversation_id
+            code, status = completion_failure
+            runtime.failure = DomainError(
+                code, "temporary completion read failure", status
+            )
+            activity = conversations.conversation_activity(db, workspace.id)
+            assert activity["running_binding_ids"] == [other["id"]]
+            assert binding.terminal_reconciliation_pending is True
+            assert binding.unread is False
+            assert binding.last_notified_completion_event_id is None
+            db.commit()
+            db.refresh(binding)
+            assert binding.terminal_reconciliation_pending is True
+            runtime.failure = None
+
         runtime.final_result = RuntimeResult(
             status="COMPLETED",
             final_message="正式最终回复",
@@ -4562,19 +4608,22 @@ def test_agent_workspace_activity_marks_background_unread_only_after_formal_fina
         assert binding.unread_origin == "MANUAL"
         assert binding.terminal_reconciliation_pending is False
         assert binding.last_notified_completion_event_id == "assistant-final"
-        assert len(activity["conversations"]) == 1
-        assert activity["conversations"][0]["id"] == binding.id
-        assert activity["conversations"][0]["final_reply_preview"] == {
+        assert len(activity["conversations"]) == (2 if completion_failure else 1)
+        completed = next(
+            item for item in activity["conversations"] if item["id"] == binding.id
+        )
+        assert completed["final_reply_preview"] == {
             "event_id": "assistant-final",
             "content": "正式最终回复",
         }
 
-        conversations.set_conversation_unread(db, workspace.id, binding.id, unread=False)
+        conversations.set_conversation_unread(
+            db, workspace.id, binding.id, unread=False
+        )
         assert binding.final_reply_preview_event_id is None
         assert binding.final_reply_preview_content is None
         conversations.conversation_activity(db, workspace.id)
         assert binding.unread is False
-
 
 def test_agent_workspace_activity_ignores_missing_snapshot_for_running_conversation(
     settings, db_session_factory, monkeypatch

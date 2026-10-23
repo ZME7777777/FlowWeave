@@ -2978,8 +2978,17 @@ def test_node_session_activity_maps_native_unready_ids(
     assert runtime.calls == 1
 
 
+@pytest.mark.parametrize(
+    "completion_failure",
+    [
+        None,
+        ("RUNTIME_READ_PER_RUNTIME_SATURATED", 503),
+        ("RUNTIME_BUSINESS_READ_TIMEOUT", 504),
+        ("EXECUTOR_UNAVAILABLE", 503),
+    ],
+)
 def test_node_session_activity_marks_unread_after_missing_terminal_snapshot(
-    db_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+    db_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch, completion_failure
 ) -> None:
     with db_session_factory() as db:
         flow_run_id, runtime_session_id, attempt_id = _node_session_context(db)
@@ -3021,6 +3030,7 @@ def test_node_session_activity_marks_unread_after_missing_terminal_snapshot(
         class ActivityRuntime:
             visible = True
             final_result: RuntimeResult | None = None
+            failure: DomainError | None = None
 
             def conversation_activity_snapshot(self, _handle):
                 if not self.visible:
@@ -3034,6 +3044,8 @@ def test_node_session_activity_marks_unread_after_missing_terminal_snapshot(
                 }
 
             def read_active_events(self, _handle):
+                if self.failure is not None:
+                    raise self.failure
                 return RuntimeEventBatch(result=self.final_result)
 
         runtime = ActivityRuntime()
@@ -3050,6 +3062,21 @@ def test_node_session_activity_marks_unread_after_missing_terminal_snapshot(
         )
         assert binding.terminal_reconciliation_pending is True
         assert binding.unread is False
+
+        if completion_failure:
+            code, status = completion_failure
+            runtime.failure = DomainError(code, "temporary completion read failure", status)
+            activity = flow_node_conversations.node_session_activity(
+                db, flow_run_id=flow_run_id, attempt_id=attempt_id
+            )
+            assert activity["running_binding_ids"] == []
+            assert binding.terminal_reconciliation_pending is True
+            assert binding.unread is False
+            assert binding.last_notified_completion_event_id is None
+            db.commit()
+            db.refresh(binding)
+            assert binding.terminal_reconciliation_pending is True
+            runtime.failure = None
 
         runtime.final_result = RuntimeResult(
             status="COMPLETED",

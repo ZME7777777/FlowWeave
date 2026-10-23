@@ -5559,25 +5559,51 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     retry: false,
   });
 
+  const activityScope = JSON.stringify([sidebarUserId, host.id, workspace?.id, runtimeQuery.data?.state, runtimeQuery.data?.updated_at]);
+  const lastSuccessfulActivity = useRef<{ scope: string; data: AgentConversationActivity; updatedAt: number } | undefined>(undefined);
   const conversationActivityQuery = useQuery({
     // A sidebar preview is not a formal route entry. Only the route binding may
     // suppress the server-owned "completed in background" unread transition.
-    queryKey: sessionQueryKey(host, 'conversation-activity', workspace?.id, routeBindingId),
+    queryKey: sessionQueryKey(host, 'conversation-activity', workspace?.id, activityScope, routeBindingId),
     queryFn: () => api.conversationActivity(workspace!.id, routeBindingId),
     // Activity is a workspace-wide native catalog read. It must not poll at a
     // rate that competes with the selected conversation's event recovery.
     enabled: Boolean(workspace && pageVisible),
     refetchOnWindowFocus: false,
     refetchInterval: pageVisible ? 15_000 : false,
-    placeholderData: previous => previous,
-    retry: false,
+    placeholderData: () => lastSuccessfulActivity.current?.scope === activityScope ? lastSuccessfulActivity.current.data : undefined,
+    retry: (count, error) => error instanceof ApiError && [0, 502, 503, 504].includes(error.status) && count < 2,
+    retryDelay: count => (count + 1) * 1_000,
   });
+  useEffect(() => {
+    if (conversationActivityQuery.isSuccess && !conversationActivityQuery.isPlaceholderData && conversationActivityQuery.data) {
+      if (lastSuccessfulActivity.current?.scope !== activityScope
+        || lastSuccessfulActivity.current.updatedAt <= conversationActivityQuery.dataUpdatedAt) {
+        lastSuccessfulActivity.current = { scope: activityScope, data: conversationActivityQuery.data, updatedAt: conversationActivityQuery.dataUpdatedAt };
+      }
+    } else if (conversationActivityQuery.isError && !(conversationActivityQuery.error instanceof ApiError
+      && [0, 502, 503, 504].includes(conversationActivityQuery.error.status))) {
+      lastSuccessfulActivity.current = undefined;
+    }
+  }, [activityScope, conversationActivityQuery.data, conversationActivityQuery.dataUpdatedAt, conversationActivityQuery.error, conversationActivityQuery.isError, conversationActivityQuery.isPlaceholderData, conversationActivityQuery.isSuccess]);
+  // placeholderData disappears when a new route's first request fails. Retain
+  // the last successful display snapshot only within this user/host/Runtime
+  // scope. Controls and queue delivery must still require a fresh response.
+  const activityFailureIsTransient = conversationActivityQuery.error instanceof ApiError
+    && [0, 502, 503, 504].includes(conversationActivityQuery.error.status);
+  const retainedActivity = lastSuccessfulActivity.current?.scope === activityScope ? lastSuccessfulActivity.current.data : undefined;
+  const activitySnapshot = conversationActivityQuery.isError
+    ? activityFailureIsTransient ? retainedActivity : undefined
+    : retainedActivity && conversationActivityQuery.dataUpdatedAt < lastSuccessfulActivity.current!.updatedAt
+      ? retainedActivity
+      : conversationActivityQuery.data ?? retainedActivity;
   const runningConversationIds = useMemo(
-    () => new Set(conversationActivityQuery.data?.running_binding_ids ?? []),
-    [conversationActivityQuery.data],
+    () => new Set(activitySnapshot?.running_binding_ids ?? []),
+    [activitySnapshot],
   );
   useEffect(() => {
-    if (!conversationActivityQuery.data || conversationActivityQuery.isPlaceholderData) return;
+    if (!conversationActivityQuery.isSuccess || !conversationActivityQuery.data || conversationActivityQuery.isPlaceholderData
+      || activitySnapshot !== conversationActivityQuery.data) return;
     const previous = previousRunningConversationIds.current;
     const completedInBackground = [...previous].filter(
       bindingId => !runningConversationIds.has(bindingId) && bindingId !== routeBindingId,
@@ -5595,22 +5621,22 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-activity', workspace.id) });
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversations', workspace.id) });
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'pinned-conversations', workspace.id) });
-  }, [conversationActivityQuery.data, conversationActivityQuery.isPlaceholderData, host, queryClient, routeBindingId, runningConversationIds, workspace]);
+  }, [activitySnapshot, conversationActivityQuery.data, conversationActivityQuery.isPlaceholderData, conversationActivityQuery.isSuccess, host, queryClient, routeBindingId, runningConversationIds, workspace]);
   const condensingConversationIds = useMemo(
-    () => new Set(conversationActivityQuery.data?.condensing_binding_ids ?? []),
-    [conversationActivityQuery.data],
+    () => new Set(activitySnapshot?.condensing_binding_ids ?? []),
+    [activitySnapshot],
   );
   const condensationTasks = useMemo(
-    () => new Map((conversationActivityQuery.data?.condensation_tasks ?? []).map(task => [task.binding_id, task])),
-    [conversationActivityQuery.data],
+    () => new Map((activitySnapshot?.condensation_tasks ?? []).map(task => [task.binding_id, task])),
+    [activitySnapshot],
   );
   const possiblyStuckConversationIds = useMemo(
-    () => new Set(conversationActivityQuery.data?.possibly_stuck_binding_ids ?? []),
-    [conversationActivityQuery.data],
+    () => new Set(activitySnapshot?.possibly_stuck_binding_ids ?? []),
+    [activitySnapshot],
   );
   const failedConversationIds = useMemo(
-    () => new Set(conversationActivityQuery.data?.failed_binding_ids ?? []),
-    [conversationActivityQuery.data],
+    () => new Set(activitySnapshot?.failed_binding_ids ?? []),
+    [activitySnapshot],
   );
   const providersQuery = useQuery({ queryKey: ['model-providers'], queryFn: api.providers, enabled: Boolean(workspace && features.modelSelection) });
   const capabilityCatalogQuery = useQuery({ queryKey: sessionQueryKey(host, 'capability-catalog'), queryFn: api.capabilities, enabled: Boolean(workspace && features.capabilities) });
@@ -5715,7 +5741,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const activityConversations = useMemo(() => {
     const byId = new Map<string, AgentConversation>();
     for (const item of conversations) byId.set(item.id, item);
-    for (const item of conversationActivityQuery.data?.conversations ?? []) byId.set(item.id, item);
+    for (const item of activitySnapshot?.conversations ?? []) byId.set(item.id, item);
     return [...byId.values()]
       .filter(item => scopeWorkDirectoryId === undefined || item.work_directory_id === scopeWorkDirectoryId)
       .filter(item => runningConversationIds.has(item.id) || condensingConversationIds.has(item.id) || conversationIsRunning(item.execution_status) || unreadConversationIds.has(item.id) || Boolean(item.unread))
@@ -5724,7 +5750,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         const rightUpdatedAt = Date.parse(right.updated_at) || Date.parse(right.created_at) || 0;
         return rightUpdatedAt - leftUpdatedAt || right.id.localeCompare(left.id);
       });
-  }, [condensingConversationIds, conversationActivityQuery.data?.conversations, conversations, runningConversationIds, scopeWorkDirectoryId, unreadConversationIds]);
+  }, [activitySnapshot?.conversations, condensingConversationIds, conversations, runningConversationIds, scopeWorkDirectoryId, unreadConversationIds]);
   const selectedConversationQuery = useQuery({
     queryKey: sessionQueryKey(host, 'conversation', workspace?.id, selectedBindingId),
     queryFn: () => api.conversation(workspace!.id, selectedBindingId!),
@@ -8576,11 +8602,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }
   }, [dispatchBackgroundQueuedMessage]);
   useEffect(() => {
-    if (!workspace || !conversationActivityQuery.data || !pageVisible) return;
+    if (!workspace || !conversationActivityQuery.isSuccess || conversationActivityQuery.isPlaceholderData || !conversationActivityQuery.data || !pageVisible
+      || activitySnapshot !== conversationActivityQuery.data) return;
     for (const bindingId of queuedMessageBindings(host, workspace.id)) {
       if (bindingId !== activeComposerScope.current && !runningConversationIds.has(bindingId)) void dispatchBackgroundQueuedMessage(bindingId);
     }
-  }, [conversationActivityQuery.data, dispatchBackgroundQueuedMessage, host, pageVisible, runningConversationIds, workspace]);
+  }, [activitySnapshot, conversationActivityQuery.data, conversationActivityQuery.isPlaceholderData, conversationActivityQuery.isSuccess, dispatchBackgroundQueuedMessage, host, pageVisible, runningConversationIds, workspace]);
   const migrateStreaming = useMutation({
     mutationFn: (_message: QueuedMessage) => {
       void _message;
@@ -9925,7 +9952,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     {agentWorkspaceView === 'schedules' && workspace && <AgentConversationSchedulesPanel workspaceId={workspace.id} activeBindingId={selected?.id} activeConversationCapabilities={selected?.capabilities} embedded showDetail={!routeBindingId && !activityPreviewBindingId} renderConversation={occurrence => {
       const item = occurrence.conversation ?? { id: occurrence.binding_id, display_title: occurrence.conversation_title, lifecycle: 'ACTIVE', streaming_callback_ready: true, created_at: occurrence.created_at, updated_at: occurrence.created_at };
       const current = item.id === selected?.id ? selected : undefined;
-      const activity = conversationActivityQuery.data?.conversations?.find(value => value.id === item.id);
+      const activity = activitySnapshot?.conversations?.find(value => value.id === item.id);
       const pendingUnread = pendingUnreadUpdates.current.get(item.id);
       const latest = activity && Date.parse(activity.updated_at) >= Date.parse(item.updated_at) ? { ...item, ...activity } : item;
       return conversationRow({ ...latest, ...current, ...(pendingUnread ? { unread: pendingUnread.unread, unread_origin: pendingUnread.unreadOrigin } : {}) }, [], { allowDrag: false });
@@ -9979,6 +10006,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         if (!sidebarScrollStorageKey) return;
         try { sessionStorage.setItem(sidebarScrollStorageKey, String(scrollTop)); } catch { /* browser session state only */ }
       }}>
+        {conversationActivityQuery.isError && <p role="status" className="agent-workspace-activity-refresh">{activitySnapshot ? '会话状态待更新，暂保留上次结果' : '会话状态暂时不可用'}</p>}
         {sidebarListMode === 'activity'
           ? <section className="agent-workspace-activity" aria-label="活动会话"><header><div><span className="eyebrow">ACTIVITY</span><b>活动</b></div><button type="button" aria-label="返回工作区列表" title="返回工作区列表" onClick={() => { setActivityPreviewBindingId(undefined); setSidebarListMode('workspaces'); }}><ArrowLeft size={15}/></button></header>{activityConversations.length ? activityConversations.map(item => conversationRow(item, [], { allowDrag: false, workspaceName: activityWorkspaceName(item), onSelect: () => previewActivityConversation(item.id), onDoubleClick: () => openActivityConversation(item.id), onMarkRead: () => markConversationRead(item.id) })) : <p>没有正在运行或未读的会话。</p>}</section>
           : <>{pinnedConversations.length > 0 && <section className={`agent-workspace-pinned${pinnedConversationsCollapsed ? ' collapsed' : ''}`} aria-label="置顶会话"><header><button type="button" aria-label={`${pinnedConversationsCollapsed ? '展开' : '收起'}置顶会话`} aria-expanded={!pinnedConversationsCollapsed} aria-controls="agent-workspace-pinned-content" onClick={() => setPinnedConversationsCollapsed(!pinnedConversationsCollapsed)}><Pin size={13}/><span>置顶</span></button></header><div id="agent-workspace-pinned-content" hidden={pinnedConversationsCollapsed}>{pinnedConversations.map(item => conversationRow(item, pinnedConversations))}</div></section>}

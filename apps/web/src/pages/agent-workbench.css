@@ -572,3 +572,4 @@
 .agent-schedule-history-run .agent-workspace-conversation-select{height:38px;padding-left:0}
 
 .agent-capability-list .agent-capability-name{display:flex;align-items:center;gap:7px}.agent-capability-name b{min-width:0}.agent-capability-list .agent-capability-builtin-badge{flex-shrink:0;margin:0;border:1px solid #d4ded7;border-radius:4px;padding:1px 5px;background:#e7efe9;color:#5e7165;font-size:9px;font-family:inherit;font-style:normal}
+.agent-workspace-activity-refresh{margin:4px 8px 8px;color:#7b877f;font-size:10px;line-height:1.5}

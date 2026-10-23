@@ -7,6 +7,44 @@ import { expect, test, type Page, type Route } from '@playwright/test';
 
 const now = '2026-10-19T00:00:00Z';
 
+for (const failureStatus of [503, 504, 403]) {
+  test(`workspace activity survives a route read failure ${failureStatus} and recovers without another click`, async ({ page }) => {
+    await page.clock.install();
+    await openWorkspace(page, [], true);
+    let failed = false;
+    let completed = false;
+    let failureCount = 0;
+    await page.route('**/conversation-activity*', async route => {
+      const active = new URL(route.request().url()).searchParams.get('active_binding_id');
+      if (failed && active === 'scheduled-conversation-2') {
+        failureCount += 1;
+        return json(route, { error: { code: failureStatus === 403 ? 'AUTHORIZATION_DENIED' : 'RUNTIME_AUXILIARY_READ_SATURATED', message: '状态暂不可用' } }, failureStatus);
+      }
+      return json(route, { running_binding_ids: completed ? [] : ['scheduled-conversation'] });
+    });
+    await page.getByRole('button', { name: '日报会话', exact: true }).click();
+    await expect(page).toHaveURL(/\/agent\/conversations\/scheduled-conversation$/);
+    // Enter a second route so the first conversation becomes a background row.
+    failed = true;
+    await page.getByRole('button', { name: '周报会话', exact: true }).click();
+    await expect(page.getByRole('status').filter({ hasText: failureStatus === 403 ? '会话状态暂时不可用' : '会话状态待更新' })).toBeVisible();
+    const running = page.locator('[data-conversation-binding-id="scheduled-conversation"]').getByRole('img', { name: '会话正在运行', exact: true });
+    if (failureStatus === 403) {
+      await expect(running).toHaveCount(0);
+      expect(failureCount).toBe(1);
+    } else {
+      await expect(running).toBeVisible();
+      expect(failureCount).toBe(3);
+    }
+    failed = false;
+    completed = true;
+    await page.clock.fastForward(16_000);
+    await expect(page.getByRole('status').filter({ hasText: '会话状态' })).toHaveCount(0);
+    await expect(running).toHaveCount(0);
+    await expect(page).toHaveURL(/\/agent\/conversations\/scheduled-conversation-2$/);
+  });
+}
+
 async function json(route: Route, body: unknown, status = 200) {
   await route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
 }
