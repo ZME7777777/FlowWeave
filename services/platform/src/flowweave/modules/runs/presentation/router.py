@@ -162,6 +162,13 @@ async def copy_nested_stepwise_run(
     )
 
 
+@router.get("/flow-runs/{run_id}/stepwise-template-readiness")
+async def stepwise_template_readiness(run_id: str, db: Db) -> dict[str, Any]:
+    return await run_sync(
+        db, lambda session: service.stepwise_record_template_readiness(session, run_id)
+    )
+
+
 @router.put("/flow-runs/{run_id}/stepwise-node-drafts/{flow_node_key}")
 async def save_stepwise_node_draft(
     run_id: str,

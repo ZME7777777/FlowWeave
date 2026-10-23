@@ -4797,8 +4797,8 @@ def _stepwise_node_draft(record: FlowRun, node_key: str) -> dict[str, Any] | Non
     return _stepwise_node_drafts(record).get(node_key)
 
 
-def validate_stepwise_record_template(db: Session, run_id: str) -> dict[str, Any]:
-    """Require every reachable node to have a reusable stepwise configuration."""
+def stepwise_record_template_readiness(db: Session, run_id: str) -> dict[str, Any]:
+    """Project complete Case-template readiness without changing the stepwise record."""
 
     record = _run(db, run_id)
     if record.run_mode != "MANUAL" or record.parent_flow_run_id is None:
@@ -4814,14 +4814,27 @@ def validate_stepwise_record_template(db: Session, run_id: str) -> dict[str, Any
         field = str(mapping.get("target_input_key") or "")
         if source in reachable and target in reachable and field:
             mappings_by_target.setdefault(target, set()).add(field)
+    node_readiness: list[dict[str, Any]] = []
     missing: list[str] = []
     incomplete: dict[str, list[str]] = {}
     for node_key in reachable:
+        node = _node(snapshot, node_key)
         draft = drafts.get(node_key)
         if draft is None:
             missing.append(node_key)
+            node_readiness.append(
+                {
+                    "node_key": node_key,
+                    "node_name": str(node.get("alias") or node_key),
+                    "status": "MISSING_DRAFT",
+                    "missing_fields": [],
+                    "has_prompt": False,
+                    "has_agent": False,
+                    "gate_count": 0,
+                    "mapped_input_fields": sorted(mappings_by_target.get(node_key, set())),
+                }
+            )
             continue
-        node = _node(snapshot, node_key)
         missing_fields = [
             field.key
             for field in _input_fields(node)
@@ -4829,27 +4842,62 @@ def validate_stepwise_record_template(db: Session, run_id: str) -> dict[str, Any
             and field.key not in _stepwise_draft_bindings(draft)
             and field.key not in mappings_by_target.get(node_key, set())
         ]
-        if (
-            str(draft.get("startup_mode") or "") != "PROMPT"
-            or not str(draft.get("startup_prompt") or "").strip()
-            or not isinstance(draft.get("agent_preset"), dict)
-            or not str(cast(dict[str, Any], draft["agent_preset"]).get("model_provider_id") or "")
-            or not str(cast(dict[str, Any], draft["agent_preset"]).get("model_name") or "")
-            or missing_fields
-        ):
+        preset = draft.get("agent_preset")
+        has_prompt = bool(str(draft.get("startup_prompt") or "").strip())
+        has_agent = bool(
+            isinstance(preset, dict)
+            and str(preset.get("model_provider_id") or "").strip()
+            and str(preset.get("model_name") or "").strip()
+        )
+        complete = (
+            str(draft.get("startup_mode") or "") == "PROMPT"
+            and has_prompt
+            and has_agent
+            and not missing_fields
+        )
+        if not complete:
             incomplete[node_key] = missing_fields
-    if missing or incomplete:
+        node_readiness.append(
+            {
+                "node_key": node_key,
+                "node_name": str(node.get("alias") or node_key),
+                "status": "READY" if complete else "INCOMPLETE",
+                "missing_fields": missing_fields,
+                "has_prompt": has_prompt,
+                "has_agent": has_agent,
+                "gate_count": len(list(draft.get("gates") or [])),
+                "mapped_input_fields": sorted(mappings_by_target.get(node_key, set())),
+            }
+        )
+    return {
+        "ready": not missing and not incomplete,
+        "start_node_key": start_node_key,
+        "reachable_node_keys": reachable,
+        "missing_node_keys": missing,
+        "incomplete": incomplete,
+        "nodes": node_readiness,
+    }
+
+
+def validate_stepwise_record_template(db: Session, run_id: str) -> dict[str, Any]:
+    """Require every reachable node to have a reusable stepwise configuration."""
+
+    readiness = stepwise_record_template_readiness(db, run_id)
+    if not readiness["ready"]:
         raise DomainError(
             "STEPWISE_TEMPLATE_INCOMPLETE",
             "every reachable stepwise node must be configured before Case launch",
             422,
             {
-                "start_node_key": start_node_key,
-                "missing_node_keys": missing,
-                "incomplete": incomplete,
+                "start_node_key": readiness["start_node_key"],
+                "missing_node_keys": readiness["missing_node_keys"],
+                "incomplete": readiness["incomplete"],
             },
         )
-    return {"start_node_key": start_node_key, "reachable_node_keys": reachable}
+    return {
+        "start_node_key": readiness["start_node_key"],
+        "reachable_node_keys": readiness["reachable_node_keys"],
+    }
 
 
 def _copy_stepwise_draft_from_attempt(

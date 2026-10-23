@@ -717,6 +717,7 @@ export const api = {
   flowRun: (id: string) => request<FlowRun>(`/flow-runs/${id}`),
   stepwiseRecords: (runId: string) => request<FlowRunStepwiseRecord[]>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-runs`),
   stepwiseRecord: (runId: string, recordId: string) => request<FlowRunStepwiseRecord>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-runs/${encodeURIComponent(recordId)}`),
+  stepwiseTemplateReadiness: (runId: string) => request<import('../types').StepwiseTemplateReadiness>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-template-readiness`),
   createStepwiseRecord: (runId: string, body: FlowRunStepwiseRecordWrite) => request<FlowRunStepwiseRecord>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-runs`, json('POST', body)),
   copyStepwiseRecord: (runId: string, recordId: string, name: string) => request<FlowRunStepwiseRecord>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-runs/${encodeURIComponent(recordId)}/copy`, json('POST', { name })),
   exportStepwiseRecordConfigs: (runId: string, recordIds: string[]) =>

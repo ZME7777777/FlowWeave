@@ -403,6 +403,18 @@ export interface FlowRunStepwiseRecord extends FlowRun {
   /** Editable node configuration; an Attempt exists only after explicit start. */
   stepwise_node_drafts?: Record<string, StepwiseNodeDraft>;
 }
+
+export interface StepwiseTemplateNodeReadiness {
+  node_key: string; node_name: string; status: 'READY' | 'INCOMPLETE' | 'MISSING_DRAFT';
+  missing_fields: string[]; has_prompt: boolean; has_agent: boolean; gate_count: number;
+  mapped_input_fields: string[];
+}
+export interface StepwiseTemplateReadiness {
+  ready: boolean; start_node_key: string; reachable_node_keys: string[];
+  missing_node_keys: string[]; incomplete: Record<string, string[]>;
+  nodes: StepwiseTemplateNodeReadiness[];
+}
+
 export interface FlowRunStepwiseRecordWrite {
   name?: string;
   start_node_key: string;

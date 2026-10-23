@@ -174,6 +174,31 @@ def test_case_stage_rejects_top_level_stepwise_run_as_template(client, skill_cap
     assert bound.json()["code"] == "CONFLICT"
 
 
+def test_stepwise_template_readiness_reports_every_reachable_node(client, skill_capability):
+    asset = create_asset(client, skill_capability, "逐步模板诊断节点")
+    flow = create_flow(client, asset["id"])
+    parent = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    )
+    assert parent.status_code == 201, parent.text
+    record = client.post(
+        f"/api/v1/flow-runs/{parent.json()['id']}/stepwise-runs",
+        json={"start_node_key": flow["nodes"][0]["instance_key"]},
+    )
+    assert record.status_code == 201, record.text
+
+    readiness = client.get(f"/api/v1/flow-runs/{record.json()['id']}/stepwise-template-readiness")
+    assert readiness.status_code == 200, readiness.text
+    result = readiness.json()
+    assert result["ready"] is False
+    assert result["missing_node_keys"] == [node["instance_key"] for node in flow["nodes"]]
+    assert [node["node_key"] for node in result["nodes"]] == [
+        node["instance_key"] for node in flow["nodes"]
+    ]
+    assert all(node["status"] == "MISSING_DRAFT" for node in result["nodes"])
+
+
 def test_case_stage_launch_copies_configured_continuous_template(client, skill_capability):
     asset = create_asset(client, skill_capability, "连续模板节点")
     flow = create_flow(client, asset["id"])
