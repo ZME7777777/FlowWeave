@@ -602,6 +602,8 @@ def write_case_files(
                     f"state = {json.dumps(str(stage['state']))}",
                     f"execution_mode = {json.dumps(str(stage['execution_mode']))}",
                     f"flow_run_id = {json.dumps(stage.get('flow_run_id') or '')}",
+                    "current_execution_flow_run_id = "
+                    f"{json.dumps(stage.get('current_execution_flow_run_id') or '')}",
                     "",
                 ]
             )

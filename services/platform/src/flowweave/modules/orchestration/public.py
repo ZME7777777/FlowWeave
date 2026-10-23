@@ -92,6 +92,7 @@ from flowweave.modules.orchestration.application.service import (
     update_automatic_run_draft,
     update_flow_run_revision_draft,
     upgrade_legacy_automatic_run_plan,
+    validate_stepwise_record_template,
 )
 
 recover_runtime_deliveries = recover_runtime_tasks
@@ -190,4 +191,5 @@ __all__ = (
     "update_automatic_run_draft",
     "update_flow_run_revision_draft",
     "upgrade_legacy_automatic_run_plan",
+    "validate_stepwise_record_template",
 )

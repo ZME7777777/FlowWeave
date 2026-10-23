@@ -148,7 +148,7 @@ def test_case_attaches_top_level_flow_run_and_projects_idempotently(client, skil
     assert replayed.json()["tasks"] == []
 
 
-def test_case_stage_binds_one_matching_flow_run_mode(client, skill_capability):
+def test_case_stage_rejects_top_level_stepwise_run_as_template(client, skill_capability):
     asset = create_asset(client, skill_capability, "阶段流程节点")
     flow = create_flow(client, asset["id"])
     run = client.post(
@@ -170,9 +170,70 @@ def test_case_stage_binds_one_matching_flow_run_mode(client, skill_capability):
         f"/api/v1/cases/{case.json()['id']}/stages/{stage['id']}/flow-run",
         json={"flow_run_id": run.json()["id"], "execution_mode": "STEPWISE"},
     )
+    assert bound.status_code == 409, bound.text
+    assert bound.json()["code"] == "CONFLICT"
+
+
+def test_case_stage_launch_copies_configured_continuous_template(client, skill_capability):
+    asset = create_asset(client, skill_capability, "连续模板节点")
+    flow = create_flow(client, asset["id"])
+    provider = client.post(
+        "/api/v1/model-providers",
+        json={
+            "name": "Case 连续模板模型",
+            "base_url": "https://models.example.test/v1",
+            "api_key": "case-template-secret",
+            "models": [{"model_name": "case-template", "enabled": True, "is_default": True}],
+        },
+    )
+    assert provider.status_code == 201, provider.text
+    preset = {"model_provider_id": provider.json()["id"], "model_name": "case-template"}
+    template = client.post(
+        f"/api/v1/flows/{flow['id']}/automatic-runs",
+        json={
+            "environment_version_id": client.environment_version_id,
+            "start_node_key": flow["nodes"][0]["instance_key"],
+            "node_plans": {
+                flow["nodes"][0]["instance_key"]: {
+                    "startup_prompt": "执行连续模板首节点",
+                    "agent_preset": preset,
+                    "input_urls": {"prd": "https://example.test/case-input"},
+                },
+                flow["nodes"][1]["instance_key"]: {
+                    "startup_prompt": "执行连续模板复核节点",
+                    "agent_preset": preset,
+                },
+            },
+        },
+    )
+    assert template.status_code == 201, template.text
+    case = client.post(
+        "/api/v1/cases",
+        json={"name": "连续模板事项", "stages": [{"stage_key": "run", "name": "执行"}]},
+    )
+    assert case.status_code == 201, case.text
+    stage = case.json()["stages"][0]
+    bound = client.put(
+        f"/api/v1/cases/{case.json()['id']}/stages/{stage['id']}/flow-run",
+        json={"flow_run_id": template.json()["id"], "execution_mode": "CONTINUOUS"},
+    )
     assert bound.status_code == 200, bound.text
-    assert bound.json()["stages"][0]["flow_run_id"] == run.json()["id"]
-    assert bound.json()["stages"][0]["execution_mode"] == "STEPWISE"
+
+    launched = client.post(
+        f"/api/v1/cases/{case.json()['id']}/stages/{stage['id']}/launch", json={}
+    )
+    assert launched.status_code == 201, launched.text
+    launched_stage = launched.json()["stages"][0]
+    assert launched_stage["flow_run_id"] == template.json()["id"]
+    assert launched_stage["current_execution_flow_run_id"] not in {None, template.json()["id"]}
+    execution = client.get(f"/api/v1/flow-runs/{launched_stage['current_execution_flow_run_id']}")
+    assert execution.status_code == 200, execution.text
+    assert execution.json()["state"] == "DRAFT"
+    assert execution.json()["automation_plan"]["start_node_key"] == template.json()["automation_plan"]["start_node_key"]
+    assert set(execution.json()["automation_plan"]["node_plans"]) == set(
+        template.json()["automation_plan"]["node_plans"]
+    )
+    assert execution.json()["automation_plan"]["node_plans"][flow["nodes"][0]["instance_key"]]["artifact_ids"] != template.json()["automation_plan"]["node_plans"][flow["nodes"][0]["instance_key"]]["artifact_ids"]
 
 
 def test_node_asset_can_be_saved_without_skill(client):

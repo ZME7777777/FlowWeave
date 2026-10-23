@@ -23,7 +23,7 @@ from flowweave.modules.runs.infrastructure.models import (
 )
 from flowweave.shared.application.transactions import finish
 from flowweave.shared.database import now
-from flowweave.shared.errors import conflict, illegal, not_found
+from flowweave.shared.errors import DomainError, conflict, illegal, not_found
 from flowweave.shared.schemas import (
     AttemptStartWrite,
     AutomaticRunCopyWrite,
@@ -32,11 +32,13 @@ from flowweave.shared.schemas import (
     CaseDecisionProposalWrite,
     CaseFlowRunWrite,
     CaseStageFlowRunWrite,
+    CaseStageLaunchWrite,
     CaseStageStateWrite,
     FlowRunRevisionDraftApplyWrite,
     FlowRunRevisionDraftCreateWrite,
     FlowRunRevisionDraftWrite,
     NodeRunCopyWrite,
+    StepwiseRunRecordCopyWrite,
 )
 
 
@@ -63,6 +65,7 @@ def _stage_dict(item: CaseStage) -> dict[str, Any]:
         "objective": item.objective,
         "position": item.position,
         "flow_run_id": item.flow_run_id,
+        "current_execution_flow_run_id": item.current_execution_flow_run_id,
         "execution_mode": item.execution_mode,
         "state": item.state,
         "created_at": item.created_at.isoformat(),
@@ -152,6 +155,7 @@ def _write_case_files(db: Session, item: Case) -> None:
             "state": stage.state,
             "execution_mode": stage.execution_mode,
             "flow_run_id": stage.flow_run_id,
+            "current_execution_flow_run_id": stage.current_execution_flow_run_id,
         }
         for stage in db.scalars(
             select(CaseStage).where(CaseStage.case_id == item.id).order_by(CaseStage.position)
@@ -258,6 +262,54 @@ def set_case_stage_state(
     return _case_dict(db, item)
 
 
+def list_case_stage_templates(db: Session, case_id: str) -> list[dict[str, Any]]:
+    """List reusable run records that can become an isolated Case execution."""
+
+    item = _case(db, case_id)
+    bound_ids = set(db.scalars(select(CaseStage.flow_run_id).where(CaseStage.case_id == item.id)))
+    templates: list[dict[str, Any]] = []
+    for run in db.scalars(
+        select(FlowRun)
+        .where(FlowRun.run_mode.in_(("MANUAL", "AUTOMATIC")))
+        .order_by(FlowRun.started_at.desc())
+    ):
+        if run.id in bound_ids:
+            continue
+        if run.run_mode == "MANUAL":
+            if run.parent_flow_run_id is None:
+                continue
+            try:
+                readiness = orchestration.validate_stepwise_record_template(db, run.id)
+            except DomainError:
+                continue
+            templates.append(
+                {
+                    "id": run.id,
+                    "name": run.name,
+                    "execution_mode": "STEPWISE",
+                    "state": run.state,
+                    "parent_flow_run_id": run.parent_flow_run_id,
+                    **readiness,
+                }
+            )
+        else:
+            plan = dict(run.automation_plan_json or {})
+            if not plan.get("start_node_key") or not plan.get("readiness", {}).get("ready"):
+                continue
+            templates.append(
+                {
+                    "id": run.id,
+                    "name": run.name,
+                    "execution_mode": "CONTINUOUS",
+                    "state": run.state,
+                    "parent_flow_run_id": run.parent_flow_run_id,
+                    "start_node_key": plan["start_node_key"],
+                    "reachable_node_keys": list(plan.get("reachable_node_keys") or []),
+                }
+            )
+    return templates
+
+
 def bind_case_stage_flow_run(
     db: Session, case_id: str, stage_id: str, payload: CaseStageFlowRunWrite
 ) -> dict[str, Any]:
@@ -266,7 +318,7 @@ def bind_case_stage_flow_run(
         raise illegal("terminal case cannot bind stage FlowRuns", state=item.state)
     stage = _stage(db, item, stage_id)
     run = db.get(FlowRun, payload.flow_run_id)
-    if run is None or run.parent_flow_run_id is not None:
+    if run is None:
         raise not_found("flow_run", payload.flow_run_id)
     expected_mode = "MANUAL" if payload.execution_mode == "STEPWISE" else "AUTOMATIC"
     if run.run_mode != expected_mode:
@@ -275,18 +327,68 @@ def bind_case_stage_flow_run(
             expected=expected_mode,
             actual=run.run_mode,
         )
+    if payload.execution_mode == "STEPWISE":
+        if run.parent_flow_run_id is None:
+            raise conflict("Case stepwise templates must be existing stepwise run records")
+        orchestration.validate_stepwise_record_template(db, run.id)
     if stage.flow_run_id and stage.flow_run_id != run.id:
         raise conflict("Case stage is already bound to a FlowRun", flow_run_id=stage.flow_run_id)
     stage.flow_run_id = run.id
     stage.execution_mode = payload.execution_mode
-    existing = db.scalar(
-        select(CaseFlowRun).where(
-            CaseFlowRun.case_id == item.id,
-            CaseFlowRun.flow_run_id == run.id,
+    item.row_version += 1
+    _write_case_files(db, item)
+    finish(db)
+    return _case_dict(db, item)
+
+
+def launch_case_stage(
+    db: Session, case_id: str, stage_id: str, payload: CaseStageLaunchWrite
+) -> dict[str, Any]:
+    """Clone a configured stage template into this Case's next execution record."""
+
+    item = _case(db, case_id)
+    if item.state in {"COMPLETED", "ARCHIVED"}:
+        raise illegal("terminal case cannot launch stages", state=item.state)
+    stage = _stage(db, item, stage_id)
+    if stage.state != "ACTIVE":
+        raise conflict("only the active Case stage can launch", state=stage.state)
+    if not stage.flow_run_id:
+        raise conflict("Case stage has no configured FlowRun template", stage_id=stage.id)
+    template = db.get(FlowRun, stage.flow_run_id)
+    if template is None:
+        raise not_found("flow_run", stage.flow_run_id)
+    if stage.execution_mode == "STEPWISE":
+        if template.parent_flow_run_id is None:
+            raise conflict(
+                "Case stepwise template is not a stepwise record", flow_run_id=template.id
+            )
+        orchestration.validate_stepwise_record_template(db, template.id)
+        execution = orchestration.copy_nested_stepwise_run_record(
+            db,
+            template.parent_flow_run_id,
+            template.id,
+            StepwiseRunRecordCopyWrite(name=payload.name),
         )
-    )
-    if existing is None:
-        db.add(CaseFlowRun(case_id=item.id, flow_run_id=run.id))
+    else:
+        if template.run_mode != "AUTOMATIC":
+            raise conflict(
+                "Case continuous template is not an automatic run", flow_run_id=template.id
+            )
+        execution = orchestration.copy_automatic_run_draft(
+            db, template.id, AutomaticRunCopyWrite(name=payload.name)
+        )
+    execution_id = str(execution["id"])
+    stage.current_execution_flow_run_id = execution_id
+    if (
+        db.scalar(
+            select(CaseFlowRun.id).where(
+                CaseFlowRun.case_id == item.id,
+                CaseFlowRun.flow_run_id == execution_id,
+            )
+        )
+        is None
+    ):
+        db.add(CaseFlowRun(case_id=item.id, flow_run_id=execution_id))
     item.row_version += 1
     _write_case_files(db, item)
     finish(db)

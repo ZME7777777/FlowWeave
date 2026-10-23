@@ -473,9 +473,13 @@ export interface FlowRunRevisionDraft {
 
 export interface CaseStage {
   id: string; case_id: string; stage_key: string; name: string; objective: string;
-  position: number; flow_run_id?: string | null; execution_mode: 'STEPWISE' | 'CONTINUOUS';
+  position: number; flow_run_id?: string | null; current_execution_flow_run_id?: string | null; execution_mode: 'STEPWISE' | 'CONTINUOUS';
   state: 'PENDING' | 'ACTIVE' | 'COMPLETED' | 'SKIPPED';
   created_at: string; updated_at: string;
+}
+export interface CaseStageTemplate {
+  id: string; name: string; execution_mode: 'STEPWISE' | 'CONTINUOUS'; state: string;
+  parent_flow_run_id?: string | null; start_node_key: string; reachable_node_keys: string[];
 }
 export interface CaseAgentTask {
   id: string; case_id: string; stage_id?: string | null; task_key: string;

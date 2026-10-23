@@ -4797,6 +4797,61 @@ def _stepwise_node_draft(record: FlowRun, node_key: str) -> dict[str, Any] | Non
     return _stepwise_node_drafts(record).get(node_key)
 
 
+def validate_stepwise_record_template(db: Session, run_id: str) -> dict[str, Any]:
+    """Require every reachable node to have a reusable stepwise configuration."""
+
+    record = _run(db, run_id)
+    if record.run_mode != "MANUAL" or record.parent_flow_run_id is None:
+        raise illegal("stepwise templates must be configured stepwise records", state=record.state)
+    snapshot = _active_snapshot(db, record)
+    start_node_key, _source_node = _stepwise_initial_node(db, record)
+    reachable = _reachable_node_keys(snapshot.definition_json, start_node_key)
+    drafts = _stepwise_node_drafts(record)
+    mappings_by_target: dict[str, set[str]] = {}
+    for mapping in snapshot.definition_json.get("port_mappings", []):
+        source = str(mapping.get("source_instance_key") or "")
+        target = str(mapping.get("target_instance_key") or "")
+        field = str(mapping.get("target_input_key") or "")
+        if source in reachable and target in reachable and field:
+            mappings_by_target.setdefault(target, set()).add(field)
+    missing: list[str] = []
+    incomplete: dict[str, list[str]] = {}
+    for node_key in reachable:
+        draft = drafts.get(node_key)
+        if draft is None:
+            missing.append(node_key)
+            continue
+        node = _node(snapshot, node_key)
+        missing_fields = [
+            field.key
+            for field in _input_fields(node)
+            if field.required
+            and field.key not in _stepwise_draft_bindings(draft)
+            and field.key not in mappings_by_target.get(node_key, set())
+        ]
+        if (
+            str(draft.get("startup_mode") or "") != "PROMPT"
+            or not str(draft.get("startup_prompt") or "").strip()
+            or not isinstance(draft.get("agent_preset"), dict)
+            or not str(cast(dict[str, Any], draft["agent_preset"]).get("model_provider_id") or "")
+            or not str(cast(dict[str, Any], draft["agent_preset"]).get("model_name") or "")
+            or missing_fields
+        ):
+            incomplete[node_key] = missing_fields
+    if missing or incomplete:
+        raise DomainError(
+            "STEPWISE_TEMPLATE_INCOMPLETE",
+            "every reachable stepwise node must be configured before Case launch",
+            422,
+            {
+                "start_node_key": start_node_key,
+                "missing_node_keys": missing,
+                "incomplete": incomplete,
+            },
+        )
+    return {"start_node_key": start_node_key, "reachable_node_keys": reachable}
+
+
 def _copy_stepwise_draft_from_attempt(
     db: Session,
     source_run: FlowRun,
@@ -5146,6 +5201,29 @@ def start_stepwise_node_draft(
             422,
             {"flow_node_key": instance_key},
         )
+    start_node_key, _initial_node = _stepwise_initial_node(db, run)
+    if instance_key != start_node_key:
+        predecessors = {
+            str(edge.get("source_instance_key") or "")
+            for edge in snapshot.definition_json.get("edges", [])
+            if str(edge.get("target_instance_key") or "") == instance_key
+        }
+        accepted_predecessors = {
+            node_run.flow_node_snapshot_key
+            for node_run in db.scalars(select(NodeRun).where(NodeRun.flow_run_id == run.id))
+            if node_run.state == NodeRunState.ACCEPTED
+        }
+        if not predecessors.issubset(accepted_predecessors):
+            raise DomainError(
+                "STEPWISE_NODE_NOT_READY",
+                "all direct predecessor nodes must be accepted before this node starts",
+                409,
+                {
+                    "flow_node_key": instance_key,
+                    "waiting_predecessor_keys": sorted(predecessors - accepted_predecessors),
+                },
+            )
+
     action = db.scalar(select(HumanAction).where(HumanAction.idempotency_key == idempotency_key))
     if action is not None:
         if action.action_type != "START_STEPWISE_NODE_DRAFT" or not action.attempt_id:
@@ -5249,14 +5327,18 @@ def copy_nested_stepwise_run_record(
             start_node_key=source_start_node_key,
         ),
     )
-    source_draft = _stepwise_node_draft(source, source_start_node_key)
+    source_drafts = _stepwise_node_drafts(source)
     copied_input_count = 0
     source_attempt_id: str | None = None
     source_node_id: str | None = None
-    if source_draft is not None:
-        copied_draft, copied_input_count = _copy_stepwise_draft(
-            db, source, copied_record, source_start_node_key, source_draft
-        )
+    copied_drafts: dict[str, dict[str, Any]] = {}
+    if source_drafts:
+        for node_key, source_draft in source_drafts.items():
+            copied_draft, copied_inputs = _copy_stepwise_draft(
+                db, source, copied_record, node_key, source_draft
+            )
+            copied_drafts[node_key] = copied_draft
+            copied_input_count += copied_inputs
     elif source_node is not None:
         initial = db.scalar(
             select(NodeAttempt)
@@ -5271,17 +5353,17 @@ def copy_nested_stepwise_run_record(
         copied_draft, copied_input_count = _copy_stepwise_draft_from_attempt(
             db, source, copied_record, source_node, initial
         )
+        copied_drafts[source_start_node_key] = copied_draft
         source_node_id = source_node.id
         source_attempt_id = initial.id
-    else:
-        copied_draft = None
-    if copied_draft is not None:
-        _save_stepwise_node_drafts(copied_record, {source_start_node_key: copied_draft})
+    if copied_drafts:
+        _save_stepwise_node_drafts(copied_record, copied_drafts)
     event_payload = {
         "source_record_id": source.id,
         "source_node_run_id": source_node_id,
         "source_attempt_id": source_attempt_id,
         "copied_input_count": copied_input_count,
+        "copied_node_draft_keys": sorted(copied_drafts),
     }
     _event(db, copied_record.id, "STEPWISE_RUN_RECORD_COPIED", event_payload)
     _event(db, parent.id, "STEPWISE_RUN_RECORD_COPIED", event_payload)

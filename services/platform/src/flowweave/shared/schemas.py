@@ -844,6 +844,10 @@ class CaseStageFlowRunWrite(ApiModel):
     execution_mode: Literal["STEPWISE", "CONTINUOUS"]
 
 
+class CaseStageLaunchWrite(ApiModel):
+    name: str | None = Field(default=None, max_length=220)
+
+
 class CaseControlConversationWrite(ApiModel):
     model_provider_id: str = Field(min_length=1, max_length=36)
     model_name: str = Field(min_length=1, max_length=240)

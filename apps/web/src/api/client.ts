@@ -598,10 +598,13 @@ export const api = {
   createCase: (body: { name: string; objective?: string; stages?: Array<{ stage_key: string; name: string; objective?: string }> }) =>
     request<Case>('/cases', json('POST', body)),
   case: (id: string) => request<Case>(`/cases/${encodeURIComponent(id)}`),
+  caseStageTemplates: (caseId: string) => request<import('../types').CaseStageTemplate[]>(`/cases/${encodeURIComponent(caseId)}/stage-templates`),
   setCaseStageState: (caseId: string, stageId: string, expected_case_row_version: number, state: import('../types').CaseStage['state']) =>
     request<Case>(`/cases/${encodeURIComponent(caseId)}/stages/${encodeURIComponent(stageId)}/state`, json('PUT', { expected_case_row_version, state })),
   bindCaseStageFlowRun: (caseId: string, stageId: string, flow_run_id: string, execution_mode: 'STEPWISE' | 'CONTINUOUS') =>
     request<Case>(`/cases/${encodeURIComponent(caseId)}/stages/${encodeURIComponent(stageId)}/flow-run`, json('PUT', { flow_run_id, execution_mode })),
+  launchCaseStage: (caseId: string, stageId: string, name?: string) =>
+    request<Case>(`/cases/${encodeURIComponent(caseId)}/stages/${encodeURIComponent(stageId)}/launch`, json('POST', { name })),
   createCaseControlConversation: (caseId: string, body: { model_provider_id: string; model_name: string; reasoning_effort?: string | null; capability_version_ids?: string[] }, idempotencyKey = randomId()) =>
     request<Case>(`/cases/${encodeURIComponent(caseId)}/control-conversation`, json('POST', body, idempotencyKey)),
 

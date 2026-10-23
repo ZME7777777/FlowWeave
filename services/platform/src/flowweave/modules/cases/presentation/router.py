@@ -12,6 +12,7 @@ from flowweave.shared.schemas import (
     CaseDecisionProposalWrite,
     CaseFlowRunWrite,
     CaseStageFlowRunWrite,
+    CaseStageLaunchWrite,
     CaseStageStateWrite,
 )
 
@@ -31,6 +32,11 @@ async def create_case(payload: CaseCreateWrite, db: Db) -> dict[str, Any]:
 @router.get("/cases/{case_id}")
 async def case(case_id: str, db: Db) -> dict[str, Any]:
     return await run_sync(db, lambda session: service.get_case(session, case_id))
+
+
+@router.get("/cases/{case_id}/stage-templates")
+async def stage_templates(case_id: str, db: Db) -> list[dict[str, Any]]:
+    return await run_sync(db, lambda session: service.list_case_stage_templates(session, case_id))
 
 
 @router.put("/cases/{case_id}/stages/{stage_id}/state")
@@ -56,6 +62,15 @@ async def bind_stage_flow_run(
 async def attach_flow_run(case_id: str, payload: CaseFlowRunWrite, db: Db) -> dict[str, Any]:
     return await run_sync(
         db, lambda session: service.attach_case_flow_run(session, case_id, payload)
+    )
+
+
+@router.post("/cases/{case_id}/stages/{stage_id}/launch", status_code=201)
+async def launch_stage(
+    case_id: str, stage_id: str, payload: CaseStageLaunchWrite, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db, lambda session: service.launch_case_stage(session, case_id, stage_id, payload)
     )
 
 

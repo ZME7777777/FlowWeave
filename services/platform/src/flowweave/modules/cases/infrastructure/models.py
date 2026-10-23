@@ -62,7 +62,12 @@ class CaseStage(Base):
     name: Mapped[str] = mapped_column(String(220))
     objective: Mapped[str] = mapped_column(Text, default="")
     position: Mapped[int] = mapped_column(Integer)
+    # The configured source record is a reusable Case launch template. It is
+    # never started by this Case; each launch creates a separate execution copy.
     flow_run_id: Mapped[str | None] = mapped_column(String(36), unique=True, index=True)
+    current_execution_flow_run_id: Mapped[str | None] = mapped_column(
+        String(36), unique=True, index=True
+    )
     execution_mode: Mapped[str] = mapped_column(String(20), default="STEPWISE")
     state: Mapped[str] = mapped_column(String(20), default="PENDING")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
