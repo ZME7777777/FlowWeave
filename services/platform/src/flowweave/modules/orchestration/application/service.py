@@ -10024,6 +10024,9 @@ def accept_attempt(
         _create_configurable_targets(db, run, node_run)
     _recompute_run(db, run)
     finish(db)
+    from flowweave.modules.cases.public import advance_case_stepwise_execution
+
+    advance_case_stepwise_execution(db, run.id)
     return run_detail(db, run.id)
 
 

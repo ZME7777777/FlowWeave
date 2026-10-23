@@ -801,6 +801,25 @@ def execute_case_control_plan(db: Session, case_id: str, plan_id: str) -> dict[s
                     CaseStageExecutionStartWrite(reason=plan.reason),
                 )
             }
+        elif plan.action == "START_STEPWISE_NODE":
+            if not stage.current_execution_flow_run_id:
+                raise conflict("Case stage has no execution copy", stage_id=stage.id)
+            run = _case_linked_run(db, item.id, stage.current_execution_flow_run_id)
+            node_key = str(plan.input_snapshot_json.get("requested", {}).get("flow_node_key") or "")
+            draft_row_version = plan.input_snapshot_json.get("requested", {}).get(
+                "draft_row_version"
+            )
+            if not node_key or not isinstance(draft_row_version, int):
+                raise conflict("stepwise plan lacks a frozen node draft reference", plan_id=plan.id)
+            result = {
+                "attempt": orchestration.start_stepwise_node_draft(
+                    db,
+                    run.id,
+                    node_key,
+                    StepwiseNodeDraftStartWrite(expected_row_version=draft_row_version),
+                    f"case-plan-stepwise-start:{plan.id}",
+                )
+            }
         elif plan.action == "STOP_EXECUTION":
             if not stage.current_execution_flow_run_id:
                 raise conflict("Case stage has no execution copy", stage_id=stage.id)
@@ -826,6 +845,74 @@ def execute_case_control_plan(db: Session, case_id: str, plan_id: str) -> dict[s
     _write_case_files(db, item)
     finish(db)
     return _control_plan_dict(plan)
+
+
+def advance_case_stepwise_execution(db: Session, flow_run_id: str) -> None:
+    """Plan and dispatch every newly-ready node of active Case stepwise copies."""
+
+    stages = list(
+        db.scalars(
+            select(CaseStage).where(
+                CaseStage.current_execution_flow_run_id == flow_run_id,
+                CaseStage.execution_mode == "STEPWISE",
+                CaseStage.state == "ACTIVE",
+            )
+        )
+    )
+    for stage in stages:
+        item = _case(db, stage.case_id)
+        if item.state in {"COMPLETED", "ARCHIVED"}:
+            continue
+        run = _case_linked_run(db, item.id, flow_run_id)
+        detail = orchestration.run_detail(db, run.id, include_artifacts=False)
+        snapshot = next(
+            (
+                candidate
+                for candidate in detail["snapshots"]
+                if candidate["id"] == detail["active_snapshot_id"]
+            ),
+            detail["snapshots"][-1] if detail["snapshots"] else None,
+        )
+        if snapshot is None:
+            continue
+        started_keys = {str(node_run["flow_node_snapshot_key"]) for node_run in detail["node_runs"]}
+        accepted_keys = {
+            str(node_run["flow_node_snapshot_key"])
+            for node_run in detail["node_runs"]
+            if node_run["state"] == "ACCEPTED"
+        }
+        for node_key, draft in (detail.get("stepwise_node_drafts") or {}).items():
+            if node_key in started_keys:
+                continue
+            predecessors = {
+                str(edge.get("source_instance_key") or "")
+                for edge in snapshot["definition"].get("edges", [])
+                if str(edge.get("target_instance_key") or "") == node_key
+            }
+            if not predecessors.issubset(accepted_keys):
+                continue
+            plan = _create_case_control_plan(
+                db,
+                item,
+                stage,
+                CaseControlPlanWrite(
+                    stage_id=stage.id,
+                    action="START_STEPWISE_NODE",
+                    idempotency_key=f"stepwise-next:{run.id}:{node_key}",
+                    reason=f"直接前驱已接受，启动已预配置节点 {node_key}。",
+                    input_snapshot={
+                        "flow_node_key": node_key,
+                        "draft_row_version": int(draft.get("row_version") or 1),
+                    },
+                ),
+                source_binding_id=None,
+            )
+            try:
+                execute_case_control_plan(db, item.id, str(plan["id"]))
+            except Exception:
+                # The plan records its dispatch failure; accepting a predecessor
+                # must not be rolled back by an autonomous successor failure.
+                continue
 
 
 def start_case_stage_execution(
