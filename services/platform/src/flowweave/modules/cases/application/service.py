@@ -41,9 +41,6 @@ from flowweave.shared.schemas import (
     CaseStageFlowRunWrite,
     CaseStageLaunchWrite,
     CaseStageStateWrite,
-    FlowRunRevisionDraftApplyWrite,
-    FlowRunRevisionDraftCreateWrite,
-    FlowRunRevisionDraftWrite,
     NodeRunCopyWrite,
     StepwiseNodeDraftStartWrite,
     StepwiseRunRecordCopyWrite,
@@ -763,7 +760,7 @@ def ingest_case_control_suggestion(
     stage = scope["stage"]
     if not isinstance(item, Case) or not isinstance(stage, CaseStage):
         raise conflict("Case control Binding has no active stage")
-    if payload.action in {"RERUN_STEPWISE_NODE", "REVISE_UNSTARTED_RUNTIME"}:
+    if payload.action == "RERUN_STEPWISE_NODE":
         raise illegal("suggested remediation action requires explicit human plan creation")
     if payload.action == "START_STEPWISE_NODE":
         raise illegal("stepwise continuation is derived from predecessor acceptance")
@@ -1161,7 +1158,7 @@ def create_case_decision_proposal(
         node_run = db.get(NodeRun, payload.node_run_id)
         if node_run is None or node_run.flow_run_id != run.id:
             raise not_found("node_run", payload.node_run_id)
-    manual_actions = {"CONTINUE_STEPWISE", "RERUN_STEPWISE_NODE", "REVISE_UNSTARTED_RUNTIME"}
+    manual_actions = {"CONTINUE_STEPWISE", "RERUN_STEPWISE_NODE"}
     if payload.action in manual_actions and run.run_mode != "MANUAL":
         raise illegal("decision is only available for stepwise FlowRuns", state=run.state)
     if payload.action == "COPY_AUTOMATIC_RUN" and run.run_mode != "AUTOMATIC":
@@ -1218,36 +1215,6 @@ def execute_case_decision_proposal(db: Session, case_id: str, proposal_id: str) 
             result = {
                 "node_run": orchestration.copy_node_run(
                     db, run.id, proposal.node_run_id, copy_payload
-                )
-            }
-        elif proposal.action == "REVISE_UNSTARTED_RUNTIME":
-            definition = proposal.payload_json.get("definition")
-            if not isinstance(definition, dict):
-                raise conflict("runtime revision decision requires a definition")
-            draft = orchestration.create_flow_run_revision_draft(
-                db,
-                run.id,
-                FlowRunRevisionDraftCreateWrite(reason=proposal.reason),
-            )
-            updated = orchestration.update_flow_run_revision_draft(
-                db,
-                run.id,
-                str(draft["id"]),
-                FlowRunRevisionDraftWrite(
-                    expected_row_version=int(draft["row_version"]),
-                    definition=definition,
-                    reason=proposal.reason,
-                ),
-            )
-            result = {
-                "revision": orchestration.apply_flow_run_revision_draft(
-                    db,
-                    run.id,
-                    str(updated["id"]),
-                    FlowRunRevisionDraftApplyWrite(
-                        expected_row_version=int(updated["row_version"])
-                    ),
-                    f"case-revision:{proposal.id}",
                 )
             }
         elif proposal.action == "COPY_AUTOMATIC_RUN":

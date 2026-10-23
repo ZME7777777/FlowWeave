@@ -802,20 +802,6 @@ class NodeRunCopyWrite(ApiModel):
     )
 
 
-class FlowRunRevisionDraftCreateWrite(ApiModel):
-    reason: str = Field(default="", max_length=2_000)
-
-
-class FlowRunRevisionDraftWrite(ApiModel):
-    expected_row_version: int = Field(ge=1)
-    definition: dict[str, Any]
-    reason: str = Field(default="", max_length=2_000)
-
-
-class FlowRunRevisionDraftApplyWrite(ApiModel):
-    expected_row_version: int = Field(ge=1)
-
-
 class NodeRunStart(ApiModel):
     startup_mode: Literal["PROMPT", "CHAT"] = "PROMPT"
     startup_prompt: str | None = Field(default=None, max_length=200_000)
@@ -880,7 +866,6 @@ class CaseControlPlanWrite(ApiModel):
         "START_STEPWISE_NODE",
         "STOP_EXECUTION",
         "RERUN_STEPWISE_NODE",
-        "REVISE_UNSTARTED_RUNTIME",
     ]
     idempotency_key: str = Field(pattern=r"^[a-z][a-z0-9._:-]{0,139}$")
     reason: str = Field(min_length=1, max_length=2_000)
@@ -908,7 +893,6 @@ class CaseControlSuggestionWrite(ApiModel):
         "START_STEPWISE_NODE",
         "STOP_EXECUTION",
         "RERUN_STEPWISE_NODE",
-        "REVISE_UNSTARTED_RUNTIME",
     ]
     reason: str = Field(min_length=1, max_length=2_000)
     node_run_id: str | None = Field(default=None, min_length=1, max_length=36)
@@ -923,7 +907,6 @@ class CaseDecisionProposalWrite(ApiModel):
         "CONTINUE_STEPWISE",
         "STOP_FLOW_RUN",
         "RERUN_STEPWISE_NODE",
-        "REVISE_UNSTARTED_RUNTIME",
         "COPY_AUTOMATIC_RUN",
     ]
     reason: str = Field(min_length=1, max_length=2_000)

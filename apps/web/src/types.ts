@@ -480,14 +480,6 @@ export interface RunSnapshot {
   definition: SnapshotDefinition;
   created_at: string;
 }
-export interface FlowRunRevisionDraft {
-  id: string; flow_run_id: string; base_snapshot_id: string; base_snapshot_version: number;
-  definition: SnapshotDefinition; definition_hash: string; row_version: number;
-  state: 'DRAFT' | 'APPLIED' | 'REJECTED'; applied_snapshot_id?: string | null;
-  reason: string; created_at: string; updated_at: string;
-}
-
-
 export interface CaseStageExecution {
   flow_run_id?: string; state: string; message?: string;
   progress?: { accepted: number; terminal: number; active: number };
@@ -517,7 +509,7 @@ export interface CaseAgentTask {
 export interface CaseControlPlan {
   id: string; case_id: string; stage_id: string; source_binding_id?: string | null;
   execution_flow_run_id?: string | null; node_run_id?: string | null; node_attempt_id?: string | null;
-  action: 'CREATE_EXECUTION_COPY' | 'START_EXECUTION' | 'START_STEPWISE_NODE' | 'STOP_EXECUTION' | 'RERUN_STEPWISE_NODE' | 'REVISE_UNSTARTED_RUNTIME';
+  action: 'CREATE_EXECUTION_COPY' | 'START_EXECUTION' | 'START_STEPWISE_NODE' | 'STOP_EXECUTION' | 'RERUN_STEPWISE_NODE';
   state: 'PENDING' | 'VALIDATED' | 'EXECUTING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED';
   idempotency_key: string; retry_of_plan_id?: string | null; reason: string; input_snapshot: Record<string, unknown>; result: Record<string, unknown>;
   error_code?: string | null; created_at: string; validated_at?: string | null; executed_at?: string | null;
@@ -525,7 +517,7 @@ export interface CaseControlPlan {
 export interface CaseDecisionProposal {
   id: string; case_id: string; flow_run_id: string; node_run_id?: string | null;
   node_attempt_id?: string | null; proposal_key: string;
-  action: 'START_STAGE_EXECUTION' | 'CONTINUE_STEPWISE' | 'STOP_FLOW_RUN' | 'RERUN_STEPWISE_NODE' | 'REVISE_UNSTARTED_RUNTIME' | 'COPY_AUTOMATIC_RUN';
+  action: 'START_STAGE_EXECUTION' | 'CONTINUE_STEPWISE' | 'STOP_FLOW_RUN' | 'RERUN_STEPWISE_NODE' | 'COPY_AUTOMATIC_RUN';
   state: 'PROPOSED' | 'EXECUTED' | 'FAILED' | 'SUPERSEDED'; reason: string;
   payload: Record<string, unknown>; result: Record<string, unknown>; created_at: string; executed_at?: string | null;
 }
@@ -564,7 +556,6 @@ export interface FlowRun extends FlowRunSummary {
     gates: Array<{ node_key: string; position: number }>;
   } | null;
   progress: { accepted: number; terminal: number; active: number };
-  revision_drafts: FlowRunRevisionDraft[];
   snapshots: RunSnapshot[]; node_runs: NodeRun[]; artifacts: ArtifactVersion[];
 }
 export interface FlowRunScheduleOccurrence {
