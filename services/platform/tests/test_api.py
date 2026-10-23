@@ -368,6 +368,48 @@ def test_confirm_start_rejects_attempt_model_override(client):
     assert rejected.status_code == 422, rejected.text
 
 
+def test_case_control_plan_persists_scoped_input_snapshot(client):
+    case = client.post(
+        "/api/v1/cases",
+        json={"name": "计划事项", "stages": [{"stage_key": "prepare", "name": "准备"}]},
+    )
+    assert case.status_code == 201, case.text
+    stage = case.json()["stages"][0]
+
+    created = client.post(
+        f"/api/v1/cases/{case.json()['id']}/control-plans",
+        json={
+            "stage_id": stage["id"],
+            "action": "CREATE_EXECUTION_COPY",
+            "idempotency_key": "prepare-copy-v1",
+            "reason": "为事项准备隔离执行副本。",
+            "input_snapshot": {"source": "case-control"},
+        },
+    )
+    assert created.status_code == 201, created.text
+    plan = created.json()
+    assert plan["state"] == "PENDING"
+    assert plan["stage_id"] == stage["id"]
+    assert plan["execution_flow_run_id"] is None
+    assert plan["input_snapshot"]["requested"] == {"source": "case-control"}
+
+    replayed = client.post(
+        f"/api/v1/cases/{case.json()['id']}/control-plans",
+        json={
+            "stage_id": stage["id"],
+            "action": "CREATE_EXECUTION_COPY",
+            "idempotency_key": "prepare-copy-v1",
+            "reason": "不同的重放文字不会创建第二份计划。",
+        },
+    )
+    assert replayed.status_code == 201, replayed.text
+    assert replayed.json()["id"] == plan["id"]
+
+    detail = client.get(f"/api/v1/cases/{case.json()['id']}")
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["control_plans"][0]["id"] == plan["id"]
+
+
 def test_platform_owned_lark_oauth_endpoints_are_removed(client):
     assert client.post("/api/v1/oauth/lark/sessions", json={"scopes": []}).status_code == 404
     assert client.get("/api/v1/credential-connections").status_code == 404

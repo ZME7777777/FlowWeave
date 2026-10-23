@@ -134,9 +134,44 @@ class CaseAgentTask(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
 
+class CaseControlPlan(Base):
+    __tablename__ = "case_control_plans"
+    __table_args__ = (
+        UniqueConstraint("case_id", "idempotency_key", name="uq_case_control_plan_key"),
+        CheckConstraint(
+            "action IN ('CREATE_EXECUTION_COPY', 'START_EXECUTION', 'START_STEPWISE_NODE', "
+            "'STOP_EXECUTION', 'RERUN_STEPWISE_NODE', 'REVISE_UNSTARTED_RUNTIME')",
+            name="ck_case_control_plan_action",
+        ),
+        CheckConstraint(
+            "state IN ('PENDING', 'VALIDATED', 'EXECUTING', 'SUCCEEDED', 'FAILED', 'CANCELLED')",
+            name="ck_case_control_plan_state",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    case_id: Mapped[str] = mapped_column(String(36), index=True)
+    stage_id: Mapped[str] = mapped_column(String(36), index=True)
+    source_binding_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    execution_flow_run_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    node_run_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    node_attempt_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    action: Mapped[str] = mapped_column(String(40))
+    state: Mapped[str] = mapped_column(String(20), default="PENDING", index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(140))
+    reason: Mapped[str] = mapped_column(Text, default="")
+    input_snapshot_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    result_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    error_code: Mapped[str | None] = mapped_column(String(120))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    validated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    executed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 __all__ = (
     "Case",
     "CaseAgentTask",
+    "CaseControlPlan",
     "CaseDecisionProposal",
     "CaseFlowRun",
     "CaseStage",

@@ -10,6 +10,7 @@ from flowweave.modules.agent_workspaces import public as agent_workspaces
 from flowweave.modules.cases.infrastructure.models import (
     Case,
     CaseAgentTask,
+    CaseControlPlan,
     CaseDecisionProposal,
     CaseFlowRun,
     CaseStage,
@@ -29,6 +30,7 @@ from flowweave.shared.schemas import (
     AutomaticRunCopyWrite,
     AutomaticRunStartWrite,
     CaseControlConversationWrite,
+    CaseControlPlanWrite,
     CaseCreateWrite,
     CaseDecisionProposalWrite,
     CaseFlowRunWrite,
@@ -185,6 +187,28 @@ def _proposal_dict(item: CaseDecisionProposal) -> dict[str, Any]:
     }
 
 
+def _control_plan_dict(item: CaseControlPlan) -> dict[str, Any]:
+    return {
+        "id": item.id,
+        "case_id": item.case_id,
+        "stage_id": item.stage_id,
+        "source_binding_id": item.source_binding_id,
+        "execution_flow_run_id": item.execution_flow_run_id,
+        "node_run_id": item.node_run_id,
+        "node_attempt_id": item.node_attempt_id,
+        "action": item.action,
+        "state": item.state,
+        "idempotency_key": item.idempotency_key,
+        "reason": item.reason,
+        "input_snapshot": item.input_snapshot_json,
+        "result": item.result_json,
+        "error_code": item.error_code,
+        "created_at": item.created_at.isoformat(),
+        "validated_at": item.validated_at.isoformat() if item.validated_at else None,
+        "executed_at": item.executed_at.isoformat() if item.executed_at else None,
+    }
+
+
 def _case_linked_run(db: Session, case_id: str, flow_run_id: str) -> FlowRun:
     linked = db.scalar(
         select(CaseFlowRun.id).where(
@@ -263,6 +287,11 @@ def _case_dict(db: Session, item: Case) -> dict[str, Any]:
         .where(CaseDecisionProposal.case_id == item.id)
         .order_by(CaseDecisionProposal.created_at.desc())
     ).all()
+    control_plans = db.scalars(
+        select(CaseControlPlan)
+        .where(CaseControlPlan.case_id == item.id)
+        .order_by(CaseControlPlan.created_at.desc())
+    ).all()
     return {
         "id": item.id,
         "name": item.name,
@@ -275,6 +304,7 @@ def _case_dict(db: Session, item: Case) -> dict[str, Any]:
         "flow_run_ids": _case_flow_runs(db, item.id),
         "tasks": [_task_dict(task) for task in tasks],
         "decision_proposals": [_proposal_dict(proposal) for proposal in proposals],
+        "control_plans": [_control_plan_dict(plan) for plan in control_plans],
         "created_at": item.created_at.isoformat(),
         "updated_at": item.updated_at.isoformat(),
     }
@@ -610,6 +640,49 @@ def attach_case_flow_run(db: Session, case_id: str, payload: CaseFlowRunWrite) -
         db.add(CaseFlowRun(case_id=item.id, flow_run_id=run.id))
         db.flush()
     return project_case_observations(db, item.id)
+
+
+def create_case_control_plan(
+    db: Session, case_id: str, payload: CaseControlPlanWrite
+) -> dict[str, Any]:
+    """Persist a platform-owned Case command before a later validator executes it."""
+
+    item = _case(db, case_id)
+    if item.state in {"COMPLETED", "ARCHIVED"}:
+        raise illegal("terminal case cannot create control plans", state=item.state)
+    stage = _stage(db, item, payload.stage_id)
+    existing = db.scalar(
+        select(CaseControlPlan).where(
+            CaseControlPlan.case_id == item.id,
+            CaseControlPlan.idempotency_key == payload.idempotency_key,
+        )
+    )
+    if existing is not None:
+        return _control_plan_dict(existing)
+    execution_flow_run_id = stage.current_execution_flow_run_id
+    if payload.action != "CREATE_EXECUTION_COPY" and not execution_flow_run_id:
+        raise conflict("control plan requires a Case execution copy", action=payload.action)
+    plan = CaseControlPlan(
+        case_id=item.id,
+        stage_id=stage.id,
+        execution_flow_run_id=execution_flow_run_id,
+        node_run_id=payload.node_run_id,
+        node_attempt_id=payload.node_attempt_id,
+        action=payload.action,
+        idempotency_key=payload.idempotency_key,
+        reason=payload.reason.strip(),
+        input_snapshot_json={
+            "case_state": item.state,
+            "stage_state": stage.state,
+            "stage_execution_mode": stage.execution_mode,
+            "stage_template_flow_run_id": stage.flow_run_id,
+            "stage_execution_flow_run_id": execution_flow_run_id,
+            "requested": payload.input_snapshot,
+        },
+    )
+    db.add(plan)
+    finish(db)
+    return _control_plan_dict(plan)
 
 
 def start_case_stage_execution(

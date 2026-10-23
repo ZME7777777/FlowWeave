@@ -8,6 +8,7 @@ from flowweave.modules.cases import public as service
 from flowweave.shared.http import Db, IdempotencyKey, command_key, run_sync
 from flowweave.shared.schemas import (
     CaseControlConversationWrite,
+    CaseControlPlanWrite,
     CaseCreateWrite,
     CaseDecisionProposalWrite,
     CaseFlowRunWrite,
@@ -103,6 +104,15 @@ async def create_decision_proposal(
 async def execute_decision_proposal(case_id: str, proposal_id: str, db: Db) -> dict[str, Any]:
     return await run_sync(
         db, lambda session: service.execute_case_decision_proposal(session, case_id, proposal_id)
+    )
+
+
+@router.post("/cases/{case_id}/control-plans", status_code=201)
+async def create_control_plan(
+    case_id: str, payload: CaseControlPlanWrite, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db, lambda session: service.create_case_control_plan(session, case_id, payload)
     )
 
 

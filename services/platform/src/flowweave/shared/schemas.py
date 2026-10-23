@@ -852,6 +852,23 @@ class CaseStageExecutionStartWrite(ApiModel):
     reason: str = Field(default="启动当前事项阶段执行副本", min_length=1, max_length=2_000)
 
 
+class CaseControlPlanWrite(ApiModel):
+    stage_id: str = Field(min_length=1, max_length=36)
+    action: Literal[
+        "CREATE_EXECUTION_COPY",
+        "START_EXECUTION",
+        "START_STEPWISE_NODE",
+        "STOP_EXECUTION",
+        "RERUN_STEPWISE_NODE",
+        "REVISE_UNSTARTED_RUNTIME",
+    ]
+    idempotency_key: str = Field(pattern=r"^[a-z][a-z0-9._:-]{0,139}$")
+    reason: str = Field(min_length=1, max_length=2_000)
+    node_run_id: str | None = Field(default=None, min_length=1, max_length=36)
+    node_attempt_id: str | None = Field(default=None, min_length=1, max_length=36)
+    input_snapshot: dict[str, Any] = Field(default_factory=_empty_any_dict)
+
+
 class CaseControlConversationWrite(ApiModel):
     model_provider_id: str = Field(min_length=1, max_length=36)
     model_name: str = Field(min_length=1, max_length=240)
