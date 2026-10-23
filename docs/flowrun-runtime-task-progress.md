@@ -9697,3 +9697,16 @@ health 与 readiness 均通过。未修改远端 Compose／env、Runtime、数�
 remote-release-finish 完成版本、健康门禁与受管发布收尾，回收一份过期成功 Web
 上下文和一个过期精确 rollback tag，保留最近三份成功上下文、回滚版本和所有引用
 版本；未清理共享 BuildKit、容器、卷、Workspace 或数据库备份。
+
+
+### FR-645 用户消息青雾白底色与柔和边界 — DONE
+
+依赖：FR-644 DONE。按用户确认的方向，将共享用户消息气泡背景改为 #EFF5F4 青雾白，
+取消可见描边，以底色自然区分消息；保留深墨色文字与原有尺寸、换行和交互。
+验证短消息、多段长消息及分屏消息布局，仅修改 Web 与协作文档，不部署。
+
+验收：Web typecheck 与 2 项既有 Chromium 定向回归通过，覆盖消息正文／公式和分屏
+换行布局。实际页面截图核对短消息与多段长消息，计算样式为 #EFF5F4 背景、透明
+边框，深墨色文字保留；气泡宽高与前版一致。git diff --check、状态唯一性和依赖
+核对通过，Alembic 唯一 head 仍为 0158_schedule_china_timezone。当前及下一可执行
+切片均为 NONE；未部署。
