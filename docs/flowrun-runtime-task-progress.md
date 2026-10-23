@@ -9891,3 +9891,25 @@ Agent Definition 和 MCP 脚本上传显示原生文件控件。恢复原有两�
 恢复原有图标和文字按钮，不再显示原生文件控件；1024px Plugin 工具栏沿用原有换行。
 git diff --check、CURRENT 唯一性与依赖核对通过，Alembic 唯一 head 仍为
 0158_schedule_china_timezone。当前及下一可执行切片均为 NONE；未部署。
+
+
+FR-650 发布补记（2026-10-23）：按用户部署授权，以固定提交
+`8123d3855d30ae5a63c2de444991a3f748ee6c1e` 通过 Web 正式预检，使用
+remote-release-prepare 受管最小上下文，源归档 SHA-256 为
+`90f1a0d9daf4f61e55e075a8bacb4082afbbb1d1d35295dea375061da5ad6016`。
+保留旧 Web 精确回滚镜像后，仅构建并重建 Web；linux/amd64 与 OCI revision
+核对通过，新镜像 ID 为
+`sha256:6c0d4720d49b7fb57bb110d86254ace46860021c436228f5ed1d03c0d94eb09e`。
+其余 37 个运行容器的身份、镜像和启动时间保持一致，Web HTTP、API／stream-api
+health 与 readiness 均通过；未修改服务器配置、Runtime、数据库、卷或工作区。
+
+全新公网浏览器检查登录、Agent 深层路由、API 前缀、未认证边界及根登录入口通过，
+页面脚本错误为零。线上实际静态资源配合受控 API 的 2 项既有 Chromium 回归通过；
+1440px／1024px 下 Skill、Plugin、Agent Definition、MCP 脚本入口均恢复透明覆盖，
+文件选择器可正常打开，Skill 上传中禁用及取消恢复通过，截图核对原生文件控件已隐藏。
+浏览器加载的 24 个 JavaScript／CSS 文件 SHA-256 与运行镜像一致；未向真实能力仓库
+提交测试上传，不将受控接口检查记为真实上传业务验收。
+
+remote-release-finish 完成版本、健康门禁与受管收尾，回收一份过期成功 Web 上下文
+及一个过期精确 rollback tag，保留最近三份成功上下文、回滚版本和所有引用版本；
+未清理共享 BuildKit、容器、卷、Workspace 或数据库备份。当前及下一可执行切片均为 NONE。
