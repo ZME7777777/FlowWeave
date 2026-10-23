@@ -124,6 +124,27 @@ DomainError，修复代码两次发送均取得各自正式事件 ID；核对函
 Python AST、diff／状态检查通过，Alembic 唯一 head 保持 0170_revision_draft_owner。
 发布验收将在实际完成后补记。
 
+FR-669 发布补记（2026-10-23）：代码提交
+`db7f58a8352c735004a13a5b62d0b3ea0124adea`。实际 Runtime 验收还使用受影响会话
+当前冻结镜像创建另一独立测试容器，首发、续聊、懒生成系统提示恢复及不重发同样通过；
+生产会话容器／SDK 未修改。两种镜像均使用真实原生 HTTP 与确定性模型替身，未调用
+外部模型。正式私有预检、platform remote-release-prepare 通过，源码归档 SHA-256 为
+`7476a2f213f339c4fe2d45c810b418dbe95b76f88f3f35aa70211fd3cd2b1f17`。
+构建 linux/amd64 平台镜像
+`sha256:d9cf03623785c226cce353f3be17fc634aa53ea9b953747374189d53c751bcdb`，
+验证 OCI revision 并保留精确回滚镜像。完成无新增 revision 的正式 migration，再同步
+recreate api／stream-api／worker；三个服务运行同一提交且 health／readiness 正常，
+正式 head 仍为 0170_revision_draft_owner。Web／Runtime／Provider 及其他共 35 个容器
+镜像和启动时间未变，原 binding 身份摘要及服务器 Compose／env 摘要未变。
+
+上线后以正式 adapter 对原受影响 reservation 做只读核对：完整类型筛选取得唯一原生
+用户事件，首发核对准确恢复相同事件 ID，native finished；未写数据库、激活记录、
+读取消息正文或重发消息。用户保留的同 UUID 草稿可由正常创建接口重试完成激活，
+不需要手工改库或重做已经执行的操作。公网登录、Agent 深层路由、根登录与 401
+认证边界在服务器实际 Chromium／HTTP 通过，上线后服务日志错误标记为零。
+platform remote-release-finish 的版本／健康门禁与受管容量收尾通过；未删除卷、
+Workspace 或业务记录。当前与下一可执行切片均为 NONE。
+
 
 ### FR-668 远程案例分支合并与平台／Web 发布 — DONE
 
