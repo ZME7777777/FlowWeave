@@ -509,6 +509,96 @@ test('pinned conversations reorder across workspaces and restore their independe
   expect(await page.evaluate(key => JSON.parse(localStorage.getItem(key)!), pinnedOrderPreferenceKey)).toEqual(['pinned-1', 'pinned-0', 'pinned-2']);
 });
 
+for (const width of [1440, 1024]) {
+  test(`conversation page uses one drop overlay across transcript and composer at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 1000 });
+    await openWorkspace(page);
+    await page.goto('/agent/conversations/scheduled-conversation');
+    const input = page.getByRole('textbox', { name: '发送 Agent 消息', exact: true });
+    await expect(input).toBeEnabled();
+    await input.fill('拖放时保留草稿');
+    const main = page.locator('.agent-workbench-main');
+    const content = main.locator('.agent-workbench-content');
+    const overlay = main.locator('.agent-workbench-drop-overlay');
+    const transfer = await page.evaluateHandle(() => {
+      const data = new DataTransfer();
+      data.setData('application/x-flowweave-conversation-reference', JSON.stringify({ bindingId: 'reference-source', eventId: 'source-event', title: '拖入的会话' }));
+      return data;
+    });
+    await content.dispatchEvent('dragenter', { dataTransfer: transfer });
+    await expect(overlay).toBeVisible();
+    const bounds = await main.boundingBox();
+    expect(await overlay.boundingBox()).toEqual(bounds);
+    const inputBounds = await input.boundingBox();
+    expect(inputBounds!.y + inputBounds!.height).toBeLessThanOrEqual(bounds!.y + bounds!.height);
+    // Moving between children must keep the same page overlay without a local input target.
+    await content.dispatchEvent('dragleave', { dataTransfer: transfer, relatedTarget: await input.elementHandle() });
+    await input.dispatchEvent('dragenter', { dataTransfer: transfer });
+    await input.dispatchEvent('dragover', { dataTransfer: transfer });
+    await expect(overlay).toBeVisible();
+    await expect(main.locator('.agent-composer-file-drop')).toHaveCount(0);
+    await page.screenshot({ path: `../../.tmp/fr649-page-drop-${width}.png` });
+    await input.dispatchEvent('drop', { dataTransfer: transfer });
+    await expect(overlay).toHaveCount(0);
+    await expect(main.getByRole('button', { name: '移除会话 拖入的会话', exact: true })).toHaveCount(1);
+    await expect(input).toHaveValue('拖放时保留草稿');
+
+    const files = await page.evaluateHandle(() => {
+      const data = new DataTransfer();
+      data.setData('application/x-flowweave-workspace-file-path', '/runtime/workspace/project/src/main.ts');
+      return data;
+    });
+    await main.locator('.agent-workbench-header').dispatchEvent('dragenter', { dataTransfer: files });
+    await expect(overlay).toBeVisible();
+    await main.locator('.agent-workbench-header').dispatchEvent('drop', { dataTransfer: files });
+    await expect(main.getByLabel('已添加的工作区引用')).toContainText('main.ts');
+    await input.dispatchEvent('dragenter', { dataTransfer: transfer });
+    await main.dispatchEvent('dragleave', { dataTransfer: transfer });
+    await expect(overlay).toHaveCount(0);
+    await input.dispatchEvent('dragenter', { dataTransfer: transfer });
+    await page.evaluate(() => window.dispatchEvent(new Event('dragend')));
+    await expect(overlay).toHaveCount(0);
+    await input.dispatchEvent('dragenter', { dataTransfer: transfer });
+    await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+    await expect(overlay).toHaveCount(0);
+    const text = await page.evaluateHandle(() => { const data = new DataTransfer(); data.setData('text/plain', '普通文本'); return data; });
+    await input.dispatchEvent('dragenter', { dataTransfer: text });
+    await expect(overlay).toHaveCount(0);
+  });
+}
+
+test('files dropped on the composer upload once through the conversation page', async ({ page }) => {
+  await openWorkspace(page);
+  await page.goto('/agent/conversations/scheduled-conversation');
+  const input = page.getByRole('textbox', { name: '发送 Agent 消息', exact: true });
+  await expect(input).toBeEnabled();
+  const creates: unknown[] = [];
+  const completions: string[] = [];
+  await page.route('**/attachments/uploads**', route => {
+    creates.push(route.request().postDataJSON());
+    return json(route, { upload_id: 'page-drop', uploaded_parts: [], chunk_size: 1024 });
+  });
+  await page.route('**/attachments/uploads/page-drop/**', route => {
+    if (new URL(route.request().url()).pathname.endsWith('/complete')) {
+      completions.push(route.request().url());
+      return json(route, { filename: 'page-drop.txt', mime_type: 'text/plain', byte_size: 4, path: '/runtime/workspace/project/uploads/page-drop.txt' });
+    }
+    return json(route, {});
+  });
+  const transfer = await page.evaluateHandle(() => {
+    const data = new DataTransfer();
+    data.items.add(new File(['test'], 'page-drop.txt', { type: 'text/plain' }));
+    return data;
+  });
+  await input.dispatchEvent('dragenter', { dataTransfer: transfer });
+  await expect(page.locator('.agent-workbench-drop-overlay')).toBeVisible();
+  await input.dispatchEvent('drop', { dataTransfer: transfer });
+  await expect(page.locator('.agent-workbench-drop-overlay')).toHaveCount(0);
+  await expect(page.locator('.agent-composer').getByTitle('预览附件：page-drop.txt', { exact: true })).toBeVisible();
+  expect(creates).toHaveLength(1);
+  expect(completions).toHaveLength(1);
+});
+
 test('pinned drag rejects ordinary workspace rows while ordinary ordering still persists', async ({ page }) => {
   const { items, orderWrites } = await mockPinnedSidebar(page);
   const ordinary = ['a', 'b'].map((id, index) => ({ ...items[0], id: `ordinary-${id}`, display_title: `普通会话 ${id}`, pinned: false, sort_key: 20 - index }));
