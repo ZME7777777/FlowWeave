@@ -4328,14 +4328,14 @@ test('current Agent conversation can select a 31st capability and keeps frozen C
   await skillMenu.getByRole('button', { name: '会话配置' }).click();
   const manager = page.getByRole('dialog', { name: '会话配置' });
   await expect(manager).toContainText('已注册 30 项');
-  const lockedSkill = manager.getByRole('button', { name: 'history-skill（已注册，不能取消）' });
+  const lockedSkill = manager.getByRole('button', { name: 'history-skill（已注册）' });
   await expect(lockedSkill).toBeDisabled();
   await expect(lockedSkill).toHaveClass(/locked/);
   await manager.getByRole('button', { name: /history-new-skill/ }).click();
   await expect(manager).toContainText('已注册 31 项');
   await manager.getByRole('button', { name: 'context', exact: true }).click();
   await expect(manager).toContainText('已装配 1 个 Context');
-  const lockedContext = manager.getByRole('button', { name: '历史上下文（创建时已装配，只读）' });
+  const lockedContext = manager.getByRole('button', { name: '历史上下文（已装配）' });
   await expect(lockedContext).toBeDisabled();
   await expect(lockedContext).toHaveClass(/locked/);
   await expect(manager.getByRole('button', { name: '注册到当前会话' })).toHaveCount(0);

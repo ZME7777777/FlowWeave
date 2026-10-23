@@ -9953,3 +9953,20 @@ health 与 readiness 均通过；未修改服务器配置、Runtime、数据库�
 remote-release-finish 完成健康、版本门禁和受管收尾，回收一份过期成功 Web 上下文
 及一个过期精确 rollback tag，保留最近三份成功上下文、回滚版本与所有引用版本；
 未清理共享 BuildKit、容器、卷、Workspace 或数据库备份。当前及下一可执行切片均为 NONE。
+
+
+### FR-652 会话配置说明精简与认证无边框列表 — DONE
+
+依赖：FR-651 DONE。删除认证页顶部说明卡，认证条目复用能力列表的默认无边框与
+选中样式；删除能力概览、已注册／已装配条目的重复限制说明，保留真实能力描述、
+状态与原有禁用行为。运行 Web typecheck 和对应配置入口的定向 Chromium 回归，
+核对桌面／紧凑布局；仅修改 Web 与必要协作文档，不部署。
+
+验收：Web typecheck、7 项既有 Chromium 定向回归通过，覆盖定时任务新建／编辑的
+能力与认证保存、认证全选／同步排除已同步项、能力筛选与内部滚动、组合筛选在
+桌面／短屏／窄屏的布局，以及已注册 Skill 与冻结 Context 的禁用行为。截图核对
+已同步认证的默认无边框列表、已注册 MCP 的真实描述与连接状态，以及桌面／窄屏
+认证入口通过。product-flow.spec.ts 的 ESLint 仍仅有原有第 490 行 prefer-const
+报错；以 HEAD 原始源码输入同一 ESLint 命令复现，新增诊断为零。git diff --check、
+CURRENT 唯一性及依赖核对通过；Alembic 唯一 head 仍为 0158_schedule_china_timezone。
+仅修改 Web 与协作文档，当前及下一可执行切片均为 NONE，未部署。
