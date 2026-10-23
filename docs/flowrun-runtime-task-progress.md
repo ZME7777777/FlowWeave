@@ -9584,3 +9584,26 @@ remote-release-finish 完成健康／revision 门禁与受管发布收尾，工�
 运行详情响应不能跨登录身份更新或重新创建已关闭标签。Web typecheck、定向 ESLint、
 git diff --check、CURRENT 唯一性与依赖核对通过。Alembic 源码唯一 head 仍为
 0158_schedule_china_timezone。当前及下一可执行切片均为 NONE；未部署。
+
+FR-641 发布补记（2026-10-23）：用户授权部署后，以已提交版本
+`1b727db91348bbb5d876a4c29e2d9e3f87c45572` 通过 Web 正式预检，并由
+remote-release-prepare 准备最小上下文，源归档 SHA-256 为
+`c67ecf7851e21bc4b6e5c3826d58346e0ae01af810d2064dbb7ae27ce926bdd5`。
+保留旧 Web 精确回滚镜像后，仅构建和重建 Web；linux/amd64 与 OCI revision
+核对通过，新镜像 ID 为
+`sha256:8242632991f7d31338f87c73e84984eb0186c0ea0f3a911c531f90c9ebd800e5`。
+发布连接在新服务启动后因本机网络中断未返回最终回执，未重复发布；重新通过只读
+独立核验确认当前镜像与服务、HTTP、API／stream-api health 和 readiness 均通过，
+其余 37 个运行容器启动时间均早于本次发布上下文创建时间。未修改远端 Compose／env、
+Runtime、数据库、卷或工作区。
+
+全新公网页面验证登录、Agent 深层路由、API 前缀、未认证边界和根登录入口通过，
+页面脚本错误为零；入口脚本和工作台模块 SHA-256 与容器内文件一致。线上实际
+静态资源配合受控 API／WebSocket 的 14 项回归全部通过：首次 9 项通过，5 项在
+页面导航阶段因本机断网／DNS／网络切换失败，网络恢复后仅补跑该 5 项并全部通过。
+覆盖标签完整恢复／关闭／顺序／权限与身份隔离、存储降级、节点运行记录恢复及
+两种宿主三种投递时序，未向真实会话发送测试消息。
+
+remote-release-finish 完成版本和健康门禁及受管发布收尾，上下文删除候选为零，
+仅回收一个过期精确 rollback tag，保留最近三份成功上下文和所有引用版本；
+未清理共享 BuildKit、容器、卷、Workspace 或数据库备份。
