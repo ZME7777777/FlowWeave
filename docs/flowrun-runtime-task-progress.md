@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`UPSTREAM BASELINE ADOPTION COMPLETE`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-652`
+> 下一可执行切片：`FR-653`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -9912,9 +9912,28 @@ list_tools、call_tool；数据与授权为受控替身，客户端来自旧 1.4
 本机无可用 PostgreSQL 服务／工具，部署前仍须补齐真实迁移验收。未改 OpenHands、
 未自动加载 Runtime 能力、未切换引用或部署；当前 NONE，下一可执行切片 FR-652。
 
-### FR-652 受治理 MCP 会话接入与整会话元数据引用 — READY
+### FR-652 正式事件长正文读取与固定 SDK 原生能力契约 — DONE
 
-依赖：FR-651 DONE。冻结 MCP version／digest 与 Manifest，验证原生插件加载、认证
-加密持久化和既有会话升级；用受限凭据接入查询后再切换整会话元数据引用，保留片段
-引用与旧消息投影。处理凭据刷新／撤销、长正文按需读取、可点击来源和失败降级，完成
-真实 PostgreSQL 0159 upgrade／downgrade 与真实固定 Runtime 验收，再考虑发布。
+依赖：FR-651 DONE。原接入计划同时涉及读取协议、原生加载取证、凭据生命周期和
+产品切换，按可独立验收边界拆分；本片补齐按正式 event ID／Unicode 位置分段读取
+可见正文，并验证锁定 SDK 的受治理插件加载、实际 MCP 调用、加密持久化和恢复。
+不修改 OpenHands 源码、source lock 或镜像；不自动接入会话或切换引用发送。
+
+验收：长正文、受限 MCP、历史 API、既有分阶段读取与脱敏共 97 项 pytest 通过。
+覆盖 Unicode／emoji 分段无损还原、隐藏背景和非消息排除、参数歧义拒绝、按正式 ID
+读取且不扫描历史、事件身份错配、投影前撤销和 generation 复核。原生探针使用固定
+commit `ae178d86f4e0e268cf31f8f9c5deda892f4ebf12` 的 SDK 1.54.0 与 frozen 依赖，
+校验归档 SHA-256、安装版本和全部 SDK Python 源码一致；通过正式能力物化、已初始化
+会话 load_plugin、原生 MCP executor 的实际 TCP 调用、Cipher 持久化无明文扫描、
+原 conversation／event 身份和 Secret Registry 恢复，以及恢复后再次 MCP 调用。
+不执行模型；服务端数据和授权为受控替身，不替代完整 Runtime 镜像／真实数据库验收。
+受影响 Ruff check／format、应用模块 Pyright（零错误）、diff／状态与依赖核对通过；
+Alembic 唯一 head 仍为 0159_agent_history_grants。未实跑 PostgreSQL 迁移，未部署。
+当前 NONE，下一可执行切片 FR-653；整会话引用发送仍沿用旧行为。
+
+### FR-653 受治理 MCP 会话接入与整会话元数据引用 — READY
+
+依赖：FR-652 DONE。冻结 MCP version／digest 与 Manifest，设计会话级受限凭据、
+来源授权集合及续期／撤销，避免原生客户端认证头快照与重复工具冲突；完成新建／既有
+会话接入后再切换整会话元数据引用，保留片段引用与旧消息投影、可点击来源和失败
+降级。完成真实 PostgreSQL 0159 upgrade／downgrade 与固定 Runtime 镜像验收后再考虑发布。

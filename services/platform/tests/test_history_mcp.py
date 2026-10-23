@@ -174,12 +174,13 @@ def test_malformed_tokens_fail(token):
         history_access.token_identity(token)
 
 
-def test_projection_rechecks_revocation_before_returning_body(access, monkeypatch):
+@pytest.mark.parametrize("params", [{}, {"event_id": "formal-event", "content_offset": 1}])
+def test_projection_rechecks_revocation_before_returning_body(access, monkeypatch, params):
     monkeypatch.setattr(conversations, "prepare_conversation_events", lambda *_args: object())
     monkeypatch.setattr(
         conversations, "assert_prepared_conversation_events_current", lambda *_args: None
     )
-    args = mcp.HistoryArguments()
+    args = mcp.HistoryArguments(**params)
     page = mcp.prepare_page(access.db, access.token, args)
     history_access.revoke(access.db, "workspace", access.target.id, access.grant.id)
     with pytest.raises(DomainError):
@@ -356,3 +357,69 @@ def test_grant_migration_postgres_sql_contains_tenant_policy(monkeypatch):
     output.truncate()
     migration.downgrade()
     assert output.getvalue().strip() == "DROP TABLE agent_conversation_history_grants;"
+
+
+def test_locked_sdk_native_plugin_secret_and_restore(client, tmp_path):
+    executable = os.getenv("HISTORY_MCP_NATIVE_PYTHON")
+    if not executable:
+        pytest.skip("Set HISTORY_MCP_NATIVE_PYTHON to an environment built from source.lock")
+    from flowweave.runtime.workspace import materialize_agent_workspace_capability_marketplace
+
+    c, token, state = client
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    port = listener.getsockname()[1]
+    config = {
+        "url": f"http://127.0.0.1:{port}{mcp.MCP_PATH}",
+        "transport": "streamable-http",
+        "headers": {"Authorization": "Bearer ${FLOWWEAVE_HISTORY_ACCESS}"},
+    }
+    host = tmp_path / "capabilities"
+    plugin_name = materialize_agent_workspace_capability_marketplace(
+        {
+            "capability_type": "MCP",
+            "capability_key": "history-probe",
+            "capability_version_id": "version-1",
+            "digest": "1" * 64,
+            "normalized_config": config,
+        },
+        host_root=host,
+        runtime_root=host,
+        marketplace_name="history-probe",
+    )
+    server = uvicorn.Server(uvicorn.Config(c.app, log_level="critical", lifespan="off"))
+    thread = threading.Thread(target=server.run, kwargs={"sockets": [listener]}, daemon=True)
+    thread.start()
+    try:
+        deadline = time.monotonic() + 5
+        while not server.started and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert server.started
+        script = Path(__file__).parents[3] / "infra/openhands/reference_history_check.py"
+        result = subprocess.run(
+            [
+                executable,
+                str(script),
+                "--marketplace",
+                str(host / "marketplace"),
+                "--plugin-name",
+                plugin_name,
+                "--state-dir",
+                str(tmp_path / "native-state"),
+            ],
+            env={**os.environ, "HISTORY_MCP_PROBE_TOKEN": token, "OPENHANDS_SUPPRESS_BANNER": "1"},
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert result.returncode == 0, result.stderr.replace(token, "[redacted]")
+        report = json.loads(result.stdout.strip().splitlines()[-1])
+        assert report["status"] == "passed"
+        assert report["events"] > 0
+        assert report["source_commit"] == "ae178d86f4e0e268cf31f8f9c5deda892f4ebf12"
+        assert "restored_native_mcp_call" in report["checks"]
+        assert state.reads == 2
+    finally:
+        server.should_exit = True
+        thread.join(timeout=5)
+        listener.close()
