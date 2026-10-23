@@ -114,6 +114,38 @@ FlowWeave 的六个 Runtime 输入／契约文件均逐字节恢复到本任务�
 本片完成后按仓库切片规则提交并停止，尚未执行修正后 platform／web 发布。
 当前与下一可执行代码切片均为 NONE。
 
+
+FR-667 发布补记（2026-10-23）：按用户重新授权，发布代码版本
+`19e07e3b0bc6c03801e958323bf1de6174ffcd5f` 的 platform／web；没有构建、更新或替换
+OpenHands Runtime／Runtime Provider。发布前逐字节确认 Runtime source lock、Dockerfile、
+provenance、契约及平台身份常量与此前线上代码 `58d1028e` 一致，继续使用原固定源码。
+
+platform 与 web 均执行正式私有配置预检、commit-bound remote-release-prepare，归档 SHA-256
+分别为 `063455d71fbbd1699ad9bb52e5a8cb9509b801c4e07c917c37c7555b58981725`、
+`72262196a82ab83da7a0899e3cd28166cac59b78228434e4f494b554be596974`。
+两个 linux/amd64 镜像均检查 OCI revision；platform 镜像为
+`sha256:784fe6c9ae50f13793482c7453590f6cf9c2c17739d3ff545a1c6c1901ae188c`，
+web 镜像为 `sha256:caa76a973d56e59825af3405476b38af32a535b8c1817e993264eca16a3a4a16`。
+保留旧镜像 rollback tag 后先运行正式 migration，退出码为 0，唯一 head 仍为
+0162_merge_history_credential；随后只 recreate api、stream-api、worker、web，四个服务
+运行同一代码 revision。API／stream-api health 与 readiness、Worker 状态及 Web HTTP
+均通过，容器内工作区交付配置源码 SHA-256 与冻结构建上下文一致。
+
+实际服务器 Chromium 验证公网 FlowWeave 登录、Agent 深层路由及根登录页均成功，两个
+未认证 API 入口返回 401。经 SSH 转发已声明的 Web 入口，在全新浏览器上下文核对实际
+API 请求使用 /flowweave/api/v1，根 /api/v1 无请求，页面无 JavaScript 错误；该转发
+验证不记作本机公网直连。使用部署后的实际静态资源与受控 API 完成工作区图片 E2E，
+覆盖中文相对／绝对／sandbox 图片、当前 binding 重绑定、越界拒绝和中央预览；为部署
+前缀仅调整临时测试副本的路径断言，没有修改正式产品或测试源码。实际加载的 43 个
+JS／CSS 文件 SHA-256 均与新 Web 镜像一致。未向业务会话发送测试消息或读取私有历史。
+
+两个 scope 的 remote-release-finish 均通过版本、健康及路由门禁，回收三份过期受管
+成功上下文和两张无引用旧镜像的四个精确 rollback tags；保留每个 scope 最近三份成功
+上下文、回滚和所有引用版本。原已取消上下文仍遵循失败保留策略，不扩大清理范围。
+收尾后再次验证四个服务版本／健康与配置源码；包含 Runtime Provider 和现存 Runtime
+在内的其余 34 个容器镜像与启动时间未变，服务器 Compose／环境文件摘要未变。
+没有清理共享 BuildKit、容器、卷、Workspace 或数据库备份。当前与下一可执行切片均为 NONE。
+
 ### FR-666 浏览器截图归属当前会话工作区 — DONE
 
 后续纠正：本片原生工具扩展及新 Runtime source lock 已按用户要求在 FR-667 撤回；
