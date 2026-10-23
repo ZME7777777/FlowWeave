@@ -262,6 +262,21 @@ def resolve_case_control_binding_scope(
     }
 
 
+def _current_stage_execution(db: Session, item: Case, run: FlowRun) -> CaseStage:
+    stage = db.scalar(
+        select(CaseStage).where(
+            CaseStage.case_id == item.id,
+            CaseStage.current_execution_flow_run_id == run.id,
+        )
+    )
+    if stage is None or stage.state != "ACTIVE":
+        raise conflict(
+            "Case remediation may target only its active stage execution copy",
+            flow_run_id=run.id,
+        )
+    return stage
+
+
 def _proposal(db: Session, case_id: str, proposal_id: str) -> CaseDecisionProposal:
     item = db.get(CaseDecisionProposal, proposal_id)
     if item is None or item.case_id != case_id:
@@ -1052,6 +1067,7 @@ def create_case_decision_proposal(
     if existing is not None:
         return _proposal_dict(existing)
     run = _case_linked_run(db, item.id, payload.flow_run_id)
+    _current_stage_execution(db, item, run)
     if payload.source_task_id:
         task = db.get(CaseAgentTask, payload.source_task_id)
         if task is None or task.case_id != item.id:
@@ -1085,10 +1101,12 @@ def create_case_decision_proposal(
 
 
 def execute_case_decision_proposal(db: Session, case_id: str, proposal_id: str) -> dict[str, Any]:
-    proposal = _proposal(db, _case(db, case_id).id, proposal_id)
+    item = _case(db, case_id)
+    proposal = _proposal(db, item.id, proposal_id)
     if proposal.state != "PROPOSED":
         raise illegal("Case decision has already executed", state=proposal.state)
     run = _case_linked_run(db, proposal.case_id, proposal.flow_run_id)
+    _current_stage_execution(db, item, run)
     try:
         if proposal.action == "CONTINUE_STEPWISE":
             if proposal.node_attempt_id is None:
