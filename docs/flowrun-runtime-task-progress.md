@@ -9661,3 +9661,16 @@ remote-release-finish 完成版本、健康门禁与受管发布收尾，仅回�
 Web typecheck、定向 ESLint、git diff --check、CURRENT 唯一性与依赖核对通过；
 Alembic 唯一 head 仍为 0158_schedule_china_timezone。仅修改 Web 和协作文档，
 当前及下一可执行切片均为 NONE；未部署。
+
+
+### FR-644 用户消息气泡雾绿配色 — DONE
+
+依赖：FR-643 DONE。将共享会话气泡的暖灰背景调整为近白、低饱和雾绿，边框同步采用
+淡绿色，使长文本大面积底色与平台绿色视觉协调。仅修改配色，验证短消息、长消息和
+既有消息展示；仅修改 Web 与协作文档，不部署。
+
+验收：Web typecheck 和 2 项既有 Chromium 定向回归通过，覆盖消息正文／公式与分屏
+换行布局。实际页面截图核对短消息和多段长消息，背景为 #F1F7F3、边框为 #DEE9E1，
+保留原文字对比、气泡尺寸与交互。git diff --check、CURRENT 唯一性和依赖核对通过；
+Alembic 唯一 head 仍为 0158_schedule_china_timezone。当前及下一可执行切片均为 NONE；
+未部署。
