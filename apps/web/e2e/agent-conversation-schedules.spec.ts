@@ -144,6 +144,28 @@ test('task rows expand on demand and action menus close outside', async ({ page 
   await expect(firstTask.getByRole('menu')).toHaveCount(0);
 });
 
+test('schedule filter expands inside the sidebar without covering tasks', async ({ page }) => {
+  await openWorkspace(page);
+  await page.getByRole('navigation', { name: 'Agent 工作区导航' }).getByRole('button', { name: '定时任务' }).click();
+
+  const tasks = page.getByRole('region', { name: '会话定时任务' });
+  await tasks.getByRole('button', { name: '筛选定时任务', exact: true }).click();
+  const filterMenu = tasks.locator('.agent-schedule-filter-menu');
+  const firstTask = tasks.locator('.agent-schedule-tree-group').first();
+  await expect(filterMenu).toBeVisible();
+
+  const [filterBox, taskBox] = await Promise.all([filterMenu.boundingBox(), firstTask.boundingBox()]);
+  expect(filterBox).not.toBeNull();
+  expect(taskBox).not.toBeNull();
+  expect(filterBox!.y + filterBox!.height).toBeLessThanOrEqual(taskBox!.y);
+
+  await filterMenu.getByRole('menuitemradio', { name: '已暂停', exact: true }).click();
+  await expect(tasks.locator('.agent-schedule-tree-group')).toHaveCount(0);
+  await tasks.getByRole('button', { name: '筛选定时任务', exact: true }).click();
+  await tasks.locator('.agent-schedule-filter-menu').getByRole('menuitemradio', { name: '全部状态', exact: true }).click();
+  await expect(tasks.locator('.agent-schedule-tree-group')).toHaveCount(2);
+});
+
 test('scheduled session shows session configuration and expands additional runs', async ({ page }) => {
   await openWorkspace(page);
   await page.getByRole('navigation', { name: 'Agent 工作区导航' }).getByRole('button', { name: '定时任务' }).click();
