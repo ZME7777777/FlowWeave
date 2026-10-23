@@ -62,6 +62,17 @@ def create_case_work_directory(
     return work_directories.create_case_work_directory(db, workspace_id, case_id, display_name)
 
 
+def write_case_files(
+    db: Session,
+    workspace_id: str,
+    work_directory_id: str,
+    **kwargs: Any,
+) -> None:
+    from flowweave.modules.agent_workspaces.application import work_directories
+
+    work_directories.write_case_files(db, workspace_id, work_directory_id, **kwargs)
+
+
 def list_flow_run_work_directories(
     db: Session, flow_run_id: str, node_attempt_id: str
 ) -> dict[str, Any]:
@@ -313,6 +324,7 @@ __all__ = (
     "AgentWorkspaceCapability",
     "AgentWorkspaceRuntime",
     "conversation_work_directory_context",
+    "create_case_work_directory",
     "create_flow_run_work_directory",
     "delete_flow_run_work_directory",
     "delete_session_attachment_files",
@@ -339,4 +351,5 @@ __all__ = (
     "runtime_allocation_for_agent_workspace",
     "validate_flow_run_workspace_references",
     "validate_message_workspace_references",
+    "write_case_files",
 )

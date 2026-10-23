@@ -138,6 +138,37 @@ def _case_flow_runs(db: Session, case_id: str) -> list[str]:
     )
 
 
+def _write_case_files(db: Session, item: Case) -> None:
+    if not item.control_work_directory_id:
+        return
+    workspace = agent_workspaces.ensure_default_agent_workspace(db)
+    stages = tuple(
+        {
+            "id": stage.id,
+            "stage_key": stage.stage_key,
+            "name": stage.name,
+            "objective": stage.objective,
+            "position": stage.position,
+            "state": stage.state,
+            "execution_mode": stage.execution_mode,
+            "flow_run_id": stage.flow_run_id,
+        }
+        for stage in db.scalars(
+            select(CaseStage).where(CaseStage.case_id == item.id).order_by(CaseStage.position)
+        )
+    )
+    agent_workspaces.write_case_files(
+        db,
+        workspace.id,
+        item.control_work_directory_id,
+        case_id=item.id,
+        name=item.name,
+        objective=item.objective,
+        state=item.state,
+        stages=stages,
+    )
+
+
 def _case_dict(db: Session, item: Case) -> dict[str, Any]:
     stages = db.scalars(
         select(CaseStage).where(CaseStage.case_id == item.id).order_by(CaseStage.position)
@@ -222,6 +253,7 @@ def set_case_stage_state(
         )
     stage.state = payload.state
     item.row_version += 1
+    _write_case_files(db, item)
     finish(db)
     return _case_dict(db, item)
 
@@ -256,6 +288,7 @@ def bind_case_stage_flow_run(
     if existing is None:
         db.add(CaseFlowRun(case_id=item.id, flow_run_id=run.id))
     item.row_version += 1
+    _write_case_files(db, item)
     finish(db)
     return _case_dict(db, item)
 
@@ -554,6 +587,7 @@ def create_case_control_conversation(
             db, workspace.id, item.id, f"事项 · {item.name}"
         )
         item.control_work_directory_id = str(directory["id"])
+    _write_case_files(db, item)
     created = conversations.bootstrap_conversation(
         db,
         workspace.id,
@@ -564,6 +598,9 @@ def create_case_control_conversation(
         capability_version_ids=tuple(payload.capability_version_ids),
         content=(
             f"你是事项“{item.name}”的协调 Agent。\n\n"
+            "当前工作目录是此事项的专属目录。先读取 case.toml 和 memory.md；"
+            "case.toml 是平台投影的当前事项、阶段和 FlowRun 摘要，"
+            "memory.md 用于沉淀可复用工作记忆。\n\n"
             f"事项目标：{item.objective or '尚未填写'}\n\n"
             "仅在当前事项工作目录中工作。基于可审计事实协助梳理阶段、风险和后续建议；"
             "不得直接修改流程模板或已启动的流程节点。"

@@ -564,6 +564,55 @@ def write_automation_files(
         ) from exc
 
 
+def write_case_files(
+    db: Session,
+    workspace_id: str,
+    work_directory_id: str,
+    *,
+    case_id: str,
+    name: str,
+    objective: str,
+    state: str,
+    stages: tuple[dict[str, Any], ...],
+) -> None:
+    """Maintain Case-local soft context without replacing platform ownership."""
+
+    item = _directory(db, workspace_id, work_directory_id)
+    version = _version(db, item)
+    case_root = _project_root(db, workspace_id) / version.working_path
+    try:
+        case_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        lines = [
+            "version = 1",
+            f"id = {json.dumps(case_id)}",
+            f"name = {json.dumps(name, ensure_ascii=False)}",
+            f"objective = {json.dumps(objective, ensure_ascii=False)}",
+            f"state = {json.dumps(state)}",
+            "",
+        ]
+        for stage in stages:
+            lines.extend(
+                [
+                    "[[stages]]",
+                    f"id = {json.dumps(str(stage['id']))}",
+                    f"key = {json.dumps(str(stage['stage_key']))}",
+                    f"name = {json.dumps(str(stage['name']), ensure_ascii=False)}",
+                    f"objective = {json.dumps(str(stage['objective']), ensure_ascii=False)}",
+                    f"position = {int(stage['position'])}",
+                    f"state = {json.dumps(str(stage['state']))}",
+                    f"execution_mode = {json.dumps(str(stage['execution_mode']))}",
+                    f"flow_run_id = {json.dumps(stage.get('flow_run_id') or '')}",
+                    "",
+                ]
+            )
+        (case_root / "case.toml").write_text("\n".join(lines), encoding="utf-8")
+        memory = case_root / "memory.md"
+        if not memory.exists():
+            memory.write_text(f"# {name} Case 记忆\n\n", encoding="utf-8")
+    except OSError as exc:
+        raise DomainError("CASE_METADATA_UNAVAILABLE", "无法写入事项配置文件", 503) from exc
+
+
 def update_work_directory(
     db: Session,
     workspace_id: str,
