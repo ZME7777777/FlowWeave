@@ -9776,3 +9776,23 @@ remote-release-finish 完成健康与版本门禁，并回收一份过期成功 
 9px；四角、配色与气泡尺寸保持，截图核对通过。鼠标连续移动至操作栏并正常复制
 正文通过。git diff --check、CURRENT 唯一性和依赖核对通过；Alembic 唯一 head 仍为
 0158_schedule_china_timezone。当前及下一可执行切片均为 NONE；待本次授权 Web 发布。
+
+
+FR-647 发布补记（2026-10-23）：按用户“调整一下并部署”的授权，以固定提交
+`c0ff1c3803e8865963b27699395163d2b309996a` 通过 Web 正式预检，并使用
+remote-release-prepare 受管最小上下文，归档 SHA-256 为
+`70241f453f186b31ec47003315663b8aab1a17983bdb0ac6db4c648cada1d876`。
+保留旧 Web 精确回滚镜像后，仅构建并重建 Web；linux/amd64 与 OCI revision
+核对通过，新镜像 ID 为
+`sha256:6935a3c8fbc9cf740f3e2f5038939caca80a9571bb899a2fc2e015abaa3b9a73`。
+其余 37 个运行容器的身份、镜像和启动时间保持一致，Web HTTP、API／stream-api
+health 与 readiness 均通过；未修改服务器配置、Runtime、数据库、卷或工作区。
+
+全新浏览器验证实际入口登录、Agent 深层路由、API 前缀、未认证边界与根登录入口，
+页面脚本错误为零。线上实际静态资源配合受控 API／WebSocket 的 2 项 Chromium
+回归通过；页面确认短消息、长消息的时间间距及右侧内收、四角与配色，并正常悬停
+到操作栏复制正文。浏览器加载的 39 个 JavaScript 文件 SHA-256 与运行镜像一致，
+未向真实会话发送测试消息。共享工作区其他未提交改动未进入发布包。
+remote-release-finish 完成健康、版本门禁与受管收尾，回收一份过期成功 Web 上下文
+及一个过期精确 rollback tag，保留最近三份成功上下文、回滚版本和所有引用版本；
+未清理共享 BuildKit、容器、卷、Workspace 或数据库备份。
