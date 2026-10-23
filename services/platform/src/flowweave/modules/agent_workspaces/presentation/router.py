@@ -24,6 +24,7 @@ from fastapi import (
 from pydantic import BaseModel, ConfigDict, Field
 
 from flowweave.bootstrap.container import Container
+from flowweave.modules.agent_sessions.application import history as conversation_history
 from flowweave.modules.agent_sessions.application import schedules as conversation_schedules
 from flowweave.modules.agent_sessions.application import search as conversation_search
 from flowweave.modules.agent_sessions.application import sidebar_conversations
@@ -1433,6 +1434,38 @@ async def delete_agent_conversation(
         ),
     )
     return Response(status_code=204)
+
+
+@router.get("/agent-workspaces/{workspace_id}/conversations/{binding_id}/history")
+async def agent_conversation_history(
+    workspace_id: str,
+    binding_id: str,
+    container: ContainerDep,
+    history_cursor: str | None = Query(default=None, max_length=200),
+    query: str | None = Query(default=None, min_length=1, max_length=200),
+    max_content_chars: int = Query(default=2_000, ge=1, le=10_000),
+) -> dict[str, Any]:
+    """Read a single authorized native page without changing unread or task state."""
+
+    def project(session: Any, prepared: Any, batch: Any) -> dict[str, Any]:
+        conversations.assert_prepared_conversation_events_current(session, prepared)
+        return {
+            "workspace_id": workspace_id,
+            "binding_id": binding_id,
+            **conversation_history.message_page(
+                batch, query=query, max_content_chars=max_content_chars
+            ),
+        }
+
+    return await run_formal_events(
+        container,
+        lambda session: conversations.prepare_conversation_events(
+            session, workspace_id, binding_id, None, history_cursor
+        ),
+        conversations.read_prepared_conversation_events,
+        project,
+        history=True,
+    )
 
 
 @router.get("/agent-workspaces/{workspace_id}/conversations/{binding_id}/events")

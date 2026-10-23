@@ -4082,6 +4082,13 @@ def read_prepared_conversation_events(prepared: PreparedConversationEvents) -> R
 def project_prepared_conversation_events(
     db: Session, prepared: PreparedConversationEvents, batch: RuntimeEventBatch
 ) -> dict[str, Any]:
+    workspace, binding = assert_prepared_conversation_events_current(db, prepared)
+    return _project_conversation_events(db, workspace, binding, batch)
+
+
+def assert_prepared_conversation_events_current(
+    db: Session, prepared: PreparedConversationEvents
+) -> tuple[AgentWorkspace, AgentConversationBinding]:
     workspace, binding = _assert_prepared_conversation_hydration_current(db, prepared.locator)
     if (
         binding.host_kind != prepared.locator.key.host_kind
@@ -4092,7 +4099,7 @@ def project_prepared_conversation_events(
             "Agent Runtime generation 已变化，请重新读取会话",
             409,
         )
-    return _project_conversation_events(db, workspace, binding, batch)
+    return workspace, binding
 
 
 def prepare_conversation_hydration(

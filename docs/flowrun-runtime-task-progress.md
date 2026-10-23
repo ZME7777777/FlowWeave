@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`UPSTREAM BASELINE ADOPTION COMPLETE`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`NONE`
+> 下一可执行切片：`FR-651`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -9876,3 +9876,27 @@ SHA-256 与运行镜像一致；未向真实会话发送测试消息，不将受
 remote-release-finish 完成健康、版本门禁与受管收尾，回收一份过期成功 Web 上下文
 和一个过期精确 rollback tag，保留最近三份成功上下文、回滚版本和所有引用版本。
 未修改远端 Compose／env、Runtime、数据库、卷或工作区，未清理共享 BuildKit。
+
+
+### FR-650 平台只读会话历史查询 API 与 CLI — DONE
+
+依赖：FR-649 DONE。为后续按需引用能力提供单窗口、正式 cursor 分页的只读历史入口，
+沿用用户／宿主／binding 授权和 generation 复核；只返回可见用户／助手正文，排除
+工具输出和隐藏引用传输内容。CLI 复用现有用户认证，提供页内关键词过滤及显式正文截断。
+本切片不切换引用协议、不自动给 Runtime 注入凭据、不修改 OpenHands 或部署。
+
+验收：新增历史查询与既有分阶段读取共 51 项 pytest 通过；CLI 17 项回归通过。
+覆盖正文／隐藏背景过滤、工具和系统消息排除、页内检索、原生游标／空页、显式截断、
+参数边界、读取前拒绝和投影复核拒绝、宿主／根目录漂移，以及既有 DB 生命周期契约。
+测试采用受控事件与授权回调，不替代真实用户认证／Runtime 端到端验收；不接数据库。
+新增模块 Pyright、新增代码 Ruff／format、受影响 Python AST、CLI 语法、diff／任务状态
+核对通过；Alembic 唯一 head 为 0158_schedule_china_timezone，未修改迁移。未部署，
+引用发送行为尚未改变；下一可执行切片 FR-651，须完成受限能力接入后才切换元数据。
+
+### FR-651 Agent 历史查询能力接入与整会话元数据引用 — READY
+
+依赖：FR-650 DONE。通过受治理 MCP 及受限认证接入只读历史查询，授权绑定请求会话
+与显式引用来源；冻结能力 version／digest，凭据仅在原生 MCP 认证边界使用，禁止把
+用户登录凭据或持久 Secret 写入消息／Runtime。接入就绪后再切换整会话引用为元数据，
+保留片段引用、旧消息投影及可点击来源，验证已有会话升级与权限／撤销／分页边界。
+需先验证固定 OpenHands 对 MCP 认证与既有会话加载的正式契约，再实施最小可验收范围。
