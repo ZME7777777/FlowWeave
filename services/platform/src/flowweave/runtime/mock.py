@@ -45,6 +45,7 @@ class MockRuntime:
         self._events: dict[str, list[RuntimeEvent]] = {}
         self._conversation_condensers: dict[str, RuntimeCondenser] = {}
         self._conversation_secrets: dict[str, dict[str, str]] = {}
+        self._conversation_secret_descriptions: dict[str, dict[str, str]] = {}
         self._git_identities: dict[str, tuple[str, str]] = {}
         self._profile_git_roots: set[str] = set()
 
@@ -126,8 +127,17 @@ class MockRuntime:
         self._conversation_secrets[handle.job_id] = dict(request.conversation_secrets)
         return handle
 
-    def update_conversation_secrets(self, handle: RuntimeHandle, secrets: dict[str, str]) -> None:
+    def update_conversation_secrets(
+        self,
+        handle: RuntimeHandle,
+        secrets: dict[str, str],
+        *,
+        descriptions: dict[str, str] | None = None,
+    ) -> None:
         self._conversation_secrets.setdefault(handle.job_id, {}).update(secrets)
+        self._conversation_secret_descriptions.setdefault(handle.job_id, {}).update(
+            descriptions or {}
+        )
 
     def conversation_title(self, handle: RuntimeHandle) -> str | None:
         del handle

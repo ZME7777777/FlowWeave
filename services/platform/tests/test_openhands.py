@@ -7372,3 +7372,45 @@ def test_record_git_identity_is_confirmed_before_native_conversation_start(
     monkeypatch.setattr(runtime, "_request", lambda *args, **kwargs: {"exit_code": 1})
     with pytest.raises(DomainError, match="无法确认工作区 Git 配置"):
         (runtime.start if execute else runtime.create_conversation)(request)
+
+
+@pytest.mark.parametrize("supported", [False, True])
+def test_credential_metadata_sync_requires_native_dynamic_context(
+    openhands_settings, monkeypatch, supported
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    calls = []
+
+    def request(method, path, **kwargs):
+        calls.append((method, path, kwargs.get("json")))
+        return {"capabilities": ["conversation_dynamic_context_v1"] if supported else []}
+
+    monkeypatch.setattr(runtime, "_request", request)
+    handle = RuntimeHandle(
+        job_id="agent-workspace:test", conversation_id="native",
+        runtime_resource_name="test-runtime",
+    )
+    if supported:
+        runtime.update_conversation_secrets(
+            handle, {"TOKEN": "private-token"}, descriptions={"TOKEN": "Only for example.test"}
+        )
+        assert calls[-1] == (
+            "POST",
+            "/api/conversations/native/secrets",
+            {
+                "secrets": {
+                    "TOKEN": {
+                        "kind": "StaticSecret",
+                        "value": "private-token",
+                        "description": "Only for example.test",
+                    }
+                }
+            },
+        )
+    else:
+        with pytest.raises(DomainError) as raised:
+            runtime.update_conversation_secrets(
+                handle, {"TOKEN": "private-token"}, descriptions={"TOKEN": "Only for example.test"}
+            )
+        assert raised.value.code == "AGENT_CREDENTIAL_CONTEXT_UNSUPPORTED"
+        assert len(calls) == 1

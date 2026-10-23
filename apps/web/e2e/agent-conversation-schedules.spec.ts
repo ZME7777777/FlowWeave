@@ -1129,7 +1129,7 @@ for (const mode of ['create', 'edit'] as const) {
       await dialog.locator('.agent-capability-list > button').filter({ has: page.locator('b', { hasText: new RegExp(`^预设${type}$`) }) }).click();
     }
     await dialog.getByRole('button', { name: '认证', exact: true }).click();
-    await dialog.getByRole('button', { name: '全选认证', exact: true }).click();
+    if (mode === 'edit') await dialog.getByRole('button', { name: '全选认证', exact: true }).click();
     await expect(dialog.getByText('已选择 2 项认证', { exact: true })).toBeVisible();
     await dialog.getByRole('button', { name: '取消全选认证', exact: true }).click();
     await expect(dialog.getByText('已选择 0 项认证', { exact: true })).toBeVisible();
@@ -2721,7 +2721,8 @@ test('schedule runs deduplicate continued conversations and share selection and 
 test('scheduled conversation API file links preview and download with the active binding', async ({ page }) => {
   const root = '/runtime/workspace/project/users/test-user/.flowweave/automations/daily';
   const report = `${root}/report.xlsx`;
-  const apiLink = `http://127.0.0.1:5173/api/v1/agent-workspaces/schedule-workspace/workspace/file?path=${encodeURIComponent(report)}`;
+  const origin = new URL(test.info().project.use.baseURL ?? 'http://127.0.0.1:5173').origin;
+  const apiLink = `${origin}/api/v1/agent-workspaces/schedule-workspace/workspace/file?path=${encodeURIComponent(report)}`;
   await openWorkspace(page, [
     { id: 'file-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '导出表格', timestamp: now } },
     { id: 'file-agent', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'file-user', content: `[下载 Excel 明细表](${apiLink})`, timestamp: now } },
@@ -2797,3 +2798,42 @@ test('scheduled Chinese text file links keep the complete path for preview and d
   expect(reads.filter(read => read === 'download')).toHaveLength(1);
   await expect(page).toHaveURL(/\/agent\/schedules\/conversations\/scheduled-run-1$/);
 });
+
+
+for (const config of ['untouched', 'capabilities', 'deselect'] as const) {
+  test(`new schedule defaults all credentials and preserves ${config} configuration`, async ({ page }) => {
+    const writes = await openWorkspace(page);
+    await page.route('**/website-credentials', route => json(route, [1, 2].map(n => ({ id: `credential-${n}`, name: `认证${n}`, target_host: 'example.test', target_path: '/', auth_type: 'TOKEN' }))));
+    await page.getByRole('navigation', { name: 'Agent 工作区导航' }).getByRole('button', { name: '定时任务' }).click();
+    await page.getByRole('region', { name: '会话定时任务' }).getByRole('button', { name: '新建', exact: true }).click();
+    await page.getByLabel('任务名称', { exact: true }).fill('默认认证');
+    await page.getByLabel('业务提示词').fill('验证默认认证');
+    if (config !== 'untouched') {
+      await page.getByRole('button', { name: /配置会话/ }).click();
+      const dialog = page.getByRole('dialog', { name: '会话配置', exact: true });
+      await expect(dialog.getByText('已选择 0 项', { exact: true })).toBeVisible();
+      if (config === 'capabilities') {
+        await dialog.getByRole('button', { name: /日报技能/ }).click();
+        await dialog.getByRole('button', { name: '保存会话配置', exact: true }).click();
+      } else {
+        await dialog.getByRole('button', { name: '认证', exact: true }).click();
+        await expect(dialog.getByText('已选择 2 项认证', { exact: true })).toBeVisible();
+        await dialog.getByRole('button', { name: '取消全选认证', exact: true }).click();
+        await dialog.getByRole('button', { name: '保存认证配置', exact: true }).click();
+        await page.getByRole('button', { name: /配置会话/ }).click();
+        await dialog.getByRole('button', { name: '认证', exact: true }).click();
+        await expect(dialog.getByText('已选择 0 项认证', { exact: true })).toBeVisible();
+        await dialog.getByRole('button', { name: '保存认证配置', exact: true }).click();
+      }
+    }
+    await page.getByRole('button', { name: '保存任务', exact: true }).click();
+    await expect.poll(() => writes.length).toBe(1);
+    expect(writes[0].body.credential_ids).toEqual(config === 'deselect' ? [] : ['credential-1', 'credential-2']);
+    expect(writes[0].body.capability_version_ids).toEqual(config === 'capabilities' ? ['capability-1'] : []);
+    await page.getByRole('button', { name: '编辑', exact: true }).click();
+    await page.getByRole('button', { name: /配置会话/ }).click();
+    const dialog = page.getByRole('dialog', { name: '会话配置', exact: true });
+    await dialog.getByRole('button', { name: '认证', exact: true }).click();
+    await expect(dialog.getByText(`已选择 ${config === 'deselect' ? 0 : 2} 项认证`, { exact: true })).toBeVisible();
+  });
+}

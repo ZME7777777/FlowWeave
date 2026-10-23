@@ -2317,9 +2317,28 @@ class OpenHandsRuntime:
     def create_conversation(self, request: StartAttemptRequest) -> RuntimeHandle:
         return self._create(request, run=False)
 
-    def update_conversation_secrets(self, handle: RuntimeHandle, secrets: dict[str, str]) -> None:
+    def update_conversation_secrets(
+        self,
+        handle: RuntimeHandle,
+        secrets: dict[str, str],
+        *,
+        descriptions: dict[str, str] | None = None,
+    ) -> None:
         """Use OpenHands' additive secret update endpoint without persisting values."""
 
+        if descriptions:
+            info = self._request(
+                "GET",
+                "/server_info",
+                base_url=self._base_url_for_handle(handle),
+                session_api_key=self._session_key_for_handle(handle),
+            )
+            if "conversation_dynamic_context_v1" not in info.get("capabilities", []):
+                raise DomainError(
+                    "AGENT_CREDENTIAL_CONTEXT_UNSUPPORTED",
+                    "当前运行环境尚不支持认证目录同步，请升级运行环境后重试；认证同步状态未更新。",
+                    409,
+                )
         self._request(
             "POST",
             f"/api/conversations/{handle.conversation_id}/secrets",
@@ -2327,7 +2346,15 @@ class OpenHandsRuntime:
             session_api_key=self._session_key_for_handle(handle),
             json={
                 "secrets": {
-                    name: {"kind": "StaticSecret", "value": value}
+                    name: {
+                        "kind": "StaticSecret",
+                        "value": value,
+                        **(
+                            {"description": descriptions[name]}
+                            if descriptions and name in descriptions
+                            else {}
+                        ),
+                    }
                     for name, value in secrets.items()
                 }
             },

@@ -197,8 +197,8 @@ def test_credential_sync_state_distinguishes_new_and_modified_credentials(
         {"id": "new", "row_version": 1},
     ]
     synced = {
-        "current": SimpleNamespace(credential_row_version=1),
-        "modified": SimpleNamespace(credential_row_version=1),
+        "current": SimpleNamespace(credential_row_version=1, context_version=1),
+        "modified": SimpleNamespace(credential_row_version=1, context_version=1),
     }
     monkeypatch.setattr(credential_sync, "list_credentials", lambda _db: credentials)
     monkeypatch.setattr(credential_sync, "_sync_rows", lambda _db, _binding_id: synced)

@@ -337,6 +337,7 @@ class AgentConversationCredentialSync(Base):
     binding_id: Mapped[str] = mapped_column(String(36), index=True)
     credential_id: Mapped[str] = mapped_column(String(36), index=True)
     credential_row_version: Mapped[int] = mapped_column(Integer)
+    context_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
