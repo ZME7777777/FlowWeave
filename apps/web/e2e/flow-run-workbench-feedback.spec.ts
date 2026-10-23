@@ -205,11 +205,21 @@ test('FlowRun detail has a restorable route and temporary topbar tab', async ({ 
   await page.getByRole('button', { name: '账户与设置' }).click();
   await page.getByRole('menuitem', { name: '终端环境', exact: true }).click();
   await expect(page.locator('.context-tab')).toHaveText([`Run #${run.run_no}`, '终端环境']);
+  await page.reload();
+  await expect(page).toHaveURL('/');
+  await expect(page.locator('.context-tab')).toHaveText([`Run #${run.run_no}`, '终端环境']);
+  await expect(page.locator('.context-tab.active')).toHaveText('终端环境');
 
   await page.getByRole('button', { name: `Run #${run.run_no}`, exact: true }).click();
+  await expect(page).toHaveURL(`/flow-runs/${run.id}`);
+  await page.reload();
+  await expect(page.locator('.context-tab')).toHaveText([`Run #${run.run_no}`, '终端环境']);
+  await expect(page.locator('.context-tab.active')).toHaveText(`Run #${run.run_no}`);
   await page.getByRole('button', { name: `关闭Run #${run.run_no}`, exact: true }).click();
   await expect(page).toHaveURL('/');
   await expect(page.getByText('1 个流程 · 1 个运行', { exact: true })).toBeVisible();
+  await page.reload();
+  await expect(page.locator('.context-tab')).toHaveText(['终端环境']);
 });
 
 test('step configuration is saved before start and only continuous and stepwise tabs exist', async ({ page }) => {
@@ -1538,6 +1548,9 @@ test('returning from an automatic node session preserves the selected automatic 
   await page.getByRole('button', { name: /自动运行会话/ }).click();
   await expect(page).toHaveURL(new RegExp(`/agent-sessions/${conversation.id}$`));
   await page.getByRole('button', { name: '节点资产', exact: true }).click();
+  await page.reload();
+  await expect(page.locator('.context-tab')).toHaveText(['Run #1']);
+  await expect(page.locator('.context-tab.active')).toHaveCount(0);
   await page.getByRole('button', { name: 'Run #1', exact: true }).click();
   await expect(page).toHaveURL(new RegExp(`/agent-sessions/${conversation.id}$`));
   await page.getByRole('button', { name: '返回节点执行' }).click();

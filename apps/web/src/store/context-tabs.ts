@@ -1,0 +1,78 @@
+import type { AuthUser } from '../types';
+
+export type SettingsView = 'environments' | 'credentials' | 'models' | 'ldap-users';
+export type FlowRunTab = { id: string; label: string; path: string; state: unknown };
+export type ContextTab = { kind: 'settings'; view: SettingsView } | { kind: 'flow-run'; id: string };
+type ContextTabsSnapshot = { settings: SettingsView[]; runs: FlowRunTab[]; order: ContextTab[] };
+
+const storageKey = (userId: string) => `flowweave.context-tabs.v1:${userId}`;
+const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object'
+  ? value as Record<string, unknown>
+  : {};
+
+// Only navigation metadata belongs in this snapshot, never arbitrary history state
+// or page data. The route still performs its normal server authorization on open.
+function navigationState(value: unknown) {
+  const source = record(record(value).flowweaveFlowRun);
+  if (typeof source.runId !== 'string' || typeof source.nodeRunId !== 'string' || typeof source.attemptId !== 'string') return {};
+  return {
+    flowweaveFlowRun: {
+      runId: source.runId, nodeRunId: source.nodeRunId, attemptId: source.attemptId,
+      mode: source.mode === 'AUTOMATIC' ? 'AUTOMATIC' : 'MANUAL',
+      automaticRecordId: typeof source.automaticRecordId === 'string' ? source.automaticRecordId : undefined,
+      stepwiseRecordId: typeof source.stepwiseRecordId === 'string' ? source.stepwiseRecordId : undefined,
+    },
+  };
+}
+
+export function readContextTabs(user: AuthUser): ContextTabsSnapshot {
+  const snapshot: ContextTabsSnapshot = { settings: [], runs: [], order: [] };
+  try {
+    const saved: unknown = JSON.parse(sessionStorage.getItem(storageKey(user.id)) ?? 'null');
+    if (!Array.isArray(saved)) return snapshot;
+    const seen = new Set<string>();
+    for (const value of saved) {
+      const tab = record(value);
+      if (tab.kind === 'settings') {
+        const view = tab.view;
+        if (view !== 'environments' && view !== 'credentials' && view !== 'models' && !(view === 'ldap-users' && user.is_super_admin)) continue;
+        if (seen.has(`settings:${view}`)) continue;
+        seen.add(`settings:${view}`);
+        snapshot.settings.push(view);
+        snapshot.order.push({ kind: 'settings', view });
+      } else if (tab.kind === 'flow-run' && typeof tab.id === 'string' && tab.id) {
+        if (seen.has(`flow-run:${tab.id}`)) continue;
+        seen.add(`flow-run:${tab.id}`);
+        const root = `/flow-runs/${encodeURIComponent(tab.id)}`;
+        const state = navigationState(tab.state);
+        const path = typeof tab.path === 'string' ? tab.path : root;
+        const leaf = path.match(/^\/flow-runs\/([^/]+)\/nodes\/([^/]+)\/attempts\/([^/]+)\/agent-sessions(?:\/[^/?#]+)?$/);
+        const source = 'flowweaveFlowRun' in state ? state.flowweaveFlowRun : undefined;
+        const validLeaf = leaf && (source
+          ? source.runId === tab.id && encodeURIComponent(source.nodeRunId) === leaf[2] && encodeURIComponent(source.attemptId) === leaf[3]
+          : leaf[1] === encodeURIComponent(tab.id));
+        snapshot.runs.push({
+          id: tab.id, label: typeof tab.label === 'string' && tab.label ? tab.label : '正在打开运行…',
+          path: path === root || validLeaf ? path : root,
+          state: path === root || validLeaf ? state : {},
+        });
+        snapshot.order.push({ kind: 'flow-run', id: tab.id });
+      }
+    }
+  } catch { /* Missing, corrupt or unavailable storage starts with no tabs. */ }
+  return snapshot;
+}
+
+export function saveContextTabs(userId: string, order: ContextTab[], runs: FlowRunTab[]) {
+  try {
+    sessionStorage.setItem(storageKey(userId), JSON.stringify(order.flatMap<ContextTab | ({ kind: 'flow-run' } & FlowRunTab)>(tab => {
+      if (tab.kind === 'settings') return [tab];
+      const run = runs.find(candidate => candidate.id === tab.id);
+      return run ? [{ kind: 'flow-run', ...run, state: navigationState(run.state) }] : [];
+    })));
+  } catch { /* Keep the current tabs usable when browser storage is unavailable. */ }
+}
+
+export function clearContextTabs(userId: string) {
+  try { sessionStorage.removeItem(storageKey(userId)); } catch { /* storage is unavailable */ }
+}

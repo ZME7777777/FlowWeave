@@ -2,6 +2,7 @@ import { Boxes, BrainCircuit, CalendarClock, ChevronDown, GitFork, Hexagon, KeyR
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useWorkbenchStore } from './store/workbench';
+import { clearContextTabs, readContextTabs, saveContextTabs, type ContextTab, type FlowRunTab, type SettingsView } from './store/context-tabs';
 import { withDeploymentBase, withoutDeploymentBase } from './deploymentPath';
 import { api } from './api/client';
 import type { AuthUser, FlowRunSummary } from './types';
@@ -48,10 +49,6 @@ const superAdminSettingsNav = [
   { view: 'ldap-users' as const, label: '用户管理', description: '管理 LDAP 授权和平台账户资料', icon: UsersRound },
 ];
 
-type SettingsView = (typeof settingsNav)[number]['view'] | (typeof superAdminSettingsNav)[number]['view'];
-type FlowRunTab = { id: string; label: string; path: string; state: unknown };
-type ContextTab = { kind: 'settings'; view: SettingsView } | { kind: 'flow-run'; id: string };
-
 const LAST_STANDALONE_AGENT_PATH_KEY = 'flowweave.agent.last-standalone-path.v1';
 
 function isStandaloneAgentPath(path: string): boolean {
@@ -90,6 +87,17 @@ export function App() {
   const [openSettingsViews, setOpenSettingsViews] = useState<SettingsView[]>([]);
   const [openFlowRunTabs, setOpenFlowRunTabs] = useState<FlowRunTab[]>([]);
   const [openContextTabs, setOpenContextTabs] = useState<ContextTab[]>([]);
+  const tabsUser = useRef<AuthUser | null>(null);
+  const restoreContextTabs = useCallback((nextUser: AuthUser) => {
+    const saved = readContextTabs(nextUser);
+    tabsUser.current = nextUser;
+    setOpenSettingsViews(saved.settings);
+    setOpenFlowRunTabs(saved.runs);
+    setOpenContextTabs(saved.order);
+  }, []);
+  useEffect(() => {
+    if (user && tabsUser.current === user) saveContextTabs(user.id, openContextTabs, openFlowRunTabs);
+  }, [openContextTabs, openFlowRunTabs, user]);
   const lastStandaloneAgentPath = useRef(readLastStandaloneAgentPath());
   const settingsMenu = useRef<HTMLDivElement>(null);
   const setLastStandaloneAgentPath = useCallback((path: string) => {
@@ -112,6 +120,12 @@ export function App() {
     // the previous account's conversation projection for up to staleTime.
     setUser(undefined);
     setSettingsOpen(false);
+    if (tabsUser.current) clearContextTabs(tabsUser.current.id);
+    tabsUser.current = null;
+    setOpenSettingsViews([]);
+    setOpenFlowRunTabs([]);
+    setOpenContextTabs([]);
+    if ([...settingsNav, ...superAdminSettingsNav].some(item => item.view === useWorkbenchStore.getState().view)) setView('nodes');
     await queryClient.cancelQueries();
     queryClient.clear();
     clearAgentIdentityStorage();
@@ -121,9 +135,12 @@ export function App() {
       setView('agent-workbench');
       setRouteVersion(value => value + 1);
     }
-    if (nextUser) setAgentSessionCacheIdentity(nextUser.id);
+    if (nextUser) {
+      setAgentSessionCacheIdentity(nextUser.id);
+      restoreContextTabs(nextUser);
+    }
     setUser(nextUser);
-  }, [queryClient, setView]);
+  }, [queryClient, restoreContextTabs, setView]);
   useEscapeClose(() => setSettingsOpen(false), settingsOpen);
   const reloadCurrentContent = useCallback(async () => {
     setSettingsOpen(false);
@@ -144,6 +161,7 @@ export function App() {
     void api.authMe().then(value => {
       if (!active) return;
       setAgentSessionCacheIdentity(value.id);
+      restoreContextTabs(value);
       setUser(value);
     }).catch(() => {
       if (active) void replaceIdentity(null);
@@ -154,7 +172,7 @@ export function App() {
       active = false;
       window.removeEventListener('flowweave:auth-required', requireLogin);
     };
-  }, [replaceIdentity]);
+  }, [replaceIdentity, restoreContextTabs]);
   const toggleFullscreenFromTopbar = (event: ReactMouseEvent<HTMLElement>) => {
     if ((event.target as HTMLElement).closest('button, a, input, select, textarea, [contenteditable="true"]')) return;
     if (!document.fullscreenEnabled) return;
@@ -181,8 +199,7 @@ export function App() {
     const label = `Run #${run.run_no}`;
     setOpenFlowRunTabs(current => {
       const existing = current.find(item => item.id === run.id);
-      if (!existing) return [...current, { id: run.id, label, path: `/flow-runs/${encodeURIComponent(run.id)}`, state: {} }];
-      return existing.label === label ? current : current.map(item => item.id === run.id ? { ...item, label } : item);
+      return !existing || existing.label === label ? current : current.map(item => item.id === run.id ? { ...item, label } : item);
     });
   }, []);
   useEffect(() => {
@@ -239,12 +256,17 @@ export function App() {
     setRouteVersion(value => value + 1);
   };
   useLayoutEffect(() => {
-    if (!activeFlowRunTabId) return;
+    if (!user || !activeFlowRunTabId) return;
     if (flowRunRouteId) {
-      useWorkbenchStore.setState({
-        view: 'workbench', selectedRunId: flowRunRouteId, selectedNodeRunId: undefined, selectedAttemptId: undefined,
-        selectedWorkbenchMode: undefined, selectedAutomaticRecordId: undefined, selectedStepwiseRecordId: undefined,
-      });
+      const selection = useWorkbenchStore.getState();
+      // A restored node tab can return before the lazy Workbench has loaded.
+      // Keep its explicit record selection until that page consumes it.
+      if (selection.view !== 'workbench' || selection.selectedRunId !== flowRunRouteId) {
+        useWorkbenchStore.setState({
+          view: 'workbench', selectedRunId: flowRunRouteId, selectedNodeRunId: undefined, selectedAttemptId: undefined,
+          selectedWorkbenchMode: undefined, selectedAutomaticRecordId: undefined, selectedStepwiseRecordId: undefined,
+        });
+      }
     }
     const path = `${routePathname}${window.location.search}${window.location.hash}`;
     const state = window.history.state ?? {};
@@ -258,8 +280,10 @@ export function App() {
         ? current
         : current.map(tab => tab.id === activeFlowRunTabId ? { ...tab, path, state } : tab);
     });
-    void api.flowRun(activeFlowRunTabId).then(registerFlowRunTab).catch(() => undefined);
-  }, [activeFlowRunTabId, flowRunRouteId, registerFlowRunTab, routePathname]);
+    void api.flowRun(activeFlowRunTabId).then(run => {
+      if (tabsUser.current === user) registerFlowRunTab(run);
+    }).catch(() => undefined);
+  }, [activeFlowRunTabId, flowRunRouteId, registerFlowRunTab, routePathname, user]);
   useEffect(() => {
     if (flowRunRouteId || nodeSessionRoute || view !== 'workbench' || !selectedRunId) return;
     window.history.pushState({}, '', withDeploymentBase(`/flow-runs/${encodeURIComponent(selectedRunId)}`));
@@ -288,13 +312,17 @@ export function App() {
     const availableSettings = user.is_super_admin
       ? [...settingsNav, ...superAdminSettingsNav]
       : settingsNav;
+    if (view === 'ldap-users' && !user.is_super_admin) {
+      setView('nodes');
+      return;
+    }
     if (!availableSettings.some(item => item.view === view)) return;
     const settingsView = view as SettingsView;
     setOpenSettingsViews(current => current.includes(settingsView) ? current : [...current, settingsView]);
     setOpenContextTabs(tabs => tabs.some(tab => tab.kind === 'settings' && tab.view === settingsView)
       ? tabs
       : [...tabs, { kind: 'settings', view: settingsView }]);
-  }, [flowRunRouteId, isAgentRoute, user, view]);
+  }, [flowRunRouteId, isAgentRoute, setView, user, view]);
   const selectView = (next: typeof view) => {
     setSettingsOpen(false);
     if (next === 'agent-workbench') {
@@ -336,7 +364,9 @@ export function App() {
       return;
     }
     window.history.pushState(tab.state, '', withDeploymentBase(tab.path));
-    setRouteVersion(value => value + 1);
+    // Restore the saved Attempt/record selection through the same path as Back.
+    // After a refresh it is no longer present in the in-memory workbench store.
+    window.dispatchEvent(new PopStateEvent('popstate', { state: tab.state }));
   };
   const closeFlowRunTab = (runId: string) => {
     const closingIndex = openFlowRunTabs.findIndex(tab => tab.id === runId);
