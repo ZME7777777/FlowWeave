@@ -410,6 +410,60 @@ def test_case_control_plan_persists_scoped_input_snapshot(client):
     assert detail.json()["control_plans"][0]["id"] == plan["id"]
 
 
+def test_control_binding_plan_is_limited_to_its_active_case_stage(client):
+    provider = client.post(
+        "/api/v1/model-providers",
+        json={
+            "name": "事项控制模型",
+            "base_url": "https://models.example.test/v1",
+            "api_key": "case-control-secret",
+            "models": [{"model_name": "case-control", "enabled": True, "is_default": True}],
+        },
+    )
+    assert provider.status_code == 201, provider.text
+    first = client.post(
+        "/api/v1/cases",
+        json={"name": "控制范围一", "stages": [{"stage_key": "one", "name": "阶段一"}]},
+    )
+    second = client.post(
+        "/api/v1/cases",
+        json={"name": "控制范围二", "stages": [{"stage_key": "two", "name": "阶段二"}]},
+    )
+    assert first.status_code == 201 and second.status_code == 201
+    first_stage = first.json()["stages"][0]
+    second_stage = second.json()["stages"][0]
+    conversation = client.post(
+        f"/api/v1/cases/{first.json()['id']}/control-conversation",
+        json={"model_provider_id": provider.json()["id"], "model_name": "case-control"},
+        headers={"Idempotency-Key": "case-control-binding-one"},
+    )
+    assert conversation.status_code == 201, conversation.text
+    binding_id = conversation.json()["control_conversation_binding_id"]
+
+    accepted = client.post(
+        f"/api/v1/case-control-bindings/{binding_id}/plans",
+        json={
+            "stage_id": first_stage["id"],
+            "action": "CREATE_EXECUTION_COPY",
+            "idempotency_key": "binding-one-copy",
+            "reason": "由当前控制会话提出。",
+        },
+    )
+    assert accepted.status_code == 201, accepted.text
+    assert accepted.json()["source_binding_id"] == binding_id
+
+    rejected = client.post(
+        f"/api/v1/case-control-bindings/{binding_id}/plans",
+        json={
+            "stage_id": second_stage["id"],
+            "action": "CREATE_EXECUTION_COPY",
+            "idempotency_key": "binding-cross-case",
+            "reason": "不应跨事项创建计划。",
+        },
+    )
+    assert rejected.status_code == 409, rejected.text
+
+
 def test_platform_owned_lark_oauth_endpoints_are_removed(client):
     assert client.post("/api/v1/oauth/lark/sessions", json={"scopes": []}).status_code == 404
     assert client.get("/api/v1/credential-connections").status_code == 404

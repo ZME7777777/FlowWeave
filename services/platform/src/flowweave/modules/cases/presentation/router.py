@@ -116,6 +116,16 @@ async def create_control_plan(
     )
 
 
+@router.post("/case-control-bindings/{binding_id}/plans", status_code=201)
+async def create_control_plan_for_binding(
+    binding_id: str, payload: CaseControlPlanWrite, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: service.create_case_control_plan_for_binding(session, binding_id, payload),
+    )
+
+
 @router.post("/cases/{case_id}/control-conversation", status_code=201)
 async def create_control_conversation(
     case_id: str,

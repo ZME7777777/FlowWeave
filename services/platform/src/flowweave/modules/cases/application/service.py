@@ -5,8 +5,10 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from flowweave.modules.agent_sessions.infrastructure.models import AgentConversationBinding
 from flowweave.modules.agent_sessions.public import conversations
 from flowweave.modules.agent_workspaces import public as agent_workspaces
+from flowweave.modules.agent_workspaces.infrastructure.models import AgentWorkDirectoryVersion
 from flowweave.modules.cases.infrastructure.models import (
     Case,
     CaseAgentTask,
@@ -222,6 +224,42 @@ def _case_linked_run(db: Session, case_id: str, flow_run_id: str) -> FlowRun:
     if run is None:
         raise not_found("flow_run", flow_run_id)
     return run
+
+
+def resolve_case_control_binding_scope(
+    db: Session, binding_id: str, *, require_active_stage: bool = True
+) -> dict[str, Any]:
+    """Resolve a Binding to its one authorized Case scope without model input."""
+
+    binding = db.get(AgentConversationBinding, binding_id)
+    if binding is None or binding.host_kind != "AGENT_WORKSPACE":
+        raise not_found("case_control_binding", binding_id)
+    item = db.scalar(select(Case).where(Case.control_conversation_binding_id == binding.id))
+    if item is None:
+        raise not_found("case_control_binding", binding_id)
+    if item.state in {"COMPLETED", "ARCHIVED"}:
+        raise illegal("terminal Case has no control scope", state=item.state)
+    if item.control_work_directory_id is None:
+        raise conflict("Case control Binding has no working directory", case_id=item.id)
+    directory_version = db.get(AgentWorkDirectoryVersion, binding.work_directory_version_id)
+    if (
+        directory_version is None
+        or directory_version.work_directory_id != item.control_work_directory_id
+    ):
+        raise conflict("Case control Binding is outside its Case work directory", case_id=item.id)
+    stage = db.scalar(
+        select(CaseStage)
+        .where(CaseStage.case_id == item.id, CaseStage.state == "ACTIVE")
+        .order_by(CaseStage.position)
+    )
+    if require_active_stage and stage is None:
+        raise conflict("Case has no active stage", case_id=item.id)
+    return {
+        "case": item,
+        "stage": stage,
+        "binding": binding,
+        "execution_flow_run_id": stage.current_execution_flow_run_id if stage else None,
+    }
 
 
 def _proposal(db: Session, case_id: str, proposal_id: str) -> CaseDecisionProposal:
@@ -650,7 +688,38 @@ def create_case_control_plan(
     item = _case(db, case_id)
     if item.state in {"COMPLETED", "ARCHIVED"}:
         raise illegal("terminal case cannot create control plans", state=item.state)
-    stage = _stage(db, item, payload.stage_id)
+    return _create_case_control_plan(
+        db, item, _stage(db, item, payload.stage_id), payload, source_binding_id=None
+    )
+
+
+def create_case_control_plan_for_binding(
+    db: Session, binding_id: str, payload: CaseControlPlanWrite
+) -> dict[str, Any]:
+    """Create a plan only inside the Case scope proven by its control Binding."""
+
+    scope = resolve_case_control_binding_scope(db, binding_id)
+    item = scope["case"]
+    stage = scope["stage"]
+    if not isinstance(item, Case) or not isinstance(stage, CaseStage):
+        raise conflict("Case control Binding has no active stage")
+    if payload.stage_id != stage.id:
+        raise conflict(
+            "control Binding may plan only for its active Case stage",
+            expected_stage_id=stage.id,
+            actual_stage_id=payload.stage_id,
+        )
+    return _create_case_control_plan(db, item, stage, payload, source_binding_id=binding_id)
+
+
+def _create_case_control_plan(
+    db: Session,
+    item: Case,
+    stage: CaseStage,
+    payload: CaseControlPlanWrite,
+    *,
+    source_binding_id: str | None,
+) -> dict[str, Any]:
     existing = db.scalar(
         select(CaseControlPlan).where(
             CaseControlPlan.case_id == item.id,
@@ -658,6 +727,8 @@ def create_case_control_plan(
         )
     )
     if existing is not None:
+        if existing.source_binding_id != source_binding_id:
+            raise conflict("control plan idempotency key belongs to another control scope")
         return _control_plan_dict(existing)
     execution_flow_run_id = stage.current_execution_flow_run_id
     if payload.action != "CREATE_EXECUTION_COPY" and not execution_flow_run_id:
@@ -665,6 +736,7 @@ def create_case_control_plan(
     plan = CaseControlPlan(
         case_id=item.id,
         stage_id=stage.id,
+        source_binding_id=source_binding_id,
         execution_flow_run_id=execution_flow_run_id,
         node_run_id=payload.node_run_id,
         node_attempt_id=payload.node_attempt_id,
