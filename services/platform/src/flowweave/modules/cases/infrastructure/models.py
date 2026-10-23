@@ -79,8 +79,8 @@ class CaseDecisionProposal(Base):
     __table_args__ = (
         UniqueConstraint("case_id", "proposal_key", name="uq_case_decision_proposal_key"),
         CheckConstraint(
-            "action IN ('CONTINUE_STEPWISE', 'STOP_FLOW_RUN', 'RERUN_STEPWISE_NODE', "
-            "'REVISE_UNSTARTED_RUNTIME', 'COPY_AUTOMATIC_RUN')",
+            "action IN ('START_STAGE_EXECUTION', 'CONTINUE_STEPWISE', 'STOP_FLOW_RUN', "
+            "'RERUN_STEPWISE_NODE', 'REVISE_UNSTARTED_RUNTIME', 'COPY_AUTOMATIC_RUN')",
             name="ck_case_decision_proposal_action",
         ),
         CheckConstraint(

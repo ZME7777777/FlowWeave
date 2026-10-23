@@ -27,10 +27,12 @@ from flowweave.shared.errors import DomainError, conflict, illegal, not_found
 from flowweave.shared.schemas import (
     AttemptStartWrite,
     AutomaticRunCopyWrite,
+    AutomaticRunStartWrite,
     CaseControlConversationWrite,
     CaseCreateWrite,
     CaseDecisionProposalWrite,
     CaseFlowRunWrite,
+    CaseStageExecutionStartWrite,
     CaseStageFlowRunWrite,
     CaseStageLaunchWrite,
     CaseStageStateWrite,
@@ -38,6 +40,7 @@ from flowweave.shared.schemas import (
     FlowRunRevisionDraftCreateWrite,
     FlowRunRevisionDraftWrite,
     NodeRunCopyWrite,
+    StepwiseNodeDraftStartWrite,
     StepwiseRunRecordCopyWrite,
 )
 
@@ -534,6 +537,94 @@ def attach_case_flow_run(db: Session, case_id: str, payload: CaseFlowRunWrite) -
         db.add(CaseFlowRun(case_id=item.id, flow_run_id=run.id))
         db.flush()
     return project_case_observations(db, item.id)
+
+
+def start_case_stage_execution(
+    db: Session,
+    case_id: str,
+    stage_id: str,
+    payload: CaseStageExecutionStartWrite,
+) -> dict[str, Any]:
+    """Start only the current Case-owned execution copy through audited services."""
+
+    item = _case(db, case_id)
+    if item.state in {"COMPLETED", "ARCHIVED"}:
+        raise illegal("terminal case cannot start stages", state=item.state)
+    stage = _stage(db, item, stage_id)
+    if stage.state != "ACTIVE":
+        raise conflict("only the active Case stage can start", state=stage.state)
+    if not stage.current_execution_flow_run_id:
+        raise conflict("Case stage has no execution copy", stage_id=stage.id)
+    run = _case_linked_run(db, item.id, stage.current_execution_flow_run_id)
+    proposal_key = f"stage-start:{stage.id}:{run.id}"
+    existing = db.scalar(
+        select(CaseDecisionProposal).where(
+            CaseDecisionProposal.case_id == item.id,
+            CaseDecisionProposal.proposal_key == proposal_key,
+        )
+    )
+    if existing is not None:
+        return _proposal_dict(existing)
+    proposal = CaseDecisionProposal(
+        case_id=item.id,
+        flow_run_id=run.id,
+        proposal_key=proposal_key,
+        action="START_STAGE_EXECUTION",
+        reason=payload.reason.strip(),
+        payload_json={"stage_id": stage.id, "execution_mode": stage.execution_mode},
+    )
+    db.add(proposal)
+    db.flush()
+    return _execute_case_stage_start(db, item, stage, run, proposal)
+
+
+def _execute_case_stage_start(
+    db: Session,
+    item: Case,
+    stage: CaseStage,
+    run: FlowRun,
+    proposal: CaseDecisionProposal,
+) -> dict[str, Any]:
+    try:
+        if stage.execution_mode == "STEPWISE":
+            template = orchestration.validate_stepwise_record_template(db, run.id)
+            start_node_key = str(template["start_node_key"])
+            draft = dict(
+                (run.automation_plan_json or {}).get("node_drafts", {}).get(start_node_key) or {}
+            )
+            result: dict[str, Any] = {
+                "attempt": orchestration.start_stepwise_node_draft(
+                    db,
+                    run.id,
+                    start_node_key,
+                    StepwiseNodeDraftStartWrite(
+                        expected_row_version=int(draft.get("row_version") or 1)
+                    ),
+                    f"case-stage-start:{proposal.id}",
+                )
+            }
+        else:
+            result = {
+                "flow_run": orchestration.start_automatic_run(
+                    db,
+                    run.id,
+                    AutomaticRunStartWrite(expected_row_version=run.row_version),
+                    f"case-stage-start:{proposal.id}",
+                )
+            }
+    except Exception as exc:
+        proposal.state = "FAILED"
+        proposal.result_json = {"code": getattr(exc, "code", "CASE_STAGE_START_FAILED")}
+        proposal.executed_at = now()
+        finish(db)
+        raise
+    proposal.state = "EXECUTED"
+    proposal.result_json = result
+    proposal.executed_at = now()
+    item.row_version += 1
+    _write_case_files(db, item)
+    finish(db)
+    return _proposal_dict(proposal)
 
 
 def create_case_decision_proposal(

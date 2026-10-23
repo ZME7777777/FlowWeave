@@ -11,6 +11,7 @@ from flowweave.shared.schemas import (
     CaseCreateWrite,
     CaseDecisionProposalWrite,
     CaseFlowRunWrite,
+    CaseStageExecutionStartWrite,
     CaseStageFlowRunWrite,
     CaseStageLaunchWrite,
     CaseStageStateWrite,
@@ -77,6 +78,16 @@ async def launch_stage(
 @router.post("/cases/{case_id}/observation-projection")
 async def project_observations(case_id: str, db: Db) -> dict[str, Any]:
     return await run_sync(db, lambda session: service.project_case_observations(session, case_id))
+
+
+@router.post("/cases/{case_id}/stages/{stage_id}/execution/start", status_code=201)
+async def start_stage_execution(
+    case_id: str, stage_id: str, payload: CaseStageExecutionStartWrite, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: service.start_case_stage_execution(session, case_id, stage_id, payload),
+    )
 
 
 @router.post("/cases/{case_id}/decision-proposals", status_code=201)

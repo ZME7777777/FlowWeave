@@ -228,12 +228,29 @@ def test_case_stage_launch_copies_configured_continuous_template(client, skill_c
     assert launched_stage["current_execution_flow_run_id"] not in {None, template.json()["id"]}
     execution = client.get(f"/api/v1/flow-runs/{launched_stage['current_execution_flow_run_id']}")
     assert execution.status_code == 200, execution.text
+    execution_plan = execution.json()["automation_plan"]
+    template_plan = template.json()["automation_plan"]
     assert execution.json()["state"] == "DRAFT"
-    assert execution.json()["automation_plan"]["start_node_key"] == template.json()["automation_plan"]["start_node_key"]
-    assert set(execution.json()["automation_plan"]["node_plans"]) == set(
-        template.json()["automation_plan"]["node_plans"]
+    assert execution_plan["start_node_key"] == template_plan["start_node_key"]
+    assert set(execution_plan["node_plans"]) == set(template_plan["node_plans"])
+    first_node_key = flow["nodes"][0]["instance_key"]
+    assert (
+        execution_plan["node_plans"][first_node_key]["artifact_ids"]
+        != template_plan["node_plans"][first_node_key]["artifact_ids"]
     )
-    assert execution.json()["automation_plan"]["node_plans"][flow["nodes"][0]["instance_key"]]["artifact_ids"] != template.json()["automation_plan"]["node_plans"][flow["nodes"][0]["instance_key"]]["artifact_ids"]
+
+    started = client.post(
+        f"/api/v1/cases/{case.json()['id']}/stages/{stage['id']}/execution/start",
+        json={"reason": "开始事项连续执行。"},
+    )
+    assert started.status_code == 201, started.text
+    assert started.json()["action"] == "START_STAGE_EXECUTION"
+    assert started.json()["state"] == "EXECUTED"
+    assert (
+        started.json()["result"]["flow_run"]["id"]
+        == launched_stage["current_execution_flow_run_id"]
+    )
+    assert started.json()["result"]["flow_run"]["state"] == "ACTIVE"
 
 
 def test_node_asset_can_be_saved_without_skill(client):

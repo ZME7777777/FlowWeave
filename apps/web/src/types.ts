@@ -492,7 +492,7 @@ export interface CaseAgentTask {
 export interface CaseDecisionProposal {
   id: string; case_id: string; flow_run_id: string; node_run_id?: string | null;
   node_attempt_id?: string | null; proposal_key: string;
-  action: 'CONTINUE_STEPWISE' | 'STOP_FLOW_RUN' | 'RERUN_STEPWISE_NODE' | 'REVISE_UNSTARTED_RUNTIME' | 'COPY_AUTOMATIC_RUN';
+  action: 'START_STAGE_EXECUTION' | 'CONTINUE_STEPWISE' | 'STOP_FLOW_RUN' | 'RERUN_STEPWISE_NODE' | 'REVISE_UNSTARTED_RUNTIME' | 'COPY_AUTOMATIC_RUN';
   state: 'PROPOSED' | 'EXECUTED' | 'FAILED' | 'SUPERSEDED'; reason: string;
   payload: Record<string, unknown>; result: Record<string, unknown>; created_at: string; executed_at?: string | null;
 }

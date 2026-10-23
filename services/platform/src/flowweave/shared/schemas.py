@@ -848,6 +848,10 @@ class CaseStageLaunchWrite(ApiModel):
     name: str | None = Field(default=None, max_length=220)
 
 
+class CaseStageExecutionStartWrite(ApiModel):
+    reason: str = Field(default="启动当前事项阶段执行副本", min_length=1, max_length=2_000)
+
+
 class CaseControlConversationWrite(ApiModel):
     model_provider_id: str = Field(min_length=1, max_length=36)
     model_name: str = Field(min_length=1, max_length=240)
