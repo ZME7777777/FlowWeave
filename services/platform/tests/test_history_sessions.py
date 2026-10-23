@@ -469,7 +469,10 @@ def test_http_renew_query_and_revoke_with_real_authority(history_app):
         assert client.post(path, json={"source_binding_ids": [g.second.id]}).status_code == 401
 
 
-def test_locked_sdk_session_credential_queries_two_sources_after_restore(history_app, tmp_path):
+@pytest.mark.parametrize("initial_config", [False, True])
+def test_locked_sdk_session_credential_queries_two_sources_after_restore(
+    history_app, tmp_path, initial_config
+):
     executable = os.getenv("HISTORY_MCP_NATIVE_PYTHON")
     if not executable:
         pytest.skip("Set HISTORY_MCP_NATIVE_PYTHON to an environment built from source.lock")
@@ -522,6 +525,7 @@ def test_locked_sdk_session_credential_queries_two_sources_after_restore(history
                 g.first.id,
                 "--restored-source-binding-id",
                 g.second.id,
+                *(["--initial-config"] if initial_config else []),
             ],
             env={**os.environ, "HISTORY_MCP_PROBE_TOKEN": token},
             capture_output=True,

@@ -2605,3 +2605,68 @@ test('Runtime browser ignores an outgoing session response after switching bindi
   await expect(iframe.contentFrame().getByRole('heading',{name:'新会话内容'})).toBeVisible();
   await expect(iframe.contentFrame().getByRole('heading',{name:'旧会话内容'})).toHaveCount(0);
 });
+
+for (const unavailable of [false, true]) {
+  test(`whole conversation drop sends only binding metadata and ${unavailable ? 'preserves draft on capability failure' : 'keeps its source link'}`, async ({ page }) => {
+    await openWorkspace(page);
+    await page.goto('/agent/conversations/scheduled-conversation');
+    const input = page.getByRole('textbox', { name: '发送 Agent 消息', exact: true });
+    await expect(input).toBeEnabled();
+    const requests: Record<string, unknown>[] = [];
+    await page.route('**/conversations/scheduled-conversation/messages', route => {
+      requests.push(route.request().postDataJSON());
+      return unavailable
+        ? json(route, { error: { code: 'AGENT_HISTORY_CAPABILITY_UNAVAILABLE', message: '会话历史查询能力不可用，请检查平台配置后重试；引用和草稿已保留' } }, 409)
+        : json(route, { accepted: true, cursor: 'metadata-user-event' }, 202);
+    });
+    const transfer = await page.evaluateHandle(() => {
+      const data = new DataTransfer();
+      data.setData('application/x-flowweave-conversation-reference', JSON.stringify({ bindingId: 'reference-source', eventId: 'sidebar-leaf-is-not-a-snippet', title: '引用来源会话' }));
+      return data;
+    });
+    await page.locator('.agent-workbench-content').dispatchEvent('drop', { dataTransfer: transfer });
+    await input.fill('根据来源继续当前任务');
+    await input.press('Enter');
+    await expect.poll(() => requests.length).toBe(1);
+    expect(requests[0].references).toEqual([{ source_binding_id: 'reference-source' }]);
+    expect(JSON.stringify(requests[0])).not.toContain('sidebar-leaf-is-not-a-snippet');
+    if (unavailable) {
+      await expect(page.getByText('会话历史查询能力不可用，请检查平台配置后重试；引用和草稿已保留', { exact: true })).toBeVisible();
+      await expect(input).toHaveValue('根据来源继续当前任务');
+      await expect(page.getByRole('button', { name: '移除会话 引用来源会话', exact: true })).toBeVisible();
+    } else {
+      await expect(page.locator('.conversation-message.user').getByRole('button', { name: /打开会话/ })).toBeVisible();
+    }
+  });
+}
+
+test('late history capability failure restores only its outgoing conversation draft', async ({ page }) => {
+  await openWorkspace(page, [], true);
+  await page.goto('/agent/conversations/scheduled-conversation');
+  const input = page.getByRole('textbox', { name: '发送 Agent 消息', exact: true });
+  await expect(input).toBeEnabled();
+  let release: (() => void) | undefined;
+  let requested = false;
+  await page.route('**/conversations/scheduled-conversation/messages', async route => {
+    requested = true;
+    await new Promise<void>(resolve => { release = resolve; });
+    await json(route, { error: { code: 'AGENT_HISTORY_CAPABILITY_UNAVAILABLE', message: '来源查询暂不可用' } }, 409);
+  });
+  const transfer = await page.evaluateHandle(() => {
+    const data = new DataTransfer();
+    data.setData('application/x-flowweave-conversation-reference', JSON.stringify({ bindingId: 'reference-source', eventId: '', title: '来源' }));
+    return data;
+  });
+  await page.locator('.agent-workbench-content').dispatchEvent('drop', { dataTransfer: transfer });
+  await input.fill('原会话失败后应恢复的内容');
+  await input.press('Enter');
+  await expect.poll(() => requested).toBe(true);
+  await page.getByRole('button', { name: '周报会话', exact: true }).dblclick();
+  await expect(page).toHaveURL(/scheduled-conversation-2$/);
+  await expect(input).toBeEnabled();
+  await input.fill('新会话独立草稿');
+  release?.();
+  await expect.poll(() => page.evaluate(() => Object.keys(localStorage).some(key => key.includes('scheduled-conversation') && (localStorage.getItem(key) ?? '').includes('原会话失败后应恢复的内容')))).toBe(true);
+  await expect(input).toHaveValue('新会话独立草稿');
+  await expect(page.getByText('来源查询暂不可用', { exact: true })).toHaveCount(0);
+});

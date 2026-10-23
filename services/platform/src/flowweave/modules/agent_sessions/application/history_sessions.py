@@ -40,12 +40,15 @@ def _assert_binding(
     workspace_id: str,
     native_id: str | None = None,
     runtime_id: str | None = None,
+    *,
+    allow_provisioning: bool = False,
 ) -> None:
     if (
         binding.owner_user_id != owner
         or binding.host_kind != "AGENT_WORKSPACE"
         or binding.host_id != workspace_id
-        or binding.lifecycle != "ACTIVE"
+        or binding.lifecycle
+        not in ({"ACTIVE", "PROVISIONING"} if allow_provisioning else {"ACTIVE"})
         or native_id is not None
         and binding.openhands_conversation_id != native_id
         or runtime_id is not None
@@ -54,14 +57,16 @@ def _assert_binding(
         raise history_access.denied()
 
 
-def _target(db: Session, workspace_id: str, target_id: str) -> AgentConversationBinding:
+def _target(
+    db: Session, workspace_id: str, target_id: str, *, allow_provisioning: bool = False
+) -> AgentConversationBinding:
     target, _ = conversations.history_reference_bindings(
         db, workspace_id, target_id, target_id, lock_target=True
     )
     owner = current_user_id()
     if agent_session_principal(db, owner) is None:
         raise history_access.denied()
-    _assert_binding(target, owner, workspace_id)
+    _assert_binding(target, owner, workspace_id, allow_provisioning=allow_provisioning)
     return target
 
 
@@ -90,6 +95,8 @@ def renew(
     target_id: str,
     source_ids: tuple[str, ...],
     ttl_seconds: int = 900,
+    *,
+    allow_provisioning: bool = False,
 ) -> tuple[AgentHistorySession, str]:
     """Only an authenticated control-plane action renews leases, never an MCP read.
 
@@ -105,7 +112,7 @@ def renew(
         raise DomainError("AGENT_HISTORY_SOURCES_INVALID", "请选择 1 到 10 个不同的来源会话", 422)
     if isinstance(ttl_seconds, bool) or not 60 <= ttl_seconds <= 3600:
         raise DomainError("AGENT_HISTORY_TTL_INVALID", "授权时长必须在 60 到 3600 秒之间", 422)
-    target = _target(db, workspace_id, target_id)
+    target = _target(db, workspace_id, target_id, allow_provisioning=allow_provisioning)
     owner = current_user_id()
     lease = _target_session(db, target.id)
     if lease is not None:
@@ -117,6 +124,7 @@ def renew(
             workspace_id,
             lease.target_conversation_id,
             lease.target_runtime_session_id,
+            allow_provisioning=allow_provisioning,
         )
     sources: list[tuple[AgentConversationBinding, AgentHistorySource | None]] = []
     for source_id in source_ids:
@@ -212,6 +220,7 @@ def authenticate(db: Session, token: str) -> AgentHistorySession:
             lease.workspace_id,
             lease.target_conversation_id,
             lease.target_runtime_session_id,
+            allow_provisioning=True,
         )
         return lease
 

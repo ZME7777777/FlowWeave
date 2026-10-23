@@ -5642,6 +5642,27 @@ class OpenHandsRuntime:
             json={"plugin_ref": plugin_ref},
         )
 
+    def conversation_mcp_configured(
+        self, handle: RuntimeHandle, server_name: str, url: str
+    ) -> bool:
+        """Read persisted native configuration, including after an uncertain loader response.
+
+        This proves configuration acknowledgement, not live tool availability.
+        Secret values are deliberately neither returned nor compared by the platform.
+        """
+        agent = self._conversation_state(handle).get("agent")
+        servers = agent.get("mcp_config") if isinstance(agent, dict) else None
+        server = servers.get(server_name) if isinstance(servers, dict) else None
+        if not isinstance(server, dict):
+            return False
+        headers = server.get("headers")
+        return (
+            server.get("url") == url
+            and server.get("transport") == "streamable-http"
+            and isinstance(headers, dict)
+            and bool(headers.get("Authorization"))
+        )
+
     def interrupt(self, handle: RuntimeHandle) -> None:
         self._request(
             "POST",

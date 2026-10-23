@@ -1,8 +1,44 @@
-# 受限会话历史 MCP（FR-651–FR-653）
+# 受限会话历史 MCP（FR-651–FR-654）
 
 FlowWeave 提供只读历史服务；OpenHands 使用其正式远程 MCP 机制调用服务，无须修改
 OpenHands 源码。当前已实现授权、分页和长正文读取，并验证固定 SDK 的原生加载／恢复；
-尚未自动注册 Runtime 能力或改变拖拽引用发送。
+已接入拖拽整会话引用：发送时只携带服务端来源元数据，经原生 MCP 按需查询历史。
+上线前仍须完成 FR-655 的真实数据库／固定 Runtime 镜像验收并配置下述固定能力。
+
+## 自动接入配置
+
+通过平台既有能力导入／发布流程，发布名为 `flowweave-reference-history` 的 MCP 能力，
+冻结配置为（替换示例域名及部署前缀）：
+
+```json
+{"mcpServers":{"flowweave-reference-history":{"url":"https://platform.example.test/api/v1/agent-history-mcp","transport":"streamable-http","headers":{"Authorization":"Bearer ${FLOWWEAVE_HISTORY_ACCESS}"}}}}
+```
+
+在 API 与 stream-api 的受保护配置中显式设置 `AGENT_HISTORY_MCP_CAPABILITY_VERSION_ID`
+为已发布版本 UUID、`AGENT_HISTORY_MCP_URL` 为与该版本完全一致的可信地址。默认均为空，
+不根据用户消息、浏览器地址或请求 Host 猜测地址；未配置时引用发送明确失败并恢复草稿。
+配置只选择不可变版本，不修改已发布能力；版本固定后，既有会话不自动迁移到其他版本。
+检查版本类型／名称、配置 digest、持久 blob SHA-256、精确地址和 Secret 占位符；禁止
+额外命令、任意认证字段或脚本。配置地址不得包含用户信息、query、fragment，路径必须
+以 `/api/v1/agent-history-mcp` 结束。
+
+新建会话先冻结能力及来源授权并提交，然后把固定 MCP 配置和 Secret Registry 凭据放入
+OpenHands 正式创建字段。既有会话首次引用在 idle／paused 边界使用正式 `secrets` 与
+`load_plugin`；先通过目标 Runtime 的正式 `/api/mcp/test` 验证连接与工具目录，再读取
+正式 Conversation state 确认配置。平台仅记录配置确认，不伪造原生工具执行成功状态。
+加载响应不确定时按正式配置对账，禁止无条件重复加载同名工具。原生加载意图和确认与
+能力 version／digest、blob hash、独立 manifest 一并冻结；能力包和 manifest 均无明文凭据。
+
+已加载会话新增引用只续租和扩展白名单，不重新加载工具；运行中首次安装明确拒绝，
+用户可等当前回复完成后重试。租约在每次引用发送前续期至一小时，不由 MCP 查询自续期；
+超过一小时的执行、独立 resume 和原生 fork 的继承能力仍须遵守原凭据的到期、撤销及
+正式身份边界，不自动为新目标重绑凭据。配置冲突要求使用新会话，不能覆盖既有客户端。
+
+整会话引用只保存 `kind=conversation`、标题、`source_binding_id`、原生来源会话 ID 与
+查询工具名，不在发送前读完整历史。片段引用继续按正式事件 ID 读取所选正文。旧消息
+中的内联引用正常投影；历史来源卡可点击进入原会话。能力失败保留完整草稿快照；异步
+失败只恢复原 binding，用户已继续编辑时保留为需手动重试的队列项，避免覆盖新输入或
+自动重发。
 
 ## 单来源授权（兼容接口）
 
@@ -48,8 +84,8 @@ MCP 初始化及列工具仅验证目标凭据；每次工具查询必须另带 
 正常过期允许原登录用户显式续租。删除来源只清理它的授权，删除目标清理整条租约与
 所有来源。凭据或来源身份漂移时拒绝查询／续租，不悄悄改绑到新会话。
 
-该接口目前由登录用户显式调用；自动能力注册、续租触发和消息引用协议接入属于 FR-654，
-不能将本片服务完成视为拖拽引用已经切换。新增迁移 `0160_agent_history_sessions` 为两表
+该接口也供消息发送链路在受信任的服务端授权上下文内使用；MCP 本身不能调用续租。
+新增迁移 `0160_agent_history_sessions` 为两表
 启用用户隔离与强制 RLS；真实 PostgreSQL 行锁／RLS 验收留在 FR-655。
 
 ## MCP
@@ -126,10 +162,11 @@ FR-653 使用相同固定 SDK 探针，以真实 SQLite 租约鉴权和受控历
 查询两个显式来源；中间执行原生加密保存／恢复，原令牌与原生工具保持可用。该证据
 不验证 PostgreSQL 行锁或完整 Runtime 镜像，不执行 LLM。
 
-FR-654 必须先完成受治理 MCP version／digest／Manifest、续租触发和既有
-会话接入，再切换整会话引用为元数据。不得将受限令牌
+FR-654 完成受治理 MCP version／digest／Manifest、续租触发、新建和既有
+会话接入。不得将受限令牌
 直接嵌入 Plugin 文件或用户消息，也不得在能力不可用时悄悄丢掉来源上下文。
 
-数据库新增迁移 `0159_agent_history_grants` 和 `0160_agent_history_sessions`，启用强制用户 RLS。
+数据库新增迁移 `0159_agent_history_grants`、`0160_agent_history_sessions` 和
+`0161_agent_history_capability`，授权表启用强制用户 RLS，0161 仅追加能力 provenance／确认字段。
 现有验证包含 SQLite 授权持久化与 PostgreSQL 离线迁移 SQL；真实 PostgreSQL upgrade／downgrade、固定
 Runtime 验收及部署仍需后续执行。

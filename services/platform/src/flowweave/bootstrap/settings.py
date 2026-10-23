@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     app_env: str = "development"
     log_level: str = "INFO"
     public_base_url: str = "http://localhost:5173"
+    # Explicitly pinned catalog version and trusted endpoint, configured together.
+    agent_history_mcp_capability_version_id: str = ""
+    agent_history_mcp_url: str = ""
 
     database_url: str = "postgresql+psycopg://flowweave:flowweave_dev@localhost:55432/flowweave"
     pool_size: int = Field(default=10, ge=1, le=100)

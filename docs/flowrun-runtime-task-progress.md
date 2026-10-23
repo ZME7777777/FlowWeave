@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`UPSTREAM BASELINE ADOPTION COMPLETE`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-654`
+> 下一可执行切片：`FR-655`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -9953,13 +9953,39 @@ Runtime 镜像仍由 FR-655 验收，不能用 SQLite 或 SDK 探针代替。受
 依赖检查通过；Alembic 唯一 head 为 0160_agent_history_sessions。未部署，拖拽引用
 发送尚未切换；当前 NONE，下一可执行切片 FR-654。
 
-### FR-654 受治理 MCP 自动接入与整会话元数据引用 — READY
+### FR-654 受治理 MCP 自动接入与整会话元数据引用 — DONE
 
 依赖：FR-653 DONE。冻结 MCP version／digest 与 Manifest，将会话租约和来源授权
 接入新建／既有会话，随后切换整会话元数据引用；保留片段引用、旧消息投影、可点击
 来源与能力不可用时的明确失败。处理并发发送／重试／恢复，不能只靠提示词替代工具。
 
-### FR-655 历史查询真实数据库与固定 Runtime 验收 — PENDING
+实现：整会话引用由服务端生成标题、来源 binding／正式 Conversation ID 和查询工具名，
+不再在发送前展开完整历史；片段仍按正式 event ID 读取正文，旧 V2–V5 投影保留。
+通过显式固定 MCP version 与可信 endpoint 配置校验 catalog digest、blob SHA-256 和
+Secret Registry 占位符；新建会话先提交受限授权再使用正式 MCP／secrets 创建字段，
+既有会话首次安装仅在空闲边界调用原生 load_plugin。正式 MCP test 验证连接／工具目录，
+正式 Conversation state 仅用于配置确认与不确定加载的对账；不将配置确认伪装成实际
+工具执行。续租复用凭据，不重复加载；首次运行中安装明确拒绝。0161 迁移新增版本、
+digest、manifest 和注册确认字段；manifest 不包含明文 Secret。失败 bootstrap 清理
+已提交的历史授权；浏览器恢复完整草稿快照，迟到回调按 binding 隔离，已继续编辑时
+保留需手动重试的队列项，前台／后台自动队列均不能重发此项。
+
+验收：历史／授权／MCP／集成主套件 156 passed；补充 bootstrap 清理后的集成套件
+23 passed（22 项已含主套件，共 157 个不同用例）；既有 Runtime contract／MCP／Plugin
+回归 20 passed。固定 source-lock SDK 1.54.0 的原生初始 MCP、既有会话 load_plugin、
+Secret 展开、加密保存／恢复及恢复后实际 TCP 调用均通过，不执行 LLM、不修改 OpenHands。
+Web typecheck、受影响 ESLint、6 项 Chromium 定向回归通过，覆盖元数据写入、来源卡、
+能力失败保留草稿、跨会话迟到失败、1440／1024 遮罩与既有置顶拖拽排序；浏览器使用
+当前独立工作树的 Vite 与受控 API，不记为真实 Runtime 业务 E2E。新增迁移仅通过
+PostgreSQL 离线 upgrade／downgrade SQL；授权集成模块 Pyright 零错误，受影响 Ruff／
+AST、定向 format、diff、任务状态与依赖检查通过，唯一 head 为 0161_agent_history_capability。
+
+边界：默认未配置自动接入能力，需在已治理 catalog 发布固定版本并配置可信地址后使用；
+未发布、未配置生产入口、未实跑 PostgreSQL 迁移或完整 Runtime 镜像。租约按每次显式
+引用发送续至一小时；超时运行、独立 resume、fork 继承与正式身份漂移不自动重新授权，
+FR-655 必须覆盖到期／撤销／分叉恢复及并发实证。当前 NONE，下一可执行切片 FR-655。
+
+### FR-655 历史查询真实数据库与固定 Runtime 验收 — READY
 
 依赖：FR-654 DONE。完成真实 PostgreSQL 授权迁移 upgrade／downgrade、RLS、租约
 与并发验收，以及固定 Runtime 镜像上的新建／既有会话、撤销与恢复验证后再考虑发布。

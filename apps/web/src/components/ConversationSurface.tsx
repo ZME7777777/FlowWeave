@@ -327,7 +327,7 @@ function MessageAttachments({ attachments, references = [], workspaceReferences 
       <MessageAttachmentThumbnail attachment={attachment} imageUrl={imageUrl?.(attachment)}/><span><b>{attachment.filename}</b><small>{attachment.mime_type || '文件'}{attachmentSize(attachment.byte_size) ? ` · ${attachmentSize(attachment.byte_size)}` : ''}</small></span><Eye size={13}/>
     </button>)}
     {references.map((reference, index) => {
-      const title = conversationName?.(reference.source_binding_id) ?? `会话引用 ${index + 1}`;
+      const title = conversationName?.(reference.source_binding_id) ?? reference.title ?? `会话引用 ${index + 1}`;
       return <button type="button" key={`${reference.event_id}:${reference.content}`} className="conversation-message-attachment conversation-message-reference" aria-label={`打开会话 ${title}`} title={`打开会话：${title}`} onClick={() => onOpenReference?.(reference)}>
         <Quote size={16}/><span><b>{title}</b><small>已添加到本条消息</small></span>
         <PanelRightOpen size={13}/>

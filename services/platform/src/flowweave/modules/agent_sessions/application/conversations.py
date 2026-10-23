@@ -16,7 +16,7 @@ from typing import cast as typing_cast
 from urllib.parse import urlencode
 from uuid import UUID, uuid4, uuid5
 
-from sqlalchemy import Numeric, and_, cast, func, or_, select, update
+from sqlalchemy import Numeric, and_, cast, delete, func, or_, select, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -1525,6 +1525,9 @@ def _create_native_conversation(
     conversation_secrets, credential_context, _credential_summaries = resolve_credentials_for_agent(
         db, credential_ids
     )
+    from flowweave.modules.agent_sessions.application import history_integration
+
+    conversation_secrets.update(history_integration.creation_secrets(db, binding))
     if credential_context:
         agent_spec = replace(
             agent_spec,
@@ -1848,6 +1851,7 @@ class PreparedRunningMessage:
     workspace_references: tuple[dict[str, str], ...]
     annotations: tuple[dict[str, Any], ...]
     git_profile: tuple[str, str] | None = None
+    history_reference_ready: bool = True
 
 
 def normalized_first_sentence(content: str) -> str:
@@ -1952,6 +1956,15 @@ def _record_bootstrap_failure(
     # though no attachment projection has been committed yet.
     if binding.workspace_id is not None:
         agent_workspace_host.delete_session_attachment_files(db, binding.workspace_id, binding.id)
+    from flowweave.modules.agent_sessions.application import history_integration, history_sessions
+
+    history_sessions.delete_binding_access(db, binding.id)
+    db.execute(
+        delete(AgentConversationCapability).where(
+            AgentConversationCapability.binding_id == binding.id,
+            AgentConversationCapability.capability_key == history_integration.SERVER_NAME,
+        )
+    )
     db.delete(command)
     db.flush()
     db.delete(binding)
@@ -2126,6 +2139,9 @@ def bootstrap_conversation(
         reasoning_effort=binding.reasoning_effort,
     )
     try:
+        from flowweave.modules.agent_sessions.application import history_integration
+
+        history_integration.prepare_creation(db, workspace, binding, source_references)
         handle = _create_native_conversation(
             db,
             workspace,
@@ -2159,6 +2175,7 @@ def bootstrap_conversation(
         _record_bootstrap_failure(db, binding, command, exc)
         raise
     try:
+        _ensure_history_references(db, workspace, binding, source_references)
         delivered = get_runtime().send_message(handle, prompt, image_urls)
     except DomainError as exc:
         if exc.details.get("outcome_unknown") is True:
@@ -2807,6 +2824,9 @@ def prepare_running_message(
             {"binding_id": binding.id},
         )
     resolved_references = _resolve_message_references(db, workspace, binding, references)
+    history_ready = _ensure_history_references(
+        db, workspace, binding, resolved_references, allow_install=False
+    )
     return PreparedRunningMessage(
         workspace_id=workspace_id,
         binding_id=binding.id,
@@ -2818,6 +2838,7 @@ def prepare_running_message(
         workspace_references=validated_workspace_references,
         annotations=annotations,
         git_profile=profile_identity(db),
+        history_reference_ready=history_ready,
     )
 
 
@@ -2837,6 +2858,12 @@ def dispatch_running_message(prepared: PreparedRunningMessage) -> RuntimeResult 
         return None
     if readiness.execution_status not in {"running", "executing"}:
         raise DomainError("AGENT_CONVERSATION_BUSY", "Agent 正在处理停止或确认请求，请稍候", 409)
+    if not prepared.history_reference_ready:
+        raise DomainError(
+            "AGENT_HISTORY_CAPABILITY_REQUIRES_IDLE",
+            "首次引用会话需要加载查询能力，请等待当前回复完成后重试",
+            409,
+        )
     prompt, image_urls = _message_payload(
         prepared.content,
         prepared.attachments,
@@ -2976,6 +3003,7 @@ def message(
         if callable(diagnostic):
             diagnostic(handle, operation="agent_running_direct", readiness=readiness)
         try:
+            _ensure_history_references(db, workspace, binding, references)
             result = runtime.send_message(handle, prompt, image_urls)
         except DomainError as exc:
             if exc.status >= 500:
@@ -3094,6 +3122,7 @@ def message(
             compaction=False,
         )
     try:
+        _ensure_history_references(db, workspace, binding, references)
         result = runtime.send_message(handle, prompt, image_urls)
     except DomainError as exc:
         if exc.status >= 500:
@@ -3240,6 +3269,43 @@ def _validated_conversation_references(
     for item in references:
         event_id = item.get("event_id")
         content = item.get("content")
+        if item.get("kind") == "conversation":
+            source_id = item.get("source_binding_id")
+            native_id = item.get("source_conversation_id")
+            title = item.get("title")
+            identity = f"conversation:{source_id}"
+            if (
+                not isinstance(source_id, str)
+                or len(source_id) != 36
+                or not isinstance(native_id, str)
+                or not 1 <= len(native_id) <= 100
+                or not isinstance(title, str)
+                or not 1 <= len(title) <= 240
+                or identity in seen
+            ):
+                raise DomainError(
+                    "AGENT_CONVERSATION_REFERENCE_INVALID", "会话引用无效，请重新选择", 422
+                )
+            total_chars += len(title)
+            if total_chars > _MAX_CONVERSATION_REFERENCE_CHARS:
+                raise DomainError(
+                    "AGENT_CONVERSATION_REFERENCE_TOO_LARGE",
+                    "引用内容过长，请缩小引用范围后重试",
+                    422,
+                )
+            normalized.append(
+                {
+                    "kind": "conversation",
+                    "event_id": "",
+                    "content": title,
+                    "title": title,
+                    "source_binding_id": source_id,
+                    "source_conversation_id": native_id,
+                    "history_tool": "read_referenced_conversation",
+                }
+            )
+            seen.add(identity)
+            continue
         if (
             not isinstance(event_id, str)
             or not event_id.strip()
@@ -3261,9 +3327,30 @@ def _validated_conversation_references(
                 "引用内容过长，请缩小引用范围后重试",
                 422,
             )
-        normalized.append({"event_id": event_id.strip(), "content": text})
+        value = {"event_id": event_id.strip(), "content": text}
+        source_id = item.get("source_binding_id")
+        if isinstance(source_id, str) and source_id.strip():
+            value["source_binding_id"] = source_id
+        normalized.append(value)
         seen.add(event_id)
     return tuple(normalized)
+
+
+def _ensure_history_references(
+    db: Session,
+    workspace: AgentWorkspace,
+    binding: AgentConversationBinding,
+    references: tuple[dict[str, str], ...],
+    *,
+    allow_install: bool = True,
+) -> bool:
+    if not any(item.get("kind") == "conversation" for item in references):
+        return True
+    from flowweave.modules.agent_sessions.application import history_integration
+
+    return history_integration.ensure(
+        db, workspace, binding, references, allow_install=allow_install
+    )
 
 
 def _reference_ids(references: tuple[dict[str, str], ...]) -> tuple[str, ...]:
@@ -3353,66 +3440,42 @@ def _resolve_source_conversation_reference(
     """Resolve a source binding through its persisted OpenHands identity."""
 
     source = _binding(db, workspace.id, source_binding_id)
+    if source_event_id is None:
+        if selection is not None:
+            raise DomainError("AGENT_CONVERSATION_REFERENCE_INVALID", "会话选区缺少来源事件", 422)
+        if source.lifecycle != "ACTIVE":
+            raise DomainError(
+                "AGENT_CONVERSATION_REFERENCE_UNAVAILABLE", "来源会话暂时不可引用", 409
+            )
+        title = (source.display_title or "未命名会话").strip()[:240] or "未命名会话"
+        return {
+            "kind": "conversation",
+            "event_id": "",
+            "content": title,
+            "title": title,
+            "source_binding_id": source.id,
+            "source_conversation_id": source.openhands_conversation_id,
+            "history_tool": "read_referenced_conversation",
+        }
     runtime = get_runtime()
     source_handle = _handle(db, workspace, source)
-    if source_event_id is not None:
-        event = runtime.read_event(source_handle, source_event_id)
-        content = _referenceable_event_text(event)
-        if content is None:
-            raise DomainError(
-                "AGENT_CONVERSATION_REFERENCE_UNAVAILABLE",
-                "引用事件不在来源会话中或已不可读取，请重新选择",
-                422,
-            )
-        visible = (
-            _project_conversation_references(content)[0]
-            if event and event.event_type == "MESSAGE"
-            else content
-        )
-        selected_text = _selected_reference_text(visible, selection)
-        if not selected_text:
-            raise DomainError(
-                "AGENT_CONVERSATION_REFERENCE_INVALID", "会话选区无效，请重新选择", 422
-            )
-        return {"event_id": source_event_id, "content": selected_text}
-    if selection is not None:
-        raise DomainError("AGENT_CONVERSATION_REFERENCE_INVALID", "会话选区缺少来源事件", 422)
-    try:
-        branch = complete_active_branch(runtime.read_active_events, source_handle)
-    except (DomainError, ValueError) as exc:
+    event = runtime.read_event(source_handle, source_event_id)
+    content = _referenceable_event_text(event)
+    if content is None:
         raise DomainError(
             "AGENT_CONVERSATION_REFERENCE_UNAVAILABLE",
-            "引用会话暂时不可读取，请稍后重试",
-            422,
-        ) from exc
-    selected: list[str] = []
-    size = 0
-    for event in reversed(branch.events):
-        content = _referenceable_event_text(event)
-        if content is None:
-            continue
-        visible = (
-            _project_conversation_references(content)[0]
-            if event.event_type == "MESSAGE"
-            else content
-        )
-        if not visible:
-            continue
-        remaining = 10_000 - size
-        if remaining <= 0:
-            break
-        selected.append(visible[-remaining:])
-        size += len(selected[-1])
-    if not selected:
-        raise DomainError(
-            "AGENT_CONVERSATION_REFERENCE_UNAVAILABLE",
-            "引用会话没有可供引用的消息",
+            "引用事件不在来源会话中或已不可读取，请重新选择",
             422,
         )
-    return {
-        "event_id": branch.cursor or source.openhands_conversation_id,
-        "content": "\n\n".join(reversed(selected)),
-    }
+    visible = (
+        _project_conversation_references(content)[0]
+        if event and event.event_type == "MESSAGE"
+        else content
+    )
+    selected_text = _selected_reference_text(visible, selection)
+    if not selected_text:
+        raise DomainError("AGENT_CONVERSATION_REFERENCE_INVALID", "会话选区无效，请重新选择", 422)
+    return {"event_id": source_event_id, "content": selected_text, "source_binding_id": source.id}
 
 
 def _resolve_message_references(
@@ -4663,6 +4726,7 @@ def rewrite_message(
         _validated_workspace_references(workspace_references),
         binding_id=binding.id,
     )
+    _ensure_history_references(db, workspace, binding, resolved_references)
     runtime.navigate(handle, parent_id)
     prompt, image_urls = _message_payload(
         content.strip(),
@@ -4740,6 +4804,8 @@ def resume(db: Session, workspace_id: str, binding_id: str) -> dict[str, Any]:
 ATTACHMENT_PATH = _ATTACHMENT_PATH
 enqueue_title_task = _enqueue_title_task
 frozen_runtime_capability = _frozen_runtime_capability
+history_runtime_handle = _handle
+history_capability_marketplace_paths = _capability_marketplace_paths
 initial_user_event_id = _initial_user_event_id
 message_payload = _message_payload
 project_conversation_references = _project_conversation_references

@@ -55,6 +55,7 @@ def check(
     state_dir: Path,
     source_binding_id: str | None = None,
     restored_source_binding_id: str | None = None,
+    initial_config: bool = False,
 ) -> dict[str, object]:
     os.environ["OPENHANDS_SUPPRESS_BANNER"] = "1"
     logging.disable(logging.CRITICAL)
@@ -103,8 +104,13 @@ def check(
             ),
         )
 
+    initial_agent = agent()
+    if initial_config:
+        initial_agent = initial_agent.model_copy(
+            update={"mcp_config": plugin.mcp_config}
+        )
     conversation = LocalConversation(
-        agent=agent(),
+        agent=initial_agent,
         workspace=state_dir / "workspace",
         persistence_dir=state_dir / "state",
         visualizer=None,
@@ -112,12 +118,22 @@ def check(
         delete_on_close=False,
     )
     try:
-        # A real initialized existing conversation, with no model execution.
-        conversation.send_message("Local contract probe; do not execute a model turn.")
-        conversation.update_secrets(
-            {"FLOWWEAVE_HISTORY_ACCESS": StaticSecret(value=SecretStr(token))}
-        )
-        conversation.load_plugin(f"{plugin_name}@history-probe")
+        if initial_config:
+            conversation.update_secrets(
+                {"FLOWWEAVE_HISTORY_ACCESS": StaticSecret(value=SecretStr(token))}
+            )
+            conversation.send_message(
+                "Initial MCP contract probe; do not execute a model turn."
+            )
+        else:
+            # A real initialized existing conversation, with no model execution.
+            conversation.send_message(
+                "Local contract probe; do not execute a model turn."
+            )
+            conversation.update_secrets(
+                {"FLOWWEAVE_HISTORY_ACCESS": StaticSecret(value=SecretStr(token))}
+            )
+            conversation.load_plugin(f"{plugin_name}@history-probe")
         configured = conversation.agent.mcp_config[server_name]
         assert (
             configured.headers["Authorization"].get_secret_value() == f"Bearer {token}"
@@ -188,7 +204,7 @@ def check(
         "status": "passed",
         "events": len(event_ids),
         "checks": [
-            "native_load_plugin",
+            "native_initial_mcp" if initial_config else "native_load_plugin",
             "native_mcp_call",
             "encrypted_restore",
             "restored_native_mcp_call",
@@ -204,6 +220,7 @@ if __name__ == "__main__":
     parser.add_argument("--state-dir", type=Path, required=True)
     parser.add_argument("--source-binding-id")
     parser.add_argument("--restored-source-binding-id")
+    parser.add_argument("--initial-config", action="store_true")
     args = parser.parse_args()
     print(
         json.dumps(
@@ -213,6 +230,7 @@ if __name__ == "__main__":
                 args.state_dir.resolve(),
                 args.source_binding_id,
                 args.restored_source_binding_id,
+                args.initial_config,
             )
         )
     )

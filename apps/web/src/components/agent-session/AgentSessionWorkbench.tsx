@@ -123,6 +123,7 @@ interface QueuedMessage {
   deliveryState?: QueueDeliveryState;
   /** A formal user event may be appended while the current turn is running. */
   nativeGuidance?: boolean;
+  requiresRetry?: boolean;
   createdAt?: number;
 }
 type FileSelection = NonNullable<AgentWorkspaceReference['selection']>;
@@ -1061,6 +1062,7 @@ function queuedMessageFromStorage(value: unknown): QueuedMessage | undefined {
     annotations: annotationsFromStorage(candidate.annotations),
     deliveryState,
     nativeGuidance: candidate.nativeGuidance === true,
+    requiresRetry: candidate.requiresRetry === true,
     createdAt: typeof candidate.createdAt === 'number' ? candidate.createdAt : Date.now(),
   };
 }
@@ -8409,6 +8411,39 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         reportOperationError(message.bindingId, error);
         return;
       }
+      if (error instanceof ApiError && error.code.startsWith('AGENT_HISTORY_')) {
+        removeLocalMessageProjection(message.id, message.bindingId);
+        const snapshot = composerDraftsByScope.current.get(message.bindingId);
+        if (!snapshot?.content.trim() && !snapshot?.attachments.length && !snapshot?.references.length && !snapshot?.workspaceReferences.length && !snapshot?.annotations.length) {
+          composerDraftsByScope.current.set(message.bindingId, {
+            content: message.content, attachments: message.items, references: message.references,
+            workspaceReferences: message.workspaceReferences ?? [], annotations: message.annotations,
+          });
+          if (activeComposerScope.current === message.bindingId) {
+            replaceComposerDraft(message.content, message.bindingId);
+            setAttachments(message.items); setReferences(message.references);
+            setWorkspaceReferences(message.workspaceReferences ?? []); setComposerAnnotations(message.annotations);
+          }
+          persistComposerDraft(message.bindingId);
+        } else {
+          const restored = { ...message, deliveryState: 'queued' as const, requiresRetry: true };
+          if (activeComposerScope.current === message.bindingId) {
+            commitQueuedMessages(current => current.some(item => item.id === message.id) ? current : [restored, ...current]);
+          } else if (workspace) {
+            const key = host.queuedMessagesStorageKey(workspace.id, message.bindingId);
+            const queue = readQueuedMessages(key);
+            if (!queue.some(item => item.id === message.id)) writeQueuedMessages(key, [restored, ...queue]);
+          }
+        }
+        if (activeComposerScope.current === message.bindingId) {
+          setPendingSubmissionConfirmation(current => current?.submissionId === message.id ? undefined : current);
+          if (!message.nativeGuidance) {
+            setActiveTurnEventId(undefined); setRequestStartedAt(undefined); setTurnState('idle');
+          }
+        }
+        reportOperationError(message.bindingId, error);
+        return;
+      }
       if (context?.nativeGuidance) {
         removeLocalMessageProjection(message.id, message.bindingId);
         reportOperationError(message.bindingId, error);
@@ -8462,7 +8497,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     const storageKey = host.queuedMessagesStorageKey(workspace.id, bindingId);
     if (!readQueueMode(host.queueModeStorageKey(workspace.id, bindingId))) return;
     const queueHead = readQueuedMessages(storageKey).find(message => message.scope === bindingId);
-    if (!queueHead || backgroundQueueDispatches.current.has(queueHead.id) || sendingMessageIds.current.has(queueHead.id)) return;
+    if (!queueHead || queueHead.requiresRetry || backgroundQueueDispatches.current.has(queueHead.id) || sendingMessageIds.current.has(queueHead.id)) return;
     backgroundQueueDispatches.current.add(queueHead.id);
     let accepted = false;
     try {
@@ -8603,8 +8638,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const addWorkspaceReferences = useCallback((paths: string[]) => {
     setWorkspaceReferences(current => [...current, ...paths.flatMap(path => current.some(reference => reference.path === path) ? [] : [{ path, kind: 'file' as const, display_name: path.split('/').filter(Boolean).pop() ?? path }])]);
   }, []);
-  const addConversationReference = useCallback(({ bindingId, eventId, title }: { bindingId: string; eventId: string; title: string }) => {
-    setReferences(current => current.some(reference => reference.sourceBindingId === bindingId) ? current : [...current, { eventId, content: title, sourceBindingId: bindingId, title }]);
+  const addConversationReference = useCallback(({ bindingId, title }: { bindingId: string; eventId: string; title: string }) => {
+    setReferences(current => current.some(reference => reference.sourceBindingId === bindingId) ? current : [...current, { eventId: '', content: title, sourceBindingId: bindingId, title }]);
   }, []);
   const acceptsConversationDrop = useCallback((event: React.DragEvent<HTMLElement>) => Boolean(canCompose && composerScope) && ((features.attachments && event.dataTransfer.types.includes('Files'))
     || event.dataTransfer.types.includes(WORKSPACE_FILE_TRANSFER_TYPE)
@@ -9210,7 +9245,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   useEffect(() => {
     if (!selected || !queueModeEnabled || !queueDispatchReady) return;
     const queueHead = queuedMessages.find(message => message.scope === selected.id && message.deliveryState === 'queued');
-    if (!queueHead || sendingMessageIds.current.has(queueHead.id)) return;
+    if (!queueHead || queueHead.requiresRetry || sendingMessageIds.current.has(queueHead.id)) return;
     const terminalKey = selected.id;
     if (autoDispatchedQueueTerminal.current === terminalKey) return;
     // A draft belongs to this just-completed turn. Mark its terminal edge as
@@ -9773,7 +9808,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (!reference.source_binding_id) return;
     selectConversation(reference.source_binding_id);
     // A fresh identity makes repeated clicks locate the same formal event again.
-    setConversationReferenceTarget({ ...reference });
+    setConversationReferenceTarget(reference.kind === 'conversation' ? undefined : { ...reference });
   };
   const toggleSidebarListMode = () => {
     if (sidebarListMode === 'activity') setActivityPreviewBindingId(undefined);

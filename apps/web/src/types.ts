@@ -760,6 +760,10 @@ export interface AgentWorkspaceReference {
   relative_path?: string;
 }
 export interface AgentConversationReference {
+  kind?: 'conversation';
+  title?: string;
+  source_conversation_id?: string;
+  history_tool?: string;
   event_id: string;
   content: string;
   /** Server-authorized FlowWeave binding; required for new requests, absent only in legacy history. */
