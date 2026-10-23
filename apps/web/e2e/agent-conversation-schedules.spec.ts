@@ -1065,6 +1065,61 @@ test('scheduled session shows session configuration and expands additional runs'
   await expect(page.getByRole('dialog', { name: '会话配置' })).toBeVisible();
 });
 
+for (const mode of ['draft', 'existing', 'preset'] as const) {
+  test(`builtin history MCP stays selected and locked in ${mode} configuration`, async ({ page }) => {
+    await openWorkspace(page);
+    // The published server is represented once by its built-in row, even
+    // when a frozen version and a newer catalog version are both present.
+    await page.route('**/api/v1/capabilities', route => json(route, [
+      { id: 'history-v2', capability_key: 'flowweave-reference-history', capability_type: 'MCP', is_latest: true },
+      { id: 'optional-skill', capability_key: '可选技能', capability_type: 'SKILL', is_latest: true },
+    ]));
+    let registrations = 0;
+    await page.route('**/capabilities/batch', route => { registrations += 1; return json(route, {}); });
+    await page.route('**/mcp-readiness', () => { throw new Error('Built-in MCP must not use generic credential-free probing'); });
+    if (mode === 'existing') {
+      await page.route('**/api/v1/agent-workspaces/schedule-workspace/conversations/scheduled-conversation', route => json(route, {
+        id: 'scheduled-conversation', lifecycle: 'ACTIVE', display_title: '日报会话',
+        streaming_callback_ready: true, write_available: true, created_at: now, updated_at: now,
+        capabilities: [{ id: 'history-v1', capability_type: 'MCP', capability_key: 'flowweave-reference-history', digest: 'frozen-digest' }],
+      }));
+      await page.goto('/agent/conversations/scheduled-conversation');
+      await page.getByRole('button', { name: '会话配置', exact: true }).click();
+    } else if (mode === 'preset') {
+      await page.getByRole('navigation', { name: 'Agent 工作区导航' }).getByRole('button', { name: '定时任务' }).click();
+      await page.getByRole('region', { name: '会话定时任务' }).getByRole('button', { name: '新建', exact: true }).click();
+      await page.getByRole('button', { name: /配置会话/ }).click();
+    } else {
+      await page.getByRole('button', { name: '新会话配置', exact: true }).click();
+    }
+    const dialog = page.getByRole('dialog', { name: '会话配置', exact: true });
+    const builtin = dialog.getByRole('button', { name: '会话历史查询', exact: true });
+    await expect(builtin).toHaveCount(1);
+    await expect(builtin).toBeDisabled();
+    await expect(builtin).toHaveAttribute('aria-pressed', 'true');
+    await expect(builtin.locator('em')).toHaveText('内置');
+    await expect(builtin.locator('small')).toHaveCount(0);
+    await expect(builtin.locator('i svg')).toHaveCount(1);
+    await dialog.getByRole('button', { name: '选择筛选结果（1）', exact: true }).click();
+    await dialog.getByRole('button', { name: '取消选择筛选结果', exact: true }).click();
+    await dialog.getByRole('button', { name: '只看已选', exact: true }).click();
+    await expect(builtin).toBeVisible();
+    await expect(dialog.locator('.agent-capability-list > button')).toHaveCount(1);
+    await dialog.getByRole('button', { name: 'MCP', exact: true }).click();
+    await expect(builtin).toBeVisible();
+    await dialog.getByPlaceholder('搜索名称、说明或文件…').fill('history');
+    await expect(builtin).toBeVisible();
+    await dialog.getByPlaceholder('搜索名称、说明或文件…').fill('不存在的能力');
+    await expect(builtin).toHaveCount(0);
+    await dialog.getByPlaceholder('搜索名称、说明或文件…').fill('');
+    await expect(builtin).toBeVisible();
+    await dialog.screenshot({ path: `../../.tmp/fr656-${mode}.png` });
+    await dialog.getByRole('button', { name: mode === 'existing' ? '注册到当前会话' : mode === 'preset' ? '保存会话配置' : '用于新建会话', exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    expect(registrations).toBe(0);
+  });
+}
+
 test('capability configuration toggles visible selections and filters to selected capabilities', async ({ page }) => {
   await openWorkspace(page);
   await page.getByRole('navigation', { name: 'Agent 工作区导航' }).getByRole('button', { name: '定时任务' }).click();
@@ -1076,7 +1131,7 @@ test('capability configuration toggles visible selections and filters to selecte
   await expect(selectVisible).toHaveAttribute('aria-pressed','false');
   await expect(selectVisible.locator('svg')).toHaveClass(/lucide-square$/);
   await selectVisible.click();
-  await expect(dialog.getByText('已选择 2 项', { exact: true })).toBeVisible();
+  await expect(dialog.getByText('已选择 3 项', { exact: true })).toBeVisible();
   await expect(dialog.getByRole('button', { name: '取消选择筛选结果', exact: true })).toBeVisible();
   await expect(dialog.getByRole('button', { name: '取消选择筛选结果', exact: true })).toHaveAttribute('aria-pressed','true');
   await expect(dialog.getByRole('button', { name: '取消选择筛选结果', exact: true }).locator('svg')).toHaveClass(/lucide-square-check/);
@@ -1087,7 +1142,8 @@ test('capability configuration toggles visible selections and filters to selecte
   await expect(dialog.getByText('周报技能', { exact: true })).toBeVisible();
 
   await dialog.getByRole('button', { name: '取消选择筛选结果', exact: true }).click();
-  await expect(dialog.getByText('没有匹配的已发布能力。')).toBeVisible();
+  await expect(dialog.getByRole('button', { name: '会话历史查询', exact: true })).toBeDisabled();
+  await expect(dialog.getByText('已选择 1 项', { exact: true })).toBeVisible();
   await expect(dialog.locator('.agent-capability-select-visible')).toHaveAttribute('aria-pressed','false');
   await expect(dialog.locator('.agent-capability-select-visible svg')).toHaveClass(/lucide-square$/);
   await expect(dialog.getByRole('button', { name: '显示全部能力', exact: true })).toBeVisible();
@@ -1146,7 +1202,7 @@ for (const mode of ['create', 'edit'] as const) {
     // Saving from the authentication tab must preserve edits on both tabs.
     await dialog.getByRole('button', { name: '保存认证配置', exact: true }).click();
     await page.getByRole('button', { name: /配置会话/ }).click();
-    await expect(dialog.getByText('已选择 6 项', { exact: true })).toBeVisible();
+    await expect(dialog.getByText('已选择 7 项', { exact: true })).toBeVisible();
     await dialog.getByRole('button', { name: '保存会话配置', exact: true }).click();
     await page.getByRole('button', { name: '保存任务', exact: true }).click();
     await expect.poll(() => writes.length).toBe(1);
@@ -1154,7 +1210,7 @@ for (const mode of ['create', 'edit'] as const) {
     expect(readinessRequests).toBe(0);
     await page.getByRole('button', { name: '编辑', exact: true }).click();
     await page.getByRole('button', { name: /配置会话/ }).click();
-    await expect(dialog.getByText('已选择 6 项', { exact: true })).toBeVisible();
+    await expect(dialog.getByText('已选择 7 项', { exact: true })).toBeVisible();
     await dialog.getByRole('button', { name: '认证', exact: true }).click();
     await expect(dialog.getByText('已选择 1 项认证', { exact: true })).toBeVisible();
   });
@@ -1204,7 +1260,7 @@ test('capability filtering keeps dialog and footer geometry stable', async ({ pa
     const before=await geometry();
     await expect.poll(()=>dialog.locator('.agent-capability-list').evaluate(element=>element.scrollHeight>element.clientHeight)).toBe(true);
     await dialog.getByRole('button',{name:'只看已选',exact:true}).click();
-    await expect(dialog.getByText('没有匹配的已发布能力。')).toBeVisible();
+    await expect(dialog.getByRole('button', { name: '会话历史查询', exact: true })).toBeDisabled();
     expect(await geometry()).toEqual(before);
     await dialog.getByRole('button',{name:'显示全部能力',exact:true}).click();
     expect(await geometry()).toEqual(before);
@@ -1213,7 +1269,7 @@ test('capability filtering keeps dialog and footer geometry stable', async ({ pa
     await expect(dialog.getByText('没有匹配的已发布能力。')).toBeVisible();
     expect(await geometry()).toEqual(before);
     await search.fill('');
-    await expect(dialog.locator('.agent-capability-list > button')).toHaveCount(30);
+    await expect(dialog.locator('.agent-capability-list > button')).toHaveCount(31);
     await expect(dialog.getByRole('button',{name:'保存会话配置',exact:true})).toBeInViewport();
   }
 });
@@ -1271,8 +1327,9 @@ for (const mode of ['existing', 'draft'] as const) {
       await assertLayout();
     }
     await dialog.getByRole('button', { name: '常用技能组合', exact: true }).click();
-    await dialog.locator('.agent-capability-list > button').first().click();
-    await expect(dialog.locator('.agent-capability-list > button').first()).toHaveClass(/selected/);
+    const optional = dialog.getByRole('button', { name: /布局技能 0/ });
+    await optional.click();
+    await expect(optional).toHaveClass(/selected/);
     await page.setViewportSize({ width: 1440, height: 900 });
     await dialog.screenshot({ path: test.info().outputPath(`capability-layout-${mode}.png`) });
   });
@@ -2811,7 +2868,7 @@ for (const config of ['untouched', 'capabilities', 'deselect'] as const) {
     if (config !== 'untouched') {
       await page.getByRole('button', { name: /配置会话/ }).click();
       const dialog = page.getByRole('dialog', { name: '会话配置', exact: true });
-      await expect(dialog.getByText('已选择 0 项', { exact: true })).toBeVisible();
+      await expect(dialog.getByText('已选择 1 项', { exact: true })).toBeVisible();
       if (config === 'capabilities') {
         await dialog.getByRole('button', { name: /日报技能/ }).click();
         await dialog.getByRole('button', { name: '保存会话配置', exact: true }).click();
@@ -2837,3 +2894,68 @@ for (const config of ['untouched', 'capabilities', 'deselect'] as const) {
     await expect(dialog.getByText(`已选择 ${config === 'deselect' ? 0 : 2} 项认证`, { exact: true })).toBeVisible();
   });
 }
+
+for (const unavailable of [false, true]) {
+  test(`whole conversation drop sends only binding metadata and ${unavailable ? 'preserves draft on capability failure' : 'keeps its source link'}`, async ({ page }) => {
+    await openWorkspace(page);
+    await page.goto('/agent/conversations/scheduled-conversation');
+    const input = page.getByRole('textbox', { name: '发送 Agent 消息', exact: true });
+    await expect(input).toBeEnabled();
+    const requests: Record<string, unknown>[] = [];
+    await page.route('**/conversations/scheduled-conversation/messages', route => {
+      requests.push(route.request().postDataJSON());
+      return unavailable
+        ? json(route, { error: { code: 'AGENT_HISTORY_CAPABILITY_UNAVAILABLE', message: '会话历史查询能力不可用，请检查平台配置后重试；引用和草稿已保留' } }, 409)
+        : json(route, { accepted: true, cursor: 'metadata-user-event' }, 202);
+    });
+    const transfer = await page.evaluateHandle(() => {
+      const data = new DataTransfer();
+      data.setData('application/x-flowweave-conversation-reference', JSON.stringify({ bindingId: 'reference-source', eventId: 'sidebar-leaf-is-not-a-snippet', title: '引用来源会话' }));
+      return data;
+    });
+    await page.locator('.agent-workbench-content').dispatchEvent('drop', { dataTransfer: transfer });
+    await input.fill('根据来源继续当前任务');
+    await input.press('Enter');
+    await expect.poll(() => requests.length).toBe(1);
+    expect(requests[0].references).toEqual([{ source_binding_id: 'reference-source' }]);
+    expect(JSON.stringify(requests[0])).not.toContain('sidebar-leaf-is-not-a-snippet');
+    if (unavailable) {
+      await expect(page.getByText('会话历史查询能力不可用，请检查平台配置后重试；引用和草稿已保留', { exact: true })).toBeVisible();
+      await expect(input).toHaveValue('根据来源继续当前任务');
+      await expect(page.getByRole('button', { name: '移除会话 引用来源会话', exact: true })).toBeVisible();
+    } else {
+      await expect(page.locator('.conversation-message.user').getByRole('button', { name: /打开会话/ })).toBeVisible();
+    }
+  });
+}
+
+test('late history capability failure restores only its outgoing conversation draft', async ({ page }) => {
+  await openWorkspace(page, [], true);
+  await page.goto('/agent/conversations/scheduled-conversation');
+  const input = page.getByRole('textbox', { name: '发送 Agent 消息', exact: true });
+  await expect(input).toBeEnabled();
+  let release: (() => void) | undefined;
+  let requested = false;
+  await page.route('**/conversations/scheduled-conversation/messages', async route => {
+    requested = true;
+    await new Promise<void>(resolve => { release = resolve; });
+    await json(route, { error: { code: 'AGENT_HISTORY_CAPABILITY_UNAVAILABLE', message: '来源查询暂不可用' } }, 409);
+  });
+  const transfer = await page.evaluateHandle(() => {
+    const data = new DataTransfer();
+    data.setData('application/x-flowweave-conversation-reference', JSON.stringify({ bindingId: 'reference-source', eventId: '', title: '来源' }));
+    return data;
+  });
+  await page.locator('.agent-workbench-content').dispatchEvent('drop', { dataTransfer: transfer });
+  await input.fill('原会话失败后应恢复的内容');
+  await input.press('Enter');
+  await expect.poll(() => requested).toBe(true);
+  await page.getByRole('button', { name: '周报会话', exact: true }).dblclick();
+  await expect(page).toHaveURL(/scheduled-conversation-2$/);
+  await expect(input).toBeEnabled();
+  await input.fill('新会话独立草稿');
+  release?.();
+  await expect.poll(() => page.evaluate(() => Object.keys(localStorage).some(key => key.includes('scheduled-conversation') && (localStorage.getItem(key) ?? '').includes('原会话失败后应恢复的内容')))).toBe(true);
+  await expect(input).toHaveValue('新会话独立草稿');
+  await expect(page.getByText('来源查询暂不可用', { exact: true })).toHaveCount(0);
+});

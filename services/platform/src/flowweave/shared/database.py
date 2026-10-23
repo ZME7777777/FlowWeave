@@ -55,6 +55,9 @@ _SHARED_OWNER_TABLES = frozenset(
 _USER_ISOLATED_TABLES = frozenset(
     {
         "agent_conversation_bindings",
+        "agent_conversation_history_grants",
+        "agent_history_sessions",
+        "agent_history_sources",
         "agent_conversation_capabilities",
         "agent_conversation_commands",
         "agent_conversation_message_attachments",

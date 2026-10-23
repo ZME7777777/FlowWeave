@@ -48,6 +48,7 @@ class MockRuntime:
         self._conversation_secret_descriptions: dict[str, dict[str, str]] = {}
         self._git_identities: dict[str, tuple[str, str]] = {}
         self._profile_git_roots: set[str] = set()
+        self._loaded_plugins: dict[str, set[str]] = {}
 
     def workspace_git_identity(
         self,
@@ -69,7 +70,8 @@ class MockRuntime:
         return {"author": author, "email": email, "configured": bool(author and email)}
 
     def probe_mcp(self, request: RuntimeMCPProbeRequest) -> RuntimeMCPProbeResult:
-        del request
+        if request.server.name == "flowweave-reference-history":
+            return RuntimeMCPProbeResult(ok=True, tools=("read_referenced_conversation",))
         return RuntimeMCPProbeResult(ok=True, tools=("mock_read",))
 
     def validate_plugin(
@@ -279,7 +281,16 @@ class MockRuntime:
         del handle, provider
 
     def load_plugin(self, handle: RuntimeHandle, plugin_ref: str) -> None:
-        del handle, plugin_ref
+        self._loaded_plugins.setdefault(handle.conversation_id or "", set()).add(plugin_ref)
+
+    def conversation_mcp_configured(
+        self, handle: RuntimeHandle, server_name: str, url: str
+    ) -> bool:
+        del url
+        return any(
+            server_name in plugin
+            for plugin in self._loaded_plugins.get(handle.conversation_id or "", set())
+        )
 
     def upload_workspace_file(
         self,

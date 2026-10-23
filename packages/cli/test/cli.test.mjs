@@ -23,6 +23,25 @@ function invokeWith(config, args, options = {}) {
 
 function invoke(config, ...args) { return invokeWith(config, args); }
 
+test('会话历史查询保留部署前缀、正式游标和页内过滤参数', async () => {
+  const config = await configured();
+  invoke(config, 'config', 'init', '--base-url', 'https://example.test/flowweave');
+  const result = invoke(config, 'agent', 'history', 'workspace-1', 'binding-1',
+    '-q', 'history_cursor=native/page+1', '-q', 'query=接口设计',
+    '-q', 'max_content_chars=4000', '--dry-run');
+  assert.equal(result.status, 0, result.stderr);
+  const request = JSON.parse(result.stdout);
+  const url = new URL(request.url);
+  assert.equal(request.method, 'GET');
+  assert.equal(url.pathname, '/flowweave/api/v1/agent-workspaces/workspace-1/conversations/binding-1/history');
+  assert.equal(url.searchParams.get('history_cursor'), 'native/page+1');
+  assert.equal(url.searchParams.get('query'), '接口设计');
+  assert.equal(url.searchParams.get('max_content_chars'), '4000');
+  const missing = invoke(config, 'agent', 'history', 'workspace-1', '--dry-run');
+  assert.notEqual(missing.status, 0);
+  assert.match(missing.stderr, /binding ID/);
+});
+
 async function authServer() {
   const child = spawn(process.execPath, [new URL('./auth-server.mjs', import.meta.url).pathname], {
     stdio: ['ignore', 'pipe', 'inherit'],

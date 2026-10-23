@@ -2,8 +2,8 @@
 
 > 创建日期：2026-08-21
 > 状态：`UPSTREAM BASELINE ADOPTION COMPLETE`
-> 当前执行切片：`NONE`
-> 下一可执行切片：`NONE`
+> 当前执行切片：`FR-665`
+> 下一可执行切片：`FR-664`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -10150,3 +10150,153 @@ diff 和任务编号唯一性检查通过，Alembic 唯一 head 为
 FR-657 合并补记（2026-10-23）：按用户授权保留原分支的独立修复与回归，合入 feat/refactor。
 任务编号由分支原 FR-647 调整为 FR-657，避免覆盖主分支同号记录；12 项引用预算回归与
 diff 检查通过，未部署。
+
+
+### FR-658 平台只读会话历史查询 API 与 CLI — DONE
+
+依赖：FR-649 DONE。为后续按需引用能力提供单窗口、正式 cursor 分页的只读历史入口，
+沿用用户／宿主／binding 授权和 generation 复核；只返回可见用户／助手正文，排除
+工具输出和隐藏引用传输内容。CLI 复用现有用户认证，提供页内关键词过滤及显式正文截断。
+本切片不切换引用协议、不自动给 Runtime 注入凭据、不修改 OpenHands 或部署。
+
+验收：新增历史查询与既有分阶段读取共 51 项 pytest 通过；CLI 17 项回归通过。
+覆盖正文／隐藏背景过滤、工具和系统消息排除、页内检索、原生游标／空页、显式截断、
+参数边界、读取前拒绝和投影复核拒绝、宿主／根目录漂移，以及既有 DB 生命周期契约。
+测试采用受控事件与授权回调，不替代真实用户认证／Runtime 端到端验收；不接数据库。
+新增模块 Pyright、新增代码 Ruff／format、受影响 Python AST、CLI 语法、diff／任务状态
+核对通过；Alembic 唯一 head 为 0158_schedule_china_timezone，未修改迁移。未部署，
+引用发送行为尚未改变；下一可执行切片 FR-659，须完成受限能力接入后才切换元数据。
+
+### FR-659 平台受限历史授权与只读 MCP 服务 — DONE
+
+依赖：FR-658 DONE。将原计划拆为可独立验收的服务与接入两片。本片提供限定用户、目标
+binding、来源 binding、正式 Conversation／Runtime Session 身份的短期可撤销只读授权；
+数据库仅保存凭据哈希，查询前后复核授权与用户访问权。服务实现标准 stateless Streamable
+HTTP MCP，仅暴露单来源历史分页工具，不开放通用平台 API；支持同用户限流、无缓存响应。
+授权由现有登录接口发起／撤销，删除任一来源／目标时清理授权；不自动注入 Runtime、
+不修改引用发送、不部署、不修改 OpenHands 源码或 source lock。
+
+验收：历史授权、只读查询与既有读取生命周期共 77 项 pytest 通过，覆盖哈希持久化、
+伪造／错用户／错授权、过期、撤销、用户停用／访问权收回、正式身份漂移、投影前撤销、凭据字面量脱敏、
+输入拒绝、同用户限流、普通平台 API 不接受受限 Bearer，以及 PostgreSQL 离线迁移
+upgrade／downgrade SQL。官方 MCP Python 客户端通过真实本地 TCP 服务完成 initialize、
+list_tools、call_tool；数据与授权为受控替身，客户端来自旧 1.49.5 环境，不记为固定
+1.54.0 Runtime 业务验收。新增模块 Pyright、受影响文件 Ruff／AST、diff／状态及依赖
+核对通过；Alembic 唯一 head 为 0159_agent_history_grants。未实跑 PostgreSQL 迁移：
+本机无可用 PostgreSQL 服务／工具，部署前仍须补齐真实迁移验收。未改 OpenHands、
+未自动加载 Runtime 能力、未切换引用或部署；当前 NONE，下一可执行切片 FR-660。
+
+### FR-660 正式事件长正文读取与固定 SDK 原生能力契约 — DONE
+
+依赖：FR-659 DONE。原接入计划同时涉及读取协议、原生加载取证、凭据生命周期和
+产品切换，按可独立验收边界拆分；本片补齐按正式 event ID／Unicode 位置分段读取
+可见正文，并验证锁定 SDK 的受治理插件加载、实际 MCP 调用、加密持久化和恢复。
+不修改 OpenHands 源码、source lock 或镜像；不自动接入会话或切换引用发送。
+
+验收：长正文、受限 MCP、历史 API、既有分阶段读取与脱敏共 97 项 pytest 通过。
+覆盖 Unicode／emoji 分段无损还原、隐藏背景和非消息排除、参数歧义拒绝、按正式 ID
+读取且不扫描历史、事件身份错配、投影前撤销和 generation 复核。原生探针使用固定
+commit `ae178d86f4e0e268cf31f8f9c5deda892f4ebf12` 的 SDK 1.54.0 与 frozen 依赖，
+校验归档 SHA-256、安装版本和全部 SDK Python 源码一致；通过正式能力物化、已初始化
+会话 load_plugin、原生 MCP executor 的实际 TCP 调用、Cipher 持久化无明文扫描、
+原 conversation／event 身份和 Secret Registry 恢复，以及恢复后再次 MCP 调用。
+不执行模型；服务端数据和授权为受控替身，不替代完整 Runtime 镜像／真实数据库验收。
+受影响 Ruff check／format、应用模块 Pyright（零错误）、diff／状态与依赖核对通过；
+Alembic 唯一 head 仍为 0159_agent_history_grants。未实跑 PostgreSQL 迁移，未部署。
+当前 NONE，下一可执行切片 FR-661；整会话引用发送仍沿用旧行为。
+
+### FR-661 会话级历史凭据租约与多来源授权 — DONE
+
+依赖：FR-660 DONE。将原接入计划按授权服务与产品接入边界拆分。本片实现单目标
+会话稳定受限凭据的加密保存、登录用户显式续租和撤销，以及逐来源白名单、正式身份
+复核与单来源撤销；MCP 接受白名单内来源 ID，旧单来源凭据保持兼容。续租不更换
+客户端认证头，也不重新加载原生工具。未授权来源、已撤销授权不得被查询自动恢复。
+仅完成服务与测试，不自动注册能力或切换消息发送。
+
+验收：历史／MCP／分阶段读取／脱敏主套件 132 passed，补充凭据边界 7 passed（其中
+新增 1 项，共 133 个不同用例）。覆盖加密持久化与哈希鉴权、同令牌续租、多来源独立
+过期／撤销、不可由查询续租、伪造路由身份、用户停用／权限收回、宿主与正式身份漂移、
+密文损坏／跨目标密文替换、删除清理、投影前撤销、旧单来源兼容和两类受限 Bearer
+均不能登录平台。真实 HTTP 用例使用 SQLite 权限记录及受控 Runtime 读取；固定
+SDK 1.54.0 探针以实际本地 TCP、平台正式能力物化和原生 executor 查询两个显式来源，
+期间验证加密保存／恢复与同一凭据可用；无模型调用，未修改 OpenHands 或 source lock。
+新增 0160 两表迁移的 PostgreSQL 离线 upgrade／downgrade SQL、用户隔离注册、唯一
+约束、强制 RLS 策略与删除顺序核对通过。行锁并发、真实 PostgreSQL RLS／迁移和完整
+Runtime 镜像仍由 FR-664 验收，不能用 SQLite 或 SDK 探针代替。受影响 Ruff／AST、
+新增模块及探针／测试 format、授权与 MCP 模块 Pyright（零错误）、diff／任务状态和
+依赖检查通过；Alembic 唯一 head 为 0160_agent_history_sessions。未部署，拖拽引用
+发送尚未切换；当前 NONE，下一可执行切片 FR-662。
+
+### FR-662 受治理 MCP 自动接入与整会话元数据引用 — DONE
+
+依赖：FR-661 DONE。冻结 MCP version／digest 与 Manifest，将会话租约和来源授权
+接入新建／既有会话，随后切换整会话元数据引用；保留片段引用、旧消息投影、可点击
+来源与能力不可用时的明确失败。处理并发发送／重试／恢复，不能只靠提示词替代工具。
+
+实现：整会话引用由服务端生成标题、来源 binding／正式 Conversation ID 和查询工具名，
+不再在发送前展开完整历史；片段仍按正式 event ID 读取正文，旧 V2–V5 投影保留。
+通过显式固定 MCP version 与可信 endpoint 配置校验 catalog digest、blob SHA-256 和
+Secret Registry 占位符；新建会话先提交受限授权再使用正式 MCP／secrets 创建字段，
+既有会话首次安装仅在空闲边界调用原生 load_plugin。正式 MCP test 验证连接／工具目录，
+正式 Conversation state 仅用于配置确认与不确定加载的对账；不将配置确认伪装成实际
+工具执行。续租复用凭据，不重复加载；首次运行中安装明确拒绝。0161 迁移新增版本、
+digest、manifest 和注册确认字段；manifest 不包含明文 Secret。失败 bootstrap 清理
+已提交的历史授权；浏览器恢复完整草稿快照，迟到回调按 binding 隔离，已继续编辑时
+保留需手动重试的队列项，前台／后台自动队列均不能重发此项。
+
+验收：历史／授权／MCP／集成主套件 156 passed；补充 bootstrap 清理后的集成套件
+23 passed（22 项已含主套件，共 157 个不同用例）；既有 Runtime contract／MCP／Plugin
+回归 20 passed。固定 source-lock SDK 1.54.0 的原生初始 MCP、既有会话 load_plugin、
+Secret 展开、加密保存／恢复及恢复后实际 TCP 调用均通过，不执行 LLM、不修改 OpenHands。
+Web typecheck、受影响 ESLint、6 项 Chromium 定向回归通过，覆盖元数据写入、来源卡、
+能力失败保留草稿、跨会话迟到失败、1440／1024 遮罩与既有置顶拖拽排序；浏览器使用
+当前独立工作树的 Vite 与受控 API，不记为真实 Runtime 业务 E2E。新增迁移仅通过
+PostgreSQL 离线 upgrade／downgrade SQL；授权集成模块 Pyright 零错误，受影响 Ruff／
+AST、定向 format、diff、任务状态与依赖检查通过，唯一 head 为 0161_agent_history_capability。
+
+边界：默认未配置自动接入能力，需在已治理 catalog 发布固定版本并配置可信地址后使用；
+未发布、未配置生产入口、未实跑 PostgreSQL 迁移或完整 Runtime 镜像。租约按每次显式
+引用发送续至一小时；超时运行、独立 resume、fork 继承与正式身份漂移不自动重新授权，
+FR-664 必须覆盖到期／撤销／分叉恢复及并发实证。当前 NONE，下一可执行切片 FR-664。
+
+### FR-664 历史查询真实数据库与固定 Runtime 验收 — READY
+
+依赖：FR-662 DONE、FR-663 DONE。完成真实 PostgreSQL 授权迁移 upgrade／downgrade、RLS、租约
+与并发验收，以及固定 Runtime 镜像上的新建／既有会话、撤销与恢复验证后再考虑发布。
+
+### FR-663 默认历史 MCP 配置展示与显式用户隔离 — DONE
+
+依赖：FR-662 DONE。按用户追加需求，在 Agent Workspace 新建、既有会话和定时预设
+配置中展示默认勾选且不可取消的历史 MCP，名称旁仅增加独立“内置”标签；沿用引用时
+自动接入，不伪造原生已连接状态。
+平台默认项不进入用户可选版本载荷，通用能力入口禁止替换该保留 MCP。历史两端 binding
+查询增加显式用户／宿主条件，并用持久化双用户记录验证跨用户引用、授权和查询拒绝。
+本片完成定向服务测试、Web typecheck 和配置 E2E；真实 PostgreSQL／完整 Runtime
+验收继续留在 FR-664，不修改 OpenHands、不部署。
+
+
+验收：历史／授权／MCP／集成主套件 158 passed、4 skipped；补充真实 binding 双用户
+读取前后拒绝后，用户隔离套件 6 passed（4 项已包含主套件，共 160 个不同用例通过）。
+两名 SUPER_ADMIN 在同一 Workspace、相同原生定位下仍不能跨用户签发、续租、引用
+或选择历史来源；SQL 显式 owner 过滤在受信 tenant bypass 中仍有效。未引用时不产生
+租约，通用注册入口拒绝手动替换内置 MCP。测试使用 SQLite 持久化用户／binding／
+租约／白名单，未替代 PostgreSQL RLS／行锁或真实 Runtime 验收。
+
+Web typecheck、受影响 ESLint、7 项 Chromium 定向回归通过；覆盖新建／既有／定时
+预设的默认锁定、独立内置标签、同名版本去重、批量取消、搜索、只看已选、保存不注册
+以及现有六类能力／认证预设与筛选布局。实际截图已核对。Ruff、定向 format、diff／
+任务状态及依赖检查通过；conversations.py 的 Pyright 与 HEAD 基线诊断一致（既存
+46 项错误，本片零新增）。Alembic 唯一 head 仍为 0161_agent_history_capability。
+未修改 OpenHands、source lock、迁移或部署；当前 NONE，下一可执行切片 FR-664。
+
+### FR-665 会话引用分支集成与发布验收 — CURRENT
+
+依赖：FR-656 DONE、FR-657 DONE、FR-663 DONE。按用户授权合并两个会话分支，
+保留主分支今天下午修复，重编号历史查询切片以避免记录冲突，并用追加式 Alembic merge
+恢复唯一 head。完成合并回归、真实数据库历史授权验证和固定 Runtime 检查后发布
+platform／web／Runtime 所需内容，清理对应工作树和分支；不删除持久数据。
+
+FR-665 合并阶段：416 项后端回归通过，包含旧引用预算用例按元数据协议升级，
+原显式正文预算拒绝仍保留；新建／既有／定时配置、消息来源与主分支新增功能一并验证。
+Alembic 新增 0162_merge_history_credential，仅连接两个独立 revision 分支，不修改已
+发布迁移。固定 Runtime source lock 沿用主分支 73e3cd8e，无额外 OpenHands 改动。

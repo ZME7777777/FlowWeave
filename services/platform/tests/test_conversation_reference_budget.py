@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from flowweave.modules.agent_sessions.application import conversations
-from flowweave.runtime.base import RuntimeEvent, RuntimeEventBatch, RuntimeHandle
+from flowweave.runtime.base import RuntimeEvent, RuntimeHandle
 from flowweave.runtime.mock import MockRuntime
 from flowweave.shared.errors import DomainError
 
@@ -18,12 +18,17 @@ def database() -> None:
 @pytest.fixture
 def resolve(monkeypatch):
     workspace = SimpleNamespace(id="workspace")
-    source = SimpleNamespace(openhands_conversation_id="native-source")
-    handle = RuntimeHandle(job_id="source", conversation_id="native-source")
+    source = SimpleNamespace(
+        id="00000000-0000-0000-0000-000000000002",
+        openhands_conversation_id="00000000-0000-0000-0000-000000000001",
+        lifecycle="ACTIVE",
+        display_title="来源会话",
+    )
+    handle = RuntimeHandle(job_id="source", conversation_id="00000000-0000-0000-0000-000000000001")
 
     def binding(_db, workspace_id, binding_id):
         assert workspace_id == workspace.id
-        assert binding_id == "source-binding"
+        assert binding_id == "00000000-0000-0000-0000-000000000002"
         return source
 
     monkeypatch.setattr(conversations, "_binding", binding)
@@ -32,8 +37,7 @@ def resolve(monkeypatch):
     def run(events, reference=None):
         class Runtime(MockRuntime):
             def read_active_events(self, actual):
-                assert actual.conversation_id == handle.conversation_id
-                return RuntimeEventBatch(events=tuple(events), cursor="native-head")
+                pytest.fail("Whole references must not expand history")
 
             def read_event(self, actual, event_id):
                 assert actual.conversation_id == handle.conversation_id
@@ -41,7 +45,10 @@ def resolve(monkeypatch):
 
         monkeypatch.setattr(conversations, "get_runtime", lambda: Runtime())
         return conversations._resolve_message_references(
-            None, workspace, None, (reference or {"source_binding_id": "source-binding"},)
+            None,
+            workspace,
+            None,
+            (reference or {"source_binding_id": "00000000-0000-0000-0000-000000000002"},),
         )
 
     return run
@@ -66,8 +73,17 @@ def test_whole_conversation_reference_fits_budget_and_round_trips(resolve, conte
         for index, text in enumerate(contents)
     ]
     resolved = resolve(events)
-    expected = "\n\n".join(contents)[-10_000:].strip()
-    assert resolved == ({"event_id": "native-head", "content": expected},)
+    assert resolved == (
+        {
+            "kind": "conversation",
+            "event_id": "",
+            "content": "来源会话",
+            "title": "来源会话",
+            "source_binding_id": "00000000-0000-0000-0000-000000000002",
+            "source_conversation_id": "00000000-0000-0000-0000-000000000001",
+            "history_tool": "read_referenced_conversation",
+        },
+    )
     assert len(resolved[0]["content"]) <= 10_000
 
     prompt, image_urls = conversations.message_payload("继续下一个切片", (), resolved)
@@ -86,13 +102,11 @@ def test_whole_conversation_reference_keeps_only_visible_context(resolve):
         RuntimeEvent(cursor="tool", event_type="TOOL_RESULT", payload={"content": "工具输出"}),
         RuntimeEvent(cursor="reply", event_type="MESSAGE", payload={"content": "最新回复"}),
     ]
-    assert resolve(events)[0]["content"] == "正式用户正文\n\n最新回复"
+    assert resolve(events)[0]["content"] == "来源会话"
 
 
-def test_empty_conversation_reference_still_fails(resolve):
-    with pytest.raises(DomainError) as caught:
-        resolve([])
-    assert caught.value.code == "AGENT_CONVERSATION_REFERENCE_UNAVAILABLE"
+def test_empty_conversation_reference_remains_metadata_only(resolve):
+    assert resolve([])[0]["kind"] == "conversation"
 
 
 def test_selected_reference_preserves_exact_event_and_range(resolve):
@@ -102,11 +116,17 @@ def test_selected_reference_preserves_exact_event_and_range(resolve):
     assert resolve(
         [event],
         {
-            "source_binding_id": "source-binding",
+            "source_binding_id": "00000000-0000-0000-0000-000000000002",
             "source_event_id": "selected-event",
             "selection": {"compact_start": 2, "compact_end": 6},
         },
-    ) == ({"event_id": "selected-event", "content": "目标内容"},)
+    ) == (
+        {
+            "event_id": "selected-event",
+            "content": "目标内容",
+            "source_binding_id": "00000000-0000-0000-0000-000000000002",
+        },
+    )
 
 
 def test_explicit_oversized_reference_and_total_budget_still_fail():

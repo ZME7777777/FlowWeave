@@ -402,6 +402,16 @@ def login(db: Session, username: str, password: str) -> LoginResult:
     return login_local(db, username, password)
 
 
+def agent_session_principal(db: Session, user_id: str) -> Principal | None:
+    """Revalidate the owner of an independently scoped Agent read credential."""
+
+    user = db.get(User, user_id)
+    if user is None or not user.is_active:
+        return None
+    principal = _principal(db, user)
+    return principal if principal.can_use_agent_sessions else None
+
+
 def authenticate(db: Session, token: str | None) -> Principal | None:
     if not token:
         return None
@@ -450,6 +460,7 @@ __all__ = (
     "SESSION_TTL",
     "LoginResult",
     "authenticate",
+    "agent_session_principal",
     "ensure_builtin_users",
     "login",
     "logout",

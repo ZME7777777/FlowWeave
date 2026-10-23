@@ -1314,6 +1314,52 @@ def materialize_agent_workspace_capabilities(
     return skills, plugins, mcp_servers
 
 
+def register_agent_workspace_capability_manifest(
+    capability: dict[str, Any], *, host_root: Path, runtime_root: Path
+) -> None:
+    """Append acknowledged governed provenance without replacing other materialized assets."""
+    path = host_root / ".flowweave-manifest.json"
+    if path.is_symlink():
+        raise DomainError("RUNTIME_CAPABILITY_UNAVAILABLE", "Invalid capability manifest", 409)
+    try:
+        manifest = (
+            json.loads(path.read_text())
+            if path.exists()
+            else {"schema_version": 1, "runtime_path": str(runtime_root), "capabilities": []}
+        )
+    except (OSError, ValueError) as exc:
+        raise DomainError(
+            "RUNTIME_CAPABILITY_UNAVAILABLE", "Invalid capability manifest", 409
+        ) from exc
+    if not isinstance(manifest, dict):
+        raise DomainError("RUNTIME_CAPABILITY_UNAVAILABLE", "Invalid capability manifest", 409)
+    entries = manifest.get("capabilities")
+    if not isinstance(entries, list) or manifest.get("runtime_path") != str(runtime_root):
+        raise DomainError("RUNTIME_CAPABILITY_UNAVAILABLE", "Invalid capability manifest", 409)
+    normalized = cast(dict[str, Any], capability["normalized_config"])
+    entry = {
+        "type": capability["capability_type"],
+        "key": capability["capability_key"],
+        "version_id": capability["capability_version_id"],
+        "digest": capability["digest"],
+        "content_hash": normalized["content_hash"],
+    }
+    previous = [
+        item
+        for item in entries
+        if isinstance(item, dict)
+        and item.get("key") == entry["key"]
+        and item.get("type") == entry["type"]
+    ]
+    if previous and any(
+        item.get("version_id") != entry["version_id"] or item.get("digest") != entry["digest"]
+        for item in previous
+    ):
+        raise DomainError("RUNTIME_CAPABILITY_UNAVAILABLE", "Capability manifest conflicts", 409)
+    manifest["capabilities"] = [item for item in entries if item not in previous] + [entry]
+    _atomic_write(path, json.dumps(manifest, ensure_ascii=False, indent=2).encode())
+
+
 def materialize_agent_workspace_hook_config(
     capabilities: tuple[dict[str, Any], ...], *, host_root: Path, runtime_root: Path
 ) -> dict[str, list[dict[str, Any]]]:

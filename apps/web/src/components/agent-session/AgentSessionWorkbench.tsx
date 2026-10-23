@@ -123,6 +123,7 @@ interface QueuedMessage {
   deliveryState?: QueueDeliveryState;
   /** A formal user event may be appended while the current turn is running. */
   nativeGuidance?: boolean;
+  requiresRetry?: boolean;
   createdAt?: number;
 }
 type FileSelection = NonNullable<AgentWorkspaceReference['selection']>;
@@ -1061,6 +1062,7 @@ function queuedMessageFromStorage(value: unknown): QueuedMessage | undefined {
     annotations: annotationsFromStorage(candidate.annotations),
     deliveryState,
     nativeGuidance: candidate.nativeGuidance === true,
+    requiresRetry: candidate.requiresRetry === true,
     createdAt: typeof candidate.createdAt === 'number' ? candidate.createdAt : Date.now(),
   };
 }
@@ -1274,6 +1276,9 @@ function stringValues(value: unknown): string[] {
 type DraftCredentialEntry = WebsiteCredential & { sync_state?: AgentConversationCredentialSyncEntry['sync_state'] };
 
 
+const HISTORY_MCP_KEY = 'flowweave-reference-history';
+const HISTORY_MCP_LABEL = '会话历史查询';
+
 export function CapabilityManager({ workspaceId, bindingId, conversationCapabilities, draftCapabilityIds, draftCredentialIds, configurationPreset = false, onClose, onCreateEnhancedConversation, onDraftCredentialIdsChange }: {
   workspaceId: string; bindingId?: string; conversationCapabilities?: AgentSessionCapability[]; onClose: () => void;
   draftCapabilityIds?: string[]; draftCredentialIds?: string[]; configurationPreset?: boolean;
@@ -1283,12 +1288,13 @@ export function CapabilityManager({ workspaceId, bindingId, conversationCapabili
   const { api } = useAgentSessionGateway();
   const host = useAgentSessionHost();
   const queryClient = useQueryClient();
+  const hasDefaultHistoryMcp = host.id === agentWorkspaceSessionHost.id;
   const [query, setQuery] = useState('');
   const [kind, setKind] = useState<AgentCapabilityType | 'ALL'>('ALL');
   const [showSelectedOnly, setShowSelectedOnly] = useState(false);
   const [managerTab, setManagerTab] = useState<'CAPABILITIES' | 'CREDENTIALS'>('CAPABILITIES');
   const [selectedCollectionIds, setSelectedCollectionIds] = useState<string[]>([]);
-  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [chosenIds, setSelectedIds] = useState<string[]>([]);
   const [selectedCredentialIds, setSelectedCredentialIds] = useState<string[]>([]);
   const [mcpReadiness, setMcpReadiness] = useState<Record<string, AgentSessionMcpReadiness | undefined>>({});
   const [checkingMcpIds, setCheckingMcpIds] = useState<Set<string>>(new Set());
@@ -1303,6 +1309,7 @@ export function CapabilityManager({ workspaceId, bindingId, conversationCapabili
     return () => { opener?.focus(); };
   }, []);
   const catalogQuery = useQuery({ queryKey: sessionQueryKey(host, 'capability-catalog'), queryFn: api.capabilities, refetchOnMount: 'always' });
+  const selectedIds = useMemo(() => chosenIds.filter(id => !hasDefaultHistoryMcp || !(catalogQuery.data ?? []).some(item => item.id === id && item.capability_type === 'MCP' && item.capability_key === HISTORY_MCP_KEY)), [chosenIds, catalogQuery.data, hasDefaultHistoryMcp]);
   const collectionsQuery = useQuery({ queryKey: sessionQueryKey(host, 'capability-collections'), queryFn: api.capabilityCollections });
   const credentialQuery = useQuery({
     queryKey: sessionQueryKey(host, 'credential-sync', workspaceId, bindingId),
@@ -1316,8 +1323,8 @@ export function CapabilityManager({ workspaceId, bindingId, conversationCapabili
   });
   useEffect(() => {
     const current = bindingId ? conversationCapabilities : draftCapabilityIds?.map(id => ({ id }));
-    if (current) setSelectedIds(current.map(item => item.id));
-  }, [bindingId, conversationCapabilities, draftCapabilityIds]);
+    if (current) setSelectedIds(current.filter(item => !hasDefaultHistoryMcp || !('capability_key' in item) || item.capability_key !== HISTORY_MCP_KEY).map(item => item.id));
+  }, [bindingId, conversationCapabilities, draftCapabilityIds, hasDefaultHistoryMcp]);
   useEffect(() => {
     if (credentialSelectionInitialized.current) return;
     if (bindingId && credentialQuery.data) {
@@ -1340,9 +1347,10 @@ export function CapabilityManager({ workspaceId, bindingId, conversationCapabili
   const frozenHookCount = (conversationCapabilities ?? []).filter(item => item.capability_type === 'HOOK').length;
   const capabilities = useMemo(() => (catalogQuery.data ?? []).filter(item =>
     ['SKILL', 'MCP', 'PLUGIN', 'CONTEXT', 'AGENT_DEFINITION', 'HOOK'].includes(item.capability_type)
+    && !(hasDefaultHistoryMcp && item.capability_type === 'MCP' && item.capability_key === HISTORY_MCP_KEY)
     && (item.is_latest || frozenCreationOnlyIds.has(item.id) || (!bindingId && (draftCapabilityIds ?? []).includes(item.id)))
     && (!bindingId || !['CONTEXT', 'AGENT_DEFINITION', 'HOOK'].includes(item.capability_type) || frozenCreationOnlyIds.has(item.id)),
-  ), [bindingId, catalogQuery.data, draftCapabilityIds, frozenCreationOnlyIds]);
+  ), [bindingId, catalogQuery.data, draftCapabilityIds, frozenCreationOnlyIds, hasDefaultHistoryMcp]);
   const byId = useMemo(() => new Map(capabilities.map(item => [item.id, item])), [capabilities]);
   const selectedCollectionMemberIds = useMemo(() => new Set(
     (collectionsQuery.data ?? [])
@@ -1359,6 +1367,8 @@ export function CapabilityManager({ workspaceId, bindingId, conversationCapabili
       && (!needle || `${item.capability_key} ${item.description} ${item.filename}`.toLocaleLowerCase().includes(needle)),
     );
   }, [bindingId, capabilities, kind, query, selectedCollectionIds.length, selectedCollectionMemberIds, selectedIds, showSelectedOnly]);
+  const showDefaultHistoryMcp = hasDefaultHistoryMcp && (kind === 'ALL' || kind === 'MCP')
+    && (!query.trim() || `${HISTORY_MCP_LABEL} ${HISTORY_MCP_KEY}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()));
   const selectedMcpIds = useMemo(() => selectedIds.filter(id => byId.get(id)?.capability_type === 'MCP'), [byId, selectedIds]);
   const readonlyCreationOnly = Boolean(bindingId && (kind === 'CONTEXT' || kind === 'AGENT_DEFINITION' || kind === 'HOOK'));
   const selectableVisibleIds = useMemo(() => visible
@@ -1488,8 +1498,8 @@ export function CapabilityManager({ workspaceId, bindingId, conversationCapabili
       </div> : <>
       <div className="agent-capability-toolbar"><div className="agent-capability-tabs">{([['ALL', 'all'], ['PLUGIN', 'plugin'], ['MCP', 'MCP'], ['SKILL', 'skill'], ['CONTEXT', 'context'], ['AGENT_DEFINITION', 'agent'], ['HOOK', 'hook']] as const).map(([value, label]) => <button type="button" key={value} className={kind === value ? 'active' : ''} onClick={() => setKind(value)}>{label}</button>)}</div><div className="agent-capability-toolbar-actions">{!readonlyCreationOnly && <button type="button" className="agent-capability-select-visible" aria-pressed={allVisibleSelected} aria-label={allVisibleSelected ? '取消选择筛选结果' : `选择筛选结果（${selectableVisibleIds.length}）`} title={allVisibleSelected ? '取消选择筛选结果' : `选择筛选结果（${selectableVisibleIds.length}）`} disabled={!selectableVisibleIds.length} onClick={toggleVisible}>{allVisibleSelected ? <SquareCheck size={16}/> : <Square size={16}/>}</button>}<button type="button" className={`agent-capability-show-selected${showSelectedOnly ? ' active' : ''}`} aria-label={showSelectedOnly ? '显示全部能力' : '只看已选'} title={showSelectedOnly ? '显示全部能力' : '只看已选'} aria-pressed={showSelectedOnly} onClick={() => setShowSelectedOnly(current => !current)}>{showSelectedOnly ? <Eye size={16}/> : <EyeOff size={16}/>}</button><label className="agent-capability-search"><Search size={15}/><input value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索名称、说明或文件…"/></label></div></div>
       {(kind === 'ALL' || kind === 'SKILL') && collectionsQuery.data?.length ? <section className="agent-capability-collection-filters" aria-label="Skill 组合筛选"><div>{collectionsQuery.data.map(collection => { const selected = selectedCollectionIds.includes(collection.id); return <button type="button" key={collection.id} className={selected ? 'selected' : ''} aria-pressed={selected} onClick={() => toggleCollectionFilter(collection.id)}><i aria-hidden="true">{selected && <Check size={12}/>}</i><span>{collection.name}</span></button>; })}</div></section> : null}
-      <div className="agent-capability-summary"><span>{readonlyCreationOnly ? <>已装配 <b>{kind === 'CONTEXT' ? frozenContextCount : kind === 'HOOK' ? frozenHookCount : frozenAgentCount}</b> 个 {kind === 'CONTEXT' ? 'Context' : kind === 'HOOK' ? 'Hook' : 'Agent'}</> : <>{bindingId ? '已注册' : '已选择'} <b>{selectedIds.length}</b> 项</>}</span>{!bindingId && <span>{configurationPreset ? '预设能力用于后续运行会话，可自由添加或取消。' : '选择只作用于本次新会话，不会改变工作区或其他会话。'}</span>}</div>
-      <div className="agent-capability-list">{catalogQuery.isLoading ? <p>正在读取能力仓库…</p> : visible.length === 0 ? <p>{readonlyCreationOnly ? `此会话创建时没有装配 ${kind === 'CONTEXT' ? 'Context' : kind === 'HOOK' ? 'Hook' : 'Agent'}。` : '没有匹配的已发布能力。'}</p> : visible.map(item => { const checked = selectedIds.includes(item.id); const isFrozenCreationOnly = Boolean(bindingId && ['CONTEXT', 'AGENT_DEFINITION', 'HOOK'].includes(item.capability_type) && frozenCreationOnlyIds.has(item.id)); const locked = Boolean(bindingId && (conversationCapabilities ?? []).some(enabled => enabled.id === item.id)); const isMcp = item.capability_type === 'MCP'; const readiness = mcpReadiness[item.id]; const checking = isMcp && checkingMcpIds.has(item.id); const readinessLabel = item.capability_type === 'CONTEXT' ? '系统上下文' : item.capability_type === 'AGENT_DEFINITION' ? 'Agent' : item.capability_type === 'HOOK' ? 'Hook' : !isMcp ? (item.capability_type === 'SKILL' ? '技能' : item.capability_type) : configurationPreset ? '运行时连接' : !checked ? 'MCP' : checking ? '检测中' : readiness?.state === 'READY' ? '已连接' : readiness?.error_kind === 'timeout' ? '连接超时' : readiness?.error_kind === 'connection' ? '连接失败' : '不可用'; const detail = locked ? item.description || item.filename : item.capability_type === 'CONTEXT' ? '创建会话时冻结，并追加到 OpenHands 系统提示词后缀。' : item.capability_type === 'AGENT_DEFINITION' ? '创建会话时冻结为 OpenHands 原生子 Agent 定义。' : item.capability_type === 'HOOK' ? '创建会话时冻结，并通过 OpenHands 官方 hook_config 注册。' : isMcp && checked && !configurationPreset && readiness?.state === 'UNAVAILABLE' ? `MCP ${readinessLabel}；不会保存为新会话默认能力。` : item.description || item.filename; const versionLabel = !item.is_latest && !bindingId ? ` · 已选版本 v${item.revision_number}` : ''; const lockedLabel = isFrozenCreationOnly ? `${item.capability_key}（已装配）` : `${item.capability_key}（已注册）`; return <button type="button" key={item.id} className={`${checked ? 'selected' : ''}${locked ? ' locked' : ''}`} disabled={locked} aria-label={locked ? lockedLabel : undefined} onClick={() => toggle(item)}><span className={`agent-capability-icon ${item.capability_type.toLowerCase()}`}><Boxes size={17}/></span><span><b>{item.capability_key}{versionLabel}</b><small>{detail}</small><em className={isMcp && checked && !configurationPreset ? `mcp-status ${readiness?.state === 'READY' ? 'ready' : readiness?.state === 'UNAVAILABLE' ? 'unavailable' : 'checking'}` : undefined}>{readinessLabel}</em></span><i aria-hidden="true">{checked ? <Check size={15}/> : null}</i></button>; })}</div>
+      <div className="agent-capability-summary"><span>{readonlyCreationOnly ? <>已装配 <b>{kind === 'CONTEXT' ? frozenContextCount : kind === 'HOOK' ? frozenHookCount : frozenAgentCount}</b> 个 {kind === 'CONTEXT' ? 'Context' : kind === 'HOOK' ? 'Hook' : 'Agent'}</> : <>{bindingId ? '已启用' : '已选择'} <b>{selectedIds.length + (hasDefaultHistoryMcp ? 1 : 0)}</b> 项</>}</span>{!bindingId && <span>{configurationPreset ? '预设能力用于后续运行会话，可自由添加或取消。' : '选择只作用于本次新会话，不会改变工作区或其他会话。'}</span>}</div>
+      <div className="agent-capability-list">{showDefaultHistoryMcp && <button type="button" className="selected locked" disabled aria-pressed="true" aria-label={HISTORY_MCP_LABEL} aria-describedby="agent-history-builtin-label"><span className="agent-capability-icon mcp"><Boxes size={17}/></span><span className="agent-capability-name"><b>{HISTORY_MCP_LABEL}</b><em id="agent-history-builtin-label" className="agent-capability-builtin-badge">内置</em></span><i aria-hidden="true"><Check size={15}/></i></button>}{catalogQuery.isLoading ? <p>正在读取能力仓库…</p> : visible.length === 0 ? (showDefaultHistoryMcp ? null : <p>{readonlyCreationOnly ? `此会话创建时没有装配 ${kind === 'CONTEXT' ? 'Context' : kind === 'HOOK' ? 'Hook' : 'Agent'}。` : '没有匹配的已发布能力。'}</p>) : visible.map(item => { const checked = selectedIds.includes(item.id); const isFrozenCreationOnly = Boolean(bindingId && ['CONTEXT', 'AGENT_DEFINITION', 'HOOK'].includes(item.capability_type) && frozenCreationOnlyIds.has(item.id)); const locked = Boolean(bindingId && (conversationCapabilities ?? []).some(enabled => enabled.id === item.id)); const isMcp = item.capability_type === 'MCP'; const readiness = mcpReadiness[item.id]; const checking = isMcp && checkingMcpIds.has(item.id); const readinessLabel = item.capability_type === 'CONTEXT' ? '系统上下文' : item.capability_type === 'AGENT_DEFINITION' ? 'Agent' : item.capability_type === 'HOOK' ? 'Hook' : !isMcp ? (item.capability_type === 'SKILL' ? '技能' : item.capability_type) : configurationPreset ? '运行时连接' : !checked ? 'MCP' : checking ? '检测中' : readiness?.state === 'READY' ? '已连接' : readiness?.error_kind === 'timeout' ? '连接超时' : readiness?.error_kind === 'connection' ? '连接失败' : '不可用'; const detail = locked ? item.description || item.filename : item.capability_type === 'CONTEXT' ? '创建会话时冻结，并追加到 OpenHands 系统提示词后缀。' : item.capability_type === 'AGENT_DEFINITION' ? '创建会话时冻结为 OpenHands 原生子 Agent 定义。' : item.capability_type === 'HOOK' ? '创建会话时冻结，并通过 OpenHands 官方 hook_config 注册。' : isMcp && checked && !configurationPreset && readiness?.state === 'UNAVAILABLE' ? `MCP ${readinessLabel}；不会保存为新会话默认能力。` : item.description || item.filename; const versionLabel = !item.is_latest && !bindingId ? ` · 已选版本 v${item.revision_number}` : ''; const lockedLabel = isFrozenCreationOnly ? `${item.capability_key}（已装配）` : `${item.capability_key}（已注册）`; return <button type="button" key={item.id} className={`${checked ? 'selected' : ''}${locked ? ' locked' : ''}`} disabled={locked} aria-label={locked ? lockedLabel : undefined} onClick={() => toggle(item)}><span className={`agent-capability-icon ${item.capability_type.toLowerCase()}`}><Boxes size={17}/></span><span><b>{item.capability_key}{versionLabel}</b><small>{detail}</small><em className={isMcp && checked && !configurationPreset ? `mcp-status ${readiness?.state === 'READY' ? 'ready' : readiness?.state === 'UNAVAILABLE' ? 'unavailable' : 'checking'}` : undefined}>{readinessLabel}</em></span><i aria-hidden="true">{checked ? <Check size={15}/> : null}</i></button>; })}</div>
       {(save.error || registrationFailure) && <div className="agent-capability-error"><p>{registrationFailure ?? save.error?.message}</p>{save.error instanceof ApiError && save.error.code === 'AGENT_CONVERSATION_MARKETPLACE_UNAVAILABLE' && onCreateEnhancedConversation && <div className="agent-capability-migration"><span>这条历史会话未在创建时注册原生能力市场。可新建一个空能力会话后，再按需选择要挂载的能力；此会话的历史内容会保留不变。</span><button type="button" className="secondary" disabled={save.isPending} onClick={() => onCreateEnhancedConversation([])}><Plus size={13}/>新建可使用能力的会话</button></div>}</div>}
       <footer>{!configurationPreset && !readonlyCreationOnly && selectedMcpIds.length > 0 && <button type="button" className="secondary" disabled={save.isPending || checkingMcpIds.size > 0} onClick={() => void checkMcpReadiness(selectedMcpIds)}>重新检测 MCP</button>}<button type="button" className="secondary" disabled={save.isPending} onClick={onClose}>{readonlyCreationOnly ? '关闭' : '取消'}</button>{!readonlyCreationOnly && <button type="button" className="primary" disabled={save.isPending || checkingMcpIds.size > 0} onClick={() => save.mutate()}>{save.isPending ? '正在注册…' : bindingId ? '注册到当前会话' : configurationPreset ? '保存会话配置' : '用于新建会话'}</button>}</footer></>}
     </section>
@@ -8423,6 +8433,39 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         reportOperationError(message.bindingId, error);
         return;
       }
+      if (error instanceof ApiError && error.code.startsWith('AGENT_HISTORY_')) {
+        removeLocalMessageProjection(message.id, message.bindingId);
+        const snapshot = composerDraftsByScope.current.get(message.bindingId);
+        if (!snapshot?.content.trim() && !snapshot?.attachments.length && !snapshot?.references.length && !snapshot?.workspaceReferences.length && !snapshot?.annotations.length) {
+          composerDraftsByScope.current.set(message.bindingId, {
+            content: message.content, attachments: message.items, references: message.references,
+            workspaceReferences: message.workspaceReferences ?? [], annotations: message.annotations,
+          });
+          if (activeComposerScope.current === message.bindingId) {
+            replaceComposerDraft(message.content, message.bindingId);
+            setAttachments(message.items); setReferences(message.references);
+            setWorkspaceReferences(message.workspaceReferences ?? []); setComposerAnnotations(message.annotations);
+          }
+          persistComposerDraft(message.bindingId);
+        } else {
+          const restored = { ...message, deliveryState: 'queued' as const, requiresRetry: true };
+          if (activeComposerScope.current === message.bindingId) {
+            commitQueuedMessages(current => current.some(item => item.id === message.id) ? current : [restored, ...current]);
+          } else if (workspace) {
+            const key = host.queuedMessagesStorageKey(workspace.id, message.bindingId);
+            const queue = readQueuedMessages(key);
+            if (!queue.some(item => item.id === message.id)) writeQueuedMessages(key, [restored, ...queue]);
+          }
+        }
+        if (activeComposerScope.current === message.bindingId) {
+          setPendingSubmissionConfirmation(current => current?.submissionId === message.id ? undefined : current);
+          if (!message.nativeGuidance) {
+            setActiveTurnEventId(undefined); setRequestStartedAt(undefined); setTurnState('idle');
+          }
+        }
+        reportOperationError(message.bindingId, error);
+        return;
+      }
       if (context?.nativeGuidance) {
         removeLocalMessageProjection(message.id, message.bindingId);
         reportOperationError(message.bindingId, error);
@@ -8476,7 +8519,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     const storageKey = host.queuedMessagesStorageKey(workspace.id, bindingId);
     if (!readQueueMode(host.queueModeStorageKey(workspace.id, bindingId))) return;
     const queueHead = readQueuedMessages(storageKey).find(message => message.scope === bindingId);
-    if (!queueHead || backgroundQueueDispatches.current.has(queueHead.id) || sendingMessageIds.current.has(queueHead.id)) return;
+    if (!queueHead || queueHead.requiresRetry || backgroundQueueDispatches.current.has(queueHead.id) || sendingMessageIds.current.has(queueHead.id)) return;
     backgroundQueueDispatches.current.add(queueHead.id);
     let accepted = false;
     try {
@@ -8617,8 +8660,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const addWorkspaceReferences = useCallback((paths: string[]) => {
     setWorkspaceReferences(current => [...current, ...paths.flatMap(path => current.some(reference => reference.path === path) ? [] : [{ path, kind: 'file' as const, display_name: path.split('/').filter(Boolean).pop() ?? path }])]);
   }, []);
-  const addConversationReference = useCallback(({ bindingId, eventId, title }: { bindingId: string; eventId: string; title: string }) => {
-    setReferences(current => current.some(reference => reference.sourceBindingId === bindingId) ? current : [...current, { eventId, content: title, sourceBindingId: bindingId, title }]);
+  const addConversationReference = useCallback(({ bindingId, title }: { bindingId: string; eventId: string; title: string }) => {
+    setReferences(current => current.some(reference => reference.sourceBindingId === bindingId) ? current : [...current, { eventId: '', content: title, sourceBindingId: bindingId, title }]);
   }, []);
   const acceptsConversationDrop = useCallback((event: React.DragEvent<HTMLElement>) => Boolean(canCompose && composerScope) && ((features.attachments && event.dataTransfer.types.includes('Files'))
     || event.dataTransfer.types.includes(WORKSPACE_FILE_TRANSFER_TYPE)
@@ -9224,7 +9267,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   useEffect(() => {
     if (!selected || !queueModeEnabled || !queueDispatchReady) return;
     const queueHead = queuedMessages.find(message => message.scope === selected.id && message.deliveryState === 'queued');
-    if (!queueHead || sendingMessageIds.current.has(queueHead.id)) return;
+    if (!queueHead || queueHead.requiresRetry || sendingMessageIds.current.has(queueHead.id)) return;
     const terminalKey = selected.id;
     if (autoDispatchedQueueTerminal.current === terminalKey) return;
     // A draft belongs to this just-completed turn. Mark its terminal edge as
@@ -9787,7 +9830,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (!reference.source_binding_id) return;
     selectConversation(reference.source_binding_id);
     // A fresh identity makes repeated clicks locate the same formal event again.
-    setConversationReferenceTarget({ ...reference });
+    setConversationReferenceTarget(reference.kind === 'conversation' ? undefined : { ...reference });
   };
   const toggleSidebarListMode = () => {
     if (sidebarListMode === 'activity') setActivityPreviewBindingId(undefined);

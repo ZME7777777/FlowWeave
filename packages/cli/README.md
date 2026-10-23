@@ -54,3 +54,22 @@ npx skills add ZME7777777/FlowWeave -g -y
 ## 0.6.0：Runtime、临时侧栏与逐步草稿
 
 `agent runtime-replace <workspace-id>`、`agent sidebar-create|sidebar|sidebar-close` 与 `run stepwise-draft|stepwise-start` 已同步当前公开 API。Runtime replacement、侧栏首条消息和逐步草稿启动均会改变受控状态，CLI 要求 `-H 'Idempotency-Key: <uuid>'`；保存逐步草稿不创建 Attempt，只有显式 `stepwise-start` 才会原子预留并启动。可恢复分片上传继续通过通用 `api`/`upload`：先读取创建上传响应，再用响应的 upload ID 与分片编号上传和完成，不能猜测 upload ID、分片或 owner。
+
+## 只读会话历史
+
+已登录的客户端可读取当前用户有权访问的 Agent Workspace 会话正文：
+
+```bash
+flowweave agent history <workspace-id> <binding-id>
+flowweave agent history <workspace-id> <binding-id> -q history_cursor=<返回的游标>
+flowweave agent history <workspace-id> <binding-id> -q query=关键词 -q max_content_chars=4000
+```
+
+每次读取一个 OpenHands 正式事件窗口；使用 `history_cursor` 向更早历史分页，直到它为空。
+`next_cursor` 是当前正式事件锚点，不是旧历史分页游标。关键词仅过滤当前页；某页没有匹配
+且仍有 `history_cursor` 时，可继续翻页，不能据此断言整个会话没有匹配。单条正文默认最多
+2,000 字符，可通过 `max_content_chars` 调整为 1–10,000；`truncated` 和 `content_chars`
+明确说明是否截断及原始长度。只返回用户／助手可见正文，不返回工具输出或隐藏引用背景。
+
+此命令沿用 `flowweave auth login` 的用户认证与权限；它不自动为 Runtime 授权，也不替代
+后续面向 Agent 的受限 MCP 接入。不要将平台登录凭据放进消息或复制给 Agent。

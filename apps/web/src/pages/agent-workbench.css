@@ -560,3 +560,5 @@
 .agent-schedule-run.active,.agent-schedule-run:has(.agent-workspace-conversation.active){background:#e5ece7;color:#173e29}
 .agent-schedule-run .agent-workspace-conversation-select.active{background:transparent}
 .agent-schedule-history-run .agent-workspace-conversation-select{height:38px;padding-left:0}
+
+.agent-capability-list .agent-capability-name{display:flex;align-items:center;gap:7px}.agent-capability-name b{min-width:0}.agent-capability-list .agent-capability-builtin-badge{flex-shrink:0;margin:0;border:1px solid #d4ded7;border-radius:4px;padding:1px 5px;background:#e7efe9;color:#5e7165;font-size:9px;font-family:inherit;font-style:normal}

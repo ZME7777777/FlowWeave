@@ -30,6 +30,67 @@ from sqlalchemy.orm import Mapped, mapped_column
 from flowweave.shared.database import Base, now, uid
 
 
+class AgentConversationHistoryGrant(Base):
+    """Revocable read-only authority; never stores native message bodies or bearer tokens."""
+
+    __tablename__ = "agent_conversation_history_grants"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    workspace_id: Mapped[str] = mapped_column(String(36), index=True)
+    target_binding_id: Mapped[str] = mapped_column(String(36), index=True)
+    source_binding_id: Mapped[str] = mapped_column(String(36), index=True)
+    target_conversation_id: Mapped[str] = mapped_column(String(100))
+    source_conversation_id: Mapped[str] = mapped_column(String(100))
+    target_runtime_session_id: Mapped[str] = mapped_column(String(36))
+    source_runtime_session_id: Mapped[str] = mapped_column(String(36))
+    token_digest: Mapped[str] = mapped_column(String(64), unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AgentHistorySession(Base):
+    """A renewable history-only lease for one native target; tokens are encrypted at rest."""
+
+    __tablename__ = "agent_history_sessions"
+    __table_args__ = (
+        UniqueConstraint("owner_user_id", "target_binding_id", name="uq_agent_history_target"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    workspace_id: Mapped[str] = mapped_column(String(36), index=True)
+    target_binding_id: Mapped[str] = mapped_column(String(36), index=True)
+    target_conversation_id: Mapped[str] = mapped_column(String(100))
+    target_runtime_session_id: Mapped[str] = mapped_column(String(36))
+    token_digest: Mapped[str] = mapped_column(String(64), unique=True)
+    encrypted_token: Mapped[bytes] = mapped_column(LargeBinary)
+    capability_version_id: Mapped[str | None] = mapped_column(String(36))
+    capability_digest: Mapped[str | None] = mapped_column(String(64))
+    runtime_manifest_json: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    registered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AgentHistorySource(Base):
+    """An explicit, individually revocable source in a target session's allowlist."""
+
+    __tablename__ = "agent_history_sources"
+    __table_args__ = (
+        UniqueConstraint("session_id", "source_binding_id", name="uq_agent_history_source"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    session_id: Mapped[str] = mapped_column(String(36), index=True)
+    source_binding_id: Mapped[str] = mapped_column(String(36), index=True)
+    source_conversation_id: Mapped[str] = mapped_column(String(100))
+    source_runtime_session_id: Mapped[str] = mapped_column(String(36))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class AgentConversationBinding(Base):
     __tablename__ = "agent_conversation_bindings"
     __table_args__ = (
@@ -509,6 +570,7 @@ event.listen(AgentConversationCommand, "before_insert", _normalize_default_host)
 
 __all__ = (
     "AgentConversationBinding",
+    "AgentConversationHistoryGrant",
     "AgentSidebarConversation",
     "AgentConversationCapability",
     "AgentConversationCommand",
