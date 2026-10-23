@@ -23,6 +23,19 @@ function previewDocument(html: string, source: string, loadId: string): string {
   // WindowProxy let the host accept only this load's small readiness signal.
   probe.textContent = `(()=>{
     const id=${JSON.stringify(loadId)},kind=${JSON.stringify(LOAD_MESSAGE)};
+    const previewOrigin=${JSON.stringify(new URL(source).origin)};
+    const openExternalLink=event=>{
+      const link=event.composedPath().find(element=>element instanceof Element&&element.matches('a[href],area[href]'));
+      if(!link)return;
+      let url;try{url=new URL(link.getAttribute('href'),document.baseURI);}catch{return;}
+      if(!['http:','https:'].includes(url.protocol)||url.origin===previewOrigin)return;
+      if(['localhost','0.0.0.0','[::1]'].includes(url.hostname)||/^127\\.\\d+\\.\\d+\\.\\d+$/.test(url.hostname))return;
+      link.setAttribute('target','_blank');link.setAttribute('rel','noopener noreferrer');
+      // Preserve native navigation while preventing SPA handlers from consuming it.
+      event.stopPropagation();
+    };
+    addEventListener('click',openExternalLink,true);
+    addEventListener('auxclick',openExternalLink,true);
     let done=false,scheduled=false,observer;
     const report=phase=>{if(!done){done=true;observer?.disconnect();parent.postMessage({kind,id,phase},'*');}};
     const check=()=>{
@@ -105,7 +118,7 @@ export function RuntimeBrowserFrame({ source, title }: { source: string; title: 
   const phase = current?.phase ?? 'fetching';
   const waiting = phase === 'fetching' || phase === 'rendering';
   return <div className="agent-workspace-browser-content" aria-busy={waiting || phase === 'slow'}>
-    {current?.html && <iframe ref={frame} key={current.loadId} className="agent-workspace-browser-frame" title={title} srcDoc={current.html} sandbox="allow-scripts allow-forms allow-modals allow-popups allow-downloads" referrerPolicy="no-referrer"/>}
+    {current?.html && <iframe ref={frame} key={current.loadId} className="agent-workspace-browser-frame" title={title} srcDoc={current.html} sandbox="allow-scripts allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-downloads" referrerPolicy="no-referrer"/>}
     {phase !== 'ready' && <div className="agent-workspace-browser-loading" role={waiting ? 'status' : 'alert'}>
       {waiting && <i className="agent-workspace-browser-loading-spinner" aria-hidden="true"/>}
       <b>{waiting ? '正在加载页面…' : phase === 'slow' ? '页面加载较慢' : '页面加载失败'}</b>

@@ -39,6 +39,21 @@ export function sandboxedWorkspaceHtmlDocument(content: string, sourcePath: stri
   document.querySelectorAll('link[rel~="stylesheet"][href]').forEach(element => rewriteAttribute(element, 'href'));
   document.querySelectorAll('style').forEach(element => { element.textContent = rewriteCssUrls(element.textContent ?? ''); });
 
+  // Files remain script-free. Native links can open outside the sandbox without
+  // replacing the report or inheriting its restrictions in the new browser tab.
+  document.querySelectorAll('a[href], area[href]').forEach(link => {
+    const href = link.getAttribute('href')?.trim() ?? '';
+    if (!/^(?:https?:)?\/\//i.test(href)) return;
+    try {
+      const url = new URL(href, window.location.href);
+      const localService = ['localhost', '0.0.0.0', '[::1]'].includes(url.hostname) || /^127\.\d+\.\d+\.\d+$/.test(url.hostname);
+      if (url.origin === window.location.origin || localService) return;
+      link.setAttribute('href', url.href);
+      link.setAttribute('target', '_blank');
+      link.setAttribute('rel', 'noopener noreferrer');
+    } catch { /* Ignore invalid links. */ }
+  });
+
   const origin = window.location.origin;
   const csp = document.createElement('meta');
   csp.httpEquiv = 'Content-Security-Policy';

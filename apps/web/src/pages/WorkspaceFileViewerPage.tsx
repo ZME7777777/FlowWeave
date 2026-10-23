@@ -45,7 +45,7 @@ export function WorkspaceFileViewerPage({ route }: { route: WorkspaceFileViewerR
   else if (isPdf(route.path)) content = <iframe className="workspace-file-viewer-media" title={filename} src={fileUrl}/>;
   else if (preview.isLoading) content = <p className="workspace-file-viewer-state"><LoaderCircle className="spin" size={22}/>正在加载文件…</p>;
   else if (preview.isError) content = <p className="workspace-file-viewer-state error"><AlertCircle size={20}/>文件不可访问：请确认仍已登录且拥有当前会话或工作目录的访问权限。</p>;
-  else if (isHtml(route.path) && preview.data) content = <iframe className="workspace-file-viewer-html" sandbox="" title={filename} srcDoc={sandboxedWorkspaceHtmlDocument(preview.data.content, route.path, path => agentWorkspaceFileUrl(route.workspaceId, path, { ...options, download: false }))}/>;
+  else if (isHtml(route.path) && preview.data) content = <iframe className="workspace-file-viewer-html" sandbox="allow-popups allow-popups-to-escape-sandbox" title={filename} srcDoc={sandboxedWorkspaceHtmlDocument(preview.data.content, route.path, path => agentWorkspaceFileUrl(route.workspaceId, path, { ...options, download: false }))}/>;
   else if (preview.data) content = <pre className="workspace-file-viewer-text">{preview.data.content}</pre>;
   else content = <p className="workspace-file-viewer-state"><FileWarning size={20}/>此文件不提供在线预览，请下载后查看。</p>;
 

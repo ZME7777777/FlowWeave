@@ -1553,7 +1553,54 @@ test('conversation website links open external browser tabs while internal servi
   await expect(panels).toHaveCount(1);
 });
 
-test('HTML reports use a same-origin viewer URL that copied tabs reopen without Runtime proxying', async ({ page }) => {
+test('Runtime page external links and browser addresses open native tabs without replacing the service', async ({ page, context }) => {
+  const externalUrl = 'https://external.example.test/runtime';
+  await context.route('https://external.example.test/**', route => route.fulfill({ contentType: 'text/html', body: '<h1>External destination</h1><script>document.body.dataset.scriptRan="true"</script>' }));
+  await openWorkspace(page, [
+    { id: 'service-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '预览服务', timestamp: now } },
+    { id: 'service-agent', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'service-user', content: '[工作区页面](http://localhost:3000/)', timestamp: now } },
+  ]);
+  let proxyRequests = 0;
+  await page.route('**/api/v1/agent-workspaces/schedule-workspace/browser/**', async route => {
+    proxyRequests += 1;
+    await route.fulfill({ contentType: 'text/html', body: `<html><body><h1>工作区服务</h1><a href="#section">页内导航</a><h2 id="section">本地章节</h2><script>
+      const link=document.createElement('a');link.href='${externalUrl}';link.target='_top';link.textContent='动态外链';document.body.append(link);
+      link.addEventListener('click',event=>{event.preventDefault();document.body.dataset.consumed='true';});
+    </script></body></html>` });
+  });
+  await page.goto('/agent/conversations/scheduled-conversation');
+  await page.getByRole('link', { name: '工作区页面' }).click();
+  const panel = page.locator('.agent-workspace-browser-tab-panel.active');
+  const frame = panel.locator('iframe').contentFrame();
+  await expect(frame.getByRole('link', { name: '页内导航' })).toHaveAttribute('href', '#section');
+  await expect(frame.getByRole('link', { name: '页内导航' })).not.toHaveAttribute('target', '_blank');
+  const initialProxyRequests = proxyRequests;
+  const mainUrl = page.url();
+  for (const action of ['link', 'address']) {
+    const popupPromise = page.waitForEvent('popup');
+    if (action === 'link') await frame.getByRole('link', { name: '动态外链' }).click();
+    else {
+      await panel.getByRole('textbox', { name: '网页地址', exact: true }).fill(externalUrl);
+      await panel.getByRole('textbox', { name: '网页地址', exact: true }).press('Enter');
+    }
+    const popup = await popupPromise;
+    await expect(popup).toHaveURL(externalUrl);
+    await expect(popup.locator('body')).toHaveAttribute('data-script-ran', 'true');
+    expect(await popup.evaluate(() => window.opener === null)).toBe(true);
+    await popup.close();
+    await expect(page).toHaveURL(mainUrl);
+    await expect(frame.getByRole('heading', { name: '工作区服务' })).toBeVisible();
+    await expect(frame.locator('body')).not.toHaveAttribute('data-consumed', 'true');
+    await expect(panel.getByRole('textbox', { name: '网页地址', exact: true })).toHaveValue('http://localhost:3000/');
+    await expect(page.locator('.agent-workspace-browser-tab-panel')).toHaveCount(1);
+    expect(proxyRequests).toBe(initialProxyRequests);
+    expect(context.pages()).toHaveLength(1);
+  }
+});
+
+test('HTML reports use a same-origin viewer URL that copied tabs reopen without Runtime proxying', async ({ page, context }) => {
+  const externalUrl = 'https://external.example.test/project';
+  await context.route('https://external.example.test/**', route => route.fulfill({ contentType: 'text/html', body: '<h1>External project</h1><script>document.body.dataset.scriptRan="true"</script>' }));
   const reportPath = '/runtime/workspace/project/reports/daily.html';
   let browserProxyRequests = 0;
   await openWorkspace(page, [
@@ -1571,12 +1618,25 @@ test('HTML reports use a same-origin viewer URL that copied tabs reopen without 
       status: 200,
       contentType: 'text/html',
       headers: { 'X-Preview-Total-Bytes': '105' },
-      body: '<!doctype html><html><body><h1>会话日报</h1><script>document.body.dataset.scriptRan="true"</script></body></html>',
+      body: '<!doctype html><html><body><h1>会话日报</h1><a href="https://external.example.test/project" target="_self">项目链接</a><script>document.body.dataset.scriptRan="true"</script></body></html>',
     });
   });
 
   await page.goto('/agent/conversations/scheduled-conversation');
   await page.getByRole('link', { name: '打开 HTML 日报' }).click();
+  await expect(page.getByTitle('daily.html HTML 预览').contentFrame().getByRole('heading', { name: '会话日报' })).toBeVisible();
+  const openProject = async (link: ReturnType<Page['getByRole']>) => {
+    const popupPromise = page.waitForEvent('popup');
+    await link.click();
+    const popup = await popupPromise;
+    await expect(popup).toHaveURL(externalUrl);
+    // The destination does not inherit the report's script-free sandbox.
+    await expect(popup.locator('body')).toHaveAttribute('data-script-ran', 'true');
+    expect(await popup.evaluate(() => window.opener === null)).toBe(true);
+    await popup.close();
+  };
+  await openProject(page.getByTitle('daily.html HTML 预览').contentFrame().getByRole('link', { name: '项目链接' }));
+  await expect(page).toHaveURL(/\/agent\/conversations\/scheduled-conversation$/);
   await expect(page.getByTitle('daily.html HTML 预览').contentFrame().getByRole('heading', { name: '会话日报' })).toBeVisible();
   await page.getByRole('dialog', { name: '文件预览' }).getByRole('button', { name: '在新标签页打开', exact: true }).click();
 
@@ -1588,6 +1648,9 @@ test('HTML reports use a same-origin viewer URL that copied tabs reopen without 
   await expect(viewerFrame.getByRole('heading', { name: 'daily.html' })).toBeVisible();
   await expect(viewerFrame.getByTitle('daily.html').contentFrame().getByRole('heading', { name: '会话日报' })).toBeVisible();
   await expect(viewerFrame.getByTitle('daily.html').contentFrame().locator('body')).not.toHaveAttribute('data-scriptRan', 'true');
+  await openProject(viewerFrame.getByTitle('daily.html').contentFrame().getByRole('link', { name: '项目链接' }));
+  await expect(address).toHaveValue(viewerUrl);
+  await expect(viewerFrame.getByTitle('daily.html').contentFrame().getByRole('heading', { name: '会话日报' })).toBeVisible();
   await expect(page.locator('.agent-workspace-tab-launcher')).toHaveCount(0);
   await expect(page.locator('.agent-workspace-browser-tab-panel')).toHaveCount(1);
 

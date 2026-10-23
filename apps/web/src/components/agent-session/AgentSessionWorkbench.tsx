@@ -31,6 +31,7 @@ import { selectCapabilityVersion, selectCapabilityVersions } from '../../utils/c
 import { SubagentAvatar } from '../SubagentAvatar';
 import { FileTypeIcon } from '../FileTypeIcon';
 import { WebsiteIcon } from '../WebsiteIcon';
+import { sandboxedWorkspaceHtmlDocument as sandboxedHtmlPreviewDocument } from '../workspace-file-preview';
 import { subagentAvatarSlots, type SubagentAvatarSlot } from '../../utils/subagentAvatar';
 import { workspaceFileChanges, workspaceRelativePath, type WorkspaceFileChange } from './fileChanges';
 import type { AgentAttachment, AgentConversation, AgentConversationActivity, AgentConversationAnnotation, AgentConversationContext, AgentConversationCredentialSyncEntry, AgentConversationHydration, AgentConversationInputReadiness, AgentConversationPage, AgentConversationReference, AgentConversationSearch, AgentPendingConfirmationAction, AgentSessionCapability, AgentSessionMcpReadiness, AgentSessionWorkDirectory, AgentSessionWorkDirectoryList, AgentSessionWorkspaceDetails, AgentWorkspaceReference, CapabilityAsset, ModelProvider, OpenHandsConversationEvent, OpenHandsConversationEventBatch, RuntimeTaskControlSnapshot, RuntimeTaskUsageSnapshot, WebsiteCredential, WorkspaceGitChangeKind, WorkspaceGitChangedFile, WorkspaceGitChanges, WorkspaceGitCommitDetails, WorkspaceGitFileDiff } from '../../types';
@@ -2116,55 +2117,6 @@ function isHtmlPreviewable(path: string, mimeType = ''): boolean {
   return mimeType.toLowerCase().split(';', 1)[0] === 'text/html' || /\.html?$/i.test(path);
 }
 
-function sandboxedHtmlPreviewDocument(content: string, sourcePath: string, workspaceFileUrl: (path: string) => string): string {
-  const document = new DOMParser().parseFromString(content, 'text/html');
-  const resourceUrl = (value: string): string | undefined => {
-    const source = value.trim();
-    if (!source || source.startsWith('#') || /^(?:data|blob):/i.test(source)) return source;
-    if (/^[a-z][a-z\d+.-]*:/i.test(source) || source.startsWith('//')) return undefined;
-    try {
-      const sourceDirectory = sourcePath.slice(0, sourcePath.lastIndexOf('/') + 1);
-      const resolved = new URL(source, `https://workspace.invalid${sourceDirectory}`).pathname;
-      return workspaceFileUrl(decodeURIComponent(resolved));
-    } catch {
-      return undefined;
-    }
-  };
-  const rewriteCssUrls = (css: string) => css.replace(/url\(\s*(['"]?)([^'")]+)\1\s*\)/gi, (match, _quote, value: string) => {
-    const resolved = resourceUrl(value);
-    return resolved ? `url("${resolved}")` : match;
-  });
-  const rewriteAttribute = (element: Element, name: string) => {
-    const value = element.getAttribute(name);
-    if (value === null) return;
-    const resolved = resourceUrl(value);
-    if (resolved === undefined) element.removeAttribute(name);
-    else element.setAttribute(name, resolved);
-  };
-
-  document.querySelectorAll('script, base, object, embed, iframe, form, button, input, select, textarea').forEach(element => element.remove());
-  document.querySelectorAll('meta[http-equiv]').forEach(element => element.remove());
-  document.querySelectorAll<HTMLElement>('*').forEach(element => {
-    for (const attribute of [...element.attributes]) {
-      if (attribute.name.toLowerCase().startsWith('on')) element.removeAttribute(attribute.name);
-    }
-    if (element.hasAttribute('style')) element.setAttribute('style', rewriteCssUrls(element.getAttribute('style') ?? ''));
-  });
-  document.querySelectorAll('img[src], audio[src], video[src], source[src], track[src], input[src], image[href], image[xlink\\:href]').forEach(element => {
-    rewriteAttribute(element, element.hasAttribute('src') ? 'src' : element.hasAttribute('href') ? 'href' : 'xlink:href');
-  });
-  document.querySelectorAll('video[poster]').forEach(element => rewriteAttribute(element, 'poster'));
-  document.querySelectorAll('link[rel~="stylesheet"][href]').forEach(element => rewriteAttribute(element, 'href'));
-  document.querySelectorAll('style').forEach(element => { element.textContent = rewriteCssUrls(element.textContent ?? ''); });
-
-  const origin = window.location.origin;
-  const csp = document.createElement('meta');
-  csp.httpEquiv = 'Content-Security-Policy';
-  csp.content = `default-src 'none'; base-uri 'none'; script-src 'none'; connect-src 'none'; form-action 'none'; frame-src 'none'; object-src 'none'; style-src 'unsafe-inline' ${origin}; img-src data: blob: ${origin}; font-src data: ${origin}; media-src ${origin}`;
-  (document.head || document.documentElement).prepend(csp);
-  return `<!doctype html>\n${document.documentElement.outerHTML}`;
-}
-
 function filePreviewLanguage(path: string): string | undefined {
   const extension = path.split('.').pop()?.toLowerCase();
   switch (extension) {
@@ -3846,7 +3798,7 @@ function ConversationFilePreviewDialog({ request, workspaceId, bindingId, workDi
                   : previewQuery.isError
                     ? <p>HTML 页面无法读取，请在新标签页中打开或下载。</p>
                     : htmlPreviewDocument
-                      ? <iframe className="agent-file-html-preview" sandbox="" title={`${request.filename} HTML 预览`} srcDoc={htmlPreviewDocument}/>
+                      ? <iframe className="agent-file-html-preview" sandbox="allow-popups allow-popups-to-escape-sandbox" title={`${request.filename} HTML 预览`} srcDoc={htmlPreviewDocument}/>
                       : null
                 : textPreviewable
                   ? previewQuery.isLoading
@@ -3923,6 +3875,11 @@ function WorkspaceBrowser({ tab, workspaceId, bindingId, workDirectoryId, browse
   const navigate = () => {
     const next = normalizeBrowserUrl(address);
     if (!next) return;
+    if (!isWorkspaceBrowserUrl(next)) {
+      window.open(next, '_blank', 'noopener,noreferrer');
+      setAddress(tab.address ?? tab.url ?? '');
+      return;
+    }
     setAddress(next);
     onUrlChange(next, new URL(next).hostname);
   };
@@ -3932,7 +3889,7 @@ function WorkspaceBrowser({ tab, workspaceId, bindingId, workDirectoryId, browse
       <div className="agent-workspace-browser-navigation" aria-label="浏览器导航"><button type="button" aria-label="后退" title="后退" disabled><ArrowLeft size={14}/></button><button type="button" aria-label="前进" title="前进" disabled><ArrowRight size={14}/></button><i aria-hidden="true"/><button type="button" aria-label="刷新当前页面" title="刷新" disabled={!source && !tab.document} onClick={() => setRefreshKey(current => current + 1)}><RefreshCw size={14}/></button></div>
       <label><input aria-label="网页地址" value={address} placeholder="搜索或输入网址" onChange={event => setAddress(event.target.value)} onBlur={navigate}/></label>
     </form>
-    {tab.document ? <iframe key={`document:${refreshKey}`} className="agent-workspace-browser-frame" sandbox="" title={tab.title || 'HTML 页面'} srcDoc={tab.document}/> : source ? platformFileViewer ? <iframe key={`${source}:${refreshKey}`} className="agent-workspace-browser-frame" title={tab.title || '内置浏览器页面'} src={source}/> : <RuntimeBrowserFrame key={`${source}:${refreshKey}`} source={source} title={tab.title || '内置浏览器页面'}/> : startPage ?? <div className="agent-workspace-browser-empty"><Globe2 size={28}/><b>安全内置浏览器</b><span>输入 HTTP 或 HTTPS 地址以在隔离页面中打开。</span></div>}
+    {tab.document ? <iframe key={`document:${refreshKey}`} className="agent-workspace-browser-frame" sandbox="allow-popups allow-popups-to-escape-sandbox" title={tab.title || 'HTML 页面'} srcDoc={tab.document}/> : source ? platformFileViewer ? <iframe key={`${source}:${refreshKey}`} className="agent-workspace-browser-frame" title={tab.title || '内置浏览器页面'} src={source}/> : <RuntimeBrowserFrame key={`${source}:${refreshKey}`} source={source} title={tab.title || '内置浏览器页面'}/> : startPage ?? <div className="agent-workspace-browser-empty"><Globe2 size={28}/><b>安全内置浏览器</b><span>输入 HTTP 或 HTTPS 地址以在隔离页面中打开。</span></div>}
   </section>;
 }
 
