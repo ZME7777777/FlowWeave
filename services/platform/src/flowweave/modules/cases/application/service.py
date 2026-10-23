@@ -757,6 +757,65 @@ def _create_case_control_plan(
     return _control_plan_dict(plan)
 
 
+def execute_case_control_plan(db: Session, case_id: str, plan_id: str) -> dict[str, Any]:
+    """Validate and dispatch one Case plan through established orchestration services."""
+
+    item = _case(db, case_id)
+    plan = db.get(CaseControlPlan, plan_id)
+    if plan is None or plan.case_id != item.id:
+        raise not_found("case_control_plan", plan_id)
+    if plan.state in {"SUCCEEDED", "CANCELLED"}:
+        return _control_plan_dict(plan)
+    if plan.state == "EXECUTING":
+        raise conflict("Case control plan is already executing", plan_id=plan.id)
+    if item.state in {"COMPLETED", "ARCHIVED"}:
+        raise illegal("terminal case cannot execute control plans", state=item.state)
+    stage = _stage(db, item, plan.stage_id)
+    if stage.state != "ACTIVE":
+        raise conflict("only the active Case stage can execute plans", state=stage.state)
+    if plan.execution_flow_run_id != stage.current_execution_flow_run_id:
+        raise conflict("plan no longer targets the current Case execution copy", plan_id=plan.id)
+    plan.state = "VALIDATED"
+    plan.validated_at = now()
+    finish(db)
+    try:
+        plan.state = "EXECUTING"
+        if plan.action == "CREATE_EXECUTION_COPY":
+            result = {"case": launch_case_stage(db, item.id, stage.id, CaseStageLaunchWrite())}
+        elif plan.action == "START_EXECUTION":
+            result = {
+                "decision": start_case_stage_execution(
+                    db,
+                    item.id,
+                    stage.id,
+                    CaseStageExecutionStartWrite(reason=plan.reason),
+                )
+            }
+        elif plan.action == "STOP_EXECUTION":
+            if not stage.current_execution_flow_run_id:
+                raise conflict("Case stage has no execution copy", stage_id=stage.id)
+            result = {
+                "flow_run": orchestration.cancel_run(
+                    db, stage.current_execution_flow_run_id, f"case-plan-stop:{plan.id}"
+                )
+            }
+        else:
+            raise illegal("Case control plan action is not yet dispatchable", action=plan.action)
+    except Exception as exc:
+        plan.state = "FAILED"
+        plan.error_code = str(getattr(exc, "code", "CASE_CONTROL_PLAN_FAILED"))
+        plan.result_json = {"code": plan.error_code}
+        plan.executed_at = now()
+        finish(db)
+        raise
+    plan.state = "SUCCEEDED"
+    plan.result_json = result
+    plan.error_code = None
+    plan.executed_at = now()
+    finish(db)
+    return _control_plan_dict(plan)
+
+
 def start_case_stage_execution(
     db: Session,
     case_id: str,

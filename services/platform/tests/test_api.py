@@ -410,6 +410,88 @@ def test_case_control_plan_persists_scoped_input_snapshot(client):
     assert detail.json()["control_plans"][0]["id"] == plan["id"]
 
 
+def test_case_control_plan_dispatches_copy_and_start_actions(client, skill_capability):
+    asset = create_asset(client, skill_capability, "计划调度节点")
+    flow = create_flow(client, asset["id"])
+    provider = client.post(
+        "/api/v1/model-providers",
+        json={
+            "name": "计划调度模型",
+            "base_url": "https://models.example.test/v1",
+            "api_key": "plan-dispatch-secret",
+            "models": [{"model_name": "plan-dispatch", "enabled": True, "is_default": True}],
+        },
+    )
+    assert provider.status_code == 201, provider.text
+    template = client.post(
+        f"/api/v1/flows/{flow['id']}/automatic-runs",
+        json={
+            "environment_version_id": client.environment_version_id,
+            "start_node_key": flow["nodes"][0]["instance_key"],
+            "node_plans": {
+                node["instance_key"]: {
+                    "startup_prompt": f"执行 {node['instance_key']}",
+                    "agent_preset": {
+                        "model_provider_id": provider.json()["id"],
+                        "model_name": "plan-dispatch",
+                    },
+                    **({"input_urls": {"prd": "https://example.test/plan"}} if index == 0 else {}),
+                }
+                for index, node in enumerate(flow["nodes"])
+            },
+        },
+    )
+    assert template.status_code == 201, template.text
+    case = client.post(
+        "/api/v1/cases",
+        json={"name": "计划调度事项", "stages": [{"stage_key": "run", "name": "执行"}]},
+    )
+    assert case.status_code == 201, case.text
+    stage = case.json()["stages"][0]
+    bound = client.put(
+        f"/api/v1/cases/{case.json()['id']}/stages/{stage['id']}/flow-run",
+        json={"flow_run_id": template.json()["id"], "execution_mode": "CONTINUOUS"},
+    )
+    assert bound.status_code == 200, bound.text
+
+    copy = client.post(
+        f"/api/v1/cases/{case.json()['id']}/control-plans",
+        json={
+            "stage_id": stage["id"],
+            "action": "CREATE_EXECUTION_COPY",
+            "idempotency_key": "dispatch-copy",
+            "reason": "创建隔离副本。",
+        },
+    )
+    assert copy.status_code == 201, copy.text
+    copied = client.post(
+        f"/api/v1/cases/{case.json()['id']}/control-plans/{copy.json()['id']}/execute"
+    )
+    assert copied.status_code == 200, copied.text
+    assert copied.json()["state"] == "SUCCEEDED"
+
+    current = client.get(f"/api/v1/cases/{case.json()['id']}").json()["stages"][0]
+    start = client.post(
+        f"/api/v1/cases/{case.json()['id']}/control-plans",
+        json={
+            "stage_id": stage["id"],
+            "action": "START_EXECUTION",
+            "idempotency_key": "dispatch-start",
+            "reason": "启动隔离副本。",
+        },
+    )
+    assert start.status_code == 201, start.text
+    started = client.post(
+        f"/api/v1/cases/{case.json()['id']}/control-plans/{start.json()['id']}/execute"
+    )
+    assert started.status_code == 200, started.text
+    assert started.json()["state"] == "SUCCEEDED"
+    assert (
+        client.get(f"/api/v1/flow-runs/{current['current_execution_flow_run_id']}").json()["state"]
+        == "ACTIVE"
+    )
+
+
 def test_control_binding_plan_is_limited_to_its_active_case_stage(client):
     provider = client.post(
         "/api/v1/model-providers",
