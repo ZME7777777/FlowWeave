@@ -3397,7 +3397,9 @@ def _resolve_source_conversation_reference(
         )
     return {
         "event_id": branch.cursor or source.openhands_conversation_id,
-        "content": "\n\n".join(reversed(selected)),
+        # The final budget includes inter-message separators, not just text.
+        # Keep the newest context when joining pushes it over the item limit.
+        "content": "\n\n".join(reversed(selected))[-10_000:],
     }
 
 
