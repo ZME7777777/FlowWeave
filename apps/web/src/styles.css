@@ -607,10 +607,10 @@ section.modal.hook-editor>header{padding:30px 24px 10px!important}
 .flow-asset-group-items>button small{margin-top:3px;color:var(--muted);font:8px 'DM Mono'}
 
 /* Give the primary tabs a deliberate start point after the brand mark. */
-.topbar nav{margin-left:20px;gap:4px}
-.topbar nav button{padding:0 16px}
-@media(max-width:1260px){.topbar nav{margin-left:8px;gap:2px}.topbar nav button{padding:0 9px}}
-@media(max-width:1080px){.topbar nav{margin-left:0}.topbar nav button{padding:0 8px}}
+.topbar nav{margin-left:4px;gap:0}
+.topbar nav button{padding:0 11px}
+@media(max-width:1260px){.topbar nav{margin-left:2px;gap:0}.topbar nav button{padding:0 8px}}
+@media(max-width:1080px){.topbar nav{margin-left:0}.topbar nav button{padding:0 7px}}
 
 
 /* Keep the account menu aligned to its trigger and compact at a glance. */
