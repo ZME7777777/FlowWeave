@@ -1,4 +1,4 @@
-import { Activity, Box, Boxes, BrainCircuit, CalendarClock, ChevronDown, GitFork, Hexagon, KeyRound, Library, LogOut, MessageSquareCode, PlayCircle, Settings, TerminalSquare, UsersRound, X } from 'lucide-react';
+import { Activity, Box, BrainCircuit, CalendarClock, ChevronDown, Component, GitFork, Hexagon, KeyRound, Library, LogOut, MessageSquareCode, PlayCircle, Settings, TerminalSquare, UsersRound, X } from 'lucide-react';
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useWorkbenchStore } from './store/workbench';
@@ -32,12 +32,12 @@ function PageLoading() {
 }
 
 const nav = [
-  { view: 'nodes' as const, label: '节点资产', icon: Boxes },
+  { view: 'nodes' as const, label: '节点资产', icon: Component },
   { view: 'capabilities' as const, label: '能力仓库', icon: Library },
   { view: 'flows' as const, label: '流程编排', icon: GitFork },
   { view: 'runs' as const, label: '流程运行', icon: PlayCircle },
   { view: 'cases' as const, label: '场景空间', icon: Box },
-  { view: 'schedules' as const, label: '定时任务', icon: CalendarClock },
+  { view: 'schedules' as const, label: '定时调度', icon: CalendarClock },
   { view: 'agent-workbench' as const, label: 'Agent 会话', icon: MessageSquareCode },
 ];
 
