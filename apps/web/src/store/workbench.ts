@@ -64,7 +64,7 @@ const safeLocalStorage: StateStorage = {
 export const useWorkbenchStore = create<WorkbenchState>()(
   persist<WorkbenchState, [], [], PersistedWorkbenchState>(
     set => ({
-      view: 'nodes',
+      view: 'cases',
       setView: view => set({ view }),
       openRun: (selectedRunId, selectedNodeRunId) => set({
         view: 'workbench', selectedRunId, selectedNodeRunId, selectedAttemptId: undefined,
