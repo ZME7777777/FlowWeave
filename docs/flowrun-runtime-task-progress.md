@@ -9763,3 +9763,16 @@ health 与 readiness 通过，未修改服务器配置、Runtime、数据库、�
 remote-release-finish 完成健康与版本门禁，并回收一份过期成功 Web 上下文及一个
 过期精确 rollback tag，保留最近三份成功上下文、回滚版本与所有引用版本，未清理
 共享 BuildKit、容器、卷、Workspace 或数据库备份。
+
+
+### FR-647 用户消息时间留白与右侧内收 — DONE
+
+依赖：FR-646 DONE。将用户消息时间向下移动 4px、向左内收 8px，保留四角 18px
+与青雾白配色；同步增加下方留白，时间栏通过透明内边距维持消息操作的悬停命中连续。
+验证短消息、长消息、复制操作和分屏布局，并按用户授权仅部署本次 Web 提交。
+
+验收：Web typecheck 与 2 项既有 Chromium 定向回归通过，覆盖消息正文／公式及分屏
+布局。页面实测短消息、长消息时间间距均从约 5px 增至 9px，右侧内收从 1px 增至
+9px；四角、配色与气泡尺寸保持，截图核对通过。鼠标连续移动至操作栏并正常复制
+正文通过。git diff --check、CURRENT 唯一性和依赖核对通过；Alembic 唯一 head 仍为
+0158_schedule_china_timezone。当前及下一可执行切片均为 NONE；待本次授权 Web 发布。
