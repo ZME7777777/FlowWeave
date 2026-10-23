@@ -10300,3 +10300,8 @@ FR-665 合并阶段：416 项后端回归通过，包含旧引用预算用例按
 原显式正文预算拒绝仍保留；新建／既有／定时配置、消息来源与主分支新增功能一并验证。
 Alembic 新增 0162_merge_history_credential，仅连接两个独立 revision 分支，不修改已
 发布迁移。固定 Runtime source lock 沿用主分支 73e3cd8e，无额外 OpenHands 改动。
+
+FR-665 发布前补齐：真实 PostgreSQL 独立库完成当前 head 全量 upgrade、回退至 0158
+及重升，双用户实际 binding／授权、并发续租、过期撤销与非特权角色强制 RLS 读写均通过。
+能力导入只允许内置 MCP 精确 Authorization Secret Registry 占位符；其余明文、
+变形引用、其他服务与非 MCP 类型仍拒绝，补充 7 项导入安全回归。

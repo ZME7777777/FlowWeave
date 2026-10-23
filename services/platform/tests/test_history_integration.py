@@ -475,3 +475,61 @@ def test_builtin_mcp_cannot_be_manually_registered_or_replaced(setup):
     assert integration.ensure(g.db, g.workspace, g.target, ())
     assert g.db.scalar(select(AgentHistorySession)) is None
     assert integration.ensure(g.db, g.workspace, g.target, g.refs)
+
+
+def test_builtin_mcp_can_use_the_governed_import_pipeline(setup, monkeypatch):
+    import base64
+
+    from flowweave.modules.catalog.application import capability_imports
+    from flowweave.shared.schemas import CapabilityValidateWrite
+
+    monkeypatch.setattr(
+        capability_imports,
+        "get_settings",
+        lambda: SimpleNamespace(capability_import_ttl_seconds=900),
+    )
+    config = {"mcpServers": {integration.SERVER_NAME: setup.config}}
+    prepared = capability_imports.prepare_validation(
+        CapabilityValidateWrite(
+            capability_type="MCP",
+            filename="history.json",
+            content_base64=base64.b64encode(json.dumps(config).encode()).decode(),
+        )
+    )
+    assert prepared.preview["capabilities"][0]["normalized_config"] == setup.config
+
+
+@pytest.mark.parametrize(
+    "change", ["literal", "suffix", "other-reference", "other-server", "extra-secret", "other-type"]
+)
+def test_builtin_import_exception_never_permits_plaintext_or_other_secrets(setup, change):
+    import base64
+
+    from flowweave.modules.catalog.application import capability_imports
+    from flowweave.shared.schemas import CapabilityValidateWrite
+
+    server = {**setup.config, "headers": dict(setup.config["headers"])}
+    name = integration.SERVER_NAME
+    kind = "MCP"
+    if change == "literal":
+        server["headers"]["Authorization"] = "Bearer fixture-private-key"
+    elif change == "suffix":
+        server["headers"]["Authorization"] += " private"
+    elif change == "other-reference":
+        server["headers"]["Authorization"] = "Bearer ${OTHER_SECRET}"
+    elif change == "other-server":
+        name = "another-server"
+    elif change == "extra-secret":
+        server["headers"]["password"] = "fixture-private-key"
+    else:
+        kind = "AGENT_PROFILE"
+    config = {"mcpServers": {name: server}}
+    with pytest.raises(DomainError) as caught:
+        capability_imports.prepare_validation(
+            CapabilityValidateWrite(
+                capability_type=kind,
+                filename="history.json",
+                content_base64=base64.b64encode(json.dumps(config).encode()).decode(),
+            )
+        )
+    assert caught.value.code == "IMPORT_REJECTED"

@@ -229,17 +229,30 @@ def _reject(message: str, **details: Any) -> DomainError:
     return DomainError("IMPORT_REJECTED", message, 422, details)
 
 
-def _reject_sensitive(value: object, path: str = "$") -> None:
+def _reject_sensitive(
+    value: object, path: str = "$", *, mcp_secret_references: bool = False
+) -> None:
     if isinstance(value, dict):
         mapping = cast(dict[object, object], value)
         for key, child in mapping.items():
             if str(key).lower() in SENSITIVE:
+                if (
+                    mcp_secret_references
+                    and path == "$.mcpServers.flowweave-reference-history.headers"
+                    and key == "Authorization"
+                    and child == "Bearer ${FLOWWEAVE_HISTORY_ACCESS}"
+                ):
+                    # This exact built-in reference contains no credential.
+                    # OpenHands expands it from the target's Secret Registry.
+                    continue
                 raise _reject("Capability config contains a secret field", path=f"{path}.{key}")
-            _reject_sensitive(child, f"{path}.{key}")
+            _reject_sensitive(child, f"{path}.{key}", mcp_secret_references=mcp_secret_references)
     elif isinstance(value, list):
         sequence = cast(list[object], value)
         for index, child in enumerate(sequence):
-            _reject_sensitive(child, f"{path}[{index}]")
+            _reject_sensitive(
+                child, f"{path}[{index}]", mcp_secret_references=mcp_secret_references
+            )
 
 
 def _context_capability(
@@ -1766,7 +1779,7 @@ def _decode_and_validate(payload: CapabilityValidateWrite) -> tuple[bytes, dict[
     if not isinstance(parsed_object, dict):
         raise _reject("Config root must be an object")
     parsed = cast(dict[str, Any], parsed_object)
-    _reject_sensitive(parsed)
+    _reject_sensitive(parsed, mcp_secret_references=payload.capability_type == "MCP")
     if payload.capability_type == "MCP":
         capabilities = _mcp_capabilities(parsed)
     elif payload.capability_type == "HOOK":
