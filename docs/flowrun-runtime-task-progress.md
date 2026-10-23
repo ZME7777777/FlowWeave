@@ -9674,3 +9674,26 @@ Alembic 唯一 head 仍为 0158_schedule_china_timezone。仅修改 Web 和协�
 保留原文字对比、气泡尺寸与交互。git diff --check、CURRENT 唯一性和依赖核对通过；
 Alembic 唯一 head 仍为 0158_schedule_china_timezone。当前及下一可执行切片均为 NONE；
 未部署。
+
+
+FR-643 发布补记（2026-10-23）：用户授权部署后，以已提交版本
+`02e1790bd98f3d5ec5f0df5a64d3c2cbf099eb5c` 通过 Web 正式预检，并由
+remote-release-prepare 准备最小上下文，源归档 SHA-256 为
+`3db3daea194366769116c275c659490660462afa9b4c80fdc12da476ba18d615`。
+保留旧 Web 精确回滚镜像后，仅构建并重建 Web；linux/amd64 与 OCI revision
+核对通过，新镜像 ID 为
+`sha256:ecb2b6d1e6b5a1e7ca5bce2e2554d6bc73ccb0b263c884dc85eefc256f16549c`。
+其他 37 个运行容器的身份、镜像与启动时间保持一致，Web HTTP、API／stream-api
+health 与 readiness 均通过。未修改远端 Compose／env、Runtime、数据库、卷或工作区。
+
+全新公网页面验证登录、Agent 深层路由、API 前缀、未认证边界和根登录入口通过，
+页面脚本错误为零。线上实际静态资源配合受控 API／WebSocket 的 11 项 Chromium
+回归全部通过，覆盖置顶独立拖拽排序／恢复／账号隔离／存储降级、跨区域拖拽边界、
+取消置顶的多页定位／失败恢复／迟到响应隔离、会话引用与普通排序及手动折叠保持。
+浏览器实际加载的 39 个 JavaScript 文件（含工作台模块）SHA-256 与运行镜像一致；
+未向真实会话发送测试消息，不将受控接口回归记为真实 Runtime 业务验收。
+本次只发布 FR-643 的固定提交，后续 FR-644 配色提交未包含在本次镜像中。
+
+remote-release-finish 完成版本、健康门禁与受管发布收尾，回收一份过期成功 Web
+上下文和一个过期精确 rollback tag，保留最近三份成功上下文、回滚版本和所有引用
+版本；未清理共享 BuildKit、容器、卷、Workspace 或数据库备份。
