@@ -574,6 +574,7 @@ def write_case_files(
     objective: str,
     state: str,
     stages: tuple[dict[str, Any], ...],
+    control_plans: tuple[dict[str, Any], ...] = (),
 ) -> None:
     """Maintain Case-local soft context without replacing platform ownership."""
 
@@ -604,6 +605,22 @@ def write_case_files(
                     f"flow_run_id = {json.dumps(stage.get('flow_run_id') or '')}",
                     "current_execution_flow_run_id = "
                     f"{json.dumps(stage.get('current_execution_flow_run_id') or '')}",
+                    "",
+                ]
+            )
+        for plan in control_plans:
+            lines.extend(
+                [
+                    "[[control_plans]]",
+                    f"id = {json.dumps(str(plan['id']))}",
+                    f"stage_id = {json.dumps(str(plan['stage_id']))}",
+                    "execution_flow_run_id = "
+                    f"{json.dumps(plan.get('execution_flow_run_id') or '')}",
+                    f"action = {json.dumps(str(plan['action']))}",
+                    f"state = {json.dumps(str(plan['state']))}",
+                    f"reason = {json.dumps(str(plan['reason']), ensure_ascii=False)}",
+                    f"error_code = {json.dumps(plan.get('error_code') or '')}",
+                    f"created_at = {json.dumps(str(plan['created_at']))}",
                     "",
                 ]
             )

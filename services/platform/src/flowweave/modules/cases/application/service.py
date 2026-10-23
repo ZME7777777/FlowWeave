@@ -299,6 +299,14 @@ def _write_case_files(db: Session, item: Case) -> None:
             select(CaseStage).where(CaseStage.case_id == item.id).order_by(CaseStage.position)
         )
     )
+    plans = tuple(
+        _control_plan_dict(plan)
+        for plan in db.scalars(
+            select(CaseControlPlan)
+            .where(CaseControlPlan.case_id == item.id)
+            .order_by(CaseControlPlan.created_at.desc())
+        )
+    )
     agent_workspaces.write_case_files(
         db,
         workspace.id,
@@ -308,6 +316,7 @@ def _write_case_files(db: Session, item: Case) -> None:
         objective=item.objective,
         state=item.state,
         stages=stages,
+        control_plans=plans,
     )
 
 
@@ -753,6 +762,7 @@ def _create_case_control_plan(
         },
     )
     db.add(plan)
+    _write_case_files(db, item)
     finish(db)
     return _control_plan_dict(plan)
 
@@ -806,12 +816,14 @@ def execute_case_control_plan(db: Session, case_id: str, plan_id: str) -> dict[s
         plan.error_code = str(getattr(exc, "code", "CASE_CONTROL_PLAN_FAILED"))
         plan.result_json = {"code": plan.error_code}
         plan.executed_at = now()
+        _write_case_files(db, item)
         finish(db)
         raise
     plan.state = "SUCCEEDED"
     plan.result_json = result
     plan.error_code = None
     plan.executed_at = now()
+    _write_case_files(db, item)
     finish(db)
     return _control_plan_dict(plan)
 

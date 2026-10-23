@@ -509,6 +509,14 @@ export interface CaseAgentTask {
   input_context: Record<string, unknown>; result: Record<string, unknown>;
   created_at: string; updated_at: string;
 }
+export interface CaseControlPlan {
+  id: string; case_id: string; stage_id: string; source_binding_id?: string | null;
+  execution_flow_run_id?: string | null; node_run_id?: string | null; node_attempt_id?: string | null;
+  action: 'CREATE_EXECUTION_COPY' | 'START_EXECUTION' | 'START_STEPWISE_NODE' | 'STOP_EXECUTION' | 'RERUN_STEPWISE_NODE' | 'REVISE_UNSTARTED_RUNTIME';
+  state: 'PENDING' | 'VALIDATED' | 'EXECUTING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED';
+  idempotency_key: string; reason: string; input_snapshot: Record<string, unknown>; result: Record<string, unknown>;
+  error_code?: string | null; created_at: string; validated_at?: string | null; executed_at?: string | null;
+}
 export interface CaseDecisionProposal {
   id: string; case_id: string; flow_run_id: string; node_run_id?: string | null;
   node_attempt_id?: string | null; proposal_key: string;
@@ -522,7 +530,7 @@ export interface Case {
   control_conversation_binding_id?: string | null;
   control_work_directory_id?: string | null;
   row_version: number; stages: CaseStage[]; flow_run_ids: string[]; tasks: CaseAgentTask[];
-  decision_proposals: CaseDecisionProposal[];
+  control_plans: CaseControlPlan[]; decision_proposals: CaseDecisionProposal[];
   created_at: string; updated_at: string;
 }
 
