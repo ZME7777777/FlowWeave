@@ -242,6 +242,15 @@ def _binding(
     return item
 
 
+def history_reference_bindings(
+    db: Session, workspace_id: str, target_id: str, source_id: str
+) -> tuple[AgentConversationBinding, AgentConversationBinding]:
+    """Authorize both ends of an explicit history reference without reading Runtime."""
+
+    workspace = _workspace(db, workspace_id)
+    return _binding(db, workspace.id, target_id), _binding(db, workspace.id, source_id)
+
+
 def _work_directory_id(db: Session, item: AgentConversationBinding) -> str | None:
     return (
         db.scalar(

@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`UPSTREAM BASELINE ADOPTION COMPLETE`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-651`
+> 下一可执行切片：`FR-652`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -9893,10 +9893,28 @@ remote-release-finish 完成健康、版本门禁与受管收尾，回收一份�
 核对通过；Alembic 唯一 head 为 0158_schedule_china_timezone，未修改迁移。未部署，
 引用发送行为尚未改变；下一可执行切片 FR-651，须完成受限能力接入后才切换元数据。
 
-### FR-651 Agent 历史查询能力接入与整会话元数据引用 — READY
+### FR-651 平台受限历史授权与只读 MCP 服务 — DONE
 
-依赖：FR-650 DONE。通过受治理 MCP 及受限认证接入只读历史查询，授权绑定请求会话
-与显式引用来源；冻结能力 version／digest，凭据仅在原生 MCP 认证边界使用，禁止把
-用户登录凭据或持久 Secret 写入消息／Runtime。接入就绪后再切换整会话引用为元数据，
-保留片段引用、旧消息投影及可点击来源，验证已有会话升级与权限／撤销／分页边界。
-需先验证固定 OpenHands 对 MCP 认证与既有会话加载的正式契约，再实施最小可验收范围。
+依赖：FR-650 DONE。将原计划拆为可独立验收的服务与接入两片。本片提供限定用户、目标
+binding、来源 binding、正式 Conversation／Runtime Session 身份的短期可撤销只读授权；
+数据库仅保存凭据哈希，查询前后复核授权与用户访问权。服务实现标准 stateless Streamable
+HTTP MCP，仅暴露单来源历史分页工具，不开放通用平台 API；支持同用户限流、无缓存响应。
+授权由现有登录接口发起／撤销，删除任一来源／目标时清理授权；不自动注入 Runtime、
+不修改引用发送、不部署、不修改 OpenHands 源码或 source lock。
+
+验收：历史授权、只读查询与既有读取生命周期共 77 项 pytest 通过，覆盖哈希持久化、
+伪造／错用户／错授权、过期、撤销、用户停用／访问权收回、正式身份漂移、投影前撤销、凭据字面量脱敏、
+输入拒绝、同用户限流、普通平台 API 不接受受限 Bearer，以及 PostgreSQL 离线迁移
+upgrade／downgrade SQL。官方 MCP Python 客户端通过真实本地 TCP 服务完成 initialize、
+list_tools、call_tool；数据与授权为受控替身，客户端来自旧 1.49.5 环境，不记为固定
+1.54.0 Runtime 业务验收。新增模块 Pyright、受影响文件 Ruff／AST、diff／状态及依赖
+核对通过；Alembic 唯一 head 为 0159_agent_history_grants。未实跑 PostgreSQL 迁移：
+本机无可用 PostgreSQL 服务／工具，部署前仍须补齐真实迁移验收。未改 OpenHands、
+未自动加载 Runtime 能力、未切换引用或部署；当前 NONE，下一可执行切片 FR-652。
+
+### FR-652 受治理 MCP 会话接入与整会话元数据引用 — READY
+
+依赖：FR-651 DONE。冻结 MCP version／digest 与 Manifest，验证原生插件加载、认证
+加密持久化和既有会话升级；用受限凭据接入查询后再切换整会话元数据引用，保留片段
+引用与旧消息投影。处理凭据刷新／撤销、长正文按需读取、可点击来源和失败降级，完成
+真实 PostgreSQL 0159 upgrade／downgrade 与真实固定 Runtime 验收，再考虑发布。

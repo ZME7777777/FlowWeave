@@ -11,6 +11,7 @@ from flowweave.modules.agent_sessions.infrastructure.models import (
     AgentConversationCapability,
     AgentConversationCommand,
     AgentConversationCredentialSync,
+    AgentConversationHistoryGrant,
     AgentConversationMessageAttachment,
     AgentConversationSchedule,
     AgentConversationScheduleOccurrence,
@@ -41,6 +42,12 @@ def delete_binding_records(db: Session, binding_id: str) -> None:
         )
     )
     db.execute(delete(BackgroundTask).where(BackgroundTask.aggregate_id == binding_id))
+    db.execute(
+        delete(AgentConversationHistoryGrant).where(
+            (AgentConversationHistoryGrant.target_binding_id == binding_id)
+            | (AgentConversationHistoryGrant.source_binding_id == binding_id)
+        )
+    )
     schedule_ids = select(AgentConversationSchedule.id).where(
         AgentConversationSchedule.binding_id == binding_id
     )

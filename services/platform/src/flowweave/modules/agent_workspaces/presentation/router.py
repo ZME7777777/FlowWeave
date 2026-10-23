@@ -21,13 +21,14 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from flowweave.bootstrap.container import Container
 from flowweave.modules.agent_sessions.application import history as conversation_history
+from flowweave.modules.agent_sessions.application import history_access, sidebar_conversations
 from flowweave.modules.agent_sessions.application import schedules as conversation_schedules
 from flowweave.modules.agent_sessions.application import search as conversation_search
-from flowweave.modules.agent_sessions.application import sidebar_conversations
 from flowweave.modules.agent_sessions.public import conversations
 from flowweave.modules.agent_workspaces.application import git_settings, work_directories, workspace
 from flowweave.modules.agent_workspaces.presentation.browser_content import BrowserContent
@@ -1432,6 +1433,42 @@ async def delete_agent_conversation(
             binding_id,
             _key(idempotency_key, "delete-agent-conversation", binding_id),
         ),
+    )
+    return Response(status_code=204)
+
+
+class HistoryGrantWrite(_Write):
+    source_binding_id: str = Field(min_length=36, max_length=36)
+    ttl_seconds: int = Field(default=900, ge=60, le=3600)
+
+
+@router.post("/agent-workspaces/{workspace_id}/conversations/{binding_id}/history-grants")
+async def create_history_grant(
+    workspace_id: str, binding_id: str, payload: HistoryGrantWrite, db: Db
+) -> JSONResponse:
+    def create(session: Any) -> dict[str, Any]:
+        grant, token = history_access.issue(
+            session, workspace_id, binding_id, payload.source_binding_id, payload.ttl_seconds
+        )
+        return {
+            "grant_id": grant.id,
+            "access_token": token,
+            "token_type": "Bearer",
+            "expires_at": grant.expires_at.isoformat(),
+            "source_binding_id": grant.source_binding_id,
+        }
+
+    return JSONResponse(
+        await run_sync(db, create), status_code=201, headers={"Cache-Control": "no-store"}
+    )
+
+
+@router.delete("/agent-workspaces/{workspace_id}/conversations/{binding_id}/history-grants/{grant_id}")
+async def revoke_history_grant(
+    workspace_id: str, binding_id: str, grant_id: str, db: Db
+) -> Response:
+    await run_sync(
+        db, lambda session: history_access.revoke(session, workspace_id, binding_id, grant_id)
     )
     return Response(status_code=204)
 

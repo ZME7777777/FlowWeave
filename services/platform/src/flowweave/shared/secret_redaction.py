@@ -36,6 +36,7 @@ _API_KEY_LITERAL_RE = re.compile(
     r"sk-oh-[A-Za-z0-9_-]{10,}"
     r"|fwrt_[A-Za-z0-9_-]{20,}"
     r"|fwpreview_[A-Za-z0-9_=-]{20,}"
+    r"|fwh1\.[0-9a-f-]{36}\.[0-9a-f-]{36}\.[A-Za-z0-9_-]{40,64}"
     r"|sk-(?:or-v1|proj|ant-(?:api|oat)\d{2})-[A-Za-z0-9_-]{20,}"
     r"|gsk_[A-Za-z0-9]{20,}"
     r"|hf_[A-Za-z0-9]{20,}"
