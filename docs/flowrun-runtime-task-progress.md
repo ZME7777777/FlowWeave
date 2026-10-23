@@ -2,8 +2,8 @@
 
 > 创建日期：2026-08-21
 > 状态：`UPSTREAM BASELINE ADOPTION COMPLETE`
-> 当前执行切片：`FR-665`
-> 下一可执行切片：`FR-664`
+> 当前执行切片：`NONE`
+> 下一可执行切片：`NONE`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -10259,10 +10259,21 @@ AST、定向 format、diff、任务状态与依赖检查通过，唯一 head 为
 引用发送续至一小时；超时运行、独立 resume、fork 继承与正式身份漂移不自动重新授权，
 FR-664 必须覆盖到期／撤销／分叉恢复及并发实证。当前 NONE，下一可执行切片 FR-664。
 
-### FR-664 历史查询真实数据库与固定 Runtime 验收 — READY
+### FR-664 历史查询真实数据库与固定 Runtime 验收 — DONE
 
 依赖：FR-662 DONE、FR-663 DONE。完成真实 PostgreSQL 授权迁移 upgrade／downgrade、RLS、租约
 与并发验收，以及固定 Runtime 镜像上的新建／既有会话、撤销与恢复验证后再考虑发布。
+
+FR-664 验收补记（2026-10-23）：使用独立唯一 PostgreSQL 临时库，实跑当前完整迁移
+链、回退至 0158 和重升；真实双用户 binding／租约／来源记录、四线程同目标续租、
+过期／续租／撤销、非特权角色的强制 RLS SELECT／WITH CHECK 验证全部通过。
+仅移除本次创建的临时库及角色，不操作业务数据。固定源码 73e3cd8e 构建的实际
+linux/amd64 Runtime 镜像通过完整 contract_check（含认证动态上下文扩展），
+并在镜像内通过真实 TCP MCP 完成新建初始配置、既有会话原生 load_plugin、两个
+显式来源查询、加密持久化／恢复与原正式事件身份复核；不执行 LLM。该镜像探针的
+历史服务与数据为受控夹具，不记为真实业务会话或生产消息验收。实际平台授权和
+数据库隔离由上述真实 PostgreSQL 用例独立覆盖。
+
 
 ### FR-663 默认历史 MCP 配置展示与显式用户隔离 — DONE
 
@@ -10289,7 +10300,7 @@ Web typecheck、受影响 ESLint、7 项 Chromium 定向回归通过；覆盖新
 46 项错误，本片零新增）。Alembic 唯一 head 仍为 0161_agent_history_capability。
 未修改 OpenHands、source lock、迁移或部署；当前 NONE，下一可执行切片 FR-664。
 
-### FR-665 会话引用分支集成与发布验收 — CURRENT
+### FR-665 会话引用分支集成与发布验收 — DONE
 
 依赖：FR-656 DONE、FR-657 DONE、FR-663 DONE。按用户授权合并两个会话分支，
 保留主分支今天下午修复，重编号历史查询切片以避免记录冲突，并用追加式 Alembic merge
@@ -10305,3 +10316,51 @@ FR-665 发布前补齐：真实 PostgreSQL 独立库完成当前 head 全量 upg
 及重升，双用户实际 binding／授权、并发续租、过期撤销与非特权角色强制 RLS 读写均通过。
 能力导入只允许内置 MCP 精确 Authorization Secret Registry 占位符；其余明文、
 变形引用、其他服务与非 MCP 类型仍拒绝，补充 7 项导入安全回归。
+
+
+FR-665 发布与清理补记（2026-10-23）：按用户授权，将原引用预算分支和本会话历史查询
+分支依次合入 feat/refactor；合并提交为 5d0cf729、a9c6cc90，发布前补齐能力导入占位符
+契约后，最终代码版本为 `58d1028e85ca3a891bcaccb853e55ceafca8fc3b`。
+原分支提交 9b919274 与 53d034b9 均已成为目标分支祖先；两个临时分支已删除，唯一
+对应独立工作树在确认干净且代码已合并后移除。保留主工作树与其他历史工作树，未推送。
+
+合并后的定向平台／OpenHands adapter 套件 423 passed、4 skipped，CLI 17 passed，
+Web typecheck、受影响 ESLint／Ruff、diff 与新增任务编号唯一性检查通过。18 项本地
+Chromium 回归通过；另用线上实际静态资源和受控 API／WebSocket 完成相同 18 个不同
+用例，包括内置锁定／独立标签、能力和认证预设、中文文件、连续运行列表及元数据引用
+成功与失败恢复。43 个实际加载 JS／CSS 文件 SHA-256 与 Web 运行镜像一致。
+本机公网出口代理返回 502，因此线上静态资源经 SSH 转发读取；真实公网登录、Agent
+深层路由和根登录入口另在服务器侧实际 Chromium 验证通过，未将转发当作本机直连。
+服务端公网 API 401 边界、MCP 无凭据／伪造凭据 401 边界，以及固定能力的版本、配置
+摘要和 blob SHA-256 校验通过。未向业务会话发送测试消息或读取私有历史／文件。
+
+使用正式预检和 commit-bound 最小上下文发布 platform／web，归档 SHA-256 分别为
+`4898cb4d5aa1480c29bb08fa3d338d1208768df3a15317e0ad4f06455750b177`、
+`462034f94cc9a8fe7127a69bbc00b4c304bb34bcf3662a7ec41f76612bcf1d50`。
+Runtime 独立上下文归档 SHA-256 为
+`06a5f6cf177249ce5fa6e979adc0606b0540ad2941933aa5ac726f768a170f79`，
+沿用主分支固定源码 73e3cd8e，未额外修改 OpenHands。最终 linux/amd64 平台、Web、
+Runtime 镜像分别为
+`sha256:a07462295818bf2ab29850da24d95b7f3e1113105323c0d1cec323f04b268cfc`、
+`sha256:e4abc291f9b8199085dfeb2bc8945efa70c1ccd05963e3ed22ad3fba9c093091`、
+`sha256:280d92c5711e442eb77a65002ffb5e52571089f907e74a5678134e975125ca80`。
+均校验 OCI revision；Runtime 镜像完成正式 contract_check 和 FR-664 实际原生加载／
+恢复探针。生产迁移成功，唯一 Alembic head 为 0162_merge_history_credential；正式
+迁移后又以最终镜像重新完成独立 PostgreSQL 验收。
+
+请求人在本会话明确确认受管内部服务器并授权配置变更后，先在服务器侧保留原 Compose
+与环境文件的时间戳、等权限备份，再仅为 api／stream-api／worker 添加固定 MCP 版本
+和查询地址。通过平台正式能力校验／发布接口创建无明文密钥的能力版本；查询地址包含
+实际部署前缀，未猜测地址或使用默认 Host。Compose config 校验、配置最小补丁复核及
+配置生效后能力／公网认证检查通过；未添加、回显或轮换密钥，服务器私有配置未复制进 Git。
+
+保留精确 rollback 镜像后，两次正式活动目录门禁确认两个 Runtime 的 612 个原生会话
+均无运行项，才同步更新 Runtime Provider、api、stream-api、worker 和 Web。五个服务
+运行同一代码 revision，health／readiness 与 Web HTTP 正常；其余 33 个容器的镜像及
+启动时间未变，既有 Runtime generation 未替换。新固定 Runtime 镜像供后续正式创建／
+replacement 使用，既有环境和会话仍遵循其冻结镜像及能力边界。
+
+platform／web remote-release-finish 均通过版本、健康与路由门禁，回收五份过期受管
+成功上下文，保留每个 scope 最近三份成功上下文、回滚和引用版本，并完成精确 rollback
+镜像保留流程。未清理共享 BuildKit，未执行容器全局清理或删除卷、Workspace、数据库
+备份。当前与下一可执行切片均为 NONE。

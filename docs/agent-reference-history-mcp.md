@@ -3,7 +3,8 @@
 FlowWeave 提供只读历史服务；OpenHands 使用其正式远程 MCP 机制调用服务，无须修改
 OpenHands 源码。当前已实现授权、分页和长正文读取，并验证固定 SDK 的原生加载／恢复；
 已接入拖拽整会话引用：发送时只携带服务端来源元数据，经原生 MCP 按需查询历史。
-上线前仍须完成 FR-664 的真实数据库／固定 Runtime 镜像验收并配置下述固定能力。
+FR-664 已完成独立真实 PostgreSQL 与实际固定 Runtime 镜像验收；FR-665 记录合并发布，
+生产固定能力由受保护服务器配置选择，配置方式如下。
 
 ## 会话配置中的内置项
 
@@ -180,5 +181,7 @@ FR-662 完成受治理 MCP version／digest／Manifest、续租触发、新建�
 
 数据库新增迁移 `0159_agent_history_grants`、`0160_agent_history_sessions` 和
 `0161_agent_history_capability`，授权表启用强制用户 RLS，0161 仅追加能力 provenance／确认字段。
-现有验证包含 SQLite 授权持久化与 PostgreSQL 离线迁移 SQL；真实 PostgreSQL upgrade／downgrade、固定
-Runtime 验收及部署仍需后续执行。
+新增 `0162_merge_history_credential` 以追加式合并独立认证迁移分支，恢复唯一 head。
+FR-664 已实跑独立 PostgreSQL 完整迁移、回退重升、强制 RLS、双用户授权及并发续租；
+实际固定 Runtime 镜像完成原生初始／热加载 MCP 和加密恢复探针。探针使用受控历史服务，
+不执行模型或读取真实业务会话；发布记录见 FR-665。
