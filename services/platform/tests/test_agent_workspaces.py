@@ -3327,7 +3327,12 @@ def test_agent_workspace_bootstrap_explicit_openhands_500_is_not_ambiguous(
         ),
     )
     runtime = RejectedBootstrapRuntime()
-    with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
+    with (
+        tenant_user(FLOWWEAVE_USER_ID),
+        settings_context(settings),
+        db_session_factory() as db,
+        runtime_context(runtime),
+    ):
         workspace = _ready_workspace_for_conversation(db)
         with pytest.raises(DomainError) as raised:
             conversations.bootstrap_conversation(
@@ -3369,6 +3374,7 @@ def test_agent_workspace_bootstrap_mcp_initialization_failure_is_not_ambiguous(
         ),
     )
     with (
+        tenant_user(FLOWWEAVE_USER_ID),
         settings_context(settings),
         db_session_factory() as db,
         runtime_context(FailingMcpInitializationRuntime()),
@@ -3417,7 +3423,12 @@ def test_agent_workspace_bootstrap_ambiguous_delivery_never_resends(
         ),
     )
     runtime = AmbiguousBootstrapRuntime()
-    with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
+    with (
+        tenant_user(FLOWWEAVE_USER_ID),
+        settings_context(settings),
+        db_session_factory() as db,
+        runtime_context(runtime),
+    ):
         workspace = _ready_workspace_for_conversation(db)
         for content in ("首条消息", "不得重发"):
             with pytest.raises(DomainError) as raised:
@@ -3436,8 +3447,9 @@ def test_agent_workspace_bootstrap_ambiguous_delivery_never_resends(
         assert conversations.list_conversations(db, workspace.id) == []
 
 
+@pytest.mark.parametrize("lazy_system_prompt", [False, True])
 def test_agent_workspace_bootstrap_reconciles_ambiguous_delivery_by_native_event_identity(
-    settings, db_session_factory, monkeypatch
+    settings, db_session_factory, monkeypatch, lazy_system_prompt
 ):
     class ReconciledBootstrapRuntime(MockRuntime):
         sent = 0
@@ -3456,10 +3468,26 @@ def test_agent_workspace_bootstrap_reconciles_ambiguous_delivery_by_native_event
             del handle
             return RuntimeEventBatch(
                 events=(
+                    *(
+                        (
+                            RuntimeEvent(
+                                cursor="native-system-prompt",
+                                event_type="STATE",
+                                payload={"source_type": "SystemPromptEvent", "parent_id": None},
+                            ),
+                        )
+                        if lazy_system_prompt
+                        else ()
+                    ),
                     RuntimeEvent(
                         cursor="native-first-user",
                         event_type="MESSAGE",
-                        payload={"source": "user", "parent_id": "__root__"},
+                        payload={
+                            "source": "user",
+                            "parent_id": "native-system-prompt"
+                            if lazy_system_prompt
+                            else "__root__",
+                        },
                     ),
                 )
             )
@@ -3475,7 +3503,12 @@ def test_agent_workspace_bootstrap_reconciles_ambiguous_delivery_by_native_event
         ),
     )
     runtime = ReconciledBootstrapRuntime()
-    with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
+    with (
+        tenant_user(FLOWWEAVE_USER_ID),
+        settings_context(settings),
+        db_session_factory() as db,
+        runtime_context(runtime),
+    ):
         workspace = _ready_workspace_for_conversation(db)
         result = conversations.bootstrap_conversation(
             db,

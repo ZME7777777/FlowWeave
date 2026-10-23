@@ -5110,7 +5110,9 @@ class OpenHandsRuntime:
             base_url=self._base_url_for_handle(handle),
             session_api_key=self._session_key_for_handle(handle),
             params={
-                "kind": "MessageEvent",
+                # EventService's query filter uses the Python class identity;
+                # the short JSON discriminator below is only a response type.
+                "kind": "openhands.sdk.event.llm_convertible.message.MessageEvent",
                 "source": "user",
                 "sort_order": "TIMESTAMP_DESC",
                 "limit": 100,

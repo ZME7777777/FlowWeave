@@ -1826,13 +1826,32 @@ def synchronize_conversation_credentials(
 def _initial_user_event_id(handle: RuntimeHandle, previous_event_id: str | None) -> str | None:
     """Find a first user event exclusively through formal native identities."""
 
-    expected_parent_id = previous_event_id or "__root__"
+    events = get_runtime().read_active_events(handle).events
+    by_id = {event.cursor: event for event in events}
+
+    def follows_initial_parent(parent_id: object) -> bool:
+        if previous_event_id is not None:
+            return parent_id == previous_event_id
+        # An empty native conversation has no leaf yet. OpenHands can append
+        # its SystemPromptEvent lazily before the first user MessageEvent.
+        # Follow only that formal ancestry, never message text or page order.
+        seen: set[str] = set()
+        while parent_id not in (None, "__root__"):
+            if not isinstance(parent_id, str) or parent_id in seen:
+                return False
+            seen.add(parent_id)
+            parent = by_id.get(parent_id)
+            if parent is None or parent.payload.get("source_type") != "SystemPromptEvent":
+                return False
+            parent_id = parent.payload.get("parent_id")
+        return True
+
     candidates = [
         event.cursor
-        for event in get_runtime().read_active_events(handle).events
+        for event in events
         if event.event_type == "MESSAGE"
         and str(event.payload.get("source") or "").lower() in {"user", "human"}
-        and event.payload.get("parent_id") == expected_parent_id
+        and follows_initial_parent(event.payload.get("parent_id"))
     ]
     return candidates[0] if len(candidates) == 1 else None
 

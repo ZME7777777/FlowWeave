@@ -3733,7 +3733,7 @@ def test_openhands_send_message_ignores_stale_snapshot_for_user_cursor(
     assert result == RuntimeResult(status="RUNNING", cursor="new-user-event")
     assert [method for method, _, _ in requests] == ["GET", "POST", "GET"]
     assert requests[0][2] == {
-        "kind": "MessageEvent",
+        "kind": "openhands.sdk.event.llm_convertible.message.MessageEvent",
         "source": "user",
         "sort_order": "TIMESTAMP_DESC",
         "limit": 100,
