@@ -4,7 +4,7 @@ import type { ViewName } from '../types';
 
 const STORAGE_KEY = 'flowweave-workbench';
 const STORAGE_VERSION = 4;
-const VIEWS = new Set<ViewName>(['nodes', 'capabilities', 'environments', 'credentials', 'models', 'ldap-users', 'conversation-management', 'flows', 'runs', 'schedules', 'workbench', 'agent-workbench']);
+const VIEWS = new Set<ViewName>(['nodes', 'capabilities', 'environments', 'credentials', 'models', 'ldap-users', 'conversation-management', 'flows', 'runs', 'cases', 'schedules', 'workbench', 'agent-workbench']);
 
 interface WorkbenchState {
   view: ViewName;
@@ -33,7 +33,7 @@ function sanitizePersistedState(value: unknown): PersistedWorkbenchState {
   const state = value && typeof value === 'object' ? value as Record<string, unknown> : {};
   const view = typeof state.view === 'string' && VIEWS.has(state.view as ViewName)
     ? state.view as ViewName
-    : 'nodes';
+    : 'cases';
   return {
     // Run, Attempt and Conversation IDs are transient. Persisting them made a
     // browser refresh reopen deleted or obsolete Runtime contexts after a
@@ -64,7 +64,7 @@ const safeLocalStorage: StateStorage = {
 export const useWorkbenchStore = create<WorkbenchState>()(
   persist<WorkbenchState, [], [], PersistedWorkbenchState>(
     set => ({
-      view: 'nodes',
+      view: 'cases',
       setView: view => set({ view }),
       openRun: (selectedRunId, selectedNodeRunId) => set({
         view: 'workbench', selectedRunId, selectedNodeRunId, selectedAttemptId: undefined,

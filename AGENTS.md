@@ -141,3 +141,11 @@ git -C /Users/zhengmengen/WorkSpace/openhands/software-agent-sdk-total-tokens-1.
 - 在嵌入式会话定时任务页，打开运行会话后点击任务块必须显式返回 `/agent/schedules` 并保留面板选择状态；会话路由存在时主工作台会隐藏任务详情，不能只更新任务面板内部的 `selectedScheduleId`。
 - 嵌入式定时会话路由也必须保留与主页会话列表一致的底部“会话配置”入口，并将当前 hydration 后的正式 capabilities 传入；每个定时任务下的运行会话默认只展示前三项，其余由该任务自身的展开控件显示。
 - Git 提交 Diff 与工作区文件 Diff 共用 `DiffChangeNavigation` 的 `scrollIntoView({ block: 'center' })` 导航机制。每种统一/并排渲染模式都必须保留 `.agent-diff-scroll-end-spacer`（高度为可视区的 50%，且至少 120px），否则最后一个变更没有足够滚动范围进入视觉中心。Git Diff 有意只渲染补丁 hunk 中的新增、删除和有限上下文；文件末尾未改动的行应通过“查看源文件”查看，而不是补进 Diff。
+
+## Case 控制面
+
+- `cases`、`case_stages` 和 `case_agent_tasks` 是用户隔离的控制面元数据；迁移必须同步加入 PostgreSQL RLS 策略及 `shared/database.py` 的 `_USER_ISOLATED_TABLES`。
+- Case 控制会话参照定时 Agent 会话：复用用户级 Agent Workspace Runtime/容器，但为每个 Case 在当前用户项目根创建 `.flowweave/cases/<case_id>` 工作目录，并将 OpenHands 原生会话 Binding 与该目录版本冻结关联。不得使用平台私有对话执行器。
+- `case_flow_runs`、`case_decision_proposals` 和 `case_control_plans` 同样属于用户隔离控制面，必须维护 RLS 与 `_USER_ISOLATED_TABLES`。Case 决策按当前产品要求自主执行，但只可走白名单动作与既有编排服务，且只能引用活动 `CaseStage.current_execution_flow_run_id`，绝不可作用于模板、历史副本、其他阶段或仅因关联而可见的 FlowRun：逐步运行可继续、停止、复制节点重跑或为未启动部分应用 Revision；连续运行只能复制为独立自动运行草稿，绝不能修改已启动自动运行。所有决策必须持久记录输入、执行结果和失败码；不得把 Case Agent 的文本输出当作可执行私有控制协议。
+- Case 阶段的 `CaseStage.flow_run_id` 是已完整配置的运行模板，Case 永不直接启动它；`current_execution_flow_run_id` 指向由模板复制的当前独立执行记录。0163 之前的直接阶段绑定迁移时必须移到 `current_execution_flow_run_id` 并清空模板字段，绝不可把历史执行误作可复用模板。逐步模板必须是子逐步记录，且从起点可达的所有节点都已有完整草稿；复制保留全图草稿，但下游实际启动仍须等待所有直接前驱接受。逐步节点重跑必须创建新的 NodeRun/Attempt 和新的原生会话 Binding，但重用同一 FlowRun 节点工作目录；旧 Binding、会话事件、工作区内容和执行记录必须保留，绝不可覆盖或删除。
+- 逐步运行的前驱节点重跑窗口只在其所有直接后继仍是未物化的待启动草稿时开放；后继一旦已有 NodeRun 即不可回退。工作台通过双击符合条件的已接受前驱节点重新进入编辑，保存草稿后左侧记录按钮必须显示“重跑”；实际重跑继续创建新的 NodeRun/Attempt/Binding，保留原会话和工作区历史。

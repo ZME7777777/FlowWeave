@@ -24,6 +24,9 @@ from flowweave.shared.schemas import (
     AutomaticRunDraftWrite,
     AutomaticRunLegacyPlanRecoveryWrite,
     AutomaticRunStartWrite,
+    FlowRunRevisionDraftApplyWrite,
+    FlowRunRevisionDraftCreateWrite,
+    FlowRunRevisionDraftWrite,
     FlowRunScheduleStateWrite,
     FlowRunScheduleWrite,
     GateRemediationWrite,
@@ -42,6 +45,7 @@ from flowweave.shared.schemas import (
     RuntimeReplacementWrite,
     StepwiseNodeDraftStartWrite,
     StepwiseNodeDraftWrite,
+    StepwiseNodeRerunEditWrite,
     StepwiseRecordConfigExportWrite,
     StepwiseRecordConfigImportWrite,
     StepwiseRunRecordCopyWrite,
@@ -158,6 +162,13 @@ async def copy_nested_stepwise_run(
     )
 
 
+@router.get("/flow-runs/{run_id}/stepwise-template-readiness")
+async def stepwise_template_readiness(run_id: str, db: Db) -> dict[str, Any]:
+    return await run_sync(
+        db, lambda session: service.stepwise_record_template_readiness(session, run_id)
+    )
+
+
 @router.put("/flow-runs/{run_id}/stepwise-node-drafts/{flow_node_key}")
 async def save_stepwise_node_draft(
     run_id: str,
@@ -168,6 +179,21 @@ async def save_stepwise_node_draft(
     return await run_sync(
         db,
         lambda session: service.save_stepwise_node_draft(session, run_id, flow_node_key, payload),
+    )
+
+
+@router.post("/flow-runs/{run_id}/stepwise-node-drafts/{flow_node_key}/rerun-edit")
+async def reactivate_stepwise_node_for_rerun(
+    run_id: str,
+    flow_node_key: str,
+    payload: StepwiseNodeRerunEditWrite,
+    db: Db,
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: service.reactivate_stepwise_node_for_rerun(
+            session, run_id, flow_node_key, payload.node_run_id
+        ),
     )
 
 
@@ -670,6 +696,52 @@ async def activate_node(
 ) -> dict[str, Any]:
     return await run_sync(
         db, lambda session: service.start_node_run(session, run_id, flow_node_key, payload)
+    )
+
+
+@router.post("/flow-runs/{run_id}/revision-drafts", status_code=201)
+async def create_flow_run_revision_draft(
+    run_id: str, payload: FlowRunRevisionDraftCreateWrite, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db, lambda session: service.create_flow_run_revision_draft(session, run_id, payload)
+    )
+
+
+@router.get("/flow-runs/{run_id}/revision-drafts/{draft_id}")
+async def get_flow_run_revision_draft(run_id: str, draft_id: str, db: Db) -> dict[str, Any]:
+    return await run_sync(
+        db, lambda session: service.get_flow_run_revision_draft(session, run_id, draft_id)
+    )
+
+
+@router.put("/flow-runs/{run_id}/revision-drafts/{draft_id}")
+async def update_flow_run_revision_draft(
+    run_id: str, draft_id: str, payload: FlowRunRevisionDraftWrite, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: service.update_flow_run_revision_draft(session, run_id, draft_id, payload),
+    )
+
+
+@router.post("/flow-runs/{run_id}/revision-drafts/{draft_id}/apply")
+async def apply_flow_run_revision_draft(
+    run_id: str,
+    draft_id: str,
+    payload: FlowRunRevisionDraftApplyWrite,
+    db: Db,
+    idempotency_key: IdempotencyKey = None,
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: service.apply_flow_run_revision_draft(
+            session,
+            run_id,
+            draft_id,
+            payload,
+            _key(idempotency_key, "apply-flow-run-revision", f"{run_id}:{draft_id}"),
+        ),
     )
 
 

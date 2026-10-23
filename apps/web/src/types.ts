@@ -1,4 +1,4 @@
-export type ViewName = 'nodes' | 'capabilities' | 'environments' | 'credentials' | 'models' | 'ldap-users' | 'conversation-management' | 'flows' | 'runs' | 'schedules' | 'workbench' | 'agent-workbench';
+export type ViewName = 'nodes' | 'capabilities' | 'environments' | 'credentials' | 'models' | 'ldap-users' | 'conversation-management' | 'flows' | 'runs' | 'cases' | 'schedules' | 'workbench' | 'agent-workbench';
 
 export interface NodeDirectory {
   id: string; parent_id?: string | null; name: string; position: number; row_version: number;
@@ -6,7 +6,8 @@ export interface NodeDirectory {
 export type ArtifactDataType = 'URL' | 'FILE';
 export interface IOField {
   id?: string; field_key: string; display_name: string; data_type: ArtifactDataType;
-  description: string; position?: number;
+  description: string; position?: number; required?: boolean;
+  runtime_port?: boolean; output_scope?: 'FLOW' | 'OBSERVATION' | 'CASE';
 }
 export interface ExecutorConfig {
   startup_prompt: string; context_prompt: string; context_capability_ids: string[];
@@ -386,6 +387,7 @@ export interface FlowRunAutomaticRecord extends FlowRun {
 }
 export interface StepwiseNodeDraft {
   row_version: number;
+  rerun_source_node_run_id?: string | null;
   startup_mode: 'PROMPT';
   startup_prompt?: string | null;
   agent_preset?: AgentPreset | null;
@@ -401,6 +403,18 @@ export interface FlowRunStepwiseRecord extends FlowRun {
   /** Editable node configuration; an Attempt exists only after explicit start. */
   stepwise_node_drafts?: Record<string, StepwiseNodeDraft>;
 }
+
+export interface StepwiseTemplateNodeReadiness {
+  node_key: string; node_name: string; status: 'READY' | 'INCOMPLETE' | 'MISSING_DRAFT';
+  missing_fields: string[]; has_prompt: boolean; has_agent: boolean; gate_count: number;
+  mapped_input_fields: string[];
+}
+export interface StepwiseTemplateReadiness {
+  ready: boolean; start_node_key: string; reachable_node_keys: string[];
+  missing_node_keys: string[]; incomplete: Record<string, string[]>;
+  nodes: StepwiseTemplateNodeReadiness[];
+}
+
 export interface FlowRunStepwiseRecordWrite {
   git_identity?: GitIdentity | null;
   name?: string;
@@ -453,7 +467,10 @@ export interface StepwiseRecordConfigDocument {
   records: StepwiseRecordConfig[];
 }
 export type RecordConfigDocument = AutomaticRecordConfigDocument | StepwiseRecordConfigDocument;
-export interface SnapshotFlowNode extends FlowNode { asset: NodeAsset }
+export interface SnapshotFlowNode extends FlowNode {
+  asset: NodeAsset;
+  runtime_port_overrides?: { inputs?: IOField[]; outputs?: IOField[] };
+}
 export interface SnapshotDefinition extends Omit<FlowDefinition, 'nodes'> {
   nodes: SnapshotFlowNode[];
 }
@@ -463,6 +480,65 @@ export interface RunSnapshot {
   definition: SnapshotDefinition;
   created_at: string;
 }
+export interface FlowRunRevisionDraft {
+  id: string; flow_run_id: string; base_snapshot_id: string; base_snapshot_version: number;
+  definition: SnapshotDefinition; definition_hash: string; row_version: number;
+  state: 'DRAFT' | 'APPLIED' | 'REJECTED'; applied_snapshot_id?: string | null;
+  reason: string; created_at: string; updated_at: string;
+}
+
+
+export interface CaseStageExecution {
+  flow_run_id?: string; state: string; message?: string;
+  progress?: { accepted: number; terminal: number; active: number };
+  active_node?: { node_key: string; node_name: string; state: AttemptState; error_code?: string | null } | null;
+  ready_node_keys?: string[];
+  automatic_block?: FlowRun['automatic_block'];
+  finished_at?: string | null;
+}
+export interface CaseStage {
+  id: string; case_id: string; stage_key: string; name: string; objective: string;
+  position: number; flow_run_id?: string | null; current_execution_flow_run_id?: string | null; execution_mode: 'STEPWISE' | 'CONTINUOUS';
+  state: 'PENDING' | 'ACTIVE' | 'COMPLETED' | 'SKIPPED'; execution?: CaseStageExecution | null;
+  created_at: string; updated_at: string;
+}
+export interface CaseStageTemplate {
+  id: string; name: string; execution_mode: 'STEPWISE' | 'CONTINUOUS'; state: string;
+  parent_flow_run_id?: string | null; start_node_key: string; reachable_node_keys: string[];
+}
+export interface CaseAgentTask {
+  id: string; case_id: string; stage_id?: string | null; task_key: string;
+  task_type: 'OBSERVE' | 'PROPOSE_REVISION' | 'REVIEW';
+  state: 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED';
+  flow_run_id?: string | null; node_attempt_id?: string | null;
+  input_context: Record<string, unknown>; result: Record<string, unknown>;
+  created_at: string; updated_at: string;
+}
+export interface CaseControlPlan {
+  id: string; case_id: string; stage_id: string; source_binding_id?: string | null;
+  execution_flow_run_id?: string | null; node_run_id?: string | null; node_attempt_id?: string | null;
+  action: 'CREATE_EXECUTION_COPY' | 'START_EXECUTION' | 'START_STEPWISE_NODE' | 'STOP_EXECUTION' | 'RERUN_STEPWISE_NODE' | 'REVISE_UNSTARTED_RUNTIME';
+  state: 'PENDING' | 'VALIDATED' | 'EXECUTING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED';
+  idempotency_key: string; retry_of_plan_id?: string | null; reason: string; input_snapshot: Record<string, unknown>; result: Record<string, unknown>;
+  error_code?: string | null; created_at: string; validated_at?: string | null; executed_at?: string | null;
+}
+export interface CaseDecisionProposal {
+  id: string; case_id: string; flow_run_id: string; node_run_id?: string | null;
+  node_attempt_id?: string | null; proposal_key: string;
+  action: 'START_STAGE_EXECUTION' | 'CONTINUE_STEPWISE' | 'STOP_FLOW_RUN' | 'RERUN_STEPWISE_NODE' | 'REVISE_UNSTARTED_RUNTIME' | 'COPY_AUTOMATIC_RUN';
+  state: 'PROPOSED' | 'EXECUTED' | 'FAILED' | 'SUPERSEDED'; reason: string;
+  payload: Record<string, unknown>; result: Record<string, unknown>; created_at: string; executed_at?: string | null;
+}
+export interface Case {
+  id: string; name: string; objective: string;
+  state: 'DRAFT' | 'ACTIVE' | 'PAUSED' | 'COMPLETED' | 'ARCHIVED';
+  control_conversation_binding_id?: string | null;
+  control_work_directory_id?: string | null;
+  row_version: number; stages: CaseStage[]; flow_run_ids: string[]; tasks: CaseAgentTask[];
+  control_plans: CaseControlPlan[]; decision_proposals: CaseDecisionProposal[];
+  created_at: string; updated_at: string;
+}
+
 export interface FlowRunSummary {
   id: string; flow_definition_id: string; flow_name?: string | null;
   flow_row_version?: number | null; run_no: number; name: string; state: string;
@@ -488,6 +564,7 @@ export interface FlowRun extends FlowRunSummary {
     gates: Array<{ node_key: string; position: number }>;
   } | null;
   progress: { accepted: number; terminal: number; active: number };
+  revision_drafts: FlowRunRevisionDraft[];
   snapshots: RunSnapshot[]; node_runs: NodeRun[]; artifacts: ArtifactVersion[];
 }
 export interface FlowRunScheduleOccurrence {

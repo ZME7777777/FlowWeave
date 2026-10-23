@@ -86,6 +86,206 @@ def create_asset(client, skill, name="方案生成"):
     return response.json()
 
 
+def test_case_control_plane_creates_stages_and_changes_stage_state(client):
+    created = client.post(
+        "/api/v1/cases",
+        json={
+            "name": "客户迁移事项",
+            "objective": "协调迁移准备与复盘。",
+            "stages": [
+                {"stage_key": "discover", "name": "发现", "objective": "确认现状"},
+                {"stage_key": "execute", "name": "执行", "objective": "完成迁移"},
+            ],
+        },
+    )
+    assert created.status_code == 201, created.text
+    item = created.json()
+    assert item["state"] == "ACTIVE"
+    assert [stage["state"] for stage in item["stages"]] == ["ACTIVE", "PENDING"]
+    assert item["tasks"] == []
+
+    listed = client.get("/api/v1/cases")
+    assert listed.status_code == 200, listed.text
+    assert [case["id"] for case in listed.json()] == [item["id"]]
+
+    updated = client.put(
+        f"/api/v1/cases/{item['id']}/stages/{item['stages'][1]['id']}/state",
+        json={"expected_case_row_version": item["row_version"], "state": "ACTIVE"},
+    )
+    assert updated.status_code == 200, updated.text
+    assert [stage["state"] for stage in updated.json()["stages"]] == ["PENDING", "ACTIVE"]
+
+    stale = client.put(
+        f"/api/v1/cases/{item['id']}/stages/{item['stages'][0]['id']}/state",
+        json={"expected_case_row_version": item["row_version"], "state": "COMPLETED"},
+    )
+    assert stale.status_code == 409, stale.text
+    assert stale.json()["error"]["code"] == "VERSION_CONFLICT"
+
+
+def test_case_attaches_top_level_flow_run_and_projects_idempotently(client, skill_capability):
+    asset = create_asset(client, skill_capability, "事项观察节点")
+    flow = create_flow(client, asset["id"])
+    run = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    )
+    assert run.status_code == 201, run.text
+    case = client.post("/api/v1/cases", json={"name": "事项观察"})
+    assert case.status_code == 201, case.text
+
+    attached = client.post(
+        f"/api/v1/cases/{case.json()['id']}/flow-runs",
+        json={"flow_run_id": run.json()["id"]},
+    )
+    assert attached.status_code == 200, attached.text
+    assert attached.json()["flow_run_ids"] == [run.json()["id"]]
+    assert attached.json()["tasks"] == []
+
+    replayed = client.post(f"/api/v1/cases/{case.json()['id']}/observation-projection")
+    assert replayed.status_code == 200, replayed.text
+    assert replayed.json()["flow_run_ids"] == [run.json()["id"]]
+    assert replayed.json()["tasks"] == []
+
+
+def test_case_stage_rejects_top_level_stepwise_run_as_template(client, skill_capability):
+    asset = create_asset(client, skill_capability, "阶段流程节点")
+    flow = create_flow(client, asset["id"])
+    run = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    )
+    assert run.status_code == 201, run.text
+    case = client.post(
+        "/api/v1/cases",
+        json={
+            "name": "阶段路径事项",
+            "stages": [{"stage_key": "discover", "name": "梳理"}],
+        },
+    )
+    assert case.status_code == 201, case.text
+    stage = case.json()["stages"][0]
+
+    bound = client.put(
+        f"/api/v1/cases/{case.json()['id']}/stages/{stage['id']}/flow-run",
+        json={"flow_run_id": run.json()["id"], "execution_mode": "STEPWISE"},
+    )
+    assert bound.status_code == 409, bound.text
+    assert bound.json()["error"]["code"] == "VERSION_CONFLICT"
+
+
+def test_stepwise_template_readiness_reports_every_reachable_node(client, skill_capability):
+    asset = create_asset(client, skill_capability, "逐步模板诊断节点")
+    flow = create_flow(client, asset["id"])
+    parent = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    )
+    assert parent.status_code == 201, parent.text
+    record = client.post(
+        f"/api/v1/flow-runs/{parent.json()['id']}/stepwise-runs",
+        json={"start_node_key": flow["nodes"][0]["instance_key"]},
+    )
+    assert record.status_code == 201, record.text
+
+    readiness = client.get(f"/api/v1/flow-runs/{record.json()['id']}/stepwise-template-readiness")
+    assert readiness.status_code == 200, readiness.text
+    result = readiness.json()
+    assert result["ready"] is False
+    assert result["missing_node_keys"] == [node["instance_key"] for node in flow["nodes"]]
+    assert [node["node_key"] for node in result["nodes"]] == [
+        node["instance_key"] for node in flow["nodes"]
+    ]
+    assert all(node["status"] == "MISSING_DRAFT" for node in result["nodes"])
+
+
+def test_case_stage_launch_copies_configured_continuous_template(client, skill_capability):
+    asset = create_asset(client, skill_capability, "连续模板节点")
+    flow = create_flow(client, asset["id"])
+    provider = client.post(
+        "/api/v1/model-providers",
+        json={
+            "name": "Case 连续模板模型",
+            "base_url": "https://models.example.test/v1",
+            "api_key": "case-template-secret",
+            "models": [{"model_name": "case-template", "enabled": True, "is_default": True}],
+        },
+    )
+    assert provider.status_code == 201, provider.text
+    preset = {"model_provider_id": provider.json()["id"], "model_name": "case-template"}
+    template = client.post(
+        f"/api/v1/flows/{flow['id']}/automatic-runs",
+        json={
+            "environment_version_id": client.environment_version_id,
+            "start_node_key": flow["nodes"][0]["instance_key"],
+            "node_plans": {
+                flow["nodes"][0]["instance_key"]: {
+                    "startup_prompt": "执行连续模板首节点",
+                    "agent_preset": preset,
+                    "input_urls": {"prd": "https://example.test/case-input"},
+                },
+                flow["nodes"][1]["instance_key"]: {
+                    "startup_prompt": "执行连续模板复核节点",
+                    "agent_preset": preset,
+                },
+            },
+        },
+    )
+    assert template.status_code == 201, template.text
+    case = client.post(
+        "/api/v1/cases",
+        json={"name": "连续模板事项", "stages": [{"stage_key": "run", "name": "执行"}]},
+    )
+    assert case.status_code == 201, case.text
+    stage = case.json()["stages"][0]
+    bound = client.put(
+        f"/api/v1/cases/{case.json()['id']}/stages/{stage['id']}/flow-run",
+        json={"flow_run_id": template.json()["id"], "execution_mode": "CONTINUOUS"},
+    )
+    assert bound.status_code == 200, bound.text
+
+    launched = client.post(
+        f"/api/v1/cases/{case.json()['id']}/stages/{stage['id']}/launch", json={}
+    )
+    assert launched.status_code == 201, launched.text
+    launched_stage = launched.json()["stages"][0]
+    assert launched_stage["flow_run_id"] == template.json()["id"]
+    assert launched_stage["current_execution_flow_run_id"] not in {None, template.json()["id"]}
+    execution = client.get(f"/api/v1/flow-runs/{launched_stage['current_execution_flow_run_id']}")
+    assert execution.status_code == 200, execution.text
+    execution_plan = execution.json()["automation_plan"]
+    template_plan = template.json()["automation_plan"]
+    assert execution.json()["state"] == "DRAFT"
+    assert execution_plan["start_node_key"] == template_plan["start_node_key"]
+    assert set(execution_plan["node_plans"]) == set(template_plan["node_plans"])
+    first_node_key = flow["nodes"][0]["instance_key"]
+    # URL inputs remain declarative until the execution starts; copying a
+    # template must preserve them without manufacturing artifact records.
+    assert execution_plan["node_plans"][first_node_key]["input_urls"] == {
+        "prd": "https://example.test/case-input"
+    }
+    assert execution_plan["node_plans"][first_node_key]["artifact_ids"] == {}
+
+    started = client.post(
+        f"/api/v1/cases/{case.json()['id']}/stages/{stage['id']}/execution/start",
+        json={"reason": "开始事项连续执行。"},
+    )
+    assert started.status_code == 201, started.text
+    assert started.json()["action"] == "START_STAGE_EXECUTION"
+    assert started.json()["state"] == "EXECUTED"
+    assert (
+        started.json()["result"]["flow_run"]["id"]
+        == launched_stage["current_execution_flow_run_id"]
+    )
+    assert started.json()["result"]["flow_run"]["state"] == "ACTIVE"
+    case_detail = client.get(f"/api/v1/cases/{case.json()['id']}")
+    assert case_detail.status_code == 200, case_detail.text
+    summary = case_detail.json()["stages"][0]["execution"]
+    assert summary["flow_run_id"] == launched_stage["current_execution_flow_run_id"]
+    assert summary["state"] == "ACTIVE"
+    assert summary["progress"]["accepted"] == 0
+
+
 def test_node_asset_can_be_saved_without_skill(client):
     response = client.post("/api/v1/node-assets", json=asset_payload("无 Skill 节点"))
     assert response.status_code == 201, response.text
@@ -95,6 +295,66 @@ def test_node_asset_can_be_saved_without_skill(client):
         "context_capability_ids": [],
     }
     assert "capabilities" not in response.json()
+
+
+def test_stepwise_rerun_edit_rejects_final_node(client, skill_capability):
+    asset = create_asset(client, skill_capability, "重跑边界节点")
+    flow = create_flow(client, asset["id"])
+    parent = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    )
+    assert parent.status_code == 201, parent.text
+    record = client.post(
+        f"/api/v1/flow-runs/{parent.json()['id']}/stepwise-runs",
+        json={"start_node_key": flow["nodes"][0]["instance_key"]},
+    )
+    assert record.status_code == 201, record.text
+    activated = client.post(
+        f"/api/v1/flow-runs/{record.json()['id']}/nodes/{flow['nodes'][0]['instance_key']}/runs",
+        json={"startup_mode": "CHAT"},
+    )
+    assert activated.status_code == 201, activated.text
+
+    rejected = client.post(
+        f"/api/v1/flow-runs/{record.json()['id']}/stepwise-node-drafts/{flow['nodes'][0]['instance_key']}/rerun-edit",
+        json={"node_run_id": activated.json()["id"]},
+    )
+    assert rejected.status_code == 409, rejected.text
+
+
+def test_case_rejects_stopping_a_linked_template(client, skill_capability):
+    asset = create_asset(client, skill_capability, "事项自动停止节点")
+    flow = create_flow(client, asset["id"])
+    run = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    )
+    assert run.status_code == 201, run.text
+    case = client.post("/api/v1/cases", json={"name": "自主纠偏事项"})
+    assert case.status_code == 201, case.text
+    attached = client.post(
+        f"/api/v1/cases/{case.json()['id']}/flow-runs",
+        json={"flow_run_id": run.json()["id"]},
+    )
+    assert attached.status_code == 200, attached.text
+
+    decision = client.post(
+        f"/api/v1/cases/{case.json()['id']}/decision-proposals",
+        json={
+            "flow_run_id": run.json()["id"],
+            "proposal_key": "stop-after-risk",
+            "action": "STOP_FLOW_RUN",
+            "reason": "事项风险已满足停止条件。",
+        },
+    )
+    assert decision.status_code == 409, decision.text
+    assert decision.json()["error"]["code"] == "VERSION_CONFLICT"
+    assert client.get(f"/api/v1/flow-runs/{run.json()['id']}").json()["state"] != "CANCELLED"
+
+    case_detail = client.get(f"/api/v1/cases/{case.json()['id']}")
+    assert case_detail.status_code == 200, case_detail.text
+    assert case_detail.json()["decision_proposals"] == []
 
 
 def test_confirm_start_rejects_attempt_model_override(client):
@@ -108,6 +368,220 @@ def test_confirm_start_rejects_attempt_model_override(client):
     )
 
     assert rejected.status_code == 422, rejected.text
+
+
+def test_case_control_plan_persists_scoped_input_snapshot(client):
+    case = client.post(
+        "/api/v1/cases",
+        json={"name": "计划事项", "stages": [{"stage_key": "prepare", "name": "准备"}]},
+    )
+    assert case.status_code == 201, case.text
+    stage = case.json()["stages"][0]
+
+    created = client.post(
+        f"/api/v1/cases/{case.json()['id']}/control-plans",
+        json={
+            "stage_id": stage["id"],
+            "action": "CREATE_EXECUTION_COPY",
+            "idempotency_key": "prepare-copy-v1",
+            "reason": "为事项准备隔离执行副本。",
+            "input_snapshot": {"source": "case-control"},
+        },
+    )
+    assert created.status_code == 201, created.text
+    plan = created.json()
+    assert plan["state"] == "PENDING"
+    assert plan["stage_id"] == stage["id"]
+    assert plan["execution_flow_run_id"] is None
+    assert plan["input_snapshot"]["requested"] == {"source": "case-control"}
+
+    replayed = client.post(
+        f"/api/v1/cases/{case.json()['id']}/control-plans",
+        json={
+            "stage_id": stage["id"],
+            "action": "CREATE_EXECUTION_COPY",
+            "idempotency_key": "prepare-copy-v1",
+            "reason": "不同的重放文字不会创建第二份计划。",
+        },
+    )
+    assert replayed.status_code == 201, replayed.text
+    assert replayed.json()["id"] == plan["id"]
+
+    detail = client.get(f"/api/v1/cases/{case.json()['id']}")
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["control_plans"][0]["id"] == plan["id"]
+
+
+def test_case_control_plan_dispatches_copy_and_start_actions(client, skill_capability):
+    asset = create_asset(client, skill_capability, "计划调度节点")
+    flow = create_flow(client, asset["id"])
+    provider = client.post(
+        "/api/v1/model-providers",
+        json={
+            "name": "计划调度模型",
+            "base_url": "https://models.example.test/v1",
+            "api_key": "plan-dispatch-secret",
+            "models": [{"model_name": "plan-dispatch", "enabled": True, "is_default": True}],
+        },
+    )
+    assert provider.status_code == 201, provider.text
+    template = client.post(
+        f"/api/v1/flows/{flow['id']}/automatic-runs",
+        json={
+            "environment_version_id": client.environment_version_id,
+            "start_node_key": flow["nodes"][0]["instance_key"],
+            "node_plans": {
+                node["instance_key"]: {
+                    "startup_prompt": f"执行 {node['instance_key']}",
+                    "agent_preset": {
+                        "model_provider_id": provider.json()["id"],
+                        "model_name": "plan-dispatch",
+                    },
+                    **({"input_urls": {"prd": "https://example.test/plan"}} if index == 0 else {}),
+                }
+                for index, node in enumerate(flow["nodes"])
+            },
+        },
+    )
+    assert template.status_code == 201, template.text
+    case = client.post(
+        "/api/v1/cases",
+        json={"name": "计划调度事项", "stages": [{"stage_key": "run", "name": "执行"}]},
+    )
+    assert case.status_code == 201, case.text
+    stage = case.json()["stages"][0]
+    bound = client.put(
+        f"/api/v1/cases/{case.json()['id']}/stages/{stage['id']}/flow-run",
+        json={"flow_run_id": template.json()["id"], "execution_mode": "CONTINUOUS"},
+    )
+    assert bound.status_code == 200, bound.text
+
+    copy = client.post(
+        f"/api/v1/cases/{case.json()['id']}/control-plans",
+        json={
+            "stage_id": stage["id"],
+            "action": "CREATE_EXECUTION_COPY",
+            "idempotency_key": "dispatch-copy",
+            "reason": "创建隔离副本。",
+        },
+    )
+    assert copy.status_code == 201, copy.text
+    copied = client.post(
+        f"/api/v1/cases/{case.json()['id']}/control-plans/{copy.json()['id']}/execute"
+    )
+    assert copied.status_code == 200, copied.text
+    assert copied.json()["state"] == "SUCCEEDED"
+
+    current = client.get(f"/api/v1/cases/{case.json()['id']}").json()["stages"][0]
+    start = client.post(
+        f"/api/v1/cases/{case.json()['id']}/control-plans",
+        json={
+            "stage_id": stage["id"],
+            "action": "START_EXECUTION",
+            "idempotency_key": "dispatch-start",
+            "reason": "启动隔离副本。",
+        },
+    )
+    assert start.status_code == 201, start.text
+    started = client.post(
+        f"/api/v1/cases/{case.json()['id']}/control-plans/{start.json()['id']}/execute"
+    )
+    assert started.status_code == 200, started.text
+    assert started.json()["state"] == "SUCCEEDED"
+    assert (
+        client.get(f"/api/v1/flow-runs/{current['current_execution_flow_run_id']}").json()["state"]
+        == "ACTIVE"
+    )
+
+
+def test_control_binding_plan_is_limited_to_its_active_case_stage(
+    client, monkeypatch, settings, db_session_factory
+):
+    provider = client.post(
+        "/api/v1/model-providers",
+        json={
+            "name": "事项控制模型",
+            "base_url": "https://models.example.test/v1",
+            "api_key": "case-control-secret",
+            "models": [{"model_name": "case-control", "enabled": True, "is_default": True}],
+        },
+    )
+    assert provider.status_code == 201, provider.text
+    from flowweave.modules.model_providers.presentation import router as provider_router
+
+    async def discover(*_args):
+        return ["case-control"]
+
+    monkeypatch.setattr(provider_router, "_discover", discover)
+    tested = client.post(f"/api/v1/model-providers/{provider.json()['id']}/test")
+    assert tested.status_code == 200, tested.text
+    from test_agent_workspaces import _ready_workspace_for_conversation
+
+    with settings_context(settings), db_session_factory() as db:
+        _ready_workspace_for_conversation(db)
+        db.commit()
+    first = client.post(
+        "/api/v1/cases",
+        json={"name": "控制范围一", "stages": [{"stage_key": "one", "name": "阶段一"}]},
+    )
+    second = client.post(
+        "/api/v1/cases",
+        json={"name": "控制范围二", "stages": [{"stage_key": "two", "name": "阶段二"}]},
+    )
+    assert first.status_code == 201 and second.status_code == 201
+    first_stage = first.json()["stages"][0]
+    second_stage = second.json()["stages"][0]
+    from dataclasses import replace
+
+    working_directories = {}
+    create_runtime = MockRuntime.create_conversation
+    reload_runtime = MockRuntime.reload_conversation
+
+    def create_in_directory(runtime, request):
+        working_directories[request.conversation_id] = request.workspace_ref
+        return create_runtime(runtime, request)
+
+    def reload_in_directory(runtime, handle, **kwargs):
+        return replace(
+            reload_runtime(runtime, handle, **kwargs),
+            workspace_working_dir=working_directories[handle.conversation_id],
+        )
+
+    monkeypatch.setattr(MockRuntime, "create_conversation", create_in_directory)
+    monkeypatch.setattr(MockRuntime, "reload_conversation", reload_in_directory)
+    conversation = client.post(
+        f"/api/v1/cases/{first.json()['id']}/control-conversation",
+        json={"model_provider_id": provider.json()["id"], "model_name": "case-control"},
+        headers={"Idempotency-Key": "case-control-binding-one"},
+    )
+    assert conversation.status_code == 201, conversation.text
+    assert list(working_directories.values())[0].endswith(
+        f"/.flowweave/cases/{first.json()['id']}"
+    )
+    binding_id = conversation.json()["control_conversation_binding_id"]
+
+    accepted = client.post(
+        f"/api/v1/case-control-bindings/{binding_id}/plans",
+        json={
+            "stage_id": first_stage["id"],
+            "action": "CREATE_EXECUTION_COPY",
+            "idempotency_key": "binding-one-copy",
+            "reason": "由当前控制会话提出。",
+        },
+    )
+    assert accepted.status_code == 201, accepted.text
+    assert accepted.json()["source_binding_id"] == binding_id
+
+    rejected = client.post(
+        f"/api/v1/case-control-bindings/{binding_id}/plans",
+        json={
+            "stage_id": second_stage["id"],
+            "action": "CREATE_EXECUTION_COPY",
+            "idempotency_key": "binding-cross-case",
+            "reason": "不应跨事项创建计划。",
+        },
+    )
+    assert rejected.status_code == 409, rejected.text
 
 
 def test_platform_owned_lark_oauth_endpoints_are_removed(client):
@@ -267,6 +741,205 @@ def test_copy_node_run_preserves_launch_configuration_without_execution_results(
         copied_attempt["input_bindings"][0]["artifact_version_id"]
         != source_attempt["input_bindings"][0]["artifact_version_id"]
     )
+
+
+def test_runtime_revision_draft_creates_and_applies_a_new_snapshot(client, skill_capability):
+    asset = create_asset(client, skill_capability, "运行时修订节点")
+    flow = create_flow(client, asset["id"])
+    started = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    )
+    assert started.status_code == 201, started.text
+    run = started.json()
+
+    created = client.post(
+        f"/api/v1/flow-runs/{run['id']}/revision-drafts",
+        json={"reason": "补充本次运行的临时审查节点"},
+    )
+    assert created.status_code == 201, created.text
+    draft = created.json()
+    assert draft["state"] == "DRAFT"
+    assert draft["base_snapshot_version"] == 1
+
+    definition = draft["definition"]
+    definition["description"] = "本次运行的修订定义"
+    updated = client.put(
+        f"/api/v1/flow-runs/{run['id']}/revision-drafts/{draft['id']}",
+        json={
+            "expected_row_version": draft["row_version"],
+            "definition": definition,
+            "reason": "加入本次运行的审查说明",
+        },
+    )
+    assert updated.status_code == 200, updated.text
+    draft = updated.json()
+    assert draft["row_version"] == 2
+
+    applied = client.post(
+        f"/api/v1/flow-runs/{run['id']}/revision-drafts/{draft['id']}/apply",
+        json={"expected_row_version": draft["row_version"]},
+        headers={"Idempotency-Key": "apply-runtime-revision"},
+    )
+    assert applied.status_code == 200, applied.text
+    revised = applied.json()
+    assert revised["active_snapshot_version"] == 2
+    assert revised["snapshots"][-1]["definition"]["description"] == "本次运行的修订定义"
+    revision = next(item for item in revised["revision_drafts"] if item["id"] == draft["id"])
+    assert revision["state"] == "APPLIED"
+    assert revision["applied_snapshot_id"] == revised["active_snapshot_id"]
+
+
+def test_runtime_revision_drafts_are_private_on_a_shared_run(client, user_client, skill_capability):
+    asset = create_asset(client, skill_capability, "独立修订草稿")
+    flow = create_flow(client, asset["id"])
+    started = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    )
+    assert started.status_code == 201, started.text
+    run_id = started.json()["id"]
+    endpoint = f"/api/v1/flow-runs/{run_id}/revision-drafts"
+    created = client.post(endpoint, json={"reason": "private reason"})
+    assert created.status_code == 201, created.text
+    draft = created.json()
+    detail = user_client.get(f"/api/v1/flow-runs/{run_id}")
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["revision_drafts"] == []
+    denied = user_client.get(f"{endpoint}/{draft['id']}")
+    assert denied.status_code == 404, denied.text
+    denied_write = user_client.put(
+        f"{endpoint}/{draft['id']}",
+        json={"expected_row_version": draft["row_version"], "definition": draft["definition"]},
+    )
+    assert denied_write.status_code == 404, denied_write.text
+    own = user_client.post(endpoint, json={"reason": "another private reason"})
+    assert own.status_code == 201, own.text
+    assert own.json()["id"] != draft["id"]
+    own_detail = client.get(f"/api/v1/flow-runs/{run_id}").json()
+    assert [item["id"] for item in own_detail["revision_drafts"]] == [draft["id"]]
+
+
+def test_runtime_revision_cannot_change_started_node(client, skill_capability):
+    asset = create_asset(client, skill_capability, "运行时修订锁定节点")
+    flow = create_flow(client, asset["id"])
+    run = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    ).json()
+    artifact = client.post(
+        f"/api/v1/flow-runs/{run['id']}/nodes/design_a/input-artifacts",
+        json={
+            "field_key": "prd",
+            "artifact_type": "URL",
+            "uri": "https://example.test/revision-input",
+        },
+    )
+    assert artifact.status_code == 201, artifact.text
+    activated = client.post(
+        f"/api/v1/flow-runs/{run['id']}/nodes/design_a/runs",
+        json=prompt_node_start(artifact_ids={"prd": artifact.json()["id"]}),
+    )
+    assert activated.status_code == 201, activated.text
+    created = client.post(f"/api/v1/flow-runs/{run['id']}/revision-drafts", json={})
+    assert created.status_code == 201, created.text
+    draft = created.json()
+    definition = draft["definition"]
+    definition["nodes"][0]["alias"] = "不允许修改已启动节点"
+    updated = client.put(
+        f"/api/v1/flow-runs/{run['id']}/revision-drafts/{draft['id']}",
+        json={
+            "expected_row_version": draft["row_version"],
+            "definition": definition,
+        },
+    )
+    assert updated.status_code == 200, updated.text
+    rejected = client.post(
+        f"/api/v1/flow-runs/{run['id']}/revision-drafts/{draft['id']}/apply",
+        json={"expected_row_version": updated.json()["row_version"]},
+        headers={"Idempotency-Key": "reject-started-node-revision"},
+    )
+    assert rejected.status_code == 409, rejected.text
+    assert rejected.json()["error"]["code"] == "RUN_REVISION_STARTED_NODE_IMMUTABLE"
+
+
+def test_runtime_revision_supports_optional_input_and_observation_output(
+    client, skill_capability, db_session_factory
+):
+    asset = create_asset(client, skill_capability, "运行时端口节点")
+    flow = create_flow(client, asset["id"])
+    run = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    ).json()
+    draft_response = client.post(f"/api/v1/flow-runs/{run['id']}/revision-drafts", json={})
+    assert draft_response.status_code == 201, draft_response.text
+    draft = draft_response.json()
+    definition = draft["definition"]
+    node = next(item for item in definition["nodes"] if item["instance_key"] == "design_a")
+    node["runtime_port_overrides"] = {
+        "inputs": [
+            {
+                "field_key": "failure_evidence",
+                "display_name": "失败证据",
+                "data_type": "URL",
+                "required": False,
+            }
+        ],
+        "outputs": [
+            {
+                "field_key": "risk_summary",
+                "display_name": "风险摘要",
+                "data_type": "URL",
+                "output_scope": "OBSERVATION",
+            }
+        ],
+    }
+    updated = client.put(
+        f"/api/v1/flow-runs/{run['id']}/revision-drafts/{draft['id']}",
+        json={"expected_row_version": draft["row_version"], "definition": definition},
+    )
+    assert updated.status_code == 200, updated.text
+    applied = client.post(
+        f"/api/v1/flow-runs/{run['id']}/revision-drafts/{draft['id']}/apply",
+        json={"expected_row_version": updated.json()["row_version"]},
+        headers={"Idempotency-Key": "apply-runtime-ports"},
+    )
+    assert applied.status_code == 200, applied.text
+
+    primary_input = client.post(
+        f"/api/v1/flow-runs/{run['id']}/nodes/design_a/input-artifacts",
+        json={
+            "field_key": "prd",
+            "artifact_type": "URL",
+            "uri": "https://example.test/runtime-port-input",
+        },
+    )
+    assert primary_input.status_code == 201, primary_input.text
+    from flowweave.modules.model_providers.infrastructure.models import ModelProvider
+
+    provider = _create_model_provider(client, "修订端口测试模型")
+    with db_session_factory() as db:
+        db.get(ModelProvider, provider["id"]).connection_state = "CONNECTED"
+        db.commit()
+    activated = client.post(
+        f"/api/v1/flow-runs/{run['id']}/nodes/design_a/runs",
+        json=prompt_node_start(
+            artifact_ids={"prd": primary_input.json()["id"]},
+            agent_preset={"model_provider_id": provider["id"], "model_name": "gpt-delete"},
+        ),
+    )
+    assert activated.status_code == 201, activated.text
+    attempt = activated.json()["attempts"][-1]
+    assert attempt["state"] == "WAITING_START_CONFIRMATION"
+    assert "failure_evidence" not in str(attempt["input_bindings"])
+    started = client.post(
+        f"/api/v1/node-attempts/{attempt['id']}/confirm-start",
+        json={"expected_state_version": attempt["state_version"], "prompt": "处理需求"},
+        headers={"Idempotency-Key": "start-runtime-port-node"},
+    )
+    assert started.status_code == 200, started.text
+    assert started.json()["output_targets"]["risk_summary"]["output_scope"] == "OBSERVATION"
 
 
 def test_copied_start_blocked_node_provisions_runtime_for_agent_workbench(client, skill_capability):

@@ -44,21 +44,21 @@ export const agentWorkspaceSessionHost: AgentSessionHost = {
   },
 };
 
-export function flowNodeSessionHost(
-  flowRunId: string,
-  nodeRunId: string,
-  attemptId: string,
+function scopedSessionHost(
+  identity: string,
+  displayName: string,
+  rootPath: string,
+  storagePrefix: string,
+  storageSuffix = '',
 ): AgentSessionHost {
-  const rootPath = `/flow-runs/${encodeURIComponent(flowRunId)}/nodes/${encodeURIComponent(nodeRunId)}/attempts/${encodeURIComponent(attemptId)}/agent-sessions`;
-  const identity = `flow-node:${flowRunId}:${attemptId}`;
   return {
     id: identity,
-    displayName: '节点会话',
+    displayName,
     rootPath,
-    bootstrapRecoveryStorageKey: `flowweave.node-session.bootstrap-recovery.v1:${flowRunId}:${attemptId}`,
-    draftStorageKey: `flowweave.node-session.conversation-draft.v1:${flowRunId}:${attemptId}`,
-    queuedMessagesStorageKey: (hostId, bindingId) => `flowweave.node-session.message-queue.v1:${flowRunId}:${attemptId}:${hostId}:${bindingId}`,
-    queueModeStorageKey: (hostId, bindingId) => `flowweave.node-session.queue-mode.v1:${flowRunId}:${attemptId}:${hostId}:${bindingId}`,
+    bootstrapRecoveryStorageKey: `${storagePrefix}.bootstrap-recovery.v1${storageSuffix}`,
+    draftStorageKey: `${storagePrefix}.conversation-draft.v1${storageSuffix}`,
+    queuedMessagesStorageKey: (hostId, bindingId) => `${storagePrefix}.message-queue.v1${storageSuffix}:${hostId}:${bindingId}`,
+    queueModeStorageKey: (hostId, bindingId) => `${storagePrefix}.queue-mode.v1${storageSuffix}:${hostId}:${bindingId}`,
     queryKey: (resource, ...identifiers) => [
       'agent-session', identity, resource,
       ...identifiers.filter((value): value is string => Boolean(value)),
@@ -71,4 +71,27 @@ export function flowNodeSessionHost(
       return match ? decodeURIComponent(match[1]) : undefined;
     },
   };
+}
+
+export function flowNodeSessionHost(
+  flowRunId: string,
+  nodeRunId: string,
+  attemptId: string,
+): AgentSessionHost {
+  return scopedSessionHost(
+    `flow-node:${flowRunId}:${attemptId}`,
+    '节点会话',
+    `/flow-runs/${encodeURIComponent(flowRunId)}/nodes/${encodeURIComponent(nodeRunId)}/attempts/${encodeURIComponent(attemptId)}/agent-sessions`,
+    'flowweave.node-session',
+    `:${flowRunId}:${attemptId}`,
+  );
+}
+
+export function caseSessionHost(caseId: string): AgentSessionHost {
+  return scopedSessionHost(
+    `case:${caseId}`,
+    '事项协调会话',
+    `/cases/${encodeURIComponent(caseId)}/conversations`,
+    `flowweave.case-session:${caseId}`,
+  );
 }

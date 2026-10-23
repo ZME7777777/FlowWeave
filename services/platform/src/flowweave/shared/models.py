@@ -24,6 +24,13 @@ from flowweave.modules.agent_workspaces.infrastructure.models import (
     AgentWorkspaceRuntimeGeneration,
     AgentWorkspaceRuntimeSecretReference,
 )
+from flowweave.modules.cases.infrastructure.models import (
+    Case,
+    CaseAgentTask,
+    CaseDecisionProposal,
+    CaseFlowRun,
+    CaseStage,
+)
 from flowweave.modules.catalog.infrastructure.models import (
     CapabilityBlob,
     CapabilityCollection,
@@ -74,6 +81,7 @@ from flowweave.modules.runs.infrastructure.models import (
     AttemptInputBinding,
     CandidateOutputSet,
     FlowRun,
+    FlowRunRevisionDraft,
     FlowRunSchedule,
     FlowRunScheduleOccurrence,
     GateEvaluation,
@@ -136,6 +144,11 @@ __all__ = (
     "BackgroundTask",
     "CapabilityImport",
     "CapabilityBlob",
+    "Case",
+    "CaseAgentTask",
+    "CaseDecisionProposal",
+    "CaseFlowRun",
+    "CaseStage",
     "CapabilityCollection",
     "CapabilityCollectionItem",
     "CapabilityDependency",
@@ -158,6 +171,7 @@ __all__ = (
     "FlowPortMapping",
     "FlowNode",
     "FlowRun",
+    "FlowRunRevisionDraft",
     "FlowRunSchedule",
     "FlowRunScheduleOccurrence",
     "FlowRunRuntime",

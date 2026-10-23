@@ -2,7 +2,7 @@ import type {
   AuthUser, LdapDirectory, LdapUser, PlatformUser,
   AgentProfileVersion, ArtifactInput, ArtifactVersion, ArtifactVersionPage, RuntimeArtifactAuditPage, CapabilityAsset, CapabilityImportResult, FlowDefinition, FlowRun, FlowRunAutomaticRecord, FlowRunAutomaticRecordUpdate, FlowRunAutomaticRecordWrite, FlowRunConversation, FlowRunRuntimeOverview, FlowRunRuntimeResource, FlowRunSummary, FlowWrite, MessageAttachmentInput, OpenHandsConversationEventBatch, McpSource, SkillSource,
   BlockedNodeDelete, BulkDeleteResult, CapabilityBulkDeleteResult, CodexDeviceAuthorization, CodexOAuthStatus, GateRemediationResult, ModelProvider, ModelProviderDiscoveryWrite, ModelProviderUsage, ModelProviderWrite, NodeAsset, NodeAssetWrite, NodeAttempt, FlowRunAutomaticRecordSummary, ProviderBulkDeleteResult,
-  AgentAttachment, AgentConversation, AgentConversationAnnotation, AgentConversationContext, AgentConversationHead, AgentConversationInputReadiness, AgentConversationReference, AgentConversationSchedule, AgentConversationScheduleOccurrence, AgentPendingConfirmation, AgentWorkDirectory, AgentWorkDirectoryList, AgentWorkspace, AgentWorkspaceCapability, AgentWorkspaceDetails, AgentWorkspaceMcpReadiness, AgentWorkspaceReference, AgentWorkspaceRuntime, AutomaticRecordConfigDocument, CapabilityCollection, CapabilityCollectionWrite, ContextBundleManifest, MarketplaceCatalog, NodeDirectory, NodeRun, OpenHandsConversationEvent, PluginSourceResolution, RunEvent, RuntimeConfirmationBatch, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, GatePolicy, WebsiteCredential, WebsiteCredentialWrite, FlowRunSchedule, FlowRunScheduleOccurrencePage, FlowRunScheduleWrite, FlowRunScheduleTemplate, FlowRunStepwiseRecord, FlowRunStepwiseRecordWrite, StepwiseNodeDraft, StepwiseRecordConfigDocument,
+  AgentAttachment, AgentConversation, AgentConversationAnnotation, AgentConversationContext, AgentConversationHead, AgentConversationInputReadiness, AgentConversationReference, AgentConversationSchedule, AgentConversationScheduleOccurrence, AgentPendingConfirmation, AgentWorkDirectory, AgentWorkDirectoryList, AgentWorkspace, AgentWorkspaceCapability, AgentWorkspaceDetails, AgentWorkspaceMcpReadiness, AgentWorkspaceReference, AgentWorkspaceRuntime, AutomaticRecordConfigDocument, CapabilityCollection, CapabilityCollectionWrite, Case, ContextBundleManifest, MarketplaceCatalog, NodeDirectory, NodeRun, OpenHandsConversationEvent, PluginSourceResolution, RunEvent, RuntimeConfirmationBatch, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, GatePolicy, WebsiteCredential, WebsiteCredentialWrite, FlowRunSchedule, FlowRunScheduleOccurrencePage, FlowRunScheduleWrite, FlowRunScheduleTemplate, FlowRunStepwiseRecord, FlowRunStepwiseRecordWrite, StepwiseNodeDraft, StepwiseRecordConfigDocument,
 } from '../types';
 import { deploymentBasePath } from '../deploymentPath';
 
@@ -600,6 +600,26 @@ export const api = {
   createDirectory: (body: { name: string; parent_id?: string | null; position?: number }) =>
     request<NodeDirectory>('/node-directories', json('POST', body)),
   deleteDirectory: (id: string) => request<void>(`/node-directories/${encodeURIComponent(id)}`, json('DELETE')),
+  cases: () => request<Case[]>('/cases'),
+  createCase: (body: { name: string; objective?: string; stages?: Array<{ stage_key: string; name: string; objective?: string }> }) =>
+    request<Case>('/cases', json('POST', body)),
+  case: (id: string) => request<Case>(`/cases/${encodeURIComponent(id)}`),
+  caseStageTemplates: (caseId: string) => request<import('../types').CaseStageTemplate[]>(`/cases/${encodeURIComponent(caseId)}/stage-templates`),
+  setCaseStageState: (caseId: string, stageId: string, expected_case_row_version: number, state: import('../types').CaseStage['state']) =>
+    request<Case>(`/cases/${encodeURIComponent(caseId)}/stages/${encodeURIComponent(stageId)}/state`, json('PUT', { expected_case_row_version, state })),
+  bindCaseStageFlowRun: (caseId: string, stageId: string, flow_run_id: string, execution_mode: 'STEPWISE' | 'CONTINUOUS') =>
+    request<Case>(`/cases/${encodeURIComponent(caseId)}/stages/${encodeURIComponent(stageId)}/flow-run`, json('PUT', { flow_run_id, execution_mode })),
+  launchCaseStage: (caseId: string, stageId: string, name?: string) =>
+    request<Case>(`/cases/${encodeURIComponent(caseId)}/stages/${encodeURIComponent(stageId)}/launch`, json('POST', { name })),
+  startCaseStageExecution: (caseId: string, stageId: string, reason = '启动当前事项阶段执行副本') =>
+    request<import('../types').CaseDecisionProposal>(`/cases/${encodeURIComponent(caseId)}/stages/${encodeURIComponent(stageId)}/execution/start`, json('POST', { reason })),
+  executeCaseControlPlan: (caseId: string, planId: string) =>
+    request<import('../types').CaseControlPlan>(`/cases/${encodeURIComponent(caseId)}/control-plans/${encodeURIComponent(planId)}/execute`, json('POST')),
+  retryCaseControlPlan: (caseId: string, planId: string) =>
+    request<import('../types').CaseControlPlan>(`/cases/${encodeURIComponent(caseId)}/control-plans/${encodeURIComponent(planId)}/retry`, json('POST')),
+  createCaseControlConversation: (caseId: string, body: { model_provider_id: string; model_name: string; reasoning_effort?: string | null; capability_version_ids?: string[] }, idempotencyKey = randomId()) =>
+    request<Case>(`/cases/${encodeURIComponent(caseId)}/control-conversation`, json('POST', body, idempotencyKey)),
+
   nodes: (directoryId?: string) => request<NodeAsset[]>(`/node-assets${directoryId ? `?directory_id=${directoryId}` : ''}`),
   node: (id: string) => request<NodeAsset>(`/node-assets/${id}`),
   createNode: (body: NodeAssetWrite) => request<NodeAsset>('/node-assets', json('POST', body)),
@@ -707,6 +727,7 @@ export const api = {
   flowRun: (id: string) => request<FlowRun>(`/flow-runs/${id}`),
   stepwiseRecords: (runId: string) => request<FlowRunStepwiseRecord[]>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-runs`),
   stepwiseRecord: (runId: string, recordId: string) => request<FlowRunStepwiseRecord>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-runs/${encodeURIComponent(recordId)}`),
+  stepwiseTemplateReadiness: (runId: string) => request<import('../types').StepwiseTemplateReadiness>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-template-readiness`),
   createStepwiseRecord: (runId: string, body: FlowRunStepwiseRecordWrite) => request<FlowRunStepwiseRecord>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-runs`, json('POST', body)),
   copyStepwiseRecord: (runId: string, recordId: string, name: string) => request<FlowRunStepwiseRecord>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-runs/${encodeURIComponent(recordId)}/copy`, json('POST', { name })),
   exportStepwiseRecordConfigs: (runId: string, recordIds: string[]) =>
@@ -718,6 +739,8 @@ export const api = {
     request<StepwiseNodeDraft>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-node-drafts/${encodeURIComponent(nodeKey)}`, json('PUT', body)),
   startStepwiseNodeDraft: (runId: string, nodeKey: string, expected_row_version: number) =>
     request<NodeAttempt>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-node-drafts/${encodeURIComponent(nodeKey)}/start`, json('POST', { expected_row_version }, true)),
+  reactivateStepwiseNodeForRerun: (runId: string, nodeKey: string, node_run_id: string) =>
+    request<StepwiseNodeDraft>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-node-drafts/${encodeURIComponent(nodeKey)}/rerun-edit`, json('POST', { node_run_id })),
   automaticRecords: async (runId: string) =>
     (await request<AutomaticRunResponse[]>(`/flow-runs/${encodeURIComponent(runId)}/automatic-runs`)).map(automaticRecord),
   automaticRecordSummaries: (runId: string) =>
@@ -755,8 +778,16 @@ export const api = {
   nodeRun: (runId: string, nodeRunId: string) => request<NodeRun>(`/flow-runs/${runId}/nodes/${nodeRunId}`),
   deleteNodeRun: (runId: string, nodeRunId: string) =>
     request<void>(`/flow-runs/${encodeURIComponent(runId)}/nodes/${encodeURIComponent(nodeRunId)}`, json('DELETE')),
-  copyNodeRun: (runId: string, nodeRunId: string, name: string) =>
-    request<NodeRun>(`/flow-runs/${encodeURIComponent(runId)}/nodes/${encodeURIComponent(nodeRunId)}/copy`, json('POST', { name })),
+  copyNodeRun: (runId: string, nodeRunId: string, name: string, source_version: 'TEMPLATE' | 'RUNTIME' = 'RUNTIME', artifact_mode: 'RULES_ONLY' | 'CANDIDATE_BINDINGS' | 'REUSE_BINDINGS' = 'CANDIDATE_BINDINGS') =>
+    request<NodeRun>(`/flow-runs/${encodeURIComponent(runId)}/nodes/${encodeURIComponent(nodeRunId)}/copy`, json('POST', { name, source_version, artifact_mode })),
+  createRevisionDraft: (runId: string, reason = '') =>
+    request<import('../types').FlowRunRevisionDraft>(`/flow-runs/${encodeURIComponent(runId)}/revision-drafts`, json('POST', { reason })),
+  revisionDraft: (runId: string, draftId: string) =>
+    request<import('../types').FlowRunRevisionDraft>(`/flow-runs/${encodeURIComponent(runId)}/revision-drafts/${encodeURIComponent(draftId)}`),
+  updateRevisionDraft: (runId: string, draftId: string, body: { expected_row_version: number; definition: import('../types').SnapshotDefinition; reason?: string }) =>
+    request<import('../types').FlowRunRevisionDraft>(`/flow-runs/${encodeURIComponent(runId)}/revision-drafts/${encodeURIComponent(draftId)}`, json('PUT', body)),
+  applyRevisionDraft: (runId: string, draftId: string, expected_row_version: number) =>
+    request<FlowRun>(`/flow-runs/${encodeURIComponent(runId)}/revision-drafts/${encodeURIComponent(draftId)}/apply`, json('POST', { expected_row_version }, true)),
   addArtifact: (runId: string, body: ArtifactInput) => request<ArtifactVersion>(`/flow-runs/${runId}/artifacts`, json('POST', body)),
   addNodeInputArtifact: (runId: string, nodeKey: string, body: ArtifactInput) =>
     request<ArtifactVersion>(`/flow-runs/${encodeURIComponent(runId)}/nodes/${encodeURIComponent(nodeKey)}/input-artifacts`, json('POST', body)),

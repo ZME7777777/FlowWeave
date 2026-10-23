@@ -84,9 +84,41 @@ async function openWorkspace(page: Page, events: unknown[] = [], includeSecondCo
   await page.getByLabel('账号').fill('schedule-user');
   await page.getByLabel('密码').fill('test-password');
   await page.getByRole('button', { name: '进入工作空间' }).click();
-  await page.getByRole('button', { name: 'Agent 会话', exact: true }).click();
+  await page.getByRole('button', { name: '自由对话', exact: true }).click();
   return writes;
 }
+
+test('fresh navigation opens case space and creates a case after the branch merge', async ({ page }) => {
+  await openWorkspace(page);
+  const cases: Record<string, unknown>[] = [];
+  await page.route('**/api/v1/cases**', async route => {
+    const pathname = new URL(route.request().url()).pathname;
+    if (pathname.endsWith('/stage-templates')) return json(route, []);
+    if (route.request().method() === 'POST' && pathname.endsWith('/cases')) {
+      const payload = route.request().postDataJSON();
+      const created = { ...payload, id: 'merged-case', state: 'ACTIVE', row_version: 1,
+        stages: [], tasks: [], flow_runs: [], control_plans: [], decision_proposals: [],
+        control_conversation_binding_id: null, created_at: now, updated_at: now };
+      cases.push(created);
+      return json(route, created, 201);
+    }
+    return json(route, cases);
+  });
+  await page.evaluate(() => localStorage.removeItem('flowweave-workbench'));
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await expect(page.getByRole('button', { name: '场景空间', exact: true })).toHaveAttribute('class', /active/);
+  await expect(page.getByRole('heading', { name: '事项', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '新建事项', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: '新建事项', exact: true });
+  await dialog.getByLabel('事项名称').fill('合并后的案例');
+  await dialog.getByLabel('目标', { exact: true }).fill('验证远程案例功能与本地工作台集成。');
+  await dialog.getByRole('button', { name: '创建事项', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.locator('.cases-list')).toContainText('合并后的案例');
+  await expect(page.getByRole('button', { name: '创建协调会话', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '自由对话', exact: true }).click();
+  await expect(page.getByRole('navigation', { name: 'Agent 工作区导航' })).toBeVisible();
+});
 
 test('conversation images resolve in the bound user project and preview with the current binding', async ({ page }) => {
   const root = '/runtime/workspace/project/users/00000000-0000-0000-0000-000000000001/my-project';
@@ -494,8 +526,8 @@ test('workspace and pinned collapse preferences survive reopening with independe
     await expect(page.getByRole('button', { name: `展开工作区 ${label}`, exact: true })).toHaveAttribute('aria-expanded', 'false');
   }
   await expect(page.getByRole('button', { name: '展开置顶会话', exact: true })).toHaveAttribute('aria-expanded', 'false');
-  await page.getByRole('button', { name: '节点资产', exact: true }).click();
-  await page.getByRole('button', { name: 'Agent 会话', exact: true }).click();
+  await page.getByRole('button', { name: '节点中心', exact: true }).click();
+  await page.getByRole('button', { name: '自由对话', exact: true }).click();
   await expect(page.getByRole('button', { name: '展开工作区 根工作区', exact: true })).toBeVisible();
   await page.getByRole('button', { name: '展开工作区 根工作区', exact: true }).click();
   await expect(page.getByRole('button', { name: '展开工作区 已有项目目录', exact: true })).toBeVisible();
@@ -542,8 +574,8 @@ test('pinned conversations reorder across workspaces and restore their independe
   expect(orderWrites).toEqual([]); // Original workspace ordering is untouched.
   await page.reload();
   await expect.poll(titles).toEqual(['置顶会话 1', '置顶会话 0', '置顶会话 2']);
-  await page.getByRole('button', { name: '节点资产', exact: true }).click();
-  await page.getByRole('button', { name: 'Agent 会话', exact: true }).click();
+  await page.getByRole('button', { name: '节点中心', exact: true }).click();
+  await page.getByRole('button', { name: '自由对话', exact: true }).click();
   await expect.poll(titles).toEqual(['置顶会话 1', '置顶会话 0', '置顶会话 2']);
   await pinned.getByRole('button', { name: '置顶会话 1', exact: true }).dragTo(page.locator('.agent-workbench-content'));
   await expect(page.getByRole('button', { name: '移除会话 置顶会话 1', exact: true })).toBeVisible();
@@ -1084,6 +1116,28 @@ test('schedule detail keeps long prompts and run scrolling inside a single scree
   await expect(detail.getByRole('button', { name: '查看全文' })).toHaveCount(0);
   await detail.locator('.agent-schedule-history-run').first().click();
   await expect(page).toHaveURL(/\/agent\/schedules\/conversations\/scheduled-run-1$/);
+});
+
+test('schedule filter expands inside the sidebar without covering tasks', async ({ page }) => {
+  await openWorkspace(page);
+  await page.getByRole('navigation', { name: 'Agent 工作区导航' }).getByRole('button', { name: '定时任务' }).click();
+
+  const tasks = page.getByRole('region', { name: '会话定时任务' });
+  await tasks.getByRole('button', { name: '筛选定时任务', exact: true }).click();
+  const filterMenu = tasks.locator('.agent-schedule-filter-menu');
+  const firstTask = tasks.locator('.agent-schedule-tree-group').first();
+  await expect(filterMenu).toBeVisible();
+
+  const [filterBox, taskBox] = await Promise.all([filterMenu.boundingBox(), firstTask.boundingBox()]);
+  expect(filterBox).not.toBeNull();
+  expect(taskBox).not.toBeNull();
+  expect(filterBox!.y + filterBox!.height).toBeLessThanOrEqual(taskBox!.y);
+
+  await filterMenu.getByRole('menuitemradio', { name: '已暂停', exact: true }).click();
+  await expect(tasks.locator('.agent-schedule-tree-group')).toHaveCount(0);
+  await tasks.getByRole('button', { name: '筛选定时任务', exact: true }).click();
+  await tasks.locator('.agent-schedule-filter-menu').getByRole('menuitemradio', { name: '全部状态', exact: true }).click();
+  await expect(tasks.locator('.agent-schedule-tree-group')).toHaveCount(2);
 });
 
 test('scheduled session shows session configuration and expands additional runs', async ({ page }) => {

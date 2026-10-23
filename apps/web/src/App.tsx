@@ -1,4 +1,4 @@
-import { Boxes, BrainCircuit, CalendarClock, ChevronDown, GitFork, Hexagon, KeyRound, Library, LogOut, MessageSquareCode, PlayCircle, Settings, TerminalSquare, UsersRound, X } from 'lucide-react';
+import { AudioLines, Box, BrainCircuit, CalendarClock, ChevronDown, Component, GitFork, Hexagon, KeyRound, Library, LogOut, MessagesSquare, PlayCircle, Settings, TerminalSquare, UsersRound, X } from 'lucide-react';
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useWorkbenchStore } from './store/workbench';
@@ -15,6 +15,7 @@ const FlowsPage = lazy(() => import('./pages/FlowsPage').then(module => ({ defau
 const NodesPage = lazy(() => import('./pages/NodesPage').then(module => ({ default: module.NodesPage })));
 const ModelsPage = lazy(() => import('./pages/ModelsPage').then(module => ({ default: module.ModelsPage })));
 const RunsPage = lazy(() => import('./pages/RunsPage').then(module => ({ default: module.RunsPage })));
+const CasesPage = lazy(() => import('./pages/CasesPage').then(module => ({ default: module.CasesPage })));
 const SchedulesPage = lazy(() => import('./pages/SchedulesPage').then(module => ({ default: module.SchedulesPage })));
 const WorkbenchPage = lazy(() => import('./pages/WorkbenchPage').then(module => ({ default: module.WorkbenchPage })));
 const CapabilitiesPage = lazy(() => import('./pages/CapabilitiesPage').then(module => ({ default: module.CapabilitiesPage })));
@@ -24,6 +25,7 @@ const LdapUsersPage = lazy(() => import('./pages/LdapUsersPage').then(module => 
 const StandaloneAgentTerminal = lazy(() => import('./components/AgentRuntimeSidebar').then(module => ({ default: module.StandaloneAgentTerminal })));
 const AgentWorkbenchPage = lazy(() => import('./pages/AgentWorkbenchPage').then(module => ({ default: module.AgentWorkbenchPage })));
 const FlowNodeSessionPage = lazy(() => import('./pages/FlowNodeSessionPage').then(module => ({ default: module.FlowNodeSessionPage })));
+const CaseSessionPage = lazy(() => import('./pages/CaseSessionPage').then(module => ({ default: module.CaseSessionPage })));
 const WorkspaceFileViewerPage = lazy(() => import('./pages/WorkspaceFileViewerPage').then(module => ({ default: module.WorkspaceFileViewerPage })));
 
 function PageLoading() {
@@ -31,12 +33,13 @@ function PageLoading() {
 }
 
 const nav = [
-  { view: 'nodes' as const, label: '节点资产', icon: Boxes },
-  { view: 'capabilities' as const, label: '能力仓库', icon: Library },
+  { view: 'nodes' as const, label: '节点中心', icon: Component },
   { view: 'flows' as const, label: '流程编排', icon: GitFork },
-  { view: 'runs' as const, label: '流程运行', icon: PlayCircle },
-  { view: 'schedules' as const, label: '定时任务', icon: CalendarClock },
-  { view: 'agent-workbench' as const, label: 'Agent 会话', icon: MessageSquareCode },
+  { view: 'runs' as const, label: '流程运行', icon: AudioLines },
+  { view: 'schedules' as const, label: '定时调度', icon: CalendarClock },
+  { view: 'cases' as const, label: '场景空间', icon: Box },
+  { view: 'capabilities' as const, label: '能力仓库', icon: Library },
+  { view: 'agent-workbench' as const, label: '自由对话', icon: MessagesSquare },
 ];
 
 const settingsNav = [
@@ -188,6 +191,7 @@ export function App() {
   const nodeSessionRoute = routePathname.match(
     /^\/flow-runs\/([^/]+)\/nodes\/([^/]+)\/attempts\/([^/]+)\/agent-sessions(?:\/([^/]+))?$/,
   );
+  const caseSessionRoute = routePathname.match(/^\/cases\/([^/]+)\/conversations\/([^/]+)$/);
   const flowRunRouteId = flowRunRoute ? decodeURIComponent(flowRunRoute[1]) : undefined;
   const nodeSessionSourceRunId = nodeSessionRoute
     ? typeof window.history.state?.flowweaveFlowRun?.runId === 'string'
@@ -291,7 +295,7 @@ export function App() {
   }, [flowRunRouteId, nodeSessionRoute, selectedRunId, view]);
   const directAgentRoute = routePathname === '/agent' || routePathname === '/agent/schedules' || routePathname.startsWith('/agent/conversations/') || routePathname.startsWith('/agent/schedules/conversations/');
   const canUseAgentSessions = user?.can_use_agent_sessions !== false;
-  const isAgentRoute = (directAgentRoute && canUseAgentSessions) || Boolean(nodeSessionRoute);
+  const isAgentRoute = (directAgentRoute && canUseAgentSessions) || Boolean(nodeSessionRoute) || Boolean(caseSessionRoute);
   useLayoutEffect(() => {
     if (directAgentRoute) rememberStandaloneAgentConversation(routePathname);
   }, [directAgentRoute, rememberStandaloneAgentConversation, routePathname]);
@@ -302,7 +306,13 @@ export function App() {
     setRouteVersion(value => value + 1);
   }, [directAgentRoute, setView, user?.can_use_agent_sessions]);
   const leaveAgentRoute = () => {
-    if (isAgentRoute) navigate('/', true);
+    if (!isAgentRoute) return;
+    if (caseSessionRoute) {
+      setView('cases');
+      navigate('/', true);
+      return;
+    }
+    navigate('/', true);
   };
   const leaveFlowRunRoute = () => {
     if (flowRunRouteId) navigate('/', true);
@@ -410,6 +420,6 @@ export function App() {
     if (!tab) return null;
     return <div className={`context-tab${activeFlowRunTabId === tab.id ? ' active' : ''}`} key={`flow-run-${tab.id}`}><button type="button" className="context-tab-select" aria-current={activeFlowRunTabId === tab.id ? 'page' : undefined} title={tab.label} onClick={() => selectFlowRunTab(tab.id)}><PlayCircle size={14}/><span>{tab.label}</span></button><button type="button" className="context-tab-close" aria-label={`关闭${tab.label}`} title={`关闭${tab.label}`} onClick={() => closeFlowRunTab(tab.id)}><X size={12}/></button></div>;
   })}</div>}<div className="topbar-actions"><div className="account-menu" ref={settingsMenu}><button type="button" className={`account-trigger${settingsActive ? ' active' : ''}`} aria-label="账户与设置" aria-haspopup="menu" aria-expanded={settingsOpen} onClick={() => setSettingsOpen(open => !open)}><span className="account-avatar" aria-hidden="true">{user.username.slice(0, 1).toUpperCase()}</span><span className="account-identity"><b>{user.username}</b><small>{user.is_super_admin ? '超级管理员' : '普通用户'}</small></span><ChevronDown size={13} className={settingsOpen ? 'rotated' : ''}/></button>{settingsOpen && <div className="settings-popover account-popover" role="menu" aria-label="账户与设置"><div className="account-popover-heading"><Settings size={14}/><b>平台设置</b></div>{accountSettingsNav.map(item => <button type="button" role="menuitem" title={item.description} key={item.view} className={renderedView === item.view && !isAgentRoute && !flowRunRouteId ? 'active' : ''} onClick={() => selectSettingsView(item.view)}><span className="settings-item-icon"><item.icon size={15}/></span><b>{item.label}</b></button>)}<button type="button" role="menuitem" title="结束当前平台会话" className="account-logout" onClick={() => void logout()}><span className="settings-item-icon"><LogOut size={15}/></span><b>退出登录</b></button></div>}</div></div></header>
-    <Suspense fallback={<PageLoading/>}><div key={contentReloadVersion}>{isAgentRoute ? nodeSessionRoute ? <FlowNodeSessionPage flowRunId={decodeURIComponent(nodeSessionRoute[1])} nodeRunId={decodeURIComponent(nodeSessionRoute[2])} attemptId={decodeURIComponent(nodeSessionRoute[3])} onNavigate={navigate}/> : <AgentWorkbenchPage onNavigate={navigate}/> : <>{renderedView === 'nodes' && <NodesPage/>}{renderedView === 'capabilities' && <CapabilitiesPage/>}{renderedView === 'environments' && <TerminalEnvironmentsPage/>}{renderedView === 'credentials' && <CredentialsPage/>}{renderedView === 'ldap-users' && user.is_super_admin && <LdapUsersPage/>}{renderedView === 'flows' && <FlowsPage/>}{renderedView === 'runs' && <RunsPage/>}{renderedView === 'schedules' && <SchedulesPage/>}{renderedView === 'models' && <ModelsPage/>}{renderedView === 'workbench' && <WorkbenchPage/>}</>}</div></Suspense>
+    <Suspense fallback={<PageLoading/>}><div key={contentReloadVersion}>{isAgentRoute ? nodeSessionRoute ? <FlowNodeSessionPage flowRunId={decodeURIComponent(nodeSessionRoute[1])} nodeRunId={decodeURIComponent(nodeSessionRoute[2])} attemptId={decodeURIComponent(nodeSessionRoute[3])} onNavigate={navigate}/> : caseSessionRoute ? <CaseSessionPage caseId={decodeURIComponent(caseSessionRoute[1])} bindingId={decodeURIComponent(caseSessionRoute[2])} onNavigate={navigate} onReturn={() => { setView('cases'); navigate('/', true); }}/> : <AgentWorkbenchPage onNavigate={navigate}/> : <>{renderedView === 'nodes' && <NodesPage/>}{renderedView === 'capabilities' && <CapabilitiesPage/>}{renderedView === 'environments' && <TerminalEnvironmentsPage/>}{renderedView === 'credentials' && <CredentialsPage/>}{renderedView === 'ldap-users' && user.is_super_admin && <LdapUsersPage/>}{renderedView === 'flows' && <FlowsPage/>}{renderedView === 'runs' && <RunsPage/>}{renderedView === 'cases' && <CasesPage onNavigate={navigate}/>}{renderedView === 'schedules' && <SchedulesPage/>}{renderedView === 'models' && <ModelsPage/>}{renderedView === 'workbench' && <WorkbenchPage/>}</>}</div></Suspense>
   </div>;
 }

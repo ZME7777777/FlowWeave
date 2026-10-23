@@ -796,6 +796,24 @@ class NodeRunCopyWrite(ApiModel):
     """Create a fresh manual record from a prior record's launch configuration."""
 
     name: str | None = Field(default=None, max_length=220)
+    source_version: Literal["TEMPLATE", "RUNTIME"] = "RUNTIME"
+    artifact_mode: Literal["RULES_ONLY", "CANDIDATE_BINDINGS", "REUSE_BINDINGS"] = (
+        "CANDIDATE_BINDINGS"
+    )
+
+
+class FlowRunRevisionDraftCreateWrite(ApiModel):
+    reason: str = Field(default="", max_length=2_000)
+
+
+class FlowRunRevisionDraftWrite(ApiModel):
+    expected_row_version: int = Field(ge=1)
+    definition: dict[str, Any]
+    reason: str = Field(default="", max_length=2_000)
+
+
+class FlowRunRevisionDraftApplyWrite(ApiModel):
+    expected_row_version: int = Field(ge=1)
 
 
 class NodeRunStart(ApiModel):
@@ -817,6 +835,104 @@ class NodeRunStart(ApiModel):
         return self
 
 
+class CaseStageWrite(ApiModel):
+    stage_key: str = Field(pattern=r"^[a-z][a-z0-9._-]{0,99}$")
+    name: str = Field(min_length=1, max_length=220)
+    objective: str = Field(default="", max_length=10_000)
+
+
+class CaseCreateWrite(ApiModel):
+    name: str = Field(min_length=1, max_length=220)
+    objective: str = Field(default="", max_length=20_000)
+    stages: list[CaseStageWrite] = Field(default_factory=list, max_length=50)
+
+    @model_validator(mode="after")
+    def validate_stages(self) -> CaseCreateWrite:
+        keys = [stage.stage_key for stage in self.stages]
+        if len(keys) != len(set(keys)):
+            raise ValueError("case stage keys must be unique")
+        return self
+
+
+class CaseStageStateWrite(ApiModel):
+    expected_case_row_version: int = Field(ge=1)
+    state: Literal["PENDING", "ACTIVE", "COMPLETED", "SKIPPED"]
+
+
+class CaseStageFlowRunWrite(ApiModel):
+    flow_run_id: str = Field(min_length=1, max_length=36)
+    execution_mode: Literal["STEPWISE", "CONTINUOUS"]
+
+
+class CaseStageLaunchWrite(ApiModel):
+    name: str | None = Field(default=None, max_length=220)
+
+
+class CaseStageExecutionStartWrite(ApiModel):
+    reason: str = Field(default="启动当前事项阶段执行副本", min_length=1, max_length=2_000)
+
+
+class CaseControlPlanWrite(ApiModel):
+    stage_id: str = Field(min_length=1, max_length=36)
+    action: Literal[
+        "CREATE_EXECUTION_COPY",
+        "START_EXECUTION",
+        "START_STEPWISE_NODE",
+        "STOP_EXECUTION",
+        "RERUN_STEPWISE_NODE",
+        "REVISE_UNSTARTED_RUNTIME",
+    ]
+    idempotency_key: str = Field(pattern=r"^[a-z][a-z0-9._:-]{0,139}$")
+    reason: str = Field(min_length=1, max_length=2_000)
+    node_run_id: str | None = Field(default=None, min_length=1, max_length=36)
+    node_attempt_id: str | None = Field(default=None, min_length=1, max_length=36)
+    input_snapshot: dict[str, Any] = Field(default_factory=_empty_any_dict)
+
+
+class CaseControlConversationWrite(ApiModel):
+    model_provider_id: str = Field(min_length=1, max_length=36)
+    model_name: str = Field(min_length=1, max_length=240)
+    reasoning_effort: str | None = Field(default=None, max_length=30)
+    capability_version_ids: list[str] = Field(default_factory=list, max_length=100)
+
+
+class CaseFlowRunWrite(ApiModel):
+    flow_run_id: str = Field(min_length=1, max_length=36)
+
+
+class CaseControlSuggestionWrite(ApiModel):
+    suggestion_key: str = Field(pattern=r"^[a-z][a-z0-9._:-]{0,119}$")
+    action: Literal[
+        "CREATE_EXECUTION_COPY",
+        "START_EXECUTION",
+        "START_STEPWISE_NODE",
+        "STOP_EXECUTION",
+        "RERUN_STEPWISE_NODE",
+        "REVISE_UNSTARTED_RUNTIME",
+    ]
+    reason: str = Field(min_length=1, max_length=2_000)
+    node_run_id: str | None = Field(default=None, min_length=1, max_length=36)
+    node_attempt_id: str | None = Field(default=None, min_length=1, max_length=36)
+    evidence: dict[str, Any] = Field(default_factory=_empty_any_dict)
+
+
+class CaseDecisionProposalWrite(ApiModel):
+    flow_run_id: str = Field(min_length=1, max_length=36)
+    proposal_key: str = Field(pattern=r"^[a-z][a-z0-9._-]{0,119}$")
+    action: Literal[
+        "CONTINUE_STEPWISE",
+        "STOP_FLOW_RUN",
+        "RERUN_STEPWISE_NODE",
+        "REVISE_UNSTARTED_RUNTIME",
+        "COPY_AUTOMATIC_RUN",
+    ]
+    reason: str = Field(min_length=1, max_length=2_000)
+    node_run_id: str | None = Field(default=None, min_length=1, max_length=36)
+    node_attempt_id: str | None = Field(default=None, min_length=1, max_length=36)
+    source_task_id: str | None = Field(default=None, min_length=1, max_length=36)
+    payload: dict[str, Any] = Field(default_factory=_empty_any_dict)
+
+
 class StepwiseNodeDraftWrite(NodeRunStart):
     """Editable node configuration for one stepwise record.
 
@@ -831,6 +947,10 @@ class StepwiseNodeDraftStartWrite(ApiModel):
     """Optimistic-lock one draft before materialising its first Attempt."""
 
     expected_row_version: int = Field(ge=1)
+
+
+class StepwiseNodeRerunEditWrite(ApiModel):
+    node_run_id: str = Field(min_length=1, max_length=36)
 
 
 class FlowRunScheduleWrite(ApiModel):

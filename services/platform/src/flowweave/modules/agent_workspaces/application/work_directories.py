@@ -484,6 +484,30 @@ def create_automation_work_directory(
         raise
 
 
+def create_case_work_directory(
+    db: Session, workspace_id: str, case_id: str, display_name: str
+) -> dict[str, Any]:
+    """Create a user-scoped Case directory within the shared Agent Runtime."""
+
+    root = _project_root(db, workspace_id)
+    relative_path = f".flowweave/cases/{case_id}"
+    target = root / relative_path
+    try:
+        target.mkdir(mode=0o700, parents=True, exist_ok=False)
+    except FileExistsError as exc:
+        raise DomainError("CASE_WORKSPACE_CONFLICT", "事项工作目录已存在", 409) from exc
+    except OSError as exc:
+        raise DomainError("CASE_WORKSPACE_UNAVAILABLE", "无法创建事项工作目录", 503) from exc
+    try:
+        return create_work_directory(db, workspace_id, display_name, (relative_path,))
+    except Exception:
+        try:
+            target.rmdir()
+        except OSError:
+            pass
+        raise
+
+
 def write_automation_files(
     db: Session,
     workspace_id: str,
@@ -538,6 +562,74 @@ def write_automation_files(
         raise DomainError(
             "AGENT_AUTOMATION_METADATA_UNAVAILABLE", "无法写入定时任务配置文件", 503
         ) from exc
+
+
+def write_case_files(
+    db: Session,
+    workspace_id: str,
+    work_directory_id: str,
+    *,
+    case_id: str,
+    name: str,
+    objective: str,
+    state: str,
+    stages: tuple[dict[str, Any], ...],
+    control_plans: tuple[dict[str, Any], ...] = (),
+) -> None:
+    """Maintain Case-local soft context without replacing platform ownership."""
+
+    item = _directory(db, workspace_id, work_directory_id)
+    version = _version(db, item)
+    case_root = _project_root(db, workspace_id) / version.working_path
+    try:
+        case_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        lines = [
+            "version = 1",
+            f"id = {json.dumps(case_id)}",
+            f"name = {json.dumps(name, ensure_ascii=False)}",
+            f"objective = {json.dumps(objective, ensure_ascii=False)}",
+            f"state = {json.dumps(state)}",
+            "",
+        ]
+        for stage in stages:
+            lines.extend(
+                [
+                    "[[stages]]",
+                    f"id = {json.dumps(str(stage['id']))}",
+                    f"key = {json.dumps(str(stage['stage_key']))}",
+                    f"name = {json.dumps(str(stage['name']), ensure_ascii=False)}",
+                    f"objective = {json.dumps(str(stage['objective']), ensure_ascii=False)}",
+                    f"position = {int(stage['position'])}",
+                    f"state = {json.dumps(str(stage['state']))}",
+                    f"execution_mode = {json.dumps(str(stage['execution_mode']))}",
+                    f"flow_run_id = {json.dumps(stage.get('flow_run_id') or '')}",
+                    "current_execution_flow_run_id = "
+                    f"{json.dumps(stage.get('current_execution_flow_run_id') or '')}",
+                    "",
+                ]
+            )
+        for plan in control_plans:
+            lines.extend(
+                [
+                    "[[control_plans]]",
+                    f"id = {json.dumps(str(plan['id']))}",
+                    f"stage_id = {json.dumps(str(plan['stage_id']))}",
+                    "execution_flow_run_id = "
+                    f"{json.dumps(plan.get('execution_flow_run_id') or '')}",
+                    f"action = {json.dumps(str(plan['action']))}",
+                    f"state = {json.dumps(str(plan['state']))}",
+                    f"reason = {json.dumps(str(plan['reason']), ensure_ascii=False)}",
+                    f"error_code = {json.dumps(plan.get('error_code') or '')}",
+                    f"created_at = {json.dumps(str(plan['created_at']))}",
+                    "",
+                ]
+            )
+        (case_root / "case.toml").write_text("\n".join(lines), encoding="utf-8")
+        memory = case_root / "memory.md"
+        if not memory.exists():
+            memory.write_text(f"# {name} Case 记忆\n\n", encoding="utf-8")
+    except OSError as exc:
+        raise DomainError("CASE_METADATA_UNAVAILABLE", "无法写入事项配置文件", 503) from exc
 
 
 def update_work_directory(
