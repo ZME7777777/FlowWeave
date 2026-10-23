@@ -106,6 +106,15 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 Alembic 唯一 head 仍为 0170_revision_draft_owner，未修改迁移。按既有直接部署授权仅发布 Web，
 实际发布验收完成后补记；当前与下一可执行切片均为 NONE。
 
+FR-670 发布补记（2026-10-23）：代码提交 `c5930598016a6cf883e9f454b709884e068d9af5`。
+正式 web 预检、commit-bound 最小上下文 prepare 与 linux/amd64 镜像构建通过，验证 OCI revision，
+保存原 Web 镜像的精确 rollback tag 后仅 recreate web；其他 37 个容器的镜像及启动时间、
+服务器 Compose／env 摘要均未变。Web HTTP、带前缀登录与 Agent 深层路由、根登录页的实际
+服务器 Chromium 验证和未授权 API 401 边界通过。以线上 Web 镜像的实际 JS／CSS 重跑上述
+七项受控 API Chromium 用例全部通过，实际加载的 45 个 JS／CSS 文件 SHA-256 与运行容器一致；
+未访问业务会话或发送真实消息。正式 remote-release-finish 的版本／健康门禁与受管容量收尾通过。
+未修改 API、stream-api、worker、Provider、Runtime 或业务数据；当前与下一可执行切片仍为 NONE。
+
 ### FR-669 正式消息查询契约与首发核对恢复 — DONE
 
 依赖：FR-668 DONE。用户报告首发及继续发送报错后，在正式预检的目标只读检查日志、
