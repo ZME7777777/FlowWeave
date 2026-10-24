@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`UPSTREAM BASELINE ADOPTION COMPLETE`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-675`
+> 下一可执行切片：`FR-676`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -235,7 +235,7 @@ Python语法、无 opt-in 拒绝执行、diff与任务唯一性检查通过；Al
 本片未发布平台／Runtime、未改服务器配置／生产配额；只创建并移除自身隔离测试容器，
 前后38个既有容器镜像与启动时间一致。当前切片NONE，下一可执行FR-675；提交后停止。
 
-### FR-675 读取 503 的安全关联证据与 Runtime 观测锁边界 — READY
+### FR-675 读取 503 的安全关联证据与 Runtime 观测锁边界 — DONE
 
 依赖：FR-674 DONE。先为既有读取失败保留安全的错误码、lane和request-id关联，验证临时
 饱和、原生Runtime错误、数据库错误可区分且不输出私有入口、Secret或消息内容。以FR-674
@@ -243,6 +243,39 @@ Python语法、无 opt-in 拒绝执行、diff与任务唯一性检查通过；Al
 删除互斥、新建与replacement保护的前提下确定并实施最小观测锁修复。必须使用真实独立
 PostgreSQL验证竞争、失败恢复和隔离，不靠提高配额或受控HTTP替身宣称生产根因解决。
 历史资源与DNS具体触发者继续保留证据缺口，不自动续跑用户任务。
+
+实现：读取准入／执行和 HTTP 错误日志关联同一 UUID、安全错误码、lane／phase／分类与
+路由模板；不记录异常正文、SQL、参数、请求原始 URL 或不可信 request-id，未处理异常
+也不输出 traceback。Runtime 观测只读取已有持久化 FlowRun 引用并核对冻结版本、镜像
+digest 和协议，避免获取引用创建锁并持有到外部观察结束；新引用、删除检查、原有 Provider
+ensure／owner 锁和 generation CAS 保留，不绕过物理 Runtime 丢失后的恢复。
+
+验收：本地定向 HTTP／诊断／观测路由 52 项通过。独立 PostgreSQL 正式完整迁移、真实
+环境锁竞争、两个并发既有读取、新建引用仍阻塞及释放后恢复、实际锁超时的安全分类、
+观测不持有父行／版本锁、删除保护、冻结身份、私有子执行隔离与共享顶层可见性，以及
+replacement lease 后拒绝旧 generation 命令均通过；所有连接归还。实际 Provider／模型 I/O
+未纳入新锁探针，完整 replacement 由既有回归另行覆盖，不能称为生产路由验收。
+
+扩展回归在独立 PostgreSQL 中 112 passed、17 failed；同一容器环境用未修改 HEAD
+对照为 98 passed、18 failed，没有新增失败。剩余失败为既有 wakeup 夹具／返回值、
+环境发布／终端／清理夹具和两项未认证错误路由预期，不计通过。修复受影响日志测试的
+Alembic fileConfig logger 隔离后，新诊断用例在混合顺序下全部通过，慢请求脱敏回归
+也通过。随后收紧未知异常日志并修正慢请求用例单独执行的迁移依赖，最终同环境定向
+HTTP／诊断／观测路由 53 项全部通过，测试容器中的十个受影响 Python 文件与最终源码
+逐字节一致。本机 Docker 未运行，未以本地数据库 fixture 错误替代远端独立数据库验收。
+
+受影响 Ruff／format／语法、新诊断模块 Pyright（零错误）、diff／任务状态及依赖检查
+通过；迁移未改，唯一 head 为0170_revision_draft_owner。探针前后38个既有容器镜像及
+启动时间不变，仅移除自身隔离资源；未修改业务数据库、服务器配置、OpenHands 或 Runtime
+镜像，未部署或续跑用户任务。详情见[取证报告](runtime-incident-2026-10-24.md)。历史五条
+503 不追溯归为同一根因；当前NONE，下一可执行FR-676，提交后停止。
+
+### FR-676 关联诊断与观测锁修复发布验收 — READY
+
+依赖：FR-675 DONE。使用已提交版本及正式 platform 预检／commit-bound 发布流程，
+同步 API、stream-api 与 Worker，完成健康、版本、路由及安全错误关联验证后收尾受管
+上下文；保留回滚证据，不修改服务器配置、业务 Runtime／配额或用户会话。仅对当前仍
+存在的错误按新分类继续取证，不主动制造业务故障或把历史资源／DNS 证据缺口标为解决。
 
 
 ### FR-671 活动状态读取失败的展示保留与后台核对隔离 — DONE

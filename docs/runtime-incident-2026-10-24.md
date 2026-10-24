@@ -1,6 +1,7 @@
-# 2026-10-24 会话失败与 503 取证（FR-674）
+# 2026-10-24 会话失败与 503 取证（FR-674／FR-675）
 
-本片完成故障机制的隔离复现与提交时间追溯，不代表生产故障已经根治。没有向用户会话发送、
+FR-674 完成故障机制的隔离复现与提交时间追溯，FR-675 补齐关联诊断和最小锁修复，
+不代表生产故障已经根治。没有向用户会话发送、
 暂停、继续或重放任务，没有修改服务器配置、生产数据库、Runtime 镜像或业务容器。
 
 ## 生产证据与时间线
@@ -107,3 +108,39 @@ TEST_DATABASE_URL=postgresql+psycopg://incident@127.0.0.1:5432/incident \
 本片七类故障／恢复场景通过，另完整空库迁移通过；原生两项在严格 errno 11 断言与显式 opt-in
 加入后重新验证。脚本 Ruff／format／语法与 diff 检查通过。故障注入前后的38个既有容器镜像和
 启动时间逐一一致，临时容器均移除。未部署平台或 Runtime 变更，未调整生产配额。
+
+## FR-675：关联诊断与既有引用观测锁修复
+
+读取执行器在准入失败和执行失败时记录同一请求的 UUID、lane、phase、安全错误码和分类；
+HTTP 错误日志记录对应 UUID、路由模板和分类。区分读取容量饱和、原生 Runtime 错误、
+数据库池超时、语句／锁超时、死锁与连接错误；无 SQLSTATE 的 DNS 错误归入连接错误，
+不声称仅凭该分类就能确定 DNS 根因。请求头只接受 UUID，其余生成新值，避免把不可信
+头中的入口或凭据写入日志。未处理异常也只记安全分类，不输出异常字符串、SQL、参数或 traceback；
+HTTP 状态和错误响应契约保持不变，未匹配路由及慢请求也不记录原始 URL。
+
+Runtime 观测改为核对已经持久化的 FlowRun 环境引用，以及 Runtime Session 冻结的版本、
+镜像 digest 和协议。此读取不创建引用，不再获取环境父行／版本的引用创建锁；原有新建
+引用锁、环境删除引用检查、Provider owner 锁和 generation CAS 仍保留。观测仍走原有
+ensure Runtime 路径，未通过提前返回绕过物理 Runtime 丢失后的恢复。
+
+[runtime_observation_check.py](../services/platform/scripts/runtime_observation_check.py) 在独立
+空 PostgreSQL 中执行正式完整迁移，再使用实际 Database、环境服务与 Runtime generation
+服务验证：
+
+- 创建事务持有真实环境父行锁时，两个既有引用读取并发完成；新的引用创建仍以
+  SQLSTATE 57014 超时，释放锁后可恢复。
+- 既有读取事务不持有环境父行／版本行锁，另一连接可 NOWAIT 获取这两行；已有 FlowRun
+  引用仍阻止删除环境和版本。
+- 错误 Run、镜像 digest、协议及退役版本均拒绝。其他用户不能读取私有子执行引用；
+  顶层共享 FlowRun 的既有可见性保留。
+- 实际取得 replacement lease 后，冻结引用仍可读取，但原 generation 的命令 fence
+  返回 RUNTIME_COMMAND_FENCED。所有连接归还，测试资源仅移除自身容器。
+
+该探针没有执行 Provider／模型 I/O，不代表已验收整个 Runtime replacement 或生产路由。
+路由单测另验证共享 Runtime 与历史 Attempt 独占 Runtime 均使用同一冻结身份调用原有
+ensure 服务，缺失引用时在 Provider 调用之前拒绝。日志回归使用真实 HTTP 和线程执行器，
+数据库错误在日志回归中为受控异常；真实数据库锁、删除保护和 fencing 由上述探针覆盖。
+
+本片未发布，未重启业务 Runtime，也未续跑用户原任务。修复覆盖已复现的一条锁等待放大
+链路并补齐后续关联证据，不能将历史五条 503 全部归因于它；原始资源耗尽和 DNS 触发者
+仍有证据缺口。发布及线上路由／健康／错误分类观察留给 FR-676。

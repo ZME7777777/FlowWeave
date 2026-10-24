@@ -52,6 +52,12 @@ from flowweave.shared.errors import DomainError
 from flowweave.shared.http import require_agent_session_access, require_authenticated_connection
 from flowweave.shared.observability import bind_metrics, reset_metrics
 from flowweave.shared.plugin_resolver import bind_plugin_resolver, reset_plugin_resolver
+from flowweave.shared.read_diagnostics import (
+    bind_read_request_id,
+    canonical_request_id,
+    failure_code,
+    reset_read_request_id,
+)
 from flowweave.shared.sandbox import bind_sandbox, reset_sandbox
 from flowweave.shared.secret_redaction import SecretRedactionFilter, redact_secret_text
 from flowweave.shared.settings import bind_settings, reset_settings
@@ -170,7 +176,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def request_context(
         request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
-        request_id = request.headers.get("X-Request-ID") or str(uuid4())
+        request_id = _request_id(request)
         request.state.request_id = request_id
         started_at = monotonic()
         principal = None
@@ -290,6 +296,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def domain_error(request: Request, exc: Exception) -> Response:
         if not isinstance(exc, DomainError):
             raise exc
+        if exc.status >= 500:
+            code, category = failure_code(exc)
+            logger.warning(
+                "API request failed request_id=%s route=%s status=%d error_code=%s category=%s",
+                _request_id(request),
+                _metric_route(request),
+                exc.status,
+                code,
+                category,
+            )
         return JSONResponse(
             status_code=exc.status,
             content=error_body(exc.code, exc.message, _request_id(request), exc.details),
@@ -374,12 +390,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     async def unhandled_error(request: Request, exc: Exception) -> Response:
         request_id = _request_id(request)
+        code, category = failure_code(exc)
         logger.error(
-            "unhandled API exception method=%s path=%s request_id=%s",
+            "unhandled API exception method=%s route=%s request_id=%s error_code=%s category=%s",
             request.method,
-            redact_secret_text(request.url.path),
+            _metric_route(request),
             request_id,
-            exc_info=exc,
+            code,
+            category,
+            # Exception strings/tracebacks can include private URLs, SQL or parameters.
+            # Correlate the safe code with the read lane instead of formatting them.
         )
         return JSONResponse(
             status_code=500,
@@ -417,6 +437,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def slow_request_logging(
         request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
+        request.state.request_id = canonical_request_id(request.headers.get("X-Request-ID"))
+        diagnostic_token = bind_read_request_id(request.state.request_id)
         started_at = monotonic()
         status_code = 500
         try:
@@ -438,10 +460,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 duration,
             )
             if duration >= _SLOW_REQUEST_SECONDS:
-                route = request.scope.get("route")
-                route_path = (
-                    route.path if route is not None else redact_secret_text(request.url.path)
-                )
+                route_path = _metric_route(request)
                 logger.warning(
                     "slow API request method=%s route=%s status=%d duration_ms=%d request_id=%s",
                     request.method,
@@ -450,6 +469,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     int(duration * 1000),
                     _request_id(request),
                 )
+            reset_read_request_id(diagnostic_token)
 
     app.middleware("http")(request_context)
     app.middleware("http")(slow_request_logging)

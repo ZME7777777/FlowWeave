@@ -703,6 +703,39 @@ def lock_referenceable_version(db: Session, version_id: str) -> EnvironmentVersi
     return version
 
 
+def read_referenced_version(
+    db: Session,
+    *,
+    flow_run_id: str,
+    version_id: str,
+    image_digest: str,
+    protocol_profile: str,
+) -> EnvironmentVersion | None:
+    """Read an existing immutable reference without acquiring a creation lock.
+
+    FlowRun creation holds the parent/version locks when adding this durable
+    reference. Environment deletion checks it under those same locks. Native
+    observation adds no reference and must not serialize readers behind them.
+    Runtime provisioning retains its own owner lock and generation CAS.
+    """
+
+    version = db.scalar(
+        select(EnvironmentVersion)
+        .join(TerminalEnvironment, TerminalEnvironment.id == EnvironmentVersion.environment_id)
+        .join(FlowRun, FlowRun.environment_version_id == EnvironmentVersion.id)
+        .where(
+            FlowRun.id == flow_run_id,
+            EnvironmentVersion.id == version_id,
+            EnvironmentVersion.state == "READY",
+            EnvironmentVersion.image_digest == image_digest,
+            EnvironmentVersion.runtime_protocol_profile == protocol_profile,
+        )
+    )
+    if version is not None:
+        require_flow_run_protocol_profile(version.runtime_protocol_profile)
+    return version
+
+
 def read_environment(db: Session, environment_id: str) -> dict[str, Any]:
     item = _environment(db, environment_id)
     if _expire_setup_sessions(db, environment_id):

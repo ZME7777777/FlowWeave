@@ -35,6 +35,7 @@ from flowweave.modules.catalog.public import (
 )
 from flowweave.modules.environments.public import (
     lock_referenceable_version,
+    read_referenced_version,
     runtime_server_identity,
     validate_runtime_manifest,
 )
@@ -7472,7 +7473,13 @@ def _ensure_attempt_runtime_for_native_observation(db: Session, attempt: NodeAtt
             409,
             {"attempt_id": attempt.id},
         )
-    environment = lock_referenceable_version(db, session.environment_version_id)
+    environment = read_referenced_version(
+        db,
+        flow_run_id=session.flow_run_id,
+        version_id=session.environment_version_id,
+        image_digest=session.runtime_image_digest,
+        protocol_profile=session.protocol_profile,
+    )
     if environment is None:
         raise DomainError(
             "RUN_ENVIRONMENT_VERSION_INVALID",
