@@ -2,7 +2,7 @@
 
 > 创建日期：2026-08-21
 > 状态：`UPSTREAM BASELINE ADOPTION COMPLETE`
-> 当前执行切片：`NONE`
+> 当前执行切片：`FR-678`
 > 下一可执行切片：`NONE`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
@@ -91,6 +91,21 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 放到 FR-12；普通切片即使涉及安全或迁移，也只实现代码并做基础语法检查。
 
 ## 6. 任务清单
+
+### FR-678 远程场景与节点界面合并发布 — CURRENT
+
+依赖：FR-677 DONE。按用户明确授权合并远程 feat/refactor 的两个新提交
+`33ee3f36`、`73533f13`，保留本地全部提交；原本地 HEAD 为 `3ae14637`。
+Git 自动合并没有文本冲突。远程改动只涉及 Web 的 Case 工作区、节点详情编辑和
+直接复制节点；同步调整场景回归的旧标题断言，并验证新版 Case 路径导航。
+
+发布前验收：Web typecheck、受影响 ESLint、git diff --check 通过，10 项定向
+Chromium 回归通过，涵盖节点详情、完整配置、复制载荷、提示词编辑、场景创建与路径、
+会话配置、路由返回以及活动列表恢复。浏览器使用受控 API／WebSocket，未向业务
+会话发送消息。Alembic 唯一 head 仍为 `0171_remove_flow_run_revision_drafts`。
+服务器只读核对确认平台与 Web 均运行 FR-677 的 `0771943c`；本次仅发布 Web，
+不涉及平台、迁移、OpenHands 或 Runtime。待以本次合并 commit 执行正式预检、
+最小上下文构建、镜像身份／健康／路由验证和受管发布收尾后补记结果。
 
 ### FR-672 暂停控制直达、异步归属与历史鉴权隔离 — DONE
 

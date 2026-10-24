@@ -95,7 +95,10 @@ export function NodeEditor({ node, initialDirectoryId = null, embedded = false, 
   };
 
   const editor = <form className={`modal editor asset-editor${embedded ? ' node-detail-editor' : ''}`} onSubmit={submit}>
-    <header className="asset-editor-header"><div><span className="eyebrow">NODE ASSET</span><h2>{node ? '编辑节点' : '新建节点'}</h2><p>在一个页面中完成节点说明、提示词以及输入输出字段配置。</p></div>{!embedded && <button type="button" className="ghost" onClick={onClose}>关闭</button>}</header>
+    <header className="asset-editor-header">
+      {embedded ? <div className="node-detail-toolbar-label"><span className="eyebrow">NODE FORM</span><b>{node ? node.name : '新建节点'}</b></div> : <div><span className="eyebrow">NODE ASSET</span><h2>{node ? '编辑节点' : '新建节点'}</h2><p>在一个页面中完成节点说明、提示词以及输入输出字段配置。</p></div>}
+      {embedded ? <div className="node-detail-toolbar-actions"><button type="button" className="ghost" onClick={onClose}>取消</button><button type="submit" className="primary" disabled={saving}>{saving ? '保存中…' : '保存节点'}</button></div> : <button type="button" className="ghost" onClick={onClose}>关闭</button>}
+    </header>
     <div className="asset-editor-columns">
       <div className="asset-editor-left">
         <section className="asset-editor-section"><header><span>01</span><div><h3>基础信息</h3><p>名称和目录用于资产检索与流程编排。</p></div></header><div className="form-grid">
@@ -114,7 +117,7 @@ export function NodeEditor({ node, initialDirectoryId = null, embedded = false, 
       })}</div></section>
     </div>
     {error && <p className="error">{error}</p>}
-    <footer><button type="button" className="ghost" onClick={onClose}>取消</button><button type="submit" className="primary" disabled={saving}>{saving ? '保存中…' : '保存节点'}</button></footer>
+    {!embedded && <footer><button type="button" className="ghost" onClick={onClose}>取消</button><button type="submit" className="primary" disabled={saving}>{saving ? '保存中…' : '保存节点'}</button></footer>}
   </form>;
 
   return embedded ? editor : <div className="modal-backdrop">{editor}</div>;

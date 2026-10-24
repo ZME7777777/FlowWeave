@@ -145,7 +145,8 @@ test('fresh navigation opens case space and creates a scenario after the branch 
   await page.evaluate(() => localStorage.removeItem('flowweave-workbench'));
   await page.goto('/', { waitUntil: 'domcontentloaded' });
   await expect(page.getByRole('button', { name: '场景空间', exact: true })).toHaveAttribute('class', /active/);
-  await expect(page.getByRole('heading', { name: '场景空间', exact: true })).toBeVisible();
+  await expect(page.locator('.scenario-side-head')).toContainText('Case');
+  await expect(page.getByRole('heading', { name: '选择或创建一个场景', exact: true })).toBeVisible();
   await page.getByRole('button', { name: '新建场景', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: '新建场景', exact: true });
   await dialog.getByLabel('场景名称').fill('合并后的案例');
@@ -153,6 +154,9 @@ test('fresh navigation opens case space and creates a scenario after the branch 
   await dialog.getByRole('button', { name: '创建场景', exact: true }).click();
   await expect(dialog).toHaveCount(0);
   await expect(page.locator('.scenario-tree')).toContainText('合并后的案例');
+  await expect(page.locator('.scenario-casebar')).toContainText('合并后的案例');
+  await page.getByRole('navigation', { name: '场景工作区' }).getByRole('button', { name: 'Case 路径', exact: true }).click();
+  await expect(page.locator('.scenario-path')).toBeVisible();
   await page.getByRole('navigation', { name: '场景工作区' }).getByRole('button', { name: '会话配置', exact: true }).click();
   await expect(page.getByRole('button', { name: '创建协调会话', exact: true })).toBeVisible();
   await page.getByRole('button', { name: '自由对话', exact: true }).click();
