@@ -2,7 +2,7 @@
 
 > 创建日期：2026-08-21
 > 状态：`UPSTREAM BASELINE ADOPTION COMPLETE`
-> 当前执行切片：`FR-680`
+> 当前执行切片：`NONE`
 > 下一可执行切片：`NONE`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
@@ -92,7 +92,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 
 ## 6. 任务清单
 
-### FR-680 节点紧凑单页表单与窄侧栏 — CURRENT
+### FR-680 节点紧凑单页表单与窄侧栏 — DONE
 
 依赖：FR-679 DONE。按用户截图反馈，将节点详情改为单列单页表单；输入／输出各以
 一行摘要展示，点击在弹窗内增删和配置字段。启动提示词与上下文各为固定高度预览块，
@@ -104,7 +104,29 @@ Web typecheck、受影响 ESLint、diff 检查及 7 项定向 Chromium 回归通
 1440／1024 宽度的侧栏、字段行、固定高度文本块及详情弹窗。覆盖单次完整保存载荷、
 取消、Esc／焦点恢复、重复字段拒绝、类型切换、目录键盘选择与复制节点。回归使用
 受控 API，不写业务节点。仅修改 Web；Alembic head 仍为
-`0171_remove_flow_run_revision_drafts`。待固定提交 Web 发布与线上验收。
+`0171_remove_flow_run_revision_drafts`。
+
+发布验收（2026-10-24）：代码及 Web 发布版本为
+`0c30d7864268445df42d202e85b456c03ae22a53`。正式 Web 预检及 commit-bound 最小
+上下文 prepare 通过，源码归档 SHA-256 为
+`bbe365db9f82aaa97c90f312ed7548a1dacef305380ec4516067ebd7ed10509c`。
+实际 linux/amd64 Web 镜像为
+`sha256:003341766028a7d8adea95c75575d1dc9029170c81fdb91ab655e61e71002f2d`，
+OCI revision 与发布提交一致。切换前导出构建镜像的实际静态资源，以受控 API 重跑
+相同 7 项 Chromium 回归，全部通过；切换后核对实际加载的 21 个 JS／CSS 文件
+SHA-256，均与线上运行镜像一致。截图已核对表单及输入／文本详情弹窗。
+
+服务器保留原 Web 日志与精确 rollback tag 后只 recreate Web；其余 37 个运行容器
+的镜像及启动时间均不变，包括 api／stream-api／worker／Runtime Provider 和既有
+Runtime。Compose／env 摘要未变，Web HTTP 和平台 health／readiness 正常。
+服务器实际 Chromium 验证公网前缀登录、Agent 深层路由与根登录页通过，两项公网 API
+认证边界为 401。新浏览器上下文另经已验证 Web 入口的 SSH 转发核对 API 部署前缀、
+401 边界及无页面异常；不记为本机公网直连。未修改服务器配置或业务节点。
+
+Web remote-release-finish 通过版本、健康与路由验收，回收一份过期受管上下文及精确
+过期 rollback tag，保留最近三份成功上下文与引用／回滚版本；收尾后再次核对 Web
+版本、平台健康、其他容器和配置均正常。不清理共享 BuildKit、卷、Workspace 或数据库
+备份。当前与下一可执行切片均为 NONE；验收文档提交不改变已发布代码身份，未推送。
 
 ### FR-679 远程事项删除与节点表单同步发布 — DONE
 
