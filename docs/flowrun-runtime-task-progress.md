@@ -2,7 +2,7 @@
 
 > 创建日期：2026-08-21
 > 状态：`UPSTREAM BASELINE ADOPTION COMPLETE`
-> 当前执行切片：`FR-682`
+> 当前执行切片：`NONE`
 > 下一可执行切片：`NONE`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
@@ -151,50 +151,56 @@ API／stream-api／worker 及 0172 数据库迁移。最终 Web 实际运行上�
 rollback tags，不清理 BuildKit、卷、Workspace、数据库备份或业务数据。本片最终
 正式 Web 发布版本为 `6ac9a0c0`；后续协作合并提交不改变此身份。主工作树原改动与
 Case 功能全部保留，未推送。
-### FR-682 Case 详情配置 platform／Web 发布 — CURRENT
 
-依赖：FR-681 DONE。用户明确要求部署 Case 详情配置。发布源码为
-`3df600e871fdbb820ce7e1d924ff6626677d578a`，以 FR-681 提交为基线，只追加目录回滚
-补偿修复和针对性测试；未包含并行的节点编辑器提交。
+FR-683 后续联合发布补记：Case 发布完成平台验收后，FR-682 将最终 Web 同步为
+`ed2332fe`，完整保留本片节点编辑器源码并与 Case 一起通过 13 项实际镜像回归；
+最终线上身份与容量收尾以紧随其后的 FR-682 记录为准。
 
-发布门禁在实际新镜像的隔离 PostgreSQL 中发现：直接 `Session.commit()` 后仍登记
-的创建补偿，会在后续删除事务回滚时误删已保存目录。修复为回滚后查询正式目录记录，
-仅在记录不存在时补偿删除；不依赖可能被弱引用身份映射淘汰再加载的 ORM 对象状态。
-新增创建回滚用例，保留已有“已提交目录的删除回滚”用例。两次未通过的候选均未切换
-线上服务，诊断保留在服务器受保护发布上下文，未清理业务数据。
+### FR-682 Case 详情配置 platform／Web 联合发布 — DONE
 
-最终 platform／web 正式预检和 commit-bound 最小上下文 prepare 通过。源码归档
+依赖：FR-681 DONE。用户明确要求部署 Case 详情配置。最终平台源码为
+`3df600e871fdbb820ce7e1d924ff6626677d578a`，最终 Web 源码为
+`ed2332fe446b1b4f0f8476f224f5d3d57c1dd7c0`；Web 合并保留本次 Case 功能及
+并行 FR-683 已发布的节点编辑器更新，平台不混入无关执行变更。
+
+发布门禁在实际候选镜像的隔离 PostgreSQL 中发现：直接 `Session.commit()` 后仍
+登记的创建补偿，会在后续删除事务回滚时误删已保存目录。修复为回滚后查询正式目录
+记录，仅在记录不存在时补偿删除；不依赖可能被弱引用身份映射淘汰后重新加载的 ORM
+对象状态。追加创建回滚用例，保留已提交目录删除回滚的回归用例。两次未通过的候选
+均未切换线上服务，服务器保留受保护诊断。修复已合并回主工作树，临时工作树已归档。
+
+platform／web 正式预检及 commit-bound 最小上下文 prepare 通过。最终源码归档
 SHA-256 分别为
 `ea5607dbb7ba28bb7345e9fef8645f8df2e0a25fd790ba8a87279cc3f814c984` 和
-`4d6ff30e5a94d1284ccf636902f95a7e5ab5a5a4d231bc2f49701a3ab8f9f0aa`。
-最终实际 linux/amd64 镜像为：
+`d6d7383fab95a342b6f79704a91511c83b124aeb97d4650592149b17b1c45286`。
+实际 linux/amd64 镜像为：
 
 - platform：`sha256:7ccd1590bba1228509f98a2a80f61343566e7281409d89a9acdad44cb2f975a5`。
-- web：`sha256:767b5ad0679ea8d2bdcdc96fd193c7dbf7f48ec4eef2f43871f8708c77740f50`。
+- web：`sha256:333038d40827cd6d47d52c8d54fb33dba33590445dccb77d21870e3bf067e440`。
 
-实际 platform 镜像的隔离 PostgreSQL 回归 23 passed，覆盖全链迁移、Case API、
-目录创建／删除／回滚与路径保护，以及本次配置测试；临时测试数据库／容器均已移除。
-隔离测试前后 38 个业务容器的镜像和启动时间不变。Web 实际构建产物的 3 项定向
-Chromium 回归通过；后端修复重建后的 186 个静态文件与已验收产物逐一一致。
+实际平台镜像的隔离 PostgreSQL 回归 23 passed，覆盖全链迁移、Case API、目录
+创建／删除／回滚与路径保护，以及本次配置测试。临时测试数据库和容器已移除，
+测试前后 38 个业务容器的镜像和启动时间不变。最终联合 Web 镜像的真实静态资源
+通过 13 项定向 Chromium 回归（3 项 Case、10 项节点编辑）；覆盖资料与模型能力
+配置、卡片排序删除、节点即时字段保存，以及桌面／低高度布局。
 
 保留旧服务日志和精确 rollback tags 后，正式迁移成功到
-`0172_case_configuration`，同步替换 api／stream-api／worker／web。四个服务的
-OCI revision 均匹配发布源码，平台 health／readiness、Web HTTP 与 Case 新列检查
-通过，Case RLS 及强制 RLS、既有隔离策略仍有效。其余 34 个运行容器的镜像和启动
-时间不变，含 Runtime Provider 与既有 Runtime；服务器 Compose／env 摘要不变。
+`0172_case_configuration`，同步替换 api／stream-api／worker，最终 Web 切换到
+上述联合版本。OCI revision 按各自发布范围核对通过，平台 health／readiness、Web
+HTTP、Case 新列以及强制 RLS／用户隔离策略检查正常。平台发布阶段其余 34 个运行
+容器不变，最终 Web 切换阶段其余 37 个容器不变；含 Runtime Provider 与既有
+Runtime，服务器 Compose／env 摘要保持一致。
 
-服务器真实 Chromium 验证 FlowWeave 登录、Case 路由、Agent 深层路由和根登录页
-均通过，公网未登录 API 返回 401。另用全新浏览器确认正式认证请求使用部署前缀，
-无根 `/api/v1/` 请求；线上实际加载的 43 个 JS／CSS 文件 SHA-256 与验收产物一致。
-没有向生产写入测试 Case 或业务运行。
+最终版本的服务器真实 Chromium 验证 FlowWeave 登录、Case 路由、Agent 深层路由
+和根登录页均通过，公网未登录 API 正确返回 401。全新浏览器确认认证请求带正式
+部署前缀，无根 `/api/v1/` 请求；线上实际加载的 43 个 JS／CSS 文件 SHA-256 与
+联合 Web 回归产物一致。没有向生产写入测试 Case 或业务节点。
 
-platform／web 的 remote-release-finish 均通过，回收 4 份超出保留范围的受管成功
-上下文及 4 个精确过期 rollback tags，保留每个范围最近三份成功上下文和全部引用
-版本；两次未完成候选按至少七天规则保留。未清理共享 BuildKit、卷、Workspace 或
-数据库备份。收尾后再次核对四服务版本、健康、迁移头、配置及其他容器均正常。
-第一次发布验收后核对并行 FR-683 记录，确认需要保留该片已上线的节点编辑器更新。
-本次合并保留两边源码，平台继续使用上述已验收版本；最终 Web 改用包含 FR-683 的
-联合提交，须重建、回归、切换和收尾后才能完成本片。当前仍为 FR-682。
+platform／web remote-release-finish 均通过健康、版本及受管容量收尾，按规则保留
+每个范围最近三份成功上下文及全部引用版本，回收过期受管上下文和精确 rollback
+标签。未完成候选仍按至少七天规则保留，未清理共享 BuildKit、卷、Workspace 或
+数据库备份。收尾后再次核对最终版本、平台健康、其他容器及配置正常。
+当前与下一可执行切片均为 NONE；本验收提交不改变平台和 Web 的发布源码身份。
 
 ### FR-681 Case 详情配置与有序路径卡片 — DONE
 
