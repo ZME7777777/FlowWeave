@@ -603,6 +603,8 @@ export const api = {
   cases: () => request<Case[]>('/cases'),
   createCase: (body: { name: string; objective?: string; stages?: Array<{ stage_key: string; name: string; objective?: string }> }) =>
     request<Case>('/cases', json('POST', body)),
+  deleteCase: (id: string) => request<void>(`/cases/${encodeURIComponent(id)}`, json('DELETE', undefined, true)),
+  deleteCaseControlConversation: (id: string) => request<void>(`/cases/${encodeURIComponent(id)}/control-conversation`, json('DELETE', undefined, true)),
   case: (id: string) => request<Case>(`/cases/${encodeURIComponent(id)}`),
   caseStageTemplates: (caseId: string) => request<import('../types').CaseStageTemplate[]>(`/cases/${encodeURIComponent(caseId)}/stage-templates`),
   setCaseStageState: (caseId: string, stageId: string, expected_case_row_version: number, state: import('../types').CaseStage['state']) =>

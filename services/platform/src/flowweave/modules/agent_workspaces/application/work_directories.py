@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import stat
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -24,6 +25,7 @@ from flowweave.modules.users.application.security import (
     current_user_id,
     user_runtime_project_root,
 )
+from flowweave.shared.application.transactions import register_commit_action
 from flowweave.shared.database import now
 from flowweave.shared.errors import DomainError, not_found
 from flowweave.shared.models import NodeAttempt, NodeRun
@@ -711,6 +713,61 @@ def delete_work_directory(db: Session, workspace_id: str, work_directory_id: str
             delete(AgentWorkDirectoryVersion).where(AgentWorkDirectoryVersion.id.in_(version_ids))
         )
     db.delete(item)
+    db.flush()
+
+
+def delete_case_work_directory(
+    db: Session, workspace_id: str, case_id: str, work_directory_id: str
+) -> None:
+    """Delete one Case-owned directory after its conversation has been removed."""
+
+    item = _directory(db, workspace_id, work_directory_id, lock=True)
+    root = _project_root(db, workspace_id)
+    relative_path = PurePosixPath(f".flowweave/cases/{case_id}")
+    version = _version(db, item)
+    if _path_values(db, version.id) != (relative_path.as_posix(),):
+        raise DomainError("CASE_WORKSPACE_DELETE_SCOPE_INVALID", "事项工作目录归属校验失败", 409)
+    target = root / relative_path
+    version_ids = list(
+        db.scalars(
+            select(AgentWorkDirectoryVersion.id).where(
+                AgentWorkDirectoryVersion.work_directory_id == item.id
+            )
+        )
+    )
+    binding_exists = bool(
+        version_ids
+        and db.scalar(
+            select(AgentConversationBinding.id).where(
+                AgentConversationBinding.workspace_id == workspace_id,
+                AgentConversationBinding.work_directory_version_id.in_(version_ids),
+            )
+        )
+    )
+    if binding_exists:
+        raise DomainError(
+            "CASE_WORKSPACE_CONVERSATION_REMAINS", "事项会话仍存在，无法删除事项工作区", 409
+        )
+    if version_ids:
+        db.execute(
+            delete(AgentWorkDirectoryPath).where(AgentWorkDirectoryPath.version_id.in_(version_ids))
+        )
+        db.execute(
+            delete(AgentWorkDirectoryVersion).where(AgentWorkDirectoryVersion.id.in_(version_ids))
+        )
+    try:
+        metadata = target.lstat()
+    except FileNotFoundError:
+        metadata = None
+    except OSError as exc:
+        raise DomainError("CASE_WORKSPACE_DELETE_FAILED", "无法读取事项工作目录", 503) from exc
+    if metadata is not None and (
+        stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode)
+    ):
+        raise DomainError("CASE_WORKSPACE_DELETE_UNSAFE", "事项工作目录不安全，拒绝删除", 409)
+    db.delete(item)
+    if metadata is not None:
+        register_commit_action(db, lambda: shutil.rmtree(target, ignore_errors=True))
     db.flush()
 
 

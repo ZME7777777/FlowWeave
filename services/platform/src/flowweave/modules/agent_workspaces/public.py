@@ -73,6 +73,16 @@ def write_case_files(
     work_directories.write_case_files(db, workspace_id, work_directory_id, **kwargs)
 
 
+def delete_case_work_directory(
+    db: Session, workspace_id: str, case_id: str, work_directory_id: str
+) -> None:
+    """Delete a Case-specific directory after its binding graph is gone."""
+
+    from flowweave.modules.agent_workspaces.application import work_directories
+
+    work_directories.delete_case_work_directory(db, workspace_id, case_id, work_directory_id)
+
+
 def list_flow_run_work_directories(
     db: Session, flow_run_id: str, node_attempt_id: str
 ) -> dict[str, Any]:

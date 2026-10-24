@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions.infrastructure.models import AgentConversationBinding
@@ -400,6 +400,85 @@ def create_case(db: Session, payload: CaseCreateWrite) -> dict[str, Any]:
     finish(db)
     return _case_dict(db, item)
 
+
+
+
+def _case_has_active_execution(db: Session, case_id: str) -> bool:
+    execution_ids = list(
+        db.scalars(
+            select(CaseStage.current_execution_flow_run_id).where(
+                CaseStage.case_id == case_id,
+                CaseStage.current_execution_flow_run_id.is_not(None),
+            )
+        )
+    )
+    return bool(
+        execution_ids
+        and db.scalar(
+            select(FlowRun.id).where(
+                FlowRun.id.in_(execution_ids), FlowRun.state.in_(("ACTIVE", "WAITING_HUMAN"))
+            )
+        )
+    )
+
+
+def _case_has_unresolved_control_plan(db: Session, case_id: str) -> bool:
+    return db.scalar(
+        select(CaseControlPlan.id).where(
+            CaseControlPlan.case_id == case_id,
+            CaseControlPlan.state.in_(("PENDING", "VALIDATED", "EXECUTING")),
+        )
+    ) is not None
+
+
+def delete_case_control_conversation(db: Session, case_id: str) -> None:
+    item = _case(db, case_id)
+    binding_id = item.control_conversation_binding_id
+    if not binding_id:
+        return
+    workspace = agent_workspaces.ensure_default_agent_workspace(db)
+    binding = db.get(AgentConversationBinding, binding_id)
+    if binding is not None:
+        conversations.delete_conversation(
+            db,
+            workspace.id,
+            binding.id,
+            f"delete-case-control-conversation:{case_id}:{binding.id}",
+        )
+    item.control_conversation_binding_id = None
+    item.row_version += 1
+    finish(db)
+
+
+def delete_case(db: Session, case_id: str) -> None:
+    item = _case(db, case_id)
+    if _case_has_active_execution(db, item.id):
+        raise DomainError("CASE_EXECUTION_RUNNING", "事项仍有进行中的执行，停止后才能删除", 409)
+    if _case_has_unresolved_control_plan(db, item.id):
+        raise DomainError(
+            "CASE_CONTROL_PLAN_PENDING", "事项仍有未完成的受控计划，完成或取消后才能删除", 409
+        )
+    workspace = agent_workspaces.ensure_default_agent_workspace(db)
+    binding_id = item.control_conversation_binding_id
+    work_directory_id = item.control_work_directory_id
+    if binding_id:
+        binding = db.get(AgentConversationBinding, binding_id)
+        if binding is not None:
+            conversations.delete_conversation(
+                db,
+                workspace.id,
+                binding.id,
+                f"delete-case:{item.id}:{binding.id}",
+            )
+    if work_directory_id:
+        agent_workspaces.delete_case_work_directory(db, workspace.id, item.id, work_directory_id)
+    db.execute(delete(CaseControlPlan).where(CaseControlPlan.case_id == item.id))
+    db.execute(delete(CaseDecisionProposal).where(CaseDecisionProposal.case_id == item.id))
+    db.execute(delete(CaseAgentTask).where(CaseAgentTask.case_id == item.id))
+    db.execute(delete(CaseFlowRun).where(CaseFlowRun.case_id == item.id))
+    db.execute(delete(CaseStage).where(CaseStage.case_id == item.id))
+    db.delete(item)
+    finish(db)
 
 def set_case_stage_state(
     db: Session, case_id: str, stage_id: str, payload: CaseStageStateWrite

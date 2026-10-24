@@ -8203,7 +8203,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       if (selected?.id === bindingId) {
         setDrawerOpen(false);
         setActivityPreviewBindingId(undefined);
-        onNavigate(nextConversation ? conversationPath(nextConversation.id) : (scheduleRoute ? '/agent/schedules' : host.rootPath), true);
+        if (nextConversation) onNavigate(conversationPath(nextConversation.id), true);
+        else if (onReturnToSource) onReturnToSource();
+        else onNavigate(scheduleRoute ? '/agent/schedules' : host.rootPath, true);
       }
       return context;
     },

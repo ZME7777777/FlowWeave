@@ -123,6 +123,59 @@ def test_case_control_plane_creates_stages_and_changes_stage_state(client):
     assert stale.json()["error"]["code"] == "VERSION_CONFLICT"
 
 
+
+
+def test_case_delete_removes_control_plane_but_preserves_linked_flow_run(client, skill_capability):
+    asset = create_asset(client, skill_capability, "事项删除节点")
+    flow = create_flow(client, asset["id"])
+    run = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    )
+    assert run.status_code == 201, run.text
+    case = client.post("/api/v1/cases", json={"name": "待删除事项"})
+    assert case.status_code == 201, case.text
+    attached = client.post(
+        f"/api/v1/cases/{case.json()['id']}/flow-runs",
+        json={"flow_run_id": run.json()["id"]},
+    )
+    assert attached.status_code == 200, attached.text
+
+    deleted = client.delete(f"/api/v1/cases/{case.json()['id']}")
+    assert deleted.status_code == 204, deleted.text
+    assert client.get(f"/api/v1/cases/{case.json()['id']}").status_code == 404
+    preserved = client.get(f"/api/v1/flow-runs/{run.json()['id']}")
+    assert preserved.status_code == 200, preserved.text
+
+
+def test_case_delete_rejects_active_execution(client, skill_capability):
+    asset = create_asset(client, skill_capability, "事项执行保护节点")
+    flow = create_flow(client, asset["id"])
+    run = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    )
+    assert run.status_code == 201, run.text
+    case = client.post(
+        "/api/v1/cases",
+        json={"name": "执行中事项", "stages": [{"stage_key": "run", "name": "执行"}]},
+    )
+    assert case.status_code == 201, case.text
+    stage = case.json()["stages"][0]
+    bound = client.put(
+        f"/api/v1/cases/{case.json()['id']}/stages/{stage['id']}/flow-run",
+        json={"flow_run_id": run.json()["id"], "execution_mode": "CONTINUOUS"},
+    )
+    assert bound.status_code == 200, bound.text
+    launched = client.post(
+        f"/api/v1/cases/{case.json()['id']}/stages/{stage['id']}/launch", json={}
+    )
+    assert launched.status_code == 201, launched.text
+
+    rejected = client.delete(f"/api/v1/cases/{case.json()['id']}")
+    assert rejected.status_code == 409, rejected.text
+    assert rejected.json()["error"]["code"] == "CASE_EXECUTION_RUNNING"
+
 def test_case_attaches_top_level_flow_run_and_projects_idempotently(client, skill_capability):
     asset = create_asset(client, skill_capability, "事项观察节点")
     flow = create_flow(client, asset["id"])
