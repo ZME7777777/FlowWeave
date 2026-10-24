@@ -339,7 +339,7 @@ test('step configuration is saved before start and only continuous and stepwise 
     return buttons.every(button => button.getBoundingClientRect().top === top);
   })).toBe(true);
 
-  await page.getByRole('button', { name: '新增' }).click();
+  await page.getByRole('button', { name: '新增', exact: true }).click();
   const stepwiseDialog = page.getByRole('dialog', { name: '新增逐步运行记录' });
   await expect(stepwiseDialog.getByRole('button', { name: '导入 / 粘贴' })).toBeVisible();
   await stepwiseDialog.getByRole('button', { name: '导入 / 粘贴' }).click();
@@ -365,7 +365,7 @@ test('step configuration is saved before start and only continuous and stepwise 
   await expect(page.locator('.node-record-list > article.active')).toContainText('导入逐步记录');
   await expect(page.locator('.node-record-list > article.active').getByRole('button', { name: '启动逐步运行 导入逐步记录' })).toBeVisible();
   await expect(page.locator('.run-side-panel').getByRole('button', { name: '启动', exact: true })).toHaveCount(0);
-  await page.getByRole('button', { name: '新增' }).click();
+  await page.getByRole('button', { name: '新增', exact: true }).click();
   const stepwiseDialogAfterImport = page.getByRole('dialog', { name: '新增逐步运行记录' });
   await stepwiseDialogAfterImport.getByRole('textbox', { name: '逐步运行记录名称' }).fill('测试逐步记录');
   await stepwiseDialogAfterImport.getByRole('button', { name: '逐步运行起始节点' }).click();
@@ -771,7 +771,7 @@ test('a stepwise record keeps completed nodes readable while the next node is co
     stepwise_node_drafts: {
       second: {
         row_version: 2, startup_mode: 'PROMPT', startup_prompt: asset.executor.startup_prompt,
-        agent_preset: { capability_version_ids: [], node_context_enabled: false }, gates: [], context_ids: [],
+        agent_preset: { model_provider_id: 'provider-1', model_name: 'test-model', capability_version_ids: [], node_context_enabled: false }, gates: [], context_ids: [],
         input_bindings: [{ input_field_key: 'input_1', artifact_version_id: mappedArtifact.id, binding_source: 'PORT_MAPPING' }],
       },
     },
@@ -787,6 +787,7 @@ test('a stepwise record keeps completed nodes readable while the next node is co
     if (path.endsWith('/auth/me')) return respond(authenticatedUser);
     if (path === '/api/v1/flow-runs' && request.method() === 'GET') return respond([parentRun]);
     if (path === '/api/v1/flows' && request.method() === 'GET') return respond([transitionDefinition]);
+    if (path === '/api/v1/model-providers') return respond([{ id: 'provider-1', name: 'Test', available_for_nodes: true, models: [{ model_name: 'test-model', enabled: true, is_default: true }] }]);
     if (path === '/api/v1/terminal-environments' || path === '/api/v1/capabilities'
       || path === '/api/v1/capability-collections' || path === '/api/v1/model-providers') return respond([]);
     if (path === `/api/v1/flow-runs/${run.id}` && request.method() === 'GET') return respond(parentRun);

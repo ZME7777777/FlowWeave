@@ -10848,3 +10848,55 @@ platform／web remote-release-finish 均通过版本、健康与路由门禁，�
 成功上下文，保留每个 scope 最近三份成功上下文、回滚和引用版本，并完成精确 rollback
 镜像保留流程。未清理共享 BuildKit，未执行容器全局清理或删除卷、Workspace、数据库
 备份。当前与下一可执行切片均为 NONE。
+
+
+### FR-677 远程运行与工作区改动合并发布 — DONE
+
+依赖：FR-676 DONE。按用户明确授权拉取远程 feat/refactor 并部署受管服务器。
+远程新增七个提交，目标为 `13562c593c7ea729837e395844d32a4250f7c0f4`；保留本地
+十三个提交，原本地 HEAD 为 `39f7fd14752675a408ee817a6ba8080a675cb1cd`。
+Git 自动合并无文本冲突，合并／发布版本为
+`0771943c17958d101e695942032b55d0efac1118`，两个原 HEAD 均为其祖先。
+场景空间、节点中心、会话定位、浮卡来源与定时行样式、运行端口和可取消重跑编辑
+一并纳入；移除未使用的类型导入，并让既有浏览器测试适配场景名称与会话配置标签。
+
+0171 仅允许退役空的旧 Revision 草稿表：PostgreSQL 事务内先以五秒锁等待取得
+ACCESS EXCLUSIVE 锁，再禁止 RLS 隐藏行并核对全表数量；非空或权限不足时失败，
+不得丢弃既有草稿。生产只读预检确认该表为零行；正式迁移再次执行上述原子保护。
+真实独立 PostgreSQL 验证完整空库到当前 head，以及非空拒绝、原记录保留和空表退役。
+补充运行端口 HTTP 验收，覆盖追加不可变 Snapshot、模板／父记录不变、映射、乐观锁、
+未知节点、已启动节点保护和缺失重跑编辑拒绝。仅在隔离测试中创建样本，不改业务会话。
+
+验收：本地 OpenHands／历史 MCP／控制通道回归 269 passed、2 skipped；Web typecheck、
+受影响 ESLint／Ruff、diff 与任务状态检查通过。本机 Docker 未运行，数据库验收使用
+服务器独立 PostgreSQL 临时容器和实际构建的平台镜像，不覆盖镜像内应用源码。
+扩展后端套件 101 passed、27 failed；同批测试在发布前旧实际镜像为 100 passed、
+27 failed，逐项失败集合完全相同，零新增失败，不能称全套通过。既存失败包括显式
+模型缺失、旧 Runtime／后台任务夹具和未认证错误路由预期。随后实际新镜像定向
+30 项全部通过，含新增端口与迁移保护；这与扩展套件有重叠，不累加为独立用例总数。
+独立数据库及测试容器全部移除，验收前后业务容器镜像与启动时间不变。
+
+本地场景／节点／定时与活动会话／逐步运行定向 Chromium 共 13 项通过；逐步测试
+补齐显式模型夹具，并以 exact 匹配新增记录按钮，避免与新增端口按钮冲突。发布后
+导出实际 Web 镜像资源，以受控 API 重跑其中九项，全部通过；加载的 46 个 JS／CSS
+文件 SHA-256 与运行镜像一致。上述受控浏览器测试不等于真实模型业务执行验收。
+服务器实际 Chromium 另验证公网前缀登录、Agent 深层路由和根登录；两项公网 API
+认证边界均为 401。没有向真实业务会话发送、暂停、继续或重放消息。
+
+正式 platform／web 预检、commit-bound 最小上下文 prepare 均通过。源码归档 SHA-256：
+platform 为 `f2d48a519d0bb22de1686a6c439425529362d09f7e53dee1c328354b1623a57a`，
+web 为 `092ebbb219a2b429bbb2744e3dc0f54acfa1ff453f1d0d19e8059a78d23f70ab`。
+实际 linux/amd64 镜像：platform 为
+`sha256:8ddcfcab973e99fd8328b08e7a22028a3daf20998ec3ae563fc0a2e6ed5f5937`，
+web 为 `sha256:ebc9e71145ebd4f3981499d7de68d54eb3c014aa9ac6e5e27c412d4510292ec7`。
+均校验 OCI revision；服务器保存原服务日志和精确 rollback tags 后，先执行正式
+migration，再同步 recreate api／stream-api／worker／web。四服务为同一代码版本，
+health／readiness／Web HTTP 正常，Alembic 唯一 head 为
+`0171_remove_flow_run_revision_drafts`。其余 34 个容器的镜像和启动时间不变，
+包括 Runtime Provider 与现有 Runtime；服务器 Compose／env 摘要不变，未修改 OpenHands。
+
+platform／web remote-release-finish 均通过版本、健康及容量收尾，回收两份过期
+受管上下文，保留各 scope 最近三份成功上下文和引用／回滚版本，并执行精确 rollback
+镜像保留流程。未清理共享 BuildKit、卷、Workspace 或数据库备份。收尾后的复核再次
+确认四服务健康、版本一致和其他容器不变；当前与下一可执行切片均为 NONE。
+本地补充提交仅包含上述回归测试与本验收记录；部署事实仍绑定代码提交 0771943c。
