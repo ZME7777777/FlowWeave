@@ -8,7 +8,7 @@ test.beforeEach(async ({ page }) => {
   }));
 });
 
-test('Context module opens a titled text upload form', async ({ page }) => {
+test('Context module supports direct text, uploads, and ZIP bundles', async ({ page }) => {
   await page.route('**/api/v1/capabilities', route => route.fulfill({
     status: 200, contentType: 'application/json', body: '[]',
   }));
@@ -25,10 +25,46 @@ test('Context module opens a titled text upload form', async ({ page }) => {
   const dialog = page.getByRole('dialog', { name: '新增 Context' });
   await expect(dialog.getByLabel('Context 标题')).toBeVisible();
   await expect(dialog.getByLabel('Context 说明')).toBeVisible();
+  await expect(dialog.getByLabel('Context 内容')).toBeVisible();
+  await expect(dialog.getByRole('button', { name: '上传文件' })).toBeVisible();
+  await expect(dialog.getByText('直接输入或粘贴文本，也可拖入文件或 ZIP 资料包。')).toBeVisible();
   await expect(dialog.getByLabel('Context 文件')).toHaveAttribute(
     'accept',
     '.txt,.md,.markdown,.zip,text/plain,text/markdown,application/zip',
   );
+});
+
+test('Context direct text is published through the existing validation flow', async ({ page }) => {
+  let validationBody: Record<string, unknown> | undefined;
+  await page.route('**/api/v1/capabilities', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
+  await page.route('**/api/v1/capability-collections', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
+  await page.route('**/api/v1/capability-imports/validate', async route => {
+    validationBody = route.request().postDataJSON() as Record<string, unknown>;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ import_token: 'text-token', content_hash: 'a'.repeat(64), preview: { capabilities: [{ capability_key: '直接编写 Context' }] } }),
+    });
+  });
+  await page.route('**/api/v1/capability-imports', route => route.fulfill({
+    status: 201, contentType: 'application/json', body: JSON.stringify({ capabilities: [{ capability_key: '直接编写 Context' }] }),
+  }));
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '能力仓库' }).click();
+  await page.getByRole('navigation', { name: '能力模块' }).getByRole('button', { name: /Context/ }).click();
+  await page.getByRole('button', { name: '新增 Context' }).click();
+  const dialog = page.getByRole('dialog', { name: '新增 Context' });
+  await dialog.getByLabel('Context 标题').fill('直接编写 Context');
+  await dialog.getByLabel('Context 内容').fill('可直接粘贴的背景信息');
+  await expect(dialog.getByText('将作为 context.txt 发布')).toBeVisible();
+  await dialog.getByRole('button', { name: '校验并发布' }).click();
+  await expect(page.getByRole('status')).toContainText('已发布 Context“直接编写 Context”');
+
+  expect(validationBody).toMatchObject({
+    capability_type: 'CONTEXT', filename: 'context.txt', context_title: '直接编写 Context',
+  });
+  expect(Buffer.from(String(validationBody?.content_base64), 'base64').toString()).toBe('可直接粘贴的背景信息');
 });
 
 test('Context Bundle is parsed before its editable directory is published', async ({ page }) => {
@@ -112,14 +148,8 @@ test('published Context Bundle shows its frozen document directory before compil
   await page.goto('/');
   await page.getByRole('button', { name: '能力仓库' }).click();
   await page.getByRole('navigation', { name: '能力模块' }).getByRole('button', { name: /Context/ }).click();
-  const contextCard = page.locator('.capability-card').filter({ hasText: '资料包' });
-  await contextCard.getByRole('button', { name: '更多操作：Context 资料包' }).click();
-  const contextMenu = page.getByRole('menu', { name: 'Context 资料包 操作菜单' });
-  await expect(contextMenu).toBeVisible();
-  await expect(contextMenu.getByRole('menuitem', { name: '查看内容' })).toBeVisible();
-  await expect(contextMenu.getByRole('menuitem', { name: '删除能力' })).toBeVisible();
-  expect(await contextMenu.evaluate(menu => menu.parentElement === document.body)).toBe(true);
-  await contextMenu.getByRole('menuitem', { name: '查看内容' }).click();
+  const contextCard = page.getByRole('button', { name: '查看 Context 资料包' });
+  await contextCard.click();
   const dialog = page.getByRole('dialog', { name: '查看 Context 资料包' });
   await expect(dialog.getByText('资料目录')).toBeVisible();
   await expect(dialog.getByText('入口：README.md · 全部文档均已加载')).toBeVisible();
