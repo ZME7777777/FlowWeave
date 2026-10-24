@@ -147,6 +147,7 @@ from flowweave.shared.schemas import (
     StepwiseRecordConfigImportWrite,
     StepwiseRunRecordCopyWrite,
     StepwiseRunRecordWrite,
+    StepwiseRuntimePortsWrite,
     SyncSnapshotWrite,
 )
 from flowweave.shared.settings import get_settings
@@ -4786,7 +4787,9 @@ def _stepwise_draft_projection(draft: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _stepwise_draft_ready(node: dict[str, Any], draft: dict[str, Any]) -> bool:
+def _stepwise_draft_ready(
+    snapshot: RunSnapshot, node: dict[str, Any], draft: dict[str, Any]
+) -> bool:
     if str(draft.get("startup_mode") or "PROMPT") != "PROMPT":
         return False
     preset = draft.get("agent_preset")
@@ -4798,7 +4801,10 @@ def _stepwise_draft_ready(node: dict[str, Any], draft: dict[str, Any]) -> bool:
     ):
         return False
     bindings = _stepwise_draft_bindings(draft)
-    return all(not field.required or field.key in bindings for field in _input_fields(node))
+    return all(
+        not field.required or field.key in bindings
+        for field in _effective_input_fields(snapshot, node)
+    )
 
 
 def _stepwise_node_draft(record: FlowRun, node_key: str) -> dict[str, Any] | None:
@@ -5100,6 +5106,17 @@ def save_stepwise_node_draft(
         )
         artifact_ids[field_key] = artifact.id
     _validate_input_bindings(db, run, node, artifact_ids)
+    required_inputs = {
+        field.key for field in _effective_input_fields(snapshot, node) if field.required
+    }
+    missing_inputs = sorted(required_inputs - set(artifact_ids))
+    if missing_inputs:
+        raise DomainError(
+            "STEPWISE_DRAFT_INPUTS_INCOMPLETE",
+            "required node inputs must be configured before saving the stepwise draft",
+            422,
+            {"fields": missing_inputs},
+        )
     executor = cast(dict[str, Any], node.get("asset", {}).get("executor") or {})
     effective_context_prompt = (
         str(preset["node_context_prompt"])
@@ -5142,6 +5159,143 @@ def save_stepwise_node_draft(
     )
     finish(db)
     return _stepwise_draft_projection(drafts[instance_key])
+
+
+def save_stepwise_runtime_ports(
+    db: Session, run_id: str, payload: StepwiseRuntimePortsWrite
+) -> dict[str, Any]:
+    """Freeze run-level ports for unstarted nodes in one stepwise record."""
+
+    run = _locked_run(db, run_id)
+    if run.run_mode != "MANUAL" or run.parent_flow_run_id is None:
+        raise illegal("only a stepwise record can change runtime ports", state=run.state)
+    if run.state in {FlowRunState.COMPLETED, FlowRunState.CANCELLED}:
+        raise illegal("terminal stepwise record cannot change runtime ports", state=run.state)
+    active = _active_snapshot(db, run)
+    if active.version != payload.expected_active_snapshot_version:
+        raise conflict(
+            "stepwise runtime ports were modified",
+            expected=payload.expected_active_snapshot_version,
+            actual=active.version,
+        )
+    definition = copy.deepcopy(active.definition_json)
+    nodes = {
+        str(node.get("instance_key") or ""): node
+        for node in definition.get("nodes", [])
+        if isinstance(node, dict) and str(node.get("instance_key") or "")
+    }
+    unknown_nodes = sorted(set(payload.node_ports) - set(nodes))
+    if unknown_nodes:
+        raise DomainError(
+            "RUN_PORTS_INVALID",
+            "runtime ports reference an unknown node",
+            422,
+            {"nodes": unknown_nodes},
+        )
+    started_nodes = {
+        str(key)
+        for key in db.scalars(
+            select(NodeRun.flow_node_snapshot_key).where(NodeRun.flow_run_id == run.id)
+        )
+    }
+    changed_started = sorted(set(payload.node_ports) & started_nodes)
+    if changed_started:
+        raise DomainError(
+            "RUN_PORTS_STARTED_NODE_IMMUTABLE",
+            "runtime ports cannot change nodes that already have execution records",
+            409,
+            {"node_keys": changed_started},
+        )
+    for node_key, ports in payload.node_ports.items():
+        inputs = [field.model_dump() for field in ports.get("inputs", [])]
+        outputs = [field.model_dump() for field in ports.get("outputs", [])]
+        for field in inputs:
+            field.update(required=False, runtime_port=True)
+            field.pop("template_url", None)
+        for field in outputs:
+            field["runtime_port"] = True
+            field.pop("template_url", None)
+        nodes[node_key]["runtime_port_overrides"] = {"inputs": inputs, "outputs": outputs}
+
+    runtime_mappings: list[dict[str, Any]] = []
+    if payload.port_mappings:
+        configured_nodes = set(payload.node_ports)
+        runtime_mappings = [
+            {**item.model_dump(), "runtime_port": True} for item in payload.port_mappings
+        ]
+        mapping_nodes = {item["source_instance_key"] for item in runtime_mappings} | {
+            item["target_instance_key"] for item in runtime_mappings
+        }
+        unknown_mapping_nodes = sorted(mapping_nodes - set(nodes))
+        if unknown_mapping_nodes:
+            raise DomainError(
+                "RUN_PORTS_INVALID",
+                "runtime mappings reference an unknown node",
+                422,
+                {"nodes": unknown_mapping_nodes},
+            )
+        changed_mapping_nodes = sorted(mapping_nodes & started_nodes)
+        if changed_mapping_nodes:
+            raise DomainError(
+                "RUN_PORTS_STARTED_NODE_IMMUTABLE",
+                "runtime mappings cannot change nodes that already have execution records",
+                409,
+                {"node_keys": changed_mapping_nodes},
+            )
+        definition["port_mappings"] = [
+            item
+            for item in definition.get("port_mappings", [])
+            if isinstance(item, dict)
+            and (
+                not item.get("runtime_port")
+                or (
+                    str(item.get("source_instance_key") or "") not in configured_nodes
+                    and str(item.get("target_instance_key") or "") not in configured_nodes
+                )
+            )
+        ] + runtime_mappings
+    _validate_runtime_definition_ports(definition)
+    environment = lock_referenceable_version(db, run.environment_version_id or "")
+    if environment is None:
+        raise DomainError(
+            "RUN_ENVIRONMENT_VERSION_INVALID",
+            "The FlowRun Environment Version is unavailable",
+            409,
+            {"environment_version_id": run.environment_version_id},
+        )
+    identity = runtime_server_identity(
+        environment.manifest_json,
+        environment_version_id=environment.id,
+        runtime_protocol_profile=environment.runtime_protocol_profile,
+    )
+    manifest = _compile_runtime_manifest(definition, server_identity=identity)
+    snapshot = RunSnapshot(
+        flow_run_id=run.id,
+        version=active.version + 1,
+        schema_version=active.schema_version,
+        definition_json=definition,
+        definition_hash=_hash(definition),
+        runtime_manifest_json=manifest,
+        runtime_manifest_hash=_runtime_manifest_hash(manifest),
+        environment_version_id=run.environment_version_id,
+    )
+    db.add(snapshot)
+    db.flush()
+    hold_snapshot_memory_references(db, snapshot_id=snapshot.id, runtime_manifest=manifest)
+    run.active_snapshot_id = snapshot.id
+    run.row_version += 1
+    _event(
+        db,
+        run.id,
+        "STEPWISE_RUNTIME_PORTS_SAVED",
+        {
+            "snapshot_version": snapshot.version,
+            "node_keys": sorted(payload.node_ports),
+            "mapping_count": len(runtime_mappings),
+        },
+    )
+    finish(db)
+    return run_detail(db, run.id)
 
 
 def reactivate_stepwise_node_for_rerun(
@@ -5222,6 +5376,36 @@ def reactivate_stepwise_node_for_rerun(
     return _stepwise_draft_projection(draft)
 
 
+def cancel_stepwise_node_rerun_edit(db: Session, run_id: str, instance_key: str) -> dict[str, Any]:
+    """Discard an unstarted rerun edit without altering its accepted history."""
+
+    run = _locked_run(db, run_id)
+    if run.run_mode != "MANUAL" or run.parent_flow_run_id is None:
+        raise illegal("only a stepwise record can cancel a rerun edit", state=run.state)
+    drafts = _stepwise_node_drafts(run)
+    draft = drafts.get(instance_key)
+    if draft is None or not draft.get("rerun_source_node_run_id"):
+        raise DomainError("STEPWISE_RERUN_EDIT_MISSING", "node has no active rerun edit", 409)
+    source = _node_run(db, str(draft["rerun_source_node_run_id"]))
+    if source.flow_run_id != run.id or source.flow_node_snapshot_key != instance_key:
+        raise DomainError(
+            "STEPWISE_RERUN_EDIT_INVALID", "rerun edit no longer matches its source node", 409
+        )
+    drafts.pop(instance_key)
+    _save_stepwise_node_drafts(run, drafts)
+    run.row_version += 1
+    _event(
+        db,
+        run.id,
+        "STEPWISE_NODE_RERUN_EDIT_CANCELLED",
+        {"flow_node_key": instance_key, "source_node_run_id": source.id},
+        source.id,
+        source.accepted_attempt_id,
+    )
+    finish(db)
+    return run_detail(db, run.id)
+
+
 def start_stepwise_node_draft(
     db: Session,
     run_id: str,
@@ -5250,7 +5434,7 @@ def start_stepwise_node_draft(
             expected=payload.expected_row_version,
             actual=draft_version,
         )
-    if not _stepwise_draft_ready(node, draft):
+    if not _stepwise_draft_ready(snapshot, node, draft):
         raise DomainError(
             "STEPWISE_DRAFT_NOT_READY",
             "stepwise node configuration is incomplete",

@@ -926,6 +926,21 @@ class StepwiseNodeDraftWrite(NodeRunStart):
     expected_row_version: int = Field(ge=1)
 
 
+class StepwiseRuntimePortMappingWrite(ApiModel):
+    source_instance_key: str = Field(min_length=1, max_length=100)
+    source_output_key: str = Field(min_length=1, max_length=100)
+    target_instance_key: str = Field(min_length=1, max_length=100)
+    target_input_key: str = Field(min_length=1, max_length=100)
+
+
+class StepwiseRuntimePortsWrite(ApiModel):
+    expected_active_snapshot_version: int = Field(ge=1)
+    node_ports: dict[str, dict[str, list[IOFieldWrite]]] = Field(default_factory=dict)
+    port_mappings: list[StepwiseRuntimePortMappingWrite] = Field(
+        default_factory=list, max_length=500
+    )
+
+
 class StepwiseNodeDraftStartWrite(ApiModel):
     """Optimistic-lock one draft before materialising its first Attempt."""
 

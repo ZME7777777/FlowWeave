@@ -227,6 +227,7 @@ export interface FlowEdge {
 export interface FlowPortMapping {
   id?: string; source_instance_key: string; source_output_key: string;
   target_instance_key: string; target_input_key: string;
+  runtime_port?: boolean;
 }
 export interface FlowDefinition {
   id: string; name: string; description: string; default_entry_key?: string | null;
@@ -384,6 +385,15 @@ export interface FlowRunAutomaticRecord extends FlowRun {
   start_node_key: string; reachable_node_keys: string[];
   node_plans: Record<string, AutomaticNodePlan>;
   readiness: { ready: boolean; issues: Array<{ code: string; node_key: string; message: string }> };
+}
+export interface StepwiseRuntimePortMapping {
+  source_instance_key: string; source_output_key: string;
+  target_instance_key: string; target_input_key: string;
+}
+export interface StepwiseRuntimePortsWrite {
+  expected_active_snapshot_version: number;
+  node_ports: Record<string, { inputs: IOField[]; outputs: IOField[] }>;
+  port_mappings: StepwiseRuntimePortMapping[];
 }
 export interface StepwiseNodeDraft {
   row_version: number;

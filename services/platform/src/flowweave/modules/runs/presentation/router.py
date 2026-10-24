@@ -47,6 +47,7 @@ from flowweave.shared.schemas import (
     StepwiseRecordConfigImportWrite,
     StepwiseRunRecordCopyWrite,
     StepwiseRunRecordWrite,
+    StepwiseRuntimePortsWrite,
     SyncSnapshotWrite,
 )
 
@@ -179,6 +180,15 @@ async def save_stepwise_node_draft(
     )
 
 
+@router.put("/flow-runs/{run_id}/stepwise-runtime-ports")
+async def save_stepwise_runtime_ports(
+    run_id: str, payload: StepwiseRuntimePortsWrite, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db, lambda session: service.save_stepwise_runtime_ports(session, run_id, payload)
+    )
+
+
 @router.post("/flow-runs/{run_id}/stepwise-node-drafts/{flow_node_key}/rerun-edit")
 async def reactivate_stepwise_node_for_rerun(
     run_id: str,
@@ -191,6 +201,16 @@ async def reactivate_stepwise_node_for_rerun(
         lambda session: service.reactivate_stepwise_node_for_rerun(
             session, run_id, flow_node_key, payload.node_run_id
         ),
+    )
+
+
+@router.delete("/flow-runs/{run_id}/stepwise-node-drafts/{flow_node_key}/rerun-edit")
+async def cancel_stepwise_node_rerun_edit(
+    run_id: str, flow_node_key: str, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: service.cancel_stepwise_node_rerun_edit(session, run_id, flow_node_key),
     )
 
 

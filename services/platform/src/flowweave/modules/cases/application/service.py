@@ -519,6 +519,11 @@ def launch_case_stage(
     stage = _stage(db, item, stage_id)
     if stage.state != "ACTIVE":
         raise conflict("only the active Case stage can launch", state=stage.state)
+    if stage.current_execution_flow_run_id:
+        raise conflict(
+            "Case stage already has a current execution copy",
+            flow_run_id=stage.current_execution_flow_run_id,
+        )
     if not stage.flow_run_id:
         raise conflict("Case stage has no configured FlowRun template", stage_id=stage.id)
     template = db.get(FlowRun, stage.flow_run_id)
