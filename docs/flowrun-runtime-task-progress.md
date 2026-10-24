@@ -139,10 +139,18 @@ Web 镜像再次重跑相同 12 项通过，镜像为
 `sha256:518e3bd47305fa9f4affece24f9ebe087f7076fd04019d03abd671af4cb56f8b`；
 对应源码最小上下文归档 SHA-256 为
 `19727096e84b5f4ae7d4ea39dc42fe8f9cd3a24516f1b8a6ff2fd7f65141532e`。
-该整合镜像使用独立 tag，不覆盖另一 Case 发布的候选镜像。因 Case 发布尚未完成
-平台迁移与切换，本片没有提前上线依赖其 API 的整合 Web；当前正式节点页面仍为
-上述已验收的 `3793c69c`。联合镜像的最终发布归 Case 发布收尾处理，不记为本片
-已部署事实；主工作树所有原改动保留，未推送。
+该整合镜像先以独立 tag 构建，不覆盖另一 Case 发布的候选镜像。等待 Case 发布
+`3df600e8` 的 platform／web 受管上下文均成功后，重新记录现有 Web 回滚镜像、日志、
+37 个其他运行容器和配置摘要，再只切换 Web 至 `6ac9a0c0`，保留该 Case 发布的
+API／stream-api／worker 及 0172 数据库迁移。最终 Web 实际运行上述整合镜像，
+加载的 43 个 JS／CSS 文件 SHA-256 一致；公网登录、Agent 深层路由、根登录页、
+两项 API 401 边界、浏览器部署前缀及平台健康检查全部通过。
+
+最终 Web remote-release-finish 成功，保留最近三份成功上下文和引用／回滚版本；
+随后再次核对 Web revision、37 个其他容器及配置不变。仅回收过期受管上下文和精确
+rollback tags，不清理 BuildKit、卷、Workspace、数据库备份或业务数据。本片最终
+正式 Web 发布版本为 `6ac9a0c0`；后续协作合并提交不改变此身份。主工作树原改动与
+Case 功能全部保留，未推送。
 ### FR-682 Case 详情配置 platform／Web 发布 — CURRENT
 
 依赖：FR-681 DONE。用户明确要求部署 Case 详情配置。发布源码为
