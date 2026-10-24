@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`UPSTREAM BASELINE ADOPTION COMPLETE`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-676`
+> 下一可执行切片：`NONE`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -270,12 +270,47 @@ HTTP／诊断／观测路由 53 项全部通过，测试容器中的十个受影
 镜像，未部署或续跑用户任务。详情见[取证报告](runtime-incident-2026-10-24.md)。历史五条
 503 不追溯归为同一根因；当前NONE，下一可执行FR-676，提交后停止。
 
-### FR-676 关联诊断与观测锁修复发布验收 — READY
+### FR-676 关联诊断与观测锁修复发布验收 — DONE
 
 依赖：FR-675 DONE。使用已提交版本及正式 platform 预检／commit-bound 发布流程，
 同步 API、stream-api 与 Worker，完成健康、版本、路由及安全错误关联验证后收尾受管
 上下文；保留回滚证据，不修改服务器配置、业务 Runtime／配额或用户会话。仅对当前仍
 存在的错误按新分类继续取证，不主动制造业务故障或把历史资源／DNS 证据缺口标为解决。
+
+发布验收（2026-10-24）：代码版本为
+`ef9f7c4027f390473ba3788700c14b01a73ccf63`。正式 platform 预检复述全部本地私有入口并
+通过只读拓扑校验，commit-bound 最小上下文 prepare 成功，归档 SHA-256 为
+`1a8d3f207bb887ecc382da730662a8be98a10ff3d8dd63bf23c764d0aac926fc`。
+实际 linux/amd64 平台镜像为
+`sha256:742a006544763aa2009287683bd165768a8e3ce62e178c01607b3cbc458519ad`，
+OCI revision 与代码提交一致。没有覆盖应用源码，在该实际镜像及独立空 PostgreSQL 上
+完成正式全量迁移、FR-675 锁竞争／恢复／删除保护／隔离／旧 generation fencing 探针，
+并通过全部53项 HTTP／安全日志／观测路由回归；测试脚本和 pytest 库仅写入可丢弃测试
+容器，六个受影响应用模块先与提交内容逐文件 SHA-256 核对。只移除自身测试容器，
+此阶段38个既有容器镜像及启动时间不变，不记为业务故障注入或生产端到端执行。
+
+服务器内保留原 API／stream-api／Worker 带时间戳日志及精确 rollback tags 后，正式
+migration 成功，数据库 head 仍为0170_revision_draft_owner；仅同步 recreate 三个
+平台服务。三服务使用同一镜像，六个应用模块与不可变发布上下文摘要一致，API 与
+stream-api 的 health／readiness 通过；其余35个容器（包括 Web、Runtime Provider 和
+全部业务 Runtime）的镜像及启动时间不变，Compose／env 摘要未变。
+
+实际 Chromium 新上下文验证公网前缀登录、Agent 深层路由及根登录，公网 API 两项
+401边界通过。另通过真实公网请求确认合法 UUID request-id 保留、非法头重新生成 UUID，
+响应头与错误体一致。日志异常分类与脱敏由上述实际镜像隔离测试验证，没有为了产生
+503而阻塞业务数据库或 Runtime。发布后148秒日志窗口未发现新503、错误分类日志、连接池、
+DNS或语句超时；数据库检查无阻塞或超过30秒的其他事务。此观察不证明历史故障根治。
+
+两个用户指定 binding 的身份摘要前后不变。发布前已观察到两条原生 readiness 和活动
+目录均为 finished，发布后仍为 finished；这区别于 FR-673 取证时的 error，变化发生在
+本次发布之前，不归因为本次修复。没有发送、暂停、继续或重放这两条业务会话，也未
+读取最终回复正文或声称其任务内容已验收。
+
+remote-release-finish 版本／健康门禁及容量收尾通过：保留各 scope 最近三份成功上下文
+及所有引用／回滚版本，移除两份过期受管上下文和六个精确旧 rollback tags。不清理共享
+BuildKit、卷、Workspace 或数据库备份。本片不改 OpenHands、Runtime 镜像、服务器
+配置或资源配额；当前和下一可执行切片均为NONE，提交后停止。历史资源耗尽及DNS
+触发者仍有证据缺口，不能把五条历史503逐条归为本片修复的环境锁机制。
 
 
 ### FR-671 活动状态读取失败的展示保留与后台核对隔离 — DONE
