@@ -6258,6 +6258,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     };
     const hasPendingAttachments = Boolean(pendingAttachmentIdsByScope.current.get(scope)?.size);
     const recoverable = conversationDraftHasContent(recovery) || hasPendingAttachments;
+    const existingRecovery = readConversationDraft(draftPersistence.storageKey);
+    if (!recoverable && existingRecovery?.draft.id !== draftPersistence.draft.id) return;
     writeConversationDraft(draftPersistence.storageKey, recoverable ? recovery : undefined);
     const draftKey = draftPersistence.draft.workDirectoryId ?? 'root';
     setRecoverableConversationDrafts(current => {
@@ -6309,7 +6311,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       modelName: newConversationModelName,
       reasoningEffort: newConversationReasoningEffort,
     };
-    writeConversationDraft(draftRecoveryStorageKey, conversationDraftHasContent(recovery) ? recovery : undefined);
+    const recoverable = conversationDraftHasContent(recovery);
+    const existingRecovery = readConversationDraft(draftRecoveryStorageKey);
+    if (!recoverable && existingRecovery?.draft.id !== conversationDraft.id) return;
+    writeConversationDraft(draftRecoveryStorageKey, recoverable ? recovery : undefined);
     const draftKey = conversationDraft.workDirectoryId ?? 'root';
     setRecoverableConversationDrafts(current => {
       if (conversationDraftHasContent(recovery)) return { ...current, [draftKey]: recovery };
@@ -9004,6 +9009,28 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const openConversationDraft = useCallback((next: Omit<ConversationDraft, 'id'>, options: { restoreRecovery?: boolean; selectStandaloneRoot?: boolean } = {}) => {
     const outgoingScope = activeComposerScope.current;
     if (outgoingScope) persistComposerDraft(outgoingScope);
+    if (!options.restoreRecovery && workspace && conversationDraft && outgoingScope === conversationDraft.id
+      && pendingBootstrap?.draft.id !== conversationDraft.id && bootstrapRecovery?.draft.id !== conversationDraft.id) {
+      const snapshot = composerDraftsByScope.current.get(conversationDraft.id) ?? {
+        content: composerDraftRef.current,
+        attachments,
+        references,
+        workspaceReferences,
+        annotations: composerAnnotations,
+      };
+      const recovery = {
+        draft: conversationDraft,
+        ...snapshot,
+        providerId: newConversationProviderId,
+        modelName: newConversationModelName,
+        reasoningEffort: newConversationReasoningEffort,
+      };
+      if (conversationDraftHasContent(recovery) || pendingAttachmentIdsByScope.current.get(conversationDraft.id)?.size) {
+        const draftKey = conversationDraft.workDirectoryId ?? 'root';
+        writeConversationDraft(conversationDraftStorageKey(host.id, workspace.id, conversationDraft.workDirectoryId), recovery);
+        setRecoverableConversationDrafts(current => ({ ...current, [draftKey]: recovery }));
+      }
+    }
     setForegroundTurn(undefined);
     setActiveTurnEventId(undefined);
     setRequestStartedAt(undefined);
@@ -9031,23 +9058,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       setNewConversationModelName(recovery.modelName);
       setNewConversationReasoningEffort(recovery.reasoningEffort);
     } else {
-      if (workspace) writeConversationDraft(conversationDraftStorageKey(host.id, workspace.id, next.workDirectoryId), undefined);
-      const draftKey = next.workDirectoryId ?? 'root';
-      const activeDraftId = conversationDraft && (conversationDraft.workDirectoryId ?? 'root') === draftKey
-        ? conversationDraft.id
-        : undefined;
-      const discardedDraftId = activeDraftId ?? recoverableConversationDrafts[draftKey]?.draft.id;
-      if (discardedDraftId) discardDraftAttachments(discardedDraftId);
-      setRecoverableConversationDrafts(current => {
-        if (!current[draftKey]) return current;
-        const updated = { ...current };
-        delete updated[draftKey];
-        return updated;
-      });
-      if (conversationDraft && conversationDraft.id === outgoingScope && (conversationDraft.workDirectoryId ?? 'root') === draftKey) {
-        composerDraftsByScope.current.delete(conversationDraft.id);
-        conversationDraftsByScope.current.delete(conversationDraft.id);
-      }
       const draft = { ...next, id: randomId(), capabilityVersionIds: next.capabilityVersionIds ?? [] };
       composerDraftsByScope.current.set(draft.id, { content: '', attachments: [], references: [], workspaceReferences: [], annotations: [] });
       setConversationDraft(draft);
@@ -9066,7 +9076,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     onNavigate(host.rootPath, false, options.selectStandaloneRoot && host.id === 'agent-workspace'
       ? { standaloneAgentReturnTarget: 'root' }
       : undefined);
-  }, [clearBootstrapRecovery, conversationDraft, discardDraftAttachments, host.id, host.rootPath, onNavigate, persistComposerDraft, recoverableConversationDrafts, replaceComposerDraft, updateLocalMessageProjections, workspace]);
+    requestAnimationFrame(() => composerRef.current?.focus());
+  }, [attachments, bootstrapRecovery, clearBootstrapRecovery, composerAnnotations, conversationDraft, host.id, host.rootPath, newConversationModelName, newConversationProviderId, newConversationReasoningEffort, onNavigate, pendingBootstrap?.draft.id, persistComposerDraft, references, replaceComposerDraft, updateLocalMessageProjections, workspace, workspaceReferences]);
   useEffect(() => {
     if (!autoOpenDraft || scheduleRoute || !workspace || selectedBindingId || conversationDraft) return;
     openConversationDraft({ displayName: '根工作区' }, { restoreRecovery: true });
