@@ -229,6 +229,12 @@ def _delete_automatic_run_record(
     )
 
 
+def _delete_flow_run_schedule(
+    db: Session, aggregate_id: str, _payload: dict[str, Any], _lease: Lease
+) -> None:
+    orchestration.process_delete_flow_run_schedule(db, aggregate_id, commit=False)
+
+
 def _cleanup_setup_container(
     db: Session, aggregate_id: str, payload: dict[str, Any], lease: Lease
 ) -> None:
@@ -324,6 +330,7 @@ HANDLERS: dict[str, Handler] = {
     "CANCEL_RUNTIME": _cancel_runtime,
     "DELETE_NODE_RUN_RECORD": _delete_node_run_record,
     "DELETE_AUTOMATIC_RUN_RECORD": _delete_automatic_run_record,
+    "DELETE_FLOW_RUN_SCHEDULE": _delete_flow_run_schedule,
     "PUBLISH_ENVIRONMENT_VERSION": _publish_environment_version,
     "CLEANUP_SETUP_CONTAINER": _cleanup_setup_container,
     "CLEANUP_ENVIRONMENT_IMAGE": _cleanup_environment_image,

@@ -7834,12 +7834,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, [streamEnabled]);
 
   useEffect(() => {
-    if (!scheduleRoute && !conversationDraft && !routeBindingId && conversations.length) {
+    if (!autoOpenDraft && !scheduleRoute && !conversationDraft && !routeBindingId && conversations.length) {
       automaticSidebarRoute.current = conversations[0].id;
       onNavigate(conversationPath(conversations[0].id), true);
     }
     if (routeBindingId && conversations.length && !selected && pendingCreatedId !== routeBindingId && !initialConversationQueries.some(query => query.isFetching) && selectedConversationQuery.isError) onNavigate(scheduleRoute ? '/agent/schedules' : host.rootPath, true);
-  }, [conversationDraft, conversationPath, conversations, host.rootPath, initialConversationQueries, onNavigate, pendingCreatedId, routeBindingId, scheduleRoute, selected, selectedConversationQuery.isError]);
+  }, [autoOpenDraft, conversationDraft, conversationPath, conversations, host.rootPath, initialConversationQueries, onNavigate, pendingCreatedId, routeBindingId, scheduleRoute, selected, selectedConversationQuery.isError]);
   useEffect(() => { if (selected?.id === pendingCreatedId) setPendingCreatedId(undefined); }, [pendingCreatedId, selected?.id]);
   useLayoutEffect(() => {
     if (!composerScope || previousComposerScope.current === composerScope) return;

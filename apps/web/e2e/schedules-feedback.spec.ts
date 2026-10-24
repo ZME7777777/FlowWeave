@@ -18,7 +18,7 @@ test('new schedule explains how to create a usable template when none exist', as
   });
 
   await page.goto('/');
-  await page.getByRole('button', { name: '定时任务', exact: true }).click();
+  await page.getByRole('button', { name: '定时调度', exact: true }).click();
 
   const createButton = page.getByRole('button', { name: '新建定时任务', exact: true });
   await expect(createButton).toBeEnabled();
@@ -28,6 +28,60 @@ test('new schedule explains how to create a usable template when none exist', as
   await expect(notice).toContainText('显示“草稿已就绪”后即可新建定时任务');
   await notice.getByRole('button', { name: '我知道了', exact: true }).click();
   await expect(notice).toBeHidden();
+});
+
+test('new schedule filters FlowRuns before choosing a continuous record', async ({ page }) => {
+  const templates = [
+    { id: 'record-1', name: '早盘巡检', flow_definition_id: 'flow-1', flow_name: '行情巡检', parent_flow_run_id: 'run-1', parent_flow_run_name: '沪深主流程', parent_flow_run_no: 8, state: 'DRAFT', run_no: 2 },
+    { id: 'record-2', name: '收盘巡检', flow_definition_id: 'flow-2', flow_name: '日报生成', parent_flow_run_id: 'run-2', parent_flow_run_name: '港股流程', parent_flow_run_no: 9, state: 'DRAFT', run_no: 3 },
+  ];
+  await page.route('**/api/v1/**', async route => {
+    const path = new URL(route.request().url()).pathname;
+    const respond = (body: unknown) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
+    if (path.endsWith('/auth/me')) return respond(authenticatedUser);
+    if (path === '/api/v1/flow-run-schedules' || path === '/api/v1/flows') return respond([]);
+    if (path === '/api/v1/flow-run-schedule-templates') return respond(templates);
+    return respond([]);
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '定时调度', exact: true }).click();
+  await page.getByRole('button', { name: '新建定时任务', exact: true }).click();
+  await expect(page.getByLabel('选择连续运行记录')).toBeDisabled();
+  await page.getByLabel('选择 FlowRun', { exact: true }).click();
+  await page.getByLabel('筛选选择 FlowRun').fill('港股');
+  await expect(page.getByRole('option', { name: /港股流程/ })).toBeVisible();
+  await expect(page.getByRole('option', { name: /沪深主流程/ })).toBeHidden();
+  await page.getByRole('option', { name: /港股流程/ }).click();
+  await page.getByLabel('选择连续运行记录', { exact: true }).click();
+  await expect(page.getByRole('option', { name: /收盘巡检/ })).toBeVisible();
+  await expect(page.getByRole('option', { name: /早盘巡检/ })).toHaveCount(0);
+});
+
+test('schedule deletion uses a destructive icon and confirms cascading record cleanup', async ({ page }) => {
+  const schedule = {
+    id: 'schedule-1', flow_definition_id: 'flow-1', environment_version_id: 'env-version-1',
+    name: '每小时检查', source_flow_run_id: 'automatic-master-1', run_mode: 'AUTOMATIC', start_node_key: 'first', interval_minutes: 1, cron_expression: '0 * * * *',
+    source_flow_run: { id: 'automatic-master-1', name: '连续运行母版', run_no: 2, state: 'DRAFT' }, status: 'PAUSED', next_run_at: null, row_version: 1, config_version: 1, last_run_at: null, has_execution: true,
+    created_at: '2026-09-07T09:00:00Z', updated_at: '2026-09-07T09:00:00Z',
+  };
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const respond = (body: unknown) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
+    if (path.endsWith('/auth/me')) return respond(authenticatedUser);
+    if (path === '/api/v1/flow-run-schedules' && request.method() === 'GET') return respond([schedule]);
+    if (path === '/api/v1/flow-run-schedule-templates' || path === '/api/v1/flows' || path.endsWith('/occurrences')) return respond([]);
+    return respond([]);
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '定时调度', exact: true }).click();
+  const remove = page.getByRole('button', { name: '删除定时任务', exact: true });
+  await expect(remove.locator('svg').first()).toBeVisible();
+  await expect(remove.locator('svg.lucide-x')).toHaveCount(0);
+  await remove.click();
+  await expect(page.getByRole('alertdialog')).toContainText('全部连续运行记录、节点 Attempt、运行会话和关联运行资源');
 });
 
 test('schedule rows expand across their full width and immediate trigger reports progress', async ({ page }) => {
@@ -64,7 +118,7 @@ test('schedule rows expand across their full width and immediate trigger reports
   page.on('pageerror', error => pageErrors.push(error.message));
   page.on('console', message => { if (message.type() === 'error') pageErrors.push(message.text()); });
   await page.goto('/');
-  await page.getByRole('button', { name: '定时任务', exact: true }).click();
+  await page.getByRole('button', { name: '定时调度', exact: true }).click();
   const workspace = page.locator('.schedule-workspace');
   const recovery = page.getByRole('alert');
   await Promise.race([

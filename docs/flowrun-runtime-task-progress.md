@@ -2,7 +2,7 @@
 
 > 创建日期：2026-08-21
 > 状态：`UPSTREAM BASELINE ADOPTION COMPLETE`
-> 当前执行切片：`NONE`
+> 当前执行切片：`FR-689`
 > 下一可执行切片：`NONE`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
@@ -91,6 +91,14 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 放到 FR-12；普通切片即使涉及安全或迁移，也只实现代码并做基础语法检查。
 
 ## 6. 任务清单
+
+### FR-689 远程草稿恢复与定时记录联动删除合并发布 — CURRENT
+
+依赖：FR-688 DONE。按用户明确授权，将远程 feat/refactor 的三个提交合入本地，
+保留本地 Case 与节点改动，处理测试中的旧 Case 界面与导航名称冲突。
+验证草稿恢复、定时创建与删除、Case 和节点回归后，以已提交版本发布 platform／web；
+执行正式预检、最小上下文、迁移、同版本 api／stream-api／worker 更新、Web 验收
+与容量收尾。不改变 Runtime Provider、固定 OpenHands 或已有 Runtime generation。
 
 ### FR-688 Case 运行候选、默认认证与紧凑表单 Web 发布 — DONE
 

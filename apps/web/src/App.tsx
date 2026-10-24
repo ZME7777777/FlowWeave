@@ -39,7 +39,7 @@ const nav = [
   { view: 'schedules' as const, label: '定时调度', icon: CalendarClock },
   { view: 'cases' as const, label: '场景空间', icon: Box },
   { view: 'capabilities' as const, label: '能力仓库', icon: Library },
-  { view: 'agent-workbench' as const, label: '自由对话', icon: MessagesSquare },
+  { view: 'agent-workbench' as const, label: 'AI 工作台', icon: MessagesSquare },
 ];
 
 const settingsNav = [

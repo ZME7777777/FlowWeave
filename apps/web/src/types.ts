@@ -602,6 +602,7 @@ export interface FlowRunScheduleWrite {
 }
 export interface FlowRunScheduleTemplate {
   id: string; name: string; flow_definition_id: string; flow_name?: string | null;
+  parent_flow_run_id: string; parent_flow_run_name?: string | null; parent_flow_run_no?: number | null;
   state: string; run_no: number;
 }
 export interface RunEvent {
