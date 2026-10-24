@@ -230,6 +230,52 @@ test('first field creates a named draft node once and keeps the list open', asyn
   await expect(page.getByTestId('node-card')).toContainText('新建并即时保存字段');
 });
 
+test('unnamed nodes configure fields without validating the main form and save in their creation directory', async ({ page }) => {
+  const writes: Record<string, unknown>[] = [];
+  await page.route('**/api/v1/node-directories', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([{ id: 'directory-1', name: '研发流程', parent_id: null, position: 0 }]) }));
+  await page.route('**/api/v1/node-assets**', route => {
+    if (route.request().method() === 'POST') {
+      const payload = route.request().postDataJSON(); writes.push(payload);
+      return route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify({ ...node, ...payload }) });
+    }
+    return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(writes.length ? [{ ...node, ...writes.at(-1) }] : []) });
+  });
+  await page.goto('/'); await page.getByRole('button', { name: '节点中心', exact: true }).click();
+  await page.getByRole('button', { name: '在 研发流程 新建节点', exact: true }).click();
+  await expect(page.locator('.node-form-body')).not.toContainText('所属目录');
+  await expect(page.locator('.node-prompt-field>p')).toHaveText(['暂无内容', '暂无内容']);
+  await page.locator('.node-form').evaluate(form => {
+    form.setAttribute('data-invalid-count', '0');
+    form.addEventListener('invalid', () => form.setAttribute('data-invalid-count', String(Number(form.getAttribute('data-invalid-count')) + 1)), true);
+  });
+  for (const direction of ['输入', '输出']) {
+    await page.getByRole('button', { name: `配置${direction}定义` }).click();
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toContainText('字段暂存于当前草稿');
+    await dialog.getByRole('button', { name: `添加${direction}`, exact: true }).click();
+    await dialog.getByLabel(`${direction}名称`, { exact: true }).fill(`${direction}文件`);
+    await dialog.getByLabel(`${direction}说明`, { exact: true }).fill(`${direction}说明`);
+    const nameBox = (await dialog.getByLabel(`${direction}名称`, { exact: true }).boundingBox())!;
+    const keyBox = (await dialog.getByLabel(`${direction}字段标识`, { exact: true }).boundingBox())!;
+    expect(nameBox.y).toBe(keyBox.y);
+    expect((await dialog.boundingBox())!.height).toBeLessThan(460);
+    await dialog.screenshot({ path: test.info().outputPath(`compact-${direction}-editor.png`) });
+    await dialog.getByRole('button', { name: '创建字段', exact: true }).click();
+    await expect(dialog.getByRole('table')).toContainText(`${direction}文件`);
+    await dialog.getByRole('button', { name: `修改${direction} ${direction}文件` }).click();
+    await dialog.getByLabel(`${direction}说明`, { exact: true }).fill('草稿修改已保留');
+    await dialog.getByRole('button', { name: '保存修改', exact: true }).click();
+    await expect(dialog.getByRole('table')).toContainText('草稿修改已保留');
+    await dialog.getByRole('button', { name: `关闭${direction}定义`, exact: true }).click();
+  }
+  await expect(page.locator('.node-form')).toHaveAttribute('data-invalid-count', '0');
+  expect(writes).toHaveLength(0);
+  await page.getByLabel('节点名称', { exact: true }).fill('先配置字段的新节点');
+  await page.getByRole('button', { name: '保存节点', exact: true }).click();
+  await expect.poll(() => writes.length).toBe(1);
+  expect(writes[0]).toMatchObject({ directory_id: 'directory-1', executor: { startup_prompt: '', context_prompt: '' }, inputs: [{ display_name: '输入文件', description: '草稿修改已保留' }], outputs: [{ display_name: '输出文件', description: '草稿修改已保留' }] });
+});
+
 for (const [width, height] of [[1440, 900], [1440, 700], [1024, 768], [1280, 620]]) {
   test(`compact node form keeps a narrow rail, fixed prompt blocks and green creation at ${width}x${height}`, async ({ page }) => {
     await page.setViewportSize({ width, height });
@@ -259,13 +305,8 @@ for (const [width, height] of [[1440, 900], [1440, 700], [1024, 768], [1280, 620
     await expect(page.locator('.node-fields-summary')).toHaveCount(2);
     await expect(page.locator('.node-form-body select')).toHaveCount(0);
     await expect(page.getByRole('button', { name: '保存节点', exact: true })).toBeVisible();
-    const directory = page.getByRole('combobox', { name: '所属目录', exact: true });
-    await directory.focus();
-    await page.keyboard.press('ArrowDown');
-    await page.keyboard.press('ArrowDown');
-    await page.keyboard.press('Enter');
-    await expect(directory).toContainText('研发流程');
-    await expect(page.getByRole('listbox', { name: '所属目录' })).toHaveCount(0);
+    await expect(page.getByRole('combobox', { name: '所属目录' })).toHaveCount(0);
+    await expect(page.locator('.node-form-body')).not.toContainText('所属目录');
     await page.screenshot({ path: test.info().outputPath(`compact-node-${width}-${height}.png`) });
   });
 }

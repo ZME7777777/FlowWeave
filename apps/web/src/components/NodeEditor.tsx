@@ -1,9 +1,7 @@
-import { useQuery } from '@tanstack/react-query';
-import { Check, ChevronDown, ChevronRight, ArrowLeft, Pencil, Plus, Trash2, X } from 'lucide-react';
+import { ChevronRight, ArrowLeft, Pencil, Plus, Trash2, X } from 'lucide-react';
 import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { api } from '../api/client';
-import type { IOField, NodeAsset, NodeAssetWrite, NodeDirectory } from '../types';
+import type { IOField, NodeAsset, NodeAssetWrite } from '../types';
 import { useEscapeClose } from './useEscapeClose';
 
 const emptyField = (direction: 'input' | 'output', index: number): IOField => ({
@@ -14,8 +12,8 @@ const emptyNode = (): NodeAssetWrite => ({
   directory_id: null, name: '', description: '', icon_kind: 'LUCIDE', icon_value: 'bot',
   row_version: 1, inputs: [], outputs: [],
   executor: {
-    startup_prompt: '读取流程输入和节点上下文，按当前任务要求完成工作。',
-    context_prompt: '优先读取流程上游产物与人工输入，引用证据时标注来源。',
+    startup_prompt: '',
+    context_prompt: '',
     context_capability_ids: [],
   },
 });
@@ -33,38 +31,8 @@ type PromptKey = 'startup_prompt' | 'context_prompt';
 type EditorTarget = FieldDirection | PromptKey;
 const promptLabels: Record<PromptKey, string> = { startup_prompt: '启动触发提示词', context_prompt: '上下文提示词' };
 
-function DirectoryPicker({ value, directories, onChange }: {
-  value: string | null; directories: NodeDirectory[]; onChange: (value: string | null) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const host = useRef<HTMLDivElement>(null);
-  const trigger = useRef<HTMLButtonElement>(null);
-  const optionsId = useId();
-  const options = [{ id: '', name: '未分类' }, ...directories];
-  const [activeIndex, setActiveIndex] = useState(0);
-  useEscapeClose(() => setOpen(false), open);
-  useEffect(() => {
-    if (!open) return;
-    const closeOutside = (event: PointerEvent) => { if (!host.current?.contains(event.target as Node)) setOpen(false); };
-    document.addEventListener('pointerdown', closeOutside);
-    return () => document.removeEventListener('pointerdown', closeOutside);
-  }, [open]);
-  const choose = (id: string) => { onChange(id || null); setOpen(false); trigger.current?.focus(); };
-  return <div className="node-directory-picker" ref={host} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false); }}>
-    <button ref={trigger} type="button" role="combobox" aria-label="所属目录" aria-haspopup="listbox" aria-expanded={open} aria-controls={optionsId} aria-activedescendant={open ? `${optionsId}-${activeIndex}` : undefined} onClick={() => { setActiveIndex(Math.max(0, options.findIndex(item => item.id === (value ?? '')))); setOpen(current => !current); }} onKeyDown={event => {
-      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-        event.preventDefault();
-        const selected = Math.max(0, options.findIndex(item => item.id === (value ?? '')));
-        setActiveIndex(current => open ? (current + (event.key === 'ArrowDown' ? 1 : -1) + options.length) % options.length : selected);
-        setOpen(true);
-      } else if (open && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); choose(options[activeIndex].id); }
-    }}><span>{options.find(item => item.id === (value ?? ''))?.name ?? '未分类'}</span><ChevronDown size={15}/></button>
-    {open && <div className="node-directory-options" id={optionsId} role="listbox" aria-label="所属目录">{options.map((item, index) => <button id={`${optionsId}-${index}`} type="button" role="option" aria-selected={item.id === (value ?? '')} className={index === activeIndex ? 'active' : ''} key={item.id} onMouseEnter={() => setActiveIndex(index)} onClick={() => choose(item.id)}><span>{item.name}</span>{item.id === (value ?? '') && <Check size={14}/>}</button>)}</div>}
-  </div>;
-}
-
-function ConfigDialog({ title, description, children, onApply, onClose, actions, busy = false }: {
-  title: string; description: string; children: ReactNode; onApply: (event: FormEvent<HTMLFormElement>) => void; onClose: () => void; actions?: ReactNode; busy?: boolean;
+function ConfigDialog({ title, description, children, onApply, onClose, actions, busy = false, compact = false }: {
+  title: string; description: string; children: ReactNode; onApply: (event: FormEvent<HTMLFormElement>) => void; onClose: () => void; actions?: ReactNode; busy?: boolean; compact?: boolean;
 }) {
   const titleId = useId();
   const form = useRef<HTMLFormElement>(null);
@@ -74,7 +42,7 @@ function ConfigDialog({ title, description, children, onApply, onClose, actions,
     (form.current?.querySelector<HTMLElement>('textarea, input') ?? form.current?.querySelector<HTMLElement>('button'))?.focus();
     return () => { if (previous instanceof HTMLElement && previous.isConnected) previous.focus(); };
   }, []);
-  return createPortal(<div className="modal-backdrop node-config-backdrop"><form ref={form} className="modal node-config-dialog" role="dialog" aria-modal="true" aria-labelledby={titleId} onSubmit={onApply} onKeyDown={event => {
+  return createPortal(<div className="modal-backdrop node-config-backdrop"><form ref={form} className={`modal node-config-dialog${compact ? ' node-fields-dialog' : ''}`} role="dialog" aria-modal="true" aria-labelledby={titleId} onSubmit={onApply} onKeyDown={event => {
     if (event.key !== 'Tab') return;
     const items = [...event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), textarea:not(:disabled), [tabindex="0"]')];
     const target = event.shiftKey ? items.at(-1) : items[0];
@@ -82,8 +50,8 @@ function ConfigDialog({ title, description, children, onApply, onClose, actions,
   }}><header><div><h2 id={titleId}>{title}</h2><p>{description}</p></div><button type="button" className="ghost" aria-label={`关闭${title}`} disabled={busy} onClick={onClose}><X size={18}/></button></header>{children}{actions === undefined ? <footer><button type="button" className="secondary" onClick={onClose}>取消</button><button type="submit" className="primary">应用</button></footer> : actions}</form></div>, document.body);
 }
 
-function FieldsDialog({ direction, fields, onPersist, onClose }: {
-  direction: FieldDirection; fields: IOField[]; onPersist: (fields: IOField[]) => Promise<void>; onClose: () => void;
+function FieldsDialog({ direction, fields, onPersist, onClose, deferred }: {
+  direction: FieldDirection; fields: IOField[]; onPersist: (fields: IOField[]) => Promise<void>; onClose: () => void; deferred: boolean;
 }) {
   const [editing, setEditing] = useState<{ index: number; draft: IOField; creating: boolean }>();
   const [busyKey, setBusyKey] = useState<string>();
@@ -107,15 +75,15 @@ function FieldsDialog({ direction, fields, onPersist, onClose }: {
     const next = editing.creating ? [...fields, draft] : fields.map((field, index) => index === editing.index ? draft : field);
     void persist(next, draft.field_key);
   };
-  return <ConfigDialog title={editing ? `${editing.creating ? '添加' : '编辑'}${label}字段` : `${label}定义`} description={editing ? '填写名称、说明与字段配置，保存后立即生效。' : `每条${label}只显示名称和说明，点击记录查看配置。`} onClose={onClose} busy={Boolean(busyKey)} onApply={saveRecord} actions={null}>
+  return <ConfigDialog title={editing ? `${editing.creating ? '添加' : '编辑'}${label}字段` : `${label}定义`} compact description={deferred ? '字段暂存于当前草稿，填写节点名称并保存节点后生效。' : editing ? '填写名称、说明与字段配置，保存后立即生效。' : `每条${label}只显示名称和说明，点击记录查看配置。`} onClose={onClose} busy={Boolean(busyKey)} onApply={saveRecord} actions={null}>
     <div className="node-config-body node-fields-body">
       {editing ? <>
         <button type="button" className="node-field-back" disabled={Boolean(busyKey)} onClick={() => { setEditing(undefined); setError(''); }}><ArrowLeft size={14}/>返回{label}列表</button>
         <fieldset className="node-field-editor" disabled={Boolean(busyKey)}>
           <label>名称<input required autoFocus autoComplete="off" aria-label={`${label}名称`} value={editing.draft.display_name} onChange={event => update({ display_name: event.target.value })}/></label>
-          <label>说明<textarea aria-label={`${label}说明`} value={editing.draft.description} onChange={event => update({ description: event.target.value })}/></label>
-          <div className="node-field-settings"><label>字段标识<input required pattern="[A-Za-z][A-Za-z0-9_]{0,99}" title="以字母开头，只能包含字母、数字和下划线" aria-label={`${label}字段标识`} value={editing.draft.field_key} onChange={event => update({ field_key: event.target.value })}/></label>
-          <div className="node-config-field-type"><span>类型</span><div className="io-type-toggle" role="radiogroup" aria-label={`${label}类型`}><button type="button" role="radio" aria-checked={editing.draft.data_type === 'URL'} className={editing.draft.data_type === 'URL' ? 'active' : ''} onClick={() => update({ data_type: 'URL' })}>URL</button><button type="button" role="radio" aria-checked={editing.draft.data_type === 'FILE'} className={editing.draft.data_type === 'FILE' ? 'active' : ''} onClick={() => update({ data_type: 'FILE' })}>文件</button></div></div></div>
+          <label>字段标识<input required pattern="[A-Za-z][A-Za-z0-9_]{0,99}" title="以字母开头，只能包含字母、数字和下划线" aria-label={`${label}字段标识`} value={editing.draft.field_key} onChange={event => update({ field_key: event.target.value })}/></label>
+          <label className="node-field-description">说明<textarea aria-label={`${label}说明`} value={editing.draft.description} onChange={event => update({ description: event.target.value })}/></label>
+          <div className="node-config-field-type"><span>类型</span><div className="io-type-toggle" role="radiogroup" aria-label={`${label}类型`}><button type="button" role="radio" aria-checked={editing.draft.data_type === 'URL'} className={editing.draft.data_type === 'URL' ? 'active' : ''} onClick={() => update({ data_type: 'URL' })}>URL</button><button type="button" role="radio" aria-checked={editing.draft.data_type === 'FILE'} className={editing.draft.data_type === 'FILE' ? 'active' : ''} onClick={() => update({ data_type: 'FILE' })}>文件</button></div></div>
           <div className="node-field-save"><button type="submit" className="primary">{busyKey ? '正在保存…' : editing.creating ? '创建字段' : '保存修改'}</button></div>
         </fieldset>
       </> : <>
@@ -152,14 +120,16 @@ export function NodeEditor({ node, initialDirectoryId = null, embedded = false, 
   useEscapeClose(onClose);
   const [form, setForm] = useState<NodeAssetWrite>(() => node ? nodeWrite(node) : { ...emptyNode(), directory_id: initialDirectoryId });
   const persisted = useRef(node);
-  const formElement = useRef<HTMLFormElement>(null);
   const [activeEditor, setActiveEditor] = useState<EditorTarget>();
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
   const submitting = useRef(false);
-  const { data: directories = [] } = useQuery({ queryKey: ['directories'], queryFn: api.directories });
 
   const persistFields = async (direction: FieldDirection, fields: IOField[]) => {
+    if (!persisted.current && !form.name.trim()) {
+      setForm(current => ({ ...current, [direction]: fields }));
+      return;
+    }
     const base = persisted.current ? nodeWrite(persisted.current) : form;
     const saved = await onSave({ ...base, [direction]: fields });
     persisted.current = saved;
@@ -183,13 +153,13 @@ export function NodeEditor({ node, initialDirectoryId = null, embedded = false, 
     finally { submitting.current = false; setSaving(false); }
   };
 
-  const editor = <form ref={formElement} className={`modal editor asset-editor node-form${embedded ? ' node-detail-editor' : ''}`} onSubmit={submit}>
+  const editor = <form className={`modal editor asset-editor node-form${embedded ? ' node-detail-editor' : ''}`} onSubmit={submit}>
     <header className="asset-editor-header"><div className="node-detail-toolbar-label"><span className="eyebrow">NODE FORM</span><b>{node ? node.name : '新建节点'}</b></div><div className="node-detail-toolbar-actions"><button type="button" className="ghost" onClick={onClose}>取消</button><button type="submit" className="primary" disabled={saving}>{saving ? '保存中…' : '保存节点'}</button></div></header>
-    <div className="node-form-body"><section className="node-form-basics"><h3>基础信息</h3><div className="node-form-grid"><label>节点名称<input aria-label="节点名称" required value={form.name} onChange={event => setForm(current => ({ ...current, name: event.target.value }))}/></label><div className="node-form-directory"><span>所属目录</span><DirectoryPicker value={form.directory_id ?? null} directories={directories} onChange={value => setForm(current => ({ ...current, directory_id: value }))}/></div><label className="node-form-description">节点说明<textarea aria-label="节点说明" value={form.description} onChange={event => setForm(current => ({ ...current, description: event.target.value }))}/></label></div></section>
-    <section className="node-form-io"><h3>输入与输出</h3>{(['inputs', 'outputs'] as const).map(direction => <button type="button" className="node-fields-summary" key={direction} aria-label={`配置${direction === 'inputs' ? '输入' : '输出'}定义`} onClick={() => { if (!persisted.current && !formElement.current?.reportValidity()) return; setActiveEditor(direction); }}><b>{direction === 'inputs' ? '输入定义' : '输出定义'}</b><span>{form[direction].length ? form[direction].map(field => field.display_name || field.field_key).join('、') : '暂未配置'}</span><small>{form[direction].length} 个字段</small><ChevronRight size={16}/></button>)}</section>
+    <div className="node-form-body"><section className="node-form-basics"><h3>基础信息</h3><div className="node-form-grid"><label>节点名称<input aria-label="节点名称" required value={form.name} onChange={event => setForm(current => ({ ...current, name: event.target.value }))}/></label><label className="node-form-description">节点说明<textarea aria-label="节点说明" value={form.description} onChange={event => setForm(current => ({ ...current, description: event.target.value }))}/></label></div></section>
+    <section className="node-form-io"><h3>输入与输出</h3>{(['inputs', 'outputs'] as const).map(direction => <button type="button" className="node-fields-summary" key={direction} aria-label={`配置${direction === 'inputs' ? '输入' : '输出'}定义`} onClick={() => setActiveEditor(direction)}><b>{direction === 'inputs' ? '输入定义' : '输出定义'}</b><span>{form[direction].length ? form[direction].map(field => field.display_name || field.field_key).join('、') : '暂未配置'}</span><small>{form[direction].length} 个字段</small><ChevronRight size={16}/></button>)}</section>
     <section className="node-form-prompts"><h3>提示词与上下文</h3>{(['startup_prompt', 'context_prompt'] as const).map(key => <article className="node-prompt-field" key={key}><header><span>{promptLabels[key]}</span><button type="button" aria-label={`查看${promptLabels[key]}全文`} aria-haspopup="dialog" onClick={() => setActiveEditor(key)}>查看全文<ChevronRight size={13}/></button></header><p>{form.executor[key] || '暂无内容'}</p></article>)}</section>
     {error && <p className="error" role="alert">{error}</p>}</div>
   </form>;
 
-  return <>{embedded ? editor : <div className="modal-backdrop">{editor}</div>}{(activeEditor === 'inputs' || activeEditor === 'outputs') && <FieldsDialog key={activeEditor} direction={activeEditor} fields={form[activeEditor]} onClose={() => setActiveEditor(undefined)} onPersist={fields => persistFields(activeEditor, fields)}/>} {(activeEditor === 'startup_prompt' || activeEditor === 'context_prompt') && <PromptDialog key={activeEditor} title={promptLabels[activeEditor]} value={form.executor[activeEditor]} onClose={() => setActiveEditor(undefined)} onApply={value => { setForm(current => ({ ...current, executor: { ...current.executor, [activeEditor]: value } })); setActiveEditor(undefined); }}/>}</>;
+  return <>{embedded ? editor : <div className="modal-backdrop">{editor}</div>}{(activeEditor === 'inputs' || activeEditor === 'outputs') && <FieldsDialog key={activeEditor} direction={activeEditor} deferred={!persisted.current && !form.name.trim()} fields={form[activeEditor]} onClose={() => setActiveEditor(undefined)} onPersist={fields => persistFields(activeEditor, fields)}/>} {(activeEditor === 'startup_prompt' || activeEditor === 'context_prompt') && <PromptDialog key={activeEditor} title={promptLabels[activeEditor]} value={form.executor[activeEditor]} onClose={() => setActiveEditor(undefined)} onApply={value => { setForm(current => ({ ...current, executor: { ...current.executor, [activeEditor]: value } })); setActiveEditor(undefined); }}/>}</>;
 }
