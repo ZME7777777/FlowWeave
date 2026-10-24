@@ -106,9 +106,34 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 
 Web typecheck、受影响 ESLint 和 diff 检查通过；Chromium 定向覆盖 Context／能力
 十项、两个会话宿主返回六项、首屏与缓存／附件六项、流程库与记录三项。
-定时任务／设置导航检查及服务器正式发布、版本、路由和容量收尾结果将在发布后
-补记。当前 Alembic 唯一 head 为 0172_case_configuration；本次远程仅有 Web 变更，
+定时任务／设置导航两项通过，共 27 个不同用例。当前 Alembic 唯一 head 为
+0172_case_configuration；本次远程仅有 Web 变更，
 不发布平台、Provider 或 Runtime。当前与下一可执行代码切片均为 NONE。
+
+
+发布验收（2026-10-25）：合并／发布代码为
+`ab7363a94b886330566d2700d1efb79bbdcf51c7`，原本地 27896798 和远程 e44e900d
+均为其祖先。正式 Web 预检及 commit-bound 最小上下文 prepare 通过，源码归档
+SHA-256 为 `0a43509e4289ced2b17f307768e24c96661634e5a9cebe705f6dff1beff44cf2`。
+实际 linux/amd64 镜像为
+`sha256:86f74e713674e9dc75bad413e61f7cab40c0aef25edbb23297a66e27db02498b`，
+OCI revision 匹配发布代码。实际构建镜像导出的静态资源在部署前缀下，以受控
+API／WebSocket 重跑同一 27 项 Chromium 用例全部通过，不将重复运行累加计数；
+首次复制用例包因缺少 ESM 声明未能收集，补齐临时包声明后通过。
+
+保存旧日志和精确 rollback tag 后仅 recreate Web。生产实际加载的 58 个 JS／CSS
+文件 SHA-256 与验收资源一致。服务器实际 Chromium 验证前缀登录、Agent 深层
+路由与根登录；全新浏览器确认 auth/me 使用部署前缀，根 API 请求为零，两项
+未认证 API 边界均为 401。该浏览器回归不等于真实模型业务执行验收，未向业务
+会话发送、暂停或重放消息。平台 api／stream-api／worker 仍运行 38b7e356，已核对
+其平台源码与本次代码完全一致；未重建 Provider 或替换既有 Runtime generation。
+
+Web remote-release-finish 通过版本、健康与容量收尾，回收一份过期受管 Web
+上下文，保留每个 scope 最近三份成功上下文及引用／回滚版本，执行精确 rollback
+镜像保留流程。收尾后再核对 Web 版本与健康、服务器 Compose／env 摘要和其余
+37 个容器镜像／启动时间均符合预期。未清理共享 BuildKit、卷、Workspace 或
+数据库备份。当前与下一可执行切片均为 NONE；本验收提交只补充记录，部署
+源码身份仍为 ab7363a9，未推送本地提交。
 
 
 ### FR-690 远程流程草稿与统一运行记录同步发布 — DONE
