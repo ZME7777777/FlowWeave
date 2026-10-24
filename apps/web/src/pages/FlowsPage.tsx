@@ -225,8 +225,6 @@ export function FlowsPage() {
   const [collapsedAssetGroups, setCollapsedAssetGroups] = useState<Set<string>>(new Set());
   const [flowSearch, setFlowSearch] = useState('');
   const [linkMode, setLinkMode] = useState<'flow' | 'data'>('flow');
-  const [selectedFlowIds, setSelectedFlowIds] = useState<Set<string>>(new Set());
-  const [deletingFlows, setDeletingFlows] = useState(false);
   const [flowInstance, setFlowInstance] = useState<ReactFlowInstance<Node<FlowNodeData>, Edge>>();
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<FlowNodeData>>([]);
   const nodesRef = useRef(nodes);
@@ -388,40 +386,13 @@ export function FlowsPage() {
     const term = flowSearch.trim().toLowerCase();
     return flows.filter(flow => !term || `${flow.name} ${flow.description}`.toLowerCase().includes(term));
   }, [flows, flowSearch]);
-  const visibleFlowIds = filteredFlows.map(flow => flow.id);
-  const allVisibleFlowsSelected = visibleFlowIds.length > 0 && visibleFlowIds.every(id => selectedFlowIds.has(id));
-  const toggleFlow = (id: string) => setSelectedFlowIds(old => {
-    const next = new Set(old);
-    if (next.has(id)) next.delete(id); else next.add(id);
-    return next;
-  });
-  const toggleVisibleFlows = () => setSelectedFlowIds(old => {
-    const next = new Set(old);
-    if (allVisibleFlowsSelected) visibleFlowIds.forEach(id => next.delete(id));
-    else visibleFlowIds.forEach(id => next.add(id));
-    return next;
-  });
-  const startNewFlow = () => {
-    setSelected(undefined);
-    setIsNew(true);
-    setNodes([]);
-    setDirectionEdges([]);
-    setPortMappings([]);
-    setSelectedNode(undefined);
-    setName('新流程');
-    setDescription('');
-    setError('');
-    setNotice('');
-  };
   const removeFlows = async (ids: string[], label: string) => {
     if (!ids.length || !await dialog.confirm({ title: `永久删除${label}？`, message: '流程定义将从数据库永久删除且不可恢复；如仍有关联运行，系统会阻止删除并提示先清理运行记录。', confirmLabel: '永久删除', tone: 'danger' })) return;
-    setDeletingFlows(true);
     setError('');
     setNotice('');
     const results = await Promise.allSettled(ids.map(id => api.deleteFlow(id)));
     const failed = ids.filter((_, index) => results[index].status === 'rejected');
     const succeeded = ids.length - failed.length;
-    setSelectedFlowIds(new Set(failed));
     if (selected && ids.includes(selected.id) && !failed.includes(selected.id)) {
       setSelected(undefined);
       setIsNew(false);
@@ -436,7 +407,6 @@ export function FlowsPage() {
       qc.invalidateQueries({ queryKey: ['flows'] }),
       qc.invalidateQueries({ queryKey: ['runs'] }),
     ]);
-    setDeletingFlows(false);
   };
   const filteredAssets = useMemo(() => assets.filter(asset => `${asset.name ?? ''} ${asset.description ?? ''}`.toLowerCase().includes(assetSearch.toLowerCase())), [assets, assetSearch]);
   const groupedAssets = useMemo(() => {

@@ -8672,11 +8672,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       reportOperationError(message.scope, error);
     },
   });
-  const discardDraftAttachments = useCallback((scope: string) => {
-    if (!workspace) return;
-    discardedDraftScopes.current.add(scope);
-    void api.deleteDraftAttachments(workspace.id, scope).catch(() => undefined);
-  }, [api, workspace]);
   const removePendingAttachmentFromScope = useCallback((id: string, scope: string) => {
     const ids = pendingAttachmentIdsByScope.current.get(scope);
     if (!ids) return;

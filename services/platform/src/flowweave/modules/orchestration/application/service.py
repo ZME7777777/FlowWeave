@@ -4423,7 +4423,9 @@ def _require_startable_flow(db: Session, flow_id: str) -> None:
             "Flow has no start node. Add at least one node before starting it.",
             422,
         )
-    target_ids = set(db.scalars(select(FlowEdge.target_flow_node_id).where(FlowEdge.flow_id == flow_id)))
+    target_ids = set(
+        db.scalars(select(FlowEdge.target_flow_node_id).where(FlowEdge.flow_id == flow_id))
+    )
     if not any(node.id not in target_ids for node in nodes):
         raise DomainError(
             "FLOW_START_NODE_MISSING",

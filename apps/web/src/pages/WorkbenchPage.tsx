@@ -222,7 +222,7 @@ function selectedRecordNodeRun(record: FlowRun | undefined, selectedNodeRunId?: 
   return selectedById ?? (!selectedNodeRunId ? active : undefined);
 }
 
-function RunRail({ mode, listFilter, manualRecords, automaticRecords, automaticError, selected, selectedStepwiseId, canCopyManualRecord, canDeleteManualRecords, stepwiseSelectedIds, automaticSelectedIds, manualBusyId, selectedAutomaticId, automaticBusyId, stepwiseLaunch, onModeChange, onListFilterChange, onCreateRecord, onSelectManualRecord, onCreateManualRecord, onCopyManual, onExportManual, onDeleteManualRecord, onSelectAutomatic, onClearSelection, onCreateAutomatic, onDeleteAutomatic, onCopyAutomatic, onExportAutomatic, onStartAutomatic }: {
+function RunRail({ mode, listFilter, manualRecords, automaticRecords, automaticError, selected, selectedStepwiseId, canCopyManualRecord, canDeleteManualRecords, stepwiseSelectedIds, automaticSelectedIds, manualBusyId, selectedAutomaticId, automaticBusyId, stepwiseLaunch, onListFilterChange, onCreateRecord, onSelectManualRecord, onCreateManualRecord, onCopyManual, onExportManual, onDeleteManualRecord, onSelectAutomatic, onClearSelection, onDeleteAutomatic, onCopyAutomatic, onExportAutomatic, onStartAutomatic }: {
   mode: WorkbenchMode; listFilter: RecordListFilter; manualRecords: FlowRunStepwiseRecord[]; automaticRecords: FlowRunAutomaticRecordSummary[]; selected?: string; selectedStepwiseId?: string; canCopyManualRecord: boolean; canDeleteManualRecords: boolean;
   automaticError?: string; stepwiseSelectedIds: Set<string>; automaticSelectedIds: Set<string>;
   manualBusyId?: string;
@@ -2085,7 +2085,6 @@ export function WorkbenchPage() {
       : selectedAutomatic
         ? '当前显示该连续运行记录的持久执行状态；灰色节点尚未激活。'
       : '未选择连续运行记录，当前显示中性流程定义；请点击左侧“新增”。';
-  const hasPanel = Boolean((mode === 'AUTOMATIC' && selectedAutomaticId) || (mode === 'MANUAL' && selectedStepwiseId) || (selectedExecutionNodeRun && selectedExecutionAttempt) || (nodeRun && attempt) || selectedNode);
   const recordSummary = mode === 'AUTOMATIC'
     ? (selectedAutomatic?.name ?? automaticRecords.find(record => record.id === selectedAutomaticId)?.name
       ? { name: selectedAutomatic?.name ?? automaticRecords.find(record => record.id === selectedAutomaticId)?.name ?? '', label: '当前连续运行记录', state: selectedAutomatic?.state ?? automaticRecords.find(record => record.id === selectedAutomaticId)?.state }

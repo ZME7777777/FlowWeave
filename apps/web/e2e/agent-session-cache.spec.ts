@@ -2360,7 +2360,7 @@ test('Agent composer keeps an uploading attachment visible across conversation s
   await page.goto('/');
   await login(page);
   await page.goto('/agent');
-  await expect(page.getByRole('heading', { name: '新会话' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeVisible();
   const attachment = page.locator('.agent-composer .agent-attachments').getByText('正在上传.png', { exact: true });
   await page.getByLabel('上传附件').setInputFiles({ name: '正在上传.png', mimeType: 'image/png', buffer: Buffer.from([1, 2, 3, 4, 5, 6, 7, 8]) });
   await expect.poll(() => uploadPartRequested).toBe(true);
@@ -2375,7 +2375,7 @@ test('Agent composer keeps an uploading attachment visible across conversation s
   releaseUpload?.();
   await expect.poll(() => page.locator('.agent-pending-attachment').count()).toBe(0);
   await recoverDraft.click();
-  await expect(page.getByRole('heading', { name: '新会话' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeVisible();
   await expect(attachment).toBeVisible();
 });
 
