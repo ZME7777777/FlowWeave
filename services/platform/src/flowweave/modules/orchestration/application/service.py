@@ -3349,6 +3349,9 @@ def list_flow_run_schedule_templates(db: Session) -> list[dict[str, Any]]:
                 "name": run.name,
                 "flow_definition_id": run.flow_definition_id,
                 "flow_name": _active_snapshot(db, run).definition_json.get("name"),
+                "parent_flow_run_id": parent.id,
+                "parent_flow_run_name": parent.name,
+                "parent_flow_run_no": parent.run_no,
                 "state": run.state,
                 "run_no": run.run_no,
             }
@@ -3557,40 +3560,44 @@ def trigger_flow_run_schedule(db: Session, schedule_id: str) -> dict[str, Any]:
 
 
 def delete_flow_run_schedule(db: Session, schedule_id: str) -> None:
-    """Delete an empty schedule directory.
-
-    Existing execution records must follow the FlowRun deletion contract so
-    Runtime cleanup and the final-record rule remain atomic.
-    """
+    """Stop a schedule and remove its generated records through their cleanup contract."""
 
     schedule = db.scalar(
         select(FlowRunSchedule).where(FlowRunSchedule.id == schedule_id).with_for_update()
     )
     if schedule is None:
         raise not_found("flow_run_schedule", schedule_id)
-    records = db.scalar(select(func.count(FlowRun.id)).where(FlowRun.schedule_id == schedule.id))
-    if records:
-        raise DomainError(
-            "SCHEDULE_HAS_RUNS",
-            "Delete the schedule FlowRun records before deleting this schedule",
-            409,
-            {"flow_run_count": records},
+    schedule.status = "PAUSED"
+    schedule.next_run_at = None
+    schedule.row_version += 1
+    runs = list(
+        db.scalars(
+            select(FlowRun)
+            .where(FlowRun.schedule_id == schedule.id)
+            .order_by(FlowRun.started_at, FlowRun.id)
         )
+    )
+    for run in runs:
+        if run.parent_flow_run_id:
+            delete_nested_automatic_run_record(db, run.parent_flow_run_id, run.id)
+        else:
+            _delete_run_records(db, run.id, allow_schedule_record=True)
     occurrence_ids = select(FlowRunScheduleOccurrence.id).where(
         FlowRunScheduleOccurrence.schedule_id == schedule.id
     )
     db.execute(
         delete(BackgroundTask).where(
-            BackgroundTask.aggregate_type == "FLOW_RUN_SCHEDULE_OCCURRENCE",
+            BackgroundTask.task_type == "MATERIALIZE_FLOW_RUN_SCHEDULE",
             BackgroundTask.aggregate_id.in_(occurrence_ids),
         )
     )
-    db.execute(
-        delete(FlowRunScheduleOccurrence).where(
-            FlowRunScheduleOccurrence.schedule_id == schedule.id
-        )
+    _enqueue_record_delete(
+        db,
+        task_type="DELETE_FLOW_RUN_SCHEDULE",
+        aggregate_type="FLOW_RUN_SCHEDULE",
+        aggregate_id=schedule.id,
+        payload={},
     )
-    db.delete(schedule)
     finish(db)
 
 
@@ -11133,6 +11140,36 @@ def delete_nested_automatic_run_record(db: Session, parent_run_id: str, run_id: 
     finish(db)
 
 
+def process_delete_flow_run_schedule(db: Session, schedule_id: str, *, commit: bool = True) -> None:
+    schedule = db.scalar(
+        select(FlowRunSchedule).where(FlowRunSchedule.id == schedule_id).with_for_update()
+    )
+    if schedule is None:
+        _finish_transaction(db, commit)
+        return
+    remaining_runs = db.scalar(
+        select(func.count(FlowRun.id)).where(FlowRun.schedule_id == schedule.id)
+    )
+    if remaining_runs:
+        raise RuntimeError("schedule record cleanup is not confirmed")
+    occurrence_ids = select(FlowRunScheduleOccurrence.id).where(
+        FlowRunScheduleOccurrence.schedule_id == schedule.id
+    )
+    db.execute(
+        delete(BackgroundTask).where(
+            BackgroundTask.aggregate_type == "FLOW_RUN_SCHEDULE_OCCURRENCE",
+            BackgroundTask.aggregate_id.in_(occurrence_ids),
+        )
+    )
+    db.execute(
+        delete(FlowRunScheduleOccurrence).where(
+            FlowRunScheduleOccurrence.schedule_id == schedule.id
+        )
+    )
+    db.delete(schedule)
+    _finish_transaction(db, commit)
+
+
 def process_delete_automatic_run_record(
     db: Session, run_id: str, parent_flow_run_id: str, *, commit: bool = True
 ) -> None:
@@ -11159,11 +11196,11 @@ def process_delete_automatic_run_record(
         for attempt in attempts
     ):
         raise RuntimeError("record Runtime cancellation is not confirmed")
-    _delete_run_records(db, run.id)
+    _delete_run_records(db, run.id, allow_schedule_record=True)
     _finish_transaction(db, commit)
 
 
-def _delete_run_records(db: Session, run_id: str) -> None:
+def _delete_run_records(db: Session, run_id: str, *, allow_schedule_record: bool = False) -> None:
     """Permanently remove a run and all durable execution data it owns.
 
     The Runtime Provider owns physical cleanup. The application explicitly
@@ -11171,6 +11208,13 @@ def _delete_run_records(db: Session, run_id: str) -> None:
     """
 
     run = _run(db, run_id)
+    if run.schedule_id and not allow_schedule_record:
+        raise DomainError(
+            "SCHEDULE_RUN_DELETE_REQUIRES_SCHEDULE",
+            "Delete scheduled runs through their schedule so all records are removed together",
+            409,
+            {"schedule_id": run.schedule_id},
+        )
     _assert_run_not_schedule_template(db, run.id)
     child_run_ids = list(
         db.scalars(
