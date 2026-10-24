@@ -105,7 +105,21 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 1440×900、1440×700、1024×768、1280×620 下主表单与页面无滚动、绿色新增及固定
 提示词入口通过；单字段弹窗两列对齐且高度小于 460px，截图已核对。浏览器使用当前
 工作树 Vite 和受控 API，未改真实业务节点。Alembic 唯一 head 仍为 0172_case_configuration。
-当前与下一可执行切片均为 NONE；Web 发布验收待补记。
+当前与下一可执行切片均为 NONE。
+
+FR-685 Web 发布补记（2026-10-24）：正式预检、commit-bound prepare 与 finish 通过，
+发布代码 `bd842dfedc0f8379489d0f24eb2fbad0ec57b82c`，最小归档 SHA-256 为
+`3db1b1b03541b5e6553e4d2ed191e8fcba2ea20b63e7118b92572b0afc00dcf1`。
+实际 linux/amd64 镜像为
+`sha256:5d7e0b764cfc94cb306a82db4740abc0c405b458ec8e9be49f9be1520010dafd`，
+OCI revision 一致。先保留旧 Web 日志和精确回滚镜像，再只 recreate Web；平台 health／
+readiness 正常，其他 37 个容器镜像与启动时间不变，远端 Compose／env 摘要不变。
+实际镜像资源配受控 API 重跑同一 11 项节点回归全部通过，41 个实际加载 JS／CSS
+文件 SHA-256 与运行容器一致。服务器实际 Chromium 验证公网前缀登录、Agent 深层
+路由与根登录，公网 API 401 边界通过；全新浏览器通过声明 Web 入口的 SSH 转发验证
+前缀请求与 401，无页面异常；转发不记为本机公网直连。未操作真实业务节点或会话。
+容量收尾按正式工具保留各 scope 最近三份成功上下文及引用／回滚版本，未清理共享
+BuildKit、卷、Workspace 或数据库备份。收尾后再次核对版本、健康和其余容器不变。
 
 ### FR-683 节点无滚动表单与输入输出即时保存 — DONE
 
