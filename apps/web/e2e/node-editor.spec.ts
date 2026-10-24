@@ -24,7 +24,7 @@ const node = {
   updated_at: '2026-08-30T00:00:00Z',
 };
 
-test('clicking a node card opens the editor directly', async ({ page }) => {
+test('clicking a node record shows its editor in the detail panel', async ({ page }) => {
   await page.route('**/api/v1/node-directories', route => route.fulfill({
     status: 200, contentType: 'application/json', body: '[]',
   }));
@@ -33,11 +33,12 @@ test('clicking a node card opens the editor directly', async ({ page }) => {
   }));
 
   await page.goto('/');
-  await page.getByRole('button', { name: '节点资产', exact: true }).click();
+  await page.getByRole('button', { name: '节点中心', exact: true }).click();
   await page.getByTestId('node-card').filter({ hasText: node.name }).click();
 
-  await expect(page.getByRole('heading', { name: '编辑节点资产' })).toBeVisible();
-  await expect(page.getByRole('dialog', { name: `节点详情 ${node.name}` })).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: '编辑节点' })).toBeVisible();
+  await expect(page.locator('.node-center-detail .node-detail-editor')).toBeVisible();
+  await expect(page.locator('.modal-backdrop')).toHaveCount(0);
 });
 
 test('editor shows all configuration sections without saving', async ({ page }) => {
@@ -54,13 +55,13 @@ test('editor shows all configuration sections without saving', async ({ page }) 
   });
 
   await page.goto('/');
-  await page.getByRole('button', { name: '节点资产', exact: true }).click();
-  await page.getByTestId('node-card').filter({ hasText: node.name }).getByTitle('编辑').click();
+  await page.getByRole('button', { name: '节点中心', exact: true }).click();
+  await page.getByTestId('node-card').filter({ hasText: node.name }).click();
 
   await expect(page.getByLabel('节点名称')).toBeVisible();
   await expect(page.getByLabel('启动触发提示词')).toBeVisible();
   await expect(page.getByRole('heading', { name: '输入输出定义' })).toBeVisible();
-  await expect(page.getByRole('button', { name: '保存节点资产' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '保存节点' })).toBeVisible();
   expect(updateCount).toBe(0);
 });
 
@@ -73,8 +74,8 @@ test('node prompt stays editable in the single-page editor', async ({ page }) =>
   }));
 
   await page.goto('/');
-  await page.getByRole('button', { name: '节点资产', exact: true }).click();
-  await page.getByTestId('node-card').filter({ hasText: node.name }).getByTitle('编辑').click();
+  await page.getByRole('button', { name: '节点中心', exact: true }).click();
+  await page.getByTestId('node-card').filter({ hasText: node.name }).click();
 
   const contextPrompt = page.getByLabel('上下文提示词');
   await contextPrompt.fill('同时保留这段自由上下文');

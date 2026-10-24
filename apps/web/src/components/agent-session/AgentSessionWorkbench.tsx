@@ -5714,9 +5714,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (scheduleRoute || sidebarListMode !== 'workspaces' || !pendingSidebarRevealBindingId || !sidebar || pendingWorkspaceGroupAnchor.current) return;
     const row = sidebar.querySelector<HTMLElement>(`[data-conversation-binding-id="${CSS.escape(pendingSidebarRevealBindingId)}"]`);
     if (!row || row.closest('[hidden]')) return;
-    const bounds = row.getBoundingClientRect();
-    const viewport = sidebar.getBoundingClientRect();
-    if (bounds.top < viewport.top || bounds.bottom > viewport.bottom) row.scrollIntoView({ block: 'nearest' });
+    row.scrollIntoView({ block: 'center' });
     if (sidebarReveal.conversation && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
       row.animate([{ boxShadow: 'inset 0 0 0 2px #83aa92' }, { boxShadow: 'inset 0 0 0 2px transparent' }], { duration: 1600 });
     }

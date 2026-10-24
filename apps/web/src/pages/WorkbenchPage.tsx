@@ -1,6 +1,6 @@
-import { Background, Controls, Handle, Position, ReactFlow, useNodesState, type Edge, type Node, type NodeProps } from '@xyflow/react';
+import { Background, Controls, Handle, Position, ReactFlow, useNodesState, type Connection, type Edge, type Node, type NodeProps } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { AlertTriangle, ArrowLeft, Bot, Boxes, Check, ChevronDown, ChevronRight, Copy, Download, ExternalLink, Eye, FileText, FolderClosed, GripVertical, Layers3, Play, Plus, RefreshCw, Send, StopCircle, Trash2, Upload, X } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, Bot, Boxes, Check, ChevronDown, ChevronRight, Copy, Download, ExternalLink, Eye, FileText, FolderClosed, GripVertical, Play, Plus, RefreshCw, Send, StopCircle, Trash2, Upload, X } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { ApiError, api, artifactContentUrl, subscribeToRun } from '../api/client';
@@ -11,7 +11,7 @@ import { useProductDialog } from '../components/ProductDialogContext';
 import { RuntimeConfirmationPanel } from '../components/RuntimeConfirmationPanel';
 import { useEscapeClose } from '../components/useEscapeClose';
 import { useWorkbenchStore } from '../store/workbench';
-import type { AgentPreset, ArtifactVersion, AttemptState, AutomaticNodePlan, AutomaticRecordConfigDocument, CapabilityAsset, FlowRun, FlowRunAutomaticRecord, FlowRunAutomaticRecordSummary, FlowRunRevisionDraft, FlowRunStepwiseRecord, GateAgentPreset, GateEvaluation, GatePolicy, GateRemediationResult, IOField, NodeAsset, NodeAttempt, NodeRun, OpenHandsConversationEvent, OpenHandsConversationEventBatch, RecordConfigDocument, SnapshotDefinition, SnapshotFlowNode, StepwiseNodeDraft, TokenUsageSummary } from '../types';
+import type { AgentPreset, ArtifactVersion, AttemptState, AutomaticNodePlan, AutomaticRecordConfigDocument, CapabilityAsset, FlowRun, FlowRunAutomaticRecord, FlowRunAutomaticRecordSummary, FlowRunStepwiseRecord, GateAgentPreset, GateEvaluation, GatePolicy, GateRemediationResult, IOField, NodeAttempt, NodeRun, OpenHandsConversationEvent, OpenHandsConversationEventBatch, RecordConfigDocument, SnapshotDefinition, SnapshotFlowNode, StepwiseNodeDraft, StepwiseRuntimePortMapping, TokenUsageSummary } from '../types';
 import { withDeploymentBase } from '../deploymentPath';
 import { selectCapabilityVersion } from '../utils/capabilitySelection';
 
@@ -295,6 +295,7 @@ function isFlowInternalClick(target: EventTarget | null): boolean {
   ));
 }
 
+type RuntimePortDirection = 'INPUT' | 'OUTPUT';
 type SnapshotGraphNodeData = {
   label: string;
   status: string;
@@ -303,16 +304,22 @@ type SnapshotGraphNodeData = {
   visits: number;
   inputs: IOField[];
   outputs: IOField[];
+  onAddRuntimePort?: (direction: RuntimePortDirection) => void;
+  canConfigureRuntimePorts: boolean;
 };
 
 function SnapshotGraphNode({ data, selected }: NodeProps<Node<SnapshotGraphNodeData>>) {
   const execution = data.stateLabel || (data.visits ? `运行 ${data.visits} 次` : '');
+  const addPort = (event: ReactMouseEvent, direction: RuntimePortDirection) => {
+    event.stopPropagation();
+    data.onAddRuntimePort?.(direction);
+  };
   return <article className={`flow-asset-node run-graph-node ${data.status}${data.activeFlowTarget ? ' flow-active-target' : ''}${selected ? ' snapshot-selected' : ''}`} data-selected={selected || undefined} data-active-flow-target={data.activeFlowTarget || undefined}>
     <Handle id="flow-target" className="flow-direction-handle run-flow-handle" type="target" position={Position.Left} isConnectable={false}/>
     <div className="flow-node-head"><span className="flow-node-kind">AGENT</span>{data.activeFlowTarget && <span className="flow-active-target-marker">当前流转节点</span>}<span className="snapshot-selected-marker" aria-hidden={!selected}>已选中</span>{execution && <small className="run-node-execution">{execution}{data.stateLabel && data.visits ? ` · 运行 ${data.visits} 次` : ''}</small>}</div>
     <strong>{data.label}</strong>
     <small>{[...data.inputs, ...data.outputs].some(field => field.runtime_port) ? '包含本次运行临时端口' : '标准端口来自节点资产'}</small>
-    <div className="flow-port-groups"><section aria-label="输入端口"><span>INPUTS</span>{data.inputs.length ? data.inputs.map(field => <div className={`flow-port-row flow-port-input${field.runtime_port ? ' runtime-port' : ''}`} key={field.field_key}><Handle id={`input:${field.field_key}`} className="data-port-handle run-data-handle input" type="target" position={Position.Left} isConnectable={false}/><b>{field.display_name || field.field_key}</b><small>{field.data_type}{field.runtime_port ? ' · 本次运行' : ''}</small></div>) : <div className="flow-port-row flow-port-input"><em>无输入</em></div>}</section><section aria-label="输出端口"><span>OUTPUTS</span>{data.outputs.length ? data.outputs.map(field => <div className={`flow-port-row flow-port-output${field.runtime_port ? ' runtime-port' : ''}`} key={field.field_key}><b>{field.display_name || field.field_key}</b><small>{field.data_type}{field.output_scope && field.output_scope !== 'FLOW' ? ` · ${field.output_scope === 'CASE' ? 'Case' : '观察'}` : ''}{field.runtime_port ? ' · 本次运行' : ''}</small><Handle id={`output:${field.field_key}`} className="data-port-handle run-data-handle output" type="source" position={Position.Right} isConnectable={false}/></div>) : <div className="flow-port-row flow-port-output"><em>无输出</em></div>}</section></div>
+    <div className="flow-port-groups"><section aria-label="输入端口"><span>INPUTS</span>{data.inputs.length ? data.inputs.map(field => <div className={`flow-port-row flow-port-input${field.runtime_port ? ' runtime-port' : ''}`} key={field.field_key}><Handle id={`input:${field.field_key}`} className="data-port-handle run-data-handle input" type="target" position={Position.Left} isConnectable={Boolean(data.canConfigureRuntimePorts && field.runtime_port)}/><b>{field.display_name || field.field_key}</b><small>{field.data_type}{field.runtime_port ? ' · 本次运行' : ''}</small></div>) : <div className="flow-port-row flow-port-input"><em>无输入</em></div>}{data.onAddRuntimePort && <button type="button" className="run-port-add" onClick={event => addPort(event, 'INPUT')}><Plus size={12}/>新增输入</button>}</section><section aria-label="输出端口"><span>OUTPUTS</span>{data.outputs.length ? data.outputs.map(field => <div className={`flow-port-row flow-port-output${field.runtime_port ? ' runtime-port' : ''}`} key={field.field_key}><b>{field.display_name || field.field_key}</b><small>{field.data_type}{field.output_scope && field.output_scope !== 'FLOW' ? ` · ${field.output_scope === 'CASE' ? 'Case' : '观察'}` : ''}{field.runtime_port ? ' · 本次运行' : ''}</small><Handle id={`output:${field.field_key}`} className="data-port-handle run-data-handle output" type="source" position={Position.Right} isConnectable={Boolean(data.canConfigureRuntimePorts && field.runtime_port)}/></div>) : <div className="flow-port-row flow-port-output"><em>无输出</em></div>}{data.onAddRuntimePort && <button type="button" className="run-port-add" onClick={event => addPort(event, 'OUTPUT')}><Plus size={12}/>新增输出</button>}</section></div>
     <Handle id="flow-source" className="flow-direction-handle run-flow-handle" type="source" position={Position.Right} isConnectable={false}/>
   </article>;
 }
@@ -370,7 +377,7 @@ function readyAutomaticPlanKeys(record?: FlowRunAutomaticRecord): Set<string> {
   return new Set(Object.keys(record.node_plans).filter(key => !incomplete.has(key)));
 }
 
-function SnapshotGraph({ run, snapshotId, draftDefinition, selectedKey, activeNodeRunId, activeNodeKey, onSelect, onDoubleSelect, onClearSelection, reachableKeys, selectableKeys, configuredPlanKeys, executionRun, missingPlanKeys, showExecutionState = true, neutralHelp, neutralView = false }: { run: FlowRun; snapshotId?: string; draftDefinition?: SnapshotDefinition; selectedKey?: string; activeNodeRunId?: string; activeNodeKey?: string; onSelect: (key: string) => void; onDoubleSelect?: (key: string) => void; onClearSelection?: () => void; reachableKeys?: Iterable<string>; selectableKeys?: Iterable<string>; configuredPlanKeys?: Iterable<string>; executionRun?: FlowRun; missingPlanKeys?: Iterable<string>; showExecutionState?: boolean; neutralHelp?: string; neutralView?: boolean }) {
+function SnapshotGraph({ run, snapshotId, draftDefinition, selectedKey, activeNodeRunId, activeNodeKey, onSelect, onDoubleSelect, onClearSelection, onAddRuntimePort, onConnectRuntimePorts, reachableKeys, selectableKeys, configuredPlanKeys, executionRun, missingPlanKeys, showExecutionState = true, neutralHelp, neutralView = false }: { run: FlowRun; snapshotId?: string; draftDefinition?: SnapshotDefinition; selectedKey?: string; activeNodeRunId?: string; activeNodeKey?: string; onSelect: (key: string) => void; onDoubleSelect?: (key: string) => void; onClearSelection?: () => void; onAddRuntimePort?: (nodeKey: string, direction: RuntimePortDirection) => void; onConnectRuntimePorts?: (connection: Connection) => void; reachableKeys?: Iterable<string>; selectableKeys?: Iterable<string>; configuredPlanKeys?: Iterable<string>; executionRun?: FlowRun; missingPlanKeys?: Iterable<string>; showExecutionState?: boolean; neutralHelp?: string; neutralView?: boolean }) {
   const [linkMode, setLinkMode] = useState<'flow' | 'data'>('flow');
   // A NodeAttempt executes against its immutable snapshot. A runtime draft is
   // previewed separately and is never substituted for an Attempt's history.
@@ -406,7 +413,7 @@ function SnapshotGraph({ run, snapshotId, draftDefinition, selectedKey, activeNo
           : status === 'waiting' || status === 'failed' ? (latestAttempt ? ATTEMPT_STATE_LABELS[latestAttempt.state] : undefined)
             : status === 'accepted' ? '已完成' : status === 'cancelled' ? '已取消' : undefined
         : undefined;
-      return { id: item.instance_key, type: 'snapshotNode', selected: item.instance_key === selectedKey, selectable: selectable.has(item.instance_key), position: { x: item.position_x, y: item.position_y }, data: { label: item.alias || item.asset.name, status, stateLabel, activeFlowTarget, visits: showExecutionState ? visits.length : 0, inputs: runtimeNodeInputs(item), outputs: runtimeNodeOutputs(item) } };
+              return { id: item.instance_key, type: 'snapshotNode', selected: item.instance_key === selectedKey, selectable: selectable.has(item.instance_key), position: { x: item.position_x, y: item.position_y }, data: { label: item.alias || item.asset.name, status, stateLabel, activeFlowTarget, visits: showExecutionState ? visits.length : 0, inputs: runtimeNodeInputs(item), outputs: runtimeNodeOutputs(item), onAddRuntimePort: onAddRuntimePort && !visits.length ? (direction: RuntimePortDirection) => onAddRuntimePort(item.instance_key, direction) : undefined, canConfigureRuntimePorts: Boolean(onAddRuntimePort) && !visits.length } };
     });
     const directionEdges: Edge[] = (snapshot?.definition.edges ?? []).map((item, index) => ({ id: `flow-${item.id ?? index}`, source: item.source_instance_key, sourceHandle: 'flow-source', target: item.target_instance_key, targetHandle: 'flow-target', type: 'bezier', className: 'flow-direction-edge' }));
     const mappingEdges = withMappingLabelOffsets((snapshot?.definition.port_mappings ?? []).map((item, index) => ({
@@ -424,7 +431,7 @@ function SnapshotGraph({ run, snapshotId, draftDefinition, selectedKey, activeNo
       ...mappingEdges.map(edge => ({ ...edge, selectable: false, style: { opacity: linkMode === 'data' ? 1 : 0.16 } })),
     ];
     return [graphNodes, graphEdges] as const;
-  }, [activeNodeKey, activeNodeRunId, configuredPlans, executionRun?.node_runs, linkMode, missingPlans, neutralView, reachable, selectable, selectedKey, showExecutionState, snapshot]);
+  }, [activeNodeKey, activeNodeRunId, configuredPlans, executionRun?.node_runs, linkMode, missingPlans, neutralView, onAddRuntimePort, reachable, selectable, selectedKey, showExecutionState, snapshot]);
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<SnapshotGraphNodeData>>([]);
   useEffect(() => {
     setNodes(current => graphNodes.map(node => ({
@@ -436,8 +443,21 @@ function SnapshotGraph({ run, snapshotId, draftDefinition, selectedKey, activeNo
   }, [graphNodes, setNodes]);
   const graphKey = `${GRAPH_RENDER_REVISION}:${snapshot?.id ?? 'snapshot'}:${snapshot?.definition_hash ?? ''}`;
   const help = neutralView ? neutralHelp ?? '选择一条运行记录后查看执行状态。' : selectable.size < reachable.size ? '灰色节点需先完成上游配置；红色节点仍需补齐当前配置。' : missingPlans.size ? '红色节点尚未完成连续运行配置；点击节点可单独配置。' : showExecutionState ? '灰色节点尚未激活；实线表示流程走向，蓝线表示产物映射。可拖拽节点调整当前视图。' : `${neutralHelp ?? '选择一条运行记录后查看执行状态。'} 可拖拽节点调整当前视图。`;
-  return <section className="run-graph" data-graph-render-revision={GRAPH_RENDER_REVISION}><header><div><small>{help}</small></div><div className="flow-link-mode run-link-mode" aria-label="运行图连线模式"><button type="button" className={linkMode === 'flow' ? 'active' : ''} aria-pressed={linkMode === 'flow'} onClick={() => setLinkMode('flow')}>流程走向</button><button type="button" className={linkMode === 'data' ? 'active' : ''} aria-pressed={linkMode === 'data'} onClick={() => setLinkMode('data')}>产物流转</button></div><span>定义 Hash {snapshot?.definition_hash.slice(0, 8)}</span></header><div className="run-graph-canvas"><ReactFlow key={graphKey} nodeTypes={runSnapshotNodeTypes} edgeTypes={flowMappingEdgeTypes} nodes={nodes} edges={edges} onNodesChange={onNodesChange} nodesConnectable={false} fitView onPaneClick={onClearSelection} onNodeClick={(_, node) => { if (selectable.has(node.id)) onSelect(node.id); }} onNodeDoubleClick={(_, node) => { if (selectable.has(node.id)) onDoubleSelect?.(node.id); }}><Background/><Controls showInteractive={false}/></ReactFlow></div></section>;
+  return <section className="run-graph" data-graph-render-revision={GRAPH_RENDER_REVISION}><header><div><small>{help}</small></div><div className="flow-link-mode run-link-mode" aria-label="运行图连线模式"><button type="button" className={linkMode === 'flow' ? 'active' : ''} aria-pressed={linkMode === 'flow'} onClick={() => setLinkMode('flow')}>流程走向</button><button type="button" className={linkMode === 'data' ? 'active' : ''} aria-pressed={linkMode === 'data'} onClick={() => setLinkMode('data')}>产物流转</button></div><span>定义 Hash {snapshot?.definition_hash.slice(0, 8)}</span></header><div className="run-graph-canvas"><ReactFlow key={graphKey} nodeTypes={runSnapshotNodeTypes} edgeTypes={flowMappingEdgeTypes} nodes={nodes} edges={edges} onNodesChange={onNodesChange} nodesConnectable={Boolean(onConnectRuntimePorts)} fitView onConnect={connection => onConnectRuntimePorts?.(connection)} onPaneClick={onClearSelection} onNodeClick={(_, node) => { if (selectable.has(node.id)) onSelect(node.id); }} onNodeDoubleClick={(_, node) => { if (selectable.has(node.id)) onDoubleSelect?.(node.id); }}><Background/><Controls showInteractive={false}/></ReactFlow></div></section>;
 }
+
+function RuntimePortDialog({ node, direction, onClose, onSave }: { node: SnapshotFlowNode; direction: RuntimePortDirection; onClose: () => void; onSave: (field: IOField) => void }) {
+  const fields = direction === 'INPUT' ? runtimeNodeInputs(node) : runtimeNodeOutputs(node);
+  const prefix = direction === 'INPUT' ? 'runtime_input' : 'runtime_output';
+  const [fieldKey, setFieldKey] = useState(() => `${prefix}_${fields.filter(field => field.runtime_port).length + 1}`);
+  const [displayName, setDisplayName] = useState(direction === 'INPUT' ? '本次运行输入' : '本次运行输出');
+  const [dataType, setDataType] = useState<IOField['data_type']>('URL');
+  const [description, setDescription] = useState('');
+  const key = fieldKey.trim();
+  const invalidKey = !/^[A-Za-z][A-Za-z0-9_]{0,99}$/.test(key) || fields.some(field => field.field_key === key);
+  return <div className="modal-backdrop"><section className="modal runtime-port-dialog" role="dialog" aria-modal="true" aria-label="新增运行端口"><header><div><span className="eyebrow">RUN PORT</span><h2>新增本次运行{direction === 'INPUT' ? '输入' : '输出'}</h2><p>{direction === 'INPUT' ? '未连线的新增输入为可选项，可留空后启动节点。' : '输出可按需连接到其他未启动节点的本次运行输入。'}</p></div><button type="button" className="ghost" onClick={onClose}><X size={17}/></button></header><label>字段标识<input value={fieldKey} onChange={event => setFieldKey(event.target.value)}/></label><label>显示名称<input value={displayName} onChange={event => setDisplayName(event.target.value)}/></label><label>数据类型<select value={dataType} onChange={event => setDataType(event.target.value as IOField['data_type'])}><option value="URL">URL</option><option value="FILE">FILE</option></select></label><label>说明<textarea value={description} onChange={event => setDescription(event.target.value)}/></label>{invalidKey && <p className="error">字段标识需以字母开头，只含字母、数字和下划线，且不能与现有端口重复。</p>}<footer><button type="button" className="ghost" onClick={onClose}>取消</button><button type="button" className="primary" disabled={invalidKey} onClick={() => onSave({ field_key: key, display_name: displayName.trim() || key, data_type: dataType, description: description.trim(), required: false, runtime_port: true, ...(direction === 'OUTPUT' ? { output_scope: 'FLOW' } : {}) })}>保存端口</button></footer></section></div>;
+}
+
 type GateHistoryGroup = {
   key: string;
   title: string;
@@ -1367,111 +1387,6 @@ function RecordGitFields({ git }: { git: ReturnType<typeof useRecordGitIdentity>
   </div>;
 }
 
-function RuntimeRevisionPanel({ run, assets, selectedNodeKey, linkSourceKey, onDraft, onSetLinkSource, onApplied }: { run: FlowRun; assets: NodeAsset[]; selectedNodeKey?: string; linkSourceKey?: string; onDraft: (draft: FlowRunRevisionDraft) => void; onSetLinkSource: (key?: string) => void; onApplied: (run: FlowRun) => void }) {
-  const [draft, setDraft] = useState<FlowRunRevisionDraft | undefined>(() => run.revision_drafts.find(item => item.state === 'DRAFT'));
-  const [reason, setReason] = useState('');
-  const [error, setError] = useState('');
-  useEffect(() => setDraft(run.revision_drafts.find(item => item.state === 'DRAFT')), [run.revision_drafts]);
-  const mutation = useMutation({
-    mutationFn: async (operation: 'create' | 'add-node' | 'add-input' | 'add-observation' | 'link' | 'save' | 'apply') => {
-      if (operation === 'create') return { draft: await api.createRevisionDraft(run.id, reason) };
-      if (!draft) throw new Error('请先创建运行时修订草稿。');
-      if (operation === 'apply') return { applied: await api.applyRevisionDraft(run.id, draft.id, draft.row_version) };
-      const definition = structuredClone(draft.definition) as SnapshotDefinition;
-      if (operation === 'add-node') {
-        const asset = assets[0];
-        if (!asset) throw new Error('当前没有可用于临时节点的节点资产。');
-        const suffix = definition.nodes.filter(node => node.instance_key.startsWith('runtime_')).length + 1;
-        const instance_key = `runtime_${asset.id.slice(0, 8)}_${suffix}`;
-        definition.nodes.push({
-          instance_key,
-          node_asset_id: asset.id,
-          alias: `${asset.name}（本次运行）`,
-          position_x: 120 + definition.nodes.length * 40,
-          position_y: 120 + definition.nodes.length * 30,
-          config_override: {},
-          gates: [],
-          asset,
-          runtime_port_overrides: { inputs: [], outputs: [] },
-        });
-      }
-      if (operation === 'link') {
-        const source = definition.nodes.find(node => node.instance_key === linkSourceKey);
-        const target = definition.nodes.find(node => node.instance_key === selectedNodeKey);
-        if (!source || !target || source.instance_key === target.instance_key) {
-          throw new Error('请先选择不同的上游和下游节点。');
-        }
-        const position = definition.edges.length;
-        if (!definition.edges.some(edge => edge.source_instance_key === source.instance_key && edge.target_instance_key === target.instance_key)) {
-          definition.edges.push({ source_instance_key: source.instance_key, target_instance_key: target.instance_key, position });
-        }
-        const mappedTargets = new Set(definition.port_mappings
-          .filter(mapping => mapping.target_instance_key === target.instance_key)
-          .map(mapping => mapping.target_input_key));
-        const mapping = runtimeNodeOutputs(source).flatMap(output => runtimeNodeInputs(target)
-          .filter(input => !mappedTargets.has(input.field_key) && input.data_type === output.data_type)
-          .map(input => ({ source_output_key: output.field_key, target_input_key: input.field_key })),
-        )[0];
-        if (mapping) definition.port_mappings.push({
-          source_instance_key: source.instance_key,
-          target_instance_key: target.instance_key,
-          ...mapping,
-        });
-      }
-      if (operation === 'add-input') {
-        const selected = definition.nodes.find(node => node.instance_key === selectedNodeKey) ?? definition.nodes[0];
-        if (!selected) throw new Error('运行时修订没有可调整的节点。');
-        const inputs = selected.runtime_port_overrides?.inputs ?? [];
-        selected.runtime_port_overrides = {
-          ...(selected.runtime_port_overrides ?? {}),
-          inputs: [...inputs, {
-            field_key: `runtime_input_${inputs.length + 1}`,
-            display_name: `临时输入 ${inputs.length + 1}`,
-            data_type: 'URL',
-            description: '可手工绑定，未连接时不阻塞本次节点启动。',
-            runtime_port: true,
-            required: false,
-          }],
-        };
-      }
-      if (operation === 'add-observation') {
-        const selected = definition.nodes.find(node => node.instance_key === selectedNodeKey)
-          ?? definition.nodes.find(node => node.instance_key === definition.default_entry_key)
-          ?? definition.nodes[0];
-        if (!selected) throw new Error('运行时修订没有可调整的节点。');
-        const outputs = selected.runtime_port_overrides?.outputs ?? [];
-        const key = `case_observation_${outputs.length + 1}`;
-        selected.runtime_port_overrides = {
-          ...(selected.runtime_port_overrides ?? {}),
-          outputs: [...outputs, {
-            field_key: key,
-            display_name: `Case 观察 ${outputs.length + 1}`,
-            data_type: 'URL',
-            description: '仅供本次运行的协调与复盘读取。',
-            runtime_port: true,
-            output_scope: 'OBSERVATION',
-          }],
-        };
-      }
-      return { draft: await api.updateRevisionDraft(run.id, draft.id, { expected_row_version: draft.row_version, definition, reason }) };
-    },
-    onSuccess: (result, operation) => {
-      setError('');
-      if (operation === 'link') onSetLinkSource(undefined);
-      if ('applied' in result && result.applied) onApplied(result.applied);
-      else if (result.draft) {
-        setDraft(result.draft);
-        onDraft(result.draft);
-      }
-    },
-    onError: reason => setError(reason instanceof Error ? reason.message : '运行时修订操作失败。'),
-  });
-  const canEdit = run.state !== 'COMPLETED' && run.state !== 'CANCELLED' && run.run_mode !== 'AUTOMATIC';
-  const selectedLabel = draft?.definition.nodes.find(node => node.instance_key === selectedNodeKey)?.alias
-    ?? draft?.definition.nodes.find(node => node.instance_key === selectedNodeKey)?.asset.name;
-  return <section className="runtime-revision-panel" aria-label="本次运行调整"><header><div><span className="eyebrow">RUN REVISION</span><h3>本次运行调整</h3><p>变更只写入新的运行快照；已开始节点和流程模板不会改变。</p></div>{draft && <span className="runtime-revision-state">草稿 v{draft.row_version}</span>}</header>{!draft ? <><label>调整原因<textarea aria-label="运行时调整原因" value={reason} onChange={event => setReason(event.target.value)} placeholder="例如：补充安全审查、增加Case观察输出。"/></label><button className="secondary full" disabled={!canEdit || mutation.isPending} onClick={() => mutation.mutate('create')}><Layers3 size={14}/>{mutation.isPending ? '创建中…' : '创建运行时草稿'}</button></> : <><p className="field-hint">基于 Snapshot v{draft.base_snapshot_version} · {draft.definition.nodes.length} 个节点 · {draft.definition.port_mappings.length} 条数据连线</p><p className="field-hint">{selectedLabel ? `当前画布选择：${selectedLabel}` : '先在画布选择节点，可将临时端口添加到该节点。'}</p><p className="field-hint">{linkSourceKey ? `连线起点：${draft.definition.nodes.find(node => node.instance_key === linkSourceKey)?.alias ?? linkSourceKey}` : '点击“设为连线起点”，再选择另一节点即可添加本次运行的流程连线。'}</p><div className="runtime-revision-actions"><button className="secondary" disabled={!canEdit || mutation.isPending || !assets.length} onClick={() => mutation.mutate('add-node')}><Plus size={14}/>临时节点</button><button className="secondary" disabled={!canEdit || mutation.isPending || !selectedNodeKey} onClick={() => onSetLinkSource(selectedNodeKey)}><Boxes size={14}/>设为连线起点</button><button className="secondary" disabled={!canEdit || mutation.isPending || !linkSourceKey || !selectedNodeKey || linkSourceKey === selectedNodeKey} onClick={() => mutation.mutate('link')}><Plus size={14}/>连到当前节点</button><button className="secondary" disabled={!canEdit || mutation.isPending} onClick={() => mutation.mutate('add-input')}><Plus size={14}/>临时输入</button><button className="secondary" disabled={!canEdit || mutation.isPending} onClick={() => mutation.mutate('add-observation')}><Eye size={14}/>观察输出</button></div><label>调整原因<textarea aria-label="更新运行时调整原因" value={reason || draft.reason} onChange={event => setReason(event.target.value)} placeholder="说明本次运行调整的原因。"/></label><div className="runtime-revision-actions"><button className="secondary" disabled={!canEdit || mutation.isPending} onClick={() => mutation.mutate('save')}><RefreshCw size={14}/>保存草稿</button><button className="primary" disabled={!canEdit || mutation.isPending} onClick={() => mutation.mutate('apply')}><Check size={14}/>{mutation.isPending ? '处理中…' : '应用到本次运行'}</button></div></>}{error && <p className="error">{error}</p>}</section>;
-}
-
 function AutomaticRecordDialog({ run, onClose, onCreated, onImport }: { run: FlowRun; onClose: () => void; onCreated: (record: FlowRunAutomaticRecord) => void; onImport: () => void }) {
   const snapshot = run.snapshots.find(item => item.id === run.active_snapshot_id) ?? run.snapshots.at(-1);
   const nodes = snapshot?.definition.nodes ?? [];
@@ -1673,6 +1588,7 @@ export function WorkbenchPage() {
   const [selectedAutomaticId, setSelectedAutomaticId] = useState<string | undefined>(selectedAutomaticRecordId);
   const [selectedStepwiseId, setSelectedStepwiseId] = useState<string | undefined>(selectedStepwiseRecordId);
   const [stepwiseSelectedIds, setStepwiseSelectedIds] = useState<Set<string>>(new Set());
+  const [runtimePortDialog, setRuntimePortDialog] = useState<{ nodeKey: string; direction: RuntimePortDirection }>();
   const [automaticSelectedIds, setAutomaticSelectedIds] = useState<Set<string>>(new Set());
   // Delete APIs return after durable cancellation/cleanup has been queued. A
   // worker performs physical deletion later, so keep accepted deletes out of
@@ -1686,19 +1602,16 @@ export function WorkbenchPage() {
   const [stepwiseDialogOpen, setStepwiseDialogOpen] = useState(false);
   const [automaticImportDialogOpen, setAutomaticImportDialogOpen] = useState(false);
   const [stepwiseImportDialogOpen, setStepwiseImportDialogOpen] = useState(false);
-  const [runtimeRevisionDraft, setRuntimeRevisionDraft] = useState<FlowRunRevisionDraft>();
 
   const [automaticExportRecordIds, setAutomaticExportRecordIds] = useState<string[]>();
   const [stepwiseExportRecordIds, setStepwiseExportRecordIds] = useState<string[]>();
   const [copyTarget, setCopyTarget] = useState<CopyTarget>();
-  const [runtimeRevisionLinkSource, setRuntimeRevisionLinkSource] = useState<string>();
 
   const [automaticBusyId, setAutomaticBusyId] = useState<string>();
   const [manualBusyId, setManualBusyId] = useState<string>();
   const [railWidth, setRailWidth] = useState(250);
   const [sidePanelWidth, setSidePanelWidth] = useState(390);
   const query = useQuery({ queryKey: ['flow-run', selectedRunId], queryFn: () => api.flowRun(selectedRunId!), enabled: Boolean(selectedRunId), refetchInterval: 5000 });
-  const assets = useQuery({ queryKey: ['node-assets'], queryFn: () => api.nodes() });
 
   const flowId = query.data?.flow_definition_id;
   const flow = useQuery({ queryKey: ['flow', flowId], queryFn: () => api.flow(flowId!), enabled: Boolean(flowId), refetchInterval: 5000 });
@@ -1708,7 +1621,6 @@ export function WorkbenchPage() {
   const stepwiseDetail = useQuery({ queryKey: ['flow-run-stepwise-record', selectedRunId, selectedStepwiseId], queryFn: () => api.stepwiseRecord(selectedRunId!, selectedStepwiseId!), enabled: Boolean(selectedRunId && selectedStepwiseId && selectedStepwiseId !== selectedRunId), refetchInterval: 5000 });
   const stepwiseTemplateReadiness = useQuery({ queryKey: ['stepwise-template-readiness', selectedStepwiseId], queryFn: () => api.stepwiseTemplateReadiness(selectedStepwiseId!), enabled: Boolean(selectedStepwiseId && selectedStepwiseId !== selectedRunId), refetchInterval: selectedStepwiseId ? 5000 : false });
   // The stepwise rail endpoint already returns the complete frozen execution
-  useEffect(() => setRuntimeRevisionDraft(query.data?.revision_drafts.find(item => item.state === 'DRAFT')), [query.data?.id, query.data?.revision_drafts]);
 
   // record. Reuse it as the immediate detail projection while the independently
   // polled detail request is in flight, just as continuous execution resolves
@@ -1899,6 +1811,43 @@ export function WorkbenchPage() {
   const selectedStepwiseRecord = mode === 'MANUAL' && selectedStepwise && selectedStepwise.parent_flow_run_id
     ? selectedStepwise as FlowRunStepwiseRecord
     : undefined;
+  const saveRuntimePorts = async (
+    nodePorts: Record<string, { inputs: IOField[]; outputs: IOField[] }>,
+    mappings: StepwiseRuntimePortMapping[],
+  ) => {
+    if (!selectedStepwiseRecord || !snapshot) return;
+    const updated = await api.saveStepwiseRuntimePorts(selectedStepwiseRecord.id, {
+      expected_active_snapshot_version: snapshot.version,
+      node_ports: nodePorts,
+      port_mappings: mappings,
+    });
+    updateCurrentRun(() => updated);
+    void stepwiseDetail.refetch();
+  };
+  const saveRuntimePort = async (node: SnapshotFlowNode, direction: RuntimePortDirection, field: IOField) => {
+    const ports = {
+      inputs: node.runtime_port_overrides?.inputs ?? [],
+      outputs: node.runtime_port_overrides?.outputs ?? [],
+    };
+    const key = direction === 'INPUT' ? 'inputs' : 'outputs';
+    await saveRuntimePorts({ [node.instance_key]: { ...ports, [key]: [...ports[key], field] } }, []);
+  };
+  const connectRuntimePorts = (connection: Connection) => {
+    if (!snapshot || !connection.source || !connection.target || !connection.sourceHandle?.startsWith('output:') || !connection.targetHandle?.startsWith('input:')) return;
+    const source = snapshot.definition.nodes.find(node => node.instance_key === connection.source);
+    const target = snapshot.definition.nodes.find(node => node.instance_key === connection.target);
+    const sourceOutputKey = connection.sourceHandle.slice('output:'.length);
+    const targetInputKey = connection.targetHandle.slice('input:'.length);
+    const output = source && runtimeNodeOutputs(source).find(field => field.field_key === sourceOutputKey);
+    const input = target && runtimeNodeInputs(target).find(field => field.field_key === targetInputKey);
+    if (!source || !target || !output?.runtime_port || !input?.runtime_port || output.data_type !== input.data_type) return;
+    const existing = snapshot.definition.port_mappings.filter(mapping => mapping.runtime_port).map(mapping => ({ source_instance_key: mapping.source_instance_key, source_output_key: mapping.source_output_key, target_instance_key: mapping.target_instance_key, target_input_key: mapping.target_input_key }));
+    if (existing.some(mapping => mapping.target_instance_key === target.instance_key && mapping.target_input_key === targetInputKey)) return;
+    void saveRuntimePorts({
+      [source.instance_key]: { inputs: source.runtime_port_overrides?.inputs ?? [], outputs: source.runtime_port_overrides?.outputs ?? [] },
+      [target.instance_key]: { inputs: target.runtime_port_overrides?.inputs ?? [], outputs: target.runtime_port_overrides?.outputs ?? [] },
+    }, [...existing, { source_instance_key: source.instance_key, source_output_key: sourceOutputKey, target_instance_key: target.instance_key, target_input_key: targetInputKey }]);
+  };
   const savedStepwiseDraft = mode === 'MANUAL' && selectedStepwiseRecord && selectedNodeKey
     ? selectedStepwiseRecord.stepwise_node_drafts?.[selectedNodeKey]
     : undefined;
@@ -2079,14 +2028,9 @@ export function WorkbenchPage() {
   const graphRun = selectedExecutionRecord ?? run;
   const selectedExecutionSnapshotId = selectedExecutionAttempt?.snapshot_id ?? attempt?.snapshot_id;
   const graphSnapshotId = selectedExecutionSnapshotId;
-  const previewRuntimeRevision: FlowRunRevisionDraft | undefined = mode === 'MANUAL' && !selectedExecutionAttempt
-    ? runtimeRevisionDraft
-    : undefined;
-  const graphReachableKeys = previewRuntimeRevision
-      ? previewRuntimeRevision.definition.nodes.map(node => node.instance_key)
-      : mode === 'AUTOMATIC' && selectedAutomatic
-        ? selectedAutomatic.reachable_node_keys
-        : reachableNodeKeys(graphRun, undefined, graphSnapshotId);
+  const graphReachableKeys = mode === 'AUTOMATIC' && selectedAutomatic
+    ? selectedAutomatic.reachable_node_keys
+    : reachableNodeKeys(graphRun, undefined, graphSnapshotId);
   // A new manual run still begins from the graph. Once an execution is selected,
   // however, clicking a never-run node must not discard that selection.
   const graphSelectableKeys = mode === 'AUTOMATIC'
@@ -2129,6 +2073,19 @@ export function WorkbenchPage() {
   const recordGitIdentity = (mode === 'AUTOMATIC' ? selectedAutomatic : selectedStepwise)?.git_identity;
   const reactivatePredecessorForRerun = (key: string) => {
     if (mode !== 'MANUAL' || !selectedStepwiseRecord) return;
+    const existingRerun = selectedStepwiseRecord.stepwise_node_drafts?.[key];
+    if (existingRerun?.rerun_source_node_run_id) {
+      setManualBusyId(existingRerun.rerun_source_node_run_id);
+      void api.cancelStepwiseNodeRerunEdit(selectedStepwiseRecord.id, key).then(updated => {
+        qc.setQueryData(['flow-run-stepwise-record', parentRun.id, selectedStepwiseRecord.id], updated);
+        setSelectedNodeKey(key);
+        useWorkbenchStore.setState({ selectedNodeRunId: existingRerun.rerun_source_node_run_id ?? undefined, selectedAttemptId: undefined });
+      }).catch(reason => window.alert(reason instanceof Error ? reason.message : '无法取消节点重跑编辑。')).finally(() => {
+        setManualBusyId(undefined);
+        void stepwiseDetail.refetch();
+      });
+      return;
+    }
     const source = [...nodeRecords].reverse().find(item =>
       item.flow_node_snapshot_key === key && item.state === 'ACCEPTED',
     );
@@ -2570,8 +2527,8 @@ export function WorkbenchPage() {
           <button type="button" className="run-workbench-toolbar-clear" aria-label="取消当前选择" onClick={clearSelection}/>
           {(run.state === 'COMPLETED' || run.state === 'CANCELLED') && <TerminalRunDelete run={run} onDeleted={() => navigate(undefined, 'delete')}/>}
         </div>
-        {mode !== 'AUTOMATIC' && run.state !== 'COMPLETED' && run.state !== 'CANCELLED' && <><SnapshotSync run={run} currentVersion={flow.data?.row_version} onSynced={updated => navigate(updated, 'sync')}/><RuntimeRevisionPanel run={run} assets={assets.data ?? []} selectedNodeKey={selectedNodeKey} linkSourceKey={runtimeRevisionLinkSource} onDraft={setRuntimeRevisionDraft} onSetLinkSource={setRuntimeRevisionLinkSource} onApplied={updated => { setRuntimeRevisionDraft(undefined); navigate(updated, 'runtime-revision'); }}/></>}
-        <SnapshotGraph run={graphRun} snapshotId={graphSnapshotId} draftDefinition={previewRuntimeRevision?.definition} selectedKey={graphSelectedKey} activeNodeRunId={activeStepwiseDraftKey ? undefined : activeExecutionNodeRun?.id} activeNodeKey={activeStepwiseDraftKey} reachableKeys={graphReachableKeys} selectableKeys={graphSelectableKeys} configuredPlanKeys={configuredAutomaticPlanKeys} executionRun={selectedExecutionRecord ?? directExecutionRun} missingPlanKeys={missingAutomaticPlanKeys} showExecutionState={showExecutionState} neutralHelp={neutralGraphHelp} neutralView={automaticNeutralView} onClearSelection={clearSelection} onSelect={selectGraphNode} onDoubleSelect={reactivatePredecessorForRerun}/>
+        {mode !== 'AUTOMATIC' && run.state !== 'COMPLETED' && run.state !== 'CANCELLED' && <SnapshotSync run={run} currentVersion={flow.data?.row_version} onSynced={updated => navigate(updated, 'sync')}/>}
+                  <SnapshotGraph run={graphRun} snapshotId={graphSnapshotId} onAddRuntimePort={selectedStepwiseRecord ? (nodeKey, direction) => setRuntimePortDialog({ nodeKey, direction }) : undefined} onConnectRuntimePorts={selectedStepwiseRecord ? connectRuntimePorts : undefined} selectedKey={graphSelectedKey} activeNodeRunId={activeStepwiseDraftKey ? undefined : activeExecutionNodeRun?.id} activeNodeKey={activeStepwiseDraftKey} reachableKeys={graphReachableKeys} selectableKeys={graphSelectableKeys} configuredPlanKeys={configuredAutomaticPlanKeys} executionRun={selectedExecutionRecord ?? directExecutionRun} missingPlanKeys={missingAutomaticPlanKeys} showExecutionState={showExecutionState} neutralHelp={neutralGraphHelp} neutralView={automaticNeutralView} onClearSelection={clearSelection} onSelect={selectGraphNode} onDoubleSelect={reactivatePredecessorForRerun}/>
       </main>
       {hasPanel && <aside className="run-side-panel">
         <div className="run-side-resizer" role="separator" aria-label="调整右侧栏宽度" aria-orientation="vertical" onPointerDown={beginSideResize}/>
@@ -2617,5 +2574,10 @@ export function WorkbenchPage() {
     {stepwiseImportDialogOpen && <RecordConfigImportDialog mode="STEPWISE" onClose={() => setStepwiseImportDialogOpen(false)} onImport={importStepwiseRecords}/>} 
     {automaticExportRecordIds && <RecordConfigExportDialog mode="AUTOMATIC" count={automaticExportRecordIds.length} onClose={() => setAutomaticExportRecordIds(undefined)} onExport={target => exportAutomaticRecords(automaticExportRecordIds, target)}/>}
     {stepwiseExportRecordIds && <RecordConfigExportDialog mode="STEPWISE" count={stepwiseExportRecordIds.length} onClose={() => setStepwiseExportRecordIds(undefined)} onExport={target => exportStepwiseRecords(stepwiseExportRecordIds, target)}/>}
+    {runtimePortDialog && snapshot && selectedStepwiseRecord && (() => {
+      const node = snapshot.definition.nodes.find(item => item.instance_key === runtimePortDialog.nodeKey);
+      return node ? <RuntimePortDialog node={node} direction={runtimePortDialog.direction} onClose={() => setRuntimePortDialog(undefined)} onSave={field => { void saveRuntimePort(node, runtimePortDialog.direction, field).then(() => setRuntimePortDialog(undefined)); }}/>: null;
+    })()}
+
   </>;
 }

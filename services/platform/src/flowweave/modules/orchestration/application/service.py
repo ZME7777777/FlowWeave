@@ -99,7 +99,6 @@ from flowweave.shared.models import (
     CandidateOutputSet,
     EnvironmentVersion,
     FlowRun,
-    FlowRunRevisionDraft,
     FlowRunRuntime,
     FlowRunSchedule,
     FlowRunScheduleOccurrence,
@@ -128,9 +127,6 @@ from flowweave.shared.schemas import (
     AutomaticRunDraftWrite,
     AutomaticRunLegacyPlanRecoveryWrite,
     AutomaticRunStartWrite,
-    FlowRunRevisionDraftApplyWrite,
-    FlowRunRevisionDraftCreateWrite,
-    FlowRunRevisionDraftWrite,
     FlowRunScheduleStateWrite,
     FlowRunScheduleWrite,
     GateRemediationWrite,
@@ -152,6 +148,7 @@ from flowweave.shared.schemas import (
     StepwiseRecordConfigImportWrite,
     StepwiseRunRecordCopyWrite,
     StepwiseRunRecordWrite,
+    StepwiseRuntimePortsWrite,
     SyncSnapshotWrite,
 )
 from flowweave.shared.settings import get_settings
@@ -4791,7 +4788,9 @@ def _stepwise_draft_projection(draft: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _stepwise_draft_ready(node: dict[str, Any], draft: dict[str, Any]) -> bool:
+def _stepwise_draft_ready(
+    snapshot: RunSnapshot, node: dict[str, Any], draft: dict[str, Any]
+) -> bool:
     if str(draft.get("startup_mode") or "PROMPT") != "PROMPT":
         return False
     preset = draft.get("agent_preset")
@@ -4803,7 +4802,10 @@ def _stepwise_draft_ready(node: dict[str, Any], draft: dict[str, Any]) -> bool:
     ):
         return False
     bindings = _stepwise_draft_bindings(draft)
-    return all(not field.required or field.key in bindings for field in _input_fields(node))
+    return all(
+        not field.required or field.key in bindings
+        for field in _effective_input_fields(snapshot, node)
+    )
 
 
 def _stepwise_node_draft(record: FlowRun, node_key: str) -> dict[str, Any] | None:
@@ -5105,6 +5107,17 @@ def save_stepwise_node_draft(
         )
         artifact_ids[field_key] = artifact.id
     _validate_input_bindings(db, run, node, artifact_ids)
+    required_inputs = {
+        field.key for field in _effective_input_fields(snapshot, node) if field.required
+    }
+    missing_inputs = sorted(required_inputs - set(artifact_ids))
+    if missing_inputs:
+        raise DomainError(
+            "STEPWISE_DRAFT_INPUTS_INCOMPLETE",
+            "required node inputs must be configured before saving the stepwise draft",
+            422,
+            {"fields": missing_inputs},
+        )
     executor = cast(dict[str, Any], node.get("asset", {}).get("executor") or {})
     effective_context_prompt = (
         str(preset["node_context_prompt"])
@@ -5147,6 +5160,143 @@ def save_stepwise_node_draft(
     )
     finish(db)
     return _stepwise_draft_projection(drafts[instance_key])
+
+
+def save_stepwise_runtime_ports(
+    db: Session, run_id: str, payload: StepwiseRuntimePortsWrite
+) -> dict[str, Any]:
+    """Freeze run-level ports for unstarted nodes in one stepwise record."""
+
+    run = _locked_run(db, run_id)
+    if run.run_mode != "MANUAL" or run.parent_flow_run_id is None:
+        raise illegal("only a stepwise record can change runtime ports", state=run.state)
+    if run.state in {FlowRunState.COMPLETED, FlowRunState.CANCELLED}:
+        raise illegal("terminal stepwise record cannot change runtime ports", state=run.state)
+    active = _active_snapshot(db, run)
+    if active.version != payload.expected_active_snapshot_version:
+        raise conflict(
+            "stepwise runtime ports were modified",
+            expected=payload.expected_active_snapshot_version,
+            actual=active.version,
+        )
+    definition = copy.deepcopy(active.definition_json)
+    nodes = {
+        str(node.get("instance_key") or ""): node
+        for node in definition.get("nodes", [])
+        if isinstance(node, dict) and str(node.get("instance_key") or "")
+    }
+    unknown_nodes = sorted(set(payload.node_ports) - set(nodes))
+    if unknown_nodes:
+        raise DomainError(
+            "RUN_PORTS_INVALID",
+            "runtime ports reference an unknown node",
+            422,
+            {"nodes": unknown_nodes},
+        )
+    started_nodes = {
+        str(key)
+        for key in db.scalars(
+            select(NodeRun.flow_node_snapshot_key).where(NodeRun.flow_run_id == run.id)
+        )
+    }
+    changed_started = sorted(set(payload.node_ports) & started_nodes)
+    if changed_started:
+        raise DomainError(
+            "RUN_PORTS_STARTED_NODE_IMMUTABLE",
+            "runtime ports cannot change nodes that already have execution records",
+            409,
+            {"node_keys": changed_started},
+        )
+    for node_key, ports in payload.node_ports.items():
+        inputs = [field.model_dump() for field in ports.get("inputs", [])]
+        outputs = [field.model_dump() for field in ports.get("outputs", [])]
+        for field in inputs:
+            field.update(required=False, runtime_port=True)
+            field.pop("template_url", None)
+        for field in outputs:
+            field["runtime_port"] = True
+            field.pop("template_url", None)
+        nodes[node_key]["runtime_port_overrides"] = {"inputs": inputs, "outputs": outputs}
+
+    runtime_mappings: list[dict[str, Any]] = []
+    if payload.port_mappings:
+        configured_nodes = set(payload.node_ports)
+        runtime_mappings = [
+            {**item.model_dump(), "runtime_port": True} for item in payload.port_mappings
+        ]
+        mapping_nodes = {item["source_instance_key"] for item in runtime_mappings} | {
+            item["target_instance_key"] for item in runtime_mappings
+        }
+        unknown_mapping_nodes = sorted(mapping_nodes - set(nodes))
+        if unknown_mapping_nodes:
+            raise DomainError(
+                "RUN_PORTS_INVALID",
+                "runtime mappings reference an unknown node",
+                422,
+                {"nodes": unknown_mapping_nodes},
+            )
+        changed_mapping_nodes = sorted(mapping_nodes & started_nodes)
+        if changed_mapping_nodes:
+            raise DomainError(
+                "RUN_PORTS_STARTED_NODE_IMMUTABLE",
+                "runtime mappings cannot change nodes that already have execution records",
+                409,
+                {"node_keys": changed_mapping_nodes},
+            )
+        definition["port_mappings"] = [
+            item
+            for item in definition.get("port_mappings", [])
+            if isinstance(item, dict)
+            and (
+                not item.get("runtime_port")
+                or (
+                    str(item.get("source_instance_key") or "") not in configured_nodes
+                    and str(item.get("target_instance_key") or "") not in configured_nodes
+                )
+            )
+        ] + runtime_mappings
+    _validate_runtime_definition_ports(definition)
+    environment = lock_referenceable_version(db, run.environment_version_id or "")
+    if environment is None:
+        raise DomainError(
+            "RUN_ENVIRONMENT_VERSION_INVALID",
+            "The FlowRun Environment Version is unavailable",
+            409,
+            {"environment_version_id": run.environment_version_id},
+        )
+    identity = runtime_server_identity(
+        environment.manifest_json,
+        environment_version_id=environment.id,
+        runtime_protocol_profile=environment.runtime_protocol_profile,
+    )
+    manifest = _compile_runtime_manifest(definition, server_identity=identity)
+    snapshot = RunSnapshot(
+        flow_run_id=run.id,
+        version=active.version + 1,
+        schema_version=active.schema_version,
+        definition_json=definition,
+        definition_hash=_hash(definition),
+        runtime_manifest_json=manifest,
+        runtime_manifest_hash=_runtime_manifest_hash(manifest),
+        environment_version_id=run.environment_version_id,
+    )
+    db.add(snapshot)
+    db.flush()
+    hold_snapshot_memory_references(db, snapshot_id=snapshot.id, runtime_manifest=manifest)
+    run.active_snapshot_id = snapshot.id
+    run.row_version += 1
+    _event(
+        db,
+        run.id,
+        "STEPWISE_RUNTIME_PORTS_SAVED",
+        {
+            "snapshot_version": snapshot.version,
+            "node_keys": sorted(payload.node_ports),
+            "mapping_count": len(runtime_mappings),
+        },
+    )
+    finish(db)
+    return run_detail(db, run.id)
 
 
 def reactivate_stepwise_node_for_rerun(
@@ -5227,6 +5377,36 @@ def reactivate_stepwise_node_for_rerun(
     return _stepwise_draft_projection(draft)
 
 
+def cancel_stepwise_node_rerun_edit(db: Session, run_id: str, instance_key: str) -> dict[str, Any]:
+    """Discard an unstarted rerun edit without altering its accepted history."""
+
+    run = _locked_run(db, run_id)
+    if run.run_mode != "MANUAL" or run.parent_flow_run_id is None:
+        raise illegal("only a stepwise record can cancel a rerun edit", state=run.state)
+    drafts = _stepwise_node_drafts(run)
+    draft = drafts.get(instance_key)
+    if draft is None or not draft.get("rerun_source_node_run_id"):
+        raise DomainError("STEPWISE_RERUN_EDIT_MISSING", "node has no active rerun edit", 409)
+    source = _node_run(db, str(draft["rerun_source_node_run_id"]))
+    if source.flow_run_id != run.id or source.flow_node_snapshot_key != instance_key:
+        raise DomainError(
+            "STEPWISE_RERUN_EDIT_INVALID", "rerun edit no longer matches its source node", 409
+        )
+    drafts.pop(instance_key)
+    _save_stepwise_node_drafts(run, drafts)
+    run.row_version += 1
+    _event(
+        db,
+        run.id,
+        "STEPWISE_NODE_RERUN_EDIT_CANCELLED",
+        {"flow_node_key": instance_key, "source_node_run_id": source.id},
+        source.id,
+        source.accepted_attempt_id,
+    )
+    finish(db)
+    return run_detail(db, run.id)
+
+
 def start_stepwise_node_draft(
     db: Session,
     run_id: str,
@@ -5255,7 +5435,7 @@ def start_stepwise_node_draft(
             expected=payload.expected_row_version,
             actual=draft_version,
         )
-    if not _stepwise_draft_ready(node, draft):
+    if not _stepwise_draft_ready(snapshot, node, draft):
         raise DomainError(
             "STEPWISE_DRAFT_NOT_READY",
             "stepwise node configuration is incomplete",
@@ -10722,238 +10902,6 @@ def retry_gate_with_provider(
     return retry_gates(db, attempt_id, payload)
 
 
-def _revision_draft_dict(item: FlowRunRevisionDraft) -> dict[str, Any]:
-    return {
-        "id": item.id,
-        "flow_run_id": item.flow_run_id,
-        "base_snapshot_id": item.base_snapshot_id,
-        "base_snapshot_version": item.base_snapshot_version,
-        "definition": item.definition_json,
-        "definition_hash": item.definition_hash,
-        "row_version": item.row_version,
-        "state": item.state,
-        "applied_snapshot_id": item.applied_snapshot_id,
-        "reason": item.reason,
-        "created_at": item.created_at.isoformat(),
-        "updated_at": item.updated_at.isoformat(),
-    }
-
-
-def _revision_draft(db: Session, run: FlowRun, draft_id: str) -> FlowRunRevisionDraft:
-    item = db.get(FlowRunRevisionDraft, draft_id)
-    if item is None or item.flow_run_id != run.id:
-        raise not_found("flow_run_revision_draft", draft_id)
-    return item
-
-
-def _assert_runtime_revision_mutable(run: FlowRun) -> None:
-    if run.run_mode == "AUTOMATIC":
-        raise illegal("automatic run topology is fixed after its plan starts", state=run.state)
-    if run.state in {FlowRunState.COMPLETED, FlowRunState.CANCELLED}:
-        raise illegal("terminal FlowRun cannot change runtime topology", state=run.state)
-
-
-def get_flow_run_revision_draft(db: Session, run_id: str, draft_id: str) -> dict[str, Any]:
-    return _revision_draft_dict(_revision_draft(db, _run(db, run_id), draft_id))
-
-
-def create_flow_run_revision_draft(
-    db: Session, run_id: str, payload: FlowRunRevisionDraftCreateWrite
-) -> dict[str, Any]:
-    run = _locked_run(db, run_id)
-    _assert_runtime_revision_mutable(run)
-    active = _active_snapshot(db, run)
-    existing = db.scalar(
-        select(FlowRunRevisionDraft).where(
-            FlowRunRevisionDraft.flow_run_id == run.id,
-            FlowRunRevisionDraft.base_snapshot_id == active.id,
-            FlowRunRevisionDraft.state == "DRAFT",
-        )
-    )
-    if existing is not None:
-        return _revision_draft_dict(existing)
-    item = FlowRunRevisionDraft(
-        flow_run_id=run.id,
-        base_snapshot_id=active.id,
-        base_snapshot_version=active.version,
-        definition_json=copy.deepcopy(active.definition_json),
-        definition_hash=active.definition_hash,
-        reason=payload.reason.strip(),
-    )
-    db.add(item)
-    db.flush()
-    _event(
-        db,
-        run.id,
-        "FLOW_RUN_REVISION_DRAFT_CREATED",
-        {"draft_id": item.id, "base_snapshot_version": active.version},
-    )
-    finish(db)
-    return _revision_draft_dict(item)
-
-
-def update_flow_run_revision_draft(
-    db: Session,
-    run_id: str,
-    draft_id: str,
-    payload: FlowRunRevisionDraftWrite,
-) -> dict[str, Any]:
-    run = _locked_run(db, run_id)
-    _assert_runtime_revision_mutable(run)
-    item = _revision_draft(db, run, draft_id)
-    if item.state != "DRAFT":
-        raise illegal("only draft revisions can be updated", state=item.state)
-    if item.row_version != payload.expected_row_version:
-        raise conflict(
-            "flow run revision draft was modified",
-            expected=payload.expected_row_version,
-            actual=item.row_version,
-        )
-    if not isinstance(payload.definition, dict):
-        raise DomainError("RUN_REVISION_INVALID", "runtime definition must be an object", 422)
-    base = _snapshot(db, item.base_snapshot_id)
-    base_environment = base.definition_json.get("environment_version_id")
-    definition = copy.deepcopy(payload.definition)
-    if definition.get("environment_version_id") != base_environment:
-        raise DomainError(
-            "RUN_REVISION_INVALID",
-            "runtime revision cannot change the FlowRun Environment Version",
-            422,
-        )
-    nodes = definition.get("nodes")
-    edges = definition.get("edges")
-    mappings = definition.get("port_mappings")
-    if not isinstance(nodes, list):
-        raise DomainError("RUN_REVISION_INVALID", "runtime definition nodes are invalid", 422)
-    if not isinstance(edges, list) or not isinstance(mappings, list):
-        raise DomainError("RUN_REVISION_INVALID", "runtime definition graph is invalid", 422)
-    keys = [str(node.get("instance_key") or "") for node in nodes if isinstance(node, dict)]
-    if len(keys) != len(nodes) or not all(keys) or len(keys) != len(set(keys)):
-        raise DomainError("RUN_REVISION_INVALID", "runtime node keys must be unique", 422)
-    known = set(keys)
-    for edge in edges:
-        if not isinstance(edge, dict):
-            raise DomainError("RUN_REVISION_INVALID", "runtime edge is invalid", 422)
-        source = str(edge.get("source_instance_key") or "")
-        target = str(edge.get("target_instance_key") or "")
-        if source not in known or target not in known or source == target:
-            raise DomainError("RUN_REVISION_INVALID", "runtime edge endpoint is invalid", 422)
-    for mapping in mappings:
-        if not isinstance(mapping, dict):
-            raise DomainError("RUN_REVISION_INVALID", "runtime port mapping is invalid", 422)
-        source = str(mapping.get("source_instance_key") or "")
-        target = str(mapping.get("target_instance_key") or "")
-        if source not in known or target not in known or source == target:
-            raise DomainError(
-                "RUN_REVISION_INVALID", "runtime port mapping endpoint is invalid", 422
-            )
-    _validate_runtime_definition_ports(definition)
-    _validate_runtime_direction_graph(definition)
-    item.definition_json = definition
-    item.definition_hash = _hash(definition)
-    item.reason = payload.reason.strip()
-    item.row_version += 1
-    _event(
-        db,
-        run.id,
-        "FLOW_RUN_REVISION_DRAFT_UPDATED",
-        {"draft_id": item.id, "row_version": item.row_version},
-    )
-    finish(db)
-    return _revision_draft_dict(item)
-
-
-def apply_flow_run_revision_draft(
-    db: Session,
-    run_id: str,
-    draft_id: str,
-    payload: FlowRunRevisionDraftApplyWrite,
-    idempotency_key: str,
-) -> dict[str, Any]:
-    run = _locked_run(db, run_id)
-    _assert_runtime_revision_mutable(run)
-    item = _revision_draft(db, run, draft_id)
-    if item.state != "DRAFT":
-        raise illegal("only draft revisions can be applied", state=item.state)
-    if item.row_version != payload.expected_row_version:
-        raise conflict(
-            "flow run revision draft was modified",
-            expected=payload.expected_row_version,
-            actual=item.row_version,
-        )
-    active = _active_snapshot(db, run)
-    if active.id != item.base_snapshot_id:
-        raise conflict(
-            "runtime revision draft is based on an older snapshot",
-            expected=item.base_snapshot_id,
-            actual=active.id,
-        )
-    started_keys = set(
-        db.scalars(select(NodeRun.flow_node_snapshot_key).where(NodeRun.flow_run_id == run.id))
-    )
-    before = {str(node.get("instance_key") or ""): node for node in active.definition_json["nodes"]}
-    after = {str(node.get("instance_key") or ""): node for node in item.definition_json["nodes"]}
-    changed_started = sorted(
-        key
-        for key in started_keys
-        if key not in after or _hash(before.get(key)) != _hash(after.get(key))
-    )
-    if changed_started:
-        raise DomainError(
-            "RUN_REVISION_STARTED_NODE_IMMUTABLE",
-            "runtime revision cannot change nodes that already have execution records",
-            409,
-            {"node_keys": changed_started},
-        )
-    environment = lock_referenceable_version(db, run.environment_version_id or "")
-    if environment is None:
-        raise DomainError(
-            "RUN_ENVIRONMENT_VERSION_INVALID",
-            "The FlowRun Environment Version is unavailable",
-            409,
-            {"environment_version_id": run.environment_version_id},
-        )
-    identity = runtime_server_identity(
-        environment.manifest_json,
-        environment_version_id=environment.id,
-        runtime_protocol_profile=environment.runtime_protocol_profile,
-    )
-    action = _action(db, run.id, "APPLY_FLOW_RUN_REVISION", idempotency_key)
-    manifest = _compile_runtime_manifest(item.definition_json, server_identity=identity)
-    snapshot = RunSnapshot(
-        flow_run_id=run.id,
-        version=active.version + 1,
-        schema_version=3,
-        definition_json=copy.deepcopy(item.definition_json),
-        definition_hash=item.definition_hash,
-        runtime_manifest_json=manifest,
-        runtime_manifest_hash=_runtime_manifest_hash(manifest),
-        environment_version_id=run.environment_version_id,
-        created_by_action_id=action.id,
-    )
-    db.add(snapshot)
-    db.flush()
-    hold_snapshot_memory_references(db, snapshot_id=snapshot.id, runtime_manifest=manifest)
-    run.active_snapshot_id = snapshot.id
-    run.row_version += 1
-    item.state = "APPLIED"
-    item.applied_snapshot_id = snapshot.id
-    item.row_version += 1
-    _event(
-        db,
-        run.id,
-        "FLOW_RUN_REVISION_APPLIED",
-        {
-            "draft_id": item.id,
-            "from_snapshot_version": active.version,
-            "snapshot_version": snapshot.version,
-            "reason": item.reason,
-        },
-    )
-    finish(db)
-    return run_detail(db, run.id)
-
-
 def sync_snapshot(
     db: Session, run_id: str, payload: SyncSnapshotWrite, idempotency_key: str
 ) -> dict[str, Any]:
@@ -11903,13 +11851,6 @@ def run_detail(db: Session, run_id: str, *, include_artifacts: bool = True) -> d
             .order_by(RunSnapshot.version)
         )
     )
-    revision_drafts = list(
-        db.scalars(
-            select(FlowRunRevisionDraft)
-            .where(FlowRunRevisionDraft.flow_run_id == run.id)
-            .order_by(FlowRunRevisionDraft.created_at)
-        )
-    )
     node_runs = list(
         db.scalars(
             select(NodeRun).where(NodeRun.flow_run_id == run.id).order_by(NodeRun.sequence_no)
@@ -12019,7 +11960,6 @@ def run_detail(db: Session, run_id: str, *, include_artifacts: bool = True) -> d
         ),
         "progress": {"accepted": accepted, "terminal": terminal, "active": len(node_runs)},
         "usage": usage,
-        "revision_drafts": [_revision_draft_dict(x) for x in revision_drafts],
         "snapshots": [
             {
                 "id": x.id,

@@ -126,7 +126,7 @@ async function openWorkspace(page: Page, events: unknown[] = [], includeSecondCo
   return writes;
 }
 
-test('fresh navigation opens case space and creates a case after the branch merge', async ({ page }) => {
+test('fresh navigation opens case space and creates a scenario after the branch merge', async ({ page }) => {
   await openWorkspace(page);
   const cases: Record<string, unknown>[] = [];
   await page.route('**/api/v1/cases**', async route => {
@@ -145,14 +145,15 @@ test('fresh navigation opens case space and creates a case after the branch merg
   await page.evaluate(() => localStorage.removeItem('flowweave-workbench'));
   await page.goto('/', { waitUntil: 'domcontentloaded' });
   await expect(page.getByRole('button', { name: '场景空间', exact: true })).toHaveAttribute('class', /active/);
-  await expect(page.getByRole('heading', { name: '事项', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: '新建事项', exact: true }).click();
-  const dialog = page.getByRole('dialog', { name: '新建事项', exact: true });
-  await dialog.getByLabel('事项名称').fill('合并后的案例');
+  await expect(page.getByRole('heading', { name: '场景空间', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '新建场景', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: '新建场景', exact: true });
+  await dialog.getByLabel('场景名称').fill('合并后的案例');
   await dialog.getByLabel('目标', { exact: true }).fill('验证远程案例功能与本地工作台集成。');
-  await dialog.getByRole('button', { name: '创建事项', exact: true }).click();
+  await dialog.getByRole('button', { name: '创建场景', exact: true }).click();
   await expect(dialog).toHaveCount(0);
-  await expect(page.locator('.cases-list')).toContainText('合并后的案例');
+  await expect(page.locator('.scenario-tree')).toContainText('合并后的案例');
+  await page.getByRole('navigation', { name: '场景工作区' }).getByRole('button', { name: '会话配置', exact: true }).click();
   await expect(page.getByRole('button', { name: '创建协调会话', exact: true })).toBeVisible();
   await page.getByRole('button', { name: '自由对话', exact: true }).click();
   await expect(page.getByRole('navigation', { name: 'Agent 工作区导航' })).toBeVisible();
@@ -1188,6 +1189,11 @@ test('scheduled session shows session configuration and expands additional runs'
   await firstSchedule.locator('.agent-schedule-tree-toggle').click();
   await expect(tasks.locator('.agent-schedule-run')).toHaveCount(3);
   await expect(firstSchedule.getByRole('button', { name: '展开其余 2 个会话', exact: true })).toBeVisible();
+
+  const firstRun = firstSchedule.locator('.agent-schedule-run').first();
+  await firstRun.hover();
+  await expect(firstRun).toHaveCSS('background-color', 'rgb(227, 241, 230)');
+  await expect(firstRun.locator('.agent-workspace-conversation-select')).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
 
   await page.goto('/agent/schedules/conversations/scheduled-run-5');
   await expect(page).toHaveURL(/\/agent\/schedules\/conversations\/scheduled-run-5$/);

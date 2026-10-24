@@ -78,7 +78,6 @@ _USER_ISOLATED_TABLES = frozenset(
         "provider_models",
         "website_credentials",
         "flow_runs",
-        "flow_run_revision_drafts",
         "flow_run_schedules",
         "flow_run_schedule_occurrences",
         "run_snapshots",

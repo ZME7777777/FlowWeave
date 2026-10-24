@@ -30,11 +30,13 @@ const emptyNode = (): NodeAssetWrite => ({
 
 interface Props {
   node?: NodeAsset;
-  onSave: (data: NodeAssetWrite) => Promise<void>;
+  initialDirectoryId?: string | null;
+  embedded?: boolean;
+  onSave: (data: NodeAssetWrite) => Promise<unknown>;
   onClose: () => void;
 }
 
-export function NodeEditor({ node, onSave, onClose }: Props) {
+export function NodeEditor({ node, initialDirectoryId = null, embedded = false, onSave, onClose }: Props) {
   useEscapeClose(onClose);
   const [form, setForm] = useState<NodeAssetWrite>(emptyNode());
   const [error, setError] = useState('');
@@ -44,7 +46,7 @@ export function NodeEditor({ node, onSave, onClose }: Props) {
 
   useEffect(() => {
     if (!node) {
-      setForm(emptyNode());
+      setForm({ ...emptyNode(), directory_id: initialDirectoryId });
       return;
     }
     setForm({
@@ -60,7 +62,7 @@ export function NodeEditor({ node, onSave, onClose }: Props) {
         ? { ...node.executor, context_capability_ids: [] }
         : emptyNode().executor,
     });
-  }, [node]);
+  }, [initialDirectoryId, node]);
 
   const updateField = (direction: 'inputs' | 'outputs', index: number, patch: Partial<IOField>) => setForm(old => ({
     ...old,
@@ -92,8 +94,8 @@ export function NodeEditor({ node, onSave, onClose }: Props) {
     }
   };
 
-  return <div className="modal-backdrop"><form className="modal editor asset-editor" onSubmit={submit}>
-    <header className="asset-editor-header"><div><span className="eyebrow">NODE ASSET</span><h2>{node ? '编辑节点资产' : '新建节点资产'}</h2><p>在一个页面中完成节点说明、提示词以及输入输出字段配置。</p></div><button type="button" className="ghost" onClick={onClose}>关闭</button></header>
+  const editor = <form className={`modal editor asset-editor${embedded ? ' node-detail-editor' : ''}`} onSubmit={submit}>
+    <header className="asset-editor-header"><div><span className="eyebrow">NODE ASSET</span><h2>{node ? '编辑节点' : '新建节点'}</h2><p>在一个页面中完成节点说明、提示词以及输入输出字段配置。</p></div>{!embedded && <button type="button" className="ghost" onClick={onClose}>关闭</button>}</header>
     <div className="asset-editor-columns">
       <div className="asset-editor-left">
         <section className="asset-editor-section"><header><span>01</span><div><h3>基础信息</h3><p>名称和目录用于资产检索与流程编排。</p></div></header><div className="form-grid">
@@ -112,6 +114,8 @@ export function NodeEditor({ node, onSave, onClose }: Props) {
       })}</div></section>
     </div>
     {error && <p className="error">{error}</p>}
-    <footer><button type="button" className="ghost" onClick={onClose}>取消</button><button type="submit" className="primary" disabled={saving}>{saving ? '保存中…' : '保存节点资产'}</button></footer>
-  </form></div>;
+    <footer><button type="button" className="ghost" onClick={onClose}>取消</button><button type="submit" className="primary" disabled={saving}>{saving ? '保存中…' : '保存节点'}</button></footer>
+  </form>;
+
+  return embedded ? editor : <div className="modal-backdrop">{editor}</div>;
 }

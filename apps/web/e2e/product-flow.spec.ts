@@ -1916,6 +1916,11 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(sources.getByRole('link', { name: 'input.example.test/brief' })).toHaveAttribute('href', 'https://input.example.test/brief');
   await expect(sources.getByRole('link', { name: 'output.example.test/result' })).toHaveCount(0);
   await expect(sources.locator('button b')).toHaveText(['最早来源.png', '需求截图.png', 'input.example.test/brief']);
+  await expect.poll(() => page.locator('.agent-workspace-summary').evaluate(card => {
+    const lastSource = card.querySelector<HTMLElement>('.agent-workspace-source-list > button:last-child');
+    if (!lastSource) throw new Error('Expected the last source row');
+    return card.getBoundingClientRect().bottom - lastSource.getBoundingClientRect().bottom;
+  })).toBeGreaterThanOrEqual(8);
   await expect(directTurn.locator('.conversation-activity-group.summary-only').getByText('耗时 2秒')).toBeVisible();
   await expect(directTurn.locator('.conversation-activity-list')).toHaveCount(0);
   const finishTurn = page.locator('.conversation-turn').filter({ hasText: '任务跟踪已完成。' });
