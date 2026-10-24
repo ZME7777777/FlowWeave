@@ -98,6 +98,8 @@ from flowweave.shared.models import (
     BackgroundTask,
     CandidateOutputSet,
     EnvironmentVersion,
+    FlowEdge,
+    FlowNode,
     FlowRun,
     FlowRunRuntime,
     FlowRunSchedule,
@@ -4413,12 +4415,30 @@ def copy_node_run(
     return node_run_detail(db, copied.id)
 
 
+def _require_startable_flow(db: Session, flow_id: str) -> None:
+    nodes = db.scalars(select(FlowNode).where(FlowNode.flow_id == flow_id)).all()
+    if not nodes:
+        raise DomainError(
+            "FLOW_START_NODE_MISSING",
+            "Flow has no start node. Add at least one node before starting it.",
+            422,
+        )
+    target_ids = set(db.scalars(select(FlowEdge.target_flow_node_id).where(FlowEdge.flow_id == flow_id)))
+    if not any(node.id not in target_ids for node in nodes):
+        raise DomainError(
+            "FLOW_START_NODE_MISSING",
+            "Flow has no start node. Keep at least one node without an incoming flow edge.",
+            422,
+        )
+
+
 def start_flow(
     db: Session,
     flow_id: str,
     payload: RunStart,
 ) -> dict[str, Any]:
     flow = load_flow(db, flow_id)
+    _require_startable_flow(db, flow_id)
     environment = lock_referenceable_version(db, payload.environment_version_id)
     if environment is None:
         raise DomainError(
@@ -5655,6 +5675,7 @@ def create_automatic_run_draft(
     parent_flow_run_id: str | None = None,
 ) -> dict[str, Any]:
     flow = load_flow(db, flow_id)
+    _require_startable_flow(db, flow_id)
     environment = lock_referenceable_version(db, payload.environment_version_id)
     if environment is None:
         raise DomainError(

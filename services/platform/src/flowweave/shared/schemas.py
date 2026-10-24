@@ -576,7 +576,9 @@ class FlowWrite(ApiModel):
     environment_version_id: str | None = Field(default=None, min_length=1, max_length=36)
     default_entry_key: str | None = None
     row_version: int | None = None
-    nodes: list[FlowNodeWrite] = Field(min_length=1)
+    # Definitions may be saved as drafts before the first node is composed.
+    # Runtime launch validates that a draft contains an executable start node.
+    nodes: list[FlowNodeWrite] = Field(default_factory=list)
     edges: list[FlowEdgeWrite] = Field(default_factory=_empty_edges)
     port_mappings: list[PortMappingWrite] = Field(default_factory=_empty_port_mappings)
 

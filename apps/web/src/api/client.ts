@@ -55,6 +55,7 @@ async function responseError(response: Response): Promise<ApiError> {
     DATA_CONFLICT: '提交的数据与现有记录冲突，请检查是否存在重名或重复关联。',
     INVALID_COMMAND: '提交的数据不符合要求，请检查必填项和输入格式。',
     FLOW_GRAPH_INVALID: '流程配置无效，请检查节点、连线、端口映射和门禁设置。',
+    FLOW_START_NODE_MISSING: '未找到一个启动节点。请为流程添加节点，并保留一个没有上游连线的起始节点。',
     RUN_STATE_INVALID: '该逐步运行记录还没有可复制或导出的起始节点配置。请先选中起始节点并保存配置。',
     RUN_ENVIRONMENT_REQUIRED: '当前运行还没有绑定运行环境，暂时不能执行此操作。',
     RUN_ENVIRONMENT_VERSION_INVALID: '当前运行绑定的环境版本不可用，请刷新后重试。',
