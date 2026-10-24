@@ -2,7 +2,7 @@
 
 > 创建日期：2026-08-21
 > 状态：`UPSTREAM BASELINE ADOPTION COMPLETE`
-> 当前执行切片：`FR-679`
+> 当前执行切片：`NONE`
 > 下一可执行切片：`NONE`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
@@ -92,7 +92,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 
 ## 6. 任务清单
 
-### FR-679 远程事项删除与节点表单同步发布 — CURRENT
+### FR-679 远程事项删除与节点表单同步发布 — DONE
 
 依赖：FR-678 DONE。按用户明确授权合并远程 feat/refactor 的 `c44b86fe`、
 `1baf5103`，保留本地全部提交；原本地 HEAD 为 `30882560`。Git 自动合并没有
@@ -102,7 +102,42 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 发布前 Web typecheck、受影响 ESLint、平台产品模块及 API 测试 Ruff、Python AST、
 diff 与任务状态检查通过；10 项定向 Chromium 回归通过，使用受控 API／WebSocket。
 Alembic 唯一 head 仍为 `0171_remove_flow_run_revision_drafts`，迁移及 Runtime 未改。
-平台／Web 正式预检已通过；待固定提交镜像构建、隔离 PostgreSQL 回归及正式发布验收。
+平台／Web 正式预检通过。
+
+发布验收（2026-10-24）：合并与部署代码提交为
+`4cf036b33e5f2d53ce57cc659c56e04ce5551b06`，原本地与远程 HEAD 均为其祖先。
+测试夹具补充提交 `2f742249` 仅补齐显式用户上下文、用户项目根与主页导航，未改变
+镜像内应用源码。固定实际平台镜像、独立 PostgreSQL 临时容器的 10 项定向回归通过，
+覆盖删除控制元数据而保留关联 FlowRun、活动执行与未完成计划拒删、提交前保留目录、
+回滚保留目录及记录、父目录／末级符号链接拒绝、提交后替换路径拒绝。临时测试容器与
+网络已移除，不操作业务数据。初次扩展旧目录套件还暴露 11 项缺少用户身份或沿用旧根
+路径断言的既有夹具失败；本片未修改这些旧用例，也未将扩展套件计为全套通过。
+
+Web typecheck、受影响 ESLint、产品模块及 API 测试 Ruff、工作目录模块 Pyright
+（显式使用项目 Python，零错误）、AST、diff 与任务状态检查通过。新增事项删除确认／
+取消／服务端拒绝后保留，以及定时任务删除而保留会话的 Chromium 回归均通过；连同
+此前十项共 12 个不同用例。构建镜像导出的实际静态资源又完成相同 12 项回归，使用
+受控 API／WebSocket，不替代真实模型执行或业务会话删除验收。加载的 47 个 JS／CSS
+文件 SHA-256 与切换后的运行镜像一致。
+
+正式 commit-bound 最小上下文源码归档 SHA-256：platform 为
+`72194c261b95ed48236a7c3913f830234d3e05d89d6994e8305ebba3b913521c`，web 为
+`f379d591e6246a2263c49ccf92bdc381dcb4938b762270888b27a5215db7151e`。
+实际 linux/amd64 镜像：platform 为
+`sha256:a8fb01afc3ee1ae4cc7f27e85be60c363a1916ad1838417a9cc68a26587c537a`，web 为
+`sha256:c8208d3a088a62811e27c9dd59d28abdddb78a1d304e1c6aed159f82e1cb57dd`。
+均校验 OCI revision；服务器保留原服务日志和精确 rollback tags，正式 migration
+成功后同步 recreate api／stream-api／worker／web。四服务同一代码版本，health／
+readiness／Web HTTP 正常，Alembic head 不变；其余 34 个运行容器的镜像与启动时间、
+会话 Binding 身份摘要和服务器 Compose／env 摘要均不变，未修改或替换现有 Runtime。
+
+服务器实际 Chromium 验证公网前缀登录、Agent 深层路由及根登录页通过，两项公网 API
+认证边界均为 401。另在新浏览器上下文经已验证 Web 入口的 SSH 转发核对 API 请求均
+使用部署前缀、无页面异常；不将转发记为本机公网直连。未向业务会话发送、暂停、继续
+或删除请求。platform／web remote-release-finish 均通过健康、版本与路由门禁，回收
+两份过期受管上下文并完成精确 rollback tag 保留，保留每 scope 最近三份成功上下文
+和引用版本。未清理共享 BuildKit、卷、Workspace 或数据库备份。当前与下一可执行
+切片均为 NONE；后续验收文档提交不改变已发布应用代码身份，未推送。
 
 ### FR-678 远程场景与节点界面合并发布 — DONE
 
