@@ -399,7 +399,7 @@ def history_app(graph, monkeypatch):
         )
 
     monkeypatch.setattr(workspace_router, "run_sync", run)
-    monkeypatch.setattr(mcp, "run_blocking_control", control)
+    monkeypatch.setattr(mcp, "run_blocking_history", control)
     monkeypatch.setattr(mcp, "run_formal_events", events)
     monkeypatch.setattr(
         conversations,

@@ -221,7 +221,7 @@ def client(monkeypatch):
     monkeypatch.setattr(
         mcp, "agent_session_principal", lambda *_args: SimpleNamespace(user_id="owner")
     )
-    monkeypatch.setattr(mcp, "run_blocking_control", control)
+    monkeypatch.setattr(mcp, "run_blocking_history", control)
     monkeypatch.setattr(mcp, "run_formal_events", read)
     app = FastAPI()
     app.state.container = SimpleNamespace(rate_limiter=SimpleNamespace(allow=allow))

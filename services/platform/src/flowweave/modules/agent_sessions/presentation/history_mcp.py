@@ -15,7 +15,7 @@ from flowweave.modules.users.application.service import agent_session_principal
 from flowweave.runtime.base import RuntimeEventBatch
 from flowweave.runtime.dependencies import get_runtime
 from flowweave.shared.errors import DomainError
-from flowweave.shared.http import get_container, run_blocking_control, run_formal_events
+from flowweave.shared.http import get_container, run_blocking_history, run_formal_events
 
 MCP_PATH = "/api/v1/agent-history-mcp"
 router = APIRouter()
@@ -154,7 +154,7 @@ async def history_mcp(request: Request) -> Response:
             raise history_access.denied()
         return principal
 
-    request.state.audit_principal = await run_blocking_control(container, authenticate)
+    request.state.audit_principal = await run_blocking_history(container, authenticate)
     decision = await container.rate_limiter.allow(
         "agent_history_mcp", owner, limit=60, window_seconds=60
     )

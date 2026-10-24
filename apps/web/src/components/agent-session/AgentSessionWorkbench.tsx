@@ -5001,7 +5001,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [escPauseConfirmation, setEscPauseConfirmation] = useState(false);
   const escPauseConfirmationTimer = useRef<number | undefined>(undefined);
   const confirmPauseOnEscapeRef = useRef<((event: KeyboardEvent) => void) | undefined>(undefined);
-  const [pausePreflightPending, setPausePreflightPending] = useState(false);
   const [turnState, setTurnState] = useState<TurnState>('idle');
   const [activeTurnEventId, setActiveTurnEventId] = useState<string>();
   const [expiredTerminalSyncTurnKey, setExpiredTerminalSyncTurnKey] = useState<string>();
@@ -7821,7 +7820,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (routeBindingId && conversations.length && !selected && pendingCreatedId !== routeBindingId && !initialConversationQueries.some(query => query.isFetching) && selectedConversationQuery.isError) onNavigate(scheduleRoute ? '/agent/schedules' : host.rootPath, true);
   }, [conversationDraft, conversationPath, conversations, host.rootPath, initialConversationQueries, onNavigate, pendingCreatedId, routeBindingId, scheduleRoute, selected, selectedConversationQuery.isError]);
   useEffect(() => { if (selected?.id === pendingCreatedId) setPendingCreatedId(undefined); }, [pendingCreatedId, selected?.id]);
-  useEffect(() => setPausePreflightPending(false), [selected?.id]);
   useLayoutEffect(() => {
     if (!composerScope || previousComposerScope.current === composerScope) return;
     const previousScope = previousComposerScope.current;
@@ -8775,71 +8773,29 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     },
   });
   const interrupt = useMutation({
-    mutationFn: () => api.interruptConversation(workspace!.id, selected!.id),
-    onMutate: () => setTurnState('pausing'),
-    onSuccess: () => {
+    mutationFn: (request: { workspaceId: string; bindingId: string }) => api.interruptConversation(request.workspaceId, request.bindingId),
+    onMutate: request => {
+      if (request.bindingId !== activeComposerScope.current) return;
+      setOperationError(undefined);
+      setTurnState('pausing');
+    },
+    onSuccess: (_value, request) => {
+      void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-activity', request.workspaceId) });
+      if (request.bindingId !== activeComposerScope.current) return;
       reconcileConversationProjection('pause_post_action');
       onHostStateChanged?.();
     },
-    onError: error => {
-      setTurnState('running');
-      reportOperationError(selected?.id, error);
+    onError: (error, request) => {
+      if (request.bindingId !== activeComposerScope.current) return;
+      setTurnState(current => current === 'pausing' ? 'running' : current);
+      reportOperationError(request.bindingId, error);
     },
   });
-  const requestInterrupt = useCallback(async () => {
-    if (!workspace || !selected || pausePreflightPending || interrupt.isPending) return;
-    const scope = selected.id;
-    const monitoring = eventsQuery.data?.monitoring;
-    const possiblyStuck = !currentFormalTurnFinished && (
-      monitoring?.possibly_stuck ?? possiblyStuckConversationIds.has(scope)
-    );
-    if (!possiblyStuck) {
-      interrupt.mutate();
-      return;
-    }
-
-    const priorEventIds = new Set((eventsQuery.data?.events ?? []).map(event => event.id));
-    const signal = eventReadAbortController.current.signal;
-    const stillActive = () => activeComposerScope.current === scope
-      && selected?.id === scope
-      && !signal.aborted;
-    setPausePreflightPending(true);
-    setOperationError(undefined);
-    try {
-      const [eventsResult, readinessResult] = await Promise.allSettled([
-        api.conversationEvents(workspace.id, scope, undefined, undefined, 'pause_preflight', signal),
-        api.inputReadiness(workspace.id, scope),
-      ]);
-      if (!stillActive()) return;
-
-      const incoming = eventsResult.status === 'fulfilled' ? eventsResult.value : undefined;
-      if (incoming) {
-        queryClient.setQueryData<OpenHandsConversationEventBatch>(eventQueryKey, existing => existing
-          ? retainConversationPresentation(existing, {
-              ...existing,
-              ...incoming,
-              events: mergeConversationEvents(existing.events, incoming.events),
-              next_cursor: incoming.next_cursor ?? existing.next_cursor,
-              history_cursor: latestHistoryCursor(existing, incoming, historyCacheByScope.current.get(scope)?.pages),
-            })
-          : incoming,
-        );
-        scheduleContextRefresh(workspace.id, scope);
-      }
-      if (readinessResult.status === 'fulfilled') {
-        queryClient.setQueryData<AgentConversationInputReadiness>(inputReadinessQueryKey, readinessResult.value);
-      }
-
-      const receivedFormalProgress = Boolean(incoming?.events.some(event => !priorEventIds.has(event.id)));
-      const executionStatus = readinessResult.status === 'fulfilled'
-        ? readinessResult.value.execution_status
-        : undefined;
-      if (receivedFormalProgress || (executionStatus && !conversationIsRunning(executionStatus))) return;
-    } finally {
-      if (stillActive()) setPausePreflightPending(false);
-    }
-    if (stillActive()) interrupt.mutate();
-  }, [api, currentFormalTurnFinished, eventQueryKey, eventsQuery.data, inputReadinessQueryKey, interrupt, pausePreflightPending, possiblyStuckConversationIds, queryClient, scheduleContextRefresh, selected, workspace]);
+  const requestInterrupt = useCallback(() => {
+    if (!workspace || !selected || interrupt.isPending && interrupt.variables?.bindingId === selected.id) return;
+    // Explicit control must reach OpenHands even while formal reads are busy.
+    interrupt.mutate({ workspaceId: workspace.id, bindingId: selected.id });
+  }, [interrupt, selected, workspace]);
   const resume = useMutation({
     mutationFn: (request: { workspaceId: string; bindingId: string }) => api.resumeConversation(request.workspaceId, request.bindingId),
     onMutate: request => {
@@ -8991,7 +8947,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     } else setTurnState('paused');
   }, [inputReadinessQuery.data?.ready, pendingRewrite, rewrite, turnState]);
   const requestRewrite = useCallback((eventId: string, content: string) => {
-    if (!selected) return;
+    if (!workspace || !selected) return;
     const original = displayedEvents.find(event => event.id === eventId);
     const request: RewriteRequest = {
       bindingId: selected.id,
@@ -9004,7 +8960,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     };
     if (effectiveTurnState === 'running') {
       setPendingRewrite(request);
-      interrupt.mutate();
+      interrupt.mutate({ workspaceId: workspace.id, bindingId: selected.id });
       return;
     }
     if (effectiveTurnState === 'pausing') {
@@ -9012,7 +8968,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       return;
     }
     if (effectiveTurnState === 'idle' || effectiveTurnState === 'paused') rewrite.mutate(request);
-  }, [displayedEvents, effectiveTurnState, interrupt, rewrite, selected]);
+  }, [displayedEvents, effectiveTurnState, interrupt, rewrite, selected, workspace]);
   const currentConversationSubmitting = (
     send.isPending && send.variables?.bindingId === selected?.id
   ) || (
@@ -9419,9 +9375,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       || Boolean(pendingMigratedSend);
     switch (composerControlMode) {
       case 'running':
-        if (pausePreflightPending) {
-          return { label: '正在核对 Agent 状态', disabled: true, editable: false, action: 'none' as const };
-        }
         return composerActionSends
           ? { label: '发送消息', disabled: actionBlocked || !canWrite, editable: canWrite && !actionBlocked, action: 'send' as const }
           : { label: '暂停当前 Agent', disabled: actionBlocked || !canInterrupt, editable: canWrite && !actionBlocked, action: 'interrupt' as const };

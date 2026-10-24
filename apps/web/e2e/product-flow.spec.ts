@@ -453,7 +453,6 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   let pauseReadinessRefreshStarted = false;
   let pauseReadinessReturnsIdle = false;
   let pauseBufferedEvent = false;
-  let pausePreflightEvent = false;
   let interruptRequests = 0;
   let backfilledTaskAction = false;
   let incompleteLiveToolProjection = false;
@@ -876,7 +875,6 @@ test('top-level Agent workspace creates a direct conversation and restores its U
             { id: 'paused-interrupt', event_type: 'STATE', payload: { source_type: 'InterruptEvent', source: 'user', parent_id: 'paused-tool-error', timestamp: new Date().toISOString() } },
           ] : []),
           ...(pauseBufferedEvent ? [{ id: 'pause-buffered-event', event_type: 'THOUGHT', payload: { source: 'agent', parent_id: 'running-user', content: '暂停请求确认前到达的正式事件。', thought: '暂停请求确认前到达的正式事件。', timestamp: new Date().toISOString() } }] : []),
-          ...(pausePreflightEvent ? [{ id: 'pause-preflight-tool', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'running-user', action_id: 'pause-preflight-tool', tool_call_id: 'pause-preflight-call', tool_name: 'terminal', event_name: 'TerminalAction', summary: '继续运行已恢复的命令', details: { command: 'pnpm test' }, timestamp: new Date().toISOString() } }] : []),
           ...(parentTurnFailed ? [{ id: 'running-parent-error', event_type: 'ERROR', payload: { source_type: 'ConversationErrorEvent', source: 'environment', parent_id: backfilledTaskAction ? 'recovered-task-action' : 'running-user', content: '模型服务暂时不可用，本轮已停止', error_code: 'LLMServiceUnavailableError', timestamp: new Date().toISOString() } }] : []),
           ...(recoverableAgentError ? [
             { id: 'recoverable-tool', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'running-user', action_id: 'recoverable-tool', tool_call_id: 'recoverable-tool-call', event_name: 'TerminalAction', details: { command: 'fetch deployment state' }, timestamp: new Date().toISOString() } },
@@ -2597,16 +2595,10 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(activeProcess.locator(':scope > summary .conversation-activity-spin')).toBeVisible();
   await expect(taskPlan).toHaveAttribute('data-stability-marker', 'live-task-plan');
   await expect.poll(() => taskPlan.evaluate(element => element.getBoundingClientRect().top)).toBe(stableTaskPlanTop);
-  pausePreflightEvent = true;
-  await page.getByRole('button', { name: '暂停当前 Agent' }).click();
-  await expect(page.getByRole('button', { name: '正在核对 Agent 状态' })).toBeDisabled();
-  await expect(activeProcess.getByText('pnpm test', { exact: true })).toBeVisible();
-  await expect.poll(() => interruptRequests).toBe(0);
-  await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
-  pausePreflightEvent = false;
   pauseReadinessGate = new Promise<void>(resolve => { releasePauseReadiness = resolve; });
   await page.getByRole('button', { name: '暂停当前 Agent' }).click();
   await expect(page.getByRole('button', { name: '暂停请求已发送' })).toBeDisabled();
+  await expect.poll(() => interruptRequests).toBe(1);
   await expect.poll(() => pauseReadinessRefreshStarted).toBe(true);
   pauseBufferedEvent = true;
   await page.evaluate(() => window.dispatchEvent(new Event('focus')));
