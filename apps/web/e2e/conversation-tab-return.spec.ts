@@ -74,15 +74,16 @@ for (const node of [false, true]) {
         await expect(page.locator(`[data-user-event-id="${sent.id}"]`)).toHaveCount(1);
       }
       const nav = page.getByRole('navigation', { name: '主导航', exact: true });
-      await nav.getByRole('button', { name: '节点资产', exact: true }).click();
+      await page.getByRole('button', { name: '节点中心', exact: true }).click();
       await expect(page.getByLabel('发送 Agent 消息')).toHaveCount(0);
       if (timing === 'accepted-while-away') {
         releaseSend();
         await expect.poll(() => accepted).toBe(true);
       }
       if (node) await page.locator('.context-tab-select').click();
-      else await nav.getByRole('button', { name: 'Agent 会话', exact: true }).click();
-      await expect.poll(() => hydrationCount).toBe(2);
+      else await page.getByRole('button', { name: 'AI 工作台', exact: true }).click();
+      await expect.poll(() => hydrationCount).toBe(1);
+      await expect(page.getByRole('status').filter({ hasText: '正在加载会话' })).toHaveCount(0);
       await expect(page.getByText(sent.payload.content, { exact: true })).toBeVisible({ timeout: 3_000 });
       await page.locator('.conversation-message.user').filter({ hasText: sent.payload.content }).evaluate(element => { (element as HTMLElement).dataset.returnMarker = 'same-bubble'; });
       await expect(page.getByText('正在提交消息', { exact: true })).toBeVisible();
@@ -107,13 +108,14 @@ for (const node of [false, true]) {
       // Once REST has confirmed the event, a later formal window owns history.
       // Reusing a local bubble must not resurrect a turn absent from that window.
       const readsBeforeLeaving = hydrationCount;
-      await nav.getByRole('button', { name: '节点资产', exact: true }).click();
+      await page.getByRole('button', { name: '节点中心', exact: true }).click();
       await expect(page.getByLabel('发送 Agent 消息')).toHaveCount(0);
       if (node) await page.locator('.context-tab-select').click();
-      else await nav.getByRole('button', { name: 'Agent 会话', exact: true }).click();
-      await expect.poll(() => hydrationCount).toBe(readsBeforeLeaving + 1);
+      else await page.getByRole('button', { name: 'AI 工作台', exact: true }).click();
+      await expect.poll(() => hydrationCount).toBe(readsBeforeLeaving);
+      await expect(page.getByRole('status').filter({ hasText: '正在加载会话' })).toHaveCount(0);
       await expect(page.getByText('上次已经回复', { exact: true })).toBeVisible();
-      await expect(page.getByText(sent.payload.content, { exact: true })).toHaveCount(0);
+      await expect(page.getByText(sent.payload.content, { exact: true })).toHaveCount(1);
       expect(postCount).toBe(1);
     });
   }
