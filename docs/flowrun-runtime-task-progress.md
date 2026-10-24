@@ -2,7 +2,7 @@
 
 > 创建日期：2026-08-21
 > 状态：`UPSTREAM BASELINE ADOPTION COMPLETE`
-> 当前执行切片：`FR-678`
+> 当前执行切片：`NONE`
 > 下一可执行切片：`NONE`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
@@ -92,7 +92,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 
 ## 6. 任务清单
 
-### FR-678 远程场景与节点界面合并发布 — CURRENT
+### FR-678 远程场景与节点界面合并发布 — DONE
 
 依赖：FR-677 DONE。按用户明确授权合并远程 feat/refactor 的两个新提交
 `33ee3f36`、`73533f13`，保留本地全部提交；原本地 HEAD 为 `3ae14637`。
@@ -104,8 +104,29 @@ Chromium 回归通过，涵盖节点详情、完整配置、复制载荷、提�
 会话配置、路由返回以及活动列表恢复。浏览器使用受控 API／WebSocket，未向业务
 会话发送消息。Alembic 唯一 head 仍为 `0171_remove_flow_run_revision_drafts`。
 服务器只读核对确认平台与 Web 均运行 FR-677 的 `0771943c`；本次仅发布 Web，
-不涉及平台、迁移、OpenHands 或 Runtime。待以本次合并 commit 执行正式预检、
-最小上下文构建、镜像身份／健康／路由验证和受管发布收尾后补记结果。
+不涉及平台、迁移、OpenHands 或 Runtime。
+
+发布验收（2026-10-24）：合并与发布代码提交为
+`379a341dd8a7443ba6e88afd4aa87393195c6f47`，原本地与远程 HEAD 均为其祖先。
+正式 Web 预检、commit-bound 最小上下文 prepare 通过，源码归档 SHA-256 为
+`9989b9ad5d46e172887753463773b87722fd4553f5f97d1b05ea022f94b93628`。
+实际 Web 镜像为
+`sha256:ea91a660940d1dcbc0a3671a3e1f4a13f59bce74050af9714917e1c0aa6c9d6b`，
+已核对 linux/amd64 与 OCI revision。切换前从构建镜像导出静态资源，使用受控
+API／WebSocket 重跑同一批 10 项 Chromium 回归，全部通过；切换后核对其加载的
+46 个 JS／CSS 文件 SHA-256，均与线上运行镜像一致。此回归不替代真实模型执行。
+
+服务器保留原 Web 日志及精确 rollback tag 后，仅 recreate Web；其余 37 个运行
+容器的镜像和启动时间均未变化，包括 api／stream-api／worker／Runtime Provider
+与既有 Runtime。Compose／env 摘要未变，Web HTTP 及平台 health／readiness 正常。
+服务器实际 Chromium 验证公网前缀登录、Agent 深层路由与根登录入口通过；两项
+公网 API 认证边界为 401。公网 HTML 与两项入口静态资源的内容摘要和运行镜像一致，
+部署前缀与 MIME 正确；私有地址、配置和日志未复制进 Git。
+
+Web remote-release-finish 通过版本、健康与容量收尾，本次无过期受管上下文候选，
+保留各 scope 最近三份成功上下文与引用／回滚版本，并完成精确 rollback 镜像
+保留流程。未删除卷、Workspace 或数据库备份，未清理共享 BuildKit。当前与下一
+可执行切片均为 NONE；本地验收补记提交不改变上述已发布代码身份，未推送。
 
 ### FR-672 暂停控制直达、异步归属与历史鉴权隔离 — DONE
 
