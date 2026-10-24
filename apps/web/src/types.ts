@@ -531,8 +531,21 @@ export interface CaseDecisionProposal {
   state: 'PROPOSED' | 'EXECUTED' | 'FAILED' | 'SUPERSEDED'; reason: string;
   payload: Record<string, unknown>; result: Record<string, unknown>; created_at: string; executed_at?: string | null;
 }
+export interface CaseMaterial {
+  kind: 'LINK' | 'FILE'; name: string; value: string;
+}
+export interface CaseBasics {
+  name: string; description: string; objective: string;
+  materials: CaseMaterial[]; work_directory_id: string | null;
+}
+export interface CaseSessionConfig {
+  model_provider_id: string; model_name: string; reasoning_effort: string | null;
+  capability_version_ids: string[]; credential_ids: string[];
+}
 export interface Case {
   id: string; name: string; objective: string;
+  description?: string; materials?: CaseMaterial[]; work_directory_id?: string | null;
+  session_config?: CaseSessionConfig;
   state: 'DRAFT' | 'ACTIVE' | 'PAUSED' | 'COMPLETED' | 'ARCHIVED';
   control_conversation_binding_id?: string | null;
   control_work_directory_id?: string | null;

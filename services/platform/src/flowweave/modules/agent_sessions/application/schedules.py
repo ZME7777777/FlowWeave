@@ -135,7 +135,7 @@ def _normalized_ids(values: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(value for value in values if value))
 
 
-def _validated_template_configuration(
+def validate_template_configuration(
     db: Session, capability_version_ids: tuple[str, ...], credential_ids: tuple[str, ...]
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     capabilities = _normalized_ids(capability_version_ids)
@@ -276,7 +276,7 @@ def create_schedule(
     capability_version_ids: tuple[str, ...],
     credential_ids: tuple[str, ...],
 ) -> dict[str, Any]:
-    capabilities, credentials = _validated_template_configuration(
+    capabilities, credentials = validate_template_configuration(
         db, capability_version_ids, credential_ids
     )
     try:
@@ -334,7 +334,7 @@ def update_schedule(
     capability_version_ids: tuple[str, ...],
     credential_ids: tuple[str, ...],
 ) -> dict[str, Any]:
-    capabilities, credentials = _validated_template_configuration(
+    capabilities, credentials = validate_template_configuration(
         db, capability_version_ids, credential_ids
     )
     schedule = db.scalar(

@@ -21,10 +21,15 @@ from flowweave.modules.cases.application.service import (
     project_case_observations,
     project_flow_run_event,
     project_flow_run_observations,
+    read_case_material,
     reconcile_case_execution_state,
     retry_case_control_plan,
+    save_case_path,
+    save_case_session_config,
     set_case_stage_state,
     start_case_stage_execution,
+    update_case,
+    upload_case_material,
 )
 
 __all__ = (
@@ -41,6 +46,11 @@ __all__ = (
     "execute_case_control_plan",
     "execute_case_decision_proposal",
     "get_case",
+    "upload_case_material",
+    "read_case_material",
+    "save_case_path",
+    "update_case",
+    "save_case_session_config",
     "ingest_case_control_suggestion",
     "launch_case_stage",
     "list_case_stage_templates",

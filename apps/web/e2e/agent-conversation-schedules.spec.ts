@@ -113,7 +113,7 @@ async function openWorkspace(page: Page, events: unknown[] = [], includeSecondCo
     if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
     if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [{ id: 'existing-directory', display_name: '已有项目目录', current_version: { working_directory: '/runtime/workspace/project/existing-directory' } }] });
     if (path.endsWith('/workspace')) return json(route, { root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', files: [], repositories: [], runtime: {}, ide: { gateway: { supported: false } } });
-    if (path.endsWith('/model-providers')) return json(route, [{ id: 'provider-1', name: '测试供应商', connection_state: 'CONNECTED', models: [{ model_name: 'model-1', enabled: true, is_default: true, default_reasoning_effort: 'medium', supported_reasoning_efforts: ['low', 'medium', 'high'] }] }]);
+    if (path.endsWith('/model-providers')) return json(route, [{ id: 'provider-1', name: '测试供应商', connection_state: 'CONNECTED', available_for_nodes: true, models: [{ model_name: 'model-1', enabled: true, is_default: true, default_reasoning_effort: 'medium', supported_reasoning_efforts: ['low', 'medium', 'high'] }] }]);
     if (path.endsWith('/website-credentials')) return json(route, [{ id: 'credential-1', name: '测试认证', target_host: 'example.test', target_path: '/', include_subdomains: false, auth_type: 'TOKEN', has_username: false, has_secret: true, row_version: 1, environment_names: { token: 'TEST_TOKEN' }, created_at: now, updated_at: now }]);
     if (path.endsWith('/capabilities')) return json(route, capabilities);
     if (path.endsWith('/capability-collections')) return json(route, []);
@@ -154,19 +154,112 @@ test('fresh navigation opens case space and creates a scenario after the branch 
   await expect(page.locator('.scenario-side-head')).toContainText('Case');
   await expect(page.getByRole('heading', { name: '选择或创建一个场景', exact: true })).toBeVisible();
   await page.getByRole('button', { name: '新建场景', exact: true }).click();
-  const dialog = page.getByRole('dialog', { name: '新建场景', exact: true });
-  await dialog.getByLabel('场景名称').fill('合并后的案例');
-  await dialog.getByLabel('目标', { exact: true }).fill('验证远程案例功能与本地工作台集成。');
-  await dialog.getByRole('button', { name: '创建场景', exact: true }).click();
-  await expect(dialog).toHaveCount(0);
+  await expect(page.getByRole('dialog', { name: '新建场景', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: '新建 Case' })).toBeVisible();
+  await expect(page.getByRole('navigation', { name: '场景工作区' })).toHaveCount(0);
+  await page.getByLabel('名称', { exact: true }).fill('合并后的案例');
+  await page.getByLabel('目标', { exact: true }).fill('验证案例功能与本地工作台集成。');
+  await page.getByRole('button', { name: '保存', exact: true }).click();
   await expect(page.locator('.scenario-tree')).toContainText('合并后的案例');
   await expect(page.locator('.scenario-casebar')).toContainText('合并后的案例');
   await page.getByRole('navigation', { name: '场景工作区' }).getByRole('button', { name: 'Case 路径', exact: true }).click();
   await expect(page.locator('.scenario-path')).toBeVisible();
   await page.getByRole('navigation', { name: '场景工作区' }).getByRole('button', { name: '会话配置', exact: true }).click();
-  await expect(page.getByRole('button', { name: '创建协调会话', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '保存配置', exact: true })).toBeVisible();
+  await expect(page.getByText('工作区模式', { exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '创建协调会话', exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: '自由对话', exact: true }).click();
   await expect(page.getByRole('navigation', { name: 'Agent 工作区导航' })).toBeVisible();
+});
+
+test('case detail saves materials workspace ordered run cards and model capabilities', async ({ page }) => {
+  await openWorkspace(page);
+  let item: Record<string, any> | undefined;
+  const writes: Array<{ path: string; body: any }> = [];
+  const templates = [1, 2].map(index => ({ id: `run-${index}`, name: `流程记录 ${index}`, execution_mode: index === 1 ? 'STEPWISE' : 'CONTINUOUS', reachable_node_keys: ['start'] }));
+  await page.route('**/api/v1/cases**', async route => {
+    const path = new URL(route.request().url()).pathname;
+    const method = route.request().method();
+    if (path.endsWith('/stage-templates')) return json(route, templates.filter(template => !item?.stages.some((stage: any) => stage.flow_run_id === template.id)));
+    if (method === 'GET') return json(route, item ? [item] : []);
+    if (path.endsWith('/materials')) {
+      expect(route.request().headers()['content-type']).toContain('multipart/form-data');
+      item = { ...item, materials: [...item!.materials, { kind: 'FILE', name: 'input.txt', value: '.flowweave/cases/config-case/materials/file-1' }], row_version: item!.row_version + 1 };
+      return json(route, item, 201);
+    }
+    const body = route.request().postDataJSON();
+    writes.push({ path, body });
+    if (method === 'POST') {
+      item = { ...body, id: 'config-case', row_version: 1, stages: [], state: 'DRAFT', control_work_directory_id: 'case-directory', tasks: [], control_plans: [], decision_proposals: [] };
+      return json(route, item, 201);
+    }
+    expect(body.expected_row_version).toBe(item!.row_version);
+    if (path.endsWith('/path')) {
+      item = { ...item, stages: body.cards.map((card: any, index: number) => card.id
+        ? { ...item!.stages.find((stage: any) => stage.id === card.id), position: index }
+        : { id: `stage-${card.flow_run_id}`, flow_run_id: card.flow_run_id, name: templates.find(template => template.id === card.flow_run_id)!.name, execution_mode: 'STEPWISE', state: 'PENDING', position: index }), row_version: item!.row_version + 1 };
+    } else if (path.endsWith('/session-config')) {
+      const { expected_row_version: _version, ...config } = body;
+      item = { ...item, session_config: config, row_version: item!.row_version + 1 };
+    } else item = { ...item, ...body, row_version: item!.row_version + 1 };
+    return json(route, item);
+  });
+  await page.getByRole('button', { name: '场景空间', exact: true }).click();
+  await page.getByRole('button', { name: '新建场景' }).click();
+  await page.getByLabel('名称', { exact: true }).fill('迁移准备');
+  await page.getByLabel('说明', { exact: true }).fill('客户迁移的基础说明');
+  await page.getByLabel('目标', { exact: true }).fill('完成上线准备');
+  await page.getByLabel('工作区', { exact: true }).selectOption('existing-directory');
+  await page.getByRole('button', { name: '添加链接' }).click();
+  await page.getByLabel('链接名称').fill('需求文档');
+  await page.getByLabel('链接地址').fill('https://example.test/input');
+  await page.locator('.scenario-link-editor').getByRole('button', { name: '添加', exact: true }).click();
+  await page.getByLabel('上传资料文件').setInputFiles({ name: 'input.txt', mimeType: 'text/plain', buffer: Buffer.from('case inputs') });
+  await page.getByRole('button', { name: '保存', exact: true }).click();
+  await expect(page.getByRole('navigation', { name: '场景工作区' })).toBeVisible();
+  expect(item!.description).toBe('客户迁移的基础说明');
+  expect(item!.work_directory_id).toBe('existing-directory');
+  expect(item!.materials).toHaveLength(2);
+  await expect(page.locator('.scenario-materials')).toContainText('input.txt');
+  const header = await page.locator('.scenario-side-head').boundingBox();
+  expect(header!.height).toBeLessThanOrEqual(56);
+  await page.getByRole('button', { name: 'Case 路径', exact: true }).click();
+  await expect(page.locator('.scenario-path ol li')).toHaveCount(0);
+  for (const id of ['run-1', 'run-2']) {
+    await page.getByRole('button', { name: /添加卡片/ }).click();
+    await page.getByLabel('流程运行记录', { exact: true }).selectOption(id);
+    await page.locator('.scenario-add-card').getByRole('button', { name: '添加', exact: true }).click();
+    await expect(page.locator('.scenario-add-card')).toHaveCount(0);
+  }
+  await page.getByRole('button', { name: '上移 流程记录 2' }).click();
+  await expect(page.locator('.scenario-path li').first()).toContainText('流程记录 2');
+  await page.getByRole('button', { name: '删除卡片 流程记录 1' }).click();
+  await expect(page.locator('.scenario-path li')).toHaveCount(1);
+  await page.getByRole('button', { name: '会话配置', exact: true }).click();
+  await page.getByLabel('模型供应商').selectOption('provider-1');
+  await page.getByLabel('模型名称').selectOption('model-1');
+  await page.getByLabel('思考程度').selectOption('high');
+  await page.getByRole('button', { name: '配置会话', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: '会话配置', exact: true });
+  await dialog.getByRole('button', { name: /日报技能/ }).click();
+  await dialog.getByRole('button', { name: '保存会话配置', exact: true }).click();
+  await page.getByRole('button', { name: '保存配置', exact: true }).click();
+  await expect(page.getByRole('status')).toContainText('已保存');
+  expect(item!.session_config).toMatchObject({ model_provider_id: 'provider-1', model_name: 'model-1', reasoning_effort: 'high', capability_version_ids: ['capability-1'] });
+  await page.getByRole('button', { name: '基础配置', exact: true }).click();
+  await page.getByRole('button', { name: '会话配置', exact: true }).click();
+  await expect(page.getByLabel('思考程度')).toHaveValue('high');
+  await expect(page.getByText('Case 会话系统上下文', { exact: true })).toHaveCount(0);
+  await page.screenshot({ path: '../../.tmp/fr681-conversation.png' });
+  await page.getByRole('button', { name: 'Case 路径', exact: true }).click();
+  await page.screenshot({ path: '../../.tmp/fr681-path.png' });
+  await page.getByRole('button', { name: '基础配置', exact: true }).click();
+  await page.screenshot({ path: '../../.tmp/fr681-basics.png' });
+  await page.setViewportSize({ width: 1024, height: 900 });
+  await expect(page.getByRole('button', { name: '保存', exact: true })).toBeVisible();
+  expect(await page.locator('.scenario-workspace').evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await page.screenshot({ path: '../../.tmp/fr681-basics-1024.png' });
+  expect(writes.filter(write => write.path.endsWith('/cases'))).toHaveLength(1);
 });
 
 test('case deletion confirms intent and retains the case when the server rejects it', async ({ page }) => {

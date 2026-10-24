@@ -827,7 +827,43 @@ class CaseStageWrite(ApiModel):
     objective: str = Field(default="", max_length=10_000)
 
 
-class CaseCreateWrite(ApiModel):
+class CaseMaterialWrite(ApiModel):
+    kind: Literal["LINK", "FILE"]
+    name: str = Field(min_length=1, max_length=220)
+    value: str = Field(min_length=1, max_length=2000)
+
+    @model_validator(mode="after")
+    def validate_reference(self) -> CaseMaterialWrite:
+        from urllib.parse import urlsplit
+
+        if self.kind == "LINK":
+            parsed = urlsplit(self.value)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                raise ValueError("资料链接必须为 HTTP 或 HTTPS 地址")
+        return self
+
+
+class CaseBasicsWrite(ApiModel):
+    name: str = Field(min_length=1, max_length=220)
+    description: str = Field(default="", max_length=20_000)
+    objective: str = Field(default="", max_length=20_000)
+    work_directory_id: str | None = Field(default=None, min_length=1, max_length=36)
+    materials: list[CaseMaterialWrite] = Field(
+        default_factory=lambda: list[CaseMaterialWrite](), max_length=100
+    )
+
+    @model_validator(mode="after")
+    def validate_name(self) -> CaseBasicsWrite:
+        if not self.name.strip():
+            raise ValueError("名称不能为空")
+        return self
+
+
+class CaseUpdateWrite(CaseBasicsWrite):
+    expected_row_version: int = Field(ge=1)
+
+
+class CaseCreateWrite(CaseBasicsWrite):
     name: str = Field(min_length=1, max_length=220)
     objective: str = Field(default="", max_length=20_000)
     stages: list[CaseStageWrite] = Field(default_factory=list, max_length=50)
@@ -838,6 +874,22 @@ class CaseCreateWrite(ApiModel):
         if len(keys) != len(set(keys)):
             raise ValueError("case stage keys must be unique")
         return self
+
+
+class CasePathCardWrite(ApiModel):
+    id: str | None = Field(default=None, min_length=1, max_length=36)
+    flow_run_id: str | None = Field(default=None, min_length=1, max_length=36)
+
+    @model_validator(mode="after")
+    def validate_source(self) -> CasePathCardWrite:
+        if bool(self.id) == bool(self.flow_run_id):
+            raise ValueError("请选择已有卡片或流程运行记录")
+        return self
+
+
+class CasePathWrite(ApiModel):
+    expected_row_version: int = Field(ge=1)
+    cards: list[CasePathCardWrite] = Field(max_length=50)
 
 
 class CaseStageStateWrite(ApiModel):
@@ -879,6 +931,11 @@ class CaseControlConversationWrite(ApiModel):
     model_name: str = Field(min_length=1, max_length=240)
     reasoning_effort: str | None = Field(default=None, max_length=30)
     capability_version_ids: list[str] = Field(default_factory=list, max_length=100)
+    credential_ids: list[str] = Field(default_factory=list, max_length=100)
+
+
+class CaseSessionConfigWrite(CaseControlConversationWrite):
+    expected_row_version: int = Field(ge=1)
 
 
 class CaseFlowRunWrite(ApiModel):

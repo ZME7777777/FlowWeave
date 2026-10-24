@@ -324,7 +324,21 @@ def git_working_file_diff(
     )
 
 
+def write_case_material_file(db: Session, workspace_id: str, case_id: str, content: bytes) -> str:
+    from flowweave.modules.agent_workspaces.application import work_directories
+
+    return work_directories.write_case_material_file(db, workspace_id, case_id, content)
+
+
+def read_case_material_file(db: Session, workspace_id: str, case_id: str, value: str) -> bytes:
+    from flowweave.modules.agent_workspaces.application import work_directories
+
+    return work_directories.read_case_material_file(db, workspace_id, case_id, value)
+
+
 __all__ = (
+    "write_case_material_file",
+    "read_case_material_file",
     "agent_workspace_owner_is_active",
     "agent_workspace_record_path",
     "AgentWorkDirectory",

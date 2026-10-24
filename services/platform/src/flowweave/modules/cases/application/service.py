@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import mimetypes
+from pathlib import PurePosixPath
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
+from flowweave.modules.agent_sessions.application.schedules import validate_template_configuration
 from flowweave.modules.agent_sessions.infrastructure.models import AgentConversationBinding
 from flowweave.modules.agent_sessions.public import conversations
 from flowweave.modules.agent_workspaces import public as agent_workspaces
+from flowweave.modules.agent_workspaces.application import work_directories
 from flowweave.modules.agent_workspaces.infrastructure.models import AgentWorkDirectoryVersion
 from flowweave.modules.cases.infrastructure.models import (
     Case,
@@ -17,6 +22,7 @@ from flowweave.modules.cases.infrastructure.models import (
     CaseFlowRun,
     CaseStage,
 )
+from flowweave.modules.model_providers.application.service import list_providers
 from flowweave.modules.orchestration import public as orchestration
 from flowweave.modules.runs.infrastructure.models import (
     ArtifactVersion,
@@ -24,6 +30,7 @@ from flowweave.modules.runs.infrastructure.models import (
     NodeAttempt,
     NodeRun,
 )
+from flowweave.modules.users.application.security import user_runtime_project_root
 from flowweave.shared.application.transactions import finish
 from flowweave.shared.database import now
 from flowweave.shared.errors import DomainError, conflict, illegal, not_found
@@ -37,10 +44,13 @@ from flowweave.shared.schemas import (
     CaseCreateWrite,
     CaseDecisionProposalWrite,
     CaseFlowRunWrite,
+    CasePathWrite,
+    CaseSessionConfigWrite,
     CaseStageExecutionStartWrite,
     CaseStageFlowRunWrite,
     CaseStageLaunchWrite,
     CaseStageStateWrite,
+    CaseUpdateWrite,
     NodeRunCopyWrite,
     StepwiseNodeDraftStartWrite,
     StepwiseRunRecordCopyWrite,
@@ -331,6 +341,8 @@ def _write_case_files(db: Session, item: Case) -> None:
         state=item.state,
         stages=stages,
         control_plans=plans,
+        description=item.description,
+        materials=tuple(item.materials_json or []),
     )
 
 
@@ -357,6 +369,10 @@ def _case_dict(db: Session, item: Case) -> dict[str, Any]:
         "id": item.id,
         "name": item.name,
         "objective": item.objective,
+        "description": item.description,
+        "materials": item.materials_json or [],
+        "work_directory_id": item.work_directory_id,
+        "session_config": item.session_config_json or {},
         "state": item.state,
         "control_conversation_binding_id": item.control_conversation_binding_id,
         "control_work_directory_id": item.control_work_directory_id,
@@ -382,7 +398,18 @@ def get_case(db: Session, case_id: str) -> dict[str, Any]:
 
 
 def create_case(db: Session, payload: CaseCreateWrite) -> dict[str, Any]:
-    item = Case(name=payload.name.strip(), objective=payload.objective.strip())
+    workspace = agent_workspaces.ensure_default_agent_workspace(db)
+    if payload.work_directory_id:
+        work_directories.get_work_directory(db, workspace.id, payload.work_directory_id)
+    if any(material.kind == "FILE" for material in payload.materials):
+        raise DomainError("CASE_MATERIAL_INVALID", "请先保存 Case，再上传文件资料", 422)
+    item = Case(
+        name=payload.name.strip(),
+        description=payload.description.strip(),
+        objective=payload.objective.strip(),
+        work_directory_id=payload.work_directory_id,
+        materials_json=[material.model_dump() for material in payload.materials],
+    )
     db.add(item)
     db.flush()
     for position, stage in enumerate(payload.stages):
@@ -397,6 +424,206 @@ def create_case(db: Session, payload: CaseCreateWrite) -> dict[str, Any]:
             )
         )
     item.state = "ACTIVE" if payload.stages else "DRAFT"
+    directory = agent_workspaces.create_case_work_directory(
+        db, workspace.id, item.id, f"Case · {item.name[:120]} · {item.id[:8]}"
+    )
+    item.control_work_directory_id = str(directory["id"])
+    _write_case_files(db, item)
+    finish(db)
+    return _case_dict(db, item)
+
+
+def _editable_case(db: Session, case_id: str, expected_row_version: int) -> Case:
+    item = db.scalar(select(Case).where(Case.id == case_id).with_for_update())
+    if item is None:
+        raise not_found("case", case_id)
+    if item.row_version != expected_row_version:
+        raise conflict("Case 已更新，请刷新后重试")
+    return item
+
+
+def update_case(db: Session, case_id: str, payload: CaseUpdateWrite) -> dict[str, Any]:
+    item = _editable_case(db, case_id, payload.expected_row_version)
+    workspace = agent_workspaces.ensure_default_agent_workspace(db)
+    if payload.work_directory_id:
+        work_directories.get_work_directory(db, workspace.id, payload.work_directory_id)
+    if item.control_conversation_binding_id and payload.work_directory_id != item.work_directory_id:
+        raise DomainError("CASE_WORKSPACE_FROZEN", "已有会话的工作区不可变更", 409)
+    known_files = {
+        material["value"] for material in item.materials_json or [] if material["kind"] == "FILE"
+    }
+    if any(
+        material.kind == "FILE" and material.value not in known_files
+        for material in payload.materials
+    ):
+        raise DomainError("CASE_MATERIAL_INVALID", "文件资料必须已上传到当前 Case", 422)
+    item.name = payload.name.strip()
+    item.description = payload.description.strip()
+    item.objective = payload.objective.strip()
+    item.work_directory_id = payload.work_directory_id
+    item.materials_json = [material.model_dump() for material in payload.materials]
+    item.row_version += 1
+    _write_case_files(db, item)
+    finish(db)
+    return _case_dict(db, item)
+
+
+def upload_case_material(
+    db: Session, case_id: str, expected_row_version: int, filename: str, content: bytes
+) -> dict[str, Any]:
+    item = _editable_case(db, case_id, expected_row_version)
+    if len(content) > 64 * 1024 * 1024:
+        raise DomainError("CASE_MATERIAL_TOO_LARGE", "文件超过 64 MB", 413)
+    if len(item.materials_json or []) >= 100:
+        raise DomainError("CASE_MATERIAL_LIMIT", "最多添加 100 项资料", 422)
+    if (
+        not filename
+        or len(filename) > 220
+        or PurePosixPath(filename).name != filename
+        or "\\" in filename
+        or "\x00" in filename
+    ):
+        raise DomainError("CASE_MATERIAL_INVALID", "文件名无效", 422)
+    workspace = agent_workspaces.ensure_default_agent_workspace(db)
+    if not item.control_work_directory_id:
+        directory = agent_workspaces.create_case_work_directory(
+            db, workspace.id, item.id, f"Case · {item.name[:120]} · {item.id[:8]}"
+        )
+        item.control_work_directory_id = str(directory["id"])
+    stored_path = agent_workspaces.write_case_material_file(db, workspace.id, item.id, content)
+    item.materials_json = [
+        *(item.materials_json or []),
+        {
+            "kind": "FILE",
+            "name": filename,
+            "value": stored_path,
+        },
+    ]
+    item.row_version += 1
+    _write_case_files(db, item)
+    finish(db)
+    return _case_dict(db, item)
+
+
+def read_case_material(db: Session, case_id: str, value: str) -> tuple[bytes, str, str]:
+    item = _case(db, case_id)
+    material = next(
+        (
+            entry
+            for entry in item.materials_json or []
+            if entry["kind"] == "FILE" and entry["value"] == value
+        ),
+        None,
+    )
+    if material is None:
+        raise not_found("case_material", value)
+    workspace = agent_workspaces.ensure_default_agent_workspace(db)
+    content = agent_workspaces.read_case_material_file(db, workspace.id, item.id, value)
+    mime = mimetypes.guess_type(material["name"])[0] or "application/octet-stream"
+    if mime in {"text/html", "application/xhtml+xml", "image/svg+xml"}:
+        mime = "text/plain"
+    return content, material["name"], mime
+
+
+def save_case_session_config(
+    db: Session, case_id: str, payload: CaseSessionConfigWrite
+) -> dict[str, Any]:
+    item = _editable_case(db, case_id, payload.expected_row_version)
+    provider = next((p for p in list_providers(db) if p["id"] == payload.model_provider_id), None)
+    model = next(
+        (
+            m
+            for m in (provider or {}).get("models", [])
+            if m["model_name"] == payload.model_name and m["enabled"]
+        ),
+        None,
+    )
+    if not provider or not provider["available_for_nodes"] or not model:
+        raise DomainError("CASE_MODEL_UNAVAILABLE", "请选择可用的供应商和模型", 422)
+    if payload.reasoning_effort and payload.reasoning_effort not in model.get(
+        "supported_reasoning_efforts", []
+    ):
+        raise DomainError("CASE_REASONING_INVALID", "模型不支持所选思考程度", 422)
+    capabilities, credentials = validate_template_configuration(
+        db, tuple(payload.capability_version_ids), tuple(payload.credential_ids)
+    )
+    item.session_config_json = {
+        **payload.model_dump(exclude={"expected_row_version"}),
+        "capability_version_ids": list(capabilities),
+        "credential_ids": list(credentials),
+    }
+    item.row_version += 1
+    finish(db)
+    return _case_dict(db, item)
+
+
+def save_case_path(db: Session, case_id: str, payload: CasePathWrite) -> dict[str, Any]:
+    item = _editable_case(db, case_id, payload.expected_row_version)
+    if item.state in {"COMPLETED", "ARCHIVED"}:
+        raise illegal("terminal case cannot change its path", state=item.state)
+    stages = list(db.scalars(select(CaseStage).where(CaseStage.case_id == item.id)))
+    by_id = {stage.id: stage for stage in stages}
+    ids = [card.id for card in payload.cards if card.id]
+    if len(ids) != len(set(ids)) or any(id_ not in by_id for id_ in ids):
+        raise DomainError("CASE_PATH_INVALID", "路径卡片重复或不属于当前 Case", 422)
+    removed = [stage for stage in stages if stage.id not in ids]
+    removed_ids = [stage.id for stage in removed]
+    if any(stage.current_execution_flow_run_id for stage in removed) or (
+        removed_ids
+        and (
+            db.scalar(
+                select(CaseControlPlan.id).where(CaseControlPlan.stage_id.in_(removed_ids)).limit(1)
+            )
+            or db.scalar(
+                select(CaseAgentTask.id).where(CaseAgentTask.stage_id.in_(removed_ids)).limit(1)
+            )
+        )
+    ):
+        raise DomainError("CASE_PATH_IN_USE", "已有执行历史的阶段不可移除", 409)
+    candidates = {
+        candidate["id"]: candidate for candidate in list_case_stage_templates(db, item.id)
+    }
+    new_ids = [card.flow_run_id for card in payload.cards if card.flow_run_id]
+    if len(new_ids) != len(set(new_ids)):
+        raise DomainError("CASE_PATH_INVALID", "不能重复添加同一运行记录", 422)
+    ordered: list[CaseStage] = []
+    for card in payload.cards:
+        if card.id:
+            ordered.append(by_id[card.id])
+            continue
+        candidate = candidates.get(card.flow_run_id)
+        if candidate is None:
+            raise DomainError(
+                "CASE_TEMPLATE_UNAVAILABLE", "运行记录不可用或已被关联，请重新选择", 409
+            )
+        ordered.append(
+            CaseStage(
+                case_id=item.id,
+                stage_key=f"run-{uuid4()}",
+                flow_run_id=candidate["id"],
+                name=candidate["name"],
+                objective="",
+                execution_mode=candidate["execution_mode"],
+                state="PENDING",
+            )
+        )
+    # Unique positions stay valid throughout reordering, including a complete swap.
+    temporary_position = max((stage.position for stage in stages), default=0) + len(stages) + 1
+    for index, stage in enumerate(stages):
+        stage.position = temporary_position + index
+    db.flush()
+    for stage in removed:
+        db.delete(stage)
+    db.flush()
+    for position, stage in enumerate(ordered):
+        stage.position = position
+        db.add(stage)
+    if ordered and not any(stage.state == "ACTIVE" for stage in ordered):
+        next((stage for stage in ordered if stage.state == "PENDING"), ordered[0]).state = "ACTIVE"
+    item.state = "ACTIVE" if ordered else "DRAFT"
+    item.row_version += 1
+    db.flush()
+    _write_case_files(db, item)
     finish(db)
     return _case_dict(db, item)
 
@@ -513,8 +740,8 @@ def set_case_stage_state(
 def list_case_stage_templates(db: Session, case_id: str) -> list[dict[str, Any]]:
     """List reusable run records that can become an isolated Case execution."""
 
-    item = _case(db, case_id)
-    bound_ids = set(db.scalars(select(CaseStage.flow_run_id).where(CaseStage.case_id == item.id)))
+    _case(db, case_id)
+    bound_ids = set(db.scalars(select(CaseStage.flow_run_id)))
     templates: list[dict[str, Any]] = []
     for run in db.scalars(
         select(FlowRun)
@@ -1349,16 +1576,20 @@ def create_case_control_conversation(
     created = conversations.bootstrap_conversation(
         db,
         workspace.id,
-        work_directory_id=item.control_work_directory_id,
+        work_directory_id=item.work_directory_id or item.control_work_directory_id,
         model_provider_id=payload.model_provider_id,
         model_name=payload.model_name,
         reasoning_effort=payload.reasoning_effort,
         capability_version_ids=tuple(payload.capability_version_ids),
+        credential_ids=tuple(payload.credential_ids),
         content=(
             f"你是事项“{item.name}”的协调 Agent。\n\n"
-            "当前工作目录是此事项的专属目录。先读取 case.toml 和 memory.md；"
+            f"先读取 {user_runtime_project_root(workspace.id)}"
+            f"/.flowweave/cases/{item.id}/case.toml "
+            "和同目录中的 memory.md；"
             "case.toml 是平台投影的当前事项、阶段和 FlowRun 摘要，"
             "memory.md 用于沉淀可复用工作记忆。\n\n"
+            f"事项说明：{item.description}\n\n"
             f"事项目标：{item.objective or '尚未填写'}\n\n"
             "仅在当前事项工作目录中工作。基于可审计事实协助梳理阶段、风险和后续建议；"
             "不得直接修改流程模板或已启动的流程节点。"

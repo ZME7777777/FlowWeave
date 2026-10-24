@@ -21,6 +21,10 @@ class Case(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     name: Mapped[str] = mapped_column(String(220))
+    description: Mapped[str] = mapped_column(Text, default="")
+    materials_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    session_config_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    work_directory_id: Mapped[str | None] = mapped_column(String(36))
     objective: Mapped[str] = mapped_column(Text, default="")
     state: Mapped[str] = mapped_column(String(20), default="DRAFT", index=True)
     control_conversation_binding_id: Mapped[str | None] = mapped_column(String(36), unique=True)

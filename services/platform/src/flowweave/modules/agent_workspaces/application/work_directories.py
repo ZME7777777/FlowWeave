@@ -8,6 +8,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
@@ -23,12 +24,16 @@ from flowweave.modules.agent_workspaces.infrastructure.models import (
     AgentWorkDirectoryVersion,
     AgentWorkspace,
 )
+from flowweave.modules.cases.infrastructure.models import Case
 from flowweave.modules.sandboxes import public as sandboxes
 from flowweave.modules.users.application.security import (
     current_user_id,
     user_runtime_project_root,
 )
-from flowweave.shared.application.transactions import register_commit_action
+from flowweave.shared.application.transactions import (
+    register_commit_action,
+    register_rollback_action,
+)
 from flowweave.shared.database import now
 from flowweave.shared.errors import DomainError, not_found
 from flowweave.shared.models import NodeAttempt, NodeRun
@@ -414,6 +419,11 @@ def list_work_directories(db: Session, workspace_id: str) -> dict[str, Any]:
         .where(
             AgentWorkDirectory.workspace_id == workspace_id,
             ~AgentWorkDirectory.id.in_(automation_directory_ids),
+            ~AgentWorkDirectory.id.in_(
+                select(Case.control_work_directory_id).where(
+                    Case.control_work_directory_id.is_not(None)
+                )
+            ),
         )
         .order_by(AgentWorkDirectory.updated_at.desc(), AgentWorkDirectory.created_at.desc())
     )
@@ -504,7 +514,12 @@ def create_case_work_directory(
     except OSError as exc:
         raise DomainError("CASE_WORKSPACE_UNAVAILABLE", "无法创建事项工作目录", 503) from exc
     try:
-        return create_work_directory(db, workspace_id, display_name, (relative_path,))
+        result = create_work_directory(db, workspace_id, display_name, (relative_path,))
+        metadata = target.lstat()
+        register_rollback_action(
+            db, lambda: _remove_case_directory(root, PurePosixPath(relative_path), metadata)
+        )
+        return result
     except Exception:
         try:
             target.rmdir()
@@ -580,6 +595,8 @@ def write_case_files(
     state: str,
     stages: tuple[dict[str, Any], ...],
     control_plans: tuple[dict[str, Any], ...] = (),
+    description: str = "",
+    materials: tuple[dict[str, Any], ...] = (),
 ) -> None:
     """Maintain Case-local soft context without replacing platform ownership."""
 
@@ -593,9 +610,20 @@ def write_case_files(
             f"id = {json.dumps(case_id)}",
             f"name = {json.dumps(name, ensure_ascii=False)}",
             f"objective = {json.dumps(objective, ensure_ascii=False)}",
+            f"description = {json.dumps(description, ensure_ascii=False)}",
             f"state = {json.dumps(state)}",
             "",
         ]
+        for material in materials:
+            lines.extend(
+                [
+                    "[[materials]]",
+                    f"kind = {json.dumps(material['kind'])}",
+                    f"name = {json.dumps(material['name'], ensure_ascii=False)}",
+                    f"value = {json.dumps(material['value'], ensure_ascii=False)}",
+                    "",
+                ]
+            )
         for stage in stages:
             lines.extend(
                 [
@@ -948,7 +976,70 @@ def frozen_flow_run_conversation_context(
     return _flow_run_runtime_root(db, flow_run_id, node_attempt_id).as_posix()
 
 
+def write_case_material_file(db: Session, workspace_id: str, case_id: str, content: bytes) -> str:
+    root = _project_root(db, workspace_id)
+    relative = PurePosixPath(f".flowweave/cases/{case_id}/materials")
+    with _case_directory_parent(root, relative) as parent:
+        if parent is None:
+            raise DomainError("CASE_WORKSPACE_UNAVAILABLE", "Case 工作目录不可用", 409)
+        try:
+            os.mkdir("materials", mode=0o700, dir_fd=parent)
+        except FileExistsError:
+            pass
+        folder = os.open("materials", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+        stored_name = str(uuid4())
+        try:
+            descriptor = os.open(
+                stored_name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=folder,
+            )
+            with os.fdopen(descriptor, "wb") as output:
+                output.write(content)
+            stored_path = relative / stored_name
+
+            def rollback_upload() -> None:
+                with _case_directory_parent(root, stored_path) as directory:
+                    if directory is not None:
+                        try:
+                            os.unlink(stored_path.name, dir_fd=directory)
+                        except FileNotFoundError:
+                            pass
+
+            register_rollback_action(db, rollback_upload)
+        finally:
+            os.close(folder)
+    return stored_path.as_posix()
+
+
+def read_case_material_file(db: Session, workspace_id: str, case_id: str, value: str) -> bytes:
+    relative = _canonical_relative_path(value)
+    prefix = PurePosixPath(f".flowweave/cases/{case_id}/materials")
+    if relative.parent != prefix:
+        raise DomainError("CASE_MATERIAL_INVALID", "文件资料不属于当前 Case", 422)
+    root = _project_root(db, workspace_id)
+    try:
+        with _case_directory_parent(root, relative) as parent:
+            if parent is None:
+                raise not_found("case_material", value)
+            descriptor = os.open(
+                relative.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent
+            )
+            with os.fdopen(descriptor, "rb") as source:
+                if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+                    raise DomainError("CASE_MATERIAL_INVALID", "资料不是普通文件", 422)
+                content = source.read(64 * 1024 * 1024 + 1)
+                if len(content) > 64 * 1024 * 1024:
+                    raise DomainError("CASE_MATERIAL_TOO_LARGE", "文件超过 64 MB", 413)
+    except OSError as exc:
+        raise not_found("case_material", value) from exc
+    return content
+
+
 __all__ = (
+    "write_case_material_file",
+    "read_case_material_file",
     "delete_flow_run_work_directory",
     "delete_work_directory",
     "conversation_context",

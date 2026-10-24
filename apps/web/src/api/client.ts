@@ -601,8 +601,20 @@ export const api = {
     request<NodeDirectory>('/node-directories', json('POST', body)),
   deleteDirectory: (id: string) => request<void>(`/node-directories/${encodeURIComponent(id)}`, json('DELETE')),
   cases: () => request<Case[]>('/cases'),
-  createCase: (body: { name: string; objective?: string; stages?: Array<{ stage_key: string; name: string; objective?: string }> }) =>
-    request<Case>('/cases', json('POST', body)),
+  createCase: (body: import('../types').CaseBasics) => request<Case>('/cases', json('POST', body)),
+  updateCase: (id: string, body: import('../types').CaseBasics & { expected_row_version: number }) =>
+    request<Case>(`/cases/${encodeURIComponent(id)}`, json('PUT', body)),
+  uploadCaseMaterial: async (id: string, expectedRowVersion: number, file: File): Promise<Case> => {
+    const body = new FormData(); body.append('file', file);
+    const response = await fetch(`${API_BASE}${ROOT}/cases/${encodeURIComponent(id)}/materials?expected_row_version=${expectedRowVersion}`, { method: 'POST', body, credentials: 'include' });
+    if (!response.ok) throw await responseError(response);
+    return response.json() as Promise<Case>;
+  },
+  caseMaterialPreview: (id: string, value: string) => requestText(`/cases/${encodeURIComponent(id)}/materials/file?${new URLSearchParams({ value })}`),
+  saveCasePath: (id: string, expected_row_version: number, cards: Array<{ id: string } | { flow_run_id: string }>) =>
+    request<Case>(`/cases/${encodeURIComponent(id)}/path`, json('PUT', { expected_row_version, cards })),
+  saveCaseSessionConfig: (id: string, expected_row_version: number, config: import('../types').CaseSessionConfig) =>
+    request<Case>(`/cases/${encodeURIComponent(id)}/session-config`, json('PUT', { expected_row_version, ...config })),
   deleteCase: (id: string) => request<void>(`/cases/${encodeURIComponent(id)}`, json('DELETE', undefined, true)),
   deleteCaseControlConversation: (id: string) => request<void>(`/cases/${encodeURIComponent(id)}/control-conversation`, json('DELETE', undefined, true)),
   case: (id: string) => request<Case>(`/cases/${encodeURIComponent(id)}`),
@@ -619,7 +631,7 @@ export const api = {
     request<import('../types').CaseControlPlan>(`/cases/${encodeURIComponent(caseId)}/control-plans/${encodeURIComponent(planId)}/execute`, json('POST')),
   retryCaseControlPlan: (caseId: string, planId: string) =>
     request<import('../types').CaseControlPlan>(`/cases/${encodeURIComponent(caseId)}/control-plans/${encodeURIComponent(planId)}/retry`, json('POST')),
-  createCaseControlConversation: (caseId: string, body: { model_provider_id: string; model_name: string; reasoning_effort?: string | null; capability_version_ids?: string[] }, idempotencyKey = randomId()) =>
+  createCaseControlConversation: (caseId: string, body: { model_provider_id: string; model_name: string; reasoning_effort?: string | null; capability_version_ids?: string[]; credential_ids?: string[] }, idempotencyKey = randomId()) =>
     request<Case>(`/cases/${encodeURIComponent(caseId)}/control-conversation`, json('POST', body, idempotencyKey)),
 
   nodes: (directoryId?: string) => request<NodeAsset[]>(`/node-assets${directoryId ? `?directory_id=${directoryId}` : ''}`),
@@ -1332,4 +1344,11 @@ export function subscribeToRun(runId: string, onEvent: () => void): () => void {
   source.onmessage = onEvent;
   ['ATTEMPT_CREATED', 'HUMAN_CONFIRM_REQUIRED', 'ARTIFACT_VERSION_CREATED', 'NODE_RUN_ACCEPTED', 'SNAPSHOT_SYNCED', 'FLOW_RUN_COMPLETED'].forEach(type => source.addEventListener(type, onEvent));
   return () => source.close();
+}
+
+export function caseMaterialFileUrl(caseId: string, value: string, download = false): string {
+  const url = absoluteApiUrl(`/cases/${encodeURIComponent(caseId)}/materials/file`);
+  url.searchParams.set('value', value);
+  if (download) url.searchParams.set('download', 'true');
+  return url.toString();
 }

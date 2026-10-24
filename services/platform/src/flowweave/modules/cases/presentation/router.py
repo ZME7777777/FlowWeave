@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
+from urllib.parse import quote
 
-from fastapi import APIRouter, Response
+from fastapi import APIRouter, File, Query, Response, UploadFile
 
 from flowweave.modules.cases import public as service
+from flowweave.shared.errors import DomainError
 from flowweave.shared.http import Db, IdempotencyKey, command_key, run_sync
 from flowweave.shared.schemas import (
     CaseControlConversationWrite,
@@ -13,10 +15,13 @@ from flowweave.shared.schemas import (
     CaseCreateWrite,
     CaseDecisionProposalWrite,
     CaseFlowRunWrite,
+    CasePathWrite,
+    CaseSessionConfigWrite,
     CaseStageExecutionStartWrite,
     CaseStageFlowRunWrite,
     CaseStageLaunchWrite,
     CaseStageStateWrite,
+    CaseUpdateWrite,
 )
 
 router = APIRouter()
@@ -30,6 +35,20 @@ async def cases(db: Db) -> list[dict[str, Any]]:
 @router.post("/cases", status_code=201)
 async def create_case(payload: CaseCreateWrite, db: Db) -> dict[str, Any]:
     return await run_sync(db, lambda session: service.create_case(session, payload))
+
+
+@router.put("/cases/{case_id}")
+async def update_case(case_id: str, payload: CaseUpdateWrite, db: Db) -> dict[str, Any]:
+    return await run_sync(db, lambda session: service.update_case(session, case_id, payload))
+
+
+@router.put("/cases/{case_id}/session-config")
+async def save_session_config(
+    case_id: str, payload: CaseSessionConfigWrite, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db, lambda session: service.save_case_session_config(session, case_id, payload)
+    )
 
 
 @router.delete("/cases/{case_id}", status_code=204, response_class=Response)
@@ -47,6 +66,50 @@ async def delete_case_control_conversation(case_id: str, db: Db) -> Response:
 @router.get("/cases/{case_id}")
 async def case(case_id: str, db: Db) -> dict[str, Any]:
     return await run_sync(db, lambda session: service.get_case(session, case_id))
+
+
+@router.put("/cases/{case_id}/path")
+async def save_path(case_id: str, payload: CasePathWrite, db: Db) -> dict[str, Any]:
+    return await run_sync(db, lambda session: service.save_case_path(session, case_id, payload))
+
+
+@router.post("/cases/{case_id}/materials", status_code=201)
+async def upload_material(
+    case_id: str,
+    db: Db,
+    file: Annotated[UploadFile, File()],
+    expected_row_version: int = Query(ge=1),
+) -> dict[str, Any]:
+    try:
+        content = await file.read(64 * 1024 * 1024 + 1)
+        if len(content) > 64 * 1024 * 1024:
+            raise DomainError("CASE_MATERIAL_TOO_LARGE", "文件超过 64 MB", 413)
+        return await run_sync(
+            db,
+            lambda session: service.upload_case_material(
+                session, case_id, expected_row_version, file.filename or "", content
+            ),
+        )
+    finally:
+        await file.close()
+
+
+@router.get("/cases/{case_id}/materials/file")
+async def material_file(case_id: str, db: Db, value: str, download: bool = False) -> Response:
+    content, filename, mime = await run_sync(
+        db, lambda session: service.read_case_material(session, case_id, value)
+    )
+    disposition = "attachment" if download else "inline"
+    return Response(
+        content,
+        media_type=mime,
+        headers={
+            "Content-Disposition": f"{disposition}; filename*=UTF-8''{quote(filename)}",
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "private, no-store",
+            "Content-Security-Policy": "sandbox; default-src 'none'",
+        },
+    )
 
 
 @router.get("/cases/{case_id}/stage-templates")
