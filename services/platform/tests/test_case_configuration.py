@@ -119,6 +119,22 @@ def test_material_upload_round_trip_and_symlink_boundary(case_db):
         "text/plain",
     )
     assert service.get_case(db, item["id"])["materials"] == [material]
+    renamed = service.update_case(
+        db,
+        item["id"],
+        CaseUpdateWrite(
+            expected_row_version=updated["row_version"],
+            name=item["name"],
+            materials=[{**material, "name": "上线资料.txt"}],
+        ),
+    )
+    assert renamed["materials"][0]["value"] == material["value"]
+    assert service.read_case_material(db, item["id"], material["value"]) == (
+        b"input data",
+        "上线资料.txt",
+        "text/plain",
+    )
+    assert service.get_case(db, item["id"])["materials"][0]["name"] == "上线资料.txt"
     path = root / material["value"]
     path.unlink()
     outside = root / "private.txt"

@@ -1,16 +1,36 @@
 import { useMemo, useRef, useState, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowDown, ArrowUp, ChevronRight, ClipboardList, ExternalLink, FileText, Link2, MessageSquareCode, Plus, Settings2, Trash2, Upload, X } from 'lucide-react';
+import { ArrowDown, Check, ChevronRight, ClipboardList, ExternalLink, FileText, GripVertical, Link2, MessageSquareCode, Pencil, Plus, Settings2, Trash2, Upload, X } from 'lucide-react';
 import { api, caseMaterialFileUrl } from '../api/client';
 import type { Case, CaseBasics, CaseMaterial, CaseSessionConfig, CaseStage } from '../types';
 import { CapabilityManager } from '../components/agent-session/AgentSessionWorkbench';
 import { useEscapeClose } from '../components/useEscapeClose';
 import { useProductDialog } from '../components/ProductDialogContext';
+import { CaseChoice } from './CaseChoice';
+import './cases.css';
 
 const CASE_STATE: Record<Case['state'], string> = { DRAFT: '草稿', ACTIVE: '进行中', PAUSED: '已暂停', COMPLETED: '已完成', ARCHIVED: '已归档' };
 const STAGE_STATE: Record<CaseStage['state'], string> = { PENDING: '待处理', ACTIVE: '进行中', COMPLETED: '已完成', SKIPPED: '已跳过' };
 type Tab = 'overview' | 'path' | 'conversation';
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : '保存失败，请重试。';
+
+function MaterialName({ name, file, onRename }: { name: string; file: boolean; onRename: (name: string) => void }) {
+  const [editing, setEditing] = useState(false);
+  // Keep the file type stable so renamed uploads retain preview and download behavior.
+  const extension = file ? name.match(/\.[^.]+$/)?.[0] ?? '' : '';
+  const [draft, setDraft] = useState('');
+  const valid = Boolean(draft.trim()) && (!file || (!/[\\/]/.test(draft) && !draft.includes('\0')));
+  const apply = () => { if (valid) { onRename(draft.trim() + extension); setEditing(false); } };
+  return editing ? <span className="case-material-rename">
+    <input aria-label={`资料名称 ${name}`} autoFocus value={draft} maxLength={220 - extension.length}
+      onChange={event => setDraft(event.target.value)} onKeyDown={event => {
+        if (event.key === 'Enter') { event.preventDefault(); apply(); }
+        if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setEditing(false); }
+      }}/>{extension && <small>{extension}</small>}
+    <button className="ghost" type="button" aria-label="确认改名" disabled={!valid} onClick={apply}><Check size={14}/></button>
+    <button className="ghost" type="button" aria-label="取消改名" onClick={() => setEditing(false)}><X size={14}/></button>
+  </span> : <button className="ghost case-material-rename-button" type="button" aria-label={`重命名 ${name}`} onClick={() => { setDraft(extension ? name.slice(0, -extension.length) : name); setEditing(true); }}><Pencil size={14}/></button>;
+}
 
 function MaterialPreview({ material, caseId, onClose }: {
   material: CaseMaterial; caseId: string; onClose: () => void;
@@ -88,18 +108,22 @@ function BasicsForm({ item, workspaceId, onSaved, onCancel }: {
       <label>名称<input autoFocus={!item} value={name} maxLength={220} required onChange={event => { setName(event.target.value); setNotice(''); }} placeholder="为这个 Case 起个名称"/></label>
       <label>说明<textarea value={description} maxLength={20_000} onChange={event => { setDescription(event.target.value); setNotice(''); }} placeholder="介绍当前场景的背景。"/></label>
       <label>目标<textarea value={objective} maxLength={20_000} onChange={event => { setObjective(event.target.value); setNotice(''); }} placeholder="说明需要达成的结果。"/></label>
-      <label><span>工作区 <span className="scenario-optional">可选</span></span><select aria-label="工作区" value={directoryId} disabled={Boolean(item?.control_conversation_binding_id)} onChange={event => { setDirectoryId(event.target.value); setNotice(''); }}>
-        <option value="">默认工作区（自动创建 Case 专属工作区）</option>
-        {directoryId && !directories.data?.items.some(directory => directory.id === directoryId) && <option value={directoryId}>当前工作区（暂不可用）</option>}
-        {directories.data?.items.filter(directory => directory.id !== item?.control_work_directory_id).map(directory => <option key={directory.id} value={directory.id}>{directory.display_name}</option>)}
-      </select><small>{item?.control_conversation_binding_id ? '会话已创建，工作区已固定。' : '可选择自由对话中的已有工作区；留空将自动创建专属工作区。'}</small></label>
+      <div className="case-field"><span>工作区 <span className="scenario-optional">可选</span></span><CaseChoice label="工作区" value={directoryId} disabled={busy || Boolean(item?.control_conversation_binding_id)} onChange={value => { setDirectoryId(value); setNotice(''); }} options={[
+        { value: '', label: '默认工作区', detail: '自动创建 Case 专属工作区' },
+        ...(directoryId && !directories.data?.items.some(directory => directory.id === directoryId) ? [{ value: directoryId, label: '当前工作区（暂不可用）' }] : []),
+        ...(directories.data?.items.filter(directory => directory.id !== item?.control_work_directory_id).map(directory => ({ value: directory.id, label: directory.display_name })) ?? []),
+      ]}/><small>{item?.control_conversation_binding_id ? '会话已创建，工作区已固定。' : '输入名称搜索已有工作区，或选择默认工作区。'}</small></div>
       {directories.error && <p className="error">{errorMessage(directories.error)}</p>}
       <section className="scenario-materials" aria-label="资料"><header><span><b>资料</b><small>添加完成当前场景所需的基础资料。</small></span><div><button className="secondary" type="button" onClick={() => setLinkOpen(current => !current)}><Link2 size={14}/>添加链接</button><button className="secondary" type="button" onClick={() => fileInput.current?.click()}><Upload size={14}/>上传文件</button></div></header>
         <input hidden ref={fileInput} type="file" multiple aria-label="上传资料文件" onChange={event => { const selectedFiles = Array.from(event.target.files ?? []); setFiles(current => [...current, ...selectedFiles]); event.target.value = ''; setNotice(''); }}/>
         {linkOpen && <div className="scenario-link-editor"><label>链接名称<input value={linkName} maxLength={220} onChange={event => setLinkName(event.target.value)} placeholder="选填"/></label><label>链接地址<input value={linkUrl} type="url" onChange={event => setLinkUrl(event.target.value)} placeholder="https://"/></label><button className="secondary" type="button" disabled={!linkUrl.trim()} onClick={addLink}>添加</button></div>}
         {!materials.length && !files.length && <p className="scenario-materials-empty">尚未添加资料</p>}
-        <ul>{materials.map((material, index) => <li key={`${index}-${material.value}`}>{material.kind === 'LINK' ? <Link2 size={15}/> : <FileText size={15}/>}{material.kind === 'LINK' ? <a href={material.value} target="_blank" rel="noreferrer">{material.name}</a> : <button className="ghost" type="button" onClick={() => setPreview(material)}>{material.name}</button>}<button className="ghost" type="button" aria-label={`移除资料 ${material.name}`} onClick={() => { setMaterials(current => current.filter((_, i) => i !== index)); setNotice(''); }}><X size={14}/></button></li>)}
-          {files.map((file, index) => <li key={`${index}-${file.name}`}><FileText size={15}/><span>{file.name}<small>保存时上传</small></span><button className="ghost" type="button" aria-label={`移除文件 ${file.name}`} onClick={() => setFiles(current => current.filter((_, i) => i !== index))}><X size={14}/></button></li>)}</ul>
+        <ul>{materials.map((material, index) => <li key={`${index}-${material.value}`}>{material.kind === 'LINK' ? <Link2 size={15}/> : <FileText size={15}/>}{material.kind === 'LINK' ? <a href={material.value} target="_blank" rel="noreferrer">{material.name}</a> : <button className="ghost case-material-preview-button" type="button" onClick={() => setPreview(material)}>{material.name}</button>}
+          <MaterialName name={material.name} file={material.kind === 'FILE'} onRename={name => { setMaterials(current => current.map((entry, i) => i === index ? { ...entry, name } : entry)); setNotice(''); }}/>
+          <button className="ghost" type="button" aria-label={`移除资料 ${material.name}`} onClick={() => { setMaterials(current => current.filter((_, i) => i !== index)); setNotice(''); }}><X size={14}/></button></li>)}
+          {files.map((file, index) => <li key={index}><FileText size={15}/><span>{file.name}<small>保存时上传</small></span>
+            <MaterialName name={file.name} file onRename={name => { setFiles(current => current.map((entry, i) => i === index ? new File([entry], name, { type: entry.type, lastModified: entry.lastModified }) : entry)); setNotice(''); }}/>
+            <button className="ghost" type="button" aria-label={`移除文件 ${file.name}`} onClick={() => setFiles(current => current.filter((_, i) => i !== index))}><X size={14}/></button></li>)}</ul>
       </section>
       <footer className="scenario-form-actions">{onCancel && <button className="secondary" type="button" onClick={onCancel}>取消</button>}<button className="primary" disabled={!name.trim() || !workspaceId}>{busy ? '保存中…' : '保存'}</button><span role="status">{notice}</span></footer>
     </fieldset>
@@ -126,10 +150,10 @@ function ConversationTab({ item, workspaceId, onUpdated }: { item: Case; workspa
     onSuccess: result => { onUpdated(result); setNotice('已保存'); },
   });
   return <section className="scenario-config">
-    <div className="scenario-config-grid"><label>模型供应商<select aria-label="模型供应商" value={providerId} onChange={event => { setProviderId(event.target.value); setModelName(''); setEffort(''); setNotice(''); }}><option value="">选择模型服务</option>{availableProviders.map(candidate => <option value={candidate.id} key={candidate.id}>{candidate.name}</option>)}</select></label>
-      <label>模型名称<select aria-label="模型名称" value={modelName} onChange={event => { setModelName(event.target.value); setEffort(''); setNotice(''); }}><option value="">选择模型</option>{models.map(candidate => <option value={candidate.model_name} key={candidate.model_name}>{candidate.model_name}</option>)}</select></label>
-      <label>思考程度<select aria-label="思考程度" value={effort} onChange={event => { setEffort(event.target.value); setNotice(''); }}><option value="">使用模型默认值</option>{model?.supported_reasoning_efforts?.map(value => <option value={value} key={value}>{value}</option>)}</select></label></div>
-    <section className="scenario-config-box"><span><b>能力配置</b><small>选择会话加载的能力与认证 · 已选 {capabilities.length + credentials.length} 项</small></span><button className="secondary" type="button" disabled={!workspaceId} onClick={() => setConfigOpen(true)}><Settings2 size={14}/>配置会话</button></section>
+    <div className="scenario-config-grid case-session-grid"><div className="case-field"><span>模型供应商</span><CaseChoice label="模型供应商" value={providerId} disabled={save.isPending} onChange={value => { setProviderId(value); setModelName(''); setEffort(''); setNotice(''); }} options={availableProviders.map(candidate => ({ value: candidate.id, label: candidate.name }))}/></div>
+      <div className="case-field"><span>模型名称</span><CaseChoice label="模型名称" value={modelName} disabled={!provider || save.isPending} placeholder={provider ? '选择模型' : '请先选择供应商'} onChange={value => { setModelName(value); setEffort(''); setNotice(''); }} options={models.map(candidate => ({ value: candidate.model_name, label: candidate.model_name }))}/></div>
+      <div className="case-field"><span>思考程度</span><CaseChoice label="思考程度" value={effort} disabled={!model || save.isPending} onChange={value => { setEffort(value); setNotice(''); }} options={[{ value: '', label: '使用模型默认值' }, ...(model?.supported_reasoning_efforts?.map(value => ({ value, label: value })) ?? [])]}/></div>
+      <div className="case-field"><span>能力配置</span><button className="secondary case-capability-choice" type="button" aria-label="配置会话" disabled={!workspaceId || save.isPending} onClick={() => setConfigOpen(true)}><Settings2 size={15}/><span>配置会话</span><small>已选 {capabilities.length + credentials.length} 项</small><ChevronRight size={15}/></button></div></div>
     {providers.error && <p className="error">{errorMessage(providers.error)}</p>}{save.error && <p className="error" role="alert">{errorMessage(save.error)}</p>}
     <footer className="scenario-form-actions"><button className="primary" disabled={!model || save.isPending} onClick={() => save.mutate()}>{save.isPending ? '保存中…' : '保存配置'}</button><span role="status">{notice}</span></footer>
     {configOpen && <CapabilityManager configurationPreset workspaceId={workspaceId} draftCapabilityIds={capabilities} draftCredentialIds={credentials} onClose={() => setConfigOpen(false)} onCreateEnhancedConversation={ids => { setCapabilities(ids); setNotice(''); }} onDraftCredentialIdsChange={ids => { setCredentials(ids); setNotice(''); }}/>}
@@ -138,21 +162,80 @@ function ConversationTab({ item, workspaceId, onUpdated }: { item: Case; workspa
 
 function PathTab({ item, onUpdated, onOpenRun }: { item: Case; onUpdated: (item: Case) => void; onOpenRun: (id: string) => void }) {
   const [adding, setAdding] = useState(false);
-  const [flowRunId, setFlowRunId] = useState('');
+  const [parentId, setParentId] = useState('');
+  const [mode, setMode] = useState('');
+  const [recordId, setRecordId] = useState('');
+  const [draggingId, setDraggingId] = useState('');
+  const [dropTarget, setDropTarget] = useState<{ id: string; after: boolean }>();
+  const [status, setStatus] = useState('');
   const templates = useQuery({ queryKey: ['case-stage-templates', item.id], queryFn: () => api.caseStageTemplates(item.id), enabled: adding });
+  const runs = useQuery({ queryKey: ['runs'], queryFn: api.runs, enabled: adding });
+  // The API returns top-level FlowRuns; eligible records carry their formal owner ID.
+  const ownedTemplates = (templates.data ?? []).filter(record => (record.parent_flow_run_id || record.id) === parentId);
+  const records = ownedTemplates.filter(record => record.execution_mode === mode);
+  const selectedRecord = records.find(record => record.id === recordId);
   const update = useMutation({
     mutationFn: (cards: Array<{ id: string } | { flow_run_id: string }>) => api.saveCasePath(item.id, item.row_version, cards),
-    onSuccess: result => { onUpdated(result); setAdding(false); setFlowRunId(''); void templates.refetch(); },
+    onSuccess: (result, cards) => {
+      onUpdated(result); setStatus('路径已保存');
+      if (cards.some(card => 'flow_run_id' in card)) { setAdding(false); setParentId(''); setMode(''); setRecordId(''); }
+      if (adding) void templates.refetch();
+    },
   });
-  const move = (from: number, to: number) => {
+  const reorder = (source: string, target: string, after: boolean) => {
+    const from = item.stages.findIndex(stage => stage.id === source);
+    const to = item.stages.findIndex(stage => stage.id === target);
+    if (from < 0 || to < 0 || from === to || update.isPending) return;
     const cards = item.stages.map(stage => ({ id: stage.id }));
-    [cards[from], cards[to]] = [cards[to], cards[from]];
-    update.mutate(cards);
+    const [card] = cards.splice(from, 1);
+    cards.splice(to - (from < to ? 1 : 0) + (after ? 1 : 0), 0, card);
+    if (cards.every((card, index) => card.id === item.stages[index].id)) return;
+    setStatus('正在保存路径顺序…'); update.mutate(cards);
   };
-  return <section className={`scenario-path scenario-path-editor${!item.stages.length ? ' is-empty' : ''}`}>
-    <ol>{item.stages.map((stage, index) => <li key={stage.id} className={stage.state.toLowerCase()}><div className="scenario-path-rail"><span>{index + 1}</span>{index < item.stages.length - 1 && <i/>}</div><article><header><div><span>{STAGE_STATE[stage.state]} · {stage.execution_mode === 'STEPWISE' ? '逐步运行' : '连续运行'}</span><h3>{stage.name}</h3></div><div className="scenario-card-actions"><button className="ghost" aria-label={`上移 ${stage.name}`} disabled={index === 0 || update.isPending} onClick={() => move(index, index - 1)}><ArrowUp size={15}/></button><button className="ghost" aria-label={`下移 ${stage.name}`} disabled={index === item.stages.length - 1 || update.isPending} onClick={() => move(index, index + 1)}><ArrowDown size={15}/></button><button className="ghost" aria-label={`删除卡片 ${stage.name}`} disabled={update.isPending} onClick={() => update.mutate(item.stages.filter(candidate => candidate.id !== stage.id).map(candidate => ({ id: candidate.id })))}><Trash2 size={15}/></button></div></header><footer>{stage.flow_run_id && <button className="ghost" onClick={() => onOpenRun(stage.flow_run_id!)}><ExternalLink size={13}/>查看运行记录</button>}{stage.current_execution_flow_run_id && <button className="ghost" onClick={() => onOpenRun(stage.current_execution_flow_run_id!)}><ExternalLink size={13}/>当前执行</button>}</footer></article></li>)}</ol>
-    {adding ? <form className="scenario-add-card" onSubmit={event => { event.preventDefault(); if (flowRunId) update.mutate([...item.stages.map(stage => ({ id: stage.id })), { flow_run_id: flowRunId }]); }}><label>流程运行记录<select aria-label="流程运行记录" autoFocus required value={flowRunId} onChange={event => setFlowRunId(event.target.value)}><option value="">选择已有流程运行记录</option>{templates.data?.map(template => <option key={template.id} value={template.id}>{template.name} · {template.execution_mode === 'STEPWISE' ? '逐步运行' : '连续运行'}</option>)}</select></label>{templates.isLoading && <p>正在加载…</p>}{templates.error && <p className="error">{errorMessage(templates.error)}</p>}{!templates.isLoading && !templates.error && !templates.data?.length && <p>暂无可添加的运行记录，请先在流程运行中配置完整的逐步或连续运行记录。</p>}<footer><button type="button" className="secondary" disabled={update.isPending} onClick={() => setAdding(false)}>取消</button><button className="primary" disabled={!flowRunId || update.isPending}>{update.isPending ? '添加中…' : '添加'}</button></footer></form>
-      : <button className="scenario-add-path-card" disabled={update.isPending || item.stages.length >= 50} onClick={() => setAdding(true)}><Plus size={24}/><b>添加卡片</b><span>选择一个已有流程运行记录</span></button>}
+  const endDrag = () => { setDraggingId(''); setDropTarget(undefined); };
+  return <section className={`scenario-path scenario-path-editor case-connected-path${!item.stages.length ? ' is-empty' : ''}`} aria-label="Case 路径卡片">
+    {item.stages.length > 0 && <header className="case-path-heading"><span><b>运行路径</b><small>{item.stages.length} 个运行记录，按顺序串联</small></span><small>拖拽卡片调整顺序</small></header>}
+    <ol>{item.stages.map((stage, index) => <li key={stage.id} data-stage-id={stage.id} className={`${stage.state.toLowerCase()}${draggingId === stage.id ? ' is-dragging' : ''}${dropTarget?.id === stage.id ? dropTarget.after ? ' drop-after' : ' drop-before' : ''}`}
+      onDragOver={event => {
+        if (!draggingId || update.isPending) return;
+        event.preventDefault(); event.dataTransfer.dropEffect = 'move';
+        const bounds = event.currentTarget.getBoundingClientRect();
+        setDropTarget({ id: stage.id, after: event.clientY > bounds.top + bounds.height / 2 });
+      }}
+      onDrop={event => {
+        event.preventDefault();
+        if (draggingId && event.dataTransfer.getData('application/x-flowweave-case-stage') === draggingId) {
+          const bounds = event.currentTarget.getBoundingClientRect();
+          reorder(draggingId, stage.id, event.clientY > bounds.top + bounds.height / 2);
+        }
+        endDrag();
+      }}>
+      <div className="scenario-path-rail"><span>{index + 1}</span><i><ArrowDown size={12}/></i></div>
+      <article draggable={!update.isPending && !adding} aria-label={`路径卡片 ${stage.name}`}
+        onDragStart={event => { event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('application/x-flowweave-case-stage', stage.id); setDraggingId(stage.id); setStatus(''); }} onDragEnd={endDrag}>
+        <header><div className="case-card-title"><span className={`case-stage-state ${stage.state.toLowerCase()}`}>{STAGE_STATE[stage.state]}</span><span>{stage.execution_mode === 'STEPWISE' ? '逐步运行' : '连续运行'}</span><h3>{stage.name}</h3></div>
+          <div className="scenario-card-actions"><button className="ghost case-drag-handle" aria-label={`调整顺序 ${stage.name}`} title="拖拽调整顺序，也可聚焦后按上下方向键" disabled={update.isPending || adding} onKeyDown={event => {
+            if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+            event.preventDefault(); const to = index + (event.key === 'ArrowDown' ? 1 : -1);
+            if (item.stages[to]) reorder(stage.id, item.stages[to].id, to > index);
+          }}><GripVertical size={17}/></button><button className="ghost" aria-label={`删除卡片 ${stage.name}`} disabled={update.isPending} onClick={() => { setStatus(''); update.mutate(item.stages.filter(candidate => candidate.id !== stage.id).map(candidate => ({ id: candidate.id }))); }}><Trash2 size={15}/></button></div>
+        </header>
+        <footer>{stage.flow_run_id && <button className="ghost" onClick={() => onOpenRun(stage.flow_run_id!)}><ExternalLink size={13}/>查看运行记录</button>}{stage.current_execution_flow_run_id && <button className="ghost" onClick={() => onOpenRun(stage.current_execution_flow_run_id!)}><ExternalLink size={13}/>当前执行</button>}</footer>
+      </article>
+    </li>)}</ol>
+    <div className="case-path-tail"><div className="scenario-path-rail"><span><Plus size={14}/></span></div>
+      {adding ? <form className="scenario-add-card case-path-picker" onSubmit={event => { event.preventDefault(); if (selectedRecord && !update.isPending) { setStatus(''); update.mutate([...item.stages.map(stage => ({ id: stage.id })), { flow_run_id: selectedRecord.id }]); } }}>
+        <header><span><b>添加运行记录</b><small>先选 FlowRun，再选择运行方式和具体记录</small></span><button className="ghost" type="button" aria-label="取消添加卡片" disabled={update.isPending} onClick={() => setAdding(false)}><X size={16}/></button></header>
+        <div className="case-path-selection"><div className="case-field"><span><em>1</em>FlowRun</span><CaseChoice label="FlowRun" value={parentId} disabled={update.isPending || runs.isLoading} onChange={value => { setParentId(value); setMode(''); setRecordId(''); }} options={(runs.data ?? []).map(run => ({ value: run.id, label: run.name, detail: `Run #${run.run_no}` }))}/></div>
+          <div className="case-field"><span><em>2</em>运行方式</span><CaseChoice label="运行方式" value={mode} disabled={!parentId || update.isPending || templates.isLoading} placeholder={parentId ? '选择运行方式' : '请先选择 FlowRun'} onChange={value => { setMode(value); setRecordId(''); }} options={[{ value: 'STEPWISE', label: '逐步运行' }, { value: 'CONTINUOUS', label: '连续运行' }].map(option => ({ ...option, detail: `${ownedTemplates.filter(record => record.execution_mode === option.value).length} 个可用记录` }))}/></div>
+          <div className="case-field"><span><em>3</em>运行记录</span><CaseChoice label="运行记录" value={recordId} disabled={!mode || update.isPending} placeholder={mode ? '选择运行记录' : '请先选择运行方式'} emptyText="暂无完整配置的可用记录" onChange={setRecordId} options={records.map(record => ({ value: record.id, label: record.name, detail: `${record.reachable_node_keys.length} 个节点` }))}/></div></div>
+        {(templates.isLoading || runs.isLoading) && <p>正在加载运行记录…</p>}
+        {(templates.error || runs.error) && <p className="error" role="alert">{errorMessage(templates.error || runs.error)}</p>}
+        {!templates.isLoading && !templates.error && mode && !records.length && <p>当前 FlowRun 下暂无可添加的{mode === 'STEPWISE' ? '逐步' : '连续'}运行记录，请先完成记录配置。</p>}
+        <footer><button type="button" className="secondary" disabled={update.isPending} onClick={() => setAdding(false)}>取消</button><button className="primary" disabled={!selectedRecord || update.isPending}>{update.isPending ? '添加中…' : '添加'}</button></footer>
+      </form> : <button className="scenario-add-path-card" disabled={update.isPending || item.stages.length >= 50} onClick={() => { setAdding(true); update.reset(); setStatus(''); }}><span className="case-add-icon"><Plus size={20}/></span><span><b>{item.stages.length ? '添加下一张卡片' : '添加第一张卡片'}</b><small>选择已有运行记录，串联 Case 路径</small></span></button>}
+    </div>
+    <p className="case-path-status" role="status">{update.error ? '' : status}</p>
     {update.error && <p className="error" role="alert">{errorMessage(update.error)}</p>}
   </section>;
 }
