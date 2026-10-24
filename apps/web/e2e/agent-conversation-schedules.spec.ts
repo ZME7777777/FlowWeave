@@ -84,7 +84,7 @@ async function openWorkspace(page: Page, events: unknown[] = [], includeSecondCo
   await page.getByLabel('账号').fill('schedule-user');
   await page.getByLabel('密码').fill('test-password');
   await page.getByRole('button', { name: '进入工作空间' }).click();
-  await page.getByRole('button', { name: '自由对话', exact: true }).click();
+  await page.getByRole('button', { name: 'AI 工作台', exact: true }).click();
   return writes;
 }
 
@@ -116,7 +116,7 @@ test('fresh navigation opens case space and creates a case after the branch merg
   await expect(dialog).toHaveCount(0);
   await expect(page.locator('.cases-list')).toContainText('合并后的案例');
   await expect(page.getByRole('button', { name: '创建协调会话', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: '自由对话', exact: true }).click();
+  await page.getByRole('button', { name: 'AI 工作台', exact: true }).click();
   await expect(page.getByRole('navigation', { name: 'Agent 工作区导航' })).toBeVisible();
 });
 
@@ -527,7 +527,7 @@ test('workspace and pinned collapse preferences survive reopening with independe
   }
   await expect(page.getByRole('button', { name: '展开置顶会话', exact: true })).toHaveAttribute('aria-expanded', 'false');
   await page.getByRole('button', { name: '节点中心', exact: true }).click();
-  await page.getByRole('button', { name: '自由对话', exact: true }).click();
+  await page.getByRole('button', { name: 'AI 工作台', exact: true }).click();
   await expect(page.getByRole('button', { name: '展开工作区 根工作区', exact: true })).toBeVisible();
   await page.getByRole('button', { name: '展开工作区 根工作区', exact: true }).click();
   await expect(page.getByRole('button', { name: '展开工作区 已有项目目录', exact: true })).toBeVisible();
@@ -575,7 +575,7 @@ test('pinned conversations reorder across workspaces and restore their independe
   await page.reload();
   await expect.poll(titles).toEqual(['置顶会话 1', '置顶会话 0', '置顶会话 2']);
   await page.getByRole('button', { name: '节点中心', exact: true }).click();
-  await page.getByRole('button', { name: '自由对话', exact: true }).click();
+  await page.getByRole('button', { name: 'AI 工作台', exact: true }).click();
   await expect.poll(titles).toEqual(['置顶会话 1', '置顶会话 0', '置顶会话 2']);
   await pinned.getByRole('button', { name: '置顶会话 1', exact: true }).dragTo(page.locator('.agent-workbench-content'));
   await expect(page.getByRole('button', { name: '移除会话 置顶会话 1', exact: true })).toBeVisible();

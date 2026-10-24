@@ -2496,7 +2496,7 @@ test('New conversation draft remains isolated and can be resumed after switching
   const mainNavigation = page.getByRole('navigation', { name: '主导航', exact: true });
   await mainNavigation.getByRole('button', { name: '节点中心', exact: true }).click();
   await expect(composer).toHaveCount(0);
-  await mainNavigation.getByRole('button', { name: '自由对话', exact: true }).click();
+  await mainNavigation.getByRole('button', { name: 'AI 工作台', exact: true }).click();
   await expect(page).toHaveURL(/\/agent$/);
   await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeVisible();
   await expect(composer).toHaveText('只属于新会话的未发送草稿');
