@@ -2,8 +2,8 @@
 
 > 创建日期：2026-08-21
 > 状态：`UPSTREAM BASELINE ADOPTION COMPLETE`
-> 当前执行切片：`FR-673`
-> 下一可执行切片：`NONE`
+> 当前执行切片：`NONE`
+> 下一可执行切片：`FR-674`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -155,7 +155,7 @@ platform／web remote-release-finish 的版本／健康门禁与容量收尾均�
 引用／回滚版本。不清理共享 BuildKit、卷、Workspace 或数据库备份。当前切片 NONE，
 下一可执行切片 FR-673，仅登记后续故障取证，不在本片开始实施。
 
-### FR-673 原生失败终态下未闭环工具会话的界面收口 — CURRENT
+### FR-673 原生失败终态下未闭环工具会话的界面收口 — DONE
 
 依赖：FR-672 DONE。用户再次确认两条会话仍显示运行；正式只读检查均为 ready=true、
 execution_status=error，事件窗口有工具失败／重启恢复 AgentErrorEvent，但没有最终回复。
@@ -178,11 +178,29 @@ readiness 仅采用该次发送后实际完成的原生读取，不把浏览器�
 终态补读。新增 5 项另以未返回 TaskAction 检查过程、悬浮摘要和子智能体详情。
 浏览器 API／WebSocket 受控，未向真实业务会话发送消息、暂停、继续或重放命令；
 线上只读检查两条原生状态与活动目录，未替换 Runtime。迁移不变，Alembic 唯一 head
-仍为 0170_revision_draft_owner。接下来仅完成本片授权的 Web commit-bound 发布与
-实际资源回归，尚未将发布记为成功；历史资源／DNS／数据库 503 转 FR-674，不在本片
-声称根治。
+仍为 0170_revision_draft_owner。源码提交时 Web 发布待完成，结果见下方发布补记；
+历史资源／DNS／数据库 503 转 FR-674，不在本片声称根治。
 
-### FR-674 历史终端资源错误与短时 503 复现实证 — PENDING
+FR-673 发布补记（2026-10-24）：代码提交
+`26e938c41925b1e39e8b3e4662ad2137025a2bc3`。正式 web 预检与 commit-bound prepare
+通过，最小源码归档 SHA-256 为
+`6734df2e9874b979addfad8e06b3c6599791bbf6ad75a699edf9ebe4b4658434`；
+实际 linux/amd64 Web 镜像为
+`sha256:3491576efbc8c5fd4680607e31afbfa8c6bb72bd5bc8c7dbabb49abc99cbfef5`，
+OCI revision 与代码提交一致。保留原 Web 日志和精确 rollback tag 后仅 recreate Web；
+服务器 Compose／env 摘要及其余 37 个容器镜像、启动时间保持不变，包括全部平台
+服务、Runtime Provider 和业务 Runtime。两个会话绑定身份摘要前后相同，直接原生
+readiness／活动目录仍均为 error；无消息、暂停、续跑或任务重放。
+
+公网前缀登录、Agent 深层路由、根登录及 API 401 边界均通过。导出运行 Web 镜像
+的实际静态资源，以受控 API／WebSocket 重跑最终 17 项 Chromium 回归全部通过，
+包括未返回子任务的过程、悬浮摘要和详情展示；45 个实际加载 JS／CSS 的 SHA-256
+与运行镜像一致。这不替代真实 Runtime 的资源耗尽／数据库／DNS 故障复现。
+remote-release-finish 的版本／健康门禁与受管容量收尾通过，保留最近三份成功上下文
+及引用版本，回收一个过期精确 rollback tag；没有清理共享 BuildKit、卷、工作区或
+数据库备份。当前切片 NONE，下一可执行 FR-674；本片结束，不开始后续实现。
+
+### FR-674 历史终端资源错误与短时 503 复现实证 — READY
 
 依赖：FR-673 DONE。基于已保存日志及固定 Runtime 的正式事件，在隔离测试资源中
 复现终端 Errno 11／未完成工具恢复，并区分 API 读取容量、数据库池／锁等待和 DNS
