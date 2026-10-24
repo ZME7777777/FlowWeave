@@ -85,6 +85,7 @@ type ComposerControlMode = 'idle' | 'running' | 'pausing' | 'paused' | 'resuming
 type QueueDeliveryState = 'queued';
 type ConversationOrderSync = { state: 'syncing' | 'failed'; orderedBindingIds: string[] };
 type ConversationPagesByScope = Record<string, AgentConversationPage>;
+type TrustedHydration = { hydratedAt: number; running: boolean };
 
 interface OptimisticConversationRemoval {
   conversations?: InfiniteData<AgentConversationPage>;
@@ -5181,9 +5182,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     contextRefreshTimers.current.clear();
     for (const resource of [
       'conversation-hydration-request',
-      'conversation-events',
-      'conversation-input-readiness',
-      'conversation-context',
       'conversation-activity',
     ]) {
       queryClient.removeQueries({ queryKey: sessionQueryKey(host, resource) });
@@ -6344,10 +6342,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     workspaceId: string;
     bindingId: string;
   } | undefined>(undefined);
-  const trustedHydrations = useRef(new Map<string, {
-    hydratedAt: number;
-    running: boolean;
-  }>());
+  const trustedHydrations = useRef(new Map<string, TrustedHydration>());
   const backgroundHydrationPrefetches = useRef(new Map<string, Promise<AgentConversationHydration>>());
   const publishHydration = useCallback((workspaceId: string, bindingId: string, hydration: AgentConversationHydration) => {
     const eventKey = sessionQueryKey(host, 'conversation-events', workspaceId, bindingId);
@@ -6365,10 +6360,15 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     queryClient.setQueryData<AgentConversationContext>(
       sessionQueryKey(host, 'conversation-context', workspaceId, bindingId), hydration.context,
     );
-    trustedHydrations.current.set(bindingId, {
+    const trusted = {
       hydratedAt: Date.now(),
       running: conversationIsRunning(hydration.readiness.execution_status),
-    });
+    };
+    trustedHydrations.current.set(bindingId, trusted);
+    queryClient.setQueryData<TrustedHydration>(
+      sessionQueryKey(host, 'conversation-trusted-hydration', workspaceId, bindingId),
+      trusted,
+    );
     const currentSelection = hydrationSelection.current;
     if (currentSelection?.workspaceId === workspaceId && currentSelection.bindingId === bindingId) {
       setHydrationPhase({ bindingId, state: 'ready' });
@@ -6492,7 +6492,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     hydrationSelection.current = { workspaceId, bindingId };
     hotReentryHydrationKey.current = undefined;
     hydrationAttemptCount.current = 0;
-    const trusted = trustedHydrations.current.get(bindingId);
+    const trusted = trustedHydrations.current.get(bindingId)
+      ?? queryClient.getQueryData<TrustedHydration>(sessionQueryKey(host, 'conversation-trusted-hydration', workspaceId, bindingId));
+    if (trusted) trustedHydrations.current.set(bindingId, trusted);
     const ttl = trusted?.running
       ? ACTIVE_CONVERSATION_CACHE_TTL_MS
       : TERMINAL_CONVERSATION_CACHE_TTL_MS;
@@ -7539,6 +7541,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     const resources = [
       'conversation',
       'conversation-hydration-request',
+      'conversation-trusted-hydration',
       'conversation-events',
       'conversation-input-readiness',
       'conversation-context',
@@ -10085,7 +10088,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       /> : <div className="agent-workbench-empty"><Bot size={32}/><b>新建会话开始协作</b><span>{features.workDirectories ? '每个会话共享同一工作区，但保留独立的对话与事件记录。' : '会话固定在当前节点 Attempt 的隔离工作目录。'}</span><button className="primary" disabled={!canOpenConversation} onClick={() => openConversationDraft({ displayName: features.workDirectories ? '根工作区' : '节点工作目录' }, { selectStandaloneRoot: features.workDirectories })}><Plus size={15}/>新建会话</button></div>}
       {visibleError && <ConversationErrorNotice key={composerScope} error={visibleError} onDismiss={dismissOperationError} transient={visibleError === operationError} onRetry={visibleError === hydrationError ? retryConversationHydration : undefined}/>}
       </div>
-      {(selected || conversationDraft) && runtime?.state !== 'RECOVERING' && <div className="agent-composer-dock">
+      {(selected || conversationDraft) && runtime?.state !== 'RECOVERING' && !conversationInitialLoading && <div className="agent-composer-dock">
         <div className={`agent-composer ${conversationVisuallyActive || pendingConfirmation ? 'busy' : ''}`}>
         {pendingConfirmation && <section className="agent-confirmation" aria-label="工具执行确认"><header><ShieldAlert size={17}/><div><b>工具正在等待你的确认</b><span>动作尚未执行。请核对整批内容后批准或拒绝。</span></div></header><div className="agent-confirmation-actions">{(pendingConfirmation.actions ?? []).map((action: AgentPendingConfirmationAction) => <article key={action.digest}><div><b>{action.summary || action.tool_name}</b><span>{action.security_risk || 'UNKNOWN'}</span></div>{Object.keys(action.arguments).length > 0 && <pre>{JSON.stringify(action.arguments, null, 2)}</pre>}</article>)}</div><textarea aria-label="工具确认理由" value={confirmationReason} maxLength={2000} placeholder="填写批准或拒绝理由…" onChange={event => setConfirmationReason(event.target.value)}/><footer><button type="button" className="danger" disabled={!confirmationReason.trim() || decideConfirmation.isPending} onClick={() => decideConfirmation.mutate(false)}><X size={14}/>拒绝整批</button><button type="button" className="primary" disabled={!confirmationReason.trim() || decideConfirmation.isPending} onClick={() => decideConfirmation.mutate(true)}><Check size={14}/>批准整批</button></footer></section>}
         {(visibleQueuedMessages.length > 0 || (selected && !queueModeEnabled)) && <section className="agent-queued-messages" aria-label="消息投递队列">

@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Braces, CheckSquare, ChevronDown, Download, Ellipsis, Eye, FileArchive, Layers3, LockKeyhole, Pencil, PlugZap, Trash2, Upload, X } from 'lucide-react';
+import { Braces, CheckSquare, ChevronDown, Download, Ellipsis, FileArchive, Layers3, LockKeyhole, Pencil, PlugZap, Trash2, Upload, X } from 'lucide-react';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { api, ApiError, capabilityPackageUrl } from '../api/client';
@@ -213,6 +213,7 @@ export function CapabilitiesPage() {
   const [contextOpen, setContextOpen] = useState(false);
   const [contextTitle, setContextTitle] = useState('');
   const [contextDescription, setContextDescription] = useState('');
+  const [contextContent, setContextContent] = useState('');
   const [contextFile, setContextFile] = useState<File>();
   const [contextBundleManifest, setContextBundleManifest] = useState<ContextBundleDraft>();
   const [viewingContext, setViewingContext] = useState<ContextPreview>();
@@ -375,18 +376,20 @@ export function CapabilitiesPage() {
     } catch (reason) { setError(errorMessage(reason)); } finally { setImportingSkill(false); }
   };
   const closeContextForm = () => {
-    setContextOpen(false); setContextTitle(''); setContextDescription(''); setContextFile(undefined); setContextBundleManifest(undefined);
+    setContextOpen(false); setContextTitle(''); setContextDescription(''); setContextContent(''); setContextFile(undefined); setContextBundleManifest(undefined);
   };
   const createContext = async () => {
     setImportingSkill(true); setError(''); setNotice('');
     try {
       const title = contextTitle.trim();
+      const content = contextContent.trim();
+      const sourceFile = contextFile ?? (content ? new File([content], 'context.txt', { type: 'text/plain;charset=utf-8' }) : undefined);
       if (!title) throw new Error('请填写 Context 标题。');
-      if (!contextFile) throw new Error('请选择一个 Context 文件。');
-      if (contextFile.size > MCP_JSON_MAX_BYTES) throw new Error('Context 文本或资料包 ZIP 不能超过 1 MiB。');
+      if (!sourceFile) throw new Error('请直接编写内容，或选择一个 Context 文件或资料包。');
+      if (sourceFile.size > MCP_JSON_MAX_BYTES) throw new Error('Context 文本或资料包 ZIP 不能超过 1 MiB。');
       const validated = await api.validateCapability({
-        capability_type: 'CONTEXT', filename: contextFile.name,
-        content_base64: toBase64(await contextFile.arrayBuffer()),
+        capability_type: 'CONTEXT', filename: sourceFile.name,
+        content_base64: toBase64(await sourceFile.arrayBuffer()),
         context_title: title, context_description: contextDescription.trim(),
         context_bundle_manifest: contextBundleManifest && {
           entrypoint: contextBundleManifest.entrypoint,
@@ -396,7 +399,7 @@ export function CapabilitiesPage() {
       });
       const normalized = validated.preview.capabilities?.[0]?.normalized_config;
       const suggestedManifest = normalized?.manifest as ContextBundleDraft | undefined;
-      if (contextFile.name.toLowerCase().endsWith('.zip') && !contextBundleManifest && suggestedManifest) {
+      if (sourceFile.name.toLowerCase().endsWith('.zip') && !contextBundleManifest && suggestedManifest) {
         setContextBundleManifest(suggestedManifest);
         return;
       }
@@ -613,7 +616,7 @@ export function CapabilitiesPage() {
     {isLoading ? <div className="empty">加载 {typeLabel(type)}…</div> : visible.length ? <><div className="capability-card-grid compact-capability-list">{pagedVisible.map(group => <CapabilityCard key={group.id} group={group} selected={selectedLineageIds.has(group.id)} onToggle={() => toggleLineage(group.id)} onEdit={() => group.latest.capability_type === 'MCP' ? void openMcpEditor(group.latest) : void openEditor(group.latest)} onViewContext={() => void openContextSource(group.latest)} onViewAgentDefinition={() => setViewingAgentDefinition(group.latest)} onProfileHistory={() => setProfileHistory(group)} onDelete={() => void remove([group])}/>)}</div><Pagination page={page} pageSize={pageSize} total={visible.length} onPageChange={setPage}/></> : <div className="empty"><FileArchive size={30}/><b>{repositoryQuery ? `没有匹配的 ${typeLabel(type)}` : `暂无 ${typeLabel(type)}`}</b><span>{repositoryQuery ? '调整搜索条件，或清除搜索查看全部能力。' : '使用本模块右上角的功能创建或导入。'}</span></div>}</div>
 
     {profileHistory && <AgentProfileHistoryDialog packageId={profileHistory.id} capabilityKey={profileHistory.latest.capability_key} onClose={() => setProfileHistory(undefined)}/>}
-    {contextOpen && <ContextDialog title={contextTitle} description={contextDescription} file={contextFile} manifest={contextBundleManifest} busy={importingSkill} onTitleChange={setContextTitle} onDescriptionChange={setContextDescription} onFileChange={file => { setContextFile(file); setContextBundleManifest(undefined); }} onManifestChange={setContextBundleManifest} onClose={closeContextForm} onSave={() => void createContext()}/>}
+    {contextOpen && <ContextDialog title={contextTitle} description={contextDescription} content={contextContent} file={contextFile} manifest={contextBundleManifest} busy={importingSkill} onTitleChange={setContextTitle} onDescriptionChange={setContextDescription} onContentChange={setContextContent} onFileChange={file => { setContextFile(file); setContextContent(''); setContextBundleManifest(undefined); }} onManifestChange={setContextBundleManifest} onClose={closeContextForm} onSave={() => void createContext()}/>}
     {hookOpen && <HookEditorDialog name={hookName} description={hookDescription} event={hookEvent} matcher={hookMatcher} mode={hookMode} file={hookFile} busy={importingSkill} onNameChange={setHookName} onDescriptionChange={setHookDescription} onEventChange={setHookEvent} onMatcherChange={setHookMatcher} onModeChange={mode => { setHookMode(mode); setHookFile(undefined); }} onFileChange={setHookFile} onClose={closeHookForm} onSave={() => void createHook()}/>}
     {viewingContext && <div className="modal-backdrop"><section className="modal context-preview-dialog" role="dialog" aria-modal="true" aria-label={`查看 Context ${viewingContext.item.capability_key}`}><header><div><span className="eyebrow">{viewingContext.contentFormat === 'BUNDLE' ? 'FROZEN CONTEXT BUNDLE' : 'FROZEN CONTEXT'}</span><h2>{viewingContext.item.capability_key}</h2></div><button className="ghost" onClick={() => setViewingContext(undefined)}>关闭</button></header><p>{viewingContext.item.description || '暂无说明'} · {viewingContext.item.filename}</p>{viewingContext.manifest && <section className="context-bundle-preview-directory"><b>资料目录</b><small>入口：{viewingContext.manifest.entrypoint ?? '未指定'} · 全部文档均已加载</small><ol>{viewingContext.manifest.documents.map(document => <li key={document.path}><b>{document.title}</b><span>{document.path}</span></li>)}</ol></section>}<pre>{viewingContext.content}</pre><footer><button className="primary" onClick={() => setViewingContext(undefined)}>完成</button></footer></section></div>}
     {editing && <div className="modal-backdrop capability-editor-backdrop"><section className="modal capability-source-editor" role="dialog" aria-label={`编辑 Skill ${editing.capability_key}`}><header><div><span className="eyebrow">EDIT SKILL</span><h2>编辑 {editing.capability_key}</h2></div><button className="ghost" onClick={() => setEditing(undefined)}>关闭</button></header><p>保存会发布新的不可变 Skill 版本；已有节点和 Run Snapshot 继续引用原版本，升级必须显式重新绑定。</p><textarea aria-label="Skill 源码" value={source} onChange={event => setSource(event.target.value)}/><div className="dependency-policy"><b>声明依赖（写入 SKILL.md frontmatter）</b><code>{DEPENDENCY_EXAMPLE}</code><span>所有版本必须精确固定。CLI 必须在平台白名单中；不接受终端命令。</span></div><footer><button className="ghost" onClick={() => setEditing(undefined)}>取消</button><button className="primary" disabled={busy} onClick={() => void saveSource()}>{busy ? '保存中…' : '发布新版本'}</button></footer></section></div>}
@@ -713,19 +716,27 @@ function HookEditorDialog({ name, description, event, matcher, mode, file, busy,
 interface ContextDialogProps {
   title: string;
   description: string;
+  content: string;
   file?: File;
   manifest?: ContextBundleDraft;
   busy: boolean;
   onTitleChange: (value: string) => void;
   onDescriptionChange: (value: string) => void;
+  onContentChange: (value: string) => void;
   onFileChange: (file?: File) => void;
   onManifestChange: (manifest: ContextBundleDraft) => void;
   onClose: () => void;
   onSave: () => void;
 }
 
-function ContextDialog({ title, description, file, manifest, busy, onTitleChange, onDescriptionChange, onFileChange, onManifestChange, onClose, onSave }: ContextDialogProps) {
+function ContextDialog({ title, description, content, file, manifest, busy, onTitleChange, onDescriptionChange, onContentChange, onFileChange, onManifestChange, onClose, onSave }: ContextDialogProps) {
   const [entrypointMenuOpen, setEntrypointMenuOpen] = useState(false);
+  const [draggingFile, setDraggingFile] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const selectFile = (nextFile?: File) => {
+    if (!nextFile) return;
+    onFileChange(nextFile);
+  };
   const moveDocument = (index: number, direction: -1 | 1) => {
     if (!manifest || index + direction < 0 || index + direction >= manifest.documents.length) return;
     const documents = [...manifest.documents];
@@ -738,15 +749,20 @@ function ContextDialog({ title, description, file, manifest, busy, onTitleChange
     setEntrypointMenuOpen(false);
   };
   const selectedEntrypoint = manifest?.entrypoint ?? '';
+  const hasSource = Boolean(file || content.trim());
   return <div className="modal-backdrop"><section className="modal context-dialog" role="dialog" aria-modal="true" aria-label="新增 Context">
     <header><div><span className="eyebrow">NEW CONTEXT</span><h2>新增 Context</h2></div><button className="ghost" onClick={onClose}>关闭</button></header>
-    <p>{manifest ? '资料包已安全解析。可调整阅读目录；全部文档仍会共同冻结并加载到同一个 Context。' : '填写标题和说明后上传文本或资料包。发布后内容、标题和说明都会被冻结；更新请新建 Context 并显式重新绑定。'}</p>
+    <p>{manifest ? '资料包已安全解析。可调整阅读目录；全部文档仍会共同冻结并加载到同一个 Context。' : '填写标题和说明，再直接编写、粘贴文本，或上传资料文件。发布后内容、标题和说明都会被冻结；更新请新建 Context 并显式重新绑定。'}</p>
     <label><span>标题 *</span><input aria-label="Context 标题" value={title} maxLength={200} placeholder="例如：产品发布手册" onChange={event => onTitleChange(event.target.value)}/></label>
     <label><span>说明</span><textarea aria-label="Context 说明" value={description} maxLength={2000} placeholder="说明这份背景信息适用于哪些任务" onChange={event => onDescriptionChange(event.target.value)}/></label>
-    <label className="context-file-upload"><input aria-label="Context 文件" type="file" accept=".txt,.md,.markdown,.zip,text/plain,text/markdown,application/zip" onChange={event => onFileChange(event.target.files?.[0])}/><span><b>{file ? file.name : '选择 Context 文件或资料包'}</b><small>{file ? `${formatBytes(file.size)} · ${file.type || '文件'}` : '支持 UTF-8 .txt、.md、.markdown 或只含这些文档的 ZIP，最大 1 MiB。'}</small></span><em>选择文件</em></label>
+    <section className={`context-source-input${draggingFile ? ' dragging' : ''}`} onDragEnter={event => { event.preventDefault(); setDraggingFile(true); }} onDragOver={event => event.preventDefault()} onDragLeave={event => { if (event.currentTarget === event.target) setDraggingFile(false); }} onDrop={event => { event.preventDefault(); setDraggingFile(false); selectFile(event.dataTransfer.files?.[0]); }}>
+      <header><b>Context 内容 *</b><span>直接输入或粘贴文本，也可拖入文件或 ZIP 资料包。</span></header>
+      <textarea aria-label="Context 内容" value={content} disabled={Boolean(file)} maxLength={MCP_JSON_MAX_BYTES} placeholder="点击此处直接编写或粘贴 Context 内容…" onChange={event => onContentChange(event.target.value)}/>
+      <footer><span>{file ? `${file.name} · ${formatBytes(file.size)}${manifest ? ' · 已解析资料包' : ''}` : content.trim() ? `${formatBytes(new Blob([content]).size)} · 将作为 context.txt 发布` : '支持 UTF-8 .txt、.md、.markdown 或只含这些文档的 ZIP，最大 1 MiB。'}</span>{file ? <button type="button" className="ghost" onClick={() => { onFileChange(undefined); if (fileInputRef.current) fileInputRef.current.value = ''; }}>移除文件</button> : <button type="button" className="secondary" onClick={() => fileInputRef.current?.click()}>上传文件</button>}</footer>
+      <input ref={fileInputRef} aria-label="Context 文件" type="file" accept=".txt,.md,.markdown,.zip,text/plain,text/markdown,application/zip" onChange={event => { selectFile(event.target.files?.[0]); event.target.value = ''; }}/>
+    </section>
     {manifest && <section className="context-bundle-editor"><header><div><b>资料包目录</b><small>文档顺序决定冲突覆盖顺序；后面的文档覆盖前面的文档。</small></div><span>{manifest.documents.length} 份文档</span></header><div className="context-entrypoint-menu"><span id="context-entrypoint-label">阅读入口</span><button type="button" className="context-entrypoint-trigger" aria-label="资料包入口" aria-describedby="context-entrypoint-label" aria-haspopup="listbox" aria-expanded={entrypointMenuOpen} onClick={() => setEntrypointMenuOpen(open => !open)}><span>{selectedEntrypoint || '不指定入口'}</span><ChevronDown size={14} aria-hidden="true"/></button>{entrypointMenuOpen && <div className="context-entrypoint-options" role="listbox" aria-label="资料包入口"><button type="button" role="option" aria-selected={!selectedEntrypoint} onClick={() => selectEntrypoint(null)}>不指定入口</button>{manifest.documents.map(document => <button type="button" role="option" key={document.path} aria-selected={selectedEntrypoint === document.path} onClick={() => selectEntrypoint(document.path)}>{document.path}</button>)}</div>}</div><ol>{manifest.documents.map((document, index) => <li key={document.path}><div><input aria-label={`资料标题 ${document.path}`} value={document.title} maxLength={200} onChange={event => onManifestChange({ ...manifest, documents: manifest.documents.map(item => item.path === document.path ? { ...item, title: event.target.value } : item) })}/><small>{document.path}</small></div><span><button type="button" className="ghost" aria-label={`上移 ${document.path}`} disabled={index === 0} onClick={() => moveDocument(index, -1)}>↑</button><button type="button" className="ghost" aria-label={`下移 ${document.path}`} disabled={index === manifest.documents.length - 1} onClick={() => moveDocument(index, 1)}>↓</button></span></li>)}</ol></section>}
-    <div className="mcp-security-note"><b>安全校验</b><span>只接受非空 UTF-8 文本；包含明文 API Key、Token、Secret、Password 或 Authorization 赋值的文件会被拒绝。</span></div>
-    <footer><button className="ghost" onClick={onClose}>取消</button><button className="primary" disabled={busy || !title.trim() || !file} onClick={onSave}>{busy ? '处理中…' : manifest ? '确认并发布' : file?.name.toLowerCase().endsWith('.zip') ? '解析资料包' : '校验并发布'}</button></footer>
+    <footer><button className="ghost" onClick={onClose}>取消</button><button className="primary" disabled={busy || !title.trim() || !hasSource} onClick={onSave}>{busy ? '处理中…' : manifest ? '确认并发布' : file?.name.toLowerCase().endsWith('.zip') ? '解析资料包' : '校验并发布'}</button></footer>
   </section></div>;
 }
 
@@ -819,5 +835,7 @@ function CapabilityCard({ group, selected, onToggle, onEdit, onViewContext, onVi
     : item.description;
   const dependencyLabel = item.dependency_build_state === 'READY' ? '依赖可用' : item.dependency_build_state === 'PENDING' ? '依赖构建中' : item.dependency_build_state === 'FAILED' ? '依赖构建失败' : '无需额外依赖';
   const totalReferences = group.versions.reduce((total, version) => total + version.reference_count, 0);
-  return <article className={`capability-card ${item.is_builtin ? 'builtin' : ''} ${selected ? 'selected' : ''}`}><header><label className="capability-card-select resource-check" title={item.is_builtin ? '系统内置默认策略，不能选择删除' : `选择能力 ${item.capability_key}`}><input type="checkbox" aria-label={`选择能力 ${item.capability_key}`} checked={selected} disabled={item.is_builtin} onChange={onToggle}/><span className={`capability-card-icon ${item.capability_type.toLowerCase()}`}>{item.capability_type === 'SKILL' || item.capability_type === 'CONTEXT' ? <FileArchive size={18}/> : <PlugZap size={18}/>}</span></label>{item.is_builtin && <span className="builtin-badge"><LockKeyhole size={12}/>系统内置</span>}<span className="cap-type">{typeLabel(item.capability_type)}</span></header><h3 title={item.capability_key}>{item.capability_key}</h3><p>{description || '暂无能力说明'}</p><div className="capability-version"><span>rev {item.revision_number}</span><code title={item.id}>{item.id.slice(0, 8)}</code><code title={item.content_hash}>{item.content_hash.slice(0, 10)}</code></div><div className={`dependency-state ${item.dependency_build_state.toLowerCase()}`} title={item.dependency_build_error || ''}>{dependencyLabel}{item.dependency_build_error ? `：${item.dependency_build_error}` : ''}</div><dl><dt>来源文件</dt><dd>{item.filename}</dd><dt>文件大小</dt><dd>{formatBytes(item.byte_size)}</dd><dt>更新时间</dt><dd>{new Date(item.created_at).toLocaleString()}</dd><dt>节点引用</dt><dd>{totalReferences} 个</dd></dl><div className="capability-card-actions"><CapabilityOverflowMenu label={`${typeLabel(item.capability_type)} ${item.capability_key}`}>{close => <>{item.capability_type === 'CONTEXT' && <button type="button" role="menuitem" onClick={() => { onViewContext(); close(); }}><Eye size={14}/>查看内容</button>}{item.capability_type === 'AGENT_DEFINITION' && <button type="button" role="menuitem" onClick={() => { onViewAgentDefinition(); close(); }}><Eye size={14}/>查看详情</button>}{(item.capability_type === 'SKILL' || item.capability_type === 'MCP') && <button type="button" role="menuitem" onClick={() => { onEdit(); close(); }}><Pencil size={14}/>编辑</button>}{item.capability_type === 'SKILL' && <a role="menuitem" href={capabilityPackageUrl(item.id)} download aria-label={`下载 Skill ${item.capability_key}`} title="下载当前版本 ZIP，修改后可通过“上传 Skill ZIP”发布新版本" onClick={close}><Download size={14}/>下载</a>}{item.capability_type === 'AGENT_PROFILE' && <button type="button" role="menuitem" onClick={() => { onProfileHistory(); close(); }}><Layers3 size={14}/>版本与绑定</button>}{item.is_builtin ? <button type="button" role="menuitem" disabled title="系统内置默认策略，不能删除"><LockKeyhole size={14}/>不可删除</button> : <button type="button" className="danger" role="menuitem" title={totalReferences > 0 ? '有关联的记录会保留并说明绑定节点，其余记录直接删除' : '删除能力'} onClick={() => { onDelete(); close(); }}><Trash2 size={14}/>删除能力</button>}</>}</CapabilityOverflowMenu></div></article>;
+  const open = item.capability_type === 'CONTEXT' ? onViewContext : item.capability_type === 'AGENT_DEFINITION' ? onViewAgentDefinition : undefined;
+  const openLabel = item.capability_type === 'CONTEXT' ? `查看 Context ${item.capability_key}` : item.capability_type === 'AGENT_DEFINITION' ? `查看 Agent Definition ${item.capability_key}` : undefined;
+  return <article className={`capability-card ${item.is_builtin ? 'builtin' : ''} ${selected ? 'selected' : ''} ${open ? 'viewable' : ''}`} role={open ? 'button' : undefined} tabIndex={open ? 0 : undefined} aria-label={openLabel} onClick={open} onKeyDown={event => { if (open && event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); open(); } }}><header><label className="capability-card-select resource-check" title={item.is_builtin ? '系统内置默认策略，不能选择删除' : `选择能力 ${item.capability_key}`} onClick={event => event.stopPropagation()}><input type="checkbox" aria-label={`选择能力 ${item.capability_key}`} checked={selected} disabled={item.is_builtin} onChange={onToggle}/><span className={`capability-card-icon ${item.capability_type.toLowerCase()}`}>{item.capability_type === 'SKILL' || item.capability_type === 'CONTEXT' ? <FileArchive size={18}/> : <PlugZap size={18}/>}</span></label>{item.is_builtin && <span className="builtin-badge"><LockKeyhole size={12}/>系统内置</span>}<span className="cap-type">{typeLabel(item.capability_type)}</span></header><h3 title={item.capability_key}>{item.capability_key}</h3><p>{description || '暂无能力说明'}</p><div className="capability-version"><span>rev {item.revision_number}</span><code title={item.id}>{item.id.slice(0, 8)}</code><code title={item.content_hash}>{item.content_hash.slice(0, 10)}</code></div><div className={`dependency-state ${item.dependency_build_state.toLowerCase()}`} title={item.dependency_build_error || ''}>{dependencyLabel}{item.dependency_build_error ? `：${item.dependency_build_error}` : ''}</div><dl><dt>来源文件</dt><dd>{item.filename}</dd><dt>文件大小</dt><dd>{formatBytes(item.byte_size)}</dd><dt>更新时间</dt><dd>{new Date(item.created_at).toLocaleString()}</dd><dt>节点引用</dt><dd>{totalReferences} 个</dd></dl><div className="capability-card-actions" onClick={event => event.stopPropagation()}><CapabilityOverflowMenu label={`${typeLabel(item.capability_type)} ${item.capability_key}`}>{close => <>{(item.capability_type === 'SKILL' || item.capability_type === 'MCP') && <button type="button" role="menuitem" onClick={() => { onEdit(); close(); }}><Pencil size={14}/>编辑</button>}{item.capability_type === 'SKILL' && <a role="menuitem" href={capabilityPackageUrl(item.id)} download aria-label={`下载 Skill ${item.capability_key}`} title="下载当前版本 ZIP，修改后可通过“上传 Skill ZIP”发布新版本" onClick={close}><Download size={14}/>下载</a>}{item.capability_type === 'AGENT_PROFILE' && <button type="button" role="menuitem" onClick={() => { onProfileHistory(); close(); }}><Layers3 size={14}/>版本与绑定</button>}{item.is_builtin ? <button type="button" role="menuitem" disabled title="系统内置默认策略，不能删除"><LockKeyhole size={14}/>不可删除</button> : <button type="button" className="danger" role="menuitem" title={totalReferences > 0 ? '有关联的记录会保留并说明绑定节点，其余记录直接删除' : '删除能力'} onClick={() => { onDelete(); close(); }}><Trash2 size={14}/>删除能力</button>}</>}</CapabilityOverflowMenu></div></article>;
 }

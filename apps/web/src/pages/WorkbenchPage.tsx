@@ -1,8 +1,8 @@
 import { Background, Controls, Handle, Position, ReactFlow, useNodesState, type Connection, type Edge, type Node, type NodeProps } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { AlertTriangle, ArrowLeft, Bot, Boxes, Check, ChevronDown, ChevronRight, Copy, Download, ExternalLink, Eye, FileText, FolderClosed, GripVertical, Info, Play, Plus, RefreshCw, Send, StopCircle, Terminal, Trash2, Upload, X } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, Bot, Boxes, Check, ChevronDown, ChevronRight, Copy, Download, ExternalLink, Eye, FileText, FolderClosed, GripVertical, Play, Plus, RefreshCw, Send, StopCircle, Trash2, Upload, X } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
 import { ApiError, api, artifactContentUrl, subscribeToRun } from '../api/client';
 import { flowMappingEdgeTypes, withMappingLabelOffsets } from '../components/flowMappingEdgeLayout';
 import { isOpenHandsAgentReply } from '../components/conversationEvents';
@@ -116,7 +116,7 @@ function openNodeSession(
 
 type WorkbenchMode = 'MANUAL' | 'AUTOMATIC';
 type RecordListFilter = 'ALL' | WorkbenchMode;
-type DetailTab = 'FLOW' | 'DETAILS' | 'RUNTIME' | 'TERMINAL';
+type DetailTab = 'DETAILS' | 'RUNTIME' | 'TERMINAL';
 
 type CopyTarget =
   | { mode: 'STEPWISE'; record: FlowRunStepwiseRecord }
@@ -756,12 +756,6 @@ function NodeInputDialog({ run, node, initialBindings = {}, initialUrls = {}, on
   return <div className="modal-backdrop"><section className="modal node-input-dialog" role="dialog" aria-modal="true" aria-label="填写节点输入"><header><div><span className="eyebrow">NODE INPUTS</span><h2>填写 {node.alias || node.asset.name} 的输入</h2><p>字段由节点定义冻结生成；每个值只绑定当前节点，不会进入可复用产物池。</p></div><button type="button" className="ghost" aria-label="关闭输入表单" onClick={onClose}><X size={17}/></button></header><div className="node-input-dialog-body">{fields.map(field => {
     const current = run.artifacts.find(item => item.id === initialBindings[field.field_key]);
     return <label className="node-input-control" key={field.field_key}><span><b>{field.display_name || field.field_key}</b><code>{field.field_key} · {field.data_type}</code><small>{field.description || '请按节点定义填写此字段。'}</small></span>{field.data_type === 'URL' ? <input aria-label={`填写输入 ${field.field_key}`} type="url" value={urls[field.field_key] ?? ''} onChange={event => setUrls(old => ({ ...old, [field.field_key]: event.target.value }))} placeholder="https://example.com/resource"/> : <span className="platform-file-upload"><Upload size={16}/><span><b>{files[field.field_key]?.name || (typeof current?.metadata?.filename === 'string' ? current.metadata.filename : '选择文件')}</b><small>{files[field.field_key] ? `${files[field.field_key]?.size} B` : '图片、PDF、文档、压缩包等，最大 25 MiB'}</small></span><input aria-label={`上传输入文件 ${field.field_key}`} type="file" onChange={event => setFiles(old => ({ ...old, [field.field_key]: event.target.files?.[0] }))}/></span>}{current && <a className="current-input" href={artifactHref(current)} target="_blank" rel="noreferrer">当前绑定：{artifactLabel(current)}</a>}</label>; })}{!fields.length && <div className="empty compact">该节点没有定义输入，可直接创建执行。</div>}</div>{error && <p className="error">{error}</p>}<footer><button type="button" className="ghost" onClick={onClose}>取消</button><button className="primary" disabled={mutation.isPending} onClick={() => mutation.mutate()}>{mutation.isPending ? '保存输入中…' : '保存输入并继续'}</button></footer></section></div>;
-}
-
-function TerminalRunDelete({ run, onDeleted }: { run: FlowRun; onDeleted: () => void }) {
-  const dialog = useProductDialog();
-  const mutation = useMutation({ mutationFn: () => api.deleteRun(run.id), onSuccess: onDeleted });
-  return <div className="flow-run-management" aria-label="流程运行态管理"><button className="danger" disabled={mutation.isPending} onClick={() => void dialog.confirm({ title: '永久删除这个流程运行？', message: '相关记录都会被清理且不可恢复。', confirmLabel: '永久删除', tone: 'danger' }).then(ok => ok && mutation.mutate())}><Trash2 size={14}/>{mutation.isPending ? '删除中…' : '永久删除此运行'}</button>{mutation.error && <p className="error">{mutation.error.message}</p>}</div>;
 }
 
 type GateDraftDialog = { index?: number; gate: GatePolicy; readOnly: boolean };
@@ -1607,7 +1601,7 @@ export function WorkbenchPage() {
   const [selectedNodeKey, setSelectedNodeKey] = useState<string>();
   const [mode, setMode] = useState<WorkbenchMode>(selectedWorkbenchMode ?? 'MANUAL');
   const [recordListFilter, setRecordListFilter] = useState<RecordListFilter>('ALL');
-  const [detailTab, setDetailTab] = useState<DetailTab>('FLOW');
+  const [detailTab, setDetailTab] = useState<DetailTab>('DETAILS');
   const [newRecordMode, setNewRecordMode] = useState<WorkbenchMode>();
   const [selectedAutomaticId, setSelectedAutomaticId] = useState<string | undefined>(selectedAutomaticRecordId);
   const [selectedStepwiseId, setSelectedStepwiseId] = useState<string | undefined>(selectedStepwiseRecordId);
@@ -1633,7 +1627,7 @@ export function WorkbenchPage() {
 
   const [automaticBusyId, setAutomaticBusyId] = useState<string>();
   const [manualBusyId, setManualBusyId] = useState<string>();
-  const [railWidth, setRailWidth] = useState(320);
+  const [recordManagerOpen, setRecordManagerOpen] = useState(false);
   const query = useQuery({ queryKey: ['flow-run', selectedRunId], queryFn: () => api.flowRun(selectedRunId!), enabled: Boolean(selectedRunId), refetchInterval: 5000 });
   const runtime = useQuery({ queryKey: ['flow-run-runtime', selectedRunId], queryFn: () => api.runtimeOverview(selectedRunId!), enabled: Boolean(selectedRunId), refetchInterval: 5000 });
   const runtimeResource = useQuery({ queryKey: ['flow-run-runtime-resource', selectedRunId], queryFn: () => api.runtimeResource(selectedRunId!), enabled: Boolean(selectedRunId && detailTab === 'RUNTIME'), refetchInterval: detailTab === 'RUNTIME' ? 10_000 : false });
@@ -2213,23 +2207,6 @@ export function WorkbenchPage() {
       useWorkbenchStore.setState({ selectedNodeRunId: undefined, selectedAttemptId: undefined });
     }
   };
-  const beginRailResize = (event: ReactPointerEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    event.stopPropagation();
-    const workbench = event.currentTarget.closest<HTMLElement>('.flow-run-record-workspace');
-    const move = (moveEvent: PointerEvent) => {
-      const left = workbench?.getBoundingClientRect().left ?? 0;
-      setRailWidth(Math.max(220, Math.min(420, moveEvent.clientX - left)));
-    };
-    const stop = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', stop); };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', stop);
-  };
-  const resizeRailByKeyboard = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
-    event.preventDefault();
-    setRailWidth(width => Math.max(220, Math.min(420, width + (event.key === 'ArrowRight' ? 16 : -16))));
-  };
   const retainAutomaticDraft = (record: FlowRunAutomaticRecord) => setAutomaticDrafts(current => ({ ...current, [record.id]: record }));
   const replaceAutomatic = (record: FlowRunAutomaticRecord) => {
     setAutomaticDrafts(current => {
@@ -2470,7 +2447,7 @@ export function WorkbenchPage() {
     onModeChange={next => { setMode(next); setRecordListFilter(next); clearSelection(); }}
     onListFilterChange={setRecordListFilter}
     onCreateRecord={() => setNewRecordMode(mode)}
-    onSelectManualRecord={(id, modifiers) => { setMode('MANUAL'); setDetailTab('FLOW'); selectStepwiseRecord(id, modifiers); }}
+    onSelectManualRecord={(id, modifiers) => { setMode('MANUAL'); setDetailTab('DETAILS'); selectStepwiseRecord(id, modifiers); }}
     onCreateManualRecord={() => setStepwiseDialogOpen(true)}
     onCopyManual={() => {
       if (selectedStepwiseRecords.length === 1) {
@@ -2481,7 +2458,7 @@ export function WorkbenchPage() {
       if (selectedStepwiseRecords.length > 1) setStepwiseExportRecordIds(selectedStepwiseRecords.map(record => record.id));
     }}
     onDeleteManualRecord={deleteStepwiseRecord}
-    onSelectAutomatic={id => { setMode('AUTOMATIC'); setDetailTab('FLOW'); selectAutomaticHistory(id, { extend: false, range: false }); }}
+    onSelectAutomatic={id => { setMode('AUTOMATIC'); setDetailTab('DETAILS'); selectAutomaticHistory(id, { extend: false, range: false }); }}
     onClearSelection={clearSelection}
     onCreateAutomatic={() => setAutomaticDialogOpen(true)}
     onDeleteAutomatic={() => {
@@ -2541,21 +2518,16 @@ export function WorkbenchPage() {
 
   return <>
     <header className="flow-run-workbench-header"><h1 title={parentRun.name}>{parentRun.name}</h1></header>
-    <section className="workbench-page flow-run-record-workspace" style={{ gridTemplateColumns: `${railWidth}px minmax(0, 1fr)` }} onClick={event => { if (!isFlowInternalClick(event.target)) clearSelection(); }}>
-      <div className="flow-run-rail-slot">{rail}<div className="run-rail-resizer" role="separator" tabIndex={0} aria-label="调整左侧记录栏宽度" aria-orientation="vertical" onPointerDown={beginRailResize} onKeyDown={resizeRailByKeyboard}/></div>
-      <main className="run-record-detail">
-        {!activeRecord ? <section className="run-record-detail-empty"><Boxes size={28}/><b>选择一条运行记录</b><span>在左侧选择逐步或连续运行记录，即可查看执行编排、节点详情、容器和终端。</span><button className="primary" onClick={() => setNewRecordMode('MANUAL')}><Plus size={14}/>新建逐步运行</button></section> : <>
-          <header className="run-record-detail-head"><button className="back" onClick={returnToRuns}><ArrowLeft size={14}/>返回流程运行</button><div><span className="eyebrow">{selectedRecordType.toUpperCase()} RECORD</span><h2>{activeRecord.name}</h2><p>{recordSummary?.state ? FLOW_STATE_LABELS[recordSummary.state] ?? recordSummary.state : '等待执行'} · 创建于 {new Date(activeRecord.started_at).toLocaleString()}</p></div><div className="run-record-detail-actions"><button className="secondary" onClick={() => setDetailTab('RUNTIME')}><Info size={14}/>运行环境</button><button className="secondary" onClick={() => setDetailTab('TERMINAL')}><Terminal size={14}/>终端</button>{(run.state === 'COMPLETED' || run.state === 'CANCELLED') && <TerminalRunDelete run={run} onDeleted={() => navigate(undefined, 'delete')}/>}</div></header>
-          <nav className="run-record-detail-tabs" aria-label="运行记录详情"><button className={detailTab === 'FLOW' ? 'active' : ''} onClick={() => setDetailTab('FLOW')}>执行编排</button><button className={detailTab === 'DETAILS' ? 'active' : ''} onClick={() => setDetailTab('DETAILS')}>节点与配置</button><button className={detailTab === 'RUNTIME' ? 'active' : ''} onClick={() => setDetailTab('RUNTIME')}>容器</button><button className={detailTab === 'TERMINAL' ? 'active' : ''} onClick={() => setDetailTab('TERMINAL')}>终端</button></nav>
-          <div className="run-record-detail-body">
-            {detailTab === 'FLOW' && <><div className="run-record-info-strip"><span><b>运行类型</b>{selectedRecordType}</span><span><b>当前状态</b>{recordSummary?.state ? FLOW_STATE_LABELS[recordSummary.state] ?? recordSummary.state : '待配置'}</span><span><b>起始节点</b>{activeRecordStartNodeKey ?? '—'}</span>{recordGitIdentity && <span><b>Git</b>{recordGitIdentity.author}</span>}</div>{mode !== 'AUTOMATIC' && run.state !== 'COMPLETED' && run.state !== 'CANCELLED' && <SnapshotSync run={run} currentVersion={flow.data?.row_version} onSynced={updated => navigate(updated, 'sync')}/>}<SnapshotGraph run={graphRun} snapshotId={graphSnapshotId} onAddRuntimePort={selectedStepwiseRecord ? (nodeKey, direction) => setRuntimePortDialog({ nodeKey, direction }) : undefined} onConnectRuntimePorts={selectedStepwiseRecord ? connectRuntimePorts : undefined} selectedKey={graphSelectedKey} activeNodeRunId={activeStepwiseDraftKey ? undefined : activeExecutionNodeRun?.id} activeNodeKey={activeStepwiseDraftKey} reachableKeys={graphReachableKeys} selectableKeys={graphSelectableKeys} configuredPlanKeys={configuredAutomaticPlanKeys} executionRun={selectedExecutionRecord ?? directExecutionRun} missingPlanKeys={missingAutomaticPlanKeys} showExecutionState={showExecutionState} neutralHelp={neutralGraphHelp} neutralView={automaticNeutralView} onClearSelection={clearSelection} onSelect={selectGraphNode} onDoubleSelect={reactivatePredecessorForRerun}/></>}
-            {detailTab === 'DETAILS' && <section className="run-record-selection-panel">{selectionPanel}</section>}
-            {detailTab === 'RUNTIME' && <section className="run-record-runtime-panel"><header><div><span className="eyebrow">FLOWRUN RUNTIME</span><h3>容器与运行环境</h3><p>容器由当前 FlowRun 共享；记录执行不会改变其隔离边界。</p></div></header><dl><div><dt>状态</dt><dd>{runtime.data?.status ?? '正在读取'}</dd></div><div><dt>可写</dt><dd>{runtime.data?.write_available ? '可写' : '只读或恢复中'}</dd></div><div><dt>活跃代次</dt><dd>#{runtime.data?.active_generation ?? '—'}</dd></div><div><dt>容器</dt><dd>{runtimeResource.data?.resource?.container_id ?? '暂不可用'}</dd></div><div><dt>CPU</dt><dd>{runtimeResource.data?.resource ? `${runtimeResource.data.resource.cpu_usage_percent.toFixed(1)}% / ${runtimeResource.data.resource.cpu_limit}` : '—'}</dd></div><div><dt>内存</dt><dd>{runtimeResource.data?.resource ? `${formatResourceBytes(runtimeResource.data.resource.memory_usage_bytes)} / ${runtimeResource.data.resource.memory_limit}` : '—'}</dd></div></dl>{runtime.data?.diagnostic_summary && <p className="run-record-runtime-diagnostic">{runtime.data.diagnostic_summary}</p>}</section>}
-            {detailTab === 'TERMINAL' && <section className="run-record-terminal-panel"><header><div><span className="eyebrow">FLOWRUN RUNTIME TERMINAL</span><h3>运行终端</h3><p>终端属于当前 FlowRun 容器，右键可复制、输入或管理 tmux 窗格。</p></div></header>{runtime.data?.write_available ? <RuntimeTerminal runId={parentRun.id}/> : <div className="empty compact">运行环境当前不可写，终端会在恢复后自动可用。</div>}</section>}
-          </div>
-        </>}
+    <section className="workbench-page flow-run-detail-workspace" onClick={event => { if (!isFlowInternalClick(event.target)) clearSelection(); }}>
+      <aside className="run-record-information">
+        <header><button className="back" onClick={returnToRuns}><ArrowLeft size={14}/>返回 FlowRun 目录</button><button type="button" className="secondary" onClick={() => setRecordManagerOpen(true)}>管理运行记录</button>{activeRecord && <><span className="eyebrow">{selectedRecordType.toUpperCase()} RECORD</span><h2>{activeRecord.name}</h2><p>{recordSummary?.state ? FLOW_STATE_LABELS[recordSummary.state] ?? recordSummary.state : '等待执行'}</p></>}</header>
+        {!activeRecord ? <div className="run-record-detail-empty"><Boxes size={26}/><b>未选择运行记录</b><span>请从 FlowRun 目录中选择一条逐步或连续运行记录，或新建一条记录开始执行。</span><button className="primary" onClick={() => setNewRecordMode('MANUAL')}><Plus size={14}/>新建运行记录</button></div> : <><nav className="run-record-detail-tabs" aria-label="运行记录信息"><button className={detailTab === 'DETAILS' ? 'active' : ''} onClick={() => setDetailTab('DETAILS')}>信息与配置</button><button className={detailTab === 'RUNTIME' ? 'active' : ''} onClick={() => setDetailTab('RUNTIME')}>容器</button><button className={detailTab === 'TERMINAL' ? 'active' : ''} onClick={() => setDetailTab('TERMINAL')}>终端</button></nav><div className="run-record-information-body">{detailTab === 'DETAILS' && <section className="run-record-selection-panel">{selectionPanel}</section>}{detailTab === 'RUNTIME' && <section className="run-record-runtime-panel"><header><span className="eyebrow">FLOWRUN RUNTIME</span><h3>容器与运行环境</h3></header><dl><div><dt>状态</dt><dd>{runtime.data?.status ?? '正在读取'}</dd></div><div><dt>可写</dt><dd>{runtime.data?.write_available ? '可写' : '只读或恢复中'}</dd></div><div><dt>容器</dt><dd>{runtimeResource.data?.resource?.container_id ?? '暂不可用'}</dd></div><div><dt>资源</dt><dd>{runtimeResource.data?.resource ? `${runtimeResource.data.resource.cpu_usage_percent.toFixed(1)}% · ${formatResourceBytes(runtimeResource.data.resource.memory_usage_bytes)}` : '—'}</dd></div></dl>{runtime.data?.diagnostic_summary && <p className="run-record-runtime-diagnostic">{runtime.data.diagnostic_summary}</p>}</section>}{detailTab === 'TERMINAL' && <section className="run-record-terminal-panel"><header><span className="eyebrow">FLOWRUN TERMINAL</span><h3>运行终端</h3></header>{runtime.data?.write_available ? <RuntimeTerminal runId={parentRun.id}/> : <div className="empty compact">运行环境当前不可写，终端会在恢复后自动可用。</div>}</section>}</div></>}
+      </aside>
+      <main className="run-record-canvas">
+        {activeRecord ? <><div className="run-record-info-strip"><span><b>运行类型</b>{selectedRecordType}</span><span><b>起始节点</b>{activeRecordStartNodeKey ?? '—'}</span>{recordGitIdentity && <span><b>Git</b>{recordGitIdentity.author}</span>}<span><b>创建时间</b>{new Date(activeRecord.started_at).toLocaleString()}</span></div>{mode !== 'AUTOMATIC' && run.state !== 'COMPLETED' && run.state !== 'CANCELLED' && <SnapshotSync run={run} currentVersion={flow.data?.row_version} onSynced={updated => navigate(updated, 'sync')}/>}<SnapshotGraph run={graphRun} snapshotId={graphSnapshotId} onAddRuntimePort={selectedStepwiseRecord ? (nodeKey, direction) => setRuntimePortDialog({ nodeKey, direction }) : undefined} onConnectRuntimePorts={selectedStepwiseRecord ? connectRuntimePorts : undefined} selectedKey={graphSelectedKey} activeNodeRunId={activeStepwiseDraftKey ? undefined : activeExecutionNodeRun?.id} activeNodeKey={activeStepwiseDraftKey} reachableKeys={graphReachableKeys} selectableKeys={graphSelectableKeys} configuredPlanKeys={configuredAutomaticPlanKeys} executionRun={selectedExecutionRecord ?? directExecutionRun} missingPlanKeys={missingAutomaticPlanKeys} showExecutionState={showExecutionState} neutralHelp={neutralGraphHelp} neutralView={automaticNeutralView} onClearSelection={clearSelection} onSelect={selectGraphNode} onDoubleSelect={reactivatePredecessorForRerun}/></> : <div className="run-directory-empty"><Boxes size={30}/><b>选择一条运行记录</b><span>记录详情会在这里展示对应的流程画布与执行状态。</span></div>}
       </main>
     </section>
+    {recordManagerOpen && <div className="modal-backdrop"><section className="modal run-record-manager" role="dialog" aria-modal="true" aria-label="管理运行记录"><header><h2>管理运行记录</h2><button type="button" className="ghost" onClick={() => setRecordManagerOpen(false)}>关闭</button></header>{rail}</section></div>}
     {copyTarget && <CopyRecordDialog mode={copyTarget.mode} sourceName={copyTarget.record.name} onClose={() => setCopyTarget(undefined)} onExport={copyTarget.mode === 'AUTOMATIC' ? target => exportAutomaticRecords([copyTarget.record.id], target) : copyTarget.mode === 'STEPWISE' ? target => exportStepwiseRecords([copyTarget.record.id], target) : undefined} onCopy={async name => {
       if (copyTarget.mode === 'STEPWISE') {
         setManualBusyId(copyTarget.record.id);

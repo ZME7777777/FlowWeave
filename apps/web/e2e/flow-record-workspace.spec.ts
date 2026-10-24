@@ -88,31 +88,40 @@ test('record workspace selects mixed records and keeps runtime detail inside the
   });
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
-  await page.locator('.run-open').click();
-  await expect(page.getByRole('tab', { name: '全部', exact: true })).toHaveAttribute('aria-selected', 'true');
-  await expect(page.locator('.unified-run-record')).toHaveCount(3);
-  await expect(page.locator('.run-record-detail-empty')).toContainText('选择一条运行记录');
-  await expect(page.locator('.run-graph')).toHaveCount(0);
-  await page.locator('.unified-run-record').filter({ hasText: manual.name }).getByRole('button').click();
-  await expect(page.locator('.run-record-detail-head')).toContainText(manual.name);
+  await expect(page.locator('.run-directory-empty')).toContainText('选择一个 FlowRun 目录');
+  await page.locator('.flow-run-directory-list').getByRole('button', { name: /测试运行/ }).click();
+  const directory = page.locator('.flow-run-record-directory');
+  await expect(directory.locator('.flow-run-record-directory-list>button')).toHaveCount(2);
+  await directory.getByRole('button', { name: '连续', exact: true }).click();
+  await expect(directory.locator('.flow-run-record-directory-list>button')).toHaveCount(1);
+  await directory.getByRole('button', { name: /自动记录 1/ }).click();
+  await expect(page.locator('.run-record-information h2')).toHaveText(automaticBase.name);
   await expect(page.locator('.run-graph')).toBeVisible();
-  const tabs = page.getByRole('navigation', { name: '运行记录详情' });
+  const tabs = page.getByRole('navigation', { name: '运行记录信息' });
+  await expect(tabs.getByRole('button', { name: '信息与配置', exact: true })).toHaveClass('active');
+  await expect(page.locator('.run-record-selection-panel')).toBeVisible();
   await tabs.getByRole('button', { name: '容器', exact: true }).click();
   await expect(page.locator('.run-record-runtime-panel')).toContainText('容器与运行环境');
   await tabs.getByRole('button', { name: '终端', exact: true }).click();
   await expect(page.locator('.run-record-terminal-panel')).toContainText('运行环境当前不可写');
-  await page.getByRole('tab', { name: '连续', exact: true }).click();
-  await expect(page.locator('.automatic-record-select')).toHaveCount(1);
-  await page.locator('.automatic-record-select').click();
-  await expect(page.locator('.run-record-detail-head')).toContainText(automaticBase.name);
-  await tabs.getByRole('button', { name: '节点与配置', exact: true }).click();
-  await expect(page.locator('.run-record-selection-panel')).toBeVisible();
-  await page.getByRole('button', { name: '新建运行', exact: true }).click();
+  await page.getByRole('button', { name: '管理运行记录', exact: true }).click();
+  const manager = page.getByRole('dialog', { name: '管理运行记录', exact: true });
+  await expect(manager.locator('.unified-run-record')).toHaveCount(3);
+  await manager.locator('.unified-run-record').filter({ hasText: manual.name }).getByRole('button').click();
+  await manager.getByRole('tab', { name: '逐步', exact: true }).click();
+  await expect(manager.getByRole('button', { name: '拷贝', exact: true })).toBeEnabled();
+  await expect(manager.getByRole('button', { name: '删除', exact: true })).toBeEnabled();
+  await manager.getByRole('button', { name: '关闭', exact: true }).click();
+  await expect(page.locator('.run-record-information h2')).toHaveText(manual.name);
+  await expect(tabs.getByRole('button', { name: '信息与配置', exact: true })).toHaveClass('active');
+  await page.getByRole('button', { name: '返回 FlowRun 目录', exact: true }).click();
+  await page.locator('.flow-run-directory-list').getByRole('button', { name: /测试运行/ }).click();
+  await page.getByRole('button', { name: '管理运行记录', exact: true }).click();
+  await page.getByRole('button', { name: '新建运行记录', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: '选择运行类型' });
   await expect(dialog.getByRole('button', { name: /逐步运行/ })).toBeVisible();
   await expect(dialog.getByRole('button', { name: /连续运行/ })).toBeVisible();
   await dialog.getByRole('button', { name: '取消', exact: true }).click();
-  await expect(page.locator('.run-record-detail-head')).toContainText(automaticBase.name);
 });
 
 test('flow library saves an empty draft before opening its node editor', async ({ page }) => {
@@ -144,8 +153,52 @@ test('flow library saves an empty draft before opening its node editor', async (
   await expect(page.locator('.flow-editor-head')).toContainText('未找到一个启动节点');
   await expect(page.getByTestId('flow-library')).toContainText('节点资产目录');
   await page.getByRole('button', { name: '全部流程', exact: true }).click();
-  await expect(page.locator('.flow-overview-card')).toContainText('可恢复编排草稿');
-  await expect(page.locator('.flow-overview-card')).toContainText('未找到一个启动节点');
-  await page.getByRole('button', { name: '继续编排', exact: true }).click();
+  await expect(page.locator('.flow-library-row')).toContainText('可恢复编排草稿');
+  await expect(page.locator('.flow-library-row')).toContainText('未找到一个启动节点');
+  await page.getByRole('button', { name: '编辑流程 可恢复编排草稿', exact: true }).click();
   await expect(page.locator('.flow-editor-head')).toContainText('可恢复编排草稿');
+});
+
+
+test('flow library pagination retains bulk deletion and copying after the merge', async ({ page }) => {
+  let flows = Array.from({ length: 11 }, (_, i) => ({ ...definition, id: `flow-${i}`, name: `验收流程 ${i}` }));
+  let copied: Record<string, unknown> | undefined;
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname.replace(/^\/flowweave/, '');
+    const respond = (body: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
+    if (path.endsWith('/auth/me')) return respond(authenticatedUser);
+    if (path === '/api/v1/flows' && request.method() === 'POST') {
+      copied = request.postDataJSON() as Record<string, unknown>;
+      return respond({ ...definition, ...copied, id: 'copied-flow' }, 201);
+    }
+    if (path === '/api/v1/flows') return respond(flows);
+    if (path.startsWith('/api/v1/flows/') && request.method() === 'DELETE') {
+      flows = flows.filter(flow => flow.id !== path.split('/').at(-1));
+      return route.fulfill({ status: 204 });
+    }
+    if (path === '/api/v1/node-assets') return respond([asset]);
+    return respond([]);
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: '流程编排', exact: true }).click();
+  await expect(page.locator('.flow-library-row')).toHaveCount(10);
+  await page.getByRole('button', { name: '下一页', exact: true }).click();
+  await expect(page.locator('.flow-library-row')).toHaveCount(1);
+  await page.getByRole('button', { name: '全选本页', exact: true }).click();
+  await page.getByRole('button', { name: '删除 (1)', exact: true }).click();
+  await page.getByRole('button', { name: '永久删除', exact: true }).click();
+  await expect(page.locator('.flow-library-row')).toHaveCount(10);
+  await expect(page.locator('.flow-library-pagination')).toContainText('第 1 / 1 页');
+  await page.getByRole('button', { name: '复制流程 验收流程 0', exact: true }).click();
+  await expect(page.locator('.flow-editor-head')).toContainText('验收流程 0 · 副本');
+  expect(copied).toEqual({
+    name: '验收流程 0 · 副本', description: '', default_entry_key: null,
+    nodes: definition.nodes.map(node => ({
+      instance_key: node.instance_key, node_asset_id: node.node_asset_id, alias: node.alias,
+      position_x: node.position_x, position_y: node.position_y, config_override: {}, gates: [],
+    })),
+    edges: [{ source_instance_key: 'first', target_instance_key: 'second', position: 0 }],
+    port_mappings: [{ source_instance_key: 'first', source_output_key: 'output_1', target_instance_key: 'second', target_input_key: 'input_1' }],
+  });
 });

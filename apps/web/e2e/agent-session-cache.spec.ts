@@ -536,6 +536,7 @@ test('Completed conversation shows an explicit loading state without appearing t
   await login(page);
   await page.goto('/agent/conversations/completed-loading-conversation');
   await expect(page.getByRole('status').filter({ hasText: '正在加载会话' })).toBeVisible();
+  await expect(page.getByLabel('发送 Agent 消息')).toHaveCount(0);
   await expect(page.getByText('会话已就绪', { exact: true })).toHaveCount(0);
   await expect(page.locator('.conversation-turn-status')).toHaveCount(0);
   await expect(page.getByText('正在思考', { exact: true })).toHaveCount(0);
