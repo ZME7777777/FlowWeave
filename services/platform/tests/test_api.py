@@ -123,6 +123,59 @@ def test_case_control_plane_creates_stages_and_changes_stage_state(client):
     assert stale.json()["error"]["code"] == "VERSION_CONFLICT"
 
 
+def test_case_delete_removes_control_plane_but_preserves_linked_flow_run(client, skill_capability):
+    asset = create_asset(client, skill_capability, "事项删除节点")
+    flow = create_flow(client, asset["id"])
+    run = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    )
+    assert run.status_code == 201, run.text
+    case = client.post("/api/v1/cases", json={"name": "待删除事项"})
+    assert case.status_code == 201, case.text
+    attached = client.post(
+        f"/api/v1/cases/{case.json()['id']}/flow-runs",
+        json={"flow_run_id": run.json()["id"]},
+    )
+    assert attached.status_code == 200, attached.text
+
+    deleted = client.delete(f"/api/v1/cases/{case.json()['id']}")
+    assert deleted.status_code == 204, deleted.text
+    assert client.get(f"/api/v1/cases/{case.json()['id']}").status_code == 404
+    preserved = client.get(f"/api/v1/flow-runs/{run.json()['id']}")
+    assert preserved.status_code == 200, preserved.text
+
+
+def test_case_delete_rejects_active_execution(client, skill_capability, db_session_factory):
+    from flowweave.modules.cases.infrastructure.models import CaseStage
+
+    asset = create_asset(client, skill_capability, "事项执行保护节点")
+    flow = create_flow(client, asset["id"])
+    run = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    )
+    assert run.status_code == 201, run.text
+    case = client.post(
+        "/api/v1/cases",
+        json={"name": "执行中事项", "stages": [{"stage_key": "run", "name": "执行"}]},
+    )
+    assert case.status_code == 201, case.text
+    stage = case.json()["stages"][0]
+    with db_session_factory() as db:
+        current_stage = db.get(CaseStage, stage["id"])
+        assert current_stage is not None
+        current_stage.current_execution_flow_run_id = run.json()["id"]
+        execution = db.get(FlowRun, run.json()["id"])
+        assert execution is not None
+        execution.state = "ACTIVE"
+        db.commit()
+
+    rejected = client.delete(f"/api/v1/cases/{case.json()['id']}")
+    assert rejected.status_code == 409, rejected.text
+    assert rejected.json()["error"]["code"] == "CASE_EXECUTION_RUNNING"
+
+
 def test_case_attaches_top_level_flow_run_and_projects_idempotently(client, skill_capability):
     asset = create_asset(client, skill_capability, "事项观察节点")
     flow = create_flow(client, asset["id"])
@@ -411,6 +464,11 @@ def test_case_control_plan_persists_scoped_input_snapshot(client):
     assert detail.status_code == 200, detail.text
     assert detail.json()["control_plans"][0]["id"] == plan["id"]
 
+    rejected = client.delete(f"/api/v1/cases/{case.json()['id']}")
+    assert rejected.status_code == 409, rejected.text
+    assert rejected.json()["error"]["code"] == "CASE_CONTROL_PLAN_PENDING"
+    assert client.get(f"/api/v1/cases/{case.json()['id']}").status_code == 200
+
 
 def test_case_control_plan_dispatches_copy_and_start_actions(client, skill_capability):
     asset = create_asset(client, skill_capability, "计划调度节点")
@@ -555,9 +613,7 @@ def test_control_binding_plan_is_limited_to_its_active_case_stage(
         headers={"Idempotency-Key": "case-control-binding-one"},
     )
     assert conversation.status_code == 201, conversation.text
-    assert list(working_directories.values())[0].endswith(
-        f"/.flowweave/cases/{first.json()['id']}"
-    )
+    assert list(working_directories.values())[0].endswith(f"/.flowweave/cases/{first.json()['id']}")
     binding_id = conversation.json()["control_conversation_binding_id"]
 
     accepted = client.post(
@@ -741,7 +797,6 @@ def test_copy_node_run_preserves_launch_configuration_without_execution_results(
         copied_attempt["input_bindings"][0]["artifact_version_id"]
         != source_attempt["input_bindings"][0]["artifact_version_id"]
     )
-
 
 
 def test_copied_start_blocked_node_provisions_runtime_for_agent_workbench(client, skill_capability):

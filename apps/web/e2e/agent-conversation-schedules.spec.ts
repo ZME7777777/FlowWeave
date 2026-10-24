@@ -90,6 +90,12 @@ async function openWorkspace(page: Page, events: unknown[] = [], includeSecondCo
       schedules.push(schedule);
       return json(route, schedule);
     }
+    if (path.includes('/conversation-schedules/') && request.method() === 'DELETE') {
+      const id = path.split('/').at(-1)!;
+      writes.push({ method: 'DELETE', id, body: {} });
+      schedules.splice(schedules.findIndex(item => item.id === id), 1);
+      return route.fulfill({ status: 204 });
+    }
     if (path.includes('/conversation-schedules/') && request.method() === 'PUT') {
       const id = path.split('/').at(-1)!;
       const body = request.postDataJSON();
@@ -161,6 +167,54 @@ test('fresh navigation opens case space and creates a scenario after the branch 
   await expect(page.getByRole('button', { name: '创建协调会话', exact: true })).toBeVisible();
   await page.getByRole('button', { name: '自由对话', exact: true }).click();
   await expect(page.getByRole('navigation', { name: 'Agent 工作区导航' })).toBeVisible();
+});
+
+test('case deletion confirms intent and retains the case when the server rejects it', async ({ page }) => {
+  await openWorkspace(page);
+  let deleted = false;
+  let rejectDelete = true;
+  let deleteCount = 0;
+  const item = { id: 'delete-case', name: '删除保护场景', objective: '', state: 'ACTIVE', row_version: 1,
+    stages: [], tasks: [], flow_runs: [], control_plans: [], decision_proposals: [],
+    control_conversation_binding_id: null, created_at: now, updated_at: now };
+  await page.route('**/api/v1/cases**', async route => {
+    if (route.request().method() === 'DELETE') {
+      deleteCount += 1;
+      if (rejectDelete) return json(route, { error: { code: 'CASE_EXECUTION_RUNNING', message: '事项仍有进行中的执行，停止后才能删除' } }, 409);
+      deleted = true;
+      return route.fulfill({ status: 204 });
+    }
+    return json(route, deleted ? [] : [item]);
+  });
+  await page.getByRole('button', { name: '场景空间', exact: true }).click();
+  await page.getByRole('button', { name: '删除', exact: true }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: '取消', exact: true }).click();
+  expect(deleteCount).toBe(0);
+  await page.getByRole('button', { name: '删除', exact: true }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: '删除 Case', exact: true }).click();
+  await expect(page.locator('.scenario-delete-error')).toContainText('事项仍有进行中的执行');
+  await expect(page.locator('.scenario-casebar')).toContainText(item.name);
+  rejectDelete = false;
+  await page.getByRole('button', { name: '删除', exact: true }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: '删除 Case', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '选择或创建一个场景', exact: true })).toBeVisible();
+  expect(deleteCount).toBe(2);
+});
+
+test('schedule deletion removes only its task and keeps existing conversations', async ({ page }) => {
+  const writes = await openWorkspace(page);
+  await page.getByRole('button', { name: '定时任务', exact: true }).click();
+  await page.locator('.agent-schedule-tree-select').filter({ hasText: '每日项目检查' }).click();
+  await page.locator('.agent-schedule-actions').getByRole('button', { name: '删除', exact: true }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: '取消', exact: true }).click();
+  expect(writes.filter(item => item.method === 'DELETE')).toHaveLength(0);
+  await page.locator('.agent-schedule-actions').getByRole('button', { name: '删除', exact: true }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: '删除任务', exact: true }).click();
+  await expect(page.locator('.agent-schedule-tree')).not.toContainText('每日项目检查');
+  await expect(page.locator('.agent-schedule-tree')).toContainText('每周复核');
+  expect(writes.filter(item => item.method === 'DELETE')).toEqual([{ method: 'DELETE', id: 'daily-schedule', body: {} }]);
+  await page.getByRole('button', { name: '自由对话', exact: true }).click();
+  await expect(page.getByRole('button', { name: '日报会话', exact: true })).toBeVisible();
 });
 
 test('conversation images resolve in the bound user project and preview with the current binding', async ({ page }) => {

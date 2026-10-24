@@ -2,7 +2,7 @@
 
 > 创建日期：2026-08-21
 > 状态：`UPSTREAM BASELINE ADOPTION COMPLETE`
-> 当前执行切片：`NONE`
+> 当前执行切片：`FR-679`
 > 下一可执行切片：`NONE`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
@@ -91,6 +91,18 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 放到 FR-12；普通切片即使涉及安全或迁移，也只实现代码并做基础语法检查。
 
 ## 6. 任务清单
+
+### FR-679 远程事项删除与节点表单同步发布 — CURRENT
+
+依赖：FR-678 DONE。按用户明确授权合并远程 feat/refactor 的 `c44b86fe`、
+`1baf5103`，保留本地全部提交；原本地 HEAD 为 `30882560`。Git 自动合并没有
+文本冲突。同步节点字段卡片布局、事项及控制会话删除、定时任务删除入口，并补齐
+事项目录删除的父目录符号链接拒绝、提交后路径身份复核及回归。
+
+发布前 Web typecheck、受影响 ESLint、平台产品模块及 API 测试 Ruff、Python AST、
+diff 与任务状态检查通过；10 项定向 Chromium 回归通过，使用受控 API／WebSocket。
+Alembic 唯一 head 仍为 `0171_remove_flow_run_revision_drafts`，迁移及 Runtime 未改。
+平台／Web 正式预检已通过；待固定提交镜像构建、隔离 PostgreSQL 回归及正式发布验收。
 
 ### FR-678 远程场景与节点界面合并发布 — DONE
 

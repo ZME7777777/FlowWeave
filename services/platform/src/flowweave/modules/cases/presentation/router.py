@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Response
 
 from flowweave.modules.cases import public as service
 from flowweave.shared.http import Db, IdempotencyKey, command_key, run_sync
@@ -30,6 +30,18 @@ async def cases(db: Db) -> list[dict[str, Any]]:
 @router.post("/cases", status_code=201)
 async def create_case(payload: CaseCreateWrite, db: Db) -> dict[str, Any]:
     return await run_sync(db, lambda session: service.create_case(session, payload))
+
+
+@router.delete("/cases/{case_id}", status_code=204, response_class=Response)
+async def delete_case(case_id: str, db: Db) -> Response:
+    await run_sync(db, lambda session: service.delete_case(session, case_id))
+    return Response(status_code=204)
+
+
+@router.delete("/cases/{case_id}/control-conversation", status_code=204, response_class=Response)
+async def delete_case_control_conversation(case_id: str, db: Db) -> Response:
+    await run_sync(db, lambda session: service.delete_case_control_conversation(session, case_id))
+    return Response(status_code=204)
 
 
 @router.get("/cases/{case_id}")

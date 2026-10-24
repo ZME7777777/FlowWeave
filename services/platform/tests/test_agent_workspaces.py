@@ -573,6 +573,85 @@ def test_agent_work_directory_root_is_implicit_and_versions_are_immutable(
         assert db.get(AgentWorkDirectoryVersion, second_version_id) is None
 
 
+def test_case_directory_delete_waits_for_commit_and_preserves_other_files(
+    settings, db_session_factory
+):
+    from flowweave.shared.application.transactions import finish
+
+    with settings_context(settings), db_session_factory() as db:
+        workspace = ensure_default_agent_workspace(db)
+        root = _agent_project_root(settings, db, workspace)
+        case_id = str(uuid4())
+        item = work_directories.create_case_work_directory(db, workspace.id, case_id, "Case")
+        target = root / ".flowweave/cases" / case_id
+        (target / "evidence.txt").write_text("case evidence")
+        other = target.parent / "other-case"
+        other.mkdir()
+        (other / "keep.txt").write_text("preserve")
+        db.commit()
+
+        work_directories.delete_case_work_directory(db, workspace.id, case_id, item["id"])
+        assert target.is_dir()
+        db.rollback()
+        from flowweave.shared.application.transactions import run_rollback_actions
+
+        run_rollback_actions(db)
+        assert target.is_dir()
+        assert db.get(AgentWorkDirectory, item["id"]) is not None
+        work_directories.delete_case_work_directory(db, workspace.id, case_id, item["id"])
+        finish(db)
+        assert not target.exists()
+        assert (other / "keep.txt").read_text() == "preserve"
+
+
+@pytest.mark.parametrize("component", [".flowweave", ".flowweave/cases", "leaf"])
+def test_case_directory_delete_rejects_symlink_ancestors(
+    settings, db_session_factory, tmp_path, component
+):
+    with settings_context(settings), db_session_factory() as db:
+        workspace = ensure_default_agent_workspace(db)
+        root = _agent_project_root(settings, db, workspace)
+        case_id = str(uuid4())
+        item = work_directories.create_case_work_directory(db, workspace.id, case_id, "Case")
+        relative = Path(".flowweave/cases") / case_id
+        changed = root / relative if component == "leaf" else root / component
+        changed.rename(changed.with_name(changed.name + "-original"))
+        external = tmp_path / "external"
+        external.mkdir()
+        changed.symlink_to(external, target_is_directory=True)
+        sentinel = external / "keep.txt"
+        sentinel.write_text("preserve")
+        with pytest.raises(DomainError) as raised:
+            work_directories.delete_case_work_directory(db, workspace.id, case_id, item["id"])
+        assert raised.value.code == "CASE_WORKSPACE_DELETE_UNSAFE"
+        assert sentinel.read_text() == "preserve"
+        assert db.get(AgentWorkDirectory, item["id"]) is not None
+
+
+def test_case_directory_delete_revalidates_path_after_database_commit(
+    settings, db_session_factory, tmp_path
+):
+    from flowweave.shared.application.transactions import finish
+
+    with settings_context(settings), db_session_factory() as db:
+        workspace = ensure_default_agent_workspace(db)
+        root = _agent_project_root(settings, db, workspace)
+        case_id = str(uuid4())
+        item = work_directories.create_case_work_directory(db, workspace.id, case_id, "Case")
+        target = root / ".flowweave/cases" / case_id
+        db.commit()
+        work_directories.delete_case_work_directory(db, workspace.id, case_id, item["id"])
+        target.rename(target.with_name(case_id + "-original"))
+        external = tmp_path / "external"
+        external.mkdir()
+        (external / "keep.txt").write_text("preserve")
+        target.symlink_to(external, target_is_directory=True)
+        with pytest.raises(DomainError) as raised:
+            finish(db)
+        assert raised.value.code == "CASE_WORKSPACE_DELETE_UNSAFE"
+        assert (external / "keep.txt").read_text() == "preserve"
+
+
 @pytest.mark.parametrize(
     ("selected_paths", "error_code"),
     [
