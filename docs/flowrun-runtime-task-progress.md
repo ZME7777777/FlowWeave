@@ -114,6 +114,31 @@ pending，继续返回已读取的正式活动目录；授权、协议与身份�
 Alembic 唯一 head 保持 0170_revision_draft_owner。代码提交后按用户授权继续本片发布，
 不开始其他实现；实际上线验收另补记。当前与下一可执行切片均为 NONE。
 
+FR-671 发布补记（2026-10-24）：代码版本
+`ef39c4fdbf15cf3af2566fae45f79758e2c20cee`。正式 platform／web 预检及
+commit-bound 最小上下文 prepare 通过；两份归档 SHA-256 分别为
+`b5f66c3ff1576833b424d25680a019c74c6ba0ee11aad8013de40a794de5c585`、
+`2ce8b4bac19960271b46239cad8bb7ef83624efdc45cecc91ff45e705fc0a26e`。
+linux/amd64 平台、Web 镜像分别为
+`sha256:579ead6dad2c0aa06a3a1d8f4b0b9aac1b892c04d48a49415ce8f6e40f18c060`、
+`sha256:68f6ff646fa60b430b6a162642464344da80357dc12125ddfc2a297ded4e290b`，
+OCI revision 均为上述代码版本。保留精确 rollback tags 后，正式 migration 退出码为 0，
+仅 recreate api／stream-api／worker／web；四服务版本、API health／readiness、
+Worker 与 Web HTTP 验证通过。三个平台服务的新增完成核对模块摘要均与发布上下文一致；
+Alembic 唯一 head 保持 `0170_revision_draft_owner`。
+
+部署连接曾暂时中断，原操作最终成功返回；恢复后重新通过正式预检和只读版本／健康验收，
+未重复激活或盲目回滚。服务器 Compose／env 摘要及其余 34 个容器的镜像／启动时间未变，
+包括 Runtime Provider 和既有 Runtime；未替换 generation 或修改持久数据。
+服务器实际 Chromium 的带前缀登录、Agent 深层路由、根登录页及公网 API 401 边界通过。
+从运行 Web 镜像导出实际静态资源，以受控 API／WebSocket 完成六项 Chromium 回归，
+覆盖新增 503／504 保留与自动恢复、403 清除，以及既有排队发送、后台完成未读与活动展示。
+实际加载的 45 个 JS／CSS 文件 SHA-256 与运行容器一致；这些浏览器用例不替代真实
+Runtime 业务消息验收，未向业务会话发送测试消息。
+platform／web 的正式 remote-release-finish 均通过版本／健康门禁和受管容量收尾，
+本次无待回收上下文或镜像。保留最近三份成功上下文及引用／回滚版本；未清理共享
+BuildKit、卷、Workspace 或数据库备份。当前与下一可执行切片均为 NONE。
+
 ### FR-670 会话操作错误的紧凑提示与有界展示 — DONE
 
 依赖：FR-669 DONE。按用户反馈，将会话发送等操作错误改为输入框上方的紧凑单行优先提示，
