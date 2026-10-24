@@ -213,7 +213,7 @@ test('schedule deletion removes only its task and keeps existing conversations',
   await expect(page.locator('.agent-schedule-tree')).not.toContainText('每日项目检查');
   await expect(page.locator('.agent-schedule-tree')).toContainText('每周复核');
   expect(writes.filter(item => item.method === 'DELETE')).toEqual([{ method: 'DELETE', id: 'daily-schedule', body: {} }]);
-  await page.getByRole('button', { name: '自由对话', exact: true }).click();
+  await page.getByRole('navigation', { name: 'Agent 工作区导航' }).getByRole('button', { name: '主页', exact: true }).click();
   await expect(page.getByRole('button', { name: '日报会话', exact: true })).toBeVisible();
 });
 

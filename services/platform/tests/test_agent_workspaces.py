@@ -578,9 +578,9 @@ def test_case_directory_delete_waits_for_commit_and_preserves_other_files(
 ):
     from flowweave.shared.application.transactions import finish
 
-    with settings_context(settings), db_session_factory() as db:
+    with settings_context(settings), tenant_user(FLOWWEAVE_USER_ID), db_session_factory() as db:
         workspace = ensure_default_agent_workspace(db)
-        root = _agent_project_root(settings, db, workspace)
+        root = _agent_project_root(settings, db, workspace) / "users" / FLOWWEAVE_USER_ID
         case_id = str(uuid4())
         item = work_directories.create_case_work_directory(db, workspace.id, case_id, "Case")
         target = root / ".flowweave/cases" / case_id
@@ -608,9 +608,9 @@ def test_case_directory_delete_waits_for_commit_and_preserves_other_files(
 def test_case_directory_delete_rejects_symlink_ancestors(
     settings, db_session_factory, tmp_path, component
 ):
-    with settings_context(settings), db_session_factory() as db:
+    with settings_context(settings), tenant_user(FLOWWEAVE_USER_ID), db_session_factory() as db:
         workspace = ensure_default_agent_workspace(db)
-        root = _agent_project_root(settings, db, workspace)
+        root = _agent_project_root(settings, db, workspace) / "users" / FLOWWEAVE_USER_ID
         case_id = str(uuid4())
         item = work_directories.create_case_work_directory(db, workspace.id, case_id, "Case")
         relative = Path(".flowweave/cases") / case_id
@@ -633,9 +633,9 @@ def test_case_directory_delete_revalidates_path_after_database_commit(
 ):
     from flowweave.shared.application.transactions import finish
 
-    with settings_context(settings), db_session_factory() as db:
+    with settings_context(settings), tenant_user(FLOWWEAVE_USER_ID), db_session_factory() as db:
         workspace = ensure_default_agent_workspace(db)
-        root = _agent_project_root(settings, db, workspace)
+        root = _agent_project_root(settings, db, workspace) / "users" / FLOWWEAVE_USER_ID
         case_id = str(uuid4())
         item = work_directories.create_case_work_directory(db, workspace.id, case_id, "Case")
         target = root / ".flowweave/cases" / case_id
