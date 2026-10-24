@@ -9,13 +9,20 @@ from flowweave.modules.runs.infrastructure.models import (
     NodeRun,
 )
 from flowweave.modules.tasks.infrastructure.models import BackgroundTask
+from flowweave.shared.artifact_store import artifact_store_context
 from flowweave.shared.domain.enums import AttemptState, FlowRunState, NodeRunState
+from flowweave.shared.settings import settings_context
 
 
 def test_deleting_schedule_queues_existing_record_cleanup_and_final_removal(
     db_session_factory,
+    container,
 ) -> None:
-    with db_session_factory() as db:
+    with (
+        settings_context(container.settings),
+        artifact_store_context(container.artifact_store),
+        db_session_factory() as db,
+    ):
         parent = FlowRun(
             flow_definition_id="flow-1",
             run_no=1,

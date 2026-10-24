@@ -2,7 +2,7 @@
 
 > 创建日期：2026-08-21
 > 状态：`UPSTREAM BASELINE ADOPTION COMPLETE`
-> 当前执行切片：`FR-689`
+> 当前执行切片：`NONE`
 > 下一可执行切片：`NONE`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
@@ -92,13 +92,50 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 
 ## 6. 任务清单
 
-### FR-689 远程草稿恢复与定时记录联动删除合并发布 — CURRENT
+### FR-689 远程草稿恢复与定时记录联动删除合并发布 — DONE
 
 依赖：FR-688 DONE。按用户明确授权，将远程 feat/refactor 的三个提交合入本地，
 保留本地 Case 与节点改动，处理测试中的旧 Case 界面与导航名称冲突。
 验证草稿恢复、定时创建与删除、Case 和节点回归后，以已提交版本发布 platform／web；
 执行正式预检、最小上下文、迁移、同版本 api／stream-api／worker 更新、Web 验收
 与容量收尾。不改变 Runtime Provider、固定 OpenHands 或已有 Runtime generation。
+
+发布验收（2026-10-24）：远程三个提交合入本地，发布代码为
+`ee2dd7adb4b9e9f8cf2da3fe8bcaeda0b6d8f0e9`，原本地 `a7cbd367` 和远程
+`576b877c` 均为其祖先。唯一文本冲突位于 Case 浏览器测试；保留本地 Case
+新界面断言并适配远程 AI 工作台名称，生产代码无冲突标记。
+
+Web typecheck、受影响 ESLint／Ruff、diff 和任务状态核对通过。本地 Cron／时区
+套件 33 passed；数据库删除用例因本机 Docker 未运行，改用服务器独立 PostgreSQL
+临时容器与实际平台镜像验证。该用例补齐直接调用应用服务所需的 settings 与
+artifact-store context 后通过，完整空库迁移到 0172 也通过；应用源码未被测试
+载荷覆盖。所有隔离测试容器均移除，测试前后 38 个业务容器镜像与启动时间不变。
+该数据库验证覆盖控制面删除／父记录保留，不声称覆盖真实活动模型和 Runtime 删除。
+
+本地定向 Chromium 29 项通过；导出实际构建 Web 镜像资源，以受控 API 在部署
+前缀下重跑同一 29 项全部通过。覆盖新建草稿返回工作台、FlowRun 筛选与连续记录
+选择、删除确认、Case 配置／认证／四尺寸布局，以及既有节点的 11 项回归。
+44 个实际加载 JS／CSS 文件 SHA-256 与线上运行容器一致，不将重复运行累加为
+独立用例数。服务器实际 Chromium 验证公网前缀登录、Agent 与 Case 深层路由及
+根登录；全新浏览器网络日志确认 auth/me 使用部署前缀，根 API 请求为零，两个
+公网 API 未认证边界均为 401。未向业务会话发送消息或删除真实定时任务／记录。
+
+正式 platform／web 预检、commit-bound 最小上下文 prepare 均通过；归档 SHA-256：
+platform 为 `bd62b79b11ae5551dfa5ff51db29d4f160456a9e7f86f83fb02ab22e5e127387`，
+web 为 `2082b06950dc5482485ecaf1b10a7a86b2dea57cca3d2990750bcbea3d0dd998`。
+实际 linux/amd64 镜像分别为
+`sha256:1542eade5f44f8046bd6afe02281678f563d77ab66c9931adcb1650300765e76`、
+`sha256:de41181cfc648edcbcdceafc4303b1cc7517718501e3a9088f6b8f0a8f70c2fa`，
+OCI revision 均与发布代码一致。服务器保留旧日志和精确 rollback tags 后，正式
+migration 成功，唯一 head 为 0172_case_configuration；同步 recreate api／stream-api／
+worker／web，四服务版本与健康一致，其余 34 个运行容器镜像和启动时间不变，
+Compose／env 摘要不变。未修改 Runtime Provider、OpenHands 或已有 generation。
+
+platform／web remote-release-finish 均通过，保留各 scope 最近三份成功上下文及
+引用／回滚版本，仅回收两份过期受管上下文和两个旧镜像的精确 rollback tags。
+不清理共享 BuildKit、卷、Workspace 或数据库备份；容量收尾后再次核对版本、
+健康、配置及其余容器不变。本收尾提交只包含测试上下文修正和验收记录，部署代码
+仍绑定 ee2dd7ad；当前与下一可执行切片均为 NONE。
 
 ### FR-688 Case 运行候选、默认认证与紧凑表单 Web 发布 — DONE
 
