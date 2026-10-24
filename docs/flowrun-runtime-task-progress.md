@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`UPSTREAM BASELINE ADOPTION COMPLETE`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`NONE`
+> 下一可执行切片：`FR-673`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -125,6 +125,43 @@ FAILED，历史有终端 Errno 11 资源暂不可用，以及重启后未完成�
 在凌晨，检查时数据库无阻塞／长事务。这些是分开的故障证据，不能声称单个补丁
 已经解决全部历史 503。发布前先保存受影响服务日志，再仅发布本片 platform／web；
 实际版本／健康／路由与受管收尾结果在发布后补记。当前与下一可执行代码切片均为 NONE。
+
+
+FR-672 发布补记（2026-10-24）：代码提交
+`4a974b0f35c71769c01c53be98fa5e27bc4baf8b`。正式 platform／web 预检、commit-bound
+最小上下文 prepare 通过，源码归档 SHA-256 分别为
+`4c1b89918feed1bdb7c199f16dee733d7918cca27c97f290be1864ec93240faf`、
+`1cf7c8dea1b6e20b922c261765d65b33653a9553826df478ecb144905c97efd7`。
+构建并检查 linux/amd64／OCI revision，平台与 Web 镜像分别为
+`sha256:16c8fb4d8653619dde9b0e7273b7c8800d2dab5b9b48db681b86e27e8e4e8b9d`、
+`sha256:c3651ef1f7a49b01d357a9ce587160b45f95985fe6817b894ed737429e9ab5c1`。
+先在服务器受保护发布上下文内保存原 API／stream-api／Worker 的带时间戳完整日志，
+再保留精确 rollback tags；日志未复制到 Git 或本机源码。正式 migration 成功，
+仅同步 recreate api／stream-api／worker／web；四服务运行同一代码版本，health／
+readiness／Web HTTP 正常，历史 MCP 模块摘要与冻结上下文一致。Alembic 唯一 head
+仍为 0170_revision_draft_owner；服务器 Compose／env 摘要及其余 34 个容器的镜像、
+启动时间均未变，包括 Runtime Provider 和既有 Runtime。
+
+原两个会话的 owner／host／binding／Runtime Session／原生 Conversation／工作目录
+身份摘要前后完全相同，发布后直接正式只读检查仍为原生 error；没有暂停、续跑或重放
+业务任务。数据库检查无阻塞／长事务，发布后现存服务日志未发现新 503 或后台异常，
+但观察窗口短且未发送真实业务消息，不能以此宣称历史资源／DNS／连接池故障已根治。
+服务器实际 Chromium 完成公网前缀登录、Agent 深层路由、根登录及 API 401 边界；
+导出运行 Web 镜像的实际资源，使用受控 API／WebSocket 重跑同样 7 项 Chromium
+回归全部通过，实际加载的 45 个 JS／CSS SHA-256 与运行镜像一致。
+
+platform／web remote-release-finish 的版本／健康门禁与容量收尾均通过，回收两份
+过期受管成功上下文和对应旧镜像四个精确 rollback tags，保留最近三份成功上下文及
+引用／回滚版本。不清理共享 BuildKit、卷、Workspace 或数据库备份。当前切片 NONE，
+下一可执行切片 FR-673，仅登记后续故障取证，不在本片开始实施。
+
+### FR-673 历史终端资源错误与短时 503 复现实证 — READY
+
+依赖：FR-672 DONE。基于已保存日志及固定 Runtime 的正式事件，在隔离测试资源中
+复现终端 Errno 11／未完成工具恢复，并区分 API 读取容量、数据库池／锁等待和 DNS
+错误对 503 的影响；先取得可复现实证，再确定最小修复边界。当前生产检查无持续故障，
+不能猜测提高资源上限、改写服务器配置或重启业务 Runtime；不自动继续原任务，不修改
+OpenHands 源码，不用受控 HTTP 替身代替真实 Runtime／数据库故障验收。
 
 
 ### FR-671 活动状态读取失败的展示保留与后台核对隔离 — DONE
