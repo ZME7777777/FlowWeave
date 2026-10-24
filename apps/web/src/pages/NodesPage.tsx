@@ -30,7 +30,7 @@ export function NodesPage() {
   const { data: directories = [] } = useQuery({ queryKey: ['directories'], queryFn: api.directories });
   const { data: nodes = [], isLoading } = useQuery({ queryKey: ['nodes'], queryFn: () => api.nodes() });
   const [selectedNodeId, setSelectedNodeId] = useState<string>();
-  const [copyingNode, setCopyingNode] = useState<NodeAsset>();
+  const [copyingNodeId, setCopyingNodeId] = useState<string>();
   const [creatingInDirectory, setCreatingInDirectory] = useState<string | null>();
   const [expandedDirectoryIds, setExpandedDirectoryIds] = useState<Set<string>>(() => new Set());
   const [search, setSearch] = useState('');
@@ -87,14 +87,37 @@ export function NodesPage() {
   };
   const saveNode = async (data: Parameters<typeof api.createNode>[0]) => {
     const saved = selectedNode ? await api.updateNode(selectedNode.id, data) : await api.createNode(data);
-    setSelectedNodeId(saved.id); setCopyingNode(undefined); setCreatingInDirectory(undefined);
+    setSelectedNodeId(saved.id); setCreatingInDirectory(undefined);
     await queryClient.invalidateQueries({ queryKey: ['nodes'] });
     return saved;
   };
-  const openCopy = (node: NodeAsset) => { setCopyingNode({ ...node, id: '', name: `${node.name} 副本`, row_version: 1 }); setCreatingInDirectory(node.directory_id ?? null); setSelectedNodeId(undefined); };
+  const copyNode = async (node: NodeAsset) => {
+    if (copyingNodeId) return;
+    setCopyingNodeId(node.id); setError(''); setNotice('');
+    const names = new Set(nodes.filter(item => item.directory_id === node.directory_id).map(item => item.name));
+    const baseName = `${node.name} 副本`;
+    let name = baseName;
+    let copyIndex = 2;
+    while (names.has(name)) name = `${baseName} ${copyIndex++}`;
+    try {
+      const copied = await api.createNode({
+        directory_id: node.directory_id ?? null,
+        name,
+        description: node.description,
+        icon_kind: node.icon_kind,
+        icon_value: node.icon_value,
+        inputs: node.inputs,
+        outputs: node.outputs,
+        executor: node.executor ?? { startup_prompt: '', context_prompt: '', context_capability_ids: [] },
+      });
+      setNotice(`节点“${copied.name}”已复制。`);
+      await queryClient.invalidateQueries({ queryKey: ['nodes'] });
+    } catch (reason) { setError(reason instanceof Error ? reason.message : '复制节点失败'); }
+    finally { setCopyingNodeId(undefined); }
+  };
   const renderNode = (node: NodeAsset) => <div className={`node-tree-record${selectedNodeId === node.id ? ' selected' : ''}`} key={node.id}>
-    <button type="button" className="node-tree-select" data-testid="node-card" aria-current={selectedNodeId === node.id ? 'true' : undefined} onClick={() => { setSelectedNodeId(node.id); setCopyingNode(undefined); setCreatingInDirectory(undefined); }}><span className="node-icon">{node.icon_value.slice(0, 2).toUpperCase()}</span><span><b>{node.name}</b><small>{node.description || '暂无说明'}</small></span></button>
-    <div className="node-record-actions"><button type="button" title="复制节点" aria-label={`复制节点 ${node.name}`} onClick={() => openCopy(node)}><Copy size={14}/></button><button type="button" title="删除节点" aria-label={`删除节点 ${node.name}`} disabled={deletingNodeId === node.id} onClick={() => void removeNode(node)}><Trash2 size={14}/></button></div>
+    <button type="button" className="node-tree-select" data-testid="node-card" aria-current={selectedNodeId === node.id ? 'true' : undefined} onClick={() => { setSelectedNodeId(node.id); setCreatingInDirectory(undefined); }}><span className="node-icon">{node.icon_value.slice(0, 2).toUpperCase()}</span><span><b>{node.name}</b><small>{node.description || '暂无说明'}</small></span></button>
+    <div className="node-record-actions"><button type="button" title="复制节点" aria-label={`复制节点 ${node.name}`} disabled={copyingNodeId === node.id} onClick={() => void copyNode(node)}><Copy size={14}/></button><button type="button" title="删除节点" aria-label={`删除节点 ${node.name}`} disabled={deletingNodeId === node.id} onClick={() => void removeNode(node)}><Trash2 size={14}/></button></div>
   </div>;
   const renderDirectory = (directory: NodeDirectory, depth: number): React.ReactNode => {
     const children = directories.filter(item => item.parent_id === directory.id);
@@ -120,9 +143,9 @@ export function NodesPage() {
       <aside className="node-center-rail" aria-label="节点目录">
         <header className="node-center-list-head"><div><span className="eyebrow">NODE CENTER</span><b>节点目录</b><small>{nodes.length} 个节点</small></div><button type="button" className="secondary" onClick={() => void createDirectory(null)}><Plus size={14}/>新建目录</button></header>
         <label className="node-center-search"><Search size={14}/><input aria-label="搜索节点" value={search} placeholder="搜索节点" onChange={event => setSearch(event.target.value)}/></label>
-        <div className="node-center-tree">{isLoading ? <p className="node-center-empty">正在加载…</p> : <>{roots.map(directory => renderDirectory(directory, 0))}<section className="node-directory-group node-uncategorized-group"><div className="node-directory-row"><span className="node-directory-toggle"><Folder size={14}/></span><span className="node-directory-select"><span><b>未分类</b><small>{uncategorizedNodes.length} 个节点</small></span></span><div className="node-record-actions"><button type="button" title="新建未分类节点" aria-label="新建未分类节点" onClick={() => { setSelectedNodeId(undefined); setCopyingNode(undefined); setCreatingInDirectory(null); }}><Plus size={14}/></button></div></div><div className="node-tree-children">{uncategorizedNodes.map(renderNode)}</div></section>{!visibleNodes.length && <p className="node-center-empty">没有匹配的节点。</p>}</>}</div>
+        <div className="node-center-tree">{isLoading ? <p className="node-center-empty">正在加载…</p> : <>{roots.map(directory => renderDirectory(directory, 0))}<section className="node-directory-group node-uncategorized-group"><div className="node-directory-row"><span className="node-directory-toggle"><Folder size={14}/></span><span className="node-directory-select"><span><b>未分类</b><small>{uncategorizedNodes.length} 个节点</small></span></span><div className="node-record-actions"><button type="button" title="新建未分类节点" aria-label="新建未分类节点" onClick={() => { setSelectedNodeId(undefined); setCreatingInDirectory(null); }}><Plus size={14}/></button></div></div><div className="node-tree-children">{uncategorizedNodes.map(renderNode)}</div></section>{!visibleNodes.length && <p className="node-center-empty">没有匹配的节点。</p>}</>}</div>
       </aside>
-      <main className="node-center-detail">{selectedNode || isCreating ? <NodeEditor key={selectedNode?.id ?? `new-${copyingNode?.name ?? creatingInDirectory ?? 'uncategorized'}`} embedded node={selectedNode ?? copyingNode} initialDirectoryId={creatingInDirectory} onClose={() => { setSelectedNodeId(undefined); setCopyingNode(undefined); setCreatingInDirectory(undefined); }} onSave={saveNode}/> : <div className="node-center-detail-empty"><Folder size={32}/><b>选择或新建一个节点</b><span>从左侧目录中选择节点，即可在此查看和修改完整配置。</span></div>}</main>
+      <main className="node-center-detail">{selectedNode || isCreating ? <NodeEditor key={selectedNode?.id ?? `new-${creatingInDirectory ?? 'uncategorized'}`} embedded node={selectedNode} initialDirectoryId={creatingInDirectory} onClose={() => { setSelectedNodeId(undefined); setCreatingInDirectory(undefined); }} onSave={saveNode}/> : <div className="node-center-detail-empty"><Folder size={32}/><b>选择或新建一个节点</b><span>从左侧目录中选择节点，即可在此查看和修改完整配置。</span></div>}</main>
     </div>
     {blockedAssets.length > 0 && <DeleteBlockedDialog assets={blockedAssets} onClose={() => setBlockedAssets([])} onOpenFlows={() => { setBlockedAssets([]); setView('flows'); }}/>}
   </section>;
