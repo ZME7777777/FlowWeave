@@ -106,6 +106,36 @@ Alembic 唯一 head 仍为 0172_case_configuration，无新增迁移。平台实
 数据库验收与 platform／web 正式发布、路由验收和容量收尾将在部署后补记。
 仅发布本次 Web／平台范围；当前与下一可执行代码切片均为 NONE。
 
+发布验收（2026-10-25）：正式发布代码为
+`38b7e3563925580bd3399bed0a3af2e98d872b86`，包含远程三个提交及上述检查修复。
+实际平台镜像以独立 PostgreSQL 验证五项通过，包括空流程保存、手动／连续启动
+拒绝、正常启动和既有运行端口冻结／保护；同时完成独立空库到当前 head 的迁移。
+首次测试收集因缺少共享 test_api 辅助模块失败，补齐测试包后通过，未覆盖镜像内
+应用源码；临时测试容器已移除，38 个业务容器在测试阶段均保持镜像和启动时间不变。
+
+导出实际构建 Web 镜像资源，在部署前缀下以受控 API 重跑同一七项 Chromium
+回归全部通过，未把重复运行累加为独立用例。线上 59 个实际加载 JS／CSS 资源
+SHA-256 与验收资源一致。服务器实际 Chromium 验证公网前缀登录、Agent 深层路由
+与根登录，全新浏览器确认 auth/me 使用部署前缀，根 API 请求为零；两个未认证
+API 边界均为 401。未向真实业务会话发送、暂停或重放消息。
+
+platform／web 正式预检及 commit-bound 最小上下文 prepare 均通过，源码归档
+SHA-256 分别为 `ec8da0db4136e7c321f7fbccc250d16c27b4bd987e6b17e09d806bc061c809a4`
+和 `15c7e9c26eb017caa697bc844ffd943a3bee62d2698711baee2cbd4b0d653f70`。
+linux/amd64 实际平台／Web 镜像分别为
+`sha256:a64c57e1ac2237f7852537283159350a8c75253b90481c55ba80f239621bfc62`、
+`sha256:76f73e94e7216d78b79e5b3a315c6557a4dd20fdf934b1d49091776dbbff155b`，
+OCI revision 均匹配发布代码。保存旧日志与精确 rollback tags 后先执行正式 migration，
+再同步 recreate api／stream-api／worker／web，四服务版本与健康一致，Alembic
+唯一 head 保持 0172_case_configuration。其余 34 个容器镜像及启动时间、服务器
+Compose／env 摘要均不变，Runtime Provider 和已有 Runtime generation 未替换。
+
+两个 scope 的 remote-release-finish 均通过，保留各 scope 最近三份成功上下文及
+引用／回滚版本，回收三份过期受管上下文和一个旧平台镜像的三个精确 rollback tags。
+未清理共享 BuildKit、卷、Workspace 或数据库备份。收尾后再次复核四服务健康、
+版本一致、配置与其余容器不变；本验收提交仅补充记录，部署代码仍绑定 38b7e356。
+当前与下一可执行切片均为 NONE，未推送本地补充提交。
+
 
 ### FR-689 远程草稿恢复与定时记录联动删除合并发布 — DONE
 
