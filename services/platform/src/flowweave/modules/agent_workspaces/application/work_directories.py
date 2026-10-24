@@ -516,9 +516,16 @@ def create_case_work_directory(
     try:
         result = create_work_directory(db, workspace_id, display_name, (relative_path,))
         metadata = target.lstat()
-        register_rollback_action(
-            db, lambda: _remove_case_directory(root, PurePosixPath(relative_path), metadata)
-        )
+        directory_id = str(result["id"])
+
+        def rollback_uncommitted_directory() -> None:
+            # A direct Session.commit() may leave this compensation registered.
+            # ORM objects may have been evicted and reloaded, so the database
+            # after rollback determines whether creation was ever committed.
+            if db.get(AgentWorkDirectory, directory_id) is None:
+                _remove_case_directory(root, PurePosixPath(relative_path), metadata)
+
+        register_rollback_action(db, rollback_uncommitted_directory)
         return result
     except Exception:
         try:

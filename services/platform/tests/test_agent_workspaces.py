@@ -573,6 +573,23 @@ def test_agent_work_directory_root_is_implicit_and_versions_are_immutable(
         assert db.get(AgentWorkDirectoryVersion, second_version_id) is None
 
 
+def test_case_directory_create_rollback_removes_only_uncommitted_directory(
+    settings, db_session_factory
+):
+    from flowweave.shared.application.transactions import run_rollback_actions
+
+    with settings_context(settings), tenant_user(FLOWWEAVE_USER_ID), db_session_factory() as db:
+        workspace = ensure_default_agent_workspace(db)
+        root = _agent_project_root(settings, db, workspace) / "users" / FLOWWEAVE_USER_ID
+        case_id = str(uuid4())
+        work_directories.create_case_work_directory(db, workspace.id, case_id, "Case")
+        target = root / ".flowweave/cases" / case_id
+        assert target.is_dir()
+        db.rollback()
+        run_rollback_actions(db)
+        assert not target.exists()
+
+
 def test_case_directory_delete_waits_for_commit_and_preserves_other_files(
     settings, db_session_factory
 ):
