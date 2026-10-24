@@ -16,7 +16,7 @@ import {
   type ReactFlowInstance,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { ArrowLeft, Box, CheckCircle2, ChevronDown, ChevronRight, CircleAlert, Folder, GitBranch, LayoutDashboard, Pencil, Plus, Save, Search, Trash2, X } from 'lucide-react';
+import { ArrowLeft, Box, CheckCircle2, ChevronDown, ChevronRight, CircleAlert, Copy, Folder, GitBranch, LayoutDashboard, Pencil, Plus, Save, Search, Trash2, X } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState, type DragEvent, type FormEvent } from 'react';
 import { api, randomId } from '../api/client';
@@ -224,6 +224,7 @@ export function FlowsPage() {
   const [assetSearch, setAssetSearch] = useState('');
   const [collapsedAssetGroups, setCollapsedAssetGroups] = useState<Set<string>>(new Set());
   const [flowSearch, setFlowSearch] = useState('');
+  const [flowPage, setFlowPage] = useState(1);
   const [linkMode, setLinkMode] = useState<'flow' | 'data'>('flow');
   const [selectedFlowIds, setSelectedFlowIds] = useState<Set<string>>(new Set());
   const [deletingFlows, setDeletingFlows] = useState(false);
@@ -388,8 +389,21 @@ export function FlowsPage() {
     const term = flowSearch.trim().toLowerCase();
     return flows.filter(flow => !term || `${flow.name} ${flow.description}`.toLowerCase().includes(term));
   }, [flows, flowSearch]);
-  const visibleFlowIds = filteredFlows.map(flow => flow.id);
+  const FLOW_PAGE_SIZE = 10;
+  const flowPageCount = Math.max(1, Math.ceil(filteredFlows.length / FLOW_PAGE_SIZE));
+  const pagedFlows = filteredFlows.slice((flowPage - 1) * FLOW_PAGE_SIZE, flowPage * FLOW_PAGE_SIZE);
+  const visibleFlowIds = pagedFlows.map(flow => flow.id);
   const allVisibleFlowsSelected = visibleFlowIds.length > 0 && visibleFlowIds.every(id => selectedFlowIds.has(id));
+  const copyFlow = async (flow: FlowDefinition) => {
+    setError('');
+    try {
+      const copied = await api.createFlow({ ...flow, name: `${flow.name} · 副本`, row_version: undefined });
+      void qc.invalidateQueries({ queryKey: ['flows'] });
+      setSelected(copied);
+      setIsNew(false);
+      setNotice(`已创建流程副本“${copied.name}”。`);
+    } catch (reason) { setError(reason instanceof Error ? flowSaveError(reason) : '复制流程失败，请稍后重试。'); }
+  };
   const toggleFlow = (id: string) => setSelectedFlowIds(old => {
     const next = new Set(old);
     if (next.has(id)) next.delete(id); else next.add(id);
@@ -455,11 +469,11 @@ export function FlowsPage() {
 
 
   const submitCreate = (event: FormEvent) => { event.preventDefault(); setError(''); create.mutate(); };
-  if (!selected) return <section className="page flow-page flow-overview-page">
-    <header className="page-head flow-overview-head"><div><span className="eyebrow">FLOW LIBRARY</span><h1>流程编排</h1><p>先管理已保存的流程；选择一个流程后再进入节点编排。</p></div><button className="primary" onClick={() => setCreating(true)}><Plus size={16}/>新建流程</button></header>
+  if (!selected) return <section className="page flow-page flow-overview-page flow-library-list-page">
+    <header className="page-head flow-overview-head"><div><span className="eyebrow">FLOW LIBRARY</span><h1>流程编排</h1><p>以列表管理流程定义；选择一条流程后进入节点编排。</p></div><button className="primary" onClick={() => setCreating(true)}><Plus size={16}/>新建流程</button></header>
     {error && <div className="notice error" role="alert">{error}</div>}
-    <div className="flow-overview-tools"><label><Search size={15}/><input aria-label="搜索流程" placeholder="搜索流程名称或说明" value={flowSearch} onChange={event => setFlowSearch(event.target.value)}/></label><span>{filteredFlows.length} 个已保存流程</span></div>
-    {!filteredFlows.length ? <div className="flow-overview-empty"><Box size={30}/><b>{flows.length ? '没有匹配的流程' : '还没有流程'}</b><span>{flows.length ? '调整搜索关键词，或新建一个流程。' : '先填写名称和说明保存流程，再进入节点编排。'}</span><button className="secondary" onClick={() => setCreating(true)}><Plus size={14}/>新建流程</button></div> : <div className="flow-overview-grid">{filteredFlows.map(flow => { const readiness = flowReadiness(flow); return <article className={`flow-overview-card${readiness.ready ? '' : ' draft'}`} key={flow.id}><header><span className={`flow-readiness ${readiness.ready ? 'ready' : 'draft'}`}>{readiness.ready ? <CheckCircle2 size={13}/> : <CircleAlert size={13}/>} {readiness.label}</span><button className="flow-card-delete" aria-label={`删除流程 ${flow.name}`} title="删除流程" onClick={() => void removeFlows([flow.id], `流程“${flow.name}”`)}><Trash2 size={15}/></button></header><h2>{flow.name}</h2><p>{flow.description || '尚未填写流程说明。'}</p><dl><div><dt>节点</dt><dd>{flow.nodes.length}</dd></div><div><dt>流程连线</dt><dd>{flow.edges.length}</dd></div><div><dt>状态</dt><dd>{readiness.detail}</dd></div></dl><footer><small>更新于 {new Date(flow.updated_at).toLocaleString()}</small><button className="secondary" onClick={() => { setSelected(flow); setIsNew(false); }}><Pencil size={13}/>{readiness.ready ? '编辑编排' : '继续编排'}</button></footer></article>; })}</div>}
+    <div className="flow-library-list-tools"><label><Search size={15}/><input aria-label="搜索流程" placeholder="搜索流程名称或说明" value={flowSearch} onChange={event => { setFlowSearch(event.target.value); setFlowPage(1); }}/></label><div><span>{filteredFlows.length} 个已保存流程</span><button className="secondary" disabled={!visibleFlowIds.length || deletingFlows} onClick={toggleVisibleFlows}>{allVisibleFlowsSelected ? '取消全选' : '全选本页'}</button><button className="danger" disabled={!selectedFlowIds.size || deletingFlows} onClick={() => void removeFlows([...selectedFlowIds], `选中的 ${selectedFlowIds.size} 个流程`)}><Trash2 size={14}/>{deletingFlows ? '删除中…' : `删除 (${selectedFlowIds.size})`}</button></div></div>
+    {!filteredFlows.length ? <div className="flow-overview-empty"><Box size={30}/><b>{flows.length ? '没有匹配的流程' : '还没有流程'}</b><span>{flows.length ? '调整搜索关键词，或新建一个流程。' : '先填写名称和说明保存流程，再进入节点编排。'}</span><button className="secondary" onClick={() => setCreating(true)}><Plus size={14}/>新建流程</button></div> : <><div className="flow-library-table"><div className="flow-library-table-head"><span/><span>流程</span><span>状态</span><span>节点 / 连线</span><span>更新时间</span><span>操作</span></div>{pagedFlows.map(flow => { const readiness = flowReadiness(flow); return <div className="flow-library-row" key={flow.id}><label><input type="checkbox" aria-label={`选择流程 ${flow.name}`} checked={selectedFlowIds.has(flow.id)} onChange={() => toggleFlow(flow.id)}/></label><button className="flow-library-open" onClick={() => { setSelected(flow); setIsNew(false); }}><b>{flow.name}</b><small>{flow.description || '尚未填写流程说明。'}</small></button><span className={`flow-readiness ${readiness.ready ? 'ready' : 'draft'}`}>{readiness.ready ? <CheckCircle2 size={13}/> : <CircleAlert size={13}/>} {readiness.label}</span><span><b>{flow.nodes.length} 节点</b><small>{flow.edges.length} 条流程连线</small></span><time>{new Date(flow.updated_at).toLocaleString()}</time><span className="flow-library-row-actions"><button className="ghost" title="复制流程" aria-label={`复制流程 ${flow.name}`} onClick={() => void copyFlow(flow)}><Copy size={15}/></button><button className="ghost" title="编辑流程" aria-label={`编辑流程 ${flow.name}`} onClick={() => { setSelected(flow); setIsNew(false); }}><Pencil size={15}/></button><button className="ghost danger-icon" title="删除流程" aria-label={`删除流程 ${flow.name}`} onClick={() => void removeFlows([flow.id], `流程“${flow.name}”`)}><Trash2 size={15}/></button></span></div>; })}</div><footer className="flow-library-pagination"><span>第 {Math.min(flowPage, flowPageCount)} / {flowPageCount} 页</span><div><button className="secondary" disabled={flowPage <= 1} onClick={() => setFlowPage(page => Math.max(1, page - 1))}>上一页</button><button className="secondary" disabled={flowPage >= flowPageCount} onClick={() => setFlowPage(page => Math.min(flowPageCount, page + 1))}>下一页</button></div></footer></>}
     {creating && <div className="modal-backdrop"><form className="modal flow-create-dialog" onSubmit={submitCreate}><header><div><span className="eyebrow">NEW FLOW</span><h2>新建流程</h2><p>先保存流程基本信息；保存后即可拖拽节点开始编排。</p></div><button type="button" className="ghost" aria-label="关闭新建流程弹窗" onClick={() => setCreating(false)}><X size={18}/></button></header><label>流程名称<input autoFocus required aria-label="新流程名称" value={newName} placeholder="例如：异常收集与修复" onChange={event => setNewName(event.target.value)}/></label><label>说明<textarea aria-label="新流程说明" value={newDescription} placeholder="说明这条流程要解决的问题和预期产出" onChange={event => setNewDescription(event.target.value)}/></label><footer><button type="button" className="ghost" onClick={() => setCreating(false)}>取消</button><button className="primary" disabled={create.isPending || !newName.trim()}>{create.isPending ? '正在保存…' : '保存并开始编排'}</button></footer></form></div>}
   </section>;
 
