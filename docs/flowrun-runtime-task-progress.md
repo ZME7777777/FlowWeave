@@ -2,7 +2,7 @@
 
 > 创建日期：2026-08-21
 > 状态：`UPSTREAM BASELINE ADOPTION COMPLETE`
-> 当前执行切片：`NONE`
+> 当前执行切片：`FR-682`
 > 下一可执行切片：`NONE`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
@@ -91,6 +91,22 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 放到 FR-12；普通切片即使涉及安全或迁移，也只实现代码并做基础语法检查。
 
 ## 6. 任务清单
+
+### FR-682 Case 详情配置发布 — CURRENT
+
+依赖：FR-681 DONE。用户明确要求部署已提交 Case 变更。以
+`12c913e0f02f3a4b2273d0708de8de80b100c9e2` 为源码基线，按 platform／web 分别完成正式预检、
+commit-bound 最小上下文构建、镜像身份检查、旧版本保护、迁移、服务定向替换、
+健康／路由／页面验收及受管收尾。配置仅取本机受保护且 Git 忽略的正式入口，
+不改服务器 Compose／env，不重建 Runtime Provider 或既有 Runtime，不清理持久数据。
+
+发布前实际新镜像的隔离 PostgreSQL 回归为 21 passed／1 failed：目录创建补偿
+在直接 `Session.commit()` 后仍登记，后续删除事务回滚时误删已提交目录。
+本切片在独立工作树基于 FR-681 修复：仅当目录 ORM 对象因创建回滚变为 transient
+时补偿删除；已提交对象保留。追加创建回滚测试，旧删除回滚测试继续作为回归门禁。
+工作树只包含本次 Case 修复，未混入并行节点编辑器提交；修复提交后仍须完成本切片
+的镜像重建、全部门禁和发布收尾，当前尚未切换线上服务。
+
 
 ### FR-681 Case 详情配置与有序路径卡片 — DONE
 

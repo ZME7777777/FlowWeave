@@ -10,7 +10,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, inspect, select
 from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions.infrastructure.models import AgentConversationSchedule
@@ -516,9 +516,18 @@ def create_case_work_directory(
     try:
         result = create_work_directory(db, workspace_id, display_name, (relative_path,))
         metadata = target.lstat()
-        register_rollback_action(
-            db, lambda: _remove_case_directory(root, PurePosixPath(relative_path), metadata)
-        )
+        directory = db.get(AgentWorkDirectory, str(result["id"]))
+        if directory is None:
+            raise DomainError("CASE_WORKSPACE_UNAVAILABLE", "事项工作目录创建失败", 503)
+
+        def rollback_uncommitted_directory() -> None:
+            # A direct Session.commit() may leave this compensation registered.
+            # Only a creation rolled back before commit becomes transient; a
+            # later transaction's rollback must preserve the committed directory.
+            if inspect(directory).transient:
+                _remove_case_directory(root, PurePosixPath(relative_path), metadata)
+
+        register_rollback_action(db, rollback_uncommitted_directory)
         return result
     except Exception:
         try:
