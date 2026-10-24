@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`UPSTREAM BASELINE ADOPTION COMPLETE`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-674`
+> 下一可执行切片：`FR-675`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -200,13 +200,49 @@ remote-release-finish 的版本／健康门禁与受管容量收尾通过，保�
 及引用版本，回收一个过期精确 rollback tag；没有清理共享 BuildKit、卷、工作区或
 数据库备份。当前切片 NONE，下一可执行 FR-674；本片结束，不开始后续实现。
 
-### FR-674 历史终端资源错误与短时 503 复现实证 — READY
+### FR-674 历史终端资源错误与短时 503 复现实证 — DONE
 
 依赖：FR-673 DONE。基于已保存日志及固定 Runtime 的正式事件，在隔离测试资源中
 复现终端 Errno 11／未完成工具恢复，并区分 API 读取容量、数据库池／锁等待和 DNS
 错误对 503 的影响；先取得可复现实证，再确定最小修复边界。当前生产检查无持续故障，
 不能猜测提高资源上限、改写服务器配置或重启业务 Runtime；不自动继续原任务，不修改
 OpenHands 源码，不用受控 HTTP 替身代替真实 Runtime／数据库故障验收。
+
+
+验收：[本片取证报告](runtime-incident-2026-10-24.md) 保留已确认事实、复现条件和因果边界。
+新增 incident_recovery_check.py 与 database_incident_check.py 两个可重复执行的隔离探针；
+显式 opt-in／Docker 边界、固定原生 source、数据库固定 loopback URL／空库检查均存在。
+实际故障 Runtime 镜像为四包1.49.5、source d3a9a1f99b144d8799df170c1e1ee9ca0bf4b19d，
+同一容器9月30日创建；23日发生停启，未原地切换到仓库当前1.54.0。Runtime 时区核对为UTC。
+真实 PID 耗尽复现原生 libtmux/subprocess BlockingIOError／errno11，释放后恢复；真实
+Agent Server HTTP 的工具运行中杀进程、同目录重启，保留原 conversation、tool_call_id 和
+五个正式事件，追加一个原生重启恢复错误，状态error且无assistant最终回复，不修改安装源码。
+
+独立 PostgreSQL 完整正式迁移到0170_revision_draft_owner；真实同步池耗尽、Worker实际
+claim 的普通异步池耗尽、环境版本父行锁／SQLSTATE57014、同一行锁阻塞两个读取线程后
+第三次 run_blocking 产生 RUNTIME_READ_SATURATED 503，以及无外网 .invalid 解析失败均
+复现。锁释放后读取／control／普通异步查询恢复；所有池 checked-out 归零。七类故障与
+恢复场景全部通过，原生两项及数据库完整组在最终源码／边界检查下重跑通过。Ruff、format、
+Python语法、无 opt-in 拒绝执行、diff与任务唯一性检查通过；Alembic唯一head未变。
+
+只读历史证据确认23日23:34资源错误先于23:39停启，23:41才发生工具未完成的原生恢复；
+凌晨DNS、Worker claim池超时、五条events GET503与一次环境锁语句超时为其他时间段的
+独立记录。已无该时间段Docker事件和原始资源错误调用栈；现有日志也无五条503的响应
+错误码和当时阻塞者。PID实验不能证明生产512配额曾触顶，不能将所有异常归因同一
+23日提交。下一最小修复边界为保留安全关联信息并缩短既有Runtime观测中的不必要环境
+锁持有；不简单删除引用／删除互斥锁，也不盲目加连接或重启业务Runtime。
+
+本片未发布平台／Runtime、未改服务器配置／生产配额；只创建并移除自身隔离测试容器，
+前后38个既有容器镜像与启动时间一致。当前切片NONE，下一可执行FR-675；提交后停止。
+
+### FR-675 读取 503 的安全关联证据与 Runtime 观测锁边界 — READY
+
+依赖：FR-674 DONE。先为既有读取失败保留安全的错误码、lane和request-id关联，验证临时
+饱和、原生Runtime错误、数据库错误可区分且不输出私有入口、Secret或消息内容。以FR-674
+真实行锁复现为入口，核对已激活Runtime的冻结引用和generation fencing，在保留环境引用／
+删除互斥、新建与replacement保护的前提下确定并实施最小观测锁修复。必须使用真实独立
+PostgreSQL验证竞争、失败恢复和隔离，不靠提高配额或受控HTTP替身宣称生产根因解决。
+历史资源与DNS具体触发者继续保留证据缺口，不自动续跑用户任务。
 
 
 ### FR-671 活动状态读取失败的展示保留与后台核对隔离 — DONE
