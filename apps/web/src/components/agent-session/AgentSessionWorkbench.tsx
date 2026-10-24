@@ -322,6 +322,7 @@ interface PendingSubmissionConfirmation {
   expiresAt: number;
 }
 interface ForegroundTurn {
+  submittedAt: number;
   submissionId: string;
   bindingId: string;
   cursor?: string;
@@ -387,8 +388,8 @@ interface RuntimeTaskProjection {
   lastEventSummary?: string;
   usage?: RuntimeTaskUsageSnapshot;
   control?: RuntimeTaskControlSnapshot;
-  /** A formal parent-turn error arrived before this Task produced a result. */
-  parentTerminal?: { eventId: string; at?: string };
+  /** Parent failed before this Task returned; native readiness may have no terminal event. */
+  parentTerminal?: { eventId?: string; at?: string };
 }
 
 function parentUserEventId(event: OpenHandsConversationEvent, byId: ReadonlyMap<string, OpenHandsConversationEvent>): string | undefined {
@@ -4884,7 +4885,7 @@ function WorkspaceDrawer({
     {conversation && <article className="agent-workspace-conversation-config"><Gauge size={16}/><div><small>会话用量</small><p className="agent-workspace-usage-line"><span>{`累计 ${conversationTotalTokens.toLocaleString('zh-CN')} Token`}</span><span>{`$${(conversationUsage?.accumulated_cost ?? 0).toFixed(6)}`}</span></p></div></article>}
     {workspaceGitRepository && <article className="agent-workspace-git-summary"><GitBranch size={16}/><div><span className="agent-workspace-git-summary-title"><small>Git 信息</small><button type="button" className="agent-workspace-git-summary-refresh" aria-label="刷新 Git 信息" title="刷新本地改动、提交和远端状态" disabled={gitSummaryRefreshing} onClick={() => void refreshGitSummary()}><RefreshCw className={gitSummaryRefreshing ? 'spin' : undefined} size={12}/></button></span><button type="button" onClick={openGitSummary} title="在全屏文件标签页中查看 Git 信息"><span className="agent-workspace-git-summary-content"><b>{workspaceGitRepository.branch || '未命名分支'}</b><span className="agent-workspace-git-summary-status"><em>{workspaceGitChangesQuery.isLoading ? '正在加载本地改动…' : `改动 +${gitChangedFileCount(workspaceGitChangesQuery.data)}`}</em><span className="agent-workspace-git-sync-status">{workspaceGitRepository.upstream ? <><span>{`本地 +${workspaceGitRepository.ahead ?? 0}`}</span><span>{`远端 +${workspaceGitRepository.behind ?? 0}`}</span></> : '未设置远程跟踪分支'}</span></span></span><ChevronRight size={13}/></button>{gitSummaryRefreshError && <p className="agent-workspace-git-summary-error" role="alert">{gitSummaryRefreshError}</p>}</div></article>}
     {conversation && <article className="agent-workspace-changes"><FileText size={16}/><div><small>变更</small><button type="button" disabled={!sessionChanges.length} onClick={() => onReviewChanges?.(sessionChanges)}><span><b>{sessionChanges.length ? `${sessionChanges.length} 个文件已更改` : '暂无变更'}</b>{sessionChanges.length > 0 && <em><ins>{`+${sessionChangeAdditions}`}</ins><del>{`-${sessionChangeDeletions}`}</del></em>}</span><ChevronRight size={13}/></button></div></article>}
-    {runtimeTasks.length > 0 && <article className="agent-workspace-subagents"><Bot size={16}/><div><small>子智能体</small><button type="button" onClick={() => openRuntimeTasks()}><span className="agent-workspace-subagent-summary" aria-label={`${runtimeTasks.length} 个子智能体任务`}><span className="agent-workspace-subagent-avatars">{runtimeTasks.map(task => <RuntimeTaskGlyph key={task.id} task={task} size={18} sessionStopped={sessionStopped}/>)}</span><b>{runtimeTasks.filter(task => runtimeTaskIsActive(task, sessionStopped)).length ? `${runtimeTasks.filter(task => runtimeTaskIsActive(task, sessionStopped)).length} 个运行中` : `${runtimeTasks.length} 完成`}</b></span><ChevronRight size={13}/></button></div></article>}
+    {runtimeTasks.length > 0 && <article className="agent-workspace-subagents"><Bot size={16}/><div><small>子智能体</small><button type="button" onClick={() => openRuntimeTasks()}><span className="agent-workspace-subagent-summary" aria-label={`${runtimeTasks.length} 个子智能体任务`}><span className="agent-workspace-subagent-avatars">{runtimeTasks.map(task => <RuntimeTaskGlyph key={task.id} task={task} size={18} sessionStopped={sessionStopped}/>)}</span><b>{runtimeTasks.filter(task => runtimeTaskIsActive(task, sessionStopped)).length ? `${runtimeTasks.filter(task => runtimeTaskIsActive(task, sessionStopped)).length} 个运行中` : `${runtimeTasks.length} 个任务`}</b></span><ChevronRight size={13}/></button></div></article>}
     {/*
       Git 仓库概览暂时隐藏：当前仅罗列工作区中的仓库路径、分支、提交与远端地址，
       对用户的下一步操作帮助有限。保留原始实现，待补充状态、差异和常用 Git 操作后再恢复。
@@ -5147,6 +5148,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     scope?: string;
     inFlight?: Promise<AgentConversationInputReadiness>;
     lastRequestAt: number;
+    lastObservedRequestAt?: number;
   }>({ lastRequestAt: 0 });
   const forceReadinessRefresh = useRef(false);
   const hotReentryHydrationKey = useRef<string | undefined>(undefined);
@@ -6641,12 +6643,17 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       const cached = queryClient.getQueryData<AgentConversationInputReadiness>(inputReadinessQueryKey);
       if (cached) return Promise.resolve(cached);
     }
-    const request = api.inputReadiness(workspaceId, scope).finally(() => {
+    const request = api.inputReadiness(workspaceId, scope).then(value => {
+      if (readinessSynchronization.current.scope === scope && readinessSynchronization.current.inFlight === request) {
+        readinessSynchronization.current.lastObservedRequestAt = now;
+      }
+      return value;
+    }).finally(() => {
       if (readinessSynchronization.current.scope === scope && readinessSynchronization.current.inFlight === request) {
         readinessSynchronization.current.inFlight = undefined;
       }
     });
-    readinessSynchronization.current = { scope, inFlight: request, lastRequestAt: now };
+    readinessSynchronization.current = { scope, inFlight: request, lastRequestAt: now, lastObservedRequestAt: synchronization.scope === scope ? synchronization.lastObservedRequestAt : undefined };
     return request;
   }, [api, inputReadinessQueryKey, queryClient, selected?.id, workspace?.id]);
   const selectedSubmissionNeedsReadiness = Boolean(
@@ -6685,6 +6692,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   });
   const nativeExecutionStatus = inputReadinessQuery.data?.execution_status;
   const nativeTurnRunning = conversationIsRunning(nativeExecutionStatus);
+  const nativeTurnFailed = inputReadinessQuery.data?.ready === true
+    && ['error', 'stuck'].includes(nativeExecutionStatus?.trim().toLowerCase() ?? '');
   const nativeTurnTerminal = inputReadinessQuery.data?.ready === true
     && conversationHasReachedTerminalState(nativeExecutionStatus);
   const eventsQuery = useQuery<OpenHandsConversationEventBatch>({
@@ -6838,6 +6847,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     // a tab is hidden. A stale terminal readiness plus an incomplete cache must
     // not suppress reconciliation: the current Runtime snapshot decides whether
     // the turn ended after the foreground transition.
+    forceReadinessRefresh.current = true;
     void synchronizeConversationEvents(true, 'foreground');
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-activity', workspace.id) });
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-input-readiness', workspace.id, selected.id) });
@@ -7119,13 +7129,22 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const foregroundTurnPending = Boolean(
     currentForegroundTurn && (!currentForegroundTurn.cursor || !hasFinishedTurn(currentFormalEvents, currentForegroundTurn.cursor)),
   );
-  const foregroundSubmissionAwaitingFormalEvent = foregroundTurnPending || rewriteAwaitingFormalEvent || Boolean(
+  const foregroundDeliveryPending = rewriteAwaitingFormalEvent || Boolean(
     activeLocalMessageProjections.some(projection => projection.state === 'submitting')
     || (
       pendingSubmissionConfirmation?.bindingId === selected?.id
       && !currentFormalEvents.some(event => event.id === pendingSubmissionConfirmation?.cursor)
     ),
   );
+  // A failed native Conversation can have no final reply at all after a tool
+  // failure/restart. Historical activity is not evidence that it still runs.
+  // Preserve only the current POST-to-formal-event handoff and ignore a failed
+  // readiness snapshot that predates this browser's new submission.
+  const nativeFailureSettled = nativeTurnFailed && !foregroundDeliveryPending
+    && (!foregroundTurnPending || (readinessSynchronization.current.scope === selected?.id
+      && (readinessSynchronization.current.lastObservedRequestAt ?? 0) > currentForegroundTurn!.submittedAt));
+  const foregroundSubmissionAwaitingFormalEvent = !nativeFailureSettled
+    && (foregroundTurnPending || foregroundDeliveryPending);
   const activeFormalTurnId = activeTurnEventId && currentFormalEvents.some(event => event.id === activeTurnEventId)
     ? activeTurnEventId
     : latestFormalUserEventId;
@@ -7164,7 +7183,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   // A formal InterruptEvent is stronger evidence: it is emitted by OpenHands
   // only after it has transitioned the Conversation to PAUSED.
   const pausedStateConflictsWithRunningEvidence = Boolean(
-    !activeFormalTurnInterrupted
+    !nativeFailureSettled
+    && !activeFormalTurnInterrupted
     && !currentFormalTurnFinished
     && (turnState === 'paused' || nativeExecutionStatus?.trim().toLowerCase() === 'paused')
     && (activeFormalTurnHasRuntimeActivity || runningConversationIds.has(selected?.id ?? '')),
@@ -7177,7 +7197,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     conversationDraft
     && pendingBootstrap?.draft.id !== conversationDraft.id,
   );
-  const effectiveTurnState: TurnState = idleUncreatedConversationDraft
+  const effectiveTurnState: TurnState = idleUncreatedConversationDraft || nativeFailureSettled
     ? 'idle'
     : turnState === 'pausing' || turnState === 'resuming'
       ? turnState
@@ -7344,7 +7364,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         state: selectedCondensing ? 'running' as const : effectiveTurnState,
         active: selectedCondensing || effectiveTurnState === 'running' || effectiveTurnState === 'pausing' || effectiveTurnState === 'resuming',
       }, [effectiveTurnState, selectedCondensing, uncreatedConversationDraft]);
-  const conversationVisuallyActive = !uncreatedConversationDraft && (
+  const conversationVisuallyActive = !uncreatedConversationDraft && !nativeFailureSettled && (
     conversationActivity.active
     || (
       effectiveTurnState !== 'paused'
@@ -7361,7 +7381,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   );
   // Keep an unfinished task plan mounted through native terminal-event
   // reconciliation so the composer dock cannot collapse during that handoff.
-  const taskPlanLayoutActive = !uncreatedConversationDraft && (conversationVisuallyActive || (
+  const taskPlanLayoutActive = !uncreatedConversationDraft && !nativeFailureSettled && (conversationVisuallyActive || (
     hasUnfinishedFormalTurn
     && (!nativeTurnTerminal || terminalEventReconciliationActive)
   ));
@@ -7409,8 +7429,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     setDrawerOpen(true);
   }, [setDrawerOpen]);
   const runtimeTasks = useMemo(
-    () => runtimeTasksFromEvents(displayedEvents, eventsQuery.data?.task_usage ?? [], eventsQuery.data?.task_control ?? []),
-    [displayedEvents, eventsQuery.data?.task_control, eventsQuery.data?.task_usage],
+    () => runtimeTasksFromEvents(displayedEvents, eventsQuery.data?.task_usage ?? [], eventsQuery.data?.task_control ?? [])
+      .map(task => nativeFailureSettled && task.status === 'RUNNING'
+        ? { ...task, parentTerminal: task.parentTerminal ?? {} }
+        : task),
+    [displayedEvents, eventsQuery.data?.task_control, eventsQuery.data?.task_usage, nativeFailureSettled],
   );
   const sessionAttachments = useMemo(() => {
     const byPath = new Map<string, AgentAttachment>();
@@ -7942,14 +7965,15 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     };
   }, [synchronizeConversationEvents, terminalEventReconciliationActive, terminalSyncTurnKey]);
   useEffect(() => {
-    if (!selected || !latestFormalTurnFinished) return;
+    if (!selected || (!latestFormalTurnFinished && !nativeFailureSettled)) return;
 
-    // The latest formal user turn has reached an OpenHands terminal event.
-    // It therefore cannot be revived by an older browser-local turn bridge.
+    // A formal terminal event or native failure closes this turn even when
+    // OpenHands could not emit a final reply after a tool/server failure.
     setActiveTurnEventId(undefined);
     setRequestStartedAt(undefined);
-    setTurnState(current => current === 'running' || current === 'resuming' ? 'idle' : current);
-  }, [latestFormalTurnFinished, selected]);
+    setTurnState(current => nativeFailureSettled || current === 'running' || current === 'resuming' ? 'idle' : current);
+    if (nativeFailureSettled) setForegroundTurn(current => current?.bindingId === selected.id ? undefined : current);
+  }, [latestFormalTurnFinished, nativeFailureSettled, selected]);
   useEffect(() => {
     // Do not infer "thinking" while the initial native state is still loading.
     // Once readiness has answered, an unfinished formal user event can bridge
@@ -8412,6 +8436,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         // A message acknowledgement alone is not a terminal state. Refresh the
         // exact native projection once, while the formal-event bridge above
         // keeps a stale preceding idle snapshot from winning the render.
+        forceReadinessRefresh.current = true;
         void queryClient.invalidateQueries({
           queryKey: sessionQueryKey(host, 'conversation-input-readiness', workspace!.id, message.bindingId),
           exact: true,
@@ -8530,7 +8555,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     sendingMessageIds.current.add(message.id);
     const showLocalMessage = () => {
       if (!message.nativeGuidance) {
-        setForegroundTurn({ submissionId: message.id, bindingId: message.bindingId });
+        setForegroundTurn({ submissionId: message.id, bindingId: message.bindingId, submittedAt: Date.now() });
       }
       // The current page owns its submitted user bubble. Its event relationship
       // is only known once the formal OpenHands event is available, so never
@@ -9258,7 +9283,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
                   : currentSessionControlState === 'resuming'
                     ? 'resuming'
                     : 'idle';
-  const queueDispatchReady = composerControlMode === 'idle';
+  const queueDispatchReady = composerControlMode === 'idle' && !nativeTurnFailed;
   useEffect(() => {
     if (!selected || !queueModeEnabled || !queueDispatchReady) return;
     const queueHead = queuedMessages.find(message => message.scope === selected.id && message.deliveryState === 'queued');
@@ -9721,7 +9746,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     // hydration readiness must never keep only the selected row spinning after
     // the shared snapshot has observed completion.
     const selectedHasFinalFormalReply = item.id === selected?.id
-      && selectedFormalTurnFinished;
+      && (selectedFormalTurnFinished || nativeFailureSettled);
     const selectedLocalTransition = item.id === selected?.id
       && !selectedHasFinalFormalReply
       && conversationActivity.active;
@@ -9993,6 +10018,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         events={displayedEvents}
         isGenerating={conversationVisuallyActive}
         isPaused={conversationActivity.state === 'paused'}
+        isFailed={nativeFailureSettled}
         pausing={conversationActivity.state === 'pausing'}
         emptyResponseRecoveryActive={emptyResponseRecoveryActive}
         modelRetryStatus={modelRetryStatus}

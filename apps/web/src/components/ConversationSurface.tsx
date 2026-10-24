@@ -957,6 +957,11 @@ function activityPresentation(entry: ActivityEntry, active: boolean, workspaceRo
   const summary = detailText(entry.action?.event.payload.summary);
   const actionTitle = (fallback: string) => summary || fallback;
   const exitCode = typeof resultDetails.exit_code === 'number' ? String(resultDetails.exit_code) : undefined;
+  if (parentFailed && !completed && eventName !== 'TaskAction') return {
+    title: command ? `结果未返回 ${compactCommand(command, workspaceRoot)}` : `${actionTitle('工具调用')} · 结果未返回`,
+    status: '主会话异常结束，结果未返回',
+    command: workspaceRelativeText(command, workspaceRoot) || undefined, thought, actionDetails: details, resultDetails,
+  };
   if (eventName === 'TerminalAction' || eventName === 'TerminalObservation' || resultName === 'TerminalObservation') {
     const verb = failed ? '运行失败' : completed ? '已运行' : '正在运行';
     return {
@@ -1890,11 +1895,13 @@ export interface ConversationScrollSnapshot {
   savedAt: number;
 }
 
-export const ConversationSurface = memo(function ConversationSurface({ events, isGenerating, isPaused = false, pausing = false, emptyResponseRecoveryActive = false, modelRetryStatus, historyPending = false, cachedHistoryMarkerCount = 0, cachedHistoryUserEvents = [], hasCachedOlderHistory = false, onRequestOlderHistory, onRevealHistoryThrough, conversationScope, referenceLocation, initialScrollSnapshot, onScrollSnapshotChange, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationPending = false, condensationStartedAt, onRewrite, onFork, onOpenAttachment, attachmentImageUrl, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenSourceLocation, onOpenWorkspaceFile, onOpenBrowser, onOpenImage, workspaceImageUrl, workspaceRoot, onCreateAnnotation, onSidebarQuestion, onLocateAnnotation, conversationName, onOpenConversationReference, taskControl = [], monitoring, connectionState }: {
+export const ConversationSurface = memo(function ConversationSurface({ events, isGenerating, isPaused = false, isFailed = false, pausing = false, emptyResponseRecoveryActive = false, modelRetryStatus, historyPending = false, cachedHistoryMarkerCount = 0, cachedHistoryUserEvents = [], hasCachedOlderHistory = false, onRequestOlderHistory, onRevealHistoryThrough, conversationScope, referenceLocation, initialScrollSnapshot, onScrollSnapshotChange, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationPending = false, condensationStartedAt, onRewrite, onFork, onOpenAttachment, attachmentImageUrl, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenSourceLocation, onOpenWorkspaceFile, onOpenBrowser, onOpenImage, workspaceImageUrl, workspaceRoot, onCreateAnnotation, onSidebarQuestion, onLocateAnnotation, conversationName, onOpenConversationReference, taskControl = [], monitoring, connectionState }: {
   events: OpenHandsConversationEvent[];
   isGenerating: boolean;
   /** Formal native conversation pause state, used only to label unfinished Task actions. */
   isPaused?: boolean;
+  /** Formal native error/stuck readiness; never inferred from recoverable tool errors. */
+  isFailed?: boolean;
   /** A pause request is pending confirmation from the native Runtime. */
   pausing?: boolean;
   /** Transient UI only; the persisted corrective event never enters history. */
@@ -2725,7 +2732,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
         const errors = turn.activity.filter(item => item.kind === 'error');
         const recoveredErrorEventIds = new Set(turn.assistant ? errors.map(item => item.event.id) : []);
         const failures = errors.filter(item => !recoveredErrorEventIds.has(item.event.id));
-        const parentFailed = failures.length > 0;
+        const parentFailed = failures.length > 0 || (isLatest && isFailed);
         const supersededAt = index < turns.length - 1 ? eventTime(turns[index + 1]?.user) : undefined;
         const finishedAt = eventTime(turn.assistant ?? failures.at(-1)) ?? supersededAt;
         const processSegments = turn.processSegments;
@@ -2736,7 +2743,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
         ).map(block => ({ ...block, id: `activity-${segmentIndex}` })));
         // A formal reply, terminal error, or later user message closes this
         // process even if Runtime readiness is still reconciling globally.
-        const completionConfirmed = Boolean(turn.assistant || failures.length || supersededAt !== undefined);
+        const completionConfirmed = Boolean(turn.assistant || parentFailed || supersededAt !== undefined);
         const fileChanges = fileChangesForTurn(events, turn);
         const userMessages = turn.user ? [turn.user] : [];
         const completedProcessKey = `${conversationScope ?? 'conversation'}:${turn.renderKey}`;

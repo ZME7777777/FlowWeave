@@ -2,8 +2,8 @@
 
 > 创建日期：2026-08-21
 > 状态：`UPSTREAM BASELINE ADOPTION COMPLETE`
-> 当前执行切片：`NONE`
-> 下一可执行切片：`FR-673`
+> 当前执行切片：`FR-673`
+> 下一可执行切片：`NONE`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -155,9 +155,36 @@ platform／web remote-release-finish 的版本／健康门禁与容量收尾均�
 引用／回滚版本。不清理共享 BuildKit、卷、Workspace 或数据库备份。当前切片 NONE，
 下一可执行切片 FR-673，仅登记后续故障取证，不在本片开始实施。
 
-### FR-673 历史终端资源错误与短时 503 复现实证 — READY
+### FR-673 原生失败终态下未闭环工具会话的界面收口 — CURRENT
 
-依赖：FR-672 DONE。基于已保存日志及固定 Runtime 的正式事件，在隔离测试资源中
+依赖：FR-672 DONE。用户再次确认两条会话仍显示运行；正式只读检查均为 ready=true、
+execution_status=error，事件窗口有工具失败／重启恢复 AgentErrorEvent，但没有最终回复。
+修复旧工具活动覆盖原生失败终态的问题，统一输入控制、侧栏圆环和过程展示；
+AgentErrorEvent 本身仍可恢复，不独立判为终态。保持新消息提交确认与 binding 隔离，
+失败不自动投递排队消息。完成定向 Chromium／静态检查后仅发布 Web，不重启业务 Runtime。
+
+本片取证：两个用户指定 binding 的直接原生 readiness 与原生活动目录均返回 error，
+没有仍在运行的证据；业务 Runtime 保持原镜像和原会话。前端旧逻辑让历史未闭环工具
+覆盖失败终态，超过终态补读期限后仍保留暂停按钮和圆环。新增 Chromium 用例先在
+修复前稳定失败（暂停按钮持续存在），修复后原生 error／stuck 均立即恢复控制、
+停止运行展示，并将无结果工具与子任务标为结果未返回，不伪造完成事件。
+后台正式事件补读仍保持有界、静默；队列在失败时保留且不自动发送。当前提交后的
+readiness 仅采用该次发送后实际完成的原生读取，不把浏览器节流缓存当新观测；
+前台恢复和消息确认会强制刷新，保留 POST 到正式用户事件的提交桥接。
+
+验收：Web typecheck、受影响组件／新增用例 ESLint 与 diff 检查通过；真实 Chromium
+17 项定向用例通过，覆盖失败无最终回复、暂停后 error、可恢复 AgentErrorEvent 仍
+运行、新发送与陈旧失败竞态、队列、暂停直达／503、Esc、跨会话迟到回调及既有正式
+终态补读。新增 5 项另以未返回 TaskAction 检查过程、悬浮摘要和子智能体详情。
+浏览器 API／WebSocket 受控，未向真实业务会话发送消息、暂停、继续或重放命令；
+线上只读检查两条原生状态与活动目录，未替换 Runtime。迁移不变，Alembic 唯一 head
+仍为 0170_revision_draft_owner。接下来仅完成本片授权的 Web commit-bound 发布与
+实际资源回归，尚未将发布记为成功；历史资源／DNS／数据库 503 转 FR-674，不在本片
+声称根治。
+
+### FR-674 历史终端资源错误与短时 503 复现实证 — PENDING
+
+依赖：FR-673 DONE。基于已保存日志及固定 Runtime 的正式事件，在隔离测试资源中
 复现终端 Errno 11／未完成工具恢复，并区分 API 读取容量、数据库池／锁等待和 DNS
 错误对 503 的影响；先取得可复现实证，再确定最小修复边界。当前生产检查无持续故障，
 不能猜测提高资源上限、改写服务器配置或重启业务 Runtime；不自动继续原任务，不修改
