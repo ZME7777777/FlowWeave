@@ -1583,8 +1583,8 @@ test('returning from an automatic node session preserves the selected automatic 
   await expect(page).toHaveURL(new RegExp(`/agent-sessions/${conversation.id}$`));
   await page.getByRole('button', { name: '返回来源', exact: true }).click();
 
-  await expect(page.getByRole('tab', { name: '连续', exact: true })).toHaveAttribute('aria-selected', 'true');
-  await expect(page.locator('.automatic-record-list > article.active')).toContainText('自动记录 1');
+  await expect(page.getByRole('tab', { name: '全部', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.locator('.unified-run-record.active')).toContainText('自动记录 1');
   await expect(page.locator('.attempt-control')).toContainText('END_BLOCKED');
 });
 

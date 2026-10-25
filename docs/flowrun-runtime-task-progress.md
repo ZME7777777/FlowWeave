@@ -108,6 +108,49 @@ Web typecheck、受影响 ESLint、Ruff 与七项无数据库字段校验通过�
 失败记为测试通过。当前唯一 Alembic head 为 0172_case_configuration，无新增迁移。
 生产发布及最终验收将在已提交版本完成构建与真实隔离接口验证后补记。
 
+发布验收（2026-10-25）：合并／部署代码为
+`84ec87c8d9520e7639a61687cec4ed169bd88b8f`。原本地 `2176278a` 与远程
+`296ddbe5` 均为其祖先；远程八个提交、本地六个提交全部保留，三处文本冲突已解决。
+
+本地 51 个不同 Chromium 定向用例最终通过，覆盖节点字段、场景空间四种尺寸、
+流程库严格复制与分页、定时历史、记录创建／复制／分页／可调侧栏、节点会话返回、
+草稿定位、跨标签恢复和两种宿主的后台完成缓存。旧测试的按钮／标签／默认筛选与
+新版布局不匹配，按实际产品入口更新后通过；节点会话返回仍验证原自动记录与正式
+执行详情保留，默认筛选为“全部”。Web typecheck、受影响 ESLint／Ruff、diff、
+任务状态与依赖检查通过。实际平台 linux/amd64 镜像配合独立 PostgreSQL 执行
+字段标识 HTTP／Schema 与节点 Context 回归，16 passed；不覆盖应用源码，测试
+数据库和测试容器均已移除，38 个既有业务容器在验收期间保持原镜像与启动时间。
+
+正式 platform／web 预检及 commit-bound 最小上下文 prepare 通过。源码归档
+SHA-256 分别为
+`aafe9f13c37c5b844a4b6b46672db097bcef7254e7f5a80d76c1df572beb34a1`、
+`0b970a70e359d41e023c6caf43faf5ee9009a4874171508a34cc373cf8357cc1`。
+实际平台镜像为
+`sha256:149a43f680a3c30ad0129d4f9c7f7d09bd1dffa1dfaa975a6e08855820ac5a05`，
+Web 镜像为
+`sha256:ecc68ea756adc83877b71f7c2ebed4f8b6c93d7a0fd6ceaaaa7280951fb533af`；
+均为 linux/amd64，OCI revision 与代码提交一致。
+
+从实际 Web 镜像导出静态资源，在部署前缀下使用受控 API／WebSocket 重跑相同
+51 个浏览器用例全部通过，不累加重复用例；两处临时夹具的前缀断言／URL 比较
+补齐后通过。实际加载的 61 个 JS／CSS 文件 SHA-256 与运行镜像一致。服务器真实
+Chromium 验证前缀登录、Agent 深层路由和根登录；全新浏览器确认 auth/me 使用
+部署前缀，根 API 请求为零。公网入口／深层 HTML 与运行镜像一致，两项入口静态
+资源摘要一致，两项未认证 API 边界为 401。上述受控回归不记为真实模型业务执行，
+未向业务会话发送、暂停、继续或重放消息。
+
+服务器保存旧服务日志和精确 rollback tags 后执行正式 migration，退出码为零；
+随后同步 recreate api／stream-api／worker／web。四服务为同一代码版本，health／
+readiness／Web HTTP 正常，Alembic 唯一 head 仍为 0172_case_configuration。
+其余 34 个既有容器的镜像与启动时间、服务器 Compose／env 摘要不变；Runtime
+Provider 和已有 Runtime generation 保持原状态。
+
+platform／web remote-release-finish 均通过版本、健康与受管容量门禁，回收两份过期
+成功上下文，保留各 scope 最近三份成功上下文与引用／回滚版本，并执行精确镜像
+保留收尾。未清理共享 BuildKit、卷、Workspace 或数据库备份。当前与下一可执行
+切片均为 NONE；本次验收提交仅对齐返回会话的默认列表断言并记录部署事实，实际
+生产源码身份仍为 84ec87c8，未推送本地提交。
+
 ### FR-692 后台完成会话的可信缓存恢复 — DONE
 
 依赖：FR-691 DONE。修复旧终态 hydration 被新一轮发送和后台完成继续复用，导致切回
