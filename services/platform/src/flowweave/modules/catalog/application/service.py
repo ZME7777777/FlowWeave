@@ -255,13 +255,25 @@ def _replace_children(db: Session, item: NodeAsset, payload: NodeAssetWrite) -> 
     db.execute(delete(NodeExecutorConfig).where(NodeExecutorConfig.node_asset_id == item.id))
     db.execute(delete(NodeContextCapability).where(NodeContextCapability.node_asset_id == item.id))
     for direction, fields in (("INPUT", payload.inputs), ("OUTPUT", payload.outputs)):
+        used_keys: set[str] = set()
+        prefix = direction.lower()
         for position, field in enumerate(fields):
+            field_data = field.model_dump()
+            key = field_data["field_key"]
+            if not key:
+                suffix = position + 1
+                key = f"{prefix}_{suffix}"
+                while key in used_keys:
+                    suffix += 1
+                    key = f"{prefix}_{suffix}"
+                field_data["field_key"] = key
+            used_keys.add(key)
             db.add(
                 NodeIOField(
                     node_asset_id=item.id,
                     direction=direction,
                     position=position,
-                    **field.model_dump(),
+                    **field_data,
                 )
             )
     db.add(

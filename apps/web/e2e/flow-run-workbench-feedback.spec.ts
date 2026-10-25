@@ -131,12 +131,12 @@ test('shared FlowRun remains visible without direct Agent access', async ({ page
   await expect(page.getByRole('navigation').getByRole('button', { name: 'Agent 会话' })).toHaveCount(0);
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
 
-  await expect(page.getByText('1 个流程 · 1 个运行', { exact: true })).toBeVisible();
-  const sharedFlow = page.locator('.run-group').filter({ hasText: definition.name });
-  await expect(sharedFlow).toBeVisible();
-  await expect(sharedFlow).toContainText('1 个运行');
-  await expect(sharedFlow).toContainText(`Run #${run.run_no} · ${run.name}`);
-  await expect(sharedFlow.getByRole('button', { name: '启动', exact: true })).toBeEnabled();
+  const directory = page.locator('.flow-run-directory');
+  await expect(directory).toContainText('FlowRun 目录1 个运行容器');
+  await expect(directory.getByRole('button', { name: `Run #${run.run_no} · 运行中 ${run.name} 运行环境可用` })).toBeVisible();
+  await directory.getByRole('button', { name: `Run #${run.run_no} · 运行中 ${run.name} 运行环境可用` }).click();
+  await expect(page.locator('.flow-run-directory-detail')).toContainText(`Run #${run.run_no}`);
+  await expect(page.getByRole('button', { name: '管理运行记录', exact: true })).toBeEnabled();
 });
 
 test('FlowRun list opens the shared terminal as an in-page dialog', async ({ page }) => {
@@ -161,7 +161,8 @@ test('FlowRun list opens the shared terminal as an in-page dialog', async ({ pag
 
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
-  await page.getByRole('button', { name: '打开运行 测试运行 的终端' }).click();
+  await page.getByRole('button', { name: `Run #${run.run_no} · 运行中 ${run.name} 运行环境可用` }).click();
+  await page.getByRole('button', { name: '终端', exact: true }).click();
 
   const dialog = page.getByRole('dialog', { name: '测试运行 终端' });
   await expect(dialog).toBeVisible();
@@ -192,14 +193,15 @@ test('FlowRun detail has a restorable route and temporary topbar tab', async ({ 
 
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
-  await page.locator('.run-open').click();
+  await page.getByRole('button', { name: `Run #${run.run_no} · 运行中 ${run.name} 运行环境可用` }).click();
+  await page.getByRole('button', { name: '管理运行记录', exact: true }).click();
   await expect(page).toHaveURL(`/flow-runs/${run.id}`);
   await expect(page.getByLabel('临时管理标签')).toBeVisible();
   await expect(page.getByRole('button', { name: `Run #${run.run_no}`, exact: true })).toBeVisible();
 
   await page.reload();
   await expect(page).toHaveURL(`/flow-runs/${run.id}`);
-  await expect(page.getByRole('button', { name: '返回运行列表', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '返回运行记录', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: `Run #${run.run_no}`, exact: true })).toBeVisible();
 
   await page.getByRole('button', { name: '账户与设置' }).click();
@@ -217,7 +219,7 @@ test('FlowRun detail has a restorable route and temporary topbar tab', async ({ 
   await expect(page.locator('.context-tab.active')).toHaveText(`Run #${run.run_no}`);
   await page.getByRole('button', { name: `关闭Run #${run.run_no}`, exact: true }).click();
   await expect(page).toHaveURL('/');
-  await expect(page.getByText('1 个流程 · 1 个运行', { exact: true })).toBeVisible();
+  await expect(page.locator('.flow-run-directory')).toContainText('FlowRun 目录1 个运行容器');
   await page.reload();
   await expect(page.locator('.context-tab')).toHaveText(['终端环境']);
 });
@@ -327,7 +329,8 @@ test('step configuration is saved before start and only continuous and stepwise 
 
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
-  await page.locator('.run-open').click();
+  await page.getByRole('button', { name: `Run #${run.run_no} · 运行中 ${run.name} 运行环境可用` }).click();
+  await page.getByRole('button', { name: '管理运行记录', exact: true }).click();
   await expect(page.getByRole('tab', { name: '逐步运行' })).toHaveAttribute('aria-selected', 'true');
   await expect(page.getByRole('tab', { name: '连续运行' })).toBeVisible();
   await expect(page.getByRole('tab')).toHaveCount(2);
@@ -528,7 +531,8 @@ test('stepwise record copy reuses the record selection and first-node configurat
 
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
-  await page.locator('.run-open').click();
+  await page.getByRole('button', { name: `Run #${run.run_no} · 运行中 ${run.name} 运行环境可用` }).click();
+  await page.getByRole('button', { name: '管理运行记录', exact: true }).click();
   const sourceSelect = page.locator('.node-record-list .automatic-record-select').filter({ hasText: sourceRecord.name });
   await sourceSelect.click();
   await expect(page.locator('.run-side-panel')).toBeVisible();
@@ -587,7 +591,8 @@ test('created attempts keep their inputs read-only after a start gate blocks the
 
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
-  await page.locator('.run-open').click();
+  await page.getByRole('button', { name: `Run #${run.run_no} · 运行中 ${run.name} 运行环境可用` }).click();
+  await page.getByRole('button', { name: '管理运行记录', exact: true }).click();
   await page.locator('.node-record-list .automatic-record-select').filter({ hasText: blockedRun.name }).click();
   await page.locator('.run-graph-node').filter({ hasText: '测试节点' }).filter({ hasNotText: '测试节点2' }).click();
   await expect(page.getByTestId('attempt-state')).toHaveText('START_BLOCKED');
@@ -711,7 +716,8 @@ test('continuous records never ask users to manually start an auto-ready success
 
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
-  await page.locator('.run-open').click();
+  await page.getByRole('button', { name: `Run #${run.run_no} · 运行中 ${run.name} 运行环境可用` }).click();
+  await page.getByRole('button', { name: '管理运行记录', exact: true }).click();
   await page.getByRole('tab', { name: '连续运行' }).click();
   await page.locator('.automatic-record-select').filter({ hasText: '自动记录 1' }).click();
 
@@ -813,7 +819,8 @@ test('a stepwise record keeps completed nodes readable while the next node is co
 
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
-  await page.locator('.run-open').click();
+  await page.getByRole('button', { name: `Run #${run.run_no} · 运行中 ${run.name} 运行环境可用` }).click();
+  await page.getByRole('button', { name: '管理运行记录', exact: true }).click();
   await page.getByRole('tab', { name: '逐步运行' }).click();
   await page.locator('.node-record-list .automatic-record-select').filter({ hasText: '批次异常收集' }).click();
   await expect(page.locator('.run-workbench-record-summary')).toContainText('批次异常收集');
@@ -884,7 +891,8 @@ test('accepting a stepwise node focuses its reached successor and allows returni
 
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
-  await page.locator('.run-open').click();
+  await page.getByRole('button', { name: `Run #${run.run_no} · 运行中 ${run.name} 运行环境可用` }).click();
+  await page.getByRole('button', { name: '管理运行记录', exact: true }).click();
   await page.locator('.node-record-list .automatic-record-select').filter({ hasText: record.name }).click();
   await page.getByRole('button', { name: '完成节点并流转' }).click();
 
@@ -939,7 +947,8 @@ test('selecting a stepwise record focuses its reached downstream draft like a co
 
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
-  await page.locator('.run-open').click();
+  await page.getByRole('button', { name: `Run #${run.run_no} · 运行中 ${run.name} 运行环境可用` }).click();
+  await page.getByRole('button', { name: '管理运行记录', exact: true }).click();
   await page.locator('.node-record-list .automatic-record-select').filter({ hasText: record.name }).click();
 
   const second = page.locator('.run-graph-node').filter({ hasText: '测试节点2' });
@@ -1012,7 +1021,8 @@ test('an accepted legacy step remains readable before configuring its missing do
 
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
-  await page.locator('.run-open').click();
+  await page.getByRole('button', { name: `Run #${run.run_no} · 运行中 ${run.name} 运行环境可用` }).click();
+  await page.getByRole('button', { name: '管理运行记录', exact: true }).click();
   await page.locator('.node-record-list .automatic-record-select').filter({ hasText: currentRun.name }).click();
   await expect(page.locator('.run-workbench-record-summary')).toContainText(currentRun.name);
   await page.locator('.run-graph-node').filter({ hasText: '测试节点' }).filter({ hasNotText: '测试节点2' }).click();
@@ -1062,7 +1072,8 @@ test('run rail keeps its controls fixed and pages records ten at a time', async 
 
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
-  await page.locator('.run-open').click();
+  await page.getByRole('button', { name: `Run #${run.run_no} · 运行中 ${run.name} 运行环境可用` }).click();
+  await page.getByRole('button', { name: '管理运行记录', exact: true }).click();
 
   const rail = page.locator('.flow-run-inner-rail');
   const fixed = rail.locator('.run-rail-fixed');
@@ -1171,13 +1182,13 @@ test('run projection stays neutral until record selection and automatic save rep
 
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
-  await page.locator('.run-open').click();
+  await page.getByRole('button', { name: /Run #1 · 运行中 测试运行/ }).click();
 
   const graph = page.locator('.run-graph');
   await expect(page.locator('.run-main .run-title')).toHaveCount(0);
   await expect(page.locator('.run-main h1')).toHaveCount(0);
   await expect(graph.getByText('运行快照 v1', { exact: true })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: '返回运行列表' })).toBeVisible();
+  await page.getByRole('button', { name: '管理运行记录', exact: true }).click();
   await expect(graph).toContainText('未选择逐步运行记录，当前显示中性流程定义');
   await expect(graph.getByText('当前激活', { exact: true })).toHaveCount(0);
   await expect(graph.getByText('运行 1 次', { exact: true })).toHaveCount(0);
@@ -1257,9 +1268,9 @@ test('run projection stays neutral until record selection and automatic save rep
 
   await automaticEditor.getByRole('button', { name: '填写节点输入' }).click();
   const inputDialog = page.getByRole('dialog', { name: '填写节点输入' });
-  await expect(inputDialog.getByRole('textbox', { name: '填写输入 input_1' })).toHaveValue('https://example.com/default-input');
-  await inputDialog.getByRole('textbox', { name: '填写输入 input_1' }).fill('https://example.com/input');
-  await inputDialog.getByLabel('上传输入文件 input_2').setInputFiles({
+  await expect(inputDialog.getByRole('textbox', { name: '填写输入 源链接' })).toHaveValue('https://example.com/default-input');
+  await inputDialog.getByRole('textbox', { name: '填写输入 源链接' }).fill('https://example.com/input');
+  await inputDialog.getByLabel('上传输入文件 源文件').setInputFiles({
     name: 'example.md', mimeType: 'text/markdown', buffer: Buffer.from('hello input'),
   });
   await inputDialog.getByRole('button', { name: '保存输入并继续' }).click();
@@ -1377,7 +1388,8 @@ test('FR-130 running automatic records show execution facts', async ({ page }) =
 
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
-  await page.locator('.run-open').click();
+  await page.getByRole('button', { name: `Run #${run.run_no} · 运行中 ${run.name} 运行环境可用` }).click();
+  await page.getByRole('button', { name: '管理运行记录', exact: true }).click();
 
   await page.getByRole('tab', { name: '连续运行' }).click();
   await page.locator('.automatic-record-select').filter({ hasText: '自动记录 1' }).click();
@@ -1449,7 +1461,8 @@ test('continuous record defaults to its final flowed node even after that node f
 
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
-  await page.locator('.run-open').click();
+  await page.getByRole('button', { name: `Run #${run.run_no} · 运行中 ${run.name} 运行环境可用` }).click();
+  await page.getByRole('button', { name: '管理运行记录', exact: true }).click();
   await page.getByRole('tab', { name: '连续运行' }).click();
   await page.locator('.automatic-record-select').filter({ hasText: '第三节点失败记录' }).click();
 
@@ -1528,7 +1541,8 @@ test('returning from an automatic node session preserves the selected automatic 
 
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
-  await page.locator('.run-open').click();
+  await page.getByRole('button', { name: `Run #${run.run_no} · 运行中 ${run.name} 运行环境可用` }).click();
+  await page.getByRole('button', { name: '管理运行记录', exact: true }).click();
   await page.getByRole('tab', { name: '连续运行' }).click();
   await page.locator('.automatic-record-select').filter({ hasText: '自动记录 1' }).click();
   await expect(page).toHaveURL(new RegExp(`/flow-runs/${run.id}$`));
@@ -1628,7 +1642,8 @@ test('node session entry opens the attempt formal conversation instead of a blan
 
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
-  await page.locator('.run-open').click();
+  await page.getByRole('button', { name: `Run #${run.run_no} · 运行中 ${run.name} 运行环境可用` }).click();
+  await page.getByRole('button', { name: '管理运行记录', exact: true }).click();
   await page.getByRole('tab', { name: '连续运行' }).click();
   await page.locator('.automatic-record-select').filter({ hasText: '自动记录 1' }).click();
   const attemptPanel = page.locator('.attempt-control');
@@ -1712,7 +1727,8 @@ test('continuous output registration failures read like the stepwise run', async
 
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
-  await page.locator('.run-open').click();
+  await page.getByRole('button', { name: `Run #${run.run_no} · 运行中 ${run.name} 运行环境可用` }).click();
+  await page.getByRole('button', { name: '管理运行记录', exact: true }).click();
   await page.getByRole('tab', { name: '连续运行' }).click();
   await page.locator('.automatic-record-select').filter({ hasText: '自动记录 1' }).click();
   const attemptPanel = page.locator('.attempt-control');
@@ -1787,7 +1803,8 @@ test('manual and automatic records remain hidden after accepted deletion', async
 
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
-  await page.locator('.run-open').click();
+  await page.getByRole('button', { name: `Run #${run.run_no} · 运行中 ${run.name} 运行环境可用` }).click();
+  await page.getByRole('button', { name: '管理运行记录', exact: true }).click();
   await page.getByRole('tab', { name: '逐步运行' }).click();
 
   const manualFirst = page.locator('.node-record-list .automatic-record-select').filter({ hasText: '逐步记录 1' });
@@ -1883,7 +1900,8 @@ test('stepwise records reuse continuous selection, current-node detail, and grap
 
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
-  await page.locator('.run-open').click();
+  await page.getByRole('button', { name: `Run #${run.run_no} · 运行中 ${run.name} 运行环境可用` }).click();
+  await page.getByRole('button', { name: '管理运行记录', exact: true }).click();
 
   await page.getByRole('tab', { name: '连续运行' }).click();
   const automaticSelect = page.locator('.automatic-record-select').filter({ hasText: automaticRecord.name });
@@ -1965,7 +1983,8 @@ test('the step graph keeps the full persisted path while selecting node details'
 
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
-  await page.locator('.run-open').click();
+  await page.getByRole('button', { name: `Run #${run.run_no} · 运行中 ${run.name} 运行环境可用` }).click();
+  await page.getByRole('button', { name: '管理运行记录', exact: true }).click();
   await page.locator('.node-record-list .automatic-record-select').filter({ hasText: stepwiseRecord.name }).click();
 
   const graphNodes = page.locator('.run-graph-node');
@@ -2031,7 +2050,8 @@ test('selecting a historical attempt renders its own frozen graph snapshot', asy
 
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
-  await page.locator('.run-open').click();
+  await page.getByRole('button', { name: `Run #${run.run_no} · 运行中 ${run.name} 运行环境可用` }).click();
+  await page.getByRole('button', { name: '管理运行记录', exact: true }).click();
   await page.locator('.node-record-list .automatic-record-select').filter({ hasText: stepwiseRecord.name }).click();
   const graph = page.locator('.run-graph');
   await expect(graph).toContainText('历史冻结首节点');
@@ -2090,7 +2110,8 @@ test('completed continuous attempts load frozen input and candidate output metad
 
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
-  await page.locator('.run-open').click();
+  await page.getByRole('button', { name: `Run #${run.run_no} · 运行中 ${run.name} 运行环境可用` }).click();
+  await page.getByRole('button', { name: '管理运行记录', exact: true }).click();
   await page.getByRole('tab', { name: '连续运行' }).click();
   await page.locator('.automatic-record-select').filter({ hasText: completedRecord.name }).click();
 
@@ -2182,7 +2203,8 @@ test('gate review conversation stays compact and remediation enters the created 
 
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
-  await page.locator('.run-open').click();
+  await page.getByRole('button', { name: `Run #${run.run_no} · 运行中 ${run.name} 运行环境可用` }).click();
+  await page.getByRole('button', { name: '管理运行记录', exact: true }).click();
   await page.getByRole('tab', { name: '连续运行' }).click();
   await page.locator('.automatic-record-select').filter({ hasText: '测试节点' }).click();
   const attemptPanel = page.locator('.attempt-control');

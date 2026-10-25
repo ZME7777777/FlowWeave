@@ -126,7 +126,7 @@ class DirectoryWrite(ApiModel):
 
 
 class IOFieldWrite(ApiModel):
-    field_key: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9_]{0,99}$")
+    field_key: str = Field(default="", pattern=r"^[A-Za-z][A-Za-z0-9_]{0,99}$")
     display_name: str = Field(default="", max_length=160)
     data_type: Literal["URL", "FILE"] = "URL"
     description: str = ""
