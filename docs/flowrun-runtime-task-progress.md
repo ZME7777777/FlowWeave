@@ -104,6 +104,29 @@ Chromium 定向回归 1 项通过。受控 API 的浏览器布局检查覆盖 19
 1440／1024 截图已核对。本片只修改 CSS，无后端、数据库或 Runtime 变更。
 当前与下一可执行切片均为 NONE；按用户授权继续完成本片 Web 发布。
 
+FR-698 发布验收（2026-10-25）：按用户授权仅发布 Web，代码版本为
+`37cbc67c6541bead18fabe555f8f542673ee4368`。正式预检与 commit-bound 最小上下文
+prepare 通过；源码归档 SHA-256 为
+`52c0c08a683f4f3cc64623e03e4eeb7ebcb725f18f817380db5cce96e19b5bd8`，
+本地复算与远端一致。实际 linux/amd64 Web 镜像为
+`sha256:adc7bfe8bf5ec7b1f46978505e82374279986bb4824aa795aa5c46ffe0cbc4ba`，
+OCI revision 与代码版本一致。镜像实际资源和受控 API 重跑同一临时标签用例通过；
+四尺寸间距复核均为 6px，无页面横向溢出。51 个实际加载 JS／CSS 的 SHA-256
+与线上运行镜像一致；受控回归不替代真实业务或 Runtime 执行验收。
+
+切换前保留旧 Web 日志和精确 rollback tag，仅 recreate Web。Web HTTP、
+API／stream-api health／readiness、公开前缀 HTML 和入口资源哈希、未认证 API
+401 边界通过；服务器真实 Chromium 验证前缀登录、Agent 深层路由及根登录。
+全新浏览器上下文认证请求使用 `/flowweave/api/v1/`，根 `/api/v1/` 请求为零。
+其余 47 个容器的镜像和启动时间不变，服务器 Compose／env 摘要不变；
+没有修改数据库、Runtime 或业务会话。
+
+正式 remote-release-finish 通过版本／健康门禁，回收一份过期受管成功上下文，
+保留各 scope 最近三份成功上下文及所有引用／回滚版本；精确镜像保留审计无候选。
+没有清理共享 BuildKit、卷、Workspace 或数据库备份。收尾后复核 Web 版本、健康、
+API／stream-api readiness、服务器配置和其余 47 个容器均通过。当前与下一可执行
+切片均为 NONE；本补记不改变部署代码身份。
+
 ### FR-697 单行流程工具栏与统一场景资料添加 — DONE
 
 依赖：FR-696 DONE。按用户反馈将流程库搜索、新建、删除合为一行并移除全选；
