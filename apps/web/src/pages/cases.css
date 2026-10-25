@@ -138,3 +138,20 @@ html:has(.scenario-space){overscroll-behavior:none}
 @media(max-width:760px){.scenario-materials .scenario-upload-editor{grid-template-columns:1fr;align-items:stretch}.case-connected-path.is-empty .scenario-add-path-card{min-height:230px}.case-form-toast{top:12px;max-width:calc(100vw - 32px)}}
 .case-path-heading>div{display:flex;align-items:center;gap:14px;margin-left:auto}.case-path-heading .danger{display:inline-flex;align-items:center;gap:5px;border:1px solid #e3cac8;border-radius:6px;background:#fff8f7;padding:6px 9px;color:#a9504a;font-size:11px}.case-path-heading .danger:hover:not(:disabled){background:#fff0ef}.case-path-heading .danger:disabled{cursor:wait;opacity:.6}
 .case-connected-path.is-empty .case-path-heading{width:100%;min-height:30px;margin-bottom:12px}.case-connected-path.is-empty .case-path-heading>div{width:100%;justify-content:flex-end}
+
+/* One material entry form serves pasted references and workspace imports. */
+.case-add-material-dialog{width:min(620px,calc(100vw - 48px));padding:24px}
+.case-add-material-dialog>header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
+.case-add-material-dialog h2{margin:0;font-size:20px}
+.case-add-material-dialog header p{margin:7px 0 0;color:var(--muted);font-size:12px}
+.case-add-material-dialog>fieldset{display:grid;gap:18px;min-width:0;margin:22px 0 0;border:0;padding:0}
+.case-add-material-dialog label{display:grid;min-width:0;gap:8px;margin:0;color:#244b38;font-size:12px;font-weight:600}
+.case-add-material-dialog input{width:100%;min-width:0;height:40px;border:1px solid #c8d9cf;border-radius:7px;background:#fff;padding:9px 11px;color:var(--ink);font-size:13px;outline:0}
+.case-add-material-dialog input:focus{border-color:#38856b;box-shadow:0 0 0 3px #1762490c}
+.case-material-address{display:flex;min-width:0;align-items:center;gap:8px}
+.case-material-address>input{flex:1}
+.case-material-address>button{flex:none;min-height:40px;gap:5px;white-space:nowrap}
+.case-add-material-dialog .case-material-path-note{margin:-9px 0 0;color:var(--muted);font-size:11px;line-height:1.6}
+.case-add-material-dialog>footer{display:flex;justify-content:flex-end;gap:8px;margin-top:24px}
+.case-add-material-dialog>footer button{min-width:72px;white-space:nowrap}
+.case-add-material-dialog>fieldset>input[hidden]{display:none}

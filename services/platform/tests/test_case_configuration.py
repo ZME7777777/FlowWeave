@@ -113,6 +113,7 @@ def test_material_upload_round_trip_and_symlink_boundary(case_db):
         db, item["id"], item["row_version"], "资料.txt", b"input data"
     )
     material = updated["materials"][0]
+    assert material["value"].startswith(f".flowweave/cases/{item['id']}/materials/")
     assert service.read_case_material(db, item["id"], material["value"]) == (
         b"input data",
         "资料.txt",
@@ -235,14 +236,32 @@ def test_session_configuration_persists_all_selections_and_rejects_unsupported_e
     assert error.value.code == "CASE_REASONING_INVALID"
 
 
-def test_case_schema_rejects_blank_names_and_unsafe_links():
+def test_case_schema_rejects_blank_names():
     with pytest.raises(ValidationError):
         CaseCreateWrite(name="   ")
-    with pytest.raises(ValidationError):
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "https://example.test/doc",
+        "feishu://docs/item",
+        "ftp://example.test/input",
+        "intranet/wiki/page",
+        "javascript:alert(1)",
+    ],
+)
+def test_case_material_keeps_reference_text_without_url_type_validation(case_db, value):
+    db, _ = case_db
+    created = service.create_case(
+        db,
         CaseCreateWrite(
-            name="Case",
-            materials=[{"kind": "LINK", "name": "link", "value": "javascript:alert(1)"}],
-        )
+            name="资料地址", materials=[{"kind": "LINK", "name": "输入", "value": value}]
+        ),
+    )
+    assert service.get_case(db, created["id"])["materials"] == [
+        {"kind": "LINK", "name": "输入", "value": value}
+    ]
 
 
 def test_case_and_path_candidates_are_isolated_by_user(case_db):

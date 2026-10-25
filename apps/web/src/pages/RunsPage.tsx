@@ -67,7 +67,11 @@ export function RunsPage() {
   const selectFlow = (flowId: string) => {
     setSelectedFlowId(flowId);
     setSelectedRunId(undefined);
-    setExpandedFlowIds(current => current.has(flowId) ? current : new Set([...current, flowId]));
+    setExpandedFlowIds(current => {
+      const next = new Set(current);
+      if (next.has(flowId)) next.delete(flowId); else next.add(flowId);
+      return next;
+    });
   };
   const selectRun = (flowId: string, runId: string) => {
     setSelectedFlowId(flowId);

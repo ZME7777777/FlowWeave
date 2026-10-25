@@ -96,6 +96,12 @@ test('record directory groups scheduled runs and opens a full canvas workspace',
   await page.locator('.flow-run-tree-select').filter({ hasText: definition.name }).click();
   await expect(page.locator('.run-directory-empty')).toContainText(definition.name);
   await expect(page.locator('.flow-run-tree-toggle')).toHaveCount(0);
+  const folder = page.locator('.flow-run-tree-select');
+  await folder.click();
+  await expect(folder).toHaveAttribute('aria-expanded', 'false');
+  await expect(page.locator('.flow-run-tree-run')).toHaveCount(0);
+  await folder.click();
+  await expect(folder).toHaveAttribute('aria-expanded', 'true');
   await expect(page.locator('.flow-run-tree-run')).toBeVisible();
   await expect(page.locator('.flow-run-tree-run .run-runtime-badge')).toHaveText('容器运行中');
   await expect(page.locator('.flow-run-tree-run')).not.toContainText('等待人工');
@@ -166,7 +172,7 @@ test('flow library saves an empty draft before opening its node editor', async (
   await page.goto('/');
   await page.getByRole('button', { name: '流程编排', exact: true }).click();
   await expect(page.locator('.flow-overview-empty')).toBeVisible();
-  await page.locator('.flow-library-list-tools').getByRole('button', { name: '新建流程' }).click();
+  await page.locator('.flow-library-list-tools').getByRole('button', { name: '新建', exact: true }).click();
   await page.getByLabel('新流程名称').fill('可恢复编排草稿');
   await page.getByLabel('新流程说明').fill('先保存基本信息');
   await page.getByRole('button', { name: '保存并开始编排' }).click();
@@ -225,12 +231,17 @@ test('flow library scrolls all rows with sidebar actions and a full width editor
     await page.setViewportSize({ width, height: 900 });
     await expect.poll(() => page.getByLabel('流程列表', { exact: true }).evaluate(element => element.getBoundingClientRect().width)).toBe(railWidth);
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(1);
-    await page.screenshot({ path: `../../.tmp/ui-696/flow-canvas-${width}.png` });
+    const controls = await page.locator('.flow-library-list-tools').locator('label, button').evaluateAll(elements => elements.map(element => element.getBoundingClientRect().toJSON()));
+    expect(controls).toHaveLength(3);
+    expect(new Set(controls.map(box => Math.round(box.y + box.height / 2))).size).toBe(1);
+    expect(controls[0].x + controls[0].width).toBeLessThan(controls[1].x);
+    await page.screenshot({ path: `../../.tmp/ui-697/flow-toolbar-${width}.png` });
   }
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.getByLabel('搜索流程', { exact: true }).fill('验收流程 10');
   await expect(page.locator('.flow-library-row')).toHaveCount(1);
-  await page.getByRole('button', { name: '全选', exact: true }).click();
+  await expect(page.getByRole('button', { name: '全选', exact: true })).toHaveCount(0);
+  await page.getByLabel('选择流程 验收流程 10', { exact: true }).check();
   await page.getByRole('button', { name: '删除 (1)', exact: true }).click();
   await page.getByRole('button', { name: '永久删除', exact: true }).click();
   await page.getByLabel('搜索流程', { exact: true }).fill('');

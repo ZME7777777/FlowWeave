@@ -199,7 +199,7 @@ test('case detail saves materials workspace ordered run cards and model capabili
     if (path.endsWith('/materials')) {
       expect(route.request().headers()['content-type']).toContain('multipart/form-data');
       const filename = route.request().postDataBuffer()!.toString('utf8').match(/filename="([^"]+)"/)![1];
-      expect(filename).toBe('准备资料.txt');
+      expect(filename).toBe('input.txt');
       item = { ...item, materials: [...item!.materials, { kind: 'FILE', name: filename, value: '.flowweave/cases/config-case/materials/file-1' }], row_version: item!.row_version + 1 };
       return json(route, item, 201);
     }
@@ -243,16 +243,18 @@ test('case detail saves materials workspace ordered run cards and model capabili
   await page.getByRole('heading', { name: '新建 Case', exact: true }).click();
   await expect(workspace).toHaveValue('已有项目目录');
   await expect(page.getByRole('listbox')).toHaveCount(0);
-  await page.getByRole('button', { name: '添加链接' }).click();
-  await page.getByLabel('链接名称').fill('需求文档');
-  await page.getByLabel('链接地址').fill('https://example.test/input');
-  await page.locator('.scenario-link-editor').getByRole('button', { name: '添加链接', exact: true }).click();
-  await page.getByRole('button', { name: '添加文件' }).click();
-  await expect(page.locator('.scenario-upload-editor')).toBeVisible();
-  await page.getByLabel('资料名称', { exact: true }).fill('准备资料.txt');
-  await page.getByLabel('选择资料文件').setInputFiles({ name: 'input.txt', mimeType: 'text/plain', buffer: Buffer.from('case inputs') });
-  await expect(page.locator('.scenario-file-picker')).toContainText('input.txt');
-  await page.locator('.scenario-upload-editor').getByRole('button', { name: '添加文件', exact: true }).click();
+  await page.getByRole('button', { name: '添加资料', exact: true }).click();
+  let materialDialog = page.getByRole('dialog', { name: '添加资料', exact: true });
+  await materialDialog.getByLabel('资料名称').fill('需求文档');
+  await materialDialog.getByLabel('资料地址').fill('https://example.test/input');
+  await materialDialog.getByRole('button', { name: '添加', exact: true }).click();
+  expect(writes).toEqual([]);
+  await page.getByRole('button', { name: '添加资料', exact: true }).click();
+  materialDialog = page.getByRole('dialog', { name: '添加资料', exact: true });
+  await materialDialog.getByLabel('资料名称', { exact: true }).fill('准备资料.txt');
+  await materialDialog.getByLabel('导入资料文件').setInputFiles({ name: 'input.txt', mimeType: 'text/plain', buffer: Buffer.from('case inputs') });
+  await expect(materialDialog.getByLabel('资料地址')).toHaveValue('.flowweave/cases/config-case/materials/file-1');
+  await materialDialog.getByRole('button', { name: '添加', exact: true }).click();
   await page.getByRole('button', { name: '保存', exact: true }).click();
   await expect(page.getByRole('navigation', { name: '场景工作区' })).toBeVisible();
   expect(item!.description).toBe('客户迁移的基础说明');
@@ -457,10 +459,12 @@ for (const [width, height] of [[1440, 900], [1440, 700], [1024, 768], [1280, 620
     await page.screenshot({ path: `../../.tmp/fr687/basics-materials-${width}-${height}.png` });
     await page.getByRole('button', { name: '新建场景', exact: true }).click();
     await assertFixed();
-    await page.getByRole('button', { name: '添加链接', exact: true }).click();
-    await page.getByLabel('链接地址').fill('https://example.test/new');
+    await page.getByRole('button', { name: '添加资料', exact: true }).click();
+    await page.getByLabel('资料地址').fill('https://example.test/new');
+    await expect(page.getByRole('dialog', { name: '添加资料', exact: true })).toBeInViewport();
+    await page.getByRole('button', { name: '取消', exact: true }).last().click();
     await assertFixed();
-    await page.screenshot({ path: `../../.tmp/fr687/basics-new-${width}-${height}.png` });
+    await page.screenshot({ path: `../../.tmp/ui-697/basics-new-${width}-${height}.png` });
   });
 }
 
@@ -3532,4 +3536,136 @@ test('late history capability failure restores only its outgoing conversation dr
   await expect.poll(() => page.evaluate(() => Object.keys(localStorage).some(key => key.includes('scheduled-conversation') && (localStorage.getItem(key) ?? '').includes('原会话失败后应恢复的内容')))).toBe(true);
   await expect(input).toHaveValue('新会话独立草稿');
   await expect(page.getByText('来源查询暂不可用', { exact: true })).toHaveCount(0);
+});
+
+test('unified case material import keeps edits through failure and cancels only its new reference', async ({ page }) => {
+  await openWorkspace(page);
+  let item = { id: 'import-case', name: '资料场景', description: '原有说明', objective: '原有目标', work_directory_id: null, state: 'DRAFT', row_version: 4,
+    materials: [{ kind: 'LINK', name: '已保存资料', value: 'https://example.test/original' }], stages: [], tasks: [], control_plans: [], decision_proposals: [], created_at: now, updated_at: now };
+  let uploads = 0;
+  const writes: Record<string, unknown>[] = [];
+  await page.route('**/api/v1/cases**', async route => {
+    const request = route.request();
+    const pathname = new URL(request.url()).pathname;
+    if (request.method() === 'GET') return json(route, [item]);
+    if (pathname.endsWith('/materials')) {
+      expect(new URL(request.url()).searchParams.get('expected_row_version')).toBe(String(item.row_version));
+      uploads += 1;
+      if (uploads === 1) return json(route, { error: { code: 'UPLOAD_FAILED', message: '上传暂不可用' } }, 503);
+      item = { ...item, row_version: item.row_version + 1, materials: [...item.materials, { kind: 'FILE', name: 'input.txt', value: '.flowweave/cases/import-case/materials/imported-file' }] };
+      return json(route, item, 201);
+    }
+    const body = request.postDataJSON();
+    expect(body.expected_row_version).toBe(item.row_version);
+    writes.push(body);
+    item = { ...item, ...body, row_version: item.row_version + 1 };
+    return json(route, item);
+  });
+  await page.getByRole('button', { name: '场景空间', exact: true }).click();
+  await page.getByRole('textbox', { name: '说明', exact: true }).fill('尚未保存的说明');
+  await page.getByRole('button', { name: '添加资料', exact: true }).click();
+  const modal = page.getByRole('dialog', { name: '添加资料', exact: true });
+  await expect(page.getByRole('button', { name: '添加链接', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '添加文件', exact: true })).toHaveCount(0);
+  await modal.getByLabel('资料名称').fill('导入资料.txt');
+  await modal.getByLabel('资料地址').fill('intranet/manual');
+  const file = { name: 'input.txt', mimeType: 'text/plain', buffer: Buffer.from('inputs') };
+  await modal.getByLabel('导入资料文件').setInputFiles(file);
+  await expect(modal.getByRole('alert')).toContainText('上传暂不可用');
+  await expect(modal.getByLabel('资料地址')).toHaveValue('intranet/manual');
+  await expect(modal.getByLabel('资料名称')).toHaveValue('导入资料.txt');
+  await modal.getByLabel('导入资料文件').setInputFiles(file);
+  await expect(modal.getByLabel('资料地址')).toHaveValue('.flowweave/cases/import-case/materials/imported-file');
+  expect(writes).toEqual([]);
+  expect(item.description).toBe('原有说明');
+  for (const width of [1440, 1024]) {
+    await page.setViewportSize({ width, height: 768 });
+    const address = await modal.getByLabel('资料地址').boundingBox();
+    const upload = await modal.getByRole('button', { name: '导入', exact: true }).boundingBox();
+    expect(Math.round(address!.y)).toBe(Math.round(upload!.y));
+    expect(upload!.width).toBeGreaterThan(50);
+    expect(await modal.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+    await page.screenshot({ path: `../../.tmp/ui-697/material-dialog-${width}.png` });
+  }
+  await modal.getByRole('button', { name: '取消', exact: true }).click();
+  await expect(modal).toHaveCount(0);
+  expect(writes[0]).toMatchObject({ description: '原有说明', materials: [{ name: '已保存资料' }] });
+  await expect(page.getByRole('textbox', { name: '说明', exact: true })).toHaveValue('尚未保存的说明');
+  await expect(page.getByRole('button', { name: '添加资料', exact: true })).toBeFocused();
+  await page.getByRole('button', { name: '保存', exact: true }).click();
+  await expect(page.getByRole('status')).toHaveText('已保存');
+  expect(item.description).toBe('尚未保存的说明');
+  expect(item.materials).toHaveLength(1);
+});
+
+test('case material accepts arbitrary reference text without making script references executable', async ({ page }) => {
+  await openWorkspace(page);
+  let saved: Record<string, unknown> | undefined;
+  const item = { id: 'references-case', name: '任意资料', description: '', objective: '', row_version: 1, state: 'DRAFT', materials: [], stages: [], tasks: [], control_plans: [], decision_proposals: [], created_at: now, updated_at: now };
+  await page.route('**/api/v1/cases**', async route => {
+    if (route.request().method() === 'GET') return json(route, [item]);
+    saved = route.request().postDataJSON();
+    return json(route, { ...item, ...saved, row_version: 2 });
+  });
+  await page.getByRole('button', { name: '场景空间', exact: true }).click();
+  const values = ['feishu://docs/item', 'ftp://example.test/input', 'intranet/wiki/page', 'javascript:window.__caseScriptExecuted=true'];
+  for (const [index, value] of values.entries()) {
+    await page.getByRole('button', { name: '添加资料', exact: true }).click();
+    const modal = page.getByRole('dialog', { name: '添加资料', exact: true });
+    await modal.getByLabel('资料名称').fill(`资料 ${index + 1}`);
+    await modal.getByLabel('资料地址').fill(value);
+    await modal.getByRole('button', { name: '添加', exact: true }).click();
+    await expect(modal).toHaveCount(0);
+  }
+  expect(saved).toBeUndefined();
+  const inert = page.locator('.scenario-materials a').filter({ hasText: '资料 4' });
+  await expect(inert).not.toHaveAttribute('href');
+  await inert.click();
+  expect(await page.evaluate(() => '__caseScriptExecuted' in window)).toBe(false);
+  await page.getByRole('button', { name: '保存', exact: true }).click();
+  await expect.poll(() => saved?.materials).toEqual(values.map((value, index) => ({ kind: 'LINK', name: `资料 ${index + 1}`, value })));
+});
+
+test('new case material upload retry reuses the created scene and saves its relative file reference', async ({ page }) => {
+  await openWorkspace(page);
+  let creates = 0, uploads = 0;
+  let item: Record<string, unknown> | undefined;
+  await page.route('**/api/v1/cases**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (request.method() === 'GET') return json(route, item ? [item] : []);
+    if (url.pathname.endsWith('/materials')) {
+      uploads += 1;
+      if (uploads === 1) return json(route, { error: { code: 'UPLOAD_FAILED', message: '请重试上传' } }, 503);
+      expect(url.searchParams.get('expected_row_version')).toBe('1');
+      item = { ...item, row_version: 2, materials: [{ kind: 'FILE', name: 'input.txt', value: '.flowweave/cases/new-import/materials/file-1' }] };
+      return json(route, item, 201);
+    }
+    const body = request.postDataJSON();
+    if (request.method() === 'POST') {
+      creates += 1;
+      item = { ...body, id: 'new-import', state: 'DRAFT', row_version: 1, stages: [], tasks: [], control_plans: [], decision_proposals: [], created_at: now, updated_at: now };
+    } else {
+      expect(body.expected_row_version).toBe(2);
+      item = { ...item, ...body, row_version: 3 };
+    }
+    return json(route, item);
+  });
+  await page.getByRole('button', { name: '场景空间', exact: true }).click();
+  await page.getByRole('button', { name: '新建场景', exact: true }).click();
+  await page.getByLabel('名称', { exact: true }).fill('新建资料场景');
+  await page.getByRole('button', { name: '添加资料', exact: true }).click();
+  const modal = page.getByRole('dialog', { name: '添加资料', exact: true });
+  const file = { name: 'input.txt', mimeType: 'text/plain', buffer: Buffer.from('inputs') };
+  await modal.getByLabel('导入资料文件').setInputFiles(file);
+  await expect(modal.getByRole('alert')).toContainText('请重试上传');
+  await modal.getByLabel('导入资料文件').setInputFiles(file);
+  await expect(modal.getByLabel('资料地址')).toHaveValue('.flowweave/cases/new-import/materials/file-1');
+  await expect(modal.getByLabel('资料名称')).toHaveValue('input.txt');
+  await modal.getByRole('button', { name: '添加', exact: true }).click();
+  await page.getByRole('button', { name: '保存', exact: true }).click();
+  await expect(page.getByRole('navigation', { name: '场景工作区' })).toBeVisible();
+  expect(creates).toBe(1);
+  expect(uploads).toBe(2);
+  expect(item?.materials).toEqual([{ kind: 'FILE', name: 'input.txt', value: '.flowweave/cases/new-import/materials/file-1' }]);
 });

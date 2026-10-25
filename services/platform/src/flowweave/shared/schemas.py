@@ -834,16 +834,6 @@ class CaseMaterialWrite(ApiModel):
     name: str = Field(min_length=1, max_length=220)
     value: str = Field(min_length=1, max_length=2000)
 
-    @model_validator(mode="after")
-    def validate_reference(self) -> CaseMaterialWrite:
-        from urllib.parse import urlsplit
-
-        if self.kind == "LINK":
-            parsed = urlsplit(self.value)
-            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-                raise ValueError("资料链接必须为 HTTP 或 HTTPS 地址")
-        return self
-
 
 class CaseBasicsWrite(ApiModel):
     name: str = Field(min_length=1, max_length=220)

@@ -1,4 +1,5 @@
 import { useMemo, useRef, useState, type FormEvent } from 'react';
+import { createPortal } from 'react-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowDown, Check, ChevronRight, ClipboardList, ExternalLink, FileText, GripVertical, Link2, MessageSquareCode, Pencil, Plus, Settings2, Trash2, Upload, X } from 'lucide-react';
 import { api, caseMaterialFileUrl } from '../api/client';
@@ -60,6 +61,72 @@ function MaterialPreview({ material, caseId, onClose }: {
   </div>;
 }
 
+function materialHref(value: string): string | undefined {
+  try {
+    const protocol = new URL(value, window.location.href).protocol;
+    return ['javascript:', 'data:', 'vbscript:'].includes(protocol) ? undefined : value;
+  } catch { return undefined; }
+}
+
+function AddMaterialDialog({ onImport, onDiscard, onApply, onClose }: {
+  onImport: (file: File) => Promise<CaseMaterial>;
+  onDiscard: (material: CaseMaterial) => Promise<void>;
+  onApply: (material: CaseMaterial) => void;
+  onClose: () => void;
+}) {
+  const [name, setName] = useState('');
+  const [value, setValue] = useState('');
+  const [imported, setImported] = useState<CaseMaterial>();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const pending = useRef(false);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const perform = async (action: () => Promise<void>) => {
+    if (pending.current) return;
+    pending.current = true; setBusy(true); setError('');
+    try { await action(); }
+    catch (reason) { setError(errorMessage(reason)); }
+    finally { pending.current = false; setBusy(false); }
+  };
+  const cancel = () => void perform(async () => {
+    if (imported) await onDiscard(imported);
+    onClose();
+  });
+  useEscapeClose(cancel);
+  return createPortal(<div className="modal-backdrop"><form className="modal case-add-material-dialog" role="dialog" aria-modal="true" aria-label="添加资料" aria-busy={busy} onKeyDown={event => {
+    if (event.key !== 'Tab') return;
+    const controls = [...event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled):not([hidden])')].filter(element => !element.closest('fieldset:disabled'));
+    const first = controls[0], last = controls.at(-1);
+    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+  }} onSubmit={event => {
+    event.preventDefault(); event.stopPropagation();
+    if (!name.trim() || !value.trim()) return;
+    void perform(async () => {
+      const file = imported && value === imported.value ? imported : undefined;
+      if (imported && !file) await onDiscard(imported);
+      onApply({ kind: file ? 'FILE' : 'LINK', name: name.trim(), value: file ? file.value : value.trim() });
+      onClose();
+    });
+  }}><header><div><h2>添加资料</h2><p>填写资料地址，或导入文件到场景工作区。</p></div><button type="button" className="ghost" aria-label="关闭添加资料" disabled={busy} onClick={cancel}><X size={18}/></button></header>
+    <fieldset disabled={busy}><label>资料名称<input autoFocus required aria-label="资料名称" value={name} maxLength={220} placeholder="为这份资料起个名称" onChange={event => setName(event.target.value)}/></label>
+      <label>资料地址<span className="case-material-address"><input required aria-label="资料地址" value={value} maxLength={2000} placeholder="输入链接或导入文件" onChange={event => setValue(event.target.value)}/><button className="secondary" type="button" onClick={() => fileInput.current?.click()}><Upload size={15}/>{busy ? '导入中…' : '导入'}</button></span></label>
+      <input hidden ref={fileInput} type="file" aria-label="导入资料文件" onChange={event => {
+        const file = event.target.files?.[0]; event.target.value = '';
+        if (!file) return;
+        void perform(async () => {
+          if (imported) { await onDiscard(imported); setImported(undefined); setValue(''); }
+          const result = await onImport(file);
+          setImported(result); setValue(result.value); setName(current => current || file.name);
+        });
+      }}/>
+      {imported && value === imported.value && <p className="case-material-path-note">文件已导入，显示的是相对于工作区的路径。</p>}
+    </fieldset>
+    {error && <p className="error" role="alert">{error}</p>}
+    <footer><button className="secondary" type="button" disabled={busy} onClick={cancel}>取消</button><button className="primary" type="submit" disabled={busy || !name.trim() || !value.trim()}>{busy ? '处理中…' : '添加'}</button></footer>
+  </form></div>, document.body);
+}
+
 function BasicsForm({ item, workspaceId, onSaved, onCancel }: {
   item?: Case; workspaceId: string; onSaved: (item: Case) => void; onCancel?: () => void;
 }) {
@@ -69,62 +136,64 @@ function BasicsForm({ item, workspaceId, onSaved, onCancel }: {
   const [objective, setObjective] = useState(item?.objective ?? '');
   const [directoryId, setDirectoryId] = useState(item?.work_directory_id ?? '');
   const [materials, setMaterials] = useState<CaseMaterial[]>(item?.materials ?? []);
-  const [files, setFiles] = useState<File[]>([]);
-  const [linkOpen, setLinkOpen] = useState(false);
-  const [uploadOpen, setUploadOpen] = useState(false);
-  const [linkName, setLinkName] = useState('');
-  const [linkUrl, setLinkUrl] = useState('');
-  const [fileName, setFileName] = useState('');
-  const [selectedFile, setSelectedFile] = useState<File>();
+  const [materialOpen, setMaterialOpen] = useState(false);
+  const materialButton = useRef<HTMLButtonElement>(null);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
-  const [toast, setToast] = useState('');
   const [busy, setBusy] = useState(false);
   const [preview, setPreview] = useState<CaseMaterial>();
   // Keep the created identity on a partial upload failure so retry never creates another Case.
   const saved = useRef(item);
-  const fileInput = useRef<HTMLInputElement>(null);
-  const showToast = (message: string) => {
-    setToast(message);
-    window.setTimeout(() => setToast(current => current === message ? '' : current), 3000);
+  const importMaterial = async (file: File): Promise<CaseMaterial> => {
+    if (!name.trim() || !workspaceId) throw new Error('请先填写场景名称，再导入文件。');
+    if (materials.length >= 100) throw new Error('最多添加 100 项资料。');
+    if (file.size > 64 * 1024 * 1024) throw new Error('单个文件不能超过 64 MB。');
+    setBusy(true); setNotice('');
+    try {
+      let current = saved.current && (!item || saved.current.row_version > item.row_version) ? saved.current : item;
+      if (!current) {
+        current = await api.createCase({ name: name.trim(), description, objective, materials, work_directory_id: directoryId || null });
+        saved.current = current;
+      }
+      const known = new Set((current.materials ?? []).map(material => material.value));
+      const result = await api.uploadCaseMaterial(current.id, current.row_version, file);
+      saved.current = result;
+      const material = result.materials?.find(material => material.kind === 'FILE' && !known.has(material.value));
+      if (!material) throw new Error('上传未返回文件路径，请重新读取场景资料。');
+      return material;
+    } finally { setBusy(false); }
   };
-  const addLink = () => {
-    try { const url = new URL(linkUrl); if (!['https:', 'http:'].includes(url.protocol)) throw new Error(); }
-    catch { showToast('请输入有效的 HTTP 或 HTTPS 链接。'); return; }
-    setMaterials(current => [...current, { kind: 'LINK', name: linkName.trim() || linkUrl, value: linkUrl }]);
-    setLinkName(''); setLinkUrl(''); setLinkOpen(false); setError(''); setNotice('');
-  };
-  const addFile = () => {
-    if (!selectedFile) { showToast('请选择要添加的文件。'); return; }
-    const renamed = fileName.trim() ? new File([selectedFile], fileName.trim(), { type: selectedFile.type, lastModified: selectedFile.lastModified }) : selectedFile;
-    setFiles(current => [...current, renamed]);
-    setFileName(''); setSelectedFile(undefined); setUploadOpen(false); setNotice('');
+  const discardImport = async (material: CaseMaterial) => {
+    const current = saved.current;
+    if (!current) return;
+    setBusy(true);
+    try {
+      saved.current = await api.updateCase(current.id, {
+        expected_row_version: current.row_version,
+        name: current.name, description: current.description ?? '', objective: current.objective,
+        work_directory_id: current.work_directory_id ?? null,
+        materials: (current.materials ?? []).filter(entry => entry.value !== material.value),
+      });
+    } finally { setBusy(false); }
   };
   const save = async (event: FormEvent) => {
     event.preventDefault();
     if (busy || !name.trim() || !workspaceId) return;
-    if (materials.length + files.length > 100) { setError('最多添加 100 项资料。'); return; }
-    if (files.some(file => file.size > 64 * 1024 * 1024)) { setError('单个文件不能超过 64 MB。'); return; }
+    if (materials.length > 100) { setError('最多添加 100 项资料。'); return; }
     setBusy(true); setError(''); setNotice('');
     const basics: CaseBasics = { name: name.trim(), description, objective, materials, work_directory_id: directoryId || null };
     try {
       const current = saved.current && (!item || saved.current.row_version > item.row_version) ? saved.current : item;
-      let result = current
+      const result = current
         ? await api.updateCase(current.id, { ...basics, expected_row_version: current.row_version })
         : await api.createCase(basics);
       saved.current = result;
-      for (const file of files) {
-        result = await api.uploadCaseMaterial(result.id, result.row_version, file);
-        saved.current = result;
-        setMaterials(result.materials ?? []);
-        setFiles(current => current.filter(candidate => candidate !== file));
-      }
       setNotice('已保存'); onSaved(result);
     } catch (reason) { setError(errorMessage(reason)); }
     finally { setBusy(false); }
   };
   return <form className="scenario-overview scenario-basics-form" onSubmit={event => void save(event)}>
-    <fieldset disabled={busy}><div className="case-basics-fields">
+    <fieldset disabled={busy || materialOpen}><div className="case-basics-fields">
       <label>名称<input autoFocus={!item} value={name} maxLength={220} required onChange={event => { setName(event.target.value); setNotice(''); }} placeholder="为这个 Case 起个名称"/></label>
       <div className="case-field"><span>工作区 <span className="scenario-optional">可选</span></span><CaseChoice label="工作区" value={directoryId} disabled={busy || Boolean(item?.control_conversation_binding_id)} onChange={value => { setDirectoryId(value); setNotice(''); }} options={[
         { value: '', label: '默认工作区', detail: '自动创建 Case 专属工作区' },
@@ -134,22 +203,17 @@ function BasicsForm({ item, workspaceId, onSaved, onCancel }: {
       <label>说明<textarea value={description} maxLength={20_000} onChange={event => { setDescription(event.target.value); setNotice(''); }} placeholder="介绍当前场景的背景。"/></label>
       <label>目标<textarea value={objective} maxLength={20_000} onChange={event => { setObjective(event.target.value); setNotice(''); }} placeholder="说明需要达成的结果。"/></label>
       </div>
-      <section className="scenario-materials" aria-label="资料"><header><span><b>资料</b><small>添加完成当前场景所需的基础资料。</small></span><div><button className="secondary" type="button" onClick={() => { setLinkOpen(current => !current); setUploadOpen(false); }}><Link2 size={14}/>添加链接</button><button className="secondary" type="button" onClick={() => { setUploadOpen(current => !current); setLinkOpen(false); }}><Upload size={14}/>添加文件</button></div></header>
-        <input hidden ref={fileInput} type="file" aria-label="选择资料文件" onChange={event => { const file = event.target.files?.[0]; if (file) { setSelectedFile(file); setFileName(current => current || file.name); } event.target.value = ''; }}/>
-        {linkOpen && <div className="scenario-link-editor"><label>链接名称<input value={linkName} maxLength={220} onChange={event => setLinkName(event.target.value)} placeholder="选填"/></label><label>链接地址<input value={linkUrl} type="url" onChange={event => setLinkUrl(event.target.value)} placeholder="https://"/></label><button className="secondary scenario-material-confirm" type="button" disabled={!linkUrl.trim()} onClick={addLink}><Check size={15}/><span className="sr-only">添加链接</span></button></div>}
-        {uploadOpen && <div className="scenario-upload-editor"><label>资料名称<input value={fileName} maxLength={220} onChange={event => setFileName(event.target.value)} placeholder="为这份资料起个名称"/></label><div className="scenario-file-picker"><span>{selectedFile ? selectedFile.name : '尚未选择文件'}</span><button className="secondary" type="button" onClick={() => fileInput.current?.click()}><Upload size={14}/>选择文件</button></div><button className="secondary scenario-material-confirm" type="button" disabled={!selectedFile} onClick={addFile}><Check size={15}/><span className="sr-only">添加文件</span></button></div>}
-        {!materials.length && !files.length && !linkOpen && !uploadOpen && <p className="scenario-materials-empty">尚未添加资料</p>}
-        <ul>{materials.map((material, index) => <li key={`${index}-${material.value}`}>{material.kind === 'LINK' ? <Link2 size={15}/> : <FileText size={15}/>}{material.kind === 'LINK' ? <a href={material.value} target="_blank" rel="noreferrer">{material.name}</a> : <button className="ghost case-material-preview-button" type="button" onClick={() => setPreview(material)}>{material.name}</button>}
+      <section className="scenario-materials" aria-label="资料"><header><span><b>资料</b><small>添加完成当前场景所需的基础资料。</small></span><button ref={materialButton} className="secondary" type="button" disabled={materials.length >= 100} onClick={() => setMaterialOpen(true)}><Plus size={14}/>添加资料</button></header>
+        {!materials.length && <p className="scenario-materials-empty">尚未添加资料</p>}
+        <ul>{materials.map((material, index) => <li key={`${index}-${material.value}`}>{material.kind === 'LINK' ? <Link2 size={15}/> : <FileText size={15}/>}{material.kind === 'LINK' ? <a href={materialHref(material.value)} target="_blank" rel="noreferrer">{material.name}</a> : <button className="ghost case-material-preview-button" type="button" onClick={() => setPreview(material)}>{material.name}</button>}
           <span className={`case-material-kind ${material.kind.toLowerCase()}`}>{material.kind === 'LINK' ? '链接' : '文件'}</span><MaterialName name={material.name} file={material.kind === 'FILE'} onRename={name => { setMaterials(current => current.map((entry, i) => i === index ? { ...entry, name } : entry)); setNotice(''); }}/>
           <button className="ghost" type="button" aria-label={`移除资料 ${material.name}`} onClick={() => { setMaterials(current => current.filter((_, i) => i !== index)); setNotice(''); }}><X size={14}/></button></li>)}
-          {files.map((file, index) => <li key={index}><FileText size={15}/><span>{file.name}<small>{file.type || '未知类型'} · 保存时上传</small></span><span className="case-material-kind file">文件</span>
-            <MaterialName name={file.name} file onRename={name => { setFiles(current => current.map((entry, i) => i === index ? new File([entry], name, { type: entry.type, lastModified: entry.lastModified }) : entry)); setNotice(''); }}/>
-            <button className="ghost" type="button" aria-label={`移除文件 ${file.name}`} onClick={() => setFiles(current => current.filter((_, i) => i !== index))}><X size={14}/></button></li>)}</ul>
+          </ul>
       </section>
       <footer className="scenario-form-actions">{onCancel && <button className="secondary" type="button" onClick={onCancel}>取消</button>}<button className="primary" disabled={!name.trim() || !workspaceId}>{busy ? '保存中…' : '保存'}</button><span role="status">{notice}</span></footer>
     </fieldset>
     {error && <p className="error" role="alert">{error}</p>}
-    {toast && <p className="case-form-toast" role="status">{toast}</p>}
+    {materialOpen && <AddMaterialDialog onImport={importMaterial} onDiscard={discardImport} onApply={material => { setMaterials(current => [...current, material]); setNotice(''); }} onClose={() => { setMaterialOpen(false); window.requestAnimationFrame(() => materialButton.current?.focus()); }}/>}
     {preview && <MaterialPreview material={preview} caseId={saved.current?.id ?? item?.id ?? ''} onClose={() => setPreview(undefined)}/>}
   </form>;
 }

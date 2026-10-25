@@ -1298,12 +1298,11 @@ body:has(.login-page){min-width:0}
 .flow-editor-page{height:var(--app-content-height);min-height:0;padding:0}.flow-editor-head{min-height:44px;margin:0;padding:6px 16px}.flow-editor-page .flow-product-layout{height:calc(var(--app-content-height) - 44px);min-height:0;border-right:0;border-bottom:0;border-left:0;border-radius:0}.flow-editor-page .flow-library{width:auto;padding-top:8px}.flow-editor-page .designer-toolbar{justify-content:flex-end}.flow-editor-page .flow-link-mode{margin-right:auto}.flow-library-workspace{grid-template-columns:250px minmax(0,1fr)}.flow-canvas-preview .react-flow__node{cursor:grab}.flow-canvas-preview .react-flow__node.dragging{cursor:grabbing}@media(max-width:1180px){.flow-library-workspace{grid-template-columns:220px minmax(0,1fr)}}
 
 /* Flow library actions belong to the list they operate on. */
-.flow-library-list-tools{display:flex;flex-direction:column;align-items:stretch;gap:10px;margin:0;padding:12px;border-bottom:1px solid var(--line)}
-.flow-library-list-tools>div{order:0;display:flex;flex-wrap:wrap;gap:6px}
-.flow-library-list-tools>div>span{order:1;flex-basis:100%;margin:2px 0 0;font-size:11px}
-.flow-library-list-tools>div>button{padding:8px;font-size:11px;white-space:nowrap}
-.flow-library-list-tools>label{order:1;width:100%;min-width:0}
-.flow-library-list-tools input{min-width:0;font-size:11px}
+.flow-library-list-tools{display:flex;flex-direction:row;align-items:center;gap:6px;margin:0;padding:10px;border-bottom:1px solid var(--line)}
+.flow-library-list-tools>label{order:0;flex:1;min-width:0;width:auto;gap:5px;padding:0 7px}
+.flow-library-list-tools input{min-width:0;padding:8px 0;font-size:11px}
+.flow-library-list-tools>label>svg{flex:none}
+.flow-library-list-tools>button{display:inline-flex;flex:none;align-items:center;justify-content:center;gap:4px;height:34px;padding:7px;font-size:11px;white-space:nowrap}
 .flow-library-workspace{grid-template-columns:320px minmax(0,1fr)}
 .flow-library-table-head{position:sticky;z-index:1;top:0}
 .flow-editor-page{width:100%;max-width:none;align-items:stretch}
