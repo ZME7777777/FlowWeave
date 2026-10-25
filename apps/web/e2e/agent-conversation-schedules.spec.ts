@@ -247,12 +247,12 @@ test('case detail saves materials workspace ordered run cards and model capabili
   await page.getByLabel('链接名称').fill('需求文档');
   await page.getByLabel('链接地址').fill('https://example.test/input');
   await page.locator('.scenario-link-editor').getByRole('button', { name: '添加链接', exact: true }).click();
-  await page.getByRole('button', { name: '上传文件' }).click();
+  await page.getByRole('button', { name: '添加文件' }).click();
   await expect(page.locator('.scenario-upload-editor')).toBeVisible();
-  await page.getByLabel('上传资料文件').setInputFiles({ name: 'input.txt', mimeType: 'text/plain', buffer: Buffer.from('case inputs') });
-  await page.getByRole('button', { name: '重命名 input.txt', exact: true }).click();
-  await page.getByRole('textbox', { name: '资料名称 input.txt', exact: true }).fill('准备资料');
-  await page.getByRole('button', { name: '确认改名', exact: true }).click();
+  await page.getByLabel('资料名称', { exact: true }).fill('准备资料.txt');
+  await page.getByLabel('选择资料文件').setInputFiles({ name: 'input.txt', mimeType: 'text/plain', buffer: Buffer.from('case inputs') });
+  await expect(page.locator('.scenario-file-picker')).toContainText('input.txt');
+  await page.locator('.scenario-upload-editor').getByRole('button', { name: '添加文件', exact: true }).click();
   await page.getByRole('button', { name: '保存', exact: true }).click();
   await expect(page.getByRole('navigation', { name: '场景工作区' })).toBeVisible();
   expect(item!.description).toBe('客户迁移的基础说明');

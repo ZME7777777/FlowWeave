@@ -28,7 +28,7 @@ const nodeWrite = (node: NodeAsset): NodeAssetWrite => ({
 
 type FieldDirection = 'inputs' | 'outputs';
 type PromptKey = 'startup_prompt' | 'context_prompt';
-type EditorTarget = FieldDirection | PromptKey;
+type EditorTarget = FieldDirection | PromptKey | 'description';
 const promptLabels: Record<PromptKey, string> = { startup_prompt: '启动触发提示词', context_prompt: '上下文提示词' };
 
 function ConfigDialog({ title, description, children, onApply, onClose, actions, busy = false, compact = false }: {
@@ -82,9 +82,8 @@ function FieldsDialog({ direction, fields, onPersist, onClose }: {
       {editing ? <>
         <button type="button" className="node-field-back" disabled={Boolean(busyKey)} onClick={() => { setEditing(undefined); setError(''); }}><ArrowLeft size={14}/>返回{label}列表</button>
         <fieldset className="node-field-editor" disabled={Boolean(busyKey)}>
-          <label>名称<input required autoFocus autoComplete="off" aria-label={`${label}名称`} value={editing.draft.display_name} onChange={event => update({ display_name: event.target.value })}/></label>
+          <div className="node-field-name-and-type"><label>名称<input required autoFocus autoComplete="off" aria-label={`${label}名称`} value={editing.draft.display_name} onChange={event => update({ display_name: event.target.value })}/></label><div className="node-config-field-type"><span>类型</span><div className="io-type-toggle" role="radiogroup" aria-label={`${label}类型`}><button type="button" role="radio" aria-checked={editing.draft.data_type === 'URL'} className={editing.draft.data_type === 'URL' ? 'active' : ''} onClick={() => update({ data_type: 'URL' })}>URL</button><button type="button" role="radio" aria-checked={editing.draft.data_type === 'FILE'} className={editing.draft.data_type === 'FILE' ? 'active' : ''} onClick={() => update({ data_type: 'FILE' })}>文件</button></div></div></div>
           <label className="node-field-description">说明<textarea aria-label={`${label}说明`} value={editing.draft.description} onChange={event => update({ description: event.target.value })}/></label>
-          <label className="node-config-field-type"><span>类型</span><select aria-label={`${label}类型`} value={editing.draft.data_type} onChange={event => update({ data_type: event.target.value as IOField['data_type'] })}><option value="URL">URL</option><option value="FILE">文件</option></select></label>
           <div className="node-field-save"><button type="button" className="secondary" disabled={Boolean(busyKey)} onClick={() => { setEditing(undefined); setError(''); }}>取消</button><button type="submit" className="primary">{busyKey ? '正在保存…' : editing.creating ? '创建字段' : '保存修改'}</button></div>
         </fieldset>
       </> : <>
@@ -110,6 +109,11 @@ function FieldsDialog({ direction, fields, onPersist, onClose }: {
 function PromptDialog({ title, value, onApply, onClose }: { title: string; value: string; onApply: (value: string) => void; onClose: () => void }) {
   const [draft, setDraft] = useState(value);
   return <ConfigDialog title={title} description="查看完整内容并编辑，应用后点击“保存节点”保存。" onClose={onClose} onApply={event => { event.preventDefault(); onApply(draft); }}><div className="node-config-body node-prompt-dialog-body"><textarea aria-label={title} value={draft} onChange={event => setDraft(event.target.value)} spellCheck={false}/></div></ConfigDialog>;
+}
+
+function NodeDescriptionDialog({ value, onApply, onClose }: { value: string; onApply: (value: string) => void; onClose: () => void }) {
+  const [draft, setDraft] = useState(value);
+  return <ConfigDialog title="节点说明" description="查看完整内容并编辑，应用后点击“保存节点”保存。" onClose={onClose} onApply={event => { event.preventDefault(); onApply(draft); }}><div className="node-config-body node-prompt-dialog-body"><textarea aria-label="节点说明全文" value={draft} onChange={event => setDraft(event.target.value)}/></div></ConfigDialog>;
 }
 
 interface Props {
@@ -156,11 +160,11 @@ export function NodeEditor({ node, initialDirectoryId = null, embedded = false, 
 
   const editor = <form className={`modal editor asset-editor node-form${embedded ? ' node-detail-editor' : ''}`} onSubmit={submit}>
     <header className="asset-editor-header"><div className="node-detail-toolbar-label"><span className="eyebrow">NODE FORM</span><b>{node ? node.name : '新建节点'}</b></div><div className="node-detail-toolbar-actions"><button type="button" className="ghost" onClick={onClose}>取消</button><button type="submit" className="primary" disabled={saving}>{saving ? '保存中…' : '保存节点'}</button></div></header>
-    <div className="node-form-body"><section className="node-form-basics"><h3>基础信息</h3><div className="node-form-grid"><label>节点名称<input aria-label="节点名称" required value={form.name} onChange={event => setForm(current => ({ ...current, name: event.target.value }))}/></label><label className="node-form-description">节点说明<textarea aria-label="节点说明" value={form.description} onChange={event => setForm(current => ({ ...current, description: event.target.value }))}/></label></div></section>
+    <div className="node-form-body"><section className="node-form-basics"><h3>基础信息</h3><div className="node-form-grid"><label>节点名称<input aria-label="节点名称" required value={form.name} onChange={event => setForm(current => ({ ...current, name: event.target.value }))}/></label><article className="node-form-description"><header><span>节点说明</span><button type="button" aria-label="查看节点说明全文" aria-haspopup="dialog" onClick={() => setActiveEditor('description')}>查看全文<ChevronRight size={13}/></button></header><p>{form.description || '暂无内容'}</p></article></div></section>
     <section className="node-form-io"><h3>输入与输出</h3>{(['inputs', 'outputs'] as const).map(direction => <button type="button" className="node-fields-summary" key={direction} aria-label={`配置${direction === 'inputs' ? '输入' : '输出'}定义`} onClick={() => setActiveEditor(direction)}><b>{direction === 'inputs' ? '输入定义' : '输出定义'}</b><span>{form[direction].length ? form[direction].map(field => field.display_name || '未命名字段').join('、') : '暂未配置'}</span><small>{form[direction].length} 个字段</small><ChevronRight size={16}/></button>)}</section>
     <section className="node-form-prompts"><h3>提示词与上下文</h3>{(['startup_prompt', 'context_prompt'] as const).map(key => <article className="node-prompt-field" key={key}><header><span>{promptLabels[key]}</span><button type="button" aria-label={`查看${promptLabels[key]}全文`} aria-haspopup="dialog" onClick={() => setActiveEditor(key)}>查看全文<ChevronRight size={13}/></button></header><p>{form.executor[key] || '暂无内容'}</p></article>)}</section>
     {error && <p className="error" role="alert">{error}</p>}</div>
   </form>;
 
-  return <>{embedded ? editor : <div className="modal-backdrop">{editor}</div>}{(activeEditor === 'inputs' || activeEditor === 'outputs') && <FieldsDialog key={activeEditor} direction={activeEditor} fields={form[activeEditor]} onClose={() => setActiveEditor(undefined)} onPersist={fields => persistFields(activeEditor, fields)}/>} {(activeEditor === 'startup_prompt' || activeEditor === 'context_prompt') && <PromptDialog key={activeEditor} title={promptLabels[activeEditor]} value={form.executor[activeEditor]} onClose={() => setActiveEditor(undefined)} onApply={value => { setForm(current => ({ ...current, executor: { ...current.executor, [activeEditor]: value } })); setActiveEditor(undefined); }}/>}</>;
+  return <>{embedded ? editor : <div className="modal-backdrop">{editor}</div>}{(activeEditor === 'inputs' || activeEditor === 'outputs') && <FieldsDialog key={activeEditor} direction={activeEditor} fields={form[activeEditor]} onClose={() => setActiveEditor(undefined)} onPersist={fields => persistFields(activeEditor, fields)}/>} {activeEditor === 'description' && <NodeDescriptionDialog value={form.description} onClose={() => setActiveEditor(undefined)} onApply={value => { setForm(current => ({ ...current, description: value })); setActiveEditor(undefined); }}/>} {(activeEditor === 'startup_prompt' || activeEditor === 'context_prompt') && <PromptDialog key={activeEditor} title={promptLabels[activeEditor]} value={form.executor[activeEditor]} onClose={() => setActiveEditor(undefined)} onApply={value => { setForm(current => ({ ...current, executor: { ...current.executor, [activeEditor]: value } })); setActiveEditor(undefined); }}/>}</>;
 }

@@ -59,12 +59,30 @@ test('editor shows all configuration sections without saving', async ({ page }) 
   await page.getByTestId('node-card').filter({ hasText: node.name }).click();
 
   await expect(page.getByLabel('节点名称')).toBeVisible();
+  await expect(page.getByRole('button', { name: '查看节点说明全文' })).toBeVisible();
   await expect(page.getByRole('button', { name: '查看启动触发提示词全文' })).toBeVisible();
   await expect(page.getByText('输入定义', { exact: true })).toBeVisible();
   await expect(page.getByText('输出定义', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '保存节点' })).toBeVisible();
   expect(updateCount).toBe(0);
 });
+
+test('node description is summarized and opens a full editor', async ({ page }) => {
+  const description = '用于核对应用清理结果、异常证据与后续修复方案的完整节点说明。';
+  await page.route('**/api/v1/node-directories', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
+  await page.route('**/api/v1/node-assets**', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([{ ...node, description }]) }));
+  await page.goto('/');
+  await page.getByRole('button', { name: '节点中心', exact: true }).click();
+  await page.getByTestId('node-card').click();
+  const summary = page.locator('.node-form-description');
+  await expect(summary.locator('p')).toHaveCSS('white-space', 'nowrap');
+  await summary.getByRole('button', { name: '查看节点说明全文' }).click();
+  const dialog = page.getByRole('dialog', { name: '节点说明', exact: true });
+  await expect(dialog.getByLabel('节点说明全文', { exact: true })).toHaveValue(description);
+  await dialog.getByRole('button', { name: '应用', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+});
+
 
 test('copy button creates a configured node copy without opening its editor', async ({ page }) => {
   const configuredNode = {
@@ -153,7 +171,7 @@ test('field list saves create, edit and delete immediately without persisting ot
   await dialog.getByLabel('输入名称', { exact: true }).fill('证据索引');
   await dialog.getByLabel('输入说明', { exact: true }).fill('输入说明');
   await expect(dialog.getByLabel('输入字段标识', { exact: true })).toHaveCount(0);
-  await dialog.getByLabel('输入类型', { exact: true }).selectOption('FILE');
+  await dialog.getByRole('radio', { name: '文件', exact: true }).click();
   reject = true;
   await dialog.getByRole('button', { name: '创建字段', exact: true }).click();
   await expect(dialog.getByRole('alert')).toContainText('保存失败');

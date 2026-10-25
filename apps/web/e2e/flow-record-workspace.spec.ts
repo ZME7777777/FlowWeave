@@ -89,8 +89,11 @@ test('record workspace selects mixed records and keeps record actions in its res
   });
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
-  await expect(page.locator('.run-directory-empty')).toContainText('选择一个 FlowRun 目录');
-  await page.locator('.flow-run-directory-list').getByRole('button', { name: /测试运行/ }).click();
+  await expect(page.locator('.run-directory-empty')).toContainText('选择一个流程编排');
+  await page.locator('.flow-run-tree-select').filter({ hasText: definition.name }).click();
+  await expect(page.locator('.run-directory-empty')).toContainText(definition.name);
+  await page.getByRole('button', { name: `展开 ${definition.name} 的 FlowRun`, exact: true }).click();
+  await page.locator('.flow-run-tree-run').filter({ hasText: run.name }).click();
   const directory = page.locator('.flow-run-record-directory');
   await expect(directory.locator('.flow-run-record-directory-list>button')).toHaveCount(2);
   await directory.getByRole('button', { name: '连续', exact: true }).click();
@@ -150,7 +153,7 @@ test('flow library saves an empty draft before opening its node editor', async (
   await expect(page.locator('.flow-library-row')).toContainText('可恢复编排草稿');
   await expect(page.locator('.flow-library-row')).toContainText('未找到一个启动节点');
   await page.getByRole('button', { name: '操作流程 可恢复编排草稿', exact: true }).click();
-  await page.getByRole('button', { name: '编辑编排', exact: true }).click();
+  await page.locator('.flow-row-menu').getByRole('button', { name: '进入编排', exact: true }).click();
   await expect(page.getByRole('textbox', { name: '流程名称', exact: true })).toHaveValue('可恢复编排草稿');
 });
 
@@ -178,6 +181,17 @@ test('flow library pagination retains bulk deletion and copying after the merge'
   await page.goto('/');
   await page.getByRole('button', { name: '流程编排', exact: true }).click();
   await expect(page.locator('.flow-library-row')).toHaveCount(10);
+  const preview = page.getByRole('region', { name: '验收流程 0 的流程画布' });
+  await expect(preview.locator('.react-flow__node')).toHaveCount(2);
+  await expect(preview.locator('.react-flow__edge')).toHaveCount(2);
+  await expect(preview.getByRole('button', { name: '进入编排', exact: true })).toBeVisible();
+  for (const [width, railWidth] of [[1440, 320], [1024, 280]]) {
+    await page.setViewportSize({ width, height: 900 });
+    await expect.poll(() => page.getByLabel('流程列表', { exact: true }).evaluate(element => element.getBoundingClientRect().width)).toBe(railWidth);
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(1);
+    await page.screenshot({ path: `../../.tmp/pull-deploy-694/flow-canvas-${width}.png` });
+  }
+  await page.setViewportSize({ width: 1440, height: 1000 });
   await page.getByRole('button', { name: '下一页', exact: true }).click();
   await expect(page.locator('.flow-library-row')).toHaveCount(1);
   await page.getByRole('button', { name: '全选本页', exact: true }).click();
