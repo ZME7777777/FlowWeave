@@ -2555,15 +2555,11 @@ test('New conversation draft remains isolated and can be resumed after switching
   await page.getByRole('button', { name: '收起工作区 根工作区' }).hover();
   await page.getByRole('button', { name: '在根工作区中新建会话' }).click();
   await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeVisible();
-  await expect(composer).toHaveText('');
+  await expect(composer).toHaveText('只属于新会话的未发送草稿');
   await expect(composer).toBeFocused();
-  await expect(draftAttachment).toHaveCount(0);
+  await expect(draftAttachment).toBeVisible();
   await expect(recoverDraft).toBeVisible();
   expect(discardedDraftId).toBeNull();
-
-  await recoverDraft.click();
-  await expect(composer).toHaveText('只属于新会话的未发送草稿');
-  await expect(draftAttachment).toBeVisible();
 });
 
 test('First message removes the matching recoverable draft from the conversation rail', async ({ page }) => {

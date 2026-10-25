@@ -5200,6 +5200,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, []);
   const bootstrapTransitionScope = useRef<string | undefined>(undefined);
   const pathname = withoutDeploymentBase(window.location.pathname);
+  const routeSearch = new URLSearchParams(window.location.search);
+  const draftWorkDirectoryId = routeSearch.get('draft_work_directory_id') ?? undefined;
   const scheduleRoute = pathname === '/agent/schedules' || pathname.startsWith('/agent/schedules/conversations/');
   const routeBindingId = host.bindingIdFromPathname(pathname);
   // Refresh respects saved collapse preferences; explicit navigation may expand
@@ -5226,9 +5228,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     else if (pathname.startsWith('/agent/conversations/')) setAgentWorkspaceView('home');
   }, [pathname, scheduleRoute]);
   const homeRouteBeforeInternalNavigation = useRef<string | undefined>(undefined);
+  const draftHomeRoute = conversationDraft?.workDirectoryId
+    ? `${host.rootPath}?draft_work_directory_id=${encodeURIComponent(conversationDraft.workDirectoryId)}`
+    : undefined;
   const rememberHomeRoute = useCallback(() => {
-    if (agentWorkspaceView === 'home') homeRouteBeforeInternalNavigation.current = pathname;
-  }, [agentWorkspaceView, pathname]);
+    if (agentWorkspaceView === 'home') homeRouteBeforeInternalNavigation.current = draftHomeRoute ?? pathname;
+  }, [agentWorkspaceView, draftHomeRoute, pathname]);
   const returnToHome = useCallback(() => {
     setAgentWorkspaceView('home');
     onNavigate(homeRouteBeforeInternalNavigation.current ?? host.rootPath);
@@ -6188,20 +6193,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       modelName: newConversationModelName,
       reasoningEffort: newConversationReasoningEffort,
     };
-    const recoverable = conversationDraftHasContent(recovery)
-      || Boolean(pendingAttachmentIdsByScope.current.get(scope)?.size);
     writeConversationDraft(
       conversationDraftStorageKey(host.id, workspace.id, conversationDraft.workDirectoryId),
-      recoverable ? recovery : undefined,
+      recovery,
     );
     const draftKey = conversationDraft.workDirectoryId ?? 'root';
-    setRecoverableConversationDrafts(current => {
-      if (recoverable) return { ...current, [draftKey]: recovery };
-      if (!current[draftKey]) return current;
-      const updated = { ...current };
-      delete updated[draftKey];
-      return updated;
-    });
+    setRecoverableConversationDrafts(current => ({ ...current, [draftKey]: recovery }));
   }, [attachments, bootstrapRecovery, composerAnnotations, conversationDraft, host.id, newConversationModelName, newConversationProviderId, newConversationReasoningEffort, pendingBootstrap, references, workspace, workspaceReferences]);
   const setComposerDraft = useCallback((scope: string | undefined, value: string) => {
     if (!updateComposerText(scope, value)) return;
@@ -6254,19 +6251,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       modelName: draftPersistence.modelName,
       reasoningEffort: draftPersistence.reasoningEffort,
     };
-    const hasPendingAttachments = Boolean(pendingAttachmentIdsByScope.current.get(scope)?.size);
-    const recoverable = conversationDraftHasContent(recovery) || hasPendingAttachments;
-    const existingRecovery = readConversationDraft(draftPersistence.storageKey);
-    if (!recoverable && existingRecovery?.draft.id !== draftPersistence.draft.id) return;
-    writeConversationDraft(draftPersistence.storageKey, recoverable ? recovery : undefined);
+    writeConversationDraft(draftPersistence.storageKey, recovery);
     const draftKey = draftPersistence.draft.workDirectoryId ?? 'root';
-    setRecoverableConversationDrafts(current => {
-      if (recoverable) return { ...current, [draftKey]: recovery };
-      if (!current[draftKey]) return current;
-      const updated = { ...current };
-      delete updated[draftKey];
-      return updated;
-    });
+    setRecoverableConversationDrafts(current => ({ ...current, [draftKey]: recovery }));
   }, [bootstrapRecovery, clearConversationDraft, host.id, pendingBootstrap, workspace]);
   const connectedProviders = (providersQuery.data ?? []).filter(item => item.connection_state === 'CONNECTED' && item.models.some(model => model.enabled && model.is_default));
   useLayoutEffect(() => {
@@ -6309,18 +6296,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       modelName: newConversationModelName,
       reasoningEffort: newConversationReasoningEffort,
     };
-    const recoverable = conversationDraftHasContent(recovery);
-    const existingRecovery = readConversationDraft(draftRecoveryStorageKey);
-    if (!recoverable && existingRecovery?.draft.id !== conversationDraft.id) return;
-    writeConversationDraft(draftRecoveryStorageKey, recoverable ? recovery : undefined);
+    writeConversationDraft(draftRecoveryStorageKey, recovery);
     const draftKey = conversationDraft.workDirectoryId ?? 'root';
-    setRecoverableConversationDrafts(current => {
-      if (conversationDraftHasContent(recovery)) return { ...current, [draftKey]: recovery };
-      if (!current[draftKey]) return current;
-      const updated = { ...current };
-      delete updated[draftKey];
-      return updated;
-    });
+    setRecoverableConversationDrafts(current => ({ ...current, [draftKey]: recovery }));
   }, [attachments, bootstrapRecovery, composerAnnotations, conversationDraft, draftRecoveryStorageKey, newConversationModelName, newConversationProviderId, newConversationReasoningEffort, pendingBootstrap?.draft.id, references, workspaceReferences]);
   const runtime = runtimeQuery.data;
   const runtimeWritable = Boolean(workspace && runtime?.write_available);
@@ -9011,6 +8989,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   ) || submissionConfirmationPending || activeLocalMessageProjections.some(projection => projection.state === 'submitting');
   const openConversationDraft = useCallback((next: Omit<ConversationDraft, 'id'>, options: { restoreRecovery?: boolean; selectStandaloneRoot?: boolean } = {}) => {
     const outgoingScope = activeComposerScope.current;
+    const draftRoute = (workDirectoryId?: string) => {
+      if (host.id !== 'agent-workspace' || !workDirectoryId) return host.rootPath;
+      return `${host.rootPath}?draft_work_directory_id=${encodeURIComponent(workDirectoryId)}`;
+    };
     if (outgoingScope) persistComposerDraft(outgoingScope);
     if (!options.restoreRecovery && workspace && conversationDraft && outgoingScope === conversationDraft.id
       && pendingBootstrap?.draft.id !== conversationDraft.id && bootstrapRecovery?.draft.id !== conversationDraft.id) {
@@ -9028,11 +9010,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         modelName: newConversationModelName,
         reasoningEffort: newConversationReasoningEffort,
       };
-      if (conversationDraftHasContent(recovery) || pendingAttachmentIdsByScope.current.get(conversationDraft.id)?.size) {
-        const draftKey = conversationDraft.workDirectoryId ?? 'root';
-        writeConversationDraft(conversationDraftStorageKey(host.id, workspace.id, conversationDraft.workDirectoryId), recovery);
-        setRecoverableConversationDrafts(current => ({ ...current, [draftKey]: recovery }));
-      }
+      const draftKey = conversationDraft.workDirectoryId ?? 'root';
+      writeConversationDraft(conversationDraftStorageKey(host.id, workspace.id, conversationDraft.workDirectoryId), recovery);
+      setRecoverableConversationDrafts(current => ({ ...current, [draftKey]: recovery }));
     }
     setForegroundTurn(undefined);
     setActiveTurnEventId(undefined);
@@ -9076,15 +9056,20 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     deferredFormalUserEvents.current.clear();
     setHiddenEventIds(new Set());
     setTurnState('idle');
-    onNavigate(host.rootPath, false, options.selectStandaloneRoot && host.id === 'agent-workspace'
+    const path = draftRoute(recovery?.draft.workDirectoryId ?? next.workDirectoryId);
+    onNavigate(path, false, options.selectStandaloneRoot && path === host.rootPath && host.id === 'agent-workspace'
       ? { standaloneAgentReturnTarget: 'root' }
       : undefined);
     requestAnimationFrame(() => composerRef.current?.focus());
   }, [attachments, bootstrapRecovery, clearBootstrapRecovery, composerAnnotations, conversationDraft, host.id, host.rootPath, newConversationModelName, newConversationProviderId, newConversationReasoningEffort, onNavigate, pendingBootstrap?.draft.id, persistComposerDraft, references, replaceComposerDraft, updateLocalMessageProjections, workspace, workspaceReferences]);
   useEffect(() => {
     if (!autoOpenDraft || scheduleRoute || !workspace || selectedBindingId || conversationDraft) return;
-    openConversationDraft({ displayName: '根工作区' }, { restoreRecovery: true });
-  }, [autoOpenDraft, conversationDraft, openConversationDraft, scheduleRoute, selectedBindingId, workspace]);
+    const directory = draftWorkDirectoryId
+      ? workDirectoriesQuery.data?.items.find(item => item.id === draftWorkDirectoryId)
+      : undefined;
+    if (draftWorkDirectoryId && !directory) return;
+    openConversationDraft({ workDirectoryId: directory?.id, displayName: directory?.display_name ?? '根工作区' }, { restoreRecovery: true });
+  }, [autoOpenDraft, conversationDraft, draftWorkDirectoryId, openConversationDraft, scheduleRoute, selectedBindingId, workDirectoriesQuery.data?.items, workspace]);
   const enqueueDraft = useCallback((draftContent = composerDraftRef.current) => {
     const scopePendingAttachments = pendingAttachments.filter(item => item.scope === composerScope);
     if (scopePendingAttachments.some(item => item.state === 'failed')) {
@@ -10002,10 +9987,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         {sidebarListMode === 'activity'
           ? <section className="agent-workspace-activity" aria-label="活动会话"><header><div><span className="eyebrow">ACTIVITY</span><b>活动</b></div><button type="button" aria-label="返回工作区列表" title="返回工作区列表" onClick={() => { setActivityPreviewBindingId(undefined); setSidebarListMode('workspaces'); }}><ArrowLeft size={15}/></button></header>{activityConversations.length ? activityConversations.map(item => conversationRow(item, [], { allowDrag: false, workspaceName: activityWorkspaceName(item), onSelect: () => previewActivityConversation(item.id), onDoubleClick: () => openActivityConversation(item.id), onMarkRead: () => markConversationRead(item.id) })) : <p>没有正在运行或未读的会话。</p>}</section>
           : <>{pinnedConversations.length > 0 && <section className={`agent-workspace-pinned${pinnedConversationsCollapsed ? ' collapsed' : ''}`} aria-label="置顶会话"><header><button type="button" aria-label={`${pinnedConversationsCollapsed ? '展开' : '收起'}置顶会话`} aria-expanded={!pinnedConversationsCollapsed} aria-controls="agent-workspace-pinned-content" onClick={() => setPinnedConversationsCollapsed(!pinnedConversationsCollapsed)}><Pin size={13}/><span>置顶</span></button></header><div id="agent-workspace-pinned-content" hidden={pinnedConversationsCollapsed}>{pinnedConversations.map(item => conversationRow(item, pinnedConversations))}</div></section>}
-            <WorkspaceConversationGroup groupId="root" label="根工作区" conversationCount={rootConversations.length} hasMore={Boolean(conversationPagesByScope.__root__?.next_cursor)} loadingMore={loadingConversationScope === '__root__'} onLoadMore={() => loadMoreConversations('__root__')} collapsed={collapsedConversationGroups.has('root')} onCollapsedChange={collapsed => setConversationGroupCollapsed('root', collapsed)} revealConversationIndex={routedRootConversationIndex >= 0 ? routedRootConversationIndex : undefined} onRevealConversation={completeSidebarReveal} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ displayName: '根工作区' }, { selectStandaloneRoot: true })}>
+            <WorkspaceConversationGroup groupId="root" label="根工作区" conversationCount={rootConversations.length} hasMore={Boolean(conversationPagesByScope.__root__?.next_cursor)} loadingMore={loadingConversationScope === '__root__'} onLoadMore={() => loadMoreConversations('__root__')} collapsed={collapsedConversationGroups.has('root')} onCollapsedChange={collapsed => setConversationGroupCollapsed('root', collapsed)} revealConversationIndex={routedRootConversationIndex >= 0 ? routedRootConversationIndex : undefined} onRevealConversation={completeSidebarReveal} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ displayName: '根工作区' }, { restoreRecovery: true, selectStandaloneRoot: true })}>
               {visibleCount => <>{pendingBootstrapItem && !pendingBootstrap?.draft.workDirectoryId ? pendingBootstrapItem : recoverableDraftItem(undefined, '根工作区')}{rootConversations.slice(0, visibleCount).map(item => conversationRow(item, rootConversations))}</>}
             </WorkspaceConversationGroup>
-            {features.workDirectories && workDirectories.map(directory => { const group = conversationsForDirectory(directory.id); const routeIndex = sidebarReveal.expandCollapsed || !collapsedConversationGroups.has(directory.id) ? group.findIndex(item => item.id === pendingSidebarRevealBindingId) : -1; return <WorkspaceConversationGroup key={directory.id} groupId={directory.id} label={directory.display_name} conversationCount={group.length} hasMore={Boolean(conversationPagesByScope[directory.id]?.next_cursor)} loadingMore={loadingConversationScope === directory.id} onLoadMore={() => loadMoreConversations(directory.id)} draggable dragging={draggedWorkDirectoryId === directory.id} dropPosition={workDirectoryDropTarget?.id === directory.id ? (workDirectoryDropTarget.after ? 'after' : 'before') : undefined} onPointerDragStart={event => startPointerWorkDirectoryDrag(event, directory.id)} collapsed={collapsedConversationGroups.has(directory.id)} onCollapsedChange={collapsed => setConversationGroupCollapsed(directory.id, collapsed)} revealConversationIndex={routeIndex >= 0 ? routeIndex : undefined} onRevealConversation={completeSidebarReveal} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ workDirectoryId: directory.id, displayName: directory.display_name })} onEdit={api.updateWorkDirectory && runtimeWritable ? () => setWorkDirectoryEditor(directory) : undefined} onDelete={api.deleteWorkDirectory && runtimeWritable ? () => void removeWorkDirectory(directory) : undefined}>
+            {features.workDirectories && workDirectories.map(directory => { const group = conversationsForDirectory(directory.id); const routeIndex = sidebarReveal.expandCollapsed || !collapsedConversationGroups.has(directory.id) ? group.findIndex(item => item.id === pendingSidebarRevealBindingId) : -1; return <WorkspaceConversationGroup key={directory.id} groupId={directory.id} label={directory.display_name} conversationCount={group.length} hasMore={Boolean(conversationPagesByScope[directory.id]?.next_cursor)} loadingMore={loadingConversationScope === directory.id} onLoadMore={() => loadMoreConversations(directory.id)} draggable dragging={draggedWorkDirectoryId === directory.id} dropPosition={workDirectoryDropTarget?.id === directory.id ? (workDirectoryDropTarget.after ? 'after' : 'before') : undefined} onPointerDragStart={event => startPointerWorkDirectoryDrag(event, directory.id)} collapsed={collapsedConversationGroups.has(directory.id)} onCollapsedChange={collapsed => setConversationGroupCollapsed(directory.id, collapsed)} revealConversationIndex={routeIndex >= 0 ? routeIndex : undefined} onRevealConversation={completeSidebarReveal} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ workDirectoryId: directory.id, displayName: directory.display_name }, { restoreRecovery: true })} onEdit={api.updateWorkDirectory && runtimeWritable ? () => setWorkDirectoryEditor(directory) : undefined} onDelete={api.deleteWorkDirectory && runtimeWritable ? () => void removeWorkDirectory(directory) : undefined}>
               {visibleCount => <>{pendingBootstrapItem && pendingBootstrap?.draft.workDirectoryId === directory.id ? pendingBootstrapItem : recoverableDraftItem(directory.id, directory.display_name)}{group.slice(0, visibleCount).map(item => conversationRow(item, group))}</>}
             </WorkspaceConversationGroup>; })}<div ref={workspaceGroupAnchorSpacer} aria-hidden="true"/></>}
       </div>
