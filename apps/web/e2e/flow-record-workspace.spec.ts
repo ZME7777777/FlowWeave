@@ -95,7 +95,10 @@ test('record directory groups scheduled runs and opens a full canvas workspace',
   await expect(page.locator('.run-directory-empty')).toContainText('选择一个流程编排');
   await page.locator('.flow-run-tree-select').filter({ hasText: definition.name }).click();
   await expect(page.locator('.run-directory-empty')).toContainText(definition.name);
-  await page.getByRole('button', { name: `展开 ${definition.name} 的 FlowRun`, exact: true }).click();
+  await expect(page.locator('.flow-run-tree-toggle')).toHaveCount(0);
+  await expect(page.locator('.flow-run-tree-run')).toBeVisible();
+  await expect(page.locator('.flow-run-tree-run .run-runtime-badge')).toHaveText('容器运行中');
+  await expect(page.locator('.flow-run-tree-run')).not.toContainText('等待人工');
   await page.locator('.flow-run-tree-run').filter({ hasText: run.name }).click();
   const directory = page.locator('.flow-run-record-directory');
   await expect(directory.locator('.flow-run-record-directory-list>button')).toHaveCount(3);
@@ -104,6 +107,8 @@ test('record directory groups scheduled runs and opens a full canvas workspace',
   const group = directory.locator('.flow-run-schedule-directory');
   const toggle = group.getByRole('button', { name: /每日验收/ });
   await expect(group.getByRole('button', { name: /定时记录 1/ })).toBeVisible();
+  await expect(group.locator('.flow-run-record-row')).toHaveCSS('display', 'grid');
+  await page.screenshot({ path: '../../.tmp/ui-696/scheduled-records.png' });
   await toggle.click();
   await expect(toggle).toHaveAttribute('aria-expanded', 'false');
   await expect(group.getByRole('button', { name: /定时记录 1/ })).toHaveCount(0);
@@ -114,10 +119,25 @@ test('record directory groups scheduled runs and opens a full canvas workspace',
   await expect(page.locator('.flow-run-workbench-header h1')).toHaveText(automaticBase.name);
   await expect(page.locator('.run-graph')).toBeVisible();
   await expect(page.locator('.run-record-detail-panel')).toBeVisible();
+  await expect(page.locator('.run-record-detail-panel')).toHaveCSS('grid-column-start', '1');
+  await expect(page.locator('.run-record-main')).toHaveCSS('grid-column-start', '2');
+  await expect(page.locator('.run-record-launch-bar button')).toBeDisabled();
+  await page.locator('.react-flow__pane').click({ position: { x: 15, y: 15 } });
+  await expect(page.locator('.flow-run-workbench-header h1')).toHaveText(automaticBase.name);
+  for (const width of [1440, 1024]) {
+    await page.setViewportSize({ width, height: 900 });
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(1);
+    const sidebar = await page.locator('.run-record-detail-panel').boundingBox();
+    const canvas = await page.locator('.run-record-main').boundingBox();
+    expect(sidebar!.x).toBe(0);
+    expect(canvas!.x).toBe(sidebar!.width);
+    expect(canvas!.x + canvas!.width).toBe(width);
+    await page.screenshot({ path: `../../.tmp/ui-696/record-workspace-${width}.png` });
+  }
   await expect(page.locator('.flow-run-inner-rail')).toHaveCount(0);
   await expect(page.getByRole('separator', { name: '调整运行记录栏宽度' })).toHaveCount(0);
   await page.getByRole('button', { name: '返回运行记录', exact: true }).click();
-  await page.getByRole('button', { name: `展开 ${definition.name} 的 FlowRun`, exact: true }).click();
+  await page.locator('.flow-run-tree-select').filter({ hasText: definition.name }).click();
   await page.locator('.flow-run-tree-run').filter({ hasText: run.name }).click();
   await directory.getByRole('button', { name: '逐步', exact: true }).click();
   await directory.getByRole('button', { name: new RegExp(manual.name) }).click();
@@ -164,7 +184,7 @@ test('flow library saves an empty draft before opening its node editor', async (
 });
 
 
-test('flow library pagination retains bulk deletion and copying after the merge', async ({ page }) => {
+test('flow library scrolls all rows with sidebar actions and a full width editor', async ({ page }) => {
   let flows = Array.from({ length: 11 }, (_, i) => ({ ...definition, id: `flow-${i}`, name: `验收流程 ${i}` }));
   let copied: Record<string, unknown> | undefined;
   await page.route('**/api/v1/**', async route => {
@@ -186,7 +206,9 @@ test('flow library pagination retains bulk deletion and copying after the merge'
   });
   await page.goto('/');
   await page.getByRole('button', { name: '流程编排', exact: true }).click();
-  await expect(page.locator('.flow-library-row')).toHaveCount(10);
+  await expect(page.locator('.flow-library-row')).toHaveCount(11);
+  await expect(page.locator('.flow-library-list-panel .flow-library-list-tools')).toBeVisible();
+  await expect(page.locator('.flow-library-pagination')).toHaveCount(0);
   const preview = page.getByRole('region', { name: '验收流程 0 的流程画布' });
   await expect(preview.locator('.react-flow__node')).toHaveCount(2);
   await expect(preview.locator('.react-flow__edge')).toHaveCount(2);
@@ -199,24 +221,32 @@ test('flow library pagination retains bulk deletion and copying after the merge'
   await page.mouse.move(beforeDrag!.x + beforeDrag!.width / 2 + 55, beforeDrag!.y + 55, { steps: 8 });
   await page.mouse.up();
   await expect.poll(async () => (await previewNode.boundingBox())!.x).toBeGreaterThan(beforeDrag!.x + 30);
-  for (const [width, railWidth] of [[1440, 250], [1024, 220]]) {
+  for (const [width, railWidth] of [[1440, 320], [1024, 280]]) {
     await page.setViewportSize({ width, height: 900 });
     await expect.poll(() => page.getByLabel('流程列表', { exact: true }).evaluate(element => element.getBoundingClientRect().width)).toBe(railWidth);
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(1);
-    await page.screenshot({ path: `../../.tmp/pull-deploy-695/flow-canvas-${width}.png` });
+    await page.screenshot({ path: `../../.tmp/ui-696/flow-canvas-${width}.png` });
   }
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.getByRole('button', { name: '下一页', exact: true }).click();
+  await page.getByLabel('搜索流程', { exact: true }).fill('验收流程 10');
   await expect(page.locator('.flow-library-row')).toHaveCount(1);
-  await page.getByRole('button', { name: '全选本页', exact: true }).click();
+  await page.getByRole('button', { name: '全选', exact: true }).click();
   await page.getByRole('button', { name: '删除 (1)', exact: true }).click();
   await page.getByRole('button', { name: '永久删除', exact: true }).click();
+  await page.getByLabel('搜索流程', { exact: true }).fill('');
   await expect(page.locator('.flow-library-row')).toHaveCount(10);
-  await expect(page.locator('.flow-library-pagination')).toContainText('第 1 / 1 页');
   await page.getByRole('button', { name: '操作流程 验收流程 0', exact: true }).click();
   await page.getByRole('button', { name: '复制流程', exact: true }).click();
   await expect(page.getByTestId('flow-designer')).toBeVisible();
   await expect.poll(() => page.locator('.flow-editor-page').evaluate(element => element.getBoundingClientRect().height)).toBeGreaterThan(800);
+  for (const width of [1440, 1024]) {
+    await page.setViewportSize({ width, height: 900 });
+    const layout = await page.locator('.flow-product-layout').boundingBox();
+    expect(layout!.x).toBe(0);
+    expect(layout!.width).toBe(width);
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(1);
+    await page.screenshot({ path: `../../.tmp/ui-696/editor-${width}.png` });
+  }
   expect(copied).toEqual({
     name: '验收流程 0 · 副本', description: '', default_entry_key: null,
     nodes: definition.nodes.map(node => ({
@@ -227,3 +257,176 @@ test('flow library pagination retains bulk deletion and copying after the merge'
     port_mappings: [{ source_instance_key: 'first', source_output_key: 'output_1', target_instance_key: 'second', target_input_key: 'input_1' }],
   });
 });
+
+for (const kind of ['MANUAL', 'AUTOMATIC'] as const) {
+  test(`outer directory creates a ${kind} record with the existing node and Git fields`, async ({ page }) => {
+    let submitted: Record<string, unknown> | undefined;
+    const manual = { ...run, id: 'created-manual', name: '新增验收记录', state: 'DRAFT', node_runs: [], start_node_key: 'first', stepwise_node_drafts: {}, parent_flow_run_id: run.id };
+    const automatic = { ...automaticBase, name: '新增验收记录' };
+    await page.route('**/api/v1/**', async route => {
+      const request = route.request();
+      const path = new URL(request.url()).pathname;
+      const respond = (body: unknown) => route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) });
+      if (path.endsWith('/auth/me')) return respond(authenticatedUser);
+      if (path.endsWith('/auth/profile')) return respond({ display_name: '验收用户', email: 'review@example.test' });
+      if (path === '/api/v1/flow-runs') return respond([run]);
+      if (path === '/api/v1/flows') return respond([definition]);
+      if (path === `/api/v1/flows/${definition.id}`) return respond(definition);
+      if (path === `/api/v1/flow-runs/${run.id}`) return respond(run);
+      if (path.endsWith('/stepwise-runs') && request.method() === 'POST') { submitted = request.postDataJSON(); return respond(manual); }
+      if (path.endsWith('/automatic-runs') && request.method() === 'POST') { submitted = request.postDataJSON(); return respond(automatic); }
+      if (path.endsWith('/stepwise-runs')) return respond(submitted && kind === 'MANUAL' ? [manual] : []);
+      if (path.endsWith('/stepwise-runs/created-manual')) return respond(manual);
+      if (path.endsWith('/automatic-runs/automatic-1')) return respond(automatic);
+      if (path.endsWith('/automatic-runs/summaries')) return respond([]);
+      if (path.endsWith('/runtime/resource')) return respond({ resource: null });
+      if (path.endsWith('/runtime')) return respond({ status: 'ACTIVE', active_generation: 1, write_available: true });
+      return respond([]);
+    });
+    await page.goto('/');
+    await page.getByRole('button', { name: '流程运行', exact: true }).click();
+    await page.locator('.flow-run-tree-select').click();
+    await page.locator('.flow-run-tree-run').click();
+    await expect(page.getByRole('button', { name: '管理运行记录', exact: true })).toHaveCount(0);
+    await page.locator('.run-directory-actions').getByRole('button', { name: '新增运行记录', exact: true }).click();
+    const chooser = page.getByRole('dialog', { name: '选择运行类型' });
+    await chooser.getByRole('button', { name: kind === 'MANUAL' ? /逐步运行/ : /连续运行/ }).click();
+    await chooser.getByRole('button', { name: '继续创建' }).click();
+    const form = page.getByRole('dialog', { name: kind === 'MANUAL' ? '新增逐步运行记录' : '新增连续运行', exact: true });
+    await expect(form.getByRole('button', { name: '导入 / 粘贴' })).toBeVisible();
+    await form.getByLabel(kind === 'MANUAL' ? '逐步运行记录名称' : '连续运行名称', { exact: true }).fill('新增验收记录');
+    await expect(form.getByLabel('Git 用户', { exact: true })).toHaveValue('验收用户');
+    await form.getByLabel('Git 邮箱', { exact: true }).fill('batch@example.test');
+    await form.getByRole('button', { name: kind === 'MANUAL' ? '创建记录' : '创建草稿', exact: true }).click();
+    await expect.poll(() => submitted).toMatchObject({ name: '新增验收记录', start_node_key: 'first', git_identity: { author: '验收用户', email: 'batch@example.test' } });
+    if (kind === 'AUTOMATIC') expect(submitted).toMatchObject({ environment_version_id: run.environment_version_id, node_plans: {} });
+    await expect(page.locator('.flow-run-workbench-header h1')).toHaveText('新增验收记录');
+    await expect(page.locator('.flow-run-inner-rail')).toHaveCount(0);
+    await expect(page.locator('.run-record-launch-bar button')).toBeDisabled();
+    await expect(page.locator('.run-record-detail-panel')).toHaveCSS('grid-column-start', '1');
+    await expect(page.getByTestId('node-configuration-panel')).toBeVisible();
+  });
+}
+
+test('create FlowRun uses a keyboard menu with only published digest-locked environments', async ({ page }) => {
+  let submitted: Record<string, unknown> | undefined;
+  await page.route('**/api/v1/**', async route => {
+    const path = new URL(route.request().url()).pathname;
+    const respond = (body: unknown) => route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) });
+    if (path.endsWith('/auth/me')) return respond(authenticatedUser);
+    if (path === '/api/v1/flows') return respond([definition]);
+    if (path === '/api/v1/flow-runs') return respond(submitted ? [run] : []);
+    if (path.endsWith('/terminal-environments')) return respond([{ id: 'env', name: '验收环境', versions: [
+      { id: 'building', state: 'BUILDING', version_no: 1, image_digest: 'sha256:a' },
+      { id: 'missing-digest', state: 'READY', version_no: 2, image_digest: null },
+      { id: run.environment_version_id, state: 'READY', version_no: 3, image_digest: 'sha256:b' },
+    ] }]);
+    if (path.endsWith(`/flows/${definition.id}/runs`) && route.request().method() === 'POST') { submitted = route.request().postDataJSON(); return respond(run); }
+    return respond([]);
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: '流程运行', exact: true }).click();
+  await page.locator('.flow-run-tree-select').click();
+  await page.locator('.flow-run-directory>header').getByRole('button', { name: '新建', exact: true }).click();
+  await expect(page.locator('.start-run-modal select')).toHaveCount(0);
+  const menu = page.getByRole('button', { name: '本次运行环境版本', exact: true });
+  await menu.focus();
+  await page.keyboard.press('ArrowDown');
+  await expect(page.getByRole('listbox', { name: '本次运行环境版本' }).getByRole('option')).toHaveCount(1);
+  await page.keyboard.press('Escape');
+  await expect(menu).toBeFocused();
+  await expect(page.locator('.start-run-modal')).toBeVisible();
+  await menu.click();
+  await page.getByRole('option', { name: '验收环境 · v3', exact: true }).click();
+  await page.getByRole('button', { name: '启动流程', exact: true }).click();
+  await expect.poll(() => submitted).toEqual({ environment_version_id: run.environment_version_id });
+  await expect(page.locator('.flow-run-tree-run.active')).toContainText(run.name);
+});
+
+for (const kind of ['MANUAL', 'AUTOMATIC'] as const) {
+  test(`left sidebar starts a ready ${kind} record through the existing API`, async ({ page }) => {
+    let started: Record<string, unknown> | undefined;
+    const pendingAttempt = { ...attempt, state: 'WAITING_START_CONFIRMATION' };
+    const manual = { ...run, id: 'manual-ready', name: '可启动逐步记录', parent_flow_run_id: run.id, start_node_key: 'first', node_runs: [{ ...nodeRun, attempts: [pendingAttempt] }] };
+    const automatic = { ...automaticBase, automation_plan: { ...automaticBase.automation_plan, readiness: { ready: true, issues: [] } } };
+    await page.route('**/api/v1/**', async route => {
+      const path = new URL(route.request().url()).pathname;
+      const respond = (body: unknown) => route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) });
+      if (path.endsWith('/auth/me')) return respond(authenticatedUser);
+      if (path === '/api/v1/flow-runs') return respond([run]);
+      if (path === '/api/v1/flows') return respond([definition]);
+      if (path === `/api/v1/flows/${definition.id}`) return respond(definition);
+      if (path === `/api/v1/flow-runs/${run.id}`) return respond(run);
+      if (path.endsWith('/stepwise-runs')) return respond([manual]);
+      if (path.endsWith('/stepwise-runs/manual-ready')) return respond(manual);
+      if (path.endsWith('/automatic-runs/summaries')) return respond([{ ...automatic, plan: { ...automatic.automation_plan, reachable_node_count: 2 } }]);
+      if (path.endsWith('/automatic-runs/automatic-1')) return respond(automatic);
+      if (path.endsWith('/confirm-start') || path.endsWith('/automatic-runs/automatic-1/start')) {
+        started = route.request().postDataJSON();
+        return route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ error: { code: 'START_REJECTED', message: '验收：启动暂不可用' } }) });
+      }
+      if (path.endsWith('/runtime/resource')) return respond({ resource: null });
+      if (path.endsWith('/runtime')) return respond({ status: 'ACTIVE', active_generation: 1, write_available: true });
+      return respond([]);
+    });
+    await page.goto('/');
+    await page.getByRole('button', { name: '流程运行', exact: true }).click();
+    await page.locator('.flow-run-tree-select').click();
+    await page.locator('.flow-run-tree-run').click();
+    await page.locator('.flow-run-record-directory-list').getByRole('button', { name: kind === 'MANUAL' ? /可启动逐步记录/ : /自动记录 1/ }).click();
+    const start = page.locator('.run-record-launch-bar button');
+    await expect(start).toBeEnabled();
+    page.once('dialog', dialog => dialog.accept());
+    await start.click();
+    await expect.poll(() => started).toMatchObject(kind === 'MANUAL'
+      ? { expected_state_version: attempt.state_version, startup_mode: 'PROMPT', prompt: attempt.startup_prompt }
+      : { expected_row_version: automatic.row_version });
+    await expect(start).toBeEnabled();
+    await expect(page.locator('.flow-run-workbench-header h1')).toHaveText(kind === 'MANUAL' ? manual.name : automatic.name);
+  });
+}
+
+for (const kind of ['MANUAL', 'AUTOMATIC'] as const) {
+  test(`outer ${kind} creation preserves configuration import and opens the imported record`, async ({ page }) => {
+    let submitted: unknown;
+    const imported = kind === 'MANUAL'
+      ? { ...run, id: 'imported-manual', name: '导入验收', parent_flow_run_id: run.id, start_node_key: 'first' }
+      : { ...automaticBase, name: '导入验收' };
+    await page.route('**/api/v1/**', async route => {
+      const path = new URL(route.request().url()).pathname;
+      const respond = (body: unknown) => route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) });
+      if (path.endsWith('/auth/me')) return respond(authenticatedUser);
+      if (path.endsWith('/auth/profile')) return respond({ display_name: '验收用户', email: 'review@example.test' });
+      if (path === '/api/v1/flow-runs') return respond([run]);
+      if (path === '/api/v1/flows') return respond([definition]);
+      if (path === `/api/v1/flows/${definition.id}`) return respond(definition);
+      if (path === `/api/v1/flow-runs/${run.id}`) return respond(run);
+      if (path.endsWith('/config-imports')) { submitted = route.request().postDataJSON(); return respond([imported]); }
+      if (path.endsWith('/stepwise-runs')) return respond(kind === 'MANUAL' && submitted ? [imported] : []);
+      if (path.endsWith('/stepwise-runs/imported-manual') || path.endsWith('/automatic-runs/automatic-1')) return respond(imported);
+      if (path.endsWith('/runtime/resource')) return respond({ resource: null });
+      if (path.endsWith('/runtime')) return respond({ status: 'ACTIVE', active_generation: 1, write_available: true });
+      return respond([]);
+    });
+    await page.goto('/');
+    await page.getByRole('button', { name: '流程运行', exact: true }).click();
+    await page.locator('.flow-run-tree-select').click();
+    await page.locator('.flow-run-tree-run').click();
+    await page.locator('.run-directory-actions').getByRole('button', { name: '新增运行记录', exact: true }).click();
+    const chooser = page.getByRole('dialog', { name: '选择运行类型' });
+    await chooser.getByRole('button', { name: kind === 'MANUAL' ? /逐步运行/ : /连续运行/ }).click();
+    await chooser.getByRole('button', { name: '继续创建' }).click();
+    await page.getByRole('button', { name: '导入 / 粘贴', exact: true }).click();
+    const importDialog = page.getByRole('dialog', { name: kind === 'MANUAL' ? '导入逐步运行配置' : '导入连续运行配置' });
+    const paste = importDialog.getByRole('textbox');
+    await paste.fill('{"format":"wrong"}');
+    await importDialog.getByRole('button', { name: '确认导入', exact: true }).click();
+    await expect(importDialog).toContainText('这不是');
+    expect(submitted).toBeUndefined();
+    const config = { format: kind === 'MANUAL' ? 'flowweave.stepwise-record-config' : 'flowweave.continuous-record-config', version: 1, records: [{ name: '导入验收', start_node_key: 'first', ...(kind === 'AUTOMATIC' ? { node_plans: {} } : { initial_configuration: { startup_prompt: '验收提示词', agent_preset: {}, gates: [], input_urls: {} } }) }] };
+    await paste.fill(JSON.stringify(config));
+    await importDialog.getByRole('button', { name: '确认导入', exact: true }).click();
+    await expect.poll(() => submitted).toEqual(config);
+    await expect(page.locator('.flow-run-workbench-header h1')).toHaveText('导入验收');
+  });
+}

@@ -75,7 +75,10 @@ test('node description is summarized and opens a full editor', async ({ page }) 
   await page.getByRole('button', { name: '节点中心', exact: true }).click();
   await page.getByTestId('node-card').click();
   const summary = page.locator('.node-form-description');
-  await expect(summary.locator('p')).toHaveCSS('white-space', 'nowrap');
+  await expect(summary.locator('p')).toHaveCSS('white-space', 'pre-wrap');
+  await expect(summary.locator('p')).toHaveCSS('-webkit-line-clamp', '3');
+  await expect(page.locator('.node-form-description-section')).toBeVisible();
+  await page.screenshot({ path: '../../.tmp/ui-696/node-description.png' });
   await summary.getByRole('button', { name: '查看节点说明全文' }).click();
   const dialog = page.getByRole('dialog', { name: '节点说明', exact: true });
   await expect(dialog.getByLabel('节点说明全文', { exact: true })).toHaveValue(description);

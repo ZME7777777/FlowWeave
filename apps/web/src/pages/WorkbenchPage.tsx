@@ -6,6 +6,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type Mouse
 import { ApiError, api, artifactContentUrl, subscribeToRun } from '../api/client';
 import { flowMappingEdgeTypes, withMappingLabelOffsets } from '../components/flowMappingEdgeLayout';
 import { isOpenHandsAgentReply } from '../components/conversationEvents';
+import { LaunchOptionMenu } from '../components/LaunchOptionMenu';
 import { Pagination } from '../components/Pagination';
 import { useProductDialog } from '../components/ProductDialogContext';
 import { RuntimeConfirmationPanel } from '../components/RuntimeConfirmationPanel';
@@ -768,23 +769,6 @@ type GateDraftDialog = { index?: number; gate: GatePolicy; readOnly: boolean };
 const gateText = (gate: GatePolicy) => String(gate.config.prompt || gate.config.code || '');
 const emptyGateAgentPreset = (): GateAgentPreset => ({});
 
-type LaunchMenuOption = { value: string; label: string };
-
-function LaunchOptionMenu({ label, value, options, disabled = false, onChange }: { label: string; value: string; options: LaunchMenuOption[]; disabled?: boolean; onChange: (value: string) => void }) {
-  const [open, setOpen] = useState(false);
-  const host = useRef<HTMLDivElement>(null);
-  useEscapeClose(() => setOpen(false), open);
-  useEffect(() => {
-    if (!open) return;
-    const close = (event: PointerEvent) => { if (event.target instanceof Node && !host.current?.contains(event.target)) setOpen(false); };
-    document.addEventListener('pointerdown', close);
-    return () => document.removeEventListener('pointerdown', close);
-  }, [open]);
-  // Empty is not a valid choice. Showing the first provider for an empty value
-  // made the fallback dialog look configured although no provider was selected.
-  const selected = options.find(item => item.value === value)?.label ?? '未选择';
-  return <div ref={host} className="launch-option-menu"><button type="button" aria-label={label} aria-expanded={open} disabled={disabled} onClick={() => setOpen(current => !current)}><span>{selected}</span><ChevronDown size={15}/></button>{open && <div className="launch-option-popover" role="listbox" aria-label={label}>{options.map(item => <button type="button" role="option" aria-selected={item.value === value} key={item.value} onClick={() => { onChange(item.value); setOpen(false); }}><span>{item.label}</span>{item.value === value && <Check size={14}/>}</button>)}</div>}</div>;
-}
 
 function ModelPresetFields({ preset, onChange, readOnly = false, label = 'Agent', showReasoningEffort = true }: { preset: GateAgentPreset; onChange: (preset: GateAgentPreset) => void; readOnly?: boolean; label?: string; showReasoningEffort?: boolean }) {
   const providers = useQuery({ queryKey: ['model-providers'], queryFn: api.providers });
@@ -1098,7 +1082,7 @@ function NodeConfigurationPanel({
 }: NodeConfigurationPanelProps) {
   const panelClassName = ['action-panel', 'node-console', className].filter(Boolean).join(' ');
   const chatDisabledTitle = chatEnabled ? undefined : '连续运行记录只支持提示词执行';
-  return <aside className={panelClassName} data-testid="node-configuration-panel"><header><div><b>{title}</b><small>{subtitle}</small></div></header>{recordControl}{feedback}<div className="node-console-mode-bar">{fixedModeLabel ? <div className="node-console-mode-summary"><b>{fixedModeLabel}</b><small>{mode === 'CHAT' ? '人工直接进入节点会话' : '保存配置后从左侧记录启动'}</small></div> : <nav className="node-console-mode-tabs" aria-label="启动方式"><button className={mode === 'PROMPT' ? 'active' : ''} aria-pressed={mode === 'PROMPT'} onClick={() => onModeChange('PROMPT')}><span>提示词执行</span><small>按节点配置自动执行</small></button><button className={mode === 'CHAT' ? 'active' : ''} aria-pressed={mode === 'CHAT'} disabled={!chatEnabled} title={chatDisabledTitle} onClick={() => onModeChange('CHAT')}><span>会话启动</span><small>人工进入会话引导</small></button></nav>}{action}</div>{mode === 'PROMPT' && <PromptConfigurationTabs active={promptTab} onChange={onPromptTabChange}/>}<div className="action-content">{mode === 'PROMPT' ? <>{promptTab === 'inputs' && promptContent}{promptTab === 'agent' && agentContent}{promptTab === 'gates' && gateContent}{promptTab === 'history' && historyContent}</> : chatContent}{belowContent}</div></aside>;
+  return <aside className={panelClassName} data-testid="node-configuration-panel"><header><div><b>{title}</b><small>{subtitle}</small></div></header>{recordControl}{feedback}<div className="node-console-mode-bar">{fixedModeLabel ? <div className="node-console-mode-summary"><b>{fixedModeLabel}</b><small>{mode === 'CHAT' ? '人工直接进入节点会话' : '保存配置后点击上方“启动”'}</small></div> : <nav className="node-console-mode-tabs" aria-label="启动方式"><button className={mode === 'PROMPT' ? 'active' : ''} aria-pressed={mode === 'PROMPT'} onClick={() => onModeChange('PROMPT')}><span>提示词执行</span><small>按节点配置自动执行</small></button><button className={mode === 'CHAT' ? 'active' : ''} aria-pressed={mode === 'CHAT'} disabled={!chatEnabled} title={chatDisabledTitle} onClick={() => onModeChange('CHAT')}><span>会话启动</span><small>人工进入会话引导</small></button></nav>}{action}</div>{mode === 'PROMPT' && <PromptConfigurationTabs active={promptTab} onChange={onPromptTabChange}/>}<div className="action-content">{mode === 'PROMPT' ? <>{promptTab === 'inputs' && promptContent}{promptTab === 'agent' && agentContent}{promptTab === 'gates' && gateContent}{promptTab === 'history' && historyContent}</> : chatContent}{belowContent}</div></aside>;
 }
 
 type NodeConsoleDraft = {
@@ -1407,7 +1391,7 @@ function RecordGitFields({ git }: { git: ReturnType<typeof useRecordGitIdentity>
   </div>;
 }
 
-function AutomaticRecordDialog({ run, onClose, onCreated, onImport }: { run: FlowRun; onClose: () => void; onCreated: (record: FlowRunAutomaticRecord) => void; onImport: () => void }) {
+export function AutomaticRecordDialog({ run, onClose, onCreated, onImport }: { run: FlowRun; onClose: () => void; onCreated: (record: FlowRunAutomaticRecord) => void; onImport: () => void }) {
   const snapshot = run.snapshots.find(item => item.id === run.active_snapshot_id) ?? run.snapshots.at(-1);
   const nodes = snapshot?.definition.nodes ?? [];
   const [name, setName] = useState('');
@@ -1429,7 +1413,7 @@ function AutomaticRecordDialog({ run, onClose, onCreated, onImport }: { run: Flo
   return <div className="modal-backdrop"><section className="modal automatic-record-dialog record-create-dialog" role="dialog" aria-modal="true" aria-label="新增连续运行"><header><h2>新增连续运行</h2><button type="button" className="ghost" aria-label="关闭新增连续运行" onClick={onClose}><X size={16}/></button></header><label>名称<input aria-label="连续运行名称" value={name} onChange={event => setName(event.target.value)} placeholder={`${run.name} · 连续运行`}/></label><label>起始节点<LaunchOptionMenu label="连续运行起始节点" value={startNodeKey} options={nodes.map(node => ({ value: node.instance_key, label: node.alias || node.asset.name }))} disabled={!nodes.length} onChange={setStartNodeKey}/></label><RecordGitFields git={git}/>{mutation.error && <p className="error">{mutation.error.message}</p>}<footer><button type="button" className="ghost" onClick={onClose}>取消</button><button type="button" className="secondary" disabled={mutation.isPending} onClick={onImport}><Upload size={13}/>导入 / 粘贴</button><button type="button" className="primary" disabled={!startNodeKey || mutation.isPending || git.loading || git.invalid} onClick={() => mutation.mutate()}>{mutation.isPending ? '创建中…' : '创建草稿'}</button></footer></section></div>;
 }
 
-function StepwiseRecordDialog({ run, onClose, onCreated, onImport }: { run: FlowRun; onClose: () => void; onCreated: (record: FlowRunStepwiseRecord) => void; onImport: () => void }) {
+export function StepwiseRecordDialog({ run, onClose, onCreated, onImport }: { run: FlowRun; onClose: () => void; onCreated: (record: FlowRunStepwiseRecord) => void; onImport: () => void }) {
   const snapshot = run.snapshots.find(item => item.id === run.active_snapshot_id) ?? run.snapshots.at(-1);
   const nodes = snapshot?.definition.nodes ?? [];
   const [name, setName] = useState('');
@@ -1460,7 +1444,7 @@ function CopyRecordDialog({ mode, sourceName, onClose, onCopy, onExport }: { mod
   return <div className="modal-backdrop"><section className="modal automatic-record-dialog" role="dialog" aria-modal="true" aria-label={`拷贝${recordLabel}`}><header><div><span className="eyebrow">COPY RECORD</span><h2>拷贝{recordLabel}</h2><p>请为副本命名。确认后只复制初始配置与人工输入，不包含会话、输出或运行过程。</p></div><button type="button" className="ghost" aria-label={`关闭拷贝${recordLabel}`} onClick={onClose}><X size={17}/></button></header><label>副本名称<input aria-label="副本名称" value={name} maxLength={220} autoFocus onChange={event => setName(event.target.value)} /></label>{mutation.error && <p className="error">拷贝失败：{mutation.error.message}</p>}{exportMutation.error && <p className="error">导出失败：{exportMutation.error.message}</p>}{exportFeedback && <p className="field-hint" role="status">{exportFeedback === 'clipboard' ? '已复制到剪贴板。' : '已开始下载配置文件。'}</p>}<footer><button type="button" className="ghost" disabled={mutation.isPending || exportMutation.isPending} onClick={onClose}>取消</button>{onExport && <><button type="button" className="secondary" disabled={mutation.isPending || exportMutation.isPending} onClick={() => exportMutation.mutate('download')}><Download size={13}/>{exportMutation.isPending && exportMutation.variables === 'download' ? '下载中…' : exportFeedback === 'download' ? '已开始下载' : '下载'}</button><button type="button" className="secondary" disabled={mutation.isPending || exportMutation.isPending} onClick={() => exportMutation.mutate('clipboard')}><Copy size={13}/>{exportMutation.isPending && exportMutation.variables === 'clipboard' ? '复制中…' : exportFeedback === 'clipboard' ? '已复制到剪贴板' : '复制'}</button></>}<button type="button" className="primary" disabled={!name.trim() || mutation.isPending || exportMutation.isPending} onClick={() => mutation.mutate()}>{mutation.isPending ? '拷贝中…' : '确认拷贝'}</button></footer></section></div>;
 }
 
-function RecordConfigImportDialog({ mode, onClose, onImport }: { mode: 'AUTOMATIC' | 'STEPWISE'; onClose: () => void; onImport: (config: RecordConfigDocument) => Promise<void> }) {
+export function RecordConfigImportDialog({ mode, onClose, onImport }: { mode: 'AUTOMATIC' | 'STEPWISE'; onClose: () => void; onImport: (config: RecordConfigDocument) => Promise<void> }) {
   const label = mode === 'AUTOMATIC' ? '连续运行' : '逐步运行';
   const [text, setText] = useState('');
   const [fileName, setFileName] = useState<string>();
@@ -1607,6 +1591,7 @@ export function WorkbenchPage() {
   const [mode, setMode] = useState<WorkbenchMode>(selectedWorkbenchMode ?? 'MANUAL');
   const [recordListFilter, setRecordListFilter] = useState<RecordListFilter>('ALL');
   const [newRecordMode, setNewRecordMode] = useState<WorkbenchMode>();
+  const automaticEntrySelection = useRef<string | undefined>(undefined);
   const [selectedAutomaticId, setSelectedAutomaticId] = useState<string | undefined>(selectedAutomaticRecordId);
   const [selectedStepwiseId, setSelectedStepwiseId] = useState<string | undefined>(selectedStepwiseRecordId);
   const stepwiseEntrySelection = useRef({ runId: selectedRunId, recordId: selectedStepwiseRecordId });
@@ -1659,6 +1644,7 @@ export function WorkbenchPage() {
     void qc.invalidateQueries({ queryKey: ['runs'] });
   }, [flowId, qc, selectedRunId, selectedStepwiseId]);
   useEffect(() => {
+    automaticEntrySelection.current = undefined;
     setSelectedNodeKey(undefined);
     // The directory supplies a one-shot record selection before this mount.
     // Preserve it while resetting the previous Run's local editing state.
@@ -1724,7 +1710,15 @@ export function WorkbenchPage() {
   }, [mode, query.data, selectedNodeRunId, selectedStepwiseId]);
   useEffect(() => {
     const record = automaticDetail.data;
-    if (!record || record.state === 'DRAFT' || !selectedAutomaticId) return;
+    if (!record || !selectedAutomaticId) return;
+    if (record.state === 'DRAFT') {
+      const entry = `${selectedRunId}:${selectedAutomaticId}`;
+      if (automaticEntrySelection.current !== entry) {
+        automaticEntrySelection.current = entry;
+        setSelectedNodeKey(current => current ?? record.start_node_key);
+      }
+      return;
+    }
     // A history return may name an exact NodeRun. Otherwise the detail always
     // opens at the final durable flow position, including failed and completed
     // nodes. NodeRun state is an outcome, not the current-position pointer.
@@ -1737,7 +1731,7 @@ export function WorkbenchPage() {
         selectExecution(restored.id, restored.attempts.at(-1)?.id);
       }
     }
-  }, [automaticDetail.data, selectExecution, selectedAttemptId, selectedAutomaticId, selectedNodeRunId]);
+  }, [automaticDetail.data, selectExecution, selectedAttemptId, selectedAutomaticId, selectedNodeRunId, selectedRunId]);
   useEffect(() => {
     const record = selectedStepwiseProjection;
     if (!record || !selectedStepwiseId) return;
@@ -1968,6 +1962,10 @@ export function WorkbenchPage() {
       delete next[key];
       return next;
     });
+  };
+  const clearNodeSelection = () => {
+    setSelectedNodeKey(undefined);
+    useWorkbenchStore.setState({ selectedNodeRunId: undefined, selectedAttemptId: undefined });
   };
   const clearSelection = () => {
     setSelectedNodeKey(undefined);
@@ -2526,12 +2524,12 @@ export function WorkbenchPage() {
 
   return <>
     <header className="flow-run-workbench-header"><h1 title={activeRecord?.name ?? parentRun.name}>{activeRecord?.name ?? parentRun.name}</h1></header>
-    <section className="workbench-page flow-run-record-workspace" onClick={event => { if (!isFlowInternalClick(event.target)) clearSelection(); }}>
+    <section className="workbench-page flow-run-record-workspace" onClick={event => { if (!isFlowInternalClick(event.target)) clearNodeSelection(); }}>
       <main className="run-main run-record-main">
         <div className="run-workbench-toolbar"><button className="back" onClick={returnToRuns}><ArrowLeft size={14}/>返回运行记录</button>{activeRecord && <div className="run-workbench-record-summary" title={activeRecord.name}><small>{selectedRecordType} · {recordSummary?.state ? FLOW_STATE_LABELS[recordSummary.state] ?? recordSummary.state : '等待执行'}</small><b>{activeRecord.name}</b></div>}</div>
-        {activeRecord ? <><div className="run-record-info-strip"><span><b>运行类型</b>{selectedRecordType}</span><span><b>起始节点</b>{activeRecordStartNodeKey ?? '—'}</span>{recordGitIdentity && <span><b>Git</b>{recordGitIdentity.author}</span>}<span><b>创建时间</b>{new Date(activeRecord.started_at).toLocaleString()}</span></div>{mode !== 'AUTOMATIC' && run.state !== 'COMPLETED' && run.state !== 'CANCELLED' && <SnapshotSync run={run} currentVersion={flow.data?.row_version} onSynced={updated => navigate(updated, 'sync')}/>}<SnapshotGraph run={graphRun} snapshotId={graphSnapshotId} onAddRuntimePort={selectedStepwiseRecord ? (nodeKey, direction) => setRuntimePortDialog({ nodeKey, direction }) : undefined} onConnectRuntimePorts={selectedStepwiseRecord ? connectRuntimePorts : undefined} selectedKey={graphSelectedKey} activeNodeRunId={activeStepwiseDraftKey ? undefined : activeExecutionNodeRun?.id} activeNodeKey={activeStepwiseDraftKey} reachableKeys={graphReachableKeys} selectableKeys={graphSelectableKeys} configuredPlanKeys={configuredAutomaticPlanKeys} executionRun={selectedExecutionRecord ?? directExecutionRun} missingPlanKeys={missingAutomaticPlanKeys} showExecutionState={showExecutionState} neutralHelp={neutralGraphHelp} neutralView={automaticNeutralView} onClearSelection={clearSelection} onSelect={selectGraphNode} onDoubleSelect={reactivatePredecessorForRerun}/></> : <div className="run-record-workspace-empty"><Boxes size={30}/><b>选择一条运行记录</b><span>从左侧选择一条记录后，在这里查看它的节点执行状态。</span></div>}
+        {activeRecord ? <><div className="run-record-info-strip"><span><b>运行类型</b>{selectedRecordType}</span><span><b>起始节点</b>{activeRecordStartNodeKey ?? '—'}</span>{recordGitIdentity && <span><b>Git</b>{recordGitIdentity.author}</span>}<span><b>创建时间</b>{new Date(activeRecord.started_at).toLocaleString()}</span></div>{mode !== 'AUTOMATIC' && run.state !== 'COMPLETED' && run.state !== 'CANCELLED' && <SnapshotSync run={run} currentVersion={flow.data?.row_version} onSynced={updated => navigate(updated, 'sync')}/>}<SnapshotGraph run={graphRun} snapshotId={graphSnapshotId} onAddRuntimePort={selectedStepwiseRecord ? (nodeKey, direction) => setRuntimePortDialog({ nodeKey, direction }) : undefined} onConnectRuntimePorts={selectedStepwiseRecord ? connectRuntimePorts : undefined} selectedKey={graphSelectedKey} activeNodeRunId={activeStepwiseDraftKey ? undefined : activeExecutionNodeRun?.id} activeNodeKey={activeStepwiseDraftKey} reachableKeys={graphReachableKeys} selectableKeys={graphSelectableKeys} configuredPlanKeys={configuredAutomaticPlanKeys} executionRun={selectedExecutionRecord ?? directExecutionRun} missingPlanKeys={missingAutomaticPlanKeys} showExecutionState={showExecutionState} neutralHelp={neutralGraphHelp} neutralView={automaticNeutralView} onClearSelection={clearNodeSelection} onSelect={selectGraphNode} onDoubleSelect={reactivatePredecessorForRerun}/></> : <div className="run-record-workspace-empty"><Boxes size={30}/><b>选择一条运行记录</b><span>返回运行记录列表并选择记录，查看节点执行状态。</span></div>}
       </main>
-      <aside className="run-side-panel run-record-detail-panel">{selectionPanel ?? <div className="run-record-workspace-empty"><Boxes size={26}/><b>未选择节点</b><span>在画布中选择节点，查看当前记录的节点详情。</span></div>}</aside>
+      <aside className="run-side-panel run-record-detail-panel"><div className="run-record-launch-bar"><b>{selectedRecordType}</b>{mode === 'AUTOMATIC' && selectedAutomatic?.state === 'DRAFT' ? <button type="button" className="primary" aria-label={`启动连续运行 ${selectedAutomatic.name}`} disabled={!selectedAutomatic.readiness.ready || Boolean(automaticBusyId)} onClick={() => { setAutomaticBusyId(selectedAutomatic.id); void api.startAutomaticRecord(parentRun.id, selectedAutomatic.id, selectedAutomatic.row_version).then(replaceAutomatic).catch(reason => window.alert(reason instanceof Error ? reason.message : '启动连续运行失败')).finally(() => setAutomaticBusyId(undefined)); }}><Play size={13}/>{automaticBusyId ? '启动中…' : '启动'}</button> : mode === 'MANUAL' && <button type="button" className="primary" aria-label={stepwiseLaunch?.rerun ? '重跑逐步节点' : '启动逐步节点'} disabled={!stepwiseLaunch?.ready || stepwiseLaunch.busy || Boolean(manualBusyId)} onClick={() => stepwiseLaunch?.onStart()}><Play size={13}/>{stepwiseLaunch?.busy ? '启动中…' : stepwiseLaunch?.rerun ? '重跑' : '启动'}</button>}</div>{selectionPanel ?? <div className="run-record-workspace-empty"><Boxes size={26}/><b>未选择节点</b><span>在画布中选择节点，查看当前记录的节点详情。</span></div>}</aside>
     </section>
     {copyTarget && <CopyRecordDialog mode={copyTarget.mode} sourceName={copyTarget.record.name} onClose={() => setCopyTarget(undefined)} onExport={copyTarget.mode === 'AUTOMATIC' ? target => exportAutomaticRecords([copyTarget.record.id], target) : copyTarget.mode === 'STEPWISE' ? target => exportStepwiseRecords([copyTarget.record.id], target) : undefined} onCopy={async name => {
       if (copyTarget.mode === 'STEPWISE') {
