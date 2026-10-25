@@ -97,7 +97,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 依赖：FR-691 DONE。修复旧终态 hydration 被新一轮发送和后台完成继续复用，导致切回
 会话只显示发送气泡、正式过程与最终回复需刷新才能恢复的问题。以正式 completion
 event id 校验缓存，保留前台读取优先、单并发预热与两种会话宿主的已有隔离契约。
-本片仅修改 Web、定向浏览器回归和协作文档，不部署。
+本片仅修改 Web、定向浏览器回归和协作文档；Web 发布验收见下。
 
 实现：新一轮消息开始投递时将浏览器可信缓存转入需热恢复的活动租约，保留原始
 hydration 时间，不伪造 Runtime readiness。后台活动目录出现普通完成预览时，按其
@@ -114,8 +114,32 @@ hydration 时间，不伪造 Runtime readiness。后台活动目录出现普通�
 读取期间输入门控与后续完整快照复用；使用受控 API／WebSocket，不记为真实模型
 执行验收。未读预览旧用例首次因同名顶栏与侧栏按钮导致 strict locator 失败，限定
 binding 行后通过；后台完成夹具同步投影 idle，避免把 unknown 误记为正常终态。
-Alembic 唯一 head 仍为 0172_case_configuration；未改平台、迁移、OpenHands 或
-远端服务。当前与下一可执行切片均为 NONE，提交后停止。
+Alembic 唯一 head 仍为 0172_case_configuration；实现不涉及平台、迁移或 OpenHands
+改动。当前与下一可执行切片均为 NONE，提交后停止。
+
+发布验收（2026-10-25）：按用户授权，仅发布 Web 代码提交
+`a39b098e6dc8acafab9e883190843be1024992c7`。正式预检与受管最小上下文 prepare
+通过，本地／远端源码归档 SHA-256 均为
+`675eb06e8ed9f00318aaebf31e8a4bc4321fc23703099550ce71bc1b62693f53`。
+实际 linux/amd64 Web 镜像为
+`sha256:94028b348f62cca2ad6b95235528fc2394e7bf5d1f9bc98b1d27e88faf693992`，
+OCI revision 与代码提交一致。发布前从实际镜像导出静态资源，在部署前缀下使用
+受控 API／WebSocket 重跑同一 29 项 Chromium 回归全部通过，不重复累计用例。
+回归实际加载的 46 个 JS／CSS 文件 SHA-256 与发布后运行镜像一致。
+
+在服务器保留旧服务日志与精确 rollback tag 后，仅定向 recreate Web。公网前缀
+入口和 Agent 深层路由返回的 HTML 与运行镜像完全一致，两项入口 JS／CSS 摘要
+一致；两个未认证 API 边界为 401。服务器真实 Chromium 验证前缀登录、会话深层
+路由和根登录，全新浏览器确认 auth/me 使用部署前缀，根 API 请求为零。上述测试
+未读取或向真实业务会话发送、暂停、继续或重放消息，不记为真实模型执行验收。
+
+Web remote-release-finish 的版本、健康及容量门禁通过，回收一份过期受管成功
+上下文及一份精确旧 rollback 镜像，保留各 scope 最近三份成功上下文与引用／回滚
+版本。收尾复核确认 Web 运行目标代码且 HTTP 正常，api／stream-api／worker／
+Runtime Provider 健康；其余 47 个既有容器的镜像与启动时间、服务器 Compose／env
+摘要均不变。未替换 Runtime generation，未清理共享 BuildKit、卷、Workspace 或
+数据库备份。当前与下一可执行切片均为 NONE；本验收提交仅更新文档，实际部署
+源码身份仍为 a39b098e，未推送本地提交。
 
 ### FR-691 远程运行目录与会话缓存合并发布 — DONE
 
