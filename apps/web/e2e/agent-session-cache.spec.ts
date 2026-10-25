@@ -3366,6 +3366,7 @@ test('A normal background conversation completion persists a regular unread mark
       if (completed) {
         conversation.unread = true;
         conversation.unread_origin = 'MANUAL';
+        conversation.execution_status = 'idle';
         conversation.final_reply_preview = { event_id: 'completed-unread-final', content: '后台预览的最终回复。' };
       }
       return json(route, {
@@ -3637,8 +3638,8 @@ test('Opening a normal-list unread conversation marks it read while activity pre
   await page.goto('/');
   await login(page);
   await page.goto('/agent/conversations/unread-conversation-a');
-  const conversationA = page.getByRole('button', { name: '未读会话 A', exact: true });
-  const conversationB = page.getByRole('button', { name: '未读会话 B', exact: true });
+  const conversationA = page.locator('[data-conversation-binding-id="unread-conversation-a"]').getByRole('button', { name: '未读会话 A', exact: true });
+  const conversationB = page.locator('[data-conversation-binding-id="unread-conversation-b"]').getByRole('button', { name: '未读会话 B', exact: true });
   const unreadMarker = conversationA.locator('xpath=..').getByRole('img', { name: '会话已完成，有未读回复' });
 
   await conversationA.click({ button: 'right' });

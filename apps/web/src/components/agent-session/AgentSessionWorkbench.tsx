@@ -5249,7 +5249,19 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [immediateFinalReplyPreview, setImmediateFinalReplyPreview] = useState<{
     bindingId: string;
     event: OpenHandsConversationEvent;
+    selectedAt: number;
   }>();
+  const trustedHydrations = useRef(new Map<string, TrustedHydration>());
+  const backgroundHydrationPrefetches = useRef(new Map<string, Promise<AgentConversationHydration>>());
+  const invalidateTrustedHydration = useCallback((workspaceId: string, bindingId: string) => {
+    // Keep the immutable events for merging; only their authority as the
+    // current terminal snapshot has expired.
+    trustedHydrations.current.delete(bindingId);
+    queryClient.removeQueries({
+      queryKey: sessionQueryKey(host, 'conversation-trusted-hydration', workspaceId, bindingId),
+      exact: true,
+    });
+  }, [host, queryClient]);
   const [backgroundHydrationPrefetchCandidates, setBackgroundHydrationPrefetchCandidates] = useState<string[]>([]);
   const [backgroundHydrationPrefetchRevision, setBackgroundHydrationPrefetchRevision] = useState(0);
   const backgroundHydrationPrefetchControllers = useRef(new Map<string, AbortController>());
@@ -5608,11 +5620,29 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       bindingId => !runningConversationIds.has(bindingId) && bindingId !== routeBindingId,
     );
     previousRunningConversationIds.current = runningConversationIds;
-    if (!completedInBackground.length || !workspace) return;
+    if (!workspace) return;
     const activityById = new Map((conversationActivityQuery.data.conversations ?? []).map(item => [item.id, item]));
+    // Completion can become visible after the catalog has already stopped
+    // reporting running. Its formal reply identity still invalidates an older
+    // terminal snapshot, even if this tab missed the running transition.
+    for (const item of activityById.values()) {
+      const completionId = item.unread && item.unread_origin === 'MANUAL'
+        ? item.final_reply_preview?.event_id
+        : undefined;
+      if (!completionId || conversationIsRunning(item.execution_status)) continue;
+      const cached = queryClient.getQueryData<OpenHandsConversationEventBatch>(
+        sessionQueryKey(host, 'conversation-events', workspace.id, item.id),
+      );
+      if (!cached?.events.some(event => event.id === completionId && isOpenHandsAgentReply(event))) {
+        invalidateTrustedHydration(workspace.id, item.id);
+      }
+    }
+    if (!completedInBackground.length) return;
     const completedUnread = completedInBackground.filter(bindingId => {
       const item = activityById.get(bindingId);
-      return item?.unread === true && item.unread_origin === 'MANUAL' && !conversationIsRunning(item.execution_status);
+      return item?.unread === true && item.unread_origin === 'MANUAL'
+        && Boolean(item.final_reply_preview)
+        && ['idle', 'finished', 'completed', 'stopped'].includes(item.execution_status?.trim().toLowerCase() ?? '');
     });
     if (completedUnread.length) {
       setBackgroundHydrationPrefetchCandidates(current => [...new Set([...current, ...completedUnread])]);
@@ -5620,7 +5650,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-activity', workspace.id) });
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversations', workspace.id) });
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'pinned-conversations', workspace.id) });
-  }, [activitySnapshot, conversationActivityQuery.data, conversationActivityQuery.isPlaceholderData, conversationActivityQuery.isSuccess, host, queryClient, routeBindingId, runningConversationIds, workspace]);
+  }, [activitySnapshot, conversationActivityQuery.data, conversationActivityQuery.isPlaceholderData, conversationActivityQuery.isSuccess, host, invalidateTrustedHydration, queryClient, routeBindingId, runningConversationIds, workspace]);
   const condensingConversationIds = useMemo(
     () => new Set(activitySnapshot?.condensing_binding_ids ?? []),
     [activitySnapshot],
@@ -6342,8 +6372,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     workspaceId: string;
     bindingId: string;
   } | undefined>(undefined);
-  const trustedHydrations = useRef(new Map<string, TrustedHydration>());
-  const backgroundHydrationPrefetches = useRef(new Map<string, Promise<AgentConversationHydration>>());
   const publishHydration = useCallback((workspaceId: string, bindingId: string, hydration: AgentConversationHydration) => {
     const eventKey = sessionQueryKey(host, 'conversation-events', workspaceId, bindingId);
     queryClient.setQueryData<OpenHandsConversationEventBatch>(
@@ -6568,7 +6596,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       const controller = new AbortController();
       backgroundHydrationPrefetchControllers.current.set(bindingId, controller);
       const request = api.conversationHydration(workspace.id, bindingId, controller.signal)
-        .then(hydration => publishHydration(workspace.id, bindingId, hydration));
+        .then(hydration => {
+          controller.signal.throwIfAborted();
+          return publishHydration(workspace.id, bindingId, hydration);
+        });
       backgroundHydrationPrefetches.current.set(bindingId, request);
       void request.then(
         () => {
@@ -7070,8 +7101,15 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, [currentFormalEvents, localProjectionQuery.data, pendingSubmissionConfirmation?.bindingId, selected?.id]);
   useEffect(() => {
     if (!immediateFinalReplyPreview || immediateFinalReplyPreview.bindingId !== selected?.id) return;
-    if (selectedHydrationPhase === 'ready' && eventsQuery.data) setImmediateFinalReplyPreview(undefined);
-  }, [eventsQuery.data, immediateFinalReplyPreview, selected?.id, selectedHydrationPhase]);
+    const replyRestored = eventsQuery.data?.events.some(event => (
+      event.id === immediateFinalReplyPreview.event.id && isOpenHandsAgentReply(event)
+    ));
+    // An old ready cache must not erase a newly selected completion preview.
+    // A fresh hydration remains authoritative even if its branch has changed.
+    const freshlyHydrated = trustedHydration
+      && trustedHydration.hydratedAt >= immediateFinalReplyPreview.selectedAt;
+    if (selectedHydrationPhase === 'ready' && (replyRestored || freshlyHydrated)) setImmediateFinalReplyPreview(undefined);
+  }, [eventsQuery.data, immediateFinalReplyPreview, selected?.id, selectedHydrationPhase, trustedHydration]);
   const displayedEvents = useMemo(() => {
     const hiddenBranchIds = eventBranchIdsFromRoots(currentFormalEvents, hiddenEventIds);
     const eventsById = new Map(currentFormalEvents.map(event => [event.id, event]));
@@ -8410,10 +8448,22 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, [snapshotFormalEventIds, updateLocalMessageProjections]);
   const send = useMutation({
     mutationFn: (message: BoundQueuedMessage) => api.sendMessage(workspace!.id, message.bindingId, message.content, message.items, message.references.map(item => ({ event_id: item.eventId, content: item.content, source_binding_id: item.sourceBindingId, ...(item.compactStart !== undefined && item.compactEnd !== undefined ? { selection: { compact_start: item.compactStart, compact_end: item.compactEnd } } : {}) })), message.workspaceReferences ?? [], messageAnnotations(message.annotations, message.references), message.id),
-    onMutate: message => ({
-      optimisticEventId: localMessageProjections.current.get(message.id)?.renderKey,
-      nativeGuidance: message.nativeGuidance === true,
-    }),
+    onMutate: message => {
+      // The cached hydration describes the preceding turn. Preserve its screen
+      // while ensuring a hot revisit reconciles this new turn, including after
+      // the POST confirmation window expires or the workbench remounts.
+      const key = sessionQueryKey(host, 'conversation-trusted-hydration', workspace!.id, message.bindingId);
+      const trusted = queryClient.getQueryData<TrustedHydration>(key);
+      if (trusted) {
+        const running = { ...trusted, running: true };
+        trustedHydrations.current.set(message.bindingId, running);
+        queryClient.setQueryData(key, running);
+      }
+      return {
+        optimisticEventId: localMessageProjections.current.get(message.id)?.renderKey,
+        nativeGuidance: message.nativeGuidance === true,
+      };
+    },
     onSuccess: (value, message, context) => {
       sendingMessageIds.current.delete(message.id);
       const cursor = value.cursor;
@@ -9830,10 +9880,20 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       ? activityConversation
       : conversationsById.get(bindingId) ?? activityConversation;
     const preview = conversation?.final_reply_preview;
+    if (preview && conversation?.unread && conversation.unread_origin === 'MANUAL' && workspace) {
+      const cached = queryClient.getQueryData<OpenHandsConversationEventBatch>(
+        sessionQueryKey(host, 'conversation-events', workspace.id, bindingId),
+      );
+      if (!cached?.events.some(event => event.id === preview.event_id && isOpenHandsAgentReply(event))) {
+        invalidateTrustedHydration(workspace.id, bindingId);
+        if (bindingId === selected?.id) retryConversationHydration();
+      }
+    }
     setImmediateFinalReplyPreview(
       preview && conversation?.unread && conversation.unread_origin === 'MANUAL'
         ? {
             bindingId,
+            selectedAt: Date.now(),
             event: {
               id: preview.event_id,
               event_type: 'MESSAGE',
