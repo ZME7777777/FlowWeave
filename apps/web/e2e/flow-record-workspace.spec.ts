@@ -68,7 +68,7 @@ const automaticBase = {
 };
 
 
-test('record workspace selects mixed records and keeps runtime detail inside the page', async ({ page }) => {
+test('record workspace selects mixed records and keeps record actions in its resizable rail', async ({ page }) => {
   const manual = { ...run, id: 'manual-record', name: '逐步验收记录', parent_flow_run_id: run.id, start_node_key: 'first' };
   await page.route('**/api/v1/**', async route => {
     const path = new URL(route.request().url()).pathname.replace(/^\/flowweave/, '');
@@ -78,6 +78,7 @@ test('record workspace selects mixed records and keeps runtime detail inside the
     if (path === '/api/v1/flows') return respond([definition]);
     if (path === `/api/v1/flows/${definition.id}`) return respond(definition);
     if (path === `/api/v1/flow-runs/${run.id}`) return respond(run);
+    if (path === `/api/v1/flow-runs/${manual.id}`) return respond(manual);
     if (path.endsWith('/stepwise-runs/manual-record')) return respond(manual);
     if (path.endsWith('/stepwise-runs')) return respond([manual]);
     if (path.endsWith('/automatic-runs/summaries')) return respond([{ ...automaticBase, plan: { ...automaticBase.automation_plan, reachable_node_count: 2 } }]);
@@ -95,29 +96,22 @@ test('record workspace selects mixed records and keeps runtime detail inside the
   await directory.getByRole('button', { name: '连续', exact: true }).click();
   await expect(directory.locator('.flow-run-record-directory-list>button')).toHaveCount(1);
   await directory.getByRole('button', { name: /自动记录 1/ }).click();
-  await expect(page.locator('.run-record-information h2')).toHaveText(automaticBase.name);
+  await expect(page.locator('.flow-run-workbench-header h1')).toHaveText(automaticBase.name);
   await expect(page.locator('.run-graph')).toBeVisible();
-  const tabs = page.getByRole('navigation', { name: '运行记录信息' });
-  await expect(tabs.getByRole('button', { name: '信息与配置', exact: true })).toHaveClass('active');
-  await expect(page.locator('.run-record-selection-panel')).toBeVisible();
-  await tabs.getByRole('button', { name: '容器', exact: true }).click();
-  await expect(page.locator('.run-record-runtime-panel')).toContainText('容器与运行环境');
-  await tabs.getByRole('button', { name: '终端', exact: true }).click();
-  await expect(page.locator('.run-record-terminal-panel')).toContainText('运行环境当前不可写');
-  await page.getByRole('button', { name: '管理运行记录', exact: true }).click();
-  const manager = page.getByRole('dialog', { name: '管理运行记录', exact: true });
-  await expect(manager.locator('.unified-run-record')).toHaveCount(3);
-  await manager.locator('.unified-run-record').filter({ hasText: manual.name }).getByRole('button').click();
-  await manager.getByRole('tab', { name: '逐步', exact: true }).click();
-  await expect(manager.getByRole('button', { name: '拷贝', exact: true })).toBeEnabled();
-  await expect(manager.getByRole('button', { name: '删除', exact: true })).toBeEnabled();
-  await manager.getByRole('button', { name: '关闭', exact: true }).click();
-  await expect(page.locator('.run-record-information h2')).toHaveText(manual.name);
-  await expect(tabs.getByRole('button', { name: '信息与配置', exact: true })).toHaveClass('active');
-  await page.getByRole('button', { name: '返回 FlowRun 目录', exact: true }).click();
-  await page.locator('.flow-run-directory-list').getByRole('button', { name: /测试运行/ }).click();
-  await page.getByRole('button', { name: '管理运行记录', exact: true }).click();
-  await page.getByRole('button', { name: '新建运行记录', exact: true }).click();
+  await expect(page.locator('.run-record-detail-panel')).toBeVisible();
+  const rail = page.locator('.flow-run-inner-rail');
+  await expect(rail.locator('.unified-run-record')).toHaveCount(3);
+  const separator = page.getByRole('separator', { name: '调整运行记录栏宽度' });
+  const originalWidth = await rail.evaluate(element => element.getBoundingClientRect().width);
+  await separator.focus();
+  await separator.press('ArrowRight');
+  await expect.poll(() => rail.evaluate(element => element.getBoundingClientRect().width)).toBeGreaterThan(originalWidth);
+  await rail.locator('.unified-run-record').filter({ hasText: manual.name }).getByRole('button').click();
+  await rail.getByRole('tab', { name: '逐步', exact: true }).click();
+  await expect(rail.getByRole('button', { name: '拷贝', exact: true })).toBeEnabled();
+  await expect(rail.getByRole('button', { name: '删除', exact: true })).toBeEnabled();
+  await expect(page.locator('.flow-run-workbench-header h1')).toHaveText(manual.name);
+  await page.locator('.flow-run-inner-rail').getByRole('button', { name: '新建运行', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: '选择运行类型' });
   await expect(dialog.getByRole('button', { name: /逐步运行/ })).toBeVisible();
   await expect(dialog.getByRole('button', { name: /连续运行/ })).toBeVisible();
@@ -145,18 +139,19 @@ test('flow library saves an empty draft before opening its node editor', async (
   await page.goto('/');
   await page.getByRole('button', { name: '流程编排', exact: true }).click();
   await expect(page.locator('.flow-overview-empty')).toBeVisible();
-  await page.locator('.flow-overview-head').getByRole('button', { name: '新建流程' }).click();
+  await page.locator('.flow-library-list-tools').getByRole('button', { name: '新建流程' }).click();
   await page.getByLabel('新流程名称').fill('可恢复编排草稿');
   await page.getByLabel('新流程说明').fill('先保存基本信息');
   await page.getByRole('button', { name: '保存并开始编排' }).click();
   await expect.poll(() => saved).toEqual(expect.objectContaining({ name: '可恢复编排草稿', nodes: [], edges: [] }));
   await expect(page.locator('.flow-editor-head')).toContainText('未找到一个启动节点');
   await expect(page.getByTestId('flow-library')).toContainText('节点资产目录');
-  await page.getByRole('button', { name: '全部流程', exact: true }).click();
+  await page.getByRole('button', { name: '返回全部流程', exact: true }).click();
   await expect(page.locator('.flow-library-row')).toContainText('可恢复编排草稿');
   await expect(page.locator('.flow-library-row')).toContainText('未找到一个启动节点');
-  await page.getByRole('button', { name: '编辑流程 可恢复编排草稿', exact: true }).click();
-  await expect(page.locator('.flow-editor-head')).toContainText('可恢复编排草稿');
+  await page.getByRole('button', { name: '操作流程 可恢复编排草稿', exact: true }).click();
+  await page.getByRole('button', { name: '编辑编排', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: '流程名称', exact: true })).toHaveValue('可恢复编排草稿');
 });
 
 
@@ -190,8 +185,9 @@ test('flow library pagination retains bulk deletion and copying after the merge'
   await page.getByRole('button', { name: '永久删除', exact: true }).click();
   await expect(page.locator('.flow-library-row')).toHaveCount(10);
   await expect(page.locator('.flow-library-pagination')).toContainText('第 1 / 1 页');
-  await page.getByRole('button', { name: '复制流程 验收流程 0', exact: true }).click();
-  await expect(page.locator('.flow-editor-head')).toContainText('验收流程 0 · 副本');
+  await page.getByRole('button', { name: '操作流程 验收流程 0', exact: true }).click();
+  await page.getByRole('button', { name: '复制流程', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: '流程名称', exact: true })).toHaveValue('验收流程 0 · 副本');
   expect(copied).toEqual({
     name: '验收流程 0 · 副本', description: '', default_entry_key: null,
     nodes: definition.nodes.map(node => ({

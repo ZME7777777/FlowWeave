@@ -246,7 +246,9 @@ test('case detail saves materials workspace ordered run cards and model capabili
   await page.getByRole('button', { name: '添加链接' }).click();
   await page.getByLabel('链接名称').fill('需求文档');
   await page.getByLabel('链接地址').fill('https://example.test/input');
-  await page.locator('.scenario-link-editor').getByRole('button', { name: '添加', exact: true }).click();
+  await page.locator('.scenario-link-editor').getByRole('button', { name: '添加链接', exact: true }).click();
+  await page.getByRole('button', { name: '上传文件' }).click();
+  await expect(page.locator('.scenario-upload-editor')).toBeVisible();
   await page.getByLabel('上传资料文件').setInputFiles({ name: 'input.txt', mimeType: 'text/plain', buffer: Buffer.from('case inputs') });
   await page.getByRole('button', { name: '重命名 input.txt', exact: true }).click();
   await page.getByRole('textbox', { name: '资料名称 input.txt', exact: true }).fill('准备资料');
@@ -480,15 +482,16 @@ test('case deletion confirms intent and retains the case when the server rejects
     return json(route, deleted ? [] : [item]);
   });
   await page.getByRole('button', { name: '场景空间', exact: true }).click();
-  await page.getByRole('button', { name: '删除', exact: true }).click();
+  await page.getByRole('button', { name: 'Case 路径', exact: true }).click();
+  await page.getByRole('button', { name: '删除场景', exact: true }).click();
   await page.getByRole('alertdialog').getByRole('button', { name: '取消', exact: true }).click();
   expect(deleteCount).toBe(0);
-  await page.getByRole('button', { name: '删除', exact: true }).click();
+  await page.getByRole('button', { name: '删除场景', exact: true }).click();
   await page.getByRole('alertdialog').getByRole('button', { name: '删除 Case', exact: true }).click();
   await expect(page.locator('.scenario-delete-error')).toContainText('事项仍有进行中的执行');
   await expect(page.locator('.scenario-casebar')).toContainText(item.name);
   rejectDelete = false;
-  await page.getByRole('button', { name: '删除', exact: true }).click();
+  await page.getByRole('button', { name: '删除场景', exact: true }).click();
   await page.getByRole('alertdialog').getByRole('button', { name: '删除 Case', exact: true }).click();
   await expect(page.getByRole('heading', { name: '选择或创建一个场景', exact: true })).toBeVisible();
   expect(deleteCount).toBe(2);
@@ -1879,6 +1882,13 @@ test('internal navigation restores a draft in its originating work directory', a
 
   await navigation.getByRole('button', { name: '会话管理' }).click();
   await navigation.getByRole('button', { name: '主页' }).click();
+  await expect(composer).toHaveValue('保留已有项目目录中的草稿');
+  await expect(recoverDraft).toHaveAttribute('aria-current', 'page');
+
+  await page.getByRole('button', { name: '日报会话', exact: true }).click();
+  await expect(page).toHaveURL(/\/agent\/conversations\/scheduled-conversation$/);
+  await navigation.getByRole('button', { name: '主页' }).click();
+  await expect(page).toHaveURL(/\/agent\?draft_work_directory_id=existing-directory$/);
   await expect(composer).toHaveValue('保留已有项目目录中的草稿');
   await expect(recoverDraft).toHaveAttribute('aria-current', 'page');
 });

@@ -55,7 +55,13 @@ const superAdminSettingsNav = [
 const LAST_STANDALONE_AGENT_PATH_KEY = 'flowweave.agent.last-standalone-path.v1';
 
 function isStandaloneAgentPath(path: string): boolean {
-  return /^\/agent(?:\/schedules)?$/.test(path) || /^\/agent\/(?:conversations|schedules\/conversations)\/[^/]+$/.test(path);
+  try {
+    const url = new URL(path, window.location.origin);
+    return /^\/agent(?:\/schedules)?$/.test(url.pathname)
+      || /^\/agent\/(?:conversations|schedules\/conversations)\/[^/]+$/.test(url.pathname);
+  } catch {
+    return false;
+  }
 }
 
 function readLastStandaloneAgentPath(): string {
@@ -108,7 +114,15 @@ export function App() {
     try { sessionStorage.setItem(LAST_STANDALONE_AGENT_PATH_KEY, path); } catch { /* browser session state only */ }
   }, []);
   const rememberStandaloneAgentConversation = useCallback((path: string) => {
-    if (/^\/agent\/(?:conversations|schedules\/conversations)\/[^/]+$/.test(path)) setLastStandaloneAgentPath(path);
+    try {
+      const url = new URL(path, window.location.origin);
+      if (/^\/agent\/(?:conversations|schedules\/conversations)\/[^/]+$/.test(url.pathname)
+        || (url.pathname === '/agent' && url.searchParams.has('draft_work_directory_id'))) {
+        setLastStandaloneAgentPath(`${url.pathname}${url.search}${url.hash}`);
+      }
+    } catch {
+      // Invalid browser history values must not replace the last valid target.
+    }
   }, [setLastStandaloneAgentPath]);
   const restoreStandaloneAgentPath = useCallback((path: string) => {
     if (isStandaloneAgentPath(path)) setLastStandaloneAgentPath(path);
@@ -239,7 +253,7 @@ export function App() {
             selectedWorkbenchMode: undefined, selectedAutomaticRecordId: undefined, selectedStepwiseRecordId: undefined,
           });
         }
-        restoreStandaloneAgentPath(path);
+        restoreStandaloneAgentPath(`${path}${window.location.search}${window.location.hash}`);
       }
       setRouteVersion(value => value + 1);
     };

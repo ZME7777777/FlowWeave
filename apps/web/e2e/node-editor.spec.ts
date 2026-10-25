@@ -86,16 +86,8 @@ test('copy button creates a configured node copy without opening its editor', as
 
   await page.goto('/');
   await page.getByRole('button', { name: '节点中心', exact: true }).click();
-  await page.getByRole('button', { name: `复制节点 ${node.name}` }).click();
-
-  await expect.poll(() => createPayload).toMatchObject({
-    name: '节点编辑步骤回归 副本',
-    inputs: configuredNode.inputs,
-    outputs: configuredNode.outputs,
-    executor: configuredNode.executor,
-  });
-  await expect(page.getByText('节点“节点编辑步骤回归 副本”已复制。')).toBeVisible();
-  await expect(page.getByRole('heading', { name: '编辑节点' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: `复制节点 ${node.name}` })).toHaveCount(0);
+  expect(createPayload).toBeUndefined();
 });
 
 test('prompt blocks open full editing and Escape cancels only the detail dialog', async ({ page }) => {
@@ -157,14 +149,11 @@ test('field list saves create, edit and delete immediately without persisting ot
   const row = dialog.locator('.node-field-record').first();
   await expect(row).toContainText('来源'); await expect(row).toContainText('原始来源');
   expect((await row.boundingBox())!.height).toBeLessThanOrEqual(46);
-  await dialog.getByRole('button', { name: '添加输入', exact: true }).click();
+  await dialog.getByRole('button', { name: '新增输入', exact: true }).click();
   await dialog.getByLabel('输入名称', { exact: true }).fill('证据索引');
   await dialog.getByLabel('输入说明', { exact: true }).fill('输入说明');
-  await dialog.getByLabel('输入字段标识', { exact: true }).fill('source');
-  await dialog.getByRole('button', { name: '创建字段', exact: true }).click();
-  await expect(dialog.getByRole('alert')).toContainText('字段标识不能重复');
-  await dialog.getByLabel('输入字段标识', { exact: true }).fill('evidence');
-  await dialog.getByRole('radio', { name: '文件', exact: true }).click();
+  await expect(dialog.getByLabel('输入字段标识', { exact: true })).toHaveCount(0);
+  await dialog.getByLabel('输入类型', { exact: true }).selectOption('FILE');
   reject = true;
   await dialog.getByRole('button', { name: '创建字段', exact: true }).click();
   await expect(dialog.getByRole('alert')).toContainText('保存失败');
@@ -200,7 +189,7 @@ test('field list saves create, edit and delete immediately without persisting ot
   await dialog.getByRole('button', { name: '关闭输出定义', exact: true }).click();
   await page.getByRole('button', { name: '保存节点', exact: true }).click();
   await expect.poll(() => writes.length).toBe(5);
-  expect(writes[4]).toMatchObject({ name: '尚未保存的节点名', inputs: [{ field_key: 'evidence', display_name: '证据索引', description: '修订后的说明', data_type: 'FILE' }], outputs: [{ display_name: '已编辑的报告' }] });
+  expect(writes[4]).toMatchObject({ name: '尚未保存的节点名', inputs: [{ display_name: '证据索引', description: '修订后的说明', data_type: 'FILE' }], outputs: [{ display_name: '已编辑的报告' }] });
   await page.reload();
   await page.getByTestId('node-card').click();
   await page.getByRole('button', { name: '配置输入定义' }).click();
@@ -223,7 +212,7 @@ test('first field creates a named draft node once and keeps the list open', asyn
   await page.getByLabel('节点名称').fill('新建并即时保存字段');
   await page.getByRole('button', { name: '配置输入定义' }).click();
   const dialog = page.getByRole('dialog');
-  await dialog.getByRole('button', { name: '添加输入', exact: true }).click();
+  await dialog.getByRole('button', { name: '新增输入', exact: true }).click();
   await dialog.getByLabel('输入名称', { exact: true }).fill('源文件');
   await dialog.getByRole('button', { name: '创建字段', exact: true }).click();
   await expect(dialog.getByRole('table')).toContainText('源文件'); expect(creates).toBe(1);
@@ -251,13 +240,10 @@ test('unnamed nodes configure fields without validating the main form and save i
   for (const direction of ['输入', '输出']) {
     await page.getByRole('button', { name: `配置${direction}定义` }).click();
     const dialog = page.getByRole('dialog');
-    await expect(dialog).toContainText('字段暂存于当前草稿');
-    await dialog.getByRole('button', { name: `添加${direction}`, exact: true }).click();
+    await dialog.getByRole('button', { name: `新增${direction}`, exact: true }).click();
     await dialog.getByLabel(`${direction}名称`, { exact: true }).fill(`${direction}文件`);
     await dialog.getByLabel(`${direction}说明`, { exact: true }).fill(`${direction}说明`);
-    const nameBox = (await dialog.getByLabel(`${direction}名称`, { exact: true }).boundingBox())!;
-    const keyBox = (await dialog.getByLabel(`${direction}字段标识`, { exact: true }).boundingBox())!;
-    expect(nameBox.y).toBe(keyBox.y);
+    await expect(dialog.getByLabel(`${direction}字段标识`, { exact: true })).toHaveCount(0);
     expect((await dialog.boundingBox())!.height).toBeLessThan(460);
     await dialog.screenshot({ path: test.info().outputPath(`compact-${direction}-editor.png`) });
     await dialog.getByRole('button', { name: '创建字段', exact: true }).click();

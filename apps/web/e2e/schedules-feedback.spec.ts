@@ -135,11 +135,51 @@ test('schedule rows expand across their full width and immediate trigger reports
   expect(workspaceBox?.width).toBeGreaterThan((page.viewportSize()?.width ?? 0) * .6);
   await expect(page.locator('.schedule-task-list button.active')).toContainText('每小时检查');
   await expect(page.getByRole('heading', { name: '每小时检查', exact: true })).toBeVisible();
-  await expect(page.getByText('任务会话与执行记录', { exact: true })).toBeVisible();
+  await expect(page.getByText('执行记录', { exact: true })).toBeVisible();
   const trigger = page.getByRole('button', { name: '立即运行', exact: true });
   await trigger.click();
   await expect(page.getByRole('button', { name: '启动中…', exact: true })).toBeDisabled();
   await expect(page.getByRole('status')).toHaveText('已创建连续运行记录，后台正在启动。');
   await trigger.click();
   await expect(page.getByRole('alert')).toHaveText('定时任务启动失败');
+});
+
+
+test('schedule history is paginated and only shows node states for an expanded record', async ({ page }) => {
+  const schedule = {
+    id: 'schedule-1', flow_definition_id: 'flow-1', environment_version_id: 'env-version-1', name: '每小时检查',
+    source_flow_run_id: 'automatic-master-1', run_mode: 'AUTOMATIC', start_node_key: 'first', interval_minutes: 1, cron_expression: '0 * * * *',
+    source_flow_run: { id: 'automatic-master-1', name: '连续运行母版', run_no: 2, state: 'DRAFT' }, status: 'ACTIVE',
+    next_run_at: '2026-09-07T10:00:00Z', row_version: 1, config_version: 1, last_run_at: '2026-09-07T09:00:00Z', has_execution: true,
+    created_at: '2026-09-07T09:00:00Z', updated_at: '2026-09-07T09:00:00Z',
+  };
+  const occurrence = (index: number) => ({
+    id: `occurrence-${index}`, scheduled_for: `2026-09-${String(20 - index).padStart(2, '0')}T09:00:00Z`, trigger_kind: index % 2 ? 'SCHEDULED' : 'MANUAL', config_version: 1, state: 'STARTED', error_detail: null,
+    flow_run: { id: `run-${index}`, name: `连续运行 ${index}`, run_no: index, parent_flow_run_id: 'parent-run', node_runs: [{ id: `node-${index}`, name: 'collect', flow_node_snapshot_key: 'collect', state: 'ACCEPTED', attempts: [{ id: `attempt-${index}` }] }] },
+  });
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const respond = (body: unknown) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
+    if (url.pathname.endsWith('/auth/me')) return respond(authenticatedUser);
+    if (url.pathname === '/api/v1/flow-run-schedules' && request.method() === 'GET') return respond([schedule]);
+    if (url.pathname === '/api/v1/flow-run-schedule-templates' || url.pathname === '/api/v1/flows') return respond([]);
+    if (url.pathname.endsWith('/occurrences')) {
+      const currentPage = Number(url.searchParams.get('page') ?? '1');
+      return respond({ items: currentPage === 1 ? Array.from({ length: 10 }, (_, index) => occurrence(index + 1)) : [occurrence(11)], total: 11, page: currentPage, page_size: 10 });
+    }
+    return respond([]);
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '定时调度', exact: true }).click();
+  const record = page.locator('.schedule-record').first();
+  await expect(page.getByText('collect', { exact: true })).toHaveCount(0);
+  await record.locator('.schedule-record-summary').click();
+  await expect(record.getByText('collect', { exact: true })).toBeVisible();
+  await record.locator('.schedule-record-summary').click();
+  await expect(record.getByText('collect', { exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: '下一页', exact: true }).click();
+  await expect(page.locator('.schedule-record-run')).toContainText('连续运行 11');
+  await expect(page.getByText('第 2 / 2 页 · 共 11 条', { exact: true })).toBeVisible();
 });
