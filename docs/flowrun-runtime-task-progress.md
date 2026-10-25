@@ -107,9 +107,27 @@ Git 自动合并无文本冲突。纳入可拖动的流程库预览、全幅编�
 
 服务器现有平台与本地平台／迁移／Runtime 构建输入一致，本次仅发布 Web；
 Alembic 唯一 head 仍为 0172_case_configuration，无数据库或 OpenHands 改动。
-发布使用已提交版本、正式 Web 预检和 commit-bound 最小上下文，保留旧镜像、
-日志及配置摘要，再定向 recreate Web。实际构建、线上路由／版本／健康、浏览器
-验证与容量收尾将在发布后补记。当前与下一可执行切片均为 NONE，不开始后续切片。
+发布验收（2026-10-25）：合并／部署代码为
+`5e9e2727398a82e7bb1206a6bfaff6b4739f8503`，原本地 `fbc44453` 与远程
+`b184998d` 均为其祖先。正式 Web 预检和 commit-bound prepare 通过；源码归档
+SHA-256 为 `205ad729a7a647545aadaac76e110f8fcf442b37628a2a0edb126e7440bc0ccf`。
+实际 Web 镜像为
+`sha256:b1af4cd9dfd10aea34ea3cd91df7b03a2b3be1027044c9f2a7091500a44f8f49`，
+linux/amd64 与 OCI revision 校验通过。保存旧 Web 日志及精确 rollback tag 后仅
+recreate Web，配置摘要及其余 47 个既有容器（含停止容器）的镜像与启动时间不变。
+
+实际镜像导出的静态资源完成同一组 14 个不同 Chromium 定向用例，全部通过；
+临时定时历史夹具补齐部署前缀处理后单独通过，不将重复运行累加。加载的 53 个
+JS／CSS 文件 SHA-256 与运行镜像一致。服务器实际 Chromium 验证公网前缀登录、
+Agent 深层路由和根登录；全新浏览器网络日志确认 auth/me 使用部署前缀，根 API
+请求为零。公网 HTML 与镜像一致，两个入口 JS／CSS 摘要一致，两项未认证 API
+边界为 401；Web HTTP、api／stream-api health／readiness 全部通过。未向真实
+业务会话发送、暂停、继续或重放消息，未替换 Provider 或已有 Runtime generation。
+
+正式 remote-release-finish 通过版本、健康与受管容量门禁，回收一份过期成功 Web
+上下文，保留各 scope 最近三份成功上下文和引用／回滚版本；精确镜像回收候选为零。
+未清理共享 BuildKit、卷、Workspace 或数据库备份。当前与下一可执行切片均为 NONE，
+本次验收提交仅记录部署事实，实际生产源码身份仍绑定 5e9e2727，未推送本地提交。
 
 ### FR-694 远程流程画布与运行分组界面合并发布 — DONE
 
