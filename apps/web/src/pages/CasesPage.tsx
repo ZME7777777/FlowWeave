@@ -74,6 +74,8 @@ function BasicsForm({ item, workspaceId, onSaved, onCancel }: {
   const [uploadOpen, setUploadOpen] = useState(false);
   const [linkName, setLinkName] = useState('');
   const [linkUrl, setLinkUrl] = useState('');
+  const [fileName, setFileName] = useState('');
+  const [selectedFile, setSelectedFile] = useState<File>();
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [toast, setToast] = useState('');
@@ -91,6 +93,12 @@ function BasicsForm({ item, workspaceId, onSaved, onCancel }: {
     catch { showToast('请输入有效的 HTTP 或 HTTPS 链接。'); return; }
     setMaterials(current => [...current, { kind: 'LINK', name: linkName.trim() || linkUrl, value: linkUrl }]);
     setLinkName(''); setLinkUrl(''); setLinkOpen(false); setError(''); setNotice('');
+  };
+  const addFile = () => {
+    if (!selectedFile) { showToast('请选择要添加的文件。'); return; }
+    const renamed = fileName.trim() ? new File([selectedFile], fileName.trim(), { type: selectedFile.type, lastModified: selectedFile.lastModified }) : selectedFile;
+    setFiles(current => [...current, renamed]);
+    setFileName(''); setSelectedFile(undefined); setUploadOpen(false); setNotice('');
   };
   const save = async (event: FormEvent) => {
     event.preventDefault();
@@ -126,10 +134,10 @@ function BasicsForm({ item, workspaceId, onSaved, onCancel }: {
       <label>说明<textarea value={description} maxLength={20_000} onChange={event => { setDescription(event.target.value); setNotice(''); }} placeholder="介绍当前场景的背景。"/></label>
       <label>目标<textarea value={objective} maxLength={20_000} onChange={event => { setObjective(event.target.value); setNotice(''); }} placeholder="说明需要达成的结果。"/></label>
       </div>
-      <section className="scenario-materials" aria-label="资料"><header><span><b>资料</b><small>添加完成当前场景所需的基础资料。</small></span><div><button className="secondary" type="button" onClick={() => { setLinkOpen(current => !current); setUploadOpen(false); }}><Link2 size={14}/>添加链接</button><button className="secondary" type="button" onClick={() => { setUploadOpen(current => !current); setLinkOpen(false); }}><Upload size={14}/>上传文件</button></div></header>
-        <input hidden ref={fileInput} type="file" multiple aria-label="上传资料文件" onChange={event => { const selectedFiles = Array.from(event.target.files ?? []); if (selectedFiles.length) { setFiles(current => [...current, ...selectedFiles]); setUploadOpen(false); setNotice(''); } event.target.value = ''; }}/>
+      <section className="scenario-materials" aria-label="资料"><header><span><b>资料</b><small>添加完成当前场景所需的基础资料。</small></span><div><button className="secondary" type="button" onClick={() => { setLinkOpen(current => !current); setUploadOpen(false); }}><Link2 size={14}/>添加链接</button><button className="secondary" type="button" onClick={() => { setUploadOpen(current => !current); setLinkOpen(false); }}><Upload size={14}/>添加文件</button></div></header>
+        <input hidden ref={fileInput} type="file" aria-label="选择资料文件" onChange={event => { const file = event.target.files?.[0]; if (file) { setSelectedFile(file); setFileName(current => current || file.name); } event.target.value = ''; }}/>
         {linkOpen && <div className="scenario-link-editor"><label>链接名称<input value={linkName} maxLength={220} onChange={event => setLinkName(event.target.value)} placeholder="选填"/></label><label>链接地址<input value={linkUrl} type="url" onChange={event => setLinkUrl(event.target.value)} placeholder="https://"/></label><button className="secondary" type="button" disabled={!linkUrl.trim()} onClick={addLink}><Check size={15}/><span className="sr-only">添加链接</span></button></div>}
-        {uploadOpen && <div className="scenario-upload-editor"><span><FileText size={15}/><b>文件名称</b><small>选择后将随场景一起保存</small></span><button className="secondary" type="button" onClick={() => fileInput.current?.click()}><Upload size={14}/>选择文件</button></div>}
+        {uploadOpen && <div className="scenario-upload-editor"><label>资料名称<input value={fileName} maxLength={220} onChange={event => setFileName(event.target.value)} placeholder="为这份资料起个名称"/></label><div className="scenario-file-picker"><span>{selectedFile ? selectedFile.name : '尚未选择文件'}</span><button className="secondary" type="button" onClick={() => fileInput.current?.click()}><Upload size={14}/>选择文件</button></div><button className="secondary" type="button" disabled={!selectedFile} onClick={addFile}><Check size={15}/><span className="sr-only">添加文件</span></button></div>}
         {!materials.length && !files.length && !linkOpen && !uploadOpen && <p className="scenario-materials-empty">尚未添加资料</p>}
         <ul>{materials.map((material, index) => <li key={`${index}-${material.value}`}>{material.kind === 'LINK' ? <Link2 size={15}/> : <FileText size={15}/>}{material.kind === 'LINK' ? <a href={material.value} target="_blank" rel="noreferrer">{material.name}</a> : <button className="ghost case-material-preview-button" type="button" onClick={() => setPreview(material)}>{material.name}</button>}
           <span className={`case-material-kind ${material.kind.toLowerCase()}`}>{material.kind === 'LINK' ? '链接' : '文件'}</span><MaterialName name={material.name} file={material.kind === 'FILE'} onRename={name => { setMaterials(current => current.map((entry, i) => i === index ? { ...entry, name } : entry)); setNotice(''); }}/>
