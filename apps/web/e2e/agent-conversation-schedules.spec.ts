@@ -1881,6 +1881,13 @@ test('internal navigation restores a draft in its originating work directory', a
   await navigation.getByRole('button', { name: '主页' }).click();
   await expect(composer).toHaveValue('保留已有项目目录中的草稿');
   await expect(recoverDraft).toHaveAttribute('aria-current', 'page');
+
+  await page.getByRole('button', { name: '日报会话', exact: true }).click();
+  await expect(page).toHaveURL(/\/agent\/conversations\/scheduled-conversation$/);
+  await navigation.getByRole('button', { name: '主页' }).click();
+  await expect(page).toHaveURL(/\/agent\?draft_work_directory_id=existing-directory$/);
+  await expect(composer).toHaveValue('保留已有项目目录中的草稿');
+  await expect(recoverDraft).toHaveAttribute('aria-current', 'page');
 });
 
 
