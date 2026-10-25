@@ -5,7 +5,7 @@ import { api } from '../api/client';
 import { useProductDialog } from '../components/ProductDialogContext';
 import { useEscapeClose } from '../components/useEscapeClose';
 import { useWorkbenchStore } from '../store/workbench';
-import type { FlowRunSchedule, FlowRunScheduleTemplate } from '../types';
+import type { FlowRunSchedule, FlowRunScheduleOccurrence, FlowRunScheduleTemplate } from '../types';
 
 type Option = { value: string; label: string };
 
@@ -53,11 +53,18 @@ function ScheduleCreateDialog({ templates, onClose, onCreated }: { templates: Fl
 
 const SCHEDULE_RECORD_PAGE_SIZE = 10;
 
-function ScheduleRecordList({ schedule }: { schedule: FlowRunSchedule }) {
+function ScheduleRecordNodesDialog({ occurrence, onClose }: { occurrence: FlowRunScheduleOccurrence; onClose: () => void }) {
   const openAutomaticRecord = useWorkbenchStore(state => state.openAutomaticRecord);
+  const run = occurrence.flow_run;
+  const nodes = run?.node_runs ?? [];
+  useEscapeClose(onClose);
+  return <div className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><section className="modal schedule-record-nodes-dialog" role="dialog" aria-modal="true" aria-label="节点运行状态"><header><div><span className="eyebrow">NODE RUNS</span><h2>节点运行状态</h2><p>{formatTime(occurrence.scheduled_for)} · {occurrence.trigger_kind === 'MANUAL' ? '手动执行' : '计划执行'} · {run ? `连续运行 #${run.run_no}` : '执行记录'}</p></div><button type="button" className="ghost" aria-label="关闭节点运行状态" onClick={onClose}><X size={17}/></button></header><div className="schedule-record-node-list">{nodes.length ? nodes.map(node => <button type="button" key={node.id} disabled={!run?.parent_flow_run_id} onClick={() => run?.parent_flow_run_id && openAutomaticRecord(run.parent_flow_run_id, run.id, node.id, node.attempts.at(-1)?.id)}><CircleDot size={16}/><span><b>{node.name || node.flow_node_snapshot_key}</b><small>{node.flow_node_snapshot_key}</small></span><em>{node.state} · {node.attempts.length} 次 Attempt</em><ChevronRight size={16}/></button>) : <p>该次执行尚未生成节点运行状态。</p>}</div><footer><button type="button" className="primary" onClick={onClose}>完成</button></footer></section></div>;
+}
+
+function ScheduleRecordList({ schedule }: { schedule: FlowRunSchedule }) {
   const [page, setPage] = useState(1);
-  const [expandedRecordId, setExpandedRecordId] = useState<string>();
-  useEffect(() => { setPage(1); setExpandedRecordId(undefined); }, [schedule.id]);
+  const [selectedOccurrence, setSelectedOccurrence] = useState<FlowRunScheduleOccurrence>();
+  useEffect(() => { setPage(1); setSelectedOccurrence(undefined); }, [schedule.id]);
   const { data, isLoading } = useQuery({
     queryKey: ['flow-run-schedule-occurrences', schedule.id, page],
     queryFn: () => api.flowRunScheduleOccurrences(schedule.id, page, SCHEDULE_RECORD_PAGE_SIZE),
@@ -70,10 +77,9 @@ function ScheduleRecordList({ schedule }: { schedule: FlowRunSchedule }) {
   if (!occurrences.length) return <div className="schedule-record-empty">尚未产生执行记录。任务首次触发后，记录会出现在这里。</div>;
   return <div className="schedule-record-list"><div className="schedule-record-table" role="list">{occurrences.map(occurrence => {
     const run = occurrence.flow_run;
-    const expanded = expandedRecordId === occurrence.id;
     const state = occurrence.state === 'STARTED' ? '已启动' : occurrence.state === 'FAILED' ? '失败' : '准备中';
-    return <article className="schedule-record" key={occurrence.id} role="listitem"><button type="button" className="schedule-record-summary" aria-expanded={expanded} onClick={() => setExpandedRecordId(current => current === occurrence.id ? undefined : occurrence.id)}><span className="schedule-record-time">{formatTime(occurrence.scheduled_for)}</span><span className="schedule-record-kind">{occurrence.trigger_kind === 'MANUAL' ? '手动执行' : '计划执行'}</span><span className="schedule-record-run">{run ? `连续运行 #${run.run_no} · ${run.name}` : occurrence.error_detail || '正在创建连续运行记录'}</span><em className={`schedule-record-state ${occurrence.state.toLowerCase()}`}>{state}</em><ChevronRight className="schedule-record-expand" size={16}/></button>{expanded && <div className="schedule-record-detail">{run?.node_runs.length ? <div className="schedule-record-nodes">{run.node_runs.map(node => <button type="button" key={node.id} disabled={!run.parent_flow_run_id} onClick={() => run.parent_flow_run_id && openAutomaticRecord(run.parent_flow_run_id, run.id, node.id, node.attempts.at(-1)?.id)}><CircleDot size={14}/><span><b>{node.name || node.flow_node_snapshot_key}</b><small>{node.state} · {node.attempts.length} 次 Attempt</small></span><ChevronRight size={14}/></button>)}</div> : <p>该次执行尚未生成节点运行状态。</p>}</div>}</article>;
-  })}</div>{pageCount > 1 && <nav className="schedule-record-pagination" aria-label="执行记录分页"><button type="button" aria-label="上一页" disabled={page === 1} onClick={() => setPage(current => current - 1)}><ChevronLeft size={15}/>上一页</button><span>第 {page} / {pageCount} 页 · 共 {total} 条</span><button type="button" aria-label="下一页" disabled={page === pageCount} onClick={() => setPage(current => current + 1)}>下一页<ChevronRight size={15}/></button></nav>}</div>;
+    return <article className="schedule-record" key={occurrence.id} role="listitem"><button type="button" className="schedule-record-summary" aria-haspopup="dialog" onClick={() => setSelectedOccurrence(occurrence)}><span className={`schedule-record-marker ${occurrence.state.toLowerCase()}`}/><span className="schedule-record-primary"><b>{formatTime(occurrence.scheduled_for)}</b><small>{occurrence.trigger_kind === 'MANUAL' ? '手动执行' : '计划执行'}</small></span><span className="schedule-record-run">{run ? `连续运行 #${run.run_no} · ${run.name}` : occurrence.error_detail || '正在创建连续运行记录'}</span><em className={`schedule-record-state ${occurrence.state.toLowerCase()}`}>{state}</em><ChevronRight className="schedule-record-expand" size={16}/></button></article>;
+  })}</div>{pageCount > 1 && <nav className="schedule-record-pagination" aria-label="执行记录分页"><button type="button" aria-label="上一页" disabled={page === 1} onClick={() => setPage(current => current - 1)}><ChevronLeft size={15}/>上一页</button><span>第 {page} / {pageCount} 页 · 共 {total} 条</span><button type="button" aria-label="下一页" disabled={page === pageCount} onClick={() => setPage(current => current + 1)}>下一页<ChevronRight size={15}/></button></nav>}{selectedOccurrence && <ScheduleRecordNodesDialog occurrence={selectedOccurrence} onClose={() => setSelectedOccurrence(undefined)}/>}</div>;
 }
 
 export function SchedulesPage() {

@@ -176,9 +176,10 @@ test('schedule history is paginated and only shows node states for an expanded r
   const record = page.locator('.schedule-record').first();
   await expect(page.getByText('collect', { exact: true })).toHaveCount(0);
   await record.locator('.schedule-record-summary').click();
-  await expect(record.getByText('collect', { exact: true })).toBeVisible();
-  await record.locator('.schedule-record-summary').click();
-  await expect(record.getByText('collect', { exact: true })).toHaveCount(0);
+  const nodeDialog = page.getByRole('dialog', { name: '节点运行状态' });
+  await expect(nodeDialog.getByRole('button', { name: /collect/ })).toBeVisible();
+  await nodeDialog.getByRole('button', { name: '完成', exact: true }).click();
+  await expect(nodeDialog).toHaveCount(0);
   await page.getByRole('button', { name: '下一页', exact: true }).click();
   await expect(page.locator('.schedule-record-run')).toContainText('连续运行 11');
   await expect(page.getByText('第 2 / 2 页 · 共 11 条', { exact: true })).toBeVisible();
