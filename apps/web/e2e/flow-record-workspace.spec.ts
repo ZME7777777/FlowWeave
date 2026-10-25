@@ -68,7 +68,7 @@ const automaticBase = {
 };
 
 
-test('record workspace selects mixed records and keeps record actions in its resizable rail', async ({ page }) => {
+test('record directory groups scheduled runs and opens a full canvas workspace', async ({ page }) => {
   const manual = { ...run, id: 'manual-record', name: '逐步验收记录', parent_flow_run_id: run.id, start_node_key: 'first' };
   await page.route('**/api/v1/**', async route => {
     const path = new URL(route.request().url()).pathname.replace(/^\/flowweave/, '');
@@ -81,7 +81,10 @@ test('record workspace selects mixed records and keeps record actions in its res
     if (path === `/api/v1/flow-runs/${manual.id}`) return respond(manual);
     if (path.endsWith('/stepwise-runs/manual-record')) return respond(manual);
     if (path.endsWith('/stepwise-runs')) return respond([manual]);
-    if (path.endsWith('/automatic-runs/summaries')) return respond([{ ...automaticBase, plan: { ...automaticBase.automation_plan, reachable_node_count: 2 } }]);
+    if (path.endsWith('/automatic-runs/summaries')) return respond([
+      { ...automaticBase, plan: { ...automaticBase.automation_plan, reachable_node_count: 2 } },
+      { ...automaticBase, id: 'scheduled-1', name: '定时记录 1', schedule_id: 'schedule-1', schedule_name: '每日验收', plan: { ...automaticBase.automation_plan, reachable_node_count: 2 } },
+    ]);
     if (path.endsWith('/automatic-runs/automatic-1')) return respond(automaticBase);
     if (path.endsWith('/runtime/resource')) return respond({ resource: null });
     if (path.endsWith('/runtime')) return respond({ status: 'ACTIVE', active_generation: 1, write_available: false });
@@ -95,30 +98,31 @@ test('record workspace selects mixed records and keeps record actions in its res
   await page.getByRole('button', { name: `展开 ${definition.name} 的 FlowRun`, exact: true }).click();
   await page.locator('.flow-run-tree-run').filter({ hasText: run.name }).click();
   const directory = page.locator('.flow-run-record-directory');
-  await expect(directory.locator('.flow-run-record-directory-list>button')).toHaveCount(2);
+  await expect(directory.locator('.flow-run-record-directory-list>button')).toHaveCount(3);
   await directory.getByRole('button', { name: '连续', exact: true }).click();
   await expect(directory.locator('.flow-run-record-directory-list>button')).toHaveCount(1);
+  const group = directory.locator('.flow-run-schedule-directory');
+  const toggle = group.getByRole('button', { name: /每日验收/ });
+  await expect(group.getByRole('button', { name: /定时记录 1/ })).toBeVisible();
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(group.getByRole('button', { name: /定时记录 1/ })).toHaveCount(0);
+  await expect(directory.locator('.flow-run-record-directory-list>button')).toHaveCount(1);
+  await toggle.click();
+  await expect(group.getByRole('button', { name: /定时记录 1/ })).toBeVisible();
   await directory.getByRole('button', { name: /自动记录 1/ }).click();
   await expect(page.locator('.flow-run-workbench-header h1')).toHaveText(automaticBase.name);
   await expect(page.locator('.run-graph')).toBeVisible();
   await expect(page.locator('.run-record-detail-panel')).toBeVisible();
-  const rail = page.locator('.flow-run-inner-rail');
-  await expect(rail.locator('.unified-run-record')).toHaveCount(3);
-  const separator = page.getByRole('separator', { name: '调整运行记录栏宽度' });
-  const originalWidth = await rail.evaluate(element => element.getBoundingClientRect().width);
-  await separator.focus();
-  await separator.press('ArrowRight');
-  await expect.poll(() => rail.evaluate(element => element.getBoundingClientRect().width)).toBeGreaterThan(originalWidth);
-  await rail.locator('.unified-run-record').filter({ hasText: manual.name }).getByRole('button').click();
-  await rail.getByRole('tab', { name: '逐步', exact: true }).click();
-  await expect(rail.getByRole('button', { name: '拷贝', exact: true })).toBeEnabled();
-  await expect(rail.getByRole('button', { name: '删除', exact: true })).toBeEnabled();
+  await expect(page.locator('.flow-run-inner-rail')).toHaveCount(0);
+  await expect(page.getByRole('separator', { name: '调整运行记录栏宽度' })).toHaveCount(0);
+  await page.getByRole('button', { name: '返回运行记录', exact: true }).click();
+  await page.getByRole('button', { name: `展开 ${definition.name} 的 FlowRun`, exact: true }).click();
+  await page.locator('.flow-run-tree-run').filter({ hasText: run.name }).click();
+  await directory.getByRole('button', { name: '逐步', exact: true }).click();
+  await directory.getByRole('button', { name: new RegExp(manual.name) }).click();
   await expect(page.locator('.flow-run-workbench-header h1')).toHaveText(manual.name);
-  await page.locator('.flow-run-inner-rail').getByRole('button', { name: '新建运行', exact: true }).click();
-  const dialog = page.getByRole('dialog', { name: '选择运行类型' });
-  await expect(dialog.getByRole('button', { name: /逐步运行/ })).toBeVisible();
-  await expect(dialog.getByRole('button', { name: /连续运行/ })).toBeVisible();
-  await dialog.getByRole('button', { name: '取消', exact: true }).click();
+  await expect(page.locator('.run-graph')).toBeVisible();
 });
 
 test('flow library saves an empty draft before opening its node editor', async ({ page }) => {
@@ -154,7 +158,9 @@ test('flow library saves an empty draft before opening its node editor', async (
   await expect(page.locator('.flow-library-row')).toContainText('未找到一个启动节点');
   await page.getByRole('button', { name: '操作流程 可恢复编排草稿', exact: true }).click();
   await page.locator('.flow-row-menu').getByRole('button', { name: '进入编排', exact: true }).click();
-  await expect(page.getByRole('textbox', { name: '流程名称', exact: true })).toHaveValue('可恢复编排草稿');
+  await expect(page.getByTestId('flow-designer')).toBeVisible();
+  await expect(page.getByRole('button', { name: '保存编排', exact: true })).toBeVisible();
+  await expect(page.getByRole('textbox', { name: '流程名称', exact: true })).toHaveCount(0);
 });
 
 
@@ -185,11 +191,19 @@ test('flow library pagination retains bulk deletion and copying after the merge'
   await expect(preview.locator('.react-flow__node')).toHaveCount(2);
   await expect(preview.locator('.react-flow__edge')).toHaveCount(2);
   await expect(preview.getByRole('button', { name: '进入编排', exact: true })).toBeVisible();
-  for (const [width, railWidth] of [[1440, 320], [1024, 280]]) {
+  const previewNode = preview.locator('.react-flow__node').first();
+  const beforeDrag = await previewNode.boundingBox();
+  expect(beforeDrag).not.toBeNull();
+  await page.mouse.move(beforeDrag!.x + beforeDrag!.width / 2, beforeDrag!.y + 20);
+  await page.mouse.down();
+  await page.mouse.move(beforeDrag!.x + beforeDrag!.width / 2 + 55, beforeDrag!.y + 55, { steps: 8 });
+  await page.mouse.up();
+  await expect.poll(async () => (await previewNode.boundingBox())!.x).toBeGreaterThan(beforeDrag!.x + 30);
+  for (const [width, railWidth] of [[1440, 250], [1024, 220]]) {
     await page.setViewportSize({ width, height: 900 });
     await expect.poll(() => page.getByLabel('流程列表', { exact: true }).evaluate(element => element.getBoundingClientRect().width)).toBe(railWidth);
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(1);
-    await page.screenshot({ path: `../../.tmp/pull-deploy-694/flow-canvas-${width}.png` });
+    await page.screenshot({ path: `../../.tmp/pull-deploy-695/flow-canvas-${width}.png` });
   }
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.getByRole('button', { name: '下一页', exact: true }).click();
@@ -201,7 +215,8 @@ test('flow library pagination retains bulk deletion and copying after the merge'
   await expect(page.locator('.flow-library-pagination')).toContainText('第 1 / 1 页');
   await page.getByRole('button', { name: '操作流程 验收流程 0', exact: true }).click();
   await page.getByRole('button', { name: '复制流程', exact: true }).click();
-  await expect(page.getByRole('textbox', { name: '流程名称', exact: true })).toHaveValue('验收流程 0 · 副本');
+  await expect(page.getByTestId('flow-designer')).toBeVisible();
+  await expect.poll(() => page.locator('.flow-editor-page').evaluate(element => element.getBoundingClientRect().height)).toBeGreaterThan(800);
   expect(copied).toEqual({
     name: '验收流程 0 · 副本', description: '', default_entry_key: null,
     nodes: definition.nodes.map(node => ({

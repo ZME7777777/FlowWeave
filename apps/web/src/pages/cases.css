@@ -122,6 +122,8 @@ html:has(.scenario-space){overscroll-behavior:none}
 .scenario-file-picker{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0;height:36px;border:1px solid #c8d9cf;border-radius:6px;background:#fff;padding:0 6px 0 9px}
 .scenario-file-picker>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#71827a;font-size:11px}
 .scenario-upload-editor svg{color:#477061}
+.scenario-materials .scenario-material-confirm{display:inline-flex;align-items:center;justify-content:center;align-self:end;width:36px;height:36px;min-height:36px;padding:0}
+.scenario-materials .scenario-material-confirm svg{width:16px;height:16px}
 .scenario-materials li>span:not(.case-material-kind){display:grid;flex:1;min-width:0}
 .scenario-materials li>span:not(.case-material-kind)>small{margin:2px 0 0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .scenario-materials .case-material-kind{flex:none;border-radius:999px;background:#edf4ef;padding:3px 6px;color:#537764;font-size:9px;line-height:1}
