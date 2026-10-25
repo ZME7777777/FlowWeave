@@ -114,6 +114,27 @@ FlowRun 行只显示运行名称、快照／环境和正式容器可用性标签
 Alembic 唯一 head 仍为 `0172_case_configuration`；无数据库、Runtime 或部署改动。
 当前与下一可执行切片均为 NONE，提交后停止。
 
+FR-696 发布验收（2026-10-25）：按用户授权，仅发布 Web，代码版本为
+`305e161c5cdcbd3b9abdacb00b34b0feeb6b6a72`。正式远端预检与受管最小上下文
+prepare 通过，源码归档 SHA-256 为
+`b7d0364164877751f9100b17b5cbcff2abcbca7909acbcd42b66df189146e923`。
+实际 linux/amd64 Web 镜像为
+`sha256:585149ddd41dc0eeb9403c301fc176b06799c3a77deaafafb37c469a29f4dfcf`，
+OCI revision 与代码版本一致。以该镜像实际静态资源和受控 API 重跑相同 22 个
+浏览器用例全部通过；54 个实际加载 JS／CSS 的 SHA-256 与线上运行镜像一致。
+该回归不替代真实模型／Runtime 业务执行验收。
+
+切换前保留旧 Web 镜像的精确 rollback tag 与原日志，只 recreate Web。Web HTTP、
+API／stream-api health 和 readiness、公开前缀 HTML 与入口资源哈希、未认证 API
+401 边界均通过。服务器真实 Chromium 验证前缀登录、Agent 深层路由及根登录；
+全新上下文的认证请求使用 `/flowweave/api/v1/`，没有根 `/api/v1/` 请求。
+其余 47 个容器的镜像及启动时间不变，服务器 Compose／env 摘要不变；没有修改
+数据库、Runtime 或业务会话。正式 remote-release-finish 通过版本／健康门禁，
+仅回收一份过期受管成功上下文，保留各 scope 最近三份与所有引用／回滚版本；
+精确镜像保留审计无候选，没有清理共享 BuildKit、卷、Workspace 或数据库备份。
+当前与下一可执行切片均为 NONE；本补记不改变部署代码身份。
+
+
 ### FR-695 远程全幅画布与定时目录合并发布 — DONE
 
 依赖：FR-694 DONE。按用户明确授权合并远程三个 Web 提交，保留本地十个提交；
