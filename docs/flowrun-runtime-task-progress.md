@@ -119,6 +119,36 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 Alembic 唯一 head 仍为 `0172_case_configuration`，无迁移或 Runtime 改动；未部署。
 当前与下一可执行切片均为 NONE，提交后停止。
 
+FR-697 发布验收（2026-10-25）：按用户授权发布 platform／web，代码版本为
+`7fa9ce6860e7dbe386ccaaad2887f1dcc2d93967`。正式远端预检和 commit-bound 最小
+上下文 prepare 通过；源码归档 SHA-256 分别为
+`13111b550c59869761d7f521015bc31fec62f1cbfc4840bdc760be8767745852`、
+`e5c61c187cedcf774f53223e51ce19cc8e1feda952ee194cca8b38c150c97289`，
+本地与远端复核一致。实际 linux/amd64 平台、Web 镜像分别为
+`sha256:a3476c932dc39cfc3d2453785cc2d84ccddd2e5707fe648fa9bdbfa8727759d5`、
+`sha256:66d5d2899138a8b932187fbc8da3e955d535f5d03d5c0a89670df2313e5a329b`，
+OCI revision 均与代码版本一致。
+
+实际新平台镜像的隔离、只读、无网络 schema 探针通过，覆盖五类资料引用的创建／
+更新透传及空名称拒绝；生产 Case 既有字段与强制 RLS 只读核对通过。以新 Web
+镜像实际静态资源和受控 API 重跑相同 11 个 Chromium 用例全部通过，54 个实际加载
+JS／CSS 的 SHA-256 与线上运行镜像一致。上述探针和受控浏览器回归不替代真实
+PostgreSQL 写入、Runtime、业务资料上传或模型执行验收；未向业务会话发送测试消息。
+
+切换前保留原服务日志与精确 rollback tags；正式 migration 成功，唯一 Alembic head
+仍为 `0172_case_configuration`。同步 recreate api／stream-api／worker／web，四服务
+运行同一代码版本，health／readiness／Web HTTP 通过。公开前缀 HTML、入口资源哈希、
+深层路由和未认证 API 401 边界通过；服务器真实 Chromium 验证前缀登录、Agent 深层
+路由及根登录。全新浏览器上下文认证请求使用 `/flowweave/api/v1/`，根 `/api/v1/`
+请求为零。其余 43 个容器的镜像和启动时间不变，包括 Runtime Provider 与既有
+Runtime；服务器 Compose／env 摘要不变，没有修改服务器配置、OpenHands 或业务数据。
+
+platform／web remote-release-finish 均通过版本／健康门禁，回收两份过期受管成功
+上下文，保留各 scope 最近三份成功上下文及引用／回滚版本；精确镜像保留流程回收
+一个旧平台镜像的三个 rollback tags，随后审计无候选。未清理共享 BuildKit、卷、
+Workspace 或数据库备份。收尾后再次复核四服务版本／健康、迁移头、配置摘要及其余
+43 个容器不变。当前与下一可执行切片均为 NONE；本补记不改变部署代码身份。
+
 ### FR-696 流程目录与运行记录工作台交互调整 — DONE
 
 依赖：FR-695 DONE。按用户八项界面反馈，调整流程库侧栏操作与滚动、全幅编排、
