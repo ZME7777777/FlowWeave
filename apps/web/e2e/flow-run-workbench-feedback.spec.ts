@@ -1182,13 +1182,13 @@ test('run projection stays neutral until record selection and automatic save rep
 
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
-  await page.getByRole('button', { name: /Run #1 · 运行中 测试运行/ }).click();
+  await page.locator('.run-open').click();
 
   const graph = page.locator('.run-graph');
   await expect(page.locator('.run-main .run-title')).toHaveCount(0);
   await expect(page.locator('.run-main h1')).toHaveCount(0);
   await expect(graph.getByText('运行快照 v1', { exact: true })).toHaveCount(0);
-  await page.getByRole('button', { name: '管理运行记录', exact: true }).click();
+  await expect(page.getByRole('button', { name: '返回运行列表' })).toBeVisible();
   await expect(graph).toContainText('未选择逐步运行记录，当前显示中性流程定义');
   await expect(graph.getByText('当前激活', { exact: true })).toHaveCount(0);
   await expect(graph.getByText('运行 1 次', { exact: true })).toHaveCount(0);
@@ -1268,9 +1268,9 @@ test('run projection stays neutral until record selection and automatic save rep
 
   await automaticEditor.getByRole('button', { name: '填写节点输入' }).click();
   const inputDialog = page.getByRole('dialog', { name: '填写节点输入' });
-  await expect(inputDialog.getByRole('textbox', { name: '填写输入 源链接' })).toHaveValue('https://example.com/default-input');
-  await inputDialog.getByRole('textbox', { name: '填写输入 源链接' }).fill('https://example.com/input');
-  await inputDialog.getByLabel('上传输入文件 源文件').setInputFiles({
+  await expect(inputDialog.getByRole('textbox', { name: '填写输入 input_1' })).toHaveValue('https://example.com/default-input');
+  await inputDialog.getByRole('textbox', { name: '填写输入 input_1' }).fill('https://example.com/input');
+  await inputDialog.getByLabel('上传输入文件 input_2').setInputFiles({
     name: 'example.md', mimeType: 'text/markdown', buffer: Buffer.from('hello input'),
   });
   await inputDialog.getByRole('button', { name: '保存输入并继续' }).click();
