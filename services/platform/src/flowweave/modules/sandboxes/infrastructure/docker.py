@@ -71,6 +71,127 @@ _PRE_NODE_ATTEMPT_RUNTIME_SPEC_FIELDS = _PRE_SHARED_PROJECT_RUNTIME_SPEC_FIELDS 
 }
 
 
+
+_LIST_LISTENING_PROCESSES = r'''
+import json
+import os
+from pathlib import Path
+
+
+def listen_inodes(path):
+    found = {}
+    try:
+        lines = Path(path).read_text().splitlines()[1:]
+    except OSError:
+        return found
+    for line in lines:
+        fields = line.split()
+        if len(fields) < 10 or fields[3] != "0A":
+            continue
+        try:
+            port = int(fields[1].rsplit(":", 1)[1], 16)
+        except ValueError:
+            continue
+        if port not in {8000}:
+            found[fields[9]] = port
+    return found
+
+
+inodes = {**listen_inodes("/proc/net/tcp"), **listen_inodes("/proc/net/tcp6")}
+services = []
+for entry in os.listdir("/proc"):
+    if not entry.isdigit() or entry == "1":
+        continue
+    pid = int(entry)
+    try:
+        fd_dir = Path(f"/proc/{pid}/fd")
+        ports = sorted({
+            inodes[target[8:-1]]
+            for fd in fd_dir.iterdir()
+            if (target := os.readlink(fd)).startswith("socket:[") and target.endswith("]")
+            and target[8:-1] in inodes
+        })
+        if not ports:
+            continue
+        stat_fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+        cmdline = [
+            value.decode(errors="replace")
+            for value in Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+            if value
+        ]
+        if not cmdline:
+            continue
+        cwd = os.readlink(f"/proc/{pid}/cwd")
+        services.append({
+            "pid": pid,
+            "started_ticks": stat_fields[19],
+            "process_group_id": int(stat_fields[2]),
+            "command": " ".join(cmdline)[:2000],
+            "working_directory": cwd if cwd.startswith("/runtime/workspace/project") else None,
+            "ports": ports,
+        })
+    except (
+        FileNotFoundError, PermissionError, ProcessLookupError, OSError, ValueError, IndexError
+    ):
+        continue
+print(json.dumps(services, separators=(",", ":")))
+'''
+
+_STOP_LISTENING_PROCESS = r'''
+import json
+import os
+import signal
+import sys
+import time
+
+pid = int(sys.argv[1])
+expected_started = sys.argv[2]
+stopped = False
+try:
+    fields = open(f"/proc/{pid}/stat", encoding="utf-8").read().rsplit(")", 1)[1].split()
+    if fields[19] != expected_started:
+        raise ProcessLookupError
+    parents = {}
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        try:
+            parts = open(f"/proc/{entry}/stat", encoding="utf-8").read().rsplit(")", 1)[1].split()
+            parents.setdefault(int(parts[1]), []).append(int(entry))
+        except (FileNotFoundError, PermissionError, ProcessLookupError, OSError, ValueError, IndexError):
+            continue
+    descendants = []
+    pending = [pid]
+    while pending:
+        current = pending.pop()
+        children = parents.get(current, [])
+        descendants.extend(children)
+        pending.extend(children)
+    targets = [*reversed(descendants), pid]
+    for target in targets:
+        try:
+            os.kill(target, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        if not any(os.path.exists(f"/proc/{target}") for target in targets):
+            stopped = True
+            break
+        time.sleep(0.1)
+    if not stopped:
+        for target in targets:
+            try:
+                os.kill(target, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        stopped = True
+except (FileNotFoundError, PermissionError, ProcessLookupError, OSError, ValueError, IndexError):
+    pass
+print(json.dumps({"stopped": stopped}))
+'''
+
+
 @dataclass(frozen=True, slots=True)
 class DockerObservation:
     resource_id: str
@@ -1895,6 +2016,114 @@ chmod 0700 "$target"
                     "actual_manager_scope": observation.labels.get("flowweave.manager-scope"),
                 },
             )
+
+
+    def list_listening_processes(
+        self, resource_name: str, expected_resource_id: str
+    ) -> list[dict[str, object]]:
+        """Inspect listeners only after verifying the Runtime ownership contract."""
+
+        if controller_is_remote(self.settings):
+            try:
+                raw = DockerControllerClient(self.settings).post(
+                    "/v1/runtimes/services/list",
+                    {"resource_name": resource_name, "resource_id": expected_resource_id},
+                    timeout=15,
+                ).get("services")
+            except DockerControllerError as exc:
+                raise DomainError(
+                    "SANDBOX_BACKEND_UNAVAILABLE",
+                    "The Docker Runtime Provider is unavailable",
+                    503,
+                ) from exc
+            if not isinstance(raw, list):
+                raise DomainError("SANDBOX_DOCKER_PROTOCOL_ERROR", "Invalid service scan data", 502)
+            return [cast(dict[str, object], item) for item in raw if isinstance(item, dict)]
+        observation = self.inspect(resource_name)
+        if observation is None:
+            return []
+        self._verify_owner(observation, expected_resource_id, self.settings.sandbox_manager_scope)
+        raw = self._run(
+            [
+                self.settings.docker_binary,
+                "exec",
+                observation.resource_identifier,
+                "/runtime/.venv/bin/python",
+                "-c",
+                _LIST_LISTENING_PROCESSES,
+            ],
+            timeout=15,
+        )
+        try:
+            value = cast(object, json.loads(raw))
+        except json.JSONDecodeError as exc:
+            raise DomainError(
+                "SANDBOX_DOCKER_PROTOCOL_ERROR", "Invalid service scan data", 502
+            ) from exc
+        if not isinstance(value, list):
+            raise DomainError("SANDBOX_DOCKER_PROTOCOL_ERROR", "Invalid service scan data", 502)
+        return [cast(dict[str, object], item) for item in value if isinstance(item, dict)]
+
+    def stop_listening_process(
+        self,
+        resource_name: str,
+        expected_resource_id: str,
+        *,
+        pid: int,
+        started_ticks: str,
+        process_group_id: int | None,
+    ) -> bool:
+        """Stop an exact listener after its PID identity is re-validated in-container."""
+
+        payload = {
+            "resource_name": resource_name,
+            "resource_id": expected_resource_id,
+            "pid": pid,
+            "started_ticks": started_ticks,
+            "process_group_id": process_group_id,
+        }
+        if controller_is_remote(self.settings):
+            try:
+                raw = DockerControllerClient(self.settings).post(
+                    "/v1/runtimes/services/stop", payload, timeout=20
+                )
+            except DockerControllerError as exc:
+                raise DomainError(
+                    "SANDBOX_BACKEND_UNAVAILABLE",
+                    "The Docker Runtime Provider is unavailable",
+                    503,
+                ) from exc
+            stopped = raw.get("stopped")
+            if not isinstance(stopped, bool):
+                raise DomainError("SANDBOX_DOCKER_PROTOCOL_ERROR", "Invalid service stop data", 502)
+            return stopped
+        observation = self.inspect(resource_name)
+        if observation is None:
+            return False
+        self._verify_owner(observation, expected_resource_id, self.settings.sandbox_manager_scope)
+        raw = self._run(
+            [
+                self.settings.docker_binary,
+                "exec",
+                observation.resource_identifier,
+                "/runtime/.venv/bin/python",
+                "-c",
+                _STOP_LISTENING_PROCESS,
+                str(pid),
+                started_ticks,
+                "" if process_group_id is None else str(process_group_id),
+            ],
+            timeout=20,
+        )
+        try:
+            value = cast(object, json.loads(raw))
+        except json.JSONDecodeError as exc:
+            raise DomainError(
+                "SANDBOX_DOCKER_PROTOCOL_ERROR", "Invalid service stop data", 502
+            ) from exc
+        if not isinstance(value, dict) or not isinstance(value.get("stopped"), bool):
+            raise DomainError("SANDBOX_DOCKER_PROTOCOL_ERROR", "Invalid service stop data", 502)
+        return cast(bool, value["stopped"])
 
     def inspect(self, resource_name: str) -> DockerObservation | None:
         if controller_is_remote(self.settings):

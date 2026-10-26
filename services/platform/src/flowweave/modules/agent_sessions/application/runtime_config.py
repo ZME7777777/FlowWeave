@@ -753,6 +753,14 @@ def frozen_agent_definitions(
     return tuple(definitions)
 
 
+_TEMPORARY_SERVICE_CONTEXT = (
+    "临时服务管理：启动用于预览、调试或验证的监听服务时，必须使用项目内受管启动方式，"
+    "并在任务结束时报告服务地址、端口和是否仍需保留。临时服务默认应在验证完成后停止；"
+    "若需要保留，明确说明原因和预期时长。不得使用宽泛的进程终止命令。"
+    "平台会自动发现 Runtime 中的监听服务并在服务到期、会话删除或会话空闲超过 24 小时时清理。"
+)
+
+
 def build_agent_spec(
     config: FrozenSessionConfig,
     *,
@@ -805,6 +813,7 @@ def build_agent_spec(
                     CONVERSATION_COLLABORATION_CONTEXT,
                     MARKDOWN_FENCE_CONTEXT,
                     MATH_MARKDOWN_CONTEXT,
+                    _TEMPORARY_SERVICE_CONTEXT,
                     frozen_context_suffix(config.capabilities),
                     system_message_suffix_append.strip(),
                 )

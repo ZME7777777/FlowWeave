@@ -28,6 +28,8 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, m
 from flowweave.bootstrap.settings import Settings
 from flowweave.modules.environments.infrastructure import docker as environments_docker
 from flowweave.modules.sandboxes.infrastructure.docker import (
+    _LIST_LISTENING_PROCESSES,
+    _STOP_LISTENING_PROCESS,
     DockerSandboxProvider,
     backend_name,
 )
@@ -298,6 +300,17 @@ class RuntimeNetworkDeleteWrite(ScopedRequest):
 class ResolveContainerWrite(SandboxDeleteWrite):
     environment_id: UUID
 
+
+
+
+class RuntimeServiceScanWrite(SandboxDeleteWrite):
+    pass
+
+
+class RuntimeServiceStopWrite(RuntimeServiceScanWrite):
+    pid: int = Field(ge=2)
+    started_ticks: str = Field(min_length=1, max_length=40, pattern=r"^[0-9]+$")
+    process_group_id: int | None = Field(default=None, ge=1)
 
 class LegacyRemoveWrite(ScopedRequest):
     resource_name: str = Field(
@@ -2033,6 +2046,75 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             str(payload.resource_id),
         )
         return {"graceful": result.graceful, "stopped": result.stopped}
+
+
+
+    @app.post("/v1/runtimes/services/list")
+    async def list_runtime_services(payload: RuntimeServiceScanWrite) -> dict[str, Any]:
+        check_scope(payload.manager_scope)
+        provider = DockerSandboxProvider(configured)
+        observation = await run_observe(provider.inspect, payload.resource_name)
+        if observation is None:
+            return {"services": []}
+        provider._verify_owner(
+            observation, str(payload.resource_id), configured.sandbox_manager_scope
+        )
+        raw = await run_observe(
+            provider._run,
+            [
+                configured.docker_binary,
+                "exec",
+                observation.resource_identifier,
+                "/runtime/.venv/bin/python",
+                "-c",
+                _LIST_LISTENING_PROCESSES,
+            ],
+            timeout=15,
+        )
+        try:
+            services = json.loads(raw)
+        except ValueError as exc:
+            raise DomainError(
+                "SANDBOX_DOCKER_PROTOCOL_ERROR", "Invalid service scan data", 502
+            ) from exc
+        if not isinstance(services, list):
+            raise DomainError("SANDBOX_DOCKER_PROTOCOL_ERROR", "Invalid service scan data", 502)
+        return {"services": services}
+
+    @app.post("/v1/runtimes/services/stop")
+    async def stop_runtime_service(payload: RuntimeServiceStopWrite) -> dict[str, bool]:
+        check_scope(payload.manager_scope)
+        provider = DockerSandboxProvider(configured)
+        observation = await run_observe(provider.inspect, payload.resource_name)
+        if observation is None:
+            return {"stopped": False}
+        provider._verify_owner(
+            observation, str(payload.resource_id), configured.sandbox_manager_scope
+        )
+        raw = await run_control(
+            provider._run,
+            [
+                configured.docker_binary,
+                "exec",
+                observation.resource_identifier,
+                "/runtime/.venv/bin/python",
+                "-c",
+                _STOP_LISTENING_PROCESS,
+                str(payload.pid),
+                payload.started_ticks,
+                "" if payload.process_group_id is None else str(payload.process_group_id),
+            ],
+            timeout=20,
+        )
+        try:
+            result = json.loads(raw)
+        except ValueError as exc:
+            raise DomainError(
+                "SANDBOX_DOCKER_PROTOCOL_ERROR", "Invalid service stop data", 502
+            ) from exc
+        if not isinstance(result, dict) or not isinstance(result.get("stopped"), bool):
+            raise DomainError("SANDBOX_DOCKER_PROTOCOL_ERROR", "Invalid service stop data", 502)
+        return {"stopped": result["stopped"]}
 
     @app.post("/v1/sandboxes/list")
     async def list_sandboxes(payload: ScopedRequest) -> dict[str, Any]:

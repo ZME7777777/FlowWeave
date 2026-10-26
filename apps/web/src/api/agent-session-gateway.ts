@@ -119,6 +119,7 @@ export interface AgentSessionApi {
   readonly addConversationCapability: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, capabilityVersionId: string) => Promise<AgentConversation>;
   readonly registerConversationCapabilities: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, capabilityVersionIds: string[]) => Promise<AgentConversationCapabilityRegistration>;
   readonly workspaceDetails: (hostId: AgentSessionHostId, options?: AgentSessionWorkspaceOptions) => Promise<AgentSessionWorkspaceDetails>;
+  readonly stopTemporaryService?: (hostId: AgentSessionHostId, serviceId: string) => Promise<{ stopped: boolean }>;
   readonly workspaceDirectory: (hostId: AgentSessionHostId, options?: AgentSessionDirectoryOptions) => Promise<AgentSessionWorkspaceDirectory>;
   readonly gitRepositories: (hostId: AgentSessionHostId, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<AgentSessionWorkspaceGitRepositories>;
   readonly syncGitRepository: (hostId: AgentSessionHostId, repositoryPath: string, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<void>;
@@ -216,6 +217,7 @@ export const agentWorkspaceSessionGateway: AgentSessionGateway = {
     addConversationCapability: api.addAgentConversationCapability,
     registerConversationCapabilities: api.registerAgentConversationCapabilities,
     workspaceDetails: api.agentWorkspaceDetails,
+    stopTemporaryService: api.stopAgentWorkspaceTemporaryService,
     workspaceDirectory: api.agentWorkspaceDirectory,
     gitRepositories: api.agentWorkspaceGitRepositories,
     syncGitRepository: api.syncAgentWorkspaceGitRepository,

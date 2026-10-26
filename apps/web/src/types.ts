@@ -1040,6 +1040,19 @@ export interface AgentSessionWorkspaceDetails {
   files: Array<{ path: string; kind: 'file' | 'directory'; size: number }>;
   repositories: WorkspaceGitRepository[];
   runtime: { container_id?: string | null; state?: string; write_available?: boolean };
+  temporary_services?: Array<{
+    id: string;
+    source: 'REGISTERED' | 'DISCOVERED';
+    state: 'RUNNING' | 'STOPPING' | 'STOPPED' | 'MISSING';
+    pid: number;
+    command: string;
+    working_directory?: string | null;
+    ports: number[];
+    url?: string | null;
+    expires_at?: string | null;
+    last_seen_at: string;
+    binding_id?: string | null;
+  }>;
   ide: {
     workspace_path: string;
     gateway: {

@@ -18,6 +18,7 @@ from flowweave.bootstrap.container import Container, build_container
 from flowweave.bootstrap.settings import Settings
 from flowweave.modules.agent_sessions.application import schedules as conversation_schedules
 from flowweave.modules.agent_sessions.application import usage_reconciliation
+from flowweave.modules.agent_sessions.application.temporary_services import cleanup_expired_services
 from flowweave.modules.agent_workspaces.application.service import (
     ensure_default_agent_workspace,
     recover_default_agent_workspace_runtime_task,
@@ -507,6 +508,11 @@ class TaskWorker:
                         )
                         await session.run_sync(
                             lambda db: recover_default_agent_workspace_runtime_task(db)
+                        )
+                        await session.run_sync(
+                            lambda db: cleanup_expired_services(
+                                db, settings=self.container.settings
+                            )
                         )
                         await session.run_sync(
                             lambda db: (mark_uow_owned(db), recover_runtime_deliveries(db))[1]

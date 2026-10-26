@@ -389,6 +389,8 @@ export const api = {
     request<AgentWorkDirectory>(`/agent-workspaces/${encodeURIComponent(id)}/work-directories/${encodeURIComponent(directoryId)}`, json('PATCH', { display_name })),
   deleteAgentWorkDirectory: (id: string, directoryId: string) =>
     request<void>(`/agent-workspaces/${encodeURIComponent(id)}/work-directories/${encodeURIComponent(directoryId)}`, json('DELETE')),
+  stopAgentWorkspaceTemporaryService: (id: string, serviceId: string) =>
+    request<{ stopped: boolean }>(`/agent-workspaces/${encodeURIComponent(id)}/temporary-services/${encodeURIComponent(serviceId)}/stop`, json('POST')),
   agentWorkspaceDetails: (id: string, options: { bindingId?: string; workDirectoryId?: string; fullIndex?: boolean } = {}) => {
     const query = new URLSearchParams();
     if (options.bindingId) query.set('binding_id', options.bindingId);
