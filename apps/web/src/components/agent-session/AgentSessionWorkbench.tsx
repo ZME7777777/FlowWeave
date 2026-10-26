@@ -262,7 +262,7 @@ function ComposerAnnotationList({ annotations, currentBindingId, onLocate, onRem
 interface BoundQueuedMessage extends QueuedMessage {
   bindingId: string;
 }
-interface ConversationDraft { id: string; workDirectoryId?: string; displayName: string; capabilityVersionIds?: string[]; }
+interface ConversationDraft { id: string; workDirectoryId?: string; displayName: string; capabilityVersionIds?: string[]; credentialIds?: string[]; }
 interface BootstrapRecovery {
   draft: ConversationDraft;
   message: QueuedMessage;
@@ -626,6 +626,7 @@ interface WorkspaceConversationGroupProps {
   onCollapsedChange?: (collapsed: boolean) => void;
   canCreateConversation?: boolean;
   onCreateConversation?: () => void;
+  onConfigureSession?: () => void;
   onEdit?: () => void;
   onDelete?: () => void;
 }
@@ -688,7 +689,7 @@ function readSidebarCollapsePreferences(storageKey: string | undefined): Sidebar
   }
 }
 
-function WorkspaceConversationGroup({ groupId, label, children, conversationCount, hasMore = false, loadingMore = false, onLoadMore, draggable = false, dragging = false, dropPosition, onPointerDragStart, collapsed = false, onCollapsedChange, canCreateConversation = false, onCreateConversation, onEdit, onDelete, revealConversationIndex, onRevealConversation }: WorkspaceConversationGroupProps & { revealConversationIndex?: number; onRevealConversation?: () => void }) {
+function WorkspaceConversationGroup({ groupId, label, children, conversationCount, hasMore = false, loadingMore = false, onLoadMore, draggable = false, dragging = false, dropPosition, onPointerDragStart, collapsed = false, onCollapsedChange, canCreateConversation = false, onCreateConversation, onConfigureSession, onEdit, onDelete, revealConversationIndex, onRevealConversation }: WorkspaceConversationGroupProps & { revealConversationIndex?: number; onRevealConversation?: () => void }) {
   const [visibleCount, setVisibleCount] = useState(3);
   const [actionsOpen, setActionsOpen] = useState(false);
   const actionsRef = useRef<HTMLDivElement>(null);
@@ -749,8 +750,9 @@ function WorkspaceConversationGroup({ groupId, label, children, conversationCoun
     onCollapsedChange?.(!collapsed);
   };
   const toggleLabel = `${collapsed ? '展开' : '收起'}工作区 ${label}`;
-  const hasOverflowActions = Boolean(onEdit || onDelete);
+  const hasOverflowActions = Boolean(onConfigureSession || onEdit || onDelete);
   const menu = actionsOpen && menuPosition && createPortal(<div ref={actionsMenuRef} role="menu" className="agent-workspace-group-actions-menu" aria-label={`工作区操作菜单：${label}`} style={menuPosition} onPointerDown={event => event.stopPropagation()}>
+    {onConfigureSession && <button type="button" role="menuitem" onClick={() => { onConfigureSession(); setActionsOpen(false); }}><Boxes size={13}/>会话配置</button>}
     {onEdit && <button type="button" role="menuitem" onClick={() => { onEdit(); setActionsOpen(false); }}><Settings size={13}/>编辑</button>}
     {onDelete && <button type="button" className="danger" role="menuitem" onClick={() => { onDelete(); setActionsOpen(false); }}><Trash2 size={13}/>删除</button>}
   </div>, document.body);
@@ -1282,11 +1284,12 @@ type DraftCredentialEntry = WebsiteCredential & { sync_state?: AgentConversation
 const HISTORY_MCP_KEY = 'flowweave-reference-history';
 const HISTORY_MCP_LABEL = '会话历史查询';
 
-export function CapabilityManager({ workspaceId, bindingId, conversationCapabilities, draftCapabilityIds, draftCredentialIds, configurationPreset = false, onClose, onCreateEnhancedConversation, onDraftCredentialIdsChange }: {
+export function CapabilityManager({ workspaceId, bindingId, conversationCapabilities, draftCapabilityIds, draftCredentialIds, configurationPreset = false, onClose, onCreateEnhancedConversation, onDraftCredentialIdsChange, onSaveConfiguration }: {
   workspaceId: string; bindingId?: string; conversationCapabilities?: AgentSessionCapability[]; onClose: () => void;
   draftCapabilityIds?: string[]; draftCredentialIds?: string[]; configurationPreset?: boolean;
   onCreateEnhancedConversation?: (capabilityVersionIds: string[]) => void;
   onDraftCredentialIdsChange?: (credentialIds: string[]) => void;
+  onSaveConfiguration?: (configuration: { capabilityVersionIds: string[]; credentialIds: string[] }) => Promise<void> | void;
 }) {
   const { api } = useAgentSessionGateway();
   const host = useAgentSessionHost();
@@ -1337,7 +1340,9 @@ export function CapabilityManager({ workspaceId, bindingId, conversationCapabili
         .map(item => item.id));
     } else if (!bindingId && credentialCatalogQuery.data) {
       credentialSelectionInitialized.current = true;
-      setSelectedCredentialIds(draftCredentialIds ?? []);
+      setSelectedCredentialIds(
+        draftCredentialIds ?? credentialCatalogQuery.data.map(credential => credential.id),
+      );
     }
   }, [bindingId, credentialCatalogQuery.data, credentialQuery.data, draftCredentialIds]);
   const frozenCreationOnlyIds = useMemo(() => new Set(
@@ -1401,7 +1406,13 @@ export function CapabilityManager({ workspaceId, bindingId, conversationCapabili
   }, [checkMcpReadiness, configurationPreset, selectedMcpIds]);
   const save = useMutation({
     mutationFn: async () => {
-      if (configurationPreset && !bindingId) return selectedIds;
+      if (configurationPreset && !bindingId) {
+        await onSaveConfiguration?.({
+          capabilityVersionIds: selectedIds,
+          credentialIds: selectedCredentialIds,
+        });
+        return selectedIds;
+      }
       const readiness = await checkMcpReadiness(selectedMcpIds);
       const unavailable = readiness.find(([, status]) => status.state !== 'READY');
       if (unavailable) {
@@ -1497,7 +1508,7 @@ export function CapabilityManager({ workspaceId, bindingId, conversationCapabili
           }) : <p>当前没有可用认证信息。</p>}</div>
         </div>
         {credentialSync.error && <div className="agent-capability-error"><p>{credentialSync.error.message}</p></div>}
-        <footer><span className="agent-credential-sync-count">已选择 <b>{selectedCredentialIds.length}</b> 项认证</span><button type="button" className="secondary" disabled={busy} onClick={onClose}>{bindingId ? '关闭' : '取消'}</button>{bindingId ? <button type="button" className="primary" disabled={busy || credentialLoading || selectedCredentialIds.length === 0} onClick={() => credentialSync.mutate()}><RefreshCw size={14}/>{credentialSync.isPending ? '正在同步…' : '同步认证'}</button> : <button type="button" className="primary" disabled={busy || credentialLoading} onClick={() => { if (configurationPreset) onCreateEnhancedConversation?.(selectedIds); if (credentialSelectionInitialized.current) onDraftCredentialIdsChange?.(selectedCredentialIds); onClose(); }}>保存认证配置</button>}</footer>
+        <footer><span className="agent-credential-sync-count">已选择 <b>{selectedCredentialIds.length}</b> 项认证</span><button type="button" className="secondary" disabled={busy} onClick={onClose}>{bindingId ? '关闭' : '取消'}</button>{bindingId ? <button type="button" className="primary" disabled={busy || credentialLoading || selectedCredentialIds.length === 0} onClick={() => credentialSync.mutate()}><RefreshCw size={14}/>{credentialSync.isPending ? '正在同步…' : '同步认证'}</button> : <button type="button" className="primary" disabled={busy || credentialLoading} onClick={() => { if (configurationPreset && onSaveConfiguration) void save.mutate(); else { if (configurationPreset) onCreateEnhancedConversation?.(selectedIds); if (credentialSelectionInitialized.current) onDraftCredentialIdsChange?.(selectedCredentialIds); onClose(); } }}>保存认证配置</button>}</footer>
       </div> : <>
       <div className="agent-capability-toolbar"><div className="agent-capability-tabs">{([['ALL', 'all'], ['PLUGIN', 'plugin'], ['MCP', 'MCP'], ['SKILL', 'skill'], ['CONTEXT', 'context'], ['AGENT_DEFINITION', 'agent'], ['HOOK', 'hook']] as const).map(([value, label]) => <button type="button" key={value} className={kind === value ? 'active' : ''} onClick={() => setKind(value)}>{label}</button>)}</div><div className="agent-capability-toolbar-actions">{!readonlyCreationOnly && <button type="button" className="agent-capability-select-visible" aria-pressed={allVisibleSelected} aria-label={allVisibleSelected ? '取消选择筛选结果' : `选择筛选结果（${selectableVisibleIds.length}）`} title={allVisibleSelected ? '取消选择筛选结果' : `选择筛选结果（${selectableVisibleIds.length}）`} disabled={!selectableVisibleIds.length} onClick={toggleVisible}>{allVisibleSelected ? <SquareCheck size={16}/> : <Square size={16}/>}</button>}<button type="button" className={`agent-capability-show-selected${showSelectedOnly ? ' active' : ''}`} aria-label={showSelectedOnly ? '显示全部能力' : '只看已选'} title={showSelectedOnly ? '显示全部能力' : '只看已选'} aria-pressed={showSelectedOnly} onClick={() => setShowSelectedOnly(current => !current)}>{showSelectedOnly ? <Eye size={16}/> : <EyeOff size={16}/>}</button><label className="agent-capability-search"><Search size={15}/><input value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索名称、说明或文件…"/></label></div></div>
       {(kind === 'ALL' || kind === 'SKILL') && collectionsQuery.data?.length ? <section className="agent-capability-collection-filters" aria-label="Skill 组合筛选"><div>{collectionsQuery.data.map(collection => { const selected = selectedCollectionIds.includes(collection.id); return <button type="button" key={collection.id} className={selected ? 'selected' : ''} aria-pressed={selected} onClick={() => toggleCollectionFilter(collection.id)}><i aria-hidden="true">{selected && <Check size={12}/>}</i><span>{collection.name}</span></button>; })}</div></section> : null}
@@ -5112,6 +5123,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [workDirectoryCreatorOpen, setWorkDirectoryCreatorOpen] = useState(false);
   const [workDirectoryEditor, setWorkDirectoryEditor] = useState<AgentSessionWorkDirectory>();
   const [capabilityManagerOpen, setCapabilityManagerOpen] = useState(false);
+  const [workspaceSessionConfigurationOpen, setWorkspaceSessionConfigurationOpen] = useState(false);
   const [workspacePathCopied, setWorkspacePathCopied] = useState(false);
   const [conversationSearchOpen, setConversationSearchOpen] = useState(false);
   const [conversationSearchId, setConversationSearchId] = useState<string>();
@@ -5300,6 +5312,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     refetchOnWindowFocus: true,
   });
   const workspace = workspaceQuery.data;
+  const workspaceSessionConfigurationQuery = useQuery({
+    queryKey: sessionQueryKey(host, 'session-configuration', workspace?.id),
+    queryFn: () => agentWorkspaceApi.agentWorkspaceSessionConfiguration(workspace!.id),
+    enabled: host.id === 'agent-workspace' && Boolean(workspace),
+    staleTime: 30_000,
+  });
   // The HTTP mutation can outlive this workbench when a top-level tab opens.
   // Keep only the browser's submitted-bubble identities in Query memory so its
   // ACK updates the same projection observed by a newly mounted workbench.
@@ -8053,7 +8071,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     message.references.map(item => ({ event_id: item.eventId, content: item.content, source_binding_id: item.sourceBindingId, ...(item.compactStart !== undefined && item.compactEnd !== undefined ? { selection: { compact_start: item.compactStart, compact_end: item.compactEnd } } : {}) })),
     message.workspaceReferences ?? [],
     conversationDraft?.workDirectoryId,
-    conversationDraft?.capabilityVersionIds ?? [],
+    conversationDraft?.capabilityVersionIds,
+    conversationDraft?.credentialIds,
     conversationDraft!.id,
     messageAnnotations(message.annotations, message.references),
   ), onSuccess: (value, message) => {
@@ -9102,7 +9121,13 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       setNewConversationModelName(recovery.modelName);
       setNewConversationReasoningEffort(recovery.reasoningEffort);
     } else {
-      const draft = { ...next, id: randomId(), capabilityVersionIds: next.capabilityVersionIds ?? [] };
+      const configuration = workspaceSessionConfigurationQuery.data;
+      const draft = {
+        ...next,
+        id: randomId(),
+        capabilityVersionIds: next.capabilityVersionIds ?? configuration?.capability_version_ids,
+        credentialIds: next.credentialIds ?? configuration?.credential_ids,
+      };
       composerDraftsByScope.current.set(draft.id, { content: '', attachments: [], references: [], workspaceReferences: [], annotations: [] });
       setConversationDraft(draft);
       replaceComposerDraft('', draft.id);
@@ -9122,7 +9147,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       ? { standaloneAgentReturnTarget: 'root' }
       : undefined);
     requestAnimationFrame(() => composerRef.current?.focus());
-  }, [attachments, bootstrapRecovery, clearBootstrapRecovery, composerAnnotations, conversationDraft, host.id, host.rootPath, newConversationModelName, newConversationProviderId, newConversationReasoningEffort, onNavigate, pendingBootstrap?.draft.id, persistComposerDraft, references, replaceComposerDraft, updateLocalMessageProjections, workspace, workspaceReferences]);
+  }, [attachments, bootstrapRecovery, clearBootstrapRecovery, composerAnnotations, conversationDraft, host.id, host.rootPath, newConversationModelName, newConversationProviderId, newConversationReasoningEffort, onNavigate, pendingBootstrap?.draft.id, persistComposerDraft, references, replaceComposerDraft, updateLocalMessageProjections, workspace, workspaceReferences, workspaceSessionConfigurationQuery.data]);
   useEffect(() => {
     if (!autoOpenDraft || scheduleRoute || !workspace || selectedBindingId || conversationDraft) return;
     const directory = draftWorkDirectoryId
@@ -10058,10 +10083,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         {sidebarListMode === 'activity'
           ? <section className="agent-workspace-activity" aria-label="活动会话"><header><div><span className="eyebrow">ACTIVITY</span><b>活动</b></div><button type="button" aria-label="返回工作区列表" title="返回工作区列表" onClick={() => { setActivityPreviewBindingId(undefined); setSidebarListMode('workspaces'); }}><ArrowLeft size={15}/></button></header>{activityConversations.length ? activityConversations.map(item => conversationRow(item, [], { allowDrag: false, workspaceName: activityWorkspaceName(item), onSelect: () => previewActivityConversation(item.id), onDoubleClick: () => openActivityConversation(item.id), onMarkRead: () => markConversationRead(item.id) })) : <p>没有正在运行或未读的会话。</p>}</section>
           : <>{pinnedConversations.length > 0 && <section className={`agent-workspace-pinned${pinnedConversationsCollapsed ? ' collapsed' : ''}`} aria-label="置顶会话"><header><button type="button" aria-label={`${pinnedConversationsCollapsed ? '展开' : '收起'}置顶会话`} aria-expanded={!pinnedConversationsCollapsed} aria-controls="agent-workspace-pinned-content" onClick={() => setPinnedConversationsCollapsed(!pinnedConversationsCollapsed)}><Pin size={13}/><span>置顶</span></button></header><div id="agent-workspace-pinned-content" hidden={pinnedConversationsCollapsed}>{pinnedConversations.map(item => conversationRow(item, pinnedConversations))}</div></section>}
-            <WorkspaceConversationGroup groupId="root" label="根工作区" conversationCount={rootConversations.length} hasMore={Boolean(conversationPagesByScope.__root__?.next_cursor)} loadingMore={loadingConversationScope === '__root__'} onLoadMore={() => loadMoreConversations('__root__')} collapsed={collapsedConversationGroups.has('root')} onCollapsedChange={collapsed => setConversationGroupCollapsed('root', collapsed)} revealConversationIndex={routedRootConversationIndex >= 0 ? routedRootConversationIndex : undefined} onRevealConversation={completeSidebarReveal} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ displayName: '根工作区' }, { restoreRecovery: true, selectStandaloneRoot: true })}>
+            <WorkspaceConversationGroup groupId="root" label="根工作区" conversationCount={rootConversations.length} hasMore={Boolean(conversationPagesByScope.__root__?.next_cursor)} loadingMore={loadingConversationScope === '__root__'} onLoadMore={() => loadMoreConversations('__root__')} collapsed={collapsedConversationGroups.has('root')} onCollapsedChange={collapsed => setConversationGroupCollapsed('root', collapsed)} revealConversationIndex={routedRootConversationIndex >= 0 ? routedRootConversationIndex : undefined} onRevealConversation={completeSidebarReveal} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ displayName: '根工作区' }, { restoreRecovery: true, selectStandaloneRoot: true })} onConfigureSession={runtimeWritable ? () => setWorkspaceSessionConfigurationOpen(true) : undefined}>
               {visibleCount => <>{pendingBootstrapItem && !pendingBootstrap?.draft.workDirectoryId ? pendingBootstrapItem : recoverableDraftItem(undefined, '根工作区')}{rootConversations.slice(0, visibleCount).map(item => conversationRow(item, rootConversations))}</>}
             </WorkspaceConversationGroup>
-            {features.workDirectories && workDirectories.map(directory => { const group = conversationsForDirectory(directory.id); const routeIndex = sidebarReveal.expandCollapsed || !collapsedConversationGroups.has(directory.id) ? group.findIndex(item => item.id === pendingSidebarRevealBindingId) : -1; return <WorkspaceConversationGroup key={directory.id} groupId={directory.id} label={directory.display_name} conversationCount={group.length} hasMore={Boolean(conversationPagesByScope[directory.id]?.next_cursor)} loadingMore={loadingConversationScope === directory.id} onLoadMore={() => loadMoreConversations(directory.id)} draggable dragging={draggedWorkDirectoryId === directory.id} dropPosition={workDirectoryDropTarget?.id === directory.id ? (workDirectoryDropTarget.after ? 'after' : 'before') : undefined} onPointerDragStart={event => startPointerWorkDirectoryDrag(event, directory.id)} collapsed={collapsedConversationGroups.has(directory.id)} onCollapsedChange={collapsed => setConversationGroupCollapsed(directory.id, collapsed)} revealConversationIndex={routeIndex >= 0 ? routeIndex : undefined} onRevealConversation={completeSidebarReveal} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ workDirectoryId: directory.id, displayName: directory.display_name }, { restoreRecovery: true })} onEdit={api.updateWorkDirectory && runtimeWritable ? () => setWorkDirectoryEditor(directory) : undefined} onDelete={api.deleteWorkDirectory && runtimeWritable ? () => void removeWorkDirectory(directory) : undefined}>
+            {features.workDirectories && workDirectories.map(directory => { const group = conversationsForDirectory(directory.id); const routeIndex = sidebarReveal.expandCollapsed || !collapsedConversationGroups.has(directory.id) ? group.findIndex(item => item.id === pendingSidebarRevealBindingId) : -1; return <WorkspaceConversationGroup key={directory.id} groupId={directory.id} label={directory.display_name} conversationCount={group.length} hasMore={Boolean(conversationPagesByScope[directory.id]?.next_cursor)} loadingMore={loadingConversationScope === directory.id} onLoadMore={() => loadMoreConversations(directory.id)} draggable dragging={draggedWorkDirectoryId === directory.id} dropPosition={workDirectoryDropTarget?.id === directory.id ? (workDirectoryDropTarget.after ? 'after' : 'before') : undefined} onPointerDragStart={event => startPointerWorkDirectoryDrag(event, directory.id)} collapsed={collapsedConversationGroups.has(directory.id)} onCollapsedChange={collapsed => setConversationGroupCollapsed(directory.id, collapsed)} revealConversationIndex={routeIndex >= 0 ? routeIndex : undefined} onRevealConversation={completeSidebarReveal} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ workDirectoryId: directory.id, displayName: directory.display_name }, { restoreRecovery: true })} onConfigureSession={runtimeWritable ? () => setWorkspaceSessionConfigurationOpen(true) : undefined} onEdit={api.updateWorkDirectory && runtimeWritable ? () => setWorkDirectoryEditor(directory) : undefined} onDelete={api.deleteWorkDirectory && runtimeWritable ? () => void removeWorkDirectory(directory) : undefined}>
               {visibleCount => <>{pendingBootstrapItem && pendingBootstrap?.draft.workDirectoryId === directory.id ? pendingBootstrapItem : recoverableDraftItem(directory.id, directory.display_name)}{group.slice(0, visibleCount).map(item => conversationRow(item, group))}</>}
             </WorkspaceConversationGroup>; })}<div ref={workspaceGroupAnchorSpacer} aria-hidden="true"/></>}
       </div>
@@ -10313,7 +10338,15 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       queryClient.setQueryData<AgentSessionWorkDirectoryList>(sessionQueryKey(host, 'work-directories', workspace.id), current => current ? { ...current, items: current.items.map(item => item.id === directory.id ? directory : item) } : current);
       void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'work-directories', workspace.id) });
     }}/>}
-    {capabilityManagerOpen && (selected || features.draftCapabilitySelection) && <CapabilityManager workspaceId={workspace.id} bindingId={selected?.id} conversationCapabilities={selected?.capabilities} draftCapabilityIds={conversationDraft?.capabilityVersionIds} onClose={() => setCapabilityManagerOpen(false)} onCreateEnhancedConversation={capabilityVersionIds => { const directory = selected?.work_directory_id ? workDirectories.find(item => item.id === selected.work_directory_id) : undefined; setCapabilityManagerOpen(false); if (conversationDraft) setConversationDraft(current => current ? { ...current, capabilityVersionIds } : current); else openConversationDraft({ workDirectoryId: directory?.id, displayName: directory?.display_name ?? '根工作区', capabilityVersionIds }); }}/>}
+        {capabilityManagerOpen && (selected || features.draftCapabilitySelection) && <CapabilityManager workspaceId={workspace.id} bindingId={selected?.id} conversationCapabilities={selected?.capabilities} draftCapabilityIds={conversationDraft?.capabilityVersionIds} draftCredentialIds={conversationDraft?.credentialIds} onClose={() => setCapabilityManagerOpen(false)} onCreateEnhancedConversation={capabilityVersionIds => { const directory = selected?.work_directory_id ? workDirectories.find(item => item.id === selected.work_directory_id) : undefined; setCapabilityManagerOpen(false); if (conversationDraft) setConversationDraft(current => current ? { ...current, capabilityVersionIds } : current); else openConversationDraft({ workDirectoryId: directory?.id, displayName: directory?.display_name ?? '根工作区', capabilityVersionIds }); }} onDraftCredentialIdsChange={credentialIds => setConversationDraft(current => current ? { ...current, credentialIds } : current)}/>}
+    {workspaceSessionConfigurationOpen && workspaceSessionConfigurationQuery.data && <CapabilityManager configurationPreset workspaceId={workspace.id} draftCapabilityIds={workspaceSessionConfigurationQuery.data.capability_version_ids} draftCredentialIds={workspaceSessionConfigurationQuery.data.credential_ids} onClose={() => setWorkspaceSessionConfigurationOpen(false)} onSaveConfiguration={async configuration => {
+      const saved = await agentWorkspaceApi.replaceAgentWorkspaceSessionConfiguration(workspace.id, {
+        capability_version_ids: configuration.capabilityVersionIds,
+        credential_ids: configuration.credentialIds,
+      });
+      queryClient.setQueryData(sessionQueryKey(host, 'session-configuration', workspace.id), saved);
+    }}/>}
+
 
   </main>;
 }

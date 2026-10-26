@@ -76,7 +76,10 @@ from flowweave.modules.agent_workspaces.application.git_settings import (
     profile_identity,
 )
 from flowweave.modules.catalog.public import resolve_version
-from flowweave.modules.credentials.application.service import resolve_credentials_for_agent
+from flowweave.modules.credentials.application.service import (
+    list_credentials,
+    resolve_credentials_for_agent,
+)
 from flowweave.modules.model_providers.public import has_connected_default_model
 from flowweave.modules.sandboxes.public import ManagedSandbox
 from flowweave.modules.tasks.public import enqueue
@@ -556,11 +559,52 @@ def _validated_capabilities(
     return tuple(selected)
 
 
+def workspace_session_configuration(db: Session, workspace_id: str) -> dict[str, list[str]]:
+    workspace = _workspace(db, workspace_id)
+    credential_ids = workspace.session_credential_ids_json
+    return {
+        "capability_version_ids": [
+            item["id"] for item in workspace_capabilities(db, workspace.id)
+        ],
+        "credential_ids": (
+            list(credential_ids)
+            if credential_ids is not None
+            else [str(item["id"]) for item in list_credentials(db)]
+        ),
+    }
+
+
+def replace_workspace_session_configuration(
+    db: Session,
+    workspace_id: str,
+    capability_version_ids: tuple[str, ...],
+    credential_ids: tuple[str, ...],
+) -> dict[str, list[str]]:
+    replace_workspace_capabilities(
+        db,
+        workspace_id,
+        capability_version_ids,
+        allowed_types=_CREATION_CAPABILITY_TYPES,
+    )
+    workspace = _workspace(db, workspace_id)
+    resolve_credentials_for_agent(db, credential_ids)
+    workspace.session_credential_ids_json = list(dict.fromkeys(credential_ids))
+    workspace.updated_at = now()
+    db.flush()
+    return workspace_session_configuration(db, workspace.id)
+
+
 def replace_workspace_capabilities(
-    db: Session, workspace_id: str, capability_version_ids: tuple[str, ...]
+    db: Session,
+    workspace_id: str,
+    capability_version_ids: tuple[str, ...],
+    *,
+    allowed_types: frozenset[str] = _DYNAMIC_CAPABILITY_TYPES,
 ) -> list[dict[str, str]]:
     workspace = _workspace(db, workspace_id)
-    selected = _validated_capabilities(db, capability_version_ids)
+    selected = _validated_capabilities(
+        db, capability_version_ids, allowed_types=allowed_types
+    )
     for reference in db.scalars(
         select(AgentWorkspaceCapability)
         .where(AgentWorkspaceCapability.workspace_id == workspace.id)
@@ -1667,7 +1711,16 @@ def create_conversation(
     db.add(command)
     try:
         _create_native_conversation(
-            db, workspace, binding, provider, user_runtime_project_root(workspace.id)
+            db,
+            workspace,
+            binding,
+            provider,
+            user_runtime_project_root(workspace.id),
+            credential_ids=(
+                None
+                if workspace.session_credential_ids_json is None
+                else tuple(workspace.session_credential_ids_json)
+            ),
         )
     except DomainError as exc:
         binding.lifecycle = "FAILED"
@@ -2028,7 +2081,7 @@ def bootstrap_conversation(
     references: tuple[dict[str, str], ...] = (),
     workspace_references: tuple[dict[str, str], ...] = (),
     annotations: tuple[dict[str, Any], ...] = (),
-    capability_version_ids: tuple[str, ...] = (),
+    capability_version_ids: tuple[str, ...] | None = None,
     credential_ids: tuple[str, ...] | None = None,
     idempotency_key: str,
     system_message_suffix_append: str = "",
@@ -2127,7 +2180,19 @@ def bootstrap_conversation(
         )
         db.add(binding)
         db.flush()
-        _freeze_capabilities(db, binding, capability_version_ids)
+        _freeze_capabilities(
+            db,
+            binding,
+            (
+                capability_version_ids
+                if capability_version_ids is not None
+                else tuple(
+                    item["id"] for item in workspace_capabilities(db, workspace.id)
+                )
+            ),
+        )
+        if credential_ids is None and workspace.session_credential_ids_json is not None:
+            credential_ids = tuple(workspace.session_credential_ids_json)
         command = AgentConversationCommand(
             workspace_id=workspace.id,
             host_kind="AGENT_WORKSPACE",

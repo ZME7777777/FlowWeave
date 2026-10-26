@@ -8,6 +8,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Integer,
+    JSON,
     LargeBinary,
     String,
     Text,
@@ -41,6 +42,7 @@ class AgentWorkspace(Base):
     scope_key: Mapped[str] = mapped_column(String(100), unique=True, index=True)
     display_name: Mapped[str] = mapped_column(String(160), default="Agent 工作区")
     desired_state: Mapped[str] = mapped_column(String(20), default="RUNNING")
+    session_credential_ids_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
@@ -249,7 +251,7 @@ class AgentWorkspaceCapability(Base):
             name="uq_agent_workspace_capability_owner_position",
         ),
         CheckConstraint(
-            "capability_type IN ('SKILL', 'MCP', 'PLUGIN')",
+            "capability_type IN ('SKILL', 'MCP', 'PLUGIN', 'CONTEXT', 'AGENT_DEFINITION', 'HOOK')",
             name="ck_agent_workspace_capability_type",
         ),
         CheckConstraint("position >= 0", name="ck_agent_workspace_capability_position"),

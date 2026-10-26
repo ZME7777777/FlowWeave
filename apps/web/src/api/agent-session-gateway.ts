@@ -134,7 +134,7 @@ export interface AgentSessionApi {
   readonly deleteFile?: (hostId: AgentSessionHostId, path: string, options?: Omit<AgentSessionFileOptions, 'download'> & { recursive?: boolean }) => Promise<void>;
   readonly createFile?: (hostId: AgentSessionHostId, parentPath: string, name: string, kind: 'FILE' | 'DIRECTORY', options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<void>;
   readonly closeTerminal: (hostId: AgentSessionHostId, terminalInstanceId: string, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<void>;
-  readonly bootstrapConversation: (hostId: AgentSessionHostId, conversationId: string, modelProviderId: string, modelName: string, reasoningEffort: string | null, content: string, attachments?: AgentAttachment[], references?: AgentConversationReference[], workspaceReferences?: AgentWorkspaceReference[], workDirectoryId?: AgentSessionWorkDirectoryId, capabilityVersionIds?: string[], idempotencyKey?: string, annotations?: AgentConversationAnnotation[]) => Promise<{ conversation: AgentConversation; accepted: boolean; cursor?: string | null }>;
+  readonly bootstrapConversation: (hostId: AgentSessionHostId, conversationId: string, modelProviderId: string, modelName: string, reasoningEffort: string | null, content: string, attachments?: AgentAttachment[], references?: AgentConversationReference[], workspaceReferences?: AgentWorkspaceReference[], workDirectoryId?: AgentSessionWorkDirectoryId, capabilityVersionIds?: string[], credentialIds?: string[], idempotencyKey?: string, annotations?: AgentConversationAnnotation[]) => Promise<{ conversation: AgentConversation; accepted: boolean; cursor?: string | null }>;
   readonly updateConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, title: string) => Promise<AgentConversation>;
   readonly setConversationPinned: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, pinned: boolean) => Promise<AgentConversation>;
   readonly setConversationUnread: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, unread: boolean, unreadOrigin?: 'MANUAL' | 'SYSTEM') => Promise<AgentConversation>;
@@ -339,7 +339,7 @@ export function flowNodeSessionGateway(
       // Node terminals are browser-owned websocket instances. Closing a tab
       // closes its socket; there is no persistent Workspace terminal record.
       closeTerminal: async () => undefined,
-      bootstrapConversation: async (_hostId, conversationId, providerId, modelName, reasoningEffort, content, attachments, references, workspaceReferences, workDirectoryId, _capabilityVersionIds, idempotencyKey, annotations) => {
+      bootstrapConversation: async (_hostId, conversationId, providerId, modelName, reasoningEffort, content, attachments, references, workspaceReferences, workDirectoryId, _capabilityVersionIds, _credentialIds, idempotencyKey, annotations) => {
         return nodeSessionApi.bootstrap(
           flowRunId, attemptId, content, providerId, modelName, reasoningEffort, attachments, references, workspaceReferences, workDirectoryId, idempotencyKey ?? conversationId, annotations,
         );

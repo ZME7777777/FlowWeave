@@ -103,6 +103,11 @@ class AgentWorkspaceCapabilitiesWrite(_Write):
     capability_version_ids: list[str] = Field(default_factory=list)
 
 
+class AgentWorkspaceSessionConfigurationWrite(_Write):
+    capability_version_ids: list[str] = Field(default_factory=list, max_length=100)
+    credential_ids: list[str] = Field(default_factory=list, max_length=100)
+
+
 class AgentGitIdentityWrite(_Write):
     author: str = Field(min_length=1, max_length=200, pattern=r"^[^\x00-\x1f\x7f<>]+$")
     email: str = Field(
@@ -273,7 +278,8 @@ class AgentConversationBootstrapWrite(_Write):
     )
     workspace_references: list[AgentWorkspaceReference] = Field(default_factory=list, max_length=20)
     annotations: list[dict[str, Any]] = Field(default_factory=list, max_length=20)
-    capability_version_ids: list[str] = Field(default_factory=list)
+    capability_version_ids: list[str] | None = Field(default=None, max_length=100)
+    credential_ids: list[str] | None = Field(default=None, max_length=100)
 
 
 class AgentMessageWrite(_Write):
@@ -451,6 +457,30 @@ async def put_agent_workspace_capabilities(
         db,
         lambda session: conversations.replace_workspace_capabilities(
             session, workspace_id, tuple(payload.capability_version_ids)
+        ),
+    )
+
+
+@router.get("/agent-workspaces/{workspace_id}/session-configuration")
+async def get_agent_workspace_session_configuration(
+    workspace_id: str, db: Db
+) -> dict[str, list[str]]:
+    return await run_sync(
+        db, lambda session: conversations.workspace_session_configuration(session, workspace_id)
+    )
+
+
+@router.put("/agent-workspaces/{workspace_id}/session-configuration")
+async def put_agent_workspace_session_configuration(
+    workspace_id: str, payload: AgentWorkspaceSessionConfigurationWrite, db: Db
+) -> dict[str, list[str]]:
+    return await run_sync(
+        db,
+        lambda session: conversations.replace_workspace_session_configuration(
+            session,
+            workspace_id,
+            tuple(payload.capability_version_ids),
+            tuple(payload.credential_ids),
         ),
     )
 
@@ -1214,7 +1244,14 @@ async def create_agent_conversation(
             references=tuple(item.model_dump(exclude_none=True) for item in payload.references),
             workspace_references=tuple(item.model_dump() for item in payload.workspace_references),
             annotations=tuple(payload.annotations),
-            capability_version_ids=tuple(payload.capability_version_ids),
+            capability_version_ids=(
+                tuple(payload.capability_version_ids)
+                if payload.capability_version_ids is not None
+                else None
+            ),
+            credential_ids=(
+                tuple(payload.credential_ids) if payload.credential_ids is not None else None
+            ),
             idempotency_key=idempotency_key,
         ),
     )
