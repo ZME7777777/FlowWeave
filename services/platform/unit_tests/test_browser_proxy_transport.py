@@ -34,11 +34,12 @@ def transport(tmp_path: Path):
                 return
             if self.path.startswith("/parallel/"):
                 barrier.wait(timeout=5)
-            data = (
-                b"x" * (browser_proxy.MAX_CONTENT_BYTES + 1)
-                if self.path == "/large"
-                else self.path.encode()
-            )
+            sizes = {
+                "/large": browser_proxy.MAX_CONTENT_BYTES + 1,
+                "/at-limit": browser_proxy.MAX_CONTENT_BYTES,
+                "/development-module": 3 * 1024 * 1024,
+            }
+            data = b"x" * sizes[self.path] if self.path in sizes else self.path.encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/octet-stream")
             self.send_header("Set-Cookie", "upstream-cookie=must-not-leak")
@@ -123,6 +124,17 @@ def test_oversize_and_invalid_targets_fail_closed_without_poisoning_next_read(tr
         with pytest.raises(DomainError):
             fetch(pool, port, path)
     assert body(fetch(pool, port, "/still-readable")) == b"/still-readable"
+
+
+@pytest.mark.parametrize("path", ["/development-module", "/at-limit"])
+def test_large_responses_survive_child_read_and_base64_wire_budget(transport, path):
+    pool, port, starts = transport
+    expected_size = browser_proxy.MAX_CONTENT_BYTES if path == "/at-limit" else 3 * 1024 * 1024
+    result = fetch(pool, port, path)
+    assert result["status"] == 200
+    assert body(result) == b"x" * expected_size
+    assert body(fetch(pool, port, "/after-large")) == b"/after-large"
+    assert starts.read_text().splitlines() == ["container-1"]
 
 
 def test_connection_limit_evicts_only_idle_immutable_container_connections(transport):

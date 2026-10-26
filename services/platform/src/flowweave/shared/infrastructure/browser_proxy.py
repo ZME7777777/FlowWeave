@@ -18,8 +18,10 @@ from typing import Any, cast
 
 from flowweave.shared.errors import DomainError
 
-MAX_CONTENT_BYTES = 2 * 1024 * 1024
-_MAX_WIRE_BYTES = 2_800_000
+# Vite source modules include transformed code and inline source maps. Keep a
+# finite per-response budget while allowing large development modules through.
+MAX_CONTENT_BYTES = 16 * 1024 * 1024
+_MAX_WIRE_BYTES = 4 * ((MAX_CONTENT_BYTES + 2) // 3) + 65_536
 _IDLE_SECONDS = 15.0
 _LIFETIME_SECONDS = 120.0
 
@@ -39,6 +41,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect)
+max_content_bytes = __MAX_CONTENT_BYTES__
 deadline = time.monotonic() + 120
 while time.monotonic() < deadline:
     if not select.select([sys.stdin], [], [], min(15, deadline-time.monotonic()))[0]:
@@ -64,8 +67,8 @@ while time.monotonic() < deadline:
         except urllib.error.HTTPError as error:
             response = error
         with response:
-            content = response.read(2_097_153)
-            if len(content) > 2_097_152:
+            content = response.read(max_content_bytes + 1)
+            if len(content) > max_content_bytes:
                 result = {'error': 'too_large'}
             else:
                 result = {'status': response.status,
@@ -75,7 +78,7 @@ while time.monotonic() < deadline:
     except Exception:
         result = {'error': 'unavailable'}
     print(json.dumps(result), flush=True)
-"""
+""".replace("__MAX_CONTENT_BYTES__", str(MAX_CONTENT_BYTES))
 
 
 def _unavailable() -> DomainError:

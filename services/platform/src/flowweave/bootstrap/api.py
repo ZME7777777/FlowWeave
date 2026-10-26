@@ -47,7 +47,7 @@ from flowweave.modules.users.application.security import (
 from flowweave.modules.users.presentation.router import router as users_router
 from flowweave.runtime.dependencies import bind_runtime, reset_runtime
 from flowweave.shared.artifact_store import bind_artifact_store, reset_artifact_store
-from flowweave.shared.browser_preview import PREVIEW_PATH, read_preview
+from flowweave.shared.browser_preview import PREVIEW_PATH, PREVIEW_RESPONSE_HEADERS, read_preview
 from flowweave.shared.errors import DomainError
 from flowweave.shared.http import require_agent_session_access, require_authenticated_connection
 from flowweave.shared.observability import bind_metrics, reset_metrics
@@ -263,6 +263,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     mutation_binding_id,
                 )
             response = await call_next(request)
+            if preview is not None:
+                # Authorized opaque-origin previews must also be able to read
+                # errors such as a bounded transport's 413 response.
+                response.headers.update(PREVIEW_RESPONSE_HEADERS)
             response.headers["X-Request-ID"] = request_id
             audit_principal = principal or getattr(request.state, "audit_principal", None)
             if audit_principal is not None and request.url.path.startswith("/api/v1/"):

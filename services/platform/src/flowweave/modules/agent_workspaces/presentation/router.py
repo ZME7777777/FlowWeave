@@ -43,7 +43,12 @@ from flowweave.modules.users.application.service import SESSION_COOKIE
 from flowweave.runtime.dependencies import runtime_context
 from flowweave.runtime.read_budget import hydration_response_budget
 from flowweave.runtime.routing import runtime_for
-from flowweave.shared.browser_preview import PREVIEW_TTL_SECONDS, BrowserPreview, deployment_path
+from flowweave.shared.browser_preview import (
+    PREVIEW_RESPONSE_HEADERS,
+    PREVIEW_TTL_SECONDS,
+    BrowserPreview,
+    deployment_path,
+)
 from flowweave.shared.errors import DomainError
 from flowweave.shared.http import (
     Db,
@@ -92,7 +97,7 @@ def _browser_target_unavailable_response() -> Response:
 </html>""",
         status_code=502,
         media_type="text/html",
-        headers={"Cache-Control": "no-store"},
+        headers=PREVIEW_RESPONSE_HEADERS,
     )
 
 
@@ -739,15 +744,7 @@ async def _proxy_agent_workspace_browser(
     )
     renderer = BrowserContent(prefix, scheme, port, normalized_path)
     content = renderer.rewrite(content, content_type)
-    safe_headers = {
-        "Cache-Control": "no-store",
-        "Referrer-Policy": "no-referrer",
-        "Access-Control-Allow-Origin": "*",
-        "X-Content-Type-Options": "nosniff",
-        "Content-Security-Policy": (
-            "sandbox allow-scripts allow-forms allow-modals allow-popups allow-downloads"
-        ),
-    }
+    safe_headers = dict(PREVIEW_RESPONSE_HEADERS)
     location = headers.get("location")
     if 300 <= status < 400 and isinstance(location, str):
         safe_headers["Location"] = renderer.url(location)

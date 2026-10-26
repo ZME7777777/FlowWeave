@@ -92,6 +92,24 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 
 ## 6. 任务清单
 
+### FR-703 内置浏览器大模块响应与错误可读性 — DONE
+
+依赖：FR-630 DONE。实际预览入口和 CasesPage 返回 200，但其依赖的工作台模块
+被 2 MiB 代理上限拒绝，返回 AGENT_BROWSER_RESPONSE_TOO_LARGE；错误响应缺少
+CORS 头，浏览器最终只报告动态模块加载失败。本片已将单响应预算调整至有界的
+16 MiB，同步子进程读取、Base64 传输和解码检查；为已授权预览的错误响应保留
+隔离与 CORS 响应头。保持所有权校验、只读 loopback、超时与连接并发限制。
+真实 HTTP 回归验证 3 MiB、恰好 16 MiB、超限拒绝和后续连接可用；正式 API
+验证 413／502／503 响应保留 CORS、禁缓存和 sandbox 隔离，普通平台 API 不获得
+预览 CORS 权限。传输／预览／用户隔离定向套件 19 项通过，错误边界用例在闭包
+静态检查修正后单独复测通过，不累加用例数。真实 Vite 的大于 2 MiB 懒加载模块
+经正式代理管线在 Chromium 隔离 iframe 渲染成功；该 1 项 E2E 使用本地 HTTP
+与受控 Docker exec 替身，不代表生产原会话已恢复。Web typecheck、受影响 E2E
+ESLint、Ruff、目标传输／预览模块 Pyright、diff 与切片状态检查通过。唯一
+Alembic head 为 0176_agent_temporary_services，本片无迁移或 OpenHands 修改。
+不发布或替换 Runtime；线上生效仍需独立预检、Runtime 范围发布和活跃会话门禁。
+当前与下一可执行切片均为 NONE。
+
 ### OPS-08 一天构建保留与单版本回滚维护 — DONE
 
 依赖：OPS-07 DONE。按用户明确授权，平台／Web 各保留当前与一个不同版本回滚镜像，

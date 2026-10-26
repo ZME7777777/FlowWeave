@@ -3134,7 +3134,9 @@ try { window.parent.document.body.dataset.escaped='yes'; } catch { document.body
 `);
   await writeFile(path.join(scratch, 'src/message.js'), `export {message} from './nested.js';`);
   await writeFile(path.join(scratch, 'src/nested.js'), `export const message='Vite 模块加载成功';`);
-  await writeFile(path.join(scratch, 'src/lazy.js'), `export const value='loaded';`);
+  // Large development modules (including inline maps) must survive every
+  // transport layer; the old 2 MiB cap passed the previous tiny lazy fixture.
+  await writeFile(path.join(scratch, 'src/lazy.js'), `export const value='loaded';\n/*${'x'.repeat(3 * 1024 * 1024)}*/`);
   await writeFile(path.join(scratch, 'src/style.css'), `@import './theme.css'; #preview-ready{color:rgb(12, 34, 56);background-image:url('../pixel.svg')}`);
   await writeFile(path.join(scratch, 'src/theme.css'), `body{margin:13px}`);
   await writeFile(path.join(scratch, 'pixel.svg'), '<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><!--'+'x'.repeat(5000)+'--></svg>');
@@ -3164,6 +3166,8 @@ export default defineConfig({root:${JSON.stringify(scratch)}, plugins:[react()],
     await expect.poll(async () => {
       try { return (await fetch(origin+'/host')).status; } catch { return 0; }
     }, {message:'Preview API starts',timeout:30_000}).toBe(200);
+    const largeModule = await fetch(`http://127.0.0.1:${vitePort}/src/lazy.js`);
+    expect((await largeModule.arrayBuffer()).byteLength).toBeGreaterThan(2 * 1024 * 1024);
     await openWorkspace(page, [
       {id:'preview-user',event_type:'MESSAGE',payload:{source:'user',parent_id:'__root__',content:'预览页面',timestamp:now}},
       {id:'preview-agent',event_type:'MESSAGE',payload:{source:'agent',parent_id:'preview-user',content:`[本地预览](http://localhost:${vitePort}/)`,timestamp:now}},
