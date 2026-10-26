@@ -3176,12 +3176,13 @@ test('selected conversation text is sent and rendered as a compact reference car
 
 test('Agent workspace groups toggle their conversation lists', async ({ page }) => {
   const now = new Date().toISOString();
-  await page.route('**/api/v1/auth/me', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id: 'collapsible-user', username: 'tester', role: 'USER', is_super_admin: false }) }));
+  await page.route('**/api/v1/auth/me', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id: 'collapsible-user', username: 'tester', role: 'USER', is_super_admin: false, can_use_agent_sessions: true }) }));
   await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
   await page.route('**/api/v1/agent-workspaces/**', async route => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
     if (path.endsWith('/default')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id: 'collapsible-workspace', display_name: 'Agent 工作区', desired_state: 'RUNNING', updated_at: now }) });
+    if (path.endsWith('/session-configuration')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ capability_version_ids: [], credential_ids: [] }) });
     if (path.endsWith('/runtime')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ state: 'ACTIVE', write_available: true, updated_at: now }) });
     if (path.endsWith('/conversations') && request.method() === 'GET') {
       const workDirectoryId = new URL(request.url()).searchParams.get('work_directory_id');
@@ -3207,15 +3208,23 @@ test('Agent workspace groups toggle their conversation lists', async ({ page }) 
   await expect(page).toHaveURL(/\/agent$/);
   await expect(page.locator('.agent-workbench-app-shell')).toHaveClass(/conversation-rail-collapsed/);
   await expect(page.locator('.agent-workbench-rail')).toBeHidden();
+  await page.locator('.agent-workbench-app-shell').evaluate(async shell => {
+    await Promise.all(shell.getAnimations().map(animation => animation.finished));
+  });
   const collapsedLayout = await page.locator('.agent-workbench-app-shell').evaluate(shell => {
     const nav = shell.querySelector<HTMLElement>('.agent-workbench-app-nav');
     const main = shell.querySelector<HTMLElement>('.agent-workbench-main');
     if (!nav || !main) throw new Error('Expected Agent navigation and conversation regions');
+    const tab = main.querySelector<HTMLElement>('.agent-conversation-tabs');
+    if (!tab) throw new Error('Expected conversation tab strip');
     const navBox = nav.getBoundingClientRect();
     const mainBox = main.getBoundingClientRect();
-    return { navRight: navBox.right, mainLeft: mainBox.left };
+    const tabBox = tab.getBoundingClientRect();
+    return { navRight: navBox.right, mainLeft: mainBox.left, tabLeft: tabBox.left };
   });
   expect(collapsedLayout.mainLeft).toBeLessThanOrEqual(collapsedLayout.navRight + 1);
+  expect(collapsedLayout.tabLeft).toBeLessThanOrEqual(collapsedLayout.mainLeft + 15);
+  await expect(page.locator('.agent-workbench-app-shell')).toHaveCSS('transition-property', /grid-template-columns/);
   await expect(composer).toHaveValue('保留中的草稿');
   await homeButton.click();
   await expect(page.locator('.agent-workbench-app-shell')).not.toHaveClass(/conversation-rail-collapsed/);

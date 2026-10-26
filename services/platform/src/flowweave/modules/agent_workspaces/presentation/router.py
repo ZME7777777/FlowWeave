@@ -463,16 +463,24 @@ async def put_agent_workspace_capabilities(
 
 @router.get("/agent-workspaces/{workspace_id}/session-configuration")
 async def get_agent_workspace_session_configuration(
-    workspace_id: str, db: Db
+    workspace_id: str,
+    db: Db,
+    work_directory_id: str | None = Query(default=None, min_length=1, max_length=36),
 ) -> dict[str, list[str]]:
     return await run_sync(
-        db, lambda session: conversations.workspace_session_configuration(session, workspace_id)
+        db,
+        lambda session: conversations.workspace_session_configuration(
+            session, workspace_id, work_directory_id
+        ),
     )
 
 
 @router.put("/agent-workspaces/{workspace_id}/session-configuration")
 async def put_agent_workspace_session_configuration(
-    workspace_id: str, payload: AgentWorkspaceSessionConfigurationWrite, db: Db
+    workspace_id: str,
+    payload: AgentWorkspaceSessionConfigurationWrite,
+    db: Db,
+    work_directory_id: str | None = Query(default=None, min_length=1, max_length=36),
 ) -> dict[str, list[str]]:
     return await run_sync(
         db,
@@ -481,6 +489,7 @@ async def put_agent_workspace_session_configuration(
             workspace_id,
             tuple(payload.capability_version_ids),
             tuple(payload.credential_ids),
+            work_directory_id,
         ),
     )
 

@@ -1678,8 +1678,9 @@ def test_agent_workspace_selected_skill_is_frozen_and_mounted(
 
 
 
+@pytest.mark.parametrize("named_directory", [False, True])
 def test_agent_workspace_session_configuration_is_inherited_by_bootstrap(
-    settings, container, db_session_factory, monkeypatch, skill_capability
+    settings, container, db_session_factory, monkeypatch, skill_capability, named_directory
 ):
     """New bootstrap conversations freeze the workspace's saved defaults."""
 
@@ -1689,6 +1690,20 @@ def test_agent_workspace_session_configuration_is_inherited_by_bootstrap(
         def create_conversation(self, request):
             self.request = request
             return super().create_conversation(request)
+
+        def reload_conversation(self, handle, *, expected=None):
+            del expected
+            assert self.request is not None
+            identity = super().reload_conversation(handle)
+            return RuntimeConversationIdentity(
+                conversation_id=identity.conversation_id,
+                workspace_working_dir=self.request.workspace_ref,
+                persistence_dir=identity.persistence_dir,
+                event_id=identity.event_id,
+                parent_id=identity.parent_id,
+                action_id=identity.action_id,
+                tool_call_id=identity.tool_call_id,
+            )
 
     monkeypatch.setattr(
         conversations,
@@ -1710,8 +1725,15 @@ def test_agent_workspace_session_configuration_is_inherited_by_bootstrap(
         runtime_context(runtime),
     ):
         workspace = _ready_workspace_for_conversation(db)
+        directory_id = None
+        if named_directory:
+            project_root = _agent_project_root(settings, db, workspace) / "users" / FLOWWEAVE_USER_ID
+            (project_root / "backend").mkdir(parents=True, exist_ok=True)
+            directory_id = work_directories.create_work_directory(
+                db, workspace.id, "backend", ("backend",)
+            )["id"]
         saved = conversations.replace_workspace_session_configuration(
-            db, workspace.id, (skill_capability["capability_id"],), ()
+            db, workspace.id, (skill_capability["capability_id"],), (), directory_id
         )
 
         assert saved == {
@@ -1722,7 +1744,7 @@ def test_agent_workspace_session_configuration_is_inherited_by_bootstrap(
         created = conversations.bootstrap_conversation(
             db,
             workspace.id,
-            work_directory_id=None,
+            work_directory_id=directory_id,
             model_provider_id=workspace.default_model_provider_id,
             model_name="test-model",
             reasoning_effort=None,

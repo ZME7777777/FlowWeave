@@ -5157,6 +5157,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [workDirectoryEditor, setWorkDirectoryEditor] = useState<AgentSessionWorkDirectory>();
   const [capabilityManagerOpen, setCapabilityManagerOpen] = useState(false);
   const [workspaceSessionConfigurationOpen, setWorkspaceSessionConfigurationOpen] = useState(false);
+  const [workspaceSessionConfigurationScope, setWorkspaceSessionConfigurationScope] = useState<string | null | undefined>(undefined);
   const [workspacePathCopied, setWorkspacePathCopied] = useState(false);
   const [conversationSearchOpen, setConversationSearchOpen] = useState(false);
   const [conversationSearchId, setConversationSearchId] = useState<string>();
@@ -5352,9 +5353,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   });
   const workspace = workspaceQuery.data;
   const workspaceSessionConfigurationQuery = useQuery({
-    queryKey: sessionQueryKey(host, 'session-configuration', workspace?.id),
-    queryFn: () => agentWorkspaceApi.agentWorkspaceSessionConfiguration(workspace!.id),
-    enabled: host.id === 'agent-workspace' && Boolean(workspace),
+    queryKey: sessionQueryKey(host, 'session-configuration', workspace?.id, workspaceSessionConfigurationScope ?? 'root'),
+    queryFn: () => agentWorkspaceApi.agentWorkspaceSessionConfiguration(
+      workspace!.id,
+      workspaceSessionConfigurationScope ?? undefined,
+    ),
+    enabled: host.id === 'agent-workspace' && Boolean(workspace) && workspaceSessionConfigurationScope !== undefined,
     staleTime: 30_000,
   });
   // The HTTP mutation can outlive this workbench when a top-level tab opens.
@@ -6433,12 +6437,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, [attachments, bootstrapRecovery, composerAnnotations, conversationDraft, draftRecoveryStorageKey, newConversationModelName, newConversationProviderId, newConversationReasoningEffort, pendingBootstrap?.draft.id, references, workspaceReferences]);
   const runtime = runtimeQuery.data;
   const runtimeWritable = Boolean(workspace && runtime?.write_available);
-  const workspaceSessionConfigurationReady = host.id !== 'agent-workspace'
-    || workspaceSessionConfigurationQuery.isSuccess;
   const canOpenConversation = Boolean(
-    workspaceSessionConfigurationReady
-    && workspace
-    && (runtime?.write_available || runtime?.fork_available),
+    workspace && (runtime?.write_available || runtime?.fork_available),
   );
   const canBootstrap = Boolean(canOpenConversation && conversationDraft && (!features.modelSelection || (newConversationProviderId && newConversationModelName)));
   const eventQueryKey = sessionQueryKey(host, 'conversation-events', workspace?.id, selected?.id);
@@ -9174,7 +9174,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   ) || (
     bootstrap.isPending && pendingBootstrap?.draft.id === conversationDraft?.id
   ) || submissionConfirmationPending || activeLocalMessageProjections.some(projection => projection.state === 'submitting');
-  const openConversationDraft = useCallback((next: Omit<ConversationDraft, 'id'>, options: { restoreRecovery?: boolean; selectStandaloneRoot?: boolean } = {}) => {
+  const openConversationDraft = useCallback(async (next: Omit<ConversationDraft, 'id'>, options: { restoreRecovery?: boolean; selectStandaloneRoot?: boolean } = {}) => {
     const outgoingScope = activeComposerScope.current;
     const draftRoute = (workDirectoryId?: string) => {
       if (host.id !== 'agent-workspace' || !workDirectoryId) return host.rootPath;
@@ -9198,8 +9198,19 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         reasoningEffort: newConversationReasoningEffort,
       };
       const draftKey = conversationDraft.workDirectoryId ?? 'root';
-      writeConversationDraft(conversationDraftStorageKey(host.id, workspace.id, conversationDraft.workDirectoryId), recovery);
-      setRecoverableConversationDrafts(current => ({ ...current, [draftKey]: recovery }));
+      const storageKey = conversationDraftStorageKey(host.id, workspace.id, conversationDraft.workDirectoryId);
+      if (conversationDraftHasContent(recovery)) {
+        writeConversationDraft(storageKey, recovery);
+        setRecoverableConversationDrafts(current => ({ ...current, [draftKey]: recovery }));
+      } else {
+        writeConversationDraft(storageKey, undefined);
+        setRecoverableConversationDrafts(current => {
+          if (!current[draftKey]) return current;
+          const next = { ...current };
+          delete next[draftKey];
+          return next;
+        });
+      }
     }
     setForegroundTurn(undefined);
     setActiveTurnEventId(undefined);
@@ -9228,7 +9239,13 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       setNewConversationModelName(recovery.modelName);
       setNewConversationReasoningEffort(recovery.reasoningEffort);
     } else {
-      const configuration = workspaceSessionConfigurationQuery.data;
+      const configuration = host.id === 'agent-workspace' && workspace
+        ? await queryClient.fetchQuery({
+          queryKey: sessionQueryKey(host, 'session-configuration', workspace.id, next.workDirectoryId ?? 'root'),
+          queryFn: () => agentWorkspaceApi.agentWorkspaceSessionConfiguration(workspace.id, next.workDirectoryId),
+          staleTime: 30_000,
+        })
+        : undefined;
       const draft = {
         ...next,
         id: randomId(),
@@ -9254,15 +9271,15 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       ? { standaloneAgentReturnTarget: 'root' }
       : undefined);
     requestAnimationFrame(() => composerRef.current?.focus());
-  }, [attachments, bootstrapRecovery, clearBootstrapRecovery, composerAnnotations, conversationDraft, host.id, host.rootPath, newConversationModelName, newConversationProviderId, newConversationReasoningEffort, onNavigate, pendingBootstrap?.draft.id, persistComposerDraft, references, replaceComposerDraft, updateLocalMessageProjections, workspace, workspaceReferences, workspaceSessionConfigurationQuery.data]);
+  }, [attachments, bootstrapRecovery, clearBootstrapRecovery, composerAnnotations, conversationDraft, host, newConversationModelName, newConversationProviderId, newConversationReasoningEffort, onNavigate, pendingBootstrap?.draft.id, persistComposerDraft, queryClient, references, replaceComposerDraft, updateLocalMessageProjections, workspace, workspaceReferences]);
   useEffect(() => {
-    if (!autoOpenDraft || scheduleRoute || !workspace || !workspaceSessionConfigurationReady || selectedBindingId || conversationDraft) return;
+    if (!autoOpenDraft || scheduleRoute || !workspace || selectedBindingId || conversationDraft) return;
     const directory = draftWorkDirectoryId
       ? workDirectoriesQuery.data?.items.find(item => item.id === draftWorkDirectoryId)
       : undefined;
     if (draftWorkDirectoryId && !directory) return;
     openConversationDraft({ workDirectoryId: directory?.id, displayName: directory?.display_name ?? '根工作区' }, { restoreRecovery: true });
-  }, [autoOpenDraft, conversationDraft, draftWorkDirectoryId, openConversationDraft, scheduleRoute, selectedBindingId, workDirectoriesQuery.data?.items, workspace, workspaceSessionConfigurationReady]);
+  }, [autoOpenDraft, conversationDraft, draftWorkDirectoryId, openConversationDraft, scheduleRoute, selectedBindingId, workDirectoriesQuery.data?.items, workspace]);
   const enqueueDraft = useCallback((draftContent = composerDraftRef.current) => {
     const scopePendingAttachments = pendingAttachments.filter(item => item.scope === composerScope);
     if (scopePendingAttachments.some(item => item.state === 'failed')) {
@@ -10004,6 +10021,27 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       return { ...current, groups: [...next] };
     });
   };
+  const discardEmptyConversationDraft = () => {
+    const outgoingDraft = conversationDraft;
+    if (!outgoingDraft || activeComposerScope.current !== outgoingDraft.id || !workspace
+      || conversationDraftHasContent({
+        draft: outgoingDraft,
+        content: composerDraftRef.current,
+        attachments,
+        references,
+        workspaceReferences,
+        annotations: composerAnnotations,
+        providerId: newConversationProviderId,
+        modelName: newConversationModelName,
+        reasoningEffort: newConversationReasoningEffort,
+      })) return;
+    conversationDraftsByScope.current.delete(outgoingDraft.id);
+    composerDraftsByScope.current.delete(outgoingDraft.id);
+    writeConversationDraft(
+      conversationDraftStorageKey(host.id, workspace.id, outgoingDraft.workDirectoryId),
+      undefined,
+    );
+  };
   const selectConversation = (bindingId: string, { revealSidebar = false }: { revealSidebar?: boolean } = {}) => {
     setConversationReferenceTarget(undefined);
     manualSidebarRoute.current = revealSidebar ? undefined : bindingId;
@@ -10011,6 +10049,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     else if (!revealSidebar) setSidebarReveal({ bindingId: undefined, expandCollapsed: false });
     const outgoingScope = activeComposerScope.current;
     if (outgoingScope) persistComposerDraft(outgoingScope);
+    discardEmptyConversationDraft();
     const activityConversation = activityConversations.find(item => item.id === bindingId);
     const conversation = activityConversation?.final_reply_preview
       ? activityConversation
@@ -10063,6 +10102,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const previewActivityConversation = (bindingId: string) => {
     const outgoingScope = activeComposerScope.current;
     if (outgoingScope) persistComposerDraft(outgoingScope);
+    discardEmptyConversationDraft();
     setConversationDraft(undefined);
     setActivityPreviewBindingId(bindingId);
   };
@@ -10193,10 +10233,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         {sidebarListMode === 'activity'
           ? <section className="agent-workspace-activity" aria-label="活动会话"><header><div><span className="eyebrow">ACTIVITY</span><b>活动</b></div><button type="button" aria-label="返回工作区列表" title="返回工作区列表" onClick={() => { setActivityPreviewBindingId(undefined); setSidebarListMode('workspaces'); }}><ArrowLeft size={15}/></button></header>{activityConversations.length ? activityConversations.map(item => conversationRow(item, [], { allowDrag: false, workspaceName: activityWorkspaceName(item), onSelect: () => previewActivityConversation(item.id), onDoubleClick: () => openActivityConversation(item.id), onMarkRead: () => markConversationRead(item.id) })) : <p>没有正在运行或未读的会话。</p>}</section>
           : <>{pinnedConversations.length > 0 && <section className={`agent-workspace-pinned${pinnedConversationsCollapsed ? ' collapsed' : ''}`} aria-label="置顶会话"><header><button type="button" aria-label={`${pinnedConversationsCollapsed ? '展开' : '收起'}置顶会话`} aria-expanded={!pinnedConversationsCollapsed} aria-controls="agent-workspace-pinned-content" onClick={() => setPinnedConversationsCollapsed(!pinnedConversationsCollapsed)}><Pin size={13}/><span>置顶</span></button></header><div id="agent-workspace-pinned-content" hidden={pinnedConversationsCollapsed}>{pinnedConversations.map(item => conversationRow(item, pinnedConversations))}</div></section>}
-            <WorkspaceConversationGroup groupId="root" label="根工作区" conversationCount={rootConversations.length} hasMore={Boolean(conversationPagesByScope.__root__?.next_cursor)} loadingMore={loadingConversationScope === '__root__'} onLoadMore={() => loadMoreConversations('__root__')} collapsed={collapsedConversationGroups.has('root')} onCollapsedChange={collapsed => setConversationGroupCollapsed('root', collapsed)} revealConversationIndex={routedRootConversationIndex >= 0 ? routedRootConversationIndex : undefined} onRevealConversation={completeSidebarReveal} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ displayName: '根工作区' }, { restoreRecovery: true, selectStandaloneRoot: true })} onConfigureSession={runtimeWritable ? () => setWorkspaceSessionConfigurationOpen(true) : undefined}>
+            <WorkspaceConversationGroup groupId="root" label="根工作区" conversationCount={rootConversations.length} hasMore={Boolean(conversationPagesByScope.__root__?.next_cursor)} loadingMore={loadingConversationScope === '__root__'} onLoadMore={() => loadMoreConversations('__root__')} collapsed={collapsedConversationGroups.has('root')} onCollapsedChange={collapsed => setConversationGroupCollapsed('root', collapsed)} revealConversationIndex={routedRootConversationIndex >= 0 ? routedRootConversationIndex : undefined} onRevealConversation={completeSidebarReveal} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ displayName: '根工作区' }, { restoreRecovery: true, selectStandaloneRoot: true })} onConfigureSession={runtimeWritable ? () => { setWorkspaceSessionConfigurationScope(null); setWorkspaceSessionConfigurationOpen(true); } : undefined}>
               {visibleCount => <>{pendingBootstrapItem && !pendingBootstrap?.draft.workDirectoryId ? pendingBootstrapItem : recoverableDraftItem(undefined, '根工作区')}{rootConversations.slice(0, visibleCount).map(item => conversationRow(item, rootConversations))}</>}
             </WorkspaceConversationGroup>
-            {features.workDirectories && workDirectories.map(directory => { const group = conversationsForDirectory(directory.id); const routeIndex = sidebarReveal.expandCollapsed || !collapsedConversationGroups.has(directory.id) ? group.findIndex(item => item.id === pendingSidebarRevealBindingId) : -1; return <WorkspaceConversationGroup key={directory.id} groupId={directory.id} label={directory.display_name} conversationCount={group.length} hasMore={Boolean(conversationPagesByScope[directory.id]?.next_cursor)} loadingMore={loadingConversationScope === directory.id} onLoadMore={() => loadMoreConversations(directory.id)} draggable dragging={draggedWorkDirectoryId === directory.id} dropPosition={workDirectoryDropTarget?.id === directory.id ? (workDirectoryDropTarget.after ? 'after' : 'before') : undefined} onPointerDragStart={event => startPointerWorkDirectoryDrag(event, directory.id)} collapsed={collapsedConversationGroups.has(directory.id)} onCollapsedChange={collapsed => setConversationGroupCollapsed(directory.id, collapsed)} revealConversationIndex={routeIndex >= 0 ? routeIndex : undefined} onRevealConversation={completeSidebarReveal} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ workDirectoryId: directory.id, displayName: directory.display_name }, { restoreRecovery: true })} onConfigureSession={runtimeWritable ? () => setWorkspaceSessionConfigurationOpen(true) : undefined} onEdit={api.updateWorkDirectory && runtimeWritable ? () => setWorkDirectoryEditor(directory) : undefined} onDelete={api.deleteWorkDirectory && runtimeWritable ? () => void removeWorkDirectory(directory) : undefined}>
+            {features.workDirectories && workDirectories.map(directory => { const group = conversationsForDirectory(directory.id); const routeIndex = sidebarReveal.expandCollapsed || !collapsedConversationGroups.has(directory.id) ? group.findIndex(item => item.id === pendingSidebarRevealBindingId) : -1; return <WorkspaceConversationGroup key={directory.id} groupId={directory.id} label={directory.display_name} conversationCount={group.length} hasMore={Boolean(conversationPagesByScope[directory.id]?.next_cursor)} loadingMore={loadingConversationScope === directory.id} onLoadMore={() => loadMoreConversations(directory.id)} draggable dragging={draggedWorkDirectoryId === directory.id} dropPosition={workDirectoryDropTarget?.id === directory.id ? (workDirectoryDropTarget.after ? 'after' : 'before') : undefined} onPointerDragStart={event => startPointerWorkDirectoryDrag(event, directory.id)} collapsed={collapsedConversationGroups.has(directory.id)} onCollapsedChange={collapsed => setConversationGroupCollapsed(directory.id, collapsed)} revealConversationIndex={routeIndex >= 0 ? routeIndex : undefined} onRevealConversation={completeSidebarReveal} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ workDirectoryId: directory.id, displayName: directory.display_name }, { restoreRecovery: true })} onConfigureSession={runtimeWritable ? () => { setWorkspaceSessionConfigurationScope(directory.id); setWorkspaceSessionConfigurationOpen(true); } : undefined} onEdit={api.updateWorkDirectory && runtimeWritable ? () => setWorkDirectoryEditor(directory) : undefined} onDelete={api.deleteWorkDirectory && runtimeWritable ? () => void removeWorkDirectory(directory) : undefined}>
               {visibleCount => <>{pendingBootstrapItem && pendingBootstrap?.draft.workDirectoryId === directory.id ? pendingBootstrapItem : recoverableDraftItem(directory.id, directory.display_name)}{group.slice(0, visibleCount).map(item => conversationRow(item, group))}</>}
             </WorkspaceConversationGroup>; })}<div ref={workspaceGroupAnchorSpacer} aria-hidden="true"/></>}
       </div>
@@ -10448,15 +10488,23 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       queryClient.setQueryData<AgentSessionWorkDirectoryList>(sessionQueryKey(host, 'work-directories', workspace.id), current => current ? { ...current, items: current.items.map(item => item.id === directory.id ? directory : item) } : current);
       void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'work-directories', workspace.id) });
     }}/>}
-    {capabilityManagerOpen && (selected || features.draftCapabilitySelection) && <CapabilityManager workspaceId={workspace.id} bindingId={selected?.id} conversationCapabilities={selected?.capabilities} draftCapabilityIds={conversationDraft?.capabilityVersionIds ?? workspaceSessionConfigurationQuery.data?.capability_version_ids} draftCredentialIds={conversationDraft?.credentialIds ?? workspaceSessionConfigurationQuery.data?.credential_ids} onClose={() => setCapabilityManagerOpen(false)} onCreateEnhancedConversation={capabilityVersionIds => { const directory = selected?.work_directory_id ? workDirectories.find(item => item.id === selected.work_directory_id) : undefined; setCapabilityManagerOpen(false); if (conversationDraft) setConversationDraft(current => current ? { ...current, capabilityVersionIds } : current); else openConversationDraft({ workDirectoryId: directory?.id, displayName: directory?.display_name ?? '根工作区', capabilityVersionIds, credentialIds: workspaceSessionConfigurationQuery.data?.credential_ids }); }} onDraftCredentialIdsChange={credentialIds => setConversationDraft(current => current ? { ...current, credentialIds } : current)}/>}
+    {capabilityManagerOpen && (selected || features.draftCapabilitySelection) && <CapabilityManager workspaceId={workspace.id} bindingId={selected?.id} conversationCapabilities={selected?.capabilities} draftCapabilityIds={conversationDraft?.capabilityVersionIds ?? workspaceSessionConfigurationQuery.data?.capability_version_ids} draftCredentialIds={conversationDraft?.credentialIds ?? workspaceSessionConfigurationQuery.data?.credential_ids} onClose={() => setCapabilityManagerOpen(false)} onCreateEnhancedConversation={capabilityVersionIds => { const directory = selected?.work_directory_id ? workDirectories.find(item => item.id === selected.work_directory_id) : undefined; setCapabilityManagerOpen(false); if (conversationDraft) setConversationDraft(current => current ? { ...current, capabilityVersionIds } : current); else void openConversationDraft({ workDirectoryId: directory?.id, displayName: directory?.display_name ?? '根工作区', capabilityVersionIds }); }} onDraftCredentialIdsChange={credentialIds => setConversationDraft(current => current ? { ...current, credentialIds } : current)}/>}
 
-    {workspaceSessionConfigurationOpen && workspaceSessionConfigurationQuery.data && <CapabilityManager configurationPreset workspaceId={workspace.id} draftCapabilityIds={workspaceSessionConfigurationQuery.data.capability_version_ids} draftCredentialIds={workspaceSessionConfigurationQuery.data.credential_ids} onClose={() => setWorkspaceSessionConfigurationOpen(false)} onSaveConfiguration={async configuration => {
-      const saved = await agentWorkspaceApi.replaceAgentWorkspaceSessionConfiguration(workspace.id, {
-        capability_version_ids: configuration.capabilityVersionIds,
-        credential_ids: configuration.credentialIds,
-      });
-      queryClient.setQueryData(sessionQueryKey(host, 'session-configuration', workspace.id), saved);
+    {workspaceSessionConfigurationOpen && workspaceSessionConfigurationQuery.data && <CapabilityManager configurationPreset workspaceId={workspace.id} draftCapabilityIds={workspaceSessionConfigurationQuery.data.capability_version_ids} draftCredentialIds={workspaceSessionConfigurationQuery.data.credential_ids} onClose={() => { setWorkspaceSessionConfigurationOpen(false); setWorkspaceSessionConfigurationScope(undefined); }} onSaveConfiguration={async configuration => {
+      const saved = await agentWorkspaceApi.replaceAgentWorkspaceSessionConfiguration(
+        workspace.id,
+        {
+          capability_version_ids: configuration.capabilityVersionIds,
+          credential_ids: configuration.credentialIds,
+        },
+        workspaceSessionConfigurationScope ?? undefined,
+      );
+      queryClient.setQueryData(
+        sessionQueryKey(host, 'session-configuration', workspace.id, workspaceSessionConfigurationScope ?? 'root'),
+        saved,
+      );
     }}/>}
+
 
 
   </main>;

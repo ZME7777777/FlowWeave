@@ -72,10 +72,12 @@ async function openWorkspace(page: Page, events: unknown[] = [], includeSecondCo
     { id: 'capability-1', capability_key: '日报技能', capability_type: 'SKILL', description: '汇总每日检查结果', filename: 'daily.md', is_latest: true },
     { id: 'capability-2', capability_key: '周报技能', capability_type: 'SKILL', description: '汇总每周检查结果', filename: 'weekly.md', is_latest: true },
   ];
-  let sessionConfiguration = {
+  const sessionConfigurations = new Map<string, { capability_version_ids: string[]; credential_ids: string[] }>();
+  const configurationScope = (request: import('@playwright/test').Request) => new URL(request.url()).searchParams.get('work_directory_id') ?? 'root';
+  sessionConfigurations.set('root', {
     capability_version_ids: scheduleOptions.defaultCapabilityIds ?? [] as string[],
     credential_ids: scheduleOptions.defaultCredentialIds ?? [] as string[],
-  };
+  });
   schedules[0].prompt = scheduleOptions.prompt ?? schedules[0].prompt;
   schedules.push({ ...schedules[0], id: 'weekly-schedule', name: '每周复核', prompt: '复核周报。', row_version: 7 });
   await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
@@ -88,8 +90,9 @@ async function openWorkspace(page: Page, events: unknown[] = [], includeSecondCo
     if (path.endsWith('/auth/login')) { authenticated = true; return json(route, { id: 'schedule-user', username: 'schedule-user', role: 'USER', can_use_agent_sessions: true }); }
     if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
     if (path.endsWith('/session-configuration')) {
-      if (request.method() === 'PUT') sessionConfiguration = request.postDataJSON();
-      return json(route, sessionConfiguration);
+      const scope = configurationScope(request);
+      if (request.method() === 'PUT') sessionConfigurations.set(scope, request.postDataJSON());
+      return json(route, sessionConfigurations.get(scope) ?? { capability_version_ids: [], credential_ids: [] });
     }
     if (path.endsWith('/conversation-management')) return json(route, { items: [], truncated: false });
     if (path.endsWith('/conversation-schedules') && request.method() === 'POST') {
@@ -3788,9 +3791,8 @@ test('workspace action menu defaults to all credentials and persists session con
   await expect(dialog).toHaveCount(0);
 
   await page.getByRole('button', { name: '日报会话', exact: true }).click();
-  const directory = page.locator('[data-workspace-group-id="existing-directory"]');
-  await directory.locator('header').hover();
-  await directory.getByRole('button', { name: '在已有项目目录中新建会话', exact: true }).click({ force: true });
+  await root.locator('header').hover();
+  await root.getByRole('button', { name: '在根工作区中新建会话', exact: true }).click({ force: true });
   await page.getByRole('button', { name: '新会话配置', exact: true }).click();
   const inherited = page.getByRole('dialog', { name: '会话配置', exact: true });
   await expect(inherited.getByRole('button', { name: /日报技能/, exact: false })).toHaveClass(/selected/);
@@ -3800,20 +3802,46 @@ test('workspace action menu defaults to all credentials and persists session con
   await expect(inherited.getByText('已选择 0 项认证', { exact: true })).toBeVisible();
 });
 
-test('new session configuration displays workspace default capabilities and credentials', async ({ page }) => {
+test('named workspaces keep session configuration separate from root defaults', async ({ page }) => {
   await openWorkspace(page, [], false, '日报会话', {
     defaultCapabilityIds: ['capability-1'],
     defaultCredentialIds: ['credential-1'],
   });
-  await page.getByRole('button', { name: '日报会话', exact: true }).click();
   const directory = page.locator('[data-workspace-group-id="existing-directory"]');
+  await directory.locator('header').hover();
+  await directory.getByRole('button', { name: '工作区操作 已有项目目录', exact: true }).click({ force: true });
+  await page.getByRole('menu', { name: '工作区操作菜单：已有项目目录', exact: true }).getByRole('menuitem', { name: '会话配置', exact: true }).click();
+
+  const configuration = page.getByRole('dialog', { name: '会话配置', exact: true });
+  await expect(configuration.getByRole('button', { name: /日报技能/, exact: false })).not.toHaveClass(/selected/);
+  await configuration.getByRole('button', { name: /周报技能/, exact: false }).click();
+  await configuration.getByRole('button', { name: '认证', exact: true }).click();
+  await configuration.getByRole('button', { name: /测试认证/, exact: false }).click();
+  await configuration.getByRole('button', { name: '保存认证配置', exact: true }).click();
+
   await directory.locator('header').hover();
   await directory.getByRole('button', { name: '在已有项目目录中新建会话', exact: true }).click({ force: true });
   await page.getByRole('button', { name: '新会话配置', exact: true }).click();
   const inherited = page.getByRole('dialog', { name: '会话配置', exact: true });
-  await expect(inherited.getByRole('button', { name: /日报技能/, exact: false })).toHaveClass(/selected/);
+  await expect(inherited.getByRole('button', { name: /日报技能/, exact: false })).not.toHaveClass(/selected/);
+  await expect(inherited.getByRole('button', { name: /周报技能/, exact: false })).toHaveClass(/selected/);
   await inherited.getByRole('button', { name: '认证', exact: true }).click();
   await expect(inherited.getByRole('button', { name: /测试认证/, exact: false })).toHaveAttribute('aria-pressed', 'true');
-  await inherited.getByRole('button', { name: '取消全选认证', exact: true }).click();
-  await expect(inherited.getByText('已选择 0 项认证', { exact: true })).toBeVisible();
+  await inherited.getByRole('button', { name: /测试认证/, exact: false }).click();
+  await inherited.getByRole('button', { name: '保存认证配置', exact: true }).click();
+
+  await page.getByRole('button', { name: '新会话配置', exact: true }).click();
+  const customized = page.getByRole('dialog', { name: '会话配置', exact: true });
+  await expect(customized.getByRole('button', { name: /周报技能/, exact: false })).toHaveClass(/selected/);
+  await customized.getByRole('button', { name: '认证', exact: true }).click();
+  await expect(customized.getByRole('button', { name: /测试认证/, exact: false })).toHaveAttribute('aria-pressed', 'false');
+  await customized.getByRole('button', { name: '关闭会话配置', exact: true }).click();
+
+  await page.getByRole('button', { name: '日报会话', exact: true }).click();
+  await directory.locator('header').hover();
+  await directory.getByRole('button', { name: '在已有项目目录中新建会话', exact: true }).click({ force: true });
+  await page.getByRole('button', { name: '新会话配置', exact: true }).click();
+  const fresh = page.getByRole('dialog', { name: '会话配置', exact: true });
+  await fresh.getByRole('button', { name: '认证', exact: true }).click();
+  await expect(fresh.getByRole('button', { name: /测试认证/, exact: false })).toHaveAttribute('aria-pressed', 'true');
 });

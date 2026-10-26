@@ -188,6 +188,8 @@ class AgentWorkDirectory(Base):
     display_name: Mapped[str] = mapped_column(String(160))
     current_version: Mapped[int] = mapped_column(Integer, default=1)
     row_version: Mapped[int] = mapped_column(Integer, default=1)
+    session_capability_ids_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    session_credential_ids_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 

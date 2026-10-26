@@ -354,6 +354,7 @@
 /* The card floats beside the conversation. Reserve space only while visible,
    so hiding it lets the transcript and composer use the full width. */
 .agent-workbench-page{--agent-environment-card-width:clamp(220px,18vw,340px);--agent-composer-empty-height:176px;--agent-summary-motion-duration:360ms;--agent-summary-motion-easing:cubic-bezier(.2,0,0,1)}
+@media(min-width:681px){.agent-workbench-app-shell{transition:grid-template-columns var(--agent-summary-motion-duration) var(--agent-summary-motion-easing)}.agent-workbench-app-shell>.agent-workbench-main{transition:grid-column var(--agent-summary-motion-duration) var(--agent-summary-motion-easing)}}
 .agent-workbench-page:has(>.agent-workspace-drawer.environment-open)>.agent-workbench-main>.agent-workbench-content{--agent-composer-center-offset:calc((var(--agent-environment-card-width) + 24px)/-2)}
 .agent-workbench-page:has(>.agent-workspace-drawer.environment-open)>.agent-workbench-main>.agent-workbench-content .conversation-surface{padding-right:calc(var(--agent-environment-card-width) + 40px)}
 .agent-workbench-page:has(>.agent-workspace-drawer.environment-open)>.agent-workbench-main>.agent-composer-dock{margin-right:calc(var(--agent-environment-card-width) + 24px)}
@@ -371,9 +372,10 @@
   .agent-workbench-page:has(>.agent-workspace-drawer:not(.fullscreen)){grid-template-columns:var(--conversation-rail-width,220px) minmax(0,1fr) auto}
   .agent-workbench-app-shell:has(>.agent-workspace-drawer:not(.fullscreen)){grid-template-columns:52px var(--conversation-rail-width,188px) minmax(0,1fr) auto}
   .agent-workbench-app-shell.conversation-rail-collapsed:has(>.agent-workspace-drawer:not(.fullscreen)){grid-template-columns:52px 0 minmax(0,1fr) auto}
-  .agent-workbench-app-shell.conversation-rail-collapsed{--agent-conversation-frame-width:980px;--agent-environment-card-width:clamp(220px,17vw,340px)}
-  .agent-workbench-app-shell.conversation-rail-collapsed:not(:has(>.agent-workspace-drawer.environment-open))>.agent-workbench-main>.agent-workbench-header{padding-inline:max(14px,calc((100% - var(--agent-conversation-frame-width))/2))}
-  .agent-workbench-app-shell.conversation-rail-collapsed:has(>.agent-workspace-drawer.environment-open)>.agent-workbench-main>.agent-workbench-header{padding-left:max(14px,calc((100% - var(--agent-conversation-frame-width) - var(--agent-environment-card-width) - 24px)/2));padding-right:max(14px,calc((100% - var(--agent-conversation-frame-width) + var(--agent-environment-card-width) + 24px)/2))}
+  .agent-workbench-app-shell.conversation-rail-collapsed{--agent-environment-card-width:clamp(220px,17vw,340px)}
+  .agent-workbench-app-shell.conversation-rail-collapsed>.agent-workbench-main>.agent-workbench-header{padding-inline:14px}
+  .agent-workbench-app-shell:has(>.agent-workspace-drawer.tools-open:not(.fullscreen)){grid-template-columns:52px var(--conversation-rail-width,188px) minmax(0,1fr) var(--agent-workspace-tool-width,400px)}
+  .agent-workbench-app-shell.conversation-rail-collapsed:has(>.agent-workspace-drawer.tools-open:not(.fullscreen)){grid-template-columns:52px 0 minmax(0,1fr) var(--agent-workspace-tool-width,400px)}
 }
 /* At compact widths the tools already consume the secondary surface. Keep the
    card hidden in both toggle states rather than squeezing a third narrow pane. */
