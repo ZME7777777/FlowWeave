@@ -108,6 +108,26 @@ head 仍为 `0174_agent_workspace_user_defaults`。服务器实际平台版本�
 平台代码，差异仅为 Web，按用户授权继续完成同一切片的 web 发布与验收。
 当前与下一可执行切片均为 NONE。
 
+正式发布（2026-10-26）：合并／部署代码版本为
+`ec93ce058f5cc0a474f41e5be868a4238fa91997`，原本地和远程 HEAD 均为其祖先。
+web 正式预检与 commit-bound 最小上下文 prepare 通过，归档 SHA-256 为
+`47d8cf98406e0422543835955fc19e3106df32da1239c407e3990e57c73fe397`；
+实际 linux/amd64 Web 镜像为
+`sha256:50fc8436effb5ac15fa4a9891c210d9798271403629b14a7ff11e52c585edcc3`，
+已核实 OCI revision。保留旧镜像 rollback tag 和服务日志后仅 recreate Web；
+Web HTTP、API／stream-api health/readiness 通过，服务器配置和其余 47 个
+容器 image／StartedAt 不变；无迁移、Provider 重启或既有 Runtime replacement。
+
+实际部署镜像导出的静态资源以受控 API／WebSocket 重跑上述九项 Chromium
+回归，全部通过；浏览器实际加载的 45 个 JS／CSS 文件 SHA-256 与运行容器
+一致。此九项与本地用例重叠，不累加，也不记为真实模型执行验收。服务器侧
+全新 Chromium 验证公开前缀登录、Agent 深层路由和根登录页，Network 验证
+API 请求使用部署前缀、没有根路径 API；两项公开认证 API 均为 401。
+remote-release-finish 的版本、健康及容量收尾通过，本次无过期受管上下文或
+精确 rollback 镜像待回收，保留各 scope 最近三份成功上下文及引用版本。
+收尾后再次复核健康、代码身份、配置及其他容器不变；未操作业务会话、卷、
+Workspace 或共享 BuildKit。补记提交仅记录验收，不改变实际部署代码身份。
+
 ### FR-701 远程侧栏与草稿修复合并发布 — DONE
 
 依赖：FR-700 DONE。按用户明确授权拉取远程 feat/refactor 至 `3cbdfe69`，
