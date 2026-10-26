@@ -9932,6 +9932,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const selectConversation = (bindingId: string, { revealSidebar = false }: { revealSidebar?: boolean } = {}) => {
     setConversationReferenceTarget(undefined);
     manualSidebarRoute.current = revealSidebar ? undefined : bindingId;
+    if (!revealSidebar) setSidebarReveal({ bindingId: undefined, expandCollapsed: false });
     const outgoingScope = activeComposerScope.current;
     if (outgoingScope) persistComposerDraft(outgoingScope);
     const activityConversation = activityConversations.find(item => item.id === bindingId);

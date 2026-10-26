@@ -912,6 +912,44 @@ for (const scope of ['root', 'directory'] as const) {
   });
 }
 
+test('clicking a conversation keeps the sidebar list at its current position', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 600 });
+  await openWorkspace(page, [], true);
+  const conversations = Array.from({ length: 24 }, (_, index) => ({
+    id: `scroll-stable-${index}`,
+    display_title: `稳定会话 ${index}`,
+    title_state: 'MANUAL',
+    lifecycle: 'ACTIVE',
+    streaming_callback_ready: true,
+    write_available: true,
+    execution_status: 'idle',
+    created_at: now,
+    updated_at: now,
+  }));
+  await page.route('**/api/v1/agent-workspaces/schedule-workspace/conversations?**', route => json(route, { items: conversations, next_cursor: null }));
+  await page.goto('/agent/conversations/scroll-stable-0');
+  const sidebar = page.locator('.agent-workbench-list');
+  await expect.poll(() => sidebar.evaluate(element => element.scrollHeight > element.clientHeight)).toBe(true);
+  await sidebar.hover();
+  await page.mouse.wheel(0, 260);
+  await expect.poll(() => sidebar.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+  const scrollTop = await sidebar.evaluate(element => element.scrollTop);
+  const visibleBindingId = await sidebar.evaluate(element => {
+    const bounds = element.getBoundingClientRect();
+    return [...element.querySelectorAll<HTMLElement>('[data-conversation-binding-id]')]
+      .find(row => row.dataset.conversationBindingId !== 'scroll-stable-0'
+        && row.getBoundingClientRect().top >= bounds.top
+        && row.getBoundingClientRect().bottom <= bounds.bottom)
+      ?.dataset.conversationBindingId;
+  });
+  expect(visibleBindingId).toBeTruthy();
+  await page.locator(`[data-conversation-binding-id="${visibleBindingId}"]`).getByRole('button').click();
+  await expect(page).toHaveURL(new RegExp(`/agent/conversations/${visibleBindingId}$`));
+  await settleWorkspaceLayout(page);
+  expect(await sidebar.evaluate(element => element.scrollTop)).toBe(scrollTop);
+});
+
+
 test('workspace and pinned collapse preferences survive reopening with independent scopes', async ({ page }) => {
   await openWorkspace(page, [], true);
   const preferenceKey = 'flowweave:sidebar-collapse:v1:schedule-user:agent-workspace:schedule-workspace';
