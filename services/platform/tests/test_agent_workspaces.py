@@ -1677,6 +1677,69 @@ def test_agent_workspace_selected_skill_is_frozen_and_mounted(
         assert frozen == selected
 
 
+
+def test_agent_workspace_session_configuration_is_inherited_by_bootstrap(
+    settings, container, db_session_factory, monkeypatch, skill_capability
+):
+    """New bootstrap conversations freeze the workspace's saved defaults."""
+
+    class CapturingRuntime(MockRuntime):
+        request = None
+
+        def create_conversation(self, request):
+            self.request = request
+            return super().create_conversation(request)
+
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=kwargs.get("model_name") or "test-model",
+            api_key="x",
+            reasoning_effort=kwargs.get("reasoning_effort"),
+        ),
+    )
+    runtime = CapturingRuntime()
+    with (
+        settings_context(settings),
+        tenant_user(FLOWWEAVE_USER_ID),
+        artifact_store_context(container.artifact_store),
+        db_session_factory() as db,
+        runtime_context(runtime),
+    ):
+        workspace = _ready_workspace_for_conversation(db)
+        saved = conversations.replace_workspace_session_configuration(
+            db, workspace.id, (skill_capability["capability_id"],), ()
+        )
+
+        assert saved == {
+            "capability_version_ids": [skill_capability["capability_id"]],
+            "credential_ids": [],
+        }
+
+        created = conversations.bootstrap_conversation(
+            db,
+            workspace.id,
+            work_directory_id=None,
+            model_provider_id=workspace.default_model_provider_id,
+            model_name="test-model",
+            reasoning_effort=None,
+            content="请使用默认会话配置。",
+            idempotency_key="workspace-session-defaults",
+        )
+
+        frozen = created["conversation"]["capabilities"]
+        assert len(frozen) == 1
+        assert frozen[0]["id"] == skill_capability["capability_id"]
+        assert frozen[0]["capability_type"] == "SKILL"
+        assert frozen[0]["capability_key"] == "test-skill"
+        assert frozen[0]["digest"]
+        assert runtime.request is not None
+        assert [skill.name for skill in runtime.request.agent_spec.skills] == ["test-skill"]
+
+
 def test_agent_workspace_loads_capability_through_native_marketplace(
     settings, container, db_session_factory, monkeypatch, skill_capability
 ):

@@ -58,7 +58,7 @@ async function settleWorkspaceLayout(page: Page) {
   });
 }
 
-async function openWorkspace(page: Page, events: unknown[] = [], includeSecondConversation = false, conversationTitle = '日报会话', scheduleOptions: { prompt?: string; occurrenceCount?: number; capabilityVersionIds?: string[]; credentialIds?: string[] } = {}) {
+async function openWorkspace(page: Page, events: unknown[] = [], includeSecondConversation = false, conversationTitle = '日报会话', scheduleOptions: { prompt?: string; occurrenceCount?: number; capabilityVersionIds?: string[]; credentialIds?: string[]; defaultCredentialIds?: string[] } = {}) {
   const writes: { method: string; id?: string; body: Record<string, unknown> }[] = [];
   let authenticated = false;
   const workspace = { id: 'schedule-workspace', display_name: 'Agent 工作区', desired_state: 'RUNNING', updated_at: now };
@@ -72,6 +72,7 @@ async function openWorkspace(page: Page, events: unknown[] = [], includeSecondCo
     { id: 'capability-1', capability_key: '日报技能', capability_type: 'SKILL', description: '汇总每日检查结果', filename: 'daily.md', is_latest: true },
     { id: 'capability-2', capability_key: '周报技能', capability_type: 'SKILL', description: '汇总每周检查结果', filename: 'weekly.md', is_latest: true },
   ];
+  let sessionConfiguration = { capability_version_ids: [] as string[], credential_ids: scheduleOptions.defaultCredentialIds ?? [] };
   schedules[0].prompt = scheduleOptions.prompt ?? schedules[0].prompt;
   schedules.push({ ...schedules[0], id: 'weekly-schedule', name: '每周复核', prompt: '复核周报。', row_version: 7 });
   await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
@@ -83,6 +84,10 @@ async function openWorkspace(page: Page, events: unknown[] = [], includeSecondCo
       : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
     if (path.endsWith('/auth/login')) { authenticated = true; return json(route, { id: 'schedule-user', username: 'schedule-user', role: 'USER', can_use_agent_sessions: true }); }
     if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/session-configuration')) {
+      if (request.method() === 'PUT') sessionConfiguration = request.postDataJSON();
+      return json(route, sessionConfiguration);
+    }
     if (path.endsWith('/conversation-management')) return json(route, { items: [], truncated: false });
     if (path.endsWith('/conversation-schedules') && request.method() === 'POST') {
       const body = request.postDataJSON();
@@ -3668,4 +3673,54 @@ test('new case material upload retry reuses the created scene and saves its rela
   expect(creates).toBe(1);
   expect(uploads).toBe(2);
   expect(item?.materials).toEqual([{ kind: 'FILE', name: 'input.txt', value: '.flowweave/cases/new-import/materials/file-1' }]);
+});
+
+
+test('workspace sidebar toggle and inline capability trigger preserve the active draft', async ({ page }) => {
+  await openWorkspace(page);
+  await page.getByRole('button', { name: '日报会话', exact: true }).click();
+  const input = page.getByLabel('发送 Agent 消息', { exact: true });
+  await input.fill('请使用@文件 后续内容');
+  await input.press('Home');
+  for (let index = 0; index < 6; index += 1) await input.press('ArrowRight');
+  await expect(page.getByRole('listbox', { name: '选择引用类型' })).toBeVisible();
+  await input.press('Escape');
+  await expect(input).toHaveValue('请使用 后续内容');
+  const home = page.getByRole('button', { name: '主页', exact: true });
+  await home.click();
+  await expect(home).toHaveAttribute('aria-pressed', 'true');
+  await expect(input).toHaveValue('请使用 后续内容');
+  await home.click();
+  await expect(home).toHaveAttribute('aria-pressed', 'false');
+  await expect(page.locator('[data-workspace-group-id="root"]').getByRole('button', { name: '日报会话', exact: true })).toBeVisible();
+  await expect(input).toHaveValue('请使用 后续内容');
+});
+
+test('workspace action menu defaults to all credentials and persists session configuration', async ({ page }) => {
+  await openWorkspace(page, [], false, '日报会话', { defaultCredentialIds: ['credential-1'] });
+  const root = page.locator('[data-workspace-group-id="root"]');
+  await root.locator('header').hover();
+  await root.getByRole('button', { name: '工作区操作 根工作区', exact: true }).click({ force: true });
+  const menu = page.getByRole('menu', { name: '工作区操作菜单：根工作区', exact: true });
+  await expect(menu.getByRole('menuitem', { name: '会话配置', exact: true })).toBeVisible();
+  await menu.getByRole('menuitem', { name: '会话配置', exact: true }).click();
+
+  const dialog = page.getByRole('dialog', { name: '会话配置', exact: true });
+  await dialog.getByRole('button', { name: /日报技能/, exact: false }).click();
+  await dialog.getByRole('button', { name: '认证', exact: true }).click();
+  await expect(dialog.getByRole('button', { name: /测试认证/, exact: false })).toHaveAttribute('aria-pressed', 'true');
+  await dialog.getByRole('button', { name: '保存认证配置', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+
+  await page.getByRole('button', { name: '日报会话', exact: true }).click();
+  const directory = page.locator('[data-workspace-group-id="existing-directory"]');
+  await directory.locator('header').hover();
+  await directory.getByRole('button', { name: '在已有项目目录中新建会话', exact: true }).click({ force: true });
+  await page.getByRole('button', { name: '新会话配置', exact: true }).click();
+  const inherited = page.getByRole('dialog', { name: '会话配置', exact: true });
+  await expect(inherited.getByRole('button', { name: /日报技能/, exact: false })).toHaveClass(/selected/);
+  await inherited.getByRole('button', { name: '认证', exact: true }).click();
+  await expect(inherited.getByRole('button', { name: /测试认证/, exact: false })).toHaveAttribute('aria-pressed', 'true');
+  await inherited.getByRole('button', { name: '取消全选认证', exact: true }).click();
+  await expect(inherited.getByText('已选择 0 项认证', { exact: true })).toBeVisible();
 });

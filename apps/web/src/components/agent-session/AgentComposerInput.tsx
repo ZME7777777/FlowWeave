@@ -17,10 +17,10 @@ export interface ComposerSuggestion {
   nativeAction?: NativeComposerAction;
 }
 
-function composerTrigger(value: string): { sigil: '$' | '/' | '@'; query: string; start: number } | undefined {
-  const match = /(?:^|\s)([$/@])([^\s]*)$/.exec(value);
+function composerTrigger(value: string, cursor: number): { sigil: '$' | '/' | '@'; query: string; start: number; end: number } | undefined {
+  const match = /([$/@])([^\s]*)$/.exec(value.slice(0, cursor));
   if (!match) return undefined;
-  return { sigil: match[1] as '$' | '/' | '@', query: match[2], start: value.length - match[0].length + (match[0].startsWith(' ') ? 1 : 0) };
+  return { sigil: match[1] as '$' | '/' | '@', query: match[2], start: cursor - match[0].length, end: cursor };
 }
 
 function isImeComposition(event: ReactKeyboardEvent<HTMLTextAreaElement>): boolean {
@@ -58,6 +58,7 @@ export const AgentComposerInput = forwardRef<ComposerHandle, {
   const [activeIndex, setActiveIndex] = useState(0);
   const [fileDragActive, setFileDragActive] = useState(false);
   const [inputOverflowing, setInputOverflowing] = useState(false);
+  const [selectionStart, setSelectionStart] = useState(() => initialDraft.length);
   const replaceDraft = useCallback((value: string) => {
     draftRef.current = value;
     setDraft(current => current === value ? current : value);
@@ -76,6 +77,7 @@ export const AgentComposerInput = forwardRef<ComposerHandle, {
     requestAnimationFrame(() => {
       textarea?.focus();
       const cursor = start + value.length;
+      setSelectionStart(cursor);
       textarea?.setSelectionRange(cursor, cursor);
     });
   }, [updateDraft]);
@@ -89,6 +91,7 @@ export const AgentComposerInput = forwardRef<ComposerHandle, {
     if (previousScope.current === scope) return;
     previousScope.current = scope;
     replaceDraft(initialDraft);
+    setSelectionStart(initialDraft.length);
   }, [initialDraft, replaceDraft, scope]);
   const hasText = Boolean(draft.trim());
   useEffect(() => { onContentPresenceChange(hasText); }, [hasText, onContentPresenceChange]);
@@ -149,7 +152,7 @@ export const AgentComposerInput = forwardRef<ComposerHandle, {
       cancelAnimationFrame(layoutFrame);
     };
   }, [resizeInput]);
-  const trigger = composerTrigger(draft);
+  const trigger = composerTrigger(draft, selectionStart);
   const visible = (() => {
     if (!trigger) return [];
     const needle = trigger.query.toLocaleLowerCase();
@@ -172,17 +175,25 @@ export const AgentComposerInput = forwardRef<ComposerHandle, {
   const select = (item: ComposerSuggestion) => {
     if (!trigger || item.available === false) return;
     if (item.kind === 'NATIVE' && item.nativeAction) {
-      updateDraft(`${draft.slice(0, trigger.start)}${draft.slice(trigger.start + trigger.query.length + 1)}`);
+      updateDraft(`${draft.slice(0, trigger.start)}${draft.slice(trigger.end)}`);
+      setSelectionStart(trigger.start);
       onNativeAction?.(item.nativeAction);
       return;
     }
     if (item.kind === 'REFERENCE') {
-      updateDraft(`${draft.slice(0, trigger.start)}${draft.slice(trigger.start + trigger.query.length + 1)}`);
+      updateDraft(`${draft.slice(0, trigger.start)}${draft.slice(trigger.end)}`);
+      setSelectionStart(trigger.start);
       onWorkspaceReferenceSelected?.();
       return;
     }
-    updateDraft(`${draft.slice(0, trigger.start)}${item.token} ${draft.slice(trigger.start + trigger.query.length + 1)}`);
-    requestAnimationFrame(() => input.current?.focus());
+    const replacement = `${item.token} `;
+    updateDraft(`${draft.slice(0, trigger.start)}${replacement}${draft.slice(trigger.end)}`);
+    requestAnimationFrame(() => {
+      const cursor = trigger.start + replacement.length;
+      setSelectionStart(cursor);
+      input.current?.focus();
+      input.current?.setSelectionRange(cursor, cursor);
+    });
   };
   const hasSuggestions = visible.length > 0;
   const showCapabilityManager = Boolean(trigger && trigger.sigil !== '@' && onManageCapabilities);
@@ -219,10 +230,10 @@ export const AgentComposerInput = forwardRef<ComposerHandle, {
     if (workspacePaths.length) onDropWorkspaceFiles?.(workspacePaths);
     if (files.length) onDropFiles?.(files);
   }}>
-    <textarea ref={input} data-overflowing={inputOverflowing || undefined} aria-label={ariaLabel} aria-autocomplete="list" aria-controls={hasMenu ? 'agent-composer-capabilities' : undefined} aria-expanded={hasMenu} value={draft} maxLength={200_000} placeholder={placeholder} disabled={disabled} onChange={event => updateDraft(event.target.value)} onPaste={onPaste} onKeyDown={event => {
+    <textarea ref={input} data-overflowing={inputOverflowing || undefined} aria-label={ariaLabel} aria-autocomplete="list" aria-controls={hasMenu ? 'agent-composer-capabilities' : undefined} aria-expanded={hasMenu} value={draft} maxLength={200_000} placeholder={placeholder} disabled={disabled} onChange={event => { setSelectionStart(event.target.selectionStart); updateDraft(event.target.value); }} onSelect={event => setSelectionStart(event.currentTarget.selectionStart)} onPaste={onPaste} onKeyDown={event => {
       if (isImeComposition(event)) return;
       if (event.key === 'Enter' && (event.metaKey || event.altKey) && !event.shiftKey) { event.preventDefault(); onDirectSubmit?.(draftRef.current); return; }
-      if (hasMenu && event.key === 'Escape') { updateDraft(draft.slice(0, -trigger!.query.length - 1)); return; }
+      if (hasMenu && event.key === 'Escape') { updateDraft(`${draft.slice(0, trigger!.start)}${draft.slice(trigger!.end)}`); setSelectionStart(trigger!.start); return; }
       if (hasSuggestions && ['ArrowDown', 'ArrowUp', 'Enter', 'Tab'].includes(event.key)) {
         event.preventDefault();
         if (event.key === 'ArrowDown') { setActiveIndex(index => (index + 1) % visible.length); return; }

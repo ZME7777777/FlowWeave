@@ -73,6 +73,7 @@ _USER_ISOLATED_TABLES = frozenset(
         "agent_work_directory_paths",
         "agent_work_directory_versions",
         "agent_workspace_capabilities",
+        "agent_workspace_session_configurations",
         "agent_workspace_preferences",
         "model_providers",
         "provider_models",

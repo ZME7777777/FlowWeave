@@ -151,6 +151,53 @@ test('record directory groups scheduled runs and opens a full canvas workspace',
   await expect(page.locator('.run-graph')).toBeVisible();
 });
 
+test('run directory pauses and restores the selected container', async ({ page }) => {
+  const requests: string[] = [];
+  let runtimeStatus: 'ACTIVE' | 'STOPPED' = 'ACTIVE';
+  let sessionRowVersion = 1;
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname.replace(/^\/flowweave/, '');
+    const respond = (body: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
+    if (path.endsWith('/auth/me')) return respond(authenticatedUser);
+    if (path === '/api/v1/flow-runs') return respond([{ ...run, runtime_status: runtimeStatus, runtime_write_available: runtimeStatus === 'ACTIVE' }]);
+    if (path === '/api/v1/flows') return respond([definition]);
+    if (path === `/api/v1/flow-runs/${run.id}/runtime`) return respond({ active_generation: 1, session_row_version: sessionRowVersion, status: runtimeStatus, write_available: runtimeStatus === 'ACTIVE' });
+    if (path === `/api/v1/flow-runs/${run.id}/runtime/pause` && request.method() === 'POST') {
+      requests.push(path);
+      runtimeStatus = 'STOPPED';
+      sessionRowVersion += 1;
+      return respond({ active_generation: 1, session_row_version: sessionRowVersion, status: runtimeStatus, write_available: false }, 202);
+    }
+    if (path === `/api/v1/flow-runs/${run.id}/runtime/resume` && request.method() === 'POST') {
+      requests.push(path);
+      runtimeStatus = 'ACTIVE';
+      sessionRowVersion += 1;
+      return respond({ active_generation: 1, session_row_version: sessionRowVersion, status: runtimeStatus, write_available: true }, 202);
+    }
+    if (path.endsWith('/stepwise-runs') || path.endsWith('/automatic-runs/summaries')) return respond([]);
+    if (path.endsWith('/terminal-environments')) return respond([]);
+    return respond([]);
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: '流程运行', exact: true }).click();
+  await page.locator('.flow-run-tree-select').filter({ hasText: definition.name }).click();
+  await page.locator('.flow-run-tree-run').filter({ hasText: run.name }).click();
+  await expect(page.getByRole('button', { name: '暂停容器', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '暂停容器', exact: true }).click();
+  const pauseDialog = page.getByRole('alertdialog', { name: `暂停容器“${run.name}”？` });
+  await expect(pauseDialog).toContainText('停止当前运行容器以回收计算资源');
+  await pauseDialog.getByRole('button', { name: '暂停', exact: true }).click();
+  await expect.poll(() => requests).toContain(`/api/v1/flow-runs/${run.id}/runtime/pause`);
+  await expect(page.getByRole('button', { name: '恢复容器', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '恢复容器', exact: true }).click();
+  const resumeDialog = page.getByRole('alertdialog', { name: `恢复容器“${run.name}”？` });
+  await expect(resumeDialog).toContainText('启动保留的运行容器');
+  await resumeDialog.getByRole('button', { name: '恢复', exact: true }).click();
+  await expect.poll(() => requests).toContain(`/api/v1/flow-runs/${run.id}/runtime/resume`);
+  await expect(page.getByRole('button', { name: '暂停容器', exact: true })).toBeVisible();
+});
+
 test('flow library saves an empty draft before opening its node editor', async ({ page }) => {
   let saved: Record<string, unknown> | undefined;
   let flows: unknown[] = [];

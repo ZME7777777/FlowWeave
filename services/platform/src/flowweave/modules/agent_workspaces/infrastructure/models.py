@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import ClassVar
 
 from sqlalchemy import (
+    JSON,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -231,6 +232,20 @@ class AgentWorkDirectoryPath(Base):
     position: Mapped[int] = mapped_column(Integer)
 
 
+class AgentWorkspaceSessionConfiguration(Base):
+    """Current user's defaults on the shared Agent Workspace host."""
+
+    __tablename__ = "agent_workspace_session_configurations"
+    __table_args__ = (
+        UniqueConstraint("owner_user_id", "workspace_id", name="uq_agent_workspace_session_owner"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    workspace_id: Mapped[str] = mapped_column(String(36), index=True)
+    credential_ids_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
 class AgentWorkspaceCapability(Base):
     """A governed capability enabled for new Agent Workspace conversations."""
 
@@ -249,7 +264,7 @@ class AgentWorkspaceCapability(Base):
             name="uq_agent_workspace_capability_owner_position",
         ),
         CheckConstraint(
-            "capability_type IN ('SKILL', 'MCP', 'PLUGIN')",
+            "capability_type IN ('SKILL', 'MCP', 'PLUGIN', 'CONTEXT', 'AGENT_DEFINITION', 'HOOK')",
             name="ck_agent_workspace_capability_type",
         ),
         CheckConstraint("position >= 0", name="ck_agent_workspace_capability_position"),
@@ -270,6 +285,7 @@ __all__ = (
     "AgentConversationBinding",
     "AgentConversationCapability",
     "AgentWorkspaceCapability",
+    "AgentWorkspaceSessionConfiguration",
     "AgentConversationMessageAttachment",
     "AgentConversationCommand",
     "AgentWorkDirectory",

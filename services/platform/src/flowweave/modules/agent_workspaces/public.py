@@ -24,6 +24,7 @@ from flowweave.modules.agent_workspaces.infrastructure.models import (
     AgentWorkspace,
     AgentWorkspaceCapability,
     AgentWorkspaceRuntime,
+    AgentWorkspaceSessionConfiguration,
 )
 
 process_agent_conversation_title = agent_sessions.process_agent_conversation_title
@@ -346,6 +347,7 @@ __all__ = (
     "AgentWorkDirectoryVersion",
     "AgentWorkspace",
     "AgentWorkspaceCapability",
+    "AgentWorkspaceSessionConfiguration",
     "AgentWorkspaceRuntime",
     "conversation_work_directory_context",
     "create_case_work_directory",

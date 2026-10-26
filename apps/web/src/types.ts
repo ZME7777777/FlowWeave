@@ -809,6 +809,11 @@ export interface AgentSessionCapability {
 }
 export type AgentWorkspaceCapability = AgentSessionCapability;
 
+export interface AgentWorkspaceSessionConfiguration {
+  capability_version_ids: string[];
+  credential_ids: string[];
+}
+
 export interface AgentConversationCapabilityRegistration {
   conversation: AgentConversation;
   completed: boolean;

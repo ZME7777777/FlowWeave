@@ -1,9 +1,10 @@
-import { Box, ChevronDown, ChevronRight, CircleDot, FolderClosed, Plus, Search, Terminal } from 'lucide-react';
+import { Box, ChevronDown, ChevronRight, CircleDot, FolderClosed, Pause, Play, Plus, Search, Terminal } from 'lucide-react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useMemo, useState } from 'react';
 import { api } from '../api/client';
 import { CreateRunRecordDialog } from '../components/CreateRunRecordDialog';
 import { FlowRunTerminalDialog } from '../components/AgentRuntimeSidebar';
+import { useProductDialog } from '../components/ProductDialogContext';
 import { StartRunDialog } from '../components/StartRunDialog';
 import { useWorkbenchStore } from '../store/workbench';
 import type { FlowDefinition, FlowRunSummary } from '../types';
@@ -25,12 +26,15 @@ const runtimeLabel = (run: FlowRunSummary) => {
 };
 
 export function RunsPage() {
+  const dialog = useProductDialog();
   const qc = useQueryClient();
   const openAutomaticRecord = useWorkbenchStore(state => state.openAutomaticRecord);
   const openStepwiseRecord = useWorkbenchStore(state => state.openStepwiseRecord);
   const [creatingRecordRunId, setCreatingRecordRunId] = useState<string>();
   const [terminalRun, setTerminalRun] = useState<{ id: string; name: string }>();
   const [starting, setStarting] = useState<FlowDefinition>();
+  const [lifecycleRunId, setLifecycleRunId] = useState<string>();
+  const [lifecycleError, setLifecycleError] = useState('');
   const [selectedFlowId, setSelectedFlowId] = useState<string>();
   const [selectedRunId, setSelectedRunId] = useState<string>();
   const [expandedFlowIds, setExpandedFlowIds] = useState<Set<string>>(new Set());
@@ -76,7 +80,32 @@ export function RunsPage() {
   const selectRun = (flowId: string, runId: string) => {
     setSelectedFlowId(flowId);
     setSelectedRunId(runId);
+    setLifecycleError('');
     setExpandedFlowIds(current => current.has(flowId) ? current : new Set([...current, flowId]));
+  };
+  const toggleRuntime = async (run: FlowRunSummary) => {
+    const isPaused = run.runtime_status === 'STOPPED';
+    const action = isPaused ? '恢复' : '暂停';
+    if (!await dialog.confirm({
+      title: `${action}容器“${run.name}”？`,
+      message: isPaused
+        ? '将启动保留的运行容器，并恢复已有工作区和会话数据。'
+        : '将停止当前运行容器以回收计算资源；工作区、会话和流程数据会保留。',
+      confirmLabel: action,
+    })) return;
+    setLifecycleRunId(run.id);
+    setLifecycleError('');
+    try {
+      const overview = await api.runtimeOverview(run.id);
+      if (overview.active_generation == null || overview.session_row_version == null) throw new Error('当前运行环境不可执行该操作。');
+      if (isPaused) await api.resumeRuntime(run.id, overview.active_generation, overview.session_row_version);
+      else await api.pauseRuntime(run.id, overview.active_generation, overview.session_row_version);
+      await qc.invalidateQueries({ queryKey: ['runs'] });
+    } catch (reason) {
+      setLifecycleError(reason instanceof Error ? reason.message : `${action}容器失败，请重试。`);
+    } finally {
+      setLifecycleRunId(undefined);
+    }
   };
   const records = useMemo(() => {
     const manual = (stepwise.data ?? []).map(record => ({ kind: 'MANUAL' as const, id: record.id, name: record.name, state: record.state, startedAt: record.started_at, detail: record.start_node_key ? '逐步配置与确认执行' : '等待配置起始节点', scheduleId: undefined, scheduleName: undefined, record }));
@@ -100,7 +129,7 @@ export function RunsPage() {
   return <section className="page runs-page run-directory-page">
     <div className="run-directory-layout">
       <aside className="flow-run-directory"><header><div><b>流程编排</b><small>{runDirectories.length} 个流程</small></div><button className="agent-schedule-new" disabled={!selectedFlow || !isStartableFlow(selectedFlow)} title={!selectedFlow ? '请先选择一个流程编排' : isStartableFlow(selectedFlow) ? undefined : '该流程未配置启动节点'} onClick={() => selectedFlow && setStarting(selectedFlow)}><Plus size={14}/>新建</button></header><label className="run-directory-search"><Search size={14}/><input aria-label="搜索流程或运行" value={search} placeholder="搜索流程或运行" onChange={event => setSearch(event.target.value)}/></label><div className="flow-run-directory-list">{runDirectories.map(flow => { const expanded = expandedFlowIds.has(flow.id); const selected = selectedFlowId === flow.id; return <section className={`flow-run-tree-group${selected ? ' selected' : ''}`} key={flow.id}><div className="flow-run-tree-flow"><button type="button" className="flow-run-tree-select" aria-current={selected ? 'true' : undefined} aria-expanded={expanded} onClick={() => selectFlow(flow.id)}><FolderClosed size={14}/><span><b>{flow.name}</b><small>{flow.runs.length} 个 FlowRun</small></span></button></div>{expanded && <div className="flow-run-tree-runs">{flow.runs.length ? flow.runs.map(run => <button type="button" className={`flow-run-tree-run${selectedRunId === run.id ? ' active' : ''}`} key={run.id} onClick={() => selectRun(flow.id, run.id)}><i/><span><b>Run #{run.run_no} · {run.name}</b><small>快照 v{run.active_snapshot_version ?? '—'} · {environmentLabel(run)}</small><em className={`run-runtime-badge ${run.runtime_write_available ? 'available' : run.runtime_status === 'STOPPED' ? 'paused' : 'pending'}`}>{runtimeLabel(run)}</em></span></button>) : <p>该流程尚未创建 FlowRun。</p>}</div>}</section>; })}{!runDirectories.length && <p>没有匹配的流程或 FlowRun。</p>}</div></aside>
-      <main className="flow-run-directory-detail">{selectedRun ? <section className="flow-run-record-directory"><header><div><span className="eyebrow">RUN RECORDS</span><h3>{selectedRun.name}</h3><p>Run #{selectedRun.run_no} · {selectedRun.flow_name ?? selectedFlow?.name} · 快照 v{selectedRun.active_snapshot_version ?? '—'}</p></div><div className="run-directory-actions"><button className="secondary" disabled={!selectedRun.runtime_write_available} onClick={() => setTerminalRun({ id: selectedRun.id, name: selectedRun.name })}><Terminal size={14}/>进入终端</button><button className="primary" onClick={() => setCreatingRecordRunId(selectedRun.id)}><Plus size={14}/>新增运行记录</button></div></header><div className="flow-run-directory-summary"><span><b>运行环境</b>{runtimeLabel(selectedRun)}</span><span><b>环境版本</b>{environmentLabel(selectedRun)}</span><span><b>创建时间</b>{new Date(selectedRun.started_at).toLocaleString()}</span><span><b>流程版本</b>v{selectedRun.flow_row_version ?? '—'}</span></div><nav className="run-record-filter"><button className={recordFilter === 'ALL' ? 'active' : ''} onClick={() => setRecordFilter('ALL')}>全部</button><button className={recordFilter === 'MANUAL' ? 'active' : ''} onClick={() => setRecordFilter('MANUAL')}>逐步</button><button className={recordFilter === 'AUTOMATIC' ? 'active' : ''} onClick={() => setRecordFilter('AUTOMATIC')}>连续</button></nav><div className="flow-run-record-directory-list">{standaloneRecords.map(recordItem)}{scheduledContinuousGroups.map(group => { const open = !collapsedScheduleIds.has(group.id); return <section className="flow-run-schedule-directory" key={group.id}><button type="button" className="flow-run-schedule-directory-toggle" aria-expanded={open} onClick={() => setCollapsedScheduleIds(current => { const next = new Set(current); if (next.has(group.id)) next.delete(group.id); else next.add(group.id); return next; })}>{open ? <ChevronDown size={14}/> : <ChevronRight size={14}/>}<FolderClosed size={14}/><span><b>{group.name}</b><small>{group.records.length} 条定时连续运行记录</small></span></button>{open && <div className="flow-run-schedule-directory-records">{group.records.map(recordItem)}</div>}</section>; })}{!records.length && <div className="run-directory-record-empty"><CircleDot size={20}/><span>该 FlowRun 尚未创建{recordFilter === 'AUTOMATIC' ? '连续' : recordFilter === 'MANUAL' ? '逐步' : ''}运行记录。</span><button className="secondary" onClick={() => setCreatingRecordRunId(selectedRun.id)}>新增运行记录</button></div>}</div></section> : selectedFlow ? <div className="run-directory-empty"><FolderClosed size={30}/><b>{selectedFlow.name}</b><span>选择左侧的 FlowRun，查看运行记录或新增记录。</span></div> : <div className="run-directory-empty"><Box size={30}/><b>选择一个流程编排</b><span>点击流程目录后，选择其下的 FlowRun。</span></div>}</main>
+      <main className="flow-run-directory-detail">{selectedRun ? <section className="flow-run-record-directory"><header><div><span className="eyebrow">RUN RECORDS</span><h3>{selectedRun.name}</h3><p>Run #{selectedRun.run_no} · {selectedRun.flow_name ?? selectedFlow?.name} · 快照 v{selectedRun.active_snapshot_version ?? '—'}</p></div><div className="run-directory-actions"><button className="secondary" disabled={!selectedRun.runtime_write_available} onClick={() => setTerminalRun({ id: selectedRun.id, name: selectedRun.name })}><Terminal size={14}/>进入终端</button>{(selectedRun.runtime_status === 'ACTIVE' || selectedRun.runtime_status === 'STOPPED') && <button className="secondary" disabled={lifecycleRunId === selectedRun.id} onClick={() => void toggleRuntime(selectedRun)}>{selectedRun.runtime_status === 'STOPPED' ? <Play size={14}/> : <Pause size={14}/>}{lifecycleRunId === selectedRun.id ? '处理中…' : selectedRun.runtime_status === 'STOPPED' ? '恢复容器' : '暂停容器'}</button>}<button className="primary" onClick={() => setCreatingRecordRunId(selectedRun.id)}><Plus size={14}/>新增运行记录</button></div></header>{lifecycleError && <p className="error run-directory-lifecycle-error" role="alert">{lifecycleError}</p>}<div className="flow-run-directory-summary"><span><b>运行环境</b>{runtimeLabel(selectedRun)}</span><span><b>环境版本</b>{environmentLabel(selectedRun)}</span><span><b>创建时间</b>{new Date(selectedRun.started_at).toLocaleString()}</span><span><b>流程版本</b>v{selectedRun.flow_row_version ?? '—'}</span></div><nav className="run-record-filter"><button className={recordFilter === 'ALL' ? 'active' : ''} onClick={() => setRecordFilter('ALL')}>全部</button><button className={recordFilter === 'MANUAL' ? 'active' : ''} onClick={() => setRecordFilter('MANUAL')}>逐步</button><button className={recordFilter === 'AUTOMATIC' ? 'active' : ''} onClick={() => setRecordFilter('AUTOMATIC')}>连续</button></nav><div className="flow-run-record-directory-list">{standaloneRecords.map(recordItem)}{scheduledContinuousGroups.map(group => { const open = !collapsedScheduleIds.has(group.id); return <section className="flow-run-schedule-directory" key={group.id}><button type="button" className="flow-run-schedule-directory-toggle" aria-expanded={open} onClick={() => setCollapsedScheduleIds(current => { const next = new Set(current); if (next.has(group.id)) next.delete(group.id); else next.add(group.id); return next; })}>{open ? <ChevronDown size={14}/> : <ChevronRight size={14}/>}<FolderClosed size={14}/><span><b>{group.name}</b><small>{group.records.length} 条定时连续运行记录</small></span></button>{open && <div className="flow-run-schedule-directory-records">{group.records.map(recordItem)}</div>}</section>; })}{!records.length && <div className="run-directory-record-empty"><CircleDot size={20}/><span>该 FlowRun 尚未创建{recordFilter === 'AUTOMATIC' ? '连续' : recordFilter === 'MANUAL' ? '逐步' : ''}运行记录。</span><button className="secondary" onClick={() => setCreatingRecordRunId(selectedRun.id)}>新增运行记录</button></div>}</div></section> : selectedFlow ? <div className="run-directory-empty"><FolderClosed size={30}/><b>{selectedFlow.name}</b><span>选择左侧的 FlowRun，查看运行记录或新增记录。</span></div> : <div className="run-directory-empty"><Box size={30}/><b>选择一个流程编排</b><span>点击流程目录后，选择其下的 FlowRun。</span></div>}</main>
     </div>
     {creatingRecordRunId && <CreateRunRecordDialog runId={creatingRecordRunId} onClose={() => setCreatingRecordRunId(undefined)}/>}
     {terminalRun && <FlowRunTerminalDialog runId={terminalRun.id} runName={terminalRun.name} onClose={() => setTerminalRun(undefined)}/>}
