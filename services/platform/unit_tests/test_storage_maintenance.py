@@ -264,6 +264,47 @@ def test_legacy_invalid_marker_and_sensitive_tree_cannot_fall_back(tmp_path):
     assert maintenance.release.select_legacy_build_assets(tmp_path, [], now=100000) == []
 
 
+def test_legacy_wrapped_source_is_recognized_but_nested_backup_blocks_deletion(tmp_path):
+    directory = tmp_path / ("release-" + "a" * 40 + "-old-build")
+    source = directory / "source" / "extracted"
+    dockerfile = source / "services/platform/Dockerfile"
+    dockerfile.parent.mkdir(parents=True)
+    dockerfile.write_text("FROM scratch")
+    for p in [*directory.rglob("*"), directory]:
+        os.utime(p, (1, 1))
+    select = maintenance.release.select_legacy_build_assets
+    assert select(tmp_path, [], now=100000) == [directory]
+    (directory / "source/backups").mkdir()
+    assert not maintenance.release.disposable_build_layout(directory)
+
+
+def test_source_workspace_placeholder_is_distinct_from_real_workspace(tmp_path):
+    source = tmp_path / "source"
+    placeholder = source / "var/workspaces"
+    placeholder.mkdir(parents=True)
+    (placeholder / ".gitkeep").write_text("\n")
+    (source / "Dockerfile").write_text("FROM scratch")
+    assert maintenance.release.disposable_build_layout(tmp_path)
+    (placeholder / "session.json").write_text("data")
+    assert not maintenance.release.disposable_build_layout(tmp_path)
+
+
+def test_bare_commit_builds_are_only_selected_in_historical_releases_directory(tmp_path):
+    build = tmp_path / "build"
+    historical = build / "releases"
+    historical.mkdir(parents=True)
+    source = historical / ("a" * 40)
+    source.mkdir()
+    (source / "Dockerfile").write_text("FROM scratch")
+    unrelated = build / ("b" * 40)
+    unrelated.mkdir()
+    (unrelated / "Dockerfile").write_text("FROM scratch")
+    for p in [*build.rglob("*"), build]:
+        os.utime(p, (1, 1))
+    assert maintenance.legacy_plan(build, None, []) == [source]
+    assert maintenance.legacy_plan(build, None, [source / "Dockerfile"]) == []
+
+
 def test_install_audit_program_is_executable_without_live_config_changes():
     # Execute the exact audit-code expression from the installer with a fake runner.
     import ast

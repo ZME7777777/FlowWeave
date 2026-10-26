@@ -152,11 +152,16 @@ def prune_build_cache():
 
 def legacy_plan(build, images, used):
     roots = [build] + ([images] if images is not None and images != build else [])
+    historical = build / "releases"
+    if historical.is_dir() and not historical.is_symlink():
+        roots.append(historical)
     return sorted(
         {
             p
             for root in roots
-            for p in release.select_legacy_build_assets(root, used, now=time.time())
+            for p in release.select_legacy_build_assets(
+                root, used, now=time.time(), bare_commits=root == historical
+            )
         }
     )
 

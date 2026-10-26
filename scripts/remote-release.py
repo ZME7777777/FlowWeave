@@ -148,7 +148,7 @@ def newest_mtime(path: Path) -> float:
 
 
 def select_legacy_build_assets(
-    directory: Path, used_paths: list[Path], *, now: float
+    directory: Path, used_paths: list[Path], *, now: float, bare_commits: bool = False
 ) -> list[Path]:
     """Only known disposable build naming conventions, never arbitrary old data."""
     patterns = (
@@ -158,7 +158,10 @@ def select_legacy_build_assets(
         r"\.flowweave-fr\d+-[0-9a-f]{7,40}",
         r"build-(?:source|src)-before-[A-Za-z0-9_-]+",
         r"fr\d+-web\.[A-Za-z0-9_]+",
+        r"flowweave-[0-9a-f]{7,40}",
     )
+    if bare_commits:
+        patterns += (r"[0-9a-f]{7,40}(?:-\d{8}T\d{6}Z)?",)
     result = []
     for path in directory.iterdir():
         if path.is_symlink() or not (path.is_dir() or path.is_file()):
@@ -201,14 +204,38 @@ def disposable_build_layout(path: Path) -> bool:
             "Dockerfile",
             "openhands-sdk/pyproject.toml",
         )
-        if any((path / probe).is_file() for probe in probes):
-            return True
-        return any(
-            child.is_dir()
-            and not child.is_symlink()
-            and (child / "openhands-sdk/pyproject.toml").is_file()
-            for child in path.iterdir()
-        )
+        # Historical tar extractions add one or two wrapper directories.
+        roots = [path]
+        found = False
+        for _ in range(3):
+            following = []
+            for root in roots:
+                if any(
+                    (root / name).exists()
+                    and not (
+                        name in ("workspace", "workspaces")
+                        and empty_source_placeholder(root / name)
+                    )
+                    for name in (
+                        ".git",
+                        ".local",
+                        "data",
+                        "backups",
+                        "database-backups",
+                        "workspace",
+                        "workspaces",
+                        "state",
+                        "artifacts",
+                        "home",
+                        "homes",
+                    )
+                ):
+                    return False
+                if any((root / probe).is_file() for probe in probes):
+                    found = True
+                following.extend(c for c in root.iterdir() if c.is_dir() and not c.is_symlink())
+            roots = following
+        return found
     try:
         with tarfile.open(path) as archive:
             for index, entry in enumerate(archive):
@@ -227,6 +254,22 @@ def disposable_build_layout(path: Path) -> bool:
     except (OSError, ValueError, tarfile.TarError):
         return False
     return False
+
+
+def empty_source_placeholder(path: Path) -> bool:
+    """Git archives include var/workspaces/.gitkeep; it contains no workspace data."""
+    if path.is_symlink() or not path.is_dir():
+        return False
+    entries = list(path.iterdir())
+    if len(entries) != 1 or entries[0].name != ".gitkeep":
+        return False
+    marker = entries[0]
+    return (
+        not marker.is_symlink()
+        and marker.is_file()
+        and marker.stat().st_size <= 16
+        and marker.read_bytes().strip() == b""
+    )
 
 
 def docker_protection(process_root: Path | None = None) -> tuple[set[str], list[Path]]:
