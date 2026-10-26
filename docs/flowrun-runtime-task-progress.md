@@ -1,11 +1,12 @@
 # FlowRun OpenHands Runtime 重构进度
 
 > 创建日期：2026-08-21
-> 状态：`UPSTREAM BASELINE ADOPTION COMPLETE`
+> 状态：`CHILD CONVERSATIONS IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`NONE`
+> 下一可执行切片：`FR-703`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
+> 子会话设计：`docs/agent-child-conversations-design.md`
 
 ## 1. 跟踪边界
 
@@ -91,6 +92,104 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 放到 FR-12；普通切片即使涉及安全或迁移，也只实现代码并做基础语法检查。
 
 ## 6. 任务清单
+
+### FR-702 原生子会话产品与接入契约冻结 — DONE
+
+依赖：FR-701 DONE。按用户确认在独立工作树开展子会话接入；Git Worktree 产品能力取消。
+冻结两宿主 shared 原生子会话、悬浮卡入口、每个子会话按标题独立右侧标签、用户续聊、
+父 Agent 正式交互、绑定级凭据、关闭保留、未读与删除恢复契约；将上游全量合入和后续
+实现拆成独立切片，不以设计完成声称功能已上线，不部署。
+
+完成（2026-10-26）：创建并附加独立工作树，分支 `codex/child-conversations`。
+新增 `docs/agent-child-conversations-design.md`，并同步架构设计第 18 节；明确一律 shared、
+普通入口隐藏、每子一个标题标签、续聊／父工具、正式身份、预留后运行、重签绑定级凭据、
+关闭保留、父删除及 replacement。原生尚缺的幂等／治理接入点与父管理工具单独标明，
+不得用现有临时聊天或平台执行器代替。后续 FR-703–FR-717 分别覆盖合并、Runtime、
+后台、前台和实际验收，完整上游目标固定为 `ce5716a3c`，本片不执行 SDK merge。
+
+验收：固定目标相对当前上游锚点的 132 个提交、四包 1.58.2 与当前 source lock／baseline
+文件树一致性复核通过；设计内链接、16 个新增编号唯一性、依赖存在／无向后循环及
+CURRENT 唯一性检查通过。历史重复编号 FR-506／528／553 保持原状，未混入清理。
+独立工作树的 Alembic heads 为唯一 `0174_agent_workspace_user_defaults`，
+`git diff --check` 通过。仅文档变更，未运行业务测试、镜像构建、迁移实跑或 E2E，
+未修改 source lock／数据库／API／Web／SDK，未部署。提交后停止，下一可执行 FR-703。
+
+### FR-703 固定 upstream main 完整合入 SDK baseline — READY
+
+依赖：FR-702 DONE。以设计固定的 `ce5716a3c0a955a85bb0cc4dcfaa94d5fefcda50`
+完整合入 SDK baseline，保留 FlowWeave 扩展和已撤回浏览器改动的历史，逐项处理冲突。
+不 cherry-pick 子会话提交，不开放 Worktree 产品功能，不部署。
+
+### FR-704 上游合并回归与 Runtime 来源依赖身份 — PENDING
+
+依赖：FR-703 DONE。验证全部 FlowWeave 扩展、受影响原生回归和实际可执行契约，
+核对 Profile／Settings schema、四包、来源归档及自有 Docker／依赖链；正式冻结身份。
+
+### FR-705 原生子创建身份与启动前治理生命周期 — PENDING
+
+依赖：FR-704 DONE。在 SDK baseline 增加正式幂等子身份、同请求查回和首轮运行前
+治理接入点；覆盖并发、429、未知结果及进程恢复，不在平台伪造 Conversation。
+
+### FR-706 原生子 launcher 调用身份与权限策略 — PENDING
+
+依赖：FR-705 DONE。建立可信原生 action／tool-call 关联、直属关系、shared 隔离、
+一层深度及并发门禁；Runtime key 不能单独授权任意父 binding。
+
+### FR-707 原生子 list read wait 工具 — PENDING
+
+依赖：FR-706 DONE。实现正式直属子查询、事件／最终结果分页及最多 30 秒的可取消
+等待；只认正式身份，不自动唤醒已结束父会话或将截断结果标成完整读取。
+
+### FR-708 原生子 send interrupt 与输入并发 — PENDING
+
+依赖：FR-707 DONE。实现父工具正式投递／中断、来源关联、稳定 invocation 幂等和
+原子忙碌门禁；用户与父 Agent 竞争不重复写消息，不建立平台执行／消息队列。
+
+### FR-709 子会话扩展归档与 V3 冻结兼容 — PENDING
+
+依赖：FR-708 DONE。冻结最终 SDK 扩展 commit／归档／digest 与 ToolSet／策略 Manifest，
+注册 V3 adapter 和追加式允许值迁移；V1／V2 与旧 Runtime 请求形状保持兼容。
+
+### FR-710 子会话关联 RLS 与普通入口隔离 — PENDING
+
+依赖：FR-709 DONE。新增用户隔离关系和唯一约束，维护强制 RLS 与表清单；两宿主
+校验直属身份，普通列表／置顶／活动／搜索及主会话路由不暴露 child 独立入口。
+
+### FR-711 两宿主子创建治理与凭据恢复 — PENDING
+
+依赖：FR-710 DONE。先预留 binding 再走原生创建，验证原生父子关系、实际目录与
+冻结能力，重签绑定级授权后首轮执行；短事务、generation fence 和崩溃对账共同覆盖。
+
+### FR-712 两宿主子续聊控制附件与结果引用 — PENDING
+
+依赖：FR-711 DONE。接入正式消息／控制／模型／condense、附件 owner 和正式结果引用，
+用户与父工具共用受理门禁，不借用父 token 或跨 binding 路径。
+
+### FR-713 子活动未读与父删除恢复 — PENDING
+
+依赖：FR-712 DONE。父列表聚合子运行／未读但不伪造父运行态；关闭保留，父删除
+围栏创建并恢复逐子清理失败；replacement 核对原父子会话及正式事件身份。
+
+### FR-714 通用侧边会话交互边界 — PENDING
+
+依赖：FR-712 DONE。最小抽取两宿主通用展示与 binding 隔离的 hydration／输入逻辑；
+临时侧边聊天保留现有一小时 TTL／关闭删除，子会话不能复用这套生命周期。
+
+### FR-715 悬浮卡子列表与标题多标签 — PENDING
+
+依赖：FR-713 DONE、FR-714 DONE。新增不撑开悬浮卡的子摘要／选择浮层，每个 child
+一个右侧标题标签；入口只来自父卡，不新建主标签、独立路由或弹出窗口。
+
+### FR-716 子标签续聊草稿快捷键与引用 — PENDING
+
+依赖：FR-715 DONE。独立发送框、模型、附件、队列、草稿／滚动和两次 Esc；正式
+结果引用加入父草稿不自动发送，迟到回调不污染其他父子 scope。
+
+### FR-717 原生子会话全链路故障与两宿主验收 — PENDING
+
+依赖：FR-713 DONE、FR-716 DONE。固定真实 Runtime／TCP、隔离 PostgreSQL、两宿主
+Chromium 验证创建、续聊、父工具、并发、RLS、未读、多标签、删除和 replacement，
+确认没有 Worktree 创建且 V1／V2 不变；不自动发布或升级已有 Runtime。
 
 ### FR-701 远程侧栏与草稿修复合并发布 — DONE
 
