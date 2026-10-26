@@ -5231,6 +5231,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   // the target group. Both requests are consumed by completion or manual collapse.
   const previousSidebarRoute = useRef(routeBindingId);
   const automaticSidebarRoute = useRef<string | undefined>(undefined);
+  const manualSidebarRoute = useRef<string | undefined>(undefined);
   const [sidebarReveal, setSidebarReveal] = useState<{ bindingId?: string; expandCollapsed: boolean; conversation?: AgentConversation }>({ bindingId: routeBindingId, expandCollapsed: false });
   const setSidebarRevealBindingId = useCallback((bindingId: string | undefined) => {
     setSidebarReveal({ bindingId, expandCollapsed: true });
@@ -5238,7 +5239,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   useEffect(() => {
     if (previousSidebarRoute.current === routeBindingId) return;
     previousSidebarRoute.current = routeBindingId;
-    setSidebarReveal({ bindingId: routeBindingId, expandCollapsed: automaticSidebarRoute.current !== routeBindingId });
+    const preserveSidebarPosition = manualSidebarRoute.current === routeBindingId;
+    manualSidebarRoute.current = undefined;
+    setSidebarReveal(preserveSidebarPosition
+      ? { bindingId: undefined, expandCollapsed: false }
+      : { bindingId: routeBindingId, expandCollapsed: automaticSidebarRoute.current !== routeBindingId });
     automaticSidebarRoute.current = undefined;
   }, [routeBindingId]);
   const pendingSidebarRevealBindingId = sidebarReveal.conversation || sidebarReveal.bindingId === routeBindingId ? sidebarReveal.bindingId : undefined;
@@ -6257,11 +6262,19 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       modelName: newConversationModelName,
       reasoningEffort: newConversationReasoningEffort,
     };
-    writeConversationDraft(
-      conversationDraftStorageKey(host.id, workspace.id, conversationDraft.workDirectoryId),
-      recovery,
-    );
+    const storageKey = conversationDraftStorageKey(host.id, workspace.id, conversationDraft.workDirectoryId);
     const draftKey = conversationDraft.workDirectoryId ?? 'root';
+    if (!conversationDraftHasContent(recovery)) {
+      writeConversationDraft(storageKey, undefined);
+      setRecoverableConversationDrafts(current => {
+        if (!current[draftKey]) return current;
+        const next = { ...current };
+        delete next[draftKey];
+        return next;
+      });
+      return;
+    }
+    writeConversationDraft(storageKey, recovery);
     setRecoverableConversationDrafts(current => ({ ...current, [draftKey]: recovery }));
   }, [attachments, bootstrapRecovery, composerAnnotations, conversationDraft, host.id, newConversationModelName, newConversationProviderId, newConversationReasoningEffort, pendingBootstrap, references, workspace, workspaceReferences]);
   const setComposerDraft = useCallback((scope: string | undefined, value: string) => {
@@ -6315,8 +6328,18 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       modelName: draftPersistence.modelName,
       reasoningEffort: draftPersistence.reasoningEffort,
     };
-    writeConversationDraft(draftPersistence.storageKey, recovery);
     const draftKey = draftPersistence.draft.workDirectoryId ?? 'root';
+    if (!conversationDraftHasContent(recovery)) {
+      writeConversationDraft(draftPersistence.storageKey, undefined);
+      setRecoverableConversationDrafts(current => {
+        if (!current[draftKey]) return current;
+        const next = { ...current };
+        delete next[draftKey];
+        return next;
+      });
+      return;
+    }
+    writeConversationDraft(draftPersistence.storageKey, recovery);
     setRecoverableConversationDrafts(current => ({ ...current, [draftKey]: recovery }));
   }, [bootstrapRecovery, clearConversationDraft, host.id, pendingBootstrap, workspace]);
   const connectedProviders = (providersQuery.data ?? []).filter(item => item.connection_state === 'CONNECTED' && item.models.some(model => model.enabled && model.is_default));
@@ -6360,8 +6383,18 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       modelName: newConversationModelName,
       reasoningEffort: newConversationReasoningEffort,
     };
-    writeConversationDraft(draftRecoveryStorageKey, recovery);
     const draftKey = conversationDraft.workDirectoryId ?? 'root';
+    if (!conversationDraftHasContent(recovery)) {
+      writeConversationDraft(draftRecoveryStorageKey, undefined);
+      setRecoverableConversationDrafts(current => {
+        if (!current[draftKey]) return current;
+        const next = { ...current };
+        delete next[draftKey];
+        return next;
+      });
+      return;
+    }
+    writeConversationDraft(draftRecoveryStorageKey, recovery);
     setRecoverableConversationDrafts(current => ({ ...current, [draftKey]: recovery }));
   }, [attachments, bootstrapRecovery, composerAnnotations, conversationDraft, draftRecoveryStorageKey, newConversationModelName, newConversationProviderId, newConversationReasoningEffort, pendingBootstrap?.draft.id, references, workspaceReferences]);
   const runtime = runtimeQuery.data;
@@ -9896,9 +9929,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       return { ...current, groups: [...next] };
     });
   };
-  const selectConversation = (bindingId: string) => {
+  const selectConversation = (bindingId: string, { revealSidebar = false }: { revealSidebar?: boolean } = {}) => {
     setConversationReferenceTarget(undefined);
-    if (bindingId === routeBindingId) setSidebarRevealBindingId(bindingId);
+    manualSidebarRoute.current = revealSidebar ? undefined : bindingId;
     const outgoingScope = activeComposerScope.current;
     if (outgoingScope) persistComposerDraft(outgoingScope);
     const activityConversation = activityConversations.find(item => item.id === bindingId);
@@ -9941,7 +9974,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   };
   const openConversationReference = (reference: AgentConversationReference) => {
     if (!reference.source_binding_id) return;
-    selectConversation(reference.source_binding_id);
+    selectConversation(reference.source_binding_id, { revealSidebar: true });
     // A fresh identity makes repeated clicks locate the same formal event again.
     setConversationReferenceTarget(reference.kind === 'conversation' ? undefined : { ...reference });
   };
@@ -9958,7 +9991,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   };
   const openActivityConversation = (bindingId: string) => {
     setSidebarListMode('workspaces');
-    selectConversation(bindingId);
+    selectConversation(bindingId, { revealSidebar: true });
   };
   const activityWorkspaceName = (item: AgentConversation) => item.work_directory_id
     ? workDirectories.find(directory => directory.id === item.work_directory_id)?.display_name ?? '未知工作区'
@@ -9977,7 +10010,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const openConversationSearchHit = (bindingId: string, eventId: string) => {
     setConversationSearchTargetEventId(eventId);
     setConversationSearchOpen(false);
-    selectConversation(bindingId);
+    selectConversation(bindingId, { revealSidebar: true });
   };
   const removeWorkDirectory = async (directory: AgentSessionWorkDirectory) => {
     if (!api.deleteWorkDirectory || !await confirmDeletion('工作区', directory.display_name)) return;
