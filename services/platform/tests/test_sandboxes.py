@@ -54,11 +54,13 @@ from flowweave.shared.models import ManagedSandbox
 from flowweave.shared.settings import settings_context
 
 
-
-
-def test_listening_service_scan_requires_owned_runtime_and_parses_result(monkeypatch) -> None:
+def test_listening_service_scan_requires_owned_runtime_and_parses_result(
+    monkeypatch, settings
+) -> None:
     provider = DockerSandboxProvider(
-        SimpleNamespace(docker_controller_mode="local", sandbox_manager_scope="scope-a")
+        settings.model_copy(
+            update={"docker_controller_mode": "local", "sandbox_manager_scope": "scope-a"}
+        )
     )
     observation = DockerObservation(
         resource_id="resource-a",
@@ -95,9 +97,13 @@ def test_listening_service_scan_requires_owned_runtime_and_parses_result(monkeyp
     assert commands[0][:4] == ["docker", "exec", "container-a", "/runtime/.venv/bin/python"]
 
 
-def test_listening_service_stop_passes_pid_identity_and_process_group(monkeypatch) -> None:
+def test_listening_service_stop_passes_pid_identity_and_process_group(
+    monkeypatch, settings
+) -> None:
     provider = DockerSandboxProvider(
-        SimpleNamespace(docker_controller_mode="local", sandbox_manager_scope="scope-a")
+        settings.model_copy(
+            update={"docker_controller_mode": "local", "sandbox_manager_scope": "scope-a"}
+        )
     )
     observation = DockerObservation(
         resource_id="resource-a",
@@ -122,6 +128,7 @@ def test_listening_service_stop_passes_pid_identity_and_process_group(monkeypatc
         process_group_id=91,
     )
     assert commands[0][-3:] == ["91", "42", "91"]
+
 
 def test_docker_storage_quota_fallback_retries_only_without_fixed_quota() -> None:
     calls: list[list[str]] = []

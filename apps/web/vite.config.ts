@@ -12,7 +12,8 @@ function casePreviewApi(): Plugin {
     stages: [{ id: 'case-preview-stage', case_id: 'case-preview', stage_key: 'validation', name: '上线前流程检查', objective: '检查上线前置条件。', position: 0, flow_run_id: 'preview-run', execution_mode: 'STEPWISE', state: 'ACTIVE', created_at: now, updated_at: now }],
     flow_run_ids: ['preview-run'], tasks: [], control_plans: [], decision_proposals: [], created_at: now, updated_at: now,
   };
-  const respond = (response: any, body: unknown, status = 200) => {
+  const respond = (rawResponse: unknown, body: unknown, status = 200) => {
+    const response = rawResponse as { statusCode: number; setHeader(name: string, value: string): void; end(body?: string): void };
     response.statusCode = status;
     response.setHeader('Content-Type', 'application/json');
     response.end(status === 204 ? undefined : JSON.stringify(body));
@@ -20,7 +21,8 @@ function casePreviewApi(): Plugin {
   return {
     name: 'flowweave-case-preview-api',
     configureServer(server) {
-      server.middlewares.use((request: any, response: any, next: () => void) => {
+      server.middlewares.use((rawRequest, response, next) => {
+        const request = rawRequest as { url?: string; method?: string };
         const url = new URL(request.url ?? '/', 'http://localhost');
         if (url.pathname.indexOf('/api/v1/') !== 0) return next();
         const path = url.pathname.slice('/api/v1'.length);

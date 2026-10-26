@@ -1869,6 +1869,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 # The handler still verifies manager scope and immutable
                 # Runtime ownership before it reaches a container.
                 "/v1/runtimes/events": frozenset({"api", "worker"}),
+                "/v1/runtimes/services/list": frozenset({"api", "worker"}),
+                "/v1/runtimes/services/stop": frozenset({"api", "worker"}),
                 "/v1/runtimes/validate-plugin": frozenset({"api"}),
                 "/v1/browser/fetch": frozenset({"api"}),
                 "/v1/terminals/start": frozenset({"api"}),

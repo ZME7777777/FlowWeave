@@ -160,7 +160,6 @@ def test_runtime_provider_returns_owned_runtime_usage(settings, monkeypatch) -> 
     }
 
 
-
 def test_docker_usage_keeps_cpu_and_memory_when_writable_layer_size_is_unknown() -> None:
     usage = DockerSandboxProvider._usage_from_local(
         '{"CPUPerc":"12.50%","MemUsage":"512MiB / 4GiB"}',
@@ -1773,3 +1772,42 @@ def test_local_plugin_validation_rejects_cross_validation_path_before_docker(set
 
     assert raised.value.code == "PLUGIN_TARGET_PATH_INVALID"
     assert touched == []
+
+
+@pytest.mark.parametrize("headers", [_api_headers(), _headers()])
+@pytest.mark.parametrize("operation", ["list", "stop"])
+def test_temporary_service_routes_authorize_owned_runtime(
+    settings, monkeypatch, headers, operation
+):
+    observation = DockerObservation(
+        resource_id=_RESOURCE_ID,
+        resource_name="fw-sbx-temporary-service",
+        resource_identifier="owned-container",
+        state="RUNNING",
+        labels={"flowweave.managed": "true", "flowweave.manager-scope": _SCOPE},
+    )
+    monkeypatch.setattr(DockerSandboxProvider, "inspect", lambda *_: observation)
+    commands = []
+
+    def run(_self, command, *, timeout):
+        commands.append(command)
+        return "[]" if operation == "list" else '{"stopped":true}'
+
+    monkeypatch.setattr(DockerSandboxProvider, "_run", run)
+    payload = {
+        "manager_scope": _SCOPE,
+        "resource_name": observation.resource_name,
+        "resource_id": _RESOURCE_ID,
+    }
+    if operation == "stop":
+        payload.update(pid=91, started_ticks="42", process_group_id=91)
+    client = TestClient(create_app(_settings(settings)))
+    response = client.post("/v1/runtimes/services/" + operation, headers=headers, json=payload)
+    assert response.status_code == 200
+    assert response.json() == ({"services": []} if operation == "list" else {"stopped": True})
+    assert commands[0][:4] == ["docker", "exec", "owned-container", "/runtime/.venv/bin/python"]
+    payload["resource_id"] = _OWNER_ID
+    response = client.post("/v1/runtimes/services/" + operation, headers=headers, json=payload)
+    assert response.status_code == 409
+    assert len(commands) == 1
+    assert client.post("/v1/runtimes/services/" + operation, json=payload).status_code == 401

@@ -53,7 +53,7 @@ async function json(route: Route, body: unknown, status = 200) {
 async function settleWorkspaceLayout(page: Page) {
   await page.evaluate(async () => {
     await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
-    const elements = document.querySelectorAll('.agent-workspace-drawer, .agent-workspace-summary, .conversation-surface, .agent-composer-dock');
+    const elements = document.querySelectorAll('.agent-workbench-app-shell, .agent-workspace-drawer, .agent-workspace-tool-shell, .agent-workspace-summary, .conversation-surface, .agent-composer-dock');
     await Promise.all([...elements].flatMap(element => element.getAnimations()).map(animation => animation.finished.catch(() => undefined)));
   });
 }
@@ -163,7 +163,7 @@ test('fresh navigation opens case space and creates a scenario after the branch 
   await page.evaluate(() => localStorage.removeItem('flowweave-workbench'));
   await page.goto('/', { waitUntil: 'domcontentloaded' });
   await expect(page.getByRole('button', { name: '场景空间', exact: true })).toHaveAttribute('class', /active/);
-  await expect(page.locator('.scenario-side-head')).toContainText('Case');
+  await expect(page.locator('.scenario-side-head')).toContainText('场景列表');
   await expect(page.getByRole('heading', { name: '选择或创建一个场景', exact: true })).toBeVisible();
   await page.getByRole('button', { name: '新建场景', exact: true }).click();
   await expect(page.getByRole('dialog', { name: '新建场景', exact: true })).toHaveCount(0);
@@ -173,10 +173,10 @@ test('fresh navigation opens case space and creates a scenario after the branch 
   await page.getByLabel('目标', { exact: true }).fill('验证案例功能与本地工作台集成。');
   await page.getByRole('button', { name: '保存', exact: true }).click();
   await expect(page.locator('.scenario-tree')).toContainText('合并后的案例');
-  await expect(page.locator('.scenario-casebar')).toContainText('合并后的案例');
-  await page.getByRole('navigation', { name: '场景工作区' }).getByRole('button', { name: 'Case 路径', exact: true }).click();
+  await expect(page.locator('.case-workspace-toolbar')).toContainText('合并后的案例');
+  await expect(page.getByRole('navigation', { name: '场景工作区' })).toHaveCount(0);
   await expect(page.locator('.scenario-path')).toBeVisible();
-  await page.getByRole('navigation', { name: '场景工作区' }).getByRole('button', { name: '会话配置', exact: true }).click();
+  await expect(page.locator('.case-config-panel')).toContainText('会话配置');
   await expect(page.getByRole('button', { name: '保存配置', exact: true })).toBeVisible();
   await expect(page.getByText('工作区模式', { exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: '创建协调会话', exact: true })).toHaveCount(0);
@@ -2094,7 +2094,7 @@ test('many subagents stay inside the floating card without scrolling it', async 
   const expectContained = async () => {
     await settleWorkspaceLayout(page);
     await expect(summary).toHaveAccessibleName('37 个子智能体任务');
-    await expect(summary.locator('b')).toHaveText('37 完成');
+    await expect(summary.locator('b')).toHaveText('37 个任务');
     await expect.poll(async () => (await geometry()).overflow).toBeLessThanOrEqual(1);
     expect((await geometry()).horizontalOverflow).toBe(0);
     expect((await geometry()).overflowStyles.flat().every(value => value === 'clip')).toBe(true);
@@ -2810,11 +2810,7 @@ test('expanded tools squeeze and reflow the transcript and composer without cove
   await page.setViewportSize({ width: 1440, height: 1080 });
   await settleWorkspaceLayout(page);
   const before = await geometry();
-  const resizer = await page.getByRole('separator', { name: '调整工作区工具宽度' }).boundingBox();
-  await page.mouse.move(resizer!.x + resizer!.width - 1, resizer!.y + 100);
-  await page.mouse.down();
-  await page.mouse.move(resizer!.x - 130, resizer!.y + 100, { steps: 12 });
-  await page.mouse.up();
+  await dragToolTo(page, (await splitGeometry(page)).width + 130);
   await expect.poll(async () => (await geometry()).mainWidth).toBeLessThan(before.mainWidth - 100);
   await settleWorkspaceLayout(page);
   const after = await geometry();
@@ -2902,6 +2898,7 @@ test('tool boundaries follow available space and small boundary movements keep t
 test('hidden preview remains hidden on same-direction release and capture or focus ending', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 1080 });
   await openWorkspace(page);
+  await page.evaluate(() => localStorage.setItem('flowweave:environment-card-open', 'false'));
   await page.goto('/agent/conversations/scheduled-conversation');
   const composer = page.getByRole('textbox', { name: '发送 Agent 消息' });
   await composer.fill('松手后保持隐藏');
@@ -3848,4 +3845,26 @@ test('named workspaces keep session configuration separate from root defaults', 
   const fresh = page.getByRole('dialog', { name: '会话配置', exact: true });
   await fresh.getByRole('button', { name: '认证', exact: true }).click();
   await expect(fresh.getByRole('button', { name: /测试认证/, exact: false })).toHaveAttribute('aria-pressed', 'true');
+});
+
+
+test('temporary services stop through the scoped workspace API and refresh the card', async ({ page }) => {
+  await openWorkspace(page);
+  let stopped = false;
+  await page.route(/\/api\/v1\/agent-workspaces\/schedule-workspace\/workspace(?:\?.*)?$/, route => json(route, {
+    root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project',
+    files: [], repositories: [], runtime: {}, ide: { gateway: { supported: false } },
+    temporary_services: stopped ? [] : [{ id: 'preview-service', source: 'DISCOVERED', state: 'RUNNING', pid: 91, command: 'vite', ports: [5173], url: 'http://127.0.0.1:5173/', last_seen_at: now }],
+  }));
+  await page.route('**/api/v1/agent-workspaces/schedule-workspace/temporary-services/preview-service/stop', route => {
+    expect(route.request().method()).toBe('POST');
+    stopped = true;
+    return json(route, { stopped: true }, 202);
+  });
+  await page.goto('/agent/conversations/scheduled-conversation');
+  const services = page.locator('.agent-workspace-temporary-services');
+  await expect(services).toContainText('http://127.0.0.1:5173/');
+  await services.getByRole('button', { name: '停止', exact: true }).click();
+  await expect(services).toHaveCount(0);
+  expect(stopped).toBe(true);
 });

@@ -12005,3 +12005,30 @@ platform／web remote-release-finish 均通过版本、健康及容量收尾。�
 镜像、各 scope 一个回滚镜像及所有容器引用。未清理共享 BuildKit、卷、Workspace
 或数据库备份。收尾后再次确认四服务版本与健康、配置摘要和其他容器不变。
 当前与下一可执行重构切片均为 NONE。
+
+
+### OPS-10 远程临时服务与本地浏览器修复集成发布 — DONE
+
+用户明确授权拉取远程代码并直接部署受管服务器，随后追加纳入已提交的本地改动。
+远程四个提交快进至 `1cb6d96a`，无文本冲突；本地 `3cd40831` 的 FR-703
+大模块预览传输修复一并纳入。隔离工作树完成集成，保留原工作树的并行修改。
+补齐临时服务 Provider 接口的 API／Worker 白名单，保持资源归属与 scope 校验；
+修正新增测试缺少的正式 Settings 夹具。工具 grid 根据 drawer 实际宽度收缩，避免
+父级读取仅定义在子级的变量而锁为 400px；保留远程过渡动画与浮卡宽度约束。
+场景与子智能体测试按当前产品文案／布局更新，预览开发夹具移除显式 any。
+
+发布前验证：新增授权／归属／认证及进程参数六项通过，FR-703 传输／隔离二十二项
+通过；真实独立 PostgreSQL 由正式测试 fixture 从空库迁移到唯一
+`0176_agent_temporary_services`。扩展后端初跑 146 passed、15 failed，其中两项
+为已修正的新测试夹具；其余十三项在拉取前 `4c33f149` 逐项复现，失败集合相同，
+不声称全套通过。Web typecheck、受影响 ESLint／Ruff、diff 检查通过；场景创建、
+多子智能体浮卡、浏览器入口、Git 启动、工具挤压／边界与隐藏、延迟模块定向回归
+八项不同用例通过。临时服务停止 UI 与实际 Vite 大模块代理另两项通过，共十项不同用例。浏览器使用受控
+API／WebSocket，不等于真实模型执行业务验收。
+
+正式 Runtime／Web 预检通过，初次原生 activity 门禁核对两个 Runtime 共 654 个
+会话，无 running／starting／executing／stopping。发布必须在服务替换前再次门禁，
+使用最终已提交版本重新 prepare 最小上下文，构建平台／Web 镜像，先 migration，
+再同步更新 Provider／api／stream-api／worker／web；健康、版本、路由和受管容量
+收尾结果在实际完成后补记。本片不构建或替换既有 OpenHands Runtime generation。
+当前与下一可执行重构切片均为 NONE。
