@@ -912,6 +912,75 @@ for (const scope of ['root', 'directory'] as const) {
   });
 }
 
+test('workspace file tree collapses smoothly and ignores a short drag while collapsed', async ({ page }) => {
+  await openWorkspace(page);
+  await page.goto('/agent/conversations/scheduled-conversation');
+  await page.getByRole('button', { name: '新建工作区页签', exact: true }).first().click();
+  await page.locator('.agent-workspace-tab-launcher.active').getByRole('button', { name: '文件', exact: true }).click();
+  const files = page.locator('.agent-workspace-files');
+  const pane = page.locator('.agent-file-tree-pane');
+  await expect(pane).toBeVisible();
+  const resize = page.getByRole('separator', { name: '调整文件目录宽度', exact: true });
+  const box = await resize.boundingBox();
+  if (!box) throw new Error('Expected file tree resize handle');
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x - 240, box.y + box.height / 2);
+  await page.mouse.up();
+  await expect(files).toHaveClass(/file-tree-collapsed/);
+  await expect(pane).toBeHidden();
+  const expand = page.getByRole('separator', { name: '展开文件目录', exact: true });
+  const collapsed = await expand.boundingBox();
+  if (!collapsed) throw new Error('Expected collapsed file tree resize handle');
+  await page.mouse.move(collapsed.x + collapsed.width / 2, collapsed.y + collapsed.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(collapsed.x + 20, collapsed.y + collapsed.height / 2);
+  await page.mouse.up();
+  await expect(files).toHaveClass(/file-tree-collapsed/);
+  await expand.dblclick();
+  await expect(files).not.toHaveClass(/file-tree-collapsed/);
+  await expect(pane).toBeVisible();
+  await expect.poll(() => pane.evaluate(element => element.getBoundingClientRect().width)).toBeGreaterThanOrEqual(180);
+});
+
+test('clicking a conversation keeps the sidebar list at its current position', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 600 });
+  await openWorkspace(page, [], true);
+  const conversations = Array.from({ length: 24 }, (_, index) => ({
+    id: `scroll-stable-${index}`,
+    display_title: `稳定会话 ${index}`,
+    title_state: 'MANUAL',
+    lifecycle: 'ACTIVE',
+    streaming_callback_ready: true,
+    write_available: true,
+    execution_status: 'idle',
+    created_at: now,
+    updated_at: now,
+  }));
+  await page.route('**/api/v1/agent-workspaces/schedule-workspace/conversations?**', route => json(route, { items: conversations, next_cursor: null }));
+  await page.goto('/agent/conversations/scroll-stable-0');
+  const sidebar = page.locator('.agent-workbench-list');
+  await expect.poll(() => sidebar.evaluate(element => element.scrollHeight > element.clientHeight)).toBe(true);
+  await sidebar.hover();
+  await page.mouse.wheel(0, 260);
+  await expect.poll(() => sidebar.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+  const scrollTop = await sidebar.evaluate(element => element.scrollTop);
+  const visibleBindingId = await sidebar.evaluate(element => {
+    const bounds = element.getBoundingClientRect();
+    return [...element.querySelectorAll<HTMLElement>('[data-conversation-binding-id]')]
+      .find(row => row.dataset.conversationBindingId !== 'scroll-stable-0'
+        && row.getBoundingClientRect().top >= bounds.top
+        && row.getBoundingClientRect().bottom <= bounds.bottom)
+      ?.dataset.conversationBindingId;
+  });
+  expect(visibleBindingId).toBeTruthy();
+  await page.locator(`[data-conversation-binding-id="${visibleBindingId}"]`).getByRole('button').click();
+  await expect(page).toHaveURL(new RegExp(`/agent/conversations/${visibleBindingId}$`));
+  await settleWorkspaceLayout(page);
+  expect(await sidebar.evaluate(element => element.scrollTop)).toBe(scrollTop);
+});
+
+
 test('workspace and pinned collapse preferences survive reopening with independent scopes', async ({ page }) => {
   await openWorkspace(page, [], true);
   const preferenceKey = 'flowweave:sidebar-collapse:v1:schedule-user:agent-workspace:schedule-workspace';

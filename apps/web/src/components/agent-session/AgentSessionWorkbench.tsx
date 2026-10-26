@@ -3987,9 +3987,11 @@ function WorkspaceDrawer({
     const stored = Number(localStorage.getItem('flowweave:workspace-tool-width'));
     return clampWorkspaceToolWidth(Number.isFinite(stored) ? stored : 400);
   });
+  const fileTreeMinimumWidth = 180;
+  const fileTreeCollapseThreshold = 28;
   const [fileTreeWidth, setFileTreeWidth] = useState(() => {
     const stored = Number(localStorage.getItem('flowweave:workspace-file-tree-width'));
-    return Math.min(520, Math.max(180, Number.isFinite(stored) ? stored : 300));
+    return Math.min(520, Math.max(fileTreeMinimumWidth, Number.isFinite(stored) ? stored : 300));
   });
   const [fileTreeCollapsed, setFileTreeCollapsed] = useState(false);
   const [panelError, setPanelError] = useState('');
@@ -4819,21 +4821,30 @@ function WorkspaceDrawer({
   };
   const expandFileTree = useCallback(() => {
     setFileTreeCollapsed(false);
-  }, []);
+    setFileTreeWidth(width => Math.max(fileTreeMinimumWidth, width));
+  }, [fileTreeMinimumWidth]);
   const startFileTreeResize = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (window.innerWidth <= 680) return;
     event.preventDefault();
     const startX = event.clientX;
-    const startWidth = fileTreeCollapsed ? 180 : fileTreeWidth;
-    const maximum = () => Math.min(520, Math.max(180, window.innerWidth * 0.55));
+    const startCollapsed = fileTreeCollapsed;
+    const startWidth = startCollapsed ? 0 : fileTreeWidth;
+    const maximum = () => Math.min(520, Math.max(fileTreeMinimumWidth, window.innerWidth * 0.55));
     const move = (moveEvent: PointerEvent) => {
-      const width = startWidth + moveEvent.clientX - startX;
-      if (width <= 180) {
+      const distance = moveEvent.clientX - startX;
+      if (startCollapsed) {
+        if (distance < fileTreeCollapseThreshold) return;
+        setFileTreeCollapsed(false);
+        setFileTreeWidth(Math.min(maximum(), fileTreeMinimumWidth + distance - fileTreeCollapseThreshold));
+        return;
+      }
+      const width = startWidth + distance;
+      if (width <= fileTreeMinimumWidth - fileTreeCollapseThreshold) {
         setFileTreeCollapsed(true);
         return;
       }
       setFileTreeCollapsed(false);
-      setFileTreeWidth(Math.min(maximum(), width));
+      setFileTreeWidth(Math.min(maximum(), Math.max(fileTreeMinimumWidth, width)));
     };
     const stop = () => {
       window.removeEventListener('pointermove', move);
@@ -5253,6 +5264,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   // the target group. Both requests are consumed by completion or manual collapse.
   const previousSidebarRoute = useRef(routeBindingId);
   const automaticSidebarRoute = useRef<string | undefined>(undefined);
+  const manualSidebarRoute = useRef<string | undefined>(undefined);
   const [sidebarReveal, setSidebarReveal] = useState<{ bindingId?: string; expandCollapsed: boolean; conversation?: AgentConversation }>({ bindingId: routeBindingId, expandCollapsed: false });
   const setSidebarRevealBindingId = useCallback((bindingId: string | undefined) => {
     setSidebarReveal({ bindingId, expandCollapsed: true });
@@ -5260,7 +5272,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   useEffect(() => {
     if (previousSidebarRoute.current === routeBindingId) return;
     previousSidebarRoute.current = routeBindingId;
-    setSidebarReveal({ bindingId: routeBindingId, expandCollapsed: automaticSidebarRoute.current !== routeBindingId });
+    const preserveSidebarPosition = manualSidebarRoute.current === routeBindingId;
+    manualSidebarRoute.current = undefined;
+    setSidebarReveal(preserveSidebarPosition
+      ? { bindingId: undefined, expandCollapsed: false }
+      : { bindingId: routeBindingId, expandCollapsed: automaticSidebarRoute.current !== routeBindingId });
     automaticSidebarRoute.current = undefined;
   }, [routeBindingId]);
   const pendingSidebarRevealBindingId = sidebarReveal.conversation || sidebarReveal.bindingId === routeBindingId ? sidebarReveal.bindingId : undefined;
@@ -6280,11 +6296,19 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       modelName: newConversationModelName,
       reasoningEffort: newConversationReasoningEffort,
     };
-    writeConversationDraft(
-      conversationDraftStorageKey(host.id, workspace.id, conversationDraft.workDirectoryId),
-      recovery,
-    );
+    const storageKey = conversationDraftStorageKey(host.id, workspace.id, conversationDraft.workDirectoryId);
     const draftKey = conversationDraft.workDirectoryId ?? 'root';
+    if (!conversationDraftHasContent(recovery)) {
+      writeConversationDraft(storageKey, undefined);
+      setRecoverableConversationDrafts(current => {
+        if (!current[draftKey]) return current;
+        const next = { ...current };
+        delete next[draftKey];
+        return next;
+      });
+      return;
+    }
+    writeConversationDraft(storageKey, recovery);
     setRecoverableConversationDrafts(current => ({ ...current, [draftKey]: recovery }));
   }, [attachments, bootstrapRecovery, composerAnnotations, conversationDraft, host.id, newConversationModelName, newConversationProviderId, newConversationReasoningEffort, pendingBootstrap, references, workspace, workspaceReferences]);
   const setComposerDraft = useCallback((scope: string | undefined, value: string) => {
@@ -6338,8 +6362,18 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       modelName: draftPersistence.modelName,
       reasoningEffort: draftPersistence.reasoningEffort,
     };
-    writeConversationDraft(draftPersistence.storageKey, recovery);
     const draftKey = draftPersistence.draft.workDirectoryId ?? 'root';
+    if (!conversationDraftHasContent(recovery)) {
+      writeConversationDraft(draftPersistence.storageKey, undefined);
+      setRecoverableConversationDrafts(current => {
+        if (!current[draftKey]) return current;
+        const next = { ...current };
+        delete next[draftKey];
+        return next;
+      });
+      return;
+    }
+    writeConversationDraft(draftPersistence.storageKey, recovery);
     setRecoverableConversationDrafts(current => ({ ...current, [draftKey]: recovery }));
   }, [bootstrapRecovery, clearConversationDraft, host.id, pendingBootstrap, workspace]);
   const connectedProviders = (providersQuery.data ?? []).filter(item => item.connection_state === 'CONNECTED' && item.models.some(model => model.enabled && model.is_default));
@@ -6383,8 +6417,18 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       modelName: newConversationModelName,
       reasoningEffort: newConversationReasoningEffort,
     };
-    writeConversationDraft(draftRecoveryStorageKey, recovery);
     const draftKey = conversationDraft.workDirectoryId ?? 'root';
+    if (!conversationDraftHasContent(recovery)) {
+      writeConversationDraft(draftRecoveryStorageKey, undefined);
+      setRecoverableConversationDrafts(current => {
+        if (!current[draftKey]) return current;
+        const next = { ...current };
+        delete next[draftKey];
+        return next;
+      });
+      return;
+    }
+    writeConversationDraft(draftRecoveryStorageKey, recovery);
     setRecoverableConversationDrafts(current => ({ ...current, [draftKey]: recovery }));
   }, [attachments, bootstrapRecovery, composerAnnotations, conversationDraft, draftRecoveryStorageKey, newConversationModelName, newConversationProviderId, newConversationReasoningEffort, pendingBootstrap?.draft.id, references, workspaceReferences]);
   const runtime = runtimeQuery.data;
@@ -9954,9 +9998,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       return { ...current, groups: [...next] };
     });
   };
-  const selectConversation = (bindingId: string) => {
+  const selectConversation = (bindingId: string, { revealSidebar = false }: { revealSidebar?: boolean } = {}) => {
     setConversationReferenceTarget(undefined);
-    if (bindingId === routeBindingId) setSidebarRevealBindingId(bindingId);
+    manualSidebarRoute.current = revealSidebar ? undefined : bindingId;
+    if (revealSidebar && bindingId === routeBindingId) setSidebarRevealBindingId(bindingId);
+    else if (!revealSidebar) setSidebarReveal({ bindingId: undefined, expandCollapsed: false });
     const outgoingScope = activeComposerScope.current;
     if (outgoingScope) persistComposerDraft(outgoingScope);
     const activityConversation = activityConversations.find(item => item.id === bindingId);
@@ -9999,7 +10045,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   };
   const openConversationReference = (reference: AgentConversationReference) => {
     if (!reference.source_binding_id) return;
-    selectConversation(reference.source_binding_id);
+    selectConversation(reference.source_binding_id, { revealSidebar: true });
     // A fresh identity makes repeated clicks locate the same formal event again.
     setConversationReferenceTarget(reference.kind === 'conversation' ? undefined : { ...reference });
   };
@@ -10016,7 +10062,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   };
   const openActivityConversation = (bindingId: string) => {
     setSidebarListMode('workspaces');
-    selectConversation(bindingId);
+    selectConversation(bindingId, { revealSidebar: true });
   };
   const activityWorkspaceName = (item: AgentConversation) => item.work_directory_id
     ? workDirectories.find(directory => directory.id === item.work_directory_id)?.display_name ?? '未知工作区'
@@ -10035,7 +10081,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const openConversationSearchHit = (bindingId: string, eventId: string) => {
     setConversationSearchTargetEventId(eventId);
     setConversationSearchOpen(false);
-    selectConversation(bindingId);
+    selectConversation(bindingId, { revealSidebar: true });
   };
   const removeWorkDirectory = async (directory: AgentSessionWorkDirectory) => {
     if (!api.deleteWorkDirectory || !await confirmDeletion('工作区', directory.display_name)) return;
@@ -10290,7 +10336,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     remove();
     if (conversationDraft && workspace) void api.deleteDraftAttachments(workspace.id, conversationDraft.id, item.path).catch(() => undefined);
   }
-}}>×</button></span>)}{pendingAttachments.filter(item => item.scope === composerScope).map(item => <span key={item.id} className={`agent-pending-attachment ${item.state}`} title={item.state === 'failed' ? '附件上传失败，请重试或删除。' : `正在上传 ${item.progress}%`}><span className="agent-attachment-open">{item.previewUrl ? <img src={item.previewUrl} alt=""/> : <FileTypeIcon filename={item.filename} mimeType={item.mimeType} size={16}/>}<em>{item.filename}</em>{item.state === 'uploading' && <small>{item.progress}%</small>}{item.state === 'failed' && <span className="agent-attachment-retry-overlay"><button type="button" onClick={() => retryPendingAttachment(item.id)}>重试</button></span>}</span>{item.state === 'uploading' && <i className="agent-attachment-progress" style={{ '--upload-progress': `${item.progress}%` } as CSSProperties}/>}<button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => removePendingAttachment(item.id)}>×</button></span>)}</>}<ComposerConversationReferenceList references={references} onOpen={reference => selectConversation(reference.sourceBindingId)} onRemove={reference => setReferences(current => current.filter(item => item !== reference))}/>{(selected || conversationDraft) && <ComposerAnnotationList annotations={composerAnnotations} currentBindingId={selected?.id ?? conversationDraft?.id} onLocate={locateAnnotation} onRemove={annotation => setComposerAnnotations(current => current.filter(item => item.id !== annotation.id))} onUpdate={(annotation, comment) => void updateAnnotation(annotation, comment)}/>}</div>}
+}}>×</button></span>)}{pendingAttachments.filter(item => item.scope === composerScope).map(item => <span key={item.id} className={`agent-pending-attachment ${item.state}`} title={item.state === 'failed' ? '附件上传失败，请重试或删除。' : `正在上传 ${item.progress}%`}><span className="agent-attachment-open">{item.previewUrl ? <img src={item.previewUrl} alt=""/> : <FileTypeIcon filename={item.filename} mimeType={item.mimeType} size={16}/>}<em>{item.filename}</em>{item.state === 'uploading' && <small>{item.progress}%</small>}{item.state === 'failed' && <span className="agent-attachment-retry-overlay"><button type="button" onClick={() => retryPendingAttachment(item.id)}>重试</button></span>}</span>{item.state === 'uploading' && <i className="agent-attachment-progress" style={{ '--upload-progress': `${item.progress}%` } as CSSProperties}/>}<button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => removePendingAttachment(item.id)}>×</button></span>)}</>}<ComposerConversationReferenceList references={references} onOpen={reference => selectConversation(reference.sourceBindingId, { revealSidebar: true })} onRemove={reference => setReferences(current => current.filter(item => item !== reference))}/>{(selected || conversationDraft) && <ComposerAnnotationList annotations={composerAnnotations} currentBindingId={selected?.id ?? conversationDraft?.id} onLocate={locateAnnotation} onRemove={annotation => setComposerAnnotations(current => current.filter(item => item.id !== annotation.id))} onUpdate={(annotation, comment) => void updateAnnotation(annotation, comment)}/>}</div>}
         {workspaceReferences.length > 0 && <div className="agent-attachments agent-workspace-references" aria-label="已添加的工作区引用">{workspaceReferences.map(reference => <span key={workspaceReferenceKey(reference)} title={reference.path}><span className="agent-attachment-open">{reference.kind === 'directory' ? <Folder size={14}/> : <FileCode2 size={14}/>}<em><b>{reference.display_name}</b><small>{workspaceReferenceLabel(reference)}</small></em></span><button type="button" className="agent-attachment-remove" aria-label={'移除工作区引用 ' + reference.display_name} onClick={() => setWorkspaceReferences(current => current.filter(item => workspaceReferenceKey(item) !== workspaceReferenceKey(reference)))}>×</button></span>)}</div>}
         </div>
         <footer>

@@ -2,7 +2,7 @@
 
 > 创建日期：2026-08-21
 > 状态：`UPSTREAM BASELINE ADOPTION COMPLETE`
-> 当前执行切片：`NONE`
+> 当前执行切片：`FR-701`
 > 下一可执行切片：`NONE`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
@@ -91,6 +91,24 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 放到 FR-12；普通切片即使涉及安全或迁移，也只实现代码并做基础语法检查。
 
 ## 6. 任务清单
+
+### FR-701 远程侧栏与草稿修复合并发布 — CURRENT
+
+依赖：FR-700 DONE。按用户明确授权拉取远程 feat/refactor 至 `3cbdfe69`，
+保留本地 `f0005a4a` 及其祖先；远程四个提交均只修改 Web。Git 自动合并无文本
+冲突。集成回归发现同路由活动会话双击不再展开折叠工作区，补回同 binding 的显式
+定位；普通列表点击继续保持滚动位置。发布范围为 web，服务器已运行本地平台版本，
+无需重启 API、stream-api、Worker、Provider 或既有 Runtime。
+
+合并验证：Web typecheck、四个受影响 TS/TSX 文件 ESLint、diff 检查通过，
+Alembic 仍为唯一 head `0174_agent_workspace_user_defaults`。已通过 27 个不同
+Chromium 定向用例，覆盖点击位置、两类工作区显式定位／折叠、置顶与取消置顶、
+增量 hydration、会话引用、文件预览、侧栏卡片、空草稿和附件隔离、文件目录收起
+阈值与恢复。最初两个同路由定位用例失败，补齐实现后均通过。旧综合 product-flow
+用例在已更名的“Agent 会话”入口超时，未运行到文件目录；已用当前入口的独立用例
+覆盖该改动，不将旧综合用例计为通过。以上使用受控 API／WebSocket，不代表真实
+模型执行验收。另一个运行中开草稿旧用例补齐现行 hover 操作和标签定位后通过；
+首次失败仅在测试入口，未进入业务断言。发布与最终验收待执行。
 
 ### FR-700 增量会话与远程工作区配置合并发布 — DONE
 
