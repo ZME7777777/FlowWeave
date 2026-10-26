@@ -2,7 +2,7 @@
 
 > 创建日期：2026-08-21
 > 状态：`UPSTREAM BASELINE ADOPTION COMPLETE`
-> 当前执行切片：`FR-701`
+> 当前执行切片：`NONE`
 > 下一可执行切片：`NONE`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
@@ -92,7 +92,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 
 ## 6. 任务清单
 
-### FR-701 远程侧栏与草稿修复合并发布 — CURRENT
+### FR-701 远程侧栏与草稿修复合并发布 — DONE
 
 依赖：FR-700 DONE。按用户明确授权拉取远程 feat/refactor 至 `3cbdfe69`，
 保留本地 `f0005a4a` 及其祖先；远程四个提交均只修改 Web。Git 自动合并无文本
@@ -108,7 +108,30 @@ Chromium 定向用例，覆盖点击位置、两类工作区显式定位／折�
 用例在已更名的“Agent 会话”入口超时，未运行到文件目录；已用当前入口的独立用例
 覆盖该改动，不将旧综合用例计为通过。以上使用受控 API／WebSocket，不代表真实
 模型执行验收。另一个运行中开草稿旧用例补齐现行 hover 操作和标签定位后通过；
-首次失败仅在测试入口，未进入业务断言。发布与最终验收待执行。
+首次失败仅在测试入口，未进入业务断言。
+
+正式发布（2026-10-26）：合并／部署代码版本为
+`648ca747658078ee43ca90127245808ea8951ead`，原本地和远程 HEAD 均为其祖先。
+web 正式预检与 commit-bound 最小上下文 prepare 通过，归档 SHA-256 为
+`25463c2fe2cef896dcae9288e8d5314f8bb87c8a0580c966b46449e2254fab9f`；
+构建并核实 linux/amd64 与 OCI revision，实际 Web 镜像为
+`sha256:24e05da717374d4c235439b4be7ebdb35c93ddfd349c1f25d1f42d5038c61656`。
+保留旧 Web 日志和精确 rollback tag 后，仅 force-recreate Web。Web HTTP、API 和
+stream-api health/readiness 均通过，服务器配置和其余 47 个容器 image／StartedAt
+不变；无迁移、无 Provider 重启、无 Runtime replacement，持久数据保留。
+
+从实际运行镜像导出静态资源，在前缀入口以受控 API／WebSocket 重跑其中 12 项
+关键 Chromium 用例，全部通过；浏览器实际加载的 46 个 JS／CSS 文件 SHA-256
+与运行容器一致。这些用例与本地 27 项重叠，不累加为不同用例，也不代表真实
+模型业务执行。服务器侧全新 Chromium 验证实际公开登录页、Agent 深层路由和根
+登录页，两个 FlowWeave 页面均观察到 `/flowweave/api/v1/` 请求且无根路径 API；
+两项公开认证 API 均为 401，未向业务会话发送、暂停或重放消息。
+
+正式 remote-release-finish 通过版本、健康和容量收尾，回收一份过期受管 Web
+成功上下文，保留各 scope 最近三份成功上下文和引用／回滚版本；精确镜像保留
+流程无待删镜像。未清理共享 BuildKit、卷、Workspace 或数据库备份。当前与下一
+可执行切片均为 NONE；本地收尾提交仅补充验收记录，不改变实际部署代码身份。
+
 
 ### FR-700 增量会话与远程工作区配置合并发布 — DONE
 
