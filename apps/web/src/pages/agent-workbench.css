@@ -372,10 +372,9 @@
   .agent-workbench-page:has(>.agent-workspace-drawer:not(.fullscreen)){grid-template-columns:var(--conversation-rail-width,220px) minmax(0,1fr) auto}
   .agent-workbench-app-shell:has(>.agent-workspace-drawer:not(.fullscreen)){grid-template-columns:52px var(--conversation-rail-width,188px) minmax(0,1fr) auto}
   .agent-workbench-app-shell.conversation-rail-collapsed:has(>.agent-workspace-drawer:not(.fullscreen)){grid-template-columns:52px 0 minmax(0,1fr) auto}
-  .agent-workbench-app-shell.conversation-rail-collapsed{--agent-environment-card-width:clamp(220px,17vw,340px)}
-  .agent-workbench-app-shell.conversation-rail-collapsed:has(>.agent-workspace-drawer.environment-open)>.agent-workbench-main>.agent-workbench-content{--agent-composer-center-offset:calc((var(--agent-environment-card-width) + 24px)/-4)}
-  .agent-workbench-app-shell.conversation-rail-collapsed:has(>.agent-workspace-drawer.environment-open)>.agent-workbench-main>.agent-workbench-content .conversation-surface{padding-right:calc((var(--agent-environment-card-width) + 40px)/2)}
-  .agent-workbench-app-shell.conversation-rail-collapsed:has(>.agent-workspace-drawer.environment-open)>.agent-workbench-main>.agent-composer-dock{margin-right:calc((var(--agent-environment-card-width) + 24px)/2)}
+  .agent-workbench-app-shell.conversation-rail-collapsed:has(>.agent-workspace-drawer.environment-open)>.agent-workbench-main>.agent-workbench-content{--agent-composer-center-offset:calc((var(--agent-environment-card-width) + 24px)/-4 - 1vw)}
+  .agent-workbench-app-shell.conversation-rail-collapsed:has(>.agent-workspace-drawer.environment-open)>.agent-workbench-main>.agent-workbench-content .conversation-surface{padding-right:calc((var(--agent-environment-card-width) + 40px)/2 + 2vw)}
+  .agent-workbench-app-shell.conversation-rail-collapsed:has(>.agent-workspace-drawer.environment-open)>.agent-workbench-main>.agent-composer-dock{margin-right:calc((var(--agent-environment-card-width) + 24px)/2 + 2vw)}
   .agent-workbench-app-shell.conversation-rail-collapsed>.agent-workbench-main>.agent-workbench-header{padding-inline:14px}
   .agent-workbench-app-shell:has(>.agent-workspace-drawer.tools-open:not(.fullscreen)){grid-template-columns:52px var(--conversation-rail-width,188px) minmax(0,1fr) var(--agent-workspace-tool-width,400px)}
   .agent-workbench-app-shell.conversation-rail-collapsed:has(>.agent-workspace-drawer.tools-open:not(.fullscreen)){grid-template-columns:52px 0 minmax(0,1fr) var(--agent-workspace-tool-width,400px)}
