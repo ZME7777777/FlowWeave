@@ -559,13 +559,34 @@ def _validated_capabilities(
     return tuple(selected)
 
 
-def workspace_session_configuration(db: Session, workspace_id: str) -> dict[str, list[str]]:
+def _session_configuration(
+    db: Session,
+    workspace: AgentWorkspace,
+    work_directory_id: str | None,
+) -> tuple[list[str], list[str] | None, AgentWorkDirectory | None]:
+    if work_directory_id is None:
+        capability_ids = [item["id"] for item in workspace_capabilities(db, workspace.id)]
+        return capability_ids, workspace.session_credential_ids_json, None
+    directory = db.scalar(
+        select(AgentWorkDirectory).where(
+            AgentWorkDirectory.id == work_directory_id,
+            AgentWorkDirectory.workspace_id == workspace.id,
+        )
+    )
+    if directory is None:
+        raise DomainError("AGENT_WORK_DIRECTORY_NOT_FOUND", "工作区不存在", 404)
+    return list(directory.session_capability_ids_json or []), directory.session_credential_ids_json, directory
+
+
+def workspace_session_configuration(
+    db: Session, workspace_id: str, work_directory_id: str | None = None
+) -> dict[str, list[str]]:
     workspace = _workspace(db, workspace_id)
-    credential_ids = workspace.session_credential_ids_json
+    capability_ids, credential_ids, _directory = _session_configuration(
+        db, workspace, work_directory_id
+    )
     return {
-        "capability_version_ids": [
-            item["id"] for item in workspace_capabilities(db, workspace.id)
-        ],
+        "capability_version_ids": capability_ids,
         "credential_ids": (
             list(credential_ids)
             if credential_ids is not None
@@ -579,19 +600,32 @@ def replace_workspace_session_configuration(
     workspace_id: str,
     capability_version_ids: tuple[str, ...],
     credential_ids: tuple[str, ...],
+    work_directory_id: str | None = None,
 ) -> dict[str, list[str]]:
-    replace_workspace_capabilities(
-        db,
-        workspace_id,
-        capability_version_ids,
-        allowed_types=_CREATION_CAPABILITY_TYPES,
-    )
     workspace = _workspace(db, workspace_id)
+    selected = _validated_capabilities(
+        db, capability_version_ids, allowed_types=_CREATION_CAPABILITY_TYPES
+    )
     resolve_credentials_for_agent(db, credential_ids)
-    workspace.session_credential_ids_json = list(dict.fromkeys(credential_ids))
-    workspace.updated_at = now()
+    if work_directory_id is None:
+        replace_workspace_capabilities(
+            db,
+            workspace.id,
+            capability_version_ids,
+            allowed_types=_CREATION_CAPABILITY_TYPES,
+        )
+        workspace.session_credential_ids_json = list(dict.fromkeys(credential_ids))
+        workspace.updated_at = now()
+    else:
+        _capability_ids, _credential_ids, directory = _session_configuration(
+            db, workspace, work_directory_id
+        )
+        assert directory is not None
+        directory.session_capability_ids_json = [published.version.id for published, _type in selected]
+        directory.session_credential_ids_json = list(dict.fromkeys(credential_ids))
+        directory.updated_at = now()
     db.flush()
-    return workspace_session_configuration(db, workspace.id)
+    return workspace_session_configuration(db, workspace.id, work_directory_id)
 
 
 def replace_workspace_capabilities(
@@ -2180,19 +2214,16 @@ def bootstrap_conversation(
         )
         db.add(binding)
         db.flush()
+        default_capability_ids, default_credential_ids, _directory = _session_configuration(
+            db, workspace, work_directory_id
+        )
         _freeze_capabilities(
             db,
             binding,
-            (
-                capability_version_ids
-                if capability_version_ids is not None
-                else tuple(
-                    item["id"] for item in workspace_capabilities(db, workspace.id)
-                )
-            ),
+            capability_version_ids if capability_version_ids is not None else tuple(default_capability_ids),
         )
-        if credential_ids is None and workspace.session_credential_ids_json is not None:
-            credential_ids = tuple(workspace.session_credential_ids_json)
+        if credential_ids is None and default_credential_ids is not None:
+            credential_ids = tuple(default_credential_ids)
         command = AgentConversationCommand(
             workspace_id=workspace.id,
             host_kind="AGENT_WORKSPACE",

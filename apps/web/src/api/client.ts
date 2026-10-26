@@ -369,10 +369,14 @@ export const api = {
     request<AgentWorkspaceCapability[]>(`/agent-workspaces/${encodeURIComponent(id)}/capabilities`),
   replaceAgentWorkspaceCapabilities: (id: string, capability_version_ids: string[]) =>
     request<AgentWorkspaceCapability[]>(`/agent-workspaces/${encodeURIComponent(id)}/capabilities`, json('PUT', { capability_version_ids })),
-  agentWorkspaceSessionConfiguration: (id: string) =>
-    request<import('../types').AgentWorkspaceSessionConfiguration>(`/agent-workspaces/${encodeURIComponent(id)}/session-configuration`),
-  replaceAgentWorkspaceSessionConfiguration: (id: string, configuration: import('../types').AgentWorkspaceSessionConfiguration) =>
-    request<import('../types').AgentWorkspaceSessionConfiguration>(`/agent-workspaces/${encodeURIComponent(id)}/session-configuration`, json('PUT', configuration)),
+  agentWorkspaceSessionConfiguration: (id: string, workDirectoryId?: string) => {
+    const query = workDirectoryId ? `?work_directory_id=${encodeURIComponent(workDirectoryId)}` : '';
+    return request<import('../types').AgentWorkspaceSessionConfiguration>(`/agent-workspaces/${encodeURIComponent(id)}/session-configuration${query}`);
+  },
+  replaceAgentWorkspaceSessionConfiguration: (id: string, configuration: import('../types').AgentWorkspaceSessionConfiguration, workDirectoryId?: string) => {
+    const query = workDirectoryId ? `?work_directory_id=${encodeURIComponent(workDirectoryId)}` : '';
+    return request<import('../types').AgentWorkspaceSessionConfiguration>(`/agent-workspaces/${encodeURIComponent(id)}/session-configuration${query}`, json('PUT', configuration));
+  },
   agentWorkspaceMcpReadiness: (id: string, capabilityVersionId: string) =>
     request<AgentWorkspaceMcpReadiness>(`/agent-workspaces/${encodeURIComponent(id)}/capabilities/${encodeURIComponent(capabilityVersionId)}/mcp-readiness`, json('POST')),
   agentWorkspaceRuntime: (id: string) => request<AgentWorkspaceRuntime>(`/agent-workspaces/${encodeURIComponent(id)}/runtime`),
