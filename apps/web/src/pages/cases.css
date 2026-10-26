@@ -155,3 +155,54 @@ html:has(.scenario-space){overscroll-behavior:none}
 .case-add-material-dialog>footer{display:flex;justify-content:flex-end;gap:8px;margin-top:24px}
 .case-add-material-dialog>footer button{min-width:72px;white-space:nowrap}
 .case-add-material-dialog>fieldset>input[hidden]{display:none}
+
+/* Single-page Case editor: keep case navigation narrow and configuration close at hand. */
+.scenario-space{grid-template-columns:224px minmax(0,1fr)}
+.scenario-space>aside>.scenario-side-head{height:54px;min-height:54px;padding:10px 13px}
+.scenario-side-head>b{font-size:15px;letter-spacing:0}
+.scenario-space>aside>.scenario-side-head button{padding:5px 9px;font-size:11px}
+.case-single-workspace{overflow:auto;background:#f6f8f7}
+.case-single-workspace>.scenario-workspace-inner{width:100%;max-width:none;margin:0;padding:0 24px 24px}
+.case-workspace-toolbar{position:sticky;z-index:20;top:0;display:flex;align-items:center;justify-content:space-between;gap:16px;min-height:62px;border-bottom:1px solid #d9e6df;background:#f6f8f7;padding:12px 0}
+.case-workspace-toolbar>span{min-width:0;overflow:hidden;color:#263e32;font-size:15px;font-weight:750;text-overflow:ellipsis;white-space:nowrap}
+.scenario-case-actions{display:flex;align-items:center;gap:7px;flex:none}
+.scenario-case-actions .primary,.scenario-case-actions .secondary,.scenario-case-actions .danger{min-height:34px;padding:7px 10px;font-size:11px}
+.case-single-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(310px,360px);align-items:start;gap:20px;padding-top:18px}
+.case-path-panel{min-width:0;min-height:0;border:1px solid #d9e6df;border-radius:10px;background:#fff;padding:18px}
+.case-config-panel{display:grid;gap:14px;min-width:0}
+.case-config-panel>section,.case-config-panel>.scenario-config{border:1px solid #d9e6df;border-radius:10px;background:#fff;padding:14px}
+.case-config-panel .scenario-basics-form{max-width:none}
+.case-config-panel .scenario-basics-form fieldset{display:grid;gap:13px;margin:0;border:0;padding:0}
+.case-config-panel .case-basics-fields{grid-template-columns:1fr;gap:11px}
+.case-config-panel .scenario-materials{margin-top:2px}
+.case-config-panel .scenario-materials ul{max-height:172px;overflow:auto;overscroll-behavior:contain}
+.case-config-panel .scenario-materials-empty{margin:8px 0;padding:10px}
+.case-config-panel .scenario-materials li{padding:6px 0}
+.case-config-panel .scenario-config{max-width:none}
+.case-config-panel .scenario-config-grid{grid-template-columns:1fr;gap:11px}
+.case-config-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:13px}
+.case-config-heading>div{display:grid;gap:3px;min-width:0}
+.case-config-heading b{color:#263e32;font-size:13px}
+.case-config-heading small{color:#71827a;font-size:10px;line-height:1.45}
+.case-config-heading .primary{min-height:32px;padding:6px 9px;font-size:10px;white-space:nowrap}
+.case-compact-text-field{display:grid;gap:6px;min-width:0}
+.case-compact-text-field>span{display:flex;align-items:center;justify-content:space-between;gap:8px;color:#18392c;font-size:12px;font-weight:750}
+.case-compact-text-field label{margin:0}
+.case-compact-text-field .ghost{display:inline-flex;align-items:center;gap:2px;padding:0;color:#087a57;font-size:10px;font-weight:650}
+.case-compact-text-field textarea{height:62px;min-height:62px;max-height:62px;resize:none;overflow:hidden;padding:8px 9px;font-size:12px;line-height:1.5}
+.case-text-dialog{width:min(760px,calc(100vw - 40px));max-height:calc(100dvh - 48px);overflow:hidden;border:1px solid #d7e0da;border-radius:14px;background:#fff;padding:0;color:#34443a;box-shadow:0 28px 80px #0c1b1452}
+.case-text-dialog::backdrop{background:#10201952}
+.case-text-dialog>section{display:flex;max-height:calc(100dvh - 50px);min-height:0;flex-direction:column}
+.case-text-dialog header{display:flex;align-items:center;justify-content:space-between;gap:16px;border-bottom:1px solid #e4ebe6;padding:14px 18px}
+.case-text-dialog h3{margin:0;font-size:16px}
+.case-text-dialog header button{display:grid;width:30px;height:30px;place-items:center;padding:0}
+.case-text-dialog p{min-height:0;overflow:auto;overscroll-behavior:contain;margin:0;padding:18px;white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px;line-height:1.8}
+.case-form-status{display:block;min-height:14px;margin-top:8px;color:#087a57;font-size:11px}
+.case-single-workspace .scenario-delete-error{margin:10px 0 0}
+.case-single-workspace .case-connected-path{max-width:none}
+.case-single-workspace .case-connected-path.is-empty{min-height:420px}
+.case-single-workspace .case-connected-path.is-empty .scenario-add-path-card{min-height:260px}
+.case-single-workspace .case-path-heading{margin-bottom:16px}
+@media(max-width:1080px){.scenario-space{grid-template-columns:208px minmax(0,1fr)}.case-single-layout{grid-template-columns:minmax(0,1fr) 320px}.case-single-workspace>.scenario-workspace-inner{padding:0 18px 18px}}
+@media(max-width:860px){.case-single-layout{grid-template-columns:1fr}.case-config-panel{grid-template-columns:repeat(2,minmax(0,1fr));align-items:start}.case-config-panel>.scenario-config{grid-column:2}.case-config-panel>section:first-child{grid-row:1 / span 2}.case-single-workspace .case-connected-path.is-empty{min-height:280px}}
+@media(max-width:680px){.scenario-space{grid-template-columns:1fr;height:auto}.scenario-space>aside{max-height:220px;border-right:0;border-bottom:1px solid #d9e6df}.case-single-workspace>.scenario-workspace-inner{padding:0 14px 18px}.case-workspace-toolbar{align-items:flex-start;flex-direction:column}.scenario-case-actions{width:100%}.scenario-case-actions button{flex:1}.case-config-panel{grid-template-columns:1fr}.case-config-panel>.scenario-config,.case-config-panel>section:first-child{grid-column:auto;grid-row:auto}}

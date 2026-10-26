@@ -97,6 +97,9 @@ export function App() {
   const [openFlowRunTabs, setOpenFlowRunTabs] = useState<FlowRunTab[]>([]);
   const [openContextTabs, setOpenContextTabs] = useState<ContextTab[]>([]);
   const tabsUser = useRef<AuthUser | null>(null);
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get('view') === 'cases') setView('cases');
+  }, [setView]);
   const restoreContextTabs = useCallback((nextUser: AuthUser) => {
     const saved = readContextTabs(nextUser);
     tabsUser.current = nextUser;
