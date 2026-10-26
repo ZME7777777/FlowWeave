@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`CHILD CONVERSATIONS IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-703`
+> 下一可执行切片：`FR-704`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 > 子会话设计：`docs/agent-child-conversations-design.md`
@@ -114,13 +114,43 @@ CURRENT 唯一性检查通过。历史重复编号 FR-506／528／553 保持原�
 `git diff --check` 通过。仅文档变更，未运行业务测试、镜像构建、迁移实跑或 E2E，
 未修改 source lock／数据库／API／Web／SDK，未部署。提交后停止，下一可执行 FR-703。
 
-### FR-703 固定 upstream main 完整合入 SDK baseline — READY
+### FR-703 固定 upstream main 完整合入 SDK baseline — DONE
 
 依赖：FR-702 DONE。以设计固定的 `ce5716a3c0a955a85bb0cc4dcfaa94d5fefcda50`
 完整合入 SDK baseline，保留 FlowWeave 扩展和已撤回浏览器改动的历史，逐项处理冲突。
 不 cherry-pick 子会话提交，不开放 Worktree 产品功能，不部署。
 
-### FR-704 上游合并回归与 Runtime 来源依赖身份 — PENDING
+完成（2026-10-26）：SDK baseline 原 HEAD `2c8025ff1` 完整合入固定 upstream
+`ce5716a3c0a955a85bb0cc4dcfaa94d5fefcda50`，产生独立双父 merge commit
+`ecf0aec091463fb242b0c5ab59d155c65d96ded8`，四包源码及本地依赖身份为 1.58.2。
+五个冲突文件逐块合并：保留后台／生命周期／交互执行器、当前 View 指标、动态凭据
+上下文和读取容量测试，同时保留上游标题 prompt、FileUploadResult、正式结束生命周期、
+丢失租约元数据保护、事件追加时钟／失败诊断及 condenser 409。原生新 child finalize 与
+Goal reload 对账进入既有生命周期执行器，避免重新引入默认线程池饥饿。
+
+验收：13 个核心模块共 550 个不同用例，初次剩余的一项标题 Laminar 测试在修正后台
+执行器夹具后定向通过；另有 9 项原生 child 工具测试、13 项真实 TCP 用例通过，共
+572 个不同用例。TCP 使用真实 Uvicorn／HTTP／WebSocket 和受控 LLM，覆盖默认后台池
+饱和下正式读取、暂停／原 ID 恢复、WebSocket 绑定与正式事件读取及原生 child，不等同真实模型或镜像验收。
+新增四项参数化回归验证默认 executor 饱和时 shared 子创建及 reload 可用，live／reloaded
+两路径均通过。标题后台夹具和 trace probe 适配了原生 save_meta／后台执行器；暂停夹具
+只在 close 屏障内断言禁止 hydration，消除 gate 释放后已恢复请求的合法调度竞态。
+
+1442 个受控跟踪 Python 文件 AST 解析通过，手工冲突／测试适配文件的 pre-commit
+格式、Ruff、PEP8、Pyright、动态属性、导入和工具注册检查通过。全量 source diff（排除
+上游 `.pr` 证据目录）及相对固定 upstream 的扩展 diff 检查通过；完整上游 diff 的空白
+检查仍指出原样引入的 `.pr/intent-ledger.md` 尾空格与 `.pr/intent-runtime-overlay.md`
+结尾空行，不修改上游证据文档掩盖告警。相对 upstream 只保留原 20 个扩展路径及一处
+必要标题 trace 测试适配，SDK 工作树干净，两个精确 parent 已核对，未推送。
+
+测试临时目录放在本工作树 `.tmp/fr703`，设置 Git discovery ceiling 防止非 Git 场景误识别
+外层 FlowWeave 仓库；此前因此产生的三项环境失败不计作产品故障或通过。忽略的 SDK
+build 副本影响全局动态属性扫描，验证时只临时移至 `.tmp`，完成后原样恢复，未提交生成物。
+FlowWeave source lock／归档／依赖锁仍为原 1.54.0，本片不构建镜像、不运行迁移／Web E2E、
+不开放子工具或 Worktree、不部署。Alembic 唯一 head 仍为 0174；后续 FR-704 负责完整
+扩展／实际契约回归和来源依赖冻结，不能把本次源码合并当作 Runtime 已升级。
+
+### FR-704 上游合并回归与 Runtime 来源依赖身份 — READY
 
 依赖：FR-703 DONE。验证全部 FlowWeave 扩展、受影响原生回归和实际可执行契约，
 核对 Profile／Settings schema、四包、来源归档及自有 Docker／依赖链；正式冻结身份。

@@ -36,10 +36,15 @@
 | 当前上游锚点 | `f0206428306db687ac9c8d833ece4fb82b015eba` |
 | 本轮已拉取、评估的 upstream main | `ce5716a3c0a955a85bb0cc4dcfaa94d5fefcda50`，四包 1.58.2 |
 | 两上游锚点之间 | 132 个提交；目标 HEAD 在 v1.58.2 发布提交之后还有五个提交 |
-| 本地 SDK baseline HEAD | `2c8025ff11b62cbce8880d08f8b7e9c69e844ecd`，与当前 source lock 文件树相同 |
+| FR-702 冻结时 SDK baseline HEAD | `2c8025ff11b62cbce8880d08f8b7e9c69e844ecd`，与当前 source lock 文件树相同 |
 
 FR-703 只合并上述固定目标，不以构建时浮动 main 替代。若执行前有新上游增量，另行取证和切片。
 本地 baseline 比锁定源码多的浏览器修改／撤回提交应保留历史，不重新引入已撤回功能。
+
+FR-703 已将上述固定目标完整合入 SDK baseline，merge commit 为
+`ecf0aec091463fb242b0c5ab59d155c65d96ded8`；两个 parent 分别是原 baseline 和固定 upstream。
+本轮定向源码／真实 TCP 合并验证已完成，详见进度记录。FlowWeave source lock 仍为旧身份，
+完整扩展／实际 Runtime 契约与来源依赖冻结继续由 FR-704 执行，不能据此声明运行镜像已升级。
 
 ### 2.2 原生已具备
 
