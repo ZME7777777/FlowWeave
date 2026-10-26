@@ -73,3 +73,16 @@ OPS-07 已完成。18 项无 DB／Docker 依赖专项、Ruff check／format 和 
 已回收。全部生产容器 ID／image ID、卷清单和 Compose／env 摘要前后一致；API、stream-api、
 Runtime Provider、PostgreSQL 健康，Worker／Web 运行，两 API health／readiness 通过。
 没有发布或重启生产服务，没有删除持久数据；下一独立重构切片为 FR-571，本次没有开始。
+
+
+## OPS-08 验收记录（2026-10-26）
+
+新策略从固定提交 `e95220d59070a3837329417f80acc9e31171d6e1` 安装生效，
+线上脚本和 systemd unit 的 SHA-256 与提交一致。31 项专项测试、Python 3.9 解析、
+Ruff、Bash 语法通过。两轮实际删除 93 个历史镜像、21 个过期受管目录、29 个旧构建资产；
+文件系统净增加约 12.5 GiB 可用空间，最终可用约 58.1 GiB。
+
+只读复验中目录与镜像候选均为零；额外容器／其他仓库引用的镜像继续保护，原生 GC
+保留的极小缓存依赖不强删。48 个容器 ID／image／启动时间、卷、Compose／env、
+备份元数据和业务数据根身份一致；API／stream-api health/readiness 与 Web HTTP 通过。
+任务实际运行成功且 timer enabled／active，继续每天北京时间 03:30 起错峰执行。
