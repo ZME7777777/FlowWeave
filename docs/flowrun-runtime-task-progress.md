@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`CHILD CONVERSATIONS IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-706`
+> 下一可执行切片：`FR-707`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 > 子会话设计：`docs/agent-child-conversations-design.md`
@@ -283,12 +283,49 @@ FlowWeave 本片只更新设计和进度，无迁移；唯一 Alembic head 仍�
 V1／V2，未接入平台／Web 产品入口，未部署、推送或替换已有 Runtime。当前 NONE，
 下一可执行切片 FR-706，提交后停止。
 
-### FR-706 原生子 launcher 调用身份与权限策略 — READY
+### FR-706 原生子 launcher 调用身份与权限策略 — DONE
 
 依赖：FR-718 DONE。建立可信原生 action／tool-call 关联、直属关系、shared 隔离、
 一层深度及并发门禁；Runtime key 不能单独授权任意父 binding。
 
-### FR-707 原生子 list read wait 工具 — PENDING
+实现：SDK baseline 提交 `2cf2bd7bdcd7a624d38aca7d5a9082199fbb46f5`。新增正式
+`start_governed_child_conversation` Tool，模型只提交 task／title；旧同类工具及无受治理
+配置的旧 children／preparation 默认契约保留。原生 Agent 单次执行边界绑定当前
+ActionEvent／Conversation，executor 按正式 action ID／tool-call ID 生成稳定 creation，
+以独立于 Runtime key 的 Cipher 签发十分钟 scope／generation／Manifest／audience／
+任务摘要证明。新增正式 launcher/verify 路由，按父正式配置、原生事件及当前分支祖先
+关系复核；无证明、伪造、跨父、generation 变化或废弃分支拒绝。过期 token 只能恢复
+已预留身份，不能首次准入；token 沿用 SecretStr、正式 serializer 与脱敏，不回显错误正文。
+
+prepare／release 接收可选 launcher_token；受治理父必须提供，旧请求无新配置时仍兼容。
+父生命周期与跨进程非等待锁串行准入，按持久回执与正式状态最多允许三个创建中／活动
+子会话，超限 429 不预留新身份，重试复用既有名额；删除未完成不提前释放。受治理子
+去掉新旧创建工具并重建独立执行器，服务端同时拒绝孙会话及绕过 immediate／通用 parent
+创建入口。release 核对最初受理的调用身份和策略。verifier 只证明原生来源，平台仍须
+在 FR-711 按父 binding 解析用户／宿主，校验 active generation、Manifest 和操作权限；
+本片不把 Runtime key 或原生验签成功等同于平台授权。
+
+验收：SDK／Agent Server／并行分发／旧 children 受影响主套件 354 passed，含新增八项
+原生来源、伪造／任务变化／跨父／generation／废弃分支、准备与释放门禁、深度、并发、
+服务重载配额、过期恢复和 Runtime key fallback 拒绝回归。三项真实 Uvicorn HTTP 回归
+通过，覆盖带 Runtime 认证的 verifier／prepare／release／旧入口拒绝，以及原准备释放
+和旧 fresh-workspace 创建兼容。12 个 Python 文件 pre-commit（Ruff format／lint、PEP8、
+Pyright、动态属性、导入及 Tool 注册）通过；diff 检查通过。测试临时目录受 Git ceiling
+隔离，避免夹具误认当前仓库为待测工作区。
+
+verify-agent-server 独立进程 F35.launcher recipe 通过，实际认证、prepare／旧入口拒绝、
+重启后仍拒绝、无子会话副作用均有证据；在上述已提交 SDK HEAD 上重跑亦通过，测试
+服务已停止且无残留受管进程。真实模型原生 launcher 调用
+因无 DEEPSEEK_API_KEY 记录 blocked，受控原生 dispatch／HTTP 不能代替真实模型验收，
+仍留 FR-717。feature-map check 通过，新增路由已归属且有驱动；全局 coverage 仍有既存
+activity／context 两条未归属路由，无重复归属或未驱动新路由。
+
+FlowWeave 仅更新设计与进度，无迁移，Alembic 唯一 head 仍为
+0174_agent_workspace_user_defaults。source lock／包／镜像维持 FR-704 的 `ecf0aec09`，
+最终扩展冻结与静态 V3 消费由 FR-709 完成。未开放产品入口、未推送、部署或替换现有
+Runtime；当前 NONE，下一可执行 FR-707，提交后停止。
+
+### FR-707 原生子 list read wait 工具 — READY
 
 依赖：FR-706 DONE。实现正式直属子查询、事件／最终结果分页及最多 30 秒的可取消
 等待；只认正式身份，不自动唤醒已结束父会话或将截断结果标成完整读取。

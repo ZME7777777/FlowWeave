@@ -127,13 +127,50 @@ event ID 时才补启动；已完成、暂停、异常或已推进到其他事�
 未治理的旧会话元数据不新增空 gate 字段。TypeScript 发布客户端仍遵循它的已发布镜像 schema
 锁；本轮新 native 路由由通用 HTTP 客户端调用，FlowWeave 的静态 V3 消费与契约门禁留在 FR-709。
 
+### 2.6 受治理 launcher 身份与门禁（FR-706）
+
+新增正式 `start_governed_child_conversation` Tool，与旧 `start_child_conversation` 并存。
+旧工具的参数、默认 Worktree 和 immediate 语义继续兼容；FlowWeave 后续只物化受治理工具。
+新工具的模型输入只有 task／title，不接受 URL、父子 ID、scope、generation 或 isolation。
+shared 是类型和执行约束，不依赖提示词纠正。
+
+Tool 配置冻结 `ChildLauncherPolicy`：父 Conversation、scope UUID、Runtime Session、generation、
+Manifest digest 及最大活动子数（不超过三）。scope UUID 后续由 FR-711 固定为父 binding；
+不能从模型输入或调用方任意 HTTP 参数推导用户和宿主。创建工具只能由有相同父 Conversation
+的配置实例加载；子 Conversation 不继承这两个创建工具，也不继承父的 live tool executor。
+
+原生 Agent 的单次执行边界通过可复原的 ContextVar 绑定当前 ActionEvent 和 Conversation，
+覆盖同步／异步 Agent 共用的实际工具分发及并行线程。受治理 executor 只在该边界内签发
+至多十分钟的 Cipher token，绑定正式 action ID、tool-call ID、冻结策略、完整目标 URL 和
+任务摘要；creation UUID 由正式 invocation 确定，未知响应不能改用新 ID。签发／验证都拒绝
+Cipher 使用任一 Runtime session key 的配置，避免仅持有连接 key 就能生成调用证明。
+token 按 SecretStr 及既有 Secret serializer／脱敏规则处理，不进入工具 observation 或错误文本。
+
+正式 `POST /api/conversations/{parent}/children/launcher/verify` 接受 typed task／title／shared／token，
+验证返回 `ChildLauncherInvocation`，不创建会话或占用创建配额。服务端按原生 event ID 读取
+ActionEvent，核对工具、tool-call、任务及当前分支祖先关系，再比对父正式配置中的全部策略
+和 audience；伪造 token、跨父、旧 generation／Manifest、旧分支或子会话发起均拒绝。
+过期证明只允许对已持久预留的原 creation 做恢复，不允许首次准入。
+
+prepare／release 增加可选 `launcher_token`；对配置受治理工具的父会话必须提供并复核证明，
+旧无此配置的准备请求形状保持兼容。受治理父／子不得通过旧 immediate children 或通用
+parent_conversation_id 创建入口绕过门禁。准备操作在父生命周期锁及跨进程非等待锁内，
+按原生持久回执和正式执行状态检查最多三个创建中／活动子会话；并发超限返回 429，
+不预留新身份，同一已受理 creation 的重试不重复占用。删除尚未完成时不提前释放配额。
+release 复核原准备保存的策略、creation 和任务摘要，不能借另一次调用放行子会话。
+
+该验证接口只证明原生调用来源。控制面必须另行解析 scope 对应的用户／宿主／父 binding，
+核对 active generation、冻结 Manifest 和权限，再执行 prepare → 凭据治理 → release。
+这部分依赖 FR-710 的关系模型并由 FR-711 接入；Runtime key 或 verifier 的成功响应都不能
+单独授权平台操作。FR-706 不开放任何平台或浏览器入口，也不更新既有冻结 Runtime。
+
 ## 3. 父 Agent 的操作契约
 
 以下工具名是目标命名，最终导出必须在对应 baseline 切片中建立正式类型和 contract：
 
 | 操作 | 结果及边界 |
 |---|---|
-| `start_child_conversation` | 传完整 task／title；shared 由受管策略冻结；返回稳定正式身份，不等待工作完成 |
+| `start_governed_child_conversation` | 传完整 task／title；shared 由受管策略冻结；返回稳定正式身份，不等待工作完成；保留旧同类工具默认契约 |
 | `list_child_conversations` | 只列当前父会话直属子 Conversation，状态来自原生投影，列表分页 |
 | `read_child_conversation` | 读取正式事件进展／assistant 结果，返回 event ID、分页／续读信息及是否完整 |
 | `send_child_conversation_message` | 追加正式输入并按原生规则运行，携带稳定原生 invocation 身份，不自动打断 |
