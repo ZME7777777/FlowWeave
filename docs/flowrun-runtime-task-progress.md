@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`CHILD CONVERSATIONS IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-718`
+> 下一可执行切片：`FR-706`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 > 子会话设计：`docs/agent-child-conversations-design.md`
@@ -248,14 +248,42 @@ lock、归档和验收镜像仍固定 FR-704 的 `ecf0aec09`，新扩展须在 F
 FR-718；原计划 FR-705 的 429、子准备、首轮治理／投递及 native 创建中崩溃恢复明确保留
 为 FR-718 的必验内容，不视为已完成。
 
-### FR-718 原生子准备与运行前治理生命周期 — READY
+### FR-718 原生子准备与运行前治理生命周期 — DONE
 
 依赖：FR-705 DONE。消费正式创建身份，接入 native child 配置物化、准备后查回、治理
 放行和首条任务的原子受理。覆盖 429 无执行副作用、并发／未知结果、创建中和首轮投递
 阶段崩溃恢复、普通 send／run 不得绕过准备门禁；保留旧 children 默认契约。此片完成后
 才进入 launcher 身份和产品集成。必要时继续按可独立验收边界拆分。
 
-### FR-706 原生子 launcher 调用身份与权限策略 — PENDING
+实现：SDK baseline 提交 `085a838aff2177bae6256794d591e7bc1ebcdfd4` 新增正式
+prepare／查询／release 路由及 shared-only 类型。先经 RunSlot 准入再预留身份，以子
+Cipher 整体加密不可变启动计划，覆盖 base_state 已写但 meta 未写的恢复窗口。准备后
+不投递消息、不运行、不初始化 Git 或创建 Worktree；普通 send／run／goal／ask／condense
+和 live Conversation 访问受门禁保护，只读与凭据配置仍可用。release 再经容量准入后，
+按正式稳定 event ID 受理首条任务；并发、取消、响应未知和服务重载均复用原身份。
+started 但后台任务尚未真正运行的崩溃窗口，仅在无活动任务、原生 IDLE 且 HEAD 为初始
+event ID 时补启动；已完成／暂停／异常或事件已推进时不重跑。删除持久标记身份并清除
+加密计划，旧 creation_id 不可复活。旧 immediate children 默认契约保留，fork 不继承
+准备门禁，旧元数据不新增空 gate；creation UUID 不代替 launcher 授权。
+
+验收：受影响 SDK／Agent Server 主回归 364 passed；真实 Uvicorn HTTP／WebSocket
+受控 LLM 回归 5 passed。覆盖 429 无执行副作用、稳定事件去重与冲突、准备／投递中
+失败、并发准备、取消写入围栏、重载／未知响应、已删除身份及调度未启动恢复。
+11 个受影响 Python 文件的 Ruff format／lint、PEP8、Pyright、动态属性／导入规则和
+Tool 注册 pre-commit 全通过。独立真实 Agent Server 的 F35.prepare 检查通过，含认证
+doctor、准备／查回／重试、409 运行门禁、实际进程重启及删除后拒绝重建；在上述已提交
+SDK HEAD 上重跑同一 recipe 通过，测试服务已停止且无残留受管进程。真实模型
+F35.release 因无 DEEPSEEK_API_KEY 记录 blocked，不能将受控 LLM 回归当作真实模型
+验收，后续 FR-717 仍须补齐。feature-map check 通过，三个新路由均已归属并有驱动；
+全局 coverage 仍有既存 activity／context 两条未归属路由，不宣称全图通过。
+
+FlowWeave 本片只更新设计和进度，无迁移；唯一 Alembic head 仍为
+0174_agent_workspace_user_defaults。source lock／归档／镜像仍固定 `ecf0aec09`，最终
+扩展归档与 V3 消费由 FR-709 冻结；未更新包版本、TypeScript 发布客户端 schema 或旧
+V1／V2，未接入平台／Web 产品入口，未部署、推送或替换已有 Runtime。当前 NONE，
+下一可执行切片 FR-706，提交后停止。
+
+### FR-706 原生子 launcher 调用身份与权限策略 — READY
 
 依赖：FR-718 DONE。建立可信原生 action／tool-call 关联、直属关系、shared 隔离、
 一层深度及并发门禁；Runtime key 不能单独授权任意父 binding。

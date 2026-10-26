@@ -96,6 +96,37 @@ FR-705 仅提供此基础原语，未接入任何创建路由，不创建 Conver
 → 治理 → 首轮投递／运行，使用生命周期 executor 执行同步存储操作；不能将拿到回执
 等同于创建或授权成功，不能在响应未知时改用另一个 creation_id。
 
+### 2.5 两阶段原生生命周期（FR-718）
+
+baseline 追加三个正式路由，均使用 Agent Server 现有会话认证：
+
+- `POST /api/conversations/{parent}/children/preparations/{creation_id}`：typed request
+  为 `ChildConversationPreparationRequest`，只允许 shared；相同意图重试返回原身份。
+- `GET` 同一路径：返回 receipt、reserved／prepared／dispatching／started 和实际工作目录。
+  phase 是创建步骤，不是 Conversation execution_status；reserved 不能当作已创建。
+- `POST` 同一路径的 `/release`：受信部署方完成绑定及凭据治理后，以原 task／title／isolation
+  放行。创建 UUID 只负责幂等，不能替代 FR-706 的可信 invocation 和用户权限。
+
+准备前先通过原生 RunSlot 准入，继而持久预留身份；原生不可变启动计划使用子 Conversation
+对应 Cipher 整体加密，只在 Runtime 持久状态目录保存。计划在初始化前提交，恢复时保持原
+配置和 child ID，即便 base_state 已写而 meta 尚未写。该原生路径不创建 Worktree，也不初始化
+Git 仓库；父配置中的平台绑定级授权仍须由 FR-711 在首轮前替换／重新激活。
+
+prepared／dispatching 门禁阻止普通 send、run、goal、ask、condense 和 live Conversation
+访问；只读事件／配置及既有凭据激活仍可用。release 在取得 RunSlot 后才写 dispatching，
+通过 LocalConversation 的正式稳定 event_id 受理首条任务；恢复只按该 ID 查回，不比较文本
+相似度。相同 ID 绑定不同消息或 sender 会拒绝；已运行／终止的首轮不会因确认丢失而重跑。
+started 仅表示调度已受理；进程在后台任务真正启动前退出时，重试会检查原生活动任务、
+execution_status 与 leaf_event_id。只有没有活动任务、仍为 IDLE 且 HEAD 恰为首条任务
+event ID 时才补启动；已完成、暂停、异常或已推进到其他事件的会话不因重试再次运行。
+请求取消必须等原生离线写入收口后再释放生命周期锁，避免新重试与迟到写入交叉。
+
+删除子会话先持久标记删除身份，并清除其加密启动计划；旧 creation_id 后续不能重新创建。
+新 fork／旧式 immediate child 创建不继承原准备门禁。旧 children 请求形状、默认 immediate
+语义和默认 worktree 选项保持上游兼容，但 FlowWeave 产品不接入该入口或 Worktree。
+未治理的旧会话元数据不新增空 gate 字段。TypeScript 发布客户端仍遵循它的已发布镜像 schema
+锁；本轮新 native 路由由通用 HTTP 客户端调用，FlowWeave 的静态 V3 消费与契约门禁留在 FR-709。
+
 ## 3. 父 Agent 的操作契约
 
 以下工具名是目标命名，最终导出必须在对应 baseline 切片中建立正式类型和 contract：
