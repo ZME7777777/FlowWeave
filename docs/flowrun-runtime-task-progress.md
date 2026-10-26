@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`CHILD CONVERSATIONS IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-707`
+> 下一可执行切片：`FR-708`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 > 子会话设计：`docs/agent-child-conversations-design.md`
@@ -325,12 +325,53 @@ FlowWeave 仅更新设计与进度，无迁移，Alembic 唯一 head 仍为
 最终扩展冻结与静态 V3 消费由 FR-709 完成。未开放产品入口、未推送、部署或替换现有
 Runtime；当前 NONE，下一可执行 FR-707，提交后停止。
 
-### FR-707 原生子 list read wait 工具 — READY
+### FR-707 原生子 list read wait 工具 — DONE
 
 依赖：FR-706 DONE。实现正式直属子查询、事件／最终结果分页及最多 30 秒的可取消
 等待；只认正式身份，不自动唤醒已结束父会话或将截断结果标成完整读取。
 
-### FR-708 原生子 send interrupt 与输入并发 — PENDING
+实现：SDK baseline 提交 `66ccd2da020d75155169b6938f7aa8a2d65b0278` 新增三个正式
+Tool、typed query／响应及 queries/verify、queries 两条正式路由。工具冻结父策略与可信
+access_url，按原生 action／tool-call 和所有查询参数签发专用用途 token；验证当前分支、
+冻结 scope／generation／Manifest／audience，再校验目标原生 parent、确定性 child ID、
+创建回执、受理策略及 shared 目录。子会话移除父查询工具；仅 Runtime key、跨父／跨子
+cursor、伪造 token、参数变化或非直属目标均拒绝，异步返回前复核权限与关系。
+
+list 使用 UUID keyset 分页，每页至多 50 条，标题超 256 字符显式标记。read 从正式 HEAD
+沿分支从新到旧读取，返回进度身份／工具元数据与正式 assistant 文本；results 只读后者，
+不导出系统／用户消息、工具参数／正文或隐藏推理。每页扫描至多 100 个事件、返回 50 条
+摘录和 12000 个 Unicode 文本字符；正文用正式 event ID 和字符 offset 续读，页／摘录
+分别标记完整性。游标绑定 scope／generation／child／mode／HEAD，HEAD 变化返回 409
+要求重读。wait 比较正式状态／HEAD 等 checkpoint，最多 30 秒，超时是正常结果；父
+cancellation 关闭 HTTP 请求，断连取消服务端任务，不运行或中断任何父子会话、不取
+child run-slot、不激活已关闭子 EventService，不建立平台轮询执行器。
+
+真实原生工具 HTTP 回归暴露父 run lock 的自等待，已修复 queries 与 FR-706 launcher
+verifier／准备配置检查：校验读取不可变正式事件与冻结配置，子查询读取原子持久状态，
+不等待正在执行的父／子工具持有的 state lock；身份／分支／关系仍在返回前复核。
+
+验收：受影响 SDK／Agent Server／并行分发／旧 children 主回归 360 passed；最终冻结
+配置标准化修正后，14 项原生调用与查询回归全部复验通过（已含主套件，不累加）。新增
+六项覆盖 Unicode 分段还原、完整性／扫描预算、跨子游标／伪造／未知目标、HEAD 变化、
+等待变化／超时／取消、等待中撤销、父取消关闭 HTTP、keyset 翻页和关闭子会话只读。
+三项真实 Uvicorn HTTP 回归通过，含受控 LLM 实际调用原生 list 工具，经认证 HTTP 得到
+正式 observation 后正常结束，以及既有 launcher 拒绝与 prepare／release 兼容。八个
+受影响 Python 文件 pre-commit（Ruff format／lint、PEP8、Pyright、动态属性、导入和
+Tool 注册）及 diff 检查通过。
+
+verify-agent-server 独立进程 F35.queries recipe 通过，覆盖两个新路由的无证明拒绝、
+30 秒上限校验、实际进程重启后仍拒绝及无子会话副作用；在上述已提交 SDK HEAD 上
+重跑亦通过，测试服务已停止且无残留受管进程。真实模型 list／read／wait 因
+缺少 DEEPSEEK_API_KEY 记录 blocked，受控 LLM 和拒绝探针不代替真实模型验收，仍由
+FR-717 补齐。feature-map check 通过，两个新路由均有归属和驱动；全局 coverage 仍有
+既存 activity／context 两条未归属路由，无重复归属或未驱动新路由。
+
+FlowWeave 仅更新设计和进度，无迁移；Alembic 唯一 head 仍为
+0174_agent_workspace_user_defaults。source lock／包版本／镜像保持 FR-704 的 `ecf0aec09`，
+最终扩展归档及 V3 消费由 FR-709 冻结。未开放平台／Web 入口、未推送、部署或替换
+已有 Runtime；当前 NONE，下一可执行 FR-708，提交后停止。
+
+### FR-708 原生子 send interrupt 与输入并发 — READY
 
 依赖：FR-707 DONE。实现父工具正式投递／中断、来源关联、稳定 invocation 幂等和
 原子忙碌门禁；用户与父 Agent 竞争不重复写消息，不建立平台执行／消息队列。

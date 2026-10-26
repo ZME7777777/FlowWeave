@@ -164,6 +164,44 @@ release 复核原准备保存的策略、creation 和任务摘要，不能借另
 这部分依赖 FR-710 的关系模型并由 FR-711 接入；Runtime key 或 verifier 的成功响应都不能
 单独授权平台操作。FR-706 不开放任何平台或浏览器入口，也不更新既有冻结 Runtime。
 
+### 2.7 原生直属子查询工具（FR-707）
+
+baseline 新增 `list_child_conversations`、`read_child_conversation` 和
+`wait_for_child_conversation` 三个正式 Tool。每个工具冻结父 `ChildLauncherPolicy` 和可信
+`access_url`，模型只能传目标子 ID、分页参数／读取预算或等待 checkpoint。工具只在原生
+invocation 边界内签发独立用途 token，绑定 operation、全部参数、action／tool-call、冻结
+scope／generation／Manifest 和 audience；不能用 launcher token 替代查询 token。
+子会话移除这三个父工具，服务端同时要求调用者为根父会话。
+
+正式 `POST /api/conversations/{parent}/children/queries/verify` 只校验原生查询来源，
+`POST /api/conversations/{parent}/children/queries` 执行 typed list／read／wait。两者均沿用
+Runtime 认证并要求原生证明；平台用户与 binding 权限仍由 FR-711 的受管入口复核。
+目标必须满足正式 parent ID、确定性 child ID、创建回执、已受理策略 scope／Runtime／
+Manifest 和 shared 工作目录一致；不是本父受治理直属子、跨父、删除中或证明参数变化均拒绝。
+异步投影完成后再次校验调用 scope 和目标关系，不能把等待期间已撤销的权限作为有效结果返回。
+
+list 按原生 child UUID 排序，以加密 keyset cursor 翻页，每页最多 50 条；状态和 HEAD 来自
+原生持久快照，标题最多 256 字符并显式标记 `title_truncated`。read 按当前正式事件分支从新
+到旧读取：events 模式返回 Action／Observation 的正式身份和工具进度元数据，以及正式
+assistant MESSAGE 的文本；results 模式只读这些 assistant 文本。均不返回系统提示词、
+用户消息、工具参数／正文、隐藏思考或流式 delta；这不是完整原始事件导出接口。
+每页最多扫描 100 个事件、返回 50 条摘录及 12000 个 Unicode 文本字符。大正文通过同一
+event ID 的 text_offset／next_text_offset 继续；页及摘录均有 complete 标记，不能将截断
+结果声称为完整读取。游标绑定父策略、子 ID、mode 和读取 HEAD；HEAD 改变返回 409，
+要求不带游标重读，避免跨分支混合。加密 cursor 和 checkpoint 都不能换父／换子复用。
+
+wait 比较正式 HEAD／execution_status／准备阶段／显示标题，单次最多 30 秒；无 checkpoint
+时从本次读取的快照开始等待。超时返回 timed_out，状态有变化返回 changed，不发送消息、
+运行会话或中断子会话。服务端使用 asyncio 有界等待；浏览器／工具连接断开取消服务端任务，
+父原生 cancellation token 触发时工具关闭 HTTP 请求并回收异步任务。无需启动已关闭子
+EventService、获取 child run-slot 或建立平台轮询执行器。
+
+原生工具执行可能持有父 run lock，因此查询及 launcher verifier 读取不可变正式事件和冻结
+配置时不得再次等待该锁；子状态读取原子持久快照，不等待正在执行的子工具释放 live state。
+此修复同时覆盖 FR-706 verifier／准备前的配置检查。真实 HTTP 回归验证父 Agent 可发起
+原生 list 工具、完成身份验证并收到 observation 后正常结束；不以受控 LLM 代替真实模型验收。
+本片仍只修改 baseline 和接入设计，不开放产品入口，版本冻结留在 FR-709。
+
 ## 3. 父 Agent 的操作契约
 
 以下工具名是目标命名，最终导出必须在对应 baseline 切片中建立正式类型和 contract：
