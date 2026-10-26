@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`CHILD CONVERSATIONS IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-705`
+> 下一可执行切片：`FR-718`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 > 子会话设计：`docs/agent-child-conversations-design.md`
@@ -214,14 +214,50 @@ startup 参数并以 180 秒通过；默认仍为 30 秒，HTTP／运行和读�
 本地验收使用独立标签，现有 Runtime 镜像／generation 与冻结协议未替换。
 当前 NONE，下一可执行切片 FR-705。
 
-### FR-705 原生子创建身份与启动前治理生命周期 — READY
+### FR-705 原生子创建身份与持久受理原语 — DONE
 
-依赖：FR-704 DONE。在 SDK baseline 增加正式幂等子身份、同请求查回和首轮运行前
-治理接入点；覆盖并发、429、未知结果及进程恢复，不在平台伪造 Conversation。
+依赖：FR-704 DONE。原切片同时涉及持久幂等身份、配置物化、运行前治理和首条任务投递，
+按可独立验收边界拆分。本片建立 SDK 正式稳定创建身份、请求摘要及原生服务的持久原子
+预留／同请求查回，覆盖线程／进程并发、冲突、响应丢失和进程退出后的恢复。不开放新
+创建路由、不创建或运行 child；纯身份预留不是已受理执行，也不宣称具备 429／首轮门禁。
+
+完成（2026-10-26）：SDK baseline 独立提交
+`c1f092aa71980b327633d931cb6f7db85d063c45`。正式
+`ChildConversationCreationIdentity` 以 parent UUID 和受信 creation UUID 为 v1 命名空间
+生成稳定 child UUID，并校验序列化身份不可替换 child。`ChildConversationCreationReceipt`
+为独立 schema 1，记录三项 UUID、task／title／isolation 的 SHA-256 与 UTC 创建时间，
+不保存任务正文、Secret、事件或执行状态。原生 `ChildConversationCreationStore` 使用
+有界跨进程 FileLock 和 SDK 原子写入／fsync／rename，返回 receipt＋是否首次预留；
+相同意图重试保持回执和时间，改变意图明确冲突。只读查回不创建目录；未知 schema、
+截断、非法编码和身份错配均明确拒绝，禁止损坏回执被覆盖或误认为未受理。
+
+验收：新增 21 项定向用例通过；合并既有 parent／child 和 executor isolation 模块后
+65 passed（含前述 21 项），覆盖 16 次八线程竞争、三个独立进程竞争、进程提交后在
+返回响应前 os._exit、写入前／提交后故障恢复、原回执不可变及损坏拒绝。进程测试经
+真实文件锁与持久目录，不用进程内 mock 代替跨进程互斥；模型／原生子会话运行未执行。
+四文件逐项及最终 pre-commit 的 Ruff format／lint、PEP8、Pyright、动态属性、导入和
+工具注册检查全部通过；staged diff、状态及依赖检查通过，Alembic 唯一 head 仍为
+`0174_agent_workspace_user_defaults`。忽略的 SDK build 副本验证时临时移出，提交后原样
+恢复，不提交生成物。使用 verify-agent-server 技能核对验证边界；本片没有新增／修改
+REST 或 WebSocket，不能把本次存储测试当作新 API、实际 Runtime 镜像或模型验收。
+
+本片未实例化 store 到 ConversationService，未修改原 children 路由／请求／事件，
+未启用任何工具或浏览器入口；跨用户／父 Tool 权限继续由 FR-706 负责。FlowWeave source
+lock、归档和验收镜像仍固定 FR-704 的 `ecf0aec09`，新扩展须在 FR-709 与其余扩展一起
+锁定；本片不构建／部署、不推送，不更改旧 V1／V2 或现有 Runtime。当前 NONE，下一可执行
+FR-718；原计划 FR-705 的 429、子准备、首轮治理／投递及 native 创建中崩溃恢复明确保留
+为 FR-718 的必验内容，不视为已完成。
+
+### FR-718 原生子准备与运行前治理生命周期 — READY
+
+依赖：FR-705 DONE。消费正式创建身份，接入 native child 配置物化、准备后查回、治理
+放行和首条任务的原子受理。覆盖 429 无执行副作用、并发／未知结果、创建中和首轮投递
+阶段崩溃恢复、普通 send／run 不得绕过准备门禁；保留旧 children 默认契约。此片完成后
+才进入 launcher 身份和产品集成。必要时继续按可独立验收边界拆分。
 
 ### FR-706 原生子 launcher 调用身份与权限策略 — PENDING
 
-依赖：FR-705 DONE。建立可信原生 action／tool-call 关联、直属关系、shared 隔离、
+依赖：FR-718 DONE。建立可信原生 action／tool-call 关联、直属关系、shared 隔离、
 一层深度及并发门禁；Runtime key 不能单独授权任意父 binding。
 
 ### FR-707 原生子 list read wait 工具 — PENDING

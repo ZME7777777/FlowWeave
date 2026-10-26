@@ -78,6 +78,24 @@ Task 的执行器等待子任务完成后返回 `TaskObservation`；子会话启
 FlowWeave 不自建 Agent loop、轮询执行器、私有 MCP 或让模型用 Shell 调用平台控制 API。
 不通过提示词规避深度／权限／隔离限制，也不通过修改持久文件偷偷补全原生关系。
 
+### 2.4 创建身份基础契约（FR-705）
+
+SDK 的 `ChildConversationCreationIdentity.for_request(parent_id, creation_id)` 按固定 v1
+命名规则生成 child UUID，供控制面在物化子 Conversation 前预留 binding。creation_id 是
+受信调用方稳定分配的创建请求 UUID，不是模型提供的身份或权限凭证；与正式 invocation
+的可信关联继续由 FR-706 补齐。不同父会话的创建 ID 命名空间互相独立。
+
+`ChildConversationCreationStore.reserve` 在原生持久目录内按 child 身份加跨进程文件锁，
+原子提交 schema 1 回执；相同身份且 task／title／isolation 摘要一致时返回原回执和原
+时间，内容改变则拒绝。`get` 用于响应丢失后的只读查回，不创建目录；损坏、未知 schema
+或身份错配不能作为未创建处理。回执只包含三项 UUID、请求摘要与创建时间，不保存任务
+正文、Agent 配置、Secret 或执行状态；随 Runtime 持久数据保留，不能因关闭子标签清理。
+
+FR-705 仅提供此基础原语，未接入任何创建路由，不创建 Conversation、不投递 task、
+不证明配额或运行许可。FR-718 必须在 native 生命周期中串起准入 → 原子预留 → 准备
+→ 治理 → 首轮投递／运行，使用生命周期 executor 执行同步存储操作；不能将拿到回执
+等同于创建或授权成功，不能在响应未知时改用另一个 creation_id。
+
 ## 3. 父 Agent 的操作契约
 
 以下工具名是目标命名，最终导出必须在对应 baseline 切片中建立正式类型和 contract：
@@ -266,8 +284,9 @@ FR-702 仅做文档契约、依赖／状态、固定源码事实和迁移 head �
 | FR-702 | 冻结本设计与子会话专用实施边界 | FR-701 |
 | FR-703 | 固定 upstream main 完整合入 SDK baseline 并保留扩展 | FR-702 |
 | FR-704 | 固定 baseline 回归与 Runtime 来源／依赖身份 | FR-703 |
-| FR-705 | 正式子创建身份、幂等及首轮运行前治理生命周期 | FR-704 |
-| FR-706 | 原生 launcher 调用身份、直属权限、shared／深度策略 | FR-705 |
+| FR-705 | 正式子创建身份、请求摘要与持久幂等预留原语 | FR-704 |
+| FR-718 | 原生 child 准备／查回、运行前治理及首条任务原子受理／恢复 | FR-705 |
+| FR-706 | 原生 launcher 调用身份、直属权限、shared／深度策略 | FR-718 |
 | FR-707 | 原生 list／read／有界 wait 工具 | FR-706 |
 | FR-708 | 原生 send／interrupt、消息来源及并发受理 | FR-707 |
 | FR-709 | 最终扩展归档、V3／Manifest 与兼容契约 | FR-708 |
