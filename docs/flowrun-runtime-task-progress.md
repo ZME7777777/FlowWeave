@@ -12032,3 +12032,40 @@ API／WebSocket，不等于真实模型执行业务验收。
 再同步更新 Provider／api／stream-api／worker／web；健康、版本、路由和受管容量
 收尾结果在实际完成后补记。本片不构建或替换既有 OpenHands Runtime generation。
 当前与下一可执行重构切片均为 NONE。
+
+
+OPS-10 正式发布补记（2026-10-26）：最终发布代码为
+`c895060ede2c8da8561b32a2c7aeee33042b2e5b`，包含远程 `1cb6d96a` 与本地
+`3cd40831` 的全部祖先。主分支已快进纳入本次集成提交，未推送。
+最终 Runtime／platform／Web 预检与 commit-bound 最小上下文 prepare 通过；
+平台／Web 源归档 SHA-256 分别为
+`7497219f82a942b1f99c6b19a683b1bb642b7bd5b801165915491145c4bb457b`、
+`decf18454198ac7cca72f42f704cd95fae83f4a4630ac82e1ed68d87897c2ff5`。
+实际 linux/amd64 平台／Web 镜像分别为
+`sha256:5cb26b80e0f4c7acae632861cbad3979f4e54d7ad7fdec6fcd9b16c87cb51c2b`、
+`sha256:97ed2a60b57e4288ce577c79bc5100684ff79ff4be58427cc607e47d3d596ac1`，
+均通过 OCI revision 核对。实际固定 Runtime 隔离容器探针验证监听扫描、错误 PID
+身份拒绝和精确进程停止；不挂载业务目录、不调用模型、不触碰业务进程。
+
+切换前再次通过两个 Runtime、654 个正式原生会话的 activity 门禁，无运行项。
+正式 migration 成功，唯一数据库 head 为 `0176_agent_temporary_services`；只读
+复核新增临时服务表的 FORCE RLS 与 owner USING／WITH CHECK 策略通过。
+Provider／api／stream-api／worker／web 同步运行最终 revision，健康、readiness
+及 Web HTTP 均通过；服务器 Compose／env 摘要一致，其他 42 个容器的 image
+与 StartedAt 一致，包括既有 OpenHands Runtime generation。
+
+公网前缀登录、Agent 深层路由和根登录入口经服务器实际 Chromium 验证通过，
+公网 API 认证边界均为 401。全新浏览器 Network 验证认证请求使用部署前缀，
+没有根路径 API 请求；公网 HTML 和入口 JS／CSS 摘要匹配运行镜像。
+导出实际 Web 镜像资源后，以受控 API／WebSocket 重跑九项不同定向回归全部
+通过，覆盖场景新布局、浮卡裁切、工具宽度与拖拽、浏览器入口与延迟模块、临时
+服务停止；加载的 45 个 JS／CSS SHA-256 全部与运行镜像一致。另一个真实 Vite
+大模块用例在本地正式代理管线通过；这些验收不等于真实模型业务执行。
+没有向业务会话发送、暂停、继续或重放消息。
+
+platform／Web remote-release-finish 均通过健康、版本与容量门禁，回收两份
+超过 24 小时且未引用的受管上下文，以及三个可回收平台／Web 历史 image ID 的
+精确 tags；保留当前、每仓库一个不同版本回滚和所有容器引用。不清理共享
+BuildKit、卷、Workspace 或数据库备份。收尾后再次复核五服务版本／健康、
+配置与其他容器不变。当前与下一可执行重构切片均为 NONE；本补记提交不改变
+实际部署代码身份。
