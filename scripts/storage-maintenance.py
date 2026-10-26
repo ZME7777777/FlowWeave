@@ -1,17 +1,23 @@
 #!/usr/bin/env python3
-"""Server-local, bounded release retention. Logs contain counts, never paths."""
+"""Server-local, bounded release retention. Logs contain counts and hashes, never paths."""
 
 from __future__ import annotations
 
 import argparse
+import datetime
 import fcntl
+import hashlib
+import http.client
 import importlib.util
 import json
 import os
-from pathlib import Path
+import re
 import shutil
+import socket
 import sys
 import time
+import urllib.parse
+from pathlib import Path
 
 sys.dont_write_bytecode = True
 
@@ -46,22 +52,19 @@ def active_mutation(proc=Path("/proc")):
 
 
 def governed_tags(tags):
-    return bool(tags) and all(
-        tag.partition(":")[0] in REPOS and "rollback" in tag.partition(":")[2]
-        for tag in tags
-    )
+    return bool(tags) and all(tag.partition(":")[0] in REPOS for tag in tags)
 
 
-def select_images(images, referenced, current, keep=3):
+def select_images(images, referenced, current, keep=1):
     protected = set(referenced) | set(current)
     for repo in REPOS:
         rollback = sorted(
             [
                 i
                 for i in images
-                if any(
-                    t.startswith(repo + ":") and "rollback" in t
-                    for t in i.get("RepoTags") or []
+                if i["Id"] not in current
+                and any(
+                    t.startswith(repo + ":") and "rollback" in t for t in i.get("RepoTags") or []
                 )
             ],
             key=lambda i: i["Created"],
@@ -78,17 +81,12 @@ def select_images(images, referenced, current, keep=3):
 def image_plan():
     containers = release.run(["docker", "ps", "-aq"]).split()
     referenced = (
-        {
-            c["Image"]
-            for c in json.loads(release.run(["docker", "inspect", *containers]))
-        }
+        {c["Image"] for c in json.loads(release.run(["docker", "inspect", *containers]))}
         if containers
         else set()
     )
     current = {
-        json.loads(release.run(["docker", "image", "inspect", repo + ":remote-amd64"]))[
-            0
-        ]["Id"]
+        json.loads(release.run(["docker", "image", "inspect", repo + ":remote-amd64"]))[0]["Id"]
         for repo in REPOS
     }
     ids = set()
@@ -98,17 +96,79 @@ def image_plan():
                 ["docker", "image", "ls", "--no-trunc", "--format", "{{.ID}}", repo]
             ).split()
         )
-    images = (
-        json.loads(release.run(["docker", "image", "inspect", *sorted(ids)]))
-        if ids
-        else []
-    )
+    images = json.loads(release.run(["docker", "image", "inspect", *sorted(ids)])) if ids else []
     return select_images(images, referenced, current)
+
+
+class DockerConnection(http.client.HTTPConnection):
+    def connect(self):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.settimeout(self.timeout)
+        self.sock.connect("/var/run/docker.sock")
+
+
+def docker_request(method, path):
+    connection = DockerConnection("localhost", timeout=600)
+    try:
+        connection.request(method, path)
+        response = connection.getresponse()
+        data = json.loads(response.read())
+        if response.status != 200:
+            raise ValueError("Docker cache request failed")
+        return data
+    finally:
+        connection.close()
+
+
+def select_build_cache(rows, now):
+    result = []
+    for row in rows:
+        if row.get("InUse") or row.get("Shared"):
+            continue
+        value = row.get("LastUsedAt") or row.get("CreatedAt")
+        if not value:
+            continue
+        # Docker emits RFC3339 nanoseconds; Python 3.9 only accepts microseconds.
+        value = re.sub(r"(\.\d{6})\d+", r"\1", value)
+        touched = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if touched.tzinfo is None:
+            raise ValueError("Docker cache timestamp lacks timezone")
+        if now - touched.timestamp() >= release.RETENTION_SECONDS:
+            result.append(row)
+    return result
+
+
+def cache_plan():
+    return select_build_cache(
+        docker_request("GET", "/system/df").get("BuildCache") or [], time.time()
+    )
+
+
+def prune_build_cache():
+    # Engine-native dangling cache GC only. Never images, containers or volumes.
+    filters = urllib.parse.urlencode({"filters": json.dumps({"until": ["24h"]})})
+    return docker_request("POST", "/build/prune?" + filters)
+
+
+def legacy_plan(build, images, used):
+    roots = [build] + ([images] if images is not None and images != build else [])
+    return sorted(
+        {
+            p
+            for root in roots
+            for p in release.select_legacy_build_assets(root, used, now=time.time())
+        }
+    )
+
+
+def deletion_record(kind, identity):
+    print(json.dumps({"event": "removed", "kind": kind, "identity": identity}), flush=True)
 
 
 def maintain(config, apply=False):
     root = Path(config["root"])
     build = release.checked_root(root, config["build"])
+    image_files = release.checked_root(root, config["images"]) if config.get("images") else None
     descriptor = os.open(
         build / ".flowweave-release.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600
     )
@@ -119,29 +179,38 @@ def maintain(config, apply=False):
             return {"status": "skipped-lock"}
         if active_mutation():
             return {"status": "skipped-active-build-or-install"}
-        protected, used = release.docker_protection(build)
-        contexts = release.select_cleanup(
-            build, protected, used, keep=3, now=time.time()
-        )
+        _, used = release.docker_protection(build)
+        contexts = release.select_cleanup(build, used, now=time.time())
+        legacy = legacy_plan(build, image_files, used)
         images = image_plan()
-        if len(contexts) > 100 or len(images) > 100:
+        cache = cache_plan() if config.get("prune_build_cache") else []
+        if len(contexts) + len(legacy) > 100 or len(images) > 100:
             raise ValueError("Bounded plan exceeded")
-        identities = {p: p.stat() for p in contexts}
+        identities = {p: p.stat() for p in [*contexts, *legacy]}
+        free_before = shutil.disk_usage(build).free
         result = {
             "status": "apply" if apply else "dry-run",
             "candidate_contexts": len(contexts),
             "candidate_images": len(images),
+            "candidate_legacy_assets": len(legacy),
+            "candidate_build_cache": len(cache),
+            "candidate_build_cache_bytes": sum(r.get("Size", 0) for r in cache),
             "removed_contexts": 0,
             "removed_images": 0,
+            "removed_legacy_assets": 0,
+            "removed_build_cache": 0,
+            "build_cache_reclaimed_bytes": 0,
         }
         print(json.dumps(result), flush=True)
         if apply:
-            for path in contexts:
+            for path in [*contexts, *legacy]:
                 if active_mutation():
                     raise ValueError("New mutation activity")
-                protected, used = release.docker_protection(build)
-                latest = release.select_cleanup(
-                    build, protected, used, keep=3, now=time.time()
+                _, used = release.docker_protection(build)
+                latest = (
+                    release.select_cleanup(build, used, now=time.time())
+                    if path in contexts
+                    else legacy_plan(build, image_files, used)
                 )
                 st, before = path.stat(), identities[path]
                 if path not in latest or (st.st_dev, st.st_ino, st.st_mtime_ns) != (
@@ -152,8 +221,13 @@ def maintain(config, apply=False):
                     raise ValueError("Context identity or reference changed")
                 if not shutil.rmtree.avoids_symlink_attacks:
                     raise ValueError("Safe directory removal unavailable")
-                shutil.rmtree(path)
-                result["removed_contexts"] += 1
+                if path.is_dir():
+                    shutil.rmtree(path)
+                else:
+                    path.unlink()
+                key = "removed_contexts" if path in contexts else "removed_legacy_assets"
+                result[key] += 1
+                deletion_record(key, hashlib.sha256(path.name.encode()).hexdigest())
             for image_id, tags in images.items():
                 for index, tag in enumerate(tags):
                     if active_mutation() or image_plan().get(image_id) != tags[index:]:
@@ -161,15 +235,21 @@ def maintain(config, apply=False):
                     # Inspect the exact tag, not just its old image, immediately
                     # before non-force removal. Docker protects container use.
                     if (
-                        json.loads(release.run(["docker", "image", "inspect", tag]))[0][
-                            "Id"
-                        ]
+                        json.loads(release.run(["docker", "image", "inspect", tag]))[0]["Id"]
                         != image_id
                     ):
                         raise ValueError("Tag was reassigned")
                     release.run(["docker", "image", "rm", tag])
                 result["removed_images"] += 1
+                deletion_record("image", image_id)
+            if config.get("prune_build_cache") and cache:
+                if active_mutation():
+                    raise ValueError("New mutation activity before cache cleanup")
+                report = prune_build_cache()
+                result["removed_build_cache"] = len(report.get("CachesDeleted") or [])
+                result["build_cache_reclaimed_bytes"] = report.get("SpaceReclaimed", 0)
         result["free_bytes"] = shutil.disk_usage(build).free
+        result["free_bytes_change"] = result["free_bytes"] - free_before
         return result
 
 

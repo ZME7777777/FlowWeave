@@ -117,13 +117,13 @@ make remote-release-finish COMMIT=<同一已提交 SHA> SCOPE=<web|platform>
 
 该命令显式授权本次受管发布资产回收：先复核相关服务均运行同一 commit 的 linux/amd64 镜像，
 api／stream-api 的 health、readiness 和 Web 容器 HTTP 入口通过后才标记发布成功。然后打印候选并
-回收超过每个 scope 最近三份成功上下文的旧目录；当前镜像、任何运行或退出容器和最近三个 rollback
-镜像的 revision，以及被挂载／进程 cwd／打开文件引用的目录始终保留。每次删除前重新读取引用并核对
-目录身份；未知、无 marker、旧版目录和符号链接不自动删除。失败／未完成上下文至少保留七天，仍被
-引用的上下文不删除；保护集合中存在缺少 revision 的旧镜像时，所有失败／未完成上下文继续保留。
-成功上下文必须已通过 finish 的镜像身份门禁，其相关镜像必有 revision，不受旧无标签镜像影响。
-最后用现有镜像保留脚本执行只读候选核验和精确 rollback tag 回收，不清理共享
-BuildKit 缓存、容器、卷或 Workspace。单次超过 100 个目录会在删除前拒绝。
+回收超过 24 小时且全目录无近期写入的受管上下文，包括失败／未完成上下文。源码目录不因镜像
+revision 而保留；回滚依靠已构建镜像。被挂载／进程 cwd／打开文件引用的目录始终保留，删除前
+重读引用并核对目录身份。普通发布不自动删除未知、无 marker、旧版目录或符号链接。
+平台／Web 各保留当前镜像和一个不同 image ID 的最新 rollback 镜像，以及所有容器引用和带其他
+仓库 tag 的镜像；其余平台／Web 历史 tag 精确回收，不使用 force。单次超过 100 个目录会拒绝。
+发布收尾不清理共享 BuildKit、容器、卷或 Workspace；每日任务按单独显式启用的配置维护缓存和
+已核验的历史构建资产，见 storage-maintenance.md。
 
 只读审计使用 `make remote-release-audit COMMIT=<SHA> SCOPE=<web|platform>`。
 Runtime 镜像／Provider 发布继续走独立 `runtime` 预检与活跃会话门禁；本工具不将其降级为普通发布。
@@ -246,8 +246,8 @@ scripts/maintain-remote-docker-retention.sh --config .local/remote-deploy.env
 
 需要持续回收受管发布上下文与精确 rollback tags 时，使用[定时维护说明](storage-maintenance.md)
 安装固定提交的 systemd 服务／timer；安装先预检、审计并实际运行一次，再启用每日北京时间 03:30
-任务。它与发布收尾共用锁，保留当前／容器引用及最近三个回滚版本，不清理共享 BuildKit、HOME、
-卷、Workspace 或备份，不重启生产服务。
+任务。它与发布收尾共用锁，保留当前／容器引用及最近一个回滚版本、最近 24 小时的构建资产；
+显式开启后清理超过 24 小时未使用的构建缓存，保留 HOME、卷、Workspace 和备份，不重启生产服务。
 
 ### 环境 HOME 缓存边界
 

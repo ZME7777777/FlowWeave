@@ -7,16 +7,25 @@ OPS-07 在已有发布保留规则上增加服务器本地 systemd oneshot 与 t
 
 ## 清理边界
 
-- 复用 `remote-release.py` 的受管 marker 和路径引用保护，保留每类最近三份成功发布上下文。
-- 当前镜像、所有运行或退出容器、每个治理仓库最近三个 rollback 镜像及其源码 revision 均保护。
-- 失败／未完成上下文至少保留七天；旧镜像无法映射 revision 时继续保护这些上下文。
-- 只回收全部 tag 均属于 flowweave-platform／flowweave-web rollback 命名的过期镜像。
-- 未知旧目录、符号链接、外部／候选 tag、共享 BuildKit、卷、Workspace、附件、会话、备份均保留。
-- HOME 下载缓存通过 OPS-06 默认禁用持久写入治理，本任务不递归清空 HOME 或 IDE 内容。
+2026-10-26 起按用户授权采用一天保留策略，发布收尾和每日任务共用边界：
 
-与发布 prepare／finish 共用非阻塞锁；存在包安装／镜像构建时跳过。删除前再次核对容器、镜像、
-挂载、进程路径引用、目录身份及 tag 指向；新增引用或身份变化立即停止。目录和镜像各超过 100 个
-候选时整次拒绝。镜像仅精确去除治理 tag，禁止 force 或任何全局 prune。
+- `flowweave-platform`、`flowweave-web` 各保留当前镜像和最近一个不同 image ID 的 rollback 镜像。
+  所有运行／退出容器引用的镜像、带其他仓库 tag 的镜像始终保护；其余这两个仓库的历史 tag
+  可精确回收，包括旧候选／构建 tag。Runtime、Environment 和无 tag 镜像不在本策略内。
+- 受管发布目录在创建／完成和最后写入均超过 24 小时后回收，不因镜像 revision 引用而保留源码。
+  实际挂载、进程 cwd 和打开文件引用仍保护。未完成／失败目录同样保留至少 24 小时。
+- 每日任务额外处理声明构建根与镜像文件根内已核验的旧构建目录、源码包、平台／Web 镜像导出包：
+  必须同时满足限定名称、可识别源码／Dockerfile／导出 manifest、全目录超过 24 小时无写入、
+  无实际路径引用、无业务数据／备份／Git 根标记。未知目录、无效受管 marker 和符号链接不删除。
+- 安装时显式启用 `--prune-build-cache` 后，使用 Docker 原生 build-cache GC 回收超过 24 小时未使用
+  的 dangling 构建缓存；不使用 `all` 或镜像／系统全局 prune。该缓存由服务器共享，可能降低后续
+  其他项目的构建缓存命中率，不会删除其镜像或业务数据。只读预览按非 Shared、非 InUse 记录估算，
+  最终释放量以 Docker 返回及文件系统前后测量为准。
+- 数据库、卷、Workspace、附件、会话、HOME、已安装工具、浏览器和所有备份均保留。
+
+任务与发布共用非阻塞锁；存在包安装／镜像构建时跳过。删除前重新核对引用、路径身份和 tag 指向，
+新增引用或身份变化立即停止。文件资产或镜像各超过 100 个候选时整次拒绝；镜像仅精确去除 tag，
+禁止 force。日志增加镜像 ID、文件名 SHA-256、实际计数、缓存释放字节和可用空间变化，不记录私有路径。
 
 ## 安装与复验
 
@@ -24,7 +33,7 @@ OPS-07 在已有发布保留规则上增加服务器本地 systemd oneshot 与 t
 
 ```bash
 python3 scripts/install-storage-maintenance.py --config .local/remote-deploy.env \
-  --commit <包含定时维护工具的已提交 SHA>
+  --commit <包含定时维护工具的已提交 SHA> --prune-build-cache
 ```
 
 安装工具先运行 other 范围正式预检，所有连接事实仅从本地私有配置读取。服务器侧生成权限 0600 的
@@ -41,6 +50,7 @@ systemctl show flowweave-storage-maintenance.service -p Result -p ExecMainStatus
 journalctl -u flowweave-storage-maintenance.service -n 20 --no-pager
 ```
 
+更新旧版配置时只允许同一部署根与构建根，安装保留旧配置与 unit 并在首次运行失败时恢复。
 安装不会更新 Compose／env、部署平台／Runtime 镜像或重启生产服务。停用只需 disable --now 对应
 maintenance.timer；不要使用 Docker 或数据清理替代停用。
 

@@ -15,17 +15,20 @@ import io
 import json
 import math
 import os
-from pathlib import Path
+import re
 import shlex
 import shutil
 import subprocess
 import sys
 import tarfile
 import time
+from pathlib import Path
 
 CONFIRM = "DELETE_FLOWWEAVE_RELEASE_CONTEXTS"
 MARKER = ".flowweave-release.json"
 UNKNOWN_PROVENANCE = "!unprovenanced-image"
+RETENTION_SECONDS = 86400
+ROLLBACK_IMAGES = 1
 PLATFORM_FILES = (
     "services/platform/Dockerfile",
     "services/platform/pyproject.toml",
@@ -84,10 +87,7 @@ def read_marker(directory: Path) -> dict | None:
         data = json.loads(marker.read_text())
         if not isinstance(data, dict):
             return None
-        if (
-            data.get("schema") != 1
-            or release_id(data["commit"], data["scope"]) != directory.name
-        ):
+        if data.get("schema") != 1 or release_id(data["commit"], data["scope"]) != directory.name:
             return None
         if data.get("state") not in ("building", "succeeded", "failed"):
             return None
@@ -113,41 +113,120 @@ def write_marker(directory: Path, data: dict) -> None:
     temporary.replace(directory / MARKER)
 
 
-def select_cleanup(
-    build: Path, protected: set[str], used_paths: list[Path], *, keep: int, now: float
-) -> list[Path]:
-    """Unknown/legacy assets and active references are always protected."""
-    if keep < 1:
-        raise ValueError("At least one rollback context must be retained")
-    rows = [(p, read_marker(p)) for p in build.iterdir()]
-    rows = [(p, m) for p, m in rows if m is not None]
-    retained = set()
-    for scope in ("platform", "web"):
-        successful = sorted(
-            [
-                (p, m)
-                for p, m in rows
-                if m["scope"] == scope and m["state"] == "succeeded"
-            ],
-            key=lambda row: row[1].get("finished_at", row[1]["created_at"]),
-            reverse=True,
-        )
-        retained.update(p for p, _ in successful[:keep])
+def select_cleanup(build: Path, used_paths: list[Path], *, now: float) -> list[Path]:
+    """Source contexts expire independently of runnable/rollback image retention."""
     result = []
-    for path, marker in rows:
-        if path in retained or marker["commit"] in protected:
+    for path in build.iterdir():
+        marker = read_marker(path)
+        if marker is None:
             continue
-        if UNKNOWN_PROVENANCE in protected and marker["state"] != "succeeded":
+        touched = max(marker["created_at"], marker.get("finished_at", 0))
+        if now - touched < RETENTION_SECONDS or path_in_use(path, used_paths):
             continue
-        if any(
-            path == used or path in used.parents or used in path.parents
-            for used in used_paths
-        ):
-            continue
-        if marker["state"] != "succeeded" and now - marker["created_at"] < 7 * 86400:
+        if now - newest_mtime(path) < RETENTION_SECONDS:
             continue
         result.append(path)
     return sorted(result)
+
+
+def path_in_use(path: Path, used_paths: list[Path]) -> bool:
+    return any(path == used or path in used.parents or used in path.parents for used in used_paths)
+
+
+def newest_mtime(path: Path) -> float:
+    """Do not follow symlinks or expire a tree with recently written descendants."""
+    newest = path.lstat().st_mtime
+    if path.is_dir():
+
+        def failed(error):
+            raise error
+
+        for directory, dirs, files in os.walk(path, followlinks=False, onerror=failed):
+            for name in [*dirs, *files]:
+                newest = max(newest, (Path(directory) / name).lstat().st_mtime)
+    return newest
+
+
+def select_legacy_build_assets(
+    directory: Path, used_paths: list[Path], *, now: float
+) -> list[Path]:
+    """Only known disposable build naming conventions, never arbitrary old data."""
+    patterns = (
+        r"(?:release|runtime|sync|fr\d+)-[0-9a-f]{7,40}(?:-[A-Za-z0-9_]+)*",
+        r"\.?flowweave-[0-9a-f]{7,40}\.tar\.gz",
+        r"web-[0-9a-f]{7,40}\.tar",
+        r"\.flowweave-fr\d+-[0-9a-f]{7,40}",
+        r"build-(?:source|src)-before-[A-Za-z0-9_-]+",
+        r"fr\d+-web\.[A-Za-z0-9_]+",
+    )
+    result = []
+    for path in directory.iterdir():
+        if path.is_symlink() or not (path.is_dir() or path.is_file()):
+            continue
+        if not any(re.fullmatch(pattern, path.name) for pattern in patterns):
+            continue
+        # Invalid or unrecognized managed markers must not fall back to legacy rules.
+        if path.is_dir() and any(
+            (path / name).exists() or (path / name).is_symlink()
+            for name in (
+                MARKER,
+                ".git",
+                ".local",
+                "data",
+                "backups",
+                "database-backups",
+                "workspace",
+                "workspaces",
+                "state",
+                "artifacts",
+                "home",
+                "homes",
+            )
+        ):
+            continue
+        if not disposable_build_layout(path):
+            continue
+        if path_in_use(path, used_paths) or now - newest_mtime(path) < RETENTION_SECONDS:
+            continue
+        result.append(path)
+    return sorted(result)
+
+
+def disposable_build_layout(path: Path) -> bool:
+    if path.is_dir():
+        probes = (
+            "services/platform/Dockerfile",
+            "apps/web/Dockerfile",
+            "infra/openhands/Dockerfile",
+            "Dockerfile",
+            "openhands-sdk/pyproject.toml",
+        )
+        if any((path / probe).is_file() for probe in probes):
+            return True
+        return any(
+            child.is_dir()
+            and not child.is_symlink()
+            and (child / "openhands-sdk/pyproject.toml").is_file()
+            for child in path.iterdir()
+        )
+    try:
+        with tarfile.open(path) as archive:
+            for index, entry in enumerate(archive):
+                if index > 100000:
+                    return False
+                name = entry.name.removeprefix("./")
+                if name in ("services/platform/Dockerfile", "apps/web/Dockerfile"):
+                    return True
+                if name == "manifest.json" and entry.isfile() and entry.size < 1024 * 1024:
+                    manifest = json.load(archive.extractfile(entry))
+                    tags = [t for image in manifest for t in image.get("RepoTags") or []]
+                    if tags and all(
+                        t.partition(":")[0] in ("flowweave-platform", "flowweave-web") for t in tags
+                    ):
+                        return True
+    except (OSError, ValueError, tarfile.TarError):
+        return False
+    return False
 
 
 def docker_protection(process_root: Path | None = None) -> tuple[set[str], list[Path]]:
@@ -155,33 +234,26 @@ def docker_protection(process_root: Path | None = None) -> tuple[set[str], list[
     containers = json.loads(run(["docker", "inspect", *ids])) if ids else []
     images = {c["Image"] for c in containers}
     for repo in ("flowweave-platform", "flowweave-web"):
-        current = json.loads(
-            run(["docker", "image", "inspect", repo + ":remote-amd64"])
-        )[0]
+        current = json.loads(run(["docker", "image", "inspect", repo + ":remote-amd64"]))[0]
         images.add(current["Id"])
         ids = sorted(
-            set(
-                run(
-                    ["docker", "image", "ls", "--no-trunc", "--format", "{{.ID}}", repo]
-                ).split()
-            )
+            set(run(["docker", "image", "ls", "--no-trunc", "--format", "{{.ID}}", repo]).split())
         )
         values = json.loads(run(["docker", "image", "inspect", *ids])) if ids else []
         rollback = sorted(
             [
                 i
                 for i in values
-                if any("rollback" in tag for tag in i.get("RepoTags", []))
+                if i["Id"] != current["Id"]
+                and any("rollback" in tag for tag in i.get("RepoTags", []))
             ],
             key=lambda i: i["Created"],
             reverse=True,
-        )[:3]
+        )[:ROLLBACK_IMAGES]
         images.update(i["Id"] for i in rollback)
     values = json.loads(run(["docker", "image", "inspect", *sorted(images)]))
     protected = {
-        (i.get("Config", {}).get("Labels") or {}).get(
-            "org.opencontainers.image.revision", ""
-        )
+        (i.get("Config", {}).get("Labels") or {}).get("org.opencontainers.image.revision", "")
         for i in values
     }
     protected.discard("")
@@ -190,22 +262,14 @@ def docker_protection(process_root: Path | None = None) -> tuple[set[str], list[
     # governed contexts passed finish's immutable image/revision health gate;
     # their images necessarily have the revision label and are protected above.
     if any(
-        not (i.get("Config", {}).get("Labels") or {}).get(
-            "org.opencontainers.image.revision"
-        )
+        not (i.get("Config", {}).get("Labels") or {}).get("org.opencontainers.image.revision")
         for i in values
         if any(
-            t.startswith(("flowweave-platform:", "flowweave-web:"))
-            for t in i.get("RepoTags", [])
+            t.startswith(("flowweave-platform:", "flowweave-web:")) for t in i.get("RepoTags", [])
         )
     ):
         protected.add(UNKNOWN_PROVENANCE)
-    paths = [
-        Path(m["Source"])
-        for c in containers
-        for m in c.get("Mounts", [])
-        if m.get("Source")
-    ]
+    paths = [Path(m["Source"]) for c in containers for m in c.get("Mounts", []) if m.get("Source")]
     paths.extend(process_references(Path("/proc"), process_root))
     return protected, paths
 
@@ -241,9 +305,7 @@ def checked_root(root: Path, relative: str) -> Path:
         raise ValueError("Invalid configured relative path")
     candidate = root / relative
     if root.is_symlink() or candidate.resolve() != candidate or not candidate.is_dir():
-        raise ValueError(
-            "Deployment directory must be a real directory without symlink parents"
-        )
+        raise ValueError("Deployment directory must be a real directory without symlink parents")
     return candidate
 
 
@@ -253,8 +315,7 @@ def check_release_services(config: dict, commit: str, scope: str) -> None:
     for service in services:
         prefix = (
             "FLOWWEAVE_REMOTE_STREAM"
-            if service == "stream-api"
-            and config.get("FLOWWEAVE_REMOTE_STREAM_COMPOSE_FILE")
+            if service == "stream-api" and config.get("FLOWWEAVE_REMOTE_STREAM_COMPOSE_FILE")
             else "FLOWWEAVE_REMOTE"
         )
         compose = [
@@ -275,15 +336,11 @@ def check_release_services(config: dict, commit: str, scope: str) -> None:
                 or state.get("Health", {}).get("Status", "healthy") != "healthy"
             ):
                 raise ValueError("Release service is not healthy")
-            image = json.loads(run(["docker", "image", "inspect", container["Image"]]))[
-                0
-            ]
+            image = json.loads(run(["docker", "image", "inspect", container["Image"]]))[0]
             if (image.get("Config", {}).get("Labels") or {}).get(
                 "org.opencontainers.image.revision"
             ) != commit:
-                raise ValueError(
-                    "Release services do not run the same requested commit"
-                )
+                raise ValueError("Release services do not run the same requested commit")
             if image["Architecture"] != "amd64" or image["Os"] != "linux":
                 raise ValueError("Release image platform is not linux/amd64")
             if service in ("api", "stream-api"):
@@ -319,13 +376,14 @@ def remote_main(payload: dict) -> None:
     build = checked_root(root, config["FLOWWEAVE_REMOTE_BUILD_ROOT"])
     directory = build / release_id(payload["commit"], payload["scope"])
     if payload["action"] == "audit":
-        protected, used = docker_protection(build)
-        candidates = select_cleanup(build, protected, used, keep=3, now=time.time())
+        _, used = docker_protection(build)
+        candidates = select_cleanup(build, used, now=time.time())
         print(
             json.dumps(
                 {
                     "candidate_release_ids": [p.name for p in candidates],
-                    "keep_per_scope": 3,
+                    "context_retention_hours": 24,
+                    "rollback_images_per_repository": ROLLBACK_IMAGES,
                 }
             )
         )
@@ -360,9 +418,7 @@ def remote_main(payload: dict) -> None:
                             or ".." in Path(entry.name).parts
                             or not (entry.isfile() or entry.isdir())
                         ):
-                            raise ValueError(
-                                "Archive contains a non-regular build input"
-                            )
+                            raise ValueError("Archive contains a non-regular build input")
                     if hasattr(tarfile, "data_filter"):
                         stream.extractall(directory, filter="data")
                     else:
@@ -393,14 +449,15 @@ def remote_main(payload: dict) -> None:
                 raise ValueError("Release context is not governed by this tool")
             data.update(state="succeeded", finished_at=time.time())
             write_marker(directory, data)
-        protected, used = docker_protection(build)
-        candidates = select_cleanup(build, protected, used, keep=3, now=time.time())
+        _, used = docker_protection(build)
+        candidates = select_cleanup(build, used, now=time.time())
         reviewed = {p: p.stat() for p in candidates}
         print(
             json.dumps(
                 {
                     "candidate_release_ids": [p.name for p in candidates],
-                    "keep_per_scope": 3,
+                    "context_retention_hours": 24,
+                    "rollback_images_per_repository": ROLLBACK_IMAGES,
                 }
             ),
             flush=True,
@@ -410,10 +467,8 @@ def remote_main(payload: dict) -> None:
                 raise ValueError("Deletion plan exceeds 100 release contexts")
             # Re-read every reference before each destructive operation.
             for path in candidates:
-                protected, used = docker_protection(build)
-                current = select_cleanup(
-                    build, protected, used, keep=3, now=time.time()
-                )
+                _, used = docker_protection(build)
+                current = select_cleanup(build, used, now=time.time())
                 st = path.stat()
                 before = reviewed[path]
                 if path not in current or (st.st_dev, st.st_ino, st.st_mtime_ns) != (
@@ -436,11 +491,10 @@ def load_config(path: Path) -> dict[str, str]:
         raise ValueError("Private sidecar must be a regular owner-only file")
     program = (
         'set -a; source "$1"; if [[ -f "$2" ]]; then source "$2"; fi; python3 -c '
-        "'import os,json; print(json.dumps({k:v for k,v in os.environ.items() if k.startswith(\"FLOWWEAVE_REMOTE_\")}))'"
+        "'import os,json; print(json.dumps({k:v for k,v in os.environ.items() "
+        'if k.startswith("FLOWWEAVE_REMOTE_")}))\''
     )
-    return json.loads(
-        run(["bash", "-c", program, "release-config", str(path), str(sidecar)])
-    )
+    return json.loads(run(["bash", "-c", program, "release-config", str(path), str(sidecar)]))
 
 
 def main() -> None:
@@ -491,9 +545,7 @@ def main() -> None:
         "exec(compile(base64.b64decode("
         + repr(encoded_source)
         + "),'<release-tool>','exec'),namespace); "
-        "namespace['remote_main'](json.loads(base64.b64decode("
-        + repr(encoded_payload)
-        + ")))"
+        "namespace['remote_main'](json.loads(base64.b64decode(" + repr(encoded_payload) + ")))"
     )
     target = config["FLOWWEAVE_REMOTE_USER"] + "@" + config["FLOWWEAVE_REMOTE_HOST"]
     ssh = [
@@ -531,9 +583,7 @@ def main() -> None:
         if archive and archive.wait() != 0:
             raise ValueError("Commit-bound archive creation failed")
         if result.returncode:
-            raise ValueError(
-                "Remote release operation failed; private diagnostics withheld"
-            )
+            raise ValueError("Remote release operation failed; private diagnostics withheld")
         print(result.stdout, end="")
     finally:
         if archive and archive.poll() is None:
@@ -551,9 +601,7 @@ def main() -> None:
         for line in audit.splitlines():
             if line.startswith(("candidate_image_ids=", "CANDIDATE ")):
                 print(line)
-        applied = run(
-            [*tool, "--apply", "--confirm", "DELETE_UNREFERENCED_FLOWWEAVE_IMAGES"]
-        )
+        applied = run([*tool, "--apply", "--confirm", "DELETE_UNREFERENCED_FLOWWEAVE_IMAGES"])
         for line in applied.splitlines():
             if line.startswith(("REMOVED ", "candidate_image_ids=")):
                 print(line)

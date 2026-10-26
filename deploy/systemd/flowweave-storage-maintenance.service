@@ -16,6 +16,6 @@ ProtectSystem=full
 PrivateTmp=true
 Environment=PYTHONDONTWRITEBYTECODE=1
 LogRateLimitIntervalSec=1h
-LogRateLimitBurst=20
+LogRateLimitBurst=500
 StandardOutput=journal
 StandardError=journal
