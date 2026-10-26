@@ -3225,6 +3225,7 @@ test('Agent workspace groups toggle their conversation lists', async ({ page }) 
   expect(collapsedLayout.mainLeft).toBeLessThanOrEqual(collapsedLayout.navRight + 1);
   expect(collapsedLayout.tabLeft).toBeLessThanOrEqual(collapsedLayout.mainLeft + 15);
   await expect(page.locator('.agent-workbench-app-shell')).toHaveCSS('transition-property', /grid-template-columns/);
+  await expect(page.locator('.agent-workspace-drawer')).toHaveCSS('transition-property', /width/);
   await expect(composer).toHaveValue('保留中的草稿');
   await homeButton.click();
   await expect(page.locator('.agent-workbench-app-shell')).not.toHaveClass(/conversation-rail-collapsed/);
