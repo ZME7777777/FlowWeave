@@ -6410,7 +6410,13 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, [attachments, bootstrapRecovery, composerAnnotations, conversationDraft, draftRecoveryStorageKey, newConversationModelName, newConversationProviderId, newConversationReasoningEffort, pendingBootstrap?.draft.id, references, workspaceReferences]);
   const runtime = runtimeQuery.data;
   const runtimeWritable = Boolean(workspace && runtime?.write_available);
-  const canOpenConversation = Boolean(workspace && (runtime?.write_available || runtime?.fork_available));
+  const workspaceSessionConfigurationReady = host.id !== 'agent-workspace'
+    || workspaceSessionConfigurationQuery.isSuccess;
+  const canOpenConversation = Boolean(
+    workspaceSessionConfigurationReady
+    && workspace
+    && (runtime?.write_available || runtime?.fork_available),
+  );
   const canBootstrap = Boolean(canOpenConversation && conversationDraft && (!features.modelSelection || (newConversationProviderId && newConversationModelName)));
   const eventQueryKey = sessionQueryKey(host, 'conversation-events', workspace?.id, selected?.id);
   const inputReadinessQueryKey = sessionQueryKey(host, 'conversation-input-readiness', workspace?.id, selected?.id);
@@ -9193,13 +9199,13 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     requestAnimationFrame(() => composerRef.current?.focus());
   }, [attachments, bootstrapRecovery, clearBootstrapRecovery, composerAnnotations, conversationDraft, host.id, host.rootPath, newConversationModelName, newConversationProviderId, newConversationReasoningEffort, onNavigate, pendingBootstrap?.draft.id, persistComposerDraft, references, replaceComposerDraft, updateLocalMessageProjections, workspace, workspaceReferences, workspaceSessionConfigurationQuery.data]);
   useEffect(() => {
-    if (!autoOpenDraft || scheduleRoute || !workspace || selectedBindingId || conversationDraft) return;
+    if (!autoOpenDraft || scheduleRoute || !workspace || !workspaceSessionConfigurationReady || selectedBindingId || conversationDraft) return;
     const directory = draftWorkDirectoryId
       ? workDirectoriesQuery.data?.items.find(item => item.id === draftWorkDirectoryId)
       : undefined;
     if (draftWorkDirectoryId && !directory) return;
     openConversationDraft({ workDirectoryId: directory?.id, displayName: directory?.display_name ?? '根工作区' }, { restoreRecovery: true });
-  }, [autoOpenDraft, conversationDraft, draftWorkDirectoryId, openConversationDraft, scheduleRoute, selectedBindingId, workDirectoriesQuery.data?.items, workspace]);
+  }, [autoOpenDraft, conversationDraft, draftWorkDirectoryId, openConversationDraft, scheduleRoute, selectedBindingId, workDirectoriesQuery.data?.items, workspace, workspaceSessionConfigurationReady]);
   const enqueueDraft = useCallback((draftContent = composerDraftRef.current) => {
     const scopePendingAttachments = pendingAttachments.filter(item => item.scope === composerScope);
     if (scopePendingAttachments.some(item => item.state === 'failed')) {
@@ -10383,7 +10389,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       queryClient.setQueryData<AgentSessionWorkDirectoryList>(sessionQueryKey(host, 'work-directories', workspace.id), current => current ? { ...current, items: current.items.map(item => item.id === directory.id ? directory : item) } : current);
       void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'work-directories', workspace.id) });
     }}/>}
-        {capabilityManagerOpen && (selected || features.draftCapabilitySelection) && <CapabilityManager workspaceId={workspace.id} bindingId={selected?.id} conversationCapabilities={selected?.capabilities} draftCapabilityIds={conversationDraft?.capabilityVersionIds} draftCredentialIds={conversationDraft?.credentialIds} onClose={() => setCapabilityManagerOpen(false)} onCreateEnhancedConversation={capabilityVersionIds => { const directory = selected?.work_directory_id ? workDirectories.find(item => item.id === selected.work_directory_id) : undefined; setCapabilityManagerOpen(false); if (conversationDraft) setConversationDraft(current => current ? { ...current, capabilityVersionIds } : current); else openConversationDraft({ workDirectoryId: directory?.id, displayName: directory?.display_name ?? '根工作区', capabilityVersionIds }); }} onDraftCredentialIdsChange={credentialIds => setConversationDraft(current => current ? { ...current, credentialIds } : current)}/>}
+                {capabilityManagerOpen && (selected || features.draftCapabilitySelection) && <CapabilityManager workspaceId={workspace.id} bindingId={selected?.id} conversationCapabilities={selected?.capabilities} draftCapabilityIds={conversationDraft?.capabilityVersionIds ?? workspaceSessionConfigurationQuery.data?.capability_version_ids} draftCredentialIds={conversationDraft?.credentialIds ?? workspaceSessionConfigurationQuery.data?.credential_ids} onClose={() => setCapabilityManagerOpen(false)} onCreateEnhancedConversation={capabilityVersionIds => { const directory = selected?.work_directory_id ? workDirectories.find(item => item.id === selected.work_directory_id) : undefined; setCapabilityManagerOpen(false); if (conversationDraft) setConversationDraft(current => current ? { ...current, capabilityVersionIds } : current); else openConversationDraft({ workDirectoryId: directory?.id, displayName: directory?.display_name ?? '根工作区', capabilityVersionIds, credentialIds: workspaceSessionConfigurationQuery.data?.credential_ids }); }} onDraftCredentialIdsChange={credentialIds => setConversationDraft(current => current ? { ...current, credentialIds } : current)}/>}
+
     {workspaceSessionConfigurationOpen && workspaceSessionConfigurationQuery.data && <CapabilityManager configurationPreset workspaceId={workspace.id} draftCapabilityIds={workspaceSessionConfigurationQuery.data.capability_version_ids} draftCredentialIds={workspaceSessionConfigurationQuery.data.credential_ids} onClose={() => setWorkspaceSessionConfigurationOpen(false)} onSaveConfiguration={async configuration => {
       const saved = await agentWorkspaceApi.replaceAgentWorkspaceSessionConfiguration(workspace.id, {
         capability_version_ids: configuration.capabilityVersionIds,
