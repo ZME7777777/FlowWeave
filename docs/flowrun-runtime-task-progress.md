@@ -11954,3 +11954,36 @@ Chromium 定向用例通过。额外旧产品长用例遇到过期导航／权�
 受管最小上下文构建、迁移和同步更新 api／stream-api／worker／web，并完成
 健康、版本、路由与容量收尾。实际发布结果另行追加，不提前声称已上线。
 当前与下一可执行重构切片均为 NONE。
+
+OPS-09 正式发布补记（2026-10-26）：合并／发布代码版本为
+`1f0bc53fe388147c59e89e9f26d881cc15d1c88a`；原本地 `47fe268c` 与远程
+`2367e0fe` 均为其祖先，未推送。正式 platform／web 预检与受管最小上下文
+prepare 通过，归档 SHA-256 分别为
+`2dfd49cecfbe00cea0b477c040934908351fca8a1a01264a8e39afbb9d488a39`、
+`4e4280186b6559ada37e65c31c2bc0828d3eeb7c0c9757b0c8766e0c65ccc61b`。
+实际 linux/amd64 平台／Web 镜像分别为
+`sha256:e048c2577b6d59d82e05e1fbac0f439662036011cf85c5d1dd69655bfb0d2b74`、
+`sha256:3b972587d22227acf9eeb361b72dcca376bbb7ae9ece7a13b3a0f692dd2056c9`，
+均通过 OCI revision 核对。
+
+保留原日志与精确 rollback tags 后，正式 migration 成功，数据库唯一 head 为
+`0175_merge_workspace_session_defaults`。api／stream-api／worker／web 已同步
+运行该代码版本，health／readiness／Web HTTP 均通过；配置文件摘要一致，其他
+43 个容器的 image 和 StartedAt 未变，包括 Runtime Provider 与既有 Runtime。
+线上只读确认新增目录配置列、用户配置表与目录表的强制 RLS 均存在。
+公网前缀登录页、Agent 深层路由、根登录页经服务器实际 Chromium 验证通过，
+前缀 API 认证边界为 401；全新浏览器网络日志确认请求使用部署前缀，无根路径
+API 请求。公网 HTML 与入口 JS／CSS 摘要匹配运行镜像。
+
+导出实际 Web 镜像资源，以受控 API／WebSocket 重跑上述七项不同 Chromium
+用例均通过；其中分组布局用例首次在动画期间读取原始坐标后点击，命中位置
+随布局移动而失效，改为等待元素稳定的 Locator.click 后复测通过。仅修改
+测试时序，没有修改或替换已发布应用资源。实际加载的 45 个 JS／CSS 文件
+SHA-256 与运行 Web 镜像一致。这些受控回归不等于真实模型业务执行验收，
+没有向业务会话发送、暂停或继续消息。
+
+platform／web remote-release-finish 均通过版本、健康及容量收尾。无过期受管
+上下文候选，精确回收两个不再受引用保护的平台／Web 历史镜像版本，保留当前
+镜像、各 scope 一个回滚镜像及所有容器引用。未清理共享 BuildKit、卷、Workspace
+或数据库备份。收尾后再次确认四服务版本与健康、配置摘要和其他容器不变。
+当前与下一可执行重构切片均为 NONE。

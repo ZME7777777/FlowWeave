@@ -3242,12 +3242,9 @@ test('Agent workspace groups toggle their conversation lists', async ({ page }) 
   await expect(rootToggle).toHaveAttribute('aria-expanded', 'false');
   await expect(rootGroup.getByRole('button', { name: '根会话' })).toBeHidden();
   await expect(projectGroup).not.toHaveCSS('transition-property', /margin/);
-  const projectToggleBounds = await projectToggle.boundingBox();
-  if (!projectToggleBounds) throw new Error('Expected visible project workspace toggle');
-  await page.mouse.click(
-    projectToggleBounds.x + projectToggleBounds.width / 2,
-    projectToggleBounds.y + projectToggleBounds.height / 2,
-  );
+  // The preceding collapse can still move this row during its animation.
+  // Locator.click waits for a stable target before sending the pointer event.
+  await projectToggle.click();
   await expect(projectToggle).toHaveAttribute('aria-expanded', 'false');
   await expect(projectGroup.getByRole('button', { name: '项目会话' })).toBeHidden();
   await projectToggle.click();
