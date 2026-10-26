@@ -3209,11 +3209,16 @@ test('Agent workspace groups toggle their conversation lists', async ({ page }) 
     const nav = shell.querySelector<HTMLElement>('.agent-workbench-app-nav');
     const main = shell.querySelector<HTMLElement>('.agent-workbench-main');
     if (!nav || !main) throw new Error('Expected Agent navigation and conversation regions');
+    const tab = main.querySelector<HTMLElement>('.agent-conversation-tabs');
+    if (!tab) throw new Error('Expected conversation tab strip');
     const navBox = nav.getBoundingClientRect();
     const mainBox = main.getBoundingClientRect();
-    return { navRight: navBox.right, mainLeft: mainBox.left };
+    const tabBox = tab.getBoundingClientRect();
+    return { navRight: navBox.right, mainLeft: mainBox.left, tabLeft: tabBox.left };
   });
   expect(collapsedLayout.mainLeft).toBeLessThanOrEqual(collapsedLayout.navRight + 1);
+  expect(collapsedLayout.tabLeft).toBeLessThanOrEqual(collapsedLayout.mainLeft + 15);
+  await expect(page.locator('.agent-workbench-app-shell')).toHaveCSS('transition-property', /grid-template-columns/);
   await expect(composer).toHaveValue('保留中的草稿');
   await homeButton.click();
   await expect(page.locator('.agent-workbench-app-shell')).not.toHaveClass(/conversation-rail-collapsed/);
