@@ -32,19 +32,22 @@
 
 | 身份 | 固定值 |
 |---|---|
-| 当前 FlowWeave source lock | `73e3cd8e4d74ff30c9ed794baf72d977800509d7`，四包 1.54.0 |
-| 当前上游锚点 | `f0206428306db687ac9c8d833ece4fb82b015eba` |
+| FR-702 冻结时 FlowWeave source lock | `73e3cd8e4d74ff30c9ed794baf72d977800509d7`，四包 1.54.0 |
+| FR-702 冻结时上游锚点 | `f0206428306db687ac9c8d833ece4fb82b015eba` |
 | 本轮已拉取、评估的 upstream main | `ce5716a3c0a955a85bb0cc4dcfaa94d5fefcda50`，四包 1.58.2 |
 | 两上游锚点之间 | 132 个提交；目标 HEAD 在 v1.58.2 发布提交之后还有五个提交 |
-| FR-702 冻结时 SDK baseline HEAD | `2c8025ff11b62cbce8880d08f8b7e9c69e844ecd`，与当前 source lock 文件树相同 |
+| FR-702 冻结时 SDK baseline HEAD | `2c8025ff11b62cbce8880d08f8b7e9c69e844ecd`，与 FR-702 时 source lock 文件树相同 |
 
 FR-703 只合并上述固定目标，不以构建时浮动 main 替代。若执行前有新上游增量，另行取证和切片。
 本地 baseline 比锁定源码多的浏览器修改／撤回提交应保留历史，不重新引入已撤回功能。
 
 FR-703 已将上述固定目标完整合入 SDK baseline，merge commit 为
 `ecf0aec091463fb242b0c5ab59d155c65d96ded8`；两个 parent 分别是原 baseline 和固定 upstream。
-本轮定向源码／真实 TCP 合并验证已完成，详见进度记录。FlowWeave source lock 仍为旧身份，
-完整扩展／实际 Runtime 契约与来源依赖冻结继续由 FR-704 执行，不能据此声明运行镜像已升级。
+本轮定向源码／真实 TCP 合并验证已完成，详见进度记录。FR-704 将新来源归档锁定为该 merge
+commit，归档 SHA-256 为 `5e4a53a2fab54bd3435b7ea29d6c6ea98fc181c3d0f2299cf85a7414a658d927`，
+并同步四包 1.58.2、固定依赖和镜像构建输入。此身份属于本分支后续构建；既有 Environment、
+FlowRun Snapshot、Runtime generation 和 V1／V2 协议不会被追溯修改。最终验收以 FR-704
+进度记录为准。原生子会话工具尚未开放，后续扩展将再次生成不可变身份。
 
 ### 2.2 原生已具备
 

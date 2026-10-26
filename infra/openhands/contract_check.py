@@ -140,6 +140,11 @@ from openhands.sdk.profiles import (
     validate_agent_profile,
 )
 from openhands.sdk.security.confirmation_policy import NeverConfirm
+from openhands.sdk.settings import (
+    AGENT_SETTINGS_SCHEMA_VERSION,
+    OpenHandsAgentSettings,
+    validate_agent_settings,
+)
 from openhands.sdk.skills import KeywordTrigger, Skill
 from openhands.sdk.subagent import SubAgentScope
 from openhands.sdk.subagent.scope import inherit_mcp_config
@@ -166,11 +171,11 @@ from openhands.tools.task.manager import Task, TaskManager, TaskStatus
 from openhands.tools.task_tracker import TaskTrackerTool
 from openhands.tools.terminal.terminal.tmux_terminal import _new_owned_session
 
-EXPECTED_VERSION = "1.54.0"
-EXPECTED_UPSTREAM_BASE = "f0206428306db687ac9c8d833ece4fb82b015eba"
-EXPECTED_SOURCE_COMMIT = "73e3cd8e4d74ff30c9ed794baf72d977800509d7"
+EXPECTED_VERSION = "1.58.2"
+EXPECTED_UPSTREAM_BASE = "ce5716a3c0a955a85bb0cc4dcfaa94d5fefcda50"
+EXPECTED_SOURCE_COMMIT = "ecf0aec091463fb242b0c5ab59d155c65d96ded8"
 EXPECTED_SOURCE_ARCHIVE_SHA256 = (
-    "5fcd3fc5e628572a7e223c954e8fd792b78d768f1d8eba9419a4d88d6490308a"
+    "5e4a53a2fab54bd3435b7ea29d6c6ea98fc181c3d0f2299cf85a7414a658d927"
 )
 PACKAGES = (
     "openhands-agent-server",
@@ -428,7 +433,7 @@ def _assert_merged_main_capability_contract() -> None:
     assert 'Message(role="user"' in condenser_source
 
     tmux_source = getsource(_new_owned_session)
-    assert "_socket_creation_lock()" in tmux_source
+    assert "_socket_creation_lock(socket_dir)" in tmux_source
     assert "TMUX_SOCKET_NAME" in tmux_source
     assert "mark_socket_owner(server)" in tmux_source
 
@@ -465,8 +470,8 @@ def _assert_tmux_terminal_isolation_contract() -> None:
     """Keep terminal cleanup isolated across simultaneous Agent Servers."""
 
     session_source = getsource(_new_owned_session)
-    assert 'socket_name=f"{TMUX_SOCKET_NAME}-{uuid.uuid4().hex}"' in session_source
-    assert "with _socket_creation_lock()" in session_source
+    assert 'socket_name = f"{TMUX_SOCKET_NAME}-{uuid.uuid4().hex}"' in session_source
+    assert "with _socket_creation_lock(socket_dir)" in session_source
     assert "mark_socket_owner(server)" in session_source
 
     cleanup_source = getsource(_cleanup_stale_tmux_sessions)
@@ -709,8 +714,23 @@ def _assert_profile_provider_secret_and_condenser_behavior() -> None:
         }
     )
     assert isinstance(migrated, OpenHandsAgentProfile)
-    assert migrated.schema_version == AGENT_PROFILE_SCHEMA_VERSION == 3
+    assert migrated.schema_version == AGENT_PROFILE_SCHEMA_VERSION == 4
     assert migrated.disabled_skills == []
+    migrated_settings = validate_agent_settings(
+        {
+            "schema_version": 8,
+            "agent_kind": "openhands",
+            "tools": [{"name": "terminal"}],
+            "enable_sub_agents": True,
+            "enable_switch_llm_tool": True,
+        },
+        persisted=True,
+    )
+    assert isinstance(migrated_settings, OpenHandsAgentSettings)
+    assert migrated_settings.schema_version == AGENT_SETTINGS_SCHEMA_VERSION == 9
+    assert [tool.name for tool in migrated_settings.tools] == ["terminal"]
+    assert "enable_sub_agents" not in migrated_settings.model_dump()
+    assert "enable_switch_llm_tool" not in migrated_settings.model_dump()
 
     with TemporaryDirectory() as directory:
         root = Path(directory)
@@ -1833,6 +1853,8 @@ def main() -> None:
                 "memory_stored_preference_stamped_on_all_launches": True,
                 "memory_native_workspace_loader": True,
                 "profile_v1_migration": True,
+                "agent_profile_schema_version": AGENT_PROFILE_SCHEMA_VERSION,
+                "agent_settings_schema_version": AGENT_SETTINGS_SCHEMA_VERSION,
                 "provider_connection_read_at_use": True,
                 "nested_secret_serializer_probe": True,
                 "subscription_condenser_dispatch": True,

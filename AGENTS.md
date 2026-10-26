@@ -47,7 +47,7 @@ scripts/verify-remote-deploy.sh --config .local/remote-deploy.env \
 
 ## OpenHands 源码与镜像基线
 
-OpenHands `baseline` 是 FlowWeave 的持续集成基线：先合并已验证的 upstream `main`，再在同一 `baseline` 分支追加经审计的 FlowWeave Runtime 扩展。当前上游锚点为 `e21d77673b738f056676044600c4ad81c5a575c8`，四包发布版本为 `1.49.5`；实际 Runtime 身份始终以 `baseline` 的固定 HEAD commit、归档 SHA-256 和 source lock 为准，而非假定等于上游锚点。
+OpenHands `baseline` 是 FlowWeave 的持续集成基线：先合并已验证的 upstream `main`，再在同一 `baseline` 分支追加经审计的 FlowWeave Runtime 扩展。当前上游锚点为 `ce5716a3c0a955a85bb0cc4dcfaa94d5fefcda50`，四包发布版本为 `1.58.2`；实际 Runtime 身份始终以 `baseline` 的固定 HEAD commit、归档 SHA-256 和 source lock 为准，而非假定等于上游锚点。
 
 - SDK 源码工作树可在 `baseline` 分支实施最小、可测试的 FlowWeave 扩展；不得直接修改 `main`，不得基于浮动上游提交构建，也不得在镜像构建期施加未进入 `baseline` 提交的源码补丁。
 - 每次合并上游后必须重新验证所有 FlowWeave 扩展；发生冲突时保留扩展的明确契约、更新其测试，并以新的 `baseline` commit、不可变归档和镜像 provenance 锁定。
@@ -55,7 +55,7 @@ OpenHands `baseline` 是 FlowWeave 的持续集成基线：先合并已验证的
 
 - SDK 源码：`/Users/zhengmengen/WorkSpace/openhands/software-agent-sdk-total-tokens-1.47`（`baseline`）
 - 历史兼容基线：`v1.42.0` / `f09e03eac772290feeb51b7d7390ffaefeca1a09`
-- 固定包版本：`openhands-agent-server==1.49.5`、`openhands-sdk==1.49.5`、`openhands-tools==1.49.5`、`openhands-workspace==1.49.5`
+- 固定包版本：`openhands-agent-server==1.58.2`、`openhands-sdk==1.58.2`、`openhands-tools==1.58.2`、`openhands-workspace==1.58.2`
 - 固定运行时镜像：`flowweave-openhands-runtime:1`
 - 契约探针：`infra/openhands/contract_check.py`
 

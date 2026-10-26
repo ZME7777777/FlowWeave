@@ -3,8 +3,8 @@
 > 状态：`FR-00 FROZEN`
 > 日期：2026-08-21
 > OpenHands 事实基线：`software-agent-sdk`
-> upstream anchor `f0206428306db687ac9c8d833ece4fb82b015eba`；FlowWeave `baseline` 在合并
-> upstream `main` 后可追加受审计扩展，实际 commit 由 Runtime source lock 固定；四个发布包版本为 `1.54.0`
+> upstream anchor `ce5716a3c0a955a85bb0cc4dcfaa94d5fefcda50`；FlowWeave `baseline` 在合并
+> upstream `main` 后可追加受审计扩展，实际 commit 由 Runtime source lock 固定；四个发布包版本为 `1.58.2`
 > 本文冻结目标架构和后续迁移边界，不表示后续运行时代码已经落地。
 
 ## 1. 决策摘要

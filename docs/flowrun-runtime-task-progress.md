@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`CHILD CONVERSATIONS IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-704`
+> 下一可执行切片：`FR-705`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 > 子会话设计：`docs/agent-child-conversations-design.md`
@@ -17,7 +17,7 @@
 “当前行为”的审计对象；是否保留必须重新按照本设计、固定 OpenHands 源码和真实运行证据判断。
 
 OpenHands `baseline` 是持续合并上游 `main` 后承载 FlowWeave Runtime 扩展的基线分支。当前上游锚点为
-`f0206428306db687ac9c8d833ece4fb82b015eba`，四个发布包版本均为 `1.54.0`；每个切片的实际 Runtime
+`ce5716a3c0a955a85bb0cc4dcfaa94d5fefcda50`，四个发布包版本均为 `1.58.2`；每个切片的实际 Runtime
 源码身份由对应的固定 `baseline` commit、归档 SHA-256 与 source lock 共同决定。
 此前完成记录中的旧版本号继续表示当时实际验收的历史基线，不做追溯改写。
 
@@ -150,12 +150,71 @@ FlowWeave source lock／归档／依赖锁仍为原 1.54.0，本片不构建镜�
 不开放子工具或 Worktree、不部署。Alembic 唯一 head 仍为 0174；后续 FR-704 负责完整
 扩展／实际契约回归和来源依赖冻结，不能把本次源码合并当作 Runtime 已升级。
 
-### FR-704 上游合并回归与 Runtime 来源依赖身份 — READY
+### FR-704 上游合并回归与 Runtime 来源依赖身份 — DONE
 
 依赖：FR-703 DONE。验证全部 FlowWeave 扩展、受影响原生回归和实际可执行契约，
 核对 Profile／Settings schema、四包、来源归档及自有 Docker／依赖链；正式冻结身份。
 
-### FR-705 原生子创建身份与启动前治理生命周期 — PENDING
+完成（2026-10-26）：固定来源为 `ecf0aec091463fb242b0c5ab59d155c65d96ded8`，
+upstream anchor 为 `ce5716a3c0a955a85bb0cc4dcfaa94d5fefcda50`，四包 1.58.2；
+归档 SHA-256 为 `5e4a53a2fab54bd3435b7ea29d6c6ea98fc181c3d0f2299cf85a7414a658d927`。
+来源锁、provenance、平台身份、插件 resolver 与构建路径同步；旧归档保留。通过正式
+fetch_source 校验并解包归档，独立 frozen 环境安装四包后完整可执行 contract 通过。
+Profile 4、Settings 9 及退役开关不能重新启用工具的迁移探针通过；平台自有 Profile 2
+输入继续由原生迁移，未重写既有能力、Snapshot 或 V1／V2 adapter。
+
+依赖链保留固定 upstream 的安全约束及具名截止时间，新增 first-party 精确截止时间，
+第三方七天观察期保持。上传时间核对确认，本次七天内第三方变更仅有固定 upstream
+已有的 certifi CA distrust 例外；未添加新的第三方例外。源码构建工具 setuptools 84.0.0／
+wheel 0.48.0 纳入同一依赖锁，四包以 --no-build-isolation 安装，避免构建期再解析工具。
+uv frozen lock、独立环境 pip check 通过。完整依赖与构建工具发布时间审计在忽略的
+`.tmp/fr704/`，正式来源归档进入 vendor，不提交测试缓存或临时环境。
+
+自有 Dockerfile 同步固定 Node 24.22.1、Python 3.13.15、uv 0.13.5、npm 11.21.0，
+保留原 OpenSandbox 与 Docker CLI 基础输入；采用固定 upstream 的 pip 26.2.2 vendoring
+修复和 Debian 20261021 快照／CA 信任边界。各新增语言／构建基础镜像均锁定 digest。
+系统和 Runtime venv 安装同一修复 wheel，移除 Debian 的旧 pip 命令包；新增离线探针
+验证 pip urllib3 2.8.0、msgpack 1.2.1、移除 pkg_resources，系统／certifi／pip 三类 CA
+均不再信任退役根。自有固定镜像未安装 OpenVSCode，相关 upstream 构建修复由原生 builder
+源码保留；未引入 Worktree 或新的默认 Tool。
+
+实际 linux/amd64 验收镜像构建成功，本地 OCI index digest 为
+`sha256:d23a80d81fa87ff919a6e17656d283c45b4eeb9d2b8a45cf936ce81dd9ccb5e8`，
+平台 manifest 为 `sha256:ede6ff179aef785b8775fb05e1a65ee8a8fd0c21980fd6447ec288908ae4658c`。
+镜像内完整 contract、原生 Chromium 可用性和已知安全修复探针通过。随后在不挂载宿主
+目录、不发布端口、--network none 的独立容器再次执行契约／安全探针；安装的四包
+522 个 Python 文件逐字节匹配归档（Server 98、SDK 313、Tools 97、Workspace 14）。
+这属于所列已知修复验收，不替代 FR-717 的完整安全／业务端到端门禁。
+
+验收：SDK 扩展／迁移／中断主套件 1028 passed，原生 child Tool 9 passed，真实
+Uvicorn／HTTP／WebSocket 13 passed。镜像内五个原生终端模块 58 passed，含 socket
+超长路径、池隔离、旧终端身份、环境脱敏和优先级。测试依赖取固定 SDK uv.lock 的六个
+纯 Python wheel 并校验 hash，只在该一次性容器离线安装；安装后再次复核四包源码不变。
+补充扩展回归 90 passed／2 failed 的两项 tmux 环境用例已由上述 Linux 套件实际通过，
+不把前次失败计作通过；subprocess 环境用例单独重跑亦通过，明确记录测试间干扰。
+
+平台 adapter／contract／plugin 独立套件 271 passed，来源／静态 V1／V2 10 passed；
+冻结契约组合 17 passed 与前述重叠，不累加总数。最初从仓库根运行的相对路径失败已在
+正式 platform 目录重跑；合并套件中的 container fixture 重置全局 logger，九项日志
+测试失败在隔离 adapter 进程后全部通过。未修改实现或断言掩盖该全局测试干扰。
+
+镜像内真实 TCP 读取容量探针完成 50 次请求：最大 0.4842 秒、P95 0.1166 秒，保持
+原两秒门槛，覆盖后台线程／七路读取、取消仍占槽、释放后恢复、interrupt、drain／reload
+及原事件恢复。128 PID 上限的一次性容器耗尽进程达到 errno 11，释放 60 个测试子进程
+后原生终端恢复。原生 server 进程终止／重启保留原 Conversation、五个既有事件及
+原 tool-call 身份，产生一个正式恢复事件，重复读取不追加恢复事件。此探针在本机
+arm64 → amd64 CPU 模拟下先触及默认 30 秒冷启动预算，新增显式且有界的 1–180 秒
+startup 参数并以 180 秒通过；默认仍为 30 秒，HTTP／运行和读取容量阈值未放宽。
+
+受影响 Ruff、AST／TOML、provenance 一致性、平台身份模块 Pyright（零错误）、diff
+和任务状态／依赖检查通过。contract 的既存 E402 启动导入边界按原约定独立排除，
+未全量格式化探针；新增安全探针 format 通过。Alembic 唯一 head 仍为
+`0174_agent_workspace_user_defaults`，无新增迁移；平台定向测试仅使用独立临时数据库。
+所有模型响应均为受控夹具，未执行真实 LLM。SDK baseline 未追加代码、未推送或部署；
+本地验收使用独立标签，现有 Runtime 镜像／generation 与冻结协议未替换。
+当前 NONE，下一可执行切片 FR-705。
+
+### FR-705 原生子创建身份与启动前治理生命周期 — READY
 
 依赖：FR-704 DONE。在 SDK baseline 增加正式幂等子身份、同请求查回和首轮运行前
 治理接入点；覆盖并发、429、未知结果及进程恢复，不在平台伪造 Conversation。
