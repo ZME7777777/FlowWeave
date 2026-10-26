@@ -1400,6 +1400,13 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.locator('.agent-file-tree-pane')).toBeHidden();
   const collapsedFileTreeResizer = page.getByRole('separator', { name: '展开文件目录' });
   await expect(collapsedFileTreeResizer).toBeVisible();
+  const collapsedFileTreeResizerBox = await collapsedFileTreeResizer.boundingBox();
+  if (!collapsedFileTreeResizerBox) throw new Error('Expected collapsed file tree resizer');
+  await page.mouse.move(collapsedFileTreeResizerBox.x + collapsedFileTreeResizerBox.width / 2, collapsedFileTreeResizerBox.y + collapsedFileTreeResizerBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(collapsedFileTreeResizerBox.x + 20, collapsedFileTreeResizerBox.y + collapsedFileTreeResizerBox.height / 2);
+  await page.mouse.up();
+  await expect(page.locator('.agent-workspace-files')).toHaveClass(/file-tree-collapsed/);
   await collapsedFileTreeResizer.dblclick();
   await expect(page.locator('.agent-workspace-files')).not.toHaveClass(/file-tree-collapsed/);
   await expect(page.locator('.agent-file-tree-pane')).toBeVisible();
@@ -3198,6 +3205,15 @@ test('Agent workspace groups toggle their conversation lists', async ({ page }) 
   await expect(page).toHaveURL(/\/agent$/);
   await expect(page.locator('.agent-workbench-app-shell')).toHaveClass(/conversation-rail-collapsed/);
   await expect(page.locator('.agent-workbench-rail')).toBeHidden();
+  const collapsedLayout = await page.locator('.agent-workbench-app-shell').evaluate(shell => {
+    const nav = shell.querySelector<HTMLElement>('.agent-workbench-app-nav');
+    const main = shell.querySelector<HTMLElement>('.agent-workbench-main');
+    if (!nav || !main) throw new Error('Expected Agent navigation and conversation regions');
+    const navBox = nav.getBoundingClientRect();
+    const mainBox = main.getBoundingClientRect();
+    return { navRight: navBox.right, mainLeft: mainBox.left };
+  });
+  expect(collapsedLayout.mainLeft).toBeLessThanOrEqual(collapsedLayout.navRight + 1);
   await expect(composer).toHaveValue('保留中的草稿');
   await homeButton.click();
   await expect(page.locator('.agent-workbench-app-shell')).not.toHaveClass(/conversation-rail-collapsed/);

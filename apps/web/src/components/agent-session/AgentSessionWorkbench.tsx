@@ -3965,9 +3965,11 @@ function WorkspaceDrawer({
     const stored = Number(localStorage.getItem('flowweave:workspace-tool-width'));
     return clampWorkspaceToolWidth(Number.isFinite(stored) ? stored : 400);
   });
+  const fileTreeMinimumWidth = 180;
+  const fileTreeCollapseThreshold = 28;
   const [fileTreeWidth, setFileTreeWidth] = useState(() => {
     const stored = Number(localStorage.getItem('flowweave:workspace-file-tree-width'));
-    return Math.min(520, Math.max(180, Number.isFinite(stored) ? stored : 300));
+    return Math.min(520, Math.max(fileTreeMinimumWidth, Number.isFinite(stored) ? stored : 300));
   });
   const [fileTreeCollapsed, setFileTreeCollapsed] = useState(false);
   const [panelError, setPanelError] = useState('');
@@ -4797,21 +4799,30 @@ function WorkspaceDrawer({
   };
   const expandFileTree = useCallback(() => {
     setFileTreeCollapsed(false);
-  }, []);
+    setFileTreeWidth(width => Math.max(fileTreeMinimumWidth, width));
+  }, [fileTreeMinimumWidth]);
   const startFileTreeResize = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (window.innerWidth <= 680) return;
     event.preventDefault();
     const startX = event.clientX;
-    const startWidth = fileTreeCollapsed ? 180 : fileTreeWidth;
-    const maximum = () => Math.min(520, Math.max(180, window.innerWidth * 0.55));
+    const startCollapsed = fileTreeCollapsed;
+    const startWidth = startCollapsed ? 0 : fileTreeWidth;
+    const maximum = () => Math.min(520, Math.max(fileTreeMinimumWidth, window.innerWidth * 0.55));
     const move = (moveEvent: PointerEvent) => {
-      const width = startWidth + moveEvent.clientX - startX;
-      if (width <= 180) {
+      const distance = moveEvent.clientX - startX;
+      if (startCollapsed) {
+        if (distance < fileTreeCollapseThreshold) return;
+        setFileTreeCollapsed(false);
+        setFileTreeWidth(Math.min(maximum(), fileTreeMinimumWidth + distance - fileTreeCollapseThreshold));
+        return;
+      }
+      const width = startWidth + distance;
+      if (width <= fileTreeMinimumWidth - fileTreeCollapseThreshold) {
         setFileTreeCollapsed(true);
         return;
       }
       setFileTreeCollapsed(false);
-      setFileTreeWidth(Math.min(maximum(), width));
+      setFileTreeWidth(Math.min(maximum(), Math.max(fileTreeMinimumWidth, width)));
     };
     const stop = () => {
       window.removeEventListener('pointermove', move);
