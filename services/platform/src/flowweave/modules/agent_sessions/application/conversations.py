@@ -4272,13 +4272,19 @@ def _assert_prepared_conversation_hydration_current(
 
 def read_prepared_conversation_hydration(
     prepared: PreparedConversationHydration,
+    cursor: str | None = None,
 ) -> tuple[RuntimeEventBatch, dict[str, int | float | str | bool | None], dict[str, bool | str]]:
     """Read formal OpenHands state without a FlowWeave DB session."""
 
     runtime = get_runtime()
     try:
-        runtime.reload_conversation(prepared.handle)
-        batch = complete_latest_user_turn(runtime.read_active_events, prepared.handle)
+        if cursor:
+            # Native cursor reconciliation validates ancestry against current
+            # HEAD. The browser already owns the previously hydrated history.
+            batch = runtime.read_active_events(replace(prepared.handle, cursor=cursor))
+        else:
+            runtime.reload_conversation(prepared.handle)
+            batch = complete_latest_user_turn(runtime.read_active_events, prepared.handle)
         context = hydration_context_snapshot(batch.context)
         readiness = (
             runtime.input_readiness(prepared.handle).as_dict()

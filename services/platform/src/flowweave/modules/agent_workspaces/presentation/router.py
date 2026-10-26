@@ -1640,7 +1640,10 @@ async def agent_conversation_search_status(
 
 @router.get("/agent-workspaces/{workspace_id}/conversations/{binding_id}/hydration")
 async def agent_conversation_hydration(
-    workspace_id: str, binding_id: str, container: ContainerDep
+    workspace_id: str,
+    binding_id: str,
+    container: ContainerDep,
+    cursor: Annotated[str | None, Query(max_length=200)] = None,
 ) -> dict[str, Any]:
     try:
         principal = current_principal()
@@ -1664,7 +1667,11 @@ async def agent_conversation_hydration(
                     "runtime_read",
                     run_hydration_runtime(
                         container,
-                        lambda: conversations.read_prepared_conversation_hydration(prepared),
+                        lambda: (
+                            conversations.read_prepared_conversation_hydration(prepared, cursor)
+                            if cursor
+                            else conversations.read_prepared_conversation_hydration(prepared)
+                        ),
                     ),
                 )
                 return await observe_hydration_phase(
@@ -1678,6 +1685,12 @@ async def agent_conversation_hydration(
                     ),
                 )
 
+            if cursor:
+                # A delta is never a complete current-state cache entry.
+                result = await container.conversation_hydration_cache.read_incremental(
+                    prepared.key, cursor, load
+                )
+                return {**result, "incremental_from": cursor}
             return await container.conversation_hydration_cache.refresh(prepared.key, load)
     except DomainError as exc:
         if exc.code not in {

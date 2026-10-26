@@ -22,6 +22,7 @@ for (const node of [false, true]) {
       let unread = false;
       let completionAnnounced = false;
       let hydrationReads = 0;
+      const hydrationCursors: Array<string | null> = [];
       let socket: WebSocketRoute | undefined;
       let releaseHydration!: () => void;
       const hydrationGate = new Promise<void>(resolve => { releaseHydration = resolve; });
@@ -59,9 +60,16 @@ for (const node of [false, true]) {
         }
         if (path.endsWith('/hydration')) {
           const isTarget = path.includes(`/${conversation.id}/`);
-          if (isTarget) hydrationReads += 1;
+          const cursor = new URL(request.url()).searchParams.get('cursor');
+          if (isTarget) { hydrationReads += 1; hydrationCursors.push(cursor); }
           if (isTarget && completed) await hydrationGate;
-          return json({ events: batch(isTarget), context, readiness: { ready: true, execution_status: 'idle' } });
+          return json({
+            events: isTarget && completed && cursor
+              ? { ...batch(true), events: [sent, thought, reply] }
+              : batch(isTarget),
+            ...(cursor ? { incremental_from: cursor } : {}),
+            context, readiness: { ready: true, execution_status: 'idle' },
+          });
         }
         if (path.endsWith('/messages') && request.method() === 'POST') {
           accepted = true;
@@ -128,14 +136,18 @@ for (const node of [false, true]) {
         await expect.poll(() => hydrationReads).toBe(2);
         await expect(page.getByRole('status').filter({ hasText: '正在加载会话' })).toBeVisible();
         await expect(page.getByLabel('发送 Agent 消息')).toHaveCount(0);
+        await expect(page.getByText('上次已经回复', { exact: true })).toHaveCount(0);
+        await expect(page.getByText(reply.payload.content, { exact: true })).toHaveCount(0);
         releaseHydration();
       }
       await expect(page.getByText(reply.payload.content, { exact: true })).toBeVisible();
+      await expect(page.getByText('上次已经回复', { exact: true })).toBeVisible();
       await expect(page.getByText(sent.payload.content, { exact: true })).toHaveCount(1);
       await expect(page.getByText(thought.payload.thought, { exact: true })).toHaveCount(1);
       await expect(page.getByRole('status').filter({ hasText: '正在加载会话' })).toHaveCount(0);
       await expect(page.getByLabel('发送 Agent 消息')).toBeEditable();
       expect(hydrationReads).toBe(2);
+      expect(hydrationCursors).toEqual([null, 'background-old-reply']);
       await expect(row.getByRole('img', { name: '会话已完成，有未读回复' })).toHaveCount(0);
       // A subsequent revisit reuses the now-complete snapshot without another
       // Runtime hydration, and its recovered formal process remains present.

@@ -2592,12 +2592,17 @@ def _assert_prepared_node_conversation_hydration_current(
 
 def read_prepared_node_conversation_hydration(
     prepared: PreparedNodeConversationHydration,
+    cursor: str | None = None,
 ) -> tuple[RuntimeEventBatch, dict[str, int | float | str | bool | None], dict[str, bool | str]]:
     """Read the node OpenHands event window without holding a DB session."""
 
     runtime = get_runtime()
     try:
-        batch = complete_latest_user_turn(runtime.read_active_events, prepared.handle)
+        batch = (
+            runtime.read_active_events(replace(prepared.handle, cursor=cursor))
+            if cursor
+            else complete_latest_user_turn(runtime.read_active_events, prepared.handle)
+        )
         context = hydration_context_snapshot(batch.context)
         readiness = (
             batch.readiness.as_dict()

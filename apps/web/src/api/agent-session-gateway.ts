@@ -142,7 +142,7 @@ export interface AgentSessionApi {
   readonly reorderConversation?: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, orderedBindingIds: AgentSessionBindingId[]) => Promise<AgentConversation>;
   readonly deleteConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<void>;
   readonly conversationEvents: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, cursor?: string, historyCursor?: string, diagnosticTrigger?: string, signal?: AbortSignal) => Promise<OpenHandsConversationEventBatch>;
-  readonly conversationHydration: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, signal?: AbortSignal) => Promise<AgentConversationHydration>;
+  readonly conversationHydration: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, signal?: AbortSignal, cursor?: string) => Promise<AgentConversationHydration>;
   /** Bounded native HEAD check before reusing an in-memory complete branch. */
   readonly conversationHead: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<AgentConversationHead>;
   readonly inputReadiness: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<AgentConversationInputReadiness>;
@@ -353,8 +353,8 @@ export function flowNodeSessionGateway(
       deleteConversation: (_hostId, bindingId) => nodeSessionApi.remove(flowRunId, attemptId, bindingId),
       conversationEvents: (_hostId, bindingId, cursor, historyCursor, diagnosticTrigger, signal) =>
         nodeSessionApi.events(flowRunId, attemptId, bindingId, cursor, historyCursor, diagnosticTrigger, signal),
-      conversationHydration: (_hostId, bindingId, signal) =>
-        nodeSessionApi.hydration(flowRunId, attemptId, bindingId, signal),
+      conversationHydration: (_hostId, bindingId, signal, cursor) =>
+        nodeSessionApi.hydration(flowRunId, attemptId, bindingId, signal, cursor),
       conversationHead: (_hostId, bindingId) =>
         nodeSessionApi.head(flowRunId, attemptId, bindingId),
       inputReadiness: (_hostId, bindingId) =>

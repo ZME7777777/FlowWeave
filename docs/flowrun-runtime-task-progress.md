@@ -92,6 +92,42 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 
 ## 6. 任务清单
 
+### FR-699 会话历史缓存与原生增量 hydration — DONE
+
+依赖：FR-698 DONE、FR-692 DONE。保留同标签页已正式 hydration 的历史缓存，仅失效
+最新状态；通过 OpenHands 正式 cursor 补读新增事件与同批 readiness／context，避免
+重复恢复整轮历史。前端始终保持“正在加载会话”，待历史与增量校验、合并后一次
+渲染；游标失效或分支变化时回退正式完整 hydration。两种宿主共同覆盖，不部署。
+
+实现：浏览器将可信历史与 `needsRefresh` 分开保留，运行中或已失效的会话切回时
+统一加载，不再先删除历史。两种宿主的 hydration 接受可选正式 cursor，以原生
+`read_active_events` 的 HEAD／parent 关系验证并返回新增事件和同批 readiness／context；
+跳过重复 reload 与整轮历史补齐。HEAD 与游标相同时直接返回空增量，不查事件页。
+响应显式携带 `incremental_from`，旧服务仍返回完整响应时保持兼容。游标不在活动
+分支或增量超出读取预算时，仅回退一次完整 hydration；完整分支合并只保留有正式
+父链证明的缓存祖先，丢弃旧分支后代。父事件已在缓存时不再重复读取 bridge 页。
+
+前端在历史、增量与同批状态全部合并后一次发布，加载期间旧正文、预览和输入均不
+抢先显示；更新失败保留缓存但显示可重试错误，发送／队列仍门控。服务端增量只做
+按用户、宿主、binding、Runtime 身份、cursor 和命令 epoch 的在途单飞，不写入完整
+current／branch／event 缓存，取消单个等待者不会取消共享读取。首次进入、刷新或
+无正式内存快照时仍走完整 hydration。AGENTS.md 同步用户要求的一体展示约束。
+
+验收（2026-10-26）：后端 hydration／OpenHands adapter／缓存回归 289 passed，包含
+同批状态、游标失效、未变化 HEAD 零事件请求、并发合并、取消隔离、命令 epoch 与
+双用户隔离；使用受控原生响应，不记为实际 Runtime 镜像或模型执行验收。固定 SDK
+73e3cd8e 源码核对原生 page_id 与 HEAD 事件身份语义，未改 SDK／source lock。
+Chromium 共 41 个不同用例通过：新增两宿主的空增量／新增／分支回退／失败重试八项，
+原回复恢复四项，跨顶栏返回六项，缓存／历史／首屏十项，定时与活动／历史引用十一项，
+hydration 不可用回退与超时两项。验证加载期间无旧正文闪现、合并后历史与新消息
+同时出现、旧分支不残留；使用受控 API／WebSocket，不重复累计重跑结果。
+
+Web typecheck、受影响 ESLint、Python AST、受影响 Ruff、定向 format、diff 和状态／
+依赖检查通过。node router 的全文件 Ruff 仍为 HEAD 已有的 13 项 E501，零新增；
+保留无关上传路由原格式，仅格式化本片 hydration 函数。Alembic 唯一 head 仍为
+0172_case_configuration；无迁移、远端操作或部署。当前与下一可执行切片均为 NONE，
+提交后停止。
+
 ### FR-698 顶部导航分隔间距收紧 — DONE
 
 依赖：FR-697 DONE。按用户截图缩小固定导航与临时标签分隔线两侧的空白，

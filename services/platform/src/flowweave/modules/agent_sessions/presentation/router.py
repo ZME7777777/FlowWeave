@@ -1071,13 +1071,18 @@ async def node_session_events(
 
 @router.get(f"{_BASE}/{{binding_id}}/hydration")
 async def node_session_hydration(
-    flow_run_id: str, attempt_id: str, binding_id: str, container: ContainerDep
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str,
+    container: ContainerDep,
+    cursor: Annotated[str | None, Query(max_length=200)] = None,
 ) -> dict[str, Any]:
     principal = current_principal()
     if principal is None:
         raise DomainError("AUTHENTICATION_REQUIRED", "请先登录", 401)
     try:
         node_conversations = agent_sessions.flow_node_conversations
+        read_hydration = node_conversations.read_prepared_node_conversation_hydration
         async with hydration_response_budget(container.settings.hydration_read_timeout_seconds):
             prepared = await observe_hydration_phase(
                 container,
@@ -1099,9 +1104,9 @@ async def node_session_hydration(
                     "runtime_read",
                     run_hydration_runtime(
                         container,
-                        lambda: node_conversations.read_prepared_node_conversation_hydration(
-                            prepared
-                        ),
+                        lambda: read_hydration(prepared, cursor)
+                        if cursor
+                        else read_hydration(prepared),
                     ),
                 )
                 return await observe_hydration_phase(
@@ -1115,6 +1120,11 @@ async def node_session_hydration(
                     ),
                 )
 
+            if cursor:
+                result = await container.conversation_hydration_cache.read_incremental(
+                    prepared.key, cursor, load
+                )
+                return {**result, "incremental_from": cursor}
             return await container.conversation_hydration_cache.refresh(prepared.key, load)
     except DomainError as exc:
         if exc.code not in {

@@ -13,6 +13,7 @@ from flowweave.modules.users.application.security import (
     reset_principal,
 )
 from flowweave.runtime.base import RuntimeEventBatch, RuntimeHandle, RuntimeInputReadiness
+from flowweave.runtime.openhands import OpenHandsRuntime
 from flowweave.runtime.read_budget import hydration_time_left
 from flowweave.shared.errors import DomainError
 from flowweave.shared.http import observe_hydration_phase
@@ -29,6 +30,25 @@ def database():
 class _EmptyHydrationCache:
     async def refresh(self, _key: object, loader: object) -> object:
         return await loader()
+
+
+def test_unchanged_native_leaf_skips_event_search(monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime = object.__new__(OpenHandsRuntime)
+
+    def unexpected_request(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("An unchanged formal HEAD requires no event search")
+
+    monkeypatch.setattr(runtime, "_request", unexpected_request)
+    assert (
+        runtime._active_events_after_cursor(
+            "conversation",
+            "same-leaf",
+            "same-leaf",
+            base_url="http://runtime.invalid",
+            session_api_key="test-placeholder",
+        )
+        == []
+    )
 
 
 @pytest.mark.asyncio
@@ -161,6 +181,129 @@ def test_node_prepared_hydration_runtime_read_has_no_database_argument(
     assert batch.cursor == "event-1"
     assert context == {"usage_current": False}
     assert readiness == {"ready": True, "execution_status": "idle"}
+
+
+@pytest.mark.parametrize("host", ["workspace", "node"])
+@pytest.mark.parametrize("invalid_cursor", [False, True])
+def test_incremental_hydration_reads_only_native_descendants_and_same_batch_state(
+    monkeypatch: pytest.MonkeyPatch, host: str, invalid_cursor: bool
+) -> None:
+    module = (
+        workspace_router.conversations
+        if host == "workspace"
+        else node_router.agent_sessions.flow_node_conversations
+    )
+    handle = RuntimeHandle(job_id="job", conversation_id="conversation")
+    calls = []
+
+    class Runtime:
+        def reload_conversation(self, _handle: RuntimeHandle) -> None:
+            raise AssertionError("Incremental recovery must not reload old history")
+
+        def read_active_events(self, current: RuntimeHandle) -> RuntimeEventBatch:
+            calls.append(current)
+            assert current.cursor == "cached-leaf"
+            assert current.history_cursor is None
+            if invalid_cursor:
+                raise DomainError("RUNTIME_EVENT_IDENTITY_MISMATCH", "Detached cursor", 409)
+            return RuntimeEventBatch(
+                cursor="latest-leaf",
+                context={"usage_current": False, "model_name": "native-model"},
+                readiness=RuntimeInputReadiness(ready=False, execution_status="running"),
+            )
+
+        def input_readiness(self, _handle: RuntimeHandle) -> RuntimeInputReadiness:
+            raise AssertionError("Use the same native snapshot as the delta")
+
+    monkeypatch.setattr(module, "get_runtime", lambda: Runtime())
+    prepared = SimpleNamespace(
+        handle=handle,
+        binding_id="binding",
+        workspace_id="workspace",
+        flow_run_id="run",
+        attempt_id="attempt",
+    )
+    read = (
+        module.read_prepared_conversation_hydration
+        if host == "workspace"
+        else module.read_prepared_node_conversation_hydration
+    )
+    if invalid_cursor:
+        with pytest.raises(DomainError, match="Detached cursor"):
+            read(prepared, "cached-leaf")
+    else:
+        batch, context, readiness = read(prepared, "cached-leaf")
+        assert batch.cursor == "latest-leaf"
+        assert context["model_name"] == "native-model"
+        assert readiness == {"ready": False, "execution_status": "running"}
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("host", ["workspace", "node"])
+async def test_incremental_hydration_is_authorized_fenced_and_not_cached_as_full_history(
+    monkeypatch: pytest.MonkeyPatch, host: str
+) -> None:
+    router = workspace_router if host == "workspace" else node_router
+    module = (
+        router.conversations
+        if host == "workspace"
+        else router.agent_sessions.flow_node_conversations
+    )
+    calls = []
+    prepared = SimpleNamespace(key="key")
+
+    async def execute(_container: object, operation: object) -> object:
+        return operation(object())
+
+    async def runtime(_container: object, operation: object) -> object:
+        return operation()
+
+    def prepare(*_args: object, **_kwargs: object) -> object:
+        calls.append("authorize")
+        return prepared
+
+    def read(current: object, cursor: str) -> object:
+        assert current is prepared and cursor == "cached-leaf"
+        calls.append("native")
+        return "snapshot"
+
+    def project(_db: object, current: object, snapshot: object) -> dict:
+        assert current is prepared and snapshot == "snapshot"
+        calls.append("fence_and_project")
+        return {"events": {"events": []}, "context": {}, "readiness": {"ready": True}}
+
+    monkeypatch.setattr(router, "run_blocking_hydration", execute)
+    monkeypatch.setattr(router, "run_hydration_runtime", runtime)
+    prefix = "conversation" if host == "workspace" else "node_conversation"
+    monkeypatch.setattr(module, "prepare_" + prefix + "_hydration", prepare)
+    monkeypatch.setattr(module, "read_prepared_" + prefix + "_hydration", read)
+    monkeypatch.setattr(module, "project_prepared_" + prefix + "_hydration", project)
+
+    class IncrementalOnlyCache:
+        async def read_incremental(self, key: object, cursor: str, loader: object) -> object:
+            assert key == "key" and cursor == "cached-leaf"
+            return await loader()
+
+    container = SimpleNamespace(
+        settings=SimpleNamespace(hydration_read_timeout_seconds=1),
+        conversation_hydration_cache=IncrementalOnlyCache(),
+    )
+    token = bind_principal(Principal(user_id="user-1", username="user", role="USER"))
+    try:
+        result = (
+            await router.agent_conversation_hydration(
+                "workspace", "binding", container, "cached-leaf"
+            )
+            if host == "workspace"
+            else await router.node_session_hydration(
+                "run", "attempt", "binding", container, "cached-leaf"
+            )
+        )
+    finally:
+        reset_principal(token)
+    assert calls == ["authorize", "native", "fence_and_project"]
+    assert result["incremental_from"] == "cached-leaf"
 
 
 @pytest.mark.asyncio

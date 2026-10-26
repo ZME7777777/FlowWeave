@@ -700,6 +700,8 @@ export interface OpenHandsConversationEventBatch {
   monitoring?: AgentActivitySummary;
 }
 export interface AgentConversationHydration {
+  /** Native ancestry-validated continuation; omitted on a full recovery. */
+  incremental_from?: string;
   events: OpenHandsConversationEventBatch;
   context: AgentConversationContext;
   readiness: AgentConversationInputReadiness;

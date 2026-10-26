@@ -639,11 +639,13 @@ test('Re-entering a recently loaded conversation reuses its trusted snapshot', a
 });
 
 
-test('Re-entering a recently loaded running conversation keeps progress visible and reconciles in background', async ({ page }) => {
+test('Re-entering a recently loaded running conversation gates cached progress until incremental hydration completes', async ({ page }) => {
   let authenticated = false;
   let hydrationReads = 0;
   let eventReads = 0;
   let readinessReads = 0;
+  let releaseReentry!: () => void;
+  const reentryGate = new Promise<void>(resolve => { releaseReentry = resolve; });
   const workspace = {
     id: 'running-hot-cache-workspace', display_name: '运行中热缓存工作区', desired_state: 'RUNNING', updated_at: now,
   };
@@ -690,6 +692,15 @@ test('Re-entering a recently loaded running conversation keeps progress visible 
     if (path.endsWith('/hydration')) {
       hydrationReads += 1;
       const bindingId = path.split('/').at(-2)!;
+      const cursor = new URL(request.url()).searchParams.get('cursor');
+      if (bindingId === 'running-hot-a' && cursor) {
+        await reentryGate;
+        return json(route, {
+          ...hydration(bindingId, true),
+          incremental_from: cursor,
+          events: { ...hydration(bindingId, true).events, events: [] },
+        });
+      }
       return json(route, hydration(bindingId, bindingId === 'running-hot-a'));
     }
     if (path.endsWith('/events')) {
@@ -721,9 +732,13 @@ test('Re-entering a recently loaded running conversation keeps progress visible 
   const readsBeforeReturn = eventReads;
 
   await page.getByRole('button', { name: '运行中热缓存 A', exact: true }).click();
+  await expect.poll(() => hydrationReads).toBe(3);
+  await expect(page.getByRole('status').filter({ hasText: '正在加载会话' })).toBeVisible();
+  await expect(page.getByText('已加载的最新进度', { exact: true })).toHaveCount(0);
+  releaseReentry();
   await expect(page.getByText('已加载的最新进度', { exact: true })).toBeVisible();
   await expect(page.getByRole('status').filter({ hasText: '正在加载会话' })).toHaveCount(0);
-  expect(hydrationReads).toBe(2);
+  expect(hydrationReads).toBe(3);
   await expect.poll(() => eventReads).toBeGreaterThan(readsBeforeReturn);
   await page.waitForTimeout(500);
   expect(readinessReads).toBeLessThanOrEqual(1);

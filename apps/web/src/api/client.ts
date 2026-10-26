@@ -552,8 +552,8 @@ export const api = {
     if (diagnosticTrigger) query.set('diagnostic_trigger', diagnosticTrigger);
     return request<OpenHandsConversationEventBatch>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/events${query.size ? `?${query}` : ''}`, { signal, timeoutMs: INTERACTIVE_REQUEST_TIMEOUT_MS });
   },
-  agentConversationHydration: (workspaceId: string, bindingId: string, signal?: AbortSignal) =>
-    request<import('../types').AgentConversationHydration>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/hydration`, { signal, timeoutMs: INTERACTIVE_REQUEST_TIMEOUT_MS }),
+  agentConversationHydration: (workspaceId: string, bindingId: string, signal?: AbortSignal, cursor?: string) =>
+    request<import('../types').AgentConversationHydration>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/hydration${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`, { signal, timeoutMs: INTERACTIVE_REQUEST_TIMEOUT_MS }),
   agentConversationHead: (workspaceId: string, bindingId: string) =>
     request<AgentConversationHead>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/head`),
   agentPendingConfirmation: (workspaceId: string, bindingId: string) =>
@@ -1154,8 +1154,8 @@ export const nodeSessionApi = {
     if (diagnosticTrigger) query.set('diagnostic_trigger', diagnosticTrigger);
     return request<import('../types').OpenHandsConversationEventBatch>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/events${query.size ? `?${query}` : ''}`, { signal, timeoutMs: INTERACTIVE_REQUEST_TIMEOUT_MS });
   },
-  hydration: (flowRunId: string, attemptId: string, bindingId: string, signal?: AbortSignal) =>
-    request<import('../types').AgentConversationHydration>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/hydration`, { signal, timeoutMs: INTERACTIVE_REQUEST_TIMEOUT_MS }),
+  hydration: (flowRunId: string, attemptId: string, bindingId: string, signal?: AbortSignal, cursor?: string) =>
+    request<import('../types').AgentConversationHydration>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/hydration${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`, { signal, timeoutMs: INTERACTIVE_REQUEST_TIMEOUT_MS }),
   head: (flowRunId: string, attemptId: string, bindingId: string) =>
     request<AgentConversationHead>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/head`),
   inputReadiness: (flowRunId: string, attemptId: string, bindingId: string) =>

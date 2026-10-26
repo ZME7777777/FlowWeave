@@ -98,6 +98,9 @@ class ConversationHydrationCache:
         self._events: OrderedDict[_EventKey, _ExpiringValue] = OrderedDict()
         self._epochs: dict[ConversationCacheScope, int] = {}
         self._inflight: dict[ConversationCacheKey, asyncio.Task[dict[str, Any]]] = {}
+        self._incremental_inflight: dict[
+            tuple[ConversationCacheKey, str, int], asyncio.Task[dict[str, Any]]
+        ] = {}
         self._lock = asyncio.Lock()
 
     async def get(self, key: ConversationCacheKey) -> dict[str, Any] | None:
@@ -149,11 +152,40 @@ class ConversationHydrationCache:
         async with self._lock:
             self._invalidate_current_locked(scope)
 
+    async def read_incremental(
+        self,
+        key: ConversationCacheKey,
+        cursor: str,
+        loader: Callable[[], Awaitable[dict[str, Any]]],
+    ) -> dict[str, Any]:
+        """Coalesce a native continuation without caching it as full history."""
+
+        async with self._lock:
+            self._current.pop(key, None)
+            identity = (key, cursor, self._epochs.get(key.scope, 0))
+            task = self._incremental_inflight.get(identity)
+            if task is None:
+
+                async def load() -> dict[str, Any]:
+                    try:
+                        return await loader()
+                    finally:
+                        async with self._lock:
+                            self._incremental_inflight.pop(identity, None)
+
+                task = asyncio.create_task(load())
+                self._incremental_inflight[identity] = task
+        return copy.deepcopy(await asyncio.shield(task))
+
     async def invalidate_binding(self, user_id: str, binding_id: str) -> None:
         async with self._lock:
             scopes = {
                 key.scope
-                for key in (*self._current.keys(), *self._inflight.keys())
+                for key in (
+                    *self._current.keys(),
+                    *self._inflight.keys(),
+                    *(identity[0] for identity in self._incremental_inflight),
+                )
                 if key.user_id == user_id and key.binding_id == binding_id
             }
             for scope in scopes:
@@ -172,8 +204,9 @@ class ConversationHydrationCache:
 
     async def close(self) -> None:
         async with self._lock:
-            tasks = tuple(self._inflight.values())
+            tasks = (*self._inflight.values(), *self._incremental_inflight.values())
             self._inflight.clear()
+            self._incremental_inflight.clear()
             self._current.clear()
             self._branches.clear()
             self._events.clear()

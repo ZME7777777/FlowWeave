@@ -85,7 +85,7 @@ type ComposerControlMode = 'idle' | 'running' | 'pausing' | 'paused' | 'resuming
 type QueueDeliveryState = 'queued';
 type ConversationOrderSync = { state: 'syncing' | 'failed'; orderedBindingIds: string[] };
 type ConversationPagesByScope = Record<string, AgentConversationPage>;
-type TrustedHydration = { hydratedAt: number; running: boolean };
+type TrustedHydration = { hydratedAt: number; running: boolean; needsRefresh?: boolean };
 
 interface OptimisticConversationRemoval {
   conversations?: InfiniteData<AgentConversationPage>;
@@ -1679,16 +1679,38 @@ function mergeConversationBatch(
   current: OpenHandsConversationEventBatch | undefined,
   incoming: OpenHandsConversationEventBatch,
   prefetchedHistory: OpenHandsConversationEventBatch[] = [],
+  incrementalFrom?: string,
 ): OpenHandsConversationEventBatch {
   if (!current) return incoming;
-  const mergedEvents = mergeConversationEvents(current.events, incoming.events);
-  const incomingContainsCurrentCursor = !current.next_cursor || incoming.events.some(event => event.id === current.next_cursor);
+  if (incrementalFrom) {
+    return {
+      ...current,
+      ...incoming,
+      events: mergeConversationEvents(current.events, incoming.events),
+      history_cursor: current.history_cursor,
+      // An unchanged native leaf has no new completion event in its delta.
+      result: incoming.events.length ? incoming.result : incoming.result ?? current.result,
+    };
+  }
+  // A full recovery can follow native navigate/rewrite. Retain only cached
+  // ancestors proven by formal parent IDs, never a detached old descendant.
+  const known = new Map([...prefetchedHistory.flatMap(page => page.events), ...current.events].map(event => [event.id, event]));
+  const incomingIds = new Set(incoming.events.map(event => event.id));
+  const ancestors: OpenHandsConversationEvent[] = [];
+  let parent = incoming.events[0]?.payload.parent_id;
+  const seen = new Set<string>();
+  while (typeof parent === 'string' && !incomingIds.has(parent) && !seen.has(parent)) {
+    seen.add(parent);
+    const event = known.get(parent);
+    if (!event) break;
+    ancestors.unshift(event);
+    parent = event.payload.parent_id;
+  }
+  const mergedEvents = mergeConversationEvents(ancestors, incoming.events);
   return retainConversationPresentation(current, {
-    ...current,
     ...incoming,
     events: mergedEvents,
-    next_cursor: incomingContainsCurrentCursor ? (incoming.next_cursor ?? current.next_cursor) : current.next_cursor,
-    history_cursor: latestHistoryCursor(current, incoming, prefetchedHistory),
+    history_cursor: ancestors.length ? current.history_cursor : incoming.history_cursor,
   });
 }
 
@@ -5261,11 +5283,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const invalidateTrustedHydration = useCallback((workspaceId: string, bindingId: string) => {
     // Keep the immutable events for merging; only their authority as the
     // current terminal snapshot has expired.
-    trustedHydrations.current.delete(bindingId);
-    queryClient.removeQueries({
-      queryKey: sessionQueryKey(host, 'conversation-trusted-hydration', workspaceId, bindingId),
-      exact: true,
-    });
+    const key = sessionQueryKey(host, 'conversation-trusted-hydration', workspaceId, bindingId);
+    const current = trustedHydrations.current.get(bindingId) ?? queryClient.getQueryData<TrustedHydration>(key);
+    if (!current || current.needsRefresh) return;
+    const stale = { ...current, needsRefresh: true };
+    trustedHydrations.current.set(bindingId, stale);
+    queryClient.setQueryData(key, stale);
   }, [host, queryClient]);
   const [backgroundHydrationPrefetchCandidates, setBackgroundHydrationPrefetchCandidates] = useState<string[]>([]);
   const [backgroundHydrationPrefetchRevision, setBackgroundHydrationPrefetchRevision] = useState(0);
@@ -6354,11 +6377,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     const eventKey = sessionQueryKey(host, 'conversation-events', workspaceId, bindingId);
     queryClient.setQueryData<OpenHandsConversationEventBatch>(
       eventKey,
-      current => mergeConversationBatch(
-        current,
-        hydration.events,
-        historyCacheByScope.current.get(bindingId)?.pages,
-      ),
+      hydration.events,
     );
     queryClient.setQueryData<AgentConversationInputReadiness>(
       sessionQueryKey(host, 'conversation-input-readiness', workspaceId, bindingId), hydration.readiness,
@@ -6381,6 +6400,50 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }
     return hydration;
   }, [host, queryClient]);
+  const loadConversationHydration = useCallback(async (workspaceId: string, bindingId: string, signal: AbortSignal) => {
+    const key = sessionQueryKey(host, 'conversation-events', workspaceId, bindingId);
+    const trusted = trustedHydrations.current.get(bindingId)
+      ?? queryClient.getQueryData<TrustedHydration>(sessionQueryKey(host, 'conversation-trusted-hydration', workspaceId, bindingId));
+    const cached = trusted ? queryClient.getQueryData<OpenHandsConversationEventBatch>(key) : undefined;
+    let cursor = cached?.next_cursor ?? undefined;
+    // Re-read an assistant anchor whose final classification was still pending.
+    const anchor = cached?.events.find(event => event.id === cursor);
+    if (anchor?.event_type === 'MESSAGE' && ['agent', 'assistant'].includes(String(anchor.payload.source))
+      && anchor.payload.final_reply === false) {
+      const parent = anchor.payload.parent_id;
+      cursor = typeof parent === 'string' && cached?.events.some(event => event.id === parent) ? parent : undefined;
+    }
+    let hydration: AgentConversationHydration;
+    try {
+      hydration = await api.conversationHydration(workspaceId, bindingId, signal, cursor);
+    } catch (error) {
+      signal.throwIfAborted();
+      if (!cursor || !(error instanceof ApiError)
+        || !['RUNTIME_EVENT_IDENTITY_MISMATCH', 'RUNTIME_EVENT_HISTORY_BUDGET_EXHAUSTED'].includes(error.code)) throw error;
+      hydration = await api.conversationHydration(workspaceId, bindingId, signal);
+    }
+    signal.throwIfAborted();
+    const incremental = cursor && hydration.incremental_from === cursor ? cursor : undefined;
+    if (hydration.incremental_from && !incremental) throw new Error('Conversation hydration cursor does not match its cached history');
+    const historyCursor = hydration.events.history_cursor;
+    const historyPages = historyCacheByScope.current.get(bindingId)?.pages;
+    const knownParent = historyCursor && [...(cached?.events ?? []), ...(historyPages?.flatMap(page => page.events) ?? [])]
+      .some(event => event.id === historyCursor);
+    const bridge = !incremental && historyCursor && !knownParent
+      ? await api.conversationEvents(workspaceId, bindingId, undefined, historyCursor, undefined, signal)
+      : undefined;
+    signal.throwIfAborted();
+    const events = bridge ? {
+      ...hydration.events,
+      events: mergeConversationEvents(bridge.events, hydration.events.events),
+      history_cursor: bridge.history_cursor,
+    } : hydration.events;
+    // Publish only once history, the native delta and same-batch state agree.
+    return publishHydration(workspaceId, bindingId, {
+      ...hydration,
+      events: mergeConversationBatch(cached, events, historyPages, incremental),
+    });
+  }, [api, host, publishHydration, queryClient]);
   // Keep the observer mounted across binding changes: cancelling a browser
   // fetch does not release the backend's synchronous read worker.
   const hydrationQueryKey = sessionQueryKey(host, 'conversation-hydration-request');
@@ -6390,24 +6453,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       const request = hydrationExecution.current;
       if (!request) throw new Error('Conversation hydration selection is unavailable');
       const { workspaceId, bindingId } = request;
-      const hydration = await api.conversationHydration(workspaceId, bindingId, signal);
-      signal.throwIfAborted();
-      const historyCursor = hydration.events.history_cursor;
-      const bridge = historyCursor
-        ? await api.conversationEvents(workspaceId, bindingId, undefined, historyCursor, undefined, signal)
-        : undefined;
-      signal.throwIfAborted();
-      const events = bridge
-        ? {
-            ...hydration.events,
-            events: mergeConversationEvents(bridge.events, hydration.events.events),
-            history_cursor: bridge.history_cursor,
-          }
-        : hydration.events;
-      // The native latest window can begin just after an assistant reply.
-      // Bridge its formal parent once before first paint so adjacent turns
-      // never appear to have a missing reply; deeper history stays deferred.
-      return publishHydration(workspaceId, bindingId, { ...hydration, events });
+      return loadConversationHydration(workspaceId, bindingId, signal);
     },
     // Each selection explicitly refreshes below. Keeping this query disabled
     // prevents cached success data from becoming authoritative on re-entry.
@@ -6483,6 +6529,16 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       });
       return;
     }
+    if (trustedHydrations.current.has(request.bindingId)) {
+      // Cached history does not become current merely because refreshing it
+      // failed. Keep it for an explicit retry, behind the same display gate.
+      setHydrationPhase({
+        bindingId: request.bindingId,
+        state: 'unavailable',
+        error: result.error instanceof Error ? result.error : new Error('会话更新失败，请重试。'),
+      });
+      return;
+    }
     setHydrationPhase({ bindingId: request.bindingId, state: 'fallback' });
   }, [refreshConversationHydration]);
   const runSelectedHydrationRef = useRef(runSelectedHydration);
@@ -6506,6 +6562,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       : TERMINAL_CONVERSATION_CACHE_TTL_MS;
     const reusable = Boolean(
       trusted
+      && !trusted.needsRefresh
+      && !trusted.running
+      && !previousRunningConversationIds.current.has(bindingId)
       && Date.now() - trusted.hydratedAt <= ttl
       && queryClient.getQueryData(sessionQueryKey(host, 'conversation-events', workspaceId, bindingId))
       && queryClient.getQueryData(sessionQueryKey(host, 'conversation-input-readiness', workspaceId, bindingId))
@@ -6524,11 +6583,13 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       hydrationRetryTimer.current = undefined;
     }
     if (reusable) return;
-    for (const resource of ['conversation-events', 'conversation-input-readiness', 'conversation-context']) {
-      queryClient.removeQueries({
-        queryKey: sessionQueryKey(host, resource, workspaceId, bindingId),
-        exact: true,
-      });
+    if (!trusted) {
+      for (const resource of ['conversation-events', 'conversation-input-readiness', 'conversation-context']) {
+        queryClient.removeQueries({
+          queryKey: sessionQueryKey(host, resource, workspaceId, bindingId),
+          exact: true,
+        });
+      }
     }
     hydrationSelectionTimer.current = window.setTimeout(() => {
       hydrationSelectionTimer.current = undefined;
@@ -6561,7 +6622,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     const bindingId = backgroundHydrationPrefetchCandidates.find(candidate => (
       candidate !== selected?.id
       && !backgroundHydrationPrefetches.current.has(candidate)
-      && !trustedHydrations.current.has(candidate)
+      && (!trustedHydrations.current.has(candidate) || trustedHydrations.current.get(candidate)?.needsRefresh)
     ));
     if (!bindingId) return;
     const timer = window.setTimeout(() => {
@@ -6573,11 +6634,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       setBackgroundHydrationPrefetchCandidates(current => current.filter(candidate => candidate !== bindingId));
       const controller = new AbortController();
       backgroundHydrationPrefetchControllers.current.set(bindingId, controller);
-      const request = api.conversationHydration(workspace.id, bindingId, controller.signal)
-        .then(hydration => {
-          controller.signal.throwIfAborted();
-          return publishHydration(workspace.id, bindingId, hydration);
-        });
+      const request = loadConversationHydration(workspace.id, bindingId, controller.signal);
       backgroundHydrationPrefetches.current.set(bindingId, request);
       void request.then(
         () => {
@@ -6599,7 +6656,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       );
     }, BACKGROUND_HYDRATION_PREFETCH_DELAY_MS);
     return () => window.clearTimeout(timer);
-  }, [api, backgroundHydrationPrefetchCandidates, backgroundHydrationPrefetchRevision, pageVisible, publishHydration, selected?.id, workspace]);
+  }, [backgroundHydrationPrefetchCandidates, backgroundHydrationPrefetchRevision, loadConversationHydration, pageVisible, selected?.id, workspace]);
 
   useEffect(() => {
     const workspaceId = workspace?.id;
@@ -8433,7 +8490,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       const key = sessionQueryKey(host, 'conversation-trusted-hydration', workspace!.id, message.bindingId);
       const trusted = queryClient.getQueryData<TrustedHydration>(key);
       if (trusted) {
-        const running = { ...trusted, running: true };
+        const running = { ...trusted, running: true, needsRefresh: true };
         trustedHydrations.current.set(message.bindingId, running);
         queryClient.setQueryData(key, running);
       }
@@ -9290,6 +9347,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   // A final-reply preview is only a compact sidebar projection. Keep it behind
   // the same gate as every other transcript until formal hydration is complete.
   const conversationInitialLoading = hydrationInteractionPending;
+  const conversationSnapshotUnavailable = Boolean(selected && selectedHydrationPhase === 'unavailable');
   useEffect(() => {
     if (!conversationReferenceTarget || conversationReferenceTarget.source_binding_id !== selected?.id || conversationInitialLoading) return;
     if (!displayedEvents.some(event => event.id === conversationReferenceTarget.event_id)) {
@@ -9312,7 +9370,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         ? 'rewriting'
       : !selected && !conversationDraft
         ? 'read-only'
-        : hydrationInteractionPending
+        : hydrationInteractionPending || conversationSnapshotUnavailable
         ? 'reconciling'
         : currentSessionControlState === 'pausing'
           ? 'pausing'
@@ -10067,7 +10125,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       <header className="agent-workbench-header"><div><nav className="agent-conversation-tabs" aria-label="会话页签"><button type="button" className="active" aria-current="page" title={selected ? conversationName(selected) : undefined} onDoubleClick={() => { if (!selected || !canWrite) return; setTitle(conversationName(selected)); setEditing(true); }}><MessageSquareText size={14}/><span>{selected ? conversationName(selected) : conversationDraft ? '新会话' : '开始一个新的会话'}</span></button></nav>{editing && <div className="agent-title-edit"><input ref={titleInput} aria-label="会话标题" value={title} onChange={event => setTitle(event.target.value)} onBlur={() => { if (!rename.isPending) { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }} onKeyDown={event => { if (event.key === 'Enter' && title.trim()) { event.preventDefault(); rename.mutate(); } if (event.key === 'Escape') { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }}/></div>}</div></header>
       <div className="agent-workbench-content">
       {runtime?.state === 'RECOVERING' && <section className="agent-runtime-recover"><LoaderCircle size={18}/><div><b>运行环境正在恢复</b><span>{runtime.message || '历史会话和工作区文件仍可查看；恢复完成后可继续发送消息和使用终端。'}</span></div></section>}
-      {conversationInitialLoading ? <div className="conversation-surface-empty" role="status"><LoaderCircle className="conversation-activity-spin" size={16}/><b>正在加载会话</b><span>正在读取最新消息与会话状态…</span></div> : selected || conversationDraft ? <ConversationSurface
+      {conversationSnapshotUnavailable ? <div className="conversation-surface-empty"><b>会话暂时无法加载</b></div> : conversationInitialLoading ? <div className="conversation-surface-empty" role="status"><LoaderCircle className="conversation-activity-spin" size={16}/><b>正在加载会话</b><span>正在读取最新消息与会话状态…</span></div> : selected || conversationDraft ? <ConversationSurface
         key={selected?.id ?? conversationDraft?.id}
         events={displayedEvents}
         isGenerating={conversationVisuallyActive}
@@ -10133,7 +10191,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       /> : <div className="agent-workbench-empty"><Bot size={32}/><b>新建会话开始协作</b><span>{features.workDirectories ? '每个会话共享同一工作区，但保留独立的对话与事件记录。' : '会话固定在当前节点 Attempt 的隔离工作目录。'}</span><button className="primary" disabled={!canOpenConversation} onClick={() => openConversationDraft({ displayName: features.workDirectories ? '根工作区' : '节点工作目录' }, { selectStandaloneRoot: features.workDirectories })}><Plus size={15}/>新建会话</button></div>}
       {visibleError && <ConversationErrorNotice key={composerScope} error={visibleError} onDismiss={dismissOperationError} transient={visibleError === operationError} onRetry={visibleError === hydrationError ? retryConversationHydration : undefined}/>}
       </div>
-      {(selected || conversationDraft) && runtime?.state !== 'RECOVERING' && !conversationInitialLoading && <div className="agent-composer-dock">
+      {(selected || conversationDraft) && runtime?.state !== 'RECOVERING' && !conversationInitialLoading && !conversationSnapshotUnavailable && <div className="agent-composer-dock">
         <div className={`agent-composer ${conversationVisuallyActive || pendingConfirmation ? 'busy' : ''}`}>
         {pendingConfirmation && <section className="agent-confirmation" aria-label="工具执行确认"><header><ShieldAlert size={17}/><div><b>工具正在等待你的确认</b><span>动作尚未执行。请核对整批内容后批准或拒绝。</span></div></header><div className="agent-confirmation-actions">{(pendingConfirmation.actions ?? []).map((action: AgentPendingConfirmationAction) => <article key={action.digest}><div><b>{action.summary || action.tool_name}</b><span>{action.security_risk || 'UNKNOWN'}</span></div>{Object.keys(action.arguments).length > 0 && <pre>{JSON.stringify(action.arguments, null, 2)}</pre>}</article>)}</div><textarea aria-label="工具确认理由" value={confirmationReason} maxLength={2000} placeholder="填写批准或拒绝理由…" onChange={event => setConfirmationReason(event.target.value)}/><footer><button type="button" className="danger" disabled={!confirmationReason.trim() || decideConfirmation.isPending} onClick={() => decideConfirmation.mutate(false)}><X size={14}/>拒绝整批</button><button type="button" className="primary" disabled={!confirmationReason.trim() || decideConfirmation.isPending} onClick={() => decideConfirmation.mutate(true)}><Check size={14}/>批准整批</button></footer></section>}
         {(visibleQueuedMessages.length > 0 || (selected && !queueModeEnabled)) && <section className="agent-queued-messages" aria-label="消息投递队列">

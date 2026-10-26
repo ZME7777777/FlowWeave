@@ -3626,6 +3626,10 @@ class OpenHandsRuntime:
 
         anchor = self._formal_identity(cursor, field="cursor", required=True)
         assert anchor is not None
+        if leaf_event_id == anchor:
+            # Native state already proves this exact cached leaf is current.
+            # No event search is needed when there are no descendants.
+            return []
         page_id = leaf_event_id
         pages_seen: set[str] = set()
         by_id: dict[str, dict[str, Any]] = {}
