@@ -109,7 +109,22 @@ RLS 读写、bootstrap 原生能力继承和降级数据保护四项通过。Web
 暂停恢复三项通过（受控 API／WebSocket，非真实模型执行）。原工作区全模块
 测试 42 passed／84 failed，失败涉及旧无 principal 夹具、历史路径与状态预期；
 product-flow 两个旧入口／登录夹具超时，不计为通过，当前定向用例覆盖相关合并功能。
-正式发布由本次用户明确授权继续执行，发布版本与部署验收在收尾记录中补充。
+正式发布（2026-10-26）：用户明确确认受管服务器并授权直接部署。已提交的合并
+版本 `7fd33714f2f7d6af16c7cbb2998750752f23889a` 完成 platform／web 两范围正式
+预检及 commit-bound 最小上下文，构建并核实 linux/amd64 和 OCI revision。实际
+平台镜像核对五个源码哈希，隔离临时 PostgreSQL 验证空库到 0174、0172 原记录
+保留、强制 RLS、空配置降级／重升级；临时数据库已回收。实际 Web 镜像在前缀
+静态入口执行增量原子展示八项与默认配置／正文触发／侧栏／容器控制三项，共
+11 passed，使用受控 API，不记为线上真实会话或模型执行验收。
+
+正式 migration 成功到唯一 head `0174_agent_workspace_user_defaults`，随后同步
+recreate api／stream-api／worker／web；四服务镜像 revision 一致，health/readiness
+通过。生产表 RLS 和六种能力约束核对通过，公开 HTML／深层路由／入口资源及
+54 个浏览器已加载资源 SHA-256 与运行镜像一致。全新 Chromium 的前缀登录、
+深层会话登录和根登录页通过，认证 API 为 401 且没有根路径 API 请求。两个
+scope 均完成 `remote-release-finish`，仅执行受管上下文和精确 rollback tags 收尾；
+旧服务日志与回滚镜像保留。服务器配置及 43 个非发布容器的 image／StartedAt
+保持不变，未重建 Provider 或替换已有 Runtime，会话与持久数据保留。
 
 ### FR-699 会话历史缓存与原生增量 hydration — DONE
 
