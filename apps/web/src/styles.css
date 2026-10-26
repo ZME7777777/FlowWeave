@@ -1320,6 +1320,7 @@ body:has(.login-page){min-width:0}
 .flow-run-tree-run .run-runtime-badge.available{background:#e1f1e6;color:#176249}
 .flow-run-tree-run .run-runtime-badge.paused{background:#f4ead7;color:#886325}
 .run-directory-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px}
+.run-directory-lifecycle-error{margin:12px 0 0}
 .flow-run-record-directory>.flow-run-directory-summary{margin-top:16px;border:1px solid #e4ebe6;border-radius:8px;overflow:hidden}
 .workbench-page.flow-run-record-workspace{grid-template-columns:minmax(320px,390px) minmax(0,1fr)}
 .workbench-page.flow-run-record-workspace>.run-record-detail-panel{grid-column:1;grid-row:1;border-left:0}
