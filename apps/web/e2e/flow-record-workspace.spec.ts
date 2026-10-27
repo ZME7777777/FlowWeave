@@ -330,7 +330,7 @@ for (const kind of ['MANUAL', 'AUTOMATIC'] as const) {
     const automatic = { ...automaticBase, name: '新增验收记录' };
     await page.route('**/api/v1/**', async route => {
       const request = route.request();
-      const path = new URL(request.url()).pathname;
+      const path = new URL(request.url()).pathname.replace(/^\/flowweave/, '');
       const respond = (body: unknown) => route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) });
       if (path.endsWith('/auth/me')) return respond(authenticatedUser);
       if (path.endsWith('/auth/profile')) return respond({ display_name: '验收用户', email: 'review@example.test' });

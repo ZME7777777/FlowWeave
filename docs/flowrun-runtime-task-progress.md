@@ -12447,3 +12447,43 @@ Chromium 定向用例通过，覆盖 Git 设置、文件树复制／折叠、拖
 受控 API／WebSocket 回归不代表真实模型业务执行。本片从同一已提交版本发布
 platform／Web，实际身份、健康、路由和容量收尾结果在发布后补记。当前与下一
 可执行重构切片均为 NONE。
+
+
+OPS-17 正式发布补记（2026-10-27）：实际部署代码为
+`290d4c0007cefb6fcd284429d365cb36c41b394e`，同时保留本地 `206b3718` 与远程
+`651a2a18` 的全部祖先。platform／Web 正式预检与 commit-bound 最小上下文
+prepare 通过；并行 prepare 的平台请求被发布锁拒绝，串行重试成功，无目录覆盖。
+源归档 SHA-256 分别为
+`e72a032b9818307164c467a942bf811580c2a8f369c40f21b83158bd71c8b04d`、
+`67dbeb65ee1672bfe2a6809389688148e1dec38f0e01e903c88251d460ce6cc8`。
+实际 linux/amd64 镜像 ID：platform
+`sha256:5a92fc96767259d7681c62301338c4da6ce95d3c10f9a814752856467c7ac943`，
+Web `sha256:c4f9ab7aef0b054a5caa8991bdc95f80deaef5ff5fd472fe6fa490f6cba0056d`。
+四服务实际镜像 OCI revision 均匹配发布 commit，两个平台变更源码摘要匹配。
+
+保留原日志与精确 rollback tags 后，正式 migration 成功，同步 recreate
+api／stream-api／worker／web，health／readiness／Web HTTP 均通过。数据库
+唯一 head 保持 `0178_merge_schedule_credentials`；服务器 Compose／env 摘要
+及其余 43 个容器的 image／StartedAt 不变。没有修改 Provider、OpenHands 镜像、
+Runtime generation 或用户业务会话；四服务发布后日志错误计数均为零。
+
+实际运行 Web 镜像的 14 项不同 Chromium 定向回归通过：十项会话界面、三项运行
+记录与一项独立 Git 摘要验收，覆盖同一文件同时暂存和未暂存时独立计数、刷新
+期间保留计数及完成后的远端状态。运行记录创建夹具补齐与该文件其他用例一致的
+生产前缀归一化后，两种创建模式均通过。旧 product-flow 综合用例仍查找已删除
+的“Agent 会话”导航按钮，在进入 Git 断言前超时，不计为通过；独立验收补足
+本次 Git 行为。53 项加载的 JS／CSS SHA-256 与运行镜像导出内容一致。
+受控 API／WebSocket 回归不等于真实模型业务执行，没有发送或重放业务消息。
+
+服务器实际 Chromium 验证前缀登录、Agent 深层路由和根登录入口；公网 HTML
+与入口 JS／CSS 匹配运行镜像，API 认证边界为 401，全新浏览器确认认证请求带
+部署前缀、根 API 请求为零。短时远端验收延迟后连接、健康与上述检查均成功。
+容量收尾和最终状态在完成后补记；本补记与夹具修正不改变实际部署应用身份。
+
+
+platform／Web remote-release-finish 均通过健康、版本与容量门禁，没有过期
+受管上下文候选。精确回收两个可回收历史 image ID 的 tags，保留当前镜像、
+每仓库一个不同版本回滚及所有容器引用；Web 收尾无剩余镜像候选。不清理共享
+BuildKit、卷、Workspace 或数据库备份。收尾后再次核对四服务版本／健康、
+唯一迁移 head、服务器配置及其他 43 个容器。本地集成与补记提交未推送，
+当前与下一可执行重构切片均为 NONE。
