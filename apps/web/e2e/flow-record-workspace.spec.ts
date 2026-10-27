@@ -348,7 +348,8 @@ for (const kind of ['MANUAL', 'AUTOMATIC'] as const) {
     await expect(page.getByRole('button', { name: '管理运行记录', exact: true })).toHaveCount(0);
     await page.locator('.run-directory-actions').getByRole('button', { name: '新增运行记录', exact: true }).click();
     const chooser = page.getByRole('dialog', { name: '选择运行类型' });
-    await chooser.getByRole('button', { name: kind === 'MANUAL' ? /逐步运行/ : /连续运行/ }).click();
+    await chooser.getByRole('button', { name: '运行类型' }).click();
+    await chooser.getByRole('option', { name: kind === 'MANUAL' ? '逐步运行' : '连续运行' }).click();
     await chooser.getByRole('button', { name: '继续创建' }).click();
     const form = page.getByRole('dialog', { name: kind === 'MANUAL' ? '新增逐步运行记录' : '新增连续运行', exact: true });
     await expect(form.getByRole('button', { name: '导入 / 粘贴' })).toBeVisible();
@@ -472,7 +473,8 @@ for (const kind of ['MANUAL', 'AUTOMATIC'] as const) {
     await page.locator('.flow-run-tree-run').click();
     await page.locator('.run-directory-actions').getByRole('button', { name: '新增运行记录', exact: true }).click();
     const chooser = page.getByRole('dialog', { name: '选择运行类型' });
-    await chooser.getByRole('button', { name: kind === 'MANUAL' ? /逐步运行/ : /连续运行/ }).click();
+    await chooser.getByRole('button', { name: '运行类型' }).click();
+    await chooser.getByRole('option', { name: kind === 'MANUAL' ? '逐步运行' : '连续运行' }).click();
     await chooser.getByRole('button', { name: '继续创建' }).click();
     await page.getByRole('button', { name: '导入 / 粘贴', exact: true }).click();
     const importDialog = page.getByRole('dialog', { name: kind === 'MANUAL' ? '导入逐步运行配置' : '导入连续运行配置' });
