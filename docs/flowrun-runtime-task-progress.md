@@ -2,7 +2,7 @@
 
 > 创建日期：2026-08-21
 > 状态：`UPSTREAM BASELINE ADOPTION COMPLETE`
-> 当前执行切片：`OPS-11`
+> 当前执行切片：`NONE`
 > 下一可执行切片：`NONE`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
@@ -12071,7 +12071,7 @@ BuildKit、卷、Workspace 或数据库备份。收尾后再次复核五服务�
 实际部署代码身份。
 
 
-### OPS-11 远程会话搜索与管理员临时服务合并发布 — CURRENT
+### OPS-11 远程会话搜索与管理员临时服务合并发布 — DONE
 
 用户在本会话明确授权拉取远程、解决冲突并直接部署受管服务器。
 集成远程 `6f488934` 与本地 `40ee3a73`；保留远程会话搜索、顶部错误提示和
@@ -12108,3 +12108,67 @@ OPS-11 线上验收补齐：八服务切换及健康／版本检查通过，真�
 导致当轮清理提前结束。修正资源选择为仅扫描明确 RUNNING 的 Agent Runtime，
 不启动、删除或修改历史容器；新增运行／退出／未启动／未知状态过滤回归。
 随后以新提交重新冻结镜像并完成最终发布，最终身份以正式补记为准。
+
+OPS-11 正式发布补记（2026-10-27）：最终部署代码为
+`717ae8762dae4612f8ed2d776093d2ce4d48d389`，包含拉取前 `40ee3a73` 与
+远程 `6f488934` 的全部祖先。集成提交为 `abe75e42`；发布前补齐采集 Cursor
+接口和已退出容器过滤，均已独立提交。Provider 定向权限／归属及进程参数
+十项、管理员凭据／scope／清理／写入六项通过；这些与扩展套件重叠，
+不累加为独立总数。扩展 Provider 套件的四项既有失败已在拉取前基线逐项
+复现，没有新增失败，不声称全套通过。Web／Admin Web typecheck、受影响
+ESLint／Ruff、语法、diff 与 CURRENT 唯一性检查通过。
+
+Runtime／other 正式预检与 platform／Web commit-bound 最小上下文 prepare
+通过。最终 platform／Web 归档 SHA-256 分别为
+`ba644e6c6106dbe52c661359b527974b79f393b039b11198ee3e105f90d85eee`、
+`c0b051689dd01e44b83a41a7ca2d3ab9391d5c742487d2bfd1643c7642533ace`；
+Admin 最小归档为
+`8349f29885a948f08e918ed2c09dba35b342f1a05e236ab72dcef20e26cf454f`，
+从同一 commit 生成并在服务器核对摘要，置于受管 platform 上下文内。
+最终五个 linux/amd64 镜像均核对 OCI revision；image ID 为：
+platform `sha256:a78f76bf6967648ab28f510ba7cb642e9579065f724752bc8baa2832dd8e7efc`，
+Web `sha256:e93f753908a4242b72813b093ec4ba28561ac82e203b4205be7b7d43159ae4a7`，
+admin-api `sha256:c4ae6fa8e7b12c191c84a0f3828a3403f219775908f1c26572409365950d75fd`，
+admin-metrics `sha256:ca3d329d2b6788219a52c46cb899fae5fa7df5320fea9cac89d9889d088fb8f0`，
+admin-web `sha256:e735e2bebfa272c3d04985975ddf4554f408f878171b2aafff98a43348884cdb`。
+
+最终实际平台镜像在隔离 PostgreSQL 完成完整空库到 0176、重复升级和退役表
+强制 RLS 验证；实际采集镜像连接同一隔离库，验证批量写入、过期测试样本
+保留期清理与 advisory lock 释放。测试数据库／网络均为本次唯一资源并已移除。
+固定 Runtime 隔离进程探针验证监听扫描、age_seconds、错误启动身份拒绝与
+精确停止；不挂载业务目录、不调用模型。
+
+原服务器 Compose／env 先保留时间戳备份并核对权限、owner；只为 Provider、
+admin-api、admin-metrics 加入专用控制密钥及后两者的既有 manager scope。
+密钥仅在服务器安全生成且未回显；完整 Compose 模型复核确认其他配置不变。
+后续验收修复未再更改配置，原备份保留于服务器，不复制进仓库或聊天。
+每次 Provider 切换前均通过两个 Runtime、658 个正式原生会话的 activity 门禁，
+没有 running／starting／executing／stopping 项。先正式 migration，再定向更新
+Provider／api／stream-api／worker／Web／admin-api／admin-metrics／admin-web。
+八服务最终 revision 一致、health／readiness 和 Web HTTP 正常，生产数据库
+唯一 head 仍为 `0176_agent_temporary_services`，原表和 owner FORCE RLS 保留。
+其他 39 个容器的 image 与 StartedAt 在最终复核时一致，包括既有 Runtime；
+未构建 OpenHands 镜像或替换 Runtime generation。
+
+线上只读检查两个运行 Runtime 的临时服务列表和正式进程年龄／启动身份，
+管理员观察／控制查询均成功；观察密钥停止为 403，未认证请求为 401。
+未向业务进程发送停止请求。采集已实际写入样本，最终新容器日志没有采集或
+临时服务清理错误，已退出历史容器被过滤且原容器保留。
+
+服务器实际 Chromium 验证公网前缀登录、Agent 深层路由和根登录页；管理入口
+及 API 认证边界通过。全新浏览器 Network 确认认证请求使用部署前缀，无根路径
+API 请求。Web 与管理 HTML／入口 JS／CSS 摘要匹配运行镜像。导出实际构建
+资源后，以受控 API／WebSocket 完成六项 Web 与一项 Admin Chromium 回归；
+其中搜索用例在构建资源中更早恢复小历史，原“历史尚未进 DOM”断言存在时序
+差异，调整受控验收副本后验证搜索计数、上下导航及正式 event id 定位；
+不把该运行记作未渲染缓存历史的验收。开发资源的原搜索用例另已通过。
+最终实际加载的 Web 45 项、管理 2 项 JS／CSS SHA-256 均匹配最终运行镜像。
+这些受控回归不等于真实模型执行业务，没有向业务会话发送、暂停或继续消息。
+
+platform／Web remote-release-finish 均通过健康、版本及容量门禁，回收四份
+超过 24 小时且未引用的受管上下文，执行精确平台／Web 历史 tag 保留流程；
+保留当前镜像、每仓库一个不同版本回滚和所有容器引用。最终只读审计无过期
+受管上下文候选。未清理共享 BuildKit、卷、Workspace 或数据库备份。收尾后
+再次确认八服务版本／健康、管理员查询与采集日志，以及其他容器不变。
+本地 feat/refactor 将快进纳入本次集成与验收记录，未推送；本补记不改变
+实际部署代码身份。当前与下一可执行切片均为 NONE。
