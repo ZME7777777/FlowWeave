@@ -12690,3 +12690,37 @@ CURRENT 唯一性通过，唯一 Alembic head 保持 `0178_merge_schedule_creden
 以及原选择与打开、容器操作和两种创建。使用受控 API，不代表真实模型执行。
 本片沿用当前会话授权发布 platform／Web，实际身份、健康、查询观测与容量
 收尾完成后补记。当前与下一可执行重构切片均为 NONE。
+
+
+OPS-22 正式发布补记（2026-10-27）：实际部署代码为
+`d3f9ff5b669989de7328fd0c661d2f3753cfc39c`。platform／Web 正式预检与
+commit-bound 最小上下文 prepare 通过，源归档 SHA-256 分别为
+`a76095603f965f73a69cfa0d38d6c097d26dcb52f42f9eeb673337082e44c1d5`、
+`aa201a90a96f85a7756b4aae1119c96d2d3e0c39b0aa967c30d5b69761783455`。
+实际 linux/amd64 镜像 ID：platform
+`sha256:8c7191d103224b78dc4f01a676734387bd673c7ac1419d35d673b9b1a11d222d`，
+Web `sha256:8416c72eb7aba46346462d7776e3567a13fe0109b8a8f895abdd54a26ef0163b`，
+均与本次 OCI revision 一致。保留旧服务日志和精确 rollback tags 后，正式
+migration 成功，唯一 head 仍为 `0178_merge_schedule_credentials`；同步
+recreate api／stream-api／worker／web，健康／readiness／HTTP 通过，服务器
+Compose／env 摘要及其他 43 个容器的 image／StartedAt 不变。未重启 Provider
+或替换 Runtime，四服务发布后日志错误计数为零。
+
+实际 API 镜像在服务器上通过正常用户上下文执行 PostgreSQL 只读事务，核验
+新目录服务返回 11 条混合类型记录，响应 3312 bytes；单次服务查询观测为
+47.65ms，不含认证、网络、浏览器和连接建立，不作端到端耗时承诺。该页游标
+已耗尽；真实生产数据不足 30 条，因此没有声称生产实跑第二页，分页及迟到
+隔离由独立 PostgreSQL 和 70 条受控 Chromium 用例验证。没有修改业务数据
+或向业务会话发送消息。
+
+服务器 Chromium 验证前缀登录、Agent 深层路由、根登录和 API 401 认证边界
+通过；公网 HTML／入口 JS／CSS 匹配运行镜像，新浏览器认证请求带部署前缀，
+根 API 请求数为零。容量收尾及最终状态完成后补记。
+
+
+platform／Web remote-release-finish 均通过健康、版本与容量门禁；精确回收
+两个超过 24 小时且无引用的受管上下文及两个可回收历史 image ID 的 tags。
+保留当前镜像、每仓库一个不同版本回滚及所有容器引用，不清理共享 BuildKit、
+卷、Workspace 或数据库备份。Web 收尾无剩余候选；收尾后再次核对四服务
+版本／健康、唯一迁移 head、服务器配置和其他 43 个容器保持。本补记不改变
+实际部署应用身份，本地提交未推送；当前与下一可执行重构切片均为 NONE。
