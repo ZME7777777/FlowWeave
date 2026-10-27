@@ -12299,3 +12299,34 @@ Web typecheck、受影响 ESLint 和 diff 检查通过。定向 Chromium 验证�
 工作区详情加载门禁一项和正式历史搜索一项通过。全部使用受控 API／WebSocket，
 不代表真实模型执行业务。本片只发布 Web，实际版本、路由及收尾结果完成后补记。
 当前与下一可执行重构切片均为 NONE。
+
+
+OPS-14 正式发布补记（2026-10-27）：实际部署代码为
+`8474f49d25197992b5b5c6454a6521db956c6d97`。Web 正式预检与最小上下文 prepare
+通过，归档 SHA-256 为
+`9bf1bb4332145ba58375d95721e3899cf8ba7d192a275a652ae9358f44efdc4f`；
+实际 linux/amd64 Web image ID 为
+`sha256:00311b4b0263d0984aae6c5c0ca7dc8025dd1db2811623a60a4a4f6ccd728c5c`，
+OCI revision 核对通过。服务器保留原 Web 日志和 rollback tag 后仅 recreate Web，
+HTTP／健康通过；其余 46 个容器的 image／StartedAt 及 Compose／env 摘要不变，
+数据库 head 保持 `0177_merge_workspace_credentials`。未重启任何 API、Worker、
+Provider 或 Runtime，也未修改数据库或用户会话。
+
+开发资源共八项不同 Chromium 定向用例通过，含补充的多子智能体无滚动回归。
+导出实际线上镜像资源，七项原布局／显隐／宽度／全屏／溢出回归全部通过；
+已有历史搜索的受控验收副本另验证结果计数、上下导航与正式 event id 定位。
+该副本沿用 OPS-13 对历史预取时序的限定，不声称额外覆盖未渲染缓存历史；
+开发资源的原历史搜索用例已通过。受控 API／WebSocket 验收不代表真实模型执行。
+实际截图确认搜索与概览为独立圆角面板，并共用相同浮动宽度及 10px 间距。
+
+服务器实际 Chromium 验证前缀登录、Agent 深层路由和根登录入口；认证边界为 401，
+公网 HTML／入口 JS／CSS 与运行镜像相同。全新浏览器网络日志确认认证请求带
+部署前缀，没有根 API 请求。AGENTS 补充搜索属于悬浮信息卡容器的长期约束。
+本补记不改变已部署应用代码身份；当前与下一可执行重构切片均为 NONE。
+
+
+所加载的 45 个 JS／CSS SHA-256 与线上镜像一致。Web remote-release-finish
+通过健康、版本与容量门禁，精确回收一个可回收历史 image ID 的 tags，保留
+当前 Web、一个不同版本回滚及所有容器引用；没有过期受管上下文候选。
+收尾后再次核对 Web 版本／健康、服务器配置及其他 46 个容器均符合预期。
+未清理共享 BuildKit、卷、Workspace 或数据库备份。最终只读 audit 无回收候选。
