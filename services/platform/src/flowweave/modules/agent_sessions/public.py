@@ -20,7 +20,6 @@ from flowweave.modules.agent_sessions.infrastructure.models import (
     AgentConversationCredentialSync,
     AgentConversationMessageAttachment,
     AgentConversationUsageBucket,
-    AgentTemporaryService,
 )
 
 
@@ -154,7 +153,6 @@ __all__ = [
     "AgentConversationCredentialSync",
     "AgentConversationMessageAttachment",
     "AgentConversationUsageBucket",
-    "AgentTemporaryService",
     "AgentSessionHostContext",
     "AgentSessionPermission",
     "ACCESS_FILES",

@@ -98,6 +98,8 @@ def listen_inodes(path):
 
 
 inodes = {**listen_inodes("/proc/net/tcp"), **listen_inodes("/proc/net/tcp6")}
+clock_ticks = os.sysconf("SC_CLK_TCK")
+uptime_seconds = float(Path("/proc/uptime").read_text().split()[0])
 services = []
 for entry in os.listdir("/proc"):
     if not entry.isdigit() or entry == "1":
@@ -125,6 +127,7 @@ for entry in os.listdir("/proc"):
         services.append({
             "pid": pid,
             "started_ticks": stat_fields[19],
+            "age_seconds": max(0, int(uptime_seconds - int(stat_fields[19]) / clock_ticks)),
             "process_group_id": int(stat_fields[2]),
             "command": " ".join(cmdline)[:2000],
             "working_directory": cwd if cwd.startswith("/runtime/workspace/project") else None,
@@ -158,7 +161,7 @@ try:
         try:
             parts = open(f"/proc/{entry}/stat", encoding="utf-8").read().rsplit(")", 1)[1].split()
             parents.setdefault(int(parts[1]), []).append(int(entry))
-        except (FileNotFoundError, PermissionError, ProcessLookupError, OSError, ValueError, IndexError):
+        except (OSError, ValueError, IndexError):
             continue
     descendants = []
     pending = [pid]

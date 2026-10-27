@@ -56,6 +56,91 @@ class AdminControlError(RuntimeError):
         self.code = code
 
 
+
+
+async def list_runtime_services(
+    settings: Settings, *, resource_name: str, resource_id: str
+) -> list[dict[str, Any]]:
+    payload = {
+        "manager_scope": settings.sandbox_manager_scope,
+        "resource_name": resource_name,
+        "resource_id": resource_id,
+        "remove_network": False,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=settings.admin_api_request_timeout_seconds) as client:
+            response = await client.post(
+                f"{settings.runtime_provider_url.rstrip('/')}/v1/runtimes/services/list",
+                json=payload,
+                headers={"Authorization": f"Bearer {settings.admin_runtime_observer_key}"},
+            )
+        body = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise AdminControlError(
+            status=503,
+            code="ADMIN_RUNTIME_SERVICE_UNAVAILABLE",
+            message="The Runtime service inspection is unavailable",
+        ) from exc
+    if (
+        response.is_error
+        or not isinstance(body, dict)
+        or not isinstance(body.get("services"), list)
+    ):
+        raise AdminControlError(
+            status=response.status_code if response.is_error else 502,
+            code="ADMIN_RUNTIME_SERVICE_PROTOCOL_ERROR",
+            message="The Runtime service inspection returned invalid data",
+        )
+    return [item for item in body["services"] if isinstance(item, dict)]
+
+
+async def stop_runtime_service(
+    settings: Settings,
+    *,
+    resource_name: str,
+    resource_id: str,
+    pid: int,
+    started_ticks: str,
+    process_group_id: int | None,
+) -> bool:
+    if not settings.admin_runtime_controller_key:
+        raise AdminControlError(
+            status=503,
+            code="ADMIN_RUNTIME_SERVICE_CONTROL_UNAVAILABLE",
+            message="Administrator Runtime service controls are not configured",
+        )
+    payload = {
+        "manager_scope": settings.sandbox_manager_scope,
+        "resource_name": resource_name,
+        "resource_id": resource_id,
+        "remove_network": False,
+        "pid": pid,
+        "started_ticks": started_ticks,
+        "process_group_id": process_group_id,
+    }
+    try:
+        timeout = max(settings.admin_api_request_timeout_seconds, 20.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.post(
+                f"{settings.runtime_provider_url.rstrip('/')}/v1/runtimes/services/stop",
+                json=payload,
+                headers={"Authorization": f"Bearer {settings.admin_runtime_controller_key}"},
+            )
+        body = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise AdminControlError(
+            status=503,
+            code="ADMIN_RUNTIME_SERVICE_CONTROL_UNAVAILABLE",
+            message="The Runtime service stop operation is unavailable",
+        ) from exc
+    if response.is_error or not isinstance(body, dict) or not isinstance(body.get("stopped"), bool):
+        raise AdminControlError(
+            status=response.status_code if response.is_error else 502,
+            code="ADMIN_RUNTIME_SERVICE_CONTROL_PROTOCOL_ERROR",
+            message="The Runtime service stop operation returned invalid data",
+        )
+    return body["stopped"]
+
 async def request_runtime_control(
     settings: Settings,
     command: RuntimeControlCommand,
@@ -156,7 +241,8 @@ async def diagnose_runtime(
             message="The platform Runtime diagnostic service returned invalid data",
         ) from exc
     if response.is_error:
-        detail = body.get("error") if isinstance(body, dict) else {}
+        raw_detail = body.get("error") if isinstance(body, dict) else None
+        detail = raw_detail if isinstance(raw_detail, dict) else {}
         raise AdminControlError(
             status=response.status_code,
             code=str(detail.get("code") or "ADMIN_CONTROL_FAILED"),

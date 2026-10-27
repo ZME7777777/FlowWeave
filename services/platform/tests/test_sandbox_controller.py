@@ -1774,11 +1774,19 @@ def test_local_plugin_validation_rejects_cross_validation_path_before_docker(set
     assert touched == []
 
 
-@pytest.mark.parametrize("headers", [_api_headers(), _headers()])
-@pytest.mark.parametrize("operation", ["list", "stop"])
-def test_temporary_service_routes_authorize_owned_runtime(
-    settings, monkeypatch, headers, operation
-):
+@pytest.mark.parametrize(
+    "operation,role", [("list", "observer"), ("list", "controller"), ("stop", "controller")]
+)
+def test_temporary_service_routes_authorize_owned_runtime(settings, monkeypatch, operation, role):
+    observer = "admin-observer-test-key-with-at-least-32-bytes"
+    controller = "admin-controller-test-key-with-at-least-32-bytes"
+    headers = {"Authorization": f"Bearer {observer if role == 'observer' else controller}"}
+    configured = _settings(settings).model_copy(
+        update={
+            "admin_runtime_observer_key": observer,
+            "admin_runtime_controller_key": controller,
+        }
+    )
     observation = DockerObservation(
         resource_id=_RESOURCE_ID,
         resource_name="fw-sbx-temporary-service",
@@ -1801,7 +1809,7 @@ def test_temporary_service_routes_authorize_owned_runtime(
     }
     if operation == "stop":
         payload.update(pid=91, started_ticks="42", process_group_id=91)
-    client = TestClient(create_app(_settings(settings)))
+    client = TestClient(create_app(configured))
     response = client.post("/v1/runtimes/services/" + operation, headers=headers, json=payload)
     assert response.status_code == 200
     assert response.json() == ({"services": []} if operation == "list" else {"stopped": True})
@@ -1811,3 +1819,32 @@ def test_temporary_service_routes_authorize_owned_runtime(
     assert response.status_code == 409
     assert len(commands) == 1
     assert client.post("/v1/runtimes/services/" + operation, json=payload).status_code == 401
+
+
+@pytest.mark.parametrize(
+    "operation,role",
+    [
+        ("list", "api"),
+        ("list", "worker"),
+        ("stop", "api"),
+        ("stop", "worker"),
+        ("stop", "observer"),
+    ],
+)
+def test_temporary_services_deny_non_admin_control_roles(settings, monkeypatch, operation, role):
+    observer = "admin-observer-test-key-with-at-least-32-bytes"
+    configured = _settings(settings).model_copy(update={"admin_runtime_observer_key": observer})
+    keys = {"api": _API_KEY, "worker": _WORKER_KEY, "observer": observer}
+    touched = []
+    monkeypatch.setattr(DockerSandboxProvider, "inspect", lambda *_: touched.append(True))
+    response = TestClient(create_app(configured)).post(
+        "/v1/runtimes/services/" + operation,
+        headers={"Authorization": "Bearer " + keys[role]},
+        json={
+            "manager_scope": _SCOPE,
+            "resource_name": "fw-sbx-temporary-service",
+            "resource_id": _RESOURCE_ID,
+        },
+    )
+    assert response.status_code == 403
+    assert touched == []

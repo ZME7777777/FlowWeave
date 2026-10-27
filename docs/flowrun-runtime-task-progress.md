@@ -2,7 +2,7 @@
 
 > 创建日期：2026-08-21
 > 状态：`UPSTREAM BASELINE ADOPTION COMPLETE`
-> 当前执行切片：`NONE`
+> 当前执行切片：`OPS-11`
 > 下一可执行切片：`NONE`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
@@ -12069,3 +12069,29 @@ platform／Web remote-release-finish 均通过健康、版本与容量门禁，�
 BuildKit、卷、Workspace 或数据库备份。收尾后再次复核五服务版本／健康、
 配置与其他容器不变。当前与下一可执行重构切片均为 NONE；本补记提交不改变
 实际部署代码身份。
+
+
+### OPS-11 远程会话搜索与管理员临时服务合并发布 — CURRENT
+
+用户在本会话明确授权拉取远程、解决冲突并直接部署受管服务器。
+集成远程 `6f488934` 与本地 `40ee3a73`；保留远程会话搜索、顶部错误提示和
+管理员临时服务管理，解决 Provider 测试冲突并保留已发布的 0176 原始迁移及
+退役表的用户隔离注册，不删除表或记录，不改写服务器已执行的迁移历史。
+临时服务查询只向管理员观察／控制身份开放，停止只向专用控制身份开放；
+普通 API／Worker 权限已移除。窄屏错误提示保留顶部居中并修正绝对定位下
+fit-content 的收缩导致的换行。
+
+发布前：Provider／进程所有权与权限矩阵十项通过，管理员请求凭据／scope、
+无密钥拒绝和过期清理边界四项通过；这十四项不重复累计。Web 与 Admin Web
+typecheck、受影响 ESLint／Ruff、语法与 diff 检查通过。六项不同 Chromium
+定向用例通过，覆盖会话搜索（含缓存历史）、错误提示与恢复、浏览器入口和
+工具布局；其中窄屏提示首次失败，修正后单独通过。受控 API／WebSocket
+验证不等于真实模型业务执行。源码 Alembic 唯一 head 为
+`0176_agent_temporary_services`。
+
+正式 Runtime／other 预检通过；首次只读原生活跃门禁检查两个 Runtime 的
+658 个会话，无运行项。发布范围包含 Provider、platform、Web、admin-api、
+admin-metrics 和 admin-web；仅在已验证服务器内备份后为三个相关服务补充
+专用控制密钥与既有 manager scope。后续使用同一已提交代码的最小归档构建，
+迁移及再次活跃门禁通过后定向更新，健康／版本／路由与容量结果实际完成后补记。
+不构建或替换既有 OpenHands Runtime generation。
