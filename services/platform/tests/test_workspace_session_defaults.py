@@ -41,6 +41,7 @@ def test_shared_workspace_defaults_are_user_isolated(settings, db_session_factor
         }
         assert conversations._workspace_credential_defaults(db, workspace.id) is None
         conversations.replace_workspace_session_configuration(db, workspace.id, (), ())
+        assert conversations._workspace_credential_defaults(db, workspace.id) == ()
         db.commit()
 
     with settings_context(settings), tenant_user(USER_USER_ID), db_session_factory() as db:
@@ -53,6 +54,7 @@ def test_shared_workspace_defaults_are_user_isolated(settings, db_session_factor
         assert conversations.workspace_session_configuration(db, workspace.id)[
             "credential_ids"
         ] == [other]
+        assert conversations._workspace_credential_defaults(db, workspace.id) is None
         with pytest.raises(DomainError):
             with db.begin_nested():
                 conversations.replace_workspace_session_configuration(db, workspace.id, (), (own,))
@@ -74,6 +76,58 @@ def test_shared_workspace_defaults_are_user_isolated(settings, db_session_factor
         assert conversations.workspace_session_configuration(db, workspace.id)[
             "credential_ids"
         ] == [other]
+
+
+def test_credential_defaults_upgrade_preserves_explicit_selections(settings, db_session_factory):
+    config = Config(str(Path(__file__).parents[1] / "alembic.ini"))
+    config.attributes["database_url"] = settings.database_url
+    command.downgrade(config, "0175_merge_workspace_session_defaults")
+    command.upgrade(config, "0176_agent_temporary_services")
+    engine = db_session_factory.kw["bind"]
+    with engine.begin() as connection:
+        for index, values in enumerate(("[]", '["saved"]')):
+            connection.execute(
+                text(
+                    "INSERT INTO agent_workspace_session_configurations "
+                    "(id, owner_user_id, workspace_id, credential_ids_json, updated_at) "
+                    "VALUES (:id, :owner, :id, CAST(:values AS json), now())"
+                ),
+                {"id": f"config-{index}", "owner": FLOWWEAVE_USER_ID, "values": values},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO agent_work_directories "
+                    "(id, owner_user_id, workspace_id, display_name, session_credential_ids_json, "
+                    "session_capability_ids_json, current_version, row_version, "
+                    "created_at, updated_at) "
+                    "VALUES (:id, :owner, 'shared', :id, CAST(:values AS json), '[]', "
+                    "1, 1, now(), now())"
+                ),
+                {"id": f"directory-{index}", "owner": FLOWWEAVE_USER_ID, "values": values},
+            )
+    command.upgrade(config, "head")
+    command.upgrade(config, "head")
+    with engine.connect() as connection:
+        assert connection.execute(
+            text(
+                "SELECT credential_ids_json, credentials_configured "
+                "FROM agent_workspace_session_configurations ORDER BY id"
+            )
+        ).all() == [([], False), (["saved"], True)]
+        assert connection.execute(
+            text("SELECT session_credential_ids_json FROM agent_work_directories ORDER BY id")
+        ).scalars().all() == [None, ["saved"]]
+        assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == (
+            ScriptDirectory.from_config(config).get_current_head()
+        )
+        assert all(
+            connection.execute(
+                text(
+                    "SELECT relrowsecurity, relforcerowsecurity FROM pg_class "
+                    "WHERE relname='agent_temporary_services'"
+                )
+            ).one()
+        )
 
 
 def test_workspace_defaults_postgres_rls_enforces_reads_and_writes(db_session_factory):
@@ -153,9 +207,7 @@ def test_workspace_defaults_migration_refuses_to_discard_saved_configuration(
         )
 
 
-def test_named_workspace_defaults_are_separate_and_reject_other_users(
-    settings, db_session_factory
-):
+def test_named_workspace_defaults_are_separate_and_reject_other_users(settings, db_session_factory):
     with settings_context(settings), tenant_user(FLOWWEAVE_USER_ID), db_session_factory() as db:
         workspace = AgentWorkspace(scope_key="directory-session-defaults")
         db.add(workspace)
@@ -180,9 +232,12 @@ def test_named_workspace_defaults_are_separate_and_reject_other_users(
         assert (
             conversations.workspace_session_configuration(db, workspace.id)["credential_ids"] == []
         )
-        assert conversations.workspace_session_configuration(db, workspace.id, first.id)[
-            "credential_ids"
-        ] == []
+        assert (
+            conversations.workspace_session_configuration(db, workspace.id, first.id)[
+                "credential_ids"
+            ]
+            == []
+        )
         assert conversations.workspace_session_configuration(db, workspace.id, second.id)[
             "credential_ids"
         ] == [own]

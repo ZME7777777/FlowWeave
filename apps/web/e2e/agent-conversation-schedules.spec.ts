@@ -76,7 +76,7 @@ async function openWorkspace(page: Page, events: unknown[] = [], includeSecondCo
   const configurationScope = (request: import('@playwright/test').Request) => new URL(request.url()).searchParams.get('work_directory_id') ?? 'root';
   sessionConfigurations.set('root', {
     capability_version_ids: scheduleOptions.defaultCapabilityIds ?? [] as string[],
-    credential_ids: scheduleOptions.defaultCredentialIds ?? [] as string[],
+    credential_ids: scheduleOptions.defaultCredentialIds ?? ['credential-1'] as string[],
   });
   schedules[0].prompt = scheduleOptions.prompt ?? schedules[0].prompt;
   schedules.push({ ...schedules[0], id: 'weekly-schedule', name: '每周复核', prompt: '复核周报。', row_version: 7 });
@@ -3760,23 +3760,25 @@ test('workspace sidebar toggle and inline capability trigger preserve the active
   await page.getByRole('button', { name: '日报会话', exact: true }).click();
   const input = page.getByLabel('发送 Agent 消息', { exact: true });
   await input.fill('请使用@文件 后续内容');
+  await expect(page.getByRole('listbox', { name: '选择引用类型' })).toHaveCount(0);
+  await input.fill('请使用 @文件 后续内容');
   await input.press('Home');
-  for (let index = 0; index < 6; index += 1) await input.press('ArrowRight');
+  for (let index = 0; index < 7; index += 1) await input.press('ArrowRight');
   await expect(page.getByRole('listbox', { name: '选择引用类型' })).toBeVisible();
   await input.press('Escape');
-  await expect(input).toHaveValue('请使用 后续内容');
+  await expect(input).toHaveValue('请使用  后续内容');
   const home = page.getByRole('button', { name: '主页', exact: true });
   await home.click();
   await expect(home).toHaveAttribute('aria-pressed', 'true');
-  await expect(input).toHaveValue('请使用 后续内容');
+  await expect(input).toHaveValue('请使用  后续内容');
   await home.click();
   await expect(home).toHaveAttribute('aria-pressed', 'false');
   await expect(page.locator('[data-workspace-group-id="root"]').getByRole('button', { name: '日报会话', exact: true })).toBeVisible();
-  await expect(input).toHaveValue('请使用 后续内容');
+  await expect(input).toHaveValue('请使用  后续内容');
 });
 
 test('workspace action menu defaults to all credentials and persists session configuration', async ({ page }) => {
-  await openWorkspace(page, [], false, '日报会话', { defaultCredentialIds: ['credential-1'] });
+  await openWorkspace(page);
   const root = page.locator('[data-workspace-group-id="root"]');
   await root.locator('header').hover();
   await root.getByRole('button', { name: '工作区操作 根工作区', exact: true }).click({ force: true });

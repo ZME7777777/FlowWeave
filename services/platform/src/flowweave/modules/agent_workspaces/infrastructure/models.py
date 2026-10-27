@@ -5,6 +5,7 @@ from typing import ClassVar
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -245,6 +246,7 @@ class AgentWorkspaceSessionConfiguration(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     workspace_id: Mapped[str] = mapped_column(String(36), index=True)
     credential_ids_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    credentials_configured: Mapped[bool] = mapped_column(Boolean, default=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
 
