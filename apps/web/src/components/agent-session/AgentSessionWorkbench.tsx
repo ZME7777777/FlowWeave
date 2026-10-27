@@ -10028,9 +10028,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   );
   const setConversationGroupCollapsed = (groupId: string, collapsed: boolean) => {
     if (collapsed) setSidebarRevealBindingId(undefined);
-    else if (!sidebarReveal.conversation && routeBindingId && unpinnedConversations.some(item => item.id === routeBindingId && (item.work_directory_id ?? 'root') === groupId)) {
-      setSidebarRevealBindingId(routeBindingId);
-    }
     const sidebar = sidebarListRef.current;
     const group = sidebar?.querySelector<HTMLElement>(`[data-workspace-group-id="${CSS.escape(groupId)}"]`);
     pendingWorkspaceGroupAnchor.current = sidebar && group && sidebarListMode === 'workspaces'

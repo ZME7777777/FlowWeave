@@ -1316,6 +1316,15 @@ test('collapsing a workspace near the viewport top preserves its header anchor',
   await group.getByRole('button', { name: '展开工作区 锚点工作区 2', exact: true }).click();
   await settleWorkspaceLayout(page);
   await expect.poll(() => header.evaluate(element => element.getBoundingClientRect().top)).toBe(top);
+  const expandedTops = await header.evaluate(async element => {
+    const values: number[] = [];
+    for (let i = 0; i < 8; i += 1) {
+      await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+      values.push(element.getBoundingClientRect().top);
+    }
+    return values;
+  });
+  expect(expandedTops.every(value => Math.abs(value - top) <= 1)).toBe(true);
   // Repeated collapse near the old scroll limit must not accumulate blank tail.
   await group.getByRole('button', { name: '收起工作区 锚点工作区 2', exact: true }).click();
   await expect.poll(() => header.evaluate(element => element.getBoundingClientRect().top)).toBe(top);
