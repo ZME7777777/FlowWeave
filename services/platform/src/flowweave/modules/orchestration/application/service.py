@@ -7957,6 +7957,7 @@ def process_start_runtime(
     flow_run_id = _node_run(db, attempt.node_run_id).flow_run_id
     request = _runtime_request(db, attempt)
     allocation = None
+    governed_parent = False
     if request.environment_image and get_settings().runtime_adapter != "mock":
         environment = lock_referenceable_version(db, request.environment_version_id)
         if environment is None:
@@ -8004,7 +8005,7 @@ def process_start_runtime(
             runtime_resource_name=allocation.resource_name,
             runtime_base_url=allocation.base_url,
         )
-        if environment.runtime_protocol_profile == "OH_FW_V3":
+        if environment.runtime_protocol_profile in {"OH_FW_V3", "OH_FW_V4"}:
             from flowweave.modules.agent_sessions.application.child_parent import (
                 attach_parent_capability,
             )
@@ -8034,7 +8035,8 @@ def process_start_runtime(
                     expected_manifest_digest=snapshot.runtime_manifest_hash,
                 ),
             )
-            if lease is not None:
+            governed_parent = environment.runtime_protocol_profile == "OH_FW_V4"
+            if lease is not None or governed_parent:
                 # This new immutable write must survive the read-transaction
                 # rollback below, before the native parent can call its gateway.
                 _require_current_lease(db, lease)
@@ -8044,6 +8046,11 @@ def process_start_runtime(
         for item in request.bindings
     ):
         request = _upload_runtime_input_attachments(db, request)
+    if governed_parent:
+        # Attachment preparation may have opened another transaction. The
+        # first native Tool must never wait on its own parent transaction.
+        _require_current_lease(db, lease)
+        db.commit()
     _release_worker_read_transaction(db, lease)
     handle: RuntimeHandle | None = None
     try:

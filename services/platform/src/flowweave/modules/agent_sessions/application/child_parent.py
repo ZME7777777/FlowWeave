@@ -1,4 +1,4 @@
-"""Creation-time parent capability; no child reservation or execution lifecycle."""
+"""Versioned creation-time parent authority, without a child execution lifecycle."""
 
 from __future__ import annotations
 
@@ -29,6 +29,11 @@ from flowweave.runtime.child_contract import (
     require_child_capability_manifest,
 )
 from flowweave.runtime.child_creation import NativeChildPolicy
+from flowweave.runtime.child_governance_contract import (
+    V4_ARCHIVE_SHA256,
+    V4_SOURCE_COMMIT,
+    require_governed_child_capability_manifest,
+)
 from flowweave.runtime.manifest import runtime_manifest_hash
 from flowweave.runtime.protocol_profiles import runtime_contract_for_protocol_profile
 from flowweave.shared.domain.openhands import OpenHandsServerIdentity
@@ -60,6 +65,31 @@ class ParentCapability(BaseModel):
     command_url: str
 
 
+class GovernedParentCapability(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal[2] = 2
+    profile: Literal["OH_FW_V4"] = "OH_FW_V4"
+    owner_user_id: UUID
+    binding_id: UUID
+    host_kind: Literal["AGENT_WORKSPACE", "FLOW_NODE"]
+    host_id: UUID
+    conversation_scope_id: UUID
+    working_directory: str = Field(min_length=1)
+    runtime_image_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    source_commit: Literal["b9f976b2ca05b947ee28eb34ebe590ff0409307f"] = V4_SOURCE_COMMIT
+    source_archive_sha256: str
+    capability: dict[str, Any]
+    runtime_manifest: dict[str, Any]
+    policy: NativeChildPolicy
+    launch_url: str
+    query_url: str
+    command_url: str
+
+
+FrozenParentCapability = ParentCapability | GovernedParentCapability
+
+
 def denied() -> DomainError:
     return DomainError("AGENT_CHILD_LAUNCH_DENIED", "子会话调用未获授权", 403)
 
@@ -80,12 +110,19 @@ def gateway_urls(owner: str, binding_id: str) -> tuple[str, str, str]:
     return root + "/start", root + "/queries", root + "/commands"
 
 
-def read_parent_capability(binding: AgentConversationBinding) -> ParentCapability:
+def read_parent_capability(binding: AgentConversationBinding) -> FrozenParentCapability:
     try:
-        frozen = ParentCapability.model_validate(binding.child_parent_manifest_json)
-        require_child_capability_manifest(frozen.capability)
+        raw = binding.child_parent_manifest_json
+        if isinstance(raw, dict) and raw.get("profile") == "OH_FW_V4":
+            frozen = GovernedParentCapability.model_validate(raw)
+            require_governed_child_capability_manifest(frozen.capability)
+            archive_digest = V4_ARCHIVE_SHA256
+        else:
+            frozen = ParentCapability.model_validate(raw)
+            require_child_capability_manifest(frozen.capability)
+            archive_digest = V3_ARCHIVE_SHA256
         if (
-            frozen.source_archive_sha256 != V3_ARCHIVE_SHA256
+            frozen.source_archive_sha256 != archive_digest
             or frozen.runtime_manifest.get("child_conversations") != frozen.capability
             or frozen.policy.manifest_digest != runtime_manifest_hash(frozen.runtime_manifest)
             or str(frozen.owner_user_id) != binding.owner_user_id
@@ -118,7 +155,7 @@ def attach_parent_capability(
     runtime_manifest: dict[str, Any],
     expected_manifest_digest: str | None = None,
 ) -> RuntimeAgentSpec:
-    if profile != "OH_FW_V3":
+    if profile not in {"OH_FW_V3", "OH_FW_V4"}:
         if binding.child_parent_manifest_json is not None:
             raise denied()
         return spec
@@ -132,7 +169,11 @@ def attach_parent_capability(
         and runtime_manifest_hash(runtime_manifest) != expected_manifest_digest
     ):
         raise denied()
-    require_child_capability_manifest(runtime_manifest.get("child_conversations"))
+    capability = (
+        require_governed_child_capability_manifest(runtime_manifest.get("child_conversations"))
+        if profile == "OH_FW_V4"
+        else require_child_capability_manifest(runtime_manifest.get("child_conversations"))
+    )
     require_ordinary_binding(db, binding)
     if binding.create_idempotency_key.startswith("gate-sidecar:") or db.scalar(
         select(AgentSidebarConversation.id).where(
@@ -144,7 +185,8 @@ def attach_parent_capability(
         if binding.lifecycle != "PROVISIONING" or binding.owner_user_id != current_user_id():
             raise denied()
         launch_url, query_url, command_url = gateway_urls(binding.owner_user_id, binding.id)
-        value = ParentCapability(
+        parent_model = GovernedParentCapability if profile == "OH_FW_V4" else ParentCapability
+        value = parent_model(
             owner_user_id=UUID(binding.owner_user_id),
             binding_id=UUID(binding.id),
             host_kind=cast(Literal["AGENT_WORKSPACE", "FLOW_NODE"], binding.host_kind),
@@ -152,8 +194,8 @@ def attach_parent_capability(
             conversation_scope_id=UUID(binding.conversation_scope_id),
             working_directory=binding.working_directory or "",
             runtime_image_digest=runtime_image_digest,
-            source_archive_sha256=V3_ARCHIVE_SHA256,
-            capability=child_capability_manifest(),
+            source_archive_sha256=V4_ARCHIVE_SHA256 if profile == "OH_FW_V4" else V3_ARCHIVE_SHA256,
+            capability=capability,
             runtime_manifest=deepcopy(runtime_manifest),
             policy=NativeChildPolicy(
                 parent_conversation_id=UUID(binding.openhands_conversation_id),
@@ -171,13 +213,16 @@ def attach_parent_capability(
         db.flush()
     frozen = read_parent_capability(binding)
     if (
-        frozen.policy.generation != generation
+        frozen.profile != profile
+        or frozen.policy.generation != generation
         or frozen.runtime_image_digest != runtime_image_digest
         or frozen.runtime_manifest != runtime_manifest
     ):
         raise denied()
     entries = native_child_tool_entries(
-        manifest=frozen.capability,
+        # V4 retains V3's exact six tool parameter schemas. Its own immutable
+        # capability has already been checked above; reuse only the compiler.
+        manifest=child_capability_manifest(),
         parent_conversation_id=frozen.policy.parent_conversation_id,
         scope_id=frozen.policy.scope_id,
         runtime_session_id=frozen.policy.runtime_session_id,
@@ -204,6 +249,14 @@ def attach_parent_capability(
                 )
             ),
         ),
+    )
+
+
+def parent_protocol_profile(binding: AgentConversationBinding) -> str | None:
+    return (
+        read_parent_capability(binding).profile
+        if binding.child_parent_manifest_json is not None
+        else None
     )
 
 

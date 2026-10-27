@@ -110,7 +110,7 @@ baseline 追加三个正式路由，均使用 Agent Server 现有会话认证：
 准备前先通过原生 RunSlot 准入，继而持久预留身份；原生不可变启动计划使用子 Conversation
 对应 Cipher 整体加密，只在 Runtime 持久状态目录保存。计划在初始化前提交，恢复时保持原
 配置和 child ID，即便 base_state 已写而 meta 尚未写。该原生路径不创建 Worktree，也不初始化
-Git 仓库；父配置中的平台绑定级授权须由 FR-722 使用 FR-720／721 的固定原生契约，
+Git 仓库；父配置中的平台绑定级授权须由 FR-723 使用 FR-720／721 的固定原生契约，
 在首轮前替换／重新激活。
 
 prepared／dispatching 门禁阻止普通 send、run、goal、ask、condense 和 live Conversation
@@ -163,7 +163,7 @@ release 复核原准备保存的策略、creation 和任务摘要，不能借另
 该验证接口只证明原生调用来源。控制面必须另行解析 scope 对应的用户／宿主／父 binding，
 核对 active generation、冻结 Manifest 和权限，再执行 prepare → 凭据治理 → release。
 这部分依赖 FR-710 的关系模型，分别由 FR-719 接入调用授权，FR-720／721 补齐和冻结原生
-前置契约，FR-722 接入创建／凭据恢复；
+前置契约，FR-722 接入 V4 父能力／首轮授权，FR-723 接入创建／凭据恢复；
 Runtime key 或 verifier 的成功响应都不能单独授权平台操作。FR-706 不开放任何平台或浏览器入口，也不更新既有冻结 Runtime。
 
 ### 2.7 原生直属子查询工具（FR-707）
@@ -295,7 +295,7 @@ node_attempt_id，FlowRun 定位使用父已授权的 conversation_scope_id；�
 
 共享 `child_relations` 服务按当前用户和已解析宿主验证直属 locator，两宿主使用同一规则；
 正式 native parent／child ID、workspace 和 isolation 另与冻结关系比对；FR-711 提供正式
-原生适配，FR-722 再接入两宿主创建。此关系或原生身份校验不单独授予创建／发送权限，
+原生适配，FR-723 再接入两宿主创建。此关系或原生身份校验不单独授予创建／发送权限，
 仍需宿主授权及 active generation 门禁。
 
 普通列表、分页、置顶、排序、管理列表、活动与搜索扫描／历史命中投影均在 SQL 中排除 child，
@@ -313,7 +313,7 @@ FR-713 尚未实现可恢复逐子清理前，关联中的父删除在任何原�
 ### 2.11 原生子创建 HTTP 边界（FR-711）
 
 原 FR-711 同时覆盖 Runtime transport、父能力装配／授权及准备／凭据／释放恢复，
-按独立验收边界拆为 FR-711、FR-719、FR-720／721／722；FR-712 依赖 FR-722。
+按独立验收边界拆为 FR-711、FR-719、FR-720／721／722／723；FR-712 依赖 FR-723。
 本片只增加 `RuntimePort` 与 OpenHands adapter 的类型化边界，不安装工具或开放产品入口。
 
 | Runtime 操作 | 正式原生接口／返回 |
@@ -342,7 +342,7 @@ title／shared 的正式摘要。请求只允许 shared 与 opaque `SecretStr`�
 
 配置核对比较正式父子身份、shared 工作目录和同一原生公开序列化边界的 Agent 文档，
 全量 skills 请求避免默认裁剪导致误判。公开配置中的 Secret 已被 native 脱敏，因此相等
-不证明凭据授权相等，不能替代 FR-722 的绑定级凭据重签、失效／恢复实证。
+不证明凭据授权相等，不能替代 FR-723 的绑定级凭据重签、失效／恢复实证。
 既有 additive `/secrets` 适配继续可用，但本片不自动更新子会话或宣称已解决 reload 回灌。
 
 可选 TCP 回归通过 `FLOWWEAVE_NATIVE_CHILD_PYTHON` 指定独立安装固定四包的 Python 环境；
@@ -391,7 +391,7 @@ Cipher proof 后返回的 invocation 才能进入此边界；Runtime key 本身�
 均不能替代证明。请求体上限 256 KiB，格式错误不使用会回显 token／task 的通用 validation body。
 
 FR-719 的授权成功**仍返回** `AGENT_CHILD_CREATION_NOT_ENABLED`，不返回伪造 child receipt，
-也不调用 prepare／release。实际子预留、凭据和首轮恢复留在 FR-722；queries／commands 平台路由
+也不调用 prepare／release。实际子预留、凭据和首轮恢复留在 FR-723；queries／commands 平台路由
 尚未开放，等待 FR-712，不把冻结工具描述等同于产品已可用。原生工具将本阶段创建门禁视为结果
 未知，不能新起另一份任务。用户侧浮卡／子标签也尚未开放。
 
@@ -411,7 +411,7 @@ Agent policy 的字段。因此仅对本片新启用的 V3 父能力会话拒绝
 原先两宿主创建方案需要先解决两个原生缺口：旧 verifier 的 JSON 不包含 Python
 `creation_id` property；既有 `/secrets` 是 additive 更新，不能清除恢复时 StoredConversation／
 AgentContext 的父凭据种子。因此拆为原生契约 FR-720、不可变归档／新静态能力契约 FR-721、
-两宿主预留／重签／释放恢复 FR-722，FR-712 依赖 FR-722。本片尚不开放产品创建。
+V4 父能力／首轮授权 FR-722，两宿主预留／重签／释放恢复 FR-723，FR-712 依赖 FR-723。本片尚不开放产品创建。
 
 SDK `baseline` 提交 `b9f976b2ca05b947ee28eb34ebe590ff0409307f` 增加两个正式路由：
 
@@ -428,7 +428,7 @@ SDK `baseline` 提交 `b9f976b2ca05b947ee28eb34ebe590ff0409307f` 增加两个正
 覆盖只允许 governance UUID、移除 secret 名、替换的原生 `SecretSource` 和移除 MCP server 名。
 移除／替换名称从 AgentContext 的 secrets 种子中剔除；StoredConversation 的 secrets 同时删除或
 替换，选定 MCP 从 Agent 配置中移除，再初始化原生 registry。普通未选中凭据和 LLM 凭据保留。
-覆盖不解析 SecretSource，不扫描任意插件／提示词内嵌秘密；平台在 FR-722 必须明确列出绑定级
+覆盖不解析 SecretSource，不扫描任意插件／提示词内嵌秘密；平台在 FR-723 必须明确列出绑定级
 授权来源和 MCP 名称，不得把此能力描述成自动识别全部父权限。子配置移除六个受管父工具及旧
 launcher，并重新验证 Agent，丢弃继承的父实时 executor。
 
@@ -482,10 +482,47 @@ V4 响应保留治理 UUID，prepare 必须匹配原请求，read／release 使�
 release、run、重试或更换 creation ID。V1／V2／V3 在调用两个新方法前拒绝，Mock 同样拒绝。
 旧 verifier／prepare 方法的 V3 请求与返回形状不变；V4 可以读取原有公共配置和恢复回执。
 
-本片只冻结可消费契约，不装配 V4 父工具、修改父授权数据结构或开放两宿主创建。FR-722 必须
-显式选择 V4、冻结相应父能力，并完成用户／资源授权、预留 binding、binding 级凭据重签和
-首轮恢复，不能用本片 DTO 或 Runtime key 代替权限。真实模型、实际镜像与双宿主故障验收仍在
+FR-721 只冻结可消费契约。FR-722 接入 V4 父工具装配、不可变父能力及首轮调用授权；
+FR-723 再接两宿主预留 binding、binding 级凭据重签和首轮恢复，不能用 DTO 或 Runtime key
+代替权限。真实模型、实际镜像与双宿主故障验收仍在
 FR-717；本片不构建／发布镜像、部署或替换 Runtime。
+
+### 2.15 两宿主 V4 父能力与首轮授权（FR-722）
+
+原 FR-722 包含父能力升级、首轮时序、子预留及凭据恢复，先收敛为可独立验收的父授权切片；
+子预留／凭据治理／恢复转 FR-723，FR-712 改依赖 FR-723。当前 `/start` 的授权通过后仍返回
+明确 `AGENT_CHILD_CREATION_NOT_ENABLED`，不伪造创建回执，也不调用原生 prepare／release。
+
+新增独立 `GovernedParentCapability` schema 2，profile 为 `OH_FW_V4`，固定 FR-721 source／
+archive 与 `oh-fw-child-v2`。原 `ParentCapability` schema 1／V3 继续读取和使用，不由设置或当前
+构建身份升级。JSON 仍保存在既有 binding 不可变字段，沿用 0177 trigger、用户隔离和 RLS；无
+新增表或迁移。绑定已有父能力时按其冻结 profile 恢复，新 Workspace 可显式选择 V4，默认仍 V1。
+临时 sidebar 的 `allow_child_capability=False` 保持关闭；gate／child 不可装配父能力，fork／
+replacement 的既有防漂移门禁继续保留。两版本冻结记录之间不能切换 source、profile 或 capability。
+
+Workspace 手动创建／bootstrap、Flow Node 手动创建／bootstrap 和自动 Worker 都装配冻结六工具。
+V4 与 V3 的六个 Tool 参数结构相同，复用原编译器；先严格校验对应版本的完整 capability，再由
+OpenHands 正式 `tool_module_qualnames` 解析。OpenHands adapter 按契约中的固定 source 选择 V3／
+V4，并分别核对八条／十条路由要求，不能只用包版本猜能力。实际 Runtime handle 保留冻结 profile。
+
+V4 在 native create 前提交父 binding 与冻结能力；Workspace 首轮 send 前也结束后续历史授权读取
+事务。Flow Node 两个创建入口同样在 create 前提交；Worker 和 inline V4 启动均在冻结后提交，
+上传准备后再次核对 lease 并结束事务，再进入 native start。普通 V1／V2／V3 不扩展此提交边界。
+这些提交保证首次 Tool 回调能独立读取父身份，不等待父首条消息完成后才变 ACTIVE 的事务。
+
+网关第一阶段仅把 ACTIVE 或冻结 V4 的 PROVISIONING 父作为候选，旧 V3 PROVISIONING、FAILED／
+DELETE_PENDING 均拒绝。候选仍须核对用户权限、宿主、镜像、Snapshot 和 active generation，并通过
+当前资源派生 key 校验；key 不是授权结果。数据库会话释放后，V4 调正式 `launcher/resolve`，
+取得含正式 creation identity 的 `NativeChildResolution`；V3 保持原 verifier。第二个短数据库阶段
+重新授权，并严格比对 policy／audience；V4 不能以旧 invocation DTO 通过。撤权、删除、取消、
+镜像或 generation 变化均拒绝。PROVISIONING 到 ACTIVE 的正常推进不改写冻结能力。
+
+验证以真实 PostgreSQL、独立原生进程和 HTTP 为证据：四项 TCP 覆盖两宿主 × V3／V4；V4
+特意保留 PROVISIONING，断言父原生 Tool 首次回调就完成实际平台复核，关联正式 ActionEvent，
+随后只到达明确创建门禁。原生服务来自各自固定归档，复核四包和 536／537 个 Python 文件。
+只有 completion 为受控 LLM，物理 Runtime 连接由夹具提供；不是模型、镜像或子创建全链路验收。
+V4 的 Workspace、Flow Node 两个手动入口及 leased／inline 启动另验证 native I/O 前无持有事务、
+其他数据库会话可读取已冻结 PROVISIONING 父。最终计数和静态检查见进度文档；本片不部署。
 
 ## 3. 父 Agent 的操作契约
 
@@ -686,8 +723,9 @@ FR-702 仅做文档契约、依赖／状态、固定源码事实和迁移 head �
 | FR-719 | 两宿主父能力冻结与 launcher 调用授权 | FR-711 |
 | FR-720 | 原生创建身份投影与准备凭据冻结 | FR-719 |
 | FR-721 | 新治理扩展归档与静态能力契约冻结 | FR-720 |
-| FR-722 | 两宿主子预留、凭据重签、首轮释放及恢复 | FR-721 |
-| FR-712 | 两宿主续聊／控制／附件／结果引用接口 | FR-722 |
+| FR-722 | 两宿主 V4 父能力装配与首轮授权 | FR-721 |
+| FR-723 | 两宿主子预留、凭据重签、首轮释放及恢复 | FR-722 |
+| FR-712 | 两宿主续聊／控制／附件／结果引用接口 | FR-723 |
 | FR-713 | 子活动／未读聚合、父删除及恢复保护 | FR-712 |
 | FR-714 | 通用侧边会话交互边界，保留临时聊天语义 | FR-712 |
 | FR-715 | 悬浮卡子列表与按标题多标签 | FR-713、FR-714 |

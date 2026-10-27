@@ -1494,7 +1494,7 @@ def _create_native_conversation(
     )
     from flowweave.modules.agent_sessions.application.child_parent import attach_parent_capability
 
-    if environment.runtime_protocol_profile == "OH_FW_V3":
+    if environment.runtime_protocol_profile in {"OH_FW_V3", "OH_FW_V4"}:
         agent_spec = attach_parent_capability(
             db,
             item,
@@ -1533,6 +1533,8 @@ def _create_native_conversation(
         runtime_base_url=f"http://{connection.resource_name}:8000",
         conversation_secrets=conversation_secrets,
     )
+    if environment.runtime_protocol_profile == "OH_FW_V4":
+        db.commit()
     handle = get_runtime().create_conversation(request)
     if handle.conversation_id != item.openhands_conversation_id:
         raise DomainError("AGENT_CONVERSATION_IDENTITY_DRIFT", "会话身份校验失败", 409)
@@ -1910,7 +1912,7 @@ def _create_or_reload_node_bootstrap(
     )
     from flowweave.modules.agent_sessions.application.child_parent import attach_parent_capability
 
-    if environment.runtime_protocol_profile == "OH_FW_V3":
+    if environment.runtime_protocol_profile in {"OH_FW_V3", "OH_FW_V4"}:
         agent_spec = attach_parent_capability(
             db,
             binding,
@@ -1949,6 +1951,8 @@ def _create_or_reload_node_bootstrap(
         runtime_base_url=f"http://{connection.resource_name}:8000",
         conversation_secrets=conversation_secrets,
     )
+    if environment.runtime_protocol_profile == "OH_FW_V4":
+        db.commit()
     created = runtime.create_conversation(request)
     if created.conversation_id != binding.openhands_conversation_id:
         raise DomainError("AGENT_CONVERSATION_IDENTITY_DRIFT", "会话身份校验失败", 409)

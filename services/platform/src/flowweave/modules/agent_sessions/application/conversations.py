@@ -863,13 +863,15 @@ def _handle(
     )
     if sandbox is None:
         raise DomainError("AGENT_RUNTIME_RECOVERING", "Agent 运行环境正在恢复，数据已保留", 503)
+    from flowweave.modules.agent_sessions.application.child_parent import parent_protocol_profile
+
     return RuntimeHandle(
         job_id=f"agent-workspace:{workspace.id}",
         conversation_id=binding.openhands_conversation_id,
         runtime_resource_id=sandbox.id,
         runtime_resource_name=sandbox.backend_resource_name,
         workspace_root=user_runtime_project_root(workspace.id),
-        protocol_profile="OH_FW_V3" if binding.child_parent_manifest_json is not None else None,
+        protocol_profile=parent_protocol_profile(binding),
     )
 
 
@@ -1629,29 +1631,27 @@ def _create_native_conversation(
     host_root, runtime_root, _marketplace_name = _capability_marketplace_paths(
         db, workspace, binding
     )
-    from flowweave.modules.agent_sessions.application.child_parent import attach_parent_capability
+    from flowweave.modules.agent_sessions.application.child_parent import (
+        attach_parent_capability,
+        parent_protocol_profile,
+    )
     from flowweave.runtime.child_contract import (
         V3_PACKAGE_VERSION,
         V3_SOURCE_COMMIT,
-        child_capability_manifest,
     )
+    from flowweave.runtime.child_governance_contract import V4_PACKAGE_VERSION, V4_SOURCE_COMMIT
+    from flowweave.runtime.protocol_profiles import child_manifest_for_protocol_profile
     from flowweave.shared.domain.openhands import OpenHandsServerIdentity
 
-    # V3 remains an immutable image contract when the build baseline advances.
-    parent_identity = OpenHandsServerIdentity(
-        V3_PACKAGE_VERSION, V3_SOURCE_COMMIT, V3_SOURCE_COMMIT
-    )
-
     config = config_from_binding(db, binding)
-    profile = (
-        "OH_FW_V3"
-        if binding.child_parent_manifest_json is not None
-        else (
-            get_settings().agent_workspace_runtime_protocol_profile
-            if allow_child_capability
-            else "OH_FW_V1"
-        )
+    profile = parent_protocol_profile(binding) or (
+        get_settings().agent_workspace_runtime_protocol_profile
+        if allow_child_capability
+        else "OH_FW_V1"
     )
+    parent_source = V4_SOURCE_COMMIT if profile == "OH_FW_V4" else V3_SOURCE_COMMIT
+    parent_version = V4_PACKAGE_VERSION if profile == "OH_FW_V4" else V3_PACKAGE_VERSION
+    parent_identity = OpenHandsServerIdentity(parent_version, parent_source, parent_source)
     agent_spec = build_agent_spec(
         config,
         provider=provider,
@@ -1661,9 +1661,9 @@ def _create_native_conversation(
         runtime_root=runtime_root,
         system_message_suffix_append=system_message_suffix_append,
         protocol_profile=profile,
-        runtime_server_identity=(parent_identity if profile == "OH_FW_V3" else None),
+        runtime_server_identity=(parent_identity if profile in {"OH_FW_V3", "OH_FW_V4"} else None),
     )
-    if profile == "OH_FW_V3":
+    if profile in {"OH_FW_V3", "OH_FW_V4"}:
         agent_spec = attach_parent_capability(
             db,
             binding,
@@ -1674,7 +1674,7 @@ def _create_native_conversation(
             runtime_image_digest=runtime.runtime_image_digest,
             runtime_manifest={
                 "schema_version": 1,
-                "child_conversations": child_capability_manifest(),
+                "child_conversations": child_manifest_for_protocol_profile(profile),
                 "capabilities": [
                     {"version_id": item.version_id, "digest": item.digest}
                     for item in config.capabilities
@@ -1682,7 +1682,7 @@ def _create_native_conversation(
             },
         )
     if binding.child_parent_manifest_json is not None:
-        handle = replace(handle, protocol_profile="OH_FW_V3")
+        handle = replace(handle, protocol_profile=profile)
     conversation_secrets, credential_context, _credential_summaries = resolve_credentials_for_agent(
         db, credential_ids
     )
@@ -1722,6 +1722,10 @@ def _create_native_conversation(
         runtime_base_url=f"http://{handle.runtime_resource_name}:8000",
         conversation_secrets=conversation_secrets,
     )
+    if profile == "OH_FW_V4":
+        # The native parent's first Tool can arrive before bootstrap is ACTIVE.
+        # Its immutable authority must already be independently readable.
+        db.commit()
     created = get_runtime().create_conversation(request)
     if created.conversation_id != binding.openhands_conversation_id:
         raise DomainError("AGENT_CONVERSATION_IDENTITY_DRIFT", "会话身份校验失败", 409)
@@ -2375,6 +2379,8 @@ def bootstrap_conversation(
         raise
     try:
         _ensure_history_references(db, workspace, binding, source_references)
+        if handle.protocol_profile == "OH_FW_V4":
+            db.commit()
         delivered = get_runtime().send_message(handle, prompt, image_urls)
     except DomainError as exc:
         if exc.details.get("outcome_unknown") is True:

@@ -83,6 +83,7 @@ from flowweave.runtime.child_governance import (
     NativeChildResolution,
     NativeGovernedChildPreparation,
 )
+from flowweave.runtime.child_governance_contract import V4_CHILD_HTTP_OPERATIONS, V4_SOURCE_COMMIT
 from flowweave.runtime.contract import OPTIONAL_HTTP_OPERATIONS
 from flowweave.runtime.git_identity import GIT_IDENTITY_SCRIPT
 from flowweave.runtime.model_catalog import declared_context_window
@@ -2194,13 +2195,18 @@ class OpenHandsRuntime:
             },
         }
         child_tools = set(CHILD_TOOL_NAMES) & {tool.name for tool in spec.tools}
+        child_profile = None
         if child_tools:
+            source = spec.runtime_contract.source_commit if spec.runtime_contract else None
+            child_profile = "OH_FW_V4" if source == V4_SOURCE_COMMIT else "OH_FW_V3"
+            operations = (
+                V4_CHILD_HTTP_OPERATIONS if child_profile == "OH_FW_V4" else CHILD_HTTP_OPERATIONS
+            )
             if (
                 child_tools != set(CHILD_TOOL_NAMES)
                 or spec.runtime_contract is None
-                or spec.runtime_contract.source_commit != V3_SOURCE_COMMIT
-                or not set(CHILD_HTTP_OPERATIONS)
-                <= set(spec.runtime_contract.required_http_operations)
+                or source not in {V3_SOURCE_COMMIT, V4_SOURCE_COMMIT}
+                or not set(operations) <= set(spec.runtime_contract.required_http_operations)
             ):
                 raise self._incompatible("governed_parent_contract_required")
             # These private-to-deployment factories are lazily imported by the
@@ -2345,7 +2351,7 @@ class OpenHandsRuntime:
             runtime_resource_name=request.runtime_resource_name,
             output_contract={item["field_key"]: item for item in self._contracts[conversation_id]},
             workspace_root=request.workspace_root,
-            protocol_profile="OH_FW_V3" if child_tools else None,
+            protocol_profile=child_profile,
             llm_timeout_policy=spec.llm_timeout_policy,
         )
         created_agent = created.get("agent")

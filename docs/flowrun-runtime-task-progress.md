@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`CHILD CONVERSATIONS IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-722`
+> 下一可执行切片：`FR-723`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 > 子会话设计：`docs/agent-child-conversations-design.md`
@@ -699,16 +699,62 @@ Tool／ActionEvent 证明 → resolve／verify → prepare／重放／read → �
 FR-722 必须再接 V4 父能力与用户／资源授权、预留、重签／禁用绑定凭据及首轮恢复；实际镜像、
 真实模型与两宿主故障链仍由 FR-717 验收。当前 NONE，下一可执行 FR-722；提交后停止。
 
-### FR-722 两宿主子预留凭据重签与首轮恢复 — READY
+### FR-722 两宿主 V4 父能力与首轮授权 — DONE
 
-依赖：FR-721 DONE。先预留 binding 再原生 prepare，核对正式父子／shared 目录／配置，
+依赖：FR-721 DONE。原范围同时覆盖 V4 父能力、首轮调用时序和子创建治理恢复，按
+独立验收边界拆分。本片为两宿主新父会话追加 V4 不可变能力装配和正式 resolve 授权；
+受管 PROVISIONING 父仅在正式 native invocation 校验后可通过网关，创建前持久冻结、
+native I/O 前释放事务，避免首轮等待自身提交。旧 V3 不升级，仍不开放实际子创建。
+
+实现：新增独立 schema 2／V4 的 GovernedParentCapability，固定 FR-721 的 source／archive／
+v2 Manifest；保留原 schema 1／V3 的字段形状和来源。沿用 binding JSON 的不可变 trigger、
+用户隔离和 RLS，无迁移。新 Workspace 显式支持 V4、默认仍 V1，既有 binding 从冻结 profile
+恢复，不由当前设置升级。两宿主手动／bootstrap 与自动 Worker 装配相同六个正式 Tool；先
+校验版本能力，再复用不变的 Tool 参数编译器，native adapter 按固定 source 与八／十条路由
+契约识别 V3／V4，返回相应 handle。sidebar、gate、child、fork 和 replacement 的边界保留。
+
+V4 在 native create 前持久提交父 binding 与冻结能力；Workspace bootstrap 首轮 send 前也
+提交后续历史授权事务。Flow Node 两个创建入口同样结束事务；Worker／inline V4 在冻结后
+提交，附件准备后再核对 lease、提交再 start，避免父 Tool 等待自身首轮事务。原 V1／V2／V3
+不扩展此事务边界。网关只把 ACTIVE 或冻结 V4 的 PROVISIONING 父视为候选，旧 V3
+PROVISIONING 和 FAILED／DELETE_PENDING 均拒绝；候选仍先核对用户、宿主、资源派生 key、
+Snapshot、image、generation。释放数据库会话后 V4 调正式 resolve，V3 保持 verifier，再在
+新事务中重新授权，严格核对 policy／audience 和 DTO 版本；裸 invocation 不能通过 V4。
+创建中转 ACTIVE 的正常推进不改冻结能力，撤权／删除／取消／replacement 期间的变化拒绝。
+
+验收：父能力及授权用例分批共 **149 个不同用例通过**：首批 **139 passed／4 skipped**，
+后补六项独立入口／版本切换用例 **6 passed**，四项原生 TCP **4 passed**（对应首批 skip，
+不重复累计）。覆盖 V3／V4 冻结互不改写、候选 lifecycle、用户撤权、generation／镜像漂移、
+Runtime-key-only／cookie／伪 proof 拒绝、前后独立数据库阶段及显式创建门禁。Workspace、
+Flow Node 手动／bootstrap、leased／inline Worker 均验证 native I/O 前无事务，独立数据库
+会话可读已冻结 PROVISIONING 父。真实 PostgreSQL 全迁移链仍到唯一 head 0178。
+
+四项 TCP 使用两宿主 × 两个固定原生归档／四包安装，复核旧 536／新 537 个 Python 文件；
+真实 native Tool／ActionEvent → 平台 HTTP → native verifier／resolve → 平台复核。V4 保留
+PROVISIONING，断言首次 Tool 调用期间就完成实际授权，并按正式 action id 关联；之后仍只
+返回 AGENT_CHILD_CREATION_NOT_ENABLED，关系表无 child。不是靠执行结束后的重放冒充首轮
+成功。加强测试观察时曾因观察器离开 tenant_user 后再次读 RLS 表取得 None，已仅为观察读取
+补齐租户范围并复验；授权实现未绕过 RLS。completion 为受控 LLM，物理连接由夹具提供，
+不声称实际 Runtime 镜像或真实模型全链路。原生／网关进程正常退出，证据位于 `.tmp/fr722/`。
+
+另有 **120 passed** 的 DTO／原生 HTTP 边界／V3–V4 契约回归，旧 adapter 创建／启动／工具／
+profile 定向 **18 passed**。两个父授权模块 Pyright 零错误，六个受影响既有模块的 337 项诊断
+与修改前 HEAD 按文件／规则／消息逐项相同、零新增；不能宣称旧模块严格类型检查全绿。
+受影响 Ruff、变更函数格式、Python AST、diff、任务状态／依赖及 head 检查通过。SDK、source
+lock、Manifest digest 和归档未改，无数据库迁移、前端、部署、推送或 Runtime 替换。
+
+实际子预留、凭据重签／禁用、首轮 release 与恢复仍由 FR-723 完成；FR-712 依赖 FR-723。
+当前 NONE，下一可执行 FR-723；提交后停止。
+
+### FR-723 两宿主子预留凭据重签与首轮恢复 — READY
+
+依赖：FR-722 DONE。先预留 binding 再原生 prepare，核对正式父子／shared 目录／配置，
 复制冻结能力并重签或明确禁用 binding 级授权后 release；短事务、同 invocation 并发、
-generation fence、原身份查回及各阶段崩溃恢复。补齐首轮父 binding 尚在 PROVISIONING
-时的授权时序；不能为运行中的 native 父工具等待父首轮提交而互相阻塞。
+generation fence、原身份查回及各阶段崩溃恢复。
 
 ### FR-712 两宿主子续聊控制附件与结果引用 — PENDING
 
-依赖：FR-722 DONE。接入正式消息／控制／模型／condense、附件 owner 和正式结果引用，
+依赖：FR-723 DONE。接入正式消息／控制／模型／condense、附件 owner 和正式结果引用，
 用户与父工具共用受理门禁，不借用父 token 或跨 binding 路径。
 
 ### FR-713 子活动未读与父删除恢复 — PENDING

@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions.application.child_parent import (
-    ParentCapability,
+    FrozenParentCapability,
     denied,
     read_parent_capability,
 )
@@ -33,6 +33,7 @@ from flowweave.modules.users.application.service import agent_session_principal
 from flowweave.runtime.auth import derive_runtime_session_key
 from flowweave.runtime.base import RuntimeHandle
 from flowweave.runtime.child_creation import NativeChildInvocation, NativeChildLaunchRequest
+from flowweave.runtime.child_governance import NativeChildResolution
 from flowweave.runtime.dependencies import get_runtime
 from flowweave.shared.errors import DomainError
 from flowweave.shared.models import FlowRunRuntime, ManagedSandbox, NodeAttempt, RunSnapshot
@@ -42,7 +43,7 @@ from flowweave.shared.settings import get_settings
 @dataclass(frozen=True, slots=True)
 class AuthorizedParent:
     principal: Principal
-    capability: ParentCapability
+    capability: FrozenParentCapability
     handle: RuntimeHandle
 
 
@@ -60,12 +61,14 @@ def _resolve_launcher(
             select(AgentConversationBinding).where(
                 AgentConversationBinding.owner_user_id == owner,
                 AgentConversationBinding.id == parent_id,
-                AgentConversationBinding.lifecycle == "ACTIVE",
+                AgentConversationBinding.lifecycle.in_(("ACTIVE", "PROVISIONING")),
             )
         )
         if principal is None or binding is None:
             raise denied()
         frozen = read_parent_capability(binding)
+        if binding.lifecycle == "PROVISIONING" and frozen.profile != "OH_FW_V4":
+            raise denied()
         require_ordinary_binding(db, binding)
         if binding.create_idempotency_key.startswith("gate-sidecar:") or db.scalar(
             select(AgentSidebarConversation.id).where(
@@ -113,7 +116,7 @@ def _resolve_launcher(
             session = db.get(FlowRunRuntime, binding.runtime_session_id)
             if (
                 connection.runtime_session_id != binding.runtime_session_id
-                or connection.protocol_profile.value != "OH_FW_V3"
+                or connection.protocol_profile.value != frozen.profile
                 or connection.generation != frozen.policy.generation
             ):
                 raise denied()
@@ -123,7 +126,7 @@ def _resolve_launcher(
                 runtime_resource_id=connection.managed_runtime_id,
                 runtime_resource_name=connection.resource_name,
                 workspace_root=frozen.working_directory,
-                protocol_profile="OH_FW_V3",
+                protocol_profile=frozen.profile,
             )
         else:
             raise denied()
@@ -132,7 +135,7 @@ def _resolve_launcher(
             or session.status != "ACTIVE"
             or session.active_generation != frozen.policy.generation
             or session.runtime_image_digest != frozen.runtime_image_digest
-            or handle.protocol_profile != "OH_FW_V3"
+            or handle.protocol_profile != frozen.profile
         ):
             raise denied()
         expected = derive_runtime_session_key(
@@ -164,15 +167,21 @@ def prepare_launcher(
 
 def verify_launcher(
     prepared: AuthorizedParent, request: NativeChildLaunchRequest
-) -> NativeChildInvocation:
-    """No database Session crosses this native I/O boundary."""
+) -> NativeChildInvocation | NativeChildResolution:
+    """No database Session crosses this native I/O boundary.
+
+    A PROVISIONING parent is only a candidate here. Runtime credentials alone
+    never authorize it: the native resolver must prove its actual Tool action.
+    """
+    if prepared.capability.profile == "OH_FW_V4":
+        return get_runtime().resolve_child_launcher(prepared.handle, request)
     return get_runtime().verify_child_launcher(prepared.handle, request)
 
 
 def project_launcher(
     db: Session,
     prepared: AuthorizedParent,
-    invocation: NativeChildInvocation,
+    invocation: NativeChildInvocation | NativeChildResolution,
     *,
     runtime_key: SecretStr,
 ) -> AuthorizedParent:
@@ -182,10 +191,18 @@ def project_launcher(
         binding_id=prepared.capability.binding_id,
         runtime_key=runtime_key,
     )
+    if fresh.capability.profile == "OH_FW_V4":
+        if not isinstance(invocation, NativeChildResolution):
+            raise denied()
+        claim = invocation.invocation
+    else:
+        if not isinstance(invocation, NativeChildInvocation):
+            raise denied()
+        claim = invocation
     if (
         fresh != prepared
-        or invocation.policy != fresh.capability.policy
-        or invocation.audience != fresh.capability.launch_url
+        or claim.policy != fresh.capability.policy
+        or claim.audience != fresh.capability.launch_url
     ):
         raise denied()
     return fresh

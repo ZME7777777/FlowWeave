@@ -52,7 +52,7 @@ async def start(owner_id: UUID, binding_id: UUID, request: Request) -> JSONRespo
         history=False,
     )
     request.state.audit_principal = prepared.principal
-    # FR-720 will consume this authorized boundary for reservation and release.
+    # FR-723 will consume this authorized boundary for reservation and release.
     # Never return a native invocation as a fabricated child creation response.
     raise DomainError(
         "AGENT_CHILD_CREATION_NOT_ENABLED",

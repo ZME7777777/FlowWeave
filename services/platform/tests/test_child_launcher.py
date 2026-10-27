@@ -34,6 +34,12 @@ from flowweave.runtime.child_contract import (
     child_capability_manifest,
 )
 from flowweave.runtime.child_creation import NativeChildInvocation, NativeChildLaunchRequest
+from flowweave.runtime.child_governance import NativeChildResolution
+from flowweave.runtime.child_governance_contract import (
+    V4_ARCHIVE_SHA256,
+    V4_SOURCE_COMMIT,
+    governed_child_capability_manifest,
+)
 from flowweave.runtime.manifest import runtime_manifest_hash
 from flowweave.runtime.protocol_profiles import runtime_contract_for_protocol_profile
 from flowweave.shared.domain.openhands import OpenHandsServerIdentity
@@ -55,8 +61,20 @@ def gateway_base_url(request):
     return "https://gateway.example.test/prefix"
 
 
+@pytest.fixture
+def parent_profile(request):
+    return getattr(request, "param", "OH_FW_V3")
+
+
 @pytest.fixture(params=["AGENT_WORKSPACE", "FLOW_NODE"])
-def parent_graph(request, db_session_factory, settings, monkeypatch, gateway_base_url):
+def parent_graph(
+    request, db_session_factory, settings, monkeypatch, gateway_base_url, parent_profile
+):
+    identity = (
+        FROZEN_V3_IDENTITY
+        if parent_profile == "OH_FW_V3"
+        else OpenHandsServerIdentity("1.58.2", V4_SOURCE_COMMIT, V4_SOURCE_COMMIT)
+    )
     config = settings.model_copy(
         update={
             "runtime_adapter": "openhands",
@@ -74,13 +92,15 @@ def parent_graph(request, db_session_factory, settings, monkeypatch, gateway_bas
         scope_id = workspace_id
     manifest = {
         "schema_version": 3,
-        "child_conversations": child_capability_manifest(),
+        "child_conversations": child_capability_manifest()
+        if parent_profile == "OH_FW_V3"
+        else governed_child_capability_manifest(),
         "nodes": {},
     }
     spec = RuntimeAgentSpec(
         tools=(RuntimeTool("task_tracker"),),
         runtime_contract=runtime_contract_for_protocol_profile(
-            "OH_FW_V3", ("task_tracker",), FROZEN_V3_IDENTITY
+            parent_profile, ("task_tracker",), identity
         ),
     )
     with settings_context(config), tenant_user(owner), db_session_factory() as db:
@@ -147,7 +167,7 @@ def parent_graph(request, db_session_factory, settings, monkeypatch, gateway_bas
                 runtime_image_digest=image,
                 environment_version_id=str(uuid4()),
                 workspace_allocation_id=str(uuid4()),
-                protocol_profile="OH_FW_V3",
+                protocol_profile=parent_profile,
                 active_generation=1,
                 status="ACTIVE",
             )
@@ -157,7 +177,7 @@ def parent_graph(request, db_session_factory, settings, monkeypatch, gateway_bas
                 "active_node_runtime_connection",
                 lambda *_args, **_kwargs: SimpleNamespace(
                     runtime_session_id=runtime_id,
-                    protocol_profile=SimpleNamespace(value="OH_FW_V3"),
+                    protocol_profile=SimpleNamespace(value=parent_profile),
                     generation=1,
                     resource_name=resource,
                     managed_runtime_id="node-runtime",
@@ -183,8 +203,8 @@ def parent_graph(request, db_session_factory, settings, monkeypatch, gateway_bas
             db,
             binding,
             spec,
-            profile="OH_FW_V3",
-            identity=FROZEN_V3_IDENTITY,
+            profile=parent_profile,
+            identity=identity,
             generation=1,
             runtime_image_digest=image,
             runtime_manifest=manifest,
@@ -199,6 +219,8 @@ def parent_graph(request, db_session_factory, settings, monkeypatch, gateway_bas
         )
         yield SimpleNamespace(
             db=db,
+            profile=parent_profile,
+            identity=identity,
             owner=owner,
             other=other,
             binding=binding,
@@ -434,6 +456,9 @@ def launcher_http(parent_graph, monkeypatch):
             raise child_parent.denied()
         return proof(g, request_digest=request.request_digest())
 
+    def resolve(handle, request):
+        return resolution(verify(handle, request))
+
     class AsyncSession:
         def __init__(self, db):
             self.db = db
@@ -467,7 +492,7 @@ def launcher_http(parent_graph, monkeypatch):
             rate_limiter=SimpleNamespace(
                 allow=AsyncMock(return_value=SimpleNamespace(allowed=True))
             ),
-            runtime=SimpleNamespace(verify_child_launcher=verify),
+            runtime=SimpleNamespace(verify_child_launcher=verify, resolve_child_launcher=resolve),
             artifact_store=Mock(),
             plugin_resolver=Mock(),
             sandbox=Mock(),
@@ -486,6 +511,7 @@ def launcher_http(parent_graph, monkeypatch):
 @pytest.mark.parametrize(
     "credential", ["absent", "cookie-only", "root-key", "wrong-key", "runtime-only", "valid"]
 )
+@pytest.mark.parametrize("parent_profile", ["OH_FW_V3", "OH_FW_V4"], indirect=True)
 def test_http_gateway_requires_runtime_key_and_native_proof(launcher_http, credential):
     from urllib.parse import urlsplit
 
@@ -543,6 +569,7 @@ def test_only_exact_native_path_bypasses_cookie_login(launcher_http):
 
 
 @pytest.mark.parametrize("gateway_base_url", ["local"], indirect=True)
+@pytest.mark.parametrize("parent_profile", ["OH_FW_V3", "OH_FW_V4"], indirect=True)
 def test_native_tool_calls_platform_gateway_over_real_tcp(launcher_http, monkeypatch):
     """Real native action -> platform auth -> native verifier -> fenced refusal.
 
@@ -565,14 +592,17 @@ def test_native_tool_calls_platform_gateway_over_real_tcp(launcher_http, monkeyp
     from flowweave.runtime.base import RuntimeProvider, StartAttemptRequest
     from flowweave.runtime.openhands import OpenHandsRuntime
 
-    python = os.environ.get("FLOWWEAVE_NATIVE_CHILD_V3_PYTHON")
-    if not python:
-        pytest.skip(
-            "Set FLOWWEAVE_NATIVE_CHILD_V3_PYTHON to the fixed native four-package environment"
-        )
     g, client, _ = launcher_http
+    environment = (
+        "FLOWWEAVE_NATIVE_CHILD_V3_PYTHON"
+        if g.profile == "OH_FW_V3"
+        else "FLOWWEAVE_NATIVE_CHILD_PYTHON"
+    )
+    python = os.environ.get(environment)
+    if not python:
+        pytest.skip(f"Set {environment} to the corresponding fixed native environment")
     repo = Path(__file__).resolve().parents[3]
-    root = repo / ".tmp/fr719/native"
+    root = repo / ".tmp/fr722/native"
     root.mkdir(parents=True, exist_ok=True)
     state = Path(tempfile.mkdtemp(dir=root))
     state.chmod(0o700)
@@ -590,15 +620,27 @@ def test_native_tool_calls_platform_gateway_over_real_tcp(launcher_http, monkeyp
     )
     source_lock = json.loads((repo / "infra/openhands/source.lock.json").read_text())
     source_lock.update(
-        source_commit=V3_SOURCE_COMMIT,
-        fork_commit=V3_SOURCE_COMMIT,
-        archive_sha256=V3_ARCHIVE_SHA256,
+        source_commit=g.identity.source_commit,
+        fork_commit=g.identity.source_commit,
+        archive_sha256=V3_ARCHIVE_SHA256 if g.profile == "OH_FW_V3" else V4_ARCHIVE_SHA256,
     )
     source_lock_path = state / "source.lock.json"
     source_lock_path.write_text(json.dumps(source_lock))
     env["FLOWWEAVE_NATIVE_CHILD_LOCK"] = str(source_lock_path)
     script = Path(__file__).parents[1] / "unit_tests/fixtures/native_child_server.py"
     native = OpenHandsRuntime(g.config)
+    authorized_calls = []
+    original_project = child_launcher.project_launcher
+
+    def record_authorization(db, prepared, verified, *, runtime_key):
+        result = original_project(db, prepared, verified, runtime_key=runtime_key)
+        claim = verified.invocation if isinstance(verified, NativeChildResolution) else verified
+        with tenant_user(g.owner):
+            saved = db.get(AgentConversationBinding, str(prepared.capability.binding_id))
+            authorized_calls.append((result.capability.profile, saved.lifecycle, claim.action_id))
+        return result
+
+    monkeypatch.setattr(child_launcher, "project_launcher", record_authorization)
     server = None
     thread = None
     with (state / "native.log").open("w") as log:
@@ -620,7 +662,7 @@ def test_native_tool_calls_platform_gateway_over_real_tcp(launcher_http, monkeyp
                 assert time.monotonic() < deadline
                 time.sleep(0.05)
             info = json.loads((state / "server-ready.json").read_text())
-            assert info["verified_python_files"] == 536
+            assert info["verified_python_files"] == (536 if g.profile == "OH_FW_V3" else 537)
             with httpx.Client(base_url=info["host"], trust_env=False, timeout=10) as http:
                 deadline = time.monotonic() + 10
                 while True:
@@ -683,7 +725,13 @@ def test_native_tool_calls_platform_gateway_over_real_tcp(launcher_http, monkeyp
                 runtime_resource_name="fr719-test-resource",
                 runtime_base_url=info["host"],
             )
+            if g.profile == "OH_FW_V4":
+                # Reproduce the first-turn window: parent binding not ACTIVE yet,
+                # but frozen authority was committed before native execution.
+                g.binding.lifecycle = "PROVISIONING"
+                g.db.commit()
             handle = native.create_conversation(request)
+            assert handle.protocol_profile == g.profile
             native.send_message(handle, "delegate")
             with httpx.Client(
                 base_url=info["host"],
@@ -709,6 +757,13 @@ def test_native_tool_calls_platform_gateway_over_real_tcp(launcher_http, monkeyp
                     if e["kind"] == "ObservationEvent" and e.get("action_id") == actions[0]["id"]
                 ]
                 assert len(observations) == 1
+                assert authorized_calls == [
+                    (
+                        g.profile,
+                        "PROVISIONING" if g.profile == "OH_FW_V4" else "ACTIVE",
+                        actions[0]["id"],
+                    )
+                ]
             signed = json.loads((state / "proof.json").read_text())
             invocation = NativeChildInvocation.model_validate(signed["invocation"])
             assert invocation.audience == g.frozen.launch_url
@@ -817,6 +872,7 @@ def test_fork_cannot_copy_parent_bound_authority(parent_graph):
 
 @pytest.mark.parametrize("parent_graph", ["AGENT_WORKSPACE"], indirect=True)
 @pytest.mark.parametrize("allow_children", [True, False])
+@pytest.mark.parametrize("parent_profile", ["OH_FW_V3", "OH_FW_V4"], indirect=True)
 def test_workspace_native_creation_attaches_only_explicit_parent_capability(
     parent_graph, monkeypatch, tmp_path, allow_children
 ):
@@ -860,6 +916,11 @@ def test_workspace_native_creation_attaches_only_explicit_parent_capability(
     captured = []
 
     def create(request):
+        if g.profile == "OH_FW_V4" and allow_children:
+            assert not g.db.in_transaction()
+            with tenant_user(g.owner), g.sessions() as reader:
+                saved = reader.get(AgentConversationBinding, binding.id)
+                assert saved.child_parent_manifest_json["profile"] == "OH_FW_V4"
         captured.append(request)
         return conversations._handle(g.db, g.db.get(AgentWorkspace, binding.workspace_id), binding)
 
@@ -876,7 +937,7 @@ def test_workspace_native_creation_attaches_only_explicit_parent_capability(
 
     with (
         settings_context(
-            g.config.model_copy(update={"agent_workspace_runtime_protocol_profile": "OH_FW_V3"})
+            g.config.model_copy(update={"agent_workspace_runtime_protocol_profile": g.profile})
         ),
         runtime_context(SimpleNamespace(create_conversation=create, reload_conversation=reload)),
     ):
@@ -893,7 +954,7 @@ def test_workspace_native_creation_attaches_only_explicit_parent_capability(
     names = {tool.name for tool in captured[0].agent_spec.tools}
     assert (set(CHILD_TOOL_NAMES) <= names) == allow_children
     assert (binding.child_parent_manifest_json is not None) == allow_children
-    assert handle.protocol_profile == ("OH_FW_V3" if allow_children else None)
+    assert handle.protocol_profile == (g.profile if allow_children else None)
 
 
 @pytest.mark.parametrize("parent_graph", ["FLOW_NODE"], indirect=True)
@@ -971,7 +1032,14 @@ def test_empty_manifest_migration_roundtrip_preserves_legacy_binding(parent_grap
 
 
 @pytest.mark.parametrize("parent_graph", ["FLOW_NODE"], indirect=True)
-def test_worker_freezes_parent_before_releasing_database_transaction(parent_graph, monkeypatch):
+@pytest.mark.parametrize(
+    "parent_profile,leased",
+    [("OH_FW_V3", True), ("OH_FW_V4", True), ("OH_FW_V4", False)],
+    indirect=["parent_profile"],
+)
+def test_worker_freezes_parent_before_releasing_database_transaction(
+    parent_graph, monkeypatch, leased
+):
     from flowweave.modules.orchestration.application import service
     from flowweave.runtime.base import StartAttemptRequest
     from flowweave.runtime.dependencies import runtime_context
@@ -1016,14 +1084,14 @@ def test_worker_freezes_parent_before_releasing_database_transaction(parent_grap
         manifest_json={},
         environment_id=request.environment_id,
         version_no=1,
-        runtime_protocol_profile="OH_FW_V3",
+        runtime_protocol_profile=g.profile,
     )
     monkeypatch.setattr(service, "_runtime_request", lambda *_: request)
     monkeypatch.setattr(service, "lock_referenceable_version", lambda *_: environment)
     monkeypatch.setattr(
         service,
         "runtime_server_identity",
-        lambda *_args, **_kwargs: FROZEN_V3_IDENTITY,
+        lambda *_args, **_kwargs: g.identity,
     )
     monkeypatch.setattr(
         service.sandboxes,
@@ -1057,7 +1125,245 @@ def test_worker_freezes_parent_before_releasing_database_transaction(parent_grap
         raise DomainError("FIXTURE_STOP", "Stop before native execution", 409)
 
     with runtime_context(SimpleNamespace(start=start)), pytest.raises(DomainError) as stopped:
-        service.process_start_runtime(g.db, attempt_id, lease=SimpleNamespace())
+        service.process_start_runtime(g.db, attempt_id, lease=SimpleNamespace() if leased else None)
     assert stopped.value.code == "FIXTURE_STOP"
-    assert lease_checks == [True]
+    assert lease_checks == ([True, True] if g.profile == "OH_FW_V4" else [True])
     assert set(CHILD_TOOL_NAMES) <= {tool.name for tool in captured[0].agent_spec.tools}
+
+
+def resolution(invocation):
+    from uuid import uuid5
+
+    from flowweave.runtime.child_creation import NativeChildIdentity
+
+    parent = invocation.policy.parent_conversation_id
+    creation = uuid5(
+        parent, f"openhands-child-invocation-v1:{invocation.action_id}:{invocation.tool_call_id}"
+    )
+    return NativeChildResolution(
+        schema_version=1,
+        invocation=invocation,
+        identity=NativeChildIdentity(
+            parent_conversation_id=parent,
+            creation_id=creation,
+            conversation_id=uuid5(parent, f"openhands-child-creation-v1:{creation.hex}"),
+        ),
+    )
+
+
+@pytest.mark.parametrize("parent_profile", ["OH_FW_V4"], indirect=True)
+@pytest.mark.parametrize("lifecycle", ["ACTIVE", "PROVISIONING"])
+def test_v4_native_resolution_authorizes_both_first_turn_and_active_parent(
+    parent_graph, monkeypatch, lifecycle
+):
+    g = parent_graph
+    g.binding.lifecycle = lifecycle
+    g.db.commit()
+    prepared = prepare(g)
+    request = NativeChildLaunchRequest(task="task", token=SecretStr("native-proof"))
+    verified = resolution(proof(g, request_digest=request.request_digest()))
+    calls = []
+
+    def resolve(handle, launch):
+        calls.append((handle, launch))
+        return verified
+
+    monkeypatch.setattr(
+        child_launcher, "get_runtime", lambda: SimpleNamespace(resolve_child_launcher=resolve)
+    )
+    assert child_launcher.verify_launcher(prepared, request) == verified
+    assert calls == [(prepared.handle, request)]
+    assert child_launcher.project_launcher(g.db, prepared, verified, runtime_key=g.key) == prepared
+    with pytest.raises(DomainError):
+        child_launcher.project_launcher(g.db, prepared, verified.invocation, runtime_key=g.key)
+
+
+@pytest.mark.parametrize("parent_profile", ["OH_FW_V3", "OH_FW_V4"], indirect=True)
+@pytest.mark.parametrize("lifecycle", ["PROVISIONING", "FAILED", "DELETE_PENDING"])
+def test_parent_lifecycle_candidates_are_version_scoped(parent_graph, lifecycle):
+    g = parent_graph
+    g.binding.lifecycle = lifecycle
+    g.db.commit()
+    if g.profile == "OH_FW_V4" and lifecycle == "PROVISIONING":
+        assert prepare(g).capability.profile == "OH_FW_V4"
+    else:
+        with pytest.raises(DomainError):
+            prepare(g)
+
+
+@pytest.mark.parametrize("parent_profile", ["OH_FW_V4"], indirect=True)
+@pytest.mark.parametrize("change", ["generation", "deleting", "disabled", "permission", "image"])
+def test_v4_provisioning_revocation_between_native_phases_is_denied(parent_graph, change):
+    g = parent_graph
+    g.binding.lifecycle = "PROVISIONING"
+    g.db.commit()
+    prepared = prepare(g)
+    verified = resolution(proof(g))
+    if change == "deleting":
+        g.binding.lifecycle = "DELETE_PENDING"
+    elif change in {"disabled", "permission"}:
+        user = g.db.get(User, g.owner)
+        if change == "disabled":
+            user.is_active = False
+        else:
+            user.role = "USER"
+    else:
+        session_type = AgentWorkspaceRuntime if g.kind == "AGENT_WORKSPACE" else FlowRunRuntime
+        runtime = g.db.get(session_type, g.runtime_id)
+        if change == "generation":
+            runtime.active_generation = 2
+        else:
+            runtime.runtime_image_digest = "sha256:" + "b" * 64
+    g.db.commit()
+    with pytest.raises(DomainError):
+        child_launcher.project_launcher(g.db, prepared, verified, runtime_key=g.key)
+
+
+@pytest.mark.parametrize("parent_profile", ["OH_FW_V4"], indirect=True)
+@pytest.mark.parametrize("parent_graph", ["FLOW_NODE"], indirect=True)
+@pytest.mark.parametrize("entry", ["create", "bootstrap"])
+def test_v4_manual_node_entries_commit_parent_before_native_create(
+    parent_graph, monkeypatch, tmp_path, entry
+):
+    from flowweave.modules.agent_sessions.application import flow_node_conversations as node
+    from flowweave.modules.agent_sessions.application.runtime_config import FrozenSessionConfig
+    from flowweave.runtime.base import StartAttemptRequest
+    from flowweave.runtime.dependencies import runtime_context
+
+    g = parent_graph
+    attempt = g.db.get(NodeAttempt, g.binding.conversation_scope_id)
+    run = g.db.get(FlowRun, g.binding.host_id)
+    snapshot = g.db.get(RunSnapshot, attempt.snapshot_id)
+    run.environment_version_id = snapshot.environment_version_id = str(uuid4())
+    parent = AgentConversationBinding(
+        id=str(uuid4()),
+        owner_user_id=g.owner,
+        host_kind=g.kind,
+        host_id=run.id,
+        flow_run_id=run.id,
+        conversation_scope_id=attempt.id,
+        runtime_session_id=g.runtime_id,
+        openhands_conversation_id=str(uuid4()),
+        working_directory=g.binding.working_directory,
+        node_attempt_id=attempt.id,
+        node_run_id=attempt.node_run_id,
+        create_idempotency_key=str(uuid4()),
+        lifecycle="PROVISIONING",
+    )
+    g.db.add(parent)
+    g.db.flush()
+    environment = SimpleNamespace(
+        id=run.environment_version_id,
+        image_digest=g.image,
+        manifest_json={},
+        environment_id=str(uuid4()),
+        version_no=1,
+        runtime_protocol_profile=g.profile,
+    )
+    monkeypatch.setattr(node, "lock_referenceable_version", lambda *_: environment)
+    monkeypatch.setattr(node, "runtime_server_identity", lambda *_args, **_kwargs: g.identity)
+    monkeypatch.setattr(
+        node, "_node_capability_root", lambda *_args, **_kwargs: tmp_path / parent.id
+    )
+    monkeypatch.setattr(node, "reserve_flow_node_binding", lambda *_args, **_kwargs: parent)
+    monkeypatch.setattr(
+        node, "config_from_binding", lambda *_: FrozenSessionConfig(None, None, None, None, ())
+    )
+    monkeypatch.setattr(node, "provider_for_config", lambda *_: None)
+    monkeypatch.setattr(node, "_materialize_conversation_memory", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(node, "_node_context_suffix", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(node, "credentials_for_agent", lambda *_: ({}, ""))
+    monkeypatch.setattr(node, "build_agent_spec", lambda *_args, **_kwargs: g.spec)
+    monkeypatch.setattr(
+        node.sandboxes,
+        "node_attempt_workspace_context",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            runtime_working_directory=parent.working_directory
+        ),
+    )
+
+    def build(_db, **kwargs):
+        return StartAttemptRequest(
+            attempt_id=parent.id,
+            execution_key="manual-node",
+            node={},
+            bindings=[],
+            workspace_ref=parent.working_directory,
+            conversation_id=parent.openhands_conversation_id,
+            agent_spec=kwargs["agent_spec"],
+        )
+
+    monkeypatch.setattr(node, "build_runtime_request", build)
+    captured = []
+    parent_id = parent.id
+
+    def create(request):
+        assert not g.db.in_transaction()
+        with tenant_user(g.owner), g.sessions() as reader:
+            saved = reader.get(AgentConversationBinding, parent_id)
+            assert saved.lifecycle == "PROVISIONING"
+            assert child_parent.read_parent_capability(saved).profile == "OH_FW_V4"
+        captured.append(request)
+        raise DomainError("FIXTURE_STOP", "Stop before native execution", 409)
+
+    with (
+        runtime_context(SimpleNamespace(create_conversation=create)),
+        pytest.raises(DomainError) as stopped,
+    ):
+        if entry == "create":
+            node._create_native_conversation(
+                g.db,
+                run=run,
+                snapshot=snapshot,
+                title=None,
+                idempotency_key=str(uuid4()),
+                binding_id=parent.id,
+                attempt_id=attempt.id,
+                node_run_id=attempt.node_run_id,
+                session_binding_id=parent.id,
+            )
+        else:
+            node._create_or_reload_node_bootstrap(
+                g.db,
+                binding=parent,
+                run=run,
+                snapshot=snapshot,
+                allow_existing=False,
+            )
+    assert stopped.value.code == "FIXTURE_STOP"
+    assert set(CHILD_TOOL_NAMES) <= {tool.name for tool in captured[0].agent_spec.tools}
+
+
+@pytest.mark.parametrize("parent_profile", ["OH_FW_V3", "OH_FW_V4"], indirect=True)
+def test_frozen_parent_cannot_change_protocol_or_capability_version(parent_graph):
+    g = parent_graph
+    target = "OH_FW_V4" if g.profile == "OH_FW_V3" else "OH_FW_V3"
+    identity = (
+        OpenHandsServerIdentity("1.58.2", V4_SOURCE_COMMIT, V4_SOURCE_COMMIT)
+        if target == "OH_FW_V4"
+        else FROZEN_V3_IDENTITY
+    )
+    manifest = {
+        **g.manifest,
+        "child_conversations": governed_child_capability_manifest()
+        if target == "OH_FW_V4"
+        else child_capability_manifest(),
+    }
+    spec = replace(
+        g.spec,
+        runtime_contract=runtime_contract_for_protocol_profile(target, ("task_tracker",), identity),
+    )
+    original = g.binding.child_parent_manifest_json
+    with pytest.raises(DomainError):
+        child_parent.attach_parent_capability(
+            g.db,
+            g.binding,
+            spec,
+            profile=target,
+            identity=identity,
+            generation=1,
+            runtime_image_digest=g.image,
+            runtime_manifest=manifest,
+        )
+    assert g.binding.child_parent_manifest_json == original
+    assert child_parent.read_parent_capability(g.binding).profile == g.profile

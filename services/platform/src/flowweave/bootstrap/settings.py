@@ -26,7 +26,9 @@ class Settings(BaseSettings):
     agent_history_mcp_capability_version_id: str = ""
     agent_history_mcp_url: str = ""
     # Explicit opt-in for new direct sessions; existing bindings never inherit it.
-    agent_workspace_runtime_protocol_profile: Literal["OH_FW_V1", "OH_FW_V3"] = "OH_FW_V1"
+    agent_workspace_runtime_protocol_profile: Literal["OH_FW_V1", "OH_FW_V3", "OH_FW_V4"] = (
+        "OH_FW_V1"
+    )
     agent_child_gateway_base_url: str = ""
 
     database_url: str = "postgresql+psycopg://flowweave:flowweave_dev@localhost:55432/flowweave"
