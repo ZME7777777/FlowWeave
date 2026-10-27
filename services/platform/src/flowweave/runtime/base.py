@@ -15,6 +15,7 @@ from flowweave.runtime.child_governance import (
     NativeChildPreparationOverrides,
     NativeChildResolution,
     NativeGovernedChildPreparation,
+    NativeParentConfiguration,
 )
 
 
@@ -765,6 +766,10 @@ class RuntimeConversationRuntime:
 
 
 class RuntimePort(Protocol):
+    def parent_conversation_configuration(
+        self, handle: RuntimeHandle
+    ) -> NativeParentConfiguration: ...
+
     def resolve_child_launcher(
         self, handle: RuntimeHandle, request: NativeChildLaunchRequest
     ) -> NativeChildResolution: ...

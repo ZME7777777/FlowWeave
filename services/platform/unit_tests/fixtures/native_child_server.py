@@ -53,7 +53,7 @@ def main():
         else secrets.token_urlsafe(32)
     )
     workspace = state / "workspace"
-    workspace.mkdir()
+    workspace.mkdir(exist_ok=serve_only)
     config = {
         "session_api_keys": [runtime_key],
         "secret_key": secrets.token_urlsafe(32),
@@ -63,6 +63,9 @@ def main():
         "preload_tools": False,
     }
     config_file = state / "config.json"
+    if serve_only and config_file.exists():
+        # Preserve the run-owned cipher across a real process restart.
+        config = json.loads(config_file.read_text())
     config_file.write_text(json.dumps(config))
     config_file.chmod(0o600)
     os.environ["OPENHANDS_AGENT_SERVER_CONFIG_PATH"] = str(config_file)

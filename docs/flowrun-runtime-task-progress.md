@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`CHILD CONVERSATIONS IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-723`
+> 下一可执行切片：`FR-712`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 > 子会话设计：`docs/agent-child-conversations-design.md`
@@ -746,13 +746,57 @@ lock、Manifest digest 和归档未改，无数据库迁移、前端、部署、
 实际子预留、凭据重签／禁用、首轮 release 与恢复仍由 FR-723 完成；FR-712 依赖 FR-723。
 当前 NONE，下一可执行 FR-723；提交后停止。
 
-### FR-723 两宿主子预留凭据重签与首轮恢复 — READY
+### FR-723 两宿主子预留凭据重签与首轮恢复 — DONE
 
 依赖：FR-722 DONE。先预留 binding 再原生 prepare，核对正式父子／shared 目录／配置，
 复制冻结能力并重签或明确禁用 binding 级授权后 release；短事务、同 invocation 并发、
 generation fence、原身份查回及各阶段崩溃恢复。
 
-### FR-712 两宿主子续聊控制附件与结果引用 — PENDING
+实施结果（2026-10-27）：V4 gateway 已接通真实原生子创建，V3 保持原 verifier 与显式 503
+产品门禁并保留已授权调用的用户审计归属。新 `child_creation` 服务通过正式 resolve 身份和父配置，在父 row lock 内预留子
+binding／关系，随后分别短事务授权 → 原生 prepare／读配置 → 核对治理，再重新授权 → 原生
+release → 受理投影；Runtime I/O 期间不保留 DB 连接。首轮父仍 PROVISIONING 时可完成整链，
+不等待父 Tool 自身结束或父 ACTIVE 提交。并发同 invocation 仅一个 binding／creation；原生
+prepare／release 及稳定首事件负责消息去重，平台不制造消息或另建执行器。
+
+迁移 `0179_agent_child_creation_audit` 添加创建策略、请求／预期公共配置摘要及原生持久目录，
+旧关系全空兼容，新治理行不允许部分字段空；既有关系不可变 trigger 继续覆盖，存在治理审计
+时拒绝有损 downgrade。平台审计不保存 task、proof、Secret 或整个 Agent 文档。准备核对
+parent／child ID、shared 目录、持久目录、治理 UUID 和公共 Agent 配置；仅剔除原生 finalize
+会刷新的 `AgentContext.current_datetime` 后取摘要。ACTIVE 表示 locator 治理完成，之后原身份
+重放不阻止用户更改原生模型；身份、目录、请求与治理 UUID 检查始终保持。
+
+`binding-isolated-v1` 在原生准备时移除父历史 Secret `FLOWWEAVE_HISTORY_ACCESS` 与 MCP
+`flowweave-reference-history`，同步排除其能力引用；其余冻结版本／摘要／位置复制。子不装配
+父六工具／旧创建工具，不分配 Attempt／NodeRun／Runtime。普通 Secret 沿原生创建配置继承；
+后续 additive `/secrets` 的 registry 更新不保证继承，故不复制父 credential-sync 记录或谎报
+已同步；独立同步留 FR-712。ACP 的 activation 与 native Conversation 关联，当前在预留前明确
+拒绝，不能将其当作普通 Secret 复制。SDK 源码及 source lock、V4／V3 身份和归档均未改。
+
+恢复重放原请求与证明，查回相同预留和原生准备计划；429、写入响应未知和超时均不删除预留
+或换身份。release 阶段权限复核失败返回结果未知，避免错误宣布未受理；native 操作返回晚于
+共享响应 deadline 时不得再投影数据库。证明过期时，仅原生准备回执存在且证明、父配置／分支
+仍有效可重放；平台预留本身不豁免过期，撤权／generation 变化仍失败关闭。没有无人值守
+重放循环或无限期恢复承诺。
+
+验证：相关 PostgreSQL／launcher／关系隔离／HTTP DTO／V3–V4 契约／迁移套件 **335 passed**，
+另补充共享 ASGI 循环中的 resolve／prepare／release 真实超时与迟到 worker 拒绝投影
+**6 passed**（共 341 个不同用例，不叠加之前重复运行）。覆盖两宿主同 invocation 四并发预留、
+准备前后／配置读取／释放前后响应丢失、配置错配、阶段间撤权、容量不足／证明拒绝、能力引用
+复制与认证同步未伪报、ACP 拒绝、有损迁移保护及历史普通入口隔离。两宿主 × V3／V4 的真实
+TCP 共四用例纳入 335：固定非 editable 安装逐文件校验（V3 536／V4 537），正式 Tool 调用进入
+平台再 resolve／prepare／release，V4 真实子首轮完成及服务进程完整重启后同证明重放，始终一个
+首条用户事件，创建时普通 Secret 继承且父历史 Secret 不继承；V3 仍 503。仅模型 completion、
+物理挂载与 Runtime 连接使用夹具，不代表实际镜像／真实模型验收。所有 run-owned 原生／平台
+服务已退出，日志位于 `.tmp/fr723/`。
+
+新增核心服务、gateway 与治理 DTO 的 Pyright **零错误**；六个受影响既有模块检查 47 项
+诊断与修改前 HEAD 按文件／规则／消息逐项相同，零新增，未宣称旧模块全绿。受影响 Ruff、
+新改函数格式、AST、diff、任务状态与依赖检查通过。Alembic 唯一 head 为
+`0179_agent_child_creation_audit`。无前端、部署、推送或 Runtime 替换。当前 NONE，下一可执行
+FR-712；提交后停止。
+
+### FR-712 两宿主子续聊控制附件与结果引用 — READY
 
 依赖：FR-723 DONE。接入正式消息／控制／模型／condense、附件 owner 和正式结果引用，
 用户与父工具共用受理门禁，不借用父 token 或跨 binding 路径。

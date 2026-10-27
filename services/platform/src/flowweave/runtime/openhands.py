@@ -82,6 +82,7 @@ from flowweave.runtime.child_governance import (
     NativeChildPreparationOverrides,
     NativeChildResolution,
     NativeGovernedChildPreparation,
+    NativeParentConfiguration,
 )
 from flowweave.runtime.child_governance_contract import V4_CHILD_HTTP_OPERATIONS, V4_SOURCE_COMMIT
 from flowweave.runtime.contract import OPTIONAL_HTTP_OPERATIONS
@@ -2411,6 +2412,14 @@ class OpenHandsRuntime:
             raise DomainError(
                 "RUNTIME_CHILD_UNSUPPORTED", "当前冻结 Runtime 协议不支持子准备凭据治理", 409
             )
+
+    def parent_conversation_configuration(self, handle: RuntimeHandle) -> NativeParentConfiguration:
+        self._require_child_governance(handle)
+        value = self._child_request(handle, "GET", params={"include_skills": "true"})
+        result = self._child_response(NativeParentConfiguration, value)
+        if result.id != UUID(handle.conversation_id):
+            raise child_contract_error()
+        return result
 
     def resolve_child_launcher(
         self, handle: RuntimeHandle, request: NativeChildLaunchRequest

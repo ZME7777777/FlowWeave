@@ -230,6 +230,17 @@ class AgentChildConversation(Base):
             "AND manifest_digest ~ '^[0-9a-f]{64}$'",
             name="ck_agent_child_audit",
         ),
+        CheckConstraint(
+            "(creation_policy_version IS NULL AND request_digest IS NULL "
+            "AND expected_agent_digest IS NULL AND expected_persistence_dir IS NULL) OR "
+            "(creation_policy_version IS NOT NULL "
+            "AND creation_policy_version = 'binding-isolated-v1' "
+            "AND request_digest IS NOT NULL "
+            "AND request_digest ~ '^[0-9a-f]{64}$' AND expected_agent_digest IS NOT NULL "
+            "AND expected_agent_digest ~ '^[0-9a-f]{64}$' AND expected_persistence_dir IS NOT NULL "
+            "AND length(expected_persistence_dir) > 0)",
+            name="ck_agent_child_creation_audit",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
@@ -246,6 +257,10 @@ class AgentChildConversation(Base):
     tool_call_id: Mapped[str] = mapped_column(String(200))
     accepted_generation: Mapped[int] = mapped_column(Integer)
     manifest_digest: Mapped[str] = mapped_column(String(64))
+    creation_policy_version: Mapped[str | None] = mapped_column(String(50))
+    request_digest: Mapped[str | None] = mapped_column(String(64))
+    expected_agent_digest: Mapped[str | None] = mapped_column(String(64))
+    expected_persistence_dir: Mapped[str | None] = mapped_column(String(1000))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 

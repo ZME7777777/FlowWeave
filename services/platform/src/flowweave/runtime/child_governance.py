@@ -11,6 +11,7 @@ from flowweave.runtime.child_creation import (
     NativeChildIdentity,
     NativeChildInvocation,
     NativeChildPreparation,
+    NativeChildWorkspace,
 )
 
 
@@ -80,3 +81,15 @@ class NativeChildPreparationOverrides(BaseModel):
 
 class NativeGovernedChildPreparation(NativeChildPreparation):
     governance_id: UUID | None = None
+
+
+class NativeParentConfiguration(BaseModel):
+    """Read-only native configuration, including root parents with no parent ID."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    id: UUID
+    parent_conversation_id: UUID | None = None
+    workspace: NativeChildWorkspace
+    persistence_dir: str | None
+    agent: dict[str, Any] = Field(repr=False)

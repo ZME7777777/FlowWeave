@@ -9,7 +9,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import SecretStr, ValidationError
 
-from flowweave.modules.agent_sessions.application import child_launcher
+from flowweave.modules.agent_sessions.application import child_creation, child_launcher
 from flowweave.modules.agent_sessions.application.child_parent import LAUNCH_PATH, denied
 from flowweave.runtime.child_creation import NativeChildLaunchRequest
 from flowweave.shared.errors import DomainError
@@ -40,23 +40,54 @@ async def start(owner_id: UUID, binding_id: UUID, request: Request) -> JSONRespo
         # The shared validation handler would echo the opaque proof and task.
         raise DomainError("AGENT_CHILD_REQUEST_INVALID", "子会话请求格式无效", 422) from None
     key = SecretStr(header)
-    prepared = await run_formal_events(
-        get_container(request),
-        lambda db: child_launcher.prepare_launcher(
-            db, owner_id=owner_id, binding_id=binding_id, runtime_key=key
-        ),
-        lambda parent: child_launcher.verify_launcher(parent, launch),
-        lambda db, parent, invocation: child_launcher.project_launcher(
-            db, parent, invocation, runtime_key=key
-        ),
-        history=False,
-    )
-    request.state.audit_principal = prepared.principal
-    # FR-723 will consume this authorized boundary for reservation and release.
-    # Never return a native invocation as a fabricated child creation response.
-    raise DomainError(
-        "AGENT_CHILD_CREATION_NOT_ENABLED",
-        "子会话创建治理尚未启用",
-        503,
-        {"outcome_unknown": False},
-    )
+    container = get_container(request)
+    releasing = False
+    try:
+        reserved = await run_formal_events(
+            container,
+            lambda db: child_launcher.prepare_launcher(
+                db, owner_id=owner_id, binding_id=binding_id, runtime_key=key
+            ),
+            lambda parent: child_creation.read_creation(parent, launch),
+            lambda db, parent, verified: child_creation.reserve_creation(
+                db, parent, verified, runtime_key=key
+            ),
+            history=False,
+        )
+        if isinstance(reserved, child_launcher.AuthorizedParent):
+            request.state.audit_principal = reserved.principal
+            raise child_creation.unavailable()
+        request.state.audit_principal = reserved.parent.principal
+        governed = await run_formal_events(
+            container,
+            lambda db: child_creation.reconcile_reservation(db, reserved, runtime_key=key),
+            lambda child: child_creation.prepare_native(child, launch),
+            lambda db, child, prepared: child_creation.govern_creation(
+                db, child, prepared, runtime_key=key
+            ),
+            history=False,
+        )
+        releasing = True
+        result = await run_formal_events(
+            container,
+            lambda db: child_creation.reconcile_reservation(db, governed, runtime_key=key),
+            lambda child: child_creation.release_native(child, launch),
+            lambda db, child, prepared: child_creation.finish_creation(
+                db, child, prepared, runtime_key=key
+            ),
+            history=False,
+        )
+    except DomainError as exc:
+        if (
+            exc.details.get("outcome_unknown") is True
+            or exc.code == "RUNTIME_BUSINESS_READ_TIMEOUT"
+            or (releasing and exc.code == "AGENT_CHILD_LAUNCH_DENIED")
+        ):
+            raise DomainError(
+                "AGENT_CHILD_CREATION_AMBIGUOUS",
+                "子会话创建结果待对账，请保留原创建身份",
+                504,
+                {"outcome_unknown": True},
+            ) from None
+        raise
+    return JSONResponse(result)

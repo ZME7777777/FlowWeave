@@ -44,6 +44,7 @@ from flowweave.runtime.child_governance import (
     NativeChildPreparationOverrides,
     NativeChildResolution,
     NativeGovernedChildPreparation,
+    NativeParentConfiguration,
 )
 from flowweave.shared.errors import DomainError
 
@@ -56,6 +57,9 @@ class MockRuntime:
         return DomainError(
             "RUNTIME_CHILD_UNSUPPORTED", "Mock Runtime 不执行 OpenHands 原生子会话", 409
         )
+
+    def parent_conversation_configuration(self, handle: RuntimeHandle) -> NativeParentConfiguration:
+        raise self._child_unsupported()
 
     def resolve_child_launcher(
         self, handle: RuntimeHandle, request: NativeChildLaunchRequest

@@ -151,7 +151,7 @@ token 按 SecretStr 及既有 Secret serializer／脱敏规则处理，不进入
 验证返回 `ChildLauncherInvocation`，不创建会话或占用创建配额。服务端按原生 event ID 读取
 ActionEvent，核对工具、tool-call、任务及当前分支祖先关系，再比对父正式配置中的全部策略
 和 audience；伪造 token、跨父、旧 generation／Manifest、旧分支或子会话发起均拒绝。
-过期证明只允许对已持久预留的原 creation 做恢复，不允许首次准入。
+过期证明只允许对已有**原生准备回执**的原 creation 做恢复；仅有平台预留不满足此条件，不允许首次准入。
 
 prepare／release 增加可选 `launcher_token`；对配置受治理工具的父会话必须提供并复核证明，
 旧无此配置的准备请求形状保持兼容。受治理父／子不得通过旧 immediate children 或通用
@@ -524,6 +524,50 @@ DELETE_PENDING 均拒绝。候选仍须核对用户权限、宿主、镜像、Sn
 V4 的 Workspace、Flow Node 两个手动入口及 leased／inline 启动另验证 native I/O 前无持有事务、
 其他数据库会话可读取已冻结 PROVISIONING 父。最终计数和静态检查见进度文档；本片不部署。
 
+### 2.16 两宿主子创建、绑定授权与首轮恢复（FR-723）
+
+平台 gateway 仅对 `OH_FW_V4` 开放真实创建；V3 继续完成原 verifier／用户授权后返回
+`AGENT_CHILD_CREATION_NOT_ENABLED`，不追溯改变旧冻结契约。V4 通过正式 `launcher/resolve`
+取得原生创建身份，另读父公共配置（允许根父的 parent ID 为 null），再执行三个短事务阶段：
+
+1. 重新校验用户、宿主、generation、不可变父能力和调用证明投影；锁定父 binding，按
+   parent＋creation 查询或原子预留 child binding／关系。并发同 invocation 取得同一 binding。
+2. 关闭事务后调用 `/preparations/{creation}/governed`，使用 child binding UUID 为
+   `governance_id`；读取正式子配置，重新授权并核对身份、shared 目录、原生持久目录和
+   准备配置摘要，才将 locator 标为 ACTIVE。ACTIVE 只表示绑定治理完成，不表示原生正在运行。
+3. 再次授权，关闭事务后调用正式 `/release`；核对 started 回执，再短事务写入受理时间，
+   返回原生 parent／child ID、workspace／shared 与 child binding ID。消息和运行完全由原生创建。
+
+`0179_agent_child_creation_audit` 在已有用户隔离关系表增加创建策略版本、请求摘要、预期公共
+Agent 配置摘要和持久目录；旧行四字段全空保留，新行必须完整合法，关系更新仍被既有不可变
+trigger 拒绝。已有治理审计时拒绝降级丢弃字段。平台不保存 task、proof、Secret、Agent 文档或
+第二套执行状态机。配置摘要只忽略 `AgentContext.current_datetime`：原生 finalize 会刷新此时间，
+其余公共配置仍参与核对。绑定治理完成后的重放允许用户后续切换模型等原生配置变化，不重新
+要求初始 Agent 摘要相等；正式父子身份、目录、持久目录、请求摘要与治理 UUID 始终校验。
+
+创建策略 `binding-isolated-v1` 在原生 prepare 时明确移除 `FLOWWEAVE_HISTORY_ACCESS` Secret
+及 `flowweave-reference-history` MCP，同时排除其平台能力引用。它们不在子首轮运行时借用父身份。
+其余冻结能力引用保留 version／digest／原位置；子不取得六个父查询／控制／创建工具或旧创建工具，
+不创建新 Attempt／NodeRun／Runtime。当前仅支持原生 `Agent`；ACP 的会话级 activation 不能当作
+普通 Secret 安全继承，故在平台预留前以 `AGENT_CHILD_AGENT_UNSUPPORTED` 明确拒绝。
+
+普通认证沿用原生继承语义：创建时 StoredConversation／AgentContext 中的普通 SecretSource
+可继承；父后续通过 additive `/secrets` 动态加入的 registry 内容不保证进入子准备计划。平台不会
+复制父 credential-sync 记录或伪报子已同步。子后续认证同步必须经 FR-712 的子 binding 专属入口，
+不通过扩大本片权限或保存明文弥补。准备计划及恢复时的绑定 Secret 移除由固定 V4 SDK 加密计划保障。
+
+恢复通过原请求／原证明重新进入 gateway：平台查回同一预留，原生 prepare／release 幂等对账，
+首条任务按原生稳定 event ID 去重。容量不足返回 429 并保留平台预留；未知写入响应／读取预算
+超时返回结果未知，不另造身份。release 之后权限复核失败也返回未知，不能宣称尚未受理。
+用户／generation／父生命周期变化始终重新拒绝，不因存在预留自动取得权限。证明过期时，只有
+**原生准备回执已存在**且原生证明、父配置和当前分支仍有效才允许原创建恢复；仅有平台预留不足以
+绕过过期门禁。平台不持久化证明或 task，未提供无人值守重放循环或无限期恢复承诺。
+
+验证包含真实 PostgreSQL、两宿主 V3／V4 原生 Tool→平台→原生 TCP、服务进程完整重启后原证明
+重放、同 invocation 并发预留、准备／配置／释放边界丢失响应、配置不符与撤权拒绝。TCP 中模型
+completion 与物理挂载／连接由测试夹具控制，原生路由、正式事件、加密持久化和生命周期真实；
+不表示实际 Runtime 镜像、真实模型、前端或远端发布已验收。详细结果见本片进度记录。
+
 ## 3. 父 Agent 的操作契约
 
 以下工具名是目标命名，最终导出必须在对应 baseline 切片中建立正式类型和 contract：
@@ -563,7 +607,7 @@ run-slot 上限约束；该策略随 Manifest 冻结。不为等待子会话无�
 4. 原子预留子 binding、子 Conversation 身份、父子关联及创建审计，提交短数据库事务。
 5. 调用正式幂等子会话创建能力，继承允许配置并固定 shared；此时不能先运行首条 task。
 6. 核对原生 parent ID、实际工作目录、Runtime 和正式 Agent 配置，建立子 binding 的授权。
-7. 为依赖 binding 的短期凭据重新签发／激活，完成必要检查后才投递首条任务并启动。
+7. 为依赖 binding 的凭据重新签发／激活或在原生准备计划中明确禁用；本版按 §2.16 禁用父历史授权，完成必要检查后才投递首条任务并启动。
 8. 返回稳定子身份；未知结果使用同一创建身份恢复，绝不另建一个 Conversation 代替。
 
 会话级初始化／身份检查在调用 OpenHands 的同步阶段不得长时间持有数据库事务。继续使用

@@ -430,3 +430,25 @@ def test_configuration_rejects_another_native_id(boundary):
     with pytest.raises(DomainError) as caught:
         runtime.child_conversation_configuration(handle)
     assert caught.value.code == "RUNTIME_CHILD_PROTOCOL_INVALID"
+
+
+def test_v4_parent_configuration_accepts_root_and_rejects_wrong_identity(boundary):
+    runtime, handle, _, _, requests, responses = boundary
+    handle = replace(handle, protocol_profile="OH_FW_V4")
+    value = {
+        "id": handle.conversation_id,
+        "parent_conversation_id": None,
+        "workspace": {"working_dir": handle.workspace_root},
+        "persistence_dir": "/state/parent",
+        "agent": {"kind": "Agent", "tools": []},
+    }
+    responses.extend(
+        [httpx.Response(200, json=value), httpx.Response(200, json={**value, "id": str(uuid4())})]
+    )
+    assert runtime.parent_conversation_configuration(handle).parent_conversation_id is None
+    assert requests[0].url.params["include_skills"] == "true"
+    with pytest.raises(DomainError, match="冻结契约"):
+        runtime.parent_conversation_configuration(handle)
+    with pytest.raises(DomainError):
+        runtime.parent_conversation_configuration(replace(handle, protocol_profile="OH_FW_V3"))
+    assert len(requests) == 2
