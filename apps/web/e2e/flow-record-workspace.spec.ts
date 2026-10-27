@@ -110,25 +110,34 @@ test('record directory groups scheduled runs and opens a full canvas workspace',
   await expect(directory.locator('.flow-run-record-row')).toHaveCount(3);
   await expect(directory.getByRole('button', { name: '全选', exact: true })).toBeVisible();
   await expect(directory.getByRole('button', { name: '拷贝', exact: true })).toBeDisabled();
-  const manualRecord = directory.locator('.flow-run-record-select', { hasText: manual.name });
+  const manualRecord = directory.getByRole('checkbox', { name: `选择运行记录 ${manual.name}`, exact: true });
   await manualRecord.click();
-  await expect(manualRecord).toHaveAttribute('aria-pressed', 'true');
+  await expect(manualRecord).toBeChecked();
+  await expect(directory).toBeVisible();
   await expect(directory.getByText('已选择 1 条')).toBeVisible();
   await expect(directory.getByRole('button', { name: '拷贝', exact: true })).toBeEnabled();
+  for (const width of [1920, 1440, 1024]) {
+    await page.setViewportSize({ width, height: 900 });
+    const rows = await directory.locator('.flow-run-record-row').evaluateAll(elements => elements.map(element => ({ height: element.getBoundingClientRect().height, overflow: element.scrollWidth - element.clientWidth })));
+    expect(rows.every(row => row.height <= 50 && row.overflow <= 1)).toBe(true);
+    await expect(directory.getByRole('button', { name: `进入运行记录 ${manual.name}`, exact: true }).getByText('打开', { exact: true })).toBeVisible();
+  }
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await directory.screenshot({ path: '../../.tmp/ops19/record-directory.png' });
   await directory.getByRole('button', { name: '连续', exact: true }).click();
   await expect(directory.locator('.flow-run-record-directory-list>.flow-run-record-row')).toHaveCount(1);
   const group = directory.locator('.flow-run-schedule-directory');
   const toggle = group.getByRole('button', { name: /每日验收/ });
-  await expect(group.locator('.flow-run-record-select', { hasText: '定时记录 1' })).toBeVisible();
+  await expect(group.getByRole('button', { name: '进入运行记录 定时记录 1', exact: true })).toBeVisible();
   await expect(group.locator('.flow-run-record-row')).toHaveCSS('display', 'grid');
   await page.screenshot({ path: '../../.tmp/ui-696/scheduled-records.png' });
   await toggle.click();
   await expect(toggle).toHaveAttribute('aria-expanded', 'false');
-  await expect(group.locator('.flow-run-record-select', { hasText: '定时记录 1' })).toHaveCount(0);
+  await expect(group.getByRole('button', { name: '进入运行记录 定时记录 1', exact: true })).toHaveCount(0);
   await expect(directory.locator('.flow-run-record-directory-list>.flow-run-record-row')).toHaveCount(1);
   await toggle.click();
-  await expect(group.locator('.flow-run-record-select', { hasText: '定时记录 1' })).toBeVisible();
-  await directory.getByRole('button', { name: `进入运行记录 ${automaticBase.name}` }).click();
+  await expect(group.getByRole('button', { name: '进入运行记录 定时记录 1', exact: true })).toBeVisible();
+  await directory.getByRole('button', { name: `进入运行记录 ${automaticBase.name}`, exact: true }).getByText(automaticBase.name, { exact: true }).click();
   await expect(page.locator('.flow-run-workbench-header h1')).toHaveText(automaticBase.name);
   await expect(page.locator('.run-graph')).toBeVisible();
   await expect(page.locator('.run-record-detail-panel')).toBeVisible();
@@ -153,7 +162,8 @@ test('record directory groups scheduled runs and opens a full canvas workspace',
   await expect(page.locator('.flow-run-tree-select').filter({ hasText: definition.name })).toHaveAttribute('aria-expanded', 'true');
   await expect(page.locator('.flow-run-tree-run').filter({ hasText: run.name })).toHaveClass(/active/);
   await directory.getByRole('button', { name: '逐步', exact: true }).click();
-  await directory.getByRole('button', { name: `进入运行记录 ${manual.name}` }).click();
+  await directory.getByRole('button', { name: `进入运行记录 ${manual.name}`, exact: true }).focus();
+  await page.keyboard.press('Enter');
   await expect(page.locator('.flow-run-workbench-header h1')).toHaveText(manual.name);
   await expect(page.locator('.run-graph')).toBeVisible();
 });
@@ -415,7 +425,7 @@ for (const kind of ['MANUAL', 'AUTOMATIC'] as const) {
     const manual = { ...run, id: 'manual-ready', name: '可启动逐步记录', parent_flow_run_id: run.id, start_node_key: 'first', node_runs: [{ ...nodeRun, attempts: [pendingAttempt] }] };
     const automatic = { ...automaticBase, automation_plan: { ...automaticBase.automation_plan, readiness: { ready: true, issues: [] } } };
     await page.route('**/api/v1/**', async route => {
-      const path = new URL(route.request().url()).pathname;
+      const path = new URL(route.request().url()).pathname.replace(/^\/flowweave/, '');
       const respond = (body: unknown) => route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) });
       if (path.endsWith('/auth/me')) return respond(authenticatedUser);
       if (path === '/api/v1/flow-runs') return respond([run]);
@@ -439,7 +449,7 @@ for (const kind of ['MANUAL', 'AUTOMATIC'] as const) {
     await page.locator('.flow-run-tree-select').click();
     await page.locator('.flow-run-tree-run').click();
     const recordName = kind === 'MANUAL' ? manual.name : automatic.name;
-    await page.locator('.flow-run-record-select', { hasText: recordName }).click();
+    await page.getByRole('checkbox', { name: `选择运行记录 ${recordName}`, exact: true }).check();
     await page.getByRole('button', { name: `进入运行记录 ${recordName}` }).click();
     const start = page.getByRole('button', { name: kind === 'MANUAL' ? '启动逐步节点' : '启动连续运行 自动记录 1' });
     await expect(start).toBeEnabled();
