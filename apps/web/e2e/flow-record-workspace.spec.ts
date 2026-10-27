@@ -107,9 +107,14 @@ test('record directory groups scheduled runs and opens a full canvas workspace',
   await expect(page.locator('.flow-run-tree-run')).not.toContainText('等待人工');
   await page.locator('.flow-run-tree-run').filter({ hasText: run.name }).click();
   const directory = page.locator('.flow-run-record-directory');
-  await expect(directory.locator('.flow-run-record-directory-list>button')).toHaveCount(3);
+  await expect(directory.locator('.flow-run-record-row')).toHaveCount(3);
+  await expect(directory.getByRole('button', { name: '全选', exact: true })).toBeVisible();
+  await expect(directory.getByRole('button', { name: '拷贝', exact: true })).toBeDisabled();
+  await directory.getByLabel(`选择运行记录 ${manual.name}`).check();
+  await expect(directory.getByText('已选择 1 条')).toBeVisible();
+  await expect(directory.getByRole('button', { name: '拷贝', exact: true })).toBeEnabled();
   await directory.getByRole('button', { name: '连续', exact: true }).click();
-  await expect(directory.locator('.flow-run-record-directory-list>button')).toHaveCount(1);
+  await expect(directory.locator('.flow-run-record-directory-list>.flow-run-record-row')).toHaveCount(1);
   const group = directory.locator('.flow-run-schedule-directory');
   const toggle = group.getByRole('button', { name: /每日验收/ });
   await expect(group.getByRole('button', { name: /定时记录 1/ })).toBeVisible();
@@ -118,7 +123,7 @@ test('record directory groups scheduled runs and opens a full canvas workspace',
   await toggle.click();
   await expect(toggle).toHaveAttribute('aria-expanded', 'false');
   await expect(group.getByRole('button', { name: /定时记录 1/ })).toHaveCount(0);
-  await expect(directory.locator('.flow-run-record-directory-list>button')).toHaveCount(1);
+  await expect(directory.locator('.flow-run-record-directory-list>.flow-run-record-row')).toHaveCount(1);
   await toggle.click();
   await expect(group.getByRole('button', { name: /定时记录 1/ })).toBeVisible();
   await directory.getByRole('button', { name: /自动记录 1/ }).click();
@@ -127,7 +132,7 @@ test('record directory groups scheduled runs and opens a full canvas workspace',
   await expect(page.locator('.run-record-detail-panel')).toBeVisible();
   await expect(page.locator('.run-record-detail-panel')).toHaveCSS('grid-column-start', '1');
   await expect(page.locator('.run-record-main')).toHaveCSS('grid-column-start', '2');
-  await expect(page.locator('.run-record-launch-bar button')).toBeDisabled();
+  await expect(page.getByRole('button', { name: `启动连续运行 ${automaticBase.name}` })).toBeDisabled();
   await page.locator('.react-flow__pane').click({ position: { x: 15, y: 15 } });
   await expect(page.locator('.flow-run-workbench-header h1')).toHaveText(automaticBase.name);
   for (const width of [1440, 1024]) {
@@ -347,13 +352,12 @@ for (const kind of ['MANUAL', 'AUTOMATIC'] as const) {
     await page.locator('.flow-run-tree-run').click();
     await expect(page.getByRole('button', { name: '管理运行记录', exact: true })).toHaveCount(0);
     await page.locator('.run-directory-actions').getByRole('button', { name: '新增运行记录', exact: true }).click();
-    const chooser = page.getByRole('dialog', { name: '选择运行类型' });
-    await chooser.getByRole('button', { name: '运行类型' }).click();
-    await chooser.getByRole('option', { name: kind === 'MANUAL' ? '逐步运行' : '连续运行' }).click();
-    await chooser.getByRole('button', { name: '继续创建' }).click();
-    const form = page.getByRole('dialog', { name: kind === 'MANUAL' ? '新增逐步运行记录' : '新增连续运行', exact: true });
+    const form = page.getByRole('dialog', { name: '新建运行记录', exact: true });
+    await form.getByRole('button', { name: '运行类型' }).click();
+    await form.getByRole('option', { name: kind === 'MANUAL' ? '逐步运行' : '连续运行' }).click();
     await expect(form.getByRole('button', { name: '导入 / 粘贴' })).toBeVisible();
-    await form.getByLabel(kind === 'MANUAL' ? '逐步运行记录名称' : '连续运行名称', { exact: true }).fill('新增验收记录');
+    await form.getByLabel('运行记录名称', { exact: true }).fill('新增验收记录');
+    await expect(form.getByRole('button', { name: '继续创建' })).toHaveCount(0);
     await expect(form.getByLabel('Git 用户', { exact: true })).toHaveValue('验收用户');
     await form.getByLabel('Git 邮箱', { exact: true }).fill('batch@example.test');
     await form.getByRole('button', { name: kind === 'MANUAL' ? '创建记录' : '创建草稿', exact: true }).click();
@@ -361,7 +365,7 @@ for (const kind of ['MANUAL', 'AUTOMATIC'] as const) {
     if (kind === 'AUTOMATIC') expect(submitted).toMatchObject({ environment_version_id: run.environment_version_id, node_plans: {} });
     await expect(page.locator('.flow-run-workbench-header h1')).toHaveText('新增验收记录');
     await expect(page.locator('.flow-run-inner-rail')).toHaveCount(0);
-    await expect(page.locator('.run-record-launch-bar button')).toBeDisabled();
+    await expect(page.getByRole('button', { name: kind === 'MANUAL' ? '启动逐步节点' : '启动连续运行 新增验收记录' })).toBeDisabled();
     await expect(page.locator('.run-record-detail-panel')).toHaveCSS('grid-column-start', '1');
     await expect(page.getByTestId('node-configuration-panel')).toBeVisible();
   });
@@ -433,7 +437,7 @@ for (const kind of ['MANUAL', 'AUTOMATIC'] as const) {
     await page.locator('.flow-run-tree-select').click();
     await page.locator('.flow-run-tree-run').click();
     await page.locator('.flow-run-record-directory-list').getByRole('button', { name: kind === 'MANUAL' ? /可启动逐步记录/ : /自动记录 1/ }).click();
-    const start = page.locator('.run-record-launch-bar button');
+    const start = page.getByRole('button', { name: kind === 'MANUAL' ? '启动逐步节点' : '启动连续运行 自动记录 1' });
     await expect(start).toBeEnabled();
     page.once('dialog', dialog => dialog.accept());
     await start.click();
@@ -472,11 +476,10 @@ for (const kind of ['MANUAL', 'AUTOMATIC'] as const) {
     await page.locator('.flow-run-tree-select').click();
     await page.locator('.flow-run-tree-run').click();
     await page.locator('.run-directory-actions').getByRole('button', { name: '新增运行记录', exact: true }).click();
-    const chooser = page.getByRole('dialog', { name: '选择运行类型' });
-    await chooser.getByRole('button', { name: '运行类型' }).click();
-    await chooser.getByRole('option', { name: kind === 'MANUAL' ? '逐步运行' : '连续运行' }).click();
-    await chooser.getByRole('button', { name: '继续创建' }).click();
-    await page.getByRole('button', { name: '导入 / 粘贴', exact: true }).click();
+    const form = page.getByRole('dialog', { name: '新建运行记录', exact: true });
+    await form.getByRole('button', { name: '运行类型' }).click();
+    await form.getByRole('option', { name: kind === 'MANUAL' ? '逐步运行' : '连续运行' }).click();
+    await form.getByRole('button', { name: '导入 / 粘贴', exact: true }).click();
     const importDialog = page.getByRole('dialog', { name: kind === 'MANUAL' ? '导入逐步运行配置' : '导入连续运行配置' });
     const paste = importDialog.getByRole('textbox');
     await paste.fill('{"format":"wrong"}');

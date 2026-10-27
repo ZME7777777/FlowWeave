@@ -1,16 +1,19 @@
-import { Box, ChevronDown, ChevronRight, CircleDot, FolderClosed, Pause, Play, Plus, Search, Terminal } from 'lucide-react';
+import { Box, CheckSquare, ChevronDown, ChevronRight, CircleDot, Copy, Download, FolderClosed, Pause, Play, Plus, Search, Square, Terminal, Trash2, Upload, X } from 'lucide-react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api/client';
 import { CreateRunRecordDialog } from '../components/CreateRunRecordDialog';
+import { RecordConfigImportDialog } from './WorkbenchPage';
 import { FlowRunTerminalDialog } from '../components/AgentRuntimeSidebar';
 import { useProductDialog } from '../components/ProductDialogContext';
 import { StartRunDialog } from '../components/StartRunDialog';
 import { useWorkbenchStore } from '../store/workbench';
-import type { FlowDefinition, FlowRunSummary } from '../types';
+import type { AutomaticRecordConfigDocument, FlowDefinition, FlowRunAutomaticRecordSummary, FlowRunStepwiseRecord, RecordConfigDocument, FlowRunSummary, StepwiseRecordConfigDocument } from '../types';
 
 const STATUS_LABELS: Record<string, string> = { ACTIVE: '运行中', WAITING_HUMAN: '等待人工', COMPLETED: '已完成', FAILED: '失败', CANCELLED: '已取消', DRAFT: '草稿' };
 type RecordFilter = 'ALL' | 'MANUAL' | 'AUTOMATIC';
+type RecordKind = 'MANUAL' | 'AUTOMATIC';
+type DirectoryRecord = { kind: RecordKind; id: string; name: string; state: string; startedAt: string; detail: string; scheduleId?: string; scheduleName?: string; record: FlowRunStepwiseRecord | FlowRunAutomaticRecordSummary };
 
 const isStartableFlow = (flow: FlowDefinition) => {
   if (!flow.nodes.length) return false;
@@ -24,6 +27,19 @@ const runtimeLabel = (run: FlowRunSummary) => {
   if (run.runtime_status === 'DEGRADED') return '容器暂不可用';
   return '容器准备中';
 };
+
+function CopyDirectoryRecordDialog({ record, onClose, onCopy }: { record: DirectoryRecord; onClose: () => void; onCopy: (name: string) => Promise<void> }) {
+  const [name, setName] = useState(`${record.name} · 副本`);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const label = record.kind === 'MANUAL' ? '逐步运行记录' : '连续运行记录';
+  const copy = async () => {
+    if (!name.trim()) return;
+    setBusy(true); setError('');
+    try { await onCopy(name.trim()); onClose(); } catch (reason) { setError(reason instanceof Error ? reason.message : '拷贝记录失败。'); } finally { setBusy(false); }
+  };
+  return <div className="modal-backdrop"><section className="modal automatic-record-dialog" role="dialog" aria-modal="true" aria-label={`拷贝${label}`}><header><div><span className="eyebrow">COPY RECORD</span><h2>拷贝{label}</h2><p>仅复制初始配置与人工输入，不包含会话、输出或运行过程。</p></div><button type="button" className="ghost" aria-label={`关闭拷贝${label}`} disabled={busy} onClick={onClose}><X size={17}/></button></header><label>副本名称<input aria-label="副本名称" value={name} maxLength={220} autoFocus onChange={event => setName(event.target.value)}/></label>{error && <p className="error">拷贝失败：{error}</p>}<footer><button type="button" className="ghost" disabled={busy} onClick={onClose}>取消</button><button type="button" className="primary" disabled={!name.trim() || busy} onClick={() => void copy()}>{busy ? '拷贝中…' : '确认拷贝'}</button></footer></section></div>;
+}
 
 export function RunsPage() {
   const dialog = useProductDialog();
@@ -41,6 +57,10 @@ export function RunsPage() {
   const [collapsedScheduleIds, setCollapsedScheduleIds] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState('');
   const [recordFilter, setRecordFilter] = useState<RecordFilter>('ALL');
+  const [selectedRecordKeys, setSelectedRecordKeys] = useState<Set<string>>(new Set());
+  const [copyRecord, setCopyRecord] = useState<DirectoryRecord>();
+  const [importKind, setImportKind] = useState<RecordKind>();
+  const [managingRecords, setManagingRecords] = useState(false);
   const { data: runs = [] } = useQuery({ queryKey: ['runs'], queryFn: api.runs, refetchInterval: 1500 });
   const { data: flows = [] } = useQuery({ queryKey: ['flows'], queryFn: api.flows });
   const { data: environments = [] } = useQuery({ queryKey: ['terminal-environments'], queryFn: api.terminalEnvironments });
@@ -122,16 +142,88 @@ export function RunsPage() {
     });
     return [...grouped.entries()].map(([id, group]) => ({ id, name: group[0].scheduleName ?? '定时任务', records: group }));
   }, [recordFilter, records]);
+  useEffect(() => { setSelectedRecordKeys(new Set()); }, [recordFilter, selectedRunId]);
   const standaloneRecords = recordFilter === 'AUTOMATIC'
     ? records.filter(item => item.kind !== 'AUTOMATIC' || !item.scheduleId)
     : records;
-  const recordItem = (item: typeof records[number]) => <button className="flow-run-record-row" key={`${item.kind}:${item.id}`} onClick={() => item.kind === 'MANUAL' ? openStepwiseRecord(selectedRunId!, item.id) : openAutomaticRecord(selectedRunId!, item.id)}><i/><span><small>{item.kind === 'MANUAL' ? '逐步运行' : '连续运行'} · {STATUS_LABELS[item.state] ?? item.state}</small><b>{item.name}</b><em>{item.detail}</em></span><time>{new Date(item.startedAt).toLocaleString()}</time><ChevronRight size={15}/></button>;
+  const recordKey = (item: DirectoryRecord) => `${item.kind}:${item.id}`;
+  const selectedRecords = records.filter(item => selectedRecordKeys.has(recordKey(item)));
+  const selectedKinds = new Set(selectedRecords.map(item => item.kind));
+  const canExport = selectedRecords.length > 0 && selectedKinds.size === 1;
+  const allSelected = records.length > 0 && records.every(item => selectedRecordKeys.has(recordKey(item)));
+  const toggleRecord = (item: DirectoryRecord, checked: boolean) => setSelectedRecordKeys(current => {
+    const next = new Set(current);
+    if (checked) next.add(recordKey(item)); else next.delete(recordKey(item));
+    return next;
+  });
+  const toggleAllRecords = () => setSelectedRecordKeys(allSelected ? new Set() : new Set(records.map(recordKey)));
+  const refreshRecords = async () => {
+    await Promise.all([
+      qc.invalidateQueries({ queryKey: ['flow-run-stepwise-records', selectedRunId] }),
+      qc.invalidateQueries({ queryKey: ['flow-run-automatic-records', selectedRunId] }),
+    ]);
+  };
+  const copySelectedRecord = async (name: string) => {
+    if (!selectedRunId || !copyRecord) return;
+    const copied = copyRecord.kind === 'MANUAL'
+      ? await api.copyStepwiseRecord(selectedRunId, copyRecord.id, name)
+      : await api.copyAutomaticRecord(selectedRunId, copyRecord.id, name);
+    await refreshRecords();
+    setSelectedRecordKeys(new Set([`${copyRecord.kind}:${copied.id}`]));
+    if (copyRecord.kind === 'MANUAL') openStepwiseRecord(selectedRunId, copied.id);
+    else openAutomaticRecord(selectedRunId, copied.id);
+  };
+  const deleteSelectedRecords = async () => {
+    if (!selectedRunId || !selectedRecords.length) return;
+    const count = selectedRecords.length;
+    if (!await dialog.confirm({ title: count === 1 ? '删除运行记录？' : `删除 ${count} 条运行记录？`, message: '将永久删除所选记录及其关联会话、工作区、产物和执行历史；此操作不可恢复。', confirmLabel: '删除', tone: 'danger' })) return;
+    setManagingRecords(true);
+    try {
+      const results = await Promise.allSettled(selectedRecords.map(record => record.kind === 'MANUAL'
+        ? api.deleteStepwiseRecord(selectedRunId, record.id)
+        : api.deleteAutomaticRecord(selectedRunId, record.id)));
+      await refreshRecords();
+      setSelectedRecordKeys(new Set());
+      const failed = results.filter(result => result.status === 'rejected');
+      if (failed.length) window.alert(`${failed.length} 条记录删除失败，请刷新后重试。`);
+    } finally { setManagingRecords(false); }
+  };
+  const exportSelectedRecords = async () => {
+    if (!selectedRunId || !canExport) return;
+    setManagingRecords(true);
+    try {
+      const kind = selectedRecords[0].kind;
+      const config = kind === 'MANUAL'
+        ? await api.exportStepwiseRecordConfigs(selectedRunId, selectedRecords.map(item => item.id))
+        : await api.exportAutomaticRecordConfigs(selectedRunId, selectedRecords.map(item => item.id));
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(new Blob([JSON.stringify(config, null, 2)], { type: 'application/json' }));
+      link.download = `${kind === 'MANUAL' ? 'stepwise' : 'continuous'}-record-config.json`;
+      link.click();
+      URL.revokeObjectURL(link.href);
+    } finally { setManagingRecords(false); }
+  };
+  const importRecords = async (config: RecordConfigDocument) => {
+    if (!selectedRunId || !importKind) return;
+    if (importKind === 'MANUAL') {
+      if (config.format !== 'flowweave.stepwise-record-config') throw new Error('这不是逐步运行配置文件。');
+      await api.importStepwiseRecordConfigs(selectedRunId, config as StepwiseRecordConfigDocument);
+    } else {
+      if (config.format !== 'flowweave.continuous-record-config') throw new Error('这不是连续运行配置文件。');
+      await api.importAutomaticRecordConfigs(selectedRunId, config as AutomaticRecordConfigDocument);
+    }
+    await refreshRecords();
+  };
+  const recordItem = (item: DirectoryRecord) => <article className={`flow-run-record-row${selectedRecordKeys.has(recordKey(item)) ? ' selected' : ''}`} key={recordKey(item)}><label className="flow-run-record-check"><input type="checkbox" aria-label={`选择运行记录 ${item.name}`} checked={selectedRecordKeys.has(recordKey(item))} onChange={event => toggleRecord(item, event.target.checked)}/></label><button type="button" className="flow-run-record-open" onClick={() => item.kind === 'MANUAL' ? openStepwiseRecord(selectedRunId!, item.id) : openAutomaticRecord(selectedRunId!, item.id)}><i/><span><small>{item.kind === 'MANUAL' ? '逐步运行' : '连续运行'} · {STATUS_LABELS[item.state] ?? item.state}</small><b>{item.name}</b><em>{item.detail}</em></span><time>{new Date(item.startedAt).toLocaleString()}</time><ChevronRight size={15}/></button></article>;
   return <section className="page runs-page run-directory-page">
     <div className="run-directory-layout">
       <aside className="flow-run-directory"><header><div><b>流程编排</b><small>{runDirectories.length} 个流程</small></div><button className="agent-schedule-new" disabled={!selectedFlow || !isStartableFlow(selectedFlow)} title={!selectedFlow ? '请先选择一个流程编排' : isStartableFlow(selectedFlow) ? undefined : '该流程未配置启动节点'} onClick={() => selectedFlow && setStarting(selectedFlow)}><Plus size={14}/>新建</button></header><label className="run-directory-search"><Search size={14}/><input aria-label="搜索流程或运行" value={search} placeholder="搜索流程或运行" onChange={event => setSearch(event.target.value)}/></label><div className="flow-run-directory-list">{runDirectories.map(flow => { const expanded = expandedFlowIds.has(flow.id); const selected = selectedFlowId === flow.id; return <section className={`flow-run-tree-group${selected ? ' selected' : ''}`} key={flow.id}><div className="flow-run-tree-flow"><button type="button" className="flow-run-tree-select" aria-current={selected ? 'true' : undefined} aria-expanded={expanded} onClick={() => selectFlow(flow.id)}><FolderClosed size={14}/><span><b>{flow.name}</b><small>{flow.runs.length} 个 FlowRun</small></span></button></div>{expanded && <div className="flow-run-tree-runs">{flow.runs.length ? flow.runs.map(run => <button type="button" className={`flow-run-tree-run${selectedRunId === run.id ? ' active' : ''}`} key={run.id} onClick={() => selectRun(flow.id, run.id)}><i/><span><b>Run #{run.run_no} · {run.name}</b><small>快照 v{run.active_snapshot_version ?? '—'} · {environmentLabel(run)}</small><em className={`run-runtime-badge ${run.runtime_write_available ? 'available' : run.runtime_status === 'STOPPED' ? 'paused' : 'pending'}`}>{runtimeLabel(run)}</em></span></button>) : <p>该流程尚未创建 FlowRun。</p>}</div>}</section>; })}{!runDirectories.length && <p>没有匹配的流程或 FlowRun。</p>}</div></aside>
-      <main className="flow-run-directory-detail">{selectedRun ? <section className="flow-run-record-directory"><header><div><span className="eyebrow">RUN RECORDS</span><h3>{selectedRun.name}</h3><p>Run #{selectedRun.run_no} · {selectedRun.flow_name ?? selectedFlow?.name} · 快照 v{selectedRun.active_snapshot_version ?? '—'}</p></div><div className="run-directory-actions"><button className="secondary" disabled={!selectedRun.runtime_write_available} onClick={() => setTerminalRun({ id: selectedRun.id, name: selectedRun.name })}><Terminal size={14}/>进入终端</button>{(selectedRun.runtime_status === 'ACTIVE' || selectedRun.runtime_status === 'STOPPED') && <button className="secondary" disabled={lifecycleRunId === selectedRun.id} onClick={() => void toggleRuntime(selectedRun)}>{selectedRun.runtime_status === 'STOPPED' ? <Play size={14}/> : <Pause size={14}/>}{lifecycleRunId === selectedRun.id ? '处理中…' : selectedRun.runtime_status === 'STOPPED' ? '恢复容器' : '暂停容器'}</button>}<button className="primary" onClick={() => setCreatingRecordRunId(selectedRun.id)}><Plus size={14}/>新增运行记录</button></div></header>{lifecycleError && <p className="error run-directory-lifecycle-error" role="alert">{lifecycleError}</p>}<div className="flow-run-directory-summary"><span><b>运行环境</b>{runtimeLabel(selectedRun)}</span><span><b>环境版本</b>{environmentLabel(selectedRun)}</span><span><b>创建时间</b>{new Date(selectedRun.started_at).toLocaleString()}</span><span><b>流程版本</b>v{selectedRun.flow_row_version ?? '—'}</span></div><nav className="run-record-filter"><button className={recordFilter === 'ALL' ? 'active' : ''} onClick={() => setRecordFilter('ALL')}>全部</button><button className={recordFilter === 'MANUAL' ? 'active' : ''} onClick={() => setRecordFilter('MANUAL')}>逐步</button><button className={recordFilter === 'AUTOMATIC' ? 'active' : ''} onClick={() => setRecordFilter('AUTOMATIC')}>连续</button></nav><div className="flow-run-record-directory-list">{standaloneRecords.map(recordItem)}{scheduledContinuousGroups.map(group => { const open = !collapsedScheduleIds.has(group.id); return <section className="flow-run-schedule-directory" key={group.id}><button type="button" className="flow-run-schedule-directory-toggle" aria-expanded={open} onClick={() => setCollapsedScheduleIds(current => { const next = new Set(current); if (next.has(group.id)) next.delete(group.id); else next.add(group.id); return next; })}>{open ? <ChevronDown size={14}/> : <ChevronRight size={14}/>}<FolderClosed size={14}/><span><b>{group.name}</b><small>{group.records.length} 条定时连续运行记录</small></span></button>{open && <div className="flow-run-schedule-directory-records">{group.records.map(recordItem)}</div>}</section>; })}{!records.length && <div className="run-directory-record-empty"><CircleDot size={20}/><span>该 FlowRun 尚未创建{recordFilter === 'AUTOMATIC' ? '连续' : recordFilter === 'MANUAL' ? '逐步' : ''}运行记录。</span><button className="secondary" onClick={() => setCreatingRecordRunId(selectedRun.id)}>新增运行记录</button></div>}</div></section> : selectedFlow ? <div className="run-directory-empty"><FolderClosed size={30}/><b>{selectedFlow.name}</b><span>选择左侧的 FlowRun，查看运行记录或新增记录。</span></div> : <div className="run-directory-empty"><Box size={30}/><b>选择一个流程编排</b><span>点击流程目录后，选择其下的 FlowRun。</span></div>}</main>
+      <main className="flow-run-directory-detail">{selectedRun ? <section className="flow-run-record-directory"><header><div><span className="eyebrow">RUN RECORDS</span><h3>{selectedRun.name}</h3><p>Run #{selectedRun.run_no} · {selectedRun.flow_name ?? selectedFlow?.name} · 快照 v{selectedRun.active_snapshot_version ?? '—'}</p></div><div className="run-directory-actions"><button className="secondary" disabled={!selectedRun.runtime_write_available} onClick={() => setTerminalRun({ id: selectedRun.id, name: selectedRun.name })}><Terminal size={14}/>进入终端</button>{(selectedRun.runtime_status === 'ACTIVE' || selectedRun.runtime_status === 'STOPPED') && <button className="secondary" disabled={lifecycleRunId === selectedRun.id} onClick={() => void toggleRuntime(selectedRun)}>{selectedRun.runtime_status === 'STOPPED' ? <Play size={14}/> : <Pause size={14}/>}{lifecycleRunId === selectedRun.id ? '处理中…' : selectedRun.runtime_status === 'STOPPED' ? '恢复容器' : '暂停容器'}</button>}</div></header>{lifecycleError && <p className="error run-directory-lifecycle-error" role="alert">{lifecycleError}</p>}<div className="flow-run-directory-summary"><span><b>运行环境</b>{runtimeLabel(selectedRun)}</span><span><b>环境版本</b>{environmentLabel(selectedRun)}</span><span><b>创建时间</b>{new Date(selectedRun.started_at).toLocaleString()}</span><span><b>流程版本</b>v{selectedRun.flow_row_version ?? '—'}</span></div><nav className="run-record-filter"><button className={recordFilter === 'ALL' ? 'active' : ''} onClick={() => setRecordFilter('ALL')}>全部</button><button className={recordFilter === 'MANUAL' ? 'active' : ''} onClick={() => setRecordFilter('MANUAL')}>逐步</button><button className={recordFilter === 'AUTOMATIC' ? 'active' : ''} onClick={() => setRecordFilter('AUTOMATIC')}>连续</button></nav><div className="run-record-management-toolbar"><button type="button" className="secondary" aria-pressed={allSelected} disabled={!records.length || managingRecords} onClick={toggleAllRecords}>{allSelected ? <CheckSquare size={14}/> : <Square size={14}/>}{allSelected ? '取消全选' : '全选'}</button><span>已选择 {selectedRecords.length} 条</span><button type="button" className="secondary" disabled={selectedRecords.length !== 1 || managingRecords} onClick={() => setCopyRecord(selectedRecords[0])}><Copy size={14}/>拷贝</button><button type="button" className="secondary" disabled={!canExport || managingRecords} title={canExport ? undefined : '请只选择同一类型的记录后导出'} onClick={() => void exportSelectedRecords()}><Download size={14}/>导出</button><button type="button" className="secondary" disabled={managingRecords} onClick={() => setImportKind(recordFilter === 'AUTOMATIC' ? 'AUTOMATIC' : 'MANUAL')}><Upload size={14}/>导入</button><button type="button" className="danger" disabled={!selectedRecords.length || managingRecords} onClick={() => void deleteSelectedRecords()}><Trash2 size={14}/>删除</button><button type="button" className="primary" disabled={managingRecords} onClick={() => setCreatingRecordRunId(selectedRun.id)}><Plus size={14}/>新增</button></div><div className="flow-run-record-directory-list">{standaloneRecords.map(recordItem)}{scheduledContinuousGroups.map(group => { const open = !collapsedScheduleIds.has(group.id); return <section className="flow-run-schedule-directory" key={group.id}><button type="button" className="flow-run-schedule-directory-toggle" aria-expanded={open} onClick={() => setCollapsedScheduleIds(current => { const next = new Set(current); if (next.has(group.id)) next.delete(group.id); else next.add(group.id); return next; })}>{open ? <ChevronDown size={14}/> : <ChevronRight size={14}/>}<FolderClosed size={14}/><span><b>{group.name}</b><small>{group.records.length} 条定时连续运行记录</small></span></button>{open && <div className="flow-run-schedule-directory-records">{group.records.map(recordItem)}</div>}</section>; })}{!records.length && <div className="run-directory-record-empty"><CircleDot size={20}/><span>该 FlowRun 尚未创建{recordFilter === 'AUTOMATIC' ? '连续' : recordFilter === 'MANUAL' ? '逐步' : ''}运行记录。</span><button className="secondary" onClick={() => setCreatingRecordRunId(selectedRun.id)}>新增运行记录</button></div>}</div></section> : selectedFlow ? <div className="run-directory-empty"><FolderClosed size={30}/><b>{selectedFlow.name}</b><span>选择左侧的 FlowRun，查看运行记录或新增记录。</span></div> : <div className="run-directory-empty"><Box size={30}/><b>选择一个流程编排</b><span>点击流程目录后，选择其下的 FlowRun。</span></div>}</main>
     </div>
     {creatingRecordRunId && <CreateRunRecordDialog runId={creatingRecordRunId} onClose={() => setCreatingRecordRunId(undefined)}/>}
+    {copyRecord && <CopyDirectoryRecordDialog record={copyRecord} onClose={() => setCopyRecord(undefined)} onCopy={copySelectedRecord}/>}
+    {importKind && <RecordConfigImportDialog mode={importKind === 'MANUAL' ? 'STEPWISE' : 'AUTOMATIC'} onClose={() => setImportKind(undefined)} onImport={importRecords}/>}
+
     {terminalRun && <FlowRunTerminalDialog runId={terminalRun.id} runName={terminalRun.name} onClose={() => setTerminalRun(undefined)}/>}
     {starting && <StartRunDialog flow={starting} environments={environments} onClose={() => setStarting(undefined)} onStart={async input => { const created = await api.runFlow(starting.id, input); selectRun(starting.id, created.id); setStarting(undefined); await qc.invalidateQueries({ queryKey: ['runs'] }); }}/>}
   </section>;
