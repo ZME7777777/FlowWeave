@@ -1935,10 +1935,11 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(outputLink).toHaveAttribute('target', '_blank');
   await expect(outputLink).toHaveAttribute('rel', 'noopener noreferrer');
   const sources = page.locator('.agent-workspace-source-list');
-  await expect(sources).toContainText('需求截图.png');
-  await expect(sources.getByRole('link', { name: 'input.example.test/brief' })).toHaveAttribute('href', 'https://input.example.test/brief');
+  await expect(sources).not.toContainText('需求截图.png');
+  await expect(sources.getByRole('link', { name: 'input.example.test/brief' })).toHaveCount(0);
   await expect(sources.getByRole('link', { name: 'output.example.test/result' })).toHaveCount(0);
-  await expect(sources.locator('button b')).toHaveText(['最早来源.png', '需求截图.png', 'input.example.test/brief']);
+  await expect(sources.locator('button b')).toHaveText(['最早来源.png']);
+  await expect(page.getByRole('button', { name: /查看全部\s*3/ })).toBeVisible();
   await expect.poll(() => page.locator('.agent-workspace-summary').evaluate(card => {
     const lastSource = card.querySelector<HTMLElement>('.agent-workspace-source-list > button:last-child');
     if (!lastSource) throw new Error('Expected the last source row');
