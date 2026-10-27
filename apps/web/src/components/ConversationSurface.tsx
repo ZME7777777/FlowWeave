@@ -640,6 +640,10 @@ function turnsFor(events: OpenHandsConversationEvent[]): Turn[] {
         orphanTurnsByEventId.set(item.event.id, orphan);
         return orphan;
       })();
+      const currentSegment = turn.processSegments.at(-1);
+      if (currentSegment?.interruptedBy && item.kind !== 'assistant' && item.kind !== 'error') {
+        turn.processSegments.push({ items: [], messageIndex: owner?.messageIndex ?? 0, startedBy: item });
+      }
       if (item.kind === 'assistant') turn.assistant = item;
       else {
         turn.activity.push(item);
@@ -1178,11 +1182,12 @@ function turnProcessBlocks(
 }
 
 function processBlocksForSegment(segment: ProcessSegment, active: boolean, completedAt?: number): TurnProcessBlock[] {
+  const interruptedAt = parsedEventTime(segment.interruptedBy?.payload.timestamp);
   return turnProcessBlocks(
     segment.items.filter(item => item.kind !== 'error'),
     eventTime(segment.startedBy),
-    parsedEventTime(segment.interruptedBy?.payload.timestamp) ?? completedAt,
-    active,
+    interruptedAt ?? completedAt,
+    active && interruptedAt === undefined,
   );
 }
 

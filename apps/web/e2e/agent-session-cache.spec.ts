@@ -4591,8 +4591,9 @@ test('Pausing immediately updates the controls before the readiness projection c
     id: 'pause-resume-conversation', display_title: '暂停继续会话', title_state: 'MANUAL', lifecycle: 'ACTIVE',
     streaming_callback_ready: true, write_available: true, execution_status: 'running', created_at: now, updated_at: now,
   };
+  const taskStartedAt = new Date(Date.now() - 3 * 60 * 60 * 1_000).toISOString();
   const events = {
-    events: [{ id: 'pause-resume-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '继续前的任务', timestamp: now } }],
+    events: [{ id: 'pause-resume-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '继续前的任务', timestamp: taskStartedAt } }],
     next_cursor: 'pause-resume-user', history_cursor: null, result: { status: 'RUNNING' },
   };
 
@@ -4655,9 +4656,11 @@ test('Pausing immediately updates the controls before the readiness projection c
   await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
   stream!.send(JSON.stringify({
     type: 'event',
-    event: { id: 'pause-resume-progress', event_type: 'THOUGHT', payload: { source: 'agent', parent_id: 'pause-resume-user', content: '恢复后无需刷新即可看到这条进展。', thought: '恢复后无需刷新即可看到这条进展。', timestamp: now } },
+    event: { id: 'pause-resume-progress', event_type: 'THOUGHT', payload: { source: 'agent', parent_id: 'pause-resume-user', content: '恢复后无需刷新即可看到这条进展。', thought: '恢复后无需刷新即可看到这条进展。', timestamp: new Date().toISOString() } },
   }));
   await expect(page.getByText('恢复后无需刷新即可看到这条进展。', { exact: true })).toBeVisible();
+  await expect(page.getByText(/已耗时 [0-9]+秒/, { exact: true })).toBeVisible();
+  await expect(page.getByText(/已耗时 [0-9]+小时/)).toHaveCount(0);
 });
 
 
