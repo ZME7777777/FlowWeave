@@ -12095,3 +12095,10 @@ admin-metrics 和 admin-web；仅在已验证服务器内备份后为三个相�
 专用控制密钥与既有 manager scope。后续使用同一已提交代码的最小归档构建，
 迁移及再次活跃门禁通过后定向更新，健康／版本／路由与容量结果实际完成后补记。
 不构建或替换既有 OpenHands Runtime generation。
+
+OPS-11 构建期补齐：旧运行中的 admin-metrics 在十分钟内已有十八次
+Connection.executemany AttributeError；正式 Psycopg 接口只在 Cursor 提供批量
+写入。改为 connection.cursor().executemany，并补充真实接口形状的写入／保留期
+清理／锁释放回归。此修复随最终代码提交重新冻结所有镜像，不复用旧 revision
+标签作为最终版本。扩展 Provider 套件 65 passed、4 failed；拉取前相同套件
+61 passed、4 failed，四个既有夹具失败名称完全一致，无新增失败。

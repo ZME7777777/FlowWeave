@@ -28,13 +28,14 @@ def collect_once(settings: Settings) -> bool:
             return False
         try:
             observed_at = datetime.now().astimezone()
-            database.executemany(
-                """
-                INSERT INTO admin_metric_samples (observed_at, scope, subject, metric, value)
-                VALUES (%s, %s, %s, %s, %s)
-                """,
-                [(observed_at, *sample) for sample in samples],
-            )
+            with connection.cursor() as cursor:
+                cursor.executemany(
+                    """
+                    INSERT INTO admin_metric_samples (observed_at, scope, subject, metric, value)
+                    VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    [(observed_at, *sample) for sample in samples],
+                )
             connection.execute(
                 "DELETE FROM admin_metric_samples "
                 "WHERE observed_at < now() - (%s * interval '1 day')",
@@ -43,7 +44,6 @@ def collect_once(settings: Settings) -> bool:
             return True
         finally:
             connection.execute("SELECT pg_advisory_unlock(%s)", (_LOCK_KEY,))
-
 
 
 _CLEANUP_LOCK_KEY = 8_142_662
