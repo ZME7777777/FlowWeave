@@ -13,10 +13,12 @@ from flowweave.modules.agent_sessions.infrastructure.models import (
 )
 from flowweave.modules.agent_workspaces.application import work_directories
 from flowweave.modules.agent_workspaces.application.service import ensure_default_agent_workspace
+from flowweave.modules.credentials.application.service import save_credential
 from flowweave.modules.tasks.infrastructure.models import BackgroundTask
 from flowweave.modules.users.application.security import FLOWWEAVE_USER_ID, tenant_user
 from flowweave.shared.database import now
 from flowweave.shared.errors import DomainError
+from flowweave.shared.schemas import WebsiteCredentialWrite
 from flowweave.shared.settings import settings_context
 
 
@@ -161,6 +163,59 @@ def test_agent_conversation_schedule_delivery_creates_a_distinct_native_conversa
         assert occurrence.binding_id != created["work_directory_id"]
         assert occurrence.state == "STARTED"
         assert occurrence.message_cursor == "scheduled-user-event"
+
+
+
+def test_unconfigured_schedule_defaults_to_all_credentials(settings, db_session_factory, monkeypatch):
+    created_runs: list[dict[str, object]] = []
+
+    def bootstrap_conversation(db, workspace_id: str, **kwargs):
+        del db
+        created_runs.append({"workspace_id": workspace_id, **kwargs})
+        return {"conversation": {"id": kwargs["conversation_id"]}, "cursor": "scheduled-user-event"}
+
+    monkeypatch.setattr(schedules.conversations, "bootstrap_conversation", bootstrap_conversation)
+    with db_session_factory() as db:
+        workspace = ensure_default_agent_workspace(db)
+        credential_id = save_credential(
+            db,
+            WebsiteCredentialWrite(
+                name="schedule-default",
+                target_host="example.test",
+                auth_type="TOKEN",
+                secret="test-token",
+            ),
+        )["id"]
+        created = schedules.create_schedule(
+            db,
+            workspace.id,
+            name="默认认证",
+            prompt="使用默认认证运行。",
+            cron_expression="0 9 * * *",
+            workspace_mode="AUTOMATION",
+            work_directory_id=None,
+            conversation_mode="NEW",
+            model_provider_id="provider-1",
+            model_name="model-1",
+            reasoning_effort=None,
+            capability_version_ids=(),
+            credential_ids=(),
+        )
+        schedule = db.get(AgentConversationSchedule, created["id"])
+        assert schedule is not None
+        schedule.credentials_configured = False
+        assert schedules._schedule_dict(db, schedule)["credential_ids"] == [credential_id]
+
+        schedules.trigger_schedule(db, workspace.id, schedule.id)
+        occurrence = db.scalar(
+            select(AgentConversationScheduleOccurrence).where(
+                AgentConversationScheduleOccurrence.schedule_id == schedule.id
+            )
+        )
+        assert occurrence is not None
+        schedules.deliver_occurrence(db, occurrence.id)
+
+        assert created_runs[0]["credential_ids"] == (credential_id,)
 
 
 @pytest.mark.parametrize("initial_mode", ["NEW", "CONTINUE"])

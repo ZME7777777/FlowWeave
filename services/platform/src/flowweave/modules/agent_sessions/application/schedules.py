@@ -18,7 +18,7 @@ from flowweave.modules.agent_sessions.infrastructure.models import (
 )
 from flowweave.modules.agent_workspaces.application import work_directories
 from flowweave.modules.agent_workspaces.infrastructure.models import AgentWorkDirectory
-from flowweave.modules.credentials.application.service import resolve_credentials_for_agent
+from flowweave.modules.credentials.application.service import list_credentials, resolve_credentials_for_agent
 from flowweave.modules.tasks.application.service import enqueue
 from flowweave.modules.tasks.infrastructure.models import BackgroundTask
 from flowweave.modules.users.application.security import tenant_user
@@ -148,6 +148,12 @@ def validate_template_configuration(
     return capabilities, credentials
 
 
+def _schedule_credential_ids(db: Session, schedule: AgentConversationSchedule) -> tuple[str, ...]:
+    if schedule.credentials_configured:
+        return tuple(schedule.credential_ids_json or [])
+    return tuple(str(credential["id"]) for credential in list_credentials(db))
+
+
 def _schedule_dict(db: Session, schedule: AgentConversationSchedule) -> dict[str, Any]:
     binding = _schedule_binding(db, schedule)
     directory = (
@@ -168,7 +174,7 @@ def _schedule_dict(db: Session, schedule: AgentConversationSchedule) -> dict[str
         "model_name": schedule.model_name,
         "reasoning_effort": schedule.reasoning_effort,
         "capability_version_ids": list(schedule.capability_version_ids_json or []),
-        "credential_ids": list(schedule.credential_ids_json or []),
+        "credential_ids": list(_schedule_credential_ids(db, schedule)),
         "name": schedule.name,
         "prompt": schedule.prompt,
         "cron_expression": schedule.cron_expression,
@@ -256,7 +262,7 @@ def _write_automation_files(db: Session, schedule: AgentConversationSchedule) ->
         model_name=schedule.model_name,
         reasoning_effort=schedule.reasoning_effort,
         capability_version_ids=tuple(schedule.capability_version_ids_json or []),
-        credential_ids=tuple(schedule.credential_ids_json or []),
+        credential_ids=_schedule_credential_ids(db, schedule),
     )
 
 
@@ -301,6 +307,7 @@ def create_schedule(
         reasoning_effort=reasoning_effort,
         capability_version_ids_json=list(capabilities),
         credential_ids_json=list(credentials),
+        credentials_configured=True,
         name=name,
         prompt=prompt,
         cron_expression=cron_expression,
@@ -366,6 +373,7 @@ def update_schedule(
     schedule.reasoning_effort = reasoning_effort
     schedule.capability_version_ids_json = list(capabilities)
     schedule.credential_ids_json = list(credentials)
+    schedule.credentials_configured = True
     if conversation_mode == "NEW":
         schedule.binding_id = None
     elif not schedule.binding_id:
@@ -552,7 +560,7 @@ def _bootstrap_run(
         reasoning_effort=schedule.reasoning_effort,
         content=_automation_prompt(schedule),
         capability_version_ids=tuple(schedule.capability_version_ids_json or []),
-        credential_ids=tuple(schedule.credential_ids_json or []),
+        credential_ids=_schedule_credential_ids(db, schedule),
         conversation_id=occurrence.binding_id,
         idempotency_key=_run_binding_id(schedule, occurrence),
     )

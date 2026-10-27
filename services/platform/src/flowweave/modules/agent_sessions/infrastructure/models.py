@@ -223,6 +223,7 @@ class AgentConversationSchedule(Base):
     reasoning_effort: Mapped[str | None] = mapped_column(String(30))
     capability_version_ids_json: Mapped[list[str]] = mapped_column(JSON, default=list)
     credential_ids_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    credentials_configured: Mapped[bool] = mapped_column(Boolean, default=False)
     name: Mapped[str] = mapped_column(String(220))
     prompt: Mapped[str] = mapped_column(Text)
     cron_expression: Mapped[str] = mapped_column(String(120))
