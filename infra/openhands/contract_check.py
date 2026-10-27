@@ -173,9 +173,9 @@ from openhands.tools.terminal.terminal.tmux_terminal import _new_owned_session
 
 EXPECTED_VERSION = "1.58.2"
 EXPECTED_UPSTREAM_BASE = "ce5716a3c0a955a85bb0cc4dcfaa94d5fefcda50"
-EXPECTED_SOURCE_COMMIT = "ecf0aec091463fb242b0c5ab59d155c65d96ded8"
+EXPECTED_SOURCE_COMMIT = "3a4f5f1f61082430e8a2ccf8d59e52c9f4eab5dc"
 EXPECTED_SOURCE_ARCHIVE_SHA256 = (
-    "5e4a53a2fab54bd3435b7ea29d6c6ea98fc181c3d0f2299cf85a7414a658d927"
+    "f63ecb0d046c1a6a20e39540c1cb6b37570c105c788916b782bc76c5881b3846"
 )
 PACKAGES = (
     "openhands-agent-server",
@@ -857,6 +857,89 @@ def _assert_quota_fallback_contract() -> None:
     assert strategy.fallback_llms == ["flowweave-fallback"]
 
 
+def _assert_governed_child_contract() -> None:
+    from pydantic import ValidationError
+
+    from openhands.sdk.conversation.child_creation import ChildConversationPreparationRequest
+    from openhands.sdk.conversation.message_request import SendMessageRequest
+    from openhands.sdk.conversation.child_launcher import ChildLauncherPolicy
+    from openhands.sdk.event.user_action import InterruptEvent, PauseEvent
+    from openhands.tools.child_conversation.commands import (
+        InterruptChildConversationTool,
+        SendChildConversationMessageTool,
+    )
+    from openhands.tools.child_conversation.governed import (
+        StartGovernedChildConversationTool,
+    )
+    from openhands.tools.child_conversation.queries import (
+        ListChildConversationsTool,
+        ReadChildConversationTool,
+        WaitForChildConversationTool,
+    )
+
+    paths = create_app().openapi()["paths"]
+    prefix = "/api/conversations/{conversation_id}/children"
+    for suffix, method in (
+        ("/launcher/verify", "post"),
+        ("/preparations/{creation_id}", "post"),
+        ("/preparations/{creation_id}", "get"),
+        ("/preparations/{creation_id}/release", "post"),
+        ("/queries/verify", "post"),
+        ("/queries", "post"),
+        ("/commands/verify", "post"),
+        ("/commands", "post"),
+    ):
+        assert method in paths[prefix + suffix]
+    assert "submission_id" in SendMessageRequest.model_fields
+    for event_class in (MessageEvent, InterruptEvent, PauseEvent):
+        assert "parent_instruction" in event_class.model_fields
+    assert ChildConversationPreparationRequest(task="probe").isolation == "shared"
+    try:
+        ChildConversationPreparationRequest(task="probe", isolation="worktree")
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError("Governed preparation accepted worktree isolation")
+
+    with TemporaryDirectory(prefix="child-tool-contract-") as temporary:
+        conversation = LocalConversation(
+            agent=Agent(llm=LLM(model="test-model", usage_id="contract"), tools=[]),
+            workspace=temporary,
+            profile_store_dir=Path(temporary) / "profiles",
+            visualizer=None,
+        )
+        try:
+            policy = ChildLauncherPolicy(
+                parent_conversation_id=conversation.id,
+                scope_id=uuid4(),
+                runtime_session_id=uuid4(),
+                generation=1,
+                manifest_digest="a" * 64,
+                max_active_children=3,
+            ).model_dump(mode="json")
+            factories = (
+                StartGovernedChildConversationTool,
+                ListChildConversationsTool,
+                ReadChildConversationTool,
+                WaitForChildConversationTool,
+                SendChildConversationMessageTool,
+                InterruptChildConversationTool,
+            )
+            for index, factory in enumerate(factories):
+                key = "launch_url" if index == 0 else "access_url"
+                spec = Tool(name=factory.name, params={
+                    "policy": policy, key: "http://control.example/children",
+                })
+                resolved = resolve_tool(spec, conversation.state)
+                assert len(resolved) == 1 and resolved[0].name == spec.name
+                assert {"policy", "launch_url", "access_url"}.isdisjoint(
+                    resolved[0].action_type.model_fields
+                )
+            assert len(conversation.state.events) == 0
+        finally:
+            conversation.close()
+
+
 def main() -> None:
     versions = {package: version(package) for package in PACKAGES}
     assert set(versions.values()) == {EXPECTED_VERSION}, versions
@@ -907,6 +990,7 @@ def main() -> None:
     assert "conversation_dynamic_context_v1" in server_info.capabilities
     _assert_credential_dynamic_context_contract()
     _assert_memory_launch_contract()
+    _assert_governed_child_contract()
     event_socket_source = getsource(events_socket)
     bash_socket_source = getsource(bash_events_socket)
     socket_source = event_socket_source + bash_socket_source
@@ -1845,6 +1929,7 @@ def main() -> None:
                 "subagent_conversation_local_tool_exemption": True,
                 "native_skill_activation": activated_skill_names,
                 "native_skill_invocation": invoked_skills,
+                "governed_shared_child_contract": True,
                 "goal_http_paths": goal_http_paths,
                 "memory_index_relpath": MEMORY_INDEX_RELPATH,
                 "memory_char_budget": MEMORY_CHAR_BUDGET,

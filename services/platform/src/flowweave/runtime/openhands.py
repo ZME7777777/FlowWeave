@@ -5250,7 +5250,7 @@ class OpenHandsRuntime:
         """Recognize the 1.54 guarantee: the user event exists but `/run` did not start."""
 
         return (
-            handle.protocol_profile == "OH_FW_V2"
+            handle.protocol_profile in {"OH_FW_V2", "OH_FW_V3"}
             and error.code == "OPENHANDS_REQUEST_FAILED"
             and error.details.get("status_code") == 429
             and error.details.get("outcome_unknown") is False

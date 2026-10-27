@@ -484,7 +484,7 @@ class RuntimeHandle:
     llm_timeout_policy: RuntimeLLMTimeoutPolicy | None = None
 
     def __post_init__(self) -> None:
-        if self.llm_timeout_policy is None and self.protocol_profile == "OH_FW_V2":
+        if self.llm_timeout_policy is None and self.protocol_profile in {"OH_FW_V2", "OH_FW_V3"}:
             object.__setattr__(self, "llm_timeout_policy", FLOWWEAVE_LLM_TIMEOUT_POLICY)
 
 

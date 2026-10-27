@@ -73,6 +73,8 @@ from flowweave.runtime.manifest import (
     runtime_node,
 )
 from flowweave.runtime.protocol_profiles import (
+    FlowRunProtocolProfile,
+    child_manifest_for_protocol_profile,
     llm_timeout_policy_for_flow_run_protocol_profile,
     subagent_policy_for_flow_run_protocol_profile,
 )
@@ -161,12 +163,14 @@ def _hash(value: Any) -> str:
 
 
 def _compile_runtime_manifest(
-    definition: dict[str, Any], *, server_identity: OpenHandsServerIdentity
+    definition: dict[str, Any],
+    *,
+    server_identity: OpenHandsServerIdentity,
+    protocol_profile: FlowRunProtocolProfile | str = FlowRunProtocolProfile.OH_FW_V1,
 ) -> dict[str, Any]:
-    """Freeze only Flow-owned node identity.
+    """Freeze node identity and the selected V3 child capability, when enabled.
 
-    Agent model, capabilities and OpenHands policy are frozen on each shared
-    Conversation binding when that Conversation is explicitly started.
+    Models, selected capabilities and binding authority remain conversation-scoped.
     """
 
     nodes: dict[str, dict[str, str]] = {}
@@ -186,8 +190,10 @@ def _compile_runtime_manifest(
         if not asset_id:
             raise DomainError("SNAPSHOT_INVALID", "Snapshot node asset id is missing", 409)
         nodes[instance_key] = {"node_asset_id": asset_id}
+    children = child_manifest_for_protocol_profile(protocol_profile)
     return {
         "schema_version": 3,
+        **({"child_conversations": children} if children is not None else {}),
         # This is provenance for the Environment Version selected by this
         # FlowRun, not the current control-plane baseline.  A Run must never
         # claim it was frozen against a newer Agent Server than its immutable
@@ -3062,6 +3068,7 @@ def _prepare_gate_plan(
                 environment_version_id=environment.id,
                 runtime_protocol_profile=environment.runtime_protocol_profile,
             ),
+            protocol_profile=environment.runtime_protocol_profile,
             llm_timeout_policy=llm_timeout_policy_for_flow_run_protocol_profile(
                 environment.runtime_protocol_profile
             ),
@@ -4362,7 +4369,11 @@ def copy_node_run(
             schema_version=3,
             definition_json=definition,
             definition_hash=_hash(definition),
-            runtime_manifest_json=_compile_runtime_manifest(definition, server_identity=identity),
+            runtime_manifest_json=_compile_runtime_manifest(
+                definition,
+                server_identity=identity,
+                protocol_profile=environment.runtime_protocol_profile,
+            ),
             runtime_manifest_hash="",
             environment_version_id=run.environment_version_id,
         )
@@ -4468,7 +4479,11 @@ def start_flow(
     )
     db.add(run)
     db.flush()
-    runtime_manifest = _compile_runtime_manifest(definition, server_identity=server_identity)
+    runtime_manifest = _compile_runtime_manifest(
+        definition,
+        server_identity=server_identity,
+        protocol_profile=environment.runtime_protocol_profile,
+    )
     snapshot = RunSnapshot(
         flow_run_id=run.id,
         version=1,
@@ -5298,7 +5313,11 @@ def save_stepwise_runtime_ports(
         environment_version_id=environment.id,
         runtime_protocol_profile=environment.runtime_protocol_profile,
     )
-    manifest = _compile_runtime_manifest(definition, server_identity=identity)
+    manifest = _compile_runtime_manifest(
+        definition,
+        server_identity=identity,
+        protocol_profile=environment.runtime_protocol_profile,
+    )
     snapshot = RunSnapshot(
         flow_run_id=run.id,
         version=active.version + 1,
@@ -5712,7 +5731,11 @@ def create_automatic_run_draft(
         start_node_key=payload.start_node_key,
         node_plans=payload.node_plans,
     )
-    runtime_manifest = _compile_runtime_manifest(definition, server_identity=server_identity)
+    runtime_manifest = _compile_runtime_manifest(
+        definition,
+        server_identity=server_identity,
+        protocol_profile=environment.runtime_protocol_profile,
+    )
     snapshot = RunSnapshot(
         flow_run_id=run.id,
         version=1,
@@ -7569,6 +7592,7 @@ def _runtime_request(db: Session, attempt: NodeAttempt) -> StartAttemptRequest:
         host_root=host_root,
         runtime_root=runtime_root,
         runtime_server_identity=server_identity,
+        protocol_profile=environment.runtime_protocol_profile,
         load_memory=memory_enabled,
         llm_timeout_policy=llm_timeout_policy_for_flow_run_protocol_profile(
             environment.runtime_protocol_profile
@@ -10979,7 +11003,11 @@ def sync_snapshot(
     if _hash(definition) == current.definition_hash:
         return run_detail(db, run.id)
     action = _action(db, run.id, "SYNC_SNAPSHOT", idempotency_key)
-    runtime_manifest = _compile_runtime_manifest(definition, server_identity=server_identity)
+    runtime_manifest = _compile_runtime_manifest(
+        definition,
+        server_identity=server_identity,
+        protocol_profile=environment.runtime_protocol_profile,
+    )
     snapshot = RunSnapshot(
         flow_run_id=run.id,
         version=current.version + 1,

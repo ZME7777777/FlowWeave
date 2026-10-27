@@ -245,6 +245,37 @@ LocalConversation 以独立线程锁保护待写来源，不从 async run lock �
 用户重复提交及异步 InterruptEvent 来源，另覆盖重载、写后失败、确认丢失和取消围栏。
 这不替代 FR-717 的真实模型与平台双宿主验收；FR-708 不开放 Web／平台入口或升级旧 Runtime。
 
+### 2.9 最终扩展来源与 V3 静态冻结（FR-709）
+
+最终受审计 SDK 来源固定为 `3a4f5f1f61082430e8a2ccf8d59e52c9f4eab5dc`，四包仍为 1.58.2，
+upstream anchor 不变。完整归档进入 `infra/openhands/vendor/`，SHA-256 为
+`f63ecb0d046c1a6a20e39540c1cb6b37570c105c788916b782bc76c5881b3846`；source lock、
+构建输入、provenance、平台身份和可执行契约同步。旧归档保留，不修改已发布 Environment、
+Snapshot、Runtime Session／generation 或 SDK 发布客户端 schema。
+
+`runtime/child_contract.py` 定义 `oh-fw-child-v1` 能力 Manifest，摘要为
+`c50549595d98880f44c2f97edd7fed834c8ebef83ff67aa6f7e4fb9eaf3320a1`。内容包含六个正式父工具、
+固定来源、shared、一层深度、三个活跃子上限、分页／扫描／文本预算、30 秒等待、稳定用户
+submission ID、prepare-before-release，以及 Task／子会话选择和结果完整性的父使用说明。
+Manifest 不含 URL、用户、binding、generation、token 或 Secret；绑定级原生策略由受信宿主在
+授权后，使用该版本编译为正式 `Tool.params.policy`、`launch_url`／`access_url`。本片验证了
+实际编译结果可由归档中的六个原生工厂解析，尚不把工具安装到产品会话；FR-711 接入授权和加载。
+
+静态 `OH_FW_V3` adapter 注册为独立契约，沿用 V2 的 timeout／Task 边界，额外要求八个
+children HTTP method/path。V3 只接受上述受审计来源及版本；Environment 发布门禁还核对
+归档摘要、四包身份和完整能力 Manifest。新构建／恢复发布的镜像只有实证来源吻合时才写入
+该能力声明。选择 V3 的新 Snapshot 同时冻结能力 Manifest；V1／V2 的 Snapshot 不增加该字段。
+绑定级工具与凭据继续在会话准备阶段冻结，不能仅凭 Snapshot 声明取得父工具权限。
+
+默认 profile 仍为 V1，不自动选择“最高版本”。新增 `0175_add_oh_fw_v3_protocol_profile`
+只扩充 Environment Version／Runtime Session／generation 三张表的允许值，不更新现有行。
+回退持有三表写入锁，关闭 RLS 隐藏后逐表拒绝仍存在的 V3 记录；不把 V3 改写成 V2。
+旧 V1／V2 的请求和冻结契约继续使用其原镜像身份，旧 Runtime 不探测／模拟子功能。
+
+独立 frozen 环境通过归档安装与完整可执行契约，536 个 Python 文件与固定 SDK commit
+逐字节一致；这不是新 Runtime 镜像或真实模型的业务验收。完整镜像／两宿主／真实模型门禁
+仍在 FR-717，FR-709 不开放浏览器入口、不部署或替换 Runtime。
+
 ## 3. 父 Agent 的操作契约
 
 以下工具名是目标命名，最终导出必须在对应 baseline 切片中建立正式类型和 contract：

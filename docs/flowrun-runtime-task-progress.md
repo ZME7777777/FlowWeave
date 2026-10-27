@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`CHILD CONVERSATIONS IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-709`
+> 下一可执行切片：`FR-710`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 > 子会话设计：`docs/agent-child-conversations-design.md`
@@ -423,12 +423,56 @@ FlowWeave 只更新设计和进度，无数据库迁移，唯一 Alembic head �
 冻结。未开放平台／Web 入口、未部署、推送或替换运行时。当前 NONE，下一可执行 FR-709，
 提交后停止。
 
-### FR-709 子会话扩展归档与 V3 冻结兼容 — READY
+### FR-709 子会话扩展归档与 V3 冻结兼容 — DONE
 
 依赖：FR-708 DONE。冻结最终 SDK 扩展 commit／归档／digest 与 ToolSet／策略 Manifest，
 注册 V3 adapter 和追加式允许值迁移；V1／V2 与旧 Runtime 请求形状保持兼容。
 
-### FR-710 子会话关联 RLS 与普通入口隔离 — PENDING
+完成（2026-10-27）：最终 SDK 来源固定为
+`3a4f5f1f61082430e8a2ccf8d59e52c9f4eab5dc`，四包维持 1.58.2，upstream anchor 不变。
+完整 commit 归档 SHA-256 为
+`f63ecb0d046c1a6a20e39540c1cb6b37570c105c788916b782bc76c5881b3846`；source lock、
+provenance、平台身份、Docker 构建输入与可执行探针同步，旧归档保留。SDK baseline 本片
+没有追加源码变更；归档、安装和固定 commit 的 536 个 Python 文件逐字节一致。
+
+新增静态 OH_FW_V3 adapter／契约及 `oh-fw-child-v1` 能力 Manifest，冻结六个父工具、
+shared／一层／三个活跃子、正式分页预算、稳定提交、prepare-release 和父使用说明。
+能力摘要为 `c50549595d98880f44c2f97edd7fed834c8ebef83ff67aa6f7e4fb9eaf3320a1`。
+V3 契约显式要求八个 native method/path，Environment 门禁同时核对 source commit／
+archive／四包／Manifest，缺少身份或能力时拒绝。新构建和恢复发布仅在实证来源吻合时
+声明能力；选择 V3 的新 Snapshot 冻结同一能力文档，五处 Snapshot 编译入口均传入其
+Environment 的冻结 profile。工具编译仅接收宿主授权后的身份与可信 URL，实证可由归档
+中的六个正式工厂解析；本片不自动安装父工具，FR-711 负责两宿主接入及绑定凭据。
+
+V3 继承 V2 原生 timeout／Task 边界及既有普通消息 429 恢复路径；独立 child 的原子
+submission/send 入口继续留 FR-712。V1／V2 的 adapter、默认 profile、请求形状及
+Snapshot 字段不变，未更新已有发布记录、Runtime 镜像／generation 或 SDK 发布 TS schema。
+新增 0175 只追加三表允许值；downgrade 锁住三表并禁止 RLS 隐藏检查，逐表发现 V3
+即拒绝，不重写历史 profile。唯一 Alembic head 为 0175_add_oh_fw_v3_protocol_profile。
+
+验收：平台 adapter／冻结 contract／V1–V3／来源主套件 268 passed；最终五项 child
+contract 与一项真实 PostgreSQL 迁移回归全部通过（其中三项已含主套件，不累加）。
+Snapshot／能力定向套件 15 passed（含上述三项）；构建架构定向两项通过。真实 PostgreSQL
+临时容器完成全迁移链到 0175；独立迁移回归验证三张表各自含 V3 时阻止回退、旧 V1／V2
+行保留、清空测试 V3 后可回退且再次拒绝 V3。离线 upgrade／downgrade SQL 亦通过。
+全部操作只在本片临时测试资源，不迁移业务数据库。
+
+扩展 Environment 套件 40 passed／11 failed，修改前 HEAD 同批为 39 passed／11 failed；
+多出的通过项是新迁移用例，失败集合完全一致。宿主／replacement／持久化／逐步端口套件
+105 passed／18 failed，与修改前 HEAD 同批通过数及失败集合完全一致。既存失败涉及旧
+provider／workspace／Settings 夹具、显式身份缺失和列表排序预期，不能称扩展全套通过。
+未修改既存失败的断言或业务逻辑掩盖结果。
+
+独立 frozen 依赖环境通过 pip check、正式 fetch_source 归档校验、四包安装及完整可执行
+contract（含六个原生 child 工厂、八条路由、shared-only、稳定提交／来源字段），未调用模型。
+实际 FlowWeave Tool.params 编译结果经归档的 native resolve_tool 解析，未产生事件／run。
+本片没有构建新镜像；完整 Runtime／真实模型／双宿主业务门禁继续由 FR-717 完成。
+新增模块 Pyright 零错误，受影响旧模块七项诊断与 HEAD 逐项相同；新增及受影响 Ruff
+检查除六条原有长提示词 E501 外通过，源码 AST、diff、来源一致性与状态／依赖核对通过。
+所有临时环境／证据在 `.tmp/fr709/`，测试容器由 fixture 清理；未推送、部署、开放产品
+入口或替换已有 Runtime。当前 NONE，下一可执行 FR-710；提交后停止。
+
+### FR-710 子会话关联 RLS 与普通入口隔离 — READY
 
 依赖：FR-709 DONE。新增用户隔离关系和唯一约束，维护强制 RLS 与表清单；两宿主
 校验直属身份，普通列表／置顶／活动／搜索及主会话路由不暴露 child 独立入口。

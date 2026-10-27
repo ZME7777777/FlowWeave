@@ -1453,6 +1453,7 @@ def _create_native_conversation(
         host_root=host_root,
         runtime_root=runtime_root,
         runtime_server_identity=server_identity,
+        protocol_profile=environment.runtime_protocol_profile,
         llm_timeout_policy=llm_timeout_policy_for_flow_run_protocol_profile(
             environment.runtime_protocol_profile
         ),
@@ -1853,6 +1854,7 @@ def _create_or_reload_node_bootstrap(
         host_root=host_root,
         runtime_root=runtime_root,
         runtime_server_identity=server_identity,
+        protocol_profile=environment.runtime_protocol_profile,
         llm_timeout_policy=llm_timeout_policy_for_flow_run_protocol_profile(
             environment.runtime_protocol_profile
         ),

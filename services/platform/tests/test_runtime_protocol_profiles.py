@@ -48,6 +48,7 @@ def test_v2_profile_uses_a_distinct_compiled_adapter_without_reinterpreting_v1()
     assert set(FLOW_RUN_RUNTIME_ADAPTERS) == {
         FlowRunProtocolProfile.OH_FW_V1,
         FlowRunProtocolProfile.OH_FW_V2,
+        FlowRunProtocolProfile.OH_FW_V3,
     }
     assert isinstance(
         FLOW_RUN_RUNTIME_ADAPTERS[FlowRunProtocolProfile.OH_FW_V2],
@@ -96,11 +97,11 @@ def test_environment_publish_request_explicitly_selects_a_compiled_profile() -> 
 
     assert payload.runtime_protocol_profile is FlowRunProtocolProfile.OH_FW_V2
     with pytest.raises(ValidationError):
-        EnvironmentPublishWrite(runtime_protocol_profile="OH_FW_V3")
+        EnvironmentPublishWrite(runtime_protocol_profile="OH_FW_V99")
 
 
 def test_unknown_profile_fails_closed_without_latest_fallback() -> None:
     with pytest.raises(DomainError) as caught:
-        runtime_for_flow_run_protocol_profile("OH_FW_V3", MockRuntime())
+        runtime_for_flow_run_protocol_profile("OH_FW_V99", MockRuntime())
 
     assert caught.value.code == "RUNTIME_PROTOCOL_PROFILE_UNSUPPORTED"

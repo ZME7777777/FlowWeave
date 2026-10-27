@@ -11,17 +11,27 @@ Generation. Never change an existing adapter or published profile record.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Final, Protocol
+from typing import Any, Final, Protocol
 
 from flowweave.runtime.base import (
     FLOWWEAVE_LLM_TIMEOUT_POLICY,
     FLOWWEAVE_SUBAGENT_POLICY,
+    RuntimeContract,
     RuntimeLLMTimeoutPolicy,
     RuntimePort,
     RuntimeSubagentPolicy,
 )
+from flowweave.runtime.child_contract import (
+    CHILD_HTTP_OPERATIONS,
+    V3_PACKAGE_VERSION,
+    V3_SOURCE_COMMIT,
+    child_capability_manifest,
+)
+from flowweave.runtime.contract import runtime_contract_for_server_identity
+from flowweave.shared.domain.openhands import OpenHandsServerIdentity
 from flowweave.shared.errors import DomainError
 
 
@@ -30,6 +40,7 @@ class FlowRunProtocolProfile(StrEnum):
 
     OH_FW_V1 = "OH_FW_V1"
     OH_FW_V2 = "OH_FW_V2"
+    OH_FW_V3 = "OH_FW_V3"
 
 
 DEFAULT_FLOW_RUN_PROTOCOL_PROFILE: Final = FlowRunProtocolProfile.OH_FW_V1
@@ -71,10 +82,41 @@ class OpenHandsV2FlowRunRuntimeAdapter:
         return runtime
 
 
+class OpenHandsV3FlowRunRuntimeAdapter:
+    """Shared native children; hosts attach tools only after binding governance."""
+
+    profile = FlowRunProtocolProfile.OH_FW_V3
+
+    def bind(self, runtime: RuntimePort) -> RuntimePort:
+        return runtime
+
+    def contract(
+        self, required_tools: tuple[str, ...], identity: OpenHandsServerIdentity
+    ) -> RuntimeContract:
+        if (
+            identity.source_commit != V3_SOURCE_COMMIT
+            or identity.package_version != V3_PACKAGE_VERSION
+        ):
+            raise DomainError(
+                "RUNTIME_CHILD_CAPABILITY_INCOMPATIBLE",
+                "V3 requires its audited native child extension",
+                409,
+            )
+        base = runtime_contract_for_server_identity(required_tools, identity)
+        return replace(
+            base,
+            schema_version=6,
+            required_http_operations=tuple(
+                sorted(set(base.required_http_operations) | set(CHILD_HTTP_OPERATIONS))
+            ),
+        )
+
+
 FLOW_RUN_RUNTIME_ADAPTERS: Final = MappingProxyType(
     {
         FlowRunProtocolProfile.OH_FW_V1: OpenHandsV1FlowRunRuntimeAdapter(),
         FlowRunProtocolProfile.OH_FW_V2: OpenHandsV2FlowRunRuntimeAdapter(),
+        FlowRunProtocolProfile.OH_FW_V3: OpenHandsV3FlowRunRuntimeAdapter(),
     }
 )
 
@@ -116,9 +158,12 @@ def runtime_for_flow_run_protocol_profile(
 def llm_timeout_policy_for_flow_run_protocol_profile(
     profile: FlowRunProtocolProfile | str,
 ) -> RuntimeLLMTimeoutPolicy | None:
-    """Return the additive V2-only native timeout policy for one FlowRun."""
+    """Return the native V2/V3 timeout policy for one FlowRun."""
 
-    if require_flow_run_protocol_profile(profile) is FlowRunProtocolProfile.OH_FW_V2:
+    if require_flow_run_protocol_profile(profile) in {
+        FlowRunProtocolProfile.OH_FW_V2,
+        FlowRunProtocolProfile.OH_FW_V3,
+    }:
         return FLOWWEAVE_LLM_TIMEOUT_POLICY
     return None
 
@@ -126,10 +171,31 @@ def llm_timeout_policy_for_flow_run_protocol_profile(
 def subagent_policy_for_flow_run_protocol_profile(
     profile: FlowRunProtocolProfile | str,
 ) -> RuntimeSubagentPolicy | None:
-    """Return the additive V2-only native delegation boundary."""
+    """Return the native V2/V3 delegation boundary."""
 
-    if require_flow_run_protocol_profile(profile) is FlowRunProtocolProfile.OH_FW_V2:
+    if require_flow_run_protocol_profile(profile) in {
+        FlowRunProtocolProfile.OH_FW_V2,
+        FlowRunProtocolProfile.OH_FW_V3,
+    }:
         return FLOWWEAVE_SUBAGENT_POLICY
+    return None
+
+
+def runtime_contract_for_protocol_profile(
+    profile: FlowRunProtocolProfile | str,
+    required_tools: tuple[str, ...],
+    identity: OpenHandsServerIdentity,
+) -> RuntimeContract:
+    if require_flow_run_protocol_profile(profile) is FlowRunProtocolProfile.OH_FW_V3:
+        return OpenHandsV3FlowRunRuntimeAdapter().contract(required_tools, identity)
+    return runtime_contract_for_server_identity(required_tools, identity)
+
+
+def child_manifest_for_protocol_profile(
+    profile: FlowRunProtocolProfile | str,
+) -> dict[str, Any] | None:
+    if require_flow_run_protocol_profile(profile) is FlowRunProtocolProfile.OH_FW_V3:
+        return child_capability_manifest()
     return None
 
 
@@ -140,6 +206,9 @@ __all__ = (
     "FlowRunRuntimeAdapter",
     "OpenHandsV1FlowRunRuntimeAdapter",
     "OpenHandsV2FlowRunRuntimeAdapter",
+    "OpenHandsV3FlowRunRuntimeAdapter",
+    "runtime_contract_for_protocol_profile",
+    "child_manifest_for_protocol_profile",
     "llm_timeout_policy_for_flow_run_protocol_profile",
     "require_flow_run_protocol_profile",
     "runtime_for_flow_run_protocol_profile",

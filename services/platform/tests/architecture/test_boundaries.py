@@ -9,6 +9,11 @@ from pathlib import Path
 
 from flowweave.shared import models as shared_model_exports  # noqa: F401
 from flowweave.shared.database import Base
+from flowweave.shared.domain.openhands import (
+    OPENHANDS_SOURCE_COMMIT,
+    OPENHANDS_UPSTREAM_BASE_COMMIT,
+    OPENHANDS_VERSION,
+)
 
 SOURCE = Path(__file__).parents[2] / "src" / "flowweave"
 REPOSITORY = Path(__file__).parents[4]
@@ -141,8 +146,8 @@ def test_openhands_runtime_uses_digest_locked_source_build() -> None:
     assert "--build-context openhands_sdk" not in makefile
     assert "COPY --from=openhands_sdk" not in dockerfile
     assert source_lock["source_kind"] == "flowweave_fork"
-    assert source_lock["upstream_base_commit"] == ("f0206428306db687ac9c8d833ece4fb82b015eba")
-    assert source_lock["source_commit"] == "73e3cd8e4d74ff30c9ed794baf72d977800509d7"
+    assert source_lock["upstream_base_commit"] == OPENHANDS_UPSTREAM_BASE_COMMIT
+    assert source_lock["source_commit"] == OPENHANDS_SOURCE_COMMIT
     assert source_lock["fork_commit"] == source_lock["source_commit"]
     assert len(source_lock["source_commit"]) == 40
     assert len(source_lock["archive_sha256"]) == 64
@@ -153,14 +158,14 @@ def test_openhands_runtime_uses_digest_locked_source_build() -> None:
     assert "patch_fork_condenser.py" not in dockerfile
     assert "/opt/openhands-source/openhands-sdk" in dockerfile
     assert "/opt/openhands-source/openhands-agent-server" in dockerfile
-    assert "expected='1.54.0'" in dockerfile
+    assert f"expected='{OPENHANDS_VERSION}'" in dockerfile
     for package in (
         "openhands-agent-server",
         "openhands-sdk",
         "openhands-tools",
         "openhands-workspace",
     ):
-        assert f'"{package}==1.54.0"' in project
+        assert f'"{package}=={OPENHANDS_VERSION}"' in project
         assert f'name = "{package}"' in lockfile
 
 

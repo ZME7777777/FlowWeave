@@ -23,6 +23,7 @@ from flowweave.modules.catalog.public import (
 from flowweave.modules.model_providers.application.service import has_connected_default_model
 from flowweave.runtime.base import (
     FLOWWEAVE_LLM_TIMEOUT_POLICY,
+    FLOWWEAVE_SUBAGENT_POLICY,
     RuntimeAgentContext,
     RuntimeAgentDefinition,
     RuntimeAgentSpec,
@@ -35,7 +36,10 @@ from flowweave.runtime.base import (
 )
 from flowweave.runtime.contract import (
     agent_workspace_runtime_contract,
-    runtime_contract_for_server_identity,
+)
+from flowweave.runtime.protocol_profiles import (
+    FlowRunProtocolProfile,
+    runtime_contract_for_protocol_profile,
 )
 from flowweave.runtime.request import resolve_runtime_selection, runtime_provider
 from flowweave.runtime.workspace import (
@@ -762,11 +766,20 @@ def build_agent_spec(
     host_root: Path,
     runtime_root: Path,
     runtime_server_identity: OpenHandsServerIdentity | None = None,
+    protocol_profile: FlowRunProtocolProfile | str = FlowRunProtocolProfile.OH_FW_V1,
     system_message_suffix_append: str = "",
     load_memory: bool = False,
     llm_timeout_policy: RuntimeLLMTimeoutPolicy | None = FLOWWEAVE_LLM_TIMEOUT_POLICY,
     subagent_policy: RuntimeSubagentPolicy | None = None,
 ) -> RuntimeAgentSpec:
+    if protocol_profile == FlowRunProtocolProfile.OH_FW_V3 and runtime_server_identity is None:
+        raise DomainError(
+            "RUNTIME_CHILD_CAPABILITY_INCOMPATIBLE",
+            "V3 requires an explicitly frozen Runtime image identity",
+            409,
+        )
+    if protocol_profile == FlowRunProtocolProfile.OH_FW_V3:
+        subagent_policy = FLOWWEAVE_SUBAGENT_POLICY
     materialized = tuple(
         item.materialization_config()
         for item in config.capabilities
@@ -835,8 +848,8 @@ def build_agent_spec(
         agent_definitions=frozen_agent_definitions(config.capabilities),
         subagent_policy=subagent_policy,
         runtime_contract=(
-            runtime_contract_for_server_identity(
-                runtime_contract_tool_names(), runtime_server_identity
+            runtime_contract_for_protocol_profile(
+                protocol_profile, runtime_contract_tool_names(), runtime_server_identity
             )
             if runtime_server_identity is not None
             else agent_workspace_runtime_contract(runtime_contract_tool_names())
