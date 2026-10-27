@@ -42,6 +42,37 @@ docker compose --env-file .env -f infra/compose.yaml \
 
 更新 `infra/openhands/**` 后，新镜像只会影响之后创建或正式 replacement 的 Runtime；已运行 Runtime 不会原地变更。发布新的 Environment Version 或通过正式 Runtime 生命周期替换 generation。
 
+### 独立 Agent Runtime 基线同步
+
+每次推进或发布 FlowWeave 受治理的 OpenHands baseline，都必须将独立 Agent Workspace Runtime
+同步到本次 source lock；不能以 SDK 已提交、镜像已构建或平台服务已更新代替运行容器升级。
+这项要求覆盖已有会话使用的活跃 generation，不能只验证新建会话。浮动 baseline HEAD
+尚未进入本次 source lock 的后续开发不自动成为发布输入。
+
+1. 固定已提交的 FlowWeave 版本，核对 `infra/openhands/source.lock.json`、SDK 不可变源码归档、
+   四包版本、Dockerfile 和 provenance 一致；执行正式 `runtime` 远端预检。
+2. 从同一 commit 的最小构建输入构建 `linux/amd64` Runtime 镜像，执行
+   `infra/openhands/contract_check.py`，核对实际镜像 digest、源码 commit、归档 SHA-256 和所需
+   capability。切换前保留旧镜像的精确 rollback tag、原配置及服务日志。
+3. 通过平台正式 Runtime 连接读取目标 Agent Workspace 的全部 OpenHands 原生活动状态，
+   `running`／`starting`／`executing`／`stopping` 任一存在时不得切换；等待安全窗口后再次检查。
+   保存原 binding／conversation 身份、持久挂载和恢复验证锚点，并在服务器侧保护原生持久状态备份。
+4. 确认平台配置的 Agent Runtime 镜像引用已经解析到目标 digest 后，使用平台正式 replacement：
+   `flowweave agent runtime-replace <workspace-id> -H 'Idempotency-Key: <本次唯一值>'`。
+   先 `--dry-run` 核对请求；异步受理后轮询既有 Runtime，不重复提交，也不手工删除容器、
+   清空目录或修改数据库 generation。沿用原 Workspace、原生 Conversation 持久状态和 Secret Reference。
+5. 验收新的 active generation：实际容器 image digest、四包版本、`/server_info.build_git_sha`、
+   provenance 必须与本次 source lock 一致；所需 capability 必须存在。以原 conversation ID
+   读取原正式事件，核对 binding 身份及 Workspace／持久挂载保持，验证 readiness 和平台健康。
+   认证目录动态同步变更还必须验证 `conversation_dynamic_context_v1` 及原生 late-secret context 契约。
+   失败时保留日志，只按原镜像与受保护状态备份恢复受影响 Runtime，不清理业务数据。
+6. 在进度文档记录代码 commit、source commit、镜像 digest、generation 和实际验证结果。
+   若活跃会话或恢复验证阻止升级，明确记录未完成，不能把本次 baseline 发布记为同步完成。
+
+此流程不改写已发布 Environment Version 或既有 FlowRun 的冻结镜像；这些资源仍按各自版本与
+Runtime 生命周期发布。仅升级独立 Agent Runtime 镜像和 generation 时，不无故重启 Provider
+或平台服务；确需更新 Provider／协议时，仍执行 `runtime` 范围的同步发布与全部受影响 Runtime 门禁。
+
 ### 部署后验证
 
 ```bash
