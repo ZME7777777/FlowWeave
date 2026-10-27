@@ -12773,3 +12773,18 @@ Web remote-release-finish 通过健康、版本与容量门禁，无过期受管
 全部容器引用，不清理共享 BuildKit、卷、Workspace 或数据库备份。收尾后
 再次核对 Web 版本／健康、服务器配置及其他 47 个容器保持。本补记不改变
 实际部署应用身份，本地提交未推送；当前与下一可执行重构切片均为 NONE。
+
+
+### OPS-24 流程菜单删除项左对齐 — DONE
+
+用户指出流程编排行菜单的删除项与其他按钮不对齐。根因是删除项命中通用
+`.danger` 的 `justify-content:center`，菜单只设置了 `text-align:left`，
+不能改变 flex 子项居中。本片只在 `.flow-row-menu button` 明确设置
+`justify-content:flex-start`，统一三项图标和文字起点，保留危险色及原操作。
+
+Web typecheck、diff／CURRENT 唯一性与唯一 Alembic head
+`0178_merge_schedule_credentials` 核对通过。既有流程列表 Chromium 用例的
+临时验收副本通过，在 1440／1024 宽度直接测量三个图标及文字 x 坐标一致、
+计算样式为 flex-start，并继续验证复制流程与画布布局。截图人工检查通过；
+没有新增产品逻辑或永久测试。受控 API 验收不代表真实业务删除，沿用当前
+会话授权仅发布 Web。实际发布结果完成后补记；当前与下一可执行切片均为 NONE。
