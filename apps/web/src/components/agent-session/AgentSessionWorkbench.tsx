@@ -4960,7 +4960,20 @@ function WorkspaceDrawer({
   const conversationTabLabel = conversation ? conversationName(conversation) : '新会话';
   const summary = details && <section className="agent-workspace-overview">
     {conversation && <article className="agent-workspace-conversation-config"><Gauge size={16}/><div><small>会话用量</small><p className="agent-workspace-usage-line"><span>{`累计 ${conversationTotalTokens.toLocaleString('zh-CN')} Token`}</span><span>{`$${(conversationUsage?.accumulated_cost ?? 0).toFixed(6)}`}</span></p></div></article>}
-    {workspaceGitRepository && <article className="agent-workspace-git-summary"><button type="button" className="agent-workspace-git-summary-refresh" aria-label="刷新 Git 信息" title="刷新本地改动、提交和远端状态" disabled={gitSummaryRefreshing} onClick={() => void refreshGitSummary()}><GitBranch size={16}/><small>Git 信息</small></button><div><button type="button" onClick={openGitSummary} title="在全屏文件栏中查看 Git 信息"><span className="agent-workspace-git-summary-content"><b>{workspaceGitRepository.branch || '未命名分支'}</b><span className="agent-workspace-git-summary-status">{workspaceGitChangesQuery.isLoading ? <em>正在加载本地改动…</em> : <span className="agent-workspace-git-change-counts"><span>{`已暂存 +${workspaceGitChangeCounts.staged}`}</span><span>{`未暂存 +${workspaceGitChangeCounts.unstaged}`}</span></span>}<span className="agent-workspace-git-sync-status">{workspaceGitRepository.upstream ? <><span>{`本地 +${workspaceGitRepository.ahead ?? 0}`}</span><span>{`远端 +${workspaceGitRepository.behind ?? 0}`}</span></> : '未设置远程跟踪分支'}</span></span></span></button>{gitSummaryRefreshError && <p className="agent-workspace-git-summary-error" role="alert">{gitSummaryRefreshError}</p>}</div></article>}
+    {workspaceGitRepository && <article className="agent-workspace-git-summary">
+      <GitBranch size={16}/>
+      <div>
+        <div className="agent-workspace-git-summary-heading">
+          <button type="button" className="agent-workspace-git-summary-refresh" aria-label="刷新 Git 信息" title="刷新本地改动、提交和远端状态" disabled={gitSummaryRefreshing} onClick={() => void refreshGitSummary()}><small>Git 信息</small></button>
+          <button type="button" className="agent-workspace-git-summary-branch" onClick={openGitSummary} title="在全屏文件栏中查看 Git 信息"><b>{workspaceGitRepository.branch || '未命名分支'}</b></button>
+        </div>
+        <button type="button" className="agent-workspace-git-summary-status" aria-label="查看 Git 改动" onClick={openGitSummary}>
+          {workspaceGitChangesQuery.isLoading ? <em>正在加载本地改动…</em> : <span className="agent-workspace-git-change-counts"><span data-empty={workspaceGitChangeCounts.staged === 0}>{`已暂存 +${workspaceGitChangeCounts.staged}`}</span><span data-empty={workspaceGitChangeCounts.unstaged === 0}>{`未暂存 +${workspaceGitChangeCounts.unstaged}`}</span></span>}
+          <span className="agent-workspace-git-sync-status">{workspaceGitRepository.upstream ? <><span>{`本地 +${workspaceGitRepository.ahead ?? 0}`}</span><span>{`远端 +${workspaceGitRepository.behind ?? 0}`}</span></> : '未设置远程跟踪分支'}</span>
+        </button>
+        {gitSummaryRefreshError && <p className="agent-workspace-git-summary-error" role="alert">{gitSummaryRefreshError}</p>}
+      </div>
+    </article>}
     {!workspaceGitRepository && conversation && <article className="agent-workspace-changes"><FileText size={16}/><div><small>变更</small><button type="button" disabled={!sessionChanges.length} onClick={() => onReviewChanges?.(sessionChanges)}><span><b>{sessionChanges.length ? `${sessionChanges.length} 个文件已更改` : '暂无变更'}</b>{sessionChanges.length > 0 && <em><ins>{`+${sessionChangeAdditions}`}</ins><del>{`-${sessionChangeDeletions}`}</del></em>}</span></button></div></article>}
     {runtimeTasks.length > 0 && <article className="agent-workspace-subagents"><Bot size={16}/><div><small>子智能体</small><button type="button" onClick={() => openRuntimeTasks()} aria-label={`查看全部 ${runtimeTasks.length} 个子智能体任务`}><span className="agent-workspace-subagent-summary"><span className="agent-workspace-subagent-avatars">{runtimeTasks.map(task => <RuntimeTaskGlyph key={task.id} task={task} size={18} sessionStopped={sessionStopped}/>)}</span><b>查看全部 ({runtimeTasks.length})</b></span></button></div></article>}
     {/*
