@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator
 from typing import Any, Literal
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from flowweave.runtime.base import (
     RuntimeAskAgentResult,
@@ -34,11 +34,46 @@ from flowweave.runtime.base import (
     RuntimeWorkspaceSnapshot,
     StartAttemptRequest,
 )
+from flowweave.runtime.child_creation import (
+    NativeChildConfiguration,
+    NativeChildInvocation,
+    NativeChildLaunchRequest,
+    NativeChildPreparation,
+)
 from flowweave.shared.errors import DomainError
 
 
 class MockRuntime:
     """Deterministic adapter used by tests and local product demos."""
+
+    @staticmethod
+    def _child_unsupported() -> DomainError:
+        return DomainError(
+            "RUNTIME_CHILD_UNSUPPORTED", "Mock Runtime 不执行 OpenHands 原生子会话", 409
+        )
+
+    def verify_child_launcher(
+        self, handle: RuntimeHandle, request: NativeChildLaunchRequest
+    ) -> NativeChildInvocation:
+        raise self._child_unsupported()
+
+    def prepare_child_conversation(
+        self, handle: RuntimeHandle, creation_id: UUID, request: NativeChildLaunchRequest
+    ) -> NativeChildPreparation:
+        raise self._child_unsupported()
+
+    def read_child_preparation(
+        self, handle: RuntimeHandle, creation_id: UUID
+    ) -> NativeChildPreparation | None:
+        raise self._child_unsupported()
+
+    def release_child_conversation(
+        self, handle: RuntimeHandle, creation_id: UUID, request: NativeChildLaunchRequest
+    ) -> NativeChildPreparation:
+        raise self._child_unsupported()
+
+    def child_conversation_configuration(self, handle: RuntimeHandle) -> NativeChildConfiguration:
+        raise self._child_unsupported()
 
     def __init__(self) -> None:
         self._results: dict[str, RuntimeResult] = {}

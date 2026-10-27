@@ -110,7 +110,7 @@ baseline 追加三个正式路由，均使用 Agent Server 现有会话认证：
 准备前先通过原生 RunSlot 准入，继而持久预留身份；原生不可变启动计划使用子 Conversation
 对应 Cipher 整体加密，只在 Runtime 持久状态目录保存。计划在初始化前提交，恢复时保持原
 配置和 child ID，即便 base_state 已写而 meta 尚未写。该原生路径不创建 Worktree，也不初始化
-Git 仓库；父配置中的平台绑定级授权仍须由 FR-711 在首轮前替换／重新激活。
+Git 仓库；父配置中的平台绑定级授权仍须由 FR-720 在首轮前替换／重新激活。
 
 prepared／dispatching 门禁阻止普通 send、run、goal、ask、condense 和 live Conversation
 访问；只读事件／配置及既有凭据激活仍可用。release 在取得 RunSlot 后才写 dispatching，
@@ -135,7 +135,7 @@ event ID 时才补启动；已完成、暂停、异常或已推进到其他事�
 shared 是类型和执行约束，不依赖提示词纠正。
 
 Tool 配置冻结 `ChildLauncherPolicy`：父 Conversation、scope UUID、Runtime Session、generation、
-Manifest digest 及最大活动子数（不超过三）。scope UUID 后续由 FR-711 固定为父 binding；
+Manifest digest 及最大活动子数（不超过三）。scope UUID 后续由 FR-719 固定为父 binding；
 不能从模型输入或调用方任意 HTTP 参数推导用户和宿主。创建工具只能由有相同父 Conversation
 的配置实例加载；子 Conversation 不继承这两个创建工具，也不继承父的 live tool executor。
 
@@ -161,8 +161,8 @@ release 复核原准备保存的策略、creation 和任务摘要，不能借另
 
 该验证接口只证明原生调用来源。控制面必须另行解析 scope 对应的用户／宿主／父 binding，
 核对 active generation、冻结 Manifest 和权限，再执行 prepare → 凭据治理 → release。
-这部分依赖 FR-710 的关系模型并由 FR-711 接入；Runtime key 或 verifier 的成功响应都不能
-单独授权平台操作。FR-706 不开放任何平台或浏览器入口，也不更新既有冻结 Runtime。
+这部分依赖 FR-710 的关系模型，分别由 FR-719 接入调用授权、FR-720 接入创建／凭据恢复；
+Runtime key 或 verifier 的成功响应都不能单独授权平台操作。FR-706 不开放任何平台或浏览器入口，也不更新既有冻结 Runtime。
 
 ### 2.7 原生直属子查询工具（FR-707）
 
@@ -175,7 +175,7 @@ scope／generation／Manifest 和 audience；不能用 launcher token 替代查�
 
 正式 `POST /api/conversations/{parent}/children/queries/verify` 只校验原生查询来源，
 `POST /api/conversations/{parent}/children/queries` 执行 typed list／read／wait。两者均沿用
-Runtime 认证并要求原生证明；平台用户与 binding 权限仍由 FR-711 的受管入口复核。
+Runtime 认证并要求原生证明；平台用户与 binding 权限仍由 FR-719 的受管入口复核。
 目标必须满足正式 parent ID、确定性 child ID、创建回执、已受理策略 scope／Runtime／
 Manifest 和 shared 工作目录一致；不是本父受治理直属子、跨父、删除中或证明参数变化均拒绝。
 异步投影完成后再次校验调用 scope 和目标关系，不能把等待期间已撤销的权限作为有效结果返回。
@@ -210,7 +210,7 @@ EventService、获取 child run-slot 或建立平台轮询执行器。
 Session、generation、Manifest 与 audience。command UUID 由正式父调用确定，不取自模型。
 正式 `/api/conversations/{parent}/children/commands/verify` 校验来源，`.../commands` 执行
 typed send／interrupt；沿用 FR-707 的配置／分支和直属关系验证，不凭 Runtime key 授权。
-平台用户与 active generation 的复核仍由 FR-711 接入，两工具不继承给子会话。
+平台用户与 active generation 的复核由 FR-719／FR-712 的受管入口接入，两工具不继承给子会话。
 
 受治理 child 的用户续聊走既有 `POST .../events`，追加稳定 submission_id 并使用 run=true；
 不带稳定身份、run=false、目标 busy 或正在等待确认时均拒绝。普通旧会话的消息形状和
@@ -259,7 +259,7 @@ Snapshot、Runtime Session／generation 或 SDK 发布客户端 schema。
 submission ID、prepare-before-release，以及 Task／子会话选择和结果完整性的父使用说明。
 Manifest 不含 URL、用户、binding、generation、token 或 Secret；绑定级原生策略由受信宿主在
 授权后，使用该版本编译为正式 `Tool.params.policy`、`launch_url`／`access_url`。本片验证了
-实际编译结果可由归档中的六个原生工厂解析，尚不把工具安装到产品会话；FR-711 接入授权和加载。
+实际编译结果可由归档中的六个原生工厂解析，尚不把工具安装到产品会话；FR-719 接入授权和加载。
 
 静态 `OH_FW_V3` adapter 注册为独立契约，沿用 V2 的 timeout／Task 边界，额外要求八个
 children HTTP method/path。V3 只接受上述受审计来源及版本；Environment 发布门禁还核对
@@ -292,8 +292,9 @@ node_attempt_id，FlowRun 定位使用父已授权的 conversation_scope_id；�
 迁移回退在表锁及禁止 RLS 隐藏下拒绝非空关系，不把仍存在的子会话降为普通会话。
 
 共享 `child_relations` 服务按当前用户和已解析宿主验证直属 locator，两宿主使用同一规则；
-正式 native parent／child ID、workspace 和 isolation 另与冻结关系比对，实际原生调用由 FR-711
-接入。此关系或原生身份校验不单独授予创建／发送权限，仍需宿主授权及 active generation 门禁。
+正式 native parent／child ID、workspace 和 isolation 另与冻结关系比对；FR-711 提供正式
+原生适配，FR-720 再接入两宿主创建。此关系或原生身份校验不单独授予创建／发送权限，
+仍需宿主授权及 active generation 门禁。
 
 普通列表、分页、置顶、排序、管理列表、活动与搜索扫描／历史命中投影均在 SQL 中排除 child，
 保存的搜索命中在分页前排除，避免只含隐藏 child 的空分页链。
@@ -306,6 +307,49 @@ FR-713 尚未实现可恢复逐子清理前，关联中的父删除在任何原�
 本片不增加子创建或续聊 API、不安装父工具、不改临时聊天 TTL；后续专用 child 入口必须使用直属
 关系服务，不能绕过普通入口隔离。真实 PostgreSQL、ORM、并发、迁移和受控 Chromium 已分别验证，
 实际原生两宿主／模型／Runtime 验收继续留在 FR-717。
+
+### 2.11 原生子创建 HTTP 边界（FR-711）
+
+原 FR-711 同时覆盖 Runtime transport、父能力装配／授权及准备／凭据／释放恢复，
+按独立验收边界拆为 FR-711、FR-719、FR-720；FR-712 改为依赖 FR-720。
+本片只增加 `RuntimePort` 与 OpenHands adapter 的类型化边界，不安装工具或开放产品入口。
+
+| Runtime 操作 | 正式原生接口／返回 |
+|---|---|
+| `verify_child_launcher` | POST `children/launcher/verify`，返回 native invocation 证据 |
+| `prepare_child_conversation` | POST `children/preparations/{creation_id}`，返回 preparation |
+| `read_child_preparation` | GET 同一路径，只有真实 HTTP 404 返回不存在 |
+| `release_child_conversation` | POST 同一路径 `/release`，显式放行原创建意图 |
+| `child_conversation_configuration` | GET 原生 Conversation，显式 `include_skills=true` |
+
+路径均从已定位的父／子 Conversation 构造并沿用 Runtime session key；操作要求 handle
+显式为 `OH_FW_V3`，未声明 profile、V1／V2 和 Mock Runtime 在外部调用前拒绝。
+写操作走既有 control 连接池，单次 HTTP 使用 30 秒阶段 timeout，并服从外层剩余读取预算；
+不提供无限等待、自动重试、改用新 UUID、自动 release、平台排队或私有执行器。
+
+launcher verifier 的 HTTP JSON **没有** SDK Python `creation_id` property；typed DTO 不凭
+缺失字段或模型文本构造它。prepare／read／release 均由受信调用方显式传入 UUID，
+核对返回的 parent／creation 以及正式 native UUID5 child 不变量；写响应还校验原始 task／
+title／shared 的正式摘要。请求只允许 shared 与 opaque `SecretStr`，verifier 的 `token`
+在 prepare／release 线路上转为正式 `launcher_token`，不持久化或写入 repr。
+
+原生 401／403／404／409／422／429 保留状态，不被旧的 missing-conversation 转换吞掉；
+仅 reconcile 的真实 404 可投影为不存在，成功 JSON 中的伪 missing marker 明确报错。
+连接中断、超时、5xx 或无法校验的写响应保持结果未知，后续必须按原 UUID 对账。
+错误不回显 response body、任务或 token；原有非 child HTTP 的处理保持不变。
+
+配置核对比较正式父子身份、shared 工作目录和同一原生公开序列化边界的 Agent 文档，
+全量 skills 请求避免默认裁剪导致误判。公开配置中的 Secret 已被 native 脱敏，因此相等
+不证明凭据授权相等，不能替代 FR-720 的绑定级凭据重签、失效／恢复实证。
+既有 additive `/secrets` 适配继续可用，但本片不自动更新子会话或宣称已解决 reload 回灌。
+
+可选 TCP 回归通过 `FLOWWEAVE_NATIVE_CHILD_PYTHON` 指定独立安装固定四包的 Python 环境；
+夹具先检查 source-lock 归档 SHA-256、四包 1.58.2 及全部 536 个安装 Python 源码逐字节一致，
+再启动真实 Uvicorn。只有 LLM completion 为受控响应；实际原生 Tool／ActionEvent 签发证明、
+HTTP verifier、prepare／重复查回、配置读取、未释放拒绝、release／重复放行和正式事件均为真实实现。
+证明由 native fixture 提供原创建 UUID，不把夹具内的 Python property 冒充 HTTP 字段；
+测试 launcher URL 指向原生 verifier，仅为取得调用证据，故工具 observation 的结果未知不等于
+平台创建成功。此探针没有平台用户授权或产品子 binding，也不替代真实模型／镜像／两宿主验收。
 
 ## 3. 父 Agent 的操作契约
 
@@ -502,8 +546,10 @@ FR-702 仅做文档契约、依赖／状态、固定源码事实和迁移 head �
 | FR-708 | 原生 send／interrupt、消息来源及并发受理 | FR-707 |
 | FR-709 | 最终扩展归档、V3／Manifest 与兼容契约 | FR-708 |
 | FR-710 | 子关联元数据迁移、RLS 与普通入口隔离 | FR-709 |
-| FR-711 | 两宿主创建治理、凭据继承和崩溃恢复 | FR-710 |
-| FR-712 | 两宿主续聊／控制／附件／结果引用接口 | FR-711 |
+| FR-711 | 原生子创建 HTTP 适配与配置核对 | FR-710 |
+| FR-719 | 两宿主父能力冻结与 launcher 调用授权 | FR-711 |
+| FR-720 | 两宿主子预留、凭据重签、首轮释放及恢复 | FR-719 |
+| FR-712 | 两宿主续聊／控制／附件／结果引用接口 | FR-720 |
 | FR-713 | 子活动／未读聚合、父删除及恢复保护 | FR-712 |
 | FR-714 | 通用侧边会话交互边界，保留临时聊天语义 | FR-712 |
 | FR-715 | 悬浮卡子列表与按标题多标签 | FR-713、FR-714 |

@@ -21,6 +21,7 @@ from urllib.parse import unquote, urlparse
 from uuid import UUID, uuid4
 
 import httpx
+from pydantic import BaseModel, ValidationError
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed, InvalidHandshake
 from websockets.sync.client import connect as sync_connect
@@ -64,6 +65,13 @@ from flowweave.runtime.base import (
     RuntimeWorkspaceFile,
     RuntimeWorkspaceSnapshot,
     StartAttemptRequest,
+)
+from flowweave.runtime.child_creation import (
+    NativeChildConfiguration,
+    NativeChildInvocation,
+    NativeChildLaunchRequest,
+    NativeChildPreparation,
+    child_contract_error,
 )
 from flowweave.runtime.contract import OPTIONAL_HTTP_OPERATIONS
 from flowweave.runtime.git_identity import GIT_IDENTITY_SCRIPT
@@ -788,6 +796,7 @@ class OpenHandsRuntime:
         missing_ok: bool = False,
         background: bool = False,
         control: bool = False,
+        native_child: bool = False,
         base_url: str,
         session_api_key: str,
         **kwargs: Any,
@@ -824,6 +833,14 @@ class OpenHandsRuntime:
             outcome = "ok"
             return cast(dict[str, Any], value)
         except httpx.HTTPStatusError as exc:
+            if native_child:
+                status = exc.response.status_code
+                raise DomainError(
+                    "RUNTIME_CHILD_REQUEST_REJECTED",
+                    "OpenHands 子会话请求被拒绝",
+                    status if 400 <= status < 500 else 502,
+                    {"status_code": status, "outcome_unknown": status >= 500},
+                ) from None
             # OpenHands initializes configured MCP servers before accepting the
             # first user event.  Preserve only this explicit, stable failure
             # class so callers can distinguish a known MCP outage from an
@@ -887,27 +904,27 @@ class OpenHandsRuntime:
                     "OpenHands formal Runtime read exceeded its deadline",
                     504,
                     {"outcome_unknown": True, "transport_failure": "timeout"},
-                ) from exc
+                ) from (None if native_child else exc)
             raise DomainError(
                 "EXECUTOR_UNAVAILABLE",
                 "OpenHands Agent Server request exceeded its deadline",
                 503,
                 {"outcome_unknown": True, "transport_failure": "timeout"},
-            ) from exc
+            ) from (None if native_child else exc)
         except httpx.HTTPError as exc:
             raise DomainError(
                 "EXECUTOR_UNAVAILABLE",
                 "OpenHands Agent Server connection was interrupted before a response",
                 503,
                 {"outcome_unknown": True, "transport_failure": "connection"},
-            ) from exc
+            ) from (None if native_child else exc)
         except ValueError as exc:
             raise DomainError(
                 "OPENHANDS_RESPONSE_INVALID",
                 "OpenHands Agent Server returned an invalid response",
                 502,
-                {"outcome_unknown": False},
-            ) from exc
+                {"outcome_unknown": native_child and method != "GET"},
+            ) from (None if native_child else exc)
         finally:
             duration = time.monotonic() - started_at
             if metrics := current_metrics():
@@ -2316,6 +2333,115 @@ class OpenHandsRuntime:
 
     def create_conversation(self, request: StartAttemptRequest) -> RuntimeHandle:
         return self._create(request, run=False)
+
+    def _child_request(
+        self, handle: RuntimeHandle, method: str, suffix: str = "", **kwargs: Any
+    ) -> dict[str, Any]:
+        # An unset Workspace profile is not permission to use the latest protocol.
+        if handle.protocol_profile != "OH_FW_V3":
+            raise DomainError(
+                "RUNTIME_CHILD_UNSUPPORTED", "当前冻结 Runtime 协议不支持受治理子会话", 409
+            )
+        try:
+            conversation_id = UUID(handle.conversation_id)
+        except ValueError:
+            raise child_contract_error() from None
+        return self._request(
+            method,
+            f"/api/conversations/{conversation_id}{suffix}",
+            base_url=self._base_url_for_handle(handle),
+            session_api_key=self._session_key_for_handle(handle),
+            control=method != "GET",
+            native_child=True,
+            timeout=30.0,
+            **kwargs,
+        )
+
+    @staticmethod
+    def _child_response[T: BaseModel](
+        model: type[T], value: dict[str, Any], *, outcome_unknown: bool = False
+    ) -> T:
+        # Pydantic validation errors may contain upstream task/token values.
+        try:
+            return model.model_validate(value)
+        except ValidationError:
+            raise child_contract_error(outcome_unknown=outcome_unknown) from None
+
+    def verify_child_launcher(
+        self, handle: RuntimeHandle, request: NativeChildLaunchRequest
+    ) -> NativeChildInvocation:
+        value = self._child_request(
+            handle, "POST", "/children/launcher/verify", json=request.verifier_payload()
+        )
+        invocation = self._child_response(NativeChildInvocation, value)
+        if (
+            invocation.policy.parent_conversation_id != UUID(handle.conversation_id)
+            or invocation.request_digest != request.request_digest()
+        ):
+            raise child_contract_error()
+        return invocation
+
+    def _child_preparation_response(
+        self,
+        handle: RuntimeHandle,
+        creation_id: UUID,
+        value: dict[str, Any],
+        request: NativeChildLaunchRequest | None = None,
+    ) -> NativeChildPreparation:
+        prepared = self._child_response(
+            NativeChildPreparation, value, outcome_unknown=request is not None
+        )
+        identity = prepared.receipt.identity
+        if (
+            identity.parent_conversation_id != UUID(handle.conversation_id)
+            or identity.creation_id != creation_id
+            or (request and prepared.receipt.request_digest != request.request_digest())
+        ):
+            raise child_contract_error(outcome_unknown=request is not None)
+        return prepared
+
+    def prepare_child_conversation(
+        self, handle: RuntimeHandle, creation_id: UUID, request: NativeChildLaunchRequest
+    ) -> NativeChildPreparation:
+        value = self._child_request(
+            handle,
+            "POST",
+            f"/children/preparations/{creation_id}",
+            json=request.preparation_payload(),
+        )
+        return self._child_preparation_response(handle, creation_id, value, request)
+
+    def read_child_preparation(
+        self, handle: RuntimeHandle, creation_id: UUID
+    ) -> NativeChildPreparation | None:
+        try:
+            value = self._child_request(handle, "GET", f"/children/preparations/{creation_id}")
+        except DomainError as exc:
+            if (
+                exc.code == "RUNTIME_CHILD_REQUEST_REJECTED"
+                and exc.details.get("status_code") == 404
+            ):
+                return None
+            raise
+        return self._child_preparation_response(handle, creation_id, value)
+
+    def release_child_conversation(
+        self, handle: RuntimeHandle, creation_id: UUID, request: NativeChildLaunchRequest
+    ) -> NativeChildPreparation:
+        value = self._child_request(
+            handle,
+            "POST",
+            f"/children/preparations/{creation_id}/release",
+            json=request.preparation_payload(),
+        )
+        return self._child_preparation_response(handle, creation_id, value, request)
+
+    def child_conversation_configuration(self, handle: RuntimeHandle) -> NativeChildConfiguration:
+        value = self._child_request(handle, "GET", params={"include_skills": "true"})
+        configuration = self._child_response(NativeChildConfiguration, value)
+        if configuration.id != UUID(handle.conversation_id):
+            raise child_contract_error()
+        return configuration
 
     def update_conversation_secrets(
         self,

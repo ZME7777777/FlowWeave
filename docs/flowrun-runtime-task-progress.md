@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`CHILD CONVERSATIONS IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-711`
+> 下一可执行切片：`FR-719`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 > 子会话设计：`docs/agent-child-conversations-design.md`
@@ -519,14 +519,54 @@ Node 夹具缺少 workspace scope、迟到夹具误拦 HTML 导航，均已修�
 尚未开放子创建、续聊或浮卡入口；专用入口与完整两宿主／原生验收仍按后续切片执行。
 当前 NONE，下一可执行 FR-711；提交后停止。
 
-### FR-711 两宿主子创建治理与凭据恢复 — READY
+### FR-711 原生子创建 HTTP 适配与治理核对 — DONE
 
-依赖：FR-710 DONE。先预留 binding 再走原生创建，验证原生父子关系、实际目录与
-冻结能力，重签绑定级授权后首轮执行；短事务、generation fence 和崩溃对账共同覆盖。
+依赖：FR-710 DONE。原范围跨 Runtime transport、父工具装配／调用鉴权及子准备／凭据／
+释放恢复，拆成可独立验收的 FR-711、FR-719、FR-720。本片只实现静态 V3 的正式
+launcher verifier、prepare／read／release 和配置核对适配，保留原生幂等／门禁及错误语义；
+不注册平台入口、不安装父工具、不预留产品子 binding，不表示两宿主创建已可用。
+
+实现：新增共享 typed request／invocation／receipt／preparation／公开配置 DTO，RuntimePort
+和 OpenHands adapter 消费正式 verifier、prepare／read／release 及完整配置读取。仅显式 V3
+可用；未声明 profile、旧 V1／V2 和 Mock 在 HTTP 前拒绝。核对正式父／creation／child
+身份、原生 UUID5 不变量与 exact task 摘要；只有 reconcile 的真实 404 返回不存在。
+明确拒绝状态沿用原生 401／403／404／409／422／429；超时、连接中断、5xx 和不可信写响应
+保留结果未知。prepare 不自动 release／run，失败不重试、不新建 UUID；错误不回显 task／
+token／响应正文。配置按正式公开 Agent 文档核对，不能把脱敏相等当作凭据治理完成。
+原生 verifier 未导出 SDK 的 creation_id property，适配明确不提供猜测字段，后续 FR-720
+必须通过正式 native 事实解决受管入口的创建身份来源。
+
+验收：定向 child transport／V3／既有 OpenHands adapter 与 Runtime contract 共 **354 passed**，
+包含一项独立原生进程真实 TCP 回归。该进程使用固定 source commit
+`3a4f5f1f61082430e8a2ccf8d59e52c9f4eab5dc` 的非 editable 四包 1.58.2，启动前复核归档
+SHA-256 及全部 536 个安装 Python 文件一致；实际原生父工具签发证明，完成 verifier、
+prepare、同 UUID 重试／查回、公开配置核对、未释放 409、首轮 release／重复 release 与
+正式单条用户／assistant 事件验证，shared 目录没有新建 .git。只替换 LLM completion，
+不调用真实模型，也没有接通产品 launcher；子进程正常停止，无 Runtime 镜像替换。
+
+受影响 Ruff check／format、diff 与任务状态／依赖核对通过。新增 DTO Pyright 零错误，
+base／mock／openhands 三文件与提交前 HEAD 的 47 项既存诊断按文件／消息／规则逐项相同，
+零新增；不能宣称整个 legacy 模块严格类型检查全绿。Alembic 唯一 head 保持
+`0176_agent_child_conversations`，无迁移；证据位于 `.tmp/fr711/`。
+未改 SDK／source lock／Runtime 镜像或 Web，不部署、不推送；两宿主创建、授权、凭据治理
+仍由 FR-719／FR-720 完成。当前 NONE，下一可执行 FR-719；提交后停止。
+
+### FR-719 两宿主父能力冻结与 launcher 调用授权 — READY
+
+依赖：FR-711 DONE。按父 binding 冻结原生工具／使用说明／策略与可信地址，接入两宿主
+新建父会话配置和只接受 native invocation 的受管入口；校验用户、宿主、active generation、
+Manifest／audience 和版本。不升级 V1／V2 或既有会话；未知源码／旧 Runtime 拒绝。
+
+### FR-720 两宿主子预留凭据重签与首轮恢复 — PENDING
+
+依赖：FR-719 DONE。先预留 binding 再原生 prepare，核对正式父子／shared 目录／配置，
+复制冻结能力并重签或明确禁用 binding 级授权后 release；短事务、同 invocation 并发、
+generation fence、原创建身份查回及各阶段崩溃恢复。不凭 JSON 未导出的 SDK property
+猜创建 ID；必要时补正式 native 身份投影并重新冻结归档。真实双宿主／模型最终由 FR-717 验收。
 
 ### FR-712 两宿主子续聊控制附件与结果引用 — PENDING
 
-依赖：FR-711 DONE。接入正式消息／控制／模型／condense、附件 owner 和正式结果引用，
+依赖：FR-720 DONE。接入正式消息／控制／模型／condense、附件 owner 和正式结果引用，
 用户与父工具共用受理门禁，不借用父 token 或跨 binding 路径。
 
 ### FR-713 子活动未读与父删除恢复 — PENDING

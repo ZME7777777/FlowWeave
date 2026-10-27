@@ -3,6 +3,14 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
+from uuid import UUID
+
+from flowweave.runtime.child_creation import (
+    NativeChildConfiguration,
+    NativeChildInvocation,
+    NativeChildLaunchRequest,
+    NativeChildPreparation,
+)
 
 
 def _empty_outputs() -> dict[str, tuple[str, str]]:
@@ -748,6 +756,26 @@ class RuntimeConversationRuntime:
 
 
 class RuntimePort(Protocol):
+    def verify_child_launcher(
+        self, handle: RuntimeHandle, request: NativeChildLaunchRequest
+    ) -> NativeChildInvocation: ...
+
+    def prepare_child_conversation(
+        self, handle: RuntimeHandle, creation_id: UUID, request: NativeChildLaunchRequest
+    ) -> NativeChildPreparation: ...
+
+    def read_child_preparation(
+        self, handle: RuntimeHandle, creation_id: UUID
+    ) -> NativeChildPreparation | None: ...
+
+    def release_child_conversation(
+        self, handle: RuntimeHandle, creation_id: UUID, request: NativeChildLaunchRequest
+    ) -> NativeChildPreparation: ...
+
+    def child_conversation_configuration(
+        self, handle: RuntimeHandle
+    ) -> NativeChildConfiguration: ...
+
     def probe_mcp(self, request: RuntimeMCPProbeRequest) -> RuntimeMCPProbeResult: ...
 
     def validate_plugin(
