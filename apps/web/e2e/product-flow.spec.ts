@@ -1235,7 +1235,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   const gitSummary = page.locator('.agent-workspace-git-summary');
   await expect(gitSummary).toContainText('Git 信息');
   await expect(gitSummary).toContainText('main');
-  await expect(gitSummary).toContainText('3 个文件已改动');
+  await expect(gitSummary).toContainText('已暂存 +1');
+  await expect(gitSummary).toContainText('未暂存 +2');
   await expect(gitSummary).toContainText('本地 +2');
   await expect(gitSummary).toContainText('远端 +1');
   const gitSummaryLayout = await gitSummary.locator('button[title="在全屏文件栏中查看 Git 信息"]').evaluate(button => {
@@ -1252,12 +1253,15 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect.poll(() => gitSyncRequests).toBe(1);
   await expect(gitSummaryRefresh).toBeDisabled();
   await expect(gitSummaryRefresh).toHaveText('Git 信息');
-  await expect(gitSummary).toContainText('改动 +3');
+  await expect(gitSummary).toContainText('已暂存 +1');
+  await expect(gitSummary).toContainText('未暂存 +2');
   await expect(gitSummary).not.toContainText('正在刷新本地改动…');
   releaseGitSync?.();
   await expect.poll(() => workspaceGitChangesRequests).toBe(gitSummaryChangesRequestsBeforeRefresh + 1);
   await expect(gitSummaryRefresh).toBeEnabled();
   await expect(gitSummaryRefresh).toHaveText('Git 信息');
+  await expect(gitSummary).toContainText('已暂存 +1');
+  await expect(gitSummary).toContainText('未暂存 +2');
   await expect(gitSummary).toContainText('本地 +0');
   await expect(gitSummary).toContainText('远端 +0');
   await gitSummary.getByTitle('在全屏文件栏中查看 Git 信息').click();
