@@ -92,6 +92,49 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 
 ## 6. 任务清单
 
+### OPS-12 独立 Agent Runtime baseline 同步升级 — DONE
+
+用户明确授权将独立 Agent Runtime 同步到受治理 baseline，并要求后续每次 baseline
+更新都同步升级该 Runtime。目标使用当前已提交 source lock：`73e3cd8e`／四包 `1.54.0`，
+不将浮动 baseline 后续开发直接作为本次发布输入。只读诊断确认旧 generation 50
+运行 `d3a9a1f9`／`1.49.5`，缺少 `conversation_dynamic_context_v1`，因此平台在写入
+新增认证前以 `AGENT_CREDENTIAL_CONTEXT_UNSUPPORTED` 拒绝同步。
+
+AGENTS 与部署文档已加入 baseline 发布必须同步独立 Agent Runtime 的规则：镜像构建
+不是收尾，必须经活跃门禁、正式 replacement 和实际容器身份／原会话恢复验收；
+仍有运行会话时明确保留未完成状态。同步纠正 AGENTS 中过期的上游锚点与四包版本。
+已有 FlowRun 的冻结镜像与 Environment Version 不因此改写。
+
+实际升级完成于 2026-10-27。发布输入绑定已提交 FlowWeave
+`40dad3e9f120b3fbb07fe77f9eca1a9a575a9dd5`，正式 runtime 远端预检通过。
+服务器已备有与当前 source lock 一致的 linux/amd64 镜像，本片复用该不可变镜像，
+未声称重新构建。实际 image ID 为
+`sha256:280d92c5711e442eb77a65002ffb5e52571089f907e74a5678134e975125ca80`；
+provenance、四包 `1.54.0`、`/server_info.build_git_sha` 均与锁定
+`73e3cd8e4d74ff30c9ed794baf72d977800509d7` 一致，源码归档 SHA-256 为
+`5fcd3fc5e628572a7e223c954e8fd792b78d768f1d8eba9419a4d88d6490308a`。
+镜像内 contract_check.py SHA-256 与本提交输入相同；隔离、无网络、无业务挂载
+的完整固定镜像契约通过，包含 late-secret 注入后动态认证目录进入模型上下文、
+Secret 不出现在目录正文、正式历史事件不改写和命令环境按需解析 Secret 的探针。
+
+首次门禁存在运行项，未切换；用户随后明确暂停会话并要求直接部署。备份前与
+切换前再次确认全部 619 条 OpenHands 原生会话均无 running／starting／executing／
+stopping。服务器侧保留权限受限的原生持久状态备份和旧镜像 rollback tag；备份
+SHA-256 为 `fb9035d52e84a7fb4188bb839457fae31f7171e6acc5f6a146ebb8371337f968`，
+不复制业务状态或私有配置进入仓库。通过正式平台 Runtime replacement 单次受理，
+generation 50 升为 51，恢复 ACTIVE／可写；未直接操作数据库 generation。
+
+升级后实际容器 digest 与验证镜像一致，四包／源码身份／归档 provenance 核对通过，
+`conversation_dynamic_context_v1` 已存在。617 个 binding 的用户、Runtime Session、
+原 conversation ID 和工作目录身份摘要不变；619 条原生会话及状态计数保留。
+原目标会话的正式 event id 可读取；平台返回的 79 个原正式事件逐项相同，cursor
+不变。全部持久挂载的来源、目的及读写属性不变。其余 37 个运行容器的 image
+和 StartedAt 不变，api／stream-api 的 health／readiness 通过，Alembic 唯一 head
+仍为 `0176_agent_temporary_services`。未更新服务器 Compose／env、Provider 或平台
+镜像，没有向业务会话发送、继续或重放消息，也未修改用户实际认证的同步选择。
+新增认证路径以实际镜像的 capability 与隔离完整契约验证，未冒称真实业务认证操作。
+文档 diff／CURRENT 唯一性检查通过；当前与下一可执行切片均为 NONE。
+
 ### FR-703 内置浏览器大模块响应与错误可读性 — DONE
 
 依赖：FR-630 DONE。实际预览入口和 CasesPage 返回 200，但其依赖的工作台模块
