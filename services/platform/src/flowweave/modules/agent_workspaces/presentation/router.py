@@ -30,7 +30,6 @@ from flowweave.modules.agent_sessions.application import (
     history_access,
     history_sessions,
     sidebar_conversations,
-    temporary_services,
 )
 from flowweave.modules.agent_sessions.application import schedules as conversation_schedules
 from flowweave.modules.agent_sessions.application import search as conversation_search
@@ -528,25 +527,6 @@ async def list_agent_work_directories(workspace_id: str, db: Db) -> dict[str, An
     return await run_sync(
         db, lambda session: work_directories.list_work_directories(session, workspace_id)
     )
-
-
-@router.post(
-    "/agent-workspaces/{workspace_id}/temporary-services/{service_id}/stop", status_code=202
-)
-async def stop_agent_workspace_temporary_service(
-    workspace_id: str, service_id: str, container: ContainerDep
-) -> dict[str, bool]:
-    await run_blocking_control(
-        container,
-        lambda session: temporary_services.stop_service(
-            session,
-            workspace_id=workspace_id,
-            service_id=service_id,
-            reason="USER_STOPPED",
-            settings=container.settings,
-        ),
-    )
-    return {"stopped": True}
 
 
 @router.get("/agent-workspaces/{workspace_id}/workspace")

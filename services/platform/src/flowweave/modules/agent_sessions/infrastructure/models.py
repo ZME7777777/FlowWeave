@@ -197,50 +197,6 @@ class AgentConversationBinding(Base):
     )
 
 
-class AgentTemporaryService(Base):
-    """A listening process attributable to one Agent workspace Runtime generation."""
-
-    __tablename__ = "agent_temporary_services"
-    __table_args__ = (
-        CheckConstraint(
-            "source IN ('REGISTERED', 'DISCOVERED')", name="ck_agent_temp_service_source"
-        ),
-        CheckConstraint(
-            "state IN ('RUNNING', 'STOPPING', 'STOPPED', 'MISSING')",
-            name="ck_agent_temp_service_state",
-        ),
-        UniqueConstraint(
-            "sandbox_id",
-            "runtime_generation",
-            "pid",
-            "process_started_ticks",
-            name="uq_agent_temp_service_process",
-        ),
-    )
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    workspace_id: Mapped[str] = mapped_column(String(36), index=True)
-    binding_id: Mapped[str | None] = mapped_column(String(36), index=True)
-    sandbox_id: Mapped[str] = mapped_column(String(36), index=True)
-    runtime_generation: Mapped[int] = mapped_column(Integer)
-    source: Mapped[str] = mapped_column(String(20))
-    state: Mapped[str] = mapped_column(String(20), default="RUNNING", index=True)
-    pid: Mapped[int] = mapped_column(Integer)
-    process_started_ticks: Mapped[str] = mapped_column(String(40))
-    process_group_id: Mapped[int | None] = mapped_column(Integer)
-    command: Mapped[str] = mapped_column(Text)
-    working_directory: Mapped[str | None] = mapped_column(String(500))
-    ports_json: Mapped[list[int]] = mapped_column(JSON, default=list)
-    url: Mapped[str | None] = mapped_column(String(1000))
-    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
-    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
-    stopped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    stop_reason: Mapped[str | None] = mapped_column(String(40))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
-
-
-
 class AgentConversationSchedule(Base):
     __tablename__ = "agent_conversation_schedules"
     __table_args__ = (
@@ -619,7 +575,6 @@ __all__ = (
     "AgentConversationCapability",
     "AgentConversationCommand",
     "AgentConversationMessageAttachment",
-    "AgentTemporaryService",
     "AgentConversationSearch",
     "AgentConversationSearchHit",
 )

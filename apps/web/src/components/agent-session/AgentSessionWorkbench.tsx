@@ -3,7 +3,7 @@ import { Terminal as XTerm } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import { type InfiniteData, useQueries, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import hljs from 'highlight.js/lib/common';
-import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bell, Bot, Boxes, CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, CircleDot, Copy, CornerDownRight, Download, Ellipsis, Eye, EyeOff, FileCode2, FileText, Folder, FolderOpen, FolderPlus, Gauge, GitBranch, Globe2, GripVertical, Home, ImageIcon, Link2, ListRestart, LoaderCircle, Maximize, Maximize2, Minimize, Minimize2, MessageSquareText, MonitorCog, MonitorOff, PanelRight, PanelRightOpen, Pencil, Pin, PinOff, Play, Plus, Quote, RefreshCw, Search, Send, Settings, ShieldAlert, Square, SquareCheck, SquarePlus, SquareTerminal, Trash2, X, Zap } from 'lucide-react';
+import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bell, Bot, Boxes, CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, CircleDot, Copy, CornerDownRight, Download, Ellipsis, Eye, EyeOff, FileCode2, FileText, Folder, FolderOpen, FolderPlus, Gauge, GitBranch, Globe2, GripVertical, Home, ImageIcon, Link2, ListRestart, LoaderCircle, Maximize, Maximize2, Minimize, Minimize2, MessageSquareText, MonitorCog, MonitorOff, PanelRight, PanelRightOpen, Pencil, Pin, PinOff, Play, Plus, Quote, RefreshCw, Search, Send, Settings, ShieldAlert, Square, SquareCheck, SquarePlus, SquareTerminal, Trash2, X } from 'lucide-react';
 import { createContext, isValidElement, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type WheelEvent as ReactWheelEvent } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
@@ -4001,7 +4001,6 @@ function WorkspaceDrawer({
   const [fullScreenView, setFullScreenView] = useState<'conversation' | 'tool'>('conversation');
   const [environmentPreferredOpen, setEnvironmentPreferredOpen] = useState(() => localStorage.getItem('flowweave:environment-card-open') !== 'false');
   const [environmentToolOverride, setEnvironmentToolOverride] = useState<{ scopeKey: string; open: boolean }>();
-  const [stoppingTemporaryServiceId, setStoppingTemporaryServiceId] = useState<string>();
   const resizeCollapsed = useRef(false);
   const [resizePreview, setResizePreview] = useState<'fullscreen' | 'hidden'>();
   const drawerFullScreen = fullScreen || resizePreview === 'fullscreen';
@@ -4124,7 +4123,6 @@ function WorkspaceDrawer({
     queryKey: sessionQueryKey(host, 'workspace-details', workspaceId, bindingId, workDirectoryId),
     queryFn: () => api.workspaceDetails(workspaceId, { bindingId, workDirectoryId }),
     enabled: true,
-    refetchInterval: environmentOpen ? 15_000 : false,
     retry: (count, error) => !(error instanceof ApiError && (error.status < 500 || error.status === 503)) && count < 2,
   });
   const details = detailsQuery.data;
@@ -4942,14 +4940,17 @@ function WorkspaceDrawer({
     {conversation && <article className="agent-workspace-conversation-config"><Gauge size={16}/><div><small>会话用量</small><p className="agent-workspace-usage-line"><span>{`累计 ${conversationTotalTokens.toLocaleString('zh-CN')} Token`}</span><span>{`$${(conversationUsage?.accumulated_cost ?? 0).toFixed(6)}`}</span></p></div></article>}
     {workspaceGitRepository && <article className="agent-workspace-git-summary"><GitBranch size={16}/><div><span className="agent-workspace-git-summary-title"><small>Git 信息</small><button type="button" className="agent-workspace-git-summary-refresh" aria-label="刷新 Git 信息" title="刷新本地改动、提交和远端状态" disabled={gitSummaryRefreshing} onClick={() => void refreshGitSummary()}><RefreshCw className={gitSummaryRefreshing ? 'spin' : undefined} size={12}/></button></span><button type="button" onClick={openGitSummary} title="在全屏文件标签页中查看 Git 信息"><span className="agent-workspace-git-summary-content"><b>{workspaceGitRepository.branch || '未命名分支'}</b><span className="agent-workspace-git-summary-status"><em>{workspaceGitChangesQuery.isLoading ? '正在加载本地改动…' : `改动 +${gitChangedFileCount(workspaceGitChangesQuery.data)}`}</em><span className="agent-workspace-git-sync-status">{workspaceGitRepository.upstream ? <><span>{`本地 +${workspaceGitRepository.ahead ?? 0}`}</span><span>{`远端 +${workspaceGitRepository.behind ?? 0}`}</span></> : '未设置远程跟踪分支'}</span></span></span><ChevronRight size={13}/></button>{gitSummaryRefreshError && <p className="agent-workspace-git-summary-error" role="alert">{gitSummaryRefreshError}</p>}</div></article>}
     {!workspaceGitRepository && conversation && <article className="agent-workspace-changes"><FileText size={16}/><div><small>变更</small><button type="button" disabled={!sessionChanges.length} onClick={() => onReviewChanges?.(sessionChanges)}><span><b>{sessionChanges.length ? `${sessionChanges.length} 个文件已更改` : '暂无变更'}</b>{sessionChanges.length > 0 && <em><ins>{`+${sessionChangeAdditions}`}</ins><del>{`-${sessionChangeDeletions}`}</del></em>}</span><ChevronRight size={13}/></button></div></article>}
-    {(details.temporary_services?.length ?? 0) > 0 && <article className="agent-workspace-temporary-services"><Zap size={16}/><div><small>临时服务</small>{details.temporary_services!.map(service => <section key={service.id}><span><b>{service.url || service.command}</b><em>{service.ports.length ? `端口 ${service.ports.join('、')}` : `PID ${service.pid}`}{service.source === 'DISCOVERED' ? ' · 自动发现' : ''}</em></span><button type="button" className="agent-temporary-service-stop" disabled={!api.stopTemporaryService || stoppingTemporaryServiceId === service.id} onClick={() => { if (!api.stopTemporaryService) return; setStoppingTemporaryServiceId(service.id); void api.stopTemporaryService(workspaceId, service.id).then(() => detailsQuery.refetch()).catch(error => setPanelError(error instanceof Error ? error.message : '停止临时服务失败，请重试。')).finally(() => setStoppingTemporaryServiceId(current => current === service.id ? undefined : current)); }}>{stoppingTemporaryServiceId === service.id ? '停止中…' : '停止'}</button></section>)}</div></article>}
     {runtimeTasks.length > 0 && <article className="agent-workspace-subagents"><Bot size={16}/><div><small>子智能体</small><button type="button" onClick={() => openRuntimeTasks()}><span className="agent-workspace-subagent-summary" aria-label={`${runtimeTasks.length} 个子智能体任务`}><span className="agent-workspace-subagent-avatars">{runtimeTasks.map(task => <RuntimeTaskGlyph key={task.id} task={task} size={18} sessionStopped={sessionStopped}/>)}</span><b>{runtimeTasks.filter(task => runtimeTaskIsActive(task, sessionStopped)).length ? `${runtimeTasks.filter(task => runtimeTaskIsActive(task, sessionStopped)).length} 个运行中` : `${runtimeTasks.length} 个任务`}</b></span><ChevronRight size={13}/></button></div></article>}
     {/*
       Git 仓库概览暂时隐藏：当前仅罗列工作区中的仓库路径、分支、提交与远端地址，
       对用户的下一步操作帮助有限。保留原始实现，待补充状态、差异和常用 Git 操作后再恢复。
       <article><GitBranch size={16}/><div><small>Git 仓库</small>{details.repositories.length ? details.repositories.map(repository => <p key={repository.path}><b>{relativeWorkspacePath(repository.path, details.root)}</b>{repository.branch && <span>{repository.branch}</span>}{repository.head && <em>{repository.head.slice(0, 12)}</em>}{repository.remote && <code>{repository.remote}</code>}</p>) : <p>当前目录未检测到 Git 仓库。</p>}</div></article>
     */}
-    <article className="agent-workspace-ide"><MonitorCog size={16}/><div><small>IDEA / Gateway</small><button type="button" className="agent-ssh-access-trigger" disabled={!sshRemoteReady} onClick={() => setSshAccessOpen(true)}>SSH 接入说明<ChevronRight size={13}/></button></div></article>
+    {/*
+      暂不展示 IDEA / Gateway：当前 SSH 接入入口使用率低，保留实现以便
+      后续直接恢复。相关 SSH 状态和说明弹窗仍可复用，不影响工作区功能。
+      <article className="agent-workspace-ide"><MonitorCog size={16}/><div><small>IDEA / Gateway</small><button type="button" className="agent-ssh-access-trigger" disabled={!sshRemoteReady} onClick={() => setSshAccessOpen(true)}>SSH 接入说明<ChevronRight size={13}/></button></div></article>
+    */}
     <article className="agent-workspace-sources"><Link2 size={16}/><div><small>来源</small>{sources.length ? <><div className="agent-workspace-source-list">{visibleSources.map(source => <button type="button" key={source.id} title={`查看来源详情：${source.label}`} onClick={openSources}><span className="agent-workspace-source-glyph"><ConversationSourceGlyph source={source} size={12}/></span><span><b>{source.label}</b><em>{conversationSourceKind(source)}</em></span></button>)}</div>{sources.length > visibleSources.length && <button type="button" className="agent-workspace-view-all-sources" onClick={openSources}><Link2 size={12}/><span>查看全部</span><em>{sources.length}</em><ChevronRight size={13}/></button>}</> : <p>用户输入的链接、文件和图片会集中显示在这里。</p>}</div></article>
   </section>;
       return <><aside ref={drawerRef} className={`agent-workspace-drawer ${drawerToolsOpen ? 'tools-open' : 'summary-open'}${drawerFullScreen ? ' fullscreen' : ''}${fullScreenConversationActive ? ' conversation-active' : ''}${environmentOpen ? ' environment-open' : ' environment-hidden'}`} style={{ width: drawerFullScreen ? undefined : panelWidth, '--agent-workspace-tool-width': `${panelWidth}px` } as CSSProperties} aria-label={drawerFullScreen ? '全屏工作区工具' : undefined}>
@@ -7497,7 +7498,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     );
     const surface = target?.closest<HTMLElement>('.conversation-surface');
     if (!target || !surface) {
-      void revealHistoryThrough(targetEventId);
+      void revealHistoryThrough(targetEventId).then(revealed => {
+        if (!revealed) {
+          setConversationSearchTargetEventId(current => current === targetEventId ? undefined : current);
+          return;
+        }
+        setConversationSearchTargetEventId(undefined);
+        window.setTimeout(() => setConversationSearchTargetEventId(targetEventId), 0);
+      });
       return;
     }
     const top = target.getBoundingClientRect().top - surface.getBoundingClientRect().top + surface.scrollTop - 28;

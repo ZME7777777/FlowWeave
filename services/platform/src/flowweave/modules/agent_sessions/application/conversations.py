@@ -2512,17 +2512,6 @@ def delete_conversation(
             command.failure_summary = "Conversation deletion failed; inspect protected logs"
             item.lifecycle = "ACTIVE"
             raise
-    from flowweave.modules.agent_sessions.application.temporary_services import (
-        stop_binding_services,
-    )
-
-    stop_binding_services(
-        db,
-        workspace_id=workspace.id,
-        binding_id=item.id,
-        reason="CONVERSATION_DELETED",
-        settings=get_settings(),
-    )
     # The native conversation is now gone, so its private attachment objects
     # must not outlive it.  The helper only unlinks files bearing this binding's
     # opaque owner UUID and never traverses arbitrary workspace paths.

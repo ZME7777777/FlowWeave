@@ -21,7 +21,6 @@ from flowweave.modules.agent_sessions.application.draft_attachments import (
     ATTACHMENT_PATH,
     assert_attachment_owner_unbound,
 )
-from flowweave.modules.agent_sessions.application.temporary_services import workspace_services
 from flowweave.modules.agent_workspaces.application import service, work_directories
 from flowweave.modules.agent_workspaces.infrastructure.models import (
     AgentConversationBinding,
@@ -1336,12 +1335,6 @@ def details(
         # scan repositories or run branch/HEAD/remote commands.
         "repositories": [],
         "runtime": {"container_id": container_short_id},
-        "temporary_services": workspace_services(
-            db,
-            workspace_id=workspace_id,
-            binding_id=binding_id,
-            settings=service.get_settings(),
-        ) if container_short_id else [],
         "ide": {
             "workspace_path": working_directory,
             "gateway": agent_sessions.ssh_remote_descriptor(
