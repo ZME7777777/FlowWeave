@@ -12635,3 +12635,27 @@ Web typecheck、受影响 ESLint、diff／CURRENT 唯一性及唯一 Alembic hea
 信息展开和人工截图检查通过。使用受控 API，不代表真实模型执行业务。
 沿用当前会话授权仅发布 Web，实际发布结果完成后补记。当前与下一可执行
 重构切片均为 NONE。
+
+
+OPS-21 正式发布补记（2026-10-27）：实际部署代码为
+`fc77b05dcdc4f9c08e2cd1189e471c79887889c9`。Web 正式预检与 commit-bound
+最小上下文 prepare 通过，源归档 SHA-256 为
+`a2fa8474f0355b5a18de1a1d6af563c3a94767168891e7b5f78c81d5e7c714d1`，
+实际 linux/amd64 Web image ID 为
+`sha256:abf32ea3a46130ba41eb37e9d959d2ecb1df8750d18773ac66b8cc84701060cb`，
+OCI revision 一致。保留日志与 rollback tag 后仅 recreate Web，HTTP／健康
+通过；服务器 Compose／env 摘要与其他 47 个容器的 image／StartedAt 不变。
+没有迁移、API／Worker／Provider 重启或 Runtime replacement。
+
+本地源码的三项定向 Chromium 回归与截图检查通过，涵盖 40 条记录的独立滚轮
+与三屏宽固定页头／工具栏。补充尝试将受控 API 用例直接指向公网页面，三项
+均在等待“流程运行”导航入口时超时，未到达本次布局断言，不计为实际线上
+行为验收。服务器实际 Chromium 验证前缀登录、Agent 深层路由、根登录与
+API 401 边界通过；公网 HTML／入口 JS／CSS 与运行镜像相同，新浏览器确认
+认证请求带部署前缀，根 API 请求数为零。未操作用户业务会话或真实模型。
+
+Web remote-release-finish 通过健康、版本与容量门禁，精确回收两个超过
+24 小时且无引用的受管上下文和一个可回收历史 image ID 的 tags；保留当前
+镜像、一个不同版本回滚及全部容器引用，不清理共享 BuildKit、卷、Workspace
+或数据库备份。收尾后版本／健康、服务器配置及其他 47 个容器再次核对通过。
+本补记不改变实际部署应用身份，本地提交未推送；当前与下一可执行切片均为 NONE。
