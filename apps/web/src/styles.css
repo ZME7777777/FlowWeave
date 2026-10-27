@@ -1392,3 +1392,49 @@ body:has(.login-page){min-width:0}
 .run-record-page-status{display:flex;min-height:38px;align-items:center;justify-content:center;gap:8px;color:#7a8980;font-size:10px}.run-record-page-status button{border:0;border-radius:4px;background:#edf4ef;padding:4px 8px;color:var(--green);font-size:10px}
 
 .run-record-page-sentinel{height:1px;pointer-events:none}
+
+/* Schedule records share the compact, fixed-context layout of the run directory. */
+.schedule-workspace{grid-template-columns:300px minmax(0,1fr);min-height:0;overflow:hidden;padding:12px 16px 16px;background:#f2f5f1}
+.schedule-workspace>.schedule-list-panel{min-height:0;overflow:hidden;border:1px solid #dfe7e1;border-radius:12px 0 0 12px}
+.schedule-workspace>.schedule-list-panel>header{flex:0 0 auto;min-height:64px;padding:12px 10px;gap:8px}
+.schedule-list-panel h1{font-size:14px;letter-spacing:0}
+.schedule-list-panel .schedule-create-button{gap:4px;padding:6px 8px;font-size:10px}
+.schedule-list-panel .schedule-task-list{min-height:0;flex:1;padding:6px 8px 12px}
+.schedule-task-list>button{padding:10px 9px}
+.schedule-task-list b{font-size:11px}
+.schedule-workspace>.schedule-conversation{display:flex;min-height:0;flex-direction:column;overflow:hidden;border:1px solid #dfe7e1;border-left:0;border-radius:0 12px 12px 0;background:#fff;padding:12px 16px 16px}
+.schedule-conversation>.schedule-conversation-head{min-height:40px;flex:0 0 auto;gap:10px;border:0;padding:0}
+.schedule-conversation-head h2{min-width:80px;flex:1;margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px;letter-spacing:0}
+.schedule-header-status{flex:none;border-radius:4px;background:#f4eedf;padding:3px 6px;color:#8c753d;font-size:10px;white-space:nowrap}
+.schedule-header-status.active{background:#e8f3ec;color:#38714f}
+.schedule-header-cron{max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#829087;font:9px ui-monospace,monospace}
+.schedule-head-actions .primary,.schedule-head-actions .secondary{min-height:28px;padding:6px 8px;gap:5px;font-size:10px}
+.schedule-head-actions .schedule-delete-button{width:28px;height:28px;border-radius:5px}
+.schedule-conversation>.schedule-conversation-content{display:flex;min-height:0;flex:1;flex-direction:column;gap:8px;width:100%;margin:10px 0 0;padding:0}
+.schedule-conversation-content>.schedule-trigger-feedback{flex:none;margin:0!important;padding:7px 10px!important;font-size:10px!important}
+.schedule-conversation-content>.schedule-history{display:flex;min-height:0;flex:1;flex-direction:column;margin:0}
+.schedule-history>.schedule-record-list{display:flex;min-height:0;flex:1;flex-direction:column;gap:0;overflow:hidden;border:1px solid #dfe8e1;border-radius:9px}
+.schedule-record-toolbar{display:flex;min-height:40px;flex:none;align-items:center;gap:9px;border-bottom:1px solid #e1e9e4;background:#f8fbf9;padding:7px 12px}
+.schedule-record-toolbar h3{margin:0;color:#42584a;font-size:11px;font-weight:600}
+.schedule-record-toolbar>span{color:#829087;font-size:10px}
+.schedule-record-list>.schedule-record-table{min-height:0;flex:1;overflow:auto;border:0;border-radius:0;overscroll-behavior:contain;scrollbar-gutter:stable}
+.schedule-record-table>.schedule-record{display:block;margin:0;border-bottom:1px solid #e7eee9}
+.schedule-record-table>.schedule-record:last-child{border-bottom:0}
+.schedule-record .schedule-record-summary{min-height:46px;grid-template-columns:8px minmax(80px,1fr) 54px 94px 52px 70px;gap:12px;padding:9px 12px;background:transparent}
+.schedule-record-summary:hover,.schedule-record-summary:focus-visible{background:#f3f8f5}
+.schedule-record-summary:focus-visible{outline:2px solid #72a587;outline-offset:-2px}
+.schedule-record-summary .schedule-record-marker{width:6px;height:6px;box-shadow:none}
+.schedule-record-summary .schedule-record-run{display:flex;min-width:0;align-items:center;gap:6px;color:#334b3d}
+.schedule-record-run b{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;font-weight:600}
+.schedule-record-run small{flex:none;color:#8b9890;font-size:9px}
+.schedule-record-summary .schedule-record-kind{color:#829087;font-family:inherit;font-size:9px;letter-spacing:0;white-space:nowrap}
+.schedule-record-summary .schedule-record-time{color:#829087;font-size:9px;font-weight:400;text-align:right}
+.schedule-record-summary .schedule-record-state{min-width:0;justify-self:center;border-radius:4px;background:transparent;padding:2px 4px;font-size:9px;font-weight:400}
+.schedule-record-summary .schedule-record-state.pending{color:#96772f}
+.schedule-record-summary .schedule-record-open{display:inline-flex;align-items:center;justify-content:center;gap:3px;border:1px solid #d5e4da;border-radius:5px;background:#f4f9f6;padding:4px 5px;color:#33694c;font-size:10px;line-height:16px;white-space:nowrap}
+.schedule-record-summary:hover .schedule-record-open,.schedule-record-summary:focus-visible .schedule-record-open{border-color:#a3c2ae;background:#e2f0e7}
+.schedule-record-list>.schedule-record-pagination{flex:none;min-height:38px;border-top:1px solid #e7eee9;padding:7px 10px;background:#fbfcfb}
+.schedule-record-list .schedule-record-empty{border:0;border-radius:0;background:#fff;padding:24px;font-size:10px}
+.schedule-record-empty>button{margin-left:8px}
+@media(max-width:1400px){.schedule-header-cron{display:none}}
+@media(max-width:1180px){.schedule-workspace{grid-template-columns:260px minmax(0,1fr)}.schedule-conversation-head h2{font-size:12px}.schedule-record .schedule-record-summary{grid-template-columns:6px minmax(70px,1fr) 54px 52px 70px;gap:8px}.schedule-record-summary .schedule-record-time{display:none}}
