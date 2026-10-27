@@ -3872,7 +3872,7 @@ test('temporary services stop through the scoped workspace API and refresh the c
 });
 
 
-test('workspace source summary shows one item and keeps all sources discoverable', async ({ page }) => {
+test('workspace source summary shows two items and keeps all sources discoverable', async ({ page }) => {
   await openWorkspace(page, [
     { id: 'source-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '查看 https://example.test/source', timestamp: now, attachments: [
       { filename: 'first.txt', mime_type: 'text/plain', byte_size: 8, path: '/runtime/workspace/project/uploads/first.txt' },
@@ -3882,9 +3882,14 @@ test('workspace source summary shows one item and keeps all sources discoverable
   ]);
   await page.getByRole('button', { name: '日报会话', exact: true }).click();
   const summary = page.locator('.agent-workspace-source-list');
-  await expect(summary.locator('button b')).toHaveText(['first.txt']);
-  await expect(page.getByRole('button', { name: /查看全部\s*3/ })).toBeVisible();
-  await page.getByRole('button', { name: /查看全部\s*3/ }).click();
+  await expect(summary.locator('button b')).toHaveText(['first.txt', 'second.txt']);
+  await expect(page.getByRole('button', { name: '查看全部', exact: true })).toBeVisible();
+  const viewAll = page.getByRole('button', { name: '查看全部', exact: true });
+  await expect(viewAll).toHaveCSS('border-top-width', '0px');
+  await expect(viewAll.locator('span')).toHaveCSS('font-weight', '400');
+  await page.getByLabel('搜索当前会话').focus();
+  await page.locator('.agent-workspace-summary').screenshot({ path: '../../.tmp/sources-refined.png' });
+  await viewAll.click();
   const sources = page.getByRole('region', { name: '全部会话来源' });
   await expect(sources).toContainText('first.txt');
   await expect(sources).toContainText('second.txt');
@@ -3901,6 +3906,10 @@ test('conversation search shares the floating card visibility width and separate
   const group = page.locator('.agent-workspace-summary');
   const search = group.getByRole('search');
   const input = search.getByLabel('搜索当前会话');
+  const unfocusedShadow = await search.evaluate(element => getComputedStyle(element).boxShadow);
+  await input.focus();
+  await expect(search).toHaveCSS('box-shadow', unfocusedShadow);
+  await expect(group).toHaveCSS('filter', 'none');
   const overview = group.locator('.agent-workspace-summary-card');
   const expectGeometry = async () => {
     await settleWorkspaceLayout(page);
@@ -3953,3 +3962,17 @@ test('conversation search shares the floating card visibility width and separate
   await expectGeometry();
   await group.screenshot({ path: '../../.tmp/search-card-corrected.png' });
 });
+
+
+for (const sourceCount of [0, 1, 2]) {
+  test(`workspace source summary keeps ${sourceCount} sources inline without view all`, async ({ page }) => {
+    await openWorkspace(page, [
+      { id: 'source-count-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '查看资料', timestamp: now, attachments: Array.from({ length: sourceCount }, (_, index) => ({ filename: `source-${index + 1}.txt`, mime_type: 'text/plain', byte_size: 8, path: `/runtime/workspace/project/uploads/source-${index + 1}.txt` })) } },
+      { id: 'source-count-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'source-count-user', content: '已读取资料。', final_reply: true, timestamp: now } },
+    ]);
+    await page.goto('/agent/conversations/scheduled-conversation');
+    await expect(page.locator('.agent-workspace-summary')).toBeVisible();
+    await expect(page.locator('.agent-workspace-source-list > button')).toHaveCount(sourceCount);
+    await expect(page.getByRole('button', { name: '查看全部', exact: true })).toHaveCount(0);
+  });
+}
