@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from urllib.parse import quote
 from uuid import uuid4
 
@@ -128,6 +128,22 @@ async def create_automatic_run_draft(
 async def nested_automatic_runs(parent_run_id: str, db: Db) -> list[dict[str, Any]]:
     return await run_sync(
         db, lambda session: service.list_nested_automatic_runs(session, parent_run_id)
+    )
+
+
+@router.get("/flow-runs/{parent_run_id}/records")
+async def record_directory(
+    parent_run_id: str,
+    db: Db,
+    kind: Literal["ALL", "MANUAL", "AUTOMATIC"] = "ALL",
+    cursor: str | None = Query(default=None, max_length=2048),
+    limit: int = Query(default=30, ge=1, le=100),
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: service.list_record_directory(
+            session, parent_run_id, kind=kind, cursor=cursor, limit=limit
+        ),
     )
 
 

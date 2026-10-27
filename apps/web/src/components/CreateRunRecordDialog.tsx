@@ -44,6 +44,7 @@ export function CreateRunRecordDialog({ runId, onClose }: { runId: string; onClo
   const created = (record: FlowRunAutomaticRecord | FlowRunStepwiseRecord, recordMode: RecordMode) => {
     const kind = recordMode === 'AUTOMATIC' ? 'automatic' : 'stepwise';
     qc.setQueryData([`flow-run-${kind}-record`, runId, record.id], record);
+    void qc.invalidateQueries({ queryKey: ['flow-run-record-directory', runId] });
     void qc.invalidateQueries({ queryKey: [`flow-run-${kind}-records`, runId] });
     onClose();
     if (recordMode === 'AUTOMATIC') useWorkbenchStore.getState().openAutomaticRecord(runId, record.id);
@@ -65,12 +66,14 @@ export function CreateRunRecordDialog({ runId, onClose }: { runId: string; onClo
       if (config.format !== 'flowweave.continuous-record-config') throw new Error('这不是连续运行配置文件。');
       const records = await api.importAutomaticRecordConfigs(runId, config);
       records.forEach(record => qc.setQueryData(['flow-run-automatic-record', runId, record.id], record));
+      void qc.invalidateQueries({ queryKey: ['flow-run-record-directory', runId] });
       void qc.invalidateQueries({ queryKey: ['flow-run-automatic-records', runId] });
       if (records[0]) created(records[0], mode);
     } else {
       if (config.format !== 'flowweave.stepwise-record-config') throw new Error('这不是逐步运行配置文件。');
       const records = await api.importStepwiseRecordConfigs(runId, config);
       records.forEach(record => qc.setQueryData(['flow-run-stepwise-record', runId, record.id], record));
+      void qc.invalidateQueries({ queryKey: ['flow-run-record-directory', runId] });
       void qc.invalidateQueries({ queryKey: ['flow-run-stepwise-records', runId] });
       if (records[0]) created(records[0], mode);
     }

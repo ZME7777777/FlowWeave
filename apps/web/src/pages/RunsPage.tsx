@@ -1,6 +1,6 @@
 import { Box, CheckSquare, ChevronDown, ChevronRight, CircleDot, Copy, Download, FolderClosed, Info, Pause, Play, Plus, Search, Square, Terminal, Trash2, Upload, X } from 'lucide-react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useMemo, useState } from 'react';
+import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api/client';
 import { CreateRunRecordDialog } from '../components/CreateRunRecordDialog';
 import { RecordConfigImportDialog } from './WorkbenchPage';
@@ -8,11 +8,11 @@ import { FlowRunTerminalDialog } from '../components/AgentRuntimeSidebar';
 import { useProductDialog } from '../components/ProductDialogContext';
 import { StartRunDialog } from '../components/StartRunDialog';
 import { useWorkbenchStore } from '../store/workbench';
-import type { AutomaticRecordConfigDocument, FlowDefinition, FlowRunAutomaticRecordSummary, FlowRunStepwiseRecord, RecordConfigDocument, FlowRunSummary, StepwiseRecordConfigDocument } from '../types';
+import type { AutomaticRecordConfigDocument, FlowDefinition, RecordConfigDocument, FlowRunSummary, StepwiseRecordConfigDocument } from '../types';
 
 const STATUS_LABELS: Record<string, string> = { ACTIVE: '运行中', WAITING_HUMAN: '等待人工', COMPLETED: '已完成', FAILED: '失败', CANCELLED: '已取消', DRAFT: '草稿' };
 type RecordKind = 'MANUAL' | 'AUTOMATIC';
-type DirectoryRecord = { kind: RecordKind; id: string; name: string; state: string; startedAt: string; detail: string; scheduleId?: string; scheduleName?: string; record: FlowRunStepwiseRecord | FlowRunAutomaticRecordSummary };
+type DirectoryRecord = { kind: RecordKind; id: string; name: string; state: string; startedAt: string; detail: string; scheduleId?: string; scheduleName?: string };
 
 const isStartableFlow = (flow: FlowDefinition) => {
   if (!flow.nodes.length) return false;
@@ -74,8 +74,50 @@ export function RunsPage() {
   };
   const selectedRun = runs.find(run => run.id === selectedRunId);
   const selectedFlow = flows.find(flow => flow.id === selectedFlowId);
-  const stepwise = useQuery({ queryKey: ['flow-run-stepwise-records', selectedRunId], queryFn: () => api.stepwiseRecords(selectedRunId!), enabled: Boolean(selectedRunId), refetchInterval: 5000 });
-  const automatic = useQuery({ queryKey: ['flow-run-automatic-records', selectedRunId], queryFn: () => api.automaticRecordSummaries(selectedRunId!), enabled: Boolean(selectedRunId), refetchInterval: 5000 });
+  const recordListRef = useRef<HTMLDivElement>(null);
+  const runInfoRef = useRef<HTMLDetailsElement>(null);
+  const recordPageSentinelRef = useRef<HTMLDivElement>(null);
+  const directoryQuery = useInfiniteQuery({
+    queryKey: ['flow-run-record-directory', selectedRunId, recordFilter],
+    queryFn: ({ pageParam, signal }) => api.recordDirectory(selectedRunId!, recordFilter, pageParam, signal),
+    initialPageParam: null as string | null,
+    getNextPageParam: page => page.next_cursor ?? undefined,
+    enabled: Boolean(selectedRunId),
+    staleTime: 10_000,
+    retry: false,
+  });
+  useEffect(() => {
+    if (recordListRef.current) recordListRef.current.scrollTop = 0;
+    if (runInfoRef.current) runInfoRef.current.open = false;
+  }, [selectedRunId, recordFilter]);
+  useEffect(() => {
+    const closeInfo = (event: PointerEvent) => {
+      const info = runInfoRef.current;
+      if (info?.open && event.target instanceof Node && !info.contains(event.target)) info.open = false;
+    };
+    const escapeInfo = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented || !runInfoRef.current?.open) return;
+      runInfoRef.current.open = false;
+      event.preventDefault();
+    };
+    document.addEventListener('pointerdown', closeInfo, true);
+    document.addEventListener('keydown', escapeInfo, true);
+    return () => {
+      document.removeEventListener('pointerdown', closeInfo, true);
+      document.removeEventListener('keydown', escapeInfo, true);
+    };
+  }, []);
+  const { fetchNextPage, hasNextPage, isFetching, isFetchNextPageError } = directoryQuery;
+  useEffect(() => {
+    const sentinel = recordPageSentinelRef.current;
+    const root = recordListRef.current;
+    if (!sentinel || !root || !hasNextPage || isFetching || isFetchNextPageError) return;
+    const observer = new IntersectionObserver(entries => {
+      if (entries.some(entry => entry.isIntersecting)) void fetchNextPage({ cancelRefetch: false });
+    }, { root, rootMargin: '160px 0px' });
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [fetchNextPage, hasNextPage, isFetching, isFetchNextPageError, selectedRunId, recordFilter]);
   const runDirectories = useMemo(() => {
     const term = search.trim().toLowerCase();
     const flowById = new Map(flows.map(flow => [flow.id, flow]));
@@ -128,11 +170,15 @@ export function RunsPage() {
       setLifecycleRunId(undefined);
     }
   };
-  const records = useMemo(() => {
-    const manual = (stepwise.data ?? []).map(record => ({ kind: 'MANUAL' as const, id: record.id, name: record.name, state: record.state, startedAt: record.started_at, detail: record.start_node_key ? '逐步配置与确认执行' : '等待配置起始节点', scheduleId: undefined, scheduleName: undefined, record }));
-    const continuous = (automatic.data ?? []).map(record => ({ kind: 'AUTOMATIC' as const, id: record.id, name: record.name, state: record.state, startedAt: record.started_at, detail: `${record.progress.accepted}/${record.plan.reachable_node_count} 节点完成`, scheduleId: record.schedule_id ?? undefined, scheduleName: record.schedule_name ?? undefined, record }));
-    return [...manual, ...continuous].filter(item => recordFilter === 'ALL' || item.kind === recordFilter).sort((left, right) => right.startedAt.localeCompare(left.startedAt));
-  }, [automatic.data, recordFilter, stepwise.data]);
+  const records = useMemo<DirectoryRecord[]>(() => {
+    const seen = new Set<string>();
+    return (directoryQuery.data?.pages.flatMap(page => page.items) ?? []).flatMap(item => {
+      const key = `${item.kind}:${item.id}`;
+      if (seen.has(key)) return [];
+      seen.add(key);
+      return [{ ...item, startedAt: item.started_at, scheduleId: item.schedule_id ?? undefined, scheduleName: item.schedule_name ?? undefined }];
+    });
+  }, [directoryQuery.data]);
   const scheduledContinuousGroups = useMemo(() => {
     if (recordFilter !== 'AUTOMATIC') return [];
     const grouped = new Map<string, typeof records>();
@@ -160,6 +206,7 @@ export function RunsPage() {
   const refreshRecords = async () => {
     await Promise.all([
       qc.invalidateQueries({ queryKey: ['flow-run-stepwise-records', selectedRunId] }),
+      qc.invalidateQueries({ queryKey: ['flow-run-record-directory', selectedRunId] }),
       qc.invalidateQueries({ queryKey: ['flow-run-automatic-records', selectedRunId] }),
     ]);
   };
@@ -242,7 +289,7 @@ export function RunsPage() {
           <span className="run-record-header-number">Run #{selectedRun.run_no}</span>
           <span className={`run-record-header-runtime${selectedRun.runtime_write_available ? ' available' : ''}`}>{runtimeLabel(selectedRun)}</span>
           <span className="run-record-header-environment" title={environmentLabel(selectedRun)}>{environmentLabel(selectedRun)}</span>
-          <details className="run-record-header-info">
+          <details className="run-record-header-info" ref={runInfoRef}>
             <summary aria-label="运行信息" title="查看运行信息"><Info size={14}/></summary>
             <dl>
               <div><dt>流程</dt><dd>{selectedRun.flow_name ?? selectedFlow?.name}</dd></div>
@@ -255,8 +302,8 @@ export function RunsPage() {
         </header>
         {lifecycleError && <p className="error run-directory-lifecycle-error" role="alert">{lifecycleError}</p>}
         <section className="flow-run-record-table" aria-label="运行记录表格">
-          <div className="run-record-management-toolbar"><nav className="run-record-filter" aria-label="运行记录类型"><button className={recordFilter === 'ALL' ? 'active' : ''} onClick={() => updateRunDirectory({ recordFilter: 'ALL' })}>全部</button><button className={recordFilter === 'MANUAL' ? 'active' : ''} onClick={() => updateRunDirectory({ recordFilter: 'MANUAL' })}>逐步</button><button className={recordFilter === 'AUTOMATIC' ? 'active' : ''} onClick={() => updateRunDirectory({ recordFilter: 'AUTOMATIC' })}>连续</button></nav><button type="button" className="secondary" aria-pressed={allSelected} disabled={!records.length || managingRecords} onClick={toggleAllRecords}>{allSelected ? <CheckSquare size={14}/> : <Square size={14}/>}{allSelected ? '取消全选' : '全选'}</button><span>已选择 {selectedRecords.length} 条</span><button type="button" className="secondary" disabled={selectedRecords.length !== 1 || managingRecords} onClick={() => setCopyRecord(selectedRecords[0])}><Copy size={14}/>拷贝</button><button type="button" className="secondary" disabled={!canExport || managingRecords} title={canExport ? undefined : '请只选择同一类型的记录后导出'} onClick={() => void exportSelectedRecords()}><Download size={14}/>导出</button><button type="button" className="secondary" disabled={managingRecords} onClick={() => setImportKind(recordFilter === 'AUTOMATIC' ? 'AUTOMATIC' : 'MANUAL')}><Upload size={14}/>导入</button><button type="button" className="danger" disabled={!selectedRecords.length || managingRecords} onClick={() => void deleteSelectedRecords()}><Trash2 size={14}/>删除</button><button type="button" className="primary" disabled={managingRecords} onClick={() => setCreatingRecordRunId(selectedRun.id)}><Plus size={14}/>新增</button></div>
-          <div className="flow-run-record-directory-list">{standaloneRecords.map(recordItem)}{scheduledContinuousGroups.map(group => { const open = !collapsedScheduleIds.has(group.id); return <section className="flow-run-schedule-directory" key={group.id}><button type="button" className="flow-run-schedule-directory-toggle" aria-expanded={open} onClick={() => { const next = new Set(collapsedScheduleIds); if (next.has(group.id)) next.delete(group.id); else next.add(group.id); updateRunDirectory({ collapsedScheduleIds: [...next] }); }}>{open ? <ChevronDown size={14}/> : <ChevronRight size={14}/>}<FolderClosed size={14}/><span><b>{group.name}</b><small>{group.records.length} 条定时连续运行记录</small></span></button>{open && <div className="flow-run-schedule-directory-records">{group.records.map(recordItem)}</div>}</section>; })}{!records.length && <div className="run-directory-record-empty"><CircleDot size={20}/><span>该 FlowRun 尚未创建{recordFilter === 'AUTOMATIC' ? '连续' : recordFilter === 'MANUAL' ? '逐步' : ''}运行记录。</span><button className="secondary" onClick={() => setCreatingRecordRunId(selectedRun.id)}>新增运行记录</button></div>}</div></section></section> : selectedFlow ? <div className="run-directory-empty"><FolderClosed size={30}/><b>{selectedFlow.name}</b><span>选择左侧的 FlowRun，查看运行记录或新增记录。</span></div> : <div className="run-directory-empty"><Box size={30}/><b>选择一个流程编排</b><span>点击流程目录后，选择其下的 FlowRun。</span></div>}</main>
+          <div className="run-record-management-toolbar"><nav className="run-record-filter" aria-label="运行记录类型"><button className={recordFilter === 'ALL' ? 'active' : ''} onClick={() => updateRunDirectory({ recordFilter: 'ALL' })}>全部</button><button className={recordFilter === 'MANUAL' ? 'active' : ''} onClick={() => updateRunDirectory({ recordFilter: 'MANUAL' })}>逐步</button><button className={recordFilter === 'AUTOMATIC' ? 'active' : ''} onClick={() => updateRunDirectory({ recordFilter: 'AUTOMATIC' })}>连续</button></nav><button type="button" className="secondary" aria-pressed={allSelected} disabled={!records.length || managingRecords} title="选择当前已加载的记录" onClick={toggleAllRecords}>{allSelected ? <CheckSquare size={14}/> : <Square size={14}/>}{allSelected ? '取消全选' : '全选'}</button><span>已选择 {selectedRecords.length} 条</span><button type="button" className="secondary" disabled={selectedRecords.length !== 1 || managingRecords} onClick={() => setCopyRecord(selectedRecords[0])}><Copy size={14}/>拷贝</button><button type="button" className="secondary" disabled={!canExport || managingRecords} title={canExport ? undefined : '请只选择同一类型的记录后导出'} onClick={() => void exportSelectedRecords()}><Download size={14}/>导出</button><button type="button" className="secondary" disabled={managingRecords} onClick={() => setImportKind(recordFilter === 'AUTOMATIC' ? 'AUTOMATIC' : 'MANUAL')}><Upload size={14}/>导入</button><button type="button" className="danger" disabled={!selectedRecords.length || managingRecords} onClick={() => void deleteSelectedRecords()}><Trash2 size={14}/>删除</button><button type="button" className="primary" disabled={managingRecords} onClick={() => setCreatingRecordRunId(selectedRun.id)}><Plus size={14}/>新增</button></div>
+          <div className="flow-run-record-directory-list" ref={recordListRef} aria-busy={directoryQuery.isFetching}>{standaloneRecords.map(recordItem)}{scheduledContinuousGroups.map(group => { const open = !collapsedScheduleIds.has(group.id); return <section className="flow-run-schedule-directory" key={group.id}><button type="button" className="flow-run-schedule-directory-toggle" aria-expanded={open} onClick={() => { const next = new Set(collapsedScheduleIds); if (next.has(group.id)) next.delete(group.id); else next.add(group.id); updateRunDirectory({ collapsedScheduleIds: [...next] }); }}>{open ? <ChevronDown size={14}/> : <ChevronRight size={14}/>}<FolderClosed size={14}/><span><b>{group.name}</b><small>{group.records.length} 条定时连续运行记录</small></span></button>{open && <div className="flow-run-schedule-directory-records">{group.records.map(recordItem)}</div>}</section>; })}{directoryQuery.hasNextPage && <div ref={recordPageSentinelRef} className="run-record-page-sentinel" aria-hidden="true"/>}{directoryQuery.isPending && <div className="run-directory-record-empty" role="status">正在加载运行记录…</div>}{directoryQuery.isError && !directoryQuery.data && <div className="run-directory-record-empty" role="alert">读取运行记录失败<button type="button" className="secondary" onClick={() => void directoryQuery.refetch()}>重试</button></div>}{directoryQuery.isFetchingNextPage && <div className="run-record-page-status" role="status">正在加载更多…</div>}{directoryQuery.isFetchNextPageError && <div className="run-record-page-status" role="alert">加载更多失败<button type="button" onClick={() => void directoryQuery.fetchNextPage({ cancelRefetch: false })}>重试</button></div>}{!directoryQuery.isPending && !directoryQuery.isError && !records.length && <div className="run-directory-record-empty"><CircleDot size={20}/><span>该 FlowRun 尚未创建{recordFilter === 'AUTOMATIC' ? '连续' : recordFilter === 'MANUAL' ? '逐步' : ''}运行记录。</span><button className="secondary" onClick={() => setCreatingRecordRunId(selectedRun.id)}>新增运行记录</button></div>}</div></section></section> : selectedFlow ? <div className="run-directory-empty"><FolderClosed size={30}/><b>{selectedFlow.name}</b><span>选择左侧的 FlowRun，查看运行记录或新增记录。</span></div> : <div className="run-directory-empty"><Box size={30}/><b>选择一个流程编排</b><span>点击流程目录后，选择其下的 FlowRun。</span></div>}</main>
     </div>
     {creatingRecordRunId && <CreateRunRecordDialog runId={creatingRecordRunId} onClose={() => setCreatingRecordRunId(undefined)}/>}
     {copyRecord && <CopyDirectoryRecordDialog record={copyRecord} onClose={() => setCopyRecord(undefined)} onCopy={copySelectedRecord}/>}

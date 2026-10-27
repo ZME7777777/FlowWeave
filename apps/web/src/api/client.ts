@@ -748,6 +748,11 @@ export const api = {
   triggerFlowRunSchedule: (id: string) => request<FlowRunSchedule>(`/flow-run-schedules/${encodeURIComponent(id)}/trigger`, json('POST')),
   deleteFlowRunSchedule: (id: string) => request<void>(`/flow-run-schedules/${encodeURIComponent(id)}`, json('DELETE')),
   flowRun: (id: string) => request<FlowRun>(`/flow-runs/${id}`),
+  recordDirectory: (runId: string, kind: 'ALL' | 'MANUAL' | 'AUTOMATIC', cursor: string | null, signal?: AbortSignal) => {
+    const query = new URLSearchParams({ kind, limit: '30' });
+    if (cursor) query.set('cursor', cursor);
+    return request<import('../types').FlowRunDirectoryPage>(`/flow-runs/${encodeURIComponent(runId)}/records?${query}`, { signal });
+  },
   stepwiseRecords: (runId: string) => request<FlowRunStepwiseRecord[]>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-runs`),
   stepwiseRecord: (runId: string, recordId: string) => request<FlowRunStepwiseRecord>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-runs/${encodeURIComponent(recordId)}`),
   stepwiseTemplateReadiness: (runId: string) => request<import('../types').StepwiseTemplateReadiness>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-template-readiness`),

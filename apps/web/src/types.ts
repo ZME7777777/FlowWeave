@@ -1179,3 +1179,9 @@ export interface PlatformUser {
   enabled: boolean;
   agent_session_access: boolean;
 }
+
+export interface FlowRunDirectoryRecord {
+  id: string; name: string; kind: 'MANUAL' | 'AUTOMATIC'; state: FlowRun['state'];
+  started_at: string; detail: string; schedule_id?: string | null; schedule_name?: string | null;
+}
+export interface FlowRunDirectoryPage { items: FlowRunDirectoryRecord[]; next_cursor: string | null }

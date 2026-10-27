@@ -68,6 +68,19 @@ const automaticBase = {
 };
 
 
+type DirectoryFixture = { id: string; name: string; state: string; started_at: string; start_node_key?: string; schedule_id?: string; schedule_name?: string; progress?: { accepted: number }; plan?: { reachable_node_count: number }; automation_plan?: { reachable_node_keys: string[] } };
+function directoryFixture(manual: DirectoryFixture[], automatic: DirectoryFixture[], url: string) {
+  const query = new URL(url).searchParams;
+  const kind = query.get('kind') ?? 'ALL';
+  const offset = Number(query.get('cursor') ?? 0);
+  const limit = Number(query.get('limit') ?? 30);
+  const items = [
+    ...manual.map(item => ({ ...item, kind: 'MANUAL', detail: item.start_node_key ? '逐步配置与确认执行' : '等待配置起始节点' })),
+    ...automatic.map(item => ({ ...item, kind: 'AUTOMATIC', detail: `${item.progress?.accepted ?? 0}/${item.plan?.reachable_node_count ?? item.automation_plan?.reachable_node_keys.length ?? 0} 节点完成` })),
+  ].filter(item => kind === 'ALL' || item.kind === kind).sort((a, b) => b.started_at.localeCompare(a.started_at) || b.id.localeCompare(a.id));
+  return { items: items.slice(offset, offset + limit), next_cursor: offset + limit < items.length ? String(offset + limit) : null };
+}
+
 test('record directory groups scheduled runs and opens a full canvas workspace', async ({ page }) => {
   const manual = { ...run, id: 'manual-record', name: '逐步验收记录', parent_flow_run_id: run.id, start_node_key: 'first' };
   await page.route('**/api/v1/**', async route => {
@@ -80,6 +93,7 @@ test('record directory groups scheduled runs and opens a full canvas workspace',
     if (path === `/api/v1/flow-runs/${run.id}`) return respond(run);
     if (path === `/api/v1/flow-runs/${manual.id}`) return respond(manual);
     if (path.endsWith('/stepwise-runs/manual-record')) return respond(manual);
+    if (path.endsWith('/records')) return respond(directoryFixture([manual], [{ ...automaticBase, plan: { reachable_node_count: 2 } }, { ...automaticBase, id: 'scheduled-1', name: '定时记录 1', schedule_id: 'schedule-1', schedule_name: '每日验收', plan: { reachable_node_count: 2 } }], route.request().url()));
     if (path.endsWith('/stepwise-runs')) return respond([manual]);
     if (path.endsWith('/automatic-runs/summaries')) return respond([
       { ...automaticBase, plan: { ...automaticBase.automation_plan, reachable_node_count: 2 } },
@@ -203,6 +217,7 @@ test('run directory pauses and restores the selected container', async ({ page }
       sessionRowVersion += 1;
       return respond({ active_generation: 1, session_row_version: sessionRowVersion, status: runtimeStatus, write_available: true }, 202);
     }
+    if (path.endsWith('/records')) return respond({ items: [], next_cursor: null });
     if (path.endsWith('/stepwise-runs') || path.endsWith('/automatic-runs/summaries')) return respond([]);
     if (path.endsWith('/terminal-environments')) return respond([]);
     return respond([]);
@@ -359,6 +374,7 @@ for (const kind of ['MANUAL', 'AUTOMATIC'] as const) {
       if (path === '/api/v1/flows') return respond([definition]);
       if (path === `/api/v1/flows/${definition.id}`) return respond(definition);
       if (path === `/api/v1/flow-runs/${run.id}`) return respond(run);
+      if (path.endsWith('/records')) return respond(directoryFixture(submitted && kind === 'MANUAL' ? [manual] : [], [], request.url()));
       if (path.endsWith('/stepwise-runs') && request.method() === 'POST') { submitted = request.postDataJSON(); return respond(manual); }
       if (path.endsWith('/automatic-runs') && request.method() === 'POST') { submitted = request.postDataJSON(); return respond(automatic); }
       if (path.endsWith('/stepwise-runs')) return respond(submitted && kind === 'MANUAL' ? [manual] : []);
@@ -443,7 +459,8 @@ for (const kind of ['MANUAL', 'AUTOMATIC'] as const) {
       if (path === '/api/v1/flows') return respond([definition]);
       if (path === `/api/v1/flows/${definition.id}`) return respond(definition);
       if (path === `/api/v1/flow-runs/${run.id}`) return respond(run);
-      if (path.endsWith('/stepwise-runs')) return respond([manual]);
+      if (path.endsWith('/records')) return respond(directoryFixture([manual], [automatic], route.request().url()));
+    if (path.endsWith('/stepwise-runs')) return respond([manual]);
       if (path.endsWith('/stepwise-runs/manual-ready')) return respond(manual);
       if (path.endsWith('/automatic-runs/summaries')) return respond([{ ...automatic, plan: { ...automatic.automation_plan, reachable_node_count: 2 } }]);
       if (path.endsWith('/automatic-runs/automatic-1')) return respond(automatic);
@@ -489,6 +506,7 @@ for (const kind of ['MANUAL', 'AUTOMATIC'] as const) {
       if (path === '/api/v1/flows') return respond([definition]);
       if (path === `/api/v1/flows/${definition.id}`) return respond(definition);
       if (path === `/api/v1/flow-runs/${run.id}`) return respond(run);
+      if (path.endsWith('/records')) return respond(directoryFixture([], [], route.request().url()));
       if (path.endsWith('/config-imports')) { submitted = route.request().postDataJSON(); return respond([imported]); }
       if (path.endsWith('/stepwise-runs')) return respond(kind === 'MANUAL' && submitted ? [imported] : []);
       if (path.endsWith('/stepwise-runs/imported-manual') || path.endsWith('/automatic-runs/automatic-1')) return respond(imported);
@@ -528,6 +546,7 @@ test('record header stays on one line and filters stay fixed while only record r
     if (path.endsWith('/auth/me')) return respond(authenticatedUser);
     if (path === '/api/v1/flow-runs') return respond([currentRun]);
     if (path === '/api/v1/flows') return respond([definition]);
+    if (path.endsWith('/records')) return respond(directoryFixture(records, [], route.request().url()));
     if (path.endsWith('/stepwise-runs')) return respond(records);
     if (path.endsWith('/automatic-runs/summaries')) return respond([]);
     return respond([]);
@@ -541,11 +560,17 @@ test('record header stays on one line and filters stay fixed while only record r
   const table = directory.getByRole('region', { name: '运行记录表格' });
   const toolbar = table.locator('.run-record-management-toolbar');
   const rows = table.locator('.flow-run-record-directory-list');
-  await expect(rows.locator('.flow-run-record-row')).toHaveCount(40);
+  await expect(rows.locator('.flow-run-record-row')).toHaveCount(30);
   await expect(toolbar.getByRole('navigation', { name: '运行记录类型' })).toBeVisible();
   await directory.getByLabel('运行信息', { exact: true }).click();
   await expect(directory.locator('.run-record-header-info dl')).toContainText('创建时间');
+  await directory.locator('.run-record-header-info dl').click();
+  await expect(directory.locator('.run-record-header-info dl')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(directory.locator('.run-record-header-info dl')).toBeHidden();
   await directory.getByLabel('运行信息', { exact: true }).click();
+  await header.locator('h3').click();
+  await expect(directory.locator('.run-record-header-info dl')).toBeHidden();
   for (const width of [1920, 1440, 1024]) {
     await page.setViewportSize({ width, height: 800 });
     await rows.evaluate(element => { element.scrollTop = 0; });
@@ -556,18 +581,111 @@ test('record header stays on one line and filters stay fixed while only record r
     expect(await page.evaluate(() => document.scrollingElement!.scrollHeight - document.scrollingElement!.clientHeight)).toBeLessThanOrEqual(1);
     expect(await rows.evaluate(element => element.scrollHeight - element.clientHeight)).toBeGreaterThan(100);
     await rows.hover();
-    await page.mouse.wheel(0, 600);
+    await page.mouse.wheel(0, 2400);
     await expect.poll(() => rows.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+    await expect(rows.locator('.flow-run-record-row')).toHaveCount(40);
     expect((await header.boundingBox())!.y).toBe(beforeHeader.y);
     expect((await toolbar.boundingBox())!.y).toBe(beforeToolbar.y);
     expect(await page.locator('.flow-run-directory-detail').evaluate(element => element.scrollTop)).toBe(0);
     await toolbar.getByRole('button', { name: '连续', exact: true }).click();
     await expect(table.getByText('该 FlowRun 尚未创建连续运行记录。')).toBeVisible();
     await toolbar.getByRole('button', { name: '逐步', exact: true }).click();
-    await expect(rows.locator('.flow-run-record-row')).toHaveCount(40);
+    await expect(rows.locator('.flow-run-record-row')).toHaveCount(30);
     await toolbar.getByRole('button', { name: '全部', exact: true }).click();
   }
   await page.setViewportSize({ width: 1440, height: 800 });
   await rows.evaluate(element => { element.scrollTop = 0; });
-  await directory.screenshot({ path: '../../.tmp/ops21/record-table.png' });
+  await directory.screenshot({ path: '../../.tmp/ops22/record-table.png' });
+});
+
+test('mixed record pages load atomically and scrolling retries without losing selection or leaking old filters', async ({ page }) => {
+  const manual = Array.from({ length: 35 }, (_, i) => ({ ...run, id: `manual-page-${i}`, name: `分页逐步 ${i}`, start_node_key: 'first', started_at: new Date(Date.parse(now) - i * 2000).toISOString() }));
+  const automatic = Array.from({ length: 35 }, (_, i) => ({ ...automaticBase, id: `auto-page-${i}`, name: `分页连续 ${i}`, started_at: new Date(Date.parse(now) - i * 2000 - 1000).toISOString() }));
+  let releaseFirst: () => void = () => undefined;
+  const firstGate = new Promise<void>(resolve => { releaseFirst = resolve; });
+  let releaseNext: () => void = () => undefined;
+  const nextGate = new Promise<void>(resolve => { releaseNext = resolve; });
+  let initial = true;
+  let failNext = true;
+  let holdAutomatic = false;
+  let lateAutomaticReturned = false;
+  let releaseAutomatic: () => void = () => undefined;
+  const automaticGate = new Promise<void>(resolve => { releaseAutomatic = resolve; });
+  let oldListRequests = 0;
+  const requests: string[] = [];
+  await page.route('**/api/v1/**', async route => {
+    const url = new URL(route.request().url());
+    const path = url.pathname.replace(/^\/flowweave/, '');
+    const respond = (body: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
+    if (path.endsWith('/auth/me')) return respond(authenticatedUser);
+    if (path === '/api/v1/flow-runs') return respond([run]);
+    if (path === '/api/v1/flows') return respond([definition]);
+    if (path.endsWith('/stepwise-runs') || path.endsWith('/automatic-runs/summaries')) { oldListRequests += 1; return respond([]); }
+    if (path.endsWith('/records')) {
+      requests.push(url.search);
+      if (holdAutomatic && url.searchParams.get('kind') === 'AUTOMATIC') {
+        await automaticGate;
+        await respond(directoryFixture(manual, automatic, route.request().url())).catch(() => undefined);
+        lateAutomaticReturned = true;
+        return;
+      }
+      if (initial) { initial = false; await firstGate; }
+      if (url.searchParams.has('cursor') && failNext) { await nextGate; return respond({ error: { code: 'UNAVAILABLE', message: '分页暂不可用' } }, 503); }
+      return respond(directoryFixture(manual, automatic, route.request().url()));
+    }
+    return respond([]);
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: '流程运行', exact: true }).click();
+  await page.locator('.flow-run-tree-select').click();
+  await page.locator('.flow-run-tree-run').click();
+  const table = page.getByRole('region', { name: '运行记录表格' });
+  const rows = table.locator('.flow-run-record-directory-list');
+  await expect(table.getByRole('status')).toHaveText('正在加载运行记录…');
+  await expect(rows.locator('.flow-run-record-row')).toHaveCount(0);
+  await expect(table.getByText('该 FlowRun 尚未创建运行记录。')).toHaveCount(0);
+  releaseFirst();
+  await expect(rows.locator('.flow-run-record-row')).toHaveCount(30);
+  await expect(rows.getByText('分页逐步 0', { exact: true })).toBeVisible();
+  await expect(rows.getByText('分页连续 0', { exact: true })).toBeVisible();
+  expect(oldListRequests).toBe(0);
+  const selection = table.getByRole('checkbox', { name: '选择运行记录 分页逐步 0', exact: true });
+  await selection.check();
+  const firstRequestCount = requests.length;
+  await rows.hover();
+  await page.mouse.wheel(0, 2400);
+  await expect.poll(() => requests.length).toBe(firstRequestCount + 1);
+  await page.mouse.wheel(0, 200);
+  await expect(table.getByRole('status')).toHaveText('正在加载更多…');
+  expect(requests.length).toBe(firstRequestCount + 1);
+  releaseNext();
+  await expect(table.getByRole('alert')).toContainText('加载更多失败');
+  await expect(rows.locator('.flow-run-record-row')).toHaveCount(30);
+  failNext = false;
+  await table.getByRole('alert').getByRole('button', { name: '重试', exact: true }).click();
+  await expect(rows.locator('.flow-run-record-row')).toHaveCount(60);
+  await expect(selection).toBeChecked();
+  await rows.hover();
+  await page.mouse.wheel(0, 2400);
+  await expect(rows.locator('.flow-run-record-row')).toHaveCount(70);
+  const labels = await rows.getByRole('checkbox').evaluateAll(elements => elements.map(element => element.getAttribute('aria-label')));
+  expect(new Set(labels).size).toBe(70);
+  const fetched = requests.length;
+  await page.mouse.wheel(0, 2400);
+  await expect(table.getByRole('status')).toHaveCount(0);
+  expect(requests.length).toBe(fetched);
+  await table.getByRole('button', { name: '逐步', exact: true }).click();
+  await expect(rows.locator('.flow-run-record-row')).toHaveCount(30);
+  await expect(rows.locator('.flow-run-record-kind').getByText('连续', { exact: true })).toHaveCount(0);
+  await expect(selection).toBeChecked();
+  holdAutomatic = true;
+  await table.getByRole('button', { name: '连续', exact: true }).click();
+  await expect(table.getByRole('status')).toHaveText('正在加载运行记录…');
+  await table.getByRole('button', { name: '全部', exact: true }).click();
+  await expect(rows.locator('.flow-run-record-row')).toHaveCount(70);
+  releaseAutomatic();
+  await expect.poll(() => lateAutomaticReturned).toBe(true);
+  await expect(rows.locator('.flow-run-record-row')).toHaveCount(70);
+  await expect(rows.getByText('分页逐步 0', { exact: true })).toBeVisible();
+
 });
