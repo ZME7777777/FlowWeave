@@ -123,7 +123,7 @@ test('record directory groups scheduled runs and opens a full canvas workspace',
     await expect(directory.getByRole('button', { name: `进入运行记录 ${manual.name}`, exact: true }).getByText('打开', { exact: true })).toBeVisible();
   }
   await page.setViewportSize({ width: 1440, height: 900 });
-  await directory.screenshot({ path: '../../.tmp/ops19/record-directory.png' });
+  await directory.screenshot({ path: '../../.tmp/ops20/record-directory.png' });
   await directory.getByRole('button', { name: '连续', exact: true }).click();
   await expect(directory.locator('.flow-run-record-directory-list>.flow-run-record-row')).toHaveCount(1);
   const group = directory.locator('.flow-run-schedule-directory');
@@ -137,7 +137,16 @@ test('record directory groups scheduled runs and opens a full canvas workspace',
   await expect(directory.locator('.flow-run-record-directory-list>.flow-run-record-row')).toHaveCount(1);
   await toggle.click();
   await expect(group.getByRole('button', { name: '进入运行记录 定时记录 1', exact: true })).toBeVisible();
-  await directory.getByRole('button', { name: `进入运行记录 ${automaticBase.name}`, exact: true }).getByText(automaticBase.name, { exact: true }).click();
+  const automaticContent = directory.getByRole('button', { name: `选择运行记录 ${automaticBase.name}`, exact: true });
+  await automaticContent.getByText(automaticBase.name, { exact: true }).click();
+  await expect(automaticContent).toHaveAttribute('aria-pressed', 'true');
+  await expect(directory).toBeVisible();
+  await expect(directory.getByRole('checkbox', { name: `选择运行记录 ${automaticBase.name}`, exact: true })).toBeChecked();
+  await expect(directory.getByText('已选择 1 条')).toBeVisible();
+  await automaticContent.press('Enter');
+  await expect(automaticContent).toHaveAttribute('aria-pressed', 'false');
+  await expect(directory).toBeVisible();
+  await directory.getByRole('button', { name: `进入运行记录 ${automaticBase.name}`, exact: true }).click();
   await expect(page.locator('.flow-run-workbench-header h1')).toHaveText(automaticBase.name);
   await expect(page.locator('.run-graph')).toBeVisible();
   await expect(page.locator('.run-record-detail-panel')).toBeVisible();
@@ -161,7 +170,9 @@ test('record directory groups scheduled runs and opens a full canvas workspace',
   await page.getByRole('button', { name: '返回运行记录', exact: true }).click();
   await expect(page.locator('.flow-run-tree-select').filter({ hasText: definition.name })).toHaveAttribute('aria-expanded', 'true');
   await expect(page.locator('.flow-run-tree-run').filter({ hasText: run.name })).toHaveClass(/active/);
+  await expect(directory.getByRole('checkbox', { name: `选择运行记录 ${automaticBase.name}`, exact: true })).not.toBeChecked();
   await directory.getByRole('button', { name: '逐步', exact: true }).click();
+  await expect(manualRecord).toBeChecked();
   await directory.getByRole('button', { name: `进入运行记录 ${manual.name}`, exact: true }).focus();
   await page.keyboard.press('Enter');
   await expect(page.locator('.flow-run-workbench-header h1')).toHaveText(manual.name);

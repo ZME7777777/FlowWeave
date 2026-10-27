@@ -1341,25 +1341,25 @@ body:has(.login-page){min-width:0}
 /* Record management belongs to the record list, not FlowRun lifecycle actions. */
 .run-record-management-toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:7px;margin:0 0 10px;padding:8px 10px;border:1px solid #dfe8e1;border-radius:8px;background:#f8fbf9}.run-record-management-toolbar>button{padding:6px 8px;font-size:10px}.run-record-management-toolbar>span{margin-right:auto;color:#748178;font-size:10px}.run-record-management-toolbar .danger:disabled,.run-record-management-toolbar .secondary:disabled{cursor:not-allowed;opacity:.48}
 .flow-run-record-directory-list{overflow:hidden}
-.flow-run-record-directory-list .flow-run-record-row{display:grid;width:100%;grid-template-columns:36px minmax(0,1fr);align-items:stretch;gap:0;border:0;border-top:1px solid #e7ede9;background:#fff;padding:0;color:var(--ink)}
+.flow-run-record-directory-list .flow-run-record-row{display:grid;width:100%;grid-template-columns:36px minmax(0,1fr) 66px;align-items:center;gap:0;border:0;border-top:1px solid #e7ede9;background:#fff;padding:0;color:var(--ink)}
 .flow-run-record-directory-list .flow-run-record-row:first-child{border-top:0}
 .flow-run-record-directory-list .flow-run-record-row:hover,.flow-run-record-directory-list .flow-run-record-row:focus-within{background:#f3f8f5}
 .flow-run-record-directory-list .flow-run-record-row.selected{background:#eef8f1;box-shadow:inset 3px 0 0 var(--green)}
-.flow-run-record-selection{display:flex;align-items:center;justify-content:center;margin:0;cursor:pointer}
+.flow-run-record-selection{display:flex;align-self:stretch;align-items:center;justify-content:center;margin:0;cursor:pointer}
 .flow-run-record-selection .flow-run-record-select{width:14px;height:14px;margin:0;padding:0;accent-color:var(--green);cursor:pointer}
-.flow-run-record-open{display:grid;width:100%;min-width:0;min-height:46px;grid-template-columns:minmax(100px,1fr) 36px 48px minmax(64px,110px) 126px 54px;align-items:center;gap:12px;border:0;background:transparent;padding:9px 12px 9px 0;color:var(--ink);text-align:left;cursor:pointer}
-.flow-run-record-open .flow-run-record-name{min-width:0;margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;font-weight:600}
+.flow-run-record-content{display:grid;width:100%;min-width:0;min-height:46px;grid-template-columns:minmax(100px,1fr) 36px 48px minmax(64px,110px) 126px;align-items:center;gap:12px;border:0;background:transparent;padding:9px 12px 9px 0;color:var(--ink);text-align:left;cursor:pointer}
+.flow-run-record-content .flow-run-record-name{min-width:0;margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;font-weight:600}
 .flow-run-record-kind{justify-self:start;border-radius:4px;background:#edf3ef;padding:2px 5px;color:#64806d;font-size:9px;white-space:nowrap}
 .flow-run-record-state{color:#78877e;font-size:10px;white-space:nowrap}
 .flow-run-record-state[data-state=ACTIVE],.flow-run-record-state[data-state=COMPLETED]{color:#2b7651}
 .flow-run-record-state[data-state=FAILED]{color:#ac5555}
 .flow-run-record-state[data-state=WAITING_HUMAN]{color:#9b762d}
-.flow-run-record-open .flow-run-record-progress{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#819087;font-size:10px}
-.flow-run-record-open time{overflow:hidden;color:#819087;font:9px 'DM Mono',ui-monospace,monospace;white-space:nowrap;text-align:right}
-.flow-run-record-enter{display:inline-flex;align-items:center;justify-content:center;gap:3px;border:1px solid #d5e4da;border-radius:5px;background:#f4f9f6;padding:4px 5px;color:#33694c;font-size:10px;line-height:16px;white-space:nowrap}
-.flow-run-record-open:hover .flow-run-record-name{color:#246540}
-.flow-run-record-open:hover .flow-run-record-enter,.flow-run-record-open:focus-visible .flow-run-record-enter{border-color:#a3c2ae;background:#e2f0e7;color:#205b39}
-.flow-run-record-open:focus-visible,.flow-run-record-select:focus-visible{outline:2px solid #72a587;outline-offset:-2px}
+.flow-run-record-content .flow-run-record-progress{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#819087;font-size:10px}
+.flow-run-record-content time{overflow:hidden;color:#819087;font:9px 'DM Mono',ui-monospace,monospace;white-space:nowrap;text-align:right}
+.flow-run-record-enter{display:inline-flex;justify-self:start;cursor:pointer;align-items:center;justify-content:center;gap:3px;border:1px solid #d5e4da;border-radius:5px;background:#f4f9f6;padding:4px 5px;color:#33694c;font-size:10px;line-height:16px;white-space:nowrap}
+.flow-run-record-content:hover .flow-run-record-name{color:#246540}
+.flow-run-record-enter:hover,.flow-run-record-enter:focus-visible{border-color:#a3c2ae;background:#e2f0e7;color:#205b39}
+.flow-run-record-content:focus-visible,.flow-run-record-enter:focus-visible,.flow-run-record-select:focus-visible{outline:2px solid #72a587;outline-offset:-2px}
 .flow-run-schedule-directory-records .flow-run-record-row{border:1px solid #e3ebe5;border-radius:7px;overflow:hidden}
 .flow-run-schedule-directory-records .flow-run-record-row+.flow-run-record-row{margin-top:5px}
-@media(max-width:1180px){.run-record-management-toolbar>span{order:2;flex-basis:100%;margin-right:0}.flow-run-record-open{grid-template-columns:minmax(80px,1fr) 36px 48px 54px;gap:8px}.flow-run-record-open .flow-run-record-progress,.flow-run-record-open time{display:none}}
+@media(max-width:1180px){.run-record-management-toolbar>span{order:2;flex-basis:100%;margin-right:0}.flow-run-record-content{grid-template-columns:minmax(80px,1fr) 36px 48px;gap:8px}.flow-run-record-content .flow-run-record-progress,.flow-run-record-content time{display:none}}
