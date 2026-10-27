@@ -3890,3 +3890,66 @@ test('workspace source summary shows one item and keeps all sources discoverable
   await expect(sources).toContainText('second.txt');
   await expect(sources).toContainText('example.test/source');
 });
+
+
+test('conversation search shares the floating card visibility width and separate surface', async ({ page }) => {
+  await openWorkspace(page, [
+    { id: 'floating-search-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '搜索布局检查', timestamp: now } },
+    { id: 'floating-search-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'floating-search-user', content: '搜索布局已检查', final_reply: true, timestamp: now } },
+  ]);
+  await page.goto('/agent/conversations/scheduled-conversation');
+  const group = page.locator('.agent-workspace-summary');
+  const search = group.getByRole('search');
+  const input = search.getByLabel('搜索当前会话');
+  const overview = group.locator('.agent-workspace-summary-card');
+  const expectGeometry = async () => {
+    await settleWorkspaceLayout(page);
+    await expect(search).toBeVisible();
+    await expect(overview).toBeVisible();
+    const a = (await search.boundingBox())!;
+    const b = (await overview.boundingBox())!;
+    expect(Math.abs(a.x - b.x)).toBeLessThanOrEqual(1);
+    expect(Math.abs(a.width - b.width)).toBeLessThanOrEqual(1);
+    expect(b.y - (a.y + a.height)).toBeGreaterThanOrEqual(8);
+    expect(b.y - (a.y + a.height)).toBeLessThanOrEqual(12);
+    expect(await search.evaluate(element => element.scrollWidth - element.clientWidth)).toBeLessThanOrEqual(1);
+    await expect(page.locator('.agent-composer-dock').getByRole('search')).toHaveCount(0);
+  };
+  for (const width of [1920, 1440, 1024, 390]) {
+    await page.setViewportSize({ width, height: 1000 });
+    await expectGeometry();
+    await input.fill('搜索');
+    await input.press('Enter');
+    await expect(search.getByText('1 个结果，共 2 个结果')).toBeVisible();
+    await expectGeometry();
+    await search.getByRole('button', { name: '下一个搜索结果' }).click();
+    await expect(search.getByText('2 个结果，共 2 个结果')).toBeVisible();
+    await page.getByRole('button', { name: '隐藏悬浮信息卡', exact: true }).first().click();
+    await expect(search).toBeHidden();
+    await expect(overview).toBeHidden();
+    await page.getByRole('button', { name: '显示悬浮信息卡', exact: true }).first().click();
+    await expectGeometry();
+    await search.getByRole('button', { name: '清除搜索' }).click();
+  }
+  await page.setViewportSize({ width: 1920, height: 1000 });
+  await page.getByRole('button', { name: '新建工作区页签', exact: true }).first().click();
+  await expect(search).toBeHidden();
+  await page.getByRole('button', { name: '显示悬浮信息卡', exact: true }).first().click();
+  await expectGeometry();
+  const resizer = page.getByRole('separator', { name: '调整工作区工具宽度' });
+  const edge = (await resizer.boundingBox())!;
+  await page.mouse.move(edge.x + edge.width / 2, edge.y + edge.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(edge.x - 200, edge.y + edge.height / 2, { steps: 10 });
+  await page.mouse.up();
+  await expectGeometry();
+  await page.getByRole('button', { name: '全屏查看工作区工具', exact: true }).click();
+  await expect(search).toBeHidden();
+  await page.getByRole('button', { name: '日报会话', exact: true }).last().click();
+  await expectGeometry();
+  await page.getByRole('button', { name: '退出全屏', exact: true }).first().click();
+  await page.getByRole('button', { name: '关闭工作区工具', exact: true }).click();
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await expectGeometry();
+  await group.screenshot({ path: '../../.tmp/search-card-corrected.png' });
+});
