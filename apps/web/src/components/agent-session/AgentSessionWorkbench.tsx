@@ -9,6 +9,7 @@ import { createPortal, flushSync } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
 import { ComposerModelMenu } from './ComposerModelMenu';
 import { ConversationErrorNotice } from './ConversationErrorNotice';
+import { InConversationSearch } from './InConversationSearch';
 import { AgentComposerInput, type ComposerSuggestion } from './AgentComposerInput';
 import { AgentWorkspaceSettings } from './AgentWorkspaceSettings';
 import { RuntimeBrowserFrame } from './RuntimeBrowserFrame';
@@ -7270,6 +7271,19 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     ));
   }, [eventsQuery.data?.history_cursor, historyCacheRevision, selected]);
   const cachedHistoryMarkerCount = cachedHistoryUserEvents.length;
+  const inConversationSearchEvents = useMemo(() => {
+    void historyCacheRevision;
+    const events = new Map(displayedEvents.map(event => [event.id, event]));
+    if (selected && eventsQuery.data?.history_cursor) {
+      const cache = historyCacheByScope.current.get(selected.id);
+      if (cache?.rootCursor === eventsQuery.data.history_cursor && (cache.complete || cache.expiresAt > Date.now())) {
+        for (const page of cache.pages) {
+          for (const event of page.events) events.set(event.id, event);
+        }
+      }
+    }
+    return orderOpenHandsConversationEvents([...events.values()]);
+  }, [displayedEvents, eventsQuery.data?.history_cursor, historyCacheRevision, selected]);
   const hasCachedOlderHistory = useMemo(() => {
     void historyCacheRevision;
     if (!selected || !eventsQuery.data?.history_cursor) return false;
@@ -7498,14 +7512,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     );
     const surface = target?.closest<HTMLElement>('.conversation-surface');
     if (!target || !surface) {
-      void revealHistoryThrough(targetEventId).then(revealed => {
-        if (!revealed) {
-          setConversationSearchTargetEventId(current => current === targetEventId ? undefined : current);
-          return;
-        }
-        setConversationSearchTargetEventId(undefined);
-        window.setTimeout(() => setConversationSearchTargetEventId(targetEventId), 0);
-      });
+      void revealHistoryThrough(targetEventId);
       return;
     }
     const top = target.getBoundingClientRect().top - surface.getBoundingClientRect().top + surface.scrollTop - 28;
@@ -10415,6 +10422,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
             <Folder size={16}/><span>{currentWorkspaceName}</span>{workspacePathCopied && <small aria-live="polite">已复制</small>}
           </button>
           <ConversationTaskPlan events={displayedEvents} isGenerating={taskPlanLayoutActive} conversationScope={selected?.id ?? conversationDraft?.id}/>
+          <InConversationSearch events={inConversationSearchEvents} onLocate={setConversationSearchTargetEventId}/>
         </div>
       </div>}
       {conversationDropActive && <div className="agent-workbench-drop-overlay" role="status" aria-live="polite"><div><Plus size={22}/><b>松开以添加到当前会话</b><span>支持附件、工作区文件和会话引用</span></div></div>}

@@ -2433,6 +2433,64 @@ test('Empty Agent workspace creates a recoverable draft while editing a new sess
   await expect(composer).toHaveValue('空工作区中的未发送草稿');
 });
 
+
+test('Agent session searches rendered and memory-cached history with result navigation', async ({ page }) => {
+  let authenticated = false;
+  const workspace = { id: 'in-conversation-search-workspace', display_name: '会话搜索工作区', desired_state: 'RUNNING', updated_at: now };
+  const conversation = {
+    id: 'in-conversation-search-conversation', display_title: '会话内搜索', title_state: 'MANUAL', lifecycle: 'ACTIVE',
+    streaming_callback_ready: true, write_available: true, execution_status: 'idle', created_at: now, updated_at: now,
+  };
+  const latestEvents = {
+    events: [
+      { id: 'search-current-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '当前消息也提到定位关键词。', timestamp: now } },
+      { id: 'search-current-agent', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'search-current-user', content: '当前回复确认定位关键词。', final_reply: true, timestamp: now } },
+    ],
+    next_cursor: 'search-current-agent', history_cursor: 'search-history', result: { status: 'COMPLETED' },
+  };
+
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const path = url.pathname;
+    if (path.endsWith('/auth/me')) return authenticated ? json(route, user) : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [conversation], next_cursor: null });
+    if (path.endsWith('/hydration')) return json(route, { events: latestEvents, context: { model_name: 'search-model', window_tokens: 128_000, used_tokens: 2_048, usage_current: true }, readiness: { ready: true, execution_status: 'idle' } });
+    if (path.endsWith('/events')) return url.searchParams.get('history_cursor') === 'search-history'
+      ? json(route, { events: [{ id: 'search-history-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '尚未渲染的历史也有定位关键词。', timestamp: now } }], next_cursor: 'search-current-agent', history_cursor: null })
+      : json(route, latestEvents);
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
+    if (path.endsWith('/workspace')) return json(route, { root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [], runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } } });
+    if (path.endsWith('/model-providers') || path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, conversation);
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+
+  await page.goto('/');
+  await login(page);
+  await page.goto(`/agent/conversations/${conversation.id}`);
+  const search = page.getByRole('search');
+  await expect(search.getByLabel('搜索当前会话')).toBeVisible();
+  await expect(search).toHaveCSS('box-shadow', /rgba?\(/);
+  expect(await page.getByText('尚未渲染的历史也有定位关键词。').count()).toBe(0);
+  await page.waitForTimeout(1_800);
+  await search.getByLabel('搜索当前会话').fill('定位关键词');
+  await search.getByLabel('搜索当前会话').press('Enter');
+  await expect(search.getByText('1 个结果，共 3 个结果')).toBeVisible();
+  await search.getByRole('button', { name: '上一个搜索结果' }).click();
+  await expect(search.getByText('3 个结果，共 3 个结果')).toBeVisible();
+  const historyHit = page.locator('[data-conversation-event-id="search-history-user"]');
+  await expect(historyHit).toBeVisible();
+  await expect(historyHit).toContainText('尚未渲染的历史也有定位关键词。');
+  await expect(search.getByText('3 个结果，共 3 个结果')).toBeVisible();
+});
+
+
 test('New conversation draft remains isolated and can be resumed after switching', async ({ page }) => {
   let authenticated = false;
   let uploadedDraftId: string | null = null;
