@@ -107,6 +107,18 @@ export type RuntimeDetail = {
     created_at: string;
   }>;
   container_observability_available: boolean;
+  temporary_services_available: boolean;
+  temporary_services: RuntimeTemporaryService[];
+};
+
+export type RuntimeTemporaryService = {
+  pid: number;
+  started_ticks: string;
+  age_seconds: number;
+  process_group_id: number | null;
+  command: string;
+  working_directory: string | null;
+  ports: number[];
 };
 
 export type Conversation = {
@@ -322,6 +334,15 @@ export const adminApi = {
     expected_generation: number;
     expected_session_row_version: number;
   }) => request<RuntimeDiagnostic>('/v1/admin/runtime-diagnostics', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) }),
+  stopRuntimeTemporaryService: (runtimeSessionId: string, input: {
+    pid: number;
+    started_ticks: string;
+    process_group_id: number | null;
+  }) => request<{ stopped: boolean }>(`/v1/admin/runtimes/${encodeURIComponent(runtimeSessionId)}/temporary-services/stop`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  }),
   controlRuntime: (input: {
     action: 'REPLACE_RUNTIME' | 'ISOLATE_RUNTIME' | 'RESUME_RUNTIME';
     runtime_kind: 'FLOW_RUN' | 'AGENT_WORKSPACE';

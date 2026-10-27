@@ -1845,6 +1845,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "/v1/runtime-networks/delete": frozenset({"api", "worker"}),
                 "/v1/sandboxes/list": frozenset({"worker"}),
                 "/v1/admin/observability": frozenset({"admin_observer"}),
+                "/v1/runtimes/services/list": frozenset({"admin_observer", "admin_controller"}),
+                "/v1/runtimes/services/stop": frozenset({"admin_controller"}),
                 "/v1/environments/remove-image": frozenset({"worker"}),
                 # Worker resolves the platform-owned Agent Workspace image at
                 # bootstrap; both roles still receive only digest provenance.

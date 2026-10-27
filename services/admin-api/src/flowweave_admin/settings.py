@@ -13,7 +13,9 @@ class Settings(BaseSettings):
     platform_api_url: str = "http://api:8080"
     platform_stream_api_url: str = "http://stream-api:8080"
     runtime_provider_url: str = "http://runtime-provider:8090"
+    sandbox_manager_scope: str = "flowweave-local"
     admin_runtime_observer_key: str = ""
+    admin_runtime_controller_key: str = ""
     admin_control_api_key: str = ""
     admin_api_request_timeout_seconds: float = Field(default=5.0, gt=0, le=30)
     admin_alert_cpu_percent_threshold: float = Field(default=90.0, ge=1, le=100)
@@ -24,6 +26,15 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_control_key(self) -> Settings:
+        if self.admin_runtime_controller_key and len(self.admin_runtime_controller_key) < 32:
+            raise ValueError("ADMIN_RUNTIME_CONTROLLER_KEY must contain at least 32 characters")
+        if (
+            self.admin_runtime_controller_key
+            and self.admin_runtime_controller_key == self.admin_runtime_observer_key
+        ):
+            raise ValueError(
+                "ADMIN_RUNTIME_CONTROLLER_KEY must differ from ADMIN_RUNTIME_OBSERVER_KEY"
+            )
         if self.admin_control_api_key and len(self.admin_control_api_key) < 32:
             raise ValueError("ADMIN_CONTROL_API_KEY must contain at least 32 characters")
         if (
