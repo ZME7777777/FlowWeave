@@ -41,6 +41,7 @@ def test_shared_workspace_defaults_are_user_isolated(settings, db_session_factor
         }
         assert conversations._workspace_credential_defaults(db, workspace.id) is None
         conversations.replace_workspace_session_configuration(db, workspace.id, (), ())
+        assert conversations._workspace_credential_defaults(db, workspace.id) == ()
         db.commit()
 
     with settings_context(settings), tenant_user(USER_USER_ID), db_session_factory() as db:
@@ -53,6 +54,7 @@ def test_shared_workspace_defaults_are_user_isolated(settings, db_session_factor
         assert conversations.workspace_session_configuration(db, workspace.id)[
             "credential_ids"
         ] == [other]
+        assert conversations._workspace_credential_defaults(db, workspace.id) is None
         with pytest.raises(DomainError):
             with db.begin_nested():
                 conversations.replace_workspace_session_configuration(db, workspace.id, (), (own,))

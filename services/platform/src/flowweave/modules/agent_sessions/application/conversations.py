@@ -567,7 +567,11 @@ def _workspace_credential_defaults(db: Session, workspace_id: str) -> tuple[str,
             AgentWorkspaceSessionConfiguration.owner_user_id == current_user_id(),
         )
     )
-    return tuple(config.credential_ids_json) if config is not None else None
+    return (
+        tuple(config.credential_ids_json)
+        if config is not None and config.credentials_configured
+        else None
+    )
 
 
 def _session_configuration(
@@ -646,6 +650,7 @@ def replace_workspace_session_configuration(
             )
             db.add(config)
         config.credential_ids_json = list(dict.fromkeys(credential_ids))
+        config.credentials_configured = True
         config.updated_at = now()
     else:
         _capability_ids, _credential_ids, directory = _session_configuration(

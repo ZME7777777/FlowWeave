@@ -76,7 +76,7 @@ async function openWorkspace(page: Page, events: unknown[] = [], includeSecondCo
   const configurationScope = (request: import('@playwright/test').Request) => new URL(request.url()).searchParams.get('work_directory_id') ?? 'root';
   sessionConfigurations.set('root', {
     capability_version_ids: scheduleOptions.defaultCapabilityIds ?? [] as string[],
-    credential_ids: scheduleOptions.defaultCredentialIds ?? [] as string[],
+    credential_ids: scheduleOptions.defaultCredentialIds ?? ['credential-1'] as string[],
   });
   schedules[0].prompt = scheduleOptions.prompt ?? schedules[0].prompt;
   schedules.push({ ...schedules[0], id: 'weekly-schedule', name: '每周复核', prompt: '复核周报。', row_version: 7 });
@@ -3779,7 +3779,7 @@ test('workspace sidebar toggle and inline capability trigger preserve the active
 });
 
 test('workspace action menu defaults to all credentials and persists session configuration', async ({ page }) => {
-  await openWorkspace(page, [], false, '日报会话', { defaultCredentialIds: ['credential-1'] });
+  await openWorkspace(page);
   const root = page.locator('[data-workspace-group-id="root"]');
   await root.locator('header').hover();
   await root.getByRole('button', { name: '工作区操作 根工作区', exact: true }).click({ force: true });
