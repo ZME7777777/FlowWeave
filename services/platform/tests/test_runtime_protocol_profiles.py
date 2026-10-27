@@ -49,6 +49,7 @@ def test_v2_profile_uses_a_distinct_compiled_adapter_without_reinterpreting_v1()
         FlowRunProtocolProfile.OH_FW_V1,
         FlowRunProtocolProfile.OH_FW_V2,
         FlowRunProtocolProfile.OH_FW_V3,
+        FlowRunProtocolProfile.OH_FW_V4,
     }
     assert isinstance(
         FLOW_RUN_RUNTIME_ADAPTERS[FlowRunProtocolProfile.OH_FW_V2],

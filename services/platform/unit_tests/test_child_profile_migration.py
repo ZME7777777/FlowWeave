@@ -11,8 +11,19 @@ from sqlalchemy.exc import DBAPIError
 from testcontainers.postgres import PostgresContainer
 
 
-def test_v3_migration_preserves_old_profiles_and_refuses_lossy_downgrade(monkeypatch):
-    path = Path(__file__).parents[1] / "migrations/versions/0175_add_oh_fw_v3_protocol_profile.py"
+@pytest.mark.parametrize(
+    "revision,previous,added",
+    [
+        ("0175_add_oh_fw_v3_protocol_profile", ("OH_FW_V1", "OH_FW_V2"), "OH_FW_V3"),
+        ("0178_add_oh_fw_v4_protocol_profile", ("OH_FW_V1", "OH_FW_V2", "OH_FW_V3"), "OH_FW_V4"),
+    ],
+)
+def test_child_profile_migration_preserves_old_profiles_and_refuses_lossy_downgrade(
+    monkeypatch, revision, previous, added
+):
+    path = Path(__file__).parents[1] / f"migrations/versions/{revision}.py"
+    quoted = ", ".join(f"'{profile}'" for profile in previous)
+    initial = ", ".join(f"('{profile}')" for profile in previous)
     spec = importlib.util.spec_from_file_location("child_profile_migration", path)
     assert spec and spec.loader
     migration = importlib.util.module_from_spec(spec)
@@ -38,17 +49,17 @@ def test_v3_migration_preserves_old_profiles_and_refuses_lossy_downgrade(monkeyp
                     conn.execute(
                         text(
                             f"CREATE TABLE {table} ({column} TEXT NOT NULL CONSTRAINT {constraint} "
-                            f"CHECK ({column} IN ('OH_FW_V1', 'OH_FW_V2')))"
+                            f"CHECK ({column} IN ({quoted})))"
                         )
                     )
-                    conn.execute(text(f"INSERT INTO {table} VALUES ('OH_FW_V1'), ('OH_FW_V2')"))
+                    conn.execute(text(f"INSERT INTO {table} VALUES {initial}"))
                 monkeypatch.setattr(migration, "op", Operations(MigrationContext.configure(conn)))
                 migration.upgrade()
             # Each table independently prevents downgrade. The exception rolls
             # back the DDL as well; no historical row is rewritten.
             for target, target_column, _ in columns:
                 with engine.begin() as conn:
-                    conn.execute(text(f"INSERT INTO {target} VALUES ('OH_FW_V3')"))
+                    conn.execute(text(f"INSERT INTO {target} VALUES ('{added}')"))
                 with pytest.raises(DBAPIError, match="Cannot downgrade"):
                     with engine.begin() as conn:
                         monkeypatch.setattr(
@@ -56,17 +67,20 @@ def test_v3_migration_preserves_old_profiles_and_refuses_lossy_downgrade(monkeyp
                         )
                         migration.downgrade()
                 with engine.begin() as conn:
-                    assert conn.execute(text(f"SELECT COUNT(*) FROM {target}")).scalar_one() == 3
-                    conn.execute(text(f"DELETE FROM {target} WHERE {target_column} = 'OH_FW_V3'"))
+                    assert (
+                        conn.execute(text(f"SELECT COUNT(*) FROM {target}")).scalar_one()
+                        == len(previous) + 1
+                    )
+                    conn.execute(text(f"DELETE FROM {target} WHERE {target_column} = '{added}'"))
             with engine.begin() as conn:
                 monkeypatch.setattr(migration, "op", Operations(MigrationContext.configure(conn)))
                 migration.downgrade()
                 for table, column, _ in columns:
                     assert conn.execute(
                         text(f"SELECT {column} FROM {table} ORDER BY 1")
-                    ).scalars().all() == ["OH_FW_V1", "OH_FW_V2"]
+                    ).scalars().all() == list(previous)
             with pytest.raises(DBAPIError):
                 with engine.begin() as conn:
-                    conn.execute(text("INSERT INTO flow_run_runtimes VALUES ('OH_FW_V3')"))
+                    conn.execute(text(f"INSERT INTO flow_run_runtimes VALUES ('{added}')"))
         finally:
             engine.dispose()

@@ -24,7 +24,10 @@ from uuid import uuid4
 def main():
     state, repo = map(Path, sys.argv[1:3])
     serve_only = len(sys.argv) > 3 and sys.argv[3] == "serve"
-    lock = json.loads((repo / "infra/openhands/source.lock.json").read_text())
+    lock_path = Path(
+        os.environ.get("FLOWWEAVE_NATIVE_CHILD_LOCK", repo / "infra/openhands/source.lock.json")
+    )
+    lock = json.loads(lock_path.read_text())
     archive = repo / "infra/openhands/vendor" / f"openhands-source-{lock['source_commit']}.tar.gz"
     assert hashlib.sha256(archive.read_bytes()).hexdigest() == lock["archive_sha256"]
     checked = 0

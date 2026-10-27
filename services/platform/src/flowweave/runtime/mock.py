@@ -40,6 +40,11 @@ from flowweave.runtime.child_creation import (
     NativeChildLaunchRequest,
     NativeChildPreparation,
 )
+from flowweave.runtime.child_governance import (
+    NativeChildPreparationOverrides,
+    NativeChildResolution,
+    NativeGovernedChildPreparation,
+)
 from flowweave.shared.errors import DomainError
 
 
@@ -51,6 +56,20 @@ class MockRuntime:
         return DomainError(
             "RUNTIME_CHILD_UNSUPPORTED", "Mock Runtime 不执行 OpenHands 原生子会话", 409
         )
+
+    def resolve_child_launcher(
+        self, handle: RuntimeHandle, request: NativeChildLaunchRequest
+    ) -> NativeChildResolution:
+        raise self._child_unsupported()
+
+    def prepare_governed_child_conversation(
+        self,
+        handle: RuntimeHandle,
+        creation_id: UUID,
+        request: NativeChildLaunchRequest,
+        overrides: NativeChildPreparationOverrides,
+    ) -> NativeGovernedChildPreparation:
+        raise self._child_unsupported()
 
     def verify_child_launcher(
         self, handle: RuntimeHandle, request: NativeChildLaunchRequest

@@ -29,15 +29,19 @@ from flowweave.runtime.base import RuntimeAgentSpec, RuntimeTool
 from flowweave.runtime.child_contract import (
     CHILD_TOOL_NAMES,
     CHILD_USAGE_GUIDANCE,
+    V3_ARCHIVE_SHA256,
+    V3_SOURCE_COMMIT,
     child_capability_manifest,
 )
 from flowweave.runtime.child_creation import NativeChildInvocation, NativeChildLaunchRequest
 from flowweave.runtime.manifest import runtime_manifest_hash
 from flowweave.runtime.protocol_profiles import runtime_contract_for_protocol_profile
-from flowweave.shared.domain.openhands import CURRENT_OPENHANDS_SERVER_IDENTITY
+from flowweave.shared.domain.openhands import OpenHandsServerIdentity
 from flowweave.shared.errors import DomainError
 from flowweave.shared.models import FlowRun, FlowRunRuntime, NodeAttempt, NodeRun, RunSnapshot, User
 from flowweave.shared.settings import settings_context
+
+FROZEN_V3_IDENTITY = OpenHandsServerIdentity("1.58.2", V3_SOURCE_COMMIT, V3_SOURCE_COMMIT)
 
 
 @pytest.fixture
@@ -76,7 +80,7 @@ def parent_graph(request, db_session_factory, settings, monkeypatch, gateway_bas
     spec = RuntimeAgentSpec(
         tools=(RuntimeTool("task_tracker"),),
         runtime_contract=runtime_contract_for_protocol_profile(
-            "OH_FW_V3", ("task_tracker",), CURRENT_OPENHANDS_SERVER_IDENTITY
+            "OH_FW_V3", ("task_tracker",), FROZEN_V3_IDENTITY
         ),
     )
     with settings_context(config), tenant_user(owner), db_session_factory() as db:
@@ -180,7 +184,7 @@ def parent_graph(request, db_session_factory, settings, monkeypatch, gateway_bas
             binding,
             spec,
             profile="OH_FW_V3",
-            identity=CURRENT_OPENHANDS_SERVER_IDENTITY,
+            identity=FROZEN_V3_IDENTITY,
             generation=1,
             runtime_image_digest=image,
             runtime_manifest=manifest,
@@ -358,7 +362,7 @@ def test_legacy_profiles_do_not_install_parent_tools(parent_graph):
                 old,
                 g.spec,
                 profile=profile,
-                identity=CURRENT_OPENHANDS_SERVER_IDENTITY,
+                identity=FROZEN_V3_IDENTITY,
                 generation=1,
                 runtime_image_digest=g.image,
                 runtime_manifest={},
@@ -375,13 +379,13 @@ def test_bad_freeze_inputs_fail_before_tool_installation(parent_graph, failure):
     g = parent_graph
     kwargs = dict(
         profile="OH_FW_V3",
-        identity=CURRENT_OPENHANDS_SERVER_IDENTITY,
+        identity=FROZEN_V3_IDENTITY,
         generation=1,
         runtime_image_digest=g.image,
         runtime_manifest=g.manifest,
     )
     if failure == "unknown-source":
-        kwargs["identity"] = replace(CURRENT_OPENHANDS_SERVER_IDENTITY, source_commit="b" * 40)
+        kwargs["identity"] = replace(FROZEN_V3_IDENTITY, source_commit="b" * 40)
     elif failure == "wrong-manifest":
         kwargs["runtime_manifest"] = {"child_conversations": {}}
     elif failure == "new-generation":
@@ -561,10 +565,10 @@ def test_native_tool_calls_platform_gateway_over_real_tcp(launcher_http, monkeyp
     from flowweave.runtime.base import RuntimeProvider, StartAttemptRequest
     from flowweave.runtime.openhands import OpenHandsRuntime
 
-    python = os.environ.get("FLOWWEAVE_NATIVE_CHILD_PYTHON")
+    python = os.environ.get("FLOWWEAVE_NATIVE_CHILD_V3_PYTHON")
     if not python:
         pytest.skip(
-            "Set FLOWWEAVE_NATIVE_CHILD_PYTHON to the fixed native four-package environment"
+            "Set FLOWWEAVE_NATIVE_CHILD_V3_PYTHON to the fixed native four-package environment"
         )
     g, client, _ = launcher_http
     repo = Path(__file__).resolve().parents[3]
@@ -584,6 +588,15 @@ def test_native_tool_calls_platform_gateway_over_real_tcp(launcher_http, monkeyp
         XDG_CACHE_HOME=str(state / "cache"),
         LITELLM_LOCAL_MODEL_COST_MAP="True",
     )
+    source_lock = json.loads((repo / "infra/openhands/source.lock.json").read_text())
+    source_lock.update(
+        source_commit=V3_SOURCE_COMMIT,
+        fork_commit=V3_SOURCE_COMMIT,
+        archive_sha256=V3_ARCHIVE_SHA256,
+    )
+    source_lock_path = state / "source.lock.json"
+    source_lock_path.write_text(json.dumps(source_lock))
+    env["FLOWWEAVE_NATIVE_CHILD_LOCK"] = str(source_lock_path)
     script = Path(__file__).parents[1] / "unit_tests/fixtures/native_child_server.py"
     native = OpenHandsRuntime(g.config)
     server = None
@@ -760,7 +773,7 @@ def test_old_active_binding_cannot_acquire_parent_capability(parent_graph):
             other,
             g.spec,
             profile="OH_FW_V3",
-            identity=CURRENT_OPENHANDS_SERVER_IDENTITY,
+            identity=FROZEN_V3_IDENTITY,
             generation=1,
             runtime_image_digest=g.image,
             runtime_manifest=g.manifest,
@@ -790,7 +803,7 @@ def test_downgrade_refuses_to_discard_parent_capability(parent_graph):
         command.downgrade(config, "0176_agent_child_conversations")
     assert (
         g.db.scalar(text("SELECT version_num FROM alembic_version"))
-        == "0177_agent_child_parent_manifest"
+        == "0178_add_oh_fw_v4_protocol_profile"
     )
     assert child_parent.read_parent_capability(g.binding) == g.frozen
 
@@ -1010,7 +1023,7 @@ def test_worker_freezes_parent_before_releasing_database_transaction(parent_grap
     monkeypatch.setattr(
         service,
         "runtime_server_identity",
-        lambda *_args, **_kwargs: CURRENT_OPENHANDS_SERVER_IDENTITY,
+        lambda *_args, **_kwargs: FROZEN_V3_IDENTITY,
     )
     monkeypatch.setattr(
         service.sandboxes,

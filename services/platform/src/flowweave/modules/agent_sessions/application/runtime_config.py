@@ -774,13 +774,16 @@ def build_agent_spec(
     llm_timeout_policy: RuntimeLLMTimeoutPolicy | None = FLOWWEAVE_LLM_TIMEOUT_POLICY,
     subagent_policy: RuntimeSubagentPolicy | None = None,
 ) -> RuntimeAgentSpec:
-    if protocol_profile == FlowRunProtocolProfile.OH_FW_V3 and runtime_server_identity is None:
+    if (
+        protocol_profile in {FlowRunProtocolProfile.OH_FW_V3, FlowRunProtocolProfile.OH_FW_V4}
+        and runtime_server_identity is None
+    ):
         raise DomainError(
             "RUNTIME_CHILD_CAPABILITY_INCOMPATIBLE",
-            "V3 requires an explicitly frozen Runtime image identity",
+            "Child-capable profiles require an explicitly frozen Runtime image identity",
             409,
         )
-    if protocol_profile == FlowRunProtocolProfile.OH_FW_V3:
+    if protocol_profile in {FlowRunProtocolProfile.OH_FW_V3, FlowRunProtocolProfile.OH_FW_V4}:
         subagent_policy = FLOWWEAVE_SUBAGENT_POLICY
     materialized = tuple(
         item.materialization_config()

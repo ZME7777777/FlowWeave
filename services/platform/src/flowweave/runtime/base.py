@@ -11,6 +11,11 @@ from flowweave.runtime.child_creation import (
     NativeChildLaunchRequest,
     NativeChildPreparation,
 )
+from flowweave.runtime.child_governance import (
+    NativeChildPreparationOverrides,
+    NativeChildResolution,
+    NativeGovernedChildPreparation,
+)
 
 
 def _empty_outputs() -> dict[str, tuple[str, str]]:
@@ -492,7 +497,11 @@ class RuntimeHandle:
     llm_timeout_policy: RuntimeLLMTimeoutPolicy | None = None
 
     def __post_init__(self) -> None:
-        if self.llm_timeout_policy is None and self.protocol_profile in {"OH_FW_V2", "OH_FW_V3"}:
+        if self.llm_timeout_policy is None and self.protocol_profile in {
+            "OH_FW_V2",
+            "OH_FW_V3",
+            "OH_FW_V4",
+        }:
             object.__setattr__(self, "llm_timeout_policy", FLOWWEAVE_LLM_TIMEOUT_POLICY)
 
 
@@ -756,6 +765,18 @@ class RuntimeConversationRuntime:
 
 
 class RuntimePort(Protocol):
+    def resolve_child_launcher(
+        self, handle: RuntimeHandle, request: NativeChildLaunchRequest
+    ) -> NativeChildResolution: ...
+
+    def prepare_governed_child_conversation(
+        self,
+        handle: RuntimeHandle,
+        creation_id: UUID,
+        request: NativeChildLaunchRequest,
+        overrides: NativeChildPreparationOverrides,
+    ) -> NativeGovernedChildPreparation: ...
+
     def verify_child_launcher(
         self, handle: RuntimeHandle, request: NativeChildLaunchRequest
     ) -> NativeChildInvocation: ...

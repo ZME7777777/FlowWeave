@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`CHILD CONVERSATIONS IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-721`
+> 下一可执行切片：`FR-722`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 > 子会话设计：`docs/agent-child-conversations-design.md`
@@ -649,12 +649,57 @@ resolve proof 为 403。全部 run 均 doctor 后驱动并停止，只操作本�
 凭据重签／恢复并解决首轮 PROVISIONING 授权时序；FR-712 依赖 FR-722。当前 NONE，
 下一可执行 FR-721；提交后停止。
 
-### FR-721 子创建治理扩展归档与静态契约冻结 — READY
+### FR-721 子创建治理扩展归档与静态契约冻结 — DONE
 
 依赖：FR-720 DONE。归档本片新 native 扩展，以新增能力版本／静态 profile 消费身份和
 准备覆盖；保留 FR-709 原有 V3 来源／Manifest 和既有记录，不重解释已冻结版本。
 
-### FR-722 两宿主子预留凭据重签与首轮恢复 — PENDING
+完成（2026-10-27）：SDK 来源固定 `b9f976b2ca05b947ee28eb34ebe590ff0409307f`，
+完整 commit 归档 SHA-256 为
+`4f53a19445c7c5cfabe022414dd33942fc3c086b0be5b60fd87e9fa0ccc5899f`；四包仍为 1.58.2，
+upstream anchor 不变。source lock、provenance、Docker COPY／build SHA、平台 current 身份与
+可执行探针同步；旧归档保留，SDK baseline 无本片源码改动。归档的 537 个包内 Python 文件
+与固定 commit 逐字节一致，两套独立安装环境分别按对应归档验证旧 V3 536 个／新 V4 537 个文件。
+
+新增静态 `OH_FW_V4` adapter／schema 7，冻结原八条路由以及 resolve／governed 两条新路由；
+`oh-fw-child-v2` 能力摘要为
+`d7c28b472a8667139698ddcc10211d325514d12f50bc39c21ce3caa3154ad365`。固定正式创建身份、
+四个 overrides 字段、初始化前治理、加密不可变计划与相同配置重放；沿用六个父工具、shared／
+一层／三个活动子、查询预算与父使用说明。Environment 校验 source／ref／archive／完整四包／
+capability／timeout，构建与恢复发布只按实证来源声明对应能力；Snapshot 原编译入口冻结 V4。
+FR-709 的 V3 source／archive／schema 6／v1 Manifest 与摘要不改，两个版本互相拒绝；默认 V1。
+Workspace V3 创建／恢复使用固定 V3 身份作期望，不再误读构建基线 current，实际握手仍拒绝错误
+镜像。0178 只追加三张版本／Runtime 表的 V4 允许值，downgrade 持锁并禁止 RLS 隐藏，任一表
+有 V4 时拒绝，不改历史行。唯一 Alembic head 为 `0178_add_oh_fw_v4_protocol_profile`。
+
+RuntimePort／OpenHands adapter 增加独立 V4 resolve 与 governed prepare 方法，正式 DTO 校验
+返回的 parent／creation／child、调用不变量和精确任务摘要，不发明服务未返回的字段。
+覆盖当前仅投影平台所需的原生 StaticSecret，repr／普通 JSON 脱敏，请求边界展开；governed
+prepare 必须取得相同治理 UUID，read／release 保留 V4 回执。旧 V3 方法／线路形状保留，
+V1／V2／V3 对新操作在 HTTP 前拒绝，Mock 不伪造。没有自动 release／run／重试或改创建 ID。
+
+验收：契约／DTO／HTTP 边界主套件 **120 passed**；额外两项真实 PostgreSQL 迁移回归通过，
+其中旧 V3 回退也重新验证（三表逐一拒绝、旧值保留、清理测试新增值后回退并拒绝再插入）。
+**2 passed** 的独立原生 TCP 回归分别使用旧 V3 和新 V4 的固定归档／安装包；实际 native
+Tool／ActionEvent 证明 → resolve／verify → prepare／重放／read → 未释放 409 → release／
+重复放行 → 单条正式 user／assistant 事件，V4 还核对治理 UUID 与原生 registry。completion
+为受控 LLM，不计为真实模型成功；父工具不经过平台产品 launcher，不声称两宿主产品已开放。
+原生进程均正常退出。完整归档可执行探针、pip check、两个构建架构定向用例通过；没有构建镜像。
+
+扩展平台同顺序回归与修改前 HEAD 均为 **353 passed／9 failed／2 skipped**，失败集合逐项
+一致；九项分别独立重跑在两边均 **9 passed**，属于既存组合顺序下日志断言问题，不改断言掩盖，
+不宣称扩展全套通过。父能力定向套件另为 **97 passed／2 skipped**（与主套件重叠，不累计）。
+新 DTO／capability／profile Pyright 零错误，十个受影响旧模块的 102 项诊断与 HEAD 按文件／
+规则／消息逐项一致、零新增；不能称整个旧模块类型检查全绿。Ruff、语法、变更范围格式、diff
+检查通过；probe 原有动态导入 E402 和 runtime_config 六条原有提示词 E501 保持，不扩大格式清理。
+全迁移链由独立测试数据库实跑至 0178，离线 upgrade／downgrade SQL 和状态／依赖检查通过。
+
+证据在 `.tmp/fr721/`。未更新任何已发布版本／Snapshot／binding／generation，没有平台 V4
+父工具装配、两宿主子创建／恢复或前端改动；未调用真实模型、部署、推送或替换 Runtime。
+FR-722 必须再接 V4 父能力与用户／资源授权、预留、重签／禁用绑定凭据及首轮恢复；实际镜像、
+真实模型与两宿主故障链仍由 FR-717 验收。当前 NONE，下一可执行 FR-722；提交后停止。
+
+### FR-722 两宿主子预留凭据重签与首轮恢复 — READY
 
 依赖：FR-721 DONE。先预留 binding 再原生 prepare，核对正式父子／shared 目录／配置，
 复制冻结能力并重签或明确禁用 binding 级授权后 release；短事务、同 invocation 并发、

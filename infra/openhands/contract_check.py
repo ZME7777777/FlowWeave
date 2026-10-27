@@ -173,9 +173,9 @@ from openhands.tools.terminal.terminal.tmux_terminal import _new_owned_session
 
 EXPECTED_VERSION = "1.58.2"
 EXPECTED_UPSTREAM_BASE = "ce5716a3c0a955a85bb0cc4dcfaa94d5fefcda50"
-EXPECTED_SOURCE_COMMIT = "3a4f5f1f61082430e8a2ccf8d59e52c9f4eab5dc"
+EXPECTED_SOURCE_COMMIT = "b9f976b2ca05b947ee28eb34ebe590ff0409307f"
 EXPECTED_SOURCE_ARCHIVE_SHA256 = (
-    "f63ecb0d046c1a6a20e39540c1cb6b37570c105c788916b782bc76c5881b3846"
+    "4f53a19445c7c5cfabe022414dd33942fc3c086b0be5b60fd87e9fa0ccc5899f"
 )
 PACKAGES = (
     "openhands-agent-server",
@@ -860,9 +860,23 @@ def _assert_quota_fallback_contract() -> None:
 def _assert_governed_child_contract() -> None:
     from pydantic import ValidationError
 
-    from openhands.sdk.conversation.child_creation import ChildConversationPreparationRequest
+    from openhands.sdk.conversation.child_creation import (
+        ChildConversationCreationIdentity,
+        ChildConversationLaunchGate,
+        ChildConversationPreparation,
+        ChildConversationPreparationRequest,
+        GovernedChildConversationPreparationRequest,
+    )
+    from openhands.sdk.conversation.child_governance import (
+        ChildConversationPreparationOverrides,
+    )
     from openhands.sdk.conversation.message_request import SendMessageRequest
-    from openhands.sdk.conversation.child_launcher import ChildLauncherPolicy
+    from openhands.sdk.conversation.child_launcher import (
+        ChildLauncherInvocation,
+        ChildLauncherPolicy,
+        ChildLauncherResolution,
+    )
+    from openhands.sdk.secret import StaticSecret
     from openhands.sdk.event.user_action import InterruptEvent, PauseEvent
     from openhands.tools.child_conversation.commands import (
         InterruptChildConversationTool,
@@ -881,6 +895,8 @@ def _assert_governed_child_contract() -> None:
     prefix = "/api/conversations/{conversation_id}/children"
     for suffix, method in (
         ("/launcher/verify", "post"),
+        ("/launcher/resolve", "post"),
+        ("/preparations/{creation_id}/governed", "post"),
         ("/preparations/{creation_id}", "post"),
         ("/preparations/{creation_id}", "get"),
         ("/preparations/{creation_id}/release", "post"),
@@ -901,6 +917,36 @@ def _assert_governed_child_contract() -> None:
     else:
         raise AssertionError("Governed preparation accepted worktree isolation")
 
+    assert set(ChildConversationPreparationOverrides.model_fields) == {
+        "governance_id", "remove_secrets", "replace_secrets", "remove_mcp_servers",
+    }
+    assert GovernedChildConversationPreparationRequest.model_fields["overrides"].is_required()
+    assert "governance_id" in ChildConversationPreparation.model_fields
+    assert "governance_id" in ChildConversationLaunchGate.model_fields
+    overrides = ChildConversationPreparationOverrides(
+        governance_id=uuid4(),
+        remove_secrets=frozenset({"parent-only"}),
+        replace_secrets={"bound": StaticSecret(value=SecretStr("child-contract-value"))},
+        remove_mcp_servers=frozenset({"history"}),
+    )
+    prepared = GovernedChildConversationPreparationRequest(task="contract", overrides=overrides)
+    assert GovernedChildConversationPreparationRequest.model_validate_json(
+        prepared.model_dump_json(context={"expose_secrets": True})
+    ) == prepared
+    assert prepared.isolation == "shared"
+    assert "child-contract-value" not in repr(prepared)
+    invalid = overrides.model_dump(mode="json", context={"expose_secrets": True})
+    invalid["remove_secrets"] = ["bound"]
+    try:
+        ChildConversationPreparationOverrides.model_validate(invalid)
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError("Native governance accepted remove/replace overlap")
+    schemas = create_app().openapi()["components"]["schemas"]
+    assert "overrides" in schemas["GovernedChildConversationPreparationRequest"]["required"]
+    assert {"identity", "invocation"} <= set(schemas["ChildLauncherResolution"]["properties"])
+
     with TemporaryDirectory(prefix="child-tool-contract-") as temporary:
         conversation = LocalConversation(
             agent=Agent(llm=LLM(model="test-model", usage_id="contract"), tools=[]),
@@ -917,6 +963,21 @@ def _assert_governed_child_contract() -> None:
                 manifest_digest="a" * 64,
                 max_active_children=3,
             ).model_dump(mode="json")
+            from datetime import timedelta
+            from openhands.sdk.utils import utc_now
+
+            invocation = ChildLauncherInvocation(
+                policy=ChildLauncherPolicy.model_validate(policy),
+                action_id="contract-action", tool_call_id="contract-tool-call",
+                audience="http://control.example/children", request_digest="b" * 64,
+                issued_at=utc_now(), expires_at=utc_now() + timedelta(minutes=5),
+            )
+            assert "creation_id" not in invocation.model_dump(mode="json")
+            resolved = ChildLauncherResolution.from_invocation(invocation)
+            assert resolved.identity == ChildConversationCreationIdentity.for_request(
+                conversation.id, invocation.creation_id
+            )
+            assert ChildLauncherResolution.model_validate_json(resolved.model_dump_json()) == resolved
             factories = (
                 StartGovernedChildConversationTool,
                 ListChildConversationsTool,
@@ -1930,6 +1991,8 @@ def main() -> None:
                 "native_skill_activation": activated_skill_names,
                 "native_skill_invocation": invoked_skills,
                 "governed_shared_child_contract": True,
+                "governed_child_creation_identity_resolution": True,
+                "immutable_child_preparation_overrides": True,
                 "goal_http_paths": goal_http_paths,
                 "memory_index_relpath": MEMORY_INDEX_RELPATH,
                 "memory_char_budget": MEMORY_CHAR_BUDGET,

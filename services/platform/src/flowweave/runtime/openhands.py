@@ -78,6 +78,11 @@ from flowweave.runtime.child_creation import (
     NativeChildPreparation,
     child_contract_error,
 )
+from flowweave.runtime.child_governance import (
+    NativeChildPreparationOverrides,
+    NativeChildResolution,
+    NativeGovernedChildPreparation,
+)
 from flowweave.runtime.contract import OPTIONAL_HTTP_OPERATIONS
 from flowweave.runtime.git_identity import GIT_IDENTITY_SCRIPT
 from flowweave.runtime.model_catalog import declared_context_window
@@ -2365,7 +2370,7 @@ class OpenHandsRuntime:
         self, handle: RuntimeHandle, method: str, suffix: str = "", **kwargs: Any
     ) -> dict[str, Any]:
         # An unset Workspace profile is not permission to use the latest protocol.
-        if handle.protocol_profile != "OH_FW_V3":
+        if handle.protocol_profile not in {"OH_FW_V3", "OH_FW_V4"}:
             raise DomainError(
                 "RUNTIME_CHILD_UNSUPPORTED", "当前冻结 Runtime 协议不支持受治理子会话", 409
             )
@@ -2394,6 +2399,49 @@ class OpenHandsRuntime:
         except ValidationError:
             raise child_contract_error(outcome_unknown=outcome_unknown) from None
 
+    @staticmethod
+    def _require_child_governance(handle: RuntimeHandle) -> None:
+        if handle.protocol_profile != "OH_FW_V4":
+            raise DomainError(
+                "RUNTIME_CHILD_UNSUPPORTED", "当前冻结 Runtime 协议不支持子准备凭据治理", 409
+            )
+
+    def resolve_child_launcher(
+        self, handle: RuntimeHandle, request: NativeChildLaunchRequest
+    ) -> NativeChildResolution:
+        self._require_child_governance(handle)
+        value = self._child_request(
+            handle, "POST", "/children/launcher/resolve", json=request.verifier_payload()
+        )
+        resolved = self._child_response(NativeChildResolution, value)
+        if (
+            resolved.identity.parent_conversation_id != UUID(handle.conversation_id)
+            or resolved.invocation.request_digest != request.request_digest()
+        ):
+            raise child_contract_error()
+        return resolved
+
+    def prepare_governed_child_conversation(
+        self,
+        handle: RuntimeHandle,
+        creation_id: UUID,
+        request: NativeChildLaunchRequest,
+        overrides: NativeChildPreparationOverrides,
+    ) -> NativeGovernedChildPreparation:
+        self._require_child_governance(handle)
+        value = self._child_request(
+            handle,
+            "POST",
+            f"/children/preparations/{creation_id}/governed",
+            json={**request.preparation_payload(), "overrides": overrides.wire_payload()},
+        )
+        prepared = self._child_preparation_response(handle, creation_id, value, request)
+        if not isinstance(prepared, NativeGovernedChildPreparation) or (
+            prepared.governance_id != overrides.governance_id
+        ):
+            raise child_contract_error(outcome_unknown=True)
+        return prepared
+
     def verify_child_launcher(
         self, handle: RuntimeHandle, request: NativeChildLaunchRequest
     ) -> NativeChildInvocation:
@@ -2416,7 +2464,11 @@ class OpenHandsRuntime:
         request: NativeChildLaunchRequest | None = None,
     ) -> NativeChildPreparation:
         prepared = self._child_response(
-            NativeChildPreparation, value, outcome_unknown=request is not None
+            NativeGovernedChildPreparation
+            if handle.protocol_profile == "OH_FW_V4"
+            else NativeChildPreparation,
+            value,
+            outcome_unknown=request is not None,
         )
         identity = prepared.receipt.identity
         if (
@@ -5403,7 +5455,7 @@ class OpenHandsRuntime:
         """Recognize the 1.54 guarantee: the user event exists but `/run` did not start."""
 
         return (
-            handle.protocol_profile in {"OH_FW_V2", "OH_FW_V3"}
+            handle.protocol_profile in {"OH_FW_V2", "OH_FW_V3", "OH_FW_V4"}
             and error.code == "OPENHANDS_REQUEST_FAILED"
             and error.details.get("status_code") == 429
             and error.details.get("outcome_unknown") is False

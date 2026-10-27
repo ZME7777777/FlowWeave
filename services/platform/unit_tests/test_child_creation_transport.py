@@ -21,6 +21,10 @@ from flowweave.runtime.child_creation import (
     NativeChildLaunchRequest,
     verify_child_configuration,
 )
+from flowweave.runtime.child_governance import (
+    NativeChildPreparationOverrides,
+    NativeChildStaticSecret,
+)
 from flowweave.runtime.mock import MockRuntime
 from flowweave.runtime.openhands import OpenHandsRuntime
 from flowweave.shared.errors import DomainError
@@ -114,6 +118,109 @@ def test_verifier_is_typed_evidence_without_inventing_creation_identity(boundary
     assert requests[0].headers["X-Session-API-Key"] == runtime._session_key_for_handle(handle)
     assert request.task not in repr(request)
     assert request.token.get_secret_value() not in repr(request)
+
+
+def resolution(handle, request):
+    native = invocation(handle, request)
+    creation = uuid5(
+        UUID(handle.conversation_id),
+        f"openhands-child-invocation-v1:{native['action_id']}:{native['tool_call_id']}",
+    )
+    return {
+        "schema_version": 1,
+        "invocation": native,
+        "identity": preparation(handle, creation, request)["receipt"]["identity"],
+    }
+
+
+def test_v4_resolve_governed_prepare_read_release_use_native_fields(boundary):
+    runtime, handle, request, _, requests, responses = boundary
+    handle = replace(handle, protocol_profile="OH_FW_V4")
+    resolved = resolution(handle, request)
+    creation = UUID(resolved["identity"]["creation_id"])
+    overrides = NativeChildPreparationOverrides(
+        governance_id=uuid4(),
+        remove_secrets=frozenset({"PARENT"}),
+        replace_secrets={"BOUND": NativeChildStaticSecret(value=SecretStr("child-private"))},
+        remove_mcp_servers=frozenset({"history"}),
+    )
+    prepared = {
+        **preparation(handle, creation, request),
+        "governance_id": str(overrides.governance_id),
+    }
+    responses.extend(
+        [
+            httpx.Response(200, json=resolved),
+            httpx.Response(201, json=prepared),
+            httpx.Response(200, json=prepared),
+            httpx.Response(200, json={**prepared, "phase": "started"}),
+        ]
+    )
+    identity = runtime.resolve_child_launcher(handle, request).identity
+    assert identity.creation_id == creation
+    result = runtime.prepare_governed_child_conversation(handle, creation, request, overrides)
+    assert len(requests) == 2  # no automatic release or run
+    assert result.governance_id == overrides.governance_id
+    assert runtime.read_child_preparation(handle, creation) == result
+    assert runtime.release_child_conversation(handle, creation, request).phase == "started"
+    assert json.loads(requests[1].content) == {
+        **request.preparation_payload(),
+        "overrides": overrides.wire_payload(),
+    }
+    assert requests[1].url.path.endswith("/governed")
+    assert "child-private" not in repr(overrides)
+    assert "child-private" not in overrides.model_dump_json()
+
+
+@pytest.mark.parametrize("profile", [None, "OH_FW_V1", "OH_FW_V2", "OH_FW_V3"])
+def test_v4_operations_refuse_other_profiles_before_http(boundary, profile):
+    runtime, handle, request, creation, requests, _ = boundary
+    handle = replace(handle, protocol_profile=profile)
+    for operation in (
+        lambda: runtime.resolve_child_launcher(handle, request),
+        lambda: runtime.prepare_governed_child_conversation(
+            handle, creation, request, NativeChildPreparationOverrides(governance_id=uuid4())
+        ),
+    ):
+        with pytest.raises(DomainError, match="当前冻结"):
+            operation()
+    assert not requests
+
+
+@pytest.mark.parametrize("mutation", ["parent", "creation", "digest", "schema"])
+def test_v4_rejects_substituted_resolution(boundary, mutation):
+    runtime, handle, request, _, _, responses = boundary
+    handle = replace(handle, protocol_profile="OH_FW_V4")
+    value = resolution(handle, request)
+    if mutation == "parent":
+        value["invocation"]["policy"]["parent_conversation_id"] = str(uuid4())
+    elif mutation == "creation":
+        other = preparation(handle, uuid4(), request)
+        value["identity"] = other["receipt"]["identity"]
+    elif mutation == "digest":
+        value["invocation"]["request_digest"] = "d" * 64
+    else:
+        value["schema_version"] = 2
+    responses.append(httpx.Response(200, json=value))
+    with pytest.raises(DomainError) as rejected:
+        runtime.resolve_child_launcher(handle, request)
+    assert rejected.value.code == "RUNTIME_CHILD_PROTOCOL_INVALID"
+    assert request.task not in str(rejected.value)
+
+
+@pytest.mark.parametrize("governance", [None, "other"])
+def test_v4_prepare_requires_the_returned_governance_identity(boundary, governance):
+    runtime, handle, request, creation, _, responses = boundary
+    handle = replace(handle, protocol_profile="OH_FW_V4")
+    value = preparation(handle, creation, request)
+    if governance:
+        value["governance_id"] = str(uuid4())
+    responses.append(httpx.Response(201, json=value))
+    with pytest.raises(DomainError) as rejected:
+        runtime.prepare_governed_child_conversation(
+            handle, creation, request, NativeChildPreparationOverrides(governance_id=uuid4())
+        )
+    assert rejected.value.details["outcome_unknown"] is True
 
 
 def test_prepare_reconcile_release_use_exact_identity_and_do_not_auto_dispatch(boundary):

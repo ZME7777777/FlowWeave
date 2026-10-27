@@ -449,6 +449,44 @@ FlowWeave source lock 保持 `3a4f5f1f61082430e8a2ccf8d59e52c9f4eab5dc`，原 `O
 版本／静态契约冻结本次扩展，不能重解释 FR-709 已冻结的身份。FR-722 另需处理首轮父 binding
 仍处于 PROVISIONING 的授权时序，不能让父 native Tool 等待其自身首轮事务提交而死锁。
 
+### 2.14 治理扩展归档与 V4 静态契约（FR-721）
+
+构建基线改为 SDK `baseline` 固定提交 `b9f976b2ca05b947ee28eb34ebe590ff0409307f`；
+完整 commit 归档 SHA-256 为
+`4f53a19445c7c5cfabe022414dd33942fc3c086b0be5b60fd87e9fa0ccc5899f`。
+四包继续为 1.58.2，上游锚点不变。source lock、provenance、Docker 输入、当前构建身份与
+可执行 contract 探针同步更新；旧归档保留。537 个包内 Python 文件与固定 commit 逐字节一致，
+独立 frozen 依赖环境从该归档安装四包并运行完整探针通过；不是实际 Runtime 镜像验收。
+
+新增 `OH_FW_V4` 静态 adapter，Runtime contract schema 为 7，显式要求旧八条 child 路由及
+`launcher/resolve`、`preparations/{creation_id}/governed` 两条正式路由。V4 仅接受上述固定
+commit／ref 和四包版本，Environment 还核对归档摘要、完整 capability 与原 LLM timeout policy。
+新 `oh-fw-child-v2` 能力摘要为
+`d7c28b472a8667139698ddcc10211d325514d12f50bc39c21ce3caa3154ad365`，冻结正式 identity
+投影、overrides 四个字段、初始化前覆盖、加密不可变计划与相同配置重放；沿用六个父工具、
+shared／一层／三个活动子、查询预算及使用说明。构建／恢复发布只按实际 probe 来源声明 v1 或 v2，
+不依据控制面“最新”版本猜测。选择 V4 的新 Snapshot 通过原编译入口冻结 v2 capability。
+
+FR-709 的 V3 source／archive／contract schema 6／`oh-fw-child-v1` 与其摘要完全保持。
+V3、V4 互不接受对方的来源和能力文档。Workspace 的 V3 创建／恢复改用 V3 固定身份作为期望值，
+避免构建基线升级后误取全局 current；实际 HTTP 仍需对旧镜像握手，不将新镜像冒充 V3。
+默认 profile 仍 V1，不更新现有 Environment Version、FlowRun、Snapshot、binding 或 generation。
+0178 迁移仅为 Environment Version、Runtime Session、Generation 三表追加 V4 允许值；downgrade
+持锁并关闭 RLS 隐藏，任一表存在 V4 都拒绝，不清空或改写冻结记录。
+
+RuntimePort 新增独立 V4 方法 `resolve_child_launcher`、`prepare_governed_child_conversation`。
+DTO 读取服务返回的正式 identity，校验 parent、creation／child 的原生不变量及精确任务摘要；
+不把 SDK property 或本地计算值冒充服务返回字段。准备请求携带 typed overrides，FlowWeave
+当前仅需要原生 StaticSecret 替换来源；秘密只在请求边界展开，DTO repr 和普通 JSON 保持脱敏。
+V4 响应保留治理 UUID，prepare 必须匹配原请求，read／release 使用 V4 响应类型；请求不自动
+release、run、重试或更换 creation ID。V1／V2／V3 在调用两个新方法前拒绝，Mock 同样拒绝。
+旧 verifier／prepare 方法的 V3 请求与返回形状不变；V4 可以读取原有公共配置和恢复回执。
+
+本片只冻结可消费契约，不装配 V4 父工具、修改父授权数据结构或开放两宿主创建。FR-722 必须
+显式选择 V4、冻结相应父能力，并完成用户／资源授权、预留 binding、binding 级凭据重签和
+首轮恢复，不能用本片 DTO 或 Runtime key 代替权限。真实模型、实际镜像与双宿主故障验收仍在
+FR-717；本片不构建／发布镜像、部署或替换 Runtime。
+
 ## 3. 父 Agent 的操作契约
 
 以下工具名是目标命名，最终导出必须在对应 baseline 切片中建立正式类型和 contract：

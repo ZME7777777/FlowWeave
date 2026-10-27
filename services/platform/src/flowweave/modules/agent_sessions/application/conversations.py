@@ -1630,8 +1630,17 @@ def _create_native_conversation(
         db, workspace, binding
     )
     from flowweave.modules.agent_sessions.application.child_parent import attach_parent_capability
-    from flowweave.runtime.child_contract import child_capability_manifest
-    from flowweave.shared.domain.openhands import CURRENT_OPENHANDS_SERVER_IDENTITY
+    from flowweave.runtime.child_contract import (
+        V3_PACKAGE_VERSION,
+        V3_SOURCE_COMMIT,
+        child_capability_manifest,
+    )
+    from flowweave.shared.domain.openhands import OpenHandsServerIdentity
+
+    # V3 remains an immutable image contract when the build baseline advances.
+    parent_identity = OpenHandsServerIdentity(
+        V3_PACKAGE_VERSION, V3_SOURCE_COMMIT, V3_SOURCE_COMMIT
+    )
 
     config = config_from_binding(db, binding)
     profile = (
@@ -1652,9 +1661,7 @@ def _create_native_conversation(
         runtime_root=runtime_root,
         system_message_suffix_append=system_message_suffix_append,
         protocol_profile=profile,
-        runtime_server_identity=(
-            CURRENT_OPENHANDS_SERVER_IDENTITY if profile == "OH_FW_V3" else None
-        ),
+        runtime_server_identity=(parent_identity if profile == "OH_FW_V3" else None),
     )
     if profile == "OH_FW_V3":
         agent_spec = attach_parent_capability(
@@ -1662,7 +1669,7 @@ def _create_native_conversation(
             binding,
             agent_spec,
             profile=profile,
-            identity=CURRENT_OPENHANDS_SERVER_IDENTITY,
+            identity=parent_identity,
             generation=runtime.active_generation or 0,
             runtime_image_digest=runtime.runtime_image_digest,
             runtime_manifest={

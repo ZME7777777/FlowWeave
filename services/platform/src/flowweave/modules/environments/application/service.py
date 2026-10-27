@@ -20,6 +20,12 @@ from flowweave.runtime.child_contract import (
     V3_SOURCE_COMMIT,
     require_child_capability_manifest,
 )
+from flowweave.runtime.child_governance_contract import (
+    V4_ARCHIVE_SHA256,
+    V4_PACKAGE_VERSION,
+    V4_SOURCE_COMMIT,
+    require_governed_child_capability_manifest,
+)
 from flowweave.runtime.protocol_profiles import (
     DEFAULT_FLOW_RUN_PROTOCOL_PROFILE,
     FlowRunProtocolProfile,
@@ -172,7 +178,11 @@ def validate_runtime_manifest(
         )
     if runtime_protocol_profile is not None:
         profile = require_flow_run_protocol_profile(runtime_protocol_profile)
-        if profile in {FlowRunProtocolProfile.OH_FW_V2, FlowRunProtocolProfile.OH_FW_V3}:
+        if profile in {
+            FlowRunProtocolProfile.OH_FW_V2,
+            FlowRunProtocolProfile.OH_FW_V3,
+            FlowRunProtocolProfile.OH_FW_V4,
+        }:
             execution_policy = document.get("execution_policy")
             execution_policy = (
                 cast(dict[str, object], execution_policy)
@@ -207,6 +217,20 @@ def validate_runtime_manifest(
             raise DomainError(
                 "ENVIRONMENT_RUNTIME_INCOMPATIBLE",
                 "The V3 Runtime image does not contain the frozen child extension",
+                409,
+                {"environment_version_id": environment_version_id},
+            )
+    if runtime_protocol_profile == FlowRunProtocolProfile.OH_FW_V4:
+        require_governed_child_capability_manifest(document.get("child_conversations"))
+        if (
+            actual_commit != V4_SOURCE_COMMIT
+            or actual_ref != V4_SOURCE_COMMIT
+            or provenance.get("source_archive_digest") != V4_ARCHIVE_SHA256
+            or actual_packages != {name: V4_PACKAGE_VERSION for name in expected_package_names}
+        ):
+            raise DomainError(
+                "ENVIRONMENT_RUNTIME_INCOMPATIBLE",
+                "The V4 Runtime image does not contain the frozen child governance extension",
                 409,
                 {"environment_version_id": environment_version_id},
             )
