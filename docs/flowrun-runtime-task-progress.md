@@ -12393,3 +12393,39 @@ Web typecheck、受影响 ESLint／Ruff、diff 和 CURRENT 唯一性检查通过
 本片发布范围为 platform／Web；先冻结同一代码 commit，再正式预检、最小上下文
 prepare、迁移并同步更新 api／stream-api／worker／web。实际部署身份、健康、
 公网浏览器验收及容量收尾完成后补记。当前与下一可执行重构切片均为 NONE。
+
+
+OPS-16 正式发布补记（2026-10-27）：实际部署代码为
+`3ba9aaf33875c954ae827dc31578655d403e1510`，包含拉取前 `a8d00c6b` 与远程
+`c881f5fd` 全部祖先。platform／Web 正式预检及 commit-bound 最小上下文 prepare
+均通过；源归档 SHA-256 分别为
+`29bf5c0828f2193e37eb3ec92dfbf5983655db70bd0ee3efbe728ae2581d5619`、
+`cf4b49d95f9b90de1601b90d9afe95e3fee7c07173a5217aaf37fab671c2ed64`。
+实际 linux/amd64 镜像 ID：platform
+`sha256:ef2a039e7d7d933df87474bd7f5bca1f2a9b8e8a1bb511b030ff2f409604385f`，
+Web `sha256:08614c5f560e6cfcd5454d3b959a709ce5d54057bf2c3393b193d18f78b11591`。
+均核对 OCI revision 与架构。实际平台镜像在唯一隔离 PostgreSQL 完成空库完整链
+经已发布 0177 到新 head、重复升级、非空 Boolean 与 FORCE RLS 验证，四个关键
+源码文件摘要匹配本次提交；测试数据库容器已移除，没有业务挂载或模型调用。
+
+发布前保留旧服务日志、精确 rollback tags 和服务器侧受保护的认证引用快照。
+正式 migration 成功后同步 recreate api／stream-api／worker／web；四服务同一
+revision，健康／readiness／Web HTTP 均通过。生产唯一 head 为
+`0178_merge_schedule_credentials`；原四条定时任务身份、owner、认证引用保留，
+新增字段回填符合非空选择语义且 FORCE RLS 保持。服务器 Compose／env 摘要及
+其余 43 个容器的 image／StartedAt 不变；没有重启 Provider、构建 OpenHands
+镜像或 replacement Runtime generation。发布后四服务日志错误计数均为零。
+
+导出实际运行 Web 镜像资源后，八项原定向 Chromium 回归全部通过；所加载的
+53 项 JS／CSS SHA-256 与镜像导出内容一致。服务器实际 Chromium 验证前缀
+登录、Agent 深层路由和根登录入口；公网 HTML／入口 JS／CSS 与运行镜像一致，
+API 认证边界为 401。全新浏览器网络确认认证请求带部署前缀，根 API 请求为零。
+这些受控 API／WebSocket 回归不等于真实模型业务执行，没有发送、暂停、继续
+或重放用户业务会话。
+
+platform／Web remote-release-finish 均通过健康、版本与容量门禁，回收两份
+超过 24 小时且未引用的受管上下文，以及一个可回收 Web 历史 image ID 的精确
+tags。保留当前镜像、每仓库一个不同版本回滚及全部容器引用，不清理共享
+BuildKit、卷、Workspace 或数据库备份。Web 收尾无剩余候选；收尾后再次复核
+四服务版本／健康、唯一迁移 head、服务器配置与其他容器不变。本补记不改变
+实际部署代码身份；本地集成与补记提交未推送，当前与下一可执行切片均为 NONE。
