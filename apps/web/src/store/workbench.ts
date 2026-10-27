@@ -6,6 +6,15 @@ const STORAGE_KEY = 'flowweave-workbench';
 const STORAGE_VERSION = 4;
 const VIEWS = new Set<ViewName>(['nodes', 'capabilities', 'environments', 'credentials', 'models', 'ldap-users', 'conversation-management', 'flows', 'runs', 'cases', 'schedules', 'workbench', 'agent-workbench']);
 
+interface RunDirectoryState {
+  selectedFlowId?: string;
+  selectedRunId?: string;
+  expandedFlowIds: string[];
+  collapsedScheduleIds: string[];
+  recordFilter: 'ALL' | 'MANUAL' | 'AUTOMATIC';
+  selectedRecordKeys: string[];
+}
+
 interface WorkbenchState {
   view: ViewName;
   selectedRunId?: string;
@@ -15,7 +24,9 @@ interface WorkbenchState {
   selectedWorkbenchMode?: 'MANUAL' | 'AUTOMATIC';
   selectedAutomaticRecordId?: string;
   selectedStepwiseRecordId?: string;
+  runDirectory: RunDirectoryState;
   setView: (view: ViewName) => void;
+  updateRunDirectory: (updates: Partial<RunDirectoryState>) => void;
   openRun: (runId: string, nodeRunId?: string) => void;
   openAutomaticRecord: (parentRunId: string, recordId: string, nodeRunId?: string, attemptId?: string) => void;
   openStepwiseRecord: (parentRunId: string, recordId: string, nodeRunId?: string, attemptId?: string) => void;
@@ -65,7 +76,16 @@ export const useWorkbenchStore = create<WorkbenchState>()(
   persist<WorkbenchState, [], [], PersistedWorkbenchState>(
     set => ({
       view: 'cases',
+      runDirectory: {
+        expandedFlowIds: [],
+        collapsedScheduleIds: [],
+        recordFilter: 'ALL',
+        selectedRecordKeys: [],
+      },
       setView: view => set({ view }),
+      updateRunDirectory: updates => set(state => ({
+        runDirectory: { ...state.runDirectory, ...updates },
+      })),
       openRun: (selectedRunId, selectedNodeRunId) => set({
         view: 'workbench', selectedRunId, selectedNodeRunId, selectedAttemptId: undefined,
         selectedWorkbenchMode: undefined, selectedAutomaticRecordId: undefined, selectedStepwiseRecordId: undefined,

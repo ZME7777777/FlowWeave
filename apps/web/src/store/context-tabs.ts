@@ -14,10 +14,12 @@ const record = (value: unknown): Record<string, unknown> => value && typeof valu
 // or page data. The route still performs its normal server authorization on open.
 function navigationState(value: unknown) {
   const source = record(record(value).flowweaveFlowRun);
-  if (typeof source.runId !== 'string' || typeof source.nodeRunId !== 'string' || typeof source.attemptId !== 'string') return {};
+  if (typeof source.runId !== 'string') return {};
   return {
     flowweaveFlowRun: {
-      runId: source.runId, nodeRunId: source.nodeRunId, attemptId: source.attemptId,
+      runId: source.runId,
+      nodeRunId: typeof source.nodeRunId === 'string' ? source.nodeRunId : undefined,
+      attemptId: typeof source.attemptId === 'string' ? source.attemptId : undefined,
       mode: source.mode === 'AUTOMATIC' ? 'AUTOMATIC' : 'MANUAL',
       automaticRecordId: typeof source.automaticRecordId === 'string' ? source.automaticRecordId : undefined,
       stepwiseRecordId: typeof source.stepwiseRecordId === 'string' ? source.stepwiseRecordId : undefined,
@@ -48,7 +50,7 @@ export function readContextTabs(user: AuthUser): ContextTabsSnapshot {
         const path = typeof tab.path === 'string' ? tab.path : root;
         const leaf = path.match(/^\/flow-runs\/([^/]+)\/nodes\/([^/]+)\/attempts\/([^/]+)\/agent-sessions(?:\/[^/?#]+)?$/);
         const source = 'flowweaveFlowRun' in state ? state.flowweaveFlowRun : undefined;
-        const validLeaf = leaf && (source
+        const validLeaf = leaf && (source?.nodeRunId && source.attemptId
           ? source.runId === tab.id && encodeURIComponent(source.nodeRunId) === leaf[2] && encodeURIComponent(source.attemptId) === leaf[3]
           : leaf[1] === encodeURIComponent(tab.id));
         snapshot.runs.push({
