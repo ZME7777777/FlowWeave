@@ -12592,3 +12592,27 @@ head 保持 `0178_merge_schedule_credentials`。既有 Chromium 目录回归通�
 断言将在实际镜像回归中核对。受控 API 验收不代表真实模型执行业务。沿用当前
 会话授权仅发布 Web，实际身份与发布结果完成后补记。当前与下一可执行切片
 均为 NONE。
+
+
+OPS-20 正式发布补记（2026-10-27）：实际部署代码为
+`4902c56df91d6c08c711366cab4dbcb93bdb4101`。Web 正式预检与 commit-bound
+最小上下文 prepare 通过，源归档 SHA-256 为
+`f6f5af2678b59136af88a24fe3d9ced4f4ecf96eccbf2595f40b01170c9529cb`，
+实际 linux/amd64 Web image ID 为
+`sha256:b2f571e1fbd077894c0622a2087a5555b0c43a2b68e8903e0f656b8b837174e7`，
+OCI revision 一致。保留日志与 rollback tag 后仅 recreate Web，HTTP／健康
+通过；服务器 Compose／env 摘要与其他 47 个容器的 image／StartedAt 不变。
+没有迁移、API／Worker／Provider 重启、Runtime replacement 或业务消息操作。
+
+最终本地源码 Chromium 定向回归通过，含新增的返回后选择保留断言；内容点击
+与 Enter 不导航、独立按钮进入及三屏宽排版同时通过。镜像静态导出遇到传输
+阻塞，重试有界超时，公网完整资源导出遇到 HTTP 502，未将实际镜像行为回归
+计为通过。实际镜像身份、线上入口 HTML／JS／CSS 摘要与公网路由核验通过；
+服务器 Chromium 验证前缀登录、Agent 深层路由、根登录及 API 401 边界，全新
+浏览器请求带部署前缀、根 API 请求数为零。受控源码回归不代表真实模型执行。
+
+Web remote-release-finish 通过健康、版本与容量门禁；没有过期受管上下文，
+精确回收一个可回收历史 image ID 的 tags，保留当前镜像、一个不同版本回滚
+及所有容器引用，不清理共享 BuildKit、卷、Workspace 或数据库备份。收尾后
+版本／健康、服务器配置与其他容器再次通过检查。补记不改变实际部署应用
+身份，本地提交未推送；当前与下一可执行切片均为 NONE。
