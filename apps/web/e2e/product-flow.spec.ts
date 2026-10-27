@@ -3505,23 +3505,19 @@ test('Agent new session keeps full capabilities and can create an explicit works
   await composer.press('Enter');
   await expect(composer).toHaveValue('/lark-tools:summarize ');
 
+  await composer.fill('sadasdas/');
+  await expect(commandMenu).toHaveCount(0);
   await composer.fill('请先$继续');
-  await composer.evaluate(element => {
-    element.setSelectionRange(3, 3);
-    element.dispatchEvent(new Event('select', { bubbles: true }));
-  });
-  await expect(skillMenu.getByRole('option', { name: /lark-sheets/ })).toBeVisible();
-  await composer.press('Enter');
-  await expect(composer).toHaveValue('请先$lark-sheets 继续');
-
+  await expect(skillMenu).toHaveCount(0);
   await composer.fill('请先/继续');
-  await composer.evaluate(element => {
-    element.setSelectionRange(3, 3);
-    element.dispatchEvent(new Event('select', { bubbles: true }));
-  });
+  await expect(commandMenu).toHaveCount(0);
+  await composer.fill('请执行 /');
   await expect(commandMenu.getByRole('option', { name: /summarize/ })).toBeVisible();
-  await composer.press('Enter');
-  await expect(composer).toHaveValue('请先/lark-tools:summarize 继续');
+
+  await composer.fill('/ ');
+  await expect(commandMenu).toHaveCount(0);
+  await composer.fill('/\n');
+  await expect(commandMenu).toHaveCount(0);
   await composer.fill('');
 
   await page.getByLabel('打开模型与推理设置').click();

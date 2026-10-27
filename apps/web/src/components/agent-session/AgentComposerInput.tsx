@@ -18,9 +18,10 @@ export interface ComposerSuggestion {
 }
 
 function composerTrigger(value: string, cursor: number): { sigil: '$' | '/' | '@'; query: string; start: number; end: number } | undefined {
-  const match = /([$/@])([^\s]*)$/.exec(value.slice(0, cursor));
+  const match = /(?:^| )([$/@])([^\s]*)$/.exec(value.slice(0, cursor));
   if (!match) return undefined;
-  return { sigil: match[1] as '$' | '/' | '@', query: match[2], start: cursor - match[0].length, end: cursor };
+  const start = match.index + match[0].indexOf(match[1]);
+  return { sigil: match[1] as '$' | '/' | '@', query: match[2], start, end: cursor };
 }
 
 function isImeComposition(event: ReactKeyboardEvent<HTMLTextAreaElement>): boolean {
