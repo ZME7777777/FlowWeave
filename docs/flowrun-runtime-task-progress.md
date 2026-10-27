@@ -12749,3 +12749,27 @@ Web typecheck、受影响 ESLint、diff／CURRENT 唯一性及唯一 Alembic hea
 手动记录时间含义和切换任务时迟到旧页不污染。截图人工检查通过；使用受控
 API，不代表真实模型执行。沿用当前会话授权仅发布 Web，实际发布结果完成
 后补记。当前与下一可执行重构切片均为 NONE。
+
+
+OPS-23 正式发布补记（2026-10-28）：实际部署代码为
+`516e647f6460b2d1c0f29da93f0553e1f113d196`，Web 正式预检及 commit-bound
+最小上下文 prepare 通过，源归档 SHA-256 为
+`91677197d1b6acd16476f5db1c618327f104745f004566c87cebc0bfec693478`。
+实际 linux/amd64 Web image ID 为
+`sha256:b1a936b4c55ecbefa2039f79c17ffdfdf5e5a584cdffde80f0c464292ffe74ee`，
+OCI revision 核对一致。保留旧日志和 rollback tag 后仅 recreate Web，HTTP／
+健康通过；服务器 Compose／env 摘要与其他 47 个容器的 image／StartedAt 不变，
+没有迁移、平台服务重启、Provider 变更或 Runtime replacement。
+
+本地开发资源六项 Chromium 定向回归通过，实际截图人工检查通过；不将其
+声称为生产认证后的功能回归。服务器 Chromium 验证前缀登录、Agent 深层
+路由、根登录和 API 401 边界通过；公网 HTML／入口 JS／CSS 摘要匹配运行
+镜像，新浏览器确认认证请求带部署前缀、根 API 请求为零。未对用户业务
+任务执行触发／暂停／恢复／删除操作，未调用真实模型。发布收尾结果完成后补记。
+
+
+Web remote-release-finish 通过健康、版本与容量门禁，无过期受管上下文；精确
+回收一个可回收历史 image ID 的 tags，保留当前 Web、一个不同版本回滚及
+全部容器引用，不清理共享 BuildKit、卷、Workspace 或数据库备份。收尾后
+再次核对 Web 版本／健康、服务器配置及其他 47 个容器保持。本补记不改变
+实际部署应用身份，本地提交未推送；当前与下一可执行重构切片均为 NONE。
