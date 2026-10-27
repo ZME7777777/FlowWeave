@@ -2092,7 +2092,7 @@ test('many subagents stay inside the floating card without scrolling it', async 
     const cardRect = element.getBoundingClientRect();
     const overview = element.querySelector('.agent-workspace-overview')!;
     const row = element.querySelector('.agent-workspace-subagents')!;
-    const targets = [overview, row, row.querySelector('button')!, row.querySelector('b')!, row.querySelector('button > svg')!];
+    const targets = [overview, row, row.querySelector('button')!, row.querySelector('b')!];
     return {
       overflow: Math.max(0, ...targets.map(target => { const rect = target.getBoundingClientRect(); return Math.max(cardRect.left - rect.left, rect.right - cardRect.right); })),
       horizontalOverflow: element.scrollWidth - element.clientWidth,

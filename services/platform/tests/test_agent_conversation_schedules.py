@@ -1,8 +1,11 @@
 from datetime import timedelta
+from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
-from sqlalchemy import select
+from alembic import command
+from alembic.config import Config
+from sqlalchemy import select, text
 
 from flowweave.bootstrap.worker import _DELIVERY_TASK_TYPES
 from flowweave.modules.agent_sessions.application import schedules
@@ -166,7 +169,10 @@ def test_agent_conversation_schedule_delivery_creates_a_distinct_native_conversa
 
 
 
-def test_unconfigured_schedule_defaults_to_all_credentials(settings, db_session_factory, monkeypatch):
+@pytest.mark.parametrize("selection", ["unconfigured", "empty", "selected"])
+def test_schedule_credential_defaults_preserve_explicit_selections(
+    settings, db_session_factory, monkeypatch, selection
+):
     created_runs: list[dict[str, object]] = []
 
     def bootstrap_conversation(db, workspace_id: str, **kwargs):
@@ -199,12 +205,13 @@ def test_unconfigured_schedule_defaults_to_all_credentials(settings, db_session_
             model_name="model-1",
             reasoning_effort=None,
             capability_version_ids=(),
-            credential_ids=(),
+            credential_ids=(credential_id,) if selection == "selected" else (),
         )
         schedule = db.get(AgentConversationSchedule, created["id"])
         assert schedule is not None
-        schedule.credentials_configured = False
-        assert schedules._schedule_dict(db, schedule)["credential_ids"] == [credential_id]
+        schedule.credentials_configured = selection != "unconfigured"
+        expected = [] if selection == "empty" else [credential_id]
+        assert schedules._schedule_dict(db, schedule)["credential_ids"] == expected
 
         schedules.trigger_schedule(db, workspace.id, schedule.id)
         occurrence = db.scalar(
@@ -215,7 +222,58 @@ def test_unconfigured_schedule_defaults_to_all_credentials(settings, db_session_
         assert occurrence is not None
         schedules.deliver_occurrence(db, occurrence.id)
 
-        assert created_runs[0]["credential_ids"] == (credential_id,)
+        assert created_runs[0]["credential_ids"] == tuple(expected)
+
+
+def test_schedule_credentials_migrate_from_deployed_head(settings, db_session_factory):
+    with db_session_factory() as db:
+        workspace = ensure_default_agent_workspace(db)
+        credential_id = save_credential(
+            db,
+            WebsiteCredentialWrite(
+                name="migration-credential",
+                target_host="example.test",
+                auth_type="TOKEN",
+                secret="test-token",
+            ),
+        )["id"]
+        expected = {}
+        for index, credential_ids in enumerate(((), (credential_id,))):
+            created = schedules.create_schedule(
+                db, workspace.id, name=f"迁移保留 {index}", prompt="保留认证选择",
+                cron_expression="0 9 * * *", workspace_mode="AUTOMATION",
+                work_directory_id=None, conversation_mode="NEW",
+                model_provider_id="provider-1", model_name="model-1",
+                reasoning_effort=None, capability_version_ids=(), credential_ids=credential_ids,
+            )
+            expected[created["id"]] = list(credential_ids)
+        db.commit()
+
+    config = Config(str(Path(__file__).parents[1] / "alembic.ini"))
+    config.attributes["database_url"] = settings.database_url
+    try:
+        command.downgrade(config, "0177_merge_workspace_credentials")
+        command.downgrade(config, "0177_schedule_default_credentials_all-1")
+        command.upgrade(config, "0177_merge_workspace_credentials")
+        with db_session_factory() as db:
+            assert db.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == (
+                "0177_merge_workspace_credentials"
+            )
+        command.upgrade(config, "head")
+        command.upgrade(config, "head")
+        with db_session_factory() as db:
+            rows = list(db.scalars(select(AgentConversationSchedule)))
+            assert {row.id: row.credential_ids_json for row in rows} == expected
+            assert all(row.credentials_configured == bool(expected[row.id]) for row in rows)
+            assert db.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == (
+                "0178_merge_schedule_credentials"
+            )
+            assert all(db.execute(text(
+                "SELECT relrowsecurity, relforcerowsecurity FROM pg_class "
+                "WHERE relname = 'agent_conversation_schedules'"
+            )).one())
+    finally:
+        command.upgrade(config, "head")
 
 
 @pytest.mark.parametrize("initial_mode", ["NEW", "CONTINUE"])

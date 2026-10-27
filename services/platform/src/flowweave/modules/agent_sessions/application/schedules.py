@@ -18,7 +18,10 @@ from flowweave.modules.agent_sessions.infrastructure.models import (
 )
 from flowweave.modules.agent_workspaces.application import work_directories
 from flowweave.modules.agent_workspaces.infrastructure.models import AgentWorkDirectory
-from flowweave.modules.credentials.application.service import list_credentials, resolve_credentials_for_agent
+from flowweave.modules.credentials.application.service import (
+    list_credentials,
+    resolve_credentials_for_agent,
+)
 from flowweave.modules.tasks.application.service import enqueue
 from flowweave.modules.tasks.infrastructure.models import BackgroundTask
 from flowweave.modules.users.application.security import tenant_user
