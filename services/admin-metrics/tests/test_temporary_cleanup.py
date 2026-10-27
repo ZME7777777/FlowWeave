@@ -23,7 +23,12 @@ def test_cleanup_respects_age_managed_runtime_and_lock(monkeypatch):
         "_observations",
         lambda _: {
             "managed_resources": [
-                {"kind": "agent-runtime", "resource_id": "owned-id", "resource_name": "owned-name"},
+                {
+                    "kind": "agent-runtime",
+                    "state": "RUNNING",
+                    "resource_id": "owned-id",
+                    "resource_name": "owned-name",
+                },
                 {"kind": "environment", "resource_id": "excluded", "resource_name": "excluded"},
             ]
         },
@@ -99,3 +104,20 @@ def test_collect_once_writes_through_psycopg_cursor_and_releases_lock(monkeypatc
     assert rows[0][1:] == ("SERVICE", "api", "cpu_usage_percent", 2.5)
     assert any("DELETE FROM admin_metric_samples" in query for query in calls)
     assert "pg_advisory_unlock" in calls[-1]
+
+
+def test_cleanup_targets_only_running_agent_runtimes():
+    resources = sampler._managed_runtime_resources(
+        {
+            "managed_resources": [
+                {
+                    "kind": "agent-runtime",
+                    "state": state,
+                    "resource_id": state,
+                    "resource_name": state,
+                }
+                for state in ("RUNNING", "EXITED", "CREATED", "UNKNOWN")
+            ]
+        }
+    )
+    assert resources == [{"resource_id": "RUNNING", "resource_name": "RUNNING"}]

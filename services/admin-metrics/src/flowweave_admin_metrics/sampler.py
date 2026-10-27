@@ -83,7 +83,11 @@ def cleanup_expired_temporary_services(settings: Settings) -> int:
 def _managed_runtime_resources(observations: dict[str, Any]) -> list[dict[str, str]]:
     resources: list[dict[str, str]] = []
     for resource in observations.get("managed_resources", []):
-        if not isinstance(resource, dict) or resource.get("kind") != "agent-runtime":
+        if (
+            not isinstance(resource, dict)
+            or resource.get("kind") != "agent-runtime"
+            or resource.get("state") != "RUNNING"
+        ):
             continue
         resource_id = resource.get("resource_id")
         resource_name = resource.get("resource_name")

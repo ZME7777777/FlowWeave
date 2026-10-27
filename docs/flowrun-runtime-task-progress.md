@@ -12102,3 +12102,9 @@ Connection.executemany AttributeError；正式 Psycopg 接口只在 Cursor 提�
 清理／锁释放回归。此修复随最终代码提交重新冻结所有镜像，不复用旧 revision
 标签作为最终版本。扩展 Provider 套件 65 passed、4 failed；拉取前相同套件
 61 passed、4 failed，四个既有夹具失败名称完全一致，无新增失败。
+
+OPS-11 线上验收补齐：八服务切换及健康／版本检查通过，真实采集已成功写入
+样本；新增过期服务清理遇到已退出的历史 Runtime 容器时返回 Docker 502，
+导致当轮清理提前结束。修正资源选择为仅扫描明确 RUNNING 的 Agent Runtime，
+不启动、删除或修改历史容器；新增运行／退出／未启动／未知状态过滤回归。
+随后以新提交重新冻结镜像并完成最终发布，最终身份以正式补记为准。
