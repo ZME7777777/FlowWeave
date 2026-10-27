@@ -531,6 +531,42 @@ def test_attachment_aliases_are_hidden_from_message_body() -> None:
     assert annotations == ()
 
 
+def test_workspace_reference_aliases_are_distinct_from_attachment_aliases() -> None:
+    attachment_path = (
+        "/runtime/workspace/project/uploads/"
+        "00000000-0000-0000-0000-000000000001-0123456789abcdef0123456789abcdef--notes.txt"
+    )
+    workspace_reference = {
+        "path": "/runtime/workspace/project/src/main.ts",
+        "kind": "file",
+        "display_name": "main.ts",
+    }
+
+    prompt, _image_urls = session_conversations.message_payload(
+        "请比较 @附件1 与 @本地文件1",
+        ({"path": attachment_path, "filename": "notes.txt"},),
+        (),
+        (workspace_reference,),
+    )
+
+    payload = json.loads(prompt.rpartition(session_conversations._MESSAGE_CONTEXT_V5_MARKER)[2])
+    assert payload["attachment_aliases"] == [
+        {"alias": "@附件1", "filename": "notes.txt", "path": attachment_path}
+    ]
+    assert payload["workspace_reference_aliases"] == [
+        {
+            "alias": "@本地文件1",
+            "filename": "main.ts",
+            "path": "/runtime/workspace/project/src/main.ts",
+        }
+    ]
+    display_content, _references, workspace_references, _annotations = (
+        session_conversations.project_conversation_references(prompt)
+    )
+    assert display_content == "请比较 @附件1 与 @本地文件1"
+    assert workspace_references == (workspace_reference,)
+
+
 def test_conversation_references_are_resolved_by_formal_native_event_id() -> None:
     class Runtime:
         def read_event(self, _handle: object, event_id: str) -> RuntimeEvent | None:

@@ -2322,13 +2322,6 @@ function selectPreviewText(root: HTMLElement, scrollContainer: HTMLElement, cont
   return range;
 }
 
-function workspaceReferenceLabel(reference: AgentWorkspaceReference): string {
-  const selection = reference.selection;
-  return selection
-    ? `${reference.relative_path ?? reference.display_name} · ${selection.start_line}:${selection.start_column}–${selection.end_line}:${selection.end_column}`
-    : reference.kind === 'directory' ? '工作区目录 · 本地路径引用' : '工作区文件 · 本地路径引用';
-}
-
 function workspaceReferenceKey(reference: AgentWorkspaceReference): string {
   return `${reference.path}:${JSON.stringify(reference.selection ?? {})}`;
 }
@@ -2910,6 +2903,27 @@ function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expande
   const nodes = useMemo(() => workspaceTree(entries, root), [entries, root]);
   const selectionAnchor = useRef<string | undefined>(undefined);
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
+  const selectedNodes = useMemo(() => {
+    const entriesByPath = new Map<string, WorkspaceTreeNode>();
+    const collect = (items: WorkspaceTreeNode[]) => items.forEach(item => {
+      entriesByPath.set(item.path, item);
+      collect(item.children);
+    });
+    collect(nodes);
+    return [...selectedPaths].map(path => entriesByPath.get(path)).filter((node): node is WorkspaceTreeNode => Boolean(node));
+  }, [nodes, selectedPaths]);
+  useEffect(() => {
+    const copySelectedEntries = (event: KeyboardEvent) => {
+      if (event.key.toLowerCase() !== 'c' || !(event.metaKey || event.ctrlKey) || !selectedNodes.length) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.isContentEditable || target?.closest('input, textarea, select, [contenteditable=true]')) return;
+      event.preventDefault();
+      const values = selectedNodes.map(node => event.altKey ? relativeWorkspacePath(node.path, root) : node.name);
+      void copyTextToClipboard(values.join('\n')).catch(() => undefined);
+    };
+    document.addEventListener('keydown', copySelectedEntries);
+    return () => document.removeEventListener('keydown', copySelectedEntries);
+  }, [root, selectedNodes]);
   const visibleNodes = useMemo(() => {
     const visible: Array<{ node: WorkspaceTreeNode; depth: number }> = [];
     const collect = (items: WorkspaceTreeNode[], depth = 0) => items.forEach(node => {
@@ -4843,12 +4857,12 @@ function WorkspaceDrawer({
         return;
       }
       const width = startWidth + distance;
-      if (width <= fileTreeMinimumWidth - fileTreeCollapseThreshold) {
+      if (width <= fileTreeMinimumWidth) {
         setFileTreeCollapsed(true);
         return;
       }
       setFileTreeCollapsed(false);
-      setFileTreeWidth(Math.min(maximum(), Math.max(fileTreeMinimumWidth, width)));
+      setFileTreeWidth(Math.min(maximum(), width));
     };
     const stop = () => {
       window.removeEventListener('pointermove', move);
@@ -7675,6 +7689,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (index < 0) return;
     composerRef.current?.insert(`@附件${index + 1}`);
   }, [attachments]);
+  const insertWorkspaceReferenceAlias = useCallback((reference: AgentWorkspaceReference) => {
+    const index = workspaceReferences.findIndex(item => workspaceReferenceKey(item) === workspaceReferenceKey(reference));
+    if (index < 0) return;
+    composerRef.current?.insert(`@本地文件${index + 1}`);
+  }, [workspaceReferences]);
   const previewWorkspaceReference = useCallback((reference: AgentWorkspaceReference) => {
     setFilePreviewRequest({
       key: randomId(),
@@ -10402,7 +10421,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (conversationDraft && workspace) void api.deleteDraftAttachments(workspace.id, conversationDraft.id, item.path).catch(() => undefined);
   }
 }}>×</button></span>)}{pendingAttachments.filter(item => item.scope === composerScope).map(item => <span key={item.id} className={`agent-pending-attachment ${item.state}`} title={item.state === 'failed' ? '附件上传失败，请重试或删除。' : `正在上传 ${item.progress}%`}><span className="agent-attachment-open">{item.previewUrl ? <img src={item.previewUrl} alt=""/> : <FileTypeIcon filename={item.filename} mimeType={item.mimeType} size={16}/>}<em>{item.filename}</em>{item.state === 'uploading' && <small>{item.progress}%</small>}{item.state === 'failed' && <span className="agent-attachment-retry-overlay"><button type="button" onClick={() => retryPendingAttachment(item.id)}>重试</button></span>}</span>{item.state === 'uploading' && <i className="agent-attachment-progress" style={{ '--upload-progress': `${item.progress}%` } as CSSProperties}/>}<button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => removePendingAttachment(item.id)}>×</button></span>)}</>}<ComposerConversationReferenceList references={references} onOpen={reference => selectConversation(reference.sourceBindingId, { revealSidebar: true })} onRemove={reference => setReferences(current => current.filter(item => item !== reference))}/>{(selected || conversationDraft) && <ComposerAnnotationList annotations={composerAnnotations} currentBindingId={selected?.id ?? conversationDraft?.id} onLocate={locateAnnotation} onRemove={annotation => setComposerAnnotations(current => current.filter(item => item.id !== annotation.id))} onUpdate={(annotation, comment) => void updateAnnotation(annotation, comment)}/>}</div>}
-        {workspaceReferences.length > 0 && <div className="agent-attachments agent-workspace-references" aria-label="已添加的工作区引用">{workspaceReferences.map(reference => <span key={workspaceReferenceKey(reference)} title={reference.path}><span className="agent-attachment-open">{reference.kind === 'directory' ? <Folder size={14}/> : <FileCode2 size={14}/>}<em><b>{reference.display_name}</b><small>{workspaceReferenceLabel(reference)}</small></em></span><button type="button" className="agent-attachment-remove" aria-label={'移除工作区引用 ' + reference.display_name} onClick={() => setWorkspaceReferences(current => current.filter(item => workspaceReferenceKey(item) !== workspaceReferenceKey(reference)))}>×</button></span>)}</div>}
+        {workspaceReferences.length > 0 && <div className="agent-attachments agent-workspace-references" aria-label="已添加的工作区引用">{workspaceReferences.map((reference, index) => <span key={workspaceReferenceKey(reference)} title={reference.path}><button type="button" className="agent-attachment-open" title={`预览本地引用：${reference.display_name}`} onClick={() => previewWorkspaceReference(reference)}>{reference.kind === 'directory' ? <Folder size={16}/> : <FileTypeIcon filename={reference.display_name} mimeType="text/plain" size={16}/>}<em>{reference.display_name}</em></button><button type="button" className="agent-attachment-alias" aria-label={`引用本地文件 ${index + 1}`} title={`插入 @本地文件${index + 1}`} onClick={() => insertWorkspaceReferenceAlias(reference)}>@</button><button type="button" className="agent-attachment-remove" aria-label={'移除工作区引用 ' + reference.display_name} onClick={() => setWorkspaceReferences(current => current.filter(item => workspaceReferenceKey(item) !== workspaceReferenceKey(reference)))}>×</button></span>)}</div>}
         </div>
         <footer>
           <div className="agent-composer-context">

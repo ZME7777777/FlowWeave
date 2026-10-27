@@ -3405,6 +3405,14 @@ def _message_payload(
     prompt = content.strip()
     normalized_references = _validated_conversation_references(references)
     normalized_workspace_references = _validated_workspace_references(workspace_references)
+    workspace_reference_aliases = [
+        {
+            "alias": f"@本地文件{index}",
+            "filename": reference["display_name"],
+            "path": reference["path"],
+        }
+        for index, reference in enumerate(normalized_workspace_references, start=1)
+    ]
     # Attachments need the same hidden transport envelope as other contextual
     # material: the Runtime receives stable aliases and paths, while history
     # continues to render only the user's original text and attachment cards.
@@ -3425,6 +3433,7 @@ def _message_payload(
                 "workspace_references": normalized_workspace_references,
                 "collaboration_annotations": annotations,
                 "attachment_aliases": attachment_aliases,
+                "workspace_reference_aliases": workspace_reference_aliases,
                 "current_user_request": {"content": prompt},
             },
             ensure_ascii=False,

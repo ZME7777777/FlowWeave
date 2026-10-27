@@ -949,6 +949,68 @@ test('workspace file tree collapses smoothly and ignores a short drag while coll
   await expect.poll(() => pane.evaluate(element => element.getBoundingClientRect().width)).toBeGreaterThanOrEqual(180);
 });
 
+
+test('workspace file tree copies selected names and relative paths with shortcuts', async ({ page, context }) => {
+  await openWorkspace(page);
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  const root = '/runtime/workspace/project';
+  await page.route('**/api/v1/agent-workspaces/*/workspace/directory**', route => {
+    const parentPath = new URL(route.request().url()).searchParams.get('parent_path') ?? root;
+    const entries = parentPath === root
+      ? [
+        { path: `${root}/src`, kind: 'directory', size: 0 },
+        { path: `${root}/README.md`, kind: 'file', size: 128 },
+      ]
+      : parentPath === `${root}/src`
+        ? [{ path: `${root}/src/config.ts`, kind: 'file', size: 42 }]
+        : [];
+    return json(route, { parent_path: parentPath, entries, next_cursor: null });
+  });
+  await page.goto('/agent/conversations/scheduled-conversation');
+  await page.getByRole('button', { name: '新建工作区页签', exact: true }).first().click();
+  await page.locator('.agent-workspace-tab-launcher.active').getByRole('button', { name: '文件', exact: true }).click();
+  await page.getByRole('button', { name: 'README.md', exact: true }).click();
+  await page.keyboard.press('Meta+C');
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('README.md');
+  await page.getByRole('button', { name: 'src', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'config.ts', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'config.ts', exact: true }).click();
+  await page.keyboard.press('Meta+C');
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('config.ts');
+  await page.keyboard.press('Meta+Alt+C');
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('src/config.ts');
+});
+
+test('workspace file tree collapses immediately at its minimum expanded width', async ({ page }) => {
+  await openWorkspace(page);
+  await page.goto('/agent/conversations/scheduled-conversation');
+  await page.getByRole('button', { name: '新建工作区页签', exact: true }).first().click();
+  await page.locator('.agent-workspace-tab-launcher.active').getByRole('button', { name: '文件', exact: true }).click();
+  const files = page.locator('.agent-workspace-files');
+  const resize = page.getByRole('separator', { name: '调整文件目录宽度', exact: true });
+  const pane = page.locator('.agent-file-tree-pane');
+  const box = await resize.boundingBox();
+  const initialWidth = await pane.evaluate(element => element.getBoundingClientRect().width);
+  if (!box) throw new Error('Expected file tree resize handle');
+  const startX = box.x + box.width / 2;
+  const y = box.y + box.height / 2;
+  await page.mouse.move(startX, y);
+  await page.mouse.down();
+  await page.mouse.move(startX - (initialWidth - 181), y);
+  await page.mouse.up();
+  await expect.poll(() => pane.evaluate(element => element.getBoundingClientRect().width)).toBeGreaterThanOrEqual(180);
+  await expect(files).not.toHaveClass(/file-tree-collapsed/);
+  const minimumWidthBox = await resize.boundingBox();
+  if (!minimumWidthBox) throw new Error('Expected visible file tree resize handle');
+  const minimumX = minimumWidthBox.x + minimumWidthBox.width / 2;
+  const minimumY = minimumWidthBox.y + minimumWidthBox.height / 2;
+  await page.mouse.move(minimumX, minimumY);
+  await page.mouse.down();
+  await page.mouse.move(minimumX - 1, minimumY);
+  await page.mouse.up();
+  await expect(files).toHaveClass(/file-tree-collapsed/);
+});
+
 test('clicking a conversation keeps the sidebar list at its current position', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 600 });
   await openWorkspace(page, [], true);
@@ -1106,7 +1168,14 @@ for (const width of [1440, 1024]) {
     await main.locator('.agent-workbench-header').dispatchEvent('dragenter', { dataTransfer: files });
     await expect(overlay).toBeVisible();
     await main.locator('.agent-workbench-header').dispatchEvent('drop', { dataTransfer: files });
-    await expect(main.getByLabel('已添加的工作区引用')).toContainText('main.ts');
+    const workspaceReferences = main.getByLabel('已添加的工作区引用');
+    await expect(workspaceReferences).toContainText('main.ts');
+    await expect(workspaceReferences.getByText('工作区文件 · 本地路径引用')).toHaveCount(0);
+    await workspaceReferences.getByRole('button', { name: '引用本地文件 1', exact: true }).click();
+    await expect(input).toHaveValue('拖放时保留草稿@本地文件1');
+    await workspaceReferences.getByRole('button', { name: '移除工作区引用 main.ts', exact: true }).click();
+    await expect(workspaceReferences).toHaveCount(0);
+    await expect(main.getByRole('button', { name: '移除附件 main.ts', exact: true })).toHaveCount(0);
     await input.dispatchEvent('dragenter', { dataTransfer: transfer });
     await main.dispatchEvent('dragleave', { dataTransfer: transfer });
     await expect(overlay).toHaveCount(0);
