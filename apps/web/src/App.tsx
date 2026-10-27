@@ -226,20 +226,12 @@ export function App() {
   useEffect(() => {
     const update = (event: PopStateEvent) => {
       const flowRun = event.state?.flowweaveFlowRun;
-      if (
-        flowRun
-        && typeof flowRun.runId === 'string'
-        && typeof flowRun.nodeRunId === 'string'
-        && typeof flowRun.attemptId === 'string'
-      ) {
-        // Node sessions are a routed leaf of the selected Attempt. Restore
-        // that in-memory selection when Back returns to the originating
-        // workbench entry instead of falling through to the run list.
+      if (flowRun && typeof flowRun.runId === 'string') {
         useWorkbenchStore.setState({
           view: 'workbench',
           selectedRunId: flowRun.runId,
-          selectedNodeRunId: flowRun.nodeRunId,
-          selectedAttemptId: flowRun.attemptId,
+          selectedNodeRunId: typeof flowRun.nodeRunId === 'string' ? flowRun.nodeRunId : undefined,
+          selectedAttemptId: typeof flowRun.attemptId === 'string' ? flowRun.attemptId : undefined,
           selectedWorkbenchMode: flowRun.mode === 'AUTOMATIC' ? 'AUTOMATIC' : 'MANUAL',
           selectedAutomaticRecordId: flowRun.mode === 'AUTOMATIC' && typeof flowRun.automaticRecordId === 'string'
             ? flowRun.automaticRecordId
@@ -307,7 +299,18 @@ export function App() {
   }, [activeFlowRunTabId, flowRunRouteId, registerFlowRunTab, routePathname, user]);
   useEffect(() => {
     if (flowRunRouteId || nodeSessionRoute || view !== 'workbench' || !selectedRunId) return;
-    window.history.pushState({}, '', withDeploymentBase(`/flow-runs/${encodeURIComponent(selectedRunId)}`));
+    const selection = useWorkbenchStore.getState();
+    const state = {
+      flowweaveFlowRun: {
+        runId: selectedRunId,
+        nodeRunId: selection.selectedNodeRunId,
+        attemptId: selection.selectedAttemptId,
+        mode: selection.selectedWorkbenchMode,
+        automaticRecordId: selection.selectedAutomaticRecordId,
+        stepwiseRecordId: selection.selectedStepwiseRecordId,
+      },
+    };
+    window.history.pushState(state, '', withDeploymentBase(`/flow-runs/${encodeURIComponent(selectedRunId)}`));
     setRouteVersion(value => value + 1);
   }, [flowRunRouteId, nodeSessionRoute, selectedRunId, view]);
   const directAgentRoute = routePathname === '/agent' || routePathname === '/agent/schedules' || routePathname.startsWith('/agent/conversations/') || routePathname.startsWith('/agent/schedules/conversations/');

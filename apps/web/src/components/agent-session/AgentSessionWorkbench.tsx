@@ -2322,13 +2322,6 @@ function selectPreviewText(root: HTMLElement, scrollContainer: HTMLElement, cont
   return range;
 }
 
-function workspaceReferenceLabel(reference: AgentWorkspaceReference): string {
-  const selection = reference.selection;
-  return selection
-    ? `${reference.relative_path ?? reference.display_name} · ${selection.start_line}:${selection.start_column}–${selection.end_line}:${selection.end_column}`
-    : reference.kind === 'directory' ? '工作区目录 · 本地路径引用' : '工作区文件 · 本地路径引用';
-}
-
 function workspaceReferenceKey(reference: AgentWorkspaceReference): string {
   return `${reference.path}:${JSON.stringify(reference.selection ?? {})}`;
 }
@@ -2910,6 +2903,27 @@ function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expande
   const nodes = useMemo(() => workspaceTree(entries, root), [entries, root]);
   const selectionAnchor = useRef<string | undefined>(undefined);
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
+  const selectedNodes = useMemo(() => {
+    const entriesByPath = new Map<string, WorkspaceTreeNode>();
+    const collect = (items: WorkspaceTreeNode[]) => items.forEach(item => {
+      entriesByPath.set(item.path, item);
+      collect(item.children);
+    });
+    collect(nodes);
+    return [...selectedPaths].map(path => entriesByPath.get(path)).filter((node): node is WorkspaceTreeNode => Boolean(node));
+  }, [nodes, selectedPaths]);
+  useEffect(() => {
+    const copySelectedEntries = (event: KeyboardEvent) => {
+      if (event.key.toLowerCase() !== 'c' || !(event.metaKey || event.ctrlKey) || !selectedNodes.length) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.isContentEditable || target?.closest('input, textarea, select, [contenteditable=true]')) return;
+      event.preventDefault();
+      const values = selectedNodes.map(node => event.altKey ? relativeWorkspacePath(node.path, root) : node.name);
+      void copyTextToClipboard(values.join('\n')).catch(() => undefined);
+    };
+    document.addEventListener('keydown', copySelectedEntries);
+    return () => document.removeEventListener('keydown', copySelectedEntries);
+  }, [root, selectedNodes]);
   const visibleNodes = useMemo(() => {
     const visible: Array<{ node: WorkspaceTreeNode; depth: number }> = [];
     const collect = (items: WorkspaceTreeNode[], depth = 0) => items.forEach(node => {
@@ -3140,8 +3154,11 @@ function workspaceRootGitRepository(repositories: AgentSessionWorkspaceDetails['
   return root ? repositories.find(repository => repository.path.replace(/\/+$/, '') === root) : undefined;
 }
 
-function gitChangedFileCount(changes?: WorkspaceGitChanges) {
-  return new Set([...(changes?.staged ?? []), ...(changes?.unstaged ?? [])].map(file => file.path)).size;
+function gitChangeCounts(changes?: WorkspaceGitChanges) {
+  return {
+    staged: new Set((changes?.staged ?? []).map(file => file.path)).size,
+    unstaged: new Set((changes?.unstaged ?? []).map(file => file.path)).size,
+  };
 }
 
 function WorkspaceGitSidebar({ details, repository, mode, onModeChange, selectedCommit, onSelectCommit, syncRepository, loadLog, loadCommit, loadDiff, loadChanges, onOpenFileDiff, onOpenWorkingDiff, closedDiffEpoch }: {
@@ -3406,7 +3423,7 @@ function GitChangedFilesSplit({ staged, unstaged, selectedKind, selectedPath, on
     : collapsed.staged
       ? 'auto minmax(0,1fr)'
       : collapsed.unstaged
-        ? 'minmax(0,1fr) auto'
+        ? 'minmax(0,1fr) auto minmax(0,1fr)'
         : `minmax(0,${splitRatio}fr) 7px minmax(0,${1 - splitRatio}fr)`;
   return <div ref={containerRef} className={`agent-git-change-split${collapsed.staged && collapsed.unstaged ? ' both-collapsed' : ''}`} style={{ gridTemplateRows: rows }} onWheelCapture={preventHorizontalNavigation}>
     <ChangedFilesTree title="暂存区" empty="暂存区没有文件。" items={staged.map(file => ({ path: file.path, value: file }))} selectedPath={selectedKind === 'STAGED' ? selectedPath : undefined} onSelect={file => onSelect('STAGED', file)} renderMeta={file => <em>{file.status}</em>} collapsed={collapsed.staged} onToggleCollapsed={() => toggle('staged')}/>
@@ -4843,12 +4860,12 @@ function WorkspaceDrawer({
         return;
       }
       const width = startWidth + distance;
-      if (width <= fileTreeMinimumWidth - fileTreeCollapseThreshold) {
+      if (width <= fileTreeMinimumWidth) {
         setFileTreeCollapsed(true);
         return;
       }
       setFileTreeCollapsed(false);
-      setFileTreeWidth(Math.min(maximum(), Math.max(fileTreeMinimumWidth, width)));
+      setFileTreeWidth(Math.min(maximum(), width));
     };
     const stop = () => {
       window.removeEventListener('pointermove', move);
@@ -4936,13 +4953,14 @@ function WorkspaceDrawer({
     : conversationUsage?.total_tokens ?? 0;
   const sessionChangeAdditions = sessionChanges.reduce((total, change) => total + change.additions, 0);
   const sessionChangeDeletions = sessionChanges.reduce((total, change) => total + change.deletions, 0);
+  const workspaceGitChangeCounts = gitChangeCounts(workspaceGitChangesQuery.data);
   const visibleSources = sources.slice(0, 2);
   const workspaceTabLabel = (tab: WorkspaceToolTab) => tab.kind === 'launcher' ? tab.title || '新标签页' : tab.kind === 'browser' ? tab.title || (() => { try { return tab.url ? new URL(tab.url).hostname : 'HTML 页面'; } catch { return '浏览器'; } })() : tab.kind === 'files' ? '文件' : tab.kind === 'changes' ? `审查${reviewChanges.length ? ` · ${reviewChanges.length}` : ''}` : tab.kind === 'sources' ? `来源${sources.length ? ` · ${sources.length}` : ''}` : tab.kind === 'git' ? `提交 · ${tab.details.commit.short_id}` : tab.kind === 'git-working' ? `${tab.changeKind === 'STAGED' ? '暂存' : '本地'} · ${tab.file.path.split('/').at(-1)}` : tab.kind === 'subagents' ? '子智能体' : tab.kind === 'sidebar-chat' ? '侧边聊天' : details?.runtime.container_id || (details?.runtime.write_available ? '终端' : '连接中…');
   const workspaceTabIcon = (tab: WorkspaceToolTab) => tab.kind === 'files' ? <FileCode2 size={13}/> : tab.kind === 'browser' || tab.kind === 'launcher' ? <Globe2 size={13}/> : tab.kind === 'terminal' ? <SquareTerminal size={13}/> : tab.kind === 'sidebar-chat' ? <PanelRightOpen size={13}/> : tab.kind === 'sources' ? <Link2 size={13}/> : tab.kind === 'changes' ? <FileText size={13}/> : tab.kind === 'git' || tab.kind === 'git-working' ? <GitBranch size={13}/> : tab.kind === 'subagents' ? <Bot size={13}/> : <Plus size={13}/>;
   const conversationTabLabel = conversation ? conversationName(conversation) : '新会话';
   const summary = details && <section className="agent-workspace-overview">
     {conversation && <article className="agent-workspace-conversation-config"><Gauge size={16}/><div><small>会话用量</small><p className="agent-workspace-usage-line"><span>{`累计 ${conversationTotalTokens.toLocaleString('zh-CN')} Token`}</span><span>{`$${(conversationUsage?.accumulated_cost ?? 0).toFixed(6)}`}</span></p></div></article>}
-    {workspaceGitRepository && <article className="agent-workspace-git-summary"><button type="button" className="agent-workspace-git-summary-refresh" aria-label="刷新 Git 信息" title="刷新本地改动、提交和远端状态" disabled={gitSummaryRefreshing} onClick={() => void refreshGitSummary()}><GitBranch size={16}/><small>Git 信息</small><RefreshCw className={gitSummaryRefreshing ? 'spin' : undefined} size={12}/></button><div><button type="button" onClick={openGitSummary} title="在全屏文件标签页中查看 Git 信息"><span className="agent-workspace-git-summary-content"><b>{workspaceGitRepository.branch || '未命名分支'}</b><span className="agent-workspace-git-summary-status"><em>{workspaceGitChangesQuery.isLoading ? '正在加载本地改动…' : `改动 +${gitChangedFileCount(workspaceGitChangesQuery.data)}`}</em><span className="agent-workspace-git-sync-status">{workspaceGitRepository.upstream ? <><span>{`本地 +${workspaceGitRepository.ahead ?? 0}`}</span><span>{`远端 +${workspaceGitRepository.behind ?? 0}`}</span></> : '未设置远程跟踪分支'}</span></span></span></button>{gitSummaryRefreshError && <p className="agent-workspace-git-summary-error" role="alert">{gitSummaryRefreshError}</p>}</div></article>}
+    {workspaceGitRepository && <article className="agent-workspace-git-summary"><button type="button" className="agent-workspace-git-summary-refresh" aria-label="刷新 Git 信息" title="刷新本地改动、提交和远端状态" disabled={gitSummaryRefreshing} onClick={() => void refreshGitSummary()}><GitBranch size={16}/><small>Git 信息</small></button><div><button type="button" onClick={openGitSummary} title="在全屏文件栏中查看 Git 信息"><span className="agent-workspace-git-summary-content"><b>{workspaceGitRepository.branch || '未命名分支'}</b><span className="agent-workspace-git-summary-status">{workspaceGitChangesQuery.isLoading ? <em>正在加载本地改动…</em> : <span className="agent-workspace-git-change-counts"><span>{`已暂存 +${workspaceGitChangeCounts.staged}`}</span><span>{`未暂存 +${workspaceGitChangeCounts.unstaged}`}</span></span>}<span className="agent-workspace-git-sync-status">{workspaceGitRepository.upstream ? <><span>{`本地 +${workspaceGitRepository.ahead ?? 0}`}</span><span>{`远端 +${workspaceGitRepository.behind ?? 0}`}</span></> : '未设置远程跟踪分支'}</span></span></span></button>{gitSummaryRefreshError && <p className="agent-workspace-git-summary-error" role="alert">{gitSummaryRefreshError}</p>}</div></article>}
     {!workspaceGitRepository && conversation && <article className="agent-workspace-changes"><FileText size={16}/><div><small>变更</small><button type="button" disabled={!sessionChanges.length} onClick={() => onReviewChanges?.(sessionChanges)}><span><b>{sessionChanges.length ? `${sessionChanges.length} 个文件已更改` : '暂无变更'}</b>{sessionChanges.length > 0 && <em><ins>{`+${sessionChangeAdditions}`}</ins><del>{`-${sessionChangeDeletions}`}</del></em>}</span></button></div></article>}
     {runtimeTasks.length > 0 && <article className="agent-workspace-subagents"><Bot size={16}/><div><small>子智能体</small><button type="button" onClick={() => openRuntimeTasks()} aria-label={`查看全部 ${runtimeTasks.length} 个子智能体任务`}><span className="agent-workspace-subagent-summary"><span className="agent-workspace-subagent-avatars">{runtimeTasks.map(task => <RuntimeTaskGlyph key={task.id} task={task} size={18} sessionStopped={sessionStopped}/>)}</span><b>查看全部 ({runtimeTasks.length})</b></span></button></div></article>}
     {/*
@@ -7675,6 +7693,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (index < 0) return;
     composerRef.current?.insert(`@附件${index + 1}`);
   }, [attachments]);
+  const insertWorkspaceReferenceAlias = useCallback((reference: AgentWorkspaceReference) => {
+    const index = workspaceReferences.findIndex(item => workspaceReferenceKey(item) === workspaceReferenceKey(reference));
+    if (index < 0) return;
+    composerRef.current?.insert(`@本地文件${index + 1}`);
+  }, [workspaceReferences]);
   const previewWorkspaceReference = useCallback((reference: AgentWorkspaceReference) => {
     setFilePreviewRequest({
       key: randomId(),
@@ -10402,7 +10425,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (conversationDraft && workspace) void api.deleteDraftAttachments(workspace.id, conversationDraft.id, item.path).catch(() => undefined);
   }
 }}>×</button></span>)}{pendingAttachments.filter(item => item.scope === composerScope).map(item => <span key={item.id} className={`agent-pending-attachment ${item.state}`} title={item.state === 'failed' ? '附件上传失败，请重试或删除。' : `正在上传 ${item.progress}%`}><span className="agent-attachment-open">{item.previewUrl ? <img src={item.previewUrl} alt=""/> : <FileTypeIcon filename={item.filename} mimeType={item.mimeType} size={16}/>}<em>{item.filename}</em>{item.state === 'uploading' && <small>{item.progress}%</small>}{item.state === 'failed' && <span className="agent-attachment-retry-overlay"><button type="button" onClick={() => retryPendingAttachment(item.id)}>重试</button></span>}</span>{item.state === 'uploading' && <i className="agent-attachment-progress" style={{ '--upload-progress': `${item.progress}%` } as CSSProperties}/>}<button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => removePendingAttachment(item.id)}>×</button></span>)}</>}<ComposerConversationReferenceList references={references} onOpen={reference => selectConversation(reference.sourceBindingId, { revealSidebar: true })} onRemove={reference => setReferences(current => current.filter(item => item !== reference))}/>{(selected || conversationDraft) && <ComposerAnnotationList annotations={composerAnnotations} currentBindingId={selected?.id ?? conversationDraft?.id} onLocate={locateAnnotation} onRemove={annotation => setComposerAnnotations(current => current.filter(item => item.id !== annotation.id))} onUpdate={(annotation, comment) => void updateAnnotation(annotation, comment)}/>}</div>}
-        {workspaceReferences.length > 0 && <div className="agent-attachments agent-workspace-references" aria-label="已添加的工作区引用">{workspaceReferences.map(reference => <span key={workspaceReferenceKey(reference)} title={reference.path}><span className="agent-attachment-open">{reference.kind === 'directory' ? <Folder size={14}/> : <FileCode2 size={14}/>}<em><b>{reference.display_name}</b><small>{workspaceReferenceLabel(reference)}</small></em></span><button type="button" className="agent-attachment-remove" aria-label={'移除工作区引用 ' + reference.display_name} onClick={() => setWorkspaceReferences(current => current.filter(item => workspaceReferenceKey(item) !== workspaceReferenceKey(reference)))}>×</button></span>)}</div>}
+        {workspaceReferences.length > 0 && <div className="agent-attachments agent-workspace-references" aria-label="已添加的工作区引用">{workspaceReferences.map((reference, index) => <span key={workspaceReferenceKey(reference)} title={reference.path}><button type="button" className="agent-attachment-open" title={`预览本地引用：${reference.display_name}`} onClick={() => previewWorkspaceReference(reference)}>{reference.kind === 'directory' ? <Folder size={16}/> : <FileTypeIcon filename={reference.display_name} mimeType="text/plain" size={16}/>}<em>{reference.display_name}</em></button><button type="button" className="agent-attachment-alias" aria-label={`引用本地文件 ${index + 1}`} title={`插入 @本地文件${index + 1}`} onClick={() => insertWorkspaceReferenceAlias(reference)}>@</button><button type="button" className="agent-attachment-remove" aria-label={'移除工作区引用 ' + reference.display_name} onClick={() => setWorkspaceReferences(current => current.filter(item => workspaceReferenceKey(item) !== workspaceReferenceKey(reference)))}>×</button></span>)}</div>}
         </div>
         <footer>
           <div className="agent-composer-context">
