@@ -518,3 +518,56 @@ for (const kind of ['MANUAL', 'AUTOMATIC'] as const) {
     await expect(page.locator('.flow-run-workbench-header h1')).toHaveText('导入验收');
   });
 }
+
+test('record header stays on one line and filters stay fixed while only record rows scroll', async ({ page }) => {
+  const currentRun = { ...run, name: 'FW-E2E-20261017 真实业务闭环重测 · 标题较长时保持单行' };
+  const records = Array.from({ length: 40 }, (_, index) => ({ ...run, id: `compact-record-${index}`, name: `逐步业务记录 ${index + 1}`, parent_flow_run_id: run.id, start_node_key: 'first' }));
+  await page.route('**/api/v1/**', async route => {
+    const path = new URL(route.request().url()).pathname.replace(/^\/flowweave/, '');
+    const respond = (body: unknown) => route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) });
+    if (path.endsWith('/auth/me')) return respond(authenticatedUser);
+    if (path === '/api/v1/flow-runs') return respond([currentRun]);
+    if (path === '/api/v1/flows') return respond([definition]);
+    if (path.endsWith('/stepwise-runs')) return respond(records);
+    if (path.endsWith('/automatic-runs/summaries')) return respond([]);
+    return respond([]);
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: '流程运行', exact: true }).click();
+  await page.locator('.flow-run-tree-select').click();
+  await page.locator('.flow-run-tree-run').click();
+  const directory = page.locator('.flow-run-record-directory');
+  const header = directory.locator('.run-record-directory-header');
+  const table = directory.getByRole('region', { name: '运行记录表格' });
+  const toolbar = table.locator('.run-record-management-toolbar');
+  const rows = table.locator('.flow-run-record-directory-list');
+  await expect(rows.locator('.flow-run-record-row')).toHaveCount(40);
+  await expect(toolbar.getByRole('navigation', { name: '运行记录类型' })).toBeVisible();
+  await directory.getByLabel('运行信息', { exact: true }).click();
+  await expect(directory.locator('.run-record-header-info dl')).toContainText('创建时间');
+  await directory.getByLabel('运行信息', { exact: true }).click();
+  for (const width of [1920, 1440, 1024]) {
+    await page.setViewportSize({ width, height: 800 });
+    await rows.evaluate(element => { element.scrollTop = 0; });
+    const beforeHeader = (await header.boundingBox())!;
+    const beforeToolbar = (await toolbar.boundingBox())!;
+    expect(beforeHeader.height).toBeLessThanOrEqual(44);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(1);
+    expect(await page.evaluate(() => document.scrollingElement!.scrollHeight - document.scrollingElement!.clientHeight)).toBeLessThanOrEqual(1);
+    expect(await rows.evaluate(element => element.scrollHeight - element.clientHeight)).toBeGreaterThan(100);
+    await rows.hover();
+    await page.mouse.wheel(0, 600);
+    await expect.poll(() => rows.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+    expect((await header.boundingBox())!.y).toBe(beforeHeader.y);
+    expect((await toolbar.boundingBox())!.y).toBe(beforeToolbar.y);
+    expect(await page.locator('.flow-run-directory-detail').evaluate(element => element.scrollTop)).toBe(0);
+    await toolbar.getByRole('button', { name: '连续', exact: true }).click();
+    await expect(table.getByText('该 FlowRun 尚未创建连续运行记录。')).toBeVisible();
+    await toolbar.getByRole('button', { name: '逐步', exact: true }).click();
+    await expect(rows.locator('.flow-run-record-row')).toHaveCount(40);
+    await toolbar.getByRole('button', { name: '全部', exact: true }).click();
+  }
+  await page.setViewportSize({ width: 1440, height: 800 });
+  await rows.evaluate(element => { element.scrollTop = 0; });
+  await directory.screenshot({ path: '../../.tmp/ops21/record-table.png' });
+});
