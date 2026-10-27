@@ -3420,7 +3420,7 @@ function GitChangedFilesSplit({ staged, unstaged, selectedKind, selectedPath, on
     : collapsed.staged
       ? 'auto minmax(0,1fr)'
       : collapsed.unstaged
-        ? 'minmax(0,1fr) auto'
+        ? 'minmax(0,1fr) auto minmax(0,1fr)'
         : `minmax(0,${splitRatio}fr) 7px minmax(0,${1 - splitRatio}fr)`;
   return <div ref={containerRef} className={`agent-git-change-split${collapsed.staged && collapsed.unstaged ? ' both-collapsed' : ''}`} style={{ gridTemplateRows: rows }} onWheelCapture={preventHorizontalNavigation}>
     <ChangedFilesTree title="暂存区" empty="暂存区没有文件。" items={staged.map(file => ({ path: file.path, value: file }))} selectedPath={selectedKind === 'STAGED' ? selectedPath : undefined} onSelect={file => onSelect('STAGED', file)} renderMeta={file => <em>{file.status}</em>} collapsed={collapsed.staged} onToggleCollapsed={() => toggle('staged')}/>
