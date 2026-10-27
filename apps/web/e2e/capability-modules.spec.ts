@@ -1,4 +1,41 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page, type Route } from '@playwright/test';
+
+
+// Legacy fixtures remain shared with editor/download/bulk-delete requests;
+// expose the new server page contract without letting the UI see the full list.
+async function mockRepository(page: Page, kind: 'capabilities' | 'capability-collections', handler: (route: Route) => Promise<unknown>) {
+  await page.route(`**/api/v1/${kind}`, handler);
+  const path = kind === 'capabilities' ? 'capability-directory' : 'capability-collection-directory';
+  await page.route(`**/api/v1/${path}?*`, async route => {
+    const adapted = new Proxy(route, { get(target, key) {
+      if (key === 'fulfill') return async (response: { body?: string; status?: number }) => {
+        const records = JSON.parse(response.body ?? '[]') as Array<Record<string, unknown>>;
+        const params = new URL(route.request().url()).searchParams;
+        let items: Array<Record<string, unknown>> = records;
+        const counts: Record<string, number> = {};
+        if (kind === 'capabilities') {
+          const groups = new Map<string, Array<Record<string, unknown>>>();
+          records.forEach(item => groups.set(String(item.lineage_id), [...(groups.get(String(item.lineage_id)) ?? []), item]));
+          items = [...groups].map(([id, versions]) => ({ id, latest: versions.find(item => item.is_latest) ?? versions[0], versions }));
+          items.forEach(item => { const type = String((item.latest as Record<string, unknown>).capability_type); counts[type] = (counts[type] ?? 0) + 1; });
+          items = items.filter(item => (item.latest as Record<string, unknown>).capability_type === params.get('capability_type'));
+        }
+        const value = (item: Record<string, unknown>, column: string) => {
+          const asset = (kind === 'capabilities' ? item.latest : item) as Record<string, unknown>;
+          return column === 'name' ? String(asset.capability_key ?? asset.name) : column === 'member_count' ? (asset.members as unknown[]).length : asset[column] as string | number;
+        };
+        const needle = (params.get('q') ?? '').toLowerCase();
+        items = items.filter(item => !needle || JSON.stringify(item).toLowerCase().includes(needle));
+        const sort = params.get('sort') ?? 'created_at'; const sign = params.get('direction') === 'asc' ? 1 : -1;
+        items.sort((a, b) => { const left = value(a, sort); const right = value(b, sort); return left < right ? -sign : left > right ? sign : String(a.id).localeCompare(String(b.id)); });
+        const number = Number(params.get('page') ?? 1); const size = Number(params.get('page_size') ?? 20);
+        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: items.slice((number - 1) * size, number * size), total: items.length, page: number, page_size: size, counts, collection_total: 0 }) });
+      };
+      const value = Reflect.get(target, key); return typeof value === 'function' ? value.bind(target) : value;
+    } });
+    await handler(adapted);
+  });
+}
 
 test.beforeEach(async ({ page }) => {
   await page.route('**/api/v1/auth/me', route => route.fulfill({
@@ -9,10 +46,10 @@ test.beforeEach(async ({ page }) => {
 });
 
 test('Context module supports direct text, uploads, and ZIP bundles', async ({ page }) => {
-  await page.route('**/api/v1/capabilities', route => route.fulfill({
+  await mockRepository(page, 'capabilities', route => route.fulfill({
     status: 200, contentType: 'application/json', body: '[]',
   }));
-  await page.route('**/api/v1/capability-collections', route => route.fulfill({
+  await mockRepository(page, 'capability-collections', route => route.fulfill({
     status: 200, contentType: 'application/json', body: '[]',
   }));
 
@@ -36,8 +73,8 @@ test('Context module supports direct text, uploads, and ZIP bundles', async ({ p
 
 test('Context direct text is published through the existing validation flow', async ({ page }) => {
   let validationBody: Record<string, unknown> | undefined;
-  await page.route('**/api/v1/capabilities', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
-  await page.route('**/api/v1/capability-collections', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
+  await mockRepository(page, 'capabilities', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
+  await mockRepository(page, 'capability-collections', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
   await page.route('**/api/v1/capability-imports/validate', async route => {
     validationBody = route.request().postDataJSON() as Record<string, unknown>;
     await route.fulfill({
@@ -70,8 +107,8 @@ test('Context direct text is published through the existing validation flow', as
 test('Context Bundle is parsed before its editable directory is published', async ({ page }) => {
   let validateCount = 0;
   let confirmedManifest: Record<string, unknown> | undefined;
-  await page.route('**/api/v1/capabilities', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
-  await page.route('**/api/v1/capability-collections', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
+  await mockRepository(page, 'capabilities', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
+  await mockRepository(page, 'capability-collections', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
   await page.route('**/api/v1/capability-imports/validate', async route => {
     validateCount += 1;
     const manifest = route.request().postDataJSON().context_bundle_manifest as Record<string, unknown> | undefined;
@@ -127,8 +164,8 @@ test('published Context Bundle shows its frozen document directory before compil
     created_at: '2026-09-02T00:00:00Z', reference_count: 0, is_builtin: false, document: {},
     dependencies: {}, dependency_build_state: 'NOT_REQUIRED', dependency_build_error: null,
   };
-  await page.route('**/api/v1/capabilities', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([bundle]) }));
-  await page.route('**/api/v1/capability-collections', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
+  await mockRepository(page, 'capabilities', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([bundle]) }));
+  await mockRepository(page, 'capability-collections', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
   await page.route('**/api/v1/capabilities/bundle-version/context-source', route => route.fulfill({
     status: 200,
     contentType: 'application/json',
@@ -158,20 +195,23 @@ test('published Context Bundle shows its frozen document directory before compil
 });
 
 test('capability repository exposes module-specific menus and actions', async ({ page }) => {
+  await mockRepository(page, 'capabilities', route => route.fulfill({ body: '[]' }));
+  await mockRepository(page, 'capability-collections', route => route.fulfill({ body: '[]' }));
   await page.goto('/');
   await page.getByRole('button', { name: '能力仓库' }).click();
 
   const modules = page.getByRole('navigation', { name: '能力模块' });
   const actions = page.locator('.capability-list-controls');
-  await expect(modules.getByRole('button')).toHaveCount(6);
-  await expect(modules.getByRole('button', { name: /Skill/ })).toHaveAttribute('aria-current', 'page');
+  await expect(modules.getByRole('button')).toHaveCount(7);
+  await expect(modules.getByRole('button', { name: /^Skill\s+\d/ })).toHaveAttribute('aria-current', 'page');
   await expect(actions.getByText('上传 Skill ZIP', { exact: true })).toBeVisible();
   await expect(actions.getByText('上传 Plugin ZIP', { exact: true })).toHaveCount(0);
-  await expect(page.locator('.skill-collection-section')).toBeVisible();
+  await modules.getByRole('button', { name: /Skill 组合/ }).click();
   const collectionEditor = page.locator('form.capability-collection-editor');
   const collectionDialog = collectionEditor.getByRole('heading', { name: '新建 Skill 组合' });
   // The header action is always present, including when the local fixture has
   // no collections, so it is the stable entry point for this test.
+  await page.getByRole('navigation', { name: '能力模块' }).getByRole('button', { name: /Skill 组合/ }).click();
   await page.getByRole('button', { name: '新建 Skill 组合' }).click();
   await expect(collectionDialog).toBeVisible();
   // The persistent local E2E database may already contain immutable Skill
@@ -254,10 +294,10 @@ test('capability editors overlay the top navigation without clipping their headi
       dependency_build_error: null,
     },
   ];
-  await page.route('**/api/v1/capabilities', route => route.fulfill({
+  await mockRepository(page, 'capabilities', route => route.fulfill({
     status: 200, contentType: 'application/json', body: JSON.stringify(capabilities),
   }));
-  await page.route('**/api/v1/capability-collections', route => route.fulfill({
+  await mockRepository(page, 'capability-collections', route => route.fulfill({
     status: 200, contentType: 'application/json', body: '[]',
   }));
   await page.route('**/api/v1/capabilities/skill-version/source', route => route.fulfill({
@@ -316,7 +356,7 @@ test('capability editors overlay the top navigation without clipping their headi
 
 test('Skill collection editor keeps its heading and actions visible while only skills scroll', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 640 });
-  const skills = Array.from({ length: 20 }, (_, index) => ({
+  const skills = Array.from({ length: 25 }, (_, index) => ({
     id: `skill-${index + 1}`,
     lineage_id: `skill-lineage-${index + 1}`,
     revision_number: 1,
@@ -337,15 +377,16 @@ test('Skill collection editor keeps its heading and actions visible while only s
     dependency_build_state: 'NOT_REQUIRED',
     dependency_build_error: null,
   }));
-  await page.route('**/api/v1/capabilities', route => route.fulfill({
+  await mockRepository(page, 'capabilities', route => route.fulfill({
     status: 200, contentType: 'application/json', body: JSON.stringify(skills),
   }));
-  await page.route('**/api/v1/capability-collections', route => route.fulfill({
+  await mockRepository(page, 'capability-collections', route => route.fulfill({
     status: 200, contentType: 'application/json', body: '[]',
   }));
 
   await page.goto('/');
   await page.getByRole('button', { name: '能力仓库' }).click();
+  await page.getByRole('navigation', { name: '能力模块' }).getByRole('button', { name: /Skill 组合/ }).click();
   await page.getByRole('button', { name: '新建 Skill 组合' }).click();
 
   const editor = page.locator('form.capability-collection-editor');
@@ -373,58 +414,31 @@ test('Skill collection editor keeps its heading and actions visible while only s
   await expect(editor.getByRole('button', { name: '保存组合' })).toBeVisible();
 });
 
-test('Skill collections use a compact paged grid', async ({ page }) => {
+test('Skill collections have their own paginated table, sort, and row actions', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 480 });
-  const collections = ['需求分析', '研发交付', '质量验证', '发布运营'].map((name, index) => ({
-    id: `collection-${index + 1}`,
-    name,
-    category: '研发',
-    description: `${name}组合说明`,
-    row_version: 1,
-    members: [],
-    created_at: '2026-09-02T00:00:00Z',
-    updated_at: '2026-09-02T00:00:00Z',
+  const collections = Array.from({ length: 23 }, (_, index) => ({
+    id: `collection-${String(index).padStart(2, '0')}`, name: `组合 ${String(index).padStart(2, '0')}`,
+    category: '研发', description: '批量选择真实 Skill 版本', row_version: 1, members: [],
+    created_at: '2026-09-02T00:00:00Z', updated_at: '2026-09-02T00:00:00Z',
   }));
-  await page.route('**/api/v1/capabilities', route => route.fulfill({
-    status: 200, contentType: 'application/json', body: '[]',
-  }));
-  await page.route('**/api/v1/capability-collections', route => route.fulfill({
-    status: 200, contentType: 'application/json', body: JSON.stringify(collections),
-  }));
-
-  await page.goto('/');
-  await page.getByRole('button', { name: '能力仓库' }).click();
-  const collectionSection = page.locator('.skill-collection-section');
-  const collectionList = collectionSection.locator('.capability-collection-list');
-  const collectionRows = collectionList.locator(':scope > article');
-  await expect(collectionRows).toHaveCount(3);
-  const widths = await collectionRows.first().evaluate(row => {
-    const list = row.parentElement;
-    return { row: row.getBoundingClientRect().width, list: list?.getBoundingClientRect().width ?? 0 };
-  });
-  expect(widths.row).toBeLessThan(widths.list);
-  const bounds = await collectionSection.evaluate(section => {
-    const pager = section.querySelector('.skill-collection-pagination');
-    const sectionBounds = section.getBoundingClientRect();
-    const pagerBounds = pager?.getBoundingClientRect();
-    return { sectionBottom: sectionBounds.bottom, pagerBottom: pagerBounds?.bottom ?? 0 };
-  });
-  expect(bounds.pagerBottom).toBeLessThanOrEqual(bounds.sectionBottom);
-  await expect(collectionSection.getByText('需求分析', { exact: true })).toBeVisible();
-  await expect(collectionSection.getByText('研发交付', { exact: true })).toBeVisible();
-  await expect(collectionSection.getByText('质量验证', { exact: true })).toBeVisible();
-  await expect(collectionSection.getByText('发布运营', { exact: true })).toHaveCount(0);
-  await collectionSection.getByRole('button', { name: '更多操作：Skill 组合 需求分析' }).click();
-  const collectionMenu = page.getByRole('menu', { name: 'Skill 组合 需求分析 操作菜单' });
-  await expect(collectionMenu.getByRole('menuitem', { name: '编辑' })).toBeVisible();
-  await expect(collectionMenu.getByRole('menuitem', { name: '删除' })).toBeVisible();
-  const collectionMenuBounds = await collectionMenu.boundingBox();
-  expect(collectionMenuBounds?.width).toBeGreaterThanOrEqual(156);
-  expect(collectionMenuBounds?.y).toBeGreaterThanOrEqual(0);
-  await collectionSection.getByRole('button', { name: '下一页' }).click();
-  await expect(collectionRows).toHaveCount(1);
-  await expect(collectionSection.getByText('发布运营', { exact: true })).toBeVisible();
-  await expect(collectionSection.getByRole('button', { name: '上一页' })).toBeEnabled();
+  await mockRepository(page, 'capabilities', route => route.fulfill({ body: '[]' }));
+  await mockRepository(page, 'capability-collections', route => route.fulfill({ body: JSON.stringify(collections) }));
+  await page.goto('/'); await page.getByRole('button', { name: '能力仓库' }).click();
+  await expect(page.getByRole('button', { name: '新建 Skill 组合' })).toHaveCount(0);
+  await page.getByRole('navigation', { name: '能力模块' }).getByRole('button', { name: /Skill 组合/ }).click();
+  const rows = page.locator('.capability-table tbody tr');
+  await expect(rows).toHaveCount(20);
+  await page.getByRole('button', { name: '更多操作：Skill 组合 组合 00' }).click();
+  const menu = page.getByRole('menu');
+  await expect(menu.getByRole('menuitem', { name: '编辑' })).toBeVisible();
+  await expect(menu.getByRole('menuitem', { name: '删除' })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: '下一页' }).click();
+  await expect(rows).toHaveCount(3); await expect(rows.first()).toContainText('组合 20');
+  await expect(page.getByRole('button', { name: '上一页' })).toBeEnabled();
+  const request = page.waitForRequest(request => request.url().includes('/capability-collection-directory?') && request.url().includes('sort=name') && request.url().includes('page=1'));
+  await page.getByRole('columnheader', { name: '名称' }).getByRole('button').click();
+  await request; await expect(rows).toHaveCount(20);
 });
 
 test('every capability module supports selecting and bulk deleting capability lineages', async ({ page }) => {
@@ -466,7 +480,7 @@ test('every capability module supports selecting and bulk deleting capability li
     is_builtin: true,
   });
 
-  await page.route('**/api/v1/capabilities', async route => {
+  await mockRepository(page, 'capabilities', async route => {
     if (route.request().method() === 'DELETE') {
       const payload = route.request().postDataJSON() as { ids: string[] };
       capabilities = capabilities.filter(item => !payload.ids.includes(item.id));
@@ -490,7 +504,7 @@ test('every capability module supports selecting and bulk deleting capability li
 
   for (const capabilityType of moduleTypes) {
     const label = labels[capabilityType];
-    await modules.getByRole('button', { name: new RegExp(label) }).click();
+    await modules.getByRole('button', { name: new RegExp(label === 'Skill' ? '^Skill\\s+\\d' : label) }).click();
     const bulkDelete = page.getByRole('button', { name: '批量删除 (0)' });
     await expect(bulkDelete).toBeDisabled();
     const checkboxes = page.getByRole('checkbox', { name: new RegExp(`选择能力 bulk-delete-${capabilityType.toLowerCase()}-`) });
@@ -512,15 +526,15 @@ test('every capability module supports selecting and bulk deleting capability li
 
 test('Skill list keeps pagination in view on short screens and offers a package download', async ({ page }) => {
   const now = new Date().toISOString();
-  const skills = Array.from({ length: 20 }, (_, index) => ({
+  const skills = Array.from({ length: 25 }, (_, index) => ({
     id: `skill-${index}`, lineage_id: `lineage-${index}`, revision_number: 1, is_latest: true,
     capability_type: 'SKILL', capability_key: `skill-${index}`, description: '测试 Skill', version: '',
     filename: `skill-${index}.zip`, content_hash: `hash-${index}`, digest: `digest-${index}`, byte_size: 1024,
     import_id: `import-${index}`, created_at: now, reference_count: 0, dependencies: {},
     dependency_build_state: 'NOT_REQUIRED', dependency_build_error: null, is_builtin: false, document: null,
   }));
-  await page.route('**/api/v1/capabilities', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(skills) }));
-  await page.route('**/api/v1/capability-collections', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
+  await mockRepository(page, 'capabilities', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(skills) }));
+  await mockRepository(page, 'capability-collections', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
   await page.setViewportSize({ width: 1440, height: 600 });
   await page.goto('/');
   await page.getByRole('button', { name: '能力仓库' }).click();
@@ -530,13 +544,56 @@ test('Skill list keeps pagination in view on short screens and offers a package 
   const box = await pager.boundingBox();
   expect(box && box.y + box.height).toBeLessThanOrEqual(600);
   await expect(page.getByRole('button', { name: '下一页' })).toBeInViewport();
-  // The card grid absorbs the remaining height and scrolls instead of
+  // The table absorbs the remaining height and scrolls instead of
   // pushing the last row or the pager below the clipped page.
-  const grid = await page.locator('.capabilities-page .capability-card-grid').boundingBox();
+  const grid = await page.locator('.capabilities-page .capability-table-scroll').boundingBox();
   expect(grid && box && grid.y + grid.height).toBeLessThanOrEqual(box!.y + 1);
 
   const skillCard = page.locator('.capability-card').filter({ hasText: 'skill-0' });
   await skillCard.getByRole('button', { name: '更多操作：Skill skill-0' }).click();
   const download = page.getByRole('menu', { name: 'Skill skill-0 操作菜单' }).getByRole('menuitem', { name: '下载 Skill skill-0' });
   await expect(download).toHaveAttribute('href', /\/api\/v1\/capabilities\/skill-0\/package$/);
+});
+
+test('repository requests global sort and preserves selection across button pages', async ({ page }) => {
+  const skills = Array.from({ length: 25 }, (_, index) => ({
+    id: `paged-version-${index}`, lineage_id: `paged-lineage-${index}`, revision_number: 1, is_latest: true,
+    capability_type: 'SKILL', capability_key: `workspace-skill-${String(24 - index).padStart(2, '0')}`,
+    description: '提供可复用的工作方法、验收步骤与团队知识，使用时冻结实际能力版本。', version: '1.0.0',
+    filename: `workspace-skill-${index}.zip`, content_hash: 'a'.repeat(64), byte_size: 2048 + index * 512,
+    import_id: `import-${index}`, created_at: new Date(2026, 8, index + 1).toISOString(), reference_count: index % 3,
+    dependencies: {}, dependency_build_state: index % 2 ? 'READY' : 'NOT_REQUIRED', is_builtin: false, document: {},
+  }));
+  await mockRepository(page, 'capabilities', route => route.fulfill({ body: JSON.stringify(skills) }));
+  await mockRepository(page, 'capability-collections', route => route.fulfill({ body: '[]' }));
+  await page.goto('/'); await page.getByRole('button', { name: '能力仓库' }).click();
+  await expect(page.locator('.capability-table tbody tr')).toHaveCount(20);
+  await expect(page.locator('.capability-table tbody tr').first()).toContainText('workspace-skill-00');
+  const first = page.getByRole('checkbox', { name: '选择能力 workspace-skill-00' });
+  await first.check();
+  await page.getByRole('button', { name: '下一页' }).click();
+  await expect(page.locator('.capability-table tbody tr')).toHaveCount(5);
+  await expect(page.getByRole('button', { name: '批量删除 (1)' })).toBeEnabled();
+  const descending = page.waitForRequest(request => request.url().includes('/capability-directory?') && request.url().includes('sort=name') && request.url().includes('direction=desc') && request.url().includes('page=1'));
+  await page.getByRole('columnheader', { name: '名称' }).getByRole('button').click();
+  await page.getByRole('columnheader', { name: '名称' }).getByRole('button').click();
+  await descending;
+  await expect(page.locator('.capability-table tbody tr').first()).toContainText('workspace-skill-24');
+  await page.getByRole('button', { name: '全选当前模块' }).click();
+  await expect(page.getByRole('button', { name: '批量删除 (25)' })).toBeEnabled();
+  await page.getByRole('button', { name: '下一页' }).click();
+  await expect(page.getByRole('checkbox', { name: '选择能力 workspace-skill-00' })).toBeChecked();
+  await page.getByRole('button', { name: '取消全选' }).click();
+  await expect(page.getByRole('button', { name: '批量删除 (0)' })).toBeDisabled();
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.getByRole('button', { name: '上一页' }).click();
+  await page.getByRole('columnheader', { name: '上传时间' }).getByRole('button').click();
+  await page.getByRole('columnheader', { name: '上传时间' }).getByRole('button').click();
+  await expect(page.locator('.capability-table tbody tr').first()).toContainText('workspace-skill-00');
+  const bounds = await page.locator('.capability-table-scroll').evaluate(element => ({
+    client: element.clientHeight, scroll: element.scrollHeight, page: document.documentElement.scrollHeight, viewport: window.innerHeight,
+  }));
+  expect(bounds.scroll).toBeGreaterThan(bounds.client);
+  expect(bounds.page).toBeLessThanOrEqual(bounds.viewport);
+  await page.screenshot({ path: '../../.tmp/ops25/capability-repository.png' });
 });

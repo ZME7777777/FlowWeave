@@ -1,0 +1,64 @@
+.capabilities-page.capability-repository{display:grid;grid-template-columns:184px minmax(0,1fr);gap:0;width:100%;max-width:none;height:var(--app-content-height);padding:0!important;overflow:hidden;background:#fff}
+.capability-repository-sidebar{display:flex;min-height:0;flex-direction:column;overflow:auto;border-right:1px solid var(--line);background:#f5f8f5;padding:16px 10px}
+.capability-repository-sidebar>header{display:flex;align-items:center;gap:9px;margin:0 8px 20px;color:#34483c;font-size:13px}
+.capability-repository-sidebar>div{margin-bottom:4px}
+.capability-repository-sidebar button{display:flex;width:100%;min-height:39px;align-items:center;gap:9px;border:0;border-radius:6px;background:transparent;padding:9px 10px;color:#65746b;text-align:left;font-size:11px}
+.capability-repository-sidebar button>svg{flex-shrink:0}
+.capability-repository-sidebar button>span{min-width:0;flex:1;white-space:nowrap}
+.capability-repository-sidebar button>em{color:#8b978e;font:10px 'DM Mono',monospace;font-style:normal}
+.capability-repository-sidebar button:hover{background:#eaf0eb;color:#225e40}
+.capability-repository-sidebar button.active{background:#e0ede4;color:#1f6845;font-weight:650}
+.capability-repository-sidebar button.active em{color:#357955}
+.capability-repository-sidebar button.collection-entry{min-height:34px;padding-left:28px;font-size:10px}
+.capability-repository-sidebar>footer{margin-top:auto;padding:28px 10px 0;color:#9aa69e;font-size:9px}
+.capabilities-page .capability-repository-main{display:flex;min-width:0;min-height:0;flex-direction:column;overflow:hidden;padding:0}
+.capability-repository-heading{display:flex;min-height:57px;flex:0 0 auto;align-items:center;gap:10px;border-bottom:1px solid #e7ece8;padding:12px 22px}
+.capability-repository-heading h2{margin:0;color:#293e30;font-size:17px;font-weight:650}
+.capability-repository-heading>span{border-radius:4px;background:#eff4f0;padding:3px 6px;color:#5f7567;font-size:10px;white-space:nowrap}
+.capability-repository-heading>small{overflow:hidden;margin-left:5px;color:#8b978f;font-size:10px;text-overflow:ellipsis;white-space:nowrap}
+.capability-repository .capability-bulk-tools{display:flex;min-height:58px;flex:0 0 auto;flex-wrap:wrap;align-items:center;gap:8px;margin:0;border:0;border-bottom:1px solid #e7ece8;border-radius:0;background:#fff;padding:10px 22px}
+.capability-repository .capability-bulk-tools>span{display:none}
+.capability-repository .capability-list-controls{display:contents}
+.capability-repository .capability-repository-search{width:270px;min-width:180px;max-width:320px;margin-right:auto!important;gap:6px;padding:0 9px;border-color:#dce4df;background:#fafcfb}
+.capability-repository .capability-repository-search input{padding:7px 0;font-size:11px}
+.capability-repository .capability-bulk-tools button,.capability-repository .capability-bulk-tools .file-button{min-height:31px;padding:6px 10px;font-size:10px}
+.capability-repository .bulk-actions{display:flex;gap:6px}
+.capability-repository .capability-notice-layer{z-index:9}
+.capability-repository .notice.error{flex:0 0 auto;margin:0;border-radius:0}
+.capability-table-scroll{min-width:0;min-height:0;flex:1;overflow:auto;overscroll-behavior:contain}
+.capability-table{width:100%;border-collapse:separate;border-spacing:0;table-layout:fixed;color:#64756a;font-size:11px}
+.capability-table th{position:sticky;top:0;z-index:2;height:38px;border-bottom:1px solid #dfe7e1;background:#f6f8f6;padding:0 12px;color:#8a978f;text-align:left;font-size:10px;font-weight:500;white-space:nowrap}
+.capability-table th>button{display:inline-flex;align-items:center;gap:6px;border:0;background:transparent;padding:9px 0;color:inherit;font-size:inherit}
+.capability-table th>button:hover,.capability-table th[aria-sort=ascending]>button,.capability-table th[aria-sort=descending]>button{color:#216749}
+.capability-table td{height:65px;border-bottom:1px solid #edf1ed;padding:10px 12px;vertical-align:middle;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.capability-table tbody tr:hover{background:#f8fbf9}
+.capability-table tbody tr.selected{background:#eef7f0;box-shadow:none}
+.capability-table .capability-card{border:0;border-radius:0;box-shadow:none}
+.capability-table .capability-name-cell{width:28%;color:#344a3b}
+.capability-table th:nth-child(2){width:28%}
+.capability-table th:nth-child(3){width:16%}
+.capability-table th:nth-child(4){width:8%}
+.capability-table th:nth-child(5){width:9%}
+.capability-table th:nth-child(6){width:16%}
+.capability-table th:nth-child(7){width:5%}
+.capability-table th:nth-child(8){width:11%}
+.capability-table .capability-check-column{width:36px;padding-left:18px;padding-right:0}
+.capability-table input[type=checkbox]{width:13px;height:13px;margin:0;accent-color:#2b7751;vertical-align:middle;cursor:pointer}
+.capability-table input:disabled{cursor:not-allowed;opacity:.45}
+.capability-table .capability-actions-column{width:52px}
+.capability-table td:last-child{overflow:visible;text-align:center}
+.capability-table td b,.capability-table td small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.capability-table td b{font-size:12px;font-weight:600}
+.capability-table td b>svg{margin-left:5px;color:#8d9b92}
+.capability-table td small{margin-top:4px;color:#8b978e;font-size:10px;line-height:1.5}
+.capability-name-open{overflow:hidden;max-width:100%;border:0;background:transparent;padding:0;color:inherit;text-align:left;text-overflow:ellipsis;font:inherit;vertical-align:middle}
+.capability-name-open:hover{text-decoration:underline;color:#216749}
+.capability-dependency{color:#8b978e;font-size:10px}
+.capability-dependency.ready{color:#3a8157}.capability-dependency.pending{color:#a37c36}.capability-dependency.failed{color:#b34b4b}
+.capability-repository-footer{display:flex;min-height:52px;flex:0 0 auto;align-items:center;gap:14px;border-top:1px solid #e1e8e2;padding:10px 22px;color:#8b978f;font-size:10px}
+.capability-repository-footer>.pagination{display:flex;flex:1;margin:0!important;padding:0;border:0}
+.capability-repository-footer>.pagination>span{margin-left:auto;margin-right:14px}
+.capability-repository-footer .pagination button{padding:6px 12px;font-size:10px}
+.capability-repository .sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap}
+@media(max-width:1250px){.capabilities-page.capability-repository{grid-template-columns:172px minmax(0,1fr)}.capability-table{min-width:1000px}.capability-repository .capability-bulk-tools{padding:10px 16px}.capability-repository-heading,.capability-repository-footer{padding-left:16px;padding-right:16px}}
+.capability-collection-table th:first-child{width:34%;padding-left:22px}.capability-collection-table td:first-child{padding-left:22px}.capability-collection-table th:nth-child(2){width:15%}.capability-collection-table th:nth-child(3){width:11%}.capability-collection-table th:nth-child(4),.capability-collection-table th:nth-child(5){width:18%}.capability-collection-table th:last-child{width:52px}

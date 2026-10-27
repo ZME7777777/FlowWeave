@@ -8,6 +8,7 @@ from flowweave.bootstrap.container import Container
 from flowweave.modules.catalog.application import (
     agent_profiles,
     capability_collections,
+    capability_directory,
     capability_imports,
     mcp_oauth_authorizations,
     mcp_oauth_secrets,
@@ -352,6 +353,41 @@ async def publish_plugin_source(
     await asyncio.to_thread(plugin_sources.verify_publish_source, plan)
     return await run_sync(
         db, lambda session: plugin_sources.confirm_publish_resolution(session, plan)
+    )
+
+
+@router.get("/capability-directory")
+async def capability_directory_page(
+    db: Db,
+    capability_type: capability_directory.CapabilityModule,
+    q: str = Query(default="", max_length=200),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    sort: capability_directory.CapabilitySort = "created_at",
+    direction: capability_directory.SortDirection = "desc",
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: capability_directory.list_directory(
+            session, capability_type, q, page, page_size, sort, direction
+        ),
+    )
+
+
+@router.get("/capability-collection-directory")
+async def capability_collection_directory_page(
+    db: Db,
+    q: str = Query(default="", max_length=200),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    sort: capability_directory.CollectionSort = "created_at",
+    direction: capability_directory.SortDirection = "desc",
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: capability_directory.list_collection_directory(
+            session, q, page, page_size, sort, direction
+        ),
     )
 
 

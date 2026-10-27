@@ -548,17 +548,20 @@ def resolve_version(
     return PublishedCapability(package, version, blob)
 
 
-def list_versions(db: Session) -> list[dict[str, Any]]:
+def list_versions(db: Session, package_ids: list[str] | None = None) -> list[dict[str, Any]]:
+    version_ids = select(CapabilityVersion.id)
+    if package_ids is not None:
+        version_ids = version_ids.where(CapabilityVersion.package_id.in_(package_ids))
     reference_rows = db.execute(
-        select(AgentWorkspaceCapability.capability_version_id, func.count()).group_by(
-            AgentWorkspaceCapability.capability_version_id
-        )
+        select(AgentWorkspaceCapability.capability_version_id, func.count())
+        .where(AgentWorkspaceCapability.capability_version_id.in_(version_ids))
+        .group_by(AgentWorkspaceCapability.capability_version_id)
     ).all()
     references: dict[str, int] = {version_id: int(count) for version_id, count in reference_rows}
     context_reference_rows = db.execute(
-        select(NodeContextCapability.capability_version_id, func.count()).group_by(
-            NodeContextCapability.capability_version_id
-        )
+        select(NodeContextCapability.capability_version_id, func.count())
+        .where(NodeContextCapability.capability_version_id.in_(version_ids))
+        .group_by(NodeContextCapability.capability_version_id)
     ).all()
     for version_id, count in context_reference_rows:
         references[version_id] = references.get(version_id, 0) + int(count)
@@ -566,12 +569,12 @@ def list_versions(db: Session) -> list[dict[str, Any]]:
         select(CapabilityVersion, CapabilityPackage, CapabilityBlob)
         .join(CapabilityPackage, CapabilityPackage.id == CapabilityVersion.package_id)
         .join(CapabilityBlob, CapabilityBlob.id == CapabilityVersion.blob_id)
-        .where(CapabilityVersion.state == "PUBLISHED")
+        .where(CapabilityVersion.state == "PUBLISHED", CapabilityVersion.id.in_(version_ids))
         .order_by(CapabilityVersion.created_at.desc(), CapabilityVersion.id.desc())
     ).all()
     latest_rows = db.execute(
         select(CapabilityVersion.package_id, func.max(CapabilityVersion.version_no))
-        .where(CapabilityVersion.state == "PUBLISHED")
+        .where(CapabilityVersion.state == "PUBLISHED", CapabilityVersion.id.in_(version_ids))
         .group_by(CapabilityVersion.package_id)
     ).all()
     latest: dict[str, int] = {

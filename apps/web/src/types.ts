@@ -30,6 +30,15 @@ export interface CapabilityAsset {
   dependency_build_state: 'NOT_REQUIRED' | 'PENDING' | 'READY' | 'FAILED';
   dependency_build_error?: string | null;
 }
+export interface CapabilityLineage {
+  id: string; latest: CapabilityAsset; versions: CapabilityAsset[];
+}
+export type CapabilitySort = 'created_at' | 'name' | 'byte_size' | 'revision_number';
+export type CapabilityCollectionSort = 'created_at' | 'name' | 'category' | 'member_count' | 'updated_at';
+export interface RepositoryPage<T> { items: T[]; total: number; page: number; page_size: number }
+export interface CapabilityDirectoryPage extends RepositoryPage<CapabilityLineage> {
+  counts: Partial<Record<CapabilityAssetType, number>>; collection_total: number;
+}
 export interface ContextBundleDocument { path: string; title: string; content_sha256: string }
 export interface ContextBundleManifest { entrypoint: string | null; documents: ContextBundleDocument[]; conflict_policy: 'ORDERED_DOCUMENTS_LATER_WINS' }
 export interface CapabilityCollection {

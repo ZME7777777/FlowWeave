@@ -1,3 +1,4 @@
+import type { CapabilityAssetType, CapabilityDirectoryPage, CapabilityCollectionSort, CapabilitySort, RepositoryPage } from '../types';
 import type {
   AuthUser, LdapDirectory, LdapUser, PlatformUser,
   AgentProfileVersion, ArtifactInput, ArtifactVersion, ArtifactVersionPage, RuntimeArtifactAuditPage, CapabilityAsset, CapabilityImportResult, FlowDefinition, FlowRun, FlowRunAutomaticRecord, FlowRunAutomaticRecordUpdate, FlowRunAutomaticRecordWrite, FlowRunConversation, FlowRunRuntimeOverview, FlowRunRuntimeResource, FlowRunSummary, FlowWrite, MessageAttachmentInput, OpenHandsConversationEventBatch, McpSource, SkillSource,
@@ -674,6 +675,10 @@ export const api = {
     request<PluginSourceResolution>(`/plugin-source-resolutions/${encodeURIComponent(id)}`),
   publishPluginSourceResolution: (id: string, expectedStateVersion: number) =>
     request<PluginSourceResolution>(`/plugin-source-resolutions/${encodeURIComponent(id)}/publish`, json('POST', { expected_state_version: expectedStateVersion })),
+  capabilityDirectory: (params: { capability_type: CapabilityAssetType; q: string; page: number; page_size: number; sort: CapabilitySort; direction: 'asc' | 'desc' }) =>
+    request<CapabilityDirectoryPage>(`/capability-directory?${new URLSearchParams(Object.entries(params).map(([key, value]) => [key, String(value)]))}`),
+  capabilityCollectionDirectory: (params: { q: string; page: number; page_size: number; sort: CapabilityCollectionSort; direction: 'asc' | 'desc' }) =>
+    request<RepositoryPage<CapabilityCollection>>(`/capability-collection-directory?${new URLSearchParams(Object.entries(params).map(([key, value]) => [key, String(value)]))}`),
   capabilities: () => request<CapabilityAsset[]>('/capabilities'),
   capabilityCollections: () => request<CapabilityCollection[]>('/capability-collections'),
   mcpSource: (id: string) => request<McpSource>(`/capabilities/${encodeURIComponent(id)}/mcp-source`),
