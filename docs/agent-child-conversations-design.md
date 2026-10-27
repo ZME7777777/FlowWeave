@@ -202,6 +202,49 @@ EventService、获取 child run-slot 或建立平台轮询执行器。
 原生 list 工具、完成身份验证并收到 observation 后正常结束；不以受控 LLM 代替真实模型验收。
 本片仍只修改 baseline 和接入设计，不开放产品入口，版本冻结留在 FR-709。
 
+### 2.8 原生父指令、中断与输入准入（FR-708）
+
+新增正式 `send_child_conversation_message` 与 `interrupt_child_conversation` Tool；模型只能
+指定直属 child ID 及发送正文。配置冻结父策略和可信 access_url，原生 invocation 签发独立
+`child-command` 用途 token，绑定 operation、所有命令参数、action／tool-call、scope、Runtime
+Session、generation、Manifest 与 audience。command UUID 由正式父调用确定，不取自模型。
+正式 `/api/conversations/{parent}/children/commands/verify` 校验来源，`.../commands` 执行
+typed send／interrupt；沿用 FR-707 的配置／分支和直属关系验证，不凭 Runtime key 授权。
+平台用户与 active generation 的复核仍由 FR-711 接入，两工具不继承给子会话。
+
+受治理 child 的用户续聊走既有 `POST .../events`，追加稳定 submission_id 并使用 run=true；
+不带稳定身份、run=false、目标 busy 或正在等待确认时均拒绝。普通旧会话的消息形状和
+受理行为保持兼容。用户与父 send 共用 EventService 输入锁，和手工 run、pause、interrupt、
+condense 串行；受治理 child 不开放额外生成输入的 goal／resume-goal 路径。只有原生可写态
+才准入新输入，运行中不会排入服务端队列、自动 interrupt 或走 ACP supersede。
+先取得 RunSlot，再调用原生 LocalConversation.send_message 和 run：busy 返回 409，容量
+不足返回 429，均不追加新消息。新输入只允许 idle、paused 或 finished；error／stuck 不隐式恢复。
+
+用户 submission UUID 和父 command UUID 在 child 命名空间内确定正式 event ID；正文、sender
+或来源改变时拒绝复用。已受理重试先读取该正式事件，返回同 event_id，不新增气泡／输入，
+不重新执行已完成轮次。只有事件仍为当前 HEAD、无活动 run 且原生 idle／paused 的未启动
+窗口可以补启动；不会依据正文、相似时间或完整历史猜测。取消请求仍须等待原生持久写入与
+调度收口后释放输入锁；外部结果未知时只能用同一身份对账。
+
+父首条任务及后续 send 继续使用正式 `user` role，在 MessageEvent 增加可选
+`parent_instruction: ChildInstructionSource`，记录 start／send、父 Conversation、action ID、
+tool-call ID 和冻结策略定位；sender 同时指向父 Conversation。旧事件及普通用户输入不新增
+空来源字段，不从消息正文识别父指令。该字段是后续 UI 显示“来自父会话的指令”的依据。
+
+interrupt 只对目标 child 调用原生中断。先在 Runtime 子会话私有目录持久写入命令回执，
+仅含来源、目标 input／HEAD、步骤和正式中断事件 ID，不保存任务正文或维护执行队列。
+实际 native InterruptEvent（同步 fallback 为 PauseEvent）取得稳定 event ID 和同一来源；
+LocalConversation 以独立线程锁保护待写来源，不从 async run lock 中取证明。原生中断调用
+返回后，等待 run 任务收口至多五秒，未完成则返回 pending=true，必须以同一 command
+继续对账；同步 fallback 沿用原生 cooperative pause，可能先等待当前工具退出，期间保持
+输入围栏，不能用迟到 pause 影响新轮次。回执已完成或正式
+中断事件已存在时仅查回；回执待完成但目标已进入更新用户输入时不再中断，避免迟到重试
+停止新的轮次。回执写入遵守原生 lease write guard，随 child 持久数据保留及删除。
+
+本片的真实 HTTP 回归使用受控 LLM 驱动原生工具和正式 prepare／release：验证父 send、
+用户重复提交及异步 InterruptEvent 来源，另覆盖重载、写后失败、确认丢失和取消围栏。
+这不替代 FR-717 的真实模型与平台双宿主验收；FR-708 不开放 Web／平台入口或升级旧 Runtime。
+
 ## 3. 父 Agent 的操作契约
 
 以下工具名是目标命名，最终导出必须在对应 baseline 切片中建立正式类型和 contract：

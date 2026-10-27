@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`CHILD CONVERSATIONS IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-708`
+> 下一可执行切片：`FR-709`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 > 子会话设计：`docs/agent-child-conversations-design.md`
@@ -371,12 +371,59 @@ FlowWeave 仅更新设计和进度，无迁移；Alembic 唯一 head 仍为
 最终扩展归档及 V3 消费由 FR-709 冻结。未开放平台／Web 入口、未推送、部署或替换
 已有 Runtime；当前 NONE，下一可执行 FR-708，提交后停止。
 
-### FR-708 原生子 send interrupt 与输入并发 — READY
+### FR-708 原生子 send interrupt 与输入并发 — DONE
 
 依赖：FR-707 DONE。实现父工具正式投递／中断、来源关联、稳定 invocation 幂等和
 原子忙碌门禁；用户与父 Agent 竞争不重复写消息，不建立平台执行／消息队列。
 
-### FR-709 子会话扩展归档与 V3 冻结兼容 — PENDING
+实现：SDK baseline 提交 `3a4f5f1f61082430e8a2ccf8d59e52c9f4eab5dc`。新增正式
+send_child_conversation_message／interrupt_child_conversation Tool、typed command／
+invocation／响应及 commands/verify、commands 路由；专用 token 绑定正式 action／tool-call、
+全部命令参数、父冻结策略和可信 access_url。复用 FR-707 分支／scope／直属身份验证，
+子会话不继承两工具；仅 Runtime key、跨父／未知目标、篡改内容均拒绝。平台用户与
+active generation 的复核继续由 FR-711 接入，原生验签不单独授予平台操作权限。
+
+受治理 child 用户发送通过原生 events 路由追加 submission_id 和 run=true，返回正式
+event_id；父 command UUID 与用户 submission UUID 在 child 内确定稳定输入事件 ID。
+普通旧会话请求／响应保持兼容。用户／父 send 与 run／pause／interrupt／condense 共用
+原生输入锁，goal 输入路径对受治理 child 明确拒绝；运行中或等待确认等不可写状态返回
+409，不排队、不自动 interrupt，不触发 ACP supersede。先准入 RunSlot 再落消息，429
+无新消息副作用。重试匹配原正式事件及正文／来源，已执行轮次不再启动；仅当前 HEAD
+恰为未启动输入且原生 idle／paused 的恢复窗口可补启动。请求取消仍等写入与调度收口，
+保持原生围栏。首条交办和后续父 send 均保留 user role，MessageEvent 的正式可选
+parent_instruction 记录父、action／tool-call 及冻结策略，旧事件不新增空字段。
+
+父 interrupt 使用原生中断并先持久写入受 lease 保护的控制回执，只保存命令来源、原目标
+input／HEAD 和原生事件身份，不保存正文或形成执行队列。实际 InterruptEvent／同步
+fallback PauseEvent 带稳定 ID 和同一来源，线程锁保护待写来源。原生调用返回后，等待
+run 收口五秒未完成则 pending=true、同 ID 对账；同步 fallback 沿用原生 cooperative pause，
+可先等待当前工具退出，期间保持输入围栏。已完成／效果已落盘的重试仅查回，待完成回执
+发现新用户轮次时不再中断，避免迟到请求停止新输入。故障和取消恢复保留原身份。
+
+验收：主套件 369 passed，含新建九项命令回归与既有父子准备／查询／执行／并行分发。
+覆盖用户与父输入竞争、容量无副作用、来源及初始任务来源、写后失败、正文冲突、伪造／
+跨父／未知目标、正式异步中断、旧中断不影响新轮次、丢失确认、用户重载重试与取消围栏。
+真实 Uvicorn HTTP／WebSocket 定向六项通过；新增完整受控 LLM 链路由原生工具生成
+launcher 证明并通过正式 prepare／release 创建 child，再验证父 send、用户稳定 ID 重试
+和父异步中断，正式事件均核对来源；同服其他五项旧行为回归通过。线程来源保护最终
+调整后，九项命令及该真实 HTTP 用例共十项复验通过，已含上述套件，不累加计数。
+十八个 Python 文件 pre-commit（Ruff format／lint、PEP8、Pyright、动态属性、导入和
+Tool 注册）及 diff 检查通过，未将受控 LLM 记为真实模型成功。
+
+verify-agent-server 的 F35.commands 独立进程 recipe 通过，两个新路由拒绝无正式证明
+的 send／interrupt，非法命令形状 422，实际重启后仍拒绝，普通父无新增 child；在上述
+已提交 SDK HEAD 上复验亦通过，测试服务已停止且无残留受管进程。真实模型
+父指令／中断因缺 DEEPSEEK_API_KEY 记为 blocked，仍由 FR-717 补齐。feature-map check
+通过，两个新路由均有归属和驱动；全局 coverage 仍有既存 activity／context 两条未归属
+路由，无重复归属或未驱动新路由。
+
+FlowWeave 只更新设计和进度，无数据库迁移，唯一 Alembic head 仍为
+0174_agent_workspace_user_defaults。source lock／包版本／镜像仍固定 FR-704 的 `ecf0aec09`，
+本片不改 V1／V2、发布客户端 schema 或既有 Runtime；最终扩展归档与 V3 消费由 FR-709
+冻结。未开放平台／Web 入口、未部署、推送或替换运行时。当前 NONE，下一可执行 FR-709，
+提交后停止。
+
+### FR-709 子会话扩展归档与 V3 冻结兼容 — READY
 
 依赖：FR-708 DONE。冻结最终 SDK 扩展 commit／归档／digest 与 ToolSet／策略 Manifest，
 注册 V3 adapter 和追加式允许值迁移；V1／V2 与旧 Runtime 请求形状保持兼容。
