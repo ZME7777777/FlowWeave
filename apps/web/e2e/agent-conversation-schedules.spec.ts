@@ -2102,8 +2102,8 @@ test('many subagents stay inside the floating card without scrolling it', async 
   });
   const expectContained = async () => {
     await settleWorkspaceLayout(page);
-    await expect(summary).toHaveAccessibleName('37 个子智能体任务');
-    await expect(summary.locator('b')).toHaveText('37 个任务');
+    await expect(summary).not.toHaveAttribute('aria-label');
+    await expect(summary.locator('b')).toHaveText('查看全部 (37)');
     await expect.poll(async () => (await geometry()).overflow).toBeLessThanOrEqual(1);
     expect((await geometry()).horizontalOverflow).toBe(0);
     expect((await geometry()).overflowStyles.flat().every(value => value === 'clip')).toBe(true);
@@ -2129,7 +2129,7 @@ test('many subagents stay inside the floating card without scrolling it', async 
   await page.getByRole('button', { name: '日报会话', exact: true }).last().click();
   await expectContained();
   await page.screenshot({ path: '../../.tmp/fr-651-card-fullscreen.png' });
-  await card.getByRole('button', { name: /37 个子智能体任务/ }).click();
+  await card.getByRole('button', { name: '查看全部 37 个子智能体任务' }).click();
   await expect(page.locator('.agent-subagent-task-list button')).toHaveCount(37);
   await expect(page.locator('.agent-subagent-record')).toContainText('卡片任务 1');
 });
