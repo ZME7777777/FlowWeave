@@ -12841,3 +12841,32 @@ Web typecheck、受影响 ESLint、Ruff、目录／投影／路由 Pyright、dif
 API，不代表真实模型执行。唯一 Alembic head 为 `0178_merge_schedule_credentials`，
 无 CURRENT。沿用当前会话授权发布 platform 与 web，实际发布结果完成后补记。
 当前与下一可执行重构切片均为 NONE。
+
+
+OPS-25 正式发布补记（2026-10-28）：实际部署代码为
+`42b2062793403b41bf815d73fc8fc3d4ff3bf968`。platform／web 正式预检及
+commit-bound 最小上下文 prepare 通过，归档 SHA-256 分别为
+`aa68eeaeb6c468d1f3e1649850c0b5d1c333359a31f411fa801d75eb6a88c2f4` 与
+`f4c852b7b50a369a0d587425bec1425f09cab3dcdf8f1c99f01b0bb7ce094a68`。
+实际 linux/amd64 平台／Web image ID 分别为
+`sha256:5f12a975515f01075945521418d1aa82e9e0f6b354d0321cbe66f0cbd984eefb` 与
+`sha256:abb2879b88343a18ccbea5b792726e801e4a9b3a8790978d809b1eeb189dbe68`，
+OCI revision 均一致。保留旧服务日志与 rollback tag 后运行 migration，head 仍为
+`0178_merge_schedule_credentials`；同步 recreate api、stream-api、worker、web，
+四服务健康和版本核对通过，服务器 Compose／env 摘要及其他 43 个容器的 image／
+StartedAt 保持。未修改 Provider、Runtime generation 或业务数据。
+
+正式 API 经临时内存认证后只读验收：57 项 Skill 首屏 20 项，4 项 MCP、7 项
+Context、其余三类空列表及 4 个 Skill 组合均正常。默认上传时间倒序；名称全局
+排序的前两页与同序较大窗口一致且无交叉，合计与旧能力 API 的 lineage 数一致。
+六类列表本次 HTTP 约 51–91ms、组合约 69ms；属于单次抽样，不作为性能承诺。
+没有真实上传、发布、编辑、删除或模型调用。生产浏览器验收覆盖前缀／根登录、
+Agent 深层路由及部署前缀请求；公开 HTML 和入口资源摘要与运行镜像一致，新增
+目录接口的匿名 401 边界通过。认证后列表 UI 的功能回归使用本地受控 API，
+不冒称为线上已登录浏览器验收。
+
+platform 与 web remote-release-finish 通过；无过期受管上下文，精确回收两个
+可回收旧 image ID 的 tags，保留当前镜像、每仓库一个不同版本回滚和全部容器
+引用。未清理共享 BuildKit、卷、Workspace 或数据库备份。收尾后四服务健康、
+版本、数据库 head、服务器配置及其他 43 个容器再次核对通过。本补记不改变
+实际部署应用身份；本地提交未推送，当前与下一可执行重构切片均为 NONE。
