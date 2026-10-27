@@ -12505,3 +12505,27 @@ Web typecheck、受影响 ESLint、diff 检查、CURRENT 唯一性与唯一 Alem
 其过期导航入口不计为本片通过证据。截图人工检查通过，使用受控 API／WebSocket，
 不代表真实模型执行。沿用当前会话直接部署授权，仅发布 Web；实际发布结果
 完成后补记。当前与下一可执行重构切片均为 NONE。
+
+
+OPS-18 正式发布补记（2026-10-27）：实际部署代码为
+`a15d39d2924a418652a1f4cd430cde464fa5546b`。Web 正式预检和 commit-bound
+最小上下文 prepare 通过，源归档 SHA-256 为
+`be36a7035e846b183793f0f31a11a245c360fd2f983056dfd23ca877afa87c7b`。
+实际 linux/amd64 Web image ID 为
+`sha256:220b651bac029d64ec23f23c623f925029f08f614e1221218aeb1018bc4afe42`，
+OCI revision 核对通过。保留旧 Web 日志与 rollback tag 后仅 recreate Web，
+HTTP／健康通过；服务器 Compose／env 摘要和其他 47 个容器的 image／StartedAt
+保持不变，没有迁移、API／Worker／Provider 重启或 Runtime replacement。
+
+导出实际运行镜像后，五项不同 Chromium 定向回归全部通过；三个屏宽的 Git
+紧凑布局、刷新状态和计数保留通过，截图人工检查通过；45 项加载的 JS／CSS
+SHA-256 匹配运行镜像。服务器实际 Chromium 验证前缀登录、Agent 深层路由和
+根登录入口；公网 HTML／入口资产与镜像一致，认证边界为 401。全新浏览器网络
+确认认证请求使用部署前缀，根 API 请求数为零。使用受控 API／WebSocket，
+未对用户业务会话发送或重放消息。
+
+Web remote-release-finish 的版本、健康与容量门禁通过，无过期受管上下文；
+精确回收一个可回收历史 image ID 的 tags，保留当前 Web、一个不同版本回滚
+及所有容器引用，不清理共享 BuildKit、卷、Workspace 或数据库备份。收尾后
+再次核对版本／健康、服务器配置及其他 47 个容器保持。补记不改变线上应用
+代码身份，本地提交未推送；当前与下一可执行重构切片均为 NONE。
