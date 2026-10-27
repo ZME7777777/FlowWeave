@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`CHILD CONVERSATIONS IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-720`
+> 下一可执行切片：`FR-721`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 > 子会话设计：`docs/agent-child-conversations-design.md`
@@ -604,16 +604,66 @@ completion 为受控 LLM，容器挂载与 FlowRun 物理连接由夹具提供�
 证据保存于 `.tmp/fr719/`；未改 SDK／source lock／Runtime 镜像或前端，未部署、推送、
 替换 Runtime 或调用真实模型。当前 NONE，下一可执行 FR-720；提交后停止。
 
-### FR-720 两宿主子预留凭据重签与首轮恢复 — READY
+### FR-720 原生创建身份与准备凭据冻结 — DONE
 
-依赖：FR-719 DONE。先预留 binding 再原生 prepare，核对正式父子／shared 目录／配置，
+依赖：FR-719 DONE。原计划包含原生契约修正、不可变归档／静态适配和产品两宿主恢复，
+按独立验收边界拆分。本片只补正式 HTTP 创建身份投影与 prepare 时的绑定级凭据／MCP
+隔离覆盖，将覆盖写入原生加密不可变计划，证明 reload 与部分初始化恢复不会回灌父凭据。
+旧 verifier／prepare／release、V1／V2／V3 固定契约不改；不开放产品创建或更新 source lock。
+
+实现：SDK `baseline` 提交 `b9f976b2ca05b947ee28eb34ebe590ff0409307f`。
+新增 POST `children/launcher/resolve`，由原生 verifier 返回 invocation 与正式
+parent／creation／child identity，类型校验二者相符；不改变旧 verifier 的 HTTP JSON。
+新增 POST `children/preparations/{creation_id}/governed`，接收正式 overrides：governance UUID、
+移除 secret 名、替换的原生 SecretSource、移除 MCP server 名。初始化前同时剔除 AgentContext
+secret 种子、调整 StoredConversation secrets 与 Agent MCP 配置，再创建原生 registry；
+不解析 source，不改变普通未选中凭据或 LLM key。受管子配置移除六个父工具和旧 launcher，
+重验 Agent 丢弃父实时 executor。覆盖只处理平台显式选定来源，不宣称自动清除任意嵌入秘密。
+
+覆盖与最终 Agent／StoredConversation 在初始化前写入完整加密不可变计划，同 creation 的
+覆盖改值、改治理 UUID、遗漏或移除列表变化一律 409；原生 reload 和 base_state 已写但 meta
+未写的恢复均复用原计划。受管计划丢失或不一致时 prepare／release 拒绝，准备阶段没有首条
+用户消息。旧 gate／preparation／plan 未配置治理时省略新增字段，旧路由和立即 children
+语义保留。新路由沿用 native 认证／证明，UUID 是配置身份，不是用户／资源授权。
+
+验收：定向原生套件 **366 passed**，其中 14 项新治理测试和正式身份／旧形状回归；另有
+**2 passed** 的真实 Uvicorn HTTP／受控 LLM 回归，核对 resolve、旧 verify 相等、governed
+prepare、首轮 release、后续发送与 interrupt。最初三项 Git 目录失败由 `.tmp` 位于 FlowWeave
+仓库内触发；设置本轮临时根的 GIT_CEILING_DIRECTORIES 后三项独立复测及全套通过，未改生产
+Git 行为。受影响九个 Python 文件的 Ruff／PEP8／Pyright、动态属性／依赖／注册检查通过。
+
+`verify-agent-server` CLI 独立进程完整 F35 为 **5 pass／1 blocked**；最终提交再重放本轮两个
+新路由的治理及拒绝配方，并记录真实模型 release 为 blocked。实际 prepare／GET／相同与
+变更覆盖重试／原生 409／重启／registry 和 MCP／加密落盘／删除后拒绝重建均已验证；非法
+resolve proof 为 403。全部 run 均 doctor 后驱动并停止，只操作本轮所有进程。完整配方首次
+执行暴露旧 release 的行内 Needs 未被 CLI 识别，导致模型前置条件未门控；保留失败证据并修为
+独立 Needs 行，最终运行明确 blocked，不把受控 LLM 或不可达 provider 当成真实模型成功。
+缺少 DEEPSEEK_API_KEY／LLM_API_KEY，模型驱动 resolve 成功及真实首轮执行继续作为 FR-717
+门禁。新两条 route 均有唯一 owner 和可执行 recipe；map check 为 35 文件／956 ID 通过。
+全局 coverage 仍有既存 activity／context 两条未归属，不能宣称全图覆盖通过。
+
+证据位于 `.tmp/fr720/`；SDK 忽略的 generated build 已原样恢复。Alembic 唯一 head 保持
+`0177_agent_child_parent_manifest`，本片无迁移。FlowWeave source lock 仍固定
+`3a4f5f1f61082430e8a2ccf8d59e52c9f4eab5dc`，没有重解释 V3／旧 Manifest、修改镜像、
+平台／Web 产品入口或任何远端。FR-721 冻结新增能力版本和静态契约，FR-722 接两宿主预留／
+凭据重签／恢复并解决首轮 PROVISIONING 授权时序；FR-712 依赖 FR-722。当前 NONE，
+下一可执行 FR-721；提交后停止。
+
+### FR-721 子创建治理扩展归档与静态契约冻结 — READY
+
+依赖：FR-720 DONE。归档本片新 native 扩展，以新增能力版本／静态 profile 消费身份和
+准备覆盖；保留 FR-709 原有 V3 来源／Manifest 和既有记录，不重解释已冻结版本。
+
+### FR-722 两宿主子预留凭据重签与首轮恢复 — PENDING
+
+依赖：FR-721 DONE。先预留 binding 再原生 prepare，核对正式父子／shared 目录／配置，
 复制冻结能力并重签或明确禁用 binding 级授权后 release；短事务、同 invocation 并发、
-generation fence、原创建身份查回及各阶段崩溃恢复。不凭 JSON 未导出的 SDK property
-猜创建 ID；必要时补正式 native 身份投影并重新冻结归档。真实双宿主／模型最终由 FR-717 验收。
+generation fence、原身份查回及各阶段崩溃恢复。补齐首轮父 binding 尚在 PROVISIONING
+时的授权时序；不能为运行中的 native 父工具等待父首轮提交而互相阻塞。
 
 ### FR-712 两宿主子续聊控制附件与结果引用 — PENDING
 
-依赖：FR-720 DONE。接入正式消息／控制／模型／condense、附件 owner 和正式结果引用，
+依赖：FR-722 DONE。接入正式消息／控制／模型／condense、附件 owner 和正式结果引用，
 用户与父工具共用受理门禁，不借用父 token 或跨 binding 路径。
 
 ### FR-713 子活动未读与父删除恢复 — PENDING

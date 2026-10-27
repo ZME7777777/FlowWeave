@@ -110,7 +110,8 @@ baseline 追加三个正式路由，均使用 Agent Server 现有会话认证：
 准备前先通过原生 RunSlot 准入，继而持久预留身份；原生不可变启动计划使用子 Conversation
 对应 Cipher 整体加密，只在 Runtime 持久状态目录保存。计划在初始化前提交，恢复时保持原
 配置和 child ID，即便 base_state 已写而 meta 尚未写。该原生路径不创建 Worktree，也不初始化
-Git 仓库；父配置中的平台绑定级授权仍须由 FR-720 在首轮前替换／重新激活。
+Git 仓库；父配置中的平台绑定级授权须由 FR-722 使用 FR-720／721 的固定原生契约，
+在首轮前替换／重新激活。
 
 prepared／dispatching 门禁阻止普通 send、run、goal、ask、condense 和 live Conversation
 访问；只读事件／配置及既有凭据激活仍可用。release 在取得 RunSlot 后才写 dispatching，
@@ -161,7 +162,8 @@ release 复核原准备保存的策略、creation 和任务摘要，不能借另
 
 该验证接口只证明原生调用来源。控制面必须另行解析 scope 对应的用户／宿主／父 binding，
 核对 active generation、冻结 Manifest 和权限，再执行 prepare → 凭据治理 → release。
-这部分依赖 FR-710 的关系模型，分别由 FR-719 接入调用授权、FR-720 接入创建／凭据恢复；
+这部分依赖 FR-710 的关系模型，分别由 FR-719 接入调用授权，FR-720／721 补齐和冻结原生
+前置契约，FR-722 接入创建／凭据恢复；
 Runtime key 或 verifier 的成功响应都不能单独授权平台操作。FR-706 不开放任何平台或浏览器入口，也不更新既有冻结 Runtime。
 
 ### 2.7 原生直属子查询工具（FR-707）
@@ -293,7 +295,7 @@ node_attempt_id，FlowRun 定位使用父已授权的 conversation_scope_id；�
 
 共享 `child_relations` 服务按当前用户和已解析宿主验证直属 locator，两宿主使用同一规则；
 正式 native parent／child ID、workspace 和 isolation 另与冻结关系比对；FR-711 提供正式
-原生适配，FR-720 再接入两宿主创建。此关系或原生身份校验不单独授予创建／发送权限，
+原生适配，FR-722 再接入两宿主创建。此关系或原生身份校验不单独授予创建／发送权限，
 仍需宿主授权及 active generation 门禁。
 
 普通列表、分页、置顶、排序、管理列表、活动与搜索扫描／历史命中投影均在 SQL 中排除 child，
@@ -311,7 +313,7 @@ FR-713 尚未实现可恢复逐子清理前，关联中的父删除在任何原�
 ### 2.11 原生子创建 HTTP 边界（FR-711）
 
 原 FR-711 同时覆盖 Runtime transport、父能力装配／授权及准备／凭据／释放恢复，
-按独立验收边界拆为 FR-711、FR-719、FR-720；FR-712 改为依赖 FR-720。
+按独立验收边界拆为 FR-711、FR-719、FR-720／721／722；FR-712 依赖 FR-722。
 本片只增加 `RuntimePort` 与 OpenHands adapter 的类型化边界，不安装工具或开放产品入口。
 
 | Runtime 操作 | 正式原生接口／返回 |
@@ -340,7 +342,7 @@ title／shared 的正式摘要。请求只允许 shared 与 opaque `SecretStr`�
 
 配置核对比较正式父子身份、shared 工作目录和同一原生公开序列化边界的 Agent 文档，
 全量 skills 请求避免默认裁剪导致误判。公开配置中的 Secret 已被 native 脱敏，因此相等
-不证明凭据授权相等，不能替代 FR-720 的绑定级凭据重签、失效／恢复实证。
+不证明凭据授权相等，不能替代 FR-722 的绑定级凭据重签、失效／恢复实证。
 既有 additive `/secrets` 适配继续可用，但本片不自动更新子会话或宣称已解决 reload 回灌。
 
 可选 TCP 回归通过 `FLOWWEAVE_NATIVE_CHILD_PYTHON` 指定独立安装固定四包的 Python 环境；
@@ -389,7 +391,7 @@ Cipher proof 后返回的 invocation 才能进入此边界；Runtime key 本身�
 均不能替代证明。请求体上限 256 KiB，格式错误不使用会回显 token／task 的通用 validation body。
 
 FR-719 的授权成功**仍返回** `AGENT_CHILD_CREATION_NOT_ENABLED`，不返回伪造 child receipt，
-也不调用 prepare／release。实际子预留、凭据和首轮恢复留在 FR-720；queries／commands 平台路由
+也不调用 prepare／release。实际子预留、凭据和首轮恢复留在 FR-722；queries／commands 平台路由
 尚未开放，等待 FR-712，不把冻结工具描述等同于产品已可用。原生工具将本阶段创建门禁视为结果
 未知，不能新起另一份任务。用户侧浮卡／子标签也尚未开放。
 
@@ -403,6 +405,49 @@ Agent policy 的字段。因此仅对本片新启用的 V3 父能力会话拒绝
 只有 completion 为受控 LLM；容器挂载与 FlowRun 物理连接由夹具提供，不声称真实镜像或真实模型
 全链路成功。Worker 定向回归另核对冻结值已持久化且 start 前无持有事务。最终产品／实际镜像／
 真实模型与完整两宿主故障验收仍由 FR-717 承担，本片不部署或替换 Runtime。
+
+### 2.13 原生身份投影与准备时凭据冻结（FR-720）
+
+原先两宿主创建方案需要先解决两个原生缺口：旧 verifier 的 JSON 不包含 Python
+`creation_id` property；既有 `/secrets` 是 additive 更新，不能清除恢复时 StoredConversation／
+AgentContext 的父凭据种子。因此拆为原生契约 FR-720、不可变归档／新静态能力契约 FR-721、
+两宿主预留／重签／释放恢复 FR-722，FR-712 依赖 FR-722。本片尚不开放产品创建。
+
+SDK `baseline` 提交 `b9f976b2ca05b947ee28eb34ebe590ff0409307f` 增加两个正式路由：
+
+| 路由（相对父 Conversation） | 契约 |
+|---|---|
+| POST `children/launcher/resolve` | 复用原 verifier，返回 `ChildLauncherResolution`：已验证 invocation 与正式 parent／creation／child identity；原生类型核对二者一致 |
+| POST `children/preparations/{creation_id}/governed` | 接收 shared 请求及必填 `ChildConversationPreparationOverrides`，在原生初始化前冻结覆盖；返回可选 governance UUID |
+
+旧 verifier、prepare、read 和 release 路由保留；旧 gate／preparation／plan 未配置治理时省略新增
+字段，旧序列化形状保持。新 route 使用已有 Runtime 认证和 native launcher proof；已配置受管父
+仍需正式调用证明。未配置父沿用受信部署调用语义。identity 和 governance UUID 都不是用户授权；
+用户权限、资源、generation、binding 预留与精确可信 audience 继续由平台校验。
+
+覆盖只允许 governance UUID、移除 secret 名、替换的原生 `SecretSource` 和移除 MCP server 名。
+移除／替换名称从 AgentContext 的 secrets 种子中剔除；StoredConversation 的 secrets 同时删除或
+替换，选定 MCP 从 Agent 配置中移除，再初始化原生 registry。普通未选中凭据和 LLM 凭据保留。
+覆盖不解析 SecretSource，不扫描任意插件／提示词内嵌秘密；平台在 FR-722 必须明确列出绑定级
+授权来源和 MCP 名称，不得把此能力描述成自动识别全部父权限。子配置移除六个受管父工具及旧
+launcher，并重新验证 Agent，丢弃继承的父实时 executor。
+
+完整覆盖与最终 Agent／StoredConversation 写入原生加密不可变 preparation plan，再创建任何
+子原生状态。相同 creation 只能以相同覆盖重放；改值、改 UUID、遗漏覆盖或移除列表变化均为 409。
+base_state 已写但 metadata 未写的重试沿用原计划，不重新复制当前父凭据；完整服务 reload 也不会
+从父 context 重新填回。受管 plan 丢失／不匹配时 prepare 和 release 拒绝，不能在治理未知时运行。
+准备阶段不添加首条用户消息；原 release 的稳定 event ID／运行受理及恢复逻辑保持原生所有。
+
+验收：366 项定向原生回归通过，另有 2 项真实 TCP／受控 LLM 回归通过，覆盖新旧接口、正式
+身份、原生首轮释放与后续消息／interrupt。14 项治理测试覆盖初始化前种子隔离、加密、reload、
+部分初始化、并发同身份重放和丢失计划拒绝。受影响 Python 的 Ruff／Pyright／依赖及注册检查通过。
+独立进程的 CLI F35 验证、缺少真实模型密钥的限制及最终证据记录在进度文档；受控 LLM 结果不作为
+真实模型成功。实际 Runtime 镜像与平台两宿主故障链仍待 FR-717。
+
+FlowWeave source lock 保持 `3a4f5f1f61082430e8a2ccf8d59e52c9f4eab5dc`，原 `OH_FW_V3`／
+`oh-fw-child-v1` 的固定身份和 Manifest 不变；新源码尚未进入产品 Runtime。FR-721 必须用新增能力
+版本／静态契约冻结本次扩展，不能重解释 FR-709 已冻结的身份。FR-722 另需处理首轮父 binding
+仍处于 PROVISIONING 的授权时序，不能让父 native Tool 等待其自身首轮事务提交而死锁。
 
 ## 3. 父 Agent 的操作契约
 
@@ -601,8 +646,10 @@ FR-702 仅做文档契约、依赖／状态、固定源码事实和迁移 head �
 | FR-710 | 子关联元数据迁移、RLS 与普通入口隔离 | FR-709 |
 | FR-711 | 原生子创建 HTTP 适配与配置核对 | FR-710 |
 | FR-719 | 两宿主父能力冻结与 launcher 调用授权 | FR-711 |
-| FR-720 | 两宿主子预留、凭据重签、首轮释放及恢复 | FR-719 |
-| FR-712 | 两宿主续聊／控制／附件／结果引用接口 | FR-720 |
+| FR-720 | 原生创建身份投影与准备凭据冻结 | FR-719 |
+| FR-721 | 新治理扩展归档与静态能力契约冻结 | FR-720 |
+| FR-722 | 两宿主子预留、凭据重签、首轮释放及恢复 | FR-721 |
+| FR-712 | 两宿主续聊／控制／附件／结果引用接口 | FR-722 |
 | FR-713 | 子活动／未读聚合、父删除及恢复保护 | FR-712 |
 | FR-714 | 通用侧边会话交互边界，保留临时聊天语义 | FR-712 |
 | FR-715 | 悬浮卡子列表与按标题多标签 | FR-713、FR-714 |
