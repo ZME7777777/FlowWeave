@@ -101,8 +101,12 @@ def create_sidebar_conversation(
         capability_version_ids=capability_version_ids,
         idempotency_key=idempotency_key,
         system_message_suffix_append=_source_context(source),
+        allow_child_capability=False,
     )
     binding_id = str(result["conversation"]["id"])
+    target = db.get(AgentConversationBinding, binding_id)
+    if target is not None and target.child_parent_manifest_json is not None:
+        raise DomainError("AGENT_SIDEBAR_SOURCE_INVALID", "不能将父能力会话转为临时聊天", 409)
     expires_at = now() + _SIDEBAR_TTL
     existing = db.scalar(
         select(AgentSidebarConversation).where(

@@ -66,6 +66,11 @@ from flowweave.runtime.base import (
     RuntimeWorkspaceSnapshot,
     StartAttemptRequest,
 )
+from flowweave.runtime.child_contract import (
+    CHILD_HTTP_OPERATIONS,
+    CHILD_TOOL_NAMES,
+    V3_SOURCE_COMMIT,
+)
 from flowweave.runtime.child_creation import (
     NativeChildConfiguration,
     NativeChildInvocation,
@@ -2183,6 +2188,23 @@ class OpenHandsRuntime:
                 )
             },
         }
+        child_tools = set(CHILD_TOOL_NAMES) & {tool.name for tool in spec.tools}
+        if child_tools:
+            if (
+                child_tools != set(CHILD_TOOL_NAMES)
+                or spec.runtime_contract is None
+                or spec.runtime_contract.source_commit != V3_SOURCE_COMMIT
+                or not set(CHILD_HTTP_OPERATIONS)
+                <= set(spec.runtime_contract.required_http_operations)
+            ):
+                raise self._incompatible("governed_parent_contract_required")
+            # These private-to-deployment factories are lazily imported by the
+            # formal creation API, rather than advertised by the base preset.
+            payload["tool_module_qualnames"] = {
+                name: "openhands.tools.child_conversation."
+                + ("governed" if index == 0 else "queries" if index < 4 else "commands")
+                for index, name in enumerate(CHILD_TOOL_NAMES)
+            }
         # Conversation secrets are a native OpenHands request field.  Keep
         # these values out of Runtime manifests, image configuration, and the
         # persisted FlowWeave conversation locator.
@@ -2271,7 +2293,11 @@ class OpenHandsRuntime:
         self._negotiate_runtime_contract(
             spec.runtime_contract,
             required_tools=(
-                tuple(tool.name for tool in spec.tools if tool.name != "FinishTool")
+                tuple(
+                    tool.name
+                    for tool in spec.tools
+                    if tool.name != "FinishTool" and tool.name not in child_tools
+                )
                 if spec.runtime_contract is not None
                 else tuple(tool.name for tool in spec.tools)
             ),
@@ -2314,6 +2340,7 @@ class OpenHandsRuntime:
             runtime_resource_name=request.runtime_resource_name,
             output_contract={item["field_key"]: item for item in self._contracts[conversation_id]},
             workspace_root=request.workspace_root,
+            protocol_profile="OH_FW_V3" if child_tools else None,
             llm_timeout_policy=spec.llm_timeout_policy,
         )
         created_agent = created.get("agent")

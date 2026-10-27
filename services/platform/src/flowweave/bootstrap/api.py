@@ -19,6 +19,12 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from flowweave.bootstrap.container import Container, build_container
 from flowweave.bootstrap.settings import Settings
 from flowweave.modules.admin_control.router import router as admin_control_router
+from flowweave.modules.agent_sessions.presentation.child_launcher import (
+    native_launcher_path,
+)
+from flowweave.modules.agent_sessions.presentation.child_launcher import (
+    router as child_launcher_router,
+)
 from flowweave.modules.agent_sessions.presentation.history_mcp import (
     MCP_PATH,
 )
@@ -195,7 +201,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     status_code=exc.status,
                     content=error_body(exc.code, exc.message, request_id),
                 )
-        if request.url.path.startswith("/api/v1/") and request.url.path != MCP_PATH:
+        if (
+            request.url.path.startswith("/api/v1/")
+            and request.url.path != MCP_PATH
+            and not native_launcher_path(request.url.path)
+        ):
             async with container.database.session() as auth_session:
                 principal = await auth_session.run_sync(
                     lambda db: (
@@ -216,6 +226,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             request.url.path.startswith("/health")
             or request.url.path.startswith("/internal/admin-control/")
             or request.url.path == MCP_PATH
+            or native_launcher_path(request.url.path)
             or request.url.path
             in {
                 "/api/v1/auth/login",
@@ -486,6 +497,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(users_router, prefix="/api/v1")
     app.include_router(admin_control_router)
     app.include_router(history_mcp_router)
+    app.include_router(child_launcher_router)
 
     app.include_router(
         agent_workspaces_router,

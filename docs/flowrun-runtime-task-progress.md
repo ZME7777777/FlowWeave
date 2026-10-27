@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`CHILD CONVERSATIONS IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-719`
+> 下一可执行切片：`FR-720`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 > 子会话设计：`docs/agent-child-conversations-design.md`
@@ -551,13 +551,60 @@ base／mock／openhands 三文件与提交前 HEAD 的 47 项既存诊断按文�
 未改 SDK／source lock／Runtime 镜像或 Web，不部署、不推送；两宿主创建、授权、凭据治理
 仍由 FR-719／FR-720 完成。当前 NONE，下一可执行 FR-719；提交后停止。
 
-### FR-719 两宿主父能力冻结与 launcher 调用授权 — READY
+### FR-719 两宿主父能力冻结与 launcher 调用授权 — DONE
 
 依赖：FR-711 DONE。按父 binding 冻结原生工具／使用说明／策略与可信地址，接入两宿主
 新建父会话配置和只接受 native invocation 的受管入口；校验用户、宿主、active generation、
 Manifest／audience 和版本。不升级 V1／V2 或既有会话；未知源码／旧 Runtime 拒绝。
 
-### FR-720 两宿主子预留凭据重签与首轮恢复 — PENDING
+实现：0177 为 binding 追加可空 `child_parent_manifest_json`，历史 NULL 不回填。
+新 PROVISIONING 父绑定冻结 source／archive、能力 Manifest、Runtime Manifest／摘要、
+image digest、用户／宿主／scope／父 UUID、Runtime Session／generation 和三个可信目标 URL；
+复用 binding 用户隔离和 RLS。数据库 trigger 禁止旧 ACTIVE 记录升级、冻结内容或其身份
+漂移；保留标题／未读／lifecycle 更新，存在冻结记录时拒绝 downgrade。
+
+Agent Workspace 默认仍为 V1，仅显式 `AGENT_WORKSPACE_RUNTIME_PROTOCOL_PROFILE=OH_FW_V3`
+的新父会话装配能力；实际创建通过固定来源／版本／路由契约握手，旧镜像不能凭配置获得能力。
+FlowRun 使用冻结 Environment profile 与 Snapshot 摘要，覆盖手动创建、bootstrap 和自动启动
+Worker；Worker 校验 lease 后提交冻结配置，再释放事务并调用 native start。六个原生父工具
+通过正式 `tool_module_qualnames` 加载，模型只有 native 工具定义允许的参数；使用说明来自
+固定能力版本。临时 sidebar 显式关闭装配，gate-sidecar／child 不得成为父。
+
+新增精确 UUID 的受管 `/api/v1/agent-child-launchers/{owner}/{binding}/start`，仅此入口独立于
+浏览器 cookie 登录；必须核对当前资源派生的 Runtime key、仍有权限的活动用户、ACTIVE 普通
+父 binding、宿主／目录／generation／镜像，FlowRun 还核对未取消 Attempt、未终结 Run、原
+Snapshot 与 V3 connection。短 DB 授权 → 不持有 DB Session 的正式 native verifier → 新 DB
+复核，再比对全部 policy 和精确 audience；原生 key 本身、自填 claim 或 cookie 都不能授权。
+错误与请求格式拒绝不回显 task／token，256 KiB 上限，用户停用／权限撤销／删除／替换
+发生在验证期间也拒绝。配置入口通过显式可信基址生成，不从 Host／模型／public URL 猜测。
+本地 env example 与 Compose 只增加默认关闭的配置传递，未操作任何远端配置。
+
+边界：授权成功仍返回明确 `AGENT_CHILD_CREATION_NOT_ENABLED`，不伪造回执或调用 prepare／
+release；实际创建／凭据／恢复留给 FR-720，queries／commands 平台入口留给 FR-712。
+新 V3 父能力会话的 fork 和需要换 native ID 的旧恢复旁路明确拒绝，避免 native fork 复制
+原父 UUID 的 resolved policy；旧普通会话不受影响。replacement 后旧 generation 不能自动
+获得新授权，正式重绑定／继承需要后续单独实现，不能改写不可变 Manifest 绕过门禁。
+
+验收：两宿主授权／关联／历史主套件 **162 passed、2 skipped**，含真实 PostgreSQL 全迁移
+upgrade、0177 downgrade 非空拒绝与空表回退重升、旧 binding 保持 NULL、原生证明字段
+错配、root／其他 key／cookie 拒绝、权限／generation／Snapshot 漂移、冻结触发器和两项真实
+TCP 探针。两项探针使用同一固定 source commit `3a4f5f1f61082430e8a2ccf8d59e52c9f4eab5dc`
+独立安装的四包 1.58.2，每次复核归档 SHA-256 及全部 536 个 Python 源码一致；真实 native
+父工具／ActionEvent → 实际平台 HTTP → native verifier → 平台复核 → 显式创建门禁。
+completion 为受控 LLM，容器挂载与 FlowRun 物理连接由夹具提供，不当作实际 Runtime 镜像
+或真实模型全链路验收。进程正常退出，无遗留监听。
+
+适配器／V3／旧协议定向回归 **359 passed**。补充 Worker 持久化与无持有事务检查通过；
+其两项定向运行含一项已在主套件的迁移用例，新增一个不同 Worker 用例，不重复累计。
+旧 Workspace 四项相关用例为 1 passed／3 failed，已在提交前 HEAD 重跑，失败集合完全相同，
+均为既存无用户 principal 夹具问题；新增真实 binding 的 Workspace 装配开／关用例均通过，
+不宣称旧宿主测试全套通过。新增模块 Pyright 零错误，八个受影响既有模块的 340 项原有
+诊断与 HEAD 逐项相同、零新增。受影响 Ruff、变更函数格式、Compose YAML 解析、diff、
+任务状态／依赖核对通过，Alembic 唯一 head 为 `0177_agent_child_parent_manifest`。
+证据保存于 `.tmp/fr719/`；未改 SDK／source lock／Runtime 镜像或前端，未部署、推送、
+替换 Runtime 或调用真实模型。当前 NONE，下一可执行 FR-720；提交后停止。
+
+### FR-720 两宿主子预留凭据重签与首轮恢复 — READY
 
 依赖：FR-719 DONE。先预留 binding 再原生 prepare，核对正式父子／shared 目录／配置，
 复制冻结能力并重签或明确禁用 binding 级授权后 release；短事务、同 invocation 并发、

@@ -8004,6 +8004,41 @@ def process_start_runtime(
             runtime_resource_name=allocation.resource_name,
             runtime_base_url=allocation.base_url,
         )
+        if environment.runtime_protocol_profile == "OH_FW_V3":
+            from flowweave.modules.agent_sessions.application.child_parent import (
+                attach_parent_capability,
+            )
+
+            parent = agent_sessions.flow_node_binding_for_attempt(
+                db, attempt.id, require_provisioning=True
+            )
+            snapshot = _snapshot(db, attempt.snapshot_id)
+            connection = sandboxes.active_node_runtime_connection(
+                db, flow_run_id=flow_run_id, node_attempt_id=attempt.id
+            )
+            if connection.runtime_session_id != parent.runtime_session_id:
+                raise DomainError(
+                    "RUNTIME_CONVERSATION_SESSION_DRIFT", "父会话 Runtime 身份已变化", 409
+                )
+            request = replace(
+                request,
+                agent_spec=attach_parent_capability(
+                    db,
+                    parent,
+                    request.agent_spec,
+                    profile=environment.runtime_protocol_profile,
+                    identity=server_identity,
+                    generation=connection.generation,
+                    runtime_image_digest=environment.image_digest,
+                    runtime_manifest=snapshot.runtime_manifest_json or {},
+                    expected_manifest_digest=snapshot.runtime_manifest_hash,
+                ),
+            )
+            if lease is not None:
+                # This new immutable write must survive the read-transaction
+                # rollback below, before the native parent can call its gateway.
+                _require_current_lease(db, lease)
+                db.commit()
     if request.input_attachments or any(
         cast(dict[str, Any], item.get("artifact") or {}).get("artifact_type") == "FILE"
         for item in request.bindings

@@ -153,6 +153,11 @@ class AgentConversationBinding(Base):
     reasoning_effort: Mapped[str | None] = mapped_column(String(30))
     fallback_models_json: Mapped[list[dict[str, str | None]]] = mapped_column(JSON, default=list)
     streaming_callback_ready: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Immutable creation-time native parent authority. NULL means no opt-in;
+    # never infer it from current deployment settings or a copied conversation.
+    child_parent_manifest_json: Mapped[dict[str, object] | None] = mapped_column(
+        JSON(none_as_null=True)
+    )
     # OpenHands identifiers are UUIDs today, but the formal Runtime contract
     # permits opaque identifiers. Keep the shared locator compatible with the
     # existing FlowRun locator rather than silently truncating a future host.

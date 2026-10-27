@@ -1,0 +1,1050 @@
+"""Two-host native parent authority with real PostgreSQL binding records."""
+
+from __future__ import annotations
+
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from types import SimpleNamespace
+from uuid import UUID, uuid4
+
+import pytest
+from pydantic import SecretStr
+from sqlalchemy import select, text
+from sqlalchemy.exc import DBAPIError
+
+from flowweave.modules.agent_sessions.application import child_launcher, child_parent
+from flowweave.modules.agent_sessions.infrastructure.models import (
+    AgentChildConversation,
+    AgentConversationBinding,
+)
+from flowweave.modules.agent_workspaces.infrastructure.models import (
+    AgentWorkspace,
+    AgentWorkspaceRuntime,
+)
+from flowweave.modules.sandboxes.infrastructure.models import ManagedSandbox
+from flowweave.modules.users.application.security import tenant_user
+from flowweave.runtime.auth import derive_runtime_session_key
+from flowweave.runtime.base import RuntimeAgentSpec, RuntimeTool
+from flowweave.runtime.child_contract import (
+    CHILD_TOOL_NAMES,
+    CHILD_USAGE_GUIDANCE,
+    child_capability_manifest,
+)
+from flowweave.runtime.child_creation import NativeChildInvocation, NativeChildLaunchRequest
+from flowweave.runtime.manifest import runtime_manifest_hash
+from flowweave.runtime.protocol_profiles import runtime_contract_for_protocol_profile
+from flowweave.shared.domain.openhands import CURRENT_OPENHANDS_SERVER_IDENTITY
+from flowweave.shared.errors import DomainError
+from flowweave.shared.models import FlowRun, FlowRunRuntime, NodeAttempt, NodeRun, RunSnapshot, User
+from flowweave.shared.settings import settings_context
+
+
+@pytest.fixture
+def gateway_base_url(request):
+    if getattr(request, "param", None) == "local":
+        import socket
+
+        with socket.socket() as bound:
+            bound.bind(("127.0.0.1", 0))
+            return f"http://127.0.0.1:{bound.getsockname()[1]}"
+    return "https://gateway.example.test/prefix"
+
+
+@pytest.fixture(params=["AGENT_WORKSPACE", "FLOW_NODE"])
+def parent_graph(request, db_session_factory, settings, monkeypatch, gateway_base_url):
+    config = settings.model_copy(
+        update={
+            "runtime_adapter": "openhands",
+            "agent_child_gateway_base_url": gateway_base_url,
+        }
+    )
+    owner, other, workspace_id, runtime_id, host_id, scope_id, native_id, binding_id = [
+        str(uuid4()) for _ in range(8)
+    ]
+    resource = "fr719-test-resource"
+    image = "sha256:" + "a" * 64
+    kind = request.param
+    if kind == "AGENT_WORKSPACE":
+        host_id = workspace_id
+        scope_id = workspace_id
+    manifest = {
+        "schema_version": 3,
+        "child_conversations": child_capability_manifest(),
+        "nodes": {},
+    }
+    spec = RuntimeAgentSpec(
+        tools=(RuntimeTool("task_tracker"),),
+        runtime_contract=runtime_contract_for_protocol_profile(
+            "OH_FW_V3", ("task_tracker",), CURRENT_OPENHANDS_SERVER_IDENTITY
+        ),
+    )
+    with settings_context(config), tenant_user(owner), db_session_factory() as db:
+        db.add_all(
+            [
+                User(id=owner, username=owner, role="SUPER_ADMIN"),
+                User(id=other, username=other, role="SUPER_ADMIN"),
+            ]
+        )
+        if kind == "AGENT_WORKSPACE":
+            db.add(AgentWorkspace(id=workspace_id, scope_key=workspace_id))
+            db.add(
+                AgentWorkspaceRuntime(
+                    id=runtime_id,
+                    workspace_id=workspace_id,
+                    runtime_image_digest=image,
+                    workspace_allocation_id=str(uuid4()),
+                    active_generation=1,
+                    status="ACTIVE",
+                )
+            )
+            db.add(
+                ManagedSandbox(
+                    id=str(uuid4()),
+                    kind="AGENT_RUNTIME",
+                    owner_type="AGENT_WORKSPACE",
+                    owner_id=workspace_id,
+                    backend_resource_name=resource,
+                    generation=1,
+                    image_reference=image,
+                    hard_expires_at=datetime.now(UTC) + timedelta(hours=1),
+                )
+            )
+        else:
+            run = FlowRun(
+                id=host_id,
+                flow_definition_id=str(uuid4()),
+                run_no=1,
+                name="native parent",
+                state="RUNNING",
+            )
+            node = NodeRun(
+                id=str(uuid4()), flow_run_id=host_id, flow_node_snapshot_key="node", sequence_no=1
+            )
+            snapshot = RunSnapshot(
+                id=str(uuid4()),
+                flow_run_id=host_id,
+                version=1,
+                definition_json={},
+                definition_hash="a" * 64,
+                runtime_manifest_json=manifest,
+                runtime_manifest_hash=runtime_manifest_hash(manifest),
+            )
+            attempt = NodeAttempt(
+                id=scope_id,
+                node_run_id=node.id,
+                snapshot_id=snapshot.id,
+                attempt_no=1,
+                state="RUNNING",
+            )
+            session = FlowRunRuntime(
+                id=runtime_id,
+                flow_run_id=host_id,
+                runtime_image_digest=image,
+                environment_version_id=str(uuid4()),
+                workspace_allocation_id=str(uuid4()),
+                protocol_profile="OH_FW_V3",
+                active_generation=1,
+                status="ACTIVE",
+            )
+            db.add_all([run, node, snapshot, attempt, session])
+            monkeypatch.setattr(
+                child_launcher.sandboxes,
+                "active_node_runtime_connection",
+                lambda *_args, **_kwargs: SimpleNamespace(
+                    runtime_session_id=runtime_id,
+                    protocol_profile=SimpleNamespace(value="OH_FW_V3"),
+                    generation=1,
+                    resource_name=resource,
+                    managed_runtime_id="node-runtime",
+                ),
+            )
+        binding = AgentConversationBinding(
+            id=binding_id,
+            owner_user_id=owner,
+            workspace_id=workspace_id if kind == "AGENT_WORKSPACE" else None,
+            host_kind=kind,
+            host_id=host_id,
+            flow_run_id=host_id if kind == "FLOW_NODE" else None,
+            conversation_scope_id=scope_id,
+            runtime_session_id=runtime_id,
+            openhands_conversation_id=native_id,
+            working_directory="/runtime/workspace/project/test",
+            create_idempotency_key=str(uuid4()),
+            lifecycle="PROVISIONING",
+        )
+        db.add(binding)
+        db.flush()
+        bound_spec = child_parent.attach_parent_capability(
+            db,
+            binding,
+            spec,
+            profile="OH_FW_V3",
+            identity=CURRENT_OPENHANDS_SERVER_IDENTITY,
+            generation=1,
+            runtime_image_digest=image,
+            runtime_manifest=manifest,
+        )
+        frozen = child_parent.read_parent_capability(binding)
+        binding.lifecycle = "ACTIVE"
+        db.commit()
+        key = SecretStr(
+            derive_runtime_session_key(
+                config.openhands_session_api_key, config.sandbox_manager_scope, resource
+            )
+        )
+        yield SimpleNamespace(
+            db=db,
+            owner=owner,
+            other=other,
+            binding=binding,
+            frozen=frozen,
+            spec=spec,
+            bound_spec=bound_spec,
+            key=key,
+            config=config,
+            manifest=manifest,
+            runtime_id=runtime_id,
+            kind=kind,
+            image=image,
+            sessions=db_session_factory,
+        )
+
+
+def prepare(g, **changes):
+    kwargs = dict(owner_id=UUID(g.owner), binding_id=UUID(g.binding.id), runtime_key=g.key)
+    kwargs.update(changes)
+    return child_launcher.prepare_launcher(g.db, **kwargs)
+
+
+def proof(g, **changes):
+    value = dict(
+        schema_version=1,
+        operation="start",
+        policy=g.frozen.policy,
+        action_id="native-action",
+        tool_call_id="native-tool-call",
+        audience=g.frozen.launch_url,
+        request_digest="a" * 64,
+        issued_at=datetime.now(UTC),
+        expires_at=datetime.now(UTC) + timedelta(minutes=10),
+    )
+    value.update(changes)
+    return NativeChildInvocation(**value)
+
+
+def test_freeze_and_two_phase_auth_do_not_create_a_child(parent_graph):
+    g = parent_graph
+    names = [tool.name for tool in g.bound_spec.tools]
+    assert tuple(names[-6:]) == CHILD_TOOL_NAMES
+    assert "start_child_conversation" not in names
+    assert CHILD_USAGE_GUIDANCE in g.bound_spec.agent_context.system_message_suffix
+    assert str(g.frozen.policy.scope_id) == g.binding.id
+    assert "/prefix/api/v1/agent-child-launchers/" in g.frozen.launch_url
+    prepared = prepare(g)
+    assert child_launcher.project_launcher(g.db, prepared, proof(g), runtime_key=g.key) == prepared
+    assert not g.db.scalar(select(AgentChildConversation.id))
+    assert len(list(g.db.scalars(select(AgentConversationBinding.id)))) == 1
+
+
+@pytest.mark.parametrize("change", ["user", "binding", "key", "root-key"])
+def test_wrong_user_binding_or_runtime_credential_cannot_authorize(parent_graph, change):
+    g = parent_graph
+    kwargs = {
+        "user": {"owner_id": UUID(g.other)},
+        "binding": {"binding_id": uuid4()},
+        "key": {"runtime_key": SecretStr("forged")},
+        "root-key": {"runtime_key": SecretStr(g.config.openhands_session_api_key)},
+    }[change]
+    with pytest.raises(DomainError) as caught:
+        prepare(g, **kwargs)
+    assert caught.value.code == "AGENT_CHILD_LAUNCH_DENIED"
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "generation",
+        "scope_id",
+        "runtime_session_id",
+        "parent_conversation_id",
+        "manifest_digest",
+        "max_active_children",
+        "audience",
+    ],
+)
+def test_native_claim_must_match_every_frozen_authority_field(parent_graph, field):
+    g = parent_graph
+    prepared = prepare(g)
+    if field == "audience":
+        invocation = proof(g, audience="https://untrusted.example.test")
+    else:
+        replacement = {"generation": 2, "manifest_digest": "b" * 64, "max_active_children": 1}.get(
+            field, uuid4()
+        )
+        invocation = proof(g, policy=g.frozen.policy.model_copy(update={field: replacement}))
+    with pytest.raises(DomainError):
+        child_launcher.project_launcher(g.db, prepared, invocation, runtime_key=g.key)
+
+
+@pytest.mark.parametrize(
+    "change", ["disabled", "permission", "generation", "image", "runtime", "deleting"]
+)
+def test_revocation_or_runtime_drift_after_native_verification_is_rejected(parent_graph, change):
+    g = parent_graph
+    prepared = prepare(g)
+    session_type = AgentWorkspaceRuntime if g.kind == "AGENT_WORKSPACE" else FlowRunRuntime
+    if change in {"disabled", "permission"}:
+        user = g.db.get(User, g.owner)
+        if change == "disabled":
+            user.is_active = False
+        else:
+            user.role = "USER"
+    elif change == "deleting":
+        g.binding.lifecycle = "DELETE_PENDING"
+    else:
+        runtime = g.db.get(session_type, g.runtime_id)
+        if change == "generation":
+            runtime.active_generation = 2
+        elif change == "image":
+            runtime.runtime_image_digest = "sha256:" + "b" * 64
+        else:
+            runtime.status = "RECONNECTING"
+    g.db.commit()
+    with pytest.raises(DomainError):
+        child_launcher.project_launcher(g.db, prepared, proof(g), runtime_key=g.key)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "owner_user_id",
+        "host_id",
+        "conversation_scope_id",
+        "runtime_session_id",
+        "openhands_conversation_id",
+        "working_directory",
+        "child_parent_manifest_json",
+    ],
+)
+def test_database_freezes_parent_identity_and_capability(parent_graph, field):
+    g = parent_graph
+    value = "{}" if field == "child_parent_manifest_json" else str(uuid4())
+    expression = "CAST(:value AS JSON)" if field == "child_parent_manifest_json" else ":value"
+    with pytest.raises(DBAPIError, match="immutable"):
+        g.db.execute(
+            text(f"UPDATE agent_conversation_bindings SET {field} = {expression} WHERE id = :id"),
+            {"value": value, "id": g.binding.id},
+        )
+        g.db.commit()
+    g.db.rollback()
+
+
+def test_frozen_parent_still_allows_title_and_unread(parent_graph):
+    g = parent_graph
+    g.binding.display_title = "new title"
+    g.binding.unread = True
+    g.db.commit()
+    assert prepare(g).capability == g.frozen
+
+
+def test_legacy_profiles_do_not_install_parent_tools(parent_graph):
+    g = parent_graph
+    old = AgentConversationBinding(child_parent_manifest_json=None)
+    for profile in ("OH_FW_V1", "OH_FW_V2"):
+        assert (
+            child_parent.attach_parent_capability(
+                g.db,
+                old,
+                g.spec,
+                profile=profile,
+                identity=CURRENT_OPENHANDS_SERVER_IDENTITY,
+                generation=1,
+                runtime_image_digest=g.image,
+                runtime_manifest={},
+            )
+            is g.spec
+        )
+    assert old.child_parent_manifest_json is None
+
+
+@pytest.mark.parametrize(
+    "failure", ["unknown-source", "wrong-manifest", "new-generation", "wrong-snapshot-digest"]
+)
+def test_bad_freeze_inputs_fail_before_tool_installation(parent_graph, failure):
+    g = parent_graph
+    kwargs = dict(
+        profile="OH_FW_V3",
+        identity=CURRENT_OPENHANDS_SERVER_IDENTITY,
+        generation=1,
+        runtime_image_digest=g.image,
+        runtime_manifest=g.manifest,
+    )
+    if failure == "unknown-source":
+        kwargs["identity"] = replace(CURRENT_OPENHANDS_SERVER_IDENTITY, source_commit="b" * 40)
+    elif failure == "wrong-manifest":
+        kwargs["runtime_manifest"] = {"child_conversations": {}}
+    elif failure == "new-generation":
+        kwargs["generation"] = 2
+    else:
+        kwargs["expected_manifest_digest"] = "b" * 64
+    with pytest.raises(DomainError):
+        child_parent.attach_parent_capability(g.db, g.binding, g.spec, **kwargs)
+
+
+def test_native_verifier_is_required_and_receives_opaque_proof(parent_graph, monkeypatch):
+    g = parent_graph
+    prepared = prepare(g)
+    calls = []
+
+    def verify(handle, request):
+        calls.append((handle, request))
+        raise DomainError("RUNTIME_CHILD_REQUEST_REJECTED", "native denied", 403)
+
+    monkeypatch.setattr(
+        child_launcher, "get_runtime", lambda: SimpleNamespace(verify_child_launcher=verify)
+    )
+    request = NativeChildLaunchRequest(task="task", token=SecretStr("opaque"))
+    with pytest.raises(DomainError):
+        child_launcher.verify_launcher(prepared, request)
+    assert calls == [(prepared.handle, request)]
+
+
+@pytest.fixture
+def launcher_http(parent_graph, monkeypatch):
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+    from contextlib import asynccontextmanager
+    from unittest.mock import AsyncMock, Mock
+
+    from fastapi.testclient import TestClient
+
+    from flowweave.bootstrap import api as bootstrap
+
+    g = parent_graph
+    calls = []
+
+    def verify(handle, request):
+        calls.append((handle, request))
+        if request.token.get_secret_value() != "native-proof":
+            raise child_parent.denied()
+        return proof(g, request_digest=request.request_digest())
+
+    class AsyncSession:
+        def __init__(self, db):
+            self.db = db
+
+        async def run_sync(self, operation):
+            return operation(self.db)
+
+        async def commit(self):
+            self.db.commit()
+
+        async def rollback(self):
+            self.db.rollback()
+
+    @asynccontextmanager
+    async def session_scope():
+        with g.sessions() as db:
+            yield AsyncSession(db)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        container = SimpleNamespace(
+            settings=g.config,
+            database=SimpleNamespace(
+                session=session_scope,
+                blocking_sessions=g.sessions,
+                history_sessions=g.sessions,
+            ),
+            blocking_executor=executor,
+            blocking_io_slots=asyncio.Semaphore(1),
+            blocking_capacity=1,
+            metrics=Mock(),
+            rate_limiter=SimpleNamespace(
+                allow=AsyncMock(return_value=SimpleNamespace(allowed=True))
+            ),
+            runtime=SimpleNamespace(verify_child_launcher=verify),
+            artifact_store=Mock(),
+            plugin_resolver=Mock(),
+            sandbox=Mock(),
+            audit_writer=Mock(),
+            conversation_hydration_cache=Mock(),
+        )
+        monkeypatch.setattr(bootstrap, "build_container", lambda *_args, **_kwargs: container)
+        app = bootstrap.create_app(g.config)
+        client = TestClient(app)
+        try:
+            yield g, client, calls
+        finally:
+            client.close()
+
+
+@pytest.mark.parametrize(
+    "credential", ["absent", "cookie-only", "root-key", "wrong-key", "runtime-only", "valid"]
+)
+def test_http_gateway_requires_runtime_key_and_native_proof(launcher_http, credential):
+    from urllib.parse import urlsplit
+
+    g, client, calls = launcher_http
+    path = urlsplit(g.frozen.launch_url).path.removeprefix("/prefix")
+    headers = {}
+    if credential in {"root-key", "wrong-key", "runtime-only", "valid"}:
+        headers["X-Session-API-Key"] = {
+            "root-key": g.config.openhands_session_api_key,
+            "wrong-key": "forged",
+        }.get(credential, g.key.get_secret_value())
+    if credential == "cookie-only":
+        client.cookies.set("flowweave_session", "browser-cookie")
+    response = client.post(
+        path,
+        headers=headers,
+        json={
+            "task": "task",
+            "title": None,
+            "isolation": "shared",
+            "token": "native-proof" if credential == "valid" else "forged-proof",
+        },
+    )
+    assert response.status_code == (503 if credential == "valid" else 403), response.text
+    if credential == "valid":
+        assert response.json()["error"]["code"] == "AGENT_CHILD_CREATION_NOT_ENABLED"
+    assert len(calls) == (1 if credential in {"runtime-only", "valid"} else 0)
+    assert not g.db.scalar(select(AgentChildConversation.id))
+
+
+@pytest.mark.parametrize(
+    "body", [b'{"token":"sensitive-proof","task":12}', b"invalid", b"x" * 262145]
+)
+def test_http_invalid_body_never_echoes_proof_or_creates_children(launcher_http, body):
+    from urllib.parse import urlsplit
+
+    g, client, calls = launcher_http
+    path = urlsplit(g.frozen.launch_url).path.removeprefix("/prefix")
+    response = client.post(
+        path, headers={"X-Session-API-Key": g.key.get_secret_value()}, content=body
+    )
+    assert response.status_code == (413 if len(body) > 262144 else 422)
+    assert "sensitive-proof" not in response.text
+    assert not calls
+
+
+def test_only_exact_native_path_bypasses_cookie_login(launcher_http):
+    from urllib.parse import urlsplit
+
+    g, client, _ = launcher_http
+    path = urlsplit(g.frozen.launch_url).path.removeprefix("/prefix")
+    for extra in ("/queries", "/commands", "/start/anything"):
+        response = client.post(path.removesuffix("/start") + extra, json={})
+        assert response.status_code == 401
+
+
+@pytest.mark.parametrize("gateway_base_url", ["local"], indirect=True)
+def test_native_tool_calls_platform_gateway_over_real_tcp(launcher_http, monkeypatch):
+    """Real native action -> platform auth -> native verifier -> fenced refusal.
+
+    The native process uses a host temp directory in place of a container mount;
+    no child is created, and the physical Runtime resolver is the fixture above.
+    """
+    import asyncio
+    import json
+    import os
+    import subprocess
+    import tempfile
+    import threading
+    import time
+    from pathlib import Path
+    from urllib.parse import urlsplit
+
+    import httpx
+    import uvicorn
+
+    from flowweave.runtime.base import RuntimeProvider, StartAttemptRequest
+    from flowweave.runtime.openhands import OpenHandsRuntime
+
+    python = os.environ.get("FLOWWEAVE_NATIVE_CHILD_PYTHON")
+    if not python:
+        pytest.skip(
+            "Set FLOWWEAVE_NATIVE_CHILD_PYTHON to the fixed native four-package environment"
+        )
+    g, client, _ = launcher_http
+    repo = Path(__file__).resolve().parents[3]
+    root = repo / ".tmp/fr719/native"
+    root.mkdir(parents=True, exist_ok=True)
+    state = Path(tempfile.mkdtemp(dir=root))
+    state.chmod(0o700)
+    for directory in ("home", "tmp", "cache"):
+        (state / directory).mkdir()
+    config = state / "fixture.json"
+    config.write_text(json.dumps({"runtime_key": g.key.get_secret_value()}))
+    config.chmod(0o600)
+    env = {name: os.environ[name] for name in ("PATH", "LANG") if name in os.environ}
+    env.update(
+        HOME=str(state / "home"),
+        TMPDIR=str(state / "tmp"),
+        XDG_CACHE_HOME=str(state / "cache"),
+        LITELLM_LOCAL_MODEL_COST_MAP="True",
+    )
+    script = Path(__file__).parents[1] / "unit_tests/fixtures/native_child_server.py"
+    native = OpenHandsRuntime(g.config)
+    server = None
+    thread = None
+    with (state / "native.log").open("w") as log:
+        process = subprocess.Popen(
+            [str(Path(python).absolute()), str(script), str(state), str(repo), "serve"],
+            env=env,
+            cwd=state,
+            stdin=subprocess.PIPE,
+            stdout=log,
+            stderr=log,
+            text=True,
+        )
+        try:
+            deadline = time.monotonic() + 30
+            while not (state / "server-ready.json").exists():
+                assert process.poll() is None, (
+                    f"Native fixture failed; inspect {state / 'native.log'}"
+                )
+                assert time.monotonic() < deadline
+                time.sleep(0.05)
+            info = json.loads((state / "server-ready.json").read_text())
+            assert info["verified_python_files"] == 536
+            with httpx.Client(base_url=info["host"], trust_env=False, timeout=10) as http:
+                deadline = time.monotonic() + 10
+                while True:
+                    try:
+                        if http.get("/health").status_code == 200:
+                            break
+                    except httpx.HTTPError:
+                        pass
+                    assert time.monotonic() < deadline
+                    time.sleep(0.05)
+            original_workspace = native._request_workspace_path
+
+            def mounted_workspace(request):
+                assert original_workspace(request) == request.workspace_ref
+                return str(state / "workspace")
+
+            # Simulate the container mount without writing /runtime on the host.
+            monkeypatch.setattr(native, "_request_workspace_path", mounted_workspace)
+            monkeypatch.setattr(native, "_base_url_for_handle", lambda _: info["host"])
+            monkeypatch.setattr(
+                native, "_session_key_for_handle", lambda _: g.key.get_secret_value()
+            )
+            client.app.state.container.runtime = native
+            gateway = urlsplit(g.config.agent_child_gateway_base_url)
+            server = uvicorn.Server(
+                uvicorn.Config(
+                    client.app,
+                    host="127.0.0.1",
+                    port=gateway.port,
+                    lifespan="off",
+                    log_level="error",
+                )
+            )
+            thread = threading.Thread(target=server.run, daemon=True)
+            thread.start()
+            deadline = time.monotonic() + 10
+            while not server.started:
+                assert time.monotonic() < deadline
+                time.sleep(0.05)
+            spec = replace(
+                g.bound_spec,
+                provider=RuntimeProvider(
+                    "fixture", "https://model.example.test", "openai/test", "unused"
+                ),
+            )
+            request = StartAttemptRequest(
+                attempt_id=g.binding.id,
+                execution_key="agent-workspace:native-parent",
+                node={},
+                bindings=[],
+                workspace_ref=f"/runtime/workspace/project/{g.binding.host_id}",
+                workspace_root=f"/runtime/workspace/project/{g.binding.host_id}",
+                conversation_id=g.binding.openhands_conversation_id,
+                agent_spec=spec,
+                environment_image=g.image,
+                environment_id=str(uuid4()),
+                environment_version_id=str(uuid4()),
+                environment_version_no=1,
+                runtime_sandbox_id="native-fixture",
+                runtime_resource_name="fr719-test-resource",
+                runtime_base_url=info["host"],
+            )
+            handle = native.create_conversation(request)
+            native.send_message(handle, "delegate")
+            with httpx.Client(
+                base_url=info["host"],
+                headers={"X-Session-API-Key": g.key.get_secret_value()},
+                timeout=10,
+                trust_env=False,
+            ) as http:
+                conversation_root = f"/api/conversations/{handle.conversation_id}"
+                deadline = time.monotonic() + 15
+                while http.get(conversation_root).json()["execution_status"] != "finished":
+                    assert time.monotonic() < deadline, "Native parent did not finish"
+                    time.sleep(0.05)
+                events = http.get(conversation_root + "/events/search").json()["items"]
+                actions = [
+                    e
+                    for e in events
+                    if e["kind"] == "ActionEvent" and e.get("tool_name") == CHILD_TOOL_NAMES[0]
+                ]
+                assert len(actions) == 1
+                observations = [
+                    e
+                    for e in events
+                    if e["kind"] == "ObservationEvent" and e.get("action_id") == actions[0]["id"]
+                ]
+                assert len(observations) == 1
+            signed = json.loads((state / "proof.json").read_text())
+            invocation = NativeChildInvocation.model_validate(signed["invocation"])
+            assert invocation.audience == g.frozen.launch_url
+            assert invocation.action_id == actions[0]["id"]
+            # Replaying the genuine native proof reaches the explicit FR-720 gate.
+            with httpx.Client(trust_env=False, timeout=10) as http:
+                accepted = http.post(
+                    g.frozen.launch_url,
+                    headers={"X-Session-API-Key": g.key.get_secret_value()},
+                    json={
+                        "task": "review child 🌳",
+                        "title": "child",
+                        "isolation": "shared",
+                        "token": signed["token"],
+                    },
+                )
+                assert accepted.status_code == 503
+                assert accepted.json()["error"]["code"] == "AGENT_CHILD_CREATION_NOT_ENABLED"
+            assert not g.db.scalar(select(AgentChildConversation.id))
+        finally:
+            if server is not None:
+                server.should_exit = True
+            if thread is not None:
+                thread.join(timeout=15)
+                assert not thread.is_alive()
+            asyncio.run(native.aclose())
+            if process.stdin:
+                try:
+                    process.stdin.write("stop\n")
+                    process.stdin.close()
+                except BrokenPipeError:
+                    pass
+            try:
+                process.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                process.terminate()
+                process.wait(timeout=10)
+            assert process.returncode == 0, f"Native fixture failed; inspect {state / 'native.log'}"
+
+
+def test_old_active_binding_cannot_acquire_parent_capability(parent_graph):
+    g = parent_graph
+    other = AgentConversationBinding(
+        id=str(uuid4()),
+        workspace_id=g.binding.workspace_id,
+        owner_user_id=g.owner,
+        host_kind=g.kind,
+        host_id=g.binding.host_id,
+        conversation_scope_id=g.binding.conversation_scope_id,
+        runtime_session_id=g.runtime_id,
+        openhands_conversation_id=str(uuid4()),
+        flow_run_id=g.binding.flow_run_id,
+        working_directory=g.binding.working_directory,
+        create_idempotency_key=str(uuid4()),
+        lifecycle="ACTIVE",
+    )
+    g.db.add(other)
+    g.db.commit()
+    with pytest.raises(DomainError):
+        child_parent.attach_parent_capability(
+            g.db,
+            other,
+            g.spec,
+            profile="OH_FW_V3",
+            identity=CURRENT_OPENHANDS_SERVER_IDENTITY,
+            generation=1,
+            runtime_image_digest=g.image,
+            runtime_manifest=g.manifest,
+        )
+    with pytest.raises(DBAPIError, match="existing conversation"):
+        g.db.execute(
+            text(
+                "UPDATE agent_conversation_bindings "
+                "SET child_parent_manifest_json = CAST(:value AS JSON) WHERE id = :id"
+            ),
+            {"value": "{}", "id": other.id},
+        )
+    g.db.rollback()
+
+
+def test_downgrade_refuses_to_discard_parent_capability(parent_graph):
+    from pathlib import Path
+
+    from alembic import command
+    from alembic.config import Config
+
+    g = parent_graph
+    g.db.rollback()
+    config = Config(str(Path(__file__).parents[1] / "alembic.ini"))
+    config.attributes["database_url"] = g.config.database_url
+    with pytest.raises(DBAPIError, match="Cannot discard frozen"):
+        command.downgrade(config, "0176_agent_child_conversations")
+    assert (
+        g.db.scalar(text("SELECT version_num FROM alembic_version"))
+        == "0177_agent_child_parent_manifest"
+    )
+    assert child_parent.read_parent_capability(g.binding) == g.frozen
+
+
+def test_fork_cannot_copy_parent_bound_authority(parent_graph):
+    with pytest.raises(DomainError) as caught:
+        child_parent.require_forkable_parent(parent_graph.binding)
+    assert caught.value.code == "AGENT_CHILD_PARENT_FORK_UNSUPPORTED"
+    child_parent.require_forkable_parent(AgentConversationBinding(child_parent_manifest_json=None))
+
+
+@pytest.mark.parametrize("parent_graph", ["AGENT_WORKSPACE"], indirect=True)
+@pytest.mark.parametrize("allow_children", [True, False])
+def test_workspace_native_creation_attaches_only_explicit_parent_capability(
+    parent_graph, monkeypatch, tmp_path, allow_children
+):
+    from flowweave.modules.agent_sessions.application import conversations
+    from flowweave.modules.agent_sessions.application.runtime_config import FrozenSessionConfig
+    from flowweave.runtime.base import RuntimeConversationIdentity, RuntimeProvider
+    from flowweave.runtime.dependencies import runtime_context
+
+    g = parent_graph
+    binding = AgentConversationBinding(
+        id=str(uuid4()),
+        owner_user_id=g.owner,
+        workspace_id=g.binding.workspace_id,
+        host_kind=g.kind,
+        host_id=g.binding.host_id,
+        conversation_scope_id=g.binding.conversation_scope_id,
+        runtime_session_id=g.runtime_id,
+        openhands_conversation_id=str(uuid4()),
+        working_directory=g.binding.working_directory,
+        create_idempotency_key=str(uuid4()),
+        lifecycle="PROVISIONING",
+    )
+    g.db.add(binding)
+    g.db.flush()
+    monkeypatch.setattr(conversations, "apply_profile_identity", lambda *_args: None)
+    materialized_root = g.config.workspace_root / "fr719-capabilities" / str(uuid4())
+    monkeypatch.setattr(
+        conversations,
+        "_capability_marketplace_paths",
+        lambda *_args: (
+            materialized_root,
+            Path("/runtime/capabilities/fr719"),
+            "test",
+        ),
+    )
+    monkeypatch.setattr(
+        conversations,
+        "config_from_binding",
+        lambda *_args: FrozenSessionConfig(None, None, None, None, ()),
+    )
+    captured = []
+
+    def create(request):
+        captured.append(request)
+        return conversations._handle(g.db, g.db.get(AgentWorkspace, binding.workspace_id), binding)
+
+    def reload(handle):
+        return RuntimeConversationIdentity(
+            handle.conversation_id,
+            binding.working_directory,
+            f"/runtime/state/conversations/{UUID(binding.openhands_conversation_id).hex}",
+            None,
+            None,
+            None,
+            None,
+        )
+
+    with (
+        settings_context(
+            g.config.model_copy(update={"agent_workspace_runtime_protocol_profile": "OH_FW_V3"})
+        ),
+        runtime_context(SimpleNamespace(create_conversation=create, reload_conversation=reload)),
+    ):
+        handle = conversations._create_native_conversation(
+            g.db,
+            g.db.get(AgentWorkspace, binding.workspace_id),
+            binding,
+            RuntimeProvider("fixture", "https://model.example.test", "test", "unused"),
+            binding.working_directory,
+            credential_ids=(),
+            allow_child_capability=allow_children,
+        )
+    assert len(captured) == 1
+    names = {tool.name for tool in captured[0].agent_spec.tools}
+    assert (set(CHILD_TOOL_NAMES) <= names) == allow_children
+    assert (binding.child_parent_manifest_json is not None) == allow_children
+    assert handle.protocol_profile == ("OH_FW_V3" if allow_children else None)
+
+
+@pytest.mark.parametrize("parent_graph", ["FLOW_NODE"], indirect=True)
+def test_cancellation_and_snapshot_drift_deny_flow_node_parent(parent_graph):
+    g = parent_graph
+    prepared = prepare(g)
+    attempt = g.db.get(NodeAttempt, g.binding.conversation_scope_id)
+    attempt.state = "CANCELLED"
+    g.db.commit()
+    with pytest.raises(DomainError):
+        child_launcher.project_launcher(g.db, prepared, proof(g), runtime_key=g.key)
+    attempt.state = "RUNNING"
+    snapshot = g.db.get(RunSnapshot, attempt.snapshot_id)
+    snapshot.runtime_manifest_hash = "b" * 64
+    g.db.commit()
+    with pytest.raises(DomainError):
+        prepare(g)
+
+
+def test_parent_entry_uses_independent_database_phases(launcher_http, monkeypatch):
+    from urllib.parse import urlsplit
+
+    g, client, _ = launcher_http
+    observed = []
+
+    def verify(handle, request):
+        # The fixture itself has no checked-out transaction at this point.
+        assert g.sessions.kw["bind"].pool.checkedout() == 0
+        observed.append(True)
+        return proof(g, request_digest=request.request_digest())
+
+    client.app.state.container.runtime.verify_child_launcher = verify
+    response = client.post(
+        urlsplit(g.frozen.launch_url).path.removeprefix("/prefix"),
+        headers={"X-Session-API-Key": g.key.get_secret_value()},
+        json={"task": "task", "token": "native-proof"},
+    )
+    assert response.status_code == 503, response.text
+    assert observed == [True]
+
+
+@pytest.mark.parametrize("parent_graph", ["AGENT_WORKSPACE"], indirect=True)
+def test_empty_manifest_migration_roundtrip_preserves_legacy_binding(parent_graph):
+    from alembic import command
+    from alembic.config import Config
+
+    g = parent_graph
+    legacy_id = str(uuid4())
+    g.db.add(
+        AgentConversationBinding(
+            id=legacy_id,
+            owner_user_id=g.owner,
+            workspace_id=g.binding.workspace_id,
+            host_kind=g.kind,
+            host_id=g.binding.host_id,
+            conversation_scope_id=g.binding.conversation_scope_id,
+            runtime_session_id=g.runtime_id,
+            openhands_conversation_id=str(uuid4()),
+            working_directory=g.binding.working_directory,
+            create_idempotency_key=str(uuid4()),
+            lifecycle="ACTIVE",
+        )
+    )
+    g.db.delete(g.binding)
+    g.db.commit()
+    config = Config(str(Path(__file__).parents[1] / "alembic.ini"))
+    config.attributes["database_url"] = g.config.database_url
+    try:
+        command.downgrade(config, "0176_agent_child_conversations")
+    finally:
+        command.upgrade(config, "head")
+    legacy = g.db.get(AgentConversationBinding, legacy_id)
+    assert legacy is not None and legacy.child_parent_manifest_json is None
+    assert legacy.lifecycle == "ACTIVE"
+
+
+@pytest.mark.parametrize("parent_graph", ["FLOW_NODE"], indirect=True)
+def test_worker_freezes_parent_before_releasing_database_transaction(parent_graph, monkeypatch):
+    from flowweave.modules.orchestration.application import service
+    from flowweave.runtime.base import StartAttemptRequest
+    from flowweave.runtime.dependencies import runtime_context
+
+    g = parent_graph
+    attempt = g.db.get(NodeAttempt, g.binding.conversation_scope_id)
+    attempt.state, attempt.runtime_phase = "EXECUTING", "STARTING"
+    parent = AgentConversationBinding(
+        id=str(uuid4()),
+        owner_user_id=g.owner,
+        host_kind=g.kind,
+        host_id=g.binding.host_id,
+        flow_run_id=g.binding.host_id,
+        conversation_scope_id=attempt.id,
+        runtime_session_id=g.runtime_id,
+        openhands_conversation_id=str(uuid4()),
+        working_directory=g.binding.working_directory,
+        node_attempt_id=attempt.id,
+        node_run_id=attempt.node_run_id,
+        create_idempotency_key=str(uuid4()),
+        lifecycle="PROVISIONING",
+    )
+    g.db.add(parent)
+    g.db.commit()
+    parent_id, attempt_id = parent.id, attempt.id
+    request = StartAttemptRequest(
+        attempt_id=attempt.id,
+        execution_key="fixture",
+        node={},
+        bindings=[],
+        workspace_ref=parent.working_directory,
+        agent_spec=g.spec,
+        conversation_id=parent.openhands_conversation_id,
+        environment_image=g.image,
+        environment_id=str(uuid4()),
+        environment_version_id=str(uuid4()),
+        environment_version_no=1,
+    )
+    environment = SimpleNamespace(
+        id=request.environment_version_id,
+        image_digest=g.image,
+        manifest_json={},
+        environment_id=request.environment_id,
+        version_no=1,
+        runtime_protocol_profile="OH_FW_V3",
+    )
+    monkeypatch.setattr(service, "_runtime_request", lambda *_: request)
+    monkeypatch.setattr(service, "lock_referenceable_version", lambda *_: environment)
+    monkeypatch.setattr(
+        service,
+        "runtime_server_identity",
+        lambda *_args, **_kwargs: CURRENT_OPENHANDS_SERVER_IDENTITY,
+    )
+    monkeypatch.setattr(
+        service.sandboxes,
+        "node_attempt_workspace_context",
+        lambda *_args, **_kwargs: SimpleNamespace(attempt_owned=False),
+    )
+    monkeypatch.setattr(
+        service.sandboxes,
+        "ensure_flow_run_runtime",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            id="node-runtime",
+            resource_name="fr719-test-resource",
+            base_url="http://runtime.example.test",
+        ),
+    )
+    monkeypatch.setattr(
+        service.agent_sessions,
+        "flow_node_binding_for_attempt",
+        lambda db, *_args, **_kwargs: db.get(AgentConversationBinding, parent_id),
+    )
+    lease_checks = []
+    monkeypatch.setattr(service, "_require_current_lease", lambda *_args: lease_checks.append(True))
+    captured = []
+
+    def start(compiled):
+        assert not g.db.in_transaction()
+        with tenant_user(g.owner), g.sessions() as reader:
+            saved = reader.get(AgentConversationBinding, parent_id)
+            assert saved.child_parent_manifest_json is not None
+        captured.append(compiled)
+        raise DomainError("FIXTURE_STOP", "Stop before native execution", 409)
+
+    with runtime_context(SimpleNamespace(start=start)), pytest.raises(DomainError) as stopped:
+        service.process_start_runtime(g.db, attempt_id, lease=SimpleNamespace())
+    assert stopped.value.code == "FIXTURE_STOP"
+    assert lease_checks == [True]
+    assert set(CHILD_TOOL_NAMES) <= {tool.name for tool in captured[0].agent_spec.tools}

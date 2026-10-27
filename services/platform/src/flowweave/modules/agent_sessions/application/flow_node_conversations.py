@@ -1492,6 +1492,20 @@ def _create_native_conversation(
         ),
         load_memory=memory_enabled,
     )
+    from flowweave.modules.agent_sessions.application.child_parent import attach_parent_capability
+
+    if environment.runtime_protocol_profile == "OH_FW_V3":
+        agent_spec = attach_parent_capability(
+            db,
+            item,
+            agent_spec,
+            profile=environment.runtime_protocol_profile,
+            identity=server_identity,
+            generation=connection.generation,
+            runtime_image_digest=environment.image_digest,
+            runtime_manifest=snapshot.runtime_manifest_json or {},
+            expected_manifest_digest=snapshot.runtime_manifest_hash,
+        )
     request = build_runtime_request(
         db,
         flow_run_id=run.id,
@@ -1894,6 +1908,20 @@ def _create_or_reload_node_bootstrap(
         ),
         load_memory=memory_enabled,
     )
+    from flowweave.modules.agent_sessions.application.child_parent import attach_parent_capability
+
+    if environment.runtime_protocol_profile == "OH_FW_V3":
+        agent_spec = attach_parent_capability(
+            db,
+            binding,
+            agent_spec,
+            profile=environment.runtime_protocol_profile,
+            identity=server_identity,
+            generation=connection.generation,
+            runtime_image_digest=environment.image_digest,
+            runtime_manifest=snapshot.runtime_manifest_json or {},
+            expected_manifest_digest=snapshot.runtime_manifest_hash,
+        )
     request = build_runtime_request(
         db,
         flow_run_id=run.id,
@@ -3999,6 +4027,9 @@ def fork_node_conversation(
     source = _binding_for_attempt(
         db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id, lock=True
     )
+    from flowweave.modules.agent_sessions.application.child_parent import require_forkable_parent
+
+    require_forkable_parent(source)
     existing = db.scalar(
         select(AgentConversationBinding).where(
             AgentConversationBinding.create_idempotency_key == idempotency_key

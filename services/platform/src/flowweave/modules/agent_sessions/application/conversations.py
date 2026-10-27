@@ -869,6 +869,7 @@ def _handle(
         runtime_resource_id=sandbox.id,
         runtime_resource_name=sandbox.backend_resource_name,
         workspace_root=user_runtime_project_root(workspace.id),
+        protocol_profile="OH_FW_V3" if binding.child_parent_manifest_json is not None else None,
     )
 
 
@@ -1597,6 +1598,7 @@ def _create_native_conversation(
     allow_existing: bool = False,
     system_message_suffix_append: str = "",
     credential_ids: tuple[str, ...] | None = None,
+    allow_child_capability: bool = True,
 ) -> RuntimeHandle:
     ensure_credential_sync_schema(db)
     runtime = db.scalar(
@@ -1627,15 +1629,53 @@ def _create_native_conversation(
     host_root, runtime_root, _marketplace_name = _capability_marketplace_paths(
         db, workspace, binding
     )
+    from flowweave.modules.agent_sessions.application.child_parent import attach_parent_capability
+    from flowweave.runtime.child_contract import child_capability_manifest
+    from flowweave.shared.domain.openhands import CURRENT_OPENHANDS_SERVER_IDENTITY
+
+    config = config_from_binding(db, binding)
+    profile = (
+        "OH_FW_V3"
+        if binding.child_parent_manifest_json is not None
+        else (
+            get_settings().agent_workspace_runtime_protocol_profile
+            if allow_child_capability
+            else "OH_FW_V1"
+        )
+    )
     agent_spec = build_agent_spec(
-        config_from_binding(db, binding),
+        config,
         provider=provider,
         binding_id=binding.id,
         working_directory=working_directory,
         host_root=host_root,
         runtime_root=runtime_root,
         system_message_suffix_append=system_message_suffix_append,
+        protocol_profile=profile,
+        runtime_server_identity=(
+            CURRENT_OPENHANDS_SERVER_IDENTITY if profile == "OH_FW_V3" else None
+        ),
     )
+    if profile == "OH_FW_V3":
+        agent_spec = attach_parent_capability(
+            db,
+            binding,
+            agent_spec,
+            profile=profile,
+            identity=CURRENT_OPENHANDS_SERVER_IDENTITY,
+            generation=runtime.active_generation or 0,
+            runtime_image_digest=runtime.runtime_image_digest,
+            runtime_manifest={
+                "schema_version": 1,
+                "child_conversations": child_capability_manifest(),
+                "capabilities": [
+                    {"version_id": item.version_id, "digest": item.digest}
+                    for item in config.capabilities
+                ],
+            },
+        )
+    if binding.child_parent_manifest_json is not None:
+        handle = replace(handle, protocol_profile="OH_FW_V3")
     conversation_secrets, credential_context, _credential_summaries = resolve_credentials_for_agent(
         db, credential_ids
     )
@@ -2130,6 +2170,7 @@ def bootstrap_conversation(
     credential_ids: tuple[str, ...] | None = None,
     idempotency_key: str,
     system_message_suffix_append: str = "",
+    allow_child_capability: bool = True,
 ) -> dict[str, Any]:
     """Create a native conversation only while accepting its first user event.
 
@@ -2231,9 +2272,7 @@ def bootstrap_conversation(
             (
                 capability_version_ids
                 if capability_version_ids is not None
-                else tuple(
-                    item["id"] for item in workspace_capabilities(db, workspace.id)
-                )
+                else tuple(item["id"] for item in workspace_capabilities(db, workspace.id))
             ),
         )
         if credential_ids is None:
@@ -2303,6 +2342,7 @@ def bootstrap_conversation(
             allow_existing=command.attempt_count > 1,
             system_message_suffix_append=system_message_suffix_append,
             credential_ids=credential_ids,
+            allow_child_capability=allow_child_capability,
         )
         previous_event_id = get_runtime().reload_conversation(handle).event_id
         binding.bootstrap_parent_event_id = previous_event_id
@@ -3198,6 +3238,14 @@ def message(
         reasoning_effort=binding.reasoning_effort,
     )
     recovery = runtime.incomplete_fork_recovery(handle)
+    if binding.child_parent_manifest_json is not None and (
+        recovery is not None or condenser_recovery_event_id is not None
+    ):
+        from flowweave.modules.agent_sessions.application.child_parent import (
+            require_forkable_parent,
+        )
+
+        require_forkable_parent(binding)
     if recovery is not None:
         source_handle = replace(
             handle,
@@ -4574,6 +4622,9 @@ def _fork_conversation(
 ) -> dict[str, Any]:
     workspace = _workspace(db, workspace_id)
     source = _binding(db, workspace_id, binding_id, lock=True)
+    from flowweave.modules.agent_sessions.application.child_parent import require_forkable_parent
+
+    require_forkable_parent(source)
     existing = db.scalar(
         select(AgentConversationBinding).where(
             AgentConversationBinding.create_idempotency_key == idempotency_key

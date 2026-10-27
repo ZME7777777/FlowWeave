@@ -351,6 +351,59 @@ HTTP verifier、prepare／重复查回、配置读取、未释放拒绝、releas
 测试 launcher URL 指向原生 verifier，仅为取得调用证据，故工具 observation 的结果未知不等于
 平台创建成功。此探针没有平台用户授权或产品子 binding，也不替代真实模型／镜像／两宿主验收。
 
+### 2.12 父能力冻结与 launcher 调用授权（FR-719）
+
+`AgentConversationBinding.child_parent_manifest_json` 由 0177 迁移追加为可空字段，复用 binding
+既有用户隔离／RLS。历史记录保持 NULL，不能由当前部署设置推断成已启用。新父 binding
+在 PROVISIONING 阶段冻结：V3 source commit／归档摘要、能力版本／digest、Runtime image digest、
+用户／宿主／scope／父 binding 与 native Conversation、Runtime Session、受理 generation、
+Runtime Manifest 与摘要、三个可信目标 URL。只保存治理配置，不保存 task、token 或事件。
+数据库 trigger 禁止既有非 PROVISIONING 记录启用、冻结值或其绑定身份漂移；标题、未读和正常
+lifecycle 更新保留。非空冻结记录存在时 downgrade 拒绝，不能丢弃权限边界。
+
+Agent Workspace 用 `AGENT_WORKSPACE_RUNTIME_PROTOCOL_PROFILE=OH_FW_V3` 显式选择新父会话；
+默认 OH_FW_V1，已有会话不自动升级。实际创建仍须通过完整原生来源／版本／接口契约握手，
+不会仅凭配置声明就接受旧镜像。FlowRun 只使用其冻结 Environment Version 的 V3 profile，
+并核对 Snapshot Manifest 原摘要。手动新建、首轮 bootstrap 和自动执行 Worker 使用同一装配器；
+Worker 在释放只读事务之前验证任务 lease 并提交不可变父配置，避免 native 首轮调用时配置丢失。
+临时 sidebar 显式不启用父能力，仍沿用原 TTL；gate sidecar／child 都不能装配父能力。
+
+`AGENT_CHILD_GATEWAY_BASE_URL` 必须显式配置为 Runtime 可达的可信网关基址，可含反向代理
+路径前缀；不能含凭据、query 或 fragment，不能从请求 Host、模型参数或默认 public URL 猜测。
+装配器生成 `.../api/v1/agent-child-launchers/{owner}/{parent_binding}/start` 以及对应 queries／commands
+目标，将六个固定工具及 Task／子会话选择说明加入创建 spec；正式 `Tool.params.policy` 的 scope
+固定为父 binding，Manifest 摘要来自该父冻结的 Runtime Manifest。OpenHands 正式
+`tool_module_qualnames` 负责加载三个原生工厂模块；基础 preset 的 usable_tools 不需要提前注册
+这些带父策略的工厂，V3 来源与八个正式路由的完整握手仍须通过。
+
+只为精确 UUID 形式的 `/start` 路径豁免浏览器 cookie 登录；入口自身要求当前 generation 的
+`X-Session-API-Key`，使用服务器 locator 推导并常量时间核对，root key 和其他 Runtime key 无效。
+owner／binding 是显式定位符，不是权限证明。平台重新取得仍启用且有 Agent 权限的用户，
+以其租户范围读取 ACTIVE 普通父 binding；Workspace 核对当前 ACTIVE generation、RUNNING
+Workspace／资源及镜像，FlowRun 另复核 Attempt 未取消、Run 未终结、原 Snapshot 与 V3 connection。
+
+入口执行三个阶段：短数据库授权 → 无 DB Session 的正式 native verifier → 新数据库授权复核。
+最后比对全部 native policy 字段和精确 audience，拒绝期间发生的用户停用、权限撤销、binding
+删除、generation／镜像／Snapshot 漂移。只有 native verifier 读取正式 ActionEvent、当前分支与
+Cipher proof 后返回的 invocation 才能进入此边界；Runtime key 本身、cookie 或调用方自填 claim
+均不能替代证明。请求体上限 256 KiB，格式错误不使用会回显 token／task 的通用 validation body。
+
+FR-719 的授权成功**仍返回** `AGENT_CHILD_CREATION_NOT_ENABLED`，不返回伪造 child receipt，
+也不调用 prepare／release。实际子预留、凭据和首轮恢复留在 FR-720；queries／commands 平台路由
+尚未开放，等待 FR-712，不把冻结工具描述等同于产品已可用。原生工具将本阶段创建门禁视为结果
+未知，不能新起另一份任务。用户侧浮卡／子标签也尚未开放。
+
+原生 fork 会复制 resolved Agent 中绑定原父 UUID 的 policy，当前正式 fork 请求不提供替换
+Agent policy 的字段。因此仅对本片新启用的 V3 父能力会话拒绝 fork 及需要换 native ID 的旧恢复
+旁路，避免返回携带旧父授权的伪新父；普通旧会话行为不变。以后开放必须另行建立正式重绑定／
+继承契约。replacement 后旧 generation 的父调用同样拒绝，不通过改写冻结信息自动恢复授权。
+
+实际验收使用固定四包独立原生进程、真实 Uvicorn／TCP 与隔离 PostgreSQL，验证六个工厂从
+平台创建 spec 加载，原生父 ActionEvent → 平台 `/start` → native verifier → 平台复核与明确门禁。
+只有 completion 为受控 LLM；容器挂载与 FlowRun 物理连接由夹具提供，不声称真实镜像或真实模型
+全链路成功。Worker 定向回归另核对冻结值已持久化且 start 前无持有事务。最终产品／实际镜像／
+真实模型与完整两宿主故障验收仍由 FR-717 承担，本片不部署或替换 Runtime。
+
 ## 3. 父 Agent 的操作契约
 
 以下工具名是目标命名，最终导出必须在对应 baseline 切片中建立正式类型和 contract：

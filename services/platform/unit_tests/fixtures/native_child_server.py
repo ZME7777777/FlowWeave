@@ -22,7 +22,8 @@ from uuid import uuid4
 
 
 def main():
-    state, repo = map(Path, sys.argv[1:])
+    state, repo = map(Path, sys.argv[1:3])
+    serve_only = len(sys.argv) > 3 and sys.argv[3] == "serve"
     lock = json.loads((repo / "infra/openhands/source.lock.json").read_text())
     archive = repo / "infra/openhands/vendor" / f"openhands-source-{lock['source_commit']}.tar.gz"
     assert hashlib.sha256(archive.read_bytes()).hexdigest() == lock["archive_sha256"]
@@ -43,7 +44,11 @@ def main():
                     checked += 1
     assert checked >= 500
 
-    runtime_key = secrets.token_urlsafe(32)
+    runtime_key = (
+        json.loads((state / "fixture.json").read_text())["runtime_key"]
+        if serve_only
+        else secrets.token_urlsafe(32)
+    )
     workspace = state / "workspace"
     workspace.mkdir()
     config = {
@@ -60,6 +65,8 @@ def main():
     os.environ["OPENHANDS_AGENT_SERVER_CONFIG_PATH"] = str(config_file)
     os.environ["OH_PERSISTENCE_DIR"] = str(state / ".openhands")
     os.environ["OH_SESSION_API_KEYS_0"] = runtime_key
+    os.environ["OPENHANDS_BUILD_GIT_SHA"] = lock["source_commit"]
+    os.environ["OPENHANDS_BUILD_GIT_REF"] = lock["source_commit"]
 
     import httpx
     import uvicorn
@@ -80,6 +87,17 @@ def main():
     def capture(invocation, cipher):
         token = original_issue(invocation, cipher)
         signed.append((invocation, token))
+        if serve_only:
+            proof_file = state / "proof.json"
+            proof_file.write_text(
+                json.dumps(
+                    {
+                        "invocation": invocation.model_dump(mode="json"),
+                        "token": token.get_secret_value(),
+                    }
+                )
+            )
+            proof_file.chmod(0o600)
         return token
 
     governed.issue_child_launcher_proof = capture
@@ -144,6 +162,12 @@ def main():
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
     try:
+        if serve_only:
+            ready_file = state / "server-ready.json"
+            ready_file.write_text(json.dumps({"host": host, "verified_python_files": checked}))
+            ready_file.chmod(0o600)
+            sys.stdin.readline()
+            return
         with httpx.Client(
             base_url=host, headers={"X-Session-API-Key": runtime_key}, trust_env=False, timeout=10
         ) as client:
