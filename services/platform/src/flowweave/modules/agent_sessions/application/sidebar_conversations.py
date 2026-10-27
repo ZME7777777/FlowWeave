@@ -9,6 +9,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions.application import conversations
+from flowweave.modules.agent_sessions.application.child_relations import (
+    require_ordinary_binding,
+)
 from flowweave.modules.agent_sessions.application.deletion import delete_binding_records
 from flowweave.modules.agent_sessions.infrastructure.models import (
     AgentConversationBinding,
@@ -35,6 +38,7 @@ def _source_binding(db: Session, workspace_id: str, binding_id: str) -> AgentCon
     )
     if binding is None:
         raise DomainError("AGENT_CONVERSATION_NOT_FOUND", "主会话不存在或已删除", 404)
+    require_ordinary_binding(db, binding)
     if (
         db.scalar(
             select(AgentSidebarConversation.id).where(

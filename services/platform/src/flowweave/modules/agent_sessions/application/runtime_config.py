@@ -10,6 +10,7 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from flowweave.modules.agent_sessions.application.child_relations import require_ordinary_binding
 from flowweave.modules.agent_sessions.infrastructure.models import (
     AgentConversationBinding,
     AgentConversationCapability,
@@ -522,6 +523,7 @@ def reserve_flow_node_binding(
         )
     )
     if existing is not None:
+        require_ordinary_binding(db, existing)
         if (
             existing.host_kind != "FLOW_NODE"
             or existing.flow_run_id != flow_run_id

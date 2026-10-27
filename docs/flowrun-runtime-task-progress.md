@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`CHILD CONVERSATIONS IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-710`
+> 下一可执行切片：`FR-711`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 > 子会话设计：`docs/agent-child-conversations-design.md`
@@ -472,12 +472,54 @@ contract（含六个原生 child 工厂、八条路由、shared-only、稳定提
 所有临时环境／证据在 `.tmp/fr709/`，测试容器由 fixture 清理；未推送、部署、开放产品
 入口或替换已有 Runtime。当前 NONE，下一可执行 FR-710；提交后停止。
 
-### FR-710 子会话关联 RLS 与普通入口隔离 — READY
+### FR-710 子会话关联 RLS 与普通入口隔离 — DONE
 
 依赖：FR-709 DONE。新增用户隔离关系和唯一约束，维护强制 RLS 与表清单；两宿主
 校验直属身份，普通列表／置顶／活动／搜索及主会话路由不暴露 child 独立入口。
 
-### FR-711 两宿主子创建治理与凭据恢复 — PENDING
+完成（2026-10-27）：新增用户隔离 `agent_child_conversations` 关系与 0176 追加式迁移，
+登记 `_USER_ISOLATED_TABLES`、模块及兼容 ORM 导出。仅保存父子 locator、宿主／scope／
+Runtime、原生创建调用身份、generation／Manifest 受理审计和创建时间，不保存任务正文、
+事件树、执行状态或明文凭据。唯一约束保护 child、多父、creation 和 invocation；强制 RLS
+同时提供 USING／WITH CHECK。数据库触发器按稳定顺序锁住两端，复核 owner／宿主／
+scope／Runtime／原生 ID／shared 目录及版本，拒绝自关联、孙会话、临时聊天和门禁 sidecar。
+关系及绑定身份不可变，子不持有 NodeRun／Attempt；并发 A→B 与 B→C 只能受理一条关系。
+回退持锁并禁止 RLS 隐藏，非空关系明确拒绝；不清空关系以掩盖仍存在的子会话。
+
+新增共享直属关系／正式 native 身份比对服务；当前用户、已授权 host context 和正式父子 ID
+共同约束读取，trusted tenant bypass 也不能替代显式 owner 校验。`accepted_generation`
+仅是原受理审计，后续请求仍须经 active generation fence，FR-711 负责实际原生调用和治理。
+普通列表／分页／置顶／排序／管理／活动、搜索扫描与已保存命中均在 SQL 中排除 child。
+普通按 binding 访问、创建／bootstrap 幂等重放、fork、历史引用及工作区文件／终端不能
+复用 child。工作区及 FlowRun 主路由在校验用户与宿主后返回已授权父 binding；共享 Web
+组件只构造当前宿主的父路由并 replace，不打开子标签，迟到响应不能改变新选择。
+父删除和记录清理在原生调用前拒绝仍有关系的 binding；逐子可恢复清理继续由 FR-713 接入。
+
+验收：最终父子关系／历史／用户隔离套件 72 passed、2 skipped，其中关系用例使用
+真实独立 PostgreSQL，覆盖两宿主、跨用户／宿主／Runtime／目录、ORM trusted bypass、
+非特权角色 RLS 读取及越权写拒绝、唯一性、一层并发、绑定漂移、普通入口拒绝、搜索、
+原生删除前门禁及实际迁移回退拒绝／清理后回退重升。全迁移链到 0176、离线 upgrade／
+downgrade SQL 与唯一 head 检查通过。SQLite 历史夹具仅补建空关系表，不能代替上述 RLS 验收。
+
+扩展旧套件初次 170 passed／102 failed／2 skipped；修改前 HEAD 同批为
+171 passed／101 failed／2 skipped。新增失败来自历史锁测试替身的查询假设，已将过滤
+合入原 SQL 以保持原锁范围和查询次数，并定向通过。随后按基线精确排除原 101 项既存
+失败，171 项此前通过用例全部复验通过、2 skipped；这不是扩展全套通过。既存失败
+涉及旧模型／Runtime／Workspace／Settings 夹具和已有授权／排序预期，不在本片修改。
+
+Chromium 四项定向验证通过：Workspace、嵌入式定时会话及 Flow Node 的子主路由回父，
+以及迟到子拒绝不跳离用户的新会话；断言无 child hydration／写入或侧边聊天打开。首次
+Node 夹具缺少 workspace scope、迟到夹具误拦 HTML 导航，均已修正夹具并复验，不计作
+产品故障或原生端到端成功。Web typecheck／受影响 ESLint、新模块及 ORM Pyright（零错误）、
+受影响 Ruff／AST、diff 与任务依赖／状态检查通过；旧文件 E501 只保留 HEAD 已有提示词／
+文件逻辑长行。本机仅按既有 pnpm lock 补装依赖，锁文件未改。测试证据在 `.tmp/fr710/`，
+测试容器／自建角色和本片 Vite 已清理或停止。
+
+未改 SDK／source lock／Runtime 镜像，不调用真实模型，不部署、推送或替换 Runtime。
+尚未开放子创建、续聊或浮卡入口；专用入口与完整两宿主／原生验收仍按后续切片执行。
+当前 NONE，下一可执行 FR-711；提交后停止。
+
+### FR-711 两宿主子创建治理与凭据恢复 — READY
 
 依赖：FR-710 DONE。先预留 binding 再走原生创建，验证原生父子关系、实际目录与
 冻结能力，重签绑定级授权后首轮执行；短事务、generation fence 和崩溃对账共同覆盖。

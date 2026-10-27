@@ -138,6 +138,75 @@ async function openWorkspace(page: Page, events: unknown[] = [], includeSecondCo
   return writes;
 }
 
+for (const host of ['workspace', 'schedules', 'node'] as const) {
+  test(`child main route returns to its authorized parent without opening a child pane: ${host}`, async ({ page }) => {
+    await openWorkspace(page);
+    const childId = 'hidden-child';
+    const parentId = 'scheduled-conversation';
+    const nodeBase = '/api/v1/flow-runs/child-run/node-attempts/child-attempt/agent-sessions';
+    const routeBase = host === 'node'
+      ? '/flow-runs/child-run/nodes/child-node/attempts/child-attempt/agent-sessions'
+      : host === 'schedules' ? '/agent/schedules/conversations' : '/agent/conversations';
+    const forbiddenRequests: string[] = [];
+    await page.route('**/api/v1/**', async route => {
+      const pathname = new URL(route.request().url()).pathname;
+      const childSuffix = host === 'node' ? `${nodeBase}/${childId}` : `/conversations/${childId}`;
+      if (pathname.endsWith(childSuffix)) return json(route, { error: {
+        code: 'AGENT_CHILD_REQUIRES_PARENT', message: '请从父会话查看子会话',
+        details: { binding_id: childId, parent_binding_id: parentId },
+      } }, 409);
+      if (pathname.includes(childSuffix + '/') || (route.request().method() !== 'GET' && pathname.includes(childId))) {
+        forbiddenRequests.push(pathname);
+        return json(route, { error: { code: 'AGENT_CONVERSATION_NOT_FOUND', message: '不可访问' } }, 404);
+      }
+      if (!pathname.startsWith(nodeBase)) return route.fallback();
+      const parent = { id: parentId, display_title: '直属父会话', lifecycle: 'ACTIVE', created_at: now,
+        updated_at: now, write_available: true, execution_status: 'finished', capabilities: [] };
+      if (pathname === `${nodeBase}/host`) return json(route, { id: 'child-run', display_name: '节点工作区', desired_state: 'RUNNING', updated_at: now });
+      if (pathname === nodeBase) return json(route, { items: [parent], next_cursor: null });
+      if (pathname === `${nodeBase}/${parentId}`) return json(route, parent);
+      if (pathname.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true });
+      if (pathname.endsWith('/activity')) return json(route, { conversations: [], running_binding_ids: [] });
+      if (pathname.endsWith('/hydration')) return json(route, { events: { events: [], next_cursor: null }, readiness: { ready: true, execution_status: 'finished' }, context: {} });
+      if (pathname.endsWith('/events')) return json(route, { events: [], next_cursor: null });
+      if (pathname.endsWith('/input-readiness')) return json(route, { ready: true, execution_status: 'finished' });
+      if (pathname.endsWith('/context')) return json(route, {});
+      if (pathname.endsWith('/pending-confirmation')) return json(route, { pending: false });
+      if (pathname.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
+      if (pathname.endsWith('/workspace')) return json(route, { root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', files: [], repositories: [], runtime: {}, ide: { gateway: { supported: false } } });
+      return json(route, { items: [] });
+    });
+    await page.goto(`${routeBase}/${childId}`);
+    await expect(page).toHaveURL(new RegExp(`${routeBase}/${parentId}$`));
+    await expect(page.locator('[data-conversation-binding-id="hidden-child"]')).toHaveCount(0);
+    await expect(page.locator('.agent-sidebar-chat')).toHaveCount(0);
+    expect(forbiddenRequests).toEqual([]);
+  });
+}
+
+test('a late child route refusal cannot redirect a newly selected conversation', async ({ page }) => {
+  await openWorkspace(page, [], true);
+  let release: (() => void) | undefined;
+  let acknowledge: (() => void) | undefined;
+  const pending = new Promise<void>(resolve => { release = resolve; });
+  const entered = new Promise<void>(resolve => { acknowledge = resolve; });
+  await page.route('**/api/v1/agent-workspaces/**/conversations/late-child', async route => {
+    acknowledge?.();
+    await pending;
+    await json(route, { error: { code: 'AGENT_CHILD_REQUIRES_PARENT', message: '请从父会话查看子会话',
+      details: { binding_id: 'late-child', parent_binding_id: 'scheduled-conversation' } } }, 409);
+  });
+  await page.goto('/agent/conversations/late-child');
+  await entered;
+  await page.getByRole('button', { name: '周报会话', exact: true }).click();
+  await expect(page).toHaveURL(/\/agent\/conversations\/scheduled-conversation-2$/);
+  const completed = page.waitForResponse(response => response.url().endsWith('/conversations/late-child'));
+  release?.();
+  await completed;
+  await settleWorkspaceLayout(page);
+  await expect(page).toHaveURL(/\/agent\/conversations\/scheduled-conversation-2$/);
+});
+
 test('fresh navigation opens case space and creates a scenario after the branch merge', async ({ page }) => {
   await openWorkspace(page);
   const cases: Record<string, unknown>[] = [];

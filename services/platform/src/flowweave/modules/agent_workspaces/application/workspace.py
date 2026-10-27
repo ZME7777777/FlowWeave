@@ -17,6 +17,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions import public as agent_sessions
+from flowweave.modules.agent_sessions.application.child_relations import (
+    require_ordinary_binding,
+)
 from flowweave.modules.agent_sessions.application.draft_attachments import (
     ATTACHMENT_PATH,
     assert_attachment_owner_unbound,
@@ -930,6 +933,7 @@ def _working_directory(
         binding = db.scalar(query)
         if binding is None:
             raise DomainError("AGENT_CONVERSATION_NOT_FOUND", "会话不存在或已删除", 404)
+        require_ordinary_binding(db, binding)
         return binding.working_directory or user_runtime_project_root(workspace_id), None
     if not work_directory_id:
         return user_runtime_project_root(workspace_id), None

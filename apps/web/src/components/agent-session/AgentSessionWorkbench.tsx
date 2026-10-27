@@ -641,6 +641,10 @@ function isMissingConversationError(error: unknown): error is ApiError {
     && error.code === 'AGENT_CONVERSATION_NOT_FOUND';
 }
 
+function isChildMainRouteError(error: unknown): error is ApiError {
+  return error instanceof ApiError && error.status === 409 && error.code === 'AGENT_CHILD_REQUIRES_PARENT';
+}
+
 function conversationIsRunning(executionStatus: string | null | undefined): boolean {
   return [
     'starting', 'running', 'executing', 'stopping',
@@ -5863,12 +5867,22 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     refetchOnWindowFocus: false,
     retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
   });
+  useEffect(() => {
+    const error = selectedConversationQuery.error;
+    if (selectedBindingId !== routeBindingId || !routeBindingId || !isChildMainRouteError(error)
+      || error.details.binding_id !== routeBindingId) return;
+    const parentId = error.details.parent_binding_id;
+    if (typeof parentId === 'string' && parentId && parentId !== routeBindingId) {
+      onNavigate(conversationPath(parentId), true);
+    }
+  }, [conversationPath, onNavigate, routeBindingId, selectedBindingId, selectedConversationQuery.error]);
   const selected = useMemo(() => {
     // A binding that an authoritative host read confirmed missing must never
     // remain a source for child queries while route navigation settles.
-    if (selectedBindingId && confirmedMissingConversationIds.has(selectedBindingId)) return undefined;
+    if (isChildMainRouteError(selectedConversationQuery.error)
+      || (selectedBindingId && confirmedMissingConversationIds.has(selectedBindingId))) return undefined;
     return selectedConversationQuery.data ?? conversations.find(item => item.id === selectedBindingId);
-  }, [confirmedMissingConversationIds, conversations, selectedBindingId, selectedConversationQuery.data]);
+  }, [confirmedMissingConversationIds, conversations, selectedBindingId, selectedConversationQuery.data, selectedConversationQuery.error]);
   const sidebarRevealConversation = sidebarReveal.conversation ?? selected;
   useEffect(() => {
     if (!scheduleRoute && pendingSidebarRevealBindingId && sidebarReveal.expandCollapsed && sidebarRevealConversation?.pinned && pinnedConversationsCollapsed) {
@@ -7997,8 +8011,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       automaticSidebarRoute.current = conversations[0].id;
       onNavigate(conversationPath(conversations[0].id), true);
     }
-    if (routeBindingId && conversations.length && !selected && pendingCreatedId !== routeBindingId && !initialConversationQueries.some(query => query.isFetching) && selectedConversationQuery.isError) onNavigate(scheduleRoute ? '/agent/schedules' : host.rootPath, true);
-  }, [autoOpenDraft, conversationDraft, conversationPath, conversations, host.rootPath, initialConversationQueries, onNavigate, pendingCreatedId, routeBindingId, scheduleRoute, selected, selectedConversationQuery.isError]);
+    if (routeBindingId && conversations.length && !selected && pendingCreatedId !== routeBindingId && !initialConversationQueries.some(query => query.isFetching) && selectedConversationQuery.isError && !isChildMainRouteError(selectedConversationQuery.error)) onNavigate(scheduleRoute ? '/agent/schedules' : host.rootPath, true);
+  }, [autoOpenDraft, conversationDraft, conversationPath, conversations, host.rootPath, initialConversationQueries, onNavigate, pendingCreatedId, routeBindingId, scheduleRoute, selected, selectedConversationQuery.error, selectedConversationQuery.isError]);
   useEffect(() => { if (selected?.id === pendingCreatedId) setPendingCreatedId(undefined); }, [pendingCreatedId, selected?.id]);
   useLayoutEffect(() => {
     if (!composerScope || previousComposerScope.current === composerScope) return;

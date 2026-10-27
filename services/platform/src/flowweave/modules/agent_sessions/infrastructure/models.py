@@ -197,6 +197,53 @@ class AgentConversationBinding(Base):
     )
 
 
+class AgentChildConversation(Base):
+    """Governed native lineage and creation audit; never conversation state."""
+
+    __tablename__ = "agent_child_conversations"
+    __table_args__ = (
+        UniqueConstraint("child_binding_id", name="uq_agent_child_binding"),
+        UniqueConstraint(
+            "runtime_session_id", "child_conversation_id", name="uq_agent_child_native"
+        ),
+        UniqueConstraint("parent_binding_id", "creation_id", name="uq_agent_child_creation"),
+        UniqueConstraint(
+            "parent_binding_id", "action_id", "tool_call_id", name="uq_agent_child_invocation"
+        ),
+        CheckConstraint(
+            "parent_binding_id <> child_binding_id", name="ck_agent_child_distinct_binding"
+        ),
+        CheckConstraint(
+            "parent_conversation_id <> child_conversation_id", name="ck_agent_child_distinct_native"
+        ),
+        CheckConstraint(
+            "host_kind IN ('AGENT_WORKSPACE', 'FLOW_NODE')", name="ck_agent_child_host"
+        ),
+        CheckConstraint("accepted_generation >= 1", name="ck_agent_child_generation"),
+        CheckConstraint(
+            "length(action_id) > 0 AND length(tool_call_id) > 0 "
+            "AND manifest_digest ~ '^[0-9a-f]{64}$'",
+            name="ck_agent_child_audit",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    host_kind: Mapped[str] = mapped_column(String(30))
+    host_id: Mapped[str] = mapped_column(String(36), index=True)
+    conversation_scope_id: Mapped[str] = mapped_column(String(36))
+    runtime_session_id: Mapped[str] = mapped_column(String(36), index=True)
+    parent_binding_id: Mapped[str] = mapped_column(String(36), index=True)
+    child_binding_id: Mapped[str] = mapped_column(String(36))
+    parent_conversation_id: Mapped[str] = mapped_column(String(100))
+    child_conversation_id: Mapped[str] = mapped_column(String(100))
+    creation_id: Mapped[str] = mapped_column(String(36))
+    action_id: Mapped[str] = mapped_column(String(200))
+    tool_call_id: Mapped[str] = mapped_column(String(200))
+    accepted_generation: Mapped[int] = mapped_column(Integer)
+    manifest_digest: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
 class AgentConversationSchedule(Base):
     __tablename__ = "agent_conversation_schedules"
     __table_args__ = (
@@ -569,6 +616,7 @@ event.listen(AgentConversationCommand, "before_insert", _normalize_default_host)
 
 
 __all__ = (
+    "AgentChildConversation",
     "AgentConversationBinding",
     "AgentConversationHistoryGrant",
     "AgentSidebarConversation",

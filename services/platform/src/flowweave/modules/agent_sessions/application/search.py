@@ -13,7 +13,11 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions.application import conversations
+from flowweave.modules.agent_sessions.application.child_relations import (
+    ordinary_conversation_clause,
+)
 from flowweave.modules.agent_sessions.infrastructure.models import (
+    AgentChildConversation,
     AgentConversationBinding,
     AgentConversationSearch,
     AgentConversationSearchHit,
@@ -218,7 +222,8 @@ def _hits(
     db: Session, search: AgentConversationSearch, *, cursor: str | None, limit: int
 ) -> tuple[list[dict[str, Any]], str | None]:
     statement = select(AgentConversationSearchHit).where(
-        AgentConversationSearchHit.search_id == search.id
+        AgentConversationSearchHit.search_id == search.id,
+        ~AgentConversationSearchHit.binding_id.in_(select(AgentChildConversation.child_binding_id)),
     )
     if cursor:
         occurred_at, created_at, hit_id = _decode_hit_cursor(cursor)
@@ -268,6 +273,7 @@ def _hits(
                 AgentConversationBinding.id == row.binding_id,
                 AgentConversationBinding.workspace_id == search.workspace_id,
                 AgentConversationBinding.lifecycle == "ACTIVE",
+                ordinary_conversation_clause(),
             )
         )
         if binding is None:
@@ -371,6 +377,7 @@ def process(db: Session, search_id: str) -> None:
         statement = select(AgentConversationBinding).where(
             AgentConversationBinding.workspace_id == workspace_id,
             AgentConversationBinding.lifecycle == "ACTIVE",
+            ordinary_conversation_clause(),
         )
         if work_directory_ids is not None:
             scopes = []

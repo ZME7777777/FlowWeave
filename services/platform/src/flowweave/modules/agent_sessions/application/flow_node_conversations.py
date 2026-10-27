@@ -21,6 +21,12 @@ from flowweave.modules.agent_sessions.application import usage as usage_projecti
 from flowweave.modules.agent_sessions.application.activity_reconciliation import (
     read_activity_completion,
 )
+from flowweave.modules.agent_sessions.application.child_relations import (
+    guard_main_route,
+    ordinary_conversation_clause,
+    require_ordinary_binding,
+    require_unlinked_deletion,
+)
 from flowweave.modules.agent_sessions.application.condensation import (
     condensation_task_failure_reason,
     enqueue_manual_condensation,
@@ -99,7 +105,11 @@ from flowweave.modules.environments.public import (
 from flowweave.modules.model_providers.public import has_connected_default_model
 from flowweave.modules.sandboxes import public as sandboxes
 from flowweave.modules.tasks.public import enqueue
-from flowweave.modules.users.application.security import current_principal
+from flowweave.modules.users.application.security import (
+    FLOWWEAVE_USER_ID,
+    current_principal,
+    current_user_id,
+)
 from flowweave.runtime.base import (
     RuntimeEventBatch,
     RuntimeHandle,
@@ -494,6 +504,8 @@ def _binding(
     query = select(AgentConversationBinding).where(
         AgentConversationBinding.id == binding_id,
         AgentConversationBinding.host_kind == _FLOW_NODE,
+        AgentConversationBinding.owner_user_id == current_user_id(default=FLOWWEAVE_USER_ID),
+        ordinary_conversation_clause(),
     )
     if lock:
         query = query.with_for_update()
@@ -869,6 +881,7 @@ def list_node_session_views(
                 ),
             ),
             AgentConversationBinding.lifecycle == "ACTIVE",
+            ordinary_conversation_clause(),
             ~AgentConversationBinding.create_idempotency_key.like("gate-sidecar:%"),
         )
         .order_by(
@@ -908,6 +921,7 @@ def node_session_activity(
                     ),
                 ),
                 AgentConversationBinding.lifecycle == "ACTIVE",
+                ordinary_conversation_clause(),
                 ~AgentConversationBinding.create_idempotency_key.like("gate-sidecar:%"),
             )
         )
@@ -1085,6 +1099,7 @@ def list_node_session_page(
             ),
         ),
         AgentConversationBinding.lifecycle == "ACTIVE",
+        ordinary_conversation_clause(),
         ~AgentConversationBinding.create_idempotency_key.like("gate-sidecar:%"),
     )
     if work_directory_id is None:
@@ -1137,6 +1152,13 @@ def list_node_session_page(
 def get_node_session_view(
     db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str
 ) -> dict[str, Any]:
+    agent_sessions.resolve_flow_node_session_host(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id, require_start_permission=False
+    )
+    guard_main_route(
+        db, host_kind=_FLOW_NODE, host_id=flow_run_id, binding_id=binding_id,
+        conversation_scope_id=attempt_id,
+    )
     item = _binding_for_attempt(
         db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
     )
@@ -1211,6 +1233,7 @@ def list_conversations(db: Session, attempt_id: str) -> list[dict[str, Any]]:
             AgentConversationBinding.host_kind == _FLOW_NODE,
             AgentConversationBinding.flow_run_id == run.id,
             AgentConversationBinding.lifecycle == "ACTIVE",
+            ordinary_conversation_clause(),
             ~AgentConversationBinding.create_idempotency_key.like("gate-sidecar:%"),
         )
         .order_by(
@@ -1239,6 +1262,7 @@ def list_node_conversations(
             AgentConversationBinding.host_kind == _FLOW_NODE,
             AgentConversationBinding.flow_run_id == flow_run_id,
             AgentConversationBinding.lifecycle == "ACTIVE",
+            ordinary_conversation_clause(),
             ~AgentConversationBinding.create_idempotency_key.like("gate-sidecar:%"),
         )
         .order_by(
@@ -1290,6 +1314,7 @@ def list_flow_run_conversations(db: Session, flow_run_id: str) -> list[dict[str,
             AgentConversationBinding.host_kind == _FLOW_NODE,
             AgentConversationBinding.flow_run_id == flow_run_id,
             AgentConversationBinding.lifecycle == "ACTIVE",
+            ordinary_conversation_clause(),
             ~AgentConversationBinding.create_idempotency_key.like("gate-sidecar:%"),
         )
         .order_by(
@@ -1674,6 +1699,7 @@ def _node_bootstrap_command(
     )
     if binding is None:
         return None, None
+    require_ordinary_binding(db, binding)
     if (
         binding.host_kind != _FLOW_NODE
         or binding.flow_run_id != flow_run_id
@@ -3821,6 +3847,7 @@ def delete_node_conversation(
     binding = _binding_for_attempt(
         db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id, lock=True
     )
+    require_unlinked_deletion(db, binding.id)
     handle = _node_handle(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id)
     readiness = get_runtime().input_readiness(handle)
     if readiness.execution_status.strip().lower() in {
@@ -3873,6 +3900,7 @@ def delete_flow_node_conversation_for_record_cleanup(
         lock=True,
         allow_gate_sidecar=True,
     )
+    require_unlinked_deletion(db, binding.id)
     if expected_node_run_id is not None and binding.node_run_id != expected_node_run_id:
         raise not_found("flow_run_conversation_binding", binding_id)
     try:

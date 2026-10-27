@@ -25,6 +25,12 @@ from flowweave.modules.agent_sessions.application import usage as usage_projecti
 from flowweave.modules.agent_sessions.application.activity_reconciliation import (
     read_activity_completion,
 )
+from flowweave.modules.agent_sessions.application.child_relations import (
+    guard_main_route,
+    ordinary_conversation_clause,
+    require_ordinary_binding,
+    require_unlinked_deletion,
+)
 from flowweave.modules.agent_sessions.application.condensation import (
     condensation_task_failure_reason,
     enqueue_manual_condensation,
@@ -84,6 +90,7 @@ from flowweave.modules.model_providers.public import has_connected_default_model
 from flowweave.modules.sandboxes.public import ManagedSandbox
 from flowweave.modules.tasks.public import enqueue
 from flowweave.modules.users.application.security import (
+    FLOWWEAVE_USER_ID,
     current_principal,
     current_user_id,
     user_runtime_project_root,
@@ -239,6 +246,10 @@ def _binding(
     query = select(AgentConversationBinding).where(
         AgentConversationBinding.id == binding_id,
         AgentConversationBinding.workspace_id == workspace_id,
+        AgentConversationBinding.owner_user_id == current_user_id(default=FLOWWEAVE_USER_ID),
+        AgentConversationBinding.host_kind == "AGENT_WORKSPACE",
+        AgentConversationBinding.host_id == workspace_id,
+        ordinary_conversation_clause(),
     )
     if lock:
         query = query.with_for_update()
@@ -263,6 +274,7 @@ def history_reference_bindings(
             AgentConversationBinding.workspace_id == workspace.id,
             AgentConversationBinding.host_kind == "AGENT_WORKSPACE",
             AgentConversationBinding.host_id == workspace.id,
+            ordinary_conversation_clause(),
         )
         if lock:
             query = query.with_for_update()
@@ -914,6 +926,7 @@ def list_conversations(db: Session, workspace_id: str) -> list[dict[str, Any]]:
             .where(
                 AgentConversationBinding.workspace_id == workspace_id,
                 AgentConversationBinding.lifecycle == "ACTIVE",
+                ordinary_conversation_clause(),
                 ~AgentConversationBinding.id.in_(
                     select(AgentSidebarConversation.sidebar_binding_id)
                 ),
@@ -938,6 +951,7 @@ def list_pinned_conversations(
             .where(
                 AgentConversationBinding.workspace_id == workspace_id,
                 AgentConversationBinding.lifecycle == "ACTIVE",
+                ordinary_conversation_clause(),
                 AgentConversationBinding.pinned.is_(True),
                 ~AgentConversationBinding.id.in_(
                     select(AgentSidebarConversation.sidebar_binding_id)
@@ -968,6 +982,7 @@ def conversation_activity(
             select(AgentConversationBinding).where(
                 AgentConversationBinding.workspace_id == workspace_id,
                 AgentConversationBinding.lifecycle == "ACTIVE",
+                ordinary_conversation_clause(),
                 ~AgentConversationBinding.id.in_(
                     select(AgentSidebarConversation.sidebar_binding_id)
                 ),
@@ -1143,6 +1158,7 @@ def list_management_conversations(
             .where(
                 AgentConversationBinding.workspace_id == workspace_id,
                 AgentConversationBinding.lifecycle == "ACTIVE",
+                ordinary_conversation_clause(),
                 ~AgentConversationBinding.id.in_(
                     select(AgentSidebarConversation.sidebar_binding_id)
                 ),
@@ -1197,6 +1213,7 @@ def delete_management_conversations(
             select(AgentConversationBinding.id).where(
                 AgentConversationBinding.workspace_id == workspace_id,
                 AgentConversationBinding.lifecycle == "ACTIVE",
+                ordinary_conversation_clause(),
                 ~AgentConversationBinding.id.in_(
                     select(AgentSidebarConversation.sidebar_binding_id)
                 ),
@@ -1243,6 +1260,7 @@ def list_conversation_page(
     query = select(AgentConversationBinding).where(
         AgentConversationBinding.workspace_id == workspace_id,
         AgentConversationBinding.lifecycle == "ACTIVE",
+        ordinary_conversation_clause(),
         ~AgentConversationBinding.id.in_(select(AgentSidebarConversation.sidebar_binding_id)),
     )
     if work_directory_id is None:
@@ -1315,6 +1333,7 @@ def reorder_conversation(
                 .where(
                     AgentConversationBinding.workspace_id == workspace_id,
                     AgentConversationBinding.lifecycle == "ACTIVE",
+                    ordinary_conversation_clause(),
                 )
                 .order_by(AgentConversationBinding.id)
                 .with_for_update()
@@ -1444,7 +1463,9 @@ def reorder_conversation(
 
 def get_conversation(db: Session, workspace_id: str, binding_id: str) -> dict[str, Any]:
     workspace = _workspace(db, workspace_id)
-    item = _binding(db, workspace_id, binding_id)
+    item = guard_main_route(
+        db, host_kind="AGENT_WORKSPACE", host_id=workspace_id, binding_id=binding_id
+    )
     try:
         batch = get_runtime().read_active_events(_handle(db, workspace, item))
         usage_projection.capture(db, item, batch.usage)
@@ -1684,6 +1705,7 @@ def create_conversation(
         )
     )
     if existing is not None:
+        require_ordinary_binding(db, existing)
         if existing.workspace_id != workspace.id:
             raise DomainError("AGENT_CONVERSATION_COMMAND_CONFLICT", "会话创建请求冲突", 409)
         if existing.lifecycle == "ACTIVE":
@@ -2040,6 +2062,7 @@ def _bootstrap_command(
     )
     if binding is None:
         return None, None
+    require_ordinary_binding(db, binding)
     if binding.workspace_id != workspace_id:
         raise DomainError("AGENT_CONVERSATION_COMMAND_CONFLICT", "会话创建请求冲突", 409)
     command = db.scalar(
@@ -2431,6 +2454,7 @@ def delete_conversation(
 ) -> None:
     workspace = _workspace(db, workspace_id)
     item = _binding(db, workspace_id, binding_id, lock=True)
+    require_unlinked_deletion(db, item.id)
     existing = db.scalar(
         select(AgentConversationCommand).where(
             AgentConversationCommand.idempotency_key == idempotency_key
@@ -4556,6 +4580,7 @@ def _fork_conversation(
         )
     )
     if existing is not None:
+        require_ordinary_binding(db, existing)
         if existing.workspace_id != workspace.id:
             raise DomainError("AGENT_CONVERSATION_COMMAND_CONFLICT", "会话分叉请求冲突", 409)
         if existing.lifecycle == "ACTIVE":

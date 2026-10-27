@@ -276,6 +276,37 @@ children HTTP method/path。V3 只接受上述受审计来源及版本；Environ
 逐字节一致；这不是新 Runtime 镜像或真实模型的业务验收。完整镜像／两宿主／真实模型门禁
 仍在 FR-717，FR-709 不开放浏览器入口、不部署或替换 Runtime。
 
+### 2.10 父子关系与普通入口隔离（FR-710）
+
+新增 `agent_child_conversations`，由 0176 迁移建立并登记到用户隔离表清单及公共 ORM 导出。
+记录 owner、host／scope、Runtime Session、父子 binding／原生 Conversation、creation／action／
+tool-call、受理时 generation、Manifest digest 和创建审计时间；不保存 task 正文、事件、HEAD、
+cursor、token 或执行状态。`accepted_generation` 是不可变受理审计，不是当前 generation 的权限证明。
+
+唯一约束覆盖 child binding、Runtime 中的 child Conversation、父下 creation 与正式 invocation。
+PostgreSQL 强制 RLS 的 USING／WITH CHECK 沿用平台用户策略；数据库触发器按稳定顺序锁住两端
+binding，检查同用户／宿主／scope／Runtime／shared 目录、原生身份和目录版本一致，拒绝自关联、
+多父和一层以上关系，以及临时侧边聊天／门禁 sidecar 混入。子 binding 不持有 node_run_id 或
+node_attempt_id，FlowRun 定位使用父已授权的 conversation_scope_id；不取得节点执行身份。
+关系不可更新，关联中的 binding 身份字段不可漂移或直接删除，标题和未读仍独立可更新。
+迁移回退在表锁及禁止 RLS 隐藏下拒绝非空关系，不把仍存在的子会话降为普通会话。
+
+共享 `child_relations` 服务按当前用户和已解析宿主验证直属 locator，两宿主使用同一规则；
+正式 native parent／child ID、workspace 和 isolation 另与冻结关系比对，实际原生调用由 FR-711
+接入。此关系或原生身份校验不单独授予创建／发送权限，仍需宿主授权及 active generation 门禁。
+
+普通列表、分页、置顶、排序、管理列表、活动与搜索扫描／历史命中投影均在 SQL 中排除 child，
+保存的搜索命中在分页前排除，避免只含隐藏 child 的空分页链。
+普通 binding 读取、消息／控制、fork、历史引用、文件／终端及创建幂等重放也不能复用 child。
+独立打开主路由只取得 `AGENT_CHILD_REQUIRES_PARENT` 与已授权父 binding，浏览器按当前宿主
+构造父路由并替换导航；不接收服务器任意 URL，不打开子标签，迟到响应不能改变新选择的路由。
+跨用户／错误宿主／scope 返回 404，不能从跳转响应取得另一个宿主的父定位。
+
+FR-713 尚未实现可恢复逐子清理前，关联中的父删除在任何原生删除调用前明确拒绝，防止孤立 child。
+本片不增加子创建或续聊 API、不安装父工具、不改临时聊天 TTL；后续专用 child 入口必须使用直属
+关系服务，不能绕过普通入口隔离。真实 PostgreSQL、ORM、并发、迁移和受控 Chromium 已分别验证，
+实际原生两宿主／模型／Runtime 验收继续留在 FR-717。
+
 ## 3. 父 Agent 的操作契约
 
 以下工具名是目标命名，最终导出必须在对应 baseline 切片中建立正式类型和 contract：

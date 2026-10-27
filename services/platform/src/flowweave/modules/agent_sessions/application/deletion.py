@@ -3,6 +3,9 @@
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
+from flowweave.modules.agent_sessions.application.child_relations import (
+    require_unlinked_deletion,
+)
 from flowweave.modules.agent_sessions.application.resumable_attachments import (
     delete_attachment_uploads,
 )
@@ -29,6 +32,7 @@ def delete_binding_records(db: Session, binding_id: str) -> None:
 
     from flowweave.modules.agent_sessions.application.history_sessions import delete_binding_access
 
+    require_unlinked_deletion(db, binding_id)
     binding = db.get(AgentConversationBinding, binding_id)
     if binding is not None:
         delete_attachment_uploads(

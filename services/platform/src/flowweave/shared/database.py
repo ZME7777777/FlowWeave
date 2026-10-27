@@ -66,6 +66,7 @@ _USER_ISOLATED_TABLES = frozenset(
         "agent_attachment_uploads",
         "agent_attachment_upload_parts",
         "agent_sidebar_conversations",
+        "agent_child_conversations",
         "agent_conversation_searches",
         "agent_conversation_search_hits",
         "agent_conversation_usage_buckets",
