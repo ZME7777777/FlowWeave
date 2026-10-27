@@ -12239,3 +12239,47 @@ ESLint／Ruff 和 diff 检查通过。浏览器入口、触发与草稿、根／
 本次只发布 platform／Web：使用同一已提交 commit 的正式预检与最小上下文，
 先迁移，再同步更新 api／stream-api／worker／web。实际健康、版本、路由和
 容量收尾完成后补记，不提前声称已上线。当前与下一可执行切片均为 NONE。
+
+
+OPS-13 正式发布补记（2026-10-27）：发布代码为
+`ff84316e6ced34ae338f0c74942f751f78286858`，包含远程 `0a843819`、拉取前
+`40dad3e9` 及并行完成的 OPS-12 `60cf3e54` 全部祖先。代码集成为 `35cccb31`，
+其后合并 OPS-12 协作文档并冻结发布；没有覆盖其他聊天的工作。
+
+正式 platform／Web 预检和 commit-bound 最小上下文 prepare 均通过。
+源归档 SHA-256 分别为
+`f09a2ea918243369e454657f47905519e0332435a698862ab07df5407213a015`、
+`08a7b5a2e3c0cc2078a391aaa7a72db4ca5e4f0099bc7ac495e35e025a4ce099`。
+实际 linux/amd64 镜像 ID：platform 为
+`sha256:4bcddebaddfee8214d98cc44aa19d6dc290fd9235de458535621a73200c00ffa`，
+Web 为 `sha256:d123a93a412602c25cbc32b7bca16d65a8b7744664e7593cbfbca2817c14842d`。
+均核对 OCI revision；先保留旧服务日志及精确 rollback tags，再执行正式
+migration，并同步 recreate api／stream-api／worker／web。四服务运行相同
+revision，health／readiness／Web HTTP 通过，数据库唯一 head 为
+`0177_merge_workspace_credentials`。只读核对新增 credentials_configured 为
+非空 Boolean，根／命名配置及原临时服务表 FORCE RLS 保留。Compose／env
+文件摘要与其余 43 个容器的 image／StartedAt 一致，包括 OPS-12 已升级的
+Runtime generation；本片不重启 Provider、不构建或替换 Runtime。
+
+开发资源另补充来源摘要的一项专项，验证只显示首个来源且“查看全部”可找回
+全部文件与链接，通过；与之前五项组成六项不同定向 Chromium 用例。两个旧
+product-flow 长用例均停在已不存在的“Agent 会话”导航按钮，未执行到本次改动，
+不计为通过，不将其归为本次功能回归。
+
+导出实际运行 Web 镜像资源后，浏览器入口、触发与草稿、根／命名工作区配置、
+来源摘要五项原定向回归通过。历史搜索原用例在构建资源下更早把历史放入 DOM，
+原“尚未渲染”断言失败；仅在忽略目录创建受控验收副本，保留原应用资源和测试，
+验证三个搜索结果、上下导航及正式 event id 定位通过。该验收只证明已有历史搜索，
+不作为未渲染缓存历史的成功证据；开发资源的原用例已通过。所加载的 45 个
+JS／CSS SHA-256 均匹配实际运行镜像。这些受控 API／WebSocket 回归不等于
+真实模型业务执行，没有向业务会话发送、暂停、继续或重放消息。
+
+服务器实际 Chromium 验证公网前缀登录、Agent 深层路由及根登录入口通过；
+两项公网 API 认证边界为 401，公网 HTML 和入口 JS／CSS 与运行镜像一致。
+全新浏览器网络日志确认认证请求带部署前缀，根 API 请求数为零。
+
+platform／Web remote-release-finish 均通过健康、版本和容量门禁，无过期受管
+上下文候选；精确回收两个可回收的历史 image ID 对应 tags，保留当前镜像、
+每仓库一个不同版本回滚及所有容器引用。不清理共享 BuildKit、卷、Workspace
+或数据库备份。本补记及新增测试不改变实际发布代码身份；当前与下一可执行
+重构切片均为 NONE。

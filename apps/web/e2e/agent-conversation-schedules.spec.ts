@@ -3870,3 +3870,23 @@ test('temporary services stop through the scoped workspace API and refresh the c
   await expect(services).toHaveCount(0);
   expect(stopped).toBe(true);
 });
+
+
+test('workspace source summary shows one item and keeps all sources discoverable', async ({ page }) => {
+  await openWorkspace(page, [
+    { id: 'source-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '查看 https://example.test/source', timestamp: now, attachments: [
+      { filename: 'first.txt', mime_type: 'text/plain', byte_size: 8, path: '/runtime/workspace/project/uploads/first.txt' },
+      { filename: 'second.txt', mime_type: 'text/plain', byte_size: 8, path: '/runtime/workspace/project/uploads/second.txt' },
+    ] } },
+    { id: 'source-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'source-user', content: '已读取资料。', final_reply: true, timestamp: now } },
+  ]);
+  await page.getByRole('button', { name: '日报会话', exact: true }).click();
+  const summary = page.locator('.agent-workspace-source-list');
+  await expect(summary.locator('button b')).toHaveText(['first.txt']);
+  await expect(page.getByRole('button', { name: /查看全部\s*3/ })).toBeVisible();
+  await page.getByRole('button', { name: /查看全部\s*3/ }).click();
+  const sources = page.getByRole('region', { name: '全部会话来源' });
+  await expect(sources).toContainText('first.txt');
+  await expect(sources).toContainText('second.txt');
+  await expect(sources).toContainText('example.test/source');
+});
