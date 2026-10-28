@@ -13,7 +13,10 @@ from uuid import uuid4
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from flowweave.modules.agent_sessions.infrastructure.models import AgentConversationSchedule
+from flowweave.modules.agent_sessions.infrastructure.models import (
+    AgentConversationSchedule,
+    AgentSidebarConversation,
+)
 from flowweave.modules.agent_sessions.public import AgentConversationBinding
 from flowweave.modules.agent_workspaces.application.service import (
     runtime_allocation_for_agent_workspace,
@@ -443,15 +446,51 @@ def list_work_directories(
     }
 
 
+def _directory_conversations(
+    db: Session, workspace_id: str, work_directory_id: str
+) -> list[AgentConversationBinding]:
+    version_ids = select(AgentWorkDirectoryVersion.id).where(
+        AgentWorkDirectoryVersion.work_directory_id == work_directory_id
+    )
+    return list(
+        db.scalars(
+            select(AgentConversationBinding)
+            .where(
+                AgentConversationBinding.workspace_id == workspace_id,
+                AgentConversationBinding.work_directory_version_id.in_(version_ids),
+                AgentConversationBinding.lifecycle == "ACTIVE",
+                ~AgentConversationBinding.id.in_(
+                    select(AgentSidebarConversation.sidebar_binding_id)
+                ),
+            )
+            .order_by(AgentConversationBinding.id)
+            .with_for_update()
+        )
+    )
+
+
 def archive_work_directory(
     db: Session, workspace_id: str, work_directory_id: str
 ) -> dict[str, Any]:
     _workspace(db, workspace_id)
     item = _directory(db, workspace_id, work_directory_id, lock=True)
+    bindings = _directory_conversations(db, workspace_id, item.id)
+    from flowweave.modules.agent_sessions.application import conversations
+
+    # Validate the complete batch before changing either directory or children.
+    # Repeated archive also repairs legacy directories with unarchived children.
+    for binding in bindings:
+        if binding.archived_at is None:
+            conversations.assert_conversation_stopped(db, workspace_id, binding.id, lock=False)
+    timestamp = now()
+    for binding in bindings:
+        if binding.archived_at is None:
+            binding.archived_at = timestamp
+            binding.updated_at = timestamp
     if item.archived_at is None:
-        item.archived_at = now()
-        item.updated_at = item.archived_at
-        db.flush()
+        item.archived_at = timestamp
+        item.updated_at = timestamp
+    db.flush()
     return _dict(db, item)
 
 
@@ -460,10 +499,15 @@ def restore_work_directory(
 ) -> dict[str, Any]:
     _workspace(db, workspace_id)
     item = _directory(db, workspace_id, work_directory_id, lock=True)
+    timestamp = now()
+    for binding in _directory_conversations(db, workspace_id, item.id):
+        if binding.archived_at is not None:
+            binding.archived_at = None
+            binding.updated_at = timestamp
     if item.archived_at is not None:
         item.archived_at = None
-        item.updated_at = now()
-        db.flush()
+        item.updated_at = timestamp
+    db.flush()
     return _dict(db, item)
 
 

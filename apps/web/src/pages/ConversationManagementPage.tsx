@@ -1,8 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArchiveRestore, ArchiveX, ChevronDown, Clock3, Folder, RefreshCw, Search, Trash2, X } from 'lucide-react';
+import { ArchiveRestore, ArchiveX, Clock3, Folder, RefreshCw, Search, Trash2, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { LaunchOptionMenu } from '../components/LaunchOptionMenu';
+import { useProductDialog } from '../components/ProductDialogContext';
 import { Pagination } from '../components/Pagination';
-import { useEscapeClose } from '../components/useEscapeClose';
 import './conversation-management.css';
 import { api } from '../api/client';
 import type { AgentConversationManagementDeleteResult, AgentConversationManagementPage, ManagedAgentConversation } from '../types';
@@ -38,56 +39,9 @@ function formatTime(value: string) {
   return new Date(value).toLocaleString('zh-CN', { dateStyle: 'medium', timeStyle: 'short' });
 }
 
-function PeriodDropdown({ value, onChange }: { value: InactivePeriod; onChange: (v: InactivePeriod) => void }) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  useEscapeClose(() => setOpen(false), open);
-  const label = PERIOD_OPTIONS.find(o => o.value === value)?.label ?? value;
-
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [open]);
-
-  return (
-    <div className="cm-period-dropdown" ref={ref}>
-      <button
-        type="button"
-        className="cm-period-trigger secondary"
-        aria-label="最后活动时间"
-        title="按最后活动时间筛选"
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        onClick={() => setOpen(o => !o)}
-      >
-        <Clock3 size={13}/><span>{label}</span>
-        <ChevronDown size={12} className={open ? 'rotated' : ''} />
-      </button>
-      {open && (
-        <ul className="cm-period-menu" role="listbox" aria-label="最后活动时间">
-          {PERIOD_OPTIONS.map(opt => (
-            <li key={opt.value} role="option" aria-selected={opt.value === value}>
-              <button
-                type="button"
-                onClick={() => { onChange(opt.value); setOpen(false); }}
-              >
-                {opt.value === value && <span className="cm-period-check">✓</span>}
-                {opt.label}
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
-  );
-}
-
-export function ConversationManagementPage() {
+export function ConversationManagementPage({ onRestored }: { onRestored?: (selection: { bindingId?: string; workDirectoryId?: string }) => void } = {}) {
   const client = useQueryClient();
+  const dialog = useProductDialog();
   const [query, setQuery] = useState('');
   const [period, setPeriod] = useState<InactivePeriod>('all');
   const [archiveFilter, setArchiveFilter] = useState<ArchiveFilter>('active');
@@ -172,8 +126,8 @@ export function ConversationManagementPage() {
         result.skipped.push(...response.skipped);
         const deleted = new Set(response.deleted_ids);
         const processed = new Set([...response.deleted_ids, ...response.skipped.map(item => item.id)]);
-        client.setQueryData<AgentConversationManagementPage>(
-          ['agent-conversation-management', selection.workspaceId, selection.workDirectoryId ?? 'root'],
+        client.setQueriesData<AgentConversationManagementPage>(
+          { queryKey: ['agent-conversation-management', selection.workspaceId, selection.workDirectoryId ?? 'root'] },
           current => current ? { ...current, items: current.items.filter(item => !deleted.has(item.id)) } : current,
         );
         setSelectedIds(current => new Set([...current].filter(id => !processed.has(id))));
@@ -196,17 +150,24 @@ export function ConversationManagementPage() {
 
   const restore = useMutation({
     mutationFn: (bindingId: string) => api.restoreAgentConversation(workspace.data!.id, bindingId),
-    onSuccess: async () => {
+    onSuccess: async (conversation, bindingId) => {
+      onRestored?.({ bindingId, workDirectoryId: conversation.work_directory_id ?? selectedWorkDirectoryId });
       await Promise.all([
         client.invalidateQueries({ queryKey: ['agent-conversation-management', workspace.data?.id] }),
+        client.invalidateQueries({ queryKey: ['agent-work-directories', workspace.data?.id] }),
         client.invalidateQueries({ queryKey: ['agent-session'] }),
       ]);
     },
   });
   const restoreDirectory = useMutation({
     mutationFn: (directoryId: string) => api.restoreAgentWorkDirectory(workspace.data!.id, directoryId),
-    onSuccess: async () => {
-      await client.invalidateQueries({ queryKey: ['agent-work-directories', workspace.data?.id] });
+    onSuccess: async (_directory, workDirectoryId) => {
+      onRestored?.({ workDirectoryId });
+      await Promise.all([
+        client.invalidateQueries({ queryKey: ['agent-work-directories', workspace.data?.id] }),
+        client.invalidateQueries({ queryKey: ['agent-conversation-management', workspace.data?.id] }),
+        client.invalidateQueries({ queryKey: ['agent-session'] }),
+      ]);
     },
   });
 
@@ -236,10 +197,12 @@ export function ConversationManagementPage() {
             <Folder size={16}/><span>{workDirectories.data?.root.display_name ?? '根工作区'}</span>
           </button>
           {workDirectories.data?.items.map(directory => <div key={directory.id} className="conversation-management-workspace-item">
-            <button type="button" className={selectedWorkDirectoryId === directory.id ? 'active' : ''} aria-pressed={selectedWorkDirectoryId === directory.id} disabled={remove.isPending} onClick={() => setSelectedWorkDirectoryId(directory.id)}>
+            <button type="button" className={selectedWorkDirectoryId === directory.id ? 'active' : ''} aria-pressed={selectedWorkDirectoryId === directory.id} disabled={remove.isPending} onClick={() => { setSelectedWorkDirectoryId(directory.id); setArchiveFilter(directory.state === 'ARCHIVED' ? 'archived' : 'active'); }}>
               <Folder size={16}/><span title={directory.display_name}>{directory.display_name}{directory.state === 'ARCHIVED' ? '（已归档）' : ''}</span>
             </button>
-            {directory.state === 'ARCHIVED' && <button type="button" className="secondary" aria-label={`恢复工作区 ${directory.display_name}`} disabled={restoreDirectory.isPending || remove.isPending} onClick={() => restoreDirectory.mutate(directory.id)}><ArchiveRestore size={14}/>恢复</button>}
+            {directory.state === 'ARCHIVED' && <button type="button" className="secondary" aria-label={`恢复工作区 ${directory.display_name}`} disabled={restoreDirectory.isPending || remove.isPending} onClick={async () => {
+              if (await dialog.confirm({ title: `恢复工作区“${directory.display_name}”？`, message: '将恢复此工作区及其中所有已归档会话，恢复后会重新显示在工作台列表中。', confirmLabel: '确认恢复' })) restoreDirectory.mutate(directory.id);
+            }}><ArchiveRestore size={14}/>恢复</button>}
           </div>)}
         </div>
       </aside>
@@ -250,8 +213,8 @@ export function ConversationManagementPage() {
         </header>
         <div className="conversation-management-toolbar">
           <label className="conversation-management-search"><Search size={14}/><input aria-label="搜索会话" value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索会话名称…"/>{query && <button type="button" aria-label="清除搜索" onClick={() => setQuery('')}><X size={13}/></button>}</label>
-          <div className="conversation-management-archive-filter" role="group" aria-label="会话状态"><button type="button" aria-pressed={archiveFilter === 'active'} onClick={() => setArchiveFilter('active')}>未归档</button><button type="button" aria-pressed={archiveFilter === 'archived'} onClick={() => setArchiveFilter('archived')}>已归档</button></div>
-          <PeriodDropdown value={period} onChange={setPeriod}/>
+          <LaunchOptionMenu label="会话状态" value={archiveFilter} options={[{ value: 'active', label: '未归档' }, { value: 'archived', label: '已归档' }]} onChange={value => setArchiveFilter(value as ArchiveFilter)}/>
+          <LaunchOptionMenu label="最后活动时间" value={period} options={PERIOD_OPTIONS} onChange={value => setPeriod(value as InactivePeriod)}/>
           <label className="conversation-management-check"><input type="checkbox" checked={includePinned} onChange={event => setIncludePinned(event.target.checked)}/><span>包含置顶</span></label>
           <label className="conversation-management-check"><input type="checkbox" checked={includeUnread} onChange={event => setIncludeUnread(event.target.checked)}/><span>包含未读</span></label>
           {filtersActive && <button className="ghost conversation-management-reset" onClick={() => { setQuery(''); setPeriod('all'); setIncludePinned(false); setIncludeUnread(false); }}>重置</button>}

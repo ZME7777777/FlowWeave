@@ -4817,3 +4817,117 @@ test('terminal action popover measures its full command list at the bottom right
   await page.keyboard.press('Escape');
   await expect(menu).toHaveCount(0);
 });
+
+for (const archiveTarget of ['conversation', 'directory', 'rejected-directory'] as const) {
+  test(`workspace archive immediately reconciles loaded pages pinned and activity lists (${archiveTarget})`, async ({ page }) => {
+    await openWorkspace(page);
+    const removedIds = new Set<string>();
+    let directoryArchived = false;
+    let archiveWrites = 0;
+    const items = Array.from({ length: 6 }, (_, index) => ({
+      id: `archive-child-${index}`, display_title: `归档验证会话 ${index}`, title_state: 'MANUAL', lifecycle: 'ACTIVE',
+      work_directory_id: 'existing-directory', pinned: index === 0, unread: true,
+      streaming_callback_ready: true, write_available: true, execution_status: 'idle',
+      created_at: now, updated_at: now,
+    }));
+    const root = { ...items[0], id: 'archive-root', display_title: '保留根会话', work_directory_id: null, pinned: false, unread: false };
+    const live = () => items.filter(item => !removedIds.has(item.id));
+    await page.route('**/api/v1/agent-workspaces/schedule-workspace/**', async route => {
+      const request = route.request(); const url = new URL(request.url()); const path = url.pathname;
+      if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: directoryArchived && url.searchParams.get('include_archived') !== 'true' ? [] : [{ id: 'existing-directory', display_name: '已有项目目录', state: directoryArchived ? 'ARCHIVED' : 'ACTIVE', current_version: { id: 'archive-version', working_directory: '/runtime/workspace/project/existing-directory' } }] });
+      if (path.endsWith('/work-directories/existing-directory/restore')) {
+        directoryArchived = false; removedIds.clear();
+        return json(route, { id: 'existing-directory', display_name: '已有项目目录', state: 'ACTIVE' });
+      }
+      if (path.endsWith('/conversations/archive-child-5/restore')) {
+        directoryArchived = false; removedIds.delete('archive-child-5');
+        return json(route, { ...items[5], archived_at: null });
+      }
+      if (path.endsWith('/conversation-management')) return json(route, { items: url.searchParams.get('work_directory_id') === 'existing-directory' ? items.filter(item => removedIds.has(item.id) === (url.searchParams.get('archived') === 'true')).map(item => ({ ...item, archived_at: removedIds.has(item.id) ? now : null })) : [], truncated: false });
+      if (path.endsWith('/pinned-conversations')) return json(route, live().filter(item => item.pinned));
+      if (path.endsWith('/conversation-activity')) return json(route, { running_binding_ids: [], unread_binding_ids: live().map(item => item.id), conversations: live() });
+      if (path.endsWith('/conversations') && request.method() === 'GET') {
+        if (url.searchParams.get('work_directory_id') !== 'existing-directory') return json(route, { items: [root], next_cursor: null });
+        const offset = url.searchParams.has('cursor') ? 3 : 0;
+        return json(route, { items: live().slice(offset, offset + 3), next_cursor: offset === 0 && live().length > 3 ? 'archive-page-2' : null });
+      }
+      if (path.endsWith('/work-directories/existing-directory/archive')) {
+        archiveWrites += 1;
+        if (archiveTarget === 'rejected-directory') return json(route, { error: { code: 'AGENT_CONVERSATION_RUNNING', message: '会话正在运行，请先停止' } }, 409);
+        directoryArchived = true; items.forEach(item => removedIds.add(item.id));
+        return json(route, { id: 'existing-directory', display_name: '已有项目目录', state: 'ARCHIVED' });
+      }
+      if (path.endsWith('/archive') && request.method() === 'POST') {
+        archiveWrites += 1;
+        const id = path.match(/\/conversations\/([^/]+)/)?.[1];
+        removedIds.add(id!);
+        return json(route, { ...items.find(item => item.id === id), archived_at: now });
+      }
+      const detail = [root, ...items].find(item => path.endsWith(`/conversations/${item.id}`));
+      if (detail) return json(route, detail);
+      return route.fallback();
+    });
+    await page.reload();
+    const group = page.locator('[data-workspace-group-id="existing-directory"]');
+    // The sixth item is from a later server page. A first-page refetch alone
+    // cannot remove it from the workbench's retained per-scope pages.
+    await page.getByRole('button', { name: '归档验证会话 5', exact: true }).click();
+    await expect(page).toHaveURL(/\/archive-child-5$/);
+    await page.getByRole('button', { name: /查看活动会话/ }).click();
+    await expect(page.getByRole('button', { name: '归档验证会话 0', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: '返回工作区列表', exact: true }).click();
+    if (archiveTarget === 'conversation') {
+      await page.locator('[data-conversation-binding-id="archive-child-5"]').hover();
+      await page.getByRole('button', { name: '归档会话 归档验证会话 5', exact: true }).click();
+      await expect(page.locator('[data-conversation-binding-id="archive-child-5"]')).toHaveCount(0);
+      await page.locator('[data-conversation-binding-id="archive-child-0"]').hover();
+      await page.getByRole('button', { name: '归档会话 归档验证会话 0', exact: true }).click();
+      await expect(page.locator('[data-conversation-binding-id="archive-child-0"]')).toHaveCount(0);
+    } else {
+      await group.locator('header').hover();
+      await page.getByRole('button', { name: '工作区操作 已有项目目录', exact: true }).click();
+      await page.getByRole('menuitem', { name: '归档', exact: true }).click();
+      await expect.poll(() => archiveWrites).toBe(1);
+      if (archiveTarget === 'rejected-directory') {
+        await expect(page.getByText('会话正在运行，请先停止', { exact: false })).toBeVisible();
+        await expect(group).toBeVisible();
+        await expect(group.getByRole('button', { name: '归档验证会话 5', exact: true })).toBeVisible();
+        return;
+      }
+      await expect(group).toHaveCount(0);
+      await expect(page.locator('[data-conversation-binding-id^="archive-child-"]')).toHaveCount(0);
+    }
+    await expect(page.getByRole('button', { name: '保留根会话', exact: true })).toBeVisible();
+    await expect(page).not.toHaveURL(/\/archive-child-5$/);
+    await page.getByRole('button', { name: /查看活动会话/ }).click();
+    for (const id of removedIds) await expect(page.locator(`[data-conversation-binding-id="${id}"]`)).toHaveCount(0);
+    if (archiveTarget === 'directory') await expect(page.getByText('没有正在运行或未读的会话。', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: '返回工作区列表', exact: true }).click();
+    await page.screenshot({ path: test.info().outputPath(`archived-${archiveTarget}.png`) });
+    if (archiveTarget === 'directory') {
+      // Management lives inside the same mounted workbench: a restore must
+      // clear successful-archive exclusions as well as refetch server lists.
+      await page.getByRole('button', { name: '会话管理', exact: true }).click();
+      await page.getByRole('button', { name: '已有项目目录（已归档）', exact: true }).click();
+      await page.getByRole('button', { name: '恢复工作区 已有项目目录', exact: true }).click();
+      await page.getByRole('alertdialog').getByRole('button', { name: '确认恢复', exact: true }).click();
+      await expect(page.getByRole('button', { name: '已有项目目录', exact: true })).toBeVisible();
+      await page.getByRole('button', { name: '主页', exact: true }).click();
+      await expect(group).toBeVisible();
+      await expect(page.getByRole('button', { name: '归档验证会话 0', exact: true })).toBeVisible();
+      await group.locator('header').hover();
+      await page.getByRole('button', { name: '工作区操作 已有项目目录', exact: true }).click();
+      await page.getByRole('menuitem', { name: '归档', exact: true }).click();
+      await expect(group).toHaveCount(0);
+      await page.getByRole('button', { name: '会话管理', exact: true }).click();
+      await page.getByRole('button', { name: '已有项目目录（已归档）', exact: true }).click();
+      await page.getByRole('checkbox', { name: '包含未读', exact: true }).check();
+      await page.getByRole('button', { name: '恢复会话 归档验证会话 5', exact: true }).click();
+      await expect(page.getByRole('button', { name: '已有项目目录', exact: true })).toBeVisible();
+      await page.getByRole('button', { name: '主页', exact: true }).click();
+      await expect(group.getByRole('button', { name: '归档验证会话 5', exact: true })).toBeVisible();
+      await expect(page.getByRole('button', { name: '归档验证会话 0', exact: true })).toHaveCount(0);
+    }
+
+  });
+}

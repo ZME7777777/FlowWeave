@@ -227,7 +227,8 @@ test('compact management emphasizes records and keeps archive filters and row ac
     await page.screenshot({ path: test.info().outputPath(`conversation-management-${width}.png`) });
   }
   await page.setViewportSize({ width: 1440, height: 900 });
-  await page.getByRole('button', { name: '已归档', exact: true }).click();
+  await page.getByRole('button', { name: '会话状态', exact: true }).click();
+  await page.getByRole('option', { name: '已归档', exact: true }).click();
   await expect(rows).toHaveCount(1);
   await expect(page.getByText('已选 0 / 1 个会话', { exact: true })).toBeVisible();
   await page.getByRole('checkbox', { name: '包含置顶' }).check();
@@ -252,4 +253,79 @@ test('compact management emphasizes records and keeps archive filters and row ac
   const before = reads;
   await page.getByRole('button', { name: '刷新', exact: true }).click();
   await expect.poll(() => reads).toBeGreaterThan(before);
+});
+
+
+test('archived directory restores require confirmation and restoring one child refreshes its parent', async ({ page }) => {
+  const now = '2026-10-29T02:00:00Z';
+  let directoryArchived = true;
+  let directoryRestores = 0;
+  let conversationRestores = 0;
+  let failRestore = false;
+  const archivedIds = new Set(['child-1', 'child-2']);
+  const items = ['child-1', 'child-2'].map((id, index) => ({ id, display_title: `归档会话 ${index + 1}`, pinned: false, unread: false, archived_at: now, created_at: now, updated_at: now, last_message_at: now }));
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request(); const url = new URL(request.url()); const path = url.pathname;
+    if (path.endsWith('/auth/me')) return respond(route, { id: 'archive-manager', username: 'manager', role: 'USER', can_use_agent_sessions: true });
+    if (path.endsWith('/agent-workspaces/default')) return respond(route, { id: 'archive-workspace', display_name: '工作区', desired_state: 'RUNNING', updated_at: now });
+    if (path.endsWith('/work-directories')) return respond(route, { root: { display_name: '根工作区' }, items: [{ id: 'archived-directory', display_name: '归档项目', state: directoryArchived ? 'ARCHIVED' : 'ACTIVE', current_version: { id: 'archive-version', working_directory: '/runtime/workspace/project/archive-project' } }] });
+    if (path.endsWith('/work-directories/archived-directory/restore')) {
+      directoryRestores += 1;
+      if (failRestore) return respond(route, { error: { code: 'RESTORE_FAILED', message: '暂时无法恢复工作区' } }, 503);
+      directoryArchived = false; archivedIds.clear();
+      return respond(route, { id: 'archived-directory', display_name: '归档项目', state: 'ACTIVE' });
+    }
+    if (path.endsWith('/conversations/child-1/restore')) {
+      conversationRestores += 1; directoryArchived = false; archivedIds.delete('child-1');
+      return respond(route, { ...items[0], archived_at: null });
+    }
+    if (path.endsWith('/conversation-management')) return respond(route, { items: url.searchParams.get('work_directory_id') === 'archived-directory' ? items.filter(item => archivedIds.has(item.id) === (url.searchParams.get('archived') === 'true')).map(item => ({ ...item, archived_at: archivedIds.has(item.id) ? now : null })) : [], truncated: false });
+    if (path.endsWith('/node-directories') || path.endsWith('/node-assets')) return respond(route, []);
+    return respond(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'AI 工作台', exact: true }).click();
+  await page.getByRole('button', { name: '会话管理', exact: true }).click();
+  await page.getByRole('button', { name: '归档项目（已归档）', exact: true }).click();
+  const rows = page.locator('.conversation-management-table tbody tr');
+  await expect(rows).toHaveCount(2);
+  await expect(rows.locator('.conversation-management-status').getByText('已归档', { exact: true })).toHaveCount(2);
+  expect(await page.locator('.conversation-management-page select').count()).toBe(0);
+  await page.getByRole('button', { name: '恢复工作区 归档项目', exact: true }).click();
+  let dialog = page.getByRole('alertdialog', { name: '恢复工作区“归档项目”？' });
+  await expect(dialog).toContainText('所有已归档会话');
+  expect(directoryRestores).toBe(0);
+  await dialog.getByRole('button', { name: '取消', exact: true }).click();
+  expect(directoryRestores).toBe(0);
+  await page.getByRole('button', { name: '恢复会话 归档会话 1', exact: true }).click();
+  await expect.poll(() => conversationRestores).toBe(1);
+  await expect(page.getByRole('button', { name: '归档项目', exact: true })).toBeVisible();
+  await expect(rows).toHaveCount(1);
+  await expect(rows).toContainText('归档会话 2');
+  // A later batch archive restores the directory action; cancellation and
+  // request failure must never hide the archived container or its records.
+  directoryArchived = true; archivedIds.add('child-1');
+  await page.reload();
+  await page.getByRole('button', { name: '会话管理', exact: true }).click();
+  await page.getByRole('button', { name: '归档项目（已归档）', exact: true }).click();
+  failRestore = true;
+  await page.getByRole('button', { name: '恢复工作区 归档项目', exact: true }).click();
+  dialog = page.getByRole('alertdialog', { name: '恢复工作区“归档项目”？' });
+  await dialog.getByRole('button', { name: '确认恢复', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('暂时无法恢复工作区');
+  await expect(page.getByRole('button', { name: '归档项目（已归档）', exact: true })).toBeVisible();
+  failRestore = false;
+  await page.getByRole('button', { name: '恢复工作区 归档项目', exact: true }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: '确认恢复', exact: true }).click();
+  await expect.poll(() => directoryRestores).toBe(2);
+  await expect(rows).toHaveCount(0);
+  const filter = page.getByRole('button', { name: '会话状态', exact: true });
+  await filter.press('ArrowDown');
+  await page.keyboard.press('Home'); await page.keyboard.press('Enter');
+  await expect(filter).toContainText('未归档');
+  await expect(rows).toHaveCount(2);
+  await filter.click(); await page.keyboard.press('Escape');
+  await expect(page.getByRole('listbox', { name: '会话状态', exact: true })).toHaveCount(0);
+  await expect(filter).toBeFocused();
+  await page.screenshot({ path: test.info().outputPath('restored-directory.png') });
 });

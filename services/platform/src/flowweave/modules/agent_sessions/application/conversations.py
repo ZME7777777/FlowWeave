@@ -1250,11 +1250,27 @@ def archive_conversation(db: Session, workspace_id: str, binding_id: str) -> dic
 
 
 def restore_conversation(db: Session, workspace_id: str, binding_id: str) -> dict[str, Any]:
+    item = _binding(db, workspace_id, binding_id)
+    directory_id = _work_directory_id(db, item)
+    # Match directory batch operations' lock order. Restoring one child only
+    # restores its parent container; other archived conversations stay archived.
+    if directory_id:
+        directory = db.scalar(
+            select(AgentWorkDirectory)
+            .where(
+                AgentWorkDirectory.id == directory_id,
+                AgentWorkDirectory.workspace_id == workspace_id,
+            )
+            .with_for_update()
+        )
+        if directory is not None and directory.archived_at is not None:
+            directory.archived_at = None
+            directory.updated_at = now()
     item = _binding(db, workspace_id, binding_id, lock=True)
     if item.archived_at is not None:
         item.archived_at = None
         item.updated_at = now()
-        db.flush()
+    db.flush()
     return _dict(db, item)
 
 

@@ -3925,8 +3925,9 @@ def test_agent_workspace_management_lists_selected_conversations_and_skips_runni
 
 
 
+@pytest.mark.parametrize("archive_mode", ["normal", "legacy", "running"])
 def test_agent_workspace_archives_and_restores_directories_and_conversations(
-    settings, db_session_factory, monkeypatch
+    settings, db_session_factory, monkeypatch, archive_mode
 ):
     monkeypatch.setattr(
         conversations,
@@ -3982,7 +3983,10 @@ def test_agent_workspace_archives_and_restores_directories_and_conversations(
         )
         assert archived_conversation["archived_at"] is not None
         assert conversations.list_conversations(db, workspace.id) == []
-        assert conversations.list_management_conversations(db, workspace.id, archived=False)["items"] == []
+        assert (
+            conversations.list_management_conversations(db, workspace.id, archived=False)["items"]
+            == []
+        )
         managed = conversations.list_management_conversations(db, workspace.id, archived=True)[
             "items"
         ]
@@ -3995,6 +3999,108 @@ def test_agent_workspace_archives_and_restores_directories_and_conversations(
         assert [item["id"] for item in conversations.list_conversations(db, workspace.id)] == [
             conversation["id"]
         ]
+
+        # Include a child frozen against an older directory version and an
+        # unrelated root conversation. Batch operations must cover all versions.
+        children = []
+        for index in range(2):
+            created = conversations.create_conversation(
+                db,
+                workspace.id,
+                f"目录会话 {index}",
+                workspace.default_model_provider_id,
+                f"directory-child-{index}",
+            )
+            child = db.get(AgentConversationBinding, created["id"])
+            child.work_directory_version_id = directory["current_version"]["id"]
+            child.working_directory = directory["current_version"]["working_directory"]
+            children.append(child)
+            if index == 0:
+                (project_root / "archive-target-v2").mkdir()
+                directory = work_directories.update_work_directory(
+                    db,
+                    workspace.id,
+                    directory["id"],
+                    display_name=None,
+                    selected_paths=("archive-target-v2",),
+                )
+        db.flush()
+        assert children[0].work_directory_version_id != children[1].work_directory_version_id
+        if archive_mode == "running":
+            original = conversations.assert_conversation_stopped
+
+            def reject_running(_db, _workspace_id, binding_id, **kwargs):
+                if binding_id == children[1].id:
+                    raise DomainError("AGENT_CONVERSATION_RUNNING", "会话正在运行", 409)
+
+            monkeypatch.setattr(conversations, "assert_conversation_stopped", reject_running)
+            with pytest.raises(DomainError, match="会话正在运行"):
+                work_directories.archive_work_directory(db, workspace.id, directory["id"])
+            assert (
+                work_directories.get_work_directory(db, workspace.id, directory["id"])["state"]
+                == "ACTIVE"
+            )
+            assert all(child.archived_at is None for child in children)
+            monkeypatch.setattr(conversations, "assert_conversation_stopped", original)
+        if archive_mode == "legacy":
+            from importlib.util import module_from_spec, spec_from_file_location
+
+            from alembic.migration import MigrationContext
+            from alembic.operations import Operations
+
+            from flowweave.modules.agent_workspaces.infrastructure.models import AgentWorkDirectory
+
+            archived_directory = db.get(AgentWorkDirectory, directory["id"])
+            archived_directory.archived_at = datetime.now(UTC)
+            db.flush()
+            path = (
+                Path(__file__).parents[1] / "migrations/versions/0184_cascade_directory_archives.py"
+            )
+            spec = spec_from_file_location("cascade_directory_archives", path)
+            migration = module_from_spec(spec)
+            spec.loader.exec_module(migration)
+            with Operations.context(MigrationContext.configure(db.connection())):
+                migration.upgrade()
+                migration.upgrade()  # Idempotent data repair.
+            db.refresh(children[0])
+            db.refresh(children[1])
+        else:
+            work_directories.archive_work_directory(db, workspace.id, directory["id"])
+        assert all(child.archived_at is not None for child in children)
+        timestamps = [child.archived_at for child in children]
+        work_directories.archive_work_directory(db, workspace.id, directory["id"])
+        assert [child.archived_at for child in children] == timestamps
+        assert (
+            conversations.list_management_conversations(
+                db,
+                workspace.id,
+                work_directory_id=directory["id"],
+                archived=False,
+            )["items"]
+            == []
+        )
+        assert {
+            item["id"]
+            for item in conversations.list_management_conversations(
+                db,
+                workspace.id,
+                work_directory_id=directory["id"],
+                archived=True,
+            )["items"]
+        } == {child.id for child in children}
+        assert db.get(AgentConversationBinding, conversation["id"]).archived_at is None
+        assert (
+            conversations.restore_conversation(db, workspace.id, children[0].id)["archived_at"]
+            is None
+        )
+        assert (
+            work_directories.get_work_directory(db, workspace.id, directory["id"])["state"]
+            == "ACTIVE"
+        )
+        assert children[1].archived_at is not None
+        work_directories.archive_work_directory(db, workspace.id, directory["id"])
+        work_directories.restore_work_directory(db, workspace.id, directory["id"])
+        assert all(child.archived_at is None for child in children)
 
 
 def test_agent_workspace_management_scopes_to_the_selected_work_directory(

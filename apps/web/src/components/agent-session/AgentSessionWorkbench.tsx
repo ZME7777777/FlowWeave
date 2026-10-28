@@ -5004,6 +5004,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [workDirectoryDropTarget, setWorkDirectoryDropTarget] = useState<{ id: string; after: boolean }>();
   const draggedWorkDirectoryRef = useRef<string | undefined>(undefined);
   const workDirectoryDropTargetRef = useRef<{ id: string; after: boolean } | undefined>(undefined);
+  const [archivedDirectoryIds, setArchivedDirectoryIds] = useState<Set<string>>(() => new Set());
   const [optimisticallyRemovedConversationIds, setOptimisticallyRemovedConversationIds] = useState<Set<string>>(() => new Set());
   const [confirmedMissingConversationIds, setConfirmedMissingConversationIds] = useState<Set<string>>(() => new Set());
   const [title, setTitle] = useState('');
@@ -5656,7 +5657,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const conversations = useMemo(() => {
     const uniqueConversations = new Map<string, AgentConversation>();
     for (const item of Object.values(conversationPagesByScope).flatMap(page => page.items)) {
-      if (!optimisticallyRemovedConversationIds.has(item.id)) uniqueConversations.set(item.id, item);
+      if (!optimisticallyRemovedConversationIds.has(item.id) && !archivedDirectoryIds.has(item.work_directory_id ?? '')) uniqueConversations.set(item.id, item);
     }
     const serverOrder = [...uniqueConversations.values()]
       .sort(
@@ -5683,7 +5684,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       let localIndex = 0;
       return group.map(item => locallyOrderedIds.has(item.id) ? locallyOrdered[localIndex++] : item);
     });
-  }, [conversationOrder, conversationPagesByScope, optimisticallyRemovedConversationIds]);
+  }, [archivedDirectoryIds, conversationOrder, conversationPagesByScope, optimisticallyRemovedConversationIds]);
   const conversationsById = useMemo(
     () => new Map(conversations.map(item => [item.id, item])),
     [conversations],
@@ -5738,14 +5739,15 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, [collapsedConversationGroups, completeSidebarReveal, conversationPagesByScope, pinnedConversationsCollapsed]);
   const pinnedConversations = useMemo(() => {
     const paged = [...conversationsById.values()].filter(item => pendingPinnedUpdates.current.get(item.id)?.pinned ?? item.pinned);
-    const items = scopeWorkDirectoryId === undefined && api.pinnedConversations ? pinnedConversationsQuery.data ?? paged : paged;
+    const items = (scopeWorkDirectoryId === undefined && api.pinnedConversations ? pinnedConversationsQuery.data ?? paged : paged)
+      .filter(item => !optimisticallyRemovedConversationIds.has(item.id) && !archivedDirectoryIds.has(item.work_directory_id ?? ''));
     const byId = new Map(items.map(item => [item.id, item]));
     const orderedIds = new Set(pinnedOrder);
     return [
       ...pinnedOrder.flatMap(id => byId.has(id) ? [byId.get(id)!] : []),
       ...items.filter(item => !orderedIds.has(item.id)),
     ];
-  }, [api.pinnedConversations, conversationsById, pinnedConversationsQuery.data, pinnedOrder, scopeWorkDirectoryId]);
+  }, [api.pinnedConversations, archivedDirectoryIds, conversationsById, optimisticallyRemovedConversationIds, pinnedConversationsQuery.data, pinnedOrder, scopeWorkDirectoryId]);
   const unpinnedConversations = conversations.filter(
     item => !(pendingPinnedUpdates.current.get(item.id)?.pinned ?? item.pinned),
   );
@@ -5754,6 +5756,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     for (const item of conversations) byId.set(item.id, item);
     for (const item of activitySnapshot?.conversations ?? []) byId.set(item.id, item);
     return [...byId.values()]
+      .filter(item => !optimisticallyRemovedConversationIds.has(item.id) && !archivedDirectoryIds.has(item.work_directory_id ?? ''))
       .filter(item => scopeWorkDirectoryId === undefined || item.work_directory_id === scopeWorkDirectoryId)
       .filter(item => runningConversationIds.has(item.id) || condensingConversationIds.has(item.id) || conversationIsRunning(item.execution_status) || unreadConversationIds.has(item.id) || Boolean(item.unread))
       .sort((left, right) => {
@@ -5761,7 +5764,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         const rightUpdatedAt = Date.parse(right.updated_at) || Date.parse(right.created_at) || 0;
         return rightUpdatedAt - leftUpdatedAt || right.id.localeCompare(left.id);
       });
-  }, [activitySnapshot?.conversations, condensingConversationIds, conversations, runningConversationIds, scopeWorkDirectoryId, unreadConversationIds]);
+  }, [activitySnapshot?.conversations, archivedDirectoryIds, condensingConversationIds, conversations, optimisticallyRemovedConversationIds, runningConversationIds, scopeWorkDirectoryId, unreadConversationIds]);
   const selectedConversationQuery = useQuery({
     queryKey: sessionQueryKey(host, 'conversation', workspace?.id, selectedBindingId),
     queryFn: () => api.conversation(workspace!.id, selectedBindingId!),
@@ -8393,20 +8396,50 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       setOperationError(error);
     },
   });
-  const archive = useMutation<AgentConversation, Error, string>({
-    mutationFn: bindingId => api.archiveConversation!(workspace!.id, bindingId),
-    onSuccess: (_conversation, bindingId) => {
-      queryClient.removeQueries({ queryKey: sessionQueryKey(host, 'conversation', workspace!.id, bindingId), exact: true });
-      if (selected?.id === bindingId) {
+  const archivedConversationDirectoryIds = useRef(new Map<string, string | undefined>());
+  const archiveSelectionRef = useRef({ workspaceId: workspace?.id, bindingId: selectedBindingId, directoryId: selected?.work_directory_id, draftDirectoryId: conversationDraft?.workDirectoryId });
+  archiveSelectionRef.current = { workspaceId: workspace?.id, bindingId: selectedBindingId, directoryId: selected?.work_directory_id, draftDirectoryId: conversationDraft?.workDirectoryId };
+  const reconcileArchivedConversations = (workspaceId: string, bindingIds: Set<string>, directoryId?: string) => {
+    const matches = (item: AgentConversation) => bindingIds.has(item.id) || Boolean(directoryId && item.work_directory_id === directoryId);
+    // Update every loaded page, including pinned/activity projections. Keep the
+    // exclusion while mounted so a late page response cannot resurrect a row.
+    if (archiveSelectionRef.current.workspaceId === workspaceId) {
+      if (directoryId) {
+        setArchivedDirectoryIds(current => new Set(current).add(directoryId));
+        if (archiveSelectionRef.current.directoryId === directoryId && archiveSelectionRef.current.bindingId) bindingIds.add(archiveSelectionRef.current.bindingId);
+      }
+      for (const bindingId of bindingIds) archivedConversationDirectoryIds.current.set(bindingId, directoryId);
+      setOptimisticallyRemovedConversationIds(current => new Set([...current, ...bindingIds]));
+      setConversationPagesByScope(current => Object.fromEntries(Object.entries(current)
+        .filter(([scope]) => scope !== directoryId)
+        .map(([scope, page]) => [scope, { ...page, items: page.items.filter(item => !matches(item)) }])));
+      setUnreadConversationIds(current => new Set([...current].filter(id => !bindingIds.has(id))));
+      if (archiveSelectionRef.current.bindingId && bindingIds.has(archiveSelectionRef.current.bindingId)) {
         setDrawerOpen(false);
         setActivityPreviewBindingId(undefined);
         onNavigate(scheduleRoute ? '/agent/schedules' : host.rootPath, true);
       }
-      void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversations', workspace!.id) });
-      void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-activity', workspace!.id) });
-      setOperationError(undefined);
+    }
+    queryClient.setQueriesData<AgentConversationPage>({ queryKey: sessionQueryKey(host, 'conversations', workspaceId) }, page => page && ({ ...page, items: page.items.filter(item => !matches(item)) }));
+    queryClient.setQueryData<AgentConversation[]>(sessionQueryKey(host, 'pinned-conversations', workspaceId), items => items?.filter(item => !matches(item)));
+    for (const bindingId of bindingIds) queryClient.removeQueries({ queryKey: sessionQueryKey(host, 'conversation', workspaceId, bindingId), exact: true });
+    void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversations', workspaceId) });
+    void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'pinned-conversations', workspaceId) });
+    void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-activity', workspaceId) });
+    void queryClient.invalidateQueries({ queryKey: ['agent-conversation-management', workspaceId] });
+  };
+  const archive = useMutation<AgentConversation, Error, { workspaceId: string; bindingId: string; scope?: string }>({
+    mutationFn: ({ workspaceId, bindingId }) => api.archiveConversation!(workspaceId, bindingId),
+    onSuccess: (_conversation, { workspaceId, bindingId, scope }) => {
+      reconcileArchivedConversations(workspaceId, new Set([bindingId]));
+      if (archiveSelectionRef.current.workspaceId === workspaceId) {
+        archivedConversationDirectoryIds.current.set(bindingId, _conversation.work_directory_id ?? undefined);
+        if (activeComposerScope.current === scope) setOperationError(undefined);
+      }
     },
-    onError: error => setOperationError(error),
+    onError: (error, { workspaceId, scope }) => {
+      if (archiveSelectionRef.current.workspaceId === workspaceId && activeComposerScope.current === scope) setOperationError(error);
+    },
   });
   const synchronizeConversationOrder = useCallback((bindingId: string, orderedBindingIds: string[]) => {
     if (!workspace || !api.reorderConversation) return;
@@ -9923,7 +9956,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     const conversationWritable = Boolean(item.write_available);
     const draggable = options.allowDrag !== false;
     const orderSync = conversationOrderSync[item.id];
-    return <WorkspaceConversationRow key={item.id} item={item} selectedBindingId={selectedBindingId} workspaceName={options.workspaceName} running={running} possiblyStuck={possiblyStuck} failed={failed} unread={unread} unreadOrigin={unreadOrigin} pinned={Boolean(item.pinned)} conversationWritable={conversationWritable} removing={remove.isPending || archive.isPending} deleteDisabled={running} dragging={draggable && draggedBindingId === item.id} dropPosition={draggable && dragTarget?.bindingId === item.id ? (dragTarget.after ? 'after' : 'before') : undefined} orderSyncState={orderSync?.state} onDragStart={draggable ? event => startConversationDrag(event, item, group) : undefined} onDragOver={draggable ? event => previewConversationDrop(event, item, group) : undefined} onDrop={draggable ? event => dropConversation(event, item, group) : undefined} onDragEnd={draggable ? endConversationDrag : undefined} onRetryOrder={orderSync?.state === 'failed' ? () => synchronizeConversationOrder(item.id, orderSync.orderedBindingIds) : undefined} onSelect={options.onSelect ?? (() => selectConversation(item.id))} onDoubleClick={options.onDoubleClick} onTogglePin={() => toggleConversationPin(item.id)} onExport={() => { void exportConversation(item); }} onMarkUnread={() => markConversationUnread(item.id)} onMarkRead={options.onMarkRead} onAcknowledgeAlert={() => markConversationRead(item.id)} onArchive={api.archiveConversation && conversationWritable ? () => archive.mutate(item.id) : undefined} onDelete={features.conversationDeletion && conversationWritable ? () => void confirmDeletion('会话', conversationName(item)).then(ok => { if (ok) remove.mutate(item.id); }) : undefined}/>;
+    return <WorkspaceConversationRow key={item.id} item={item} selectedBindingId={selectedBindingId} workspaceName={options.workspaceName} running={running} possiblyStuck={possiblyStuck} failed={failed} unread={unread} unreadOrigin={unreadOrigin} pinned={Boolean(item.pinned)} conversationWritable={conversationWritable} removing={remove.isPending || archive.isPending} deleteDisabled={running} dragging={draggable && draggedBindingId === item.id} dropPosition={draggable && dragTarget?.bindingId === item.id ? (dragTarget.after ? 'after' : 'before') : undefined} orderSyncState={orderSync?.state} onDragStart={draggable ? event => startConversationDrag(event, item, group) : undefined} onDragOver={draggable ? event => previewConversationDrop(event, item, group) : undefined} onDrop={draggable ? event => dropConversation(event, item, group) : undefined} onDragEnd={draggable ? endConversationDrag : undefined} onRetryOrder={orderSync?.state === 'failed' ? () => synchronizeConversationOrder(item.id, orderSync.orderedBindingIds) : undefined} onSelect={options.onSelect ?? (() => selectConversation(item.id))} onDoubleClick={options.onDoubleClick} onTogglePin={() => toggleConversationPin(item.id)} onExport={() => { void exportConversation(item); }} onMarkUnread={() => markConversationUnread(item.id)} onMarkRead={options.onMarkRead} onAcknowledgeAlert={() => markConversationRead(item.id)} onArchive={api.archiveConversation && conversationWritable ? () => archive.mutate({ workspaceId: workspace!.id, bindingId: item.id, scope: activeComposerScope.current }) : undefined} onDelete={features.conversationDeletion && conversationWritable ? () => void confirmDeletion('会话', conversationName(item)).then(ok => { if (ok) remove.mutate(item.id); }) : undefined}/>;
   };
   const pendingBootstrapItem = pendingBootstrap
     ? <button className={pendingBootstrap.draft.id === conversationDraft?.id ? 'active' : ''} aria-current={pendingBootstrap.draft.id === conversationDraft?.id ? 'page' : undefined} aria-label={`${pendingConversationName(pendingBootstrap.message)}，正在创建会话`}><LoaderCircle className="conversation-activity-spin" size={13}/><span><b>{pendingConversationName(pendingBootstrap.message)}</b><small>正在创建会话</small></span><ChevronRight size={13}/></button>
@@ -10073,14 +10106,24 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     selectConversation(bindingId, { revealSidebar: true });
   };
   const archiveWorkDirectory = async (directory: AgentSessionWorkDirectory) => {
-    if (!api.archiveWorkDirectory) return;
+    if (!api.archiveWorkDirectory || !workspace) return;
+    const workspaceId = workspace.id;
+    const operationScope = activeComposerScope.current;
+    const bindingIds = new Set([...conversations, ...pinnedConversations, ...activityConversations, ...(selected ? [selected] : [])]
+      .filter(item => item.work_directory_id === directory.id).map(item => item.id));
     setOperationError(undefined);
     try {
-      await api.archiveWorkDirectory(workspace!.id, directory.id);
-      if (conversationDraft?.workDirectoryId === directory.id) setConversationDraft(undefined);
-      await queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'work-directories', workspace!.id) });
-      setOperationError(undefined);
-    } catch (reason) { reportOperationError('work-directory-archive', reason instanceof Error ? reason : new Error('归档工作区失败')); }
+      await api.archiveWorkDirectory(workspaceId, directory.id);
+      await queryClient.cancelQueries({ queryKey: sessionQueryKey(host, 'work-directories', workspaceId) });
+      queryClient.setQueryData<typeof workDirectoriesQuery.data>(sessionQueryKey(host, 'work-directories', workspaceId), current => current && ({ ...current, items: current.items.filter(item => item.id !== directory.id) }));
+      reconcileArchivedConversations(workspaceId, bindingIds, directory.id);
+      if (archiveSelectionRef.current.workspaceId === workspaceId && archiveSelectionRef.current.draftDirectoryId === directory.id) setConversationDraft(undefined);
+      await queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'work-directories', workspaceId) });
+      void queryClient.invalidateQueries({ queryKey: ['agent-work-directories', workspaceId] });
+      if (archiveSelectionRef.current.workspaceId === workspaceId && activeComposerScope.current === operationScope) setOperationError(undefined);
+    } catch (reason) {
+      if (archiveSelectionRef.current.workspaceId === workspaceId && activeComposerScope.current === operationScope) setOperationError(reason instanceof Error ? reason : new Error('归档工作区失败'));
+    }
   };
   const removeWorkDirectory = async (directory: AgentSessionWorkDirectory) => {
     if (!api.deleteWorkDirectory || !await confirmDeletion('工作区', directory.display_name)) return;
@@ -10133,7 +10176,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       const latest = activity && Date.parse(activity.updated_at) >= Date.parse(item.updated_at) ? { ...item, ...activity } : item;
       return conversationRow({ ...latest, ...current, ...(pendingUnread ? { unread: pendingUnread.unread, unread_origin: pendingUnread.unreadOrigin } : {}) }, [], { allowDrag: false });
     }} onSelectSchedule={() => { setActivityPreviewBindingId(undefined); onNavigate('/agent/schedules'); }}/>}
-    {agentWorkspaceView === 'management' && <section className="agent-conversation-management-page" aria-label="会话管理"><ConversationManagementPage/></section>}
+    {agentWorkspaceView === 'management' && <section className="agent-conversation-management-page" aria-label="会话管理"><ConversationManagementPage onRestored={({ bindingId, workDirectoryId }) => {
+      const restoredIds = new Set(bindingId ? [bindingId] : [...archivedConversationDirectoryIds.current].filter(([, directoryId]) => directoryId === workDirectoryId).map(([id]) => id));
+      setOptimisticallyRemovedConversationIds(current => new Set([...current].filter(id => !restoredIds.has(id))));
+      for (const id of restoredIds) archivedConversationDirectoryIds.current.delete(id);
+      if (workDirectoryId) setArchivedDirectoryIds(current => new Set([...current].filter(id => id !== workDirectoryId)));
+    }}/></section>}
     {selected && <ConversationStreamObserver workspaceId={workspace.id} bindingId={selected.id} enabled={streamEnabled} onEvent={onStreamEvent} onStatus={updateStreamStatus} onReconnect={onStreamReconnect}/>}
     {workspace && queuedMessageBindings(host, workspace.id).filter(bindingId => bindingId !== selected?.id).map(bindingId => (
       <ConversationStreamObserver
