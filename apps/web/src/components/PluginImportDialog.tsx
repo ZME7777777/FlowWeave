@@ -6,7 +6,7 @@ import { useEscapeClose } from './useEscapeClose';
 import type { MarketplaceCatalog, PluginSourceResolution } from '../types';
 import './plugin-import.css';
 
-const PAGE_SIZE = 6;
+const PAGE_SIZE = 10;
 type Source = 'marketplace' | 'git';
 interface Props {
   onClose: () => void;
@@ -45,7 +45,10 @@ export function PluginImportDialog({ onClose, onPublished, onUpload }: Props) {
   const [catalog, setCatalog] = useState<MarketplaceCatalog>();
   const [loading, setLoading] = useState(true);
   const [catalogError, setCatalogError] = useState('');
-  const [selectedName, setSelectedName] = useState('');
+  const [selectedNames, setSelectedNames] = useState<Set<string>>(new Set());
+  const [importedNames, setImportedNames] = useState<Set<string>>(new Set());
+  const [publishedCount, setPublishedCount] = useState(0);
+  const marketplaceResolutions = useRef(new Map<string, PluginSourceResolution>());
   const [query, setQuery] = useState('');
   const [page, setPage] = useState(1);
   const [url, setUrl] = useState('');
@@ -61,7 +64,6 @@ export function PluginImportDialog({ onClose, onPublished, onUpload }: Props) {
   const plugins = useMemo(() => (catalog?.plugins ?? []).filter(plugin =>
     `${plugin.name} ${plugin.description ?? ''} ${plugin.category ?? ''}`.toLowerCase().includes(query.trim().toLowerCase()),
   ), [catalog, query]);
-  const selected = catalog?.plugins.find(plugin => plugin.name === selectedName);
 
   const browse = async () => {
     const request = ++browseGeneration.current;
@@ -72,7 +74,7 @@ export function PluginImportDialog({ onClose, onPublished, onUpload }: Props) {
     try {
       const result = await api.openhandsMarketplaceCatalog(controller.signal);
       if (request !== browseGeneration.current) return;
-      setCatalog(result); setSelectedName(''); setPage(1);
+      setCatalog(result); setSelectedNames(new Set()); setImportedNames(new Set()); marketplaceResolutions.current.clear(); setPublishedCount(0); setPage(1);
     } catch (reason) {
       if (request === browseGeneration.current) setCatalogError(message(reason));
     } finally { if (request === browseGeneration.current) setLoading(false); }
@@ -82,46 +84,69 @@ export function PluginImportDialog({ onClose, onPublished, onUpload }: Props) {
     return () => { generation.current += 1; browseGeneration.current += 1; browseAbort.current?.abort(); };
   }, []);
 
-  const reset = () => { generation.current += 1; setResolution(undefined); setError(''); setStatus(''); };
+  const reset = () => { generation.current += 1; setResolution(undefined); setError(''); setStatus(''); setPublishedCount(0); };
   const importPlugin = async () => {
     const request = ++generation.current;
-    setBusy(true); setError(''); setStatus('正在读取插件…');
-    try {
-      let current = resolution;
-      if (!current || current.state !== 'READY') {
-        if (source === 'marketplace') {
-          if (!catalog || !selectedName) throw new Error('请先选择一个插件。');
-          current = await api.createMarketplacePluginResolution({
-            marketplace_source_url: catalog.source, marketplace_commit: catalog.commit,
-            marketplace_repo_path: catalog.repo_path, plugin_name: selectedName,
-          });
-        } else {
-          const input = gitSource(url, commit, repoPath);
-          setCommit(input.commit); setRepoPath(input.repo_path ?? ''); setUrl(input.source_url);
-          current = await api.createPluginSourceResolution(input);
-        }
-      }
+    setBusy(true); setError(''); setPublishedCount(0);
+    const publish = async (initial: PluginSourceResolution | undefined, create: () => Promise<PluginSourceResolution>, update: (value: PluginSourceResolution) => void, label: string) => {
+      setStatus(`正在读取${label}…`);
+      let current = initial;
+      if (!current || current.state === 'FAILED' || current.state === 'EXPIRED') current = await create();
       if (request !== generation.current) return;
-      setResolution(current);
+      update(current);
       const deadline = Date.now() + 5 * 60_000;
       while (current.state === 'PENDING' && Date.now() < deadline) {
-        setStatus('正在检查插件内容…');
+        setStatus(`正在检查${label}…`);
         await new Promise(resolve => window.setTimeout(resolve, 1500));
         if (request !== generation.current) return;
         current = await api.pluginSourceResolution(current.id);
         if (request !== generation.current) return;
-        setResolution(current);
+        update(current);
       }
       if (current.state === 'FAILED') throw new Error(current.error_detail || '无法读取插件内容，请检查来源后重试。');
       if (current.state === 'EXPIRED') throw new Error('导入准备已过期，请重试。');
       if (current.state === 'PENDING') throw new Error('插件检查仍在进行，请稍后重试以继续查看结果。');
       if (current.state === 'READY') {
-        setStatus('正在导入…');
+        setStatus(`正在导入${label}…`);
         current = await api.publishPluginSourceResolution(current.id, current.state_version);
         if (request !== generation.current) return;
-        setResolution(current);
+        update(current);
       }
-      if (current.state === 'PUBLISHED') await onPublished();
+      return current;
+    };
+    try {
+      if (source === 'marketplace') {
+        if (!catalog || !selectedNames.size) throw new Error('请先选择插件。');
+        const names = [...selectedNames];
+        const failures: string[] = [];
+        for (const [index, name] of names.entries()) {
+          try {
+            const current = await publish(marketplaceResolutions.current.get(name), () => api.createMarketplacePluginResolution({
+              marketplace_source_url: catalog.source, marketplace_commit: catalog.commit,
+              marketplace_repo_path: catalog.repo_path, plugin_name: name,
+            }), value => marketplaceResolutions.current.set(name, value), ` ${name}（${index + 1}/${names.length}）`);
+            if (!current || request !== generation.current) return;
+            if (current.state === 'PUBLISHED') {
+              setImportedNames(previous => new Set(previous).add(name));
+              setSelectedNames(previous => { const next = new Set(previous); next.delete(name); return next; });
+              setPublishedCount(previous => previous + 1);
+              await onPublished();
+              if (request !== generation.current) return;
+            }
+          } catch (reason) {
+            if (request !== generation.current) return;
+            failures.push(`${name}：${message(reason)}`);
+          }
+        }
+        setError(failures.join('；'));
+      } else {
+        const current = await publish(resolution, () => {
+          const input = gitSource(url, commit, repoPath);
+          setCommit(input.commit); setRepoPath(input.repo_path ?? ''); setUrl(input.source_url);
+          return api.createPluginSourceResolution(input);
+        }, setResolution, '插件');
+        if (current?.state === 'PUBLISHED' && request === generation.current) await onPublished();
+      }
     } catch (reason) { if (request === generation.current) setError(message(reason)); }
     finally { if (request === generation.current) { setBusy(false); setStatus(''); } }
   };
@@ -138,11 +163,10 @@ export function PluginImportDialog({ onClose, onPublished, onUpload }: Props) {
         <div className="plugin-import-search"><label><Search size={14}/><input aria-label="搜索插件" placeholder="搜索插件名称或说明" value={query} disabled={busy} onChange={event => { setQuery(event.target.value); setPage(1); }}/></label><button className="ghost" title="刷新目录" aria-label="刷新目录" disabled={loading || busy} onClick={() => void browse()}><RefreshCw size={14}/></button></div>
         {loading ? <div className="plugin-import-empty" role="status"><LoaderCircle className="spin" size={20}/><span>正在加载插件目录…</span><small>首次读取可能需要一些时间</small></div>
           : catalogError ? <div className="plugin-import-empty"><Store size={22}/><span>暂时无法加载插件市场</span><small role="alert">{catalogError}</small><button className="secondary" onClick={() => void browse()}>重新加载</button><button className="ghost" onClick={() => { reset(); setSource('git'); }}>从 Git 仓库导入<ChevronRight size={13}/></button></div>
-          : <><div className="plugin-import-list" aria-label="插件目录">{plugins.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE).map(plugin => <button key={plugin.name} disabled={busy} aria-pressed={selectedName === plugin.name} onClick={() => { reset(); setSelectedName(plugin.name); }}>
-            <span className="plugin-import-check">{selectedName === plugin.name && <Check size={12}/>}</span><Package size={17}/><span className="plugin-import-copy"><b>{plugin.name}</b><small>{plugin.description || '暂无说明'}</small></span><span className="plugin-import-version">{plugin.version || plugin.category}</span>
+          : <><div className="plugin-import-list" aria-label="插件目录">{plugins.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE).map(plugin => <button key={plugin.name} role="checkbox" aria-label={`选择插件 ${plugin.name}`} disabled={busy || importedNames.has(plugin.name)} aria-checked={selectedNames.has(plugin.name)} onClick={() => { reset(); setSelectedNames(previous => { const next = new Set(previous); if (next.has(plugin.name)) next.delete(plugin.name); else next.add(plugin.name); return next; }); }}>
+            <span className="plugin-import-check">{selectedNames.has(plugin.name) && <Check size={12}/>}</span><Package size={17}/><span className="plugin-import-copy"><b>{plugin.name}</b><small>{plugin.description || '暂无说明'}</small></span><span className="plugin-import-version">{importedNames.has(plugin.name) ? '已导入' : plugin.version || plugin.category}</span>
           </button>)}{!plugins.length && <div className="plugin-import-empty"><Search size={20}/><span>{query ? '没有匹配的插件' : '目录中暂时没有插件'}</span>{query && <button className="ghost" onClick={() => { setQuery(''); setPage(1); }}>清除搜索</button>}</div>}</div>
           <div className="plugin-import-pagination"><small>OpenHands · {plugins.length} 个插件</small><Pagination page={page} pageSize={PAGE_SIZE} total={plugins.length} onPageChange={setPage}/></div></>}
-        {selected && !loading && !catalogError && <div className="plugin-import-selection"><b>{selected.name}</b><p>{selected.description || '暂无说明'}</p><small>{[selected.author, selected.category, selected.version].filter(Boolean).join(' · ')}</small></div>}
       </section> : <section className="plugin-import-git" aria-label="Git 仓库导入">
         <label>仓库或提交链接<input autoFocus value={url} disabled={busy} placeholder="https://github.com/owner/repo" onChange={event => { reset(); setUrl(event.target.value); }}/></label>
         <p>可直接粘贴 GitHub 的固定提交或目录链接，自动识别版本与插件目录。</p>
@@ -150,8 +174,8 @@ export function PluginImportDialog({ onClose, onPublished, onUpload }: Props) {
         <details className="plugin-import-help"><summary>如何获取导入链接？</summary><ol><li>打开公开仓库的提交记录，进入要导入的那次提交。</li><li>复制地址栏中的 <code>/commit/完整提交号</code> 链接，粘贴到上方。</li><li>如果插件在子目录中，填写包含插件清单的目录，如 <code>plugins/review</code>。</li></ol><p>支持含 <code>plugin.json</code>、<code>.plugin/plugin.json</code> 或 <code>.claude-plugin/plugin.json</code> 的插件目录。只有 SKILL.md 的技能请到 Skill 模块导入。</p><p>使用固定提交可确保导入版本不随仓库后续更新而改变。私有仓库和未获允许的来源会被拒绝。</p></details>
       </section>}
       {error && <p className="plugin-import-error" role="alert">{error}</p>}
-      {resolution?.state === 'PUBLISHED' && <p className="plugin-import-success" role="status"><Check size={14}/>插件已导入能力仓库。</p>}
+      {(resolution?.state === 'PUBLISHED' || publishedCount > 0) && <p className="plugin-import-success" role="status"><Check size={14}/>{publishedCount > 1 ? `${publishedCount} 个插件已导入能力仓库。` : '插件已导入能力仓库。'}</p>}
     </div>
-    <footer className="plugin-import-footer"><span>{busy ? <><LoaderCircle className="spin" size={13}/>{status}</> : '导入后可在会话配置中选择使用'}</span><button className="ghost" onClick={onClose}>{resolution?.state === 'PUBLISHED' ? '完成' : '取消'}</button><button className="primary" disabled={busy || resolution?.state === 'PUBLISHED' || (source === 'marketplace' ? loading || !!catalogError || !selectedName : !url.trim())} onClick={() => void importPlugin()}>{busy ? '导入中…' : error ? '重试导入' : '导入插件'}</button></footer>
+    <footer className="plugin-import-footer"><span>{busy ? <><LoaderCircle className="spin" size={13}/>{status}</> : source === 'marketplace' && selectedNames.size ? `已选择 ${selectedNames.size} 个插件` : '导入后可在会话配置中选择使用'}</span><button className="ghost" onClick={onClose}>{resolution?.state === 'PUBLISHED' || (source === 'marketplace' && importedNames.size > 0) ? '完成' : '取消'}</button><button className="primary" disabled={busy || resolution?.state === 'PUBLISHED' || (source === 'marketplace' ? loading || !!catalogError || !selectedNames.size : !url.trim())} onClick={() => void importPlugin()}>{busy ? '导入中…' : `${error ? '重试导入' : '导入插件'}${source === 'marketplace' && selectedNames.size ? ` (${selectedNames.size})` : ''}`}</button></footer>
   </section></div>;
 }
