@@ -13803,3 +13803,25 @@ Web typecheck、受影响ESLint和diff检查通过，23项Chromium节点编辑�
 字段截图人工检查通过。最终底板尺寸修正后只重跑受影响视觉探针。浏览器使用
 受控API，不代表生产编辑或模型运行。无CURRENT，唯一Alembic head保持
 0178_merge_schedule_credentials。沿用会话授权仅发布Web，正式结果后补。
+
+
+OPS-45 正式发布补记（2026-10-28）：实际 Web 部署代码为
+`02f2e7d4ab03f7ff3737f353e32e0c083a9cbd8d`。正式预检与commit-bound最小
+上下文prepare通过，源归档SHA-256为
+`8670a92912d268dbcc722140451e0559199f0af9235e389bdcfadd01d7951f42`，
+实际linux/amd64 Web image ID为
+`sha256:4fe55750b31c2f20801b4d6ac74e591ffbe4f8a6f081a5e5987acad00556b461`，
+OCI revision一致。保留原日志和回滚镜像后仅recreate Web，健康与版本通过，
+服务器配置摘要及其他47个容器的image／StartedAt保持。
+
+公网HTML、入口资源及NodesPage JS／CSS摘要匹配实际镜像；确认滑动底板选择器、
+减少动态效果规则、浅绿与深色文字以及单行说明上限已进入线上模块，同时复核
+既有会话分批删除模块。Chromium登录、Agent／记录深层与根路由、匿名401边界、
+全新浏览器前缀API请求通过，根API请求为零。节点编辑行为、120字边界和滑动
+帧采样由本地受控API回归验证，不冒称生产已登录编辑／保存验收，无生产节点
+写入或模型调用。
+
+Web remote-release-finish通过，回收4个过期受管发布上下文，保留近期上下文、
+实际引用、当前镜像及每仓库一个不同回滚版本；未清理共享BuildKit、卷、工作区
+或数据库备份。收尾后健康、版本、配置及其他47个容器再验通过。后端／Runtime
+保持，本补记不改变部署身份；本片未执行push，无后续任务。
