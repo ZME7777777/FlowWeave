@@ -131,8 +131,8 @@ function AddMaterialDialog({ onImport, onDiscard, onApply, onClose }: {
   </form></div>, document.body);
 }
 
-function CompactTextField({ label, value, placeholder, onChange }: {
-  label: string; value: string; placeholder: string; onChange: (value: string) => void;
+function CompactTextField({ label, value, placeholder, onChange, readOnly = false }: {
+  label: string; value: string; placeholder: string; readOnly?: boolean; onChange: (value: string) => void;
 }) {
   const textarea = useRef<HTMLTextAreaElement>(null);
   const dialog = useRef<HTMLDialogElement>(null);
@@ -148,7 +148,7 @@ function CompactTextField({ label, value, placeholder, onChange }: {
   }, [value]);
   return <div className="case-compact-text-field">
     <span><label htmlFor={`case-${label}`}>{label}</label>{truncated && <button type="button" className="ghost" aria-haspopup="dialog" onClick={() => dialog.current?.showModal()}>查看原文<ChevronRight size={13}/></button>}</span>
-    <textarea ref={textarea} id={`case-${label}`} aria-label={label} value={value} maxLength={20_000} onChange={event => onChange(event.target.value)} placeholder={placeholder}/>
+    <textarea ref={textarea} id={`case-${label}`} aria-label={label} value={value} readOnly={readOnly} maxLength={20_000} onChange={event => onChange(event.target.value)} placeholder={placeholder}/>
     {createPortal(<dialog ref={dialog} className="case-text-dialog" aria-label={`${label}全文`} onClick={event => { if (event.target === event.currentTarget) dialog.current?.close(); }}>
       <section><header><h3>{label}</h3><button type="button" className="ghost" aria-label={`关闭${label}全文`} onClick={() => dialog.current?.close()}><X size={17}/></button></header><p>{value || '暂无内容'}</p></section>
     </dialog>, document.body)}
@@ -171,7 +171,7 @@ function BasicsForm({ item, workspaceId, onSaved, onCancel, formId, showActions 
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
   const [preview, setPreview] = useState<CaseMaterial>();
-  // Keep the created identity on a partial upload failure so retry never creates another Case.
+  // Preserve the newest server version while managing uploaded materials.
   const saved = useRef(item);
   const importMaterial = async (file: File): Promise<CaseMaterial> => {
     if (!name.trim() || !workspaceId) throw new Error('请先填写场景名称，再导入文件。');
@@ -179,11 +179,8 @@ function BasicsForm({ item, workspaceId, onSaved, onCancel, formId, showActions 
     if (file.size > 64 * 1024 * 1024) throw new Error('单个文件不能超过 64 MB。');
     setBusy(true); setNotice('');
     try {
-      let current = saved.current && (!item || saved.current.row_version > item.row_version) ? saved.current : item;
-      if (!current) {
-        current = await api.createCase({ name: name.trim(), description, objective, materials, work_directory_id: directoryId || null });
-        saved.current = current;
-      }
+      const current = saved.current && (!item || saved.current.row_version > item.row_version) ? saved.current : item;
+      if (!current) throw new Error('请先创建场景，再添加资料。');
       const known = new Set((current.materials ?? []).map(material => material.value));
       const result = await api.uploadCaseMaterial(current.id, current.row_version, file);
       saved.current = result;
@@ -214,7 +211,7 @@ function BasicsForm({ item, workspaceId, onSaved, onCancel, formId, showActions 
     try {
       const current = saved.current && (!item || saved.current.row_version > item.row_version) ? saved.current : item;
       const result = current
-        ? await api.updateCase(current.id, { ...basics, name: current.name, work_directory_id: current.work_directory_id ?? null, expected_row_version: current.row_version })
+        ? await api.updateCase(current.id, { ...basics, name: current.name, description: current.description ?? '', objective: current.objective, work_directory_id: current.work_directory_id ?? null, expected_row_version: current.row_version })
         : await api.createCase(basics);
       saved.current = result;
       setNotice('已保存'); onSaved(result);
@@ -228,17 +225,17 @@ function BasicsForm({ item, workspaceId, onSaved, onCancel, formId, showActions 
         { value: '', label: '默认工作区', detail: '自动创建 Case 专属工作区' },
         ...(directoryId && !directories.data?.items.some(directory => directory.id === directoryId) ? [{ value: directoryId, label: '当前工作区（暂不可用）' }] : []),
         ...(directories.data?.items.filter(directory => directory.id !== item?.control_work_directory_id).map(directory => ({ value: directory.id, label: directory.display_name })) ?? []),
-      ]}/><small>{item || saved.current ? '名称和工作区创建后固定。' : '名称和工作区创建后不可修改。'}</small>{directories.error && <p className="error">{errorMessage(directories.error)}</p>}</div>
-      <CompactTextField label="说明" value={description} placeholder="介绍当前场景的背景。" onChange={value => { setDescription(value); setNotice(''); }}/>
-      <CompactTextField label="目标" value={objective} placeholder="说明需要达成的结果。" onChange={value => { setObjective(value); setNotice(''); }}/>
+      ]}/><small>{item || saved.current ? '基础信息创建后固定。' : '基础信息创建后不可修改。'}</small>{directories.error && <p className="error">{errorMessage(directories.error)}</p>}</div>
+      <CompactTextField label="说明" readOnly={Boolean(item)} value={description} placeholder="介绍当前场景的背景。" onChange={value => { setDescription(value); setNotice(''); }}/>
+      <CompactTextField label="目标" readOnly={Boolean(item)} value={objective} placeholder="说明需要达成的结果。" onChange={value => { setObjective(value); setNotice(''); }}/>
       </div>
-      <section className="scenario-materials" aria-label="资料"><header><span><b>资料</b></span><button ref={materialButton} className="secondary" type="button" disabled={materials.length >= 100} onClick={() => setMaterialOpen(true)}><Plus size={14}/>添加资料</button></header>
+      {item && <section className="scenario-materials" aria-label="资料"><header><span><b>资料</b></span><button ref={materialButton} className="secondary" type="button" disabled={materials.length >= 100} onClick={() => setMaterialOpen(true)}><Plus size={14}/>添加资料</button></header>
         {!materials.length && <p className="scenario-materials-empty">尚未添加资料</p>}
         <ul>{materials.map((material, index) => <li key={`${index}-${material.value}`}>{material.kind === 'LINK' ? <Link2 size={15}/> : <FileText size={15}/>}{material.kind === 'LINK' ? <a href={materialHref(material.value)} target="_blank" rel="noreferrer">{material.name}</a> : <button className="ghost case-material-preview-button" type="button" onClick={() => setPreview(material)}>{material.name}</button>}
           <span className={`case-material-kind ${material.kind.toLowerCase()}`}>{material.kind === 'LINK' ? '链接' : '文件'}</span><MaterialName name={material.name} file={material.kind === 'FILE'} onRename={name => { setMaterials(current => current.map((entry, i) => i === index ? { ...entry, name } : entry)); setNotice(''); }}/>
           <button className="ghost" type="button" aria-label={`移除资料 ${material.name}`} onClick={() => { setMaterials(current => current.filter((_, i) => i !== index)); setNotice(''); }}><X size={14}/></button></li>)}
           </ul>
-      </section>
+      </section>}
       {showActions && <footer className="scenario-form-actions">{onCancel && <button className="secondary" type="button" onClick={onCancel}>取消</button>}<button className="primary" disabled={!name.trim() || !workspaceId}>{busy ? '保存中…' : '保存'}</button><span role="status">{notice}</span></footer>}
     </fieldset>
     {!showActions && <span className="case-form-status" role="status">{notice}</span>}
@@ -270,14 +267,13 @@ function ConversationTab({ item, workspaceId, onUpdated }: { item: Case; workspa
     onSuccess: result => { onUpdated(result); setNotice('已保存'); },
   });
   return <section className="scenario-config">
-    <header className="case-config-heading"><div><b>会话配置</b></div><button className="primary" disabled={!model || save.isPending || !credentialsReady} onClick={() => save.mutate()}>{save.isPending ? '保存中…' : '保存配置'}</button></header>
     <div className="scenario-config-grid case-session-grid"><div className="case-field"><span>模型供应商</span><CaseChoice label="模型供应商" value={providerId} disabled={save.isPending} onChange={value => { setProviderId(value); setModelName(''); setEffort(''); setNotice(''); }} options={availableProviders.map(candidate => ({ value: candidate.id, label: candidate.name }))}/></div>
       <div className="case-field"><span>模型名称</span><CaseChoice label="模型名称" value={modelName} disabled={!provider || save.isPending} placeholder={provider ? '选择模型' : '请先选择供应商'} onChange={value => { setModelName(value); setEffort(''); setNotice(''); }} options={models.map(candidate => ({ value: candidate.model_name, label: candidate.model_name }))}/></div>
       <div className="case-field"><span>思考程度</span><CaseChoice label="思考程度" value={effort} disabled={!model || save.isPending} onChange={value => { setEffort(value); setNotice(''); }} options={[{ value: '', label: '使用模型默认值' }, ...(model?.supported_reasoning_efforts?.map(value => ({ value, label: value })) ?? [])]}/></div>
       <div className="case-field"><span>能力配置</span><button className="secondary case-capability-choice" type="button" aria-label="配置会话" disabled={!workspaceId || save.isPending || !credentialsReady} onClick={() => setConfigOpen(true)}><Settings2 size={15}/><span>配置会话</span><small>{credentialsReady ? `已选 ${capabilities.length + credentials.length} 项` : '正在读取认证…'}</small><ChevronRight size={15}/></button></div></div>
     {providers.error && <p className="error">{errorMessage(providers.error)}</p>}{save.error && <p className="error" role="alert">{errorMessage(save.error)}</p>}
     {credentialSelection === undefined && credentialCatalog.error && <p className="error" role="alert">{errorMessage(credentialCatalog.error)}<button type="button" className="ghost" onClick={() => void credentialCatalog.refetch()}>重新读取认证</button></p>}
-    <span className="case-form-status" role="status">{notice}</span>
+    <footer className="case-config-heading"><span className="case-form-status" role="status">{notice}</span><button className="primary" disabled={!model || save.isPending || !credentialsReady} onClick={() => save.mutate()}>{save.isPending ? '保存中…' : '保存配置'}</button></footer>
     {configOpen && <CapabilityManager configurationPreset workspaceId={workspaceId} draftCapabilityIds={capabilities} draftCredentialIds={credentials} onClose={() => setConfigOpen(false)} onCreateEnhancedConversation={ids => { setCapabilities(ids); setNotice(''); }} onDraftCredentialIdsChange={ids => { setCredentialSelection(ids); setNotice(''); }}/>}
   </section>;
 }
@@ -328,7 +324,6 @@ function PathTab({ item, onUpdated, onOpenRun }: { item: Case; onUpdated: (item:
   const pathLocked = item.state === 'COMPLETED' || item.state === 'ARCHIVED';
   const endDrag = () => { setDraggingId(''); setDropTarget(undefined); };
   return <section className={`scenario-path scenario-path-editor case-connected-path${!item.stages.length ? ' is-empty' : ''}`} aria-label="Case 路径卡片">
-    <header className="case-path-heading"><span><b>Case 路径</b><small>{item.stages.length} 个流程 · {item.stages.filter(stage => stage.state === 'COMPLETED').length} 个已完成</small></span><div><small>{pathLocked ? '路径已结束' : '拖拽排序'}</small></div></header>
     <ol>{item.stages.map((stage, index) => <li key={stage.id} data-stage-id={stage.id} className={`${stage.state.toLowerCase()}${draggingId === stage.id ? ' is-dragging' : ''}${dropTarget?.id === stage.id ? dropTarget.after ? ' drop-after' : ' drop-before' : ''}`}
       onDragOver={event => {
         if (!draggingId || update.isPending || pathLocked) return;
@@ -371,7 +366,7 @@ function PathTab({ item, onUpdated, onOpenRun }: { item: Case; onUpdated: (item:
         {(templates.error || runs.error) && <p className="error" role="alert">{errorMessage(templates.error || runs.error)}</p>}
         {!templates.isLoading && !templates.error && selectedParent && mode && !records.length && <p>当前 FlowRun 下暂无可添加的{mode === 'STEPWISE' ? '逐步' : '连续'}运行记录，请先完成记录配置。</p>}
         <footer><button type="button" className="secondary" disabled={update.isPending} onClick={() => setAdding(false)}>取消</button><button className="primary" disabled={!selectedRecord || update.isPending}>{update.isPending ? '添加中…' : '添加'}</button></footer>
-      </form> : <button className="scenario-add-path-card" disabled={pathLocked || update.isPending || item.stages.length >= 50} onClick={() => { setAdding(true); update.reset(); setStatus(''); }}><span className="case-add-icon"><Plus size={20}/></span><span><b>{item.stages.length ? '添加下一流程' : '添加首个流程'}</b><small>选择已配置的流程运行记录</small></span></button>}
+      </form> : <button className="scenario-add-path-card" disabled={pathLocked || update.isPending || item.stages.length >= 50} onClick={() => { setAdding(true); update.reset(); setStatus(''); }}><span className="case-add-icon"><Plus size={20}/></span><span><b>{item.stages.length ? '添加下一流程' : '添加首个流程'}</b></span></button>}
     </div>
     <p className="case-path-status" role="status">{update.error ? '' : status}</p>
     {(update.error || execute.error) && <p className="error" role="alert">{errorMessage(update.error || execute.error)}</p>}
@@ -385,7 +380,7 @@ function CaseActivity({ item, onOpenRun }: { item: Case; onOpenRun: (id: string)
     ...item.tasks.map(task => ({ id: `task-${task.id}`, kind: '观察任务', action: ({ OBSERVE: '观察结果', PROPOSE_REVISION: '建议修订', REVIEW: '复核' })[task.task_type], state: task.state, reason: '', error: '', runId: task.flow_run_id, created: task.created_at })),
   ].sort((left, right) => right.created.localeCompare(left.created));
   const states: Record<string, string> = { PENDING: '待处理', VALIDATED: '已校验', EXECUTING: '执行中', RUNNING: '执行中', SUCCEEDED: '成功', FAILED: '失败', CANCELLED: '已取消', PROPOSED: '已提出', EXECUTED: '已执行', SUPERSEDED: '已替代' };
-  return <section className="case-activity-list">{events.length ? events.map(event => <article key={event.id}><header><b>{event.action}</b><span className={`case-activity-state ${event.state.toLowerCase()}`}>{states[event.state] ?? event.state}</span></header><small>{event.kind} · {new Date(event.created).toLocaleString()}</small>{event.reason && <p>{event.reason}</p>}{event.error && <p className="error">{event.error}</p>}{event.runId && <button className="ghost" onClick={() => onOpenRun(event.runId!)}><ExternalLink size={12}/>查看执行记录</button>}</article>) : <div className="empty"><Clock3 size={24}/><span>暂无控制记录</span></div>}</section>;
+  return <section className="case-activity-list">{events.length ? events.map(event => <article key={event.id}><header><b>{event.action}</b><span className={`case-activity-state ${event.state.toLowerCase()}`}>{states[event.state] ?? event.state}</span></header><small>{event.kind} · {new Date(event.created).toLocaleString()}</small>{event.reason && <p>{event.reason}</p>}{event.error && <p className="error">{event.error}</p>}{event.runId && <button className="ghost" onClick={() => onOpenRun(event.runId!)}><ExternalLink size={12}/>查看执行记录</button>}</article>) : <div className="empty"><Clock3 size={24}/><span>暂无 Agent 操作记录</span></div>}</section>;
 }
 
 function ScenarioWorkspace({ item, workspaceId, onUpdated, onDelete, onOpenConversation, onOpenRun }: { item: Case; workspaceId: string; onUpdated: (item: Case) => void; onDelete: () => void; onOpenConversation: (id: string) => void; onOpenRun: (id: string) => void }) {
@@ -413,7 +408,6 @@ function ScenarioWorkspace({ item, workspaceId, onUpdated, onDelete, onOpenConve
     finally { setDeleting(false); }
   };
   const terminal = item.state === 'COMPLETED' || item.state === 'ARCHIVED';
-  const ready = item.stages.length > 0 && item.stages.every(stage => stage.flow_run_id) && Boolean(item.session_config?.model_provider_id && item.session_config.model_name);
   const openOrStart = () => {
     if (item.control_conversation_binding_id) { onOpenConversation(item.control_conversation_binding_id); return; }
     if (!item.stages.length || item.stages.some(stage => !stage.flow_run_id)) { setError('请先配置完整的 Case 路径。'); return; }
@@ -423,13 +417,13 @@ function ScenarioWorkspace({ item, workspaceId, onUpdated, onDelete, onOpenConve
   const active = item.stages.find(stage => stage.state === 'ACTIVE');
   const completed = item.stages.filter(stage => stage.state === 'COMPLETED').length;
   const stateLabel = item.control_conversation_binding_id || item.stages.some(stage => stage.current_execution_flow_run_id) ? CASE_STATE[item.state] : terminal ? CASE_STATE[item.state] : '待启动';
-  const panelTitle = panel === 'basics' ? '场景信息' : panel === 'agent' ? 'Agent 配置' : '控制记录';
+  const panelTitle = panel === 'basics' ? '场景信息' : panel === 'agent' ? 'Agent 配置' : 'Agent 操作记录';
   return <main className="scenario-workspace case-single-workspace"><div className="scenario-workspace-inner">
-    <header className="case-workspace-toolbar"><div className="case-workspace-title"><h1 title={item.name}>{item.name}</h1><span className={`case-workspace-state ${item.state.toLowerCase()}`}>{stateLabel}</span><small>{completed}/{item.stages.length} 阶段</small></div><div className="scenario-case-actions"><button className="ghost" aria-pressed={panel === 'basics'} onClick={() => setPanel('basics')}><Info size={14}/>场景信息</button><button className="ghost" aria-pressed={panel === 'agent'} onClick={() => setPanel('agent')}><Settings2 size={14}/>Agent 配置</button><button className="ghost" aria-pressed={panel === 'activity'} onClick={() => setPanel('activity')}><Clock3 size={14}/>控制记录</button><button className="primary" disabled={start.isPending || (terminal && !item.control_conversation_binding_id)} onClick={openOrStart}>{item.control_conversation_binding_id ? <Bot size={14}/> : <Play size={13}/>} {start.isPending ? '启动中…' : item.control_conversation_binding_id ? '打开 Agent' : '启动 Agent'}</button><button className="ghost case-delete-action" type="button" aria-label="删除场景" title="删除场景" disabled={deleting} onClick={() => void deleteCase()}><Trash2 size={14}/></button></div></header>
+    <header className="case-workspace-toolbar"><div className="case-workspace-title"><h1 title={item.name}>{item.name}</h1><span className={`case-workspace-state ${item.state.toLowerCase()}`}>{stateLabel}</span><small>{completed}/{item.stages.length} 阶段</small>{active && <small className="case-current-stage" title={`当前阶段：${active.name}`}>{active.name}</small>}</div><div className="scenario-case-actions"><button className="ghost" aria-pressed={panel === 'basics'} onClick={() => setPanel('basics')}><Info size={14}/>场景信息</button><button className="ghost" aria-pressed={panel === 'agent'} onClick={() => setPanel('agent')}><Settings2 size={14}/>Agent 配置</button><button className="ghost" title="查看 Agent 对流程的操作与结果" aria-pressed={panel === 'activity'} onClick={() => setPanel('activity')}><Clock3 size={14}/>Agent 操作记录</button><button className="primary" disabled={start.isPending || (terminal && !item.control_conversation_binding_id)} onClick={openOrStart}>{item.control_conversation_binding_id ? <Bot size={14}/> : <Play size={13}/>} {start.isPending ? '启动中…' : item.control_conversation_binding_id ? '打开 Agent' : '启动 Agent'}</button><button className="ghost case-delete-action" type="button" aria-label="删除场景" title="删除场景" disabled={deleting} onClick={() => void deleteCase()}><Trash2 size={14}/></button></div></header>
     {(error || start.error || live.error) && <p className="error scenario-delete-error" role="alert">{error || errorMessage(start.error || live.error)}</p>}
-    <div className="case-path-context"><span><Bot size={15}/>{item.control_conversation_binding_id ? 'Agent 会话已创建' : ready ? '配置就绪' : !item.stages.length ? '添加流程，串联场景路径' : '配置 Agent 后启动'}</span><span>{active ? `当前阶段 · ${active.name}` : terminal ? '路径已结束' : '等待配置路径'}</span>{item.control_conversation_binding_id && <button className="ghost" onClick={() => onOpenConversation(item.control_conversation_binding_id!)}>查看会话<ChevronRight size={13}/></button>}</div>
+
     <div className="case-single-layout"><section className="case-path-panel"><PathTab item={item} onUpdated={onUpdated} onOpenRun={onOpenRun}/></section></div>
-    {panel && createPortal(<div className="modal-backdrop case-inspector-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) setPanel(undefined); }}><section className="modal case-inspector scenario-workspace" role="dialog" aria-modal="true" aria-label={panelTitle} onKeyDown={event => {
+    {panel && createPortal(<div className="modal-backdrop case-inspector-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) setPanel(undefined); }}><section className={`modal case-inspector scenario-workspace case-inspector-${panel}`} role="dialog" aria-modal="true" aria-label={panelTitle} onKeyDown={event => {
       if (event.key !== 'Tab') return;
       const controls = [...event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), textarea:not(:disabled), a[href]')];
       const first = controls[0], last = controls.at(-1);

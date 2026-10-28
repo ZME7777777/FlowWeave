@@ -146,6 +146,8 @@ git -C /Users/zhengmengen/WorkSpace/openhands/software-agent-sdk-total-tokens-1.
 
 ## Case 控制面
 
+- 场景名称、工作区、说明和目标创建后固定，浏览器只读与服务端写入校验共同约束；创建表单不提供资料上传，创建成功后仍可管理资料。
+
 - `cases`、`case_stages` 和 `case_agent_tasks` 是用户隔离的控制面元数据；迁移必须同步加入 PostgreSQL RLS 策略及 `shared/database.py` 的 `_USER_ISOLATED_TABLES`。
 - Case 控制会话参照定时 Agent 会话：复用用户级 Agent Workspace Runtime/容器，但为每个 Case 在当前用户项目根创建 `.flowweave/cases/<case_id>` 工作目录，并将 OpenHands 原生会话 Binding 与该目录版本冻结关联。不得使用平台私有对话执行器。
 - `case_flow_runs`、`case_decision_proposals` 和 `case_control_plans` 同样属于用户隔离控制面，必须维护 RLS 与 `_USER_ISOLATED_TABLES`。Case 决策按当前产品要求自主执行，但只可走白名单动作与既有编排服务，且只能引用活动 `CaseStage.current_execution_flow_run_id`，绝不可作用于模板、历史副本、其他阶段或仅因关联而可见的 FlowRun：逐步运行可继续、停止、复制节点重跑或为未启动部分应用 Revision；连续运行只能复制为独立自动运行草稿，绝不能修改已启动自动运行。所有决策必须持久记录输入、执行结果和失败码；不得把 Case Agent 的文本输出当作可执行私有控制协议。

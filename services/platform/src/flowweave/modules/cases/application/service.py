@@ -446,6 +446,11 @@ def update_case(db: Session, case_id: str, payload: CaseUpdateWrite) -> dict[str
     item = _editable_case(db, case_id, payload.expected_row_version)
     if payload.name.strip() != item.name or payload.work_directory_id != item.work_directory_id:
         raise DomainError("CASE_IDENTITY_FROZEN", "名称和工作区创建后不可修改", 409)
+    if (
+        payload.description.strip() != item.description
+        or payload.objective.strip() != item.objective
+    ):
+        raise DomainError("CASE_IDENTITY_FROZEN", "说明和目标创建后不可修改", 409)
     known_files = {
         material["value"] for material in item.materials_json or [] if material["kind"] == "FILE"
     }

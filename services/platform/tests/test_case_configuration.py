@@ -87,15 +87,16 @@ def test_basics_save_independently_and_reject_stale_and_forged_files(case_db):
     assert item["control_work_directory_id"]
     payload = dict(
         name=item["name"],
-        description="新说明",
-        objective="新目标",
+        description=item["description"],
+        objective=item["objective"],
         work_directory_id=item["work_directory_id"],
         materials=[{"kind": "LINK", "name": "输入文档", "value": "https://example.test/input"}],
         expected_row_version=item["row_version"],
     )
     updated = service.update_case(db, item["id"], CaseUpdateWrite(**payload))
     assert updated["work_directory_id"] == item["work_directory_id"]
-    assert updated["objective"] == "新目标" and updated["description"] == "新说明"
+    assert updated["objective"] == item["objective"]
+    assert updated["description"] == item["description"]
     with pytest.raises(DomainError, match="") as error:
         service.update_case(db, item["id"], CaseUpdateWrite(**payload))
     assert error.value.code == "VERSION_CONFLICT"
@@ -127,6 +128,9 @@ def test_material_upload_round_trip_and_symlink_boundary(case_db):
         CaseUpdateWrite(
             expected_row_version=updated["row_version"],
             name=item["name"],
+            description=item["description"],
+            objective=item["objective"],
+            work_directory_id=item["work_directory_id"],
             materials=[{**material, "name": "上线资料.txt"}],
         ),
     )
@@ -315,16 +319,24 @@ def test_case_configuration_migration_preserves_existing_rows():
     engine.dispose()
 
 
-@pytest.mark.parametrize("change", [{"name": "另一个名称"}, {"work_directory_id": "other"}])
-def test_case_identity_is_immutable_but_context_remains_editable(case_db, change):
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"name": "另一个名称"},
+        {"work_directory_id": "other"},
+        {"description": "新背景"},
+        {"objective": "新目标"},
+    ],
+)
+def test_case_basics_are_immutable_but_materials_remain_editable(case_db, change):
     db, _ = case_db
     item = create_case(db)
     payload = dict(
         name=item["name"],
         work_directory_id=item["work_directory_id"],
-        description="补充背景",
-        objective="补充验收目标",
-        materials=[],
+        description=item["description"],
+        objective=item["objective"],
+        materials=[{"kind": "LINK", "name": "资料", "value": "https://example.test/input"}],
         expected_row_version=item["row_version"],
     )
     with pytest.raises(DomainError) as error:
@@ -336,8 +348,9 @@ def test_case_identity_is_immutable_but_context_remains_editable(case_db, change
     assert unchanged["work_directory_id"] == item["work_directory_id"]
     assert unchanged["row_version"] == item["row_version"]
     updated = service.update_case(db, item["id"], CaseUpdateWrite(**payload))
-    assert updated["description"] == "补充背景"
-    assert updated["objective"] == "补充验收目标"
+    assert updated["description"] == item["description"]
+    assert updated["objective"] == item["objective"]
+    assert updated["materials"][0]["name"] == "资料"
     assert updated["row_version"] == item["row_version"] + 1
 
 

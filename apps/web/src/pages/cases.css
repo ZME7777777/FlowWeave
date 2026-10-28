@@ -278,3 +278,50 @@ html:has(.scenario-space){overscroll-behavior:none}
 .case-activity-state{border-radius:4px;background:#eff4f0;padding:3px 6px;color:#7d9184;font-size:9px}.case-activity-state.failed{background:#fff0ef;color:#ad5050}.case-activity-state.succeeded,.case-activity-state.executed{background:#e8f4eb;color:#3e8155}
 @media(max-width:1180px){.scenario-space{grid-template-columns:194px minmax(0,1fr)}.case-workspace-toolbar{padding:9px 14px;gap:8px}.case-workspace-toolbar .scenario-case-actions button{padding:6px;font-size:9px}.case-workspace-title{gap:7px}.case-workspace-title>small{display:none}.case-path-context{padding:7px 14px;gap:12px}.case-single-workspace .case-path-panel{padding:20px}.case-inspector .case-session-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .case-single-workspace .case-single-layout{align-items:stretch}
+
+/* Compact scenario cards and content-sized information/configuration panels. */
+.case-single-workspace .case-path-panel{padding:16px 20px 24px}
+.case-single-workspace .case-connected-path{max-width:960px;margin:0}
+.case-single-workspace .case-connected-path article{margin-bottom:12px;padding:9px 12px;border-radius:7px}
+.case-single-workspace .case-card-title>h3{font-size:12px}
+.case-single-workspace .case-connected-path article>header{align-items:center}
+.case-single-workspace .case-connected-path .scenario-card-actions button{padding:3px}
+.case-single-workspace .case-connected-path article>footer{gap:12px;margin-top:6px}
+.case-single-workspace .case-connected-path article>footer button{font-size:9px}
+.case-single-workspace .case-stage-progress{gap:10px}
+.case-single-workspace .case-stage-progress>span{margin-top:4px;font-size:9px}
+.case-single-workspace .case-stage-progress:empty{display:none}
+.case-single-workspace .case-stage-objective{overflow:hidden;margin:5px 0;font-size:10px;text-overflow:ellipsis;white-space:nowrap}
+.case-single-workspace .case-connected-path>ol>li,.case-single-workspace .case-path-tail{gap:12px}
+.case-single-workspace .case-connected-path .scenario-path-rail{padding-top:9px}
+.case-single-workspace .case-connected-path .scenario-path-rail i{min-height:18px}
+.case-single-workspace .case-connected-path .scenario-add-path-card,.case-single-workspace .case-connected-path.is-empty .scenario-add-path-card{min-height:46px;flex-direction:row;justify-content:flex-start;gap:9px;border-radius:6px;padding:8px 12px}
+.case-single-workspace .case-connected-path .case-add-icon{width:24px;height:24px;border-radius:5px}
+.case-single-workspace .case-connected-path .case-path-picker{padding:12px}
+.case-single-workspace .case-connected-path .case-path-selection{grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.case-current-stage{max-width:160px;overflow:hidden;text-overflow:ellipsis}
+.case-inspector.case-inspector-basics,.case-inspector.case-inspector-agent{height:auto;width:min(680px,calc(100vw - 48px))}
+.case-inspector.case-inspector-agent{width:min(620px,calc(100vw - 48px));overflow:visible}
+.case-inspector.case-inspector-agent .case-inspector-heading{border-radius:12px 12px 0 0}
+.case-inspector.case-inspector-agent .case-inspector-body{overflow:visible}
+.case-inspector.case-inspector-basics>.case-inspector-body{overflow:auto;overscroll-behavior:contain}
+.case-inspector.case-inspector-basics .scenario-basics-form{height:auto;flex:none}
+.case-inspector.case-inspector-basics .scenario-basics-form>fieldset{flex:none;gap:14px}
+.case-inspector.case-inspector-basics .scenario-materials{flex:none;max-height:240px}
+.case-inspector.case-inspector-basics .scenario-materials ul{flex:auto;max-height:185px}
+.case-inspector.case-inspector-basics .scenario-materials-empty{flex:none;margin:6px 0 0;padding:10px}
+.case-inspector .case-basics-fields{align-items:start;gap:12px 16px}
+.case-inspector .case-basics-fields label{margin-top:0}
+.case-inspector .case-basics-fields input,.case-inspector .case-choice-control,.case-inspector .case-capability-choice{height:34px;min-height:34px}
+.case-inspector .case-choice-control input{height:32px}
+.case-inspector .case-compact-text-field textarea{height:58px;min-height:58px;max-height:58px}
+.case-inspector textarea[readonly]{border-color:#e4ebe6;background:#f6f8f7;color:#728178;cursor:default}
+.case-inspector .case-session-grid{gap:12px 16px}
+.case-inspector .case-config-heading{align-items:center;margin:14px 0 0}
+.case-inspector .case-config-heading>.case-form-status{min-height:0;margin:0}
+.case-inspector .scenario-config .case-field{gap:5px;font-size:11px}
+.case-inspector-agent .case-session-grid>.case-field:nth-child(n+3) .case-choice-options{top:auto;bottom:calc(100% + 5px)}
+.case-inspector .scenario-form-actions button,.case-inspector .case-config-heading button{min-height:30px;padding:6px 10px;font-size:10px}
+.case-basics-workspace .scenario-basics-form{height:auto;max-width:800px;flex:none}
+.case-basics-workspace .scenario-basics-form fieldset{flex:none}
+@media(max-width:1180px){.case-current-stage{display:none}.case-single-workspace .case-path-panel{padding:14px}.case-single-workspace .case-connected-path .case-path-selection{gap:8px}}
