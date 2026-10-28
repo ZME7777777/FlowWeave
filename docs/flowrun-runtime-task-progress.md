@@ -13091,3 +13091,30 @@ Web typecheck、受影响 ESLint、Ruff、目录与路由 Pyright、git diff --c
 截图人工检查通过；浏览器使用受控 API。Alembic 唯一 head 保持
 0178_merge_schedule_credentials，无 CURRENT。沿用当前会话授权发布 platform
 与 web，正式结果后补；当前与下一可执行重构切片均为 NONE。
+
+
+OPS-30 正式发布补记（2026-10-28）：实际部署代码为
+`e0eb61d766ab4f7e30ecb333b0dde07d7fe8acfa`。platform／web 正式预检与
+commit-bound 最小上下文 prepare 通过，归档 SHA-256 分别为
+`993292a6dce2f8d34513ee24504b9a739ffef5f1db59dbcc52e04ed037372690` 和
+`c6f02d3b404084b0b6babe2eb83e95fc504c0faac7ae8a12f447d644394d2eed`。
+实际 linux/amd64 平台／Web image ID 分别为
+`sha256:f464ec7fa37f16cb5125ff08daa9caad9b3f3418b40a093ee56dce45439a6f4d` 和
+`sha256:1345735caee37830331e21c5d98e21f6386a24e95780f0714ddd8e31eb4f94ca`，
+OCI revision 均一致。保留旧日志与回滚镜像后执行 migration，head 保持
+0178_merge_schedule_credentials；同步 recreate api、stream-api、worker、web，
+四服务健康与版本通过。服务器配置摘要及其他 43 个容器的 image／StartedAt
+保持，没有 Provider 重启、Runtime replacement 或业务数据变更。
+
+正式认证后对 3 个现有父运行目录执行只读 GET 验收，名称／完整 ID 的大小写
+搜索、无结果、类型筛选、搜索分页和游标范围拒绝通过；未创建、编辑或删除
+业务记录，未调用模型。公网 HTML、入口资源及 RunsPage 模块摘要与运行镜像
+一致，搜索控件存在。Chromium 验证前缀／根登录、Agent／记录深层路由、匿名
+401 及全新浏览器前缀请求通过，根 API 请求为零。认证后复杂 UI 交互仍由本地
+受控 API 验收，不冒称线上已登录完整交互。
+
+platform 与 web remote-release-finish 通过，无过期受管上下文；精确回收两个
+历史 image ID 的 tags，保留当前镜像、每仓库一个不同版本回滚及全部容器引用。
+未清理共享 BuildKit、卷、Workspace 或数据库备份。收尾后四服务健康、版本、
+数据库 head、配置与其他 43 个容器再次核对通过。本补记不改变实际部署身份，
+本地提交未推送；当前与下一可执行重构切片均为 NONE。
