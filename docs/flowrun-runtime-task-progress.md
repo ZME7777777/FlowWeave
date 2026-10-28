@@ -13759,3 +13759,24 @@ React消息DOM、不选中文字或抢占输入焦点；清除、零命中及会
 Alembic head保持0178_merge_schedule_credentials；当前无CURRENT，Case的
 下一可执行切片CASE-02保持不变，本片无后续任务。其他会话管理在途改动未
 纳入本片；未部署、未推送。
+
+
+OPS-43 正式发布补记（2026-10-28）：实际 Web 部署代码为
+`261a9d1b6360ee8f8f42aa881e4fe1057922b7fd`。正式预检与 commit-bound 最小
+上下文 prepare 通过，源归档 SHA-256 为
+`7e90245cafa20b61c0ec1b7bc47c7e5e67d4776e27da9ff6da67913c253aaca4`，
+实际 linux/amd64 Web image ID 为
+`sha256:ebee407652a98d7a403897763259a03e97fb470c8c237c464336cab6871de40b`，
+OCI revision 一致。保留旧日志及回滚镜像后仅 recreate Web，健康、版本通过；
+服务器配置摘要及其他47个容器的image／StartedAt保持。
+
+公网HTML、入口资源和包含分批删除逻辑的正式会话模块摘要匹配运行镜像，确认
+进度和部分失败处理已进入线上资源。Chromium登录／Agent与记录深层／根路由、
+匿名401边界及全新浏览器前缀API请求通过，根API请求为零。未调用生产删除
+接口；115／500项、跳过和部分失败重试仅由本地受控API的4项浏览器回归验证，
+不冒称实际生产会话删除验收。
+
+Web remote-release-finish通过，回收一个过期受管发布上下文，保留近期上下文、
+实际引用、当前镜像与每仓库一个不同回滚镜像；不清理共享BuildKit、卷、工作区
+或数据库备份。收尾后健康、版本、配置与其他47个容器复核通过。后端与Runtime
+保持，本片未执行push；本补记不改变实际部署身份，当前请求已闭环。
