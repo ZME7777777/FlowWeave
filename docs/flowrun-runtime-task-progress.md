@@ -13470,7 +13470,7 @@ Web typecheck、受影响 ESLint、diff 检查与唯一 Alembic head
 部署授权仅发布 Web，正式发布结果后补；当前与下一可执行重构切片均为 NONE。
 
 
-### OPS-38 场景 Agent 自主协调目标与事件／资料契约修订 — DONE
+### OPS-39 场景 Agent 自主协调目标与事件／资料契约修订 — DONE
 
 按用户四点要求修订 `docs/case-space-lifecycle-review.md`：启动采用类似Agent定时
 一次新运行的原生会话bootstrap，继承场景配置并获知目标、完整路径和资料；流程
