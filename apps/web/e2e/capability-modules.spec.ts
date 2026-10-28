@@ -206,7 +206,7 @@ test('capability repository exposes module-specific menus and actions', async ({
   const actions = page.locator('.capability-list-controls');
   await expect(modules.getByRole('button')).toHaveCount(7);
   await expect(modules.getByRole('button', { name: /^Skill\s+\d/ })).toHaveAttribute('aria-current', 'page');
-  await expect(actions.getByText('上传 Skill ZIP', { exact: true })).toBeVisible();
+  await expect(actions.getByRole('button', { name: '导入 Skill', exact: true })).toBeVisible();
   await expect(actions.getByText('上传 Plugin ZIP', { exact: true })).toHaveCount(0);
   await modules.getByRole('button', { name: /Skill 组合/ }).click();
   const collectionEditor = page.locator('form.capability-collection-editor');
@@ -228,8 +228,9 @@ test('capability repository exposes module-specific menus and actions', async ({
 
   await modules.getByRole('button', { name: /Plugin/ }).click();
   await expect(actions.getByRole('button', { name: '导入 Plugin' })).toBeVisible();
-  await expect(actions.getByRole('button')).toHaveCount(1);
-  await expect(actions.getByText('上传 Skill ZIP', { exact: true })).toHaveCount(0);
+  await expect(actions.getByRole('button', { name: '市场源管理', exact: true })).toBeVisible();
+  await expect(actions.getByRole('button')).toHaveCount(2);
+  await expect(actions.getByRole('button', { name: '导入 Skill', exact: true })).toHaveCount(0);
   await expect(page.locator('.skill-collection-section')).toHaveCount(0);
 
   const moduleActions = [

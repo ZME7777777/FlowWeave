@@ -14445,3 +14445,28 @@ Web typecheck、受影响ESLint和diff检查通过，三个页面截图人工核
 本片仅Web，无API／迁移／Runtime变更。并行Case和能力市场修改保持独立，不纳入
 本片；工作树Alembic head及任务状态提交前单独核对。沿用本会话的受管服务器部署
 授权，仅发布固定提交Web，实际验收结果完成后补记；本片无后续开发任务。
+
+
+### OPS-56 发布验收 — DONE
+
+2026-10-29按用户授权从fc7f192e5151506b9e65ed45492f0a1eef307423执行
+正式platform与web双预检、remote-release-prepare最小上下文、linux/amd64
+镜像构建和revision核验。迁移从0180完整执行至0183_user_market_sources，
+退出0；同commit同步recreate api、stream-api、worker、web，健康及readiness
+通过。服务器配置hash保持，43个受保护容器的image／启动身份保持。
+本次Web已包含OPS-51整行勾选、OPS-52行内Diff深色标识、OPS-53全高多选
+Plugin导入及此前已提交Web功能；后续并行OPS-55提交不混入本次固定上下文。
+
+实际部署API以正式登录验证市场源GET、两项内置URL和身份、无鉴权401；
+skills.sh公开react搜索返回48项，完整76文件的Skill校验通过并保留固定
+commit、目录、content hash。仅生成受现有TTL回收的临时校验记录，没有
+向实际用户能力库发布测试条目；验收登录通过正式logout关闭。迁移列为
+非空JSON，现有用户均完成默认回填。公网前缀首页、Agent深层路由、市场
+源API认证边界、入口与市场／Diff模块静态资源SHA验证通过。三个真实
+Chromium页面完成登录hydration，fresh context无错误根路径API请求。
+
+platform与web均已执行remote-release-finish并通过健康／版本门禁和受管
+保留策略。上线commit为fc7f192e；此收尾提交只补发布记录和同步现有能力
+模块E2E对“导入Skill”及统一源管理按钮的断言，不含新产品代码，故不再
+发布一次。该定向用例1项通过；本片累计市场/Plugin15项、Diff5项、模块
+菜单1项浏览器回归通过，后端26项通过。实现与发布均完成，无待部署项。
