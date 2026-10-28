@@ -412,6 +412,21 @@ test('Skill collection editor keeps its heading and actions visible while only s
   expect(bounds.memberList?.scrollHeight).toBeGreaterThan(bounds.memberList?.clientHeight ?? 0);
   await expect(memberList.locator('label').first()).toBeVisible();
   await expect(editor.getByRole('button', { name: '保存组合' })).toBeVisible();
+  await expect(editor.getByLabel('分类', { exact: true })).toHaveCount(0);
+  await expect(editor.locator('textarea')).toHaveCount(0);
+  for (const [width, height] of [[1440, 900], [1280, 640], [1024, 768]]) {
+    await page.setViewportSize({ width, height });
+    const fields = await editor.locator('.capability-collection-fields input').evaluateAll(inputs => inputs.map(input => input.getBoundingClientRect().toJSON()));
+    expect(fields).toHaveLength(2);
+    expect(Math.abs(fields[0].top - fields[1].top)).toBeLessThan(1);
+    const dialogBox = (await editor.boundingBox())!;
+    const listBox = (await members.boundingBox())!;
+    expect(listBox.height / dialogBox.height).toBeGreaterThan(0.65);
+    expect(await editor.evaluate(element => element.scrollHeight - element.clientHeight)).toBeLessThanOrEqual(1);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
+    await expect(editor.getByRole('button', { name: '保存组合' })).toBeInViewport();
+    await page.screenshot({ path: `../../.tmp/ops31/collection-editor-${width}-${height}.png` });
+  }
 });
 
 test('Skill collections have their own paginated table, sort, and row actions', async ({ page }) => {
