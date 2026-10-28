@@ -206,3 +206,75 @@ html:has(.scenario-space){overscroll-behavior:none}
 @media(max-width:1080px){.scenario-space{grid-template-columns:208px minmax(0,1fr)}.case-single-layout{grid-template-columns:minmax(0,1fr) 320px}.case-single-workspace>.scenario-workspace-inner{padding:0 18px 18px}}
 @media(max-width:860px){.case-single-layout{grid-template-columns:1fr}.case-config-panel{grid-template-columns:repeat(2,minmax(0,1fr));align-items:start}.case-config-panel>.scenario-config{grid-column:2}.case-config-panel>section:first-child{grid-row:1 / span 2}.case-single-workspace .case-connected-path.is-empty{min-height:280px}}
 @media(max-width:680px){.scenario-space{grid-template-columns:1fr;height:auto}.scenario-space>aside{max-height:220px;border-right:0;border-bottom:1px solid #d9e6df}.case-single-workspace>.scenario-workspace-inner{padding:0 14px 18px}.case-workspace-toolbar{align-items:flex-start;flex-direction:column}.scenario-case-actions{width:100%}.scenario-case-actions button{flex:1}.case-config-panel{grid-template-columns:1fr}.case-config-panel>.scenario-config,.case-config-panel>section:first-child{grid-column:auto;grid-row:auto}}
+
+/* Keep the path as the primary workspace; configuration opens on demand. */
+.scenario-space{height:var(--app-content-height);min-height:0;grid-template-columns:224px minmax(0,1fr);background:#fff}
+.scenario-space>aside{min-height:0;background:#f5f8f5}
+.scenario-space>aside>.scenario-side-head{height:54px;min-height:54px;padding:10px 13px}
+.case-sidebar-search{display:flex;flex:none;align-items:center;gap:6px;margin:10px 12px 3px;border:1px solid #dce5df;border-radius:6px;background:#fff;padding:0 8px;color:#819087}
+.case-sidebar-search input{min-width:0;width:100%;height:30px;border:0;background:transparent;padding:0;font-size:10px;outline:none}
+.scenario-space .scenario-tree{min-height:0;flex:1;overflow:auto;overscroll-behavior:contain;padding:8px}
+.scenario-space .scenario-case-head{padding:9px 8px;gap:8px;border-radius:6px}
+.scenario-space .scenario-case-head b{font-size:11px;font-weight:600}.scenario-space .scenario-case-head small{font-size:9px}
+.scenario-space .scenario-session{min-height:28px;padding-top:4px;padding-bottom:4px}
+.case-single-workspace{min-height:0;overflow:hidden;background:#fff}
+.case-single-workspace>.scenario-workspace-inner{display:flex;width:100%;height:100%;min-height:0;max-width:none;margin:0;padding:0;flex-direction:column}
+.case-workspace-toolbar{position:static;display:flex;min-height:54px;flex:0 0 auto;align-items:center;gap:12px;border-bottom:1px solid #e3eae5;background:#fff;padding:9px 20px}
+.case-workspace-title{display:flex;min-width:0;align-items:center;gap:9px}
+.scenario-space .case-workspace-title h1{min-width:0;overflow:hidden;margin:0;font-size:15px;font-weight:650;letter-spacing:0;text-overflow:ellipsis;white-space:nowrap}
+.case-workspace-title>small{flex-shrink:0;color:#8a988e;font-size:10px;white-space:nowrap}
+.case-workspace-state{flex-shrink:0;border-radius:4px;background:#eef3ef;padding:3px 6px;color:#789081;font-size:9px;white-space:nowrap}
+.case-workspace-state.active{background:#e7f3eb;color:#377b53}.case-workspace-state.paused{background:#fff3df;color:#9c7132}
+.case-workspace-toolbar .scenario-case-actions{gap:5px}
+.case-workspace-toolbar .scenario-case-actions button{display:inline-flex;align-items:center;gap:5px;min-height:30px;padding:6px 9px;font-size:10px;white-space:nowrap}
+.case-workspace-toolbar .scenario-case-actions .ghost[aria-pressed=true]{background:#edf5ef;color:#286744}
+.case-workspace-toolbar .case-delete-action{padding:6px;color:#b25858}
+.case-path-context{display:flex;min-height:40px;flex:0 0 auto;align-items:center;gap:20px;border-bottom:1px solid #e8eee9;background:#fafcfb;padding:7px 20px;color:#819187;font-size:10px}
+.case-path-context>span{display:flex;min-width:0;align-items:center;gap:7px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.case-path-context>span:first-child{color:#496f56;flex-shrink:0}.case-path-context .ghost{margin-left:auto;padding:0;color:#4c7b5c;font-size:10px}
+.case-single-workspace .case-single-layout{display:flex;min-width:0;min-height:0;flex:1;overflow:hidden;gap:0;padding:0}
+.case-single-workspace .case-path-panel{display:flex;min-height:0;min-width:0;width:100%;flex:1;overflow:auto;overscroll-behavior:contain;border:0;border-radius:0;background:#fff;padding:22px clamp(20px,4vw,64px) 28px}
+.case-single-workspace .case-connected-path{display:block;min-width:0;min-height:0;width:100%;max-width:1100px;margin:0 auto;padding:0}
+.case-single-workspace .case-path-heading{margin:0 0 22px}.case-path-heading>span{display:flex;align-items:center;gap:12px}.case-path-heading small{font-size:10px}
+.case-single-workspace .case-connected-path article{min-height:0;margin-bottom:20px;border-radius:8px;padding:13px 16px;box-shadow:none}
+.case-single-workspace .case-card-title{flex:1;min-width:0;gap:9px}
+.case-single-workspace .case-card-title>h3{order:-1;flex-basis:auto;max-width:70%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
+.case-single-workspace .case-card-title>span{font-size:9px}
+.case-stage-objective{margin:9px 0;color:#819087;font-size:10px;line-height:1.6}
+.case-stage-progress{display:flex;flex-wrap:wrap;align-items:center;gap:12px;color:#83938a;font-size:10px}
+.case-stage-progress>span{display:flex;align-items:center;gap:5px;margin-top:9px}.case-stage-progress b{color:#54725d;font-size:10px;font-weight:500}
+.case-single-workspace .case-connected-path article>footer{gap:14px;margin-top:12px}
+.case-single-workspace .case-connected-path article>footer button{font-size:10px}
+.case-single-workspace .case-connected-path .case-manual-launch{margin-left:auto;color:#87958b}
+.case-single-workspace .case-connected-path .scenario-add-path-card{min-height:65px;padding:12px 16px;border-radius:8px}
+.case-single-workspace .case-connected-path .case-add-icon{width:28px;height:28px;border-radius:6px}.case-single-workspace .scenario-add-path-card b{font-size:11px}.case-single-workspace .scenario-add-path-card small{font-size:10px}
+.case-single-workspace .case-connected-path.is-empty{display:flex;min-height:0;flex-direction:column;justify-content:flex-start}
+.case-single-workspace .case-connected-path.is-empty .case-path-tail{max-width:none;margin:0}
+.case-single-workspace .case-connected-path.is-empty .scenario-add-path-card{width:100%;min-height:150px;margin:0;flex-direction:column;justify-content:center}
+.case-single-workspace .scenario-delete-error{flex:0 0 auto;margin:0;border-bottom:1px solid #f0dada;background:#fff5f5;padding:9px 20px;font-size:11px}
+.case-inspector-backdrop{z-index:2000}
+.case-inspector.scenario-workspace{display:flex;width:min(740px,calc(100vw - 48px));height:min(720px,calc(100dvh - 56px));max-height:calc(100dvh - 56px);min-height:0;flex-direction:column;overflow:hidden;background:#fff;padding:0}
+.case-inspector>.case-inspector-heading{display:flex;min-height:52px;flex:0 0 auto;align-items:center;justify-content:space-between;border-bottom:1px solid #e4ebe6;background:#fff;padding:12px 20px}
+.case-inspector>.case-inspector-heading h2{margin:0;font-size:16px}.case-inspector-heading .ghost{padding:4px}
+.case-inspector-body{display:flex;min-height:0;flex:1;flex-direction:column;overflow:hidden;padding:18px 20px}
+.case-inspector-body>.scenario-basics-form{display:flex;min-height:0;height:100%;max-width:none;flex-direction:column}
+.case-inspector-body>.scenario-basics-form>fieldset{display:flex;min-height:0;flex:1;flex-direction:column;gap:12px;margin:0;border:0;padding:0}
+.case-inspector .case-basics-fields{flex-shrink:0;gap:10px 18px}
+.case-inspector .scenario-materials{display:flex;min-height:0;flex:1;flex-direction:column;margin:0}
+.case-inspector .scenario-materials>header{flex-shrink:0}.case-inspector .scenario-materials ul{min-height:0;flex:1;overflow:auto;overscroll-behavior:contain;margin:6px 0 0}
+.case-inspector .scenario-materials-empty{min-height:0;flex:1;margin:8px 0 0;max-height:65px;padding:12px}
+.case-inspector .scenario-materials li{min-height:35px;padding:5px 0}
+.case-inspector .scenario-form-actions{flex-shrink:0;margin:0;padding-top:4px}
+.case-inspector input[readonly]{border-color:#e4ebe6;background:#f6f8f7;color:#728178;cursor:default}
+.case-inspector .scenario-config{max-width:none;padding:0}
+.case-inspector .case-session-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+.case-inspector .case-choice-options{max-height:180px}
+.case-inspector .scenario-materials .case-material-rename{display:flex;align-items:center;gap:4px;flex:0 1 300px;overflow:visible}
+.case-inspector .scenario-materials .case-material-rename-button{margin-left:0}
+.case-activity-list{min-height:0;overflow:auto;overscroll-behavior:contain}
+.case-activity-list>article{margin-bottom:10px;border:1px solid #e4ebe6;border-radius:7px;padding:12px 14px}
+.case-activity-list header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:5px}.case-activity-list b{color:#3b5543;font-size:12px}.case-activity-list small{color:#8c998f;font-size:10px}
+.case-activity-list p{margin:8px 0;color:#75887b;font-size:11px;line-height:1.6;overflow-wrap:anywhere}.case-activity-list .error{color:#ad5050}.case-activity-list button{padding:8px 0 0;color:#50795d;font-size:10px}
+.case-activity-state{border-radius:4px;background:#eff4f0;padding:3px 6px;color:#7d9184;font-size:9px}.case-activity-state.failed{background:#fff0ef;color:#ad5050}.case-activity-state.succeeded,.case-activity-state.executed{background:#e8f4eb;color:#3e8155}
+@media(max-width:1180px){.scenario-space{grid-template-columns:194px minmax(0,1fr)}.case-workspace-toolbar{padding:9px 14px;gap:8px}.case-workspace-toolbar .scenario-case-actions button{padding:6px;font-size:9px}.case-workspace-title{gap:7px}.case-workspace-title>small{display:none}.case-path-context{padding:7px 14px;gap:12px}.case-single-workspace .case-path-panel{padding:20px}.case-inspector .case-session-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.case-single-workspace .case-single-layout{align-items:stretch}

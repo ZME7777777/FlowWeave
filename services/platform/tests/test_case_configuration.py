@@ -19,6 +19,7 @@ from flowweave.modules.runs.infrastructure.models import FlowRun
 from flowweave.modules.users.application.security import tenant_user
 from flowweave.shared.errors import DomainError
 from flowweave.shared.schemas import (
+    CaseControlConversationWrite,
     CaseCreateWrite,
     CasePathWrite,
     CaseSessionConfigWrite,
@@ -85,15 +86,15 @@ def test_basics_save_independently_and_reject_stale_and_forged_files(case_db):
     assert item["stages"] == [] and item["description"] == "背景说明"
     assert item["control_work_directory_id"]
     payload = dict(
-        name="新名称",
+        name=item["name"],
         description="新说明",
         objective="新目标",
-        work_directory_id="existing",
+        work_directory_id=item["work_directory_id"],
         materials=[{"kind": "LINK", "name": "输入文档", "value": "https://example.test/input"}],
         expected_row_version=item["row_version"],
     )
     updated = service.update_case(db, item["id"], CaseUpdateWrite(**payload))
-    assert updated["work_directory_id"] == "existing"
+    assert updated["work_directory_id"] == item["work_directory_id"]
     assert updated["objective"] == "新目标" and updated["description"] == "新说明"
     with pytest.raises(DomainError, match="") as error:
         service.update_case(db, item["id"], CaseUpdateWrite(**payload))
@@ -312,3 +313,78 @@ def test_case_configuration_migration_preserves_existing_rows():
             module.downgrade()
         assert connection.execute(text("SELECT name FROM cases")).scalar_one() == "Existing Case"
     engine.dispose()
+
+
+@pytest.mark.parametrize("change", [{"name": "另一个名称"}, {"work_directory_id": "other"}])
+def test_case_identity_is_immutable_but_context_remains_editable(case_db, change):
+    db, _ = case_db
+    item = create_case(db)
+    payload = dict(
+        name=item["name"],
+        work_directory_id=item["work_directory_id"],
+        description="补充背景",
+        objective="补充验收目标",
+        materials=[],
+        expected_row_version=item["row_version"],
+    )
+    with pytest.raises(DomainError) as error:
+        service.update_case(db, item["id"], CaseUpdateWrite(**{**payload, **change}))
+    assert error.value.code == "CASE_IDENTITY_FROZEN"
+    db.rollback()
+    unchanged = service.get_case(db, item["id"])
+    assert unchanged["name"] == item["name"]
+    assert unchanged["work_directory_id"] == item["work_directory_id"]
+    assert unchanged["row_version"] == item["row_version"]
+    updated = service.update_case(db, item["id"], CaseUpdateWrite(**payload))
+    assert updated["description"] == "补充背景"
+    assert updated["objective"] == "补充验收目标"
+    assert updated["row_version"] == item["row_version"] + 1
+
+
+def test_case_agent_requires_complete_path_before_bootstrap_and_preserves_binding(
+    case_db, monkeypatch
+):
+    db, _ = case_db
+    item = service.create_case(
+        db,
+        CaseCreateWrite(
+            name="客户迁移", objective="完成迁移", work_directory_id="existing-source-directory"
+        ),
+    )
+    payload = CaseControlConversationWrite(model_provider_id="provider", model_name="model")
+    created = []
+
+    def bootstrap(db, workspace_id, **kwargs):
+        created.append(kwargs)
+        return {"conversation": {"id": "case-binding"}}
+
+    monkeypatch.setattr(service.conversations, "bootstrap_conversation", bootstrap)
+    with pytest.raises(DomainError) as error:
+        service.create_case_control_conversation(db, item["id"], payload, "start-case")
+    assert error.value.code == "CASE_PATH_INCOMPLETE"
+    assert created == []
+    stage = CaseStage(
+        case_id=item["id"],
+        stage_key="first",
+        name="首个流程",
+        position=0,
+        state="ACTIVE",
+        flow_run_id=None,
+    )
+    db.add(stage)
+    db.commit()
+    with pytest.raises(DomainError) as error:
+        service.create_case_control_conversation(db, item["id"], payload, "start-case")
+    assert error.value.code == "CASE_PATH_INCOMPLETE"
+    assert created == []
+    stage.flow_run_id = "template"
+    db.commit()
+    started = service.create_case_control_conversation(db, item["id"], payload, "start-case")
+    assert started["control_conversation_binding_id"] == "case-binding"
+    assert created[0]["work_directory_id"] == item["control_work_directory_id"]
+    assert created[0]["work_directory_id"] != item["work_directory_id"]
+    assert "受控动作" in created[0]["content"]
+    assert "case.toml" in created[0]["content"]
+    assert "完成迁移" in created[0]["content"]
+    service.create_case_control_conversation(db, item["id"], payload, "start-case")
+    assert len(created) == 1

@@ -444,11 +444,8 @@ def _editable_case(db: Session, case_id: str, expected_row_version: int) -> Case
 
 def update_case(db: Session, case_id: str, payload: CaseUpdateWrite) -> dict[str, Any]:
     item = _editable_case(db, case_id, payload.expected_row_version)
-    workspace = agent_workspaces.ensure_default_agent_workspace(db)
-    if payload.work_directory_id:
-        work_directories.get_work_directory(db, workspace.id, payload.work_directory_id)
-    if item.control_conversation_binding_id and payload.work_directory_id != item.work_directory_id:
-        raise DomainError("CASE_WORKSPACE_FROZEN", "已有会话的工作区不可变更", 409)
+    if payload.name.strip() != item.name or payload.work_directory_id != item.work_directory_id:
+        raise DomainError("CASE_IDENTITY_FROZEN", "名称和工作区创建后不可修改", 409)
     known_files = {
         material["value"] for material in item.materials_json or [] if material["kind"] == "FILE"
     }
@@ -1566,6 +1563,11 @@ def create_case_control_conversation(
     item = _case(db, case_id)
     if item.control_conversation_binding_id:
         return _case_dict(db, item)
+    if item.state in {"COMPLETED", "ARCHIVED"}:
+        raise illegal("terminal case cannot start an Agent", state=item.state)
+    stages = list(db.scalars(select(CaseStage).where(CaseStage.case_id == item.id)))
+    if not stages or any(not stage.flow_run_id for stage in stages):
+        raise DomainError("CASE_PATH_INCOMPLETE", "请先配置完整的 Case 路径", 409)
     workspace = agent_workspaces.ensure_default_agent_workspace(db)
     if item.control_work_directory_id is None:
         directory = agent_workspaces.create_case_work_directory(
@@ -1576,7 +1578,7 @@ def create_case_control_conversation(
     created = conversations.bootstrap_conversation(
         db,
         workspace.id,
-        work_directory_id=item.work_directory_id or item.control_work_directory_id,
+        work_directory_id=item.control_work_directory_id,
         model_provider_id=payload.model_provider_id,
         model_name=payload.model_name,
         reasoning_effort=payload.reasoning_effort,
@@ -1591,8 +1593,11 @@ def create_case_control_conversation(
             "memory.md 用于沉淀可复用工作记忆。\n\n"
             f"事项说明：{item.description}\n\n"
             f"事项目标：{item.objective or '尚未填写'}\n\n"
-            "仅在当前事项工作目录中工作。基于可审计事实协助梳理阶段、风险和后续建议；"
-            "不得直接修改流程模板或已启动的流程节点。"
+            "按 Case 路径协调多个流程，仅在当前事项专属工作目录和当前活动阶段的授权范围内工作。"
+            "先核对目标、资料和阶段模板，再通过平台已有的受控动作创建独立执行副本、"
+            "触发执行、观察结果并协调后续阶段。每次操作都必须保留正式执行记录；"
+            "发生阻塞时记录原因并请求必要的人工处理，不得将建议冒充已执行。"
+            "不得直接修改流程模板或已启动的连续运行，也不得操作其他事项或历史执行副本。"
         ),
         idempotency_key=idempotency_key,
     )

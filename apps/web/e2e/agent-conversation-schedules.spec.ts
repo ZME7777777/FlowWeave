@@ -8,6 +8,12 @@ import type { CaseBasics, CaseSessionConfig, CaseStage } from '../src/types';
 
 const now = '2026-10-19T00:00:00Z';
 
+async function openCasePanel(page: Page, name: '场景信息' | 'Agent 配置') {
+  const close = page.getByRole('button', { name: '关闭场景面板', exact: true });
+  if (await close.count()) await close.click();
+  await page.getByRole('button', { name, exact: true }).click();
+}
+
 for (const failureStatus of [503, 504, 403]) {
   test(`workspace activity survives a route read failure ${failureStatus} and recovers without another click`, async ({ page }) => {
     await page.clock.install();
@@ -176,10 +182,12 @@ test('fresh navigation opens case space and creates a scenario after the branch 
   await expect(page.locator('.case-workspace-toolbar')).toContainText('合并后的案例');
   await expect(page.getByRole('navigation', { name: '场景工作区' })).toHaveCount(0);
   await expect(page.locator('.scenario-path')).toBeVisible();
-  await expect(page.locator('.case-config-panel')).toContainText('会话配置');
+  await expect(page.locator('.case-config-panel')).toHaveCount(0);
+  await openCasePanel(page, 'Agent 配置');
   await expect(page.getByRole('button', { name: '保存配置', exact: true })).toBeVisible();
   await expect(page.getByText('工作区模式', { exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: '创建协调会话', exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: '关闭场景面板' }).click();
   await page.getByRole('button', { name: 'AI 工作台', exact: true }).click();
   await expect(page.getByRole('navigation', { name: 'Agent 工作区导航' })).toBeVisible();
 });
@@ -267,10 +275,11 @@ test('case detail saves materials workspace ordered run cards and model capabili
   await expect(materialDialog.getByLabel('资料地址')).toHaveValue('.flowweave/cases/config-case/materials/file-1');
   await materialDialog.getByRole('button', { name: '添加', exact: true }).click();
   await page.getByRole('button', { name: '保存', exact: true }).click();
-  await expect(page.getByRole('navigation', { name: '场景工作区' })).toBeVisible();
+  await expect(page.locator('.scenario-path')).toBeVisible();
   expect(item!.description).toBe('客户迁移的基础说明');
   expect(item!.work_directory_id).toBe('existing-directory');
   expect(item!.materials).toHaveLength(2);
+  await openCasePanel(page, '场景信息');
   await expect(page.locator('.scenario-materials')).toContainText('准备资料.txt');
   await page.getByRole('button', { name: '重命名 准备资料.txt', exact: true }).click();
   await page.getByRole('textbox', { name: '资料名称 准备资料.txt', exact: true }).fill('上线资料');
@@ -279,18 +288,18 @@ test('case detail saves materials workspace ordered run cards and model capabili
   await page.getByRole('textbox', { name: '资料名称 需求文档', exact: true }).fill('迁移需求');
   await page.getByRole('button', { name: '确认改名', exact: true }).click();
   await page.getByRole('button', { name: '保存', exact: true }).click();
-  await expect(page.getByRole('status')).toHaveText('已保存');
+  await expect(page.locator('.case-inspector').getByRole('status')).toHaveText('已保存');
   expect(item!.materials.map(material => material.name)).toEqual(['迁移需求', '上线资料.txt']);
   await page.getByRole('button', { name: '上线资料.txt', exact: true }).click();
   await expect(page.getByRole('dialog', { name: '资料预览' })).toContainText('case inputs');
   await page.getByRole('button', { name: '关闭预览' }).click();
   const header = await page.locator('.scenario-side-head').boundingBox();
   expect(header!.height).toBeLessThanOrEqual(56);
-  await page.getByRole('button', { name: 'Case 路径', exact: true }).click();
+  await page.getByRole('button', { name: '关闭场景面板', exact: true }).click();
   await expect(page.locator('.scenario-path ol li')).toHaveCount(0);
   await page.screenshot({ path: '../../.tmp/fr684/path-empty.png' });
   for (const index of [1, 2]) {
-    await page.getByRole('button', { name: /添加.*卡片/ }).click();
+    await page.getByRole('button', { name: /添加.*流程/ }).click();
     await expect(page.getByRole('combobox', { name: '运行方式', exact: true })).toBeDisabled();
     await expect(page.getByRole('combobox', { name: '运行记录', exact: true })).toBeDisabled();
     await page.getByRole('combobox', { name: 'FlowRun', exact: true }).click();
@@ -348,7 +357,7 @@ test('case detail saves materials workspace ordered run cards and model capabili
   await expect(page.locator('.scenario-path li').first()).toContainText('流程记录 2');
   await page.getByRole('button', { name: '删除卡片 流程记录 1' }).click();
   await expect(page.locator('.scenario-path li')).toHaveCount(1);
-  await page.getByRole('button', { name: '会话配置', exact: true }).click();
+  await openCasePanel(page, 'Agent 配置');
   await expect(page.getByRole('combobox', { name: '模型名称', exact: true })).toBeDisabled();
   await page.getByRole('combobox', { name: '模型供应商', exact: true }).click();
   await page.getByRole('option', { name: '测试供应商', exact: true }).click();
@@ -361,10 +370,10 @@ test('case detail saves materials workspace ordered run cards and model capabili
   await dialog.getByRole('button', { name: /日报技能/ }).click();
   await dialog.getByRole('button', { name: '保存会话配置', exact: true }).click();
   await page.getByRole('button', { name: '保存配置', exact: true }).click();
-  await expect(page.getByRole('status')).toContainText('已保存');
+  await expect(page.locator('.case-inspector').getByRole('status')).toContainText('已保存');
   expect(item!.session_config).toMatchObject({ model_provider_id: 'provider-1', model_name: 'model-1', reasoning_effort: 'high', capability_version_ids: ['capability-1'], credential_ids: ['credential-1', 'credential-2'] });
-  await page.getByRole('button', { name: '基础配置', exact: true }).click();
-  await page.getByRole('button', { name: '会话配置', exact: true }).click();
+  await openCasePanel(page, '场景信息');
+  await openCasePanel(page, 'Agent 配置');
   await expect(page.getByRole('combobox', { name: '思考程度', exact: true })).toHaveValue('high');
   for (const count of [1, 0]) {
     await page.getByRole('button', { name: '配置会话', exact: true }).click();
@@ -375,10 +384,10 @@ test('case detail saves materials workspace ordered run cards and model capabili
     await credentialDialog.getByRole('button', { name: count === 1 ? /场景认证 2/ : /场景认证 1/ }).click();
     await credentialDialog.getByRole('button', { name: '保存认证配置', exact: true }).click();
     await page.getByRole('button', { name: '保存配置', exact: true }).click();
-    await expect(page.getByRole('status')).toHaveText('已保存');
+    await expect(page.locator('.case-inspector').getByRole('status')).toHaveText('已保存');
     expect(item!.session_config!.credential_ids).toEqual(count === 1 ? ['credential-1'] : []);
-    await page.getByRole('button', { name: '基础配置', exact: true }).click();
-    await page.getByRole('button', { name: '会话配置', exact: true }).click();
+    await openCasePanel(page, '场景信息');
+    await openCasePanel(page, 'Agent 配置');
   }
   await page.getByRole('button', { name: '配置会话', exact: true }).click();
   await page.getByRole('dialog', { name: '会话配置', exact: true }).getByRole('button', { name: '认证', exact: true }).click();
@@ -388,19 +397,19 @@ test('case detail saves materials workspace ordered run cards and model capabili
 
   await expect(page.getByText('Case 会话系统上下文', { exact: true })).toHaveCount(0);
   await page.screenshot({ path: '../../.tmp/fr684/conversation.png' });
-  await page.getByRole('button', { name: 'Case 路径', exact: true }).click();
+  await page.getByRole('button', { name: '关闭场景面板', exact: true }).click();
   await page.screenshot({ path: '../../.tmp/fr684/path-single.png' });
-  await page.getByRole('button', { name: '基础配置', exact: true }).click();
+  await openCasePanel(page, '场景信息');
   const renameButtons = await page.locator('.case-material-rename-button').all();
   const renameBoxes = await Promise.all(renameButtons.map(button => button.boundingBox()));
   expect(renameBoxes[0]!.x).toBe(renameBoxes[1]!.x);
   await page.screenshot({ path: '../../.tmp/fr684/basics.png' });
   await page.setViewportSize({ width: 1024, height: 900 });
   await expect(page.getByRole('button', { name: '保存', exact: true })).toBeVisible();
-  expect(await page.locator('.scenario-workspace').evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+  expect(await page.locator('.case-inspector').evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
   await page.screenshot({ path: '../../.tmp/fr684/basics-1024.png' });
   await expect(page.locator('.scenario-workspace select')).toHaveCount(0);
-  await page.getByRole('button', { name: '会话配置', exact: true }).click();
+  await openCasePanel(page, 'Agent 配置');
   const controls = await page.locator('.case-session-grid .case-choice-control, .case-capability-choice').all();
   const boxes = await Promise.all(controls.map(control => control.boundingBox()));
   expect(boxes[0]!.width).toBeCloseTo(boxes[1]!.width, 0);
@@ -428,7 +437,7 @@ test('case default credentials block saving on catalog failure and select all af
     ? json(route, { error: { code: 'SERVICE_UNAVAILABLE', message: '认证列表读取失败' } }, 503)
     : json(route, [{ id: 'credential-a', name: '认证 A' }, { id: 'credential-b', name: '认证 B' }]));
   await page.getByRole('button', { name: '场景空间', exact: true }).click();
-  await page.getByRole('button', { name: '会话配置', exact: true }).click();
+  await openCasePanel(page, 'Agent 配置');
   await expect(page.getByRole('button', { name: '保存配置', exact: true })).toBeDisabled();
   await expect(page.getByRole('button', { name: '配置会话', exact: true })).toBeDisabled();
   await expect(page.getByRole('alert')).toContainText('认证列表读取失败');
@@ -437,7 +446,7 @@ test('case default credentials block saving on catalog failure and select all af
   await page.getByRole('button', { name: '重新读取认证', exact: true }).click();
   await expect(page.getByRole('button', { name: '保存配置', exact: true })).toBeEnabled();
   await page.getByRole('button', { name: '保存配置', exact: true }).click();
-  await expect(page.getByRole('status')).toHaveText('已保存');
+  await expect(page.locator('.case-inspector').getByRole('status')).toHaveText('已保存');
   expect(writes[0].credential_ids).toEqual(['credential-a', 'credential-b']);
 });
 
@@ -451,16 +460,17 @@ for (const [width, height] of [[1440, 900], [1440, 700], [1024, 768], [1280, 620
     await page.route('**/api/v1/cases', route => json(route, [item]));
     await page.getByRole('button', { name: '场景空间', exact: true }).click();
     const assertFixed = async () => {
-      const boxes = await page.locator('.scenario-space, .case-basics-workspace, .case-basics-workspace>.scenario-workspace-inner').evaluateAll(elements => elements.map(element => ({ height: element.clientHeight, scroll: element.scrollHeight, width: element.clientWidth, scrollWidth: element.scrollWidth })));
+      const boxes = await page.locator('.scenario-space, .case-basics-workspace, .case-inspector').evaluateAll(elements => elements.map(element => ({ height: element.clientHeight, scroll: element.scrollHeight, width: element.clientWidth, scrollWidth: element.scrollWidth })));
       expect(boxes.every(box => box.scroll <= box.height + 1 && box.scrollWidth <= box.width + 1)).toBe(true);
       const save = await page.getByRole('button', { name: '保存', exact: true }).boundingBox();
       expect(save!.y + save!.height).toBeLessThanOrEqual(height - 8);
       await page.locator('.case-basics-fields').hover(); await page.mouse.wheel(0, 800);
-      expect(await page.locator('.case-basics-workspace').evaluate(element => element.scrollTop)).toBe(0);
+      expect(await page.locator('.case-inspector, .case-basics-workspace').first().evaluate(element => element.scrollTop)).toBe(0);
       expect((await page.locator('.topbar').boundingBox())!.y).toBe(0);
       expect(await page.locator('html').evaluate(element => getComputedStyle(element).overscrollBehaviorY)).toBe('none');
       expect(await page.evaluate(() => ({ scroll: document.documentElement.scrollHeight, height: innerHeight, top: scrollY }))).toEqual({ scroll: height, height, top: 0 });
     };
+    await openCasePanel(page, '场景信息');
     await expect(page.getByRole('textbox', { name: '说明', exact: true })).toHaveValue(item.description);
     await assertFixed();
     await expect(page.locator('.scenario-materials ul')).toBeVisible();
@@ -468,6 +478,7 @@ for (const [width, height] of [[1440, 900], [1440, 700], [1024, 768], [1280, 620
     await page.locator('.scenario-materials ul').evaluate(element => { element.scrollTop = element.scrollHeight; });
     await expect(page.getByRole('link', { name: '资料 100', exact: true })).toBeInViewport();
     await page.screenshot({ path: `../../.tmp/fr687/basics-materials-${width}-${height}.png` });
+    await page.getByRole('button', { name: '关闭场景面板', exact: true }).click();
     await page.getByRole('button', { name: '新建场景', exact: true }).click();
     await assertFixed();
     await page.getByRole('button', { name: '添加资料', exact: true }).click();
@@ -497,14 +508,13 @@ test('case deletion confirms intent and retains the case when the server rejects
     return json(route, deleted ? [] : [item]);
   });
   await page.getByRole('button', { name: '场景空间', exact: true }).click();
-  await page.getByRole('button', { name: 'Case 路径', exact: true }).click();
   await page.getByRole('button', { name: '删除场景', exact: true }).click();
   await page.getByRole('alertdialog').getByRole('button', { name: '取消', exact: true }).click();
   expect(deleteCount).toBe(0);
   await page.getByRole('button', { name: '删除场景', exact: true }).click();
   await page.getByRole('alertdialog').getByRole('button', { name: '删除 Case', exact: true }).click();
   await expect(page.locator('.scenario-delete-error')).toContainText('事项仍有进行中的执行');
-  await expect(page.locator('.scenario-casebar')).toContainText(item.name);
+  await expect(page.locator('.case-workspace-toolbar')).toContainText(item.name);
   rejectDelete = false;
   await page.getByRole('button', { name: '删除场景', exact: true }).click();
   await page.getByRole('alertdialog').getByRole('button', { name: '删除 Case', exact: true }).click();
@@ -3724,6 +3734,7 @@ test('unified case material import keeps edits through failure and cancels only 
     return json(route, item);
   });
   await page.getByRole('button', { name: '场景空间', exact: true }).click();
+  await openCasePanel(page, '场景信息');
   await page.getByRole('textbox', { name: '说明', exact: true }).fill('尚未保存的说明');
   await page.getByRole('button', { name: '添加资料', exact: true }).click();
   const modal = page.getByRole('dialog', { name: '添加资料', exact: true });
@@ -3755,7 +3766,7 @@ test('unified case material import keeps edits through failure and cancels only 
   await expect(page.getByRole('textbox', { name: '说明', exact: true })).toHaveValue('尚未保存的说明');
   await expect(page.getByRole('button', { name: '添加资料', exact: true })).toBeFocused();
   await page.getByRole('button', { name: '保存', exact: true }).click();
-  await expect(page.getByRole('status')).toHaveText('已保存');
+  await expect(page.locator('.case-inspector').getByRole('status')).toHaveText('已保存');
   expect(item.description).toBe('尚未保存的说明');
   expect(item.materials).toHaveLength(1);
 });
@@ -3770,6 +3781,7 @@ test('case material accepts arbitrary reference text without making script refer
     return json(route, { ...item, ...saved, row_version: 2 });
   });
   await page.getByRole('button', { name: '场景空间', exact: true }).click();
+  await openCasePanel(page, '场景信息');
   const values = ['feishu://docs/item', 'ftp://example.test/input', 'intranet/wiki/page', 'javascript:window.__caseScriptExecuted=true'];
   for (const [index, value] of values.entries()) {
     await page.getByRole('button', { name: '添加资料', exact: true }).click();
@@ -3826,7 +3838,7 @@ test('new case material upload retry reuses the created scene and saves its rela
   await expect(modal.getByLabel('资料名称')).toHaveValue('input.txt');
   await modal.getByRole('button', { name: '添加', exact: true }).click();
   await page.getByRole('button', { name: '保存', exact: true }).click();
-  await expect(page.getByRole('navigation', { name: '场景工作区' })).toBeVisible();
+  await expect(page.locator('.scenario-path')).toBeVisible();
   expect(creates).toBe(1);
   expect(uploads).toBe(2);
   expect(item?.materials).toEqual([{ kind: 'FILE', name: 'input.txt', value: '.flowweave/cases/new-import/materials/file-1' }]);
@@ -4054,3 +4066,131 @@ for (const sourceCount of [0, 1, 2]) {
     await expect(page.getByRole('button', { name: '查看全部', exact: true })).toHaveCount(0);
   });
 }
+
+test('case path fills the workspace with compact stages and on-demand context and control records', async ({ page }) => {
+  await openWorkspace(page);
+  let item = {
+    id: 'path-case', name: '客户上线场景', description: '客户背景说明', objective: '完成迁移、验证并交付', work_directory_id: 'existing-directory', control_work_directory_id: 'case-directory',
+    state: 'ACTIVE', row_version: 1, materials: [], flow_run_ids: [], created_at: now, updated_at: now,
+    session_config: { model_provider_id: 'provider-1', model_name: 'model-1', reasoning_effort: 'high', capability_version_ids: [], credential_ids: [] },
+    tasks: [], decision_proposals: [], control_plans: [{ id: 'plan', case_id: 'path-case', stage_id: 'stage-1', action: 'START_EXECUTION', state: 'FAILED', reason: '等待环境恢复后重试', error_code: 'ENVIRONMENT_NOT_READY', created_at: now }],
+    stages: Array.from({ length: 12 }, (_, index) => ({ id: `stage-${index}`, case_id: 'path-case', stage_key: `stage-${index}`, name: ['资料准备', '迁移执行', '质量验证', '结果交付'][index % 4] + ` ${index + 1}`, objective: '', flow_run_id: `template-${index}`, position: index, execution_mode: index % 2 ? 'CONTINUOUS' : 'STEPWISE', state: index === 0 ? 'COMPLETED' : index === 1 ? 'ACTIVE' : 'PENDING', current_execution_flow_run_id: index < 2 ? `execution-${index}` : null, execution: index < 2 ? { state: index === 0 ? 'COMPLETED' : 'CANCELLED', progress: { accepted: index === 0 ? 4 : 2, terminal: 4, active: 0 }, active_node: null } : null })),
+  };
+  await page.route('**/api/v1/cases**', route => {
+    const path = new URL(route.request().url()).pathname;
+    if (route.request().method() === 'PUT') {
+      const payload = route.request().postDataJSON();
+      expect(payload.name).toBe(item.name); expect(payload.work_directory_id).toBe('existing-directory');
+      item = { ...item, ...payload, row_version: item.row_version + 1 };
+      return json(route, item);
+    }
+    return json(route, path.endsWith('/cases') ? [item] : item);
+  });
+  await page.getByRole('button', { name: '场景空间', exact: true }).click();
+  await expect(page.locator('.case-config-panel')).toHaveCount(0);
+  await expect(page.locator('.scenario-path ol li')).toHaveCount(12);
+  const current = page.getByRole('article', { name: '路径卡片 迁移执行 2', exact: true });
+  await expect(current).toContainText('已停止'); await expect(current).not.toContainText('运行中');
+  await expect(current.getByRole('button', { name: '查看执行记录' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '保存基础信息' })).toHaveCount(0);
+  for (const width of [1440, 1024]) {
+    await page.setViewportSize({ width, height: 768 });
+    const bounds = await page.locator('.case-path-panel').evaluate(element => ({ width: element.clientWidth, scroll: element.scrollHeight, height: element.clientHeight, main: element.closest('.scenario-workspace')!.clientWidth }));
+    expect(bounds.width).toBeGreaterThan(bounds.main * 0.9);
+    expect(bounds.scroll).toBeGreaterThan(bounds.height);
+    expect((await page.locator('.case-workspace-toolbar').boundingBox())!.height).toBeLessThanOrEqual(56);
+    await page.locator('.case-path-panel').hover(); await page.mouse.wheel(0, 600);
+    await expect.poll(() => page.locator('.case-path-panel').evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+    expect(await page.evaluate(() => ({ width: document.documentElement.scrollWidth, scroll: document.documentElement.scrollHeight, viewport: innerHeight }))).toEqual({ width, scroll: 768, viewport: 768 });
+    await page.locator('.case-path-panel').evaluate(element => { element.scrollTop = 0; });
+    await page.screenshot({ path: `../../.tmp/ops26/case-path-${width}.png` });
+  }
+  await openCasePanel(page, '场景信息');
+  const context = page.getByRole('dialog', { name: '场景信息', exact: true });
+  await expect(context.getByRole('textbox', { name: '名称', exact: true })).toHaveAttribute('readonly');
+  await expect(context.getByRole('combobox', { name: '工作区', exact: true })).toBeDisabled();
+  await context.getByRole('textbox', { name: '目标', exact: true }).fill('补充后的交付目标');
+  await context.getByRole('button', { name: '保存', exact: true }).click();
+  await expect(context.getByRole('status')).toHaveText('已保存');
+  expect(item.objective).toBe('补充后的交付目标');
+  await page.keyboard.press('Escape'); await expect(context).toHaveCount(0);
+  await page.getByRole('button', { name: '控制记录', exact: true }).click();
+  const activity = page.getByRole('dialog', { name: '控制记录' });
+  await expect(activity).toContainText('等待环境恢复后重试');
+  await expect(activity).toContainText('ENVIRONMENT_NOT_READY');
+  await page.mouse.click(8, 150); await expect(activity).toHaveCount(0);
+  await page.getByRole('textbox', { name: '搜索场景' }).fill('不存在的场景');
+  await expect(page.locator('.scenario-case-head')).toHaveCount(0);
+});
+
+test('case Agent start checks configuration and retries using the same submission identity', async ({ page }) => {
+  await openWorkspace(page);
+  let item: Record<string, unknown> = { id: 'start-case', name: '上线场景', objective: '交付', row_version: 1, state: 'DRAFT', stages: [], tasks: [], control_plans: [], decision_proposals: [], materials: [], created_at: now, updated_at: now };
+  const keys: string[] = [];
+  await page.route('**/api/v1/cases**', route => {
+    const path = new URL(route.request().url()).pathname;
+    const request = route.request();
+    if (path.endsWith('/control-conversation') && request.method() === 'POST') {
+      keys.push(request.headers()['idempotency-key']);
+      if (keys.length === 1) return json(route, { error: { code: 'TEMPORARY_FAILURE', message: '创建暂不可用，请重试' } }, 503);
+      item = { ...item, control_conversation_binding_id: 'control-binding', control_work_directory_id: 'case-directory', row_version: 3 };
+      return json(route, item);
+    }
+    if (path.endsWith('/session-config') && request.method() === 'PUT') {
+      const { expected_row_version: version, ...config } = request.postDataJSON();
+      expect(version).toBe(1); item = { ...item, session_config: config, row_version: 2 };
+      return json(route, item);
+    }
+    return json(route, path.endsWith('/cases') ? [item] : item);
+  });
+  await page.getByRole('button', { name: '场景空间', exact: true }).click();
+  await page.getByRole('button', { name: '启动 Agent', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('请先配置完整的 Case 路径');
+  expect(keys).toEqual([]);
+  item = { ...item, stages: [{ id: 'stage', name: '交付流程', flow_run_id: 'template', state: 'ACTIVE', position: 0, execution_mode: 'STEPWISE' }] };
+  await page.reload();
+  await page.getByRole('button', { name: '场景空间', exact: true }).click();
+  await page.getByRole('button', { name: '启动 Agent', exact: true }).click();
+  const config = page.getByRole('dialog', { name: 'Agent 配置', exact: true });
+  await expect(config).toBeVisible();
+  await config.getByRole('combobox', { name: '模型供应商' }).click();
+  await page.getByRole('option', { name: '测试供应商', exact: true }).click();
+  await config.getByRole('combobox', { name: '模型名称' }).click();
+  await page.getByRole('option', { name: 'model-1', exact: true }).click();
+  await config.getByRole('button', { name: '保存配置', exact: true }).click();
+  await expect(config.getByRole('status')).toHaveText('已保存');
+  await page.getByRole('button', { name: '关闭场景面板' }).click();
+  await page.getByRole('button', { name: '启动 Agent', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('创建暂不可用');
+  await page.getByRole('button', { name: '启动 Agent', exact: true }).click();
+  await expect(page).toHaveURL(/\/cases\/start-case\/conversations\/control-binding$/);
+  expect(keys).toHaveLength(2); expect(keys[0]).toBeTruthy(); expect(keys[0]).toBe(keys[1]);
+});
+
+test('manual Case stage retry retains its execution copy after a start failure', async ({ page }) => {
+  await openWorkspace(page);
+  let launches = 0, starts = 0;
+  let item = { id: 'retry-case', name: '阶段重试', row_version: 1, state: 'ACTIVE', materials: [], tasks: [], control_plans: [], decision_proposals: [],
+    stages: [{ id: 'stage', name: '交付阶段', flow_run_id: 'template', position: 0, state: 'ACTIVE', execution_mode: 'STEPWISE', current_execution_flow_run_id: null as string | null, execution: null as null | { state: string } }] };
+  await page.route('**/api/v1/cases**', route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path.endsWith('/launch')) {
+      launches += 1; item = { ...item, row_version: 2, stages: [{ ...item.stages[0], current_execution_flow_run_id: 'execution', execution: { state: 'DRAFT' } }] };
+      return json(route, item);
+    }
+    if (path.endsWith('/execution/start')) {
+      starts += 1;
+      if (starts === 1) return json(route, { error: { code: 'UNAVAILABLE', message: '暂不可启动' } }, 503);
+      item = { ...item, row_version: 3, stages: [{ ...item.stages[0], execution: { state: 'ACTIVE' } }] };
+      return json(route, { state: 'EXECUTED' });
+    }
+    return json(route, path.endsWith('/cases') ? [item] : item);
+  });
+  await page.getByRole('button', { name: '场景空间', exact: true }).click();
+  await page.getByRole('button', { name: '手动启动', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('暂不可启动');
+  await expect(page.getByRole('button', { name: '查看执行记录', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '手动启动', exact: true }).click();
+  await expect(page.getByRole('article', { name: '路径卡片 交付阶段' })).toContainText('运行中');
+  expect(launches).toBe(1); expect(starts).toBe(2);
+});
