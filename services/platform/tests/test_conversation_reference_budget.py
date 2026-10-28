@@ -45,7 +45,7 @@ def resolve(monkeypatch):
 
         monkeypatch.setattr(conversations, "get_runtime", lambda: Runtime())
         return conversations._resolve_message_references(
-            None,
+            SimpleNamespace(scalar=lambda _query: None),
             workspace,
             None,
             (reference or {"source_binding_id": "00000000-0000-0000-0000-000000000002"},),

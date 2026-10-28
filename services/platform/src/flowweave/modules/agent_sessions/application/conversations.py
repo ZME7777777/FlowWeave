@@ -70,6 +70,7 @@ from flowweave.modules.agent_sessions.application.workspace_file_links import (
     project_sandbox_file_links,
 )
 from flowweave.modules.agent_sessions.infrastructure.models import (
+    AgentChildConversation,
     AgentConversationBinding,
     AgentConversationCapability,
     AgentConversationCommand,
@@ -3716,6 +3717,32 @@ def _resolve_message_references(
             raise DomainError(
                 "AGENT_CONVERSATION_REFERENCE_INVALID", "会话引用无效，请重新选择", 422
             )
+        child_relation = db.scalar(
+            select(AgentChildConversation).where(
+                AgentChildConversation.child_binding_id == source_binding_id.strip(),
+            )
+        )
+        if child_relation is not None:
+            from flowweave.modules.agent_sessions.application import child_sessions
+
+            if not isinstance(source_event_id, str) or selection is not None:
+                raise DomainError(
+                    "AGENT_CONVERSATION_REFERENCE_INVALID",
+                    "子结果引用需要正式回复事件",
+                    422,
+                )
+            locator = child_sessions.parent_reference_locator(
+                db, target, source_binding_id.strip()
+            )
+            result = child_sessions.result_reference(locator, source_event_id.strip())
+            resolved.append(
+                {
+                    "event_id": source_event_id.strip(),
+                    "content": result["content"],
+                    "source_binding_id": locator.binding_id,
+                }
+            )
+            continue
         resolved.append(
             _resolve_source_conversation_reference(
                 db,
@@ -5037,3 +5064,7 @@ resolve_conversation_references = _resolve_conversation_references
 record_message_attachments = _record_message_attachments
 validate_attachment_owners = _validate_attachment_owners
 validated_workspace_references = _validated_workspace_references
+
+referenceable_event_text = _referenceable_event_text
+selected_reference_text = _selected_reference_text
+binding_view = _dict

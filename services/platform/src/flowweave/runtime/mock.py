@@ -46,6 +46,14 @@ from flowweave.runtime.child_governance import (
     NativeGovernedChildPreparation,
     NativeParentConfiguration,
 )
+from flowweave.runtime.child_interaction import (
+    NativeCommandInvocation,
+    NativeCommandRequest,
+    NativeCommandResult,
+    NativeQueryInvocation,
+    NativeQueryRequest,
+    NativeQueryResult,
+)
 from flowweave.shared.errors import DomainError
 
 
@@ -59,6 +67,35 @@ class MockRuntime:
         )
 
     def parent_conversation_configuration(self, handle: RuntimeHandle) -> NativeParentConfiguration:
+        raise self._child_unsupported()
+
+    def verify_child_query(
+        self, handle: RuntimeHandle, request: NativeQueryRequest
+    ) -> NativeQueryInvocation:
+        raise self._child_unsupported()
+
+    def query_children(
+        self, handle: RuntimeHandle, request: NativeQueryRequest
+    ) -> NativeQueryResult:
+        raise self._child_unsupported()
+
+    def verify_child_command(
+        self, handle: RuntimeHandle, request: NativeCommandRequest
+    ) -> NativeCommandInvocation:
+        raise self._child_unsupported()
+
+    def command_child(
+        self, handle: RuntimeHandle, request: NativeCommandRequest
+    ) -> NativeCommandResult:
+        raise self._child_unsupported()
+
+    def send_child_message(
+        self,
+        handle: RuntimeHandle,
+        submission_id: UUID,
+        content: str,
+        image_urls: tuple[str, ...] = (),
+    ) -> str:
         raise self._child_unsupported()
 
     def resolve_child_launcher(

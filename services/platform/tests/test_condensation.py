@@ -113,6 +113,9 @@ def test_condensation_logs_safe_failure_without_runtime_detail(monkeypatch, capl
     caplog.set_level(logging.INFO, logger="flowweave.agent_conversation_diagnostics")
 
     class Session:
+        def scalar(self, _query):
+            return None
+
         def rollback(self):
             pass
 

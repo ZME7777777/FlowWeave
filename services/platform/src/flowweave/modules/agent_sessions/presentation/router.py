@@ -95,6 +95,7 @@ class NodeAttachmentReference(_Write):
 
 class NodeConversationReference(_Write):
     event_id: str = Field(min_length=1, max_length=200)
+    source_binding_id: str | None = Field(default=None, min_length=36, max_length=36)
 
 
 class NodeWorkspaceReference(_Write):
@@ -520,7 +521,7 @@ async def bootstrap_node_session(
                 cast(dict[str, str | int], item.model_dump(exclude_none=True))
                 for item in payload.attachments
             ),
-            references=tuple(item.model_dump() for item in payload.references),
+            references=tuple(item.model_dump(exclude_none=True) for item in payload.references),
             workspace_references=tuple(item.model_dump() for item in payload.workspace_references),
             annotations=tuple(payload.annotations),
             legacy_image_urls=tuple(legacy_image_urls),
@@ -1278,7 +1279,7 @@ async def node_session_message(
             cast(dict[str, str | int], item.model_dump(exclude_none=True))
             for item in payload.attachments
         ),
-        "references": tuple(item.model_dump() for item in payload.references),
+        "references": tuple(item.model_dump(exclude_none=True) for item in payload.references),
         "workspace_references": tuple(item.model_dump() for item in payload.workspace_references),
         "annotations": tuple(payload.annotations),
     }
@@ -1333,7 +1334,7 @@ async def rerun_node_message(
                 cast(dict[str, str | int], item.model_dump(exclude_none=True))
                 for item in payload.attachments
             ),
-            references=tuple(item.model_dump() for item in payload.references),
+            references=tuple(item.model_dump(exclude_none=True) for item in payload.references),
             workspace_references=tuple(item.model_dump() for item in payload.workspace_references),
             annotations=tuple(payload.annotations),
         ),

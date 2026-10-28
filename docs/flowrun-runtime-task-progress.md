@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`CHILD CONVERSATIONS IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-712`
+> 下一可执行切片：`FR-713`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 > 子会话设计：`docs/agent-child-conversations-design.md`
@@ -796,12 +796,72 @@ TCP 共四用例纳入 335：固定非 editable 安装逐文件校验（V3 536�
 `0179_agent_child_creation_audit`。无前端、部署、推送或 Runtime 替换。当前 NONE，下一可执行
 FR-712；提交后停止。
 
-### FR-712 两宿主子续聊控制附件与结果引用 — READY
+### FR-712 两宿主子续聊控制附件与结果引用 — DONE
 
 依赖：FR-723 DONE。接入正式消息／控制／模型／condense、附件 owner 和正式结果引用，
 用户与父工具共用受理门禁，不借用父 token 或跨 binding 路径。
 
-### FR-713 子活动未读与父删除恢复 — PENDING
+完成（2026-10-28）：新增两宿主共用、cookie 认证的专用子资源
+`/api/v1/agent-session-children/{parent_id}/{child_id}`，包含详情、正式 events／hydration／
+readiness／context、消息、控制、模型、待确认／decision、附件上传／移除／文件读取、普通凭据
+查询／显式同步及正式结果引用。父工具精确 `queries`／`commands` 回调同时开放；Runtime key
+与原生 proof 都必须满足，并在 native verify 前后重做用户／宿主／policy／audience／generation
+复核。只有已经验证 proof 的原生调用可在父 V4 PROVISIONING 首轮操作其已治理子；浏览器
+父仍须 ACTIVE。V3 创建继续明确拒绝，不新增旧协议能力或向浏览器暴露 Runtime 连接。
+
+新增不可变 ChildLocator 由服务端解析当前用户、直属关系、宿主、Runtime／image／generation、
+shared 目录、创建审计和原生持久目录；操作前正式 read 回执／子配置核对 started、governance UUID
+及原生父子身份。取消节点的子可读不可写，不取得 Attempt／NodeRun 权限。原生调用采用短 DB
+prepare → I/O → 重新授权／project，Session 不进入新子运行操作；未知受理结果保留提交身份，
+原生已送达后权限／定位变化返回结果未知，既有响应 deadline 禁止迟到 worker 投影。
+
+用户消息必须携带稳定 submission UUID，经正式 `/events` 的 submission_id／user／run=true
+受理；不通过前后历史差集猜 event ID，不建平台消息队列。父 send 与用户 send 都进入固定 SDK
+同一原生输入锁／run-slot 门禁，busy／429 不追加新输入；相同提交重放取得同一正式事件，附件
+元数据在 child row lock 下幂等记录。模型只解析当前用户可见的已测试供应商并只更新子 binding；
+暂停／继续／待确认均调用原生控制。condense 复用既有单次持久任务，Worker 再授权子 locator 后
+调用 native condense；单独投影 task 状态，不伪造 native RUNNING，child 内 Idempotency-Key
+隔离并发受理。认证同步仅为子显式发送普通用户 Secret，原生成功且复核授权后才记录子版本；
+不借用父历史 token／MCP，不将 Secret 明文写入平台元数据。
+
+附件只属于子 binding UUID 的 uploads 前缀；发送／读取均检查精确附件投影与宿主根，拒绝父、
+兄弟、未登记路径及越界／非规范路径，移除复用现有宿主文件安全清理；下载保留 sandbox CSP
+与 nosniff。正式 assistant 结果引用最多一万字，不自动发送或改父草稿；两宿主父消息入口只对
+其直属子重新取正式 event_id／正文，不接受浏览器伪造结果或兄弟引用。普通父消息原有引用
+路径继续保留，Flow Node 新子 locator 在 prepare 冻结后再读 Runtime；Workspace 复用其既有
+引用装配阶段。完整历史仍在原生，不新建数据库 transcript／HEAD／cursor 状态机。
+
+父 list／read／wait 保持原生分页、完整性、text offset、checkpoint；list 过滤没有已启动平台
+locator 的 Runtime-only／尚未治理子，read 最多 50 项／12000 字，wait 最多 30 秒并使用有界
+history lane／35 秒整体 deadline。同步等待取消后 slot 可保留至原生返回或超时，不承诺抢占
+线程，也不因父等待取消而暂停子。新 DTO／适配方法只消费现有 V4 正式类型与路由。原生事件
+投影另保留类型校验后的 parent_instruction 与 sender，start／send／interrupt 的正式
+parent/action/tool-call/scope/session/generation/manifest 作为来源，不按文本／顺序猜测。
+
+验证：最终相关 PostgreSQL／两宿主子 API／launcher／父子隔离／压缩／消息 ACK／引用／独立
+事件读取阶段／HTTP DTO 契约套件 **484 passed／2 deselected**，另补充物理 Runtime 镜像漂移
+拒绝 **1 passed**；共 485 个不同用例通过，不叠加中间重复运行。新增关系查询使既有轻量引用／
+压缩测试夹具需要 scalar 空查询，已补齐接口而未放宽生产判断。两项 deselected 为修改前 HEAD
+同一组合顺序也失败的既存用例：压缩日志测试 StopIteration、Flow Node 流投影测试漏传已有
+working_directory 参数；独立 HEAD 对照 **49 passed／2 failed**，保留失败证据，未宣称旧测试
+全绿。最终主套件与对照日志均在 `.tmp/fr712/`。
+
+四项真实 TCP（两宿主 × V3／V4）包含在主套件：按各自固定归档核对 V3 536／V4 537 个已安装
+Python 文件；V4 父在 PROVISIONING 时实际执行全部六个正式工具，经平台 verify→授权→原生
+queries／commands，核对关联 action／tool-call 的成功 observation、父 send 正式来源；父
+ACTIVE 后用户通过专用 HTTP 续聊，重复 submission 只有一个事件，再完整重启原生服务、按原
+创建证明恢复并核对共三条 user 事件（初始、父追加、用户追加）及 Secret 隔离。V3 保持原拒绝。
+模型 completion、容器挂载映射和 Runtime 物理连接为夹具，正式 API／Tool／事件／加密持久化／
+重启真实；不等同于实际 Runtime 镜像或真实模型全链路验收。所有测试服务正常退出。
+
+新核心／gateway／DTO 的 Pyright **零错误**；12 个受影响旧模块当前 101 项诊断与 HEAD 按
+文件／规则／消息逐项相同、零新增。受影响 Ruff 通过；Flow Node router 的 13 条既有 E501
+未扩散，不清理无关格式。新文件格式、AST、diff、状态／依赖核对通过。Alembic 唯一 head
+保持 `0179_agent_child_creation_audit`，无迁移；SDK、source lock、归档、V3／V4 Manifest
+和镜像未改。无前端、部署、推送、Runtime 替换或 Worktree 产品功能。当前 NONE，下一可执行
+FR-713；提交后停止。
+
+### FR-713 子活动未读与父删除恢复 — READY
 
 依赖：FR-712 DONE。父列表聚合子运行／未读但不伪造父运行态；关闭保留，父删除
 围栏创建并恢复逐子清理失败；replacement 核对原父子会话及正式事件身份。

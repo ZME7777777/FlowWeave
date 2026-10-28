@@ -568,6 +568,51 @@ trigger 拒绝。已有治理审计时拒绝降级丢弃字段。平台不保存
 completion 与物理挂载／连接由测试夹具控制，原生路由、正式事件、加密持久化和生命周期真实；
 不表示实际 Runtime 镜像、真实模型、前端或远端发布已验收。详细结果见本片进度记录。
 
+### 2.17 两宿主子会话读写、父工具与结果引用（FR-712）
+
+新增 cookie 认证的专用资源 `/api/v1/agent-session-children/{parent_id}/{child_id}`，两宿主
+共用服务端 locator 解析。它按当前用户重新取得父 binding、V4 不可变能力、父宿主／scope、
+Runtime Session／generation／image，再以直属关系核对子身份；父和子必须已进入 ACTIVE，
+关系必须有 `binding-isolated-v1` 创建审计。写操作继续经过原 FlowRun／Attempt 终态围栏；
+已取消节点的子会话可读但不能恢复、发送、换模型或同步凭据。浏览器不能指定 native ID、
+工作目录、Runtime endpoint 或 owner；普通主会话入口仍拒绝 child，不提供独立页面路由。
+
+| 专用后缀 | 正式行为 |
+|---|---|
+| GET 根资源、`events`、`hydration`、`input-readiness`、`context` | 读取子实际配置／started 回执，核对原生父子 ID、治理 UUID、shared 工作目录和持久目录；事件只读取最新正式窗口，支持原生 cursor／history_cursor。hydration 返回同批事件／context／readiness，不复制数据库历史或跨 binding 缓存 |
+| POST `messages` | 必填用户稳定 UUID `submission_id`，传正式 `/events` 的 user／run=true；原生返回 event_id 为唯一受理事实。与父 send 使用同一个原生输入锁和容量门禁；409／429 不建平台消息队列，未知响应重放原 submission，不枚举历史猜 ID |
+| POST `control` | interrupt／resume 只作用于目标子原生会话；condense 复用既有单次持久压缩任务，Worker 重新授权子 locator 后调用原生 condense，HTTP 不等待压缩 LLM。任务状态单独投影，不能伪造 native RUNNING；`Idempotency-Key` 在 child scope 内使用 |
+| POST `model` | 复用当前用户可见、测试通过的供应商解析；原生空闲受理后只更新子 binding 的模型／推理配置，不回写父 |
+| GET `pending-confirmation`、POST `pending-confirmation/decision` | 复用原生待确认 action／tool-call／digest 和确认接口；拒绝空理由，不发送用户消息代替确认 |
+| POST／DELETE `attachments`、GET `file` | 使用子 binding UUID 的 upload owner；通过精确待发送／正式附件记录授权，拒绝借用父或兄弟的 uploads、非规范路径和越界目录。上传以 25 MiB 为限，移除复用宿主的普通文件安全清理；文件响应保持 sandbox CSP 与 nosniff |
+| GET `credentials`、POST `credentials/sync` | 普通用户凭据按当前用户解析，单独发送至子原生 `/secrets`，成功及重新授权后才写子 sync 版本。失败不复制父状态、不扩大创建时禁用的历史 MCP／token，也不保存 Secret 明文 |
+| GET `result-reference/{event_id}` | 服务端只读回该直属子的正式 assistant MESSAGE，最多一万字，返回来源 binding／event ID 与可见内容；仅预览引用，不修改父草稿或自动发送。用户显式发送时，两宿主父消息入口重新授权并读回正式事件，拒绝浏览器伪造正文或向兄弟／其他父会话引用 |
+
+原生调用使用短事务 prepare → Runtime I/O → 重新授权／投影，传递不可变 locator，不将
+SQL Session 带入新的子运行操作。消息附件投影按 child row lock 和正式 event_id 去重；原生
+已受理后 locator／权限变化时返回结果未知，不能宣布尚未送达。根资源仅表示可访问性，输入
+可用性仍服从正式 readiness。普通父消息的既有引用装配仍复用原路径：Workspace 引用在其
+原有装配阶段只读子事件，Flow Node 的新子引用 locator 在 DB 阶段冻结、Runtime 阶段读回；
+不因这次接入新增私有历史查询协议或继承父历史 token。
+
+父工具正式回调 URL 的 `queries`／`commands` 现已接通；只对精确 owner／binding UUID 路径
+免 cookie，仍必须先通过资源派生 Runtime key 和原生证明，再逐阶段复核用户、V4 policy、
+audience、generation 和平台直属关系。命令不信任模型提供的父身份。已冻结 V4 的 PROVISIONING
+父仅在原生证明验证后可查询／指令其已治理子，浏览器无此例外。V3 保持创建产品门禁，不因新
+入口自动升级。父 list 仅展示已有已启动平台 locator 的原生结果；分页 cursor、完整性标记、
+逐段文本 offset 和 checkpoint 原样保留。read 最多 50 项／12000 字；wait 最多 30 秒，单独
+使用有界 history lane 和 35 秒整体预算，不占交互读 lane。调用取消不暂停子会话；已开始的
+同步原生等待可占用其有界 slot 至返回／超时，不承诺可抢占该线程。
+
+新增 `NativeQuery*`／`NativeCommand*` DTO 直接消费固定 V4 的正式路由和类型；不重签私有
+执行证明、重算原生用量或构建平台 Agent loop。原生事件投影保留经类型校验的
+`parent_instruction`（start／send／interrupt、parent、action／tool-call、scope、Runtime Session、
+generation、manifest）和原生 sender；普通用户输入不添加父来源，不按文本或顺序猜关联。
+
+本片不增加前端标签、浮卡列表、未读聚合、删除／replacement 恢复或部署。子 UI 仍由
+FR-714～716 接入，活动／父删除继续由 FR-713 完成；固定 SDK、source lock、V3／V4 Manifest
+和已发布镜像不变。相关真实数据库／原生 TCP 和兼容回归结果见本片进度记录。
+
 ## 3. 父 Agent 的操作契约
 
 以下工具名是目标命名，最终导出必须在对应 baseline 切片中建立正式类型和 contract：

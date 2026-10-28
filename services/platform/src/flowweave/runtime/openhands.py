@@ -85,6 +85,18 @@ from flowweave.runtime.child_governance import (
     NativeParentConfiguration,
 )
 from flowweave.runtime.child_governance_contract import V4_CHILD_HTTP_OPERATIONS, V4_SOURCE_COMMIT
+from flowweave.runtime.child_interaction import (
+    NativeChildInstructionSource,
+    NativeCommandInvocation,
+    NativeCommandRequest,
+    NativeCommandResult,
+    NativeListPage,
+    NativeQueryInvocation,
+    NativeQueryRequest,
+    NativeQueryResult,
+    NativeReadPage,
+    NativeWaitResult,
+)
 from flowweave.runtime.contract import OPTIONAL_HTTP_OPERATIONS
 from flowweave.runtime.git_identity import GIT_IDENTITY_SCRIPT
 from flowweave.runtime.model_catalog import declared_context_window
@@ -2392,7 +2404,7 @@ class OpenHandsRuntime:
             session_api_key=self._session_key_for_handle(handle),
             control=method != "GET",
             native_child=True,
-            timeout=30.0,
+            timeout=kwargs.pop("timeout", 30.0),
             **kwargs,
         )
 
@@ -2456,6 +2468,109 @@ class OpenHandsRuntime:
         ):
             raise child_contract_error(outcome_unknown=True)
         return prepared
+
+    def verify_child_query(
+        self, handle: RuntimeHandle, request: NativeQueryRequest
+    ) -> NativeQueryInvocation:
+        self._require_child_governance(handle)
+        value = self._child_request(
+            handle, "POST", "/children/queries/verify", json=request.wire_payload()
+        )
+        claim = self._child_response(NativeQueryInvocation, value)
+        if (
+            claim.policy.parent_conversation_id != UUID(handle.conversation_id)
+            or claim.query != request.query
+        ):
+            raise child_contract_error()
+        return claim
+
+    def query_children(
+        self, handle: RuntimeHandle, request: NativeQueryRequest
+    ) -> NativeQueryResult:
+        self._require_child_governance(handle)
+        # The platform reserves a bounded long-read slot for native wait.
+        value = self._child_request(
+            handle, "POST", "/children/queries", json=request.wire_payload(), timeout=35.0
+        )
+        expected = {
+            "list": NativeListPage,
+            "read": NativeReadPage,
+            "wait": NativeWaitResult,
+        }[request.query.operation]
+        result = self._child_response(expected, value)
+        snapshots = result.items if isinstance(result, NativeListPage) else [result.snapshot]
+        if (isinstance(result, NativeListPage) and len(result.items) > request.query.limit) or any(
+            item.parent_conversation_id != UUID(handle.conversation_id)
+            or (
+                request.query.conversation_id is not None
+                and item.conversation_id != request.query.conversation_id
+            )
+            for item in snapshots
+        ):
+            raise child_contract_error()
+        if isinstance(result, NativeReadPage) and (
+            len(result.items) > request.query.limit
+            or sum(len(item.text or "") for item in result.items) > request.query.max_chars
+        ):
+            raise child_contract_error()
+        return result
+
+    def verify_child_command(
+        self, handle: RuntimeHandle, request: NativeCommandRequest
+    ) -> NativeCommandInvocation:
+        self._require_child_governance(handle)
+        value = self._child_request(
+            handle, "POST", "/children/commands/verify", json=request.wire_payload()
+        )
+        claim = self._child_response(NativeCommandInvocation, value)
+        if (
+            claim.policy.parent_conversation_id != UUID(handle.conversation_id)
+            or claim.command != request.command
+        ):
+            raise child_contract_error()
+        return claim
+
+    def command_child(
+        self, handle: RuntimeHandle, request: NativeCommandRequest
+    ) -> NativeCommandResult:
+        self._require_child_governance(handle)
+        value = self._child_request(
+            handle, "POST", "/children/commands", json=request.wire_payload()
+        )
+        result = self._child_response(NativeCommandResult, value, outcome_unknown=True)
+        if (
+            result.conversation_id != request.command.conversation_id
+            or result.operation != request.command.operation
+        ):
+            raise child_contract_error(outcome_unknown=True)
+        return result
+
+    def send_child_message(
+        self,
+        handle: RuntimeHandle,
+        submission_id: UUID,
+        content: str,
+        image_urls: tuple[str, ...] = (),
+    ) -> str:
+        self._require_child_governance(handle)
+        parts: list[dict[str, Any]] = [{"type": "text", "text": content}]
+        if image_urls:
+            parts.append({"type": "image", "image_urls": list(image_urls)})
+        result = self._child_request(
+            handle,
+            "POST",
+            "/events",
+            json={
+                "role": "user",
+                "content": parts,
+                "run": True,
+                "submission_id": str(submission_id),
+            },
+        )
+        event_id = result.get("event_id")
+        if not isinstance(event_id, str) or not event_id:
+            raise child_contract_error(outcome_unknown=True)
+        return event_id
 
     def verify_child_launcher(
         self, handle: RuntimeHandle, request: NativeChildLaunchRequest
@@ -3497,6 +3612,17 @@ class OpenHandsRuntime:
             "source": source,
             "content": redact_secret_text(event_text),
         }
+        instruction = item.get("parent_instruction")
+        if instruction is not None:
+            try:
+                payload["parent_instruction"] = NativeChildInstructionSource.model_validate(
+                    instruction
+                ).model_dump(mode="json")
+            except ValueError:
+                raise child_contract_error() from None
+            sender = item.get("sender")
+            if isinstance(sender, str):
+                payload["sender"] = sender
         timestamp = item.get("timestamp")
         if isinstance(timestamp, str) and timestamp:
             payload["timestamp"] = timestamp[:80]

@@ -17,6 +17,14 @@ from flowweave.runtime.child_governance import (
     NativeGovernedChildPreparation,
     NativeParentConfiguration,
 )
+from flowweave.runtime.child_interaction import (
+    NativeCommandInvocation,
+    NativeCommandRequest,
+    NativeCommandResult,
+    NativeQueryInvocation,
+    NativeQueryRequest,
+    NativeQueryResult,
+)
 
 
 def _empty_outputs() -> dict[str, tuple[str, str]]:
@@ -781,6 +789,27 @@ class RuntimePort(Protocol):
         request: NativeChildLaunchRequest,
         overrides: NativeChildPreparationOverrides,
     ) -> NativeGovernedChildPreparation: ...
+
+    def verify_child_query(
+        self, handle: RuntimeHandle, request: NativeQueryRequest
+    ) -> NativeQueryInvocation: ...
+
+    def query_children(
+        self, handle: RuntimeHandle, request: NativeQueryRequest
+    ) -> NativeQueryResult: ...
+
+    def verify_child_command(
+        self, handle: RuntimeHandle, request: NativeCommandRequest
+    ) -> NativeCommandInvocation: ...
+
+    def command_child(
+        self, handle: RuntimeHandle, request: NativeCommandRequest
+    ) -> NativeCommandResult: ...
+
+    def send_child_message(
+        self, handle: RuntimeHandle, submission_id: UUID, content: str,
+        image_urls: tuple[str, ...] = (),
+    ) -> str: ...
 
     def verify_child_launcher(
         self, handle: RuntimeHandle, request: NativeChildLaunchRequest

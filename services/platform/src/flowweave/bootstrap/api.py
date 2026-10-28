@@ -25,6 +25,9 @@ from flowweave.modules.agent_sessions.presentation.child_launcher import (
 from flowweave.modules.agent_sessions.presentation.child_launcher import (
     router as child_launcher_router,
 )
+from flowweave.modules.agent_sessions.presentation.child_sessions import (
+    router as child_sessions_router,
+)
 from flowweave.modules.agent_sessions.presentation.history_mcp import (
     MCP_PATH,
 )
@@ -510,6 +513,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     for router in (
         agent_sessions_router,
+        child_sessions_router,
         catalog_router,
         cases_router,
         environments_router,

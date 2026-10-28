@@ -116,14 +116,39 @@ def main():
         delegate = text == "delegate" and not any(
             m.role == "tool" for m in messages[user_index + 1 :]
         )
+        tool_name = GOVERNED_CHILD_TOOL if delegate else None
+        arguments = {"task": "review child 🌳", "title": "child"}
+        if os.environ.get("FLOWWEAVE_CHILD_INTERACTIONS") == "1" and text == "delegate":
+            tool_count = sum(m.role == "tool" for m in messages[user_index + 1 :])
+            if signed and 1 <= tool_count <= 5:
+                from openhands.sdk.conversation.child_creation import (
+                    ChildConversationCreationIdentity,
+                )
+
+                child = ChildConversationCreationIdentity.for_request(
+                    signed[0][0].policy.parent_conversation_id, signed[0][0].creation_id
+                ).conversation_id
+                sequence = [
+                    "list_child_conversations",
+                    "read_child_conversation",
+                    "wait_for_child_conversation",
+                    "send_child_conversation_message",
+                    "interrupt_child_conversation",
+                ]
+                tool_name = sequence[tool_count - 1]
+                arguments = {} if tool_count == 1 else {"conversation_id": str(child)}
+                if tool_count == 3:
+                    arguments["timeout_seconds"] = 0
+                if tool_count == 4:
+                    arguments["text"] = "parent follow-up"
         call = (
             MessageToolCall(
                 id=str(uuid4()),
-                name=GOVERNED_CHILD_TOOL,
-                arguments=json.dumps({"task": "review child 🌳", "title": "child"}),
+                name=tool_name,
+                arguments=json.dumps(arguments),
                 origin="completion",
             )
-            if delegate
+            if tool_name
             else None
         )
         message = Message(

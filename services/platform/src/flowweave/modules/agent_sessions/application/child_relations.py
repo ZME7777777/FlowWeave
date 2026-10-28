@@ -29,6 +29,7 @@ def require_direct_child(
     *,
     parent_binding_id: str,
     child_binding_id: str,
+    allow_provisioning_parent: bool = False,
 ) -> tuple[AgentChildConversation, AgentConversationBinding, AgentConversationBinding]:
     """Host permissions must be checked before supplying this resolved context."""
 
@@ -67,7 +68,12 @@ def require_direct_child(
         or parent.id == child.id
         or parent.openhands_conversation_id != relation.parent_conversation_id
         or child.openhands_conversation_id != relation.child_conversation_id
-        or parent.lifecycle not in {"ACTIVE", "DELETE_PENDING"}
+        or parent.lifecycle
+        not in (
+            {"ACTIVE", "DELETE_PENDING", "PROVISIONING"}
+            if allow_provisioning_parent
+            else {"ACTIVE", "DELETE_PENDING"}
+        )
         or child.node_attempt_id is not None
         or child.node_run_id is not None
         or db.scalar(

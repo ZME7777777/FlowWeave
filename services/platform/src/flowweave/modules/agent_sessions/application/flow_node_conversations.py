@@ -16,7 +16,7 @@ from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions import public as agent_sessions
-from flowweave.modules.agent_sessions.application import resumable_attachments
+from flowweave.modules.agent_sessions.application import child_sessions, resumable_attachments
 from flowweave.modules.agent_sessions.application import usage as usage_projection
 from flowweave.modules.agent_sessions.application.activity_reconciliation import (
     read_activity_completion,
@@ -170,6 +170,7 @@ class PreparedRunningNodeMessage:
     references: tuple[dict[str, str], ...]
     workspace_references: tuple[dict[str, str], ...]
     annotations: tuple[dict[str, Any], ...]
+    child_references: tuple[tuple[child_sessions.ChildLocator, str], ...] = ()
 
 
 def _observe_task_watchdogs_after_send(
@@ -3052,6 +3053,36 @@ def send_node_question(
     return send_flow_run_question(db, flow_run_id, binding_id, payload, idempotency_key, actor)
 
 
+def prepare_child_result_references(
+    db: Session,
+    binding: AgentConversationBinding,
+    references: tuple[dict[str, str], ...],
+) -> tuple[tuple[dict[str, str], ...], tuple[tuple[child_sessions.ChildLocator, str], ...]]:
+    local: list[dict[str, str]] = []
+    child: list[tuple[child_sessions.ChildLocator, str]] = []
+    for reference in references:
+        source_id = reference.get("source_binding_id")
+        if source_id and source_id != binding.id:
+            locator = child_sessions.parent_reference_locator(db, binding, source_id)
+            child.append((locator, reference["event_id"]))
+        else:
+            local.append(reference)
+    return tuple(local), tuple(child)
+
+
+def read_child_result_references(
+    references: tuple[tuple[child_sessions.ChildLocator, str], ...],
+) -> tuple[dict[str, str], ...]:
+    return tuple(
+        {
+            "event_id": event_id,
+            "source_binding_id": locator.binding_id,
+            "content": child_sessions.result_reference(locator, event_id)["content"],
+        }
+        for locator, event_id in references
+    )
+
+
 def prepare_running_node_message(
     db: Session,
     *,
@@ -3104,6 +3135,7 @@ def prepare_running_node_message(
         # behavior, but replay this validation error if the runtime proves
         # idle and the rebind is actually required.
         provider_error = exc
+    local_references, child_references = prepare_child_result_references(db, binding, references)
     return PreparedRunningNodeMessage(
         flow_run_id=flow_run_id,
         attempt_id=attempt_id,
@@ -3114,7 +3146,8 @@ def prepare_running_node_message(
         provider_error=provider_error,
         content=content,
         attachments=attachments,
-        references=references,
+        references=local_references,
+        child_references=child_references,
         workspace_references=resolved_workspace_references,
         annotations=annotations,
     )
@@ -3137,7 +3170,9 @@ def dispatch_running_node_message(
         if prepared.provider is not None:
             runtime.switch_model(prepared.handle, prepared.provider)
         compacted = _condense_before_node_message(runtime, prepared.handle)
-    references = resolve_conversation_references(runtime, prepared.handle, prepared.references)
+    references = resolve_conversation_references(
+        runtime, prepared.handle, prepared.references
+    ) + read_child_result_references(prepared.child_references)
     prompt, image_urls = message_payload(
         prepared.content,
         prepared.attachments,
@@ -3163,7 +3198,9 @@ def dispatch_running_node_message(
     except DomainError as exc:
         if exc.status >= 500:
             raise DomainError(
-                "AGENT_MESSAGE_DELIVERY_AMBIGUOUS", "消息发送结果不确定，请先刷新会话", 504
+                "AGENT_MESSAGE_DELIVERY_AMBIGUOUS",
+                "消息发送结果不确定，请先刷新会话",
+                504,
             ) from exc
         raise
 
@@ -3201,6 +3238,16 @@ def finalize_running_node_message(
         attempt_id=prepared.attempt_id,
         binding=binding,
     )
+    for locator, _ in prepared.child_references:
+        try:
+            child_sessions.revalidate(db, locator)
+        except DomainError:
+            raise DomainError(
+                "AGENT_MESSAGE_DELIVERY_AMBIGUOUS",
+                "消息已原生送达，但结果引用权限已变化，请刷新",
+                504,
+                {"outcome_unknown": True},
+            ) from None
     if result.cursor:
         record_message_attachments(
             db, binding, result.cursor, prepared.content.strip(), prepared.attachments
@@ -3265,7 +3312,10 @@ def send_node_message(
         binding_id=binding_id,
     )
     runtime = get_runtime()
-    references = resolve_conversation_references(runtime, handle, references)
+    references, child_references = prepare_child_result_references(db, binding, references)
+    references = resolve_conversation_references(
+        runtime, handle, references
+    ) + read_child_result_references(child_references)
     prompt, image_urls = message_payload(
         content, attachments, references, workspace_references, annotations
     )
@@ -3986,7 +4036,10 @@ def rerun_node_message(
     if parent_id is not None and not isinstance(parent_id, str):
         raise DomainError("RUNTIME_EVENT_IDENTITY_INVALID", "消息事件身份无效", 409)
     validate_attachment_owners(binding.id, attachments)
-    resolved_references = resolve_conversation_references(runtime, handle, references)
+    references, child_references = prepare_child_result_references(db, binding, references)
+    resolved_references = resolve_conversation_references(
+        runtime, handle, references
+    ) + read_child_result_references(child_references)
     resolved_workspace_references = agent_workspace_host.validate_flow_run_workspace_references(
         db,
         flow_run_id,

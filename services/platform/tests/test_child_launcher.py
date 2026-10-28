@@ -193,7 +193,11 @@ def parent_graph(
             conversation_scope_id=scope_id,
             runtime_session_id=runtime_id,
             openhands_conversation_id=native_id,
-            working_directory="/runtime/workspace/project/test",
+            working_directory=(
+                f"/runtime/workspace/project/users/{owner}/test"
+                if kind == "AGENT_WORKSPACE"
+                else f"/runtime/workspace/project/{host_id}"
+            ),
             create_idempotency_key=str(uuid4()),
             lifecycle="PROVISIONING",
         )
@@ -486,6 +490,8 @@ def launcher_http(parent_graph, monkeypatch):
                 history_sessions=g.sessions,
             ),
             blocking_executor=executor,
+            history_read_executor=executor,
+            history_read_slots=asyncio.Semaphore(1),
             blocking_io_slots=asyncio.Semaphore(1),
             blocking_capacity=1,
             metrics=Mock(),
@@ -567,7 +573,7 @@ def test_only_exact_native_path_bypasses_cookie_login(launcher_http):
 
     g, client, _ = launcher_http
     path = urlsplit(g.frozen.launch_url).path.removeprefix("/prefix")
-    for extra in ("/queries", "/commands", "/start/anything"):
+    for extra in ("/queries/anything", "/commands/anything", "/start/anything"):
         response = client.post(path.removesuffix("/start") + extra, json={})
         assert response.status_code == 401
 
@@ -631,6 +637,8 @@ def test_native_tool_calls_platform_gateway_over_real_tcp(launcher_http, monkeyp
     source_lock_path = state / "source.lock.json"
     source_lock_path.write_text(json.dumps(source_lock))
     env["FLOWWEAVE_NATIVE_CHILD_LOCK"] = str(source_lock_path)
+    if g.profile == "OH_FW_V4":
+        env["FLOWWEAVE_CHILD_INTERACTIONS"] = "1"
     script = Path(__file__).parents[1] / "unit_tests/fixtures/native_child_server.py"
     native = OpenHandsRuntime(g.config)
     authorized_calls = []
@@ -690,38 +698,34 @@ def test_native_tool_calls_platform_gateway_over_real_tcp(launcher_http, monkeyp
                 native, "_session_key_for_handle", lambda _: g.key.get_secret_value()
             )
             if g.profile == "OH_FW_V4":
-                # Reverse the fixture mount mapping at the formal DTO boundary.
-                # Production compares the actual container paths unchanged.
-                for method_name in (
-                    "parent_conversation_configuration",
-                    "child_conversation_configuration",
-                ):
-                    original = getattr(native, method_name)
+                original_request = native._request
 
-                    def mapped_configuration(handle, original=original):
-                        result = original(handle)
-                        assert result.workspace.working_dir == str(state / "workspace")
-                        return result.model_copy(
-                            update={
-                                "workspace": result.workspace.model_copy(
-                                    update={"working_dir": g.binding.working_directory}
-                                )
+                def mounted_response(method, path, **kwargs):
+                    # Simulate container mount paths on actual HTTP responses;
+                    # keep the production state/config identity checks enabled.
+                    value = original_request(method, path, **kwargs)
+                    parts = path.strip("/").split("/")
+                    if (
+                        method == "GET"
+                        and len(parts) == 3
+                        and parts[:2] == ["api", "conversations"]
+                    ):
+                        workspace = value.get("workspace")
+                        if workspace is not None:
+                            assert workspace["working_dir"] == str(state / "workspace")
+                            value["workspace"] = {
+                                **workspace,
+                                "working_dir": g.binding.working_directory,
                             }
-                        )
+                            value["persistence_dir"] = (
+                                f"/runtime/state/conversations/{UUID(parts[2]).hex}"
+                            )
+                    if "/children/preparations/" in path and value.get("workspace") is not None:
+                        assert value["workspace"] == str(state / "workspace")
+                        value["workspace"] = g.binding.working_directory
+                    return value
 
-                    monkeypatch.setattr(native, method_name, mapped_configuration)
-                for method_name in (
-                    "prepare_governed_child_conversation",
-                    "release_child_conversation",
-                ):
-                    original = getattr(native, method_name)
-
-                    def mapped_preparation(*args, original=original):
-                        result = original(*args)
-                        assert result.workspace == str(state / "workspace")
-                        return result.model_copy(update={"workspace": g.binding.working_directory})
-
-                    monkeypatch.setattr(native, method_name, mapped_preparation)
+                monkeypatch.setattr(native, "_request", mounted_response)
             client.app.state.container.runtime = native
             gateway = urlsplit(g.config.agent_child_gateway_base_url)
             server = uvicorn.Server(
@@ -811,6 +815,23 @@ def test_native_tool_calls_platform_gateway_over_real_tcp(launcher_http, monkeyp
                 assert observations[0]["observation"]["outcome_unknown"] == (
                     g.profile == "OH_FW_V3"
                 )
+                if g.profile == "OH_FW_V4":
+                    all_actions = [
+                        e
+                        for e in events
+                        if e["kind"] == "ActionEvent" and e.get("tool_name") in CHILD_TOOL_NAMES
+                    ]
+                    assert len(all_actions) == 6
+                    all_observations = [
+                        e
+                        for e in events
+                        if e["kind"] == "ObservationEvent"
+                        and e.get("action_id") in {a["id"] for a in all_actions}
+                    ]
+                    assert len(all_observations) == 6
+                    assert not any(e["observation"].get("is_error") for e in all_observations), (
+                        all_observations
+                    )
                 assert authorized_calls
                 assert all(
                     call
@@ -860,7 +881,17 @@ def test_native_tool_calls_platform_gateway_over_real_tcp(launcher_http, monkeyp
                             for e in child_events
                             if e["kind"] == "MessageEvent" and e.get("source") == "user"
                         ]
-                        assert len(users) == 1
+                        assert len(users) == 2
+                        parent_inputs = [
+                            e
+                            for e in users
+                            if (e.get("parent_instruction") or {}).get("operation") == "send"
+                        ]
+                        assert len(parent_inputs) == 1
+                        assert (
+                            parent_inputs[0]["parent_instruction"]["parent_conversation_id"]
+                            == handle.conversation_id
+                        )
                         assert "review child" in str(users[0])
                         configuration = child_http.get(child_root).json()
                         names = configuration["secret_registry"]["secret_sources"]
@@ -872,6 +903,33 @@ def test_native_tool_calls_platform_gateway_over_real_tcp(launcher_http, monkeyp
                         }
                         assert configuration["parent_conversation_id"] == handle.conversation_id
             if g.profile == "OH_FW_V4":
+                from flowweave.bootstrap import api as bootstrap_api
+                from flowweave.modules.users.application.security import Principal
+
+                monkeypatch.setattr(
+                    bootstrap_api.users,
+                    "authenticate",
+                    lambda db, cookie: Principal(g.owner, g.owner, "SUPER_ADMIN", True),
+                )
+                client.cookies.set("flowweave_session", "fixture-cookie")
+                browser_root = (
+                    f"/api/v1/agent-session-children/{g.binding.id}/{accepted.json()['binding_id']}"
+                )
+                # The first-turn parent window ends after its native tools.
+                g.binding.lifecycle = "ACTIVE"
+                g.db.commit()
+                submission = str(uuid4())
+                user_message = {"submission_id": submission, "content": "user follow-up"}
+                user_sent = client.post(browser_root + "/messages", json=user_message)
+                assert user_sent.status_code == 202, user_sent.text
+                replay = client.post(browser_root + "/messages", json=user_message)
+                assert (
+                    replay.status_code == 202
+                    and replay.json()["cursor"] == user_sent.json()["cursor"]
+                ), replay.text
+                hydration = client.get(browser_root + "/hydration")
+                assert hydration.status_code == 200, hydration.text
+                assert client.get(browser_root + "/context").status_code == 200
                 # A real server shutdown/restart must preserve native gate,
                 # initial event and the platform reservation with the same proof.
                 process.stdin.write("stop\n")
@@ -931,7 +989,7 @@ def test_native_tool_calls_platform_gateway_over_real_tcp(launcher_http, monkeyp
                                 if e["kind"] == "MessageEvent" and e.get("source") == "user"
                             ]
                         )
-                        == 1
+                        == 3
                     )
                     names = reloaded.get(child_root).json()["secret_registry"]["secret_sources"]
                     assert "FLOWWEAVE_HISTORY_ACCESS" not in names

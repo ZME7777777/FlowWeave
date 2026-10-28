@@ -364,6 +364,7 @@ async def run_formal_events(
     project: Callable[[Session, P, R], T],
     *,
     history: bool,
+    timeout_seconds: float | None = None,
 ) -> T:
     """Keep one real worker slot, but close DB sessions during Runtime I/O."""
 
@@ -390,7 +391,11 @@ async def run_formal_events(
     started_at = monotonic()
     outcome = "error"
     try:
-        async with formal_response_budget(container.settings.runtime_event_read_timeout_seconds):
+        async with formal_response_budget(
+            timeout_seconds
+            if timeout_seconds is not None
+            else container.settings.runtime_event_read_timeout_seconds
+        ):
             result = await _run_blocking_operation(
                 container,
                 execute,
