@@ -13136,3 +13136,23 @@ Web typecheck、受影响 ESLint、git diff --check 通过。2 项既有 Chromiu
 成员映射最新版本、搜索不丢选择及完整说明提示通过，无生产业务写入或模型
 调用。无 CURRENT，沿用当前会话授权仅发布 Web；正式结果后补，当前与下一
 可执行重构切片均为 NONE。
+
+
+OPS-31 正式发布补记（2026-10-28）：实际部署代码为
+`1205dba9d4e9a530f6a4915042b1928b050f02a3`。Web 正式预检与 commit-bound
+最小上下文 prepare 通过，归档 SHA-256 为
+`65c896d19503f42d13ff26fbb0ad85e9de5ab7eed3a229b4ef3580f2d53f9373`，
+实际 linux/amd64 Web image ID 为
+`sha256:f7a6464162e31a3766b7fa30a66d15cec5c5b8c0efc6703fe2ddcec85f579d7b`，
+OCI revision 一致。保留旧日志与回滚镜像后仅 recreate Web，健康及版本通过；
+服务器配置摘要和其他 47 个容器的 image／StartedAt 保持，无迁移、平台／
+Provider 重启、Runtime replacement、生产业务写入或模型调用。
+
+公网 HTML、入口资源及组合编辑器模块摘要匹配运行镜像，新简短说明与 Skill
+列表控件存在；Chromium 验证前缀／根登录、Agent／记录深层路由、匿名 401 和
+全新浏览器前缀请求通过，根 API 请求为零。组合保存及复杂交互使用本地受控
+API 验证，不冒称线上已登录业务操作。remote-release-finish 通过，无过期受管
+上下文；精确回收一个历史 image ID 的 tags，保留当前、一个不同版本回滚和
+全部容器引用，未清理共享 BuildKit、卷、Workspace 或数据库备份。收尾后
+健康、版本、配置和其他 47 个容器再验通过。补记不改变部署应用身份，本地
+提交未推送；当前与下一可执行重构切片均为 NONE。
