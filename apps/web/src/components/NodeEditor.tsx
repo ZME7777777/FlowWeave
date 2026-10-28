@@ -1,4 +1,4 @@
-import { Check, ChevronDown, ChevronUp, Maximize2, Plus, Trash2, X } from 'lucide-react';
+import { Maximize2, Plus, Trash2, X } from 'lucide-react';
 import { useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import type { IOField, NodeAsset, NodeAssetWrite } from '../types';
@@ -37,11 +37,11 @@ function PromptContent({ promptKey, value, preview, disabled, onChange }: { prom
 function PromptMode({ preview, onChange }: { preview: boolean; onChange: (preview: boolean) => void }) {
   return <div className="node-prompt-mode" role="group" aria-label="正文显示方式"><button type="button" aria-pressed={!preview} onClick={() => onChange(false)}>编辑</button><button type="button" aria-pressed={preview} onClick={() => onChange(true)}>预览</button></div>;
 }
-function ExpandedPrompt({ promptKey, value, disabled, error, onChange, onClose, onSave }: { error: string; promptKey: PromptKey; value: string; disabled: boolean; onChange: (value: string) => void; onClose: () => void; onSave: (event: KeyboardEvent) => void }) {
+function ExpandedPrompt({ promptKey, value, disabled, error, onChange, onClose, onCancel, onSave }: { onCancel: () => void; error: string; promptKey: PromptKey; value: string; disabled: boolean; onChange: (value: string) => void; onClose: () => void; onSave: (event: KeyboardEvent) => void }) {
   const panel = useRef<HTMLElement>(null);
   const [preview, setPreview] = useState(false);
   const title = useId();
-  useEscapeClose(onClose);
+  useEscapeClose(() => { onCancel(); onClose(); });
   useEffect(() => {
     const previous = document.activeElement;
     panel.current?.querySelector('textarea')?.focus();
@@ -57,26 +57,29 @@ function ExpandedPrompt({ promptKey, value, disabled, error, onChange, onClose, 
 
 interface Props {
   node?: NodeAsset; initialDirectoryId?: string | null; embedded?: boolean;
-  onSave: (data: NodeAssetWrite) => Promise<NodeAsset>; onClose: () => void;
+  onSave: (data: NodeAssetWrite) => Promise<NodeAsset>;
   onDraftStateChange?: (state: NodeDraftState) => void;
 }
-export function NodeEditor({ node, initialDirectoryId = null, embedded = false, onSave, onClose, onDraftStateChange }: Props) {
+export function NodeEditor({ node, initialDirectoryId = null, embedded = false, onSave, onDraftStateChange }: Props) {
   const [form, setForm] = useState(() => initialDraft(node, initialDirectoryId));
-  const [baseline, setBaseline] = useState(() => JSON.stringify(writeDraft(form)));
+  const [baseline, setBaseline] = useState(() => structuredClone(form));
   const [activeTab, setActiveTab] = useState<EditorTab>('startup_prompt');
   const [previews, setPreviews] = useState<Record<PromptKey, boolean>>({ startup_prompt: false, context_prompt: false });
-  const [descriptionExpanded, setDescriptionExpanded] = useState(false);
+  const [isCreated, setIsCreated] = useState(Boolean(node));
   const [expandedPrompt, setExpandedPrompt] = useState<PromptKey>();
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
   const submitting = useRef(false);
   const formElement = useRef<HTMLFormElement>(null);
   const nameInput = useRef<HTMLInputElement>(null);
   const tabsId = useId();
-  const dirty = JSON.stringify(writeDraft(form)) !== baseline;
+  const dirty = JSON.stringify(writeDraft(form)) !== JSON.stringify(writeDraft(baseline));
   useLayoutEffect(() => { onDraftStateChange?.({ dirty, saving }); }, [dirty, saving, onDraftStateChange]);
-  useEscapeClose(() => { if (!submitting.current) onClose(); });
+  const cancelChanges = () => {
+    if (submitting.current || !dirty) return;
+    setForm(structuredClone(baseline)); setError('');
+  };
+  useEscapeClose(cancelChanges);
   useEffect(() => {
     if (!dirty && !saving) return;
     const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ''; };
@@ -100,7 +103,7 @@ export function NodeEditor({ node, initialDirectoryId = null, embedded = false, 
       payload.inputs.forEach(field => { field.display_name = field.display_name.trim(); });
       payload.outputs.forEach(field => { field.display_name = field.display_name.trim(); });
       const result = initialDraft(await onSave(payload));
-      setForm(result); setBaseline(JSON.stringify(writeDraft(result))); setSaved(true);
+      setForm(result); setBaseline(structuredClone(result)); setIsCreated(true);
     } catch (reason) { setError(reason instanceof Error ? reason.message : '保存失败，请重试。'); }
     finally { submitting.current = false; setSaving(false); }
   };
@@ -115,8 +118,10 @@ export function NodeEditor({ node, initialDirectoryId = null, embedded = false, 
     </section>;
   };
   const editor = <form ref={formElement} className={`modal editor asset-editor node-form node-edit-workspace${embedded ? ' node-detail-editor' : ''}`} noValidate onSubmit={submit} onKeyDown={shortcut}>
-    <header className="asset-editor-header"><div className="node-detail-toolbar-label"><input ref={nameInput} aria-label="节点名称" title="编辑节点名称" size={Math.max(12, Math.min(36, form.name.length * 2 + 2))} value={form.name} maxLength={200} disabled={saving} placeholder="新建节点 · 输入名称" onChange={event => setForm(current => ({ ...current, name: event.target.value }))}/><span className={`node-save-state${dirty ? ' modified' : ''}`} role="status">{saving ? '保存中…' : dirty ? '未保存修改' : saved ? <><Check size={12}/>已保存</> : node ? '已保存' : '新节点'}</span></div><div className="node-detail-toolbar-actions"><button type="button" className="ghost" disabled={saving} onClick={onClose}>关闭</button><button type="submit" className="primary" disabled={saving} title="⌘ / Ctrl + S">{saving ? '保存中…' : '保存节点'}</button></div></header>
-    <div className={`node-inline-description${descriptionExpanded ? ' expanded' : ''}`}><button type="button" className="node-description-summary" aria-expanded={descriptionExpanded} aria-controls={`${tabsId}-description`} onClick={() => setDescriptionExpanded(value => !value)}><span>{form.description || '添加节点说明'}</span>{descriptionExpanded ? <ChevronUp size={14}/> : <ChevronDown size={14}/>}</button><div hidden={!descriptionExpanded} id={`${tabsId}-description`}><textarea rows={3} aria-label="节点说明" value={form.description} disabled={saving} placeholder="简述节点用途，帮助其他人选择和复用。" onChange={event => setForm(current => ({ ...current, description: event.target.value }))}/></div></div>
+    <header className="asset-editor-header"><div className={`node-detail-toolbar-label${isCreated ? ' node-fixed-metadata' : ''}`}>
+      {isCreated ? <><h2 title={form.name}>{form.name}</h2>{form.description && <p title={form.description}>{form.description}</p>}</> : <input ref={nameInput} aria-label="节点名称" title="节点名称" size={Math.max(12, Math.min(36, form.name.length * 2 + 2))} value={form.name} maxLength={200} disabled={saving} placeholder="新建节点 · 输入名称" onChange={event => setForm(current => ({ ...current, name: event.target.value }))}/>}
+    </div><div className="node-detail-toolbar-actions"><button type="button" className="secondary node-cancel-changes" disabled={!dirty || saving} onClick={cancelChanges} title="取消本次修改（Esc）">取消</button><button type="submit" className="primary" disabled={saving} title="⌘ / Ctrl + S">{saving ? '保存中…' : '保存节点'}</button></div></header>
+    {!isCreated && <label className="node-creation-description">节点说明<textarea rows={2} aria-label="节点说明" value={form.description} disabled={saving} placeholder="简述节点用途，创建后名称与说明将固定。" onChange={event => setForm(current => ({ ...current, description: event.target.value }))}/></label>}
     <div className="node-editor-tabs" role="tablist" aria-label="节点配置">{(['startup_prompt', 'context_prompt', 'fields'] as const).map((tab, index, tabs) => <button key={tab} type="button" role="tab" id={`${tabsId}-${tab}`} aria-controls={`${tabsId}-panel-${tab}`} aria-selected={activeTab === tab} tabIndex={activeTab === tab ? 0 : -1} onClick={() => setActiveTab(tab)} onKeyDown={event => {
       const next = event.key === 'ArrowRight' ? tabs[(index + 1) % tabs.length] : event.key === 'ArrowLeft' ? tabs[(index + tabs.length - 1) % tabs.length] : event.key === 'Home' ? tabs[0] : event.key === 'End' ? tabs.at(-1) : undefined;
       if (next) { event.preventDefault(); setActiveTab(next); document.getElementById(`${tabsId}-${next}`)?.focus(); }
@@ -125,5 +130,5 @@ export function NodeEditor({ node, initialDirectoryId = null, embedded = false, 
     {(['startup_prompt', 'context_prompt'] as const).map(key => <section key={key} hidden={activeTab !== key} className="node-editor-panel node-text-panel" role="tabpanel" id={`${tabsId}-panel-${key}`} aria-labelledby={`${tabsId}-${key}`}><div className="node-prompt-toolbar"><small>{key === 'startup_prompt' ? '任务、步骤与验收标准' : '背景信息与执行约束'}</small><span>{form.executor[key].length.toLocaleString()} 字符</span><PromptMode preview={previews[key]} onChange={value => setPreviews(current => ({ ...current, [key]: value }))}/><button type="button" className="node-prompt-expand" aria-label={`放大编辑${promptLabels[key]}`} onClick={() => setExpandedPrompt(key)}><Maximize2 size={13}/><span>放大</span></button></div><PromptContent promptKey={key} value={form.executor[key]} preview={previews[key]} disabled={saving} onChange={value => updatePrompt(key, value)}/></section>)}
     <section hidden={activeTab !== 'fields'} className="node-editor-panel node-fields-panel" role="tabpanel" id={`${tabsId}-panel-fields`} aria-labelledby={`${tabsId}-fields`}>{fieldList('inputs')}{fieldList('outputs')}<p className="node-fields-draft-note">字段修改随节点统一保存。</p></section>
   </form>;
-  return <>{embedded ? editor : <div className="modal-backdrop">{editor}</div>}{expandedPrompt && <ExpandedPrompt promptKey={expandedPrompt} value={form.executor[expandedPrompt]} disabled={saving} error={error} onChange={value => updatePrompt(expandedPrompt, value)} onSave={shortcut} onClose={() => setExpandedPrompt(undefined)}/>}</>;
+  return <>{embedded ? editor : <div className="modal-backdrop">{editor}</div>}{expandedPrompt && <ExpandedPrompt promptKey={expandedPrompt} value={form.executor[expandedPrompt]} disabled={saving} error={error} onCancel={cancelChanges} onChange={value => updatePrompt(expandedPrompt, value)} onSave={shortcut} onClose={() => setExpandedPrompt(undefined)}/>}</>;
 }

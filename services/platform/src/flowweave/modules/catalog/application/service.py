@@ -311,6 +311,18 @@ def save_asset(db: Session, payload: NodeAssetWrite, asset_id: str | None = None
             raise conflict(
                 "node asset was modified", expected=payload.row_version, actual=item.row_version
             )
+        changed_metadata = [
+            field
+            for field in ("name", "description")
+            if getattr(payload, field) != getattr(item, field)
+        ]
+        if changed_metadata:
+            raise DomainError(
+                "NODE_ASSET_METADATA_IMMUTABLE",
+                "节点名称和说明创建后不可修改。",
+                422,
+                {"fields": changed_metadata},
+            )
         item.row_version += 1
         item.updated_at = datetime.now(UTC)
     else:
@@ -347,8 +359,6 @@ def save_asset(db: Session, payload: NodeAssetWrite, asset_id: str | None = None
         db.flush()
     for key in (
         "directory_id",
-        "name",
-        "description",
         "icon_kind",
         "icon_value",
     ):

@@ -6,7 +6,7 @@ let nextId = 1;
 let listening = false;
 
 function onKeyDown(event: KeyboardEvent) {
-  if (event.key !== 'Escape' || event.defaultPrevented) return;
+  if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
   const top = entries.at(-1);
   if (!top) return;
   event.preventDefault();
