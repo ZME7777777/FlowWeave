@@ -12909,3 +12909,30 @@ bootstrap 使用受控替身，未运行真实模型。14 项 Chromium 定向回
 调整后 3 项新增用例再验通过。截图人工检查通过。唯一 Alembic head 保持
 0178_merge_schedule_credentials，无迁移、无 CURRENT。沿用当前会话授权发布
 platform 与 web，实际发布完成后补记；当前与下一可执行重构切片均为 NONE。
+
+
+OPS-26 正式发布补记（2026-10-28）：实际部署代码为
+`3f92634af7e4c8cbe285dcc1cf8225504d660044`。platform／web 正式预检与
+commit-bound 最小上下文 prepare 通过；归档 SHA-256 分别为
+`a85d765f223d8b2d9638e38bdb820c82a940895b84ba67400f46b00e85912cde` 和
+`3712e02147fa949bd05a6752a1e1b763fa133e07d3364eb16c48f408b964a402`。
+实际 linux/amd64 平台／Web image ID 分别为
+`sha256:0fe5884f41f84835db1473954a7651a870fdf2497fa5b31e9eff994457db08c0` 和
+`sha256:1edc37e9e1196238ae6fd096c604d7580117f98a21db8c9b9d143a8d141263a4`，
+OCI revision 一致。保留旧日志与回滚镜像后执行 migration，数据库 head 仍为
+0178_merge_schedule_credentials；同步 recreate api、stream-api、worker、web，
+四服务健康与版本核对通过。服务器 Compose／env 摘要及其他 43 个容器的 image／
+StartedAt 保持，未重启 Provider 或 replacement Runtime。
+
+发布前后在只读数据库事务中核对 Case、阶段、控制计划、决策、观察任务及关联
+运行的记录摘要完全一致。正式认证后 GET 场景列表与详情通过，现有一个空路径、
+无控制会话的 Case 保留；未发送业务写请求、启动场景或调用真实模型。公网 HTML、
+入口 JS／CSS 与运行镜像摘要一致，Case 路由和新 CasesPage JS／CSS 可达，模块
+包含新场景信息／控制记录／Agent 启动入口。生产 Chromium 验证前缀／根登录、
+深层路由、匿名 401 与全新浏览器前缀请求通过。复杂路径、资料编辑和 Agent
+失败重试由本地受控 API 回归验证，不冒称为生产真实 Agent 全流程执行验收。
+
+platform 与 web remote-release-finish 通过，无过期受管上下文，精确回收两个
+可回收历史 image ID 的 tags，保留当前镜像、每仓库一个不同版本回滚及全部
+实际引用；未清理共享 BuildKit、卷、Workspace 或数据库备份。实际部署身份
+不因本补记改变；本地提交未推送，当前与下一可执行重构切片均为 NONE。
