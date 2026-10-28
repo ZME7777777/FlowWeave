@@ -13238,3 +13238,30 @@ Case 回归通过，覆盖创建、资料导入失败重试／取消、预览／
 无新增迁移，Alembic唯一head保持0178_merge_schedule_credentials，无CURRENT。
 沿用当前会话直接部署授权发布platform／web，正式结果后补；当前及下一可执行
 重构切片均为NONE。
+
+
+OPS-33 正式发布补记（2026-10-28）：实际部署代码为
+`8e6c1a6e2a858bf37e3f22aab22e0e217b18220c`。platform／web 正式预检与
+commit-bound 最小上下文 prepare 通过，归档 SHA-256 分别为
+`08abebbe60d9fbb6b9383e98855b40fef42614490941eeb0cfb694a28b24ca82` 和
+`d19897162c5210224749336b917d3f43e763f28bc9e5968ad58cb7c5458670c0`。
+实际 linux/amd64 平台／Web image ID 分别为
+`sha256:863446fd495c1bea2c2074083e5808b96b0be2fb4f844713040cb7675a3d65f1` 和
+`sha256:70dc45ff97165f571276b34a102bc7ed6cb169f13ea268fe730bb9e8c7ae95a5`，
+OCI revision 均一致。保留原日志和回滚镜像后执行正式 migration，数据库 head
+保持0178_merge_schedule_credentials；同步 recreate api、stream-api、worker、web，
+四服务健康与版本通过，服务器配置摘要及其他43个容器 image／StartedAt保持。
+没有 Provider 重启、Runtime replacement 或业务写入。
+
+发布前后以只读数据库快照及正式认证 GET 核对现有 Case 控制面元数据，全部
+保持一致。公网 HTML、入口资源及 Case 模块 JS／CSS 摘要匹配运行镜像，新
+紧凑面板及 Agent 操作记录控件存在；Chromium 验证场景深层路由、记录深层
+路由、前缀／根登录及匿名401边界通过，全新浏览器认证 API 使用部署前缀，
+根API请求为零。基础信息锁定与复杂交互由本地服务测试及受控浏览器API验收，
+未通过线上业务写入验证，也未调用模型。
+
+platform与web remote-release-finish通过，无过期受管上下文；精确回收两个
+历史image ID的tags，保留当前镜像、每仓库一个不同版本回滚及全部容器引用。
+未清理共享BuildKit、卷、Workspace或数据库备份。收尾后健康、版本、数据库
+head、配置和其他43个容器再次核对通过。本补记不改变部署应用身份，本地
+提交未推送；当前及下一可执行重构切片均为NONE。
