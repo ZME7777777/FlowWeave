@@ -11,6 +11,7 @@ from flowweave.modules.catalog.application import (
     capability_directory,
     capability_files,
     capability_imports,
+    market_sources,
     mcp_oauth_authorizations,
     mcp_oauth_secrets,
     mcp_validations,
@@ -18,10 +19,12 @@ from flowweave.modules.catalog.application import (
     plugin_sources,
     plugin_validations,
     service,
+    skill_market,
 )
 from flowweave.runtime.base import RuntimeMCPOAuthCallbackRequest
 from flowweave.shared.errors import DomainError
 from flowweave.shared.http import Db, get_container, run_sync
+from flowweave.shared.market_schemas import MarketSkillImportWrite, MarketSourcesWrite
 from flowweave.shared.schemas import (
     AgentProfileCopyWrite,
     AgentProfileRetireWrite,
@@ -758,3 +761,56 @@ async def delete_capability_batch(payload: CapabilityBulkDeleteWrite, db: Db) ->
     return await run_sync(
         db, lambda session: capability_imports.delete_capabilities(session, payload.ids)
     )
+
+
+@router.get("/market-sources")
+async def market_source_preferences(db: Db) -> dict:
+    return await run_sync(db, market_sources.read_sources)
+
+
+@router.put("/market-sources")
+async def update_market_source_preferences(payload: MarketSourcesWrite, db: Db) -> dict:
+    return await run_sync(db, lambda session: market_sources.save_sources(session, payload))
+
+
+@router.get("/market-sources/{source_id}/plugins")
+async def browse_market_plugins(source_id: str, db: Db) -> dict:
+    source = await run_sync(
+        db, lambda session: market_sources.select_source(session, source_id, {"PLUGIN_GIT"})
+    )
+    await db.rollback()
+    return await asyncio.to_thread(skill_market.plugin_catalog, source)
+
+
+@router.get("/market-sources/{source_id}/skills")
+async def browse_market_skills(
+    source_id: str, db: Db, q: str = Query(default="", max_length=200)
+) -> dict:
+    source = await run_sync(
+        db,
+        lambda session: market_sources.select_source(
+            session, source_id, {"SKILL_GIT", "SKILLS_SH"}
+        ),
+    )
+    await db.rollback()
+    return await asyncio.to_thread(skill_market.search, source, q)
+
+
+@router.post("/market-skill-imports/validate")
+async def validate_market_skill(payload: MarketSkillImportWrite, db: Db) -> dict:
+    source = await run_sync(
+        db,
+        lambda session: market_sources.select_source(
+            session, payload.source_id, {"SKILL_GIT", "SKILLS_SH"}
+        ),
+    )
+    await db.rollback()
+    prepared = await asyncio.to_thread(skill_market.prepare_import, source, payload)
+    stored = await asyncio.to_thread(capability_imports.store_validation_source, prepared)
+    try:
+        return await run_sync(
+            db, lambda session: capability_imports.register_validation(session, stored)
+        )
+    except BaseException:
+        await asyncio.to_thread(capability_imports.discard_validation_source, stored)
+        raise

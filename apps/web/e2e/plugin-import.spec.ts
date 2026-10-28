@@ -19,6 +19,7 @@ test.beforeEach(async ({ page }) => {
   await page.route('**/api/v1/auth/me', route => route.fulfill({ json: { id: 'plugin-user', username: 'plugin-user', role: 'USER' } }));
   await page.route('**/api/v1/capability-directory?*', route => route.fulfill({ json: { items: [], total: 0, page: 1, page_size: 20, counts: {}, collection_total: 0 } }));
   await page.route('**/api/v1/capability-collection-directory?*', route => route.fulfill({ json: { items: [], total: 0, page: 1, page_size: 20 } }));
+  await page.route('**/api/v1/market-sources', route => route.fulfill({ json: { revision: '1', sources: [{ id: 'openhands', name: 'OpenHands', kind: 'PLUGIN_GIT', url: 'https://github.com/OpenHands/extensions.git', ref: 'HEAD', repo_path: '', enabled: true, builtin: true }] } }));
   await page.route('**/api/v1/plugin-marketplace-catalogs/openhands', route => route.fulfill({ json: catalog }));
 });
 
@@ -173,7 +174,7 @@ test('market list fills the dialog and keeps toggleable multiple selections acro
       const footerGap = element.querySelector('.plugin-import-footer')!.getBoundingClientRect().top - body.getBoundingClientRect().bottom;
       return { footerGap: Math.round(footerGap), bottomGap: Math.round(bottomGap), bodyOverflow: body.scrollHeight - body.clientHeight, listHeight: Math.round(list.getBoundingClientRect().height) };
     })).toMatchObject({ footerGap: 0, bottomGap: 16, bodyOverflow: 0 });
-    expect(await dialog.locator('.plugin-import-list').evaluate(element => element.clientHeight)).toBeGreaterThan(180);
+    expect(await dialog.locator('.plugin-import-list').evaluate(element => element.clientHeight)).toBeGreaterThan(120);
   }
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.screenshot({ path: '../../.tmp/ops53-plugin-multiselect/market-selection.png' });

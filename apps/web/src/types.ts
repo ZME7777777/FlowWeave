@@ -1233,3 +1233,14 @@ export interface FlowRunDirectoryRecord {
   started_at: string; detail: string; schedule_id?: string | null; schedule_name?: string | null;
 }
 export interface FlowRunDirectoryPage { items: FlowRunDirectoryRecord[]; next_cursor: string | null }
+
+export interface MarketSource {
+  id: string; name: string; kind: 'PLUGIN_GIT' | 'SKILL_GIT' | 'SKILLS_SH'; url: string;
+  ref: string; repo_path: string; enabled: boolean; builtin: boolean;
+}
+export interface MarketSources { revision: string; sources: MarketSource[] }
+export interface MarketSkill {
+  id: string; repository: string; skill_id: string; name: string; description: string;
+  installs?: number | null; commit?: string | null; path?: string | null;
+}
+export interface MarketSkillSearch { skills: MarketSkill[]; query: string; search_required: boolean; commit?: string }

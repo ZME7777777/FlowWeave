@@ -1,6 +1,8 @@
 import { Check, ChevronRight, FileArchive, GitBranch, LoaderCircle, Package, RefreshCw, Search, Store, X } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api/client';
+import { MarketSourcePicker } from './MarketSources';
+import { useMarketSources } from './useMarketSources';
 import { Pagination } from './Pagination';
 import { useEscapeClose } from './useEscapeClose';
 import type { MarketplaceCatalog, PluginSourceResolution } from '../types';
@@ -41,6 +43,8 @@ function gitSource(value: string, commit: string, repoPath: string) {
 
 export function PluginImportDialog({ onClose, onPublished, onUpload }: Props) {
   useEscapeClose(onClose);
+  const market = useMarketSources('PLUGIN');
+  const marketSource = market.source;
   const [source, setSource] = useState<Source>('marketplace');
   const [catalog, setCatalog] = useState<MarketplaceCatalog>();
   const [loading, setLoading] = useState(true);
@@ -65,24 +69,28 @@ export function PluginImportDialog({ onClose, onPublished, onUpload }: Props) {
     `${plugin.name} ${plugin.description ?? ''} ${plugin.category ?? ''}`.toLowerCase().includes(query.trim().toLowerCase()),
   ), [catalog, query]);
 
-  const browse = async () => {
+  const browse = useCallback(async () => {
+    if (!marketSource) return;
+    generation.current += 1;
+    setCatalog(undefined); setSelectedNames(new Set()); setImportedNames(new Set()); marketplaceResolutions.current.clear(); setPublishedCount(0); setError(''); setStatus(''); setQuery('');
     const request = ++browseGeneration.current;
     browseAbort.current?.abort();
     const controller = new AbortController();
     browseAbort.current = controller;
     setLoading(true); setCatalogError('');
     try {
-      const result = await api.openhandsMarketplaceCatalog(controller.signal);
+      const result = await (marketSource.id === 'openhands' ? api.openhandsMarketplaceCatalog(controller.signal) : api.marketPluginCatalog(marketSource.id, controller.signal));
       if (request !== browseGeneration.current) return;
       setCatalog(result); setSelectedNames(new Set()); setImportedNames(new Set()); marketplaceResolutions.current.clear(); setPublishedCount(0); setPage(1);
     } catch (reason) {
       if (request === browseGeneration.current) setCatalogError(message(reason));
     } finally { if (request === browseGeneration.current) setLoading(false); }
-  };
+  }, [marketSource]);
   useEffect(() => {
-    void browse();
+    if (marketSource) void browse();
+    else { setCatalog(undefined); setLoading(market.isPending); setSelectedNames(new Set()); }
     return () => { generation.current += 1; browseGeneration.current += 1; browseAbort.current?.abort(); };
-  }, []);
+  }, [browse, marketSource, market.isPending]);
 
   const reset = () => { generation.current += 1; setResolution(undefined); setError(''); setStatus(''); setPublishedCount(0); };
   const importPlugin = async () => {
@@ -160,13 +168,13 @@ export function PluginImportDialog({ onClose, onPublished, onUpload }: Props) {
     </div>
     <div className="plugin-import-body">
       {source === 'marketplace' ? <section aria-label="插件市场" className="plugin-import-market">
-        <div className="plugin-import-search"><label><Search size={14}/><input aria-label="搜索插件" placeholder="搜索插件名称或说明" value={query} disabled={busy} onChange={event => { setQuery(event.target.value); setPage(1); }}/></label><button className="ghost" title="刷新目录" aria-label="刷新目录" disabled={loading || busy} onClick={() => void browse()}><RefreshCw size={14}/></button></div>
+        <MarketSourcePicker market={market} disabled={busy}/><div className="plugin-import-search"><label><Search size={14}/><input aria-label="搜索插件" placeholder="搜索插件名称或说明" value={query} disabled={busy} onChange={event => { setQuery(event.target.value); setPage(1); }}/></label><button className="ghost" title="刷新目录" aria-label="刷新目录" disabled={loading || busy} onClick={() => void browse()}><RefreshCw size={14}/></button></div>
         {loading ? <div className="plugin-import-empty" role="status"><LoaderCircle className="spin" size={20}/><span>正在加载插件目录…</span><small>首次读取可能需要一些时间</small></div>
           : catalogError ? <div className="plugin-import-empty"><Store size={22}/><span>暂时无法加载插件市场</span><small role="alert">{catalogError}</small><button className="secondary" onClick={() => void browse()}>重新加载</button><button className="ghost" onClick={() => { reset(); setSource('git'); }}>从 Git 仓库导入<ChevronRight size={13}/></button></div>
           : <><div className="plugin-import-list" aria-label="插件目录">{plugins.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE).map(plugin => <button key={plugin.name} role="checkbox" aria-label={`选择插件 ${plugin.name}`} disabled={busy || importedNames.has(plugin.name)} aria-checked={selectedNames.has(plugin.name)} onClick={() => { reset(); setSelectedNames(previous => { const next = new Set(previous); if (next.has(plugin.name)) next.delete(plugin.name); else next.add(plugin.name); return next; }); }}>
             <span className="plugin-import-check">{selectedNames.has(plugin.name) && <Check size={12}/>}</span><Package size={17}/><span className="plugin-import-copy"><b>{plugin.name}</b><small>{plugin.description || '暂无说明'}</small></span><span className="plugin-import-version">{importedNames.has(plugin.name) ? '已导入' : plugin.version || plugin.category}</span>
           </button>)}{!plugins.length && <div className="plugin-import-empty"><Search size={20}/><span>{query ? '没有匹配的插件' : '目录中暂时没有插件'}</span>{query && <button className="ghost" onClick={() => { setQuery(''); setPage(1); }}>清除搜索</button>}</div>}</div>
-          <div className="plugin-import-pagination"><small>OpenHands · {plugins.length} 个插件</small><Pagination page={page} pageSize={PAGE_SIZE} total={plugins.length} onPageChange={setPage}/></div></>}
+          <div className="plugin-import-pagination"><small>{marketSource?.name ?? '市场'} · {plugins.length} 个插件</small><Pagination page={page} pageSize={PAGE_SIZE} total={plugins.length} onPageChange={setPage}/></div></>}
       </section> : <section className="plugin-import-git" aria-label="Git 仓库导入">
         <label>仓库或提交链接<input autoFocus value={url} disabled={busy} placeholder="https://github.com/owner/repo" onChange={event => { reset(); setUrl(event.target.value); }}/></label>
         <p>可直接粘贴 GitHub 的固定提交或目录链接，自动识别版本与插件目录。</p>

@@ -14376,3 +14376,38 @@ Web remote-release-finish通过，精确回收5个超过24小时的受管旧上�
 镜像；没有清理共享BuildKit、卷、Workspace或数据库备份。收尾后Web版本、健康、
 服务器配置及其他47个容器复核通过。并行CASE-03B与能力市场工作树保持独立，
 仅从固定提交构建Web；未push，本片无后续开发任务。
+
+
+### OPS-56 统一市场源与 skills.sh Skill 搜索导入 — DONE
+
+依赖 OPS-53、CASE-03B DONE；0183_user_market_sources 顺接已提交的 0182。
+Plugin 与 Skill 在能力仓库和各自导入弹窗共用市场源管理；默认 OpenHands
+明确显示 https://github.com/OpenHands/extensions.git，Skill 默认显示
+https://skills.sh。内置源身份固定、可停用，自定义源可新增、编辑、删除，
+支持 Plugin Git 市场与公开 GitHub Skill 仓库、分支／标签／固定提交及
+仓库内目录。当前用户的 users.market_sources_json 保存配置，更新带内容
+revision 乐观锁和用户行锁；来源选择只能使用该用户启用且类型匹配的源。
+
+Skill 使用官方 CLI 同样的公开 /api/search；版本化 /api/v1 的 OIDC 不是
+此入口的前置条件。不假定可枚举完整 skills.sh：至少两字符搜索，最多50项，
+失败明确可重试或切换 Git 源。Git 来源可空词浏览。多选／再次点击取消、
+Space、跨搜索选择、部分失败保留选择并仅重试失败项；切换来源清空选择，
+关闭／切换后的迟到搜索或校验不继续自动发布。保留 ZIP 与 Plugin Git 入口。
+
+下载在 DB 事务外进行，HTTPS GitHub codeload 限定来源、拒绝重定向和凭据，
+Git HEAD／分支／标签解析固定40位提交；ZIP受压缩／展开／条目数量限制且
+不落地解压。导入唯一匹配的完整 Skill 目录、参考资料及脚本，选中目录内
+符号链接拒绝，不跟随仓库其他位置的链接；确定性 ZIP 复用原有校验、临时
+存储、导入凭证和发布流程。CapabilityImport.preview_json.source 持久记录
+市场、仓库、固定 commit、目录和 content hash，不污染 Runtime config。
+
+验证（2026-10-28至29）：PostgreSQL真实空库全迁移至0183，市场与既有
+Plugin后端26项通过；Plugin/Skill Playwright15项通过，含用户配置、来源
+切换、过期搜索、取消勾选、批量部分失败及关闭队列，390px／短屏布局。
+真实公开 react 搜索返回48项，vercel-react-best-practices固定至提交
+1a2c79d4e6c4a2283dc2c614b6538cbe1ed5ca62，完整76文件94229字节通过
+正式Skill包校验；另有用户隔离、乐观锁冲突、不可篡改内置源、禁用源、
+恶意URL／路径／所选符号链接拒绝及确定性来源记录测试。Web typecheck、
+受影响 ESLint、Ruff、production build、Diff定向回归及 diff检查通过。
+工作树并行设置界面变更保持独立，未提交进本片。实现完成；按用户授权继续
+从已提交版本执行platform/web部署，不开始后续开发切片。

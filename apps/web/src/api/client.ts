@@ -1,4 +1,4 @@
-import type { CapabilityPackageFiles, CapabilityPackageFile, CapabilityPackageComparison, CapabilityPackageFileDiff, CapabilityAssetType, CapabilityDirectoryPage, CapabilityCollectionSort, CapabilitySort, RepositoryPage } from '../types';
+import type { MarketSources, MarketSkillSearch, MarketSkill, CapabilityPackageFiles, CapabilityPackageFile, CapabilityPackageComparison, CapabilityPackageFileDiff, CapabilityAssetType, CapabilityDirectoryPage, CapabilityCollectionSort, CapabilitySort, RepositoryPage } from '../types';
 import type {
   AuthUser, LdapDirectory, LdapUser, PlatformUser,
   AgentProfileVersion, ArtifactInput, ArtifactVersion, ArtifactVersionPage, RuntimeArtifactAuditPage, CapabilityAsset, CapabilityImportResult, FlowDefinition, FlowRun, FlowRunAutomaticRecord, FlowRunAutomaticRecordUpdate, FlowRunAutomaticRecordWrite, FlowRunConversation, FlowRunRuntimeOverview, FlowRunRuntimeResource, FlowRunSummary, FlowWrite, MessageAttachmentInput, OpenHandsConversationEventBatch, McpSource, SkillSource, SkillVersionComparison,
@@ -685,6 +685,11 @@ export const api = {
     request<PluginSourceResolution>('/plugin-source-resolutions', json('POST', body)),
   previewMarketplaceCatalog: (body: { marketplace_source_url: string; marketplace_commit: string; marketplace_repo_path?: string | null }) =>
     request<MarketplaceCatalog>('/plugin-marketplace-catalogs/preview', json('POST', body)),
+  marketSources: (signal?: AbortSignal) => request<MarketSources>('/market-sources', { signal }),
+  saveMarketSources: (body: MarketSources) => request<MarketSources>('/market-sources', json('PUT', body)),
+  marketPluginCatalog: (sourceId: string, signal?: AbortSignal) => request<MarketplaceCatalog>(`/market-sources/${encodeURIComponent(sourceId)}/plugins`, { signal, timeoutMs: 330_000 }),
+  marketSkills: (sourceId: string, query: string, signal?: AbortSignal) => request<MarketSkillSearch>(`/market-sources/${encodeURIComponent(sourceId)}/skills?q=${encodeURIComponent(query)}`, { signal, timeoutMs: 90_000 }),
+  validateMarketSkill: (sourceId: string, skill: MarketSkill) => request<{ import_token: string; content_hash: string; preview: Record<string, unknown> }>('/market-skill-imports/validate', { ...json('POST', { source_id: sourceId, repository: skill.repository, skill_id: skill.skill_id, commit: skill.commit ?? null, path: skill.path ?? null }), timeoutMs: 120_000 }),
   openhandsMarketplaceCatalog: (signal?: AbortSignal) =>
     request<MarketplaceCatalog>('/plugin-marketplace-catalogs/openhands', { signal, timeoutMs: 330_000 }),
   createMarketplacePluginResolution: (body: { marketplace_source_url: string; marketplace_commit: string; marketplace_repo_path?: string | null; plugin_name: string }) =>
