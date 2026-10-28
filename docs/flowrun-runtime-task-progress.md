@@ -13186,3 +13186,30 @@ Web typecheck、受影响 ESLint、Ruff、git diff --check 通过，新分页模
 1440×1000／1440×600／1024×700，页面及详情主区域无溢出。受控 API 与测试库
 不代表生产模型执行。Alembic head保持0178_merge_schedule_credentials，无CURRENT。
 沿用会话授权发布platform／web，正式结果后补；当前与下一可执行切片均为NONE。
+
+
+OPS-32 正式发布补记（2026-10-28）：实际部署代码为
+`6ab404d593ff715dcf234e5aefc55321ea2092ee`。platform／web 正式预检与
+commit-bound 最小上下文 prepare 通过，归档 SHA-256 分别为
+`212b5275baddec2508e7ce223ce0e5c3fcd986efaca2805d117485daf4553356` 和
+`cde921beca99a00a9330a47b4a5cff1b4af5cf98b09fc20ba98bae4137ae1750`。
+实际 linux/amd64 平台／Web image ID 分别为
+`sha256:d9383cd7d52a85da56ea24ecd4e7c8d1e380bb462df53d04ad0c85c407ccd0c7` 和
+`sha256:a74ed1c0994aee86193d619066f78cd1e568a91dd8596e88a222986b6449e76d`，
+OCI revision 一致。保留旧日志和回滚镜像后执行 migration，数据库 head 保持
+0178_merge_schedule_credentials；同步 recreate api、stream-api、worker、web，
+四服务健康和版本通过。服务器配置摘要及其他43个容器 image／StartedAt 保持，
+无 Provider 重启、Runtime replacement 或业务数据变更。
+
+正式认证后对4个现有 Agent 定时任务执行只读历史目录 GET 验收，会话唯一数、
+最近触发时间／类型及分页响应结构通过，旧 occurrences 中可见会话数未丢失。
+未触发、编辑或删除任务，未调用模型。公网 HTML、入口资源及调度模块 JS／CSS
+摘要匹配运行镜像；Chromium 验证定时页面、记录深层路由、前缀／根登录、匿名
+401及全新浏览器前缀请求通过，根 API 请求为零。复杂滚动／错误重试由本地
+受控 API 验证，不冒称生产已登录完整交互或真实模型执行。
+
+platform 与 web remote-release-finish 通过，无过期受管上下文；精确回收两个
+历史 image ID 的 tags，保留当前镜像、每仓库一个不同版本回滚与全部容器引用。
+未清理共享 BuildKit、卷、Workspace 或数据库备份。收尾后四服务健康、版本、
+数据库 head、配置及其他43个容器再次核对通过。本补记不改变部署应用身份，
+本地提交未推送；当前与下一可执行重构切片均为 NONE。
