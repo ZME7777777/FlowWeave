@@ -13825,3 +13825,27 @@ Web remote-release-finish通过，回收4个过期受管发布上下文，保留
 实际引用、当前镜像及每仓库一个不同回滚版本；未清理共享BuildKit、卷、工作区
 或数据库备份。收尾后健康、版本、配置及其他47个容器再验通过。后端／Runtime
 保持，本补记不改变部署身份；本片未执行push，无后续任务。
+
+
+OPS-44 正式上线核验补记（2026-10-28）：用户授权部署后，正式Web预检通过。
+只读检查确认后续版本 `02f2e7d4ab03f7ff3737f353e32e0c083a9cbd8d` 已上线，
+其祖先包含本片 `3fadcc27c9ac1b35b199a8bdb2c55384a85842b0`，三个搜索修复
+源文件与本片提交完全一致。故未回退到较早版本、重复构建或recreate服务。
+
+对实际上线版本重新执行正式预检，核对受管上下文三个源文件摘要与固定Git
+源码一致，源归档SHA-256为
+`8670a92912d268dbcc722140451e0559199f0af9235e389bdcfadd01d7951f42`；
+实际Web image ID为
+`sha256:4fe55750b31c2f20801b4d6ac74e591ffbe4f8a6f081a5e5987acad00556b461`，
+OCI revision一致，发布marker为succeeded。公网HTML、入口JS／CSS和包含
+conversation-search-highlights的正式会话模块摘要与运行镜像一致，确认本片
+局部文字高亮修复已进入线上资源。Chromium前缀登录、Agent／记录深层、根
+登录与匿名401边界通过；全新浏览器前缀API请求通过，根API请求为零。局部
+高亮与切换交互沿用本片3项受控API浏览器回归，不冒称生产登录会话交互验收。
+
+API及stream-api的health／readiness通过，Web健康与版本、服务器配置摘要
+及其他47个容器image／StartedAt复核保持。Web remote-release-finish再验
+通过，无过期受管上下文或历史镜像候选；保留近期上下文、实际引用、当前及
+回滚镜像，未清理共享BuildKit、卷、工作区或备份。收尾后健康、版本与配置
+再验通过。无迁移、Runtime／Provider操作或生产会话写入；本补记不改变实际
+部署身份，未推送，本次部署请求已闭环。
