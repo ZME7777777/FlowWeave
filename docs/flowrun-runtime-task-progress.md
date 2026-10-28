@@ -14064,7 +14064,27 @@ Chromium 回归中16项首轮通过；批量删除用例仍断言合并前“全
 3项后端回归通过，修正既有路由测试缺少必要响应字段的夹具，并覆盖原生
 resolver异常的503与诊断隔离。Web typecheck、受影响 ESLint、Ruff和diff
 检查通过；Alembic仍为唯一0180_merge_archives_case_rounds，无迁移或Runtime
-升级。本片无后续开发任务，正式发布结果后补。
+升级。本片无后续开发任务，正式发布结果如下。
+
+OPS-48 正式发布补记（2026-10-28）：实际平台／Web代码为
+ d2fa28d1f9f18d6b58e63647c6db28804df80912（同时包含已提交OPS-49搜索改动）。
+两个范围的正式预检、commit-bound prepare、构建、健康／版本／路由验收及
+remote-release-finish均通过。平台／Web源码归档SHA-256依次为
+98f5a22f327ef1be81290e746932912dfc1af70031b857ae56f4c288cf2e4650、
+7d335354c75b75682df71b5bdadd1a19f756bd362aef1e54c10b1e4cfe09c5c0；
+运行image ID依次为
+sha256:0360e7e2fa27a7ed4426222c1de98e67ee243ee2c34fb915af5b6258e5cfe23c、
+sha256:b5fbe449297aad68ce339521868dfbd3f1dee81097322c7e9d922f02955e95bd。
+迁移检查仍为唯一0180 head，同步recreate api、stream-api、worker、web；
+保留旧镜像与服务日志，配置及其他43个容器image／StartedAt复核保持。
+三项平台服务的本片源文件摘要匹配固定上下文，公网HTML及新导入JS／CSS
+摘要匹配运行镜像。实际原生resolver再次读取76项官方目录（21.0秒），响应
+通过正式MarketplaceCatalogRead校验；没有导入生产能力、修改业务会话或
+调用模型。Chromium前缀登录、Agent／记录深层路由、根登录页及401边界通过，
+全新浏览器前缀API请求通过、根API请求为0。两范围收尾后四服务健康、版本、
+唯一head、配置及其他43个容器复核通过；保留24小时受管上下文与每仓库一个
+不同回滚镜像，不清理共享BuildKit、卷、Workspace或备份。未push，当前无
+CURRENT，本片无后续任务。
 
 ### OPS-49 会话搜索逐处命中与键盘导航 — DONE
 
