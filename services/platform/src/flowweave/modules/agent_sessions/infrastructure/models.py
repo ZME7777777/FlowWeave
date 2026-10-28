@@ -178,6 +178,7 @@ class AgentConversationBinding(Base):
     final_reply_preview_content: Mapped[str | None] = mapped_column(Text)
     pinned: Mapped[bool] = mapped_column(Boolean, default=False)
     unread: Mapped[bool] = mapped_column(Boolean, default=False)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     # The unread bit remains the server-owned fact. SYSTEM with unread=False
     # records that the user acknowledged the current abnormality.
     unread_origin: Mapped[str | None] = mapped_column(String(20))

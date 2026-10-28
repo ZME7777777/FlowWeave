@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import difflib
 import hashlib
 import io
 import json
@@ -48,6 +49,7 @@ from flowweave.shared.errors import DomainError
 from flowweave.shared.models import (
     AgentConversationBinding,
     AgentConversationCapability,
+    AgentConversationSchedule,
     AgentWorkspace,
     AgentWorkspaceCapability,
     CapabilityBlob,
@@ -2032,6 +2034,7 @@ def confirm_commit(db: Session, plan: CapabilityCommitPlan, final_key: str) -> d
         raise _reject("Import token is invalid, expired, or already consumed")
     published = publish_import(db, item)
     refresh_skill_collection_members(db, published)
+    _keep_two_published_skills(db, published)
     if published:
         canonical_storage_key = published[0].blob.storage_key
         if canonical_storage_key != final_key:
@@ -2070,6 +2073,169 @@ def confirm_commit(db: Session, plan: CapabilityCommitPlan, final_key: str) -> d
         "capabilities": capabilities,
         "committed_at": consumed_at.isoformat(),
     }
+
+
+
+def _skill_versions(db: Session, package_id: str) -> list[CapabilityVersion]:
+    return list(
+        db.scalars(
+            select(CapabilityVersion)
+            .where(CapabilityVersion.package_id == package_id)
+            .order_by(CapabilityVersion.version_no.desc())
+        )
+    )
+
+
+def _replace_skill_selection_references(
+    db: Session, package_id: str, current_version_id: str
+) -> None:
+    stale_ids = [
+        version.id
+        for version in _skill_versions(db, package_id)
+        if version.id != current_version_id
+    ]
+    if not stale_ids:
+        return
+    for reference in db.scalars(
+        select(AgentWorkspaceCapability).where(
+            AgentWorkspaceCapability.capability_version_id.in_(stale_ids)
+        )
+    ):
+        reference.capability_version_id = current_version_id
+        current = db.get(CapabilityVersion, current_version_id)
+        if current is not None:
+            reference.digest = current.digest
+    for schedule in db.scalars(select(AgentConversationSchedule)):
+        configured = list(schedule.capability_version_ids_json or [])
+        if not any(version_id in stale_ids for version_id in configured):
+            continue
+        schedule.capability_version_ids_json = [
+            current_version_id if version_id in stale_ids else version_id
+            for version_id in configured
+        ]
+
+
+def _frozen_version_references(db: Session, version_id: str) -> bool:
+    return bool(
+        _node_context_references(db, version_id)
+        or _conversation_references(db, version_id)
+        or _automatic_run_references(db, version_id)
+        or _governance_references(db, version_id)
+    )
+
+
+def _discard_version(db: Session, version: CapabilityVersion) -> None:
+    package_id = version.package_id
+    blob_id = version.blob_id
+    db.delete(version)
+    db.flush()
+    if not db.scalar(
+        select(func.count(CapabilityVersion.id)).where(CapabilityVersion.package_id == package_id)
+    ):
+        package = db.get(CapabilityPackage, package_id)
+        if package is not None:
+            db.delete(package)
+    if db.scalar(
+        select(func.count(CapabilityVersion.id)).where(CapabilityVersion.blob_id == blob_id)
+    ):
+        return
+    blob = db.get(CapabilityBlob, blob_id)
+    if blob is None:
+        return
+    import_uses_blob = db.scalar(
+        select(CapabilityImport.id).where(CapabilityImport.storage_key == blob.storage_key).limit(1)
+    )
+    if import_uses_blob is not None:
+        return
+    storage_key = blob.storage_key
+    db.delete(blob)
+    if not storage_key.startswith("builtin://"):
+        register_commit_action(db, lambda key=storage_key: get_artifact_store().delete(key))
+
+
+def _keep_two_skill_versions(db: Session, package_id: str) -> None:
+    versions = _skill_versions(db, package_id)
+    if not versions:
+        return
+    current = next((version for version in versions if version.state == "PUBLISHED"), None)
+    if current is None:
+        return
+    _replace_skill_selection_references(db, package_id, current.id)
+    visible = [version for version in versions if version.state == "PUBLISHED"]
+    for obsolete in visible[2:]:
+        if _frozen_version_references(db, obsolete.id):
+            obsolete.state = "RETIRED"
+        else:
+            _discard_version(db, obsolete)
+
+
+def _keep_two_published_skills(db: Session, published: list[Any]) -> None:
+    package_ids = {
+        item.package.id for item in published if item.package.capability_type == "SKILL"
+    }
+    for package_id in package_ids:
+        _keep_two_skill_versions(db, package_id)
+
+
+def compare_skill_versions(db: Session, capability_id: str) -> dict[str, Any]:
+    current = resolve_version(db, capability_id)
+    if current.package.capability_type != "SKILL":
+        raise DomainError("CAPABILITY_NOT_SKILL", "Only Skill versions can be compared", 422)
+    previous = db.scalar(
+        select(CapabilityVersion)
+        .where(
+            CapabilityVersion.package_id == current.package.id,
+            CapabilityVersion.version_no < current.version.version_no,
+            CapabilityVersion.state == "PUBLISHED",
+        )
+        .order_by(CapabilityVersion.version_no.desc())
+        .limit(1)
+    )
+    if previous is None:
+        raise DomainError(
+            "SKILL_PREVIOUS_VERSION_UNAVAILABLE", "Skill has no previous version", 409
+        )
+    previous_source = read_skill_source(db, previous.id)
+    current_source = read_skill_source(db, current.version.id)
+    return {
+        "previous": previous_source,
+        "current": current_source,
+        "diff": "".join(
+            difflib.unified_diff(
+                previous_source["content"].splitlines(keepends=True),
+                current_source["content"].splitlines(keepends=True),
+                fromfile="previous/SKILL.md",
+                tofile="current/SKILL.md",
+            )
+        ),
+    }
+
+
+def rollback_skill_version(db: Session, capability_id: str) -> dict[str, Any]:
+    current = resolve_version(db, capability_id)
+    if current.package.capability_type != "SKILL":
+        raise DomainError("CAPABILITY_NOT_SKILL", "Only Skill versions can be rolled back", 422)
+    versions = _skill_versions(db, current.package.id)
+    if not versions or versions[0].id != current.version.id:
+        raise DomainError(
+            "SKILL_ROLLBACK_CONFLICT",
+            "Only the current Skill version can be rolled back",
+            409,
+        )
+    previous = next(
+        (version for version in versions[1:] if version.state == "PUBLISHED"), None
+    )
+    if previous is None:
+        raise DomainError(
+            "SKILL_PREVIOUS_VERSION_UNAVAILABLE", "Skill has no previous version", 409
+        )
+    _replace_skill_selection_references(db, current.package.id, previous.id)
+    if _frozen_version_references(db, current.version.id):
+        current.version.state = "RETIRED"
+    else:
+        _discard_version(db, current.version)
+    finish(db)
+    return next(item for item in list_versions(db) if item["id"] == previous.id)
 
 
 def list_capabilities(db: Session) -> list[dict[str, Any]]:
@@ -2398,6 +2564,7 @@ def confirm_skill_update(
     db.flush()
     published = publish_import(db, imported)
     refresh_skill_collection_members(db, published)
+    _keep_two_published_skills(db, published)
     if len(published) != 1:
         raise DomainError("CAPABILITY_SOURCE_INVALID", "Capability source is invalid", 422)
     revised = published[0]

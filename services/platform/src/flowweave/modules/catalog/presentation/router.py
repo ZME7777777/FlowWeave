@@ -598,6 +598,20 @@ async def capability_source(capability_id: str, db: Db) -> dict[str, Any]:
     )
 
 
+@router.get("/capabilities/{capability_id}/skill-version-comparison")
+async def skill_version_comparison(capability_id: str, db: Db) -> dict[str, Any]:
+    return await run_sync(
+        db, lambda session: capability_imports.compare_skill_versions(session, capability_id)
+    )
+
+
+@router.post("/capabilities/{capability_id}/rollback")
+async def rollback_skill_version(capability_id: str, db: Db) -> dict[str, Any]:
+    return await run_sync(
+        db, lambda session: capability_imports.rollback_skill_version(session, capability_id)
+    )
+
+
 @router.get("/capabilities/{capability_id}/package")
 async def capability_package(capability_id: str, db: Db) -> Response:
     filename, content = await run_sync(

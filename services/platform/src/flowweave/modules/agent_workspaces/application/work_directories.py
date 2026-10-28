@@ -332,7 +332,8 @@ def _dict(db: Session, item: AgentWorkDirectory) -> dict[str, Any]:
     return {
         "id": item.id,
         "display_name": item.display_name,
-        "state": "ACTIVE",
+        "state": "ARCHIVED" if item.archived_at else "ACTIVE",
+        "archived_at": item.archived_at.isoformat() if item.archived_at else None,
         "current_version": {
             "id": version.id,
             "version": version.version,
@@ -407,30 +408,63 @@ def frozen_conversation_context(
     return _agent_working_directory(workspace_id, version.working_path)
 
 
-def list_work_directories(db: Session, workspace_id: str) -> dict[str, Any]:
+def list_work_directories(
+    db: Session, workspace_id: str, *, include_archived: bool = False
+) -> dict[str, Any]:
     _workspace(db, workspace_id)
     automation_directory_ids = select(AgentConversationSchedule.work_directory_id).where(
         AgentConversationSchedule.workspace_id == workspace_id,
         AgentConversationSchedule.workspace_mode == "AUTOMATION",
         AgentConversationSchedule.work_directory_id.is_not(None),
     )
+    predicates = [
+        AgentWorkDirectory.workspace_id == workspace_id,
+        ~AgentWorkDirectory.id.in_(automation_directory_ids),
+        ~AgentWorkDirectory.id.in_(
+            select(Case.control_work_directory_id).where(
+                Case.control_work_directory_id.is_not(None)
+            )
+        ),
+    ]
+    if not include_archived:
+        predicates.append(AgentWorkDirectory.archived_at.is_(None))
     items = db.scalars(
         select(AgentWorkDirectory)
-        .where(
-            AgentWorkDirectory.workspace_id == workspace_id,
-            ~AgentWorkDirectory.id.in_(automation_directory_ids),
-            ~AgentWorkDirectory.id.in_(
-                select(Case.control_work_directory_id).where(
-                    Case.control_work_directory_id.is_not(None)
-                )
-            ),
+        .where(*predicates)
+        .order_by(
+            AgentWorkDirectory.archived_at,
+            AgentWorkDirectory.updated_at.desc(),
+            AgentWorkDirectory.created_at.desc(),
         )
-        .order_by(AgentWorkDirectory.updated_at.desc(), AgentWorkDirectory.created_at.desc())
     )
     return {
         "root": root_context(workspace_id=workspace_id),
         "items": [_dict(db, item) for item in items],
     }
+
+
+def archive_work_directory(
+    db: Session, workspace_id: str, work_directory_id: str
+) -> dict[str, Any]:
+    _workspace(db, workspace_id)
+    item = _directory(db, workspace_id, work_directory_id, lock=True)
+    if item.archived_at is None:
+        item.archived_at = now()
+        item.updated_at = item.archived_at
+        db.flush()
+    return _dict(db, item)
+
+
+def restore_work_directory(
+    db: Session, workspace_id: str, work_directory_id: str
+) -> dict[str, Any]:
+    _workspace(db, workspace_id)
+    item = _directory(db, workspace_id, work_directory_id, lock=True)
+    if item.archived_at is not None:
+        item.archived_at = None
+        item.updated_at = now()
+        db.flush()
+    return _dict(db, item)
 
 
 def get_work_directory(db: Session, workspace_id: str, work_directory_id: str) -> dict[str, Any]:

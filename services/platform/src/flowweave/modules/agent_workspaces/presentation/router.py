@@ -529,9 +529,16 @@ async def replace_agent_workspace_runtime(
 
 
 @router.get("/agent-workspaces/{workspace_id}/work-directories")
-async def list_agent_work_directories(workspace_id: str, db: Db) -> dict[str, Any]:
+async def list_agent_work_directories(
+    workspace_id: str,
+    db: Db,
+    include_archived: bool = Query(default=False),
+) -> dict[str, Any]:
     return await run_sync(
-        db, lambda session: work_directories.list_work_directories(session, workspace_id)
+        db,
+        lambda session: work_directories.list_work_directories(
+            session, workspace_id, include_archived=include_archived
+        ),
     )
 
 
@@ -1031,16 +1038,44 @@ async def delete_agent_work_directory(
     return Response(status_code=204)
 
 
+@router.post("/agent-workspaces/{workspace_id}/work-directories/{work_directory_id}/archive")
+async def archive_agent_work_directory(
+    workspace_id: str, work_directory_id: str, container: ContainerDep
+) -> dict[str, Any]:
+    return await run_blocking_auxiliary(
+        container,
+        lambda session: work_directories.archive_work_directory(
+            session, workspace_id, work_directory_id
+        ),
+    )
+
+
+@router.post("/agent-workspaces/{workspace_id}/work-directories/{work_directory_id}/restore")
+async def restore_agent_work_directory(
+    workspace_id: str, work_directory_id: str, container: ContainerDep
+) -> dict[str, Any]:
+    return await run_blocking_auxiliary(
+        container,
+        lambda session: work_directories.restore_work_directory(
+            session, workspace_id, work_directory_id
+        ),
+    )
+
+
 @router.get("/agent-workspaces/{workspace_id}/conversation-management")
 async def list_agent_management_conversations(
     workspace_id: str,
     container: ContainerDep,
     work_directory_id: str | None = Query(default=None, min_length=1, max_length=36),
+    archived: bool | None = Query(default=None),
 ) -> dict[str, Any]:
     return await run_blocking(
         container,
         lambda session: conversations.list_management_conversations(
-            session, workspace_id, work_directory_id=work_directory_id
+            session,
+            workspace_id,
+            work_directory_id=work_directory_id,
+            archived=archived,
         ),
     )
 
@@ -1505,6 +1540,26 @@ async def delete_agent_conversation(
         ),
     )
     return Response(status_code=204)
+
+
+@router.post("/agent-workspaces/{workspace_id}/conversations/{binding_id}/archive")
+async def archive_agent_conversation(
+    workspace_id: str, binding_id: str, container: ContainerDep
+) -> dict[str, Any]:
+    return await run_blocking_lifecycle(
+        container,
+        lambda session: conversations.archive_conversation(session, workspace_id, binding_id),
+    )
+
+
+@router.post("/agent-workspaces/{workspace_id}/conversations/{binding_id}/restore")
+async def restore_agent_conversation(
+    workspace_id: str, binding_id: str, container: ContainerDep
+) -> dict[str, Any]:
+    return await run_blocking_lifecycle(
+        container,
+        lambda session: conversations.restore_conversation(session, workspace_id, binding_id),
+    )
 
 
 class HistoryGrantWrite(_Write):
