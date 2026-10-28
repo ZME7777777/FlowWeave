@@ -1,10 +1,10 @@
 """Stable public facade for Case control-plane services."""
 
 from flowweave.modules.cases.application.native_tools import (
-    assert_native_registration as assert_case_native_tools,
+    assert_coordinator_tools as assert_case_native_tools,
 )
 from flowweave.modules.cases.application.native_tools import (
-    prepare_creation as prepare_case_native_tools,
+    prepare_coordinator_tools as prepare_case_native_tools,
 )
 from flowweave.modules.cases.application.service import (
     CaseActionFailure,

@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`UPSTREAM BASELINE ADOPTION COMPLETE`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`CASE-03B`
+> 下一可执行切片：`CASE-04`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -13673,8 +13673,8 @@ Web remote-release-finish 通过，无过期受管上下文；保留当前镜像
 | CASE-01 | DONE | OPS-37、OPS-39 DONE | 动作结果、失败重试与暂停门禁 |
 | CASE-02 | DONE | CASE-01 | 新协调轮次与原生会话bootstrap |
 | CASE-03A | DONE | CASE-02 | 原生 MCP 注册、冻结授权与场景范围读取 |
-| CASE-03B | READY | CASE-03A | 流程图／草稿读取与当前执行副本配置、启动工具 |
-| CASE-04 | PENDING | CASE-03B | 产物登记与跨容器授权读取 |
+| CASE-03B | DONE | CASE-03A | 流程图／草稿读取与当前执行副本配置、启动工具 |
+| CASE-04 | READY | CASE-03B | 产物登记与跨容器授权读取 |
 | CASE-05 | PENDING | CASE-02、CASE-04 | 持久事件投递与Agent回访 |
 | CASE-06 | PENDING | CASE-03B、CASE-05 | 逐步复核、配置修订与重跑 |
 | CASE-07 | PENDING | CASE-04、CASE-05、CASE-06 | 连续修订、跨阶段决策与完成 |
@@ -14227,12 +14227,43 @@ Ruff、目标Pyright（含public为0）、格式和diff检查通过，唯一Alem
 扩展失败不在本片重复执行或修正。本片未部署、未推送、未升级实际Runtime；下一
 可执行切片CASE-03B。提交本片后停止，不自动开始配置与启动工具。
 
-### CASE-03B 流程读取与当前执行副本配置、启动工具 — READY
+### CASE-03B 流程读取与当前执行副本配置、启动工具 — DONE
 
 依赖CASE-03A DONE。读取授权场景内的流程图、输入输出契约、当前副本与草稿；
 通过另行冻结的原生动作能力调用既有服务，仅允许活动阶段当前独立副本的配置、
 复制及启动，所有写入使用技术前置条件、乐观版本与持久动作结果。保护源模板和
 历史执行，不接入CASE-04资料发布或CASE-05事件回访；业务输入由Agent选择与补充。
+
+CASE-03B实施结果（2026-10-28）：独立冻结`flowweave-case-flows`原生MCP及
+`case_flow_tool_grants`授权，不扩权CASE-03A只读key／凭据。新协调bootstrap默认
+装配两份冻结能力与独立Secret Registry条目；新授权表强制用户RLS、binding／round
+级联撤销，执行时复查当前协调身份。读取工具提供阶段模板／当前副本、冻结图、输入
+输出契约、运行时端口扩展、节点状态和草稿；明确白名单投影、50项分页及1MiB上限，
+不暴露Runtime清单／物理路径。动作请求限256KiB，仅复制活动模板、配置当前连续
+草稿或未启动逐步草稿、启动执行及逐步节点。Case行锁、场景／目标／Run／Snapshot
+乐观前置条件和既有编排校验共同保护模板、历史、已启动连续记录及已有NodeRun。
+动作入既有CaseControlPlan，保存输入、结果和失败码；同键异载荷拒绝、同载荷重放
+原结果，失败显式关联新尝试。配置／复制局部失败以savepoint及对应补偿保留失败
+审计，不能误提交部分输入。未接入事件回访、资料授权、复核重跑或跨阶段推进。
+
+验证：Case定向160项全部通过，含37项新增流程工具回归；最后补强新会话同时注入
+两份能力／凭据和首次明确失败后的bootstrap重试断言，2项再次通过。真实PostgreSQL
+验证复制独立性、配置持久化／回读、并发同键只创建一份、版本冲突持久失败、关联
+重试、暂停／终态／身份漂移、源模板与物化节点保护、savepoint补偿、HTTP边界及迁移
+升级／降级、非superuser RLS和级联撤销。固定source lock的1.54.0 SDK实际通过四项
+探针：只读上下文、流程读取、原生复制、嵌套自动草稿配置；均核对加密持久化、原会话
+恢复后的正式调用及写动作幂等，不调用模型。SDK会移除null参数，因此无当前副本
+采用可省略字段并在服务端保留严格门禁；未修改OpenHands或推进Runtime基线。
+
+扩展history MCP／连续草稿／逐步端口62项通过、2项失败。两项旧逐步草稿断言只期望
+start_node_key，实际还含git_identity:null；在改动前93d079c2隔离副本重跑均复现，
+未修改旧断言或声明全仓通过。首轮共享工作树被另一会话尚无迁移的用户模型字段
+阻断；最终使用.tmp中的93d079c2加本片精确文件验证副本，未撤销／提交其他工作。
+受影响Ruff、format、diff检查通过；新工具／授权／MCP适配／public及savepoint的
+Pyright为0，既有service保持39项既有诊断、无新增。独立验证迁移head为0182，
+共享工作树另有其他在途0183后继且仍为唯一head；不纳入本片。设计与部署配置要求
+见case-space-lifecycle-review.md。未部署、未推送、未发布实际系统能力；下一切片
+CASE-04 READY。按仓库规则提交本片后停止。
 
 ### OPS-51 流程与能力列表整行单击勾选 — DONE
 

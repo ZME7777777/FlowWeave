@@ -911,6 +911,7 @@ class CaseControlPlanWrite(ApiModel):
     stage_id: str = Field(min_length=1, max_length=36)
     action: Literal[
         "CREATE_EXECUTION_COPY",
+        "CONFIGURE_EXECUTION",
         "START_EXECUTION",
         "START_STEPWISE_NODE",
         "STOP_EXECUTION",

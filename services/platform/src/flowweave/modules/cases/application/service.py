@@ -31,7 +31,7 @@ from flowweave.modules.runs.infrastructure.models import (
     NodeAttempt,
     NodeRun,
 )
-from flowweave.shared.application.transactions import finish
+from flowweave.shared.application.transactions import finish, savepoint
 from flowweave.shared.database import now
 from flowweave.shared.errors import DomainError, conflict, illegal, not_found
 from flowweave.shared.schemas import (
@@ -1194,7 +1194,11 @@ def ingest_case_control_suggestion(
 
 
 def create_case_control_plan_for_binding(
-    db: Session, binding_id: str, payload: CaseControlPlanWrite
+    db: Session,
+    binding_id: str,
+    payload: CaseControlPlanWrite,
+    *,
+    retry_of_plan_id: str | None = None,
 ) -> dict[str, Any]:
     """Create a plan only inside the Case scope proven by its control Binding."""
 
@@ -1209,7 +1213,9 @@ def create_case_control_plan_for_binding(
             expected_stage_id=stage.id,
             actual_stage_id=payload.stage_id,
         )
-    return _create_case_control_plan(db, item, stage, payload, source_binding_id=binding_id)
+    return _create_case_control_plan(
+        db, item, stage, payload, source_binding_id=binding_id, retry_of_plan_id=retry_of_plan_id
+    )
 
 
 def _create_case_control_plan(
@@ -1290,8 +1296,18 @@ def execute_case_control_plan(db: Session, case_id: str, plan_id: str) -> dict[s
     finish(db)
     try:
         plan.state = "EXECUTING"
-        if plan.action == "CREATE_EXECUTION_COPY":
-            result = {"case": launch_case_stage(db, item.id, stage.id, CaseStageLaunchWrite())}
+        from flowweave.modules.cases.application.flow_tools import (
+            configure_execution,
+            validate_action_preconditions,
+        )
+
+        validate_action_preconditions(db, item, stage, plan)
+        if plan.action == "CONFIGURE_EXECUTION":
+            with savepoint(db):
+                result = configure_execution(db, stage, plan)
+        elif plan.action == "CREATE_EXECUTION_COPY":
+            with savepoint(db):
+                result = {"case": launch_case_stage(db, item.id, stage.id, CaseStageLaunchWrite())}
         elif plan.action == "START_EXECUTION":
             result = {
                 "decision": start_case_stage_execution(
@@ -1342,6 +1358,16 @@ def execute_case_control_plan(db: Session, case_id: str, plan_id: str) -> dict[s
         plan.state = "FAILED"
         plan.error_code = str(getattr(exc, "code", "CASE_CONTROL_PLAN_FAILED"))
         plan.result_json = {"code": plan.error_code}
+        if (
+            isinstance(exc, DomainError)
+            and plan.input_snapshot_json.get("requested", {}).get("expected_case_row_version")
+            is not None
+        ):
+            plan.result_json["validation"] = {
+                key: exc.details[key]
+                for key in ("field", "fields", "field_key", "field_keys", "node_key", "node_keys")
+                if key in exc.details
+            }
         if isinstance(exc, DomainError) and exc.details.get("decision_id"):
             plan.result_json = {**plan.result_json, "decision_id": exc.details["decision_id"]}
         plan.executed_at = now()

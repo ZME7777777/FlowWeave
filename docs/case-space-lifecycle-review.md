@@ -10,8 +10,9 @@ CASE-02已完成新协调轮次、配置／上下文快照、持久Worker原生b
 历史会话保留可打开；工具、事件回访及跨容器产物回流仍未交付。
 CASE-03A已接入正式只读 MCP：新协调会话可查询当前场景概览、阶段路径与资料引用，
 凭据按当前轮次／binding／Runtime／目录版本及用户重新授权。CASE-03按验收边界拆为
-03A（注册与读取）及03B（流程图／草稿与配置、启动）；下一可执行切片为CASE-03B，
-唯一实施状态以`flowrun-runtime-task-progress.md`为准。
+03A（注册与读取）及03B（流程图／草稿与配置、启动）。CASE-03B已交付独立原生流程
+MCP及当前副本的配置、复制与启动动作；下一可执行切片为CASE-04，唯一实施状态以
+`flowrun-runtime-task-progress.md`为准。事件回访、资料跨容器读取及自主复核仍未交付。
 
 ## 1. 产品目标：由场景 Agent 代替人运行和监控流程
 
@@ -394,3 +395,44 @@ binding、原生conversation、Runtime Session、目录版本和有效用户权�
 删除时，同时清理能力引用并级联撤销凭据，原轮次可安全重试。真实固定SDK探针覆盖
 初始MCP注册、HTTP工具调用、加密持久化及原会话恢复后再次调用，无模型请求。它验证
 工具和授权线路，不替代CASE-09的真实业务运行、生产网络和故障恢复全链路验收。
+
+
+## CASE-03B 实施边界（2026-10-28）
+
+新协调会话默认另外冻结 `flowweave-case-flows`，其中 `read_case_flow` 读取场景内指定
+阶段的模板或当前副本，分页展示冻结流程图、输入输出契约、运行时端口扩展、当前节点
+执行状态与草稿。`manage_case_flow` 只提供四项动作：复制活动阶段模板为独立执行记录、
+配置当前副本的连续草稿或尚未物化的逐步节点草稿、启动当前执行、启动指定逐步节点。
+阶段通过服务端从当前协调 binding 解析；工具只接受预期身份作为并发前置条件，不能
+通过传入另一个 Case／binding／FlowRun 扩张执行范围。模板、历史副本及其他阶段可供
+只读参考，不能作为写入目标。已启动连续记录及已有 NodeRun 的逐步节点拒绝配置；
+节点复核、端口修订与重跑仍归 CASE-06／07。
+
+动作冻结场景版本、活动阶段 key、当前副本引用、运行记录版本和 Snapshot 版本；
+逐步启动另冻结节点草稿版本。当前副本配置、模型、能力与输入校验均复用既有编排服务，
+业务资料与提示词由 Agent 决定。无匹配版本时记录 `CASE_FLOW_VERSION_CONFLICT`，
+不偷偷刷新并自动覆盖用户配置。动作输入、结果、失败码和关联重试保存在
+`CaseControlPlan`；同键同载荷回放原结果，同键异载荷拒绝。失败后须用新键显式关联
+原失败计划；已存在启动事实仍服从既有对账门禁。协调写入按 Case 行锁串行，复制或
+配置内部失败通过 savepoint 回滚局部 SQL 和对应补偿，保留外层失败审计。
+
+`flowweave-case-context` 的既有只读工具清单不变。新动作 MCP 使用独立入口
+`/api/v1/case-flow-tools-mcp`、独立 `FLOWWEAVE_CASE_FLOW_ACCESS` 原生 Secret Registry
+条目及 `case_flow_tool_grants` 授权表；只读凭据无法调用流程入口，流程凭据也不被
+只读入口接受。新表强制用户 RLS，binding／round 删除级联撤销；每次请求重新校验
+原生身份与冻结能力，执行已保存动作时还会再次检查当前协调授权。
+
+运维需另行发布 PUBLISHED MCP key `flowweave-case-flows`，在私有环境配置
+`CASE_FLOW_TOOLS_MCP_CAPABILITY_VERSION_ID` 与 `CASE_FLOW_TOOLS_MCP_URL`。
+config 仍只允许 `url`、`transport=streamable-http` 和
+`headers={"Authorization":"Bearer ${FLOWWEAVE_CASE_FLOW_ACCESS}"}`，URL 以新入口结尾，
+通过版本 digest 与 blob SHA-256 验证。此授权只在 Case 原生 bootstrap 时创建，普通
+Agent 会话不会取得它；历史原生会话不静默追加权限。缺少任一默认能力时新协调会话
+明确失败，发布与实际网络验收后才能认为服务器已可用。
+
+读取投影不返回 Runtime 清单、物理路径或平台认证，分页最多 50 项，超出 1 MiB
+响应要求缩小范围；动作请求最多 256 KiB。原生 SDK 会移除 null 参数，因此复制时
+“没有当前副本”使用可省略参数，服务端仍检查其确实为空。锁定 SDK 验证了实际工具
+发现、HTTP 读写、嵌套草稿参数、加密持久化及恢复后同一动作回放，不请求模型。
+这不是实际 Runtime 镜像或场景目标全链路验收；CASE-04 的资料授权、CASE-05 的事件
+回访及后续复核、跨阶段决策仍须继续实施。本片未部署、未发布系统能力或升级 Runtime。

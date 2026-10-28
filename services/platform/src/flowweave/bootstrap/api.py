@@ -27,6 +27,7 @@ from flowweave.modules.agent_sessions.presentation.history_mcp import (
 )
 from flowweave.modules.agent_sessions.presentation.router import router as agent_sessions_router
 from flowweave.modules.agent_workspaces.presentation.router import router as agent_workspaces_router
+from flowweave.modules.cases.application.native_tools import FLOWS as CASE_FLOW_TOOL_CONTRACT
 from flowweave.modules.cases.presentation.router import router as cases_router
 from flowweave.modules.cases.presentation.tools_mcp import MCP_PATH as CASE_MCP_PATH
 from flowweave.modules.cases.presentation.tools_mcp import router as case_tools_mcp_router
@@ -200,6 +201,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if request.url.path.startswith("/api/v1/") and request.url.path not in {
             MCP_PATH,
             CASE_MCP_PATH,
+            CASE_FLOW_TOOL_CONTRACT.path,
         }:
             async with container.database.session() as auth_session:
                 principal = await auth_session.run_sync(
@@ -220,7 +222,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         is_public = (
             request.url.path.startswith("/health")
             or request.url.path.startswith("/internal/admin-control/")
-            or request.url.path in {MCP_PATH, CASE_MCP_PATH}
+            or request.url.path in {MCP_PATH, CASE_MCP_PATH, CASE_FLOW_TOOL_CONTRACT.path}
             or request.url.path
             in {
                 "/api/v1/auth/login",

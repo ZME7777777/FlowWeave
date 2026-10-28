@@ -94,6 +94,26 @@ class CaseToolGrant(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
+class CaseFlowToolGrant(Base):
+    """Separately frozen workflow authority; context grants never authorize writes."""
+
+    __tablename__ = "case_flow_tool_grants"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    # Referential constraints live in the migration, like the other control-plane models.
+    round_id: Mapped[str] = mapped_column(String(36), unique=True)
+    binding_id: Mapped[str] = mapped_column(String(36), unique=True)
+    work_directory_version_id: Mapped[str] = mapped_column(String(36))
+    runtime_session_id: Mapped[str] = mapped_column(String(36))
+    native_conversation_id: Mapped[str] = mapped_column(String(36))
+    token_digest: Mapped[str] = mapped_column(String(64))
+    encrypted_token: Mapped[bytes] = mapped_column(LargeBinary)
+    capability_version_id: Mapped[str] = mapped_column(String(36))
+    capability_digest: Mapped[str] = mapped_column(String(64))
+    runtime_manifest_json: Mapped[dict[str, Any]] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
 class CaseFlowRun(Base):
     __tablename__ = "case_flow_runs"
     __table_args__ = (UniqueConstraint("case_id", "flow_run_id", name="uq_case_flow_run"),)
@@ -204,7 +224,8 @@ class CaseControlPlan(Base):
         UniqueConstraint("case_id", "idempotency_key", name="uq_case_control_plan_key"),
         CheckConstraint(
             "action IN ('CREATE_EXECUTION_COPY', 'START_EXECUTION', 'START_STEPWISE_NODE', "
-            "'STOP_EXECUTION', 'RERUN_STEPWISE_NODE', 'REVISE_UNSTARTED_RUNTIME')",
+            "'STOP_EXECUTION', 'RERUN_STEPWISE_NODE', 'REVISE_UNSTARTED_RUNTIME', "
+            "'CONFIGURE_EXECUTION')",
             name="ck_case_control_plan_action",
         ),
         CheckConstraint(
@@ -240,5 +261,7 @@ __all__ = (
     "CaseControlRound",
     "CaseDecisionProposal",
     "CaseFlowRun",
+    "CaseFlowToolGrant",
+    "CaseToolGrant",
     "CaseStage",
 )

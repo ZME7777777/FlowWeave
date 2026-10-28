@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import secrets
+from dataclasses import dataclass
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
@@ -16,7 +17,12 @@ from flowweave.modules.agent_sessions.infrastructure.models import (
     AgentConversationCapability,
 )
 from flowweave.modules.agent_workspaces.infrastructure.models import AgentWorkDirectoryVersion
-from flowweave.modules.cases.infrastructure.models import Case, CaseControlRound, CaseToolGrant
+from flowweave.modules.cases.infrastructure.models import (
+    Case,
+    CaseControlRound,
+    CaseFlowToolGrant,
+    CaseToolGrant,
+)
 from flowweave.modules.catalog.public import PublishedCapability, resolve_version
 from flowweave.modules.users.application.security import current_user_id, tenant_user
 from flowweave.modules.users.application.service import agent_session_principal
@@ -34,6 +40,31 @@ AUTH_HEADER = "Bearer ${FLOWWEAVE_CASE_ACCESS}"
 MCP_PATH = "/api/v1/case-tools-mcp"
 
 
+@dataclass(frozen=True)
+class ToolContract:
+    server_name: str
+    secret_name: str
+    path: str
+    prefix: str
+    setting_prefix: str
+    grant_model: type[CaseToolGrant] | type[CaseFlowToolGrant]
+
+    @property
+    def auth_header(self) -> str:
+        return "Bearer ${" + self.secret_name + "}"
+
+
+CONTEXT = ToolContract(SERVER_NAME, SECRET_NAME, MCP_PATH, "fwc1", "case_tools_mcp", CaseToolGrant)
+FLOWS = ToolContract(
+    "flowweave-case-flows",
+    "FLOWWEAVE_CASE_FLOW_ACCESS",
+    "/api/v1/case-flow-tools-mcp",
+    "fwcf1",
+    "case_flow_tools_mcp",
+    CaseFlowToolGrant,
+)
+
+
 def denied() -> DomainError:
     return DomainError("CASE_TOOL_ACCESS_DENIED", "场景工具授权无效或已失效", 401)
 
@@ -42,11 +73,11 @@ def unavailable() -> DomainError:
     return DomainError("CASE_TOOL_CAPABILITY_UNAVAILABLE", "场景工具未配置或冻结版本无效", 409)
 
 
-def token_identity(token: str) -> tuple[str, str]:
+def token_identity(token: str, *, contract: ToolContract = CONTEXT) -> tuple[str, str]:
     # Claims only route RLS. The stored digest below authenticates the credential.
     try:
         prefix, owner, grant_id, nonce = token.split(".")
-        if prefix != "fwc1" or not 40 <= len(nonce) <= 64:
+        if prefix != contract.prefix or not 40 <= len(nonce) <= 64:
             raise ValueError
         if str(UUID(owner)) != owner or str(UUID(grant_id)) != grant_id:
             raise ValueError
@@ -89,10 +120,12 @@ def _scope(db: Session, round_id: str, binding_id: str) -> tuple[CaseControlRoun
     return entry, item
 
 
-def authenticate(db: Session, token: str) -> tuple[CaseToolGrant, Case]:
-    owner, grant_id = token_identity(token)
+def authenticate(
+    db: Session, token: str, *, contract: ToolContract = CONTEXT
+) -> tuple[CaseToolGrant | CaseFlowToolGrant, Case]:
+    owner, grant_id = token_identity(token, contract=contract)
     with tenant_user(owner):
-        grant = db.get(CaseToolGrant, grant_id, populate_existing=True)
+        grant = db.get(contract.grant_model, grant_id, populate_existing=True)
         if (
             grant is None
             or grant.owner_user_id != owner
@@ -106,7 +139,7 @@ def authenticate(db: Session, token: str) -> tuple[CaseToolGrant, Case]:
         frozen = db.scalar(
             select(AgentConversationCapability).where(
                 AgentConversationCapability.binding_id == grant.binding_id,
-                AgentConversationCapability.capability_key == SERVER_NAME,
+                AgentConversationCapability.capability_key == contract.server_name,
             )
         )
         if (
@@ -122,9 +155,13 @@ def authenticate(db: Session, token: str) -> tuple[CaseToolGrant, Case]:
         return grant, item
 
 
-def _published(db: Session, version_id: str | None = None) -> PublishedCapability:
+def _published(
+    db: Session, version_id: str | None = None, *, contract: ToolContract = CONTEXT
+) -> PublishedCapability:
     settings = get_settings()
-    configured_id = version_id or settings.case_tools_mcp_capability_version_id
+    configured_id = version_id or getattr(
+        settings, contract.setting_prefix + "_capability_version_id"
+    )
     try:
         if not configured_id:
             raise unavailable()
@@ -136,20 +173,22 @@ def _published(db: Session, version_id: str | None = None) -> PublishedCapabilit
         parsed = urlsplit(url)
         if (
             published.package.capability_type != "MCP"
-            or published.package.capability_key != SERVER_NAME
+            or published.package.capability_key != contract.server_name
             or parsed.scheme not in {"http", "https"}
             or not parsed.hostname
             or parsed.username
             or parsed.password
             or parsed.query
             or parsed.fragment
-            or not parsed.path.endswith(MCP_PATH)
-            or (version_id is None and url != settings.case_tools_mcp_url)
+            or not parsed.path.endswith(contract.path)
+            or (version_id is None and url != getattr(settings, contract.setting_prefix + "_url"))
             or config.get("transport") != "streamable-http"
-            or config.get("headers") != {"Authorization": AUTH_HEADER}
+            or config.get("headers") != {"Authorization": contract.auth_header}
             or set(config) - {"url", "transport", "headers"}
             or published.version.digest
-            != capability_version_digest("MCP", SERVER_NAME, published.blob.content_hash, config)
+            != capability_version_digest(
+                "MCP", contract.server_name, published.blob.content_hash, config
+            )
         ):
             raise unavailable()
         content = get_artifact_store().read(published.blob.storage_key)
@@ -161,7 +200,11 @@ def _published(db: Session, version_id: str | None = None) -> PublishedCapabilit
 
 
 def prepare_creation(
-    db: Session, round_id: str, binding: AgentConversationBinding
+    db: Session,
+    round_id: str,
+    binding: AgentConversationBinding,
+    *,
+    contract: ToolContract = CONTEXT,
 ) -> dict[str, str]:
     """Commit a frozen reference and scoped grant before native MCP initialization.
 
@@ -169,12 +212,12 @@ def prepare_creation(
     Retry keeps the same credential and version, even if defaults have changed.
     """
     entry, _ = _scope(db, round_id, binding.id)
-    grant = db.scalar(select(CaseToolGrant).where(CaseToolGrant.round_id == entry.id))
-    published = _published(db, grant.capability_version_id if grant else None)
+    grant = db.scalar(select(contract.grant_model).where(contract.grant_model.round_id == entry.id))
+    published = _published(db, grant.capability_version_id if grant else None, contract=contract)
     reference = db.scalar(
         select(AgentConversationCapability).where(
             AgentConversationCapability.binding_id == binding.id,
-            AgentConversationCapability.capability_key == SERVER_NAME,
+            AgentConversationCapability.capability_key == contract.server_name,
         )
     )
     if reference is not None and (
@@ -184,8 +227,8 @@ def prepare_creation(
         raise unavailable()
     if grant is None:
         grant_id = str(uuid4())
-        token = f"fwc1.{entry.owner_user_id}.{grant_id}.{secrets.token_urlsafe(32)}"
-        grant = CaseToolGrant(
+        token = f"{contract.prefix}.{entry.owner_user_id}.{grant_id}.{secrets.token_urlsafe(32)}"
+        grant = contract.grant_model(
             id=grant_id,
             owner_user_id=entry.owner_user_id,
             round_id=entry.id,
@@ -202,7 +245,7 @@ def prepare_creation(
                 "capabilities": [
                     {
                         "type": "MCP",
-                        "key": SERVER_NAME,
+                        "key": contract.server_name,
                         "version_id": published.version.id,
                         "digest": published.version.digest,
                         "blob_id": published.blob.id,
@@ -222,7 +265,7 @@ def prepare_creation(
             AgentConversationCapability(
                 binding_id=binding.id,
                 capability_type="MCP",
-                capability_key=SERVER_NAME,
+                capability_key=contract.server_name,
                 capability_version_id=published.version.id,
                 digest=published.version.digest,
                 position=(position if position is not None else -1) + 1,
@@ -230,19 +273,23 @@ def prepare_creation(
         )
     db.flush()
     token = decrypt_secret(grant.encrypted_token)
-    authenticate(db, token)
+    authenticate(db, token, contract=contract)
     db.commit()
-    return {SECRET_NAME: token}
+    return {contract.secret_name: token}
 
 
-def assert_native_registration(db: Session, binding_id: str, handle: RuntimeHandle) -> None:
+def assert_native_registration(
+    db: Session, binding_id: str, handle: RuntimeHandle, *, contract: ToolContract = CONTEXT
+) -> None:
     """Recovery may adopt a native conversation only with its frozen Case MCP."""
-    grant = db.scalar(select(CaseToolGrant).where(CaseToolGrant.binding_id == binding_id))
+    grant = db.scalar(
+        select(contract.grant_model).where(contract.grant_model.binding_id == binding_id)
+    )
     if grant is None:
         raise unavailable()
-    published = _published(db, grant.capability_version_id)
+    published = _published(db, grant.capability_version_id, contract=contract)
     if not get_runtime().conversation_mcp_configured(
-        handle, SERVER_NAME, published.version.normalized_config_json["url"]
+        handle, contract.server_name, published.version.normalized_config_json["url"]
     ):
         # Preserve the existing native identity for reconciliation. Deleting it
         # as a definitively failed reservation would discard unknown history.
@@ -252,3 +299,19 @@ def assert_native_registration(db: Session, binding_id: str, handle: RuntimeHand
             409,
             {"outcome_unknown": True},
         )
+
+
+def prepare_coordinator_tools(
+    db: Session, round_id: str, binding: AgentConversationBinding
+) -> dict[str, str]:
+    # Each credential is bound to one immutable tool contract. Neither endpoint
+    # accepts the other's credential, even for the same coordinator.
+    return {
+        **prepare_creation(db, round_id, binding),
+        **prepare_creation(db, round_id, binding, contract=FLOWS),
+    }
+
+
+def assert_coordinator_tools(db: Session, binding_id: str, handle: RuntimeHandle) -> None:
+    assert_native_registration(db, binding_id, handle)
+    assert_native_registration(db, binding_id, handle, contract=FLOWS)

@@ -30,6 +30,7 @@ from flowweave.modules.cases.infrastructure.models import (
     CaseControlRound,
     CaseDecisionProposal,
     CaseFlowRun,
+    CaseFlowToolGrant,
     CaseStage,
     CaseToolGrant,
 )
@@ -149,6 +150,7 @@ __all__ = (
     "CaseAgentTask",
     "CaseControlRound",
     "CaseToolGrant",
+    "CaseFlowToolGrant",
     "CaseDecisionProposal",
     "CaseFlowRun",
     "CaseStage",

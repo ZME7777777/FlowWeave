@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from typing import cast
 
 from sqlalchemy.orm import Session
@@ -89,3 +90,31 @@ def finish(session: Session) -> None:
         run_rollback_actions(session)
         raise
     run_commit_actions(session)
+
+
+@contextmanager
+def savepoint(session: Session) -> Iterator[None]:
+    """Roll back one auditable local action without committing its outer UoW.
+
+    Legacy helpers call finish() internally. Temporarily own those calls, and
+    compensate only this savepoint's external work if its SQL writes fail.
+    """
+    owned = session.info.get(_UOW_OWNED)
+    rollback_count = len(_actions(session, _ROLLBACK_ACTIONS))
+    commit_count = len(_actions(session, _COMMIT_ACTIONS))
+    session.info[_UOW_OWNED] = True
+    try:
+        with session.begin_nested():
+            yield
+    except BaseException:
+        rollback = _actions(session, _ROLLBACK_ACTIONS)
+        pending = rollback[rollback_count:]
+        del rollback[rollback_count:]
+        del _actions(session, _COMMIT_ACTIONS)[commit_count:]
+        _run_actions(pending, reverse=True)
+        raise
+    finally:
+        if owned is None:
+            session.info.pop(_UOW_OWNED, None)
+        else:
+            session.info[_UOW_OWNED] = owned

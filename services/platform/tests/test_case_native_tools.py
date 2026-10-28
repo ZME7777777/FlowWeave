@@ -39,20 +39,22 @@ from flowweave.shared.errors import DomainError
 from flowweave.shared.settings import settings_context
 
 
-def publish_case_tools(db, settings, store, monkeypatch, url=None):
+def publish_case_tools(
+    db, settings, store, monkeypatch, url=None, *, contract=native_tools.CONTEXT
+):
     config = {
         "url": url or "http://case-tools.example.test/api/v1/case-tools-mcp",
         "transport": "streamable-http",
-        "headers": {"Authorization": native_tools.AUTH_HEADER},
+        "headers": {"Authorization": contract.auth_header},
     }
-    content = json.dumps({"mcpServers": {native_tools.SERVER_NAME: config}}).encode()
+    content = json.dumps({"mcpServers": {contract.server_name: config}}).encode()
     content_hash = hashlib.sha256(content).hexdigest()
     package = CapabilityPackage(
-        capability_type="MCP", capability_key=native_tools.SERVER_NAME, display_name="Case context"
+        capability_type="MCP", capability_key=contract.server_name, display_name="Case context"
     )
     blob = CapabilityBlob(
         content_hash=content_hash,
-        storage_key="case-tools.json",
+        storage_key=contract.server_name + ".json",
         byte_size=len(content),
         media_type="application/json",
     )
@@ -63,20 +65,29 @@ def publish_case_tools(db, settings, store, monkeypatch, url=None):
         package_id=package.id,
         blob_id=blob.id,
         version_no=1,
-        digest=capability_version_digest("MCP", native_tools.SERVER_NAME, content_hash, config),
+        digest=capability_version_digest("MCP", contract.server_name, content_hash, config),
         normalized_config_json=config,
-        source_filename="case-tools.json",
+        source_filename=contract.server_name + ".json",
         state="PUBLISHED",
     )
     db.add(version)
     db.commit()
     configured = settings.model_copy(
         update={
-            "case_tools_mcp_url": config["url"],
-            "case_tools_mcp_capability_version_id": version.id,
+            contract.setting_prefix + "_url": config["url"],
+            contract.setting_prefix + "_capability_version_id": version.id,
         }
     )
     monkeypatch.setattr(native_tools, "get_settings", lambda: configured)
+    if contract == native_tools.CONTEXT:
+        publish_case_tools(
+            db,
+            configured,
+            store,
+            monkeypatch,
+            config["url"].removesuffix(native_tools.MCP_PATH) + native_tools.FLOWS.path,
+            contract=native_tools.FLOWS,
+        )
     return version
 
 
@@ -446,10 +457,13 @@ def test_request_body_bound_and_notifications(native_case):
     )
 
 
-def test_locked_sdk_loads_calls_and_restores_case_context(
-    native_case, tmp_path, monkeypatch, settings, container
-):
+@pytest.mark.parametrize("contract", [native_tools.CONTEXT, native_tools.FLOWS])
+def test_locked_sdk_loads_calls_and_restores_case_context(native_case, tmp_path, contract):
     """The real locked SDK discovers and invokes tools; no LLM call is made."""
+    run_locked_case_probe(native_case, tmp_path, contract)
+
+
+def run_locked_case_probe(g, tmp_path, contract, action_args=None):
     import os
     import subprocess
     import threading
@@ -462,16 +476,19 @@ def test_locked_sdk_loads_calls_and_restores_case_context(
     executable = os.getenv("CASE_MCP_NATIVE_PYTHON")
     if not executable:
         pytest.skip("Set CASE_MCP_NATIVE_PYTHON to a source.lock SDK environment")
-    g = native_case
     listener = g.listener
-    config = g.version.normalized_config_json
+    version = native_tools._published(g.db, contract=contract).version
+    token = native_tools.prepare_creation(g.db, g.entry.id, g.binding, contract=contract)[
+        contract.secret_name
+    ]
+    config = version.normalized_config_json
     host = tmp_path / "capabilities"
     plugin = materialize_agent_workspace_capability_marketplace(
         {
             "capability_type": "MCP",
-            "capability_key": native_tools.SERVER_NAME,
-            "capability_version_id": g.version.id,
-            "digest": g.version.digest,
+            "capability_key": contract.server_name,
+            "capability_version_id": version.id,
+            "digest": version.digest,
             "normalized_config": config,
         },
         host_root=host,
@@ -498,14 +515,15 @@ def test_locked_sdk_loads_calls_and_restores_case_context(
                 "--state-dir",
                 str(tmp_path / "native-state"),
                 "--initial-config",
-                "--case-context",
+                "--case-flows" if contract == native_tools.FLOWS else "--case-context",
+                *(["--case-flow-action-json", json.dumps(action_args)] if action_args else []),
             ],
-            env={**os.environ, "HISTORY_MCP_PROBE_TOKEN": g.token},
+            env={**os.environ, "HISTORY_MCP_PROBE_TOKEN": token},
             capture_output=True,
             text=True,
             timeout=60,
         )
-        assert result.returncode == 0, result.stderr.replace(g.token, "[redacted]")
+        assert result.returncode == 0, result.stderr.replace(token, "[redacted]")
         report = json.loads(result.stdout.strip().splitlines()[-1])
         assert report["status"] == "passed"
         assert "restored_native_mcp_call" in report["checks"]

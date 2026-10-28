@@ -57,6 +57,8 @@ def check(
     restored_source_binding_id: str | None = None,
     initial_config: bool = False,
     case_context: bool = False,
+    case_flows: bool = False,
+    case_flow_action_json: str | None = None,
 ) -> dict[str, object]:
     os.environ["OPENHANDS_SUPPRESS_BANNER"] = "1"
     logging.disable(logging.CRITICAL)
@@ -76,6 +78,9 @@ def check(
     token = os.environ.pop("HISTORY_MCP_PROBE_TOKEN")
     secret_name = "FLOWWEAVE_CASE_ACCESS" if case_context else "FLOWWEAVE_HISTORY_ACCESS"
     tool_name = "read_case_context" if case_context else "read_referenced_conversation"
+    if case_flows:
+        secret_name = "FLOWWEAVE_CASE_FLOW_ACCESS"
+        tool_name = "manage_case_flow" if case_flow_action_json else "read_case_flow"
     plugin_root = marketplace / "plugins" / plugin_name
     plugin = Plugin.load(plugin_root)
     assert len(plugin.mcp_config) == 1, (
@@ -151,6 +156,8 @@ def check(
         arguments = (
             {"source_binding_id": source_binding_id} if source_binding_id else {}
         )
+        if case_flow_action_json:
+            arguments = json.loads(case_flow_action_json)
         result = tool.as_executable().executor(
             tool.action_from_arguments(arguments), conversation
         )
@@ -196,6 +203,8 @@ def check(
         tool = restored_tools[0]
         restored_source = restored_source_binding_id or source_binding_id
         arguments = {"source_binding_id": restored_source} if restored_source else {}
+        if case_flow_action_json:
+            arguments = json.loads(case_flow_action_json)
         result = tool.as_executable().executor(
             tool.action_from_arguments(arguments), restored
         )
@@ -225,6 +234,8 @@ if __name__ == "__main__":
     parser.add_argument("--restored-source-binding-id")
     parser.add_argument("--initial-config", action="store_true")
     parser.add_argument("--case-context", action="store_true")
+    parser.add_argument("--case-flows", action="store_true")
+    parser.add_argument("--case-flow-action-json")
     args = parser.parse_args()
     print(
         json.dumps(
@@ -236,6 +247,8 @@ if __name__ == "__main__":
                 args.restored_source_binding_id,
                 args.initial_config,
                 args.case_context,
+                args.case_flows,
+                args.case_flow_action_json,
             )
         )
     )
