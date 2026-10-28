@@ -974,7 +974,7 @@ function WorkspaceConversationRow({
     {showFailedUnreadAlert && <button type="button" className="agent-workspace-conversation-alert" aria-label="确认会话异常已读" title="标记为已读" onClick={event => { event.stopPropagation(); onAcknowledgeAlert?.(); }}><CircleAlert aria-hidden="true" size={14}/></button>}
     {unread && !showAlert && !running && <span className="agent-workspace-conversation-unread" role="img" aria-label="会话已完成，有未读回复" title="会话有未读回复"/>}
     {running && !showRunningAlert && <LoaderCircle className="agent-workspace-conversation-running" role="img" aria-label="会话正在运行" size={14}/>}
-    {onArchive && !running && !showAlert && <button type="button" className="agent-workspace-conversation-delete" aria-label={`归档会话 ${conversationName(item)}`} title={deleteDisabled ? '会话运行中，请先停止' : '归档会话'} disabled={!conversationWritable || deleteDisabled || removing} onClick={onArchive}><Archive size={13}/></button>}
+    {onArchive && !running && !showAlert && <button type="button" className="agent-workspace-conversation-archive" aria-label={`归档会话 ${conversationName(item)}`} title={deleteDisabled ? '会话运行中，请先停止' : '归档会话'} disabled={!conversationWritable || deleteDisabled || removing} onClick={onArchive}><Archive size={13}/></button>}
     {contextMenu && createPortal(<div className="agent-conversation-context-menu" role="menu" aria-label={`会话操作菜单：${conversationName(item)}`} style={{ left: contextMenu.x, top: contextMenu.y }} onPointerDown={event => event.stopPropagation()} onContextMenu={event => event.preventDefault()}>
       {pinned
         ? <button type="button" role="menuitem" onClick={() => { onTogglePin(); setContextMenu(undefined); }}><PinOff size={13}/>取消置顶</button>
