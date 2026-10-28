@@ -1724,3 +1724,72 @@ def test_capability_bulk_delete_remains_independent_from_nodes(client, skill_cap
     assert result.json()["blocked"] == []
     capabilities = client.get("/api/v1/capabilities").json()
     assert [item for item in capabilities if item["capability_type"] == "SKILL"] == []
+
+
+def test_skill_keeps_current_and_previous_versions_with_comparison_and_rollback(client):
+    encoded = _zip_content(
+        {
+            "skill/SKILL.md": (
+                "---\nname: versioned-skill\ndescription: Versioned Skill\n---\n"
+                "# Version one\n"
+            )
+        }
+    )
+    validated = client.post(
+        "/api/v1/capability-imports/validate",
+        json={
+            "capability_type": "SKILL",
+            "filename": "versioned-skill.zip",
+            "content_base64": encoded,
+        },
+    )
+    assert validated.status_code == 200, validated.text
+    committed = client.post(
+        "/api/v1/capability-imports", json={"import_token": validated.json()["import_token"]}
+    )
+    assert committed.status_code == 201, committed.text
+    first_id = committed.json()["capabilities"][0]["capability_id"]
+
+    second = client.put(
+        f"/api/v1/capabilities/{first_id}/source",
+        json={
+            "content": (
+                "---\nname: versioned-skill\ndescription: Versioned Skill\n---\n"
+                "# Version two\n"
+            )
+        },
+    )
+    assert second.status_code == 200, second.text
+    second_id = second.json()["id"]
+    third = client.put(
+        f"/api/v1/capabilities/{second_id}/source",
+        json={
+            "content": (
+                "---\nname: versioned-skill\ndescription: Versioned Skill\n---\n"
+                "# Version three\n"
+            )
+        },
+    )
+    assert third.status_code == 200, third.text
+    third_id = third.json()["id"]
+
+    listed = [
+        item for item in client.get("/api/v1/capabilities").json()
+        if item["capability_key"] == "versioned-skill"
+    ]
+    assert {item["id"] for item in listed} == {second_id, third_id}
+    comparison = client.get(f"/api/v1/capabilities/{third_id}/skill-version-comparison")
+    assert comparison.status_code == 200, comparison.text
+    assert "Version two" in comparison.json()["previous"]["content"]
+    assert "Version three" in comparison.json()["current"]["content"]
+    assert "-# Version two" in comparison.json()["diff"]
+    assert "+# Version three" in comparison.json()["diff"]
+
+    rolled_back = client.post(f"/api/v1/capabilities/{third_id}/rollback")
+    assert rolled_back.status_code == 200, rolled_back.text
+    assert rolled_back.json()["id"] == second_id
+    listed_after_rollback = [
+        item for item in client.get("/api/v1/capabilities").json()
+        if item["capability_key"] == "versioned-skill"
+    ]
+    assert [item["id"] for item in listed_after_rollback] == [second_id]

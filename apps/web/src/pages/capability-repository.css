@@ -41,6 +41,8 @@
 .capability-table th:nth-child(5){width:9%}
 .capability-table th:nth-child(6){width:16%}
 .capability-table th:nth-child(7){width:5%}
+.skill-version-comparison-dialog{width:min(1120px,calc(100vw - 48px));max-height:calc(100vh - 48px);display:flex;flex-direction:column}.skill-version-comparison-dialog>header p{margin:5px 0 0;color:#738278;font-size:11px}.skill-version-comparison-panes{display:grid;grid-template-columns:1fr 1fr;gap:12px;min-height:0;flex:1;padding:4px 0}.skill-version-comparison-panes section{display:flex;min-width:0;min-height:280px;flex-direction:column;border:1px solid #dfe7e1;border-radius:6px;background:#fbfcfb}.skill-version-comparison-panes b{padding:10px 12px 0;color:#385341;font-size:12px}.skill-version-comparison-panes small{padding:3px 12px 10px;color:#89968d;font-size:10px}.skill-version-comparison-panes pre,.skill-version-comparison-diff pre{min-height:0;overflow:auto;margin:0;border-top:1px solid #edf1ed;padding:12px;white-space:pre-wrap;word-break:break-word;font:11px/1.55 'DM Mono',monospace}.skill-version-comparison-diff{flex:0 0 auto;margin-top:12px;border:1px solid #dfe7e1;border-radius:6px}.skill-version-comparison-diff summary{cursor:pointer;padding:9px 12px;color:#486151;font-size:11px;font-weight:600}.skill-version-comparison-diff pre{max-height:190px;color:#47584d}@media(max-width:760px){.skill-version-comparison-panes{grid-template-columns:1fr}.skill-version-comparison-panes section{min-height:180px}}
+
 .capability-table th:nth-child(8){width:11%}
 .capability-table .capability-check-column{width:36px;padding-left:18px;padding-right:0}
 .capability-table input[type=checkbox]{width:13px;height:13px;margin:0;accent-color:#2b7751;vertical-align:middle;cursor:pointer}
