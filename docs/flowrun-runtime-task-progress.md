@@ -13497,3 +13497,25 @@ storage_key当URL，不给Runtime分发管理员Cookie／明文密钥。保留�
 验收。文档diff、引用、CURRENT唯一性及唯一Alembic head核对通过。工作树中的
 节点中心改动属于其他在途工作，本片未修改或提交；无应用／服务器／Runtime发布。
 当前与下一可执行重构切片均为NONE。
+
+
+OPS-38 正式发布补记（2026-10-28）：实际部署代码为
+`2c43a1052bad6db0db4a97233b01845572d9e085`。Web 正式预检及 commit-bound
+最小上下文 prepare 通过，源归档 SHA-256 为
+`18b736845c3810d740383f53ef4c414dd1dcf0672da1870ce49eb6ad6988c65f`，
+实际 linux/amd64 Web image ID 为
+`sha256:e7d06c52de520500cc4923168266381c4ab3d31eea5194fcc3627bd17410504e`，
+OCI revision 一致。保留旧日志和回滚镜像后仅 recreate Web，健康与版本通过；
+服务器配置摘要和其他 47 个容器的 image／StartedAt 保持，没有迁移、平台／
+Provider 重启、Runtime replacement、生产节点写入或模型调用。
+
+公网 HTML、入口资源及 NodesPage 模块 JS／CSS 摘要匹配实际运行镜像，确认
+新标签编辑区、放大编辑、统一草稿保存和未保存状态控件已进入发布模块。
+Chromium 验证前缀／根登录、Agent 与记录深层路由、匿名 401 边界和全新浏览器
+前缀 API 请求通过，根 API 请求为零。节点编辑与保存行为由本地受控 API 的
+19 项回归验证，不冒称生产已登录节点编辑／保存验收。
+
+Web remote-release-finish 通过，无过期受管上下文，精确回收一个历史 image ID
+的 tags；保留当前镜像、一个不同版本回滚及全部容器引用，未清理共享 BuildKit、
+卷、Workspace 或数据库备份。收尾后健康、版本、配置和其他 47 个容器再验通过。
+本补记不改变实际部署身份，本地提交未推送；当前及下一可执行重构切片均为 NONE。
