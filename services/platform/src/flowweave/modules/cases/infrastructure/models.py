@@ -3,7 +3,16 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, CheckConstraint, DateTime, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    CheckConstraint,
+    DateTime,
+    Integer,
+    LargeBinary,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from flowweave.shared.database import Base, now, uid
@@ -63,6 +72,26 @@ class CaseControlRound(Base):
     error_code: Mapped[str | None] = mapped_column(String(120))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class CaseToolGrant(Base):
+    """Credential reference for one native coordinator, never a login session."""
+
+    __tablename__ = "case_tool_grants"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    # Referential constraints live in the migration, like the other control-plane models.
+    round_id: Mapped[str] = mapped_column(String(36), unique=True)
+    binding_id: Mapped[str] = mapped_column(String(36), unique=True)
+    work_directory_version_id: Mapped[str] = mapped_column(String(36))
+    runtime_session_id: Mapped[str] = mapped_column(String(36))
+    native_conversation_id: Mapped[str] = mapped_column(String(36))
+    token_digest: Mapped[str] = mapped_column(String(64))
+    encrypted_token: Mapped[bytes] = mapped_column(LargeBinary)
+    capability_version_id: Mapped[str] = mapped_column(String(36))
+    capability_digest: Mapped[str] = mapped_column(String(64))
+    runtime_manifest_json: Mapped[dict[str, Any]] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
 class CaseFlowRun(Base):

@@ -1659,6 +1659,7 @@ def _create_native_conversation(
     allow_existing: bool = False,
     system_message_suffix_append: str = "",
     credential_ids: tuple[str, ...] | None = None,
+    system_secrets: dict[str, str] | None = None,
 ) -> RuntimeHandle:
     ensure_credential_sync_schema(db)
     runtime = db.scalar(
@@ -1704,6 +1705,7 @@ def _create_native_conversation(
     from flowweave.modules.agent_sessions.application import history_integration
 
     conversation_secrets.update(history_integration.creation_secrets(db, binding))
+    conversation_secrets.update(system_secrets or {})
     if credential_context:
         agent_spec = replace(
             agent_spec,
@@ -2154,13 +2156,12 @@ def _record_bootstrap_failure(
     # though no attachment projection has been committed yet.
     if binding.workspace_id is not None:
         agent_workspace_host.delete_session_attachment_files(db, binding.workspace_id, binding.id)
-    from flowweave.modules.agent_sessions.application import history_integration, history_sessions
+    from flowweave.modules.agent_sessions.application import history_sessions
 
     history_sessions.delete_binding_access(db, binding.id)
     db.execute(
         delete(AgentConversationCapability).where(
             AgentConversationCapability.binding_id == binding.id,
-            AgentConversationCapability.capability_key == history_integration.SERVER_NAME,
         )
     )
     db.delete(command)
@@ -2188,6 +2189,7 @@ def bootstrap_conversation(
     credential_ids: tuple[str, ...] | None = None,
     idempotency_key: str,
     system_message_suffix_append: str = "",
+    case_control_round_id: str | None = None,
 ) -> dict[str, Any]:
     """Create a native conversation only while accepting its first user event.
 
@@ -2353,6 +2355,11 @@ def bootstrap_conversation(
         from flowweave.modules.agent_sessions.application import history_integration
 
         history_integration.prepare_creation(db, workspace, binding, source_references)
+        system_secrets: dict[str, str] = {}
+        if case_control_round_id is not None:
+            from flowweave.modules.cases.public import prepare_case_native_tools
+
+            system_secrets = prepare_case_native_tools(db, case_control_round_id, binding)
         handle = _create_native_conversation(
             db,
             workspace,
@@ -2362,7 +2369,12 @@ def bootstrap_conversation(
             allow_existing=command.attempt_count > 1,
             system_message_suffix_append=system_message_suffix_append,
             credential_ids=credential_ids,
+            system_secrets=system_secrets,
         )
+        if case_control_round_id is not None and command.attempt_count > 1:
+            from flowweave.modules.cases.public import assert_case_native_tools
+
+            assert_case_native_tools(db, binding.id, handle)
         previous_event_id = get_runtime().reload_conversation(handle).event_id
         binding.bootstrap_parent_event_id = previous_event_id
         db.commit()

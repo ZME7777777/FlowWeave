@@ -552,8 +552,9 @@ def test_case_control_plan_dispatches_copy_and_start_actions(client, skill_capab
     )
 
 
+@pytest.mark.parametrize("fail_first_native", [False, True])
 def test_control_binding_plan_is_limited_to_its_active_case_stage(
-    client, monkeypatch, settings, db_session_factory
+    client, monkeypatch, settings, db_session_factory, fail_first_native
 ):
     provider = client.post(
         "/api/v1/model-providers",
@@ -624,12 +625,33 @@ def test_control_binding_plan_is_limited_to_its_active_case_stage(
     assert configured.status_code == 200, configured.text
     from dataclasses import replace
 
+    from test_case_native_tools import publish_case_tools
+
+    from flowweave.modules.cases.application import native_tools
+    from flowweave.shared.artifact_store import artifact_store_context
+
+    with settings_context(settings), db_session_factory() as db:
+        publish_case_tools(db, settings, client.app.state.container.artifact_store, monkeypatch)
     working_directories = {}
+    native_calls = []
     create_runtime = MockRuntime.create_conversation
     reload_runtime = MockRuntime.reload_conversation
 
     def create_in_directory(runtime, request):
+        native_calls.append(request.conversation_id)
         working_directories[request.conversation_id] = request.workspace_ref
+        mcp = next(
+            server
+            for server in request.agent_spec.mcp_servers
+            if server.name == native_tools.SERVER_NAME
+        )
+        assert mcp.config["headers"] == {"Authorization": native_tools.AUTH_HEADER}
+        assert request.conversation_secrets[native_tools.SECRET_NAME].startswith("fwc1.")
+        assert "fwc1." not in request.agent_spec.agent_context.system_message_suffix
+        if fail_first_native and len(native_calls) == 1:
+            from flowweave.shared.errors import DomainError
+
+            raise DomainError("CASE_NATIVE_TEST_FAILURE", "controlled creation failure", 503)
         return create_runtime(runtime, request)
 
     def reload_in_directory(runtime, handle, **kwargs):
@@ -655,9 +677,37 @@ def test_control_binding_plan_is_limited_to_its_active_case_stage(
         tenant_user(owner_id),
         db_session_factory() as db,
         runtime_context(MockRuntime()),
+        artifact_store_context(client.app.state.container.artifact_store),
     ):
-        deliver_control_round(db, conversation.json()["current_control_round_id"])
+        round_id = conversation.json()["current_control_round_id"]
+        deliver_control_round(db, round_id)
         db.commit()
+        if fail_first_native:
+            from sqlalchemy import select
+
+            from flowweave.modules.agent_sessions.infrastructure.models import (
+                AgentConversationCapability,
+            )
+            from flowweave.modules.cases.application.coordination import retry_control_round
+            from flowweave.modules.cases.infrastructure.models import (
+                CaseControlRound,
+                CaseToolGrant,
+            )
+
+            entry = db.get(CaseControlRound, round_id)
+            assert entry.state == "FAILED"
+            assert db.scalar(select(CaseToolGrant.id)) is None
+            assert (
+                db.scalar(
+                    select(AgentConversationCapability.id).where(
+                        AgentConversationCapability.binding_id == entry.binding_id
+                    )
+                )
+                is None
+            )
+            retry_control_round(db, first.json()["id"], round_id)
+            deliver_control_round(db, round_id)
+            db.commit()
     conversation = client.get(f"/api/v1/cases/{first.json()['id']}")
     assert conversation.json()["control_rounds"][0]["state"] == "STARTED", conversation.text
     assert list(working_directories.values())[0].endswith(f"/.flowweave/cases/{first.json()['id']}")

@@ -31,6 +31,7 @@ from flowweave.modules.cases.infrastructure.models import (
     CaseDecisionProposal,
     CaseFlowRun,
     CaseStage,
+    CaseToolGrant,
 )
 from flowweave.modules.catalog.infrastructure.models import (
     CapabilityBlob,
@@ -147,6 +148,7 @@ __all__ = (
     "Case",
     "CaseAgentTask",
     "CaseControlRound",
+    "CaseToolGrant",
     "CaseDecisionProposal",
     "CaseFlowRun",
     "CaseStage",

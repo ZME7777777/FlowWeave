@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     # Explicitly pinned catalog version and trusted endpoint, configured together.
     agent_history_mcp_capability_version_id: str = ""
     agent_history_mcp_url: str = ""
+    case_tools_mcp_capability_version_id: str = ""
+    case_tools_mcp_url: str = ""
 
     database_url: str = "postgresql+psycopg://flowweave:flowweave_dev@localhost:55432/flowweave"
     pool_size: int = Field(default=10, ge=1, le=100)

@@ -426,7 +426,8 @@ def test_locked_sdk_native_plugin_secret_and_restore(client, tmp_path):
         report = json.loads(result.stdout.strip().splitlines()[-1])
         assert report["status"] == "passed"
         assert report["events"] > 0
-        assert report["source_commit"] == "ae178d86f4e0e268cf31f8f9c5deda892f4ebf12"
+        source_lock = Path(__file__).parents[3] / "infra/openhands/source.lock.json"
+        assert report["source_commit"] == json.loads(source_lock.read_text())["source_commit"]
         assert "restored_native_mcp_call" in report["checks"]
         assert state.reads == 2
     finally:

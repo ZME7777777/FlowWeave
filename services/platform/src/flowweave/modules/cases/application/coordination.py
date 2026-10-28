@@ -229,6 +229,7 @@ def deliver_control_round(db: Session, round_id: str) -> None:
                 entry.workspace_id,
                 work_directory_id=entry.work_directory_id,
                 conversation_id=entry.binding_id,
+                case_control_round_id=entry.id,
                 model_provider_id=config["model_provider_id"],
                 model_name=config["model_name"],
                 reasoning_effort=config["reasoning_effort"],

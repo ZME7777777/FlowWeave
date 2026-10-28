@@ -90,6 +90,7 @@ _USER_ISOLATED_TABLES = frozenset(
         "case_agent_tasks",
         "case_control_plans",
         "case_control_rounds",
+        "case_tool_grants",
         "case_decision_proposals",
         "case_flow_runs",
         "case_stages",

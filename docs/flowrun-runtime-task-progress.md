@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`UPSTREAM BASELINE ADOPTION COMPLETE`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`CASE-03`
+> 下一可执行切片：`CASE-03B`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -13672,10 +13672,11 @@ Web remote-release-finish 通过，无过期受管上下文；保留当前镜像
 | --- | --- | --- | --- |
 | CASE-01 | DONE | OPS-37、OPS-39 DONE | 动作结果、失败重试与暂停门禁 |
 | CASE-02 | DONE | CASE-01 | 新协调轮次与原生会话bootstrap |
-| CASE-03 | READY | CASE-02 | Case原生工具及作用域 |
-| CASE-04 | PENDING | CASE-03 | 产物登记与跨容器授权读取 |
+| CASE-03A | DONE | CASE-02 | 原生 MCP 注册、冻结授权与场景范围读取 |
+| CASE-03B | READY | CASE-03A | 流程图／草稿读取与当前执行副本配置、启动工具 |
+| CASE-04 | PENDING | CASE-03B | 产物登记与跨容器授权读取 |
 | CASE-05 | PENDING | CASE-02、CASE-04 | 持久事件投递与Agent回访 |
-| CASE-06 | PENDING | CASE-03、CASE-05 | 逐步复核、配置修订与重跑 |
+| CASE-06 | PENDING | CASE-03B、CASE-05 | 逐步复核、配置修订与重跑 |
 | CASE-07 | PENDING | CASE-04、CASE-05、CASE-06 | 连续修订、跨阶段决策与完成 |
 | CASE-08 | PENDING | CASE-02–CASE-07 | 前端反馈与接管统一 |
 | CASE-09 | PENDING | CASE-01–CASE-08 | 全链路与恢复验收 |
@@ -14187,6 +14188,51 @@ platform／web remote-release-finish 均通过；按受管策略保留最近 24 
 当前无 CURRENT，本片无后续开发任务。
 收尾后再次核对四服务版本、健康、唯一 head、配置与其余容器保护项，均通过。
 
+### CASE-03A 原生工具注册与场景范围读取 — DONE
+
+依赖 CASE-02 DONE。将 CASE-03 按独立授权边界拆为 03A／03B；本片通过正式 MCP
+创建字段接入只读场景工具，冻结 version／digest／blob 与 Runtime Manifest，凭据
+由服务端绑定当前 round／binding／Runtime／用户并在每次调用重新授权。只读取
+目标、阶段路径及资料引用；流程图、草稿和写操作归 CASE-03B，不提前接入事件回访。
+
+实施结果（2026-10-28）：新协调会话经OpenHands正式创建字段接入只读MCP
+`flowweave-case-context`／`read_case_context`，按overview、stages和materials读取
+当前场景，分页上限50。工具参数不接受用户／场景／轮次／binding／FlowRun身份；
+目标、路径和资料引用均由服务端推导，不返回会话配置密钥或平台登录凭据。
+
+新增0181_case_tool_grants，保存当前轮次绑定的凭据摘要、加密凭据和固定version／
+digest／blob／hash Manifest，维护用户隔离和强制RLS。每次调用核对有效用户、当前
+轮次、Case、binding、原生conversation、Runtime Session及冻结目录版本；旧轮次、
+终态、删除与身份漂移失效，暂停仍可读取。binding／round删除由数据库级联回收授权，
+保留其他原生历史。已冻结版本不随默认配置变化，凭据仅通过正式Secret Registry注入。
+初次配置缺失或包损坏明确失败；新私有配置要求记录在场景设计文档中，不含实际入口。
+
+恢复已有原生会话时重新核对正式MCP配置；缺失时按结果不确定保留原身份供对账。
+明确创建失败则删除失败绑定全部能力引用，级联撤销授权；显式重试仍使用原轮次。
+现有成功会话和历史执行不被修改，不把文本当成控制协议。本key／入口保持只读，
+后续写操作须另行冻结动作能力，不能向旧工具入口静默扩权。
+
+验证：Case配置／动作／协调／HTTP和工具定向回归共122项均通过（跨完整套件与
+后补恢复回归）；PostgreSQL升级／降级、非超级用户RLS读写隔离、授权级联回收通过。
+用source.lock固定73e3cd8e4d74ff30c9ed794baf72d977800509d7归档在.tmp内建立隔离SDK
+环境，验证全部SDK源码、1.54.0包版本、初始MCP发现、真实HTTP工具调用、加密
+持久化及原ID／事件恢复后再次调用，未调用LLM。扩展后的共享探针也通过既有历史
+MCP与官方客户端两项兼容回归；将原用例硬编码的旧source commit断言改为实际lock。
+Ruff、目标Pyright（含public为0）、格式和diff检查通过，唯一Alembic head为0181。
+
+扩展检查另记录1项既有夹具失败：test_resource_deletion_preserves_history_and_hard_deletes_run_dependencies
+在直接插入BackgroundTask时未设置owner_user_id，触发NOT NULL，发生在本片逻辑之前；
+该用例和归属规则未修改，不据此宣称全仓库通过。初次扩展178项通过、2项外部环境
+探针未配置而跳过；随后提供固定SDK环境，两项均实际通过。原CASE-02记录的其他
+扩展失败不在本片重复执行或修正。本片未部署、未推送、未升级实际Runtime；下一
+可执行切片CASE-03B。提交本片后停止，不自动开始配置与启动工具。
+
+### CASE-03B 流程读取与当前执行副本配置、启动工具 — READY
+
+依赖CASE-03A DONE。读取授权场景内的流程图、输入输出契约、当前副本与草稿；
+通过另行冻结的原生动作能力调用既有服务，仅允许活动阶段当前独立副本的配置、
+复制及启动，所有写入使用技术前置条件、乐观版本与持久动作结果。保护源模板和
+历史执行，不接入CASE-04资料发布或CASE-05事件回访；业务输入由Agent选择与补充。
 
 ### OPS-51 流程与能力列表整行单击勾选 — DONE
 
