@@ -355,7 +355,7 @@ class AgentAttachmentUploadPart(Base):
 
 
 class AgentConversationCapability(Base):
-    """Immutable capability-version provenance frozen for one conversation."""
+    """Immutable registration history; last position per capability is current."""
 
     __tablename__ = "agent_conversation_capabilities"
     __table_args__ = (

@@ -10,6 +10,7 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from flowweave.modules.agent_sessions.application.capability_versions import current_capabilities
 from flowweave.modules.agent_sessions.infrastructure.models import (
     AgentConversationBinding,
     AgentConversationCapability,
@@ -594,10 +595,12 @@ def flow_node_binding_for_attempt(
 
 def config_from_binding(db: Session, binding: AgentConversationBinding) -> FrozenSessionConfig:
     frozen: list[FrozenSessionCapability] = []
-    for reference in db.scalars(
-        select(AgentConversationCapability)
-        .where(AgentConversationCapability.binding_id == binding.id)
-        .order_by(AgentConversationCapability.position)
+    for reference in current_capabilities(
+        db.scalars(
+            select(AgentConversationCapability)
+            .where(AgentConversationCapability.binding_id == binding.id)
+            .order_by(AgentConversationCapability.position)
+        )
     ):
         published = resolve_version(db, reference.capability_version_id, include_retired=True)
         if (

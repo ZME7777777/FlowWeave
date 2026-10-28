@@ -1800,6 +1800,7 @@ def test_agent_workspace_loads_capability_through_native_marketplace(
     )
     runtime = CapturingRuntime()
     with (
+        tenant_user(FLOWWEAVE_USER_ID),
         settings_context(settings),
         artifact_store_context(container.artifact_store),
         db_session_factory() as db,
@@ -1879,6 +1880,7 @@ def test_agent_workspace_registers_capabilities_as_one_ordered_batch(
     )
     runtime = CapturingRuntime()
     with (
+        tenant_user(FLOWWEAVE_USER_ID),
         settings_context(settings),
         artifact_store_context(container.artifact_store),
         db_session_factory() as db,

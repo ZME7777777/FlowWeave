@@ -1811,7 +1811,7 @@ for (const mode of ['draft', 'existing', 'preset'] as const) {
     await dialog.getByPlaceholder('搜索名称、说明或文件…').fill('');
     await expect(builtin).toBeVisible();
     await dialog.screenshot({ path: `../../.tmp/fr656-${mode}.png` });
-    await dialog.getByRole('button', { name: mode === 'existing' ? '注册到当前会话' : mode === 'preset' ? '保存会话配置' : '用于新建会话', exact: true }).click();
+    await dialog.getByRole('button', { name: mode === 'existing' ? '保存' : mode === 'preset' ? '保存会话配置' : '用于新建会话', exact: true }).click();
     await expect(dialog).toHaveCount(0);
     expect(registrations).toBe(0);
   });
@@ -4446,3 +4446,67 @@ test('schedule history retries bounded pages and ignores a late page after switc
   await expect(list).not.toContainText('daily-schedule');
   await expect(page.locator('.agent-schedule-detail-main')).toHaveJSProperty('scrollTop', 0);
 });
+
+
+for (const mode of ['success', 'failure', 'missing-old-catalog'] as const) {
+  test(`registered skill stages an inline update until save (${mode})`, async ({ page }) => {
+    await openWorkspace(page);
+    const old = { id: 'daily-v1', lineage_id: 'daily-lineage', capability_type: 'SKILL', capability_key: '日报技能', revision_number: 1, is_latest: false, description: '旧版日报规则', filename: 'SKILL.md' };
+    const latest = { ...old, id: 'daily-v2', revision_number: 2, is_latest: true, description: '新版日报规则' };
+    let active = old.id;
+    let fail = mode === 'failure';
+    const registrations: string[][] = [];
+    const conversation = () => ({
+      id: 'scheduled-conversation', lifecycle: 'ACTIVE', display_title: '日报会话',
+      streaming_callback_ready: true, write_available: true, created_at: now, updated_at: now,
+      capabilities: [{ id: active, capability_type: 'SKILL', capability_key: old.capability_key, digest: active }],
+    });
+    await page.route('**/api/v1/capabilities', route => json(route, mode === 'missing-old-catalog' ? [latest] : [old, latest]));
+    await page.route('**/api/v1/capability-collections', route => json(route, [{ id: 'daily-collection', name: '日报组合', members: [latest] }]));
+    await page.route('**/api/v1/agent-workspaces/schedule-workspace/conversations/scheduled-conversation', route => json(route, conversation()));
+    await page.route('**/capabilities/batch', route => {
+      const ids = route.request().postDataJSON().capability_version_ids;
+      registrations.push(ids);
+      if (!fail) active = latest.id;
+      return json(route, { conversation: conversation(), completed: !fail,
+        loaded_capability_version_ids: fail ? [] : ids, already_loaded_capability_version_ids: [],
+        failure: fail ? { capability_version_id: latest.id, code: 'PLUGIN_LOAD_FAILED', message: '新版加载失败' } : null });
+    });
+    await page.goto('/agent/conversations/scheduled-conversation');
+    await page.getByRole('button', { name: '会话配置', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: '会话配置' });
+    const row = dialog.locator('[data-capability-key="日报技能"]');
+    await expect(row).toHaveCount(1);
+    await expect(row.getByText('有新版本', { exact: true })).toBeVisible();
+    await dialog.getByRole('button', { name: '只看已选', exact: true }).click();
+    await dialog.getByRole('button', { name: '日报组合', exact: true }).click();
+    await expect(row).toBeVisible();
+    await row.getByRole('button', { name: '同步 日报技能 到 v2', exact: true }).click();
+    await expect(row).toHaveCount(1);
+    await expect(row.getByText('待保存', { exact: true })).toBeVisible();
+    expect(registrations).toEqual([]);
+    await dialog.getByRole('button', { name: '取消', exact: true }).click();
+    await page.getByRole('button', { name: '会话配置', exact: true }).click();
+    await expect(row.getByText('有新版本', { exact: true })).toBeVisible();
+    expect(registrations).toEqual([]);
+    await row.getByRole('button', { name: '同步 日报技能 到 v2', exact: true }).click();
+    await page.setViewportSize({ width: 600, height: 800 });
+    await expect(row.getByRole('button', { name: '同步 日报技能 到 v2', exact: true })).toBeInViewport();
+    await expect(dialog.getByRole('button', { name: '保存', exact: true })).toBeInViewport();
+    await dialog.screenshot({ path: `../../.tmp/ops46-skill-update-${mode}.png` });
+    await dialog.getByRole('button', { name: '保存', exact: true }).click();
+    if (fail) {
+      await expect(dialog.getByText(/新版加载失败/)).toBeVisible();
+      await expect(row).toHaveCount(1);
+      await expect(row.getByText('待保存', { exact: true })).toBeVisible();
+      fail = false;
+      await dialog.getByRole('button', { name: '保存', exact: true }).click();
+    }
+    await expect(dialog).toHaveCount(0);
+    expect(registrations).toEqual(Array.from({ length: mode === 'failure' ? 2 : 1 }, () => ['daily-v2']));
+    await page.getByRole('button', { name: '会话配置', exact: true }).click();
+    await expect(row).toHaveCount(1);
+    await expect(row.locator('b')).toHaveText('日报技能 · v2');
+    await expect(row.getByText('有新版本', { exact: true })).toHaveCount(0);
+  });
+}

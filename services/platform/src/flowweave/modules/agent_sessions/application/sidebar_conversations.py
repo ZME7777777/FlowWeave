@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions.application import conversations
+from flowweave.modules.agent_sessions.application.capability_versions import current_capabilities
 from flowweave.modules.agent_sessions.application.deletion import delete_binding_records
 from flowweave.modules.agent_sessions.infrastructure.models import (
     AgentConversationBinding,
@@ -76,10 +77,12 @@ def create_sidebar_conversation(
     source = _source_binding(db, workspace_id, source_binding_id)
     capability_version_ids = tuple(
         item.capability_version_id
-        for item in db.scalars(
-            select(AgentConversationCapability)
-            .where(AgentConversationCapability.binding_id == source.id)
-            .order_by(AgentConversationCapability.position)
+        for item in current_capabilities(
+            db.scalars(
+                select(AgentConversationCapability)
+                .where(AgentConversationCapability.binding_id == source.id)
+                .order_by(AgentConversationCapability.position)
+            )
         )
     )
     result = conversations.bootstrap_conversation(

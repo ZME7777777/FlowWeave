@@ -21,6 +21,10 @@ from flowweave.modules.agent_sessions.application import usage as usage_projecti
 from flowweave.modules.agent_sessions.application.activity_reconciliation import (
     read_activity_completion,
 )
+from flowweave.modules.agent_sessions.application.capability_versions import (
+    current_capabilities,
+    validate_skill_upgrade,
+)
 from flowweave.modules.agent_sessions.application.condensation import (
     condensation_task_failure_reason,
     enqueue_manual_condensation,
@@ -610,10 +614,12 @@ def _node_session_dict(db: Session, item: AgentConversationBinding) -> dict[str,
                 "capability_key": capability.capability_key,
                 "digest": capability.digest,
             }
-            for capability in db.scalars(
-                select(AgentConversationCapability)
-                .where(AgentConversationCapability.binding_id == item.id)
-                .order_by(AgentConversationCapability.position)
+            for capability in current_capabilities(
+                db.scalars(
+                    select(AgentConversationCapability)
+                    .where(AgentConversationCapability.binding_id == item.id)
+                    .order_by(AgentConversationCapability.position)
+                )
             )
         ],
         "streaming_callback_ready": item.streaming_callback_ready,
@@ -718,7 +724,7 @@ def _node_session_page_dicts(
                 AgentConversationCapability.position,
             )
         )
-        for capability in capabilities:
+        for capability in current_capabilities(capabilities):
             capabilities_by_binding[capability.binding_id].append(
                 {
                     "id": capability.capability_version_id,
@@ -3647,9 +3653,12 @@ def register_node_conversation_capabilities(
             )
         )
     )
-    existing_versions = {reference.capability_version_id for reference in existing}
-    existing_names = {
-        (reference.capability_type, reference.capability_key) for reference in existing
+    existing_versions = {
+        reference.capability_version_id for reference in current_capabilities(existing)
+    }
+    existing_by_name = {
+        (reference.capability_type, reference.capability_key): reference
+        for reference in current_capabilities(existing)
     }
     pending: list[tuple[Any, str]] = []
     already_loaded: list[str] = []
@@ -3658,12 +3667,10 @@ def register_node_conversation_capabilities(
         if version_id in existing_versions:
             already_loaded.append(version_id)
             continue
-        if (capability_type, published.package.capability_key) in existing_names:
-            raise DomainError(
-                "AGENT_CONVERSATION_CAPABILITY_CONFLICT", "同类型同名称能力已加载其他版本", 409
-            )
+        previous = existing_by_name.get((capability_type, published.package.capability_key))
+        if previous is not None:
+            validate_skill_upgrade(db, previous, published)
         pending.append((published, capability_type))
-        existing_names.add((capability_type, published.package.capability_key))
 
     if not pending:
         return {

@@ -652,3 +652,16 @@
 .agent-schedule-page-sentinel{height:1px;pointer-events:none}
 .agent-schedule-run>.agent-schedule-run-content{min-width:0}
 @media(max-width:1180px){.agent-schedule-detail>.agent-schedule-summary{flex-wrap:wrap;gap:7px 12px}.agent-schedule-detail>.agent-schedule-summary>div:nth-child(2){flex:1 1 180px}.agent-schedule-history-columns{grid-template-columns:minmax(0,1fr) 32px 120px;gap:8px}.agent-schedule-history-list>.agent-schedule-history-run,.agent-schedule-history-list>.agent-schedule-history-run:has(.agent-workspace-conversation){grid-template-columns:14px minmax(0,1fr) 32px 120px;gap:8px}}
+
+/* Registered Skills keep a single row while a newer version is staged. */
+.agent-capability-skill-row{display:flex;align-items:center;gap:10px;border:1px solid #cde0d3;border-radius:8px;background:#f1f7f3;margin-block:2px;padding-right:10px}
+.agent-capability-skill-row>button{display:grid;flex:1;min-width:0;grid-template-columns:34px minmax(0,1fr) 22px;align-items:center;gap:10px;border:0;border-radius:8px;background:transparent;padding:9px;text-align:left}
+.agent-capability-skill-row>button>span:nth-child(2){min-width:0}
+.agent-capability-skill-row>button.locked{cursor:default;opacity:1}
+.agent-capability-skill-update{display:flex;flex-shrink:0;align-items:center;gap:8px}
+.agent-capability-skill-update>span{border-radius:4px;background:#fff0cf;padding:3px 6px;color:#94651d;font-size:10px;white-space:nowrap}
+.agent-capability-skill-update>span.pending{background:#e2eee7;color:#32634a}
+.agent-capability-skill-update>button{display:flex;align-items:center;gap:4px;border:1px solid #afcbb8;border-radius:5px;background:#fff;padding:5px 7px;color:#286140;font-size:10px;white-space:nowrap}
+.agent-capability-skill-update>button:hover:not(:disabled){background:#e5f0e8}
+.agent-capability-skill-update>button:disabled{opacity:.65;cursor:default}
+@media(max-width:680px){.agent-capability-skill-row{gap:4px;padding-right:7px}.agent-capability-skill-row>button{grid-template-columns:30px minmax(0,1fr) 20px;gap:6px;padding:8px 6px}.agent-capability-skill-update{flex-direction:column;gap:4px}}
