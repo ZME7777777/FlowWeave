@@ -653,15 +653,35 @@
 .agent-schedule-run>.agent-schedule-run-content{min-width:0}
 @media(max-width:1180px){.agent-schedule-detail>.agent-schedule-summary{flex-wrap:wrap;gap:7px 12px}.agent-schedule-detail>.agent-schedule-summary>div:nth-child(2){flex:1 1 180px}.agent-schedule-history-columns{grid-template-columns:minmax(0,1fr) 32px 120px;gap:8px}.agent-schedule-history-list>.agent-schedule-history-run,.agent-schedule-history-list>.agent-schedule-history-run:has(.agent-workspace-conversation){grid-template-columns:14px minmax(0,1fr) 32px 120px;gap:8px}}
 
-/* Registered Skills keep a single row while a newer version is staged. */
-.agent-capability-skill-row{display:flex;align-items:center;gap:10px;border:1px solid #cde0d3;border-radius:8px;background:#f1f7f3;margin-block:2px;padding-right:10px}
-.agent-capability-skill-row>button{display:grid;flex:1;min-width:0;grid-template-columns:34px minmax(0,1fr) 22px;align-items:center;gap:10px;border:0;border-radius:8px;background:transparent;padding:9px;text-align:left}
-.agent-capability-skill-row>button>span:nth-child(2){min-width:0}
+/* Compact configuration rows share leading square selection marks and two text lines. */
+.agent-capability-manager .agent-capability-list>button,.agent-capability-skill-row>button{display:grid;box-sizing:border-box;min-width:0;min-height:48px;grid-template-columns:18px 26px minmax(0,1fr);align-items:center;gap:9px;padding:7px 9px}
+.agent-capability-manager .agent-capability-icon{width:26px;height:26px;border-radius:6px}
+.agent-capability-manager .agent-capability-icon.skill{background:#e8f1eb;color:#286140}
+.agent-capability-manager .agent-capability-icon.plugin{background:#fff0df;color:#92551f}
+.agent-capability-manager .agent-capability-icon.mcp{background:#eef0fb;color:#465ea5}
+.agent-capability-manager .agent-capability-icon.context{background:#e6f1f4;color:#327285}
+.agent-capability-manager .agent-capability-icon.agent_definition{background:#f0eafb;color:#77509b}
+.agent-capability-manager .agent-capability-icon.hook{background:#fbeaec;color:#a0586a}
+.agent-capability-manager .agent-capability-icon.credential{background:#fff0df;color:#92551f}
+.agent-capability-manager .agent-selection-checkbox{box-sizing:border-box;width:16px;height:16px;flex-shrink:0;border:1px solid #bacbc0;border-radius:4px;background:#fff;color:#fff}
+.agent-capability-manager .selected .agent-selection-checkbox{border-color:#327552;background:#327552;color:#fff}
+.agent-capability-manager .agent-capability-copy{display:grid;min-width:0;gap:3px}
+.agent-capability-manager .agent-capability-name{display:flex;min-width:0;align-items:center;gap:7px}
+.agent-capability-manager .agent-capability-copy b{margin:0;min-width:0;font-size:11px;line-height:15px}
+.agent-capability-manager .agent-capability-copy small{margin:0;min-width:0;font-size:10px;line-height:14px}
+.agent-capability-manager .agent-capability-name em{flex-shrink:0;margin:0;line-height:13px}
+.agent-capability-skill-row{display:flex;align-items:center;gap:8px;border:1px solid #cde0d3;border-radius:8px;background:#f1f7f3;margin-block:2px;padding-right:9px}
+.agent-capability-skill-row>button{flex:1;border:0;border-radius:8px;background:transparent;text-align:left}
 .agent-capability-skill-row>button.locked{cursor:default;opacity:1}
-.agent-capability-skill-update{display:flex;flex-shrink:0;align-items:center;gap:8px}
+.agent-capability-skill-update{display:flex;flex-shrink:0;align-items:center;gap:6px}
 .agent-capability-skill-update>span{border-radius:4px;background:#fff0cf;padding:3px 6px;color:#94651d;font-size:10px;white-space:nowrap}
 .agent-capability-skill-update>span.pending{background:#e2eee7;color:#32634a}
 .agent-capability-skill-update>button{display:flex;align-items:center;gap:4px;border:1px solid #afcbb8;border-radius:5px;background:#fff;padding:5px 7px;color:#286140;font-size:10px;white-space:nowrap}
 .agent-capability-skill-update>button:hover:not(:disabled){background:#e5f0e8}
 .agent-capability-skill-update>button:disabled{opacity:.65;cursor:default}
-@media(max-width:680px){.agent-capability-skill-row{gap:4px;padding-right:7px}.agent-capability-skill-row>button{grid-template-columns:30px minmax(0,1fr) 20px;gap:6px;padding:8px 6px}.agent-capability-skill-update{flex-direction:column;gap:4px}}
+.agent-credential-sync-heading{grid-template-columns:18px 26px minmax(0,1fr) 64px;gap:9px;padding:7px 9px}
+.agent-credential-sync-heading>.agent-capability-select-visible{grid-column:1;grid-row:1;width:18px;height:18px}
+.agent-credential-sync-heading>span:first-of-type{grid-column:3;text-align:left}
+.agent-credential-sync-heading>span:last-of-type{grid-column:4;text-align:center}
+.agent-credential-sync .agent-capability-list>button{grid-template-columns:18px 26px minmax(0,1fr) 64px;gap:9px;min-height:48px;padding:7px 9px}
+@media(max-width:680px){.agent-capability-manager .agent-capability-list>button,.agent-capability-skill-row>button{gap:7px;padding-inline:7px}.agent-capability-skill-row{gap:5px;padding-right:7px}.agent-capability-skill-update{gap:4px}.agent-credential-sync-heading,.agent-credential-sync .agent-capability-list>button{grid-template-columns:18px 26px minmax(0,1fr) 58px;gap:7px;padding-inline:7px}}

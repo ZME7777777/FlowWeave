@@ -1795,7 +1795,7 @@ for (const mode of ['draft', 'existing', 'preset'] as const) {
     await expect(builtin).toBeDisabled();
     await expect(builtin).toHaveAttribute('aria-pressed', 'true');
     await expect(builtin.locator('em')).toHaveText('内置');
-    await expect(builtin.locator('small')).toHaveCount(0);
+    await expect(builtin.locator('small')).toHaveText('按授权检索引用会话的历史内容');
     await expect(builtin.locator('i svg')).toHaveCount(1);
     await dialog.getByRole('button', { name: '选择筛选结果（1）', exact: true }).click();
     await dialog.getByRole('button', { name: '取消选择筛选结果', exact: true }).click();
@@ -1888,12 +1888,12 @@ for (const mode of ['create', 'edit'] as const) {
     await expect(dialog.getByText('已选择 0 项认证', { exact: true })).toBeVisible();
     await dialog.getByRole('button', { name: /认证1/ }).click();
     const credentialMark = dialog.locator('.agent-capability-list > button i').first();
-    expect(await credentialMark.evaluate(element => { const s = getComputedStyle(element); return [s.width, s.height, s.borderRadius]; })).toEqual(['20px', '20px', '50%']);
+    expect(await credentialMark.evaluate(element => { const s = getComputedStyle(element); return [s.width, s.height, s.borderRadius]; })).toEqual(['16px', '16px', '4px']);
     await dialog.screenshot({ path: `../../.tmp/fr648-${mode}-credentials.png` });
     await page.setViewportSize({ width: 640, height: 640 });
     await expect(dialog.getByRole('button', { name: '全选认证', exact: true })).toBeInViewport();
     await expect(dialog.getByRole('button', { name: '保存认证配置', exact: true })).toBeInViewport();
-    expect(await credentialMark.evaluate(element => getComputedStyle(element).width)).toBe('20px');
+    expect(await credentialMark.evaluate(element => getComputedStyle(element).width)).toBe('16px');
     await dialog.screenshot({ path: `../../.tmp/fr648-${mode}-credentials-mobile.png` });
     await page.setViewportSize({ width: 1440, height: 1000 });
     // Saving from the authentication tab must preserve edits on both tabs.
@@ -4510,3 +4510,69 @@ for (const mode of ['success', 'failure', 'missing-old-catalog'] as const) {
     await expect(row.getByText('有新版本', { exact: true })).toHaveCount(0);
   });
 }
+
+
+test('session configuration keeps compact two-line rows and leading square selections', async ({ page }) => {
+  await openWorkspace(page);
+  const types = ['SKILL', 'PLUGIN', 'MCP', 'CONTEXT', 'AGENT_DEFINITION', 'HOOK'];
+  const catalog = types.map(type => ({ id: `compact-${type}`, capability_type: type,
+    capability_key: `${type} 名称${'很长的名称'.repeat(12)}`, description: '说明内容'.repeat(50), filename: 'entry.md', is_latest: true }));
+  await page.route('**/api/v1/capabilities', route => json(route, catalog));
+  await page.getByRole('button', { name: '新会话配置', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: '会话配置' });
+  const assertRow = async (row: import('@playwright/test').Locator) => {
+    const layout = await row.evaluate(element => {
+      const mark = element.querySelector<HTMLElement>('.agent-selection-checkbox')!;
+      const icon = element.querySelector<HTMLElement>('.agent-capability-icon')!;
+      const title = element.querySelector<HTMLElement>('b')!;
+      const description = element.querySelector<HTMLElement>('small')!;
+      const rect = element.getBoundingClientRect(), m = mark.getBoundingClientRect(), i = icon.getBoundingClientRect(), t = title.getBoundingClientRect();
+      const style = getComputedStyle(mark);
+      return { height: rect.height, markSize: [m.width, m.height], radius: style.borderRadius,
+        ordered: m.right <= i.left && i.right <= t.left, titleLine: title.getBoundingClientRect().height,
+        descriptionLine: description.getBoundingClientRect().height, descriptionWrap: getComputedStyle(description).whiteSpace,
+        overflow: element.scrollWidth > element.clientWidth,
+        icon: icon.querySelector('svg')!.getAttribute('class') };
+    });
+    expect(layout.height).toBeLessThanOrEqual(50);
+    expect(layout.markSize).toEqual([16, 16]);
+    expect(layout.radius).toBe('4px');
+    expect(layout.ordered).toBe(true);
+    expect(layout.titleLine).toBeLessThanOrEqual(16);
+    expect(layout.descriptionLine).toBeLessThanOrEqual(15);
+    expect(layout.descriptionWrap).toBe('nowrap');
+    expect(layout.overflow).toBe(false);
+    return layout.icon;
+  };
+  for (const width of [1440, 600]) {
+    await page.setViewportSize({ width, height: 900 });
+    const icons = [];
+    for (const item of catalog) {
+      const row = dialog.locator('.agent-capability-list > button').filter({ has: page.locator('b', { hasText: item.capability_key }) });
+      icons.push(await assertRow(row));
+    }
+    expect(new Set(icons).size).toBe(types.length);
+    await dialog.screenshot({ path: `../../.tmp/ops47-capabilities-${width}.png` });
+  }
+  const skill = dialog.locator('.agent-capability-list > button').filter({ has: page.locator('b', { hasText: catalog[0].capability_key }) });
+  await skill.locator('.agent-selection-checkbox').click();
+  await expect(skill).toHaveAttribute('aria-pressed', 'true');
+  await skill.focus();
+  await page.keyboard.press('Space');
+  await expect(skill).toHaveAttribute('aria-pressed', 'false');
+  await dialog.getByRole('button', { name: '认证', exact: true }).click();
+  const credential = dialog.locator('.agent-credential-sync .agent-capability-list > button').first();
+  await assertRow(credential);
+  await expect(credential).toHaveAttribute('aria-pressed', 'true');
+  await credential.locator('.agent-selection-checkbox').click();
+  await expect(credential).toHaveAttribute('aria-pressed', 'false');
+  const heading = dialog.locator('.agent-credential-sync-heading');
+  expect(await heading.evaluate(element => {
+    const select = element.querySelector('button')!.getBoundingClientRect();
+    const name = element.querySelector('span')!.getBoundingClientRect();
+    return select.right < name.left;
+  })).toBe(true);
+  await dialog.getByRole('button', { name: '全选认证', exact: true }).click();
+  await expect(credential).toHaveAttribute('aria-pressed', 'true');
+  await dialog.screenshot({ path: '../../.tmp/ops47-credentials.png' });
+});
