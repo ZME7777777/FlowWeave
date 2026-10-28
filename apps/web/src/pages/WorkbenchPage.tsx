@@ -13,9 +13,10 @@ import { RuntimeConfirmationPanel } from '../components/RuntimeConfirmationPanel
 import { useEscapeClose } from '../components/useEscapeClose';
 import { useWorkbenchStore } from '../store/workbench';
 import type { AgentPreset, ArtifactVersion, AttemptState, AutomaticNodePlan, AutomaticRecordConfigDocument, CapabilityAsset, FlowRun, FlowRunAutomaticRecord, FlowRunAutomaticRecordSummary, FlowRunStepwiseRecord, GateAgentPreset, GateEvaluation, GatePolicy, GateRemediationResult, IOField, NodeAttempt, NodeRun, OpenHandsConversationEvent, OpenHandsConversationEventBatch, RecordConfigDocument, SnapshotDefinition, SnapshotFlowNode, StepwiseNodeDraft, StepwiseRuntimePortMapping, TokenUsageSummary } from '../types';
-import { withDeploymentBase } from '../deploymentPath';
+import { withDeploymentBase, withoutDeploymentBase } from '../deploymentPath';
 import { selectCapabilityVersion } from '../utils/capabilitySelection';
 import './run-record-detail.css';
+import { flowRunPath, parseFlowRunPath, type FlowRunLocation } from '../flowRunNavigation';
 
 const attemptState = (run: NodeRun) => run.attempts.at(-1)?.state ?? run.state;
 const RUN_RAIL_PAGE_SIZE = 10;
@@ -1626,10 +1627,15 @@ function AutomaticLegacyPlanRecoveryPanel({ parentRunId, record, onRecovered }: 
   return <aside className="action-panel"><div className="action-content automatic-empty"><span className="eyebrow">CONTINUOUS RUN BLOCKED</span><h3>连续运行计划需要升级</h3><p>{gateLocations.length ? `${gateLocations.join('、')}来自旧版本，缺少稳定标识；平台尚未创建任何节点执行。` : '旧版本门禁缺少稳定标识；平台尚未创建任何节点执行。'}</p><p className="field-hint">升级只会为这条未执行的历史计划补齐门禁标识，并重新提交原有连续运行启动任务，不会改写已存在的会话、产物或执行记录。</p>{mutation.error && <p className="error">升级失败：{mutation.error.message}</p>}<button className="primary" disabled={mutation.isPending} onClick={() => void dialog.confirm({ title: '升级计划并重新启动？', message: '系统将补齐旧计划缺失的门禁标识，并重新提交连续运行启动任务。该操作仅适用于尚未创建节点执行的历史阻断记录。', confirmLabel: '升级并重新启动' }).then(confirmed => { if (confirmed) mutation.mutate(); })}>{mutation.isPending ? '升级并启动中…' : '升级计划并重新启动'}</button></div></aside>;
 }
 
-export function WorkbenchPage() {
+export function WorkbenchPage({ location }: { location?: FlowRunLocation }) {
   const dialog = useProductDialog();
   const qc = useQueryClient();
-  const { selectedRunId, selectedNodeRunId, selectedAttemptId, selectedWorkbenchMode, selectedAutomaticRecordId, selectedStepwiseRecordId, selectAttempt, selectExecution } = useWorkbenchStore();
+  const selection = useWorkbenchStore();
+  const { selectedNodeRunId, selectedAttemptId, selectAttempt, selectExecution } = selection;
+  const selectedRunId = location?.runId ?? selection.selectedRunId;
+  const selectedWorkbenchMode = location?.mode ?? selection.selectedWorkbenchMode;
+  const selectedAutomaticRecordId = location?.recordId ? (location.mode === 'AUTOMATIC' ? location.recordId : undefined) : selection.selectedAutomaticRecordId;
+  const selectedStepwiseRecordId = location?.recordId ? (location.mode === 'MANUAL' ? location.recordId : undefined) : selection.selectedStepwiseRecordId;
   const [selectedNodeKey, setSelectedNodeKey] = useState<string>();
   const [mode, setMode] = useState<WorkbenchMode>(selectedWorkbenchMode ?? 'MANUAL');
   const [recordListFilter, setRecordListFilter] = useState<RecordListFilter>('ALL');
@@ -1816,7 +1822,8 @@ export function WorkbenchPage() {
     // The mode and automatic-record ID are a one-shot browser-history restore
     // hint. Workbench owns the live selection after it mounts, so do not let
     // this transient context affect a later Run opened from the list.
-    if (selectedWorkbenchMode || selectedAutomaticRecordId || selectedStepwiseRecordId) {
+    const hint = useWorkbenchStore.getState();
+    if (hint.selectedWorkbenchMode || hint.selectedAutomaticRecordId || hint.selectedStepwiseRecordId) {
       useWorkbenchStore.setState({
         selectedWorkbenchMode: undefined,
         selectedAutomaticRecordId: undefined,
@@ -1824,6 +1831,24 @@ export function WorkbenchPage() {
       });
     }
   }, [selectedAutomaticRecordId, selectedStepwiseRecordId, selectedWorkbenchMode]);
+  useEffect(() => {
+    const recordId = mode === 'AUTOMATIC' ? selectedAutomaticId : selectedStepwiseId;
+    if (!selectedRunId || !recordId) return;
+    const path = withDeploymentBase(flowRunPath({ runId: selectedRunId, mode, recordId }));
+    if (window.location.pathname === path) return;
+    const selection = useWorkbenchStore.getState();
+    const state = { flowweaveFlowRun: {
+      runId: selectedRunId, mode,
+      automaticRecordId: mode === 'AUTOMATIC' ? recordId : undefined,
+      stepwiseRecordId: mode === 'MANUAL' ? recordId : undefined,
+      nodeRunId: selection.selectedNodeRunId, attemptId: selection.selectedAttemptId,
+    } };
+    // Upgrade legacy parent-only links in place. A record selected from within
+    // an existing record is a new history entry and a separate temporary tab.
+    if (parseFlowRunPath(withoutDeploymentBase(window.location.pathname))?.recordId) window.history.pushState(state, '', path);
+    else window.history.replaceState(state, '', path);
+    window.dispatchEvent(new PopStateEvent('popstate', { state }));
+  }, [mode, selectedAutomaticId, selectedRunId, selectedStepwiseId]);
   const returnToRuns = () => {
     useWorkbenchStore.setState({ view: 'runs', selectedRunId: undefined, selectedNodeRunId: undefined, selectedAttemptId: undefined });
     window.history.pushState({}, '', withDeploymentBase('/'));

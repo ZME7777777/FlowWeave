@@ -278,3 +278,136 @@ test('completed stepwise history uses the same frozen configuration and keeps it
   await panel.getByRole('button', { name: '输出', exact: true }).click();
   await expect(panel.getByRole('region', { name: '节点输出' })).toContainText(outputArtifact.uri);
 });
+
+const recordA = { ...completedRecord, id: 'aaaaaaaa-0000-0000-0000-000000000001', name: '记录 A' };
+const recordB = { ...completedRecord, id: 'bbbbbbbb-0000-0000-0000-000000000002', name: '记录 B' };
+const recordC = { ...completedRecord, id: recordA.id, name: '逐步记录 C', run_mode: 'MANUAL', start_node_key: 'first' };
+const recordPath = (id: string, kind = 'automatic') => `/flow-runs/${run.id}/records/${kind}/${id}`;
+
+async function mockRecordTabs(page: Page) {
+  await mocks(page, recordA);
+  await page.route('**/api/v1/flow-runs/**', route => {
+    const path = new URL(route.request().url()).pathname;
+    const respond = (body: unknown) => route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) });
+    if (path.endsWith('/records')) return respond({ items: [recordA, recordB, recordC].map(item => ({ kind: item.run_mode === 'MANUAL' ? 'MANUAL' : 'AUTOMATIC', id: item.id, name: item.name, state: item.state, started_at: now })), next_cursor: null });
+    if (path.endsWith('/automatic-runs/summaries') || path.endsWith('/automatic-runs')) return respond([recordA, recordB]);
+    if (path.endsWith('/stepwise-runs')) return respond([recordC]);
+    if (path.endsWith(`/automatic-runs/${recordA.id}`)) return respond(recordA);
+    if (path.endsWith(`/automatic-runs/${recordB.id}`)) return respond(recordB);
+    if (path.endsWith(`/stepwise-runs/${recordC.id}`)) return respond(recordC);
+    return route.fallback();
+  });
+}
+
+async function enterDirectoryRecord(page: Page, name: string) {
+  await page.getByRole('button', { name: '流程运行', exact: true }).click();
+  await page.locator('.flow-run-tree-select').filter({ hasText: definition.name }).click();
+  await page.locator('.flow-run-tree-run').filter({ hasText: run.name }).click();
+  const row = page.locator('.flow-run-record-directory .flow-run-record-row').filter({ hasText: name });
+  await row.locator('.flow-run-record-enter').click();
+}
+
+test('records of one FlowRun have independent URLs and tabs across switch refresh history and close', async ({ page }) => {
+  await mockRecordTabs(page);
+  await page.goto('/');
+  await enterDirectoryRecord(page, recordA.name);
+  await expect(page).toHaveURL(recordPath(recordA.id));
+  await expect(page.locator('.context-tab.active .context-tab-select')).toHaveText('Run #1_aaaaaaaa');
+  await page.getByRole('button', { name: '返回运行记录', exact: true }).click();
+  // Directory selection is retained when returning from a record.
+  await page.locator('.flow-run-record-directory .flow-run-record-row').filter({ hasText: recordB.name }).locator('.flow-run-record-enter').click();
+  await expect(page).toHaveURL(recordPath(recordB.id));
+  await expect(page.locator('.context-tab')).toHaveCount(2);
+  await expect(page.locator('.run-detail-header h1')).toHaveText(recordB.name);
+  await page.screenshot({ path: '../../.tmp/ops28/independent-record-tabs.png' });
+  await page.getByRole('button', { name: 'Run #1_aaaaaaaa', exact: true }).click();
+  await expect(page).toHaveURL(recordPath(recordA.id));
+  await expect(page.locator('.run-detail-header h1')).toHaveText(recordA.name);
+  await page.goBack();
+  await expect(page).toHaveURL(recordPath(recordB.id));
+  await expect(page.locator('.run-detail-header h1')).toHaveText(recordB.name);
+  await page.goForward();
+  await expect(page.locator('.run-detail-header h1')).toHaveText(recordA.name);
+  await page.reload();
+  await expect(page.locator('.run-detail-header h1')).toHaveText(recordA.name);
+  await expect(page.locator('.context-tab')).toHaveCount(2);
+  await page.getByRole('button', { name: 'Run #1_bbbbbbbb', exact: true }).click();
+  await expect(page.locator('.run-detail-header h1')).toHaveText(recordB.name);
+  await page.getByRole('button', { name: '关闭Run #1_bbbbbbbb', exact: true }).click();
+  await expect(page).toHaveURL(recordPath(recordA.id));
+  await expect(page.locator('.context-tab')).toHaveCount(1);
+  await page.getByRole('button', { name: '关闭Run #1_aaaaaaaa', exact: true }).click();
+  await expect(page).toHaveURL('/');
+  await expect(page.locator('.context-tab')).toHaveCount(0);
+});
+
+test('copied record links restore without history and mode is part of tab identity', async ({ page, context }) => {
+  await mockRecordTabs(page);
+  await page.goto(recordPath(recordB.id));
+  await expect(page.locator('.run-detail-header h1')).toHaveText(recordB.name);
+  await expect(page.locator('.context-tab.active .context-tab-select')).toHaveText('Run #1_bbbbbbbb');
+  const fresh = await context.newPage();
+  await mockRecordTabs(fresh);
+  await fresh.goto(recordPath(recordA.id, 'stepwise'));
+  await expect(fresh.locator('.run-detail-header h1')).toHaveText(recordC.name);
+  await expect(fresh.locator('.run-detail-kind')).toHaveText('逐步运行');
+  await fresh.evaluate(path => {
+    window.history.pushState({}, '', path);
+    window.dispatchEvent(new PopStateEvent('popstate'));
+  }, recordPath(recordA.id));
+  await expect(fresh.locator('.run-detail-header h1')).toHaveText(recordA.name);
+  await expect(fresh.locator('.run-detail-kind')).toHaveText('连续运行');
+  await expect(fresh.locator('.context-tab')).toHaveCount(2);
+  await fresh.reload();
+  await expect(fresh.locator('.context-tab')).toHaveCount(2);
+  await expect(fresh.locator('.run-detail-header h1')).toHaveText(recordA.name);
+  await fresh.close();
+});
+
+test('legacy saved tabs migrate to their record and URL wins over stale history selection', async ({ page }) => {
+  await mockRecordTabs(page);
+  await page.addInitScript(({ parent, first, second, userId }) => {
+    if (sessionStorage.getItem('record-tab-fixture')) return;
+    sessionStorage.setItem('record-tab-fixture', '1');
+    const state = { flowweaveFlowRun: { runId: parent, mode: 'AUTOMATIC', automaticRecordId: second } };
+    sessionStorage.setItem(`flowweave.context-tabs.v1:${userId}`, JSON.stringify([
+      { kind: 'flow-run', id: parent, label: 'Run #1', path: `/flow-runs/${parent}`, state },
+    ]));
+    if (window.location.pathname.endsWith(first)) window.history.replaceState(state, '', window.location.href);
+  }, { parent: run.id, first: recordA.id, second: recordB.id, userId: authenticatedUser.id });
+  await page.goto(recordPath(recordA.id));
+  await expect(page.locator('.run-detail-header h1')).toHaveText(recordA.name);
+  await expect(page.locator('.context-tab')).toHaveCount(2);
+  await page.getByRole('button', { name: 'Run #1_bbbbbbbb', exact: true }).click();
+  await expect(page).toHaveURL(recordPath(recordB.id));
+  await expect(page.locator('.run-detail-header h1')).toHaveText(recordB.name);
+  await expect(page.locator('.context-tab')).toHaveCount(2);
+});
+
+test('node session stays inside its record tab and browser Back restores that exact record', async ({ page }) => {
+  await mockRecordTabs(page);
+  await page.route('**/api/v1/flow-runs/**/agent-sessions**', route => {
+    const path = new URL(route.request().url()).pathname;
+    const respond = (body: unknown) => route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) });
+    if (path.endsWith('/host')) return respond({ id: recordB.id, display_name: '节点工作区', desired_state: 'RUNNING', updated_at: now });
+    if (path.endsWith('/runtime')) return respond({ state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/activity')) return respond({ running_binding_ids: [], condensing_binding_ids: [], possibly_stuck_binding_ids: [], failed_binding_ids: [] });
+    if (path.endsWith('/agent-sessions')) return respond({ items: [], next_cursor: null });
+    return route.fallback();
+  });
+  await page.goto(recordPath(recordB.id));
+  await expect(page.locator('.run-detail-header h1')).toHaveText(recordB.name);
+  await page.getByRole('button', { name: '查看节点会话', exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`/flow-runs/${recordB.id}/nodes/`));
+  await expect(page.locator('.context-tab')).toHaveCount(1);
+  await expect(page.locator('.context-tab.active .context-tab-select')).toHaveText('Run #1_bbbbbbbb');
+  await page.goBack();
+  await expect(page).toHaveURL(recordPath(recordB.id));
+  await expect(page.locator('.run-detail-header h1')).toHaveText(recordB.name);
+  await expect(page.locator('.context-tab')).toHaveCount(1);
+  await page.getByRole('button', { name: '查看节点会话', exact: true }).click();
+  await page.getByRole('button', { name: '返回来源', exact: true }).click();
+  await expect(page).toHaveURL(recordPath(recordB.id));
+  await expect(page.locator('.run-detail-header h1')).toHaveText(recordB.name);
+  await expect(page.locator('.context-tab')).toHaveCount(1);
+});

@@ -5,6 +5,7 @@ import { useWorkbenchStore } from './store/workbench';
 import { clearContextTabs, readContextTabs, saveContextTabs, type ContextTab, type FlowRunTab, type SettingsView } from './store/context-tabs';
 import { withDeploymentBase, withoutDeploymentBase } from './deploymentPath';
 import { api } from './api/client';
+import { flowRunLocationFromState, flowRunPath, flowRunTabId, flowRunTabLabel, parseFlowRunPath, type FlowRunLocation } from './flowRunNavigation';
 import type { AuthUser, FlowRunSummary } from './types';
 import { LoginScreen } from './components/LoginScreen';
 import { workspaceFileViewerRoute } from './pages/workspace-file-viewer-route';
@@ -204,23 +205,26 @@ export function App() {
   };
   const routePathname = withoutDeploymentBase(window.location.pathname);
   const fileViewerRoute = workspaceFileViewerRoute();
-  const flowRunRoute = routePathname.match(/^\/flow-runs\/([^/]+)$/);
+  const flowRunRoute = parseFlowRunPath(routePathname);
   const nodeSessionRoute = routePathname.match(
     /^\/flow-runs\/([^/]+)\/nodes\/([^/]+)\/attempts\/([^/]+)\/agent-sessions(?:\/([^/]+))?$/,
   );
   const caseSessionRoute = routePathname.match(/^\/cases\/([^/]+)\/conversations\/([^/]+)$/);
-  const flowRunRouteId = flowRunRoute ? decodeURIComponent(flowRunRoute[1]) : undefined;
-  const nodeSessionSourceRunId = nodeSessionRoute
-    ? typeof window.history.state?.flowweaveFlowRun?.runId === 'string'
-      ? window.history.state.flowweaveFlowRun.runId as string
-      : decodeURIComponent(nodeSessionRoute[1])
+  const flowRunRouteId = flowRunRoute?.runId;
+  const nodeSessionLocation = nodeSessionRoute
+    ? flowRunLocationFromState(window.history.state) ?? { runId: decodeURIComponent(nodeSessionRoute[1]) }
     : undefined;
-  const activeFlowRunTabId = flowRunRouteId ?? nodeSessionSourceRunId;
-  const registerFlowRunTab = useCallback((run: Pick<FlowRunSummary, 'id' | 'run_no'>) => {
-    const label = `Run #${run.run_no}`;
+  const savedFlowRunLocation = flowRunLocationFromState(window.history.state);
+  const activeFlowRunLocation = flowRunRoute
+    ? !flowRunRoute.recordId && savedFlowRunLocation?.runId === flowRunRoute.runId ? savedFlowRunLocation : flowRunRoute
+    : nodeSessionLocation;
+  const activeFlowRunTabId = activeFlowRunLocation ? flowRunTabId(activeFlowRunLocation) : undefined;
+  const registerFlowRunTab = useCallback((run: Pick<FlowRunSummary, 'id' | 'run_no'>, location: FlowRunLocation) => {
+    const id = flowRunTabId(location);
+    const label = flowRunTabLabel(run.run_no, location);
     setOpenFlowRunTabs(current => {
-      const existing = current.find(item => item.id === run.id);
-      return !existing || existing.label === label ? current : current.map(item => item.id === run.id ? { ...item, label } : item);
+      const existing = current.find(item => item.id === id);
+      return !existing || existing.label === label ? current : current.map(item => item.id === id ? { ...item, label } : item);
     });
   }, []);
   useEffect(() => {
@@ -270,16 +274,24 @@ export function App() {
   };
   useLayoutEffect(() => {
     if (!user || !activeFlowRunTabId) return;
+    const route = parseFlowRunPath(routePathname);
+    const saved = flowRunLocationFromState(window.history.state);
+    const location = route ? !route.recordId && saved?.runId === route.runId ? saved : route : saved ?? { runId: activeFlowRunTabId };
     if (flowRunRouteId) {
-      const selection = useWorkbenchStore.getState();
-      // A restored node tab can return before the lazy Workbench has loaded.
-      // Keep its explicit record selection until that page consumes it.
-      if (selection.view !== 'workbench' || selection.selectedRunId !== flowRunRouteId) {
-        useWorkbenchStore.setState({
-          view: 'workbench', selectedRunId: flowRunRouteId, selectedNodeRunId: undefined, selectedAttemptId: undefined,
-          selectedWorkbenchMode: undefined, selectedAutomaticRecordId: undefined, selectedStepwiseRecordId: undefined,
-        });
-      }
+      const flowRunRoute = location;
+      const source = window.history.state?.flowweaveFlowRun;
+      const savedLocation = flowRunLocationFromState(window.history.state);
+      const matchingHistory = savedLocation && flowRunTabId(savedLocation) === activeFlowRunTabId;
+      // The URL is authoritative, including when another record of this same
+      // parent is already mounted or history state belongs to an older record.
+      useWorkbenchStore.setState({
+        view: 'workbench', selectedRunId: flowRunRoute.runId,
+        selectedNodeRunId: matchingHistory && typeof source?.nodeRunId === 'string' ? source.nodeRunId : undefined,
+        selectedAttemptId: matchingHistory && typeof source?.attemptId === 'string' ? source.attemptId : undefined,
+        selectedWorkbenchMode: flowRunRoute.mode,
+        selectedAutomaticRecordId: flowRunRoute.mode === 'AUTOMATIC' ? flowRunRoute.recordId : undefined,
+        selectedStepwiseRecordId: flowRunRoute.mode === 'MANUAL' ? flowRunRoute.recordId : undefined,
+      });
     }
     const path = `${routePathname}${window.location.search}${window.location.hash}`;
     const state = window.history.state ?? {};
@@ -293,11 +305,11 @@ export function App() {
         ? current
         : current.map(tab => tab.id === activeFlowRunTabId ? { ...tab, path, state } : tab);
     });
-    void api.flowRun(activeFlowRunTabId).then(run => {
-      if (tabsUser.current === user) registerFlowRunTab(run);
+    void api.flowRun(location.runId).then(run => {
+      if (tabsUser.current === user) registerFlowRunTab(run, location);
     }).catch(() => undefined);
   }, [activeFlowRunTabId, flowRunRouteId, registerFlowRunTab, routePathname, user]);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (flowRunRouteId || nodeSessionRoute || view !== 'workbench' || !selectedRunId) return;
     const selection = useWorkbenchStore.getState();
     const state = {
@@ -310,7 +322,8 @@ export function App() {
         stepwiseRecordId: selection.selectedStepwiseRecordId,
       },
     };
-    window.history.pushState(state, '', withDeploymentBase(`/flow-runs/${encodeURIComponent(selectedRunId)}`));
+    const recordId = selection.selectedWorkbenchMode === 'AUTOMATIC' ? selection.selectedAutomaticRecordId : selection.selectedStepwiseRecordId;
+    window.history.pushState(state, '', withDeploymentBase(flowRunPath({ runId: selectedRunId, mode: selection.selectedWorkbenchMode, recordId })));
     setRouteVersion(value => value + 1);
   }, [flowRunRouteId, nodeSessionRoute, selectedRunId, view]);
   const directAgentRoute = routePathname === '/agent' || routePathname === '/agent/schedules' || routePathname.startsWith('/agent/conversations/') || routePathname.startsWith('/agent/schedules/conversations/');
@@ -438,8 +451,8 @@ export function App() {
     }
     const tab = openFlowRunTabs.find(candidate => candidate.id === contextTab.id);
     if (!tab) return null;
-    return <div className={`context-tab${activeFlowRunTabId === tab.id ? ' active' : ''}`} key={`flow-run-${tab.id}`}><button type="button" className="context-tab-select" aria-current={activeFlowRunTabId === tab.id ? 'page' : undefined} title={tab.label} onClick={() => selectFlowRunTab(tab.id)}><PlayCircle size={14}/><span>{tab.label}</span></button><button type="button" className="context-tab-close" aria-label={`关闭${tab.label}`} title={`关闭${tab.label}`} onClick={() => closeFlowRunTab(tab.id)}><X size={12}/></button></div>;
+    return <div className={`context-tab${activeFlowRunTabId === tab.id ? ' active' : ''}`} key={`flow-run-${tab.id}`}><button type="button" className="context-tab-select" aria-current={activeFlowRunTabId === tab.id ? 'page' : undefined} title={`${tab.label} · ${tab.path}`} onClick={() => selectFlowRunTab(tab.id)}><PlayCircle size={14}/><span>{tab.label}</span></button><button type="button" className="context-tab-close" aria-label={`关闭${tab.label}`} title={`关闭${tab.label}`} onClick={() => closeFlowRunTab(tab.id)}><X size={12}/></button></div>;
   })}</div>}<div className="topbar-actions"><div className="account-menu" ref={settingsMenu}><button type="button" className={`account-trigger${settingsActive ? ' active' : ''}`} aria-label="账户与设置" aria-haspopup="menu" aria-expanded={settingsOpen} onClick={() => setSettingsOpen(open => !open)}><span className="account-avatar" aria-hidden="true">{user.username.slice(0, 1).toUpperCase()}</span><span className="account-identity"><b>{user.username}</b><small>{user.is_super_admin ? '超级管理员' : '普通用户'}</small></span><ChevronDown size={13} className={settingsOpen ? 'rotated' : ''}/></button>{settingsOpen && <div className="settings-popover account-popover" role="menu" aria-label="账户与设置"><div className="account-popover-heading"><Settings size={14}/><b>平台设置</b></div>{accountSettingsNav.map(item => <button type="button" role="menuitem" title={item.description} key={item.view} className={renderedView === item.view && !isAgentRoute && !flowRunRouteId ? 'active' : ''} onClick={() => selectSettingsView(item.view)}><span className="settings-item-icon"><item.icon size={15}/></span><b>{item.label}</b></button>)}<button type="button" role="menuitem" title="结束当前平台会话" className="account-logout" onClick={() => void logout()}><span className="settings-item-icon"><LogOut size={15}/></span><b>退出登录</b></button></div>}</div></div></header>
-    <Suspense fallback={<PageLoading/>}><div key={contentReloadVersion}>{isAgentRoute ? nodeSessionRoute ? <FlowNodeSessionPage flowRunId={decodeURIComponent(nodeSessionRoute[1])} nodeRunId={decodeURIComponent(nodeSessionRoute[2])} attemptId={decodeURIComponent(nodeSessionRoute[3])} onNavigate={navigate}/> : caseSessionRoute ? <CaseSessionPage caseId={decodeURIComponent(caseSessionRoute[1])} bindingId={decodeURIComponent(caseSessionRoute[2])} onNavigate={navigate} onReturn={() => { setView('cases'); navigate('/', true); }}/> : <AgentWorkbenchPage onNavigate={navigate}/> : <>{renderedView === 'nodes' && <NodesPage/>}{renderedView === 'capabilities' && <CapabilitiesPage/>}{renderedView === 'environments' && <TerminalEnvironmentsPage/>}{renderedView === 'credentials' && <CredentialsPage/>}{renderedView === 'ldap-users' && user.is_super_admin && <LdapUsersPage/>}{renderedView === 'flows' && <FlowsPage/>}{renderedView === 'runs' && <RunsPage/>}{renderedView === 'cases' && <CasesPage onNavigate={navigate}/>}{renderedView === 'schedules' && <SchedulesPage/>}{renderedView === 'models' && <ModelsPage/>}{renderedView === 'workbench' && <WorkbenchPage/>}</>}</div></Suspense>
+    <Suspense fallback={<PageLoading/>}><div key={contentReloadVersion}>{isAgentRoute ? nodeSessionRoute ? <FlowNodeSessionPage flowRunId={decodeURIComponent(nodeSessionRoute[1])} nodeRunId={decodeURIComponent(nodeSessionRoute[2])} attemptId={decodeURIComponent(nodeSessionRoute[3])} onNavigate={navigate}/> : caseSessionRoute ? <CaseSessionPage caseId={decodeURIComponent(caseSessionRoute[1])} bindingId={decodeURIComponent(caseSessionRoute[2])} onNavigate={navigate} onReturn={() => { setView('cases'); navigate('/', true); }}/> : <AgentWorkbenchPage onNavigate={navigate}/> : <>{renderedView === 'nodes' && <NodesPage/>}{renderedView === 'capabilities' && <CapabilitiesPage/>}{renderedView === 'environments' && <TerminalEnvironmentsPage/>}{renderedView === 'credentials' && <CredentialsPage/>}{renderedView === 'ldap-users' && user.is_super_admin && <LdapUsersPage/>}{renderedView === 'flows' && <FlowsPage/>}{renderedView === 'runs' && <RunsPage/>}{renderedView === 'cases' && <CasesPage onNavigate={navigate}/>}{renderedView === 'schedules' && <SchedulesPage/>}{renderedView === 'models' && <ModelsPage/>}{renderedView === 'workbench' && <WorkbenchPage key={activeFlowRunTabId ?? selectedRunId} location={activeFlowRunLocation}/>}</>}</div></Suspense>
   </div>;
 }

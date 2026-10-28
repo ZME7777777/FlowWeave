@@ -1,4 +1,5 @@
 import type { AuthUser } from '../types';
+import { flowRunLocationFromState, flowRunPath, flowRunTabId, flowRunTabLabel, parseFlowRunPath } from '../flowRunNavigation';
 
 export type SettingsView = 'environments' | 'credentials' | 'models' | 'ldap-users';
 export type FlowRunTab = { id: string; label: string; path: string; state: unknown };
@@ -43,22 +44,29 @@ export function readContextTabs(user: AuthUser): ContextTabsSnapshot {
         snapshot.settings.push(view);
         snapshot.order.push({ kind: 'settings', view });
       } else if (tab.kind === 'flow-run' && typeof tab.id === 'string' && tab.id) {
-        if (seen.has(`flow-run:${tab.id}`)) continue;
-        seen.add(`flow-run:${tab.id}`);
-        const root = `/flow-runs/${encodeURIComponent(tab.id)}`;
         const state = navigationState(tab.state);
-        const path = typeof tab.path === 'string' ? tab.path : root;
+        const path = typeof tab.path === 'string' ? tab.path : `/flow-runs/${encodeURIComponent(tab.id)}`;
+        const route = parseFlowRunPath(path);
+        const savedLocation = flowRunLocationFromState(state);
+        const location = route?.recordId ? route : savedLocation ?? route;
+        if (!location) continue;
+        const id = flowRunTabId(location);
+        if (seen.has(`flow-run:${id}`)) continue;
+        seen.add(`flow-run:${id}`);
+        const root = flowRunPath(location);
         const leaf = path.match(/^\/flow-runs\/([^/]+)\/nodes\/([^/]+)\/attempts\/([^/]+)\/agent-sessions(?:\/[^/?#]+)?$/);
         const source = 'flowweaveFlowRun' in state ? state.flowweaveFlowRun : undefined;
         const validLeaf = leaf && (source?.nodeRunId && source.attemptId
-          ? source.runId === tab.id && encodeURIComponent(source.nodeRunId) === leaf[2] && encodeURIComponent(source.attemptId) === leaf[3]
-          : leaf[1] === encodeURIComponent(tab.id));
+          ? source.runId === location.runId && encodeURIComponent(source.nodeRunId) === leaf[2] && encodeURIComponent(source.attemptId) === leaf[3]
+          : leaf[1] === encodeURIComponent(location.runId));
+        const savedLabel = typeof tab.label === 'string' && tab.label ? tab.label : '正在打开运行…';
+        const runNo = savedLabel.match(/^Run #(\d+)(?:_.*)?$/)?.[1];
         snapshot.runs.push({
-          id: tab.id, label: typeof tab.label === 'string' && tab.label ? tab.label : '正在打开运行…',
-          path: path === root || validLeaf ? path : root,
-          state: path === root || validLeaf ? state : {},
+          id, label: runNo ? flowRunTabLabel(Number(runNo), location) : savedLabel,
+          path: validLeaf ? path : root,
+          state: route || validLeaf ? state : {},
         });
-        snapshot.order.push({ kind: 'flow-run', id: tab.id });
+        snapshot.order.push({ kind: 'flow-run', id });
       }
     }
   } catch { /* Missing, corrupt or unavailable storage starts with no tabs. */ }
