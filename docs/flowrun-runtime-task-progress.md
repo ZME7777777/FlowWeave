@@ -14470,3 +14470,27 @@ platform与web均已执行remote-release-finish并通过健康／版本门禁和
 模块E2E对“导入Skill”及统一源管理按钮的断言，不含新产品代码，故不再
 发布一次。该定向用例1项通过；本片累计市场/Plugin15项、Diff5项、模块
 菜单1项浏览器回归通过，后端26项通过。实现与发布均完成，无待部署项。
+
+OPS-55 发布验收补记（2026-10-29）：正式Web部署提交
+`c049c166352fce43093d69ba372327d6342645f5`。预检和commit-bound最小上下文prepare
+通过，源归档SHA-256为
+`2548275434526a994c7038036260d0c3872d1885b32d9d1e9c264d25ebb9a96e`；
+实际linux/amd64 Web image ID为
+`sha256:ae5bbc184dbd8138eb5495e4a2d3bdb02a9b5c99e4ccce38fc265c297cbae218`，
+OCI revision一致。首轮切换前检测到并行OPS-56已更新Web，旧容器ID门禁拒绝切换；
+核对OPS-56提交为本片祖先且API／Web已同为该版本后，保护其他47个容器不变，
+保留最新线上Web的日志及回滚镜像并重新建立本次原容器基线。并行收尾同时回收
+尚未激活的本片镜像tag，保留诊断后从同一固定上下文通过缓存重建，镜像ID保持
+一致，再次通过门禁后仅recreate Web。未将旧版本覆盖到新的服务或配置上。
+
+实际Web版本与健康、服务器Compose／env摘要及其他47个容器image／StartedAt
+复核通过。公网HTML、入口资源及三个管理页JS／共享CSS共4个模块摘要与运行镜像
+一致。服务器侧Chromium前缀登录、Agent深层与根登录、API匿名401边界及全新
+浏览器前缀API请求通过，根API请求为0。生产验收没有创建／编辑／删除环境、认证
+或模型，也未登录真实Codex；这些交互以14项受控浏览器回归验证，不冒称生产
+已登录管理操作验收。本片无API／Worker重启、迁移或Runtime replacement。
+
+Web remote-release-finish通过，精确回收2个超过24小时的受管旧上下文及1个可
+回收历史image ID的tags；保留近期上下文、全部实际引用及每仓库一个不同版本
+回滚镜像，不清理共享BuildKit、卷、Workspace或数据库备份。收尾后Web版本、
+健康、服务器配置及其他47个容器再验通过；未push，本片无后续开发任务。
