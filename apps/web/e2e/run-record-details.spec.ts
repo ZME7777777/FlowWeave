@@ -121,6 +121,15 @@ async function mocks(page: Page, initial: object, mode: 'AUTOMATIC' | 'MANUAL' =
     if (path.endsWith('/stepwise-template-readiness')) return respond({ ready: true, issues: [], nodes: [], reachable_node_keys: ['first', 'second'] });
     if (path.endsWith('/automatic-runs/summaries')) return respond(mode === 'AUTOMATIC' ? [record] : []);
     if (path.endsWith('/stepwise-runs')) return respond(mode === 'MANUAL' ? [record] : []);
+    if (path.endsWith('/nodes/first/input-artifacts')) {
+      const body = request.postDataJSON();
+      expect(body).toMatchObject({ field_key: 'input_1', artifact_type: 'URL', uri: 'https://example.test/edited-input' });
+      return respond({ ...inputArtifact, id: 'edited-url', uri: body.uri });
+    }
+    if (path.endsWith('/nodes/first/input-artifacts/upload')) {
+      expect(request.headers()['content-type']).toContain('multipart/form-data');
+      return respond({ ...inputArtifact, id: 'edited-file', field_key: 'input_2', artifact_type: 'FILE', uri: null, metadata: { filename: 'inputs.txt' } });
+    }
     if (path.endsWith('/artifacts')) {
       const ids = url.searchParams.getAll('artifact_ids');
       const items = [inputArtifact, outputArtifact].filter(item => ids.includes(item.id));
@@ -128,11 +137,11 @@ async function mocks(page: Page, initial: object, mode: 'AUTOMATIC' | 'MANUAL' =
     }
     if (path.endsWith('/artifact-audit')) return respond({ items: [], page: 1, page_size: 20, total: 0 });
     if (path.endsWith('/automatic-runs/automatic-1') && request.method() === 'PUT') {
-      const body = request.postDataJSON(); writes.push(body); record = { ...record, ...body, row_version: 2 };
+      const body = request.postDataJSON(); writes.push(body); record = { ...record, ...body, automation_plan: { ...(record.automation_plan as object), node_plans: body.node_plans }, row_version: 2 };
       return respond(record);
     }
     if (path === '/api/v1/flow-runs/manual-1/stepwise-node-drafts/first' && request.method() === 'PUT') {
-      const body = request.postDataJSON(); writes.push(body); const draft = { ...(record.stepwise_node_drafts as Record<string, object>).first, ...body, row_version: 2, input_bindings: [] };
+      const body = request.postDataJSON(); writes.push(body); const draft = { ...(record.stepwise_node_drafts as Record<string, object>).first, ...body, row_version: 2, input_bindings: Object.entries(body.artifact_ids).map(([input_field_key, artifact_version_id]) => ({ input_field_key, artifact_version_id })) };
       record = { ...record, stepwise_node_drafts: { first: draft } }; return respond(draft);
     }
     if (path.endsWith('/automatic-runs/automatic-1') || path.endsWith('/stepwise-runs/manual-1') || path.endsWith('/flow-runs/manual-1')) return respond(record);
@@ -154,14 +163,15 @@ async function openRecord(page: Page, mode: 'AUTOMATIC' | 'MANUAL') {
   if (mode === 'MANUAL' && !await page.locator('.attempt-control').count()) await page.locator('.run-graph-node').filter({ has: page.getByText(asset.name, { exact: true }) }).click();
 }
 
-test('completed record fits a compact header, frozen configuration and 36 capabilities beside the canvas', async ({ page }) => {
+test('completed record keeps configuration and 36 capabilities in secondary dialogs beside the canvas', async ({ page }) => {
   await mocks(page, completedRecord);
   await openRecord(page, 'AUTOMATIC');
   const panel = page.locator('.attempt-control');
   await expect(panel.getByTestId('attempt-state')).toHaveText('ACCEPTED');
-  await expect(panel.getByRole('region', { name: '本轮冻结配置' })).toContainText('test-model');
-  await expect(panel.locator('.node-capability-context article')).toHaveCount(36);
-  await expect(panel.getByRole('link', { name: inputArtifact.uri })).toBeVisible();
+  await expect(panel.getByRole('region', { name: '执行配置', exact: true })).toContainText('test-model');
+  await expect(panel.locator('.node-capability-context article')).toHaveCount(0);
+  await expect(panel.getByRole('link', { name: inputArtifact.uri })).toHaveCount(0);
+  await expect(panel.getByRole('region', { name: '上下文与能力', exact: true })).toContainText('36 项能力');
   await expect(panel.getByTestId('automatic-progress')).toHaveCount(0);
   await expect(page.locator('.run-workbench-toolbar')).toHaveCount(0);
   for (const [width, height] of [[1440, 900], [1440, 650], [1024, 768]]) {
@@ -171,21 +181,45 @@ test('completed record fits a compact header, frozen configuration and 36 capabi
     expect((await page.locator('.run-detail-header').boundingBox())!.height).toBeLessThanOrEqual(45);
     expect((await page.locator('.run-graph').boundingBox())!.height).toBeGreaterThan(height - 190);
     await expect.poll(() => page.locator('.run-graph .react-flow__node').evaluateAll(nodes => nodes.every(node => { const rect = node.getBoundingClientRect(); const canvas = node.closest('.run-graph-canvas')!.getBoundingClientRect(); return rect.left >= canvas.left && rect.right <= canvas.right && rect.top >= canvas.top && rect.bottom <= canvas.bottom; }))).toBe(true);
-    const list = await panel.locator('.node-capability-context>div').boundingBox();
-    expect(list!.height).toBeLessThan(340);
-    await page.screenshot({ path: `../../.tmp/ops27/record-completed-${width}-${height}.png` });
+    for (const summary of await panel.locator('.record-detail-summary').all()) {
+      expect((await summary.boundingBox())!.height).toBeLessThanOrEqual(42);
+      await expect(summary).toBeInViewport();
+    }
+    expect(await panel.locator('.action-content').evaluate(element => element.scrollHeight <= element.clientHeight)).toBe(true);
+    await page.screenshot({ path: `../../.tmp/ops34/record-completed-${width}-${height}.png` });
   }
   await page.getByRole('button', { name: '产物流转', exact: true }).click();
   await expect(page.locator('.flow-direction-edge .react-flow__edge-path').first()).toHaveCSS('opacity', '0.16');
   await page.getByRole('button', { name: '流程走向', exact: true }).click();
   await expect(page.locator('.flow-direction-edge .react-flow__edge-path').first()).toHaveCSS('opacity', '1');
-  await panel.getByRole('button', { name: '全文', exact: true }).click();
-  const prompt = page.getByRole('dialog', { name: '查看冻结启动提示词' });
-  await expect(prompt.locator('pre')).toHaveText(completedAttempt.startup_prompt);
-  await page.keyboard.press('Escape'); await expect(prompt).toHaveCount(0);
-  await panel.getByRole('button', { name: '查看 团队背景', exact: true }).click();
-  await expect(page.getByRole('dialog', { name: '查看 Context 团队背景' })).toContainText('该轮使用的不可变团队背景');
-  await page.keyboard.press('Escape');
+  const configButton = panel.getByRole('button', { name: '查看执行配置', exact: true });
+  await configButton.click();
+  const config = page.getByRole('dialog', { name: '执行配置', exact: true });
+  await expect(config.getByRole('region', { name: '本轮冻结配置' })).toContainText('test-model');
+  await expect(config.locator('pre')).toHaveText(completedAttempt.startup_prompt);
+  await page.keyboard.press('Tab');
+  expect(await config.evaluate(element => element.contains(document.activeElement))).toBe(true);
+  await page.screenshot({ path: '../../.tmp/ops34/frozen-configuration.png' });
+  await page.keyboard.press('Escape'); await expect(config).toHaveCount(0);
+  await expect(configButton).toBeFocused();
+  await panel.getByRole('button', { name: '查看节点输入', exact: true }).click();
+  const inputs = page.getByRole('dialog', { name: '节点输入', exact: true });
+  await expect(inputs.getByRole('link', { name: inputArtifact.uri })).toBeVisible();
+  await expect(inputs.getByRole('textbox')).toHaveCount(0);
+  await page.screenshot({ path: '../../.tmp/ops34/frozen-inputs.png' });
+  await page.mouse.click(8, 100); await expect(inputs).toHaveCount(0);
+  await panel.getByRole('button', { name: '查看上下文与能力', exact: true }).click();
+  const context = page.getByRole('dialog', { name: '上下文与能力', exact: true });
+  await expect(context.locator('.node-capability-context article')).toHaveCount(36);
+  await expect(context).toContainText('flowweave-capability-35');
+  expect(await context.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await page.screenshot({ path: '../../.tmp/ops34/context-capabilities.png' });
+  await context.getByRole('button', { name: '查看 团队背景', exact: true }).click();
+  await expect(context.getByRole('region', { name: '查看 Context 团队背景' })).toContainText('该轮使用的不可变团队背景');
+  await expect(page.getByRole('dialog')).toHaveCount(1);
+  await context.getByRole('button', { name: '返回列表', exact: true }).click();
+  await expect(context.locator('.node-capability-context article')).toHaveCount(36);
+  await page.keyboard.press('Escape'); await expect(context).toHaveCount(0);
   await panel.getByRole('button', { name: '门禁结果', exact: true }).click();
   await expect(panel).toContainText('门禁');
   await panel.getByRole('button', { name: '输出', exact: true }).click();
@@ -204,15 +238,24 @@ for (const mode of ['AUTOMATIC', 'MANUAL'] as const) {
     const writes = await mocks(page, initial, mode);
     await openRecord(page, mode);
     const panel = page.getByTestId('node-configuration-panel');
-    await expect(panel.getByRole('heading', { name: '输入', exact: true })).toBeVisible();
+    await expect(panel.getByRole('heading', { name: '节点输入', exact: true })).toBeVisible();
     await expect(panel.getByRole('heading', { name: 'Agent 配置', exact: true })).toBeVisible();
     await expect(panel.getByRole('heading', { name: '开始门禁', exact: true })).toBeVisible();
     await expect(panel.getByRole('heading', { name: '结束门禁', exact: true })).toBeVisible();
     await expect(panel.locator('.node-configuration-sections>section')).toHaveCount(4);
     await panel.getByRole('button', { name: '门禁配置', exact: true }).click();
     await expect(panel.getByRole('heading', { name: '结束门禁', exact: true })).toBeInViewport();
-    await expect(panel.getByRole('heading', { name: '输入', exact: true })).toBeVisible();
+    await expect(panel.getByRole('heading', { name: '节点输入', exact: true })).toBeVisible();
     await panel.getByRole('button', { name: '输入与上下文', exact: true }).click();
+    await expect(panel.locator('.input-summary article')).toHaveCount(0);
+    await panel.getByRole('button', { name: '填写节点输入', exact: true }).click();
+    const inputs = page.getByRole('dialog', { name: '填写节点输入', exact: true });
+    await inputs.getByRole('textbox', { name: '填写输入 input_1', exact: true }).fill('https://example.test/edited-input');
+    await inputs.getByLabel('上传输入文件 input_2').setInputFiles({ name: 'inputs.txt', mimeType: 'text/plain', buffer: Buffer.from('node inputs') });
+    await page.screenshot({ path: `../../.tmp/ops34/input-form-${mode}.png` });
+    await inputs.getByRole('button', { name: '保存输入并继续', exact: true }).click();
+    await expect(inputs).toHaveCount(0);
+    await expect(panel.getByRole('region', { name: '节点输入', exact: true })).toContainText('2/2 项已配置');
     await panel.locator('.startup-prompt-summary').getByRole('button', { name: '编辑', exact: true }).click();
     const prompt = page.getByRole('dialog', { name: '编辑启动提示词' });
     await prompt.getByRole('textbox').fill('本次编辑后的启动任务');
@@ -225,12 +268,15 @@ for (const mode of ['AUTOMATIC', 'MANUAL'] as const) {
       expect(body.expected_row_version).toBe(1);
       expect((body.node_plans as Record<string, { startup_prompt: string }>).first.startup_prompt).toBe('本次编辑后的启动任务');
     } else expect(body.startup_prompt).toBe('本次编辑后的启动任务');
+    const bindings = mode === 'AUTOMATIC' ? (body.node_plans as Record<string, { artifact_ids: object }>).first.artifact_ids : body.artifact_ids;
+    expect(bindings).toEqual({ input_1: 'edited-url', input_2: 'edited-file' });
+    await expect(panel.getByRole('region', { name: '节点输入', exact: true })).toContainText('2/2 项已配置');
     for (const [width, height] of [[1440, 900], [1024, 768]]) {
       await page.setViewportSize({ width, height });
       await expect.poll(() => page.evaluate(() => document.documentElement.scrollHeight)).toBe(height);
       await panel.locator('.action-content').evaluate(element => { element.scrollTop = 0; });
       await expect(panel.getByRole('heading', { name: 'Agent 配置', exact: true })).toBeInViewport();
-      await page.screenshot({ path: `../../.tmp/ops27/record-draft-${mode}-${width}.png` });
+      await page.screenshot({ path: `../../.tmp/ops34/record-draft-${mode}-${width}.png` });
     }
   });
 }
@@ -272,7 +318,7 @@ test('completed stepwise history uses the same frozen configuration and keeps it
   await openRecord(page, 'MANUAL');
   const panel = page.locator('.attempt-control');
   await expect(panel.getByTestId('attempt-state')).toHaveText('ACCEPTED');
-  await expect(panel.getByRole('region', { name: '本轮冻结配置' })).toContainText('test-model');
+  await expect(panel.getByRole('region', { name: '执行配置', exact: true })).toContainText('test-model');
   await expect(page.locator('.run-graph-node').filter({ hasText: '测试节点（执行时版本）' })).toBeVisible();
   await expect(panel.getByRole('button', { name: '取消本轮节点执行', exact: true })).toHaveCount(0);
   await panel.getByRole('button', { name: '输出', exact: true }).click();
@@ -314,6 +360,15 @@ test('records of one FlowRun have independent URLs and tabs across switch refres
   await expect(page).toHaveURL(recordPath(recordA.id));
   await expect(page.locator('.context-tab.active .context-tab-select')).toHaveText('Run #1_aaaaaaaa');
   await page.getByRole('button', { name: '返回运行记录', exact: true }).click();
+  // The full ID remains readable after search or returning from a record.
+  for (const width of [1440, 1024]) {
+    await page.setViewportSize({ width, height: 768 });
+    const id = page.locator('.flow-run-record-row').filter({ hasText: recordA.name }).locator('.flow-run-record-id');
+    await expect(id).toHaveText(`ID ${recordA.id}`);
+    expect(await id.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
+    await page.screenshot({ path: `../../.tmp/ops34/directory-full-id-${width}.png` });
+  }
   // Directory selection is retained when returning from a record.
   await page.locator('.flow-run-record-directory .flow-run-record-row').filter({ hasText: recordB.name }).locator('.flow-run-record-enter').click();
   await expect(page).toHaveURL(recordPath(recordB.id));

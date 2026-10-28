@@ -722,6 +722,7 @@ test('record search queries all server pages, combines mode and clears safely ac
   await search.fill('  search-record-0  ');
   await expect(rows.locator('.flow-run-record-row')).toHaveCount(1);
   await expect(rows).toContainText('搜索业务 0');
+  await expect(rows.locator('.flow-run-record-id')).toHaveText('ID search-record-0');
   expect(requests.at(-1)).toMatchObject({ q: 'search-record-0', cursor: null });
   await expect(toolbar).toContainText('已选择 0 条');
   await expect(toolbar.getByRole('button', { name: '删除', exact: true })).toBeDisabled();

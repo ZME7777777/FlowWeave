@@ -2,6 +2,7 @@ import { Background, Controls, Handle, Position, ReactFlow, useNodesState, type 
 import '@xyflow/react/dist/style.css';
 import { AlertTriangle, ArrowLeft, Bot, Boxes, Check, ChevronDown, ChevronRight, Copy, Download, ExternalLink, Eye, FileText, FolderClosed, GripVertical, Info, Play, Plus, RefreshCw, Send, StopCircle, Trash2, Upload, X } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { createPortal } from 'react-dom';
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
 import { ApiError, api, artifactContentUrl, subscribeToRun } from '../api/client';
 import { flowMappingEdgeTypes, withMappingLabelOffsets } from '../components/flowMappingEdgeLayout';
@@ -722,7 +723,35 @@ function artifactHref(item: ArtifactVersion, download = false) {
 
 type InputContract = SnapshotFlowNode['asset']['inputs'][number];
 
-function InputSummary({ fields, bindings, artifacts, inputUrls = {} }: { fields: InputContract[]; bindings: Record<string, string>; artifacts: ArtifactVersion[]; inputUrls?: Record<string, string> }) {
+function RecordDetailsDialog({ title, children, onClose }: { title: string; children: ReactNode; onClose: () => void }) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  useEscapeClose(onClose);
+  useEffect(() => {
+    const element = dialog.current;
+    const previous = document.activeElement;
+    element?.showModal();
+    return () => { element?.close(); if (previous instanceof HTMLElement && previous.isConnected) previous.focus({ preventScroll: true }); };
+  }, []);
+  return createPortal(<dialog ref={dialog} className="modal record-details-dialog" aria-label={title} onKeyDown={event => {
+    if (event.key !== 'Tab') return;
+    const controls = [...event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), a[href], input:not(:disabled), textarea:not(:disabled), [tabindex="0"]')];
+    const first = controls[0], last = controls.at(-1);
+    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+  }} onCancel={event => { event.preventDefault(); onClose(); }} onClick={event => { if (event.target === event.currentTarget) { const rect = event.currentTarget.getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) onClose(); } }}><header><h2>{title}</h2><button type="button" className="ghost" aria-label={`关闭${title}`} onClick={onClose}><X size={17}/></button></header><div className="record-details-dialog-body">{children}</div></dialog>, document.body);
+}
+
+function RecordDetailSummary({ title, summary, children, onEdit, actionLabel }: { title: string; summary: string; children?: ReactNode; onEdit?: () => void; actionLabel?: string }) {
+  const [open, setOpen] = useState(false);
+  return <section className="record-detail-summary" aria-label={title}><h4>{title}</h4><span title={summary}>{summary}</span><button type="button" className="ghost" aria-haspopup="dialog" aria-label={actionLabel ?? `查看${title}`} onClick={onEdit ?? (() => setOpen(true))}>{onEdit ? '配置' : '查看'}<ChevronRight size={13}/></button>{open && <RecordDetailsDialog title={title} onClose={() => setOpen(false)}>{children}</RecordDetailsDialog>}</section>;
+}
+
+function InputSummary({ fields, bindings, artifacts, inputUrls = {}, onEdit }: { fields: InputContract[]; bindings: Record<string, string>; artifacts: ArtifactVersion[]; inputUrls?: Record<string, string>; onEdit?: () => void }) {
+  const configured = fields.filter(field => bindings[field.field_key] || inputUrls[field.field_key]).length;
+  return <RecordDetailSummary title="节点输入" summary={fields.length ? `${configured}/${fields.length} 项已配置` : '无需输入'} onEdit={fields.length ? onEdit : undefined} actionLabel={onEdit && fields.length ? '填写节点输入' : '查看节点输入'}><InputDetails fields={fields} bindings={bindings} artifacts={artifacts} inputUrls={inputUrls}/></RecordDetailSummary>;
+}
+
+function InputDetails({ fields, bindings, artifacts, inputUrls = {} }: { fields: InputContract[]; bindings: Record<string, string>; artifacts: ArtifactVersion[]; inputUrls?: Record<string, string> }) {
   return <section className="input-summary" aria-label="节点输入"><h4>输入</h4>{fields.length ? fields.map(field => {
     const artifact = artifacts.find(item => item.id === bindings[field.field_key]);
     const inputUrl = inputUrls[field.field_key];
@@ -929,7 +958,13 @@ function nodeContextItems(node: SnapshotFlowNode, contextIds: string[] | null, f
   return [...byId.values()];
 }
 
-function NodeContextSummary({ node, contextIds, frozenSessionContexts = [], frozenAgentCapabilities = [], agentPreset, editable = false, onChange, mode }: {
+function NodeContextSummary(props: Parameters<typeof NodeContextDetails>[0]) {
+  const contexts = nodeContextItems(props.node, props.contextIds, props.frozenSessionContexts ?? [], props.agentPreset);
+  const capabilities = (props.frozenAgentCapabilities ?? []).filter(item => item.capability_type !== 'CONTEXT');
+  return <RecordDetailSummary title="上下文与能力" summary={`${contexts.filter(item => item.applied).length}/${contexts.length} 项上下文 · ${capabilities.length} 项能力`}><NodeContextDetails {...props}/></RecordDetailSummary>;
+}
+
+function NodeContextDetails({ node, contextIds, frozenSessionContexts = [], frozenAgentCapabilities = [], agentPreset, editable = false, onChange, mode }: {
   node: SnapshotFlowNode; contextIds: string[] | null; editable?: boolean;
   frozenSessionContexts?: NonNullable<NodeAttempt['frozen_session_contexts']>;
   frozenAgentCapabilities?: NonNullable<NodeAttempt['frozen_agent_capabilities']>;
@@ -937,7 +972,6 @@ function NodeContextSummary({ node, contextIds, frozenSessionContexts = [], froz
   onChange?: (ids: string[]) => void; mode?: 'PROMPT' | 'CHAT';
 }) {
   const [viewing, setViewing] = useState<NodeContextItem>();
-  useEscapeClose(() => setViewing(undefined), Boolean(viewing));
   const items = nodeContextItems(node, contextIds, frozenSessionContexts, agentPreset);
   const selected = contextIds === null ? new Set(items.map(item => item.id)) : new Set(contextIds);
   const visible = items;
@@ -952,7 +986,8 @@ function NodeContextSummary({ node, contextIds, frozenSessionContexts = [], froz
     : items.length === 0
       ? '该节点没有配置自定义上下文或能力。'
       : '本轮未应用节点文本 Context。';
-  return <section className="attempt-side-section node-context-summary"><header><div><h4>上下文与能力</h4></div>{editable && <span className="context-selection-count">已选 {selected.size}</span>}</header>{visible.length ? <div className="node-context-list">{visible.map(item => <article key={item.id} className={`${item.source === 'NODE' ? 'node-context-owned' : 'node-context-repository'}${item.applied ? ' selected' : ' not-applied'}`}>{editable ? <button type="button" className="node-context-toggle" aria-pressed={selected.has(item.id)} onClick={() => toggle(item.id)}><i className="context-checkbox" aria-hidden="true">{selected.has(item.id) ? '✓' : ''}</i><span><b>{item.title}</b><small>{item.meta}</small></span></button> : <span className="node-context-label"><b>{item.title}</b><small>{item.meta}</small></span>}<span className={`context-application-state ${item.applied ? 'applied' : ''}`}>{item.applied ? '本轮已应用' : '本轮未应用'}</span><button type="button" className="ghost context-detail-button" aria-label={`查看 ${item.title}`} onClick={() => setViewing(item)}><Eye size={14}/>查看</button></article>)}</div> : <p className="field-hint">{empty}</p>}{!editable && configuredCapabilities.length > 0 && <section className="node-capability-context"><header><span>装配能力</span><b>{configuredCapabilities.length} 项</b></header><div>{configuredCapabilities.map(item => <article key={item.id} title={`${item.capability_key} · ${item.capability_type} · ${item.digest}`}><span><b>{item.capability_key}</b><small>{item.capability_type}</small></span></article>)}</div></section>}{viewing && <div className="modal-backdrop"><section className="modal context-preview-dialog" role="dialog" aria-modal="true" aria-label={`查看 Context ${viewing.title}`}><header><div><span className="eyebrow">FROZEN CONTEXT</span><h2>{viewing.title}</h2></div><button className="ghost" onClick={() => setViewing(undefined)}><X size={15}/>关闭</button></header><p>{viewing.meta} · {viewing.applied ? '本轮已应用' : '本轮未应用'}</p><pre>{viewing.text}</pre><footer><button className="primary" onClick={() => setViewing(undefined)}>完成</button></footer></section></div>}</section>;
+  if (viewing) return <section className="record-context-preview" aria-label={`查看 Context ${viewing.title}`}><header><div><span className="eyebrow">FROZEN CONTEXT</span><h2>{viewing.title}</h2></div><button className="ghost" onClick={() => setViewing(undefined)}><ArrowLeft size={15}/>返回列表</button></header><p>{viewing.meta} · {viewing.applied ? '本轮已应用' : '本轮未应用'}</p><pre>{viewing.text}</pre></section>;
+  return <section className="attempt-side-section node-context-summary"><header><div><h4>上下文与能力</h4></div>{editable && <span className="context-selection-count">已选 {selected.size}</span>}</header>{visible.length ? <div className="node-context-list">{visible.map(item => <article key={item.id} className={`${item.source === 'NODE' ? 'node-context-owned' : 'node-context-repository'}${item.applied ? ' selected' : ' not-applied'}`}>{editable ? <button type="button" className="node-context-toggle" aria-pressed={selected.has(item.id)} onClick={() => toggle(item.id)}><i className="context-checkbox" aria-hidden="true">{selected.has(item.id) ? '✓' : ''}</i><span><b>{item.title}</b><small>{item.meta}</small></span></button> : <span className="node-context-label"><b>{item.title}</b><small>{item.meta}</small></span>}<span className={`context-application-state ${item.applied ? 'applied' : ''}`}>{item.applied ? '本轮已应用' : '本轮未应用'}</span><button type="button" className="ghost context-detail-button" aria-label={`查看 ${item.title}`} onClick={() => setViewing(item)}><Eye size={14}/>查看</button></article>)}</div> : <p className="field-hint">{empty}</p>}{!editable && configuredCapabilities.length > 0 && <section className="node-capability-context"><header><span>装配能力</span><b>{configuredCapabilities.length} 项</b></header><div>{configuredCapabilities.map(item => <article key={item.id} title={`${item.capability_key} · ${item.capability_type} · ${item.digest}`}><span><b>{item.capability_key}</b><small>{item.capability_type}</small></span></article>)}</div></section>}</section>;
 }
 
 function CapabilityPresetDialog({ selectedIds, onClose, onChange }: { selectedIds: string[]; onClose: () => void; onChange: (ids: string[]) => void }) {
@@ -1182,7 +1217,7 @@ function NodeConsole({ run, node, startupMode, stepwiseDraft, initialBindings, l
   const runAction = <button className="primary node-run-button" disabled={saveDisabled} onClick={() => mutation.mutate(bindings)}>{startupMode === 'PROMPT' ? <Check size={14}/> : <Play size={14}/>}{mutation.isPending ? '保存中…' : startupMode === 'PROMPT' ? '保存配置' : '启动节点会话'}</button>;
   const historyRun = { ...run, node_runs: run.node_runs.filter(item => isDirectNodeRun(item) === (startupMode === 'CHAT')) };
   const history = <NodeExecutionHistory run={historyRun} node={node} onSelectExecution={onSelectExecution}/>;
-  return <><NodeConfigurationPanel className={startupMode === 'PROMPT' ? 'automatic-record-editor' : undefined} title={node.alias || node.asset.name} subtitle={`节点控制台 · 已执行 ${visits} 次`} mode={startupMode} fixedModeLabel={startupMode === 'CHAT' ? '直接启动' : '逐步运行'} onModeChange={() => undefined} compactToolbar headerActions={<>{headerActions}{runAction}</>} promptTab={promptTab} onPromptTabChange={setPromptTab} promptContent={<>{(stepwiseDraft || Object.keys(initialBindings ?? {}).length > 0) && <p className="field-hint">已填入上游映射输入</p>}<InputSummary fields={runtimeNodeInputs(node)} bindings={bindings} artifacts={inputArtifacts}/>{runtimeNodeInputs(node).length > 0 && <button className="secondary full" onClick={() => setInputDialogOpen(true)}><Upload size={14}/>填写节点输入</button>}<StartupPromptSummary prompt={prompt} freezeHint="点击启动时才会随 Attempt 冻结。" onEdit={() => setPromptDialogOpen(true)}/></>} agentContent={<AgentPresetEditor preset={agentPreset} nodeContext={node.asset.executor?.context_prompt ?? ''} onChange={setAgentPreset}/>} gateContent={<GateDraftEditor gates={gates} onChange={setGates}/>} historyContent={history} chatContent={history} belowContent={<>{invalidModel && <p className="error">请选择 Agent 模型供应商和模型后再保存配置。</p>}{invalidGates && <p className="error">每个门禁都需要填写判定提示词。</p>}{terminal && <p className="field-hint">流程已结束，不能创建新的节点执行。</p>}{mutation.error && <p className="error"><AlertTriangle size={14}/>{mutation.error.message}</p>}</>}/>{inputDialogOpen && <NodeInputDialog run={{ ...run, artifacts: inputArtifacts }} node={node} initialBindings={bindings} onClose={() => setInputDialogOpen(false)} onSubmit={({ bindings: nextBindings, artifacts }) => { setBindings(nextBindings); setInputArtifacts(current => mergeArtifacts(current, artifacts)); setInputDialogOpen(false); }}/>} {promptDialogOpen && <StartupPromptDialog prompt={prompt} onChange={setPrompt} onClose={() => setPromptDialogOpen(false)}/>}</>;
+  return <><NodeConfigurationPanel className={startupMode === 'PROMPT' ? 'automatic-record-editor' : undefined} title={node.alias || node.asset.name} subtitle={`节点控制台 · 已执行 ${visits} 次`} mode={startupMode} fixedModeLabel={startupMode === 'CHAT' ? '直接启动' : '逐步运行'} onModeChange={() => undefined} compactToolbar headerActions={<>{headerActions}{runAction}</>} promptTab={promptTab} onPromptTabChange={setPromptTab} promptContent={<>{(stepwiseDraft || Object.keys(initialBindings ?? {}).length > 0) && <p className="field-hint">已填入上游映射输入</p>}<InputSummary fields={runtimeNodeInputs(node)} bindings={bindings} artifacts={inputArtifacts} onEdit={() => setInputDialogOpen(true)}/><StartupPromptSummary prompt={prompt} freezeHint="点击启动时才会随 Attempt 冻结。" onEdit={() => setPromptDialogOpen(true)}/></>} agentContent={<AgentPresetEditor preset={agentPreset} nodeContext={node.asset.executor?.context_prompt ?? ''} onChange={setAgentPreset}/>} gateContent={<GateDraftEditor gates={gates} onChange={setGates}/>} historyContent={history} chatContent={history} belowContent={<>{invalidModel && <p className="error">请选择 Agent 模型供应商和模型后再保存配置。</p>}{invalidGates && <p className="error">每个门禁都需要填写判定提示词。</p>}{terminal && <p className="field-hint">流程已结束，不能创建新的节点执行。</p>}{mutation.error && <p className="error"><AlertTriangle size={14}/>{mutation.error.message}</p>}</>}/>{inputDialogOpen && <NodeInputDialog run={{ ...run, artifacts: inputArtifacts }} node={node} initialBindings={bindings} onClose={() => setInputDialogOpen(false)} onSubmit={({ bindings: nextBindings, artifacts }) => { setBindings(nextBindings); setInputArtifacts(current => mergeArtifacts(current, artifacts)); setInputDialogOpen(false); }}/>} {promptDialogOpen && <StartupPromptDialog prompt={prompt} onChange={setPrompt} onClose={() => setPromptDialogOpen(false)}/>}</>;
 }
 
 const AUTOMATIC_STAGE_ORDER = ['INPUT_READINESS', 'START_GATES', 'START_HANDOFF', 'RUNTIME_START', 'AGENT_RUNNING', 'END_GATES', 'FLOW_ADVANCE'];
@@ -1207,15 +1242,13 @@ function AutomaticProgressPanel({ progress }: { progress: NonNullable<NodeAttemp
 }
 
 function FrozenExecutionConfiguration({ attempt }: { attempt: NodeAttempt }) {
-  const [viewPrompt, setViewPrompt] = useState(false);
-  useEscapeClose(() => setViewPrompt(false), viewPrompt);
   const preset = attempt.agent_preset;
-  return <section className="attempt-side-section frozen-execution-configuration" aria-label="本轮冻结配置">
-    <header><h4>执行配置</h4><span>已冻结</span></header>
-    <dl><dt>启动方式</dt><dd>{attempt.startup_mode === 'CHAT' ? '直接会话' : attempt.startup_mode === 'SKILL' ? 'Skill 执行' : '提示词执行'}</dd><dt>模型</dt><dd title={preset?.model_provider_id ?? undefined}>{preset?.model_name || '未记录'}</dd><dt>思考程度</dt><dd>{preset?.reasoning_effort || '默认'}</dd>{Boolean(preset?.fallback_models?.length) && <><dt>备用模型</dt><dd title={preset!.fallback_models!.map(model => model.model_name).join('、')}>{preset!.fallback_models!.map(model => model.model_name).join('、')}</dd></>}</dl>
-    {attempt.startup_prompt && <div className="frozen-startup-prompt"><span>启动提示词</span><p>{attempt.startup_prompt}</p><button className="ghost" onClick={() => setViewPrompt(true)}><Eye size={12}/>全文</button></div>}
-    {viewPrompt && <div className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) setViewPrompt(false); }}><section className="modal context-preview-dialog" role="dialog" aria-modal="true" aria-label="查看冻结启动提示词"><header><h2>启动提示词</h2><button className="ghost" onClick={() => setViewPrompt(false)}><X size={15}/>关闭</button></header><pre>{attempt.startup_prompt}</pre></section></div>}
-  </section>;
+  return <RecordDetailSummary title="执行配置" summary={`${preset?.model_name || '未记录模型'} · ${preset?.reasoning_effort || '默认'} · 已冻结`}>
+    <section className="frozen-execution-configuration" aria-label="本轮冻结配置">
+      <dl><dt>启动方式</dt><dd>{attempt.startup_mode === 'CHAT' ? '直接会话' : attempt.startup_mode === 'SKILL' ? 'Skill 执行' : '提示词执行'}</dd><dt>模型</dt><dd title={preset?.model_provider_id ?? undefined}>{preset?.model_name || '未记录'}</dd><dt>思考程度</dt><dd>{preset?.reasoning_effort || '默认'}</dd>{Boolean(preset?.fallback_models?.length) && <><dt>备用模型</dt><dd>{preset!.fallback_models!.map(model => model.model_name).join('、')}</dd></>}</dl>
+      {attempt.startup_prompt && <section className="record-frozen-prompt"><h4>启动提示词</h4><pre>{attempt.startup_prompt}</pre></section>}
+    </section>
+  </RecordDetailSummary>;
 }
 
 function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, sessionReturnContext, automaticArtifactScope, headerAction }: { run: FlowRun; nodeRun: NodeRun; attempt: NodeAttempt; refresh: () => void; navigate: (result: unknown, kind: string) => void; sessionReturnContext?: { runId: string; mode: WorkbenchMode; automaticRecordId?: string; stepwiseRecordId?: string }; automaticArtifactScope?: { parentRunId: string; recordId: string }; headerAction?: ReactNode }) {
@@ -1605,7 +1638,7 @@ function AutomaticRecordEditor({ parent, record, selectedKey, launchAction, onDr
   if (!node || !plan) return <aside className="action-panel automatic-record-editor"><div className="action-content automatic-empty">请在流程图中选择一个可配置节点。</div></aside>;
   const feedback = save.error ? `保存失败：${save.error.message}` : saveFeedback;
   const history = <NodeExecutionHistory run={record} node={node}/>;
-  return <><NodeConfigurationPanel className="automatic-record-editor" title={node.alias || node.asset.name} subtitle={`${record.name} · ${editable ? '连续运行草稿配置' : '连续运行配置（只读）'}`} mode="PROMPT" fixedModeLabel="连续运行" onModeChange={() => undefined} chatEnabled={false} compactToolbar promptTab={promptTab} onPromptTabChange={setPromptTab} feedback={feedback && <div className={`automatic-save-feedback-banner ${save.error ? 'error' : 'success'}`} role={save.error ? 'alert' : 'status'}><b>{save.error ? '保存失败' : '已保存'}</b><span>{feedback}</span></div>} headerActions={<>{editable && <button className="primary node-run-button" disabled={save.isPending} onClick={() => save.mutate()}>{save.isPending ? '保存中…' : '保存配置'}</button>}{launchAction}</>} promptContent={<><InputSummary fields={node.asset.inputs} bindings={plan.artifact_ids} artifacts={inputArtifacts} inputUrls={plan.input_urls}/>{boundArtifacts.isLoading && <p className="field-hint">正在读取已绑定输入…</p>}{boundArtifacts.isError && <p className="error">读取已绑定输入失败：{boundArtifacts.error.message}</p>}{editable && node.asset.inputs.length > 0 && <button className="secondary full" onClick={() => setInputDialogOpen(true)}><Upload size={14}/>填写节点输入</button>}<StartupPromptSummary prompt={plan.startup_prompt} freezeHint="连续运行启动时会随记录冻结。" editable={editable} onEdit={() => setPromptDialogOpen(true)}/></>} agentContent={editable ? <AgentPresetEditor preset={plan.agent_preset} nodeContext={node.asset.executor?.context_prompt ?? ''} onChange={agent_preset => patch({ agent_preset })}/> : <section className="attempt-side-section"><h4>首会话 Agent 配置</h4><p>{plan.agent_preset.model_name || '未选择模型'} · {plan.agent_preset.capability_version_ids.length} 项能力</p></section>} gateContent={editable ? <GateDraftEditor gates={plan.gates} onChange={gates => patch({ gates })}/> : <GateList evaluations={[]} policies={plan.gates}/>} historyContent={history} chatContent={history}/>{inputDialogOpen && <NodeInputDialog run={{ ...record, artifacts: inputArtifacts }} node={node} initialBindings={plan.artifact_ids} initialUrls={plan.input_urls} onClose={() => setInputDialogOpen(false)} onSubmit={({ bindings: artifact_ids, artifacts }) => {
+  return <><NodeConfigurationPanel className="automatic-record-editor" title={node.alias || node.asset.name} subtitle={`${record.name} · ${editable ? '连续运行草稿配置' : '连续运行配置（只读）'}`} mode="PROMPT" fixedModeLabel="连续运行" onModeChange={() => undefined} chatEnabled={false} compactToolbar promptTab={promptTab} onPromptTabChange={setPromptTab} feedback={feedback && <div className={`automatic-save-feedback-banner ${save.error ? 'error' : 'success'}`} role={save.error ? 'alert' : 'status'}><b>{save.error ? '保存失败' : '已保存'}</b><span>{feedback}</span></div>} headerActions={<>{editable && <button className="primary node-run-button" disabled={save.isPending} onClick={() => save.mutate()}>{save.isPending ? '保存中…' : '保存配置'}</button>}{launchAction}</>} promptContent={<><InputSummary fields={node.asset.inputs} bindings={plan.artifact_ids} artifacts={inputArtifacts} inputUrls={plan.input_urls} onEdit={editable ? () => setInputDialogOpen(true) : undefined}/>{boundArtifacts.isLoading && <p className="field-hint">正在读取已绑定输入…</p>}{boundArtifacts.isError && <p className="error">读取已绑定输入失败：{boundArtifacts.error.message}</p>}<StartupPromptSummary prompt={plan.startup_prompt} freezeHint="连续运行启动时会随记录冻结。" editable={editable} onEdit={() => setPromptDialogOpen(true)}/></>} agentContent={editable ? <AgentPresetEditor preset={plan.agent_preset} nodeContext={node.asset.executor?.context_prompt ?? ''} onChange={agent_preset => patch({ agent_preset })}/> : <section className="attempt-side-section"><h4>首会话 Agent 配置</h4><p>{plan.agent_preset.model_name || '未选择模型'} · {plan.agent_preset.capability_version_ids.length} 项能力</p></section>} gateContent={editable ? <GateDraftEditor gates={plan.gates} onChange={gates => patch({ gates })}/> : <GateList evaluations={[]} policies={plan.gates}/>} historyContent={history} chatContent={history}/>{inputDialogOpen && <NodeInputDialog run={{ ...record, artifacts: inputArtifacts }} node={node} initialBindings={plan.artifact_ids} initialUrls={plan.input_urls} onClose={() => setInputDialogOpen(false)} onSubmit={({ bindings: artifact_ids, artifacts }) => {
     const nextArtifacts = mergeArtifacts(inputArtifacts, artifacts);
     const input_urls = Object.fromEntries(Object.entries(plan.input_urls).filter(([fieldKey]) => !artifact_ids[fieldKey]));
     const nextPlans = { ...plans, [node.instance_key]: { ...plan, artifact_ids, input_urls } };

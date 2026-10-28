@@ -283,7 +283,7 @@ export function RunsPage() {
         <input type="checkbox" className="flow-run-record-select" aria-label={`选择运行记录 ${item.name}`} checked={selected} onChange={event => toggleRecord(item, event.target.checked)}/>
       </label>
       <button type="button" className="flow-run-record-content" aria-label={`选择运行记录 ${item.name}`} aria-pressed={selected} onClick={() => toggleRecord(item, !selected)}>
-        <b className="flow-run-record-name" title={item.name}>{item.name}</b>
+        <span className="flow-run-record-identity"><b className="flow-run-record-name" title={item.name}>{item.name}</b><code className="flow-run-record-id" title={`记录 ID：${item.id}`}>ID {item.id}</code></span>
         <span className="flow-run-record-kind">{item.kind === 'MANUAL' ? '逐步' : '连续'}</span>
         <span className="flow-run-record-state" data-state={item.state}>{STATUS_LABELS[item.state] ?? item.state}</span>
         <span className="flow-run-record-progress" title={item.detail}>{item.detail}</span>
