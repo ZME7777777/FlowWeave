@@ -13375,3 +13375,19 @@ platform与web remote-release-finish通过，无过期受管上下文，精确�
 未清理共享BuildKit、卷、Workspace或数据库备份。收尾后健康、版本、数据库
 head、配置和更新后的保护清单再验通过。本补记不改变实际部署身份，本地提交
 未推送；当前及下一可执行重构切片均为NONE。
+
+
+### OPS-36 流程预览画布缩放控件恢复交互 — DONE
+
+流程库预览的两段既有布局CSS均将react-flow__controls-button设为
+pointer-events:none，屏蔽原生放大、缩小和适应画布按钮点击。删除两处阻断
+规则，继续复用React Flow原生Controls及其禁用边界；节点端口的只读行为、
+预览拖动和进入编排保持，无API或执行语义变更。
+
+Web typecheck、受影响ESLint与git diff --check通过。2项既有Chromium流程库
+回归通过，覆盖空草稿创建、预览节点／边、鼠标点击放大与缩小后的真实viewport
+scale变化、适应画布后的节点边界及拖动后重新居中，以及列表滚动、选择、复制、
+进入编排和双尺寸布局。截图人工检查通过，使用受控API，未修改生产流程或调用
+模型。无后端／迁移改动，唯一Alembic head保持0178_merge_schedule_credentials，
+无CURRENT。沿用当前会话授权仅发布Web，正式结果后补；当前及下一可执行
+重构切片均为NONE。

@@ -311,6 +311,19 @@ test('flow library scrolls all rows with sidebar actions and a full width editor
   await expect(preview.locator('.react-flow__edge')).toHaveCount(2);
   await expect(preview.getByRole('button', { name: '进入编排', exact: true })).toBeVisible();
   const previewNode = preview.locator('.react-flow__node').first();
+  const scale = () => preview.locator('.react-flow__viewport').evaluate(element => new DOMMatrix(getComputedStyle(element).transform).a);
+  const initialScale = await scale();
+  await preview.getByRole('button', { name: 'Zoom In', exact: true }).click();
+  await expect.poll(scale).toBeGreaterThan(initialScale + 0.05);
+  const enlargedScale = await scale();
+  await preview.getByRole('button', { name: 'Zoom Out', exact: true }).click();
+  await expect.poll(scale).toBeLessThan(enlargedScale - 0.05);
+  await preview.getByRole('button', { name: 'Fit View', exact: true }).click();
+  await expect.poll(() => preview.locator('.react-flow__node').evaluateAll(nodes => nodes.every(node => {
+    const bounds = node.getBoundingClientRect();
+    const canvas = node.closest('.react-flow')!.getBoundingClientRect();
+    return bounds.left >= canvas.left && bounds.right <= canvas.right && bounds.top >= canvas.top && bounds.bottom <= canvas.bottom;
+  }))).toBe(true);
   const beforeDrag = await previewNode.boundingBox();
   expect(beforeDrag).not.toBeNull();
   await page.mouse.move(beforeDrag!.x + beforeDrag!.width / 2, beforeDrag!.y + 20);
@@ -318,6 +331,10 @@ test('flow library scrolls all rows with sidebar actions and a full width editor
   await page.mouse.move(beforeDrag!.x + beforeDrag!.width / 2 + 55, beforeDrag!.y + 55, { steps: 8 });
   await page.mouse.up();
   await expect.poll(async () => (await previewNode.boundingBox())!.x).toBeGreaterThan(beforeDrag!.x + 30);
+  const draggedTransform = await preview.locator('.react-flow__viewport').getAttribute('style');
+  await preview.getByRole('button', { name: 'Fit View', exact: true }).click();
+  await expect.poll(() => preview.locator('.react-flow__viewport').getAttribute('style')).not.toBe(draggedTransform);
+  await page.screenshot({ path: '../../.tmp/ops36/preview-controls.png' });
   for (const [width, railWidth] of [[1440, 320], [1024, 280]]) {
     await page.setViewportSize({ width, height: 900 });
     await expect.poll(() => page.getByLabel('流程列表', { exact: true }).evaluate(element => element.getBoundingClientRect().width)).toBe(railWidth);
