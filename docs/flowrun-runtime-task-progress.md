@@ -13642,3 +13642,22 @@ Web typecheck、diff 检查通过，6 项既有 Chromium 定向回归通过，�
 产品测试；浏览器使用受控 API，不代表生产编辑。唯一 Alembic head 为
 0178_merge_schedule_credentials。并行 CASE-01 CURRENT 属其他在途工作，
 本片不修改其实现或状态。沿用会话授权仅发布 Web，正式结果后补；本片无后续任务。
+
+
+OPS-42 正式发布补记（2026-10-28）：实际 Web 部署代码为
+`8262f5dbcee88b57860825d840252a4305094ba5`。正式预检和 commit-bound 最小
+上下文 prepare 通过，源归档 SHA-256 为
+`d686e54d36f4a92c56319973b02356b1bb2400020b16fe8bdfe8606c8001df71`，
+实际 linux/amd64 Web image ID 为
+`sha256:e55a0d1bdcbe7b8bc6daa096509cfb498d7e341df8163db5a8dc5b542669db8a`，
+OCI revision 一致。保留原日志和回滚镜像后仅 recreate Web，健康和版本通过，
+服务器配置摘要及其他 47 个容器的 image／StartedAt 保持。
+
+公网 HTML、入口资源、NodesPage JS／CSS 摘要匹配实际镜像，并核对字段切换
+选中底色与阴影已包含在发布 CSS 中。Chromium 登录／Agent 与记录深层／根路由、
+匿名 401 边界与全新浏览器前缀 API 请求通过，根 API 请求为零。切换、保存、
+取消和布局由本地受控 API 回归及截图验证，不声称生产已登录编辑操作验收。
+Web remote-release-finish 通过，无过期受管上下文；保留当前镜像、每仓库一个
+不同回滚版本和容器引用，未清理共享 BuildKit、卷、Workspace 或数据库备份。
+收尾后健康、版本、配置与其他 47 个容器再验通过。未发布后端／Runtime，未作
+生产业务写入。本补记不改变部署身份，本地提交未推送，本片无后续任务。
