@@ -5,11 +5,11 @@ import { createPortal } from 'react-dom';
 import { api, ApiError, capabilityPackageUrl } from '../api/client';
 import { CapabilityCollectionEditorDialog } from '../components/CapabilityCollectionEditorDialog';
 import { Pagination } from '../components/Pagination';
-import { MarketplaceCatalogDialog } from '../components/MarketplaceCatalogDialog';
+import { PluginImportDialog } from '../components/PluginImportDialog';
 import { AgentProfileHistoryDialog } from '../components/AgentProfileHistoryDialog';
 import { useProductDialog } from '../components/ProductDialogContext';
 import { useEscapeClose } from '../components/useEscapeClose';
-import type { BlockedCapabilityDelete, CapabilityAsset, CapabilityAssetType, CapabilityLineage, CapabilityCollection, CapabilityCollectionWrite, CapabilitySort, CapabilityCollectionSort, ContextBundleManifest, PluginSourceResolution, SkillVersionComparison } from '../types';
+import type { BlockedCapabilityDelete, CapabilityAsset, CapabilityAssetType, CapabilityLineage, CapabilityCollection, CapabilityCollectionWrite, CapabilitySort, CapabilityCollectionSort, ContextBundleManifest, SkillVersionComparison } from '../types';
 
 import './capability-repository.css';
 
@@ -219,21 +219,9 @@ export function CapabilitiesPage() {
   const [hookMode, setHookMode] = useState<HookMode>('PROMPT');
   const [hookFile, setHookFile] = useState<File>();
   useEscapeClose(() => setHookOpen(false), hookOpen);
-  const [gitPluginOpen, setGitPluginOpen] = useState(false);
-  const [marketplaceOpen, setMarketplaceOpen] = useState(false);
+  const [pluginImportOpen, setPluginImportOpen] = useState(false);
+  const pluginUpload = useRef<HTMLInputElement>(null);
   const [profileHistory, setProfileHistory] = useState<CapabilityLineage>();
-  const [gitSourceUrl, setGitSourceUrl] = useState('https://github.com/');
-  const [gitCommit, setGitCommit] = useState('');
-  const [gitRepoPath, setGitRepoPath] = useState('');
-  const [gitResolution, setGitResolution] = useState<PluginSourceResolution>();
-  const [gitBusy, setGitBusy] = useState(false);
-  const gitPollGeneration = useRef(0);
-  const closeGitPlugin = () => {
-    gitPollGeneration.current += 1;
-    setGitBusy(false);
-    setGitPluginOpen(false);
-  };
-  useEscapeClose(closeGitPlugin, gitPluginOpen);
   const [source, setSource] = useState('');
   const [mcpMode, setMcpMode] = useState<McpEditorMode>('FORM');
   const [mcpJson, setMcpJson] = useState(MCP_JSON_EXAMPLE);
@@ -477,45 +465,6 @@ export function CapabilitiesPage() {
       await refresh(); setNotice(editingMcp ? `已发布 MCP“${editingMcp.capability_key}”的新版本。` : '已创建 MCP 能力。');
     } catch (reason) { setError(errorMessage(reason)); } finally { setBusy(false); }
   };
-  const pollGitPlugin = async (initial: PluginSourceResolution, generation: number) => {
-    let current = initial;
-    const deadline = Date.now() + 5 * 60_000;
-    while (current.state === 'PENDING' && Date.now() < deadline && gitPollGeneration.current === generation) {
-      await new Promise(resolve => window.setTimeout(resolve, 1500));
-      if (gitPollGeneration.current !== generation) return;
-      current = await api.pluginSourceResolution(current.id);
-      setGitResolution(current);
-    }
-    if (gitPollGeneration.current !== generation) return;
-    if (current.state === 'PENDING') setError('远端 Plugin 仍在解析。可稍后关闭并用相同来源重新打开状态。');
-    else if (current.state === 'FAILED') setError(current.error_detail || '远端 Plugin 解析失败，可按相同来源重试。');
-    else if (current.state === 'EXPIRED') setError('远端 Plugin 解析已过期，可按相同来源重新提交。');
-  };
-  const resolveGitPlugin = async () => {
-    setGitBusy(true); setError(''); setNotice('');
-    const sourceUrl = gitSourceUrl.trim();
-    const commit = gitCommit.trim().toLowerCase();
-    const repoPath = gitRepoPath.trim();
-    try {
-      if (!/^https:\/\/[^\s]+$/u.test(sourceUrl)) throw new Error('来源必须是允许域名上的 HTTPS Git URL。');
-      if (!/^[0-9a-f]{40}$/u.test(commit)) throw new Error('Commit 必须是完整的 40 位十六进制 SHA。');
-      if (repoPath && !/^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*$/u.test(repoPath)) throw new Error('仓库子路径格式无效。');
-      const generation = ++gitPollGeneration.current;
-      const resolution = await api.createPluginSourceResolution({ source_url: sourceUrl, commit, repo_path: repoPath || null });
-      setGitResolution(resolution);
-      await pollGitPlugin(resolution, generation);
-    } catch (reason) { setError(errorMessage(reason)); } finally { setGitBusy(false); }
-  };
-  const publishGitPlugin = async () => {
-    if (!gitResolution || gitResolution.state !== 'READY') return;
-    setGitBusy(true); setError(''); setNotice('');
-    try {
-      const published = await api.publishPluginSourceResolution(gitResolution.id, gitResolution.state_version);
-      setGitResolution(published);
-      await refresh();
-      setNotice(`已发布固定 commit ${published.requested_commit.slice(0, 12)} 的不可变 Plugin 版本。`);
-    } catch (reason) { setError(errorMessage(reason)); } finally { setGitBusy(false); }
-  };
   const toggleLineage = (group: CapabilityLineage) => {
     selectedGroups.current.set(group.id, group);
     setSelectedLineageIds(old => { const next = new Set(old); if (next.has(group.id)) next.delete(group.id); else next.add(group.id); return next; });
@@ -630,19 +579,9 @@ export function CapabilitiesPage() {
   };
   return <section className="page capabilities-page capability-repository">
     <nav className="capability-repository-sidebar" aria-label="能力模块"><header><Layers3 size={18}/><b>能力仓库</b></header>{CAPABILITY_MODULES.map(item => <div key={item}><button disabled={busy || importingSkill} className={!collectionsView && type === item ? 'active' : ''} aria-current={!collectionsView && type === item ? 'page' : undefined} title={capabilityModuleDescription(item)} onClick={() => navigateModule(item)}>{moduleIcon(item)}<span>{typeLabel(item)}</span><em>{counts[item] ?? '—'}</em></button>{item === 'SKILL' && <button disabled={busy || importingSkill} className={`collection-entry ${collectionsView ? 'active' : ''}`} aria-current={collectionsView ? 'page' : undefined} onClick={() => navigateModule('SKILL', true)}><Layers3 size={14}/><span>Skill 组合</span><em>{collectionTotal ?? '—'}</em></button>}</div>)}<footer>统一管理 · 按版本使用</footer></nav>
-    {marketplaceOpen && <MarketplaceCatalogDialog onClose={() => setMarketplaceOpen(false)} onPublished={async () => { await refresh(); setNotice('Marketplace Plugin 已发布为不可变 Capability Version。'); }}/>}
-    {gitPluginOpen && <div className="modal-backdrop"><section className="modal git-plugin-dialog" role="dialog" aria-modal="true" aria-label="从固定 Git commit 导入 Plugin">
-      <header><div><span className="eyebrow">PINNED GIT PLUGIN</span><h2>解析远端 Plugin</h2></div><button className="ghost" onClick={closeGitPlugin}>关闭</button></header>
-      <p>解析器在隔离容器中拉取固定 commit，并将通过校验的内容冻结为本地 ZIP。远端 URL 不会进入 Runtime。</p>
-      <label>HTTPS Git URL<input value={gitSourceUrl} placeholder="https://github.com/org/repository.git" onChange={event => setGitSourceUrl(event.target.value)}/></label>
-      <label>完整 commit SHA<input value={gitCommit} maxLength={40} spellCheck={false} placeholder="40 位十六进制 SHA" onChange={event => setGitCommit(event.target.value)}/></label>
-      <label>仓库子路径（可选）<input value={gitRepoPath} placeholder="plugins/my-plugin" onChange={event => setGitRepoPath(event.target.value)}/></label>
-      {gitResolution && <section className={`git-plugin-status ${gitResolution.state.toLowerCase()}`}><header><b>{gitResolution.state}</b><code>v{gitResolution.state_version}</code></header><small>{gitResolution.requested_commit}</small>{gitResolution.content_hash && <small>内容摘要：{gitResolution.content_hash}</small>}<div className="git-plugin-contributions">{Object.entries(gitResolution.preview.contributions ?? {}).map(([kind, values]) => <span key={kind}><b>{kind}</b><em>{values.length ? values.join('、') : '无'}</em></span>)}</div>{gitResolution.error_detail && <p>{gitResolution.error_detail}</p>}</section>}
-      <div className="mcp-security-note"><b>发布边界</b><span>READY 仅表示解析完成；只有点击“发布不可变版本”后才会进入能力仓库。FAILED / EXPIRED 可使用相同来源重新解析。</span></div>
-      <footer><button className="ghost" onClick={closeGitPlugin}>取消</button><button className="secondary" disabled={gitBusy} onClick={() => void resolveGitPlugin()}>{gitBusy && gitResolution?.state === 'PENDING' ? '解析中…' : gitResolution?.state === 'FAILED' || gitResolution?.state === 'EXPIRED' ? '重新解析' : '开始解析'}</button><button className="primary" disabled={gitBusy || gitResolution?.state !== 'READY'} onClick={() => void publishGitPlugin()}>{gitBusy ? '处理中…' : '发布不可变版本'}</button></footer>
-    </section></div>}
+    {pluginImportOpen && <PluginImportDialog onClose={() => setPluginImportOpen(false)} onUpload={() => pluginUpload.current?.click()} onPublished={async () => { await refresh(); setNotice('Plugin 已导入能力仓库。'); }}/>}
     <div className="capability-module-scroll capability-repository-main"><header className="capability-repository-heading"><h2>{heading}</h2><span>{total} 项</span><small>{collectionsView ? '组合用于批量选择 Skill，运行时仍按实际版本使用。' : capabilityModuleDescription(type)}</small></header><div className="capability-notice-layer">{notice && <div className="notice success capability-notice" role="status"><span>{notice}</span><button type="button" aria-label="关闭成功提示" title="关闭" onClick={() => setNotice('')}><X size={15}/></button></div>}</div>{error && <div className="notice error" role="alert">{error}</div>}
-    <div className="capability-bulk-tools"><span>{repositoryQuery ? `找到 ${total} 项匹配的 ${heading}` : `共 ${total} 项 ${heading}`}{visible.some(group => group.latest.is_builtin) ? ` · ${visible.filter(group => group.latest.is_builtin).length} 项系统内置不可删除` : ''}</span><div className="capability-list-controls"><label className="capability-repository-search"><Search size={14}/><input aria-label="搜索当前能力模块" maxLength={200} disabled={busy} value={repositoryQuery} onChange={event => { setRepositoryQuery(event.target.value); setPage(1); clearSelection(); }} placeholder={`搜索 ${heading} 名称、说明或文件…`}/>{repositoryQuery && <button type="button" aria-label="清除搜索" onClick={() => { setRepositoryQuery(''); setPage(1); clearSelection(); }}>×</button>}</label>{collectionsView ? <button className="primary" disabled={busy} onClick={() => void openCollectionEditor(null)}><Layers3 size={14}/>新建 Skill 组合</button> : <>{type === 'SKILL' && <label className="primary file-button"><Upload size={15}/>{importingSkill ? '上传中…' : '上传 Skill ZIP'}<input type="file" disabled={importingSkill || busy} accept=".zip" onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void importFileCapability(file, 'SKILL'); }}/></label>}{type === 'PLUGIN' && <><label className="primary file-button"><Upload size={15}/>{importingSkill ? '上传中…' : '上传 Plugin ZIP'}<input type="file" disabled={importingSkill || busy} accept=".zip" onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void importFileCapability(file, 'PLUGIN'); }}/></label><button className="secondary" disabled={busy || importingSkill} onClick={() => { setError(''); setNotice(''); setMarketplaceOpen(true); }}><PlugZap size={14}/>OpenHands Marketplace</button><button className="secondary" disabled={busy || importingSkill} onClick={() => { setError(''); setNotice(''); setGitPluginOpen(true); }}><PlugZap size={14}/>Git Plugin</button></>}{type === 'CONTEXT' && <button className="primary" disabled={importingSkill || busy} onClick={() => { setError(''); setNotice(''); setContextOpen(true); }}><Upload size={15}/>新增 Context</button>}{type === 'MCP' && <button className="primary" disabled={importingSkill || busy} onClick={() => void openMcpEditor()}><Braces size={15}/>新建 MCP</button>}{type === 'HOOK' && <button className="primary" disabled={importingSkill || busy} onClick={() => { setError(''); setNotice(''); setHookOpen(true); }}><Upload size={15}/>新建 Hook</button>}{type === 'AGENT_DEFINITION' && <label className="primary file-button"><Upload size={15}/>{importingSkill ? '上传中…' : '上传 Agent Definition Markdown'}<input type="file" disabled={importingSkill || busy} accept=".md,.markdown,text/markdown" onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void importFileCapability(file, 'AGENT_DEFINITION'); }}/></label>}</>}</div>{!collectionsView && <div className="bulk-actions"><button className="secondary" disabled={!total || busy} onClick={() => void toggleVisible()}><CheckSquare size={14}/>{allVisibleSelected ? '取消全选' : '全选当前模块'}</button><button className="danger" disabled={!selectedVisible.length || busy} onClick={() => void remove(selectedVisible, true)}><Trash2 size={14}/>{busy ? '删除中…' : `批量删除 (${selectedVisible.length})`}</button></div>}</div>
+    <div className="capability-bulk-tools"><span>{repositoryQuery ? `找到 ${total} 项匹配的 ${heading}` : `共 ${total} 项 ${heading}`}{visible.some(group => group.latest.is_builtin) ? ` · ${visible.filter(group => group.latest.is_builtin).length} 项系统内置不可删除` : ''}</span><div className="capability-list-controls"><label className="capability-repository-search"><Search size={14}/><input aria-label="搜索当前能力模块" maxLength={200} disabled={busy} value={repositoryQuery} onChange={event => { setRepositoryQuery(event.target.value); setPage(1); clearSelection(); }} placeholder={`搜索 ${heading} 名称、说明或文件…`}/>{repositoryQuery && <button type="button" aria-label="清除搜索" onClick={() => { setRepositoryQuery(''); setPage(1); clearSelection(); }}>×</button>}</label>{collectionsView ? <button className="primary" disabled={busy} onClick={() => void openCollectionEditor(null)}><Layers3 size={14}/>新建 Skill 组合</button> : <>{type === 'SKILL' && <label className="primary file-button"><Upload size={15}/>{importingSkill ? '上传中…' : '上传 Skill ZIP'}<input type="file" disabled={importingSkill || busy} accept=".zip" onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void importFileCapability(file, 'SKILL'); }}/></label>}{type === 'PLUGIN' && <><input ref={pluginUpload} aria-label="Plugin ZIP 文件" type="file" hidden disabled={importingSkill || busy} accept=".zip" onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; if (file) { setPluginImportOpen(false); void importFileCapability(file, 'PLUGIN'); } }}/><button className="primary" disabled={busy || importingSkill} onClick={() => { setError(''); setNotice(''); setPluginImportOpen(true); }}><Upload size={14}/>{importingSkill ? '上传中…' : '导入 Plugin'}</button></>}{type === 'CONTEXT' && <button className="primary" disabled={importingSkill || busy} onClick={() => { setError(''); setNotice(''); setContextOpen(true); }}><Upload size={15}/>新增 Context</button>}{type === 'MCP' && <button className="primary" disabled={importingSkill || busy} onClick={() => void openMcpEditor()}><Braces size={15}/>新建 MCP</button>}{type === 'HOOK' && <button className="primary" disabled={importingSkill || busy} onClick={() => { setError(''); setNotice(''); setHookOpen(true); }}><Upload size={15}/>新建 Hook</button>}{type === 'AGENT_DEFINITION' && <label className="primary file-button"><Upload size={15}/>{importingSkill ? '上传中…' : '上传 Agent Definition Markdown'}<input type="file" disabled={importingSkill || busy} accept=".md,.markdown,text/markdown" onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void importFileCapability(file, 'AGENT_DEFINITION'); }}/></label>}</>}</div>{!collectionsView && <div className="bulk-actions"><button className="secondary" disabled={!total || busy} onClick={() => void toggleVisible()}><CheckSquare size={14}/>{allVisibleSelected ? '取消全选' : '全选当前模块'}</button><button className="danger" disabled={!selectedVisible.length || busy} onClick={() => void remove(selectedVisible, true)}><Trash2 size={14}/>{busy ? '删除中…' : `批量删除 (${selectedVisible.length})`}</button></div>}</div>
     {queryError && <div className="notice error" role="alert">{errorMessage(queryError)}<button className="secondary" onClick={() => void (collectionsView ? collectionDirectory.refetch() : directory.refetch())}>重试</button></div>}
     <div className="capability-table-scroll" key={`${heading}-${page}-${sort}-${collectionSort}-${direction}`} aria-busy={isLoading}>
       <table className={`capability-table${collectionsView ? ' capability-collection-table' : ''}`}><thead><tr>{!collectionsView && <th scope="col" className="capability-check-column"><span className="sr-only">选择</span></th>}{sortHeader('名称', 'name')}{collectionsView ? <>{sortHeader('分类', 'category')}{sortHeader('Skill 数量', 'member_count')}{sortHeader('创建时间', 'created_at')}{sortHeader('更新时间', 'updated_at')}</> : <><th scope="col">来源文件</th>{sortHeader('大小', 'byte_size')}{sortHeader('版本', 'revision_number')}{sortHeader('上传时间', 'created_at')}<th scope="col">引用</th><th scope="col">依赖状态</th></>}<th scope="col" className="capability-actions-column">操作</th></tr></thead><tbody>

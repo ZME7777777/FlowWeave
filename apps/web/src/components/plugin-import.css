@@ -1,0 +1,63 @@
+.plugin-import-dialog.modal{display:flex;flex-direction:column;width:min(760px,calc(100vw - 40px));height:min(690px,calc(100dvh - 56px));max-height:calc(100dvh - 56px);padding:0;overflow:hidden;border-radius:10px}
+.plugin-import-header{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:15px 20px 10px}
+.plugin-import-header h2{margin:0;font-size:14px;font-weight:600}
+.plugin-import-header .ghost{padding:5px;color:var(--muted)}
+.plugin-import-sources{display:flex;align-items:center;gap:4px;padding:0 20px;border-bottom:1px solid var(--line)}
+.plugin-import-sources button{display:flex;align-items:center;gap:6px;border:0;border-bottom:2px solid transparent;background:transparent;padding:11px 12px;color:var(--muted);font-size:11px;cursor:pointer}
+.plugin-import-sources button[aria-selected=true]{border-bottom-color:var(--green);color:var(--green);font-weight:600}
+.plugin-import-sources .plugin-import-upload{margin-left:auto;padding-right:0}
+.plugin-import-body{min-height:0;flex:1;overflow:auto;padding:16px 20px}
+.plugin-import-market{display:flex;min-height:100%;flex-direction:column}
+.plugin-import-search{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+.plugin-import-search label{display:flex;align-items:center;gap:8px;flex:1;min-width:0;border:1px solid var(--line);border-radius:6px;background:#f8faf9;padding:9px 10px;color:var(--muted)}
+.plugin-import-search input{min-width:0;width:100%;border:0;outline:0;background:transparent;font:inherit;font-size:11px}
+.plugin-import-search label:focus-within{border-color:var(--green)}
+.plugin-import-search .ghost{padding:8px}
+.plugin-import-list{display:flex;flex-direction:column}
+.plugin-import-list>button{display:flex;align-items:center;gap:10px;min-width:0;width:100%;padding:11px 10px;text-align:left;border:0;border-bottom:1px solid #edf1ee;background:#fff;border-radius:4px;color:var(--muted);cursor:pointer}
+.plugin-import-list>button:hover{background:#f6f9f7}
+.plugin-import-list>button[aria-pressed=true]{background:#edf5ef}
+.plugin-import-check{display:grid;place-items:center;flex:0 0 15px;height:15px;border:1px solid #b9c7be;border-radius:3px;background:#fff}
+[aria-pressed=true]>.plugin-import-check{background:var(--green);border-color:var(--green);color:#fff}
+.plugin-import-list>button>svg{flex-shrink:0}
+.plugin-import-copy{display:flex;flex:1;min-width:0;flex-direction:column;gap:4px}
+.plugin-import-copy b{font-size:12px;font-weight:600;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.plugin-import-copy small{font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1.5}
+.plugin-import-version{max-width:100px;flex-shrink:0;font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.plugin-import-pagination{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 0}
+.plugin-import-pagination>small{color:var(--muted);font-size:10px;white-space:nowrap}
+.plugin-import-pagination .pagination{margin:0}
+.plugin-import-selection{margin-top:auto;padding:12px 10px 0;border-top:1px solid var(--line)}
+.plugin-import-selection b{font-size:12px;font-weight:600;overflow-wrap:anywhere}
+.plugin-import-selection p{margin:6px 0;color:var(--muted);font-size:11px;line-height:1.7;overflow-wrap:anywhere}
+.plugin-import-selection small{color:var(--muted);font-size:10px}
+.plugin-import-empty{display:flex;min-height:260px;flex:1;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:24px;text-align:center;color:var(--muted);font-size:12px}
+.plugin-import-empty small{max-width:460px;font-size:11px;line-height:1.7;overflow-wrap:anywhere}
+.plugin-import-empty .secondary{margin-top:4px}
+.plugin-import-git{display:flex;flex-direction:column;gap:18px;padding:8px 0}
+.plugin-import-git label{display:flex;min-width:0;flex-direction:column;gap:8px;font-size:11px;color:var(--ink)}
+.plugin-import-git input{width:100%;min-width:0;border:1px solid #cbd6d0;border-radius:6px;padding:11px 10px;background:#fff;font-size:11px;outline:none}
+.plugin-import-git input:focus{border-color:var(--green)}
+.plugin-import-git>p{margin:-10px 0 0;color:var(--muted);font-size:11px;line-height:1.7}
+.plugin-import-fields{display:grid;grid-template-columns:1.5fr 1fr;gap:14px}
+.plugin-import-fields label>small{display:contents;color:var(--muted)}
+.plugin-import-help{margin-top:6px;border-top:1px solid var(--line);padding-top:16px;color:var(--muted);font-size:11px;line-height:1.8}
+.plugin-import-help summary{width:fit-content;cursor:pointer;color:var(--green)}
+.plugin-import-help ol{padding-left:20px;margin:12px 0}
+.plugin-import-help p{margin:10px 0}
+.plugin-import-help code{font-size:10px;overflow-wrap:anywhere}
+.plugin-import-error{padding:10px 12px;border-radius:5px;background:#fff1ed;color:#9a4432;font-size:11px;line-height:1.7;overflow-wrap:anywhere}
+.plugin-import-success{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--green)}
+.plugin-import-footer{display:flex;align-items:center;gap:8px;padding:12px 20px;border-top:1px solid var(--line);background:#fafcfb}
+.plugin-import-footer>span{display:flex;align-items:center;gap:6px;min-width:0;flex:1;color:var(--muted);font-size:10px}
+.plugin-import-dialog button:focus-visible,.plugin-import-help summary:focus-visible{outline:2px solid var(--green);outline-offset:2px}
+.plugin-import-dialog button:disabled{cursor:default;opacity:.55}
+@media(max-width:600px){.plugin-import-dialog.modal{width:calc(100vw - 24px);height:calc(100dvh - 40px);max-height:calc(100dvh - 40px)}.plugin-import-header{padding:14px 14px 8px}.plugin-import-sources{padding:0 12px}.plugin-import-sources button{padding:10px 8px;font-size:10px}.plugin-import-body{padding:12px 14px}.plugin-import-fields{grid-template-columns:1fr}.plugin-import-footer{padding:12px 14px;flex-wrap:wrap}.plugin-import-footer>span{flex-basis:100%}.plugin-import-footer>.ghost{margin-left:auto}.plugin-import-version{max-width:60px}.plugin-import-pagination{align-items:flex-start;flex-wrap:wrap}}
+/* Modal defaults also style labels and inputs; keep the search as one line. */
+.modal-backdrop:has(>.plugin-import-dialog){padding:20px 12px}
+.plugin-import-dialog .plugin-import-search label{flex-direction:row;margin:0;gap:8px}
+.plugin-import-dialog .plugin-import-search input{padding:0;border:0;box-shadow:none}
+.plugin-import-copy b{line-height:16px}
+.plugin-import-copy small{line-height:16px}
+.plugin-import-copy{gap:3px}
+.plugin-import-list>button{padding-top:8px;padding-bottom:8px}

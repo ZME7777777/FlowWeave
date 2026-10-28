@@ -102,9 +102,16 @@ def list_openhands_marketplace_catalog() -> dict[str, object]:
         raise DomainError(
             "OPENHANDS_MARKETPLACE_UNAVAILABLE", "无法读取 OpenHands Marketplace", 503
         )
-    return get_plugin_resolver().list_marketplace(
-        MarketplaceCatalogRequest(_OPENHANDS_MARKETPLACE_SOURCE, match.group(1), None)
-    )
+    try:
+        return get_plugin_resolver().list_marketplace(
+            MarketplaceCatalogRequest(_OPENHANDS_MARKETPLACE_SOURCE, match.group(1), None)
+        )
+    except (RuntimeError, ValueError) as exc:
+        raise DomainError(
+            "OPENHANDS_MARKETPLACE_UNAVAILABLE",
+            "插件市场暂时不可用，请稍后重试，或从 Git 仓库导入。",
+            503,
+        ) from exc
 
 
 def _read_model(item: PluginSourceResolution) -> dict[str, Any]:

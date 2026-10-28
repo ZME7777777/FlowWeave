@@ -160,7 +160,11 @@ def test_openhands_marketplace_catalog_binds_the_api_plugin_resolver(client, mon
 
     def list_marketplace(request):
         captured["request"] = request
-        return {"commit": request.marketplace_commit, "plugins": []}
+        return {
+            "schema_version": 1, "source": request.marketplace_source,
+            "commit": request.marketplace_commit, "plugins": [],
+            "marketplace_name": "test-marketplace", "owner": "OpenHands",
+        }
 
     monkeypatch.setattr(
         plugin_sources.subprocess,
@@ -178,3 +182,22 @@ def test_openhands_marketplace_catalog_binds_the_api_plugin_resolver(client, mon
     request = captured["request"]
     assert request.marketplace_source == "https://github.com/OpenHands/extensions.git"
     assert request.marketplace_commit == "b" * 40
+
+
+def test_openhands_marketplace_resolver_failure_returns_retryable_error(
+    client, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        plugin_sources.subprocess, "run",
+        lambda *args, **kwargs: CompletedProcess(args, 0, "b" * 40 + "\tHEAD\n", ""),
+    )
+
+    def unavailable(_request):
+        raise RuntimeError("internal resolver diagnostics must not reach the browser")
+
+    monkeypatch.setattr(client.app.state.container.plugin_resolver, "list_marketplace", unavailable)
+    response = client.get("/api/v1/plugin-marketplace-catalogs/openhands")
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "OPENHANDS_MARKETPLACE_UNAVAILABLE"
+    assert "Git" in response.json()["error"]["message"]
+    assert "internal resolver" not in response.text

@@ -225,9 +225,8 @@ test('capability repository exposes module-specific menus and actions', async ({
   await expect(collectionDialog).toBeHidden();
 
   await modules.getByRole('button', { name: /Plugin/ }).click();
-  await expect(actions.getByText('上传 Plugin ZIP', { exact: true })).toBeVisible();
-  await expect(actions.getByRole('button', { name: 'OpenHands Marketplace' })).toBeVisible();
-  await expect(actions.getByRole('button', { name: 'Git Plugin' })).toBeVisible();
+  await expect(actions.getByRole('button', { name: '导入 Plugin' })).toBeVisible();
+  await expect(actions.getByRole('button')).toHaveCount(1);
   await expect(actions.getByText('上传 Skill ZIP', { exact: true })).toHaveCount(0);
   await expect(page.locator('.skill-collection-section')).toHaveCount(0);
 
@@ -532,7 +531,7 @@ test('every capability module supports selecting and bulk deleting capability li
     await page.getByRole('button', { name: '批量删除 (2)' }).click();
     const confirm = page.getByRole('alertdialog');
     await expect(confirm).toContainText('删除所选的 2 项能力');
-    await expect(confirm).toContainText('全部历史版本');
+    await expect(confirm).toContainText('已有会话或运行引用的冻结快照会被保留');
     await confirm.getByRole('button', { name: '确认删除' }).click();
     await expect(checkboxes).toHaveCount(0);
     await expect(page.getByRole('status')).toContainText('已删除 2 条无关联能力记录');
