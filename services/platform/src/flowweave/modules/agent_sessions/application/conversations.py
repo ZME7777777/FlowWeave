@@ -254,6 +254,7 @@ def history_reference_bindings(
     """Authorize both ends of an explicit history reference without reading Runtime."""
 
     workspace = _workspace(db, workspace_id)
+
     # History tools never inherit an administrator's broader platform access.
     # Keep explicit owner/host predicates even with ORM isolation and RLS.
     def owned_binding(identity: str, *, lock: bool = False) -> AgentConversationBinding:
@@ -333,6 +334,7 @@ def _dict(
         "write_available": write_available,
         "pinned": item.pinned,
         "unread": item.unread,
+        "archived_at": item.archived_at.isoformat() if item.archived_at else None,
         "unread_origin": item.unread_origin,
         "final_reply_preview": final_reply_preview(item),
         "lifecycle": item.lifecycle,
@@ -674,9 +676,7 @@ def replace_workspace_capabilities(
     allowed_types: frozenset[str] = _DYNAMIC_CAPABILITY_TYPES,
 ) -> list[dict[str, str]]:
     workspace = _workspace(db, workspace_id)
-    selected = _validated_capabilities(
-        db, capability_version_ids, allowed_types=allowed_types
-    )
+    selected = _validated_capabilities(db, capability_version_ids, allowed_types=allowed_types)
     for reference in db.scalars(
         select(AgentWorkspaceCapability)
         .where(AgentWorkspaceCapability.workspace_id == workspace.id)
@@ -960,6 +960,7 @@ def list_conversations(db: Session, workspace_id: str) -> list[dict[str, Any]]:
             .where(
                 AgentConversationBinding.workspace_id == workspace_id,
                 AgentConversationBinding.lifecycle == "ACTIVE",
+                AgentConversationBinding.archived_at.is_(None),
                 ~AgentConversationBinding.id.in_(
                     select(AgentSidebarConversation.sidebar_binding_id)
                 ),
@@ -984,6 +985,7 @@ def list_pinned_conversations(
             .where(
                 AgentConversationBinding.workspace_id == workspace_id,
                 AgentConversationBinding.lifecycle == "ACTIVE",
+                AgentConversationBinding.archived_at.is_(None),
                 AgentConversationBinding.pinned.is_(True),
                 ~AgentConversationBinding.id.in_(
                     select(AgentSidebarConversation.sidebar_binding_id)
@@ -1014,6 +1016,7 @@ def conversation_activity(
             select(AgentConversationBinding).where(
                 AgentConversationBinding.workspace_id == workspace_id,
                 AgentConversationBinding.lifecycle == "ACTIVE",
+                AgentConversationBinding.archived_at.is_(None),
                 ~AgentConversationBinding.id.in_(
                     select(AgentSidebarConversation.sidebar_binding_id)
                 ),
@@ -1177,23 +1180,30 @@ def _management_conversation_scope(workspace_id: str, work_directory_id: str | N
 
 
 def list_management_conversations(
-    db: Session, workspace_id: str, *, work_directory_id: str | None = None
+    db: Session,
+    workspace_id: str,
+    *,
+    work_directory_id: str | None = None,
+    archived: bool | None = None,
 ) -> dict[str, Any]:
     """List durable direct conversations in one user-visible workspace group."""
 
     _workspace(db, workspace_id)
     limit = 500
+    predicates = [
+        AgentConversationBinding.workspace_id == workspace_id,
+        AgentConversationBinding.lifecycle == "ACTIVE",
+        ~AgentConversationBinding.id.in_(select(AgentSidebarConversation.sidebar_binding_id)),
+        _management_conversation_scope(workspace_id, work_directory_id),
+    ]
+    if archived is True:
+        predicates.append(AgentConversationBinding.archived_at.is_not(None))
+    elif archived is False:
+        predicates.append(AgentConversationBinding.archived_at.is_(None))
     items = list(
         db.scalars(
             select(AgentConversationBinding)
-            .where(
-                AgentConversationBinding.workspace_id == workspace_id,
-                AgentConversationBinding.lifecycle == "ACTIVE",
-                ~AgentConversationBinding.id.in_(
-                    select(AgentSidebarConversation.sidebar_binding_id)
-                ),
-                _management_conversation_scope(workspace_id, work_directory_id),
-            )
+            .where(*predicates)
             .order_by(
                 AgentConversationBinding.last_message_at.desc(),
                 AgentConversationBinding.created_at.desc(),
@@ -1210,6 +1220,7 @@ def list_management_conversations(
                 "display_title": item.display_title,
                 "pinned": item.pinned,
                 "unread": item.unread,
+                "archived_at": item.archived_at.isoformat() if item.archived_at else None,
                 "created_at": item.created_at.isoformat(),
                 "updated_at": item.updated_at.isoformat(),
                 "last_message_at": (
@@ -1220,6 +1231,25 @@ def list_management_conversations(
         ],
         "truncated": truncated,
     }
+
+
+def archive_conversation(db: Session, workspace_id: str, binding_id: str) -> dict[str, Any]:
+    item = _binding(db, workspace_id, binding_id, lock=True)
+    assert_conversation_stopped(db, workspace_id, binding_id, lock=False)
+    if item.archived_at is None:
+        item.archived_at = now()
+        item.updated_at = item.archived_at
+        db.flush()
+    return _dict(db, item)
+
+
+def restore_conversation(db: Session, workspace_id: str, binding_id: str) -> dict[str, Any]:
+    item = _binding(db, workspace_id, binding_id, lock=True)
+    if item.archived_at is not None:
+        item.archived_at = None
+        item.updated_at = now()
+        db.flush()
+    return _dict(db, item)
 
 
 def delete_management_conversations(
@@ -1289,6 +1319,7 @@ def list_conversation_page(
     query = select(AgentConversationBinding).where(
         AgentConversationBinding.workspace_id == workspace_id,
         AgentConversationBinding.lifecycle == "ACTIVE",
+        AgentConversationBinding.archived_at.is_(None),
         ~AgentConversationBinding.id.in_(select(AgentSidebarConversation.sidebar_binding_id)),
     )
     if work_directory_id is None:

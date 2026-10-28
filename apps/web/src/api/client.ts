@@ -1,7 +1,7 @@
 import type { CapabilityAssetType, CapabilityDirectoryPage, CapabilityCollectionSort, CapabilitySort, RepositoryPage } from '../types';
 import type {
   AuthUser, LdapDirectory, LdapUser, PlatformUser,
-  AgentProfileVersion, ArtifactInput, ArtifactVersion, ArtifactVersionPage, RuntimeArtifactAuditPage, CapabilityAsset, CapabilityImportResult, FlowDefinition, FlowRun, FlowRunAutomaticRecord, FlowRunAutomaticRecordUpdate, FlowRunAutomaticRecordWrite, FlowRunConversation, FlowRunRuntimeOverview, FlowRunRuntimeResource, FlowRunSummary, FlowWrite, MessageAttachmentInput, OpenHandsConversationEventBatch, McpSource, SkillSource,
+  AgentProfileVersion, ArtifactInput, ArtifactVersion, ArtifactVersionPage, RuntimeArtifactAuditPage, CapabilityAsset, CapabilityImportResult, FlowDefinition, FlowRun, FlowRunAutomaticRecord, FlowRunAutomaticRecordUpdate, FlowRunAutomaticRecordWrite, FlowRunConversation, FlowRunRuntimeOverview, FlowRunRuntimeResource, FlowRunSummary, FlowWrite, MessageAttachmentInput, OpenHandsConversationEventBatch, McpSource, SkillSource, SkillVersionComparison,
   BlockedNodeDelete, BulkDeleteResult, CapabilityBulkDeleteResult, CodexDeviceAuthorization, CodexOAuthStatus, GateRemediationResult, ModelProvider, ModelProviderDiscoveryWrite, ModelProviderUsage, ModelProviderWrite, NodeAsset, NodeAssetWrite, NodeAttempt, FlowRunAutomaticRecordSummary, ProviderBulkDeleteResult,
   AgentAttachment, AgentConversation, AgentConversationAnnotation, AgentConversationContext, AgentConversationHead, AgentConversationInputReadiness, AgentConversationReference, AgentConversationSchedule, AgentConversationScheduleOccurrence, AgentPendingConfirmation, AgentWorkDirectory, AgentWorkDirectoryList, AgentWorkspace, AgentWorkspaceCapability, AgentWorkspaceDetails, AgentWorkspaceMcpReadiness, AgentWorkspaceReference, AgentWorkspaceRuntime, AutomaticRecordConfigDocument, CapabilityCollection, CapabilityCollectionWrite, Case, ContextBundleManifest, MarketplaceCatalog, NodeDirectory, NodeRun, OpenHandsConversationEvent, PluginSourceResolution, RunEvent, RuntimeConfirmationBatch, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, GatePolicy, WebsiteCredential, WebsiteCredentialWrite, FlowRunSchedule, FlowRunScheduleOccurrencePage, FlowRunScheduleWrite, FlowRunScheduleTemplate, FlowRunStepwiseRecord, FlowRunStepwiseRecordWrite, StepwiseNodeDraft, StepwiseRecordConfigDocument, StepwiseRuntimePortsWrite,
 } from '../types';
@@ -383,13 +383,18 @@ export const api = {
   agentWorkspaceRuntime: (id: string) => request<AgentWorkspaceRuntime>(`/agent-workspaces/${encodeURIComponent(id)}/runtime`),
   agentGitIdentity: (id: string) => request<AgentGitIdentity>(`/agent-workspaces/${encodeURIComponent(id)}/settings/git`),
   saveAgentGitIdentity: (id: string, identity: { author: string; email: string }) => request<AgentGitIdentity>(`/agent-workspaces/${encodeURIComponent(id)}/settings/git`, { method: 'PUT', body: JSON.stringify(identity) }),
-  agentWorkDirectories: (id: string) => request<AgentWorkDirectoryList>(`/agent-workspaces/${encodeURIComponent(id)}/work-directories`),
+  agentWorkDirectories: (id: string, includeArchived = false) =>
+    request<AgentWorkDirectoryList>(`/agent-workspaces/${encodeURIComponent(id)}/work-directories${includeArchived ? '?include_archived=true' : ''}`),
   createAgentWorkDirectory: (id: string, display_name: string, selected_paths: string[]) =>
     request<AgentWorkDirectory>(`/agent-workspaces/${encodeURIComponent(id)}/work-directories`, json('POST', { display_name, selected_paths })),
   updateAgentWorkDirectory: (id: string, directoryId: string, display_name: string) =>
     request<AgentWorkDirectory>(`/agent-workspaces/${encodeURIComponent(id)}/work-directories/${encodeURIComponent(directoryId)}`, json('PATCH', { display_name })),
   deleteAgentWorkDirectory: (id: string, directoryId: string) =>
     request<void>(`/agent-workspaces/${encodeURIComponent(id)}/work-directories/${encodeURIComponent(directoryId)}`, json('DELETE')),
+  archiveAgentWorkDirectory: (id: string, directoryId: string) =>
+    request<AgentWorkDirectory>(`/agent-workspaces/${encodeURIComponent(id)}/work-directories/${encodeURIComponent(directoryId)}/archive`, json('POST')),
+  restoreAgentWorkDirectory: (id: string, directoryId: string) =>
+    request<AgentWorkDirectory>(`/agent-workspaces/${encodeURIComponent(id)}/work-directories/${encodeURIComponent(directoryId)}/restore`, json('POST')),
   agentWorkspaceDetails: (id: string, options: { bindingId?: string; workDirectoryId?: string; fullIndex?: boolean } = {}) => {
     const query = new URLSearchParams();
     if (options.bindingId) query.set('binding_id', options.bindingId);
@@ -489,9 +494,11 @@ export const api = {
     if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
     return request<void>(`/agent-workspaces/${encodeURIComponent(id)}/terminals/${encodeURIComponent(terminalInstanceId)}${query.size ? `?${query}` : ''}`, json('DELETE'));
   },
-  agentConversationManagement: (workspaceId: string, workDirectoryId?: string) => {
-    const query = workDirectoryId ? `?work_directory_id=${encodeURIComponent(workDirectoryId)}` : '';
-    return request<import('../types').AgentConversationManagementPage>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-management${query}`);
+  agentConversationManagement: (workspaceId: string, workDirectoryId?: string, archived?: boolean) => {
+    const query = new URLSearchParams();
+    if (workDirectoryId) query.set('work_directory_id', workDirectoryId);
+    if (archived !== undefined) query.set('archived', String(archived));
+    return request<import('../types').AgentConversationManagementPage>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-management${query.size ? `?${query}` : ''}`);
   },
   deleteManagedAgentConversations: (workspaceId: string, binding_ids: string[], workDirectoryId?: string) => {
     const query = workDirectoryId ? `?work_directory_id=${encodeURIComponent(workDirectoryId)}` : '';
@@ -557,6 +564,10 @@ export const api = {
     request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/unread`, json('PUT', { unread, unread_origin })),
   reorderAgentConversation: (workspaceId: string, bindingId: string, ordered_binding_ids: string[]) =>
     request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/order`, json('POST', { ordered_binding_ids })),
+  archiveAgentConversation: (workspaceId: string, bindingId: string) =>
+    request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/archive`, json('POST')),
+  restoreAgentConversation: (workspaceId: string, bindingId: string) =>
+    request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/restore`, json('POST')),
   deleteAgentConversation: (workspaceId: string, bindingId: string) =>
     request<void>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}`, json('DELETE', undefined, true)),
   agentConversationEvents: (workspaceId: string, bindingId: string, cursor?: string, historyCursor?: string, diagnosticTrigger?: string, signal?: AbortSignal) => {
@@ -696,6 +707,8 @@ export const api = {
   deleteCapabilityCollection: (id: string) =>
     request<void>(`/capability-collections/${id}`, json('DELETE')),
   capabilitySource: (id: string) => request<SkillSource>(`/capabilities/${encodeURIComponent(id)}/source`),
+  skillVersionComparison: (id: string) => request<SkillVersionComparison>(`/capabilities/${encodeURIComponent(id)}/skill-version-comparison`),
+  rollbackSkillVersion: (id: string) => request<CapabilityAsset>(`/capabilities/${encodeURIComponent(id)}/rollback`, json('POST')),
   contextSource: (id: string) => request<{ id: string; capability_key: string; filename: string; description: string; content_format: 'TEXT' | 'BUNDLE'; manifest: ContextBundleManifest | null; content: string }>(`/capabilities/${encodeURIComponent(id)}/context-source`),
   updateCapabilitySource: (id: string, content: string) =>
     request<CapabilityAsset>(`/capabilities/${encodeURIComponent(id)}/source`, json('PUT', { content })),

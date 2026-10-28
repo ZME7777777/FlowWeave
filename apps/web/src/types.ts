@@ -52,6 +52,9 @@ export interface CapabilityCollectionWrite {
 export interface SkillSource {
   id: string; capability_key: string; filename: string; entry: string; content: string;
 }
+export interface SkillVersionComparison {
+  previous: SkillSource; current: SkillSource; diff: string;
+}
 export interface McpSource {
   id: string; capability_key: string; filename: string; content: string;
   mcp_scripts: Array<{ server: string; filename: string; content_base64: string }>;
@@ -910,6 +913,7 @@ export interface AgentConversation {
   execution_status?: string | null;
   pinned?: boolean;
   unread?: boolean;
+  archived_at?: string | null;
   unread_origin?: 'MANUAL' | 'SYSTEM' | null;
   /** Server-confirmed terminal assistant MESSAGE for a newly unread conversation. */
   final_reply_preview?: { event_id: string; content: string } | null;
@@ -975,6 +979,7 @@ export interface ManagedAgentConversation {
   display_title?: string | null;
   pinned: boolean;
   unread: boolean;
+  archived_at?: string | null;
   created_at: string;
   updated_at: string;
   last_message_at?: string | null;
@@ -1032,7 +1037,8 @@ export interface AgentConversationSearch {
 export interface AgentSessionWorkDirectory {
   id: string;
   display_name: string;
-  state: 'ACTIVE';
+  state: 'ACTIVE' | 'ARCHIVED';
+  archived_at?: string | null;
   current_version: {
     id: string;
     version: number;

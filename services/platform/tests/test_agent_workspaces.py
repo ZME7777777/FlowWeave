@@ -3922,6 +3922,79 @@ def test_agent_workspace_management_lists_selected_conversations_and_skips_runni
         assert db.get(AgentConversationBinding, running["id"]) is not None
 
 
+
+def test_agent_workspace_archives_and_restores_directories_and_conversations(
+    settings, db_session_factory, monkeypatch
+):
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=kwargs.get("model_name") or "test-model",
+            api_key="x",
+            reasoning_effort=kwargs.get("reasoning_effort"),
+        ),
+    )
+    with (
+        settings_context(settings),
+        tenant_user(FLOWWEAVE_USER_ID),
+        db_session_factory() as db,
+        runtime_context(MockRuntime()),
+    ):
+        workspace = _ready_workspace_for_conversation(db)
+        project_root = _agent_project_root(settings, db, workspace) / "users" / FLOWWEAVE_USER_ID
+        project_root.mkdir(mode=0o700, exist_ok=True)
+        (project_root / "archive-target").mkdir()
+        directory = work_directories.create_work_directory(
+            db, workspace.id, "待归档工作区", ("archive-target",)
+        )
+        archived_directory = work_directories.archive_work_directory(
+            db, workspace.id, directory["id"]
+        )
+        assert archived_directory["state"] == "ARCHIVED"
+        assert [
+            item["id"] for item in work_directories.list_work_directories(db, workspace.id)["items"]
+        ] == []
+        assert [
+            item["id"]
+            for item in work_directories.list_work_directories(
+                db, workspace.id, include_archived=True
+            )["items"]
+        ] == [directory["id"]]
+        assert (
+            work_directories.restore_work_directory(db, workspace.id, directory["id"])["state"]
+            == "ACTIVE"
+        )
+
+        conversation = conversations.create_conversation(
+            db,
+            workspace.id,
+            "待归档会话",
+            workspace.default_model_provider_id,
+            "archive-conversation",
+        )
+        archived_conversation = conversations.archive_conversation(
+            db, workspace.id, conversation["id"]
+        )
+        assert archived_conversation["archived_at"] is not None
+        assert conversations.list_conversations(db, workspace.id) == []
+        assert conversations.list_management_conversations(db, workspace.id)["items"] == []
+        managed = conversations.list_management_conversations(db, workspace.id, archived=True)[
+            "items"
+        ]
+        assert [item["id"] for item in managed] == [conversation["id"]]
+        assert managed[0]["archived_at"] is not None
+        restored_conversation = conversations.restore_conversation(
+            db, workspace.id, conversation["id"]
+        )
+        assert restored_conversation["archived_at"] is None
+        assert [item["id"] for item in conversations.list_conversations(db, workspace.id)] == [
+            conversation["id"]
+        ]
+
+
 def test_agent_workspace_management_scopes_to_the_selected_work_directory(
     settings, db_session_factory, monkeypatch
 ):

@@ -129,6 +129,7 @@ export interface AgentSessionApi {
   readonly gitDiff: (hostId: AgentSessionHostId, repositoryPath: string, commit: string, path: string, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<WorkspaceGitFileDiff>;
   readonly createWorkDirectory: (hostId: AgentSessionHostId, displayName: string, selectedPaths: string[]) => Promise<AgentSessionWorkDirectory>;
   readonly updateWorkDirectory?: (hostId: AgentSessionHostId, workDirectoryId: AgentSessionWorkDirectoryId, displayName: string) => Promise<AgentSessionWorkDirectory>;
+  readonly archiveWorkDirectory?: (hostId: AgentSessionHostId, workDirectoryId: AgentSessionWorkDirectoryId) => Promise<AgentSessionWorkDirectory>;
   readonly deleteWorkDirectory?: (hostId: AgentSessionHostId, workDirectoryId: AgentSessionWorkDirectoryId) => Promise<void>;
   readonly filePreview: (hostId: AgentSessionHostId, path: string, options?: Omit<AgentSessionFileOptions, 'download'>, offset?: number, signal?: AbortSignal) => Promise<AgentSessionFilePreview>;
   readonly deleteFile?: (hostId: AgentSessionHostId, path: string, options?: Omit<AgentSessionFileOptions, 'download'> & { recursive?: boolean }) => Promise<void>;
@@ -140,6 +141,7 @@ export interface AgentSessionApi {
   readonly setConversationUnread: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, unread: boolean, unreadOrigin?: 'MANUAL' | 'SYSTEM') => Promise<AgentConversation>;
   /** Node-session hosts intentionally omit this workspace-local presentation control. */
   readonly reorderConversation?: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, orderedBindingIds: AgentSessionBindingId[]) => Promise<AgentConversation>;
+  readonly archiveConversation?: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<AgentConversation>;
   readonly deleteConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<void>;
   readonly conversationEvents: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, cursor?: string, historyCursor?: string, diagnosticTrigger?: string, signal?: AbortSignal) => Promise<OpenHandsConversationEventBatch>;
   readonly conversationHydration: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, signal?: AbortSignal, cursor?: string) => Promise<AgentConversationHydration>;
@@ -226,6 +228,7 @@ export const agentWorkspaceSessionGateway: AgentSessionGateway = {
     gitDiff: api.agentWorkspaceGitDiff,
     createWorkDirectory: api.createAgentWorkDirectory,
     updateWorkDirectory: api.updateAgentWorkDirectory,
+    archiveWorkDirectory: api.archiveAgentWorkDirectory,
     deleteWorkDirectory: api.deleteAgentWorkDirectory,
     filePreview: api.agentWorkspaceFilePreview,
     deleteFile: api.deleteAgentWorkspaceFile,
@@ -234,6 +237,7 @@ export const agentWorkspaceSessionGateway: AgentSessionGateway = {
     bootstrapConversation: api.bootstrapAgentConversation,
     updateConversation: api.updateAgentConversation,
     reorderConversation: api.reorderAgentConversation,
+    archiveConversation: api.archiveAgentConversation,
     deleteConversation: api.deleteAgentConversation,
     conversationEvents: (workspaceId, bindingId, cursor, historyCursor, diagnosticTrigger, signal) =>
       api.agentConversationEvents(workspaceId, bindingId, cursor, historyCursor, diagnosticTrigger, signal),

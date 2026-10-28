@@ -191,6 +191,7 @@ class AgentWorkDirectory(Base):
     row_version: Mapped[int] = mapped_column(Integer, default=1)
     session_capability_ids_json: Mapped[list[str]] = mapped_column(JSON, default=list)
     session_credential_ids_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
