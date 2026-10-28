@@ -123,6 +123,12 @@ async function openWorkspace(page: Page, events: unknown[] = [], includeSecondCo
       return json(route, schedules[index]);
     }
     if (path.endsWith('/conversation-schedules')) return json(route, schedules);
+    if (path.includes('/conversation-schedules/') && path.endsWith('/run-conversations')) {
+      const params = new URL(request.url()).searchParams;
+      const offset = Number(params.get('cursor') ?? 0), limit = Number(params.get('limit') ?? 20);
+      const items = Array.from({ length: scheduleOptions.occurrenceCount ?? 5 }, (_, index) => ({ id: `delivery-${index + 1}`, binding_id: `scheduled-run-${index + 1}`, conversation_title: `每日项目检查 · 运行 ${index + 1}`, scheduled_for: now, latest_run_at: now, trigger_kind: 'SCHEDULED', state: 'STARTED', created_at: now }));
+      return json(route, { items: items.slice(offset, offset + limit), next_cursor: offset + limit < items.length ? String(offset + limit) : null, total: items.length });
+    }
     if (path.includes('/conversation-schedules/') && path.endsWith('/occurrences')) return json(route, Array.from({ length: scheduleOptions.occurrenceCount ?? 5 }, (_, index) => ({ id: `delivery-${index + 1}`, binding_id: index === 0 ? 'scheduled-run-1' : `scheduled-run-${index + 1}`, conversation_title: `每日项目检查 · 2026-10-${19 - index} 09:00`, scheduled_for: now, trigger_kind: 'SCHEDULED', state: 'STARTED', message_cursor: `event-${index + 1}`, created_at: now })));
     if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
     if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: conversations, next_cursor: null });
@@ -1649,10 +1655,11 @@ test('schedule detail keeps long prompts and run scrolling inside a single scree
   await page.locator('.agent-schedule-tree-select').first().click();
   const detail = page.locator('.agent-schedule-detail');
   const list = detail.getByRole('region', { name: '运行会话列表' });
+  await expect(list.locator('.agent-schedule-history-run')).toHaveCount(20);
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 1440, height: 600 }, { width: 1024, height: 700 }]) {
     await page.setViewportSize(viewport);
     await expect(detail.getByRole('button', { name: '查看全文' })).toBeVisible();
-    await expect(list.locator('.agent-schedule-history-run')).toHaveCount(40);
+    expect(await list.locator('.agent-schedule-history-run').count()).toBeGreaterThanOrEqual(20);
     await expect.poll(() => page.evaluate(() => {
       const main = document.querySelector<HTMLElement>('.agent-schedule-detail-main')!;
       const list = document.querySelector<HTMLElement>('.agent-schedule-history-list')!;
@@ -1662,6 +1669,8 @@ test('schedule detail keeps long prompts and run scrolling inside a single scree
     await list.hover();
     await page.mouse.wheel(0, 800);
     await expect.poll(() => list.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+    await list.evaluate(element => { element.scrollTop = element.scrollHeight; });
+    await expect(list.locator('.agent-schedule-history-run')).toHaveCount(40);
     await expect(page.locator('.agent-schedule-detail-main')).toHaveJSProperty('scrollTop', 0);
     await detail.getByRole('button', { name: '查看全文' }).click();
     const dialog = page.getByRole('dialog', { name: '业务提示词全文' });
@@ -1671,9 +1680,13 @@ test('schedule detail keeps long prompts and run scrolling inside a single scree
     await page.keyboard.press('Escape');
     await expect(dialog).not.toBeVisible();
     await expect(detail.getByRole('button', { name: '查看全文' })).toBeFocused();
+    const headerBoxes = await detail.locator(':scope>header h3, :scope>header .agent-schedule-actions').evaluateAll(elements => elements.map(element => element.getBoundingClientRect().toJSON()));
+    expect(Math.abs(headerBoxes[0].top + headerBoxes[0].height / 2 - headerBoxes[1].top - headerBoxes[1].height / 2)).toBeLessThan(2);
+    await page.screenshot({ path: `../../.tmp/ops32/schedule-detail-${viewport.width}-${viewport.height}.png` });
   }
   await page.setViewportSize({ width: 1440, height: 1000 });
   await detail.screenshot({ path: test.info().outputPath('schedule-detail.png') });
+  await page.screenshot({ path: '../../.tmp/ops32/schedule-detail.png' });
   await detail.getByRole('button', { name: '查看全文' }).click();
   await page.getByRole('button', { name: '关闭业务提示词' }).click();
   await page.locator('.agent-schedule-tree-select').nth(1).click();
@@ -4193,4 +4206,53 @@ test('manual Case stage retry retains its execution copy after a start failure',
   await page.getByRole('button', { name: '手动启动', exact: true }).click();
   await expect(page.getByRole('article', { name: '路径卡片 交付阶段' })).toContainText('运行中');
   expect(launches).toBe(1); expect(starts).toBe(2);
+});
+
+
+test('schedule history retries bounded pages and ignores a late page after switching tasks', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 700 });
+  await openWorkspace(page);
+  const reads: Array<{ schedule: string; cursor: string | null }> = [];
+  let rejectInitial = true, nextFailed = false;
+  let releasePage: (() => void) | undefined;
+  await page.route('**/conversation-schedules/*/run-conversations?*', async route => {
+    const url = new URL(route.request().url());
+    const schedule = url.pathname.split('/').at(-2)!;
+    const cursor = url.searchParams.get('cursor');
+    reads.push({ schedule, cursor });
+    if (schedule === 'daily-schedule' && !cursor && rejectInitial) {
+      return json(route, { error: { code: 'TEMPORARY', message: '暂不可用' } }, 503);
+    }
+    if (schedule === 'daily-schedule' && cursor && !nextFailed) {
+      nextFailed = true;
+      return json(route, { error: { code: 'TEMPORARY', message: '分页暂不可用' } }, 503);
+    }
+    if (schedule === 'daily-schedule' && cursor) await new Promise<void>(resolve => { releasePage = resolve; });
+    const items = Array.from({ length: schedule === 'weekly-schedule' ? 1 : 20 }, (_, index) => ({
+      id: `${schedule}-${cursor ?? 'head'}-${index}`, binding_id: `${schedule}-${cursor ?? 'head'}-${index}`,
+      conversation_title: `${schedule} 会话 ${index}`, trigger_kind: 'SCHEDULED', state: 'STARTED', created_at: now,
+    }));
+    return json(route, { items, next_cursor: schedule === 'daily-schedule' && !cursor ? 'next-page' : null, total: schedule === 'daily-schedule' ? 40 : 1 });
+  });
+  await page.goto('/agent/schedules');
+  await page.locator('.agent-schedule-tree-select').first().click();
+  const detail = page.locator('.agent-schedule-detail');
+  const list = detail.getByRole('region', { name: '运行会话列表' });
+  await expect(list).toContainText('读取运行会话失败');
+  rejectInitial = false;
+  await list.getByRole('button', { name: '重试', exact: true }).click();
+  await expect(list.locator('.agent-schedule-history-run')).toHaveCount(20);
+  expect(reads.every(item => item.schedule === 'daily-schedule')).toBe(true);
+  await list.evaluate(element => { element.scrollTop = element.scrollHeight; });
+  await expect(list).toContainText('加载更多失败');
+  await expect(list.locator('.agent-schedule-history-run')).toHaveCount(20);
+  await list.getByRole('button', { name: '重试', exact: true }).click();
+  await expect.poll(() => Boolean(releasePage)).toBe(true);
+  await page.locator('.agent-schedule-tree-select').nth(1).click();
+  await expect(detail.getByRole('heading', { name: '每周复核', exact: true })).toBeVisible();
+  await expect(list.locator('.agent-schedule-history-run')).toHaveCount(1);
+  releasePage?.();
+  await expect(list).toContainText('weekly-schedule');
+  await expect(list).not.toContainText('daily-schedule');
+  await expect(page.locator('.agent-schedule-detail-main')).toHaveJSProperty('scrollTop', 0);
 });

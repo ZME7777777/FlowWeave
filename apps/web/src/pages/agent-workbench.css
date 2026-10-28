@@ -610,3 +610,45 @@
 /* Search and overview share the card's positioning, width and visibility. */
 .agent-workspace-drawer:is(.summary-open,.tools-open)>.agent-workspace-summary{border:0;background:transparent;box-shadow:none;filter:none}
 .agent-workspace-summary-card{box-sizing:border-box;min-width:0;overflow:clip;border:1px solid #e2e9e4;border-radius:14px;background:#fff;box-shadow:0 12px 32px #16241c1a}
+
+/* Scheduled Agent detail keeps its context fixed while run conversations page locally. */
+.agent-schedule-page .agent-schedule-layout>main.agent-schedule-detail-main,.agent-schedule-page.embedded.detail-visible .agent-schedule-layout>main.agent-schedule-detail-main{padding:12px 16px 16px}
+.agent-schedule-detail-main .agent-schedule-detail{max-width:none;gap:9px}
+.agent-schedule-detail>header{min-height:34px;align-items:center;flex-wrap:nowrap;gap:12px}
+.agent-schedule-detail>header>div:first-child{display:flex;flex:1;align-items:center;gap:9px;overflow:hidden}
+.agent-schedule-detail>header h3{display:block;min-width:0;flex:1;margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px;line-height:1.5}
+.agent-schedule-detail-status{flex-shrink:0;border-radius:4px;background:#e6f2e9;padding:3px 6px;color:#33724d;font-size:9px;white-space:nowrap}
+.agent-schedule-detail-status[data-state=PAUSED]{background:#fff1db;color:#9a702a}
+.agent-schedule-detail-mode{color:#7b8e80;font-size:9px;white-space:nowrap}
+.agent-schedule-detail .agent-schedule-actions{gap:5px;margin:0}
+.agent-schedule-detail .agent-schedule-actions button{height:28px;padding:5px 8px;font-size:10px}
+.agent-schedule-detail>.agent-schedule-summary{display:flex;align-items:center;gap:12px;border:0;border-bottom:1px solid #e1e9e3;border-radius:0;background:transparent;padding:0 0 8px}
+.agent-schedule-detail>.agent-schedule-summary>div{display:flex;min-width:0;align-items:center;gap:6px;border:0;padding:0;font-size:10px}
+.agent-schedule-detail>.agent-schedule-summary>div:nth-child(2){flex:1}
+.agent-schedule-detail>.agent-schedule-summary span{flex-shrink:0;color:#8c9b90;font-size:9px}
+.agent-schedule-detail>.agent-schedule-summary b{margin:0;font-size:10px;font-weight:500}
+.agent-schedule-detail>.agent-schedule-prompt{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:9px;border-radius:6px;padding:8px 10px}
+.agent-schedule-detail>.agent-schedule-prompt>header{display:contents}
+.agent-schedule-detail>.agent-schedule-prompt>header>span{grid-area:1/1;font-size:10px;color:#668171;white-space:nowrap}
+.agent-schedule-detail>.agent-schedule-prompt>header>button{grid-area:1/3;white-space:nowrap}
+.agent-schedule-detail>.agent-schedule-prompt>p{display:block;grid-area:1/2;max-height:none;margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px}
+.agent-schedule-detail>.agent-schedule-history{grid-template-rows:auto auto minmax(0,1fr);gap:0;overflow:hidden;border:1px solid #dce6df;border-radius:8px;background:#fff}
+.agent-schedule-detail .agent-schedule-history>header{align-items:center;min-height:36px;border-bottom:1px solid #e1e9e4;padding:7px 11px;background:#f5f9f6}
+.agent-schedule-detail .agent-schedule-history h4{margin:0;font-size:12px}
+.agent-schedule-history-columns{display:grid;grid-template-columns:minmax(0,1fr) 44px 140px;align-items:center;gap:12px;border-bottom:1px solid #e5ebe7;background:#fafcfb;padding:7px 12px;color:#8b998f;font-size:9px}
+.agent-schedule-detail .agent-schedule-history-list{display:block;scrollbar-gutter:stable}
+.agent-schedule-history-list>.agent-schedule-history-run,.agent-schedule-history-list>.agent-schedule-history-run:has(.agent-workspace-conversation){display:grid;grid-template-columns:14px minmax(0,1fr) 44px 140px;gap:10px;min-height:44px;border:0;border-bottom:1px solid #e6ece8;border-radius:0;background:#fff;padding:3px 10px;color:#438563}
+.agent-schedule-history-run>.agent-schedule-run-content{min-width:0}
+.agent-schedule-run-content>.agent-workspace-conversation{min-width:0;margin:0}
+.agent-schedule-history-run .agent-workspace-conversation-select{height:36px;min-width:0}
+.agent-schedule-history-run time{overflow:hidden;color:#8a9a8f;font-size:9px;white-space:nowrap;text-overflow:ellipsis}
+.agent-schedule-run-trigger{font-size:9px;color:#7f9486}
+.agent-schedule-run-content>span{display:grid;min-width:0;gap:3px}
+.agent-schedule-run-content>span b,.agent-schedule-run-content>span small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.agent-schedule-run-content>span b{font-size:10px;color:#4c6254}
+.agent-schedule-run-content>span small{font-size:9px;color:#8d9b92}
+.agent-schedule-page-status{display:flex;align-items:center;justify-content:center;gap:8px;margin:0;padding:12px;color:#819087;font-size:10px}
+.agent-schedule-page-status button{border:0;border-radius:4px;background:#edf5ef;padding:4px 8px;color:#37744d;font-size:10px}
+.agent-schedule-page-sentinel{height:1px;pointer-events:none}
+.agent-schedule-run>.agent-schedule-run-content{min-width:0}
+@media(max-width:1180px){.agent-schedule-detail>.agent-schedule-summary{flex-wrap:wrap;gap:7px 12px}.agent-schedule-detail>.agent-schedule-summary>div:nth-child(2){flex:1 1 180px}.agent-schedule-history-columns{grid-template-columns:minmax(0,1fr) 32px 120px;gap:8px}.agent-schedule-history-list>.agent-schedule-history-run,.agent-schedule-history-list>.agent-schedule-history-run:has(.agent-workspace-conversation){grid-template-columns:14px minmax(0,1fr) 32px 120px;gap:8px}}

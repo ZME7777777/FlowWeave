@@ -190,8 +190,17 @@ def _schedule_dict(db: Session, schedule: AgentConversationSchedule) -> dict[str
     }
 
 
-def _occurrence_dict(db: Session, item: AgentConversationScheduleOccurrence) -> dict[str, Any]:
-    binding = db.get(AgentConversationBinding, item.binding_id)
+def occurrence_dict(
+    db: Session,
+    item: AgentConversationScheduleOccurrence,
+    *,
+    bindings: dict[str, AgentConversationBinding] | None = None,
+) -> dict[str, Any]:
+    binding = (
+        bindings.get(item.binding_id)
+        if bindings is not None
+        else db.get(AgentConversationBinding, item.binding_id)
+    )
     return {
         "id": item.id,
         "scheduled_for": item.scheduled_for.isoformat() if item.scheduled_for else None,
@@ -504,7 +513,7 @@ def list_occurrences(db: Session, workspace_id: str, schedule_id: str) -> list[d
     if schedule is None:
         raise not_found("agent_conversation_schedule", schedule_id)
     return [
-        _occurrence_dict(db, item)
+        occurrence_dict(db, item)
         for item in db.scalars(
             select(AgentConversationScheduleOccurrence)
             .where(AgentConversationScheduleOccurrence.schedule_id == schedule.id)

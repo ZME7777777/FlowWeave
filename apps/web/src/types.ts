@@ -947,6 +947,8 @@ export interface AgentConversationSchedule {
   updated_at: string;
 }
 export interface AgentConversationScheduleOccurrence {
+  latest_run_at?: string;
+  latest_trigger_kind?: 'SCHEDULED' | 'MANUAL';
   id: string;
   scheduled_for?: string | null;
   trigger_kind: 'SCHEDULED' | 'MANUAL';
@@ -962,6 +964,11 @@ export interface AgentConversationScheduleOccurrence {
 export interface AgentConversationPage {
   items: AgentConversation[];
   next_cursor?: string | null;
+}
+export interface AgentScheduleRunConversationPage {
+  items: AgentConversationScheduleOccurrence[];
+  next_cursor: string | null;
+  total: number;
 }
 export interface ManagedAgentConversation {
   id: string;

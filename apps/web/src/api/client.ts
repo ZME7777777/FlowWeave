@@ -511,6 +511,11 @@ export const api = {
     request<void>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-schedules/${encodeURIComponent(scheduleId)}`, json('DELETE')),
   agentConversationScheduleOccurrences: (workspaceId: string, scheduleId: string) =>
     request<AgentConversationScheduleOccurrence[]>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-schedules/${encodeURIComponent(scheduleId)}/occurrences`),
+  agentScheduleRunConversations: (workspaceId: string, scheduleId: string, cursor: string | null, signal?: AbortSignal) => {
+    const params = new URLSearchParams({ limit: '20' });
+    if (cursor) params.set('cursor', cursor);
+    return request<import('../types').AgentScheduleRunConversationPage>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-schedules/${encodeURIComponent(scheduleId)}/run-conversations?${params}`, { signal });
+  },
   agentConversations: (workspaceId: string, cursor?: string, limit = 3, workDirectoryId?: string) => {
     const query = new URLSearchParams({ limit: String(limit) });
     if (cursor) query.set('cursor', cursor);

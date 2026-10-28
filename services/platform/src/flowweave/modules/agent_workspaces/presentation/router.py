@@ -29,6 +29,7 @@ from flowweave.modules.agent_sessions.application import history as conversation
 from flowweave.modules.agent_sessions.application import (
     history_access,
     history_sessions,
+    schedule_history,
     sidebar_conversations,
 )
 from flowweave.modules.agent_sessions.application import schedules as conversation_schedules
@@ -1167,6 +1168,28 @@ async def list_agent_conversation_schedule_occurrences(
     return await run_sync(
         db,
         lambda session: conversation_schedules.list_occurrences(session, workspace_id, schedule_id),
+    )
+
+
+@router.get(
+    "/agent-workspaces/{workspace_id}/conversation-schedules/{schedule_id}/run-conversations"
+)
+async def list_schedule_run_conversations(
+    workspace_id: str,
+    schedule_id: str,
+    db: Db,
+    cursor: str | None = Query(default=None, max_length=1024),
+    limit: int = Query(default=20, ge=1, le=100),
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: schedule_history.list_run_conversations(
+            session,
+            workspace_id,
+            schedule_id,
+            cursor=cursor,
+            limit=limit,
+        ),
     )
 
 
