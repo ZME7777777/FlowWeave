@@ -1,170 +1,129 @@
-import { ChevronRight, ArrowLeft, Pencil, Plus, Trash2, X } from 'lucide-react';
-import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { Check, ChevronDown, ChevronUp, Maximize2, Plus, Trash2, X } from 'lucide-react';
+import { useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import type { IOField, NodeAsset, NodeAssetWrite } from '../types';
+import { ConversationMarkdown } from './ConversationMarkdown';
 import { useEscapeClose } from './useEscapeClose';
+import './node-editor.css';
 
-const emptyField = (): IOField => ({
-  field_key: '', display_name: '', data_type: 'URL', description: '',
-});
-
-const emptyNode = (): NodeAssetWrite => ({
-  directory_id: null, name: '', description: '', icon_kind: 'LUCIDE', icon_value: 'bot',
-  row_version: 1, inputs: [], outputs: [],
-  executor: {
-    startup_prompt: '',
-    context_prompt: '',
-    context_capability_ids: [],
-  },
-});
-
-const nodeWrite = (node: NodeAsset): NodeAssetWrite => ({
-  directory_id: node.directory_id ?? null, name: node.name, description: node.description,
-  icon_kind: node.icon_kind, icon_value: node.icon_value, row_version: node.row_version,
-  inputs: node.inputs.map(({ field_key, display_name, data_type, description }) => ({ field_key, display_name, data_type, description })),
-  outputs: node.outputs.map(({ field_key, display_name, data_type, description }) => ({ field_key, display_name, data_type, description })),
-  executor: node.executor ? { ...node.executor, context_capability_ids: [] } : emptyNode().executor,
-});
-
-type FieldDirection = 'inputs' | 'outputs';
 type PromptKey = 'startup_prompt' | 'context_prompt';
-type EditorTarget = FieldDirection | PromptKey | 'description';
+type EditorTab = PromptKey | 'fields';
+type Direction = 'inputs' | 'outputs';
+type DraftField = IOField & { draftId: string };
+type NodeDraft = Omit<NodeAssetWrite, Direction> & Record<Direction, DraftField[]>;
+export interface NodeDraftState { dirty: boolean; saving: boolean }
 const promptLabels: Record<PromptKey, string> = { startup_prompt: '启动触发提示词', context_prompt: '上下文提示词' };
 
-function ConfigDialog({ title, description, children, onApply, onClose, actions, busy = false, compact = false }: {
-  title: string; description?: string; children: ReactNode; onApply: (event: FormEvent<HTMLFormElement>) => void; onClose: () => void; actions?: ReactNode; busy?: boolean; compact?: boolean;
-}) {
-  const titleId = useId();
-  const form = useRef<HTMLFormElement>(null);
-  useEscapeClose(() => { if (!busy) onClose(); });
+function initialDraft(node?: NodeAsset, directoryId: string | null = null): NodeDraft {
+  return {
+    directory_id: node?.directory_id ?? directoryId, name: node?.name ?? '', description: node?.description ?? '',
+    icon_kind: node?.icon_kind ?? 'LUCIDE', icon_value: node?.icon_value ?? 'bot', row_version: node?.row_version ?? 1,
+    inputs: (node?.inputs ?? []).map(field => ({ ...field, draftId: crypto.randomUUID() })),
+    outputs: (node?.outputs ?? []).map(field => ({ ...field, draftId: crypto.randomUUID() })),
+    executor: { startup_prompt: node?.executor?.startup_prompt ?? '', context_prompt: node?.executor?.context_prompt ?? '', context_capability_ids: [] },
+  };
+}
+function writeDraft(draft: NodeDraft): NodeAssetWrite {
+  const fields = (values: DraftField[]) => values.map(({ field_key, display_name, data_type, description }) => ({ field_key, display_name, data_type, description }));
+  return { ...draft, inputs: fields(draft.inputs), outputs: fields(draft.outputs) };
+}
+
+function PromptContent({ promptKey, value, preview, disabled, onChange }: { promptKey: PromptKey; value: string; preview: boolean; disabled: boolean; onChange: (value: string) => void }) {
+  return <div className="node-prompt-content">
+    <textarea hidden={preview} aria-label={promptLabels[promptKey]} value={value} readOnly={disabled} placeholder={promptKey === 'startup_prompt' ? '描述节点要完成的任务、执行步骤和验收标准…' : '补充背景、约束与需要始终遵守的规则…'} spellCheck={false} onChange={event => onChange(event.target.value)}/>
+    <div hidden={!preview} className="node-prompt-preview" aria-label={`${promptLabels[promptKey]}预览`}>{value ? <ConversationMarkdown>{value}</ConversationMarkdown> : <p className="node-prompt-empty">暂无内容，切换到编辑后添加。</p>}</div>
+  </div>;
+}
+function PromptMode({ preview, onChange }: { preview: boolean; onChange: (preview: boolean) => void }) {
+  return <div className="node-prompt-mode" role="group" aria-label="正文显示方式"><button type="button" aria-pressed={!preview} onClick={() => onChange(false)}>编辑</button><button type="button" aria-pressed={preview} onClick={() => onChange(true)}>预览</button></div>;
+}
+function ExpandedPrompt({ promptKey, value, disabled, error, onChange, onClose, onSave }: { error: string; promptKey: PromptKey; value: string; disabled: boolean; onChange: (value: string) => void; onClose: () => void; onSave: (event: KeyboardEvent) => void }) {
+  const panel = useRef<HTMLElement>(null);
+  const [preview, setPreview] = useState(false);
+  const title = useId();
+  useEscapeClose(onClose);
   useEffect(() => {
     const previous = document.activeElement;
-    (form.current?.querySelector<HTMLElement>('textarea, input') ?? form.current?.querySelector<HTMLElement>('button'))?.focus();
+    panel.current?.querySelector('textarea')?.focus();
     return () => { if (previous instanceof HTMLElement && previous.isConnected) previous.focus(); };
   }, []);
-  return createPortal(<div className="modal-backdrop node-config-backdrop"><form ref={form} className={`modal node-config-dialog${compact ? ' node-fields-dialog' : ''}`} role="dialog" aria-modal="true" aria-labelledby={titleId} onSubmit={onApply} onKeyDown={event => {
+  return createPortal(<div className="modal-backdrop node-expanded-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><section ref={panel} className="node-expanded-prompt" role="dialog" aria-modal="true" aria-labelledby={title} onKeyDown={event => {
+    onSave(event);
     if (event.key !== 'Tab') return;
-    const items = [...event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), textarea:not(:disabled), [tabindex="0"]')];
-    const target = event.shiftKey ? items.at(-1) : items[0];
-    if (document.activeElement === (event.shiftKey ? items[0] : items.at(-1))) { event.preventDefault(); target?.focus(); }
-  }}><header><div><h2 id={titleId}>{title}</h2>{description && <p>{description}</p>}</div><button type="button" className="ghost" aria-label={`关闭${title}`} disabled={busy} onClick={onClose}><X size={18}/></button></header>{children}{actions === undefined ? <footer><button type="button" className="secondary" onClick={onClose}>取消</button><button type="submit" className="primary">应用</button></footer> : actions}</form></div>, document.body);
-}
-
-function FieldsDialog({ direction, fields, onPersist, onClose }: {
-  direction: FieldDirection; fields: IOField[]; onPersist: (fields: IOField[]) => Promise<void>; onClose: () => void;
-}) {
-  const [editing, setEditing] = useState<{ index: number; draft: IOField; creating: boolean }>();
-  const [busyKey, setBusyKey] = useState<string>();
-  const [error, setError] = useState('');
-  const inFlight = useRef(false);
-  const label = direction === 'inputs' ? '输入' : '输出';
-  const update = (patch: Partial<IOField>) => { setError(''); setEditing(current => current ? { ...current, draft: { ...current.draft, ...patch } } : current); };
-  const createField = () => {
-    setError('');
-    setEditing({ index: fields.length, draft: emptyField(), creating: true });
-  };
-  const persist = async (next: IOField[], key: string) => {
-    if (inFlight.current) return;
-    inFlight.current = true; setBusyKey(key); setError('');
-    try { await onPersist(next); setEditing(undefined); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : '保存失败，请重试。'); }
-    finally { inFlight.current = false; setBusyKey(undefined); }
-  };
-  const saveRecord = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (!editing || inFlight.current) return;
-    const draft = { ...editing.draft, display_name: editing.draft.display_name.trim() };
-    const next = editing.creating ? [...fields, draft] : fields.map((field, index) => index === editing.index ? draft : field);
-    void persist(next, draft.field_key);
-  };
-  return <ConfigDialog title={editing ? `${editing.creating ? '添加' : '编辑'}${label}字段` : `${label}定义`} compact description={editing ? undefined : `点击一条${label}查看和编辑配置。`} onClose={onClose} busy={Boolean(busyKey)} onApply={saveRecord} actions={null}>
-    <div className="node-config-body node-fields-body">
-      {editing ? <>
-        <button type="button" className="node-field-back" disabled={Boolean(busyKey)} onClick={() => { setEditing(undefined); setError(''); }}><ArrowLeft size={14}/>返回{label}列表</button>
-        <fieldset className="node-field-editor" disabled={Boolean(busyKey)}>
-          <div className="node-field-name-and-type"><label>名称<input required autoFocus autoComplete="off" aria-label={`${label}名称`} value={editing.draft.display_name} onChange={event => update({ display_name: event.target.value })}/></label><div className="node-config-field-type"><span>类型</span><div className="io-type-toggle" role="radiogroup" aria-label={`${label}类型`}><button type="button" role="radio" aria-checked={editing.draft.data_type === 'URL'} className={editing.draft.data_type === 'URL' ? 'active' : ''} onClick={() => update({ data_type: 'URL' })}>URL</button><button type="button" role="radio" aria-checked={editing.draft.data_type === 'FILE'} className={editing.draft.data_type === 'FILE' ? 'active' : ''} onClick={() => update({ data_type: 'FILE' })}>文件</button></div></div></div>
-          <label className="node-field-description">说明<textarea aria-label={`${label}说明`} value={editing.draft.description} onChange={event => update({ description: event.target.value })}/></label>
-          <div className="node-field-save"><button type="button" className="secondary" disabled={Boolean(busyKey)} onClick={() => { setEditing(undefined); setError(''); }}>取消</button><button type="submit" className="primary">{busyKey ? '正在保存…' : editing.creating ? '创建字段' : '保存修改'}</button></div>
-        </fieldset>
-      </> : <>
-        <div className="node-fields-toolbar"><span>{fields.length} 个{label}字段</span></div>
-        <div className="node-fields-table" role="table" aria-label={`${label}字段列表`}>
-          <div className="node-fields-table-head" role="row"><span role="columnheader">名称</span><span role="columnheader">说明</span><span role="columnheader">操作</span></div>
-          {fields.map((field, index) => {
-            const name = field.display_name || '未命名字段';
-            return <div className="node-field-record" role="row" key={field.field_key} aria-busy={busyKey === field.field_key}>
-              <button type="button" className="node-field-open" disabled={Boolean(busyKey)} aria-label={`配置${label} ${name}`} onClick={() => { setError(''); setEditing({ index, draft: { ...field }, creating: false }); }}><b role="cell" title={name}>{name}</b><span role="cell" title={field.description}>{field.description || '暂无说明'}</span></button>
-              <div className="node-field-actions" role="cell"><button type="button" disabled={Boolean(busyKey)} aria-label={`修改${label} ${name}`} onClick={() => { setError(''); setEditing({ index, draft: { ...field }, creating: false }); }}><Pencil size={14}/></button><button type="button" disabled={Boolean(busyKey)} className="node-field-delete" aria-label={`删除${label} ${name}`} onClick={() => void persist(fields.filter((_, i) => i !== index), field.field_key)}>{busyKey === field.field_key ? <span>…</span> : <Trash2 size={14}/>}</button></div>
-            </div>;
-          })}
-        </div>
-        <button type="button" className="node-field-create" disabled={Boolean(busyKey)} onClick={createField}><Plus size={14}/>新增{label}</button>
-        {!fields.length && <p className="node-fields-empty">暂未定义{label}，请在下方新增。</p>}
-      </>}
-      {error && <p role="alert" className="error node-field-error">{error}</p>}
-    </div>
-  </ConfigDialog>;
-}
-
-function PromptDialog({ title, value, onApply, onClose }: { title: string; value: string; onApply: (value: string) => void; onClose: () => void }) {
-  const [draft, setDraft] = useState(value);
-  return <ConfigDialog title={title} description="查看完整内容并编辑，应用后点击“保存节点”保存。" onClose={onClose} onApply={event => { event.preventDefault(); onApply(draft); }}><div className="node-config-body node-prompt-dialog-body"><textarea aria-label={title} value={draft} onChange={event => setDraft(event.target.value)} spellCheck={false}/></div></ConfigDialog>;
-}
-
-function NodeDescriptionDialog({ value, onApply, onClose }: { value: string; onApply: (value: string) => void; onClose: () => void }) {
-  const [draft, setDraft] = useState(value);
-  return <ConfigDialog title="节点说明" description="查看完整内容并编辑，应用后点击“保存节点”保存。" onClose={onClose} onApply={event => { event.preventDefault(); onApply(draft); }}><div className="node-config-body node-prompt-dialog-body"><textarea aria-label="节点说明全文" value={draft} onChange={event => setDraft(event.target.value)}/></div></ConfigDialog>;
+    const items = [...event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), textarea:not([hidden])')];
+    if (document.activeElement === (event.shiftKey ? items[0] : items.at(-1))) { event.preventDefault(); (event.shiftKey ? items.at(-1) : items[0])?.focus(); }
+  }}><header><b id={title}>{promptLabels[promptKey]}</b><span>修改与节点草稿同步</span><PromptMode preview={preview} onChange={setPreview}/><button type="button" className="ghost" aria-label="退出放大编辑" onClick={onClose}><X size={17}/></button></header><PromptContent promptKey={promptKey} value={value} preview={preview} disabled={disabled} onChange={onChange}/>{error && <p className="error node-save-error" role="alert">{error}</p>}<footer><small>⌘ / Ctrl + S 保存节点</small><button type="button" className="secondary" onClick={onClose}>完成</button></footer></section></div>, document.body);
 }
 
 interface Props {
   node?: NodeAsset; initialDirectoryId?: string | null; embedded?: boolean;
   onSave: (data: NodeAssetWrite) => Promise<NodeAsset>; onClose: () => void;
+  onDraftStateChange?: (state: NodeDraftState) => void;
 }
-
-export function NodeEditor({ node, initialDirectoryId = null, embedded = false, onSave, onClose }: Props) {
-  useEscapeClose(onClose);
-  const [form, setForm] = useState<NodeAssetWrite>(() => node ? nodeWrite(node) : { ...emptyNode(), directory_id: initialDirectoryId });
-  const persisted = useRef(node);
-  const [activeEditor, setActiveEditor] = useState<EditorTarget>();
+export function NodeEditor({ node, initialDirectoryId = null, embedded = false, onSave, onClose, onDraftStateChange }: Props) {
+  const [form, setForm] = useState(() => initialDraft(node, initialDirectoryId));
+  const [baseline, setBaseline] = useState(() => JSON.stringify(writeDraft(form)));
+  const [activeTab, setActiveTab] = useState<EditorTab>('startup_prompt');
+  const [previews, setPreviews] = useState<Record<PromptKey, boolean>>({ startup_prompt: false, context_prompt: false });
+  const [descriptionExpanded, setDescriptionExpanded] = useState(false);
+  const [expandedPrompt, setExpandedPrompt] = useState<PromptKey>();
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
   const submitting = useRef(false);
-
-  const persistFields = async (direction: FieldDirection, fields: IOField[]) => {
-    if (!persisted.current && !form.name.trim()) {
-      setForm(current => ({ ...current, [direction]: fields }));
-      return;
-    }
-    const base = persisted.current ? nodeWrite(persisted.current) : form;
-    const saved = await onSave({ ...base, [direction]: fields });
-    persisted.current = saved;
-    setForm(current => ({ ...current, [direction]: saved[direction], row_version: saved.row_version }));
-  };
-
+  const formElement = useRef<HTMLFormElement>(null);
+  const nameInput = useRef<HTMLInputElement>(null);
+  const tabsId = useId();
+  const dirty = JSON.stringify(writeDraft(form)) !== baseline;
+  useLayoutEffect(() => { onDraftStateChange?.({ dirty, saving }); }, [dirty, saving, onDraftStateChange]);
+  useEscapeClose(() => { if (!submitting.current) onClose(); });
+  useEffect(() => {
+    if (!dirty && !saving) return;
+    const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ''; };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [dirty, saving]);
+  const updatePrompt = (key: PromptKey, value: string) => setForm(current => ({ ...current, executor: { ...current.executor, [key]: value } }));
+  const updateField = (direction: Direction, id: string, patch: Partial<IOField>) => setForm(current => ({ ...current, [direction]: current[direction].map(field => field.draftId === id ? { ...field, ...patch } : field) }));
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (submitting.current) return;
+    if (!form.name.trim()) { setError('请填写节点名称。'); setExpandedPrompt(undefined); window.requestAnimationFrame(() => nameInput.current?.focus()); return; }
+    if (form.name.length > 200) { setError('节点名称不能超过 200 个字符。'); nameInput.current?.focus(); return; }
+    for (const direction of ['inputs', 'outputs'] as const) {
+      const index = form[direction].findIndex(field => !field.display_name.trim() || field.display_name.length > 160);
+      if (index !== -1) { setExpandedPrompt(undefined); setActiveTab('fields'); setError(`请填写${direction === 'inputs' ? '输入' : '输出'}字段名称，最多 160 个字符。`); window.requestAnimationFrame(() => formElement.current?.querySelector<HTMLInputElement>(`[data-field-direction="${direction}"] [data-field-name="${index}"]`)?.focus()); return; }
+    }
     submitting.current = true; setSaving(true); setError('');
     try {
-      const saved = await onSave({
-        ...form,
-        inputs: form.inputs.map(field => ({ ...field, display_name: field.display_name.trim() })),
-        outputs: form.outputs.map(field => ({ ...field, display_name: field.display_name.trim() })),
-        executor: { ...form.executor, context_capability_ids: [] },
-      });
-      persisted.current = saved;
-      setForm(nodeWrite(saved));
-    } catch (reason) { setError(reason instanceof Error ? reason.message : '保存失败'); }
+      const payload = writeDraft(form);
+      payload.inputs.forEach(field => { field.display_name = field.display_name.trim(); });
+      payload.outputs.forEach(field => { field.display_name = field.display_name.trim(); });
+      const result = initialDraft(await onSave(payload));
+      setForm(result); setBaseline(JSON.stringify(writeDraft(result))); setSaved(true);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : '保存失败，请重试。'); }
     finally { submitting.current = false; setSaving(false); }
   };
-
-  const editor = <form className={`modal editor asset-editor node-form${embedded ? ' node-detail-editor' : ''}`} onSubmit={submit}>
-    <header className="asset-editor-header"><div className="node-detail-toolbar-label"><span className="eyebrow">NODE FORM</span><b>{node ? node.name : '新建节点'}</b></div><div className="node-detail-toolbar-actions"><button type="button" className="ghost" onClick={onClose}>取消</button><button type="submit" className="primary" disabled={saving}>{saving ? '保存中…' : '保存节点'}</button></div></header>
-    <div className="node-form-body"><section className="node-form-basics"><h3>基础信息</h3><div className="node-form-grid"><label>节点名称<input aria-label="节点名称" required value={form.name} onChange={event => setForm(current => ({ ...current, name: event.target.value }))}/></label></div></section><section className="node-form-description-section"><article className="node-form-description"><header><span>节点说明</span><button type="button" aria-label="查看节点说明全文" aria-haspopup="dialog" onClick={() => setActiveEditor('description')}>查看全文<ChevronRight size={13}/></button></header><p>{form.description || '暂无内容'}</p></article></section>
-    <section className="node-form-io"><h3>输入与输出</h3>{(['inputs', 'outputs'] as const).map(direction => <button type="button" className="node-fields-summary" key={direction} aria-label={`配置${direction === 'inputs' ? '输入' : '输出'}定义`} onClick={() => setActiveEditor(direction)}><b>{direction === 'inputs' ? '输入定义' : '输出定义'}</b><span>{form[direction].length ? form[direction].map(field => field.display_name || '未命名字段').join('、') : '暂未配置'}</span><small>{form[direction].length} 个字段</small><ChevronRight size={16}/></button>)}</section>
-    <section className="node-form-prompts"><h3>提示词与上下文</h3>{(['startup_prompt', 'context_prompt'] as const).map(key => <article className="node-prompt-field" key={key}><header><span>{promptLabels[key]}</span><button type="button" aria-label={`查看${promptLabels[key]}全文`} aria-haspopup="dialog" onClick={() => setActiveEditor(key)}>查看全文<ChevronRight size={13}/></button></header><p>{form.executor[key] || '暂无内容'}</p></article>)}</section>
-    {error && <p className="error" role="alert">{error}</p>}</div>
+  const shortcut = (event: KeyboardEvent) => {
+    if (event.defaultPrevented || event.nativeEvent.isComposing || !(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 's') return;
+    event.preventDefault(); formElement.current?.requestSubmit();
+  };
+  const fieldList = (direction: Direction) => {
+    const label = direction === 'inputs' ? '输入' : '输出';
+    return <section className="node-draft-fields" data-field-direction={direction} aria-label={`${label}定义`}><header><h3>{label}定义 <small>{form[direction].length}</small></h3><button type="button" className="secondary" disabled={saving} onClick={() => setForm(current => ({ ...current, [direction]: [...current[direction], { draftId: crypto.randomUUID(), field_key: '', display_name: '', data_type: 'URL', description: '' }] }))}><Plus size={13}/>新增{label}</button></header>
+      {form[direction].length ? <div className="node-draft-field-list"><div className="node-draft-field-head" aria-hidden="true"><span>名称</span><span>类型</span><span>说明</span><span/></div>{form[direction].map((field, index) => <div className="node-draft-field-row" key={field.draftId}><input data-field-name={index} aria-label={`${label}名称 ${index + 1}`} value={field.display_name} maxLength={160} disabled={saving} placeholder="字段名称" onChange={event => updateField(direction, field.draftId, { display_name: event.target.value })}/><div className="node-field-type" role="group" aria-label={`${label}类型 ${index + 1}`}>{(['URL', 'FILE'] as const).map(type => <button key={type} type="button" aria-pressed={field.data_type === type} disabled={saving} onClick={() => updateField(direction, field.draftId, { data_type: type })}>{type === 'FILE' ? '文件' : 'URL'}</button>)}</div><textarea rows={1} aria-label={`${label}说明 ${index + 1}`} value={field.description} disabled={saving} placeholder="用途与要求" onChange={event => updateField(direction, field.draftId, { description: event.target.value })}/><button type="button" className="node-draft-field-delete" aria-label={`删除${label} ${field.display_name || `第 ${index + 1} 项`}`} disabled={saving} onClick={() => setForm(current => ({ ...current, [direction]: current[direction].filter(item => item.draftId !== field.draftId) }))}><Trash2 size={14}/></button></div>)}</div> : <p className="node-draft-fields-empty">暂无{label}字段</p>}
+    </section>;
+  };
+  const editor = <form ref={formElement} className={`modal editor asset-editor node-form node-edit-workspace${embedded ? ' node-detail-editor' : ''}`} noValidate onSubmit={submit} onKeyDown={shortcut}>
+    <header className="asset-editor-header"><div className="node-detail-toolbar-label"><input ref={nameInput} aria-label="节点名称" title="编辑节点名称" size={Math.max(12, Math.min(36, form.name.length * 2 + 2))} value={form.name} maxLength={200} disabled={saving} placeholder="新建节点 · 输入名称" onChange={event => setForm(current => ({ ...current, name: event.target.value }))}/><span className={`node-save-state${dirty ? ' modified' : ''}`} role="status">{saving ? '保存中…' : dirty ? '未保存修改' : saved ? <><Check size={12}/>已保存</> : node ? '已保存' : '新节点'}</span></div><div className="node-detail-toolbar-actions"><button type="button" className="ghost" disabled={saving} onClick={onClose}>关闭</button><button type="submit" className="primary" disabled={saving} title="⌘ / Ctrl + S">{saving ? '保存中…' : '保存节点'}</button></div></header>
+    <div className={`node-inline-description${descriptionExpanded ? ' expanded' : ''}`}><button type="button" className="node-description-summary" aria-expanded={descriptionExpanded} aria-controls={`${tabsId}-description`} onClick={() => setDescriptionExpanded(value => !value)}><span>{form.description || '添加节点说明'}</span>{descriptionExpanded ? <ChevronUp size={14}/> : <ChevronDown size={14}/>}</button><div hidden={!descriptionExpanded} id={`${tabsId}-description`}><textarea rows={3} aria-label="节点说明" value={form.description} disabled={saving} placeholder="简述节点用途，帮助其他人选择和复用。" onChange={event => setForm(current => ({ ...current, description: event.target.value }))}/></div></div>
+    <div className="node-editor-tabs" role="tablist" aria-label="节点配置">{(['startup_prompt', 'context_prompt', 'fields'] as const).map((tab, index, tabs) => <button key={tab} type="button" role="tab" id={`${tabsId}-${tab}`} aria-controls={`${tabsId}-panel-${tab}`} aria-selected={activeTab === tab} tabIndex={activeTab === tab ? 0 : -1} onClick={() => setActiveTab(tab)} onKeyDown={event => {
+      const next = event.key === 'ArrowRight' ? tabs[(index + 1) % tabs.length] : event.key === 'ArrowLeft' ? tabs[(index + tabs.length - 1) % tabs.length] : event.key === 'Home' ? tabs[0] : event.key === 'End' ? tabs.at(-1) : undefined;
+      if (next) { event.preventDefault(); setActiveTab(next); document.getElementById(`${tabsId}-${next}`)?.focus(); }
+    }}>{tab === 'fields' ? <>输入与输出 <small>{form.inputs.length} / {form.outputs.length}</small></> : tab === 'startup_prompt' ? '启动提示词' : '上下文'}</button>)}</div>
+    {error && <p className="error node-save-error" role="alert">{error}</p>}
+    {(['startup_prompt', 'context_prompt'] as const).map(key => <section key={key} hidden={activeTab !== key} className="node-editor-panel node-text-panel" role="tabpanel" id={`${tabsId}-panel-${key}`} aria-labelledby={`${tabsId}-${key}`}><div className="node-prompt-toolbar"><small>{key === 'startup_prompt' ? '任务、步骤与验收标准' : '背景信息与执行约束'}</small><span>{form.executor[key].length.toLocaleString()} 字符</span><PromptMode preview={previews[key]} onChange={value => setPreviews(current => ({ ...current, [key]: value }))}/><button type="button" className="node-prompt-expand" aria-label={`放大编辑${promptLabels[key]}`} onClick={() => setExpandedPrompt(key)}><Maximize2 size={13}/><span>放大</span></button></div><PromptContent promptKey={key} value={form.executor[key]} preview={previews[key]} disabled={saving} onChange={value => updatePrompt(key, value)}/></section>)}
+    <section hidden={activeTab !== 'fields'} className="node-editor-panel node-fields-panel" role="tabpanel" id={`${tabsId}-panel-fields`} aria-labelledby={`${tabsId}-fields`}>{fieldList('inputs')}{fieldList('outputs')}<p className="node-fields-draft-note">字段修改随节点统一保存。</p></section>
   </form>;
-
-  return <>{embedded ? editor : <div className="modal-backdrop">{editor}</div>}{(activeEditor === 'inputs' || activeEditor === 'outputs') && <FieldsDialog key={activeEditor} direction={activeEditor} fields={form[activeEditor]} onClose={() => setActiveEditor(undefined)} onPersist={fields => persistFields(activeEditor, fields)}/>} {activeEditor === 'description' && <NodeDescriptionDialog value={form.description} onClose={() => setActiveEditor(undefined)} onApply={value => { setForm(current => ({ ...current, description: value })); setActiveEditor(undefined); }}/>} {(activeEditor === 'startup_prompt' || activeEditor === 'context_prompt') && <PromptDialog key={activeEditor} title={promptLabels[activeEditor]} value={form.executor[activeEditor]} onClose={() => setActiveEditor(undefined)} onApply={value => { setForm(current => ({ ...current, executor: { ...current.executor, [activeEditor]: value } })); setActiveEditor(undefined); }}/>}</>;
+  return <>{embedded ? editor : <div className="modal-backdrop">{editor}</div>}{expandedPrompt && <ExpandedPrompt promptKey={expandedPrompt} value={form.executor[expandedPrompt]} disabled={saving} error={error} onChange={value => updatePrompt(expandedPrompt, value)} onSave={shortcut} onClose={() => setExpandedPrompt(undefined)}/>}</>;
 }
