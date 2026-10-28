@@ -58,6 +58,14 @@ export function RunsPage() {
   const expandedFlowIds = useMemo(() => new Set(runDirectory.expandedFlowIds), [runDirectory.expandedFlowIds]);
   const collapsedScheduleIds = useMemo(() => new Set(runDirectory.collapsedScheduleIds), [runDirectory.collapsedScheduleIds]);
   const recordFilter = runDirectory.recordFilter;
+  const recordSearch = runDirectory.recordSearch;
+  const [debouncedRecordSearch, setDebouncedRecordSearch] = useState({ runId: selectedRunId, term: recordSearch.trim() });
+  const recordSearchTerm = debouncedRecordSearch.runId === selectedRunId && recordSearch.trim() ? debouncedRecordSearch.term : '';
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedRecordSearch({ runId: selectedRunId, term: recordSearch.trim() }), 250);
+    return () => window.clearTimeout(timer);
+  }, [recordSearch, selectedRunId]);
+  const changeRecordSearch = (value: string) => updateRunDirectory({ recordSearch: value, selectedRecordKeys: [] });
   const selectedRecordKeys = useMemo(() => new Set(runDirectory.selectedRecordKeys), [runDirectory.selectedRecordKeys]);
   const [copyRecord, setCopyRecord] = useState<DirectoryRecord>();
   const [importKind, setImportKind] = useState<RecordKind>();
@@ -78,8 +86,8 @@ export function RunsPage() {
   const runInfoRef = useRef<HTMLDetailsElement>(null);
   const recordPageSentinelRef = useRef<HTMLDivElement>(null);
   const directoryQuery = useInfiniteQuery({
-    queryKey: ['flow-run-record-directory', selectedRunId, recordFilter],
-    queryFn: ({ pageParam, signal }) => api.recordDirectory(selectedRunId!, recordFilter, pageParam, signal),
+    queryKey: ['flow-run-record-directory', selectedRunId, recordFilter, recordSearchTerm],
+    queryFn: ({ pageParam, signal }) => api.recordDirectory(selectedRunId!, recordFilter, pageParam, signal, recordSearchTerm),
     initialPageParam: null as string | null,
     getNextPageParam: page => page.next_cursor ?? undefined,
     enabled: Boolean(selectedRunId),
@@ -89,7 +97,7 @@ export function RunsPage() {
   useEffect(() => {
     if (recordListRef.current) recordListRef.current.scrollTop = 0;
     if (runInfoRef.current) runInfoRef.current.open = false;
-  }, [selectedRunId, recordFilter]);
+  }, [selectedRunId, recordFilter, recordSearchTerm]);
   useEffect(() => {
     const closeInfo = (event: PointerEvent) => {
       const info = runInfoRef.current;
@@ -117,7 +125,7 @@ export function RunsPage() {
     }, { root, rootMargin: '160px 0px' });
     observer.observe(sentinel);
     return () => observer.disconnect();
-  }, [fetchNextPage, hasNextPage, isFetching, isFetchNextPageError, selectedRunId, recordFilter]);
+  }, [fetchNextPage, hasNextPage, isFetching, isFetchNextPageError, selectedRunId, recordFilter, recordSearchTerm]);
   const runDirectories = useMemo(() => {
     const term = search.trim().toLowerCase();
     const flowById = new Map(flows.map(flow => [flow.id, flow]));
@@ -137,13 +145,17 @@ export function RunsPage() {
     updateRunDirectory({
       selectedFlowId: flowId,
       selectedRunId: undefined,
+      recordSearch: '',
+      selectedRecordKeys: [],
       expandedFlowIds: [...nextExpanded],
     });
   };
   const selectRun = (flowId: string, runId: string) => {
     const nextExpanded = new Set(expandedFlowIds);
     nextExpanded.add(flowId);
-    updateRunDirectory({ selectedFlowId: flowId, selectedRunId: runId, expandedFlowIds: [...nextExpanded] });
+    updateRunDirectory({ selectedFlowId: flowId, selectedRunId: runId, expandedFlowIds: [...nextExpanded],
+      ...(runId !== selectedRunId ? { recordSearch: '', selectedRecordKeys: [] } : {}),
+    });
     setLifecycleError('');
   };
   const toggleRuntime = async (run: FlowRunSummary) => {
@@ -302,8 +314,8 @@ export function RunsPage() {
         </header>
         {lifecycleError && <p className="error run-directory-lifecycle-error" role="alert">{lifecycleError}</p>}
         <section className="flow-run-record-table" aria-label="运行记录表格">
-          <div className="run-record-management-toolbar"><nav className="run-record-filter" aria-label="运行记录类型"><button className={recordFilter === 'ALL' ? 'active' : ''} onClick={() => updateRunDirectory({ recordFilter: 'ALL' })}>全部</button><button className={recordFilter === 'MANUAL' ? 'active' : ''} onClick={() => updateRunDirectory({ recordFilter: 'MANUAL' })}>逐步</button><button className={recordFilter === 'AUTOMATIC' ? 'active' : ''} onClick={() => updateRunDirectory({ recordFilter: 'AUTOMATIC' })}>连续</button></nav><button type="button" className="secondary" aria-pressed={allSelected} disabled={!records.length || managingRecords} title="选择当前已加载的记录" onClick={toggleAllRecords}>{allSelected ? <CheckSquare size={14}/> : <Square size={14}/>}{allSelected ? '取消全选' : '全选'}</button><span>已选择 {selectedRecords.length} 条</span><button type="button" className="secondary" disabled={selectedRecords.length !== 1 || managingRecords} onClick={() => setCopyRecord(selectedRecords[0])}><Copy size={14}/>拷贝</button><button type="button" className="secondary" disabled={!canExport || managingRecords} title={canExport ? undefined : '请只选择同一类型的记录后导出'} onClick={() => void exportSelectedRecords()}><Download size={14}/>导出</button><button type="button" className="secondary" disabled={managingRecords} onClick={() => setImportKind(recordFilter === 'AUTOMATIC' ? 'AUTOMATIC' : 'MANUAL')}><Upload size={14}/>导入</button><button type="button" className="danger" disabled={!selectedRecords.length || managingRecords} onClick={() => void deleteSelectedRecords()}><Trash2 size={14}/>删除</button><button type="button" className="primary" disabled={managingRecords} onClick={() => setCreatingRecordRunId(selectedRun.id)}><Plus size={14}/>新增</button></div>
-          <div className="flow-run-record-directory-list" ref={recordListRef} aria-busy={directoryQuery.isFetching}>{standaloneRecords.map(recordItem)}{scheduledContinuousGroups.map(group => { const open = !collapsedScheduleIds.has(group.id); return <section className="flow-run-schedule-directory" key={group.id}><button type="button" className="flow-run-schedule-directory-toggle" aria-expanded={open} onClick={() => { const next = new Set(collapsedScheduleIds); if (next.has(group.id)) next.delete(group.id); else next.add(group.id); updateRunDirectory({ collapsedScheduleIds: [...next] }); }}>{open ? <ChevronDown size={14}/> : <ChevronRight size={14}/>}<FolderClosed size={14}/><span><b>{group.name}</b><small>{group.records.length} 条定时连续运行记录</small></span></button>{open && <div className="flow-run-schedule-directory-records">{group.records.map(recordItem)}</div>}</section>; })}{directoryQuery.hasNextPage && <div ref={recordPageSentinelRef} className="run-record-page-sentinel" aria-hidden="true"/>}{directoryQuery.isPending && <div className="run-directory-record-empty" role="status">正在加载运行记录…</div>}{directoryQuery.isError && !directoryQuery.data && <div className="run-directory-record-empty" role="alert">读取运行记录失败<button type="button" className="secondary" onClick={() => void directoryQuery.refetch()}>重试</button></div>}{directoryQuery.isFetchingNextPage && <div className="run-record-page-status" role="status">正在加载更多…</div>}{directoryQuery.isFetchNextPageError && <div className="run-record-page-status" role="alert">加载更多失败<button type="button" onClick={() => void directoryQuery.fetchNextPage({ cancelRefetch: false })}>重试</button></div>}{!directoryQuery.isPending && !directoryQuery.isError && !records.length && <div className="run-directory-record-empty"><CircleDot size={20}/><span>该 FlowRun 尚未创建{recordFilter === 'AUTOMATIC' ? '连续' : recordFilter === 'MANUAL' ? '逐步' : ''}运行记录。</span><button className="secondary" onClick={() => setCreatingRecordRunId(selectedRun.id)}>新增运行记录</button></div>}</div></section></section> : selectedFlow ? <div className="run-directory-empty"><FolderClosed size={30}/><b>{selectedFlow.name}</b><span>选择左侧的 FlowRun，查看运行记录或新增记录。</span></div> : <div className="run-directory-empty"><Box size={30}/><b>选择一个流程编排</b><span>点击流程目录后，选择其下的 FlowRun。</span></div>}</main>
+          <div className="run-record-management-toolbar"><nav className="run-record-filter" aria-label="运行记录类型"><button className={recordFilter === 'ALL' ? 'active' : ''} onClick={() => updateRunDirectory({ recordFilter: 'ALL' })}>全部</button><button className={recordFilter === 'MANUAL' ? 'active' : ''} onClick={() => updateRunDirectory({ recordFilter: 'MANUAL' })}>逐步</button><button className={recordFilter === 'AUTOMATIC' ? 'active' : ''} onClick={() => updateRunDirectory({ recordFilter: 'AUTOMATIC' })}>连续</button></nav><button type="button" className="secondary" aria-pressed={allSelected} disabled={!records.length || managingRecords} title="选择当前已加载的记录" onClick={toggleAllRecords}>{allSelected ? <CheckSquare size={14}/> : <Square size={14}/>}{allSelected ? '取消全选' : '全选'}</button><span>已选择 {selectedRecords.length} 条</span><label className="run-record-search"><Search size={14}/><input type="search" aria-label="搜索运行记录" placeholder="搜索记录名称或 ID" maxLength={220} value={recordSearch} onChange={event => changeRecordSearch(event.target.value)}/>{recordSearch && <button type="button" className="ghost" aria-label="清除运行记录搜索" title="清除搜索" onClick={() => changeRecordSearch('')}><X size={13}/></button>}</label><button type="button" className="secondary" disabled={selectedRecords.length !== 1 || managingRecords} onClick={() => setCopyRecord(selectedRecords[0])}><Copy size={14}/>拷贝</button><button type="button" className="secondary" disabled={!canExport || managingRecords} title={canExport ? undefined : '请只选择同一类型的记录后导出'} onClick={() => void exportSelectedRecords()}><Download size={14}/>导出</button><button type="button" className="secondary" disabled={managingRecords} onClick={() => setImportKind(recordFilter === 'AUTOMATIC' ? 'AUTOMATIC' : 'MANUAL')}><Upload size={14}/>导入</button><button type="button" className="danger" disabled={!selectedRecords.length || managingRecords} onClick={() => void deleteSelectedRecords()}><Trash2 size={14}/>删除</button><button type="button" className="primary" disabled={managingRecords} onClick={() => setCreatingRecordRunId(selectedRun.id)}><Plus size={14}/>新增</button></div>
+          <div className="flow-run-record-directory-list" ref={recordListRef} aria-busy={directoryQuery.isFetching}>{standaloneRecords.map(recordItem)}{scheduledContinuousGroups.map(group => { const open = !collapsedScheduleIds.has(group.id); return <section className="flow-run-schedule-directory" key={group.id}><button type="button" className="flow-run-schedule-directory-toggle" aria-expanded={open} onClick={() => { const next = new Set(collapsedScheduleIds); if (next.has(group.id)) next.delete(group.id); else next.add(group.id); updateRunDirectory({ collapsedScheduleIds: [...next] }); }}>{open ? <ChevronDown size={14}/> : <ChevronRight size={14}/>}<FolderClosed size={14}/><span><b>{group.name}</b><small>{group.records.length} 条定时连续运行记录</small></span></button>{open && <div className="flow-run-schedule-directory-records">{group.records.map(recordItem)}</div>}</section>; })}{directoryQuery.hasNextPage && <div ref={recordPageSentinelRef} className="run-record-page-sentinel" aria-hidden="true"/>}{directoryQuery.isPending && <div className="run-directory-record-empty" role="status">正在加载运行记录…</div>}{directoryQuery.isError && !directoryQuery.data && <div className="run-directory-record-empty" role="alert">读取运行记录失败<button type="button" className="secondary" onClick={() => void directoryQuery.refetch()}>重试</button></div>}{directoryQuery.isFetchingNextPage && <div className="run-record-page-status" role="status">正在加载更多…</div>}{directoryQuery.isFetchNextPageError && <div className="run-record-page-status" role="alert">加载更多失败<button type="button" onClick={() => void directoryQuery.fetchNextPage({ cancelRefetch: false })}>重试</button></div>}{!directoryQuery.isPending && !directoryQuery.isError && !records.length && <div className="run-directory-record-empty"><CircleDot size={20}/>{recordSearchTerm ? <><span>没有匹配的运行记录。</span><button className="secondary" onClick={() => changeRecordSearch('')}>清除搜索</button></> : <><span>该 FlowRun 尚未创建{recordFilter === 'AUTOMATIC' ? '连续' : recordFilter === 'MANUAL' ? '逐步' : ''}运行记录。</span><button className="secondary" onClick={() => setCreatingRecordRunId(selectedRun.id)}>新增运行记录</button></>}</div>}</div></section></section> : selectedFlow ? <div className="run-directory-empty"><FolderClosed size={30}/><b>{selectedFlow.name}</b><span>选择左侧的 FlowRun，查看运行记录或新增记录。</span></div> : <div className="run-directory-empty"><Box size={30}/><b>选择一个流程编排</b><span>点击流程目录后，选择其下的 FlowRun。</span></div>}</main>
     </div>
     {creatingRecordRunId && <CreateRunRecordDialog runId={creatingRecordRunId} onClose={() => setCreatingRecordRunId(undefined)}/>}
     {copyRecord && <CopyDirectoryRecordDialog record={copyRecord} onClose={() => setCopyRecord(undefined)} onCopy={copySelectedRecord}/>}

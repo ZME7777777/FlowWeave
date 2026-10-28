@@ -12,6 +12,7 @@ interface RunDirectoryState {
   expandedFlowIds: string[];
   collapsedScheduleIds: string[];
   recordFilter: 'ALL' | 'MANUAL' | 'AUTOMATIC';
+  recordSearch: string;
   selectedRecordKeys: string[];
 }
 
@@ -80,6 +81,7 @@ export const useWorkbenchStore = create<WorkbenchState>()(
         expandedFlowIds: [],
         collapsedScheduleIds: [],
         recordFilter: 'ALL',
+        recordSearch: '',
         selectedRecordKeys: [],
       },
       setView: view => set({ view }),

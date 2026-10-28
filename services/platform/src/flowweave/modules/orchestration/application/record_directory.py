@@ -22,12 +22,14 @@ def list_record_directory(
     kind: Literal["ALL", "MANUAL", "AUTOMATIC"] = "ALL",
     cursor: str | None = None,
     limit: int = 30,
+    q: str = "",
 ) -> dict[str, Any]:
     # The normal user-scoped session/RLS applies to parent and child reads alike.
     if db.get(FlowRun, parent_run_id) is None:
         raise not_found("flow_run", parent_run_id)
-    if kind not in {"ALL", "MANUAL", "AUTOMATIC"} or not 1 <= limit <= 100:
+    if kind not in {"ALL", "MANUAL", "AUTOMATIC"} or not 1 <= limit <= 100 or len(q) > 220:
         raise DomainError("INVALID_RECORD_PAGE", "invalid record directory page", 400)
+    term = q.strip().lower()
     filters = [
         FlowRun.parent_flow_run_id == parent_run_id,
         or_(
@@ -42,17 +44,32 @@ def list_record_directory(
     ]
     if kind != "ALL":
         filters.append(FlowRun.run_mode == kind)
+    if term:
+        filters.append(
+            or_(
+                FlowRun.name.icontains(term, autoescape=True),
+                FlowRun.id.icontains(term, autoescape=True),
+            )
+        )
     if cursor:
         try:
             if len(cursor) > 2048:
                 raise ValueError("oversize cursor")
-            scope, filter_kind, timestamp, record_id = json.loads(
-                base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4))
-            )
+            decoded = json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)))
+            # Unfiltered legacy cursors remain usable. Search cursors are
+            # bound to the normalized term as well as the parent and mode.
+            if not isinstance(decoded, list):
+                raise ValueError("invalid cursor fields")
+            values = cast(list[Any], decoded)
+            if len(values) not in (4, 5):
+                raise ValueError("invalid cursor fields")
+            scope, filter_kind, timestamp, record_id = values[:4]
+            cursor_term = values[4] if len(values) == 5 else ""
             when = datetime.fromisoformat(timestamp)
             if (
                 scope != parent_run_id
                 or filter_kind != kind
+                or cursor_term != term
                 or when.tzinfo is None
                 or not isinstance(record_id, str)
                 or not record_id
@@ -141,6 +158,8 @@ def list_record_directory(
                         last["started_at"].isoformat(),
                         last["id"],
                     ]
+                    + ([term] if term else []),
+                    ensure_ascii=False,
                 ).encode()
             )
             .decode()

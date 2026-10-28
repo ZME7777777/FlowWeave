@@ -72,12 +72,13 @@ type DirectoryFixture = { id: string; name: string; state: string; started_at: s
 function directoryFixture(manual: DirectoryFixture[], automatic: DirectoryFixture[], url: string) {
   const query = new URL(url).searchParams;
   const kind = query.get('kind') ?? 'ALL';
+  const term = (query.get('q') ?? '').trim().toLowerCase();
   const offset = Number(query.get('cursor') ?? 0);
   const limit = Number(query.get('limit') ?? 30);
   const items = [
     ...manual.map(item => ({ ...item, kind: 'MANUAL', detail: item.start_node_key ? '逐步配置与确认执行' : '等待配置起始节点' })),
     ...automatic.map(item => ({ ...item, kind: 'AUTOMATIC', detail: `${item.progress?.accepted ?? 0}/${item.plan?.reachable_node_count ?? item.automation_plan?.reachable_node_keys.length ?? 0} 节点完成` })),
-  ].filter(item => kind === 'ALL' || item.kind === kind).sort((a, b) => b.started_at.localeCompare(a.started_at) || b.id.localeCompare(a.id));
+  ].filter(item => kind === 'ALL' || item.kind === kind).filter(item => !term || item.name.toLowerCase().includes(term) || item.id.toLowerCase().includes(term)).sort((a, b) => b.started_at.localeCompare(a.started_at) || b.id.localeCompare(a.id));
   return { items: items.slice(offset, offset + limit), next_cursor: offset + limit < items.length ? String(offset + limit) : null };
 }
 
@@ -688,4 +689,72 @@ test('mixed record pages load atomically and scrolling retries without losing se
   await expect(rows.locator('.flow-run-record-row')).toHaveCount(70);
   await expect(rows.getByText('分页逐步 0', { exact: true })).toBeVisible();
 
+});
+
+
+test('record search queries all server pages, combines mode and clears safely across parent runs', async ({ page }) => {
+  const records = Array.from({ length: 80 }, (_, index) => ({ ...run, id: `search-record-${index}`, name: `搜索业务 ${index}`, parent_flow_run_id: run.id, start_node_key: 'first' }));
+  const requests: Array<{ q: string; kind: string; cursor: string | null; parent: string }> = [];
+  await page.route('**/api/v1/**', async route => {
+    const url = new URL(route.request().url());
+    const path = url.pathname;
+    const respond = (body: unknown) => route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) });
+    if (path.endsWith('/auth/me')) return respond(authenticatedUser);
+    if (path === '/api/v1/flow-runs') return respond([run, { ...run, id: 'other-run', run_no: 2, name: '另一运行' }]);
+    if (path === '/api/v1/flows') return respond([definition]);
+    if (path.endsWith('/records')) {
+      const q = url.searchParams.get('q') ?? '';
+      requests.push({ q, kind: url.searchParams.get('kind') ?? 'ALL', cursor: url.searchParams.get('cursor'), parent: path.split('/')[4] });
+      if (q === 'slow') await new Promise(resolve => setTimeout(resolve, 500));
+      return respond(directoryFixture(records, [], url.href));
+    }
+    return respond([]);
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: '流程运行', exact: true }).click();
+  await page.locator('.flow-run-tree-select').click();
+  await page.locator('.flow-run-tree-run').filter({ hasText: run.name }).click();
+  const rows = page.locator('.flow-run-record-directory-list');
+  const toolbar = page.locator('.run-record-management-toolbar');
+  const search = page.getByRole('searchbox', { name: '搜索运行记录' });
+  await expect(rows.locator('.flow-run-record-row')).toHaveCount(30);
+  await rows.getByRole('checkbox').first().check();
+  await search.fill('  search-record-0  ');
+  await expect(rows.locator('.flow-run-record-row')).toHaveCount(1);
+  await expect(rows).toContainText('搜索业务 0');
+  expect(requests.at(-1)).toMatchObject({ q: 'search-record-0', cursor: null });
+  await expect(toolbar).toContainText('已选择 0 条');
+  await expect(toolbar.getByRole('button', { name: '删除', exact: true })).toBeDisabled();
+  await toolbar.getByRole('button', { name: '逐步', exact: true }).click();
+  await expect.poll(() => requests.at(-1)?.kind).toBe('MANUAL');
+  expect(requests.at(-1)?.q).toBe('search-record-0');
+  await search.fill('slow');
+  await expect.poll(() => requests.at(-1)?.q).toBe('slow');
+  await search.fill('search-record-1');
+  await expect(rows.locator('.flow-run-record-row')).toHaveCount(11);
+  await expect(rows).not.toContainText('搜索业务 0');
+  await search.fill('不存在的搜索');
+  await expect(rows).toContainText('没有匹配的运行记录');
+  await toolbar.getByRole('button', { name: '清除运行记录搜索', exact: true }).click();
+  await expect(search).toHaveValue('');
+  await expect(rows.locator('.flow-run-record-row')).toHaveCount(30);
+  await search.fill('搜索业务');
+  await expect.poll(() => requests.at(-1)?.q).toBe('搜索业务');
+  await rows.evaluate(element => { element.scrollTop = element.scrollHeight; });
+  await expect(rows.locator('.flow-run-record-row')).toHaveCount(60);
+  expect(requests.at(-1)).toMatchObject({ q: '搜索业务', kind: 'MANUAL', cursor: '30' });
+  await page.getByRole('button', { name: '流程编排', exact: true }).click();
+  await page.getByRole('button', { name: '流程运行', exact: true }).click();
+  await expect(search).toHaveValue('搜索业务');
+  await page.locator('.flow-run-tree-run').filter({ hasText: '另一运行' }).click();
+  await expect(search).toHaveValue('');
+  await expect.poll(() => requests.at(-1)?.parent).toBe('other-run');
+  expect(requests.at(-1)?.q).toBe('');
+  for (const width of [1440, 1024]) {
+    await page.setViewportSize({ width, height: 768 });
+    await expect(search).toBeInViewport();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
+    expect(await page.evaluate(() => document.documentElement.scrollHeight)).toBe(768);
+    await page.screenshot({ path: `../../.tmp/ops30/record-search-${width}.png` });
+  }
 });

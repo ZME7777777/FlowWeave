@@ -138,11 +138,12 @@ async def record_directory(
     kind: Literal["ALL", "MANUAL", "AUTOMATIC"] = "ALL",
     cursor: str | None = Query(default=None, max_length=2048),
     limit: int = Query(default=30, ge=1, le=100),
+    q: str = Query(default="", max_length=220),
 ) -> dict[str, Any]:
     return await run_sync(
         db,
         lambda session: service.list_record_directory(
-            session, parent_run_id, kind=kind, cursor=cursor, limit=limit
+            session, parent_run_id, kind=kind, cursor=cursor, limit=limit, q=q
         ),
     )
 

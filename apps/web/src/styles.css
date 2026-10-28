@@ -1438,3 +1438,13 @@ body:has(.login-page){min-width:0}
 .schedule-record-empty>button{margin-left:8px}
 @media(max-width:1400px){.schedule-header-cron{display:none}}
 @media(max-width:1180px){.schedule-workspace{grid-template-columns:260px minmax(0,1fr)}.schedule-conversation-head h2{font-size:12px}.schedule-record .schedule-record-summary{grid-template-columns:6px minmax(70px,1fr) 54px 52px 70px;gap:8px}.schedule-record-summary .schedule-record-time{display:none}}
+
+/* Record search uses the toolbar's available space; results remain server-paged. */
+.flow-run-record-table>.run-record-management-toolbar>span{margin-right:0}
+.run-record-search{display:flex;min-width:140px;flex:1 1 180px;align-items:center;gap:6px;height:28px;border:1px solid #d4dfd7;border-radius:6px;background:#fff;padding:0 8px;color:#829087}
+.run-record-search:focus-within{border-color:#91b69c;box-shadow:0 0 0 2px #dcece0}
+.run-record-search>svg{flex-shrink:0}
+.run-record-search input{min-width:0;width:100%;height:100%;border:0;background:transparent;padding:0;outline:0;font-size:10px}
+.run-record-search input::-webkit-search-cancel-button{-webkit-appearance:none}
+.run-record-search>button{display:flex;flex:0 0 auto;align-items:center;justify-content:center;border:0;padding:3px;color:#829087}
+@media(max-width:1180px){.run-record-search{order:1;flex-basis:100%}}
