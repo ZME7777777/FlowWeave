@@ -37,7 +37,11 @@
 .node-edit-workspace .node-draft-field-row>input,.node-edit-workspace .node-draft-field-row>textarea{width:100%;min-width:0;min-height:32px;border:1px solid transparent;border-radius:4px;background:transparent;padding:5px 6px;color:#40564a;font-family:inherit;font-size:11px;line-height:1.7}
 .node-edit-workspace .node-draft-field-row>textarea{height:34px;resize:vertical;max-height:150px}.node-edit-workspace .node-draft-field-row>input:hover,.node-edit-workspace .node-draft-field-row>textarea:hover{border-color:#dde6df}
 .node-edit-workspace .node-draft-field-row>input:focus,.node-edit-workspace .node-draft-field-row>textarea:focus{border-color:#8bb59a;outline:2px solid #e9f3ec;background:#fff}
-.node-field-type{display:flex;border:1px solid #e1e8e2;border-radius:5px;overflow:hidden}.node-field-type>button{min-width:0;flex:1;border:0;background:transparent;padding:5px 6px;color:#91a095;font-size:10px}.node-field-type>button[aria-pressed=true]{background:#e9f2eb;color:#2b754a}
+.node-field-type{display:flex;gap:3px;border:1px solid #d8e2db;border-radius:7px;background:#edf2ee;padding:3px;box-shadow:inset 0 1px 2px #183d2512}
+.node-field-type>button{min-width:0;min-height:25px;flex:1;border:1px solid transparent;border-radius:4px;background:transparent;padding:3px 5px;color:#63756a;font-size:10px;line-height:1.5}
+.node-field-type>button:hover:not(:disabled):not([aria-pressed=true]){background:#e0e9e3;color:#345741}
+.node-field-type>button[aria-pressed=true]{border-color:#245b3d;background:#2d704c;color:#fff;font-weight:600;box-shadow:0 2px 4px #163a2940,inset 0 1px 0 #ffffff26}
+.node-field-type>button:focus-visible{outline:2px solid #268456;outline-offset:2px}
 .node-draft-field-delete{display:grid;place-items:center;width:26px;height:26px;border:0;border-radius:5px;background:transparent;padding:0;color:#9aaba0}.node-draft-field-delete:hover{background:#fff0ee;color:#ad5c53}
 .node-draft-fields-empty{margin:0;padding:18px;border:1px dashed #e1e8e2;border-radius:6px;color:#a0aca3;font-size:11px;text-align:center}.node-fields-draft-note{color:#9aa79e;font-size:10px}
 .node-save-error{flex:0 0 auto;margin:0;border-bottom:1px solid #edd8d3;background:#fff7f5;padding:9px 22px;font-size:11px}
