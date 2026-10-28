@@ -589,6 +589,39 @@ def test_control_binding_plan_is_limited_to_its_active_case_stage(
     assert first.status_code == 201 and second.status_code == 201
     first_stage = first.json()["stages"][0]
     second_stage = second.json()["stages"][0]
+    # The binding authorization assertions must run beyond current bootstrap
+    # readiness, using an actual reusable template and saved Agent configuration.
+    from flowweave.modules.cases.infrastructure.models import CaseStage
+    from flowweave.modules.users.application.security import tenant_user
+
+    owner = client.get("/api/v1/auth/me").json()["id"]
+    with tenant_user(owner), db_session_factory() as db:
+        definition = FlowDefinition(name="控制范围模板")
+        db.add(definition)
+        db.flush()
+        template = FlowRun(
+            flow_definition_id=definition.id,
+            run_no=1,
+            name="控制范围模板记录",
+            run_mode="AUTOMATIC",
+            state="DRAFT",
+            environment_version_id=client.environment_version_id,
+            automation_plan_json={"start_node_key": "first", "readiness": {"ready": True}},
+        )
+        db.add(template)
+        db.flush()
+        db.get(CaseStage, first_stage["id"]).flow_run_id = template.id
+        db.get(CaseStage, first_stage["id"]).execution_mode = "CONTINUOUS"
+        db.commit()
+    configured = client.put(
+        f"/api/v1/cases/{first.json()['id']}/session-config",
+        json={
+            "expected_row_version": first.json()["row_version"],
+            "model_provider_id": provider.json()["id"],
+            "model_name": "case-control",
+        },
+    )
+    assert configured.status_code == 200, configured.text
     from dataclasses import replace
 
     working_directories = {}

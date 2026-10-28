@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Annotated, Any
 from urllib.parse import quote
 
 from fastapi import APIRouter, File, Query, Response, UploadFile
+from sqlalchemy.orm import Session
 
 from flowweave.modules.cases import public as service
 from flowweave.shared.errors import DomainError
@@ -25,6 +27,28 @@ from flowweave.shared.schemas import (
 )
 
 router = APIRouter()
+
+
+async def _run_case_action(
+    db: Db, operation: Callable[[Session], dict[str, Any]]
+) -> dict[str, Any]:
+    """Commit the recorded failure, then return its original HTTP error."""
+
+    def dispatch(
+        session: Session,
+    ) -> tuple[dict[str, Any] | None, service.CaseActionFailure | None]:
+        try:
+            return operation(session), None
+        except service.CaseActionFailure as failure:
+            if not session.is_active:
+                raise
+            return None, failure
+
+    result, failure = await run_sync(db, dispatch)
+    if failure is not None:
+        raise failure
+    assert result is not None
+    return result
 
 
 @router.get("/cases")
@@ -161,7 +185,7 @@ async def project_observations(case_id: str, db: Db) -> dict[str, Any]:
 async def start_stage_execution(
     case_id: str, stage_id: str, payload: CaseStageExecutionStartWrite, db: Db
 ) -> dict[str, Any]:
-    return await run_sync(
+    return await _run_case_action(
         db,
         lambda session: service.start_case_stage_execution(session, case_id, stage_id, payload),
     )
@@ -171,14 +195,14 @@ async def start_stage_execution(
 async def create_decision_proposal(
     case_id: str, payload: CaseDecisionProposalWrite, db: Db
 ) -> dict[str, Any]:
-    return await run_sync(
+    return await _run_case_action(
         db, lambda session: service.create_case_decision_proposal(session, case_id, payload)
     )
 
 
 @router.post("/cases/{case_id}/decision-proposals/{proposal_id}/execute")
 async def execute_decision_proposal(case_id: str, proposal_id: str, db: Db) -> dict[str, Any]:
-    return await run_sync(
+    return await _run_case_action(
         db, lambda session: service.execute_case_decision_proposal(session, case_id, proposal_id)
     )
 
@@ -194,7 +218,7 @@ async def create_control_plan(
 
 @router.post("/cases/{case_id}/control-plans/{plan_id}/execute")
 async def execute_control_plan(case_id: str, plan_id: str, db: Db) -> dict[str, Any]:
-    return await run_sync(
+    return await _run_case_action(
         db, lambda session: service.execute_case_control_plan(session, case_id, plan_id)
     )
 

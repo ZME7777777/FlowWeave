@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`UPSTREAM BASELINE ADOPTION COMPLETE`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`NONE`
+> 下一可执行切片：`CASE-02`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -13661,3 +13661,56 @@ Web remote-release-finish 通过，无过期受管上下文；保留当前镜像
 不同回滚版本和容器引用，未清理共享 BuildKit、卷、Workspace 或数据库备份。
 收尾后健康、版本、配置与其他 47 个容器再验通过。未发布后端／Runtime，未作
 生产业务写入。本补记不改变部署身份，本地提交未推送，本片无后续任务。
+
+
+## 场景 Agent 自主协调实施跟踪
+
+产品与审计依据：`docs/case-space-lifecycle-review.md`。以下切片按用户“开始实施”
+授权顺序推进，一次提交一片；CASE编号独立于历史OPS与FR。
+
+| 切片 | 状态 | 依赖 | 范围 |
+| --- | --- | --- | --- |
+| CASE-01 | DONE | OPS-37、OPS-39 DONE | 动作结果、失败重试与暂停门禁 |
+| CASE-02 | READY | CASE-01 | 新协调轮次与原生会话bootstrap |
+| CASE-03 | PENDING | CASE-02 | Case原生工具及作用域 |
+| CASE-04 | PENDING | CASE-03 | 产物登记与跨容器授权读取 |
+| CASE-05 | PENDING | CASE-02、CASE-04 | 持久事件投递与Agent回访 |
+| CASE-06 | PENDING | CASE-03、CASE-05 | 逐步复核、配置修订与重跑 |
+| CASE-07 | PENDING | CASE-04、CASE-05、CASE-06 | 连续修订、跨阶段决策与完成 |
+| CASE-08 | PENDING | CASE-02–CASE-07 | 前端反馈与接管统一 |
+| CASE-09 | PENDING | CASE-01–CASE-08 | 全链路与恢复验收 |
+
+### CASE-01 动作结果、失败重试与暂停门禁 — DONE
+
+本片修正FAILED／未完成阶段启动决策被上层计划当作成功的情况，显式重试创建
+新的可追溯决策并保留旧失败；若已有执行事实且无法安全认领，拒绝再次启动，
+不通过新idempotency key重复创建执行。暂停禁止复制、启动、继续和重跑，
+允许作用于当前执行的停止；后台后继推进必须遵守相同门禁。成功／取消计划
+的幂等读取不产生新动作。暂不接入工具、事件回访或跨阶段自主推进。
+
+
+CASE-01 实施结果（2026-10-28）：统一Case执行动作的暂停／终态检查；暂停阻止
+手动／binding计划、建议、复制、启动、继续和重跑，以及后台逐步后继推进，
+保留当前执行的停止和无副作用的成功／取消计划重放。FAILED、PROPOSED和
+SUPERSEDED阶段启动决策不再使上层计划成功；重复执行原失败计划只返回错误。
+显式retry创建关联的新启动决策并保留原失败，重用在途retry计划；真实FlowRun
+行锁串行化并发启动并重新检查场景／阶段状态。已有节点或已冻结连续执行而
+缺少可信成功决策时返回CASE_START_RECONCILIATION_REQUIRED，不创建重复执行；
+这类结果不确定的完整恢复仍属于后续持久事件／恢复切片，本片不伪造成功。
+
+新增CaseActionFailure只标识已登记审计结果的分发失败。Case动作HTTP适配器
+先提交该结果，再返回原DomainError状态；普通校验、权限或已失效数据库事务
+仍回滚，不改变全局run_sync。阶段、计划与决策的失败记录可跨请求读取，通用
+异常返回稳定错误码，不回显内部异常文本。未实现动作明确失败，不再依赖未绑定
+result引发异常。旧binding范围测试补齐合法模板与已保存配置，真正执行原授权
+断言，没有降低启动校验或安全断言。
+
+验证：修复前新增控制动作回归14项失败、1项通过；修复后Case配置、控制动作、
+PostgreSQL／HTTP及既有Case API定向套件66项全通过，含双数据库会话并发启动
+只调用一次、连续失败链、旧失败记录兼容、非终态结果拒绝、部分启动拒绝重复、
+暂停仍可停止、跨用户拒绝和binding／suggestion暂停保护。编排动作使用受控替身，
+不声称真实模型或Runtime执行验收。受影响Ruff、diff检查通过；service Pyright
+由基线40项既有诊断降至39项、无新增诊断，router／public为0。唯一Alembic head
+保持0178_merge_schedule_credentials，无迁移。其他工作台在途改动未纳入本片。
+本片未部署、未推送；当前切片NONE，下一可执行切片CASE-02（新协调轮次与原生
+会话bootstrap），其余依赖状态保持PENDING。提交成功后停止，不开始下一片。

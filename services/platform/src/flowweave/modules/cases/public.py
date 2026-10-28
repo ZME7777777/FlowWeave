@@ -1,6 +1,7 @@
 """Stable public facade for Case control-plane services."""
 
 from flowweave.modules.cases.application.service import (
+    CaseActionFailure,
     advance_case_stepwise_execution,
     attach_case_flow_run,
     bind_case_stage_flow_run,
@@ -33,6 +34,7 @@ from flowweave.modules.cases.application.service import (
 )
 
 __all__ = (
+    "CaseActionFailure",
     "advance_case_stepwise_execution",
     "attach_case_flow_run",
     "bind_case_stage_flow_run",

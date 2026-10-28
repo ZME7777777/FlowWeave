@@ -57,11 +57,41 @@ from flowweave.shared.schemas import (
 )
 
 
+class CaseActionFailure(DomainError):
+    """A dispatched action failed after its auditable result was recorded."""
+
+
 def _case(db: Session, case_id: str) -> Case:
     item = db.get(Case, case_id)
     if item is None:
         raise not_found("case", case_id)
     return item
+
+
+def _require_case_action(item: Case, action: str) -> None:
+    """Keep every Case command on the same pause and terminal boundary."""
+
+    if item.state in {"COMPLETED", "ARCHIVED"}:
+        raise illegal("terminal Case cannot execute actions", state=item.state, action=action)
+    if item.state == "PAUSED" and action not in {"STOP_EXECUTION", "STOP_FLOW_RUN"}:
+        raise DomainError(
+            "CASE_PAUSED",
+            "场景已暂停，请恢复后再执行此动作",
+            409,
+            {"case_id": item.id, "action": action},
+        )
+
+
+def _stage_start_result(proposal: CaseDecisionProposal) -> dict[str, Any]:
+    if proposal.state == "EXECUTED":
+        return _proposal_dict(proposal)
+    code = str(proposal.result_json.get("code") or "CASE_STAGE_START_NOT_EXECUTED")
+    raise DomainError(
+        code,
+        "阶段启动未成功，请检查执行记录后显式重试",
+        409,
+        {"decision_id": proposal.id, "state": proposal.state},
+    )
 
 
 def _stage(db: Session, item: Case, stage_id: str) -> CaseStage:
@@ -833,8 +863,7 @@ def launch_case_stage(
     """Clone a configured stage template into this Case's next execution record."""
 
     item = _case(db, case_id)
-    if item.state in {"COMPLETED", "ARCHIVED"}:
-        raise illegal("terminal case cannot launch stages", state=item.state)
+    _require_case_action(item, "CREATE_EXECUTION_COPY")
     stage = _stage(db, item, stage_id)
     if stage.state != "ACTIVE":
         raise conflict("only the active Case stage can launch", state=stage.state)
@@ -1133,6 +1162,7 @@ def _create_case_control_plan(
     source_binding_id: str | None,
     retry_of_plan_id: str | None = None,
 ) -> dict[str, Any]:
+    _require_case_action(item, payload.action)
     existing = db.scalar(
         select(CaseControlPlan).where(
             CaseControlPlan.case_id == item.id,
@@ -1181,10 +1211,16 @@ def execute_case_control_plan(db: Session, case_id: str, plan_id: str) -> dict[s
         raise not_found("case_control_plan", plan_id)
     if plan.state in {"SUCCEEDED", "CANCELLED"}:
         return _control_plan_dict(plan)
+    if plan.state == "FAILED":
+        raise DomainError(
+            plan.error_code or "CASE_CONTROL_PLAN_FAILED",
+            "此控制动作已失败，请创建关联重试，不会重复执行原计划",
+            409,
+            {"plan_id": plan.id, "state": plan.state},
+        )
     if plan.state == "EXECUTING":
         raise conflict("Case control plan is already executing", plan_id=plan.id)
-    if item.state in {"COMPLETED", "ARCHIVED"}:
-        raise illegal("terminal case cannot execute control plans", state=item.state)
+    _require_case_action(item, plan.action)
     stage = _stage(db, item, plan.stage_id)
     if stage.state != "ACTIVE":
         raise conflict("only the active Case stage can execute plans", state=stage.state)
@@ -1200,9 +1236,21 @@ def execute_case_control_plan(db: Session, case_id: str, plan_id: str) -> dict[s
         elif plan.action == "START_EXECUTION":
             result = {
                 "decision": start_case_stage_execution(
-                    db, item.id, stage.id, CaseStageExecutionStartWrite(reason=plan.reason)
+                    db,
+                    item.id,
+                    stage.id,
+                    CaseStageExecutionStartWrite(reason=plan.reason),
+                    retry_plan_id=plan.id if plan.retry_of_plan_id else None,
                 )
             }
+            decision = result["decision"]
+            if decision.get("state") != "EXECUTED":
+                raise DomainError(
+                    "CASE_STAGE_START_NOT_EXECUTED",
+                    "阶段启动动作未执行成功",
+                    409,
+                    {"decision_id": decision.get("id"), "state": decision.get("state")},
+                )
         elif plan.action == "START_STEPWISE_NODE":
             if not stage.current_execution_flow_run_id:
                 raise conflict("Case stage has no execution copy", stage_id=stage.id)
@@ -1235,10 +1283,19 @@ def execute_case_control_plan(db: Session, case_id: str, plan_id: str) -> dict[s
         plan.state = "FAILED"
         plan.error_code = str(getattr(exc, "code", "CASE_CONTROL_PLAN_FAILED"))
         plan.result_json = {"code": plan.error_code}
+        if isinstance(exc, DomainError) and exc.details.get("decision_id"):
+            plan.result_json = {**plan.result_json, "decision_id": exc.details["decision_id"]}
         plan.executed_at = now()
         _write_case_files(db, item)
         finish(db)
-        raise
+        if isinstance(exc, DomainError):
+            raise CaseActionFailure(exc.code, exc.message, exc.status, exc.details) from exc
+        raise CaseActionFailure(
+            plan.error_code or "CASE_CONTROL_PLAN_FAILED",
+            "场景控制动作执行失败",
+            500,
+            {"plan_id": plan.id},
+        ) from exc
     plan.state = "SUCCEEDED"
     plan.result_json = result
     plan.error_code = None
@@ -1252,9 +1309,18 @@ def retry_case_control_plan(db: Session, case_id: str, plan_id: str) -> dict[str
     """Create a new auditable attempt for one failed, still-authorized plan."""
 
     item = _case(db, case_id)
-    failed = db.get(CaseControlPlan, plan_id)
+    failed = db.scalar(
+        select(CaseControlPlan)
+        .where(
+            CaseControlPlan.id == plan_id,
+            CaseControlPlan.case_id == item.id,
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     if failed is None or failed.case_id != item.id:
         raise not_found("case_control_plan", plan_id)
+    _require_case_action(item, failed.action)
     if failed.state != "FAILED":
         raise conflict("only failed Case control plans can be retried", state=failed.state)
     if failed.action not in {
@@ -1272,6 +1338,18 @@ def retry_case_control_plan(db: Session, case_id: str, plan_id: str) -> dict[str
         stage = _current_stage_execution(
             db, item, _case_linked_run(db, item.id, str(failed.execution_flow_run_id or ""))
         )
+    existing_retry = db.scalar(
+        select(CaseControlPlan)
+        .where(
+            CaseControlPlan.case_id == item.id,
+            CaseControlPlan.retry_of_plan_id == failed.id,
+            CaseControlPlan.state.in_(("PENDING", "VALIDATED", "EXECUTING", "SUCCEEDED")),
+        )
+        .order_by(CaseControlPlan.created_at.desc(), CaseControlPlan.id.desc())
+        .limit(1)
+    )
+    if existing_retry is not None:
+        return _control_plan_dict(existing_retry)
     retry_number = (
         len(
             list(
@@ -1315,7 +1393,7 @@ def advance_case_stepwise_execution(db: Session, flow_run_id: str) -> None:
     )
     for stage in stages:
         item = _case(db, stage.case_id)
-        if item.state in {"COMPLETED", "ARCHIVED"}:
+        if item.state != "ACTIVE":
             continue
         run = _case_linked_run(db, item.id, flow_run_id)
         detail = orchestration.run_detail(db, run.id, include_artifacts=False)
@@ -1374,34 +1452,97 @@ def start_case_stage_execution(
     case_id: str,
     stage_id: str,
     payload: CaseStageExecutionStartWrite,
+    *,
+    retry_plan_id: str | None = None,
 ) -> dict[str, Any]:
-    """Start only the current Case-owned execution copy through audited services."""
+    """Start once; retries preserve failed decisions and cannot duplicate partial starts."""
 
     item = _case(db, case_id)
-    if item.state in {"COMPLETED", "ARCHIVED"}:
-        raise illegal("terminal case cannot start stages", state=item.state)
+    _require_case_action(item, "START_EXECUTION")
     stage = _stage(db, item, stage_id)
     if stage.state != "ACTIVE":
         raise conflict("only the active Case stage can start", state=stage.state)
     if not stage.current_execution_flow_run_id:
         raise conflict("Case stage has no execution copy", stage_id=stage.id)
     run = _case_linked_run(db, item.id, stage.current_execution_flow_run_id)
+    # Match the orchestration lock so different retry requests cannot launch the
+    # same stage concurrently with different command identities.
+    db.refresh(run, with_for_update=True)
+    db.refresh(item)
+    db.refresh(stage)
+    _require_case_action(item, "START_EXECUTION")
+    if stage.state != "ACTIVE" or stage.current_execution_flow_run_id != run.id:
+        raise conflict("Case stage changed while waiting to start")
     proposal_key = f"stage-start:{stage.id}:{run.id}"
-    existing = db.scalar(
-        select(CaseDecisionProposal).where(
+    previous = db.scalar(
+        select(CaseDecisionProposal)
+        .where(
             CaseDecisionProposal.case_id == item.id,
-            CaseDecisionProposal.proposal_key == proposal_key,
+            CaseDecisionProposal.flow_run_id == run.id,
+            CaseDecisionProposal.action == "START_STAGE_EXECUTION",
         )
+        .order_by(CaseDecisionProposal.created_at.desc(), CaseDecisionProposal.id.desc())
+        .limit(1)
     )
-    if existing is not None:
-        return _proposal_dict(existing)
+    retry_of_proposal_id: str | None = None
+    if retry_plan_id:
+        retry = db.get(CaseControlPlan, retry_plan_id)
+        if retry is None or retry.case_id != item.id:
+            raise not_found("case_control_plan", retry_plan_id)
+        failed = db.get(CaseControlPlan, retry.retry_of_plan_id) if retry.retry_of_plan_id else None
+        if (
+            failed is None
+            or any(
+                plan.case_id != item.id
+                or plan.stage_id != stage.id
+                or plan.execution_flow_run_id != run.id
+                or plan.action != "START_EXECUTION"
+                for plan in (retry, failed)
+            )
+            or failed.state != "FAILED"
+        ):
+            raise conflict("stage start retry no longer matches its failed plan")
+        proposal_key = f"stage-start:retry:{retry.id}"
+        repeated = db.scalar(
+            select(CaseDecisionProposal).where(
+                CaseDecisionProposal.case_id == item.id,
+                CaseDecisionProposal.proposal_key == proposal_key,
+            )
+        )
+        if repeated is not None:
+            return _stage_start_result(repeated)
+        previous_id = failed.result_json.get("decision_id")
+        if isinstance(previous_id, str):
+            previous = _proposal(db, item.id, previous_id)
+            if previous.flow_run_id != run.id or previous.action != "START_STAGE_EXECUTION":
+                raise conflict("failed plan references another stage start")
+        if previous is not None:
+            if previous.state != "FAILED":
+                return _stage_start_result(previous)
+            retry_of_proposal_id = previous.id
+        # An earlier request may have committed before its response failed. Do not
+        # use a fresh start key against an existing attempt/frozen automatic plan.
+        started = db.scalar(select(NodeRun.id).where(NodeRun.flow_run_id == run.id).limit(1))
+        if started or (stage.execution_mode == "CONTINUOUS" and run.state != "DRAFT"):
+            raise DomainError(
+                "CASE_START_RECONCILIATION_REQUIRED",
+                "当前执行已有启动事实，请先核对原执行，不能重复启动",
+                409,
+                {"flow_run_id": run.id, "decision_id": retry_of_proposal_id},
+            )
+    elif previous is not None:
+        return _stage_start_result(previous)
     proposal = CaseDecisionProposal(
         case_id=item.id,
         flow_run_id=run.id,
         proposal_key=proposal_key,
         action="START_STAGE_EXECUTION",
         reason=payload.reason.strip(),
-        payload_json={"stage_id": stage.id, "execution_mode": stage.execution_mode},
+        payload_json={
+            "stage_id": stage.id,
+            "execution_mode": stage.execution_mode,
+            **({"retry_of_proposal_id": retry_of_proposal_id} if retry_of_proposal_id else {}),
+        },
     )
     db.add(proposal)
     db.flush()
@@ -1447,7 +1588,16 @@ def _execute_case_stage_start(
         proposal.result_json = {"code": getattr(exc, "code", "CASE_STAGE_START_FAILED")}
         proposal.executed_at = now()
         finish(db)
-        raise
+        if isinstance(exc, DomainError):
+            raise CaseActionFailure(
+                exc.code,
+                exc.message,
+                exc.status,
+                {**exc.details, "decision_id": proposal.id},
+            ) from exc
+        raise CaseActionFailure(
+            "CASE_STAGE_START_FAILED", "阶段启动失败", 500, {"decision_id": proposal.id}
+        ) from exc
     proposal.state = "EXECUTED"
     proposal.result_json = result
     proposal.executed_at = now()
@@ -1461,8 +1611,7 @@ def create_case_decision_proposal(
     db: Session, case_id: str, payload: CaseDecisionProposalWrite
 ) -> dict[str, Any]:
     item = _case(db, case_id)
-    if item.state in {"COMPLETED", "ARCHIVED"}:
-        raise illegal("terminal case cannot create decisions", state=item.state)
+    _require_case_action(item, payload.action)
     existing = db.scalar(
         select(CaseDecisionProposal).where(
             CaseDecisionProposal.case_id == item.id,
@@ -1508,6 +1657,7 @@ def create_case_decision_proposal(
 def execute_case_decision_proposal(db: Session, case_id: str, proposal_id: str) -> dict[str, Any]:
     item = _case(db, case_id)
     proposal = _proposal(db, item.id, proposal_id)
+    _require_case_action(item, proposal.action)
     if proposal.state != "PROPOSED":
         raise illegal("Case decision has already executed", state=proposal.state)
     run = _case_linked_run(db, proposal.case_id, proposal.flow_run_id)
@@ -1555,12 +1705,21 @@ def execute_case_decision_proposal(db: Session, case_id: str, proposal_id: str) 
             ):
                 db.add(CaseFlowRun(case_id=proposal.case_id, flow_run_id=copied["id"]))
             result = {"flow_run": copied}
+        else:
+            raise illegal("Case decision action is not dispatchable", action=proposal.action)
     except Exception as exc:
         proposal.state = "FAILED"
         proposal.result_json = {"code": getattr(exc, "code", "CASE_DECISION_EXECUTION_FAILED")}
         proposal.executed_at = now()
         finish(db)
-        raise
+        if isinstance(exc, DomainError):
+            raise CaseActionFailure(exc.code, exc.message, exc.status, exc.details) from exc
+        raise CaseActionFailure(
+            "CASE_DECISION_EXECUTION_FAILED",
+            "场景决策执行失败",
+            500,
+            {"decision_id": proposal.id},
+        ) from exc
     proposal.state = "EXECUTED"
     proposal.result_json = result
     proposal.executed_at = now()
