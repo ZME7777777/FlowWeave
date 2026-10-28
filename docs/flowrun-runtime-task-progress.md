@@ -14010,3 +14010,31 @@ OPS-47 实施结果（2026-10-28）：能力项统一为前置16px方形选择�
 0180 head；不代表生产归档操作或真实模型调用。Web typecheck、受影响
 ESLint及diff检查通过。当前无CURRENT，Case下一片仍为CASE-03，本片无后续
 开发任务。用户明确授权合并后提交及平台／Web部署，正式结果后补。
+
+
+OPS-47 正式发布补记（2026-10-28）：实际平台与Web代码为
+8647d7b6534e3d8a026ca694e3386ca8b95e348e，包含远程6749ca5b、6d34fe47
+及65ab2d3b合并结果。正式platform／web预检和最小上下文prepare通过；
+源归档SHA-256分别为63e3a57bb831ea22db33a5f4ec0305a6573a7291425922dad64ae746ad8b5bb3
+和d027d0d98477cd37d430a7e33892ec57a7ad3484ce03c96df757b54f9f838505。
+平台image ID为sha256:67ab0146677fbff9c7dea56aeccd0be43a67a7b8879c7230bd9868968e851399，
+Web image ID为sha256:62b8b1b6483d26f65ec2ecf1b1a99066b361c6db1eaad2be7e01e374f04b7d9a，
+linux/amd64与OCI revision均一致。保留旧镜像回滚标签及服务日志后，正式
+migration由0179_case_control_rounds到0180_merge_archives_case_rounds成功，
+随后同步recreate api、stream-api、worker及web。健康、readiness与版本通过，
+配置摘要及其他43个容器image／StartedAt保持；Runtime Provider及现有
+Workspace／FlowRun Runtime未重启或replacement。
+
+三项平台服务各8个相关源文件与不可变上下文逐一比对通过；只读数据库检查
+确认归档列及索引、Case协调轮次表和唯一0180 head。公网HTML、入口资源及
+紧凑会话配置JS／CSS摘要匹配运行镜像，确认前置方形选择标记、两行说明
+容器和行内同步样式进入正式资源。Chromium前缀登录、Agent／记录深层及根
+登录页、匿名401边界与全新浏览器前缀API请求通过，根API请求为0。列表
+实际交互沿用17项受控API浏览器回归，不冒称已登录生产编辑、归档或Skill
+版本写入；没有修改生产业务会话、调用模型或执行人工归档／删除。
+
+两个范围的remote-release-finish均通过，精确回收1个过期受管Web上下文
+及2个历史平台／Web image ID的受管tags，保留24小时上下文、实际引用、
+当前镜像及每仓库一个不同回滚镜像；未清理共享BuildKit、卷、Workspace或
+备份。收尾后四服务健康／版本、唯一head、配置和其他43个容器复核通过。
+本补记不改变实际部署身份；未push，当前无CURRENT，本片无后续任务。
