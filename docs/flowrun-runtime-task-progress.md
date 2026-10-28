@@ -13944,3 +13944,33 @@ source commit 与锁定的73e3cd8e一致，同名 Skill 覆盖、原生 invoke_s
 既有8项提交保留。唯一Alembic head为0179_case_control_rounds，当前无CURRENT，
 Case下一可执行切片仍为CASE-03，本片无后续开发任务。用户已授权提交后发布
 平台及Web；正式发布结果后补，不在此将预检或受控回归描述为线上业务操作。
+
+
+OPS-46 正式发布补记（2026-10-28）：用户明确授权拉取后修改、提交并部署。
+实际平台／Web部署代码为e067daca11a91999863fa91f2773fe26f8ae0161，
+正式platform及web预检与commit-bound最小上下文prepare通过，两个源归档
+SHA-256分别为19c77f27474fef47b577caa5a65d4069d4800a69052fe960880ee8ac246f29f9
+和33fd308654a3a0ade7fb06604a39186bc93b0f44178c396b2ea70814783f7c5a。
+平台image ID为sha256:cd86c433585c944439ffb8d83bb3ff54f170d532a5d5d1291b8b70d1a31dde35，
+Web image ID为sha256:4b87f2e96c6fdfff0a7bcbc79c61c9d0c75fd690d1d8a4548a053691600f193b，
+均为linux/amd64且OCI revision一致。新共享版本包含此前已提交CASE-02；
+正式migration从0178_merge_schedule_credentials正常迁移至0179_case_control_rounds，
+退出码0，随后同步recreate api、stream-api、worker及web。发布前保留回滚
+镜像和原日志；健康／readiness通过，服务器配置摘要和其他43个容器的image／
+StartedAt保持。没有重启Runtime Provider或replacement现有Runtime。
+
+三项平台服务中的6个本片源文件逐一与不可变发布上下文摘要匹配；公网HTML、
+入口资源及包含行内同步的JS／CSS摘要匹配运行镜像，确认新版提示、待保存
+状态与行内更新样式已经进入线上资源。初始静态探针误要求未独立定义的按钮
+CSS选择器，改为实际状态容器选择器后通过，产品源码无需修正。Chromium前缀
+登录、Agent与记录深层及根登录路由均通过；匿名API保持401，全新浏览器
+前缀API请求通过，根API请求为0。未修改生产用户的Skill或会话；交互采用
+10项受控API浏览器回归，原生覆盖／调用／恢复采用锁定镜像的隔离探针，
+不冒称生产会话升级实操。新helper的Pyright显式使用项目venv后0诊断。
+
+platform与web的remote-release-finish均通过，精确回收3个过期受管上下文
+和2个历史平台／Web image ID的受管tags，保留近期上下文、实际引用、当前
+镜像及每仓库一个不同回滚版本；未清理共享BuildKit、卷、Workspace或备份。
+收尾后四服务健康／版本、数据库head、配置及其他43个容器复核通过。
+本验收记录不改变实际部署身份；本次未push，当前无CURRENT，本片无后续
+开发任务，Case下一可执行切片仍为CASE-03。
