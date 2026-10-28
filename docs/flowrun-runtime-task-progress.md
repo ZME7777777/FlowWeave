@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`UPSTREAM BASELINE ADOPTION COMPLETE`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`CASE-02`
+> 下一可执行切片：`CASE-03`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -13671,8 +13671,8 @@ Web remote-release-finish 通过，无过期受管上下文；保留当前镜像
 | 切片 | 状态 | 依赖 | 范围 |
 | --- | --- | --- | --- |
 | CASE-01 | DONE | OPS-37、OPS-39 DONE | 动作结果、失败重试与暂停门禁 |
-| CASE-02 | READY | CASE-01 | 新协调轮次与原生会话bootstrap |
-| CASE-03 | PENDING | CASE-02 | Case原生工具及作用域 |
+| CASE-02 | DONE | CASE-01 | 新协调轮次与原生会话bootstrap |
+| CASE-03 | READY | CASE-02 | Case原生工具及作用域 |
 | CASE-04 | PENDING | CASE-03 | 产物登记与跨容器授权读取 |
 | CASE-05 | PENDING | CASE-02、CASE-04 | 持久事件投递与Agent回访 |
 | CASE-06 | PENDING | CASE-03、CASE-05 | 逐步复核、配置修订与重跑 |
@@ -13714,6 +13714,60 @@ PostgreSQL／HTTP及既有Case API定向套件66项全通过，含双数据库�
 保持0178_merge_schedule_credentials，无迁移。其他工作台在途改动未纳入本片。
 本片未部署、未推送；当前切片NONE，下一可执行切片CASE-02（新协调轮次与原生
 会话bootstrap），其余依赖状态保持PENDING。提交成功后停止，不开始下一片。
+
+
+### CASE-02 新协调轮次与原生会话 bootstrap — DONE
+
+依赖 CASE-01 DONE。本片把“新建协调轮次”和“打开当前 Agent”分开：显式新启动
+预留固定 round／binding UUID，在同一事务冻结场景配置与场景上下文并投递持久任务；
+HTTP 不等待模型或 Runtime。相同提交只返回原轮次，失败重试使用原 round、UUID、
+配置和首条任务，不创建第二份会话；历史幂等请求不能重新选中旧协调者。新轮次
+保留所有原生历史会话和执行记录，当前会话运行时拒绝替换。
+
+新增 case_control_rounds 与 Case.current_control_round_id，0179_case_control_rounds
+迁移为旧 current binding 回填 legacy 轮次，不伪造旧配置或初始上下文。新表有
+owner ORM 隔离、PostgreSQL 强制 RLS、owner 索引及同 Case 提交键唯一约束。
+启动快照包含目标、说明、状态、有序全路径、模板／当前执行身份及资料目录；
+配置冻结供应商、模型、思考程度、能力版本与认证引用，无 Secret 明文。仍要求
+既有完整可复用模板；本片不新增本轮业务输入校验，也未实现输入补全工具。
+
+Worker 的投递 lane、owner tenant context 和 handler 已接通，调用既有原生
+bootstrap_conversation，复用原生能力冻结、目录版本和首条事件提交／不确定结果
+对账。轮次的 session advisory lock 跨越原生 bootstrap 的内部 commit，阻止
+重复 worker 并发投递。首条任务运行前发布当前 binding 的控制作用域；页面只在
+STARTED 后暴露可打开入口。投递前重新校验路径和已冻结配置；已变路径明确失败。
+未知异常沿既有任务重试，耗尽后记录稳定失败码；显式重试新建 delivery attempt，
+旧任务迟到的终态通知不能污染新 attempt。未新建执行器或解析 Agent 文本动作。
+
+前端新增协调会话历史入口，区分创建中、创建失败、重试、打开和新轮次；创建完成
+后可自动进入本轮会话。浏览器重试保留提交键，已登记失败通过 round retry API；
+自动打开状态带 Case row_version，忽略上一版 FAILED 快照。历史会话路由可打开，
+不再把旧 binding 错判为其他 Case；历史 binding 不能解析为当前 Case 控制作用域。
+历史页面不提供删除当前协调者的入口，删除请求也核对 expected binding，防止
+误删新一轮。删除与新轮次预留共用Case行锁；外部创建期间的资料编辑和版本号
+重新加锁读取后合并。删除 Case 时检查全部保留会话，未完成创建阻止删除。
+
+验证（2026-10-28）：Case 配置／控制动作／PostgreSQL HTTP／协调任务／既有
+Case API 定向套件80项全通过，含运行中的当前会话阻止新轮次。包含并发预留仅一轮／一任务、投递锁跨 commit、幂等及冻结配置、失败
+重试、正式 Worker 领取与 owner 身份、旧迁移回填、实际非超级用户 RLS 读隔离、
+迁移降级，以及原生 bootstrap 适配到 Case binding 的范围检查。使用 PostgreSQL
+与受控 Runtime／编排替身，没有调用真实模型或固定镜像跨容器验收。迁移在测试
+数据库实跑，唯一 head 为0179_case_control_rounds。
+
+Case Chromium 15项全通过，含异步启动、不确定提交重试、后台失败重试、自动打开、
+新轮次与历史路由，以及既有资料／配置／路径／删除交互。最后调整历史删除入口后，
+协调轮次定向用例再次通过。Web TypeScript、受影响 ESLint、后端 Ruff、diff检查通过；
+新增 coordination／router Pyright为0，service保持基线39项既有诊断，签名无新增。
+
+扩展检查如实保留：原生 Workspace bootstrap套件9通过、3失败，失败均在未进入
+Case代码前因旧直接调用夹具缺少用户principal而报错；Worker lanes套件8通过、
+2失败，原因是基线注册表未覆盖DELETE_FLOW_RUN_SCHEDULE／
+EXPIRE_AGENT_SIDEBAR_CONVERSATION，以及旧单并发夹具与当前Settings门禁不符。
+这些代码／夹具不是本片新增，未扩大范围修复，也未把扩展检查记为全通过。
+
+本片未部署、未推送；未接入 CASE-03 原生操作工具、CASE-04 产物授权回流或
+CASE-05 事件回访，不能声称自主协调全链路已完成。当前切片NONE，下一可执行
+切片CASE-03（Case原生工具及作用域），提交成功后停止。
 
 
 ### OPS-43 会话管理超过单批上限的删除修复 — DONE

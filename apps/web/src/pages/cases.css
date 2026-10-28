@@ -334,3 +334,9 @@ html:has(.scenario-space){overscroll-behavior:none}
 .case-audit-entry small{color:#8a988f;font-size:9px}
 .case-workspace-toolbar .primary:disabled{cursor:not-allowed;background:#edf1ee;border-color:#e0e7e2;color:#98a59c}
 @media(max-width:1180px){.case-single-workspace .case-connected-path .case-path-selection{grid-template-columns:minmax(0,1fr) 110px minmax(0,1.2fr) auto}.case-path-selection>footer{gap:3px}.case-path-selection>footer button{padding:8px;font-size:10px}}
+.case-round-list { display: grid; gap: 12px; }
+.case-round-list > p { color: var(--muted); margin: 0; }
+.case-round-list > button { justify-self: start; }
+.case-round-list article { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.case-round-list article > div { display: grid; gap: 4px; flex: 1; min-width: 0; }
+.case-round-list small { color: var(--muted); }

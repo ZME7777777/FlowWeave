@@ -82,8 +82,12 @@ async def delete_case(case_id: str, db: Db) -> Response:
 
 
 @router.delete("/cases/{case_id}/control-conversation", status_code=204, response_class=Response)
-async def delete_case_control_conversation(case_id: str, db: Db) -> Response:
-    await run_sync(db, lambda session: service.delete_case_control_conversation(session, case_id))
+async def delete_case_control_conversation(
+    case_id: str, db: Db, binding_id: str | None = None
+) -> Response:
+    await run_sync(
+        db, lambda session: service.delete_case_control_conversation(session, case_id, binding_id)
+    )
     return Response(status_code=204)
 
 
@@ -248,6 +252,20 @@ async def create_control_conversation(
         db,
         lambda session: service.create_case_control_conversation(session, case_id, payload, key),
     )
+
+
+@router.post("/cases/{case_id}/control-rounds/{round_id}/retry")
+async def retry_control_round(case_id: str, round_id: str, db: Db) -> dict[str, Any]:
+    from flowweave.modules.cases.application.coordination import retry_control_round
+
+    return await run_sync(db, lambda session: retry_control_round(session, case_id, round_id))
+
+
+@router.get("/cases/{case_id}/control-rounds/{round_id}")
+async def control_round(case_id: str, round_id: str, db: Db) -> dict[str, Any]:
+    from flowweave.modules.cases.application.coordination import get_control_round
+
+    return await run_sync(db, lambda session: get_control_round(session, case_id, round_id))
 
 
 @router.post("/cases/{case_id}/control-plans/{plan_id}/retry", status_code=201)

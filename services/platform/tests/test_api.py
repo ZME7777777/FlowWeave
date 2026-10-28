@@ -646,6 +646,20 @@ def test_control_binding_plan_is_limited_to_its_active_case_stage(
         headers={"Idempotency-Key": "case-control-binding-one"},
     )
     assert conversation.status_code == 201, conversation.text
+    from flowweave.modules.cases.application.coordination import deliver_control_round
+    from flowweave.modules.users.application.security import tenant_user
+
+    owner_id = client.get("/api/v1/auth/me").json()["id"]
+    with (
+        settings_context(settings),
+        tenant_user(owner_id),
+        db_session_factory() as db,
+        runtime_context(MockRuntime()),
+    ):
+        deliver_control_round(db, conversation.json()["current_control_round_id"])
+        db.commit()
+    conversation = client.get(f"/api/v1/cases/{first.json()['id']}")
+    assert conversation.json()["control_rounds"][0]["state"] == "STARTED", conversation.text
     assert list(working_directories.values())[0].endswith(f"/.flowweave/cases/{first.json()['id']}")
     binding_id = conversation.json()["control_conversation_binding_id"]
 

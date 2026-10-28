@@ -29,9 +29,40 @@ class Case(Base):
     state: Mapped[str] = mapped_column(String(20), default="DRAFT", index=True)
     control_conversation_binding_id: Mapped[str | None] = mapped_column(String(36), unique=True)
     control_work_directory_id: Mapped[str | None] = mapped_column(String(36), unique=True)
+    current_control_round_id: Mapped[str | None] = mapped_column(String(36), unique=True)
     row_version: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class CaseControlRound(Base):
+    """Durable bootstrap identity and immutable context, not a conversation store."""
+
+    __tablename__ = "case_control_rounds"
+    __table_args__ = (
+        UniqueConstraint("case_id", "idempotency_key", name="uq_case_control_round_key"),
+        CheckConstraint(
+            "state IN ('PENDING', 'STARTED', 'FAILED', 'DELETED')",
+            name="ck_case_control_round_state",
+        ),
+        CheckConstraint("delivery_attempt >= 1", name="ck_case_control_round_attempt"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    case_id: Mapped[str] = mapped_column(String(36), index=True)
+    workspace_id: Mapped[str] = mapped_column(String(36))
+    work_directory_id: Mapped[str] = mapped_column(String(36))
+    binding_id: Mapped[str] = mapped_column(String(36), unique=True)
+    idempotency_key: Mapped[str] = mapped_column(String(140))
+    state: Mapped[str] = mapped_column(String(20), default="PENDING")
+    delivery_attempt: Mapped[int] = mapped_column(Integer, default=1)
+    session_config_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    context_snapshot_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    initial_prompt: Mapped[str] = mapped_column(Text)
+    message_cursor: Mapped[str | None] = mapped_column(String(200))
+    error_code: Mapped[str | None] = mapped_column(String(120))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class CaseFlowRun(Base):
@@ -177,6 +208,7 @@ __all__ = (
     "Case",
     "CaseAgentTask",
     "CaseControlPlan",
+    "CaseControlRound",
     "CaseDecisionProposal",
     "CaseFlowRun",
     "CaseStage",

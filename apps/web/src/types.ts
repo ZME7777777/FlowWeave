@@ -558,9 +558,16 @@ export interface Case {
   state: 'DRAFT' | 'ACTIVE' | 'PAUSED' | 'COMPLETED' | 'ARCHIVED';
   control_conversation_binding_id?: string | null;
   control_work_directory_id?: string | null;
+  current_control_round_id?: string | null;
+  control_rounds?: CaseControlRound[];
   row_version: number; stages: CaseStage[]; flow_run_ids: string[]; tasks: CaseAgentTask[];
   control_plans: CaseControlPlan[]; decision_proposals: CaseDecisionProposal[];
   created_at: string; updated_at: string;
+}
+
+export interface CaseControlRound {
+  id: string; binding_id: string | null; state: 'PENDING' | 'STARTED' | 'FAILED' | 'DELETED';
+  is_current: boolean; error_code: string | null; created_at: string; started_at: string | null;
 }
 
 export interface FlowRunSummary {

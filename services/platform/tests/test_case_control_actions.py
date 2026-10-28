@@ -8,6 +8,7 @@ from flowweave.modules.cases.application import service
 from flowweave.modules.cases.infrastructure.models import (
     Case,
     CaseControlPlan,
+    CaseControlRound,
     CaseDecisionProposal,
     CaseFlowRun,
     CaseStage,
@@ -40,13 +41,14 @@ def control_db(monkeypatch) -> Iterator[Session]:
         Case,
         CaseStage,
         CaseControlPlan,
+        CaseControlRound,
         CaseDecisionProposal,
         CaseFlowRun,
         FlowRun,
         NodeRun,
     ):
         model.__table__.create(engine)
-    monkeypatch.setattr(service, "_write_case_files", lambda *args: None)
+    monkeypatch.setattr(service, "write_case_files", lambda *args: None)
     with tenant_user("owner"), Session(engine) as db:
         db.add_all(
             [

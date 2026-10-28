@@ -4317,6 +4317,59 @@ test('case Agent start checks configuration and retries using the same submissio
   expect(keys).toHaveLength(2); expect(keys[0]).toBeTruthy(); expect(keys[0]).toBe(keys[1]);
 });
 
+test('case coordination rounds wait for background delivery retry and retain history', async ({ page }) => {
+  await openWorkspace(page);
+  await page.clock.install();
+  let item: Record<string, unknown> = {
+    id: 'round-case', name: '交付协调', objective: '完整交付', state: 'ACTIVE', row_version: 1,
+    stages: [{ id: 'stage', name: '交付流程', flow_run_id: 'template', state: 'ACTIVE', position: 0, execution_mode: 'CONTINUOUS' }],
+    session_config: { model_provider_id: 'provider-1', model_name: 'model-1', reasoning_effort: 'high', capability_version_ids: [], credential_ids: [] },
+    tasks: [], control_plans: [], decision_proposals: [], materials: [], control_rounds: [], created_at: now, updated_at: now,
+  };
+  const starts: string[] = [];
+  let retries = 0;
+  const round = (id: string, state: string, current = true) => ({ id, state, binding_id: state === 'STARTED' ? `${id}-binding` : null, is_current: current, error_code: state === 'FAILED' ? 'AGENT_BOOTSTRAP_DELIVERY_AMBIGUOUS' : null, created_at: now, started_at: state === 'STARTED' ? now : null });
+  await page.route('**/api/v1/cases**', route => {
+    const request = route.request();
+    const pathname = new URL(request.url()).pathname;
+    if (request.method() === 'POST' && pathname.endsWith('/control-conversation')) {
+      starts.push(request.headers()['idempotency-key']);
+      const id = `round-${starts.length}`;
+      item = { ...item, current_control_round_id: id, control_conversation_binding_id: null, control_work_directory_id: 'case-directory', control_rounds: [round(id, 'PENDING'), ...(starts.length > 1 ? [round('round-1', 'STARTED', false)] : [])], row_version: Number(item.row_version) + 1 };
+      return json(route, item, 201);
+    }
+    if (request.method() === 'POST' && pathname.endsWith('/retry')) {
+      retries += 1;
+      item = { ...item, control_rounds: [round('round-1', 'PENDING')], row_version: Number(item.row_version) + 1 };
+      return json(route, item);
+    }
+    return json(route, pathname.endsWith('/cases') ? [item] : item);
+  });
+  await page.getByRole('button', { name: '场景空间', exact: true }).click();
+  await page.getByRole('button', { name: '启动 Agent', exact: true }).click();
+  await expect(page.getByRole('button', { name: '创建会话中…', exact: true })).toBeDisabled();
+  await expect(page).not.toHaveURL(/\/conversations\//);
+  item = { ...item, control_rounds: [round('round-1', 'FAILED')], row_version: 3 };
+  await page.clock.fastForward(3100);
+  await expect(page.getByRole('alert')).toContainText('AGENT_BOOTSTRAP_DELIVERY_AMBIGUOUS');
+  await page.getByRole('button', { name: '重试启动', exact: true }).click();
+  expect(retries).toBe(1); expect(starts).toHaveLength(1);
+  item = { ...item, control_rounds: [round('round-1', 'STARTED')], control_conversation_binding_id: 'round-1-binding', row_version: 5 };
+  await page.clock.fastForward(3100);
+  await expect(page).toHaveURL(/\/cases\/round-case\/conversations\/round-1-binding$/);
+  await page.getByRole('button', { name: '场景空间', exact: true }).click();
+  await page.getByRole('button', { name: '协调会话', exact: true }).click();
+  await page.getByRole('button', { name: '新建协调轮次', exact: true }).click();
+  expect(starts).toHaveLength(2); expect(starts[0]).not.toBe(starts[1]);
+  await page.getByRole('button', { name: '协调会话', exact: true }).click();
+  const history = page.getByRole('dialog', { name: '协调会话', exact: true });
+  await expect(history).toContainText('历史轮次');
+  await expect(history).toContainText('当前轮次');
+  await history.getByRole('button', { name: '打开会话', exact: true }).click();
+  await expect(page).toHaveURL(/\/cases\/round-case\/conversations\/round-1-binding$/);
+  await expect(page.getByText('该会话不属于当前事项')).toHaveCount(0);
+});
+
 test('manual Case stage retry retains its execution copy after a start failure', async ({ page }) => {
   await openWorkspace(page);
   let launches = 0, starts = 0;

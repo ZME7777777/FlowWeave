@@ -303,7 +303,16 @@ def _expire_plugin_source(
     expire_plugin_source(db, aggregate_id)
 
 
+def _bootstrap_case_control_round(
+    db: Session, aggregate_id: str, _payload: dict[str, Any], _lease: Lease
+) -> None:
+    from flowweave.modules.cases.application.coordination import deliver_control_round
+
+    deliver_control_round(db, aggregate_id)
+
+
 HANDLERS: dict[str, Handler] = {
+    "BOOTSTRAP_CASE_CONTROL_ROUND": _bootstrap_case_control_round,
     "EVALUATE_READINESS": _readiness,
     "RUN_GATE_POLICY": _gates,
     "START_RUNTIME": _start_runtime,
@@ -356,6 +365,15 @@ def handle(db: Session, task: BackgroundTask, lease: Lease) -> None:
 def record_terminal_failure(db: Session, task_id: str, error: str) -> None:
     task = db.get(BackgroundTask, task_id)
     if task is None or task.state != TaskState.DEAD:
+        return
+    if task.task_type == "BOOTSTRAP_CASE_CONTROL_ROUND":
+        from flowweave.modules.cases.infrastructure.models import CaseControlRound
+
+        entry = db.get(CaseControlRound, task.aggregate_id)
+        expected_key = f"case-round:{entry.id}:{entry.delivery_attempt}" if entry else ""
+        if entry is not None and entry.state == "PENDING" and task.idempotency_key == expected_key:
+            entry.state = "FAILED"
+            entry.error_code = "CASE_AGENT_DELIVERY_EXHAUSTED"
         return
     if task.task_type == "GENERATE_AGENT_CONVERSATION_TITLE":
         finalize_agent_conversation_title_failure(

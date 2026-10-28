@@ -6,11 +6,12 @@ from pydantic import ValidationError
 from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session
 
-from flowweave.modules.cases.application import service
+from flowweave.modules.cases.application import coordination, service
 from flowweave.modules.cases.infrastructure.models import (
     Case,
     CaseAgentTask,
     CaseControlPlan,
+    CaseControlRound,
     CaseDecisionProposal,
     CaseFlowRun,
     CaseStage,
@@ -34,6 +35,7 @@ def database():
 
 @pytest.fixture
 def case_db(monkeypatch, tmp_path):
+    monkeypatch.setattr(coordination, "_enqueue", lambda db, entry: None)
     engine = create_engine("sqlite://")
     # PostgreSQL session variables are irrelevant to SQLite; ORM tenant filters remain active.
     event.listen(
@@ -48,6 +50,7 @@ def case_db(monkeypatch, tmp_path):
         CaseStage,
         CaseAgentTask,
         CaseControlPlan,
+        CaseControlRound,
         CaseDecisionProposal,
         CaseFlowRun,
         FlowRun,
@@ -68,7 +71,7 @@ def case_db(monkeypatch, tmp_path):
     monkeypatch.setattr(
         service.work_directories, "get_work_directory", lambda db, workspace, id: {"id": id}
     )
-    monkeypatch.setattr(service, "_write_case_files", lambda db, item: None)
+    monkeypatch.setattr(service, "write_case_files", lambda db, item: None)
     with tenant_user("owner"), Session(engine) as db:
         yield db, tmp_path
     engine.dispose()
@@ -78,6 +81,204 @@ def create_case(db):
     return service.create_case(
         db, CaseCreateWrite(name="客户迁移", description="背景说明", objective="完成迁移")
     )
+
+
+@pytest.fixture
+def configured_case(case_db, monkeypatch):
+    db, _ = case_db
+    item = create_case(db)
+    config = CaseControlConversationWrite(
+        model_provider_id="provider",
+        model_name="model",
+        reasoning_effort=None,
+        capability_version_ids=["skill-version"],
+        credential_ids=["credential-reference"],
+    )
+    db.get(Case, item["id"]).session_config_json = config.model_dump()
+    db.get(Case, item["id"]).materials_json = [
+        {"kind": "LINK", "name": "验收资料", "value": "https://example.test/spec"}
+    ]
+    # Insert in reverse order to prove the context follows the saved path.
+    for position in (1, 0):
+        template = FlowRun(
+            id=f"template-{position}",
+            flow_definition_id="flow",
+            run_no=position + 1,
+            state="DRAFT",
+            name=f"template {position}",
+            run_mode="AUTOMATIC",
+            automation_plan_json={"start_node_key": "start", "readiness": {"ready": True}},
+        )
+        db.add(template)
+        db.add(
+            CaseStage(
+                case_id=item["id"],
+                stage_key=f"stage-{position}",
+                name=f"阶段 {position}",
+                position=position,
+                execution_mode="CONTINUOUS",
+                flow_run_id=template.id,
+                state="ACTIVE" if position == 0 else "PENDING",
+            )
+        )
+    db.commit()
+    monkeypatch.setattr(
+        service,
+        "list_providers",
+        lambda db: [
+            {
+                "id": "provider",
+                "available_for_nodes": True,
+                "models": [{"model_name": "model", "enabled": True}],
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        service, "validate_template_configuration", lambda db, caps, creds: (caps, creds)
+    )
+    monkeypatch.setattr(service.conversations, "assert_conversation_stopped", lambda *args: None)
+    return db, item, config
+
+
+def test_coordination_round_freezes_configuration_path_and_materials_without_starting_flow(
+    configured_case, monkeypatch
+):
+    db, item, config = configured_case
+    submitted = []
+
+    def bootstrap(db, workspace_id, **kwargs):
+        submitted.append(kwargs)
+        # Exercise the native bootstrap's internal commit boundary.
+        db.commit()
+        return {"conversation": {"id": kwargs["conversation_id"]}, "cursor": "formal-event"}
+
+    monkeypatch.setattr(service.conversations, "bootstrap_conversation", bootstrap)
+    queued = service.create_case_control_conversation(db, item["id"], config, "round-command")
+    entry = db.get(CaseControlRound, queued["current_control_round_id"])
+    assert entry.state == "PENDING" and submitted == []
+    assert [stage["position"] for stage in entry.context_snapshot_json["stages"]] == [0, 1]
+    assert entry.context_snapshot_json["materials"][0]["value"] == "https://example.test/spec"
+    assert "完成迁移" in entry.initial_prompt and "template-0" in entry.initial_prompt
+    original_prompt = entry.initial_prompt
+    db.get(Case, item["id"]).session_config_json = {"model_provider_id": "changed"}
+    db.get(Case, item["id"]).materials_json = []
+    db.commit()
+    coordination.deliver_control_round(db, entry.id)
+    db.commit()
+    coordination.deliver_control_round(db, entry.id)
+    assert len(submitted) == 1
+    assert submitted[0]["content"] == original_prompt
+    assert submitted[0]["model_provider_id"] == "provider"
+    assert submitted[0]["capability_version_ids"] == ("skill-version",)
+    assert submitted[0]["credential_ids"] == ("credential-reference",)
+    assert entry.message_cursor == "formal-event"
+    assert db.get(Case, item["id"]).control_conversation_binding_id == entry.binding_id
+    assert all(run.state == "DRAFT" for run in db.scalars(select(FlowRun)))
+
+
+def test_coordination_explicit_retry_reuses_frozen_uuid_and_does_not_create_new_round(
+    configured_case, monkeypatch
+):
+    db, item, config = configured_case
+    calls = []
+
+    def bootstrap(db, workspace_id, **kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            raise DomainError("AGENT_BOOTSTRAP_DELIVERY_AMBIGUOUS", "unknown", 504)
+        return {"conversation": {"id": kwargs["conversation_id"]}}
+
+    monkeypatch.setattr(service.conversations, "bootstrap_conversation", bootstrap)
+    queued = service.create_case_control_conversation(db, item["id"], config, "first")
+    round_id = queued["current_control_round_id"]
+    coordination.deliver_control_round(db, round_id)
+    db.commit()
+    assert db.get(CaseControlRound, round_id).state == "FAILED"
+    assert db.get(Case, item["id"]).control_conversation_binding_id is None
+    retried = coordination.retry_control_round(db, item["id"], round_id)
+    assert retried["current_control_round_id"] == round_id
+    coordination.deliver_control_round(db, round_id)
+    db.commit()
+    assert calls[0] == calls[1]
+    assert len(list(db.scalars(select(CaseControlRound)))) == 1
+    assert db.get(CaseControlRound, round_id).delivery_attempt == 2
+
+
+def test_new_round_retains_history_and_old_request_never_reselects_old_coordinator(
+    configured_case, monkeypatch
+):
+    db, item, config = configured_case
+    monkeypatch.setattr(
+        service.conversations,
+        "bootstrap_conversation",
+        lambda db, workspace, **kw: {"conversation": {"id": kw["conversation_id"]}},
+    )
+    first = service.create_case_control_conversation(db, item["id"], config, "one")
+    coordination.deliver_control_round(db, first["current_control_round_id"])
+    db.commit()
+    first_binding = db.get(Case, item["id"]).control_conversation_binding_id
+    second = service.create_case_control_conversation(db, item["id"], config, "two")
+    with pytest.raises(DomainError) as error:
+        service.create_case_control_conversation(db, item["id"], config, "three")
+    assert error.value.code == "CASE_AGENT_START_PENDING"
+    coordination.deliver_control_round(db, second["current_control_round_id"])
+    db.commit()
+    replay = service.create_case_control_conversation(db, item["id"], config, "one")
+    assert replay["current_control_round_id"] == second["current_control_round_id"]
+    assert len(replay["control_rounds"]) == 2
+    assert replay["control_conversation_binding_id"] != first_binding
+    assert (
+        coordination.get_control_round(db, item["id"], first["current_control_round_id"])["state"]
+        == "STARTED"
+    )
+
+
+def test_running_coordinator_blocks_new_round_and_preserves_current_binding(
+    configured_case, monkeypatch
+):
+    db, item, config = configured_case
+    db.get(Case, item["id"]).control_conversation_binding_id = "running-binding"
+    db.commit()
+
+    def running(*args):
+        raise DomainError("AGENT_CONVERSATION_RUNNING", "会话正在运行", 409)
+
+    monkeypatch.setattr(service.conversations, "assert_conversation_stopped", running)
+    with pytest.raises(DomainError) as error:
+        service.create_case_control_conversation(db, item["id"], config, "new-round")
+    assert error.value.code == "AGENT_CONVERSATION_RUNNING"
+    assert db.get(Case, item["id"]).control_conversation_binding_id == "running-binding"
+    assert not list(db.scalars(select(CaseControlRound)))
+
+
+@pytest.mark.parametrize("state", ["PAUSED", "COMPLETED", "ARCHIVED"])
+def test_round_start_obeys_case_state_before_runtime_writes(configured_case, state):
+    db, item, config = configured_case
+    db.get(Case, item["id"]).state = state
+    db.commit()
+    with pytest.raises(DomainError):
+        service.create_case_control_conversation(db, item["id"], config, "forbidden")
+    assert not list(db.scalars(select(CaseControlRound)))
+
+
+def test_delivery_revalidates_path_and_configuration_and_preserves_failed_audit(
+    configured_case, monkeypatch
+):
+    db, item, config = configured_case
+    queued = service.create_case_control_conversation(db, item["id"], config, "one")
+    db.get(FlowRun, "template-0").automation_plan_json = {}
+    db.commit()
+    calls = []
+    monkeypatch.setattr(
+        service.conversations,
+        "bootstrap_conversation",
+        lambda *args, **kwargs: calls.append(kwargs),
+    )
+    coordination.deliver_control_round(db, queued["current_control_round_id"])
+    db.commit()
+    entry = db.get(CaseControlRound, queued["current_control_round_id"])
+    assert entry.state == "FAILED" and entry.error_code == "CASE_TEMPLATE_UNAVAILABLE"
+    assert calls == []
 
 
 def test_basics_save_independently_and_reject_stale_and_forged_files(case_db):
@@ -370,7 +571,7 @@ def test_case_agent_requires_complete_path_before_bootstrap_and_preserves_bindin
 
     def bootstrap(db, workspace_id, **kwargs):
         created.append(kwargs)
-        return {"conversation": {"id": "case-binding"}}
+        return {"conversation": {"id": kwargs["conversation_id"]}}
 
     monkeypatch.setattr(service.conversations, "bootstrap_conversation", bootstrap)
     with pytest.raises(DomainError) as error:
@@ -437,7 +638,12 @@ def test_case_agent_requires_complete_path_before_bootstrap_and_preserves_bindin
         ),
     )
     started = service.create_case_control_conversation(db, item["id"], payload, "start-case")
-    assert started["control_conversation_binding_id"] == "case-binding"
+    assert started["control_conversation_binding_id"] is None
+    assert created == []
+    coordination.deliver_control_round(db, started["current_control_round_id"])
+    db.commit()
+    started = service.get_case(db, item["id"])
+    assert started["control_conversation_binding_id"] == created[0]["conversation_id"]
     assert created[0]["work_directory_id"] == item["control_work_directory_id"]
     assert created[0]["work_directory_id"] != item["work_directory_id"]
     assert "受控动作" in created[0]["content"]
@@ -501,7 +707,7 @@ def test_case_agent_revalidates_start_conditions_before_any_runtime_write(
         service, "validate_template_configuration", lambda db, caps, creds: (caps, creds)
     )
     writes = []
-    monkeypatch.setattr(service, "_write_case_files", lambda *args: writes.append("files"))
+    monkeypatch.setattr(service, "write_case_files", lambda *args: writes.append("files"))
     monkeypatch.setattr(
         service.conversations,
         "bootstrap_conversation",

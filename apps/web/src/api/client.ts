@@ -631,7 +631,7 @@ export const api = {
   saveCaseSessionConfig: (id: string, expected_row_version: number, config: import('../types').CaseSessionConfig) =>
     request<Case>(`/cases/${encodeURIComponent(id)}/session-config`, json('PUT', { expected_row_version, ...config })),
   deleteCase: (id: string) => request<void>(`/cases/${encodeURIComponent(id)}`, json('DELETE', undefined, true)),
-  deleteCaseControlConversation: (id: string) => request<void>(`/cases/${encodeURIComponent(id)}/control-conversation`, json('DELETE', undefined, true)),
+  deleteCaseControlConversation: (id: string, bindingId?: string) => request<void>(`/cases/${encodeURIComponent(id)}/control-conversation${bindingId ? `?binding_id=${encodeURIComponent(bindingId)}` : ''}`, json('DELETE', undefined, true)),
   case: (id: string) => request<Case>(`/cases/${encodeURIComponent(id)}`),
   caseStageTemplates: (caseId: string) => request<import('../types').CaseStageTemplate[]>(`/cases/${encodeURIComponent(caseId)}/stage-templates`),
   setCaseStageState: (caseId: string, stageId: string, expected_case_row_version: number, state: import('../types').CaseStage['state']) =>
@@ -648,6 +648,8 @@ export const api = {
     request<import('../types').CaseControlPlan>(`/cases/${encodeURIComponent(caseId)}/control-plans/${encodeURIComponent(planId)}/retry`, json('POST')),
   createCaseControlConversation: (caseId: string, body: { model_provider_id: string; model_name: string; reasoning_effort?: string | null; capability_version_ids?: string[]; credential_ids?: string[] }, idempotencyKey = randomId()) =>
     request<Case>(`/cases/${encodeURIComponent(caseId)}/control-conversation`, json('POST', body, idempotencyKey)),
+  retryCaseControlRound: (caseId: string, roundId: string) =>
+    request<Case>(`/cases/${encodeURIComponent(caseId)}/control-rounds/${encodeURIComponent(roundId)}/retry`, json('POST')),
 
   nodes: (directoryId?: string) => request<NodeAsset[]>(`/node-assets${directoryId ? `?directory_id=${directoryId}` : ''}`),
   node: (id: string) => request<NodeAsset>(`/node-assets/${id}`),
