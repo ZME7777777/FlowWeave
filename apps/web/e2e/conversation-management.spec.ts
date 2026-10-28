@@ -158,3 +158,98 @@ test('deletion from the final page returns to a valid page after the result shri
   await expect(page.locator('.conversation-management-table tbody tr')).toHaveCount(20);
   expect(state.requests.map(request => request.ids)).toEqual([['batch-conversation-21']]);
 });
+
+test('compact management emphasizes records and keeps archive filters and row actions independent', async ({ page }) => {
+  const now = '2026-10-28T02:00:00Z';
+  const old = '2026-07-01T02:00:00Z';
+  const active = Array.from({ length: 25 }, (_, index) => ({
+    id: `compact-${index}`, display_title: `项目复盘 ${index + 1}：核对阶段目标与下一步工作安排`,
+    pinned: false, unread: false, archived_at: null, created_at: old, updated_at: now, last_message_at: now,
+  }));
+  const archived = [{ ...active[0], id: 'archived-1', display_title: '已归档的项目复盘', archived_at: now, last_message_at: old },
+    { ...active[1], id: 'pinned-1', display_title: '置顶复盘', archived_at: now, pinned: true, last_message_at: old },
+    { ...active[2], id: 'unread-1', display_title: '未读复盘', archived_at: now, unread: true, last_message_at: old }];
+  let restoreCount = 0;
+  let reads = 0;
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request(); const url = new URL(request.url()); const path = url.pathname;
+    if (path.endsWith('/auth/me')) return respond(route, { id: 'compact-manager', username: 'manager', role: 'USER', can_use_agent_sessions: true });
+    if (path.endsWith('/agent-workspaces/default')) return respond(route, { id: 'compact-workspace', display_name: '工作区', desired_state: 'RUNNING', updated_at: now });
+    if (path.endsWith('/work-directories')) return respond(route, { root: { id: 'root', display_name: '根工作区' }, items: Array.from({ length: 30 }, (_, index) => ({ id: `directory-${index}`, display_name: `项目工作区 ${index + 1}` })) });
+    if (path.endsWith('/restore') && request.method() === 'POST') { restoreCount += 1; return respond(route, { ...archived[0], archived_at: null }); }
+    if (path.endsWith('/conversation-management')) { reads += 1; return respond(route, { items: url.searchParams.get('archived') === 'true' ? archived : active, truncated: false }); }
+    if (path.endsWith('/node-directories') || path.endsWith('/node-assets')) return respond(route, []);
+    return respond(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'AI 工作台' }).click();
+  await page.getByRole('button', { name: '会话管理', exact: true }).click();
+  const rows = page.locator('.conversation-management-table tbody tr');
+  await expect(rows).toHaveCount(20);
+  await rows.first().getByText(active[0].display_title).click();
+  await expect(rows.first().getByRole('checkbox')).toBeChecked();
+  await expect(rows.first()).toHaveClass('selected');
+  await rows.first().getByRole('checkbox').uncheck();
+  await rows.first().getByRole('checkbox').press('Space');
+  await expect(rows.first().getByRole('checkbox')).toBeChecked();
+  await page.getByRole('button', { name: '下一页', exact: true }).click();
+  await expect(page.getByText('已选 1 / 25 个会话', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '上一页', exact: true }).click();
+  for (const width of [1920, 1440, 1024]) {
+    await page.setViewportSize({ width, height: 600 });
+    await expect.poll(() => page.locator('.conversation-management-page').evaluate(element => element.getBoundingClientRect().bottom)).toBeLessThanOrEqual(601);
+    const bounds = await page.locator('.conversation-management-page').evaluate(element => {
+      const table = element.querySelector('.conversation-management-table-wrap')!;
+      const first = element.querySelector('tbody tr')!;
+      const heading = element.querySelector('.conversation-management-header')!;
+      const workspace = element.querySelector('.conversation-management-workspace-list')!;
+      return { start: element.getBoundingClientRect().top, table: table.getBoundingClientRect().top,
+        row: first.getBoundingClientRect().height, heading: heading.getBoundingClientRect().height,
+        scroll: table.scrollHeight, client: table.clientHeight, workspaceScroll: workspace.scrollHeight,
+        workspaceClient: workspace.clientHeight, page: document.documentElement.scrollHeight, viewport: innerHeight };
+    });
+    expect(bounds.heading).toBeLessThanOrEqual(48);
+    expect(bounds.table - bounds.start).toBeLessThanOrEqual(width === 1024 ? 140 : 100);
+    expect(bounds.row).toBeLessThanOrEqual(46);
+    expect(bounds.scroll).toBeGreaterThan(bounds.client);
+    expect(bounds.workspaceScroll).toBeGreaterThan(bounds.workspaceClient);
+    expect(bounds.page).toBeLessThanOrEqual(bounds.viewport);
+    await expect(page.getByRole('button', { name: '下一页', exact: true })).toBeInViewport();
+    const scroller = page.locator('.conversation-management-table-wrap');
+    await scroller.hover(); await page.mouse.wheel(0, 400);
+    await expect.poll(() => scroller.evaluate(node => node.scrollTop)).toBeGreaterThan(0);
+    await expect(page.getByRole('columnheader', { name: '会话名称', exact: true })).toBeInViewport();
+    await page.getByRole('button', { name: '下一页', exact: true }).click();
+    await expect(rows).toHaveCount(5);
+    await expect.poll(() => scroller.evaluate(node => node.scrollTop)).toBe(0);
+    await page.getByRole('button', { name: '上一页', exact: true }).click();
+    await expect(rows).toHaveCount(20);
+    await page.screenshot({ path: test.info().outputPath(`conversation-management-${width}.png`) });
+  }
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.getByRole('button', { name: '已归档', exact: true }).click();
+  await expect(rows).toHaveCount(1);
+  await expect(page.getByText('已选 0 / 1 个会话', { exact: true })).toBeVisible();
+  await page.getByRole('checkbox', { name: '包含置顶' }).check();
+  await page.getByRole('checkbox', { name: '包含未读' }).check();
+  await expect(rows).toHaveCount(3);
+  await page.getByRole('button', { name: '最后活动时间', exact: true }).click();
+  await page.getByRole('option', { name: '30 天前' }).click();
+  await expect(rows).toHaveCount(3);
+  await page.getByRole('button', { name: '最后活动时间', exact: true }).click();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('listbox', { name: '最后活动时间' })).toHaveCount(0);
+  await page.getByRole('button', { name: '最后活动时间', exact: true }).click();
+  await page.getByRole('heading', { name: '会话管理', exact: true }).click();
+  await expect(page.getByRole('listbox', { name: '最后活动时间' })).toHaveCount(0);
+  await page.getByRole('textbox', { name: '搜索会话', exact: true }).fill('已归档的');
+  await expect(rows).toHaveCount(1);
+  await page.getByRole('button', { name: '恢复会话 已归档的项目复盘', exact: true }).click();
+  await expect.poll(() => restoreCount).toBe(1);
+  await expect(rows.first().getByRole('checkbox')).not.toBeChecked();
+  await page.getByRole('button', { name: '重置', exact: true }).click();
+  await expect(rows).toHaveCount(1);
+  const before = reads;
+  await page.getByRole('button', { name: '刷新', exact: true }).click();
+  await expect.poll(() => reads).toBeGreaterThan(before);
+});

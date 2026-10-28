@@ -1,7 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArchiveRestore, ArchiveX, CheckSquare, ChevronDown, Clock3, Folder, MessageSquareText, RefreshCw, Trash2 } from 'lucide-react';
+import { ArchiveRestore, ArchiveX, ChevronDown, Clock3, Folder, RefreshCw, Search, Trash2, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Pagination } from '../components/Pagination';
+import { useEscapeClose } from '../components/useEscapeClose';
+import './conversation-management.css';
 import { api } from '../api/client';
 import type { AgentConversationManagementDeleteResult, AgentConversationManagementPage, ManagedAgentConversation } from '../types';
 
@@ -39,6 +41,7 @@ function formatTime(value: string) {
 function PeriodDropdown({ value, onChange }: { value: InactivePeriod; onChange: (v: InactivePeriod) => void }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  useEscapeClose(() => setOpen(false), open);
   const label = PERIOD_OPTIONS.find(o => o.value === value)?.label ?? value;
 
   useEffect(() => {
@@ -55,11 +58,13 @@ function PeriodDropdown({ value, onChange }: { value: InactivePeriod; onChange: 
       <button
         type="button"
         className="cm-period-trigger secondary"
+        aria-label="最后活动时间"
+        title="按最后活动时间筛选"
         aria-haspopup="listbox"
         aria-expanded={open}
         onClick={() => setOpen(o => !o)}
       >
-        <span>{label}</span>
+        <Clock3 size={13}/><span>{label}</span>
         <ChevronDown size={12} className={open ? 'rotated' : ''} />
       </button>
       {open && (
@@ -92,6 +97,7 @@ export function ConversationManagementPage() {
   const [confirming, setConfirming] = useState(false);
   const [page, setPage] = useState(1);
   const [selectedWorkDirectoryId, setSelectedWorkDirectoryId] = useState<string | undefined>();
+  const tableRef = useRef<HTMLDivElement>(null);
   const [deletionProgress, setDeletionProgress] = useState({ processed: 0, total: 0 });
 
   const workspace = useQuery({ queryKey: ['agent-workspace', 'default'], queryFn: ({ signal }) => api.defaultAgentWorkspace(signal) });
@@ -137,6 +143,8 @@ export function ConversationManagementPage() {
 
   const currentPage = Math.min(page, Math.max(1, Math.ceil(visible.length / PAGE_SIZE)));
   const paged = useMemo(() => visible.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE), [visible, currentPage]);
+
+  useEffect(() => { if (tableRef.current) tableRef.current.scrollTop = 0; }, [currentPage, selectedWorkDirectoryId, query, period, archiveFilter, includePinned, includeUnread]);
 
   const visibleIds = useMemo(() => new Set(visible.map(item => item.id)), [visible]);
   const selectedVisible = visible.filter(item => selectedIds.has(item.id));
@@ -215,40 +223,46 @@ export function ConversationManagementPage() {
     return next;
   });
 
-  return <section className="page conversation-management-page">
-    <header className="conversation-management-header">
-      <h1>会话管理</h1>
-      <div className="conversation-management-metrics"><span><MessageSquareText size={15}/>{conversations.data?.items.length ?? 0} 个会话</span><button className="secondary" disabled={conversations.isFetching || remove.isPending} onClick={() => void conversations.refetch()}><RefreshCw size={14} className={conversations.isFetching ? 'spin' : ''}/>刷新</button></div>
-    </header>
-    {conversations.data?.truncated && <div className="conversation-management-notice warning"><Clock3 size={17}/><span>当前仅显示最近 500 个会话。请先完成本次清理，再继续管理更早的会话。</span></div>}
+  const filtersActive = Boolean(query || period !== 'all' || includePinned || includeUnread);
+  const loading = conversations.isLoading || workspace.isLoading || workDirectories.isLoading;
+  const readError = conversations.error ?? workspace.error ?? workDirectories.error;
+
+  return <section className="page conversation-management-page compact-conversation-management">
     <section className="conversation-management-layout">
       <aside className="conversation-management-workspaces" aria-label="Agent 工作区">
-        <header><b>工作区</b></header>
+        <header><Folder size={15}/><b>工作区</b></header>
         <div className="conversation-management-workspace-list">
           <button type="button" className={!selectedWorkDirectoryId ? 'active' : ''} aria-pressed={!selectedWorkDirectoryId} disabled={remove.isPending} onClick={() => setSelectedWorkDirectoryId(undefined)}>
             <Folder size={16}/><span>{workDirectories.data?.root.display_name ?? '根工作区'}</span>
           </button>
           {workDirectories.data?.items.map(directory => <div key={directory.id} className="conversation-management-workspace-item">
             <button type="button" className={selectedWorkDirectoryId === directory.id ? 'active' : ''} aria-pressed={selectedWorkDirectoryId === directory.id} disabled={remove.isPending} onClick={() => setSelectedWorkDirectoryId(directory.id)}>
-              <Folder size={16}/><span>{directory.display_name}{directory.state === 'ARCHIVED' ? '（已归档）' : ''}</span>
+              <Folder size={16}/><span title={directory.display_name}>{directory.display_name}{directory.state === 'ARCHIVED' ? '（已归档）' : ''}</span>
             </button>
             {directory.state === 'ARCHIVED' && <button type="button" className="secondary" aria-label={`恢复工作区 ${directory.display_name}`} disabled={restoreDirectory.isPending || remove.isPending} onClick={() => restoreDirectory.mutate(directory.id)}><ArchiveRestore size={14}/>恢复</button>}
           </div>)}
         </div>
       </aside>
       <section className="conversation-management-panel">
-      <div className="conversation-management-toolbar">
-        <label>搜索会话<input value={query} onChange={event => setQuery(event.target.value)} placeholder={`搜索 ${selectedWorkspaceLabel} 会话`}/></label>
-        <label>最后活动时间<PeriodDropdown value={period} onChange={setPeriod}/></label>
-        <label>会话状态<select value={archiveFilter} onChange={event => setArchiveFilter(event.target.value as ArchiveFilter)}><option value="active">未归档</option><option value="archived">已归档</option></select></label>
-        <label className="conversation-management-check"><input type="checkbox" checked={includePinned} onChange={event => setIncludePinned(event.target.checked)}/><span>置顶</span></label>
-        <label className="conversation-management-check"><input type="checkbox" checked={includeUnread} onChange={event => setIncludeUnread(event.target.checked)}/><span>未读</span></label>
-      </div>
-      {conversations.isLoading || workspace.isLoading || workDirectories.isLoading ? <div className="empty">正在读取会话…</div> : conversations.isError || workspace.isError || workDirectories.isError ? <div className="empty error">{conversations.error?.message ?? workspace.error?.message ?? workDirectories.error?.message}</div> : <>
-        <div className="conversation-management-selection"><label><input type="checkbox" aria-label="选择当前筛选结果中的全部会话" checked={selectAllVisible} ref={input => { if (input) input.indeterminate = !selectAllVisible && selectedVisible.length > 0; }} onChange={toggleVisible}/><CheckSquare size={15}/><span>选择当前结果</span></label><span>已选 {selectedVisible.length} / {visible.length} 个会话</span><button className="danger" disabled={selectedVisible.length === 0 || remove.isPending} onClick={() => { remove.reset(); setConfirming(true); }}><Trash2 size={14}/>删除已选会话</button></div>
-        <div className="conversation-management-table-wrap"><table className="conversation-management-table"><thead><tr><th>选择</th><th>会话</th><th>最后活动</th><th>创建时间</th><th>状态</th><th>操作</th></tr></thead><tbody>{paged.map(item => <tr key={item.id}><td><input type="checkbox" aria-label={`选择会话 ${conversationTitle(item)}`} checked={selectedIds.has(item.id)} onChange={() => toggle(item.id)}/></td><td><b>{conversationTitle(item)}</b></td><td>{formatTime(activityTime(item))}</td><td>{formatTime(item.created_at)}</td><td><span className="conversation-management-status">{item.archived_at ? '已归档' : item.pinned ? '置顶' : item.unread ? '未读' : '普通'}</span></td><td>{item.archived_at && <button type="button" className="secondary" aria-label={`恢复会话 ${conversationTitle(item)}`} disabled={restore.isPending || remove.isPending} onClick={() => restore.mutate(item.id)}><ArchiveRestore size={14}/>恢复</button>}</td></tr>)}</tbody></table>{visible.length === 0 && <div className="empty compact"><ArchiveX size={25}/><b>没有符合当前条件的会话</b><span>调整筛选条件，或等待正在运行的会话完成。</span></div>}</div>
-        <Pagination page={currentPage} pageSize={PAGE_SIZE} total={visible.length} onPageChange={setPage}/>
-      </>}
+        <header className="conversation-management-header">
+          <div><h1>会话管理</h1><span className="conversation-management-directory-name" title={selectedWorkspaceLabel}>{selectedWorkspaceLabel}</span><span className="conversation-management-count">{conversations.data?.items.length ?? 0} 个会话</span></div>
+          <button className="ghost" disabled={conversations.isFetching || remove.isPending} onClick={() => void conversations.refetch()}><RefreshCw size={14} className={conversations.isFetching ? 'spin' : ''}/>刷新</button>
+        </header>
+        <div className="conversation-management-toolbar">
+          <label className="conversation-management-search"><Search size={14}/><input aria-label="搜索会话" value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索会话名称…"/>{query && <button type="button" aria-label="清除搜索" onClick={() => setQuery('')}><X size={13}/></button>}</label>
+          <div className="conversation-management-archive-filter" role="group" aria-label="会话状态"><button type="button" aria-pressed={archiveFilter === 'active'} onClick={() => setArchiveFilter('active')}>未归档</button><button type="button" aria-pressed={archiveFilter === 'archived'} onClick={() => setArchiveFilter('archived')}>已归档</button></div>
+          <PeriodDropdown value={period} onChange={setPeriod}/>
+          <label className="conversation-management-check"><input type="checkbox" checked={includePinned} onChange={event => setIncludePinned(event.target.checked)}/><span>包含置顶</span></label>
+          <label className="conversation-management-check"><input type="checkbox" checked={includeUnread} onChange={event => setIncludeUnread(event.target.checked)}/><span>包含未读</span></label>
+          {filtersActive && <button className="ghost conversation-management-reset" onClick={() => { setQuery(''); setPeriod('all'); setIncludePinned(false); setIncludeUnread(false); }}>重置</button>}
+          <button className="danger conversation-management-delete" disabled={selectedVisible.length === 0 || remove.isPending || loading || Boolean(readError)} onClick={() => { remove.reset(); setConfirming(true); }}><Trash2 size={14}/>删除已选会话</button>
+        </div>
+        {conversations.data?.truncated && <div className="conversation-management-notice warning"><Clock3 size={14}/><span>当前仅显示最近 500 个会话。请先完成本次清理，再继续管理更早的会话。</span></div>}
+        {(restore.isError || restoreDirectory.isError) && <div className="conversation-management-notice warning" role="alert">{restore.error?.message ?? restoreDirectory.error?.message}</div>}
+        {loading ? <div className="empty">正在读取会话…</div> : readError ? <div className="empty error" role="alert"><span>{readError.message}</span><button className="secondary" onClick={() => void Promise.all([workspace.refetch(), workDirectories.refetch(), conversations.refetch()])}>重试</button></div> : <>
+          <div className="conversation-management-table-wrap" ref={tableRef}><table className="conversation-management-table"><thead><tr><th scope="col"><input type="checkbox" aria-label="选择当前筛选结果中的全部会话" title="选择全部匹配结果（含其他页）" checked={selectAllVisible} disabled={!visible.length || remove.isPending} ref={input => { if (input) input.indeterminate = !selectAllVisible && selectedVisible.length > 0; }} onChange={toggleVisible}/></th><th scope="col">会话名称</th><th scope="col">最后活动</th><th scope="col">创建时间</th><th scope="col">状态</th><th scope="col">操作</th></tr></thead><tbody>{paged.map(item => <tr key={item.id} className={selectedIds.has(item.id) ? 'selected' : ''} onClick={event => { if (!(event.target as HTMLElement).closest('button, input, label, a')) toggle(item.id); }}><td><input type="checkbox" aria-label={`选择会话 ${conversationTitle(item)}`} checked={selectedIds.has(item.id)} onChange={() => toggle(item.id)}/></td><td><b title={conversationTitle(item)}>{conversationTitle(item)}</b></td><td>{formatTime(activityTime(item))}</td><td>{formatTime(item.created_at)}</td><td><span className="conversation-management-status">{item.archived_at ? '已归档' : item.pinned ? '置顶' : item.unread ? '未读' : '普通'}</span></td><td>{item.archived_at && <button type="button" className="secondary" aria-label={`恢复会话 ${conversationTitle(item)}`} disabled={restore.isPending || remove.isPending} onClick={() => restore.mutate(item.id)}><ArchiveRestore size={14}/>恢复</button>}</td></tr>)}</tbody></table>{visible.length === 0 && <div className="empty compact"><ArchiveX size={25}/><b>没有符合当前条件的会话</b><span>调整筛选条件，或等待正在运行的会话完成。</span></div>}</div>
+          <footer className="conversation-management-footer"><span aria-live="polite">已选 {selectedVisible.length} / {visible.length} 个会话</span><Pagination page={currentPage} pageSize={PAGE_SIZE} total={visible.length} onPageChange={setPage}/></footer>
+        </>}
       </section>
     </section>
     {confirming && <div className="modal-backdrop"><section className="modal conversation-management-confirm" role="dialog" aria-modal="true" aria-label="确认删除会话"><header><div><span className="eyebrow">PERMANENT DELETION</span><h2>删除 {remove.isPending ? deletionProgress.total : selectedVisible.length} 个会话？</h2></div><button className="ghost" disabled={remove.isPending} onClick={() => setConfirming(false)}>取消</button></header><p>此操作不可恢复。系统会在删除时再次检查会话是否仍在运行；状态变化的会话将跳过，不会被强制中断。</p>{remove.isPending && <p role="status">已处理 {deletionProgress.processed} / {deletionProgress.total} 个会话…</p>}{remove.isError && <p role="alert" className="notice error">{remove.error.message}</p>}<footer><button className="secondary" disabled={remove.isPending} onClick={() => setConfirming(false)}>返回</button><button className="danger" disabled={remove.isPending || selectedVisible.length === 0} onClick={() => remove.mutate({ workspaceId: workspace.data!.id, workDirectoryId: selectedWorkDirectoryId, bindingIds: selectedVisible.map(item => item.id) })}><Trash2 size={14}/>{remove.isPending ? '删除中…' : '确认永久删除'}</button></footer></section></div>}
