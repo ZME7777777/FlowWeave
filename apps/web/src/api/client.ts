@@ -1,4 +1,4 @@
-import type { CapabilityAssetType, CapabilityDirectoryPage, CapabilityCollectionSort, CapabilitySort, RepositoryPage } from '../types';
+import type { CapabilityPackageFiles, CapabilityPackageFile, CapabilityPackageComparison, CapabilityPackageFileDiff, CapabilityAssetType, CapabilityDirectoryPage, CapabilityCollectionSort, CapabilitySort, RepositoryPage } from '../types';
 import type {
   AuthUser, LdapDirectory, LdapUser, PlatformUser,
   AgentProfileVersion, ArtifactInput, ArtifactVersion, ArtifactVersionPage, RuntimeArtifactAuditPage, CapabilityAsset, CapabilityImportResult, FlowDefinition, FlowRun, FlowRunAutomaticRecord, FlowRunAutomaticRecordUpdate, FlowRunAutomaticRecordWrite, FlowRunConversation, FlowRunRuntimeOverview, FlowRunRuntimeResource, FlowRunSummary, FlowWrite, MessageAttachmentInput, OpenHandsConversationEventBatch, McpSource, SkillSource, SkillVersionComparison,
@@ -708,6 +708,11 @@ export const api = {
     request<CapabilityCollection>(`/capability-collections/${id}`, json('PUT', body)),
   deleteCapabilityCollection: (id: string) =>
     request<void>(`/capability-collections/${id}`, json('DELETE')),
+  capabilityFiles: (id: string, signal?: AbortSignal) => request<CapabilityPackageFiles>(`/capabilities/${encodeURIComponent(id)}/files`, { signal }),
+  capabilityFile: (id: string, path: string, signal?: AbortSignal) => request<CapabilityPackageFile>(`/capabilities/${encodeURIComponent(id)}/file?${new URLSearchParams({ path })}`, { signal }),
+  capabilityComparison: (id: string, signal?: AbortSignal) => request<CapabilityPackageComparison>(`/capabilities/${encodeURIComponent(id)}/version-comparison`, { signal }),
+  capabilityFileDiff: (id: string, path: string, signal?: AbortSignal) => request<CapabilityPackageFileDiff>(`/capabilities/${encodeURIComponent(id)}/file-diff?${new URLSearchParams({ path })}`, { signal }),
+  updateCapabilityFiles: (id: string, expected_digest: string, files: Record<string, string>) => request<CapabilityAsset>(`/capabilities/${encodeURIComponent(id)}/files`, json('PUT', { expected_digest, files })),
   capabilitySource: (id: string) => request<SkillSource>(`/capabilities/${encodeURIComponent(id)}/source`),
   skillVersionComparison: (id: string) => request<SkillVersionComparison>(`/capabilities/${encodeURIComponent(id)}/skill-version-comparison`),
   rollbackSkillVersion: (id: string) => request<CapabilityAsset>(`/capabilities/${encodeURIComponent(id)}/rollback`, json('POST')),

@@ -166,7 +166,7 @@ test('published Context Bundle shows its frozen document directory before compil
   };
   await mockRepository(page, 'capabilities', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([bundle]) }));
   await mockRepository(page, 'capability-collections', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
-  await page.route('**/api/v1/capabilities/bundle-version/context-source', route => route.fulfill({
+  await page.route('**/api/v1/capabilities/bundle-version/files', route => route.fulfill({
     status: 200,
     contentType: 'application/json',
     body: JSON.stringify({
@@ -178,7 +178,8 @@ test('published Context Bundle shows its frozen document directory before compil
           { path: 'guides/02.md', title: '最终说明', content_sha256: '2'.repeat(64) },
         ],
       },
-      content: '[资料包 · 关联资料包]\n\n## 文档：总览',
+      compiled_content: '[资料包 · 关联资料包]\n\n## 文档：总览',
+      files: [{ path: 'README.md', title: '总览', byte_size: 20 }, { path: 'guides/02.md', title: '最终说明', byte_size: 20 }],
     }),
   }));
 
@@ -188,9 +189,9 @@ test('published Context Bundle shows its frozen document directory before compil
   const contextCard = page.getByRole('button', { name: '查看 Context 资料包' });
   await contextCard.click();
   const dialog = page.getByRole('dialog', { name: '查看 Context 资料包' });
-  await expect(dialog.getByText('资料目录')).toBeVisible();
-  await expect(dialog.getByText('入口：README.md · 全部文档均已加载')).toBeVisible();
-  await expect(dialog.getByText('最终说明')).toBeVisible();
+  await expect(dialog.getByRole('treeitem', { name: '总内容', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(dialog.getByRole('treeitem', { name: 'README.md', exact: true })).toBeVisible();
+  await expect(dialog.getByRole('treeitem', { name: '02.md', exact: true })).toBeVisible();
   await expect(dialog.locator('pre')).toContainText('## 文档：总览');
 });
 
@@ -299,8 +300,8 @@ test('capability editors overlay the top navigation without clipping their headi
   await mockRepository(page, 'capability-collections', route => route.fulfill({
     status: 200, contentType: 'application/json', body: '[]',
   }));
-  await page.route('**/api/v1/capabilities/skill-version/source', route => route.fulfill({
-    status: 200, contentType: 'application/json', body: JSON.stringify({ content: '# Layout skill' }),
+  await page.route('**/api/v1/capabilities/skill-version/files', route => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify({ digest: 'a'.repeat(64), files: [{ path: 'SKILL.md', editable: true }], compiled_content: null }),
   }));
   await page.route('**/api/v1/capabilities/mcp-version/mcp-source', route => route.fulfill({
     status: 200,
@@ -316,7 +317,7 @@ test('capability editors overlay the top navigation without clipping their headi
   await page.getByRole('button', { name: '能力仓库' }).click();
 
   const verifyEditor = async (dialogName: string, headingName: string) => {
-    const backdrop = page.locator('.capability-editor-backdrop');
+    const backdrop = page.locator(dialogName.startsWith('编辑 Skill') ? '.capability-package-backdrop' : '.capability-editor-backdrop');
     const dialog = page.getByRole('dialog', { name: dialogName });
     const bounds = await dialog.evaluate(element => {
       const heading = element.querySelector('h2');
@@ -325,7 +326,7 @@ test('capability editors overlay the top navigation without clipping their headi
       return { dialogBounds, headingBounds };
     });
 
-    await expect(backdrop).toHaveCSS('z-index', '60');
+    await expect(backdrop).toHaveCSS('z-index', dialogName.startsWith('编辑 Skill') ? '150' : '60');
     expect(bounds.dialogBounds.top).toBeGreaterThanOrEqual(0);
     expect(bounds.headingBounds?.top).toBeGreaterThanOrEqual(bounds.dialogBounds.top);
     expect(bounds.headingBounds?.bottom).toBeLessThanOrEqual(bounds.dialogBounds.bottom);
@@ -338,7 +339,7 @@ test('capability editors overlay the top navigation without clipping their headi
   const skillMenu = page.getByRole('menu', { name: 'Skill layout-skill 操作菜单' });
   await expect(skillMenu).toBeVisible();
   await skillMenu.getByRole('menuitem', { name: '编辑' }).click();
-  await verifyEditor('编辑 Skill layout-skill', '编辑 layout-skill');
+  await verifyEditor('编辑 Skill layout-skill', 'layout-skill');
   await page.getByRole('dialog', { name: '编辑 Skill layout-skill' }).getByRole('button', { name: '关闭' }).click();
 
   await page.getByRole('navigation', { name: '能力模块' }).getByRole('button', { name: /MCP/ }).click();

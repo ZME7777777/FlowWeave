@@ -1793,3 +1793,370 @@ def test_skill_keeps_current_and_previous_versions_with_comparison_and_rollback(
         if item["capability_key"] == "versioned-skill"
     ]
     assert [item["id"] for item in listed_after_rollback] == [second_id]
+def _publish_package(client, kind, filename, entries, **extra):
+    validated = client.post(
+        "/api/v1/capability-imports/validate",
+        json={
+            "capability_type": kind,
+            "filename": filename,
+            "content_base64": context_bundle_zip(entries),
+            **extra,
+        },
+    )
+    assert validated.status_code == 200, validated.text
+    committed = client.post(
+        "/api/v1/capability-imports",
+        json={"import_token": validated.json()["import_token"]},
+    )
+    assert committed.status_code == 201, committed.text
+    return committed.json()["capabilities"]
+
+
+def test_skill_package_tree_edits_scripts_preserves_resources_and_rejects_stale_editor(
+    client,
+):
+    source = (
+        "---\nname: complete-skill\ndescription: Full package\n---\n# Instructions\n"
+    )
+    entries = {
+        "team/complete/SKILL.md": source,
+        "team/complete/scripts/run.py": "print('one')",
+        "team/complete/config/defaults.yaml": "mode: default\n",
+        "team/complete/assets/icon.png": b"\x89PNG\r\n\x1a\n\x00binary",
+        "team/other/SKILL.md": "---\nname: other-skill\ndescription: Other\n---\n# Other\n",
+    }
+    published = _publish_package(client, "SKILL", "team.zip", entries)
+    original = next(
+        item["capability_id"]
+        for item in published
+        if item["capability_key"] == "complete-skill"
+    )
+    prefix = f"/api/v1/capabilities/{original}"
+    listing = client.get(f"{prefix}/files")
+    assert listing.status_code == 200, listing.text
+    package = listing.json()
+    assert {file["path"] for file in package["files"]} == {
+        "SKILL.md",
+        "scripts/run.py",
+        "config/defaults.yaml",
+        "assets/icon.png",
+    }
+    assert not next(
+        file for file in package["files"] if file["path"] == "assets/icon.png"
+    )["editable"]
+    script = client.get(f"{prefix}/file", params={"path": "scripts/run.py"})
+    assert script.json()["content"] == "print('one')"
+    image = client.get(f"{prefix}/file", params={"path": "assets/icon.png"})
+    assert image.json()["image"].startswith("data:image/png;base64,")
+    assert image.json()["content"] is None
+    for path in ("../other/SKILL.md", "/etc/passwd", "team/other/SKILL.md"):
+        assert client.get(f"{prefix}/file", params={"path": path}).status_code == 404
+        assert (
+            client.put(
+                f"{prefix}/files",
+                json={"expected_digest": package["digest"], "files": {path: "wrong"}},
+            ).status_code
+            == 404
+        )
+    assert (
+        client.put(
+            f"{prefix}/files",
+            json={
+                "expected_digest": "f" * 64,
+                "files": {"scripts/run.py": "print('two')"},
+            },
+        ).status_code
+        == 409
+    )
+    assert (
+        client.put(
+            f"{prefix}/files",
+            json={
+                "expected_digest": package["digest"],
+                "files": {"assets/icon.png": "replace binary"},
+            },
+        ).status_code
+        == 422
+    )
+    updated = client.put(
+        f"{prefix}/files",
+        json={
+            "expected_digest": package["digest"],
+            "files": {
+                "scripts/run.py": "print('two')",
+                "config/defaults.yaml": "mode: updated\n",
+            },
+        },
+    )
+    assert updated.status_code == 200, updated.text
+    current_id = updated.json()["id"]
+    current = f"/api/v1/capabilities/{current_id}"
+    assert client.get(f"{current}/source").json()["content"] == source
+    exported = client.get(f"{current}/package")
+    assert exported.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(exported.content)) as archive:
+        assert set(archive.namelist()) == {
+            "complete/SKILL.md",
+            "complete/scripts/run.py",
+            "complete/config/defaults.yaml",
+            "complete/assets/icon.png",
+        }
+        assert archive.read("complete/scripts/run.py") == b"print('two')"
+        assert (
+            archive.read("complete/assets/icon.png")
+            == entries["team/complete/assets/icon.png"]
+        )
+    comparison = client.get(f"{current}/version-comparison")
+    assert comparison.status_code == 200, comparison.text
+    assert {file["path"]: file["status"] for file in comparison.json()["files"]} == {
+        "SKILL.md": "unchanged",
+        "scripts/run.py": "modified",
+        "config/defaults.yaml": "modified",
+        "assets/icon.png": "unchanged",
+    }
+    diff = client.get(f"{current}/file-diff", params={"path": "scripts/run.py"})
+    assert diff.status_code == 200, diff.text
+    assert "-print('one')\n\\ No newline" in diff.json()["diff"]
+    assert "+print('two')\n\\ No newline" in diff.json()["diff"]
+    assert client.get(
+        f"{current}/file-diff", params={"path": "assets/icon.png"}
+    ).json()["preview_unavailable"]
+    stale = client.put(
+        f"{prefix}/files",
+        json={
+            "expected_digest": package["digest"],
+            "files": {"scripts/run.py": "stale"},
+        },
+    )
+    assert stale.status_code == 409, stale.text
+    assert (
+        client.get(f"{current}/file", params={"path": "scripts/run.py"}).json()[
+            "content"
+        ]
+        == "print('two')"
+    )
+    other_id = next(
+        item["capability_id"]
+        for item in published
+        if item["capability_key"] == "other-skill"
+    )
+    assert (
+        len(client.get(f"/api/v1/capabilities/{other_id}/files").json()["files"]) == 1
+    )
+
+
+def test_context_package_files_download_diff_two_versions_and_rollback(client):
+    def publish(entries):
+        return _publish_package(
+            client,
+            "CONTEXT",
+            "versioned-context.zip",
+            entries,
+            context_title="Versioned context",
+        )[0]["capability_id"]
+
+    first = publish(
+        {
+            "bundle/README.md": "# Introduction\nVersion one\n",
+            "bundle/old.txt": "Old document\n",
+        }
+    )
+    second_entries = {
+        "bundle/README.md": "# Introduction\nVersion two\n",
+        "bundle/notes/details.md": "# Details\nSecond\n",
+    }
+    second = publish(second_entries)
+    third_entries = {
+        "bundle/README.md": "# Introduction\nVersion three\n",
+        "bundle/new.md": "New document\n",
+    }
+    third = publish(third_entries)
+    records = [
+        item
+        for item in client.get("/api/v1/capabilities").json()
+        if item["capability_type"] == "CONTEXT"
+    ]
+    assert {item["id"] for item in records} == {second, third}
+    assert first not in {item["id"] for item in records}
+    prefix = f"/api/v1/capabilities/{third}"
+    listing = client.get(f"{prefix}/files")
+    assert listing.status_code == 200, listing.text
+    assert {file["path"] for file in listing.json()["files"]} == {"README.md", "new.md"}
+    assert all(not file["editable"] for file in listing.json()["files"])
+    assert "Version three" in listing.json()["compiled_content"]
+    assert "New document" in listing.json()["compiled_content"]
+    assert (
+        client.get(f"{prefix}/file", params={"path": "README.md"}).json()["content"]
+        == third_entries["bundle/README.md"]
+    )
+    downloaded = client.get(f"{prefix}/package")
+    assert downloaded.status_code == 200, downloaded.text
+    with zipfile.ZipFile(io.BytesIO(downloaded.content)) as archive:
+        assert set(archive.namelist()) == set(third_entries)
+    comparison = client.get(f"{prefix}/version-comparison")
+    assert comparison.status_code == 200, comparison.text
+    assert comparison.json()["previous"]["id"] == second
+    assert {file["path"]: file["status"] for file in comparison.json()["files"]} == {
+        "": "modified",
+        "README.md": "modified",
+        "notes/details.md": "deleted",
+        "new.md": "added",
+    }
+    total = client.get(f"{prefix}/file-diff", params={"path": ""})
+    assert "-Version two" in total.json()["diff"]
+    assert "+Version three" in total.json()["diff"]
+    assert (
+        "-Second"
+        in client.get(
+            f"{prefix}/file-diff", params={"path": "notes/details.md"}
+        ).json()["diff"]
+    )
+    assert (
+        "+New document"
+        in client.get(f"{prefix}/file-diff", params={"path": "new.md"}).json()["diff"]
+    )
+    rollback = client.post(f"{prefix}/rollback")
+    assert rollback.status_code == 200, rollback.text
+    assert rollback.json()["id"] == second
+    records = [
+        item
+        for item in client.get("/api/v1/capabilities").json()
+        if item["capability_type"] == "CONTEXT"
+    ]
+    assert [item["id"] for item in records] == [second]
+    assert (
+        "Version two"
+        in client.get(f"/api/v1/capabilities/{second}/files").json()["compiled_content"]
+    )
+
+
+def test_edited_skill_keeps_executable_modes_and_materializes_every_resource(
+    client, db_session_factory, settings, container
+):
+    from flowweave.runtime.workspace import materialize_agent_workspace_capabilities
+    from flowweave.shared.artifact_store import artifact_store_context
+    from flowweave.shared.settings import settings_context
+
+    host_root = settings.workspace_root / "ops50-materialized"
+
+    script_info = zipfile.ZipInfo("mode-skill/scripts/check.sh")
+    script_info.external_attr = 0o100755 << 16
+    published = _publish_package(
+        client,
+        "SKILL",
+        "mode-skill.zip",
+        [
+            (
+                "mode-skill/SKILL.md",
+                "---\nname: mode-skill\ndescription: Resources\n---\n# Skill\n",
+            ),
+            (script_info, "#!/bin/sh\necho original\n"),
+            ("mode-skill/config/defaults.json", '{"mode":"safe"}'),
+        ],
+    )
+    capability_id = published[0]["capability_id"]
+    listing = client.get(f"/api/v1/capabilities/{capability_id}/files").json()
+    saved = client.put(
+        f"/api/v1/capabilities/{capability_id}/files",
+        json={
+            "expected_digest": listing["digest"],
+            "files": {"scripts/check.sh": "#!/bin/sh\necho revised\n"},
+        },
+    )
+    assert saved.status_code == 200, saved.text
+    revised_id = saved.json()["id"]
+    downloaded = client.get(f"/api/v1/capabilities/{revised_id}/package")
+    with zipfile.ZipFile(io.BytesIO(downloaded.content)) as archive:
+        assert (
+            archive.getinfo("mode-skill/scripts/check.sh").external_attr >> 16
+            == 0o100755
+        )
+    with (
+        db_session_factory() as db,
+        settings_context(settings),
+        artifact_store_context(container.artifact_store),
+    ):
+        resolved = resolve_version(db, revised_id)
+        skills, plugins, mcps = materialize_agent_workspace_capabilities(
+            (
+                {
+                    "capability_type": "SKILL",
+                    "capability_key": "mode-skill",
+                    "capability_version_id": revised_id,
+                    "digest": resolved.version.digest,
+                    "normalized_config": resolved.runtime_config(),
+                },
+            ),
+            host_root=host_root,
+            runtime_root=host_root,
+        )
+    assert len(skills) == 1 and not plugins and not mcps
+    root = host_root / "skills" / "mode-skill"
+    assert (root / "scripts/check.sh").read_text() == "#!/bin/sh\necho revised\n"
+    assert (root / "scripts/check.sh").stat().st_mode & 0o777 == 0o755
+    assert (root / "config/defaults.json").read_text() == '{"mode":"safe"}'
+    assert skills[0].workspace_path == str(root)
+    assert skills[0].source == str(root / "SKILL.md")
+
+
+def test_context_two_version_retention_keeps_frozen_conversation_references(
+    client, db_session_factory
+):
+    first = _publish_package(
+        client,
+        "CONTEXT",
+        "frozen-context.zip",
+        {"context/README.md": "# Frozen one\n"},
+        context_title="Frozen context",
+    )[0]["capability_id"]
+    binding_id = str(uuid4())
+    with db_session_factory() as db:
+        version = db.get(CapabilityVersion, first)
+        db.add(
+            AgentConversationBinding(
+                id=binding_id,
+                runtime_session_id=str(uuid4()),
+                host_kind="AGENT_WORKSPACE",
+                host_id=str(uuid4()),
+                conversation_scope_id=str(uuid4()),
+                openhands_conversation_id=str(uuid4()),
+                display_title="Frozen context",
+                lifecycle="ACTIVE",
+                create_idempotency_key=f"frozen-context:{binding_id}",
+            )
+        )
+        db.flush()
+        db.add(
+            AgentConversationCapability(
+                binding_id=binding_id,
+                capability_version_id=first,
+                capability_type="CONTEXT",
+                capability_key="Frozen context",
+                digest=version.digest,
+                position=0,
+            )
+        )
+        db.commit()
+    for number in (2, 3):
+        _publish_package(
+            client,
+            "CONTEXT",
+            "frozen-context.zip",
+            {"context/README.md": f"# Frozen {number}\n"},
+            context_title="Frozen context",
+        )
+    with db_session_factory() as db:
+        assert db.get(CapabilityVersion, first).state == "RETIRED"
+        assert resolve_version(db, first, include_retired=True).version.id == first
+        binding = db.scalar(
+            select(AgentConversationCapability).where(
+                AgentConversationCapability.binding_id == binding_id
+            )
+        )
+        assert binding.capability_version_id == first
+    visible = [
+        item
+        for item in client.get("/api/v1/capabilities").json()
+        if item["capability_type"] == "CONTEXT"
+    ]
+    assert len(visible) == 2 and first not in {item["id"] for item in visible}

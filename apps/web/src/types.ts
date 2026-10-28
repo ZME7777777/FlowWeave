@@ -55,6 +55,25 @@ export interface SkillSource {
 export interface SkillVersionComparison {
   previous: SkillSource; current: SkillSource; diff: string;
 }
+export interface CapabilityPackageMetadata {
+  id: string; capability_key: string; capability_type: 'SKILL' | 'CONTEXT';
+  filename: string; digest: string; version_no: number;
+}
+export interface CapabilityPackageFiles extends CapabilityPackageMetadata {
+  entry: string; compiled_content: string | null; manifest: ContextBundleManifest | null;
+  files: Array<{ path: string; title: string; byte_size: number; sha256: string; editable: boolean }>;
+}
+export interface CapabilityPackageFile {
+  path: string; content: string | null; byte_size: number; editable: boolean;
+  preview_unavailable: boolean; image: string | null;
+}
+export interface CapabilityPackageComparison {
+  previous: CapabilityPackageMetadata; current: CapabilityPackageMetadata;
+  files: Array<{ path: string; status: 'added' | 'deleted' | 'modified' | 'unchanged'; before_size: number; after_size: number }>;
+}
+export interface CapabilityPackageFileDiff {
+  path: string; diff: string; preview_unavailable: boolean; previous_id: string; current_id: string;
+}
 export interface McpSource {
   id: string; capability_key: string; filename: string; content: string;
   mcp_scripts: Array<{ server: string; filename: string; content_base64: string }>;

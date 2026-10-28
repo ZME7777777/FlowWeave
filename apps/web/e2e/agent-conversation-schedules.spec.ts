@@ -2881,6 +2881,22 @@ test('launcher opens Git history without closing the workspace tools', async ({ 
   await expect(page.getByRole('complementary', { name: 'Git' })).toBeVisible();
   await expect(page.getByRole('navigation', { name: 'Git 视图' }).getByRole('button', { name: '提交记录', exact: true })).toHaveAttribute('aria-pressed', 'true');
   await expect(page.getByText('Initial commit', { exact: true })).toBeVisible();
+  await page.route('**/api/v1/agent-workspaces/schedule-workspace/workspace/git/commit?**', route => json(route, {
+    repository, commit: { id: 'abcdef123456', short_id: 'abcdef', author: 'FlowWeave', date: now, subject: 'Initial commit' }, files: [{ path: 'scripts/run.py', status: 'M' }],
+  }));
+  await page.route('**/api/v1/agent-workspaces/schedule-workspace/workspace/git/diff?**', route => json(route, {
+    path: 'scripts/run.py', diff: "@@ -1 +1 @@\n-print('before')\n+print('after')\n", truncated: false,
+  }));
+  await page.locator('.agent-git-log button').filter({ hasText: 'Initial commit' }).click();
+  await page.getByRole('tree', { name: '提交文件树' }).getByRole('button', { name: 'run.py M' }).click();
+  const diff = page.locator('.agent-git-file-diff-review');
+  await expect(diff.locator('.agent-diff-split .addition')).toContainText("print('after')");
+  await expect(diff.locator('.agent-diff-split .deletion')).toContainText("print('before')");
+  await expect(diff.locator('.agent-diff-split-viewport>.agent-diff-scroll-end-spacer')).toHaveCount(1);
+  await diff.getByRole('button', { name: '统一', exact: true }).click();
+  await expect(diff.locator('.agent-diff-unified .addition')).toContainText("print('after')");
+  await expect(diff.locator('.agent-diff-unified>.agent-diff-scroll-end-spacer')).toHaveCount(1);
+  await diff.getByRole('button', { name: '下一处改动' }).click();
 });
 
 test('terminal tabs use the terminal icon', async ({ page }) => {

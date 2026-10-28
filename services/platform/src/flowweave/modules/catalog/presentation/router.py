@@ -9,6 +9,7 @@ from flowweave.modules.catalog.application import (
     agent_profiles,
     capability_collections,
     capability_directory,
+    capability_files,
     capability_imports,
     mcp_oauth_authorizations,
     mcp_oauth_secrets,
@@ -29,6 +30,7 @@ from flowweave.shared.schemas import (
     CapabilityCollectionWrite,
     CapabilityCommitWrite,
     CapabilityMcpRevisionWrite,
+    CapabilityPackageRevisionWrite,
     CapabilitySkillRevisionWrite,
     CapabilityValidateWrite,
     DirectoryWrite,
@@ -591,6 +593,56 @@ async def probe_plugin_capability(
         )
 
 
+@router.get("/capabilities/{capability_id}/files")
+async def capability_file_list(capability_id: str, db: Db) -> dict[str, Any]:
+    return await run_sync(
+        db, lambda session: capability_files.read_package_files(session, capability_id)
+    )
+
+
+@router.get("/capabilities/{capability_id}/file")
+async def capability_file(capability_id: str, path: str, db: Db) -> dict[str, Any]:
+    return await run_sync(
+        db, lambda session: capability_files.read_package_file(session, capability_id, path)
+    )
+
+
+@router.get("/capabilities/{capability_id}/version-comparison")
+async def capability_comparison(capability_id: str, db: Db) -> dict[str, Any]:
+    return await run_sync(
+        db, lambda session: capability_files.compare_package_versions(session, capability_id)
+    )
+
+
+@router.get("/capabilities/{capability_id}/file-diff")
+async def capability_file_diff(capability_id: str, path: str, db: Db) -> dict[str, Any]:
+    return await run_sync(
+        db, lambda session: capability_files.compare_package_file(session, capability_id, path)
+    )
+
+
+@router.put("/capabilities/{capability_id}/files")
+async def update_capability_files(
+    capability_id: str, payload: CapabilityPackageRevisionWrite, db: Db
+) -> dict[str, Any]:
+    update_plan = await run_sync(
+        db,
+        lambda session: capability_imports.prepare_skill_files_update(
+            session, capability_id, payload.files, payload.expected_digest
+        ),
+    )
+    stored = await asyncio.to_thread(capability_imports.store_skill_update_source, update_plan)
+    try:
+        final_key = await asyncio.to_thread(capability_imports.finalize_skill_update_source, stored)
+        return await run_sync(
+            db, lambda session: capability_imports.confirm_skill_update(session, stored, final_key)
+        )
+    except BaseException:
+        if stored.prepared.storage_key is not None:
+            await asyncio.to_thread(capability_imports.discard_validation_source, stored.prepared)
+        raise
+
+
 @router.get("/capabilities/{capability_id}/source")
 async def capability_source(capability_id: str, db: Db) -> dict[str, Any]:
     return await run_sync(
@@ -619,7 +671,9 @@ async def capability_package(capability_id: str, db: Db) -> Response:
     )
     return Response(
         content=content,
-        media_type="application/zip",
+        media_type="application/zip"
+        if filename.lower().endswith(".zip")
+        else "text/plain; charset=utf-8",
         headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
     )
 

@@ -7,7 +7,7 @@ import io
 import json
 import re
 import zipfile
-from copy import deepcopy
+from copy import copy, deepcopy
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
@@ -2075,7 +2075,6 @@ def confirm_commit(db: Session, plan: CapabilityCommitPlan, final_key: str) -> d
     }
 
 
-
 def _skill_versions(db: Session, package_id: str) -> list[CapabilityVersion]:
     return list(
         db.scalars(
@@ -2171,7 +2170,9 @@ def _keep_two_skill_versions(db: Session, package_id: str) -> None:
 
 def _keep_two_published_skills(db: Session, published: list[Any]) -> None:
     package_ids = {
-        item.package.id for item in published if item.package.capability_type == "SKILL"
+        item.package.id
+        for item in published
+        if item.package.capability_type in {"SKILL", "CONTEXT"}
     }
     for package_id in package_ids:
         _keep_two_skill_versions(db, package_id)
@@ -2213,21 +2214,30 @@ def compare_skill_versions(db: Session, capability_id: str) -> dict[str, Any]:
 
 def rollback_skill_version(db: Session, capability_id: str) -> dict[str, Any]:
     current = resolve_version(db, capability_id)
-    if current.package.capability_type != "SKILL":
-        raise DomainError("CAPABILITY_NOT_SKILL", "Only Skill versions can be rolled back", 422)
-    versions = _skill_versions(db, current.package.id)
+    if current.package.capability_type not in {"SKILL", "CONTEXT"}:
+        raise DomainError(
+            "CAPABILITY_NOT_VERSIONED", "Only Skill and Context can be rolled back", 422
+        )
+    db.scalar(
+        select(CapabilityPackage)
+        .where(CapabilityPackage.id == current.package.id)
+        .with_for_update()
+    )
+    versions = [
+        version
+        for version in _skill_versions(db, current.package.id)
+        if version.state == "PUBLISHED"
+    ]
     if not versions or versions[0].id != current.version.id:
         raise DomainError(
             "SKILL_ROLLBACK_CONFLICT",
-            "Only the current Skill version can be rolled back",
+            "只能回退当前版本。",
             409,
         )
-    previous = next(
-        (version for version in versions[1:] if version.state == "PUBLISHED"), None
-    )
+    previous = next((version for version in versions[1:] if version.state == "PUBLISHED"), None)
     if previous is None:
         raise DomainError(
-            "SKILL_PREVIOUS_VERSION_UNAVAILABLE", "Skill has no previous version", 409
+            "SKILL_PREVIOUS_VERSION_UNAVAILABLE", "暂无上一版本可回退。", 409
         )
     _replace_skill_selection_references(db, current.package.id, previous.id)
     if _frozen_version_references(db, current.version.id):
@@ -2277,9 +2287,22 @@ def read_skill_package(db: Session, capability_id: str) -> tuple[str, bytes]:
     """
 
     published = resolve_version(db, capability_id)
+    if published.package.capability_type == "CONTEXT":
+        filename = published.version.source_filename
+        suffix = PurePosixPath(filename).suffix or ".txt"
+        try:
+            content = get_artifact_store().read(published.blob.storage_key)
+        except FileNotFoundError as exc:
+            raise DomainError(
+                "CAPABILITY_SOURCE_UNAVAILABLE", "Context package is unavailable", 422
+            ) from exc
+        return (
+            f"{published.package.capability_key}-v{published.version.version_no}{suffix}",
+            content,
+        )
     if published.package.capability_type != "SKILL":
         raise DomainError(
-            "CAPABILITY_NOT_DOWNLOADABLE", "Only Skill packages can be downloaded", 422
+            "CAPABILITY_NOT_DOWNLOADABLE", "Only Skill and Context can be downloaded", 422
         )
     normalized = published.version.normalized_config_json or {}
     entry = PurePosixPath(str(normalized.get("entry") or ""))
@@ -2301,7 +2324,9 @@ def read_skill_package(db: Session, capability_id: str) -> tuple[str, bytes]:
                 ):
                     continue
                 relative = PurePosixPath(*member.parts[len(skill_root.parts) :])
-                exported.writestr(str(PurePosixPath(folder) / relative), archive.read(info))
+                exported_info = copy(info)
+                exported_info.filename = str(PurePosixPath(folder) / relative)
+                exported.writestr(exported_info, archive.read(info))
     except (FileNotFoundError, KeyError, zipfile.BadZipFile) as exc:
         raise DomainError(
             "CAPABILITY_SOURCE_UNAVAILABLE", "Skill package is unavailable", 422
@@ -2399,32 +2424,57 @@ def read_mcp_source(db: Session, capability_id: str) -> dict[str, Any]:
 
 def prepare_skill_update(db: Session, capability_id: str, content: str) -> PreparedSkillUpdate:
     published = resolve_version(db, capability_id)
+    return prepare_skill_files_update(
+        db, capability_id, {"SKILL.md": content}, published.version.digest
+    )
+
+
+def prepare_skill_files_update(
+    db: Session, capability_id: str, files: dict[str, str], expected_digest: str
+) -> PreparedSkillUpdate:
+    from flowweave.modules.catalog.application.capability_files import (
+        PREVIEW_MAX_BYTES,
+        package_files,
+    )
+
+    published, members = package_files(db, capability_id)
     if published.package.capability_type != "SKILL":
         raise DomainError("CAPABILITY_NOT_EDITABLE", "Only Skill source can be edited", 422)
+    if expected_digest != published.version.digest:
+        raise DomainError("CAPABILITY_SOURCE_CONFLICT", "能力包已更新，请重新打开后编辑。", 409)
     normalized = published.version.normalized_config_json or {}
     skill_file = str(normalized.get("entry") or "")
+    root = PurePosixPath(skill_file).parent
+    replacements: dict[str, bytes] = {}
+    for path, text in files.items():
+        if path not in members:
+            raise DomainError("CAPABILITY_FILE_NOT_FOUND", "能力包中没有这个文件。", 404)
+        data = members[path]
+        try:
+            if len(data) > PREVIEW_MAX_BYTES or b"\x00" in data:
+                raise ValueError("File is not editable")
+            data.decode("utf-8")
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise DomainError(
+                "CAPABILITY_FILE_NOT_EDITABLE", "该文件仅支持下载查看。", 422
+            ) from exc
+        if len(text.encode("utf-8")) > PREVIEW_MAX_BYTES:
+            raise DomainError("CAPABILITY_FILE_TOO_LARGE", "编辑后的文本不能超过 1 MiB。", 422)
+        if data != text.encode("utf-8"):
+            replacements[str(root / path)] = text.encode("utf-8")
+    if not replacements:
+        raise DomainError("CAPABILITY_SOURCE_UNCHANGED", "Capability source has not changed", 422)
     try:
         source = get_artifact_store().read(published.blob.storage_key)
         output = io.BytesIO()
-        replaced = False
         with (
             zipfile.ZipFile(io.BytesIO(source)) as archive,
             zipfile.ZipFile(output, "w") as revised,
         ):
             for info in archive.infolist():
-                data = archive.read(info.filename) if not info.is_dir() else b""
-                if info.filename.replace("\\", "/") == skill_file:
-                    if data.decode("utf-8") == content:
-                        raise DomainError(
-                            "CAPABILITY_SOURCE_UNCHANGED",
-                            "Capability source has not changed",
-                            422,
-                        )
-                    data = content.encode("utf-8")
-                    replaced = True
+                data = archive.read(info) if not info.is_dir() else b""
+                data = replacements.get(info.filename.replace("\\", "/"), data)
                 revised.writestr(info, data)
-        if not replaced:
-            raise KeyError(skill_file)
     except (FileNotFoundError, KeyError, OSError, zipfile.BadZipFile) as exc:
         raise DomainError(
             "CAPABILITY_SOURCE_UNAVAILABLE", "Skill source is unavailable", 422
@@ -2532,10 +2582,20 @@ def confirm_skill_update(
     """Publish a new immutable Skill version without rebinding consumers."""
 
     register_rollback_action(db, lambda: get_artifact_store().delete(final_key))
+    package_id = db.scalar(
+        select(CapabilityVersion.package_id).where(
+            CapabilityVersion.id == update_plan.capability_id
+        )
+    )
+    if package_id is not None:
+        db.scalar(
+            select(CapabilityPackage).where(CapabilityPackage.id == package_id).with_for_update()
+        )
     baseline = db.scalar(
         select(CapabilityVersion)
         .where(CapabilityVersion.id == update_plan.capability_id)
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
     if (
         baseline is None
@@ -2547,6 +2607,17 @@ def confirm_skill_update(
             "Capability source changed while it was being edited",
             409,
         )
+    latest = db.scalar(
+        select(CapabilityVersion)
+        .where(
+            CapabilityVersion.package_id == baseline.package_id,
+            CapabilityVersion.state == "PUBLISHED",
+        )
+        .order_by(CapabilityVersion.version_no.desc())
+        .limit(1)
+    )
+    if latest is None or latest.id != baseline.id:
+        raise DomainError("CAPABILITY_SOURCE_CONFLICT", "能力包已有新版本，请重新打开后编辑。", 409)
     now = datetime.now(UTC)
     imported = CapabilityImport(
         token_digest=update_plan.prepared.token_digest,

@@ -1,9 +1,10 @@
+import { HighlightedDiffCode, SharedSplitDiff, DiffChangeNavigation } from '../FileDiff';
+import { filePreviewLanguage, highlightedCode, splitDiffRows, diffChangeStartIndexes, gitDiffLines, type GitDiffLine, type SplitDiffRow } from '../fileDiffModel';
 import { FitAddon } from '@xterm/addon-fit';
 import { Terminal as XTerm } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import { type InfiniteData, useQueries, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import hljs from 'highlight.js/lib/common';
-import { Archive, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bell, Bot, Boxes, CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, CircleDot, Copy, CornerDownRight, Download, Ellipsis, Eye, EyeOff, FileCode2, FileText, Folder, FolderOpen, FolderPlus, Gauge, GitBranch, Globe2, GripVertical, Home, ImageIcon, Link2, ListRestart, LoaderCircle, Maximize, Maximize2, Minimize, Minimize2, MessageSquareText, MonitorCog, MonitorOff, PanelRight, PanelRightOpen, Pencil, Pin, PinOff, Play, Plug, Plus, Puzzle, Quote, RefreshCw, Search, Send, Settings, ShieldAlert, Sparkles, Square, SquareCheck, SquarePlus, SquareTerminal, Trash2, Webhook, X } from 'lucide-react';
+import { Archive, ArrowLeft, ArrowRight, ArrowUp, Bell, Bot, Boxes, CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, CircleDot, Copy, CornerDownRight, Download, Ellipsis, Eye, EyeOff, FileCode2, FileText, Folder, FolderOpen, FolderPlus, Gauge, GitBranch, Globe2, GripVertical, Home, ImageIcon, Link2, ListRestart, LoaderCircle, Maximize, Maximize2, Minimize, Minimize2, MessageSquareText, MonitorCog, MonitorOff, PanelRight, PanelRightOpen, Pencil, Pin, PinOff, Play, Plug, Plus, Puzzle, Quote, RefreshCw, Search, Send, Settings, ShieldAlert, Sparkles, Square, SquareCheck, SquarePlus, SquareTerminal, Trash2, Webhook, X } from 'lucide-react';
 import { createContext, isValidElement, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type WheelEvent as ReactWheelEvent } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
@@ -2258,47 +2259,6 @@ function isHtmlPreviewable(path: string, mimeType = ''): boolean {
   return mimeType.toLowerCase().split(';', 1)[0] === 'text/html' || /\.html?$/i.test(path);
 }
 
-function filePreviewLanguage(path: string): string | undefined {
-  const extension = path.split('.').pop()?.toLowerCase();
-  switch (extension) {
-    case 'py': case 'pyi': return 'python';
-    case 'java': return 'java';
-    case 'sql': return 'sql';
-    case 'ts': case 'tsx': return 'typescript';
-    case 'js': case 'jsx': case 'mjs': case 'cjs': return 'javascript';
-    case 'json': return 'json';
-    case 'yaml': case 'yml': return 'yaml';
-    case 'xml': case 'svg': case 'html': case 'htm': case 'vue': return 'xml';
-    case 'css': case 'scss': case 'less': return 'css';
-    case 'sh': case 'bash': case 'zsh': return 'bash';
-    case 'go': return 'go';
-    case 'rs': return 'rust';
-    case 'rb': return 'ruby';
-    case 'php': return 'php';
-    case 'c': case 'h': return 'c';
-    case 'cc': case 'cpp': case 'cxx': case 'hpp': return 'cpp';
-    case 'cs': return 'csharp';
-    case 'kt': case 'kts': return 'kotlin';
-    case 'toml': case 'ini': case 'conf': case 'properties': return 'ini';
-    default: return undefined;
-  }
-}
-
-function highlightedCode(value: string, language?: string): string {
-  if (language && hljs.getLanguage(language)) return hljs.highlight(value, { language, ignoreIllegals: true }).value;
-  return hljs.highlightAuto(value).value;
-}
-
-/**
- * Diff payloads contain only source lines (their Git prefix and hunk headers
- * have already been parsed away), so they can use the same safe highlighter as
- * a workspace source preview.  Keep the path at the call site: a Git Diff is
- * repository-relative, while a review Diff is workspace-relative.
- */
-function HighlightedDiffCode({ path, value }: { path: string; value: string }) {
-  return <code dangerouslySetInnerHTML={{ __html: highlightedCode(value, filePreviewLanguage(path)) }}/>;
-}
-
 function WorkspaceMarkdownCode({ className, children, ...props }: ComponentPropsWithoutRef<'code'>) {
   const language = /language-([\w+-]+)/.exec(className ?? '')?.[1];
   if (!language) return <code className={className} {...props}>{children}</code>;
@@ -2551,142 +2511,6 @@ function sourceLineForGitDiffLine(lines: GitDiffLine[], selectedIndex: number): 
     if (lines[index].newLine) return lines[index].newLine!;
   }
   return 1;
-}
-
-type SplitDiffRow<T> = {
-  before?: { line: T; index: number };
-  after?: { line: T; index: number };
-};
-
-/**
- * Align each contiguous replacement block before handing it to the two panes.
- * A unified diff serializes removals and additions, whereas a split diff must
- * show them on the same visual rows.
- */
-function splitDiffRows<T extends { kind: 'context' | 'addition' | 'deletion' }>(
-  lines: T[],
-  replacementBoundary: (previous: T, next: T) => boolean = () => false,
-): SplitDiffRow<T>[] {
-  const rows: SplitDiffRow<T>[] = [];
-  for (let index = 0; index < lines.length;) {
-    const line = lines[index];
-    if (line.kind === 'context') {
-      rows.push({ before: { line, index }, after: { line, index } });
-      index += 1;
-      continue;
-    }
-    const deletions: Array<{ line: T; index: number }> = [];
-    const additions: Array<{ line: T; index: number }> = [];
-    const blockStart = index;
-    while (index < lines.length && lines[index].kind !== 'context'
-      && (index === blockStart || !replacementBoundary(lines[index - 1], lines[index]))) {
-      const changed = { line: lines[index], index };
-      if (changed.line.kind === 'deletion') deletions.push(changed);
-      else additions.push(changed);
-      index += 1;
-    }
-    for (let offset = 0; offset < Math.max(deletions.length, additions.length); offset += 1) {
-      rows.push({ before: deletions[offset], after: additions[offset] });
-    }
-  }
-  return rows;
-}
-
-/**
- * A split diff has one horizontal code position, not two independently
- * scrollable panes. The bottom scrollbar drives the clipped code bodies in
- * both columns while their headers, gutters, and divider stay put.
- */
-function SharedSplitDiff({ before, after, resetKey }: { before: ReactNode; after: ReactNode; resetKey: string }) {
-  const viewportRef = useRef<HTMLDivElement>(null);
-  const scrollbarRef = useRef<HTMLDivElement>(null);
-  const [scrollbarWidth, setScrollbarWidth] = useState(0);
-  const applyOffset = useCallback((scrollLeft: number) => {
-    viewportRef.current?.querySelectorAll<HTMLElement>('.agent-diff-split-code-content').forEach(content => {
-      content.style.setProperty('--agent-diff-code-offset', `-${scrollLeft}px`);
-    });
-  }, []);
-  const measureScrollbar = useCallback(() => {
-    const viewport = viewportRef.current;
-    const scrollbar = scrollbarRef.current;
-    if (!viewport || !scrollbar) return;
-    const lines = Array.from(viewport.querySelectorAll<HTMLElement>('.agent-diff-split .agent-diff-line:not(.empty)'));
-    // The gutter is deliberately fixed while only the code cell moves.  The
-    // scroll range must therefore be calculated from each code cell's actual
-    // visible width, not from the entire half-pane; otherwise it reaches its
-    // end one gutter-width before a long line is fully revealed.
-    const maxOffset = Math.max(0, ...lines.map(line => {
-      const code = line.querySelector<HTMLElement>('code');
-      if (!code) return 0;
-      const visibleCodeWidth = Math.max(0, line.clientWidth - code.offsetLeft);
-      return Math.max(0, code.scrollWidth - visibleCodeWidth);
-    }));
-    setScrollbarWidth(Math.ceil(scrollbar.clientWidth + maxOffset));
-  }, []);
-  useLayoutEffect(() => {
-    const viewport = viewportRef.current;
-    const scrollbar = scrollbarRef.current;
-    if (!viewport || !scrollbar) return;
-    viewport.scrollTop = 0;
-    scrollbar.scrollLeft = 0;
-    applyOffset(0);
-    measureScrollbar();
-    const observer = new ResizeObserver(measureScrollbar);
-    observer.observe(viewport);
-    observer.observe(scrollbar);
-    return () => observer.disconnect();
-  }, [applyOffset, measureScrollbar, resetKey]);
-  const scrollSplitCode = (event: ReactWheelEvent<HTMLDivElement>) => {
-    const viewport = viewportRef.current;
-    const scrollbar = scrollbarRef.current;
-    if (!viewport || !scrollbar) return;
-    const horizontalDelta = event.deltaX || (event.shiftKey ? event.deltaY : 0);
-    if (horizontalDelta) {
-      event.preventDefault();
-      event.stopPropagation();
-      const maxLeft = Math.max(0, scrollbar.scrollWidth - scrollbar.clientWidth);
-      scrollbar.scrollLeft = Math.min(maxLeft, Math.max(0, scrollbar.scrollLeft + horizontalDelta));
-      applyOffset(scrollbar.scrollLeft);
-      return;
-    }
-    const maxTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
-    const reachesVerticalBoundary = (event.deltaY < 0 && viewport.scrollTop <= 0)
-      || (event.deltaY > 0 && viewport.scrollTop >= maxTop - 1);
-    event.stopPropagation();
-    if (reachesVerticalBoundary) {
-      event.preventDefault();
-      viewport.scrollTop = Math.min(maxTop, Math.max(0, viewport.scrollTop + event.deltaY));
-    }
-  };
-  return <div className="agent-diff-split">
-    <div ref={viewportRef} className="agent-diff-split-viewport" onWheelCapture={scrollSplitCode}>
-      <div className="agent-diff-split-content">
-        <div className="agent-diff-before agent-diff-split-pane"><header>修改前</header><div className="agent-diff-split-code-content">{before}</div></div>
-        <div className="agent-diff-split-pane"><header>修改后</header><div className="agent-diff-split-code-content">{after}</div></div>
-      </div>
-      <div className="agent-diff-scroll-end-spacer" aria-hidden="true"/>
-    </div>
-    <div ref={scrollbarRef} className="agent-diff-split-scrollbar" aria-label="同步查看两侧被截断的代码" onScroll={event => applyOffset(event.currentTarget.scrollLeft)}><div style={{ width: scrollbarWidth }}/></div>
-  </div>;
-}
-
-function diffChangeStartIndexes<T extends { kind: 'context' | 'addition' | 'deletion' }>(lines: T[]): number[] {
-  return lines.flatMap((line, index) => line.kind !== 'context' && (index === 0 || lines[index - 1].kind === 'context') ? [index] : []);
-}
-
-function DiffChangeNavigation({ rootRef, resetKey, changeIndexes }: { rootRef: React.RefObject<HTMLElement | null>; resetKey: string; changeIndexes: number[] }) {
-  const activeChange = useRef(-1);
-  useEffect(() => { activeChange.current = -1; }, [resetKey]);
-  const move = (direction: -1 | 1) => {
-    if (!changeIndexes.length) return;
-    activeChange.current = (activeChange.current + direction + changeIndexes.length) % changeIndexes.length;
-    const target = rootRef.current?.querySelector<HTMLElement>(`[data-diff-change-index="${changeIndexes[activeChange.current]}"]`);
-    target?.scrollIntoView({ block: 'center', behavior: 'smooth' });
-  };
-  return <div className="agent-diff-change-navigation" aria-label="改动位置导航">
-    <button type="button" aria-label="上一处改动" title="上一处改动" disabled={!changeIndexes.length} onClick={() => move(-1)}><ArrowUp size={14}/></button>
-    <button type="button" aria-label="下一处改动" title="下一处改动" disabled={!changeIndexes.length} onClick={() => move(1)}><ArrowDown size={14}/></button>
-  </div>;
 }
 
 function WorkspaceChangesReview({ changes, selectedId, onSelect, onOpenSource, workspaceRoot }: { changes: WorkspaceFileChange[]; selectedId?: string; onSelect: (id: string) => void; onOpenSource: (change: WorkspaceFileChange, line: number) => void; workspaceRoot?: string }) {
@@ -3627,39 +3451,6 @@ function WorkspaceGitCommitSidebarDetail({ details, loading, error, selectedPath
       <dl><dt>Hash</dt><dd><code title={details.commit.id}>{details.commit.short_id}</code></dd><dt>作者</dt><dd>{details.commit.author || '未提供'}{details.commit.author_email && <> &lt;{details.commit.author_email}&gt;</>}</dd><dt>作者时间</dt><dd>{gitCommitTimestamp(details.commit.authored_at ?? details.commit.date)}</dd></dl>
     </article>
   </section>;
-}
-
-type GitDiffLine = { oldLine?: number; newLine?: number; kind: 'context' | 'addition' | 'deletion'; text: string; hunk: number };
-
-function gitDiffLines(value: string): GitDiffLine[] {
-  const lines: GitDiffLine[] = [];
-  let oldLine = 0;
-  let newLine = 0;
-  let hunkNumber = 0;
-  let inHunk = false;
-  for (const sourceLine of value.split('\n')) {
-    const hunkMatch = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(sourceLine);
-    if (hunkMatch) {
-      oldLine = Number(hunkMatch[1]);
-      newLine = Number(hunkMatch[2]);
-      hunkNumber += 1;
-      inHunk = true;
-      continue;
-    }
-    if (!inHunk || sourceLine === '\\ No newline at end of file') continue;
-    if (sourceLine.startsWith('+')) {
-      lines.push({ kind: 'addition', newLine, text: sourceLine.slice(1), hunk: hunkNumber });
-      newLine += 1;
-    } else if (sourceLine.startsWith('-')) {
-      lines.push({ kind: 'deletion', oldLine, text: sourceLine.slice(1), hunk: hunkNumber });
-      oldLine += 1;
-    } else if (sourceLine.startsWith(' ')) {
-      lines.push({ kind: 'context', oldLine, newLine, text: sourceLine.slice(1), hunk: hunkNumber });
-      oldLine += 1;
-      newLine += 1;
-    }
-  }
-  return lines;
 }
 
 function WorkspaceGitFileDiffReview({ details, diff, onOpenSource }: { details: WorkspaceGitCommitDetails; diff: WorkspaceGitFileDiff; onOpenSource: (path: string, line: number) => void }) {

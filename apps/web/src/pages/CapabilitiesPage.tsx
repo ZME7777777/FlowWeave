@@ -3,13 +3,14 @@ import { ArrowDown, ArrowUp, ArrowUpDown, BookOpen, Box, Code2, Search, Webhook,
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { api, ApiError, capabilityPackageUrl } from '../api/client';
+import { CapabilityPackageDialog } from '../components/CapabilityPackageDialog';
 import { CapabilityCollectionEditorDialog } from '../components/CapabilityCollectionEditorDialog';
 import { Pagination } from '../components/Pagination';
 import { PluginImportDialog } from '../components/PluginImportDialog';
 import { AgentProfileHistoryDialog } from '../components/AgentProfileHistoryDialog';
 import { useProductDialog } from '../components/ProductDialogContext';
 import { useEscapeClose } from '../components/useEscapeClose';
-import type { BlockedCapabilityDelete, CapabilityAsset, CapabilityAssetType, CapabilityLineage, CapabilityCollection, CapabilityCollectionWrite, CapabilitySort, CapabilityCollectionSort, ContextBundleManifest, SkillVersionComparison } from '../types';
+import type { BlockedCapabilityDelete, CapabilityAsset, CapabilityAssetType, CapabilityLineage, CapabilityCollection, CapabilityCollectionWrite, CapabilitySort, CapabilityCollectionSort, ContextBundleManifest } from '../types';
 
 import './capability-repository.css';
 
@@ -29,14 +30,6 @@ const MCP_JSON_EXAMPLE = JSON.stringify({
     },
   },
 }, null, 2);
-const DEPENDENCY_EXAMPLE = `dependencies:
-  python:
-    requests: 2.32.3
-  node:
-    lodash: 4.17.21
-  cli:
-    lark-cli: 1.0.84`;
-
 const CAPABILITY_MODULES: CapabilityAssetType[] = ['SKILL', 'PLUGIN', 'MCP', 'AGENT_DEFINITION', 'CONTEXT', 'HOOK'];
 const HOOK_EVENTS = [
   { value: 'pre_tool_use', label: '工具调用前', native: 'PreToolUse', description: '在 OpenHands 执行匹配工具前检查；可阻断调用。', toolScoped: true },
@@ -58,13 +51,6 @@ interface McpScriptAsset { server: string; filename: string; contentBase64: stri
 
 type ContextBundleDraft = Omit<ContextBundleManifest, 'documents'> & {
   documents: Array<{ path: string; title: string; content_sha256: string }>
-};
-
-type ContextPreview = {
-  item: CapabilityAsset;
-  content: string;
-  contentFormat: 'TEXT' | 'BUNDLE';
-  manifest: ContextBundleManifest | null;
 };
 
 function parseMcpDocument(text: string): McpDocument {
@@ -193,18 +179,15 @@ export function CapabilitiesPage() {
   const [collectionsView, setCollectionsView] = useState(false);
   const [type, setType] = useState<CapabilityAssetType>('SKILL');
   const [editing, setEditing] = useState<CapabilityAsset>();
-  useEscapeClose(() => setEditing(undefined), Boolean(editing));
-  const [skillComparison, setSkillComparison] = useState<SkillVersionComparison>();
-  useEscapeClose(() => setSkillComparison(undefined), Boolean(skillComparison));
+  const [skillComparison, setSkillComparison] = useState<CapabilityAsset>();
   const [contextOpen, setContextOpen] = useState(false);
   const [contextTitle, setContextTitle] = useState('');
   const [contextDescription, setContextDescription] = useState('');
   const [contextContent, setContextContent] = useState('');
   const [contextFile, setContextFile] = useState<File>();
   const [contextBundleManifest, setContextBundleManifest] = useState<ContextBundleDraft>();
-  const [viewingContext, setViewingContext] = useState<ContextPreview>();
+  const [viewingContext, setViewingContext] = useState<CapabilityAsset>();
   useEscapeClose(() => setContextOpen(false), contextOpen);
-  useEscapeClose(() => setViewingContext(undefined), Boolean(viewingContext));
   const [editingCollection, setEditingCollection] = useState<CapabilityCollection | null | undefined>();
   const [mcpOpen, setMcpOpen] = useState(false);
   const [editingMcp, setEditingMcp] = useState<CapabilityAsset>();
@@ -222,7 +205,6 @@ export function CapabilitiesPage() {
   const [pluginImportOpen, setPluginImportOpen] = useState(false);
   const pluginUpload = useRef<HTMLInputElement>(null);
   const [profileHistory, setProfileHistory] = useState<CapabilityLineage>();
-  const [source, setSource] = useState('');
   const [mcpMode, setMcpMode] = useState<McpEditorMode>('FORM');
   const [mcpJson, setMcpJson] = useState(MCP_JSON_EXAMPLE);
   const [mcpSelectedServer, setMcpSelectedServer] = useState('remote');
@@ -418,13 +400,7 @@ export function CapabilitiesPage() {
       setNotice(`已发布 Hook“${committed.capabilities[0]?.capability_key ?? name}”。它会在新建会话时冻结并由 OpenHands 原生执行。`);
     } catch (reason) { setError(errorMessage(reason)); } finally { setImportingSkill(false); }
   };
-  const openContextSource = async (item: CapabilityAsset) => {
-    setBusy(true); setError('');
-    try {
-      const source = await api.contextSource(item.id);
-      setViewingContext({ item, content: source.content, contentFormat: source.content_format, manifest: source.manifest });
-    } catch (reason) { setError(errorMessage(reason)); } finally { setBusy(false); }
-  };
+  const openContextSource = (item: CapabilityAsset) => setViewingContext(item);
   const openMcpEditor = async (item?: CapabilityAsset) => {
     setBusy(true); setError(''); setNotice('');
     try {
@@ -520,20 +496,12 @@ export function CapabilitiesPage() {
       if (blocked.length) setError(blockedCapabilityMessage(blocked));
     } catch (reason) { setError(errorMessage(reason)); } finally { setBusy(false); }
   };
-  const openEditor = async (item: CapabilityAsset) => {
-    setBusy(true); setError('');
-    try { const loaded = await api.capabilitySource(item.id); setSource(loaded.content); setEditing(item); }
-    catch (reason) { setError(errorMessage(reason)); } finally { setBusy(false); }
-  };
-  const compareSkillVersions = async (item: CapabilityAsset) => {
-    setBusy(true); setError('');
-    try { setSkillComparison(await api.skillVersionComparison(item.id)); }
-    catch (reason) { setError(errorMessage(reason)); } finally { setBusy(false); }
-  };
+  const openEditor = (item: CapabilityAsset) => setEditing(item);
+  const compareSkillVersions = (item: CapabilityAsset) => setSkillComparison(item);
   const rollbackSkillVersion = async (item: CapabilityAsset) => {
     const confirmed = await dialog.confirm({
       title: `回退 ${item.capability_key}？`,
-      message: '将移除当前版本，并恢复上一版本为当前版本。已经创建的会话和运行不会变更，仍使用其启动时注册的 Skill 快照。',
+      message: '将移除当前版本，并恢复上一版本为当前版本。已经创建的会话和运行继续使用其冻结的能力快照。',
       confirmLabel: '确认回退', tone: 'danger',
     });
     if (!confirmed) return;
@@ -541,15 +509,7 @@ export function CapabilitiesPage() {
     try {
       await api.rollbackSkillVersion(item.id);
       await refresh();
-      setNotice(`已回退 Skill“${item.capability_key}”到上一版本。`);
-    } catch (reason) { setError(errorMessage(reason)); } finally { setBusy(false); }
-  };
-  const saveSource = async () => {
-    if (!editing) return;
-    setBusy(true); setError(''); setNotice('');
-    try {
-      await api.updateCapabilitySource(editing.id, source);
-      setEditing(undefined); await refresh(); setNotice(`已保存 ${editing.capability_key}，使用该能力的节点已同步更新。`);
+      setNotice(`已回退 ${typeLabel(item.capability_type)}“${item.capability_key}”到上一版本。`);
     } catch (reason) { setError(errorMessage(reason)); } finally { setBusy(false); }
   };
   const saveCollection = async (payload: CapabilityCollectionWrite) => {
@@ -593,9 +553,9 @@ export function CapabilitiesPage() {
     {profileHistory && <AgentProfileHistoryDialog packageId={profileHistory.id} capabilityKey={profileHistory.latest.capability_key} onClose={() => setProfileHistory(undefined)}/>}
     {contextOpen && <ContextDialog title={contextTitle} description={contextDescription} content={contextContent} file={contextFile} manifest={contextBundleManifest} busy={importingSkill} onTitleChange={setContextTitle} onDescriptionChange={setContextDescription} onContentChange={setContextContent} onFileChange={file => { setContextFile(file); setContextContent(''); setContextBundleManifest(undefined); }} onManifestChange={setContextBundleManifest} onClose={closeContextForm} onSave={() => void createContext()}/>}
     {hookOpen && <HookEditorDialog name={hookName} description={hookDescription} event={hookEvent} matcher={hookMatcher} mode={hookMode} file={hookFile} busy={importingSkill} onNameChange={setHookName} onDescriptionChange={setHookDescription} onEventChange={setHookEvent} onMatcherChange={setHookMatcher} onModeChange={mode => { setHookMode(mode); setHookFile(undefined); }} onFileChange={setHookFile} onClose={closeHookForm} onSave={() => void createHook()}/>}
-    {viewingContext && <div className="modal-backdrop"><section className="modal context-preview-dialog" role="dialog" aria-modal="true" aria-label={`查看 Context ${viewingContext.item.capability_key}`}><header><div><span className="eyebrow">{viewingContext.contentFormat === 'BUNDLE' ? 'FROZEN CONTEXT BUNDLE' : 'FROZEN CONTEXT'}</span><h2>{viewingContext.item.capability_key}</h2></div><button className="ghost" onClick={() => setViewingContext(undefined)}>关闭</button></header><p>{viewingContext.item.description || '暂无说明'} · {viewingContext.item.filename}</p>{viewingContext.manifest && <section className="context-bundle-preview-directory"><b>资料目录</b><small>入口：{viewingContext.manifest.entrypoint ?? '未指定'} · 全部文档均已加载</small><ol>{viewingContext.manifest.documents.map(document => <li key={document.path}><b>{document.title}</b><span>{document.path}</span></li>)}</ol></section>}<pre>{viewingContext.content}</pre><footer><button className="primary" onClick={() => setViewingContext(undefined)}>完成</button></footer></section></div>}
-    {editing && <div className="modal-backdrop capability-editor-backdrop"><section className="modal capability-source-editor" role="dialog" aria-label={`编辑 Skill ${editing.capability_key}`}><header><div><span className="eyebrow">EDIT SKILL</span><h2>编辑 {editing.capability_key}</h2></div><button className="ghost" onClick={() => setEditing(undefined)}>关闭</button></header><p>保存后仅保留当前与上一版本；已有会话和运行继续使用其注册时的冻结 Skill 快照。</p><textarea aria-label="Skill 源码" value={source} onChange={event => setSource(event.target.value)}/><div className="dependency-policy"><b>声明依赖（写入 SKILL.md frontmatter）</b><code>{DEPENDENCY_EXAMPLE}</code><span>所有版本必须精确固定。CLI 必须在平台白名单中；不接受终端命令。</span></div><footer><button className="ghost" onClick={() => setEditing(undefined)}>取消</button><button className="primary" disabled={busy} onClick={() => void saveSource()}>{busy ? '保存中…' : '发布新版本'}</button></footer></section></div>}
-    {skillComparison && <SkillVersionComparisonDialog comparison={skillComparison} onClose={() => setSkillComparison(undefined)}/>}
+    {viewingContext && <CapabilityPackageDialog key={viewingContext.id} item={viewingContext} onClose={() => setViewingContext(undefined)} onPublished={refresh}/>}
+    {editing && <CapabilityPackageDialog key={editing.id} item={editing} onClose={() => setEditing(undefined)} onPublished={async () => { await refresh(); setNotice(`已发布 ${editing.capability_key} 的新版本；已有会话继续使用冻结版本。`); }}/>}
+    {skillComparison && <CapabilityPackageDialog key={`compare:${skillComparison.id}`} item={skillComparison} comparison onClose={() => setSkillComparison(undefined)} onPublished={refresh}/>}
     {editingCollection !== undefined && <CapabilityCollectionEditorDialog collection={editingCollection ?? undefined} capabilities={capabilities} busy={busy} onClose={() => setEditingCollection(undefined)} onSave={payload => void saveCollection(payload)}/>}
     {mcpOpen && <McpEditorDialog editing={Boolean(editingMcp)} mode={mcpMode} json={mcpJson} jsonError={mcpJsonError || parsedMcp.error || mcpContractError} selectedServer={activeMcpServerName} server={activeMcpServer} transport={activeMcpTransport} connectionKind={activeMcpConnectionKind} scripts={mcpScripts.filter(script => script.server === activeMcpServerName)} busy={busy} onModeChange={switchMcpMode} onJsonChange={value => { setMcpJson(value); setMcpJsonError(''); }} onConnectionKindChange={switchMcpConnectionKind} onRenameServer={renameMcpServer} onUpdateServer={updateMcpServer} onAddScripts={(server, files) => void addMcpScripts(server, files).catch(reason => setMcpJsonError(errorMessage(reason)))} onRemoveScript={removeMcpScript} onClose={() => { setMcpOpen(false); setEditingMcp(undefined); }} onSave={() => void createMcp()}/>}
     {viewingAgentDefinition && <AgentDefinitionDetailDialog item={viewingAgentDefinition} onClose={() => setViewingAgentDefinition(undefined)} />}
@@ -751,10 +711,6 @@ function AgentDefinitionDetailDialog({ item, onClose }: { item: CapabilityAsset;
 }
 
 
-function SkillVersionComparisonDialog({ comparison, onClose }: { comparison: SkillVersionComparison; onClose: () => void }) {
-  return <div className="modal-backdrop"><section className="modal skill-version-comparison-dialog" role="dialog" aria-modal="true" aria-label={`版本对比 ${comparison.current.capability_key}`}><header><div><span className="eyebrow">SKILL VERSION COMPARISON</span><h2>{comparison.current.capability_key}</h2><p>左侧为上一版本，右侧为当前版本。</p></div><button className="ghost" onClick={onClose}>关闭</button></header><div className="skill-version-comparison-panes"><section><b>上一版本</b><small>{comparison.previous.filename}</small><pre>{comparison.previous.content}</pre></section><section><b>当前版本</b><small>{comparison.current.filename}</small><pre>{comparison.current.content}</pre></section></div><details className="skill-version-comparison-diff" open><summary>文本差异</summary><pre>{comparison.diff || '两个版本的 SKILL.md 内容相同。'}</pre></details><footer><button className="primary" onClick={onClose}>完成</button></footer></section></div>;
-}
-
 interface CardProps { group: CapabilityLineage; selected: boolean; onToggle: () => void; onEdit: () => void; onCompare: () => void; onRollback: () => void; onViewContext: () => void; onViewAgentDefinition: () => void; onProfileHistory: () => void; onDelete: () => void }
 
 function CapabilityOverflowMenu({ label, children }: { label: string; children: (close: () => void) => ReactNode }) {
@@ -816,8 +772,9 @@ function CapabilityCard({ group, selected, onToggle, onEdit, onCompare, onRollba
     : item.description;
   const dependencyLabel = item.dependency_build_state === 'READY' ? '依赖可用' : item.dependency_build_state === 'PENDING' ? '依赖构建中' : item.dependency_build_state === 'FAILED' ? '依赖构建失败' : '无需额外依赖';
   const totalReferences = group.versions.reduce((total, version) => total + version.reference_count, 0);
-  const open = item.capability_type === 'CONTEXT' ? onViewContext : item.capability_type === 'AGENT_DEFINITION' ? onViewAgentDefinition : undefined;
-  const openLabel = item.capability_type === 'CONTEXT' ? `查看 Context ${item.capability_key}` : item.capability_type === 'AGENT_DEFINITION' ? `查看 Agent Definition ${item.capability_key}` : undefined;
-  const hasPreviousSkillVersion = item.capability_type === 'SKILL' && group.versions.length > 1;
-  return <tr className={`capability-card ${selected ? 'selected' : ''}`}><td className="capability-check-column"><input type="checkbox" aria-label={`选择能力 ${item.capability_key}`} checked={selected} disabled={item.is_builtin} onChange={onToggle}/></td><td className="capability-name-cell"><b title={item.capability_key}>{open ? <button className="capability-name-open" aria-label={openLabel} onClick={open}>{item.capability_key}</button> : item.capability_key}{item.is_builtin && <LockKeyhole size={12}/>}</b><small title={description}>{description || '暂无说明'}</small></td><td className="capability-file-cell" title={item.filename}>{item.filename}</td><td>{formatBytes(item.byte_size)}</td><td><span>{item.capability_type === 'SKILL' ? '当前版本' : `rev ${item.revision_number}${item.version ? ` · ${item.version}` : ''}`}</span>{item.capability_type === 'SKILL' && <small>{hasPreviousSkillVersion ? '可回退到上一版本' : '暂无上一版本'}</small>}</td><td>{new Date(item.created_at).toLocaleString()}</td><td>{totalReferences}</td><td><span className={`capability-dependency ${item.dependency_build_state.toLowerCase()}`} title={item.dependency_build_error || ''}>{dependencyLabel}</span></td><td><CapabilityOverflowMenu label={`${typeLabel(item.capability_type)} ${item.capability_key}`}>{close => <>{(item.capability_type === 'SKILL' || item.capability_type === 'MCP') && <button type="button" role="menuitem" onClick={() => { onEdit(); close(); }}><Pencil size={14}/>编辑</button>}{item.capability_type === 'SKILL' && <><a role="menuitem" href={capabilityPackageUrl(item.id)} download aria-label={`下载 Skill ${item.capability_key}`} title="下载当前版本 ZIP" onClick={close}><Download size={14}/>下载</a><button type="button" role="menuitem" disabled={!hasPreviousSkillVersion} title={hasPreviousSkillVersion ? '对比上一版本和当前版本' : '暂无上一版本可对比'} onClick={() => { onCompare(); close(); }}><GitCompareArrows size={14}/>版本对比</button><button type="button" role="menuitem" disabled={!hasPreviousSkillVersion} title={hasPreviousSkillVersion ? '删除当前版本并恢复上一版本' : '暂无上一版本可回退'} onClick={() => { onRollback(); close(); }}><RotateCcw size={14}/>回退到上一版本</button></>}{item.capability_type === 'AGENT_PROFILE' && <button type="button" role="menuitem" onClick={() => { onProfileHistory(); close(); }}><Layers3 size={14}/>版本与绑定</button>}{item.is_builtin ? <button type="button" role="menuitem" disabled title="系统内置默认策略，不能删除"><LockKeyhole size={14}/>不可删除</button> : <button type="button" className="danger" role="menuitem" title={totalReferences > 0 ? '有关联的记录会保留并说明绑定节点，其余记录直接删除' : '删除能力'} onClick={() => { onDelete(); close(); }}><Trash2 size={14}/>删除能力</button>}</>}</CapabilityOverflowMenu></td></tr>;
+  const open = item.capability_type === 'CONTEXT' ? onViewContext : item.capability_type === 'AGENT_DEFINITION' ? onViewAgentDefinition : item.capability_type === 'SKILL' ? onEdit : undefined;
+  const openLabel = item.capability_type === 'CONTEXT' ? `查看 Context ${item.capability_key}` : item.capability_type === 'AGENT_DEFINITION' ? `查看 Agent Definition ${item.capability_key}` : item.capability_type === 'SKILL' ? `编辑 Skill ${item.capability_key}` : undefined;
+  const versioned = item.capability_type === 'SKILL' || item.capability_type === 'CONTEXT';
+  const hasPreviousSkillVersion = versioned && group.versions.length > 1;
+  return <tr className={`capability-card ${selected ? 'selected' : ''}`}><td className="capability-check-column"><input type="checkbox" aria-label={`选择能力 ${item.capability_key}`} checked={selected} disabled={item.is_builtin} onChange={onToggle}/></td><td className="capability-name-cell"><b title={item.capability_key}>{open ? <button className="capability-name-open" aria-label={openLabel} onClick={open}>{item.capability_key}</button> : item.capability_key}{item.is_builtin && <LockKeyhole size={12}/>}</b><small title={description}>{description || '暂无说明'}</small></td><td className="capability-file-cell" title={item.filename}>{item.filename}</td><td>{formatBytes(item.byte_size)}</td><td><span>{versioned ? '当前版本' : `rev ${item.revision_number}${item.version ? ` · ${item.version}` : ''}`}</span>{versioned && <small>{hasPreviousSkillVersion ? '可回退到上一版本' : '暂无上一版本'}</small>}</td><td>{new Date(item.created_at).toLocaleString()}</td><td>{totalReferences}</td><td><span className={`capability-dependency ${item.dependency_build_state.toLowerCase()}`} title={item.dependency_build_error || ''}>{dependencyLabel}</span></td><td><CapabilityOverflowMenu label={`${typeLabel(item.capability_type)} ${item.capability_key}`}>{close => <>{(item.capability_type === 'SKILL' || item.capability_type === 'MCP') && <button type="button" role="menuitem" onClick={() => { onEdit(); close(); }}><Pencil size={14}/>编辑</button>}{versioned && <><a role="menuitem" href={capabilityPackageUrl(item.id)} download aria-label={`下载 ${typeLabel(item.capability_type)} ${item.capability_key}`} title="下载当前版本完整包" onClick={close}><Download size={14}/>下载</a><button type="button" role="menuitem" disabled={!hasPreviousSkillVersion} title={hasPreviousSkillVersion ? '对比上一版本和当前版本' : '暂无上一版本可对比'} onClick={() => { onCompare(); close(); }}><GitCompareArrows size={14}/>版本对比</button><button type="button" role="menuitem" disabled={!hasPreviousSkillVersion} title={hasPreviousSkillVersion ? '删除当前版本并恢复上一版本' : '暂无上一版本可回退'} onClick={() => { onRollback(); close(); }}><RotateCcw size={14}/>回退到上一版本</button></>}{item.capability_type === 'AGENT_PROFILE' && <button type="button" role="menuitem" onClick={() => { onProfileHistory(); close(); }}><Layers3 size={14}/>版本与绑定</button>}{item.is_builtin ? <button type="button" role="menuitem" disabled title="系统内置默认策略，不能删除"><LockKeyhole size={14}/>不可删除</button> : <button type="button" className="danger" role="menuitem" title={totalReferences > 0 ? '有关联的记录会保留并说明绑定节点，其余记录直接删除' : '删除能力'} onClick={() => { onDelete(); close(); }}><Trash2 size={14}/>删除能力</button>}</>}</CapabilityOverflowMenu></td></tr>;
 }

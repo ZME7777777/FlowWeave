@@ -302,6 +302,11 @@ class CapabilitySkillRevisionWrite(ApiModel):
     content: str = Field(min_length=1, max_length=1_048_576)
 
 
+class CapabilityPackageRevisionWrite(ApiModel):
+    expected_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    files: dict[str, str] = Field(min_length=1, max_length=1000)
+
+
 class AgentProfileRevisionWrite(ApiModel):
     expected_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     document: dict[str, Any]
