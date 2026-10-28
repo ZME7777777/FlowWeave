@@ -14326,3 +14326,22 @@ Web typecheck、受影响ESLint与diff检查通过。本片仅Web，无后端／
 保留并行CASE-03B的CURRENT及其他工作树改动。工作树Alembic唯一head为
 0182_case_flow_tools，不把未提交迁移纳入本片。沿用当前会话部署授权，仅发布
 本片固定提交Web，结果完成后补记；本片无后续开发切片。
+
+OPS-54 发布验收补记（2026-10-28）：正式部署Web提交
+`7e5a1b52bbfa55b485cd4be818def4afe95be204`，预检和commit-bound最小上下文prepare
+通过，源归档SHA-256为
+`738686676cea973c7193a8916a7e1c6ca88eea54fd264e793640a54b7128578b`。
+实际linux/amd64 Web image ID为
+`sha256:17140df71cb0c54b90e7f2758b88f1a08e9f35e9e54cf73ecf3372f75cc041db`，
+OCI revision一致。保留旧日志与回滚镜像后仅recreate Web；健康、版本和服务器
+配置摘要核对通过，其他47个容器的image／StartedAt保持，无迁移或Runtime替换。
+
+公网HTML、入口资源及会话管理JS／CSS两个模块摘要匹配运行镜像；服务器侧
+Chromium前缀登录、Agent深层与根登录通过，API匿名401边界及新浏览器前缀请求
+验证通过，根API请求为0。生产验收没有恢复／删除业务会话；认证后的列表筛选、
+恢复和删除行为由前述8项受控浏览器回归验证，不冒称生产已登录交互验收。
+Web remote-release-finish通过，精确回收5个超过24小时的受管旧上下文及1个可
+回收历史image ID的tags，保留近期上下文、全部实际引用和每仓库一个不同回滚
+镜像；没有清理共享BuildKit、卷、Workspace或数据库备份。收尾后Web版本、健康、
+服务器配置及其他47个容器复核通过。并行CASE-03B与能力市场工作树保持独立，
+仅从固定提交构建Web；未push，本片无后续开发任务。
