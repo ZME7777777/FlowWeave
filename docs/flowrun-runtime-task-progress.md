@@ -13343,3 +13343,35 @@ Case配置测试通过，覆盖两种模板模式、空／缺失／未就绪模�
 未调用模型或在生产创建会话。无新增迁移，唯一Alembic head仍为
 0178_merge_schedule_credentials，无CURRENT。沿用当前会话授权发布platform／web，
 正式结果后补；当前与下一可执行重构切片均为NONE。
+
+
+OPS-35 正式发布补记（2026-10-28）：实际部署代码为
+`f71c22632c7fc56797ef33108e9a9346be0c9097`。platform／web正式预检及
+commit-bound最小上下文prepare通过，归档SHA-256分别为
+`7616586d7a191445bfbf24b51da46c4df48e89b9175130d02f94e7b47995806d`和
+`3daa4354c5a5823a0d758b44a653cb860092ddb2b2fdf8f39cd92e8e131470ca`。
+实际linux/amd64平台／Web image ID分别为
+`sha256:6d5e06d6d0f1688f82885a044c1b64ec7f59af0b51e6bca5cc90e0ed82d6a9ae`和
+`sha256:e31beb9916bbdd02904f968b00d51f4215e5309a0266356ee8fde2591ef4fb94`，
+OCI revision一致。
+
+构建期间一个非Compose的受管Runtime出现StartedAt变化，首次activate在任何
+镜像切换／迁移／服务更新前由保护检查拒绝。只读核对其原image ID保持、容器
+运行中、所有目标服务ID与image及服务器配置保持；保护清单原件与变化证据保留
+在受限发布上下文，仅对该独立生命周期变化更新观察基线。本次未操作该Runtime。
+随后保留旧日志与回滚镜像，正式migration通过，head保持
+0178_merge_schedule_credentials，同步recreate api、stream-api、worker、web，
+四服务健康与版本通过。后续保护清单43个容器及配置摘要保持，没有Provider
+重启、Runtime replacement或业务写入。
+
+正式认证只读GET与发布前数据库快照确认现有Case元数据保持。公网HTML、入口
+资源及Case模块JS／CSS摘要匹配运行镜像，新启动限制、次要审计与添加表单控件
+存在；Chromium验证场景／记录深层路由、前缀／根登录、匿名401边界通过，全新
+浏览器认证API使用部署前缀，根API请求为零。启动拒绝与复杂交互由本地服务
+测试和受控浏览器API验收，没有线上创建会话、触发流程或调用模型。
+
+platform与web remote-release-finish通过，无过期受管上下文，精确回收两个
+历史image ID的tags；保留当前镜像、每仓库一个不同版本回滚和全部容器引用。
+未清理共享BuildKit、卷、Workspace或数据库备份。收尾后健康、版本、数据库
+head、配置和更新后的保护清单再验通过。本补记不改变实际部署身份，本地提交
+未推送；当前及下一可执行重构切片均为NONE。
