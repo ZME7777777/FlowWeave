@@ -527,10 +527,9 @@ def read_case_material(db: Session, case_id: str, value: str) -> tuple[bytes, st
     return content, material["name"], mime
 
 
-def save_case_session_config(
-    db: Session, case_id: str, payload: CaseSessionConfigWrite
+def _validated_case_session_config(
+    db: Session, payload: CaseControlConversationWrite
 ) -> dict[str, Any]:
-    item = _editable_case(db, case_id, payload.expected_row_version)
     provider = next((p for p in list_providers(db) if p["id"] == payload.model_provider_id), None)
     model = next(
         (
@@ -549,11 +548,21 @@ def save_case_session_config(
     capabilities, credentials = validate_template_configuration(
         db, tuple(payload.capability_version_ids), tuple(payload.credential_ids)
     )
-    item.session_config_json = {
-        **payload.model_dump(exclude={"expected_row_version"}),
+    return {
+        **payload.model_dump(),
         "capability_version_ids": list(capabilities),
         "credential_ids": list(credentials),
     }
+
+
+def save_case_session_config(
+    db: Session, case_id: str, payload: CaseSessionConfigWrite
+) -> dict[str, Any]:
+    item = _editable_case(db, case_id, payload.expected_row_version)
+    config = CaseControlConversationWrite.model_validate(
+        payload.model_dump(exclude={"expected_row_version"})
+    )
+    item.session_config_json = _validated_case_session_config(db, config)
     item.row_version += 1
     finish(db)
     return _case_dict(db, item)
@@ -1559,6 +1568,27 @@ def execute_case_decision_proposal(db: Session, case_id: str, proposal_id: str) 
     return _proposal_dict(proposal)
 
 
+def _validate_case_start_path(db: Session, stages: list[CaseStage]) -> None:
+    if not stages or any(not stage.flow_run_id for stage in stages):
+        raise DomainError("CASE_PATH_INCOMPLETE", "请先配置完整的 Case 路径", 409)
+    for stage in stages:
+        template = db.get(FlowRun, stage.flow_run_id)
+        if template is None:
+            raise DomainError("CASE_TEMPLATE_UNAVAILABLE", "流程模板已不可用，请重新配置路径", 409)
+        if stage.execution_mode == "STEPWISE":
+            if template.run_mode != "MANUAL" or not template.parent_flow_run_id:
+                raise DomainError("CASE_TEMPLATE_UNAVAILABLE", "逐步流程模板不可用", 409)
+            orchestration.validate_stepwise_record_template(db, template.id)
+        else:
+            plan = template.automation_plan_json or {}
+            if (
+                template.run_mode != "AUTOMATIC"
+                or not plan.get("start_node_key")
+                or not plan.get("readiness", {}).get("ready")
+            ):
+                raise DomainError("CASE_TEMPLATE_UNAVAILABLE", "连续流程模板配置不完整", 409)
+
+
 def create_case_control_conversation(
     db: Session,
     case_id: str,
@@ -1571,8 +1601,14 @@ def create_case_control_conversation(
     if item.state in {"COMPLETED", "ARCHIVED"}:
         raise illegal("terminal case cannot start an Agent", state=item.state)
     stages = list(db.scalars(select(CaseStage).where(CaseStage.case_id == item.id)))
-    if not stages or any(not stage.flow_run_id for stage in stages):
-        raise DomainError("CASE_PATH_INCOMPLETE", "请先配置完整的 Case 路径", 409)
+    _validate_case_start_path(db, stages)
+    saved = item.session_config_json or {}
+    if not saved.get("model_provider_id") or not saved.get("model_name"):
+        raise DomainError("CASE_AGENT_CONFIG_REQUIRED", "请先保存 Agent 配置", 409)
+    config = CaseControlConversationWrite.model_validate(saved)
+    if config.model_dump() != payload.model_dump():
+        raise DomainError("CASE_AGENT_CONFIG_CHANGED", "Agent 配置已更新，请刷新后重试", 409)
+    validated = _validated_case_session_config(db, config)
     workspace = agent_workspaces.ensure_default_agent_workspace(db)
     if item.control_work_directory_id is None:
         directory = agent_workspaces.create_case_work_directory(
@@ -1584,11 +1620,11 @@ def create_case_control_conversation(
         db,
         workspace.id,
         work_directory_id=item.control_work_directory_id,
-        model_provider_id=payload.model_provider_id,
-        model_name=payload.model_name,
-        reasoning_effort=payload.reasoning_effort,
-        capability_version_ids=tuple(payload.capability_version_ids),
-        credential_ids=tuple(payload.credential_ids),
+        model_provider_id=validated["model_provider_id"],
+        model_name=validated["model_name"],
+        reasoning_effort=validated["reasoning_effort"],
+        capability_version_ids=tuple(validated["capability_version_ids"]),
+        credential_ids=tuple(validated["credential_ids"]),
         content=(
             f"你是事项“{item.name}”的协调 Agent。\n\n"
             f"先读取 {user_runtime_project_root(workspace.id)}"

@@ -146,6 +146,8 @@ git -C /Users/zhengmengen/WorkSpace/openhands/software-agent-sdk-total-tokens-1.
 
 ## Case 控制面
 
+- 新建 Case 协调会话前，必须具有完整可复用的阶段路径和已保存的 Agent 配置；前端提前禁用启动，后端在创建会话／写入运行时前重新校验模板、模型、能力与认证，拒绝过期配置。已有协调会话仍可直接打开。操作记录包含平台自动推进、手动动作和会话控制请求，仅作为次要排查入口，不得统称为 Agent 会话消息。
+
 - 场景名称、工作区、说明和目标创建后固定，浏览器只读与服务端写入校验共同约束；创建表单不提供资料上传，创建成功后仍可管理资料。
 
 - `cases`、`case_stages` 和 `case_agent_tasks` 是用户隔离的控制面元数据；迁移必须同步加入 PostgreSQL RLS 策略及 `shared/database.py` 的 `_USER_ISOLATED_TABLES`。

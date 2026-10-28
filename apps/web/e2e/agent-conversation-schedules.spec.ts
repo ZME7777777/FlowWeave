@@ -307,7 +307,7 @@ test('case detail saves materials workspace ordered run cards and model capabili
   expect(header!.height).toBeLessThanOrEqual(56);
   await page.getByRole('button', { name: '关闭场景面板', exact: true }).click();
   await expect(page.locator('.scenario-path ol li')).toHaveCount(0);
-  await page.screenshot({ path: '../../.tmp/ops33/path-empty.png' });
+  await page.screenshot({ path: '../../.tmp/ops35/path-empty.png' });
   for (const index of [1, 2]) {
     await page.getByRole('button', { name: /添加.*流程/ }).click();
     await expect(page.getByRole('combobox', { name: '运行方式', exact: true })).toBeDisabled();
@@ -337,9 +337,20 @@ test('case detail saves materials workspace ordered run cards and model capabili
       await page.getByRole('combobox', { name: '运行记录', exact: true }).click();
       await page.getByRole('option', { name: '流程记录 1', exact: true }).click();
       await page.getByRole('combobox', { name: '运行记录', exact: true }).click();
-      await page.screenshot({ path: '../../.tmp/ops33/picker-open.png' });
+      for (const width of [1440, 1024]) {
+        await page.setViewportSize({ width, height: 768 });
+        const picker = page.locator('.case-path-picker');
+        expect((await picker.boundingBox())!.height).toBeLessThan(125);
+        const controls = await picker.getByRole('combobox').all();
+        const boxes = await Promise.all(controls.map(control => control.boundingBox()));
+        expect(Math.round(boxes[0]!.y)).toBe(Math.round(boxes[2]!.y));
+        expect(await picker.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+        await expect(page.getByRole('option', { name: '流程记录 1', exact: true })).toContainText('run-1');
+        await page.screenshot({ path: `../../.tmp/ops35/picker-open-${width}.png` });
+      }
+
       await page.getByRole('combobox', { name: '运行记录', exact: true }).press('Escape');
-      await page.screenshot({ path: '../../.tmp/ops33/picker.png' });
+      await page.screenshot({ path: '../../.tmp/ops35/picker.png' });
       parentRunning = false;
       await expect(page.locator('.scenario-add-card')).toContainText('所选 FlowRun 已停止运行，请重新选择。');
       await expect(page.locator('.scenario-add-card').getByRole('button', { name: '添加', exact: true })).toBeDisabled();
@@ -359,7 +370,7 @@ test('case detail saves materials workspace ordered run cards and model capabili
   rejectOrder = false;
   await second.dragTo(first, { targetPosition: { x: 30, y: 5 } });
   await expect(page.locator('.scenario-path li').first()).toContainText('流程记录 2');
-  await page.screenshot({ path: '../../.tmp/ops33/path.png' });
+  await page.screenshot({ path: '../../.tmp/ops35/path.png' });
   // Keyboard reordering uses the same persisted order.
   await page.getByRole('button', { name: '调整顺序 流程记录 2', exact: true }).press('ArrowDown');
   await expect(page.locator('.scenario-path li').first()).toContainText('流程记录 1');
@@ -406,18 +417,18 @@ test('case detail saves materials workspace ordered run cards and model capabili
   await page.getByRole('button', { name: '关闭会话配置', exact: true }).click();
 
   await expect(page.getByText('Case 会话系统上下文', { exact: true })).toHaveCount(0);
-  await page.screenshot({ path: '../../.tmp/ops33/conversation.png' });
+  await page.screenshot({ path: '../../.tmp/ops35/conversation.png' });
   await page.getByRole('button', { name: '关闭场景面板', exact: true }).click();
-  await page.screenshot({ path: '../../.tmp/ops33/path-single.png' });
+  await page.screenshot({ path: '../../.tmp/ops35/path-single.png' });
   await openCasePanel(page, '场景信息');
   const renameButtons = await page.locator('.case-material-rename-button').all();
   const renameBoxes = await Promise.all(renameButtons.map(button => button.boundingBox()));
   expect(renameBoxes[0]!.x).toBe(renameBoxes[1]!.x);
-  await page.screenshot({ path: '../../.tmp/ops33/basics.png' });
+  await page.screenshot({ path: '../../.tmp/ops35/basics.png' });
   await page.setViewportSize({ width: 1024, height: 900 });
   await expect(page.getByRole('button', { name: '保存', exact: true })).toBeVisible();
   expect(await page.locator('.case-inspector').evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
-  await page.screenshot({ path: '../../.tmp/ops33/basics-1024.png' });
+  await page.screenshot({ path: '../../.tmp/ops35/basics-1024.png' });
   await expect(page.locator('.scenario-workspace select')).toHaveCount(0);
   await openCasePanel(page, 'Agent 配置');
   const controls = await page.locator('.case-session-grid .case-choice-control, .case-capability-choice').all();
@@ -425,7 +436,7 @@ test('case detail saves materials workspace ordered run cards and model capabili
   expect(boxes[0]!.width).toBeCloseTo(boxes[1]!.width, 0);
   expect(boxes[2]!.height).toBe(boxes[3]!.height);
   expect(boxes[2]!.y).toBe(boxes[3]!.y);
-  await page.screenshot({ path: '../../.tmp/ops33/conversation-1024.png' });
+  await page.screenshot({ path: '../../.tmp/ops35/conversation-1024.png' });
   expect(writes.filter(write => write.path.endsWith('/cases'))).toHaveLength(1);
 });
 
@@ -4119,13 +4130,15 @@ test('case path fills the workspace with compact stages and on-demand context an
     await page.setViewportSize({ width, height: 768 });
     const bounds = await page.locator('.case-path-panel').evaluate(element => ({ width: element.clientWidth, scroll: element.scrollHeight, height: element.clientHeight, main: element.closest('.scenario-workspace')!.clientWidth }));
     expect(bounds.width).toBeGreaterThan(bounds.main * 0.9);
+    const path = await page.locator('.case-connected-path').boundingBox();
+    expect(path!.width).toBeGreaterThan(bounds.width - 50);
     expect(bounds.scroll).toBeGreaterThan(bounds.height);
     expect((await page.locator('.case-workspace-toolbar').boundingBox())!.height).toBeLessThanOrEqual(56);
     await page.locator('.case-path-panel').hover(); await page.mouse.wheel(0, 600);
     await expect.poll(() => page.locator('.case-path-panel').evaluate(element => element.scrollTop)).toBeGreaterThan(0);
     expect(await page.evaluate(() => ({ width: document.documentElement.scrollWidth, scroll: document.documentElement.scrollHeight, viewport: innerHeight }))).toEqual({ width, scroll: 768, viewport: 768 });
     await page.locator('.case-path-panel').evaluate(element => { element.scrollTop = 0; });
-    await page.screenshot({ path: `../../.tmp/ops33/case-path-${width}.png` });
+    await page.screenshot({ path: `../../.tmp/ops35/case-path-${width}.png` });
   }
   await expect(page.getByText('Case 路径', { exact: true })).toHaveCount(0);
   await expect(page.getByText('拖拽排序', { exact: true })).toHaveCount(0);
@@ -4137,7 +4150,7 @@ test('case path fills the workspace with compact stages and on-demand context an
     expect((await agent.boundingBox())!.height).toBeLessThan(360);
     await agent.getByRole('combobox', { name: '思考程度', exact: true }).click();
     await expect(agent.getByRole('option', { name: 'high', exact: true })).toBeVisible();
-    await page.screenshot({ path: `../../.tmp/ops33/agent-configuration-${width}.png` });
+    await page.screenshot({ path: `../../.tmp/ops35/agent-configuration-${width}.png` });
     await page.keyboard.press('Escape');
   }
   await openCasePanel(page, '场景信息');
@@ -4147,13 +4160,15 @@ test('case path fills the workspace with compact stages and on-demand context an
   await expect(context.getByRole('textbox', { name: '目标', exact: true })).toHaveAttribute('readonly');
   await expect(context.getByRole('textbox', { name: '说明', exact: true })).toHaveAttribute('readonly');
   expect((await context.boundingBox())!.height).toBeLessThan(600);
-  await page.screenshot({ path: '../../.tmp/ops33/scene-information.png' });
+  await page.screenshot({ path: '../../.tmp/ops35/scene-information.png' });
   await context.getByRole('button', { name: '保存', exact: true }).click();
   await expect(context.getByRole('status')).toHaveText('已保存');
   expect(item.objective).toBe('完成迁移、验证并交付');
   await page.keyboard.press('Escape'); await expect(context).toHaveCount(0);
-  await page.getByRole('button', { name: 'Agent 操作记录', exact: true }).click();
-  const activity = page.getByRole('dialog', { name: 'Agent 操作记录' });
+  await expect(page.locator('.case-workspace-toolbar').getByRole('button', { name: /操作记录/ })).toHaveCount(0);
+  await openCasePanel(page, '场景信息');
+  await page.getByRole('button', { name: '查看操作记录', exact: true }).click();
+  const activity = page.getByRole('dialog', { name: '操作记录', exact: true });
   await expect(activity).toContainText('等待环境恢复后重试');
   await expect(activity).toContainText('ENVIRONMENT_NOT_READY');
   await page.mouse.click(8, 150); await expect(activity).toHaveCount(0);
@@ -4182,13 +4197,17 @@ test('case Agent start checks configuration and retries using the same submissio
     return json(route, path.endsWith('/cases') ? [item] : item);
   });
   await page.getByRole('button', { name: '场景空间', exact: true }).click();
-  await page.getByRole('button', { name: '启动 Agent', exact: true }).click();
-  await expect(page.getByRole('alert')).toContainText('请先配置完整的 Case 路径');
+  await expect(page.getByRole('button', { name: '启动 Agent', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: '启动 Agent', exact: true })).toHaveAttribute('title', '请先添加完整的流程路径、保存 Agent 配置');
+  await expect(page.getByRole('alert')).toHaveCount(0);
   expect(keys).toEqual([]);
   item = { ...item, stages: [{ id: 'stage', name: '交付流程', flow_run_id: 'template', state: 'ACTIVE', position: 0, execution_mode: 'STEPWISE' }] };
   await page.reload();
   await page.getByRole('button', { name: '场景空间', exact: true }).click();
-  await page.getByRole('button', { name: '启动 Agent', exact: true }).click();
+  await expect(page.getByRole('button', { name: '启动 Agent', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: '启动 Agent', exact: true })).toHaveAttribute('title', '请先保存 Agent 配置');
+  expect(keys).toEqual([]);
+  await openCasePanel(page, 'Agent 配置');
   const config = page.getByRole('dialog', { name: 'Agent 配置', exact: true });
   await expect(config).toBeVisible();
   await config.getByRole('combobox', { name: '模型供应商' }).click();
@@ -4198,6 +4217,7 @@ test('case Agent start checks configuration and retries using the same submissio
   await config.getByRole('button', { name: '保存配置', exact: true }).click();
   await expect(config.getByRole('status')).toHaveText('已保存');
   await page.getByRole('button', { name: '关闭场景面板' }).click();
+  await expect(page.getByRole('button', { name: '启动 Agent', exact: true })).toBeEnabled();
   await page.getByRole('button', { name: '启动 Agent', exact: true }).click();
   await expect(page.getByRole('alert')).toContainText('创建暂不可用');
   await page.getByRole('button', { name: '启动 Agent', exact: true }).click();

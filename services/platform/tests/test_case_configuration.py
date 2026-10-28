@@ -354,8 +354,9 @@ def test_case_basics_are_immutable_but_materials_remain_editable(case_db, change
     assert updated["row_version"] == item["row_version"] + 1
 
 
+@pytest.mark.parametrize("mode", ["CONTINUOUS", "STEPWISE"])
 def test_case_agent_requires_complete_path_before_bootstrap_and_preserves_binding(
-    case_db, monkeypatch
+    case_db, monkeypatch, mode
 ):
     db, _ = case_db
     item = service.create_case(
@@ -391,7 +392,50 @@ def test_case_agent_requires_complete_path_before_bootstrap_and_preserves_bindin
     assert error.value.code == "CASE_PATH_INCOMPLETE"
     assert created == []
     stage.flow_run_id = "template"
+    stage.execution_mode = mode
+    monkeypatch.setattr(
+        service.orchestration,
+        "validate_stepwise_record_template",
+        lambda db, run_id: {"start_node_key": "start", "reachable_node_keys": ["start"]},
+    )
+    db.add(
+        FlowRun(
+            id="template",
+            flow_definition_id="flow",
+            run_no=1,
+            name="流程模板",
+            run_mode="AUTOMATIC" if mode == "CONTINUOUS" else "MANUAL",
+            parent_flow_run_id="master",
+            automation_plan_json={"start_node_key": "start", "readiness": {"ready": True}},
+        )
+    )
     db.commit()
+    with pytest.raises(DomainError) as error:
+        service.create_case_control_conversation(db, item["id"], payload, "start-case")
+    assert error.value.code == "CASE_AGENT_CONFIG_REQUIRED"
+    assert created == []
+    monkeypatch.setattr(
+        service,
+        "list_providers",
+        lambda db: [
+            {
+                "id": "provider",
+                "available_for_nodes": True,
+                "models": [{"model_name": "model", "enabled": True}],
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        service, "validate_template_configuration", lambda db, caps, creds: (caps, creds)
+    )
+    service.save_case_session_config(
+        db,
+        item["id"],
+        CaseSessionConfigWrite(
+            **payload.model_dump(),
+            expected_row_version=item["row_version"],
+        ),
+    )
     started = service.create_case_control_conversation(db, item["id"], payload, "start-case")
     assert started["control_conversation_binding_id"] == "case-binding"
     assert created[0]["work_directory_id"] == item["control_work_directory_id"]
@@ -401,3 +445,112 @@ def test_case_agent_requires_complete_path_before_bootstrap_and_preserves_bindin
     assert "完成迁移" in created[0]["content"]
     service.create_case_control_conversation(db, item["id"], payload, "start-case")
     assert len(created) == 1
+
+
+@pytest.mark.parametrize(
+    "failure,expected",
+    [
+        ("missing_template", "CASE_TEMPLATE_UNAVAILABLE"),
+        ("incomplete_template", "CASE_TEMPLATE_UNAVAILABLE"),
+        ("wrong_mode", "CASE_TEMPLATE_UNAVAILABLE"),
+        ("missing_config", "CASE_AGENT_CONFIG_REQUIRED"),
+        ("stepwise_incomplete", "STEPWISE_TEMPLATE_INCOMPLETE"),
+        ("changed_config", "CASE_AGENT_CONFIG_CHANGED"),
+        ("unavailable_provider", "CASE_MODEL_UNAVAILABLE"),
+        ("disabled_model", "CASE_MODEL_UNAVAILABLE"),
+        ("unsupported_effort", "CASE_REASONING_INVALID"),
+        ("unavailable_capability", "CAPABILITY_UNAVAILABLE"),
+    ],
+)
+def test_case_agent_revalidates_start_conditions_before_any_runtime_write(
+    case_db, monkeypatch, failure, expected
+):
+    db, _ = case_db
+    item = create_case(db)
+    template = FlowRun(
+        id="template",
+        parent_flow_run_id="master",
+        flow_definition_id="flow",
+        run_no=1,
+        name="流程模板",
+        run_mode="AUTOMATIC",
+        automation_plan_json={"start_node_key": "start", "readiness": {"ready": True}},
+    )
+    stage = CaseStage(
+        case_id=item["id"],
+        stage_key="first",
+        name="阶段",
+        position=0,
+        state="ACTIVE",
+        flow_run_id="template",
+        execution_mode="CONTINUOUS",
+    )
+    config = {"model_provider_id": "provider", "model_name": "model"}
+    db.get(Case, item["id"]).session_config_json = config
+    db.add_all([template, stage])
+    db.commit()
+    providers = [
+        {
+            "id": "provider",
+            "available_for_nodes": True,
+            "models": [{"model_name": "model", "enabled": True}],
+        }
+    ]
+    monkeypatch.setattr(service, "list_providers", lambda db: providers)
+    monkeypatch.setattr(
+        service, "validate_template_configuration", lambda db, caps, creds: (caps, creds)
+    )
+    writes = []
+    monkeypatch.setattr(service, "_write_case_files", lambda *args: writes.append("files"))
+    monkeypatch.setattr(
+        service.conversations,
+        "bootstrap_conversation",
+        lambda *args, **kwargs: writes.append("bootstrap"),
+    )
+    monkeypatch.setattr(
+        service.agent_workspaces,
+        "ensure_default_agent_workspace",
+        lambda *args: writes.append("workspace"),
+    )
+    payload = CaseControlConversationWrite(**config)
+    if failure == "missing_template":
+        db.delete(template)
+    elif failure == "incomplete_template":
+        template.automation_plan_json = {}
+    elif failure == "wrong_mode":
+        template.run_mode = "MANUAL"
+    elif failure == "missing_config":
+        db.get(Case, item["id"]).session_config_json = {}
+    elif failure == "stepwise_incomplete":
+        template.run_mode = "MANUAL"
+        template.parent_flow_run_id = "master"
+        stage.execution_mode = "STEPWISE"
+
+        def reject_template(*args):
+            raise DomainError("STEPWISE_TEMPLATE_INCOMPLETE", "节点配置不完整", 422)
+
+        monkeypatch.setattr(
+            service.orchestration, "validate_stepwise_record_template", reject_template
+        )
+    elif failure == "changed_config":
+        payload = payload.model_copy(update={"model_name": "stale-model"})
+    elif failure == "unavailable_provider":
+        providers.clear()
+    elif failure == "disabled_model":
+        providers[0]["models"][0]["enabled"] = False
+    elif failure == "unsupported_effort":
+        config = {**config, "reasoning_effort": "high"}
+        db.get(Case, item["id"]).session_config_json = config
+        payload = CaseControlConversationWrite(**config)
+    else:
+
+        def reject_capabilities(*args):
+            raise DomainError("CAPABILITY_UNAVAILABLE", "能力已不可用", 409)
+
+        monkeypatch.setattr(service, "validate_template_configuration", reject_capabilities)
+    db.commit()
+    with pytest.raises(DomainError) as error:
+        service.create_case_control_conversation(db, item["id"], payload, "start")
+    assert error.value.code == expected
+    assert writes == []
+    assert service.get_case(db, item["id"])["control_conversation_binding_id"] is None
