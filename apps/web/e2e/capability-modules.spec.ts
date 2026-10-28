@@ -188,6 +188,7 @@ test('published Context Bundle shows its frozen document directory before compil
   await page.getByRole('navigation', { name: '能力模块' }).getByRole('button', { name: /Context/ }).click();
   const contextCard = page.getByRole('button', { name: '查看 Context 资料包' });
   await contextCard.click();
+  await expect(page.getByRole('checkbox', { name: '选择能力 资料包', exact: true })).not.toBeChecked();
   const dialog = page.getByRole('dialog', { name: '查看 Context 资料包' });
   await expect(dialog.getByRole('treeitem', { name: '总内容', exact: true })).toHaveAttribute('aria-selected', 'true');
   await expect(dialog.getByRole('treeitem', { name: 'README.md', exact: true })).toBeVisible();
@@ -524,7 +525,38 @@ test('every capability module supports selecting and bulk deleting capability li
     await expect(bulkDelete).toBeDisabled();
     const checkboxes = page.getByRole('checkbox', { name: new RegExp(`选择能力 bulk-delete-${capabilityType.toLowerCase()}-`) });
     await expect(checkboxes).toHaveCount(2);
-    if (capabilityType === 'CONTEXT') await expect(page.getByRole('checkbox', { name: '选择能力 builtin-default-context' })).toBeDisabled();
+    const firstCheckbox = checkboxes.nth(0);
+    const row = page.locator('.capability-card').filter({ has: page.getByRole('checkbox', { name: await firstCheckbox.getAttribute('aria-label') ?? '', exact: true }) });
+    // Description, file, size, version, timestamp, references and status are all
+    // selection targets; native controls must still toggle exactly once.
+    for (const cell of [1, 2, 3, 4, 5, 6, 7]) {
+      const target = cell === 1 ? row.locator('td').nth(cell).locator('small') : row.locator('td').nth(cell);
+      await target.click();
+      await expect(checkboxes.nth(0)).toBeChecked();
+      await expect(page.getByRole('button', { name: '批量删除 (1)' })).toBeEnabled();
+      await target.click();
+      await expect(checkboxes.nth(0)).not.toBeChecked();
+    }
+    await checkboxes.nth(0).click();
+    await expect(checkboxes.nth(0)).toBeChecked();
+    await row.getByRole('button', { name: /^更多操作：/ }).click();
+    await expect(page.getByRole('menu')).toBeVisible();
+    await expect(checkboxes.nth(0)).toBeChecked();
+    await page.keyboard.press('Escape');
+    await checkboxes.nth(0).click();
+    await expect(checkboxes.nth(0)).not.toBeChecked();
+    await checkboxes.nth(0).focus();
+    await page.keyboard.press('Space');
+    await expect(checkboxes.nth(0)).toBeChecked();
+    await page.keyboard.press('Space');
+    await expect(checkboxes.nth(0)).not.toBeChecked();
+    if (capabilityType === 'CONTEXT') {
+      const builtin = page.getByRole('checkbox', { name: '选择能力 builtin-default-context' });
+      await expect(builtin).toBeDisabled();
+      await page.locator('.capability-card').filter({ has: builtin }).locator('.capability-file-cell').click();
+      await expect(builtin).not.toBeChecked();
+      await expect(page.getByRole('button', { name: '批量删除 (0)' })).toBeDisabled();
+    }
     await page.getByRole('button', { name: '全选当前模块' }).click();
     await expect(checkboxes.nth(0)).toBeChecked();
     await expect(checkboxes.nth(1)).toBeChecked();

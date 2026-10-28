@@ -377,6 +377,52 @@ test('flow library scrolls all rows with sidebar actions and a full width editor
   });
 });
 
+test('flow library row clicks toggle checkboxes while preserving preview and actions', async ({ page }) => {
+  const flows = [0, 1].map(index => ({ ...definition, id: `select-flow-${index}`, name: `选择验收流程 ${index}` }));
+  await page.route('**/api/v1/**', async route => {
+    const path = new URL(route.request().url()).pathname.replace(/^\/flowweave/, '');
+    const respond = (body: unknown) => route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) });
+    if (path.endsWith('/auth/me')) return respond(authenticatedUser);
+    if (path === '/api/v1/flows') return respond(flows);
+    if (path === '/api/v1/node-assets') return respond([asset]);
+    return respond([]);
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: '流程编排', exact: true }).click();
+  const checkbox = page.getByLabel('选择流程 选择验收流程 1', { exact: true });
+  const row = page.locator('.flow-library-row').filter({ has: checkbox });
+  await row.getByRole('button', { name: '选择验收流程 1', exact: true }).click();
+  await expect(checkbox).toBeChecked();
+  await expect(page.getByRole('region', { name: '选择验收流程 1 的流程画布' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '删除 (1)', exact: true })).toBeEnabled();
+  await row.locator('.flow-readiness').click();
+  await expect(checkbox).not.toBeChecked();
+  await row.click({ position: { x: 2, y: 2 } });
+  await expect(checkbox).toBeChecked();
+  await row.getByRole('button', { name: '操作流程 选择验收流程 1', exact: true }).click();
+  await expect(page.locator('.flow-row-menu')).toBeVisible();
+  await expect(checkbox).toBeChecked();
+  await page.keyboard.press('Escape');
+  await checkbox.click();
+  await expect(checkbox).not.toBeChecked();
+  await checkbox.focus();
+  await page.keyboard.press('Space');
+  await expect(checkbox).toBeChecked();
+  await page.keyboard.press('Space');
+  await expect(checkbox).not.toBeChecked();
+  await row.getByRole('button', { name: '选择验收流程 1', exact: true }).dblclick();
+  await expect(page.getByTestId('flow-designer')).toBeVisible();
+  await page.getByRole('button', { name: '返回全部流程', exact: true }).click();
+  await expect(checkbox).toBeChecked();
+  await checkbox.uncheck();
+  await row.getByRole('button', { name: '操作流程 选择验收流程 1', exact: true }).click();
+  await page.locator('.flow-row-menu').getByRole('button', { name: '进入编排', exact: true }).click();
+  await expect(page.getByTestId('flow-designer')).toBeVisible();
+  await page.getByRole('button', { name: '返回全部流程', exact: true }).click();
+  await expect(checkbox).not.toBeChecked();
+  await expect(page.getByRole('button', { name: '删除 (0)', exact: true })).toBeDisabled();
+});
+
 for (const kind of ['MANUAL', 'AUTOMATIC'] as const) {
   test(`outer directory creates a ${kind} record with the existing node and Git fields`, async ({ page }) => {
     let submitted: Record<string, unknown> | undefined;
