@@ -9,7 +9,7 @@ import { createPortal, flushSync } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
 import { ComposerModelMenu } from './ComposerModelMenu';
 import { ConversationErrorNotice } from './ConversationErrorNotice';
-import { InConversationSearch } from './InConversationSearch';
+import { InConversationSearch, type InConversationSearchHit } from './InConversationSearch';
 import { AgentComposerInput, type ComposerSuggestion } from './AgentComposerInput';
 import { AgentWorkspaceSettings } from './AgentWorkspaceSettings';
 import { RuntimeBrowserFrame } from './RuntimeBrowserFrame';
@@ -23,7 +23,7 @@ import { deploymentBasePath, withoutDeploymentBase } from '../../deploymentPath'
 import { agentWorkspaceSessionHost, type AgentSessionHost } from './session-host';
 import { SidebarConversationPane } from './SidebarConversationPane';
 import { clearConversationSnapshots, getAgentSessionCacheIdentity, readConversationContextSnapshot, writeConversationContextSnapshot } from './conversation-cache';
-import { ConversationSurface, ConversationTaskPlan, type ConversationHistoryPrepend, type ConversationReference, type ConversationScrollSnapshot, type ModelRetryStatus } from '../ConversationSurface';
+import { ConversationSurface, ConversationTaskPlan, type ConversationHistoryPrepend, type ConversationReference, type ConversationScrollSnapshot, type ConversationSearchLocation, type ModelRetryStatus } from '../ConversationSurface';
 import { isOpenHandsAgentReply, isOpenHandsConversationInterrupt, isOpenHandsConversationTerminalError, isOpenHandsEmptyResponseRecovery, orderOpenHandsConversationEvents, projectFlowWeaveMessageContext, projectHistoricalAgentReplies } from '../conversationEvents';
 import { useProductDialog } from '../ProductDialogContext';
 import { useEscapeClose } from '../useEscapeClose';
@@ -5204,6 +5204,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [conversationSearchCursor, setConversationSearchCursor] = useState<string>();
   const [conversationSearchHits, setConversationSearchHits] = useState<NonNullable<AgentConversationSearch['hits']>>([]);
   const [conversationSearchTargetEventId, setConversationSearchTargetEventId] = useState<string>();
+  const [inConversationSearchLocation, setInConversationSearchLocation] = useState<ConversationSearchLocation>();
   const [conversationReferenceTarget, setConversationReferenceTarget] = useState<AgentConversationReference>();
   const [sidebarListMode, setSidebarListMode] = useState<'workspaces' | 'activity'>('workspaces');
   const [activityPreviewBindingId, setActivityPreviewBindingId] = useState<string>();
@@ -7319,6 +7320,17 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }
     return orderOpenHandsConversationEvents([...events.values()]);
   }, [displayedEvents, eventsQuery.data?.history_cursor, historyCacheRevision, selected]);
+  useEffect(() => {
+    setInConversationSearchLocation(current => current?.bindingId === selected?.id ? current : undefined);
+  }, [selected?.id]);
+  const revealSearchHistory = useRef(revealHistoryThrough);
+  revealSearchHistory.current = revealHistoryThrough;
+  const locateInConversationSearch = useCallback((hit: InConversationSearchHit | undefined) => {
+    const bindingId = selected?.id;
+    if (!bindingId || activeHistoryScope.current !== bindingId) return;
+    setInConversationSearchLocation(hit ? { bindingId, ...hit } : undefined);
+    if (hit) void revealSearchHistory.current(hit.eventId);
+  }, [selected?.id]);
   const hasCachedOlderHistory = useMemo(() => {
     void historyCacheRevision;
     if (!selected || !eventsQuery.data?.history_cursor) return false;
@@ -10330,6 +10342,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         onRevealHistoryThrough={revealHistoryThrough}
         conversationScope={selected?.id ?? conversationDraft?.id}
         referenceLocation={conversationReferenceTarget?.source_binding_id === selected?.id ? conversationReferenceTarget : undefined}
+        searchLocation={inConversationSearchLocation?.bindingId === selected?.id ? inConversationSearchLocation : undefined}
         initialScrollSnapshot={conversationScrollSnapshots.current.get(selected?.id ?? conversationDraft?.id ?? '')}
         onScrollSnapshotChange={updateConversationScrollSnapshot}
         historyPrepend={historyPrepend}
@@ -10488,7 +10501,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       workDirectoryId={selected ? undefined : conversationDraft?.workDirectoryId}
       conversation={selected}
       conversationCumulativeTokens={contextQuery.data?.cumulative_tokens}
-      conversationSearch={(selected || conversationDraft) && runtime?.state !== 'RECOVERING' && !conversationInitialLoading && !conversationSnapshotUnavailable ? <InConversationSearch key={selected?.id ?? conversationDraft?.id} events={inConversationSearchEvents} onLocate={setConversationSearchTargetEventId}/> : undefined}
+      conversationSearch={(selected || conversationDraft) && runtime?.state !== 'RECOVERING' && !conversationInitialLoading && !conversationSnapshotUnavailable ? <InConversationSearch key={selected?.id ?? conversationDraft?.id} events={inConversationSearchEvents} onLocate={locateInConversationSearch}/> : undefined}
       attachments={drawerAttachments}
       sources={drawerSources}
       attachmentRequest={attachmentRequest}

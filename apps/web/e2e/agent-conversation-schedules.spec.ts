@@ -4020,6 +4020,98 @@ test('workspace source summary shows two items and keeps all sources discoverabl
 });
 
 
+test('conversation search highlights only matching text and clears scoped highlights', async ({ page }) => {
+  await openWorkspace(page, [
+    { id: 'search-text-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '请核对成功样本与状态。', timestamp: now } },
+    { id: 'search-text-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'search-text-user', content: '已补充**成功**样本的详细信息。\n\n下载：[成功样本.xlsx](https://example.test/result.xlsx)\n\n状态为 `成功`，Token 与 `token` 均已核对。\n\n字面值：`[x].*`。', final_reply: true, timestamp: now } },
+  ], true);
+  await page.goto('/agent/conversations/scheduled-conversation');
+  const search = page.locator('.agent-workspace-summary').getByRole('search');
+  const input = search.getByLabel('搜索当前会话');
+  const highlights = page.locator('.agent-workbench-main .conversation-search-highlights i');
+  const user = page.locator('[data-conversation-event-id="search-text-user"]');
+  const reply = page.locator('[data-conversation-event-id="search-text-reply"]');
+  const submit = async (query: string) => {
+    await input.fill(query);
+    await input.press('Enter');
+  };
+  const expectLocalHighlights = async (message: typeof reply, count: number) => {
+    await expect(highlights).toHaveCount(count);
+    const bounds = (await message.boundingBox())!;
+    for (const highlight of await highlights.all()) {
+      const rect = (await highlight.boundingBox())!;
+      expect(rect.width).toBeGreaterThan(0);
+      expect(rect.width).toBeLessThan(100);
+      expect(rect.height).toBeLessThan(35);
+      expect(rect.x).toBeGreaterThanOrEqual(bounds.x - 1);
+      expect(rect.x + rect.width).toBeLessThanOrEqual(bounds.x + bounds.width + 1);
+      expect(rect.y).toBeGreaterThanOrEqual(bounds.y - 1);
+      expect(rect.y + rect.height).toBeLessThanOrEqual(bounds.y + bounds.height + 1);
+    }
+    await expect(page.locator('.conversation-search-target')).toHaveCount(0);
+  };
+  await submit('成功');
+  await expect(search.locator('output')).toHaveText('1 个结果，共 2 个结果');
+  await expectLocalHighlights(user, 1);
+  await expect(input).toBeFocused();
+  await search.getByRole('button', { name: '下一个搜索结果' }).click();
+  await expect(search.locator('output')).toHaveText('2 个结果，共 2 个结果');
+  await expectLocalHighlights(reply, 3);
+  // Every overlay must coincide with the exact matched text, including bold,
+  // links and inline code, rather than just fitting inside the message box.
+  const expected = await reply.locator('strong, a, code').evaluateAll(elements => elements.slice(0, 3).map(element => {
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    let text = walker.nextNode() as Text | null;
+    while (text && !text.data.includes('成功')) text = walker.nextNode() as Text | null;
+    if (!text) throw new Error('Expected a rendered search match');
+    const offset = text.data.indexOf('成功');
+    const range = document.createRange();
+    range.setStart(text, offset);
+    range.setEnd(text, offset + 2);
+    const rect = range.getBoundingClientRect();
+    return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+  }));
+  const actual = await highlights.evaluateAll(elements => elements.map(element => {
+    const rect = element.getBoundingClientRect();
+    return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+  }));
+  for (let index = 0; index < expected.length; index += 1) {
+    for (const key of ['x', 'y', 'width', 'height'] as const) expect(Math.abs(actual[index][key] - expected[index][key])).toBeLessThanOrEqual(1);
+  }
+  await page.screenshot({ path: '../../.tmp/conversation-search-text-highlight.png' });
+  await page.setViewportSize({ width: 1024, height: 800 });
+  await settleWorkspaceLayout(page);
+  await expectLocalHighlights(reply, 3);
+  await search.getByRole('button', { name: '上一个搜索结果' }).click();
+  await expectLocalHighlights(user, 1);
+  await search.getByRole('button', { name: '上一个搜索结果' }).click();
+  await expectLocalHighlights(reply, 3);
+  await submit('TOKEN');
+  await expect(search.locator('output')).toHaveText('1 个结果，共 1 个结果');
+  await expectLocalHighlights(reply, 2);
+  await submit('[x].*');
+  await expectLocalHighlights(reply, 1);
+  await submit('无匹配内容');
+  await expect(search.locator('output')).toHaveText('0 个结果');
+  await expect(highlights).toHaveCount(0);
+  await submit('成功');
+  await expectLocalHighlights(user, 1);
+  await search.getByRole('button', { name: '清除搜索' }).click();
+  await expect(highlights).toHaveCount(0);
+  await submit('成功');
+  await expectLocalHighlights(user, 1);
+  await input.press('Escape');
+  await expect(highlights).toHaveCount(0);
+  await submit('成功');
+  await page.getByRole('button', { name: '周报会话', exact: true }).click();
+  await expect(page).toHaveURL(/\/scheduled-conversation-2$/);
+  await expect(input).toHaveValue('');
+  await expect(highlights).toHaveCount(0);
+  await page.getByRole('button', { name: '日报会话', exact: true }).click();
+  await expect(input).toHaveValue('');
+  await expect(highlights).toHaveCount(0);
+});
+
 test('conversation search shares the floating card visibility width and separate surface', async ({ page }) => {
   await openWorkspace(page, [
     { id: 'floating-search-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '搜索布局检查', timestamp: now } },

@@ -77,10 +77,17 @@ interface ConversationAnnotationReference extends ConversationReference {
 }
 
 interface ConversationTextHighlight {
+  search?: boolean;
   fallbackToEvent?: boolean;
   eventId: string;
   quote: string;
   compactStart?: number;
+}
+
+export interface ConversationSearchLocation {
+  bindingId: string;
+  eventId: string;
+  query: string;
 }
 
 interface ConversationHighlightRect {
@@ -1769,6 +1776,33 @@ function conversationHighlightRects(range: Range, root: HTMLElement): Conversati
   }, []);
 }
 
+function conversationSearchRanges(root: HTMLElement, query: string): Range[] {
+  if (!query) return [];
+  const nodes: Array<{ node: Text; start: number; end: number }> = [];
+  let text = '';
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode() as Text | null; node; node = walker.nextNode() as Text | null) {
+    // Message controls and file summaries are outside the searchable message body.
+    if (node.parentElement?.closest('button, footer, .conversation-file-changes, .conversation-message-attachments')) continue;
+    const start = text.length;
+    text += node.data;
+    nodes.push({ node, start, end: text.length });
+  }
+  // Resolve literal matches in rendered text, including Markdown/syntax spans,
+  // without inserting markup into React-owned message nodes.
+  const pattern = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'giu');
+  return Array.from(text.matchAll(pattern)).flatMap(match => {
+    const start = nodes.find(entry => entry.end > match.index);
+    const endOffset = match.index + match[0].length;
+    const end = nodes.find(entry => entry.start < endOffset && entry.end >= endOffset);
+    if (!start || !end) return [];
+    const range = document.createRange();
+    range.setStart(start.node, match.index - start.start);
+    range.setEnd(end.node, endOffset - end.start);
+    return [range];
+  });
+}
+
 function conversationQuoteRange(root: HTMLElement, quote: string, compactStart?: number): Range | undefined {
   const compactQuote = quote.replace(/\s+/g, '');
   if (!compactQuote) return undefined;
@@ -1900,7 +1934,7 @@ export interface ConversationScrollSnapshot {
   savedAt: number;
 }
 
-export const ConversationSurface = memo(function ConversationSurface({ events, isGenerating, isPaused = false, isFailed = false, pausing = false, emptyResponseRecoveryActive = false, modelRetryStatus, historyPending = false, cachedHistoryMarkerCount = 0, cachedHistoryUserEvents = [], hasCachedOlderHistory = false, onRequestOlderHistory, onRevealHistoryThrough, conversationScope, referenceLocation, initialScrollSnapshot, onScrollSnapshotChange, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationPending = false, condensationStartedAt, onRewrite, onFork, onOpenAttachment, attachmentImageUrl, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenSourceLocation, onOpenWorkspaceFile, onOpenBrowser, onOpenImage, workspaceImageUrl, workspaceRoot, onCreateAnnotation, onSidebarQuestion, onLocateAnnotation, conversationName, onOpenConversationReference, taskControl = [], monitoring, connectionState }: {
+export const ConversationSurface = memo(function ConversationSurface({ events, isGenerating, isPaused = false, isFailed = false, pausing = false, emptyResponseRecoveryActive = false, modelRetryStatus, historyPending = false, cachedHistoryMarkerCount = 0, cachedHistoryUserEvents = [], hasCachedOlderHistory = false, onRequestOlderHistory, onRevealHistoryThrough, conversationScope, referenceLocation, searchLocation, initialScrollSnapshot, onScrollSnapshotChange, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationPending = false, condensationStartedAt, onRewrite, onFork, onOpenAttachment, attachmentImageUrl, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenSourceLocation, onOpenWorkspaceFile, onOpenBrowser, onOpenImage, workspaceImageUrl, workspaceRoot, onCreateAnnotation, onSidebarQuestion, onLocateAnnotation, conversationName, onOpenConversationReference, taskControl = [], monitoring, connectionState }: {
   events: OpenHandsConversationEvent[];
   isGenerating: boolean;
   /** Formal native conversation pause state, used only to label unfinished Task actions. */
@@ -1927,6 +1961,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   conversationScope?: string;
   /** Explicit user navigation, scoped to the referenced binding and formal event. */
   referenceLocation?: AgentConversationReference;
+  searchLocation?: ConversationSearchLocation;
   /** In-memory reading position captured before this scoped viewport unmounted. */
   initialScrollSnapshot?: ConversationScrollSnapshot;
   onScrollSnapshotChange?: (scope: string, snapshot: ConversationScrollSnapshot) => void;
@@ -2199,6 +2234,15 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
       fallbackToEvent: true,
     });
   }, [conversationScope, highlightReferenceText, referenceLocation, stopFollowingLatest]);
+  useLayoutEffect(() => {
+    if (!searchLocation || searchLocation.bindingId !== conversationScope) return;
+    stopFollowingLatest();
+    highlightReferenceText({ eventId: searchLocation.eventId, quote: searchLocation.query, search: true });
+    return () => {
+      setHighlightedReference(current => current?.search ? undefined : current);
+      setReferenceHighlightRects([]);
+    };
+  }, [conversationScope, highlightReferenceText, searchLocation, stopFollowingLatest]);
   const updateReferenceHighlight = useCallback(() => {
     const element = surface.current;
     const highlightRoot = content.current;
@@ -2207,7 +2251,8 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
       .find(item => item.dataset.conversationEventId === highlightedReference.eventId);
     if (!target) return false;
     for (let parent = target.parentElement?.closest('details'); parent; parent = parent.parentElement?.closest('details')) parent.open = true;
-    let range = conversationQuoteRange(target, highlightedReference.quote, highlightedReference.compactStart);
+    const searchRanges = highlightedReference.search ? conversationSearchRanges(target, highlightedReference.quote) : undefined;
+    let range = searchRanges ? searchRanges[0] : conversationQuoteRange(target, highlightedReference.quote, highlightedReference.compactStart);
     if (!range && highlightedReference.fallbackToEvent) {
       // Whole-conversation drag references carry a title rather than a quote.
       // Their explicit formal event ID still provides an exact navigation target.
@@ -2215,7 +2260,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
       range.selectNodeContents(target);
     }
     if (!range) return false;
-    const rects = conversationHighlightRects(range, highlightRoot);
+    const rects = (searchRanges ?? [range]).flatMap(match => conversationHighlightRects(match, highlightRoot));
     if (!rects.length) return false;
     setReferenceHighlightRects(rects);
     if (referenceLocationPending.current) {
@@ -2225,6 +2270,9 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
       element.scrollTo({ top: Math.max(0, top), behavior: 'auto' });
       referenceLocationPending.current = false;
     }
+    // Search stays highlighted until cleared or moved, without selecting text
+    // or stealing the input's caret. Quote navigation keeps its brief selection.
+    if (highlightedReference.search) return true;
     const selection = window.getSelection();
     selection?.removeAllRanges();
     selection?.addRange(range);
@@ -2728,7 +2776,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
       else if (['ArrowDown', 'PageDown', 'End'].includes(event.key)) scrollInteractionTowardLatest.current = true;
     }}>
       <div ref={content} className="conversation-surface-content">
-      {referenceHighlightRects.length > 0 && <div className="conversation-reference-highlights" aria-hidden="true">{referenceHighlightRects.map((rect, index) => <i key={`${rect.left}:${rect.top}:${index}`} style={rect}/>)}</div>}
+      {referenceHighlightRects.length > 0 && <div className={`conversation-reference-highlights${highlightedReference?.search ? ' conversation-search-highlights' : ''}`} aria-hidden="true">{referenceHighlightRects.map((rect, index) => <i key={`${rect.left}:${rect.top}:${index}`} style={rect}/>)}</div>}
       {historyPending && <div className="conversation-history-loading" role="status"><LoaderCircle size={14}/>正在载入更早的会话记录…</div>}
       {turns.map((turn, index) => {
         const isLatest = index === turns.length - 1;

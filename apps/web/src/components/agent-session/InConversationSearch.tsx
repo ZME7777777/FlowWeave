@@ -23,9 +23,14 @@ function searchableContent(event: OpenHandsConversationEvent): SearchHit | undef
     : undefined;
 }
 
+export interface InConversationSearchHit {
+  eventId: string;
+  query: string;
+}
+
 export function InConversationSearch({ events, onLocate }: {
   events: OpenHandsConversationEvent[];
-  onLocate: (eventId: string) => void;
+  onLocate: (hit: InConversationSearchHit | undefined) => void;
 }) {
   const [query, setQuery] = useState('');
   const [submittedQuery, setSubmittedQuery] = useState('');
@@ -49,12 +54,18 @@ export function InConversationSearch({ events, onLocate }: {
   useEffect(() => {
     setActiveIndex(index => hits.length ? Math.min(index, hits.length - 1) : 0);
   }, [hits.length]);
+  const activeEventId = hits[Math.min(activeIndex, hits.length - 1)]?.eventId;
+  useEffect(() => {
+    onLocate(activeEventId ? { eventId: activeEventId, query: submittedQuery } : undefined);
+  }, [activeEventId, onLocate, submittedQuery]);
   const submit = (event?: FormEvent<HTMLFormElement>) => {
     event?.preventDefault();
+    if (searchTimer.current !== undefined) window.clearTimeout(searchTimer.current);
     const nextQuery = query.trim();
     if (!nextQuery) {
       setSubmittedQuery('');
       setActiveIndex(0);
+      setSearching(false);
       return;
     }
     setSearching(true);
@@ -69,7 +80,7 @@ export function InConversationSearch({ events, onLocate }: {
     if (!hits.length) return;
     const nextIndex = (activeIndex + direction + hits.length) % hits.length;
     setActiveIndex(nextIndex);
-    onLocate(hits[nextIndex].eventId);
+    if (nextIndex === activeIndex) onLocate({ eventId: hits[nextIndex].eventId, query: submittedQuery });
   };
   const clear = () => {
     if (searchTimer.current !== undefined) window.clearTimeout(searchTimer.current);
