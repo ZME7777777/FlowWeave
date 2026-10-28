@@ -4020,45 +4020,50 @@ test('workspace source summary shows two items and keeps all sources discoverabl
 });
 
 
-test('conversation search highlights only matching text and clears scoped highlights', async ({ page }) => {
+test('conversation search highlights all occurrences and navigates one active match with Enter', async ({ page }) => {
   await openWorkspace(page, [
     { id: 'search-text-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '请核对成功样本与状态。', timestamp: now } },
-    { id: 'search-text-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'search-text-user', content: '已补充**成功**样本的详细信息。\n\n下载：[成功样本.xlsx](https://example.test/result.xlsx)\n\n状态为 `成功`，Token 与 `token` 均已核对。\n\n字面值：`[x].*`。', final_reply: true, timestamp: now } },
+    { id: 'search-text-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'search-text-user', content: '已补充**成功**样本的详细信息。\n\n下载：[成功样本.xlsx](https://example.test/成功/result.xlsx)\n\n状态为 `成功`，Token 与 `token` 均已核对。\n\n字面值：`[x].*`。\n\n跨**格式**匹配。', final_reply: true, timestamp: now } },
   ], true);
   await page.goto('/agent/conversations/scheduled-conversation');
   const search = page.locator('.agent-workspace-summary').getByRole('search');
   const input = search.getByLabel('搜索当前会话');
   const highlights = page.locator('.agent-workbench-main .conversation-search-highlights i');
+  const active = highlights.and(page.locator('.is-active'));
   const user = page.locator('[data-conversation-event-id="search-text-user"]');
   const reply = page.locator('[data-conversation-event-id="search-text-reply"]');
   const submit = async (query: string) => {
     await input.fill(query);
     await input.press('Enter');
   };
-  const expectLocalHighlights = async (message: typeof reply, count: number) => {
-    await expect(highlights).toHaveCount(count);
-    const bounds = (await message.boundingBox())!;
-    for (const highlight of await highlights.all()) {
-      const rect = (await highlight.boundingBox())!;
-      expect(rect.width).toBeGreaterThan(0);
-      expect(rect.width).toBeLessThan(100);
-      expect(rect.height).toBeLessThan(35);
-      expect(rect.x).toBeGreaterThanOrEqual(bounds.x - 1);
-      expect(rect.x + rect.width).toBeLessThanOrEqual(bounds.x + bounds.width + 1);
-      expect(rect.y).toBeGreaterThanOrEqual(bounds.y - 1);
-      expect(rect.y + rect.height).toBeLessThanOrEqual(bounds.y + bounds.height + 1);
-    }
-    await expect(page.locator('.conversation-search-target')).toHaveCount(0);
+  const expectActive = async (index: number, eventId: string, matchIndex: number) => {
+    await expect(search.locator('output')).toHaveText(`${index} 个结果，共 4 个结果`);
+    await expect(highlights).toHaveCount(4);
+    await expect(active).toHaveCount(1);
+    await expect(active).toHaveAttribute('data-search-event-id', eventId);
+    await expect(active).toHaveAttribute('data-search-match-index', String(matchIndex));
   };
   await submit('成功');
-  await expect(search.locator('output')).toHaveText('1 个结果，共 2 个结果');
-  await expectLocalHighlights(user, 1);
+  await expectActive(1, 'search-text-user', 0);
   await expect(input).toBeFocused();
+  await input.press('Enter');
+  await expectActive(2, 'search-text-reply', 0);
+  await input.press('Enter');
+  await expectActive(3, 'search-text-reply', 1);
+  await input.press('Shift+Enter');
+  await expectActive(2, 'search-text-reply', 0);
+  await search.getByRole('button', { name: '上一个搜索结果' }).click();
+  await expectActive(1, 'search-text-user', 0);
+  await input.press('Shift+Enter');
+  await expectActive(4, 'search-text-reply', 2);
   await search.getByRole('button', { name: '下一个搜索结果' }).click();
-  await expect(search.locator('output')).toHaveText('2 个结果，共 2 个结果');
-  await expectLocalHighlights(reply, 3);
-  // Every overlay must coincide with the exact matched text, including bold,
-  // links and inline code, rather than just fitting inside the message box.
+  await expectActive(1, 'search-text-user', 0);
+  await input.dispatchEvent('keydown', { key: 'Enter', code: 'Enter', isComposing: true });
+  await expectActive(1, 'search-text-user', 0);
+  await settleWorkspaceLayout(page);
+  const colors = await highlights.evaluateAll(elements => elements.map(element => ({ active: element.classList.contains('is-active'), color: getComputedStyle(element).backgroundColor })));
+  expect(colors.find(item => item.active)?.color).not.toBe(colors.find(item => !item.active)?.color);
+  // All overlays coincide with matched text, including bold, links and code.
   const expected = await reply.locator('strong, a, code').evaluateAll(elements => elements.slice(0, 3).map(element => {
     const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
     let text = walker.nextNode() as Text | null;
@@ -4071,35 +4076,41 @@ test('conversation search highlights only matching text and clears scoped highli
     const rect = range.getBoundingClientRect();
     return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
   }));
-  const actual = await highlights.evaluateAll(elements => elements.map(element => {
+  const replyRects = await highlights.and(page.locator('[data-search-event-id="search-text-reply"]')).evaluateAll(elements => elements.map(element => {
     const rect = element.getBoundingClientRect();
     return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
   }));
   for (let index = 0; index < expected.length; index += 1) {
-    for (const key of ['x', 'y', 'width', 'height'] as const) expect(Math.abs(actual[index][key] - expected[index][key])).toBeLessThanOrEqual(1);
+    for (const key of ['x', 'y', 'width', 'height'] as const) expect(Math.abs(replyRects[index][key] - expected[index][key]), JSON.stringify({ index, key, actual: replyRects[index], expected: expected[index] })).toBeLessThanOrEqual(1);
+    expect(replyRects[index].width).toBeLessThan(100);
+    expect(replyRects[index].height).toBeLessThan(35);
   }
-  await page.screenshot({ path: '../../.tmp/conversation-search-text-highlight.png' });
+  expect((await user.boundingBox())!.width).toBeGreaterThan((await active.boundingBox())!.width);
+  await page.screenshot({ path: '../../.tmp/conversation-search-occurrences.png' });
   await page.setViewportSize({ width: 1024, height: 800 });
   await settleWorkspaceLayout(page);
-  await expectLocalHighlights(reply, 3);
-  await search.getByRole('button', { name: '上一个搜索结果' }).click();
-  await expectLocalHighlights(user, 1);
-  await search.getByRole('button', { name: '上一个搜索结果' }).click();
-  await expectLocalHighlights(reply, 3);
+  await expectActive(1, 'search-text-user', 0);
   await submit('TOKEN');
-  await expect(search.locator('output')).toHaveText('1 个结果，共 1 个结果');
-  await expectLocalHighlights(reply, 2);
+  await expect(search.locator('output')).toHaveText('1 个结果，共 2 个结果');
+  await expect(highlights).toHaveCount(2);
+  await input.press('Enter');
+  await expect(search.locator('output')).toHaveText('2 个结果，共 2 个结果');
+  await expect(active).toHaveAttribute('data-search-match-index', '1');
   await submit('[x].*');
-  await expectLocalHighlights(reply, 1);
-  await submit('无匹配内容');
+  await expect(highlights).toHaveCount(1);
+  await expect(active).toHaveCount(1);
+  await submit('跨格式匹配');
+  await expect(search.locator('output')).toHaveText('1 个结果，共 1 个结果');
+  await expect(active).toHaveCount(1);
+  await submit('example.test');
   await expect(search.locator('output')).toHaveText('0 个结果');
   await expect(highlights).toHaveCount(0);
   await submit('成功');
-  await expectLocalHighlights(user, 1);
+  await expectActive(1, 'search-text-user', 0);
   await search.getByRole('button', { name: '清除搜索' }).click();
   await expect(highlights).toHaveCount(0);
   await submit('成功');
-  await expectLocalHighlights(user, 1);
+  await expectActive(1, 'search-text-user', 0);
   await input.press('Escape');
   await expect(highlights).toHaveCount(0);
   await submit('成功');
@@ -4111,6 +4122,37 @@ test('conversation search highlights only matching text and clears scoped highli
   await expect(input).toHaveValue('');
   await expect(highlights).toHaveCount(0);
 });
+
+
+test('conversation search scrolls to each occurrence within a long reply', async ({ page }) => {
+  const content = ['第一处定位词。', ...Array.from({ length: 45 }, (_, i) => `第${i + 1}段填充内容。`), '第二处定位词。', ...Array.from({ length: 45 }, (_, i) => `第${i + 46}段填充内容。`), '第三处定位词。'].join('\n\n');
+  await openWorkspace(page, [
+    { id: 'search-long-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '请查看长回复', timestamp: now } },
+    { id: 'search-long-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'search-long-user', content, final_reply: true, timestamp: now } },
+  ]);
+  await page.goto('/agent/conversations/scheduled-conversation');
+  const search = page.locator('.agent-workspace-summary').getByRole('search');
+  const input = search.getByLabel('搜索当前会话');
+  const active = page.locator('.agent-workbench-main .conversation-search-highlights i.is-active');
+  const surface = page.locator('.agent-workbench-main .conversation-surface');
+  await input.fill('定位词');
+  await input.press('Enter');
+  for (let index = 0; index < 3; index += 1) {
+    await expect(search.locator('output')).toHaveText(`${index + 1} 个结果，共 3 个结果`);
+    await expect(active).toHaveCount(1);
+    await expect(active).toHaveAttribute('data-search-match-index', String(index));
+    await expect.poll(async () => {
+      const hit = (await active.boundingBox())!;
+      const bounds = (await surface.boundingBox())!;
+      return hit.y >= bounds.y && hit.y + hit.height <= bounds.y + bounds.height;
+    }).toBe(true);
+    if (index < 2) await input.press('Enter');
+  }
+  await input.press('Shift+Enter');
+  await expect(active).toHaveAttribute('data-search-match-index', '1');
+  await expect(input).toBeFocused();
+});
+
 
 test('conversation search shares the floating card visibility width and separate surface', async ({ page }) => {
   await openWorkspace(page, [

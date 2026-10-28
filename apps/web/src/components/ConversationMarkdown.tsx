@@ -10,8 +10,7 @@ import { MarkdownCodeBlock, MermaidDiagram } from './MermaidDiagram';
 import { ConversationTextReveal } from './ConversationTextReveal';
 import { WebsiteIcon } from './WebsiteIcon';
 import { isMermaidDiagram, markdownCodeText, normalizeNestedMarkdownFences } from './markdownCodeBlock';
-
-const MARKDOWN_SYNTAX = /(^|\n)\s{0,3}(?:#{1,6}\s|[-*+]\s|\d+[.)]\s|>|```)|[`*_~$]|!?\[[^\]]*\]\([^)]*\)|\||https?:\/\/[^\s<]+/i;
+import { CONVERSATION_MARKDOWN_SYNTAX } from './conversationSearch';
 
 interface MarkdownRenderOptions {
   onOpenWorkspaceFile?: (href: string) => boolean;
@@ -191,7 +190,7 @@ function rehypeFormulaMetadata() {
 export function ConversationMarkdown({ children, reveal = false, onOpenWorkspaceFile, onOpenBrowser, onOpenImage, workspaceImageUrl }: { children: string; reveal?: boolean; onOpenWorkspaceFile?: (href: string) => boolean; onOpenBrowser?: (href: string) => boolean; onOpenImage?: (src: string, alt?: string) => void; workspaceImageUrl?: (href: string) => string | undefined }) {
   const markdown = useMemo(() => normalizeNestedMarkdownFences(children), [children]);
   const renderOptions = useMemo(() => ({ onOpenWorkspaceFile, onOpenBrowser, onOpenImage, workspaceImageUrl }), [onOpenWorkspaceFile, onOpenBrowser, onOpenImage, workspaceImageUrl]);
-  if (!MARKDOWN_SYNTAX.test(markdown)) return <p><ConversationTextReveal reveal={reveal}>{markdown}</ConversationTextReveal></p>;
+  if (!CONVERSATION_MARKDOWN_SYNTAX.test(markdown)) return <p><ConversationTextReveal reveal={reveal}>{markdown}</ConversationTextReveal></p>;
   return <MarkdownRenderOptionsContext value={renderOptions}>
     <div className={reveal ? 'conversation-text-reveal-block conversation-text-reveal-shimmer' : undefined}>
       <ReactMarkdown urlTransform={(url, key) => (key === 'src' ? workspaceImageUrl?.(url) : undefined) ?? defaultUrlTransform(url)} remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex, rehypeFormulaMetadata]} components={{ a: MarkdownLink, img: MarkdownImage, pre: MarkdownPre, span: MarkdownSpan, table: MarkdownTable }}>{markdown}</ReactMarkdown>

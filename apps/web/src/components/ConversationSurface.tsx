@@ -8,6 +8,7 @@ import { useEscapeClose } from './useEscapeClose';
 import { subagentAvatarSlotForEvent, subagentAvatarSlots, type SubagentAvatarSlot } from '../utils/subagentAvatar';
 import { workspaceFileChanges, workspaceRelativePath, type WorkspaceFileChange } from './agent-session/fileChanges';
 import { isFlowWeaveInternalProtocolMessage, isFlowWeaveMessageContext, isOpenHandsAgentReply, isOpenHandsConversationTerminalError, isOpenHandsEmptyResponseRecovery, orderOpenHandsConversationEvents, parseOpenHandsEventTime, projectFlowWeaveMessageContext } from './conversationEvents';
+import { conversationSearchPattern } from './conversationSearch';
 import './conversation-surface.css';
 
 type ItemKind = 'user' | 'assistant' | 'thought' | 'tool' | 'error' | 'condensation' | 'security';
@@ -77,7 +78,6 @@ interface ConversationAnnotationReference extends ConversationReference {
 }
 
 interface ConversationTextHighlight {
-  search?: boolean;
   fallbackToEvent?: boolean;
   eventId: string;
   quote: string;
@@ -88,6 +88,9 @@ export interface ConversationSearchLocation {
   bindingId: string;
   eventId: string;
   query: string;
+  matchIndex: number;
+  eventIds: string[];
+  navigationId: number;
 }
 
 interface ConversationHighlightRect {
@@ -1780,17 +1783,25 @@ function conversationSearchRanges(root: HTMLElement, query: string): Range[] {
   if (!query) return [];
   const nodes: Array<{ node: Text; start: number; end: number }> = [];
   let text = '';
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-  for (let node = walker.nextNode() as Text | null; node; node = walker.nextNode() as Text | null) {
+  let previousBlock: Element | null | undefined;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    if (!(node instanceof Text)) {
+      if (node instanceof HTMLBRElement) text += '\n';
+      continue;
+    }
     // Message controls and file summaries are outside the searchable message body.
-    if (node.parentElement?.closest('button, footer, .conversation-file-changes, .conversation-message-attachments')) continue;
+    if (node.parentElement?.closest('button, footer, .conversation-file-changes, .conversation-message-attachments, .katex, .conversation-mermaid')) continue;
+    const block = node.parentElement?.closest('p, pre, td, th, li, h1, h2, h3, h4, h5, h6');
+    if (text && block !== previousBlock) text += '\n';
+    previousBlock = block;
     const start = text.length;
     text += node.data;
     nodes.push({ node, start, end: text.length });
   }
   // Resolve literal matches in rendered text, including Markdown/syntax spans,
   // without inserting markup into React-owned message nodes.
-  const pattern = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'giu');
+  const pattern = conversationSearchPattern(query);
   return Array.from(text.matchAll(pattern)).flatMap(match => {
     const start = nodes.find(entry => entry.end > match.index);
     const endOffset = match.index + match[0].length;
@@ -2037,6 +2048,8 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   const copyResetTimer = useRef<number | undefined>(undefined);
   const referenceHighlightTimer = useRef<number | undefined>(undefined);
   const referenceLocationPending = useRef(false);
+  const searchLocationPending = useRef(false);
+  const previousSearchTarget = useRef<string | undefined>(undefined);
   const rewriteEditor = useRef<HTMLTextAreaElement>(null);
   const [isAtLatest, setIsAtLatest] = useState(true);
   const [editingEventId, setEditingEventId] = useState<string>();
@@ -2049,6 +2062,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   const [viewingReference, setViewingReference] = useState<AgentConversationReference>();
   const [highlightedReference, setHighlightedReference] = useState<ConversationTextHighlight>();
   const [referenceHighlightRects, setReferenceHighlightRects] = useState<ConversationHighlightRect[]>([]);
+  const [searchHighlightRects, setSearchHighlightRects] = useState<Array<ConversationHighlightRect & { active: boolean; eventId: string; matchIndex: number }>>([]);
   useLayoutEffect(() => {
     if (!editingEventId) return;
     const editor = rewriteEditor.current;
@@ -2234,15 +2248,6 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
       fallbackToEvent: true,
     });
   }, [conversationScope, highlightReferenceText, referenceLocation, stopFollowingLatest]);
-  useLayoutEffect(() => {
-    if (!searchLocation || searchLocation.bindingId !== conversationScope) return;
-    stopFollowingLatest();
-    highlightReferenceText({ eventId: searchLocation.eventId, quote: searchLocation.query, search: true });
-    return () => {
-      setHighlightedReference(current => current?.search ? undefined : current);
-      setReferenceHighlightRects([]);
-    };
-  }, [conversationScope, highlightReferenceText, searchLocation, stopFollowingLatest]);
   const updateReferenceHighlight = useCallback(() => {
     const element = surface.current;
     const highlightRoot = content.current;
@@ -2251,8 +2256,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
       .find(item => item.dataset.conversationEventId === highlightedReference.eventId);
     if (!target) return false;
     for (let parent = target.parentElement?.closest('details'); parent; parent = parent.parentElement?.closest('details')) parent.open = true;
-    const searchRanges = highlightedReference.search ? conversationSearchRanges(target, highlightedReference.quote) : undefined;
-    let range = searchRanges ? searchRanges[0] : conversationQuoteRange(target, highlightedReference.quote, highlightedReference.compactStart);
+    let range = conversationQuoteRange(target, highlightedReference.quote, highlightedReference.compactStart);
     if (!range && highlightedReference.fallbackToEvent) {
       // Whole-conversation drag references carry a title rather than a quote.
       // Their explicit formal event ID still provides an exact navigation target.
@@ -2260,7 +2264,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
       range.selectNodeContents(target);
     }
     if (!range) return false;
-    const rects = (searchRanges ?? [range]).flatMap(match => conversationHighlightRects(match, highlightRoot));
+    const rects = conversationHighlightRects(range, highlightRoot);
     if (!rects.length) return false;
     setReferenceHighlightRects(rects);
     if (referenceLocationPending.current) {
@@ -2270,9 +2274,6 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
       element.scrollTo({ top: Math.max(0, top), behavior: 'auto' });
       referenceLocationPending.current = false;
     }
-    // Search stays highlighted until cleared or moved, without selecting text
-    // or stealing the input's caret. Quote navigation keeps its brief selection.
-    if (highlightedReference.search) return true;
     const selection = window.getSelection();
     selection?.removeAllRanges();
     selection?.addRange(range);
@@ -2287,14 +2288,56 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     }
     return true;
   }, [highlightedReference]);
+  // Search has its own persistent overlay. Quote/annotation navigation may still
+  // use the existing transient selection without clearing the other matches.
+  useLayoutEffect(() => {
+    const target = searchLocation && searchLocation.bindingId === conversationScope
+      ? JSON.stringify([conversationScope, searchLocation.query, searchLocation.eventId, searchLocation.matchIndex, searchLocation.navigationId])
+      : undefined;
+    if (target !== previousSearchTarget.current) {
+      previousSearchTarget.current = target;
+      searchLocationPending.current = Boolean(target);
+      if (target) stopFollowingLatest();
+    }
+  }, [conversationScope, searchLocation, stopFollowingLatest]);
+  const updateSearchHighlights = useCallback(() => {
+    const element = surface.current;
+    const highlightRoot = content.current;
+    if (!searchLocation || searchLocation.bindingId !== conversationScope || !element || !highlightRoot) {
+      setSearchHighlightRects(current => current.length ? [] : current);
+      return;
+    }
+    const eventIds = new Set(searchLocation.eventIds);
+    const rects: Array<ConversationHighlightRect & { active: boolean; eventId: string; matchIndex: number }> = [];
+    let activeRange: Range | undefined;
+    for (const target of element.querySelectorAll<HTMLElement>('[data-conversation-event-id]')) {
+      const eventId = target.dataset.conversationEventId!;
+      if (!eventIds.has(eventId)) continue;
+      if (eventId === searchLocation.eventId && searchLocationPending.current) {
+        for (let parent = target.parentElement?.closest('details'); parent; parent = parent.parentElement?.closest('details')) parent.open = true;
+      }
+      conversationSearchRanges(target, searchLocation.query).forEach((range, matchIndex) => {
+        const active = eventId === searchLocation.eventId && matchIndex === searchLocation.matchIndex;
+        if (active) activeRange = range;
+        rects.push(...conversationHighlightRects(range, highlightRoot).map(rect => ({ ...rect, active, eventId, matchIndex })));
+      });
+    }
+    setSearchHighlightRects(rects);
+    if (activeRange && searchLocationPending.current && activeRange.getClientRects().length) {
+      const top = activeRange.getBoundingClientRect().top - element.getBoundingClientRect().top + element.scrollTop - 28;
+      element.scrollTo({ top: Math.max(0, top), behavior: 'auto' });
+      searchLocationPending.current = false;
+    }
+  }, [conversationScope, searchLocation]);
   useEffect(() => () => {
     if (referenceHighlightTimer.current) window.clearTimeout(referenceHighlightTimer.current);
   }, []);
   useLayoutEffect(() => {
     updateReferenceHighlight();
-  }, [events, updateReferenceHighlight]);
+    updateSearchHighlights();
+  }, [events, updateReferenceHighlight, updateSearchHighlights]);
   useEffect(() => {
-    if (!highlightedReference || !content.current) return;
+    if ((!highlightedReference && !searchLocation) || !content.current) return;
     const highlightRoot = content.current;
     let updateFrame: number | undefined;
     const scheduleUpdate = () => {
@@ -2302,6 +2345,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
       updateFrame = window.requestAnimationFrame(() => {
         updateFrame = undefined;
         updateReferenceHighlight();
+        updateSearchHighlights();
       });
     };
     const mutationObserver = new MutationObserver(mutations => {
@@ -2311,13 +2355,15 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     const resizeObserver = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(scheduleUpdate);
     resizeObserver?.observe(highlightRoot);
     window.addEventListener('resize', scheduleUpdate);
+    highlightRoot.addEventListener('scroll', scheduleUpdate, true);
     return () => {
       mutationObserver.disconnect();
       resizeObserver?.disconnect();
       window.removeEventListener('resize', scheduleUpdate);
+      highlightRoot.removeEventListener('scroll', scheduleUpdate, true);
       if (updateFrame !== undefined) window.cancelAnimationFrame(updateFrame);
     };
-  }, [highlightedReference, updateReferenceHighlight]);
+  }, [highlightedReference, searchLocation, updateReferenceHighlight, updateSearchHighlights]);
   const locateTextAnnotation = useCallback((annotation: AgentConversationAnnotation) => {
     // Text anchors belong to this transcript. Resolving them here avoids the
     // FlowNode route's outer grid from becoming an accidental scroll target.
@@ -2776,7 +2822,8 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
       else if (['ArrowDown', 'PageDown', 'End'].includes(event.key)) scrollInteractionTowardLatest.current = true;
     }}>
       <div ref={content} className="conversation-surface-content">
-      {referenceHighlightRects.length > 0 && <div className={`conversation-reference-highlights${highlightedReference?.search ? ' conversation-search-highlights' : ''}`} aria-hidden="true">{referenceHighlightRects.map((rect, index) => <i key={`${rect.left}:${rect.top}:${index}`} style={rect}/>)}</div>}
+      {referenceHighlightRects.length > 0 && <div className="conversation-reference-highlights" aria-hidden="true">{referenceHighlightRects.map((rect, index) => <i key={`${rect.left}:${rect.top}:${index}`} style={rect}/>)}</div>}
+      {searchHighlightRects.length > 0 && <div className="conversation-reference-highlights conversation-search-highlights" aria-hidden="true">{searchHighlightRects.map(({ active, eventId, matchIndex, ...rect }, index) => <i key={`${eventId}:${matchIndex}:${index}`} data-search-event-id={eventId} data-search-match-index={matchIndex} className={active ? 'is-active' : undefined} style={rect}/>)}</div>}
       {historyPending && <div className="conversation-history-loading" role="status"><LoaderCircle size={14}/>正在载入更早的会话记录…</div>}
       {turns.map((turn, index) => {
         const isLatest = index === turns.length - 1;
