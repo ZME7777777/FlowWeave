@@ -4657,3 +4657,163 @@ test('workspace file review shares exact intraline highlighting in unified and s
     await expect(diff.locator('.deletion code')).toHaveText('const mode = "old"');
   }
 });
+
+async function expectInsideViewport(page: Page, popover: import('@playwright/test').Locator) {
+  await expect(popover).toBeVisible();
+  await expect.poll(async () => {
+    const box = await popover.boundingBox();
+    const viewport = page.viewportSize()!;
+    return Boolean(box && box.width > 0 && box.height > 0 && box.x >= 7 && box.y >= 7 && box.x + box.width <= viewport.width - 7 && box.y + box.height <= viewport.height - 7);
+  }).toBe(true);
+}
+
+test('workspace action popovers flip above and left and follow resize and content growth', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await openWorkspace(page);
+  const trigger = page.getByRole('button', { name: '工作区操作 已有项目目录', exact: true });
+  // Put the real trigger at the screenshot's boundary, independent of sidebar row count.
+  await trigger.evaluate(element => Object.assign(element.style, { position: 'fixed', right: '12px', bottom: '12px', opacity: '1', zIndex: '2100' }));
+  await trigger.dispatchEvent('click');
+  const menu = page.getByRole('menu', { name: '工作区操作菜单：已有项目目录', exact: true });
+  await expectInsideViewport(page, menu);
+  const anchor = (await trigger.boundingBox())!;
+  const box = (await menu.boundingBox())!;
+  expect(box.y + box.height).toBeLessThanOrEqual(anchor.y);
+  expect(box.x).toBeLessThan(anchor.x);
+  await page.setViewportSize({ width: 760, height: 420 });
+  await expectInsideViewport(page, menu);
+  const resizedAnchor = (await trigger.boundingBox())!;
+  await expect.poll(async () => { const current = (await menu.boundingBox())!; return current.y + current.height <= resizedAnchor.y; }).toBe(true);
+  await page.screenshot({ path: test.info().outputPath('workspace-menu-bottom-right.png') });
+  // A changing action list must be measured again and remain scrollable at short heights.
+  await menu.evaluate(element => {
+    for (let i = 0; i < 20; i++) {
+      const button = document.createElement('button'); button.textContent = `额外操作 ${i + 1}`; button.setAttribute('role', 'menuitem'); element.append(button);
+    }
+  });
+  await expectInsideViewport(page, menu);
+  await expect.poll(() => menu.evaluate(element => element.scrollHeight > element.clientHeight)).toBe(true);
+  await menu.getByRole('menuitem', { name: '额外操作 20', exact: true }).scrollIntoViewIfNeeded();
+  await expect(menu.getByRole('menuitem', { name: '额外操作 20', exact: true })).toBeInViewport();
+  await page.keyboard.press('Escape');
+  await expect(menu).toHaveCount(0);
+  await trigger.dispatchEvent('click');
+  await menu.getByRole('menuitem', { name: '会话配置', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: '会话配置', exact: true })).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test('conversation context menu measures all actions at each viewport corner', async ({ page }) => {
+  await openWorkspace(page);
+  const row = page.locator('[data-conversation-binding-id="scheduled-conversation"]');
+  const menu = page.getByRole('menu', { name: '会话操作菜单：日报会话', exact: true });
+  for (const corner of ['bottom-right', 'top-left'] as const) {
+    await row.evaluate((element, value) => Object.assign((element as HTMLElement).style, { position: 'fixed', left: value === 'top-left' ? '0' : 'auto', top: value === 'top-left' ? '0' : 'auto', right: value === 'bottom-right' ? '0' : 'auto', bottom: value === 'bottom-right' ? '0' : 'auto', width: '180px', height: '32px', zIndex: '1800' }), corner);
+    await row.click({ button: 'right', position: corner === 'bottom-right' ? { x: 178, y: 30 } : { x: 1, y: 1 } });
+    await expectInsideViewport(page, menu);
+    await expect(menu.getByRole('menuitem', { name: '标记为未读', exact: true })).toBeVisible();
+    if (corner === 'bottom-right') {
+      const box = (await menu.boundingBox())!; const viewport = page.viewportSize()!;
+      expect(box.y + box.height).toBeLessThanOrEqual(viewport.height - 2);
+      expect(box.x + box.width).toBeLessThanOrEqual(viewport.width - 2);
+    }
+    await page.keyboard.press('Escape');
+    await expect(menu).toHaveCount(0);
+  }
+  await page.setViewportSize({ width: 260, height: 160 });
+  await row.evaluate(element => Object.assign((element as HTMLElement).style, { left: 'auto', top: 'auto', right: '0', bottom: '0' }));
+  await row.click({ button: 'right', position: { x: 178, y: 30 } });
+  await expectInsideViewport(page, menu);
+  await menu.getByRole('menuitem', { name: '标记为未读', exact: true }).click();
+  await expect(menu).toHaveCount(0);
+});
+
+test('account action popover stays inside a short viewport and closes outside', async ({ page }) => {
+  await openWorkspace(page);
+  await page.setViewportSize({ width: 680, height: 240 });
+  const trigger = page.getByRole('button', { name: '账户与设置', exact: true });
+  await trigger.click();
+  const menu = page.getByRole('menu', { name: '账户与设置', exact: true });
+  await expectInsideViewport(page, menu);
+  await menu.getByRole('menuitem', { name: '退出登录', exact: true }).scrollIntoViewIfNeeded();
+  await expect(menu.getByRole('menuitem', { name: '退出登录', exact: true })).toBeInViewport();
+  await page.mouse.click(12, 210);
+  await expect(menu).toHaveCount(0);
+  await trigger.click();
+  await page.keyboard.press('Escape');
+  await expect(menu).toHaveCount(0);
+});
+
+test('flow action popover escapes a clipped list and keeps selection and actions independent', async ({ page }) => {
+  await openWorkspace(page);
+  await page.route('**/api/v1/flows', route => json(route, [{ id: 'popover-flow', name: '边界流程', description: '', nodes: [], edges: [], created_at: now, updated_at: now }]));
+  await page.getByRole('button', { name: '流程编排', exact: true }).click();
+  const trigger = page.getByRole('button', { name: '操作流程 边界流程', exact: true });
+  await trigger.click();
+  const menu = page.getByRole('menu', { name: '流程操作菜单：边界流程', exact: true });
+  await expectInsideViewport(page, menu);
+  const checkbox = page.getByRole('checkbox', { name: '选择流程 边界流程', exact: true });
+  await expect(checkbox).not.toBeChecked();
+  await page.keyboard.press('Escape');
+  await expect(menu).toHaveCount(0);
+  await trigger.click();
+  await menu.getByRole('button', { name: '进入编排', exact: true }).click();
+  await expect(page.getByRole('button', { name: '保存编排', exact: true })).toBeVisible();
+  await expect(menu).toHaveCount(0);
+});
+
+test('queued message action popover preserves upward placement outside dismissal and editing', async ({ page }) => {
+  await openWorkspace(page);
+  await page.evaluate(() => {
+    sessionStorage.setItem('flowweave.agent.message-queue.v1:schedule-workspace:scheduled-conversation', JSON.stringify([{ id: 'edge-message', scope: 'scheduled-conversation', content: '边界排队消息', items: [], references: [], annotations: [], deliveryState: 'queued' }]));
+    sessionStorage.setItem('flowweave.agent.queue-mode.v1:schedule-workspace:scheduled-conversation', 'disabled');
+  });
+  await page.goto('/agent/conversations/scheduled-conversation');
+  const trigger = page.getByRole('button', { name: '更多排队消息操作 1', exact: true });
+  await trigger.click();
+  const menu = page.getByRole('menu', { name: '排队消息操作', exact: true });
+  await expectInsideViewport(page, menu);
+  const anchor = (await trigger.boundingBox())!; const box = (await menu.boundingBox())!;
+  expect(box.y + box.height).toBeLessThanOrEqual(anchor.y);
+  await expect(menu.getByRole('menuitem', { name: '编辑消息', exact: true })).toHaveCSS('border-top-width', '0px');
+  await page.getByRole('textbox', { name: '发送 Agent 消息' }).click();
+  await expect(menu).toHaveCount(0);
+  await trigger.click();
+  await menu.getByRole('menuitem', { name: '编辑消息', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: '发送 Agent 消息' })).toHaveValue('边界排队消息');
+  await expect(menu).toHaveCount(0);
+});
+
+test('file action popover measures directory actions at the bottom right', async ({ page }) => {
+  await openWorkspace(page);
+  const root = '/runtime/workspace/project';
+  await page.route('**/api/v1/agent-workspaces/*/workspace/directory**', route => json(route, { parent_path: root, entries: [{ path: `${root}/src`, kind: 'directory', size: 0 }], next_cursor: null }));
+  await page.goto('/agent/conversations/scheduled-conversation');
+  await page.getByRole('button', { name: '新建工作区页签', exact: true }).first().click();
+  await page.locator('.agent-workspace-tab-launcher.active').getByRole('button', { name: '文件', exact: true }).click();
+  const viewport = page.viewportSize()!;
+  await page.getByRole('button', { name: 'src', exact: true }).evaluate((element, viewport) => element.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: viewport.width - 2, clientY: viewport.height - 2 })), viewport);
+  const menu = page.getByRole('menu', { name: '文件操作菜单', exact: true });
+  await expectInsideViewport(page, menu);
+  await expect(menu.getByRole('menuitem')).toHaveCount(3);
+  await page.keyboard.press('Escape');
+  await expect(menu).toHaveCount(0);
+});
+
+test('terminal action popover measures its full command list at the bottom right', async ({ page }) => {
+  await openWorkspace(page);
+  await page.routeWebSocket('**/*terminal*', socket => socket.send('terminal ready\r\n'));
+  await page.goto('/agent/conversations/scheduled-conversation');
+  await page.getByRole('button', { name: '新建工作区页签', exact: true }).first().click();
+  await page.locator('.agent-workspace-tab-launcher.active').getByRole('button', { name: '终端', exact: true }).click();
+  const terminal = page.locator('.agent-workspace-terminal');
+  await expect(terminal).toContainText('已连接');
+  const viewport = page.viewportSize()!;
+  await terminal.locator('.xterm-screen').dispatchEvent('mousedown', { button: 2, clientX: viewport.width - 2, clientY: viewport.height - 2 });
+  const menu = page.getByRole('menu', { name: '终端操作菜单', exact: true });
+  await expectInsideViewport(page, menu);
+  await expect(menu.getByRole('menuitem', { name: '关闭当前窗格', exact: true })).toBeInViewport();
+  await page.keyboard.press('Escape');
+  await expect(menu).toHaveCount(0);
+});

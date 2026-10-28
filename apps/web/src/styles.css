@@ -690,19 +690,19 @@ section.modal.hook-editor>header{padding:30px 24px 10px!important}
 .account-menu>.account-trigger[aria-expanded=true] .account-avatar{background:#e7efe9;color:var(--green)}
 .account-menu>.account-trigger[aria-expanded=true] .account-identity small{color:var(--muted)}
 .account-menu>.account-trigger[aria-expanded=true]>svg{color:var(--green)}
-.account-menu>.account-popover{
+.account-popover{
   z-index:1;
   top:calc(50% - 20px);
   overflow:hidden;
   border-color:#cfd9d2;
   border-radius:9px;
   background:#fff;
-  padding:45px 5px 5px;
+  padding:5px;
   box-shadow:0 18px 38px #08150f38;
   transform-origin:top right;
   animation:account-popover-open .14s ease-out;
 }
-.account-menu>.account-popover .account-popover-heading{
+.account-popover .account-popover-heading{
   min-height:24px;
   display:flex;
   align-items:center;
@@ -712,14 +712,14 @@ section.modal.hook-editor>header{padding:30px 24px 10px!important}
   padding:2px 6px 6px;
   color:#7b8981;
 }
-.account-menu>.account-popover .account-popover-heading>svg{display:none}
-.account-menu>.account-popover .account-popover-heading b{font-size:8px;letter-spacing:.9px}
+.account-popover .account-popover-heading>svg{display:none}
+.account-popover .account-popover-heading b{font-size:8px;letter-spacing:.9px}
 @keyframes account-popover-open{
   from{opacity:0}
   to{opacity:1}
 }
 @media(prefers-reduced-motion:reduce){
-  .account-menu>.account-popover{animation:none}
+  .account-popover{animation:none}
 }
 
 /* Login experience: a quiet product introduction paired with one focused task.
@@ -1454,3 +1454,8 @@ body:has(.login-page){min-width:0}
 .flow-run-record-identity{display:flex;min-width:0;flex-wrap:wrap;align-items:center;gap:3px 12px}
 .flow-run-record-identity .flow-run-record-name{flex:1 1 160px}
 .flow-run-record-id{flex:0 1 auto;max-width:100%;color:#829087;font:9px/1.5 'DM Mono',ui-monospace,monospace;overflow-wrap:anywhere;user-select:text}
+
+/* Portaled menus keep their intended width and let oversized option lists scroll. */
+.flow-row-menu[data-viewport-popover]{width:138px}
+.capability-overflow-popover[data-viewport-popover]{width:156px}
+.account-popover[data-viewport-popover]{animation:none}

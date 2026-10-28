@@ -685,3 +685,6 @@
 .agent-credential-sync-heading>span:last-of-type{grid-column:4;text-align:center}
 .agent-credential-sync .agent-capability-list>button{grid-template-columns:18px 26px minmax(0,1fr) 64px;gap:9px;min-height:48px;padding:7px 9px}
 @media(max-width:680px){.agent-capability-manager .agent-capability-list>button,.agent-capability-skill-row>button{gap:7px;padding-inline:7px}.agent-capability-skill-row{gap:5px;padding-right:7px}.agent-capability-skill-update{gap:4px}.agent-credential-sync-heading,.agent-credential-sync .agent-capability-list>button{grid-template-columns:18px 26px minmax(0,1fr) 58px;gap:7px;padding-inline:7px}}
+
+.agent-workspace-group-actions-menu[data-viewport-popover]{width:140px}
+.agent-conversation-context-menu[data-viewport-popover],.agent-file-context-menu[data-viewport-popover]{width:176px}

@@ -1,3 +1,4 @@
+import { ViewportPopover } from './ViewportPopover';
 import { BookOpen, Check, ChevronDown, ChevronRight, CircleAlert, ClipboardList, Copy, ExternalLink, Eye, FileCode2, FileCog, FileJson, FilePenLine, FilePlus2, FileText, FileType2, GitFork, Link, LoaderCircle, PanelRightOpen, PanelTop, Pencil, PlugZap, Quote, Search, ShieldCheck, Sparkles, SquareTerminal, Workflow, Wrench } from 'lucide-react';
 import { Fragment, lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from 'react';
 import type { AgentActivitySummary, AgentAttachment, AgentConversationAnnotation, AgentConversationReference, AgentWorkspaceReference, OpenHandsConversationEvent, RuntimeTaskControlSnapshot } from '../types';
@@ -2058,7 +2059,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   const [condensationElapsed, setCondensationElapsed] = useState(0);
   const [expandedCompletedProcesses, setExpandedCompletedProcesses] = useState<ReadonlySet<string>>(() => new Set());
   const [messagePreview, setMessagePreview] = useState<{ id: string; content: string; index: number; top: number }>();
-  const [selectedReference, setSelectedReference] = useState<{ reference: ConversationAnnotationReference; left: number; top: number }>();
+  const [selectedReference, setSelectedReference] = useState<{ reference: ConversationAnnotationReference; range: Range }>();
   const [viewingReference, setViewingReference] = useState<AgentConversationReference>();
   const [highlightedReference, setHighlightedReference] = useState<ConversationTextHighlight>();
   const [referenceHighlightRects, setReferenceHighlightRects] = useState<ConversationHighlightRect[]>([]);
@@ -2757,8 +2758,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
       }
       setSelectedReference({
         reference,
-        left: Math.min(Math.max(12, bounds.left), Math.max(12, window.innerWidth - 172)),
-        top: Math.min(bounds.bottom + 8, Math.max(12, window.innerHeight - 44)),
+        range: currentSelection.getRangeAt(0).cloneRange(),
       });
     });
   }, [conversationScope, onCreateAnnotation]);
@@ -2938,10 +2938,10 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
       </div>
     </section>
     {viewingReference && <ConversationReferencePreview reference={viewingReference} onClose={() => setViewingReference(undefined)} onLocate={locateReferenceSource}/>}
-    {selectedReference && <span className="conversation-add-reference" style={{ left: selectedReference.left, top: selectedReference.top }}>
+    {selectedReference && <ViewportPopover className="conversation-add-reference" anchor={() => selectedReference.range.getBoundingClientRect()} gap={8}>
       <button type="button" onPointerDown={event => event.preventDefault()} onClick={() => { onCreateAnnotation?.({ event_id: selectedReference.reference.eventId, quote: selectedReference.reference.content, compact_start: selectedReference.reference.compactStart }); window.getSelection()?.removeAllRanges(); setSelectedReference(undefined); }}><Quote size={14}/>添加到会话</button>
       {onSidebarQuestion && <button type="button" onPointerDown={event => event.preventDefault()} onClick={() => { onSidebarQuestion(selectedReference.reference); window.getSelection()?.removeAllRanges(); setSelectedReference(undefined); }}><PanelRightOpen size={14}/>在侧边聊天提问</button>}
-    </span>}
+    </ViewportPopover>}
     {showJumpToLatest && <button
       type="button"
       className={`conversation-jump-latest${isGenerating ? ' generating' : ''}`}

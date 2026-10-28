@@ -482,6 +482,11 @@ test('create FlowRun uses a keyboard menu with only published digest-locked envi
     if (path.endsWith('/auth/me')) return respond(authenticatedUser);
     if (path === '/api/v1/flows') return respond([definition]);
     if (path === '/api/v1/flow-runs') return respond(submitted ? [run] : []);
+    if (path === `/api/v1/flow-runs/${run.id}`) return respond(run);
+    if (path === `/api/v1/flows/${definition.id}`) return respond(definition);
+    if (path.endsWith('/records')) return respond(directoryFixture([], [], route.request().url()));
+    if (path.endsWith('/runtime/resource')) return respond({ resource: null });
+    if (path.endsWith('/runtime')) return respond({ status: 'ACTIVE', active_generation: 1, write_available: true });
     if (path.endsWith('/terminal-environments')) return respond([{ id: 'env', name: '验收环境', versions: [
       { id: 'building', state: 'BUILDING', version_no: 1, image_digest: 'sha256:a' },
       { id: 'missing-digest', state: 'READY', version_no: 2, image_digest: null },

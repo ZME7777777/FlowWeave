@@ -1,3 +1,4 @@
+import { ViewportPopover } from '../ViewportPopover';
 import { HighlightedDiffCode, SharedSplitDiff, DiffChangeNavigation } from '../FileDiff';
 import { filePreviewLanguage, highlightedCode, splitDiffRows, diffChangeStartIndexes, gitDiffLines, type GitDiffLine, type SplitDiffRow, diffInlineRanges } from '../fileDiffModel';
 import { FitAddon } from '@xterm/addon-fit';
@@ -698,7 +699,6 @@ function WorkspaceConversationGroup({ groupId, label, children, conversationCoun
   const actionsRef = useRef<HTMLDivElement>(null);
   const actionsMenuRef = useRef<HTMLDivElement>(null);
   const actionsTriggerRef = useRef<HTMLButtonElement>(null);
-  const [menuPosition, setMenuPosition] = useState<{ left: number; top: number }>();
   const initializedItemCount = useRef(false);
   const previousConversationCount = useRef(conversationCount);
   const contentId = `agent-workspace-group-${groupId}`;
@@ -727,23 +727,12 @@ function WorkspaceConversationGroup({ groupId, label, children, conversationCoun
   }, [collapsed, onRevealConversation, revealConversationIndex, visibleCount]);
   useEffect(() => {
     if (!actionsOpen) return;
-    const updateMenuPosition = () => {
-      const trigger = actionsTriggerRef.current;
-      if (!trigger) return;
-      const bounds = trigger.getBoundingClientRect();
-      setMenuPosition({ left: bounds.left, top: bounds.bottom + 3 });
-    };
     const close = (event: PointerEvent) => {
       if (event.target instanceof Node && !actionsRef.current?.contains(event.target) && !actionsMenuRef.current?.contains(event.target)) setActionsOpen(false);
     };
-    updateMenuPosition();
     window.addEventListener('pointerdown', close);
-    window.addEventListener('resize', updateMenuPosition);
-    window.addEventListener('scroll', updateMenuPosition, true);
     return () => {
       window.removeEventListener('pointerdown', close);
-      window.removeEventListener('resize', updateMenuPosition);
-      window.removeEventListener('scroll', updateMenuPosition, true);
     };
   }, [actionsOpen]);
 
@@ -753,12 +742,12 @@ function WorkspaceConversationGroup({ groupId, label, children, conversationCoun
   };
   const toggleLabel = `${collapsed ? '展开' : '收起'}工作区 ${label}`;
   const hasOverflowActions = Boolean(onConfigureSession || onEdit || onArchive || onDelete);
-  const menu = actionsOpen && menuPosition && createPortal(<div ref={actionsMenuRef} role="menu" className="agent-workspace-group-actions-menu" aria-label={`工作区操作菜单：${label}`} style={menuPosition} onPointerDown={event => event.stopPropagation()}>
+  const menu = actionsOpen && <ViewportPopover anchor={() => actionsTriggerRef.current} gap={3} ref={actionsMenuRef} role="menu" className="agent-workspace-group-actions-menu" aria-label={`工作区操作菜单：${label}`} onPointerDown={event => event.stopPropagation()}>
     {onConfigureSession && <button type="button" role="menuitem" onClick={() => { onConfigureSession(); setActionsOpen(false); }}><Boxes size={13}/>会话配置</button>}
     {onArchive && <button type="button" role="menuitem" onClick={() => { onArchive(); setActionsOpen(false); }}><Archive size={13}/>归档</button>}
     {onEdit && <button type="button" role="menuitem" onClick={() => { onEdit(); setActionsOpen(false); }}><Settings size={13}/>编辑</button>}
     {onDelete && <button type="button" className="danger" role="menuitem" onClick={() => { onDelete(); setActionsOpen(false); }}><Trash2 size={13}/>删除</button>}
-  </div>, document.body);
+  </ViewportPopover>;
   return <section data-workspace-group-id={groupId} data-work-directory-id={draggable ? groupId : undefined} className={`agent-workspace-group${collapsed ? ' collapsed' : ''}${dragging ? ' dragging' : ''}${dropPosition ? ` drop-${dropPosition}` : ''}`}>
     <header onPointerDown={draggable ? onPointerDragStart : undefined}>
       <button type="button" className="agent-workspace-group-toggle" aria-label={toggleLabel} aria-expanded={!collapsed} aria-controls={contentId} onClick={toggleCollapsed}>
@@ -957,13 +946,12 @@ function WorkspaceConversationRow({
     if (!contextMenu) return;
     const close = () => setContextMenu(undefined);
     window.addEventListener('pointerdown', close);
-    window.addEventListener('resize', close);
-    return () => { window.removeEventListener('pointerdown', close); window.removeEventListener('resize', close); };
+    return () => { window.removeEventListener('pointerdown', close); };
   }, [contextMenu]);
   const selected = item.id === selectedBindingId;
   return <div data-conversation-binding-id={item.id} className={`agent-workspace-conversation${selected ? ' active' : ''}${dragging ? ' dragging' : ''}${dropPosition ? ` drop-${dropPosition}` : ''}`} onDragOver={onDragOver} onDrop={onDrop} onContextMenu={event => {
     event.preventDefault();
-    setContextMenu({ x: Math.min(event.clientX, window.innerWidth - 180), y: Math.min(event.clientY, window.innerHeight - 52) });
+    setContextMenu({ x: event.clientX, y: event.clientY });
   }}>
     <button type="button" draggable={Boolean(onDragStart)} className={`agent-workspace-conversation-select${selected ? ' active' : ''}`} aria-label={conversationName(item)} title={onDragStart ? '拖入发送框以引用此会话，或拖到其他会话以调整顺序' : undefined} onDragStart={onDragStart} onDragEnd={onDragEnd} onClick={onSelect} onDoubleClick={onDoubleClick}>
       <span><b>{conversationName(item)}</b>{workspaceName && <small title={workspaceName}><Folder size={11}/><span>{workspaceName}</span></small>}</span>
@@ -975,7 +963,7 @@ function WorkspaceConversationRow({
     {unread && !showAlert && !running && <span className="agent-workspace-conversation-unread" role="img" aria-label="会话已完成，有未读回复" title="会话有未读回复"/>}
     {running && !showRunningAlert && <LoaderCircle className="agent-workspace-conversation-running" role="img" aria-label="会话正在运行" size={14}/>}
     {onArchive && !running && !showAlert && <button type="button" className="agent-workspace-conversation-archive" aria-label={`归档会话 ${conversationName(item)}`} title={deleteDisabled ? '会话运行中，请先停止' : '归档会话'} disabled={!conversationWritable || deleteDisabled || removing} onClick={onArchive}><Archive size={13}/></button>}
-    {contextMenu && createPortal(<div className="agent-conversation-context-menu" role="menu" aria-label={`会话操作菜单：${conversationName(item)}`} style={{ left: contextMenu.x, top: contextMenu.y }} onPointerDown={event => event.stopPropagation()} onContextMenu={event => event.preventDefault()}>
+    {contextMenu && <ViewportPopover anchor={contextMenu} gap={0} className="agent-conversation-context-menu" role="menu" aria-label={`会话操作菜单：${conversationName(item)}`} onPointerDown={event => event.stopPropagation()} onContextMenu={event => event.preventDefault()}>
       {pinned
         ? <button type="button" role="menuitem" onClick={() => { onTogglePin(); setContextMenu(undefined); }}><PinOff size={13}/>取消置顶</button>
         : <button type="button" role="menuitem" onClick={() => { onTogglePin(); setContextMenu(undefined); }}><Pin size={13}/>置顶</button>}
@@ -984,7 +972,7 @@ function WorkspaceConversationRow({
         ? unread && <button type="button" role="menuitem" onClick={() => { onMarkRead(); setContextMenu(undefined); }}><CircleDot size={13}/>标记为已读</button>
         : <button type="button" role="menuitem" onClick={() => { onMarkUnread(); setContextMenu(undefined); }}><CircleDot size={13}/>标记为未读</button>}
       {onDelete && <button type="button" className="danger" role="menuitem" disabled={!conversationWritable || deleteDisabled || removing} onClick={() => { onDelete(); setContextMenu(undefined); }}><Trash2 size={13}/>删除</button>}
-    </div>, document.body)}
+    </ViewportPopover>}
   </div>;
 }
 
@@ -2120,7 +2108,7 @@ function WorkspaceTerminal({ workspaceId, terminalInstanceId, bindingId, workDir
       event.preventDefault();
       event.stopImmediatePropagation();
       const { text, line } = terminalTextAt(event);
-      setContextMenu({ x: Math.min(event.clientX, window.innerWidth - 230), y: Math.min(event.clientY, window.innerHeight - 330), text, line });
+      setContextMenu({ x: event.clientX, y: event.clientY, text, line });
       terminal.focus();
     };
     const closeTerminalContextMenu = (event: MouseEvent) => {
@@ -2246,7 +2234,7 @@ function WorkspaceTerminal({ workspaceId, terminalInstanceId, bindingId, workDir
     if (value) void navigator.clipboard.writeText(value).catch(() => undefined);
   };
   const selectedText = contextMenu?.text || '选中内容';
-  return <section className="agent-workspace-terminal"><header><span className={`terminal-dot ${state}`}/><span>{detail}</span></header><div ref={host} aria-label="Agent 工作区终端"/>{contextMenu && createPortal(<div className="agent-terminal-context-menu" role="menu" aria-label="终端操作菜单" style={{ left: contextMenu.x, top: contextMenu.y }} onMouseDown={event => event.stopPropagation()} onContextMenu={event => event.preventDefault()}><button type="button" role="menuitem" disabled={!contextMenu.text} onClick={() => copy(contextMenu.text)}>复制 “{selectedText}”</button><button type="button" role="menuitem" disabled={!contextMenu.line} onClick={() => copy(contextMenu.line)}>复制当前行</button><button type="button" role="menuitem" disabled={!contextMenu.text} onClick={() => runTmux(contextMenu.text)}>输入 “{selectedText}”</button><hr/><button type="button" role="menuitem" onClick={() => runTmux('\u0002%')}>左右分屏</button><button type="button" role="menuitem" onClick={() => runTmux('\u0002"')}>上下分屏</button><button type="button" role="menuitem" onClick={() => runTmux('\u0002m')}>标记窗格</button><button type="button" role="menuitem" className="danger" onClick={killCurrentPane}>关闭当前窗格</button></div>, document.body)}</section>;
+  return <section className="agent-workspace-terminal"><header><span className={`terminal-dot ${state}`}/><span>{detail}</span></header><div ref={host} aria-label="Agent 工作区终端"/>{contextMenu && <ViewportPopover anchor={contextMenu} gap={0} className="agent-terminal-context-menu" role="menu" aria-label="终端操作菜单" onMouseDown={event => event.stopPropagation()} onContextMenu={event => event.preventDefault()}><button type="button" role="menuitem" disabled={!contextMenu.text} onClick={() => copy(contextMenu.text)}>复制 “{selectedText}”</button><button type="button" role="menuitem" disabled={!contextMenu.line} onClick={() => copy(contextMenu.line)}>复制当前行</button><button type="button" role="menuitem" disabled={!contextMenu.text} onClick={() => runTmux(contextMenu.text)}>输入 “{selectedText}”</button><hr/><button type="button" role="menuitem" onClick={() => runTmux('\u0002%')}>左右分屏</button><button type="button" role="menuitem" onClick={() => runTmux('\u0002"')}>上下分屏</button><button type="button" role="menuitem" onClick={() => runTmux('\u0002m')}>标记窗格</button><button type="button" role="menuitem" className="danger" onClick={killCurrentPane}>关闭当前窗格</button></ViewportPopover>}</section>;
 }
 
 function isTextPreviewable(path: string, mimeType = ''): boolean {
@@ -4009,8 +3997,7 @@ function WorkspaceDrawer({
     if (!entryMenu) return;
     const close = () => setEntryMenu(undefined);
     window.addEventListener('pointerdown', close);
-    window.addEventListener('resize', close);
-    return () => { window.removeEventListener('pointerdown', close); window.removeEventListener('resize', close); };
+    return () => { window.removeEventListener('pointerdown', close); };
   }, [entryMenu]);
   const detailsQuery = useQuery({
     queryKey: sessionQueryKey(host, 'workspace-details', workspaceId, bindingId, workDirectoryId),
@@ -4882,7 +4869,7 @@ function WorkspaceDrawer({
             <div className="agent-file-tree-pane">
               <header className="agent-file-tree-toolbar"><span>{selectedEntryPaths.size ? `已选 ${selectedEntryPaths.size} 项` : '文件'}</span><div className="agent-file-tree-actions"><input ref={workspaceUploadInput} type="file" multiple hidden onChange={event => { Array.from(event.target.files ?? []).forEach(file => startWorkspaceUpload(file)); event.currentTarget.value = ''; }}/><button type="button" title="上传文件" aria-label="上传文件" disabled={!api.uploadWorkspaceFile} onClick={() => workspaceUploadInput.current?.click()}><ArrowUp size={13}/></button><button type="button" title="新建文件" aria-label="新建文件" onClick={() => createAtActiveDirectory('FILE')}><FileCode2 size={13}/></button><button type="button" title="新建目录" aria-label="新建目录" onClick={() => createAtActiveDirectory('DIRECTORY')}><FolderPlus size={13}/></button><button type="button" className={`agent-file-tree-hidden-toggle${showHiddenFiles ? ' active' : ''}`} title={showHiddenFiles ? '隐藏以 . 开头的文件和目录' : '显示以 . 开头的文件和目录'} aria-label={showHiddenFiles ? '隐藏隐藏文件和目录' : '显示隐藏文件和目录'} aria-pressed={showHiddenFiles} onClick={() => setShowHiddenFiles(current => !current)}>{showHiddenFiles ? <EyeOff size={13}/> : <Eye size={13}/>}</button><button type="button" className={`agent-file-tree-expand-toggle${expandAllFileDirectories ? ' expanded' : ''}`} title={expandAllFileDirectories ? '全部收起' : '全部展开'} aria-label={expandAllFileDirectories ? '全部收起目录' : '全部展开目录'} disabled={!fileDirectoryPaths.length} onClick={toggleAllFileDirectories}>{expandAllFileDirectories ? <ChevronRight size={13}/> : <ChevronDown size={13}/>}</button><button type="button" className="danger" title="删除选中项" aria-label="删除选中项" disabled={!selectedEntryRoots.length} onClick={() => void removeEntries(selectedEntryRoots.map(path => ({ path, kind: visibleFiles.find(item => item.path === path)?.kind ?? 'directory' })))}><Trash2 size={13}/></button></div></header>
               {workspaceUploads.length > 0 && <div className="agent-workspace-upload-list" aria-label="工作区上传">{workspaceUploads.map(item => <article key={item.id} className={item.state}><span>{item.file.name}</span><small>{item.state === 'uploading' ? `${item.progress}%` : '上传失败'}</small>{item.state === 'uploading' ? <i style={{ '--upload-progress': `${item.progress}%` } as CSSProperties}/> : <button type="button" onClick={() => retryWorkspaceUpload(item.id)}>重试</button>}</article>)}</div>}
-              <WorkspaceFileTree entries={visibleFiles} root={details.working_directory} selectedFile={selectedFile} selectedPaths={selectedEntryPaths} expanded={expandedFilePaths} pagination={new Map([...directoryPages].map(([path, page]) => [path, page.nextCursor]))} loadingDirectories={loadingDirectoryPaths} onExpandedChange={updateExpandedFilePaths} onLoadMore={parentPath => { void loadDirectory(parentPath); }} onSelect={path => { setActiveDirectory(undefined); selectFile(path); }} onSelectionChange={setSelectedEntryPaths} onActivateDirectory={path => { setActiveDirectory(path); setGitContextPath(path); setGitSidebarRequested(Boolean(path)); }} onContextMenu={(path, kind, event) => { setEntryMenu({ path, kind, x: Math.min(event.clientX, window.innerWidth - 190), y: Math.min(event.clientY, window.innerHeight - 190) }); }} fileDownloadUrl={path => fileUrl(workspaceId, path, { bindingId, workDirectoryId, download: true })}/>
+              <WorkspaceFileTree entries={visibleFiles} root={details.working_directory} selectedFile={selectedFile} selectedPaths={selectedEntryPaths} expanded={expandedFilePaths} pagination={new Map([...directoryPages].map(([path, page]) => [path, page.nextCursor]))} loadingDirectories={loadingDirectoryPaths} onExpandedChange={updateExpandedFilePaths} onLoadMore={parentPath => { void loadDirectory(parentPath); }} onSelect={path => { setActiveDirectory(undefined); selectFile(path); }} onSelectionChange={setSelectedEntryPaths} onActivateDirectory={path => { setActiveDirectory(path); setGitContextPath(path); setGitSidebarRequested(Boolean(path)); }} onContextMenu={(path, kind, event) => { setEntryMenu({ path, kind, x: event.clientX, y: event.clientY }); }} fileDownloadUrl={path => fileUrl(workspaceId, path, { bindingId, workDirectoryId, download: true })}/>
             </div>
             <div className="agent-file-tree-resizer" role="separator" tabIndex={0} aria-label={fileTreeCollapsed ? '展开文件目录' : '调整文件目录宽度'} aria-orientation="vertical" title={fileTreeCollapsed ? '双击展开文件目录' : '拖动调整文件目录宽度'} onPointerDown={startFileTreeResize} onDoubleClick={expandFileTree} onKeyDown={event => { if (fileTreeCollapsed && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); expandFileTree(); } }}/>
             <div className="agent-file-preview">{candidatePreview ? <>
@@ -4907,7 +4894,7 @@ function WorkspaceDrawer({
           }))} syncRepository={repositoryPath => api.syncGitRepository(workspaceId, repositoryPath, gitOptions)} loadLog={repositoryPath => api.gitLog(workspaceId, repositoryPath, gitOptions)} loadCommit={(repositoryPath, commit) => api.gitCommit(workspaceId, repositoryPath, commit, gitOptions)} loadDiff={(repositoryPath, commit, path) => api.gitDiff(workspaceId, repositoryPath, commit, path, gitOptions)} loadChanges={repositoryPath => api.gitChanges(workspaceId, repositoryPath, gitOptions)} onOpenFileDiff={openGitFileDiff} onOpenWorkingDiff={openGitWorkingDiff} closedDiffEpoch={closedGitDiffEpoch}/>}
         </div>)}
       </div>
-    </section>{entryMenu && <div className="agent-file-context-menu" role="menu" aria-label="文件操作菜单" style={{ left: entryMenu.x, top: entryMenu.y }} onPointerDown={event => event.stopPropagation()}>{entryMenu.kind === 'directory' && <><button type="button" role="menuitem" onClick={() => { void createEntry(entryMenu.path, 'FILE'); setEntryMenu(undefined); }}><FileCode2 size={14}/>新建文件</button><button type="button" role="menuitem" onClick={() => { void createEntry(entryMenu.path, 'DIRECTORY'); setEntryMenu(undefined); }}><FolderPlus size={14}/>新建目录</button></>}<button type="button" className="danger" role="menuitem" onClick={() => { void removeEntries([{ path: entryMenu.path, kind: entryMenu.kind }]); setEntryMenu(undefined); }}><Trash2 size={14}/>{entryMenu.kind === 'directory' ? '删除目录' : '删除文件'}</button></div>}
+    </section>{entryMenu && <ViewportPopover anchor={entryMenu} gap={0} className="agent-file-context-menu" role="menu" aria-label="文件操作菜单" onPointerDown={event => event.stopPropagation()}>{entryMenu.kind === 'directory' && <><button type="button" role="menuitem" onClick={() => { void createEntry(entryMenu.path, 'FILE'); setEntryMenu(undefined); }}><FileCode2 size={14}/>新建文件</button><button type="button" role="menuitem" onClick={() => { void createEntry(entryMenu.path, 'DIRECTORY'); setEntryMenu(undefined); }}><FolderPlus size={14}/>新建目录</button></>}<button type="button" className="danger" role="menuitem" onClick={() => { void removeEntries([{ path: entryMenu.path, kind: entryMenu.kind }]); setEntryMenu(undefined); }}><Trash2 size={14}/>{entryMenu.kind === 'directory' ? '删除目录' : '删除文件'}</button></ViewportPopover>}
   </aside>{sshAccessOpen && sshRemoteReady && <SshAccessGuide host={details!.ide.gateway.host!} port={details!.ide.gateway.port!} path={details!.ide.gateway.path!} onClose={() => setSshAccessOpen(false)}/>} {pendingTerminalClose && <div className="agent-terminal-close-backdrop" onPointerDown={event => { if (event.target === event.currentTarget && !closingTerminalId) setPendingTerminalClose(undefined); }}><section role="dialog" aria-modal="true" aria-labelledby="agent-terminal-close-title" className="agent-terminal-close-dialog"><header><span className="eyebrow">TERMINAL</span><h2 id="agent-terminal-close-title">关闭此终端？</h2></header><p>关闭后会停止该终端中正在执行的命令，并清除这一个终端会话；其他终端和当前会话不会受影响。</p><footer><button type="button" className="secondary" disabled={Boolean(closingTerminalId)} onClick={() => setPendingTerminalClose(undefined)}>取消</button><button type="button" className="danger" autoFocus disabled={Boolean(closingTerminalId)} onClick={() => { const tab = pendingTerminalClose; setPendingTerminalClose(undefined); void closeTab(tab); }}>{closingTerminalId ? '正在关闭…' : '关闭终端'}</button></footer></section></div>}</>;
 }
 
@@ -4982,11 +4969,13 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [draggedQueuedMessageId, setDraggedQueuedMessageId] = useState<string>();
   const [queuedMessageMenuId, setQueuedMessageMenuId] = useState<string>();
   const queuedMessageMenuRef = useRef<HTMLDivElement>(null);
+  const queuedMessagePopoverRef = useRef<HTMLDivElement>(null);
+  useEscapeClose(() => setQueuedMessageMenuId(undefined), Boolean(queuedMessageMenuId));
   const [pendingRewrite, setPendingRewrite] = useState<RewriteRequest>();
   useEffect(() => {
     if (!queuedMessageMenuId) return;
     const closeOnOutsidePointer = (event: PointerEvent) => {
-      if (event.target instanceof Node && !queuedMessageMenuRef.current?.contains(event.target)) setQueuedMessageMenuId(undefined);
+      if (event.target instanceof Node && !queuedMessageMenuRef.current?.contains(event.target) && !queuedMessagePopoverRef.current?.contains(event.target)) setQueuedMessageMenuId(undefined);
     };
     document.addEventListener('pointerdown', closeOnOutsidePointer, true);
     return () => document.removeEventListener('pointerdown', closeOnOutsidePointer, true);
@@ -10329,10 +10318,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
                 {editable && <button type="button" aria-label={`调整方向排队消息 ${index + 1}`} title={queueModeEnabled ? '立即发送，调整当前回复方向' : '队列模式已关闭'} disabled={selectedCondensing || !queueModeEnabled || !canWrite || effectiveTurnState !== 'running' || !selected?.streaming_callback_ready || message.scope !== selected.id} onClick={() => sendQueuedMessageImmediately(message)}><CornerDownRight size={12}/>调整方向</button>}
                 <button type="button" className="queue-remove" aria-label={`移除排队消息 ${index + 1}`} disabled={!removable} onClick={() => { commitQueuedMessages(items => items.filter(item => item.id !== message.id)); removeLocalMessageProjection(message.id, message.scope); setQueuedMessageMenuId(current => current === message.id ? undefined : current); }}><Trash2 size={13}/></button>
                 {editable && <button type="button" className="queue-more" aria-label={`更多排队消息操作 ${index + 1}`} title="更多操作" aria-haspopup="menu" aria-expanded={queuedMessageMenuId === message.id} onClick={() => setQueuedMessageMenuId(current => current === message.id ? undefined : message.id)}><Ellipsis size={14}/></button>}
-                {editable && queuedMessageMenuId === message.id && <div className="queue-menu" role="menu">
+                {editable && queuedMessageMenuId === message.id && <ViewportPopover ref={queuedMessagePopoverRef} anchor={() => queuedMessageMenuRef.current?.querySelector('.queue-more')} align="end" placement="top" className="queue-menu" role="menu" aria-label="排队消息操作">
                   <button type="button" role="menuitem" onClick={() => editQueuedMessage(message)}><Pencil size={12}/>编辑消息</button>
                   <button type="button" role="menuitem" onClick={toggleQueueMode}><ListRestart size={12}/>{queueModeEnabled ? '关闭队列模式' : '启用队列模式'}</button>
-                </div>}
+                </ViewportPopover>}
               </div>
             </article>;
           })}

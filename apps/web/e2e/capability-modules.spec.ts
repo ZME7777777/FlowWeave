@@ -645,3 +645,36 @@ test('repository requests global sort and preserves selection across button page
   expect(bounds.page).toBeLessThanOrEqual(bounds.viewport);
   await page.screenshot({ path: '../../.tmp/ops25/capability-repository.png' });
 });
+
+test('capability action popover flips at the bottom edge and follows table scrolling', async ({ page }) => {
+  const collections = Array.from({ length: 20 }, (_, index) => ({ id: `edge-${index}`, name: `边界组合 ${index}`, category: '', description: '', row_version: 1, members: [], created_at: '2026-10-29T00:00:00Z', updated_at: '2026-10-29T00:00:00Z' }));
+  await mockRepository(page, 'capabilities', route => route.fulfill({ json: [] }));
+  await mockRepository(page, 'capability-collections', route => route.fulfill({ body: JSON.stringify(collections) }));
+  await page.setViewportSize({ width: 1200, height: 440 });
+  await page.goto('/');
+  await page.getByRole('button', { name: '能力仓库' }).click();
+  await page.getByRole('navigation', { name: '能力模块' }).getByRole('button', { name: /Skill 组合/ }).click();
+  const trigger = page.getByRole('button', { name: '更多操作：Skill 组合 边界组合 0', exact: true });
+  await trigger.click();
+  const menu = page.getByRole('menu', { name: 'Skill 组合 边界组合 0 操作菜单', exact: true });
+  await expect(menu).toBeVisible();
+  const before = (await menu.boundingBox())!;
+  await page.locator('.capability-table-scroll').evaluate(element => { element.scrollTop = 40; });
+  await expect.poll(async () => (await menu.boundingBox())!.y).not.toBe(before.y);
+  const box = (await menu.boundingBox())!;
+  expect(box.x).toBeGreaterThanOrEqual(8);
+  expect(box.y).toBeGreaterThanOrEqual(8);
+  expect(box.x + box.width).toBeLessThanOrEqual(1192);
+  expect(box.y + box.height).toBeLessThanOrEqual(432);
+  await page.keyboard.press('Escape');
+  await expect(menu).toHaveCount(0);
+  // Exercise the same overflow component at the bottom of a scroll container.
+  const last = page.getByRole('button', { name: '更多操作：Skill 组合 边界组合 19', exact: true });
+  await last.scrollIntoViewIfNeeded();
+  await last.click();
+  const bottomMenu = page.getByRole('menu', { name: 'Skill 组合 边界组合 19 操作菜单', exact: true });
+  const bottomBox = (await bottomMenu.boundingBox())!;
+  expect(bottomBox.y + bottomBox.height).toBeLessThanOrEqual(432);
+  await bottomMenu.getByRole('menuitem', { name: '编辑', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '编辑 Skill 组合', exact: true })).toBeVisible();
+});

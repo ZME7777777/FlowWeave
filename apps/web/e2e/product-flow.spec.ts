@@ -2498,11 +2498,13 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByLabel('消息投递队列').getByText('待编辑排队消息')).toBeVisible();
   const queueMoreButton = page.getByLabel('消息投递队列').getByRole('button', { name: '更多排队消息操作 1' });
   await queueMoreButton.click();
-  const queueMenu = page.getByLabel('消息投递队列').getByRole('menu');
+  const queueMenu = page.getByRole('menu', { name: '排队消息操作' });
   await expect(queueMenu).toBeVisible();
   const queueMenuBox = await queueMenu.boundingBox();
   const queueMoreBox = await queueMoreButton.boundingBox();
-  expect(queueMenuBox?.bottom).toBeLessThanOrEqual(queueMoreBox?.top ?? Number.POSITIVE_INFINITY);
+  expect(queueMenuBox).not.toBeNull();
+  expect(queueMoreBox).not.toBeNull();
+  expect(queueMenuBox!.y + queueMenuBox!.height).toBeLessThanOrEqual(queueMoreBox!.y);
   await composer.click();
   await expect(queueMenu).toBeHidden();
   await queueMoreButton.click();
@@ -2515,7 +2517,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await composer.press('Enter');
   await expect(page.getByLabel('消息投递队列').getByText('已编辑的排队消息')).toBeVisible();
   await page.getByLabel('消息投递队列').getByRole('button', { name: '更多排队消息操作 1' }).click();
-  await page.getByLabel('消息投递队列').getByRole('menuitem', { name: '关闭队列模式' }).click();
+  await page.getByRole('menu', { name: '排队消息操作' }).getByRole('menuitem', { name: '关闭队列模式' }).click();
   await expect(page.locator('.agent-composer-note')).toHaveText('队列已关闭 · 保留 1 条');
   await page.reload();
   await expect(page.locator('.agent-composer-note')).toHaveText('队列已关闭 · 保留 1 条');
@@ -2533,7 +2535,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   modelIsResponding = true;
   await page.reload();
   await page.getByLabel('消息投递队列').getByRole('button', { name: '更多排队消息操作 1' }).click();
-  await page.getByLabel('消息投递队列').getByRole('menuitem', { name: '启用队列模式' }).click();
+  await page.getByRole('menu', { name: '排队消息操作' }).getByRole('menuitem', { name: '启用队列模式' }).click();
   await expect(page.locator('.agent-composer-note')).toHaveText('已排队 1 条');
   modelIsResponding = false;
   await page.reload();
