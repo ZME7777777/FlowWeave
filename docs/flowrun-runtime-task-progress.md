@@ -13391,3 +13391,23 @@ scale变化、适应画布后的节点边界及拖动后重新居中，以及列
 模型。无后端／迁移改动，唯一Alembic head保持0178_merge_schedule_credentials，
 无CURRENT。沿用当前会话授权仅发布Web，正式结果后补；当前及下一可执行
 重构切片均为NONE。
+
+
+OPS-36 正式发布补记（2026-10-28）：实际部署代码为
+`5e3db7cd4542fd1c7d856900cfbb130d73f57160`。Web正式预检与commit-bound
+最小上下文prepare通过，源归档SHA-256为
+`deb2b5e840c019f947b793cfe3f1d4eb868497aabce3ade2d9b00c9692a6e9c0`，
+实际linux/amd64 Web image ID为
+`sha256:de76fbc6e5fd8189aafc8ec9e5347f602093aa538b0ffefc1e5de7ede6c208d5`，
+OCI revision一致。保留旧日志和回滚镜像后仅recreate Web，健康及版本通过；
+服务器配置摘要与其他47个容器image／StartedAt保持，没有迁移、平台／Provider
+重启、Runtime replacement、生产业务写入或模型调用。
+
+公网HTML、入口资源及流程预览JS／CSS摘要匹配运行镜像，确认公网样式不存在
+预览控件pointer-events:none阻断规则；Chromium验证Agent／记录深层路由、
+前缀／根登录、匿名401和全新浏览器前缀API请求通过，根API请求为零。真实鼠标
+缩放／适应画布交互由本地受控API回归验证，不冒称生产已登录流程操作验收。
+Web remote-release-finish通过，无过期受管上下文，精确回收一个历史image ID
+的tags；保留当前、一个不同版本回滚及全部容器引用，未清理共享BuildKit、卷、
+Workspace或数据库备份。收尾后健康、版本、配置与其他47个容器再验通过。
+本补记不改变实际部署身份，本地提交未推送；当前及下一可执行重构切片均为NONE。
