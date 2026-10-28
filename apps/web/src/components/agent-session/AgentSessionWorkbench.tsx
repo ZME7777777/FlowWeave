@@ -24,7 +24,7 @@ import { agentWorkspaceSessionHost, type AgentSessionHost } from './session-host
 import { SidebarConversationPane } from './SidebarConversationPane';
 import { clearConversationSnapshots, getAgentSessionCacheIdentity, readConversationContextSnapshot, writeConversationContextSnapshot } from './conversation-cache';
 import { ConversationSurface, ConversationTaskPlan, type ConversationHistoryPrepend, type ConversationReference, type ConversationScrollSnapshot, type ModelRetryStatus } from '../ConversationSurface';
-import { isOpenHandsAgentReply, isOpenHandsConversationInterrupt, isOpenHandsConversationTerminalError, isOpenHandsEmptyResponseRecovery, orderOpenHandsConversationEvents, projectFlowWeaveMessageContext } from '../conversationEvents';
+import { isOpenHandsAgentReply, isOpenHandsConversationInterrupt, isOpenHandsConversationTerminalError, isOpenHandsEmptyResponseRecovery, orderOpenHandsConversationEvents, projectFlowWeaveMessageContext, projectHistoricalAgentReplies } from '../conversationEvents';
 import { useProductDialog } from '../ProductDialogContext';
 import { useEscapeClose } from '../useEscapeClose';
 import { MermaidDiagram } from '../MermaidDiagram';
@@ -7240,10 +7240,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     const immediatePreview = preview && preview.bindingId === activeScope
       ? [preview.event]
       : [];
-    return mergeConversationEvents(
+    return projectHistoricalAgentReplies(mergeConversationEvents(
       eventsQuery.data?.events ?? [],
       [...scopedLiveEvents.filter(item => item.scope === activeScope).map(item => item.event), ...immediatePreview],
-    );
+    ));
   }, [conversationDraft?.id, eventsQuery.data?.events, immediateFinalReplyPreview, scopedLiveEvents, selected?.id]);
   useEffect(() => {
     if (!selected?.id || pendingSubmissionConfirmation?.bindingId === selected.id) return;

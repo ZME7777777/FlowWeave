@@ -96,6 +96,38 @@ export function isOpenHandsAgentReply(event: OpenHandsConversationEvent): boolea
     && event.payload.content.trim().length > 0;
 }
 
+export function projectHistoricalAgentReplies(events: OpenHandsConversationEvent[]): OpenHandsConversationEvent[] {
+  // Match the API's terminal_assistant_message_ids rule across the browser's
+  // merged windows. A stream marks every assistant message non-final; a later
+  // bounded REST window can omit the preceding reply entirely. The next formal
+  // user event still proves its identity through the native parent chain.
+  const byId = new Map(events.map(event => [event.id, event]));
+  const replyIds = new Set<string>();
+  for (const event of events) {
+    if (event.event_type !== 'MESSAGE'
+      || !['user', 'human'].includes(String(event.payload.source ?? '').toLowerCase())) continue;
+    const visited = new Set<string>();
+    let parentId = event.payload.parent_id;
+    while (parentId && parentId !== '__root__' && !visited.has(parentId)) {
+      visited.add(parentId);
+      const parent = byId.get(parentId);
+      if (!parent) break;
+      if (parent.event_type === 'MESSAGE') {
+        const source = String(parent.payload.source ?? '').toLowerCase();
+        if (['agent', 'assistant'].includes(source)) {
+          replyIds.add(parent.id);
+          break;
+        }
+        if (['user', 'human'].includes(source)) break;
+      }
+      parentId = parent.payload.parent_id;
+    }
+  }
+  return events.map(event => replyIds.has(event.id) && event.payload.final_reply === false
+    ? { ...event, payload: { ...event.payload, final_reply: true } }
+    : event);
+}
+
 export function isOpenHandsConversationTerminalError(event: OpenHandsConversationEvent): boolean {
   return event.event_type === 'ERROR'
     && String(event.payload.source_type ?? '') === 'ConversationErrorEvent';
