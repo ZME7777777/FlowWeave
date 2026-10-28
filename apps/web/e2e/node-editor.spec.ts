@@ -416,3 +416,31 @@ test('cancel clears a new draft without creating or leaving the editor', async (
   await expect(page.getByRole('textbox', { name: '启动触发提示词', exact: true })).toHaveValue('');
   await expect(cancel).toBeDisabled(); expect(state.writes).toHaveLength(0);
 });
+
+test('field descriptions use bounded single-line inputs while legacy contents survive an unrelated save', async ({ page }) => {
+  const legacyDescription = '原有详细说明'.repeat(30);
+  const configured = { ...node, inputs: [{ field_key: 'source', display_name: '来源', data_type: 'FILE' as const, description: legacyDescription }], outputs: [{ field_key: 'report', display_name: '报告', data_type: 'URL' as const, description: '' }] };
+  const state = await setup(page, [configured]); await openNode(page);
+  await page.screenshot({ path: test.info().outputPath('prompt-surface.png') });
+  await openFields(page);
+  const legacy = page.getByLabel('输入说明 1', { exact: true });
+  const description = page.getByLabel('输出说明 1', { exact: true });
+  expect(await description.evaluate(element => element.tagName)).toBe('INPUT');
+  await expect(description).toHaveAttribute('maxlength', '120');
+  await expect(legacy).toHaveValue(legacyDescription);
+  await expect(legacy).toHaveAttribute('title', legacyDescription);
+  await description.fill('说明'.repeat(60));
+  await description.press('End'); await page.keyboard.insertText('超出限制');
+  await expect(description).toHaveValue('说明'.repeat(60));
+  await page.getByRole('group', { name: '输出类型 1', exact: true }).getByRole('button', { name: '文件', exact: true }).click();
+  await page.screenshot({ path: test.info().outputPath('field-surface.png') });
+  await page.getByRole('button', { name: '保存节点', exact: true }).click();
+  await expectSaved(page);
+  expect(state.writes[0].inputs[0].description).toBe(legacyDescription);
+  expect(state.writes[0].outputs[0]).toMatchObject({ description: '说明'.repeat(60), data_type: 'FILE' });
+  await page.getByRole('tab', { name: '上下文', exact: true }).click();
+  await page.getByRole('textbox', { name: '上下文提示词', exact: true }).fill('更新约束');
+  await page.getByRole('button', { name: '保存节点', exact: true }).click();
+  await expectSaved(page);
+  expect(state.writes[1].inputs[0].description).toBe(legacyDescription);
+});
