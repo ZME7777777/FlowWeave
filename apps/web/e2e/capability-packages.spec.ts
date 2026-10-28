@@ -120,3 +120,38 @@ test('slow file reads cannot replace a later selected file and failed publishing
   await expect(dialog.getByRole('alert')).toContainText('能力包已有新版本');
   await expect(dialog.getByLabel('编辑 config/defaults.yaml')).toHaveValue('changed');
 });
+
+
+test('version Diff layers exact intraline changes over syntax in both modes', async ({ page }) => {
+  await setup(page);
+  await page.route(`**/api/v1/capabilities/${skill.id}/version-comparison`, route => route.fulfill({ json: { previous: metadata(skill, true), current: metadata(skill), files: [{ path: 'scripts/run.py', status: 'modified' }] } }));
+  const before = ["print('old')", 'foo = 10; bar = 20;', '# 发布 1123', '# 中文😀说明旧', '  value\t', 'value = "<script>& old"'];
+  const after = ["print('new')", 'foo = 90; bar = 30;', '# 发布 1123123', '# 中文😁说明新', '    value ', 'value = "<script>& new"'];
+  const patch = '@@ -1,6 +1,6 @@\n' + before.map(line => '-' + line).join('\n') + '\n' + after.map(line => '+' + line).join('\n') + '\n';
+  await page.route(`**/api/v1/capabilities/${skill.id}/file-diff?*`, route => route.fulfill({ json: { path: 'scripts/run.py', diff: patch, preview_unavailable: false } }));
+  await openMenu(page, 'Skill complete-skill');
+  await page.getByRole('menuitem', { name: '版本对比', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: '版本对比 complete-skill' });
+  for (const mode of ['并排', '统一']) {
+    await dialog.getByRole('button', { name: mode, exact: true }).click();
+    const left = dialog.locator('.agent-diff-line.deletion code');
+    const right = dialog.locator('.agent-diff-line.addition code');
+    expect(await left.allTextContents()).toEqual(before);
+    expect(await right.allTextContents()).toEqual(after);
+    await expect(left.nth(0).locator('.hljs-string .agent-diff-inline-change')).toHaveText('old');
+    await expect(right.nth(0).locator('.hljs-string .agent-diff-inline-change')).toHaveText('new');
+    await expect(left.nth(1).locator('.agent-diff-inline-change')).toHaveText(['1', '2']);
+    await expect(right.nth(1).locator('.agent-diff-inline-change')).toHaveText(['9', '3']);
+    await expect(left.nth(2).locator('.agent-diff-inline-change')).toHaveCount(0);
+    await expect(right.nth(2).locator('.agent-diff-inline-change')).toHaveText('123');
+    await expect(left.nth(3).locator('.agent-diff-inline-change')).toHaveText(['😀', '旧']);
+    await expect(right.nth(3).locator('.agent-diff-inline-change')).toHaveText(['😁', '新']);
+    expect(await left.nth(4).locator('.agent-diff-inline-change').allTextContents()).toEqual(['\t']);
+    expect(await right.nth(4).locator('.agent-diff-inline-change').allTextContents()).toEqual(['  ', ' ']);
+    await expect(right.nth(5).locator('script')).toHaveCount(0);
+    await expect(left.nth(0).locator('.agent-diff-inline-change')).toHaveCSS('background-color', 'rgb(243, 180, 180)');
+    await expect(right.nth(0).locator('.agent-diff-inline-change')).toHaveCSS('background-color', 'rgb(169, 223, 185)');
+  }
+  await dialog.getByRole('button', { name: '并排', exact: true }).click();
+  await page.screenshot({ path: '../../.tmp/ops52-inline-diff/intraline-split.png' });
+});

@@ -1,5 +1,5 @@
 import { HighlightedDiffCode, SharedSplitDiff, DiffChangeNavigation } from '../FileDiff';
-import { filePreviewLanguage, highlightedCode, splitDiffRows, diffChangeStartIndexes, gitDiffLines, type GitDiffLine, type SplitDiffRow } from '../fileDiffModel';
+import { filePreviewLanguage, highlightedCode, splitDiffRows, diffChangeStartIndexes, gitDiffLines, type GitDiffLine, type SplitDiffRow, diffInlineRanges } from '../fileDiffModel';
 import { FitAddon } from '@xterm/addon-fit';
 import { Terminal as XTerm } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
@@ -2517,6 +2517,8 @@ function WorkspaceChangesReview({ changes, selectedId, onSelect, onOpenSource, w
   const [mode, setMode] = useState<'unified' | 'split'>('split');
   const diffRootRef = useRef<HTMLElement>(null);
   const selected = changes.find(change => change.id === selectedId) ?? changes[0];
+  const splitLines = useMemo(() => splitDiffRows(selected?.lines ?? []), [selected?.lines]);
+  const inlineRanges = useMemo(() => diffInlineRanges(splitLines), [splitLines]);
   useEffect(() => { if (selected && selected.id !== selectedId) onSelect(selected.id); }, [onSelect, selected, selectedId]);
   const stopDiffOverscroll = (event: ReactWheelEvent<HTMLElement>) => {
     const pane = event.currentTarget;
@@ -2537,13 +2539,12 @@ function WorkspaceChangesReview({ changes, selectedId, onSelect, onOpenSource, w
     }
   };
   if (!selected) return <div className="agent-changes-empty"><b>没有可审查的文件改动</b><span>仅显示 OpenHands 已确认的文件写入操作。</span></div>;
-  const splitLines = splitDiffRows(selected.lines);
   const changeIndexes = diffChangeStartIndexes(selected.lines);
   const renderSplitLine = (entry: SplitDiffRow<WorkspaceFileChange['lines'][number]>['before'], side: 'before' | 'after', rowIndex: number) => {
     if (!entry) return <div key={`${side}:${rowIndex}`} className="agent-diff-line empty" aria-hidden="true"/>;
     const { line, index } = entry;
     const number = side === 'before' ? line.oldLine : line.newLine;
-    return <div className={`agent-diff-line ${line.kind}`} data-diff-change-index={changeIndexes.includes(index) ? index : undefined} key={`${side}:${rowIndex}:${line.oldLine ?? ''}:${line.newLine ?? ''}:${line.text}`} title={`双击打开源文件第 ${sourceLineForDiffLine(selected.lines, index)} 行`} onDoubleClick={() => onOpenSource(selected, sourceLineForDiffLine(selected.lines, index))}><i>{number ?? ''}</i><HighlightedDiffCode path={selected.path} value={line.text || ' '}/></div>;
+    return <div className={`agent-diff-line ${line.kind}`} data-diff-change-index={changeIndexes.includes(index) ? index : undefined} key={`${side}:${rowIndex}:${line.oldLine ?? ''}:${line.newLine ?? ''}:${line.text}`} title={`双击打开源文件第 ${sourceLineForDiffLine(selected.lines, index)} 行`} onDoubleClick={() => onOpenSource(selected, sourceLineForDiffLine(selected.lines, index))}><i>{number ?? ''}</i><HighlightedDiffCode path={selected.path} value={line.text || ' '} ranges={inlineRanges.get(index)}/></div>;
   };
   return <section className="agent-changes-review">
     <ChangedFilesTree
@@ -2559,7 +2560,7 @@ function WorkspaceChangesReview({ changes, selectedId, onSelect, onOpenSource, w
       {selected.contentUnavailable
         ? <div className="agent-changes-empty"><b>未捕获行级差异</b><span>该文件由已成功的终端命令明确指定；为避免猜测，未根据工作区状态补全内容。</span></div>
         : mode === 'unified'
-          ? <pre className="agent-diff-unified" onWheelCapture={stopDiffOverscroll}>{selected.lines.map((line, index) => <div className={`agent-diff-line ${line.kind}`} data-diff-change-index={changeIndexes.includes(index) ? index : undefined} key={`${line.oldLine ?? ''}:${line.newLine ?? ''}:${line.text}`} title={`双击打开源文件第 ${sourceLineForDiffLine(selected.lines, index)} 行`} onDoubleClick={() => onOpenSource(selected, sourceLineForDiffLine(selected.lines, index))}><i>{line.oldLine ?? line.newLine ?? ''}</i><strong>{line.kind === 'addition' ? '+' : line.kind === 'deletion' ? '-' : ' '}</strong><HighlightedDiffCode path={selected.path} value={line.text || ' '}/></div>)}<div className="agent-diff-scroll-end-spacer" aria-hidden="true"/></pre>
+          ? <pre className="agent-diff-unified" onWheelCapture={stopDiffOverscroll}>{selected.lines.map((line, index) => <div className={`agent-diff-line ${line.kind}`} data-diff-change-index={changeIndexes.includes(index) ? index : undefined} key={`${line.oldLine ?? ''}:${line.newLine ?? ''}:${line.text}`} title={`双击打开源文件第 ${sourceLineForDiffLine(selected.lines, index)} 行`} onDoubleClick={() => onOpenSource(selected, sourceLineForDiffLine(selected.lines, index))}><i>{line.oldLine ?? line.newLine ?? ''}</i><strong>{line.kind === 'addition' ? '+' : line.kind === 'deletion' ? '-' : ' '}</strong><HighlightedDiffCode path={selected.path} value={line.text || ' '} ranges={inlineRanges.get(index)}/></div>)}<div className="agent-diff-scroll-end-spacer" aria-hidden="true"/></pre>
           : <SharedSplitDiff resetKey={selected.id} before={splitLines.map((row, index) => renderSplitLine(row.before, 'before', index))} after={splitLines.map((row, index) => renderSplitLine(row.after, 'after', index))}/>
       }
     </article>
@@ -3458,6 +3459,7 @@ function WorkspaceGitFileDiffReview({ details, diff, onOpenSource }: { details: 
   const diffRootRef = useRef<HTMLElement>(null);
   const lines = useMemo(() => gitDiffLines(diff.diff), [diff.diff]);
   const splitLines = useMemo(() => splitDiffRows(lines, (previous, next) => previous.hunk !== next.hunk), [lines]);
+  const inlineRanges = useMemo(() => diffInlineRanges(splitLines), [splitLines]);
   const changeIndexes = diffChangeStartIndexes(lines);
   // Git diff paths are always relative to the repository root, whereas the
   // shared workspace navigator expects a path in the current work-directory
@@ -3483,12 +3485,12 @@ function WorkspaceGitFileDiffReview({ details, diff, onOpenSource }: { details: 
     if (!entry) return <div key={`${side}:${rowIndex}`} className="agent-diff-line empty" aria-hidden="true"/>;
     const { line, index } = entry;
     const number = side === 'before' ? line.oldLine : line.newLine;
-    return <div className={`agent-diff-line ${line.kind}`} data-diff-change-index={changeIndexes.includes(index) ? index : undefined} key={`${side}:${rowIndex}:${line.oldLine ?? ''}:${line.newLine ?? ''}:${line.text}`} title={`双击打开源文件第 ${sourceLineForGitDiffLine(lines, index)} 行`} onDoubleClick={() => onOpenSource(sourcePath, sourceLineForGitDiffLine(lines, index))}><i>{number ?? ''}</i><HighlightedDiffCode path={diff.path} value={line.text || ' '}/></div>;
+    return <div className={`agent-diff-line ${line.kind}`} data-diff-change-index={changeIndexes.includes(index) ? index : undefined} key={`${side}:${rowIndex}:${line.oldLine ?? ''}:${line.newLine ?? ''}:${line.text}`} title={`双击打开源文件第 ${sourceLineForGitDiffLine(lines, index)} 行`} onDoubleClick={() => onOpenSource(sourcePath, sourceLineForGitDiffLine(lines, index))}><i>{number ?? ''}</i><HighlightedDiffCode path={diff.path} value={line.text || ' '} ranges={inlineRanges.get(index)}/></div>;
   };
   return <section ref={diffRootRef} className="agent-git-file-diff-review">
     <header><div><b title={diff.path}>{diff.path}</b><small><code>{details.commit.short_id}</code><span title={details.commit.subject}>{details.commit.subject || '（无提交说明）'}</span>{diff.truncated && <em>已截断</em>}</small></div><div className="agent-changes-diff-actions"><DiffChangeNavigation rootRef={diffRootRef} resetKey={`${details.commit.id}:${diff.path}`} changeIndexes={changeIndexes}/><button type="button" className="agent-open-source-file" onClick={() => onOpenSource(sourcePath, sourceLineForGitDiffLine(lines, lines.findIndex(line => line.kind !== 'deletion')))}><FileCode2 size={12}/>查看源文件</button>{lines.length > 0 && <div className="agent-diff-mode"><button type="button" className={mode === 'unified' ? 'active' : ''} onClick={() => setMode('unified')}>统一</button><button type="button" className={mode === 'split' ? 'active' : ''} onClick={() => setMode('split')}>并排</button></div>}</div></header>
     {!lines.length ? <p className="agent-git-file-diff-empty">{diff.diff ? '该文件没有可展示的文本行级 Diff。' : '该文件没有可显示的文本 Diff。'}</p> : mode === 'unified'
-      ? <pre className="agent-diff-unified" onWheelCapture={stopDiffOverscroll}>{lines.map((line, index) => <div className={`agent-diff-line ${line.kind}`} data-diff-change-index={changeIndexes.includes(index) ? index : undefined} key={`${line.oldLine ?? ''}:${line.newLine ?? ''}:${line.text}`} title={`双击打开源文件第 ${sourceLineForGitDiffLine(lines, index)} 行`} onDoubleClick={() => onOpenSource(sourcePath, sourceLineForGitDiffLine(lines, index))}><i>{line.oldLine ?? line.newLine ?? ''}</i><strong>{line.kind === 'addition' ? '+' : line.kind === 'deletion' ? '-' : ' '}</strong><HighlightedDiffCode path={diff.path} value={line.text || ' '}/></div>)}<div className="agent-diff-scroll-end-spacer" aria-hidden="true"/></pre>
+      ? <pre className="agent-diff-unified" onWheelCapture={stopDiffOverscroll}>{lines.map((line, index) => <div className={`agent-diff-line ${line.kind}`} data-diff-change-index={changeIndexes.includes(index) ? index : undefined} key={`${line.oldLine ?? ''}:${line.newLine ?? ''}:${line.text}`} title={`双击打开源文件第 ${sourceLineForGitDiffLine(lines, index)} 行`} onDoubleClick={() => onOpenSource(sourcePath, sourceLineForGitDiffLine(lines, index))}><i>{line.oldLine ?? line.newLine ?? ''}</i><strong>{line.kind === 'addition' ? '+' : line.kind === 'deletion' ? '-' : ' '}</strong><HighlightedDiffCode path={diff.path} value={line.text || ' '} ranges={inlineRanges.get(index)}/></div>)}<div className="agent-diff-scroll-end-spacer" aria-hidden="true"/></pre>
       : <SharedSplitDiff resetKey={diff.path} before={splitLines.map((row, index) => renderSplitLine(row.before, 'before', index))} after={splitLines.map((row, index) => renderSplitLine(row.after, 'after', index))}/>
     }
   </section>;

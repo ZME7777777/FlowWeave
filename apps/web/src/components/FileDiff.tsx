@@ -1,4 +1,4 @@
-import { filePreviewLanguage, highlightedCode, splitDiffRows, diffChangeStartIndexes, gitDiffLines, type GitDiffLine, type SplitDiffRow } from './fileDiffModel';
+import { filePreviewLanguage, highlightedCode, splitDiffRows, diffChangeStartIndexes, gitDiffLines, type GitDiffLine, type SplitDiffRow, diffInlineRanges, type DiffTextRange } from './fileDiffModel';
 import { ArrowDown, ArrowUp } from 'lucide-react';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type WheelEvent as ReactWheelEvent } from 'react';
 import '../pages/agent-workbench.css';
@@ -9,8 +9,42 @@ import '../pages/agent-workbench.css';
  * a workspace source preview.  Keep the path at the call site: a Git Diff is
  * repository-relative, while a review Diff is workspace-relative.
  */
-export function HighlightedDiffCode({ path, value }: { path: string; value: string }) {
-  return <code dangerouslySetInnerHTML={{ __html: highlightedCode(value, filePreviewLanguage(path)) }}/>;
+export function HighlightedDiffCode({ path, value, ranges }: { path: string; value: string; ranges?: DiffTextRange[] }) {
+  const html = useMemo(() => {
+    const syntax = highlightedCode(value, filePreviewLanguage(path));
+    if (!ranges?.length) return syntax;
+    // Walk decoded text nodes rather than slicing syntax HTML: entities and
+    // nested highlight.js tokens must keep their original text and structure.
+    const template = document.createElement('template');
+    template.innerHTML = syntax;
+    const walker = document.createTreeWalker(template.content, NodeFilter.SHOW_TEXT);
+    const nodes: Text[] = [];
+    while (walker.nextNode()) nodes.push(walker.currentNode as Text);
+    let offset = 0;
+    let rangeIndex = 0;
+    for (const node of nodes) {
+      const text = node.data;
+      const end = offset + text.length;
+      const fragment = document.createDocumentFragment();
+      let position = 0;
+      while (rangeIndex < ranges.length && ranges[rangeIndex].end <= offset) rangeIndex += 1;
+      for (let index = rangeIndex; index < ranges.length && ranges[index].start < end; index += 1) {
+        const start = Math.max(0, ranges[index].start - offset);
+        const stop = Math.min(text.length, ranges[index].end - offset);
+        fragment.append(text.slice(position, start));
+        const mark = document.createElement('span');
+        mark.className = 'agent-diff-inline-change';
+        mark.textContent = text.slice(start, stop);
+        fragment.append(mark);
+        position = stop;
+      }
+      fragment.append(text.slice(position));
+      node.replaceWith(fragment);
+      offset = end;
+    }
+    return template.innerHTML;
+  }, [path, value, ranges]);
+  return <code dangerouslySetInnerHTML={{ __html: html }}/>;
 }
 
 
@@ -114,16 +148,17 @@ export function FileDiff({ path, patch, unavailable = false }: { path: string; p
   const rootRef = useRef<HTMLElement>(null);
   const lines = useMemo(() => gitDiffLines(patch), [patch]);
   const rows = useMemo(() => splitDiffRows(lines, (previous, next) => previous.hunk !== next.hunk), [lines]);
+  const inlineRanges = useMemo(() => diffInlineRanges(rows), [rows]);
   const changes = diffChangeStartIndexes(lines);
   const resetKey = `${path}:${patch}`;
   const render = (entry: SplitDiffRow<GitDiffLine>['before'], side: 'before' | 'after', index: number) => {
     if (!entry) return <div key={index} className="agent-diff-line empty" aria-hidden="true"/>;
-    return <div key={index} className={`agent-diff-line ${entry.line.kind}`} data-diff-change-index={changes.includes(entry.index) ? entry.index : undefined}><i>{(side === 'before' ? entry.line.oldLine : entry.line.newLine) ?? ''}</i><HighlightedDiffCode path={path} value={entry.line.text || ' '}/></div>;
+    return <div key={index} className={`agent-diff-line ${entry.line.kind}`} data-diff-change-index={changes.includes(entry.index) ? entry.index : undefined}><i>{(side === 'before' ? entry.line.oldLine : entry.line.newLine) ?? ''}</i><HighlightedDiffCode path={path} value={entry.line.text || ' '} ranges={inlineRanges.get(entry.index)}/></div>;
   };
   return <section className="agent-git-file-diff-review capability-file-diff" ref={rootRef}>
     <header><span>上一版本 → 当前版本</span><div className="agent-changes-diff-actions"><DiffChangeNavigation rootRef={rootRef} resetKey={resetKey} changeIndexes={changes}/><div className="agent-diff-mode"><button type="button" className={mode === 'unified' ? 'active' : ''} onClick={() => setMode('unified')}>统一</button><button type="button" className={mode === 'split' ? 'active' : ''} onClick={() => setMode('split')}>并排</button></div></div></header>
     {unavailable ? <div className="capability-package-empty">二进制或大文件不支持行级对比，可下载两版查看。</div> : !lines.length ? <div className="capability-package-empty">文件内容相同</div> : mode === 'unified'
-      ? <pre className="agent-diff-unified" key={resetKey}>{lines.map((line, index) => <div key={index} className={`agent-diff-line ${line.kind}`} data-diff-change-index={changes.includes(index) ? index : undefined}><i>{line.oldLine ?? line.newLine ?? ''}</i><strong>{line.kind === 'addition' ? '+' : line.kind === 'deletion' ? '-' : ' '}</strong><HighlightedDiffCode path={path} value={line.text || ' '}/></div>)}<div className="agent-diff-scroll-end-spacer" aria-hidden="true"/></pre>
+      ? <pre className="agent-diff-unified" key={resetKey}>{lines.map((line, index) => <div key={index} className={`agent-diff-line ${line.kind}`} data-diff-change-index={changes.includes(index) ? index : undefined}><i>{line.oldLine ?? line.newLine ?? ''}</i><strong>{line.kind === 'addition' ? '+' : line.kind === 'deletion' ? '-' : ' '}</strong><HighlightedDiffCode path={path} value={line.text || ' '} ranges={inlineRanges.get(index)}/></div>)}<div className="agent-diff-scroll-end-spacer" aria-hidden="true"/></pre>
       : <SharedSplitDiff resetKey={resetKey} before={rows.map((row, index) => render(row.before, 'before', index))} after={rows.map((row, index) => render(row.after, 'after', index))}/>}
   </section>;
 }

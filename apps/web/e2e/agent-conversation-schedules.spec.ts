@@ -2885,16 +2885,20 @@ test('launcher opens Git history without closing the workspace tools', async ({ 
     repository, commit: { id: 'abcdef123456', short_id: 'abcdef', author: 'FlowWeave', date: now, subject: 'Initial commit' }, files: [{ path: 'scripts/run.py', status: 'M' }],
   }));
   await page.route('**/api/v1/agent-workspaces/schedule-workspace/workspace/git/diff?**', route => json(route, {
-    path: 'scripts/run.py', diff: "@@ -1 +1 @@\n-print('before')\n+print('after')\n", truncated: false,
+    path: 'scripts/run.py', diff: "@@ -1 +1 @@\n-print('old')\n+print('new')\n", truncated: false,
   }));
   await page.locator('.agent-git-log button').filter({ hasText: 'Initial commit' }).click();
   await page.getByRole('tree', { name: '提交文件树' }).getByRole('button', { name: 'run.py M' }).click();
   const diff = page.locator('.agent-git-file-diff-review');
-  await expect(diff.locator('.agent-diff-split .addition')).toContainText("print('after')");
-  await expect(diff.locator('.agent-diff-split .deletion')).toContainText("print('before')");
+  await expect(diff.locator('.agent-diff-split .addition')).toContainText("print('new')");
+  await expect(diff.locator('.agent-diff-split .deletion')).toContainText("print('old')");
+  await expect(diff.locator('.addition .hljs-string .agent-diff-inline-change')).toHaveText('new');
+  await expect(diff.locator('.deletion .hljs-string .agent-diff-inline-change')).toHaveText('old');
   await expect(diff.locator('.agent-diff-split-viewport>.agent-diff-scroll-end-spacer')).toHaveCount(1);
   await diff.getByRole('button', { name: '统一', exact: true }).click();
-  await expect(diff.locator('.agent-diff-unified .addition')).toContainText("print('after')");
+  await expect(diff.locator('.agent-diff-unified .addition')).toContainText("print('new')");
+  await expect(diff.locator('.agent-diff-unified .addition .agent-diff-inline-change')).toHaveText('new');
+  await expect(diff.locator('.agent-diff-unified .deletion .agent-diff-inline-change')).toHaveText('old');
   await expect(diff.locator('.agent-diff-unified>.agent-diff-scroll-end-spacer')).toHaveCount(1);
   await diff.getByRole('button', { name: '下一处改动' }).click();
 });
@@ -4633,4 +4637,23 @@ test('session configuration keeps compact two-line rows and leading square selec
   await dialog.getByRole('button', { name: '全选认证', exact: true }).click();
   await expect(credential).toHaveAttribute('aria-pressed', 'true');
   await dialog.screenshot({ path: '../../.tmp/ops47-credentials.png' });
+});
+
+test('workspace file review shares exact intraline highlighting in unified and split modes', async ({ page }) => {
+  await openWorkspace(page, [
+    { id: 'diff-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '更新配置', timestamp: now } },
+    { id: 'diff-action', event_type: 'TOOL_CALL', payload: { parent_id: 'diff-user', action_id: 'diff-action', tool_call_id: 'diff-call', tool_name: 'file_editor', event_name: 'FileEditorAction', details: { command: 'str_replace', path: '/runtime/workspace/project/config.ts', old_str: 'const mode = "old"', new_str: 'const mode = "new"' }, timestamp: now } },
+    { id: 'diff-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'diff-action', action_id: 'diff-action', tool_call_id: 'diff-call', tool_name: 'file_editor', event_name: 'FileEditorObservation', content: 'The file was edited successfully.', details: { command: 'str_replace', path: '/runtime/workspace/project/config.ts', is_error: false }, timestamp: now } },
+    { id: 'diff-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'diff-result', content: '配置已更新。', final_reply: true, timestamp: now } },
+  ]);
+  await page.goto('/agent/conversations/scheduled-conversation');
+  await page.getByRole('button', { name: '已编辑 1 个文件' }).click();
+  const diff = page.locator('.agent-changes-review');
+  for (const mode of ['统一', '并排']) {
+    await diff.getByRole('button', { name: mode, exact: true }).click();
+    await expect(diff.locator('.addition .hljs-string .agent-diff-inline-change')).toHaveText('new');
+    await expect(diff.locator('.deletion .hljs-string .agent-diff-inline-change')).toHaveText('old');
+    await expect(diff.locator('.addition code')).toHaveText('const mode = "new"');
+    await expect(diff.locator('.deletion code')).toHaveText('const mode = "old"');
+  }
 });
