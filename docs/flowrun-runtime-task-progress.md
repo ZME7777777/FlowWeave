@@ -13574,3 +13574,30 @@ AGENT_MODEL_CONFIGURATION_REQUIRED 拒绝；在改动前 8d095029 的隔离源�
 0178_merge_schedule_credentials。浏览器使用受控 API，不声称生产业务写入或
 真实模型验收。沿用会话授权发布 platform／web，正式结果后补；当前及下一
 可执行重构切片均为 NONE。
+
+
+OPS-41 正式发布补记（2026-10-28）：实际部署代码为
+`851bbb3fcbae0238506b20d0b3be9f6ccb2c9623`。platform／web 正式预检与
+commit-bound 最小上下文 prepare 通过，源归档 SHA-256 分别为
+`2a5eb494139eb4fe8d0106da5a2dd5f56f85815890493e87e662797aaef13695`、
+`94351cdf69a30339ca69872cbe2af57cb6ddf3f31c3c7af700c6f4e89133256c`。
+实际 linux/amd64 platform／web image ID 分别为
+`sha256:d0c510fead91176ca0ba9cf87a8eb7412b0d8771d0c71bb9148d0d1a96bb98fe`、
+`sha256:f1acc8462ae159b5b37845a40cc51f57f2b3ce3de550ceaa24f559cc1c27c885`，
+OCI revision 均一致。保留原日志和回滚镜像后，从同一版本同步 recreate api、
+stream-api、worker、web；四服务健康与版本通过，迁移成功且唯一数据库 head
+保持 `0178_merge_schedule_credentials`。服务器配置摘要、其他 43 个容器的
+image／StartedAt 保持，未变更 Runtime／Provider 或服务器配置。
+
+已登录只读 API 核对现有 3 个节点及完整目录摘要与发布前完全一致，正式服务内
+包含元数据不可变校验；没有执行生产节点编辑、上传、删除或模型调用。公网 HTML、
+入口资源与 NodesPage JS／CSS 摘要匹配实际运行镜像，新页头、取消控件及样式已
+进入发布模块。Chromium 验证登录、Agent／记录深层和根路由、匿名 401 边界及
+全新浏览器前缀 API 请求通过，根 `/api/v1` 请求为零。编辑、取消与保存行为由
+本地受控 API 的 22 项回归验证，不冒称生产已登录编辑验收。
+
+platform／web remote-release-finish 均通过，无过期受管上下文，精确回收两个
+可回收历史 image ID 的 tags；保留当前版本、每仓库一个不同回滚版本及所有
+容器引用，未清理共享 BuildKit、卷、Workspace 或数据库备份。收尾后四服务
+健康、版本、数据库 head、配置和其他 43 个容器再验通过。本补记不改变实际
+部署身份，本地提交未推送；当前及下一可执行重构切片均为 NONE。
