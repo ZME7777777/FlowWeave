@@ -13010,3 +13010,24 @@ Web typecheck、受影响 ESLint、git diff --check 通过。11 项 Chromium 定
 通过；截图人工检查通过。使用受控 API，无真实模型或业务写入。Alembic 唯一
 head 保持 0178_merge_schedule_credentials，无 CURRENT、无后端改动。沿用当前
 会话授权仅发布 Web，正式结果后补；当前与下一可执行重构切片均为 NONE。
+
+
+OPS-28 正式发布补记（2026-10-28）：实际部署代码为
+`2329f7ce4846e6f3079751e1ca4dd673971b9c72`。Web 正式预检与 commit-bound
+最小上下文 prepare 通过，源归档 SHA-256 为
+`9c0419a047fc7a26cfe0b10784aeef11b69d436cd57d7b1041270c40fb89f690`，
+实际 linux/amd64 Web image ID 为
+`sha256:639cac0b9d03ef5074e37496d8c3923a7ab93297969cb71a15bbaa6f7b30366c`，
+OCI revision 一致。保留旧日志及回滚镜像后只 recreate Web，健康、版本与
+配置摘要通过，其他 47 个容器的 image／StartedAt 保持。没有数据库迁移、
+业务写入、模型调用、平台／Provider 重启或 Runtime replacement。
+
+公网 HTML、入口 JS／CSS 和 WorkbenchPage 模块摘要与运行镜像一致；新增
+运行记录深层地址、Agent 路由、前缀／根登录经 Chromium 验证通过，匿名 API
+401 边界和全新浏览器的部署前缀请求通过，根 API 请求为零。记录切换、刷新、
+旧标签恢复及节点会话返回使用本地受控 API 验收，不冒称生产已登录完整操作。
+Web remote-release-finish 通过健康、版本与容量门禁，无过期受管上下文；精确
+回收一个历史 image ID 的 tags，保留当前镜像、一个不同版本回滚及全部容器
+引用。未清理共享 BuildKit、卷、Workspace 或数据库备份。收尾后健康、版本、
+配置及其他 47 个容器再次核对通过。本补记不改变部署应用身份，本地提交未
+推送；当前与下一可执行重构切片均为 NONE。
