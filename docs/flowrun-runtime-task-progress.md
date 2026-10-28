@@ -14160,3 +14160,29 @@ Alembic 仍唯一 0180_merge_archives_case_rounds head。原 Hook 的规范化�
 的“Agent 会话”导航按钮超时，不作为 Diff 验收；实际 Diff 已由增强后的
 agent-conversation-schedules 定向用例验证。实现提交时尚未部署，发布验收后补记。
 本片无后续开发任务，不推进 Case 切片。
+
+OPS-50 发布验收补记（2026-10-28）：实现提交 ef149e67；先拉取并无冲突合并
+远端会话归档修复 801d9c9e，实际固定发布为
+ e96c8614368999473bb7844dd28129b321607d7f。合并后 Web typecheck、4 项包文件
+交互与增强后的既有 Git Diff 用例共 5 项再次通过。已完成 platform／web 正式
+预检、commit-bound 最小上下文构建、linux/amd64 和 OCI revision 核验、回滚
+镜像与原日志保留；migration 成功且唯一 head 仍为
+0180_merge_archives_case_rounds，同步切换 api、stream-api、worker 与 web。
+
+运行 Platform image ID：
+sha256:bbaecde4efa645cbe089f04f34ebafe7c469d66130d8a01785b53972bbaf7228；
+Web image ID：
+sha256:5917196388e5e9c5adbe6bd4397f68849abf062e6bf05ac47031d987e1865782。
+三个平台服务的能力包读取／发布／路由／schema 四项源码摘要均与固定上下文
+一致；四服务健康、实际 image 与 revision 通过。公网 HTML、入口静态资源及
+包文件工作台 JS／CSS 摘要匹配运行镜像，API 匿名边界通过。首轮资源探针错误
+假定 API 客户端字段与包工作台位于同一个 JS chunk，修正为工作台自身标记后
+通过，未修改发布代码。服务器侧 Chromium 的前缀登录、Agent／记录深层和根
+登录页通过；全新浏览器 API 全部携带部署前缀，根 API 请求为 0。生产验收未
+写入能力版本或会话；编辑／发布／回滚交互以受控浏览器及独立测试数据库验证。
+
+platform／web remote-release-finish 均通过；按受管策略保留最近 24 小时上下文、
+实际引用和每仓库一个回滚镜像，不扩大清理范围。服务器配置及其他 43 个容器
+的 image／StartedAt 保持，Runtime／SDK／既有会话 generation 未替换。未 push，
+当前无 CURRENT，本片无后续开发任务。
+收尾后再次核对四服务版本、健康、唯一 head、配置与其余容器保护项，均通过。
