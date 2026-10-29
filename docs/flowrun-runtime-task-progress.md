@@ -15159,3 +15159,31 @@ Runtime、OpenHands或服务器配置改动；不含并行CASE实现，未清理
 未为诊断续期或发消息，线上原引用成功发送不能以本地回归代替。
 
 沿用当前会话直接部署授权，发布验收待补记，无后续实现切片。
+
+#### OPS-71 Web／Platform 发布验收
+
+2026-10-29正式Platform／Web预检及受管最小上下文准备通过，发布
+`a5ebc3eb10dde1cc619e9dbe9a615a3a236fb8fc`。Platform源归档SHA-256为
+`ba091868188fffc840a687ffd11beaebd1aba2959e36844f1e175d7dff233d9d`，
+Web源归档SHA-256为
+`36b4a0d8a0a12d036a9f394fb7b6996d941e5f10a68b0ae0e803b3985c670b39`。
+linux/amd64 Platform镜像ID为
+`sha256:734fa1196f03fc6e74477a50cf179c73ecf8bdc13598e69e7f5058d666b4c985`，
+Web镜像ID为
+`sha256:ce526a49bfac7e7af9e2308075c795567f3c46aa42a1c804b0f688308b4075a1`。
+
+保留旧镜像回滚tag和诊断日志，正式migration入口退出0，数据库保持
+0184_cascade_directory_archives。同步recreate api、stream-api、worker和web，
+四项revision、健康／readiness与Web入口通过；服务器配置哈希及其他43个保护
+容器的镜像和启动时间不变，Runtime Provider与会话运行容器未重建。
+
+公网HTML／Agent深层路由、两项入口资源和五项匹配图表错误隔离／独立key／
+错误样式的模块资源与运行镜像一致。全新Chromium核验平台登录、深层路由、
+根登录页通过；Network仅使用部署前缀API，根路径API请求为0，两项鉴权边界
+为401。运行API镜像内源码SHA-256与本地已提交修复文件一致。认证后引用发送
+拒绝、草稿／空态与错误图交互以本地受控回归验收，未对线上会话发送消息、
+删除记录或续期历史授权；首条发送的原始失败仍不能从旧日志还原。
+
+Platform及Web的remote-release-finish通过，精确回收1个过期受管上下文；保留
+近24小时上下文、实际引用和每仓库一个回滚镜像。收尾后四项版本、健康、
+数据库head、配置哈希及43个保护容器再次核验通过。未push，无后续实现切片。
