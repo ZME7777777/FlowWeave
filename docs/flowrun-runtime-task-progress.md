@@ -15224,3 +15224,27 @@ Web typecheck、受影响源码／测试ESLint、production build、git diff及�
 唯一性核对通过。唯一Alembic head仍为0184_cascade_directory_archives，
 无CURRENT。本片仅Web及依赖，不含API、迁移、Runtime或并行CASE实现。
 沿用本会话直接部署授权，发布验收待补记，无后续实现切片。
+
+
+#### OPS-72 Web 发布验收
+
+2026-10-29正式Web预检及受管最小上下文准备通过，发布
+`e44ddf7808801808c077bb77e36ae899f3aa1a76`。源归档SHA-256为
+`15c036b6806d6a3c6591d43629108065a69e58533189fc18dc00d0b8ee7ac791`，
+linux/amd64镜像ID为
+`sha256:b9ddc9f9f82e749b75eecd74369e35de93070da3789cf9241a2dbbdb53a29f0d`。
+保留旧Web回滚镜像与日志，仅定向recreate Web，revision、健康及HTTP入口
+通过；服务器配置哈希及其余46个保护容器的镜像和启动时间不变。
+
+公网HTML／Agent深层路由与运行镜像一致，两项入口资源及三项匹配标签保留／
+预览样式的模块资源SHA-256一致。全新Chromium核验平台登录、深层路由及根
+登录页通过；Network仅使用部署前缀API，根路径API请求为0，两项鉴权边界
+为401。首次浏览器命令已输出登录DOM但进程未退出而超时，保留诊断后改为
+有界读取渲染结果并显式回收本次临时浏览器；三项页面检查完成，残留临时
+浏览器容器为0。认证后节点预览、草稿及标签交互以本地60项受控浏览器回归
+验收，未对线上节点、能力或会话执行写入。
+
+remote-release-finish通过，精确回收7个过期受管上下文；保留最近24小时上下文、
+所有实际路径引用及每仓库一个回滚镜像。收尾后revision、健康、服务器配置
+和46个保护容器再次核验通过。无API、迁移或Runtime发布，未push，
+无后续实现切片。
