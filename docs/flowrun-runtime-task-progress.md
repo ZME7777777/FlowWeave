@@ -15423,3 +15423,25 @@ version，直接切到工具能力页显示检测进度、结果、检测时间�
 production build、git diff与任务状态唯一性核对通过；Alembic唯一head仍为
 0184_cascade_directory_archives。仅Web变更，无迁移、Platform、SDK、Runtime
 或服务器配置改动，沿用当前会话直接部署授权，发布验收待补记，无后续实现切片。
+
+
+#### OPS-75 Web 发布验收
+
+2026-10-29正式Web预检与受管最小上下文准备通过，发布
+`47a396aa9009d47916e2907169825c2f3964b041`，源归档SHA-256为
+`690b2d64e409a3becf390434c891524b71958077cc341c38eb31f51583161085`。
+linux/amd64 Web镜像ID为
+`sha256:6c72106e8e66e2ec2ce9a24fa12d0c292dfee62312331eb04493f98af67f1c83`。
+保留旧Web回滚镜像和服务日志，仅定向recreate Web，revision与HTTP健康通过；
+服务器配置哈希及其余47个容器的镜像和启动时间保持。无Platform、迁移、
+SDK或Runtime更新，数据库仍为0184_cascade_directory_archives。
+
+公网HTML／Agent深层路由、两项入口资源及三个包含详情测试、内置删除保护
+文案与按钮样式的模块资源SHA-256与运行镜像一致；两项API鉴权边界为401。
+全新Chromium的平台登录、深层路由和根登录页通过，3978条完整网络事件中
+部署前缀API请求通过，根路径API请求为0，临时浏览器均回收。详情测试及
+内置选择交互由本地23项受控Chromium回归验收，未修改或删除线上能力记录。
+
+Web remote-release-finish通过，无过期受管上下文候选；保留最近24小时上下文、
+实际路径引用及每仓库一个回滚镜像。收尾后Web版本／健康、数据库head、配置
+及47个保护容器再次核验通过。未push，无后续实现切片。
