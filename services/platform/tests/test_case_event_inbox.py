@@ -250,14 +250,14 @@ def test_formal_output_and_acceptance_remain_distinct_facts(event_case):
 
 def test_inbox_failure_rolls_back_source_and_artifact(event_case, monkeypatch):
     g = event_case
-    original = g.db.execute
+    original = g.db.scalar
 
     def fail(statement, *args, **kwargs):
         if getattr(getattr(statement, "table", None), "name", None) == "case_execution_events":
             raise RuntimeError("inbox write failed")
         return original(statement, *args, **kwargs)
 
-    monkeypatch.setattr(g.db, "execute", fail)
+    monkeypatch.setattr(g.db, "scalar", fail)
     with pytest.raises(RuntimeError, match="inbox write failed"):
         orchestration._register_artifact(
             g.db,
@@ -270,7 +270,7 @@ def test_inbox_failure_rolls_back_source_and_artifact(event_case, monkeypatch):
             attempt_id=g.attempt.id,
         )
     g.db.rollback()
-    monkeypatch.setattr(g.db, "execute", original)
+    monkeypatch.setattr(g.db, "scalar", original)
     assert inbox(g) == []
     assert g.db.scalar(select(func.count()).select_from(RunEvent)) == 0
     assert g.db.scalar(select(func.count()).select_from(ArtifactVersion)) == 0

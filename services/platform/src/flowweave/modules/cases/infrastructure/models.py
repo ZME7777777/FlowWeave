@@ -301,6 +301,37 @@ class CaseExecutionEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
+class CaseFeedbackDelivery(Base):
+    """Delivery audit references, never a copy of native messages or history."""
+
+    __tablename__ = "case_feedback_deliveries"
+    __table_args__ = (
+        UniqueConstraint("case_id", "source_key", name="uq_case_feedback_source"),
+        UniqueConstraint("execution_event_id", name="uq_case_feedback_execution_event"),
+        CheckConstraint(
+            "state IN ('PENDING', 'SUBMITTING', 'ACKNOWLEDGED', 'DELIVERED', "
+            "'AMBIGUOUS', 'AUDIT_ONLY', 'FAILED')",
+            name="ck_case_feedback_state",
+        ),
+        Index("ix_case_feedback_queue", "round_id", "state", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    case_id: Mapped[str] = mapped_column(String(36), index=True)
+    round_id: Mapped[str] = mapped_column(String(36))
+    binding_id: Mapped[str] = mapped_column(String(36))
+    source_key: Mapped[str] = mapped_column(String(140))
+    source_kind: Mapped[str] = mapped_column(String(40))
+    execution_event_id: Mapped[str | None] = mapped_column(String(36))
+    case_row_version: Mapped[int] = mapped_column(Integer)
+    batch_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    state: Mapped[str] = mapped_column(String(20), default="PENDING")
+    message_event_id: Mapped[str | None] = mapped_column(String(200))
+    error_code: Mapped[str | None] = mapped_column(String(100))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class CaseControlPlan(Base):
     __tablename__ = "case_control_plans"
     __table_args__ = (
@@ -338,6 +369,7 @@ class CaseControlPlan(Base):
 
 
 __all__ = (
+    "CaseFeedbackDelivery",
     "Case",
     "CaseAgentTask",
     "CaseControlPlan",

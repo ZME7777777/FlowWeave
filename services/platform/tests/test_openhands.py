@@ -7387,7 +7387,8 @@ def test_credential_metadata_sync_requires_native_dynamic_context(
 
     monkeypatch.setattr(runtime, "_request", request)
     handle = RuntimeHandle(
-        job_id="agent-workspace:test", conversation_id="native",
+        job_id="agent-workspace:test",
+        conversation_id="native",
         runtime_resource_name="test-runtime",
     )
     if supported:
@@ -7414,3 +7415,113 @@ def test_credential_metadata_sync_requires_native_dynamic_context(
             )
         assert raised.value.code == "AGENT_CREDENTIAL_CONTEXT_UNSUPPORTED"
         assert len(calls) == 1
+
+
+def test_case_append_uses_formal_run_false_and_exact_user_identity(
+    openhands_settings,
+    monkeypatch,
+    formal_user_event_windows,
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    calls = []
+
+    def request(method, path, **kwargs):
+        calls.append((method, path, kwargs))
+        return {"id": "case-user-event"}
+
+    monkeypatch.setattr(runtime, "_request", request)
+    result = runtime.append_message(_handle("previous"), "case facts")
+    assert result.status == "IDLE" and result.cursor == "case-user-event"
+    assert calls[0][2]["json"]["run"] is False
+    assert calls[0][2]["timeout"] == 30
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    "status,leaf,expected_posts,expected_status",
+    [
+        ("idle", "case-user", 1, "RUNNING"),
+        ("running", "case-tool", 0, "RUNNING"),
+        ("finished", "case-answer", 0, "COMPLETED"),
+        ("paused", "case-user", 0, "WAITING"),
+        ("paused", "case-tool", 0, "WAITING"),
+        ("waiting_for_confirmation", "case-tool", 0, "WAITING"),
+        ("idle", "case-tool", 0, "WAITING"),
+    ],
+)
+def test_case_run_acknowledged_message_uses_formal_ancestry_and_preserves_pauses(
+    openhands_settings,
+    monkeypatch,
+    status,
+    leaf,
+    expected_posts,
+    expected_status,
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    monkeypatch.setattr(
+        runtime,
+        "_conversation_state",
+        lambda _, **kwargs: {
+            "execution_status": status,
+            "leaf_event_id": leaf,
+        },
+    )
+    calls = []
+
+    def request(method, path, **kwargs):
+        calls.append((method, path))
+        event_id = path.rsplit("/", 1)[-1]
+        if method == "POST":
+            return {"success": True}
+        return {
+            "id": event_id,
+            "parent_id": "case-user" if event_id != "case-user" else None,
+            "kind": "MessageEvent" if event_id == "case-user" else "OtherEvent",
+            "source": "user" if event_id == "case-user" else "agent",
+        }
+
+    monkeypatch.setattr(runtime, "_request", request)
+    result = runtime.run_pending_message(_handle("unused"), "case-user")
+    assert result.status == expected_status and result.cursor == "case-user"
+    assert len([c for c in calls if c[0] == "POST"]) == expected_posts
+    assert all(not path.endswith("/events") for _, path in calls)
+
+
+def test_case_run_rejects_other_branch_without_text_or_order_matching(
+    openhands_settings,
+    monkeypatch,
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    monkeypatch.setattr(
+        runtime,
+        "_conversation_state",
+        lambda _, **kwargs: {
+            "execution_status": "idle",
+            "leaf_event_id": "different-user",
+        },
+    )
+    calls = []
+
+    def request(method, path, **kwargs):
+        calls.append(method)
+        return {"id": "different-user", "parent_id": None, "source": "user", "kind": "MessageEvent"}
+
+    monkeypatch.setattr(runtime, "_request", request)
+    with pytest.raises(DomainError, match="bounded current native branch"):
+        runtime.run_pending_message(_handle("unused"), "case-user")
+    assert calls == ["GET"]
+
+
+def test_case_append_preflight_failure_is_known_not_submitted(openhands_settings, monkeypatch):
+    runtime = OpenHandsRuntime(openhands_settings)
+    calls = []
+
+    def unavailable(method, path, **kwargs):
+        calls.append(method)
+        raise DomainError("READ_TIMEOUT", "read failed", 504, {"outcome_unknown": True})
+
+    monkeypatch.setattr(runtime, "_request", unavailable)
+    with pytest.raises(DomainError) as failure:
+        runtime.append_message(_handle("unused"), "facts")
+    assert failure.value.details == {"native_append_started": False}
+    assert calls == ["GET"]

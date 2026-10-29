@@ -889,6 +889,11 @@ class CasePathWrite(ApiModel):
     cards: list[CasePathCardWrite] = Field(max_length=50)
 
 
+class CaseCoordinationStateWrite(ApiModel):
+    expected_row_version: int = Field(ge=1)
+    state: Literal["ACTIVE", "PAUSED"]
+
+
 class CaseStageStateWrite(ApiModel):
     expected_case_row_version: int = Field(ge=1)
     state: Literal["PENDING", "ACTIVE", "COMPLETED", "SKIPPED"]

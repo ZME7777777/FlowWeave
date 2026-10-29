@@ -14,6 +14,7 @@ from flowweave.shared.schemas import (
     CaseControlConversationWrite,
     CaseControlPlanWrite,
     CaseControlSuggestionWrite,
+    CaseCoordinationStateWrite,
     CaseCreateWrite,
     CaseDecisionProposalWrite,
     CaseFlowRunWrite,
@@ -64,6 +65,21 @@ async def create_case(payload: CaseCreateWrite, db: Db) -> dict[str, Any]:
 @router.put("/cases/{case_id}")
 async def update_case(case_id: str, payload: CaseUpdateWrite, db: Db) -> dict[str, Any]:
     return await run_sync(db, lambda session: service.update_case(session, case_id, payload))
+
+
+@router.put("/cases/{case_id}/coordination-state")
+async def coordination_state(
+    case_id: str, payload: CaseCoordinationStateWrite, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: service.set_case_coordination_state(
+            session,
+            case_id,
+            payload.expected_row_version,
+            payload.state,
+        ),
+    )
 
 
 @router.put("/cases/{case_id}/session-config")

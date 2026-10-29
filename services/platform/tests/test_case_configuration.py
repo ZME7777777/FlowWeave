@@ -6,13 +6,14 @@ from pydantic import ValidationError
 from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session
 
-from flowweave.modules.cases.application import coordination, service
+from flowweave.modules.cases.application import coordination, feedback, service
 from flowweave.modules.cases.infrastructure.models import (
     Case,
     CaseAgentTask,
     CaseControlPlan,
     CaseControlRound,
     CaseDecisionProposal,
+    CaseFeedbackDelivery,
     CaseFlowRun,
     CaseStage,
 )
@@ -36,6 +37,7 @@ def database():
 @pytest.fixture
 def case_db(monkeypatch, tmp_path):
     monkeypatch.setattr(coordination, "_enqueue", lambda db, entry: None)
+    monkeypatch.setattr(feedback, "_enqueue", lambda db, entry: None)
     engine = create_engine("sqlite://")
     # PostgreSQL session variables are irrelevant to SQLite; ORM tenant filters remain active.
     event.listen(
@@ -53,6 +55,7 @@ def case_db(monkeypatch, tmp_path):
         CaseControlRound,
         CaseDecisionProposal,
         CaseFlowRun,
+        CaseFeedbackDelivery,
         FlowRun,
     ):
         model.__table__.create(engine)

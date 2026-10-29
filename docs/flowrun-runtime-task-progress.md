@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`UPSTREAM BASELINE ADOPTION COMPLETE`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`CASE-05B`
+> 下一可执行切片：`CASE-06`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -13676,11 +13676,65 @@ Web remote-release-finish 通过，无过期受管上下文；保留当前镜像
 | CASE-03B | DONE | CASE-03A | 流程图／草稿读取与当前执行副本配置、启动工具 |
 | CASE-04 | DONE | CASE-03B | 产物登记与跨容器授权读取 |
 | CASE-05A | DONE | CASE-02、CASE-04 | 当前执行关键事件的事务性持久入队与正式来源去重 |
-| CASE-05B | READY | CASE-05A | 后台串行回访、原生消息提交对账、资料／配置变更与恢复 |
-| CASE-06 | PENDING | CASE-03B、CASE-05B | 逐步复核、配置修订与重跑 |
+| CASE-05B | DONE | CASE-05A | 后台串行回访、原生消息提交对账、资料／配置变更与恢复 |
+| CASE-06 | READY | CASE-03B、CASE-05B | 逐步复核、配置修订与重跑 |
 | CASE-07 | PENDING | CASE-04、CASE-05B、CASE-06 | 连续修订、跨阶段决策与完成 |
 | CASE-08 | PENDING | CASE-02–CASE-07 | 前端反馈与接管统一 |
 | CASE-09 | PENDING | CASE-01–CASE-08 | 全链路与恢复验收 |
+
+### CASE-05B 后台串行回访与原生消息提交收据 — DONE
+
+依赖：CASE-05A（DONE）。新增用户隔离`case_feedback_deliveries`，正式执行来源与
+BackgroundTask在生产事务中一起入队；人工资料变更、保存会话配置变更和Case恢复按
+Case版本登记。bootstrap期间编辑等待原轮次STARTED；不以今天的轮次回填旧RunEvent。
+Worker启动／维护仅恢复05A已有冻结接收身份的来源。每轮次跨commit session lock串行，
+每批最多32条且逐条保留来源；新任务处理旧页后仍保留自身尚未投递的来源。旧轮次、非当前
+阶段／执行、终态、权限撤销或目录／binding漂移降为审计，不迁移给新协调者。
+
+消费者在当前协调者idle／finished时发送事实通知，要求通过既有正式工具重新查询场景、
+输入门禁和产物；不直接执行文本建议。运行中、原生暂停、确认和未知状态使用租约CAS
+延期，不耗尽健康等待的失败预算；普通错误仍有界重试，耗尽持久记FAILED。新增带乐观锁的
+Case协调暂停／恢复API，恢复继续同一轮次；Case暂停不伪装成原生interrupt，用户暂停的
+会话仍须使用原生控制恢复。Case详情返回最近50项投递状态、正式来源与消息ID审计。
+0187迁移强制RLS，加入`_USER_ISOLATED_TABLES`并在Case删除时级联，不保存消息正文／
+原生历史，不扩大源运行保留。冻结工具授权先在本地核验，再释放DB事务检查原生MCP；
+readiness、追加与run也均在提交事务后执行。
+
+固定OpenHands`73e3cd8e`的SendMessageRequest没有客户端幂等键，POST events成功响应
+不含消息ID。新增适配器`append_message`沿正式接口`run=false`追加，以正式用户MessageEvent
+ID集合差核对唯一身份，先持久保存ACKNOWLEDGED收据，再单独启动。Worker租约过期或run
+失败后仅补run，并按正式parent_id核对当前分支（最多200个事件／8秒）；运行／已完成不重复
+启动，暂停／确认不自动恢复。追加前读取失败明确重试；POST结果不明、身份不唯一或
+SUBMITTING时崩溃则持久AMBIGUOUS并阻止该轮次后续自动投递，不按文本、顺序或旧cursor猜测，
+不盲目重发。原会话保留供人工接管；未知提交的统一前端处置仍属CASE-08。
+
+验证（2026-10-29）：最后版本反馈定向真实PostgreSQL／Worker测试33 passed，覆盖同事务
+失败回滚、合批来源与收据重放、33条积压、暂停恢复、bootstrap并发编辑、原生暂停／确认、
+权限撤销、模板／历史范围、串行锁、租约generation、run失败只补启动、未知提交停发、健康
+延期预算、真实Worker owner、迁移升降级、非超级用户RLS写拒绝与Case删除级联。控制面／
+配置／动作组合回归95 passed（与反馈组有重叠）；事件入队、协调bootstrap、原生工具和资料
+组合139 passed／7 skipped；跳过项是原有显式SDK／镜像集成门禁，未计作通过。OpenHands
+适配器完整独立回归254 passed；Worker退出回归在组合运行中通过。
+
+实际固定镜像离线探针`infra/openhands/case_feedback_check.py`通过：成功响应只有Success、
+run=false不启动、正式ID唯一、单独run不追加用户事件、finished后追加回idle、服务重载保留
+同一待处理消息及仅补run，无重复用户消息、无外部模型调用。镜像contract_check核对四包
+1.54.0、server_info source commit `73e3cd8e4d74ff30c9ed794baf72d977800509d7`和归档
+SHA-256 `5fcd3fc5e628572a7e223c954e8fd792b78d768f1d8eba9419a4d88d6490308a`一致。
+新增反馈、模型、原生授权准备、任务延期和Runtime接口／Mock边界Pyright为0；受影响Ruff、
+format与diff检查通过，唯一Alembic head为0187_case_feedback。
+
+验证限制：数据库与适配器同进程组合时，迁移日志初始化使9项日志断言失败；适配器独立
+重跑254项全部通过。既有worker_lanes仍有2项非本片失败：旧注册覆盖断言缺少另外两个既有
+handler，以及单Worker夹具与poll并发默认值冲突；本片新任务已注册到delivery与owner作用域，
+真实Worker延期测试通过。整文件OpenHands Pyright仍报原有237行可空item_id索引1项，本片
+未修改该行且未把整文件记作通过。本机Docker socket两次短暂消失，恢复后相关PG回归重跑
+通过。详细输出仅在忽略目录`.tmp/case-05b/`，无生产配置或远端操作。
+
+本片不新增原生私有执行协议、不推进SDK baseline、不调用真实模型、不部署。旧自动接受／
+后继和阶段推进仍待CASE-06／07收敛，变为非活动阶段的迟到来源只作审计；DELIVERED只代表
+事实已提交并核对原生启动，不代表Agent已完成质量复核或整个场景目标。下一CASE-06 READY；
+独立提交成功后停止。
 
 ### CASE-05A 当前执行关键事件事务性入队 — DONE
 

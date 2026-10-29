@@ -147,7 +147,7 @@ def record_case_execution_event(db: Session, event: RunEvent) -> None:
             routing, reason = "HELD", "CASE_PAUSED"
         elif recipient.case_state != "ACTIVE":
             routing, reason = "AUDIT_ONLY", "CASE_NOT_ACTIVE"
-        db.execute(
+        inserted = db.scalar(
             insert(CaseExecutionEvent)
             .values(
                 id=uid(),
@@ -176,4 +176,9 @@ def record_case_execution_event(db: Session, event: RunEvent) -> None:
                 created_at=now(),
             )
             .on_conflict_do_nothing(constraint="uq_case_execution_event_source")
+            .returning(CaseExecutionEvent.id)
         )
+        if inserted:
+            from flowweave.modules.cases.application.feedback import record_execution_feedback
+
+            record_execution_feedback(db, inserted)

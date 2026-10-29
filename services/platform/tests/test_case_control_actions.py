@@ -10,6 +10,7 @@ from flowweave.modules.cases.infrastructure.models import (
     CaseControlPlan,
     CaseControlRound,
     CaseDecisionProposal,
+    CaseFeedbackDelivery,
     CaseFlowRun,
     CaseStage,
 )
@@ -44,6 +45,7 @@ def control_db(monkeypatch) -> Iterator[Session]:
         CaseControlRound,
         CaseDecisionProposal,
         CaseFlowRun,
+        CaseFeedbackDelivery,
         FlowRun,
         NodeRun,
     ):

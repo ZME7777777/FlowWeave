@@ -386,6 +386,8 @@ def write_case_files(db: Session, item: Case) -> None:
 
 
 def _case_dict(db: Session, item: Case) -> dict[str, Any]:
+    from flowweave.modules.cases.application.feedback import delivery_status
+
     current_round = (
         db.get(CaseControlRound, item.current_control_round_id)
         if item.current_control_round_id
@@ -446,6 +448,7 @@ def _case_dict(db: Session, item: Case) -> dict[str, Any]:
         "flow_run_ids": _case_flow_runs(db, item.id),
         "tasks": [_task_dict(task) for task in tasks],
         "decision_proposals": [_proposal_dict(proposal) for proposal in proposals],
+        "feedback_deliveries": delivery_status(db, item.id),
         "control_plans": [_control_plan_dict(plan) for plan in control_plans],
         "created_at": item.created_at.isoformat(),
         "updated_at": item.updated_at.isoformat(),
@@ -528,8 +531,13 @@ def update_case(db: Session, case_id: str, payload: CaseUpdateWrite) -> dict[str
     item.description = payload.description.strip()
     item.objective = payload.objective.strip()
     item.work_directory_id = payload.work_directory_id
+    changed = item.materials_json != [material.model_dump() for material in payload.materials]
     item.materials_json = [material.model_dump() for material in payload.materials]
     item.row_version += 1
+    if changed:
+        from flowweave.modules.cases.application.feedback import record_case_change
+
+        record_case_change(db, item, "MATERIALS_CHANGED")
     write_case_files(db, item)
     finish(db)
     return _case_dict(db, item)
@@ -567,6 +575,9 @@ def upload_case_material(
         },
     ]
     item.row_version += 1
+    from flowweave.modules.cases.application.feedback import record_case_change
+
+    record_case_change(db, item, "MATERIALS_CHANGED")
     write_case_files(db, item)
     finish(db)
     return _case_dict(db, item)
@@ -627,8 +638,32 @@ def save_case_session_config(
     config = CaseControlConversationWrite.model_validate(
         payload.model_dump(exclude={"expected_row_version"})
     )
-    item.session_config_json = validate_case_session_config(db, config)
+    validated = validate_case_session_config(db, config)
+    changed = item.session_config_json != validated
+    item.session_config_json = validated
     item.row_version += 1
+    if changed:
+        from flowweave.modules.cases.application.feedback import record_case_change
+
+        record_case_change(db, item, "SESSION_CONFIG_CHANGED")
+    finish(db)
+    return _case_dict(db, item)
+
+
+def set_case_coordination_state(
+    db: Session, case_id: str, expected_row_version: int, state: str
+) -> dict[str, Any]:
+    item = _editable_case(db, case_id, expected_row_version)
+    if state not in {"ACTIVE", "PAUSED"} or item.state not in {"ACTIVE", "PAUSED"}:
+        raise DomainError("CASE_STATE_TRANSITION_INVALID", "当前场景不可暂停或恢复", 409)
+    if item.state != state:
+        item.state = state
+        item.row_version += 1
+        if state == "ACTIVE":
+            from flowweave.modules.cases.application.feedback import record_case_change
+
+            record_case_change(db, item, "CASE_RESUMED")
+        write_case_files(db, item)
     finish(db)
     return _case_dict(db, item)
 

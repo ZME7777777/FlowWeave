@@ -333,3 +333,28 @@ def assert_coordinator_tools(db: Session, binding_id: str, handle: RuntimeHandle
     assert_native_registration(db, binding_id, handle)
     assert_native_registration(db, binding_id, handle, contract=FLOWS)
     assert_native_registration(db, binding_id, handle, contract=MATERIALS)
+
+
+def coordinator_tool_endpoints(db: Session, binding_id: str) -> tuple[tuple[str, str], ...]:
+    """Prepare frozen registration checks without doing native network I/O."""
+    endpoints: list[tuple[str, str]] = []
+    for contract in (CONTEXT, FLOWS, MATERIALS):
+        grant = db.scalar(
+            select(contract.grant_model).where(
+                contract.grant_model.binding_id == binding_id,
+            )
+        )
+        if grant is None:
+            raise unavailable()
+        authenticate(db, decrypt_secret(grant.encrypted_token), contract=contract)
+        endpoints.append(
+            (
+                contract.server_name,
+                frozen_endpoint(
+                    db,
+                    grant.capability_version_id,
+                    contract=contract,
+                ),
+            )
+        )
+    return tuple(endpoints)

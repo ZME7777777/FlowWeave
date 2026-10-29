@@ -5173,12 +5173,30 @@ class OpenHandsRuntime:
     def send_message(
         self, handle: RuntimeHandle, content: str, image_urls: tuple[str, ...] = ()
     ) -> RuntimeResult:
+        return self._submit_user_message(handle, content, image_urls, run=True)
+
+    def append_message(self, handle: RuntimeHandle, content: str) -> RuntimeResult:
+        return self._submit_user_message(handle, content, (), run=False)
+
+    def _submit_user_message(
+        self, handle: RuntimeHandle, content: str, image_urls: tuple[str, ...], *, run: bool
+    ) -> RuntimeResult:
         parts: list[dict[str, Any]] = []
         if content:
             parts.append({"type": "text", "text": content})
         if image_urls:
             parts.append({"type": "image", "image_urls": list(image_urls)})
-        before = self._message_user_event_ids(handle)
+        try:
+            before = self._message_user_event_ids(handle)
+        except DomainError as exc:
+            if run:
+                raise
+            raise DomainError(
+                "RUNTIME_MESSAGE_NOT_SUBMITTED",
+                "Native message preflight unavailable",
+                503,
+                {"native_append_started": False},
+            ) from exc
         try:
             created = self._request(
                 "POST",
@@ -5189,15 +5207,15 @@ class OpenHandsRuntime:
                 # current LLM/tool step finishes. This formal event append must
                 # wait for that boundary rather than timing out at the ordinary
                 # short control-request limit and inviting a duplicate retry.
-                timeout=3600,
+                timeout=3600 if run else 30,
                 json={
                     "role": "user",
                     "content": parts,
-                    "run": True,
+                    "run": run,
                 },
             )
         except DomainError as exc:
-            if self._is_v2_run_slot_rejection(handle, exc):
+            if run and self._is_v2_run_slot_rejection(handle, exc):
                 return self._retry_v2_persisted_user_event_run(
                     handle, self._appended_user_event_id(handle, before)
                 )
@@ -5243,7 +5261,7 @@ class OpenHandsRuntime:
             len(content),
             len(image_urls),
         )
-        return RuntimeResult(status="RUNNING", cursor=cursor)
+        return RuntimeResult(status="RUNNING" if run else "IDLE", cursor=cursor)
 
     @staticmethod
     def _is_v2_run_slot_rejection(handle: RuntimeHandle, error: DomainError) -> bool:
@@ -5912,6 +5930,62 @@ class OpenHandsRuntime:
             )
         cursor = str(state.get("leaf_event_id") or handle.cursor or "") or None
         return RuntimeResult(status="RUNNING", cursor=cursor)
+
+    def run_pending_message(self, handle: RuntimeHandle, event_id: str) -> RuntimeResult:
+        """Resume only an acknowledged native user event on the current branch.
+
+        Persisted append and run are separate operations. Retrying this method
+        never appends a message and never deliberately resumes a native pause.
+        Formal parent ids fence navigation; message text is never inspected.
+        """
+        identity = self._formal_identity(event_id, field="id", required=True)
+        deadline = time.monotonic() + 8
+        state = self._conversation_state(handle, timeout=5)
+        cursor = self._formal_identity(
+            state.get("leaf_event_id"), field="leaf_event_id", required=False
+        )
+        leaf = cursor
+        found = False
+        for _ in range(200):
+            remaining = deadline - time.monotonic()
+            if cursor is None or remaining <= 0:
+                break
+            event = self._request(
+                "GET",
+                f"/api/conversations/{handle.conversation_id}/events/{cursor}",
+                base_url=self._base_url_for_handle(handle),
+                session_api_key=self._session_key_for_handle(handle),
+                timeout=min(remaining, 3),
+            )
+            if event.get("id") != cursor:
+                raise DomainError("RUNTIME_MESSAGE_IDENTITY_UNAVAILABLE", "Native event drift", 409)
+            if cursor == identity:
+                found = event.get("kind") == "MessageEvent" and event.get("source") == "user"
+                break
+            cursor = self._formal_identity(
+                event.get("parent_id"), field="parent_id", required=False
+            )
+        if not found:
+            raise DomainError(
+                "RUNTIME_MESSAGE_BRANCH_UNVERIFIED",
+                "The acknowledged user event is not in the bounded current native branch",
+                409,
+            )
+        status = str(state.get("execution_status") or "unknown").lower()
+        if status == "idle" and leaf == identity:
+            self._request(
+                "POST",
+                f"/api/conversations/{handle.conversation_id}/run",
+                base_url=self._base_url_for_handle(handle),
+                session_api_key=self._session_key_for_handle(handle),
+                json={},
+            )
+            return RuntimeResult(status="RUNNING", cursor=identity)
+        if status in {"running", "executing", "starting"}:
+            return RuntimeResult(status="RUNNING", cursor=identity)
+        if status in {"finished", "stuck", "error"} and leaf != identity:
+            return RuntimeResult(status="COMPLETED", cursor=identity)
+        return RuntimeResult(status="WAITING", cursor=identity)
 
     def condense(self, handle: RuntimeHandle) -> RuntimeResult:
         """Request native condensation; completion is observed via event cursor."""

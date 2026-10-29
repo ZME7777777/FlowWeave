@@ -35,6 +35,7 @@ from flowweave.modules.orchestration import public as orchestration
 from flowweave.modules.sandboxes import public as sandboxes
 from flowweave.modules.sandboxes.application.runtime_pause import process_flow_run_runtime_pause
 from flowweave.modules.tasks.public import Lease, lease_is_current
+from flowweave.modules.users.application.security import tenant_user
 from flowweave.shared.models import BackgroundTask, TaskState
 
 Handler = Callable[[Session, str, dict[str, Any], Lease], None]
@@ -311,7 +312,16 @@ def _bootstrap_case_control_round(
     deliver_control_round(db, aggregate_id)
 
 
+def _deliver_case_feedback(
+    db: Session, aggregate_id: str, _payload: dict[str, Any], lease: Lease
+) -> None:
+    from flowweave.modules.cases.application.feedback import deliver_feedback
+
+    deliver_feedback(db, aggregate_id, lease)
+
+
 HANDLERS: dict[str, Handler] = {
+    "DELIVER_CASE_FEEDBACK": _deliver_case_feedback,
     "BOOTSTRAP_CASE_CONTROL_ROUND": _bootstrap_case_control_round,
     "EVALUATE_READINESS": _readiness,
     "RUN_GATE_POLICY": _gates,
@@ -365,6 +375,12 @@ def handle(db: Session, task: BackgroundTask, lease: Lease) -> None:
 def record_terminal_failure(db: Session, task_id: str, error: str) -> None:
     task = db.get(BackgroundTask, task_id)
     if task is None or task.state != TaskState.DEAD:
+        return
+    if task.task_type == "DELIVER_CASE_FEEDBACK":
+        from flowweave.modules.cases.application.feedback import record_feedback_failure
+
+        with tenant_user(task.owner_user_id):
+            record_feedback_failure(db, task.aggregate_id)
         return
     if task.task_type == "BOOTSTRAP_CASE_CONTROL_ROUND":
         from flowweave.modules.cases.infrastructure.models import CaseControlRound

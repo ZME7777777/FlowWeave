@@ -39,6 +39,7 @@ from flowweave.modules.cases.application.service import (
     retry_case_control_plan,
     save_case_path,
     save_case_session_config,
+    set_case_coordination_state,
     set_case_stage_state,
     start_case_stage_execution,
     update_case,
@@ -81,5 +82,6 @@ __all__ = (
     "reconcile_case_execution_state",
     "retry_case_control_plan",
     "set_case_stage_state",
+    "set_case_coordination_state",
     "start_case_stage_execution",
 )

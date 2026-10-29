@@ -889,6 +889,14 @@ class RuntimePort(Protocol):
         self, handle: RuntimeHandle, content: str, image_urls: tuple[str, ...] = ()
     ) -> RuntimeResult: ...
 
+    def append_message(self, handle: RuntimeHandle, content: str) -> RuntimeResult:
+        """Persist a native user message without running the conversation."""
+        ...
+
+    def run_pending_message(self, handle: RuntimeHandle, event_id: str) -> RuntimeResult:
+        """Run an acknowledged current-branch message, preserving native pauses."""
+        ...
+
     def upload_workspace_file(
         self,
         handle: RuntimeHandle,

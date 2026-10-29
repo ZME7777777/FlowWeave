@@ -498,6 +498,17 @@ class MockRuntime:
             reset_metrics=reset_metrics,
         )
 
+    def append_message(self, handle: RuntimeHandle, content: str) -> RuntimeResult:
+        events = self._events.setdefault(handle.job_id, [])
+        cursor = str(len(events) + 2)
+        events.append(RuntimeEvent(cursor, "MESSAGE", {"source": "user", "content": content}))
+        return RuntimeResult(status="IDLE", cursor=cursor)
+
+    def run_pending_message(self, handle: RuntimeHandle, event_id: str) -> RuntimeResult:
+        if not any(event.cursor == event_id for event in self._events.get(handle.job_id, [])):
+            raise DomainError("RUNTIME_MESSAGE_IDENTITY_UNAVAILABLE", "Message not found", 409)
+        return self.run(handle)
+
     def send_message(
         self, handle: RuntimeHandle, content: str, image_urls: tuple[str, ...] = ()
     ) -> RuntimeResult:
