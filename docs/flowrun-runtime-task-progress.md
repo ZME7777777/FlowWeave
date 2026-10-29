@@ -15055,3 +15055,33 @@ Network仅使用部署前缀API，根路径API请求为0，两项API鉴权边界
 本片含Web及平台API，无数据库迁移、Runtime／OpenHands或服务器配置变更。
 唯一Alembic head仍为0184_cascade_directory_archives，任务表无CURRENT，不含
 并行CASE开发。沿用本会话直接部署授权，发布验收待补记，无后续实现切片。
+
+#### OPS-69 Web／Platform 发布验收
+
+2026-10-29正式Web／Platform预检与受管最小上下文准备通过，发布
+`afb090baf06dfc86cd18bdbf704fe28c9962cf2b`。Platform源归档SHA-256为
+`f0ddbf5a87fc350933cad9277aca5d185c74bd03b0aa4b09f9e49977eb4c0085`，
+Web源归档SHA-256为
+`72dcf7847e3f1b0118a80f132a6d877de99028188f3d71619cce3ad2b2ce224e`。
+linux/amd64的Platform镜像ID为
+`sha256:3df3d96b63b8d6813ac71f9356035e43b598acf0d0be93c3f9a105a230b327c8`，
+Web镜像ID为
+`sha256:a1cf000c76a084f63fe1c5cc0efe14887c7cb97fbd929f1f95b35d32585fd1ba`。
+
+切换前保留回滚镜像与日志，正式migration入口退出0，Alembic保持
+0184_cascade_directory_archives。仅同步recreate api、stream-api、worker和web，
+四项revision、健康／readiness和Web入口核验通过；服务器配置哈希与其余43个
+保护容器的镜像和启动时间不变。Runtime Provider和会话运行容器未重建。
+
+公网HTML、Agent深层路由、两项入口资源及三项匹配批量归档按钮／进度／样式
+的模块资源与运行镜像一致。全新Chromium验证平台登录、深层路由和根登录页
+通过，Network只使用部署前缀API，根路径API请求为0，两项API鉴权边界为401。
+实际API镜像内确认新POST路由及1至20条数量约束；在连接级REPEATABLE READ及
+只读事务内以空服务输入核验无操作路径，管理列表前后相同，实际归档会话为0。
+只读探针首次在RLS初始化后设置事务隔离被数据库拒绝，改为连接级隔离后通过；
+该探针未执行任何业务写入。认证后的真实批量选择／归档／恢复交互以本地受控
+回归验收，未替用户归档线上记录。
+
+platform与web的remote-release-finish通过，无过期受管上下文候选；保留近24小时
+上下文、实际引用及每仓库一个回滚镜像。收尾后四项版本、健康、数据库head、
+服务器配置及43个保护容器再验通过。未push，无后续实现切片。
