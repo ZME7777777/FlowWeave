@@ -19,6 +19,7 @@ from flowweave.modules.agent_sessions.application import (
 )
 from flowweave.modules.agent_sessions.infrastructure.models import (
     AgentConversationCapability,
+    AgentConversationCredentialSync,
     AgentHistorySession,
 )
 from flowweave.modules.catalog.infrastructure.models import (
@@ -48,6 +49,7 @@ def setup(graph, monkeypatch, tmp_path):
     g = graph
     for model in (
         AgentConversationCapability,
+        AgentConversationCredentialSync,
         CapabilityBlob,
         CapabilityPackage,
         CapabilityVersion,

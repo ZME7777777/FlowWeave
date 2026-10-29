@@ -71,6 +71,7 @@ from flowweave.modules.agent_sessions.infrastructure.models import (
     AgentConversationBinding,
     AgentConversationCapability,
     AgentConversationCommand,
+    AgentConversationCredentialSync,
     AgentConversationMessageAttachment,
     AgentSidebarConversation,
 )
@@ -2209,7 +2210,7 @@ def _record_bootstrap_failure(
     failure must leave no Binding or command row behind.
     """
 
-    del error
+    _logger.warning("Agent bootstrap rejected: code=%s status=%s", error.code, error.status)
     # Draft attachments are already private to this reserved binding ID.  A
     # definitively failed first message must release those files too, even
     # though no attachment projection has been committed yet.
@@ -2218,6 +2219,14 @@ def _record_bootstrap_failure(
     from flowweave.modules.agent_sessions.application import history_sessions
 
     history_sessions.delete_binding_access(db, binding.id)
+    # Native creation records selected credentials before first-message delivery.
+    # Remove that dependent projection before deleting a failed reservation so
+    # its FK cannot mask the original Runtime/history error.
+    db.execute(
+        delete(AgentConversationCredentialSync).where(
+            AgentConversationCredentialSync.binding_id == binding.id,
+        )
+    )
     db.execute(
         delete(AgentConversationCapability).where(
             AgentConversationCapability.binding_id == binding.id,

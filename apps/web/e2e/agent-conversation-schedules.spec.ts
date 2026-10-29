@@ -5002,3 +5002,76 @@ for (const archiveTarget of ['conversation', 'directory', 'rejected-directory', 
 
   });
 }
+
+test('invalid Mermaid stays inside its message and draft reference retries keep one empty state', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  page.on('console', message => { if (message.type() === 'error' && /same key|unique.*key/i.test(message.text())) errors.push(message.text()); });
+  const events = [
+    { id: 'diagram-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '查看图表', timestamp: now } },
+    { id: 'diagram-answer', event_type: 'MESSAGE', payload: { source: 'assistant', parent_id: 'diagram-user', content: '```mermaid\nflowchart LR\nA[开始] --> B[结束]\n```\n\n```mermaid\nflowchart LR\nA[unclosed\n```', timestamp: now } },
+  ];
+  await openWorkspace(page, events);
+  await page.goto('/agent/conversations/scheduled-conversation');
+  const diagrams = page.locator('.conversation-mermaid');
+  await expect(diagrams).toHaveCount(2);
+  await expect(diagrams.nth(0).getByRole('img', { name: 'Mermaid 图表' })).toBeVisible();
+  await expect(diagrams.nth(1).getByText(/图片生成失败/)).toBeVisible();
+  await expect(page.locator('body > [data-mermaid-render-container]')).toHaveCount(0);
+  await expect(page.locator('body > [id^="dflowweave-mermaid"]')).toHaveCount(0);
+  expect(await page.evaluate(() => document.documentElement.scrollHeight <= window.innerHeight)).toBe(true);
+  await diagrams.nth(1).getByRole('button', { name: '文本', exact: true }).click();
+  await expect(diagrams.nth(1).locator('code')).toContainText('A[unclosed');
+  await diagrams.nth(0).getByRole('button', { name: '全屏放大' }).click();
+  await expect(page.getByRole('dialog', { name: 'Mermaid 图表全屏预览' })).toBeVisible();
+  await page.getByRole('button', { name: '关闭', exact: true }).click();
+
+  await page.getByRole('button', { name: '收起工作区 根工作区' }).hover();
+  await page.getByRole('button', { name: '在根工作区中新建会话' }).click();
+  await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeVisible();
+  const input = page.getByRole('textbox', { name: '发送 Agent 消息', exact: true });
+  await input.fill('总结一下这个会话的内容。');
+  const transfer = await page.evaluateHandle(() => {
+    const data = new DataTransfer();
+    data.setData('application/x-flowweave-conversation-reference', JSON.stringify({ bindingId: 'scheduled-conversation', eventId: '', title: '日报会话' }));
+    return data;
+  });
+  await input.dispatchEvent('drop', { dataTransfer: transfer });
+  await expect(page.getByRole('button', { name: '移除会话 日报会话', exact: true })).toBeVisible();
+  await expect(input).toHaveValue('总结一下这个会话的内容。');
+  let attempts = 0;
+  await page.route('**/api/v1/agent-workspaces/*/conversations', async route => {
+    if (route.request().method() !== 'POST') return route.fallback();
+    attempts += 1;
+    expect(route.request().postDataJSON().content).toBe('总结一下这个会话的内容。');
+    expect(route.request().postDataJSON().references).toEqual([{ source_binding_id: 'scheduled-conversation' }]);
+    return json(route, { error: { code: 'AGENT_HISTORY_CAPABILITY_UNAVAILABLE', message: '会话历史查询能力不可用，请检查平台配置后重试；引用和草稿已保留' } }, 409);
+  });
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    await page.getByRole('button', { name: '发送消息', exact: true }).click();
+    await expect.poll(() => attempts).toBe(attempt);
+    await expect(page.getByText('会话历史查询能力不可用，请检查平台配置后重试；引用和草稿已保留', { exact: true })).toBeVisible();
+    await expect(page.getByText('会话已就绪', { exact: true })).toHaveCount(1);
+    await expect(input).toHaveValue('总结一下这个会话的内容。');
+    await expect(page.getByRole('button', { name: '移除会话 日报会话', exact: true })).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollHeight <= window.innerHeight)).toBe(true);
+  }
+  await page.screenshot({ path: '../../.tmp/ops71/reference-error.png' });
+  expect(errors).toEqual([]);
+});
+
+
+test('leaving an invalid Mermaid while its render is queued leaves no temporary page content', async ({ page }) => {
+  await openWorkspace(page, [
+    { id: 'queued-diagram-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '查看图表', timestamp: now } },
+    { id: 'queued-diagram-answer', event_type: 'MESSAGE', payload: { source: 'assistant', parent_id: 'queued-diagram-user', content: '```mermaid\nflowchart LR\nA[unclosed\n```', timestamp: now } },
+  ]);
+  await page.goto('/agent/conversations/scheduled-conversation');
+  await expect(page.locator('.conversation-mermaid')).toHaveCount(1);
+  await page.getByRole('button', { name: '收起工作区 根工作区' }).hover();
+  await page.getByRole('button', { name: '在根工作区中新建会话' }).click();
+  await expect(page.getByText('会话已就绪', { exact: true })).toHaveCount(1);
+  await expect(page.locator('body > [data-mermaid-render-container]')).toHaveCount(0);
+  await expect(page.locator('body > [id^="dflowweave-mermaid"]')).toHaveCount(0);
+  expect(await page.evaluate(() => document.documentElement.scrollHeight <= window.innerHeight)).toBe(true);
+});
