@@ -14904,3 +14904,23 @@ platform与web的remote-release-finish均通过，精确回收9个超过24小时
 本片仅Web，无API、数据库、Runtime或服务器配置变更；唯一Alembic head仍为
 0184_cascade_directory_archives，任务表无CURRENT。不含并行CASE开发。沿用
 本会话直接发布授权，发布验收待补记，无后续实现切片。
+
+#### OPS-66 Web 发布验收
+
+2026-10-29正式Web预检与受管最小上下文准备通过，发布
+`0d02b0992c1c85e5de55cf69ffe06fc29be766d2`。源归档SHA-256为
+`7756c0938639ab3b97470c6ba67d1b24531971ce839f70a459383243214c0889`，
+linux/amd64镜像ID为
+`sha256:a2fee08fe77bc170d378956bd4ae62d01a76cd0b3bc96479c94fb28cb264fa38`。
+保留旧Web回滚镜像及日志，仅定向recreate Web。运行revision与提交一致，健康
+及HTTP入口通过；服务器配置哈希与其他46个受保护容器镜像和启动时间不变。
+
+公网入口及Agent深层路由HTML、两项入口资源、三项匹配新时间筛选／右侧操作区／
+归档配色的JS及CSS资源与运行镜像逐项一致。全新Chromium验证平台登录、深层
+路由和根登录页通过，Network只使用部署前缀API，根路径API请求为0，两项API
+鉴权边界为401。认证后的工作区恢复和筛选交互以8项本地受控回归验收，未对
+线上工作区或会话执行恢复、删除或其他业务写入。
+
+remote-release-finish通过，无过期受管上下文候选；保留近24小时上下文、实际
+引用及每仓库一个回滚镜像。收尾后版本、健康、配置及46个保护容器再验通过。
+无API、迁移或Runtime发布，未push，无后续实现切片。
