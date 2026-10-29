@@ -595,6 +595,8 @@ export const api = {
     request<AgentPendingConfirmation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/pending-confirmation`),
   decideAgentConfirmation: (workspaceId: string, bindingId: string, expected_pending_digest: string, accept: boolean, reason: string) =>
     request<{ accepted: boolean; cursor?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/pending-confirmation/decision`, json('POST', { expected_pending_digest, accept, reason })),
+  cancelAgentMessageSubmission: (workspaceId: string, bindingId: string, submissionId: string) =>
+    request<{ cancelled: boolean }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/messages/${encodeURIComponent(submissionId)}/cancel`, json('POST', {})),
   sendAgentMessage: (workspaceId: string, bindingId: string, content: string, attachments: AgentAttachment[] = [], references: AgentConversationReference[] = [], workspace_references: AgentWorkspaceReference[] = [], annotations: AgentConversationAnnotation[] = [], idempotencyKey?: string) =>
     request<{ accepted: boolean; cursor?: string | null; compacted?: boolean; queued_during_turn?: boolean }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/messages`, json('POST', { content, attachments: attachmentReferences(attachments), references: conversationReferencePayload(references), workspace_references: workspaceReferencePayload(workspace_references), annotations }, idempotencyKey)),
   uploadAgentAttachment: (workspaceId: string, bindingId: string, file: File, onProgress?: UploadProgressHandler): Promise<AgentAttachment> =>
@@ -1231,6 +1233,8 @@ export const nodeSessionApi = {
     request<{ model_provider_id: string; model_name?: string | null; reasoning_effort?: string | null }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/model`, json('POST', { model_provider_id, model_name, reasoning_effort })),
   remove: (flowRunId: string, attemptId: string, bindingId: string) =>
     request<void>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}`, json('DELETE', undefined, true)),
+  cancelMessageSubmission: (flowRunId: string, attemptId: string, bindingId: string, submissionId: string) =>
+    request<{ cancelled: boolean }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/messages/${encodeURIComponent(submissionId)}/cancel`, json('POST', {})),
   message: (flowRunId: string, attemptId: string, bindingId: string, content: string, attachments: AgentAttachment[] = [], references: AgentConversationReference[] = [], workspace_references: AgentWorkspaceReference[] = [], idempotencyKey = randomId(), annotations: AgentConversationAnnotation[] = []) =>
     request<{ accepted: boolean; cursor?: string | null; compacted?: boolean; queued_during_turn?: boolean }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/messages`, json('POST', { content, attachments: attachmentReferences(attachments), references: conversationReferencePayload(references), workspace_references: workspaceReferencePayload(workspace_references), annotations }, idempotencyKey)),
   pendingConfirmation: (flowRunId: string, attemptId: string, bindingId: string) =>

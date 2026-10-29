@@ -15564,3 +15564,41 @@ SDK或Runtime更新，数据库仍为0184_cascade_directory_archives。
 Web remote-release-finish通过，无过期受管上下文候选；保留最近24小时上下文、
 实际路径引用及每仓库一个回滚镜像。收尾后Web版本／健康、数据库head、配置
 及47个保护容器再次核验通过。未push，无后续实现切片。
+
+
+### OPS-78 提交阶段暂停取消投递并恢复草稿 — DONE
+
+2026-10-30将已有会话提交中的暂停与投递取消联动；共享工作台覆盖独立Agent
+Workspace和FlowRun节点宿主。点击后立即显示取消反馈，服务端确认尚未进入
+原生投递时移除本次乐观气泡，把文本、附件、会话引用、工作区引用与注释恢复
+为原binding的同一草稿快照；保留用户随后输入的内容。迟到成功／失败回调
+不能再次清空恢复草稿或污染其他会话；重新发送使用新的提交标识。取消请求
+失败显示错误并保留可重试暂停入口，不把网络取消冒充实际撤销。
+
+新增0185_message_submission_cancel及用户隔离AgentMessageSubmission表，只
+存提交UUID、binding、投递前围栏和暂停意图，不存消息、正式event或Runtime
+状态。两宿主入口先按原宿主授权并提交短事务；取消先到时写墓碑，跨API进程
+在真正调用原生send前以条件UPDATE竞争，取消胜出后同步worker即使仍在准备
+也不得投递。取消不提前释放真实worker容量；完成的准备失败才清除可重试围栏。
+RLS、ORM用户隔离、binding删除级联与窄授权共同约束；正式分派前后使用既有
+control连接池的短事务，不扩大连接预算。新API两条契约同步登记，其他契约
+基线不随本次无关schema漂移重生成。
+
+OpenHands原生事件投递已开始后无法保证撤销，竞争失败返回cancelled=false并
+复用既有interrupt；若原生append仍在途，worker在结束后检查持久暂停意图再
+interrupt，避免先暂停后投递重新运行。正式事件保留，不以隐藏已送达消息伪装
+撤回，不自动重发结果不确定的消息。首次bootstrap、历史消息重写和侧边聊天
+独立控件未改变其既有生命周期。
+
+验证：隔离PostgreSQL完整迁移到0185，17项后端回归通过，含9项新取消、
+真实HTTP／阻塞worker取消、墓碑／跨线程分派竞态、失败重试、租户／宿主
+隔离、强制RLS、删除级联、新路由契约以及0184↔0185回退重跑保留原binding。
+既有消息lane、原生guidance及模糊投递回归在绑定测试principal后通过。
+12项不同Chromium回归通过（4项新取消场景、接受确认、侧边聊天及6项定向
+定时会话工具／草稿／队列回归）；额外引用菜单用例缺少“选择引用类型”
+listbox，在未修改HEAD 9103058的独立Web快照同断言复现，未修改或计入通过。
+Web typecheck、定向ESLint、production build、受影响Ruff、git diff与任务状态
+唯一性通过；节点router原有13项E501与HEAD逐项对照保持，未记作完整lint
+通过。唯一Alembic head为0185_message_submission_cancel。无OpenHands源码、
+SDK、Runtime或服务器配置变更；沿用直接部署授权，发布验收待补记，无后续
+实现切片。

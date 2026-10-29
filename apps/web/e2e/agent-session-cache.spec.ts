@@ -4852,3 +4852,108 @@ test('Pausing before the first Agent event immediately replaces the submitting s
   releaseInterrupt?.();
   await expect(page.getByRole('button', { name: '继续当前 Agent' })).toBeVisible();
 });
+
+for (const outcome of ['cancelled', 'dispatched', 'late-scope', 'failed'] as const) {
+  test(`Submitting message pause ${outcome} preserves delivery and composer boundaries`, async ({ page }) => {
+    test.setTimeout(25_000);
+    let authenticated = false;
+    let pauseRequests = 0;
+    let cancelRequests = 0;
+    let releaseMessage!: () => void;
+    let releaseCancellation!: () => void;
+    const messageGate = new Promise<void>(resolve => { releaseMessage = resolve; });
+    const cancellationGate = new Promise<void>(resolve => { releaseCancellation = resolve; });
+    const sent: { id?: string; content: string; attachments: unknown[] }[] = [];
+    const workspace = { id: 'cancel-submit-workspace', display_name: '提交取消工作区', desired_state: 'RUNNING', updated_at: now };
+    const conversations = ['cancel-submit-a', 'cancel-submit-b'].map((id, index) => ({
+      id, display_title: `取消测试会话 ${index ? 'B' : 'A'}`, title_state: 'MANUAL', lifecycle: 'ACTIVE',
+      streaming_callback_ready: true, write_available: true, execution_status: 'idle', created_at: now, updated_at: now,
+    }));
+    await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+    await page.route('**/api/v1/**', async route => {
+      const request = route.request();
+      const path = new URL(request.url()).pathname;
+      if (path.endsWith('/auth/me')) return authenticated ? json(route, user) : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+      if (path.endsWith('/auth/login')) { authenticated = true; return json(route, user); }
+      if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+      if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+      if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: conversations, next_cursor: null });
+      if (path.endsWith('/conversation-activity')) return json(route, { running_binding_ids: [] });
+      if (path.endsWith('/messages') && request.method() === 'POST') {
+        sent.push({ id: request.headers()['idempotency-key'], ...request.postDataJSON() });
+        if (sent.length === 1) {
+          await messageGate;
+          return outcome === 'dispatched'
+            ? json(route, { accepted: true, cursor: 'irreversible-event' }, 202)
+            : json(route, { error: { code: 'AGENT_MESSAGE_CANCELLED', message: '已取消发送' } }, 409);
+        }
+        return json(route, { accepted: true, cursor: 'resubmitted-event' }, 202);
+      }
+      if (path.endsWith('/cancel')) {
+        cancelRequests += 1;
+        expect(path).toContain(`/messages/${sent[0].id}/cancel`);
+        if (outcome === 'late-scope') await cancellationGate;
+        if (outcome === 'failed') return json(route, { error: { code: 'EXECUTOR_UNAVAILABLE', message: '取消暂不可用' } }, 503);
+        return json(route, { cancelled: outcome !== 'dispatched' });
+      }
+      if (path.endsWith('/interrupt')) { pauseRequests += 1; return json(route, { accepted: true }, 202); }
+      const events = { events: [], next_cursor: null, history_cursor: null };
+      const readiness = { ready: true, execution_status: 'idle' };
+      const context = { model_name: 'test-model', window_tokens: 128_000, used_tokens: 0 };
+      if (path.endsWith('/hydration')) return json(route, { events, readiness, context });
+      if (path.endsWith('/events')) return json(route, events);
+      if (path.endsWith('/input-readiness')) return json(route, readiness);
+      if (path.endsWith('/context')) return json(route, context);
+      if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+      if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区' }, items: [] });
+      if (path.endsWith('/workspace')) return json(route, { root: '/runtime/workspace/project', working_directory: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, files: [], repositories: [], runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } } });
+      if (path.includes('/attachments/uploads') && request.method() === 'POST' && !path.endsWith('/complete')) return json(route, { upload_id: 'cancel-upload', chunk_size: 262_144, uploaded_parts: [] }, 201);
+      if (path.includes('/attachments/uploads') && request.method() === 'PUT') return json(route, { uploaded: true });
+      if (path.includes('/attachments/uploads') && path.endsWith('/complete')) return json(route, { filename: 'cancel.txt', mime_type: 'text/plain', byte_size: 4, path: '/runtime/workspace/project/uploads/cancel.txt' });
+      if (path.endsWith('/model-providers') || path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+      if (path.includes('/conversations/') && request.method() === 'GET') return json(route, conversations.find(item => path.endsWith(item.id)));
+      return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+    });
+    await page.goto('/');
+    await login(page);
+    await page.goto('/agent/conversations/cancel-submit-a');
+    const composer = page.getByLabel('发送 Agent 消息');
+    await composer.fill('提交中撤回的内容');
+    await page.getByLabel('上传附件').setInputFiles({ name: 'cancel.txt', mimeType: 'text/plain', buffer: Buffer.from('data') });
+    await expect(page.locator('.agent-composer .agent-attachments').getByText('cancel.txt', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: '发送消息', exact: true }).click();
+    await expect.poll(() => sent.length).toBe(1);
+    await page.getByRole('button', { name: '暂停当前 Agent', exact: true }).click();
+    await expect.poll(() => cancelRequests).toBe(1);
+    if (outcome === 'late-scope') {
+      await page.getByRole('button', { name: '取消测试会话 B', exact: true }).click();
+      await composer.fill('B 的新草稿');
+      releaseCancellation();
+      releaseMessage();
+      await expect(composer).toHaveValue('B 的新草稿');
+      await page.getByRole('button', { name: '取消测试会话 A', exact: true }).click();
+    }
+    if (outcome === 'cancelled' || outcome === 'late-scope') {
+      await expect(composer).toHaveValue('提交中撤回的内容');
+      await expect(page.locator('.agent-composer .agent-attachments').getByText('cancel.txt', { exact: true })).toBeVisible();
+      await expect(page.locator('[data-user-event-id^="pending-user:"]')).toHaveCount(0);
+      await expect(page.getByRole('button', { name: '发送消息', exact: true })).toBeEnabled();
+      expect(pauseRequests).toBe(0);
+      releaseMessage();
+      await page.getByRole('button', { name: '发送消息', exact: true }).click();
+      await expect.poll(() => sent.length).toBe(2);
+      expect(sent[1].id).not.toBe(sent[0].id);
+      expect(sent[1].content).toBe(sent[0].content);
+      expect(sent[1].attachments).toEqual(sent[0].attachments);
+    } else if (outcome === 'dispatched') {
+      await expect.poll(() => pauseRequests).toBe(1);
+      await expect(composer).toHaveValue('');
+      releaseMessage();
+    } else {
+      await expect(page.getByRole('button', { name: '暂停当前 Agent', exact: true })).toBeEnabled();
+      await expect(composer).toHaveValue('');
+      expect(pauseRequests).toBe(0);
+      releaseMessage();
+    }
+  });
+}

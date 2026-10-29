@@ -27,6 +27,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from flowweave.bootstrap.container import Container
 from flowweave.modules.agent_sessions import public as agent_sessions
+from flowweave.modules.agent_sessions.application import message_submissions
 from flowweave.modules.agent_sessions.application.runtime_config import resolve_session_config
 from flowweave.modules.agent_workspaces import public as agent_workspace_host
 from flowweave.modules.environments import public as environments
@@ -1272,42 +1273,99 @@ async def node_session_message(
     container: ContainerDep,
     idempotency_key: IdempotencyKey = None,
 ) -> dict[str, Any]:
-    del idempotency_key
+    node_messages = agent_sessions.flow_node_conversations
+    if idempotency_key:
+        await run_sync(
+            db,
+            lambda session: (
+                node_messages.authorize_node_message_submission(
+                    session,
+                    flow_run_id=flow_run_id,
+                    attempt_id=attempt_id,
+                    binding_id=binding_id,
+                ),
+                message_submissions.begin(session, binding_id, idempotency_key),
+            ),
+        )
+    fence = (
+        message_submissions.DispatchFence(
+            container.database.control_sessions, binding_id, idempotency_key
+        )
+        if idempotency_key
+        else None
+    )
     arguments = {
         "attachments": tuple(
             cast(dict[str, str | int], item.model_dump(exclude_none=True))
             for item in payload.attachments
         ),
         "references": tuple(item.model_dump() for item in payload.references),
-        "workspace_references": tuple(item.model_dump() for item in payload.workspace_references),
+        "workspace_references": tuple(
+            item.model_dump() for item in payload.workspace_references
+        ),
         "annotations": tuple(payload.annotations),
     }
-    prepared = await run_sync(
-        db,
-        lambda session: agent_sessions.flow_node_conversations.prepare_running_node_message(
-            session,
-            flow_run_id=flow_run_id,
-            attempt_id=attempt_id,
-            binding_id=binding_id,
-            content=payload.content,
-            **arguments,
-        ),
-    )
-    result, queued_during_turn, compacted = await run_blocking_message(
-        container,
-        lambda _session: agent_sessions.flow_node_conversations.dispatch_running_node_message(
-            prepared
-        ),
-    )
+    try:
+        with message_submissions.fenced(fence):
+            prepared = await run_sync(
+                db,
+                lambda session: node_messages.prepare_running_node_message(
+                    session,
+                    flow_run_id=flow_run_id,
+                    attempt_id=attempt_id,
+                    binding_id=binding_id,
+                    content=payload.content,
+                    **arguments,
+                ),
+            )
+            result, queued_during_turn, compacted = await run_blocking_message(
+                container,
+                lambda _session: node_messages.dispatch_running_node_message(
+                    prepared
+                ),
+            )
+            return await run_sync(
+                db,
+                lambda session: node_messages.finalize_running_node_message(
+                    session,
+                    prepared,
+                    result,
+                    queued_during_turn=queued_during_turn,
+                    compacted=compacted,
+                ),
+            )
+
+    except DomainError:
+        if idempotency_key:
+            await run_sync(
+                db,
+                lambda session: message_submissions.discard_preparation(
+                    session, binding_id, idempotency_key
+                ),
+            )
+        raise
+
+
+@router.post(f"{_BASE}/{{binding_id}}/messages/{{submission_id}}/cancel")
+async def cancel_node_message_submission(
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str,
+    submission_id: str,
+    db: Db,
+) -> dict[str, bool]:
+    node_messages = agent_sessions.flow_node_conversations
     return await run_sync(
         db,
-        lambda session: agent_sessions.flow_node_conversations.finalize_running_node_message(
-            session,
-            prepared,
-            result,
-            queued_during_turn=queued_during_turn,
-            compacted=compacted,
-        ),
+        lambda session: (
+            node_messages.authorize_node_message_submission(
+                session,
+                flow_run_id=flow_run_id,
+                attempt_id=attempt_id,
+                binding_id=binding_id,
+            ),
+            message_submissions.cancel(session, binding_id, submission_id),
+        )[1],
     )
 
 

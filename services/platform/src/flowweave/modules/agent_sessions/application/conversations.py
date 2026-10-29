@@ -20,7 +20,7 @@ from sqlalchemy import Numeric, and_, cast, delete, func, or_, select, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from flowweave.modules.agent_sessions.application import resumable_attachments
+from flowweave.modules.agent_sessions.application import message_submissions, resumable_attachments
 from flowweave.modules.agent_sessions.application import usage as usage_projection
 from flowweave.modules.agent_sessions.application.activity_reconciliation import (
     read_activity_completion,
@@ -3108,6 +3108,13 @@ def terminal_container_details(db: Session, workspace_id: str) -> tuple[str, str
     return sandbox.backend_resource_name, sandbox.id, sandbox.backend_resource_id
 
 
+def authorize_message_submission(db: Session, workspace_id: str, binding_id: str) -> None:
+    _workspace(db, workspace_id)
+    binding = _binding(db, workspace_id, binding_id)
+    if binding.owner_user_id != current_user_id() or binding.host_kind != "AGENT_WORKSPACE":
+        raise DomainError("AGENT_CONVERSATION_NOT_FOUND", "会话不存在或已删除", 404)
+
+
 def prepare_running_message(
     db: Session,
     workspace_id: str,
@@ -3196,7 +3203,7 @@ def dispatch_running_message(prepared: PreparedRunningMessage) -> RuntimeResult 
     if prepared.git_profile is not None:
         runtime.workspace_git_identity(prepared.handle, profile=prepared.git_profile)
     try:
-        return runtime.send_message(prepared.handle, prompt, image_urls)
+        return message_submissions.dispatch(runtime, prepared.handle, prompt, image_urls)
     except DomainError as exc:
         if exc.status >= 500:
             raise DomainError(
@@ -3326,7 +3333,7 @@ def message(
             diagnostic(handle, operation="agent_running_direct", readiness=readiness)
         try:
             _ensure_history_references(db, workspace, binding, references)
-            result = runtime.send_message(handle, prompt, image_urls)
+            result = message_submissions.dispatch(runtime, handle, prompt, image_urls)
         except DomainError as exc:
             if exc.status >= 500:
                 raise DomainError(
@@ -3445,7 +3452,7 @@ def message(
         )
     try:
         _ensure_history_references(db, workspace, binding, references)
-        result = runtime.send_message(handle, prompt, image_urls)
+        result = message_submissions.dispatch(runtime, handle, prompt, image_urls)
     except DomainError as exc:
         if exc.status >= 500:
             raise DomainError(

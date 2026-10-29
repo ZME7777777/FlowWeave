@@ -5129,6 +5129,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const queuedMessagesStorageKeyRef = useRef<string | undefined>(undefined);
   const queuedMessagesRef = useRef<QueuedMessage[]>([]);
   const sendingMessageIds = useRef(new Set<string>());
+  const outgoingSubmissions = useRef(new Map<string, BoundQueuedMessage>());
+  const restoredSubmissionIds = useRef(new Set<string>());
+  const [cancellingSubmission, setCancellingSubmission] = useState<{ bindingId: string; submissionId: string }>();
   const backgroundQueueDispatches = useRef(new Set<string>());
   const localMessageProjections = useRef(new Map<string, LocalMessageProjection>());
   useEffect(() => () => {
@@ -8544,9 +8547,44 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }));
     return renderKey;
   }, [snapshotFormalEventIds, updateLocalMessageProjections]);
+  const restoreCancelledSubmission = useCallback((message: BoundQueuedMessage) => {
+    if (restoredSubmissionIds.current.has(message.id)) return;
+    restoredSubmissionIds.current.add(message.id);
+    outgoingSubmissions.current.delete(message.id);
+    sendingMessageIds.current.delete(message.id);
+    removeLocalMessageProjection(message.id, message.bindingId);
+    const current = composerDraftsByScope.current.get(message.bindingId);
+    const snapshot = {
+      content: [message.content, current?.content].filter(Boolean).join('\n\n'),
+      attachments: [...message.items, ...(current?.attachments ?? [])].filter((item, index, all) => all.findIndex(other => other.path === item.path) === index),
+      references: [...message.references, ...(current?.references ?? [])],
+      workspaceReferences: [...(message.workspaceReferences ?? []), ...(current?.workspaceReferences ?? [])],
+      annotations: [...message.annotations, ...(current?.annotations ?? [])],
+    };
+    composerDraftsByScope.current.set(message.bindingId, snapshot);
+    if (activeComposerScope.current === message.bindingId) {
+      replaceComposerDraft(snapshot.content, message.bindingId);
+      setAttachments(snapshot.attachments); setReferences(snapshot.references);
+      setWorkspaceReferences(snapshot.workspaceReferences); setComposerAnnotations(snapshot.annotations);
+      if (!message.nativeGuidance) {
+        setForegroundTurn(current => current?.submissionId === message.id ? undefined : current);
+        setPendingSubmissionConfirmation(current => current?.submissionId === message.id ? undefined : current);
+        setActiveTurnEventId(undefined); setRequestStartedAt(undefined); setTurnState('idle');
+      }
+      setOperationError(undefined);
+      requestAnimationFrame(() => {
+        if (activeComposerScope.current === message.bindingId) composerRef.current?.focus();
+      });
+    }
+    persistComposerDraft(message.bindingId);
+  }, [persistComposerDraft, removeLocalMessageProjection, replaceComposerDraft]);
   const send = useMutation({
-    mutationFn: (message: BoundQueuedMessage) => api.sendMessage(workspace!.id, message.bindingId, message.content, message.items, message.references.map(item => ({ event_id: item.eventId, content: item.content, source_binding_id: item.sourceBindingId, ...(item.compactStart !== undefined && item.compactEnd !== undefined ? { selection: { compact_start: item.compactStart, compact_end: item.compactEnd } } : {}) })), message.workspaceReferences ?? [], messageAnnotations(message.annotations, message.references), message.id),
+    mutationFn: (message: BoundQueuedMessage) => {
+      if (restoredSubmissionIds.current.has(message.id)) throw new ApiError('消息已取消', 'AGENT_MESSAGE_CANCELLED', {}, 409);
+      return api.sendMessage(workspace!.id, message.bindingId, message.content, message.items, message.references.map(item => ({ event_id: item.eventId, content: item.content, source_binding_id: item.sourceBindingId, ...(item.compactStart !== undefined && item.compactEnd !== undefined ? { selection: { compact_start: item.compactStart, compact_end: item.compactEnd } } : {}) })), message.workspaceReferences ?? [], messageAnnotations(message.annotations, message.references), message.id);
+    },
     onMutate: message => {
+      if (restoredSubmissionIds.current.has(message.id)) return { optimisticEventId: undefined, nativeGuidance: true };
       // The cached hydration describes the preceding turn. Preserve its screen
       // while ensuring a hot revisit reconciles this new turn, including after
       // the POST confirmation window expires or the workbench remounts.
@@ -8563,7 +8601,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       };
     },
     onSuccess: (value, message, context) => {
+      outgoingSubmissions.current.delete(message.id);
       sendingMessageIds.current.delete(message.id);
+      if (restoredSubmissionIds.current.has(message.id)) return;
       const cursor = value.cursor;
       if (!context?.nativeGuidance && activeComposerScope.current === message.bindingId) {
         setForegroundTurn(current => current?.submissionId === message.id
@@ -8605,7 +8645,13 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       refresh(message.bindingId);
     },
     onError: (error, message, context) => {
+      outgoingSubmissions.current.delete(message.id);
       sendingMessageIds.current.delete(message.id);
+      if (error instanceof ApiError && error.code === 'AGENT_MESSAGE_CANCELLED') {
+        restoreCancelledSubmission(message);
+        return;
+      }
+      if (restoredSubmissionIds.current.has(message.id)) return;
       setForegroundTurn(current => current?.submissionId === message.id ? undefined : current);
       if (error instanceof ApiError && error.code === 'AGENT_MESSAGE_DELIVERY_AMBIGUOUS') {
         updateLocalMessageProjections(current => {
@@ -8709,6 +8755,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const dispatchMessage = useCallback((message: BoundQueuedMessage, immediate = false) => {
     if (sendingMessageIds.current.has(message.id)) return;
     sendingMessageIds.current.add(message.id);
+    outgoingSubmissions.current.set(message.id, message);
     const showLocalMessage = () => {
       if (!message.nativeGuidance) {
         setForegroundTurn({ submissionId: message.id, bindingId: message.bindingId, submittedAt: Date.now() });
@@ -8967,11 +9014,28 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       reportOperationError(request.bindingId, error);
     },
   });
+  const cancelSubmission = useMutation({
+    mutationFn: (request: { workspaceId: string; message: BoundQueuedMessage }) =>
+      api.cancelMessageSubmission(request.workspaceId, request.message.bindingId, request.message.id),
+    onMutate: ({ message }) => setCancellingSubmission({ bindingId: message.bindingId, submissionId: message.id }),
+    onSuccess: (result, { workspaceId, message }) => {
+      if (result.cancelled) restoreCancelledSubmission(message);
+      else interrupt.mutate({ workspaceId, bindingId: message.bindingId });
+    },
+    onError: (error, { message }) => reportOperationError(message.bindingId, error),
+    onSettled: (_value, _error, { message }) => setCancellingSubmission(current => current?.submissionId === message.id ? undefined : current),
+  });
   const requestInterrupt = useCallback(() => {
-    if (!workspace || !selected || interrupt.isPending && interrupt.variables?.bindingId === selected.id) return;
-    // Explicit control must reach OpenHands even while formal reads are busy.
+    if (!workspace || !selected || cancellingSubmission?.bindingId === selected.id
+      || interrupt.isPending && interrupt.variables?.bindingId === selected.id) return;
+    const message = [...outgoingSubmissions.current.values()].reverse().find(item => item.bindingId === selected.id);
+    if (message) {
+      cancelSubmission.mutate({ workspaceId: workspace.id, message });
+      return;
+    }
+    // Accepted native messages use the existing formal interrupt action.
     interrupt.mutate({ workspaceId: workspace.id, bindingId: selected.id });
-  }, [interrupt, selected, workspace]);
+  }, [cancelSubmission, cancellingSubmission?.bindingId, interrupt, selected, workspace]);
   const resume = useMutation({
     mutationFn: (request: { workspaceId: string; bindingId: string }) => api.resumeConversation(request.workspaceId, request.bindingId),
     onMutate: request => {
@@ -9146,7 +9210,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (effectiveTurnState === 'idle' || effectiveTurnState === 'paused') rewrite.mutate(request);
   }, [displayedEvents, effectiveTurnState, interrupt, rewrite, selected, workspace]);
   const currentConversationSubmitting = (
-    send.isPending && send.variables?.bindingId === selected?.id
+    send.isPending && send.variables?.bindingId === selected?.id && !restoredSubmissionIds.current.has(send.variables.id)
   ) || (
     rewrite.isPending && rewrite.variables?.bindingId === selected?.id
   ) || (
@@ -9582,6 +9646,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const visibleError = operationError ?? hydrationError ?? confirmationQuery.error ?? eventsQuery.error;
   const composerActionSends = composerHasContent && !pendingConfirmation;
   const composerControl = (() => {
+    if (selected && cancellingSubmission?.bindingId === selected.id) return { label: '正在取消发送', disabled: true, editable: true, action: 'none' as const };
     const actionBlocked = Boolean(pendingConfirmation)
       || bootstrap.isPending
       || migrateStreaming.isPending

@@ -30,6 +30,7 @@ from flowweave.modules.agent_sessions.application import (
     history_access,
     history_sessions,
     management_deletion,
+    message_submissions,
     schedule_history,
     sidebar_conversations,
 )
@@ -1926,7 +1927,8 @@ async def agent_confirmation_decision(
 
 
 @router.post(
-    "/agent-workspaces/{workspace_id}/conversations/{binding_id}/messages", status_code=202
+    "/agent-workspaces/{workspace_id}/conversations/{binding_id}/messages",
+    status_code=202,
 )
 async def agent_message(
     workspace_id: str,
@@ -1936,43 +1938,99 @@ async def agent_message(
     container: ContainerDep,
     idempotency_key: IdempotencyKey = None,
 ) -> dict[str, Any]:
-    del idempotency_key
-    arguments = {
-        "attachments": tuple(item.model_dump(exclude_none=True) for item in payload.attachments),
-        "references": tuple(item.model_dump(exclude_none=True) for item in payload.references),
-        "workspace_references": tuple(item.model_dump() for item in payload.workspace_references),
-        "annotations": tuple(payload.annotations),
-    }
-    prepared = await run_sync(
-        db,
-        lambda session: (
-            sidebar_conversations.assert_sidebar_writable(session, workspace_id, binding_id),
-            conversations.prepare_running_message(
-                session, workspace_id, binding_id, payload.content, **arguments
-            ),
-        )[1],
-    )
-    running_result = await run_blocking_message(
-        container, lambda _session: conversations.dispatch_running_message(prepared)
-    )
-    if running_result is not None:
-        return await run_sync(
+    if idempotency_key:
+        await run_sync(
             db,
-            lambda session: conversations.finalize_running_message(
-                session, prepared, running_result
+            lambda session: (
+                conversations.authorize_message_submission(
+                    session, workspace_id, binding_id
+                ),
+                message_submissions.begin(session, binding_id, idempotency_key),
             ),
         )
-    return await run_blocking_message(
-        container,
-        lambda session: conversations.message(
-            session,
-            workspace_id,
-            binding_id,
-            payload.content,
-            **arguments,
-        ),
+    fence = (
+        message_submissions.DispatchFence(
+            container.database.control_sessions, binding_id, idempotency_key
+        )
+        if idempotency_key
+        else None
     )
+    arguments = {
+        "attachments": tuple(
+            item.model_dump(exclude_none=True) for item in payload.attachments
+        ),
+        "references": tuple(
+            item.model_dump(exclude_none=True) for item in payload.references
+        ),
+        "workspace_references": tuple(
+            item.model_dump() for item in payload.workspace_references
+        ),
+        "annotations": tuple(payload.annotations),
+    }
+    try:
+        with message_submissions.fenced(fence):
+            prepared = await run_sync(
+                db,
+                lambda session: (
+                    sidebar_conversations.assert_sidebar_writable(
+                        session, workspace_id, binding_id
+                    ),
+                    conversations.prepare_running_message(
+                        session, workspace_id, binding_id, payload.content, **arguments
+                    ),
+                )[1],
+            )
+            running_result = await run_blocking_message(
+                container,
+                lambda _session: conversations.dispatch_running_message(prepared),
+            )
+            if running_result is not None:
+                return await run_sync(
+                    db,
+                    lambda session: conversations.finalize_running_message(
+                        session, prepared, running_result
+                    ),
+                )
+            return await run_blocking_message(
+                container,
+                lambda session: conversations.message(
+                    session,
+                    workspace_id,
+                    binding_id,
+                    payload.content,
+                    **arguments,
+                ),
+            )
 
+    except DomainError:
+        if idempotency_key:
+            await run_sync(
+                db,
+                lambda session: message_submissions.discard_preparation(
+                    session, binding_id, idempotency_key
+                ),
+            )
+        raise
+
+
+@router.post(
+    "/agent-workspaces/{workspace_id}/conversations/{binding_id}/messages/{submission_id}/cancel"
+)
+async def cancel_agent_message_submission(
+    workspace_id: str,
+    binding_id: str,
+    submission_id: str,
+    db: Db,
+) -> dict[str, bool]:
+    return await run_sync(
+        db,
+        lambda session: (
+            conversations.authorize_message_submission(
+                session, workspace_id, binding_id
+            ),
+            message_submissions.cancel(session, binding_id, submission_id),
+        )[1],
+    )
 
 @router.post(
     "/agent-workspaces/{workspace_id}/conversations/{binding_id}/attachments", status_code=201

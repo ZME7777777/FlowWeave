@@ -16,7 +16,7 @@ from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions import public as agent_sessions
-from flowweave.modules.agent_sessions.application import resumable_attachments
+from flowweave.modules.agent_sessions.application import message_submissions, resumable_attachments
 from flowweave.modules.agent_sessions.application import usage as usage_projection
 from flowweave.modules.agent_sessions.application.activity_reconciliation import (
     read_activity_completion,
@@ -103,7 +103,7 @@ from flowweave.modules.environments.public import (
 from flowweave.modules.model_providers.public import has_connected_default_model
 from flowweave.modules.sandboxes import public as sandboxes
 from flowweave.modules.tasks.public import enqueue
-from flowweave.modules.users.application.security import current_principal
+from flowweave.modules.users.application.security import current_principal, current_user_id
 from flowweave.runtime.base import (
     RuntimeEventBatch,
     RuntimeHandle,
@@ -549,6 +549,16 @@ def _binding_for_attempt(
     ):
         raise not_found("flow_run_conversation_binding", binding_id)
     return item
+
+
+def authorize_node_message_submission(
+    db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str,
+) -> None:
+    binding = _binding_for_attempt(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id,
+    )
+    if binding.owner_user_id != current_user_id():
+        raise not_found("flow_run_conversation_binding", binding_id)
 
 
 def node_conversation_binding(
@@ -3102,7 +3112,7 @@ def dispatch_running_node_message(
         )
     try:
         return (
-            runtime.send_message(prepared.handle, prompt, image_urls),
+            message_submissions.dispatch(runtime, prepared.handle, prompt, image_urls),
             queued_during_turn,
             compacted,
         )
