@@ -15713,3 +15713,26 @@ production build、git diff和任务状态唯一性通过；唯一Alembic head�
 0185_message_submission_cancel。仅Web变更，无Platform、迁移、OpenHands、
 SDK、Runtime或服务器配置改动。沿用直接部署授权，发布验收待补记，无后续
 实现切片。
+
+
+#### OPS-80 Web 发布验收
+
+2026-10-30正式Web预检与受管最小上下文准备通过，发布
+`2e5e3b7c90f7be0b23bf8508ae02bee03fec1964`，源归档SHA-256为
+`6062b30302dd95a028e44e2bd3107d78e5c753eead50edfa531ff947a3f2efd2`。
+linux/amd64 Web镜像ID为
+`sha256:0b130c34f937fbfcb7639bd12fbb1eda7673aab445deeee8f13e53aebb36c640`。
+保留旧Web回滚镜像和服务日志，仅定向recreate Web，revision与HTTP健康通过；
+服务器配置哈希及其余47个容器的镜像和启动时间保持。无Platform、迁移、
+SDK或Runtime更新，数据库仍为0185_message_submission_cancel。
+
+公网HTML／Agent深层路由、两项入口资源及三个包含只读会话配置文案与
+样式的模块资源SHA-256与运行镜像一致，API鉴权边界通过。全新Chromium
+的平台登录、深层路由和根登录页通过；3870条完整网络事件中部署前缀API
+请求通过，根路径API请求为0，临时浏览器均回收。线上验收只读，未修改
+实际节点、运行记录或能力。交互由本地15项Chromium回归与截图验证；
+三项既有内置MCP旧说明文本断言失败已在未修改版本复现，保持前述记录。
+
+Web remote-release-finish通过，无过期受管上下文候选；保留最近24小时上下文、
+实际路径引用及每仓库一个回滚镜像。收尾后Web版本／健康、数据库head、
+服务器配置与47个保护容器再次核验通过。未push，无后续实现切片。
