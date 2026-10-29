@@ -80,6 +80,7 @@ from flowweave.modules.agent_workspaces.application.git_settings import (
     apply_profile_identity,
     profile_identity,
 )
+from flowweave.modules.catalog.application import mcp_authentication
 from flowweave.modules.catalog.public import resolve_version
 from flowweave.modules.credentials.application.service import (
     list_credentials,
@@ -740,7 +741,7 @@ def _binding_mcp_keys(db: Session, binding: AgentConversationBinding) -> tuple[s
 
 
 def probe_workspace_mcp_readiness(
-    db: Session, workspace_id: str, capability_version_id: str
+    db: Session, workspace_id: str, capability_version_id: str, *, read_only_tool_call=None
 ) -> dict[str, Any]:
     """Probe one published MCP from the active Agent Workspace Runtime.
 
@@ -805,9 +806,23 @@ def probe_workspace_mcp_readiness(
             server = replace(
                 server, config={**server.config, "headers": {"Authorization": f"Bearer {token}"}}
             )
+        if not builtin_history:
+            server, _ = mcp_authentication.prepare_server(db, server, probe=True)
+        from flowweave.runtime.base import RuntimeMCPToolCall
+
+        call = (
+            RuntimeMCPToolCall(
+                name=read_only_tool_call.name, arguments=read_only_tool_call.arguments
+            )
+            if read_only_tool_call is not None
+            else None
+        )
+        if builtin_history and call is not None:
+            raise DomainError("MCP_PROBE_READ_ONLY", "内置能力仅支持工具目录检测", 422)
         result = get_runtime().probe_mcp(
             RuntimeMCPProbeRequest(
                 server=server,
+                read_only_tool_call=call,
                 base_url=f"http://{sandbox.backend_resource_name}:8000",
                 runtime_resource_name=sandbox.backend_resource_name,
             )
@@ -821,12 +836,28 @@ def probe_workspace_mcp_readiness(
         # synchronously.  The temporary immutable probe directory is never a
         # Conversation capability and must not accumulate in the allocation.
         shutil.rmtree(host_root, ignore_errors=True)
+    invocation = None
+    if read_only_tool_call is not None:
+        business_code = None
+        try:
+            body = json.loads(result.tool_call_text or "")
+            value = body.get("code") if isinstance(body, dict) else None
+            if isinstance(value, int) and not isinstance(value, bool):
+                business_code = value
+        except (ValueError, TypeError):
+            pass
+        invocation = {
+            "name": read_only_tool_call.name,
+            "is_error": result.tool_call_is_error,
+            "business_code": business_code,
+        }
     return {
         "state": "READY" if result.ok else "UNAVAILABLE",
         "error_kind": None if result.ok else (result.error_kind or "unknown"),
         "reason": None if result.ok else f"MCP_{(result.error_kind or 'unknown').upper()}",
         "tools": list(result.tools) if result.ok else [],
         "checked_at": now().isoformat(),
+        **({"read_only_tool_call": invocation} if invocation is not None else {}),
     }
 
 
@@ -1824,6 +1855,7 @@ def _create_native_conversation(
         runtime_base_url=f"http://{handle.runtime_resource_name}:8000",
         conversation_secrets=conversation_secrets,
     )
+    request = mcp_authentication.prepare_request(db, request, f"conversation:{binding.id}")
     created = get_runtime().create_conversation(request)
     if created.conversation_id != binding.openhands_conversation_id:
         raise DomainError("AGENT_CONVERSATION_IDENTITY_DRIFT", "会话身份校验失败", 409)
@@ -1994,8 +2026,15 @@ def register_conversation_capabilities(
     for published, capability_type in pending:
         version_id = published.version.id
         try:
-            plugin_name = materialize_agent_workspace_capability_marketplace(
+            material, auth_secrets = mcp_authentication.prepare_material(
+                db,
                 _frozen_runtime_capability(db, published, capability_type),
+                f"conversation:{binding.id}",
+            )
+            if auth_secrets:
+                runtime.update_conversation_secrets(handle, auth_secrets)
+            plugin_name = materialize_agent_workspace_capability_marketplace(
+                material,
                 host_root=host_root,
                 runtime_root=runtime_root,
                 marketplace_name=marketplace_name,

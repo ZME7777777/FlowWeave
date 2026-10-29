@@ -78,6 +78,7 @@ from flowweave.shared.infrastructure.docker_controller import (
     DockerControllerClient,
     DockerControllerError,
 )
+from flowweave.shared.schemas import MCPWorkspaceProbeWrite
 from flowweave.shared.settings import bind_settings, reset_settings
 
 router = APIRouter()
@@ -512,12 +513,18 @@ async def put_agent_workspace_session_configuration(
 
 @router.post("/agent-workspaces/{workspace_id}/capabilities/{capability_version_id}/mcp-readiness")
 async def probe_agent_workspace_mcp_readiness(
-    workspace_id: str, capability_version_id: str, container: ContainerDep
+    workspace_id: str,
+    capability_version_id: str,
+    container: ContainerDep,
+    payload: MCPWorkspaceProbeWrite | None = None,
 ) -> dict[str, Any]:
     return await run_blocking(
         container,
         lambda session: conversations.probe_workspace_mcp_readiness(
-            session, workspace_id, capability_version_id
+            session,
+            workspace_id,
+            capability_version_id,
+            read_only_tool_call=payload.read_only_tool_call if payload else None,
         ),
     )
 
@@ -1542,7 +1549,10 @@ async def register_agent_conversation_capabilities(
     return await run_blocking_lifecycle(
         container,
         lambda session: conversations.register_conversation_capabilities(
-            session, workspace_id, binding_id, tuple(payload.capability_version_ids)
+            session,
+            workspace_id,
+            binding_id,
+            tuple(payload.capability_version_ids),
         ),
     )
 

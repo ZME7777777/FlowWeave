@@ -7,6 +7,7 @@ import { CapabilityPackageDialog } from '../components/CapabilityPackageDialog';
 import { CapabilityCollectionEditorDialog } from '../components/CapabilityCollectionEditorDialog';
 import { McpConnectionTestDialog } from '../components/McpConnectionTestDialog';
 import { mcpConnectionLabel } from '../components/mcp-connection';
+import { McpAuthenticationFields } from '../components/McpAuthenticationFields';
 import { McpDetailsDialog } from '../components/McpDetailsDialog';
 import { LaunchOptionMenu } from '../components/LaunchOptionMenu';
 import { Pagination } from '../components/Pagination';
@@ -16,7 +17,7 @@ import { AgentProfileHistoryDialog } from '../components/AgentProfileHistoryDial
 import { useProductDialog } from '../components/ProductDialogContext';
 import { useDialogFocus } from '../components/useDialogFocus';
 import { useEscapeClose } from '../components/useEscapeClose';
-import type { AgentSessionMcpReadiness, BlockedCapabilityDelete, CapabilityAsset, CapabilityAssetType, CapabilityLineage, CapabilityCollection, CapabilityCollectionWrite, CapabilitySort, CapabilityCollectionSort, ContextBundleManifest } from '../types';
+import type { AgentSessionMcpReadiness, BlockedCapabilityDelete, CapabilityAsset, CapabilityAssetType, CapabilityLineage, CapabilityCollection, CapabilityCollectionWrite, CapabilitySort, CapabilityCollectionSort, ContextBundleManifest, McpAuthenticationWrite } from '../types';
 
 import './capability-repository.css';
 
@@ -196,6 +197,9 @@ export function CapabilitiesPage() {
   useEscapeClose(() => setContextOpen(false), contextOpen);
   const [editingCollection, setEditingCollection] = useState<CapabilityCollection | null | undefined>();
   const [mcpOpen, setMcpOpen] = useState(false);
+  const [mcpAuthentication, setMcpAuthentication] = useState<McpAuthenticationWrite>();
+  const [mcpInitialAuthentication, setMcpInitialAuthentication] = useState<McpAuthenticationWrite>();
+  const [mcpAuthenticationVersionId, setMcpAuthenticationVersionId] = useState<string>();
   const [editingMcp, setEditingMcp] = useState<CapabilityAsset>();
   const [mcpInitialSource, setMcpInitialSource] = useState('');
   const [mcpBaseRevision, setMcpBaseRevision] = useState<number>();
@@ -280,6 +284,9 @@ export function CapabilitiesPage() {
   const activeMcpServer = parsedMcp.document?.mcpServers[activeMcpServerName] ?? {};
   const activeMcpTransport = effectiveTransport(activeMcpServer);
   const activeMcpConnectionKind = connectionKind(activeMcpServer);
+  const mcpAuthStrategy = (activeMcpServer.auth as { strategy?: string } | undefined)?.strategy;
+  const canBindMcpAuthentication = activeMcpConnectionKind === 'REMOTE' && (!mcpAuthStrategy || ['none', 'bearer'].includes(mcpAuthStrategy))
+    && !Object.keys((activeMcpServer.headers as Record<string, unknown> | undefined) ?? {}).some(key => key.toLowerCase() === 'authorization');
 
   const saveMcpDocument = (document: McpDocument, selectedServer?: string) => {
     setMcpJson(serializeMcpDocument(document));
@@ -311,6 +318,7 @@ export function CapabilitiesPage() {
       return;
     }
     setMcpScripts([]);
+    if (!mcpAuthentication) setMcpAuthentication({ strategy: 'none', credential_id: null, expected_row_version: 0 });
     const next: McpServerConfig = { ...activeMcpServer, transport: 'streamable-http', url: '' };
     ['type', 'command', 'args', 'env', 'cwd'].forEach(key => delete next[key]);
     saveMcpDocument({ mcpServers: { [activeMcpServerName]: next } }, activeMcpServerName);
@@ -421,12 +429,16 @@ export function CapabilitiesPage() {
     try {
       if (item) {
         const loaded = await qc.ensureQueryData({ queryKey: ['mcp-source', item.id], queryFn: () => api.mcpSource(item.id) });
+        const auth = await api.mcpAuthentication(item.id);
+        const selectedAuthentication = auth.editable ? { strategy: auth.strategy, credential_id: auth.credential_id, expected_row_version: auth.row_version } : undefined;
+        setMcpAuthentication(selectedAuthentication); setMcpInitialAuthentication(selectedAuthentication); setMcpAuthenticationVersionId(item.id);
         setMcpJson(loaded.content);
         setMcpInitialSource(JSON.stringify([loaded.content, loaded.mcp_scripts.map(({ server, filename, content_base64 }) => ({ server, filename, content_base64 }))]));
         setMcpScripts(loaded.mcp_scripts.map(script => ({ ...script, contentBase64: script.content_base64, byteSize: Math.floor(script.content_base64.length * 3 / 4) })));
         setMcpSelectedServer(loaded.capability_key);
         setEditingMcp(latest); setMcpBaseRevision(item.revision_number);
       } else {
+        setMcpAuthentication({ strategy: 'none', credential_id: null, expected_row_version: 0 }); setMcpInitialAuthentication(undefined); setMcpAuthenticationVersionId(undefined);
         setMcpJson(MCP_JSON_EXAMPLE); setMcpScripts([]); setMcpSelectedServer('remote'); setEditingMcp(undefined); setMcpBaseRevision(undefined);
       }
       setMcpMode('FORM'); setMcpJsonError(''); setMcpOpen(true); setViewingMcp(undefined);
@@ -445,16 +457,22 @@ export function CapabilitiesPage() {
         if (!server || effectiveTransport(server) !== 'stdio') throw new Error(`脚本“${script.filename}”绑定的 Server“${script.server}”不存在或已不是本地 stdio Server。`);
       }
       const scripts = mcpScripts.map(script => ({ server: script.server, filename: script.filename, content_base64: script.contentBase64 }));
-      if (editingMcp) await api.updateMcpSource(editingMcp.id, mcpJson, scripts);
+      const authentication = canBindMcpAuthentication && mcpAuthentication ? { ...mcpAuthentication, expected_row_version: 0 } : undefined;
+      const sourceUnchanged = Boolean(editingMcp && mcpInitialSource === JSON.stringify([mcpJson, scripts]));
+      if (sourceUnchanged && mcpAuthentication && mcpAuthenticationVersionId) {
+        await api.saveMcpAuthentication(mcpAuthenticationVersionId, mcpAuthentication);
+        await qc.invalidateQueries({ queryKey: ['mcp-authentication', mcpAuthenticationVersionId] });
+        setMcpResults(current => { const next = { ...current }; delete next[mcpAuthenticationVersionId]; return next; });
+      } else if (editingMcp) await api.updateMcpSource(editingMcp.id, mcpJson, scripts, authentication);
       else {
         const validated = await api.validateCapability({ capability_type: 'MCP', filename: 'mcp.json', content_base64: toBase64(bytes.buffer), mcp_scripts: scripts });
         const capabilityCount = validated.preview.capabilities?.length ?? 0;
         if (!capabilityCount) throw new Error('JSON 中没有可用的 MCP Server。');
-        await api.commitCapability(validated.import_token);
+        await api.commitCapability(validated.import_token, authentication);
       }
       setMcpOpen(false); setMcpMode('FORM'); setMcpSelectedServer('remote'); setMcpJsonError(''); setMcpJson(MCP_JSON_EXAMPLE); setMcpScripts([]);
       setEditingMcp(undefined);
-      await refresh(); setNotice(editingMcp ? `已发布 MCP“${editingMcp.capability_key}”的新版本。` : '已创建 MCP 能力。');
+      await refresh(); setNotice(sourceUnchanged ? '已保存当前账号的 MCP 认证绑定。' : editingMcp ? `已发布 MCP“${editingMcp.capability_key}”的新版本。` : '已创建 MCP 能力。');
     } catch (reason) { setError(errorMessage(reason)); } finally { setBusy(false); }
   };
   const toggleLineage = (group: CapabilityLineage) => {
@@ -590,14 +608,17 @@ export function CapabilitiesPage() {
     {skillComparison && <CapabilityPackageDialog key={`compare:${skillComparison.id}`} item={skillComparison} comparison onClose={() => setSkillComparison(undefined)} onPublished={refresh}/>}
     {editingCollection !== undefined && <CapabilityCollectionEditorDialog collection={editingCollection ?? undefined} capabilities={capabilities} busy={busy} onClose={() => setEditingCollection(undefined)} onSave={payload => void saveCollection(payload)}/>}
     {mcpTestTargets && <McpConnectionTestDialog targets={mcpTestTargets} onResult={(id, result) => setMcpResults(current => ({ ...current, [id]: result }))} onClose={() => setMcpTestTargets(undefined)}/>}
-    {viewingMcp && <McpDetailsDialog key={viewingMcp.id} initialTab={viewingMcpTools ? 'tools' : 'config'} results={mcpResults} onResult={(id, result) => setMcpResults(current => ({ ...current, [id]: result }))} group={viewingMcp} onClose={() => setViewingMcp(undefined)} onEdit={(source, latest) => void openMcpEditor(source, latest)}/>}
-    {mcpOpen && <McpEditorDialog unchanged={Boolean(editingMcp && mcpInitialSource === JSON.stringify([mcpJson, mcpScripts.map(script => ({ server: script.server, filename: script.filename, content_base64: script.contentBase64 }))]))} baseRevision={mcpBaseRevision} saveError={error} editing={Boolean(editingMcp)} mode={mcpMode} json={mcpJson} jsonError={mcpJsonError || parsedMcp.error || mcpContractError} selectedServer={activeMcpServerName} server={activeMcpServer} transport={activeMcpTransport} connectionKind={activeMcpConnectionKind} scripts={mcpScripts.filter(script => script.server === activeMcpServerName)} busy={busy} onModeChange={switchMcpMode} onJsonChange={value => { setMcpJson(value); setMcpJsonError(''); }} onConnectionKindChange={switchMcpConnectionKind} onRenameServer={renameMcpServer} onUpdateServer={updateMcpServer} onAddScripts={(server, files) => void addMcpScripts(server, files).catch(reason => setMcpJsonError(errorMessage(reason)))} onRemoveScript={removeMcpScript} onClose={() => { setMcpOpen(false); setEditingMcp(undefined); }} onSave={() => void createMcp()}/>}
+    {viewingMcp && <McpDetailsDialog onAuthenticationSaved={id => { setMcpResults(current => { const next = { ...current }; delete next[id]; return next; }); }} key={viewingMcp.id} initialTab={viewingMcpTools ? 'tools' : 'config'} results={mcpResults} onResult={(id, result) => setMcpResults(current => ({ ...current, [id]: result }))} group={viewingMcp} onClose={() => setViewingMcp(undefined)} onEdit={(source, latest) => void openMcpEditor(source, latest)}/>}
+    {mcpOpen && <McpEditorDialog unchanged={Boolean(editingMcp && mcpInitialSource === JSON.stringify([mcpJson, mcpScripts.map(script => ({ server: script.server, filename: script.filename, content_base64: script.contentBase64 }))]) && JSON.stringify(mcpAuthentication) === JSON.stringify(mcpInitialAuthentication))} authenticationOnly={Boolean(editingMcp && JSON.stringify(mcpAuthentication) !== JSON.stringify(mcpInitialAuthentication) && mcpInitialSource === JSON.stringify([mcpJson, mcpScripts.map(script => ({ server: script.server, filename: script.filename, content_base64: script.contentBase64 }))]))} authentication={canBindMcpAuthentication ? mcpAuthentication : undefined} onAuthenticationChange={setMcpAuthentication} baseRevision={mcpBaseRevision} saveError={error} editing={Boolean(editingMcp)} mode={mcpMode} json={mcpJson} jsonError={mcpJsonError || parsedMcp.error || mcpContractError} selectedServer={activeMcpServerName} server={activeMcpServer} transport={activeMcpTransport} connectionKind={activeMcpConnectionKind} scripts={mcpScripts.filter(script => script.server === activeMcpServerName)} busy={busy} onModeChange={switchMcpMode} onJsonChange={value => { setMcpJson(value); setMcpJsonError(''); }} onConnectionKindChange={switchMcpConnectionKind} onRenameServer={renameMcpServer} onUpdateServer={updateMcpServer} onAddScripts={(server, files) => void addMcpScripts(server, files).catch(reason => setMcpJsonError(errorMessage(reason)))} onRemoveScript={removeMcpScript} onClose={() => { setMcpOpen(false); setEditingMcp(undefined); }} onSave={() => void createMcp()}/>}
     {viewingAgentDefinition && <AgentDefinitionDetailDialog item={viewingAgentDefinition} onClose={() => setViewingAgentDefinition(undefined)} />}
   </section>;
 }
 
 interface McpEditorDialogProps {
   editing: boolean;
+  authentication?: McpAuthenticationWrite;
+  authenticationOnly: boolean;
+  onAuthenticationChange: (value: McpAuthenticationWrite) => void;
   baseRevision?: number;
   saveError: string;
   unchanged: boolean;
@@ -623,7 +644,7 @@ interface McpEditorDialogProps {
 
 function McpEditorDialog(props: McpEditorDialogProps) {
   const {
-    editing, baseRevision, saveError, unchanged, mode, json, jsonError, selectedServer, server, transport, connectionKind, scripts, busy,
+    editing, authenticationOnly, authentication, onAuthenticationChange, baseRevision, saveError, unchanged, mode, json, jsonError, selectedServer, server, transport, connectionKind, scripts, busy,
     onModeChange, onJsonChange, onConnectionKindChange,
     onRenameServer, onUpdateServer, onAddScripts, onRemoveScript, onClose, onSave,
   } = props;
@@ -650,6 +671,7 @@ function McpEditorDialog(props: McpEditorDialogProps) {
         <label><span>Server 名称 *</span><input aria-label="Server 名称" value={selectedServer} placeholder={connectionKind === 'REMOTE' ? '例如 remote' : '例如 local'} disabled={editing} onChange={event => onRenameServer(event.target.value)}/><small>{editing ? '已发布 MCP 的身份不可修改。' : '作为能力名和 OpenHands mcp_config 中的唯一键。'}</small></label>
         {connectionKind === 'REMOTE' ? <label><span>远程协议 *</span><LaunchOptionMenu label="远程协议" value={transport} options={[{ value: 'streamable-http', label: 'Streamable HTTP' }, { value: 'http', label: 'HTTP' }, { value: 'sse', label: 'SSE' }]} disabled={busy} onChange={value => updateTransport(value as McpTransport)}/><small>仅按 MCP 服务端实际支持的协议选择。</small></label> : <label><span>连接协议</span><input aria-label="连接协议" value="stdio" disabled/><small>本地 MCP 固定通过标准输入输出连接。</small></label>}
         {transport === 'stdio' ? <><label className="full-row"><span>CLI 命令 *</span><input aria-label="CLI 命令" value={stringValue('command')} placeholder="例如 python、node 或 mcp-tool-server" onChange={event => onUpdateServer({ command: event.target.value })}/><small>可使用终端环境内已安装的 CLI，或把下方上传的脚本设为入口。</small></label><label><span>参数</span><textarea aria-label="CLI 参数" value={args} placeholder={'每行一个参数，例如：\nscripts/server.py\n--readonly'} onChange={event => { const values = event.target.value.split('\n').map(item => item.trim()).filter(Boolean); onUpdateServer(values.length ? { args: values } : {}, values.length ? [] : ['args']); }}/></label><label><span>工作目录</span><input aria-label="工作目录" value={stringValue('cwd')} placeholder="留空则使用 MCP 工作目录" onChange={event => onUpdateServer(event.target.value ? { cwd: event.target.value } : {}, event.target.value ? [] : ['cwd'])}/></label><section className="mcp-script-panel full-row"><header><div><b>脚本资源</b><span>随当前 Server 持久化并解包到 <code>scripts/</code></span></div><label className="secondary file-button">上传脚本<input type="file" multiple accept=".py,.js,.mjs,.cjs,.sh,.json,.yaml,.yml,.toml,.txt" onChange={event => { const files = [...(event.target.files ?? [])]; event.target.value = ''; if (files.length) onAddScripts(selectedServer, files); }}/></label></header>{scripts.length ? <div className="mcp-script-list">{scripts.map(script => <article key={script.filename}><div><b>{script.filename}</b><small>{formatBytes(script.byteSize)} · scripts/{script.filename}</small></div>{isExecutableScript(script.filename) && <button type="button" className="secondary" onClick={() => setScriptAsEntry(script.filename)}>设为入口</button>}<button type="button" className="ghost" onClick={() => onRemoveScript(selectedServer, script.filename)}>移除</button></article>)}</div> : <div className="mcp-script-empty">可上传多个入口脚本和辅助配置；单文件 1 MiB，合计 10 MiB，最多 20 个。</div>}</section></> : <label className="full-row"><span>Server URL *</span><input aria-label="Server URL" type="url" value={stringValue('url')} placeholder="https://mcp.example.com/mcp" onChange={event => onUpdateServer({ url: event.target.value })}/><small>填写 Runtime 容器网络可访问的 HTTP(S) 地址。</small></label>}
+        {connectionKind === 'REMOTE' && authentication && <McpAuthenticationFields value={authentication} url={stringValue('url')} disabled={busy} onChange={onAuthenticationChange}/>}
         <label><span>超时（秒）</span><input aria-label="超时" type="number" min="1" value={timeout} onChange={event => onUpdateServer(event.target.value ? { timeout: Number(event.target.value) } : {}, event.target.value ? [] : ['timeout'])}/></label>
         <label><span>说明</span><input aria-label="MCP 说明" value={stringValue('description')} placeholder="说明该 Server 提供什么工具" onChange={event => onUpdateServer(event.target.value ? { description: event.target.value } : {}, event.target.value ? [] : ['description'])}/></label>
         <div className="mcp-form-actions full-row"><span>高级字段请切换到 JSON 编辑；字段仍受远程 / 本地连接契约限制。</span></div>
@@ -657,8 +679,8 @@ function McpEditorDialog(props: McpEditorDialogProps) {
     </div> : <div className="mcp-json-editor"><textarea aria-label="MCP JSON" value={json} spellCheck={false} onChange={event => onJsonChange(event.target.value)}/><div className="mcp-config-help"><b>FlowWeave JSON 结构</b><span>新建 MCP 一次只接受一个具名 Server。</span><span>远程：<code>url</code> + <code>transport</code>，可使用 headers、auth、keep_alive。</span><span>本地：<code>command</code> + <code>args</code> + <code>transport: stdio</code>，可使用 env、cwd。</span><span>远程与本地字段不可混用。</span></div></div>}
     </fieldset>
     {(jsonError || saveError) && <p className="error" role="alert">{jsonError || saveError}</p>}
-    <div className="mcp-editor-note">认证由会话配置注入；CLI 和依赖使用已发布的终端环境。</div>
-    <footer><span>已有会话和运行保留冻结版本</span><button className="ghost" disabled={busy} onClick={onClose}>取消</button><button className="primary" disabled={busy || unchanged || !json.trim() || Boolean(jsonError)} onClick={onSave}>{busy ? '保存中…' : editing ? '发布新版本' : '校验并保存'}</button></footer>
+    <div className="mcp-editor-note">认证绑定仅对当前账号生效，Token 不写入 JSON；CLI 和依赖使用已发布的终端环境。</div>
+    <footer><span>连接配置发布新版本；认证绑定仅对当前账号生效</span><button className="ghost" disabled={busy} onClick={onClose}>取消</button><button className="primary" disabled={busy || unchanged || !json.trim() || Boolean(jsonError) || connectionKind === 'REMOTE' && authentication?.strategy === 'bearer' && !authentication.credential_id} onClick={onSave}>{busy ? '保存中…' : editing ? authenticationOnly ? '保存认证' : '发布新版本' : '校验并保存'}</button></footer>
   </section></div>;
 }
 

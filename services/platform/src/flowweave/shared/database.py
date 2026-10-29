@@ -80,6 +80,8 @@ _USER_ISOLATED_TABLES = frozenset(
         "model_providers",
         "provider_models",
         "website_credentials",
+        "mcp_authentication_bindings",
+        "mcp_authentication_uses",
         "flow_runs",
         "flow_run_schedules",
         "flow_run_schedule_occurrences",

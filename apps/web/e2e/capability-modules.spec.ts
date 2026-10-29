@@ -693,6 +693,10 @@ test('MCP builtins are read-only and version details create a new draft from a h
     document: config, dependencies: {}, dependency_build_state: 'NOT_REQUIRED', dependency_build_error: null,
   });
   let records = [asset('mcp-v1', 1, configs.first), asset('mcp-v2', 2, configs.second), asset('builtin-v2', 2, { description: '会话历史查询' }, true)];
+  await page.route('**/api/v1/capabilities/*/mcp-authentication', route => route.fulfill({ json: {
+    capability_version_id: route.request().url().split('/').at(-2), strategy: 'none', credential_id: null,
+    credential_name: null, row_version: 0, editable: false, valid: true,
+  } }));
   await mockRepository(page, 'capabilities', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(records) }));
   await mockRepository(page, 'capability-collections', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
   const writes: Array<{ id: string; content: string; mcp_scripts: Array<{ filename: string }> }> = [];

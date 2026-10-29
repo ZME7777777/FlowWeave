@@ -12,6 +12,7 @@ from flowweave.modules.catalog.application import (
     capability_files,
     capability_imports,
     market_sources,
+    mcp_authentication,
     mcp_oauth_authorizations,
     mcp_oauth_secrets,
     mcp_validations,
@@ -40,6 +41,7 @@ from flowweave.shared.schemas import (
     MarketplaceCatalogRead,
     MarketplaceCatalogWrite,
     MarketplacePluginSourceResolveWrite,
+    MCPAuthenticationWrite,
     MCPOAuthAuthorizationCallbackWrite,
     MCPOAuthAuthorizationStartWrite,
     MCPOAuthSecretReferenceRevokeWrite,
@@ -297,7 +299,10 @@ async def commit_capability(payload: CapabilityCommitWrite, db: Db) -> dict[str,
     )
     final_key = await asyncio.to_thread(capability_imports.finalize_commit_source, plan)
     return await run_sync(
-        db, lambda session: capability_imports.confirm_commit(session, plan, final_key)
+        db,
+        lambda session: capability_imports.confirm_commit(
+            session, plan, final_key, payload.mcp_authentication
+        ),
     )
 
 
@@ -733,7 +738,9 @@ async def update_mcp_source(
         final_key = await asyncio.to_thread(capability_imports.finalize_skill_update_source, stored)
         return await run_sync(
             db,
-            lambda session: capability_imports.confirm_mcp_update(session, stored, final_key),
+            lambda session: capability_imports.confirm_mcp_update(
+                session, stored, final_key, payload.mcp_authentication
+            ),
         )
     except BaseException:
         if stored.prepared.storage_key is not None:
@@ -823,3 +830,17 @@ async def validate_market_skill(payload: MarketSkillImportWrite, db: Db) -> dict
     except BaseException:
         await asyncio.to_thread(capability_imports.discard_validation_source, stored)
         raise
+
+
+@router.get("/capabilities/{capability_id}/mcp-authentication")
+async def mcp_authentication_read(capability_id: str, db: Db) -> dict[str, Any]:
+    return await run_sync(db, lambda session: mcp_authentication.read(session, capability_id))
+
+
+@router.put("/capabilities/{capability_id}/mcp-authentication")
+async def mcp_authentication_write(
+    capability_id: str, payload: MCPAuthenticationWrite, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db, lambda session: mcp_authentication.save(session, capability_id, payload)
+    )

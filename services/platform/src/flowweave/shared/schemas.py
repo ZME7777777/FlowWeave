@@ -1132,7 +1132,20 @@ def _empty_mcp_scripts() -> list[MCPScriptWrite]:
     return []
 
 
+class MCPAuthenticationWrite(ApiModel):
+    strategy: Literal["none", "bearer"] = "none"
+    credential_id: str | None = None
+    expected_row_version: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def validate_binding(self) -> MCPAuthenticationWrite:
+        if (self.strategy == "bearer") != bool(self.credential_id):
+            raise ValueError("Bearer authentication requires exactly one credential")
+        return self
+
+
 class CapabilityMcpRevisionWrite(CapabilitySkillRevisionWrite):
+    mcp_authentication: MCPAuthenticationWrite | None = None
     mcp_scripts: list[MCPScriptWrite] = Field(default_factory=_empty_mcp_scripts, max_length=20)
 
 
@@ -1200,11 +1213,16 @@ class CapabilityValidateWrite(ApiModel):
 
 class CapabilityCommitWrite(ApiModel):
     import_token: str
+    mcp_authentication: MCPAuthenticationWrite | None = None
 
 
 class MCPReadOnlyToolCallWrite(ApiModel):
     name: str = Field(min_length=1, max_length=200)
     arguments: dict[str, Any] = Field(default_factory=_empty_any_dict)
+
+
+class MCPWorkspaceProbeWrite(ApiModel):
+    read_only_tool_call: MCPReadOnlyToolCallWrite | None = None
 
 
 class MCPProbeWrite(ApiModel):

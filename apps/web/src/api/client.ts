@@ -378,8 +378,8 @@ export const api = {
     const query = workDirectoryId ? `?work_directory_id=${encodeURIComponent(workDirectoryId)}` : '';
     return request<import('../types').AgentWorkspaceSessionConfiguration>(`/agent-workspaces/${encodeURIComponent(id)}/session-configuration${query}`, json('PUT', configuration));
   },
-  agentWorkspaceMcpReadiness: (id: string, capabilityVersionId: string, signal?: AbortSignal) =>
-    request<AgentWorkspaceMcpReadiness>(`/agent-workspaces/${encodeURIComponent(id)}/capabilities/${encodeURIComponent(capabilityVersionId)}/mcp-readiness`, { ...json('POST'), signal, timeoutMs: 25_000 }),
+  agentWorkspaceMcpReadiness: (id: string, capabilityVersionId: string, signal?: AbortSignal, read_only_tool_call?: { name: string; arguments: Record<string, unknown> }) =>
+    request<AgentWorkspaceMcpReadiness>(`/agent-workspaces/${encodeURIComponent(id)}/capabilities/${encodeURIComponent(capabilityVersionId)}/mcp-readiness`, { ...json('POST', read_only_tool_call ? { read_only_tool_call } : undefined), signal, timeoutMs: 25_000 }),
   agentWorkspaceRuntime: (id: string) => request<AgentWorkspaceRuntime>(`/agent-workspaces/${encodeURIComponent(id)}/runtime`),
   agentGitIdentity: (id: string) => request<AgentGitIdentity>(`/agent-workspaces/${encodeURIComponent(id)}/settings/git`),
   saveAgentGitIdentity: (id: string, identity: { author: string; email: string }) => request<AgentGitIdentity>(`/agent-workspaces/${encodeURIComponent(id)}/settings/git`, { method: 'PUT', body: JSON.stringify(identity) }),
@@ -692,7 +692,7 @@ export const api = {
       };
       content_hash: string;
     }>('/capability-imports/validate', json('POST', body)),
-  commitCapability: (import_token: string) => request<CapabilityImportResult>('/capability-imports', json('POST', { import_token })),
+  commitCapability: (import_token: string, mcp_authentication?: import('../types').McpAuthenticationWrite) => request<CapabilityImportResult>('/capability-imports', json('POST', { import_token, ...(mcp_authentication ? { mcp_authentication } : {}) })),
   createPluginSourceResolution: (body: { source_url: string; commit: string; repo_path?: string | null }) =>
     request<PluginSourceResolution>('/plugin-source-resolutions', json('POST', body)),
   previewMarketplaceCatalog: (body: { marketplace_source_url: string; marketplace_commit: string; marketplace_repo_path?: string | null }) =>
@@ -716,9 +716,11 @@ export const api = {
     request<RepositoryPage<CapabilityCollection>>(`/capability-collection-directory?${new URLSearchParams(Object.entries(params).map(([key, value]) => [key, String(value)]))}`),
   capabilities: () => request<CapabilityAsset[]>('/capabilities'),
   capabilityCollections: () => request<CapabilityCollection[]>('/capability-collections'),
+  mcpAuthentication: (id: string, signal?: AbortSignal) => request<import('../types').McpAuthentication>(`/capabilities/${encodeURIComponent(id)}/mcp-authentication`, { signal }),
+  saveMcpAuthentication: (id: string, value: import('../types').McpAuthenticationWrite) => request<import('../types').McpAuthentication>(`/capabilities/${encodeURIComponent(id)}/mcp-authentication`, json('PUT', value)),
   mcpSource: (id: string) => request<McpSource>(`/capabilities/${encodeURIComponent(id)}/mcp-source`),
-  updateMcpSource: (id: string, content: string, mcp_scripts: Array<{ server: string; filename: string; content_base64: string }>) =>
-    request<CapabilityAsset>(`/capabilities/${encodeURIComponent(id)}/mcp-source`, json('PUT', { content, mcp_scripts })),
+  updateMcpSource: (id: string, content: string, mcp_scripts: Array<{ server: string; filename: string; content_base64: string }>, mcp_authentication?: import('../types').McpAuthenticationWrite) =>
+    request<CapabilityAsset>(`/capabilities/${encodeURIComponent(id)}/mcp-source`, json('PUT', { content, mcp_scripts, ...(mcp_authentication ? { mcp_authentication } : {}) })),
   createCapabilityCollection: (body: CapabilityCollectionWrite) =>
     request<CapabilityCollection>('/capability-collections', json('POST', body)),
   updateCapabilityCollection: (id: string, body: CapabilityCollectionWrite) =>

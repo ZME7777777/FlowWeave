@@ -94,6 +94,7 @@ from flowweave.modules.agent_sessions.public import (
     AgentConversationMessageAttachment,
 )
 from flowweave.modules.agent_workspaces import public as agent_workspace_host
+from flowweave.modules.catalog.application import mcp_authentication
 from flowweave.modules.catalog.public import resolve_version
 from flowweave.modules.credentials.application.service import credentials_for_agent
 from flowweave.modules.environments.public import (
@@ -1507,7 +1508,7 @@ def _create_native_conversation(
         runtime_sandbox_id=connection.managed_runtime_id,
         runtime_resource_name=connection.resource_name,
         runtime_base_url=f"http://{connection.resource_name}:8000",
-        conversation_secrets=conversation_secrets,
+        conversation_secrets={**request.conversation_secrets, **conversation_secrets},
     )
     handle = get_runtime().create_conversation(request)
     if handle.conversation_id != item.openhands_conversation_id:
@@ -1907,7 +1908,7 @@ def _create_or_reload_node_bootstrap(
         runtime_sandbox_id=connection.managed_runtime_id,
         runtime_resource_name=connection.resource_name,
         runtime_base_url=f"http://{connection.resource_name}:8000",
-        conversation_secrets=conversation_secrets,
+        conversation_secrets={**request.conversation_secrets, **conversation_secrets},
     )
     created = runtime.create_conversation(request)
     if created.conversation_id != binding.openhands_conversation_id:
@@ -3716,8 +3717,15 @@ def register_node_conversation_capabilities(
     for published, capability_type in pending:
         version_id = published.version.id
         try:
-            plugin_name = materialize_agent_workspace_capability_marketplace(
+            material, auth_secrets = mcp_authentication.prepare_material(
+                db,
                 frozen_runtime_capability(db, published, capability_type),
+                f"conversation:{binding.id}",
+            )
+            if auth_secrets:
+                runtime.update_conversation_secrets(handle, auth_secrets)
+            plugin_name = materialize_agent_workspace_capability_marketplace(
+                material,
                 host_root=host_root,
                 runtime_root=runtime_root,
                 marketplace_name=marketplace_name,

@@ -74,6 +74,13 @@ export interface CapabilityPackageComparison {
 export interface CapabilityPackageFileDiff {
   path: string; diff: string; preview_unavailable: boolean; previous_id: string; current_id: string;
 }
+export interface McpAuthenticationWrite {
+  strategy: 'none' | 'bearer'; credential_id: string | null; expected_row_version: number;
+}
+export interface McpAuthentication {
+  capability_version_id: string; strategy: 'none' | 'bearer'; credential_id: string | null;
+  credential_name: string | null; row_version: number; editable: boolean; valid: boolean;
+}
 export interface McpSource {
   id: string; capability_key: string; filename: string; content: string;
   mcp_scripts: Array<{ server: string; filename: string; content_base64: string }>;
@@ -873,6 +880,7 @@ export interface AgentConversationCapabilityRegistration {
 }
 
 export interface AgentSessionMcpReadiness {
+  read_only_tool_call?: { name: string; is_error: boolean | null; business_code: number | null };
   state: 'READY' | 'UNAVAILABLE';
   error_kind: 'timeout' | 'connection' | 'unknown' | null;
   checked_at: string;

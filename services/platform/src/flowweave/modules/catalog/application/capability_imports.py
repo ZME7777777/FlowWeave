@@ -2002,7 +2002,9 @@ def finalize_commit_source(plan: CapabilityCommitPlan) -> str:
         ) from exc
 
 
-def confirm_commit(db: Session, plan: CapabilityCommitPlan, final_key: str) -> dict[str, Any]:
+def confirm_commit(
+    db: Session, plan: CapabilityCommitPlan, final_key: str, authentication=None
+) -> dict[str, Any]:
     """CAS-confirm the finalized object reference and consume the one-time token."""
 
     consumed_at = datetime.now(UTC)
@@ -2049,6 +2051,12 @@ def confirm_commit(db: Session, plan: CapabilityCommitPlan, final_key: str) -> d
             if installed is not None:
                 require_user_managed(installed)
     published = publish_import(db, item)
+    if authentication is not None:
+        from flowweave.modules.catalog.application import mcp_authentication
+
+        if len(published) != 1 or item.capability_type != "MCP":
+            raise _reject("Authentication binding requires exactly one MCP")
+        mcp_authentication.save(db, published[0].version.id, authentication)
     refresh_skill_collection_members(db, published)
     _keep_two_published_skills(db, published)
     if published:
@@ -2696,7 +2704,7 @@ def confirm_skill_update(
 
 
 def confirm_mcp_update(
-    db: Session, update_plan: PreparedSkillUpdate, final_key: str
+    db: Session, update_plan: PreparedSkillUpdate, final_key: str, authentication=None
 ) -> dict[str, Any]:
     """Publish one revised MCP version without rebinding existing consumers."""
 
@@ -2741,6 +2749,10 @@ def confirm_mcp_update(
             "CAPABILITY_SOURCE_UNCHANGED", "配置已存在于历史版本，请修改后再发布", 422
         )
     revised_id = published[0].version.id
+    if authentication is not None:
+        from flowweave.modules.catalog.application import mcp_authentication
+
+        mcp_authentication.save(db, revised_id, authentication)
     finish(db)
     return next(item for item in list_versions(db) if item["id"] == revised_id)
 
