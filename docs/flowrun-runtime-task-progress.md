@@ -14961,3 +14961,32 @@ MCP回归包含在后端计数内。截图人工核对通过。首次失败分�
 配置变更。唯一Alembic head为0184_cascade_directory_archives，任务表无CURRENT。
 仅使用当前发布工作树，不纳入并行CASE开发。沿用直接发布授权，发布验收待
 补记，无后续实现切片。
+
+#### OPS-67 Web／Platform 发布验收
+
+2026-10-29正式Web／Platform预检及受管最小上下文准备通过，发布
+`8dfc782ae86dd12d6e6fc4526efdda79c5879d36`。Platform源归档SHA-256为
+`3168b71a4eed5910b72c6de1c9d190dbdd3343b085dd1905908c7fc3edd1fce9`，
+Web源归档SHA-256为
+`30bf306fabace17ff96cf0d661cc3cc17bb84fdb95f8586a634d593f6c7c0885`。
+linux/amd64的Platform镜像ID为
+`sha256:61f7f159dcb4c002d089d5d9353b01333592a96404c428ddbad2a4ac3ec30e9d`，
+Web镜像ID为
+`sha256:426bbd7b9d4c163882470baa0333c7c2adc32110152bc0ff3968f7a7e04f55ed`。
+
+切换前保留回滚镜像及日志，migration正式入口退出0，Alembic仍为
+0184_cascade_directory_archives。同步recreate api、stream-api、worker和web，
+四项运行revision、健康／readiness与Web入口验证通过；服务器配置哈希及其他
+43个保护容器的镜像与启动时间不变，Runtime Provider和运行容器未重建。
+
+公网HTML、Agent深层路由、两项入口资源及四项匹配MCP版本详情／编辑／内置
+样式的模块资源与运行镜像一致。全新Chromium验证平台登录、深层路由和根
+登录页通过，Network仅使用部署前缀API，根路径API请求为0，两项鉴权边界为401。
+实际API镜像内以只读数据库事务读取5个MCP版本及其源配置；发布前后ID、digest、
+content_hash的汇总摘要相同，2个内置版本均返回is_builtin且管理保护判定为403。
+正式configured_capability校验当前历史查询MCP的身份、配置、digest及源内容通过。
+未对线上MCP执行修改、导入或删除；认证后的详情与编辑交互以本地受控E2E验收。
+
+platform及web的remote-release-finish通过，精确回收1个过期受管上下文；保留
+近24小时上下文、实际引用及每仓库一个回滚镜像。收尾后四项版本、健康、数据库
+head、服务器配置及43个保护容器再次核验通过。未push，无后续实现切片。
