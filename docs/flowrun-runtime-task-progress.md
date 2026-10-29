@@ -15006,3 +15006,21 @@ conversation-rail-collapsed，第二网格列宽度变成0，使定时任务和�
 
 本片仅Web，无API、迁移、Runtime或服务器配置变更，不含并行CASE开发；任务
 表无CURRENT。沿用本会话直接发布授权，发布验收待补记，无后续实现切片。
+
+#### OPS-68 Web 发布验收
+
+2026-10-29正式Web预检及受管最小上下文准备通过，发布
+`5b58a5b36ff93c836fdc9ff4619e4f1000ac2bbb`。源归档SHA-256为
+`d24c3a85a7b6b883402caaf758e9ad92d82b096f8941bdedbf18eecda9d492e6`，
+linux/amd64镜像ID为
+`sha256:e47e2e4e73c1432e8ae7ac30fb909cd84b0e8915bb5f992d5d97edbd4ce5091a`。
+保留旧Web回滚镜像及日志，仅定向recreate Web；实际revision、健康及HTTP入口
+通过，服务器配置哈希与其他46个保护容器镜像及启动时间不变。
+
+公网入口／Agent深层路由HTML、两项入口资源及两项匹配工作台折叠样式的模块
+资源与运行镜像逐项一致。全新Chromium验证平台登录、深层路由及根登录页通过，
+Network仅使用部署前缀API，根路径API请求为0，两项API鉴权边界为401。认证后
+主页收起、定时侧栏和会话切换以6项本地受控回归验收，未对线上会话执行业务
+写入。remote-release-finish通过，精确回收1个过期受管上下文，保留近24小时
+上下文、实际引用及每仓库一个回滚镜像；收尾后版本、健康、配置和46个保护
+容器再次核验通过。无API、迁移或Runtime发布，未push，无后续实现切片。
