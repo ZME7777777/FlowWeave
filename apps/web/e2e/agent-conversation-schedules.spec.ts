@@ -2334,7 +2334,7 @@ for (const initiallyOpen of [true, false]) {
         await page.getByRole('button', { name: '关闭新标签页页签', exact: true }).click();
       } else {
         if (close === 'fullscreen') await page.getByRole('button', { name: '全屏查看工作区工具', exact: true }).click();
-        await page.getByRole('button', { name: '关闭工作区工具', exact: true }).click();
+        await page.getByRole('button', { name: '隐藏工作区工具', exact: true }).click();
       }
       await expect(page.locator('.agent-workspace-drawer')).toHaveClass(/summary-open/);
       await expectRestored();
@@ -2371,7 +2371,7 @@ for (const initiallyOpen of [true, false]) {
         await page.getByRole('button', { name: '关闭新标签页页签', exact: true }).click();
       } else {
         if (close === 'fullscreen') await page.getByRole('button', { name: '全屏查看工作区工具', exact: true }).click();
-        await page.getByRole('button', { name: '关闭工作区工具', exact: true }).click();
+        await page.getByRole('button', { name: '隐藏工作区工具', exact: true }).click();
       }
       await expect(page.locator('.agent-workspace-drawer')).toHaveClass(/summary-open/);
       await expectCard(initiallyOpen);
@@ -2654,7 +2654,7 @@ test('fullscreen tools occupy the entire workbench region and restore the conver
   await expect(controls.getByRole('button')).toHaveCount(3);
   await expect(controls.getByRole('button',{name:/^(显示|隐藏)悬浮信息卡$/})).toBeVisible();
   await expect(controls.getByRole('button',{name:'退出全屏',exact:true})).toBeVisible();
-  await expect(controls.getByRole('button',{name:'关闭工作区工具',exact:true})).toBeVisible();
+  await expect(controls.getByRole('button',{name:'隐藏工作区工具',exact:true})).toBeVisible();
   await expect(page.locator('.agent-workspace-tab-launcher.active')).toBeVisible();
   const bounds=() => page.evaluate(() => {
     const root=document.querySelector('.agent-workbench-page')!.getBoundingClientRect();
@@ -2679,12 +2679,12 @@ test('fullscreen tools occupy the entire workbench region and restore the conver
   await page.getByRole('button',{name:'显示悬浮信息卡',exact:true}).click();
   await expect(page.locator('.agent-workspace-summary')).toBeVisible();
   expect(await page.locator('.agent-workbench-content').evaluate(element=>element.getBoundingClientRect().width)).toBe(contentWidth);
-  await expect(page.locator('.agent-workspace-summary').getByText('IDEA / Gateway')).toBeInViewport();
+  await expect(page.locator('.agent-workspace-summary').getByText('来源', { exact: true })).toBeInViewport();
   await expect(page.locator('.agent-workspace-tab-launcher.active')).toBeHidden();
   await tabs.getByRole('button',{name:'新标签页',exact:true}).click();
   await expect(main).toBeHidden();
   await expect.poll(bounds).toBeLessThanOrEqual(1);
-  await controls.getByRole('button',{name:'关闭工作区工具',exact:true}).click();
+  await controls.getByRole('button',{name:'隐藏工作区工具',exact:true}).click();
   await expect(main).toBeVisible();
   await expect(page.locator('.agent-workspace-summary')).toBeVisible();
   await expect(composer).toHaveValue('全屏切换时保留草稿');
@@ -2869,6 +2869,7 @@ test('new workspace tabs embed a compact browser without a duplicate browser car
   await expect(launcher.getByRole('textbox', { name: '网页地址', exact: true })).toBeVisible();
   await expect(launcher.getByRole('button', { name: '浏览器', exact: true })).toHaveCount(0);
   await expect(launcher.getByRole('button', { name: '文件', exact: true })).toBeVisible();
+  await expect(page.locator('.agent-workspace-tool-body > .agent-drawer-empty')).toHaveCount(0);
   await expect.poll(() => launcher.locator('.agent-workspace-browser-toolbar').evaluate(element => element.getBoundingClientRect().height)).toBeLessThanOrEqual(48);
 });
 
@@ -4284,7 +4285,7 @@ test('conversation search shares the floating card visibility width and separate
   await page.getByRole('button', { name: '日报会话', exact: true }).last().click();
   await expectGeometry();
   await page.getByRole('button', { name: '退出全屏', exact: true }).first().click();
-  await page.getByRole('button', { name: '关闭工作区工具', exact: true }).click();
+  await page.getByRole('button', { name: '隐藏工作区工具', exact: true }).click();
   await page.setViewportSize({ width: 1440, height: 1000 });
   await expectGeometry();
   await group.screenshot({ path: '../../.tmp/search-card-corrected.png' });

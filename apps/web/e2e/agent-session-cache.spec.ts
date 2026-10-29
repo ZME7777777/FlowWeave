@@ -1435,9 +1435,29 @@ test('Sidebar chat tabs stay isolated to their source conversation', async ({ pa
   await expect(page).toHaveURL(/\/agent\/conversations\/sidebar-chat-scope-a$/);
   await expect(page.locator('.agent-workspace-drawer')).toHaveClass(/tools-open/);
   await expect(page.getByRole('region', { name: '侧边聊天' })).toBeVisible();
-  await page.getByLabel('关闭工作区工具').click();
-  await expect(page.getByRole('region', { name: '侧边聊天' })).toHaveCount(0);
+  const pane = page.getByRole('region', { name: '侧边聊天' });
+  const draft = pane.getByRole('textbox', { name: '发送侧边聊天消息' });
+  await draft.fill('收起后仍保留的侧边草稿');
+  const tabs = page.locator('.agent-workspace-tabs > div');
+  const count = await tabs.count();
+  await page.getByLabel('隐藏工作区工具').click();
+  await expect(pane).toBeHidden();
   await expect(page.locator('.agent-workspace-drawer')).toHaveClass(/summary-open/);
+  await page.getByRole('button', { name: '侧边聊天会话 B', exact: true }).click();
+  await page.getByRole('button', { name: '侧边聊天会话 A', exact: true }).click();
+  await expect(page.locator('.agent-workspace-drawer')).toHaveClass(/summary-open/);
+  await page.getByRole('button', { name: '显示工作区工具', exact: true }).click();
+  await expect(pane).toBeVisible();
+  await expect(tabs).toHaveCount(count);
+  // The conversation switch may remount its own pane; the hide operation
+  // itself must preserve the current composer and active tab.
+  await draft.fill('隐藏期间保留，不创建新聊天');
+  await page.getByLabel('隐藏工作区工具').click();
+  await page.getByRole('button', { name: '显示工作区工具', exact: true }).click();
+  await expect(draft).toHaveValue('隐藏期间保留，不创建新聊天');
+  await expect(page.locator('.agent-workspace-tabs > div.active')).toContainText('侧边聊天');
+  await page.getByRole('button', { name: '关闭侧边聊天页签', exact: true }).click();
+  await expect(pane).toHaveCount(0);
 });
 
 
@@ -1635,6 +1655,10 @@ test('Sidebar chat recognizes its optimistic message and reuses the send button 
   let authenticated = false;
   let sidebarCreated = false;
   let paused = false;
+  let created = 0;
+  const deletes: string[] = [];
+  let releaseCreation!: () => void;
+  const creationGate = new Promise<void>(resolve => { releaseCreation = resolve; });
   const workspace = { id: 'sidebar-behavior-workspace', display_name: '侧边交互工作区', desired_state: 'RUNNING', updated_at: now };
   const source = {
     id: 'sidebar-behavior-source', display_title: '主会话', title_state: 'MANUAL', lifecycle: 'ACTIVE', streaming_callback_ready: true, write_available: true,
@@ -1666,6 +1690,8 @@ test('Sidebar chat recognizes its optimistic message and reuses the send button 
     if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
     if (path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
     if (path.endsWith('/sidebar') && request.method() === 'POST') {
+      created += 1;
+      await creationGate;
       sidebarCreated = true;
       return json(route, { conversation: sidebar, accepted: true, cursor: 'sidebar-first-event', expires_at: new Date(Date.now() + 3_600_000).toISOString() }, 201);
     }
@@ -1673,6 +1699,7 @@ test('Sidebar chat recognizes its optimistic message and reuses the send button 
       paused = true;
       return json(route, { accepted: true });
     }
+    if (path.includes('/sidebars/') && request.method() === 'DELETE') { deletes.push(path); return route.fulfill({ status: 204 }); }
     if (path.includes('/sidebars/')) return json(route, { binding_id: sidebar.id, source_binding_id: source.id, expires_at: new Date(Date.now() + 3_600_000).toISOString(), expired: false });
     if (path.includes('/conversations/') && request.method() === 'GET') return json(route, path.includes(sidebar.id) ? sidebar : source);
     return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
@@ -1687,10 +1714,41 @@ test('Sidebar chat recognizes its optimistic message and reuses the send button 
   await sidebarPane.getByRole('textbox', { name: '发送侧边聊天消息' }).fill('你好');
   await sidebarPane.getByRole('button', { name: '发送侧边聊天消息' }).click();
 
-  await expect(sidebarPane.locator('.conversation-message.user')).toHaveCount(1);
+  await expect.poll(() => created).toBe(1);
+  await page.getByRole('button', { name: '隐藏工作区工具', exact: true }).click();
+  await expect(sidebarPane).toBeHidden();
+  releaseCreation();
+  await expect(page.locator('.agent-sidebar-conversation .conversation-message.user')).toHaveCount(1);
+  // Binding creation arrives while hidden; it must not force the tools open.
+  await expect(page.locator('.agent-workspace-drawer')).toHaveClass(/summary-open/);
+  await page.getByRole('button', { name: '显示工作区工具', exact: true }).click();
+  await expect(sidebarPane).toBeVisible();
+  expect(created).toBe(1);
+  expect(deletes).toEqual([]);
   await expect(sidebarPane.getByRole('button', { name: '发送侧边聊天消息' })).toHaveCount(0);
   await sidebarPane.getByRole('button', { name: '暂停侧边聊天 Agent' }).click();
   await expect(sidebarPane.getByRole('button', { name: '继续侧边聊天 Agent' })).toBeVisible();
+  const draft = sidebarPane.getByRole('textbox', { name: '发送侧边聊天消息' });
+  await draft.fill('未发送的追问');
+  await page.getByRole('button', { name: '全屏查看工作区工具', exact: true }).click();
+  await page.getByRole('button', { name: '隐藏工作区工具', exact: true }).click();
+  await expect(sidebarPane).toBeHidden();
+  await page.getByRole('button', { name: '显示工作区工具', exact: true }).click();
+  await expect(draft).toHaveValue('未发送的追问');
+  await expect(sidebarPane.getByRole('button', { name: '继续侧边聊天 Agent' })).toBeVisible();
+  expect(deletes).toEqual([]);
+  expect(created).toBe(1);
+  await page.getByRole('button', { name: '隐藏工作区工具', exact: true }).click();
+  await page.locator('.agent-workspace-new-tab-trigger').click();
+  await page.getByRole('navigation', { name: '工作区页签' }).getByRole('button', { name: '新建工作区页签', exact: true }).click();
+  await page.locator('.agent-workspace-tab-launcher.active').getByRole('button', { name: '侧边聊天', exact: true }).click();
+  await expect(draft).toHaveValue('未发送的追问');
+  await expect(sidebarPane.getByRole('button', { name: '继续侧边聊天 Agent' })).toBeVisible();
+  expect(created).toBe(1);
+  await page.screenshot({ path: '../../.tmp/ops77/sidebar-chat-preserved.png' });
+  await page.getByRole('button', { name: '关闭侧边聊天页签', exact: true }).click();
+  await expect(sidebarPane).toHaveCount(0);
+  expect(deletes).toEqual([`/api/v1/agent-workspaces/${workspace.id}/sidebars/${sidebar.id}`]);
 });
 
 
