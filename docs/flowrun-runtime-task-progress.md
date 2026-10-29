@@ -14831,3 +14831,44 @@ CURRENT、唯一Alembic head为0186_case_execution_events，不纳入本片提�
 发布将从线上已部署平台ec6f8746的0184链创建独立、已提交的发布快照，只合入
 本片市场API和当前已提交Web，以排除尚未发布CASE-04／CASE-05迁移与源码；
 具体SHA、快照验证和发布验收待补记，不自动开始后续开发。
+
+#### OPS-64 发布快照与线上验收
+
+2026-10-29实现提交为`1d09823e638264e30807e15058bb60894ee4ff49`。发布快照
+`d6d0c3b2c320e281daaff6437ebf70c59090e6d3`以线上平台ec6f8746为父提交，
+只覆盖本片市场API／测试及实现提交的完整Web树；逐路径验证其Web树与实现
+提交完全一致、Platform差异仅5个市场相关文件，未含0185／0186迁移及Case
+源码。快照通过本地`refs/flowweave/releases/ops64`保留。正式预检要求目标
+提交可从当前HEAD到达，因此第一次在主检出预检即被拒绝、未连接远端修改；
+随后创建指向发布快照的隔离托管检出，从正确HEAD重新预检通过。提取精确
+快照源码后另跑24项后端定向回归全部通过，验证实际发布的0184迁移链组合。
+
+正式web／platform预检与commit-bound最小上下文准备通过。Platform源归档
+SHA-256为`560875e5a0acdbcb06b35d515bfaf991034fcb2c4c8566ba0ca7de0d0f995c07`，
+Web源归档SHA-256为
+`435f8a0300d6890cf2371da09acfb2f2653712544e5aa6e45c33a464404a2106`。
+linux/amd64 Platform镜像ID为
+`sha256:f21d4407ffc0e4b4195455e51f180cd0538241e6337c6cebcc1a512771b7cb94`，
+Web镜像ID为
+`sha256:dd19434f0014b2e498cf1d3c0baa7246feb518cd27488a520c894499288834be`。
+保留切换前回滚镜像与服务日志，正式migration入口退出0，数据库保持
+0184_cascade_directory_archives。仅同步recreate api／stream-api／worker／web，
+四项运行revision、健康／readiness、Web HTTP入口通过；服务器Compose/env
+哈希与其余43个既有容器镜像和启动时间不变，不更新Runtime Provider。
+
+公网HTML与Agent深层路由匹配运行镜像，两项入口资源及三项匹配热门、
+当前页读取和分页样式的JS/CSS模块资源SHA-256一致。远端全新Chromium渲染
+平台登录／Agent深层路由／根登录页通过；两个API鉴权边界401，Network只用
+前缀API、根路径API请求为0。
+
+从实际API镜像以只读事务读取当前账户已启用内置来源，回滚事务后请求真实
+公开数据：Plugin共78项，第一页10项、第二页10项，固定commit一致、无跨页
+重复且全局搜索通过；当次冷目录读取约3.6秒、缓存第二页约0.0003秒，Skill
+热门20项约6.0秒。上述时间仅为服务器服务函数读取，不含浏览器网络传输，
+外部源网络变化仍影响冷加载。用户市场源、能力和业务数据未作写入或导入。
+
+platform与web的remote-release-finish通过，精确回收4个超过24小时的受管
+旧上下文；保留近期上下文、实际引用和每仓库一个回滚镜像，不清理共享
+BuildKit、卷、Workspace或数据库备份。收尾后四项revision、健康、0184数据库
+head、服务器配置及43个保护容器再验通过。临时托管发布检出完成后归档，
+本片未push，不自动开始后续实现。
