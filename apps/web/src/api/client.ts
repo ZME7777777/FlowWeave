@@ -508,6 +508,12 @@ export const api = {
     const query = workDirectoryId ? `?work_directory_id=${encodeURIComponent(workDirectoryId)}` : '';
     return request<import('../types').AgentConversationManagementDeleteResult>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-management/delete${query}`, json('POST', { binding_ids }, crypto.randomUUID()));
   },
+  agentConversationDeletionJobs: (workspaceId: string, signal?: AbortSignal) =>
+    request<{ items: import('../types').AgentConversationDeletionJob[] }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-management/deletion-jobs`, { signal }),
+  startAgentConversationDeletion: (workspaceId: string, binding_ids: string[], workDirectoryId: string | undefined, idempotencyKey: string) => {
+    const query = workDirectoryId ? `?work_directory_id=${encodeURIComponent(workDirectoryId)}` : '';
+    return request<import('../types').AgentConversationDeletionJob>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-management/deletion-jobs${query}`, json('POST', { binding_ids }, idempotencyKey));
+  },
   agentConversationSchedules: (workspaceId: string) =>
     request<AgentConversationSchedule[]>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-schedules`),
   createAgentConversationSchedule: (workspaceId: string, body: { name: string; prompt: string; cron_expression: string; workspace_mode: 'AUTOMATION' | 'EXISTING'; work_directory_id?: string; conversation_mode: 'NEW' | 'CONTINUE'; model_provider_id: string; model_name: string; reasoning_effort?: string | null; capability_version_ids: string[]; credential_ids: string[] }) =>

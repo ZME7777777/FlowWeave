@@ -10184,7 +10184,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       const latest = activity && Date.parse(activity.updated_at) >= Date.parse(item.updated_at) ? { ...item, ...activity } : item;
       return conversationRow({ ...latest, ...current, ...(pendingUnread ? { unread: pendingUnread.unread, unread_origin: pendingUnread.unreadOrigin } : {}) }, [], { allowDrag: false });
     }} onSelectSchedule={() => { setActivityPreviewBindingId(undefined); onNavigate('/agent/schedules'); }}/>}
-    {agentWorkspaceView === 'management' && <section className="agent-conversation-management-page" aria-label="会话管理"><ConversationManagementPage onDirectoryDeleted={({ workspaceId, workDirectoryId, bindingIds }) => {
+    {agentWorkspaceView === 'management' && <section className="agent-conversation-management-page" aria-label="会话管理"><ConversationManagementPage onDeleted={({ workspaceId, bindingIds }) => reconcileArchivedConversations(workspaceId, new Set(bindingIds))} onDirectoryDeleted={({ workspaceId, workDirectoryId, bindingIds }) => {
       reconcileArchivedConversations(workspaceId, new Set(bindingIds), workDirectoryId);
       if (archiveSelectionRef.current.draftDirectoryId === workDirectoryId) setConversationDraft(undefined);
     }} onArchived={({ workspaceId, workDirectoryId, bindingIds }) => {

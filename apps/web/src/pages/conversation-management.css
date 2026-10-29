@@ -58,3 +58,5 @@
 .agent-workbench-page:has(>.agent-conversation-management-page)>.agent-workbench-app-nav{min-height:0}
 
 .compact-conversation-management .conversation-management-actions>.conversation-management-archive{min-height:31px;border-color:#dbe4dd;background:#fafcfb;padding:5px 9px;color:#526f5c;font-size:10px;white-space:nowrap}.compact-conversation-management .conversation-management-actions>.conversation-management-archive:disabled{border-color:transparent;background:transparent;color:#bdc4be}
+
+.conversation-management-deletion-job{display:flex;flex:0 0 auto;flex-wrap:wrap;background:#f3f8f4;color:#526e5a}.conversation-management-deletion-job>span{min-width:0;flex:1}.conversation-management-deletion-job button{padding:3px 7px;font-size:10px;flex-shrink:0}

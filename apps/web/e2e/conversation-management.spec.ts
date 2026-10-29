@@ -1,6 +1,7 @@
 import { expect, test, type Route } from '@playwright/test';
 
 async function respond(route: Route, body: unknown, status = 200) {
+  if (status === 404 && route.request().method() === 'GET' && new URL(route.request().url()).pathname.endsWith('/deletion-jobs')) { body = { items: [] }; status = 200; }
   await route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
 }
 
@@ -75,29 +76,24 @@ test('conversation management keeps the selected workspace and pagination in fix
   await expect(page.getByText('会话 21', { exact: true })).toBeVisible();
 });
 
-async function deletionSetup(page: import('@playwright/test').Page, count: number, options: { failBatch?: number; holdBatches?: number[]; skippedIds?: string[] } = {}) {
+async function deletionSetup(page: import('@playwright/test').Page, count: number, failSubmission = false) {
   const now = new Date().toISOString();
   let items = Array.from({ length: count }, (_, index) => ({ id: `batch-conversation-${index + 1}`, display_title: `批量会话 ${index + 1}`, pinned: false, unread: false, created_at: now, updated_at: now, last_message_at: now }));
   const requests: Array<{ ids: string[]; directory: string | null; key: string | undefined }> = [];
-  const releases = new Map<number, () => void>();
+  const jobs: import('../src/types').AgentConversationDeletionJob[] = [];
   await page.route('**/api/v1/**', async route => {
-    const request = route.request();
-    const url = new URL(request.url());
-    const path = url.pathname;
+    const request = route.request(); const url = new URL(request.url()); const path = url.pathname;
     if (path.endsWith('/auth/me')) return respond(route, { id: 'batch-manager', username: 'batch-manager', role: 'USER', is_super_admin: false, can_use_agent_sessions: true });
     if (path.endsWith('/agent-workspaces/default')) return respond(route, { id: 'workspace-default', display_name: '默认工作区', desired_state: 'RUNNING', updated_at: now });
     if (path.endsWith('/work-directories')) return respond(route, { root: { id: 'root', display_name: '根工作区' }, items: [{ id: 'directory-project', display_name: '测试项目' }] });
-    if (path.endsWith('/conversation-management/delete')) {
+    if (path.endsWith('/deletion-jobs')) {
+      if (request.method() === 'GET') return respond(route, { items: jobs });
       const ids = request.postDataJSON().binding_ids as string[];
       requests.push({ ids, directory: url.searchParams.get('work_directory_id'), key: request.headers()['idempotency-key'] });
-      const batch = requests.length;
-      if (options.holdBatches?.includes(batch)) await new Promise<void>(resolve => releases.set(batch, resolve));
-      if (ids.length > 100) return respond(route, { error: { code: 'INVALID_COMMAND', message: '每批最多100个' } }, 422);
-      if (batch === options.failBatch) return respond(route, { error: { code: 'EXECUTOR_UNAVAILABLE', message: '暂时无法连接执行服务' } }, 503);
-      const skipped = ids.filter(id => options.skippedIds?.includes(id)).map(id => ({ id, code: 'AGENT_CONVERSATION_RUNNING' }));
-      const deleted_ids = ids.filter(id => !options.skippedIds?.includes(id));
-      items = items.filter(item => !deleted_ids.includes(item.id));
-      return respond(route, { deleted_ids, skipped });
+      if (failSubmission && requests.length === 1) return respond(route, { error: { code: 'SERVICE_UNAVAILABLE', message: '提交暂时失败，请重试' } }, 503);
+      const job: import('../src/types').AgentConversationDeletionJob = { id: `job-${jobs.length + 1}`, workspace_id: 'workspace-default', work_directory_id: 'directory-project', workspace_label: '测试项目', state: 'PENDING', total: ids.length, processed: 0, binding_ids: ids, deleted_ids: [], skipped: [], remaining_ids: ids, created_at: now, updated_at: now };
+      jobs.unshift(job);
+      return respond(route, job, 202);
     }
     if (path.endsWith('/conversation-management')) return respond(route, { items: url.searchParams.get('work_directory_id') === 'directory-project' ? items : [], truncated: count === 500 });
     if (path.endsWith('/node-directories') || path.endsWith('/node-assets')) return respond(route, []);
@@ -110,54 +106,80 @@ async function deletionSetup(page: import('@playwright/test').Page, count: numbe
   await expect(page.getByText(`已选 0 / ${count} 个会话`, { exact: true })).toBeVisible();
   await page.getByRole('checkbox', { name: '选择当前筛选结果中的全部会话' }).check();
   await page.getByRole('button', { name: '删除已选会话', exact: true }).click();
-  return { requests, release: (batch: number) => releases.get(batch)!() };
+  return { requests, jobs, progress: (processed: number, state: import('../src/types').AgentConversationDeletionJob['state'], skippedIds: string[] = []) => {
+    const job = jobs[0];
+    const done = job.binding_ids.slice(0, processed);
+    job.state = state; job.processed = processed; job.deleted_ids = done.filter(id => !skippedIds.includes(id));
+    job.skipped = done.filter(id => skippedIds.includes(id)).map(id => ({ id, code: 'AGENT_CONVERSATION_RUNNING' }));
+    job.remaining_ids = job.binding_ids.slice(processed);
+    items = items.filter(item => !job.deleted_ids.includes(item.id));
+  } };
 }
 
-test('115 selected conversations are deleted sequentially in bounded batches and running skips are combined', async ({ page }) => {
-  const state = await deletionSetup(page, 115, { holdBatches: [1, 2], skippedIds: ['batch-conversation-1', 'batch-conversation-115'] });
+test('large deletion runs in the server background while browsing and refreshing remain usable', async ({ page }) => {
+  const state = await deletionSetup(page, 317);
   const dialog = page.getByRole('dialog', { name: '确认删除会话' });
-  let summary = '';
-  page.on('dialog', async alert => { summary = alert.message(); await alert.accept(); });
   await dialog.getByRole('button', { name: '确认永久删除', exact: true }).click();
-  await expect.poll(() => state.requests.length).toBe(1);
-  expect(state.requests[0].ids).toHaveLength(100);
-  await expect(dialog.getByRole('status')).toHaveText('已处理 0 / 115 个会话…');
-  await expect(dialog.getByRole('button', { name: '取消', exact: true })).toBeDisabled();
-  await expect(page.getByRole('button', { name: '根工作区', exact: true })).toBeDisabled();
-  state.release(1);
-  await expect.poll(() => state.requests.length).toBe(2);
-  await expect(dialog.getByRole('status')).toHaveText('已处理 100 / 115 个会话…');
-  expect(state.requests[1].ids).toHaveLength(15);
-  expect(state.requests.every(request => request.directory === 'directory-project')).toBe(true);
-  state.release(2);
   await expect(dialog).toHaveCount(0);
-  await expect.poll(() => summary).toContain('已删除 113 个会话；2 个会话');
+  await expect(page.getByRole('status')).toContainText('后台删除中');
+  await expect(page.getByRole('status')).toContainText('0/317');
+  expect(state.requests).toHaveLength(1);
+  expect(state.requests[0].ids).toHaveLength(317);
+  await expect(page.getByRole('button', { name: '根工作区', exact: true })).toBeEnabled();
+  await expect(page.getByLabel('搜索会话')).toBeEnabled();
+  await expect(page.getByRole('checkbox', { name: '选择会话 批量会话 1', exact: true })).toBeDisabled();
+  await page.getByRole('button', { name: '根工作区', exact: true }).click();
+  state.progress(100, 'RUNNING', ['batch-conversation-1']);
+  await expect(page.getByRole('status')).toContainText('100/317');
+  await page.reload();
+  await page.getByRole('button', { name: 'AI 工作台', exact: true }).click();
+  await page.getByRole('button', { name: '会话管理', exact: true }).click();
+  await expect(page.getByRole('status')).toContainText('100/317');
+  expect(state.requests).toHaveLength(1);
+  await page.setViewportSize({ width: 1024, height: 650 });
+  expect(await page.evaluate(() => document.documentElement.scrollHeight <= innerHeight + 1)).toBe(true);
+  await page.screenshot({ path: '../../.tmp/ops76/background-deletion.png' });
+  state.progress(317, 'SUCCEEDED', ['batch-conversation-1', 'batch-conversation-317']);
+  await expect(page.getByRole('status')).toContainText('后台删除完成');
+  await expect(page.getByRole('status')).toContainText('已删除 315 · 跳过 2');
+  await page.getByRole('button', { name: '测试项目', exact: true }).click();
   await expect(page.getByText('已选 0 / 2 个会话', { exact: true })).toBeVisible();
-  const allIds = state.requests.flatMap(request => request.ids);
-  expect(new Set(allIds).size).toBe(115);
-  expect(new Set(state.requests.map(request => request.key)).size).toBe(2);
-  expect(state.requests.every(request => Boolean(request.key))).toBe(true);
+  await expect(page.getByRole('checkbox', { name: '选择会话 批量会话 1', exact: true })).toBeEnabled();
 });
 
-test('a failed middle batch stops deletion and retry submits only the remaining selection', async ({ page }) => {
-  const state = await deletionSetup(page, 500, { failBatch: 2 });
+test('submission failures preserve selection and retry the same idempotency key', async ({ page }) => {
+  const state = await deletionSetup(page, 115, true);
   const dialog = page.getByRole('dialog', { name: '确认删除会话' });
   await dialog.getByRole('button', { name: '确认永久删除', exact: true }).click();
-  await expect(dialog.getByRole('alert')).toContainText('已删除 100 个，跳过 0 个');
-  await expect(dialog.getByRole('alert')).toContainText('未完成的会话仍保留选中');
-  await expect(dialog.getByRole('button', { name: '确认永久删除', exact: true })).toBeEnabled();
-  expect(state.requests).toHaveLength(2);
-  await expect(page.getByText('已选 400 / 400 个会话', { exact: true })).toBeVisible();
+  await expect(dialog.getByRole('alert')).toContainText('提交暂时失败');
+  await expect(page.getByText('已选 115 / 115 个会话', { exact: true })).toBeVisible();
   await dialog.getByRole('button', { name: '确认永久删除', exact: true }).click();
   await expect(dialog).toHaveCount(0);
-  expect(state.requests.map(request => request.ids.length)).toEqual([100, 100, 100, 100, 100, 100]);
-  const completedBeforeFailure = new Set(state.requests[0].ids);
-  expect(state.requests.slice(2).flatMap(request => request.ids).some(id => completedBeforeFailure.has(id))).toBe(false);
-  expect(new Set(state.requests.slice(2).flatMap(request => request.ids)).size).toBe(400);
+  expect(state.requests).toHaveLength(2);
+  expect(state.requests[0].key).toBeTruthy();
+  expect(state.requests[0].key).toBe(state.requests[1].key);
+  expect(state.requests.every(request => request.directory === 'directory-project')).toBe(true);
+});
+
+test('failed background task retries only its remaining IDs without blocking navigation', async ({ page }) => {
+  const state = await deletionSetup(page, 500);
+  await page.getByRole('dialog').getByRole('button', { name: '确认永久删除', exact: true }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  state.progress(100, 'DEAD');
+  await expect(page.getByRole('status')).toContainText('剩余 400 项未处理');
+  await page.getByRole('button', { name: '根工作区', exact: true }).click();
+  await page.getByRole('button', { name: '重试未完成', exact: true }).click();
+  await expect.poll(() => state.requests.length).toBe(2);
+  expect(state.requests[1].ids).toEqual(state.requests[0].ids.slice(100));
+  expect(state.requests[1].directory).toBe('directory-project');
+  expect(state.requests[1].key).not.toBe(state.requests[0].key);
+  state.progress(400, 'SUCCEEDED');
+  await expect(page.getByRole('status')).toContainText('后台删除完成');
+  await page.getByRole('button', { name: '测试项目', exact: true }).click();
   await expect(page.getByText('没有符合当前条件的会话', { exact: true })).toBeVisible();
 });
 
-test('deletion from the final page returns to a valid page after the result shrinks', async ({ page }) => {
+test('background completion on the final page returns to a valid page', async ({ page }) => {
   const state = await deletionSetup(page, 21);
   await page.getByRole('dialog').getByRole('button', { name: '取消', exact: true }).click();
   await page.getByRole('checkbox', { name: '选择当前筛选结果中的全部会话' }).uncheck();
@@ -166,6 +188,7 @@ test('deletion from the final page returns to a valid page after the result shri
   await page.getByRole('button', { name: '删除已选会话', exact: true }).click();
   await page.getByRole('dialog').getByRole('button', { name: '确认永久删除', exact: true }).click();
   await expect(page.getByRole('dialog')).toHaveCount(0);
+  state.progress(1, 'SUCCEEDED');
   await expect(page.locator('.conversation-management-table tbody tr')).toHaveCount(20);
   expect(state.requests.map(request => request.ids)).toEqual([['batch-conversation-21']]);
 });

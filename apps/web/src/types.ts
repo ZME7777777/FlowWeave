@@ -1032,6 +1032,19 @@ export interface AgentConversationManagementDeleteResult {
   deleted_ids: string[];
   skipped: Array<{ id: string; code: string }>;
 }
+export interface AgentConversationDeletionJob extends AgentConversationManagementDeleteResult {
+  id: string;
+  workspace_id: string;
+  work_directory_id: string | null;
+  workspace_label: string;
+  state: 'PENDING' | 'RUNNING' | 'RETRY' | 'SUCCEEDED' | 'DEAD';
+  total: number;
+  processed: number;
+  binding_ids: string[];
+  remaining_ids: string[];
+  created_at: string;
+  updated_at: string;
+}
 export interface AgentConversationActivity {
   /** Complete summaries for every binding that belongs in the activity panel. */
   conversations?: AgentConversation[];

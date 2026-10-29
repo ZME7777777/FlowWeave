@@ -122,6 +122,14 @@ def _cleanup_agent_work_directory(
     cleanup(db, aggregate_id, payload)
 
 
+def _delete_managed_agent_conversations(
+    db: Session, aggregate_id: str, _payload: dict[str, Any], lease: Lease
+) -> None:
+    from flowweave.modules.agent_sessions.application.management_deletion import process
+
+    process(db, aggregate_id, lease)
+
+
 def _cleanup_draft_attachment(
     db: Session, aggregate_id: str, payload: dict[str, Any], _lease: Lease
 ) -> None:
@@ -334,6 +342,7 @@ HANDLERS: dict[str, Handler] = {
     "CONDENSE_AGENT_CONVERSATION": _condense_agent_conversation,
     "CLEANUP_DRAFT_ATTACHMENT": _cleanup_draft_attachment,
     "CLEANUP_AGENT_WORK_DIRECTORY": _cleanup_agent_work_directory,
+    "DELETE_MANAGED_AGENT_CONVERSATIONS": _delete_managed_agent_conversations,
     "DELIVER_AGENT_CONVERSATION_SCHEDULE": _deliver_agent_conversation_schedule,
     "EXPIRE_AGENT_SIDEBAR_CONVERSATION": _expire_agent_sidebar_conversation,
     "GENERATE_AGENT_CONVERSATION_TITLE": _generate_agent_conversation_title,

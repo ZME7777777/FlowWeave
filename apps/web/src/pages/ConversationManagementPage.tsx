@@ -6,11 +6,10 @@ import { useProductDialog } from '../components/ProductDialogContext';
 import { Pagination } from '../components/Pagination';
 import './conversation-management.css';
 import { api } from '../api/client';
-import type { AgentConversationManagementArchiveResult, AgentConversationManagementDeleteResult, AgentConversationManagementPage, ManagedAgentConversation } from '../types';
+import type { AgentConversationManagementArchiveResult, AgentConversationDeletionJob, AgentConversationManagementPage, ManagedAgentConversation } from '../types';
 
 const DAY = 24 * 60 * 60 * 1000;
 const PAGE_SIZE = 20;
-const DELETE_BATCH_SIZE = 100;
 const ARCHIVE_BATCH_SIZE = 20;
 
 interface ConversationSelection {
@@ -40,7 +39,7 @@ function formatTime(value: string) {
   return new Date(value).toLocaleString('zh-CN', { dateStyle: 'medium', timeStyle: 'short' });
 }
 
-export function ConversationManagementPage({ onRestored, onArchived, onDirectoryDeleted }: { onRestored?: (selection: { bindingId?: string; workDirectoryId?: string }) => void; onArchived?: (selection: { workspaceId: string; workDirectoryId?: string; bindingIds: string[] }) => void; onDirectoryDeleted?: (selection: { workspaceId: string; workDirectoryId: string; bindingIds: string[] }) => void } = {}) {
+export function ConversationManagementPage({ onRestored, onArchived, onDeleted, onDirectoryDeleted }: { onRestored?: (selection: { bindingId?: string; workDirectoryId?: string }) => void; onArchived?: (selection: { workspaceId: string; workDirectoryId?: string; bindingIds: string[] }) => void; onDeleted?: (selection: { workspaceId: string; bindingIds: string[] }) => void; onDirectoryDeleted?: (selection: { workspaceId: string; workDirectoryId: string; bindingIds: string[] }) => void } = {}) {
   const client = useQueryClient();
   const dialog = useProductDialog();
   const [query, setQuery] = useState('');
@@ -56,7 +55,9 @@ export function ConversationManagementPage({ onRestored, onArchived, onDirectory
   const [page, setPage] = useState(1);
   const [selectedWorkDirectoryId, setSelectedWorkDirectoryId] = useState<string | undefined>();
   const tableRef = useRef<HTMLDivElement>(null);
-  const [deletionProgress, setDeletionProgress] = useState({ processed: 0, total: 0 });
+  const [dismissedJobIds, setDismissedJobIds] = useState<Set<string>>(new Set());
+  const reconciledJobs = useRef(new Map<string, string>());
+  const deleteRequestKey = useRef<{ selection: string; key: string } | undefined>(undefined);
 
   const workspace = useQuery({ queryKey: ['agent-workspace', 'default'], queryFn: ({ signal }) => api.defaultAgentWorkspace(signal) });
   const workDirectories = useQuery({
@@ -73,6 +74,33 @@ export function ConversationManagementPage({ onRestored, onArchived, onDirectory
     queryFn: () => api.agentConversationManagement(workspace.data!.id, selectedWorkDirectoryId, archiveFilter === 'all' ? undefined : archiveFilter === 'archived'),
     enabled: Boolean(workspace.data?.id),
   });
+
+  const deletionJobs = useQuery({
+    queryKey: ['agent-conversation-deletion-jobs', workspace.data?.id],
+    queryFn: ({ signal }) => api.agentConversationDeletionJobs(workspace.data!.id, signal),
+    enabled: Boolean(workspace.data?.id),
+    refetchInterval: query => query.state.data?.items.some(job => ['PENDING', 'RUNNING', 'RETRY'].includes(job.state)) ? 1500 : false,
+  });
+  const activeJob = deletionJobs.data?.items.find(job => ['PENDING', 'RUNNING', 'RETRY'].includes(job.state));
+  const shownJob = activeJob ?? deletionJobs.data?.items.find(job => !dismissedJobIds.has(job.id));
+  const pendingDeletionIds = useMemo(() => new Set(activeJob?.remaining_ids ?? []), [activeJob?.remaining_ids]);
+  const deletedJobIds = useMemo(() => new Set(deletionJobs.data?.items.flatMap(job => job.deleted_ids) ?? []), [deletionJobs.data]);
+  useEffect(() => {
+    for (const job of deletionJobs.data?.items ?? []) {
+      const signature = `${job.state}:${job.processed}`;
+      if (reconciledJobs.current.get(job.id) === signature) continue;
+      reconciledJobs.current.set(job.id, signature);
+      if (job.deleted_ids.length) {
+        const deleted = new Set(job.deleted_ids);
+        client.setQueriesData<AgentConversationManagementPage>({ queryKey: ['agent-conversation-management', job.workspace_id] }, current => current && ({ ...current, items: current.items.filter(item => !deleted.has(item.id)) }));
+        onDeleted?.({ workspaceId: job.workspace_id, bindingIds: job.deleted_ids });
+      }
+      if (job.processed || job.state === 'SUCCEEDED' || job.state === 'DEAD') {
+        void client.invalidateQueries({ queryKey: ['agent-conversation-management', job.workspace_id] });
+        void client.invalidateQueries({ queryKey: ['agent-session'] });
+      }
+    }
+  }, [client, deletionJobs.data, onDeleted]);
 
   useEffect(() => {
     if (selectedWorkDirectoryId && !workDirectories.data?.items.some(item => item.id === selectedWorkDirectoryId)) {
@@ -91,12 +119,13 @@ export function ConversationManagementPage({ onRestored, onArchived, onDirectory
     const cutoff = period === 'all' ? undefined : Date.now() - Number(period) * DAY;
     const term = query.trim().toLocaleLowerCase();
     return (conversations.data?.items ?? []).filter(item => {
+      if (deletedJobIds.has(item.id)) return false;
       if (!includePinned && item.pinned) return false;
       if (!includeUnread && item.unread) return false;
       if (cutoff && new Date(activityTime(item)).getTime() > cutoff) return false;
       return !term || conversationTitle(item).toLocaleLowerCase().includes(term);
     });
-  }, [conversations.data?.items, includePinned, includeUnread, period, query]);
+  }, [conversations.data?.items, deletedJobIds, includePinned, includeUnread, period, query]);
 
   // Reset page when filters change
   useEffect(() => { setPage(1); }, [query, period, archiveFilter, includePinned, includeUnread]);
@@ -107,8 +136,9 @@ export function ConversationManagementPage({ onRestored, onArchived, onDirectory
   useEffect(() => { if (tableRef.current) tableRef.current.scrollTop = 0; }, [currentPage, selectedWorkDirectoryId, query, period, archiveFilter, includePinned, includeUnread]);
 
   const visibleIds = useMemo(() => new Set(visible.map(item => item.id)), [visible]);
-  const selectedVisible = visible.filter(item => selectedIds.has(item.id));
-  const selectAllVisible = visible.length > 0 && visible.every(item => selectedIds.has(item.id));
+  const selectedVisible = visible.filter(item => selectedIds.has(item.id) && !pendingDeletionIds.has(item.id));
+  const selectable = visible.filter(item => !pendingDeletionIds.has(item.id));
+  const selectAllVisible = selectable.length > 0 && selectable.every(item => selectedIds.has(item.id));
 
   useEffect(() => {
     if (!conversations.data) return;
@@ -117,42 +147,18 @@ export function ConversationManagementPage({ onRestored, onArchived, onDirectory
 
   const remove = useMutation({
     retry: false,
-    onMutate: selection => setDeletionProgress({ processed: 0, total: selection.bindingIds.length }),
-    mutationFn: async (selection: ConversationSelection) => {
-      const result: AgentConversationManagementDeleteResult = { deleted_ids: [], skipped: [] };
-      for (let offset = 0; offset < selection.bindingIds.length; offset += DELETE_BATCH_SIZE) {
-        const batch = selection.bindingIds.slice(offset, offset + DELETE_BATCH_SIZE);
-        let response: AgentConversationManagementDeleteResult;
-        try {
-          response = await api.deleteManagedAgentConversations(selection.workspaceId, batch, selection.workDirectoryId);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : '删除请求失败，请稍后重试。';
-          throw new Error(`已删除 ${result.deleted_ids.length} 个，跳过 ${result.skipped.length} 个；本批请求失败，未完成的会话仍保留选中。${message}`);
-        }
-        result.deleted_ids.push(...response.deleted_ids);
-        result.skipped.push(...response.skipped);
-        const deleted = new Set(response.deleted_ids);
-        const processed = new Set([...response.deleted_ids, ...response.skipped.map(item => item.id)]);
-        client.setQueriesData<AgentConversationManagementPage>(
-          { queryKey: ['agent-conversation-management', selection.workspaceId, selection.workDirectoryId ?? 'root'] },
-          current => current ? { ...current, items: current.items.filter(item => !deleted.has(item.id)) } : current,
-        );
-        setSelectedIds(current => new Set([...current].filter(id => !processed.has(id))));
-        setDeletionProgress({ processed: offset + batch.length, total: selection.bindingIds.length });
-      }
-      return result;
+    mutationFn: (selection: ConversationSelection) => {
+      const signature = JSON.stringify(selection);
+      if (deleteRequestKey.current?.selection !== signature) deleteRequestKey.current = { selection: signature, key: crypto.randomUUID() };
+      return api.startAgentConversationDeletion(selection.workspaceId, selection.bindingIds, selection.workDirectoryId, deleteRequestKey.current.key);
     },
-    onSuccess: result => {
-      setSelectedIds(new Set());
+    onSuccess: (job: AgentConversationDeletionJob, selection: ConversationSelection) => {
+      deleteRequestKey.current = undefined;
+      client.setQueryData<{ items: AgentConversationDeletionJob[] }>(['agent-conversation-deletion-jobs', selection.workspaceId], current => ({ items: [job, ...(current?.items ?? []).filter(item => item.id !== job.id)] }));
+      setSelectedIds(current => new Set([...current].filter(id => !selection.bindingIds.includes(id))));
       setConfirming(false);
-      if (result.skipped.length) {
-        window.alert(`已删除 ${result.deleted_ids.length} 个会话；${result.skipped.length} 个会话因正在运行、已删除或状态变化而跳过。`);
-      }
+      void client.invalidateQueries({ queryKey: ['agent-conversation-deletion-jobs', selection.workspaceId] });
     },
-    onSettled: (_result, _error, selection) => Promise.all([
-      client.invalidateQueries({ queryKey: ['agent-conversation-management', selection.workspaceId] }),
-      client.invalidateQueries({ queryKey: ['agent-session'] }),
-    ]),
   });
 
   const archive = useMutation({
@@ -270,8 +276,8 @@ export function ConversationManagementPage({ onRestored, onArchived, onDirectory
 
   const toggleVisible = () => setSelectedIds(current => {
     const next = new Set(current);
-    if (selectAllVisible) visible.forEach(item => next.delete(item.id));
-    else visible.forEach(item => next.add(item.id));
+    if (selectAllVisible) selectable.forEach(item => next.delete(item.id));
+    else selectable.forEach(item => next.add(item.id));
     return next;
   });
 
@@ -313,20 +319,27 @@ export function ConversationManagementPage({ onRestored, onArchived, onDirectory
             }}><ArchiveRestore size={14}/>{restoreDirectory.isPending ? '恢复中…' : '恢复工作区'}</button>}
             {selectedDirectory?.state === 'ARCHIVED' && <button type="button" className="danger conversation-management-delete" aria-label={`删除工作区 ${selectedDirectory.display_name}`} disabled={operationBusy || loading || Boolean(readError)} onClick={() => void requestDirectoryDelete()}><Trash2 size={14}/>{deleteDirectory.isPending ? '删除工作区中…' : '删除工作区'}</button>}
             <button type="button" className="secondary conversation-management-archive" disabled={!archiveCandidates.length || operationBusy || loading || Boolean(readError)} onClick={() => void requestArchive()}><Archive size={14}/>{archive.isPending ? `归档中 ${archiveProgress.processed}/${archiveProgress.total}` : '归档已选会话'}</button>
-            <button className="danger conversation-management-delete" disabled={selectedVisible.length === 0 || operationBusy || loading || Boolean(readError)} onClick={() => { remove.reset(); setConfirming(true); }}><Trash2 size={14}/>删除已选会话</button>
+            <button className="danger conversation-management-delete" disabled={Boolean(activeJob) || selectedVisible.length === 0 || operationBusy || loading || Boolean(readError)} title={activeJob ? '后台删除任务正在处理，可继续浏览其他会话' : undefined} onClick={() => { remove.reset(); setConfirming(true); }}><Trash2 size={14}/>删除已选会话</button>
           </div>
         </div>
+        {shownJob && <div className={`conversation-management-notice conversation-management-deletion-job${shownJob.state === 'DEAD' ? ' warning' : ''}`} role="status">
+          <span><b>{shownJob.state === 'SUCCEEDED' ? '后台删除完成' : shownJob.state === 'DEAD' ? '后台删除未完成' : shownJob.state === 'RETRY' ? '后台删除等待重试' : '后台删除中'}</b> · {shownJob.workspace_label} · 已处理 {shownJob.processed}/{shownJob.total} · 已删除 {shownJob.deleted_ids.length} · 跳过 {shownJob.skipped.length}{shownJob.state === 'DEAD' ? ` · 剩余 ${shownJob.remaining_ids.length} 项未处理` : ''}</span>
+          {shownJob.state === 'DEAD' && shownJob.remaining_ids.length > 0 && <button type="button" className="secondary" disabled={Boolean(activeJob) || operationBusy} onClick={() => remove.mutate({ workspaceId: shownJob.workspace_id, workDirectoryId: shownJob.work_directory_id ?? undefined, bindingIds: shownJob.remaining_ids })}>重试未完成</button>}
+          {!['PENDING', 'RUNNING', 'RETRY'].includes(shownJob.state) && <button type="button" className="ghost" aria-label="关闭后台删除结果" onClick={() => setDismissedJobIds(current => new Set(current).add(shownJob.id))}><X size={13}/></button>}
+        </div>}
+        {deletionJobs.error && <div className="conversation-management-notice warning" role="alert">无法更新后台删除进度，任务仍会继续。<button type="button" className="secondary" onClick={() => void deletionJobs.refetch()}>重试查询</button></div>}
+        {remove.error && !confirming && <div className="conversation-management-notice warning" role="alert">{remove.error.message}</div>}
         {deleteDirectory.error && <div className="conversation-management-notice warning" role="alert">{deleteDirectory.error.message}</div>}
         {archive.isPending && <div className="conversation-management-notice" role="status">正在归档会话：{archiveProgress.processed} / {archiveProgress.total}</div>}
         {archiveFeedback && !archive.isPending && <div className={`conversation-management-notice${archiveFeedback.error ? ' warning' : ''}`} role={archiveFeedback.error ? 'alert' : 'status'}>{archiveFeedback.message}</div>}
         {conversations.data?.truncated && <div className="conversation-management-notice warning"><Clock3 size={14}/><span>当前仅显示最近 500 个会话。请先完成本次清理，再继续管理更早的会话。</span></div>}
         {(restore.isError || restoreDirectory.isError) && <div className="conversation-management-notice warning" role="alert">{restore.error?.message ?? restoreDirectory.error?.message}</div>}
         {loading ? <div className="empty">正在读取会话…</div> : readError ? <div className="empty error" role="alert"><span>{readError.message}</span><button className="secondary" onClick={() => void Promise.all([workspace.refetch(), workDirectories.refetch(), conversations.refetch()])}>重试</button></div> : <>
-          <div className="conversation-management-table-wrap" ref={tableRef}><table className="conversation-management-table"><thead><tr><th scope="col"><input type="checkbox" aria-label="选择当前筛选结果中的全部会话" title="选择全部匹配结果（含其他页）" checked={selectAllVisible} disabled={!visible.length || operationBusy} ref={input => { if (input) input.indeterminate = !selectAllVisible && selectedVisible.length > 0; }} onChange={toggleVisible}/></th><th scope="col">会话名称</th><th scope="col">最后活动</th><th scope="col">创建时间</th><th scope="col">状态</th><th scope="col">操作</th></tr></thead><tbody>{paged.map(item => <tr key={item.id} className={selectedIds.has(item.id) ? 'selected' : ''} onClick={event => { if (!operationBusy && !(event.target as HTMLElement).closest('button, input, label, a')) toggle(item.id); }}><td><input type="checkbox" aria-label={`选择会话 ${conversationTitle(item)}`} checked={selectedIds.has(item.id)} disabled={operationBusy} onChange={() => toggle(item.id)}/></td><td><b title={conversationTitle(item)}>{conversationTitle(item)}</b></td><td>{formatTime(activityTime(item))}</td><td>{formatTime(item.created_at)}</td><td><span className="conversation-management-status">{item.archived_at ? '已归档' : item.pinned ? '置顶' : item.unread ? '未读' : '普通'}</span></td><td>{item.archived_at && <button type="button" className="secondary" aria-label={`恢复会话 ${conversationTitle(item)}`} disabled={operationBusy} onClick={() => restore.mutate(item.id)}><ArchiveRestore size={14}/>恢复</button>}</td></tr>)}</tbody></table>{visible.length === 0 && <div className="empty compact"><ArchiveX size={25}/><b>没有符合当前条件的会话</b><span>调整筛选条件，或等待正在运行的会话完成。</span></div>}</div>
+          <div className="conversation-management-table-wrap" ref={tableRef}><table className="conversation-management-table"><thead><tr><th scope="col"><input type="checkbox" aria-label="选择当前筛选结果中的全部会话" title="选择全部匹配结果（含其他页）" checked={selectAllVisible} disabled={!selectable.length || operationBusy} ref={input => { if (input) input.indeterminate = !selectAllVisible && selectedVisible.length > 0; }} onChange={toggleVisible}/></th><th scope="col">会话名称</th><th scope="col">最后活动</th><th scope="col">创建时间</th><th scope="col">状态</th><th scope="col">操作</th></tr></thead><tbody>{paged.map(item => <tr key={item.id} className={selectedIds.has(item.id) ? 'selected' : ''} onClick={event => { if (!operationBusy && !pendingDeletionIds.has(item.id) && !(event.target as HTMLElement).closest('button, input, label, a')) toggle(item.id); }}><td><input type="checkbox" aria-label={`选择会话 ${conversationTitle(item)}`} checked={selectedIds.has(item.id) && !pendingDeletionIds.has(item.id)} disabled={operationBusy || pendingDeletionIds.has(item.id)} onChange={() => toggle(item.id)}/></td><td><b title={conversationTitle(item)}>{conversationTitle(item)}</b></td><td>{formatTime(activityTime(item))}</td><td>{formatTime(item.created_at)}</td><td><span className="conversation-management-status">{pendingDeletionIds.has(item.id) ? '待删除' : item.archived_at ? '已归档' : item.pinned ? '置顶' : item.unread ? '未读' : '普通'}</span></td><td>{item.archived_at && <button type="button" className="secondary" aria-label={`恢复会话 ${conversationTitle(item)}`} disabled={operationBusy || pendingDeletionIds.has(item.id)} onClick={() => restore.mutate(item.id)}><ArchiveRestore size={14}/>恢复</button>}</td></tr>)}</tbody></table>{visible.length === 0 && <div className="empty compact"><ArchiveX size={25}/><b>没有符合当前条件的会话</b><span>调整筛选条件，或等待正在运行的会话完成。</span></div>}</div>
           <footer className="conversation-management-footer"><span aria-live="polite">已选 {selectedVisible.length} / {visible.length} 个会话</span><Pagination page={currentPage} pageSize={PAGE_SIZE} total={visible.length} onPageChange={setPage}/></footer>
         </>}
       </section>
     </section>
-    {confirming && <div className="modal-backdrop"><section className="modal conversation-management-confirm" role="dialog" aria-modal="true" aria-label="确认删除会话"><header><div><span className="eyebrow">PERMANENT DELETION</span><h2>删除 {remove.isPending ? deletionProgress.total : selectedVisible.length} 个会话？</h2></div><button className="ghost" disabled={operationBusy} onClick={() => setConfirming(false)}>取消</button></header><p>此操作不可恢复。系统会在删除时再次检查会话是否仍在运行；状态变化的会话将跳过，不会被强制中断。</p>{remove.isPending && <p role="status">已处理 {deletionProgress.processed} / {deletionProgress.total} 个会话…</p>}{remove.isError && <p role="alert" className="notice error">{remove.error.message}</p>}<footer><button className="secondary" disabled={operationBusy} onClick={() => setConfirming(false)}>返回</button><button className="danger" disabled={remove.isPending || selectedVisible.length === 0} onClick={() => remove.mutate({ workspaceId: workspace.data!.id, workDirectoryId: selectedWorkDirectoryId, bindingIds: selectedVisible.map(item => item.id) })}><Trash2 size={14}/>{remove.isPending ? '删除中…' : '确认永久删除'}</button></footer></section></div>}
+    {confirming && <div className="modal-backdrop"><section className="modal conversation-management-confirm" role="dialog" aria-modal="true" aria-label="确认删除会话"><header><div><span className="eyebrow">PERMANENT DELETION</span><h2>删除 {selectedVisible.length} 个会话？</h2></div><button className="ghost" disabled={operationBusy} onClick={() => setConfirming(false)}>取消</button></header><p>提交后将在后台删除，可以继续操作或离开页面。此操作不可恢复；运行中或状态变化的会话会跳过，不会被强制中断。</p>{remove.isError && <p role="alert" className="notice error">{remove.error.message}</p>}<footer><button className="secondary" disabled={operationBusy} onClick={() => setConfirming(false)}>返回</button><button className="danger" disabled={remove.isPending || selectedVisible.length === 0} onClick={() => remove.mutate({ workspaceId: workspace.data!.id, workDirectoryId: selectedWorkDirectoryId, bindingIds: selectedVisible.map(item => item.id) })}><Trash2 size={14}/>{remove.isPending ? '提交中…' : '确认永久删除'}</button></footer></section></div>}
   </section>;
 }

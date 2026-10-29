@@ -29,6 +29,7 @@ from flowweave.modules.agent_sessions.application import history as conversation
 from flowweave.modules.agent_sessions.application import (
     history_access,
     history_sessions,
+    management_deletion,
     schedule_history,
     sidebar_conversations,
 )
@@ -192,6 +193,10 @@ class AgentConversationManagementDeleteWrite(_Write):
 
 class AgentConversationManagementArchiveWrite(_Write):
     binding_ids: list[str] = Field(min_length=1, max_length=20)
+
+
+class AgentConversationDeletionJobWrite(_Write):
+    binding_ids: list[str] = Field(min_length=1, max_length=500)
 
 
 class AgentConversationScheduleWrite(_Write):
@@ -1117,6 +1122,33 @@ async def delete_agent_management_conversations(
             workspace_id,
             tuple(payload.binding_ids),
             _key(idempotency_key, "delete-agent-conversations", workspace_id),
+            work_directory_id=work_directory_id,
+        ),
+    )
+
+
+@router.get("/agent-workspaces/{workspace_id}/conversation-management/deletion-jobs")
+async def list_agent_conversation_deletion_jobs(workspace_id: str, db: Db) -> dict[str, Any]:
+    return await run_sync(db, lambda session: management_deletion.listing(session, workspace_id))
+
+
+@router.post(
+    "/agent-workspaces/{workspace_id}/conversation-management/deletion-jobs", status_code=202
+)
+async def start_agent_conversation_deletion_job(
+    workspace_id: str,
+    payload: AgentConversationDeletionJobWrite,
+    db: Db,
+    idempotency_key: IdempotencyKey = None,
+    work_directory_id: str | None = Query(default=None, min_length=1, max_length=36),
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: management_deletion.start(
+            session,
+            workspace_id,
+            tuple(payload.binding_ids),
+            _key(idempotency_key, "delete-agent-conversation-job", workspace_id),
             work_directory_id=work_directory_id,
         ),
     )
