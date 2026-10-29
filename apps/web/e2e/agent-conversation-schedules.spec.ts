@@ -1852,6 +1852,7 @@ test('capability configuration toggles visible selections and filters to selecte
 
   await dialog.getByRole('button', { name: '取消选择筛选结果', exact: true }).click();
   await expect(dialog.getByRole('button', { name: '会话历史查询', exact: true })).toBeDisabled();
+  await expect(dialog.getByRole('button', { name: '会话历史查询', exact: true })).toContainText('read_referenced_conversation');
   await expect(dialog.getByText('已选择 1 项', { exact: true })).toBeVisible();
   await expect(dialog.locator('.agent-capability-select-visible')).toHaveAttribute('aria-pressed','false');
   await expect(dialog.locator('.agent-capability-select-visible svg')).toHaveClass(/lucide-square$/);

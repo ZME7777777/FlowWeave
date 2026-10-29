@@ -750,6 +750,14 @@ def probe_workspace_mcp_readiness(
     conversations.
     """
 
+    def unavailable_result(reason: str) -> dict[str, Any]:
+        return {
+            "state": "UNAVAILABLE", "error_kind": "unknown", "reason": reason,
+            "tools": [], "checked_at": now().isoformat(),
+        }
+
+    from flowweave.modules.agent_sessions.application import history_integration, history_probe
+
     workspace = _workspace(db, workspace_id)
     published = resolve_version(db, capability_version_id)
     if published.package.capability_type != "MCP":
@@ -758,7 +766,7 @@ def probe_workspace_mcp_readiness(
         select(AgentWorkspaceRuntime).where(AgentWorkspaceRuntime.workspace_id == workspace.id)
     )
     if runtime is None or runtime.status != "ACTIVE" or runtime.active_generation is None:
-        return {"state": "UNAVAILABLE", "error_kind": "unknown", "checked_at": now().isoformat()}
+        return unavailable_result("RUNTIME_NOT_READY")
     sandbox = db.scalar(
         select(ManagedSandbox).where(
             ManagedSandbox.owner_type == "AGENT_WORKSPACE",
@@ -768,7 +776,7 @@ def probe_workspace_mcp_readiness(
         )
     )
     if sandbox is None or not sandbox.backend_resource_name:
-        return {"state": "UNAVAILABLE", "error_kind": "unknown", "checked_at": now().isoformat()}
+        return unavailable_result("RUNTIME_NOT_READY")
     allocation = agent_workspace_host.runtime_allocation_for_agent_workspace(db, workspace.id)
     probe_id = str(uuid4())
     host_root = (
@@ -784,15 +792,30 @@ def probe_workspace_mcp_readiness(
         _, _, servers = materialize_agent_workspace_capabilities(
             (capability,), host_root=host_root, runtime_root=runtime_root
         )
+        server = servers[0]
+        builtin_history = published.package.capability_key == history_integration.SERVER_NAME
+        if builtin_history:
+            configured = history_integration.configured_capability(db)
+            if configured.version.id != published.version.id:
+                raise DomainError(
+                    "AGENT_HISTORY_VERSION_NOT_CURRENT",
+                    "请检测系统当前发布的历史查询版本", 409,
+                )
+            token = history_probe.issue(current_user_id(), published.version.id)
+            server = replace(
+                server, config={**server.config, "headers": {"Authorization": f"Bearer {token}"}}
+            )
         result = get_runtime().probe_mcp(
             RuntimeMCPProbeRequest(
-                server=servers[0],
+                server=server,
                 base_url=f"http://{sandbox.backend_resource_name}:8000",
                 runtime_resource_name=sandbox.backend_resource_name,
             )
         )
-    except DomainError:
-        return {"state": "UNAVAILABLE", "error_kind": "unknown", "checked_at": now().isoformat()}
+        if builtin_history and result.ok and "read_referenced_conversation" not in result.tools:
+            return unavailable_result("TOOLS_MISSING")
+    except DomainError as exc:
+        return unavailable_result(exc.code)
     finally:
         # The MCP test endpoint has consumed the materialized configuration
         # synchronously.  The temporary immutable probe directory is never a
@@ -801,6 +824,8 @@ def probe_workspace_mcp_readiness(
     return {
         "state": "READY" if result.ok else "UNAVAILABLE",
         "error_kind": None if result.ok else (result.error_kind or "unknown"),
+        "reason": None if result.ok else f"MCP_{(result.error_kind or 'unknown').upper()}",
+        "tools": list(result.tools) if result.ok else [],
         "checked_at": now().isoformat(),
     }
 

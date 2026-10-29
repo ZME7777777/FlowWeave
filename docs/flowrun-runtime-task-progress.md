@@ -15248,3 +15248,53 @@ remote-release-finish通过，精确回收7个过期受管上下文；保留最�
 所有实际路径引用及每仓库一个回滚镜像。收尾后revision、健康、服务器配置
 和46个保护容器再次核验通过。无API、迁移或Runtime发布，未push，
 无后续实现切片。
+
+
+### OPS-73 MCP 连接测试、工具目录与历史查询误判修复 — DONE
+
+2026-10-29按用户截图排查内置历史查询不可用，并补齐能力仓库的MCP批量测试。
+正式Platform预检后，校验内置固定版本、digest及blob有效；使用临时零来源授权
+从实际Agent Runtime调用OpenHands正式MCP test，握手和工具发现通过，返回
+read_referenced_conversation，未读取历史正文，临时授权已删除。
+
+进一步以独立临时会话走首条引用的完整创建／注册路径，在send_message边界
+强制拦截，不发送用户消息、不调用模型；真实复现两次probe成功、两次原生配置
+确认false、AGENT_HISTORY_CAPABILITY_UNAVAILABLE。原生响应包含正确Server名称、
+URL、streamable-http及enabled，但不含Authorization。固定source lock
+73e3cd8e的conversation_service._compose_conversation_info先对state作脱敏dump，
+再构建ConversationInfo；MCP SecretStr映射校验会丢弃掩码值。平台误把公开响应
+缺少认证头当作未配置。适配器改为核对具名Server、精确URL、transport及enabled，
+认证仍由正式MCP probe验证，不请求明文凭据，也不跳过真实连接检查。
+同一诊断仅替换此判断后到达READY_TO_SEND，随后按预设拦截并正常删除临时
+原生会话／Binding。部署后仍需核验实际已提交镜像，无OpenHands源码或Runtime
+镜像改动。
+
+能力仓库MCP表格总操作栏新增“测试全部 MCP”；勾选记录时联动为“测试连接(N)”，
+保留跨页选择、原删除保护和全局排序。无选择时测试当前搜索匹配的全部MCP，
+包括内置项；逐个探测，结果即时显示，单项失败不阻塞后续；关闭／Escape停止
+后续检测并取消浏览器在途请求。完成结果按固定version id保留，返回标签不会
+重复已完成探测。表格以连接状态及工具数量替换MCP的无关依赖状态，名称／工具
+入口可只读查看详情；详情新增“工具能力”页，版本间结果隔离。内置项仍禁止
+选择、编辑、删除，可通过测试全部和只读详情检查；会话配置显示内置正式工具名，
+已选普通MCP在探测成功后展示工具目录。只展示原生probe返回的名称，不伪造schema，
+连接成功不宣称所有工具调用均已验证。
+
+复用当前用户Agent Workspace Runtime的既有mcp-readiness入口，返回安全失败分类、
+工具名和检测时间；不启动额外Runtime、不创建会话、不写入工具执行事件。内置
+测试使用60秒、加密且绑定用户／固定版本的catalog-only凭据，仅允许握手、ping和
+列举工具，工具调用一律拒绝；不创建或续期会话历史来源授权。过期、篡改、用户
+失权或配置版本变化均拒绝。正常引用失败提示和日志新增安全原因分类，不包含
+凭据、正文或私有URL。
+
+验证：116项后端回归通过，4项既有可选测试跳过；含真实隔离PostgreSQL的能力
+验证／OAuth和Workspace挂载13项，以及历史权限、MCP协议、初始注册、过期／
+篡改／版本绑定、catalog-only不能调用工具、失败不保留旧工具、临时物化清理等。
+既有Workspace直接调用夹具遗漏tenant上下文，补齐后通过，未放宽业务校验。
+21项Chromium回归通过，覆盖13项能力模块、5项MCP连接测试及3项会话能力／
+历史失败草稿场景；验证多选联动、串行探测、单项超时继续、内置保护、0工具、
+取消、标签返回、75工具内部滚动和1024短屏固定操作。截图人工核对通过。
+一个既有会话sidebar用例在未触及的引用类型键盘步骤失败，未计入通过数。
+Web typecheck、定向ESLint、production build、受影响Python Ruff、git diff及状态
+唯一性核对通过；唯一Alembic head仍为0184_cascade_directory_archives，无CURRENT。
+本片仅Web／Platform，无迁移、SDK、Runtime或服务器配置变更，不含并行CASE改动。
+沿用本会话直接部署授权，发布验收待补记，无后续实现切片。

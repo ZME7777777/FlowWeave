@@ -1,6 +1,7 @@
 """Governed native MCP registration before delivering metadata-only whole references."""
 
 import hashlib
+import logging
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -29,13 +30,24 @@ from flowweave.shared.settings import get_settings
 SERVER_NAME = "flowweave-reference-history"
 SECRET_NAME = "FLOWWEAVE_HISTORY_ACCESS"
 AUTH_HEADER = "Bearer ${FLOWWEAVE_HISTORY_ACCESS}"
+_logger = logging.getLogger(__name__)
 
 
-def unavailable() -> DomainError:
+def unavailable(reason: str = "CONFIGURATION_INVALID") -> DomainError:
+    explanation = {
+        "MCP_TIMEOUT": "连接超时",
+        "MCP_CONNECTION": "连接或认证失败",
+        "MCP_UNKNOWN": "连接检测失败",
+        "TOOLS_MISSING": "服务未返回历史查询工具",
+        "NATIVE_CONFIGURATION_MISSING": "运行环境未确认查询能力配置",
+        "CONFIGURATION_INVALID": "发布配置或版本校验失败",
+    }.get(reason, "运行环境暂不可用")
+    _logger.warning("History MCP unavailable: reason=%s", reason)
     return DomainError(
         "AGENT_HISTORY_CAPABILITY_UNAVAILABLE",
-        "会话历史查询能力不可用，请检查平台配置后重试；引用和草稿已保留",
+        f"会话历史查询能力不可用：{explanation}；请在能力仓库测试连接后重试，引用和草稿已保留",
         409,
+        {"reason": reason},
     )
 
 
@@ -107,8 +119,10 @@ def probe(handle: RuntimeHandle, published: PublishedCapability, token: str) -> 
             timeout=10,
         )
     )
-    if not result.ok or "read_referenced_conversation" not in result.tools:
-        raise unavailable()
+    if not result.ok:
+        raise unavailable(f"MCP_{(result.error_kind or 'unknown').upper()}")
+    if "read_referenced_conversation" not in result.tools:
+        raise unavailable("TOOLS_MISSING")
 
 
 def prepare_creation(
@@ -202,7 +216,7 @@ def ensure(
     except DomainError as exc:
         if exc.code.startswith("AGENT_HISTORY_"):
             raise
-        raise unavailable() from exc
+        raise unavailable(exc.code) from exc
 
 
 def _ensure(
@@ -321,7 +335,7 @@ def _ensure(
         if not runtime.conversation_mcp_configured(
             handle, SERVER_NAME, get_settings().agent_history_mcp_url
         ):
-            raise unavailable()
+            raise unavailable("NATIVE_CONFIGURATION_MISSING")
     # This records native configuration acknowledgement, not model execution
     # or a fabricated live-tool status. Actual tool use remains native MCP.
     freeze_reference(db, target.id, published)

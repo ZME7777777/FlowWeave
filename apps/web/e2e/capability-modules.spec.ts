@@ -720,8 +720,9 @@ test('MCP builtins are read-only and version details create a new draft from a h
   const builtin = page.locator('.capability-card').filter({ hasText: 'flowweave-reference-history' });
   await expect(builtin.getByText('内置', { exact: true })).toBeVisible();
   await expect(builtin.getByRole('checkbox')).toBeDisabled();
-  await expect(builtin.getByRole('button')).toHaveCount(0);
-  await builtin.click(); await expect(builtin.getByRole('checkbox')).not.toBeChecked();
+  await expect(builtin.getByRole('button', { name: /更多操作/ })).toHaveCount(0);
+  await expect(builtin.getByRole('button', { name: '查看 MCP flowweave-reference-history', exact: true })).toBeEnabled();
+  await builtin.getByRole('cell').nth(2).click(); await expect(builtin.getByRole('checkbox')).not.toBeChecked();
   await page.getByRole('button', { name: '全选当前模块', exact: true }).click();
   await expect(page.getByRole('button', { name: '批量删除 (1)', exact: true })).toBeEnabled();
   await expect(builtin.getByRole('checkbox')).not.toBeChecked();

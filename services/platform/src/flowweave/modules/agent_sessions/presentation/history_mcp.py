@@ -9,7 +9,13 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from sqlalchemy.orm import Session
 
-from flowweave.modules.agent_sessions.application import conversations, history, history_access
+from flowweave.modules.agent_sessions.application import (
+    conversations,
+    history,
+    history_access,
+    history_integration,
+    history_probe,
+)
 from flowweave.modules.users.application.security import tenant_user
 from flowweave.modules.users.application.service import agent_session_principal
 from flowweave.runtime.base import RuntimeEventBatch
@@ -141,15 +147,26 @@ def rpc_error(identity: Any, code: int, message: str) -> JSONResponse:
 @router.post(MCP_PATH)
 async def history_mcp(request: Request) -> Response:
     auth = request.headers.get("authorization", "")
-    if not auth.startswith("Bearer ") or len(auth) > 256:
+    if not auth.startswith("Bearer ") or len(auth) > 1024:
         raise history_access.denied()
     token = auth[7:]
-    owner, _grant_id = history_access.token_identity(token)
+    catalog_only = token.startswith(history_probe.PREFIX)
+    owner, credential_id = (
+        history_probe.identity(token) if catalog_only else history_access.token_identity(token)
+    )
     container = get_container(request)
 
     def authenticate(db: Session) -> Any:
-        grant = history_access.authenticate(db, token)
-        principal = agent_session_principal(db, grant.owner_user_id)
+        if catalog_only:
+            if history_probe.identity(token) != (owner, credential_id):
+                raise history_access.denied()
+            with tenant_user(owner):
+                if history_integration.configured_capability(db).version.id != credential_id:
+                    raise history_access.denied()
+            principal = agent_session_principal(db, owner)
+        else:
+            grant = history_access.authenticate(db, token)
+            principal = agent_session_principal(db, grant.owner_user_id)
         if principal is None:
             raise history_access.denied()
         return principal
@@ -206,6 +223,8 @@ async def history_mcp(request: Request) -> Response:
         return rpc_result(identity, {"tools": [TOOL]})
     if method != "tools/call":
         return rpc_error(identity, -32601, "Method not found")
+    if catalog_only:
+        raise history_access.denied()
     if params.get("name") != TOOL["name"]:
         return rpc_error(identity, -32602, "Unknown tool")
     try:

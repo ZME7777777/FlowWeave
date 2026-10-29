@@ -1992,6 +1992,7 @@ def test_agent_workspace_selected_plugin_and_mcp_are_mounted(
     runtime = CapturingRuntime()
     with (
         settings_context(settings),
+        tenant_user(FLOWWEAVE_USER_ID),
         artifact_store_context(container.artifact_store),
         db_session_factory() as db,
         runtime_context(runtime),
@@ -2007,6 +2008,8 @@ def test_agent_workspace_selected_plugin_and_mcp_are_mounted(
         )
         assert readiness["state"] == "READY"
         assert readiness["error_kind"] is None
+        assert readiness["tools"] == ["mock_read"]
+        assert readiness["reason"] is None
         assert runtime.mcp_probe_request is not None
         assert runtime.mcp_probe_request.server.name == "agent-local"
         assert runtime.mcp_probe_request.runtime_resource_name == (

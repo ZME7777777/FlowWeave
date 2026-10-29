@@ -876,6 +876,8 @@ export interface AgentSessionMcpReadiness {
   state: 'READY' | 'UNAVAILABLE';
   error_kind: 'timeout' | 'connection' | 'unknown' | null;
   checked_at: string;
+  tools?: string[];
+  reason?: string | null;
 }
 export type AgentWorkspaceMcpReadiness = AgentSessionMcpReadiness;
 

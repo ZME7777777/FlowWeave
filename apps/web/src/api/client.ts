@@ -378,8 +378,8 @@ export const api = {
     const query = workDirectoryId ? `?work_directory_id=${encodeURIComponent(workDirectoryId)}` : '';
     return request<import('../types').AgentWorkspaceSessionConfiguration>(`/agent-workspaces/${encodeURIComponent(id)}/session-configuration${query}`, json('PUT', configuration));
   },
-  agentWorkspaceMcpReadiness: (id: string, capabilityVersionId: string) =>
-    request<AgentWorkspaceMcpReadiness>(`/agent-workspaces/${encodeURIComponent(id)}/capabilities/${encodeURIComponent(capabilityVersionId)}/mcp-readiness`, json('POST')),
+  agentWorkspaceMcpReadiness: (id: string, capabilityVersionId: string, signal?: AbortSignal) =>
+    request<AgentWorkspaceMcpReadiness>(`/agent-workspaces/${encodeURIComponent(id)}/capabilities/${encodeURIComponent(capabilityVersionId)}/mcp-readiness`, { ...json('POST'), signal, timeoutMs: 25_000 }),
   agentWorkspaceRuntime: (id: string) => request<AgentWorkspaceRuntime>(`/agent-workspaces/${encodeURIComponent(id)}/runtime`),
   agentGitIdentity: (id: string) => request<AgentGitIdentity>(`/agent-workspaces/${encodeURIComponent(id)}/settings/git`),
   saveAgentGitIdentity: (id: string, identity: { author: string; email: string }) => request<AgentGitIdentity>(`/agent-workspaces/${encodeURIComponent(id)}/settings/git`, { method: 'PUT', body: JSON.stringify(identity) }),

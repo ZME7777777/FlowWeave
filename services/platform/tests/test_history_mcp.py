@@ -434,3 +434,71 @@ def test_locked_sdk_native_plugin_secret_and_restore(client, tmp_path):
         server.should_exit = True
         thread.join(timeout=5)
         listener.close()
+
+
+@pytest.mark.parametrize("method", ["initialize", "tools/list", "ping", "tools/call"])
+def test_catalog_probe_credential_never_authorizes_history(client, monkeypatch, method):
+    from flowweave.modules.agent_sessions.application import history_integration, history_probe
+    from flowweave.shared.settings import settings_context
+
+    c, _token, state = client
+    owner, version_id = str(uuid4()), str(uuid4())
+    monkeypatch.setattr(
+        history_integration,
+        "configured_capability",
+        lambda _db: SimpleNamespace(version=SimpleNamespace(id=version_id)),
+    )
+    with settings_context(Settings(_env_file=None)):
+        token = history_probe.issue(owner, version_id)
+        response = c.post(
+            mcp.MCP_PATH,
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": method,
+                "params": {
+                    "name": "read_referenced_conversation",
+                    "arguments": {"source_binding_id": str(uuid4())},
+                },
+            },
+        )
+    assert response.status_code == (401 if method == "tools/call" else 200)
+    if method == "tools/list":
+        assert response.json()["result"]["tools"][0]["name"] == "read_referenced_conversation"
+    assert state.reads == 0
+    assert token not in response.text
+
+
+def test_catalog_probe_expiry_tampering_and_version_binding(client, monkeypatch):
+    from flowweave.modules.agent_sessions.application import history_integration, history_probe
+    from flowweave.shared.settings import settings_context
+
+    c, _, state = client
+    owner, version_id = str(uuid4()), str(uuid4())
+    monkeypatch.setattr(history_probe.time, "time", lambda: 10_000)
+    with settings_context(Settings(_env_file=None)):
+        token = history_probe.issue(owner, version_id)
+        assert history_probe.identity(token) == (owner, version_id)
+        monkeypatch.setattr(history_probe.time, "time", lambda: 10_061)
+        with pytest.raises(DomainError):
+            history_probe.identity(token)
+        monkeypatch.setattr(history_probe.time, "time", lambda: 10_000)
+        with pytest.raises(DomainError):
+            history_probe.identity(token[:-10] + "tampered00")
+        monkeypatch.setattr(
+            history_integration,
+            "configured_capability",
+            lambda _db: SimpleNamespace(version=SimpleNamespace(id=str(uuid4()))),
+        )
+        response = c.post(
+            mcp.MCP_PATH,
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/list",
+            },
+        )
+        assert response.status_code == 401
+    assert state.reads == 0

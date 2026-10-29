@@ -5745,12 +5745,15 @@ class OpenHandsRuntime:
         server = servers.get(server_name) if isinstance(servers, dict) else None
         if not isinstance(server, dict):
             return False
-        headers = server.get("headers")
+        # ConversationInfo reconstructs the Agent from a redacted model dump.
+        # MCP secret-map validation then drops masked header values, so public
+        # state cannot prove whether Authorization is installed. Authentication
+        # is exercised by the native MCP probe; this read acknowledges only
+        # the exact non-secret configuration and its enabled state.
         return (
             server.get("url") == url
             and server.get("transport") == "streamable-http"
-            and isinstance(headers, dict)
-            and bool(headers.get("Authorization"))
+            and server.get("enabled") is not False
         )
 
     def interrupt(self, handle: RuntimeHandle) -> None:
