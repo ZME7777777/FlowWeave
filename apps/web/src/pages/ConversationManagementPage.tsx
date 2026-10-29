@@ -19,7 +19,7 @@ interface DeleteSelection {
 }
 
 type InactivePeriod = 'all' | '30' | '90';
-type ArchiveFilter = 'active' | 'archived';
+type ArchiveFilter = 'all' | 'active' | 'archived';
 
 const PERIOD_OPTIONS: { value: InactivePeriod; label: string }[] = [
   { value: 'all', label: '全部时间' },
@@ -44,7 +44,7 @@ export function ConversationManagementPage({ onRestored }: { onRestored?: (selec
   const dialog = useProductDialog();
   const [query, setQuery] = useState('');
   const [period, setPeriod] = useState<InactivePeriod>('all');
-  const [archiveFilter, setArchiveFilter] = useState<ArchiveFilter>('active');
+  const [archiveFilter, setArchiveFilter] = useState<ArchiveFilter>('all');
   const [includePinned, setIncludePinned] = useState(false);
   const [includeUnread, setIncludeUnread] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -65,7 +65,7 @@ export function ConversationManagementPage({ onRestored }: { onRestored?: (selec
     : workDirectories.data?.root.display_name ?? '根工作区';
   const conversations = useQuery({
     queryKey: ['agent-conversation-management', workspace.data?.id, selectedWorkDirectoryId ?? 'root', archiveFilter],
-    queryFn: () => api.agentConversationManagement(workspace.data!.id, selectedWorkDirectoryId, archiveFilter === 'archived'),
+    queryFn: () => api.agentConversationManagement(workspace.data!.id, selectedWorkDirectoryId, archiveFilter === 'all' ? undefined : archiveFilter === 'archived'),
     enabled: Boolean(workspace.data?.id),
   });
 
@@ -184,7 +184,7 @@ export function ConversationManagementPage({ onRestored }: { onRestored?: (selec
     return next;
   });
 
-  const filtersActive = Boolean(query || period !== 'all' || includePinned || includeUnread);
+  const filtersActive = Boolean(query || period !== 'all' || archiveFilter !== 'all' || includePinned || includeUnread);
   const loading = conversations.isLoading || workspace.isLoading || workDirectories.isLoading;
   const readError = conversations.error ?? workspace.error ?? workDirectories.error;
 
@@ -197,7 +197,7 @@ export function ConversationManagementPage({ onRestored }: { onRestored?: (selec
             <Folder size={16}/><span>{workDirectories.data?.root.display_name ?? '根工作区'}</span>
           </button>
           {workDirectories.data?.items.map(directory => <div key={directory.id} className="conversation-management-workspace-item">
-            <button type="button" className={selectedWorkDirectoryId === directory.id ? 'active' : ''} aria-pressed={selectedWorkDirectoryId === directory.id} disabled={remove.isPending} onClick={() => { setSelectedWorkDirectoryId(directory.id); setArchiveFilter(directory.state === 'ARCHIVED' ? 'archived' : 'active'); }}>
+            <button type="button" className={selectedWorkDirectoryId === directory.id ? 'active' : ''} aria-pressed={selectedWorkDirectoryId === directory.id} disabled={remove.isPending} onClick={() => setSelectedWorkDirectoryId(directory.id)}>
               <Folder size={16}/><span title={directory.display_name}>{directory.display_name}{directory.state === 'ARCHIVED' ? '（已归档）' : ''}</span>
             </button>
             {directory.state === 'ARCHIVED' && <button type="button" className="secondary" aria-label={`恢复工作区 ${directory.display_name}`} disabled={restoreDirectory.isPending || remove.isPending} onClick={async () => {
@@ -213,11 +213,11 @@ export function ConversationManagementPage({ onRestored }: { onRestored?: (selec
         </header>
         <div className="conversation-management-toolbar">
           <label className="conversation-management-search"><Search size={14}/><input aria-label="搜索会话" value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索会话名称…"/>{query && <button type="button" aria-label="清除搜索" onClick={() => setQuery('')}><X size={13}/></button>}</label>
-          <LaunchOptionMenu label="会话状态" value={archiveFilter} options={[{ value: 'active', label: '未归档' }, { value: 'archived', label: '已归档' }]} onChange={value => setArchiveFilter(value as ArchiveFilter)}/>
+          <LaunchOptionMenu label="会话状态" value={archiveFilter} options={[{ value: 'all', label: '全部' }, { value: 'active', label: '未归档' }, { value: 'archived', label: '已归档' }]} onChange={value => setArchiveFilter(value as ArchiveFilter)}/>
           <LaunchOptionMenu label="最后活动时间" value={period} options={PERIOD_OPTIONS} onChange={value => setPeriod(value as InactivePeriod)}/>
           <label className="conversation-management-check"><input type="checkbox" checked={includePinned} onChange={event => setIncludePinned(event.target.checked)}/><span>包含置顶</span></label>
           <label className="conversation-management-check"><input type="checkbox" checked={includeUnread} onChange={event => setIncludeUnread(event.target.checked)}/><span>包含未读</span></label>
-          {filtersActive && <button className="ghost conversation-management-reset" onClick={() => { setQuery(''); setPeriod('all'); setIncludePinned(false); setIncludeUnread(false); }}>重置</button>}
+          {filtersActive && <button className="ghost conversation-management-reset" onClick={() => { setQuery(''); setPeriod('all'); setArchiveFilter('all'); setIncludePinned(false); setIncludeUnread(false); }}>重置</button>}
           <button className="danger conversation-management-delete" disabled={selectedVisible.length === 0 || remove.isPending || loading || Boolean(readError)} onClick={() => { remove.reset(); setConfirming(true); }}><Trash2 size={14}/>删除已选会话</button>
         </div>
         {conversations.data?.truncated && <div className="conversation-management-notice warning"><Clock3 size={14}/><span>当前仅显示最近 500 个会话。请先完成本次清理，再继续管理更早的会话。</span></div>}
