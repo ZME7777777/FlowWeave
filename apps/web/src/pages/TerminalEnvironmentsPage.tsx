@@ -7,9 +7,10 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, ApiError, environmentTerminalUrl } from '../api/client';
 import { useProductDialog } from '../components/ProductDialogContext';
 import { SettingsManagementLayout, SettingsResourceRow } from '../components/SettingsManagementLayout';
+import { EnvironmentVersionsPanel } from '../components/EnvironmentVersionsPanel';
 import { Pagination } from '../components/Pagination';
 import { useEscapeClose } from '../components/useEscapeClose';
-import type { EnvironmentSetupSession, EnvironmentVersion, TerminalEnvironment } from '../types';
+import type { EnvironmentSetupSession, TerminalEnvironment } from '../types';
 
 function PublishingPanel({ onClose }: { onClose: () => void }) {
   useEscapeClose(onClose);
@@ -283,6 +284,7 @@ export function TerminalEnvironmentsPage() {
   const [terminalAttached, setTerminalAttached] = useState(false);
   const [terminalViewOpen, setTerminalViewOpen] = useState(false);
   const [terminalError, setTerminalError] = useState('');
+  const [openingVersionId, setOpeningVersionId] = useState<string | null>(null);
   const [openingEnvironmentId, setOpeningEnvironmentId] = useState<string | null>(null);
   const [deletingEnvironmentId, setDeletingEnvironmentId] = useState<string | null>(null);
   const [error, setError] = useState('');
@@ -312,11 +314,14 @@ export function TerminalEnvironmentsPage() {
   const open = async (environment: TerminalEnvironment, baseVersionId?: string) => {
     if (openingEnvironmentId) return;
     setOpeningEnvironmentId(environment.id);
+    setOpeningVersionId(baseVersionId ?? null);
     setError('');
     try {
       const current = environment.active_sessions[0];
       setTerminalError('');
+      if (baseVersionId && current) throw new Error('已有配置会话，请先完成或丢弃后再创建新草稿。');
       const next = current ?? await api.createEnvironmentSetup(environment.id, baseVersionId);
+      queryClient.setQueryData<TerminalEnvironment[]>(['terminal-environments'], items => items?.map(item => item.id === environment.id ? { ...item, active_sessions: [next] } : item));
       setTerminal(next);
       setTerminalAttached(next.state !== 'PUBLISHING');
       setTerminalViewOpen(true);
@@ -325,6 +330,7 @@ export function TerminalEnvironmentsPage() {
       setError(reason instanceof Error ? reason.message : '启动环境失败');
     } finally {
       setOpeningEnvironmentId(null);
+      setOpeningVersionId(null);
     }
   };
   const explainEnvironmentInUse = (environment: TerminalEnvironment, reason: ApiError) => {
@@ -395,27 +401,6 @@ export function TerminalEnvironmentsPage() {
       setDeletingEnvironmentId(null);
     }
   };
-  const removeVersion = async (environment: TerminalEnvironment, version: EnvironmentVersion) => {
-    if (version.reference_count > 0) return;
-    const confirmed = await dialog.confirm({
-      title: `删除 ${environment.name} · v${version.version_no}`,
-      message: '此操作会删除版本记录并清理对应的本地镜像标签，无法撤销。后续发布仍会使用新的版本号。',
-      confirmLabel: '删除版本',
-      tone: 'danger',
-    });
-    if (!confirmed) return;
-    setError('');
-    try {
-      await api.deleteEnvironmentVersion(environment.id, version.id);
-      await queryClient.invalidateQueries({ queryKey: ['terminal-environments'] });
-    } catch (reason) {
-      if (reason instanceof ApiError && reason.code === 'ENVIRONMENT_VERSION_IN_USE') {
-        const runs = Number(reason.details.run_reference_count ?? 0);
-        setError(`该版本已被 ${runs} 个运行占用。解除引用后才能删除。`);
-      } else setError(reason instanceof Error ? reason.message : '删除版本失败');
-    }
-  };
-
   return <SettingsManagementLayout title="终端环境" count={environments.length} query={query} onQueryChange={value => { setQuery(value); setPage(1); }} className="environments-page"
     actions={<button className="primary" onClick={() => setCreating(true)}><Plus size={14}/>新建环境</button>}
     listKey={`${query}-${page}`}
@@ -434,15 +419,15 @@ export function TerminalEnvironmentsPage() {
     {terminal?.state === 'PUBLISHING' && terminalViewOpen && <PublishingPanel onClose={closeTerminal}/>}
 </>}>
     {error && <p className="error" role="alert">{error}</p>}
-    {activeEnvironment ? [activeEnvironment].map(environment => { const latest = environment.versions.find(item => item.state === 'READY'); const active = environment.active_sessions[0]; return <div className="settings-selected-environment" key={environment.id}>
+    {activeEnvironment ? [activeEnvironment].map(environment => { const active = environment.active_sessions[0]; return <div className="settings-selected-environment" key={environment.id}>
       <header className="settings-detail-header"><div><h2>{environment.name}</h2><small title={environment.description}>{environment.description || '未填写说明'}</small></div><div className="settings-detail-actions">
-        {active ? <button className="primary" disabled={deletingEnvironmentId !== null} onClick={() => { setTerminal(active); setTerminalAttached(active.state !== 'PUBLISHING'); setTerminalViewOpen(true); }}>{active.state === 'PUBLISHING' ? <LoaderCircle className="spin" size={14}/> : <Terminal size={14}/>}{active.state === 'PUBLISHING' ? '查看发布进度' : '继续配置'}</button> : <button className="secondary" disabled={openingEnvironmentId !== null || deletingEnvironmentId !== null} aria-busy={openingEnvironmentId === environment.id} onClick={() => void open(environment, latest?.id)}>{openingEnvironmentId === environment.id ? <LoaderCircle className="spin" size={14}/> : <Play size={14}/>}<span aria-live="polite">{openingEnvironmentId === environment.id ? (latest ? '正在创建草稿…' : '正在开启终端…') : latest ? `从 v${latest.version_no} 创建草稿` : '开启终端'}</span></button>}
+        {active ? <button className="primary" disabled={deletingEnvironmentId !== null} onClick={() => { setTerminal(active); setTerminalAttached(active.state !== 'PUBLISHING'); setTerminalViewOpen(true); }}>{active.state === 'PUBLISHING' ? <LoaderCircle className="spin" size={14}/> : <Terminal size={14}/>}{active.state === 'PUBLISHING' ? '查看发布进度' : '继续配置'}</button> : !environment.versions.some(version => version.state === 'READY') && <button className="secondary" disabled={openingEnvironmentId !== null || deletingEnvironmentId !== null} aria-busy={openingEnvironmentId === environment.id} onClick={() => void open(environment)}>{openingEnvironmentId === environment.id ? <LoaderCircle className="spin" size={14}/> : <Play size={14}/>}开启终端</button>}
+
         <button className="ghost" disabled={deletingEnvironmentId !== null} aria-label={`删除环境 ${environment.name}`} onClick={() => void remove(environment)}>{deletingEnvironmentId === environment.id ? <LoaderCircle className="spin" size={15}/> : <Trash2 size={15}/>}删除</button>
       </div></header>
       <details className="settings-info warning"><summary>凭据风险 · 发布可能保留认证信息</summary><p>终端不挂载宿主目录，但发布不会清理或拒绝认证文件。镜像可能永久包含 Token、密钥、Cookie 和命令历史，请限制镜像访问与分发范围。</p></details>
-      <div className="settings-detail-body"><div className="settings-environment-summary"><span>可运行版本<b>{environment.versions.filter(item => item.state === 'READY').length}</b></span><span>最新版本<b>{latest ? `v${latest.version_no}` : '需要发布'}</b></span><span>配置会话<b>{active?.state ?? '无'}</b></span>{latest && <code title={latest.image_digest}>{latest.image_digest.slice(0, 25)}…</code>}</div>
-      {latest?.manifest.commands && <div className="settings-environment-tools">{Object.entries(latest.manifest.commands).map(([command, version]) => <span key={command} title={version}>{command} · {version}</span>)}</div>}
-      <h3>版本历史（{environment.versions.length}）</h3>{environment.versions.length ? <table className="settings-data-table settings-environment-versions"><thead><tr><th>版本与说明</th><th>状态</th><th>发布时间</th><th>运行引用</th><th>操作</th></tr></thead><tbody>{environment.versions.map(version => { const occupied = version.reference_count > 0; return <tr key={version.id}><td><b>v{version.version_no}</b><small title={version.description}>{version.description || '未填写版本说明'}</small><small>{version.runtime_capabilities?.length ? version.runtime_capabilities.join(' + ') : 'minimal'}</small><small title={version.image_digest}>{version.image_digest ? `${version.image_digest.slice(0, 25)}…` : '无镜像摘要'}</small></td><td><span className={`environment-version-state ${version.state.toLowerCase()}`}>{version.state}</span></td><td>{new Date(version.created_at).toLocaleString()}</td><td><span className={occupied ? 'environment-version-usage occupied' : 'environment-version-usage'}>{occupied ? `${version.run_reference_count} 个运行` : '未被占用'}</span></td><td><button className="ghost" disabled={occupied} title={occupied ? '解除运行引用后才能删除' : `删除 v${version.version_no}`} aria-label={`删除版本 v${version.version_no}`} onClick={() => void removeVersion(environment, version)}><Trash2 size={14}/></button></td></tr>; })}</tbody></table> : <div className="empty compact">还没有已发布版本。开启终端配置环境后发布。</div>}</div>
+      <EnvironmentVersionsPanel environment={environment} openingVersionId={openingVersionId} draftBusy={openingEnvironmentId !== null || deletingEnvironmentId !== null} onCreateDraft={version => void open(environment, version.id)}/>
+
     </div>; }) : <div className="empty"><Terminal size={26}/><b>{query ? '没有匹配的终端环境' : '暂无终端环境'}</b><span>新建后可在隔离终端中安装节点需要的命令。</span></div>}
   </SettingsManagementLayout>;
 }
