@@ -15541,3 +15541,26 @@ Platform和Web remote-release-finish均通过，无过期受管上下文候选�
 按钮可访问名称断言，既有全屏用例改为核对当前“来源”区域，不再要求已隐藏
 的IDE入口。仅Web变更，无Platform、迁移、SDK、Runtime或服务器配置改动。
 沿用当前会话直接部署授权，发布验收待补记，无后续实现切片。
+
+
+#### OPS-77 Web 发布验收
+
+2026-10-29正式Web预检与受管最小上下文准备通过，发布
+`1a8a47f1438f7e6d2acd3c520e0ec03d43c5add0`，源归档SHA-256为
+`06f0635d2431cbbcd7dd7339e70671d90632ee2cfe1f63f37dba6759c368385f`。
+linux/amd64 Web镜像ID为
+`sha256:c8efeea50094d6183c24f958a9f750663140f2adf66d14b9288ed4296f049b36`。
+保留旧Web回滚镜像和服务日志，仅定向recreate Web，revision与HTTP健康通过；
+服务器配置哈希及其余47个容器的镜像和启动时间保持。无Platform、迁移、
+SDK或Runtime更新，数据库仍为0184_cascade_directory_archives。
+
+公网HTML／Agent深层路由、两项入口资源及三个包含隐藏／显示工具文案与
+工具内容样式的模块资源SHA-256与运行镜像一致；两项API鉴权边界为401。
+全新Chromium的平台登录、深层路由和根登录页通过，3859条完整网络事件中
+部署前缀API请求通过，根路径API请求为0，临时浏览器均回收。侧边聊天
+隐藏、草稿保留、迟到创建和显式关闭由本地12项受控Chromium回归验收，
+线上验收未创建或删除实际用户聊天。
+
+Web remote-release-finish通过，无过期受管上下文候选；保留最近24小时上下文、
+实际路径引用及每仓库一个回滚镜像。收尾后Web版本／健康、数据库head、配置
+及47个保护容器再次核验通过。未push，无后续实现切片。
