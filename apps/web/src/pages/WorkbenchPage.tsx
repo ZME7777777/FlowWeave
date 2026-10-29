@@ -1677,6 +1677,7 @@ export function WorkbenchPage({ location }: { location?: FlowRunLocation }) {
   const [selectedAutomaticId, setSelectedAutomaticId] = useState<string | undefined>(selectedAutomaticRecordId);
   const [selectedStepwiseId, setSelectedStepwiseId] = useState<string | undefined>(selectedStepwiseRecordId);
   const stepwiseEntrySelection = useRef({ runId: selectedRunId, recordId: selectedStepwiseRecordId });
+  const initializedRunId = useRef<string | undefined | null>(null);
   const [stepwiseSelectedIds, setStepwiseSelectedIds] = useState<Set<string>>(new Set());
   const [runtimePortDialog, setRuntimePortDialog] = useState<{ nodeKey: string; direction: RuntimePortDirection }>();
   const [automaticSelectedIds, setAutomaticSelectedIds] = useState<Set<string>>(new Set());
@@ -1726,6 +1727,8 @@ export function WorkbenchPage({ location }: { location?: FlowRunLocation }) {
     void qc.invalidateQueries({ queryKey: ['runs'] });
   }, [flowId, qc, selectedRunId, selectedStepwiseId]);
   useEffect(() => {
+    if (initializedRunId.current === selectedRunId) return;
+    initializedRunId.current = selectedRunId;
     automaticEntrySelection.current = undefined;
     setSelectedNodeKey(undefined);
     // The directory supplies a one-shot record selection before this mount.

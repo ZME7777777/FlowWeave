@@ -74,7 +74,7 @@ for (const node of [false, true]) {
         await expect(page.locator(`[data-user-event-id="${sent.id}"]`)).toHaveCount(1);
       }
       await page.getByRole('button', { name: '节点中心', exact: true }).click();
-      await expect(page.getByLabel('发送 Agent 消息')).toHaveCount(0);
+      await expect(page.getByLabel('发送 Agent 消息')).toBeHidden();
       if (timing === 'accepted-while-away') {
         releaseSend();
         await expect.poll(() => accepted).toBe(true);
@@ -108,7 +108,7 @@ for (const node of [false, true]) {
       // Reusing a local bubble must not resurrect a turn absent from that window.
       const readsBeforeLeaving = hydrationCount;
       await page.getByRole('button', { name: '节点中心', exact: true }).click();
-      await expect(page.getByLabel('发送 Agent 消息')).toHaveCount(0);
+      await expect(page.getByLabel('发送 Agent 消息')).toBeHidden();
       if (node) await page.locator('.context-tab-select').click();
       else await page.getByRole('button', { name: 'AI 工作台', exact: true }).click();
       await expect.poll(() => hydrationCount).toBe(readsBeforeLeaving);

@@ -1,4 +1,4 @@
-import { Maximize2, Plus, Trash2, X } from 'lucide-react';
+import { Eye, Maximize2, Pencil, Plus, Trash2, X } from 'lucide-react';
 import { useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import type { IOField, NodeAsset, NodeAssetWrite } from '../types';
@@ -30,30 +30,31 @@ function writeDraft(draft: NodeDraft): NodeAssetWrite {
 }
 
 function PromptContent({ promptKey, value, preview, disabled, onChange }: { promptKey: PromptKey; value: string; preview: boolean; disabled: boolean; onChange: (value: string) => void }) {
-  return <div className="node-prompt-content">
+  return <div className={`node-prompt-content ${preview ? 'preview-mode' : 'editing-mode'}`}>
     <textarea hidden={preview} aria-label={promptLabels[promptKey]} value={value} readOnly={disabled} placeholder={promptKey === 'startup_prompt' ? '描述节点要完成的任务、执行步骤和验收标准…' : '补充背景、约束与需要始终遵守的规则…'} spellCheck={false} onChange={event => onChange(event.target.value)}/>
     <div hidden={!preview} className="node-prompt-preview" aria-label={`${promptLabels[promptKey]}预览`}>{value ? <ConversationMarkdown>{value}</ConversationMarkdown> : <p className="node-prompt-empty">暂无内容，切换到编辑后添加。</p>}</div>
   </div>;
 }
 function PromptMode({ preview, onChange }: { preview: boolean; onChange: (preview: boolean) => void }) {
-  return <div className="node-prompt-mode" role="group" aria-label="正文显示方式"><button type="button" aria-pressed={!preview} onClick={() => onChange(false)}>编辑</button><button type="button" aria-pressed={preview} onClick={() => onChange(true)}>预览</button></div>;
+  return <div className={`node-prompt-mode ${preview ? 'is-preview' : 'is-editing'}`} role="group" aria-label="正文显示方式"><span className="node-prompt-mode-label">{preview ? <Eye size={12}/> : <Pencil size={12}/>} {preview ? '预览模式' : '编辑模式'}</span><button type="button" aria-pressed={!preview} onClick={() => onChange(false)}>编辑</button><button type="button" aria-pressed={preview} onClick={() => onChange(true)}>预览</button></div>;
 }
-function ExpandedPrompt({ promptKey, value, disabled, error, onChange, onClose, onCancel, onSave }: { onCancel: () => void; error: string; promptKey: PromptKey; value: string; disabled: boolean; onChange: (value: string) => void; onClose: () => void; onSave: (event: KeyboardEvent) => void }) {
+function ExpandedPrompt({ promptKey, value, disabled, error, preview, onPreviewChange, onChange, onClose, onCancel, onSave }: { preview: boolean; onPreviewChange: (preview: boolean) => void; onCancel: () => void; error: string; promptKey: PromptKey; value: string; disabled: boolean; onChange: (value: string) => void; onClose: () => void; onSave: (event: KeyboardEvent) => void }) {
   const panel = useRef<HTMLElement>(null);
-  const [preview, setPreview] = useState(false);
   const title = useId();
   useEscapeClose(() => { onCancel(); onClose(); });
   useEffect(() => {
     const previous = document.activeElement;
-    panel.current?.querySelector('textarea')?.focus();
     return () => { if (previous instanceof HTMLElement && previous.isConnected) previous.focus(); };
   }, []);
+  useEffect(() => {
+    panel.current?.querySelector<HTMLElement>(preview ? 'button[aria-pressed=true]' : 'textarea:not([hidden])')?.focus();
+  }, [preview]);
   return createPortal(<div className="modal-backdrop node-expanded-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><section ref={panel} className="node-expanded-prompt" role="dialog" aria-modal="true" aria-labelledby={title} onKeyDown={event => {
     onSave(event);
     if (event.key !== 'Tab') return;
     const items = [...event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), textarea:not([hidden])')];
     if (document.activeElement === (event.shiftKey ? items[0] : items.at(-1))) { event.preventDefault(); (event.shiftKey ? items.at(-1) : items[0])?.focus(); }
-  }}><header><b id={title}>{promptLabels[promptKey]}</b><span>修改与节点草稿同步</span><PromptMode preview={preview} onChange={setPreview}/><button type="button" className="ghost" aria-label="退出放大编辑" onClick={onClose}><X size={17}/></button></header><PromptContent promptKey={promptKey} value={value} preview={preview} disabled={disabled} onChange={onChange}/>{error && <p className="error node-save-error" role="alert">{error}</p>}<footer><small>⌘ / Ctrl + S 保存节点</small><button type="button" className="secondary" onClick={onClose}>完成</button></footer></section></div>, document.body);
+  }}><header><b id={title}>{promptLabels[promptKey]}</b><span>修改与节点草稿同步</span><PromptMode preview={preview} onChange={onPreviewChange}/><button type="button" className="ghost" aria-label="退出放大编辑" onClick={onClose}><X size={17}/></button></header><PromptContent promptKey={promptKey} value={value} preview={preview} disabled={disabled} onChange={onChange}/>{error && <p className="error node-save-error" role="alert">{error}</p>}<footer><small>⌘ / Ctrl + S 保存节点</small><button type="button" className="secondary" onClick={onClose}>完成</button></footer></section></div>, document.body);
 }
 
 interface Props {
@@ -65,7 +66,7 @@ export function NodeEditor({ node, initialDirectoryId = null, embedded = false, 
   const [form, setForm] = useState(() => initialDraft(node, initialDirectoryId));
   const [baseline, setBaseline] = useState(() => structuredClone(form));
   const [activeTab, setActiveTab] = useState<EditorTab>('startup_prompt');
-  const [previews, setPreviews] = useState<Record<PromptKey, boolean>>({ startup_prompt: false, context_prompt: false });
+  const [previews, setPreviews] = useState<Record<PromptKey, boolean>>({ startup_prompt: Boolean(node), context_prompt: Boolean(node) });
   const [isCreated, setIsCreated] = useState(Boolean(node));
   const [expandedPrompt, setExpandedPrompt] = useState<PromptKey>();
   const [error, setError] = useState('');
@@ -131,5 +132,5 @@ export function NodeEditor({ node, initialDirectoryId = null, embedded = false, 
     {(['startup_prompt', 'context_prompt'] as const).map(key => <section key={key} hidden={activeTab !== key} className="node-editor-panel node-text-panel" role="tabpanel" id={`${tabsId}-panel-${key}`} aria-labelledby={`${tabsId}-${key}`}><div className="node-prompt-toolbar"><small>{key === 'startup_prompt' ? '任务、步骤与验收标准' : '背景信息与执行约束'}</small><span>{form.executor[key].length.toLocaleString()} 字符</span><PromptMode preview={previews[key]} onChange={value => setPreviews(current => ({ ...current, [key]: value }))}/><button type="button" className="node-prompt-expand" aria-label={`放大编辑${promptLabels[key]}`} onClick={() => setExpandedPrompt(key)}><Maximize2 size={13}/><span>放大</span></button></div><PromptContent promptKey={key} value={form.executor[key]} preview={previews[key]} disabled={saving} onChange={value => updatePrompt(key, value)}/></section>)}
     <section hidden={activeTab !== 'fields'} className="node-editor-panel node-fields-panel" role="tabpanel" id={`${tabsId}-panel-fields`} aria-labelledby={`${tabsId}-fields`}>{fieldList('inputs')}{fieldList('outputs')}<p className="node-fields-draft-note">字段修改随节点统一保存。</p></section>
   </form>;
-  return <>{embedded ? editor : <div className="modal-backdrop">{editor}</div>}{expandedPrompt && <ExpandedPrompt promptKey={expandedPrompt} value={form.executor[expandedPrompt]} disabled={saving} error={error} onCancel={cancelChanges} onChange={value => updatePrompt(expandedPrompt, value)} onSave={shortcut} onClose={() => setExpandedPrompt(undefined)}/>}</>;
+  return <>{embedded ? editor : <div className="modal-backdrop">{editor}</div>}{expandedPrompt && <ExpandedPrompt promptKey={expandedPrompt} value={form.executor[expandedPrompt]} preview={previews[expandedPrompt]} onPreviewChange={preview => setPreviews(current => ({ ...current, [expandedPrompt]: preview }))} disabled={saving} error={error} onCancel={cancelChanges} onChange={value => updatePrompt(expandedPrompt, value)} onSave={shortcut} onClose={() => setExpandedPrompt(undefined)}/>}</>;
 }

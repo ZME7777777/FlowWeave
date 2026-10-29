@@ -159,7 +159,7 @@ async function openRecord(page: Page, mode: 'AUTOMATIC' | 'MANUAL') {
   await expect(directory.locator('.flow-run-record-enter')).toHaveCount(1);
   await directory.locator('.flow-run-record-enter').click();
   await expect(page.getByRole('button', { name: '返回运行记录', exact: true })).toBeVisible();
-  await expect(page.locator('.run-detail-kind')).toContainText(mode === 'AUTOMATIC' ? '连续' : '逐步');
+  await expect(page.locator('.run-detail-kind:visible')).toContainText(mode === 'AUTOMATIC' ? '连续' : '逐步');
   if (mode === 'MANUAL' && !await page.locator('.attempt-control').count()) await page.locator('.run-graph-node').filter({ has: page.getByText(asset.name, { exact: true }) }).click();
 }
 
@@ -261,6 +261,10 @@ for (const mode of ['AUTOMATIC', 'MANUAL'] as const) {
     await prompt.getByRole('textbox').fill('本次编辑后的启动任务');
     await prompt.getByRole('button', { name: '完成', exact: true }).click();
     await expect(panel.locator('.startup-prompt-summary')).toContainText('本次编辑后的启动任务');
+    await page.getByRole('button', { name: '节点中心', exact: true }).click();
+    await page.locator('.context-tab-select').filter({ hasText: /^Run #/ }).click();
+    await expect(panel.locator('.startup-prompt-summary')).toContainText('本次编辑后的启动任务');
+    await expect(panel.getByRole('region', { name: '节点输入', exact: true })).toContainText('2/2 项已配置');
     await panel.locator('.node-console-header-actions').getByRole('button', { name: '保存配置', exact: true }).click();
     await expect.poll(() => writes.length).toBe(1);
     const body = writes[0];
@@ -373,21 +377,21 @@ test('records of one FlowRun have independent URLs and tabs across switch refres
   await page.locator('.flow-run-record-directory .flow-run-record-row').filter({ hasText: recordB.name }).locator('.flow-run-record-enter').click();
   await expect(page).toHaveURL(recordPath(recordB.id));
   await expect(page.locator('.context-tab')).toHaveCount(2);
-  await expect(page.locator('.run-detail-header h1')).toHaveText(recordB.name);
+  await expect(page.locator('.run-detail-header:visible h1')).toHaveText(recordB.name);
   await page.screenshot({ path: '../../.tmp/ops28/independent-record-tabs.png' });
   await page.getByRole('button', { name: 'Run #1_aaaaaaaa', exact: true }).click();
   await expect(page).toHaveURL(recordPath(recordA.id));
-  await expect(page.locator('.run-detail-header h1')).toHaveText(recordA.name);
+  await expect(page.locator('.run-detail-header:visible h1')).toHaveText(recordA.name);
   await page.goBack();
   await expect(page).toHaveURL(recordPath(recordB.id));
-  await expect(page.locator('.run-detail-header h1')).toHaveText(recordB.name);
+  await expect(page.locator('.run-detail-header:visible h1')).toHaveText(recordB.name);
   await page.goForward();
-  await expect(page.locator('.run-detail-header h1')).toHaveText(recordA.name);
+  await expect(page.locator('.run-detail-header:visible h1')).toHaveText(recordA.name);
   await page.reload();
-  await expect(page.locator('.run-detail-header h1')).toHaveText(recordA.name);
+  await expect(page.locator('.run-detail-header:visible h1')).toHaveText(recordA.name);
   await expect(page.locator('.context-tab')).toHaveCount(2);
   await page.getByRole('button', { name: 'Run #1_bbbbbbbb', exact: true }).click();
-  await expect(page.locator('.run-detail-header h1')).toHaveText(recordB.name);
+  await expect(page.locator('.run-detail-header:visible h1')).toHaveText(recordB.name);
   await page.getByRole('button', { name: '关闭Run #1_bbbbbbbb', exact: true }).click();
   await expect(page).toHaveURL(recordPath(recordA.id));
   await expect(page.locator('.context-tab')).toHaveCount(1);
@@ -399,23 +403,23 @@ test('records of one FlowRun have independent URLs and tabs across switch refres
 test('copied record links restore without history and mode is part of tab identity', async ({ page, context }) => {
   await mockRecordTabs(page);
   await page.goto(recordPath(recordB.id));
-  await expect(page.locator('.run-detail-header h1')).toHaveText(recordB.name);
+  await expect(page.locator('.run-detail-header:visible h1')).toHaveText(recordB.name);
   await expect(page.locator('.context-tab.active .context-tab-select')).toHaveText('Run #1_bbbbbbbb');
   const fresh = await context.newPage();
   await mockRecordTabs(fresh);
   await fresh.goto(recordPath(recordA.id, 'stepwise'));
-  await expect(fresh.locator('.run-detail-header h1')).toHaveText(recordC.name);
-  await expect(fresh.locator('.run-detail-kind')).toHaveText('逐步运行');
+  await expect(fresh.locator('.run-detail-header:visible h1')).toHaveText(recordC.name);
+  await expect(fresh.locator('.run-detail-kind:visible')).toHaveText('逐步运行');
   await fresh.evaluate(path => {
     window.history.pushState({}, '', path);
     window.dispatchEvent(new PopStateEvent('popstate'));
   }, recordPath(recordA.id));
-  await expect(fresh.locator('.run-detail-header h1')).toHaveText(recordA.name);
-  await expect(fresh.locator('.run-detail-kind')).toHaveText('连续运行');
+  await expect(fresh.locator('.run-detail-header:visible h1')).toHaveText(recordA.name);
+  await expect(fresh.locator('.run-detail-kind:visible')).toHaveText('连续运行');
   await expect(fresh.locator('.context-tab')).toHaveCount(2);
   await fresh.reload();
   await expect(fresh.locator('.context-tab')).toHaveCount(2);
-  await expect(fresh.locator('.run-detail-header h1')).toHaveText(recordA.name);
+  await expect(fresh.locator('.run-detail-header:visible h1')).toHaveText(recordA.name);
   await fresh.close();
 });
 
@@ -431,11 +435,11 @@ test('legacy saved tabs migrate to their record and URL wins over stale history 
     if (window.location.pathname.endsWith(first)) window.history.replaceState(state, '', window.location.href);
   }, { parent: run.id, first: recordA.id, second: recordB.id, userId: authenticatedUser.id });
   await page.goto(recordPath(recordA.id));
-  await expect(page.locator('.run-detail-header h1')).toHaveText(recordA.name);
+  await expect(page.locator('.run-detail-header:visible h1')).toHaveText(recordA.name);
   await expect(page.locator('.context-tab')).toHaveCount(2);
   await page.getByRole('button', { name: 'Run #1_bbbbbbbb', exact: true }).click();
   await expect(page).toHaveURL(recordPath(recordB.id));
-  await expect(page.locator('.run-detail-header h1')).toHaveText(recordB.name);
+  await expect(page.locator('.run-detail-header:visible h1')).toHaveText(recordB.name);
   await expect(page.locator('.context-tab')).toHaveCount(2);
 });
 
@@ -451,18 +455,18 @@ test('node session stays inside its record tab and browser Back restores that ex
     return route.fallback();
   });
   await page.goto(recordPath(recordB.id));
-  await expect(page.locator('.run-detail-header h1')).toHaveText(recordB.name);
+  await expect(page.locator('.run-detail-header:visible h1')).toHaveText(recordB.name);
   await page.getByRole('button', { name: '查看节点会话', exact: true }).click();
   await expect(page).toHaveURL(new RegExp(`/flow-runs/${recordB.id}/nodes/`));
   await expect(page.locator('.context-tab')).toHaveCount(1);
   await expect(page.locator('.context-tab.active .context-tab-select')).toHaveText('Run #1_bbbbbbbb');
   await page.goBack();
   await expect(page).toHaveURL(recordPath(recordB.id));
-  await expect(page.locator('.run-detail-header h1')).toHaveText(recordB.name);
+  await expect(page.locator('.run-detail-header:visible h1')).toHaveText(recordB.name);
   await expect(page.locator('.context-tab')).toHaveCount(1);
   await page.getByRole('button', { name: '查看节点会话', exact: true }).click();
   await page.getByRole('button', { name: '返回来源', exact: true }).click();
   await expect(page).toHaveURL(recordPath(recordB.id));
-  await expect(page.locator('.run-detail-header h1')).toHaveText(recordB.name);
+  await expect(page.locator('.run-detail-header:visible h1')).toHaveText(recordB.name);
   await expect(page.locator('.context-tab')).toHaveCount(1);
 });

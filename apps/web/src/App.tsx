@@ -1,3 +1,5 @@
+import type { NodeDraftState } from './components/NodeEditor';
+import { RetainedPages } from './components/RetainedPages';
 import { ViewportPopover } from './components/ViewportPopover';
 import { AudioLines, Box, BrainCircuit, CalendarClock, ChevronDown, Component, GitFork, Hexagon, KeyRound, Library, LogOut, MessagesSquare, PlayCircle, Settings, TerminalSquare, UsersRound, X } from 'lucide-react';
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
@@ -91,8 +93,10 @@ function clearAgentIdentityStorage() {
 export function App() {
   const queryClient = useQueryClient();
   const { view, selectedRunId, setView } = useWorkbenchStore();
+  const nodeDraftState = useRef<NodeDraftState>({ dirty: false, saving: false });
+  const onNodeDraftStateChange = useCallback((state: NodeDraftState) => { nodeDraftState.current = state; }, []);
   const nodeLeaveGuard = useRef<(() => Promise<boolean>) | undefined>(undefined);
-  const registerNodeLeaveGuard = useCallback((guard: (() => Promise<boolean>) | undefined) => { nodeLeaveGuard.current = guard; }, []);
+  const registerNodeLeaveGuard = useCallback((guard: (() => Promise<boolean>) | undefined) => { if (guard) nodeLeaveGuard.current = guard; }, []);
   const [contentReloadVersion, setContentReloadVersion] = useState(0);
   const [, setRouteVersion] = useState(0);
   const [user, setUser] = useState<AuthUser | null>();
@@ -144,6 +148,8 @@ export function App() {
     // Agent Workspace ID is shared, so retaining its query key would reuse
     // the previous account's conversation projection for up to staleTime.
     setUser(undefined);
+    nodeLeaveGuard.current = undefined;
+    nodeDraftState.current = { dirty: false, saving: false };
     setSettingsOpen(false);
     if (tabsUser.current) clearContextTabs(tabsUser.current.id);
     tabsUser.current = null;
@@ -166,12 +172,22 @@ export function App() {
     }
     setUser(nextUser);
   }, [queryClient, restoreContextTabs, setView]);
+  useEffect(() => {
+    const warn = (event: BeforeUnloadEvent) => {
+      if (!nodeDraftState.current.dirty && !nodeDraftState.current.saving) return;
+      event.preventDefault(); event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, []);
   useEscapeClose(() => setSettingsOpen(false), settingsOpen);
   const reloadCurrentContent = useCallback(async () => {
     if (nodeLeaveGuard.current && !await nodeLeaveGuard.current()) return;
     setSettingsOpen(false);
     await queryClient.cancelQueries();
     queryClient.clear();
+    nodeLeaveGuard.current = undefined;
+    nodeDraftState.current = { dirty: false, saving: false };
     setContentReloadVersion(current => current + 1);
   }, [queryClient]);
   useEffect(() => {
@@ -372,7 +388,6 @@ export function App() {
       : [...tabs, { kind: 'settings', view: settingsView }]);
   }, [flowRunRouteId, isAgentRoute, setView, user, view]);
   const selectView = async (next: typeof view) => {
-    if (next !== 'nodes' && nodeLeaveGuard.current && !await nodeLeaveGuard.current()) return false;
     setSettingsOpen(false);
     if (next === 'agent-workbench') {
       if (user?.can_use_agent_sessions === false) {
@@ -408,7 +423,6 @@ export function App() {
     else selectView('nodes');
   };
   const selectFlowRunTab = async (runId: string) => {
-    if (nodeLeaveGuard.current && !await nodeLeaveGuard.current()) return;
     const tab = openFlowRunTabs.find(item => item.id === runId);
     if (!tab) {
       navigate(`/flow-runs/${encodeURIComponent(runId)}`);
@@ -452,6 +466,12 @@ export function App() {
   const settingsActive = Boolean(activeSettingsItem);
   const visibleNav = nav.filter(item => item.view !== 'agent-workbench' || user.can_use_agent_sessions !== false);
   const hasContextTabs = openContextTabs.length > 0;
+  const pageGroup = activeFlowRunTabId ? `run:${activeFlowRunTabId}` : isAgentRoute ? 'agent-workbench' : renderedView;
+  const pageKey = nodeSessionRoute ? `node-session:${nodeSessionRoute.slice(1).join(':')}`
+    : caseSessionRoute ? `case-session:${caseSessionRoute.slice(1).join(':')}`
+    : directAgentRoute && canUseAgentSessions ? 'agent-workbench'
+    : renderedView === 'workbench' ? `workbench:${activeFlowRunTabId ?? selectedRunId}` : renderedView;
+  const retainedGroups = [...visibleNav.map(item => item.view), ...openSettingsViews, ...openFlowRunTabs.map(tab => `run:${tab.id}`)];
   return <div className={`app-shell${isAgentRoute ? ' agent-workbench-shell' : ''}`}><header className="topbar" onDoubleClick={toggleFullscreenFromTopbar}><button type="button" className="brand" aria-label="重新加载当前页面数据" title="重新加载当前页面数据（保持全屏）" onClick={() => void reloadCurrentContent()}><span className="brand-mark"><Hexagon size={22} fill="currentColor"/></span><span>FlowWeave</span></button><nav aria-label="主导航">{visibleNav.map(item => <button key={item.view} className={(!activeFlowRunTabId && (isAgentRoute ? item.view === 'agent-workbench' : renderedView === item.view)) ? 'active' : ''} onClick={() => selectView(item.view)}><item.icon size={15}/>{item.label}</button>)}</nav>{hasContextTabs && <div className="context-tabs" aria-label="临时管理标签">{openContextTabs.map(contextTab => {
     if (contextTab.kind === 'settings') {
       const item = accountSettingsNav.find(candidate => candidate.view === contextTab.view);
@@ -462,6 +482,6 @@ export function App() {
     if (!tab) return null;
     return <div className={`context-tab${activeFlowRunTabId === tab.id ? ' active' : ''}`} key={`flow-run-${tab.id}`}><button type="button" className="context-tab-select" aria-current={activeFlowRunTabId === tab.id ? 'page' : undefined} title={`${tab.label} · ${tab.path}`} onClick={() => selectFlowRunTab(tab.id)}><PlayCircle size={14}/><span>{tab.label}</span></button><button type="button" className="context-tab-close" aria-label={`关闭${tab.label}`} title={`关闭${tab.label}`} onClick={() => closeFlowRunTab(tab.id)}><X size={12}/></button></div>;
   })}</div>}<div className="topbar-actions"><div className="account-menu" ref={settingsMenu}><button type="button" className={`account-trigger${settingsActive ? ' active' : ''}`} aria-label="账户与设置" aria-haspopup="menu" aria-expanded={settingsOpen} onClick={() => setSettingsOpen(open => !open)}><span className="account-avatar" aria-hidden="true">{user.username.slice(0, 1).toUpperCase()}</span><span className="account-identity"><b>{user.username}</b><small>{user.is_super_admin ? '超级管理员' : '普通用户'}</small></span><ChevronDown size={13} className={settingsOpen ? 'rotated' : ''}/></button>{settingsOpen && <ViewportPopover ref={settingsPopover} anchor={() => settingsMenu.current} align="end" matchAnchorWidth className="settings-popover account-popover" role="menu" aria-label="账户与设置"><div className="account-popover-heading"><Settings size={14}/><b>平台设置</b></div>{accountSettingsNav.map(item => <button type="button" role="menuitem" title={item.description} key={item.view} className={renderedView === item.view && !isAgentRoute && !flowRunRouteId ? 'active' : ''} onClick={() => selectSettingsView(item.view)}><span className="settings-item-icon"><item.icon size={15}/></span><b>{item.label}</b></button>)}<button type="button" role="menuitem" title="结束当前平台会话" className="account-logout" onClick={() => void logout()}><span className="settings-item-icon"><LogOut size={15}/></span><b>退出登录</b></button></ViewportPopover>}</div></div></header>
-    <Suspense fallback={<PageLoading/>}><div key={contentReloadVersion}>{isAgentRoute ? nodeSessionRoute ? <FlowNodeSessionPage flowRunId={decodeURIComponent(nodeSessionRoute[1])} nodeRunId={decodeURIComponent(nodeSessionRoute[2])} attemptId={decodeURIComponent(nodeSessionRoute[3])} onNavigate={navigate}/> : caseSessionRoute ? <CaseSessionPage caseId={decodeURIComponent(caseSessionRoute[1])} bindingId={decodeURIComponent(caseSessionRoute[2])} onNavigate={navigate} onReturn={() => { setView('cases'); navigate('/', true); }}/> : <AgentWorkbenchPage onNavigate={navigate}/> : <>{renderedView === 'nodes' && <NodesPage onRegisterLeaveGuard={registerNodeLeaveGuard}/>}{renderedView === 'capabilities' && <CapabilitiesPage/>}{renderedView === 'environments' && <TerminalEnvironmentsPage/>}{renderedView === 'credentials' && <CredentialsPage/>}{renderedView === 'ldap-users' && user.is_super_admin && <LdapUsersPage/>}{renderedView === 'flows' && <FlowsPage/>}{renderedView === 'runs' && <RunsPage/>}{renderedView === 'cases' && <CasesPage onNavigate={navigate}/>}{renderedView === 'schedules' && <SchedulesPage/>}{renderedView === 'models' && <ModelsPage/>}{renderedView === 'workbench' && <WorkbenchPage key={activeFlowRunTabId ?? selectedRunId} location={activeFlowRunLocation}/>}</>}</div></Suspense>
+    <RetainedPages key={`${user.id}:${contentReloadVersion}`} activeKey={pageKey} group={pageGroup} retainedGroups={retainedGroups} fallback={<PageLoading/>}>{isAgentRoute ? nodeSessionRoute ? <FlowNodeSessionPage flowRunId={decodeURIComponent(nodeSessionRoute[1])} nodeRunId={decodeURIComponent(nodeSessionRoute[2])} attemptId={decodeURIComponent(nodeSessionRoute[3])} onNavigate={navigate}/> : caseSessionRoute ? <CaseSessionPage caseId={decodeURIComponent(caseSessionRoute[1])} bindingId={decodeURIComponent(caseSessionRoute[2])} onNavigate={navigate} onReturn={() => { setView('cases'); navigate('/', true); }}/> : <AgentWorkbenchPage onNavigate={navigate}/> : <>{renderedView === 'nodes' && <NodesPage onRegisterLeaveGuard={registerNodeLeaveGuard} onDraftStateChange={onNodeDraftStateChange}/>}{renderedView === 'capabilities' && <CapabilitiesPage/>}{renderedView === 'environments' && <TerminalEnvironmentsPage/>}{renderedView === 'credentials' && <CredentialsPage/>}{renderedView === 'ldap-users' && user.is_super_admin && <LdapUsersPage/>}{renderedView === 'flows' && <FlowsPage/>}{renderedView === 'runs' && <RunsPage/>}{renderedView === 'cases' && <CasesPage onNavigate={navigate}/>}{renderedView === 'schedules' && <SchedulesPage/>}{renderedView === 'models' && <ModelsPage/>}{renderedView === 'workbench' && <WorkbenchPage key={activeFlowRunTabId ?? selectedRunId} location={activeFlowRunLocation}/>}</>}</RetainedPages>
   </div>;
 }

@@ -264,7 +264,10 @@ export function FlowsPage() {
   const [directionEdges, setDirectionEdges] = useEdgesState<Edge>([]);
   const [portMappings, setPortMappings] = useEdgesState<Edge>([]);
 
+  const initializedCanvas = useRef<{ selected: typeof selected; assets: typeof assets } | undefined>(undefined);
   useEffect(() => {
+    if (initializedCanvas.current && initializedCanvas.current.selected === selected && initializedCanvas.current.assets === assets) return;
+    initializedCanvas.current = { selected, assets };
     const [canvasNodes, canvasEdges, canvasMappings] = toCanvas(selected, assets);
     setNodes(canvasNodes);
     setDirectionEdges(canvasEdges);
