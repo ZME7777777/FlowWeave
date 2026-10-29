@@ -14853,3 +14853,32 @@ FlowRun过滤，并返回正式flow_definition_id；新增flow_run_reference_cou
 本片从已部署OPS-64快照实施，仅含Web及只读平台API，不含并行CASE开发、迁移、
 Runtime或服务器配置变更。沿用本会话直接发布授权，发布验收待补记，无后续
 实现切片。
+
+#### OPS-65 Web／Platform 发布验收
+
+2026-10-29正式platform及web预检、受管最小上下文准备通过，发布
+`a801b635cd50e8a1ef84f05b912e68eacd8bd248`。Platform源归档SHA-256为
+`64136562980479420c100a42b33e1db081d8e01a9b3f9d63f71410d4c52c4d0c`，
+Web源归档SHA-256为
+`5f9bf78508eb3e750c4a1ad4b05887895cbd4eca804ea177c7f7c578bbf653a3`。
+linux/amd64的Platform镜像ID为
+`sha256:e9c112801143e34f78f95d8de05e1d40377a9c8dc2e3a9d7e4e2b94b2629c9c3`，
+Web镜像ID为
+`sha256:bb04dcafa13b08afbaabfe22bb77ee1058653057ddfa84c1ee2b78026aa708dc`。
+
+切换前保留回滚镜像及日志，正式migration退出0，Alembic仍为
+0184_cascade_directory_archives。仅同步recreate api、stream-api、worker和web，
+四项revision、健康／readiness与Web入口核验通过；服务器配置哈希及其他43个
+容器镜像和启动时间不变。Runtime Provider和运行容器未重建。
+
+公网HTML、深层路由、两项入口资源及三项匹配FlowRun引用功能的模块资源与
+运行镜像一致。全新Chromium验证平台登录、Agent深层路由和根登录页通过，
+Network只使用部署前缀API，根路径API请求为0；两项API鉴权边界为401。
+实际API镜像内以只读数据库事务读取全部环境版本：4个有引用版本、5个顶层
+FlowRun及4页核对通过，确认无子运行混入、无分页重复、flow_definition_id正确，
+展示数量与正式查询总数一致且原始引用数量不小于展示数量。未对线上业务
+执行新建、删除、启动或暂停；认证后的跳转交互以本地受控Chromium回归验收。
+
+platform与web的remote-release-finish均通过，精确回收9个超过24小时的受管
+旧上下文，保留近期上下文、实际引用及每仓库一个回滚镜像。收尾后四项版本、
+健康、数据库head、配置与43个保护容器再次核验通过。未push，无后续实现切片。
