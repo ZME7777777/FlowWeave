@@ -2629,7 +2629,7 @@ def delete_conversation(
         if existing.state == "SUCCEEDED":
             return
         raise DomainError("AGENT_CONVERSATION_DELETE_PENDING", "会话删除仍在处理中", 409)
-    assert_conversation_stopped(db, workspace_id, binding_id, lock=False)
+    assert_conversation_stopped(db, workspace_id, binding_id, lock=False, allow_missing=True)
     item.lifecycle = "DELETE_PENDING"
     command = AgentConversationCommand(
         workspace_id=workspace.id,
@@ -2666,13 +2666,19 @@ def delete_conversation(
 
 
 def assert_conversation_stopped(
-    db: Session, workspace_id: str, binding_id: str, *, lock: bool = True
+    db: Session, workspace_id: str, binding_id: str, *,
+    lock: bool = True, allow_missing: bool = False,
 ) -> None:
     """Reject destructive operations while OpenHands is executing a turn."""
 
     workspace = _workspace(db, workspace_id)
     binding = _binding(db, workspace_id, binding_id, lock=lock)
-    readiness = get_runtime().input_readiness(_handle(db, workspace, binding))
+    try:
+        readiness = get_runtime().input_readiness(_handle(db, workspace, binding))
+    except DomainError as exc:
+        if allow_missing and exc.code == "RUNTIME_CONVERSATION_MISSING":
+            return
+        raise
     if readiness.execution_status.strip().lower() in {
         "starting",
         "running",

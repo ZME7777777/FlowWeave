@@ -5428,7 +5428,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, [workDirectoryOrderStorageKey]);
   const workDirectories = useMemo(() => {
     const items = (workDirectoriesQuery.data?.items ?? []).filter(item => (
-      scopeWorkDirectoryId === undefined || item.id === scopeWorkDirectoryId
+      !archivedDirectoryIds.has(item.id) && (scopeWorkDirectoryId === undefined || item.id === scopeWorkDirectoryId)
     ));
     const byId = new Map(items.map(item => [item.id, item]));
     const ordered = workDirectoryOrder.flatMap(id => {
@@ -5437,7 +5437,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     });
     const known = new Set(ordered.map(item => item.id));
     return [...ordered, ...items.filter(item => !known.has(item.id))];
-  }, [scopeWorkDirectoryId, workDirectoriesQuery.data?.items, workDirectoryOrder]);
+  }, [archivedDirectoryIds, scopeWorkDirectoryId, workDirectoriesQuery.data?.items, workDirectoryOrder]);
   const persistWorkDirectoryOrder = useCallback((orderedIds: string[]) => {
     setWorkDirectoryOrder(orderedIds);
     if (!workDirectoryOrderStorageKey) return;
@@ -8307,7 +8307,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       title: `删除${kind}“${name}”？`,
       message: kind === '会话'
         ? '会永久删除该会话及其附件和事件记录，无法恢复。'
-        : '会永久删除该工作区、其中的会话、附件和冻结目录版本，无法恢复。',
+        : '会永久删除该工作区所有版本目录中的文件、其中的会话和上传附件，无法恢复。',
       confirmLabel: '确认删除',
       tone: 'danger',
     });
@@ -10132,9 +10132,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (!api.deleteWorkDirectory || !await confirmDeletion('工作区', directory.display_name)) return;
     setOperationError(undefined);
     try {
-      await api.deleteWorkDirectory(workspace!.id, directory.id);
-      if (conversationDraft?.workDirectoryId === directory.id) setConversationDraft(undefined);
-      await queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'work-directories', workspace!.id) });
+      const workspaceId = workspace!.id;
+      await api.deleteWorkDirectory(workspaceId, directory.id);
+      await queryClient.cancelQueries({ queryKey: sessionQueryKey(host, 'work-directories', workspaceId) });
+      queryClient.setQueryData<typeof workDirectoriesQuery.data>(sessionQueryKey(host, 'work-directories', workspaceId), current => current && ({ ...current, items: current.items.filter(item => item.id !== directory.id) }));
+      reconcileArchivedConversations(workspaceId, new Set(), directory.id);
+      if (archiveSelectionRef.current.workspaceId === workspaceId && archiveSelectionRef.current.draftDirectoryId === directory.id) setConversationDraft(undefined);
+      await queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'work-directories', workspaceId) });
+      void queryClient.invalidateQueries({ queryKey: ['agent-work-directories', workspaceId] });
       setOperationError(undefined);
     } catch (reason) { reportOperationError('work-directory-delete', reason instanceof Error ? reason : new Error('删除工作区失败')); }
   };
@@ -10179,7 +10184,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       const latest = activity && Date.parse(activity.updated_at) >= Date.parse(item.updated_at) ? { ...item, ...activity } : item;
       return conversationRow({ ...latest, ...current, ...(pendingUnread ? { unread: pendingUnread.unread, unread_origin: pendingUnread.unreadOrigin } : {}) }, [], { allowDrag: false });
     }} onSelectSchedule={() => { setActivityPreviewBindingId(undefined); onNavigate('/agent/schedules'); }}/>}
-    {agentWorkspaceView === 'management' && <section className="agent-conversation-management-page" aria-label="会话管理"><ConversationManagementPage onArchived={({ workspaceId, workDirectoryId, bindingIds }) => {
+    {agentWorkspaceView === 'management' && <section className="agent-conversation-management-page" aria-label="会话管理"><ConversationManagementPage onDirectoryDeleted={({ workspaceId, workDirectoryId, bindingIds }) => {
+      reconcileArchivedConversations(workspaceId, new Set(bindingIds), workDirectoryId);
+      if (archiveSelectionRef.current.draftDirectoryId === workDirectoryId) setConversationDraft(undefined);
+    }} onArchived={({ workspaceId, workDirectoryId, bindingIds }) => {
       reconcileArchivedConversations(workspaceId, new Set(bindingIds));
       if (archiveSelectionRef.current.workspaceId === workspaceId) {
         for (const bindingId of bindingIds) archivedConversationDirectoryIds.current.set(bindingId, workDirectoryId);

@@ -1173,11 +1173,7 @@ def _subtree_has_bound_attachment(db: Session, workspace_id: str, path: str) -> 
     )
 
 
-_PRIVATE_ATTACHMENT_PATH = re.compile(
-    r"^/runtime/workspace/(?:project|[0-9a-f-]{36})/uploads/"
-    r"(?P<owner>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-"
-    r"[0-9a-f]{32}(?:--[A-Za-z0-9][A-Za-z0-9._-]{0,180})?$"
-)
+_PRIVATE_ATTACHMENT_PATH = ATTACHMENT_PATH
 
 
 def _attachment_media_metadata(

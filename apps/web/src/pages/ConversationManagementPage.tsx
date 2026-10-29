@@ -40,7 +40,7 @@ function formatTime(value: string) {
   return new Date(value).toLocaleString('zh-CN', { dateStyle: 'medium', timeStyle: 'short' });
 }
 
-export function ConversationManagementPage({ onRestored, onArchived }: { onRestored?: (selection: { bindingId?: string; workDirectoryId?: string }) => void; onArchived?: (selection: { workspaceId: string; workDirectoryId?: string; bindingIds: string[] }) => void } = {}) {
+export function ConversationManagementPage({ onRestored, onArchived, onDirectoryDeleted }: { onRestored?: (selection: { bindingId?: string; workDirectoryId?: string }) => void; onArchived?: (selection: { workspaceId: string; workDirectoryId?: string; bindingIds: string[] }) => void; onDirectoryDeleted?: (selection: { workspaceId: string; workDirectoryId: string; bindingIds: string[] }) => void } = {}) {
   const client = useQueryClient();
   const dialog = useProductDialog();
   const [query, setQuery] = useState('');
@@ -215,7 +215,43 @@ export function ConversationManagementPage({ onRestored, onArchived }: { onResto
     },
   });
 
-  const operationBusy = remove.isPending || archive.isPending || archivePreparing || restore.isPending || restoreDirectory.isPending;
+  const [directoryDeletePreparing, setDirectoryDeletePreparing] = useState(false);
+  const deleteDirectory = useMutation({
+    retry: false,
+    mutationFn: (selection: { workspaceId: string; workDirectoryId: string; bindingIds: string[] }) => api.deleteAgentWorkDirectory(selection.workspaceId, selection.workDirectoryId),
+    onSuccess: async (_result, selection) => {
+      onDirectoryDeleted?.(selection);
+      await Promise.all([
+        client.cancelQueries({ queryKey: ['agent-work-directories', selection.workspaceId] }),
+        client.cancelQueries({ queryKey: ['agent-conversation-management', selection.workspaceId] }),
+      ]);
+      client.setQueriesData<import('../types').AgentWorkDirectoryList>(
+        { queryKey: ['agent-work-directories', selection.workspaceId] },
+        current => current && ({ ...current, items: current.items.filter(item => item.id !== selection.workDirectoryId) }),
+      );
+      client.removeQueries({ queryKey: ['agent-conversation-management', selection.workspaceId, selection.workDirectoryId] });
+      setSelectedWorkDirectoryId(undefined);
+      setSelectedIds(new Set());
+      setConfirming(false);
+      await Promise.all([
+        client.invalidateQueries({ queryKey: ['agent-work-directories', selection.workspaceId] }),
+        client.invalidateQueries({ queryKey: ['agent-conversation-management', selection.workspaceId] }),
+        client.invalidateQueries({ queryKey: ['agent-session'] }),
+      ]);
+    },
+  });
+  const requestDirectoryDelete = async () => {
+    if (!workspace.data || !selectedDirectory) return;
+    const directory = selectedDirectory;
+    const selection = { workspaceId: workspace.data.id, workDirectoryId: directory.id, bindingIds: conversations.data?.items.map(item => item.id) ?? [] };
+    setDirectoryDeletePreparing(true);
+    deleteDirectory.reset();
+    try {
+      if (await dialog.confirm({ title: `删除工作区“${directory.display_name}”？`, message: '将永久删除此工作区及所有版本目录中的文件、其中全部会话与上传附件，无法恢复。', confirmLabel: '确认删除工作区', tone: 'danger' })) deleteDirectory.mutate(selection);
+    } finally { setDirectoryDeletePreparing(false); }
+  };
+
+  const operationBusy = directoryDeletePreparing || deleteDirectory.isPending || remove.isPending || archive.isPending || archivePreparing || restore.isPending || restoreDirectory.isPending;
   const archiveCandidates = selectedVisible.filter(item => !item.archived_at);
   const requestArchive = async () => {
     if (!workspace.data || operationBusy || !archiveCandidates.length) return;
@@ -275,10 +311,12 @@ export function ConversationManagementPage({ onRestored, onArchived }: { onResto
               const directory = selectedDirectory;
               if (await dialog.confirm({ title: `恢复工作区“${directory.display_name}”？`, message: '将恢复此工作区及其中所有已归档会话，恢复后会重新显示在工作台列表中。', confirmLabel: '确认恢复' })) restoreDirectory.mutate(directory.id);
             }}><ArchiveRestore size={14}/>{restoreDirectory.isPending ? '恢复中…' : '恢复工作区'}</button>}
+            {selectedDirectory?.state === 'ARCHIVED' && <button type="button" className="danger conversation-management-delete" aria-label={`删除工作区 ${selectedDirectory.display_name}`} disabled={operationBusy || loading || Boolean(readError)} onClick={() => void requestDirectoryDelete()}><Trash2 size={14}/>{deleteDirectory.isPending ? '删除工作区中…' : '删除工作区'}</button>}
             <button type="button" className="secondary conversation-management-archive" disabled={!archiveCandidates.length || operationBusy || loading || Boolean(readError)} onClick={() => void requestArchive()}><Archive size={14}/>{archive.isPending ? `归档中 ${archiveProgress.processed}/${archiveProgress.total}` : '归档已选会话'}</button>
             <button className="danger conversation-management-delete" disabled={selectedVisible.length === 0 || operationBusy || loading || Boolean(readError)} onClick={() => { remove.reset(); setConfirming(true); }}><Trash2 size={14}/>删除已选会话</button>
           </div>
         </div>
+        {deleteDirectory.error && <div className="conversation-management-notice warning" role="alert">{deleteDirectory.error.message}</div>}
         {archive.isPending && <div className="conversation-management-notice" role="status">正在归档会话：{archiveProgress.processed} / {archiveProgress.total}</div>}
         {archiveFeedback && !archive.isPending && <div className={`conversation-management-notice${archiveFeedback.error ? ' warning' : ''}`} role={archiveFeedback.error ? 'alert' : 'status'}>{archiveFeedback.message}</div>}
         {conversations.data?.truncated && <div className="conversation-management-notice warning"><Clock3 size={14}/><span>当前仅显示最近 500 个会话。请先完成本次清理，再继续管理更早的会话。</span></div>}

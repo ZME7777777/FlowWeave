@@ -494,3 +494,78 @@ for (const failSecondBatch of [false, true]) {
     await all.check(); await expect(archive).toBeDisabled();
   });
 }
+
+async function archivedDeletionSetup(page: import('@playwright/test').Page, failFirst = false) {
+  let removed = false;
+  let requests = 0;
+  const now = new Date().toISOString();
+  await page.route('**/api/v1/**', async route => {
+    const url = new URL(route.request().url()); const path = url.pathname;
+    if (path.endsWith('/auth/me')) return respond(route, { id: 'directory-manager', username: 'manager', role: 'USER', can_use_agent_sessions: true });
+    if (path.endsWith('/agent-workspaces/default')) return respond(route, { id: 'directory-workspace', desired_state: 'RUNNING', updated_at: now });
+    if (path.endsWith('/work-directories')) return respond(route, { root: { display_name: '根工作区' }, items: removed ? [] : [{ id: 'archived-project', display_name: '已归档项目', state: 'ARCHIVED' }] });
+    if (path.endsWith('/work-directories/archived-project') && route.request().method() === 'DELETE') {
+      requests += 1;
+      if (failFirst && requests === 1) return respond(route, { error: { code: 'AGENT_WORK_DIRECTORY_SHARED_PATH', message: '目录仍被其他工作区使用，无法连同文件删除' } }, 409);
+      removed = true;
+      return route.fulfill({ status: 204 });
+    }
+    if (path.endsWith('/conversation-management')) return respond(route, { items: !removed && url.searchParams.get('work_directory_id') === 'archived-project' ? Array.from({ length: 21 }, (_, index) => ({ id: `archived-${index}`, display_title: `归档会话 ${index}`, pinned: false, unread: false, archived_at: now, created_at: now, updated_at: now })) : [], truncated: false });
+    if (path.endsWith('/node-directories') || path.endsWith('/node-assets')) return respond(route, []);
+    return respond(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'AI 工作台', exact: true }).click();
+  await page.getByRole('button', { name: '会话管理', exact: true }).click();
+  await page.getByRole('button', { name: '已归档项目', exact: true }).click();
+  await expect(page.locator('.conversation-management-table tbody tr')).toHaveCount(20);
+  return { count: () => requests };
+}
+
+test('archived workspace deletion reuses the directory endpoint and clears its whole paginated list', async ({ page }) => {
+  const state = await archivedDeletionSetup(page);
+  const actions = page.getByRole('group', { name: '工作区与会话操作' });
+  await expect(actions.getByRole('button', { name: '恢复工作区 已归档项目', exact: true })).toBeVisible();
+  await actions.getByRole('button', { name: '删除工作区 已归档项目', exact: true }).click();
+  const confirmation = page.getByRole('alertdialog');
+  await expect(confirmation).toContainText('所有版本目录中的文件');
+  await expect(confirmation).toContainText('上传附件');
+  await confirmation.getByRole('button', { name: '取消', exact: true }).click();
+  expect(state.count()).toBe(0);
+  await expect(page.getByRole('button', { name: '已归档项目', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '下一页', exact: true }).click();
+  await expect(page.locator('.conversation-management-table tbody tr')).toHaveCount(1);
+  await page.getByRole('checkbox', { name: '选择会话 归档会话 20', exact: true }).check();
+  await actions.getByRole('button', { name: '删除工作区 已归档项目', exact: true }).click();
+  await confirmation.getByRole('button', { name: '确认删除工作区', exact: true }).click();
+  await expect.poll(state.count).toBe(1);
+  await expect(page.getByRole('button', { name: '已归档项目', exact: true })).toHaveCount(0);
+  await expect(page.locator('.conversation-management-directory-name')).toHaveText('根工作区');
+  await expect(actions.getByRole('button', { name: /^删除工作区 / })).toHaveCount(0);
+  await expect(page.getByRole('navigation', { name: '列表分页' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '删除已选会话', exact: true })).toBeDisabled();
+});
+
+test('failed workspace deletion keeps its selection and allows retry', async ({ page }) => {
+  const state = await archivedDeletionSetup(page, true);
+  await page.getByRole('button', { name: '下一页', exact: true }).click();
+  await page.getByRole('button', { name: '删除工作区 已归档项目', exact: true }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: '确认删除工作区', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('目录仍被其他工作区使用');
+  await expect(page.locator('.conversation-management-directory-name')).toHaveText('已归档项目');
+  await expect(page.getByText('共 21 项，第 2 / 2 页')).toBeVisible();
+  await page.getByRole('button', { name: '删除工作区 已归档项目', exact: true }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: '确认删除工作区', exact: true }).click();
+  await expect.poll(state.count).toBe(2);
+  await expect(page.locator('.conversation-management-directory-name')).toHaveText('根工作区');
+});
+
+test('archived workspace actions stay together on a short viewport', async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 650 });
+  await archivedDeletionSetup(page);
+  const actions = page.getByRole('group', { name: '工作区与会话操作' });
+  await expect(actions.getByRole('button', { name: '删除工作区 已归档项目', exact: true })).toBeInViewport();
+  await expect(actions.getByRole('button', { name: '恢复工作区 已归档项目', exact: true })).toBeInViewport();
+  expect(await page.evaluate(() => document.documentElement.scrollHeight <= innerHeight + 1)).toBe(true);
+  await page.screenshot({ path: '../../.tmp/ops74/archived-workspace-delete.png' });
+});
