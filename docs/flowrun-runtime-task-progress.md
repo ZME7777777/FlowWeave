@@ -15659,3 +15659,26 @@ Home和End。原model／gate字段校验移入所属Tab，保存按钮title指�
 git diff及任务状态唯一性通过。Alembic唯一head仍为0185_message_submission_cancel，
 无Platform、迁移、OpenHands、SDK、Runtime或服务器配置改动。沿用会话直接
 部署授权，发布验收待补记，无后续实现切片。
+
+
+#### OPS-79 Web 发布验收
+
+2026-10-30正式Web预检与受管最小上下文准备通过，发布
+`576ad6efecdc460ee1ae5aea4ebd26a68dbd2b83`，源归档SHA-256为
+`bb213c61776de361797d9759ac4bf70641437528f43270d764f7dcd0f15a5cb0`。
+linux/amd64 Web镜像ID为
+`sha256:61f3bdbc63671bd3e21bd241334ae31813cc25803e07810afd12066d78e15886`。
+保留旧Web回滚镜像和服务日志，仅定向recreate Web，revision与HTTP健康通过；
+服务器配置哈希及其余47个容器的镜像和启动时间保持。无Platform、迁移、
+SDK或Runtime更新，数据库仍为0185_message_submission_cancel。
+
+公网HTML／Agent深层路由、两项入口资源及三个包含节点上下文新文案与
+配置样式的模块资源SHA-256与运行镜像一致，两项API鉴权边界为401。全新
+Chromium的平台登录、深层路由和根登录页通过；4055条完整网络事件中
+部署前缀API请求通过，根路径API请求为0，临时浏览器均回收。实际节点
+配置与保存交互由本地11项受控Chromium回归及1440／1024截图验收，
+线上只读验收未修改实际运行记录。
+
+Web remote-release-finish通过，无过期受管上下文候选；保留最近24小时上下文、
+实际路径引用及每仓库一个回滚镜像。收尾后Web版本／健康、数据库head、
+服务器配置与47个保护容器再次核验通过。未push，无后续实现切片。
