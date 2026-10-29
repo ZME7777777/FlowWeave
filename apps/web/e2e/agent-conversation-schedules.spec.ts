@@ -3932,6 +3932,43 @@ test('workspace sidebar toggle and inline capability trigger preserve the active
   await expect(input).toHaveValue('请使用  后续内容');
 });
 
+for (const width of [1440, 1024]) {
+  test(`collapsing the home rail leaves scheduled conversation navigation visible (${width})`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 800 });
+    await openWorkspace(page);
+    const navigation = page.getByRole('navigation', { name: 'Agent 工作区导航' });
+    const home = navigation.getByRole('button', { name: '主页', exact: true });
+    const shell = page.locator('.agent-workbench-app-shell');
+    await home.click();
+    await expect(shell).toHaveClass(/conversation-rail-collapsed/);
+    await expect(page.locator('.agent-workbench-rail')).toBeHidden();
+    await navigation.getByRole('button', { name: '定时任务', exact: true }).click();
+    const tasks = page.getByRole('region', { name: '会话定时任务' });
+    await tasks.locator('.agent-schedule-tree-select').first().click();
+    await tasks.locator('.agent-schedule-tree-toggle').first().click();
+    await tasks.locator('.agent-schedule-run').first().click();
+    await expect(page).toHaveURL(/\/agent\/schedules\/conversations\/scheduled-run-1$/);
+    await expect(shell).not.toHaveClass(/conversation-rail-collapsed/);
+    await expect(home).toHaveAttribute('aria-pressed', 'false');
+    await expect(tasks.locator('.agent-schedule-tree-select').first()).toBeInViewport();
+    await expect(tasks.locator('.agent-schedule-run').first()).toBeInViewport();
+    expect((await tasks.boundingBox())!.width).toBeGreaterThan(180);
+    await expect(page.getByRole('textbox', { name: '发送 Agent 消息', exact: true })).toBeVisible();
+    await page.screenshot({ path: test.info().outputPath(`scheduled-rail-after-home-collapse-${width}.png`) });
+    await tasks.locator('.agent-schedule-tree-select').filter({ hasText: '每周复核' }).click();
+    await expect(page).toHaveURL(/\/agent\/schedules$/);
+    await expect(page.getByRole('heading', { name: '每周复核', exact: true })).toBeVisible();
+    await expect(tasks.locator('.agent-schedule-tree-select').first()).toBeInViewport();
+    await home.click();
+    await expect(page.locator('.agent-workbench-rail')).toBeVisible();
+    await home.click();
+    await expect(shell).toHaveClass(/conversation-rail-collapsed/);
+    await navigation.getByRole('button', { name: '定时任务', exact: true }).click();
+    await expect(shell).not.toHaveClass(/conversation-rail-collapsed/);
+    await expect(tasks.locator('.agent-schedule-tree-select').first()).toBeInViewport();
+  });
+}
+
 test('workspace action menu defaults to all credentials and persists session configuration', async ({ page }) => {
   await openWorkspace(page);
   const root = page.locator('[data-workspace-group-id="root"]');
