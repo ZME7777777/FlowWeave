@@ -229,7 +229,7 @@ test('completed record keeps configuration and 36 capabilities in secondary dial
 });
 
 for (const mode of ['AUTOMATIC', 'MANUAL'] as const) {
-  test(`${mode} draft shows inputs Agent and gate configuration together and preserves save semantics`, async ({ page }) => {
+  test(`${mode} draft separates configuration tabs and preserves edits and save semantics`, async ({ page }) => {
     const plan = { ...frozenAutomaticBase.automation_plan.node_plans.first, agent_preset: configuredPreset, gates: [gate] };
     const initial = mode === 'AUTOMATIC' ? { ...frozenAutomaticBase, automation_plan: { ...frozenAutomaticBase.automation_plan, node_plans: { first: plan } } } : {
       ...run, id: 'manual-1', name: '逐步配置记录', parent_flow_run_id: run.id, start_node_key: 'first', node_runs: [], artifacts: [], progress: { accepted: 0, terminal: 0, active: 0 },
@@ -239,14 +239,46 @@ for (const mode of ['AUTOMATIC', 'MANUAL'] as const) {
     await openRecord(page, mode);
     const panel = page.getByTestId('node-configuration-panel');
     await expect(panel.getByRole('heading', { name: '节点输入', exact: true })).toBeVisible();
-    await expect(panel.getByRole('heading', { name: 'Agent 配置', exact: true })).toBeVisible();
-    await expect(panel.getByRole('heading', { name: '开始门禁', exact: true })).toBeVisible();
-    await expect(panel.getByRole('heading', { name: '结束门禁', exact: true })).toBeVisible();
-    await expect(panel.locator('.node-configuration-sections>section')).toHaveCount(4);
-    await panel.getByRole('button', { name: '门禁配置', exact: true }).click();
+    const tab = (name: string) => panel.getByRole('tab', { name, exact: true });
+    const activePanel = panel.locator('[role=tabpanel]:visible');
+    await expect(activePanel).toHaveCount(1);
+    await expect(panel.getByRole('heading', { name: 'Agent 配置', exact: true })).toBeHidden();
+    await expect(panel.getByRole('heading', { name: '开始门禁', exact: true })).toBeHidden();
+    await expect(panel.getByRole('heading', { name: '结束门禁', exact: true })).toBeHidden();
+    await expect(activePanel).toContainText('大模型专属上下文');
+    await panel.locator('.node-context-preset').getByRole('button', { name: '配置', exact: true }).click();
+    const context = page.getByRole('dialog', { name: '配置大模型专属上下文', exact: true });
+    await context.getByRole('textbox', { name: '大模型专属上下文' }).fill('本次运行的专属背景');
+    await context.getByRole('button', { name: '完成', exact: true }).click();
+    await panel.getByRole('switch', { name: '启用大模型专属上下文' }).click();
+    await tab('输入与上下文').focus();
+    await page.keyboard.press('ArrowRight');
+    await expect(tab('Agent 配置')).toBeFocused();
+    await expect(tab('Agent 配置')).toHaveAttribute('aria-selected', 'true');
+    await expect(activePanel).toHaveAccessibleName('Agent 配置');
+    await expect(activePanel.locator('.agent-preset-module')).toHaveCount(3);
+    await expect(activePanel).not.toContainText('大模型专属上下文');
+    await activePanel.getByRole('button', { name: /^大模型.*配置/ }).click();
+    const model = page.getByRole('dialog', { name: '配置大模型', exact: true });
+    await expect(model.getByRole('button', { name: '首会话模型供应商', exact: true })).toContainText('验收模型服务');
+    await model.getByRole('button', { name: '完成', exact: true }).click();
+    await activePanel.getByRole('button', { name: /^额度失败备用模型/ }).click();
+    const fallback = page.getByRole('dialog', { name: '配置额度失败 fallback 模型', exact: true });
+    await fallback.getByRole('button', { name: '取消', exact: true }).click();
+    await activePanel.getByRole('button', { name: /^能力/ }).click();
+    const capabilities = page.getByRole('dialog', { name: '配置能力', exact: true });
+    await capabilities.getByRole('button', { name: '保存能力', exact: true }).click();
+    await expect(panel.getByRole('heading', { name: '节点输入', exact: true })).toBeHidden();
+    await tab('门禁配置').click();
+    await expect(activePanel).toHaveAccessibleName('门禁配置');
     await expect(panel.getByRole('heading', { name: '结束门禁', exact: true })).toBeInViewport();
-    await expect(panel.getByRole('heading', { name: '节点输入', exact: true })).toBeVisible();
-    await panel.getByRole('button', { name: '输入与上下文', exact: true }).click();
+    await expect(panel.getByRole('heading', { name: '节点输入', exact: true })).toBeHidden();
+    await tab('执行记录').click();
+    await expect(activePanel).toContainText('还没有执行记录');
+    await expect(panel.getByRole('heading', { name: '开始门禁', exact: true })).toBeHidden();
+    await page.keyboard.press('Home');
+    await expect(tab('输入与上下文')).toHaveAttribute('aria-selected', 'true');
+    await expect(panel.getByRole('switch', { name: '启用大模型专属上下文' })).toBeChecked();
     await expect(panel.locator('.input-summary article')).toHaveCount(0);
     await panel.getByRole('button', { name: '填写节点输入', exact: true }).click();
     const inputs = page.getByRole('dialog', { name: '填写节点输入', exact: true });
@@ -274,13 +306,20 @@ for (const mode of ['AUTOMATIC', 'MANUAL'] as const) {
     } else expect(body.startup_prompt).toBe('本次编辑后的启动任务');
     const bindings = mode === 'AUTOMATIC' ? (body.node_plans as Record<string, { artifact_ids: object }>).first.artifact_ids : body.artifact_ids;
     expect(bindings).toEqual({ input_1: 'edited-url', input_2: 'edited-file' });
+    const preset = mode === 'AUTOMATIC' ? (body.node_plans as Record<string, { agent_preset: object }>).first.agent_preset : body.agent_preset;
+    expect(preset).toMatchObject({ node_context_prompt: '本次运行的专属背景', node_context_enabled: true });
     await expect(panel.getByRole('region', { name: '节点输入', exact: true })).toContainText('2/2 项已配置');
     for (const [width, height] of [[1440, 900], [1024, 768]]) {
       await page.setViewportSize({ width, height });
       await expect.poll(() => page.evaluate(() => document.documentElement.scrollHeight)).toBe(height);
       await panel.locator('.action-content').evaluate(element => { element.scrollTop = 0; });
+      await expect(activePanel).toHaveAccessibleName('输入与上下文');
+      await expect(panel.locator('.node-context-preset')).toBeInViewport();
+      await page.screenshot({ path: `../../.tmp/ops79/record-inputs-${mode}-${width}.png` });
+      await tab('Agent 配置').click();
       await expect(panel.getByRole('heading', { name: 'Agent 配置', exact: true })).toBeInViewport();
-      await page.screenshot({ path: `../../.tmp/ops34/record-draft-${mode}-${width}.png` });
+      await page.screenshot({ path: `../../.tmp/ops79/record-agent-${mode}-${width}.png` });
+      await tab('输入与上下文').click();
     }
   });
 }
@@ -469,4 +508,23 @@ test('node session stays inside its record tab and browser Back restores that ex
   await expect(page).toHaveURL(recordPath(recordB.id));
   await expect(page.locator('.run-detail-header:visible h1')).toHaveText(recordB.name);
   await expect(page.locator('.context-tab')).toHaveCount(1);
+});
+
+
+test('configuration tabs restore their own scroll and keep the page fixed with many gates', async ({ page }) => {
+  const plan = { ...frozenAutomaticBase.automation_plan.node_plans.first, agent_preset: configuredPreset, gates: Array.from({ length: 24 }, (_, index) => ({ ...gate, position: index, config: { prompt: `核对交付项目 ${index + 1}` } })) };
+  await mocks(page, { ...frozenAutomaticBase, automation_plan: { ...frozenAutomaticBase.automation_plan, node_plans: { first: plan } } });
+  await openRecord(page, 'AUTOMATIC');
+  const panel = page.getByTestId('node-configuration-panel');
+  const content = panel.locator('.action-content');
+  await panel.getByRole('tab', { name: '门禁配置', exact: true }).click();
+  await content.evaluate(element => { element.scrollTop = 350; });
+  const previous = await content.evaluate(element => element.scrollTop);
+  expect(previous).toBeGreaterThan(200);
+  await panel.getByRole('tab', { name: 'Agent 配置', exact: true }).click();
+  await expect.poll(() => content.evaluate(element => element.scrollTop)).toBe(0);
+  await panel.getByRole('tab', { name: '门禁配置', exact: true }).click();
+  await expect.poll(() => content.evaluate(element => element.scrollTop)).toBe(previous);
+  expect(await page.evaluate(() => document.documentElement.scrollHeight)).toBe(1000);
+  await page.screenshot({ path: '../../.tmp/ops79/gates-scroll.png' });
 });
