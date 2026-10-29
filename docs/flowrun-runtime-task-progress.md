@@ -15602,3 +15602,34 @@ Web typecheck、定向ESLint、production build、受影响Ruff、git diff与任
 通过。唯一Alembic head为0185_message_submission_cancel。无OpenHands源码、
 SDK、Runtime或服务器配置变更；沿用直接部署授权，发布验收待补记，无后续
 实现切片。
+
+
+#### OPS-78 Web／Platform 发布验收
+
+2026-10-30正式Platform／Web预检及受管最小上下文准备通过，发布
+`050a74f674ca6e0b4f65fcd5088a8d7060b1552e`。Platform源归档SHA-256为
+`456419583a4312b1cb605db27f61a2a47e0b0421d13bbb5ef8f35e32f50b3c7e`，
+Web源归档SHA-256为
+`d9b700b3cf63aa7e54a7e127fb27857319ccdce7ae96f09100c31320c2a7a462`。
+linux/amd64 Platform镜像ID为
+`sha256:fbfdedb713d2ff96265f632c6495dffb067e02e245b8e14aa6224e343dc4b0bf`，
+Web镜像ID为
+`sha256:212d3e46af10bd8ca452614b4db2f177aaab0a6adcb5a1f0005281217660b0d0`。
+保留旧镜像回滚tag和服务日志；正式migration退出0，数据库推进到
+0185_message_submission_cancel。同步recreate api、stream-api、worker和web，
+四项revision、健康／readiness及HTTP入口通过，Runtime未重建，服务器配置不变。
+
+实际API镜像中取消围栏、两宿主HTTP入口和模型映射共四项源码SHA-256
+与提交一致；只读核对新增表7列、强制RLS、租户policy和binding级联删除外键
+均存在，两个取消接口已注册。公网HTML／Agent深层路由、两项入口资源以及
+四个包含取消文案／错误码和发送框样式的模块资源SHA-256与运行镜像一致。
+新取消POST在内的API鉴权边界均为401。全新Chromium的平台登录、深层路由
+与根登录页通过，4107条完整网络事件中部署前缀API请求通过，根路径API
+请求为0，临时浏览器全部回收。线上验收只读，未发送或取消用户实际消息；
+提交取消、跨线程竞态及草稿恢复由本地17项后端和12项不同浏览器回归验证，
+已有引用菜单基线失败保持前述记录。
+
+Platform和Web remote-release-finish通过，按正式规则回收4项已过期受管
+上下文；保留最近24小时上下文、实际路径引用及每仓库一个回滚镜像。收尾后
+四项版本／健康、数据库head、服务器配置哈希及其余43个容器镜像／启动时间
+再次核验通过。未push，无后续实现切片。
