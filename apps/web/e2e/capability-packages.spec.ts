@@ -1,9 +1,9 @@
 import { expect, test, type Page } from '@playwright/test';
 
 const digest = 'a'.repeat(64);
-const skill = { id: 'skill-current', lineage_id: 'skill-lineage', revision_number: 2, is_latest: true, capability_type: 'SKILL', capability_key: 'complete-skill', description: 'Files and scripts', version: '', filename: 'complete.zip', content_hash: digest, byte_size: 2500, created_at: '2026-10-28T00:00:00Z', reference_count: 0, is_builtin: false, dependencies: {}, dependency_build_state: 'NOT_REQUIRED', dependency_build_error: null, document: {} };
+const skill = { id: 'skill-current', lineage_id: 'skill-lineage', revision_number: 12, is_latest: true, capability_type: 'SKILL', capability_key: 'complete-skill', description: 'Files and scripts', version: '', filename: 'complete.zip', content_hash: digest, byte_size: 2500, created_at: '2026-10-28T00:00:00Z', reference_count: 0, is_builtin: false, dependencies: {}, dependency_build_state: 'NOT_REQUIRED', dependency_build_error: null, document: {} };
 const context = { ...skill, id: 'context-current', lineage_id: 'context-lineage', capability_type: 'CONTEXT', capability_key: 'product-context', filename: 'context.zip' };
-const metadata = (asset: typeof skill, previous = false) => ({ ...asset, id: previous ? `${asset.id}-previous` : asset.id, digest, version_no: previous ? 1 : 2 });
+const metadata = (asset: typeof skill, previous = false) => ({ ...asset, id: previous ? `${asset.id}-previous` : asset.id, digest, version_no: previous ? 9 : asset.revision_number });
 const files = ['SKILL.md', 'scripts/run.py', 'config/defaults.yaml', 'assets/icon.png'];
 const sources: Record<string, string> = { 'SKILL.md': '# Skill\nRead the scripts.', 'scripts/run.py': "print('old')\n", 'config/defaults.yaml': 'mode: default\n', 'README.md': '# Overview\nFirst document', 'guides/notes.md': '# Notes\nSecond document' };
 async function setup(page: Page, asset = skill) {
@@ -11,7 +11,7 @@ async function setup(page: Page, asset = skill) {
   await page.route('**/api/v1/capabilities', route => route.fulfill({ json: [asset] }));
   await page.route('**/api/v1/capability-collections', route => route.fulfill({ json: [] }));
   await page.route('**/api/v1/capability-collection-directory?*', route => route.fulfill({ json: { items: [], total: 0, page: 1, page_size: 20 } }));
-  await page.route('**/api/v1/capability-directory?*', route => route.fulfill({ json: { items: [{ id: asset.lineage_id, latest: asset, versions: [asset, { ...asset, id: `${asset.id}-previous`, is_latest: false, revision_number: 1 }] }], total: 1, page: 1, page_size: 20, counts: { [asset.capability_type]: 1 }, collection_total: 0 } }));
+  await page.route('**/api/v1/capability-directory?*', route => route.fulfill({ json: { items: [{ id: asset.lineage_id, latest: asset, versions: [asset, { ...asset, id: `${asset.id}-previous`, is_latest: false, revision_number: 9 }] }], total: 1, page: 1, page_size: 20, counts: { [asset.capability_type]: 1 }, collection_total: 0 } }));
   await page.route(`**/api/v1/capabilities/${asset.id}/files`, route => route.fulfill({ json: { ...metadata(asset), entry: asset.capability_type === 'SKILL' ? 'SKILL.md' : '', compiled_content: asset.capability_type === 'CONTEXT' ? '# Total\nFirst document\nSecond document' : null, manifest: asset.capability_type === 'CONTEXT' ? { entrypoint: 'README.md', documents: [{ path: 'README.md', title: 'Overview' }, { path: 'guides/notes.md', title: 'Notes' }], conflict_policy: 'ORDERED_DOCUMENTS_LATER_WINS' } : null, files: (asset.capability_type === 'SKILL' ? files : ['README.md', 'guides/notes.md']).map(path => ({ path, title: path, byte_size: 40, sha256: digest, editable: asset.capability_type === 'SKILL' && !path.endsWith('.png') })) } }));
   await page.route(`**/api/v1/capabilities/${asset.id}/file?*`, route => { const path = new URL(route.request().url()).searchParams.get('path')!; return route.fulfill({ json: { path, content: sources[path] ?? null, byte_size: 40, editable: asset.capability_type === 'SKILL' && !path.endsWith('.png'), preview_unavailable: path.endsWith('.png'), image: null } }); });
   await page.goto('/');
@@ -22,6 +22,9 @@ async function openMenu(page: Page, name: string) { await page.getByRole('button
 
 test('Skill full package keeps file drafts and publishes all edits with the frozen digest', async ({ page }) => {
   await setup(page);
+  const row = page.locator('.capability-card');
+  await expect(row).toContainText('当前 v12');
+  await expect(row).toContainText('上一版 v9');
   let payload: unknown;
   await page.route(`**/api/v1/capabilities/${skill.id}/files`, async route => {
     if (route.request().method() !== 'PUT') return route.fallback();
@@ -29,6 +32,7 @@ test('Skill full package keeps file drafts and publishes all edits with the froz
   });
   await page.getByRole('button', { name: '编辑 Skill complete-skill', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: '编辑 Skill complete-skill' });
+  await expect(dialog.locator('header').first()).toContainText('当前 v12');
   await expect(dialog.getByLabel('编辑 SKILL.md')).toHaveValue(sources['SKILL.md']);
   await dialog.getByRole('treeitem', { name: 'run.py', exact: true }).click();
   await dialog.getByLabel('编辑 scripts/run.py').fill("print('new')\n");
@@ -54,6 +58,9 @@ test('package version review uses shared file Diff, both modes, navigation and d
   await openMenu(page, 'Skill complete-skill');
   await page.getByRole('menuitem', { name: '版本对比', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: '版本对比 complete-skill' });
+  await expect(dialog.locator('footer')).toContainText('上一版 v9 → 当前 v12');
+  await expect(dialog.getByRole('link', { name: '下载上一版本' })).toHaveText('上一版 v9');
+  await expect(dialog.getByRole('link', { name: '下载当前版本' })).toHaveText('当前版 v12');
   await expect(dialog.locator('.agent-diff-split')).toBeVisible();
   await expect(dialog.locator('.agent-diff-line.addition').filter({ hasText: "print('new')" })).toBeVisible();
   await expect(dialog.getByRole('treeitem', { name: /SKILL.md/ })).toHaveCount(0);
@@ -74,8 +81,12 @@ test('package version review uses shared file Diff, both modes, navigation and d
 
 test('Context opens total content first, switches files and offers comparison, download and rollback', async ({ page }) => {
   await setup(page, context);
+  await expect(page.locator('.capability-card')).toContainText('当前 v12');
+  await expect(page.locator('.capability-card')).toContainText('上一版 v9');
+  await page.screenshot({ path: '../../.tmp/ops70/context-versions.png' });
   await page.getByRole('button', { name: '查看 Context product-context' }).click();
   const dialog = page.getByRole('dialog', { name: '查看 Context product-context' });
+  await expect(dialog.locator('footer')).toContainText('当前 v12');
   await expect(dialog.getByRole('treeitem', { name: '总内容', exact: true })).toHaveAttribute('aria-selected', 'true');
   await expect(dialog.locator('pre')).toContainText('First document\nSecond document');
   await dialog.getByRole('treeitem', { name: 'notes.md', exact: true }).click();
@@ -154,4 +165,18 @@ test('version Diff layers exact intraline changes over syntax in both modes', as
   }
   await dialog.getByRole('button', { name: '并排', exact: true }).click();
   await page.screenshot({ path: '../../.tmp/ops52-inline-diff/intraline-split.png' });
+});
+
+
+test('a single retained version keeps its actual number and has no previous version actions', async ({ page }) => {
+  await setup(page, { ...context, revision_number: 27 });
+  await page.route('**/api/v1/capability-directory?*', route => route.fulfill({ json: { items: [{ id: context.lineage_id, latest: { ...context, revision_number: 27 }, versions: [{ ...context, revision_number: 27 }] }], total: 1, page: 1, page_size: 20, counts: { CONTEXT: 1 }, collection_total: 0 } }));
+  await page.reload();
+  const row = page.locator('.capability-card');
+  await expect(row).toContainText('当前 v27');
+  await expect(row).toContainText('暂无上一版本');
+  await expect(row).not.toContainText('上一版 v26');
+  await openMenu(page, 'Context product-context');
+  await expect(page.getByRole('menuitem', { name: '版本对比', exact: true })).toBeDisabled();
+  await expect(page.getByRole('menuitem', { name: '回退到上一版本', exact: true })).toBeDisabled();
 });
