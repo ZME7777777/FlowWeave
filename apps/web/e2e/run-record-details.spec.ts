@@ -209,16 +209,20 @@ test('completed record keeps configuration and 36 capabilities in secondary dial
   await page.screenshot({ path: '../../.tmp/ops34/frozen-inputs.png' });
   await page.mouse.click(8, 100); await expect(inputs).toHaveCount(0);
   await panel.getByRole('button', { name: '查看上下文与能力', exact: true }).click();
-  const context = page.getByRole('dialog', { name: '上下文与能力', exact: true });
-  await expect(context.locator('.node-capability-context article')).toHaveCount(36);
+  const context = page.getByRole('dialog', { name: '会话配置 只读', exact: true });
+  await expect(context.locator('.frozen-capability-row').filter({ hasText: 'Skill' })).toHaveCount(36);
+  await context.locator('.agent-capability-list').evaluate(element => { element.scrollTop = element.scrollHeight; });
   await expect(context).toContainText('flowweave-capability-35');
+  await expect(context.getByRole('button', { name: '保存', exact: true })).toHaveCount(0);
+  await expect(context.getByRole('checkbox')).toHaveCount(0);
   expect(await context.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
-  await page.screenshot({ path: '../../.tmp/ops34/context-capabilities.png' });
+  await page.screenshot({ path: '../../.tmp/ops80/context-capabilities.png' });
   await context.getByRole('button', { name: '查看 团队背景', exact: true }).click();
   await expect(context.getByRole('region', { name: '查看 Context 团队背景' })).toContainText('该轮使用的不可变团队背景');
   await expect(page.getByRole('dialog')).toHaveCount(1);
   await context.getByRole('button', { name: '返回列表', exact: true }).click();
-  await expect(context.locator('.node-capability-context article')).toHaveCount(36);
+  await expect(context.locator('.frozen-capability-row').filter({ hasText: 'Skill' })).toHaveCount(36);
+  await expect(context.getByRole('button', { name: '查看 团队背景', exact: true })).toBeFocused();
   await page.keyboard.press('Escape'); await expect(context).toHaveCount(0);
   await panel.getByRole('button', { name: '门禁结果', exact: true }).click();
   await expect(panel).toContainText('门禁');
@@ -527,4 +531,90 @@ test('configuration tabs restore their own scroll and keep the page fixed with m
   await expect.poll(() => content.evaluate(element => element.scrollTop)).toBe(previous);
   expect(await page.evaluate(() => document.documentElement.scrollHeight)).toBe(1000);
   await page.screenshot({ path: '../../.tmp/ops79/gates-scroll.png' });
+});
+
+
+for (const mode of ['AUTOMATIC', 'MANUAL'] as const) {
+  test(`${mode} frozen configuration uses session filters and never loads the current capability catalog`, async ({ page }) => {
+    const historicalContext = { id: 'historical-context', capability_key: '历史团队约定', digest: 'd'.repeat(64), text: '本次冻结的旧版团队约定。' };
+    const types = ['SKILL', 'MCP', 'PLUGIN', 'CONTEXT', 'AGENT_DEFINITION', 'HOOK'];
+    const frozen = types.map((capability_type, index) => ({
+      id: `historical-${capability_type}`, capability_type, capability_key: `历史能力-${capability_type}`, digest: String(index).repeat(64),
+      ...(capability_type === 'CONTEXT' ? { text: '冻结上下文原文' } : {}),
+    }));
+    const contextualNode = { ...definition.nodes[0], asset: { ...asset, context_capabilities: [{ id: 'not-applied-context', capability_key: '未应用的节点背景', digest: 'a'.repeat(64), text: '未应用的节点说明。' }] } };
+    const contextualSnapshot = { ...snapshot, definition: { ...definition, nodes: [contextualNode, definition.nodes[1]] } };
+    const frozenAttempt = { ...completedAttempt, frozen_session_contexts: [historicalContext], frozen_agent_capabilities: frozen };
+    const record = { ...completedRecord, id: mode === 'MANUAL' ? 'manual-1' : automaticBase.id, run_mode: mode, start_node_key: 'first', snapshots: [contextualSnapshot], node_runs: [{ ...completedRecord.node_runs[0], attempts: [frozenAttempt] }] };
+    const writes = await mocks(page, record, mode);
+    const unsafeReads: string[] = [], mutations: string[] = [];
+    page.on('request', request => {
+      const path = new URL(request.url()).pathname;
+      if (path.includes('/capabilities') || path.includes('/website-credentials') || path.includes('/mcp-readiness')) unsafeReads.push(path);
+      if (path.startsWith('/api/v1/') && request.method() !== 'GET') mutations.push(path);
+    });
+    await openRecord(page, mode);
+    await page.getByRole('button', { name: '查看上下文与能力', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: '会话配置 只读', exact: true });
+    const list = dialog.locator('.agent-capability-list');
+    await expect(list.locator('button')).toHaveCount(8);
+    await expect(dialog.getByRole('button', { name: '关闭会话配置' })).toBeFocused();
+    await page.keyboard.press('Shift+Tab');
+    await expect(dialog.getByRole('button', { name: '关闭', exact: true })).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(dialog.getByRole('button', { name: '关闭会话配置' })).toBeFocused();
+    await dialog.getByRole('button', { name: '只看已装配', exact: true }).click();
+    await expect(list.locator('button')).toHaveCount(7);
+    await dialog.getByRole('button', { name: '显示全部冻结项', exact: true }).click();
+    const filters = dialog.getByRole('navigation', { name: '能力类型' });
+    for (const [kind, title] of [['SKILL', 'skill'], ['MCP', 'MCP'], ['PLUGIN', 'plugin'], ['AGENT_DEFINITION', 'agent'], ['HOOK', 'hook']]) {
+      await filters.getByRole('button', { name: title, exact: true }).click();
+      await expect(list.locator('button')).toHaveCount(1);
+      await list.getByRole('button', { name: `查看 历史能力-${kind}`, exact: true }).click();
+      await expect(dialog).toContainText(`historical-${kind}`);
+      await expect(dialog).toContainText('已装配 · 只读');
+      await dialog.getByRole('button', { name: '返回列表', exact: true }).click();
+      await expect(filters.getByRole('button', { name: title, exact: true })).toHaveAttribute('aria-pressed', 'true');
+    }
+    await filters.getByRole('button', { name: 'context', exact: true }).click();
+    await expect(list.locator('button')).toHaveCount(3);
+    await list.getByRole('button', { name: '查看 历史能力-CONTEXT', exact: true }).click();
+    await expect(dialog.getByRole('region', { name: '查看 Context 历史能力-CONTEXT' })).toContainText('冻结上下文原文');
+    await dialog.getByRole('button', { name: '返回列表', exact: true }).click();
+    await dialog.getByRole('textbox', { name: '搜索冻结能力' }).fill('未应用');
+    await expect(list.locator('button')).toHaveCount(1);
+    await expect(list).toContainText('本轮未应用');
+    await list.getByRole('button', { name: '查看 未应用的节点背景', exact: true }).click();
+    await expect(dialog).toContainText('未应用 · 只读');
+    await dialog.getByRole('button', { name: '返回列表', exact: true }).click();
+    await expect(dialog.getByRole('textbox', { name: '搜索冻结能力' })).toHaveValue('未应用');
+    await dialog.getByRole('textbox', { name: '搜索冻结能力' }).fill('不存在');
+    await expect(list).toContainText('没有匹配的冻结配置');
+    await dialog.getByRole('textbox', { name: '搜索冻结能力' }).fill('');
+    for (const [width, height] of [[1024, 768], [390, 720]]) {
+      await page.setViewportSize({ width, height });
+      expect(await dialog.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+      await page.screenshot({ path: `../../.tmp/ops80/frozen-${mode}-${width}.png` });
+    }
+    await page.mouse.click(2, 2);
+    await expect(dialog).toHaveCount(0);
+    expect(writes).toHaveLength(0);
+    expect(mutations).toEqual([]);
+    expect(unsafeReads).toEqual([]);
+  });
+}
+
+
+test('empty frozen node configuration stays explicit and read-only', async ({ page }) => {
+  const emptyAttempt = { ...completedAttempt, frozen_session_contexts: [], frozen_agent_capabilities: [] };
+  await mocks(page, { ...completedRecord, node_runs: [{ ...completedRecord.node_runs[0], attempts: [emptyAttempt] }] });
+  await openRecord(page, 'AUTOMATIC');
+  const opener = page.getByRole('button', { name: '查看上下文与能力', exact: true });
+  await opener.click();
+  const dialog = page.getByRole('dialog', { name: '会话配置 只读', exact: true });
+  await expect(dialog).toContainText('本轮未记录上下文或能力');
+  await expect(dialog.getByRole('button', { name: '保存', exact: true })).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await expect(opener).toBeFocused();
 });

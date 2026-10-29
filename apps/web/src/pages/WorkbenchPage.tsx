@@ -16,6 +16,7 @@ import { useWorkbenchStore } from '../store/workbench';
 import type { AgentPreset, ArtifactVersion, AttemptState, AutomaticNodePlan, AutomaticRecordConfigDocument, CapabilityAsset, FlowRun, FlowRunAutomaticRecord, FlowRunAutomaticRecordSummary, FlowRunStepwiseRecord, GateAgentPreset, GateEvaluation, GatePolicy, GateRemediationResult, IOField, NodeAttempt, NodeRun, OpenHandsConversationEvent, OpenHandsConversationEventBatch, RecordConfigDocument, SnapshotDefinition, SnapshotFlowNode, StepwiseNodeDraft, StepwiseRuntimePortMapping, TokenUsageSummary } from '../types';
 import { withDeploymentBase, withoutDeploymentBase } from '../deploymentPath';
 import { selectCapabilityVersion } from '../utils/capabilitySelection';
+import { ReadOnlySessionConfiguration, type FrozenSessionConfigurationItem } from '../components/agent-session/ReadOnlySessionConfiguration';
 import './run-record-detail.css';
 import { flowRunPath, parseFlowRunPath, type FlowRunLocation } from '../flowRunNavigation';
 
@@ -921,7 +922,7 @@ function GateDraftEditor({ gates, onChange }: { gates: GatePolicy[]; onChange: (
 
 const MANUAL_NODE_CONTEXT_ID = '__node_context_prompt__';
 
-type NodeContextItem = { id: string; title: string; meta: string; text: string; source: 'NODE' | 'REPOSITORY' | 'SESSION'; applied: boolean };
+type NodeContextItem = { id: string; title: string; meta: string; digest?: string; text: string; source: 'NODE' | 'REPOSITORY' | 'SESSION'; applied: boolean };
 
 function nodeContextItems(node: SnapshotFlowNode, contextIds: string[] | null, frozenSessionContexts: NonNullable<NodeAttempt['frozen_session_contexts']> = [], agentPreset?: AgentPreset | null): NodeContextItem[] {
   const selected = contextIds === null ? null : new Set(contextIds);
@@ -933,6 +934,7 @@ function nodeContextItems(node: SnapshotFlowNode, contextIds: string[] | null, f
       id: item.id,
       title: item.capability_key,
       meta: `节点 Context 能力 · ${item.digest.slice(0, 12)}`,
+      digest: item.digest,
       text: item.text,
       source: 'REPOSITORY' as const,
       applied: selected === null || selected.has(item.id),
@@ -944,12 +946,14 @@ function nodeContextItems(node: SnapshotFlowNode, contextIds: string[] | null, f
     if (existing) {
       existing.applied = true;
       existing.text = item.text;
+      existing.digest = item.digest;
       return;
     }
     byId.set(item.id, {
       id: item.id,
       title: item.capability_key,
       meta: `本轮 Context 能力 · ${item.digest.slice(0, 12)}`,
+      digest: item.digest,
       text: item.text,
       source: 'SESSION',
       applied: true,
@@ -958,36 +962,28 @@ function nodeContextItems(node: SnapshotFlowNode, contextIds: string[] | null, f
   return [...byId.values()];
 }
 
-function NodeContextSummary(props: Parameters<typeof NodeContextDetails>[0]) {
-  const contexts = nodeContextItems(props.node, props.contextIds, props.frozenSessionContexts ?? [], props.agentPreset);
-  const capabilities = (props.frozenAgentCapabilities ?? []).filter(item => item.capability_type !== 'CONTEXT');
-  return <RecordDetailSummary title="上下文与能力" summary={`${contexts.filter(item => item.applied).length}/${contexts.length} 项上下文 · ${capabilities.length} 项能力`}><NodeContextDetails {...props}/></RecordDetailSummary>;
-}
-
-function NodeContextDetails({ node, contextIds, frozenSessionContexts = [], frozenAgentCapabilities = [], agentPreset, editable = false, onChange, mode }: {
-  node: SnapshotFlowNode; contextIds: string[] | null; editable?: boolean;
+function NodeContextSummary({ node, contextIds, frozenSessionContexts = [], frozenAgentCapabilities = [], agentPreset }: {
+  node: SnapshotFlowNode; contextIds: string[] | null;
   frozenSessionContexts?: NonNullable<NodeAttempt['frozen_session_contexts']>;
   frozenAgentCapabilities?: NonNullable<NodeAttempt['frozen_agent_capabilities']>;
-  agentPreset?: AgentPreset | null;
-  onChange?: (ids: string[]) => void; mode?: 'PROMPT' | 'CHAT';
+  agentPreset?: AgentPreset | null; mode?: 'PROMPT' | 'CHAT';
 }) {
-  const [viewing, setViewing] = useState<NodeContextItem>();
-  const items = nodeContextItems(node, contextIds, frozenSessionContexts, agentPreset);
-  const selected = contextIds === null ? new Set(items.map(item => item.id)) : new Set(contextIds);
-  const visible = items;
-  const configuredCapabilities = frozenAgentCapabilities.filter(item => item.capability_type !== 'CONTEXT');
-
-  const toggle = (id: string) => {
-    if (!onChange) return;
-    onChange(selected.has(id) ? [...selected].filter(item => item !== id) : [...selected, id]);
-  };
-  const empty = mode === 'CHAT' && frozenSessionContexts.length === 0 && configuredCapabilities.length === 0
-    ? '仅创建会话不会应用节点上下文；进入会话后由你自行决定是否补充上下文。'
-    : items.length === 0
-      ? '该节点没有配置自定义上下文或能力。'
-      : '本轮未应用节点文本 Context。';
-  if (viewing) return <section className="record-context-preview" aria-label={`查看 Context ${viewing.title}`}><header><div><span className="eyebrow">FROZEN CONTEXT</span><h2>{viewing.title}</h2></div><button className="ghost" onClick={() => setViewing(undefined)}><ArrowLeft size={15}/>返回列表</button></header><p>{viewing.meta} · {viewing.applied ? '本轮已应用' : '本轮未应用'}</p><pre>{viewing.text}</pre></section>;
-  return <section className="attempt-side-section node-context-summary"><header><div><h4>上下文与能力</h4></div>{editable && <span className="context-selection-count">已选 {selected.size}</span>}</header>{visible.length ? <div className="node-context-list">{visible.map(item => <article key={item.id} className={`${item.source === 'NODE' ? 'node-context-owned' : 'node-context-repository'}${item.applied ? ' selected' : ' not-applied'}`}>{editable ? <button type="button" className="node-context-toggle" aria-pressed={selected.has(item.id)} onClick={() => toggle(item.id)}><i className="context-checkbox" aria-hidden="true">{selected.has(item.id) ? '✓' : ''}</i><span><b>{item.title}</b><small>{item.meta}</small></span></button> : <span className="node-context-label"><b>{item.title}</b><small>{item.meta}</small></span>}<span className={`context-application-state ${item.applied ? 'applied' : ''}`}>{item.applied ? '本轮已应用' : '本轮未应用'}</span><button type="button" className="ghost context-detail-button" aria-label={`查看 ${item.title}`} onClick={() => setViewing(item)}><Eye size={14}/>查看</button></article>)}</div> : <p className="field-hint">{empty}</p>}{!editable && configuredCapabilities.length > 0 && <section className="node-capability-context"><header><span>装配能力</span><b>{configuredCapabilities.length} 项</b></header><div>{configuredCapabilities.map(item => <article key={item.id} title={`${item.capability_key} · ${item.capability_type} · ${item.digest}`}><span><b>{item.capability_key}</b><small>{item.capability_type}</small></span></article>)}</div></section>}</section>;
+  const [open, setOpen] = useState(false);
+  const contexts = nodeContextItems(node, contextIds, frozenSessionContexts, agentPreset);
+  const contextById = new Map(contexts.map(item => [item.id, item]));
+  const items = new Map<string, FrozenSessionConfigurationItem>(contexts.map(item => [item.id, {
+    id: item.id, capability_key: item.title, capability_type: 'CONTEXT', digest: item.digest,
+    text: item.text, source: item.meta, applied: item.applied,
+  }]));
+  for (const item of frozenAgentCapabilities) {
+    const context = contextById.get(item.id);
+    items.set(item.id, {
+      ...item, text: item.text ?? context?.text, source: '本轮冻结能力', applied: true,
+    });
+  }
+  const capabilities = frozenAgentCapabilities.filter(item => item.capability_type !== 'CONTEXT');
+  const displayedContexts = [...items.values()].filter(item => item.capability_type === 'CONTEXT');
+  return <section className="record-detail-summary" aria-label="上下文与能力"><h4>上下文与能力</h4><span>{displayedContexts.filter(item => item.applied).length}/{displayedContexts.length} 项上下文 · {capabilities.length} 项能力</span><button type="button" className="ghost" aria-haspopup="dialog" aria-label="查看上下文与能力" onClick={() => setOpen(true)}>查看<ChevronRight size={13}/></button>{open && <ReadOnlySessionConfiguration items={[...items.values()]} onClose={() => setOpen(false)}/>}</section>;
 }
 
 function CapabilityPresetDialog({ selectedIds, onClose, onChange }: { selectedIds: string[]; onClose: () => void; onChange: (ids: string[]) => void }) {
