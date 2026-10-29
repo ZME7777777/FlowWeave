@@ -8,5 +8,5 @@ export function useMarketSources(kind: 'PLUGIN' | 'SKILL') {
   const [selectedId, setSelectedId] = useState('');
   const sources = query.data?.sources.filter(item => item.enabled && (kind === 'PLUGIN' ? item.kind === 'PLUGIN_GIT' : item.kind !== 'PLUGIN_GIT')) ?? [];
   const source = sources.find(item => item.id === selectedId) ?? sources[0];
-  return { ...query, sources, source, setSelectedId };
+  return { ...query, kind, sources, source, setSelectedId };
 }

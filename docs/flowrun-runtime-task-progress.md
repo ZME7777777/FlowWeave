@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`UPSTREAM BASELINE ADOPTION COMPLETE`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`CASE-04`
+> 下一可执行切片：`CASE-05`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -13674,8 +13674,8 @@ Web remote-release-finish 通过，无过期受管上下文；保留当前镜像
 | CASE-02 | DONE | CASE-01 | 新协调轮次与原生会话bootstrap |
 | CASE-03A | DONE | CASE-02 | 原生 MCP 注册、冻结授权与场景范围读取 |
 | CASE-03B | DONE | CASE-03A | 流程图／草稿读取与当前执行副本配置、启动工具 |
-| CASE-04 | READY | CASE-03B | 产物登记与跨容器授权读取 |
-| CASE-05 | PENDING | CASE-02、CASE-04 | 持久事件投递与Agent回访 |
+| CASE-04 | DONE | CASE-03B | 产物登记与跨容器授权读取 |
+| CASE-05 | READY | CASE-02、CASE-04 | 持久事件投递与Agent回访 |
 | CASE-06 | PENDING | CASE-03B、CASE-05 | 逐步复核、配置修订与重跑 |
 | CASE-07 | PENDING | CASE-04、CASE-05、CASE-06 | 连续修订、跨阶段决策与完成 |
 | CASE-08 | PENDING | CASE-02–CASE-07 | 前端反馈与接管统一 |
@@ -14265,6 +14265,34 @@ Pyright为0，既有service保持39项既有诊断、无新增。独立验证迁
 见case-space-lifecycle-review.md。未部署、未推送、未发布实际系统能力；下一切片
 CASE-04 READY。按仓库规则提交本片后停止。
 
+
+### CASE-04 产物登记与跨容器授权读取 — DONE
+
+依赖CASE-03B DONE。正式ArtifactVersion登记同事务幂等保存Case＋产物版本引用，
+仅接受阶段当前独立执行的producer输出，不以旧OBSERVATION／CASE标签筛选，也不将
+模板、普通输入或仅关联运行扩成资料权限。保存阶段／节点／Attempt／正式完成事件来源，
+动态投影候选、接受、拒绝、取消、替代状态；新版本与历史执行证据保留，不自动验收。
+浏览器新增分页资料API；原生MCP返回含部署前缀的标准产物URL、元数据与安全来源。
+
+新会话另外冻结独立flowweave-case-materials MCP与Secret Registry授权，只读工具
+read_case_material提供分页目录及64KiB以内的base64分块。原生凭据也可读取标准
+artifact-versions内容GET；逐请求校验用户、Case、当前轮次、binding、目录版本、
+Runtime／原生身份和冻结版本，不依赖cookie，不可用于其他平台路由。DB授权后释放
+事务再读产物库，核对内容大小／SHA-256，响应no-store；链接保留原URI、不代抓外链。
+0185迁移的资料引用／授权表强制RLS，回填当前同用户正式输出；外键RESTRICT及运行
+子树删除前置检查保护源文件，删除场景仅释放引用，删除binding级联撤销授权。
+
+验证：105项Case定向测试通过，含六项固定source lock的1.54.0 SDK原生调用及恢复
+探针；补充场景启动／配置／暂停／重试兼容性与最终资料回归83项通过，两组有资料用例
+重叠。真实PostgreSQL验证去重、分页、状态、版本、越权／撤销、删除保护、内容漂移、
+迁移升级／降级、回填、非superuser RLS和级联。现有Dockerfile本地独立测试镜像
+内置contract_check通过；另一个不挂载产物目录的Runtime容器通过标准URL与MCP读回
+171000字节文件并核对哈希。最初常用镜像源码与锁不符被正确拒绝，使用单独测试标签
+构建匹配版本后通过，未覆盖常用镜像或替换会话。新增边界Pyright为0，受影响Ruff／
+format／diff检查通过，唯一Alembic head为0185_case_materials。配置契约见场景设计
+文档CASE-04节。没有真实模型、生产发布、系统能力发布或Runtime replacement；事件
+回访与自主跨阶段闭环仍待后续。当前NONE，下一CASE-05 READY；独立提交后停止。
+
 ### OPS-51 流程与能力列表整行单击勾选 — DONE
 
 依赖 OPS-50 DONE。按用户两张截图，流程列表的名称、状态与行空白区域
@@ -14640,3 +14668,166 @@ page>=1、page_size为1至100。详情增加运行引用分类，按需读取，
 0185_case_materials head及其CURRENT状态保持不变，不纳入本片提交／发布。
 发布使用已提交的0184迁移链；继承已提交OPS-60会话归档筛选修复。发布验收
 待补记，无后续实现切片。
+
+#### OPS-61 Web／Platform 发布验收
+
+2026-10-29沿用本会话受控服务器直接发布授权，正式web／platform预检通过，
+从`ec6f8746e1291d2c013ec0fa0ab9010cc353dd6c`的受管最小上下文发布。
+Platform源归档SHA-256为
+`33fc7bf186a4c80d4f6f85d31517b4011f9f59df779ab1ff56fd9588ce583224`，
+Web源归档SHA-256为
+`8b74a857fbdf2cf7a52bb83140db4b063acf4d64215a97bc8c3d8db490dfcf7a`。
+linux/amd64的Platform镜像ID为
+`sha256:c277594218c8b4b38f9eeecf3d1e8e304c5dbcba9d692dcda2d70b7aa3de84fb`，
+Web镜像ID为
+`sha256:70130b09a1a59f113b8b8e62540aff05705319a438200a5dd0292698799e6d02`。
+
+首次切换因OPS-60并行Web发布改变容器身份而在任何激活／迁移前停止；只读
+确认新线上revision为本片祖先`1868ee8ab3ba3b04ab1cc1f8a769c68eb1982b2c`，
+其他服务、43个保护容器和配置哈希不变。保留原盘点，并为最新Web补充回滚
+镜像及日志后更新Web盘点。本片已包含OPS-60修复，未覆盖其行为。
+
+正式migration入口退出0，Alembic保持0184_cascade_directory_archives；随后仅
+同步recreate api、stream-api、worker、web。四项运行镜像revision、linux/amd64、
+健康／readiness与Web HTTP验收通过。服务器Compose/env哈希及其余43个既有
+容器镜像和启动时间保持不变。Runtime Provider与运行容器未重建，未发布并行
+CASE-04迁移、源码或本机未提交内容。
+
+公网HTML与Agent深层路由匹配运行镜像，两项入口资源及三项匹配版本详情／
+运行引用模块的JS/CSS资源SHA-256一致；两个前缀API鉴权边界为401。全新远端
+Chromium实际渲染平台登录、深层路由和根登录页通过，Network确认使用前缀
+API，根路径API请求为0。实际API镜像内以只读数据库事务调用正式版本引用
+读取：3个已有被引用版本、25条首屏运行引用及1次第二页读取通过，核对所有
+返回记录确实引用所选版本且分页无重复，正式GET路由已注册。未对线上版本
+执行创建草稿、删除或其他业务写入；认证后的UI交互以本地受控数据回归验收。
+
+platform与web的remote-release-finish均通过，精确回收2个超过24小时的受管
+旧上下文，保留近期上下文、实际引用及每仓库一个回滚镜像；不清理共享BuildKit、
+卷、Workspace或数据库备份。收尾后四项版本、健康、0184数据库head、服务器
+配置和43个保护容器再验通过。未push；本片无后续开发任务。
+
+### OPS-62 已暂停容器的终端入口禁用视觉 — DONE
+
+2026-10-29按用户截图修复流程运行目录中终端入口已禁用但外观仍像可点击按钮
+的问题。运行目录操作按钮增加局部禁用样式：灰色文字／背景／边框、降低透明度
+和禁用鼠标指针。终端入口同时要求正式runtime_status为ACTIVE、write_available
+为true且当前运行无暂停／恢复请求；暂停、准备中与操作中保持禁用，并用title
+说明恢复或等待就绪。保留既有暂停／恢复容器、确认与正式服务端调用契约。
+
+Web typecheck、受影响源码／E2E ESLint与git diff检查通过。既有暂停／恢复
+Chromium用例补充终端入口断言后通过：ACTIVE可用、STOPPED置灰并阻止打开、
+STARTING继续禁用、恢复ACTIVE后重新可用。截图人工核对通过。本片仅Web，
+不修改API、数据库迁移、Runtime或实际暂停／恢复线上容器。工作树中并行
+CASE-04资料及0185迁移不纳入本片；任务状态沿用原记录。发布验收待补记，
+无后续开发切片。
+
+#### OPS-62 Web 发布验收
+
+2026-10-29沿用本会话直接发布授权，正式web预检与最小上下文准备通过，部署
+`9fc47bbf7e5f572b03c055a4f89390469e2b263d`。源归档SHA-256为
+`734ed535aefe310904d3f0b592f3385bfca46fad54c3a023e7e7ffa29595b39b`，
+linux/amd64镜像ID为
+`sha256:491f61e45170e3662cf1834f9a60d4bba41777d98ae13b256fce4a267749daf6`。
+保留切换前Web回滚镜像及日志，仅recreate Web；运行revision与目标提交一致，
+健康、服务器配置哈希及其余47个既有容器镜像和启动时间核验通过。
+
+公网入口／Agent深层路由HTML与镜像一致，两项入口资源及含本次禁用提示与
+CSS的两项模块资源SHA-256一致。全新远端Chromium实际加载平台登录、深层
+路由和根登录页通过，两个API鉴权边界为401，Network确认使用前缀API且根
+路径API请求为0。终端暂停／恢复交互及置灰效果以本地受控回归验收，未在
+线上操作实际容器暂停／恢复。
+
+remote-release-finish通过，无超过保留期的受管上下文候选；保留最近24小时
+上下文、实际引用及每仓库一个回滚镜像。收尾后版本、健康、配置及47个保护
+容器再验通过。无API／迁移／Runtime发布，未push，本片无后续开发任务。
+
+### OPS-63 Skill／Plugin 市场与 ZIP 导入分离 — DONE
+
+2026-10-29按用户要求撤下能力列表工具栏的统一市场源管理入口。Skill和Plugin
+各自提供独立市场入口；“导入 Skill／Plugin”只选择对应ZIP文件，沿用原有
+大小限制、服务端校验、预览确认及正式发布链，并在前端拒绝非ZIP扩展名。
+市场弹窗移除ZIP切换项，重命名为SkillMarketDialog／PluginMarketDialog，
+保留搜索、多选、分页、部分失败重试、关闭后停止剩余队列及Plugin固定Git
+提交／目录导入功能；导入后的不可变能力与现有版本不作改写。
+
+市场源管理仅在各市场中进入，按Skill／Plugin过滤展示与编辑；新增源自动
+固定所属类型，不再提供跨类型下拉。内置来源以紧凑列表展示固定名称／地址，
+允许自定义开关启停；自定义源可编辑名称、地址、版本、目录或从待保存列表
+删除，取消仍保留原服务端配置。编辑区仅展开当前项，内容独立滚动，头尾操作
+固定。来源选择复用LaunchOptionMenu／ViewportPopover，支持键盘、Escape、
+外部点击和边界定位；管理页使用自定义switch，无原生select／option或复选框。
+
+沿用现有按用户存储和校验的来源接口，避免迁移已有配置。保存前重新读取
+最新快照，仅替换本类型来源并保留另一类型的新改动；同类型内容已变化则
+显式提示重新加载，不能覆盖；仅另一类型引发的revision竞争允许重读并有界
+重试一次。复用原服务端来源合法性与乐观锁，不引入平台私有导入链或更改
+OpenHands治理边界。
+
+验证：Web typecheck、受影响TS／TSX与E2E ESLint、git diff检查通过。20项市场
+Chromium回归及1项能力模块入口回归通过，共21项，覆盖Plugin Git／目录／
+批量导入、Skill搜索／完整技能发布、ZIP专用入口及确认、两类来源列表隔离、
+自动类型、跨类型新修改保留与一次冲突重试、同类型竞争拒绝／重新加载、
+删除后取消、键盘选择及1440／390宽度。来源管理桌面／窄屏截图人工核对通过。
+本片仅Web，无API／迁移／Runtime更新；保留已提交CASE-04源码但不发布平台。
+发布验收待补记，无后续实现切片。
+
+#### OPS-63 Web 发布验收
+
+2026-10-29沿用本会话直接发布授权，正式Web预检及受管最小上下文准备通过，
+发布`667f61fba5c4c8f4b5369ba23c31708c3f6461c9`。源归档SHA-256为
+`87211d7f5c9252c432d44c4ad8b334fe6b20b4eadb3ba2810e325a46915b3d64`，
+linux/amd64镜像ID为
+`sha256:61d1a8d1e3e2b72e846f9d5595c5f06d632ed5063c847dd1465d8e5c3c9fd60f`。
+保留旧Web回滚镜像与日志，仅recreate Web。实际revision与提交一致；服务器
+配置哈希及其他47个既有容器镜像和启动时间保持不变。
+
+公网入口／Agent深层路由HTML匹配运行镜像；两项入口资源及三项匹配独立
+市场源、ZIP专用入口和新列表样式的JS/CSS资源SHA-256一致。全新远端Chromium
+实际加载平台登录、Agent深层路由和根登录页通过；两个API鉴权边界为401，
+Network确认只使用前缀API、根路径API请求为0。认证后的市场配置及导入交互
+以21项本地受控回归验收，未修改线上用户市场源或实际导入能力。
+
+remote-release-finish通过，精确回收1个超过24小时的受管旧Web上下文，保留
+近期上下文、实际引用及每仓库一个回滚镜像。收尾后Web版本、健康、服务器
+配置和47个保护容器再验通过。沿用现有来源接口和数据，无API／迁移／Runtime
+发布，未push；本片无后续实现切片。
+
+### OPS-64 Skill 热门首屏与 Plugin 后端分页 — DONE
+
+2026-10-29按用户要求为Skill市场增加默认首屏：skills.sh空查询读取其公开
+累计安装量排行榜第一页，按原始排行选取前20个可通过既有GitHub治理链导入
+的条目；展示真实安装量，搜索特定技能后清空查询可返回热门。自定义Skill Git
+来源打开时自动读取原目录，不伪造热度。榜单有五分钟有界缓存，失败可重试，
+搜索与导入继续使用原正式校验和发布流程。
+
+定位Plugin旧慢路径：每次打开先解析HEAD，再启动隔离Docker解析器获取仓库
+完整目录，前端才过滤与切页。新增只读浏览投影：对允许的公开GitHub仓库，
+固定提交后只读取原生目录约定的.plugin或.claude-plugin/marketplace.json，
+通过有界类型校验投影名称／说明／版本等目录元数据；不读取插件内容、不执行
+代码、不替代导入时OpenHands正式Marketplace解析与不可变内容校验。GitHub
+Raw将符号链接返回为相对路径文本，最多跟随4次且限制在同仓库、同提交内；
+禁止跳到其他仓库／提交／主机或逃出根目录，HTTP重定向关闭，响应限制2MiB。
+其他已允许的Git主机继续使用原正式隔离解析器读取目录。
+
+Plugin浏览接口按q全目录搜索，page/page_size后端分页（默认每页10、上限50），
+响应仅含当前页条目与total。HEAD解析缓存120秒，固定目录快照缓存300秒，
+最多32个缓存项，同键并发single-flight且失败不缓存。翻页／搜索沿用首屏
+commit，缓存过期也继续取同一提交，手工刷新重新选择最新快照。前端只请求
+当前页，保留跨页／搜索多选与部分失败重试，250ms合并搜索并取消／忽略旧
+响应，补上仅空白变化不应永久进入加载态的边界。
+
+验证：Web typecheck、定向ESLint、Python Ruff、新market_browse模块严格Pyright、
+git diff检查通过；既有skill_market整体严格Pyright仍有历史未标注dict／set
+类型问题，未将其声称为全量通过。24项PostgreSQL／Python定向回归和22项
+Chromium市场回归通过，共46项；最后搜索边界变更后再验2项分页／多选通过。
+覆盖真实分页请求／全局搜索、快照commit稳定、迟到结果抑制、热门初始加载／
+搜索返回、跨来源隔离、ZIP与Git导入保留、缓存合并／上限／失败重试、响应
+大小及符号链接安全。新首屏和分页截图人工核对通过。本机真实公开源只读
+探针：Plugin目录共78项，冷首屏约4.1秒、缓存第二页小于1ms；Skill热门20项
+约3.2秒。数字只代表当次开发机网络，线上发布后另行只读核验。
+
+本片含Web与市场读取API，无数据库／Runtime变更。工作树中CASE-05A为唯一
+CURRENT、唯一Alembic head为0186_case_execution_events，不纳入本片提交。
+发布将从线上已部署平台ec6f8746的0184链创建独立、已提交的发布快照，只合入
+本片市场API和当前已提交Web，以排除尚未发布CASE-04／CASE-05迁移与源码；
+具体SHA、快照验证和发布验收待补记，不自动开始后续开发。

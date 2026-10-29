@@ -1,5 +1,5 @@
-import { Check, ChevronRight, FileArchive, GitBranch, LoaderCircle, Package, RefreshCw, Search, Store, X } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Check, ChevronRight, GitBranch, LoaderCircle, Package, RefreshCw, Search, Store, X } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../api/client';
 import { MarketSourcePicker } from './MarketSources';
 import { useMarketSources } from './useMarketSources';
@@ -13,7 +13,6 @@ type Source = 'marketplace' | 'git';
 interface Props {
   onClose: () => void;
   onPublished: () => void | Promise<void>;
-  onUpload: () => void;
 }
 function message(reason: unknown): string {
   return reason instanceof Error ? reason.message : '导入失败，请重试。';
@@ -41,7 +40,7 @@ function gitSource(value: string, commit: string, repoPath: string) {
   return { source_url: url.toString().replace(/\/$/u, ''), commit: revision, repo_path: path || null };
 }
 
-export function PluginImportDialog({ onClose, onPublished, onUpload }: Props) {
+export function PluginMarketDialog({ onClose, onPublished }: Props) {
   useEscapeClose(onClose);
   const market = useMarketSources('PLUGIN');
   const marketSource = market.source;
@@ -55,6 +54,7 @@ export function PluginImportDialog({ onClose, onPublished, onUpload }: Props) {
   const marketplaceResolutions = useRef(new Map<string, PluginSourceResolution>());
   const [query, setQuery] = useState('');
   const [page, setPage] = useState(1);
+  const queryRef = useRef(query); queryRef.current = query;
   const [url, setUrl] = useState('');
   const [commit, setCommit] = useState('');
   const [repoPath, setRepoPath] = useState('');
@@ -65,33 +65,51 @@ export function PluginImportDialog({ onClose, onPublished, onUpload }: Props) {
   const generation = useRef(0);
   const browseGeneration = useRef(0);
   const browseAbort = useRef<AbortController | undefined>(undefined);
-  const plugins = useMemo(() => (catalog?.plugins ?? []).filter(plugin =>
-    `${plugin.name} ${plugin.description ?? ''} ${plugin.category ?? ''}`.toLowerCase().includes(query.trim().toLowerCase()),
-  ), [catalog, query]);
-
+  const pinnedCommit = useRef<string | undefined>(undefined);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [reload, setReload] = useState(0);
+  const plugins = catalog?.plugins ?? [];
+  useEffect(() => {
+    const timer = window.setTimeout(() => setSearchTerm(query.trim()), 250);
+    return () => window.clearTimeout(timer);
+  }, [query]);
+  useEffect(() => {
+    generation.current += 1; browseGeneration.current += 1; browseAbort.current?.abort();
+    pinnedCommit.current = undefined;
+    setCatalog(undefined); setSelectedNames(new Set()); setImportedNames(new Set());
+    marketplaceResolutions.current.clear(); setPublishedCount(0); setError(''); setStatus('');
+    setQuery(''); setSearchTerm(''); setPage(1);
+  }, [marketSource]);
   const browse = useCallback(async () => {
     if (!marketSource) return;
-    generation.current += 1;
-    setCatalog(undefined); setSelectedNames(new Set()); setImportedNames(new Set()); marketplaceResolutions.current.clear(); setPublishedCount(0); setError(''); setStatus(''); setQuery('');
     const request = ++browseGeneration.current;
     browseAbort.current?.abort();
-    const controller = new AbortController();
-    browseAbort.current = controller;
-    setLoading(true); setCatalogError('');
+    const controller = new AbortController(); browseAbort.current = controller;
+    setLoading(true); setCatalogError(''); setCatalog(undefined);
     try {
-      const result = await (marketSource.id === 'openhands' ? api.openhandsMarketplaceCatalog(controller.signal) : api.marketPluginCatalog(marketSource.id, controller.signal));
-      if (request !== browseGeneration.current) return;
-      setCatalog(result); setSelectedNames(new Set()); setImportedNames(new Set()); marketplaceResolutions.current.clear(); setPublishedCount(0); setPage(1);
+      const result = await api.marketPluginCatalog(marketSource.id, searchTerm, page, pinnedCommit.current, controller.signal);
+      if (request !== browseGeneration.current || searchTerm !== queryRef.current.trim()) return;
+      pinnedCommit.current = result.commit; setCatalog(result);
     } catch (reason) {
-      if (request === browseGeneration.current) setCatalogError(message(reason));
-    } finally { if (request === browseGeneration.current) setLoading(false); }
-  }, [marketSource]);
+      if (request === browseGeneration.current && searchTerm === queryRef.current.trim()) setCatalogError(message(reason));
+    } finally { if (request === browseGeneration.current && searchTerm === queryRef.current.trim()) setLoading(false); }
+  }, [marketSource, searchTerm, page]);
   useEffect(() => {
-    if (marketSource) void browse();
-    else { setCatalog(undefined); setLoading(market.isPending); setSelectedNames(new Set()); }
-    return () => { generation.current += 1; browseGeneration.current += 1; browseAbort.current?.abort(); };
-  }, [browse, marketSource, market.isPending]);
+    if (marketSource && source === 'marketplace') void browse();
+    else if (!marketSource) { setCatalog(undefined); setLoading(market.isPending); }
+    return () => { browseGeneration.current += 1; browseAbort.current?.abort(); };
+  }, [browse, marketSource, market.isPending, source, reload]);
+  useEffect(() => () => { generation.current += 1; }, []);
+  const refreshCatalog = () => {
+    generation.current += 1; pinnedCommit.current = undefined;
+    setSelectedNames(new Set()); setImportedNames(new Set()); marketplaceResolutions.current.clear();
+    setPublishedCount(0); setPage(1); setReload(value => value + 1);
+  };
 
+  const changeQuery = (value: string) => {
+    setQuery(value); setPage(1);
+    if (value.trim() !== searchTerm || page !== 1) { setCatalog(undefined); setLoading(true); }
+  };
   const reset = () => { generation.current += 1; setResolution(undefined); setError(''); setStatus(''); setPublishedCount(0); };
   const importPlugin = async () => {
     const request = ++generation.current;
@@ -159,22 +177,21 @@ export function PluginImportDialog({ onClose, onPublished, onUpload }: Props) {
     finally { if (request === generation.current) { setBusy(false); setStatus(''); } }
   };
 
-  return <div className="modal-backdrop"><section className="modal plugin-import-dialog" role="dialog" aria-modal="true" aria-label="导入 Plugin">
-    <header className="plugin-import-header"><h2>导入 Plugin</h2><button className="ghost" aria-label="关闭" onClick={onClose}><X size={16}/></button></header>
+  return <div className="modal-backdrop"><section className="modal plugin-import-dialog" role="dialog" aria-modal="true" aria-label="插件市场">
+    <header className="plugin-import-header"><h2>插件市场</h2><button className="ghost" aria-label="关闭" onClick={onClose}><X size={16}/></button></header>
     <div className="plugin-import-sources" role="tablist" aria-label="导入来源">
       <button role="tab" aria-selected={source === 'marketplace'} disabled={busy} onClick={() => { reset(); setSource('marketplace'); }}><Store size={14}/>插件市场</button>
       <button role="tab" aria-selected={source === 'git'} disabled={busy} onClick={() => { reset(); setSource('git'); }}><GitBranch size={14}/>Git 仓库</button>
-      <button className="plugin-import-upload" disabled={busy} onClick={onUpload}><FileArchive size={14}/>上传 ZIP</button>
     </div>
     <div className="plugin-import-body">
       {source === 'marketplace' ? <section aria-label="插件市场" className="plugin-import-market">
-        <MarketSourcePicker market={market} disabled={busy}/><div className="plugin-import-search"><label><Search size={14}/><input aria-label="搜索插件" placeholder="搜索插件名称或说明" value={query} disabled={busy} onChange={event => { setQuery(event.target.value); setPage(1); }}/></label><button className="ghost" title="刷新目录" aria-label="刷新目录" disabled={loading || busy} onClick={() => void browse()}><RefreshCw size={14}/></button></div>
-        {loading ? <div className="plugin-import-empty" role="status"><LoaderCircle className="spin" size={20}/><span>正在加载插件目录…</span><small>首次读取可能需要一些时间</small></div>
+        <MarketSourcePicker market={market} disabled={busy}/><div className="plugin-import-search"><label><Search size={14}/><input aria-label="搜索插件" placeholder="搜索插件名称或说明" value={query} disabled={busy} onChange={event => changeQuery(event.target.value)}/></label><button className="ghost" title="刷新目录" aria-label="刷新目录" disabled={loading || busy} onClick={refreshCatalog}><RefreshCw size={14}/></button></div>
+        {loading ? <div className="plugin-import-empty" role="status"><LoaderCircle className="spin" size={20}/><span>正在加载插件目录…</span><small>正在读取当前页</small></div>
           : catalogError ? <div className="plugin-import-empty"><Store size={22}/><span>暂时无法加载插件市场</span><small role="alert">{catalogError}</small><button className="secondary" onClick={() => void browse()}>重新加载</button><button className="ghost" onClick={() => { reset(); setSource('git'); }}>从 Git 仓库导入<ChevronRight size={13}/></button></div>
-          : <><div className="plugin-import-list" aria-label="插件目录">{plugins.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE).map(plugin => <button key={plugin.name} role="checkbox" aria-label={`选择插件 ${plugin.name}`} disabled={busy || importedNames.has(plugin.name)} aria-checked={selectedNames.has(plugin.name)} onClick={() => { reset(); setSelectedNames(previous => { const next = new Set(previous); if (next.has(plugin.name)) next.delete(plugin.name); else next.add(plugin.name); return next; }); }}>
+          : <><div className="plugin-import-list" aria-label="插件目录">{plugins.map(plugin => <button key={plugin.name} role="checkbox" aria-label={`选择插件 ${plugin.name}`} disabled={busy || importedNames.has(plugin.name)} aria-checked={selectedNames.has(plugin.name)} onClick={() => { reset(); setSelectedNames(previous => { const next = new Set(previous); if (next.has(plugin.name)) next.delete(plugin.name); else next.add(plugin.name); return next; }); }}>
             <span className="plugin-import-check">{selectedNames.has(plugin.name) && <Check size={12}/>}</span><Package size={17}/><span className="plugin-import-copy"><b>{plugin.name}</b><small>{plugin.description || '暂无说明'}</small></span><span className="plugin-import-version">{importedNames.has(plugin.name) ? '已导入' : plugin.version || plugin.category}</span>
-          </button>)}{!plugins.length && <div className="plugin-import-empty"><Search size={20}/><span>{query ? '没有匹配的插件' : '目录中暂时没有插件'}</span>{query && <button className="ghost" onClick={() => { setQuery(''); setPage(1); }}>清除搜索</button>}</div>}</div>
-          <div className="plugin-import-pagination"><small>{marketSource?.name ?? '市场'} · {plugins.length} 个插件</small><Pagination page={page} pageSize={PAGE_SIZE} total={plugins.length} onPageChange={setPage}/></div></>}
+          </button>)}{!plugins.length && <div className="plugin-import-empty"><Search size={20}/><span>{query ? '没有匹配的插件' : '目录中暂时没有插件'}</span>{query && <button className="ghost" onClick={() => changeQuery('')}>清除搜索</button>}</div>}</div>
+          <div className="plugin-import-pagination"><small>{marketSource?.name ?? '市场'} · {catalog?.total ?? plugins.length} 个插件</small><Pagination page={page} pageSize={PAGE_SIZE} total={catalog?.total ?? plugins.length} onPageChange={value => { if (!loading && !busy) setPage(value); }}/></div></>}
       </section> : <section className="plugin-import-git" aria-label="Git 仓库导入">
         <label>仓库或提交链接<input autoFocus value={url} disabled={busy} placeholder="https://github.com/owner/repo" onChange={event => { reset(); setUrl(event.target.value); }}/></label>
         <p>可直接粘贴 GitHub 的固定提交或目录链接，自动识别版本与插件目录。</p>

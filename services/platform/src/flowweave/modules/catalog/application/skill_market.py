@@ -13,6 +13,7 @@ from collections import OrderedDict
 from dataclasses import replace
 from pathlib import PurePosixPath
 from threading import Lock
+from typing import Any, cast
 
 import httpx
 import yaml
@@ -173,8 +174,59 @@ def _skills(files: dict[str, bytes], root: str = "") -> list[dict]:
     return result
 
 
+def popular(source: MarketSource) -> dict[str, Any]:
+    from flowweave.modules.catalog.application.market_browse import cached, public_json
+
+    def load() -> list[dict[str, Any]]:
+        raw: dict[str, Any] = public_json("https://www.skills.sh/api/skills/all-time/0")
+        if not isinstance(raw, dict) or not isinstance(raw.get("skills"), list):
+            raise ValueError("Invalid leaderboard")
+        result = []
+        for item in cast(list[dict[str, Any]], raw["skills"])[:200]:
+            if not isinstance(item, dict):
+                continue
+            repo, skill_id = item.get("source"), item.get("skillId")
+            if (
+                not isinstance(repo, str)
+                or not isinstance(skill_id, str)
+                or not 1 <= len(skill_id) <= 200
+            ):
+                continue
+            try:
+                market_sources.github_repository(f"https://github.com/{repo}")
+            except DomainError:
+                continue
+            result.append(
+                {
+                    "id": f"{repo}/{skill_id}",
+                    "repository": repo,
+                    "skill_id": skill_id,
+                    "name": str(item.get("name") or skill_id)[:200],
+                    "description": repo,
+                    "installs": item.get("installs") if type(item.get("installs")) is int else None,
+                    "commit": None,
+                    "path": None,
+                }
+            )
+            if len(result) == 20:
+                break
+        return result
+
+    try:
+        return {
+            "skills": cached(("skills-popular", source.url), load),
+            "query": "",
+            "search_required": False,
+            "mode": "popular",
+        }
+    except (httpx.HTTPError, ValueError, TypeError, TimeoutError) as exc:
+        raise unavailable("热门技能暂时不可用，请重试或搜索技能") from exc
+
+
 def search(source: MarketSource, query: str) -> dict:
     if source.kind == "SKILLS_SH":
+        if not query.strip():
+            return popular(source)
         if len(query.strip()) < 2:
             return {"skills": [], "query": query, "search_required": True}
         try:

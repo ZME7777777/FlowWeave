@@ -141,7 +141,7 @@ def test_public_search_uses_unauthenticated_bounded_endpoint(monkeypatch):
     result = skill_market.search(market_sources.BUILTINS[1], "demo")
     assert len(result["skills"]) == 1
     assert result["skills"][0]["repository"] == "acme/skills"
-    assert skill_market.search(market_sources.BUILTINS[1], "")["search_required"]
+    assert skill_market.search(market_sources.BUILTINS[1], "x")["search_required"]
     assert len(seen) == 1
     monkeypatch.setattr(httpx, "stream", real_stream)
 

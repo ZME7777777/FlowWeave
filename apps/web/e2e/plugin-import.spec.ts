@@ -12,23 +12,29 @@ async function open(page: Page) {
   await page.goto('/');
   await page.getByRole('button', { name: '能力仓库' }).click();
   await page.getByRole('navigation', { name: '能力模块' }).getByRole('button', { name: /Plugin/ }).click();
-  await page.getByRole('button', { name: '导入 Plugin', exact: true }).click();
-  return page.getByRole('dialog', { name: '导入 Plugin' });
+  await page.getByRole('button', { name: '插件市场', exact: true }).click();
+  return page.getByRole('dialog', { name: '插件市场' });
 }
 test.beforeEach(async ({ page }) => {
   await page.route('**/api/v1/auth/me', route => route.fulfill({ json: { id: 'plugin-user', username: 'plugin-user', role: 'USER' } }));
   await page.route('**/api/v1/capability-directory?*', route => route.fulfill({ json: { items: [], total: 0, page: 1, page_size: 20, counts: {}, collection_total: 0 } }));
   await page.route('**/api/v1/capability-collection-directory?*', route => route.fulfill({ json: { items: [], total: 0, page: 1, page_size: 20 } }));
   await page.route('**/api/v1/market-sources', route => route.fulfill({ json: { revision: '1', sources: [{ id: 'openhands', name: 'OpenHands', kind: 'PLUGIN_GIT', url: 'https://github.com/OpenHands/extensions.git', ref: 'HEAD', repo_path: '', enabled: true, builtin: true }] } }));
-  await page.route('**/api/v1/plugin-marketplace-catalogs/openhands', route => route.fulfill({ json: catalog }));
+  await page.route('**/api/v1/market-sources/openhands/plugins?*', route => {
+    const url = new URL(route.request().url()); const term = url.searchParams.get('q') || ''; const page = Number(url.searchParams.get('page') || 1);
+    const plugins = catalog.plugins.filter(item => `${item.name} ${item.description}`.includes(term));
+    return route.fulfill({ json: { ...catalog, plugins: plugins.slice((page - 1) * 10, page * 10), total: plugins.length, page, page_size: 10 } });
+  });
 });
 
 test('market loading, retry, search and import use a single compact content dialog', async ({ page }) => {
   let failBrowse = true;
-  await page.route('**/api/v1/plugin-marketplace-catalogs/openhands', async route => {
+  await page.route('**/api/v1/market-sources/openhands/plugins?*', async route => {
     const fail = failBrowse;
     await new Promise(resolve => setTimeout(resolve, 350));
-    await route.fulfill(fail ? { status: 503, json: { detail: '目录暂时不可用' } } : { json: catalog });
+    const url = new URL(route.request().url()); const term = url.searchParams.get('q') || ''; const currentPage = Number(url.searchParams.get('page') || 1);
+    const rows = catalog.plugins.filter(item => `${item.name} ${item.description}`.includes(term));
+    await route.fulfill(fail ? { status: 503, json: { detail: '目录暂时不可用' } } : { json: { ...catalog, plugins: rows.slice((currentPage - 1) * 10, currentPage * 10), total: rows.length } });
   });
   let requested: Record<string, unknown> | undefined;
   let publishCount = 0;
@@ -108,9 +114,8 @@ test('closing during resolution prevents late automatic publishing and ZIP remai
   await dialog.getByRole('button', { name: /^导入插件/ }).click();
   await dialog.getByRole('button', { name: '关闭', exact: true }).click();
   finish();
-  await page.getByRole('button', { name: '导入 Plugin', exact: true }).click();
   const fileChooser = page.waitForEvent('filechooser');
-  await page.getByRole('button', { name: '上传 ZIP' }).click();
+  await page.getByRole('button', { name: '导入 Plugin', exact: true }).click();
   await (await fileChooser).setFiles([]);
   expect(publishCount).toBe(0);
 });
@@ -246,8 +251,39 @@ test('closing a market batch preserves completed imports and stops the remaining
   finish();
   await responseDelivered;
   await page.getByRole('button', { name: '关闭成功提示', exact: true }).click();
-  await page.getByRole('button', { name: '导入 Plugin', exact: true }).click();
-  await expect(page.getByRole('dialog', { name: '导入 Plugin' }).getByRole('checkbox', { name: '选择插件 review-1', exact: true })).not.toBeChecked();
+  await page.getByRole('button', { name: '插件市场', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: '插件市场' }).getByRole('checkbox', { name: '选择插件 review-1', exact: true })).not.toBeChecked();
   expect(requested).toEqual(['review-1', 'review-2']);
   expect(published).toEqual(['review-1']);
+});
+
+test('Plugin pages and search request only one page and retain the same commit snapshot', async ({ page }) => {
+  const queries: URL[] = [];
+  let release: () => void = () => {}; const pending = new Promise<void>(resolve => { release = resolve; });
+  await page.route('**/api/v1/market-sources/openhands/plugins?*', async route => {
+    const url = new URL(route.request().url()); queries.push(url);
+    const pageNo = Number(url.searchParams.get('page')); const term = url.searchParams.get('q') || '';
+    if (term === 'slow') { await pending; return route.fulfill({ json: { ...catalog, plugins: [{ name: 'stale' }], total: 1 } }).catch(() => {}); }
+    const rows = term ? [{ name: 'focused-result' }] : Array.from({ length: 10 }, (_, index) => ({ name: `plugin-${(pageNo - 1) * 10 + index + 1}` }));
+    await route.fulfill({ json: { ...catalog, plugins: rows, total: term ? 1 : 250, page: pageNo, page_size: 10 } });
+  });
+  const dialog = await open(page);
+  await expect(dialog.getByRole('checkbox')).toHaveCount(10);
+  expect(queries.every(url => url.searchParams.get('page') === '1')).toBe(true);
+  await dialog.getByRole('checkbox', { name: '选择插件 plugin-1', exact: true }).click();
+  await dialog.getByRole('button', { name: '下一页', exact: true }).click();
+  await expect(dialog.getByRole('checkbox', { name: '选择插件 plugin-11', exact: true })).toBeVisible();
+  expect(queries.at(-1)!.searchParams.get('page')).toBe('2');
+  expect(queries.at(-1)!.searchParams.get('commit')).toBe(sha);
+  await dialog.getByLabel('搜索插件').fill('slow');
+  await expect.poll(() => queries.some(url => url.searchParams.get('q') === 'slow')).toBe(true);
+  await dialog.getByLabel('搜索插件').fill('focus');
+  await expect(dialog.getByRole('checkbox', { name: '选择插件 focused-result', exact: true })).toBeVisible();
+  release();
+  await expect(dialog.getByRole('checkbox', { name: '选择插件 stale', exact: true })).toHaveCount(0);
+  expect(queries.at(-1)!.searchParams.get('page')).toBe('1');
+  expect(queries.at(-1)!.searchParams.get('page_size')).toBe('10');
+  expect(queries.at(-1)!.searchParams.get('commit')).toBe(sha);
+  await expect(dialog.getByText('已选择 1 个插件', { exact: true })).toBeVisible();
+  await dialog.screenshot({ path: test.info().outputPath('plugin-server-page.png') });
 });
