@@ -349,6 +349,7 @@ test('archived directory restores require confirmation and restoring one child r
   await expect.poll(() => directoryRestores).toBe(2);
   await expect(rows).toHaveCount(0);
   const filter = page.getByRole('button', { name: '会话状态', exact: true });
+  await expect(filter).toBeEnabled();
   await filter.press('ArrowDown');
   await page.keyboard.press('Home'); await page.keyboard.press('ArrowDown'); await page.keyboard.press('Enter');
   await expect(filter).toContainText('未归档');
@@ -420,3 +421,76 @@ test('archive filter defaults to all, filters both states, and resets across wor
   await expect(filter).toContainText('全部');
   await expect(rows).toHaveCount(2);
 });
+
+for (const failSecondBatch of [false, true]) {
+  test(`selected conversations archive in bounded batches while their workspace stays active (${failSecondBatch ? 'retry' : 'complete'})`, async ({ page }) => {
+    const now = new Date().toISOString();
+    let items = Array.from({ length: 43 }, (_, index) => ({ id: `archive-${index + 1}`, display_title: `批量归档会话 ${index + 1}`, pinned: false, unread: false, archived_at: index === 42 ? now : null, created_at: now, updated_at: now, last_message_at: now }));
+    const requests: string[][] = []; let workspaceWrites = 0; let running = true;
+    let releaseFirst: (() => void) | undefined;
+    await page.route('**/api/v1/**', async route => {
+      const url = new URL(route.request().url()); const path = url.pathname;
+      if (path.endsWith('/auth/me')) return respond(route, { id: 'bulk-archive-user', username: 'manager', role: 'USER', can_use_agent_sessions: true });
+      if (path.endsWith('/agent-workspaces/default')) return respond(route, { id: 'bulk-archive-workspace', display_name: '工作区', desired_state: 'RUNNING', updated_at: now });
+      if (path.includes('/work-directories/') && route.request().method() !== 'GET') { workspaceWrites += 1; return respond(route, {}); }
+      if (path.endsWith('/work-directories')) return respond(route, { root: { display_name: '根工作区' }, items: [{ id: 'project-directory', display_name: '保留的工作区', state: 'ACTIVE' }] });
+      if (path.endsWith('/conversation-management/archive')) {
+        expect(url.searchParams.get('work_directory_id')).toBe('project-directory');
+        const ids = route.request().postDataJSON().binding_ids as string[]; requests.push(ids);
+        expect(ids.length).toBeLessThanOrEqual(20);
+        if (requests.length === 1) await new Promise<void>(resolve => { releaseFirst = resolve; });
+        if (failSecondBatch && requests.length === 2) return respond(route, { error: { code: 'TEMPORARY', message: '本批网络失败' } }, 503);
+        const successful = ids.filter(id => !running || id !== 'archive-22');
+        items = items.map(item => successful.includes(item.id) ? { ...item, archived_at: now } : item);
+        return respond(route, { archived: successful.map(id => ({ id, archived_at: now })), skipped: ids.filter(id => !successful.includes(id)).map(id => ({ id, code: 'AGENT_CONVERSATION_RUNNING' })) });
+      }
+      if (path.endsWith('/conversation-management')) return respond(route, { items: url.searchParams.get('work_directory_id') !== 'project-directory' ? [] : items.filter(item => !url.searchParams.has('archived') || Boolean(item.archived_at) === (url.searchParams.get('archived') === 'true')), truncated: false });
+      if (path.endsWith('/node-directories') || path.endsWith('/node-assets')) return respond(route, []);
+      return respond(route, {}, 404);
+    });
+    await page.goto('/'); await page.getByRole('button', { name: 'AI 工作台', exact: true }).click();
+    await page.getByRole('button', { name: '会话管理', exact: true }).click();
+    await page.getByRole('button', { name: '保留的工作区', exact: true }).click();
+    const all = page.getByRole('checkbox', { name: '选择当前筛选结果中的全部会话' });
+    await all.check(); await page.getByRole('button', { name: '下一页', exact: true }).click();
+    await expect(page.getByText('已选 43 / 43 个会话', { exact: true })).toBeVisible();
+    const archive = page.getByRole('button', { name: '归档已选会话', exact: true });
+    await archive.click();
+    let confirmation = page.getByRole('alertdialog', { name: '归档 42 个会话？', exact: true });
+    await expect(confirmation).toContainText('工作区保持不变');
+    await confirmation.getByRole('button', { name: '取消', exact: true }).click(); expect(requests).toHaveLength(0);
+    await archive.click(); await confirmation.getByRole('button', { name: '确认归档', exact: true }).click();
+    await expect.poll(() => Boolean(releaseFirst)).toBe(true);
+    await expect(page.getByRole('button', { name: '删除已选会话', exact: true })).toBeDisabled();
+    await expect(page.getByRole('button', { name: '根工作区', exact: true })).toBeDisabled();
+    await expect(page.getByRole('textbox', { name: '搜索会话', exact: true })).toBeDisabled();
+    await expect(page.getByRole('status')).toContainText('0 / 42'); releaseFirst!();
+    if (failSecondBatch) {
+      await expect(page.getByRole('alert')).toContainText('已归档 20 个');
+      expect(requests).toHaveLength(2);
+      await archive.click(); confirmation = page.getByRole('alertdialog', { name: '归档 22 个会话？', exact: true });
+      await confirmation.getByRole('button', { name: '确认归档', exact: true }).click();
+      await expect(page.getByRole('status')).toContainText('已归档 21 个会话');
+      expect(requests.slice(2).flat().some(id => requests[0].includes(id))).toBe(false);
+    } else {
+      await expect(page.getByRole('status')).toContainText('已归档 41 个会话');
+      expect(requests.map(ids => ids.length)).toEqual([20, 20, 2]);
+    }
+    expect(workspaceWrites).toBe(0);
+    await expect(page.getByRole('complementary', { name: 'Agent 工作区' }).getByRole('button', { name: '保留的工作区', exact: true })).not.toHaveAccessibleDescription('已归档工作区');
+    await page.getByRole('button', { name: '会话状态', exact: true }).click();
+    await page.getByRole('option', { name: '未归档', exact: true }).click();
+    await expect(page.locator('.conversation-management-table tbody tr')).toHaveCount(1);
+    await expect(page.getByRole('checkbox', { name: '选择会话 批量归档会话 22', exact: true })).toBeChecked();
+    await expect(page.getByRole('navigation', { name: '列表分页' })).toHaveCount(0);
+    await page.screenshot({ path: test.info().outputPath('bulk-archive-complete.png') });
+    running = false;
+    await archive.click(); await page.getByRole('alertdialog').getByRole('button', { name: '确认归档', exact: true }).click();
+    await expect(page.locator('.conversation-management-table tbody tr')).toHaveCount(0);
+    await expect(archive).toBeDisabled();
+    await page.getByRole('button', { name: '会话状态', exact: true }).click();
+    await page.getByRole('option', { name: '已归档', exact: true }).click();
+    await expect(page.getByText('共 43 项，第 1 / 3 页', { exact: true })).toBeVisible();
+    await all.check(); await expect(archive).toBeDisabled();
+  });
+}

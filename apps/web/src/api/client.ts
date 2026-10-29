@@ -500,6 +500,10 @@ export const api = {
     if (archived !== undefined) query.set('archived', String(archived));
     return request<import('../types').AgentConversationManagementPage>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-management${query.size ? `?${query}` : ''}`);
   },
+  archiveManagedAgentConversations: (workspaceId: string, binding_ids: string[], workDirectoryId?: string) => {
+    const query = workDirectoryId ? `?work_directory_id=${encodeURIComponent(workDirectoryId)}` : '';
+    return request<import('../types').AgentConversationManagementArchiveResult>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-management/archive${query}`, { ...json('POST', { binding_ids }), timeoutMs: 60_000 });
+  },
   deleteManagedAgentConversations: (workspaceId: string, binding_ids: string[], workDirectoryId?: string) => {
     const query = workDirectoryId ? `?work_directory_id=${encodeURIComponent(workDirectoryId)}` : '';
     return request<import('../types').AgentConversationManagementDeleteResult>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-management/delete${query}`, json('POST', { binding_ids }, crypto.randomUUID()));

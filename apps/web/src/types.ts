@@ -1022,6 +1022,10 @@ export interface AgentConversationManagementPage {
   items: ManagedAgentConversation[];
   truncated: boolean;
 }
+export interface AgentConversationManagementArchiveResult {
+  archived: Array<{ id: string; archived_at: string }>;
+  skipped: Array<{ id: string; code: string }>;
+}
 export interface AgentConversationManagementDeleteResult {
   deleted_ids: string[];
   skipped: Array<{ id: string; code: string }>;

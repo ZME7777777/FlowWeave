@@ -56,3 +56,5 @@
 .agent-conversation-management-page .conversation-management-page.compact-conversation-management{height:100%;min-height:0}
 .agent-workbench-page:has(>.agent-conversation-management-page){height:var(--app-content-height);min-height:0;grid-template-rows:minmax(0,1fr)}
 .agent-workbench-page:has(>.agent-conversation-management-page)>.agent-workbench-app-nav{min-height:0}
+
+.compact-conversation-management .conversation-management-actions>.conversation-management-archive{min-height:31px;border-color:#dbe4dd;background:#fafcfb;padding:5px 9px;color:#526f5c;font-size:10px;white-space:nowrap}.compact-conversation-management .conversation-management-actions>.conversation-management-archive:disabled{border-color:transparent;background:transparent;color:#bdc4be}

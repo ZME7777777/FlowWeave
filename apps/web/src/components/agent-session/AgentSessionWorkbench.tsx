@@ -8417,6 +8417,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         .map(([scope, page]) => [scope, { ...page, items: page.items.filter(item => !matches(item)) }])));
       setUnreadConversationIds(current => new Set([...current].filter(id => !bindingIds.has(id))));
       if (archiveSelectionRef.current.bindingId && bindingIds.has(archiveSelectionRef.current.bindingId)) {
+        homeRouteBeforeInternalNavigation.current = host.rootPath;
         setDrawerOpen(false);
         setActivityPreviewBindingId(undefined);
         onNavigate(scheduleRoute ? '/agent/schedules' : host.rootPath, true);
@@ -10178,7 +10179,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       const latest = activity && Date.parse(activity.updated_at) >= Date.parse(item.updated_at) ? { ...item, ...activity } : item;
       return conversationRow({ ...latest, ...current, ...(pendingUnread ? { unread: pendingUnread.unread, unread_origin: pendingUnread.unreadOrigin } : {}) }, [], { allowDrag: false });
     }} onSelectSchedule={() => { setActivityPreviewBindingId(undefined); onNavigate('/agent/schedules'); }}/>}
-    {agentWorkspaceView === 'management' && <section className="agent-conversation-management-page" aria-label="会话管理"><ConversationManagementPage onRestored={({ bindingId, workDirectoryId }) => {
+    {agentWorkspaceView === 'management' && <section className="agent-conversation-management-page" aria-label="会话管理"><ConversationManagementPage onArchived={({ workspaceId, workDirectoryId, bindingIds }) => {
+      reconcileArchivedConversations(workspaceId, new Set(bindingIds));
+      if (archiveSelectionRef.current.workspaceId === workspaceId) {
+        for (const bindingId of bindingIds) archivedConversationDirectoryIds.current.set(bindingId, workDirectoryId);
+      }
+    }} onRestored={({ bindingId, workDirectoryId }) => {
       const restoredIds = new Set(bindingId ? [bindingId] : [...archivedConversationDirectoryIds.current].filter(([, directoryId]) => directoryId === workDirectoryId).map(([id]) => id));
       setOptimisticallyRemovedConversationIds(current => new Set([...current].filter(id => !restoredIds.has(id))));
       for (const id of restoredIds) archivedConversationDirectoryIds.current.delete(id);

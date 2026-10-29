@@ -1239,14 +1239,57 @@ def list_management_conversations(
     }
 
 
-def archive_conversation(db: Session, workspace_id: str, binding_id: str) -> dict[str, Any]:
+def _archive_binding(db: Session, workspace_id: str, binding_id: str) -> AgentConversationBinding:
     item = _binding(db, workspace_id, binding_id, lock=True)
-    assert_conversation_stopped(db, workspace_id, binding_id, lock=False)
     if item.archived_at is None:
+        assert_conversation_stopped(db, workspace_id, binding_id, lock=False)
         item.archived_at = now()
         item.updated_at = item.archived_at
         db.flush()
-    return _dict(db, item)
+    return item
+
+
+def archive_conversation(db: Session, workspace_id: str, binding_id: str) -> dict[str, Any]:
+    return _dict(db, _archive_binding(db, workspace_id, binding_id))
+
+
+def archive_management_conversations(
+    db: Session,
+    workspace_id: str,
+    binding_ids: tuple[str, ...],
+    *,
+    work_directory_id: str | None = None,
+) -> dict[str, Any]:
+    """Archive selected direct conversations without archiving their workspace."""
+    _workspace(db, workspace_id)
+    eligible = set(
+        db.scalars(
+            select(AgentConversationBinding.id).where(
+                AgentConversationBinding.workspace_id == workspace_id,
+                AgentConversationBinding.lifecycle == "ACTIVE",
+                ~AgentConversationBinding.id.in_(
+                    select(AgentSidebarConversation.sidebar_binding_id)
+                ),
+                _management_conversation_scope(workspace_id, work_directory_id),
+                AgentConversationBinding.id.in_(binding_ids),
+            )
+        )
+    )
+    archived: list[dict[str, str]] = []
+    skipped: list[dict[str, str]] = []
+    # Stable lock order also makes overlapping batch requests safe to retry.
+    for binding_id in sorted(set(binding_ids)):
+        if binding_id not in eligible:
+            skipped.append({"id": binding_id, "code": "AGENT_CONVERSATION_SCOPE_MISMATCH"})
+            continue
+        try:
+            with db.begin_nested():
+                item = _archive_binding(db, workspace_id, binding_id)
+                assert item.archived_at is not None
+                archived.append({"id": item.id, "archived_at": item.archived_at.isoformat()})
+        except DomainError as exc:
+            skipped.append({"id": binding_id, "code": exc.code})
+    return {"archived": archived, "skipped": skipped}
 
 
 def restore_conversation(db: Session, workspace_id: str, binding_id: str) -> dict[str, Any]:

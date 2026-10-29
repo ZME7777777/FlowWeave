@@ -190,6 +190,10 @@ class AgentConversationManagementDeleteWrite(_Write):
     binding_ids: list[str] = Field(min_length=1, max_length=100)
 
 
+class AgentConversationManagementArchiveWrite(_Write):
+    binding_ids: list[str] = Field(min_length=1, max_length=20)
+
+
 class AgentConversationScheduleWrite(_Write):
     name: str = Field(min_length=1, max_length=220)
     prompt: str = Field(min_length=1, max_length=200_000)
@@ -1076,6 +1080,24 @@ async def list_agent_management_conversations(
             workspace_id,
             work_directory_id=work_directory_id,
             archived=archived,
+        ),
+    )
+
+
+@router.post("/agent-workspaces/{workspace_id}/conversation-management/archive")
+async def archive_agent_management_conversations(
+    workspace_id: str,
+    payload: AgentConversationManagementArchiveWrite,
+    container: ContainerDep,
+    work_directory_id: str | None = Query(default=None, min_length=1, max_length=36),
+) -> dict[str, Any]:
+    return await run_blocking_lifecycle(
+        container,
+        lambda session: conversations.archive_management_conversations(
+            session,
+            workspace_id,
+            tuple(payload.binding_ids),
+            work_directory_id=work_directory_id,
         ),
     )
 
