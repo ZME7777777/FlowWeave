@@ -425,7 +425,6 @@ export function TerminalEnvironmentsPage() {
 
         <button className="ghost" disabled={deletingEnvironmentId !== null} aria-label={`删除环境 ${environment.name}`} onClick={() => void remove(environment)}>{deletingEnvironmentId === environment.id ? <LoaderCircle className="spin" size={15}/> : <Trash2 size={15}/>}删除</button>
       </div></header>
-      <details className="settings-info warning"><summary>凭据风险 · 发布可能保留认证信息</summary><p>终端不挂载宿主目录，但发布不会清理或拒绝认证文件。镜像可能永久包含 Token、密钥、Cookie 和命令历史，请限制镜像访问与分发范围。</p></details>
       <EnvironmentVersionsPanel environment={environment} openingVersionId={openingVersionId} draftBusy={openingEnvironmentId !== null || deletingEnvironmentId !== null} onCreateDraft={version => void open(environment, version.id)}/>
 
     </div>; }) : <div className="empty"><Terminal size={26}/><b>{query ? '没有匹配的终端环境' : '暂无终端环境'}</b><span>新建后可在隔离终端中安装节点需要的命令。</span></div>}

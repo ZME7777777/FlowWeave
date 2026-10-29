@@ -8,15 +8,24 @@ function version(number: number) {
     reference_count: number === 25 ? 2 : 0, run_reference_count: number === 25 ? 2 : 0, created_at: now };
 }
 async function json(route: Route, body: unknown, status = 200) { await route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) }); }
-async function setup(page: Page, options: { failDelete?: string; active?: boolean } = {}) {
+async function setup(page: Page, options: { failDelete?: string; active?: boolean; longCommands?: boolean; failRuns?: boolean } = {}) {
   let versions = Array.from({ length: 25 }, (_, index) => version(25 - index));
-  const selectedBases: string[] = []; const deletions: string[] = [];
+  const selectedBases: string[] = []; const deletions: string[] = []; const runRequests: string[] = [];
+  let failRuns = options.failRuns;
+  if (options.longCommands) versions.find(item => item.id === 'version-24')!.manifest.commands = Object.fromEntries(Array.from({ length: 40 }, (_, index) => [`tool-${index + 1}`, `Version ${index + 1}\n${'Long output '.repeat(18)}`])) as ReturnType<typeof version>['manifest']['commands'];
   let active: Array<Record<string, unknown>> = options.active ? [{ id: 'existing-setup', environment_id: 'environment-1', state: 'RUNNING', base_version_id: 'version-24', expires_at: '2027-01-01T00:00:00Z' }] : [];
   const environment = () => ({ id: 'environment-1', name: '开发环境', description: '用于历史版本管理', row_version: 1, versions, active_sessions: active, created_at: now, updated_at: now });
   await page.route('**/api/v1/**', async route => {
     const path = new URL(route.request().url()).pathname; const method = route.request().method();
     if (path.endsWith('/auth/me')) return json(route, { id: 'environment-manager', username: 'manager', role: 'USER' });
     if (path.endsWith('/terminal-environments')) return json(route, [environment()]);
+    if (path.includes('/versions/') && path.endsWith('/runs')) {
+      runRequests.push(route.request().url());
+      if (failRuns) return json(route, { error: { code: 'UNAVAILABLE', message: '暂时不可用' } }, 503);
+      const currentPage = Number(new URL(route.request().url()).searchParams.get('page') || 1);
+      const all = Array.from({ length: 23 }, (_, index) => ({ id: `run-${index + 1}`, name: `版本运行 ${index + 1}`, run_no: index + 1, state: index ? 'COMPLETED' : 'ACTIVE', run_mode: index ? 'AUTOMATIC' : 'MANUAL', parent_flow_run_id: index ? 'run-1' : null, started_at: now, finished_at: null }));
+      return json(route, { items: all.slice((currentPage - 1) * 20, currentPage * 20), total: all.length, page: currentPage, page_size: 20 });
+    }
     if (path.endsWith('/setup-sessions') && method === 'POST') {
       const id = route.request().postDataJSON().base_version_id; selectedBases.push(id);
       active = [{ id: 'setup-new', environment_id: 'environment-1', state: 'RUNNING', base_version_id: id, expires_at: '2027-01-01T00:00:00Z' }];
@@ -34,7 +43,7 @@ async function setup(page: Page, options: { failDelete?: string; active?: boolea
   await page.goto('/'); await page.getByRole('button', { name: '账户与设置' }).click();
   await page.getByRole('menuitem', { name: '终端环境', exact: true }).click();
   await expect(page.getByRole('region', { name: '环境版本列表' })).toBeVisible();
-  return { selectedBases, deletions };
+  return { selectedBases, deletions, runRequests, allowRuns: () => { failRuns = false; } };
 }
 
 test('history fills the detail pane and keeps a compact header, sticky columns, and button pagination', async ({ page }) => {
@@ -89,7 +98,7 @@ test('any READY historical version sends its own base id and an active setup pre
 test('version details use the chosen immutable command inventory, show unknown authentication, and support keyboard tabs', async ({ page }) => {
   await setup(page);
   const panel = page.getByRole('region', { name: '环境版本列表' });
-  await panel.getByRole('button', { name: '查看版本 v24', exact: true }).click();
+  await panel.locator('tbody tr').filter({ hasText: '版本 24 说明' }).getByText('版本 24 说明', { exact: true }).click();
   const dialog = page.getByRole('dialog', { name: '开发环境 v24 版本详情' });
   await expect(dialog.getByText('test/runtime:v24', { exact: true })).toBeVisible();
   await dialog.getByRole('tab', { name: '命令（2）', exact: true }).click();
@@ -126,4 +135,65 @@ test('bulk delete spans pages, skips protected versions, and keeps failures sele
   await expect(panel.getByRole('button', { name: '删除所选 (0)' })).toBeDisabled();
   expect(state.deletions).toHaveLength(25);
   expect(state.deletions.at(-1)).toBe('version-23');
+});
+
+
+test('record click opens details independently of checkboxes and removes the redundant action and risk banner', async ({ page }) => {
+  await setup(page);
+  const panel = page.getByRole('region', { name: '环境版本列表' });
+  await expect(page.getByText('凭据风险 · 发布可能保留认证信息', { exact: true })).toHaveCount(0);
+  await expect(panel.getByRole('button', { name: /^版本 v\d+ 详情$/ })).toHaveCount(0);
+  await panel.getByRole('checkbox', { name: '选择版本 v24', exact: true }).check();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await panel.locator('tbody tr').filter({ hasText: '版本 25 说明' }).getByText('版本 25 说明', { exact: true }).click();
+  await expect(page.getByRole('dialog', { name: '开发环境 v25 版本详情' })).toBeVisible();
+  await page.keyboard.press('Escape');
+  const row = panel.locator('tbody tr').filter({ hasText: '版本 24 说明' });
+  await row.focus(); await row.press('Enter');
+  await expect(page.getByRole('dialog', { name: '开发环境 v24 版本详情' })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(panel.getByRole('checkbox', { name: '选择版本 v24', exact: true })).toBeChecked();
+});
+
+test('long command output scrolls under a fixed header within its own viewport', async ({ page }) => {
+  await setup(page, { longCommands: true });
+  await page.getByRole('button', { name: '查看版本 v24', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: '开发环境 v24 版本详情' });
+  await dialog.getByRole('tab', { name: '命令（40）', exact: true }).click();
+  const scroll = dialog.locator('.environment-version-detail-table-scroll');
+  const note = dialog.locator('.environment-version-detail-note');
+  const before = await note.boundingBox();
+  await scroll.evaluate(node => { node.scrollTop = 137; });
+  await expect.poll(() => scroll.evaluate(node => node.scrollTop)).toBe(137);
+  const positions = await scroll.evaluate(node => {
+    const header = node.querySelector('thead')!.getBoundingClientRect();
+    const bounds = node.getBoundingClientRect();
+    const topCell = document.elementFromPoint(header.left + 20, bounds.top + 5);
+    return { top: bounds.top, header: header.top, height: header.height, topIsHeader: Boolean(topCell?.closest('thead')) };
+  });
+  expect(positions.header).toBeCloseTo(positions.top, 0);
+  expect(positions.topIsHeader).toBe(true); expect(positions.height).toBeGreaterThan(20);
+  expect((await note.boundingBox())!.y).toBe(before!.y);
+  await expect(dialog.getByRole('button', { name: '完成', exact: true })).toBeInViewport();
+  await page.screenshot({ path: test.info().outputPath('environment-version-command-scroll.png') });
+});
+
+test('version references load on demand, retry errors, and paginate all matching runs', async ({ page }) => {
+  const state = await setup(page, { failRuns: true });
+  await page.getByRole('button', { name: '查看版本 v25', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: '开发环境 v25 版本详情' });
+  expect(state.runRequests).toHaveLength(0);
+  await dialog.getByRole('tab', { name: '运行引用（2）', exact: true }).click();
+  await expect(dialog.getByRole('alert')).toContainText('加载运行记录失败');
+  state.allowRuns();
+  await dialog.getByRole('button', { name: '重试', exact: true }).click();
+  await expect(dialog.locator('tbody tr')).toHaveCount(20);
+  await expect(dialog.getByText('子运行 · 连续', { exact: true }).first()).toBeVisible();
+  await expect(dialog.getByText('版本运行 1', { exact: true })).toBeVisible();
+  await dialog.getByRole('button', { name: '下一页', exact: true }).click();
+  await expect(dialog.locator('tbody tr')).toHaveCount(3);
+  await expect(dialog.getByText('版本运行 21', { exact: true })).toBeVisible();
+  expect(state.runRequests.every(url => url.includes('/versions/version-25/runs'))).toBe(true);
+  expect(state.runRequests.at(-1)).toContain('page=2');
+  await page.screenshot({ path: test.info().outputPath('environment-version-runs.png') });
 });

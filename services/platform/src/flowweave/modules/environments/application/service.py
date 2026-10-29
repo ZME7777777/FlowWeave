@@ -743,6 +743,49 @@ def read_environment(db: Session, environment_id: str) -> dict[str, Any]:
     return environment_dict(db, item)
 
 
+def list_version_runs(
+    db: Session, environment_id: str, version_id: str, *, page: int, page_size: int
+) -> dict[str, Any]:
+    _environment(db, environment_id)
+    version = db.scalar(
+        select(EnvironmentVersion).where(
+            EnvironmentVersion.id == version_id,
+            EnvironmentVersion.environment_id == environment_id,
+        )
+    )
+    if version is None:
+        raise not_found("environment_version", version_id)
+    # Keep the existing visibility of shared parent runs and private child
+    # records for both count and page; never hydrate Runtime or full run details.
+    condition = FlowRun.environment_version_id == version_id
+    total = db.scalar(select(func.count()).select_from(FlowRun).where(condition)) or 0
+    runs = db.scalars(
+        select(FlowRun)
+        .where(condition)
+        .order_by(FlowRun.started_at.desc(), FlowRun.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
+    return {
+        "items": [
+            {
+                "id": run.id,
+                "name": run.name,
+                "run_no": run.run_no,
+                "run_mode": run.run_mode,
+                "parent_flow_run_id": run.parent_flow_run_id,
+                "state": run.state,
+                "started_at": _time(run.started_at),
+                "finished_at": _time(run.finished_at),
+            }
+            for run in runs
+        ],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
+
+
 def save_environment(
     db: Session, payload: TerminalEnvironmentWrite, environment_id: str | None = None
 ) -> dict[str, Any]:

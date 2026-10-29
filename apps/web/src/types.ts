@@ -137,6 +137,13 @@ export interface EnvironmentVersion {
   error_detail?: string | null; run_reference_count: number;
   reference_count: number; created_at: string;
 }
+export interface EnvironmentVersionRunPage {
+  items: Array<{
+    id: string; name: string; run_no: number; run_mode: 'MANUAL' | 'AUTOMATIC';
+    parent_flow_run_id: string | null; state: string; started_at: string; finished_at: string | null;
+  }>;
+  total: number; page: number; page_size: number;
+}
 export interface EnvironmentSetupSession {
   id: string; environment_id: string; base_version_id?: string | null;
   state: 'STARTING' | 'RUNNING' | 'PUBLISHING' | 'PUBLISHED' | 'FAILED' | 'CANCELLED' | 'EXPIRED';

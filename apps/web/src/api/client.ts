@@ -736,6 +736,8 @@ export const api = {
   deleteTerminalEnvironment: (id: string) => request<void>(`/terminal-environments/${id}`, json('DELETE')),
   deleteEnvironmentVersion: (environmentId: string, versionId: string) =>
     request<void>(`/terminal-environments/${environmentId}/versions/${versionId}`, json('DELETE')),
+  environmentVersionRuns: (environmentId: string, versionId: string, page: number, signal?: AbortSignal) =>
+    request<import('../types').EnvironmentVersionRunPage>(`/terminal-environments/${encodeURIComponent(environmentId)}/versions/${encodeURIComponent(versionId)}/runs?page=${page}&page_size=20`, { signal }),
   createEnvironmentSetup: (id: string, base_version_id?: string) =>
     request<EnvironmentSetupSession>(`/terminal-environments/${id}/setup-sessions`, json('POST', { base_version_id: base_version_id || null })),
   publishEnvironmentSetup: (id: string, description = '', runtime_capabilities: string[] = []) =>
