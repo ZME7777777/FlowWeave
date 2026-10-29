@@ -1,5 +1,6 @@
 """Stable public facade for Case control-plane services."""
 
+from flowweave.modules.cases.application.event_inbox import record_case_execution_event
 from flowweave.modules.cases.application.materials import (
     assert_no_case_artifact_references,
     list_case_artifact_materials,
@@ -75,6 +76,7 @@ __all__ = (
     "list_cases",
     "project_case_observations",
     "project_flow_run_event",
+    "record_case_execution_event",
     "project_flow_run_observations",
     "reconcile_case_execution_state",
     "retry_case_control_plan",

@@ -94,6 +94,7 @@ _USER_ISOLATED_TABLES = frozenset(
         "case_flow_tool_grants",
         "case_material_tool_grants",
         "case_artifact_references",
+        "case_execution_events",
         "case_decision_proposals",
         "case_flow_runs",
         "case_stages",

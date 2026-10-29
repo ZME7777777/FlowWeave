@@ -5,8 +5,10 @@ from typing import Any
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     CheckConstraint,
     DateTime,
+    Index,
     Integer,
     LargeBinary,
     String,
@@ -258,6 +260,47 @@ class CaseAgentTask(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
 
+class CaseExecutionEvent(Base):
+    """Transactional delivery inbox of source references, never a native event store."""
+
+    __tablename__ = "case_execution_events"
+    __table_args__ = (
+        UniqueConstraint("case_id", "run_event_cursor", name="uq_case_execution_event_source"),
+        CheckConstraint(
+            "routing_state IN ('PENDING', 'HELD', 'AUDIT_ONLY')",
+            name="ck_case_execution_event_routing",
+        ),
+        CheckConstraint("case_row_version >= 1", name="ck_case_execution_event_version"),
+        Index("ix_case_execution_event_queue", "round_id", "routing_state", "run_event_cursor"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    case_id: Mapped[str] = mapped_column(String(36), index=True)
+    stage_id: Mapped[str] = mapped_column(String(36))
+    stage_key: Mapped[str] = mapped_column(String(100))
+    execution_flow_run_id: Mapped[str] = mapped_column(String(36))
+    run_event_cursor: Mapped[int] = mapped_column(BigInteger)
+    event_type: Mapped[str] = mapped_column(String(80))
+    fact_type: Mapped[str] = mapped_column(String(40))
+    node_run_id: Mapped[str | None] = mapped_column(String(36))
+    node_key: Mapped[str | None] = mapped_column(String(100))
+    node_attempt_id: Mapped[str | None] = mapped_column(String(36))
+    candidate_output_set_id: Mapped[str | None] = mapped_column(String(36))
+    artifact_version_id: Mapped[str | None] = mapped_column(String(36))
+    native_completion_event_id: Mapped[str | None] = mapped_column(String(200))
+    # Immutable routing/audit identities survive conversation or stage deletion.
+    # Only the owning Case cascades this inbox; it does not retain source Runs.
+    round_id: Mapped[str | None] = mapped_column(String(36))
+    binding_id: Mapped[str | None] = mapped_column(String(36))
+    case_row_version: Mapped[int] = mapped_column(Integer)
+    case_state: Mapped[str] = mapped_column(String(20))
+    stage_state: Mapped[str] = mapped_column(String(20))
+    routing_state: Mapped[str] = mapped_column(String(20))
+    routing_reason: Mapped[str | None] = mapped_column(String(80))
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
 class CaseControlPlan(Base):
     __tablename__ = "case_control_plans"
     __table_args__ = (
@@ -298,6 +341,7 @@ __all__ = (
     "Case",
     "CaseAgentTask",
     "CaseControlPlan",
+    "CaseExecutionEvent",
     "CaseControlRound",
     "CaseDecisionProposal",
     "CaseFlowRun",

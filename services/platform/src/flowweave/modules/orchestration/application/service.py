@@ -227,6 +227,9 @@ def _event(
     db.add(event)
     db.flush()
     enqueue_matching_deliveries(db, event)
+    from flowweave.modules.cases.public import record_case_execution_event
+
+    record_case_execution_event(db, event)
     if event_type in {
         "NODE_RUN_COMPLETED",
         "RUNTIME_FAILED",
@@ -242,6 +245,7 @@ def _event(
             node_run_id=node_run_id,
             node_attempt_id=attempt_id,
             payload=event.payload_json,
+            run_event_cursor=event.cursor,
         )
 
 
@@ -10665,7 +10669,7 @@ def reject_attempt(
     )
     node_run = _node_run(db, attempt.node_run_id)
     run = _run(db, node_run.flow_run_id)
-    _action(
+    rejection = _action(
         db,
         run.id,
         "REJECT_ATTEMPT",
@@ -10724,6 +10728,14 @@ def reject_attempt(
         {"attempt_no": next_no, "reason": payload.reason},
         node_run.id,
         next_attempt.id,
+    )
+    _event(
+        db,
+        run.id,
+        "ATTEMPT_REJECTED",
+        {"action_id": rejection.id, "replacement_attempt_id": next_attempt.id},
+        node_run.id,
+        attempt.id,
     )
     _dispatch_readiness(db, next_attempt)
     finish(db)

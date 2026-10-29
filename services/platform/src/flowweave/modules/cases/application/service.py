@@ -1056,6 +1056,7 @@ def project_flow_run_event(
     node_run_id: str | None = None,
     node_attempt_id: str | None = None,
     payload: dict[str, Any] | None = None,
+    run_event_cursor: int | None = None,
 ) -> None:
     """Expose terminal runtime facts to Case coordination without executing decisions."""
 
@@ -1070,7 +1071,11 @@ def project_flow_run_event(
         select(CaseFlowRun.case_id).where(CaseFlowRun.flow_run_id == flow_run_id)
     ).all()
     for case_id in case_ids:
-        task_key = f"event:{event_type}:{node_attempt_id or flow_run_id}"
+        task_key = (
+            f"event:{run_event_cursor}"
+            if run_event_cursor is not None
+            else f"event:{event_type}:{node_attempt_id or flow_run_id}"
+        )
         if (
             db.scalar(
                 select(CaseAgentTask.id).where(
@@ -1090,6 +1095,7 @@ def project_flow_run_event(
                 node_attempt_id=node_attempt_id,
                 input_context_json={
                     "event_type": event_type,
+                    "run_event_cursor": run_event_cursor,
                     "node_run_id": node_run_id,
                     "node_attempt_id": node_attempt_id,
                     "event": payload or {},

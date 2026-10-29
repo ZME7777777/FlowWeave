@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`UPSTREAM BASELINE ADOPTION COMPLETE`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`CASE-05`
+> 下一可执行切片：`CASE-05B`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -13675,11 +13675,42 @@ Web remote-release-finish 通过，无过期受管上下文；保留当前镜像
 | CASE-03A | DONE | CASE-02 | 原生 MCP 注册、冻结授权与场景范围读取 |
 | CASE-03B | DONE | CASE-03A | 流程图／草稿读取与当前执行副本配置、启动工具 |
 | CASE-04 | DONE | CASE-03B | 产物登记与跨容器授权读取 |
-| CASE-05 | READY | CASE-02、CASE-04 | 持久事件投递与Agent回访 |
-| CASE-06 | PENDING | CASE-03B、CASE-05 | 逐步复核、配置修订与重跑 |
-| CASE-07 | PENDING | CASE-04、CASE-05、CASE-06 | 连续修订、跨阶段决策与完成 |
+| CASE-05A | DONE | CASE-02、CASE-04 | 当前执行关键事件的事务性持久入队与正式来源去重 |
+| CASE-05B | READY | CASE-05A | 后台串行回访、原生消息提交对账、资料／配置变更与恢复 |
+| CASE-06 | PENDING | CASE-03B、CASE-05B | 逐步复核、配置修订与重跑 |
+| CASE-07 | PENDING | CASE-04、CASE-05B、CASE-06 | 连续修订、跨阶段决策与完成 |
 | CASE-08 | PENDING | CASE-02–CASE-07 | 前端反馈与接管统一 |
 | CASE-09 | PENDING | CASE-01–CASE-08 | 全链路与恢复验收 |
+
+### CASE-05A 当前执行关键事件事务性入队 — DONE
+
+CASE-05拆为05A（生产事务与正式来源）及05B（持久消费者与原生消息提交确认）。
+新增用户隔离`case_execution_events`，在编排RunEvent生产事务中记录关键执行事实，
+不做外部I/O或独立commit。Case＋正式RunEvent cursor唯一去重；同类型／Attempt的
+不同来源保留，重复与并发重放不重建、不改派轮次。旧CaseAgentTask也使用生产cursor
+登记，修正按事件类型＋Attempt合并不同来源的问题。拒绝入口新增正式ATTEMPT_REJECTED
+事件并关联HumanAction和替代Attempt；完成、产物登记与接受／拒绝保持独立事实。
+
+路由只来自同owner阶段的当前执行，冻结Case版本、阶段／执行／节点／Attempt、候选、
+产物及协调轮次／binding。模板、仅关联、历史执行、普通输入或跨运行来源不入投递队列。
+活动场景／阶段及STARTED协调者标PENDING，暂停标HELD，终态／非活动阶段／协调者
+不可用或新轮次晚于来源时标AUDIT_ONLY。路由在既有生命周期回写之前捕获；消费者必须
+重新授权，不能将此快照当作当前权限。只保存正式引用和路由审计，无消息正文、payload
+副本或密钥；原生完成ID仅从产物或经过候选身份核对的正式完成投影取得，不用旧候选
+指针替失败事件推测因果。0186迁移强制RLS并加入用户隔离注册，Case删除级联队列，
+阶段／会话身份仅作历史引用保留；不以今天的身份回填旧事件，不扩大源运行保留策略。
+
+验证（2026-10-29）：69项事件队列／原生流程动作／资料来源定向测试通过；既有协调启动、
+控制动作、暂停和配置回归89项通过（两组包含事件用例重叠）。真实PostgreSQL覆盖来源与
+入队／产物原子回滚、并发来源重放、不同来源保留、轮次不可改派、暂停与终态、模板／
+历史／跨用户与跨运行排除、候选与接受分离、正式拒绝、非超级用户RLS读写拒绝、迁移
+升级／降级、无历史回填及Case删除级联。新增队列／模型／公开边界Pyright为0；受影响
+Ruff、format和diff检查通过，唯一Alembic head为0186_case_execution_events。
+
+本片未接入BackgroundTask消费者、未发送原生消息、未调用真实模型或修改冻结MCP／
+Runtime契约，未部署。资料／配置变化通知、串行回访、租约／重试、暂停恢复与原生提交
+对账仍属CASE-05B；自动推进规则仍待CASE-06／07收敛。当前NONE，下一CASE-05B READY；
+独立提交成功后停止。
 
 ### CASE-01 动作结果、失败重试与暂停门禁 — DONE
 
