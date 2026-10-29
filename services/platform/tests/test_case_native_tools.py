@@ -11,7 +11,7 @@ from uuid import uuid4
 import pytest
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 
 from flowweave.modules.agent_sessions.infrastructure.models import (
     AgentConversationBinding,
@@ -49,12 +49,19 @@ def publish_case_tools(
     }
     content = json.dumps({"mcpServers": {contract.server_name: config}}).encode()
     content_hash = hashlib.sha256(content).hexdigest()
-    package = CapabilityPackage(
-        capability_type="MCP", capability_key=contract.server_name, display_name="Case context"
+    package = db.scalar(
+        select(CapabilityPackage).where(
+            CapabilityPackage.capability_type == "MCP",
+            CapabilityPackage.capability_key == contract.server_name,
+        )
     )
+    if package is None:
+        package = CapabilityPackage(
+            capability_type="MCP", capability_key=contract.server_name, display_name="Case context"
+        )
     blob = CapabilityBlob(
         content_hash=content_hash,
-        storage_key=contract.server_name + ".json",
+        storage_key=contract.server_name + "/" + content_hash + ".json",
         byte_size=len(content),
         media_type="application/json",
     )
@@ -64,7 +71,15 @@ def publish_case_tools(
     version = CapabilityVersion(
         package_id=package.id,
         blob_id=blob.id,
-        version_no=1,
+        version_no=(
+            db.scalar(
+                select(func.max(CapabilityVersion.version_no)).where(
+                    CapabilityVersion.package_id == package.id
+                )
+            )
+            or 0
+        )
+        + 1,
         digest=capability_version_digest("MCP", contract.server_name, content_hash, config),
         normalized_config_json=config,
         source_filename=contract.server_name + ".json",
@@ -87,6 +102,15 @@ def publish_case_tools(
             monkeypatch,
             config["url"].removesuffix(native_tools.MCP_PATH) + native_tools.FLOWS.path,
             contract=native_tools.FLOWS,
+        )
+    if contract == native_tools.FLOWS:
+        publish_case_tools(
+            db,
+            configured,
+            store,
+            monkeypatch,
+            config["url"].removesuffix(native_tools.FLOWS.path) + native_tools.MATERIALS.path,
+            contract=native_tools.MATERIALS,
         )
     return version
 
@@ -457,7 +481,9 @@ def test_request_body_bound_and_notifications(native_case):
     )
 
 
-@pytest.mark.parametrize("contract", [native_tools.CONTEXT, native_tools.FLOWS])
+@pytest.mark.parametrize(
+    "contract", [native_tools.CONTEXT, native_tools.FLOWS, native_tools.MATERIALS]
+)
 def test_locked_sdk_loads_calls_and_restores_case_context(native_case, tmp_path, contract):
     """The real locked SDK discovers and invokes tools; no LLM call is made."""
     run_locked_case_probe(native_case, tmp_path, contract)
@@ -515,7 +541,13 @@ def run_locked_case_probe(g, tmp_path, contract, action_args=None):
                 "--state-dir",
                 str(tmp_path / "native-state"),
                 "--initial-config",
-                "--case-flows" if contract == native_tools.FLOWS else "--case-context",
+                (
+                    "--case-flows"
+                    if contract == native_tools.FLOWS
+                    else "--case-materials"
+                    if contract == native_tools.MATERIALS
+                    else "--case-context"
+                ),
                 *(["--case-flow-action-json", json.dumps(action_args)] if action_args else []),
             ],
             env={**os.environ, "HISTORY_MCP_PROBE_TOKEN": token},

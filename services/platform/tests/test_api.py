@@ -656,6 +656,14 @@ def test_control_binding_plan_is_limited_to_its_active_case_stage(
         assert flows.config["headers"] == {"Authorization": native_tools.FLOWS.auth_header}
         assert request.conversation_secrets[native_tools.FLOWS.secret_name].startswith("fwcf1.")
         assert "fwcf1." not in request.agent_spec.agent_context.system_message_suffix
+        material = next(
+            server
+            for server in request.agent_spec.mcp_servers
+            if server.name == native_tools.MATERIALS.server_name
+        )
+        assert material.config["headers"] == {"Authorization": native_tools.MATERIALS.auth_header}
+        assert request.conversation_secrets[native_tools.MATERIALS.secret_name].startswith("fwcm1.")
+        assert "fwcm1." not in request.agent_spec.agent_context.system_message_suffix
         if fail_first_native and len(native_calls) == 1:
             from flowweave.shared.errors import DomainError
 

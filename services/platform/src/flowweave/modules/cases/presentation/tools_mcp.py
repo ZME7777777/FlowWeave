@@ -1,5 +1,6 @@
 """Native read-only Case MCP endpoint, independent of platform login cookies."""
 
+import asyncio
 import json
 from typing import Any, cast
 
@@ -8,7 +9,7 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
-from flowweave.modules.cases.application import context_tools, flow_tools, native_tools
+from flowweave.modules.cases.application import context_tools, flow_tools, materials, native_tools
 from flowweave.modules.users.application.security import Principal
 from flowweave.modules.users.application.service import agent_session_principal
 from flowweave.shared.errors import DomainError
@@ -39,6 +40,11 @@ async def case_tools_mcp(request: Request) -> Response:
 @router.post(native_tools.FLOWS.path)
 async def case_flow_tools_mcp(request: Request) -> Response:
     return await handle_mcp(request, native_tools.FLOWS)
+
+
+@router.post(native_tools.MATERIALS.path)
+async def case_material_tools_mcp(request: Request) -> Response:
+    return await handle_mcp(request, native_tools.MATERIALS)
 
 
 async def handle_mcp(request: Request, contract: native_tools.ToolContract) -> Response:
@@ -100,7 +106,15 @@ async def handle_mcp(request: Request, contract: native_tools.ToolContract) -> R
     if method == "tools/list":
         return result(
             identity,
-            {"tools": flow_tools.TOOLS if contract == native_tools.FLOWS else [context_tools.TOOL]},
+            {
+                "tools": (
+                    flow_tools.TOOLS
+                    if contract == native_tools.FLOWS
+                    else [materials.TOOL]
+                    if contract == native_tools.MATERIALS
+                    else [context_tools.TOOL]
+                )
+            },
         )
     if method != "tools/call":
         return error(identity, -32601, "Method not found")
@@ -108,13 +122,24 @@ async def handle_mcp(request: Request, contract: native_tools.ToolContract) -> R
     flow_read = contract == native_tools.FLOWS and tool_name == "read_case_flow"
     flow_write = contract == native_tools.FLOWS and tool_name == "manage_case_flow"
     context_read = contract == native_tools.CONTEXT and tool_name == context_tools.TOOL["name"]
-    if not (flow_read or flow_write or context_read):
+    material_read = contract == native_tools.MATERIALS and tool_name == materials.TOOL["name"]
+    if not (flow_read or flow_write or context_read or material_read):
         return error(identity, -32602, "Unknown tool")
     try:
         if flow_write:
             args = flow_tools.FlowActionArguments.model_validate(params.get("arguments", {}))
             projection = await run_blocking_mutation(
                 container, lambda db: flow_tools.manage_flow(db, token, args)
+            )
+        elif material_read:
+            material_args = materials.MaterialArguments.model_validate(params.get("arguments", {}))
+            prepared = await run_blocking_history(
+                container, lambda db: materials.read_material(db, token, material_args)
+            )
+            projection = (
+                await asyncio.to_thread(materials.read_material_bytes, prepared)
+                if isinstance(prepared, materials.MaterialRead)
+                else prepared
             )
         elif flow_read:
             read_args = flow_tools.FlowReadArguments.model_validate(params.get("arguments", {}))

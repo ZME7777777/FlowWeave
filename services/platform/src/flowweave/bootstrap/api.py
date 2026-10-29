@@ -27,7 +27,11 @@ from flowweave.modules.agent_sessions.presentation.history_mcp import (
 )
 from flowweave.modules.agent_sessions.presentation.router import router as agent_sessions_router
 from flowweave.modules.agent_workspaces.presentation.router import router as agent_workspaces_router
+from flowweave.modules.cases.application.materials import is_native_artifact_request
 from flowweave.modules.cases.application.native_tools import FLOWS as CASE_FLOW_TOOL_CONTRACT
+from flowweave.modules.cases.application.native_tools import (
+    MATERIALS as CASE_MATERIAL_TOOL_CONTRACT,
+)
 from flowweave.modules.cases.presentation.router import router as cases_router
 from flowweave.modules.cases.presentation.tools_mcp import MCP_PATH as CASE_MCP_PATH
 from flowweave.modules.cases.presentation.tools_mcp import router as case_tools_mcp_router
@@ -40,6 +44,7 @@ from flowweave.modules.event_automations.presentation.router import (
 )
 from flowweave.modules.flows.presentation.router import router as flows_router
 from flowweave.modules.model_providers.presentation.router import router as providers_router
+from flowweave.modules.runs.presentation.router import artifact_content_router
 from flowweave.modules.runs.presentation.router import router as runs_router
 from flowweave.modules.users.application import service as users
 from flowweave.modules.users.application.audit import AuditRecord
@@ -198,11 +203,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     status_code=exc.status,
                     content=error_body(exc.code, exc.message, request_id),
                 )
-        if request.url.path.startswith("/api/v1/") and request.url.path not in {
-            MCP_PATH,
-            CASE_MCP_PATH,
-            CASE_FLOW_TOOL_CONTRACT.path,
-        }:
+        case_artifact_request = is_native_artifact_request(
+            request.url.path, request.method, request.headers.get("authorization", "")
+        )
+        if (
+            not case_artifact_request
+            and request.url.path.startswith("/api/v1/")
+            and request.url.path
+            not in {
+                MCP_PATH,
+                CASE_MCP_PATH,
+                CASE_FLOW_TOOL_CONTRACT.path,
+                CASE_MATERIAL_TOOL_CONTRACT.path,
+            }
+        ):
             async with container.database.session() as auth_session:
                 principal = await auth_session.run_sync(
                     lambda db: (
@@ -222,7 +236,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         is_public = (
             request.url.path.startswith("/health")
             or request.url.path.startswith("/internal/admin-control/")
-            or request.url.path in {MCP_PATH, CASE_MCP_PATH, CASE_FLOW_TOOL_CONTRACT.path}
+            or case_artifact_request
+            or request.url.path
+            in {
+                MCP_PATH,
+                CASE_MCP_PATH,
+                CASE_FLOW_TOOL_CONTRACT.path,
+                CASE_MATERIAL_TOOL_CONTRACT.path,
+            }
             or request.url.path
             in {
                 "/api/v1/auth/login",
@@ -498,6 +519,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(admin_control_router)
     app.include_router(history_mcp_router)
     app.include_router(case_tools_mcp_router)
+    app.include_router(artifact_content_router, prefix="/api/v1")
 
     app.include_router(
         agent_workspaces_router,

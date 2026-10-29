@@ -27,10 +27,12 @@ from flowweave.modules.agent_workspaces.infrastructure.models import (
 from flowweave.modules.cases.infrastructure.models import (
     Case,
     CaseAgentTask,
+    CaseArtifactReference,
     CaseControlRound,
     CaseDecisionProposal,
     CaseFlowRun,
     CaseFlowToolGrant,
+    CaseMaterialToolGrant,
     CaseStage,
     CaseToolGrant,
 )
@@ -151,6 +153,8 @@ __all__ = (
     "CaseControlRound",
     "CaseToolGrant",
     "CaseFlowToolGrant",
+    "CaseMaterialToolGrant",
+    "CaseArtifactReference",
     "CaseDecisionProposal",
     "CaseFlowRun",
     "CaseStage",

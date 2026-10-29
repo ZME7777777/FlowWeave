@@ -59,6 +59,7 @@ def check(
     case_context: bool = False,
     case_flows: bool = False,
     case_flow_action_json: str | None = None,
+    case_materials: bool = False,
 ) -> dict[str, object]:
     os.environ["OPENHANDS_SUPPRESS_BANNER"] = "1"
     logging.disable(logging.CRITICAL)
@@ -76,11 +77,16 @@ def check(
     from openhands.sdk.utils.cipher import Cipher
 
     token = os.environ.pop("HISTORY_MCP_PROBE_TOKEN")
-    secret_name = "FLOWWEAVE_CASE_ACCESS" if case_context else "FLOWWEAVE_HISTORY_ACCESS"
+    secret_name = (
+        "FLOWWEAVE_CASE_ACCESS" if case_context else "FLOWWEAVE_HISTORY_ACCESS"
+    )
     tool_name = "read_case_context" if case_context else "read_referenced_conversation"
     if case_flows:
         secret_name = "FLOWWEAVE_CASE_FLOW_ACCESS"
         tool_name = "manage_case_flow" if case_flow_action_json else "read_case_flow"
+    if case_materials:
+        secret_name = "FLOWWEAVE_CASE_MATERIAL_ACCESS"
+        tool_name = "read_case_material"
     plugin_root = marketplace / "plugins" / plugin_name
     plugin = Plugin.load(plugin_root)
     assert len(plugin.mcp_config) == 1, (
@@ -186,10 +192,7 @@ def check(
     try:
         assert restored.id == identity
         assert tuple(event.id for event in restored.state.events) == event_ids
-        assert (
-            restored.state.secret_registry.get_secret_value(secret_name)
-            == token
-        )
+        assert restored.state.secret_registry.get_secret_value(secret_name) == token
         assert restored.agent.mcp_config[server_name].headers[
             "Authorization"
         ].get_secret_value() == (f"Bearer {token}")
@@ -235,6 +238,7 @@ if __name__ == "__main__":
     parser.add_argument("--initial-config", action="store_true")
     parser.add_argument("--case-context", action="store_true")
     parser.add_argument("--case-flows", action="store_true")
+    parser.add_argument("--case-materials", action="store_true")
     parser.add_argument("--case-flow-action-json")
     args = parser.parse_args()
     print(
@@ -249,6 +253,7 @@ if __name__ == "__main__":
                 args.case_context,
                 args.case_flows,
                 args.case_flow_action_json,
+                args.case_materials,
             )
         )
     )

@@ -1,5 +1,10 @@
 """Stable public facade for Case control-plane services."""
 
+from flowweave.modules.cases.application.materials import (
+    assert_no_case_artifact_references,
+    list_case_artifact_materials,
+    project_flow_run_artifacts,
+)
 from flowweave.modules.cases.application.native_tools import (
     assert_coordinator_tools as assert_case_native_tools,
 )
@@ -41,6 +46,9 @@ from flowweave.modules.cases.application.service import (
 
 __all__ = (
     "CaseActionFailure",
+    "assert_no_case_artifact_references",
+    "list_case_artifact_materials",
+    "project_flow_run_artifacts",
     "prepare_case_native_tools",
     "assert_case_native_tools",
     "advance_case_stepwise_execution",

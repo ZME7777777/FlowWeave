@@ -11,8 +11,9 @@ CASE-02已完成新协调轮次、配置／上下文快照、持久Worker原生b
 CASE-03A已接入正式只读 MCP：新协调会话可查询当前场景概览、阶段路径与资料引用，
 凭据按当前轮次／binding／Runtime／目录版本及用户重新授权。CASE-03按验收边界拆为
 03A（注册与读取）及03B（流程图／草稿与配置、启动）。CASE-03B已交付独立原生流程
-MCP及当前副本的配置、复制与启动动作；下一可执行切片为CASE-04，唯一实施状态以
-`flowrun-runtime-task-progress.md`为准。事件回访、资料跨容器读取及自主复核仍未交付。
+MCP及当前副本的配置、复制与启动动作。CASE-04已交付正式输出资料登记、独立冻结的资料
+MCP及标准产物URL的受限读取；本地固定源码Runtime容器读取和哈希验收通过。下一切片
+为CASE-05，唯一实施状态以`flowrun-runtime-task-progress.md`为准。事件回访和自主复核仍未交付。
 
 ## 1. 产品目标：由场景 Agent 代替人运行和监控流程
 
@@ -300,7 +301,8 @@ FlowRun 与场景 Agent 在同一容器或共享同一工作目录。Agent 回�
 
 ## 9. 实施顺序与验收边界
 
-以下为修订后的实施顺序；第1、2片已完成，其余待实施。当前证据和限制以任务进度文档为准。
+以下为修订后的实施顺序；第1至4片已完成（第3片分03A／03B验收），其余待实施。
+当前证据和限制以任务进度文档为准。
 
 | 顺序 | 切片 | 依赖 | 可独立验收的结果 |
 | --- | --- | --- | --- |
@@ -436,3 +438,54 @@ Agent 会话不会取得它；历史原生会话不静默追加权限。缺少�
 发现、HTTP 读写、嵌套草稿参数、加密持久化及恢复后同一动作回放，不请求模型。
 这不是实际 Runtime 镜像或场景目标全链路验收；CASE-04 的资料授权、CASE-05 的事件
 回访及后续复核、跨阶段决策仍须继续实施。本片未部署、未发布系统能力或升级 Runtime。
+
+
+## CASE-04 实施边界（2026-10-29）
+
+正式节点产物在既有 ArtifactVersion 登记事务内生成 `CaseArtifactReference`，不受旧
+OBSERVATION／CASE 输出标签限制；只登记阶段当前执行副本的正式 producer 输出，模板、
+仅关联的运行和普通输入不会因此取得资料授权。唯一键以 Case＋artifact version 去重，
+登记保存阶段 key、执行记录、节点、Attempt 和产物身份；文件内容继续由既有产物库存储。
+候选、接受、拒绝、取消和替代状态从正式 Attempt／CandidateOutputSet／NodeRun 投影，
+不因登记而接受结果。新版本保留旧引用，切换当前执行后旧证据仍可读，不能覆盖旧文件。
+
+浏览器可分页查询 `GET /api/v1/cases/{case_id}/artifact-materials`；页面整合仍属CASE-08。
+资料包含文件名、类型、大小、哈希、版本、正式完成事件及来源链，链接保留原始业务URL。
+浏览器内容链接沿用相对标准产物URL；原生Agent链接从本轮冻结且验证的MCP入口去除
+契约路径后生成，保留部署前缀，不使用浏览器localhost或源容器路径。URI链接只返回
+引用，平台不会代Agent抓取外链，也不会给外部链接分发平台身份。
+
+新协调会话额外冻结独立 `flowweave-case-materials` MCP，入口为
+`/api/v1/case-material-tools-mcp`，唯一工具 `read_case_material` 提供分页目录及有界字节
+分块读取。每块最多64KiB，以base64传输，Agent可组装文件；每次读取复核完整内容的
+大小与SHA-256。标准 `GET /api/v1/artifact-versions/{artifact_id}/content`（含download=true）
+也接受此独立受限身份。只有精确GET内容路径允许进入原生认证，不扩大为其他平台API
+登录身份；cookie浏览器读取沿用原授权。认证事务结束后才读产物库，不持数据库连接等待
+文件I/O；返回no-store，不把凭据放进URL、资料、提示词或普通能力配置。
+
+`case_material_tool_grants`与`case_artifact_references`均属于用户隔离元数据，0185迁移
+启用强制RLS，并仅回填当前阶段执行的同用户正式输出。迁移暂时开启既有受控bypass，
+回填后恢复原设置。产物与运行外键RESTRICT，加上删除入口对子树的只读引用检查，在
+任何Runtime／目录清理前阻止源运行删除；此检查只返回是否受保护，不泄露其他用户的
+场景或执行信息。删除场景释放资料引用；源产物不会因删除场景被删除。目录版本、Runtime、
+原生会话、当前轮次、用户权限或Case终态失效时，每次请求重新拒绝；删除binding级联
+撤销凭据。暂停仍可阅读，不引入执行动作。
+
+运维需另行发布PUBLISHED MCP key `flowweave-case-materials`，在私有配置设置
+`CASE_MATERIAL_TOOLS_MCP_CAPABILITY_VERSION_ID`与`CASE_MATERIAL_TOOLS_MCP_URL`；
+config仅允许url、transport=streamable-http及
+`headers={"Authorization":"Bearer ${FLOWWEAVE_CASE_MATERIAL_ACCESS}"}`。
+平台沿用版本digest、blob哈希、加密凭据、原生Secret Registry及创建恢复校验。
+新协调会话缺少此能力时明确失败，旧原生会话不会被静默追加权限；需使用新协调轮次。
+既有context只读清单与flows动作清单保持原契约。
+
+验证：105项Case定向回归通过，含六项固定源码1.54.0 SDK原生工具／加密持久化／同会话
+恢复探针；兼容性与最终资料回归另83项通过（两组包含重叠资料用例）。真实PostgreSQL
+覆盖去重、分页、候选状态、历史保留、跨场景／用户／凭据隔离、逐请求撤销、源运行保留、
+内容漂移，以及迁移升级／降级、回填、非superuser RLS及级联撤销。使用现有Dockerfile
+按当前source lock构建独立本地测试镜像，内置contract_check通过；新容器不挂载平台
+产物目录，通过HTTP标准URL和MCP分块读回同一171000字节文件并核对哈希。最初本地
+常用镜像源码不符，探针正确拒绝后才构建匹配镜像，未重打常用镜像标签或替换既有会话。
+新增工具／原生授权／MCP／Case路由及协调代码Pyright为0，受影响Ruff、format、diff
+检查通过。未调用真实模型、未部署、未推送、未发布实际系统能力，也未做生产generation
+replacement。CASE-05事件持久投递与回访、后续复核和跨阶段决策仍未交付。

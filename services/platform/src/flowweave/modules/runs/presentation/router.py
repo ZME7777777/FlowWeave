@@ -52,6 +52,7 @@ from flowweave.shared.schemas import (
 )
 
 router = APIRouter()
+artifact_content_router = APIRouter()
 
 
 def _key(value: str | None, action: str, identifier: str) -> str:
@@ -707,12 +708,28 @@ async def delete_artifact(run_id: str, artifact_id: str, db: Db) -> Response:
     return Response(status_code=204)
 
 
-@router.get("/artifact-versions/{artifact_id}/content")
-async def artifact_content(artifact_id: str, db: Db, download: bool = False) -> Response:
-    reference = await run_sync(
-        db, lambda session: service.artifact_content_reference(session, artifact_id)
-    )
-    content, mime_type, filename = await asyncio.to_thread(service.read_artifact_content, reference)
+@artifact_content_router.get("/artifact-versions/{artifact_id}/content")
+async def artifact_content(
+    artifact_id: str, request: Request, db: Db, download: bool = False
+) -> Response:
+    header = request.headers.get("authorization", "")
+    if header:
+        from flowweave.modules.cases.application.materials import (
+            authorized_content_reference,
+            read_material_content,
+        )
+
+        prepared = await run_sync(
+            db, lambda session: authorized_content_reference(session, header, artifact_id)
+        )
+        content, mime_type, filename = await asyncio.to_thread(read_material_content, prepared)
+    else:
+        reference = await run_sync(
+            db, lambda session: service.artifact_content_reference(session, artifact_id)
+        )
+        content, mime_type, filename = await asyncio.to_thread(
+            service.read_artifact_content, reference
+        )
     disposition = "attachment" if download else "inline"
     return Response(
         content=content,
@@ -720,6 +737,7 @@ async def artifact_content(artifact_id: str, db: Db, download: bool = False) -> 
         headers={
             "Content-Disposition": f"{disposition}; filename*=UTF-8''{quote(filename)}",
             "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "no-store",
         },
     )
 

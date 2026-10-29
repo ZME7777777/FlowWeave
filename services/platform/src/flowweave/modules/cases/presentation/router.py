@@ -91,6 +91,18 @@ async def delete_case_control_conversation(
     return Response(status_code=204)
 
 
+@router.get("/cases/{case_id}/artifact-materials")
+async def artifact_materials(
+    case_id: str,
+    db: Db,
+    offset: int = Query(default=0, ge=0, le=100_000),
+    limit: int = Query(default=20, ge=1, le=50),
+) -> dict[str, Any]:
+    return await run_sync(
+        db, lambda session: service.list_case_artifact_materials(session, case_id, offset, limit)
+    )
+
+
 @router.get("/cases/{case_id}")
 async def case(case_id: str, db: Db) -> dict[str, Any]:
     return await run_sync(db, lambda session: service.get_case(session, case_id))

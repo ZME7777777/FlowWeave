@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`UPSTREAM BASELINE ADOPTION COMPLETE`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`CASE-04`
+> 下一可执行切片：`CASE-05`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -13674,8 +13674,8 @@ Web remote-release-finish 通过，无过期受管上下文；保留当前镜像
 | CASE-02 | DONE | CASE-01 | 新协调轮次与原生会话bootstrap |
 | CASE-03A | DONE | CASE-02 | 原生 MCP 注册、冻结授权与场景范围读取 |
 | CASE-03B | DONE | CASE-03A | 流程图／草稿读取与当前执行副本配置、启动工具 |
-| CASE-04 | READY | CASE-03B | 产物登记与跨容器授权读取 |
-| CASE-05 | PENDING | CASE-02、CASE-04 | 持久事件投递与Agent回访 |
+| CASE-04 | DONE | CASE-03B | 产物登记与跨容器授权读取 |
+| CASE-05 | READY | CASE-02、CASE-04 | 持久事件投递与Agent回访 |
 | CASE-06 | PENDING | CASE-03B、CASE-05 | 逐步复核、配置修订与重跑 |
 | CASE-07 | PENDING | CASE-04、CASE-05、CASE-06 | 连续修订、跨阶段决策与完成 |
 | CASE-08 | PENDING | CASE-02–CASE-07 | 前端反馈与接管统一 |
@@ -14264,6 +14264,34 @@ Pyright为0，既有service保持39项既有诊断、无新增。独立验证迁
 共享工作树另有其他在途0183后继且仍为唯一head；不纳入本片。设计与部署配置要求
 见case-space-lifecycle-review.md。未部署、未推送、未发布实际系统能力；下一切片
 CASE-04 READY。按仓库规则提交本片后停止。
+
+
+### CASE-04 产物登记与跨容器授权读取 — DONE
+
+依赖CASE-03B DONE。正式ArtifactVersion登记同事务幂等保存Case＋产物版本引用，
+仅接受阶段当前独立执行的producer输出，不以旧OBSERVATION／CASE标签筛选，也不将
+模板、普通输入或仅关联运行扩成资料权限。保存阶段／节点／Attempt／正式完成事件来源，
+动态投影候选、接受、拒绝、取消、替代状态；新版本与历史执行证据保留，不自动验收。
+浏览器新增分页资料API；原生MCP返回含部署前缀的标准产物URL、元数据与安全来源。
+
+新会话另外冻结独立flowweave-case-materials MCP与Secret Registry授权，只读工具
+read_case_material提供分页目录及64KiB以内的base64分块。原生凭据也可读取标准
+artifact-versions内容GET；逐请求校验用户、Case、当前轮次、binding、目录版本、
+Runtime／原生身份和冻结版本，不依赖cookie，不可用于其他平台路由。DB授权后释放
+事务再读产物库，核对内容大小／SHA-256，响应no-store；链接保留原URI、不代抓外链。
+0185迁移的资料引用／授权表强制RLS，回填当前同用户正式输出；外键RESTRICT及运行
+子树删除前置检查保护源文件，删除场景仅释放引用，删除binding级联撤销授权。
+
+验证：105项Case定向测试通过，含六项固定source lock的1.54.0 SDK原生调用及恢复
+探针；补充场景启动／配置／暂停／重试兼容性与最终资料回归83项通过，两组有资料用例
+重叠。真实PostgreSQL验证去重、分页、状态、版本、越权／撤销、删除保护、内容漂移、
+迁移升级／降级、回填、非superuser RLS和级联。现有Dockerfile本地独立测试镜像
+内置contract_check通过；另一个不挂载产物目录的Runtime容器通过标准URL与MCP读回
+171000字节文件并核对哈希。最初常用镜像源码与锁不符被正确拒绝，使用单独测试标签
+构建匹配版本后通过，未覆盖常用镜像或替换会话。新增边界Pyright为0，受影响Ruff／
+format／diff检查通过，唯一Alembic head为0185_case_materials。配置契约见场景设计
+文档CASE-04节。没有真实模型、生产发布、系统能力发布或Runtime replacement；事件
+回访与自主跨阶段闭环仍待后续。当前NONE，下一CASE-05 READY；独立提交后停止。
 
 ### OPS-51 流程与能力列表整行单击勾选 — DONE
 

@@ -114,6 +114,46 @@ class CaseFlowToolGrant(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
+class CaseMaterialToolGrant(Base):
+    """Native read authority for registered outputs, distinct from workflow actions."""
+
+    __tablename__ = "case_material_tool_grants"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    # Referential constraints live in the migration, like the other control-plane models.
+    round_id: Mapped[str] = mapped_column(String(36), unique=True)
+    binding_id: Mapped[str] = mapped_column(String(36), unique=True)
+    work_directory_version_id: Mapped[str] = mapped_column(String(36))
+    runtime_session_id: Mapped[str] = mapped_column(String(36))
+    native_conversation_id: Mapped[str] = mapped_column(String(36))
+    token_digest: Mapped[str] = mapped_column(String(64))
+    encrypted_token: Mapped[bytes] = mapped_column(LargeBinary)
+    capability_version_id: Mapped[str] = mapped_column(String(36))
+    capability_digest: Mapped[str] = mapped_column(String(64))
+    runtime_manifest_json: Mapped[dict[str, Any]] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class CaseArtifactReference(Base):
+    """Immutable provenance; content remains owned by the official ArtifactVersion."""
+
+    __tablename__ = "case_artifact_references"
+    __table_args__ = (
+        UniqueConstraint("case_id", "artifact_version_id", name="uq_case_artifact_reference"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    case_id: Mapped[str] = mapped_column(String(36), index=True)
+    stage_id: Mapped[str] = mapped_column(String(36))
+    stage_key: Mapped[str] = mapped_column(String(100))
+    execution_flow_run_id: Mapped[str] = mapped_column(String(36), index=True)
+    node_run_id: Mapped[str] = mapped_column(String(36))
+    node_key: Mapped[str] = mapped_column(String(100))
+    node_attempt_id: Mapped[str] = mapped_column(String(36))
+    artifact_version_id: Mapped[str] = mapped_column(String(36), index=True)
+    registered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
 class CaseFlowRun(Base):
     __tablename__ = "case_flow_runs"
     __table_args__ = (UniqueConstraint("case_id", "flow_run_id", name="uq_case_flow_run"),)
@@ -262,6 +302,8 @@ __all__ = (
     "CaseDecisionProposal",
     "CaseFlowRun",
     "CaseFlowToolGrant",
+    "CaseMaterialToolGrant",
+    "CaseArtifactReference",
     "CaseToolGrant",
     "CaseStage",
 )

@@ -21,6 +21,7 @@ from flowweave.modules.cases.infrastructure.models import (
     Case,
     CaseControlRound,
     CaseFlowToolGrant,
+    CaseMaterialToolGrant,
     CaseToolGrant,
 )
 from flowweave.modules.catalog.public import PublishedCapability, resolve_version
@@ -47,7 +48,7 @@ class ToolContract:
     path: str
     prefix: str
     setting_prefix: str
-    grant_model: type[CaseToolGrant] | type[CaseFlowToolGrant]
+    grant_model: type[CaseToolGrant] | type[CaseFlowToolGrant] | type[CaseMaterialToolGrant]
 
     @property
     def auth_header(self) -> str:
@@ -62,6 +63,16 @@ FLOWS = ToolContract(
     "fwcf1",
     "case_flow_tools_mcp",
     CaseFlowToolGrant,
+)
+
+
+MATERIALS = ToolContract(
+    "flowweave-case-materials",
+    "FLOWWEAVE_CASE_MATERIAL_ACCESS",
+    "/api/v1/case-material-tools-mcp",
+    "fwcm1",
+    "case_material_tools_mcp",
+    CaseMaterialToolGrant,
 )
 
 
@@ -122,7 +133,7 @@ def _scope(db: Session, round_id: str, binding_id: str) -> tuple[CaseControlRoun
 
 def authenticate(
     db: Session, token: str, *, contract: ToolContract = CONTEXT
-) -> tuple[CaseToolGrant | CaseFlowToolGrant, Case]:
+) -> tuple[CaseToolGrant | CaseFlowToolGrant | CaseMaterialToolGrant, Case]:
     owner, grant_id = token_identity(token, contract=contract)
     with tenant_user(owner):
         grant = db.get(contract.grant_model, grant_id, populate_existing=True)
@@ -197,6 +208,11 @@ def _published(
         return published
     except (DomainError, OSError, ValueError, TypeError):
         raise unavailable() from None
+
+
+def frozen_endpoint(db: Session, version_id: str, *, contract: ToolContract) -> str:
+    """Return only the URL from a validated immutable native capability."""
+    return str(_published(db, version_id, contract=contract).version.normalized_config_json["url"])
 
 
 def prepare_creation(
@@ -309,9 +325,11 @@ def prepare_coordinator_tools(
     return {
         **prepare_creation(db, round_id, binding),
         **prepare_creation(db, round_id, binding, contract=FLOWS),
+        **prepare_creation(db, round_id, binding, contract=MATERIALS),
     }
 
 
 def assert_coordinator_tools(db: Session, binding_id: str, handle: RuntimeHandle) -> None:
     assert_native_registration(db, binding_id, handle)
     assert_native_registration(db, binding_id, handle, contract=FLOWS)
+    assert_native_registration(db, binding_id, handle, contract=MATERIALS)

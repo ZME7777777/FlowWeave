@@ -841,6 +841,10 @@ def _register_artifact(
         {"artifact_id": item.id, "field_key": item.field_key, "version_no": version},
         attempt_id=attempt_id,
     )
+    if attempt_id is not None:
+        from flowweave.modules.cases.public import project_flow_run_artifacts
+
+        project_flow_run_artifacts(db, run_id, artifact_id=item.id)
     if source == "RUNTIME" and attempt_id is not None:
         from flowweave.modules.cases.public import project_flow_run_observations
 
@@ -11108,6 +11112,9 @@ def cancel_run(db: Session, run_id: str, idempotency_key: str) -> dict[str, Any]
 
 
 def _assert_run_not_schedule_template(db: Session, run_id: str) -> None:
+    from flowweave.modules.cases.public import assert_no_case_artifact_references
+
+    assert_no_case_artifact_references(db, run_id)
     template_schedule_ids = list(
         db.scalars(select(FlowRunSchedule.id).where(FlowRunSchedule.source_flow_run_id == run_id))
     )

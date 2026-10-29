@@ -803,6 +803,9 @@ def delete_case(db: Session, case_id: str) -> None:
     db.execute(delete(CaseControlPlan).where(CaseControlPlan.case_id == item.id))
     db.execute(delete(CaseDecisionProposal).where(CaseDecisionProposal.case_id == item.id))
     db.execute(delete(CaseAgentTask).where(CaseAgentTask.case_id == item.id))
+    from flowweave.modules.cases.application.materials import delete_case_artifact_references
+
+    delete_case_artifact_references(db, item.id)
     db.execute(delete(CaseFlowRun).where(CaseFlowRun.case_id == item.id))
     db.execute(delete(CaseStage).where(CaseStage.case_id == item.id))
     db.delete(item)
