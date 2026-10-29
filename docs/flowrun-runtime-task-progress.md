@@ -14640,3 +14640,40 @@ page>=1、page_size为1至100。详情增加运行引用分类，按需读取，
 0185_case_materials head及其CURRENT状态保持不变，不纳入本片提交／发布。
 发布使用已提交的0184迁移链；继承已提交OPS-60会话归档筛选修复。发布验收
 待补记，无后续实现切片。
+
+#### OPS-61 Web／Platform 发布验收
+
+2026-10-29沿用本会话受控服务器直接发布授权，正式web／platform预检通过，
+从`ec6f8746e1291d2c013ec0fa0ab9010cc353dd6c`的受管最小上下文发布。
+Platform源归档SHA-256为
+`33fc7bf186a4c80d4f6f85d31517b4011f9f59df779ab1ff56fd9588ce583224`，
+Web源归档SHA-256为
+`8b74a857fbdf2cf7a52bb83140db4b063acf4d64215a97bc8c3d8db490dfcf7a`。
+linux/amd64的Platform镜像ID为
+`sha256:c277594218c8b4b38f9eeecf3d1e8e304c5dbcba9d692dcda2d70b7aa3de84fb`，
+Web镜像ID为
+`sha256:70130b09a1a59f113b8b8e62540aff05705319a438200a5dd0292698799e6d02`。
+
+首次切换因OPS-60并行Web发布改变容器身份而在任何激活／迁移前停止；只读
+确认新线上revision为本片祖先`1868ee8ab3ba3b04ab1cc1f8a769c68eb1982b2c`，
+其他服务、43个保护容器和配置哈希不变。保留原盘点，并为最新Web补充回滚
+镜像及日志后更新Web盘点。本片已包含OPS-60修复，未覆盖其行为。
+
+正式migration入口退出0，Alembic保持0184_cascade_directory_archives；随后仅
+同步recreate api、stream-api、worker、web。四项运行镜像revision、linux/amd64、
+健康／readiness与Web HTTP验收通过。服务器Compose/env哈希及其余43个既有
+容器镜像和启动时间保持不变。Runtime Provider与运行容器未重建，未发布并行
+CASE-04迁移、源码或本机未提交内容。
+
+公网HTML与Agent深层路由匹配运行镜像，两项入口资源及三项匹配版本详情／
+运行引用模块的JS/CSS资源SHA-256一致；两个前缀API鉴权边界为401。全新远端
+Chromium实际渲染平台登录、深层路由和根登录页通过，Network确认使用前缀
+API，根路径API请求为0。实际API镜像内以只读数据库事务调用正式版本引用
+读取：3个已有被引用版本、25条首屏运行引用及1次第二页读取通过，核对所有
+返回记录确实引用所选版本且分页无重复，正式GET路由已注册。未对线上版本
+执行创建草稿、删除或其他业务写入；认证后的UI交互以本地受控数据回归验收。
+
+platform与web的remote-release-finish均通过，精确回收2个超过24小时的受管
+旧上下文，保留近期上下文、实际引用及每仓库一个回滚镜像；不清理共享BuildKit、
+卷、Workspace或数据库备份。收尾后四项版本、健康、0184数据库head、服务器
+配置和43个保护容器再验通过。未push；本片无后续开发任务。
