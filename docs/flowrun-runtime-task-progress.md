@@ -15298,3 +15298,38 @@ Web typecheck、定向ESLint、production build、受影响Python Ruff、git dif
 唯一性核对通过；唯一Alembic head仍为0184_cascade_directory_archives，无CURRENT。
 本片仅Web／Platform，无迁移、SDK、Runtime或服务器配置变更，不含并行CASE改动。
 沿用本会话直接部署授权，发布验收待补记，无后续实现切片。
+
+
+#### OPS-73 Web／Platform 发布验收
+
+2026-10-29正式Platform／Web预检及受管最小上下文准备通过，发布
+`adea43d8fcdcf2769de16485bb01e0d853aa1fa3`。Platform源归档SHA-256为
+`3269640f8b17597e43c206d7a1523a084c4d4cc2e931a1276e4783c836dc5d75`，
+Web源归档SHA-256为
+`76f2a108b6047e38edca14e5ef6fd86efb3a4ea36fe16439ee5b7c3a4d93743f`。
+linux/amd64 Platform镜像ID为
+`sha256:64df36ddb17215a91d8f7aa4c6e4b06633f6b8331d92d8ac320986f18b04b2e2`，
+Web镜像ID为
+`sha256:4496abcc24c4ed699eae01ca227b766617ad1164bc1672440b11511e231bf1e9`。
+核对两项不可变镜像身份并合并构建台账后发布；保留旧镜像回滚tag和服务日志，
+正式migration退出0，数据库保持0184_cascade_directory_archives。同步recreate
+api、stream-api、worker及web，四项revision、健康／readiness和Web入口通过；
+服务器配置哈希及其他43个保护容器的镜像和启动时间不变，Runtime未重建。
+
+运行API镜像内适配器、catalog-only凭据及MCP路由三项源码SHA-256与本地提交
+一致。通过正式Runtime probe实测当前4个MCP全部READY，工具数量分别为
+1（内置）、1、9、5；内置返回read_referenced_conversation。实际catalog-only
+凭据调用tools/call被401拒绝，不读取历史正文、不创建或续期来源授权。
+重新执行临时首条引用注册诊断，这次完全使用已部署适配器：两次probe READY，
+公开状态仍无Authorization但配置确认true，流程到达READY_TO_SEND；按诊断
+门禁拦截发送并清除临时Binding，不发送业务消息、不调用模型。
+
+公网HTML／Agent深层路由、两项入口资源及三项匹配MCP连接／工具页的模块资源
+与运行镜像一致，两项鉴权边界为401。全新Chromium的平台登录、深层路由及根
+登录页通过，本次临时浏览器均回收。原Network helper未通过验收，改为
+有界读取渲染DOM和完整网络事件，并回收自身进程；4211条完整
+网络事件中出现部署前缀鉴权请求，根路径API请求为0。
+
+Platform及Web的remote-release-finish通过，无过期受管上下文候选；保留最近
+24小时上下文、实际路径引用和每仓库一个回滚镜像。收尾后四项revision、健康、
+数据库head、配置哈希及43个保护容器再次核验通过。未push，无后续实现切片。
