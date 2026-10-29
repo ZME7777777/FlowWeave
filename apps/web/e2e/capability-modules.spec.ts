@@ -679,3 +679,101 @@ test('capability action popover flips at the bottom edge and follows table scrol
   await bottomMenu.getByRole('menuitem', { name: '编辑', exact: true }).click();
   await expect(page.getByRole('heading', { name: '编辑 Skill 组合', exact: true })).toBeVisible();
 });
+
+test('MCP builtins are read-only and version details create a new draft from a historical source', async ({ page }) => {
+  const configs = {
+    first: { transport: 'stdio', command: 'python', args: ['scripts/server.py'], description: '历史配置' },
+    second: { transport: 'streamable-http', url: 'https://tools.example.test/mcp', description: '当前配置' },
+  };
+  const asset = (id: string, revision: number, config: Record<string, unknown>, builtin = false) => ({
+    id, lineage_id: builtin ? 'builtin-lineage' : 'tools-lineage', revision_number: revision, is_latest: revision === 2,
+    capability_type: 'MCP', capability_key: builtin ? 'flowweave-reference-history' : 'tools', description: String(config.description ?? ''),
+    version: '', filename: 'mcp.json', content_hash: id.repeat(64).slice(0, 64), byte_size: 128, import_id: 'test-import',
+    created_at: `2026-10-${20 + revision}T02:00:00Z`, reference_count: 0, is_builtin: builtin,
+    document: config, dependencies: {}, dependency_build_state: 'NOT_REQUIRED', dependency_build_error: null,
+  });
+  let records = [asset('mcp-v1', 1, configs.first), asset('mcp-v2', 2, configs.second), asset('builtin-v2', 2, { description: '会话历史查询' }, true)];
+  await mockRepository(page, 'capabilities', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(records) }));
+  await mockRepository(page, 'capability-collections', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
+  const writes: Array<{ id: string; content: string; mcp_scripts: Array<{ filename: string }> }> = [];
+  let failSave = true;
+  await page.route('**/api/v1/capabilities/*/mcp-source', async route => {
+    const id = new URL(route.request().url()).pathname.split('/').at(-2)!;
+    if (route.request().method() === 'PUT') {
+      const body = route.request().postDataJSON() as { content: string; mcp_scripts: Array<{ filename: string }> };
+      writes.push({ id, ...body });
+      if (failSave) { failSave = false; return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'TEMPORARY', message: '暂时无法发布，请重试' } }) }); }
+      records = records.map(item => item.lineage_id === 'tools-lineage' ? { ...item, is_latest: false } : item);
+      const revised = { ...asset('mcp-v3', 3, JSON.parse(body.content).mcpServers.tools), is_latest: true };
+      records.push(revised);
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(revised) });
+    }
+    const entry = records.find(item => item.id === id)!;
+    return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+      id, capability_key: 'tools', filename: 'mcp.json', content: JSON.stringify({ mcpServers: { tools: entry.document } }, null, 2),
+      mcp_scripts: id === 'mcp-v1' ? [{ server: 'tools', filename: 'server.py', content_base64: 'cHJpbnQoMSkK' }] : [],
+    }) });
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: '能力仓库', exact: true }).click();
+  await page.getByRole('navigation', { name: '能力模块' }).getByRole('button', { name: /MCP/ }).click();
+  const builtin = page.locator('.capability-card').filter({ hasText: 'flowweave-reference-history' });
+  await expect(builtin.getByText('内置', { exact: true })).toBeVisible();
+  await expect(builtin.getByRole('checkbox')).toBeDisabled();
+  await expect(builtin.getByRole('button')).toHaveCount(0);
+  await builtin.click(); await expect(builtin.getByRole('checkbox')).not.toBeChecked();
+  await page.getByRole('button', { name: '全选当前模块', exact: true }).click();
+  await expect(page.getByRole('button', { name: '批量删除 (1)', exact: true })).toBeEnabled();
+  await expect(builtin.getByRole('checkbox')).not.toBeChecked();
+  await page.getByRole('button', { name: '查看 MCP tools', exact: true }).click();
+  const detail = page.getByRole('dialog', { name: 'MCP tools 详情', exact: true });
+  await detail.getByRole('complementary', { name: 'MCP 版本历史' }).getByRole('button', { name: /v1/ }).click();
+  await detail.getByRole('button', { name: 'JSON', exact: true }).click();
+  await expect(detail.getByLabel('MCP 版本 JSON')).toContainText('scripts/server.py');
+  await detail.getByRole('button', { name: '脚本（1）', exact: true }).click();
+  await expect(detail.getByRole('cell', { name: 'server.py', exact: true })).toBeVisible();
+  for (const width of [1440, 760, 390]) {
+    await page.setViewportSize({ width, height: 720 });
+    await expect(detail.getByRole('button', { name: '基于 v1 编辑', exact: true })).toBeInViewport();
+    expect(await detail.evaluate(element => element.scrollHeight <= element.clientHeight + 1)).toBe(true);
+    await page.screenshot({ path: test.info().outputPath(`mcp-version-${width}.png`) });
+  }
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await detail.getByRole('button', { name: '基于 v1 编辑', exact: true }).click();
+  const editor = page.getByRole('dialog', { name: '编辑 MCP', exact: true });
+  await expect(editor.getByRole('button', { name: '发布新版本', exact: true })).toBeDisabled();
+  await expect(editor.getByLabel('CLI 命令', { exact: true })).toHaveValue('python');
+  await expect(editor.getByLabel('Server 名称', { exact: true })).toBeDisabled();
+  expect(await editor.locator('.mcp-script-panel').evaluate(element => element.getBoundingClientRect().height)).toBeGreaterThan(90);
+  await editor.getByRole('button', { name: '设为入口', exact: true }).scrollIntoViewIfNeeded();
+  await expect(editor.getByRole('button', { name: '设为入口', exact: true })).toBeInViewport();
+  await editor.getByLabel('MCP 说明', { exact: true }).fill('从历史版本重新调整');
+  await page.screenshot({ path: test.info().outputPath('mcp-editor.png') });
+  await editor.getByRole('button', { name: '发布新版本', exact: true }).click();
+  await expect(editor.getByRole('alert')).toContainText('暂时无法发布');
+  await expect(editor.getByLabel('MCP 说明', { exact: true })).toHaveValue('从历史版本重新调整');
+  await editor.getByRole('button', { name: '发布新版本', exact: true }).click();
+  await expect(editor).toHaveCount(0);
+  expect(writes.every(item => item.id === 'mcp-v2')).toBe(true);
+  expect(writes.at(-1)!.mcp_scripts[0].filename).toBe('server.py');
+  await expect(page.locator('.capability-card').filter({ hasText: 'tools' })).toContainText('v3 · 3 个版本');
+  await page.getByRole('button', { name: '查看 MCP tools', exact: true }).click();
+  await expect(detail.getByRole('complementary', { name: 'MCP 版本历史' }).getByRole('button')).toHaveCount(3);
+  await page.keyboard.press('Escape'); await expect(detail).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '查看 MCP tools', exact: true })).toBeFocused();
+  await page.getByRole('button', { name: '新建 MCP', exact: true }).click();
+  const creating = page.getByRole('dialog', { name: '新建 MCP', exact: true });
+  expect(await creating.locator('select').count()).toBe(0);
+  await creating.getByRole('button', { name: '关闭', exact: true }).focus();
+  await page.keyboard.press('Shift+Tab');
+  await expect(creating.getByRole('button', { name: '校验并保存', exact: true })).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(creating.getByRole('button', { name: '关闭', exact: true })).toBeFocused();
+  const protocol = creating.getByRole('button', { name: '远程协议', exact: true });
+  await protocol.press('ArrowDown'); await page.keyboard.press('End'); await page.keyboard.press('Enter');
+  await expect(protocol).toContainText('SSE');
+  await protocol.click(); await page.keyboard.press('Escape'); await expect(protocol).toBeFocused();
+  await protocol.click(); await creating.getByRole('heading').click();
+  await expect(page.getByRole('listbox', { name: '远程协议' })).toHaveCount(0);
+  await page.keyboard.press('Escape'); await expect(creating).toHaveCount(0);
+});

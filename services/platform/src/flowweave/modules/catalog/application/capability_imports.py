@@ -22,9 +22,12 @@ from flowweave.modules.catalog.application.capability_collections import (
     refresh_skill_collection_members,
 )
 from flowweave.modules.catalog.application.capability_repository import (
+    PublishedCapability,
+    is_builtin_capability,
     list_versions,
     publish_dependency_build,
     publish_import,
+    require_user_managed,
     resolve_version,
 )
 from flowweave.modules.tasks.public import enqueue
@@ -2032,6 +2035,19 @@ def confirm_commit(db: Session, plan: CapabilityCommitPlan, final_key: str) -> d
     item = db.get(CapabilityImport, plan.import_id)
     if item is None:
         raise _reject("Import token is invalid, expired, or already consumed")
+    for entry in item.preview_json.get("capabilities", []):
+        key = str(entry.get("capability_key") or "")
+        if is_builtin_capability(item.capability_type, key):
+            installed = db.scalar(
+                select(CapabilityPackage)
+                .where(
+                    CapabilityPackage.capability_type == item.capability_type,
+                    CapabilityPackage.capability_key == key,
+                )
+                .with_for_update()
+            )
+            if installed is not None:
+                require_user_managed(installed)
     published = publish_import(db, item)
     refresh_skill_collection_members(db, published)
     _keep_two_published_skills(db, published)
@@ -2236,9 +2252,7 @@ def rollback_skill_version(db: Session, capability_id: str) -> dict[str, Any]:
         )
     previous = next((version for version in versions[1:] if version.state == "PUBLISHED"), None)
     if previous is None:
-        raise DomainError(
-            "SKILL_PREVIOUS_VERSION_UNAVAILABLE", "暂无上一版本可回退。", 409
-        )
+        raise DomainError("SKILL_PREVIOUS_VERSION_UNAVAILABLE", "暂无上一版本可回退。", 409)
     _replace_skill_selection_references(db, current.package.id, previous.id)
     if _frozen_version_references(db, current.version.id):
         current.version.state = "RETIRED"
@@ -2514,6 +2528,26 @@ def prepare_skill_files_update(
     )
 
 
+def _require_current_mcp(
+    db: Session, published: PublishedCapability, *, lock: bool = False
+) -> None:
+    require_user_managed(published.package)
+    if lock:
+        db.scalar(
+            select(CapabilityPackage)
+            .where(CapabilityPackage.id == published.package.id)
+            .with_for_update()
+        )
+    latest = db.scalar(
+        select(func.max(CapabilityVersion.version_no)).where(
+            CapabilityVersion.package_id == published.package.id,
+            CapabilityVersion.state == "PUBLISHED",
+        )
+    )
+    if latest != published.version.version_no:
+        raise DomainError("CAPABILITY_SOURCE_CONFLICT", "MCP 已有新版本，请重新打开后再编辑", 409)
+
+
 def prepare_mcp_update(
     db: Session, capability_id: str, content: str, scripts: list[MCPScriptWrite]
 ) -> PreparedSkillUpdate:
@@ -2522,6 +2556,7 @@ def prepare_mcp_update(
     published = resolve_version(db, capability_id)
     if published.package.capability_type != "MCP":
         raise DomainError("CAPABILITY_NOT_EDITABLE", "Only MCP source can be edited", 422)
+    _require_current_mcp(db, published)
     payload = CapabilityValidateWrite(
         capability_type="MCP",
         filename=published.version.source_filename,
@@ -2666,6 +2701,7 @@ def confirm_mcp_update(
     """Publish one revised MCP version without rebinding existing consumers."""
 
     register_rollback_action(db, lambda: get_artifact_store().delete(final_key))
+    _require_current_mcp(db, resolve_version(db, update_plan.capability_id), lock=True)
     baseline = db.scalar(
         select(CapabilityVersion)
         .where(CapabilityVersion.id == update_plan.capability_id)
@@ -2699,6 +2735,10 @@ def confirm_mcp_update(
     if len(published) != 1 or published[0].package.id != baseline.package_id:
         raise DomainError(
             "CAPABILITY_IDENTITY_CHANGED", "Editing an MCP cannot change its identity", 422
+        )
+    if published[0].version.version_no <= baseline.version_no:
+        raise DomainError(
+            "CAPABILITY_SOURCE_UNCHANGED", "配置已存在于历史版本，请修改后再发布", 422
         )
     revised_id = published[0].version.id
     finish(db)
@@ -2913,6 +2953,17 @@ def delete_capabilities(db: Session, capability_ids: list[str]) -> dict[str, Any
     deletable: list[CapabilityVersion] = []
     for capability_id in unique_ids:
         published = resolve_version(db, capability_id)
+        if is_builtin_capability(
+            published.package.capability_type, published.package.capability_key
+        ):
+            blocked.append(
+                {
+                    "id": capability_id,
+                    "name": published.package.capability_key,
+                    "relation": "BUILTIN_CAPABILITY",
+                }
+            )
+            continue
         workspaces = _workspace_references(db, capability_id)
         nodes = _node_context_references(db, capability_id)
         conversations = _conversation_references(db, capability_id)

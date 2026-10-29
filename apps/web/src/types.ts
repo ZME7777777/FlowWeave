@@ -23,7 +23,7 @@ export interface CapabilityRef {
 export interface CapabilityAsset {
   id: string; lineage_id: string; revision_number: number; is_latest: boolean;
   capability_type: CapabilityAssetType; capability_key: string;
-  description: string; version: string; filename: string; content_hash: string;
+  description: string; version: string; filename: string; content_hash: string; digest?: string;
   byte_size: number; import_id: string; created_at: string; reference_count: number;
   is_builtin: boolean; document: Record<string, unknown>;
   dependencies: Record<string, Record<string, string>>;

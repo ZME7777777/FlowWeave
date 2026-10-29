@@ -1771,6 +1771,7 @@ for (const mode of ['draft', 'existing', 'preset'] as const) {
       { id: 'history-v2', capability_key: 'flowweave-reference-history', capability_type: 'MCP', is_latest: true },
       { id: 'optional-skill', capability_key: '可选技能', capability_type: 'SKILL', is_latest: true },
     ]));
+    await page.route('**/api/v1/capability-collections', route => json(route, [{ id: 'builtin-filter-collection', name: '测试技能组合', members: [{ id: 'optional-skill', capability_key: '可选技能', capability_type: 'SKILL' }] }]));
     let registrations = 0;
     await page.route('**/capabilities/batch', route => { registrations += 1; return json(route, {}); });
     await page.route('**/mcp-readiness', () => { throw new Error('Built-in MCP must not use generic credential-free probing'); });
@@ -1797,6 +1798,17 @@ for (const mode of ['draft', 'existing', 'preset'] as const) {
     await expect(builtin.locator('em')).toHaveText('内置');
     await expect(builtin.locator('small')).toHaveText('按授权检索引用会话的历史内容');
     await expect(builtin.locator('i svg')).toHaveCount(1);
+    await expect(dialog.locator('.agent-capability-list > button').last()).toHaveAccessibleName('会话历史查询');
+    await dialog.getByRole('button', { name: '测试技能组合', exact: true }).click();
+    await expect(builtin).toHaveCount(0);
+    for (const name of ['skill', 'plugin', 'context', 'agent', 'hook']) {
+      await dialog.getByRole('button', { name, exact: true }).click();
+      await expect(builtin).toHaveCount(0);
+    }
+    await dialog.getByRole('button', { name: 'all', exact: true }).click();
+    await expect(builtin).toHaveCount(0);
+    await dialog.getByRole('button', { name: '测试技能组合', exact: true }).click();
+    await expect(builtin).toBeVisible();
     await dialog.getByRole('button', { name: '选择筛选结果（1）', exact: true }).click();
     await dialog.getByRole('button', { name: '取消选择筛选结果', exact: true }).click();
     await dialog.getByRole('button', { name: '只看已选', exact: true }).click();
