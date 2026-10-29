@@ -1,4 +1,4 @@
-import { Check, FileArchive, LoaderCircle, Search, Sparkles, X } from 'lucide-react';
+import { Check, LoaderCircle, Search, Sparkles, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../api/client';
 import type { MarketSkill } from '../types';
@@ -8,7 +8,7 @@ import { useEscapeClose } from './useEscapeClose';
 import './plugin-import.css';
 
 const reasonMessage = (reason: unknown) => reason instanceof Error ? reason.message : '请求失败，请重试';
-export function SkillImportDialog({ onClose, onPublished, onUpload }: { onClose: () => void; onPublished: () => void | Promise<void>; onUpload: () => void }) {
+export function SkillMarketDialog({ onClose, onPublished }: { onClose: () => void; onPublished: () => void | Promise<void> }) {
   useEscapeClose(onClose);
   const market = useMarketSources('SKILL');
   const source = market.source;
@@ -76,9 +76,8 @@ export function SkillImportDialog({ onClose, onPublished, onUpload }: { onClose:
       if (failures.length) setError(failures.join('；'));
     } finally { if (current()) setBusy(false); }
   };
-  return <div className="modal-backdrop"><section className="modal plugin-import-dialog" role="dialog" aria-modal="true" aria-label="导入 Skill">
-    <header className="plugin-import-header"><div><Sparkles size={19}/><div><h2>导入 Skill</h2><p>搜索技能、多选导入，或上传本地技能包。</p></div></div><button className="ghost" aria-label="关闭导入" onClick={onClose}><X size={18}/></button></header>
-    <div className="plugin-import-sources"><button className="active"><Search size={14}/>技能市场</button><button disabled={busy} onClick={onUpload}><FileArchive size={14}/>上传 ZIP</button></div>
+  return <div className="modal-backdrop"><section className="modal plugin-import-dialog" role="dialog" aria-modal="true" aria-label="Skill 市场">
+    <header className="plugin-import-header"><h2>Skill 市场</h2><button className="ghost" aria-label="关闭 Skill 市场" onClick={onClose}><X size={18}/></button></header>
     <div className="plugin-import-body"><section className="plugin-import-market" aria-label="Skill 市场">
       <MarketSourcePicker market={market} disabled={busy}/>
       <form className="plugin-import-search" onSubmit={event => { event.preventDefault(); void search(); }}><label><Search size={14}/><input aria-label="搜索 Skill" disabled={busy} value={query} placeholder={source?.kind === 'SKILLS_SH' ? '输入至少两个字符，搜索 skills.sh…' : '搜索仓库中的 Skill，留空浏览全部…'} maxLength={200} onChange={event => setQuery(event.target.value)}/></label><button className="secondary" type="submit" disabled={!source || busy || loading || (source.kind === 'SKILLS_SH' && query.trim().length < 2)}>搜索</button></form>

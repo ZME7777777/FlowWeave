@@ -1,4 +1,4 @@
-import { Check, ChevronRight, FileArchive, GitBranch, LoaderCircle, Package, RefreshCw, Search, Store, X } from 'lucide-react';
+import { Check, ChevronRight, GitBranch, LoaderCircle, Package, RefreshCw, Search, Store, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api/client';
 import { MarketSourcePicker } from './MarketSources';
@@ -13,7 +13,6 @@ type Source = 'marketplace' | 'git';
 interface Props {
   onClose: () => void;
   onPublished: () => void | Promise<void>;
-  onUpload: () => void;
 }
 function message(reason: unknown): string {
   return reason instanceof Error ? reason.message : '导入失败，请重试。';
@@ -41,7 +40,7 @@ function gitSource(value: string, commit: string, repoPath: string) {
   return { source_url: url.toString().replace(/\/$/u, ''), commit: revision, repo_path: path || null };
 }
 
-export function PluginImportDialog({ onClose, onPublished, onUpload }: Props) {
+export function PluginMarketDialog({ onClose, onPublished }: Props) {
   useEscapeClose(onClose);
   const market = useMarketSources('PLUGIN');
   const marketSource = market.source;
@@ -159,12 +158,11 @@ export function PluginImportDialog({ onClose, onPublished, onUpload }: Props) {
     finally { if (request === generation.current) { setBusy(false); setStatus(''); } }
   };
 
-  return <div className="modal-backdrop"><section className="modal plugin-import-dialog" role="dialog" aria-modal="true" aria-label="导入 Plugin">
-    <header className="plugin-import-header"><h2>导入 Plugin</h2><button className="ghost" aria-label="关闭" onClick={onClose}><X size={16}/></button></header>
+  return <div className="modal-backdrop"><section className="modal plugin-import-dialog" role="dialog" aria-modal="true" aria-label="插件市场">
+    <header className="plugin-import-header"><h2>插件市场</h2><button className="ghost" aria-label="关闭" onClick={onClose}><X size={16}/></button></header>
     <div className="plugin-import-sources" role="tablist" aria-label="导入来源">
       <button role="tab" aria-selected={source === 'marketplace'} disabled={busy} onClick={() => { reset(); setSource('marketplace'); }}><Store size={14}/>插件市场</button>
       <button role="tab" aria-selected={source === 'git'} disabled={busy} onClick={() => { reset(); setSource('git'); }}><GitBranch size={14}/>Git 仓库</button>
-      <button className="plugin-import-upload" disabled={busy} onClick={onUpload}><FileArchive size={14}/>上传 ZIP</button>
     </div>
     <div className="plugin-import-body">
       {source === 'marketplace' ? <section aria-label="插件市场" className="plugin-import-market">

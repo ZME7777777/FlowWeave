@@ -12,8 +12,8 @@ async function open(page: Page) {
   await page.goto('/');
   await page.getByRole('button', { name: '能力仓库' }).click();
   await page.getByRole('navigation', { name: '能力模块' }).getByRole('button', { name: /Plugin/ }).click();
-  await page.getByRole('button', { name: '导入 Plugin', exact: true }).click();
-  return page.getByRole('dialog', { name: '导入 Plugin' });
+  await page.getByRole('button', { name: '插件市场', exact: true }).click();
+  return page.getByRole('dialog', { name: '插件市场' });
 }
 test.beforeEach(async ({ page }) => {
   await page.route('**/api/v1/auth/me', route => route.fulfill({ json: { id: 'plugin-user', username: 'plugin-user', role: 'USER' } }));
@@ -108,9 +108,8 @@ test('closing during resolution prevents late automatic publishing and ZIP remai
   await dialog.getByRole('button', { name: /^导入插件/ }).click();
   await dialog.getByRole('button', { name: '关闭', exact: true }).click();
   finish();
-  await page.getByRole('button', { name: '导入 Plugin', exact: true }).click();
   const fileChooser = page.waitForEvent('filechooser');
-  await page.getByRole('button', { name: '上传 ZIP' }).click();
+  await page.getByRole('button', { name: '导入 Plugin', exact: true }).click();
   await (await fileChooser).setFiles([]);
   expect(publishCount).toBe(0);
 });
@@ -246,8 +245,8 @@ test('closing a market batch preserves completed imports and stops the remaining
   finish();
   await responseDelivered;
   await page.getByRole('button', { name: '关闭成功提示', exact: true }).click();
-  await page.getByRole('button', { name: '导入 Plugin', exact: true }).click();
-  await expect(page.getByRole('dialog', { name: '导入 Plugin' }).getByRole('checkbox', { name: '选择插件 review-1', exact: true })).not.toBeChecked();
+  await page.getByRole('button', { name: '插件市场', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: '插件市场' }).getByRole('checkbox', { name: '选择插件 review-1', exact: true })).not.toBeChecked();
   expect(requested).toEqual(['review-1', 'review-2']);
   expect(published).toEqual(['review-1']);
 });
