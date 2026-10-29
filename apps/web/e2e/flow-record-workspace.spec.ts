@@ -196,7 +196,7 @@ test('record directory groups scheduled runs and opens a full canvas workspace',
 
 test('run directory pauses and restores the selected container', async ({ page }) => {
   const requests: string[] = [];
-  let runtimeStatus: 'ACTIVE' | 'STOPPED' = 'ACTIVE';
+  let runtimeStatus: 'ACTIVE' | 'STOPPED' | 'STARTING' = 'ACTIVE';
   let sessionRowVersion = 1;
   await page.route('**/api/v1/**', async route => {
     const request = route.request();
@@ -214,9 +214,9 @@ test('run directory pauses and restores the selected container', async ({ page }
     }
     if (path === `/api/v1/flow-runs/${run.id}/runtime/resume` && request.method() === 'POST') {
       requests.push(path);
-      runtimeStatus = 'ACTIVE';
+      runtimeStatus = 'STARTING';
       sessionRowVersion += 1;
-      return respond({ active_generation: 1, session_row_version: sessionRowVersion, status: runtimeStatus, write_available: true }, 202);
+      return respond({ active_generation: 1, session_row_version: sessionRowVersion, status: runtimeStatus, write_available: false }, 202);
     }
     if (path.endsWith('/records')) return respond({ items: [], next_cursor: null });
     if (path.endsWith('/stepwise-runs') || path.endsWith('/automatic-runs/summaries')) return respond([]);
@@ -227,6 +227,8 @@ test('run directory pauses and restores the selected container', async ({ page }
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
   await page.locator('.flow-run-tree-select').filter({ hasText: definition.name }).click();
   await page.locator('.flow-run-tree-run').filter({ hasText: run.name }).click();
+  const terminal = page.getByRole('button', { name: '进入终端', exact: true });
+  await expect(terminal).toBeEnabled();
   await expect(page.getByRole('button', { name: '暂停容器', exact: true })).toBeVisible();
   await page.getByRole('button', { name: '暂停容器', exact: true }).click();
   const pauseDialog = page.getByRole('alertdialog', { name: `暂停容器“${run.name}”？` });
@@ -234,12 +236,23 @@ test('run directory pauses and restores the selected container', async ({ page }
   await pauseDialog.getByRole('button', { name: '暂停', exact: true }).click();
   await expect.poll(() => requests).toContain(`/api/v1/flow-runs/${run.id}/runtime/pause`);
   await expect(page.getByRole('button', { name: '恢复容器', exact: true })).toBeVisible();
+  await expect(terminal).toBeDisabled();
+  await expect(terminal).toHaveCSS('cursor', 'not-allowed');
+  await expect(terminal).toHaveCSS('opacity', '0.6');
+  await expect(terminal).toHaveAttribute('title', '容器已暂停，请先恢复容器');
+  await terminal.click({ force: true });
+  await expect(page.getByRole('dialog', { name: `${run.name} 终端`, exact: true })).toHaveCount(0);
+  await page.screenshot({ path: test.info().outputPath('paused-terminal-disabled.png') });
   await page.getByRole('button', { name: '恢复容器', exact: true }).click();
   const resumeDialog = page.getByRole('alertdialog', { name: `恢复容器“${run.name}”？` });
   await expect(resumeDialog).toContainText('启动保留的运行容器');
   await resumeDialog.getByRole('button', { name: '恢复', exact: true }).click();
   await expect.poll(() => requests).toContain(`/api/v1/flow-runs/${run.id}/runtime/resume`);
+  await expect(terminal).toBeDisabled();
+  await expect(terminal).toHaveAttribute('title', '容器就绪后可进入终端');
+  runtimeStatus = 'ACTIVE';
   await expect(page.getByRole('button', { name: '暂停容器', exact: true })).toBeVisible();
+  await expect(terminal).toBeEnabled();
 });
 
 test('flow library saves an empty draft before opening its node editor', async ({ page }) => {

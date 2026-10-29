@@ -1459,3 +1459,5 @@ body:has(.login-page){min-width:0}
 .flow-row-menu[data-viewport-popover]{width:138px}
 .capability-overflow-popover[data-viewport-popover]{width:156px}
 .account-popover[data-viewport-popover]{animation:none}
+
+.run-directory-actions>button:disabled{border-color:#dce3de;background:#f3f5f3;color:#9aa59e;opacity:.6;cursor:not-allowed;box-shadow:none}

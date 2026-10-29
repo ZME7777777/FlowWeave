@@ -81,6 +81,8 @@ export function RunsPage() {
     return '独立运行环境';
   };
   const selectedRun = runs.find(run => run.id === selectedRunId);
+  const canOpenTerminal = selectedRun?.runtime_status === 'ACTIVE'
+    && selectedRun.runtime_write_available === true && lifecycleRunId !== selectedRun.id;
   const selectedFlow = flows.find(flow => flow.id === selectedFlowId);
   const recordListRef = useRef<HTMLDivElement>(null);
   const runInfoRef = useRef<HTMLDetailsElement>(null);
@@ -310,7 +312,7 @@ export function RunsPage() {
               <div><dt>流程版本</dt><dd>v{selectedRun.flow_row_version ?? '—'} · 快照 v{selectedRun.active_snapshot_version ?? '—'}</dd></div>
             </dl>
           </details>
-          <div className="run-directory-actions"><button className="secondary" disabled={!selectedRun.runtime_write_available} onClick={() => setTerminalRun({ id: selectedRun.id, name: selectedRun.name })}><Terminal size={14}/>进入终端</button>{(selectedRun.runtime_status === 'ACTIVE' || selectedRun.runtime_status === 'STOPPED') && <button className="secondary" disabled={lifecycleRunId === selectedRun.id} onClick={() => void toggleRuntime(selectedRun)}>{selectedRun.runtime_status === 'STOPPED' ? <Play size={14}/> : <Pause size={14}/>}{lifecycleRunId === selectedRun.id ? '处理中…' : selectedRun.runtime_status === 'STOPPED' ? '恢复容器' : '暂停容器'}</button>}</div>
+          <div className="run-directory-actions"><button className="secondary" disabled={!canOpenTerminal} title={canOpenTerminal ? undefined : lifecycleRunId === selectedRun.id ? '正在处理容器，请稍候' : selectedRun.runtime_status === 'STOPPED' ? '容器已暂停，请先恢复容器' : '容器就绪后可进入终端'} onClick={() => setTerminalRun({ id: selectedRun.id, name: selectedRun.name })}><Terminal size={14}/>进入终端</button>{(selectedRun.runtime_status === 'ACTIVE' || selectedRun.runtime_status === 'STOPPED') && <button className="secondary" disabled={lifecycleRunId === selectedRun.id} onClick={() => void toggleRuntime(selectedRun)}>{selectedRun.runtime_status === 'STOPPED' ? <Play size={14}/> : <Pause size={14}/>}{lifecycleRunId === selectedRun.id ? '处理中…' : selectedRun.runtime_status === 'STOPPED' ? '恢复容器' : '暂停容器'}</button>}</div>
         </header>
         {lifecycleError && <p className="error run-directory-lifecycle-error" role="alert">{lifecycleError}</p>}
         <section className="flow-run-record-table" aria-label="运行记录表格">
