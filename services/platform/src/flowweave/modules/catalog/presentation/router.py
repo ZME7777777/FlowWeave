@@ -774,12 +774,21 @@ async def update_market_source_preferences(payload: MarketSourcesWrite, db: Db) 
 
 
 @router.get("/market-sources/{source_id}/plugins")
-async def browse_market_plugins(source_id: str, db: Db) -> dict:
+async def browse_market_plugins(
+    source_id: str,
+    db: Db,
+    q: str = Query(default="", max_length=200),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=10, ge=1, le=50),
+    commit: str | None = Query(default=None, pattern=r"^[0-9a-f]{40}$"),
+) -> dict:
     source = await run_sync(
         db, lambda session: market_sources.select_source(session, source_id, {"PLUGIN_GIT"})
     )
     await db.rollback()
-    return await asyncio.to_thread(skill_market.plugin_catalog, source)
+    from flowweave.modules.catalog.application.market_browse import plugin_page
+
+    return await asyncio.to_thread(plugin_page, source, q, page, page_size, commit)
 
 
 @router.get("/market-sources/{source_id}/skills")

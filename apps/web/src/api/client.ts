@@ -687,7 +687,7 @@ export const api = {
     request<MarketplaceCatalog>('/plugin-marketplace-catalogs/preview', json('POST', body)),
   marketSources: (signal?: AbortSignal) => request<MarketSources>('/market-sources', { signal }),
   saveMarketSources: (body: MarketSources) => request<MarketSources>('/market-sources', json('PUT', body)),
-  marketPluginCatalog: (sourceId: string, signal?: AbortSignal) => request<MarketplaceCatalog>(`/market-sources/${encodeURIComponent(sourceId)}/plugins`, { signal, timeoutMs: 330_000 }),
+  marketPluginCatalog: (sourceId: string, query: string, page: number, commit: string | undefined, signal?: AbortSignal) => request<MarketplaceCatalog>(`/market-sources/${encodeURIComponent(sourceId)}/plugins?${new URLSearchParams({ q: query, page: String(page), page_size: '10', ...(commit ? { commit } : {}) })}`, { signal, timeoutMs: 90_000 }),
   marketSkills: (sourceId: string, query: string, signal?: AbortSignal) => request<MarketSkillSearch>(`/market-sources/${encodeURIComponent(sourceId)}/skills?q=${encodeURIComponent(query)}`, { signal, timeoutMs: 90_000 }),
   validateMarketSkill: (sourceId: string, skill: MarketSkill) => request<{ import_token: string; content_hash: string; preview: Record<string, unknown> }>('/market-skill-imports/validate', { ...json('POST', { source_id: sourceId, repository: skill.repository, skill_id: skill.skill_id, commit: skill.commit ?? null, path: skill.path ?? null }), timeoutMs: 120_000 }),
   openhandsMarketplaceCatalog: (signal?: AbortSignal) =>

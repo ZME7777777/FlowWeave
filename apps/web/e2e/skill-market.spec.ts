@@ -44,7 +44,7 @@ test('each market manages only its own sources with custom controls', async ({ p
   await expect(dialog.getByRole('link', { name: 'https://github.com/acme/skills.git' })).toBeVisible();
   await dialog.getByRole('button', { name: '关闭 Skill 市场' }).click();
   await page.getByRole('navigation', { name: '能力模块' }).getByRole('button', { name: /Plugin/ }).click();
-  await page.route('**/api/v1/plugin-marketplace-catalogs/openhands', route => route.fulfill({ json: { plugins: [], source: builtins[0].url, commit: sha } }));
+  await page.route('**/api/v1/market-sources/openhands/plugins?*', route => route.fulfill({ json: { plugins: [], source: builtins[0].url, commit: sha } }));
   await page.getByRole('button', { name: '插件市场', exact: true }).click();
   const plugin = page.getByRole('dialog', { name: '插件市场', exact: true });
   await plugin.getByRole('button', { name: '市场源管理' }).click();
@@ -70,7 +70,7 @@ test('skill search supports click cancel, keyboard selection and batch import', 
   });
   await page.route('**/api/v1/capability-imports', async route => { commits.push(route.request().postDataJSON().import_token); await route.fulfill({ status: 201, json: {} }); });
   const dialog = await open(page);
-  await expect(dialog.getByRole('button', { name: '搜索', exact: true })).toBeDisabled();
+  await expect(dialog.getByRole('button', { name: '搜索', exact: true })).toBeEnabled();
   await dialog.getByLabel('搜索 Skill').fill('demo');
   await dialog.getByLabel('搜索 Skill').press('Enter');
   const first = dialog.getByRole('checkbox', { name: '选择技能 demo', exact: true });
@@ -244,4 +244,25 @@ for (const width of [1440, 390]) test(`source manager keeps the list and custom 
   await expect(page.getByRole('listbox', { name: '市场来源' })).toBeVisible();
   await page.keyboard.press('Escape'); await expect(page.getByRole('listbox')).toHaveCount(0);
   await expect(dialog).toBeVisible();
+});
+
+test('Skill market opens with popular recommendations and can return after a focused search', async ({ page }) => {
+  const terms: string[] = [];
+  await page.route('**/api/v1/market-sources/skills-sh/skills?*', async route => {
+    const term = new URL(route.request().url()).searchParams.get('q') || ''; terms.push(term);
+    await route.fulfill({ json: { skills: term ? [skills[1]] : skills, search_required: false, ...(term ? {} : { mode: 'popular' }) } });
+  });
+  const dialog = await open(page);
+  await expect(dialog.getByRole('checkbox', { name: '选择技能 demo', exact: true })).toBeVisible();
+  await expect(dialog.getByText(/热门推荐 · 累计安装量/)).toBeVisible();
+  expect(terms).toContain('');
+  await dialog.getByLabel('搜索 Skill').fill('review');
+  await dialog.getByLabel('搜索 Skill').press('Enter');
+  await expect(dialog.getByRole('checkbox')).toHaveCount(1);
+  await expect(dialog.getByRole('checkbox', { name: '选择技能 review', exact: true })).toBeVisible();
+  await dialog.getByLabel('搜索 Skill').fill('');
+  await dialog.getByRole('button', { name: '搜索', exact: true }).click();
+  await expect(dialog.getByText(/热门推荐 · 累计安装量/)).toBeVisible();
+  await expect(dialog.getByRole('checkbox')).toHaveCount(2);
+  await dialog.screenshot({ path: test.info().outputPath('skill-popular.png') });
 });

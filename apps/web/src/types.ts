@@ -96,6 +96,7 @@ export interface PluginSourceResolution {
   expires_at: string; resolved_at?: string | null; published_at?: string | null;
 }
 export interface MarketplaceCatalog {
+  total?: number; page?: number; page_size?: number; query?: string;
   schema_version: 1; source: string; commit: string; repo_path?: string | null;
   marketplace_name: string; description?: string | null; version?: string | null; owner: string;
   plugins: Array<{ name: string; description?: string | null; version?: string | null; category?: string | null; author?: string | null }>;
@@ -1250,4 +1251,4 @@ export interface MarketSkill {
   id: string; repository: string; skill_id: string; name: string; description: string;
   installs?: number | null; commit?: string | null; path?: string | null;
 }
-export interface MarketSkillSearch { skills: MarketSkill[]; query: string; search_required: boolean; commit?: string }
+export interface MarketSkillSearch { mode?: 'popular'; skills: MarketSkill[]; query: string; search_required: boolean; commit?: string }
