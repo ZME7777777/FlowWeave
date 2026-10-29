@@ -4843,7 +4843,7 @@ for (const archiveTarget of ['conversation', 'directory', 'rejected-directory'] 
         directoryArchived = false; removedIds.delete('archive-child-5');
         return json(route, { ...items[5], archived_at: null });
       }
-      if (path.endsWith('/conversation-management')) return json(route, { items: url.searchParams.get('work_directory_id') === 'existing-directory' ? items.filter(item => removedIds.has(item.id) === (url.searchParams.get('archived') === 'true')).map(item => ({ ...item, archived_at: removedIds.has(item.id) ? now : null })) : [], truncated: false });
+      if (path.endsWith('/conversation-management')) return json(route, { items: url.searchParams.get('work_directory_id') === 'existing-directory' ? items.filter(item => !url.searchParams.has('archived') || removedIds.has(item.id) === (url.searchParams.get('archived') === 'true')).map(item => ({ ...item, archived_at: removedIds.has(item.id) ? now : null })) : [], truncated: false });
       if (path.endsWith('/pinned-conversations')) return json(route, live().filter(item => item.pinned));
       if (path.endsWith('/conversation-activity')) return json(route, { running_binding_ids: [], unread_binding_ids: live().map(item => item.id), conversations: live() });
       if (path.endsWith('/conversations') && request.method() === 'GET') {
@@ -4908,9 +4908,11 @@ for (const archiveTarget of ['conversation', 'directory', 'rejected-directory'] 
       // Management lives inside the same mounted workbench: a restore must
       // clear successful-archive exclusions as well as refetch server lists.
       await page.getByRole('button', { name: '会话管理', exact: true }).click();
-      await page.getByRole('button', { name: '已有项目目录（已归档）', exact: true }).click();
+      await expect(page.getByRole('button', { name: '已有项目目录', exact: true })).toHaveAccessibleDescription('已归档工作区');
+      await page.getByRole('button', { name: '已有项目目录', exact: true }).click();
       await page.getByRole('button', { name: '恢复工作区 已有项目目录', exact: true }).click();
       await page.getByRole('alertdialog').getByRole('button', { name: '确认恢复', exact: true }).click();
+      await expect(page.getByRole('button', { name: '恢复工作区 已有项目目录', exact: true })).toHaveCount(0);
       await expect(page.getByRole('button', { name: '已有项目目录', exact: true })).toBeVisible();
       await page.getByRole('button', { name: '主页', exact: true }).click();
       await expect(group).toBeVisible();
@@ -4920,9 +4922,11 @@ for (const archiveTarget of ['conversation', 'directory', 'rejected-directory'] 
       await page.getByRole('menuitem', { name: '归档', exact: true }).click();
       await expect(group).toHaveCount(0);
       await page.getByRole('button', { name: '会话管理', exact: true }).click();
-      await page.getByRole('button', { name: '已有项目目录（已归档）', exact: true }).click();
+      await expect(page.getByRole('button', { name: '已有项目目录', exact: true })).toHaveAccessibleDescription('已归档工作区');
+      await page.getByRole('button', { name: '已有项目目录', exact: true }).click();
       await page.getByRole('checkbox', { name: '包含未读', exact: true }).check();
       await page.getByRole('button', { name: '恢复会话 归档验证会话 5', exact: true }).click();
+      await expect(page.getByRole('button', { name: '恢复工作区 已有项目目录', exact: true })).toHaveCount(0);
       await expect(page.getByRole('button', { name: '已有项目目录', exact: true })).toBeVisible();
       await page.getByRole('button', { name: '主页', exact: true }).click();
       await expect(group.getByRole('button', { name: '归档验证会话 5', exact: true })).toBeVisible();

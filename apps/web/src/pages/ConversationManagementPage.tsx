@@ -18,13 +18,13 @@ interface DeleteSelection {
   bindingIds: string[];
 }
 
-type InactivePeriod = 'all' | '30' | '90';
+type InactivePeriod = 'all' | '7' | '30';
 type ArchiveFilter = 'all' | 'active' | 'archived';
 
 const PERIOD_OPTIONS: { value: InactivePeriod; label: string }[] = [
   { value: 'all', label: '全部时间' },
+  { value: '7', label: '7 天前' },
   { value: '30', label: '30 天前' },
-  { value: '90', label: '90 天前' },
 ];
 
 function conversationTitle(item: ManagedAgentConversation) {
@@ -60,8 +60,9 @@ export function ConversationManagementPage({ onRestored }: { onRestored?: (selec
     queryFn: () => api.agentWorkDirectories(workspace.data!.id, true),
     enabled: Boolean(workspace.data?.id),
   });
+  const selectedDirectory = workDirectories.data?.items.find(item => item.id === selectedWorkDirectoryId);
   const selectedWorkspaceLabel = selectedWorkDirectoryId
-    ? workDirectories.data?.items.find(item => item.id === selectedWorkDirectoryId)?.display_name ?? '工作区'
+    ? selectedDirectory?.display_name ?? '工作区'
     : workDirectories.data?.root.display_name ?? '根工作区';
   const conversations = useQuery({
     queryKey: ['agent-conversation-management', workspace.data?.id, selectedWorkDirectoryId ?? 'root', archiveFilter],
@@ -196,13 +197,10 @@ export function ConversationManagementPage({ onRestored }: { onRestored?: (selec
           <button type="button" className={!selectedWorkDirectoryId ? 'active' : ''} aria-pressed={!selectedWorkDirectoryId} disabled={remove.isPending} onClick={() => setSelectedWorkDirectoryId(undefined)}>
             <Folder size={16}/><span>{workDirectories.data?.root.display_name ?? '根工作区'}</span>
           </button>
-          {workDirectories.data?.items.map(directory => <div key={directory.id} className="conversation-management-workspace-item">
-            <button type="button" className={selectedWorkDirectoryId === directory.id ? 'active' : ''} aria-pressed={selectedWorkDirectoryId === directory.id} disabled={remove.isPending} onClick={() => setSelectedWorkDirectoryId(directory.id)}>
-              <Folder size={16}/><span title={directory.display_name}>{directory.display_name}{directory.state === 'ARCHIVED' ? '（已归档）' : ''}</span>
+          {workDirectories.data?.items.map(directory => <div key={directory.id} className={`conversation-management-workspace-item${directory.state === 'ARCHIVED' ? ' archived' : ''}`}>
+            <button type="button" className={selectedWorkDirectoryId === directory.id ? 'active' : ''} aria-pressed={selectedWorkDirectoryId === directory.id} aria-description={directory.state === 'ARCHIVED' ? '已归档工作区' : undefined} disabled={remove.isPending} onClick={() => setSelectedWorkDirectoryId(directory.id)}>
+              <Folder size={16}/><span title={directory.display_name}>{directory.display_name}</span>
             </button>
-            {directory.state === 'ARCHIVED' && <button type="button" className="secondary" aria-label={`恢复工作区 ${directory.display_name}`} disabled={restoreDirectory.isPending || remove.isPending} onClick={async () => {
-              if (await dialog.confirm({ title: `恢复工作区“${directory.display_name}”？`, message: '将恢复此工作区及其中所有已归档会话，恢复后会重新显示在工作台列表中。', confirmLabel: '确认恢复' })) restoreDirectory.mutate(directory.id);
-            }}><ArchiveRestore size={14}/>恢复</button>}
           </div>)}
         </div>
       </aside>
@@ -218,7 +216,13 @@ export function ConversationManagementPage({ onRestored }: { onRestored?: (selec
           <label className="conversation-management-check"><input type="checkbox" checked={includePinned} onChange={event => setIncludePinned(event.target.checked)}/><span>包含置顶</span></label>
           <label className="conversation-management-check"><input type="checkbox" checked={includeUnread} onChange={event => setIncludeUnread(event.target.checked)}/><span>包含未读</span></label>
           {filtersActive && <button className="ghost conversation-management-reset" onClick={() => { setQuery(''); setPeriod('all'); setArchiveFilter('all'); setIncludePinned(false); setIncludeUnread(false); }}>重置</button>}
-          <button className="danger conversation-management-delete" disabled={selectedVisible.length === 0 || remove.isPending || loading || Boolean(readError)} onClick={() => { remove.reset(); setConfirming(true); }}><Trash2 size={14}/>删除已选会话</button>
+          <div className="conversation-management-actions" role="group" aria-label="工作区与会话操作">
+            {selectedDirectory?.state === 'ARCHIVED' && <button type="button" className="secondary conversation-management-restore" aria-label={`恢复工作区 ${selectedDirectory.display_name}`} disabled={restoreDirectory.isPending || remove.isPending} onClick={async () => {
+              const directory = selectedDirectory;
+              if (await dialog.confirm({ title: `恢复工作区“${directory.display_name}”？`, message: '将恢复此工作区及其中所有已归档会话，恢复后会重新显示在工作台列表中。', confirmLabel: '确认恢复' })) restoreDirectory.mutate(directory.id);
+            }}><ArchiveRestore size={14}/>{restoreDirectory.isPending ? '恢复中…' : '恢复工作区'}</button>}
+            <button className="danger conversation-management-delete" disabled={selectedVisible.length === 0 || remove.isPending || restoreDirectory.isPending || loading || Boolean(readError)} onClick={() => { remove.reset(); setConfirming(true); }}><Trash2 size={14}/>删除已选会话</button>
+          </div>
         </div>
         {conversations.data?.truncated && <div className="conversation-management-notice warning"><Clock3 size={14}/><span>当前仅显示最近 500 个会话。请先完成本次清理，再继续管理更早的会话。</span></div>}
         {(restore.isError || restoreDirectory.isError) && <div className="conversation-management-notice warning" role="alert">{restore.error?.message ?? restoreDirectory.error?.message}</div>}

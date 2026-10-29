@@ -8,7 +8,7 @@
 .compact-conversation-management .conversation-management-workspace-list>button,.compact-conversation-management .conversation-management-workspace-item>button:first-child{min-height:34px;padding:7px 9px;border-radius:6px}
 .compact-conversation-management .conversation-management-workspace-list button>span{font-size:11px;font-weight:500}
 .compact-conversation-management .conversation-management-workspace-list button>svg{width:15px;height:15px}
-.compact-conversation-management .conversation-management-workspace-item>.secondary{display:inline-flex;flex:0 0 auto;align-items:center;justify-content:center;gap:4px;width:auto;background:transparent;padding:5px;color:#588069;font-size:9px}
+.compact-conversation-management .conversation-management-workspace-item.archived>button{color:#887044;background:#f5f0e6}.compact-conversation-management .conversation-management-workspace-item.archived>button:hover{background:#eee5d3}.compact-conversation-management .conversation-management-workspace-item.archived>button.active{color:#715322;background:#e9ddc3;box-shadow:inset 3px 0 #a4864f}
 .compact-conversation-management .conversation-management-panel{border:0;border-radius:0;box-shadow:none}
 .compact-conversation-management .conversation-management-header{display:flex;height:auto;min-height:46px;flex:0 0 auto;flex-direction:row;align-items:center;gap:10px;margin:0;border-bottom:1px solid #e3eae4;padding:7px 18px}
 .compact-conversation-management .conversation-management-header>div{display:flex;min-width:0;align-items:center;gap:12px}
@@ -27,7 +27,8 @@
 .compact-conversation-management input[type=checkbox]{width:13px;height:13px;margin:0;accent-color:var(--green);vertical-align:middle;cursor:pointer}
 .compact-conversation-management input:disabled{cursor:not-allowed;opacity:.5}
 .compact-conversation-management .conversation-management-reset{padding:5px 2px;font-size:10px}
-.compact-conversation-management .conversation-management-delete{min-height:31px;margin-left:auto;border-color:#efd7d7;background:#fff8f8;padding:5px 9px;font-size:10px;white-space:nowrap}
+.conversation-management-actions{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-left:auto}.compact-conversation-management .conversation-management-actions>.conversation-management-restore{min-height:31px;border-color:#dbe4dd;background:#fafcfb;padding:5px 9px;color:#526f5c;font-size:10px;white-space:nowrap}
+.compact-conversation-management .conversation-management-delete{min-height:31px;border-color:#efd7d7;background:#fff8f8;padding:5px 9px;font-size:10px;white-space:nowrap}
 .compact-conversation-management .conversation-management-delete:disabled{border-color:transparent;background:transparent;color:#bdc4be}
 .compact-conversation-management .conversation-management-notice{align-items:center;gap:7px;margin:0;border:0;border-bottom:1px solid #eee4c9;border-radius:0;padding:7px 18px;font-size:10px}
 .compact-conversation-management .conversation-management-table-wrap{min-width:0;overflow:auto;scrollbar-gutter:stable}

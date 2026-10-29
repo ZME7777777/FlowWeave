@@ -14,7 +14,7 @@ test('conversation management keeps the selected workspace and pagination in fix
     unread: false,
     created_at: now,
     updated_at: now,
-    last_message_at: index === 20 ? new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString() : now,
+    last_message_at: index >= 19 ? new Date(Date.now() - (index === 20 ? 31 : 10) * 24 * 60 * 60 * 1000).toISOString() : now,
   }));
 
   await page.route('**/api/v1/**', async route => {
@@ -60,6 +60,17 @@ test('conversation management keeps the selected workspace and pagination in fix
 
   await page.getByRole('button', { name: '下一页' }).click();
   await expect(page.getByText('共 21 项，第 2 / 2 页')).toBeVisible();
+  await expect(page.locator('.conversation-management-table tbody tr')).toHaveCount(1);
+  await expect(page.getByText('会话 21', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '最后活动时间', exact: true }).click();
+  await expect(page.getByRole('option', { name: '90 天前', exact: true })).toHaveCount(0);
+  await page.getByRole('option', { name: '7 天前', exact: true }).click();
+  await expect(page.locator('.conversation-management-table tbody tr')).toHaveCount(2);
+  await expect(page.getByText('会话 20', { exact: true })).toBeVisible();
+  await expect(page.getByText('已选 0 / 2 个会话', { exact: true })).toBeVisible();
+  await expect(page.getByRole('navigation', { name: '列表分页' })).toHaveCount(0);
+  await page.getByRole('button', { name: '最后活动时间', exact: true }).click();
+  await page.getByRole('option', { name: '30 天前', exact: true }).click();
   await expect(page.locator('.conversation-management-table tbody tr')).toHaveCount(1);
   await expect(page.getByText('会话 21', { exact: true })).toBeVisible();
 });
@@ -289,7 +300,20 @@ test('archived directory restores require confirmation and restoring one child r
   await page.getByRole('button', { name: '会话管理', exact: true }).click();
   await page.getByRole('button', { name: '会话状态', exact: true }).click();
   await page.getByRole('option', { name: '已归档', exact: true }).click();
-  await page.getByRole('button', { name: '归档项目（已归档）', exact: true }).click();
+  const sidebar = page.getByRole('complementary', { name: 'Agent 工作区' });
+  await expect(page.getByRole('button', { name: '恢复工作区 归档项目', exact: true })).toHaveCount(0);
+  const directory = sidebar.getByRole('button', { name: '归档项目', exact: true });
+  await expect(directory).toHaveAccessibleDescription('已归档工作区');
+  await expect(sidebar).not.toContainText('已归档');
+  await directory.click();
+  const actions = page.getByRole('group', { name: '工作区与会话操作' });
+  await expect(actions.getByRole('button', { name: '恢复工作区 归档项目', exact: true })).toBeVisible();
+  await expect(sidebar.getByRole('button', { name: /恢复工作区/ })).toHaveCount(0);
+  const restoreBounds = await actions.getByRole('button', { name: '恢复工作区 归档项目', exact: true }).boundingBox();
+  const deleteBounds = await actions.getByRole('button', { name: '删除已选会话', exact: true }).boundingBox();
+  expect(Math.abs(restoreBounds!.y - deleteBounds!.y)).toBeLessThan(2);
+  expect(restoreBounds!.x + restoreBounds!.width).toBeLessThan(deleteBounds!.x);
+  await page.screenshot({ path: test.info().outputPath('archived-workspace-actions.png') });
   const rows = page.locator('.conversation-management-table tbody tr');
   await expect(rows).toHaveCount(2);
   await expect(rows.locator('.conversation-management-status').getByText('已归档', { exact: true })).toHaveCount(2);
@@ -312,13 +336,13 @@ test('archived directory restores require confirmation and restoring one child r
   await page.getByRole('button', { name: '会话管理', exact: true }).click();
   await page.getByRole('button', { name: '会话状态', exact: true }).click();
   await page.getByRole('option', { name: '已归档', exact: true }).click();
-  await page.getByRole('button', { name: '归档项目（已归档）', exact: true }).click();
+  await page.getByRole('button', { name: '归档项目', exact: true }).click();
   failRestore = true;
   await page.getByRole('button', { name: '恢复工作区 归档项目', exact: true }).click();
   dialog = page.getByRole('alertdialog', { name: '恢复工作区“归档项目”？' });
   await dialog.getByRole('button', { name: '确认恢复', exact: true }).click();
   await expect(page.getByRole('alert')).toContainText('暂时无法恢复工作区');
-  await expect(page.getByRole('button', { name: '归档项目（已归档）', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '归档项目', exact: true })).toBeVisible();
   failRestore = false;
   await page.getByRole('button', { name: '恢复工作区 归档项目', exact: true }).click();
   await page.getByRole('alertdialog').getByRole('button', { name: '确认恢复', exact: true }).click();
@@ -382,7 +406,7 @@ test('archive filter defaults to all, filters both states, and resets across wor
   await page.getByRole('button', { name: '重置', exact: true }).click();
   await expect(filter).toContainText('全部');
   await expect(rows).toHaveCount(2);
-  await page.getByRole('button', { name: '归档项目（已归档）', exact: true }).click();
+  await page.getByRole('button', { name: '归档项目', exact: true }).click();
   await expect(filter).toContainText('全部');
   await expect(rows).toHaveCount(1);
   expect(queries.at(-1)).toBeNull();
