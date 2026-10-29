@@ -15487,3 +15487,33 @@ Worker重启续跑剩余项。任务行不在Runtime调用期间加锁，进度�
 git diff及状态唯一性核对通过。Alembic唯一head仍为0184_cascade_directory_archives，
 无迁移、SDK、Runtime或服务器配置改动。沿用会话部署授权，发布验收待补记，
 无后续实现切片。
+
+
+#### OPS-76 Web／Platform 发布验收
+
+2026-10-29正式Platform／Web预检和受管最小上下文准备通过，发布
+`e62f85aff906e9cffe0293e67d469a2ce2766826`。Platform源归档SHA-256为
+`8877446abcda12c7946568f6963d4007ceb89889e5e7701d9801d54b2ca732ee`，
+Web源归档SHA-256为
+`c9eed75264677fa9c28a94ddf289dcb76796cb2e98e964ec3e9ebeffc24d3cb4`。
+linux/amd64 Platform镜像ID为
+`sha256:15ce5f9e6097cc4ba43b270b1186e04b2cf8bbc76cbc23050d5a2d1c6bfda052`，
+Web镜像ID为
+`sha256:09308418271c102501cb9747cfa6c15a710d351f7267f545b1408d102574cdac`。
+保留旧镜像回滚tag和服务日志，正式migration退出0，数据库仍为
+0184_cascade_directory_archives；同步recreate api、stream-api、worker和web，
+四项revision、健康／readiness及HTTP入口通过；Runtime未重建。
+
+运行API镜像内持久删除任务、HTTP受理／查询路由、任务handler和Worker四项
+源码SHA-256与提交一致；实际镜像中任务位于维护队列，handler已注册。
+公网HTML／Agent深层路由、两项入口资源及三个包含后台进度／重试文案和样式
+的模块资源SHA-256与运行镜像一致。包括新任务查询入口在内的三项API鉴权
+边界均为401。全新Chromium的平台登录、深层路由及根登录页通过；4052条
+完整网络事件中部署前缀API请求通过，根路径API请求为0，临时浏览器均回收。
+线上验收仅只读，不创建删除任务或删除实际用户会话；后台执行、受理与刷新
+交互由本地44项后端及13项浏览器回归验证，六项基线已有失败保持前述记录。
+
+Platform和Web remote-release-finish均通过，无过期受管上下文候选；保留最近
+24小时上下文、实际路径引用及每仓库一个回滚镜像。收尾后四项版本、健康、
+数据库head、服务器配置哈希及其他43个容器的镜像／启动时间再次核验通过，
+服务器配置不变。未push，无后续实现切片。
