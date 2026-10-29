@@ -15367,3 +15367,32 @@ owner上下文。12项Chromium会话管理回归全部通过，含删除确认�
 build、受影响Python Ruff及git diff检查通过；唯一Alembic head仍为
 0184_cascade_directory_archives，无迁移／Runtime／SDK／服务器配置变更。
 不混入并行CASE开发，沿用本会话直接部署授权；发布验收待补记，无后续实现切片。
+
+
+#### OPS-74 Web／Platform 发布验收
+
+2026-10-29正式Platform／Web预检与受管最小上下文准备通过，发布
+`e12f6778893cc4395a0de825fc0978c61832376c`。Platform源归档SHA-256为
+`b070f28181398937bf758cf482718296dc233598be0820d1c180ba36f20b2520`，
+Web源归档SHA-256为
+`9abbc1fca7cb54b9e2941c8fc9e864cbaaa5c1fea39556a127d81c7ad149ee1f`。
+linux/amd64 Platform镜像ID为
+`sha256:d78bdf1bfdb51a4acae5b7a11c238bd5a94c384a1e60b3334e5a7cb7f4b10e01`，
+Web镜像ID为
+`sha256:33779d66616d8421a8ecff339608b96f8e3eda4737e29b24224da54fe4978df7`。
+保留旧镜像回滚tag及原服务日志，正式migration退出0，数据库仍为
+0184_cascade_directory_archives；同步recreate api、stream-api、worker、web，
+四项revision、健康／readiness及Web入口均通过，Runtime未重建。
+
+实际API镜像内工作目录删除、文件暂存清理、附件匹配、原生删除重试、任务
+handler与Worker共六个源码文件SHA-256与提交一致。公网HTML／Agent深层路由、
+两项入口资源及三个匹配工作区删除文案／操作栏的模块资源与运行镜像一致；
+两项鉴权边界均为401。全新Chromium的平台登录、深层路由和根登录页通过，
+3875条完整网络事件中部署前缀API请求通过，根路径API请求为0，临时浏览器
+均回收。线上只作只读验收，未删除用户实际工作区；删除交互和物理清理分别
+由本地12项浏览器及21项隔离PostgreSQL／文件回归验证。
+
+Platform及Web的remote-release-finish均通过，精确回收4个过期受管发布上下文，
+保留最近24小时上下文、实际路径引用和每仓库一个回滚镜像。收尾后四项revision、
+健康、数据库head、服务器配置哈希及其他43个容器的镜像／启动时间再次核验
+通过；服务器配置未改动。未push，无后续实现切片。
