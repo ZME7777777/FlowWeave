@@ -14831,3 +14831,25 @@ CURRENT、唯一Alembic head为0186_case_execution_events，不纳入本片提�
 发布将从线上已部署平台ec6f8746的0184链创建独立、已提交的发布快照，只合入
 本片市场API和当前已提交Web，以排除尚未发布CASE-04／CASE-05迁移与源码；
 具体SHA、快照验证和发布验收待补记，不自动开始后续开发。
+
+### OPS-65 终端环境的 FlowRun 引用与目录定位 — DONE
+
+2026-10-29按用户要求，终端历史版本列表、概览及引用详情统一展示顶层FlowRun，
+不再把共享同一容器的子运行记录重复列为使用者。服务端版本引用分页按顶层
+FlowRun过滤，并返回正式flow_definition_id；新增flow_run_reference_count用于
+展示，原run_reference_count及完整引用删除保护保持不变，包括只有子记录引用
+某版本时仍禁止删除。沿用正式权限、稳定倒序和按钮分页，无数据库迁移。
+
+点击FlowRun行或键盘激活名称后关闭详情，切到流程运行tab，展开所属流程、选中
+目标FlowRun、清除旧记录筛选，并在目录挂载后滚动居中、聚焦和短暂高亮。
+定位请求为不持久化的瞬态状态，不启动或暂停容器、不进入子运行工作台。
+
+验证：Web typecheck、定向ESLint、Python Ruff及git diff检查通过；17项Chromium
+回归及4项PostgreSQL回归通过。覆盖顶层分页、共享父运行与私有子记录边界、
+子记录删除保护、详情重试、折叠目录和较远目标定位、键盘与整行跳转、原设置
+管理与运行目录暂停／恢复。截图人工核对通过。唯一Alembic head为
+0184_cascade_directory_archives，任务表无CURRENT。
+
+本片从已部署OPS-64快照实施，仅含Web及只读平台API，不含并行CASE开发、迁移、
+Runtime或服务器配置变更。沿用本会话直接发布授权，发布验收待补记，无后续
+实现切片。

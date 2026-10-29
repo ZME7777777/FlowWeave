@@ -135,12 +135,12 @@ export interface EnvironmentVersion {
   base_image_reference: string; base_image_digest: string;
   runtime_capabilities: string[];
   manifest: { commands?: Record<string, string>; [key: string]: unknown };
-  error_detail?: string | null; run_reference_count: number;
+  error_detail?: string | null; run_reference_count: number; flow_run_reference_count?: number;
   reference_count: number; created_at: string;
 }
 export interface EnvironmentVersionRunPage {
   items: Array<{
-    id: string; name: string; run_no: number; run_mode: 'MANUAL' | 'AUTOMATIC';
+    id: string; name: string; flow_definition_id: string; run_no: number; run_mode: 'MANUAL' | 'AUTOMATIC';
     parent_flow_run_id: string | null; state: string; started_at: string; finished_at: string | null;
   }>;
   total: number; page: number; page_size: number;

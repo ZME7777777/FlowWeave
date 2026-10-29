@@ -1461,3 +1461,5 @@ body:has(.login-page){min-width:0}
 .account-popover[data-viewport-popover]{animation:none}
 
 .run-directory-actions>button:disabled{border-color:#dce3de;background:#f3f5f3;color:#9aa59e;opacity:.6;cursor:not-allowed;box-shadow:none}
+
+.flow-run-tree-run.located{outline:2px solid #6a9e7e;outline-offset:-2px;box-shadow:inset 0 0 0 2px #c3decb}
