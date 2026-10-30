@@ -4301,19 +4301,34 @@ test('case path fills the workspace with compact stages and on-demand context an
     }
     return json(route, path.endsWith('/cases') ? [item] : item);
   });
-  await page.getByRole('button', { name: '场景空间', exact: true }).click();
+  await page.goto('/?view=cases');
   await expect(page.locator('.case-config-panel')).toHaveCount(0);
   await expect(page.locator('.scenario-path ol li')).toHaveCount(12);
   const current = page.getByRole('article', { name: '路径卡片 迁移执行 2', exact: true });
   await expect(current).toContainText('已停止'); await expect(current).not.toContainText('运行中');
   await expect(current.getByRole('button', { name: '查看执行记录' })).toBeVisible();
+  const flowInfo = page.getByRole('complementary', { name: '流程信息', exact: true });
+  await expect(flowInfo).toContainText('迁移执行 2');
+  await expect(flowInfo).toContainText('2 / 12');
+  const recordEntry = flowInfo.getByRole('button', { name: /查看流程记录/ });
+  await expect(recordEntry).toBeVisible();
+  await page.getByRole('article', { name: '路径卡片 质量验证 3', exact: true }).click();
+  await expect(flowInfo).toContainText('质量验证 3');
+  await expect(flowInfo).toContainText('启动后可从这里进入对应的流程记录');
+  await current.click();
+  await recordEntry.click();
+  await expect(page).toHaveURL(/\/flow-runs\/execution-1$/);
+  await page.goto('/?view=cases');
+  await expect(flowInfo).toBeVisible();
   await expect(page.getByRole('button', { name: '保存基础信息' })).toHaveCount(0);
   for (const width of [1440, 1024]) {
     await page.setViewportSize({ width, height: 768 });
     const bounds = await page.locator('.case-path-panel').evaluate(element => ({ width: element.clientWidth, scroll: element.scrollHeight, height: element.clientHeight, main: element.closest('.scenario-workspace')!.clientWidth }));
     expect(bounds.width).toBeGreaterThan(bounds.main * 0.9);
     const path = await page.locator('.case-connected-path').boundingBox();
-    expect(path!.width).toBeGreaterThan(bounds.width - 50);
+    const info = await flowInfo.boundingBox();
+    expect(path!.width).toBeGreaterThan(bounds.width - info!.width - 100);
+    expect(info!.width).toBeGreaterThan(230);
     expect(bounds.scroll).toBeGreaterThan(bounds.height);
     expect((await page.locator('.case-workspace-toolbar').boundingBox())!.height).toBeLessThanOrEqual(56);
     await page.locator('.case-path-panel').hover(); await page.mouse.wheel(0, 600);

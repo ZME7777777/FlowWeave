@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { AlertTriangle, ArrowDown, Bot, Check, ChevronRight, CirclePause, CirclePlay, ClipboardList, Clock3, ExternalLink, FileText, GripVertical, Info, Link2, MessageSquareCode, Pencil, Play, Plus, Search, Settings2, Trash2, Upload, X } from 'lucide-react';
+import { AlertTriangle, ArrowDown, Bot, Check, ChevronRight, CirclePause, CirclePlay, ClipboardList, Clock3, ExternalLink, FileText, GitBranch, GripVertical, Info, Link2, ListChecks, MessageSquareCode, Pencil, Play, Plus, Search, Settings2, Trash2, Upload, X } from 'lucide-react';
 import { api, caseMaterialFileUrl } from '../api/client';
 import type { Case, CaseBasics, CaseMaterial, CaseSessionConfig, CaseStage } from '../types';
 import { CapabilityManager } from '../components/agent-session/AgentSessionWorkbench';
@@ -279,11 +279,14 @@ function ConversationTab({ item, workspaceId, onUpdated }: { item: Case; workspa
   </section>;
 }
 
-function PathTab({ item, artifactCounts, onUpdated, onOpenRun }: { item: Case; artifactCounts: Record<string, number>; onUpdated: (item: Case) => void; onOpenRun: (id: string) => void }) {
+function PathTab({ item, artifactCounts, onUpdated, onOpenRun, onOpenRecord }: { item: Case; artifactCounts: Record<string, number>; onUpdated: (item: Case) => void; onOpenRun: (id: string) => void; onOpenRecord: (stage: CaseStage) => void }) {
   const [adding, setAdding] = useState(false);
   const [parentId, setParentId] = useState('');
   const [mode, setMode] = useState('');
   const [recordId, setRecordId] = useState('');
+  const defaultStage = item.stages.find(stage => stage.state === 'ACTIVE') ?? item.stages.find(stage => stage.current_execution_flow_run_id) ?? item.stages[0];
+  const [selectedStageId, setSelectedStageId] = useState(defaultStage?.id ?? '');
+  const selectedStage = item.stages.find(stage => stage.id === selectedStageId) ?? defaultStage;
   const [draggingId, setDraggingId] = useState('');
   const [dropTarget, setDropTarget] = useState<{ id: string; after: boolean }>();
   const [status, setStatus] = useState('');
@@ -325,8 +328,9 @@ function PathTab({ item, artifactCounts, onUpdated, onOpenRun }: { item: Case; a
   const pathLocked = item.state === 'COMPLETED' || item.state === 'ARCHIVED';
   useEscapeClose(() => setAdding(false), adding && !update.isPending);
   const endDrag = () => { setDraggingId(''); setDropTarget(undefined); };
-  return <section className={`scenario-path scenario-path-editor case-connected-path${!item.stages.length ? ' is-empty' : ''}`} aria-label="Case 路径卡片">
-    <ol>{item.stages.map((stage, index) => <li key={stage.id} data-stage-id={stage.id} className={`${stage.state.toLowerCase()}${draggingId === stage.id ? ' is-dragging' : ''}${dropTarget?.id === stage.id ? dropTarget.after ? ' drop-after' : ' drop-before' : ''}`}
+  return <div className={`case-path-workspace${selectedStage ? ' has-stage-info' : ''}`}>
+    <section className={`scenario-path scenario-path-editor case-connected-path${!item.stages.length ? ' is-empty' : ''}`} aria-label="Case 路径卡片">
+    <ol>{item.stages.map((stage, index) => <li key={stage.id} data-stage-id={stage.id} className={`${stage.state.toLowerCase()}${selectedStage?.id === stage.id ? ' is-selected' : ''}${draggingId === stage.id ? ' is-dragging' : ''}${dropTarget?.id === stage.id ? dropTarget.after ? ' drop-after' : ' drop-before' : ''}`}
       onDragOver={event => {
         if (!draggingId || update.isPending || pathLocked) return;
         event.preventDefault(); event.dataTransfer.dropEffect = 'move';
@@ -342,7 +346,9 @@ function PathTab({ item, artifactCounts, onUpdated, onOpenRun }: { item: Case; a
         endDrag();
       }}>
       <div className="scenario-path-rail"><span>{index + 1}</span><i><ArrowDown size={12}/></i></div>
-      <article draggable={!pathLocked && !update.isPending && !adding && !execute.isPending} aria-label={`路径卡片 ${stage.name}`}
+      <article draggable={!pathLocked && !update.isPending && !adding && !execute.isPending} aria-label={`路径卡片 ${stage.name}`} aria-current={selectedStage?.id === stage.id ? 'true' : undefined} tabIndex={0}
+        onClick={() => setSelectedStageId(stage.id)} onFocus={() => setSelectedStageId(stage.id)}
+        onKeyDown={event => { if ((event.key === 'Enter' || event.key === ' ') && event.target === event.currentTarget) { event.preventDefault(); setSelectedStageId(stage.id); } }}
         onDragStart={event => { event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('application/x-flowweave-case-stage', stage.id); setDraggingId(stage.id); setStatus(''); }} onDragEnd={endDrag}>
         <header><div className="case-card-title"><span className={`case-stage-state ${stage.current_execution_flow_run_id ? 'executing' : stage.state.toLowerCase()}`}>{stageExecutionLabel(stage)}</span><span>{stage.execution_mode === 'STEPWISE' ? '逐步运行' : '连续运行'}</span><h3>{stage.name}</h3></div>
           <div className="scenario-card-actions"><button className="ghost case-drag-handle" aria-label={`调整顺序 ${stage.name}`} title="拖拽调整顺序，也可聚焦后按上下方向键" disabled={pathLocked || update.isPending || adding || execute.isPending} onKeyDown={event => {
@@ -370,7 +376,24 @@ function PathTab({ item, artifactCounts, onUpdated, onOpenRun }: { item: Case; a
     </div>
     <p className="case-path-status" role="status">{update.error ? '' : status}</p>
     {(update.error || execute.error) && <p className="error" role="alert">{errorMessage(update.error || execute.error)}</p>}
-  </section>;
+    </section>
+    {selectedStage && <aside className="case-stage-info" aria-label="流程信息">
+      <header><span className="case-stage-info-icon"><GitBranch size={17}/></span><span><small>流程信息</small><h2 title={selectedStage.name}>{selectedStage.name}</h2></span></header>
+      <div className="case-stage-info-badges"><span className={`case-stage-state ${selectedStage.current_execution_flow_run_id ? 'executing' : selectedStage.state.toLowerCase()}`}>{stageExecutionLabel(selectedStage)}</span><span>{selectedStage.execution_mode === 'STEPWISE' ? '逐步运行' : '连续运行'}</span></div>
+      {selectedStage.objective && <p className="case-stage-info-objective">{selectedStage.objective}</p>}
+      <dl>
+        <div><dt>阶段位置</dt><dd>{item.stages.findIndex(stage => stage.id === selectedStage.id) + 1} / {item.stages.length}</dd></div>
+        <div><dt>执行方式</dt><dd>{selectedStage.execution_mode === 'STEPWISE' ? '逐步运行' : '连续运行'}</dd></div>
+        <div><dt>当前节点</dt><dd>{selectedStage.execution?.active_node?.node_name ?? (selectedStage.current_execution_flow_run_id ? '暂无活动节点' : '尚未启动')}</dd></div>
+        <div><dt>执行进度</dt><dd>{selectedStage.execution?.progress ? `${selectedStage.execution.progress.accepted} 已接受 · ${selectedStage.execution.progress.active} 活动` : '暂无执行数据'}</dd></div>
+        <div><dt>正式产物</dt><dd>{artifactCounts[selectedStage.stage_key] ?? 0} 项</dd></div>
+      </dl>
+      <div className="case-stage-info-actions">
+        {selectedStage.current_execution_flow_run_id ? <button className="primary" onClick={() => onOpenRecord(selectedStage)}><ListChecks size={14}/>查看流程记录<ExternalLink size={12}/></button> : <p><Info size={13}/>启动后可从这里进入对应的流程记录。</p>}
+        {selectedStage.flow_run_id && <button className="ghost" onClick={() => onOpenRun(selectedStage.flow_run_id!)}>查看流程模板<ExternalLink size={12}/></button>}
+      </div>
+    </aside>}
+  </div>;
 }
 
 function CaseActivity({ item, onOpenRun, onRetry }: { item: Case; onOpenRun: (id: string) => void; onRetry?: (id: string) => void }) {
@@ -384,7 +407,7 @@ function CaseActivity({ item, onOpenRun, onRetry }: { item: Case; onOpenRun: (id
   return <section className="case-activity-list">{events.length ? events.map(event => <article key={event.id}><header><b>{event.action}</b><span className={`case-activity-state ${event.state.toLowerCase()}`}>{states[event.state] ?? event.state}</span></header><small>{event.kind} · {new Date(event.created).toLocaleString()}</small>{event.reason && <p>{event.reason}</p>}{event.error && <p className="error">{event.error}</p>}<footer>{event.runId && <button className="ghost" onClick={() => onOpenRun(event.runId!)}><ExternalLink size={12}/>查看执行记录</button>}{onRetry && event.planId && event.state === 'FAILED' && <button className="secondary" onClick={() => onRetry(event.planId!)}>重试失败动作</button>}</footer></article>) : <div className="empty"><Clock3 size={24}/><span>暂无操作记录</span></div>}</section>;
 }
 
-function ScenarioWorkspace({ item, workspaceId, onUpdated, onDelete, onOpenConversation, onOpenRun }: { item: Case; workspaceId: string; onUpdated: (item: Case) => void; onDelete: () => void; onOpenConversation: (id: string) => void; onOpenRun: (id: string) => void }) {
+function ScenarioWorkspace({ item, workspaceId, onUpdated, onDelete, onOpenConversation, onOpenRun, onOpenRecord }: { item: Case; workspaceId: string; onUpdated: (item: Case) => void; onDelete: () => void; onOpenConversation: (id: string) => void; onOpenRun: (id: string) => void; onOpenRecord: (stage: CaseStage) => void }) {
   const dialog = useProductDialog();
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState('');
@@ -464,7 +487,7 @@ function ScenarioWorkspace({ item, workspaceId, onUpdated, onDelete, onOpenConve
     {currentRound?.state === 'FAILED' && <p className="error scenario-delete-error" role="alert">协调会话创建失败：{currentRound.error_code}。重试会复用本轮配置和会话身份。</p>}
     <section className={`case-coordination-status ${failedPlans.length || failedDeliveries.length ? 'has-alert' : ''}`} role="status" aria-label="场景协调状态"><span>{failedPlans.length || failedDeliveries.length ? <AlertTriangle size={14}/> : <Bot size={14}/>}<b>{agentStatus}</b>{active && <small>当前阶段：{active.name}</small>}</span>{Boolean(failedPlans.length || failedDeliveries.length) && <button className="secondary" onClick={() => setPanel('takeover')}>查看异常与接管</button>}</section>
     {failedDeliveries[0] && <p className="case-feedback-alert" role="alert">Agent 回访未完成：{failedDeliveries[0].error_code ?? failedDeliveries[0].state}。执行事实已保留，可打开 Agent 人工接管。</p>}
-    <div className="case-single-layout"><section className="case-path-panel"><PathTab item={item} artifactCounts={artifactCounts} onUpdated={onUpdated} onOpenRun={onOpenRun}/></section></div>
+    <div className="case-single-layout"><section className="case-path-panel"><PathTab item={item} artifactCounts={artifactCounts} onUpdated={onUpdated} onOpenRun={onOpenRun} onOpenRecord={onOpenRecord}/></section></div>
     {panel && createPortal(<div className="modal-backdrop case-inspector-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) setPanel(undefined); }}><section className={`modal case-inspector scenario-workspace case-inspector-${panel}`} role="dialog" aria-modal="true" aria-label={panelTitle} onKeyDown={event => {
       if (event.key !== 'Tab') return;
       const controls = [...event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), textarea:not(:disabled), a[href]')];
@@ -494,7 +517,7 @@ export function CasesPage({ onNavigate }: { onNavigate: (path: string) => void }
       return <section className="scenario-case-wrap" key={item.id}><button className={`scenario-case-head ${isSelected ? 'active' : ''}`} onClick={() => { setSelectedId(item.id); setCreating(false); }}><i className={item.control_conversation_binding_id || item.stages.some(stage => stage.current_execution_flow_run_id) ? item.state.toLowerCase() : 'draft'}/><span><b>{item.name}</b><small>{item.control_conversation_binding_id || item.stages.some(stage => stage.current_execution_flow_run_id) || item.state === 'COMPLETED' || item.state === 'ARCHIVED' ? CASE_STATE[item.state] : '待启动'} · {completed}/{item.stages.length} 阶段</small></span><ChevronRight size={15}/></button>{isSelected && item.control_conversation_binding_id && <button className="scenario-session" onClick={() => onNavigate(`/cases/${encodeURIComponent(item.id)}/conversations/${encodeURIComponent(item.control_conversation_binding_id!)}`)}><MessageSquareCode size={13}/><span><b>Case Agent</b></span><em>打开</em></button>}</section>;
     })}</div> : <div className="scenario-empty"><ClipboardList size={21}/><b>暂无场景</b></div>}</aside>
     {creating ? <main className="scenario-workspace case-basics-workspace"><div className="scenario-workspace-inner"><header className="scenario-casebar"><h1>新建 Case</h1></header><div className="scenario-workspace-content">{workspace.error && <p className="error">{errorMessage(workspace.error)}</p>}<BasicsForm key="new-case" workspaceId={workspace.data?.id ?? ''} onCancel={() => { setCreating(false); void cases.refetch(); }} onSaved={item => { replace(item); setSelectedId(item.id); setCreating(false); }}/></div></div></main>
-      : selected ? <ScenarioWorkspace key={selected.id} item={selected} workspaceId={workspace.data?.id ?? ''} onUpdated={replace} onDelete={() => remove(selected.id)} onOpenConversation={bindingId => onNavigate(`/cases/${encodeURIComponent(selected.id)}/conversations/${encodeURIComponent(bindingId)}`)} onOpenRun={id => onNavigate(`/flow-runs/${encodeURIComponent(id)}`)}/>
+      : selected ? <ScenarioWorkspace key={selected.id} item={selected} workspaceId={workspace.data?.id ?? ''} onUpdated={replace} onDelete={() => remove(selected.id)} onOpenConversation={bindingId => onNavigate(`/cases/${encodeURIComponent(selected.id)}/conversations/${encodeURIComponent(bindingId)}`)} onOpenRun={id => onNavigate(`/flow-runs/${encodeURIComponent(id)}`)} onOpenRecord={stage => onNavigate(`/flow-runs/${encodeURIComponent(stage.current_execution_flow_run_id!)}`)}/>
         : <section className="scenario-workspace scenario-workspace-empty"><ClipboardList size={28}/><h2>选择或创建一个场景</h2></section>}
   </main>;
 }
