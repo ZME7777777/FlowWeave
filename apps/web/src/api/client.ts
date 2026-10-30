@@ -1,3 +1,4 @@
+import { writableAgentPreset, writableGates } from '../utils/agentPresetWrite';
 import type { MarketSources, MarketSkillSearch, MarketSkill, CapabilityPackageFiles, CapabilityPackageFile, CapabilityPackageComparison, CapabilityPackageFileDiff, CapabilityAssetType, CapabilityDirectoryPage, CapabilityCollectionSort, CapabilitySort, RepositoryPage } from '../types';
 import type {
   AuthUser, LdapDirectory, LdapUser, PlatformUser,
@@ -304,31 +305,8 @@ const automaticRecord = (run: AutomaticRunResponse): FlowRunAutomaticRecord => {
 const automaticNodePlansWrite = (nodePlans: FlowRunAutomaticRecordUpdate['node_plans']): FlowRunAutomaticRecordUpdate['node_plans'] =>
   Object.fromEntries(Object.entries(nodePlans).map(([nodeKey, plan]) => [nodeKey, {
     startup_prompt: plan.startup_prompt,
-    agent_preset: {
-      capability_version_ids: plan.agent_preset.capability_version_ids,
-      model_provider_id: plan.agent_preset.model_provider_id,
-      model_name: plan.agent_preset.model_name,
-      reasoning_effort: plan.agent_preset.reasoning_effort,
-      // This is an editable part of the launch preset. Keep it when projecting
-      // a frozen response back to the strict write shape; otherwise a later
-      // draft save silently replaces the configured quota fallbacks with [].
-      fallback_models: plan.agent_preset.fallback_models ?? [],
-      node_context_enabled: plan.agent_preset.node_context_enabled,
-      node_context_prompt: plan.agent_preset.node_context_prompt,
-    },
-    gates: plan.gates.map(gate => ({
-      stage: gate.stage,
-      position: gate.position,
-      gate_type: gate.gate_type,
-      enabled: gate.enabled,
-      timeout_seconds: gate.timeout_seconds,
-      config: gate.config,
-      agent_preset: {
-        model_provider_id: gate.agent_preset?.model_provider_id,
-        model_name: gate.agent_preset?.model_name,
-        reasoning_effort: gate.agent_preset?.reasoning_effort,
-      },
-    })),
+    agent_preset: writableAgentPreset(plan.agent_preset),
+    gates: writableGates(plan.gates),
     artifact_ids: plan.artifact_ids,
     input_urls: plan.input_urls,
   }]));
@@ -816,7 +794,7 @@ export const api = {
     request<FlowRunStepwiseRecord[]>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-runs/config-imports`, json('POST', document)),
   deleteStepwiseRecord: (runId: string, recordId: string) => request<void>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-runs/${encodeURIComponent(recordId)}`, json('DELETE')),
   saveStepwiseNodeDraft: (runId: string, nodeKey: string, body: { expected_row_version: number; startup_mode: 'PROMPT'; startup_prompt?: string; artifact_ids: Record<string, string>; input_urls: Record<string, string>; gates: GatePolicy[]; agent_preset: import('../types').AgentPreset }) =>
-    request<StepwiseNodeDraft>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-node-drafts/${encodeURIComponent(nodeKey)}`, json('PUT', body)),
+    request<StepwiseNodeDraft>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-node-drafts/${encodeURIComponent(nodeKey)}`, json('PUT', { ...body, agent_preset: writableAgentPreset(body.agent_preset), gates: writableGates(body.gates) })),
   saveStepwiseRuntimePorts: (runId: string, body: StepwiseRuntimePortsWrite) =>
     request<FlowRunStepwiseRecord>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-runtime-ports`, json('PUT', body)),
   startStepwiseNodeDraft: (runId: string, nodeKey: string, expected_row_version: number) =>

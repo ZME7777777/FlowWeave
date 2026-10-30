@@ -1279,9 +1279,10 @@ type DraftCredentialEntry = WebsiteCredential & { sync_state?: AgentConversation
 const HISTORY_MCP_KEY = 'flowweave-reference-history';
 const HISTORY_MCP_LABEL = '会话历史查询';
 
-export function CapabilityManager({ workspaceId, bindingId, conversationCapabilities, draftCapabilityIds, draftCredentialIds, configurationPreset = false, onClose, onCreateEnhancedConversation, onDraftCredentialIdsChange, onSaveConfiguration }: {
+export function CapabilityManager({ workspaceId, bindingId, conversationCapabilities, draftCapabilityIds, draftCredentialIds, configurationPreset = false, capabilitiesOnly = false, onDraftCapabilityIdsChange, onClose, onCreateEnhancedConversation, onDraftCredentialIdsChange, onSaveConfiguration }: {
   workspaceId: string; bindingId?: string; conversationCapabilities?: AgentSessionCapability[]; onClose: () => void;
-  draftCapabilityIds?: string[]; draftCredentialIds?: string[]; configurationPreset?: boolean;
+  draftCapabilityIds?: string[]; draftCredentialIds?: string[]; configurationPreset?: boolean; capabilitiesOnly?: boolean;
+  onDraftCapabilityIdsChange?: (ids: string[]) => void;
   onCreateEnhancedConversation?: (capabilityVersionIds: string[]) => void;
   onDraftCredentialIdsChange?: (credentialIds: string[]) => void;
   onSaveConfiguration?: (configuration: { capabilityVersionIds: string[]; credentialIds: string[] }) => Promise<void> | void;
@@ -1289,13 +1290,13 @@ export function CapabilityManager({ workspaceId, bindingId, conversationCapabili
   const { api } = useAgentSessionGateway();
   const host = useAgentSessionHost();
   const queryClient = useQueryClient();
-  const hasDefaultHistoryMcp = host.id === agentWorkspaceSessionHost.id;
+  const hasDefaultHistoryMcp = !capabilitiesOnly && host.id === agentWorkspaceSessionHost.id;
   const [query, setQuery] = useState('');
   const [kind, setKind] = useState<AgentCapabilityType | 'ALL'>('ALL');
   const [showSelectedOnly, setShowSelectedOnly] = useState(false);
   const [managerTab, setManagerTab] = useState<'CAPABILITIES' | 'CREDENTIALS'>('CAPABILITIES');
   const [selectedCollectionIds, setSelectedCollectionIds] = useState<string[]>([]);
-  const [chosenIds, setSelectedIds] = useState<string[]>([]);
+  const [chosenIds, setSelectedIds] = useState<string[]>(draftCapabilityIds ?? []);
   const [selectedCredentialIds, setSelectedCredentialIds] = useState<string[]>([]);
   const [mcpReadiness, setMcpReadiness] = useState<Record<string, AgentSessionMcpReadiness | undefined>>({});
   const [checkingMcpIds, setCheckingMcpIds] = useState<Set<string>>(new Set());
@@ -1325,7 +1326,7 @@ export function CapabilityManager({ workspaceId, bindingId, conversationCapabili
   const credentialCatalogQuery = useQuery({
     queryKey: ['website-credentials'],
     queryFn: agentWorkspaceApi.websiteCredentials,
-    enabled: Boolean(!bindingId && (managerTab === 'CREDENTIALS' || configurationPreset)),
+    enabled: Boolean(!capabilitiesOnly && !bindingId && (managerTab === 'CREDENTIALS' || configurationPreset)),
   });
   useEffect(() => {
     if (credentialSelectionInitialized.current) return;
@@ -1450,7 +1451,7 @@ export function CapabilityManager({ workspaceId, bindingId, conversationCapabili
   const save = useMutation({
     mutationFn: async () => {
       if (configurationPreset && !bindingId) {
-        const credentialIds = credentialSelectionInitialized.current
+        const credentialIds = capabilitiesOnly ? [] : credentialSelectionInitialized.current
           ? selectedCredentialIds
           : draftCredentialIds ?? credentialCatalogQuery.data?.map(credential => credential.id);
         if (credentialIds === undefined) throw new Error('认证目录正在读取，请稍候再保存。');
@@ -1506,20 +1507,16 @@ export function CapabilityManager({ workspaceId, bindingId, conversationCapabili
     },
   });
   useEscapeClose(() => { if (!save.isPending && !credentialSync.isPending) onClose(); });
-  const toggle = (item: CapabilityChoice) => setSelectedIds(current => {
-    if (current.includes(item.id)) {
-      // The formal OpenHands API is additive.  Do not display an uncheckable
-      // illusion for a capability already loaded into this native session.
+  const updateChosenIds = (next: string[]) => { setSelectedIds(next); onDraftCapabilityIdsChange?.(next); };
+  const toggle = (item: CapabilityChoice) => {
+    if (chosenIds.includes(item.id)) {
       if (bindingId && (conversationCapabilities ?? []).some(enabled => enabled.id === item.id
-        || (enabled.capability_type === 'SKILL' && item.capability_type === 'SKILL' && enabled.capability_key === item.capability_key))) return current;
-      return current.filter(id => id !== item.id);
-    }
-    return selectCapabilityVersion(current, item, byId);
-  });
-  const toggleVisible = () => setSelectedIds(current => {
-    if (allVisibleSelected) return current.filter(id => !selectableVisibleIds.includes(id));
-    return selectCapabilityVersions(current, selectableVisibleIds.map(id => byId.get(id)).filter((item): item is CapabilityChoice => Boolean(item)), byId);
-  });
+        || (enabled.capability_type === 'SKILL' && item.capability_type === 'SKILL' && enabled.capability_key === item.capability_key))) return;
+      updateChosenIds(chosenIds.filter(id => id !== item.id));
+    } else updateChosenIds(selectCapabilityVersion(chosenIds, item, byId));
+  };
+  const toggleVisible = () => updateChosenIds(allVisibleSelected ? chosenIds.filter(id => !selectableVisibleIds.includes(id))
+    : selectCapabilityVersions(chosenIds, selectableVisibleIds.map(id => byId.get(id)).filter((item): item is CapabilityChoice => Boolean(item)), byId));
   const synchronizeSkill = (item: CapabilityAsset) => setSelectedIds(current => selectCapabilityVersion(current, item, byId));
   const toggleCollectionFilter = (collectionId: string) => setSelectedCollectionIds(current => current.includes(collectionId)
     ? current.filter(id => id !== collectionId)
@@ -1545,7 +1542,7 @@ export function CapabilityManager({ workspaceId, bindingId, conversationCapabili
   return <div className="agent-capability-backdrop" role="presentation" onPointerDown={event => { if (event.target === event.currentTarget && !busy) onClose(); }}>
     <section ref={dialog} className={`agent-capability-manager${bindingId ? ' has-session-tabs' : ''}${managerTab === 'CREDENTIALS' ? ' credentials-tab' : ''}`} role="dialog" aria-modal="true" aria-labelledby="agent-capability-title" onKeyDown={trapFocus}>
       <header><h2 id="agent-capability-title">会话配置</h2><button ref={closeButton} type="button" aria-label="关闭会话配置" disabled={busy} onClick={onClose}><X size={18}/></button></header>
-      <div className="agent-session-config-tabs"><button type="button" className={managerTab === 'CAPABILITIES' ? 'active' : ''} onClick={() => setManagerTab('CAPABILITIES')}>能力</button><button type="button" className={managerTab === 'CREDENTIALS' ? 'active' : ''} onClick={() => setManagerTab('CREDENTIALS')}>认证</button></div>
+      {!capabilitiesOnly && <div className="agent-session-config-tabs"><button type="button" className={managerTab === 'CAPABILITIES' ? 'active' : ''} onClick={() => setManagerTab('CAPABILITIES')}>能力</button><button type="button" className={managerTab === 'CREDENTIALS' ? 'active' : ''} onClick={() => setManagerTab('CREDENTIALS')}>认证</button></div>}
       {managerTab === 'CREDENTIALS' ? <div className="agent-credential-sync">
         <div className="agent-credential-sync-content">
           <div className="agent-credential-sync-heading"><button type="button" className="agent-capability-select-visible" aria-label={allCredentialsSelected ? '取消全选认证' : '全选认证'} title={allCredentialsSelected ? '取消全选认证' : '全选认证'} aria-pressed={allCredentialsSelected} disabled={busy || credentialLoading || Boolean(credentialError) || !selectableCredentialIds.length} onClick={toggleAllCredentials}>{allCredentialsSelected ? <SquareCheck size={16}/> : <Square size={16}/>}</button><span>认证名称</span><span>状态</span></div>
@@ -1585,7 +1582,7 @@ export function CapabilityManager({ workspaceId, bindingId, conversationCapabili
         </button>;
         return registeredSkill ? <div key={`SKILL:${item.capability_key}`} className={`agent-capability-skill-row${checked ? ' selected' : ''}${update ? ' has-update' : ''}`} data-capability-key={item.capability_key}>{choice}{update && <div className="agent-capability-skill-update"><span className={pendingUpdate ? 'pending' : ''}>{pendingUpdate ? '待保存' : '有新版本'}</span><button type="button" className="agent-capability-sync" disabled={busy || pendingUpdate} aria-label={`同步 ${item.capability_key} 到 v${update.revision_number}`} onClick={() => synchronizeSkill(update)}><RefreshCw size={12}/>{pendingUpdate ? '已同步' : '同步'}</button></div>}</div> : choice; })}{showDefaultHistoryMcp && <button type="button" className="selected locked" disabled aria-pressed="true" aria-label={HISTORY_MCP_LABEL} aria-describedby="agent-history-builtin-label"><i className="agent-selection-checkbox" aria-hidden="true"><Check size={12}/></i><span className="agent-capability-icon mcp" aria-hidden="true" title="MCP"><Plug size={16}/></span><span className="agent-capability-copy"><span className="agent-capability-name"><b>{HISTORY_MCP_LABEL}</b><em id="agent-history-builtin-label" className="agent-capability-builtin-badge">内置</em></span><small title="read_referenced_conversation：按授权读取引用会话，支持分页、搜索与完整正文分段读取">工具：read_referenced_conversation · 按授权检索引用会话的历史内容</small></span></button>}</div>
       {(save.error || registrationFailure) && <div className="agent-capability-error"><p>{registrationFailure ?? save.error?.message}</p>{save.error instanceof ApiError && save.error.code === 'AGENT_CONVERSATION_MARKETPLACE_UNAVAILABLE' && onCreateEnhancedConversation && <div className="agent-capability-migration"><span>这条历史会话未在创建时注册原生能力市场。可新建一个空能力会话后，再按需选择要挂载的能力；此会话的历史内容会保留不变。</span><button type="button" className="secondary" disabled={save.isPending} onClick={() => onCreateEnhancedConversation([])}><Plus size={13}/>新建可使用能力的会话</button></div>}</div>}
-      <footer>{!configurationPreset && !readonlyCreationOnly && selectedMcpIds.length > 0 && <button type="button" className="secondary" disabled={save.isPending || checkingMcpIds.size > 0} onClick={() => void checkMcpReadiness(selectedMcpIds)}>重新检测 MCP</button>}<button type="button" className="secondary" disabled={save.isPending} onClick={onClose}>{readonlyCreationOnly ? '关闭' : '取消'}</button>{!readonlyCreationOnly && <button type="button" className="primary" disabled={save.isPending || checkingMcpIds.size > 0 || Boolean(configurationPreset && credentialCatalogQuery.isLoading)} onClick={() => save.mutate()}>{save.isPending ? '正在保存…' : bindingId ? '保存' : configurationPreset ? '保存会话配置' : '用于新建会话'}</button>}</footer></>}
+      <footer>{!configurationPreset && !readonlyCreationOnly && selectedMcpIds.length > 0 && <button type="button" className="secondary" disabled={save.isPending || checkingMcpIds.size > 0} onClick={() => void checkMcpReadiness(selectedMcpIds)}>重新检测 MCP</button>}<button type="button" className="secondary" disabled={save.isPending} onClick={onClose}>{readonlyCreationOnly ? '关闭' : '取消'}</button>{!readonlyCreationOnly && <button type="button" className="primary" disabled={save.isPending || checkingMcpIds.size > 0 || Boolean(configurationPreset && credentialCatalogQuery.isLoading)} onClick={() => save.mutate()}>{save.isPending ? '正在保存…' : bindingId ? '保存' : capabilitiesOnly ? '完成' : configurationPreset ? '保存会话配置' : '用于新建会话'}</button>}</footer></>}
     </section>
   </div>;
 }

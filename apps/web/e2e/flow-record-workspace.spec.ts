@@ -162,19 +162,19 @@ test('record directory groups scheduled runs and opens a full canvas workspace',
   await expect(automaticContent).toHaveAttribute('aria-pressed', 'false');
   await expect(directory).toBeVisible();
   await directory.getByRole('button', { name: `进入运行记录 ${automaticBase.name}`, exact: true }).click();
-  await expect(page.locator('.flow-run-workbench-header h1')).toHaveText(automaticBase.name);
-  await expect(page.locator('.run-graph')).toBeVisible();
-  await expect(page.locator('.run-record-detail-panel')).toBeVisible();
-  await expect(page.locator('.run-record-detail-panel')).toHaveCSS('grid-column-start', '1');
-  await expect(page.locator('.run-record-main')).toHaveCSS('grid-column-start', '2');
-  await expect(page.getByRole('button', { name: `启动连续运行 ${automaticBase.name}` })).toHaveCount(0);
+  await expect(page.locator('.flow-run-workbench-header h1:visible')).toHaveText(automaticBase.name);
+  await expect(page.locator('.run-graph:visible')).toBeVisible();
+  await expect(page.locator('.run-record-detail-panel:visible')).toBeVisible();
+  await expect(page.locator('.run-record-detail-panel:visible')).toHaveCSS('grid-column-start', '1');
+  await expect(page.locator('.run-record-main:visible')).toHaveCSS('grid-column-start', '2');
+  await expect(page.getByRole('button', { name: `启动连续运行 ${automaticBase.name}` })).toBeDisabled();
   await page.locator('.react-flow__pane').click({ position: { x: 15, y: 15 } });
-  await expect(page.locator('.flow-run-workbench-header h1')).toHaveText(automaticBase.name);
+  await expect(page.locator('.flow-run-workbench-header h1:visible')).toHaveText(automaticBase.name);
   for (const width of [1440, 1024]) {
     await page.setViewportSize({ width, height: 900 });
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(1);
-    const sidebar = await page.locator('.run-record-detail-panel').boundingBox();
-    const canvas = await page.locator('.run-record-main').boundingBox();
+    const sidebar = await page.locator('.run-record-detail-panel:visible').boundingBox();
+    const canvas = await page.locator('.run-record-main:visible').boundingBox();
     expect(sidebar!.x).toBe(0);
     expect(canvas!.x).toBe(sidebar!.width);
     expect(canvas!.x + canvas!.width).toBe(width);
@@ -190,8 +190,8 @@ test('record directory groups scheduled runs and opens a full canvas workspace',
   await expect(manualRecord).toBeChecked();
   await directory.getByRole('button', { name: `进入运行记录 ${manual.name}`, exact: true }).focus();
   await page.keyboard.press('Enter');
-  await expect(page.locator('.flow-run-workbench-header h1')).toHaveText(manual.name);
-  await expect(page.locator('.run-graph')).toBeVisible();
+  await expect(page.locator('.flow-run-workbench-header h1:visible')).toHaveText(manual.name);
+  await expect(page.locator('.run-graph:visible')).toBeVisible();
 });
 
 test('run directory pauses and restores the selected container', async ({ page }) => {

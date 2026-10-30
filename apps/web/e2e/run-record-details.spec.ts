@@ -270,8 +270,8 @@ for (const mode of ['AUTOMATIC', 'MANUAL'] as const) {
     const fallback = page.getByRole('dialog', { name: '配置额度失败 fallback 模型', exact: true });
     await fallback.getByRole('button', { name: '取消', exact: true }).click();
     await activePanel.getByRole('button', { name: /^能力/ }).click();
-    const capabilities = page.getByRole('dialog', { name: '配置能力', exact: true });
-    await capabilities.getByRole('button', { name: '保存能力', exact: true }).click();
+    const capabilities = page.getByRole('dialog', { name: '会话配置', exact: true });
+    await capabilities.getByRole('button', { name: '完成', exact: true }).click();
     await expect(panel.getByRole('heading', { name: '节点输入', exact: true })).toBeHidden();
     await tab('门禁配置').click();
     await expect(activePanel).toHaveAccessibleName('门禁配置');
@@ -301,7 +301,7 @@ for (const mode of ['AUTOMATIC', 'MANUAL'] as const) {
     await page.locator('.context-tab-select').filter({ hasText: /^Run #/ }).click();
     await expect(panel.locator('.startup-prompt-summary')).toContainText('本次编辑后的启动任务');
     await expect(panel.getByRole('region', { name: '节点输入', exact: true })).toContainText('2/2 项已配置');
-    await panel.locator('.node-console-header-actions').getByRole('button', { name: '保存配置', exact: true }).click();
+    await panel.locator('.node-console-header-actions').getByRole('button', { name: '保存', exact: true }).click();
     await expect.poll(() => writes.length).toBe(1);
     const body = writes[0];
     if (mode === 'AUTOMATIC') {
@@ -635,4 +635,206 @@ test('empty frozen node configuration stays explicit and read-only', async ({ pa
   await page.keyboard.press('Escape');
   await expect(dialog).toHaveCount(0);
   await expect(opener).toBeFocused();
+});
+
+
+function manualDraftRecord(preset: object = configuredPreset) {
+  const draft = { row_version: 1, startup_mode: 'PROMPT', startup_prompt: '执行当前节点任务', agent_preset: { capability_version_ids: [], node_context_enabled: false, ...preset }, gates: [], input_bindings: [] as Array<{ input_field_key: string; artifact_version_id: string }> };
+  return { ...run, id: 'manual-1', name: '逐步配置记录', parent_flow_run_id: run.id, start_node_key: 'first', node_runs: [], artifacts: [], progress: { accepted: 0, terminal: 0, active: 0 }, stepwise_node_drafts: { first: draft, second: structuredClone(draft) } };
+}
+
+test('incomplete configuration focuses its field and missing inputs validate before writing', async ({ page }) => {
+  const writes = await mocks(page, manualDraftRecord({ model_provider_id: null, model_name: null }), 'MANUAL');
+  await openRecord(page, 'MANUAL');
+  const panel = page.getByTestId('node-configuration-panel');
+  await expect(panel.getByRole('button', { name: '启动逐步节点', exact: true })).toBeDisabled();
+  await panel.getByRole('button', { name: '保存', exact: true }).click();
+  await expect(panel.getByRole('tab', { name: 'Agent 配置', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(panel.locator('[data-configuration-field=model]')).toBeFocused();
+  await expect(panel.locator('[data-configuration-field=model]')).toHaveAttribute('aria-invalid', 'true');
+  await expect(panel.getByRole('alert')).toHaveText('请选择模型供应商和模型。');
+  expect(writes).toHaveLength(0);
+  await panel.getByRole('tab', { name: '输入与上下文', exact: true }).click();
+  await panel.getByRole('button', { name: '填写节点输入', exact: true }).click();
+  const inputs = page.getByRole('dialog', { name: '填写节点输入', exact: true });
+  await inputs.getByRole('button', { name: '保存输入并继续', exact: true }).click();
+  await expect(inputs.getByRole('textbox')).toBeFocused();
+  await expect(inputs.getByRole('textbox')).toHaveAttribute('aria-invalid', 'true');
+  await inputs.getByRole('textbox').fill('not-an-address');
+  await inputs.getByRole('button', { name: '保存输入并继续', exact: true }).click();
+  await expect(inputs.getByRole('alert').first()).toHaveText('请填写完整的 HTTP 或 HTTPS 地址。');
+  await page.screenshot({ path: '../../.tmp/ops83/input-validation.png' });
+});
+
+test('only the execution position is current while downstream drafts stay grey and cannot start', async ({ page }) => {
+  const initial = manualDraftRecord();
+  const writes = await mocks(page, initial, 'MANUAL');
+  await openRecord(page, 'MANUAL');
+  await expect(page.locator('[data-active-flow-target=true]')).toHaveCount(1);
+  await expect(page.locator('[data-active-flow-target=true]')).toContainText('测试节点');
+  await page.locator('.run-graph-node').filter({ has: page.getByText('测试节点2', { exact: true }) }).click();
+  const panel = page.getByTestId('node-configuration-panel');
+  await expect(panel.locator('header').first()).toContainText('测试节点2');
+  await expect(page.locator('.run-graph-node.snapshot-selected')).toHaveClass(/inactive/);
+  await expect(page.locator('.run-graph-node.snapshot-selected')).not.toHaveAttribute('data-active-flow-target');
+  await expect(panel.getByRole('button', { name: '启动逐步节点', exact: true })).toBeDisabled();
+  await expect(panel.getByRole('button', { name: '保存', exact: true })).toBeEnabled();
+  for (const width of [1440, 1024]) {
+    await page.setViewportSize({ width, height: 800 });
+    expect((await page.locator('.run-record-detail-panel').boundingBox())!.width).toBe(350);
+    const buttons = await panel.locator('.node-console-header-actions>button').evaluateAll(items => items.map(item => { const r = item.getBoundingClientRect(); return { y:r.y, height:r.height }; }));
+    expect(buttons[0]).toEqual(buttons[1]);
+    await expect(panel.getByRole('tab', { name: '执行记录', exact:true })).toBeInViewport();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
+    await page.screenshot({ path: `../../.tmp/ops83/stepwise-${width}.png` });
+  }
+  expect(writes).toHaveLength(0);
+});
+
+test('saving a frozen projection strips audit fields and unsaved changes disable start', async ({ page }) => {
+  const initial = manualDraftRecord({ ...configuredPreset, capabilities: [{ id:'frozen-audit' }] });
+  initial.stepwise_node_drafts.first.input_bindings = [
+    { input_field_key:'input_1', artifact_version_id:'input-url' }, { input_field_key:'input_2', artifact_version_id:'input-file' },
+  ];
+  const writes = await mocks(page, initial, 'MANUAL');
+  await openRecord(page, 'MANUAL');
+  const panel = page.getByTestId('node-configuration-panel');
+  await expect(panel.getByRole('button', { name: '启动逐步节点', exact:true })).toBeEnabled();
+  await panel.locator('.startup-prompt-summary').getByRole('button', { name:'编辑', exact:true }).click();
+  const prompt = page.getByRole('dialog', { name:'编辑启动提示词' });
+  await prompt.getByRole('textbox').fill('修改后的任务');
+  await prompt.getByRole('button', { name:'完成', exact:true }).click();
+  await expect(panel.getByRole('button', { name:'启动逐步节点', exact:true })).toBeDisabled();
+  await panel.getByRole('button', { name:'保存', exact:true }).click();
+  await expect.poll(() => writes.length).toBe(1);
+  expect(writes[0].agent_preset).not.toHaveProperty('capabilities');
+  await expect(panel.getByRole('button', { name:'启动逐步节点', exact:true })).toBeEnabled();
+  let startVersion: number | undefined;
+  await page.route('**/api/v1/flow-runs/manual-1/stepwise-node-drafts/first/start', route => {
+    startVersion = route.request().postDataJSON().expected_row_version;
+    return route.fulfill({ json:{ ...attempt, id:'started-attempt', node_run_id:'started-node', binding_id:'started-binding', state:'WAITING_START_CONFIRMATION' } });
+  });
+  await panel.getByRole('button', { name:'启动逐步节点', exact:true }).click();
+  await expect(page).toHaveURL(/flow-runs\/manual-1\/nodes\/started-node\/attempts\/started-attempt\/agent-sessions\/started-binding$/);
+  expect(startVersion).toBe(2);
+});
+
+test('server validation locates the relevant configuration instead of a generic error', async ({ page }) => {
+  await mocks(page, manualDraftRecord(), 'MANUAL');
+  await page.route('**/api/v1/flow-runs/manual-1/stepwise-node-drafts/first', route => route.fulfill({ status:422, json:{ error:{ code:'INVALID_COMMAND', message:'invalid', details:{ errors:[{ loc:['body','gates',0,'agent_preset','model_name'], type:'missing' }] } } } }));
+  await openRecord(page, 'MANUAL');
+  const panel = page.getByTestId('node-configuration-panel');
+  await panel.getByRole('button', { name:'保存', exact:true }).click();
+  await expect(panel.getByRole('tab', { name:'门禁配置', exact:true })).toHaveAttribute('aria-selected','true');
+  await expect(panel.locator('[data-configuration-field=gates]')).toBeFocused();
+  await expect(panel.getByRole('alert')).toHaveText('请检查门禁的提示词、模型和执行配置。');
+  await expect(panel).not.toContainText('提交的数据不符合要求');
+});
+
+test('automatic editor and run directory keep the full presentation on return', async ({ page }) => {
+  await mocks(page, frozenAutomaticBase);
+  await openRecord(page, 'AUTOMATIC');
+  const panel = page.getByTestId('node-configuration-panel');
+  await panel.getByRole('tab', { name:'Agent 配置', exact:true }).click();
+  await page.getByRole('button', { name:'节点中心', exact:true }).click();
+  await page.locator('.context-tab-select').filter({ hasText:/^Run #/ }).click();
+  await expect(panel.getByRole('tab', { name:'Agent 配置', exact:true })).toHaveAttribute('aria-selected','true');
+  await page.getByRole('button', { name:'返回运行记录', exact:true }).click();
+  await expect(page.locator('.flow-run-tree-run.active')).toContainText(run.name);
+  await expect(page.locator('.flow-run-record-row')).toHaveCount(1);
+});
+
+
+test('returning to the directory preserves filters selection expansion details and scroll', async ({ page }) => {
+  await mocks(page, frozenAutomaticBase);
+  await page.route('**/api/v1/flow-runs/run-1/records?**', route => route.fulfill({ json: { items: Array.from({length:60}, (_, index) => ({ kind:'AUTOMATIC', id:index === 35 ? automaticBase.id : `other-${index}`, name:index === 35 ? automaticBase.name : `自动记录 ${index + 2}`, state:'DRAFT', started_at:now })), next_cursor:null } }));
+  await page.goto('/');
+  await page.getByRole('button', { name:'流程运行', exact:true }).click();
+  await page.locator('.flow-run-tree-select').filter({ hasText:definition.name }).click();
+  await page.locator('.flow-run-tree-run').filter({ hasText:run.name }).click();
+  await page.getByRole('button', { name:'连续', exact:true }).click();
+  await page.getByRole('searchbox', { name:'搜索运行记录', exact:true }).fill('自动');
+  await expect(page.locator('.flow-run-record-row')).toHaveCount(60);
+  const row = page.locator('.flow-run-record-row').filter({ has:page.getByText(automaticBase.name, { exact:true }) });
+  await row.locator('.flow-run-record-select').click();
+  await page.getByLabel('运行信息', { exact:true }).click();
+  await row.locator('.flow-run-record-enter').scrollIntoViewIfNeeded();
+  const scroll = await page.locator('.flow-run-record-directory-list').evaluate(element => element.scrollTop);
+  expect(scroll).toBeGreaterThan(0);
+  await row.locator('.flow-run-record-enter').click();
+  await expect(page.getByRole('button', { name:'返回运行记录', exact:true })).toBeVisible();
+  await page.getByRole('button', { name:'返回运行记录', exact:true }).click();
+  await expect(page.getByRole('searchbox', { name:'搜索运行记录', exact:true })).toHaveValue('自动');
+  await expect(page.locator('.run-record-filter').getByRole('button', { name:'连续', exact:true })).toHaveClass('active');
+  await expect(page.locator('.flow-run-tree-select')).toHaveAttribute('aria-expanded','true');
+  await expect(row).toHaveClass(/selected/);
+  await expect.poll(() => page.locator('.flow-run-record-directory-list').evaluate(element => element.scrollTop)).toBe(scroll);
+});
+
+
+test('node capability selection reuses Agent icons filters and keeps the unsaved draft', async ({ page }) => {
+  await mocks(page, manualDraftRecord(), 'MANUAL');
+  const capability = { id:'skill-a', capability_key:'共享图标技能', capability_type:'SKILL', description:'测试技能', is_latest:true, revision_number:1 };
+  await page.route('**/api/v1/capabilities', route => route.fulfill({ json:[capability] }));
+  await page.route('**/api/v1/capability-collections', route => route.fulfill({ json:[{ id:'collection-a', name:'测试技能组', members:[capability] }] }));
+  await openRecord(page, 'MANUAL');
+  const panel = page.getByTestId('node-configuration-panel');
+  await panel.getByRole('tab', { name:'Agent 配置', exact:true }).click();
+  await panel.getByRole('button', { name:/^能力/ }).click();
+  const dialog = page.getByRole('dialog', { name:'会话配置', exact:true });
+  await expect(dialog.locator('.agent-capability-icon.skill>svg')).toHaveClass(/lucide-sparkles/);
+  await expect(dialog.locator('.agent-selection-checkbox')).toHaveCount(1);
+  await expect(dialog.getByRole('button', { name:'认证', exact:true })).toHaveCount(0);
+  await dialog.getByRole('button', { name:'测试技能组', exact:true }).click();
+  await dialog.getByRole('button', { name:/共享图标技能/ }).click();
+  await page.keyboard.press('Escape');
+  await expect(panel.getByRole('button', { name:/^能力/ })).toContainText('已选 1 项');
+  await panel.getByRole('button', { name:/^能力/ }).click();
+  await expect(dialog.getByRole('button', { name:/共享图标技能/ })).toHaveAttribute('aria-pressed','true');
+  await page.screenshot({ path:'../../.tmp/ops83/shared-capabilities.png' });
+});
+
+test('reached successor and historical selection remain separate across temporary tabs', async ({ page }) => {
+  const initial = manualDraftRecord();
+  const accepted = { ...nodeRun, state:'ACCEPTED', accepted_attempt_id:completedAttempt.id, attempts:[completedAttempt] };
+  await mocks(page, { ...initial, node_runs:[accepted], current_node_key:'second' }, 'MANUAL');
+  await openRecord(page, 'MANUAL');
+  await expect(page.locator('[data-active-flow-target=true]')).toHaveCount(1);
+  await expect(page.locator('[data-active-flow-target=true]')).toContainText('测试节点2');
+  await page.locator('.run-graph-node').filter({ has:page.getByText('测试节点', {exact:true}) }).click();
+  await expect(page.getByTestId('attempt-state')).toHaveText('ACCEPTED');
+  await page.getByRole('button', { name:'产物流转', exact:true }).click();
+  await page.getByRole('button', { name:'节点中心', exact:true }).click();
+  await page.locator('.context-tab-select').filter({hasText:/^Run #/}).click();
+  await expect(page.getByTestId('attempt-state')).toHaveText('ACCEPTED');
+  await expect(page.locator('.run-graph-node.snapshot-selected')).toContainText('测试节点');
+  await expect(page.getByRole('button', { name:'产物流转', exact:true })).toHaveAttribute('aria-pressed','true');
+  await expect(page.locator('[data-active-flow-target=true]')).toContainText('测试节点2');
+});
+
+
+test('an executing stepwise node does not prevent editing an unstarted downstream draft', async ({ page }) => {
+  await mocks(page, { ...manualDraftRecord(), node_runs:[nodeRun] }, 'MANUAL');
+  await openRecord(page, 'MANUAL');
+  await expect(page.getByTestId('attempt-state')).toHaveText('EXECUTING');
+  await page.locator('.run-graph-node').filter({ has:page.getByText('测试节点2', {exact:true}) }).click();
+  const panel = page.getByTestId('node-configuration-panel');
+  await expect(panel.locator('header').first()).toContainText('测试节点2');
+  await expect(panel.getByRole('button', {name:'保存',exact:true})).toBeEnabled();
+  await expect(panel.getByRole('button', {name:'启动逐步节点',exact:true})).toBeDisabled();
+  await expect(page.locator('[data-active-flow-target=true]')).toHaveCount(1);
+  await expect(page.locator('[data-active-flow-target=true]')).toContainText('测试节点');
+});
+
+test('a saved reached transition draft can start after its accepted predecessor', async ({ page }) => {
+  const initial = manualDraftRecord();
+  const noInputsSnapshot = { ...snapshot, definition:{ ...definition, nodes:definition.nodes.map(item => ({...item,asset:{...item.asset,inputs:[]}})) } };
+  const accepted = { ...nodeRun, state:'ACCEPTED', accepted_attempt_id:completedAttempt.id, attempts:[completedAttempt] };
+  const waiting = { ...nodeRun, id:'waiting-second', flow_node_snapshot_key:'second', sequence_no:2, created_from:'FLOW_TRANSITION', attempts:[{...attempt,id:'waiting-input',node_run_id:'waiting-second',state:'WAITING_INPUT',startup_prompt:null}] };
+  await mocks(page, { ...initial, snapshots:[noInputsSnapshot], node_runs:[accepted,waiting] }, 'MANUAL');
+  await openRecord(page, 'MANUAL');
+  await page.locator('.run-graph-node').filter({ has:page.getByText('测试节点2', {exact:true}) }).click();
+  await expect(page.getByTestId('node-configuration-panel').getByRole('button', {name:'启动逐步节点',exact:true})).toBeEnabled();
+  await expect(page.locator('[data-active-flow-target=true]')).toHaveCount(1);
+  await expect(page.locator('[data-active-flow-target=true]')).toContainText('测试节点2');
 });

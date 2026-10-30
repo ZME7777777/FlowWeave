@@ -1796,7 +1796,7 @@ for (const mode of ['draft', 'existing', 'preset'] as const) {
     await expect(builtin).toBeDisabled();
     await expect(builtin).toHaveAttribute('aria-pressed', 'true');
     await expect(builtin.locator('em')).toHaveText('内置');
-    await expect(builtin.locator('small')).toHaveText('按授权检索引用会话的历史内容');
+    await expect(builtin.locator('small')).toHaveText('工具：read_referenced_conversation · 按授权检索引用会话的历史内容');
     await expect(builtin.locator('i svg')).toHaveCount(1);
     await expect(dialog.locator('.agent-capability-list > button').last()).toHaveAccessibleName('会话历史查询');
     await dialog.getByRole('button', { name: '测试技能组合', exact: true }).click();

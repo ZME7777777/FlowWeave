@@ -100,7 +100,11 @@ export function RunsPage() {
     staleTime: 10_000,
     retry: false,
   });
+  const recordScrollScope = useRef<string | undefined>(undefined);
   useEffect(() => {
+    const scope = JSON.stringify([selectedRunId, recordFilter, recordSearchTerm]);
+    if (recordScrollScope.current === scope) return;
+    recordScrollScope.current = scope;
     if (recordListRef.current) recordListRef.current.scrollTop = 0;
     if (runInfoRef.current) runInfoRef.current.open = false;
   }, [selectedRunId, recordFilter, recordSearchTerm]);
