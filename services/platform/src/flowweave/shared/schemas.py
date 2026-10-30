@@ -919,6 +919,8 @@ class CaseControlPlanWrite(ApiModel):
         "CONFIGURE_EXECUTION",
         "START_EXECUTION",
         "START_STEPWISE_NODE",
+        "ACCEPT_STEPWISE_ATTEMPT",
+        "REJECT_STEPWISE_ATTEMPT",
         "STOP_EXECUTION",
         "RERUN_STEPWISE_NODE",
     ]

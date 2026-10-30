@@ -17,7 +17,14 @@ from flowweave.modules.cases.infrastructure.models import (
 )
 from flowweave.modules.flows.infrastructure.models import FlowDefinition
 from flowweave.modules.model_providers.infrastructure.models import ModelProvider, ProviderModel
-from flowweave.modules.runs.infrastructure.models import FlowRun, NodeRun, RunSnapshot
+from flowweave.modules.runs.infrastructure.models import (
+    ArtifactVersion,
+    CandidateOutputSet,
+    FlowRun,
+    NodeAttempt,
+    NodeRun,
+    RunSnapshot,
+)
 from flowweave.modules.users.application.security import tenant_user
 from flowweave.shared.credentials_crypto import encrypt_secret
 from flowweave.shared.errors import DomainError
@@ -415,6 +422,196 @@ def test_stepwise_start_passes_frozen_draft_and_native_binding_result(flow_case,
     assert projection(rpc(g, "manage_case_flow", args)) == saved
     assert len(calls) == 1 and calls[0][:3] == (g.execution.id, "first", 1)
     assert "case-plan-stepwise-start:" in calls[0][3]
+
+
+def review_ready(g):
+    stepwise(g)
+    g.node = NodeRun(
+        flow_run_id=g.execution.id,
+        flow_node_snapshot_key="first",
+        sequence_no=1,
+        state="ACTIVE",
+        created_from="STEPWISE_DRAFT_START",
+    )
+    g.db.add(g.node)
+    g.db.flush()
+    g.attempt = NodeAttempt(
+        node_run_id=g.node.id,
+        attempt_no=1,
+        snapshot_id=g.execution.active_snapshot_id,
+        state="WAITING_ACCEPTANCE",
+        startup_prompt="reviewed prompt",
+        agent_preset_json=g.preset,
+        gate_policies_json=[],
+    )
+    g.db.add(g.attempt)
+    g.db.flush()
+    artifact = ArtifactVersion(
+        flow_run_id=g.execution.id,
+        producer_attempt_id=g.attempt.id,
+        field_key="report",
+        version_no=1,
+        artifact_type="URL",
+        uri="https://example.test/result",
+        source="RUNTIME",
+    )
+    g.db.add(artifact)
+    g.db.flush()
+    g.candidate = CandidateOutputSet(
+        attempt_id=g.attempt.id,
+        completion_event_id="native-completion",
+        status="GATE_PASSED",
+        artifact_ids_json=[artifact.id],
+    )
+    g.db.add(g.candidate)
+    g.db.flush()
+    g.attempt.current_candidate_output_set_id = g.candidate.id
+    g.execution.automation_plan_json = {"start_node_key": "first", "node_drafts": {}}
+    g.db.commit()
+
+
+def test_case_review_requires_explicit_acceptance_before_successor_start(flow_case, monkeypatch):
+    g = flow_case
+    review_ready(g)
+    starts = []
+    monkeypatch.setattr(
+        service.orchestration,
+        "start_stepwise_node_draft",
+        lambda *args: starts.append(args),
+    )
+    review = projection(rpc(g, "read_case_flow", {"section": "nodes"}))
+    first = review["items"][0]["execution"]
+    assert first["latest_attempt"]["id"] == g.attempt.id
+    assert first["latest_attempt"]["state"] == "WAITING_ACCEPTANCE"
+    assert first["latest_attempt"]["state_version"] == 1
+    accepted = projection(
+        rpc(
+            g,
+            "manage_case_flow",
+            action(
+                g,
+                "ACCEPT_STEPWISE_ATTEMPT",
+                flow_node_key="first",
+                node_run_id=g.node.id,
+                node_attempt_id=g.attempt.id,
+                expected_attempt_state_version=1,
+            ),
+        )
+    )
+    assert accepted["state"] == "SUCCEEDED"
+    refresh(g)
+    assert g.node.state == "ACCEPTED"
+    drafts = projection(rpc(g, "read_case_flow", {"section": "drafts"}))["items"]
+    assert [item["flow_node_key"] for item in drafts] == ["second"]
+    assert starts == []
+
+
+def test_case_can_reject_then_configure_and_start_replacement_attempt(flow_case, monkeypatch):
+    g = flow_case
+    review_ready(g)
+    monkeypatch.setattr(service.orchestration, "_dispatch_readiness", lambda *args: None)
+    monkeypatch.setattr(
+        service.orchestration, "ensure_node_attempt_workspace", lambda *args, **kwargs: "test"
+    )
+    rejected = projection(
+        rpc(
+            g,
+            "manage_case_flow",
+            action(
+                g,
+                "REJECT_STEPWISE_ATTEMPT",
+                flow_node_key="first",
+                node_run_id=g.node.id,
+                node_attempt_id=g.attempt.id,
+                expected_attempt_state_version=1,
+                copy_input_bindings=True,
+            ),
+        )
+    )
+    assert rejected["state"] == "SUCCEEDED"
+    refresh(g)
+    replacement = g.db.scalar(
+        select(NodeAttempt)
+        .where(NodeAttempt.node_run_id == g.node.id)
+        .order_by(NodeAttempt.attempt_no.desc())
+    )
+    assert g.attempt.state == "REJECTED" and replacement.attempt_no == 2
+    assert replacement.state == "WAITING_INPUT"
+    assert replacement.startup_prompt is None
+    assert replacement.agent_preset_json == g.preset
+
+
+def test_case_reopens_accepted_node_for_editable_rerun_without_rewriting_history(flow_case):
+    g = flow_case
+    review_ready(g)
+    g.attempt.state = "ACCEPTED"
+    g.node.state = "ACCEPTED"
+    g.node.accepted_attempt_id = g.attempt.id
+    g.execution.automation_plan_json = {
+        "start_node_key": "first",
+        "node_drafts": {
+            "second": {
+                "row_version": 2,
+                "startup_mode": "PROMPT",
+                "startup_prompt": "successor",
+                "agent_preset": g.preset,
+                "input_bindings": {},
+                "gates": [],
+            }
+        },
+    }
+    g.db.commit()
+    result = projection(
+        rpc(
+            g,
+            "manage_case_flow",
+            action(
+                g,
+                "RERUN_STEPWISE_NODE",
+                flow_node_key="first",
+                node_run_id=g.node.id,
+            ),
+        )
+    )
+    assert result["state"] == "SUCCEEDED"
+    refresh(g)
+    assert g.node.state == "ACCEPTED" and g.node.accepted_attempt_id == g.attempt.id
+    drafts = projection(rpc(g, "read_case_flow", {"section": "drafts"}))["items"]
+    assert drafts[0]["flow_node_key"] == "first"
+    assert drafts[0]["rerun_source_node_run_id"] == g.node.id
+
+
+def test_case_rerun_fails_after_successor_materializes(flow_case):
+    g = flow_case
+    review_ready(g)
+    g.attempt.state = "ACCEPTED"
+    g.node.state = "ACCEPTED"
+    g.node.accepted_attempt_id = g.attempt.id
+    g.db.add(
+        NodeRun(
+            flow_run_id=g.execution.id,
+            flow_node_snapshot_key="second",
+            sequence_no=2,
+            state="ACTIVE",
+            created_from="STEPWISE_DRAFT_START",
+        )
+    )
+    g.db.commit()
+    result = projection(
+        rpc(
+            g,
+            "manage_case_flow",
+            action(
+                g,
+                "RERUN_STEPWISE_NODE",
+                flow_node_key="first",
+                node_run_id=g.node.id,
+            ),
+        )
+    )
+    assert result["state"] == "FAILED"
+    refresh(g)
+    assert "first" not in g.execution.automation_plan_json["node_drafts"]
 
 
 @pytest.mark.parametrize("state", ["PAUSED", "COMPLETED", "ARCHIVED"])

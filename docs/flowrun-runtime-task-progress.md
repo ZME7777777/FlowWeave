@@ -13677,10 +13677,41 @@ Web remote-release-finish 通过，无过期受管上下文；保留当前镜像
 | CASE-04 | DONE | CASE-03B | 产物登记与跨容器授权读取 |
 | CASE-05A | DONE | CASE-02、CASE-04 | 当前执行关键事件的事务性持久入队与正式来源去重 |
 | CASE-05B | DONE | CASE-05A | 后台串行回访、原生消息提交对账、资料／配置变更与恢复 |
-| CASE-06 | READY | CASE-03B、CASE-05B | 逐步复核、配置修订与重跑 |
-| CASE-07 | PENDING | CASE-04、CASE-05B、CASE-06 | 连续修订、跨阶段决策与完成 |
+| CASE-06 | DONE | CASE-03B、CASE-05B | 逐步复核、配置修订与重跑 |
+| CASE-07 | READY | CASE-04、CASE-05B、CASE-06 | 连续修订、跨阶段决策与完成 |
 | CASE-08 | PENDING | CASE-02–CASE-07 | 前端反馈与接管统一 |
 | CASE-09 | PENDING | CASE-01–CASE-08 | 全链路与恢复验收 |
+
+
+### CASE-06 逐步复核、配置修订与重跑 — DONE
+
+依赖：CASE-03B、CASE-05B（DONE）。扩展既有冻结`flowweave-case-flows`原生MCP，
+不新增旁路执行器或扩大Case身份参数。`read_case_flow`的节点投影新增最新Attempt的ID、
+序号、状态、乐观版本、候选输出集及错误码；草稿投影公开可审计的
+`rerun_source_node_run_id`，仍不返回Runtime物理身份、工作目录或完整原生事件。
+
+`manage_case_flow`新增三类受控逐步动作：对`WAITING_ACCEPTANCE`的精确Attempt执行正式
+接受或拒绝，以及在直接后继均未物化时把已接受前驱重新打开为可编辑重跑草稿。每项动作
+冻结Case／stage／当前执行／Run／Snapshot、节点与Attempt身份及状态版本，复用原
+`CaseControlPlan`的幂等键、失败审计、显式关联重试和当前协调binding逐次授权。接受直接调用
+既有`accept_attempt`，只生成并端口绑定下游草稿；拒绝调用`reject_attempt`并创建正式替代
+Attempt，保留旧Attempt、会话、产物与来源事件。重跑调用既有
+`reactivate_stepwise_node_for_rerun`，复用同一节点工作目录并保留原接受记录；最终节点、终态
+运行、未接受节点及后继已物化时仍拒绝。后续配置与启动继续走既有草稿保存和
+`START_STEPWISE_NODE`，模板、历史执行和已物化后继不可修改。
+
+移除Case接受后的平台自动后继分发：编排层仍按正式接受生成下游草稿，协调Agent必须重新读取、
+必要时修订并显式启动，避免在质量复核窗口前抢先消费结果。普通非Case逐步运行契约不变。
+新增0188迁移只扩展控制动作约束；降级遇到新增接受／拒绝审计记录时安全拒绝，避免丢失持久
+执行证据。连续运行修订、阶段切换和Case完成仍明确属于CASE-07。
+
+验证（2026-10-30）：受影响Python `py_compile`、Ruff format/check、动作schema实例化、
+ORM动作约束及“Case后继无自动分发”静态契约通过，`git diff --check`通过。新增四项真实
+PostgreSQL／HTTP回归覆盖显式接受后仅产生下游草稿、正式拒绝替代Attempt、可编辑重跑保留
+历史，以及后继物化后拒绝重跑；本机无Docker socket且无已配置`TEST_DATABASE_URL`，测试
+在Testcontainers PostgreSQL夹具建立前以4项环境错误停止，未进入业务断言，不能记为通过。
+本片未连接数据库、未调用模型、未发布Runtime或远端服务。下一切片CASE-07 READY；独立提交
+成功后停止。
 
 ### CASE-05B 后台串行回访与原生消息提交收据 — DONE
 

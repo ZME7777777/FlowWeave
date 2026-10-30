@@ -36,6 +36,7 @@ from flowweave.shared.database import now
 from flowweave.shared.errors import DomainError, conflict, illegal, not_found
 from flowweave.shared.schemas import (
     AttemptStartWrite,
+    AttemptVersionWrite,
     AutomaticRunCopyWrite,
     AutomaticRunStartWrite,
     CaseControlConversationWrite,
@@ -52,6 +53,7 @@ from flowweave.shared.schemas import (
     CaseStageStateWrite,
     CaseUpdateWrite,
     NodeRunCopyWrite,
+    RejectWrite,
     StepwiseNodeDraftStartWrite,
     StepwiseRunRecordCopyWrite,
 )
@@ -1388,6 +1390,53 @@ def execute_case_control_plan(db: Session, case_id: str, plan_id: str) -> dict[s
                     f"case-plan-stepwise-start:{plan.id}",
                 )
             }
+        elif plan.action in {"ACCEPT_STEPWISE_ATTEMPT", "REJECT_STEPWISE_ATTEMPT"}:
+            requested = plan.input_snapshot_json.get("requested", {})
+            attempt_id = str(requested.get("node_attempt_id") or "")
+            expected_version = requested.get("expected_attempt_state_version")
+            if (
+                not attempt_id
+                or not isinstance(expected_version, int)
+                or plan.node_attempt_id != attempt_id
+            ):
+                raise conflict("stepwise review lacks a frozen Attempt reference", plan_id=plan.id)
+            if plan.action == "ACCEPT_STEPWISE_ATTEMPT":
+                result = {
+                    "flow_run": orchestration.accept_attempt(
+                        db,
+                        attempt_id,
+                        AttemptVersionWrite(expected_state_version=expected_version),
+                        f"case-plan-accept:{plan.id}",
+                    )
+                }
+            else:
+                result = {
+                    "attempt": orchestration.reject_attempt(
+                        db,
+                        attempt_id,
+                        RejectWrite(
+                            expected_state_version=expected_version,
+                            reason=plan.reason,
+                            copy_input_bindings=bool(requested.get("copy_input_bindings", True)),
+                        ),
+                        f"case-plan-reject:{plan.id}",
+                    )
+                }
+        elif plan.action == "RERUN_STEPWISE_NODE":
+            if not stage.current_execution_flow_run_id or not plan.node_run_id:
+                raise conflict("Case rerun lacks an execution or node reference", plan_id=plan.id)
+            requested = plan.input_snapshot_json.get("requested", {})
+            node_key = str(requested.get("flow_node_key") or "")
+            if not node_key or requested.get("node_run_id") != plan.node_run_id:
+                raise conflict("stepwise rerun lacks a frozen node reference", plan_id=plan.id)
+            result = {
+                "draft": orchestration.reactivate_stepwise_node_for_rerun(
+                    db,
+                    stage.current_execution_flow_run_id,
+                    node_key,
+                    plan.node_run_id,
+                )
+            }
         elif plan.action == "STOP_EXECUTION":
             if not stage.current_execution_flow_run_id:
                 raise conflict("Case stage has no execution copy", stage_id=stage.id)
@@ -1509,71 +1558,13 @@ def retry_case_control_plan(db: Session, case_id: str, plan_id: str) -> dict[str
 
 
 def advance_case_stepwise_execution(db: Session, flow_run_id: str) -> None:
-    """Plan and dispatch every newly-ready node of active Case stepwise copies."""
+    """Keep accepted Case outputs editable; the coordinator starts successors explicitly."""
 
-    stages = list(
-        db.scalars(
-            select(CaseStage).where(
-                CaseStage.current_execution_flow_run_id == flow_run_id,
-                CaseStage.execution_mode == "STEPWISE",
-                CaseStage.state == "ACTIVE",
-            )
-        )
-    )
-    for stage in stages:
-        item = _case(db, stage.case_id)
-        if item.state != "ACTIVE":
-            continue
-        run = _case_linked_run(db, item.id, flow_run_id)
-        detail = orchestration.run_detail(db, run.id, include_artifacts=False)
-        snapshot = next(
-            (
-                candidate
-                for candidate in detail["snapshots"]
-                if candidate["id"] == detail["active_snapshot_id"]
-            ),
-            detail["snapshots"][-1] if detail["snapshots"] else None,
-        )
-        if snapshot is None:
-            continue
-        started_keys = {str(node_run["flow_node_snapshot_key"]) for node_run in detail["node_runs"]}
-        accepted_keys = {
-            str(node_run["flow_node_snapshot_key"])
-            for node_run in detail["node_runs"]
-            if node_run["state"] == "ACCEPTED"
-        }
-        for node_key, draft in (detail.get("stepwise_node_drafts") or {}).items():
-            if node_key in started_keys:
-                continue
-            predecessors = {
-                str(edge.get("source_instance_key") or "")
-                for edge in snapshot["definition"].get("edges", [])
-                if str(edge.get("target_instance_key") or "") == node_key
-            }
-            if not predecessors.issubset(accepted_keys):
-                continue
-            plan = _create_case_control_plan(
-                db,
-                item,
-                stage,
-                CaseControlPlanWrite(
-                    stage_id=stage.id,
-                    action="START_STEPWISE_NODE",
-                    idempotency_key=f"stepwise-next:{run.id}:{node_key}",
-                    reason=f"直接前驱已接受，启动已预配置节点 {node_key}。",
-                    input_snapshot={
-                        "flow_node_key": node_key,
-                        "draft_row_version": int(draft.get("row_version") or 1),
-                    },
-                ),
-                source_binding_id=None,
-            )
-            try:
-                execute_case_control_plan(db, item.id, str(plan["id"]))
-            except Exception:
-                # The plan records its dispatch failure; accepting a predecessor
-                # must not be rolled back by an autonomous successor failure.
-                continue
+    # Formal acceptance already creates and port-binds downstream drafts. Starting
+    # them here would consume the coordinator's review/revision window and turn a
+    # durable execution fact into a business decision. CASE coordinators must read
+    # the fresh draft and submit START_STEPWISE_NODE themselves.
+    return None
 
 
 def start_case_stage_execution(

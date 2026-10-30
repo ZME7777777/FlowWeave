@@ -16,7 +16,7 @@ from flowweave.modules.cases.infrastructure.models import (
     CaseFlowToolGrant,
     CaseStage,
 )
-from flowweave.modules.runs.infrastructure.models import FlowRun, NodeRun, RunSnapshot
+from flowweave.modules.runs.infrastructure.models import FlowRun, NodeAttempt, NodeRun, RunSnapshot
 from flowweave.modules.users.application.security import tenant_user
 from flowweave.shared.credentials_crypto import decrypt_secret
 from flowweave.shared.errors import DomainError, conflict
@@ -40,7 +40,13 @@ class FlowReadArguments(BaseModel):
 class FlowActionArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     action: Literal[
-        "CREATE_EXECUTION_COPY", "CONFIGURE_EXECUTION", "START_EXECUTION", "START_STEPWISE_NODE"
+        "CREATE_EXECUTION_COPY",
+        "CONFIGURE_EXECUTION",
+        "START_EXECUTION",
+        "START_STEPWISE_NODE",
+        "ACCEPT_STEPWISE_ATTEMPT",
+        "REJECT_STEPWISE_ATTEMPT",
+        "RERUN_STEPWISE_NODE",
     ]
     idempotency_key: str = Field(pattern=r"^[a-z][a-z0-9._:-]{0,119}$")
     reason: str = Field(min_length=1, max_length=2_000)
@@ -50,6 +56,10 @@ class FlowActionArguments(BaseModel):
     expected_run_row_version: int = Field(ge=1)
     expected_snapshot_version: int = Field(ge=1)
     flow_node_key: str | None = Field(default=None, min_length=1, max_length=100)
+    node_run_id: str | None = Field(default=None, min_length=1, max_length=36)
+    node_attempt_id: str | None = Field(default=None, min_length=1, max_length=36)
+    expected_attempt_state_version: int | None = Field(default=None, ge=1)
+    copy_input_bindings: bool | None = None
     draft_row_version: int | None = Field(default=None, ge=1)
     automatic_draft: AutomaticRunDraftUpdateWrite | None = None
     stepwise_draft: StepwiseNodeDraftWrite | None = None
@@ -64,11 +74,30 @@ class FlowActionArguments(BaseModel):
             raise ValueError("configuration is required only for CONFIGURE_EXECUTION")
         if self.automatic_draft and self.stepwise_draft:
             raise ValueError("choose one draft mode")
-        node_action = self.stepwise_draft is not None or self.action == "START_STEPWISE_NODE"
+        node_actions = {
+            "START_STEPWISE_NODE",
+            "ACCEPT_STEPWISE_ATTEMPT",
+            "REJECT_STEPWISE_ATTEMPT",
+            "RERUN_STEPWISE_NODE",
+        }
+        node_action = self.stepwise_draft is not None or self.action in node_actions
         if node_action != (self.flow_node_key is not None):
             raise ValueError("flow_node_key is required only for a stepwise node action")
         if (self.action == "START_STEPWISE_NODE") != (self.draft_row_version is not None):
             raise ValueError("draft_row_version is required only for START_STEPWISE_NODE")
+        review_actions = {"ACCEPT_STEPWISE_ATTEMPT", "REJECT_STEPWISE_ATTEMPT"}
+        if (self.action in review_actions) != (
+            self.node_run_id is not None
+            and self.node_attempt_id is not None
+            and self.expected_attempt_state_version is not None
+        ):
+            raise ValueError("review actions require frozen node and Attempt identities")
+        if (self.action == "RERUN_STEPWISE_NODE") != (
+            self.node_run_id is not None and self.node_attempt_id is None
+        ):
+            raise ValueError("rerun requires only the accepted node_run_id")
+        if self.action != "REJECT_STEPWISE_ATTEMPT" and self.copy_input_bindings is not None:
+            raise ValueError("copy_input_bindings is available only when rejecting an Attempt")
         if (
             self.action == "CREATE_EXECUTION_COPY"
             and self.expected_execution_flow_run_id is not None
@@ -109,10 +138,12 @@ TOOLS = [
     ),
     _tool(
         "manage_case_flow",
-        "Create an independent ACTIVE stage copy, configure its editable draft, or start "
-        "it/a stepwise node. Targets derive from this coordinator. Read fresh versions first. "
-        "Reuse one idempotency_key after timeouts. Failed actions require retry_of_plan_id "
-        "and a new key. Does not review outputs, rerun, publish materials, or advance stages.",
+        "Create or configure the ACTIVE stage copy, start a stepwise node, formally accept or "
+        "reject its reviewed Attempt, or reopen an accepted predecessor for an editable rerun. "
+        "Targets derive from this coordinator. Read fresh versions first. Rejection creates the "
+        "formal replacement Attempt; editable reruns are limited to unconsumed predecessors. "
+        "Reuse one idempotency_key after timeouts. Failed actions require retry_of_plan_id and "
+        "a new key. Does not advance stages or start successors implicitly.",
         FlowActionArguments,
         False,
     ),
@@ -143,6 +174,7 @@ def _draft(value: dict[str, Any]) -> dict[str, Any]:
         value,
         (
             "row_version",
+            "rerun_source_node_run_id",
             "startup_mode",
             "startup_prompt",
             "artifact_ids",
@@ -242,6 +274,26 @@ def read_flow(db: Session, token: str, args: FlowReadArguments) -> dict[str, Any
                     .order_by(NodeRun.sequence_no)
                 )
             }
+            latest_attempts: dict[str, Any] = {}
+            for execution in current_nodes.values():
+                attempt = db.scalar(
+                    select(NodeAttempt)
+                    .where(NodeAttempt.node_run_id == execution.id)
+                    .order_by(NodeAttempt.attempt_no.desc())
+                    .limit(1)
+                )
+                latest_attempts[execution.id] = (
+                    {
+                        "id": attempt.id,
+                        "attempt_no": attempt.attempt_no,
+                        "state": attempt.state,
+                        "state_version": attempt.state_version,
+                        "candidate_output_set_id": attempt.current_candidate_output_set_id,
+                        "error_code": attempt.error_code,
+                    }
+                    if attempt is not None
+                    else None
+                )
             for node in nodes:
                 if args.flow_node_key and node.get("instance_key") != args.flow_node_key:
                     continue
@@ -255,6 +307,7 @@ def read_flow(db: Session, token: str, args: FlowReadArguments) -> dict[str, Any
                                 "node_run_id": execution.id,
                                 "state": execution.state,
                                 "accepted_attempt_id": execution.accepted_attempt_id,
+                                "latest_attempt": latest_attempts[execution.id],
                             }
                             if execution
                             else None
@@ -375,6 +428,8 @@ def manage_flow(db: Session, token: str, args: FlowActionArguments) -> dict[str,
                     or failed.stage_id != stage.id
                     or failed.action != args.action
                     or failed.execution_flow_run_id != stage.current_execution_flow_run_id
+                    or failed.node_run_id != args.node_run_id
+                    or failed.node_attempt_id != args.node_attempt_id
                 ):
                     raise conflict("retry does not match a failed action in the current scope")
             # A failed precondition is an audited action too; check it at dispatch.
@@ -383,6 +438,8 @@ def manage_flow(db: Session, token: str, args: FlowActionArguments) -> dict[str,
                 action=args.action,
                 idempotency_key=args.idempotency_key,
                 reason=args.reason,
+                node_run_id=args.node_run_id,
+                node_attempt_id=args.node_attempt_id,
                 input_snapshot=request,
             )
             saved = service.create_case_control_plan_for_binding(
@@ -473,8 +530,44 @@ def validate_action_preconditions(
         )
         if materialized is not None:
             raise conflict("only unstarted stepwise nodes may be configured")
-    if plan.action == "START_STEPWISE_NODE" and stage.execution_mode != "STEPWISE":
-        raise conflict("node start requires stepwise mode")
+    stepwise_actions = {
+        "START_STEPWISE_NODE",
+        "ACCEPT_STEPWISE_ATTEMPT",
+        "REJECT_STEPWISE_ATTEMPT",
+        "RERUN_STEPWISE_NODE",
+    }
+    if plan.action in stepwise_actions and stage.execution_mode != "STEPWISE":
+        raise conflict("node action requires stepwise mode")
+    if plan.action in {"ACCEPT_STEPWISE_ATTEMPT", "REJECT_STEPWISE_ATTEMPT"}:
+        if not args.node_run_id or not args.node_attempt_id:
+            raise conflict("review action lacks frozen execution identities")
+        node_run = db.get(NodeRun, args.node_run_id)
+        attempt = db.get(NodeAttempt, args.node_attempt_id)
+        if (
+            node_run is None
+            or attempt is None
+            or node_run.flow_run_id != run.id
+            or node_run.flow_node_snapshot_key != args.flow_node_key
+            or attempt.node_run_id != node_run.id
+            or plan.node_run_id != node_run.id
+            or plan.node_attempt_id != attempt.id
+        ):
+            raise DomainError(
+                "CASE_FLOW_VERSION_CONFLICT", "待复核节点身份已变化，请重新读取后再决定", 409
+            )
+    elif plan.action == "RERUN_STEPWISE_NODE":
+        if not args.node_run_id:
+            raise conflict("rerun action lacks a frozen node identity")
+        node_run = db.get(NodeRun, args.node_run_id)
+        if (
+            node_run is None
+            or node_run.flow_run_id != run.id
+            or node_run.flow_node_snapshot_key != args.flow_node_key
+            or plan.node_run_id != node_run.id
+        ):
+            raise DomainError(
+                "CASE_FLOW_VERSION_CONFLICT", "待重跑节点身份已变化，请重新读取后再决定", 409
+            )
     return run
 
 

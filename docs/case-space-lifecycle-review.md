@@ -12,10 +12,12 @@ CASE-03A已接入正式只读 MCP：新协调会话可查询当前场景概览�
 凭据按当前轮次／binding／Runtime／目录版本及用户重新授权。CASE-03按验收边界拆为
 03A（注册与读取）及03B（流程图／草稿与配置、启动）。CASE-03B已交付独立原生流程
 MCP及当前副本的配置、复制与启动动作。CASE-04已交付正式输出资料登记、独立冻结的资料
-MCP及标准产物URL的受限读取；本地固定源码Runtime容器读取和哈希验收通过。下一切片
-为CASE-06，唯一实施状态以`flowrun-runtime-task-progress.md`为准。CASE-05A已完成流程关键
-事件的事务性持久入队；CASE-05B已接入后台串行原生消息回访、提交收据和资料／配置变化通知。
-逐步自主复核、重跑与跨阶段决策仍待CASE-06／07，不能把投递完成等同于业务目标已完成。
+MCP及标准产物URL的受限读取；本地固定源码Runtime容器读取和哈希验收通过。CASE-05A已完成
+流程关键事件的事务性持久入队；CASE-05B已接入后台串行原生消息回访、提交收据和资料／配置
+变化通知。CASE-06已将正式接受／拒绝、可编辑重跑及显式后继启动接入同一冻结流程MCP，
+平台不再在接受后抢先启动后继。下一切片为CASE-07，唯一实施状态以
+`flowrun-runtime-task-progress.md`为准。连续修订、跨阶段决策与场景完成仍未交付，不能把
+投递完成或单个FlowRun完成等同于业务目标已完成。
 
 ## 1. 产品目标：由场景 Agent 代替人运行和监控流程
 
@@ -562,3 +564,30 @@ PENDING解释为Agent已收到。资料／配置变化通知、串行回访、�
 事件用例），涵盖真实PostgreSQL原子回滚、并发重放、轮次保留、来源边界、非超级用户
 RLS读写拒绝、迁移升级／降级和Case删除级联。新增边界Pyright为0，受影响Ruff、format
 与diff检查通过。没有模型调用、原生回访、生产部署或Runtime变更；下一片CASE-05B。
+
+
+## CASE-06 实施边界（2026-10-30）
+
+既有`flowweave-case-flows`冻结能力新增逐步复核动作，不改变MCP key、URL、凭据或历史轮次。
+`read_case_flow(section=nodes)`返回节点当前NodeRun与最新Attempt的最小复核身份、状态版本、候选
+输出集引用和错误码；`section=drafts`返回`rerun_source_node_run_id`。这些是当前执行控制事实，
+不是OpenHands历史副本，也不包含工作区路径、Runtime清单或物理连接。
+
+`manage_case_flow`可对活动阶段当前逐步执行执行`ACCEPT_STEPWISE_ATTEMPT`、
+`REJECT_STEPWISE_ATTEMPT`和`RERUN_STEPWISE_NODE`。请求必须携带最新读取的Case／stage／Run／
+Snapshot前置条件；接受／拒绝还冻结NodeRun、Attempt和`expected_attempt_state_version`，重跑冻结
+已接受NodeRun。平台在持久计划后再次校验当前协调授权与全部身份，再调用既有编排正式服务。
+同一幂等键同载荷重放结果，异载荷拒绝；失败使用新键并精确关联原失败计划，不可换节点或Attempt。
+
+接受只允许正式`WAITING_ACCEPTANCE` Attempt且要求通过的候选输出集；它保留原Attempt和产物，
+生成并端口绑定下游可编辑草稿。Case专用的旧自动后继分发已收口为空操作，协调Agent重新读取后
+可以配置草稿并显式`START_STEPWISE_NODE`。拒绝使用正式`reject_attempt`，保留拒绝事件与原会话，
+创建同NodeRun的新Attempt；未启动节点的普通配置以及已接受前驱的可编辑重跑继续走既有草稿服务。
+重跑只在直接后继全部仍为未物化草稿时开放，复用旧workspace ref但创建新的NodeRun／Attempt／
+binding；最终节点、终态记录、非接受状态或任一后继已物化时拒绝，绝不修改旧快照或删除历史。
+
+0188只扩展`case_control_plans`动作检查约束；存在新增接受／拒绝审计行时downgrade安全失败。
+连续运行副本修订、阶段待复核、显式进入下一阶段和Case完成属于CASE-07；CASE-06不改变
+`reconcile_case_execution_state`的跨阶段状态回写。定向PostgreSQL／HTTP测试已写入，但当前执行环境
+没有Docker socket或外部`TEST_DATABASE_URL`，因此在测试数据库夹具前停止；静态、模型与语法检查
+通过，完整数据库及原生全链路验收仍按后续环境门禁执行。
