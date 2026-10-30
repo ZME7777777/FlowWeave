@@ -1827,8 +1827,8 @@ test('capability configuration toggles visible selections and filters to selecte
   const selectVisible = dialog.getByRole('button', { name: '选择筛选结果（2）', exact: true });
   await expect(selectVisible).toHaveAttribute('aria-pressed','false');
   await expect(selectVisible.locator('svg')).toHaveClass(/lucide-square$/);
+  await expect(dialog.getByText(/已选择 \d+ 项/, { exact: true })).toHaveCount(0);
   await selectVisible.click();
-  await expect(dialog.getByText('已选择 3 项', { exact: true })).toBeVisible();
   await expect(dialog.getByRole('button', { name: '取消选择筛选结果', exact: true })).toBeVisible();
   await expect(dialog.getByRole('button', { name: '取消选择筛选结果', exact: true })).toHaveAttribute('aria-pressed','true');
   await expect(dialog.getByRole('button', { name: '取消选择筛选结果', exact: true }).locator('svg')).toHaveClass(/lucide-square-check/);
@@ -1840,7 +1840,7 @@ test('capability configuration toggles visible selections and filters to selecte
 
   await dialog.getByRole('button', { name: '取消选择筛选结果', exact: true }).click();
   await expect(dialog.getByRole('button', { name: '会话历史查询', exact: true })).toBeDisabled();
-  await expect(dialog.getByText('已选择 1 项', { exact: true })).toBeVisible();
+  await expect(dialog.getByText(/已选择 \d+ 项/, { exact: true })).toHaveCount(0);
   await expect(dialog.locator('.agent-capability-select-visible')).toHaveAttribute('aria-pressed','false');
   await expect(dialog.locator('.agent-capability-select-visible svg')).toHaveClass(/lucide-square$/);
   await expect(dialog.getByRole('button', { name: '显示全部能力', exact: true })).toBeVisible();
@@ -1869,19 +1869,39 @@ for (const mode of ['create', 'edit'] as const) {
     }
     await page.getByRole('button', { name: /配置会话/ }).click();
     const dialog = page.getByRole('dialog', { name: '会话配置', exact: true });
+    const configNavigation = dialog.getByRole('navigation', { name: '会话配置分类' });
+    await expect(configNavigation.getByRole('button', { name: '能力', exact: true })).toHaveAttribute('aria-current', 'page');
+    const collectionTrigger = dialog.getByRole('button', { name: 'Skill 组合', exact: true });
+    await expect(dialog.getByRole('region', { name: 'Skill 组合筛选' })).toHaveCount(0);
+    await collectionTrigger.click();
+    await expect(dialog.getByRole('region', { name: 'Skill 组合筛选' })).toBeVisible();
     await dialog.getByRole('button', { name: '技能组合', exact: true }).click();
+    await dialog.getByRole('button', { name: '清除筛选', exact: true }).click();
+    await collectionTrigger.click();
+    await expect(dialog.getByRole('region', { name: 'Skill 组合筛选' })).toHaveCount(0);
     for (const [type, tab] of types.map((type, index) => [type, ['MCP', 'context', 'plugin', 'skill', 'agent', 'hook'][index]])) {
       await dialog.getByRole('button', { name: tab, exact: true }).click();
       if (mode === 'edit' && ['MCP', 'CONTEXT'].includes(type)) {
-        const old = dialog.getByRole('button', { name: new RegExp(`预设${type} · 已选版本 v1`) });
+        const matchingRows = dialog.locator('.agent-capability-list > button').filter({ has: page.locator('b', { hasText: new RegExp(`^预设${type}$`) }) });
+        const old = type === 'CONTEXT'
+          ? matchingRows.filter({ has: page.locator('.agent-capability-version-badge') })
+          : matchingRows.filter({ has: page.locator('.agent-selection-checkbox svg') });
+        if (type === 'MCP') await expect(matchingRows).toHaveCount(2);
         await expect(old).toHaveClass(/selected/);
         await expect(old).toBeEnabled();
+        if (type === 'CONTEXT') {
+          await expect(dialog.locator('.agent-capability-list > button')).toHaveCount(1);
+          await expect(old.locator('.agent-capability-version-badge')).toHaveText('v1');
+          await expect(old.locator('.agent-capability-sync')).toHaveCount(0);
+        }
         await old.click();
-        await expect(old).not.toHaveClass(/selected/);
+        if (type === 'CONTEXT') await expect(matchingRows.filter({ has: page.locator('.agent-capability-version-badge') })).toHaveCount(0);
       }
-      await dialog.locator('.agent-capability-list > button').filter({ has: page.locator('b', { hasText: new RegExp(`^预设${type}$`) }) }).click();
+      const current = dialog.locator('.agent-capability-list > button').filter({ has: page.locator('b', { hasText: new RegExp(`^预设${type}$`) }) });
+      await current.first().click();
     }
     await dialog.getByRole('button', { name: '认证', exact: true }).click();
+    await expect(configNavigation.getByRole('button', { name: '认证', exact: true })).toHaveAttribute('aria-current', 'page');
     if (mode === 'edit') await dialog.getByRole('button', { name: '全选认证', exact: true }).click();
     await expect(dialog.getByText('已选择 2 项认证', { exact: true })).toBeVisible();
     await dialog.getByRole('button', { name: '取消全选认证', exact: true }).click();
@@ -1899,7 +1919,7 @@ for (const mode of ['create', 'edit'] as const) {
     // Saving from the authentication tab must preserve edits on both tabs.
     await dialog.getByRole('button', { name: '保存认证配置', exact: true }).click();
     await page.getByRole('button', { name: /配置会话/ }).click();
-    await expect(dialog.getByText('已选择 7 项', { exact: true })).toBeVisible();
+    await expect(dialog.locator('.agent-capability-list > button.selected')).toHaveCount(7);
     await dialog.getByRole('button', { name: '保存会话配置', exact: true }).click();
     await page.getByRole('button', { name: '保存任务', exact: true }).click();
     await expect.poll(() => writes.length).toBe(1);
@@ -1907,7 +1927,7 @@ for (const mode of ['create', 'edit'] as const) {
     expect(readinessRequests).toBe(0);
     await page.getByRole('button', { name: '编辑', exact: true }).click();
     await page.getByRole('button', { name: /配置会话/ }).click();
-    await expect(dialog.getByText('已选择 7 项', { exact: true })).toBeVisible();
+    await expect(dialog.locator('.agent-capability-list > button.selected')).toHaveCount(7);
     await dialog.getByRole('button', { name: '认证', exact: true }).click();
     await expect(dialog.getByText('已选择 1 项认证', { exact: true })).toBeVisible();
   });
@@ -1928,6 +1948,10 @@ test('credential select all excludes synced credentials and disables itself when
   await page.getByRole('button', { name: '会话配置', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: '会话配置' });
   await dialog.getByRole('button', { name: '认证', exact: true }).click();
+  const credentialHeading = dialog.locator('.agent-credential-sync-heading');
+  const selectAllCredentials = dialog.getByRole('button', { name: '全选认证', exact: true });
+  expect(await credentialHeading.evaluate(element => getComputedStyle(element).fontSize)).toBe('11px');
+  expect(await selectAllCredentials.evaluate(element => { const style = getComputedStyle(element); return [style.width, style.height]; })).toEqual(['22px', '22px']);
   await expect(dialog.getByRole('button', { name: '同步认证0（已同步）', exact: true })).toBeDisabled();
   await expect(dialog.getByText('已选择 2 项认证', { exact: true })).toBeVisible();
   await dialog.getByRole('button', { name: '全选认证', exact: true }).click();
@@ -1949,7 +1973,7 @@ test('capability filtering keeps dialog and footer geometry stable', async ({ pa
   const dialog=page.getByRole('dialog',{name:'会话配置'});
   const geometry=()=>dialog.evaluate(element=>{
     const box=element.getBoundingClientRect();
-    const footer=element.querySelector(':scope > footer')!.getBoundingClientRect();
+    const footer=element.querySelector('.agent-session-config-panel > footer')!.getBoundingClientRect();
     return {top:box.top,height:box.height,footer:footer.top};
   });
   for(const height of [1000,600]){
@@ -1991,29 +2015,27 @@ for (const mode of ['existing', 'draft'] as const) {
       await page.getByRole('button', { name: /配置会话/ }).click();
     }
     const dialog = page.getByRole('dialog', { name: '会话配置' });
-    await expect(dialog.getByRole('button', { name: '常用技能组合', exact: true })).toBeVisible();
+    const collectionTrigger = dialog.locator('.agent-capability-collection-trigger');
+    await expect(collectionTrigger).toHaveAccessibleName('Skill 组合');
+    await expect(collectionTrigger).toBeVisible();
+    await expect(dialog.getByRole('button', { name: '常用技能组合', exact: true })).toHaveCount(0);
     const assertLayout = async () => {
       const layout = await dialog.evaluate(element => {
         const bounds = (selector: string) => element.querySelector<HTMLElement>(selector)!.getBoundingClientRect();
-        const summary = bounds('.agent-capability-summary');
-        const list = bounds(':scope > .agent-capability-list');
+        const list = bounds('.agent-session-config-panel > .agent-capability-list');
         const first = bounds('.agent-capability-list > button');
-        const footer = bounds(':scope > footer');
-        const summaryText = element.querySelector('.agent-capability-summary > span:last-child')!.getBoundingClientRect();
+        const footer = bounds('.agent-session-config-panel > footer');
         const firstButton = element.querySelector('.agent-capability-list > button')!;
         const hit = document.elementFromPoint(first.x + first.width / 2, first.y + first.height / 2);
-        return { summaryBottom: summary.bottom, summaryTextBottom: summaryText.bottom, listTop: list.top,
-          firstTop: first.top, listBottom: list.bottom, footerTop: footer.top,
+        return { listTop: list.top, firstTop: first.top, listBottom: list.bottom, footerTop: footer.top,
           firstClickable: hit !== null && firstButton.contains(hit),
           scrollable: element.querySelector('.agent-capability-list')!.scrollHeight > list.height };
       });
-      expect(layout.summaryTextBottom).toBeLessThanOrEqual(layout.summaryBottom + 1);
-      expect(layout.summaryBottom).toBeLessThanOrEqual(layout.listTop + 1);
-      expect(layout.summaryTextBottom).toBeLessThanOrEqual(layout.firstTop);
+      expect(layout.listTop).toBeLessThanOrEqual(layout.firstTop);
       expect(layout.listBottom).toBeLessThanOrEqual(layout.footerTop + 1);
       expect(layout.firstClickable).toBe(true);
       expect(layout.scrollable).toBe(true);
-      await expect(dialog.locator(':scope > footer')).toBeInViewport();
+      await expect(dialog.locator('.agent-session-config-panel > footer')).toBeInViewport();
     };
     for (const viewport of [{ width: 1440, height: 1000 }, { width: 1440, height: 600 }, { width: 640, height: 640 }]) {
       await page.setViewportSize(viewport);
@@ -2023,7 +2045,9 @@ for (const mode of ['existing', 'draft'] as const) {
       await dialog.getByRole('button', { name: 'all', exact: true }).click();
       await assertLayout();
     }
+    await collectionTrigger.click();
     await dialog.getByRole('button', { name: '常用技能组合', exact: true }).click();
+    await expect(collectionTrigger).toHaveAccessibleName('Skill 组合 · 1');
     const optional = dialog.getByRole('button', { name: /布局技能 0/ });
     await optional.click();
     await expect(optional).toHaveClass(/selected/);
