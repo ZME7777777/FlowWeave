@@ -15776,3 +15776,35 @@ Web typecheck、定向ESLint、production build、受影响Python Ruff、diff检
 5fcd3fc5e628572a7e223c954e8fd792b78d768f1d8eba9419a4d88d6490308a与source lock一致。
 无OpenHands、SDK、Runtime基线或服务器配置改动。沿用直接部署授权，
 发布验收待补记；未操作实际金山账号或文档，无后续实现切片。
+
+
+#### OPS-81 Platform／Web 发布验收
+
+2026-10-30正式Platform与Web预检、受管最小上下文准备通过，发布
+`aafb2dcf7733321ecf3a88facebae6206ba9f3be`。Platform源归档SHA-256为
+`b8cb80696bda8c717e524dbab836b846db565f8a21be847cf02fc62188295925`，
+Web为`50d93b4bf57cae3a31b896ab64321200f703f878a2cdbc5a3bf29c09b861fb41`。
+linux/amd64平台镜像ID为
+`sha256:fc13698215374e45aa984ec40261611c64b04b7e1b67789a7ed04907cfc6e359`，
+Web为`sha256:182401d0873d61b201a7d6f2b7692119d06c8576de2c4e97bb375121c49c3bdb`。
+
+保留旧镜像回滚tag及服务日志；正式migration退出0，数据库由0185推进至
+0186_mcp_authentication。同步recreate api、stream-api、worker和web，四项
+revision、健康／readiness及HTTP入口通过；服务器配置哈希与其余43个容器
+镜像／启动时间保持。未重建Runtime Provider、独立Agent Runtime或既有
+FlowRun容器，未改变SDK／OpenHands基线。
+
+实际平台镜像中六项认证解析、宿主与配置相关源码SHA-256与提交一致；
+GET／PUT认证接口已注册，两张新增表的字段、强制RLS、租户policy、唯一键
+与版本删除级联外键经只读核验通过。现有登录身份读取已发布远程MCP的
+认证绑定接口通过，响应只含引用和状态；未写入实际用户资源或调用金山工具。
+
+公网HTML／Agent深层路由、两项入口资源及三个包含认证表单、说明和样式
+的模块资源SHA-256与运行镜像一致，API鉴权边界通过。全新Chromium的平台
+登录、深层路由和根登录页通过；4061条完整网络事件中部署前缀API请求通过，
+根路径API请求为0，临时浏览器全部回收。真实Bearer握手和只读调用由本地
+固定实际镜像的受控MCP服务验证，金山真实账号与文档未参与验收。
+
+Platform与Web remote-release-finish通过，无过期受管上下文候选；保留最近
+24小时上下文、实际路径引用及每仓库一个回滚镜像。收尾后四项版本／健康、
+数据库head、服务器配置及43个保护容器再次核验通过。未push，无后续实现切片。
