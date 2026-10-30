@@ -1405,7 +1405,7 @@ export function CapabilityManager({ workspaceId, bindingId, conversationCapabili
         && allCapabilities.get(id)?.capability_key === item.capability_key)
       : undefined;
     if (selectedContextId) return item.id === selectedContextId;
-    return (item.is_latest || frozenCreationOnlyIds.has(item.id) || (!bindingId && (draftCapabilityIds ?? []).includes(item.id)))
+    return (item.is_latest || frozenCreationOnlyIds.has(item.id) || (!bindingId && item.capability_type !== 'CONTEXT' && (draftCapabilityIds ?? []).includes(item.id)))
       && (!bindingId || !['CONTEXT', 'AGENT_DEFINITION', 'HOOK'].includes(item.capability_type) || frozenCreationOnlyIds.has(item.id));
   }), [allCapabilities, bindingId, chosenIds, draftCapabilityIds, frozenCreationOnlyIds, hasDefaultHistoryMcp, registeredSkills]);
   const byId = allCapabilities;
@@ -1597,7 +1597,7 @@ export function CapabilityManager({ workspaceId, bindingId, conversationCapabili
         const detail = isMcp && checked && !configurationPreset && readiness?.state === 'UNAVAILABLE' ? `MCP ${readinessLabel}；请检测连接后保存。` : item.description || item.filename;
         const skillVersionLabel = registeredSkill && item.revision_number ? ` · v${item.revision_number}` : '';
         const selectedVersionLabel = item.capability_type === 'CONTEXT' && !item.is_latest && !bindingId && item.revision_number
-          ? `已选版本 v${item.revision_number}`
+          ? `v${item.revision_number}`
           : undefined;
         const lockedLabel = isFrozenCreationOnly ? `${item.capability_key}（已装配）` : `${item.capability_key}（已注册）`;
         const Icon = capabilityTypeIcons[item.capability_type as AgentCapabilityType];
