@@ -148,7 +148,7 @@ test('Agent navigation restores the last standalone conversation after leaving t
   await expect(page).toHaveURL(/\/agent\/conversations\/navigation-restore-conversation$/);
   await expect(page.getByText('切换页面后仍应看到这条回复。')).toBeVisible();
 
-  await page.getByRole('button', { name: '节点资产', exact: true }).click();
+  await page.getByRole('button', { name: '节点中心', exact: true }).click();
   await expect(page).toHaveURL(/\/$/);
   await page.getByRole('button', { name: 'Agent 会话', exact: true }).click();
   await expect(page).toHaveURL(/\/agent\/conversations\/navigation-restore-conversation$/);
@@ -157,7 +157,7 @@ test('Agent navigation restores the last standalone conversation after leaving t
   await page.getByRole('button', { name: '在根工作区中新建会话' }).click({ force: true });
   await expect(page).toHaveURL(/\/agent$/);
   await expect(page.locator('h2.agent-session-title')).toHaveText('新会话');
-  await page.getByRole('button', { name: '节点资产', exact: true }).click();
+  await page.getByRole('button', { name: '节点中心', exact: true }).click();
   await page.getByRole('button', { name: 'Agent 会话', exact: true }).click();
   await expect(page).toHaveURL(/\/agent$/);
 });

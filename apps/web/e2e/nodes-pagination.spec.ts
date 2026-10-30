@@ -18,7 +18,7 @@ test('prefixed deployment keeps API requests under the application base path whe
   });
 
   await page.goto('/flowweave/');
-  await page.getByRole('button', { name: '节点资产', exact: true }).click();
+  await page.getByRole('button', { name: '节点中心', exact: true }).click();
 
   await expect(page.getByTestId('node-card')).toHaveCount(1);
   expect(requestedPaths).toEqual(expect.arrayContaining([
@@ -54,7 +54,7 @@ test('desktop node assets keep a full five-by-five grid on the first page', asyn
   }));
 
   await page.goto('/');
-  await page.getByRole('button', { name: '节点资产', exact: true }).click();
+  await page.getByRole('button', { name: '节点中心', exact: true }).click();
 
   await expect(page.getByTestId('node-card')).toHaveCount(25);
   await expect(page.getByRole('navigation', { name: '列表分页' })).toHaveCount(0);

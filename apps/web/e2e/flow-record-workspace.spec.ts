@@ -282,7 +282,7 @@ test('flow library saves an empty draft before opening its node editor', async (
   await page.getByRole('button', { name: '保存并开始编排' }).click();
   await expect.poll(() => saved).toEqual(expect.objectContaining({ name: '可恢复编排草稿', nodes: [], edges: [] }));
   await expect(page.locator('.flow-editor-head')).toContainText('未找到一个启动节点');
-  await expect(page.getByTestId('flow-library')).toContainText('节点资产目录');
+  await expect(page.getByTestId('flow-library')).toContainText('节点中心目录');
   await page.getByRole('button', { name: '返回全部流程', exact: true }).click();
   await expect(page.locator('.flow-library-row')).toContainText('可恢复编排草稿');
   await expect(page.locator('.flow-library-row')).toContainText('未找到一个启动节点');

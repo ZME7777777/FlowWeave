@@ -54,7 +54,7 @@ export function NodesPage({ onRegisterLeaveGuard }: { onRegisterLeaveGuard?: (gu
     return next;
   });
   const createDirectory = async (parentId: string | null) => {
-    const directoryName = await dialog.prompt({ title: parentId ? '新建子目录' : '新建节点目录', message: '创建一个用于整理节点资产的目录。', inputLabel: '目录名称', placeholder: '例如：产品研发', confirmLabel: '创建目录' });
+    const directoryName = await dialog.prompt({ title: parentId ? '新建子目录' : '新建节点目录', message: '创建一个用于整理节点中心的目录。', inputLabel: '目录名称', placeholder: '例如：产品研发', confirmLabel: '创建目录' });
     if (!directoryName) return;
     setError('');
     try {

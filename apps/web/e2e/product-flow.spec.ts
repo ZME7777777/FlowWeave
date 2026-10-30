@@ -3545,7 +3545,7 @@ test('Agent new session keeps full capabilities and can create an explicit works
   expect(attachmentUploads).toBe(2);
 
   await composer.fill('切换页面后仍应保留的首条草稿');
-  await page.getByRole('button', { name: '节点资产', exact: true }).click();
+  await page.getByRole('button', { name: '节点中心', exact: true }).click();
   await page.getByRole('button', { name: 'Agent 会话', exact: true }).click();
   await expect(page.getByRole('heading', { name: '新会话' })).toBeVisible();
   await expect(page.getByLabel('发送 Agent 消息')).toHaveValue('切换页面后仍应保留的首条草稿');
@@ -3621,7 +3621,7 @@ test('Agent new session keeps full capabilities and can create an explicit works
   await page.locator('.agent-workspace-tool-actions').getByLabel('关闭工作区工具').click();
   await expect(page.getByText('环境信息', { exact: true })).toBeVisible();
   expect(destroyedTerminalIds).toHaveLength(0);
-  await page.getByRole('button', { name: '节点资产', exact: true }).click();
+  await page.getByRole('button', { name: '节点中心', exact: true }).click();
   await page.getByRole('button', { name: 'Agent 会话' }).click();
   await expect.poll(() => new URL(page.url()).pathname).toBe('/agent/conversations/fr58-conversation');
   await expect(page.getByRole('heading', { name: '实现前端工作区' })).toBeVisible();
@@ -3772,13 +3772,13 @@ test('Agent workspace drawer remains available while Runtime is recovering', asy
 test('node asset editor and repeated flow-node canvas match the product model', async ({ page }) => {
   await login(page);
 
-  await page.getByRole('button', { name: '节点资产' }).click();
+  await page.getByRole('button', { name: '节点中心' }).click();
 
-  const assetName = `UI节点资产-${suffix}`;
+  const assetName = `UI节点中心-${suffix}`;
   await page.getByRole('button', { name: '新建节点' }).click();
   const editor = page.locator('form.asset-editor');
   await editor.getByLabel('节点名称').fill(assetName);
-  await editor.getByLabel('节点说明').fill('单页节点资产编辑器验收');
+  await editor.getByLabel('节点说明').fill('单页节点中心编辑器验收');
   await editor.getByLabel('启动触发提示词').fill('读取输入并执行节点任务');
   await expect(editor.getByRole('heading', { name: '输入定义' })).toBeVisible();
   await expect(editor.getByRole('heading', { name: '输出定义' })).toBeVisible();
@@ -3796,7 +3796,7 @@ test('node asset editor and repeated flow-node canvas match the product model', 
   await editor.getByLabel('outputs name 0').fill('输出产物');
   const card = page.getByTestId('node-card').filter({ hasText: assetName }).last();
   const saved = page.waitForResponse(response => response.url().endsWith('/api/v1/node-assets') && response.request().method() === 'POST');
-  await editor.getByRole('button', { name: '保存节点资产' }).click();
+  await editor.getByRole('button', { name: '保存节点中心' }).click();
   const savedResponse = await saved;
   expect(savedResponse.ok()).toBeTruthy();
   await expect(card).toBeVisible();
@@ -4106,7 +4106,7 @@ test('corrupt and legacy browser state recover without a blank page', async ({ p
 
   await page.evaluate(() => localStorage.setItem('flowweave-workbench', '{broken-json'));
   await page.reload();
-  await expect(page.getByRole('heading', { name: '节点资产', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '节点中心', exact: true })).toBeVisible();
   await expect.poll(() => page.evaluate(() => localStorage.getItem('flowweave-workbench'))).toBeNull();
 
   await page.evaluate(() => localStorage.setItem('flowweave-workbench', JSON.stringify({
@@ -4114,7 +4114,7 @@ test('corrupt and legacy browser state recover without a blank page', async ({ p
     state: { view: 'legacy-dashboard', selectedRunId: 42, selectedNodeRunId: false },
   })));
   await page.reload();
-  await expect(page.getByRole('heading', { name: '节点资产', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '节点中心', exact: true })).toBeVisible();
   await expect.poll(() => page.evaluate(() => {
     const raw = localStorage.getItem('flowweave-workbench');
     return raw ? JSON.parse(raw).version : undefined;
@@ -4166,7 +4166,7 @@ test('node assets, flows and runs support single and filtered bulk deletion', as
   await expect(page.getByTestId('node-card')).toHaveCount(3);
   await confirmProductDialog(
     page,
-    page.getByRole('button', { name: `删除节点资产 ${singleAsset.name}` }),
+    page.getByRole('button', { name: `删除节点中心 ${singleAsset.name}` }),
     '确认删除',
   );
   await expect(page.getByTestId('node-card')).toHaveCount(2);
@@ -4178,7 +4178,7 @@ test('node assets, flows and runs support single and filtered bulk deletion', as
     '确认删除',
   );
   await expect(page.getByTestId('node-card')).toHaveCount(0);
-  await expect(page.getByRole('status')).toContainText('已删除 2 个节点资产');
+  await expect(page.getByRole('status')).toContainText('已删除 2 个节点中心');
 
   // Flow definitions with runs are protected until their runs are deleted.
   await page.getByRole('button', { name: '流程编排' }).click();

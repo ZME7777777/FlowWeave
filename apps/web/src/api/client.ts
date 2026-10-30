@@ -45,7 +45,7 @@ async function responseError(response: Response): Promise<ApiError> {
   const backendMessage = typeof body?.error?.message === 'string' ? body.error.message : '';
   const chineseMessages: Record<string, string> = {
     FLOW_NAME_CONFLICT: '流程名称已存在，请使用其他名称。',
-    NODE_ASSET_NAME_CONFLICT: '当前目录已存在同名节点资产，请使用其他名称。',
+    NODE_ASSET_NAME_CONFLICT: '当前目录已存在同名节点中心，请使用其他名称。',
     FLOW_IN_USE: '该流程仍有关联运行，请先删除关联运行后再永久删除流程。',
     NODE_ASSET_IN_USE: '该节点仍被流程引用，请先从相关流程中移除节点。',
     CAPABILITY_IN_USE: '该能力仍被节点引用，请先解除引用后再删除。',
