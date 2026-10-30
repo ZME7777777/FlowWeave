@@ -378,6 +378,7 @@ const recordC = { ...completedRecord, id: recordA.id, name: '逐步记录 C', ru
 const recordPath = (id: string, kind = 'automatic') => `/flow-runs/${run.id}/records/${kind}/${id}`;
 
 async function mockRecordTabs(page: Page) {
+  await page.setViewportSize({ width: 1920, height: 1000 });
   await mocks(page, recordA);
   await page.route('**/api/v1/flow-runs/**', route => {
     const path = new URL(route.request().url()).pathname;
@@ -416,6 +417,7 @@ test('records of one FlowRun have independent URLs and tabs across switch refres
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
     await page.screenshot({ path: `../../.tmp/ops34/directory-full-id-${width}.png` });
   }
+  await page.getByRole('button', { name: '收起固定导航' }).click();
   // Directory selection is retained when returning from a record.
   await page.locator('.flow-run-record-directory .flow-run-record-row').filter({ hasText: recordB.name }).locator('.flow-run-record-enter').click();
   await expect(page).toHaveURL(recordPath(recordB.id));
@@ -441,6 +443,22 @@ test('records of one FlowRun have independent URLs and tabs across switch refres
   await page.getByRole('button', { name: '关闭Run #1_aaaaaaaa', exact: true }).click();
   await expect(page).toHaveURL('/');
   await expect(page.locator('.context-tab')).toHaveCount(0);
+});
+
+test('mixed settings and record tabs close to their actual display neighbor', async ({ page }) => {
+  await mockRecordTabs(page);
+  await page.goto(recordPath(recordA.id));
+  await expect(page.locator('.run-detail-header:visible h1')).toHaveText(recordA.name);
+  await page.getByRole('button', { name: '账户与设置' }).click();
+  await page.getByRole('menuitem', { name: '大模型配置', exact: true }).click();
+  await enterDirectoryRecord(page, recordB.name);
+  await expect(page.locator('.context-tab-select')).toHaveText(['Run #1_bbbbbbbb', '大模型配置', 'Run #1_aaaaaaaa']);
+  await page.getByRole('button', { name: '关闭Run #1_bbbbbbbb', exact: true }).click();
+  await expect(page.locator('.context-tab.active')).toHaveText('大模型配置');
+  await expect(page).toHaveURL('/');
+  await page.getByRole('button', { name: '关闭大模型配置', exact: true }).click();
+  await expect(page).toHaveURL(recordPath(recordA.id));
+  await expect(page.locator('.run-detail-header:visible h1')).toHaveText(recordA.name);
 });
 
 test('copied record links restore without history and mode is part of tab identity', async ({ page, context }) => {
