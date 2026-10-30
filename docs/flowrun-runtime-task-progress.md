@@ -15831,3 +15831,29 @@ Web typecheck、定向ESLint、production build及diff检查通过；构建仅�
 大chunk提示。1024／1180／1440截图检查通过。唯一Alembic head保持
 0186_mcp_authentication。仅Web变更，无API、SDK、Runtime或服务器配置
 改动；沿用直接部署授权，发布验收待补记，无后续实现切片。
+
+
+#### OPS-82 Web 发布验收
+
+2026-10-30正式Web预检与commit绑定的受管最小上下文准备通过，发布
+`b0ab780347189d24fb9b0232b6ae7241092df4fd`。源码归档SHA-256为
+`f08639b77c6c91ce7bd2536cb2db311ee71edf42aaee233eedbda2d29fc9b22b`，
+linux/amd64 Web镜像ID为
+`sha256:cfe41bdae443a8477c5c5b9997844ef5a1b246db46bab5477e8235ac6012d7ff`。
+
+保留旧Web回滚镜像及服务日志，仅recreate Web；实际revision、健康和HTTP
+入口通过。服务器配置哈希及其余47个容器的镜像／启动时间保持，数据库
+head仍为0186_mcp_authentication；API／stream-api／worker、Provider与既有
+Runtime均未更新。
+
+公网HTML与Agent深层路由一致，两项入口资源和三项顶栏JS／CSS模块资源
+SHA-256与运行镜像一致，API鉴权边界通过。全新Chromium的平台登录、
+深层路由和根登录页通过；4783条完整网络事件中部署前缀API请求通过，
+根路径API请求为0，临时浏览器全部回收。另以隔离账号API夹具加载实际
+已发布静态资源，验证固定菜单收起／展开、隐藏标签提升、168px宽度、
+Escape及关闭补位；无JavaScript错误或根API请求，未写入实际用户资源。
+
+remote-release-finish成功，回收两项超过保留期限且无引用的受管上下文；
+保留最近24小时上下文、实际路径引用及每仓库一个回滚镜像。收尾后再次
+核验Web版本／健康、数据库head、服务器配置与47个保护容器通过。未push，
+无后续实现切片。
