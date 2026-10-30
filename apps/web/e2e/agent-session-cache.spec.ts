@@ -1778,6 +1778,46 @@ test('Conversation attachments open in a preview dialog before the file sidebar'
   await expect(page.locator('.agent-workspace-drawer')).toHaveClass(/tools-open/);
 });
 
+
+test('Image previews support keyboard zoom, pan, and reset', async ({ page }) => {
+  let authenticated = false;
+  const workspace = { id: 'image-preview-workspace', display_name: '图片预览工作区', desired_state: 'RUNNING', updated_at: now };
+  const conversation = { id: 'image-preview-conversation', display_title: '图片预览会话', title_state: 'MANUAL', lifecycle: 'ACTIVE', streaming_callback_ready: true, write_available: true, execution_status: 'idle', created_at: now, updated_at: now };
+  const attachment = { filename: 'diagram.png', mime_type: 'image/png', byte_size: 24, path: '/runtime/workspace/project/uploads/diagram.png' };
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request(); const url = new URL(request.url()); const path = url.pathname;
+    if (path.endsWith('/auth/me')) return authenticated ? json(route, user) : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login')) { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [conversation], next_cursor: null });
+    if (path.endsWith('/events') || path.endsWith('/hydration')) {
+      const eventPage = { events: [{ id: 'image-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '查看图片', attachments: [attachment], timestamp: now } }], next_cursor: 'image-user', history_cursor: null, result: { status: 'COMPLETED' } };
+      return json(route, path.endsWith('/hydration') ? { events: eventPage, context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 1_024, usage_current: true }, readiness: { ready: true, execution_status: 'idle' } } : eventPage);
+    }
+    if (path.endsWith('/file') && url.searchParams.get('preview') === 'true') return route.fulfill({ status: 200, contentType: 'image/png', body: Buffer.from('image-preview') });
+    if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
+    if (path.endsWith('/workspace')) return json(route, { root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', work_directory: null, files: [attachment], repositories: [], runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } } });
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/input-readiness')) return json(route, { ready: true, execution_status: 'idle' });
+    if (path.endsWith('/context')) return json(route, { model_name: 'test-model', window_tokens: 128_000, used_tokens: 1_024, usage_current: true });
+    if (path.endsWith('/model-providers') || path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, conversation);
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+  await page.goto('/'); await login(page); await page.goto(`/agent/conversations/${conversation.id}`);
+  await page.getByRole('button', { name: 'diagram.png image/png · 24 B' }).click();
+  const preview = page.getByRole('dialog', { name: '文件预览' });
+  const imageViewport = preview.getByRole('application', { name: /图片预览/ });
+  await imageViewport.focus();
+  await page.keyboard.press('Meta+ArrowUp'); await expect(preview.locator('img')).toHaveAttribute('style', /scale\(1\.12\)/);
+  await page.keyboard.press('Alt+ArrowRight'); await expect(preview.locator('img')).toHaveAttribute('style', /translate\(40px, 0px\)/);
+  await page.keyboard.press('Control+ArrowDown'); await expect(preview.locator('img')).toHaveAttribute('style', /translate\(0px, 0px\) scale\(1\)/);
+  await page.keyboard.press('Control+ArrowUp'); await imageViewport.dblclick();
+  await expect(preview.locator('img')).toHaveAttribute('style', /translate\(0px, 0px\) scale\(1\)/);
+});
+
 test('Workspace file references open in a preview dialog', async ({ page }) => {
   let authenticated = false;
   const workspace = { id: 'workspace-reference-preview-workspace', display_name: '本地引用预览工作区', desired_state: 'RUNNING', updated_at: now };
@@ -2524,6 +2564,11 @@ test('New conversation draft remains isolated and can be resumed after switching
     if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
     if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
     if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: conversations, next_cursor: null });
+    if (path.endsWith('/conversation-activity')) return json(route, { running_binding_ids: [] });
+    if (path.endsWith('/pinned-conversations')) return json(route, { binding_ids: [] });
+    if (path.endsWith('/session-configuration')) return json(route, { capability_version_ids: [], credential_ids: [] });
+    if (path.endsWith('/settings/git')) return json(route, { author: '', email: '', configured: false });
+
     if (path.includes('/attachments/uploads') && request.method() === 'POST' && !path.endsWith('/complete')) {
       uploadedDraftId = (JSON.parse(request.postData() ?? '{}') as { conversation_id?: string }).conversation_id ?? null;
       return json(route, { upload_id: 'draft-race-upload', chunk_size: 262_144, uploaded_parts: [] }, 201);
@@ -2556,7 +2601,7 @@ test('New conversation draft remains isolated and can be resumed after switching
   await page.goto('/');
   await login(page);
   await page.goto('/agent');
-  await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '新建会话', exact: true })).toBeVisible();
   // An unsubmitted draft owns no native Conversation. Even if the previous
   // selected binding is still unwinding, it must remain editable and idle.
   await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
@@ -2584,21 +2629,6 @@ test('New conversation draft remains isolated and can be resumed after switching
   await expect(draftAttachment).toBeVisible();
   const restoredImage = page.locator('.agent-composer .agent-attachment-open img');
   await expect(restoredImage).toHaveAttribute('src', /draft_attachment_owner_id=/);
-  await draftAttachment.click();
-  const preview = page.getByRole('dialog', { name: '文件预览' });
-  await expect(preview.locator('img')).toHaveAttribute('src', /draft_attachment_owner_id=/);
-  const imageViewport = preview.getByRole('application', { name: /图片预览/ });
-  await imageViewport.focus();
-  await page.keyboard.press('Meta+ArrowUp');
-  await expect(preview.locator('img')).toHaveAttribute('style', /scale\(1\.12\)/);
-  await page.keyboard.press('Alt+ArrowRight');
-  await expect(preview.locator('img')).toHaveAttribute('style', /translate\(40px, 0px\)/);
-  await page.keyboard.press('Control+ArrowDown');
-  await expect(preview.locator('img')).toHaveAttribute('style', /translate\(0px, 0px\) scale\(1\)/);
-  await page.keyboard.press('Control+ArrowUp');
-  await imageViewport.dblclick();
-  await expect(preview.locator('img')).toHaveAttribute('style', /translate\(0px, 0px\) scale\(1\)/);
-  await page.getByRole('button', { name: '关闭文件预览' }).click();
   await composer.fill('只属于新会话的未发送草稿');
 
   const mainNavigation = page.getByRole('navigation', { name: '主导航', exact: true });
