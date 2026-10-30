@@ -5,7 +5,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { Terminal as XTerm } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import { type InfiniteData, useQueries, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Archive, ArrowLeft, ArrowRight, ArrowUp, Bell, Bot, Boxes, CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, CircleDot, Copy, CornerDownRight, Download, Ellipsis, Eye, EyeOff, FileCode2, FileText, Folder, FolderOpen, FolderPlus, Gauge, GitBranch, Globe2, GripVertical, Home, ImageIcon, Layers3, Link2, ListRestart, LoaderCircle, Maximize, Maximize2, Minimize, Minimize2, MessageSquareText, MonitorCog, MonitorOff, PanelRight, PanelRightOpen, Pencil, Pin, PinOff, Play, Plug, Plus, Puzzle, Quote, RefreshCw, Search, Send, Settings, ShieldAlert, Sparkles, Square, SquareCheck, SquarePlus, SquareTerminal, Trash2, Webhook, X } from 'lucide-react';
+import { Archive, ArrowLeft, ArrowRight, ArrowUp, Bell, Bot, Boxes, CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, CircleDot, Copy, CornerDownRight, Download, Ellipsis, Eye, EyeOff, FileCode2, FileText, Folder, FolderOpen, FolderPlus, Gauge, GitBranch, Globe2, GripVertical, Home, ImageIcon, Layers3, Link2, ListRestart, LoaderCircle, Maximize, Maximize2, Minimize, Minimize2, MessageSquareText, MonitorCog, MonitorOff, PanelRight, PanelRightOpen, Pause, Pencil, Pin, PinOff, Play, Plug, Plus, Puzzle, Quote, RefreshCw, Search, Send, Settings, ShieldAlert, Sparkles, Square, SquareCheck, SquarePlus, SquareTerminal, Target, Trash2, Webhook, X } from 'lucide-react';
 import { createContext, isValidElement, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type WheelEvent as ReactWheelEvent } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
@@ -3892,6 +3892,40 @@ function WorkspaceBrowser({ tab, workspaceId, bindingId, workDirectoryId, browse
 }
 
 
+type GoalStatus = NonNullable<OpenHandsConversationEvent['payload']['goal_status']>;
+
+function ConversationGoalMode({ goalStatus, enabled, canEnable, pending, onToggle, onControl, onLocate }: {
+  goalStatus?: GoalStatus;
+  enabled: boolean;
+  canEnable: boolean;
+  pending: boolean;
+  onToggle: () => void;
+  onControl: (action: 'STOP' | 'RESUME') => void;
+  onLocate: () => void;
+}) {
+  const active = goalStatus?.active === true;
+  const resumable = goalStatus?.status === 'interrupted';
+  if (!goalStatus) return <button type="button" className={`conversation-goal-mode-toggle${enabled ? ' active' : ''}`} aria-pressed={enabled} disabled={!canEnable} title={enabled ? '已开启目标模式：发送消息将启动目标循环' : '开启目标模式'} onClick={onToggle}>
+    <Target size={14}/><span>目标模式</span>
+  </button>;
+  const label = active
+    ? `目标运行中 · 第 ${goalStatus.iteration} / ${goalStatus.max_iterations} 轮`
+    : goalStatus.status === 'complete'
+      ? '目标已验收通过'
+      : goalStatus.status === 'capped'
+        ? `目标达到 ${goalStatus.max_iterations} 轮上限`
+        : '目标已中断';
+  return <section className={`conversation-goal-status ${goalStatus.status}`} tabIndex={0} role="group" aria-label={label}>
+    <button type="button" className="conversation-goal-status-summary" onClick={onLocate} title="定位目标消息">
+      <Target size={14}/><span><b>{label}</b><small>{goalStatus.objective}</small></span>
+    </button>
+    {(active || resumable) && <button type="button" className="conversation-goal-status-control" disabled={pending} aria-label={active ? '停止目标' : '恢复目标'} title={active ? '停止目标' : '恢复目标'} onClick={() => onControl(active ? 'STOP' : 'RESUME')}>
+      {active ? <Square size={11} fill="currentColor"/> : <Play size={12} fill="currentColor"/>}
+    </button>}
+    <aside className="conversation-goal-status-preview" role="tooltip"><header><Target size={13}/><b>{label}</b></header><p>{goalStatus.objective}</p>{goalStatus.verdict?.missing && <small>{`Judge：${goalStatus.verdict.missing}`}</small>}</aside>
+  </section>;
+}
+
 function WorkspaceDrawer({
   open, onOpen, onClose, onFullScreenConversationActiveChange, onAnnotateFileSelection, highlightedFileSelection, workspaceId, scopeKey, migrateFromScopeKey, bindingId, workDirectoryId, conversation, conversationCumulativeTokens, conversationSearch, attachments, sources, attachmentRequest, candidatePreviewRequest, markdownFileRequest, browserRequest, onBrowserRequestHandled, htmlPreviewRequest, reviewChanges = [], reviewRequestId, sessionChanges = [], onReviewChanges, runtimeAvailable, runtimeTasks, agentDefinitions, sessionStopped, sidebarQuestion, onSidebarBindingCreated, onOpenSidebarQuestion, onCloseSidebarQuestion, onOpenConversationReference, onPreviewAttachment,
 }: {
@@ -4990,6 +5024,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const conversationDraftsByScope = useRef(new Map<string, ConversationDraftPersistence>());
   const composerRef = useRef<ComposerHandle>(null);
   const [composerHasText, setComposerHasText] = useState(() => Boolean(initialComposerDraft.trim()));
+  const [goalModeEnabled, setGoalModeEnabled] = useState(false);
   const [streamStatus, setStreamStatus] = useState<StreamStatus>('disabled');
   const [modelRetryStatus, setModelRetryStatus] = useState<ModelRetryStatus>();
   const [scopedLiveEvents, setScopedLiveEvents] = useState<ScopedConversationEvent[]>([]);
@@ -7200,10 +7235,19 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     };
     const visibleFormalEvents = currentFormalEvents.filter(event => (
       !belongsToHiddenBranch(event)
+      && !suppressedRecoveryErrorIds.has(event.id)
       && !deferredRewriteUserEventIds.has(event.id)
     ));
     return projectLocalMessages(visibleFormalEvents, activeLocalMessageProjections);
-  }, [activeLocalMessageProjections, currentFormalEvents, deferredRewriteUserEventIds, hiddenEventIds]);
+  }, [activeLocalMessageProjections, currentFormalEvents, deferredRewriteUserEventIds, hiddenEventIds, suppressedRecoveryErrorIds]);
+  const latestGoalEvent = useMemo(() => {
+    for (const event of [...currentFormalEvents].reverse()) {
+      if (event.payload.goal_status) return event;
+    }
+    return undefined;
+  }, [currentFormalEvents]);
+  const latestGoalStatus = latestGoalEvent?.payload.goal_status;
+  useEffect(() => setGoalModeEnabled(false), [selected?.id]);
   const rewriteAwaitingFormalEvent = activeLocalMessageProjections.some(projection => (
     Boolean(projection.replacedEventId)
     && (!projection.canonicalEventId || !currentFormalEvents.some(event => event.id === projection.canonicalEventId))
@@ -7824,6 +7868,56 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const canCondense = Boolean(selected && canWrite && !selectedCondensing
     && inputReadinessQuery.data?.ready === true
     && (effectiveTurnState === 'idle' || effectiveTurnState === 'paused'));
+  const goalControl = useMutation({
+    mutationFn: (request: { action: 'START' | 'STOP' | 'RESUME'; objective?: string }) => api.controlGoal(
+      workspace!.id,
+      selected!.id,
+      request.action,
+      request.objective,
+      3,
+    ),
+    onSuccess: () => {
+      if (selected?.id === activeComposerScope.current) void synchronizeConversationEvents(true, 'goal_control');
+      void queryClient.invalidateQueries({ queryKey: inputReadinessQueryKey });
+      void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-activity', workspace?.id) });
+    },
+    onError: error => reportOperationError(selected?.id, error),
+  });
+  const canStartGoal = Boolean(
+    selected
+    && canWrite
+    && !goalControl.isPending
+    && !latestGoalStatus?.active
+    && inputReadinessQuery.data?.ready === true
+    && (effectiveTurnState === 'idle' || effectiveTurnState === 'paused'),
+  );
+  const startGoalFromComposer = useCallback((content: string) => {
+    const objective = content.trim();
+    if (!objective || !selected || !canStartGoal) return;
+    if (attachments.length || references.length || workspaceReferences.length || composerAnnotations.length) {
+      setOperationError(new Error('目标模式暂不支持附件、引用或批注；请先移除这些内容后启动。'));
+      return;
+    }
+    setOperationError(undefined);
+    goalControl.mutate({ action: 'START', objective });
+    setGoalModeEnabled(false);
+    replaceComposerDraft('');
+    if (composerScope) composerDraftsByScope.current.set(composerScope, { content: '', attachments: [], references: [], workspaceReferences: [], annotations: [] });
+    if (workspace && composerScope) clearConversationComposerDraft(host.id, workspace.id, composerScope);
+  }, [attachments.length, canStartGoal, composerAnnotations.length, composerScope, goalControl, host.id, references.length, replaceComposerDraft, selected, workspace, workspaceReferences.length]);
+  const locateGoalMessage = useCallback(() => {
+    if (!latestGoalStatus) return;
+    const objective = latestGoalStatus.objective.trim();
+    const goalMessage = currentFormalEvents.find(event => (
+      event.event_type === 'MESSAGE'
+      && ['user', 'human'].includes(String(event.payload.source ?? '').toLowerCase())
+      && String(event.payload.content ?? '').trim() === objective
+    ));
+    const eventId = goalMessage?.id ?? latestGoalEvent?.id;
+    if (!eventId) return;
+    setConversationSearchTargetEventId(eventId);
+    void revealHistoryThrough(eventId);
+  }, [currentFormalEvents, latestGoalEvent?.id, latestGoalStatus, revealHistoryThrough]);
   const visibleComposerSuggestions = useMemo<ComposerSuggestion[]>(() => {
     if (!selected) return composerSuggestions;
     return [{
@@ -10506,7 +10600,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
             </article>;
           })}
         </section>}
-                  <AgentComposerInput key={composerScope ?? 'composer'} ref={composerRef} initialDraft={composerDraftRef.current} scope={composerScope} suggestions={visibleComposerSuggestions} placeholder={pendingConfirmation ? '请先处理上方工具确认…' : composerControlMode === 'condensing' ? '可继续输入，发送后将排队…' : composerControlMode === 'reconciling' ? '正在同步 Agent 状态…' : composerControlMode === 'read-only' ? '当前会话不可编辑…' : '给 Agent 发消息…'} disabled={!composerControl.editable} onDraftChange={setComposerDraft} onContentPresenceChange={onComposerContentPresenceChange} onDraftPersist={persistComposerDraft} onPaste={event => { if (!features.attachments) return; const files = transferredFiles(event.clipboardData); if (!files.length) return; event.preventDefault(); files.forEach(startAttachmentUpload); }} onSubmit={enqueueDraft} onDirectSubmit={sendDraftDirectly} onManageCapabilities={features.capabilities && (selected || features.draftCapabilitySelection) ? () => setCapabilityManagerOpen(true) : undefined} onNativeAction={action => { if (action === 'CONDENSE' && canCondense && !condense.isPending && workspace && selected) condense.mutate({ workspaceId: workspace.id, bindingId: selected.id }); }} onWorkspaceReferenceSelected={() => { setWorkspaceReferenceQuery(''); setWorkspaceReferencePickerOpen(true); }}/>
+                  <AgentComposerInput key={composerScope ?? 'composer'} ref={composerRef} initialDraft={composerDraftRef.current} scope={composerScope} suggestions={visibleComposerSuggestions} placeholder={goalModeEnabled ? '输入验收目标，发送后将启动目标循环…' : pendingConfirmation ? '请先处理上方工具确认…' : composerControlMode === 'condensing' ? '可继续输入，发送后将排队…' : composerControlMode === 'reconciling' ? '正在同步 Agent 状态…' : composerControlMode === 'read-only' ? '当前会话不可编辑…' : '给 Agent 发消息…'} disabled={!composerControl.editable} onDraftChange={setComposerDraft} onContentPresenceChange={onComposerContentPresenceChange} onDraftPersist={persistComposerDraft} onPaste={event => { if (!features.attachments) return; const files = transferredFiles(event.clipboardData); if (!files.length) return; event.preventDefault(); files.forEach(startAttachmentUpload); }} onSubmit={content => goalModeEnabled ? startGoalFromComposer(content) : enqueueDraft(content)} onDirectSubmit={content => goalModeEnabled ? startGoalFromComposer(content) : sendDraftDirectly(content)} onManageCapabilities={features.capabilities && (selected || features.draftCapabilitySelection) ? () => setCapabilityManagerOpen(true) : undefined} onNativeAction={action => { if (action === 'CONDENSE' && canCondense && !condense.isPending && workspace && selected) condense.mutate({ workspaceId: workspace.id, bindingId: selected.id }); }} onWorkspaceReferenceSelected={() => { setWorkspaceReferenceQuery(''); setWorkspaceReferencePickerOpen(true); }} goalModeEnabled={goalModeEnabled} goalModeAvailable={canStartGoal} onGoalModeToggle={() => setGoalModeEnabled(current => !current)}/>
         <div className="agent-composer-attachments">
         {(features.attachments && (attachments.length > 0 || pendingAttachments.some(item => item.scope === composerScope)) || references.length > 0 || workspaceReferences.length > 0 || composerAnnotations.length > 0) && <div className="agent-attachments" aria-label="已添加的附件、会话引用和工作区引用">{features.attachments && <>{attachments.map((item, index) => <span key={item.path}><button type="button" className="agent-attachment-open" title={`预览附件：${item.filename}`} onClick={() => previewAttachment(item)}>{composerAttachmentImageUrl(item) ? <img src={composerAttachmentImageUrl(item)} alt=""/> : <FileTypeIcon filename={item.filename} mimeType={item.mime_type} size={16}/>}<em>{item.filename}</em></button><button type="button" className="agent-attachment-alias" aria-label={`引用附件 ${index + 1}`} title={`插入 @附件${index + 1}`} onClick={() => insertAttachmentAlias(item)}>@</button><button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => {
   const remove = () => setAttachments(all => all.filter(candidate => candidate.path !== item.path));
@@ -10536,6 +10630,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
           <button type="button" className={`agent-current-workspace${workspacePathCopied ? ' copied' : ''}`} title={`${workspacePathCopied ? '已复制' : '点击复制'}：${currentWorkspaceRelativePath}`} aria-label={workspacePathCopied ? `工作区路径已复制：${currentWorkspaceRelativePath}` : `当前工作区：${currentWorkspaceName}；点击复制相对根工作区路径：${currentWorkspaceRelativePath}`} onClick={copyCurrentWorkspacePath}>
             <Folder size={16}/><span>{currentWorkspaceName}</span>{workspacePathCopied && <small aria-live="polite">已复制</small>}
           </button>
+          {selected && <ConversationGoalMode goalStatus={latestGoalStatus} enabled={goalModeEnabled} canEnable={canStartGoal} pending={goalControl.isPending} onToggle={() => setGoalModeEnabled(current => !current)} onControl={action => goalControl.mutate({ action })} onLocate={locateGoalMessage}/>}
           <ConversationTaskPlan events={displayedEvents} isGenerating={taskPlanLayoutActive} conversationScope={selected?.id ?? conversationDraft?.id}/>
         </div>
       </div>}

@@ -4975,6 +4975,39 @@ def input_readiness(db: Session, workspace_id: str, binding_id: str) -> dict[str
     return readiness.as_dict()
 
 
+def control_goal(
+    db: Session,
+    workspace_id: str,
+    binding_id: str,
+    *,
+    action: str,
+    objective: str | None,
+    max_iterations: int,
+) -> dict[str, bool]:
+    workspace = _workspace(db, workspace_id)
+    binding = _binding(db, workspace_id, binding_id, lock=True)
+    runtime = db.scalar(
+        select(AgentWorkspaceRuntime)
+        .where(AgentWorkspaceRuntime.workspace_id == workspace.id)
+        .with_for_update()
+    )
+    if runtime is not None and runtime.status == "RECONNECTING":
+        raise DomainError("AGENT_RUNTIME_UNAVAILABLE", "Agent 运行环境暂时不可写入，请稍后重试", 503)
+    if runtime is None or runtime.status != "ACTIVE" or runtime.active_generation is None:
+        raise DomainError("AGENT_RUNTIME_RECOVERING", "Agent 运行环境正在恢复，数据已保留", 503)
+    handle = _handle(db, workspace, binding)
+    native = get_runtime()
+    if action == "START":
+        native.start_goal(handle, objective or "", max_iterations)
+    elif action == "STOP":
+        native.stop_goal(handle)
+    elif action == "RESUME":
+        native.resume_goal(handle)
+    else:
+        raise DomainError("GOAL_ACTION_INVALID", "不支持的目标操作", 422)
+    return {"accepted": True}
+
+
 def rewrite_message(
     db: Session,
     workspace_id: str,

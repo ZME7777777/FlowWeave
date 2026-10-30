@@ -57,7 +57,7 @@ from flowweave.shared.http import (
     run_terminal_control,
     run_terminal_stream,
 )
-from flowweave.shared.schemas import ConversationPatchWrite
+from flowweave.shared.schemas import ConversationGoalWrite, ConversationPatchWrite
 from flowweave.shared.settings import bind_settings, reset_settings
 
 router = APIRouter()
@@ -1538,6 +1538,28 @@ async def interrupt_node_session(
             flow_run_id=flow_run_id,
             attempt_id=attempt_id,
             binding_id=binding_id,
+        ),
+    )
+
+
+@router.post(f"{_BASE}/{{binding_id}}/goal", status_code=202)
+async def control_node_session_goal(
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str,
+    payload: ConversationGoalWrite,
+    container: ContainerDep,
+) -> dict[str, bool]:
+    return await run_blocking_control(
+        container,
+        lambda session: agent_sessions.flow_node_conversations.control_goal(
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            binding_id=binding_id,
+            action=payload.action,
+            objective=payload.objective,
+            max_iterations=payload.max_iterations,
         ),
     )
 

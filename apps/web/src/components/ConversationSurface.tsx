@@ -1,5 +1,5 @@
 import { ViewportPopover } from './ViewportPopover';
-import { BookOpen, Check, ChevronDown, ChevronRight, CircleAlert, ClipboardList, Copy, ExternalLink, Eye, FileCode2, FileCog, FileJson, FilePenLine, FilePlus2, FileText, FileType2, GitFork, Link, LoaderCircle, PanelRightOpen, PanelTop, Pencil, PlugZap, Quote, Search, ShieldCheck, Sparkles, SquareTerminal, Workflow, Wrench } from 'lucide-react';
+import { BookOpen, Check, ChevronDown, ChevronRight, CircleAlert, ClipboardList, Copy, ExternalLink, Eye, FileCode2, FileCog, FileJson, FilePenLine, FilePlus2, FileText, FileType2, GitFork, Link, LoaderCircle, PanelRightOpen, PanelTop, Pencil, PlugZap, Quote, Search, ShieldCheck, Sparkles, SquareTerminal, Target, Workflow, Wrench } from 'lucide-react';
 import { Fragment, lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from 'react';
 import type { AgentActivitySummary, AgentAttachment, AgentConversationAnnotation, AgentConversationReference, AgentWorkspaceReference, OpenHandsConversationEvent, RuntimeTaskControlSnapshot } from '../types';
 import { SubagentAvatar } from './SubagentAvatar';
@@ -12,7 +12,7 @@ import { isFlowWeaveInternalProtocolMessage, isFlowWeaveMessageContext, isOpenHa
 import { conversationSearchPattern } from './conversationSearch';
 import './conversation-surface.css';
 
-type ItemKind = 'user' | 'assistant' | 'thought' | 'tool' | 'error' | 'condensation' | 'security';
+type ItemKind = 'user' | 'assistant' | 'thought' | 'tool' | 'error' | 'condensation' | 'goal' | 'security';
 
 interface Item {
   event: OpenHandsConversationEvent;
@@ -494,6 +494,17 @@ function itemsFor(event: OpenHandsConversationEvent, taskRetryError = false): It
   }
   if (event.event_type === 'CONDENSATION_REQUESTED') return [{ event, kind: 'condensation', title: '开始压缩上下文', content: '' }];
   if (event.event_type === 'CONDENSATION_COMPLETED') return [{ event, kind: 'condensation', title: '压缩完成', content: '' }];
+  if (event.payload.goal_status) {
+    const goal = event.payload.goal_status;
+    const title = goal.status === 'complete'
+      ? '目标已验收通过'
+      : goal.status === 'capped'
+        ? '目标已达到轮次上限'
+        : goal.status === 'interrupted'
+          ? '目标循环已中断'
+          : goal.iteration === 0 ? '开始执行目标' : `目标第 ${goal.iteration} 轮验收`;
+    return [{ event, kind: 'goal', title, content: goal.verdict?.missing ?? '' }];
+  };
   if (event.event_type === 'SECURITY_ANALYSIS') return [{ event, kind: 'security', title: '安全分析', content: '' }];
   if (event.event_type === 'TOOL_CALL') return [{ event, kind: 'tool', title: eventName, content: thought || content }];
   // Its native observation only confirms that text was logged, so rendering it
@@ -1486,6 +1497,13 @@ function ActivityEntryRow({ entry, active, reveal = false, paused = false, paren
   if (item.kind === 'condensation') return <article className={`conversation-activity-row tool condensation${condensationRunning ? ' running' : ''}`} role="status" aria-label={presentation.title}>
     <Sparkles size={13}/><div><b>{presentation.title}</b></div>
   </article>;
+  if (item.kind === 'goal') {
+    const goal = item.event.payload.goal_status!;
+    const detail = item.content || (goal.status === 'complete' ? 'Judge 已确认当前目标的完成证据。' : goal.status === 'interrupted' ? '可在会话目标卡中恢复原目标。' : undefined);
+    return <article className={`conversation-activity-row goal ${goal.status}`} role="status" aria-label={item.title}>
+      <Target size={13}/><div><b>{item.title}</b><small>{`第 ${goal.iteration} / ${goal.max_iterations} 轮 · ${goal.objective}`}</small>{detail && <span>{detail}</span>}</div>
+    </article>;
+  }
   if (item.kind === 'security') {
     const security = securityAnalysisPresentation(item.event);
     return <article className="conversation-activity-row security-analysis" role="status" aria-label={security.title} data-security-analysis-event-id={item.event.id} data-security-action-ids={security.actionIds}>

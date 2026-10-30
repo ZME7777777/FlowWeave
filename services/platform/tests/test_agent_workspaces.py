@@ -6746,3 +6746,57 @@ def test_agent_workspace_rewrite_reads_old_user_event_by_native_id(
 
     assert result["accepted"] is True
     assert runtime.calls == [("navigate", "root-event"), ("send", "after")]
+
+
+
+def test_agent_workspace_goal_control_delegates_to_native_runtime(settings, db_session_factory):
+    class GoalRuntime(MockRuntime):
+        calls: list[tuple[str, str | None, int | None]] = []
+
+        def start_goal(self, _handle, objective, max_iterations):
+            self.calls.append(("START", objective, max_iterations))
+
+        def stop_goal(self, _handle):
+            self.calls.append(("STOP", None, None))
+
+        def resume_goal(self, _handle):
+            self.calls.append(("RESUME", None, None))
+
+    runtime = GoalRuntime()
+    with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
+        workspace = _ready_workspace_for_conversation(db)
+        created = conversations.create_conversation(
+            db, workspace.id, None, workspace.default_model_provider_id, "goal-control"
+        )
+
+        started = conversations.control_goal(
+            db,
+            workspace.id,
+            created["id"],
+            action="START",
+            objective="Run the focused test suite until it passes.",
+            max_iterations=3,
+        )
+        stopped = conversations.control_goal(
+            db,
+            workspace.id,
+            created["id"],
+            action="STOP",
+            objective=None,
+            max_iterations=10,
+        )
+        resumed = conversations.control_goal(
+            db,
+            workspace.id,
+            created["id"],
+            action="RESUME",
+            objective=None,
+            max_iterations=10,
+        )
+
+    assert started == stopped == resumed == {"accepted": True}
+    assert runtime.calls == [
+        ("START", "Run the focused test suite until it passes.", 3),
+        ("STOP", None, None),
+        ("RESUME", None, None),
+    ]

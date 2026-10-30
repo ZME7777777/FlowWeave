@@ -1,4 +1,4 @@
-import { ChevronRight, Boxes } from 'lucide-react';
+import { ChevronRight, Boxes, Target } from 'lucide-react';
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { CONVERSATION_REFERENCE_TRANSFER_TYPE, WORKSPACE_FILE_TRANSFER_TYPE, transferredConversationReference, transferredFiles, transferredWorkspacePaths, type ComposerHandle } from './agentComposerInputUtils';
 
@@ -47,8 +47,11 @@ export const AgentComposerInput = forwardRef<ComposerHandle, {
   onManageCapabilities?: () => void;
   onNativeAction?: (action: NativeComposerAction) => void;
   onWorkspaceReferenceSelected?: () => void;
+  goalModeEnabled?: boolean;
+  goalModeAvailable?: boolean;
+  onGoalModeToggle?: () => void;
 }>(function AgentComposerInput({
-  ariaLabel = '发送 Agent 消息', initialDraft, scope, suggestions, disabled, placeholder, onDraftChange, onContentPresenceChange, onDraftPersist, onPaste, onDropFiles, onDropWorkspaceFiles, onDropConversationReference, onSubmit, onDirectSubmit, onManageCapabilities, onNativeAction, onWorkspaceReferenceSelected,
+  ariaLabel = '发送 Agent 消息', initialDraft, scope, suggestions, disabled, placeholder, onDraftChange, onContentPresenceChange, onDraftPersist, onPaste, onDropFiles, onDropWorkspaceFiles, onDropConversationReference, onSubmit, onDirectSubmit, onManageCapabilities, onNativeAction, onWorkspaceReferenceSelected, goalModeEnabled = false, goalModeAvailable = false, onGoalModeToggle,
 }, ref) {
   const input = useRef<HTMLTextAreaElement>(null);
   const dragDepth = useRef(0);
@@ -245,6 +248,7 @@ export const AgentComposerInput = forwardRef<ComposerHandle, {
       if (hasMenu && ['Enter', 'Tab'].includes(event.key)) { event.preventDefault(); return; }
       if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); onSubmit(draftRef.current); }
     }}/>
+    {goalModeAvailable && <button type="button" className={`agent-composer-goal-toggle${goalModeEnabled ? ' active' : ''}`} aria-label={goalModeEnabled ? '关闭目标模式' : '开启目标模式'} aria-pressed={goalModeEnabled} title={goalModeEnabled ? '目标模式已开启：发送消息将启动目标循环' : '开启目标模式'} disabled={disabled} onClick={onGoalModeToggle}><Target size={14}/></button>}
     {fileDragActive && <div className="agent-composer-file-drop" aria-live="polite">{dragKind === 'conversation' ? '松开以添加会话' : '松开以添加附件'}</div>}
     {hasMenu && <div id="agent-composer-capabilities" className="agent-composer-capability-menu" role="listbox" aria-label={trigger!.sigil === '$' ? '选择技能' : trigger!.sigil === '@' ? '选择引用类型' : hasNativeSuggestions ? '选择 OpenHands 原生能力、命令或 MCP' : '选择命令或 MCP'}>{hasSuggestions ? <>{visible.map((item, index) => <div className="agent-composer-capability-option" key={item.id}>{trigger!.sigil === '@' && index === 0 && <div className="agent-composer-capability-section">引用类型</div>}{trigger!.sigil === '/' && item.kind === 'NATIVE' && (index === 0 || visible[index - 1]?.kind !== 'NATIVE') && <div className="agent-composer-capability-section">OpenHands 原生能力</div>}{trigger!.sigil === '/' && item.kind !== 'NATIVE' && (index === 0 || visible[index - 1]?.kind === 'NATIVE') && <div className="agent-composer-capability-section">MCP 与命令</div>}<button type="button" role="option" aria-selected={index === activeIndex} aria-disabled={item.available === false || undefined} disabled={item.available === false} className={`${index === activeIndex ? 'active' : ''}${item.available === false ? ' unavailable' : ''}`} onMouseDown={event => event.preventDefault()} onMouseEnter={() => setActiveIndex(index)} onClick={() => select(item)}><code>{item.token}</code><span><b>{item.label}</b><small>{item.detail}</small></span><em>{item.kind === 'SKILL' ? '技能' : item.kind === 'COMMAND' ? '命令' : item.kind === 'NATIVE' ? '原生' : item.kind === 'REFERENCE' ? '引用' : 'MCP'}</em></button></div>)}</> : <div className="agent-composer-capability-empty"><span><b>{trigger!.sigil === '@' ? '当前没有匹配的引用类型' : !suggestions.length ? trigger!.sigil === '$' ? '当前会话还没有加载 Skill' : '当前会话还没有加载命令或 MCP' : '当前会话没有匹配的能力'}</b><small>{trigger!.sigil === '@' ? '调整输入关键词以筛选引用类型。' : !suggestions.length ? `先为此会话加载能力，随后可在这里用 ${trigger!.sigil} 选择并插入。` : '调整输入关键词，或前往会话配置。'}</small></span></div>}{showCapabilityManager && <button type="button" className="agent-composer-capability-manage" aria-label="会话配置" onMouseDown={event => event.preventDefault()} onClick={onManageCapabilities}><Boxes size={16}/><b>会话配置</b><ChevronRight size={16}/></button>}</div>}
   </div>;

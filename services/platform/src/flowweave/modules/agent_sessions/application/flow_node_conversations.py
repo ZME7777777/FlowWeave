@@ -4572,14 +4572,28 @@ def resume_node_conversation(
 
 def control_goal(
     db: Session,
-    binding_id: str,
     *,
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str,
     action: str,
     objective: str | None,
     max_iterations: int,
-) -> dict[str, Any]:
+) -> dict[str, bool]:
+    _assert_node_session_writable(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
+    )
+    _binding_for_attempt(
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        binding_id=binding_id,
+        lock=True,
+    )
     runtime = get_runtime()
-    handle = _handle(db, binding_id)
+    handle = _node_handle(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
+    )
     if action == "START":
         runtime.start_goal(handle, objective or "", max_iterations)
     elif action == "STOP":

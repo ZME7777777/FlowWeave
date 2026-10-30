@@ -76,6 +76,7 @@ from flowweave.shared.infrastructure.docker_controller import (
     DockerControllerClient,
     DockerControllerError,
 )
+from flowweave.shared.schemas import ConversationGoalWrite
 from flowweave.shared.settings import bind_settings, reset_settings
 
 router = APIRouter()
@@ -2256,6 +2257,26 @@ async def agent_interrupt(
         lambda session: conversations.interrupt(session, workspace_id, binding_id),
     )
     return {"accepted": True}
+
+
+@router.post("/agent-workspaces/{workspace_id}/conversations/{binding_id}/goal", status_code=202)
+async def agent_conversation_goal(
+    workspace_id: str,
+    binding_id: str,
+    payload: ConversationGoalWrite,
+    container: ContainerDep,
+) -> dict[str, bool]:
+    return await run_blocking_control(
+        container,
+        lambda session: conversations.control_goal(
+            session,
+            workspace_id,
+            binding_id,
+            action=payload.action,
+            objective=payload.objective,
+            max_iterations=payload.max_iterations,
+        ),
+    )
 
 
 @router.get("/agent-workspaces/{workspace_id}/conversations/{binding_id}/input-readiness")

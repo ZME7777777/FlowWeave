@@ -167,6 +167,8 @@ export interface AgentSessionApi {
   readonly forkConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, eventId: string) => Promise<AgentConversation>;
   /** Requests native context condensation without appending a user message. */
   readonly condenseConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<{ accepted: boolean; task_id?: string | null }>;
+  /** Controls the OpenHands-owned Goal Loop for one existing Conversation. */
+  readonly controlGoal: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, action: 'START' | 'STOP' | 'RESUME', objective?: string, maxIterations?: number) => Promise<{ accepted: boolean }>;
   readonly interruptConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<{ accepted: boolean }>;
   readonly resumeConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<{ accepted: boolean; cursor?: string | null }>;
   readonly decideConfirmation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, expectedPendingDigest: string, accept: boolean, reason: string) => Promise<{ accepted: boolean; cursor?: string | null }>;
@@ -257,6 +259,7 @@ export const agentWorkspaceSessionGateway: AgentSessionGateway = {
     deleteDraftAttachments: api.deleteAgentWorkspaceDraftAttachments,
     forkConversation: api.forkAgentConversation,
     condenseConversation: api.condenseAgentConversation,
+    controlGoal: api.controlAgentConversationGoal,
     interruptConversation: api.interruptAgentConversation,
     resumeConversation: api.resumeAgentConversation,
     decideConfirmation: api.decideAgentConfirmation,
@@ -385,6 +388,8 @@ export function flowNodeSessionGateway(
       forkConversation: (_hostId, bindingId, eventId) => nodeSessionApi.fork(flowRunId, attemptId, bindingId, eventId),
       condenseConversation: (_hostId, bindingId) =>
         nodeSessionApi.condense(flowRunId, attemptId, bindingId),
+      controlGoal: (_hostId, bindingId, action, objective, maxIterations) =>
+        nodeSessionApi.controlGoal(flowRunId, attemptId, bindingId, action, objective, maxIterations),
       interruptConversation: (_hostId, bindingId) =>
         nodeSessionApi.interrupt(flowRunId, attemptId, bindingId),
       resumeConversation: (_hostId, bindingId) =>

@@ -612,6 +612,8 @@ export const api = {
     request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/streaming-migration`, json('POST', { model_provider_id, model_name, reasoning_effort }, true)),
   condenseAgentConversation: (workspaceId: string, bindingId: string) =>
     request<{ accepted: boolean; task_id?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/condense`, json('POST', undefined, true)),
+  controlAgentConversationGoal: (workspaceId: string, bindingId: string, action: 'START' | 'STOP' | 'RESUME', objective?: string, max_iterations?: number) =>
+    request<{ accepted: boolean }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/goal`, json('POST', { action, ...(action === 'START' ? { objective, max_iterations } : {}) })),
   forkAgentConversation: (workspaceId: string, bindingId: string, event_id: string) =>
     request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/fork`, json('POST', { event_id }, true)),
   rerunAgentMessage: (workspaceId: string, bindingId: string, eventId: string, content: string, attachments: AgentAttachment[] = [], references: AgentConversationReference[] = [], workspace_references: AgentWorkspaceReference[] = [], annotations: AgentConversationAnnotation[] = []) =>
@@ -1244,6 +1246,8 @@ export const nodeSessionApi = {
   },
   condense: (flowRunId: string, attemptId: string, bindingId: string) =>
     request<{ accepted: boolean; task_id?: string | null }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/condense`, json('POST', undefined, true)),
+  controlGoal: (flowRunId: string, attemptId: string, bindingId: string, action: 'START' | 'STOP' | 'RESUME', objective?: string, max_iterations?: number) =>
+    request<{ accepted: boolean }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/goal`, json('POST', { action, ...(action === 'START' ? { objective, max_iterations } : {}) })),
   interrupt: (flowRunId: string, attemptId: string, bindingId: string) =>
     request<{ accepted: boolean }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/interrupt`, json('POST')),
   resume: (flowRunId: string, attemptId: string, bindingId: string) =>

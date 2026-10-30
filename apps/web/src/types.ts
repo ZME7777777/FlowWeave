@@ -718,6 +718,15 @@ export interface OpenHandsConversationEvent {
         security_risk: 'UNKNOWN' | 'LOW' | 'MEDIUM' | 'HIGH';
       }>;
     };
+    /** OpenHands-owned Goal Loop lifecycle state from ConversationStateUpdateEvent(key="goal"). */
+    goal_status?: {
+      active: boolean;
+      status: 'running' | 'complete' | 'capped' | 'interrupted';
+      iteration: number;
+      max_iterations: number;
+      objective: string;
+      verdict?: { score: number; complete: boolean; missing: string } | null;
+    };
     /** Server-confirmed terminal delivery for this assistant MessageEvent. */
     final_reply?: boolean;
     /** Safe projection of the formal OpenHands TaskAction/TaskObservation lifecycle. */
