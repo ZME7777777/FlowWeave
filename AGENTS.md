@@ -161,3 +161,10 @@ git -C /Users/zhengmengen/WorkSpace/openhands/software-agent-sdk-total-tokens-1.
 - `case_flow_runs`、`case_decision_proposals` 和 `case_control_plans` 同样属于用户隔离控制面，必须维护 RLS 与 `_USER_ISOLATED_TABLES`。Case 决策按当前产品要求自主执行，但只可走白名单动作与既有编排服务，且只能引用活动 `CaseStage.current_execution_flow_run_id`，绝不可作用于模板、历史副本、其他阶段或仅因关联而可见的 FlowRun：逐步运行可继续、停止、复制节点重跑或为未启动部分应用 Revision；连续运行只能复制为独立自动运行草稿，绝不能修改已启动自动运行。所有决策必须持久记录输入、执行结果和失败码；不得把 Case Agent 的文本输出当作可执行私有控制协议。
 - Case 阶段的 `CaseStage.flow_run_id` 是已完整配置的运行模板，Case 永不直接启动它；`current_execution_flow_run_id` 指向由模板复制的当前独立执行记录。0163 之前的直接阶段绑定迁移时必须移到 `current_execution_flow_run_id` 并清空模板字段，绝不可把历史执行误作可复用模板。逐步模板必须是子逐步记录，且从起点可达的所有节点都已有完整草稿；复制保留全图草稿，但下游实际启动仍须等待所有直接前驱接受。逐步节点重跑必须创建新的 NodeRun/Attempt 和新的原生会话 Binding，但重用同一 FlowRun 节点工作目录；旧 Binding、会话事件、工作区内容和执行记录必须保留，绝不可覆盖或删除。
 - 逐步运行的前驱节点重跑窗口只在其所有直接后继仍是未物化的待启动草稿时开放；后继一旦已有 NodeRun 即不可回退。工作台通过双击符合条件的已接受前驱节点重新进入编辑，保存草稿后左侧记录按钮必须显示“重跑”；实际重跑继续创建新的 NodeRun/Attempt/Binding，保留原会话和工作区历史。
+
+## FlowWeave 会话网关重连
+
+- OpenHands 对同一会话的原生继续入口是 `POST /api/conversations/{conversation_id}/run`；`OpenHandsRuntime.run()` 必须只允许 `idle`、`paused` 和经正式可恢复错误分类的 `error` 状态，绝不能重启 `finished` 会话。
+- FlowWeave 仅对正式 `ConversationErrorEvent` 中 `classification.kind === "transient"` 且 `retryable === true` 的网关/网络错误自动重连：包括模型网关 `502/503/504`、连接中断、超时和空响应；`quota`（额度耗尽）、`rate_limit`、认证、配置、上下文和内容策略错误一律不自动重连。总尝试次数是 3，包含收到的首次失败，因此最多调用原生 `/run` 2 次；每次继续后必须等待新的非终态正式事件，不能仅以 HTTP 接受响应判定成功。
+- OpenHands 单次模型请求的 `num_retries` 同样是总尝试次数，当前固定为 3，包含第一次请求；流式模型重试进度上限也必须保持为 `3/3`。
+- 工作台重连时维持原会话与事件树，暂时抑制该可恢复错误的终态渲染，并在思考区和发送框显示“正在尝试重连（n/3）”；收到正式进展事件后恢复常规渲染，耗尽后才显示原始终态错误。

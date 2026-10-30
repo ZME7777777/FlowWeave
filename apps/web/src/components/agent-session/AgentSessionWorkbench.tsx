@@ -44,6 +44,8 @@ import '../../pages/agent-workbench-layout.css';
 
 const ACTIVE_EVENT_RECOVERY_INTERVAL_MS = 4_000;
 const ACTIVE_EVENT_LATEST_RECHECK_INTERVAL_MS = 30_000;
+const FLOWWEAVE_RECONNECT_MAX_ATTEMPTS = 3;
+const FLOWWEAVE_RECONNECT_OBSERVATION_MS = 5_000;
 const INPUT_READINESS_MIN_REQUEST_INTERVAL_MS = 2_000;
 const PAUSE_CONFIRMATION_RETRY_INTERVAL_MS = 500;
 const SUBMISSION_EVENT_CONFIRMATION_TIMEOUT_MS = 60_000;
@@ -78,13 +80,20 @@ const SESSION_PERFORMANCE_MARK_PREFIX = 'flowweave.agent-session.';
 // Runtime payload. They govern each model request made while a Task runs;
 // they are not a wall-clock deadline for the whole child task.
 const MODEL_REQUEST_TIMEOUT_SECONDS = 120;
-const MODEL_REQUEST_MAX_RETRIES = 5;
+const MODEL_REQUEST_MAX_RETRIES = 3;
 const PRODUCT_CONTEXT_WINDOW_TOKENS = 512_000;
 const CONTEXT_COMPACTION_TRIGGER_PERCENT = 80;
 const CONTEXT_COMPACTION_TRIGGER_TOKENS = 409_600;
 type StreamStatus = 'connecting' | 'live' | 'recovering' | 'disabled';
-type TurnState = 'idle' | 'running' | 'pausing' | 'paused' | 'resuming';
-type ComposerControlMode = 'idle' | 'running' | 'pausing' | 'paused' | 'resuming' | 'rewriting' | 'reconciling' | 'read-only' | 'condensing';
+type TurnState = 'idle' | 'running' | 'pausing' | 'paused' | 'resuming' | 'reconnecting';
+type ComposerControlMode = 'idle' | 'running' | 'pausing' | 'paused' | 'resuming' | 'reconnecting' | 'rewriting' | 'reconciling' | 'read-only' | 'condensing';
+type FlowWeaveReconnect = {
+  bindingId: string;
+  errorEventId: string;
+  attempt: number;
+  baselineEventIds: Set<string>;
+  resumeIssued: boolean;
+};
 type QueueDeliveryState = 'queued';
 type ConversationOrderSync = { state: 'syncing' | 'failed'; orderedBindingIds: string[] };
 type ConversationPagesByScope = Record<string, AgentConversationPage>;
@@ -659,6 +668,20 @@ function conversationHasReachedTerminalState(executionStatus: string | null | un
   return ['idle', 'completed', 'stopped', 'finished', 'error', 'stuck'].includes(
     executionStatus?.trim().toLowerCase() ?? '',
   );
+}
+
+function isRecoverableGatewayFailure(event: OpenHandsConversationEvent): boolean {
+  if (!isOpenHandsConversationTerminalError(event)) return false;
+  const classification = event.payload.classification;
+  if (typeof classification !== 'object' || classification === null || Array.isArray(classification)) {
+    return false;
+  }
+  const values = classification as Record<string, unknown>;
+  // OpenHands reserves `transient` for short-lived transport/provider faults:
+  // timeouts, connection loss, 502/503/504-style gateway failures and empty
+  // responses. Quota, rate-limit, auth, config and context errors are separate
+  // kinds, even when their own retryable flag is true.
+  return values.kind === 'transient' && values.retryable === true;
 }
 
 const MAX_BOOTSTRAP_RECONCILIATION_ATTEMPTS = 3;
@@ -4980,6 +5003,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [escPauseConfirmation, setEscPauseConfirmation] = useState(false);
   const escPauseConfirmationTimer = useRef<number | undefined>(undefined);
   const confirmPauseOnEscapeRef = useRef<((event: KeyboardEvent) => void) | undefined>(undefined);
+  const [flowWeaveReconnect, setFlowWeaveReconnect] = useState<FlowWeaveReconnect>();
+  const [suppressedRecoveryErrorIds, setSuppressedRecoveryErrorIds] = useState<Set<string>>(() => new Set());
+  const [exhaustedRecoveryErrorIds, setExhaustedRecoveryErrorIds] = useState<Set<string>>(() => new Set());
   const [turnState, setTurnState] = useState<TurnState>('idle');
   const [activeTurnEventId, setActiveTurnEventId] = useState<string>();
   const [expiredTerminalSyncTurnKey, setExpiredTerminalSyncTurnKey] = useState<string>();
@@ -7255,7 +7281,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   // failure/restart. Historical activity is not evidence that it still runs.
   // Preserve only the current POST-to-formal-event handoff and ignore a failed
   // readiness snapshot that predates this browser's new submission.
-  const nativeFailureSettled = nativeTurnFailed && !foregroundDeliveryPending
+  const reconnectingCurrentConversation = flowWeaveReconnect?.bindingId === selected?.id;
+  const nativeFailureSettled = !reconnectingCurrentConversation && nativeTurnFailed && !foregroundDeliveryPending
     && (!foregroundTurnPending || (readinessSynchronization.current.scope === selected?.id
       && (readinessSynchronization.current.lastObservedRequestAt ?? 0) > currentForegroundTurn!.submittedAt));
   const foregroundSubmissionAwaitingFormalEvent = !nativeFailureSettled
@@ -7314,8 +7341,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   );
   const effectiveTurnState: TurnState = idleUncreatedConversationDraft || nativeFailureSettled
     ? 'idle'
-    : turnState === 'pausing' || turnState === 'resuming'
-      ? turnState
+    : reconnectingCurrentConversation
+      ? 'reconnecting'
+      : turnState === 'pausing' || turnState === 'resuming'
+        ? turnState
       : currentFormalTurnFinished
         ? 'idle'
         : pausedStateConflictsWithRunningEvidence
@@ -7339,7 +7368,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   // The browser queue contains only messages that have not started delivery.
   // Once a request starts, the optimistic conversation event owns its display.
   const visibleQueuedMessages = queuedMessages.filter(message => message.scope === selected?.id);
-  const isGenerating = effectiveTurnState === 'running' || effectiveTurnState === 'pausing' || effectiveTurnState === 'resuming';
+  const isGenerating = effectiveTurnState === 'running' || effectiveTurnState === 'pausing' || effectiveTurnState === 'resuming' || effectiveTurnState === 'reconnecting';
   const streamEnabled = Boolean(
     selected
     && (runtime?.write_available || selected.write_available)
@@ -7477,7 +7506,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     ? { state: 'idle' as const, active: false }
     : {
         state: selectedCondensing ? 'running' as const : effectiveTurnState,
-        active: selectedCondensing || effectiveTurnState === 'running' || effectiveTurnState === 'pausing' || effectiveTurnState === 'resuming',
+        active: selectedCondensing || effectiveTurnState === 'running' || effectiveTurnState === 'pausing' || effectiveTurnState === 'resuming' || effectiveTurnState === 'reconnecting',
       }, [effectiveTurnState, selectedCondensing, uncreatedConversationDraft]);
   const conversationVisuallyActive = !uncreatedConversationDraft && !nativeFailureSettled && (
     conversationActivity.active
@@ -7977,7 +8006,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       bootstrapTransitionScope.current = undefined;
       return;
     }
-    setEditing(false); setQueuedMessageMenuId(undefined); pendingLiveEvents.current = []; if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current); liveEventsFrame.current = undefined; setScopedLiveEvents(current => current.filter(item => item.scope === composerScope)); setLocalMessageProjectionRevision(current => current + 1); setHiddenEventIds(new Set()); setDeferredRewriteUserEventIds(new Set()); setActiveTurnEventId(undefined); setForegroundTurn(undefined); setExpiredTerminalSyncTurnKey(undefined); setRequestStartedAt(undefined); setConfirmationReason(''); setTurnState('idle'); queuedMessagesRef.current = []; setQueuedMessages([]); setPendingRewrite(undefined);
+    setEditing(false); setQueuedMessageMenuId(undefined); pendingLiveEvents.current = []; if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current); liveEventsFrame.current = undefined; setScopedLiveEvents(current => current.filter(item => item.scope === composerScope)); setLocalMessageProjectionRevision(current => current + 1); setHiddenEventIds(new Set()); setSuppressedRecoveryErrorIds(new Set()); setExhaustedRecoveryErrorIds(new Set()); setFlowWeaveReconnect(undefined); setDeferredRewriteUserEventIds(new Set()); setActiveTurnEventId(undefined); setForegroundTurn(undefined); setExpiredTerminalSyncTurnKey(undefined); setRequestStartedAt(undefined); setConfirmationReason(''); setTurnState('idle'); queuedMessagesRef.current = []; setQueuedMessages([]); setPendingRewrite(undefined);
     if (recoveredComposer && composerScope) {
       composerDraftsByScope.current.set(composerScope, recoveredComposer);
       replaceComposerDraft(recoveredComposer.content, composerScope);
@@ -9037,6 +9066,79 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       reportOperationError(request.bindingId, error);
     },
   });
+  const latestRecoverableGatewayError = useMemo(() => {
+    const events = orderOpenHandsConversationEvents(currentFormalEvents);
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const candidate = events[index];
+      if (!isRecoverableGatewayFailure(candidate)) continue;
+      return events.slice(index + 1).some(event => event.id !== candidate.id)
+        ? undefined
+        : candidate;
+    }
+    return undefined;
+  }, [currentFormalEvents]);
+  useEffect(() => {
+    if (!selected || !latestRecoverableGatewayError
+      || exhaustedRecoveryErrorIds.has(latestRecoverableGatewayError.id)) return;
+    if (flowWeaveReconnect?.bindingId === selected.id) {
+      setSuppressedRecoveryErrorIds(current => new Set([...current, latestRecoverableGatewayError.id]));
+      return;
+    }
+    setSuppressedRecoveryErrorIds(current => new Set([...current, latestRecoverableGatewayError.id]));
+    setFlowWeaveReconnect({
+      bindingId: selected.id,
+      errorEventId: latestRecoverableGatewayError.id,
+      attempt: 1,
+      baselineEventIds: new Set(currentFormalEvents.map(event => event.id)),
+      resumeIssued: false,
+    });
+    setTurnState('reconnecting');
+  }, [currentFormalEvents, exhaustedRecoveryErrorIds, flowWeaveReconnect, latestRecoverableGatewayError, selected]);
+  useEffect(() => {
+    if (!workspace || !selected || !flowWeaveReconnect
+      || flowWeaveReconnect.bindingId !== selected.id) return;
+    const progressed = currentFormalEvents.some(event => (
+      !flowWeaveReconnect.baselineEventIds.has(event.id)
+      && !isOpenHandsConversationTerminalError(event)
+    ));
+    if (progressed) {
+      setFlowWeaveReconnect(undefined);
+      setTurnState('running');
+      reconcileConversationProjection('flowweave_reconnect_progress');
+      return;
+    }
+    if (!flowWeaveReconnect.resumeIssued) {
+      if (flowWeaveReconnect.attempt >= FLOWWEAVE_RECONNECT_MAX_ATTEMPTS) {
+        setSuppressedRecoveryErrorIds(current => {
+          const next = new Set(current);
+          next.delete(flowWeaveReconnect.errorEventId);
+          return next;
+        });
+        setExhaustedRecoveryErrorIds(current => new Set([...current, flowWeaveReconnect.errorEventId]));
+        setFlowWeaveReconnect(undefined);
+        setTurnState('idle');
+        return;
+      }
+      setFlowWeaveReconnect(current => current
+        && current.bindingId === selected.id
+        && current.errorEventId === flowWeaveReconnect.errorEventId
+        ? { ...current, resumeIssued: true }
+        : current);
+      void api.resumeConversation(workspace.id, selected.id)
+        .then(() => reconcileConversationProjection('flowweave_reconnect_resume'))
+        .catch(() => reconcileConversationProjection('flowweave_reconnect_error'));
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setFlowWeaveReconnect(current => current
+        && current.bindingId === selected.id
+        && current.errorEventId === flowWeaveReconnect.errorEventId
+        ? { ...current, attempt: current.attempt + 1, resumeIssued: false }
+        : current);
+    }, FLOWWEAVE_RECONNECT_OBSERVATION_MS);
+    return () => window.clearTimeout(timer);
+  }, [api, currentFormalEvents, flowWeaveReconnect, reconcileConversationProjection, selected, workspace]);
+
   const decideConfirmation = useMutation({
     mutationFn: (accept: boolean) => api.decideConfirmation(workspace!.id, selected!.id, pendingConfirmation!.pending_actions_digest!, accept, confirmationReason.trim()),
     onSuccess: value => {
@@ -9294,7 +9396,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       return;
     }
     const content = draftContent.trim();
-    if ((!content && !attachments.length && !references.length && !workspaceReferences.length && !composerAnnotations.length) || migrateStreaming.isPending || pendingMigratedSend || effectiveTurnState === 'pausing' || effectiveTurnState === 'resuming'
+    if ((!content && !attachments.length && !references.length && !workspaceReferences.length && !composerAnnotations.length) || migrateStreaming.isPending || pendingMigratedSend || effectiveTurnState === 'pausing' || effectiveTurnState === 'resuming' || effectiveTurnState === 'reconnecting'
       || (!queueModeEnabled && effectiveTurnState === 'running')) return;
     replaceComposerDraft('');
     setOperationError(undefined);
@@ -9465,7 +9567,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       void revealHistoryThrough(conversationReferenceTarget.event_id);
     }
   }, [conversationInitialLoading, conversationReferenceTarget, displayedEvents, historyCacheRevision, revealHistoryThrough, selected?.id]);
-  const currentSessionControlState: TurnState = effectiveTurnState === 'pausing' || effectiveTurnState === 'paused' || effectiveTurnState === 'resuming'
+  const currentSessionControlState: TurnState = effectiveTurnState === 'pausing' || effectiveTurnState === 'paused' || effectiveTurnState === 'resuming' || effectiveTurnState === 'reconnecting'
     ? effectiveTurnState
     : foregroundSubmissionAwaitingFormalEvent
       ? 'running'
@@ -9495,7 +9597,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
                   ? 'paused'
                   : currentSessionControlState === 'resuming'
                     ? 'resuming'
-                    : 'idle';
+                    : currentSessionControlState === 'reconnecting'
+                      ? 'reconnecting'
+                      : 'idle';
   const queueDispatchReady = composerControlMode === 'idle' && !nativeTurnFailed;
   useEffect(() => {
     if (!selected || !queueModeEnabled || !queueDispatchReady) return;
@@ -9624,6 +9728,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         return { label: '暂停请求已发送', disabled: true, editable: false, action: 'none' as const };
       case 'resuming':
         return { label: '正在继续 Agent', disabled: true, editable: false, action: 'none' as const };
+      case 'reconnecting':
+        return { label: `正在尝试重连（${flowWeaveReconnect?.attempt ?? 1}/${FLOWWEAVE_RECONNECT_MAX_ATTEMPTS}）`, disabled: true, editable: false, action: 'none' as const };
       case 'rewriting':
         return { label: '正在重新思考', disabled: true, editable: false, action: 'none' as const };
       case 'reconciling':
@@ -9647,7 +9753,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     ? (conversationDraft && !newConversationModelName ? '请选择模型' : undefined)
     : bootstrapRecovery
       ? '正在安全核对首条消息'
-      : conversationDraft && !newConversationModelName ? '请选择模型' : persistModel.isPending ? '正在保存模型设置' : pendingConfirmation ? '等待工具确认' : finalReplyAwaitingNativeCompletion ? '回复已生成，正在收尾' : streamStatus === 'recovering' ? '连接恢复中' : composerControlMode === 'rewriting' ? '正在重新思考' : composerControlMode === 'reconciling' ? '正在同步 Agent 状态' : composerControlMode === 'read-only' ? '当前会话不可编辑' : composerControlMode === 'condensing' ? '正在压缩上下文' : composerControlMode === 'pausing' ? '正在暂停' : composerControlMode === 'paused' ? '已暂停' : composerControlMode === 'resuming' ? '正在继续' : undefined;
+      : conversationDraft && !newConversationModelName ? '请选择模型' : persistModel.isPending ? '正在保存模型设置' : pendingConfirmation ? '等待工具确认' : finalReplyAwaitingNativeCompletion ? '回复已生成，正在收尾' : composerControlMode === 'reconnecting' ? `正在尝试重连（${flowWeaveReconnect?.attempt ?? 1}/${FLOWWEAVE_RECONNECT_MAX_ATTEMPTS}）` : streamStatus === 'recovering' ? '连接恢复中' : composerControlMode === 'rewriting' ? '正在重新思考' : composerControlMode === 'reconciling' ? '正在同步 Agent 状态' : composerControlMode === 'read-only' ? '当前会话不可编辑' : composerControlMode === 'condensing' ? '正在压缩上下文' : composerControlMode === 'pausing' ? '正在暂停' : composerControlMode === 'paused' ? '已暂停' : composerControlMode === 'resuming' ? '正在继续' : undefined;
   const runComposerAction = () => {
     if (composerControl.action === 'send') enqueueDraft();
     else if (composerControl.action === 'interrupt') void requestInterrupt();
@@ -10290,6 +10396,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         isPaused={conversationActivity.state === 'paused'}
         isFailed={nativeFailureSettled}
         pausing={conversationActivity.state === 'pausing'}
+        reconnectingAttempt={reconnectingCurrentConversation ? flowWeaveReconnect?.attempt : undefined}
+        reconnectingMaxAttempts={FLOWWEAVE_RECONNECT_MAX_ATTEMPTS}
         emptyResponseRecoveryActive={emptyResponseRecoveryActive}
         modelRetryStatus={modelRetryStatus}
         historyPending={Boolean(selected && historyLoadingBindingId === selected.id)}

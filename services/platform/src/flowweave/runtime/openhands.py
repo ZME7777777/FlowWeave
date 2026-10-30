@@ -261,7 +261,7 @@ class _TransientStreamProjection:
                 attempt is None
                 or maximum is None
                 or attempt > maximum
-                or maximum > 5
+                or maximum > 3
                 or failure_kind not in allowed_kinds
                 or not isinstance(final, bool)
                 or model_role not in {"primary", "fallback"}
@@ -1467,9 +1467,9 @@ class OpenHandsRuntime:
             # Workspace conversations, LLM switches, and condensers.
             # OpenHands interprets this as the total number of transport
             # attempts, including the initial call. Keep the product
-            # contract at five attempts so live progress can truthfully reach
-            # 5/5 without a frontend timer or a second send.
-            "num_retries": 5,
+            # contract at three attempts so live progress can truthfully reach
+            # 3/3 without a frontend timer or a second send.
+            "num_retries": 3,
             "retry_multiplier": 2.0,
             "retry_min_wait": 1,
             "retry_max_wait": 4,
@@ -5935,11 +5935,11 @@ class OpenHandsRuntime:
         session_api_key = self._session_key_for_handle(handle)
         state = self._conversation_state(handle)
         status = str(state.get("execution_status") or "").lower()
-        # Only IDLE/PAUSED are resumable. A worker may crash after a rejected
-        # batch has already resumed and completed but before FlowWeave commits
-        # its CAS; re-triggering FINISHED here would execute the turn twice.
-        # RUNNING and terminal states are reconciled by the normal poll path.
-        if status in {"idle", "paused"}:
+        # A FlowWeave recovery may continue the same formal Conversation after
+        # OpenHands ended a transient model call in ``error``. Never restart a
+        # finished turn: that could execute it twice. Running states remain
+        # owned by the normal event-reconciliation path.
+        if status in {"idle", "paused", "error"}:
             self._request(
                 "POST",
                 f"/api/conversations/{handle.conversation_id}/run",

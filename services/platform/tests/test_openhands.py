@@ -1328,7 +1328,7 @@ def test_openhands_starts_real_agent_with_selected_provider_and_skill(
         "reasoning_effort": "high",
         "api_mode": "chat",
         "stream": True,
-        "num_retries": 5,
+        "num_retries": 3,
         "retry_multiplier": 2.0,
         "retry_min_wait": 1,
         "retry_max_wait": 4,
@@ -2347,7 +2347,7 @@ def test_openhands_configures_codex_oauth_for_responses(openhands_settings, monk
         "supports_responses_api": True,
         "supports_sampling_params": False,
     }
-    assert llm["num_retries"] == 5
+    assert llm["num_retries"] == 3
     assert llm["retry_multiplier"] == 2.0
     assert llm["retry_min_wait"] == 1
     assert llm["retry_max_wait"] == 4
@@ -4293,7 +4293,7 @@ def test_openhands_stream_projection_forwards_only_valid_model_retry_progress():
         {
             "type": "retry",
             "attempt": 3,
-            "max_attempts": 5,
+            "max_attempts": 3,
             "failure_kind": "timeout",
             "final": False,
             "model_role": "primary",
@@ -4303,7 +4303,7 @@ def test_openhands_stream_projection_forwards_only_valid_model_retry_progress():
         {
             "type": "model_retry",
             "attempt": 3,
-            "max_attempts": 5,
+            "max_attempts": 3,
             "failure_kind": "timeout",
             "final": False,
             "model_role": "primary",
@@ -4313,8 +4313,8 @@ def test_openhands_stream_projection_forwards_only_valid_model_retry_progress():
         projection.project(
             {
                 "type": "retry",
-                "attempt": 6,
-                "max_attempts": 5,
+                "attempt": 4,
+                "max_attempts": 3,
                 "failure_kind": "timeout",
                 "final": False,
                 "model_role": "primary",
@@ -4687,7 +4687,7 @@ def test_openhands_switches_llm_in_place_with_reasoning(openhands_settings, monk
     assert payload["llm"]["stream"] is True
     assert payload["llm"]["temperature"] is None
     assert payload["llm"]["max_output_tokens"] is None
-    assert payload["llm"]["num_retries"] == 5
+    assert payload["llm"]["num_retries"] == 3
     assert payload["llm"]["retry_multiplier"] == 2.0
     assert payload["llm"]["retry_min_wait"] == 1
     assert payload["llm"]["retry_max_wait"] == 4
@@ -5173,9 +5173,35 @@ def test_openhands_run_does_not_retrigger_running_conversation(openhands_setting
     assert requests == [("GET", "/api/conversations/10000000-0000-4000-8000-000000000002")]
 
 
+
+def test_openhands_run_continues_error_conversation(openhands_settings, monkeypatch):
+    runtime = OpenHandsRuntime(openhands_settings)
+    requests: list[tuple[str, str, object]] = []
+    responses = iter(
+        [
+            _state(execution_status="error", leaf_event_id="gateway-error"),
+            {"success": True},
+        ]
+    )
+
+    def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
+        requests.append((method, path, kwargs.get("json")))
+        return next(responses)
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+
+    assert runtime.run(_handle("gateway-error")) == RuntimeResult(
+        status="RUNNING", cursor="gateway-error"
+    )
+    assert requests == [
+        ("GET", "/api/conversations/10000000-0000-4000-8000-000000000002", None),
+        ("POST", "/api/conversations/10000000-0000-4000-8000-000000000002/run", {}),
+    ]
+
+
 @pytest.mark.parametrize(
     "status",
-    ["finished", "error", "stuck", "waiting_for_confirmation"],
+    ["finished", "stuck", "waiting_for_confirmation"],
 )
 def test_openhands_run_does_not_retrigger_non_resumable_conversation(
     openhands_settings, monkeypatch, status
@@ -5252,7 +5278,7 @@ def test_openhands_serializes_frozen_summarizing_condenser(openhands_settings, m
             "reasoning_effort": "high",
             "api_mode": "chat",
             "stream": True,
-            "num_retries": 5,
+            "num_retries": 3,
             "retry_multiplier": 2.0,
             "retry_min_wait": 1,
             "retry_max_wait": 4,
