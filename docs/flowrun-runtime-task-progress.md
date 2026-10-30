@@ -13679,8 +13679,32 @@ Web remote-release-finish 通过，无过期受管上下文；保留当前镜像
 | CASE-05B | DONE | CASE-05A | 后台串行回访、原生消息提交对账、资料／配置变更与恢复 |
 | CASE-06 | DONE | CASE-03B、CASE-05B | 逐步复核、配置修订与重跑 |
 | CASE-07 | DONE | CASE-04、CASE-05B、CASE-06 | 连续修订、跨阶段决策与完成 |
-| CASE-08 | READY | CASE-02–CASE-07 | 前端反馈与接管统一 |
-| CASE-09 | PENDING | CASE-01–CASE-08 | 全链路与恢复验收 |
+| CASE-08 | DONE | CASE-02–CASE-07 | 前端反馈与接管统一 |
+| CASE-09 | READY | CASE-01–CASE-08 | 全链路与恢复验收 |
+
+
+### CASE-08 前端运行反馈与接管统一 — DONE
+
+依赖：CASE-02–CASE-07（DONE）。Case主工作区现在直接展示服务端正式事实：当前阶段、Agent协调状态、
+执行中的活动节点、`REVIEW_PENDING`待复核、阶段进度和当前页已登记的正式接受产物数量。FlowRun的
+`COMPLETED`不再在路径卡上显示为业务阶段“已完成”，而是按阶段状态显示“等待 Agent 复核”；
+只有`CaseStage.COMPLETED`计入完成阶段数。
+
+主工具栏接入既有乐观锁协调状态接口，允许暂停／继续后台自主动作，不冒充OpenHands原生会话
+interrupt或停止当前FlowRun。当前协调会话仍可一键打开。失败控制计划和FAILED／AMBIGUOUS回访
+从次要审计提升为主路径可见异常；“异常与接管”面板展示失败原因、执行记录和关联重试状态，失败
+动作只调用既有正式retry API，用户也可打开当前Agent会话人工判断，不在浏览器伪造决策、完成或
+直接写阶段状态。
+
+前端类型同步0188／0189阶段与动作约束、CASE-05B反馈投递投影和CASE-04正式产物投影；资料读取
+调用已有只读分页接口，只把`ACCEPTED`产物计为正式来源。候选、拒绝和历史产物不冒充当前接受
+证据；完整资料分页和文件阅读仍走既有资料服务。本片无API、迁移或Runtime修改。
+
+验证（2026-10-30）：Web typecheck、受影响TS／TSX和E2E ESLint、`git diff --check`通过；4项
+Chromium定向回归通过，覆盖原紧凑路径、协调轮次、人工阶段启动以及本片的待复核／正式产物／
+回访异常／暂停恢复／失败动作重试与人工接管。本片修改的`types.ts`、`api/client.ts`同时存在并行
+Goal Loop工作区改动，提交时使用精确局部暂存，只纳入Case类型和Case API区段。下一切片CASE-09
+READY；独立提交成功后停止。
 
 
 ### CASE-07 连续修订、跨阶段决策与完成 — DONE

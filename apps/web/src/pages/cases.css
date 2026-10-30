@@ -74,6 +74,7 @@ html:has(.scenario-space){overscroll-behavior:none}
 .case-connected-path .case-card-title>h3{flex-basis:100%;margin:0;color:#263e32;font-size:14px;line-height:1.5;font-weight:650}
 .case-connected-path article .case-stage-state{border-radius:4px;background:#f0f4f2;padding:3px 6px;color:#71827a;font-size:10px}
 .case-connected-path article .case-stage-state.active{background:#fff0d6;color:#aa701b}
+.case-connected-path article .case-stage-state.review_pending{background:#eef0ff;color:#5c5faa}
 .case-connected-path article .case-stage-state.completed{background:#e6f4ec;color:#087a57}
 .case-connected-path li.active article{border-color:#bbd5c7;background:#fbfdfb}
 .case-connected-path li.active .scenario-path-rail>span{border-color:#78aa91;background:#eaf5ee;color:#087a57}
@@ -232,6 +233,9 @@ html:has(.scenario-space){overscroll-behavior:none}
 .case-path-context{display:flex;min-height:40px;flex:0 0 auto;align-items:center;gap:20px;border-bottom:1px solid #e8eee9;background:#fafcfb;padding:7px 20px;color:#819187;font-size:10px}
 .case-path-context>span{display:flex;min-width:0;align-items:center;gap:7px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .case-path-context>span:first-child{color:#496f56;flex-shrink:0}.case-path-context .ghost{margin-left:auto;padding:0;color:#4c7b5c;font-size:10px}
+.case-coordination-status{display:flex;min-height:42px;flex:0 0 auto;align-items:center;justify-content:space-between;gap:16px;border-bottom:1px solid #e5ece7;background:#f7faf8;padding:7px 20px;color:#486754}
+.case-coordination-status.has-alert{background:#fff9ee;color:#865f28}.case-coordination-status>span{display:flex;min-width:0;align-items:center;gap:8px}.case-coordination-status b{font-size:11px}.case-coordination-status small{color:#849289;font-size:9px}.case-coordination-status button{min-height:28px;padding:5px 9px;font-size:10px;white-space:nowrap}
+.case-feedback-alert{flex:0 0 auto;margin:0;border-bottom:1px solid #f1dcb9;background:#fffaf1;padding:7px 20px;color:#986820;font-size:10px}
 .case-single-workspace .case-single-layout{display:flex;min-width:0;min-height:0;flex:1;overflow:hidden;gap:0;padding:0}
 .case-single-workspace .case-path-panel{display:flex;min-height:0;min-width:0;width:100%;flex:1;overflow:auto;overscroll-behavior:contain;border:0;border-radius:0;background:#fff;padding:22px clamp(20px,4vw,64px) 28px}
 .case-single-workspace .case-connected-path{display:block;min-width:0;min-height:0;width:100%;max-width:1100px;margin:0 auto;padding:0}
@@ -276,6 +280,9 @@ html:has(.scenario-space){overscroll-behavior:none}
 .case-activity-list header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:5px}.case-activity-list b{color:#3b5543;font-size:12px}.case-activity-list small{color:#8c998f;font-size:10px}
 .case-activity-list p{margin:8px 0;color:#75887b;font-size:11px;line-height:1.6;overflow-wrap:anywhere}.case-activity-list .error{color:#ad5050}.case-activity-list button{padding:8px 0 0;color:#50795d;font-size:10px}
 .case-activity-state{border-radius:4px;background:#eff4f0;padding:3px 6px;color:#7d9184;font-size:9px}.case-activity-state.failed{background:#fff0ef;color:#ad5050}.case-activity-state.succeeded,.case-activity-state.executed{background:#e8f4eb;color:#3e8155}
+.case-activity-list article>footer{display:flex;align-items:center;gap:10px;margin-top:8px}.case-activity-list article>footer button{padding:5px 8px}
+.case-takeover{display:flex;min-height:0;flex:1;flex-direction:column;gap:12px;overflow:auto}.case-takeover>p{margin:0;color:#71827a;font-size:11px;line-height:1.6}.case-takeover>article{display:flex;align-items:center;justify-content:space-between;gap:12px;border:1px solid #f0d7b1;border-radius:7px;background:#fffaf2;padding:10px 12px}.case-takeover>article b{font-size:11px}.case-takeover>article small{color:#a56d25;font-size:10px}.case-takeover>.primary{align-self:flex-start}
+
 @media(max-width:1180px){.scenario-space{grid-template-columns:194px minmax(0,1fr)}.case-workspace-toolbar{padding:9px 14px;gap:8px}.case-workspace-toolbar .scenario-case-actions button{padding:6px;font-size:9px}.case-workspace-title{gap:7px}.case-workspace-title>small{display:none}.case-path-context{padding:7px 14px;gap:12px}.case-single-workspace .case-path-panel{padding:20px}.case-inspector .case-session-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .case-single-workspace .case-single-layout{align-items:stretch}
 

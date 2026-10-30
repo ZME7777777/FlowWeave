@@ -16,8 +16,9 @@ MCP及标准产物URL的受限读取；本地固定源码Runtime容器读取和�
 流程关键事件的事务性持久入队；CASE-05B已接入后台串行原生消息回访、提交收据和资料／配置
 变化通知。CASE-06已将正式接受／拒绝、可编辑重跑及显式后继启动接入同一冻结流程MCP，
 平台不再在接受后抢先启动后继。CASE-07已交付连续执行复制修订、显式跨阶段推进和基于正式
-接受产物证据的场景完成，单个FlowRun完成只进入待协调复核。下一切片为CASE-08，唯一实施状态
-以`flowrun-runtime-task-progress.md`为准；前端统一反馈与人工接管仍未交付。
+接受产物证据的场景完成，单个FlowRun完成只进入待协调复核。CASE-08已将这些正式事实统一投影到
+Case主工作区，并交付协调暂停／恢复、失败动作重试和打开原Agent会话接管。下一切片为CASE-09，
+唯一实施状态以`flowrun-runtime-task-progress.md`为准；真实混合路径与故障恢复全链路验收尚未执行。
 
 ## 1. 产品目标：由场景 Agent 代替人运行和监控流程
 
@@ -621,3 +622,25 @@ CaseFlowRun并切换当前执行，阶段回ACTIVE；源执行、Snapshot、原�
 验证：Python语法、Ruff、动作schema、SQLite状态／ORM约束、反馈重新授权与无自动跨阶段静态契约
 通过。新增真实PostgreSQL／HTTP回归已覆盖等待复核、连续复制切换、显式推进、未收口阶段和错误
 证据拒绝、正式接受产物完成；当前环境因无Docker／PostgreSQL在夹具前停止，未将其记为业务通过。
+
+
+## CASE-08 实施边界（2026-10-30）
+
+Case主工作区以Case详情正式投影作为单一事实源：`CaseStage.state`决定业务阶段状态，
+`execution`只描述当前独立执行副本。执行副本COMPLETED而阶段`REVIEW_PENDING`时显示“等待 Agent
+复核”，不能显示阶段已完成；状态条同时展示当前阶段和活动节点。阶段卡从既有
+`artifact-materials`只读接口读取当前页资料，只统计`ACCEPTED`正式产物，候选、拒绝、取消和旧版本
+不冒充当前交付证据。
+
+失败`CaseControlPlan`及FAILED／AMBIGUOUS回访投递在主路径显示异常，并进入“异常与接管”面板。
+动作重试继续调用正式关联retry API，面板保留失败原因与重试计划状态；人工接管只是打开当前
+OpenHands原生协调会话，不在浏览器直接写阶段、完成Case或伪造Agent判断。普通完整操作记录仍作为
+次要审计入口。
+
+协调暂停／恢复复用带`expected_row_version`的Case coordination-state接口。它只停止或恢复新的
+后台自主动作，页面明确说明不等于中断原生会话或停止当前FlowRun；真实会话interrupt和执行停止
+继续使用各自已有正式入口。终态Case不提供协调切换。
+
+验证：Web typecheck、定向ESLint与4项Chromium回归通过，覆盖紧凑路径不回退、协调轮次、人工启动、
+待复核、接受产物、回访异常、暂停恢复、失败动作重试及打开Agent接管。真实原生工具、混合阶段、
+Worker重启、事件重放、跨容器资料与越权矩阵保留给CASE-09。

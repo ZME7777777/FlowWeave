@@ -540,7 +540,7 @@ export interface CaseStageExecution {
 export interface CaseStage {
   id: string; case_id: string; stage_key: string; name: string; objective: string;
   position: number; flow_run_id?: string | null; current_execution_flow_run_id?: string | null; execution_mode: 'STEPWISE' | 'CONTINUOUS';
-  state: 'PENDING' | 'ACTIVE' | 'COMPLETED' | 'SKIPPED'; execution?: CaseStageExecution | null;
+  state: 'PENDING' | 'ACTIVE' | 'REVIEW_PENDING' | 'COMPLETED' | 'SKIPPED'; execution?: CaseStageExecution | null;
   created_at: string; updated_at: string;
 }
 export interface CaseStageTemplate {
@@ -558,17 +558,33 @@ export interface CaseAgentTask {
 export interface CaseControlPlan {
   id: string; case_id: string; stage_id: string; source_binding_id?: string | null;
   execution_flow_run_id?: string | null; node_run_id?: string | null; node_attempt_id?: string | null;
-  action: 'CREATE_EXECUTION_COPY' | 'START_EXECUTION' | 'START_STEPWISE_NODE' | 'STOP_EXECUTION' | 'RERUN_STEPWISE_NODE';
+  action: 'CREATE_EXECUTION_COPY' | 'CONFIGURE_EXECUTION' | 'START_EXECUTION' | 'START_STEPWISE_NODE' | 'ACCEPT_STEPWISE_ATTEMPT' | 'REJECT_STEPWISE_ATTEMPT' | 'STOP_EXECUTION' | 'RERUN_STEPWISE_NODE' | 'COPY_CONTINUOUS_EXECUTION' | 'ADVANCE_CASE_STAGE' | 'COMPLETE_CASE';
   state: 'PENDING' | 'VALIDATED' | 'EXECUTING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED';
   idempotency_key: string; retry_of_plan_id?: string | null; reason: string; input_snapshot: Record<string, unknown>; result: Record<string, unknown>;
   error_code?: string | null; created_at: string; validated_at?: string | null; executed_at?: string | null;
 }
+export interface CaseFeedbackDelivery {
+  id: string; round_id: string; binding_id: string; source_kind: 'EXECUTION' | 'CASE_CHANGE';
+  execution_event_id?: string | null;
+  state: 'PENDING' | 'HELD' | 'LEASED' | 'SUBMITTING' | 'ACKNOWLEDGED' | 'RUN_REQUESTED' | 'DELIVERED' | 'FAILED' | 'AMBIGUOUS' | 'AUDIT_ONLY';
+  batch_id?: string | null; message_event_id?: string | null; error_code?: string | null;
+}
+
 export interface CaseDecisionProposal {
   id: string; case_id: string; flow_run_id: string; node_run_id?: string | null;
   node_attempt_id?: string | null; proposal_key: string;
   action: 'START_STAGE_EXECUTION' | 'CONTINUE_STEPWISE' | 'STOP_FLOW_RUN' | 'RERUN_STEPWISE_NODE' | 'COPY_AUTOMATIC_RUN';
   state: 'PROPOSED' | 'EXECUTED' | 'FAILED' | 'SUPERSEDED'; reason: string;
   payload: Record<string, unknown>; result: Record<string, unknown>; created_at: string; executed_at?: string | null;
+}
+export interface CaseArtifactMaterial {
+  id: string; kind: 'ARTIFACT'; artifact_version_id: string; stage_key: string;
+  execution_flow_run_id: string; node_key: string; node_run_id: string; node_attempt_id: string;
+  completion_event_id?: string | null; field_key: string; version_no: number;
+  artifact_type: 'URL' | 'FILE'; name: string; mime_type?: string | null; byte_size?: number | null;
+  content_hash?: string | null; state: 'CANDIDATE' | 'ACCEPTED' | 'REJECTED' | 'CANCELLED' | 'SUPERSEDED';
+  candidate_status?: string | null; uri?: string | null; content_url?: string | null;
+  registered_at: string; content_access: 'EXTERNAL_URI' | 'PLATFORM_ARTIFACT';
 }
 export interface CaseMaterial {
   kind: 'LINK' | 'FILE'; name: string; value: string;
@@ -592,6 +608,7 @@ export interface Case {
   control_rounds?: CaseControlRound[];
   row_version: number; stages: CaseStage[]; flow_run_ids: string[]; tasks: CaseAgentTask[];
   control_plans: CaseControlPlan[]; decision_proposals: CaseDecisionProposal[];
+  feedback_deliveries?: CaseFeedbackDelivery[];
   created_at: string; updated_at: string;
 }
 

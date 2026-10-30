@@ -644,6 +644,10 @@ export const api = {
   deleteCase: (id: string) => request<void>(`/cases/${encodeURIComponent(id)}`, json('DELETE', undefined, true)),
   deleteCaseControlConversation: (id: string, bindingId?: string) => request<void>(`/cases/${encodeURIComponent(id)}/control-conversation${bindingId ? `?binding_id=${encodeURIComponent(bindingId)}` : ''}`, json('DELETE', undefined, true)),
   case: (id: string) => request<Case>(`/cases/${encodeURIComponent(id)}`),
+  caseArtifactMaterials: (id: string, offset = 0, limit = 50) =>
+    request<{ items: import('../types').CaseArtifactMaterial[]; next_offset: number | null }>(`/cases/${encodeURIComponent(id)}/artifact-materials?${new URLSearchParams({ offset: String(offset), limit: String(limit) })}`),
+  setCaseCoordinationState: (id: string, expected_row_version: number, state: 'ACTIVE' | 'PAUSED') =>
+    request<Case>(`/cases/${encodeURIComponent(id)}/coordination-state`, json('PUT', { expected_row_version, state })),
   caseStageTemplates: (caseId: string) => request<import('../types').CaseStageTemplate[]>(`/cases/${encodeURIComponent(caseId)}/stage-templates`),
   setCaseStageState: (caseId: string, stageId: string, expected_case_row_version: number, state: import('../types').CaseStage['state']) =>
     request<Case>(`/cases/${encodeURIComponent(caseId)}/stages/${encodeURIComponent(stageId)}/state`, json('PUT', { expected_case_row_version, state })),

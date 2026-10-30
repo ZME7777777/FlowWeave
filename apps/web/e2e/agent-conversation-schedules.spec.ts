@@ -4460,6 +4460,54 @@ test('case coordination rounds wait for background delivery retry and retain his
   await expect(page.getByText('该会话不属于当前事项')).toHaveCount(0);
 });
 
+
+test('case workspace presents review, feedback and governed takeover actions', async ({ page }) => {
+  await openWorkspace(page);
+  let item = {
+    id: 'takeover-case', name: '交付复核', objective: '确认结果并交付', state: 'ACTIVE', row_version: 8,
+    control_conversation_binding_id: 'case-agent-binding', materials: [], decision_proposals: [], tasks: [],
+    feedback_deliveries: [{ id: 'delivery-1', round_id: 'round', binding_id: 'case-agent-binding', source_kind: 'EXECUTION', execution_event_id: 'event-1', state: 'FAILED', batch_id: null, message_event_id: null, error_code: 'CASE_FEEDBACK_RETRIES_EXHAUSTED' }],
+    control_plans: [{ id: 'failed-plan', case_id: 'takeover-case', stage_id: 'stage', source_binding_id: 'case-agent-binding', execution_flow_run_id: 'execution', action: 'ADVANCE_CASE_STAGE', state: 'FAILED', idempotency_key: 'failed-plan', reason: '结果符合目标，进入下一阶段', input_snapshot: {}, result: {}, error_code: 'CASE_FLOW_VERSION_CONFLICT', created_at: now, validated_at: now, executed_at: now }],
+    stages: [{ id: 'stage', case_id: 'takeover-case', stage_key: 'review', name: '质量复核', objective: '核对正式交付物', position: 0, flow_run_id: 'template', current_execution_flow_run_id: 'execution', execution_mode: 'CONTINUOUS', state: 'REVIEW_PENDING', execution: { flow_run_id: 'execution', state: 'COMPLETED', progress: { accepted: 2, terminal: 2, active: 0 }, active_node: null, ready_node_keys: [], automatic_block: null, finished_at: now }, created_at: now, updated_at: now }],
+    control_rounds: [{ id: 'round', binding_id: 'case-agent-binding', state: 'STARTED', is_current: true, error_code: null, created_at: now, started_at: now }],
+    session_config: { model_provider_id: 'provider-1', model_name: 'model-1', reasoning_effort: 'high', capability_version_ids: [], credential_ids: [] }, created_at: now, updated_at: now,
+  };
+  const coordinationStates: string[] = [];
+  let retried = 0;
+  await page.route('**/api/v1/cases**', route => {
+    const request = route.request();
+    const pathname = new URL(request.url()).pathname;
+    if (pathname.endsWith('/coordination-state') && request.method() === 'PUT') {
+      const payload = request.postDataJSON(); coordinationStates.push(payload.state);
+      item = { ...item, state: payload.state, row_version: item.row_version + 1 };
+      return json(route, item);
+    }
+    if (pathname.endsWith('/control-plans/failed-plan/retry') && request.method() === 'POST') {
+      retried += 1;
+      item = { ...item, row_version: item.row_version + 1, control_plans: [{ ...item.control_plans[0], id: 'retry-plan', state: 'PENDING', retry_of_plan_id: 'failed-plan', error_code: null }] };
+      return json(route, item.control_plans[0], 201);
+    }
+    if (pathname.endsWith('/artifact-materials')) return json(route, { items: [{ id: 'material-1', kind: 'ARTIFACT', artifact_version_id: 'artifact-1', stage_key: 'review', execution_flow_run_id: 'execution', node_key: 'deliver', node_run_id: 'node', node_attempt_id: 'attempt', completion_event_id: 'completion', field_key: 'report', version_no: 2, artifact_type: 'URL', name: '交付报告', mime_type: null, byte_size: null, content_hash: null, state: 'ACCEPTED', candidate_status: 'GATE_PASSED', uri: 'https://example.test/report', content_url: null, registered_at: now, content_access: 'EXTERNAL_URI' }], next_offset: null });
+    return json(route, pathname.endsWith('/cases') ? [item] : item);
+  });
+  await page.goto('/?view=cases');
+  const stage = page.getByRole('article', { name: '路径卡片 质量复核' });
+  await expect(stage).toContainText('等待 Agent 复核');
+  await expect(stage).toContainText('正式产物 1');
+  await expect(page.getByRole('status', { name: '场景协调状态' })).toContainText('结果已就绪，等待 Agent 判断');
+  await expect(page.getByRole('alert')).toContainText('CASE_FEEDBACK_RETRIES_EXHAUSTED');
+  await page.getByRole('button', { name: '暂停协调', exact: true }).click();
+  await expect(page.getByRole('button', { name: '继续协调', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '继续协调', exact: true }).click();
+  expect(coordinationStates).toEqual(['PAUSED', 'ACTIVE']);
+  await page.getByRole('button', { name: '查看异常与接管', exact: true }).click();
+  const takeover = page.getByRole('dialog', { name: '异常与接管', exact: true });
+  await expect(takeover).toContainText('结果符合目标，进入下一阶段');
+  await takeover.getByRole('button', { name: '重试失败动作', exact: true }).click();
+  expect(retried).toBe(1);
+  await expect(takeover).toContainText('待处理');
+});
+
 test('manual Case stage retry retains its execution copy after a start failure', async ({ page }) => {
   await openWorkspace(page);
   let launches = 0, starts = 0;
