@@ -299,7 +299,7 @@ def resolve_case_control_binding_scope(
         raise conflict("Case control Binding is outside its Case work directory", case_id=item.id)
     stage = db.scalar(
         select(CaseStage)
-        .where(CaseStage.case_id == item.id, CaseStage.state == "ACTIVE")
+        .where(CaseStage.case_id == item.id, CaseStage.state.in_(("ACTIVE", "REVIEW_PENDING")))
         .order_by(CaseStage.position)
     )
     if require_active_stage and stage is None:
@@ -319,9 +319,9 @@ def _current_stage_execution(db: Session, item: Case, run: FlowRun) -> CaseStage
             CaseStage.current_execution_flow_run_id == run.id,
         )
     )
-    if stage is None or stage.state != "ACTIVE":
+    if stage is None or stage.state not in {"ACTIVE", "REVIEW_PENDING"}:
         raise conflict(
-            "Case remediation may target only its active stage execution copy",
+            "Case remediation may target only its current stage execution copy",
             flow_run_id=run.id,
         )
     return stage
@@ -731,7 +731,7 @@ def save_case_path(db: Session, case_id: str, payload: CasePathWrite) -> dict[st
     for position, stage in enumerate(ordered):
         stage.position = position
         db.add(stage)
-    if ordered and not any(stage.state == "ACTIVE" for stage in ordered):
+    if ordered and not any(stage.state in {"ACTIVE", "REVIEW_PENDING"} for stage in ordered):
         next((stage for stage in ordered if stage.state == "PENDING"), ordered[0]).state = "ACTIVE"
     item.state = "ACTIVE" if ordered else "DRAFT"
     item.row_version += 1
@@ -862,11 +862,15 @@ def set_case_stage_state(
     if item.state in {"COMPLETED", "ARCHIVED"}:
         raise illegal("terminal case cannot change stages", state=item.state)
     stage = _stage(db, item, stage_id)
+    if stage.state == "REVIEW_PENDING":
+        raise conflict("review-pending stage must be resolved by a governed Case action")
     if payload.state == "ACTIVE":
         db.execute(
             CaseStage.__table__.update()
             .where(
-                CaseStage.case_id == item.id, CaseStage.id != stage.id, CaseStage.state == "ACTIVE"
+                CaseStage.case_id == item.id,
+                CaseStage.id != stage.id,
+                CaseStage.state.in_(("ACTIVE", "REVIEW_PENDING")),
             )
             .values(state="PENDING")
         )
@@ -1156,17 +1160,8 @@ def reconcile_case_execution_state(db: Session, flow_run_id: str) -> None:
             continue
         changed = False
         if run.state == "COMPLETED" and stage.state == "ACTIVE":
-            stage.state = "COMPLETED"
+            stage.state = "REVIEW_PENDING"
             changed = True
-            next_stage = db.scalar(
-                select(CaseStage)
-                .where(CaseStage.case_id == item.id, CaseStage.position > stage.position)
-                .order_by(CaseStage.position)
-            )
-            if next_stage is None:
-                item.state = "COMPLETED"
-            elif next_stage.state == "PENDING":
-                next_stage.state = "ACTIVE"
         elif run.state == "CANCELLED" and stage.state == "ACTIVE":
             item.state = "PAUSED"
             changed = True
@@ -1333,8 +1328,18 @@ def execute_case_control_plan(db: Session, case_id: str, plan_id: str) -> dict[s
         raise conflict("Case control plan is already executing", plan_id=plan.id)
     require_case_action(item, plan.action)
     stage = _stage(db, item, plan.stage_id)
-    if stage.state != "ACTIVE":
-        raise conflict("only the active Case stage can execute plans", state=stage.state)
+    allowed_stage_state = (
+        "REVIEW_PENDING"
+        if plan.action in {"COPY_CONTINUOUS_EXECUTION", "ADVANCE_CASE_STAGE", "COMPLETE_CASE"}
+        else "ACTIVE"
+    )
+    if stage.state != allowed_stage_state:
+        raise conflict("Case plan does not match the current stage state", state=stage.state)
+    db.refresh(item, with_for_update=True)
+    db.refresh(stage)
+    require_case_action(item, plan.action)
+    if stage.state != allowed_stage_state:
+        raise conflict("Case stage changed while waiting to execute", state=stage.state)
     if plan.execution_flow_run_id != stage.current_execution_flow_run_id:
         raise conflict("plan no longer targets the current Case execution copy", plan_id=plan.id)
     plan.state = "VALIDATED"
@@ -1437,6 +1442,54 @@ def execute_case_control_plan(db: Session, case_id: str, plan_id: str) -> dict[s
                     plan.node_run_id,
                 )
             }
+        elif plan.action == "COPY_CONTINUOUS_EXECUTION":
+            source_run_id = stage.current_execution_flow_run_id
+            if not source_run_id:
+                raise conflict("Case stage has no execution copy", stage_id=stage.id)
+            requested = plan.input_snapshot_json.get("requested", {})
+            with savepoint(db):
+                copied = orchestration.copy_automatic_run_draft(
+                    db,
+                    source_run_id,
+                    AutomaticRunCopyWrite(name=requested.get("copy_name")),
+                )
+                copied_id = str(copied["id"])
+                stage.current_execution_flow_run_id = copied_id
+                stage.state = "ACTIVE"
+                db.add(CaseFlowRun(case_id=item.id, flow_run_id=copied_id))
+                item.row_version += 1
+                db.flush()
+                result = {
+                    "source_execution_flow_run_id": source_run_id,
+                    "execution_flow_run_id": copied_id,
+                }
+        elif plan.action == "ADVANCE_CASE_STAGE":
+            next_stage = db.scalar(
+                select(CaseStage)
+                .where(CaseStage.case_id == item.id, CaseStage.position > stage.position)
+                .order_by(CaseStage.position)
+                .limit(1)
+            )
+            if next_stage is None:
+                raise conflict("final stage must complete the Case with formal evidence")
+            stage.state = "COMPLETED"
+            next_stage.state = "ACTIVE"
+            item.row_version += 1
+            result = {
+                "completed_stage_key": stage.stage_key,
+                "active_stage_key": next_stage.stage_key,
+            }
+        elif plan.action == "COMPLETE_CASE":
+            requested = plan.input_snapshot_json.get("requested", {})
+            stage.state = "COMPLETED"
+            item.state = "COMPLETED"
+            item.row_version += 1
+            result = {
+                "completed_stage_key": stage.stage_key,
+                "evidence_artifact_version_ids": list(
+                    requested.get("evidence_artifact_version_ids") or []
+                ),
+            }
         elif plan.action == "STOP_EXECUTION":
             if not stage.current_execution_flow_run_id:
                 raise conflict("Case stage has no execution copy", stage_id=stage.id)
@@ -1506,6 +1559,9 @@ def retry_case_control_plan(db: Session, case_id: str, plan_id: str) -> dict[str
         "START_EXECUTION",
         "START_STEPWISE_NODE",
         "STOP_EXECUTION",
+        "COPY_CONTINUOUS_EXECUTION",
+        "ADVANCE_CASE_STAGE",
+        "COMPLETE_CASE",
     }:
         raise illegal("failed plan action is not eligible for human retry", action=failed.action)
     if failed.action == "CREATE_EXECUTION_COPY":

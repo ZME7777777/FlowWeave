@@ -923,6 +923,9 @@ class CaseControlPlanWrite(ApiModel):
         "REJECT_STEPWISE_ATTEMPT",
         "STOP_EXECUTION",
         "RERUN_STEPWISE_NODE",
+        "COPY_CONTINUOUS_EXECUTION",
+        "ADVANCE_CASE_STAGE",
+        "COMPLETE_CASE",
     ]
     idempotency_key: str = Field(pattern=r"^[a-z][a-z0-9._:-]{0,139}$")
     reason: str = Field(min_length=1, max_length=2_000)

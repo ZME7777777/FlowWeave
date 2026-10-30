@@ -15,9 +15,9 @@ MCP及当前副本的配置、复制与启动动作。CASE-04已交付正式输�
 MCP及标准产物URL的受限读取；本地固定源码Runtime容器读取和哈希验收通过。CASE-05A已完成
 流程关键事件的事务性持久入队；CASE-05B已接入后台串行原生消息回访、提交收据和资料／配置
 变化通知。CASE-06已将正式接受／拒绝、可编辑重跑及显式后继启动接入同一冻结流程MCP，
-平台不再在接受后抢先启动后继。下一切片为CASE-07，唯一实施状态以
-`flowrun-runtime-task-progress.md`为准。连续修订、跨阶段决策与场景完成仍未交付，不能把
-投递完成或单个FlowRun完成等同于业务目标已完成。
+平台不再在接受后抢先启动后继。CASE-07已交付连续执行复制修订、显式跨阶段推进和基于正式
+接受产物证据的场景完成，单个FlowRun完成只进入待协调复核。下一切片为CASE-08，唯一实施状态
+以`flowrun-runtime-task-progress.md`为准；前端统一反馈与人工接管仍未交付。
 
 ## 1. 产品目标：由场景 Agent 代替人运行和监控流程
 
@@ -591,3 +591,33 @@ binding；最终节点、终态记录、非接受状态或任一后继已物化�
 `reconcile_case_execution_state`的跨阶段状态回写。定向PostgreSQL／HTTP测试已写入，但当前执行环境
 没有Docker socket或外部`TEST_DATABASE_URL`，因此在测试数据库夹具前停止；静态、模型与语法检查
 通过，完整数据库及原生全链路验收仍按后续环境门禁执行。
+
+
+## CASE-07 实施边界（2026-10-30）
+
+当前执行FlowRun的正式`COMPLETED`只把所属活动阶段转为`REVIEW_PENDING`并增加Case版本；
+不完成阶段、不完成Case、不激活或启动下一阶段。CASE-05B重新授权将`REVIEW_PENDING`视为同一
+当前执行的有效回访范围，确保触发该状态的完成事件仍投递给原协调轮次。人工阶段状态接口不能
+修改待复核阶段，路径重排也不会额外激活另一个阶段；收口只通过受审计的冻结工具动作。
+
+`flowweave-case-flows`新增三项动作。`COPY_CONTINUOUS_EXECUTION`要求当前阶段为CONTINUOUS、
+当前执行为已完成AUTOMATIC记录，通过正式`copy_automatic_run_draft`创建新DRAFT，原子登记
+CaseFlowRun并切换当前执行，阶段回ACTIVE；源执行、Snapshot、原生会话、产物和资料引用均保留。
+新草稿不自动启动，Agent使用已有`CONFIGURE_EXECUTION`选择本轮资料、模型和能力，再通过
+`START_EXECUTION`冻结启动。复制沿用既有产物复制治理，不允许直接把其他运行Artifact ID写入新计划。
+
+`ADVANCE_CASE_STAGE`只从待复核阶段执行：把当前阶段置COMPLETED并将路径中紧邻下一阶段置ACTIVE，
+不创建副本或启动流程；Agent进入下一阶段后继续按03B的复制、配置、启动链决策。
+`COMPLETE_CASE`只允许没有后继的最终阶段，且其他阶段必须已COMPLETED／SKIPPED；调用方必须提交
+至少一个当前阶段当前执行的`CaseArtifactReference`，并且来源NodeRun已正式接受对应Attempt。
+平台按ID、stage、execution和正式接受关系核对后才完成阶段与Case，不接受文本结论、文件名、模板、
+历史执行、候选或拒绝产物冒充交付证据。
+
+三项请求均携带最新Case、stage、当前执行、Run row version和Snapshot version；计划持久化后重新
+认证当前round／binding，Case行锁串行执行。相同幂等键只能重放同载荷，失败保留错误码并允许精确
+关联的新计划重试。0189只扩展CaseStage和CaseControlPlan检查约束；存在`REVIEW_PENDING`或新动作
+审计记录时downgrade安全拒绝。前端如何显示待复核、Agent判断、完成证据和人工接管属于CASE-08。
+
+验证：Python语法、Ruff、动作schema、SQLite状态／ORM约束、反馈重新授权与无自动跨阶段静态契约
+通过。新增真实PostgreSQL／HTTP回归已覆盖等待复核、连续复制切换、显式推进、未收口阶段和错误
+证据拒绝、正式接受产物完成；当前环境因无Docker／PostgreSQL在夹具前停止，未将其记为业务通过。

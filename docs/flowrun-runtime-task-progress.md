@@ -13678,9 +13678,39 @@ Web remote-release-finish 通过，无过期受管上下文；保留当前镜像
 | CASE-05A | DONE | CASE-02、CASE-04 | 当前执行关键事件的事务性持久入队与正式来源去重 |
 | CASE-05B | DONE | CASE-05A | 后台串行回访、原生消息提交对账、资料／配置变更与恢复 |
 | CASE-06 | DONE | CASE-03B、CASE-05B | 逐步复核、配置修订与重跑 |
-| CASE-07 | READY | CASE-04、CASE-05B、CASE-06 | 连续修订、跨阶段决策与完成 |
-| CASE-08 | PENDING | CASE-02–CASE-07 | 前端反馈与接管统一 |
+| CASE-07 | DONE | CASE-04、CASE-05B、CASE-06 | 连续修订、跨阶段决策与完成 |
+| CASE-08 | READY | CASE-02–CASE-07 | 前端反馈与接管统一 |
 | CASE-09 | PENDING | CASE-01–CASE-08 | 全链路与恢复验收 |
+
+
+### CASE-07 连续修订、跨阶段决策与完成 — DONE
+
+依赖：CASE-04、CASE-05B、CASE-06（DONE）。运行完成事件不再直接把阶段和场景标为完成，
+也不自动激活下一阶段；当前阶段进入持久`REVIEW_PENDING`，原协调轮次仍可读取同一当前
+执行，完成事实及正式产物继续经CASE-05B投递。路径保存和人工阶段状态接口不能绕过该复核态，
+只能由受治理动作收口。
+
+扩展既有冻结`flowweave-case-flows`MCP，新增三个带Case／stage／当前执行／Run／Snapshot
+乐观前置条件的动作。`COPY_CONTINUOUS_EXECUTION`只接受已完成的当前连续副本，调用既有
+`copy_automatic_run_draft`创建独立DRAFT，并原子切换`current_execution_flow_run_id`与阶段回ACTIVE；
+旧执行、Snapshot、会话和产物保留，Agent随后使用既有`CONFIGURE_EXECUTION`和
+`START_EXECUTION`补齐本轮资料并启动。`ADVANCE_CASE_STAGE`把已复核阶段标COMPLETED、仅激活
+路径中的下一阶段，不创建或启动其执行副本。`COMPLETE_CASE`只允许最后阶段，要求所有早期
+阶段均COMPLETED／SKIPPED，并核对至少一个当前阶段当前执行的已登记正式接受产物后，才同时完成
+阶段与Case；不按Agent文本、文件名或旧执行引用猜测证据。
+
+三项动作继续写入`CaseControlPlan`，沿用当前binding逐次授权、状态版本、幂等载荷、失败审计与
+显式关联重试；Case行锁串行跨阶段状态切换，暂停／终态门禁不变。0189迁移新增
+`REVIEW_PENDING`阶段状态和动作约束，存在新状态或审计动作时downgrade安全拒绝。Case详情已能
+投影该状态；用户可见反馈和接管展示留给CASE-08。
+
+验证（2026-10-30）：受影响Python `py_compile`、Ruff format/check、动作schema实例化、SQLite
+状态回写／ORM约束、反馈来源复核态及“完成事件不自动推进／完成Case”静态契约通过；0189为
+当前迁移链唯一head，`git diff --check`通过。新增五项真实PostgreSQL／HTTP回归覆盖等待复核、
+连续复制切换、显式阶段推进、未收口阶段拒绝完成及正式接受产物证据；当前环境无Docker socket且
+无`TEST_DATABASE_URL`，测试在Testcontainers PostgreSQL夹具前以环境错误停止，未进入业务断言，
+不能记为通过。本片未调用模型、未发布Runtime或远端服务。下一切片CASE-08 READY；独立提交成功
+后停止。
 
 
 ### CASE-06 逐步复核、配置修订与重跑 — DONE

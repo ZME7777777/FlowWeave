@@ -10,6 +10,7 @@ from test_case_native_tools import native_case  # noqa: F401
 
 from flowweave.modules.cases.application import native_tools, service
 from flowweave.modules.cases.infrastructure.models import (
+    CaseArtifactReference,
     CaseControlPlan,
     CaseFlowRun,
     CaseFlowToolGrant,
@@ -612,6 +613,201 @@ def test_case_rerun_fails_after_successor_materializes(flow_case):
     assert result["state"] == "FAILED"
     refresh(g)
     assert "first" not in g.execution.automation_plan_json["node_drafts"]
+
+
+def mark_continuous_review_pending(g):
+    g.execution.state = "COMPLETED"
+    service.reconcile_case_execution_state(g.db, g.execution.id)
+    g.db.commit()
+    g.db.refresh(g.item)
+    g.db.refresh(g.stage)
+    assert g.item.state == "ACTIVE"
+    assert g.stage.state == "REVIEW_PENDING"
+
+
+def test_completed_execution_waits_for_agent_review_without_advancing_case(flow_case):
+    g = flow_case
+    next_stage = CaseStage(
+        case_id=g.item.id,
+        stage_key="1",
+        name="next",
+        position=1,
+        state="PENDING",
+        execution_mode="CONTINUOUS",
+    )
+    g.db.add(next_stage)
+    g.db.commit()
+    mark_continuous_review_pending(g)
+    g.db.refresh(next_stage)
+    facts = projection(rpc(g, "read_case_flow"))
+    assert facts["stage_state"] == "REVIEW_PENDING"
+    assert facts["flow_run"]["id"] == g.execution.id
+    assert next_stage.state == "PENDING"
+
+
+def test_agent_copies_completed_continuous_execution_and_switches_current_draft(flow_case):
+    g = flow_case
+    mark_continuous_review_pending(g)
+    source_plan = copy.deepcopy(g.execution.automation_plan_json)
+    result = projection(
+        rpc(
+            g,
+            "manage_case_flow",
+            action(g, "COPY_CONTINUOUS_EXECUTION", copy_name="revised execution"),
+        )
+    )
+    assert result["state"] == "SUCCEEDED"
+    refresh(g)
+    copied = g.db.get(FlowRun, g.stage.current_execution_flow_run_id)
+    assert copied.id != g.execution.id
+    assert copied.state == "DRAFT" and copied.name == "revised execution"
+    assert g.stage.state == "ACTIVE"
+    assert g.execution.state == "COMPLETED"
+    assert g.execution.automation_plan_json == source_plan
+    assert g.db.scalar(
+        select(CaseFlowRun).where(
+            CaseFlowRun.case_id == g.item.id, CaseFlowRun.flow_run_id == copied.id
+        )
+    )
+
+
+def test_agent_advances_reviewed_stage_without_starting_next_execution(flow_case):
+    g = flow_case
+    next_template = FlowRun(
+        flow_definition_id=g.template.flow_definition_id,
+        run_no=3,
+        name="next template",
+        run_mode="AUTOMATIC",
+        state="DRAFT",
+        environment_version_id=g.template.environment_version_id,
+        automation_plan_json=copy.deepcopy(g.template.automation_plan_json),
+    )
+    g.db.add(next_template)
+    g.db.flush()
+    next_snapshot = RunSnapshot(
+        flow_run_id=next_template.id,
+        version=1,
+        definition_json=copy.deepcopy(g.definition),
+        definition_hash="c" * 64,
+        runtime_manifest_json={"schema_version": 3, "nodes": {}},
+        runtime_manifest_hash="d" * 64,
+        environment_version_id=next_template.environment_version_id,
+    )
+    g.db.add(next_snapshot)
+    g.db.flush()
+    next_template.active_snapshot_id = next_snapshot.id
+    next_stage = CaseStage(
+        case_id=g.item.id,
+        stage_key="1",
+        name="next",
+        position=1,
+        state="PENDING",
+        execution_mode="CONTINUOUS",
+        flow_run_id=next_template.id,
+    )
+    g.db.add(next_stage)
+    g.db.commit()
+    mark_continuous_review_pending(g)
+    result = projection(rpc(g, "manage_case_flow", action(g, "ADVANCE_CASE_STAGE")))
+    assert result["state"] == "SUCCEEDED"
+    refresh(g)
+    assert g.stage.state == "COMPLETED"
+    assert next_stage.state == "ACTIVE"
+    assert next_stage.current_execution_flow_run_id is None
+    assert g.item.state == "ACTIVE"
+
+
+def test_agent_cannot_skip_unresolved_stage_and_complete_case(flow_case):
+    g = flow_case
+    g.stage.position = 1
+    earlier = CaseStage(
+        case_id=g.item.id,
+        stage_key="before",
+        name="before",
+        position=0,
+        state="PENDING",
+        execution_mode="CONTINUOUS",
+    )
+    g.db.add(earlier)
+    g.db.commit()
+    mark_continuous_review_pending(g)
+    result = projection(
+        rpc(
+            g,
+            "manage_case_flow",
+            action(g, "COMPLETE_CASE", evidence_artifact_version_ids=[str(uuid4())]),
+        )
+    )
+    assert result["state"] == "FAILED"
+
+
+def test_agent_completes_final_stage_only_with_current_accepted_artifact_evidence(flow_case):
+    g = flow_case
+    g.node = NodeRun(
+        flow_run_id=g.execution.id,
+        flow_node_snapshot_key="first",
+        sequence_no=1,
+        state="ACCEPTED",
+        created_from="AUTOMATIC_PLAN",
+    )
+    g.db.add(g.node)
+    g.db.flush()
+    g.attempt = NodeAttempt(
+        node_run_id=g.node.id,
+        attempt_no=1,
+        snapshot_id=g.execution.active_snapshot_id,
+        state="ACCEPTED",
+    )
+    g.db.add(g.attempt)
+    g.db.flush()
+    g.node.accepted_attempt_id = g.attempt.id
+    artifact = ArtifactVersion(
+        flow_run_id=g.execution.id,
+        producer_attempt_id=g.attempt.id,
+        field_key="report",
+        version_no=1,
+        artifact_type="URL",
+        uri="https://example.test/result",
+        source="RUNTIME",
+    )
+    g.db.add(artifact)
+    g.db.flush()
+    artifact_id = artifact.id
+    g.db.add(
+        CaseArtifactReference(
+            case_id=g.item.id,
+            stage_id=g.stage.id,
+            stage_key=g.stage.stage_key,
+            execution_flow_run_id=g.execution.id,
+            node_run_id=g.node.id,
+            node_key="first",
+            node_attempt_id=g.attempt.id,
+            artifact_version_id=artifact_id,
+        )
+    )
+    g.execution.state = "COMPLETED"
+    g.db.commit()
+    mark_continuous_review_pending(g)
+    stale = projection(
+        rpc(
+            g,
+            "manage_case_flow",
+            action(g, "COMPLETE_CASE", evidence_artifact_version_ids=[str(uuid4())]),
+        )
+    )
+    assert stale["state"] == "FAILED"
+    refresh(g)
+    result = projection(
+        rpc(
+            g,
+            "manage_case_flow",
+            action(g, "COMPLETE_CASE", evidence_artifact_version_ids=[artifact_id]),
+        )
+    )
+    assert result["state"] == "SUCCEEDED"
+    refresh(g)
+    assert g.stage.state == "COMPLETED"
+    assert g.item.state == "COMPLETED"
 
 
 @pytest.mark.parametrize("state", ["PAUSED", "COMPLETED", "ARCHIVED"])

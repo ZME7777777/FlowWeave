@@ -173,7 +173,7 @@ def _source_is_current(db: Session, entry: CaseFeedbackDelivery) -> bool:
         and event.routing_state != "AUDIT_ONLY"
         and stage.case_id == entry.case_id
         and stage.owner_user_id == entry.owner_user_id
-        and stage.state == "ACTIVE"
+        and stage.state in {"ACTIVE", "REVIEW_PENDING"}
         and stage.current_execution_flow_run_id == event.execution_flow_run_id
     )
 

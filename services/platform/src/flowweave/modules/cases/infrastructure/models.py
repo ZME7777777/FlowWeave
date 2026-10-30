@@ -172,7 +172,7 @@ class CaseStage(Base):
         UniqueConstraint("case_id", "stage_key", name="uq_case_stage_key"),
         UniqueConstraint("case_id", "position", name="uq_case_stage_position"),
         CheckConstraint(
-            "state IN ('PENDING', 'ACTIVE', 'COMPLETED', 'SKIPPED')",
+            "state IN ('PENDING', 'ACTIVE', 'REVIEW_PENDING', 'COMPLETED', 'SKIPPED')",
             name="ck_case_stage_state",
         ),
         CheckConstraint("position >= 0", name="ck_case_stage_position"),
@@ -339,7 +339,8 @@ class CaseControlPlan(Base):
         CheckConstraint(
             "action IN ('CREATE_EXECUTION_COPY', 'START_EXECUTION', 'START_STEPWISE_NODE', "
             "'ACCEPT_STEPWISE_ATTEMPT', 'REJECT_STEPWISE_ATTEMPT', 'STOP_EXECUTION', "
-            "'RERUN_STEPWISE_NODE', 'REVISE_UNSTARTED_RUNTIME', 'CONFIGURE_EXECUTION')",
+            "'RERUN_STEPWISE_NODE', 'COPY_CONTINUOUS_EXECUTION', 'ADVANCE_CASE_STAGE', "
+            "'COMPLETE_CASE', 'REVISE_UNSTARTED_RUNTIME', 'CONFIGURE_EXECUTION')",
             name="ck_case_control_plan_action",
         ),
         CheckConstraint(

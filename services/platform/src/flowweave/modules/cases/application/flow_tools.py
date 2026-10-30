@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from flowweave.modules.cases.application import native_tools, service
 from flowweave.modules.cases.infrastructure.models import (
     Case,
+    CaseArtifactReference,
     CaseControlPlan,
     CaseFlowToolGrant,
     CaseStage,
@@ -47,6 +48,9 @@ class FlowActionArguments(BaseModel):
         "ACCEPT_STEPWISE_ATTEMPT",
         "REJECT_STEPWISE_ATTEMPT",
         "RERUN_STEPWISE_NODE",
+        "COPY_CONTINUOUS_EXECUTION",
+        "ADVANCE_CASE_STAGE",
+        "COMPLETE_CASE",
     ]
     idempotency_key: str = Field(pattern=r"^[a-z][a-z0-9._:-]{0,119}$")
     reason: str = Field(min_length=1, max_length=2_000)
@@ -60,6 +64,8 @@ class FlowActionArguments(BaseModel):
     node_attempt_id: str | None = Field(default=None, min_length=1, max_length=36)
     expected_attempt_state_version: int | None = Field(default=None, ge=1)
     copy_input_bindings: bool | None = None
+    copy_name: str | None = Field(default=None, max_length=220)
+    evidence_artifact_version_ids: list[str] = Field(default_factory=list, max_length=100)
     draft_row_version: int | None = Field(default=None, ge=1)
     automatic_draft: AutomaticRunDraftUpdateWrite | None = None
     stepwise_draft: StepwiseNodeDraftWrite | None = None
@@ -98,6 +104,17 @@ class FlowActionArguments(BaseModel):
             raise ValueError("rerun requires only the accepted node_run_id")
         if self.action != "REJECT_STEPWISE_ATTEMPT" and self.copy_input_bindings is not None:
             raise ValueError("copy_input_bindings is available only when rejecting an Attempt")
+        if self.action != "COPY_CONTINUOUS_EXECUTION" and self.copy_name is not None:
+            raise ValueError("copy_name is available only when copying a continuous execution")
+        if self.action == "COMPLETE_CASE":
+            if not self.evidence_artifact_version_ids:
+                raise ValueError("Case completion requires formal artifact evidence")
+            if len(self.evidence_artifact_version_ids) != len(
+                set(self.evidence_artifact_version_ids)
+            ):
+                raise ValueError("completion evidence must be unique")
+        elif self.evidence_artifact_version_ids:
+            raise ValueError("artifact evidence is available only when completing a Case")
         if (
             self.action == "CREATE_EXECUTION_COPY"
             and self.expected_execution_flow_run_id is not None
@@ -138,12 +155,13 @@ TOOLS = [
     ),
     _tool(
         "manage_case_flow",
-        "Create or configure the ACTIVE stage copy, start a stepwise node, formally accept or "
-        "reject its reviewed Attempt, or reopen an accepted predecessor for an editable rerun. "
-        "Targets derive from this coordinator. Read fresh versions first. Rejection creates the "
-        "formal replacement Attempt; editable reruns are limited to unconsumed predecessors. "
-        "Reuse one idempotency_key after timeouts. Failed actions require retry_of_plan_id and "
-        "a new key. Does not advance stages or start successors implicitly.",
+        "Create or configure the current stage copy, review/rerun stepwise work, copy a completed "
+        "continuous execution into a new current draft, explicitly advance a reviewed stage, or "
+        "complete the final reviewed stage with formal Artifact evidence. Targets derive from this "
+        "coordinator. Read fresh versions first. Old executions, templates, conversations, and "
+        "Artifacts remain immutable. Reuse one idempotency_key after timeouts. Failed actions "
+        "require retry_of_plan_id and a new key. Stage advancement never starts the next "
+        "execution.",
         FlowActionArguments,
         False,
     ),
@@ -210,7 +228,7 @@ def read_flow(db: Session, token: str, args: FlowReadArguments) -> dict[str, Any
         query = (
             query.where(CaseStage.stage_key == args.stage_key)
             if args.stage_key
-            else query.where(CaseStage.state == "ACTIVE")
+            else query.where(CaseStage.state.in_(("ACTIVE", "REVIEW_PENDING")))
         )
         stage = db.scalar(query.order_by(CaseStage.position))
         if stage is None:
@@ -515,9 +533,11 @@ def validate_action_preconditions(
         or snapshot.version != args.expected_snapshot_version
     ):
         raise DomainError("CASE_FLOW_VERSION_CONFLICT", "流程版本已变化，请重新读取后再决定", 409)
+    review_actions = {"COPY_CONTINUOUS_EXECUTION", "ADVANCE_CASE_STAGE", "COMPLETE_CASE"}
+    expected_stage_state = "REVIEW_PENDING" if plan.action in review_actions else "ACTIVE"
     if plan.action != "CREATE_EXECUTION_COPY":
-        if stage.state != "ACTIVE" or stage.current_execution_flow_run_id != run.id:
-            raise conflict("action is outside the active stage execution")
+        if stage.state != expected_stage_state or stage.current_execution_flow_run_id != run.id:
+            raise conflict("action is outside the current stage execution", state=stage.state)
     if plan.action == "CONFIGURE_EXECUTION" and stage.execution_mode == "STEPWISE":
         if not args.stepwise_draft or not args.flow_node_key:
             raise conflict("stepwise configuration requires a node draft")
@@ -568,6 +588,61 @@ def validate_action_preconditions(
             raise DomainError(
                 "CASE_FLOW_VERSION_CONFLICT", "待重跑节点身份已变化，请重新读取后再决定", 409
             )
+    if plan.action in review_actions:
+        if stage.execution_mode != "CONTINUOUS" or run.run_mode != "AUTOMATIC":
+            raise conflict("cross-stage review requires a continuous execution")
+        if run.state != "COMPLETED":
+            raise conflict("only a completed execution can be reviewed", state=run.state)
+        if plan.action == "ADVANCE_CASE_STAGE":
+            next_stage = db.scalar(
+                select(CaseStage)
+                .where(CaseStage.case_id == item.id, CaseStage.position > stage.position)
+                .order_by(CaseStage.position)
+                .limit(1)
+            )
+            if next_stage is None:
+                raise conflict("final stage must complete the Case with formal evidence")
+        elif plan.action == "COMPLETE_CASE":
+            next_stage_id = db.scalar(
+                select(CaseStage.id)
+                .where(CaseStage.case_id == item.id, CaseStage.position > stage.position)
+                .limit(1)
+            )
+            if next_stage_id is not None:
+                raise conflict("Case can complete only from its final stage")
+            incomplete_stage_id = db.scalar(
+                select(CaseStage.id)
+                .where(
+                    CaseStage.case_id == item.id,
+                    CaseStage.id != stage.id,
+                    CaseStage.state.notin_(("COMPLETED", "SKIPPED")),
+                )
+                .limit(1)
+            )
+            if incomplete_stage_id is not None:
+                raise conflict("all earlier Case stages must be resolved before completion")
+            registered = set(
+                db.scalars(
+                    select(CaseArtifactReference.artifact_version_id)
+                    .join(NodeRun, NodeRun.id == CaseArtifactReference.node_run_id)
+                    .where(
+                        CaseArtifactReference.case_id == item.id,
+                        CaseArtifactReference.stage_id == stage.id,
+                        CaseArtifactReference.execution_flow_run_id == run.id,
+                        CaseArtifactReference.artifact_version_id.in_(
+                            args.evidence_artifact_version_ids
+                        ),
+                        NodeRun.flow_run_id == run.id,
+                        NodeRun.accepted_attempt_id == CaseArtifactReference.node_attempt_id,
+                    )
+                )
+            )
+            if registered != set(args.evidence_artifact_version_ids):
+                raise DomainError(
+                    "CASE_COMPLETION_EVIDENCE_INVALID",
+                    "场景完成证据必须来自当前阶段当前执行的正式产物",
+                    422,
+                )
     return run
 
 
