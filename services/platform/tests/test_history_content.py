@@ -20,7 +20,7 @@ def event(content, kind="MESSAGE", source="assistant", identity="formal-event"):
     )
 
 
-@pytest.mark.parametrize("size", [1, 10, 2_000, 10_000])
+@pytest.mark.parametrize("size", [1, 10, 2_000, 10_000, 12_000])
 def test_long_visible_content_can_be_reassembled_without_loss(size):
     original = "开头🙂\n\n" + "有中文和 emoji🚀。" * 1_000 + "\n结尾"
     prompt, _ = conversations.message_payload(

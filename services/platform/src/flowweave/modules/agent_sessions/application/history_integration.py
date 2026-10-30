@@ -103,7 +103,9 @@ def configured_capability(db: Session) -> PublishedCapability:
 def source_ids(references: tuple[dict[str, str], ...]) -> tuple[str, ...]:
     return tuple(
         dict.fromkeys(
-            item["source_binding_id"] for item in references if item.get("kind") == "conversation"
+            item["source_binding_id"]
+            for item in references
+            if item.get("kind") == "conversation" and not item.get("resolved_content")
         )
     )
 

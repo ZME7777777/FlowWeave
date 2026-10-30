@@ -30,8 +30,8 @@ def message_content(
     visible = visible_message(event)
     if visible is None:
         raise DomainError("AGENT_HISTORY_EVENT_UNAVAILABLE", "该事件没有可读取的消息正文", 404)
-    if not 1 <= max_content_chars <= 10_000:
-        raise DomainError("AGENT_HISTORY_LIMIT_INVALID", "正文长度必须在 1 到 10000 之间", 422)
+    if not 1 <= max_content_chars <= 12_000:
+        raise DomainError("AGENT_HISTORY_LIMIT_INVALID", "正文长度必须在 1 到 12000 之间", 422)
     source, content = visible
     if not 0 <= content_offset <= len(content):
         raise DomainError("AGENT_HISTORY_RANGE_INVALID", "正文读取位置无效", 422)
@@ -52,8 +52,8 @@ def message_page(
 ) -> dict[str, Any]:
     """Filter one native window; never walk history or invent pagination cursors."""
 
-    if not 1 <= max_content_chars <= 10_000:
-        raise DomainError("AGENT_HISTORY_LIMIT_INVALID", "正文长度必须在 1 到 10000 之间", 422)
+    if not 1 <= max_content_chars <= 12_000:
+        raise DomainError("AGENT_HISTORY_LIMIT_INVALID", "正文长度必须在 1 到 12000 之间", 422)
     needle = (query or "").strip().casefold()
     messages: list[dict[str, str | int | bool]] = []
     for event in batch.events:

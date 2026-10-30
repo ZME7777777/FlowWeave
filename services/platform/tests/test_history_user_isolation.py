@@ -17,7 +17,7 @@ from flowweave.modules.agent_sessions.presentation import history_mcp as mcp
 from flowweave.modules.agent_workspaces.infrastructure.models import AgentWorkspace
 from flowweave.modules.users.application.security import tenant_bypass, tenant_user
 from flowweave.modules.users.infrastructure.models import User
-from flowweave.runtime.base import RuntimeEventBatch
+from flowweave.runtime.base import RuntimeEvent, RuntimeEventBatch
 from flowweave.shared.errors import DomainError
 
 # The shared fixture replaces this resolver; these tests restore the real SQL path.
@@ -116,14 +116,32 @@ def test_explicit_owner_predicates_still_apply_during_trusted_tenant_bypass(
 
 def test_reference_metadata_cannot_disclose_another_users_conversation(persisted, monkeypatch):
     g = persisted
+    class Runtime:
+        def reload_conversation(self, _handle):
+            return None
+
+        def read_active_events(self, _handle):
+            return RuntimeEventBatch(
+                events=(
+                    RuntimeEvent(
+                        cursor="source-message",
+                        event_type="MESSAGE",
+                        payload={"source": "user", "content": "来源内容"},
+                    ),
+                )
+            )
+
     monkeypatch.setattr(
-        conversations, "get_runtime", lambda: pytest.fail("No native read expected")
+        conversations, "get_runtime", lambda: Runtime()
     )
+    monkeypatch.setattr(conversations, "_handle", lambda *_args: object())
     workspace = g.db.get(AgentWorkspace, "workspace")
     own = conversations._resolve_source_conversation_reference(
         g.db, workspace, g.first.id, None, None
     )
     assert own["source_binding_id"] == g.first.id
+    assert own["history_tool"] == "platform_conversation_history"
+    assert own["resolved_content"] == "user: 来源内容"
     with pytest.raises(DomainError) as caught:
         conversations._resolve_source_conversation_reference(
             g.db, workspace, g.other_source.id, None, None

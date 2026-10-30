@@ -784,8 +784,10 @@ test('node capability selection reuses Agent icons filters and keeps the unsaved
   const dialog = page.getByRole('dialog', { name:'会话配置', exact:true });
   await expect(dialog.locator('.agent-capability-icon.skill>svg')).toHaveClass(/lucide-sparkles/);
   await expect(dialog.locator('.agent-selection-checkbox')).toHaveCount(1);
-  await expect(dialog.getByRole('button', { name:'认证', exact:true })).toHaveCount(0);
-  await dialog.getByRole('button', { name:'测试技能组', exact:true }).click();
+  await expect(dialog.getByRole('tab', { name:'认证', exact:true })).toHaveCount(0);
+  await dialog.getByRole('button', { name:/^Skill 组合筛选/ }).click();
+  await page.getByRole('checkbox', { name:'测试技能组', exact:true }).click();
+  await page.keyboard.press('Escape');
   await dialog.getByRole('button', { name:/共享图标技能/ }).click();
   await page.keyboard.press('Escape');
   await expect(panel.getByRole('button', { name:/^能力/ })).toContainText('已选 1 项');

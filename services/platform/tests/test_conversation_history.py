@@ -60,7 +60,7 @@ def test_history_returns_visible_messages_with_formal_pagination():
     assert history.message_page(replace(batch, history_cursor=None))["history_cursor"] is None
 
 
-@pytest.mark.parametrize("limit", [0, -1, 10_001])
+@pytest.mark.parametrize("limit", [0, -1, 12_001])
 def test_history_rejects_invalid_content_limits(limit):
     with pytest.raises(DomainError, match="正文长度"):
         history.message_page(RuntimeEventBatch(events=()), max_content_chars=limit)

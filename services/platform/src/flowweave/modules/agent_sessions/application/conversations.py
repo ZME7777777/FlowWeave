@@ -3650,6 +3650,7 @@ def _validated_conversation_references(
             source_id = item.get("source_binding_id")
             native_id = item.get("source_conversation_id")
             title = item.get("title")
+            resolved_content = item.get("resolved_content")
             identity = f"conversation:{source_id}"
             if (
                 not isinstance(source_id, str)
@@ -3658,29 +3659,42 @@ def _validated_conversation_references(
                 or not 1 <= len(native_id) <= 100
                 or not isinstance(title, str)
                 or not 1 <= len(title) <= 240
+                or resolved_content is not None
+                and (
+                    not isinstance(resolved_content, str)
+                    or not resolved_content.strip()
+                    or len(resolved_content) > _MAX_CONVERSATION_REFERENCE_CHARS
+                )
                 or identity in seen
             ):
                 raise DomainError(
                     "AGENT_CONVERSATION_REFERENCE_INVALID", "会话引用无效，请重新选择", 422
                 )
             total_chars += len(title)
+            if isinstance(resolved_content, str):
+                total_chars += len(resolved_content)
             if total_chars > _MAX_CONVERSATION_REFERENCE_CHARS:
                 raise DomainError(
                     "AGENT_CONVERSATION_REFERENCE_TOO_LARGE",
                     "引用内容过长，请缩小引用范围后重试",
                     422,
                 )
-            normalized.append(
-                {
-                    "kind": "conversation",
-                    "event_id": "",
-                    "content": title,
-                    "title": title,
-                    "source_binding_id": source_id,
-                    "source_conversation_id": native_id,
-                    "history_tool": "read_referenced_conversation",
-                }
-            )
+            value = {
+                "kind": "conversation",
+                "event_id": "",
+                "content": title,
+                "title": title,
+                "source_binding_id": source_id,
+                "source_conversation_id": native_id,
+                "history_tool": (
+                    "platform_conversation_history"
+                    if isinstance(resolved_content, str)
+                    else "read_referenced_conversation"
+                ),
+            }
+            if isinstance(resolved_content, str):
+                value["resolved_content"] = resolved_content.strip()
+            normalized.append(value)
             seen.add(identity)
             continue
         if (
@@ -3721,7 +3735,10 @@ def _ensure_history_references(
     *,
     allow_install: bool = True,
 ) -> bool:
-    if not any(item.get("kind") == "conversation" for item in references):
+    if not any(
+        item.get("kind") == "conversation" and not item.get("resolved_content")
+        for item in references
+    ):
         return True
     from flowweave.modules.agent_sessions.application import history_integration
 
@@ -3807,6 +3824,68 @@ def _selected_reference_text(content: str, selection: dict[str, Any] | None) -> 
     return content[start_offset:end_offset].strip()
 
 
+def read_visible_conversation_context(
+    db: Session, workspace: AgentWorkspace, source: AgentConversationBinding
+) -> str:
+    """Read the same bounded, user-visible source history for every host.
+
+    This is the platform-owned source reader used by dragged references and
+    temporary sidebar conversations. It deliberately excludes tool calls,
+    results, and internal events before the text reaches another conversation.
+    """
+
+    title = (source.display_title or "未命名会话").strip()[:240] or "未命名会话"
+    runtime = get_runtime()
+    source_handle = _handle(db, workspace, source)
+    try:
+        runtime.reload_conversation(source_handle)
+        batch = runtime.read_active_events(source_handle)
+        pages = [batch]
+        history_cursor = batch.history_cursor
+        seen_cursors: set[str] = set()
+        while history_cursor and history_cursor not in seen_cursors and len(pages) < 32:
+            seen_cursors.add(history_cursor)
+            older = runtime.read_active_events(
+                replace(
+                    source_handle,
+                    history_cursor=history_cursor,
+                    active_branch_leaf_event_id=batch.cursor,
+                )
+            )
+            pages.insert(0, older)
+            history_cursor = older.history_cursor
+    except Exception as exc:
+        _logger.warning("Native conversation reference read failed: %s", type(exc).__name__)
+        raise DomainError(
+            "AGENT_CONVERSATION_REFERENCE_UNAVAILABLE",
+            "来源会话暂时不可读取，请稍后重试",
+            409,
+        ) from exc
+    parts: list[str] = []
+    remaining = _MAX_CONVERSATION_REFERENCE_CHARS
+    for page in pages:
+        for event in page.events:
+            if event.event_type != "MESSAGE":
+                continue
+            source_name = str(event.payload.get("source") or "").strip().lower()
+            if source_name not in {"user", "human", "agent", "assistant"}:
+                continue
+            raw = event.payload.get("content")
+            if not isinstance(raw, str):
+                continue
+            visible = _project_conversation_references(raw)[0].strip()
+            if not visible:
+                continue
+            excerpt = visible[:remaining]
+            parts.append(f"{source_name}: {excerpt}")
+            remaining -= len(excerpt)
+            if remaining <= 0:
+                break
+        if remaining <= 0:
+            break
+    return "\n\n".join(parts).strip() or title
+
+
 def _resolve_source_conversation_reference(
     db: Session,
     workspace: AgentWorkspace,
@@ -3825,6 +3904,24 @@ def _resolve_source_conversation_reference(
                 "AGENT_CONVERSATION_REFERENCE_UNAVAILABLE", "来源会话暂时不可引用", 409
             )
         title = (source.display_title or "未命名会话").strip()[:240] or "未命名会话"
+        try:
+            resolved_content = read_visible_conversation_context(db, workspace, source)
+        except RuntimeError as exc:
+            # A few control-plane reconciliation paths run before a Runtime
+            # context is bound. Preserve the legacy metadata-only reference in
+            # that narrow case; normal message delivery always has a Runtime
+            # and uses the platform reader above.
+            if "Runtime is not bound" not in str(exc):
+                raise
+            return {
+                "kind": "conversation",
+                "event_id": "",
+                "content": title,
+                "title": title,
+                "source_binding_id": source.id,
+                "source_conversation_id": source.openhands_conversation_id,
+                "history_tool": "read_referenced_conversation",
+            }
         return {
             "kind": "conversation",
             "event_id": "",
@@ -3832,7 +3929,8 @@ def _resolve_source_conversation_reference(
             "title": title,
             "source_binding_id": source.id,
             "source_conversation_id": source.openhands_conversation_id,
-            "history_tool": "read_referenced_conversation",
+            "history_tool": "platform_conversation_history",
+            "resolved_content": resolved_content,
         }
     runtime = get_runtime()
     source_handle = _handle(db, workspace, source)

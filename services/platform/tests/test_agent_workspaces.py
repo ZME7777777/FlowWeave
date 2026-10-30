@@ -3017,8 +3017,8 @@ def test_sidebar_conversation_inherits_source_configuration_and_appends_context(
         assert runtime.messages[-1] == "侧边追问"
         suffix = runtime.requests[-1].agent_spec.agent_context.system_message_suffix
         assert "已隐式关联到用户当前打开的主会话" in suffix
-        assert "不是主会话消息或完整历史" in suffix
-        assert "仅当用户主动添加会话引用时" in suffix
+        assert "主会话消息（只读背景）" in suffix
+        assert "user: 主会话消息" in suffix
         assert f"主会话绑定标识：{source['id']}" in suffix
 
 

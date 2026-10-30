@@ -399,7 +399,7 @@ test('case detail saves materials workspace ordered run cards and model capabili
   for (const count of [1, 0]) {
     await page.getByRole('button', { name: '配置会话', exact: true }).click();
     const credentialDialog = page.getByRole('dialog', { name: '会话配置', exact: true });
-    await credentialDialog.getByRole('button', { name: '认证', exact: true }).click();
+    await credentialDialog.getByRole('tab', { name: '认证', exact: true }).click();
     await expect(credentialDialog.getByRole('button', { name: /场景认证 1/ })).toHaveAttribute('aria-pressed', 'true');
     await expect(credentialDialog.getByRole('button', { name: /场景认证 2/ })).toHaveAttribute('aria-pressed', count === 1 ? 'true' : 'false');
     await credentialDialog.getByRole('button', { name: count === 1 ? /场景认证 2/ : /场景认证 1/ }).click();
@@ -411,7 +411,7 @@ test('case detail saves materials workspace ordered run cards and model capabili
     await openCasePanel(page, 'Agent 配置');
   }
   await page.getByRole('button', { name: '配置会话', exact: true }).click();
-  await page.getByRole('dialog', { name: '会话配置', exact: true }).getByRole('button', { name: '认证', exact: true }).click();
+  await page.getByRole('dialog', { name: '会话配置', exact: true }).getByRole('tab', { name: '认证', exact: true }).click();
   await expect(page.getByRole('button', { name: /场景认证 1/ })).toHaveAttribute('aria-pressed', 'false');
   await expect(page.getByRole('button', { name: /场景认证 2/ })).toHaveAttribute('aria-pressed', 'false');
   await page.getByRole('button', { name: '关闭会话配置', exact: true }).click();
@@ -1799,7 +1799,9 @@ for (const mode of ['draft', 'existing', 'preset'] as const) {
     await expect(builtin.locator('small')).toHaveText('工具：read_referenced_conversation · 按授权检索引用会话的历史内容');
     await expect(builtin.locator('i svg')).toHaveCount(1);
     await expect(dialog.locator('.agent-capability-list > button').last()).toHaveAccessibleName('会话历史查询');
-    await dialog.getByRole('button', { name: '测试技能组合', exact: true }).click();
+    await dialog.getByRole('button', { name: /^Skill 组合筛选/ }).click();
+    await page.getByRole('checkbox', { name: '测试技能组合', exact: true }).click();
+    await page.keyboard.press('Escape');
     await expect(builtin).toHaveCount(0);
     for (const name of ['skill', 'plugin', 'context', 'agent', 'hook']) {
       await dialog.getByRole('button', { name, exact: true }).click();
@@ -1807,7 +1809,9 @@ for (const mode of ['draft', 'existing', 'preset'] as const) {
     }
     await dialog.getByRole('button', { name: 'all', exact: true }).click();
     await expect(builtin).toHaveCount(0);
-    await dialog.getByRole('button', { name: '测试技能组合', exact: true }).click();
+    await dialog.getByRole('button', { name: /^Skill 组合筛选/ }).click();
+    await page.getByRole('checkbox', { name: '测试技能组合', exact: true }).click();
+    await page.keyboard.press('Escape');
     await expect(builtin).toBeVisible();
     await dialog.getByRole('button', { name: '选择筛选结果（1）', exact: true }).click();
     await dialog.getByRole('button', { name: '取消选择筛选结果', exact: true }).click();
@@ -1840,7 +1844,7 @@ test('capability configuration toggles visible selections and filters to selecte
   await expect(selectVisible).toHaveAttribute('aria-pressed','false');
   await expect(selectVisible.locator('svg')).toHaveClass(/lucide-square$/);
   await selectVisible.click();
-  await expect(dialog.getByText('已选择 3 项', { exact: true })).toBeVisible();
+  await expect(dialog.locator('.agent-capability-list > button.selected')).toHaveCount(3);
   await expect(dialog.getByRole('button', { name: '取消选择筛选结果', exact: true })).toBeVisible();
   await expect(dialog.getByRole('button', { name: '取消选择筛选结果', exact: true })).toHaveAttribute('aria-pressed','true');
   await expect(dialog.getByRole('button', { name: '取消选择筛选结果', exact: true }).locator('svg')).toHaveClass(/lucide-square-check/);
@@ -1853,7 +1857,7 @@ test('capability configuration toggles visible selections and filters to selecte
   await dialog.getByRole('button', { name: '取消选择筛选结果', exact: true }).click();
   await expect(dialog.getByRole('button', { name: '会话历史查询', exact: true })).toBeDisabled();
   await expect(dialog.getByRole('button', { name: '会话历史查询', exact: true })).toContainText('read_referenced_conversation');
-  await expect(dialog.getByText('已选择 1 项', { exact: true })).toBeVisible();
+  await expect(dialog.locator('.agent-capability-list > button.selected')).toHaveCount(1);
   await expect(dialog.locator('.agent-capability-select-visible')).toHaveAttribute('aria-pressed','false');
   await expect(dialog.locator('.agent-capability-select-visible svg')).toHaveClass(/lucide-square$/);
   await expect(dialog.getByRole('button', { name: '显示全部能力', exact: true })).toBeVisible();
@@ -1894,11 +1898,11 @@ for (const mode of ['create', 'edit'] as const) {
       }
       await dialog.locator('.agent-capability-list > button').filter({ has: page.locator('b', { hasText: new RegExp(`^预设${type}$`) }) }).click();
     }
-    await dialog.getByRole('button', { name: '认证', exact: true }).click();
+    await dialog.getByRole('tab', { name: '认证', exact: true }).click();
     if (mode === 'edit') await dialog.getByRole('button', { name: '全选认证', exact: true }).click();
-    await expect(dialog.getByText('已选择 2 项认证', { exact: true })).toBeVisible();
+    await expect(dialog.locator('.agent-capability-list > button.selected')).toHaveCount(2);
     await dialog.getByRole('button', { name: '取消全选认证', exact: true }).click();
-    await expect(dialog.getByText('已选择 0 项认证', { exact: true })).toBeVisible();
+    await expect(dialog.locator('.agent-capability-list > button.selected')).toHaveCount(0);
     await dialog.getByRole('button', { name: /认证1/ }).click();
     const credentialMark = dialog.locator('.agent-capability-list > button i').first();
     expect(await credentialMark.evaluate(element => { const s = getComputedStyle(element); return [s.width, s.height, s.borderRadius]; })).toEqual(['16px', '16px', '4px']);
@@ -1912,7 +1916,7 @@ for (const mode of ['create', 'edit'] as const) {
     // Saving from the authentication tab must preserve edits on both tabs.
     await dialog.getByRole('button', { name: '保存认证配置', exact: true }).click();
     await page.getByRole('button', { name: /配置会话/ }).click();
-    await expect(dialog.getByText('已选择 7 项', { exact: true })).toBeVisible();
+    await expect(dialog.locator('.agent-capability-list > button.selected')).toHaveCount(7);
     await dialog.getByRole('button', { name: '保存会话配置', exact: true }).click();
     await page.getByRole('button', { name: '保存任务', exact: true }).click();
     await expect.poll(() => writes.length).toBe(1);
@@ -1920,9 +1924,9 @@ for (const mode of ['create', 'edit'] as const) {
     expect(readinessRequests).toBe(0);
     await page.getByRole('button', { name: '编辑', exact: true }).click();
     await page.getByRole('button', { name: /配置会话/ }).click();
-    await expect(dialog.getByText('已选择 7 项', { exact: true })).toBeVisible();
-    await dialog.getByRole('button', { name: '认证', exact: true }).click();
-    await expect(dialog.getByText('已选择 1 项认证', { exact: true })).toBeVisible();
+    await expect(dialog.locator('.agent-capability-list > button.selected')).toHaveCount(7);
+    await dialog.getByRole('tab', { name: '认证', exact: true }).click();
+    await expect(dialog.locator('.agent-capability-list > button.selected')).toHaveCount(1);
   });
 }
 
@@ -1940,13 +1944,13 @@ test('credential select all excludes synced credentials and disables itself when
   await page.goto('/agent/conversations/scheduled-conversation');
   await page.getByRole('button', { name: '会话配置', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: '会话配置' });
-  await dialog.getByRole('button', { name: '认证', exact: true }).click();
+  await dialog.getByRole('tab', { name: '认证', exact: true }).click();
   await expect(dialog.getByRole('button', { name: '同步认证0（已同步）', exact: true })).toBeDisabled();
-  await expect(dialog.getByText('已选择 2 项认证', { exact: true })).toBeVisible();
+  await expect(dialog.locator('.agent-capability-list > button.selected')).toHaveCount(2);
   await dialog.getByRole('button', { name: '全选认证', exact: true }).click();
-  await expect(dialog.getByText('已选择 3 项认证', { exact: true })).toBeVisible();
+  await expect(dialog.locator('.agent-capability-list > button.selected')).toHaveCount(3);
   await dialog.getByRole('button', { name: '取消全选认证', exact: true }).click();
-  await expect(dialog.getByText('已选择 0 项认证', { exact: true })).toBeVisible();
+  await expect(dialog.locator('.agent-capability-list > button.selected')).toHaveCount(0);
   await dialog.getByRole('button', { name: '全选认证', exact: true }).click();
   await dialog.getByRole('button', { name: '同步认证', exact: true }).click();
   await expect(dialog.getByRole('button', { name: '全选认证', exact: true })).toBeDisabled();
@@ -1962,7 +1966,7 @@ test('capability filtering keeps dialog and footer geometry stable', async ({ pa
   const dialog=page.getByRole('dialog',{name:'会话配置'});
   const geometry=()=>dialog.evaluate(element=>{
     const box=element.getBoundingClientRect();
-    const footer=element.querySelector(':scope > footer')!.getBoundingClientRect();
+    const footer=element.querySelector('.agent-session-configuration-content > footer')!.getBoundingClientRect();
     return {top:box.top,height:box.height,footer:footer.top};
   });
   for(const height of [1000,600]){
@@ -2004,15 +2008,15 @@ for (const mode of ['existing', 'draft'] as const) {
       await page.getByRole('button', { name: /配置会话/ }).click();
     }
     const dialog = page.getByRole('dialog', { name: '会话配置' });
-    await expect(dialog.getByRole('button', { name: '常用技能组合', exact: true })).toBeVisible();
+    await expect(dialog.getByRole('button', { name: /^Skill 组合筛选/ })).toBeVisible();
     const assertLayout = async () => {
       const layout = await dialog.evaluate(element => {
         const bounds = (selector: string) => element.querySelector<HTMLElement>(selector)!.getBoundingClientRect();
-        const summary = bounds('.agent-capability-summary');
-        const list = bounds(':scope > .agent-capability-list');
+        const summary = bounds('.agent-capability-toolbar');
+        const list = bounds('.agent-session-configuration-content > .agent-capability-list');
         const first = bounds('.agent-capability-list > button');
-        const footer = bounds(':scope > footer');
-        const summaryText = element.querySelector('.agent-capability-summary > span:last-child')!.getBoundingClientRect();
+        const footer = bounds('.agent-session-configuration-content > footer');
+        const summaryText = element.querySelector('.agent-capability-toolbar > label')!.getBoundingClientRect();
         const firstButton = element.querySelector('.agent-capability-list > button')!;
         const hit = document.elementFromPoint(first.x + first.width / 2, first.y + first.height / 2);
         return { summaryBottom: summary.bottom, summaryTextBottom: summaryText.bottom, listTop: list.top,
@@ -2026,7 +2030,7 @@ for (const mode of ['existing', 'draft'] as const) {
       expect(layout.listBottom).toBeLessThanOrEqual(layout.footerTop + 1);
       expect(layout.firstClickable).toBe(true);
       expect(layout.scrollable).toBe(true);
-      await expect(dialog.locator(':scope > footer')).toBeInViewport();
+      await expect(dialog.locator('.agent-session-configuration-content > footer')).toBeInViewport();
     };
     for (const viewport of [{ width: 1440, height: 1000 }, { width: 1440, height: 600 }, { width: 640, height: 640 }]) {
       await page.setViewportSize(viewport);
@@ -2036,7 +2040,9 @@ for (const mode of ['existing', 'draft'] as const) {
       await dialog.getByRole('button', { name: 'all', exact: true }).click();
       await assertLayout();
     }
-    await dialog.getByRole('button', { name: '常用技能组合', exact: true }).click();
+    await dialog.getByRole('button', { name: /^Skill 组合筛选/ }).click();
+    await page.getByRole('checkbox', { name: '常用技能组合', exact: true }).click();
+    await page.keyboard.press('Escape');
     const optional = dialog.getByRole('button', { name: /布局技能 0/ });
     await optional.click();
     await expect(optional).toHaveClass(/selected/);
@@ -3610,18 +3616,18 @@ for (const config of ['untouched', 'capabilities', 'deselect'] as const) {
     if (config !== 'untouched') {
       await page.getByRole('button', { name: /配置会话/ }).click();
       const dialog = page.getByRole('dialog', { name: '会话配置', exact: true });
-      await expect(dialog.getByText('已选择 1 项', { exact: true })).toBeVisible();
+      await expect(dialog.locator('.agent-capability-list > button.selected')).toHaveCount(1);
       if (config === 'capabilities') {
         await dialog.getByRole('button', { name: /日报技能/ }).click();
         await dialog.getByRole('button', { name: '保存会话配置', exact: true }).click();
       } else {
-        await dialog.getByRole('button', { name: '认证', exact: true }).click();
-        await expect(dialog.getByText('已选择 2 项认证', { exact: true })).toBeVisible();
+        await dialog.getByRole('tab', { name: '认证', exact: true }).click();
+        await expect(dialog.locator('.agent-capability-list > button.selected')).toHaveCount(2);
         await dialog.getByRole('button', { name: '取消全选认证', exact: true }).click();
         await dialog.getByRole('button', { name: '保存认证配置', exact: true }).click();
         await page.getByRole('button', { name: /配置会话/ }).click();
-        await dialog.getByRole('button', { name: '认证', exact: true }).click();
-        await expect(dialog.getByText('已选择 0 项认证', { exact: true })).toBeVisible();
+        await dialog.getByRole('tab', { name: '认证', exact: true }).click();
+        await expect(dialog.locator('.agent-capability-list > button.selected')).toHaveCount(0);
         await dialog.getByRole('button', { name: '保存认证配置', exact: true }).click();
       }
     }
@@ -3632,7 +3638,7 @@ for (const config of ['untouched', 'capabilities', 'deselect'] as const) {
     await page.getByRole('button', { name: '编辑', exact: true }).click();
     await page.getByRole('button', { name: /配置会话/ }).click();
     const dialog = page.getByRole('dialog', { name: '会话配置', exact: true });
-    await dialog.getByRole('button', { name: '认证', exact: true }).click();
+    await dialog.getByRole('tab', { name: '认证', exact: true }).click();
     await expect(dialog.getByText(`已选择 ${config === 'deselect' ? 0 : 2} 项认证`, { exact: true })).toBeVisible();
   });
 }
@@ -3982,7 +3988,7 @@ test('workspace action menu defaults to all credentials and persists session con
 
   const dialog = page.getByRole('dialog', { name: '会话配置', exact: true });
   await dialog.getByRole('button', { name: /日报技能/, exact: false }).click();
-  await dialog.getByRole('button', { name: '认证', exact: true }).click();
+  await dialog.getByRole('tab', { name: '认证', exact: true }).click();
   await expect(dialog.getByRole('button', { name: /测试认证/, exact: false })).toHaveAttribute('aria-pressed', 'true');
   await dialog.getByRole('button', { name: '保存认证配置', exact: true }).click();
   await expect(dialog).toHaveCount(0);
@@ -3993,7 +3999,7 @@ test('workspace action menu defaults to all credentials and persists session con
   await page.getByRole('button', { name: '新会话配置', exact: true }).click();
   const inherited = page.getByRole('dialog', { name: '会话配置', exact: true });
   await expect(inherited.getByRole('button', { name: /日报技能/, exact: false })).toHaveClass(/selected/);
-  await inherited.getByRole('button', { name: '认证', exact: true }).click();
+  await inherited.getByRole('tab', { name: '认证', exact: true }).click();
   await expect(inherited.getByRole('button', { name: /测试认证/, exact: false })).toHaveAttribute('aria-pressed', 'true');
   await inherited.getByRole('button', { name: '取消全选认证', exact: true }).click();
   await expect(inherited.getByText('已选择 0 项认证', { exact: true })).toBeVisible();
@@ -4012,7 +4018,7 @@ test('named workspaces keep session configuration separate from root defaults', 
   const configuration = page.getByRole('dialog', { name: '会话配置', exact: true });
   await expect(configuration.getByRole('button', { name: /日报技能/, exact: false })).not.toHaveClass(/selected/);
   await configuration.getByRole('button', { name: /周报技能/, exact: false }).click();
-  await configuration.getByRole('button', { name: '认证', exact: true }).click();
+  await configuration.getByRole('tab', { name: '认证', exact: true }).click();
   await configuration.getByRole('button', { name: /测试认证/, exact: false }).click();
   await configuration.getByRole('button', { name: '保存认证配置', exact: true }).click();
 
@@ -4022,7 +4028,7 @@ test('named workspaces keep session configuration separate from root defaults', 
   const inherited = page.getByRole('dialog', { name: '会话配置', exact: true });
   await expect(inherited.getByRole('button', { name: /日报技能/, exact: false })).not.toHaveClass(/selected/);
   await expect(inherited.getByRole('button', { name: /周报技能/, exact: false })).toHaveClass(/selected/);
-  await inherited.getByRole('button', { name: '认证', exact: true }).click();
+  await inherited.getByRole('tab', { name: '认证', exact: true }).click();
   await expect(inherited.getByRole('button', { name: /测试认证/, exact: false })).toHaveAttribute('aria-pressed', 'true');
   await inherited.getByRole('button', { name: /测试认证/, exact: false }).click();
   await inherited.getByRole('button', { name: '保存认证配置', exact: true }).click();
@@ -4030,7 +4036,7 @@ test('named workspaces keep session configuration separate from root defaults', 
   await page.getByRole('button', { name: '新会话配置', exact: true }).click();
   const customized = page.getByRole('dialog', { name: '会话配置', exact: true });
   await expect(customized.getByRole('button', { name: /周报技能/, exact: false })).toHaveClass(/selected/);
-  await customized.getByRole('button', { name: '认证', exact: true }).click();
+  await customized.getByRole('tab', { name: '认证', exact: true }).click();
   await expect(customized.getByRole('button', { name: /测试认证/, exact: false })).toHaveAttribute('aria-pressed', 'false');
   await customized.getByRole('button', { name: '关闭会话配置', exact: true }).click();
 
@@ -4039,7 +4045,7 @@ test('named workspaces keep session configuration separate from root defaults', 
   await directory.getByRole('button', { name: '在已有项目目录中新建会话', exact: true }).click({ force: true });
   await page.getByRole('button', { name: '新会话配置', exact: true }).click();
   const fresh = page.getByRole('dialog', { name: '会话配置', exact: true });
-  await fresh.getByRole('button', { name: '认证', exact: true }).click();
+  await fresh.getByRole('tab', { name: '认证', exact: true }).click();
   await expect(fresh.getByRole('button', { name: /测试认证/, exact: false })).toHaveAttribute('aria-pressed', 'true');
 });
 
@@ -4673,7 +4679,7 @@ test('session configuration keeps compact two-line rows and leading square selec
   await skill.focus();
   await page.keyboard.press('Space');
   await expect(skill).toHaveAttribute('aria-pressed', 'false');
-  await dialog.getByRole('button', { name: '认证', exact: true }).click();
+  await dialog.getByRole('tab', { name: '认证', exact: true }).click();
   const credential = dialog.locator('.agent-credential-sync .agent-capability-list > button').first();
   await assertRow(credential);
   await expect(credential).toHaveAttribute('aria-pressed', 'true');

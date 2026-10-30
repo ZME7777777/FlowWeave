@@ -31,7 +31,9 @@ class HistoryArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     history_cursor: str | None = Field(default=None, min_length=1, max_length=200)
     query: str | None = Field(default=None, min_length=1, max_length=200)
-    max_content_chars: int = Field(default=2000, ge=1, le=10_000, strict=True)
+    # Keep compatibility with the OpenHands history prompt, which requests a
+    # 12k preview for a long referenced message.
+    max_content_chars: int = Field(default=2000, ge=1, le=12_000, strict=True)
     event_id: str | None = Field(default=None, min_length=1, max_length=200)
     content_offset: int = Field(default=0, ge=0, le=2_147_483_647, strict=True)
     source_binding_id: str | None = Field(default=None, min_length=36, max_length=36)
