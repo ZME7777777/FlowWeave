@@ -15892,3 +15892,23 @@ Runtime执行协议。运行端口选择器同步使用既有自定义组件。
 production build与diff检查通过；构建仅有既有大chunk提示。唯一Alembic
 head保持0186_mcp_authentication，无Platform、SDK或Runtime变更。沿用
 直接部署授权，仅发布Web；发布验收待补记，无后续实现切片。
+
+
+#### OPS-83 Web 发布验收
+
+2026-10-30正式Web预检、最小上下文与发布收尾通过，发布
+`11af11f0e9206083376284863ba042608fcbfd49`。源码归档SHA-256为
+`f38e4b2bc3cd8e28cd7fab1a097f7146aebbba4b7d40b9cb1d3eb7b4e71fd6ed`，
+linux/amd64 Web镜像ID为
+`sha256:123921f080581725c7f9fde5a06f3380844483b3c62f6470a37fe54b04f42fa4`。
+仅recreate Web，回滚镜像与服务日志保留；版本／健康、数据库head
+0186_mcp_authentication及47个保护容器镜像／启动时间通过，服务器配置
+哈希保持。公网HTML／Agent深层路由、两项入口资源与三项节点配置模块
+SHA-256一致，API鉴权边界及全新Chromium三种登录／深链入口通过。
+4097条完整网络事件中根API请求为0；临时浏览器回收通过。
+
+隔离账号API夹具加载实际已发布静态资源，验证350px侧栏、启动禁用、
+字段定位、共享能力图标与选择、严格保存载荷、临时Tab状态及返回目录，
+无JavaScript错误及根API请求；未写入真实用户资源。受管收尾上下文候选
+为10项；保留24小时上下文、实际引用及每仓库一个回滚镜像。收尾后再次
+核验Web健康／版本、配置和47个保护容器通过，未push。
