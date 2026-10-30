@@ -1425,6 +1425,21 @@ test('Sidebar chat tabs stay isolated to their source conversation', async ({ pa
   await expect(page.getByText('向主会话追问', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '打开侧边聊天', exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: '删除会话', exact: true })).toHaveCount(0);
+  await page.getByRole('navigation', { name: '工作区页签' }).getByRole('button', { name: '新建工作区页签', exact: true }).click();
+  await expect(page.locator('.agent-workspace-tab-launcher.active')).toBeVisible();
+  await page.getByLabel('关闭工作区工具').click();
+  const collapsedTools = page.getByRole('button', { name: '打开工作区工具（1 个页签）', exact: true });
+  await expect(collapsedTools).toBeVisible();
+  await expect(collapsedTools).toContainText('1');
+  await collapsedTools.click();
+  await expect(page.locator('.agent-workspace-tab-launcher.active')).toBeVisible();
+  for (let index = 0; index < 9; index += 1) {
+    await page.getByRole('navigation', { name: '工作区页签' }).getByRole('button', { name: '新建工作区页签', exact: true }).click();
+  }
+  await page.getByLabel('关闭工作区工具').click();
+  const collapsedOverflowTools = page.getByRole('button', { name: '打开工作区工具（10 个页签）', exact: true });
+  await expect(collapsedOverflowTools).toContainText('9+');
+  await collapsedOverflowTools.click();
 
   await page.getByRole('button', { name: '侧边聊天会话 B', exact: true }).click();
   await expect(page).toHaveURL(/\/agent\/conversations\/sidebar-chat-scope-b$/);
@@ -1434,7 +1449,7 @@ test('Sidebar chat tabs stay isolated to their source conversation', async ({ pa
   await page.getByRole('button', { name: '侧边聊天会话 A', exact: true }).click();
   await expect(page).toHaveURL(/\/agent\/conversations\/sidebar-chat-scope-a$/);
   await expect(page.locator('.agent-workspace-drawer')).toHaveClass(/tools-open/);
-  await expect(page.getByRole('region', { name: '侧边聊天' })).toBeVisible();
+  await expect(page.locator('.agent-workspace-tab-launcher.active')).toBeVisible();
   await page.getByLabel('关闭工作区工具').click();
   await expect(page.getByRole('region', { name: '侧边聊天' })).toHaveCount(0);
   await expect(page.locator('.agent-workspace-drawer')).toHaveClass(/summary-open/);

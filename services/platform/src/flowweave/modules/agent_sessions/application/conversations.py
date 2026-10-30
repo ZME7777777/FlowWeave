@@ -2205,6 +2205,7 @@ def bootstrap_conversation(
     credential_ids: tuple[str, ...] | None = None,
     idempotency_key: str,
     system_message_suffix_append: str = "",
+    implicit_history_source_ids: tuple[str, ...] = (),
     case_control_round_id: str | None = None,
 ) -> dict[str, Any]:
     """Create a native conversation only while accepting its first user event.
@@ -2339,6 +2340,15 @@ def bootstrap_conversation(
         allow_provisioning=True,
     )
     source_references = _resolve_message_references(db, workspace, binding, references)
+    implicit_history_references = _resolve_message_references(
+        db,
+        workspace,
+        binding,
+        tuple({"source_binding_id": source_id} for source_id in implicit_history_source_ids),
+    )
+    history_references = _validated_conversation_references(
+        tuple((*source_references, *implicit_history_references))
+    )
     prompt, image_urls = _message_payload(
         message_text, attachments, source_references, normalized_workspace_references, annotations
     )
@@ -2370,7 +2380,7 @@ def bootstrap_conversation(
     try:
         from flowweave.modules.agent_sessions.application import history_integration
 
-        history_integration.prepare_creation(db, workspace, binding, source_references)
+        history_integration.prepare_creation(db, workspace, binding, history_references)
         system_secrets: dict[str, str] = {}
         if case_control_round_id is not None:
             from flowweave.modules.cases.public import prepare_case_native_tools
@@ -3575,10 +3585,26 @@ def _validated_conversation_references(
                 "引用内容过长，请缩小引用范围后重试",
                 422,
             )
-        value = {"event_id": event_id.strip(), "content": text}
+        value: dict[str, Any] = {"event_id": event_id.strip(), "content": text}
         source_id = item.get("source_binding_id")
         if isinstance(source_id, str) and source_id.strip():
             value["source_binding_id"] = source_id
+        selection = item.get("selection")
+        if selection is not None:
+            start = selection.get("compact_start") if isinstance(selection, dict) else None
+            end = selection.get("compact_end") if isinstance(selection, dict) else None
+            if (
+                isinstance(start, bool)
+                or not isinstance(start, int)
+                or isinstance(end, bool)
+                or not isinstance(end, int)
+                or start < 0
+                or end <= start
+            ):
+                raise DomainError(
+                    "AGENT_CONVERSATION_REFERENCE_INVALID", "会话选区无效，请重新选择", 422
+                )
+            value["selection"] = {"compact_start": start, "compact_end": end}
         normalized.append(value)
         seen.add(event_id)
     return tuple(normalized)
@@ -3723,7 +3749,14 @@ def _resolve_source_conversation_reference(
     selected_text = _selected_reference_text(visible, selection)
     if not selected_text:
         raise DomainError("AGENT_CONVERSATION_REFERENCE_INVALID", "会话选区无效，请重新选择", 422)
-    return {"event_id": source_event_id, "content": selected_text, "source_binding_id": source.id}
+    reference: dict[str, Any] = {
+        "event_id": source_event_id,
+        "content": selected_text,
+        "source_binding_id": source.id,
+    }
+    if selection is not None:
+        reference["selection"] = selection
+    return reference
 
 
 def _resolve_message_references(

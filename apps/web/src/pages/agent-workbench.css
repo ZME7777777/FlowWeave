@@ -489,7 +489,7 @@
 .agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-tool-actions>button:hover{background:#d9e6de!important;color:#245f3c!important}
 .agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-tool-actions>button:focus-visible{outline:2px solid #83aa92;outline-offset:2px}
 
-.agent-workbench-top-actions .agent-workspace-new-tab-trigger{width:26px;min-width:26px;height:26px;min-height:26px;flex:0 0 26px;padding:0}
+.agent-workbench-top-actions .agent-workspace-new-tab-trigger{width:26px;min-width:26px;height:26px;min-height:26px;flex:0 0 26px;padding:0}.agent-workbench-top-actions .agent-workspace-new-tab-trigger.has-tabs{position:relative}.agent-workbench-top-actions .agent-workspace-new-tab-trigger.has-tabs>span{position:absolute;right:-4px;bottom:-4px;min-width:13px;height:13px;border:1px solid #d1ddd5;border-radius:3px;background:#fff;padding:0 2px;color:#2e5a40;font:700 8px/13px 'DM Mono',ui-monospace,monospace;text-align:center}
 
 
 /* Title editing shares the header's right-side action clearance. */
@@ -603,7 +603,7 @@
 .agent-schedule-run .agent-workspace-conversation-select:hover,.agent-schedule-run .agent-workspace-conversation-select.active{background:transparent}
 .agent-schedule-history-run .agent-workspace-conversation-select{height:38px;padding-left:0}
 
-.agent-capability-list .agent-capability-name{display:flex;align-items:center;gap:7px}.agent-capability-name b{min-width:0}.agent-capability-list .agent-capability-builtin-badge{flex-shrink:0;margin:0;border:1px solid #d4ded7;border-radius:4px;padding:1px 5px;background:#e7efe9;color:#5e7165;font-size:9px;font-family:inherit;font-style:normal}
+.agent-capability-list .agent-capability-name{display:flex;align-items:center;gap:7px}.agent-capability-name b{min-width:0}.agent-capability-list .agent-capability-builtin-badge,.agent-capability-list .agent-capability-version-badge{flex-shrink:0;margin:0;border:1px solid #d4ded7;border-radius:4px;padding:1px 5px;background:#e7efe9;color:#5e7165;font-size:9px;font-family:inherit;font-style:normal}.agent-capability-list .agent-capability-version-badge{border-color:#ead7ae;background:#fff3d9;color:#94651d}
 .agent-workspace-activity-refresh{margin:4px 8px 8px;color:#7b877f;font-size:10px;line-height:1.5}
 
 
@@ -688,3 +688,53 @@
 
 .agent-workspace-group-actions-menu[data-viewport-popover]{width:140px}
 .agent-conversation-context-menu[data-viewport-popover],.agent-file-context-menu[data-viewport-popover]{width:176px}
+
+/* Session configuration uses a stable side navigation and keeps actions above content. */
+.agent-capability-manager{height:min(680px,calc(100dvh - 48px));max-height:min(680px,calc(100dvh - 48px));grid-template-rows:auto minmax(0,1fr)}
+.agent-capability-manager.credentials-tab{height:min(680px,calc(100dvh - 48px));grid-template-rows:auto minmax(0,1fr)}
+.agent-session-config-body{display:grid;min-height:0;grid-template-columns:104px minmax(0,1fr)}
+.agent-session-config-tabs{display:flex;min-width:0;flex-direction:column;gap:5px;border:0;border-right:1px solid #e1e8e3;background:#f7faf8;padding:12px 9px}
+.agent-session-config-tabs button{display:flex;width:100%;align-items:center;gap:8px;border:0;border-radius:7px;background:transparent;padding:9px 10px;color:#637168;font-size:12px;text-align:left}
+.agent-session-config-tabs button:hover{background:#edf4ef;color:#286140}
+.agent-session-config-tabs button.active{background:#e2efe6;color:#20613d;font-weight:700}
+.agent-session-config-tabs button svg{flex:0 0 auto}
+.agent-session-config-panel{display:flex;min-width:0;min-height:0;flex-direction:column;overflow:hidden}
+.agent-session-config-panel>.agent-credential-sync{flex:1 1 auto}
+.agent-capability-manager:not(.credentials-tab){display:grid;flex-direction:initial}
+.agent-capability-manager:not(.credentials-tab)>:not(.agent-capability-list),.agent-capability-manager:not(.credentials-tab)>.agent-capability-list{flex:initial}
+.agent-capability-controls{flex:0 0 auto;border-bottom:1px solid #e4ebe6;background:#fbfcfb;padding:10px 14px}
+.agent-capability-controls>.agent-capability-toolbar-actions{width:100%}
+.agent-capability-controls .agent-capability-search{min-width:180px;flex:1 1 240px}
+.agent-capability-collection-trigger{display:flex;width:auto;min-width:112px;height:31px;align-items:center;justify-content:center;gap:6px;padding:0 9px;white-space:nowrap}
+.agent-capability-collection-trigger>svg:last-child{transition:transform .15s ease}
+.agent-capability-collection-trigger.active>svg:last-child{transform:rotate(180deg)}
+.agent-capability-collection-filters{margin-top:9px;border:1px solid #d9e5dc;border-radius:8px;background:#f5f9f6;padding:8px 10px}
+.agent-capability-collection-filters>header{display:flex;margin-bottom:7px}
+.agent-capability-collection-filters>header>span{display:grid}
+.agent-capability-collection-filters>div>button{min-width:max-content}
+.agent-capability-toolbar{flex:0 0 auto;justify-content:flex-start;padding:7px 14px}
+.agent-capability-summary{flex:0 0 auto;justify-content:flex-end;padding:5px 14px;text-align:right}
+.agent-session-config-panel>.agent-capability-list{flex:1 1 auto;min-height:0}
+.agent-session-config-panel>footer{display:flex;flex:0 0 auto;justify-content:flex-end;gap:8px;border-top:1px solid #e7ece8;padding:12px 18px}
+.agent-session-config-panel>footer button{padding:8px 13px;font-size:10px}
+.agent-session-config-panel>.agent-capability-error{flex:0 0 auto}
+.agent-credential-sync-content{padding-top:14px}
+.agent-credential-sync-heading{min-height:36px;border:1px solid #e2e8e4;background:#f4f7f5;color:#53655a;font-size:11px;letter-spacing:.01em}
+.agent-credential-sync-heading>.agent-capability-select-visible{width:22px;height:22px;border:1px solid #b8cbbf;border-radius:5px;background:#fff;color:#286140}
+.agent-credential-sync-heading>.agent-capability-select-visible svg{width:18px;height:18px}
+@media(max-width:680px){
+  .agent-capability-manager,.agent-capability-manager.credentials-tab{height:min(680px,calc(100dvh - 20px));max-height:min(680px,calc(100dvh - 20px))}
+  .agent-session-config-body{grid-template-columns:72px minmax(0,1fr)}
+  .agent-session-config-tabs{overflow:visible;padding:9px 6px}
+  .agent-session-config-tabs button{justify-content:center;padding:9px 5px}
+  .agent-session-config-tabs button span{display:none}
+  .agent-capability-controls{padding:8px 10px}
+  .agent-capability-toolbar-actions{display:grid;grid-template-columns:31px 31px minmax(0,1fr);align-items:center}
+  .agent-capability-select-visible,.agent-capability-show-selected{width:31px}
+  .agent-capability-collection-trigger{grid-column:3;width:100%;min-width:0}
+  .agent-capability-search{grid-column:1/-1;min-width:0}
+  .agent-capability-toolbar{padding-inline:10px;overflow-x:auto}
+  .agent-capability-summary{align-items:stretch;flex-direction:column;padding-inline:10px}
+  .agent-credential-sync-content{padding-inline:10px}
+  .agent-credential-sync>footer{padding-inline:10px}
+}
