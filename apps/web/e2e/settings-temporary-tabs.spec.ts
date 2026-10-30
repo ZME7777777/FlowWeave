@@ -50,21 +50,36 @@ test('keeps account settings in unique temporary tabs and closes the active tab 
 
   // Temporary tabs share the permanent nav tab's anatomy: full topbar
   // height, label size and the lime underline marking the active tab.
-  const permanent = page.getByRole('button', { name: '节点资产', exact: true });
+  const permanent = page.getByRole('button', { name: '节点中心', exact: true });
   const temporary = page.locator('.context-tab.active');
   const [permanentBox, temporaryBox] = await Promise.all([permanent.boundingBox(), temporary.boundingBox()]);
   expect(temporaryBox?.height).toBe(permanentBox?.height);
   await expect(temporary.locator('.context-tab-select')).toHaveCSS('font-size', await permanent.evaluate(element => getComputedStyle(element).fontSize));
   await expect(temporary).toHaveCSS('border-bottom-color', 'rgb(216, 242, 86)');
   await expect(temporary).toHaveCSS('border-top-left-radius', '0px');
+  await expect(page.getByRole('button', { name: '收起临时标签' })).toBeVisible();
+  await page.getByRole('button', { name: '收起临时标签' }).click();
+  await expect(page.getByRole('button', { name: '展开临时标签' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '其他临时标签（4）' })).toBeVisible();
+  await page.getByRole('button', { name: '其他临时标签（4）' }).click();
+  const temporaryMenu = page.getByRole('menu', { name: '其他临时标签' });
+  await expect(temporaryMenu).toBeVisible();
+  await expect(temporaryMenu.getByRole('menuitem')).toHaveCount(4);
+  await expect(temporaryMenu).toHaveCSS('width', '184px');
+  await temporaryMenu.getByRole('menuitem', { name: '认证管理', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '认证管理', exact: true })).toBeVisible();
+  await expect(temporaryMenu).toHaveCount(0);
+  await page.getByRole('button', { name: '展开临时标签' }).click();
+  await expect(page.locator('.context-tab.active')).toContainText('认证管理');
+  await expect(page.getByRole('button', { name: '收起临时标签' })).toBeVisible();
 
-  await page.getByRole('button', { name: '节点资产', exact: true }).click();
+  await page.getByRole('button', { name: '节点中心', exact: true }).click();
   await expect(page.getByLabel('临时管理标签')).toBeVisible();
   await expect(page.locator('.context-tab')).toHaveCount(4);
   await page.reload();
   await expect(page.locator('.context-tab')).toHaveText(['终端环境', '认证管理', '大模型配置', '用户管理']);
   await expect(page.locator('.context-tab.active')).toHaveCount(0);
-  await expect(page.getByRole('button', { name: '节点资产', exact: true })).toHaveClass('active');
+  await expect(page.getByRole('button', { name: '节点中心', exact: true })).toHaveClass('active');
 
   await page.getByRole('button', { name: '大模型配置', exact: true }).click();
   await page.getByRole('button', { name: '关闭大模型配置', exact: true }).click();
@@ -88,7 +103,7 @@ test('isolates saved tabs by account and filters settings after permission chang
   await page.goto('/');
   await openSettings(page, '大模型配置');
   await openSettings(page, '用户管理');
-  await page.getByRole('button', { name: '节点资产', exact: true }).click();
+  await page.getByRole('button', { name: '节点中心', exact: true }).click();
 
   user = { ...admin, id: 'other-user', username: 'user', role: 'USER', is_super_admin: false };
   await page.reload();
@@ -102,7 +117,7 @@ test('isolates saved tabs by account and filters settings after permission chang
   user = { ...admin, role: 'USER', is_super_admin: false };
   await page.reload();
   await expect(page.locator('.context-tab')).toHaveText(['大模型配置']);
-  await expect(page.getByRole('button', { name: '节点资产', exact: true })).toHaveClass('active');
+  await expect(page.getByRole('button', { name: '节点中心', exact: true })).toHaveClass('active');
 });
 
 test('logout clears temporary tabs before the next login', async ({ page }) => {
