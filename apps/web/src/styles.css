@@ -1308,7 +1308,8 @@ body:has(.login-page){min-width:0}
 .flow-library-list-tools input{min-width:0;padding:8px 0;font-size:11px}
 .flow-library-list-tools>label>svg{flex:none}
 .flow-library-list-tools>button{display:inline-flex;flex:none;align-items:center;justify-content:center;gap:4px;height:34px;padding:7px;font-size:11px;white-space:nowrap}
-.flow-library-workspace{grid-template-columns:320px minmax(0,1fr)}
+.flow-library-workspace{grid-template-columns:280px minmax(0,1fr)}
+@media(max-width:1180px){.flow-library-workspace{grid-template-columns:220px minmax(0,1fr)}}
 .flow-library-table-head{position:sticky;z-index:1;top:0}
 .flow-editor-page{width:100%;max-width:none;align-items:stretch}
 .flow-editor-page>.flow-product-layout{width:100%;max-width:none;align-self:stretch;flex:1 1 0}

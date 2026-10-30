@@ -45,25 +45,29 @@ async function setup(page: Page, initial: NodeAsset[] = [node], directory = fals
   return { writes, reject: (value: boolean) => { reject = value; }, hold: () => { hold = true; }, release: () => { hold = false; release?.(); } };
 }
 const openNode = async (page: Page, name = node.name) => page.getByTestId('node-card').filter({ hasText: name }).click();
-const openFields = async (page: Page) => page.getByRole('tab', { name: /输入与输出/ }).click();
+const openInputs = async (page: Page) => page.getByRole('tab', { name: /^输入/ }).click();
+const openOutputs = async (page: Page) => page.getByRole('tab', { name: /^输出/ }).click();
 
 async function expectSaved(page: Page) {
   await expect(page.getByRole('button', { name: '保存节点', exact: true })).toBeEnabled();
   await expect(page.locator('.node-edit-workspace > header').getByRole('button', { name: '取消', exact: true })).toBeDisabled();
 }
 
-test('selecting a node opens a compact workspace with full inline prompts', async ({ page }) => {
+test('selecting a node opens a compact workspace with side-by-side prompts', async ({ page }) => {
   const state = await setup(page); await openNode(page);
   await expect(page.getByRole('heading', { name: node.name, exact: true })).toBeVisible();
-  await expect(page.getByRole('tab', { name: '启动提示词', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('tab', { name: '提示词与上下文', exact: true })).toHaveAttribute('aria-selected', 'true');
   await expect(page.getByRole('tab')).toHaveCount(3);
   await expect(page.getByRole('textbox', { name: '启动触发提示词', exact: true })).toHaveValue(node.executor!.startup_prompt);
+  await expect(page.getByRole('textbox', { name: '上下文提示词', exact: true })).toHaveValue(node.executor!.context_prompt);
   await expect(page.locator('.node-center-detail .node-detail-editor')).toBeVisible();
   await expect(page.locator('.modal-backdrop')).toHaveCount(0);
   await expect(page.locator('.node-center-detail')).not.toContainText('NODE FORM');
-  await openFields(page);
-  await expect(page.getByRole('region', { name: '输入定义' })).toBeVisible();
-  await expect(page.getByRole('region', { name: '输出定义' })).toBeVisible();
+  await openInputs(page);
+  await expect(page.getByRole('region', { name: '输入字段' })).toBeVisible();
+  await expect(page.getByRole('region', { name: '输出字段' })).toHaveCount(0);
+  await openOutputs(page);
+  await expect(page.getByRole('region', { name: '输出字段' })).toBeVisible();
   expect(state.writes).toHaveLength(0);
 });
 
@@ -85,11 +89,11 @@ test('created metadata shares one read-only header without save status', async (
 
 test('prompt tabs, Markdown preview and enlarged editor share the same draft', async ({ page }) => {
   const state = await setup(page); await openNode(page);
+  const startupPrompt = page.locator('.node-prompt-section').filter({ has: page.getByText('启动提示词', { exact: true }) });
   await page.getByRole('textbox', { name: '启动触发提示词', exact: true }).fill('# 任务\n\n- 核对证据\n- **完成验证**');
-  await page.getByRole('button', { name: '预览', exact: true }).click();
+  await startupPrompt.getByRole('button', { name: '预览', exact: true }).click();
   await expect(page.getByRole('heading', { name: '任务', exact: true })).toBeVisible();
   await expect(page.locator('.node-prompt-preview strong')).toHaveText('完成验证');
-  await page.getByRole('tab', { name: '上下文', exact: true }).click();
   await page.getByRole('textbox', { name: '上下文提示词', exact: true }).fill('新的执行约束');
   const expand = page.getByRole('button', { name: '放大编辑上下文提示词' });
   await expand.click();
@@ -104,9 +108,8 @@ test('prompt tabs, Markdown preview and enlarged editor share the same draft', a
   await page.locator('.node-expanded-backdrop').click({ position: { x: 2, y: 2 } });
   await expect(dialog).toHaveCount(0);
   expect(state.writes).toHaveLength(0);
-  await page.getByRole('tab', { name: '启动提示词', exact: true }).click();
   await expect(page.getByRole('heading', { name: '任务', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: '编辑', exact: true }).click();
+  await startupPrompt.getByRole('button', { name: '编辑', exact: true }).click();
   await page.getByRole('textbox', { name: '启动触发提示词', exact: true }).press('ControlOrMeta+s');
   await expectSaved(page);
   expect(state.writes).toHaveLength(1);
@@ -117,7 +120,7 @@ test('input and output creation editing and deletion remain drafts until the one
   const configured = { ...node, inputs: [{ field_key: 'source', display_name: '来源', data_type: 'FILE' as const, description: '原始来源' }], outputs: [{ field_key: 'report', display_name: '报告', data_type: 'URL' as const, description: '结果链接' }] };
   const state = await setup(page, [configured]); await openNode(page);
 
-  await openFields(page);
+  await openInputs(page);
   await page.getByRole('button', { name: '新增输入', exact: true }).click();
   await page.getByLabel('输入名称 2', { exact: true }).fill('证据索引');
   await page.getByLabel('输入说明 2', { exact: true }).fill('修订后的完整说明');
@@ -125,6 +128,7 @@ test('input and output creation editing and deletion remain drafts until the one
   await page.getByRole('button', { name: '删除输入 来源', exact: true }).click();
   await expect(page.getByLabel('输入名称 1', { exact: true })).toHaveValue('证据索引');
   await expect(page.getByLabel('输入说明 1', { exact: true })).toHaveValue('修订后的完整说明');
+  await openOutputs(page);
   await page.getByLabel('输出名称 1', { exact: true }).fill('已编辑的报告');
   await page.getByLabel('输出说明 1', { exact: true }).fill('报告交付要求');
   expect(state.writes).toHaveLength(0);
@@ -133,16 +137,16 @@ test('input and output creation editing and deletion remain drafts until the one
   expect(state.writes).toHaveLength(1);
   expect(state.writes[0]).toMatchObject({ name: node.name, row_version: 1, inputs: [{ display_name: '证据索引', description: '修订后的完整说明', data_type: 'FILE' }], outputs: [{ field_key: 'report', display_name: '已编辑的报告', description: '报告交付要求' }] });
   expect(state.writes[0].inputs[0]).not.toHaveProperty('draftId');
-  await page.reload(); await openNode(page); await openFields(page);
+  await page.reload(); await openNode(page); await openInputs(page);
   await expect(page.getByLabel('输入说明 1', { exact: true })).toHaveValue('修订后的完整说明');
 });
 
 test('new nodes can configure fields before a name and save only once in their directory', async ({ page }) => {
   const state = await setup(page, [], true);
   await page.getByRole('button', { name: '在 研发流程 新建节点', exact: true }).click();
-  await openFields(page); await page.getByRole('button', { name: '新增输入', exact: true }).click();
+  await openInputs(page); await page.getByRole('button', { name: '新增输入', exact: true }).click();
   await page.getByLabel('输入名称 1', { exact: true }).fill('源文件');
-  await page.getByRole('button', { name: '新增输出', exact: true }).click();
+  await openOutputs(page); await page.getByRole('button', { name: '新增输出', exact: true }).click();
   await page.getByLabel('输出名称 1', { exact: true }).fill('报告');
   expect(state.writes).toHaveLength(0);
   await page.getByRole('button', { name: '保存节点', exact: true }).click();
@@ -160,11 +164,11 @@ test('new nodes can configure fields before a name and save only once in their d
 
 test('invalid hidden fields are revealed and version conflicts preserve every draft for retry', async ({ page }) => {
   const state = await setup(page); await openNode(page);
-  await openFields(page); await page.getByRole('button', { name: '新增输出', exact: true }).click();
-  await page.getByRole('tab', { name: '启动提示词', exact: true }).click();
+  await openOutputs(page); await page.getByRole('button', { name: '新增输出', exact: true }).click();
+  await page.getByRole('tab', { name: '提示词与上下文', exact: true }).click();
   await page.getByRole('textbox', { name: '启动触发提示词', exact: true }).fill('尚未保存的执行步骤');
   await page.getByRole('button', { name: '保存节点', exact: true }).click();
-  await expect(page.getByRole('tab', { name: /输入与输出/ })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('tab', { name: /^输出/ })).toHaveAttribute('aria-selected', 'true');
   await expect(page.getByLabel('输出名称 1', { exact: true })).toBeFocused();
   expect(state.writes).toHaveLength(0);
   await page.getByLabel('输出名称 1', { exact: true }).fill('交付报告');
@@ -172,7 +176,7 @@ test('invalid hidden fields are revealed and version conflicts preserve every dr
   await expect(page.getByRole('alert')).toContainText('节点已被其他人修改');
   await expect(page.getByRole('button', { name: '取消', exact: true })).toBeEnabled();
   await expect(page.getByLabel('输出名称 1', { exact: true })).toHaveValue('交付报告');
-  await page.getByRole('tab', { name: '启动提示词', exact: true }).click();
+  await page.getByRole('tab', { name: '提示词与上下文', exact: true }).click();
   await expect(page.getByRole('textbox', { name: '启动触发提示词', exact: true })).toHaveValue('尚未保存的执行步骤');
   state.reject(false); await page.getByRole('button', { name: '保存节点', exact: true }).click();
   await expectSaved(page);
@@ -240,14 +244,13 @@ for (const [width, height] of [[1440, 900], [1440, 700], [1024, 768], [1280, 620
     const long = { ...node, description: node.description.repeat(20), executor: { ...node.executor!, startup_prompt: '# 任务执行\n\n' + '逐项核对输入，保留完整证据与执行记录。\n'.repeat(100) } };
     await setup(page, [long]); await openNode(page);
     const text = page.getByRole('textbox', { name: '启动触发提示词', exact: true });
+    const startupPrompt = page.locator('.node-prompt-section').filter({ has: page.getByText('启动提示词', { exact: true }) });
     await text.hover(); await page.mouse.wheel(0, 500);
     await expect.poll(() => text.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
     const previous = await text.evaluate(element => element.scrollTop);
-    await page.getByRole('tab', { name: '上下文', exact: true }).click();
-    await page.getByRole('tab', { name: '启动提示词', exact: true }).click();
     expect(await text.evaluate(element => element.scrollTop)).toBe(previous);
-    await page.getByRole('button', { name: '预览', exact: true }).click();
-    await page.getByRole('button', { name: '编辑', exact: true }).click();
+    await startupPrompt.getByRole('button', { name: '预览', exact: true }).click();
+    await startupPrompt.getByRole('button', { name: '编辑', exact: true }).click();
     expect(await text.evaluate(element => element.scrollTop)).toBe(previous);
     const bounds = await page.locator('.node-center-detail,.node-detail-editor').evaluateAll(elements => elements.map(element => ({ height: element.clientHeight, scroll: element.scrollHeight, width: element.clientWidth, scrollWidth: element.scrollWidth })));
     expect(bounds.every(box => box.scroll <= box.height + 1 && box.scrollWidth <= box.width + 1)).toBe(true);
@@ -302,7 +305,7 @@ test('many fields and the node directory scroll independently with fixed node co
   const fields = Array.from({ length: 20 }, (_, i) => ({ field_key: `field_${i}`, display_name: `输入资料 ${i}`, data_type: 'FILE' as const, description: `背景与验收证据 ${i}` }));
   const configured = { ...node, inputs: fields, outputs: [{ field_key: 'report', display_name: '交付报告', data_type: 'URL' as const, description: '报告与验证记录' }] };
   const records = [configured, ...Array.from({ length: 30 }, (_, index) => ({ ...node, id: `node-${index}`, name: `研发任务节点 ${index}` }))];
-  await setup(page, records); await openNode(page); await openFields(page);
+  await setup(page, records); await openNode(page); await openInputs(page);
   const panel = page.getByRole('tabpanel');
   await panel.hover(); await page.mouse.wheel(0, 700);
   await expect.poll(() => panel.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
@@ -346,7 +349,7 @@ test('deleting a different node keeps the selected node and its unsaved text', a
 test('deleting the directory of an uncreated draft also protects its fields', async ({ page }) => {
   await setup(page, [], true);
   await page.getByRole('button', { name: '在 研发流程 新建节点', exact: true }).click();
-  await openFields(page); await page.getByRole('button', { name: '新增输入', exact: true }).click();
+  await openInputs(page); await page.getByRole('button', { name: '新增输入', exact: true }).click();
   await page.getByLabel('输入名称 1', { exact: true }).fill('尚未保存的字段');
   await page.getByRole('button', { name: '删除目录 研发流程', exact: true }).click();
   await expect(page.getByRole('alertdialog')).toContainText('放弃未保存');
@@ -361,20 +364,20 @@ test('cancel restores prompts and all field changes while retaining the current 
   const cancel = page.getByRole('button', { name: '取消', exact: true });
   await expect(cancel).toBeDisabled();
   await page.getByRole('textbox', { name: '启动触发提示词', exact: true }).fill('未保存启动提示词');
-  await page.getByRole('tab', { name: '上下文', exact: true }).click();
   await page.getByRole('textbox', { name: '上下文提示词', exact: true }).fill('未保存上下文');
-  await openFields(page);
+  await openInputs(page);
   await page.getByLabel('输入说明 1', { exact: true }).fill('未保存字段说明');
+  await openOutputs(page);
   await page.getByRole('button', { name: '新增输出', exact: true }).click();
   await page.getByLabel('输出名称 1', { exact: true }).fill('临时报告');
   await expect(cancel).toBeEnabled(); await cancel.click();
   await expect(cancel).toBeDisabled();
-  await expect(page.getByRole('tab', { name: /输入与输出/ })).toHaveAttribute('aria-selected', 'true');
-  await expect(page.getByLabel('输入说明 1', { exact: true })).toHaveValue('原始说明');
+  await expect(page.getByRole('tab', { name: /^输出/ })).toHaveAttribute('aria-selected', 'true');
   await expect(page.getByLabel('输出名称 1', { exact: true })).toHaveCount(0);
-  await page.getByRole('tab', { name: '上下文', exact: true }).click();
+  await openInputs(page);
+  await expect(page.getByLabel('输入说明 1', { exact: true })).toHaveValue('原始说明');
+  await page.getByRole('tab', { name: '提示词与上下文', exact: true }).click();
   await expect(page.getByRole('textbox', { name: '上下文提示词', exact: true })).toHaveValue(node.executor!.context_prompt);
-  await page.getByRole('tab', { name: '启动提示词', exact: true }).click();
   await expect(page.getByRole('textbox', { name: '启动触发提示词', exact: true })).toHaveValue(node.executor!.startup_prompt);
   await expect(page.getByRole('heading', { name: node.name, exact: true })).toBeVisible();
   expect(state.writes).toHaveLength(0);
@@ -422,13 +425,14 @@ test('field descriptions use bounded single-line inputs while legacy contents su
   const configured = { ...node, inputs: [{ field_key: 'source', display_name: '来源', data_type: 'FILE' as const, description: legacyDescription }], outputs: [{ field_key: 'report', display_name: '报告', data_type: 'URL' as const, description: '' }] };
   const state = await setup(page, [configured]); await openNode(page);
   await page.screenshot({ path: test.info().outputPath('prompt-surface.png') });
-  await openFields(page);
+  await openInputs(page);
   const legacy = page.getByLabel('输入说明 1', { exact: true });
+  await expect(legacy).toHaveValue(legacyDescription);
+  await expect(legacy).toHaveAttribute('title', legacyDescription);
+  await openOutputs(page);
   const description = page.getByLabel('输出说明 1', { exact: true });
   expect(await description.evaluate(element => element.tagName)).toBe('INPUT');
   await expect(description).toHaveAttribute('maxlength', '120');
-  await expect(legacy).toHaveValue(legacyDescription);
-  await expect(legacy).toHaveAttribute('title', legacyDescription);
   await description.fill('说明'.repeat(60));
   await description.press('End'); await page.keyboard.insertText('超出限制');
   await expect(description).toHaveValue('说明'.repeat(60));
@@ -438,7 +442,7 @@ test('field descriptions use bounded single-line inputs while legacy contents su
   await expectSaved(page);
   expect(state.writes[0].inputs[0].description).toBe(legacyDescription);
   expect(state.writes[0].outputs[0]).toMatchObject({ description: '说明'.repeat(60), data_type: 'FILE' });
-  await page.getByRole('tab', { name: '上下文', exact: true }).click();
+  await page.getByRole('tab', { name: '提示词与上下文', exact: true }).click();
   await page.getByRole('textbox', { name: '上下文提示词', exact: true }).fill('更新约束');
   await page.getByRole('button', { name: '保存节点', exact: true }).click();
   await expectSaved(page);
