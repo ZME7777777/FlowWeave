@@ -4155,6 +4155,11 @@ class OpenHandsRuntime:
                 # projection and permanently strands the FlowRun Attempt.
                 if self._is_explicit_pause_interruption(item):
                     continue
+                # Tool-call validation errors are formal, retryable Agent outcomes.
+                # OpenHands feeds them back to the model so it can correct the call;
+                # they are not terminal Runtime failures.
+                if self._is_retryable_agent_tool_error(item):
+                    continue
                 # OpenHands 1.42/1.44 can publish an asynchronous native
                 # auto-title provider failure as a generic ConversationErrorEvent
                 # after the real assistant message.  The title is auxiliary
@@ -4202,6 +4207,20 @@ class OpenHandsRuntime:
             str(item.get("kind") or "") == "AgentErrorEvent"
             and str(item.get("error") or "")
             == "Tool call interrupted before completion. The conversation was paused."
+        )
+
+    @staticmethod
+    def _is_retryable_agent_tool_error(item: dict[str, Any]) -> bool:
+        if str(item.get("kind") or "") != "AgentErrorEvent":
+            return False
+        if not str(item.get("tool_name") or "") or not str(item.get("tool_call_id") or ""):
+            return False
+        classification = item.get("classification")
+        return (
+            isinstance(classification, dict)
+            and classification.get("kind") == "agent_action"
+            and classification.get("retryable") is True
+            and classification.get("user_action") == "retry"
         )
 
     @staticmethod

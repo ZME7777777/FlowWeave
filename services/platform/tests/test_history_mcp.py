@@ -215,6 +215,8 @@ def client(monkeypatch):
     async def read(*_args, **kwargs):
         assert kwargs["history"] is True
         state.reads += 1
+        if getattr(state, "history_unavailable", False):
+            raise DomainError("RUNTIME_READ_SATURATED", "busy", 503)
         return {"messages": [{"event_id": "formal", "content": "正文"}], "history_cursor": "older"}
 
     monkeypatch.setattr(history_access, "authorize", authorize)
@@ -250,17 +252,48 @@ def test_mcp_handshake_tool_schema_and_read(client):
     assert initialized.json()["result"]["protocolVersion"] == "2025-03-26"
     tool = rpc("tools/list").json()["result"]["tools"][0]
     assert tool["annotations"]["readOnlyHint"] is True
-    assert "source_binding_id" in tool["inputSchema"]["properties"]
+    properties = tool["inputSchema"]["properties"]
+    assert "source_binding_id" in properties
+    assert "36-character" in properties["source_binding_id"]["description"]
+    assert "1-10000" in properties["max_content_chars"]["description"]
     result = rpc("tools/call", {"name": tool["name"], "arguments": {}})
     assert result.headers["cache-control"] == "no-store"
     assert json.loads(result.json()["result"]["content"][0]["text"])["history_cursor"] == "older"
     assert state.reads == 1
+    capped = rpc("tools/call", {"name": tool["name"], "arguments": {"max_content_chars": 12_000}})
+    assert "result" in capped.json()
+    assert state.reads == 2
     invalid = rpc("tools/call", {"name": tool["name"], "arguments": {"source_binding_id": "other"}})
-    assert invalid.json()["error"]["code"] == -32602
-    assert state.reads == 1
+    invalid_result = invalid.json()["result"]
+    assert invalid_result["isError"] is True
+    invalid_detail = json.loads(invalid_result["content"][0]["text"])
+    assert invalid_detail["error"] == "invalid_arguments"
+    assert "source_binding_id" in invalid_detail["guidance"]
+    assert state.reads == 2
     state.authorized = False
     assert rpc("tools/list").status_code == 401
-    assert state.reads == 1
+    assert state.reads == 2
+
+
+def test_mcp_history_failure_is_a_tool_observation(client):
+    c, token, state = client
+    state.history_unavailable = True
+    response = c.post(
+        mcp.MCP_PATH,
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": mcp.TOOL["name"], "arguments": {}},
+        },
+    )
+
+    result = response.json()["result"]
+    assert result["isError"] is True
+    detail = json.loads(result["content"][0]["text"])
+    assert detail["error"] == "history_unavailable"
+    assert "Continue without it" in detail["guidance"]
 
 
 def test_mcp_transport_rejects_bad_auth_and_requests(client):

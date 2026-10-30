@@ -6445,6 +6445,31 @@ def test_openhands_does_not_turn_an_explicit_pause_into_a_runtime_failure(openha
     assert result is None
 
 
+def test_openhands_keeps_retryable_agent_tool_error_non_terminal(openhands_settings):
+    runtime = OpenHandsRuntime(openhands_settings)
+    result = runtime._result_from_events(
+        _handle(),
+        [
+            {
+                "kind": "AgentErrorEvent",
+                "id": "tool-validation-1",
+                "parent_id": "tool-action-1",
+                "tool_call_id": "tool-call-1",
+                "tool_name": "read_referenced_conversation",
+                "error": "Error validating tool arguments",
+                "classification": {
+                    "kind": "agent_action",
+                    "retryable": True,
+                    "user_action": "retry",
+                },
+            }
+        ],
+        "tool-validation-1",
+    )
+
+    assert result is None
+
+
 def test_openhands_keeps_a_restart_interruption_as_a_runtime_failure(openhands_settings):
     runtime = OpenHandsRuntime(openhands_settings)
     error = (

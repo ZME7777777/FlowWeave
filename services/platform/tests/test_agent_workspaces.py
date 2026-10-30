@@ -18,6 +18,7 @@ from sqlalchemy import select
 
 from flowweave.bootstrap.runtime_provider import RuntimeProviderResourceWrite
 from flowweave.modules.agent_sessions.application import (
+    history_integration,
     resumable_attachments,
     sidebar_conversations,
 )
@@ -2966,6 +2967,14 @@ def test_sidebar_conversation_inherits_source_configuration_and_appends_context(
         ),
     )
     runtime = CapturingRuntime()
+    prepared_history: list[tuple[str, str, tuple[dict[str, str], ...]]] = []
+    monkeypatch.setattr(
+        history_integration,
+        "prepare_creation",
+        lambda _db, workspace, target, references: prepared_history.append(
+            (workspace.id, target.id, references)
+        ),
+    )
     with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
         workspace = _ready_workspace_for_conversation(db)
         source = conversations.bootstrap_conversation(
@@ -3012,10 +3021,18 @@ def test_sidebar_conversation_inherits_source_configuration_and_appends_context(
         assert child.working_directory == source["working_directory"]
         assert len(runtime.requests) == 2
         assert runtime.messages[-1] == "侧边追问"
+        assert prepared_history[0][2] == ()
+        assert prepared_history[1][0:2] == (workspace.id, child.id)
+        implicit_reference = prepared_history[1][2][0]
+        assert implicit_reference["kind"] == "conversation"
+        assert implicit_reference["source_binding_id"] == source["id"]
+        assert (
+            implicit_reference["source_conversation_id"] == source["openhands_conversation_id"]
+        )
         suffix = runtime.requests[-1].agent_spec.agent_context.system_message_suffix
-        assert "已隐式关联到用户当前打开的主会话" in suffix
-        assert "不是主会话消息或完整历史" in suffix
-        assert "仅当用户主动添加会话引用时" in suffix
+        assert "已隐式授权按需读取此主会话" in suffix
+        assert "不要在当前任务不需要时查询" in suffix
+        assert "max_content_chars 必须是 1 到 10000 的整数" in suffix
         assert f"主会话绑定标识：{source['id']}" in suffix
 
 
