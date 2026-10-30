@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`UPSTREAM BASELINE ADOPTION COMPLETE`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`CASE-06`
+> 下一可执行切片：`NONE`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -13680,7 +13680,18 @@ Web remote-release-finish 通过，无过期受管上下文；保留当前镜像
 | CASE-06 | DONE | CASE-03B、CASE-05B | 逐步复核、配置修订与重跑 |
 | CASE-07 | DONE | CASE-04、CASE-05B、CASE-06 | 连续修订、跨阶段决策与完成 |
 | CASE-08 | DONE | CASE-02–CASE-07 | 前端反馈与接管统一 |
-| CASE-09 | READY | CASE-01–CASE-08 | 全链路与恢复验收 |
+| CASE-09 | SKIPPED | CASE-01–CASE-08 | 全链路与恢复验收；用户决定不在当前条件下执行 |
+
+
+### CASE 自主协调实施跟踪 — CLOSED
+
+2026-10-30，用户确认CASE-09当前不具备执行条件，并明确要求在CASE-01至CASE-08功能均已实现后
+结束本跟踪、跳过后续任务。因此CASE-09记为`SKIPPED`而非`DONE`：不运行真实原生工具、混合路径、
+Worker重启、事件重放、跨容器资料或越权恢复矩阵，也不声称这些全链路门禁已通过。CASE-01至
+CASE-08的实现与各自已记录验证保持不变；本决定不把“已实现”提升为“已完成最终系统验收”。
+
+当前执行切片和下一可执行切片均为`NONE`。若未来具备独立PostgreSQL、固定Runtime、真实容器与
+可控故障注入环境，应新建验收任务重新定义范围和证据，不把本次跳过状态自动改写为通过。
 
 
 ### CASE-08 前端运行反馈与接管统一 — DONE
