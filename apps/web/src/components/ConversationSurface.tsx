@@ -494,17 +494,7 @@ function itemsFor(event: OpenHandsConversationEvent, taskRetryError = false): It
   }
   if (event.event_type === 'CONDENSATION_REQUESTED') return [{ event, kind: 'condensation', title: '开始压缩上下文', content: '' }];
   if (event.event_type === 'CONDENSATION_COMPLETED') return [{ event, kind: 'condensation', title: '压缩完成', content: '' }];
-  if (event.payload.goal_status) {
-    const goal = event.payload.goal_status;
-    const title = goal.status === 'complete'
-      ? '目标已验收通过'
-      : goal.status === 'capped'
-        ? '目标已达到轮次上限'
-        : goal.status === 'interrupted'
-          ? '目标循环已中断'
-          : goal.iteration === 0 ? '开始执行目标' : `目标第 ${goal.iteration} 轮验收`;
-    return [{ event, kind: 'goal', title, content: goal.verdict?.missing ?? '' }];
-  };
+  if (event.payload.goal_status) return [];
   if (event.event_type === 'SECURITY_ANALYSIS') return [{ event, kind: 'security', title: '安全分析', content: '' }];
   if (event.event_type === 'TOOL_CALL') return [{ event, kind: 'tool', title: eventName, content: thought || content }];
   // Its native observation only confirms that text was logged, so rendering it
