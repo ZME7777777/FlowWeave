@@ -3733,12 +3733,32 @@ function ConversationFilePreviewDialog({ request, workspaceId, bindingId, workDi
     : undefined, [canPreviewHtml, fileOptions, fileUrl, previewState, workspaceId, workspaceRequest]);
   const lightweightPreview = Boolean(previewState && (previewState.totalBytes > 128 * 1024 || previewState.content.length > 128 * 1024));
   const imagePreviewable = request.kind === 'image' || canPreviewImage;
-  const handleImageWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
-    if (!event.metaKey) return;
-    event.preventDefault();
-    const nextScale = Math.min(4, Math.max(1, imageScale * (event.deltaY < 0 ? 1.12 : 1 / 1.12)));
+  const changeImageScale = (factor: number) => {
+    const nextScale = Math.min(4, Math.max(1, imageScale * factor));
     setImageScale(nextScale);
     if (nextScale === 1) setImageOffset({ x: 0, y: 0 });
+  };
+  const handleImageWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
+    if (!(event.metaKey || event.ctrlKey)) return;
+    event.preventDefault();
+    changeImageScale(event.deltaY < 0 ? 1.12 : 1 / 1.12);
+  };
+  const handleImageKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.altKey && !event.metaKey && !event.ctrlKey) {
+      const pan = {
+        ArrowUp: { x: 0, y: -40 },
+        ArrowDown: { x: 0, y: 40 },
+        ArrowLeft: { x: -40, y: 0 },
+        ArrowRight: { x: 40, y: 0 },
+      }[event.key];
+      if (!pan) return;
+      event.preventDefault();
+      setImageOffset(current => ({ x: current.x + pan.x, y: current.y + pan.y }));
+      return;
+    }
+    if (!(event.metaKey || event.ctrlKey) || event.altKey || !['ArrowUp', 'ArrowDown'].includes(event.key)) return;
+    event.preventDefault();
+    changeImageScale(event.key === 'ArrowUp' ? 1.12 : 1 / 1.12);
   };
   const startImageDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (imageScale === 1 || event.button !== 0) return;
@@ -3757,7 +3777,11 @@ function ConversationFilePreviewDialog({ request, workspaceId, bindingId, workDi
   };
   const imagePreview = imagePreviewable && <div
     className={`agent-image-preview-viewport${imageScale > 1 ? ' zoomed' : ''}`}
+    tabIndex={0}
+    role="application"
+    aria-label="图片预览：按住 Command 或 Ctrl 加上下方向键缩放；按住 Option 或 Alt 加方向键移动；双击复位"
     onWheel={handleImageWheel}
+    onKeyDown={handleImageKeyDown}
     onDoubleClick={resetImageViewport}
     onPointerDown={startImageDrag}
     onPointerMove={moveImageDrag}

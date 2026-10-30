@@ -1932,7 +1932,7 @@ test('A delayed message response never renders in another conversation', async (
   await expect(page.getByText('正在提交消息', { exact: true })).toHaveCount(0);
 });
 
-test('A running-session Enter queues without rendering, while Command or Alt+Enter renders and sends', async ({ page }) => {
+test('A running-session Enter queues without rendering, while Ctrl+Enter renders and sends', async ({ page }) => {
   let authenticated = false;
   let sentMessages = 0;
   const workspace = { id: 'queue-semantics-workspace', display_name: '队列语义工作区', desired_state: 'RUNNING', updated_at: now };
@@ -1981,7 +1981,7 @@ test('A running-session Enter queues without rendering, while Command or Alt+Ent
   await expect(page.getByLabel('消息投递队列').getByText('先排队，再调整方向')).toBeVisible();
   expect(sentMessages).toBe(0);
 
-  await composer.press('Alt+Enter');
+  await composer.press('Control+Enter');
   await expect(page.getByLabel('消息投递队列').getByText('先排队，再调整方向')).toHaveCount(0);
   await expect(message).toBeVisible();
   await expect.poll(() => sentMessages).toBe(1);
@@ -2585,7 +2585,19 @@ test('New conversation draft remains isolated and can be resumed after switching
   const restoredImage = page.locator('.agent-composer .agent-attachment-open img');
   await expect(restoredImage).toHaveAttribute('src', /draft_attachment_owner_id=/);
   await draftAttachment.click();
-  await expect(page.getByRole('dialog', { name: '文件预览' }).locator('img')).toHaveAttribute('src', /draft_attachment_owner_id=/);
+  const preview = page.getByRole('dialog', { name: '文件预览' });
+  await expect(preview.locator('img')).toHaveAttribute('src', /draft_attachment_owner_id=/);
+  const imageViewport = preview.getByRole('application', { name: /图片预览/ });
+  await imageViewport.focus();
+  await page.keyboard.press('Meta+ArrowUp');
+  await expect(preview.locator('img')).toHaveAttribute('style', /scale\(1\.12\)/);
+  await page.keyboard.press('Alt+ArrowRight');
+  await expect(preview.locator('img')).toHaveAttribute('style', /translate\(40px, 0px\)/);
+  await page.keyboard.press('Control+ArrowDown');
+  await expect(preview.locator('img')).toHaveAttribute('style', /translate\(0px, 0px\) scale\(1\)/);
+  await page.keyboard.press('Control+ArrowUp');
+  await imageViewport.dblclick();
+  await expect(preview.locator('img')).toHaveAttribute('style', /translate\(0px, 0px\) scale\(1\)/);
   await page.getByRole('button', { name: '关闭文件预览' }).click();
   await composer.fill('只属于新会话的未发送草稿');
 
