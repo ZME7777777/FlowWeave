@@ -8446,10 +8446,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         .map(([scope, page]) => [scope, { ...page, items: page.items.filter(item => !matches(item)) }])));
       setUnreadConversationIds(current => new Set([...current].filter(id => !bindingIds.has(id))));
       if (archiveSelectionRef.current.bindingId && bindingIds.has(archiveSelectionRef.current.bindingId)) {
-        homeRouteBeforeInternalNavigation.current = host.rootPath;
+        const archivedConversationDirectoryId = directoryId ? undefined : archiveSelectionRef.current.directoryId;
+        const newConversationPath = !scheduleRoute && host.id === 'agent-workspace' && archivedConversationDirectoryId
+          ? `${host.rootPath}?draft_work_directory_id=${encodeURIComponent(archivedConversationDirectoryId)}`
+          : scheduleRoute ? '/agent/schedules' : host.rootPath;
+        homeRouteBeforeInternalNavigation.current = newConversationPath;
         setDrawerOpen(false);
         setActivityPreviewBindingId(undefined);
-        onNavigate(scheduleRoute ? '/agent/schedules' : host.rootPath, true);
+        onNavigate(newConversationPath, true);
       }
     }
     queryClient.setQueriesData<AgentConversationPage>({ queryKey: sessionQueryKey(host, 'conversations', workspaceId) }, page => page && ({ ...page, items: page.items.filter(item => !matches(item)) }));

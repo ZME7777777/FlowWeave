@@ -4953,7 +4953,12 @@ for (const archiveTarget of ['conversation', 'directory', 'rejected-directory', 
       await expect(page.locator('[data-conversation-binding-id^="archive-child-"]')).toHaveCount(0);
     }
     await expect(page.getByRole('button', { name: '保留根会话', exact: true })).toBeVisible();
-    await expect(page).not.toHaveURL(/\/archive-child-5$/);
+    if (archiveTarget === 'conversation') {
+      await expect(page).toHaveURL(/\/agent\?draft_work_directory_id=existing-directory$/);
+      await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeVisible();
+    } else {
+      await expect(page).not.toHaveURL(/\/archive-child-5$/);
+    }
     await page.getByRole('button', { name: /查看活动会话/ }).click();
     for (const id of removedIds) await expect(page.locator(`[data-conversation-binding-id="${id}"]`)).toHaveCount(0);
     if (archiveTarget === 'directory') await expect(page.getByText('没有正在运行或未读的会话。', { exact: true })).toBeVisible();
