@@ -4800,6 +4800,7 @@ test('conversation context menu measures all actions at each viewport corner', a
     await row.click({ button: 'right', position: corner === 'bottom-right' ? { x: 178, y: 30 } : { x: 1, y: 1 } });
     await expectInsideViewport(page, menu);
     await expect(menu.getByRole('menuitem', { name: '标记为未读', exact: true })).toBeVisible();
+    await expect(menu.getByRole('menuitem', { name: '删除', exact: true })).toHaveCSS('justify-content', 'flex-start');
     if (corner === 'bottom-right') {
       const box = (await menu.boundingBox())!; const viewport = page.viewportSize()!;
       expect(box.y + box.height).toBeLessThanOrEqual(viewport.height - 2);
