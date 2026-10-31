@@ -117,13 +117,6 @@ class AgentWorkspaceSessionConfigurationWrite(_Write):
     credential_ids: list[str] = Field(default_factory=list, max_length=100)
 
 
-class AgentGitIdentityWrite(_Write):
-    author: str = Field(min_length=1, max_length=200, pattern=r"^[^\x00-\x1f\x7f<>]+$")
-    email: str = Field(
-        min_length=3, max_length=320, pattern=r"^[^\x00-\x1f\x7f\s@<>]+@[^\x00-\x1f\x7f\s@<>]+$"
-    )
-
-
 @router.get("/agent-workspaces/{workspace_id}/settings/git")
 async def get_agent_git_identity(
     workspace_id: str, container: ContainerDep
@@ -133,17 +126,12 @@ async def get_agent_git_identity(
     )
 
 
-@router.put("/agent-workspaces/{workspace_id}/settings/git")
-async def put_agent_git_identity(
-    workspace_id: str, payload: AgentGitIdentityWrite, container: ContainerDep
+@router.post("/agent-workspaces/{workspace_id}/settings/git/synchronize")
+async def synchronize_agent_git_identity(
+    workspace_id: str, container: ContainerDep
 ) -> dict[str, str | bool]:
-    if not payload.author.strip():
-        raise DomainError("AGENT_GIT_AUTHOR_REQUIRED", "请填写 Git 作者", 422)
     return await run_blocking_mutation(
-        container,
-        lambda db: git_settings.git_identity(
-            db, workspace_id, identity=(payload.author.strip(), payload.email)
-        ),
+        container, lambda db: git_settings.synchronize_profile_identity(db, workspace_id)
     )
 
 
@@ -770,6 +758,7 @@ async def list_agent_workspace_directory(
     limit: int = Query(default=100, ge=1, le=250),
     work_directory_id: str | None = Query(default=None),
     binding_id: str | None = Query(default=None),
+    include_hidden: bool = Query(default=False),
 ) -> dict[str, Any]:
     return await run_blocking_auxiliary(
         container,
@@ -781,6 +770,7 @@ async def list_agent_workspace_directory(
             limit=limit,
             work_directory_id=work_directory_id,
             binding_id=binding_id,
+            include_hidden=include_hidden,
         ),
     )
 
@@ -813,6 +803,7 @@ async def download_agent_workspace_file(
     download: bool = Query(default=False),
     preview: bool = Query(default=False),
     offset: int = Query(default=0, ge=0),
+    include_hidden: bool = Query(default=False),
 ) -> Response:
     item = await run_blocking_auxiliary(
         container,
@@ -825,6 +816,7 @@ async def download_agent_workspace_file(
             draft_attachment_owner_id,
             preview=preview and not download,
             offset=offset,
+            include_hidden=include_hidden,
         ),
     )
     disposition = "attachment" if download else "inline"
@@ -1268,6 +1260,23 @@ async def delete_agent_conversation_schedule(
     await run_sync(
         db,
         lambda session: conversation_schedules.delete_schedule(session, workspace_id, schedule_id),
+    )
+    return Response(status_code=204)
+
+
+
+@router.delete(
+    "/agent-workspaces/{workspace_id}/conversation-schedules/{schedule_id}/occurrences/{occurrence_id}",
+    status_code=204,
+)
+async def delete_failed_agent_conversation_schedule_occurrence(
+    workspace_id: str, schedule_id: str, occurrence_id: str, db: Db
+) -> Response:
+    await run_sync(
+        db,
+        lambda session: conversation_schedules.delete_failed_occurrence(
+            session, workspace_id, schedule_id, occurrence_id
+        ),
     )
     return Response(status_code=204)
 

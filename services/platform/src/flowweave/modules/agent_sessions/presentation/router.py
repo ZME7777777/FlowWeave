@@ -570,6 +570,7 @@ async def node_session_workspace_directory(
     limit: int = Query(default=100, ge=1, le=250),
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
+    include_hidden: bool = Query(default=False),
 ) -> dict[str, Any]:
     return await run_blocking_auxiliary(
         container,
@@ -582,6 +583,7 @@ async def node_session_workspace_directory(
             parent_path=parent_path,
             cursor=cursor,
             limit=limit,
+            include_hidden=include_hidden,
         ),
     )
 
@@ -620,6 +622,7 @@ async def node_session_workspace_file(
     download: bool = Query(default=False),
     preview: bool = Query(default=False),
     offset: int = Query(default=0, ge=0),
+    include_hidden: bool = Query(default=False),
 ) -> Response:
     content, content_type, filename, total_size, next_offset = await run_blocking_auxiliary(
         container,
@@ -633,6 +636,7 @@ async def node_session_workspace_file(
             draft_attachment_owner_id=draft_attachment_owner_id,
             preview=preview and not download,
             offset=offset,
+            include_hidden=include_hidden,
         ),
     )
     disposition = "attachment" if download else "inline"

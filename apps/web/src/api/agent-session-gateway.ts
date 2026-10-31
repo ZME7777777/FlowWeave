@@ -53,6 +53,7 @@ export type AgentSessionFileOptions = {
   workDirectoryId?: AgentSessionWorkDirectoryId;
   /** UUID of an uncreated draft that owns a private attachment. */
   draftAttachmentOwnerId?: string;
+  includeHidden?: boolean;
   download?: boolean;
 };
 export type AgentSessionFilePreview = {
@@ -66,6 +67,7 @@ export type AgentSessionWorkspaceOptions = Omit<AgentSessionFileOptions, 'downlo
 export type AgentSessionDirectoryOptions = Omit<AgentSessionFileOptions, 'download'> & {
   parentPath?: string;
   cursor?: string;
+  includeHidden?: boolean;
 };
 export type AgentSessionTerminalOptions = Omit<AgentSessionFileOptions, 'download'> & {
   terminalInstanceId: string;
@@ -309,7 +311,15 @@ export function flowNodeSessionGateway(
       workspaceDetails: (_hostId, options) =>
         nodeSessionApi.workspace(flowRunId, attemptId, options?.bindingId, options?.workDirectoryId, options?.fullIndex),
       workspaceDirectory: (_hostId, options) =>
-        nodeSessionApi.workspaceDirectory(flowRunId, attemptId, options?.bindingId, options?.workDirectoryId, options?.parentPath, options?.cursor),
+        nodeSessionApi.workspaceDirectory(
+          flowRunId,
+          attemptId,
+          options?.bindingId,
+          options?.workDirectoryId,
+          options?.parentPath,
+          options?.cursor,
+          options?.includeHidden,
+        ),
       gitRepositories: (_hostId, options) =>
         nodeSessionApi.gitRepositories(flowRunId, attemptId, options?.bindingId, options?.workDirectoryId),
       syncGitRepository: async (_hostId, repositoryPath, options) => {
@@ -335,7 +345,16 @@ export function flowNodeSessionGateway(
         nodeSessionApi.createWorkDirectory(flowRunId, attemptId, displayName, selectedPaths),
       filePreview: async (_hostId, path, options, offset = 0, signal) => {
         const response = await fetch(nodeSessionApi.file(
-          flowRunId, attemptId, path, options?.bindingId, options?.workDirectoryId, options?.draftAttachmentOwnerId, false, true, offset,
+          flowRunId,
+          attemptId,
+          path,
+          options?.bindingId,
+          options?.workDirectoryId,
+          options?.draftAttachmentOwnerId,
+          false,
+          true,
+          offset,
+          options?.includeHidden,
         ), { signal });
         if (!response.ok) throw new Error('Node workspace file preview is unavailable');
         const nextOffset = response.headers.get('X-Preview-Next-Offset');
@@ -411,7 +430,18 @@ export function flowNodeSessionGateway(
     },
     browserUrl: (_hostId, target) => target,
     fileUrl: (_hostId, path, options) =>
-      nodeSessionApi.file(flowRunId, attemptId, path, options?.bindingId, options?.workDirectoryId, options?.draftAttachmentOwnerId, options?.download),
+      nodeSessionApi.file(
+        flowRunId,
+        attemptId,
+        path,
+        options?.bindingId,
+        options?.workDirectoryId,
+        options?.draftAttachmentOwnerId,
+        options?.download,
+        false,
+        0,
+        options?.includeHidden,
+      ),
     candidateOutputUrl: (_hostId, fieldKey, relativePath) =>
       nodeSessionApi.candidateOutputFile(flowRunId, attemptId, fieldKey, relativePath),
     subscribe: (_hostId, bindingId, onEvent, onStatus) =>

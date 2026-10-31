@@ -4033,25 +4033,35 @@ function WorkspaceDrawer({
     retry: (count, error) => !(error instanceof ApiError && (error.status < 500 || error.status === 503)) && count < 2,
   });
   const details = detailsQuery.data;
-  const directoryQueryKey = sessionQueryKey(host, 'workspace-directory', workspaceId, bindingId, workDirectoryId);
+  const directoryQueryKey = sessionQueryKey(host, 'workspace-directory', workspaceId, bindingId, workDirectoryId, showHiddenFiles ? 'hidden' : 'visible');
   const rootDirectoryQuery = useQuery({
     queryKey: [...directoryQueryKey, 'root'],
-    queryFn: () => api.workspaceDirectory(workspaceId, { bindingId, workDirectoryId }),
+    queryFn: () => api.workspaceDirectory(workspaceId, { bindingId, workDirectoryId, includeHidden: showHiddenFiles }),
     enabled: Boolean(open && scopeState.activeTabId === 'files'),
     retry: (count, error) => !(error instanceof ApiError && (error.status < 500 || error.status === 503)) && count < 2,
   });
   const [directoryPages, setDirectoryPages] = useState<Map<string, WorkspaceDirectoryPage>>(() => new Map());
   const loadingDirectories = useRef(new Set<string>());
+  const directoryListingEpoch = useRef(0);
   const [loadingDirectoryPaths, setLoadingDirectoryPaths] = useState<Set<string>>(() => new Set());
   const loadDirectory = useCallback(async (parentPath?: string) => {
     const key = parentPath ?? '';
-    if (loadingDirectories.current.has(key)) return;
+    const epoch = directoryListingEpoch.current;
+    const requestKey = `${epoch}:${key}`;
+    if (loadingDirectories.current.has(requestKey)) return;
     const current = directoryPages.get(key);
     if (current && !current.nextCursor) return;
-    loadingDirectories.current.add(key);
+    loadingDirectories.current.add(requestKey);
     setLoadingDirectoryPaths(paths => new Set(paths).add(key));
     try {
-      const page = await api.workspaceDirectory(workspaceId, { bindingId, workDirectoryId, parentPath, cursor: current?.nextCursor });
+      const page = await api.workspaceDirectory(workspaceId, {
+        bindingId,
+        workDirectoryId,
+        parentPath,
+        cursor: current?.nextCursor,
+        includeHidden: showHiddenFiles,
+      });
+      if (directoryListingEpoch.current !== epoch) return;
       setDirectoryPages(pages => {
         const next = new Map(pages);
         const previous = next.get(key);
@@ -4059,15 +4069,18 @@ function WorkspaceDrawer({
         return next;
       });
     } catch (reason) {
-      if (!isDeletedEntryPath(parentPath)) setPanelError(reason instanceof Error ? reason.message : '读取目录失败');
+      if (directoryListingEpoch.current === epoch && !isDeletedEntryPath(parentPath)) setPanelError(reason instanceof Error ? reason.message : '读取目录失败');
     } finally {
-      loadingDirectories.current.delete(key);
-      setLoadingDirectoryPaths(paths => { const next = new Set(paths); next.delete(key); return next; });
+      loadingDirectories.current.delete(requestKey);
+      if (directoryListingEpoch.current === epoch) {
+        setLoadingDirectoryPaths(paths => { const next = new Set(paths); next.delete(key); return next; });
+      }
     }
-  }, [api, bindingId, directoryPages, isDeletedEntryPath, workDirectoryId, workspaceId]);
+  }, [api, bindingId, directoryPages, isDeletedEntryPath, showHiddenFiles, workDirectoryId, workspaceId]);
   useEffect(() => {
     // A directory belongs to the currently authorized session scope. Never
     // reuse a selection after switching conversations or work directories.
+    directoryListingEpoch.current += 1;
     deletedEntryPaths.current.clear();
     setActiveDirectory(undefined);
     setSelectedEntryPaths(new Set());
@@ -4078,7 +4091,7 @@ function WorkspaceDrawer({
     setDirectoryPages(new Map());
     loadingDirectories.current.clear();
     setLoadingDirectoryPaths(new Set());
-  }, [bindingId, details?.working_directory, workDirectoryId]);
+  }, [bindingId, details?.working_directory, showHiddenFiles, workDirectoryId]);
   useEffect(() => {
     if (!rootDirectoryQuery.data) return;
     setDirectoryPages(pages => {
@@ -4155,8 +4168,8 @@ function WorkspaceDrawer({
   const selectedMimeType = selectedAttachment?.mime_type ?? '';
   const textPreviewable = Boolean(selectedFile && isTextPreviewable(selectedFile, selectedMimeType));
   const previewQuery = useQuery({
-    queryKey: sessionQueryKey(host, 'file-preview', workspaceId, bindingId, selectedFile),
-    queryFn: ({ signal }) => api.filePreview(workspaceId, selectedFile!, { bindingId, workDirectoryId }, undefined, signal),
+    queryKey: sessionQueryKey(host, 'file-preview', workspaceId, bindingId, selectedFile, showHiddenFiles ? 'hidden' : 'visible'),
+    queryFn: ({ signal }) => api.filePreview(workspaceId, selectedFile!, { bindingId, workDirectoryId, includeHidden: showHiddenFiles }, undefined, signal),
     enabled: Boolean(open && scopeState.activeTabId === 'files' && textPreviewable),
     retry: false,
   });
@@ -4176,7 +4189,7 @@ function WorkspaceDrawer({
       const next = await api.filePreview(
         workspaceId,
         selectedFile,
-        { bindingId, workDirectoryId },
+        { bindingId, workDirectoryId, includeHidden: showHiddenFiles },
         previewState.nextOffset,
       );
       setPreviewState(current => current?.path === selectedFile ? {
@@ -4190,7 +4203,7 @@ function WorkspaceDrawer({
     } finally {
       setPreviewMoreLoading(false);
     }
-  }, [api, bindingId, isDeletedEntryPath, previewMoreLoading, previewState, selectedFile, workDirectoryId, workspaceId]);
+  }, [api, bindingId, isDeletedEntryPath, previewMoreLoading, previewState, selectedFile, showHiddenFiles, workDirectoryId, workspaceId]);
   const lightweightPreview = Boolean(
     previewState && (previewState.totalBytes > 128 * 1024 || previewState.content.length > 128 * 1024),
   );
@@ -4762,7 +4775,7 @@ function WorkspaceDrawer({
     : null;
   const workspaceDetailsLoaded = Boolean(details);
   const selectedFileUrl = selectedFile
-    ? fileUrl(workspaceId, selectedFile, { bindingId, workDirectoryId, download: false })
+    ? fileUrl(workspaceId, selectedFile, { bindingId, workDirectoryId, includeHidden: showHiddenFiles, download: false })
     : '';
   const canPreviewImage = Boolean(selectedFile && (selectedMimeType.startsWith('image/') || /\.(?:avif|gif|jpe?g|png|svg|webp)$/i.test(selectedFile)));
   const canPreviewPdf = Boolean(selectedFile && (selectedMimeType === 'application/pdf' || /\.pdf$/i.test(selectedFile)));
@@ -4891,14 +4904,14 @@ function WorkspaceDrawer({
             <div className="agent-file-tree-pane">
               <header className="agent-file-tree-toolbar"><span>{selectedEntryPaths.size ? `已选 ${selectedEntryPaths.size} 项` : '文件'}</span><div className="agent-file-tree-actions"><input ref={workspaceUploadInput} type="file" multiple hidden onChange={event => { Array.from(event.target.files ?? []).forEach(file => startWorkspaceUpload(file)); event.currentTarget.value = ''; }}/><button type="button" title="上传文件" aria-label="上传文件" disabled={!api.uploadWorkspaceFile} onClick={() => workspaceUploadInput.current?.click()}><ArrowUp size={13}/></button><button type="button" title="新建文件" aria-label="新建文件" onClick={() => createAtActiveDirectory('FILE')}><FileCode2 size={13}/></button><button type="button" title="新建目录" aria-label="新建目录" onClick={() => createAtActiveDirectory('DIRECTORY')}><FolderPlus size={13}/></button><button type="button" className={`agent-file-tree-hidden-toggle${showHiddenFiles ? ' active' : ''}`} title={showHiddenFiles ? '隐藏以 . 开头的文件和目录' : '显示以 . 开头的文件和目录'} aria-label={showHiddenFiles ? '隐藏隐藏文件和目录' : '显示隐藏文件和目录'} aria-pressed={showHiddenFiles} onClick={() => setShowHiddenFiles(current => !current)}>{showHiddenFiles ? <EyeOff size={13}/> : <Eye size={13}/>}</button><button type="button" className={`agent-file-tree-expand-toggle${expandAllFileDirectories ? ' expanded' : ''}`} title={expandAllFileDirectories ? '全部收起' : '全部展开'} aria-label={expandAllFileDirectories ? '全部收起目录' : '全部展开目录'} disabled={!fileDirectoryPaths.length} onClick={toggleAllFileDirectories}>{expandAllFileDirectories ? <ChevronRight size={13}/> : <ChevronDown size={13}/>}</button><button type="button" className="danger" title="删除选中项" aria-label="删除选中项" disabled={!selectedEntryRoots.length} onClick={() => void removeEntries(selectedEntryRoots.map(path => ({ path, kind: visibleFiles.find(item => item.path === path)?.kind ?? 'directory' })))}><Trash2 size={13}/></button></div></header>
               {workspaceUploads.length > 0 && <div className="agent-workspace-upload-list" aria-label="工作区上传">{workspaceUploads.map(item => <article key={item.id} className={item.state}><span>{item.file.name}</span><small>{item.state === 'uploading' ? `${item.progress}%` : '上传失败'}</small>{item.state === 'uploading' ? <i style={{ '--upload-progress': `${item.progress}%` } as CSSProperties}/> : <button type="button" onClick={() => retryWorkspaceUpload(item.id)}>重试</button>}</article>)}</div>}
-              <WorkspaceFileTree entries={visibleFiles} root={details.working_directory} selectedFile={selectedFile} selectedPaths={selectedEntryPaths} expanded={expandedFilePaths} pagination={new Map([...directoryPages].map(([path, page]) => [path, page.nextCursor]))} loadingDirectories={loadingDirectoryPaths} onExpandedChange={updateExpandedFilePaths} onLoadMore={parentPath => { void loadDirectory(parentPath); }} onSelect={path => { setActiveDirectory(undefined); selectFile(path); }} onSelectionChange={setSelectedEntryPaths} onActivateDirectory={path => { setActiveDirectory(path); setGitContextPath(path); setGitSidebarRequested(Boolean(path)); }} onContextMenu={(path, kind, event) => { setEntryMenu({ path, kind, x: event.clientX, y: event.clientY }); }} fileDownloadUrl={path => fileUrl(workspaceId, path, { bindingId, workDirectoryId, download: true })}/>
+              <WorkspaceFileTree entries={visibleFiles} root={details.working_directory} selectedFile={selectedFile} selectedPaths={selectedEntryPaths} expanded={expandedFilePaths} pagination={new Map([...directoryPages].map(([path, page]) => [path, page.nextCursor]))} loadingDirectories={loadingDirectoryPaths} onExpandedChange={updateExpandedFilePaths} onLoadMore={parentPath => { void loadDirectory(parentPath); }} onSelect={path => { setActiveDirectory(undefined); selectFile(path); }} onSelectionChange={setSelectedEntryPaths} onActivateDirectory={path => { setActiveDirectory(path); setGitContextPath(path); setGitSidebarRequested(Boolean(path)); }} onContextMenu={(path, kind, event) => { setEntryMenu({ path, kind, x: event.clientX, y: event.clientY }); }} fileDownloadUrl={path => fileUrl(workspaceId, path, { bindingId, workDirectoryId, includeHidden: showHiddenFiles, download: true })}/>
             </div>
             <div className="agent-file-tree-resizer" role="separator" tabIndex={0} aria-label={fileTreeCollapsed ? '展开文件目录' : '调整文件目录宽度'} aria-orientation="vertical" title={fileTreeCollapsed ? '双击展开文件目录' : '拖动调整文件目录宽度'} onPointerDown={startFileTreeResize} onDoubleClick={expandFileTree} onKeyDown={event => { if (fileTreeCollapsed && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); expandFileTree(); } }}/>
             <div className="agent-file-preview">{candidatePreview ? <>
               <header><span title={candidatePreview.filename}>{candidatePreview.filename} · 候选输出</span></header>
               <iframe className="agent-file-media-preview" sandbox="" title={`${candidatePreview.filename} 候选文件预览`} src={candidatePreview.url}/>
             </> : selectedFile ? <>
-              <header><span title={selectedFile}>{selectedAttachment?.filename || relativeWorkspacePath(selectedFile, details.root)}</span><a href={fileUrl(workspaceId, selectedFile, { bindingId, workDirectoryId, download: true })}><Download size={13}/>下载</a></header>
+              <header><span title={selectedFile}>{selectedAttachment?.filename || relativeWorkspacePath(selectedFile, details.root)}</span><a href={fileUrl(workspaceId, selectedFile, { bindingId, workDirectoryId, includeHidden: showHiddenFiles, download: true })}><Download size={13}/>下载</a></header>
               {canPreviewImage ? <img className="agent-file-media-preview" src={selectedAttachment?.image_data_url || selectedFileUrl} alt={selectedAttachment?.filename || '附件预览'}/> : canPreviewPdf ? <iframe className="agent-file-media-preview" title={selectedAttachment?.filename || 'PDF 预览'} src={selectedFileUrl}/> : textPreviewable ? previewQuery.isLoading ? <p>正在读取文件…</p> : previewQuery.isError ? <p>文件预览不可用，请下载后查看。</p> : previewState ? <div className="agent-file-preview-paged"><WorkspaceTextPreview path={selectedFile} content={previewState.content} lightweight={lightweightPreview} highlight={lightweightPreview ? undefined : highlightedFileSelection?.path === selectedFile ? highlightedFileSelection.selection : undefined} highlightLine={lightweightPreview ? undefined : sourceFileNavigation?.path === selectedFile ? sourceFileNavigation.line : undefined} onAnnotate={!lightweightPreview && onAnnotateFileSelection ? (selection, quote) => onAnnotateFileSelection(selectedFile, selection, quote) : undefined} onOpenWorkspaceFile={openMarkdownPreviewLink}/>{previewState.nextOffset !== undefined && <footer><span>已加载 {formatFileSize(previewState.nextOffset)} / {formatFileSize(previewState.totalBytes)}</span><button type="button" onClick={() => void loadMorePreview()} disabled={previewMoreLoading}>{previewMoreLoading ? '正在加载…' : '加载更多'}</button></footer>}</div> : null : <p>此文件不提供浏览器预览，请下载后查看。</p>}
             </> : <p>选择一个文件以预览或下载。</p>}</div>
           </section>}

@@ -155,6 +155,7 @@ def _host_path(
     *,
     require_file: bool,
     allow_automation_workspace: bool = False,
+    allow_hidden: bool = False,
 ) -> Path:
     parsed = PurePosixPath(runtime_path)
     root = PurePosixPath(runtime_root)
@@ -166,13 +167,17 @@ def _host_path(
         raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "文件路径不在工作区范围内", 422)
     relative = parsed.relative_to(root)
     hidden_parts = tuple(part for part in relative.parts if part.startswith(".") and part != ".tmp")
+    if any(part in {".git", ".openhands"} for part in relative.parts):
+        raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "文件路径不在工作区范围内", 422)
     automation_workspace = (
         allow_automation_workspace
         and hidden_parts == (".flowweave",)
         and relative.parts[:2] == (".flowweave", "automations")
         and len(relative.parts) >= 3
     )
-    if hidden_parts and not automation_workspace:
+    if ".flowweave" in relative.parts and not automation_workspace:
+        raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "文件路径不在工作区范围内", 422)
+    if hidden_parts and not (allow_hidden or automation_workspace):
         raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "文件路径不在工作区范围内", 422)
     candidate = project_root.joinpath(*relative.parts)
     try:
@@ -264,7 +269,12 @@ def _directory_cursor(kind: str, name: str) -> str:
 
 
 def _authorized_directory(
-    project_root: Path, runtime_root: str, file_roots: tuple[str, ...], parent_path: str
+    project_root: Path,
+    runtime_root: str,
+    file_roots: tuple[str, ...],
+    parent_path: str,
+    *,
+    include_hidden: bool = False,
 ) -> Path:
     if not any(
         parent_path == root or parent_path.startswith(root.rstrip("/") + "/") for root in file_roots
@@ -283,6 +293,7 @@ def _authorized_directory(
             parent_path,
             require_file=False,
             allow_automation_workspace=automation_workspace,
+            allow_hidden=include_hidden,
         )
     )
     try:
@@ -323,6 +334,7 @@ def list_directory(
     limit: int = 100,
     work_directory_id: str | None = None,
     binding_id: str | None = None,
+    include_hidden: bool = False,
 ) -> dict[str, Any]:
     """List one authorized directory without recursively indexing the project tree."""
 
@@ -334,7 +346,13 @@ def list_directory(
     project_root = _project_root(db, workspace_id)
     runtime_root = _runtime_root(workspace_id)
     selected_parent = parent_path or working_directory
-    host_parent = _authorized_directory(project_root, runtime_root, file_roots, selected_parent)
+    host_parent = _authorized_directory(
+        project_root,
+        runtime_root,
+        file_roots,
+        selected_parent,
+        include_hidden=include_hidden,
+    )
     after = _decode_directory_cursor(cursor)
     started_at = time.monotonic()
     outcome = "error"
@@ -347,7 +365,9 @@ def list_directory(
                 "AGENT_WORKSPACE_STORAGE_UNAVAILABLE", "工作区目录当前不可用", 503
             ) from exc
         for child in children:
-            if child.name.startswith("."):
+            if child.name in {".flowweave", ".git", ".openhands"} or (
+                child.name.startswith(".") and not include_hidden
+            ):
                 continue
             try:
                 metadata = child.lstat()
@@ -1540,6 +1560,7 @@ def download(
     *,
     preview: bool = False,
     offset: int = 0,
+    include_hidden: bool = False,
 ) -> Any:
     _workspace(db, workspace_id)
     runtime_root = _runtime_root(workspace_id)
@@ -1572,6 +1593,7 @@ def download(
         path,
         require_file=True,
         allow_automation_workspace=automation_workspace,
+        allow_hidden=include_hidden,
     )
     try:
         size = host_path.stat().st_size

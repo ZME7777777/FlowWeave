@@ -51,6 +51,11 @@ def test_directory_listing_reads_only_direct_children_and_pages(
     (project / "alpha").mkdir(parents=True)
     (project / "alpha" / "nested.txt").write_text("not a root entry")
     (project / "beta").mkdir()
+    (project / ".hidden").mkdir()
+    (project / ".hidden" / "nested.txt").write_text("hidden child")
+    (project / ".env").write_text("hidden entry")
+    (project / ".git").mkdir()
+    (project / ".flowweave").mkdir()
     (project / "zeta.txt").write_text("root entry")
     runtime_root = "/runtime/workspace/project"
 
@@ -85,6 +90,26 @@ def test_directory_listing_reads_only_direct_children_and_pages(
     second = list_directory(None, "workspace", cursor=first["next_cursor"], limit=2)
     assert [entry["path"] for entry in second["entries"]] == [f"{runtime_root}/zeta.txt"]
     assert second["next_cursor"] is None
+
+    hidden = list_directory(None, "workspace", include_hidden=True)
+    assert [entry["path"] for entry in hidden["entries"]] == [
+        f"{runtime_root}/.hidden",
+        f"{runtime_root}/alpha",
+        f"{runtime_root}/beta",
+        f"{runtime_root}/.env",
+        f"{runtime_root}/zeta.txt",
+    ]
+    hidden_child = list_directory(
+        None,
+        "workspace",
+        parent_path=f"{runtime_root}/.hidden",
+        include_hidden=True,
+    )
+    assert [entry["path"] for entry in hidden_child["entries"]] == [
+        f"{runtime_root}/.hidden/nested.txt"
+    ]
+    assert f"{runtime_root}/.git" not in [entry["path"] for entry in hidden["entries"]]
+    assert f"{runtime_root}/.flowweave" not in [entry["path"] for entry in hidden["entries"]]
 
 
 def test_workspace_details_skips_full_tree_and_git_without_explicit_index(

@@ -360,7 +360,7 @@ export const api = {
     request<AgentWorkspaceMcpReadiness>(`/agent-workspaces/${encodeURIComponent(id)}/capabilities/${encodeURIComponent(capabilityVersionId)}/mcp-readiness`, { ...json('POST', read_only_tool_call ? { read_only_tool_call } : undefined), signal, timeoutMs: 25_000 }),
   agentWorkspaceRuntime: (id: string) => request<AgentWorkspaceRuntime>(`/agent-workspaces/${encodeURIComponent(id)}/runtime`),
   agentGitIdentity: (id: string) => request<AgentGitIdentity>(`/agent-workspaces/${encodeURIComponent(id)}/settings/git`),
-  saveAgentGitIdentity: (id: string, identity: { author: string; email: string }) => request<AgentGitIdentity>(`/agent-workspaces/${encodeURIComponent(id)}/settings/git`, { method: 'PUT', body: JSON.stringify(identity) }),
+  synchronizeAgentGitIdentity: (id: string) => request<AgentGitIdentity>(`/agent-workspaces/${encodeURIComponent(id)}/settings/git/synchronize`, json('POST')),
   agentWorkDirectories: (id: string, includeArchived = false) =>
     request<AgentWorkDirectoryList>(`/agent-workspaces/${encodeURIComponent(id)}/work-directories${includeArchived ? '?include_archived=true' : ''}`),
   createAgentWorkDirectory: (id: string, display_name: string, selected_paths: string[]) =>
@@ -380,12 +380,13 @@ export const api = {
     if (options.fullIndex) query.set('full_index', 'true');
     return request<AgentWorkspaceDetails>(`/agent-workspaces/${encodeURIComponent(id)}/workspace${query.size ? `?${query}` : ''}`);
   },
-  agentWorkspaceDirectory: (id: string, options: { bindingId?: string; workDirectoryId?: string; parentPath?: string; cursor?: string } = {}) => {
+  agentWorkspaceDirectory: (id: string, options: { bindingId?: string; workDirectoryId?: string; parentPath?: string; cursor?: string; includeHidden?: boolean } = {}) => {
     const query = new URLSearchParams();
     if (options.bindingId) query.set('binding_id', options.bindingId);
     if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
     if (options.parentPath) query.set('parent_path', options.parentPath);
     if (options.cursor) query.set('cursor', options.cursor);
+    if (options.includeHidden) query.set('include_hidden', 'true');
     return request<import('../types').AgentSessionWorkspaceDirectory>(`/agent-workspaces/${encodeURIComponent(id)}/workspace/directory${query.size ? `?${query}` : ''}`);
   },
   agentWorkspaceGitRepositories: (id: string, options: { bindingId?: string; workDirectoryId?: string } = {}) => {
@@ -430,11 +431,12 @@ export const api = {
     if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
     return request<import('../types').WorkspaceGitFileDiff>(`/agent-workspaces/${encodeURIComponent(id)}/workspace/git/diff?${query}`);
   },
-  agentWorkspaceFilePreview: async (id: string, path: string, options: { bindingId?: string; workDirectoryId?: string; draftAttachmentOwnerId?: string } = {}, offset = 0, signal?: AbortSignal) => {
+  agentWorkspaceFilePreview: async (id: string, path: string, options: { bindingId?: string; workDirectoryId?: string; draftAttachmentOwnerId?: string; includeHidden?: boolean } = {}, offset = 0, signal?: AbortSignal) => {
     const query = new URLSearchParams({ path });
     if (options.bindingId) query.set('binding_id', options.bindingId);
     if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
     if (options.draftAttachmentOwnerId) query.set('draft_attachment_owner_id', options.draftAttachmentOwnerId);
+    if (options.includeHidden) query.set('include_hidden', 'true');
     query.set('preview', 'true');
     query.set('offset', String(offset));
     let response: Response;
@@ -506,6 +508,8 @@ export const api = {
     request<AgentConversationSchedule>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-schedules/${encodeURIComponent(scheduleId)}/trigger`, json('POST')),
   deleteAgentConversationSchedule: (workspaceId: string, scheduleId: string) =>
     request<void>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-schedules/${encodeURIComponent(scheduleId)}`, json('DELETE')),
+  deleteFailedAgentConversationScheduleOccurrence: (workspaceId: string, scheduleId: string, occurrenceId: string) =>
+    request<void>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-schedules/${encodeURIComponent(scheduleId)}/occurrences/${encodeURIComponent(occurrenceId)}`, json('DELETE')),
   agentConversationScheduleOccurrences: (workspaceId: string, scheduleId: string) =>
     request<AgentConversationScheduleOccurrence[]>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-schedules/${encodeURIComponent(scheduleId)}/occurrences`),
   agentScheduleRunConversations: (workspaceId: string, scheduleId: string, cursor: string | null, signal?: AbortSignal) => {
@@ -1080,12 +1084,13 @@ export function agentWorkspaceTerminalUrl(workspaceId: string, rows = 24, column
   return url.toString();
 }
 
-export function agentWorkspaceFileUrl(workspaceId: string, path: string, options: { bindingId?: string; workDirectoryId?: string; draftAttachmentOwnerId?: string; download?: boolean } = {}): string {
+export function agentWorkspaceFileUrl(workspaceId: string, path: string, options: { bindingId?: string; workDirectoryId?: string; draftAttachmentOwnerId?: string; includeHidden?: boolean; download?: boolean } = {}): string {
   const url = absoluteApiUrl(`/agent-workspaces/${encodeURIComponent(workspaceId)}/workspace/file`);
   url.searchParams.set('path', path);
   if (options.bindingId) url.searchParams.set('binding_id', options.bindingId);
   if (options.workDirectoryId) url.searchParams.set('work_directory_id', options.workDirectoryId);
   if (options.draftAttachmentOwnerId) url.searchParams.set('draft_attachment_owner_id', options.draftAttachmentOwnerId);
+  if (options.includeHidden) url.searchParams.set('include_hidden', 'true');
   if (options.download ?? true) url.searchParams.set('download', 'true');
   return url.toString();
 }
@@ -1274,12 +1279,13 @@ export const nodeSessionApi = {
     if (fullIndex) query.set('full_index', 'true');
     return request<import('../types').AgentSessionWorkspaceDetails>(`${nodeSessionBase(flowRunId, attemptId)}/workspace${query.size ? `?${query}` : ''}`);
   },
-  workspaceDirectory: (flowRunId: string, attemptId: string, bindingId?: string, workDirectoryId?: string, parentPath?: string, cursor?: string) => {
+  workspaceDirectory: (flowRunId: string, attemptId: string, bindingId?: string, workDirectoryId?: string, parentPath?: string, cursor?: string, includeHidden = false) => {
     const query = new URLSearchParams();
     if (bindingId) query.set('binding_id', bindingId);
     if (workDirectoryId) query.set('work_directory_id', workDirectoryId);
     if (parentPath) query.set('parent_path', parentPath);
     if (cursor) query.set('cursor', cursor);
+    if (includeHidden) query.set('include_hidden', 'true');
     return request<import('../types').AgentSessionWorkspaceDirectory>(`${nodeSessionBase(flowRunId, attemptId)}/workspace/directory${query.size ? `?${query}` : ''}`);
   },
   gitRepositories: (flowRunId: string, attemptId: string, bindingId?: string, workDirectoryId?: string) => {
@@ -1336,11 +1342,12 @@ export const nodeSessionApi = {
     if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
     return request<void>(`${nodeSessionBase(flowRunId, attemptId)}/workspace/entries${query.size ? `?${query}` : ''}`, json('POST', { parent_path, name, kind }));
   },
-  file: (flowRunId: string, attemptId: string, path: string, bindingId?: string, workDirectoryId?: string, draftAttachmentOwnerId?: string, download = false, preview = false, offset = 0) => {
+  file: (flowRunId: string, attemptId: string, path: string, bindingId?: string, workDirectoryId?: string, draftAttachmentOwnerId?: string, download = false, preview = false, offset = 0, includeHidden = false) => {
     const query = new URLSearchParams({ path });
     if (bindingId) query.set('binding_id', bindingId);
     if (workDirectoryId) query.set('work_directory_id', workDirectoryId);
     if (draftAttachmentOwnerId) query.set('draft_attachment_owner_id', draftAttachmentOwnerId);
+    if (includeHidden) query.set('include_hidden', 'true');
     if (download) query.set('download', 'true');
     if (preview) {
       query.set('preview', 'true');

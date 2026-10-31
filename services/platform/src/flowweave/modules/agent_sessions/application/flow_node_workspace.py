@@ -307,14 +307,23 @@ def _directory_cursor(kind: str, name: str) -> str:
 
 
 def _authorized_directory(
-    project_root: Path, runtime_root: PurePosixPath, roots: tuple[str, ...], parent_path: str
+    project_root: Path,
+    runtime_root: PurePosixPath,
+    roots: tuple[str, ...],
+    parent_path: str,
+    *,
+    include_hidden: bool = False,
 ) -> Path:
     parsed = PurePosixPath(parent_path)
     if (
         not parsed.is_absolute()
         or not parsed.is_relative_to(runtime_root)
         or parsed.as_posix() != parent_path
-        or any(part in {"", ".", ".."} or part.startswith(".") for part in parsed.parts)
+        or any(
+            part in {"", ".", "..", ".flowweave", ".git", ".openhands"}
+            or (part.startswith(".") and not include_hidden)
+            for part in parsed.parts
+        )
         or not any(
             parent_path == root or parent_path.startswith(root.rstrip("/") + "/") for root in roots
         )
@@ -347,6 +356,7 @@ def list_directory(
     parent_path: str | None = None,
     cursor: str | None = None,
     limit: int = 100,
+    include_hidden: bool = False,
 ) -> dict[str, Any]:
     """Read only one scope-authorized FlowRun directory page."""
 
@@ -363,7 +373,13 @@ def list_directory(
     )
     _validate_scope_roots(project_root, runtime_root, roots)
     selected_parent = parent_path or working_directory
-    parent = _authorized_directory(project_root, runtime_root, roots, selected_parent)
+    parent = _authorized_directory(
+        project_root,
+        runtime_root,
+        roots,
+        selected_parent,
+        include_hidden=include_hidden,
+    )
     after = _decode_directory_cursor(cursor)
     started_at = time.monotonic()
     outcome = "error"
@@ -376,7 +392,9 @@ def list_directory(
                 "FLOW_RUN_WORKSPACE_UNAVAILABLE", "FlowRun 工作区当前不可用", 503
             ) from exc
         for child in children:
-            if child.name.startswith("."):
+            if child.name in {".flowweave", ".git", ".openhands"} or (
+                child.name.startswith(".") and not include_hidden
+            ):
                 continue
             try:
                 metadata = child.lstat()
@@ -429,14 +447,23 @@ def list_directory(
 
 
 def _host_file(
-    project_root: Path, runtime_root: PurePosixPath, path: str, roots: tuple[str, ...]
+    project_root: Path,
+    runtime_root: PurePosixPath,
+    path: str,
+    roots: tuple[str, ...],
+    *,
+    include_hidden: bool = False,
 ) -> Path:
     parsed = PurePosixPath(path)
     if (
         not parsed.is_absolute()
         or not parsed.is_relative_to(runtime_root)
         or parsed.as_posix() != path
-        or any(part in {"", ".", ".."} or part.startswith(".") for part in parsed.parts)
+        or any(
+            part in {"", ".", "..", ".flowweave", ".git", ".openhands"}
+            or (part.startswith(".") and not include_hidden)
+            for part in parsed.parts
+        )
         or not any(path == root or path.startswith(root.rstrip("/") + "/") for root in roots)
     ):
         raise DomainError("FLOW_RUN_WORKSPACE_PATH_INVALID", "文件路径不在当前工作区范围内", 422)
@@ -778,6 +805,7 @@ def read_file(
     draft_attachment_owner_id: str | None = None,
     preview: bool = False,
     offset: int = 0,
+    include_hidden: bool = False,
 ) -> tuple[bytes, str, str, int | None, int | None]:
     project_root, runtime_root, _, _ = _authorize_entry(
         db, flow_run_id=flow_run_id, attempt_id=attempt_id
@@ -807,6 +835,7 @@ def read_file(
         runtime_root,
         path,
         (str(runtime_root / "uploads"),) if is_draft_attachment else roots,
+        include_hidden=include_hidden,
     )
     try:
         size = candidate.stat().st_size
