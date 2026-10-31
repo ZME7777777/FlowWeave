@@ -228,6 +228,70 @@ test('completed record keeps configuration and 36 capabilities in secondary dial
   await expect(panel).toContainText('未发现需要审阅的历史重复候选');
 });
 
+test('stepwise records add runtime ports with the API payload and dismiss the dialog naturally', async ({ page }) => {
+  const manual = {
+    ...run, id: 'manual-1', name: '运行端口记录', parent_flow_run_id: run.id, start_node_key: 'first',
+    node_runs: [], artifacts: [], progress: { accepted: 0, terminal: 0, active: 0 },
+  };
+  await mocks(page, manual, 'MANUAL');
+  let updated = structuredClone(manual);
+  const portWrites: unknown[] = [];
+  const endpoint = '/api/v1/flow-runs/manual-1/stepwise-runtime-ports';
+  await page.route('**/api/v1/flow-runs/manual-1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const respond = (body: unknown) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
+    if (path === endpoint && request.method() === 'PUT') {
+      const body = request.postDataJSON();
+      portWrites.push(body);
+      const port = body.node_ports.first.inputs.at(-1);
+      updated = {
+        ...updated,
+        active_snapshot_version: 2,
+        active_snapshot_id: 'snapshot-2',
+        snapshots: [...updated.snapshots, {
+          ...snapshot,
+          id: 'snapshot-2',
+          version: 2,
+          definition: {
+            ...definition,
+            nodes: definition.nodes.map(node => node.instance_key === 'first'
+              ? { ...node, runtime_port_overrides: { inputs: [{ ...port, required: false, runtime_port: true }], outputs: [] } }
+              : node),
+          },
+        }],
+      };
+      return respond(updated);
+    }
+    if (path.endsWith('/stepwise-runs/manual-1') && request.method() === 'GET') return respond(updated);
+    return route.fallback();
+  });
+
+  await openRecord(page, 'MANUAL');
+  await page.getByRole('button', { name: '新增输入', exact: true }).first().click();
+  const dialog = page.getByRole('dialog', { name: '新增本次运行输入', exact: true });
+  await dialog.getByRole('textbox').first().fill('临时资料');
+  await dialog.getByLabel('运行端口数据类型').click();
+  await page.getByRole('option', { name: 'FILE', exact: true }).click();
+  await dialog.getByRole('button', { name: '保存端口', exact: true }).click();
+  await expect.poll(() => portWrites.length).toBe(1);
+  expect(portWrites[0]).toEqual({
+    expected_active_snapshot_version: 1,
+    node_ports: { first: { inputs: [{ field_key: 'runtime_input_1', display_name: '临时资料', data_type: 'FILE', description: '' }], outputs: [] } },
+    port_mappings: [],
+  });
+  await expect(dialog).toHaveCount(0);
+
+  await page.getByRole('button', { name: '新增输入', exact: true }).first().click();
+  await expect(dialog).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await page.getByRole('button', { name: '新增输入', exact: true }).first().click();
+  await page.locator('.modal-backdrop').click({ position: { x: 5, y: 5 } });
+  await expect(dialog).toHaveCount(0);
+});
+
+
 for (const mode of ['AUTOMATIC', 'MANUAL'] as const) {
   test(`${mode} draft shows inputs Agent and gate configuration together and preserves save semantics`, async ({ page }) => {
     const plan = { ...frozenAutomaticBase.automation_plan.node_plans.first, agent_preset: configuredPreset, gates: [gate] };

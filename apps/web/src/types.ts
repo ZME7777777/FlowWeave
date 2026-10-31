@@ -429,9 +429,12 @@ export interface StepwiseRuntimePortMapping {
   source_instance_key: string; source_output_key: string;
   target_instance_key: string; target_input_key: string;
 }
+export interface StepwiseRuntimePortFieldWrite {
+  field_key: string; display_name: string; data_type: ArtifactDataType; description: string;
+}
 export interface StepwiseRuntimePortsWrite {
   expected_active_snapshot_version: number;
-  node_ports: Record<string, { inputs: IOField[]; outputs: IOField[] }>;
+  node_ports: Record<string, { inputs: StepwiseRuntimePortFieldWrite[]; outputs: StepwiseRuntimePortFieldWrite[] }>;
   port_mappings: StepwiseRuntimePortMapping[];
 }
 export interface StepwiseNodeDraft {

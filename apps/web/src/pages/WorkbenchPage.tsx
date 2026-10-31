@@ -495,13 +495,14 @@ function RuntimePortDialog({ node, direction, onClose, onSave }: { node: Snapsho
   const [dataType, setDataType] = useState<IOField['data_type']>('URL');
   const [description, setDescription] = useState('');
   const name = displayName.trim();
+  useEscapeClose(onClose);
   const save = () => {
     let suffix = fields.filter(field => field.runtime_port).length + 1;
     let fieldKey = `${prefix}_${suffix}`;
     while (fields.some(field => field.field_key === fieldKey)) fieldKey = `${prefix}_${++suffix}`;
     onSave({ field_key: fieldKey, display_name: name, data_type: dataType, description: description.trim(), required: false, runtime_port: true, ...(direction === 'OUTPUT' ? { output_scope: 'FLOW' } : {}) });
   };
-  return <div className="modal-backdrop"><section className="modal runtime-port-dialog" role="dialog" aria-modal="true" aria-label="新增运行端口"><header><div><span className="eyebrow">RUN PORT</span><h2>新增本次运行{direction === 'INPUT' ? '输入' : '输出'}</h2><p>{direction === 'INPUT' ? '未连线的新增输入为可选项，可留空后启动节点。' : '输出可按需连接到其他未启动节点的本次运行输入。'}</p></div><button type="button" className="ghost" onClick={onClose}><X size={17}/></button></header><label>名称<input autoFocus value={displayName} onChange={event => setDisplayName(event.target.value)}/></label><label>数据类型<select value={dataType} onChange={event => setDataType(event.target.value as IOField['data_type'])}><option value="URL">URL</option><option value="FILE">FILE</option></select></label><label>说明<textarea value={description} onChange={event => setDescription(event.target.value)}/></label><footer><button type="button" className="ghost" onClick={onClose}>取消</button><button type="button" className="primary" disabled={!name} onClick={save}>保存端口</button></footer></section></div>;
+  return <div className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><section className="modal runtime-port-dialog" role="dialog" aria-modal="true" aria-labelledby="runtime-port-dialog-title"><header><div><span className="eyebrow">RUN PORT</span><h2 id="runtime-port-dialog-title">新增本次运行{direction === 'INPUT' ? '输入' : '输出'}</h2><p>{direction === 'INPUT' ? '未连线的新增输入为可选项，可留空后启动节点。' : '输出可按需连接到其他未启动节点的本次运行输入。'}</p></div><button type="button" className="ghost" aria-label="关闭新增运行端口" onClick={onClose}><X size={17}/></button></header><label>名称<input autoFocus value={displayName} onChange={event => setDisplayName(event.target.value)}/></label><label>数据类型<LaunchOptionMenu label="运行端口数据类型" value={dataType} options={[{ value: 'URL', label: 'URL' }, { value: 'FILE', label: 'FILE' }]} onChange={value => setDataType(value as IOField['data_type'])}/></label><label>说明<textarea value={description} onChange={event => setDescription(event.target.value)}/></label><footer><button type="button" className="ghost" onClick={onClose}>取消</button><button type="button" className="primary" disabled={!name} onClick={save}>保存端口</button></footer></section></div>;
 }
 
 type GateHistoryGroup = {
@@ -1938,9 +1939,13 @@ export function WorkbenchPage({ location }: { location?: FlowRunLocation }) {
     mappings: StepwiseRuntimePortMapping[],
   ) => {
     if (!selectedStepwiseRecord || !snapshot) return;
+    const serializePort = ({ field_key, display_name, data_type, description }: IOField) => ({ field_key, display_name, data_type, description });
     const updated = await api.saveStepwiseRuntimePorts(selectedStepwiseRecord.id, {
       expected_active_snapshot_version: snapshot.version,
-      node_ports: nodePorts,
+      node_ports: Object.fromEntries(Object.entries(nodePorts).map(([nodeKey, ports]) => [nodeKey, {
+        inputs: ports.inputs.map(serializePort),
+        outputs: ports.outputs.map(serializePort),
+      }])),
       port_mappings: mappings,
     });
     updateCurrentRun(() => updated);
