@@ -1594,18 +1594,12 @@ const ActivityGroup = memo(function ActivityGroup({ items, active, revealEventId
     const item = entry.action ?? entry.item;
     return String(item.event.payload.event_name ?? '') === 'TaskAction' && entry.results.length === 0;
   });
-  // A delayed readiness response can briefly make an active turn appear idle.
-  // Preserve the visible details through that recovery; only a formal
-  // reply/error together with a native terminal state may auto-collapse.
-  const [uncontrolledOpen, setUncontrolledOpen] = useState(active);
-  const hasBeenActive = useRef(active);
+  // A turn can contain several segments after a formal interruption. Keep
+  // every segment visible until its formal terminal reply closes the turn.
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(active || !completionConfirmed);
   useLayoutEffect(() => {
-    if (active) {
-      hasBeenActive.current = true;
-      return;
-    }
-    if (hasBeenActive.current && completionConfirmed) setUncontrolledOpen(false);
-  }, [active, completionConfirmed]);
+    if (completionConfirmed) setUncontrolledOpen(false);
+  }, [completionConfirmed]);
   const open = controlledOpen ?? uncontrolledOpen;
   const setOpen = useCallback((next: boolean) => {
     if (controlledOpen === undefined) setUncontrolledOpen(next);
@@ -2851,9 +2845,12 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
           isCurrent && segmentIndex === processSegments.length - 1 && !turn.assistant && !failures.length,
           finishedAt,
         ).map(block => ({ ...block, id: `activity-${segmentIndex}` })));
-        // A formal reply, terminal error, or later user message closes this
-        // process even if Runtime readiness is still reconciling globally.
-        const completionConfirmed = Boolean(turn.assistant || parentFailed || supersededAt !== undefined);
+        // A continuation can add another user event before the Runtime emits
+        // the one formal reply for the whole conversation. Do not fold an
+        // earlier process merely because it was superseded; close every
+        // pending process together when that later formal reply arrives.
+        const laterTurnHasFormalReply = turns.slice(index + 1).some(candidate => Boolean(candidate.assistant));
+        const completionConfirmed = Boolean(turn.assistant || parentFailed || laterTurnHasFormalReply);
         const fileChanges = fileChangesForTurn(events, turn);
         const userMessages = turn.user ? [turn.user] : [];
         const completedProcessKey = `${conversationScope ?? 'conversation'}:${turn.renderKey}`;

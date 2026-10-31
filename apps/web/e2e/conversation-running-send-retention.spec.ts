@@ -117,8 +117,72 @@ for (const timing of ['stream-ahead', 'ack-ahead', 'overlapping-ack', 'reversed-
     await expect(page.locator('[data-conversation-turn="follow-up-user"]').getByText('处理补充要求', { exact: true })).toBeVisible();
     if (timing === 'reversed-ack') releaseFirst?.();
     await expect(activeTurn.locator('summary').first()).toContainText('6 项');
+    await expect(activeTurn.locator('details.conversation-activity-group')).toHaveAttribute('open', '');
     if (timing === 'stream-ahead' || externallyRunning) await expect(activeTurn.locator('[data-retention-marker="original"]')).toHaveCount(1);
     await expect(page.locator('.conversation-message.user')).toHaveCount(3);
     expect(postCount).toBe(externallyRunning ? 1 : 2);
+
+    const finalReply = { id: 'follow-up-final-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: followUpThought.id, content: '连续过程已正式完成。', timestamp: new Date().toISOString() } };
+    socket!.send(JSON.stringify({ type: 'event', event: finalReply }));
+    await expect(page.getByText(finalReply.payload.content, { exact: true })).toBeVisible();
+    await expect(page.locator('details.conversation-process-summary')).toHaveCount(2);
+    await expect(page.locator('details.conversation-process-summary[open]')).toHaveCount(0);
   });
 }
+
+
+test('Paused process segments stay expanded until their formal reply arrives', async ({ page }) => {
+  const timestamp = '2026-10-22T11:00:00Z';
+  const user = { id: 'pause-process-user', username: 'pause-process-user', role: 'USER', is_super_admin: false };
+  const workspace = { id: 'pause-process-workspace', display_name: '暂停过程回归', desired_state: 'RUNNING', updated_at: timestamp };
+  const conversation = { id: 'pause-process-conversation', display_title: '暂停过程回归', title_state: 'MANUAL', lifecycle: 'ACTIVE', streaming_callback_ready: true, write_available: true, created_at: timestamp, updated_at: timestamp };
+  const userEvent = { id: 'pause-process-user-event', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '暂停后继续完成任务', timestamp } };
+  const initialThought = { id: 'pause-process-initial-thought', event_type: 'THOUGHT', payload: { source: 'agent', parent_id: userEvent.id, content: '暂停前已完成第一步', thought: '暂停前已完成第一步', timestamp: '2026-10-22T11:00:01Z' } };
+  const interruption = { id: 'pause-process-interruption', event_type: 'ERROR', payload: { source_type: 'AgentErrorEvent', parent_id: initialThought.id, content: 'Tool call interrupted before completion. The conversation was paused.', timestamp: '2026-10-22T11:00:02Z' } };
+  const resumedThought = { id: 'pause-process-resumed-thought', event_type: 'THOUGHT', payload: { source: 'agent', parent_id: interruption.id, content: '继续执行第二步', thought: '继续执行第二步', timestamp: '2026-10-22T11:00:03Z' } };
+  const finalReply = { id: 'pause-process-final-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: resumedThought.id, content: '暂停后的任务已完成。', timestamp: '2026-10-22T11:00:04Z' } };
+  let authenticated = false;
+  let socket: WebSocketRoute | undefined;
+  const events = { events: [userEvent], next_cursor: userEvent.id, history_cursor: null, result: { status: 'RUNNING' } };
+  const context = { model_name: 'test-model', window_tokens: 128_000, used_tokens: 100, usage_current: true };
+  await page.routeWebSocket('**/agent-workspaces/**/stream', route => { socket = route; });
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const json = (body: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
+    if (path.endsWith('/auth/me')) return authenticated ? json(user) : json({ error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login')) { authenticated = true; return json(user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(workspace);
+    if (path.endsWith('/runtime')) return json({ state: 'ACTIVE', write_available: true, updated_at: timestamp });
+    if (path.endsWith('/conversations')) return json({ items: [conversation], next_cursor: null });
+    if (path.endsWith('/conversation-activity')) return json({ running_binding_ids: [conversation.id], items: [] });
+    if (path.endsWith('/hydration') || path.endsWith('/events')) return json({ events, context, readiness: { ready: false, execution_status: 'running' } });
+    if (path.endsWith('/input-readiness')) return json({ ready: false, execution_status: 'running' });
+    if (path.endsWith('/pending-confirmation')) return json({ pending: false });
+    if (path.endsWith('/context')) return json(context);
+    if (path.endsWith('/work-directories')) return json({ root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
+    if (path.endsWith('/workspace')) return json({ root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [], runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } } });
+    if (path.endsWith('/model-providers')) return json([{ id: 'pause-process-provider', name: '测试模型', connection_state: 'CONNECTED', models: [{ model_name: 'test-model', enabled: true, is_default: true }] }]);
+    if (path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json([]);
+    if (path.includes('/conversations/') && request.method() === 'GET') return json(conversation);
+    return json({ error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+
+  await page.goto('/');
+  await page.getByLabel('账号').fill(user.username);
+  await page.getByLabel('密码').fill('test-password');
+  await page.getByRole('button', { name: '进入工作空间' }).click();
+  await page.goto(`/agent/conversations/${conversation.id}`);
+  await expect.poll(() => Boolean(socket)).toBe(true);
+  for (const event of [initialThought, interruption, resumedThought]) socket!.send(JSON.stringify({ type: 'event', event }));
+  const turn = page.locator(`[data-conversation-turn="${userEvent.id}"]`);
+  await expect(turn.getByText(initialThought.payload.content, { exact: true })).toBeVisible();
+  await expect(turn.getByText(resumedThought.payload.content, { exact: true })).toBeVisible();
+  await expect(turn.locator('details.conversation-activity-group')).toHaveCount(2);
+  await expect(turn.locator('details.conversation-activity-group[open]')).toHaveCount(2);
+
+  socket!.send(JSON.stringify({ type: 'event', event: finalReply }));
+  await expect(turn.getByText(finalReply.payload.content, { exact: true })).toBeVisible();
+  await expect(turn.locator('details.conversation-process-summary')).toHaveCount(2);
+  await expect(turn.locator('details.conversation-process-summary[open]')).toHaveCount(0);
+});
