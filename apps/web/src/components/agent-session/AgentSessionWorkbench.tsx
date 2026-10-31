@@ -10586,16 +10586,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
             const removable = true;
             return <article
               key={message.id}
-              draggable={editable && queueModeEnabled}
-              onDragStart={event => {
-                if (!editable || !queueModeEnabled || !(event.target instanceof Element) || !event.target.closest('.queue-drag-handle')) {
-                  event.preventDefault();
-                  return;
-                }
-                event.dataTransfer.effectAllowed = 'move';
-                event.dataTransfer.setData('text/plain', message.id);
-                setDraggedQueuedMessageId(message.id);
-              }}
               onDragOver={event => {
                 if (editable && queueModeEnabled && draggedQueuedMessageId && draggedQueuedMessageId !== message.id) event.preventDefault();
               }}
@@ -10605,10 +10595,13 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
                 if (sourceId && editable && queueModeEnabled) moveQueuedMessage(sourceId, message.id);
                 setDraggedQueuedMessageId(undefined);
               }}
-              onDragEnd={() => setDraggedQueuedMessageId(undefined)}
               className={draggedQueuedMessageId === message.id ? 'dragging' : undefined}
             >
-              <button type="button" className="queue-drag-handle" aria-label={`拖动排队消息 ${index + 1} 以调整顺序`} title="拖动调整顺序" disabled={!editable || !queueModeEnabled} tabIndex={-1}><GripVertical size={14}/></button>
+              <button type="button" draggable={editable && queueModeEnabled} className="queue-drag-handle" aria-label={`拖动排队消息 ${index + 1} 以调整顺序`} title="拖动调整顺序" disabled={!editable || !queueModeEnabled} tabIndex={-1} onDragStart={event => {
+                event.dataTransfer.effectAllowed = 'move';
+                event.dataTransfer.setData('text/plain', message.id);
+                setDraggedQueuedMessageId(message.id);
+              }} onDragEnd={() => setDraggedQueuedMessageId(undefined)}><GripVertical size={14}/></button>
               <small>{index + 1}</small>
               <p>{message.content || (message.references.length ? `会话引用 ${message.references.length} 条` : message.workspaceReferences?.length ? `工作区引用 ${message.workspaceReferences.length} 条` : '图片附件')}</p>
               <span>{['等待发送', message.items.length ? `${message.items.length} 个附件` : '', message.references.length ? `${message.references.length} 条会话引用` : '', message.workspaceReferences?.length ? `${message.workspaceReferences.length} 条工作区引用` : ''].filter(Boolean).join(' · ')}</span>

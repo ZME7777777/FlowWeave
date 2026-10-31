@@ -2494,6 +2494,13 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(editableQueuedMessage).toBeVisible();
   await expect(page.locator('.conversation-message.user').filter({ hasText: '待编辑排队消息' })).toHaveCount(0);
   expect(sentMessages).toBe(sentBeforeQueue);
+  await composer.fill('第二条排队消息');
+  await composer.press('Enter');
+  await expect(queuedMessage.getByText('第二条排队消息')).toBeVisible();
+  await queuedMessage.getByRole('button', { name: '拖动排队消息 2 以调整顺序' }).dragTo(queuedMessage.getByRole('button', { name: '拖动排队消息 1 以调整顺序' }));
+  await expect(queuedMessage.locator('article').first()).toContainText('第二条排队消息');
+  await queuedMessage.getByRole('button', { name: '移除排队消息 1' }).click();
+  await expect(queuedMessage.locator('article')).toHaveCount(1);
   await page.reload();
   await expect(page.getByLabel('消息投递队列').getByText('待编辑排队消息')).toBeVisible();
   const queueMoreButton = page.getByLabel('消息投递队列').getByRole('button', { name: '更多排队消息操作 1' });
