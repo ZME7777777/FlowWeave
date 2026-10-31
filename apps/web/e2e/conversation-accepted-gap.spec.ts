@@ -106,3 +106,59 @@ for (const node of [false, true]) {
     });
   }
 }
+
+
+test('message completion unlocks the current composer before terminal REST hydration', async ({ page }) => {
+  const timestamp = '2026-10-31T02:00:00Z';
+  const user = { id: 'message-complete-user', username: 'message-complete-user', role: 'USER', is_super_admin: false };
+  const workspace = { id: 'message-complete-workspace', display_name: '完成信号工作区', desired_state: 'RUNNING', updated_at: timestamp };
+  const conversation = { id: 'message-complete-conversation', display_title: '完成信号会话', title_state: 'MANUAL', lifecycle: 'ACTIVE', streaming_callback_ready: true, write_available: true, created_at: timestamp, updated_at: timestamp };
+  const initial = [
+    { id: 'message-complete-user-event', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '已完成但尚未同步', timestamp } },
+    { id: 'message-complete-thought', event_type: 'THOUGHT', payload: { source: 'agent', parent_id: 'message-complete-user-event', thought: '正在整理最终回复', timestamp } },
+  ];
+  const context = { model_name: 'test-model', window_tokens: 128_000, used_tokens: 100, usage_current: true };
+  let authenticated = false;
+  let posts = 0;
+  let socket: WebSocketRoute | undefined;
+  await page.routeWebSocket('**/agent-workspaces/**/stream', route => { socket = route; });
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const json = (body: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
+    if (path.endsWith('/auth/me')) return authenticated ? json(user) : json({ error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login')) { authenticated = true; return json(user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(workspace);
+    if (path.endsWith('/runtime')) return json({ state: 'ACTIVE', write_available: true, updated_at: timestamp });
+    if (path.endsWith('/conversations')) return json({ items: [conversation], next_cursor: null });
+    if (path.endsWith('/conversation-activity')) return json({ running_binding_ids: [conversation.id], items: [] });
+    if (path.endsWith('/hydration')) return json({ events: { events: initial, next_cursor: 'message-complete-thought', history_cursor: null, result: { status: 'RUNNING' } }, context, readiness: { ready: false, execution_status: 'running' } });
+    if (path.endsWith('/events')) return json({ events: initial, next_cursor: 'message-complete-thought', history_cursor: null, result: { status: 'RUNNING' } });
+    if (path.endsWith('/input-readiness')) return json({ ready: false, execution_status: 'running' });
+    if (path.endsWith('/messages') && request.method() === 'POST') { posts += 1; return json({ accepted: true, cursor: `message-complete-next-${posts}` }, 202); }
+    if (path.endsWith('/pending-confirmation')) return json({ pending: false });
+    if (path.endsWith('/context')) return json(context);
+    if (path.endsWith('/work-directories')) return json({ root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
+    if (path.endsWith('/workspace')) return json({ root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [], runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } } });
+    if (path.endsWith('/model-providers')) return json([{ id: 'message-complete-provider', name: '测试模型', connection_state: 'CONNECTED', models: [{ model_name: 'test-model', enabled: true, is_default: true }] }]);
+    if (path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json([]);
+    if (path.includes('/conversations/') && request.method() === 'GET') return json(conversation);
+    return json({ error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+
+  await page.goto('/');
+  await page.getByLabel('账号').fill(user.username);
+  await page.getByLabel('密码').fill('test-password');
+  await page.getByRole('button', { name: '进入工作空间' }).click();
+  await page.goto(`/agent/conversations/${conversation.id}`);
+  await expect.poll(() => Boolean(socket)).toBe(true);
+  await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
+
+  socket!.send(JSON.stringify({ type: 'message_complete' }));
+  await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toHaveCount(0);
+  await expect(page.locator(`[data-conversation-binding-id="${conversation.id}"] .agent-workspace-conversation-running`)).toHaveCount(0);
+  await page.getByLabel('发送 Agent 消息').fill('完成后立即发送');
+  await page.getByRole('button', { name: '发送消息', exact: true }).click();
+  await expect.poll(() => posts).toBe(1);
+  await expect(page.getByLabel('消息投递队列')).toHaveCount(0);
+});

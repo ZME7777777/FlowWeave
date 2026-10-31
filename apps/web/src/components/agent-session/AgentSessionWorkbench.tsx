@@ -5108,6 +5108,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [exhaustedRecoveryErrorIds, setExhaustedRecoveryErrorIds] = useState<Set<string>>(() => new Set());
   const [turnState, setTurnState] = useState<TurnState>('idle');
   const [activeTurnEventId, setActiveTurnEventId] = useState<string>();
+  const [streamCompletedBindingId, setStreamCompletedBindingId] = useState<string>();
   const [expiredTerminalSyncTurnKey, setExpiredTerminalSyncTurnKey] = useState<string>();
   const [requestStartedAt, setRequestStartedAt] = useState<number>();
   const [pendingSubmissionConfirmation, setPendingSubmissionConfirmation] = useState<PendingSubmissionConfirmation>();
@@ -7463,7 +7464,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     conversationDraft
     && pendingBootstrap?.draft.id !== conversationDraft.id,
   );
-  const effectiveTurnState: TurnState = idleUncreatedConversationDraft || nativeFailureSettled
+  const streamCompletionAcknowledged = streamCompletedBindingId === selected?.id;
+  const effectiveTurnState: TurnState = idleUncreatedConversationDraft || nativeFailureSettled || streamCompletionAcknowledged
     ? 'idle'
     : reconnectingCurrentConversation
       ? 'reconnecting'
@@ -7632,7 +7634,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         state: selectedCondensing ? 'running' as const : effectiveTurnState,
         active: selectedCondensing || effectiveTurnState === 'running' || effectiveTurnState === 'pausing' || effectiveTurnState === 'resuming' || effectiveTurnState === 'reconnecting',
       }, [effectiveTurnState, selectedCondensing, uncreatedConversationDraft]);
-  const conversationVisuallyActive = !uncreatedConversationDraft && !nativeFailureSettled && (
+  const conversationVisuallyActive = !uncreatedConversationDraft && !nativeFailureSettled && !streamCompletionAcknowledged && (
     conversationActivity.active
     || (
       effectiveTurnState !== 'paused'
@@ -7649,13 +7651,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   );
   // Keep an unfinished task plan mounted through native terminal-event
   // reconciliation so the composer dock cannot collapse during that handoff.
-  const taskPlanLayoutActive = !uncreatedConversationDraft && !nativeFailureSettled && (conversationVisuallyActive || (
+  const taskPlanLayoutActive = !uncreatedConversationDraft && !nativeFailureSettled && !streamCompletionAcknowledged && (conversationVisuallyActive || (
     hasUnfinishedFormalTurn
     && (!nativeTurnTerminal || terminalEventReconciliationActive)
   ));
   const latestDisplayedEvent = displayedEvents.at(-1);
   useEffect(() => {
     setModelRetryStatus(undefined);
+    setStreamCompletedBindingId(undefined);
   }, [selected?.id]);
   const emptyResponseRecoveryActive = conversationActivity.state === 'running'
     && Boolean(latestDisplayedEvent && isOpenHandsEmptyResponseRecovery(latestDisplayedEvent));
@@ -8121,6 +8124,19 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     // Final replies render only from their durable MESSAGE event. Transient text
     // deltas are deliberately ignored to avoid partial content being replaced.
     if (event.type === 'stream_closed') void synchronizeConversationEvents(true, 'stream_closed');
+    if (event.type === 'message_complete') {
+      setStreamCompletedBindingId(scope);
+      setForegroundTurn(undefined);
+      setPendingSubmissionConfirmation(undefined);
+      setActiveTurnEventId(undefined);
+      setRequestStartedAt(undefined);
+      setTurnState(current => current === 'running' || current === 'resuming' ? 'idle' : current);
+      void synchronizeConversationEvents(true, 'foreground');
+      if (workspace) void queryClient.invalidateQueries({
+        queryKey: sessionQueryKey(host, 'conversation-input-readiness', workspace.id, scope),
+        exact: true,
+      });
+    }
     if (event.type === 'model_retry' && event.attempt && event.max_attempts && event.failure_kind && typeof event.final === 'boolean' && event.model_role) {
       setModelRetryStatus({
         attempt: event.attempt,
@@ -8132,7 +8148,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }
     if (event.type === 'event' && event.event) {
       const formalEvent = event.event;
-      if (formalEvent.event_type === 'MESSAGE' && ['user', 'human'].includes(String(formalEvent.payload.source ?? '').toLowerCase())) setModelRetryStatus(undefined);
+      if (formalEvent.event_type === 'MESSAGE' && ['user', 'human'].includes(String(formalEvent.payload.source ?? '').toLowerCase())) {
+        setModelRetryStatus(undefined);
+        setStreamCompletedBindingId(current => current === scope ? undefined : current);
+      }
       appendLiveEvent(scope, formalEvent);
       const terminal = isOpenHandsConversationTerminalError(formalEvent)
         || (formalEvent.event_type === 'COMPLETED' && formalEvent.payload.event_name === 'FinishAction')
@@ -8941,6 +8960,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (sendingMessageIds.current.has(message.id)) return;
     sendingMessageIds.current.add(message.id);
     const showLocalMessage = () => {
+      setStreamCompletedBindingId(current => current === message.bindingId ? undefined : current);
       if (!message.nativeGuidance) {
         setForegroundTurn({ submissionId: message.id, bindingId: message.bindingId, submittedAt: Date.now() });
       }
@@ -10245,7 +10265,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     // hydration readiness must never keep only the selected row spinning after
     // the shared snapshot has observed completion.
     const selectedHasFinalFormalReply = item.id === selected?.id
-      && (selectedFormalTurnFinished || nativeFailureSettled);
+      && (selectedFormalTurnFinished || nativeFailureSettled || streamCompletionAcknowledged);
     const selectedLocalTransition = item.id === selected?.id
       && !selectedHasFinalFormalReply
       && conversationActivity.active;
