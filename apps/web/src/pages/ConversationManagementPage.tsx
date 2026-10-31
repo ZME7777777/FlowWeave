@@ -6,7 +6,7 @@ import { useProductDialog } from '../components/ProductDialogContext';
 import { Pagination } from '../components/Pagination';
 import './conversation-management.css';
 import { api } from '../api/client';
-import type { AgentConversationManagementDeleteResult, AgentConversationManagementPage, AgentConversationManagementWorkspaceKind, ManagedAgentConversation } from '../types';
+import type { AgentConversation, AgentConversationManagementDeleteResult, AgentConversationManagementPage, AgentConversationManagementWorkspaceKind, ManagedAgentConversation } from '../types';
 
 const DAY = 24 * 60 * 60 * 1000;
 const PAGE_SIZE = 20;
@@ -51,7 +51,7 @@ function WorkspaceIcon({ kind }: { kind: AgentConversationManagementWorkspaceKin
   return <Folder size={16}/>;
 }
 
-export function ConversationManagementPage({ onOpenConversation, onRestored }: { onOpenConversation?: (bindingId: string) => void; onRestored?: (selection: { bindingId?: string; workDirectoryId?: string }) => void } = {}) {
+export function ConversationManagementPage({ onOpenConversation, onRestored }: { onOpenConversation?: (bindingId: string) => void; onRestored?: (selection: { bindingId?: string; workDirectoryId?: string; conversation?: AgentConversation }) => void } = {}) {
   const client = useQueryClient();
   const dialog = useProductDialog();
   const [query, setQuery] = useState('');
@@ -166,7 +166,7 @@ export function ConversationManagementPage({ onOpenConversation, onRestored }: {
   const restore = useMutation({
     mutationFn: (bindingId: string) => api.restoreAgentConversation(workspace.data!.id, bindingId),
     onSuccess: async (conversation, bindingId) => {
-      onRestored?.({ bindingId, workDirectoryId: conversation.work_directory_id ?? selectedWorkDirectoryId });
+      onRestored?.({ bindingId, workDirectoryId: conversation.work_directory_id ?? selectedWorkDirectoryId, conversation });
       await Promise.all([
         client.invalidateQueries({ queryKey: ['agent-conversation-management', workspace.data?.id] }),
         client.invalidateQueries({ queryKey: ['agent-work-directories', workspace.data?.id] }),

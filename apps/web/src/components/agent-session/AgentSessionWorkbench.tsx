@@ -653,6 +653,8 @@ interface WorkspaceConversationGroupProps {
   onEdit?: () => void;
   onArchive?: () => void;
   onDelete?: () => void;
+  restoredConversationCount?: number;
+  onRestoredConversationsVisible?: () => void;
 }
 
 function sessionQueryKey(host: AgentSessionHost, resource: string, ...identifiers: Array<string | undefined>) {
@@ -727,7 +729,7 @@ function readSidebarCollapsePreferences(storageKey: string | undefined): Sidebar
   }
 }
 
-function WorkspaceConversationGroup({ groupId, label, children, conversationCount, hasMore = false, loadingMore = false, onLoadMore, draggable = false, dragging = false, dropPosition, onPointerDragStart, collapsed = false, onCollapsedChange, canCreateConversation = false, onCreateConversation, onConfigureSession, onEdit, onArchive, onDelete, revealConversationIndex, onRevealConversation }: WorkspaceConversationGroupProps & { revealConversationIndex?: number; onRevealConversation?: () => void }) {
+function WorkspaceConversationGroup({ groupId, label, children, conversationCount, hasMore = false, loadingMore = false, onLoadMore, draggable = false, dragging = false, dropPosition, onPointerDragStart, collapsed = false, onCollapsedChange, canCreateConversation = false, onCreateConversation, onConfigureSession, onEdit, onArchive, onDelete, restoredConversationCount = 0, onRestoredConversationsVisible, revealConversationIndex, onRevealConversation }: WorkspaceConversationGroupProps & { revealConversationIndex?: number; onRevealConversation?: () => void }) {
   const [visibleCount, setVisibleCount] = useState(3);
   const [actionsOpen, setActionsOpen] = useState(false);
   const actionsRef = useRef<HTMLDivElement>(null);
@@ -745,10 +747,17 @@ function WorkspaceConversationGroup({ groupId, label, children, conversationCoun
     }
     const added = conversationCount - previousConversationCount.current;
     previousConversationCount.current = conversationCount;
-    // Keep every already visible conversation present when a server refresh
-    // inserts a newly restored or created conversation ahead of it.
-    if (added > 0 && !collapsed) setVisibleCount(current => current + added);
-  }, [collapsed, conversationCount]);
+    // A restore may arrive in the first refreshed page without changing its
+    // size. Count it once below, while retaining normal creation pagination.
+    const nonRestoredAdded = Math.max(0, added - restoredConversationCount);
+    if (nonRestoredAdded > 0 && !collapsed) setVisibleCount(current => current + nonRestoredAdded);
+  }, [collapsed, conversationCount, restoredConversationCount]);
+  useEffect(() => {
+    if (!restoredConversationCount || collapsed) return;
+    setVisibleCount(current => current + restoredConversationCount);
+    onRestoredConversationsVisible?.();
+    if (hasMore && !loadingMore) void onLoadMore?.();
+  }, [collapsed, hasMore, loadingMore, onLoadMore, onRestoredConversationsVisible, restoredConversationCount]);
   useEffect(() => {
     if (revealConversationIndex === undefined) return;
     if (collapsed) onCollapsedChange?.(false);
@@ -5311,8 +5320,23 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const automaticSidebarRoute = useRef<string | undefined>(undefined);
   const manualSidebarRoute = useRef<string | undefined>(undefined);
   const [sidebarReveal, setSidebarReveal] = useState<{ bindingId?: string; expandCollapsed: boolean; conversation?: AgentConversation }>({ bindingId: routeBindingId, expandCollapsed: false });
+  const [restoredConversationCounts, setRestoredConversationCounts] = useState<Record<string, number>>({});
   const setSidebarRevealBindingId = useCallback((bindingId: string | undefined) => {
     setSidebarReveal({ bindingId, expandCollapsed: true });
+  }, []);
+  const revealRestoredConversation = useCallback((conversation: AgentConversation) => {
+    setSidebarReveal({ bindingId: conversation.id, expandCollapsed: true, conversation });
+    if (conversation.pinned) return;
+    const groupId = conversation.work_directory_id ?? 'root';
+    setRestoredConversationCounts(current => ({ ...current, [groupId]: (current[groupId] ?? 0) + 1 }));
+  }, []);
+  const markRestoredConversationsVisible = useCallback((groupId: string) => {
+    setRestoredConversationCounts(current => {
+      if (!current[groupId]) return current;
+      const next = { ...current };
+      delete next[groupId];
+      return next;
+    });
   }, []);
   useEffect(() => {
     if (previousSidebarRoute.current === routeBindingId) return;
@@ -10462,11 +10486,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       const latest = activity && Date.parse(activity.updated_at) >= Date.parse(item.updated_at) ? { ...item, ...activity } : item;
       return conversationRow({ ...latest, ...current, ...(pendingUnread ? { unread: pendingUnread.unread, unread_origin: pendingUnread.unreadOrigin } : {}) }, [], { allowDrag: false });
     }} onSelectSchedule={() => { setActivityPreviewBindingId(undefined); onNavigate('/agent/schedules'); }}/>}
-    {agentWorkspaceView === 'management' && <section className="agent-conversation-management-page" aria-label="会话管理"><ConversationManagementPage onOpenConversation={bindingId => { setAgentWorkspaceView('home'); selectConversation(bindingId); }} onRestored={({ bindingId, workDirectoryId }) => {
+    {agentWorkspaceView === 'management' && <section className="agent-conversation-management-page" aria-label="会话管理"><ConversationManagementPage onOpenConversation={bindingId => { setAgentWorkspaceView('home'); selectConversation(bindingId); }} onRestored={({ conversation, bindingId, workDirectoryId }) => {
       const restoredIds = new Set(bindingId ? [bindingId] : [...archivedConversationDirectoryIds.current].filter(([, directoryId]) => directoryId === workDirectoryId).map(([id]) => id));
       setOptimisticallyRemovedConversationIds(current => new Set([...current].filter(id => !restoredIds.has(id))));
       for (const id of restoredIds) archivedConversationDirectoryIds.current.delete(id);
       if (workDirectoryId) setArchivedDirectoryIds(current => new Set([...current].filter(id => id !== workDirectoryId)));
+      if (conversation) revealRestoredConversation(conversation);
     }}/></section>}
     {selected && <ConversationStreamObserver workspaceId={workspace.id} bindingId={selected.id} enabled={streamEnabled} onEvent={onStreamEvent} onStatus={updateStreamStatus} onReconnect={onStreamReconnect}/>}
     {workspace && queuedMessageBindings(host, workspace.id).filter(bindingId => bindingId !== selected?.id).map(bindingId => (
@@ -10520,10 +10545,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         {sidebarListMode === 'activity'
           ? <section className="agent-workspace-activity" aria-label="活动会话"><header><div><span className="eyebrow">ACTIVITY</span><b>活动</b></div><button type="button" aria-label="返回工作区列表" title="返回工作区列表" onClick={() => { setActivityPreviewBindingId(undefined); setSidebarListMode('workspaces'); }}><ArrowLeft size={15}/></button></header>{activityConversations.length ? activityConversations.map(item => conversationRow(item, [], { allowDrag: false, workspaceName: activityWorkspaceName(item), onSelect: () => previewActivityConversation(item.id), onDoubleClick: () => openActivityConversation(item.id), onMarkRead: () => markConversationRead(item.id) })) : <p>没有正在运行或未读的会话。</p>}</section>
           : <>{pinnedConversations.length > 0 && <section className={`agent-workspace-pinned${pinnedConversationsCollapsed ? ' collapsed' : ''}`} aria-label="置顶会话"><header><button type="button" aria-label={`${pinnedConversationsCollapsed ? '展开' : '收起'}置顶会话`} aria-expanded={!pinnedConversationsCollapsed} aria-controls="agent-workspace-pinned-content" onClick={() => setPinnedConversationsCollapsed(!pinnedConversationsCollapsed)}><Pin size={13}/><span>置顶</span></button></header><div id="agent-workspace-pinned-content" hidden={pinnedConversationsCollapsed}>{pinnedConversations.map(item => conversationRow(item, pinnedConversations))}</div></section>}
-            <WorkspaceConversationGroup groupId="root" label="根工作区" conversationCount={rootConversations.length} hasMore={Boolean(conversationPagesByScope.__root__?.next_cursor)} loadingMore={loadingConversationScope === '__root__'} onLoadMore={() => loadMoreConversations('__root__')} collapsed={collapsedConversationGroups.has('root')} onCollapsedChange={collapsed => setConversationGroupCollapsed('root', collapsed)} revealConversationIndex={routedRootConversationIndex >= 0 ? routedRootConversationIndex : undefined} onRevealConversation={completeSidebarReveal} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ displayName: '根工作区' }, { restoreRecovery: true, selectStandaloneRoot: true })} onConfigureSession={runtimeWritable ? () => { setWorkspaceSessionConfigurationScope(null); setWorkspaceSessionConfigurationOpen(true); } : undefined}>
+            <WorkspaceConversationGroup groupId="root" label="根工作区" conversationCount={rootConversations.length} hasMore={Boolean(conversationPagesByScope.__root__?.next_cursor)} loadingMore={loadingConversationScope === '__root__'} onLoadMore={() => loadMoreConversations('__root__')} collapsed={collapsedConversationGroups.has('root')} onCollapsedChange={collapsed => setConversationGroupCollapsed('root', collapsed)} restoredConversationCount={restoredConversationCounts.root} onRestoredConversationsVisible={() => markRestoredConversationsVisible('root')} revealConversationIndex={routedRootConversationIndex >= 0 ? routedRootConversationIndex : undefined} onRevealConversation={completeSidebarReveal} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ displayName: '根工作区' }, { restoreRecovery: true, selectStandaloneRoot: true })} onConfigureSession={runtimeWritable ? () => { setWorkspaceSessionConfigurationScope(null); setWorkspaceSessionConfigurationOpen(true); } : undefined}>
               {visibleCount => <>{pendingBootstrapItem && !pendingBootstrap?.draft.workDirectoryId ? pendingBootstrapItem : recoverableDraftItem(undefined, '根工作区')}{rootConversations.slice(0, visibleCount).map(item => conversationRow(item, rootConversations))}</>}
             </WorkspaceConversationGroup>
-            {features.workDirectories && workDirectories.map(directory => { const group = conversationsForDirectory(directory.id); const routeIndex = sidebarReveal.expandCollapsed || !collapsedConversationGroups.has(directory.id) ? group.findIndex(item => item.id === pendingSidebarRevealBindingId) : -1; return <WorkspaceConversationGroup key={directory.id} groupId={directory.id} label={directory.display_name} conversationCount={group.length} hasMore={Boolean(conversationPagesByScope[directory.id]?.next_cursor)} loadingMore={loadingConversationScope === directory.id} onLoadMore={() => loadMoreConversations(directory.id)} draggable dragging={draggedWorkDirectoryId === directory.id} dropPosition={workDirectoryDropTarget?.id === directory.id ? (workDirectoryDropTarget.after ? 'after' : 'before') : undefined} onPointerDragStart={event => startPointerWorkDirectoryDrag(event, directory.id)} collapsed={collapsedConversationGroups.has(directory.id)} onCollapsedChange={collapsed => setConversationGroupCollapsed(directory.id, collapsed)} revealConversationIndex={routeIndex >= 0 ? routeIndex : undefined} onRevealConversation={completeSidebarReveal} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ workDirectoryId: directory.id, displayName: directory.display_name }, { restoreRecovery: true })} onConfigureSession={runtimeWritable ? () => { setWorkspaceSessionConfigurationScope(directory.id); setWorkspaceSessionConfigurationOpen(true); } : undefined} onEdit={api.updateWorkDirectory && runtimeWritable ? () => setWorkDirectoryEditor(directory) : undefined} onArchive={api.archiveWorkDirectory && runtimeWritable ? () => void archiveWorkDirectory(directory) : undefined} onDelete={api.deleteWorkDirectory && runtimeWritable ? () => void removeWorkDirectory(directory) : undefined}>
+            {features.workDirectories && workDirectories.map(directory => { const group = conversationsForDirectory(directory.id); const routeIndex = sidebarReveal.expandCollapsed || !collapsedConversationGroups.has(directory.id) ? group.findIndex(item => item.id === pendingSidebarRevealBindingId) : -1; return <WorkspaceConversationGroup key={directory.id} groupId={directory.id} label={directory.display_name} conversationCount={group.length} hasMore={Boolean(conversationPagesByScope[directory.id]?.next_cursor)} loadingMore={loadingConversationScope === directory.id} onLoadMore={() => loadMoreConversations(directory.id)} draggable dragging={draggedWorkDirectoryId === directory.id} dropPosition={workDirectoryDropTarget?.id === directory.id ? (workDirectoryDropTarget.after ? 'after' : 'before') : undefined} onPointerDragStart={event => startPointerWorkDirectoryDrag(event, directory.id)} collapsed={collapsedConversationGroups.has(directory.id)} onCollapsedChange={collapsed => setConversationGroupCollapsed(directory.id, collapsed)} restoredConversationCount={restoredConversationCounts[directory.id]} onRestoredConversationsVisible={() => markRestoredConversationsVisible(directory.id)} revealConversationIndex={routeIndex >= 0 ? routeIndex : undefined} onRevealConversation={completeSidebarReveal} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ workDirectoryId: directory.id, displayName: directory.display_name }, { restoreRecovery: true })} onConfigureSession={runtimeWritable ? () => { setWorkspaceSessionConfigurationScope(directory.id); setWorkspaceSessionConfigurationOpen(true); } : undefined} onEdit={api.updateWorkDirectory && runtimeWritable ? () => setWorkDirectoryEditor(directory) : undefined} onArchive={api.archiveWorkDirectory && runtimeWritable ? () => void archiveWorkDirectory(directory) : undefined} onDelete={api.deleteWorkDirectory && runtimeWritable ? () => void removeWorkDirectory(directory) : undefined}>
               {visibleCount => <>{pendingBootstrapItem && pendingBootstrap?.draft.workDirectoryId === directory.id ? pendingBootstrapItem : recoverableDraftItem(directory.id, directory.display_name)}{group.slice(0, visibleCount).map(item => conversationRow(item, group))}</>}
             </WorkspaceConversationGroup>; })}<div ref={workspaceGroupAnchorSpacer} aria-hidden="true"/></>}
       </div>
