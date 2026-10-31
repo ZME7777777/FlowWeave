@@ -1779,6 +1779,53 @@ test('Conversation attachments open in a preview dialog before the file sidebar'
 });
 
 
+test('Opening a preview from one conversation cannot open files after switching conversations', async ({ page }) => {
+  let authenticated = false;
+  const workspace = { id: 'scoped-file-preview-workspace', display_name: '文件栏范围工作区', desired_state: 'RUNNING', updated_at: now };
+  const conversations = ['scoped-file-preview-a', 'scoped-file-preview-b'].map((id, index) => ({
+    id, display_title: `文件栏范围会话 ${index ? 'B' : 'A'}`, title_state: 'MANUAL', lifecycle: 'ACTIVE',
+    streaming_callback_ready: true, write_available: true, execution_status: 'idle', created_at: now, updated_at: now,
+  }));
+  const attachment = { filename: '范围隔离.png', mime_type: 'image/png', byte_size: 24, path: '/runtime/workspace/project/uploads/scoped-preview.png' };
+
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request(); const url = new URL(request.url()); const path = url.pathname;
+    if (path.endsWith('/auth/me')) return authenticated ? json(route, user) : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: conversations, next_cursor: null });
+    if (path.endsWith('/events') || path.endsWith('/hydration')) {
+      const bindingId = path.split('/').at(-2)!;
+      const events = { events: bindingId === conversations[0].id ? [{ id: 'scoped-preview-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '查看范围隔离图片', attachments: [attachment], timestamp: now } }] : [], next_cursor: bindingId, history_cursor: null, result: { status: 'COMPLETED' } };
+      return json(route, path.endsWith('/hydration') ? { events, context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 1_024, usage_current: true }, readiness: { ready: true, execution_status: 'idle' } } : events);
+    }
+    if (path.endsWith('/file')) return route.fulfill({ status: 200, contentType: 'image/png', body: Buffer.from('scoped-preview') });
+    if (path.endsWith('/workspace/directory')) return json(route, { parent_path: '/runtime/workspace/project', entries: [{ kind: 'directory', path: '/runtime/workspace/project/uploads', size: 0 }], next_cursor: null });
+    if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
+    if (path.endsWith('/workspace')) return json(route, { root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', work_directory: null, files: [attachment], repositories: [], runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } } });
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/input-readiness')) return json(route, { ready: true, execution_status: 'idle' });
+    if (path.endsWith('/context')) return json(route, { model_name: 'test-model', window_tokens: 128_000, used_tokens: 1_024, usage_current: true });
+    if (path.endsWith('/model-providers') || path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, conversations.find(item => item.id === path.split('/').at(-1)));
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+
+  await page.goto('/');
+  await login(page);
+  await page.goto(`/agent/conversations/${conversations[0].id}`);
+  await page.getByRole('button', { name: '范围隔离.png image/png · 24 B' }).click();
+  await page.evaluate(() => {
+    document.querySelector<HTMLButtonElement>('[role="dialog"] button[aria-label="在文件标签页打开"]')?.click();
+    [...document.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === '文件栏范围会话 B')?.click();
+  });
+
+  await expect(page).toHaveURL(new RegExp(`/agent/conversations/${conversations[1].id}$`));
+  await expect(page.locator('.agent-workspace-drawer')).not.toHaveClass(/tools-open/);
+});
+
 test('Image previews support keyboard zoom, pan, and reset', async ({ page }) => {
   let authenticated = false;
   const workspace = { id: 'image-preview-workspace', display_name: '图片预览工作区', desired_state: 'RUNNING', updated_at: now };

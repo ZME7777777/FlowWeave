@@ -3245,7 +3245,7 @@ type WorkspaceToolTab =
   | { id: 'sidebar-chat'; kind: 'sidebar-chat' }
   | { id: string; kind: 'terminal'; terminalInstanceId: string };
 type WorkspaceToolScopeState = { tabs: WorkspaceToolTab[]; activeTabId?: string; selectedFile?: string; selectedChangeId?: string; selectedGitFile?: string; selectedGitCommit?: string; selectedGitRepositoryPath?: string; gitMode?: 'history' | 'changes'; selectedRuntimeTaskId?: string };
-type MarkdownFileRequest = { key: string; path: string; line?: number };
+type MarkdownFileRequest = { key: string; scopeKey: string; path: string; line?: number };
 
 type ChangedFileTreeNode<T> = { name: string; path: string; value?: T; children: ChangedFileTreeNode<T>[] };
 type CollapsibleTreeNode = { name: string; path: string; children: CollapsibleTreeNode[] };
@@ -3584,7 +3584,7 @@ function WorkspaceGitWorkingDiffReview({ tab, onOpenSource, onSelectFile }: {
     {tab.loading ? <div className="agent-changes-empty"><span>正在读取文件 Diff…</span></div> : tab.error ? <div className="agent-changes-empty"><b>文件 Diff 读取失败</b><span>{tab.error}</span></div> : tab.diff ? <WorkspaceGitFileDiffReview details={details} diff={tab.diff} onOpenSource={onOpenSource}/> : <div className="agent-changes-empty"><span>选择一个文件查看 Diff。</span></div>}
   </section>;
 }
-type CandidateFilePreviewRequest = { key: string; filename: string; url: string };
+type CandidateFilePreviewRequest = { key: string; scopeKey: string; filename: string; url: string };
 type WorkspaceUpload = { id: string; file: File; progress: number; state: 'uploading' | 'failed' };
 
 function SshAccessGuide({
@@ -3637,10 +3637,10 @@ function clampConversationRailWidth(value: number): number {
 
 
 type ConversationFilePreviewRequest =
-  | { key: string; kind: 'workspace'; path: string; filename: string; mimeType?: string; imageDataUrl?: string | null; attachment?: AgentAttachment; previewBindingId?: string; draftAttachmentOwnerId?: string }
-  | { key: string; kind: 'directory'; path: string; filename: string }
-  | { key: string; kind: 'candidate'; filename: string; url: string; fieldKey: string; relativePath: string }
-  | { key: string; kind: 'image'; filename: string; url: string };
+  | { key: string; scopeKey: string; kind: 'workspace'; path: string; filename: string; mimeType?: string; imageDataUrl?: string | null; attachment?: AgentAttachment; previewBindingId?: string; draftAttachmentOwnerId?: string }
+  | { key: string; scopeKey: string; kind: 'directory'; path: string; filename: string }
+  | { key: string; scopeKey: string; kind: 'candidate'; filename: string; url: string; fieldKey: string; relativePath: string }
+  | { key: string; scopeKey: string; kind: 'image'; filename: string; url: string };
 
 function ConversationFilePreviewDialog({ request, workspaceId, bindingId, workDirectoryId, onClose, onOpenInTab, onOpenWorkspaceFile }: {
   request: ConversationFilePreviewRequest;
@@ -4507,15 +4507,17 @@ function WorkspaceDrawer({
     // reopen it from this effect.
     if (!attachmentRequest || handledAttachmentRequestKey.current === attachmentRequest.key) return;
     handledAttachmentRequestKey.current = attachmentRequest.key;
+    if (attachmentRequest.scopeKey !== scopeKey) return;
     setCandidatePreview(undefined);
     openFiles(attachmentRequest.attachment?.path);
-  }, [attachmentRequest, openFiles]);
+  }, [attachmentRequest, openFiles, scopeKey]);
   useEffect(() => {
     if (!candidatePreviewRequest || handledCandidatePreviewRequestKey.current === candidatePreviewRequest.key) return;
     handledCandidatePreviewRequestKey.current = candidatePreviewRequest.key;
+    if (candidatePreviewRequest.scopeKey !== scopeKey) return;
     setCandidatePreview(candidatePreviewRequest);
     openFiles();
-  }, [candidatePreviewRequest, openFiles]);
+  }, [candidatePreviewRequest, openFiles, scopeKey]);
   const openTerminal = useCallback(() => {
     if (!runtimeAvailable) return;
     const terminalInstanceId = randomId();
@@ -4595,8 +4597,9 @@ function WorkspaceDrawer({
   useEffect(() => {
     if (!markdownFileRequest || handledMarkdownFileRequestKey.current === markdownFileRequest.key) return;
     handledMarkdownFileRequestKey.current = markdownFileRequest.key;
+    if (markdownFileRequest.scopeKey !== scopeKey) return;
     openSourcePath(markdownFileRequest.path, markdownFileRequest.line ?? 1);
-  }, [markdownFileRequest, openSourcePath]);
+  }, [markdownFileRequest, openSourcePath, scopeKey]);
   const selectedEntryRoots = useMemo(() => [...selectedEntryPaths].filter(path => ![...selectedEntryPaths].some(other => other !== path && path.startsWith(`${other}/`))), [selectedEntryPaths]);
   const removeEntries = async (items: Array<{ path: string; kind: 'file' | 'directory' }>) => {
     if (!api.deleteFile || !items.length) return;
@@ -5143,7 +5146,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [filePreviewRequest, setFilePreviewRequest] = useState<ConversationFilePreviewRequest>();
   const [browserRequest, setBrowserRequest] = useState<{ key: string; scopeKey: string; url: string }>();
   const [htmlPreviewRequest, setHtmlPreviewRequest] = useState<{ key: string; filename: string; document?: string; sourceUrl?: string }>();
-  const [attachmentRequest, setAttachmentRequest] = useState<{ key: string; attachment?: AgentAttachment }>();
+  const [attachmentRequest, setAttachmentRequest] = useState<{ key: string; scopeKey: string; attachment?: AgentAttachment }>();
   const [fileSelectionReference, setFileSelectionReference] = useState<{ path: string; selection: FileSelection }>();
   const [candidatePreviewRequest, setCandidatePreviewRequest] = useState<CandidateFilePreviewRequest>();
   const [sourceLocationRequest, setSourceLocationRequest] = useState<MarkdownFileRequest>();
@@ -7644,9 +7647,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     setDrawerOpen(true);
   }, [setDrawerOpen]);
   const openSourceLocation = useCallback((path: string, line: number) => {
-    setSourceLocationRequest({ key: randomId(), path, line });
+    setSourceLocationRequest({ key: randomId(), scopeKey: workspaceToolScopeKey, path, line });
     setDrawerOpen(true);
-  }, [setDrawerOpen]);
+  }, [setDrawerOpen, workspaceToolScopeKey]);
   const runtimeTasks = useMemo(
     () => runtimeTasksFromEvents(displayedEvents, eventsQuery.data?.task_usage ?? [], eventsQuery.data?.task_control ?? [])
       .map(task => nativeFailureSettled && task.status === 'RUNNING'
@@ -7685,6 +7688,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const previewAttachment = useCallback((attachment: AgentAttachment, previewBindingId?: string) => {
     setFilePreviewRequest({
       key: randomId(),
+      scopeKey: workspaceToolScopeKey,
       kind: 'workspace',
       path: attachment.path,
       filename: attachment.filename,
@@ -7694,7 +7698,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       previewBindingId,
       draftAttachmentOwnerId: previewBindingId ? undefined : conversationDraft?.id,
     });
-  }, [conversationDraft?.id]);
+  }, [conversationDraft?.id, workspaceToolScopeKey]);
   const composerAttachmentImageUrl = useCallback((attachment: AgentAttachment) => {
     if (attachment.image_data_url) return attachment.image_data_url;
     if (!workspace) return undefined;
@@ -7718,38 +7722,40 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const previewWorkspaceReference = useCallback((reference: AgentWorkspaceReference) => {
     setFilePreviewRequest({
       key: randomId(),
+      scopeKey: workspaceToolScopeKey,
       kind: 'workspace',
       path: reference.path,
       filename: reference.display_name || reference.path.split('/').filter(Boolean).at(-1) || reference.path,
     });
-  }, []);
+  }, [workspaceToolScopeKey]);
   const previewCandidateFile = useCallback((fieldKey: string, relativePath: string) => {
     if (!workspace || !candidateOutputUrl) return;
     setFilePreviewRequest({
       key: randomId(),
+      scopeKey: workspaceToolScopeKey,
       kind: 'candidate',
       filename: relativePath.split('/').at(-1) || relativePath,
       url: candidateOutputUrl(workspace.id, fieldKey, relativePath),
       fieldKey,
       relativePath,
     });
-  }, [candidateOutputUrl, workspace]);
+  }, [candidateOutputUrl, workspace, workspaceToolScopeKey]);
   const openPreviewInTab = useCallback((request: ConversationFilePreviewRequest, htmlDocument?: string, sourceUrl?: string) => {
-    if (request.kind === 'image') return;
+    if (request.kind === 'image' || request.scopeKey !== workspaceToolScopeKey) return;
     setFilePreviewRequest(undefined);
     if (request.kind === 'workspace' && isHtmlPreviewable(request.path, request.mimeType) && htmlDocument) {
       setHtmlPreviewRequest({ key: randomId(), filename: request.filename, document: htmlDocument, sourceUrl });
     } else if (request.kind === 'candidate') {
-      setCandidatePreviewRequest({ key: randomId(), filename: request.filename, url: request.url });
+      setCandidatePreviewRequest({ key: randomId(), scopeKey: request.scopeKey, filename: request.filename, url: request.url });
     } else if (request.kind === 'directory') {
-      setAttachmentRequest({ key: randomId() });
+      setAttachmentRequest({ key: randomId(), scopeKey: request.scopeKey });
     } else {
       setAttachmentRequest(request.attachment
-        ? { key: randomId(), attachment: request.attachment }
-        : { key: randomId(), attachment: { filename: request.filename, mime_type: request.mimeType ?? '', byte_size: 0, path: request.path } });
+        ? { key: randomId(), scopeKey: request.scopeKey, attachment: request.attachment }
+        : { key: randomId(), scopeKey: request.scopeKey, attachment: { filename: request.filename, mime_type: request.mimeType ?? '', byte_size: 0, path: request.path } });
     }
     setDrawerOpen(true);
-  }, [setDrawerOpen]);
+  }, [setDrawerOpen, workspaceToolScopeKey]);
   const reconcileMissingConversation = useCallback((bindingId: string) => {
     if (!workspace || reconciledMissingConversationIds.current.has(bindingId)) return;
     reconciledMissingConversationIds.current.add(bindingId);
@@ -9927,6 +9933,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }
     setFilePreviewRequest({
       key: randomId(),
+      scopeKey: workspaceToolScopeKey,
       // Agent replies are free-form Markdown: its visible label is not a
       // trustworthy file identity.  A bare relative link (for example `.`)
       // resolves to the authorized working directory, which must be treated
@@ -9947,9 +9954,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const previewMarkdownImage = (src: string, alt?: string) => {
     const path = workspaceMarkdownImagePath(src, activeWorkspaceRoot);
     setFilePreviewRequest(path ? {
-      key: randomId(), kind: 'workspace', path, filename: alt || path.split('/').filter(Boolean).at(-1) || '图片', mimeType: 'image/*',
+      key: randomId(), scopeKey: workspaceToolScopeKey, kind: 'workspace', path, filename: alt || path.split('/').filter(Boolean).at(-1) || '图片', mimeType: 'image/*',
     } : {
-      key: randomId(), kind: 'image', filename: alt || '会话图片', url: src,
+      key: randomId(), scopeKey: workspaceToolScopeKey, kind: 'image', filename: alt || '会话图片', url: src,
     });
   };
   const workspaceMarkdownImageUrl = (href: string) => {
