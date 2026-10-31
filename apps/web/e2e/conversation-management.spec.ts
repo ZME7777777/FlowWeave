@@ -225,10 +225,14 @@ test('compact management emphasizes records and keeps archive filters and row ac
   await page.getByRole('button', { name: '会话管理', exact: true }).click();
   const rows = page.locator('.conversation-management-table tbody tr');
   await expect(rows).toHaveCount(20);
-  await rows.first().getByText(active[0].display_title).click();
+  await rows.first().click({ position: { x: 2, y: 2 } });
   await expect(rows.first().getByRole('checkbox')).toBeChecked();
   await expect(rows.first()).toHaveClass('selected');
   await rows.first().getByRole('checkbox').uncheck();
+  await rows.first().getByRole('button', { name: active[0].display_title, exact: true }).click();
+  await expect(page.locator('.agent-workbench-page')).toBeVisible();
+  await page.getByRole('button', { name: '会话管理', exact: true }).click();
+  await expect(rows.first().getByRole('checkbox')).not.toBeChecked();
   await rows.first().getByRole('checkbox').press('Space');
   await expect(rows.first().getByRole('checkbox')).toBeChecked();
   await page.getByRole('button', { name: '下一页', exact: true }).click();

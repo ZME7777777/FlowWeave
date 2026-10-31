@@ -280,17 +280,17 @@ export function RunsPage() {
     const openRecord = () => item.kind === 'MANUAL'
       ? openStepwiseRecord(selectedRunId!, item.id)
       : openAutomaticRecord(selectedRunId!, item.id);
-    return <article className={`flow-run-record-row${selected ? ' selected' : ''}`} key={recordKey(item)}>
+    return <article className={`flow-run-record-row${selected ? ' selected' : ''}`} key={recordKey(item)} onClick={event => { if (!(event.target instanceof Element) || event.target.closest('button, input, label, a')) return; toggleRecord(item, !selected); }}>
       <label className="flow-run-record-selection" title={`选择运行记录 ${item.name}`}>
         <input type="checkbox" className="flow-run-record-select" aria-label={`选择运行记录 ${item.name}`} checked={selected} onChange={event => toggleRecord(item, event.target.checked)}/>
       </label>
-      <button type="button" className="flow-run-record-content" aria-label={`选择运行记录 ${item.name}`} aria-pressed={selected} onClick={() => toggleRecord(item, !selected)}>
-        <span className="flow-run-record-identity"><b className="flow-run-record-name" title={item.name}>{item.name}</b><code className="flow-run-record-id" title={`记录 ID：${item.id}`}>ID {item.id}</code></span>
+      <div className="flow-run-record-content" aria-pressed={selected}>
+        <span className="flow-run-record-identity"><button type="button" className="flow-run-record-name" aria-label={`打开运行记录 ${item.name}`} title={item.name} onClick={openRecord}>{item.name}</button><code className="flow-run-record-id" title={`记录 ID：${item.id}`}>ID {item.id}</code></span>
         <span className="flow-run-record-kind">{item.kind === 'MANUAL' ? '逐步' : '连续'}</span>
         <span className="flow-run-record-state" data-state={item.state}>{STATUS_LABELS[item.state] ?? item.state}</span>
         <span className="flow-run-record-progress" title={item.detail}>{item.detail}</span>
         <time dateTime={item.startedAt} title={new Date(item.startedAt).toLocaleString('zh-CN', { hour12: false })}>{new Date(item.startedAt).toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })}</time>
-      </button>
+      </div>
       <button type="button" className="flow-run-record-enter" aria-label={`进入运行记录 ${item.name}`} onClick={openRecord}>打开<ChevronRight size={14}/></button>
     </article>;
   };

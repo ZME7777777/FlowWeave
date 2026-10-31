@@ -152,16 +152,12 @@ test('record directory groups scheduled runs and opens a full canvas workspace',
   await expect(directory.locator('.flow-run-record-directory-list>.flow-run-record-row')).toHaveCount(1);
   await toggle.click();
   await expect(group.getByRole('button', { name: '进入运行记录 定时记录 1', exact: true })).toBeVisible();
-  const automaticContent = directory.getByRole('button', { name: `选择运行记录 ${automaticBase.name}`, exact: true });
-  await automaticContent.getByText(automaticBase.name, { exact: true }).click();
-  await expect(automaticContent).toHaveAttribute('aria-pressed', 'true');
-  await expect(directory).toBeVisible();
+  const automaticRow = directory.getByRole('checkbox', { name: `选择运行记录 ${automaticBase.name}`, exact: true }).locator('xpath=ancestor::article');
+  const automaticName = automaticRow.getByRole('button', { name: `打开运行记录 ${automaticBase.name}`, exact: true });
+  await automaticRow.click({ position: { x: 2, y: 2 } });
   await expect(directory.getByRole('checkbox', { name: `选择运行记录 ${automaticBase.name}`, exact: true })).toBeChecked();
   await expect(directory.getByText('已选择 1 条')).toBeVisible();
-  await automaticContent.press('Enter');
-  await expect(automaticContent).toHaveAttribute('aria-pressed', 'false');
-  await expect(directory).toBeVisible();
-  await directory.getByRole('button', { name: `进入运行记录 ${automaticBase.name}`, exact: true }).click();
+  await automaticName.click();
   await expect(page.locator('.flow-run-workbench-header h1')).toHaveText(automaticBase.name);
   await expect(page.locator('.run-graph')).toBeVisible();
   await expect(page.locator('.run-record-detail-panel')).toBeVisible();
@@ -185,10 +181,10 @@ test('record directory groups scheduled runs and opens a full canvas workspace',
   await page.getByRole('button', { name: '返回运行记录', exact: true }).click();
   await expect(page.locator('.flow-run-tree-select').filter({ hasText: definition.name })).toHaveAttribute('aria-expanded', 'true');
   await expect(page.locator('.flow-run-tree-run').filter({ hasText: run.name })).toHaveClass(/active/);
-  await expect(directory.getByRole('checkbox', { name: `选择运行记录 ${automaticBase.name}`, exact: true })).not.toBeChecked();
+  await expect(directory.getByRole('checkbox', { name: `选择运行记录 ${automaticBase.name}`, exact: true })).toBeChecked();
   await directory.getByRole('button', { name: '逐步', exact: true }).click();
   await expect(manualRecord).toBeChecked();
-  await directory.getByRole('button', { name: `进入运行记录 ${manual.name}`, exact: true }).focus();
+  await directory.getByRole('button', { name: `打开运行记录 ${manual.name}`, exact: true }).focus();
   await page.keyboard.press('Enter');
   await expect(page.locator('.flow-run-workbench-header h1')).toHaveText(manual.name);
   await expect(page.locator('.run-graph')).toBeVisible();
@@ -390,7 +386,7 @@ test('flow library scrolls all rows with sidebar actions and a full width editor
   });
 });
 
-test('flow library row clicks toggle checkboxes while preserving preview and actions', async ({ page }) => {
+test('flow library rows select while titles open the editor independently', async ({ page }) => {
   const flows = [0, 1].map(index => ({ ...definition, id: `select-flow-${index}`, name: `选择验收流程 ${index}` }));
   await page.route('**/api/v1/**', async route => {
     const path = new URL(route.request().url()).pathname.replace(/^\/flowweave/, '');
@@ -404,10 +400,14 @@ test('flow library row clicks toggle checkboxes while preserving preview and act
   await page.getByRole('button', { name: '流程编排', exact: true }).click();
   const checkbox = page.getByLabel('选择流程 选择验收流程 1', { exact: true });
   const row = page.locator('.flow-library-row').filter({ has: checkbox });
-  await row.getByRole('button', { name: '选择验收流程 1', exact: true }).click();
+  await row.click({ position: { x: 2, y: 2 } });
   await expect(checkbox).toBeChecked();
-  await expect(page.getByRole('region', { name: '选择验收流程 1 的流程画布' })).toBeVisible();
+  await expect(page.getByRole('region', { name: '选择验收流程 1 的流程画布' })).toHaveCount(0);
   await expect(page.getByRole('button', { name: '删除 (1)', exact: true })).toBeEnabled();
+  await row.getByRole('button', { name: '打开流程 选择验收流程 1', exact: true }).click();
+  await expect(page.getByTestId('flow-designer')).toBeVisible();
+  await page.getByRole('button', { name: '返回全部流程', exact: true }).click();
+  await expect(checkbox).toBeChecked();
   await row.locator('.flow-readiness').click();
   await expect(checkbox).not.toBeChecked();
   await row.click({ position: { x: 2, y: 2 } });
@@ -423,11 +423,10 @@ test('flow library row clicks toggle checkboxes while preserving preview and act
   await expect(checkbox).toBeChecked();
   await page.keyboard.press('Space');
   await expect(checkbox).not.toBeChecked();
-  await row.getByRole('button', { name: '选择验收流程 1', exact: true }).dblclick();
+  await row.getByRole('button', { name: '打开流程 选择验收流程 1', exact: true }).click();
   await expect(page.getByTestId('flow-designer')).toBeVisible();
   await page.getByRole('button', { name: '返回全部流程', exact: true }).click();
-  await expect(checkbox).toBeChecked();
-  await checkbox.uncheck();
+  await expect(checkbox).not.toBeChecked();
   await row.getByRole('button', { name: '操作流程 选择验收流程 1', exact: true }).click();
   await page.locator('.flow-row-menu').getByRole('button', { name: '进入编排', exact: true }).click();
   await expect(page.getByTestId('flow-designer')).toBeVisible();

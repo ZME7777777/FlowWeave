@@ -13,9 +13,10 @@
 .settings-management-selection button:disabled{border-color:transparent;background:transparent;color:#a5b1a8}
 .settings-management-list-scroll{min-height:0;flex:1;overflow:auto;overscroll-behavior:contain;padding:4px 8px}
 .settings-resource-row{display:flex;min-width:0;align-items:center;gap:7px;border:1px solid transparent;border-radius:6px;margin:3px 0;padding:0 7px}
-.settings-resource-row:hover{background:#edf4ee}.settings-resource-row.active{border-color:#c8ddce;background:#e5f0e8}.settings-resource-row.checked:not(.active){background:#eef5ef}
+.settings-resource-row.selectable{cursor:pointer}.settings-resource-row:hover{background:#edf4ee}.settings-resource-row.active{border-color:#c8ddce;background:#e5f0e8}.settings-resource-row.checked:not(.active){background:#eef5ef}
 .settings-resource-row>input{width:13px;height:13px;flex:0 0 auto;margin:0;accent-color:var(--green);cursor:pointer}
-.settings-resource-row>button{display:flex;min-width:0;min-height:68px;flex:1;flex-direction:column;align-items:stretch;justify-content:center;gap:3px;border:0;background:transparent;padding:9px 3px;color:#49634f;text-align:left}
+.settings-resource-copy{display:flex;min-width:0;min-height:68px;flex:1;flex-direction:column;align-items:stretch;justify-content:center;gap:3px;padding:9px 3px;color:#49634f;text-align:left}
+.settings-resource-name{display:block;min-width:0;max-width:max-content;border:0;background:transparent;padding:0;color:inherit;font:inherit;text-align:left}.settings-resource-name:hover,.settings-resource-name:focus-visible{text-decoration:underline;color:#216749}
 .settings-resource-row b,.settings-resource-row small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .settings-resource-row b{color:#3d5544;font-size:12px;font-weight:550}.settings-resource-row.active b{color:#256443}
 .settings-resource-row small{color:#8b9b8f;font-size:10px!important;line-height:1.4}

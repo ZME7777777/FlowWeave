@@ -42,6 +42,7 @@
 .compact-conversation-management .conversation-management-table th:nth-child(5){width:72px}
 .compact-conversation-management .conversation-management-table th:last-child{width:80px}
 .compact-conversation-management .conversation-management-table td b{color:#34483b;font-size:12px;font-weight:550}
+.conversation-management-name{max-width:100%;border:0;background:transparent;padding:0;color:inherit;font:inherit;text-align:left}.conversation-management-name:hover,.conversation-management-name:focus-visible{text-decoration:underline;color:#216749}
 .compact-conversation-management .conversation-management-table tbody tr{cursor:pointer}
 .compact-conversation-management .conversation-management-table tbody tr:hover{background:#f6faf7}
 .compact-conversation-management .conversation-management-table tbody tr.selected{background:#edf6ef}

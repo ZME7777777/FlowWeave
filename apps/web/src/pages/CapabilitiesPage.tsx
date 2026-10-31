@@ -751,8 +751,8 @@ function CapabilityCard({ group, selected, onToggle, onEdit, onCompare, onRollba
     : item.description;
   const dependencyLabel = item.dependency_build_state === 'READY' ? '依赖可用' : item.dependency_build_state === 'PENDING' ? '依赖构建中' : item.dependency_build_state === 'FAILED' ? '依赖构建失败' : '无需额外依赖';
   const totalReferences = group.versions.reduce((total, version) => total + version.reference_count, 0);
-  const open = item.capability_type === 'CONTEXT' ? onViewContext : item.capability_type === 'AGENT_DEFINITION' ? onViewAgentDefinition : item.capability_type === 'SKILL' ? onEdit : undefined;
-  const openLabel = item.capability_type === 'CONTEXT' ? `查看 Context ${item.capability_key}` : item.capability_type === 'AGENT_DEFINITION' ? `查看 Agent Definition ${item.capability_key}` : item.capability_type === 'SKILL' ? `编辑 Skill ${item.capability_key}` : undefined;
+  const open = item.capability_type === 'CONTEXT' ? onViewContext : item.capability_type === 'AGENT_DEFINITION' ? onViewAgentDefinition : item.capability_type === 'SKILL' || item.capability_type === 'MCP' ? onEdit : undefined;
+  const openLabel = item.capability_type === 'CONTEXT' ? `查看 Context ${item.capability_key}` : item.capability_type === 'AGENT_DEFINITION' ? `查看 Agent Definition ${item.capability_key}` : item.capability_type === 'MCP' ? `编辑 MCP ${item.capability_key}` : item.capability_type === 'SKILL' ? `编辑 Skill ${item.capability_key}` : undefined;
   const versioned = item.capability_type === 'SKILL' || item.capability_type === 'CONTEXT';
   const hasPreviousSkillVersion = versioned && group.versions.length > 1;
   return <tr className={`capability-card ${selected ? 'selected' : ''}`} onClick={event => {

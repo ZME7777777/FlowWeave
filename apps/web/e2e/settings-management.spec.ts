@@ -40,9 +40,17 @@ test('all three management pages share compact lists, selection, search, and fix
     const detail = page.getByRole('main', { name: `${title}详情` });
     await expect(list.locator('.settings-resource-row')).toHaveCount(20);
     await expect(detail.getByRole('heading', { name: `${name} 1`, exact: true })).toBeVisible();
-    await list.getByRole('button', { name: `查看 ${name} 2`, exact: true }).click();
+    const titleButton = list.getByRole('button', { name: `查看 ${name} 2`, exact: true });
+    if (title !== '终端环境') {
+      const resource = titleButton.locator('xpath=ancestor::div[contains(@class, "settings-resource-row")]');
+      await resource.click({ position: { x: 2, y: 2 } });
+      await expect(resource.getByRole('checkbox')).toBeChecked();
+      await expect(detail.getByRole('heading', { name: `${name} 1`, exact: true })).toBeVisible();
+      await titleButton.click();
+      await expect(resource.getByRole('checkbox')).toBeChecked();
+    } else await titleButton.click();
     await expect(detail.getByRole('heading', { name: `${name} 2`, exact: true })).toBeVisible();
-    await expect(list.getByRole('button', { name: `查看 ${name} 2`, exact: true })).toHaveAttribute('aria-pressed', 'true');
+    await expect(titleButton).toHaveAttribute('aria-pressed', 'true');
     for (const width of [1920, 1440, 1024]) {
       await page.setViewportSize({ width, height: 600 });
       const bounds = await list.evaluate(element => {

@@ -138,14 +138,17 @@ test('bulk delete spans pages, skips protected versions, and keeps failures sele
 });
 
 
-test('record click opens details independently of checkboxes and removes the redundant action and risk banner', async ({ page }) => {
+test('version rows select independently while names open details', async ({ page }) => {
   await setup(page);
   const panel = page.getByRole('region', { name: '环境版本列表' });
   await expect(page.getByText('凭据风险 · 发布可能保留认证信息', { exact: true })).toHaveCount(0);
   await expect(panel.getByRole('button', { name: /^版本 v\d+ 详情$/ })).toHaveCount(0);
   await panel.getByRole('checkbox', { name: '选择版本 v24', exact: true }).check();
   await expect(page.getByRole('dialog')).toHaveCount(0);
-  await panel.locator('tbody tr').filter({ hasText: '版本 25 说明' }).getByText('版本 25 说明', { exact: true }).click();
+  const protectedRow = panel.locator('tbody tr').filter({ hasText: '版本 25 说明' });
+  await protectedRow.click();
+  await expect(page.getByRole('dialog', { name: '开发环境 v25 版本详情' })).toHaveCount(0);
+  await protectedRow.getByRole('button', { name: '查看版本 v25', exact: true }).click();
   await expect(page.getByRole('dialog', { name: '开发环境 v25 版本详情' })).toBeVisible();
   await page.keyboard.press('Escape');
   const row = panel.locator('tbody tr').filter({ hasText: '版本 24 说明' });

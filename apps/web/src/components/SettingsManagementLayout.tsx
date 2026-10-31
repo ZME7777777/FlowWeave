@@ -35,8 +35,9 @@ export function SettingsResourceRow({ name, description, meta, active, onSelect,
   name: string; description: string; meta?: ReactNode; active: boolean; onSelect: () => void;
   checked?: boolean; onToggle?: () => void;
 }) {
-  return <div className={`settings-resource-row${active ? ' active' : ''}${checked ? ' checked' : ''}`}>
-    {onToggle && <input type="checkbox" aria-label={`选择 ${name}`} checked={checked} onChange={onToggle}/>}
-    <button type="button" aria-label={`查看 ${name}`} aria-pressed={active} onClick={onSelect}><b title={name}>{name}</b><small title={description}>{description}</small>{meta && <span className="settings-resource-meta">{meta}</span>}</button>
+  const selectable = Boolean(onToggle);
+  return <div className={`settings-resource-row${active ? ' active' : ''}${checked ? ' checked' : ''}${selectable ? ' selectable' : ''}`} onClick={selectable ? onToggle : undefined}>
+    {onToggle && <input type="checkbox" aria-label={`选择 ${name}`} checked={checked} onClick={event => event.stopPropagation()} onChange={onToggle}/>}
+    <div className="settings-resource-copy"><button type="button" className="settings-resource-name" aria-label={`查看 ${name}`} aria-pressed={active} onClick={event => { event.stopPropagation(); onSelect(); }}><b title={name}>{name}</b></button><small title={description}>{description}</small>{meta && <span className="settings-resource-meta">{meta}</span>}</div>
   </div>;
 }
