@@ -645,3 +645,16 @@ OpenHands原生协调会话，不在浏览器直接写阶段、完成Case或伪�
 验证：Web typecheck、定向ESLint与4项Chromium回归通过，覆盖紧凑路径不回退、协调轮次、人工启动、
 待复核、接受产物、回访异常、暂停恢复、失败动作重试及打开Agent接管。真实原生工具、混合阶段、
 Worker重启、事件重放、跨容器资料与越权矩阵保留给CASE-09。
+
+
+## Case MCP 内置隐藏边界（2026-10-30）
+
+`flowweave-case-context`、`flowweave-case-flows`和`flowweave-case-materials`继续以PUBLISHED、不可变
+CapabilityVersion作为服务端版本／digest／blob事实源，但属于平台内置能力，不进入用户能力仓库目录、
+旧全量能力列表或普通会话配置候选。普通Agent Workspace、普通Agent会话及FlowRun节点会话即使通过
+直接version id提交也以`CAPABILITY_PLATFORM_MANAGED`拒绝；不能绕过UI取得Case权限。
+
+Case协调会话仍只由服务端bootstrap按私有配置的固定version id解析，冻结能力引用并创建Case、round、
+binding、原生conversation、Runtime Session和目录版本范围的独立授权／Secret。目录隐藏不改变
+`resolve_version`及Case恢复校验，也不把这三项转换为提示词、私有协议或未治理代码；普通用户不负责
+导入、选择、编辑或删除它们，发布和升级由平台部署流程管理。

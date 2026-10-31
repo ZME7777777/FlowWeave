@@ -79,6 +79,9 @@ from flowweave.modules.agent_workspaces.application.git_settings import (
     apply_profile_identity,
     profile_identity,
 )
+from flowweave.modules.catalog.application.platform_capabilities import (
+    require_user_configurable_capability,
+)
 from flowweave.modules.catalog.public import resolve_version
 from flowweave.modules.credentials.application.service import (
     list_credentials,
@@ -537,6 +540,7 @@ def _validated_capabilities(
         if version_id in seen_versions:
             raise DomainError("AGENT_CONVERSATION_CAPABILITY_DUPLICATE", "能力不能重复选择", 422)
         published = resolve_version(db, version_id)
+        require_user_configurable_capability(published)
         capability_type = published.package.capability_type
         if (
             capability_type == "MCP"

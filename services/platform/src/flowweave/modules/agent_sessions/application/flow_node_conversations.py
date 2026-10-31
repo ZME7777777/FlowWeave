@@ -94,6 +94,9 @@ from flowweave.modules.agent_sessions.public import (
     AgentConversationMessageAttachment,
 )
 from flowweave.modules.agent_workspaces import public as agent_workspace_host
+from flowweave.modules.catalog.application.platform_capabilities import (
+    require_user_configurable_capability,
+)
 from flowweave.modules.catalog.public import resolve_version
 from flowweave.modules.credentials.application.service import credentials_for_agent
 from flowweave.modules.environments.public import (
@@ -3634,6 +3637,7 @@ def register_node_conversation_capabilities(
         if version_id in seen_versions:
             raise DomainError("AGENT_CONVERSATION_CAPABILITY_DUPLICATE", "能力不能重复选择", 422)
         published = resolve_version(db, version_id)
+        require_user_configurable_capability(published)
         capability_type = published.package.capability_type
         if capability_type not in {"SKILL", "MCP", "PLUGIN"}:
             raise DomainError("AGENT_CAPABILITY_INVALID", "该能力不能加载到 Agent 会话", 422)

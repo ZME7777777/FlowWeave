@@ -13693,6 +13693,24 @@ CASE-08的实现与各自已记录验证保持不变；本决定不把“已实�
 当前执行切片和下一可执行切片均为`NONE`。若未来具备独立PostgreSQL、固定Runtime、真实容器与
 可控故障注入环境，应新建验收任务重新定义范围和证据，不把本次跳过状态自动改写为通过。
 
+### OPS-65 Case MCP 内置隐藏与普通会话隔离 — DONE
+
+2026-10-30按用户要求将三个Case专用MCP收口为平台内置隐藏机制。它们继续保留PUBLISHED不可变
+CapabilityVersion，供Case bootstrap按固定version id核对digest／blob并冻结到协调会话；不改为提示词、
+私有执行器或绕过OpenHands正式MCP。能力仓库分页目录、类型计数和旧全量能力列表统一过滤
+`flowweave-case-context`、`flowweave-case-flows`、`flowweave-case-materials`，因此不进入能力仓库UI或
+普通会话配置候选。
+
+服务端共享能力校验同时拒绝普通Agent Workspace默认配置、工作目录会话配置、普通Agent会话和定时
+会话直接version id写入；FlowRun节点会话独立注册路径同样拒绝，统一返回
+`CAPABILITY_PLATFORM_MANAGED`。Case bootstrap内部`resolve_version`、固定配置解析、授权表、Secret
+Registry、恢复校验和历史冻结引用保持不变，UI隐藏不能被直接API提交绕过。本片无迁移、Web或Runtime
+变更。
+
+验证：受影响Python `py_compile`、Ruff check、目标格式检查及`git diff --check`通过。新增真实
+PostgreSQL/API回归覆盖目录／旧列表隐藏、普通工作区拒绝和Case内部固定版本仍可解析；当前环境缺少
+Docker socket，Testcontainers在数据库夹具创建前失败，目标断言未执行且未记为通过。当前及下一切片
+仍为NONE。
 
 ### CASE-08 前端运行反馈与接管统一 — DONE
 

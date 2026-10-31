@@ -10,6 +10,9 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from flowweave.modules.catalog.application.memory_sources import register_policy_references
+from flowweave.modules.catalog.application.platform_capabilities import (
+    is_platform_managed_capability,
+)
 from flowweave.shared.domain.capability_digest import capability_version_digest
 from flowweave.shared.domain.runtime_policy import (
     DEFAULT_CONTEXT_POLICY_CONFIG,
@@ -584,6 +587,8 @@ def list_versions(db: Session, package_ids: list[str] | None = None) -> list[dic
     }
     result: list[dict[str, Any]] = []
     for version, package, blob in rows:
+        if is_platform_managed_capability(package.capability_type, package.capability_key):
+            continue
         normalized = cast(dict[str, Any], version.normalized_config_json or {})
         is_builtin = False
         result.append(

@@ -13,6 +13,7 @@ from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from sqlalchemy import func, select, text
 
+from flowweave.modules.agent_sessions.application import conversations
 from flowweave.modules.agent_sessions.infrastructure.models import (
     AgentConversationBinding,
     AgentConversationCapability,
@@ -113,6 +114,40 @@ def publish_case_tools(
             contract=native_tools.MATERIALS,
         )
     return version
+
+
+def test_case_mcp_versions_are_hidden_and_rejected_by_generic_sessions(
+    client, db_session_factory, settings, container, monkeypatch
+):
+    owner = client.get("/api/v1/auth/me").json()["id"]
+    with (
+        tenant_user(owner),
+        settings_context(settings),
+        artifact_store_context(container.artifact_store),
+        db_session_factory() as db,
+    ):
+        context_version = publish_case_tools(db, settings, container.artifact_store, monkeypatch)
+        package_id = context_version.package_id
+        workspace = conversations.default_workspace(db)
+        with pytest.raises(DomainError) as raised:
+            conversations.replace_workspace_capabilities(db, workspace["id"], (context_version.id,))
+        assert raised.value.code == "CAPABILITY_PLATFORM_MANAGED"
+        assert native_tools._published(db, context_version.id).version.id == context_version.id
+
+    listed = client.get("/api/v1/capabilities")
+    assert listed.status_code == 200
+    assert not any(item["lineage_id"] == package_id for item in listed.json())
+    directory = client.get("/api/v1/capability-directory", params={"capability_type": "MCP"})
+    assert directory.status_code == 200
+    assert all(
+        item["latest"]["capability_key"]
+        not in {
+            native_tools.CONTEXT.server_name,
+            native_tools.FLOWS.server_name,
+            native_tools.MATERIALS.server_name,
+        }
+        for item in directory.json()["items"]
+    )
 
 
 @pytest.fixture

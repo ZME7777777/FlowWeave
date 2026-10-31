@@ -7,6 +7,9 @@ from sqlalchemy.orm import Session
 
 from flowweave.modules.catalog.application.capability_collections import collection_projection
 from flowweave.modules.catalog.application.capability_repository import list_versions
+from flowweave.modules.catalog.application.platform_capabilities import (
+    PLATFORM_MANAGED_CAPABILITY_KEYS,
+)
 from flowweave.shared.models import (
     CapabilityBlob,
     CapabilityCollection,
@@ -38,9 +41,11 @@ def list_directory(
         .group_by(CapabilityVersion.package_id)
         .subquery()
     )
+    public_package = ~CapabilityPackage.capability_key.in_(PLATFORM_MANAGED_CAPABILITY_KEYS)
     count_rows = db.execute(
         select(CapabilityPackage.capability_type, func.count())
         .join(latest, latest.c.package_id == CapabilityPackage.id)
+        .where(public_package)
         .group_by(CapabilityPackage.capability_type)
     ).all()
     counts = {kind: count for kind, count in count_rows}
@@ -53,7 +58,7 @@ def list_directory(
             & (CapabilityVersion.version_no == latest.c.revision),
         )
         .join(CapabilityBlob, CapabilityBlob.id == CapabilityVersion.blob_id)
-        .where(CapabilityPackage.capability_type == capability_type)
+        .where(CapabilityPackage.capability_type == capability_type, public_package)
     )
     if q.strip():
         needle = f"%{q.strip().replace('/', '//').replace('%', '/%').replace('_', '/_')}%"
