@@ -21,6 +21,9 @@ from flowweave.modules.agent_sessions.infrastructure.models import (
     AgentConversationCapability,
     AgentHistorySession,
 )
+from flowweave.modules.catalog.application.platform_capabilities import (
+    is_platform_managed_capability,
+)
 from flowweave.modules.catalog.infrastructure.models import (
     CapabilityBlob,
     CapabilityPackage,
@@ -466,12 +469,13 @@ def test_failed_bootstrap_discards_committed_history_authority(setup, monkeypatc
     assert g.db.scalar(select(AgentConversationCapability)) is None
 
 
-def test_builtin_mcp_cannot_be_manually_registered_or_replaced(setup):
+def test_builtin_mcp_is_platform_managed_and_cannot_be_manually_registered(setup):
     g = setup
+    assert is_platform_managed_capability("MCP", integration.SERVER_NAME)
     with pytest.raises(DomainError) as caught:
         conversations._validated_capabilities(g.db, (g.version.id,))
-    assert caught.value.code == "AGENT_HISTORY_CAPABILITY_PLATFORM_MANAGED"
-    # Default enablement never authorizes an implicit source.
+    assert caught.value.code == "CAPABILITY_PLATFORM_MANAGED"
+    # Hidden availability alone never authorizes an implicit source.
     assert integration.ensure(g.db, g.workspace, g.target, ())
     assert g.db.scalar(select(AgentHistorySession)) is None
     assert integration.ensure(g.db, g.workspace, g.target, g.refs)
@@ -489,13 +493,15 @@ def test_builtin_mcp_can_use_the_governed_import_pipeline(setup, monkeypatch):
         lambda: SimpleNamespace(capability_import_ttl_seconds=900),
     )
     config = {"mcpServers": {integration.SERVER_NAME: setup.config}}
-    prepared = capability_imports.prepare_validation(
-        CapabilityValidateWrite(
-            capability_type="MCP",
-            filename="history.json",
-            content_base64=base64.b64encode(json.dumps(config).encode()).decode(),
-        )
+    payload = CapabilityValidateWrite(
+        capability_type="MCP",
+        filename="history.json",
+        content_base64=base64.b64encode(json.dumps(config).encode()).decode(),
     )
+    with pytest.raises(DomainError) as caught:
+        capability_imports.prepare_validation(payload)
+    assert caught.value.code == "CAPABILITY_PLATFORM_MANAGED"
+    prepared = capability_imports.prepare_validation(payload, allow_platform_managed=True)
     assert prepared.preview["capabilities"][0]["normalized_config"] == setup.config
 
 

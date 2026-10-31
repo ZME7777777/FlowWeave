@@ -22,10 +22,15 @@ from flowweave.modules.catalog.application.capability_collections import (
     refresh_skill_collection_members,
 )
 from flowweave.modules.catalog.application.capability_repository import (
+    list_user_configurable_versions,
     list_versions,
     publish_dependency_build,
     publish_import,
     resolve_version,
+)
+from flowweave.modules.catalog.application.platform_capabilities import (
+    is_platform_managed_capability,
+    require_user_configurable_capability,
 )
 from flowweave.modules.tasks.public import enqueue
 from flowweave.shared.application.transactions import (
@@ -1851,12 +1856,26 @@ class PreparedSkillUpdate:
     prepared: PreparedCapabilityImport
 
 
-def prepare_validation(payload: CapabilityValidateWrite) -> PreparedCapabilityImport:
+def _require_user_importable_entries(prepared: PreparedCapabilityImport) -> None:
+    for entry in prepared.preview.get("capabilities", []):
+        if is_platform_managed_capability(
+            prepared.capability_type, str(entry.get("capability_key") or "")
+        ):
+            raise DomainError(
+                "CAPABILITY_PLATFORM_MANAGED",
+                "平台内置能力只能由受管发布流程更新",
+                422,
+            )
+
+
+def prepare_validation(
+    payload: CapabilityValidateWrite, *, allow_platform_managed: bool = False
+) -> PreparedCapabilityImport:
     """Validate and freeze an import before object-store or database work."""
 
     content, preview = _decode_and_validate(payload)
     token = token_urlsafe(32)
-    return PreparedCapabilityImport(
+    prepared = PreparedCapabilityImport(
         token=token,
         token_digest=hashlib.sha256(token.encode()).hexdigest(),
         capability_type=payload.capability_type,
@@ -1867,6 +1886,9 @@ def prepare_validation(payload: CapabilityValidateWrite) -> PreparedCapabilityIm
         expires_at=datetime.now(UTC)
         + timedelta(seconds=get_settings().capability_import_ttl_seconds),
     )
+    if not allow_platform_managed:
+        _require_user_importable_entries(prepared)
+    return prepared
 
 
 def store_validation_source(prepared: PreparedCapabilityImport) -> PreparedCapabilityImport:
@@ -2236,9 +2258,7 @@ def rollback_skill_version(db: Session, capability_id: str) -> dict[str, Any]:
         )
     previous = next((version for version in versions[1:] if version.state == "PUBLISHED"), None)
     if previous is None:
-        raise DomainError(
-            "SKILL_PREVIOUS_VERSION_UNAVAILABLE", "暂无上一版本可回退。", 409
-        )
+        raise DomainError("SKILL_PREVIOUS_VERSION_UNAVAILABLE", "暂无上一版本可回退。", 409)
     _replace_skill_selection_references(db, current.package.id, previous.id)
     if _frozen_version_references(db, current.version.id):
         current.version.state = "RETIRED"
@@ -2252,6 +2272,12 @@ def list_capabilities(db: Session) -> list[dict[str, Any]]:
     """List immutable repository versions; imports are source audit only."""
 
     return list_versions(db)
+
+
+def list_user_configurable_capabilities(db: Session) -> list[dict[str, Any]]:
+    """List only capabilities accepted by user-authored configurations."""
+
+    return list_user_configurable_versions(db)
 
 
 def read_skill_source(db: Session, capability_id: str) -> dict[str, Any]:
@@ -2520,6 +2546,7 @@ def prepare_mcp_update(
     """Validate a revised single-server MCP and keep its immutable identity."""
 
     published = resolve_version(db, capability_id)
+    require_user_configurable_capability(published)
     if published.package.capability_type != "MCP":
         raise DomainError("CAPABILITY_NOT_EDITABLE", "Only MCP source can be edited", 422)
     payload = CapabilityValidateWrite(
@@ -2913,6 +2940,17 @@ def delete_capabilities(db: Session, capability_ids: list[str]) -> dict[str, Any
     deletable: list[CapabilityVersion] = []
     for capability_id in unique_ids:
         published = resolve_version(db, capability_id)
+        if is_platform_managed_capability(
+            published.package.capability_type, published.package.capability_key
+        ):
+            blocked.append(
+                {
+                    "id": capability_id,
+                    "name": published.package.capability_key,
+                    "relation": "BUILTIN_CAPABILITY",
+                }
+            )
+            continue
         workspaces = _workspace_references(db, capability_id)
         nodes = _node_context_references(db, capability_id)
         conversations = _conversation_references(db, capability_id)

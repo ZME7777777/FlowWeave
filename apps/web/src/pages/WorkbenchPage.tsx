@@ -992,7 +992,7 @@ function NodeContextDetails({ node, contextIds, frozenSessionContexts = [], froz
 }
 
 function CapabilityPresetDialog({ selectedIds, onClose, onChange }: { selectedIds: string[]; onClose: () => void; onChange: (ids: string[]) => void }) {
-  const catalog = useQuery({ queryKey: ['capabilities'], queryFn: api.capabilities });
+  const catalog = useQuery({ queryKey: ['user-configurable-capabilities'], queryFn: api.userConfigurableCapabilities });
   const collections = useQuery({ queryKey: ['capability-collections'], queryFn: api.capabilityCollections });
   const [query, setQuery] = useState('');
   const [selectedCollectionIds, setSelectedCollectionIds] = useState<string[]>([]);
@@ -1052,7 +1052,7 @@ function FallbackModelDialog({ initial, primary, onClose, onSave }: { initial: N
 }
 
 function AgentPresetEditor({ preset, nodeContext, onChange }: { preset: AgentPreset; nodeContext: string; onChange: (preset: AgentPreset) => void }) {
-  const catalog = useQuery({ queryKey: ['capabilities'], queryFn: api.capabilities });
+  const catalog = useQuery({ queryKey: ['user-configurable-capabilities'], queryFn: api.userConfigurableCapabilities });
   const providers = useQuery({ queryKey: ['model-providers'], queryFn: api.providers });
   const [dialog, setDialog] = useState<'capabilities' | 'model' | 'fallback' | 'context'>();
   useEscapeClose(() => setDialog(undefined), Boolean(dialog));

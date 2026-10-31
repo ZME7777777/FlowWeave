@@ -1,4 +1,4 @@
-"""Platform-managed capabilities that must not enter user configuration."""
+"""Platform-managed capabilities visible to governance but unavailable to users."""
 
 from typing import Any
 
@@ -9,6 +9,7 @@ PLATFORM_MANAGED_CAPABILITY_KEYS = frozenset(
         "flowweave-case-context",
         "flowweave-case-flows",
         "flowweave-case-materials",
+        "flowweave-reference-history",
     }
 )
 

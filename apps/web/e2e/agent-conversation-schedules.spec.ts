@@ -1767,22 +1767,19 @@ test('scheduled session shows session configuration and expands additional runs'
 });
 
 for (const mode of ['draft', 'existing', 'preset'] as const) {
-  test(`builtin history MCP stays selected and locked in ${mode} configuration`, async ({ page }) => {
+  test(`platform-managed history MCP stays hidden in ${mode} configuration`, async ({ page }) => {
     await openWorkspace(page);
-    // The published server is represented once by its built-in row, even
-    // when a frozen version and a newer catalog version are both present.
-    await page.route('**/api/v1/capabilities', route => json(route, [
-      { id: 'history-v2', capability_key: 'flowweave-reference-history', capability_type: 'MCP', is_latest: true },
+    await page.route('**/api/v1/user-configurable-capabilities', route => json(route, [
       { id: 'optional-skill', capability_key: '可选技能', capability_type: 'SKILL', is_latest: true },
     ]));
     let registrations = 0;
     await page.route('**/capabilities/batch', route => { registrations += 1; return json(route, {}); });
-    await page.route('**/mcp-readiness', () => { throw new Error('Built-in MCP must not use generic credential-free probing'); });
+    await page.route('**/mcp-readiness', () => { throw new Error('Hidden MCP must not use generic credential-free probing'); });
     if (mode === 'existing') {
       await page.route('**/api/v1/agent-workspaces/schedule-workspace/conversations/scheduled-conversation', route => json(route, {
         id: 'scheduled-conversation', lifecycle: 'ACTIVE', display_title: '日报会话',
         streaming_callback_ready: true, write_available: true, created_at: now, updated_at: now,
-        capabilities: [{ id: 'history-v1', capability_type: 'MCP', capability_key: 'flowweave-reference-history', digest: 'frozen-digest' }],
+        capabilities: [],
       }));
       await page.goto('/agent/conversations/scheduled-conversation');
       await page.getByRole('button', { name: '会话配置', exact: true }).click();
@@ -1794,27 +1791,15 @@ for (const mode of ['draft', 'existing', 'preset'] as const) {
       await page.getByRole('button', { name: '新会话配置', exact: true }).click();
     }
     const dialog = page.getByRole('dialog', { name: '会话配置', exact: true });
-    const builtin = dialog.getByRole('button', { name: '会话历史查询', exact: true });
-    await expect(builtin).toHaveCount(1);
-    await expect(builtin).toBeDisabled();
-    await expect(builtin).toHaveAttribute('aria-pressed', 'true');
-    await expect(builtin.locator('em')).toHaveText('内置');
-    await expect(builtin.locator('small')).toHaveText('按授权检索引用会话的历史内容');
-    await expect(builtin.locator('i svg')).toHaveCount(1);
-    await dialog.getByRole('button', { name: '选择筛选结果（1）', exact: true }).click();
-    await dialog.getByRole('button', { name: '取消选择筛选结果', exact: true }).click();
-    await dialog.getByRole('button', { name: '只看已选', exact: true }).click();
-    await expect(builtin).toBeVisible();
-    await expect(dialog.locator('.agent-capability-list > button')).toHaveCount(1);
+    await expect(dialog.getByText('会话历史查询', { exact: true })).toHaveCount(0);
+    await expect(dialog.getByText('flowweave-reference-history', { exact: true })).toHaveCount(0);
     await dialog.getByRole('button', { name: 'MCP', exact: true }).click();
-    await expect(builtin).toBeVisible();
+    await expect(dialog.getByText('没有匹配的已发布能力。', { exact: true })).toBeVisible();
     await dialog.getByPlaceholder('搜索名称、说明或文件…').fill('history');
-    await expect(builtin).toBeVisible();
-    await dialog.getByPlaceholder('搜索名称、说明或文件…').fill('不存在的能力');
-    await expect(builtin).toHaveCount(0);
+    await expect(dialog.getByText('没有匹配的已发布能力。', { exact: true })).toBeVisible();
     await dialog.getByPlaceholder('搜索名称、说明或文件…').fill('');
-    await expect(builtin).toBeVisible();
-    await dialog.screenshot({ path: `../../.tmp/fr656-${mode}.png` });
+    await dialog.getByRole('button', { name: 'all', exact: true }).click();
+    await expect(dialog.getByText('可选技能', { exact: true })).toBeVisible();
     await dialog.getByRole('button', { name: mode === 'existing' ? '保存' : mode === 'preset' ? '保存会话配置' : '用于新建会话', exact: true }).click();
     await expect(dialog).toHaveCount(0);
     expect(registrations).toBe(0);

@@ -1321,9 +1321,6 @@ function stringValues(value: unknown): string[] {
 type DraftCredentialEntry = WebsiteCredential & { sync_state?: AgentConversationCredentialSyncEntry['sync_state'] };
 
 
-const HISTORY_MCP_KEY = 'flowweave-reference-history';
-const HISTORY_MCP_LABEL = '会话历史查询';
-
 export function CapabilityManager({ workspaceId, bindingId, conversationCapabilities, draftCapabilityIds, draftCredentialIds, configurationPreset = false, onClose, onCreateEnhancedConversation, onDraftCredentialIdsChange, onSaveConfiguration }: {
   workspaceId: string; bindingId?: string; conversationCapabilities?: AgentSessionCapability[]; onClose: () => void;
   draftCapabilityIds?: string[]; draftCredentialIds?: string[]; configurationPreset?: boolean;
@@ -1334,7 +1331,6 @@ export function CapabilityManager({ workspaceId, bindingId, conversationCapabili
   const { api } = useAgentSessionGateway();
   const host = useAgentSessionHost();
   const queryClient = useQueryClient();
-  const hasDefaultHistoryMcp = host.id === agentWorkspaceSessionHost.id;
   const [query, setQuery] = useState('');
   const [kind, setKind] = useState<AgentCapabilityType | 'ALL'>('ALL');
   const [showSelectedOnly, setShowSelectedOnly] = useState(false);
@@ -1361,7 +1357,7 @@ export function CapabilityManager({ workspaceId, bindingId, conversationCapabili
     return () => { opener?.focus(); };
   }, []);
   const catalogQuery = useQuery({ queryKey: sessionQueryKey(host, 'capability-catalog'), queryFn: api.capabilities, refetchOnMount: 'always' });
-  const selectedIds = useMemo(() => chosenIds.filter(id => !hasDefaultHistoryMcp || !(catalogQuery.data ?? []).some(item => item.id === id && item.capability_type === 'MCP' && item.capability_key === HISTORY_MCP_KEY)), [chosenIds, catalogQuery.data, hasDefaultHistoryMcp]);
+  const selectedIds = chosenIds;
   const collectionsQuery = useQuery({ queryKey: sessionQueryKey(host, 'capability-collections'), queryFn: api.capabilityCollections });
   const credentialQuery = useQuery({
     queryKey: sessionQueryKey(host, 'credential-sync', workspaceId, bindingId),
@@ -1406,7 +1402,7 @@ export function CapabilityManager({ workspaceId, bindingId, conversationCapabili
   useEffect(() => {
     const current = bindingId ? conversationCapabilities : draftCapabilityIds?.map(id => ({ id }));
     if (!current) return;
-    const next = current.filter(item => !hasDefaultHistoryMcp || !('capability_key' in item) || item.capability_key !== HISTORY_MCP_KEY).map(item => item.id);
+    const next = current.map(item => item.id);
     const previous = previousSelection.current;
     if (previous && previous.length === next.length && previous.every((id, index) => id === next[index])) return;
     previousSelection.current = next;
@@ -1416,7 +1412,7 @@ export function CapabilityManager({ workspaceId, bindingId, conversationCapabili
       const pending = chosen.filter(id => !previous.includes(id));
       return selectCapabilityVersions(next, pending.map(id => allCapabilities.get(id)).filter((item): item is CapabilityChoice => Boolean(item)), allCapabilities);
     });
-  }, [allCapabilities, bindingId, conversationCapabilities, draftCapabilityIds, hasDefaultHistoryMcp]);
+  }, [allCapabilities, bindingId, conversationCapabilities, draftCapabilityIds]);
   const registeredSkills = useMemo(() => new Map(
     (bindingId ? conversationCapabilities ?? [] : [])
       .filter(item => item.capability_type === 'SKILL')
@@ -1434,8 +1430,7 @@ export function CapabilityManager({ workspaceId, bindingId, conversationCapabili
     return updates;
   }, [allCapabilities, catalogQuery.data, registeredSkills]);
   const capabilities = useMemo(() => [...allCapabilities.values()].filter(item => {
-    if (!['SKILL', 'MCP', 'PLUGIN', 'CONTEXT', 'AGENT_DEFINITION', 'HOOK'].includes(item.capability_type)
-      || (hasDefaultHistoryMcp && item.capability_type === 'MCP' && item.capability_key === HISTORY_MCP_KEY)) return false;
+    if (!['SKILL', 'MCP', 'PLUGIN', 'CONTEXT', 'AGENT_DEFINITION', 'HOOK'].includes(item.capability_type)) return false;
     const registeredSkill = registeredSkills.get(item.capability_key);
     if (item.capability_type === 'SKILL' && registeredSkill) {
       const chosen = chosenIds.find(id => allCapabilities.get(id)?.capability_type === 'SKILL'
@@ -1449,7 +1444,7 @@ export function CapabilityManager({ workspaceId, bindingId, conversationCapabili
     if (selectedContextId) return item.id === selectedContextId;
     return (item.is_latest || frozenCreationOnlyIds.has(item.id) || (!bindingId && item.capability_type !== 'CONTEXT' && (draftCapabilityIds ?? []).includes(item.id)))
       && (!bindingId || !['CONTEXT', 'AGENT_DEFINITION', 'HOOK'].includes(item.capability_type) || frozenCreationOnlyIds.has(item.id));
-  }), [allCapabilities, bindingId, chosenIds, draftCapabilityIds, frozenCreationOnlyIds, hasDefaultHistoryMcp, registeredSkills]);
+  }), [allCapabilities, bindingId, chosenIds, draftCapabilityIds, frozenCreationOnlyIds, registeredSkills]);
   const byId = allCapabilities;
   const selectedCollectionMemberIds = useMemo(() => new Set(
     (collectionsQuery.data ?? [])
@@ -1467,8 +1462,6 @@ export function CapabilityManager({ workspaceId, bindingId, conversationCapabili
       && (!needle || `${item.capability_key} ${item.description} ${item.filename}`.toLocaleLowerCase().includes(needle)),
     );
   }, [bindingId, capabilities, kind, query, selectedCollectionIds.length, selectedCollectionMemberIds, selectedIds, showSelectedOnly]);
-  const showDefaultHistoryMcp = hasDefaultHistoryMcp && (kind === 'ALL' || kind === 'MCP')
-    && (!query.trim() || `${HISTORY_MCP_LABEL} ${HISTORY_MCP_KEY}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()));
   const selectedMcpIds = useMemo(() => selectedIds.filter(id => byId.get(id)?.capability_type === 'MCP'), [byId, selectedIds]);
   const readonlyCreationOnly = Boolean(bindingId && (kind === 'CONTEXT' || kind === 'AGENT_DEFINITION' || kind === 'HOOK'));
   const selectableVisibleIds = useMemo(() => visible
@@ -1627,7 +1620,7 @@ export function CapabilityManager({ workspaceId, bindingId, conversationCapabili
       </div>
       <div className="agent-capability-toolbar"><div className="agent-capability-tabs">{([['ALL', 'all'], ['PLUGIN', 'plugin'], ['MCP', 'MCP'], ['SKILL', 'skill'], ['CONTEXT', 'context'], ['AGENT_DEFINITION', 'agent'], ['HOOK', 'hook']] as const).map(([value, label]) => <button type="button" key={value} className={kind === value ? 'active' : ''} onClick={() => setKind(value)}>{label}</button>)}</div></div>
       {(readonlyCreationOnly || !bindingId) && <div className="agent-capability-summary">{readonlyCreationOnly ? <span>已装配 <b>{kind === 'CONTEXT' ? frozenContextCount : kind === 'HOOK' ? frozenHookCount : frozenAgentCount}</b> 个 {kind === 'CONTEXT' ? 'Context' : kind === 'HOOK' ? 'Hook' : 'Agent'}</span> : <span>{configurationPreset ? '预设能力用于后续运行会话，可自由添加或取消。' : '选择只作用于本次新会话，不会改变工作区或其他会话。'}</span>}</div>}
-      <div className="agent-capability-list">{showDefaultHistoryMcp && <button type="button" className="selected locked" disabled aria-pressed="true" aria-label={HISTORY_MCP_LABEL} aria-describedby="agent-history-builtin-label"><i className="agent-selection-checkbox" aria-hidden="true"><Check size={12}/></i><span className="agent-capability-icon mcp" aria-hidden="true" title="MCP"><Plug size={16}/></span><span className="agent-capability-copy"><span className="agent-capability-name"><b>{HISTORY_MCP_LABEL}</b><em id="agent-history-builtin-label" className="agent-capability-builtin-badge">内置</em></span><small>按授权检索引用会话的历史内容</small></span></button>}{catalogQuery.isLoading ? <p>正在读取能力仓库…</p> : visible.length === 0 ? (showDefaultHistoryMcp ? null : <p>{readonlyCreationOnly ? `此会话创建时没有装配 ${kind === 'CONTEXT' ? 'Context' : kind === 'HOOK' ? 'Hook' : 'Agent'}。` : '没有匹配的已发布能力。'}</p>) : visible.map(item => { const checked = selectedIds.includes(item.id);
+      <div className="agent-capability-list">{catalogQuery.isLoading ? <p>正在读取能力仓库…</p> : visible.length === 0 ? <p>{readonlyCreationOnly ? `此会话创建时没有装配 ${kind === 'CONTEXT' ? 'Context' : kind === 'HOOK' ? 'Hook' : 'Agent'}。` : '没有匹配的已发布能力。'}</p> : visible.map(item => { const checked = selectedIds.includes(item.id);
         const isFrozenCreationOnly = Boolean(bindingId && ['CONTEXT', 'AGENT_DEFINITION', 'HOOK'].includes(item.capability_type) && frozenCreationOnlyIds.has(item.id));
         const registeredSkill = item.capability_type === 'SKILL' ? registeredSkills.get(item.capability_key) : undefined;
         const update = registeredSkill ? skillUpdates.get(item.capability_key) : undefined;

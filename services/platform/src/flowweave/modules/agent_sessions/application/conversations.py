@@ -542,15 +542,6 @@ def _validated_capabilities(
         published = resolve_version(db, version_id)
         require_user_configurable_capability(published)
         capability_type = published.package.capability_type
-        if (
-            capability_type == "MCP"
-            and published.package.capability_key == "flowweave-reference-history"
-        ):
-            raise DomainError(
-                "AGENT_HISTORY_CAPABILITY_PLATFORM_MANAGED",
-                "会话历史查询为平台默认能力，引用会话时自动连接，不能手动替换",
-                422,
-            )
         identity = (capability_type, published.package.capability_key)
         if capability_type not in allowed_types:
             raise DomainError(
@@ -5008,7 +4999,9 @@ def control_goal(
         .with_for_update()
     )
     if runtime is not None and runtime.status == "RECONNECTING":
-        raise DomainError("AGENT_RUNTIME_UNAVAILABLE", "Agent 运行环境暂时不可写入，请稍后重试", 503)
+        raise DomainError(
+            "AGENT_RUNTIME_UNAVAILABLE", "Agent 运行环境暂时不可写入，请稍后重试", 503
+        )
     if runtime is None or runtime.status != "ACTIVE" or runtime.active_generation is None:
         raise DomainError("AGENT_RUNTIME_RECOVERING", "Agent 运行环境正在恢复，数据已保留", 503)
     handle = _handle(db, workspace, binding)

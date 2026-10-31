@@ -39,6 +39,16 @@ export interface RepositoryPage<T> { items: T[]; total: number; page: number; pa
 export interface CapabilityDirectoryPage extends RepositoryPage<CapabilityLineage> {
   counts: Partial<Record<CapabilityAssetType, number>>; collection_total: number;
 }
+export interface CapabilityValidationResult {
+  id: string; capability_version_id: string; environment_version_id: string | null;
+  validator: string; status: 'RUNNING' | 'PASSED' | 'FAILED';
+  report: {
+    connection_ok?: boolean; error_kind?: string | null; error_code?: string;
+    tool_catalog?: Array<{ name: string }>;
+  };
+  created_at: string; completed_at?: string | null;
+}
+
 export interface ContextBundleDocument { path: string; title: string; content_sha256: string }
 export interface ContextBundleManifest { entrypoint: string | null; documents: ContextBundleDocument[]; conflict_policy: 'ORDERED_DOCUMENTS_LATER_WINS' }
 export interface CapabilityCollection {

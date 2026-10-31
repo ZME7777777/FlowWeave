@@ -587,10 +587,8 @@ def list_versions(db: Session, package_ids: list[str] | None = None) -> list[dic
     }
     result: list[dict[str, Any]] = []
     for version, package, blob in rows:
-        if is_platform_managed_capability(package.capability_type, package.capability_key):
-            continue
         normalized = cast(dict[str, Any], version.normalized_config_json or {})
-        is_builtin = False
+        is_builtin = is_platform_managed_capability(package.capability_type, package.capability_key)
         result.append(
             {
                 "id": version.id,
@@ -616,3 +614,9 @@ def list_versions(db: Session, package_ids: list[str] | None = None) -> list[dic
             }
         )
     return result
+
+
+def list_user_configurable_versions(db: Session) -> list[dict[str, Any]]:
+    """Return published capabilities that may enter user-authored configuration."""
+
+    return [item for item in list_versions(db) if not item["is_builtin"]]

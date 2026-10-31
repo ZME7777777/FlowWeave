@@ -94,7 +94,7 @@ export function SidebarConversationPane({ workspaceId, sourceBindingId, sidebarB
     queryFn: () => api.agentConversation(workspaceId, sourceBindingId),
   });
   const providersQuery = useQuery({ queryKey: ['model-providers'], queryFn: api.providers });
-  const capabilitiesQuery = useQuery({ queryKey: ['capabilities'], queryFn: api.capabilities });
+  const capabilitiesQuery = useQuery({ queryKey: ['user-configurable-capabilities'], queryFn: api.userConfigurableCapabilities });
   const models = useMemo(() => (providersQuery.data ?? []).flatMap(provider => provider.connection_state === 'CONNECTED'
     ? provider.models.filter(model => model.enabled).map(model => ({ providerId: provider.id, modelName: model.model_name, reasoningEffort: model.default_reasoning_effort ?? null, label: `${provider.name} · ${model.model_name}` }))
     : []), [providersQuery.data]);

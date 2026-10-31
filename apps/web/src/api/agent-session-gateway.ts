@@ -212,7 +212,7 @@ export const agentWorkspaceSessionGateway: AgentSessionGateway = {
       api.setAgentConversationUnread(_hostId, bindingId, unread, unreadOrigin),
     workDirectories: api.agentWorkDirectories,
     providers: api.providers,
-    capabilities: api.capabilities,
+    capabilities: api.userConfigurableCapabilities,
     capabilityCollections: api.capabilityCollections,
     hostCapabilities: api.agentWorkspaceCapabilities,
     mcpReadiness: api.agentWorkspaceMcpReadiness,
@@ -294,7 +294,7 @@ export function flowNodeSessionGateway(
       conversation: (_hostId, bindingId) => nodeSessionApi.get(flowRunId, attemptId, bindingId),
       workDirectories: () => nodeSessionApi.workDirectories(flowRunId, attemptId),
       providers: api.providers,
-      capabilities: api.capabilities,
+      capabilities: api.userConfigurableCapabilities,
       capabilityCollections: api.capabilityCollections,
       // A node is only a route scope. It has no capability configuration of
       // its own: new conversations inherit the ordinary Agent default, and

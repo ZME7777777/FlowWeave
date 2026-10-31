@@ -44,6 +44,8 @@ scripts/verify-remote-deploy.sh --config .local/remote-deploy.env \
 - 不得用提示词、私有控制 JSON、文本约定、私有 HTTP 或平台自建执行器模拟 OpenHands 已提供的能力。
 - FlowWeave 显式传入的 Runtime 能力必须可追溯到固定 version、digest、blob/hash 和 Snapshot Runtime Manifest，明文 Secret 不得持久化进入 Runtime。OpenHands 原生的 HOME/项目 ambient Plugin 发现明确允许，它不是 FlowWeave 冻结 Plugin 的替代事实源，也不得用私有字段或源码补丁禁用。
 - 事件关联必须使用 OpenHands 正式的 `id`、`parent_id`、`action_id`、`tool_call_id`、cursor 等字段，不得按事件顺序、名称或文本猜测。
+- 平台内置 MCP 使用治理／业务双视图：在能力仓库中以只读 `is_builtin` 项展示并允许通过固定 Environment Version 执行正式 MCP 连接与工具目录探针，但不得出现在普通会话、定时预设、FlowRun 节点或其他用户可配置能力候选中，也不得通过直接版本 ID、编辑、删除或普通导入绕过；只能由对应平台业务生命周期按需装配。
+
 
 ## OpenHands 源码与镜像基线
 

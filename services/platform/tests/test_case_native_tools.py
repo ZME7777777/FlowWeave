@@ -26,6 +26,7 @@ from flowweave.modules.cases.infrastructure.models import (
     CaseStage,
     CaseToolGrant,
 )
+from flowweave.modules.catalog.application import capability_imports
 from flowweave.modules.catalog.infrastructure.models import (
     CapabilityBlob,
     CapabilityPackage,
@@ -116,7 +117,7 @@ def publish_case_tools(
     return version
 
 
-def test_case_mcp_versions_are_hidden_and_rejected_by_generic_sessions(
+def test_case_mcp_versions_are_governance_visible_but_rejected_by_generic_sessions(
     client, db_session_factory, settings, container, monkeypatch
 ):
     owner = client.get("/api/v1/auth/me").json()["id"]
@@ -132,22 +133,34 @@ def test_case_mcp_versions_are_hidden_and_rejected_by_generic_sessions(
         with pytest.raises(DomainError) as raised:
             conversations.replace_workspace_capabilities(db, workspace["id"], (context_version.id,))
         assert raised.value.code == "CAPABILITY_PLATFORM_MANAGED"
+        with pytest.raises(DomainError) as edited:
+            capability_imports.prepare_mcp_update(db, context_version.id, "{}", [])
+        assert edited.value.code == "CAPABILITY_PLATFORM_MANAGED"
+        deleted = capability_imports.delete_capabilities(db, [context_version.id])
+        assert deleted["deleted_ids"] == []
+        assert deleted["blocked"][0]["relation"] == "BUILTIN_CAPABILITY"
         assert native_tools._published(db, context_version.id).version.id == context_version.id
 
     listed = client.get("/api/v1/capabilities")
     assert listed.status_code == 200
-    assert not any(item["lineage_id"] == package_id for item in listed.json())
+    governed = [item for item in listed.json() if item["lineage_id"] == package_id]
+    assert governed and all(item["is_builtin"] for item in governed)
+    configurable = client.get("/api/v1/user-configurable-capabilities")
+    assert configurable.status_code == 200
+    assert not any(item["lineage_id"] == package_id for item in configurable.json())
     directory = client.get("/api/v1/capability-directory", params={"capability_type": "MCP"})
     assert directory.status_code == 200
-    assert all(
-        item["latest"]["capability_key"]
-        not in {
-            native_tools.CONTEXT.server_name,
-            native_tools.FLOWS.server_name,
-            native_tools.MATERIALS.server_name,
-        }
+    case_keys = {
+        native_tools.CONTEXT.server_name,
+        native_tools.FLOWS.server_name,
+        native_tools.MATERIALS.server_name,
+    }
+    projected = [
+        item["latest"]
         for item in directory.json()["items"]
-    )
+        if item["latest"]["capability_key"] in case_keys
+    ]
+    assert projected and all(item["is_builtin"] for item in projected)
 
 
 @pytest.fixture

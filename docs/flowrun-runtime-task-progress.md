@@ -92,6 +92,23 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 
 ## 6. 任务清单
 
+### OPS-65 平台内置 MCP 治理可见与业务隔离 — DONE
+
+平台内置 MCP 统一采用双视图治理：`flowweave-reference-history` 与三个 Case MCP
+继续在能力仓库中以 `is_builtin` 只读项展示，纳入类型计数，可选择已发布 READY
+环境通过 OpenHands 正式 MCP probe 测试连接与工具目录；内置项不可选择、编辑、
+删除或由普通导入占用保留名称。新增独立用户可配置能力投影，普通 Workspace、
+工作目录、会话、定时预设、FlowRun 节点预设与节点会话均只读取该投影；直接提交
+内置版本 ID 仍以 `CAPABILITY_PLATFORM_MANAGED` 拒绝。
+
+平台装配生命周期保持不变：历史 MCP 只在实际发送会话引用或创建关联侧边聊天时
+注册，无引用和仅拖入未发送草稿不注册；Case MCP 只由协调会话 bootstrap 装配。
+历史 MCP 治理／按需注册 31 项回归通过；治理仓库可见、只读、连接测试 Chromium
+回归 1 项通过，会话配置 draft／existing／preset 隐藏回归 3 项通过。Case PostgreSQL
+定向用例因当前环境无 Docker，在测试数据库夹具创建前阻断；Python／Web 编译、
+Ruff、定向 ESLint（保留一项既有 Hook 依赖警告）与 diff 检查通过。
+
+
 ### OPS-12 独立 Agent Runtime baseline 同步升级 — DONE
 
 用户明确授权将独立 Agent Runtime 同步到受治理 baseline，并要求后续每次 baseline

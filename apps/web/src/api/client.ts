@@ -711,6 +711,9 @@ export const api = {
   capabilityCollectionDirectory: (params: { q: string; page: number; page_size: number; sort: CapabilityCollectionSort; direction: 'asc' | 'desc' }) =>
     request<RepositoryPage<CapabilityCollection>>(`/capability-collection-directory?${new URLSearchParams(Object.entries(params).map(([key, value]) => [key, String(value)]))}`),
   capabilities: () => request<CapabilityAsset[]>('/capabilities'),
+  userConfigurableCapabilities: () => request<CapabilityAsset[]>('/user-configurable-capabilities'),
+  probeMcpCapability: (id: string, environment_version_id: string, timeout = 15) =>
+    request<import('../types').CapabilityValidationResult>(`/capabilities/${encodeURIComponent(id)}/mcp-probes`, json('POST', { environment_version_id, timeout })),
   capabilityCollections: () => request<CapabilityCollection[]>('/capability-collections'),
   mcpSource: (id: string) => request<McpSource>(`/capabilities/${encodeURIComponent(id)}/mcp-source`),
   updateMcpSource: (id: string, content: string, mcp_scripts: Array<{ server: string; filename: string; content_base64: string }>) =>

@@ -401,6 +401,11 @@ async def capabilities(db: Db) -> list[dict[str, Any]]:
     return await run_sync(db, capability_imports.list_capabilities)
 
 
+@router.get("/user-configurable-capabilities")
+async def user_configurable_capabilities(db: Db) -> list[dict[str, Any]]:
+    return await run_sync(db, capability_imports.list_user_configurable_capabilities)
+
+
 @router.post("/capabilities/{capability_id}/mcp-oauth-secret-references", status_code=201)
 async def create_mcp_oauth_secret_reference(
     capability_id: str, payload: MCPOAuthSecretReferenceWrite, db: Db

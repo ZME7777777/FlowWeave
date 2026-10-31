@@ -43,6 +43,7 @@ test.beforeEach(async ({ page }) => {
     contentType: 'application/json',
     body: JSON.stringify({ id: 'capability-user', username: 'capability-user', role: 'USER', is_super_admin: false }),
   }));
+  await page.route('**/api/v1/terminal-environments', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
 });
 
 test('Context module supports direct text, uploads, and ZIP bundles', async ({ page }) => {
@@ -458,6 +459,38 @@ test('Skill collections have their own paginated table, sort, and row actions', 
   await page.getByRole('columnheader', { name: '名称' }).getByRole('button').click();
   await request; await expect(rows).toHaveCount(20);
 });
+
+test('platform-managed MCP stays governance-visible, read-only, and testable', async ({ page }) => {
+  const builtin = {
+    id: 'builtin-mcp-version', lineage_id: 'builtin-mcp-lineage', revision_number: 2, is_latest: true,
+    capability_type: 'MCP', capability_key: 'flowweave-reference-history', description: '平台按会话引用自动装配',
+    version: '2', filename: 'flowweave-history.json', content_hash: 'a'.repeat(64), byte_size: 221,
+    import_id: 'builtin-import', created_at: '2026-10-23T11:41:25Z', reference_count: 0, is_builtin: true,
+    document: {}, dependencies: {}, dependency_build_state: 'NOT_REQUIRED', dependency_build_error: null,
+  };
+  await mockRepository(page, 'capabilities', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([builtin]) }));
+  await page.unroute('**/api/v1/terminal-environments');
+  await page.route('**/api/v1/terminal-environments', route => route.fulfill({ json: [{ id: 'environment', name: '验证环境', description: '', row_version: 1, versions: [{ id: 'environment-v1', environment_id: 'environment', version_no: 1, description: '', state: 'READY', image_reference: 'runtime@sha256:test', image_digest: `sha256:${'1'.repeat(64)}`, base_image_reference: '', base_image_digest: '', runtime_capabilities: [], manifest: {}, run_reference_count: 0, reference_count: 0, created_at: '2026-10-01T00:00:00Z' }], active_sessions: [], created_at: '2026-10-01T00:00:00Z', updated_at: '2026-10-01T00:00:00Z' }] }));
+  let probes = 0;
+  await page.route('**/api/v1/capabilities/builtin-mcp-version/mcp-probes', route => { probes += 1; return route.fulfill({ status: 201, json: { id: 'probe-1', capability_version_id: builtin.id, environment_version_id: 'environment-v1', validator: 'openhands-mcp-target-v1', status: 'PASSED', report: { connection_ok: true, tool_catalog: [{ name: 'read_referenced_conversation' }] }, created_at: '2026-10-30T00:00:00Z', completed_at: '2026-10-30T00:00:01Z' } }); });
+  await page.goto('/');
+  await page.getByRole('button', { name: '能力仓库' }).click();
+  await page.getByRole('navigation', { name: '能力模块' }).getByRole('button', { name: /^MCP\s+1$/ }).click();
+  const row = page.locator('.capability-card').filter({ hasText: 'flowweave-reference-history' });
+  await expect(row).toBeVisible();
+  await expect(row.locator('input[type="checkbox"]')).toBeDisabled();
+  await expect(row.getByRole('button', { name: '编辑 MCP flowweave-reference-history' })).toHaveCount(0);
+  await row.getByRole('button', { name: 'MCP flowweave-reference-history' }).click();
+  const menu = page.getByRole('menu');
+  await expect(menu.getByRole('menuitem', { name: /测试连接 · 未测试/ })).toBeVisible();
+  await expect(menu.getByRole('menuitem', { name: '编辑' })).toHaveCount(0);
+  await menu.getByRole('menuitem', { name: /测试连接 · 未测试/ }).click();
+  await expect(page.getByRole('status')).toContainText('连接成功');
+  expect(probes).toBe(1);
+  await row.getByRole('button', { name: 'MCP flowweave-reference-history' }).click();
+  await expect(page.getByRole('menu').getByRole('menuitem', { name: /测试连接 · 已连接 · 1 个工具/ })).toBeVisible();
+});
+
 
 test('every capability module supports selecting and bulk deleting capability lineages', async ({ page }) => {
   const moduleTypes = ['SKILL', 'PLUGIN', 'MCP', 'HOOK', 'AGENT_DEFINITION', 'CONTEXT'] as const;
