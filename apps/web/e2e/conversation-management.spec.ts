@@ -24,7 +24,7 @@ test('conversation management keeps the selected workspace and pagination in fix
       can_use_agent_sessions: true,
     });
     if (path.endsWith('/agent-workspaces/default')) return respond(route, workspace);
-    if (path.endsWith('/agent-workspaces/workspace-default/work-directories')) return respond(route, { root: { id: 'root', display_name: '根工作区' }, items: [] });
+    if (path.endsWith('/agent-workspaces/workspace-default/conversation-management/workspaces')) return respond(route, { root: { id: 'root', display_name: '根工作区' }, items: [] });
     if (path.endsWith('/agent-workspaces/workspace-default/conversation-management')) return respond(route, { items, truncated: false });
     if (path.endsWith('/node-directories') || path.endsWith('/node-assets')) return respond(route, []);
     return respond(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
@@ -36,10 +36,10 @@ test('conversation management keeps the selected workspace and pagination in fix
 
   const layout = page.locator('.conversation-management-layout');
   await expect(layout).toBeVisible();
-  await expect(page.getByRole('complementary', { name: 'Agent 工作区' })).toContainText('根工作区');
+  await expect(page.getByRole('complementary', { name: '会话工作区' })).toContainText('根工作区');
   await expect(page.getByRole('button', { name: '根工作区', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '最后活动时间', exact: true })).toContainText('全部时间');
-  await expect(page.locator('.conversation-management-workspace-list small')).toHaveCount(0);
+  await expect(page.locator('.conversation-management-workspace-list small')).toHaveCount(1);
   await expect(page.locator('.conversation-management-table tbody td small')).toHaveCount(0);
   await expect(page.locator('.conversation-management-table tbody tr')).toHaveCount(20);
   await expect(page.getByRole('navigation', { name: '列表分页' })).toBeVisible();
@@ -64,7 +64,46 @@ test('conversation management keeps the selected workspace and pagination in fix
   await expect(page.getByText('会话 21', { exact: true })).toBeVisible();
 });
 
+test('management groups Agent schedules and scenarios by their business names', async ({ page }) => {
+  const now = new Date().toISOString();
+  const requestedDirectories: Array<string | null> = [];
+  await page.route('**/api/v1/**', async route => {
+    const url = new URL(route.request().url());
+    const path = url.pathname;
+    if (path.endsWith('/auth/me')) return respond(route, { id: 'group-manager', username: 'manager', role: 'USER', can_use_agent_sessions: true });
+    if (path.endsWith('/agent-workspaces/default')) return respond(route, { id: 'group-workspace', display_name: '我的 Agent', desired_state: 'RUNNING', updated_at: now });
+    if (path.endsWith('/conversation-management/workspaces')) return respond(route, {
+      root: { display_name: '我的 Agent', workspace_kind: 'AGENT' },
+      items: [
+        { id: 'schedule-directory', display_name: '香港美股全量极值任务巡检', workspace_kind: 'AGENT_SCHEDULE', state: 'ACTIVE' },
+        { id: 'case-directory', display_name: '年度审计场景', workspace_kind: 'CASE', state: 'ACTIVE' },
+      ],
+    });
+    if (path.endsWith('/conversation-management')) {
+      const directory = url.searchParams.get('work_directory_id');
+      requestedDirectories.push(directory);
+      return respond(route, { items: directory ? [{ id: `${directory}-conversation`, display_title: `${directory} 会话`, pinned: false, unread: false, created_at: now, updated_at: now }] : [], truncated: false });
+    }
+    if (path.endsWith('/node-directories') || path.endsWith('/node-assets')) return respond(route, []);
+    return respond(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: 'AI 工作台', exact: true }).click();
+  await page.getByRole('button', { name: '会话管理', exact: true }).click();
+  await expect(page.getByRole('button', { name: '我的 Agent', exact: true })).toContainText('Agent 会话');
+  await expect(page.getByRole('button', { name: '香港美股全量极值任务巡检', exact: true })).toContainText('Agent 定时');
+  await expect(page.getByRole('button', { name: '年度审计场景', exact: true })).toContainText('场景空间');
+  await page.getByRole('button', { name: '香港美股全量极值任务巡检', exact: true }).click();
+  await expect(page.getByText('schedule-directory 会话', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '年度审计场景', exact: true }).click();
+  await expect(page.getByText('case-directory 会话', { exact: true })).toBeVisible();
+  expect(requestedDirectories).toContain('schedule-directory');
+  expect(requestedDirectories).toContain('case-directory');
+});
+
 async function deletionSetup(page: import('@playwright/test').Page, count: number, options: { failBatch?: number; holdBatches?: number[]; skippedIds?: string[] } = {}) {
+
   const now = new Date().toISOString();
   let items = Array.from({ length: count }, (_, index) => ({ id: `batch-conversation-${index + 1}`, display_title: `批量会话 ${index + 1}`, pinned: false, unread: false, created_at: now, updated_at: now, last_message_at: now }));
   const requests: Array<{ ids: string[]; directory: string | null; key: string | undefined }> = [];
@@ -75,7 +114,7 @@ async function deletionSetup(page: import('@playwright/test').Page, count: numbe
     const path = url.pathname;
     if (path.endsWith('/auth/me')) return respond(route, { id: 'batch-manager', username: 'batch-manager', role: 'USER', is_super_admin: false, can_use_agent_sessions: true });
     if (path.endsWith('/agent-workspaces/default')) return respond(route, { id: 'workspace-default', display_name: '默认工作区', desired_state: 'RUNNING', updated_at: now });
-    if (path.endsWith('/work-directories')) return respond(route, { root: { id: 'root', display_name: '根工作区' }, items: [{ id: 'directory-project', display_name: '测试项目' }] });
+    if (path.endsWith('/conversation-management/workspaces')) return respond(route, { root: { id: 'root', display_name: '根工作区' }, items: [{ id: 'directory-project', display_name: '测试项目', workspace_kind: 'AGENT' }] });
     if (path.endsWith('/conversation-management/delete')) {
       const ids = request.postDataJSON().binding_ids as string[];
       requests.push({ ids, directory: url.searchParams.get('work_directory_id'), key: request.headers()['idempotency-key'] });
@@ -175,7 +214,7 @@ test('compact management emphasizes records and keeps archive filters and row ac
     const request = route.request(); const url = new URL(request.url()); const path = url.pathname;
     if (path.endsWith('/auth/me')) return respond(route, { id: 'compact-manager', username: 'manager', role: 'USER', can_use_agent_sessions: true });
     if (path.endsWith('/agent-workspaces/default')) return respond(route, { id: 'compact-workspace', display_name: '工作区', desired_state: 'RUNNING', updated_at: now });
-    if (path.endsWith('/work-directories')) return respond(route, { root: { id: 'root', display_name: '根工作区' }, items: Array.from({ length: 30 }, (_, index) => ({ id: `directory-${index}`, display_name: `项目工作区 ${index + 1}` })) });
+    if (path.endsWith('/conversation-management/workspaces')) return respond(route, { root: { id: 'root', display_name: '根工作区' }, items: Array.from({ length: 30 }, (_, index) => ({ id: `directory-${index}`, display_name: `项目工作区 ${index + 1}`, workspace_kind: 'AGENT' })) });
     if (path.endsWith('/restore') && request.method() === 'POST') { restoreCount += 1; return respond(route, { ...archived[0], archived_at: null }); }
     if (path.endsWith('/conversation-management')) { reads += 1; return respond(route, { items: url.searchParams.has('archived') ? url.searchParams.get('archived') === 'true' ? archived : active : [...active, ...archived], truncated: false }); }
     if (path.endsWith('/node-directories') || path.endsWith('/node-assets')) return respond(route, []);
@@ -256,7 +295,6 @@ test('compact management emphasizes records and keeps archive filters and row ac
   await expect.poll(() => reads).toBeGreaterThan(before);
 });
 
-
 test('archived directory restores require confirmation and restoring one child refreshes its parent', async ({ page }) => {
   const now = '2026-10-29T02:00:00Z';
   let directoryArchived = true;
@@ -269,12 +307,12 @@ test('archived directory restores require confirmation and restoring one child r
     const request = route.request(); const url = new URL(request.url()); const path = url.pathname;
     if (path.endsWith('/auth/me')) return respond(route, { id: 'archive-manager', username: 'manager', role: 'USER', can_use_agent_sessions: true });
     if (path.endsWith('/agent-workspaces/default')) return respond(route, { id: 'archive-workspace', display_name: '工作区', desired_state: 'RUNNING', updated_at: now });
-    if (path.endsWith('/work-directories')) return respond(route, { root: { display_name: '根工作区' }, items: [{ id: 'archived-directory', display_name: '归档项目', state: directoryArchived ? 'ARCHIVED' : 'ACTIVE', current_version: { id: 'archive-version', working_directory: '/runtime/workspace/project/archive-project' } }] });
+    if (path.endsWith('/conversation-management/workspaces')) return respond(route, { root: { display_name: '根工作区' }, items: [{ id: 'archived-directory', display_name: '归档项目', workspace_kind: 'AGENT', state: directoryArchived ? 'ARCHIVED' : 'ACTIVE', current_version: { id: 'archive-version', working_directory: '/runtime/workspace/project/archive-project' } }] });
     if (path.endsWith('/work-directories/archived-directory/restore')) {
       directoryRestores += 1;
       if (failRestore) return respond(route, { error: { code: 'RESTORE_FAILED', message: '暂时无法恢复工作区' } }, 503);
       directoryArchived = false; archivedIds.clear();
-      return respond(route, { id: 'archived-directory', display_name: '归档项目', state: 'ACTIVE' });
+      return respond(route, { id: 'archived-directory', display_name: '归档项目', workspace_kind: 'AGENT', state: 'ACTIVE' });
     }
     if (path.endsWith('/conversations/child-1/restore')) {
       conversationRestores += 1; directoryArchived = false; archivedIds.delete('child-1');
@@ -346,9 +384,9 @@ test('archive filter defaults to all, filters both states, and resets across wor
     const url = new URL(route.request().url()); const path = url.pathname;
     if (path.endsWith('/auth/me')) return respond(route, { id: 'filter-manager', username: 'manager', role: 'USER', can_use_agent_sessions: true });
     if (path.endsWith('/agent-workspaces/default')) return respond(route, { id: 'filter-workspace', display_name: '工作区', desired_state: 'RUNNING', updated_at: now });
-    if (path.endsWith('/work-directories')) return respond(route, { root: { display_name: '根工作区' }, items: [
-      { id: 'active-directory', display_name: '正常项目', state: 'ACTIVE' },
-      { id: 'archived-directory', display_name: '归档项目', state: 'ARCHIVED' },
+    if (path.endsWith('/conversation-management/workspaces')) return respond(route, { root: { display_name: '根工作区' }, items: [
+      { id: 'active-directory', display_name: '正常项目', workspace_kind: 'AGENT', state: 'ACTIVE' },
+      { id: 'archived-directory', display_name: '归档项目', workspace_kind: 'AGENT', state: 'ARCHIVED' },
     ] });
     if (path.endsWith('/conversation-management')) {
       const archived = url.searchParams.get('archived'); queries.push(archived);

@@ -5,8 +5,10 @@
 .compact-conversation-management .conversation-management-workspaces>header{display:flex;min-height:46px;flex:0 0 auto;align-items:center;gap:8px;border-bottom:1px solid #e2e9e3;padding:10px 16px;color:#687b6e}
 .compact-conversation-management .conversation-management-workspaces>header>b{font-size:11px;font-weight:600}
 .compact-conversation-management .conversation-management-workspace-list{display:flex;min-height:0;flex-direction:column;overflow:auto;gap:3px;padding:8px}
-.compact-conversation-management .conversation-management-workspace-list>button,.compact-conversation-management .conversation-management-workspace-item>button:first-child{min-height:34px;padding:7px 9px;border-radius:6px}
-.compact-conversation-management .conversation-management-workspace-list button>span{font-size:11px;font-weight:500}
+.compact-conversation-management .conversation-management-workspace-list>button,.compact-conversation-management .conversation-management-workspace-item>button:first-child{min-height:42px;padding:7px 9px;border-radius:6px}
+.compact-conversation-management .conversation-management-workspace-list button>span{display:flex;min-width:0;flex:1;flex-direction:column;align-items:flex-start;gap:1px;font-size:11px}
+.compact-conversation-management .conversation-management-workspace-list button>span>b{overflow:hidden;max-width:100%;font-weight:550;text-overflow:ellipsis;white-space:nowrap}
+.compact-conversation-management .conversation-management-workspace-list button>span>small{color:#91a096;font-size:9px;font-weight:400}
 .compact-conversation-management .conversation-management-workspace-list button>svg{width:15px;height:15px}
 .compact-conversation-management .conversation-management-workspace-item>.secondary{display:inline-flex;flex:0 0 auto;align-items:center;justify-content:center;gap:4px;width:auto;background:transparent;padding:5px;color:#588069;font-size:9px}
 .compact-conversation-management .conversation-management-panel{border:0;border-radius:0;box-shadow:none}

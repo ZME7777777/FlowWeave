@@ -1,12 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArchiveRestore, ArchiveX, Clock3, Folder, RefreshCw, Search, Trash2, X } from 'lucide-react';
+import { ArchiveRestore, ArchiveX, Bot, CalendarClock, Clock3, Folder, RefreshCw, Search, Trash2, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { LaunchOptionMenu } from '../components/LaunchOptionMenu';
 import { useProductDialog } from '../components/ProductDialogContext';
 import { Pagination } from '../components/Pagination';
 import './conversation-management.css';
 import { api } from '../api/client';
-import type { AgentConversationManagementDeleteResult, AgentConversationManagementPage, ManagedAgentConversation } from '../types';
+import type { AgentConversationManagementDeleteResult, AgentConversationManagementPage, AgentConversationManagementWorkspaceKind, ManagedAgentConversation } from '../types';
 
 const DAY = 24 * 60 * 60 * 1000;
 const PAGE_SIZE = 20;
@@ -39,6 +39,18 @@ function formatTime(value: string) {
   return new Date(value).toLocaleString('zh-CN', { dateStyle: 'medium', timeStyle: 'short' });
 }
 
+const WORKSPACE_KIND_LABEL: Record<AgentConversationManagementWorkspaceKind, string> = {
+  AGENT: 'Agent 会话',
+  AGENT_SCHEDULE: 'Agent 定时',
+  CASE: '场景空间',
+};
+
+function WorkspaceIcon({ kind }: { kind: AgentConversationManagementWorkspaceKind }) {
+  if (kind === 'AGENT_SCHEDULE') return <CalendarClock size={16}/>;
+  if (kind === 'CASE') return <Bot size={16}/>;
+  return <Folder size={16}/>;
+}
+
 export function ConversationManagementPage({ onRestored }: { onRestored?: (selection: { bindingId?: string; workDirectoryId?: string }) => void } = {}) {
   const client = useQueryClient();
   const dialog = useProductDialog();
@@ -55,14 +67,17 @@ export function ConversationManagementPage({ onRestored }: { onRestored?: (selec
   const [deletionProgress, setDeletionProgress] = useState({ processed: 0, total: 0 });
 
   const workspace = useQuery({ queryKey: ['agent-workspace', 'default'], queryFn: ({ signal }) => api.defaultAgentWorkspace(signal) });
-  const workDirectories = useQuery({
-    queryKey: ['agent-work-directories', workspace.data?.id, 'including-archived'],
-    queryFn: () => api.agentWorkDirectories(workspace.data!.id, true),
+  const managementWorkspaces = useQuery({
+    queryKey: ['agent-conversation-management-workspaces', workspace.data?.id],
+    queryFn: () => api.agentConversationManagementWorkspaces(workspace.data!.id),
     enabled: Boolean(workspace.data?.id),
   });
-  const selectedWorkspaceLabel = selectedWorkDirectoryId
-    ? workDirectories.data?.items.find(item => item.id === selectedWorkDirectoryId)?.display_name ?? '工作区'
-    : workDirectories.data?.root.display_name ?? '根工作区';
+  const selectedWorkspace = selectedWorkDirectoryId
+    ? managementWorkspaces.data?.items.find(item => item.id === selectedWorkDirectoryId)
+    : undefined;
+  const selectedWorkspaceLabel = selectedWorkspace?.display_name
+    ?? managementWorkspaces.data?.root.display_name
+    ?? 'Agent 会话';
   const conversations = useQuery({
     queryKey: ['agent-conversation-management', workspace.data?.id, selectedWorkDirectoryId ?? 'root', archiveFilter],
     queryFn: () => api.agentConversationManagement(workspace.data!.id, selectedWorkDirectoryId, archiveFilter === 'all' ? undefined : archiveFilter === 'archived'),
@@ -70,10 +85,10 @@ export function ConversationManagementPage({ onRestored }: { onRestored?: (selec
   });
 
   useEffect(() => {
-    if (selectedWorkDirectoryId && !workDirectories.data?.items.some(item => item.id === selectedWorkDirectoryId)) {
+    if (selectedWorkDirectoryId && !managementWorkspaces.data?.items.some(item => item.id === selectedWorkDirectoryId)) {
       setSelectedWorkDirectoryId(undefined);
     }
-  }, [selectedWorkDirectoryId, workDirectories.data?.items]);
+  }, [managementWorkspaces.data?.items, selectedWorkDirectoryId]);
 
   useEffect(() => {
     setSelectedIds(new Set());
@@ -155,6 +170,7 @@ export function ConversationManagementPage({ onRestored }: { onRestored?: (selec
       await Promise.all([
         client.invalidateQueries({ queryKey: ['agent-conversation-management', workspace.data?.id] }),
         client.invalidateQueries({ queryKey: ['agent-work-directories', workspace.data?.id] }),
+        client.invalidateQueries({ queryKey: ['agent-conversation-management-workspaces', workspace.data?.id] }),
         client.invalidateQueries({ queryKey: ['agent-session'] }),
       ]);
     },
@@ -165,6 +181,7 @@ export function ConversationManagementPage({ onRestored }: { onRestored?: (selec
       onRestored?.({ workDirectoryId });
       await Promise.all([
         client.invalidateQueries({ queryKey: ['agent-work-directories', workspace.data?.id] }),
+        client.invalidateQueries({ queryKey: ['agent-conversation-management-workspaces', workspace.data?.id] }),
         client.invalidateQueries({ queryKey: ['agent-conversation-management', workspace.data?.id] }),
         client.invalidateQueries({ queryKey: ['agent-session'] }),
       ]);
@@ -185,20 +202,20 @@ export function ConversationManagementPage({ onRestored }: { onRestored?: (selec
   });
 
   const filtersActive = Boolean(query || period !== 'all' || archiveFilter !== 'all' || includePinned || includeUnread);
-  const loading = conversations.isLoading || workspace.isLoading || workDirectories.isLoading;
-  const readError = conversations.error ?? workspace.error ?? workDirectories.error;
+  const loading = conversations.isLoading || workspace.isLoading || managementWorkspaces.isLoading;
+  const readError = conversations.error ?? workspace.error ?? managementWorkspaces.error;
 
   return <section className="page conversation-management-page compact-conversation-management">
     <section className="conversation-management-layout">
-      <aside className="conversation-management-workspaces" aria-label="Agent 工作区">
+      <aside className="conversation-management-workspaces" aria-label="会话工作区">
         <header><Folder size={15}/><b>工作区</b></header>
         <div className="conversation-management-workspace-list">
-          <button type="button" className={!selectedWorkDirectoryId ? 'active' : ''} aria-pressed={!selectedWorkDirectoryId} disabled={remove.isPending} onClick={() => setSelectedWorkDirectoryId(undefined)}>
-            <Folder size={16}/><span>{workDirectories.data?.root.display_name ?? '根工作区'}</span>
+          <button type="button" aria-label={managementWorkspaces.data?.root.display_name ?? 'Agent 工作区'} className={!selectedWorkDirectoryId ? 'active' : ''} aria-pressed={!selectedWorkDirectoryId} disabled={remove.isPending} onClick={() => setSelectedWorkDirectoryId(undefined)}>
+            <Folder size={16}/><span><b>{managementWorkspaces.data?.root.display_name ?? 'Agent 工作区'}</b><small>Agent 会话</small></span>
           </button>
-          {workDirectories.data?.items.map(directory => <div key={directory.id} className="conversation-management-workspace-item">
-            <button type="button" className={selectedWorkDirectoryId === directory.id ? 'active' : ''} aria-pressed={selectedWorkDirectoryId === directory.id} disabled={remove.isPending} onClick={() => setSelectedWorkDirectoryId(directory.id)}>
-              <Folder size={16}/><span title={directory.display_name}>{directory.display_name}{directory.state === 'ARCHIVED' ? '（已归档）' : ''}</span>
+          {managementWorkspaces.data?.items.map(directory => <div key={directory.id} className="conversation-management-workspace-item">
+            <button type="button" aria-label={`${directory.display_name}${directory.state === 'ARCHIVED' ? '（已归档）' : ''}`} className={selectedWorkDirectoryId === directory.id ? 'active' : ''} aria-pressed={selectedWorkDirectoryId === directory.id} disabled={remove.isPending} onClick={() => setSelectedWorkDirectoryId(directory.id)}>
+              <WorkspaceIcon kind={directory.workspace_kind}/><span title={directory.display_name}><b>{directory.display_name}{directory.state === 'ARCHIVED' ? '（已归档）' : ''}</b><small>{WORKSPACE_KIND_LABEL[directory.workspace_kind]}</small></span>
             </button>
             {directory.state === 'ARCHIVED' && <button type="button" className="secondary" aria-label={`恢复工作区 ${directory.display_name}`} disabled={restoreDirectory.isPending || remove.isPending} onClick={async () => {
               if (await dialog.confirm({ title: `恢复工作区“${directory.display_name}”？`, message: '将恢复此工作区及其中所有已归档会话，恢复后会重新显示在工作台列表中。', confirmLabel: '确认恢复' })) restoreDirectory.mutate(directory.id);
@@ -222,7 +239,7 @@ export function ConversationManagementPage({ onRestored }: { onRestored?: (selec
         </div>
         {conversations.data?.truncated && <div className="conversation-management-notice warning"><Clock3 size={14}/><span>当前仅显示最近 500 个会话。请先完成本次清理，再继续管理更早的会话。</span></div>}
         {(restore.isError || restoreDirectory.isError) && <div className="conversation-management-notice warning" role="alert">{restore.error?.message ?? restoreDirectory.error?.message}</div>}
-        {loading ? <div className="empty">正在读取会话…</div> : readError ? <div className="empty error" role="alert"><span>{readError.message}</span><button className="secondary" onClick={() => void Promise.all([workspace.refetch(), workDirectories.refetch(), conversations.refetch()])}>重试</button></div> : <>
+        {loading ? <div className="empty">正在读取会话…</div> : readError ? <div className="empty error" role="alert"><span>{readError.message}</span><button className="secondary" onClick={() => void Promise.all([workspace.refetch(), managementWorkspaces.refetch(), conversations.refetch()])}>重试</button></div> : <>
           <div className="conversation-management-table-wrap" ref={tableRef}><table className="conversation-management-table"><thead><tr><th scope="col"><input type="checkbox" aria-label="选择当前筛选结果中的全部会话" title="选择全部匹配结果（含其他页）" checked={selectAllVisible} disabled={!visible.length || remove.isPending} ref={input => { if (input) input.indeterminate = !selectAllVisible && selectedVisible.length > 0; }} onChange={toggleVisible}/></th><th scope="col">会话名称</th><th scope="col">最后活动</th><th scope="col">创建时间</th><th scope="col">状态</th><th scope="col">操作</th></tr></thead><tbody>{paged.map(item => <tr key={item.id} className={selectedIds.has(item.id) ? 'selected' : ''} onClick={event => { if (!(event.target as HTMLElement).closest('button, input, label, a')) toggle(item.id); }}><td><input type="checkbox" aria-label={`选择会话 ${conversationTitle(item)}`} checked={selectedIds.has(item.id)} onChange={() => toggle(item.id)}/></td><td><b title={conversationTitle(item)}>{conversationTitle(item)}</b></td><td>{formatTime(activityTime(item))}</td><td>{formatTime(item.created_at)}</td><td><span className="conversation-management-status">{item.archived_at ? '已归档' : item.pinned ? '置顶' : item.unread ? '未读' : '普通'}</span></td><td>{item.archived_at && <button type="button" className="secondary" aria-label={`恢复会话 ${conversationTitle(item)}`} disabled={restore.isPending || remove.isPending} onClick={() => restore.mutate(item.id)}><ArchiveRestore size={14}/>恢复</button>}</td></tr>)}</tbody></table>{visible.length === 0 && <div className="empty compact"><ArchiveX size={25}/><b>没有符合当前条件的会话</b><span>调整筛选条件，或等待正在运行的会话完成。</span></div>}</div>
           <footer className="conversation-management-footer"><span aria-live="polite">已选 {selectedVisible.length} / {visible.length} 个会话</span><Pagination page={currentPage} pageSize={PAGE_SIZE} total={visible.length} onPageChange={setPage}/></footer>
         </>}

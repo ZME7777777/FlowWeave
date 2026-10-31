@@ -1114,6 +1114,16 @@ export interface AgentSessionWorkDirectoryList {
 }
 export type AgentWorkDirectoryList = AgentSessionWorkDirectoryList;
 
+export type AgentConversationManagementWorkspaceKind = 'AGENT' | 'AGENT_SCHEDULE' | 'CASE';
+export interface AgentConversationManagementWorkspace extends AgentSessionWorkDirectory {
+  workspace_kind: AgentConversationManagementWorkspaceKind;
+  source_id?: string | null;
+}
+export interface AgentConversationManagementWorkspaceList {
+  root: AgentSessionWorkDirectoryList['root'] & { workspace_kind: 'AGENT' };
+  items: AgentConversationManagementWorkspace[];
+}
+
 export interface AgentSessionWorkspaceDetails {
   root: string;
   scope: { kind: 'ROOT' | 'WORK_DIRECTORY'; id?: string; display_name: string };

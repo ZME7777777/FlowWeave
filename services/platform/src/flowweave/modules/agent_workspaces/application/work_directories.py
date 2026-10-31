@@ -411,39 +411,113 @@ def frozen_conversation_context(
     return _agent_working_directory(workspace_id, version.working_path)
 
 
+def _directory_predicates(
+    workspace_id: str, *, include_archived: bool, include_managed: bool
+) -> list[Any]:
+    predicates: list[Any] = [AgentWorkDirectory.workspace_id == workspace_id]
+    if not include_managed:
+        predicates.extend(
+            (
+                ~AgentWorkDirectory.id.in_(
+                    select(AgentConversationSchedule.work_directory_id).where(
+                        AgentConversationSchedule.workspace_id == workspace_id,
+                        AgentConversationSchedule.workspace_mode == "AUTOMATION",
+                        AgentConversationSchedule.work_directory_id.is_not(None),
+                    )
+                ),
+                ~AgentWorkDirectory.id.in_(
+                    select(Case.control_work_directory_id).where(
+                        Case.control_work_directory_id.is_not(None)
+                    )
+                ),
+            )
+        )
+    if not include_archived:
+        predicates.append(AgentWorkDirectory.archived_at.is_(None))
+    return predicates
+
+
+def _ordered_directories(db: Session, predicates: list[Any]) -> list[AgentWorkDirectory]:
+    return list(
+        db.scalars(
+            select(AgentWorkDirectory)
+            .where(*predicates)
+            .order_by(
+                AgentWorkDirectory.archived_at,
+                AgentWorkDirectory.updated_at.desc(),
+                AgentWorkDirectory.created_at.desc(),
+            )
+        )
+    )
+
+
 def list_work_directories(
     db: Session, workspace_id: str, *, include_archived: bool = False
 ) -> dict[str, Any]:
     _workspace(db, workspace_id)
-    automation_directory_ids = select(AgentConversationSchedule.work_directory_id).where(
-        AgentConversationSchedule.workspace_id == workspace_id,
-        AgentConversationSchedule.workspace_mode == "AUTOMATION",
-        AgentConversationSchedule.work_directory_id.is_not(None),
-    )
-    predicates = [
-        AgentWorkDirectory.workspace_id == workspace_id,
-        ~AgentWorkDirectory.id.in_(automation_directory_ids),
-        ~AgentWorkDirectory.id.in_(
-            select(Case.control_work_directory_id).where(
-                Case.control_work_directory_id.is_not(None)
-            )
+    items = _ordered_directories(
+        db,
+        _directory_predicates(
+            workspace_id, include_archived=include_archived, include_managed=False
         ),
-    ]
-    if not include_archived:
-        predicates.append(AgentWorkDirectory.archived_at.is_(None))
-    items = db.scalars(
-        select(AgentWorkDirectory)
-        .where(*predicates)
-        .order_by(
-            AgentWorkDirectory.archived_at,
-            AgentWorkDirectory.updated_at.desc(),
-            AgentWorkDirectory.created_at.desc(),
-        )
     )
     return {
         "root": root_context(workspace_id=workspace_id),
         "items": [_dict(db, item) for item in items],
     }
+
+
+def list_management_workspaces(
+    db: Session, workspace_id: str, *, include_archived: bool = False
+) -> dict[str, Any]:
+    workspace = _workspace(db, workspace_id)
+    items = _ordered_directories(
+        db,
+        _directory_predicates(
+            workspace_id, include_archived=include_archived, include_managed=True
+        ),
+    )
+    schedules = {
+        item.work_directory_id: item
+        for item in db.scalars(
+            select(AgentConversationSchedule).where(
+                AgentConversationSchedule.workspace_id == workspace_id,
+                AgentConversationSchedule.workspace_mode == "AUTOMATION",
+                AgentConversationSchedule.work_directory_id.is_not(None),
+            )
+        )
+    }
+    cases = {
+        item.control_work_directory_id: item
+        for item in db.scalars(
+            select(Case).where(Case.control_work_directory_id.is_not(None))
+        )
+    }
+    result: list[dict[str, Any]] = []
+    for item in items:
+        value = _dict(db, item)
+        if schedule := schedules.get(item.id):
+            value.update(
+                {
+                    "display_name": schedule.name,
+                    "workspace_kind": "AGENT_SCHEDULE",
+                    "source_id": schedule.id,
+                }
+            )
+        elif case := cases.get(item.id):
+            value.update(
+                {
+                    "display_name": case.name,
+                    "workspace_kind": "CASE",
+                    "source_id": case.id,
+                }
+            )
+        else:
+            value["workspace_kind"] = "AGENT"
+        result.append(value)
+    root = root_context(workspace_id=workspace_id)
+    root.update({"display_name": workspace.display_name, "workspace_kind": "AGENT"})
+    return {"root": root, "items": result}
 
 
 def _directory_conversations(
@@ -1135,6 +1209,7 @@ __all__ = (
     "frozen_conversation_context",
     "get_work_directory",
     "get_flow_run_work_directory",
+    "list_management_workspaces",
     "list_work_directories",
     "list_flow_run_work_directories",
     "root_context",

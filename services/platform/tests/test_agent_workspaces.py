@@ -4120,6 +4120,50 @@ def test_agent_workspace_archives_and_restores_directories_and_conversations(
         assert all(child.archived_at is None for child in children)
 
 
+
+def test_agent_workspace_management_lists_case_workspaces_by_case_name(
+    settings, db_session_factory
+):
+    from flowweave.modules.cases.infrastructure.models import Case
+
+    with settings_context(settings), tenant_user(FLOWWEAVE_USER_ID), db_session_factory() as db:
+        workspace = _ready_workspace_for_conversation(db)
+        project_root = (
+            _agent_project_root(settings, db, workspace) / "users" / FLOWWEAVE_USER_ID
+        )
+        project_root.mkdir(mode=0o700, exist_ok=True)
+        case_path = project_root / ".flowweave" / "cases" / "case-management"
+        case_path.mkdir(parents=True)
+        directory = work_directories.create_work_directory(
+            db,
+            workspace.id,
+            "Case · 旧目录名称 · 12345678",
+            (".flowweave/cases/case-management",),
+        )
+        item = Case(
+            id="case-management",
+            name="跨部门迁移场景",
+            description="",
+            objective="完成迁移",
+            control_work_directory_id=directory["id"],
+        )
+        db.add(item)
+        db.flush()
+
+        assert work_directories.list_work_directories(db, workspace.id)["items"] == []
+        managed = work_directories.list_management_workspaces(db, workspace.id)["items"]
+        identity = [
+            (
+                entry["id"],
+                entry["display_name"],
+                entry["workspace_kind"],
+                entry["source_id"],
+            )
+            for entry in managed
+        ]
+        assert identity == [(directory["id"], "跨部门迁移场景", "CASE", item.id)]
+
+
 def test_agent_workspace_management_scopes_to_the_selected_work_directory(
     settings, db_session_factory, monkeypatch
 ):

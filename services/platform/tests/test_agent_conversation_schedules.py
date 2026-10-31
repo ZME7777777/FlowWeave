@@ -101,6 +101,17 @@ def test_automation_work_directory_is_hidden_from_conversation_workspace_list(
 
         assert created["work_directory_id"] is not None
         assert work_directories.list_work_directories(db, workspace.id)["items"] == []
+        managed = work_directories.list_management_workspaces(db, workspace.id)["items"]
+        assert managed == [
+            {
+                **work_directories.get_work_directory(
+                    db, workspace.id, str(created["work_directory_id"])
+                ),
+                "display_name": "每日检查",
+                "workspace_kind": "AGENT_SCHEDULE",
+                "source_id": created["id"],
+            }
+        ]
 
 
 def test_agent_conversation_schedule_delivery_is_claimed_by_worker() -> None:

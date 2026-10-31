@@ -1063,6 +1063,20 @@ async def restore_agent_work_directory(
     )
 
 
+@router.get("/agent-workspaces/{workspace_id}/conversation-management/workspaces")
+async def list_agent_management_workspaces(
+    workspace_id: str,
+    db: Db,
+    include_archived: bool = Query(default=True),
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: work_directories.list_management_workspaces(
+            session, workspace_id, include_archived=include_archived
+        ),
+    )
+
+
 @router.get("/agent-workspaces/{workspace_id}/conversation-management")
 async def list_agent_management_conversations(
     workspace_id: str,
