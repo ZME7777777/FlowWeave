@@ -479,6 +479,72 @@ def _git_run(repository: Path, *arguments: str) -> bytes | None:
     return result.stdout if result.returncode == 0 else None
 
 
+def ensure_private_upload_directory_ignored(
+    project_root: Path, runtime_root: str, working_directory: str
+) -> None:
+    """Keep the platform-owned attachment directory out of any enclosing Git repo."""
+
+    runtime_path = PurePosixPath(working_directory)
+    runtime_workspace_root = PurePosixPath(runtime_root)
+    if not runtime_path.is_relative_to(runtime_workspace_root):
+        raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "附件目录不在当前工作区范围内", 422)
+    host_directory = project_root.joinpath(
+        *runtime_path.relative_to(runtime_workspace_root).parts
+    )
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(host_directory), "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            check=False,
+            env={"PATH": os.defpath},
+            text=True,
+            timeout=_GIT_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return
+    if result.returncode != 0 or not result.stdout.strip():
+        return
+    repository = Path(result.stdout.strip()).resolve()
+    upload_directory = (host_directory / ".uploads").resolve()
+    if (
+        not repository.is_relative_to(project_root.resolve())
+        or not upload_directory.is_relative_to(repository)
+    ):
+        return
+    relative_upload_directory = upload_directory.relative_to(repository).as_posix()
+    pattern = f"/{relative_upload_directory}/"
+    exclude_value = _git_run(
+        repository,
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-path",
+        "info/exclude",
+    )
+    if not exclude_value:
+        return
+    exclude_path = Path(exclude_value.decode("utf-8", errors="strict").strip())
+    try:
+        if exclude_path.exists() and exclude_path.is_symlink():
+            raise DomainError("AGENT_WORKSPACE_GIT_EXCLUDE_INVALID", "Git 排除文件无效", 409)
+        existing = exclude_path.read_text() if exclude_path.exists() else ""
+        if pattern in {line.strip() for line in existing.splitlines()}:
+            return
+        exclude_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        exclude_path.write_text(
+            f"{existing.rstrip()}\n{pattern}\n" if existing else f"{pattern}\n"
+        )
+    except OSError as exc:
+        raise DomainError(
+            "AGENT_WORKSPACE_GIT_EXCLUDE_UNAVAILABLE",
+            "无法保护附件目录的 Git 排除规则",
+            503,
+        ) from exc
+
+
+def _is_private_upload_path(path: str) -> bool:
+    return any(part == ".uploads" for part in PurePosixPath(path).parts)
+
+
 def _fetch_origin(repository: Path) -> None:
     """Update the configured origin without accepting a browser-supplied remote."""
 
@@ -767,10 +833,12 @@ def git_working_changes(
     staged = _git_changed_files(repository, staged=True)
     unstaged = _git_changed_files(repository, staged=False)
     untracked = _git_run(repository, "ls-files", "--others", "--exclude-standard", "-z") or b""
+    staged = [item for item in staged if not _is_private_upload_path(item["path"])]
+    unstaged = [item for item in unstaged if not _is_private_upload_path(item["path"])]
     unstaged.extend(
         {"path": path, "status": "?"}
         for path in untracked.decode("utf-8", errors="replace").split("\0")
-        if path
+        if path and not _is_private_upload_path(path)
     )
     return {
         "repository": _repository_details(repository, runtime_path),
@@ -1174,7 +1242,7 @@ def _subtree_has_bound_attachment(db: Session, workspace_id: str, path: str) -> 
 
 
 _PRIVATE_ATTACHMENT_PATH = re.compile(
-    r"^/runtime/workspace/(?:project|[0-9a-f-]{36})/uploads/"
+    r"^/runtime/workspace/(?:project/(?:users/)?[0-9a-f-]{36}|project|[0-9a-f-]{36})(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/(?:\.uploads|uploads)/"
     r"(?P<owner>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-"
     r"[0-9a-f]{32}(?:--[A-Za-z0-9][A-Za-z0-9._-]{0,180})?$"
 )
@@ -1217,11 +1285,10 @@ def delete_bound_attachment_files(db: Session, workspace_id: str, binding_id: st
     project_root = _project_root(db, workspace_id)
     runtime_root = _runtime_root(workspace_id)
     private_paths = set(paths)
-    uploads = project_root / "uploads"
     try:
         private_paths.update(
-            str(PurePosixPath(runtime_root) / "uploads" / candidate.name)
-            for candidate in uploads.glob(f"{binding_id}-*")
+            str(PurePosixPath(runtime_root) / candidate.relative_to(project_root).as_posix())
+            for candidate in project_root.rglob(f"{binding_id}-*")
             if candidate.is_file()
         )
     except OSError:

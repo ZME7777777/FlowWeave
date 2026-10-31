@@ -909,6 +909,7 @@ def _handle(
         runtime_resource_id=sandbox.id,
         runtime_resource_name=sandbox.backend_resource_name,
         workspace_root=user_runtime_project_root(workspace.id),
+        working_directory=binding.working_directory or user_runtime_project_root(workspace.id),
     )
 
 
@@ -3397,7 +3398,7 @@ def message(
 
 
 _ATTACHMENT_PATH = re.compile(
-    rf"^(?P<workspace_root>{_RUNTIME_WORKSPACE_PATH})/uploads/"
+    rf"^(?P<workspace_root>{_RUNTIME_WORKSPACE_PATH})(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/(?:\.uploads|uploads)/"
     r"(?P<owner>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-"
     r"(?P<object>[0-9a-f]{32})(?:--(?P<filename>[A-Za-z0-9][A-Za-z0-9._-]{0,180}))?$"
 )
@@ -4118,8 +4119,13 @@ def upload_attachment(
             owner_id = str(UUID(attachment_owner_id or ""))
         except ValueError as exc:
             raise DomainError("AGENT_CONVERSATION_ID_INVALID", "附件必须关联有效会话", 422) from exc
-        agent_workspace_host.conversation_work_directory_context(
+        _, working_directory = agent_workspace_host.conversation_work_directory_context(
             db, workspace.id, work_directory_id
+        )
+        agent_workspace_host.ensure_private_upload_directory_ignored(
+            agent_workspace_host.agent_workspace_record_path(db, workspace.id),
+            user_runtime_project_root(workspace.id),
+            working_directory,
         )
         resource_name, resource_id = terminal_resource_details(db, workspace.id)
         handle = RuntimeHandle(
@@ -4128,11 +4134,17 @@ def upload_attachment(
             runtime_resource_id=resource_id,
             runtime_resource_name=resource_name,
             workspace_root=user_runtime_project_root(workspace.id),
+            working_directory=working_directory,
         )
     else:
         bound_conversation = _binding(db, workspace_id, binding_id)
         owner_id = bound_conversation.id
         handle = _handle(db, workspace, bound_conversation)
+        agent_workspace_host.ensure_private_upload_directory_ignored(
+            agent_workspace_host.agent_workspace_record_path(db, workspace.id),
+            handle.workspace_root,
+            handle.working_directory,
+        )
     path = get_runtime().upload_workspace_file(
         handle,
         filename=filename,

@@ -5370,7 +5370,19 @@ class OpenHandsRuntime:
         # identify ordinary files (notably PDFs) without trusting a caller
         # supplied path.
         workspace_root = self._validated_workspace_root(handle.workspace_root)
-        target = f"{workspace_root}/uploads/{owner_id}-{uuid4().hex}--{safe_name}"
+        working_directory = PurePosixPath(handle.working_directory or workspace_root)
+        if (
+            not working_directory.is_absolute()
+            or not working_directory.is_relative_to(PurePosixPath(workspace_root))
+            or working_directory.as_posix() != (handle.working_directory or workspace_root)
+            or any(part in {"", ".", ".."} for part in working_directory.parts)
+        ):
+            raise DomainError(
+                "RUNTIME_WORKSPACE_INVALID",
+                "The Agent Workspace working directory is invalid",
+                422,
+            )
+        target = f"{working_directory}/.uploads/{owner_id}-{uuid4().hex}--{safe_name}"
         try:
             response = self._transport().regular.post(
                 f"{self._base_url_for_handle(handle)}/api/file/upload",

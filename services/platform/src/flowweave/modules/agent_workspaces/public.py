@@ -157,6 +157,18 @@ def delete_session_attachment_files(db: Session, workspace_id: str, binding_id: 
     workspace.delete_bound_attachment_files(db, workspace_id, binding_id)
 
 
+def ensure_private_upload_directory_ignored(
+    project_root: Path, runtime_root: str, working_directory: str
+) -> None:
+    """Exclude the platform-owned attachment directory from an enclosing Git repo."""
+
+    from flowweave.modules.agent_workspaces.application import workspace
+
+    workspace.ensure_private_upload_directory_ignored(
+        project_root, runtime_root, working_directory
+    )
+
+
 def validate_message_workspace_references(
     db: Session,
     workspace_id: str,

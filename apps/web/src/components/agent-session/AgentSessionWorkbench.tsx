@@ -383,6 +383,17 @@ async function copyTextToClipboard(value: string): Promise<void> {
   if (!copied) throw new Error('Clipboard is unavailable');
 }
 
+async function copyImageToClipboard(sourceUrl: string): Promise<void> {
+  if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
+    throw new Error('当前浏览器不支持复制图片');
+  }
+  const response = await fetch(sourceUrl, { credentials: 'include' });
+  if (!response.ok) throw new Error('图片暂时无法读取');
+  const blob = await response.blob();
+  if (!blob.type.startsWith('image/')) throw new Error('当前文件不是可复制的图片');
+  await navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })]);
+}
+
 type RuntimeTaskStatus = 'RUNNING' | 'COMPLETED' | 'ERROR';
 interface RuntimeTaskProjection {
   id: string;
@@ -734,9 +745,8 @@ function WorkspaceConversationGroup({ groupId, label, children, conversationCoun
     }
     const added = conversationCount - previousConversationCount.current;
     previousConversationCount.current = conversationCount;
-    // A newly created conversation must extend the current visible list rather
-    // than displacing the old third row. Manual pagination naturally does the
-    // same when its page arrives.
+    // Keep every already visible conversation present when a server refresh
+    // inserts a newly restored or created conversation ahead of it.
     if (added > 0 && !collapsed) setVisibleCount(current => current + added);
   }, [collapsed, conversationCount]);
   useEffect(() => {
@@ -3658,6 +3668,7 @@ function ConversationFilePreviewDialog({ request, workspaceId, bindingId, workDi
   const [imageOffset, setImageOffset] = useState({ x: 0, y: 0 });
   const [previewState, setPreviewState] = useState<{ path: string; content: string; totalBytes: number; nextOffset?: number }>();
   const [previewMoreLoading, setPreviewMoreLoading] = useState(false);
+  const [copyState, setCopyState] = useState<'idle' | 'copying' | 'copied' | 'failed'>('idle');
   const titleRef = useRef<HTMLHeadingElement>(null);
   const imageDragRef = useRef<{ pointerId: number; x: number; y: number; offsetX: number; offsetY: number } | undefined>(undefined);
   const resetImageViewport = () => {
@@ -3668,6 +3679,7 @@ function ConversationFilePreviewDialog({ request, workspaceId, bindingId, workDi
   useEffect(() => {
     setFullScreen(false);
     resetImageViewport();
+    setCopyState('idle');
     titleRef.current?.focus();
   }, [request.key]);
 
@@ -3740,6 +3752,15 @@ function ConversationFilePreviewDialog({ request, workspaceId, bindingId, workDi
     : undefined, [canPreviewHtml, fileOptions, fileUrl, previewState, workspaceId, workspaceRequest]);
   const lightweightPreview = Boolean(previewState && (previewState.totalBytes > 128 * 1024 || previewState.content.length > 128 * 1024));
   const imagePreviewable = request.kind === 'image' || canPreviewImage;
+  const copyImage = async () => {
+    setCopyState('copying');
+    try {
+      await copyImageToClipboard(sourceUrl);
+      setCopyState('copied');
+    } catch {
+      setCopyState('failed');
+    }
+  };
   const changeImageScale = (factor: number) => {
     const nextScale = Math.min(4, Math.max(1, imageScale * factor));
     setImageScale(nextScale);
@@ -3807,6 +3828,7 @@ function ConversationFilePreviewDialog({ request, workspaceId, bindingId, workDi
       <header>
         <div><span className="eyebrow">FILE PREVIEW</span><h2 ref={titleRef} tabIndex={-1} title={path}>{request.filename}</h2><small title={path}>{path}</small></div>
         <div className="agent-file-preview-dialog-actions">
+          {imagePreviewable && <button type="button" aria-label="复制图片" title={copyState === 'failed' ? '复制失败，请检查浏览器剪贴板权限' : '复制图片到系统剪贴板'} disabled={copyState === 'copying'} onClick={() => void copyImage()}><Copy size={14}/>{copyState === 'copying' ? '复制中' : copyState === 'copied' ? '已复制' : copyState === 'failed' ? '复制失败' : '复制'}</button>}
           {downloadUrl && <a href={downloadUrl}><Download size={14}/>下载</a>}
           <button type="button" aria-label={fullScreen ? '退出全屏预览' : '全屏预览'} title={fullScreen ? '退出全屏' : '全屏'} onClick={() => setFullScreen(current => !current)}>{fullScreen ? <Minimize2 size={16}/> : <Maximize2 size={16}/>}</button>
           <button type="button" aria-label="关闭文件预览" title="关闭" onClick={onClose}><X size={17}/></button>
@@ -4507,10 +4529,10 @@ function WorkspaceDrawer({
     // reopen it from this effect.
     if (!attachmentRequest || handledAttachmentRequestKey.current === attachmentRequest.key) return;
     handledAttachmentRequestKey.current = attachmentRequest.key;
-    if (attachmentRequest.scopeKey !== scopeKey) return;
     setCandidatePreview(undefined);
+    if (attachmentRequest.attachment?.path.includes('/.uploads/')) setShowHiddenFiles(true);
     openFiles(attachmentRequest.attachment?.path);
-  }, [attachmentRequest, openFiles, scopeKey]);
+  }, [attachmentRequest, openFiles]);
   useEffect(() => {
     if (!candidatePreviewRequest || handledCandidatePreviewRequestKey.current === candidatePreviewRequest.key) return;
     handledCandidatePreviewRequestKey.current = candidatePreviewRequest.key;
@@ -8927,6 +8949,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     try {
       const readiness = await api.inputReadiness(workspace.id, bindingId);
       if (!readiness.ready || !conversationHasReachedTerminalState(readiness.execution_status)) return;
+      const events = await api.conversationEvents(workspace.id, bindingId);
+      if (!latestFormalTurnIsFinished(events.events)) return;
       const currentQueue = readQueuedMessages(storageKey);
       if (currentQueue[0]?.id !== queueHead.id) return;
       writeQueuedMessages(storageKey, currentQueue.filter(message => message.id !== queueHead.id));
@@ -10438,7 +10462,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       const latest = activity && Date.parse(activity.updated_at) >= Date.parse(item.updated_at) ? { ...item, ...activity } : item;
       return conversationRow({ ...latest, ...current, ...(pendingUnread ? { unread: pendingUnread.unread, unread_origin: pendingUnread.unreadOrigin } : {}) }, [], { allowDrag: false });
     }} onSelectSchedule={() => { setActivityPreviewBindingId(undefined); onNavigate('/agent/schedules'); }}/>}
-    {agentWorkspaceView === 'management' && <section className="agent-conversation-management-page" aria-label="会话管理"><ConversationManagementPage onRestored={({ bindingId, workDirectoryId }) => {
+    {agentWorkspaceView === 'management' && <section className="agent-conversation-management-page" aria-label="会话管理"><ConversationManagementPage onOpenConversation={bindingId => { setAgentWorkspaceView('home'); selectConversation(bindingId); }} onRestored={({ bindingId, workDirectoryId }) => {
       const restoredIds = new Set(bindingId ? [bindingId] : [...archivedConversationDirectoryIds.current].filter(([, directoryId]) => directoryId === workDirectoryId).map(([id]) => id));
       setOptimisticallyRemovedConversationIds(current => new Set([...current].filter(id => !restoredIds.has(id))));
       for (const id of restoredIds) archivedConversationDirectoryIds.current.delete(id);

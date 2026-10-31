@@ -759,7 +759,7 @@ def _handle(
     )
 
 
-def test_openhands_uploads_valid_pptx_with_extended_runtime_timeout(
+def test_openhands_uploads_attachment_to_frozen_working_directory(
     openhands_settings, monkeypatch
 ):
     runtime = OpenHandsRuntime(openhands_settings)
@@ -780,8 +780,13 @@ def test_openhands_uploads_valid_pptx_with_extended_runtime_timeout(
     monkeypatch.setattr(openhands_module, "uuid4", lambda: SimpleNamespace(hex="a" * 32))
 
     content = b"PK\x03\x04" + b"pptx-content"
+    handle = _handle()
+    handle = replace(
+        handle,
+        working_directory=f"{handle.workspace_root}/materials",
+    )
     path = runtime.upload_workspace_file(
-        _handle(),
+        handle,
         filename="郑蒙恩-Java开发工程师职级晋升答辩.pptx",
         content_type=("application/vnd.openxmlformats-officedocument.presentationml.presentation"),
         content=content,
@@ -789,7 +794,7 @@ def test_openhands_uploads_valid_pptx_with_extended_runtime_timeout(
 
     safe_filename = "Java" + "_" * len("开发工程师职级晋升答辩") + ".pptx"
     assert path == (
-        "/runtime/workspace/10000000-0000-4000-8000-000000000001/uploads/"
+        "/runtime/workspace/10000000-0000-4000-8000-000000000001/materials/.uploads/"
         "10000000-0000-4000-8000-000000000002-"
         f"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa--{safe_filename}"
     )

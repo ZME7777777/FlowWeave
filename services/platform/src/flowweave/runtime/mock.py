@@ -312,7 +312,8 @@ class MockRuntime:
             ).strip("._-")[:181]
             or "attachment"
         )
-        return f"{handle.workspace_root}/uploads/{owner}-{uuid4().hex}--{safe_name}"
+        working_directory = handle.working_directory or handle.workspace_root
+        return f"{working_directory}/.uploads/{owner}-{uuid4().hex}--{safe_name}"
 
     def workspace_snapshot(self, handle: RuntimeHandle, path: str) -> RuntimeWorkspaceSnapshot:
         del handle

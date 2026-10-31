@@ -482,6 +482,9 @@ class RuntimeHandle:
     # Carries the Agent Spec's immutable LLM policy through later native
     # switch/fork operations without inventing platform-side timeout states.
     llm_timeout_policy: RuntimeLLMTimeoutPolicy | None = None
+    # Frozen conversation directory inside the workspace. Attachment uploads
+    # live here so they share the selected work directory's lifecycle.
+    working_directory: str = ""
 
     def __post_init__(self) -> None:
         if self.llm_timeout_policy is None and self.protocol_profile == "OH_FW_V2":

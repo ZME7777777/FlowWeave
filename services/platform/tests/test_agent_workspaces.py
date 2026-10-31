@@ -347,6 +347,8 @@ def test_git_working_changes_separate_staged_unstaged_and_untracked_files(tmp_pa
     git("add", "staged.txt")
     (repository / "unstaged.txt").write_text("unstaged change\n")
     (repository / "untracked.txt").write_text("new file\n")
+    (repository / ".uploads").mkdir()
+    (repository / ".uploads" / "private.png").write_bytes(b"private")
 
     changes = workspace.git_working_changes(
         repository,
@@ -360,6 +362,7 @@ def test_git_working_changes_separate_staged_unstaged_and_untracked_files(tmp_pa
         {"path": "unstaged.txt", "status": "M"},
         {"path": "untracked.txt", "status": "?"},
     ]
+    assert all(not item["path"].startswith(".uploads/") for item in changes["unstaged"])
 
     staged_diff = workspace.git_working_file_diff(
         repository,
@@ -2258,7 +2261,10 @@ def test_agent_workspace_allows_only_bound_conversation_attachments_outside_scop
         ):
             del handle, filename, content_type, content
             assert attachment_owner_id is not None
-            return f"/runtime/workspace/project/uploads/{attachment_owner_id}-{uuid4().hex}"
+            return (
+                "/runtime/workspace/project/service/.uploads/"
+                f"{attachment_owner_id}-{uuid4().hex}"
+            )
 
     monkeypatch.setattr(
         conversations,
@@ -2284,7 +2290,7 @@ def test_agent_workspace_allows_only_bound_conversation_attachments_outside_scop
             db, item.id, None, item.default_model_provider_id, "attachment-other"
         )
         # The work-directory is frozen on the binding.  Make both test
-        # conversations use the restricted scope so `uploads/` is genuinely
+        # conversations use the restricted scope so unrelated files remain
         # outside their normal readable tree.
         for binding_id in (owner["id"], other["id"]):
             binding = db.get(AgentConversationBinding, binding_id)
@@ -2300,7 +2306,15 @@ def test_agent_workspace_allows_only_bound_conversation_attachments_outside_scop
             content_type="application/pdf",
             content=b"%PDF-1.7",
         )
-        upload_path = project_root / "uploads" / str(attachment["path"]).rsplit("/", 1)[-1]
+        assert str(attachment["path"]).startswith(
+            "/runtime/workspace/project/service/.uploads/"
+        )
+        upload_path = (
+            project_root
+            / "service"
+            / ".uploads"
+            / str(attachment["path"]).rsplit("/", 1)[-1]
+        )
         upload_path.parent.mkdir()
         upload_path.write_bytes(b"%PDF-1.7")
         # A bound upload is previewable from the right-hand panel before it is
