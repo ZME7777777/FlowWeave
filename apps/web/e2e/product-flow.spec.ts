@@ -3006,7 +3006,7 @@ test('terminal readiness without a formal result keeps reconciliation non-blocki
   await expect.poll(() => messagePosts).toBe(0);
 });
 
-test('editing the latest user message locally replaces only its active branch', async ({ page }) => {
+test('each user message can be edited and replaced on its active branch', async ({ page }) => {
   let rewritten = false;
   let releaseRewrite: (() => void) | undefined;
   let rerunPayload: Record<string, unknown> | undefined;
@@ -3064,7 +3064,9 @@ test('editing the latest user message locally replaces only its active branch', 
   await expect(page.getByText('不应保留的旧回答', { exact: true })).toBeVisible();
   await expect(page.locator('[data-user-event-id="original-user"]')).toContainText('审计报告.pdf');
   await expect(page.locator('[data-user-event-id="original-user"]')).toContainText('审计报告.md');
-  await page.getByRole('button', { name: '编辑并重新思考' }).click();
+  const rewriteButtons = page.getByRole('button', { name: '编辑并重新思考' });
+  await expect(rewriteButtons).toHaveCount(2);
+  await rewriteButtons.last().click();
   await expect(page.getByText('需要重新思考的问题', { exact: true })).toHaveCount(0);
   await expect(page.locator('.conversation-message-edit')).toBeVisible();
   const rewriteEditor = page.getByLabel('编辑已发送消息');
@@ -3085,7 +3087,7 @@ test('editing the latest user message locally replaces only its active branch', 
   expect(releaseRewrite).toBeUndefined();
   expect(rerunPayload).toBeUndefined();
 
-  await page.getByRole('button', { name: '编辑并重新思考' }).click();
+  await rewriteButtons.last().click();
   await expect(rewriteEditor).toBeFocused();
   await expect(rewriteEditor).toHaveValue('需要重新思考的问题');
   await rewriteEditor.fill('修改后的');
