@@ -1550,7 +1550,8 @@ test('workspace directory search browses one level at a time independently of ch
   await creator.screenshot({ path: test.info().outputPath('directory-path-browsing.png') });
   await browse('frontend/src/nested').click();
   await expect(search).toHaveValue('frontend/src/nested/');
-  await expect(creator.getByText('此目录没有子目录。')).toBeVisible();
+  await expect(creator.getByText('此目录没有子目录。')).toHaveCount(0);
+  await expect(creator.getByRole('button', { name: '收起目录 frontend/src/nested', exact: true })).toHaveCount(0);
   await browse('frontend/src/nested').click();
   await expect(search).toHaveValue('frontend/src/');
   await checkbox('frontend/src').uncheck();

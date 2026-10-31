@@ -3044,13 +3044,14 @@ function WorkDirectoryCreator({ workspaceId, onClose, onCreated }: {
     const open = ancestors[depth]?.path === node.path;
     const checked = selectedPaths.includes(relativePath);
     const children = ancestors[depth + 1] ? [ancestors[depth + 1]] : visibleDirectories;
-    return <div key={node.path} role="treeitem" aria-expanded={open} aria-level={depth + 1}>
+    const hasChildren = !open || directoryLoading || children.length > 0;
+    return <div key={node.path} role="treeitem" aria-expanded={hasChildren ? open : undefined} aria-level={depth + 1}>
       <div className="agent-work-directory-row" style={{ '--directory-depth': depth } as CSSProperties}>
-        <button type="button" aria-label={(open ? '收起目录 ' : '展开目录 ') + relativePath} onClick={() => browseDirectory(node.path, open)}>{open ? <ChevronDown size={13}/> : <ChevronRight size={13}/>}</button>
+        {hasChildren && <button type="button" aria-label={(open ? '收起目录 ' : '展开目录 ') + relativePath} onClick={() => browseDirectory(node.path, open)}>{open ? <ChevronDown size={13}/> : <ChevronRight size={13}/>}</button>}
         <input type="checkbox" aria-label={relativePath} checked={checked} disabled={!checked && selectedPaths.length >= 20} onChange={() => togglePath(relativePath)}/>
         <button type="button" className="agent-work-directory-browse" aria-label={`浏览目录 ${relativePath}`} title={relativePath} onClick={() => browseDirectory(node.path, open)}>{open ? <FolderOpen size={14}/> : <Folder size={14}/>}<span>{node.path.split('/').pop()}</span></button>
       </div>
-      {open && <div role="group">{renderDirectories(children, depth + 1)}</div>}
+      {hasChildren && open && <div role="group">{renderDirectories(children, depth + 1)}</div>}
     </div>;
   });
   const canSubmit = Boolean(displayName.trim() && selectedPaths.length && !create.isPending);
@@ -3063,7 +3064,7 @@ function WorkDirectoryCreator({ workspaceId, onClose, onCreated }: {
         <div>
           {directoryLoading && <p>正在读取项目目录…</p>}
           {directoryError && <p className="error">{directoryError.message || '项目目录读取失败，请稍后重试。'}</p>}
-          {!directoryLoading && !directoryError && !visibleDirectories.length && <p>{!directorySearch ? '项目根目录中还没有可选择的子目录。' : directorySearch.endsWith('/') && validAncestors ? '此目录没有子目录。' : '没有匹配的目录。'}</p>}
+          {!directoryLoading && !directoryError && !visibleDirectories.length && (!directorySearch || !directorySearch.endsWith('/') || !validAncestors) && <p>{!directorySearch ? '项目根目录中还没有可选择的子目录。' : '没有匹配的目录。'}</p>}
           {details && (ancestors.length > 0 || visibleDirectories.length > 0) && <div role="tree" aria-label="项目目录树">{renderDirectories(ancestors.length ? [ancestors[0]] : visibleDirectories)}</div>}
         </div>
       </section>
