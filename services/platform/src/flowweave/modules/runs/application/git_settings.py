@@ -9,9 +9,9 @@ from flowweave.modules.users.application.git_identity import profile_identity
 from flowweave.shared.schemas import GitIdentityWrite
 
 
-def default_git_identity(db: Session, explicit: GitIdentityWrite | None) -> dict[str, str] | None:
-    if explicit is not None:
-        return explicit.model_dump()
+def default_git_identity(db: Session) -> dict[str, str] | None:
+    """Freeze the current authenticated user's profile for a new FlowRun."""
+
     profile = profile_identity(db)
     return {"author": profile[0], "email": profile[1]} if profile else None
 

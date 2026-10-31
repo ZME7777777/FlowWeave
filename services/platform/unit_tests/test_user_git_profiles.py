@@ -10,6 +10,7 @@ from flowweave.modules.agent_workspaces.application import git_settings, workspa
 from flowweave.modules.users.application.security import tenant_user
 from flowweave.modules.users.infrastructure.models import User
 from flowweave.runtime.base import RuntimeHandle
+from flowweave.shared.errors import DomainError
 
 
 @pytest.fixture
@@ -91,7 +92,49 @@ def test_profile_is_written_through_native_adapter_before_conversation_work(prof
     assert calls == [("ldap-user-root", {"profile": ("LDAP 姓名", "ldap@example.test")})]
 
 
-def test_settings_read_does_not_apply_profile_or_change_directory_identity(profiles, monkeypatch):
+def test_profile_sync_failure_does_not_block_ordinary_agent_work(profiles, monkeypatch, caplog):
+    monkeypatch.setattr(workspace, "ensure_user_project_root", lambda *args: None)
+
+    def unavailable(*_args, **_kwargs):
+        raise DomainError(
+            "AGENT_GIT_CONFIG_UNAVAILABLE", "无法确认工作区 Git 配置，请稍后重试", 503
+        )
+
+    monkeypatch.setattr(
+        git_settings,
+        "get_runtime",
+        lambda: SimpleNamespace(workspace_git_identity=unavailable),
+    )
+    with tenant_user("ldap"), caplog.at_level("WARNING"):
+        git_settings.apply_profile_identity(
+            profiles,
+            "shared",
+            RuntimeHandle("env-exec:runtime", "", workspace_root="ldap-user-root"),
+        )
+
+    assert "agent_workspace_git_profile_sync_unavailable" in caplog.text
+
+
+def test_profile_sync_propagates_unrelated_runtime_failures(profiles, monkeypatch):
+    monkeypatch.setattr(workspace, "ensure_user_project_root", lambda *args: None)
+
+    def unavailable(*_args, **_kwargs):
+        raise DomainError("EXECUTOR_UNAVAILABLE", "OpenHands 不可用", 503)
+
+    monkeypatch.setattr(
+        git_settings,
+        "get_runtime",
+        lambda: SimpleNamespace(workspace_git_identity=unavailable),
+    )
+    with tenant_user("ldap"), pytest.raises(DomainError, match="OpenHands 不可用"):
+        git_settings.apply_profile_identity(
+            profiles,
+            "shared",
+            RuntimeHandle("env-exec:runtime", "", workspace_root="ldap-user-root"),
+        )
+
+
+def test_settings_read_is_read_only_and_sync_uses_current_profile(profiles, monkeypatch):
     from flowweave.modules.agent_sessions.application import conversations
 
     calls = []
@@ -101,14 +144,11 @@ def test_settings_read_does_not_apply_profile_or_change_directory_identity(profi
         git_settings,
         "get_runtime",
         lambda: SimpleNamespace(
-            workspace_git_identity=lambda handle, **kwargs: calls.append(kwargs)
-            or {
-                "author": "",
-                "email": "",
-                "configured": False,
-            }
+            workspace_git_identity=lambda _handle, **kwargs: calls.append(kwargs)
+            or {"author": "", "email": "", "configured": False}
         ),
     )
     with tenant_user("local"):
         assert git_settings.git_identity(profiles, "workspace")["configured"] is False
-    assert calls == [{"identity": None}]
+        git_settings.synchronize_profile_identity(profiles, "workspace")
+    assert calls == [{}, {}, {"profile": ("本地姓名", "local@example.test")}]

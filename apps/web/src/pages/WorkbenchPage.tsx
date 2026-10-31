@@ -1514,36 +1514,16 @@ const emptyAutomaticNodePlan = (node: SnapshotFlowNode): AutomaticNodePlan => ({
   gates: [], artifact_ids: {}, input_urls: {},
 });
 
-function useRecordGitIdentity() {
-  const profile = useQuery({ queryKey: ['current-user-profile'], queryFn: api.currentUserProfile, staleTime: 0, refetchOnWindowFocus: false, retry: false });
-  const [author, setAuthor] = useState<string>();
-  const [email, setEmail] = useState<string>();
-  const name = author ?? profile.data?.display_name ?? '';
-  const address = email ?? profile.data?.email ?? '';
-  const identity = name.trim() && address.trim() ? { author: name.trim(), email: address.trim() } : undefined;
-  return { name, address, setAuthor, setEmail, identity, loading: profile.isPending,
-    invalid: Boolean(name.trim()) !== Boolean(address.trim()) };
-}
-
-function RecordGitFields({ git }: { git: ReturnType<typeof useRecordGitIdentity> }) {
-  return <div className="record-git-fields">
-    <label>Git 用户<input aria-label="Git 用户" value={git.name} maxLength={200} placeholder={git.loading ? '正在读取…' : '提交作者姓名'} onChange={event => git.setAuthor(event.target.value)}/></label>
-    <label>Git 邮箱<input aria-label="Git 邮箱" type="email" value={git.address} maxLength={320} placeholder={git.loading ? '正在读取…' : '提交作者邮箱'} onChange={event => git.setEmail(event.target.value)}/></label>
-  </div>;
-}
-
 export function AutomaticRecordDialog({ run, onClose, onCreated, onImport }: { run: FlowRun; onClose: () => void; onCreated: (record: FlowRunAutomaticRecord) => void; onImport: () => void }) {
   const snapshot = run.snapshots.find(item => item.id === run.active_snapshot_id) ?? run.snapshots.at(-1);
   const nodes = snapshot?.definition.nodes ?? [];
   const [name, setName] = useState('');
-  const git = useRecordGitIdentity();
   const [startNodeKey, setStartNodeKey] = useState(nodes[0]?.instance_key ?? '');
   const mutation = useMutation({
     mutationFn: () => {
       if (!run.environment_version_id) throw new Error('当前流程运行未绑定运行环境。');
       return api.createAutomaticRecord(run.id, {
         name: name.trim() || undefined,
-        git_identity: git.identity,
         environment_version_id: run.environment_version_id,
         start_node_key: startNodeKey, node_plans: {},
       });
@@ -1551,25 +1531,23 @@ export function AutomaticRecordDialog({ run, onClose, onCreated, onImport }: { r
     onSuccess: onCreated,
   });
   useEscapeClose(onClose);
-  return <div className="modal-backdrop"><section className="modal automatic-record-dialog record-create-dialog" role="dialog" aria-modal="true" aria-label="新增连续运行"><header><h2>新增连续运行</h2><button type="button" className="ghost" aria-label="关闭新增连续运行" onClick={onClose}><X size={16}/></button></header><label>名称<input aria-label="连续运行名称" value={name} onChange={event => setName(event.target.value)} placeholder={`${run.name} · 连续运行`}/></label><label>起始节点<LaunchOptionMenu label="连续运行起始节点" value={startNodeKey} options={nodes.map(node => ({ value: node.instance_key, label: node.alias || node.asset.name }))} disabled={!nodes.length} onChange={setStartNodeKey}/></label><RecordGitFields git={git}/>{mutation.error && <p className="error">{mutation.error.message}</p>}<footer><button type="button" className="ghost" onClick={onClose}>取消</button><button type="button" className="secondary" disabled={mutation.isPending} onClick={onImport}><Upload size={13}/>导入 / 粘贴</button><button type="button" className="primary" disabled={!startNodeKey || mutation.isPending || git.loading || git.invalid} onClick={() => mutation.mutate()}>{mutation.isPending ? '创建中…' : '创建草稿'}</button></footer></section></div>;
+  return <div className="modal-backdrop"><section className="modal automatic-record-dialog record-create-dialog" role="dialog" aria-modal="true" aria-label="新增连续运行"><header><h2>新增连续运行</h2><button type="button" className="ghost" aria-label="关闭新增连续运行" onClick={onClose}><X size={16}/></button></header><label>名称<input aria-label="连续运行名称" value={name} onChange={event => setName(event.target.value)} placeholder={`${run.name} · 连续运行`}/></label><label>起始节点<LaunchOptionMenu label="连续运行起始节点" value={startNodeKey} options={nodes.map(node => ({ value: node.instance_key, label: node.alias || node.asset.name }))} disabled={!nodes.length} onChange={setStartNodeKey}/></label><p className="record-git-notice">Git 身份将自动冻结为当前用户身份。</p>{mutation.error && <p className="error">{mutation.error.message}</p>}<footer><button type="button" className="ghost" onClick={onClose}>取消</button><button type="button" className="secondary" disabled={mutation.isPending} onClick={onImport}><Upload size={13}/>导入 / 粘贴</button><button type="button" className="primary" disabled={!startNodeKey || mutation.isPending} onClick={() => mutation.mutate()}>{mutation.isPending ? '创建中…' : '创建草稿'}</button></footer></section></div>;
 }
 
 export function StepwiseRecordDialog({ run, onClose, onCreated, onImport }: { run: FlowRun; onClose: () => void; onCreated: (record: FlowRunStepwiseRecord) => void; onImport: () => void }) {
   const snapshot = run.snapshots.find(item => item.id === run.active_snapshot_id) ?? run.snapshots.at(-1);
   const nodes = snapshot?.definition.nodes ?? [];
   const [name, setName] = useState('');
-  const git = useRecordGitIdentity();
   const [startNodeKey, setStartNodeKey] = useState(nodes[0]?.instance_key ?? '');
   const mutation = useMutation({
     mutationFn: () => api.createStepwiseRecord(run.id, {
       name: name.trim() || undefined,
-      git_identity: git.identity,
       start_node_key: startNodeKey,
     }),
     onSuccess: onCreated,
   });
   useEscapeClose(onClose);
-  return <div className="modal-backdrop"><section className="modal automatic-record-dialog record-create-dialog" role="dialog" aria-modal="true" aria-label="新增逐步运行记录"><header><h2>新增逐步运行记录</h2><button type="button" className="ghost" aria-label="关闭新增逐步运行记录" onClick={onClose}><X size={16}/></button></header><label>记录名称<input aria-label="逐步运行记录名称" value={name} maxLength={220} autoFocus placeholder={`${run.name} · 批次执行`} onChange={event => setName(event.target.value)}/></label><label>起始节点<LaunchOptionMenu label="逐步运行起始节点" value={startNodeKey} options={nodes.map(node => ({ value: node.instance_key, label: node.alias || node.asset.name }))} disabled={!nodes.length} onChange={setStartNodeKey}/></label><RecordGitFields git={git}/>{mutation.error && <p className="error">创建失败：{mutation.error.message}</p>}<footer><button type="button" className="ghost" disabled={mutation.isPending} onClick={onClose}>取消</button><button type="button" className="secondary" disabled={mutation.isPending} onClick={onImport}><Upload size={13}/>导入 / 粘贴</button><button type="button" className="primary" disabled={!startNodeKey || mutation.isPending || git.loading || git.invalid} onClick={() => mutation.mutate()}>{mutation.isPending ? '创建中…' : '创建记录'}</button></footer></section></div>;
+  return <div className="modal-backdrop"><section className="modal automatic-record-dialog record-create-dialog" role="dialog" aria-modal="true" aria-label="新增逐步运行记录"><header><h2>新增逐步运行记录</h2><button type="button" className="ghost" aria-label="关闭新增逐步运行记录" onClick={onClose}><X size={16}/></button></header><label>记录名称<input aria-label="逐步运行记录名称" value={name} maxLength={220} autoFocus placeholder={`${run.name} · 批次执行`} onChange={event => setName(event.target.value)}/></label><label>起始节点<LaunchOptionMenu label="逐步运行起始节点" value={startNodeKey} options={nodes.map(node => ({ value: node.instance_key, label: node.alias || node.asset.name }))} disabled={!nodes.length} onChange={setStartNodeKey}/></label><p className="record-git-notice">Git 身份将自动冻结为当前用户身份。</p>{mutation.error && <p className="error">创建失败：{mutation.error.message}</p>}<footer><button type="button" className="ghost" disabled={mutation.isPending} onClick={onClose}>取消</button><button type="button" className="secondary" disabled={mutation.isPending} onClick={onImport}><Upload size={13}/>导入 / 粘贴</button><button type="button" className="primary" disabled={!startNodeKey || mutation.isPending} onClick={() => mutation.mutate()}>{mutation.isPending ? '创建中…' : '创建记录'}</button></footer></section></div>;
 }
 
 function CopyRecordDialog({ mode, sourceName, onClose, onCopy, onExport }: { mode: CopyTarget['mode']; sourceName: string; onClose: () => void; onCopy: (name: string) => Promise<void>; onExport?: (target: ExportTarget) => Promise<void> }) {

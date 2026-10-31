@@ -15,20 +15,6 @@ const recordModeOptions = [
   { value: 'AUTOMATIC', label: '连续运行' },
 ] as const;
 
-function useRecordGitIdentity() {
-  const profile = useQuery({ queryKey: ['current-user-profile'], queryFn: api.currentUserProfile, staleTime: 0, refetchOnWindowFocus: false, retry: false });
-  const [author, setAuthor] = useState<string>();
-  const [email, setEmail] = useState<string>();
-  const name = author ?? profile.data?.display_name ?? '';
-  const address = email ?? profile.data?.email ?? '';
-  const identity = name.trim() && address.trim() ? { author: name.trim(), email: address.trim() } : undefined;
-  return { name, address, setAuthor, setEmail, identity, loading: profile.isPending, invalid: Boolean(name.trim()) !== Boolean(address.trim()) };
-}
-
-function RecordGitFields({ git }: { git: ReturnType<typeof useRecordGitIdentity> }) {
-  return <div className="record-git-fields"><label>Git 用户<input aria-label="Git 用户" value={git.name} maxLength={200} placeholder={git.loading ? '正在读取…' : '提交作者姓名'} onChange={event => git.setAuthor(event.target.value)}/></label><label>Git 邮箱<input aria-label="Git 邮箱" type="email" value={git.address} maxLength={320} placeholder={git.loading ? '正在读取…' : '提交作者邮箱'} onChange={event => git.setEmail(event.target.value)}/></label></div>;
-}
-
 export function CreateRunRecordDialog({ runId, onClose }: { runId: string; onClose: () => void }) {
   const qc = useQueryClient();
   const [mode, setMode] = useState<RecordMode>('MANUAL');
@@ -39,7 +25,6 @@ export function CreateRunRecordDialog({ runId, onClose }: { runId: string; onClo
   const nodes = snapshot?.definition.nodes ?? [];
   const [startNodeKey, setStartNodeKey] = useState('');
   const selectedStartNode = startNodeKey || nodes[0]?.instance_key || '';
-  const git = useRecordGitIdentity();
   useEscapeClose(onClose, !importing);
   const created = (record: FlowRunAutomaticRecord | FlowRunStepwiseRecord, recordMode: RecordMode) => {
     const kind = recordMode === 'AUTOMATIC' ? 'automatic' : 'stepwise';
@@ -55,9 +40,9 @@ export function CreateRunRecordDialog({ runId, onClose }: { runId: string; onClo
       if (!run.data) throw new Error('正在读取 FlowRun。');
       if (mode === 'AUTOMATIC') {
         if (!run.data.environment_version_id) throw new Error('当前流程运行未绑定运行环境。');
-        return { record: await api.createAutomaticRecord(runId, { name: name.trim() || undefined, git_identity: git.identity, environment_version_id: run.data.environment_version_id, start_node_key: selectedStartNode, node_plans: {} }), mode };
+        return { record: await api.createAutomaticRecord(runId, { name: name.trim() || undefined, environment_version_id: run.data.environment_version_id, start_node_key: selectedStartNode, node_plans: {} }), mode };
       }
-      return { record: await api.createStepwiseRecord(runId, { name: name.trim() || undefined, git_identity: git.identity, start_node_key: selectedStartNode }), mode };
+      return { record: await api.createStepwiseRecord(runId, { name: name.trim() || undefined, start_node_key: selectedStartNode }), mode };
     },
     onSuccess: result => created(result.record, result.mode),
   });
@@ -79,5 +64,5 @@ export function CreateRunRecordDialog({ runId, onClose }: { runId: string; onClo
     }
   };
   if (importing) return <RecordConfigImportDialog mode={mode === 'MANUAL' ? 'STEPWISE' : 'AUTOMATIC'} onClose={() => setImporting(false)} onImport={importConfig}/>;
-  return <div className="modal-backdrop"><section className="modal automatic-record-dialog record-create-dialog" role="dialog" aria-modal="true" aria-label="新建运行记录"><header><div><span className="eyebrow">NEW RUN RECORD</span><h2>新建运行记录</h2><p>选择运行类型后，填写名称、起始节点和 Git 身份。</p></div><button type="button" className="ghost" aria-label="关闭新建运行记录" onClick={onClose}><X size={16}/></button></header><label>运行类型<LaunchOptionMenu label="运行类型" value={mode} options={[...recordModeOptions]} onChange={value => setMode(value as RecordMode)}/></label><label>名称<input aria-label="运行记录名称" value={name} maxLength={220} autoFocus placeholder={`${run.data?.name ?? 'FlowRun'} · ${mode === 'AUTOMATIC' ? '连续运行' : '批次执行'}`} onChange={event => setName(event.target.value)}/></label><label>起始节点<LaunchOptionMenu label="运行记录起始节点" value={selectedStartNode} options={nodes.map(node => ({ value: node.instance_key, label: node.alias || node.asset.name }))} disabled={!nodes.length} onChange={setStartNodeKey}/></label><RecordGitFields git={git}/>{run.isError && <p className="error">读取流程运行失败：{run.error.message}</p>}{create.error && <p className="error">创建失败：{create.error.message}</p>}<footer><button type="button" className="ghost" disabled={create.isPending} onClick={onClose}>取消</button><button type="button" className="secondary" disabled={create.isPending} onClick={() => setImporting(true)}><Upload size={13}/>导入 / 粘贴</button><button type="button" className="primary" disabled={!selectedStartNode || create.isPending || git.loading || git.invalid || !run.data} onClick={() => create.mutate()}>{create.isPending ? '创建中…' : mode === 'AUTOMATIC' ? '创建草稿' : '创建记录'}</button></footer></section></div>;
+  return <div className="modal-backdrop"><section className="modal automatic-record-dialog record-create-dialog" role="dialog" aria-modal="true" aria-label="新建运行记录"><header><div><span className="eyebrow">NEW RUN RECORD</span><h2>新建运行记录</h2><p>选择运行类型、名称和起始节点；Git 身份将自动冻结为当前用户身份。</p></div><button type="button" className="ghost" aria-label="关闭新建运行记录" onClick={onClose}><X size={16}/></button></header><label>运行类型<LaunchOptionMenu label="运行类型" value={mode} options={[...recordModeOptions]} onChange={value => setMode(value as RecordMode)}/></label><label>名称<input aria-label="运行记录名称" value={name} maxLength={220} autoFocus placeholder={`${run.data?.name ?? 'FlowRun'} · ${mode === 'AUTOMATIC' ? '连续运行' : '批次执行'}`} onChange={event => setName(event.target.value)}/></label><label>起始节点<LaunchOptionMenu label="运行记录起始节点" value={selectedStartNode} options={nodes.map(node => ({ value: node.instance_key, label: node.alias || node.asset.name }))} disabled={!nodes.length} onChange={setStartNodeKey}/></label>{run.isError && <p className="error">读取流程运行失败：{run.error.message}</p>}{create.error && <p className="error">创建失败：{create.error.message}</p>}<footer><button type="button" className="ghost" disabled={create.isPending} onClick={onClose}>取消</button><button type="button" className="secondary" disabled={create.isPending} onClick={() => setImporting(true)}><Upload size={13}/>导入 / 粘贴</button><button type="button" className="primary" disabled={!selectedStartNode || create.isPending || !run.data} onClick={() => create.mutate()}>{create.isPending ? '创建中…' : mode === 'AUTOMATIC' ? '创建草稿' : '创建记录'}</button></footer></section></div>;
 }

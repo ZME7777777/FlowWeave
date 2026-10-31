@@ -180,6 +180,84 @@ def test_agent_conversation_schedule_delivery_creates_a_distinct_native_conversa
 
 
 
+
+def test_failed_schedule_occurrence_without_conversation_can_be_deleted(
+    settings, db_session_factory
+):
+    with db_session_factory() as db:
+        workspace = ensure_default_agent_workspace(db)
+        created = schedules.create_schedule(
+            db,
+            workspace.id,
+            name="失败记录清理",
+            prompt="生成报告。",
+            cron_expression="0 9 * * *",
+            workspace_mode="AUTOMATION",
+            work_directory_id=None,
+            conversation_mode="NEW",
+            model_provider_id="provider-1",
+            model_name="model-1",
+            reasoning_effort=None,
+            capability_version_ids=(),
+            credential_ids=(),
+        )
+        occurrence = AgentConversationScheduleOccurrence(
+            schedule_id=created["id"],
+            binding_id="failed-bootstrap-reservation",
+            state="FAILED",
+            error_detail="AGENT_GIT_CONFIG_UNAVAILABLE: 无法确认工作区 Git 配置",
+        )
+        db.add(occurrence)
+        db.flush()
+
+        schedules.delete_failed_occurrence(db, workspace.id, created["id"], occurrence.id)
+
+        assert db.get(AgentConversationScheduleOccurrence, occurrence.id) is None
+
+
+def test_failed_schedule_occurrence_with_conversation_is_not_deleted(settings, db_session_factory):
+    from uuid import uuid4
+
+    with db_session_factory() as db:
+        workspace = ensure_default_agent_workspace(db)
+        created = schedules.create_schedule(
+            db,
+            workspace.id,
+            name="已有会话的失败记录",
+            prompt="生成报告。",
+            cron_expression="0 9 * * *",
+            workspace_mode="AUTOMATION",
+            work_directory_id=None,
+            conversation_mode="NEW",
+            model_provider_id="provider-1",
+            model_name="model-1",
+            reasoning_effort=None,
+            capability_version_ids=(),
+            credential_ids=(),
+        )
+        binding = AgentConversationBinding(
+            workspace_id=workspace.id,
+            runtime_session_id=str(uuid4()),
+            host_id=workspace.id,
+            conversation_scope_id=workspace.id,
+            openhands_conversation_id=str(uuid4()),
+            create_idempotency_key=str(uuid4()),
+            lifecycle="ACTIVE",
+        )
+        db.add(binding)
+        db.flush()
+        occurrence = AgentConversationScheduleOccurrence(
+            schedule_id=created["id"], binding_id=binding.id, state="FAILED"
+        )
+        db.add(occurrence)
+        db.flush()
+
+        with pytest.raises(DomainError, match="已有可管理会话"):
+            schedules.delete_failed_occurrence(db, workspace.id, created["id"], occurrence.id)
+
+        assert db.get(AgentConversationScheduleOccurrence, occurrence.id) is not None
+
+
 @pytest.mark.parametrize("selection", ["unconfigured", "empty", "selected"])
 def test_schedule_credential_defaults_preserve_explicit_selections(
     settings, db_session_factory, monkeypatch, selection

@@ -503,6 +503,40 @@ def delete_schedule(db: Session, workspace_id: str, schedule_id: str) -> None:
     finish(db)
 
 
+
+def delete_failed_occurrence(
+    db: Session, workspace_id: str, schedule_id: str, occurrence_id: str
+) -> None:
+    occurrence = db.scalar(
+        select(AgentConversationScheduleOccurrence)
+        .join(AgentConversationSchedule)
+        .where(
+            AgentConversationScheduleOccurrence.id == occurrence_id,
+            AgentConversationScheduleOccurrence.schedule_id == schedule_id,
+            AgentConversationSchedule.workspace_id == workspace_id,
+        )
+        .with_for_update()
+    )
+    if occurrence is None:
+        raise not_found("agent_conversation_schedule_occurrence", occurrence_id)
+    if occurrence.state != "FAILED":
+        raise DomainError("AGENT_SCHEDULE_OCCURRENCE_DELETE_INVALID", "只能删除失败的运行记录", 409)
+    if db.get(AgentConversationBinding, occurrence.binding_id) is not None:
+        raise DomainError(
+            "AGENT_SCHEDULE_OCCURRENCE_CONVERSATION_EXISTS",
+            "该失败记录已有可管理会话，请在会话列表中删除",
+            409,
+        )
+    db.execute(
+        delete(BackgroundTask).where(
+            BackgroundTask.aggregate_type == "AGENT_CONVERSATION_SCHEDULE_OCCURRENCE",
+            BackgroundTask.aggregate_id == occurrence.id,
+        )
+    )
+    db.delete(occurrence)
+    finish(db)
+
+
 def list_occurrences(db: Session, workspace_id: str, schedule_id: str) -> list[dict[str, Any]]:
     schedule = db.scalar(
         select(AgentConversationSchedule).where(

@@ -604,90 +604,42 @@ test('conversation images resolve in the bound user project and preview with the
   await page.screenshot({ path: '../../.tmp/fr666-workspace-image-preview.png' });
 });
 
-test('workspace Git settings show only confirmed identity and save with readback', async ({ page }) => {
+test('workspace Git settings show only real identity and synchronize the current profile', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 800 });
   await openWorkspace(page);
-  await page.route('**/api/v1/auth/profile', route => json(route, { display_name: '账户姓名', email: 'account@example.test' }));
-  let identity = { author: 'Login Profile', email: 'login@example.test', configured: false };
-  let reads = 0;
-  let failSave = true;
-  let releaseRead: () => void = () => undefined;
-  const firstRead = new Promise<void>(resolve => { releaseRead = resolve; });
-  await page.route('**/api/v1/agent-workspaces/schedule-workspace/settings/git', async route => {
-    if (route.request().method() === 'GET') {
-      reads += 1;
-      if (reads === 1) await firstRead;
-      return json(route, identity);
-    }
-    if (failSave) return json(route, { error: { code: 'GIT_FAILED', message: '写入未完成' } }, 503);
-    identity = { ...route.request().postDataJSON(), configured: true };
+  let identity = { author: '', email: '', configured: false };
+  await page.route('**/api/v1/agent-workspaces/schedule-workspace/settings/git', route => json(route, identity));
+  await page.route('**/api/v1/agent-workspaces/schedule-workspace/settings/git/synchronize', route => {
+    expect(route.request().method()).toBe('POST');
+    identity = { author: '账户姓名', email: 'account@example.test', configured: true };
     return json(route, identity);
   });
   await page.goto('/agent/conversations/scheduled-conversation');
   await page.getByRole('textbox', { name: '发送 Agent 消息' }).fill('设置前保留草稿');
   const trigger = page.getByRole('button', { name: '工作区设置', exact: true });
   const nav = page.getByRole('navigation', { name: 'Agent 工作区导航' });
-  expect(await trigger.evaluate(element => {
-    const button = element.getBoundingClientRect();
-    return element.parentElement!.getBoundingClientRect().bottom - button.bottom;
-  })).toBeLessThan(20);
   await trigger.click();
   const settings = page.getByRole('region', { name: '工作区设置' });
   const author = settings.getByRole('textbox', { name: 'Git 作者' });
   const email = settings.getByRole('textbox', { name: 'Git 邮箱' });
   await expect(author).toHaveAttribute('readonly', '');
+  await expect(email).toHaveAttribute('readonly', '');
   await expect(author).toHaveValue('');
-  releaseRead();
-  await expect(author).toBeEnabled();
-  await expect(author).toHaveValue('');
-  await expect(email).toHaveValue('');
-  await expect(settings.getByRole('button', { name: '保存', exact: true })).toHaveCount(0);
-  await settings.getByRole('button', { name: '编辑', exact: true }).click();
+  await expect(settings.getByRole('button', { name: '编辑', exact: true })).toHaveCount(0);
+  await settings.getByRole('button', { name: '同步当前用户身份', exact: true }).click();
   await expect(author).toHaveValue('账户姓名');
   await expect(email).toHaveValue('account@example.test');
-  await author.fill('工作区作者');
-  await email.fill('author@example.test');
-  await settings.getByRole('button', { name: '保存', exact: true }).click();
-  await expect(settings.getByRole('alert')).toContainText('写入未完成');
-  await expect(settings.getByText('已保存并生效')).toHaveCount(0);
-  await expect(author).toHaveValue('工作区作者');
-  failSave = false;
-  await settings.getByRole('button', { name: '保存', exact: true }).click();
-  await expect(settings.getByRole('status')).toHaveText('已保存并从目录确认');
-  await expect(author).toHaveAttribute('readonly', '');
-  expect(identity).toEqual({ author: '工作区作者', email: 'author@example.test', configured: true });
+  await expect(settings.getByRole('status')).toHaveText('已同步并从目录确认');
   await page.screenshot({ path: '../../.tmp/fr623-git-settings-desktop.png' });
   await nav.getByRole('button', { name: '主页', exact: true }).click();
   await expect(page).toHaveURL(/scheduled-conversation$/);
   await expect(page.getByRole('textbox', { name: '发送 Agent 消息' })).toHaveValue('设置前保留草稿');
-  // Reopening must re-read Runtime configuration rather than show stale cache.
   identity = { author: '终端修改后的作者', email: 'changed@example.test', configured: true };
   await trigger.click();
   await expect(author).toHaveValue(identity.author);
   await expect(email).toHaveValue(identity.email);
-  identity = { author: '', email: '', configured: false };
-  await settings.getByRole('button', { name: '重新读取', exact: true }).click();
-  await expect(author).toHaveValue('');
-  await expect(email).toHaveValue('');
-  await expect(settings.getByText('未配置', { exact: true })).toBeVisible();
-  await settings.getByRole('button', { name: '编辑', exact: true }).click();
-  await expect(author).toHaveValue('账户姓名');
-  await expect(email).toHaveValue('account@example.test');
-  await settings.getByRole('button', { name: '取消', exact: true }).click();
-  await expect(author).toHaveValue('');
-  identity = { author: '终端修改后的作者', email: 'changed@example.test', configured: true };
-  await settings.getByRole('button', { name: '重新读取', exact: true }).click();
-  await expect(author).toHaveValue(identity.author);
   await page.setViewportSize({ width: 1024, height: 700 });
   expect(await settings.evaluate(element => element.scrollWidth - element.clientWidth)).toBe(0);
-  await expect(settings.getByRole('button', { name: '编辑', exact: true })).toBeInViewport();
-  await settings.getByRole('button', { name: '编辑', exact: true }).click();
-  await expect(author).toHaveValue(identity.author);
-  await author.fill('未保存自定义作者');
-  await settings.getByRole('button', { name: '取消', exact: true }).click();
-  await expect(author).toHaveValue(identity.author);
-  await settings.getByRole('button', { name: '编辑', exact: true }).click();
-  await expect(author).toHaveValue('未保存自定义作者');
   await page.screenshot({ path: '../../.tmp/fr623-git-settings-narrow.png' });
 });
 
@@ -1010,6 +962,34 @@ test('workspace file tree copies selected names and relative paths with shortcut
   await page.keyboard.press('Meta+Alt+C');
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('src/config.ts');
 });
+
+
+test('workspace file tree reloads dotfiles when hidden entries are enabled', async ({ page }) => {
+  await openWorkspace(page);
+  const root = '/runtime/workspace/project';
+  const hiddenRequests: string[] = [];
+  await page.route('**/api/v1/agent-workspaces/*/workspace/directory**', route => {
+    const url = new URL(route.request().url());
+    hiddenRequests.push(url.searchParams.get('include_hidden') ?? 'false');
+    const includeHidden = url.searchParams.get('include_hidden') === 'true';
+    return json(route, {
+      parent_path: root,
+      entries: [
+        { path: `${root}/README.md`, kind: 'file', size: 128 },
+        ...(includeHidden ? [{ path: `${root}/.env`, kind: 'file', size: 64 }] : []),
+      ],
+      next_cursor: null,
+    });
+  });
+  await page.goto('/agent/conversations/scheduled-conversation');
+  await page.getByRole('button', { name: '新建工作区页签', exact: true }).first().click();
+  await page.locator('.agent-workspace-tab-launcher.active').getByRole('button', { name: '文件', exact: true }).click();
+  await expect(page.getByRole('button', { name: '.env', exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: '显示隐藏文件和目录', exact: true }).click();
+  await expect(page.getByRole('button', { name: '.env', exact: true })).toBeVisible();
+  expect(hiddenRequests).toContain('true');
+});
+
 
 test('workspace file tree collapses immediately at its minimum expanded width', async ({ page }) => {
   await openWorkspace(page);

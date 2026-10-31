@@ -134,7 +134,6 @@ from flowweave.shared.schemas import (
     GateRemediationWrite,
     GateRetryWithProviderWrite,
     GateRiskAcceptanceWrite,
-    GitIdentityWrite,
     HumanInputWrite,
     ManualAttemptOutputsWrite,
     NodeRunCopyWrite,
@@ -3455,6 +3454,7 @@ def create_flow_run_schedule(db: Session, payload: FlowRunScheduleWrite) -> dict
     source = _run(db, payload.source_flow_run_id)
     parent = db.get(FlowRun, source.parent_flow_run_id) if source.parent_flow_run_id else None
     plan = copy.deepcopy(dict(source.automation_plan_json or {}))
+    plan["git_identity"] = default_git_identity(db)
     readiness = cast(dict[str, Any], plan.get("readiness") or {})
     if (
         source.run_mode != "AUTOMATIC"
@@ -4487,6 +4487,7 @@ def start_flow(
         runtime_manifest_hash=_runtime_manifest_hash(runtime_manifest),
         environment_version_id=environment.id,
     )
+    run.automation_plan_json = {"git_identity": default_git_identity(db)}
     db.add(snapshot)
     db.flush()
     sandboxes.allocate_flow_run_runtime(db, run.id)
@@ -4643,7 +4644,7 @@ def _create_nested_stepwise_run_record(
     record.active_snapshot_id = snapshot.id
     record.automation_plan_json = {
         "start_node_key": payload.start_node_key,
-        "git_identity": default_git_identity(db, payload.git_identity),
+        "git_identity": default_git_identity(db),
     }
     hold_snapshot_memory_references(
         db, snapshot_id=snapshot.id, runtime_manifest=snapshot.runtime_manifest_json
@@ -5597,17 +5598,10 @@ def copy_nested_stepwise_run_record(
     ):
         raise not_found("stepwise_run_record", source_record_id)
     source_start_node_key, source_node = _stepwise_initial_node(db, source)
-    source_identity = record_git_identity(source)
     copied_record = _create_nested_stepwise_run_record(
         db,
         parent.id,
-        StepwiseRunRecordWrite(
-            name=payload.name,
-            start_node_key=source_start_node_key,
-            git_identity=(
-                GitIdentityWrite.model_validate(source_identity) if source_identity else None
-            ),
-        ),
+        StepwiseRunRecordWrite(name=payload.name, start_node_key=source_start_node_key),
     )
     source_drafts = _stepwise_node_drafts(source)
     copied_input_count = 0
@@ -5712,14 +5706,15 @@ def create_automatic_run_draft(
     )
     db.add(run)
     db.flush()
-    run.automation_plan_json = {"git_identity": default_git_identity(db, payload.git_identity)}
-    run.automation_plan_json = _freeze_automatic_plan(
+    plan = _freeze_automatic_plan(
         db,
         run,
         definition,
         start_node_key=payload.start_node_key,
         node_plans=payload.node_plans,
     )
+    plan["git_identity"] = default_git_identity(db)
+    run.automation_plan_json = plan
     runtime_manifest = _compile_runtime_manifest(definition, server_identity=server_identity)
     snapshot = RunSnapshot(
         flow_run_id=run.id,
@@ -5992,6 +5987,7 @@ def copy_automatic_run_draft(
         plan["artifact_ids"] = copied_ids
         node_plans[str(node_key)] = plan
     source_plan["node_plans"] = node_plans
+    source_plan["git_identity"] = default_git_identity(db)
     upgraded_gate_ids = _upgrade_legacy_automatic_plan_gate_ids(source_plan)
     source_plan["status"] = "DRAFT"
     copied.automation_plan_json = source_plan
@@ -6085,7 +6081,6 @@ def export_nested_automatic_run_configs(
         "records": [
             {
                 "name": record.name,
-                "git_identity": record_git_identity(record),
                 "start_node_key": str(
                     (record.automation_plan_json or {}).get("start_node_key") or ""
                 ),
@@ -6125,7 +6120,6 @@ def import_nested_automatic_run_configs(
                     environment_version_id=parent.environment_version_id,
                     start_node_key=record.start_node_key,
                     node_plans=record.node_plans,
-                    git_identity=record.git_identity,
                 ),
             )
         )
@@ -6201,7 +6195,6 @@ def export_nested_stepwise_run_configs(
         records.append(
             {
                 "name": record.name,
-                "git_identity": record_git_identity(record),
                 "start_node_key": start_node_key,
                 "initial_configuration": {
                     "startup_prompt": startup_prompt,
@@ -6239,11 +6232,7 @@ def import_nested_stepwise_run_configs(
         record = _create_nested_stepwise_run_record(
             db,
             parent.id,
-            StepwiseRunRecordWrite(
-                name=config.name,
-                start_node_key=config.start_node_key,
-                git_identity=config.git_identity,
-            ),
+            StepwiseRunRecordWrite(name=config.name, start_node_key=config.start_node_key),
         )
         snapshot = _active_snapshot(db, record)
         node = _node(snapshot, config.start_node_key)

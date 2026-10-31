@@ -659,7 +659,6 @@ class StepwiseRunRecordWrite(ApiModel):
     """
 
     name: str | None = Field(default=None, max_length=220)
-    git_identity: GitIdentityWrite | None = None
     start_node_key: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9_-]{0,99}$")
 
 
@@ -690,7 +689,6 @@ class AutomaticNodePlanWrite(ApiModel):
 class AutomaticRunDraftWrite(ApiModel):
     name: str | None = Field(default=None, max_length=220)
     environment_version_id: str = Field(min_length=1, max_length=36)
-    git_identity: GitIdentityWrite | None = None
     start_node_key: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9_-]{0,99}$")
     node_plans: dict[str, AutomaticNodePlanWrite] = Field(default_factory=dict, max_length=200)
 
@@ -736,7 +734,6 @@ class AutomaticRecordConfigWrite(ApiModel):
     """Portable metadata, deliberately without Environment or Runtime state."""
 
     name: str | None = Field(default=None, max_length=220)
-    git_identity: GitIdentityWrite | None = None
     start_node_key: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9_-]{0,99}$")
     node_plans: dict[str, AutomaticNodePlanWrite] = Field(default_factory=dict, max_length=200)
 
@@ -749,6 +746,21 @@ class AutomaticRecordConfigImportWrite(ApiModel):
     exported_at: str | None = Field(default=None, max_length=64)
     source: dict[str, str] | None = None
     records: list[AutomaticRecordConfigWrite] = Field(min_length=1, max_length=100)
+
+    @model_validator(mode="before")
+    @classmethod
+    def drop_legacy_git_identity(cls, value: object) -> object:
+        if not isinstance(value, dict) or not isinstance(value.get("records"), list):
+            return value
+        return {
+            **value,
+            "records": [
+                {key: item for key, item in record.items() if key != "git_identity"}
+                if isinstance(record, dict)
+                else record
+                for record in value["records"]
+            ],
+        }
 
 
 class StepwiseRecordConfigExportWrite(ApiModel):
@@ -784,7 +796,6 @@ class StepwiseRecordConfigWrite(ApiModel):
     """Portable metadata for one stepwise record."""
 
     name: str | None = Field(default=None, max_length=220)
-    git_identity: GitIdentityWrite | None = None
     start_node_key: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9_-]{0,99}$")
     initial_configuration: StepwiseInitialConfigurationWrite
 
@@ -797,6 +808,21 @@ class StepwiseRecordConfigImportWrite(ApiModel):
     exported_at: str | None = Field(default=None, max_length=64)
     source: dict[str, str] | None = None
     records: list[StepwiseRecordConfigWrite] = Field(min_length=1, max_length=100)
+
+    @model_validator(mode="before")
+    @classmethod
+    def drop_legacy_git_identity(cls, value: object) -> object:
+        if not isinstance(value, dict) or not isinstance(value.get("records"), list):
+            return value
+        return {
+            **value,
+            "records": [
+                {key: item for key, item in record.items() if key != "git_identity"}
+                if isinstance(record, dict)
+                else record
+                for record in value["records"]
+            ],
+        }
 
 
 class NodeRunCopyWrite(ApiModel):

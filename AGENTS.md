@@ -165,6 +165,13 @@ git -C /Users/zhengmengen/WorkSpace/openhands/software-agent-sdk-total-tokens-1.
 - 嵌入式定时会话路由也必须保留与主页会话列表一致的底部“会话配置”入口，并将当前 hydration 后的正式 capabilities 传入；每个定时任务下的运行会话默认只展示前三项，其余由该任务自身的展开控件显示。
 - Git 提交 Diff 与工作区文件 Diff 共用 `DiffChangeNavigation` 的 `scrollIntoView({ block: 'center' })` 导航机制。每种统一/并排渲染模式都必须保留 `.agent-diff-scroll-end-spacer`（高度为可视区的 50%，且至少 120px），否则最后一个变更没有足够滚动范围进入视觉中心。Git Diff 有意只渲染补丁 hunk 中的新增、删除和有限上下文；文件末尾未改动的行应通过“查看源文件”查看，而不是补进 Diff。
 
+
+## Git 身份来源
+
+- Git 提交身份是当前认证用户资料派生的冻结审计字段，不是 FlowRun、复制、导入或编辑载荷可定义的配置；所有新建 FlowRun、记录、副本和导入记录都必须冻结当前用户身份。
+- Agent Workspace 设置页只实读用户根目录的有效 Git 身份；目录未配置时仅可同步当前用户资料，不得提供作者或邮箱的手工编辑，也不得覆盖已有真实目录身份。
+- 工作区默认身份通过受管 Git `includeIf` 作用于用户根目录之下的子 Git 仓库；仓库自身 `user.name`/`user.email` 仍优先。
+
 ## Case 控制面
 
 - 新建 Case 协调会话前，必须具有完整可复用的阶段路径和已保存的 Agent 配置；前端提前禁用启动，后端在创建会话／写入运行时前重新校验模板、模型、能力与认证，拒绝过期配置。已有协调会话仍可直接打开。操作记录包含平台自动推进、手动动作和会话控制请求，仅作为次要排查入口，不得统称为 Agent 会话消息。

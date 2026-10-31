@@ -485,7 +485,6 @@ export interface StepwiseTemplateReadiness {
 }
 
 export interface FlowRunStepwiseRecordWrite {
-  git_identity?: GitIdentity | null;
   name?: string;
   start_node_key: string;
 }
@@ -500,7 +499,6 @@ export interface FlowRunAutomaticRecordSummary {
   usage?: TokenUsageSummary;
 }
 export interface FlowRunAutomaticRecordWrite {
-  git_identity?: GitIdentity | null;
   name?: string; environment_version_id: string; start_node_key: string;
   node_plans?: Record<string, AutomaticNodePlan>;
 }
@@ -509,7 +507,6 @@ export interface FlowRunAutomaticRecordUpdate {
   node_plans: Record<string, AutomaticNodePlan>;
 }
 export interface AutomaticRecordConfig {
-  git_identity?: GitIdentity | null;
   name?: string | null; start_node_key: string;
   node_plans: Record<string, AutomaticNodePlan>;
 }
@@ -525,7 +522,6 @@ export interface StepwiseInitialConfiguration {
   input_urls: Record<string, string>;
 }
 export interface StepwiseRecordConfig {
-  git_identity?: GitIdentity | null;
   name?: string | null;
   start_node_key: string;
   initial_configuration: StepwiseInitialConfiguration;

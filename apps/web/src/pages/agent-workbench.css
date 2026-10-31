@@ -13,6 +13,8 @@
 .agent-workspace-git-summary .agent-workspace-git-summary-heading{display:flex;min-width:0;align-items:center;gap:8px}
 .agent-workspace-git-summary .agent-workspace-git-summary-refresh{flex:0 0 auto;padding:0;color:#7c8880;cursor:pointer}
 .agent-workspace-git-summary .agent-workspace-git-summary-refresh small{margin:0;line-height:16px}
+.agent-schedule-run-remove{display:grid;align-self:center;width:24px;height:24px;place-items:center;border:0;border-radius:5px;background:transparent;color:#a54641}.agent-schedule-run-remove:hover:not(:disabled){background:#fce9e8}.agent-schedule-run-remove:disabled{cursor:wait;opacity:.6}.agent-schedule-history-run:has(.agent-schedule-run-remove){grid-template-columns:14px minmax(0,1fr) 44px 120px 24px}@media(max-width:1180px){.agent-schedule-history-run:has(.agent-schedule-run-remove){grid-template-columns:14px minmax(0,1fr) 32px 100px 24px}}
+
 .agent-workspace-git-summary .agent-workspace-git-summary-refresh:hover:not(:disabled) small{color:#286140}
 .agent-workspace-git-summary .agent-workspace-git-summary-refresh:disabled{cursor:progress;opacity:.65}
 .agent-workspace-git-summary .agent-workspace-git-summary-branch{min-width:0;margin-left:auto;padding:0;color:#52685a}
