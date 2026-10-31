@@ -2037,6 +2037,12 @@ function latestUnfinishedUserEventId(events: OpenHandsConversationEvent[]): stri
   return [...userEvents].reverse().find(event => !hasFinishedTurn(events, event.id))?.id;
 }
 
+function latestFormalTurnIsFinished(events: OpenHandsConversationEvent[]): boolean {
+  const latestUserEvent = [...events].reverse().find(event => event.event_type === 'MESSAGE'
+    && ['user', 'human'].includes(String(event.payload.source ?? '').toLowerCase()));
+  return Boolean(latestUserEvent && hasFinishedTurn(events, latestUserEvent.id));
+}
+
 function eventBranchIdsFromRoots(events: OpenHandsConversationEvent[], rootEventIds: Iterable<string>): Set<string> {
   const children = new Map<string, string[]>();
   for (const event of events) {

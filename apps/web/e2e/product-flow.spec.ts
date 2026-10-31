@@ -2884,6 +2884,64 @@ test('terminal reconciliation retries the latest event window when the durable r
   await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
 });
 
+test('background queue waits for a formal terminal event after stale readiness', async ({ page }) => {
+  const now = new Date().toISOString();
+  let terminalEventAvailable = false;
+  let messagePosts = 0;
+  const conversation = {
+    id: 'background-queue-terminal-conversation', display_title: '后台队列终态确认', lifecycle: 'ACTIVE',
+    streaming_callback_ready: true, write_available: true, model_provider_id: null, model_name: null, reasoning_effort: null,
+    created_at: now, updated_at: now,
+  };
+  await page.route('**/api/v1/auth/me', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ id: 'background-queue-terminal-user', username: 'tester', role: 'USER', is_super_admin: false }),
+  }));
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/agent-workspaces/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/default')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id: 'background-queue-terminal-workspace', display_name: 'Agent 工作区', desired_state: 'RUNNING', updated_at: now }) });
+    if (path.endsWith('/runtime')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ state: 'ACTIVE', write_available: true, message: null, updated_at: now }) });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [{ ...conversation, execution_status: terminalEventAvailable ? 'idle' : 'running' }], next_cursor: null }) });
+    if (path.endsWith('/conversation-activity')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ running_binding_ids: [], conversations: [{ ...conversation, execution_status: terminalEventAvailable ? 'idle' : 'running' }] }) });
+    if (path.endsWith('/events')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+      events: [
+        { id: 'background-queue-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '仍在后台运行的请求', timestamp: now } },
+        ...(terminalEventAvailable ? [{ id: 'background-queue-finish', event_type: 'COMPLETED', payload: { source: 'agent', parent_id: 'background-queue-user', event_name: 'FinishAction', timestamp: now } }] : []),
+      ],
+      next_cursor: null,
+    }) });
+    if (path.endsWith('/input-readiness')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ready: true, execution_status: 'idle' }) });
+    if (path.endsWith('/messages') && request.method() === 'POST') {
+      messagePosts += 1;
+      return route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ accepted: true, cursor: 'background-queue-next-user' }) });
+    }
+    if (path.endsWith('/work-directories')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] }) });
+    if (path.endsWith('/workspace')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [], runtime: { container_id: 'background-queue-terminal-runtime' }, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '未配置', note: '' } } }) });
+    if (path.endsWith('/context')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ model_name: null, reasoning_effort: null }) });
+    if (path.endsWith('/pending-confirmation')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ pending: false }) });
+    if (path.endsWith('/capabilities')) return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+    return route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }) });
+  });
+  await page.route('**/api/v1/model-providers', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
+  await page.route('**/api/v1/capabilities', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
+
+  await login(page);
+  await page.goto('/agent/conversations/background-queue-terminal-conversation');
+  await page.getByLabel('发送 Agent 消息').fill('必须等待正式终态');
+  await page.getByLabel('发送 Agent 消息').press('Enter');
+  await expect(page.getByLabel('消息投递队列').getByText('必须等待正式终态')).toBeVisible();
+  await page.goto('/agent');
+  await page.waitForTimeout(250);
+  expect(messagePosts).toBe(0);
+
+  terminalEventAvailable = true;
+  await page.reload();
+  await expect.poll(() => messagePosts, { timeout: 1_500 }).toBe(1);
+});
+
 test('terminal readiness without a formal result keeps reconciliation non-blocking', async ({ page }) => {
   const now = new Date().toISOString();
   let terminal = false;
