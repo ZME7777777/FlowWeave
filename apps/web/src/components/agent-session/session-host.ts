@@ -11,9 +11,9 @@ export interface AgentSessionHost {
   readonly bootstrapRecoveryStorageKey: string;
   /** Current-tab recovery for a new, not-yet-created conversation draft. */
   readonly draftStorageKey: string;
-  /** Current-tab recovery for queued or unresolved message delivery intent. */
+  /** Device-local recovery for queued or unresolved message delivery intent. */
   queuedMessagesStorageKey(hostId: string, bindingId: string): string;
-  /** Current-tab preference controlling whether queued messages may dispatch. */
+  /** Device-local preference controlling whether queued messages may dispatch. */
   queueModeStorageKey(hostId: string, bindingId: string): string;
   /** Namespace every query and browser-only tool layout by host identity. */
   queryKey(resource: string, ...identifiers: Array<string | undefined>): readonly string[];

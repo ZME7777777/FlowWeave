@@ -1068,14 +1068,12 @@ function queuedMessageFromStorage(value: unknown): QueuedMessage | undefined {
   };
 }
 
-function readQueuedMessages(storageKey: string | undefined): QueuedMessage[] {
-  if (!storageKey) return [];
+function queuedMessagesFromSerializedStorage(value: string | null): QueuedMessage[] {
   try {
-    const stored = window.sessionStorage.getItem(storageKey);
-    const value: unknown = stored ? JSON.parse(stored) : [];
-    if (!Array.isArray(value)) return [];
+    const parsed: unknown = value ? JSON.parse(value) : [];
+    if (!Array.isArray(parsed)) return [];
     const ids = new Set<string>();
-    return value.flatMap(item => {
+    return parsed.flatMap(item => {
       const message = queuedMessageFromStorage(item);
       if (!message || ids.has(message.id)) return [];
       ids.add(message.id);
@@ -1086,11 +1084,27 @@ function readQueuedMessages(storageKey: string | undefined): QueuedMessage[] {
   }
 }
 
+function readQueuedMessages(storageKey: string | undefined): QueuedMessage[] {
+  if (!storageKey) return [];
+  try {
+    const local = window.localStorage.getItem(storageKey);
+    if (local !== null) return queuedMessagesFromSerializedStorage(local);
+    const legacy = window.sessionStorage.getItem(storageKey);
+    if (legacy === null) return [];
+    const messages = queuedMessagesFromSerializedStorage(legacy);
+    if (messages.length) window.localStorage.setItem(storageKey, JSON.stringify(messages));
+    window.sessionStorage.removeItem(storageKey);
+    return messages;
+  } catch {
+    return [];
+  }
+}
+
 function writeQueuedMessages(storageKey: string | undefined, messages: QueuedMessage[]) {
   if (!storageKey) return;
   try {
-    if (messages.length) window.sessionStorage.setItem(storageKey, JSON.stringify(messages));
-    else window.sessionStorage.removeItem(storageKey);
+    if (messages.length) window.localStorage.setItem(storageKey, JSON.stringify(messages));
+    else window.localStorage.removeItem(storageKey);
   } catch {
     // This is a browser-only recovery aid. A storage quota failure must not
     // block an otherwise valid explicit user submission.
@@ -1102,10 +1116,12 @@ function queuedMessageBindings(host: AgentSessionHost, workspaceId: string): str
   const prefix = host.queuedMessagesStorageKey(workspaceId, marker).slice(0, -marker.length);
   const bindings = new Set<string>();
   try {
-    for (let index = 0; index < window.sessionStorage.length; index += 1) {
-      const key = window.sessionStorage.key(index);
-      if (!key?.startsWith(prefix)) continue;
-      for (const message of readQueuedMessages(key)) bindings.add(message.scope);
+    for (const storage of [window.localStorage, window.sessionStorage]) {
+      for (let index = 0; index < storage.length; index += 1) {
+        const key = storage.key(index);
+        if (!key?.startsWith(prefix)) continue;
+        for (const message of readQueuedMessages(key)) bindings.add(message.scope);
+      }
     }
   } catch {
     // The current conversation remains usable when browser storage is blocked.
@@ -1116,7 +1132,13 @@ function queuedMessageBindings(host: AgentSessionHost, workspaceId: string): str
 function readQueueMode(storageKey: string | undefined): boolean {
   if (!storageKey) return true;
   try {
-    return window.sessionStorage.getItem(storageKey) !== 'disabled';
+    const local = window.localStorage.getItem(storageKey);
+    if (local !== null) return local !== 'disabled';
+    const legacy = window.sessionStorage.getItem(storageKey);
+    if (legacy === null) return true;
+    window.localStorage.setItem(storageKey, legacy);
+    window.sessionStorage.removeItem(storageKey);
+    return legacy !== 'disabled';
   } catch {
     return true;
   }
@@ -1125,8 +1147,8 @@ function readQueueMode(storageKey: string | undefined): boolean {
 function writeQueueMode(storageKey: string | undefined, enabled: boolean) {
   if (!storageKey) return;
   try {
-    if (enabled) window.sessionStorage.removeItem(storageKey);
-    else window.sessionStorage.setItem(storageKey, 'disabled');
+    if (enabled) window.localStorage.removeItem(storageKey);
+    else window.localStorage.setItem(storageKey, 'disabled');
   } catch {
     // Queue mode is a browser-only interaction preference.
   }
@@ -5301,14 +5323,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       current ? new Map([...current].filter(([, projection]) => !projection.formalEventObserved)) : undefined
     ));
   }, [localProjectionQueryKey, projectionIdentity, queryClient]);
-  useQuery({
-    queryKey: ['agent-workspace-git-settings', workspace?.id],
-    queryFn: () => agentWorkspaceApi.agentGitIdentity(workspace!.id),
-    enabled: host.id === 'agent-workspace' && Boolean(workspace),
-    staleTime: 60_000,
-    refetchOnWindowFocus: false,
-    retry: false,
-  });
   const conversationSearchSupported = Boolean(api.startConversationSearch && api.conversationSearch);
   const conversationSearchQuery = useQuery<AgentConversationSearch>({
     queryKey: sessionQueryKey(host, 'conversation-search', workspace?.id, conversationSearchId, conversationSearchCursor),

@@ -2573,7 +2573,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   modelIsResponding = true;
   await page.reload();
   activeConversation.streaming_callback_ready = true;
-  await page.evaluate(() => sessionStorage.setItem('flowweave.agent.message-queue.v1:agent-workspace-1:agent-conversation-streaming-1', JSON.stringify([{
+  await page.evaluate(() => localStorage.setItem('flowweave.agent.message-queue.v1:agent-workspace-1:agent-conversation-streaming-1', JSON.stringify([{
     id: 'legacy-dispatched-message', scope: 'agent-conversation-streaming-1', content: '旧版已发送消息', items: [], references: [], annotations: [], deliveryState: 'ambiguous', createdAt: Date.now(),
   }])));
   await page.reload();

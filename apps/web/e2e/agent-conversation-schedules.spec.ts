@@ -4823,8 +4823,8 @@ test('flow action popover escapes a clipped list and keeps selection and actions
 test('queued message action popover preserves upward placement outside dismissal and editing', async ({ page }) => {
   await openWorkspace(page);
   await page.evaluate(() => {
-    sessionStorage.setItem('flowweave.agent.message-queue.v1:schedule-workspace:scheduled-conversation', JSON.stringify([{ id: 'edge-message', scope: 'scheduled-conversation', content: '边界排队消息', items: [], references: [], annotations: [], deliveryState: 'queued' }]));
-    sessionStorage.setItem('flowweave.agent.queue-mode.v1:schedule-workspace:scheduled-conversation', 'disabled');
+    localStorage.setItem('flowweave.agent.message-queue.v1:schedule-workspace:scheduled-conversation', JSON.stringify([{ id: 'edge-message', scope: 'scheduled-conversation', content: '边界排队消息', items: [], references: [], annotations: [], deliveryState: 'queued' }]));
+    localStorage.setItem('flowweave.agent.queue-mode.v1:schedule-workspace:scheduled-conversation', 'disabled');
   });
   await page.goto('/agent/conversations/scheduled-conversation');
   const trigger = page.getByRole('button', { name: '更多排队消息操作 1', exact: true });
