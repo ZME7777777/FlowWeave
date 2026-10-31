@@ -25,6 +25,7 @@ async function respond(route: Route, body: unknown, status = 200) {
 }
 
 test('keeps account settings in unique temporary tabs and closes the active tab predictably', async ({ page }) => {
+  await page.setViewportSize({ width: 1920, height: 1000 });
   await mockSettingsApi(page);
 
   await page.goto('/');
@@ -42,7 +43,7 @@ test('keeps account settings in unique temporary tabs and closes the active tab 
   await expect(page.locator('.context-tab.active')).toContainText('大模型配置');
 
   await page.reload();
-  await expect(page.locator('.context-tab')).toHaveText(['终端环境', '认证管理', '大模型配置', '用户管理']);
+  await expect(page.locator('.context-tab')).toHaveText(['用户管理', '大模型配置', '认证管理', '终端环境']);
   await expect(page.locator('.context-tab.active')).toContainText('大模型配置');
 
   await openSettings(page, '用户管理');
@@ -77,17 +78,17 @@ test('keeps account settings in unique temporary tabs and closes the active tab 
   await expect(page.getByLabel('临时管理标签')).toBeVisible();
   await expect(page.locator('.context-tab')).toHaveCount(4);
   await page.reload();
-  await expect(page.locator('.context-tab')).toHaveText(['终端环境', '认证管理', '大模型配置', '用户管理']);
+  await expect(page.locator('.context-tab')).toHaveText(['用户管理', '大模型配置', '认证管理', '终端环境']);
   await expect(page.locator('.context-tab.active')).toHaveCount(0);
   await expect(page.getByRole('button', { name: '节点中心', exact: true })).toHaveClass('active');
 
   await page.getByRole('button', { name: '大模型配置', exact: true }).click();
   await page.getByRole('button', { name: '关闭大模型配置', exact: true }).click();
   await expect(page.locator('.context-tab')).toHaveCount(3);
-  await expect(page.locator('.context-tab.active')).toContainText('用户管理');
+  await expect(page.locator('.context-tab.active')).toContainText('认证管理');
   await page.reload();
-  await expect(page.locator('.context-tab')).toHaveText(['终端环境', '认证管理', '用户管理']);
-  await expect(page.locator('.context-tab.active')).toContainText('用户管理');
+  await expect(page.locator('.context-tab')).toHaveText(['用户管理', '认证管理', '终端环境']);
+  await expect(page.locator('.context-tab.active')).toContainText('认证管理');
 
   for (const label of ['用户管理', '认证管理', '终端环境']) {
     await page.getByRole('button', { name: `关闭${label}`, exact: true }).click();
@@ -112,7 +113,7 @@ test('isolates saved tabs by account and filters settings after permission chang
 
   user = { ...admin };
   await page.reload();
-  await expect(page.locator('.context-tab')).toHaveText(['大模型配置', '用户管理']);
+  await expect(page.locator('.context-tab')).toHaveText(['用户管理', '大模型配置']);
   await page.getByRole('button', { name: '用户管理', exact: true }).click();
   user = { ...admin, role: 'USER', is_super_admin: false };
   await page.reload();
@@ -159,7 +160,7 @@ for (const storage of ['corrupt', 'unavailable'] as const) {
     await expect(page.locator('.context-tabs')).toHaveCount(0);
     await openSettings(page, '终端环境');
     await openSettings(page, '大模型配置');
-    await expect(page.locator('.context-tab')).toHaveText(['终端环境', '大模型配置']);
+    await expect(page.locator('.context-tab')).toHaveText(['大模型配置', '终端环境']);
     await page.getByRole('button', { name: '关闭终端环境' }).click();
     await expect(page.locator('.context-tab.active')).toHaveText('大模型配置');
     await page.getByRole('button', { name: '关闭大模型配置' }).click();

@@ -1,3 +1,5 @@
+import { CapabilityCollectionFilter } from './CapabilityCollectionFilter';
+import './session-configuration-layout.css';
 import { ViewportPopover } from '../ViewportPopover';
 import { HighlightedDiffCode, SharedSplitDiff, DiffChangeNavigation } from '../FileDiff';
 import { filePreviewLanguage, highlightedCode, splitDiffRows, diffChangeStartIndexes, gitDiffLines, type GitDiffLine, type SplitDiffRow, diffInlineRanges } from '../fileDiffModel';
@@ -5,8 +7,8 @@ import { FitAddon } from '@xterm/addon-fit';
 import { Terminal as XTerm } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import { type InfiniteData, useQueries, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Archive, ArrowLeft, ArrowRight, ArrowUp, Bell, Bot, Boxes, CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, CircleDot, Copy, CornerDownRight, Download, Ellipsis, Eye, EyeOff, FileCode2, FileText, Folder, FolderOpen, FolderPlus, Gauge, GitBranch, Globe2, GripVertical, Home, ImageIcon, KeyRound, Layers3, Link2, ListRestart, LoaderCircle, Maximize, Maximize2, Minimize, Minimize2, MessageSquareText, MonitorCog, MonitorOff, PanelRight, PanelRightOpen, Pencil, Pin, PinOff, Play, Plug, Plus, Puzzle, Quote, RefreshCw, Search, Send, Settings, ShieldAlert, Sparkles, Square, SquareCheck, SquarePlus, SquareTerminal, Target, Trash2, Webhook, X } from 'lucide-react';
-import { createContext, isValidElement, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type WheelEvent as ReactWheelEvent } from 'react';
+import { Archive, ArrowLeft, ArrowRight, ArrowUp, Bell, Bot, Boxes, CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, CircleDot, Copy, CornerDownRight, Download, Ellipsis, Eye, EyeOff, FileCode2, FileText, Folder, FolderOpen, FolderPlus, Gauge, GitBranch, Globe2, GripVertical, Home, ImageIcon, Link2, ListRestart, LoaderCircle, Maximize, Maximize2, Minimize, Minimize2, MessageSquareText, MonitorCog, MonitorOff, PanelRight, PanelRightOpen, Pencil, Pin, PinOff, Play, Plug, Plus, Quote, RefreshCw, Search, Send, Settings, ShieldAlert, Square, SquareCheck, SquarePlus, SquareTerminal, Trash2, X } from 'lucide-react';
+import { createContext, isValidElement, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type WheelEvent as ReactWheelEvent } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
 import { ComposerModelMenu } from './ComposerModelMenu';
@@ -39,13 +41,12 @@ import { sandboxedWorkspaceHtmlDocument as sandboxedHtmlPreviewDocument } from '
 import { subagentAvatarSlots, type SubagentAvatarSlot } from '../../utils/subagentAvatar';
 import { workspaceFileChanges, workspaceRelativePath, type WorkspaceFileChange } from './fileChanges';
 import type { AgentAttachment, AgentConversation, AgentConversationActivity, AgentConversationScheduleOccurrence, AgentConversationAnnotation, AgentConversationContext, AgentConversationCredentialSyncEntry, AgentConversationHydration, AgentConversationInputReadiness, AgentConversationPage, AgentConversationReference, AgentConversationSearch, AgentPendingConfirmationAction, AgentSessionCapability, AgentSessionMcpReadiness, AgentSessionWorkDirectory, AgentSessionWorkDirectoryList, AgentSessionWorkspaceDetails, AgentWorkspaceReference, CapabilityAsset, ModelProvider, OpenHandsConversationEvent, OpenHandsConversationEventBatch, RuntimeTaskControlSnapshot, RuntimeTaskUsageSnapshot, WebsiteCredential, WorkspaceGitChangeKind, WorkspaceGitChangedFile, WorkspaceGitChanges, WorkspaceGitCommitDetails, WorkspaceGitFileDiff } from '../../types';
+import { capabilityTypeIcons, capabilityTypeLabels, capabilityTypeFilters, type AgentCapabilityType } from './capabilityPresentation';
 import '../../pages/agent-workbench.css';
 import '../../pages/agent-workbench-layout.css';
 
 const ACTIVE_EVENT_RECOVERY_INTERVAL_MS = 4_000;
 const ACTIVE_EVENT_LATEST_RECHECK_INTERVAL_MS = 30_000;
-const FLOWWEAVE_RECONNECT_MAX_ATTEMPTS = 3;
-const FLOWWEAVE_RECONNECT_OBSERVATION_MS = 5_000;
 const INPUT_READINESS_MIN_REQUEST_INTERVAL_MS = 2_000;
 const PAUSE_CONFIRMATION_RETRY_INTERVAL_MS = 500;
 const SUBMISSION_EVENT_CONFIRMATION_TIMEOUT_MS = 60_000;
@@ -80,20 +81,13 @@ const SESSION_PERFORMANCE_MARK_PREFIX = 'flowweave.agent-session.';
 // Runtime payload. They govern each model request made while a Task runs;
 // they are not a wall-clock deadline for the whole child task.
 const MODEL_REQUEST_TIMEOUT_SECONDS = 120;
-const MODEL_REQUEST_MAX_RETRIES = 3;
+const MODEL_REQUEST_MAX_RETRIES = 5;
 const PRODUCT_CONTEXT_WINDOW_TOKENS = 512_000;
 const CONTEXT_COMPACTION_TRIGGER_PERCENT = 80;
 const CONTEXT_COMPACTION_TRIGGER_TOKENS = 409_600;
 type StreamStatus = 'connecting' | 'live' | 'recovering' | 'disabled';
-type TurnState = 'idle' | 'running' | 'pausing' | 'paused' | 'resuming' | 'reconnecting';
-type ComposerControlMode = 'idle' | 'running' | 'pausing' | 'paused' | 'resuming' | 'reconnecting' | 'rewriting' | 'reconciling' | 'read-only' | 'condensing';
-type FlowWeaveReconnect = {
-  bindingId: string;
-  errorEventId: string;
-  attempt: number;
-  baselineEventIds: Set<string>;
-  resumeIssued: boolean;
-};
+type TurnState = 'idle' | 'running' | 'pausing' | 'paused' | 'resuming';
+type ComposerControlMode = 'idle' | 'running' | 'pausing' | 'paused' | 'resuming' | 'rewriting' | 'reconciling' | 'read-only' | 'condensing';
 type QueueDeliveryState = 'queued';
 type ConversationOrderSync = { state: 'syncing' | 'failed'; orderedBindingIds: string[] };
 type ConversationPagesByScope = Record<string, AgentConversationPage>;
@@ -383,17 +377,6 @@ async function copyTextToClipboard(value: string): Promise<void> {
   if (!copied) throw new Error('Clipboard is unavailable');
 }
 
-async function copyImageToClipboard(sourceUrl: string): Promise<void> {
-  if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
-    throw new Error('当前浏览器不支持复制图片');
-  }
-  const response = await fetch(sourceUrl, { credentials: 'include' });
-  if (!response.ok) throw new Error('图片暂时无法读取');
-  const blob = await response.blob();
-  if (!blob.type.startsWith('image/')) throw new Error('当前文件不是可复制的图片');
-  await navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })]);
-}
-
 type RuntimeTaskStatus = 'RUNNING' | 'COMPLETED' | 'ERROR';
 interface RuntimeTaskProjection {
   id: string;
@@ -653,8 +636,6 @@ interface WorkspaceConversationGroupProps {
   onEdit?: () => void;
   onArchive?: () => void;
   onDelete?: () => void;
-  restoredConversationCount?: number;
-  onRestoredConversationsVisible?: () => void;
 }
 
 function sessionQueryKey(host: AgentSessionHost, resource: string, ...identifiers: Array<string | undefined>) {
@@ -681,20 +662,6 @@ function conversationHasReachedTerminalState(executionStatus: string | null | un
   return ['idle', 'completed', 'stopped', 'finished', 'error', 'stuck'].includes(
     executionStatus?.trim().toLowerCase() ?? '',
   );
-}
-
-function isRecoverableGatewayFailure(event: OpenHandsConversationEvent): boolean {
-  if (!isOpenHandsConversationTerminalError(event)) return false;
-  const classification = event.payload.classification;
-  if (typeof classification !== 'object' || classification === null || Array.isArray(classification)) {
-    return false;
-  }
-  const values = classification as Record<string, unknown>;
-  // OpenHands reserves `transient` for short-lived transport/provider faults:
-  // timeouts, connection loss, 502/503/504-style gateway failures and empty
-  // responses. Quota, rate-limit, auth, config and context errors are separate
-  // kinds, even when their own retryable flag is true.
-  return values.kind === 'transient' && values.retryable === true;
 }
 
 const MAX_BOOTSTRAP_RECONCILIATION_ATTEMPTS = 3;
@@ -729,7 +696,7 @@ function readSidebarCollapsePreferences(storageKey: string | undefined): Sidebar
   }
 }
 
-function WorkspaceConversationGroup({ groupId, label, children, conversationCount, hasMore = false, loadingMore = false, onLoadMore, draggable = false, dragging = false, dropPosition, onPointerDragStart, collapsed = false, onCollapsedChange, canCreateConversation = false, onCreateConversation, onConfigureSession, onEdit, onArchive, onDelete, restoredConversationCount = 0, onRestoredConversationsVisible, revealConversationIndex, onRevealConversation }: WorkspaceConversationGroupProps & { revealConversationIndex?: number; onRevealConversation?: () => void }) {
+function WorkspaceConversationGroup({ groupId, label, children, conversationCount, hasMore = false, loadingMore = false, onLoadMore, draggable = false, dragging = false, dropPosition, onPointerDragStart, collapsed = false, onCollapsedChange, canCreateConversation = false, onCreateConversation, onConfigureSession, onEdit, onArchive, onDelete, revealConversationIndex, onRevealConversation }: WorkspaceConversationGroupProps & { revealConversationIndex?: number; onRevealConversation?: () => void }) {
   const [visibleCount, setVisibleCount] = useState(3);
   const [actionsOpen, setActionsOpen] = useState(false);
   const actionsRef = useRef<HTMLDivElement>(null);
@@ -747,17 +714,11 @@ function WorkspaceConversationGroup({ groupId, label, children, conversationCoun
     }
     const added = conversationCount - previousConversationCount.current;
     previousConversationCount.current = conversationCount;
-    // A restore may arrive in the first refreshed page without changing its
-    // size. Count it once below, while retaining normal creation pagination.
-    const nonRestoredAdded = Math.max(0, added - restoredConversationCount);
-    if (nonRestoredAdded > 0 && !collapsed) setVisibleCount(current => current + nonRestoredAdded);
-  }, [collapsed, conversationCount, restoredConversationCount]);
-  useEffect(() => {
-    if (!restoredConversationCount || collapsed) return;
-    setVisibleCount(current => current + restoredConversationCount);
-    onRestoredConversationsVisible?.();
-    if (hasMore && !loadingMore) void onLoadMore?.();
-  }, [collapsed, hasMore, loadingMore, onLoadMore, onRestoredConversationsVisible, restoredConversationCount]);
+    // A newly created conversation must extend the current visible list rather
+    // than displacing the old third row. Manual pagination naturally does the
+    // same when its page arrives.
+    if (added > 0 && !collapsed) setVisibleCount(current => current + added);
+  }, [collapsed, conversationCount]);
   useEffect(() => {
     if (revealConversationIndex === undefined) return;
     if (collapsed) onCollapsedChange?.(false);
@@ -1309,10 +1270,6 @@ function isHydrationRequestTimeout(error: unknown): boolean {
 
 type CapabilityChoice = Pick<CapabilityAsset, 'id' | 'capability_type' | 'capability_key'> & Partial<CapabilityAsset>;
 
-type AgentCapabilityType = 'SKILL' | 'MCP' | 'PLUGIN' | 'CONTEXT' | 'AGENT_DEFINITION' | 'HOOK';
-
-const capabilityTypeIcons = { SKILL: Sparkles, MCP: Plug, PLUGIN: Puzzle, CONTEXT: FileText, AGENT_DEFINITION: Bot, HOOK: Webhook };
-const capabilityTypeLabels = { SKILL: 'Skill', MCP: 'MCP', PLUGIN: 'Plugin', CONTEXT: 'Context', AGENT_DEFINITION: 'Agent', HOOK: 'Hook' };
 
 function stringValues(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0) : [];
@@ -1321,9 +1278,10 @@ function stringValues(value: unknown): string[] {
 type DraftCredentialEntry = WebsiteCredential & { sync_state?: AgentConversationCredentialSyncEntry['sync_state'] };
 
 
-export function CapabilityManager({ workspaceId, bindingId, conversationCapabilities, draftCapabilityIds, draftCredentialIds, configurationPreset = false, onClose, onCreateEnhancedConversation, onDraftCredentialIdsChange, onSaveConfiguration }: {
+export function CapabilityManager({ workspaceId, bindingId, conversationCapabilities, draftCapabilityIds, draftCredentialIds, configurationPreset = false, capabilitiesOnly = false, onDraftCapabilityIdsChange, onClose, onCreateEnhancedConversation, onDraftCredentialIdsChange, onSaveConfiguration }: {
   workspaceId: string; bindingId?: string; conversationCapabilities?: AgentSessionCapability[]; onClose: () => void;
-  draftCapabilityIds?: string[]; draftCredentialIds?: string[]; configurationPreset?: boolean;
+  draftCapabilityIds?: string[]; draftCredentialIds?: string[]; configurationPreset?: boolean; capabilitiesOnly?: boolean;
+  onDraftCapabilityIdsChange?: (ids: string[]) => void;
   onCreateEnhancedConversation?: (capabilityVersionIds: string[]) => void;
   onDraftCredentialIdsChange?: (credentialIds: string[]) => void;
   onSaveConfiguration?: (configuration: { capabilityVersionIds: string[]; credentialIds: string[] }) => Promise<void> | void;
@@ -1335,9 +1293,16 @@ export function CapabilityManager({ workspaceId, bindingId, conversationCapabili
   const [kind, setKind] = useState<AgentCapabilityType | 'ALL'>('ALL');
   const [showSelectedOnly, setShowSelectedOnly] = useState(false);
   const [managerTab, setManagerTab] = useState<'CAPABILITIES' | 'CREDENTIALS'>('CAPABILITIES');
-  const [collectionsOpen, setCollectionsOpen] = useState(false);
+  const configurationId = useId();
+  const configurationContent = useRef<HTMLDivElement>(null);
+  const listScroll = useRef({ CAPABILITIES: 0, CREDENTIALS: 0 });
+  const selectConfigurationTab = (next: 'CAPABILITIES' | 'CREDENTIALS') => {
+    listScroll.current[managerTab] = configurationContent.current?.querySelector('.agent-capability-list')?.scrollTop ?? 0;
+    setManagerTab(next);
+    requestAnimationFrame(() => { const list = configurationContent.current?.querySelector('.agent-capability-list'); if (list) list.scrollTop = listScroll.current[next]; });
+  };
   const [selectedCollectionIds, setSelectedCollectionIds] = useState<string[]>([]);
-  const [chosenIds, setSelectedIds] = useState<string[]>([]);
+  const [chosenIds, setSelectedIds] = useState<string[]>(draftCapabilityIds ?? []);
   const [selectedCredentialIds, setSelectedCredentialIds] = useState<string[]>([]);
   const [mcpReadiness, setMcpReadiness] = useState<Record<string, AgentSessionMcpReadiness | undefined>>({});
   const [checkingMcpIds, setCheckingMcpIds] = useState<Set<string>>(new Set());
@@ -1357,7 +1322,7 @@ export function CapabilityManager({ workspaceId, bindingId, conversationCapabili
     return () => { opener?.focus(); };
   }, []);
   const catalogQuery = useQuery({ queryKey: sessionQueryKey(host, 'capability-catalog'), queryFn: api.capabilities, refetchOnMount: 'always' });
-  const selectedIds = chosenIds;
+  const selectedIds = useMemo(() => chosenIds.filter(id => !(catalogQuery.data ?? []).some(item => item.id === id && item.is_builtin)), [chosenIds, catalogQuery.data]);
   const collectionsQuery = useQuery({ queryKey: sessionQueryKey(host, 'capability-collections'), queryFn: api.capabilityCollections });
   const credentialQuery = useQuery({
     queryKey: sessionQueryKey(host, 'credential-sync', workspaceId, bindingId),
@@ -1367,7 +1332,7 @@ export function CapabilityManager({ workspaceId, bindingId, conversationCapabili
   const credentialCatalogQuery = useQuery({
     queryKey: ['website-credentials'],
     queryFn: agentWorkspaceApi.websiteCredentials,
-    enabled: Boolean(!bindingId && (managerTab === 'CREDENTIALS' || configurationPreset)),
+    enabled: Boolean(!capabilitiesOnly && !bindingId && (managerTab === 'CREDENTIALS' || configurationPreset)),
   });
   useEffect(() => {
     if (credentialSelectionInitialized.current) return;
@@ -1388,9 +1353,6 @@ export function CapabilityManager({ workspaceId, bindingId, conversationCapabili
       .filter(item => item.capability_type === 'CONTEXT' || item.capability_type === 'AGENT_DEFINITION' || item.capability_type === 'HOOK')
       .map(item => item.id),
   ), [conversationCapabilities]);
-  const frozenContextCount = (conversationCapabilities ?? []).filter(item => item.capability_type === 'CONTEXT').length;
-  const frozenAgentCount = (conversationCapabilities ?? []).filter(item => item.capability_type === 'AGENT_DEFINITION').length;
-  const frozenHookCount = (conversationCapabilities ?? []).filter(item => item.capability_type === 'HOOK').length;
   const allCapabilities = useMemo(() => {
     const entries = new Map<string, CapabilityChoice>((catalogQuery.data ?? []).map(item => [item.id, item]));
     for (const item of conversationCapabilities ?? []) {
@@ -1402,7 +1364,7 @@ export function CapabilityManager({ workspaceId, bindingId, conversationCapabili
   useEffect(() => {
     const current = bindingId ? conversationCapabilities : draftCapabilityIds?.map(id => ({ id }));
     if (!current) return;
-    const next = current.map(item => item.id);
+    const next = current.filter(item => !('is_builtin' in item) || !item.is_builtin).map(item => item.id);
     const previous = previousSelection.current;
     if (previous && previous.length === next.length && previous.every((id, index) => id === next[index])) return;
     previousSelection.current = next;
@@ -1430,19 +1392,15 @@ export function CapabilityManager({ workspaceId, bindingId, conversationCapabili
     return updates;
   }, [allCapabilities, catalogQuery.data, registeredSkills]);
   const capabilities = useMemo(() => [...allCapabilities.values()].filter(item => {
-    if (!['SKILL', 'MCP', 'PLUGIN', 'CONTEXT', 'AGENT_DEFINITION', 'HOOK'].includes(item.capability_type)) return false;
+    if (!['SKILL', 'MCP', 'PLUGIN', 'CONTEXT', 'AGENT_DEFINITION', 'HOOK'].includes(item.capability_type)
+      || item.is_builtin) return false;
     const registeredSkill = registeredSkills.get(item.capability_key);
     if (item.capability_type === 'SKILL' && registeredSkill) {
       const chosen = chosenIds.find(id => allCapabilities.get(id)?.capability_type === 'SKILL'
         && allCapabilities.get(id)?.capability_key === item.capability_key) ?? registeredSkill.id;
       return item.id === chosen;
     }
-    const selectedContextId = item.capability_type === 'CONTEXT'
-      ? chosenIds.find(id => allCapabilities.get(id)?.capability_type === 'CONTEXT'
-        && allCapabilities.get(id)?.capability_key === item.capability_key)
-      : undefined;
-    if (selectedContextId) return item.id === selectedContextId;
-    return (item.is_latest || frozenCreationOnlyIds.has(item.id) || (!bindingId && item.capability_type !== 'CONTEXT' && (draftCapabilityIds ?? []).includes(item.id)))
+    return (item.is_latest || frozenCreationOnlyIds.has(item.id) || (!bindingId && (draftCapabilityIds ?? []).includes(item.id)))
       && (!bindingId || !['CONTEXT', 'AGENT_DEFINITION', 'HOOK'].includes(item.capability_type) || frozenCreationOnlyIds.has(item.id));
   }), [allCapabilities, bindingId, chosenIds, draftCapabilityIds, frozenCreationOnlyIds, registeredSkills]);
   const byId = allCapabilities;
@@ -1493,7 +1451,7 @@ export function CapabilityManager({ workspaceId, bindingId, conversationCapabili
   const save = useMutation({
     mutationFn: async () => {
       if (configurationPreset && !bindingId) {
-        const credentialIds = credentialSelectionInitialized.current
+        const credentialIds = capabilitiesOnly ? [] : credentialSelectionInitialized.current
           ? selectedCredentialIds
           : draftCredentialIds ?? credentialCatalogQuery.data?.map(credential => credential.id);
         if (credentialIds === undefined) throw new Error('认证目录正在读取，请稍候再保存。');
@@ -1549,26 +1507,19 @@ export function CapabilityManager({ workspaceId, bindingId, conversationCapabili
     },
   });
   useEscapeClose(() => { if (!save.isPending && !credentialSync.isPending) onClose(); });
-  const toggle = (item: CapabilityChoice) => setSelectedIds(current => {
-    if (current.includes(item.id)) {
-      // The formal OpenHands API is additive.  Do not display an uncheckable
-      // illusion for a capability already loaded into this native session.
+  const updateChosenIds = (next: string[]) => { setSelectedIds(next); onDraftCapabilityIdsChange?.(next); };
+  const toggle = (item: CapabilityChoice) => {
+    if (chosenIds.includes(item.id)) {
       if (bindingId && (conversationCapabilities ?? []).some(enabled => enabled.id === item.id
-        || (enabled.capability_type === 'SKILL' && item.capability_type === 'SKILL' && enabled.capability_key === item.capability_key))) return current;
-      return current.filter(id => id !== item.id);
-    }
-    return selectCapabilityVersion(current, item, byId);
-  });
-  const toggleVisible = () => setSelectedIds(current => {
-    if (allVisibleSelected) return current.filter(id => !selectableVisibleIds.includes(id));
-    return selectCapabilityVersions(current, selectableVisibleIds.map(id => byId.get(id)).filter((item): item is CapabilityChoice => Boolean(item)), byId);
-  });
+        || (enabled.capability_type === 'SKILL' && item.capability_type === 'SKILL' && enabled.capability_key === item.capability_key))) return;
+      updateChosenIds(chosenIds.filter(id => id !== item.id));
+    } else updateChosenIds(selectCapabilityVersion(chosenIds, item, byId));
+  };
+  const toggleVisible = () => updateChosenIds(allVisibleSelected ? chosenIds.filter(id => !selectableVisibleIds.includes(id))
+    : selectCapabilityVersions(chosenIds, selectableVisibleIds.map(id => byId.get(id)).filter((item): item is CapabilityChoice => Boolean(item)), byId));
   const synchronizeSkill = (item: CapabilityAsset) => setSelectedIds(current => selectCapabilityVersion(current, item, byId));
-  const toggleCollectionFilter = (collectionId: string) => setSelectedCollectionIds(current => current.includes(collectionId)
-    ? current.filter(id => id !== collectionId)
-    : [...current, collectionId]);
   const trapFocus = (event: ReactKeyboardEvent<HTMLElement>) => {
-    if (event.key !== 'Tab') return;
+    if (event.key !== 'Tab' || !(event.target instanceof Node) || !dialog.current?.contains(event.target)) return;
     const focusable = [...(dialog.current?.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), [href], [tabindex]:not([tabindex="-1"])') ?? [])].filter(item => item.offsetParent !== null);
     if (!focusable.length) return;
     const first = focusable[0]; const last = focusable[focusable.length - 1];
@@ -1586,14 +1537,16 @@ export function CapabilityManager({ workspaceId, bindingId, conversationCapabili
     : [...new Set([...current, ...selectableCredentialIds])]);
   const toggleCredential = (credential: DraftCredentialEntry) => setSelectedCredentialIds(current => current.includes(credential.id) ? current.filter(id => id !== credential.id) : [...current, credential.id]);
   return <div className="agent-capability-backdrop" role="presentation" onPointerDown={event => { if (event.target === event.currentTarget && !busy) onClose(); }}>
-    <section ref={dialog} className={`agent-capability-manager${bindingId ? ' has-session-tabs' : ''}${managerTab === 'CREDENTIALS' ? ' credentials-tab' : ''}`} role="dialog" aria-modal="true" aria-labelledby="agent-capability-title" onKeyDown={trapFocus}>
+    <section ref={dialog} className={`agent-capability-manager session-configuration-editor${bindingId ? ' has-session-tabs' : ''}${managerTab === 'CREDENTIALS' ? ' credentials-tab' : ''}`} role="dialog" aria-modal="true" aria-labelledby="agent-capability-title" onKeyDown={trapFocus}>
       <header><h2 id="agent-capability-title">会话配置</h2><button ref={closeButton} type="button" aria-label="关闭会话配置" disabled={busy} onClick={onClose}><X size={18}/></button></header>
-      <div className="agent-session-config-body">
-        <nav className="agent-session-config-tabs" aria-label="会话配置分类">
-          <button type="button" className={managerTab === 'CAPABILITIES' ? 'active' : ''} aria-current={managerTab === 'CAPABILITIES' ? 'page' : undefined} onClick={() => setManagerTab('CAPABILITIES')}><Boxes size={16}/><span>能力</span></button>
-          <button type="button" className={managerTab === 'CREDENTIALS' ? 'active' : ''} aria-current={managerTab === 'CREDENTIALS' ? 'page' : undefined} onClick={() => setManagerTab('CREDENTIALS')}><ShieldAlert size={16}/><span>认证</span></button>
-        </nav>
-        <main className="agent-session-config-panel">
+      <div className="agent-session-configuration-layout">
+      {!capabilitiesOnly && <nav className="agent-session-config-tabs" role="tablist" aria-label="会话配置分类" aria-orientation="vertical" onKeyDown={event => {
+        const next = event.key === 'ArrowDown' || event.key === 'ArrowUp' ? managerTab === 'CAPABILITIES' ? 'CREDENTIALS' : 'CAPABILITIES' : event.key === 'Home' ? 'CAPABILITIES' : event.key === 'End' ? 'CREDENTIALS' : undefined;
+        if (!next) return;
+        event.preventDefault(); selectConfigurationTab(next);
+        event.currentTarget.querySelector<HTMLButtonElement>(`[data-configuration-tab="${next}"]`)?.focus();
+      }}>{(['CAPABILITIES', 'CREDENTIALS'] as const).map(tab => <button key={tab} id={`${configurationId}-${tab}`} type="button" role="tab" data-configuration-tab={tab} aria-selected={managerTab === tab} aria-controls={`${configurationId}-content`} tabIndex={managerTab === tab ? 0 : -1} onClick={() => selectConfigurationTab(tab)}>{tab === 'CAPABILITIES' ? <Boxes size={15}/> : <ShieldAlert size={15}/>}<span>{tab === 'CAPABILITIES' ? '能力' : '认证'}</span></button>)}</nav>}
+      <div ref={configurationContent} id={`${configurationId}-content`} className="agent-session-configuration-content" role={!capabilitiesOnly ? 'tabpanel' : undefined} aria-labelledby={!capabilitiesOnly ? `${configurationId}-${managerTab}` : undefined}>
       {managerTab === 'CREDENTIALS' ? <div className="agent-credential-sync">
         <div className="agent-credential-sync-content">
           <div className="agent-credential-sync-heading"><button type="button" className="agent-capability-select-visible" aria-label={allCredentialsSelected ? '取消全选认证' : '全选认证'} title={allCredentialsSelected ? '取消全选认证' : '全选认证'} aria-pressed={allCredentialsSelected} disabled={busy || credentialLoading || Boolean(credentialError) || !selectableCredentialIds.length} onClick={toggleAllCredentials}>{allCredentialsSelected ? <SquareCheck size={16}/> : <Square size={16}/>}</button><span>认证名称</span><span>状态</span></div>
@@ -1602,24 +1555,19 @@ export function CapabilityManager({ workspaceId, bindingId, conversationCapabili
             const current = Boolean(bindingId && credential.sync_state === 'CURRENT');
             const state = !bindingId ? '默认' : credential.sync_state === 'CURRENT' ? '已同步' : credential.sync_state === 'NEW' ? '有新增' : credential.sync_state === 'MODIFIED' ? '有修改' : '未记录';
             const stateClass = bindingId ? credential.sync_state?.toLocaleLowerCase() ?? 'unrecorded' : 'default';
-            const summary = `${credential.target_host}${credential.target_path} · ${credential.auth_type === 'TOKEN' ? 'Token' : '用户名密码'}`;
-            return <button type="button" key={credential.id} className={`${selected || current ? 'selected' : ''}${current ? ' locked' : ''}`} disabled={current || busy} aria-pressed={selected || current} aria-label={current ? `${credential.name}（已同步）` : undefined} title={current ? '该认证已同步到当前会话。' : undefined} onClick={() => toggleCredential(credential)}><i className="agent-selection-checkbox" aria-hidden="true">{selected || current ? <Check size={12}/> : null}</i><span className="agent-capability-icon credential" aria-hidden="true"><KeyRound size={16}/></span><span className="agent-credential-copy"><b>{credential.name}</b><small title={summary}>{summary}</small></span><em className={`agent-credential-sync-state ${stateClass}`}>{state}</em></button>;
+            return <button type="button" key={credential.id} className={`${selected || current ? 'selected' : ''}${current ? ' locked' : ''}`} disabled={current || busy} aria-pressed={selected || current} aria-label={current ? `${credential.name}（已同步）` : undefined} title={current ? '该认证已同步到当前会话。' : undefined} onClick={() => toggleCredential(credential)}><i className="agent-selection-checkbox" aria-hidden="true">{selected || current ? <Check size={12}/> : null}</i><span className="agent-capability-icon credential" aria-hidden="true"><ShieldAlert size={16}/></span><span className="agent-capability-copy"><b>{credential.name}</b><small>{credential.target_host}{credential.target_path} · {credential.auth_type === 'TOKEN' ? 'Token' : '用户名密码'}</small></span><em className={`agent-credential-sync-state ${stateClass}`}>{state}</em></button>;
           }) : <p>当前没有可用认证信息。</p>}</div>
         </div>
         {credentialSync.error && <div className="agent-capability-error"><p>{credentialSync.error.message}</p></div>}
-        <footer><span className="agent-credential-sync-count">已选择 <b>{selectedCredentialIds.length}</b> 项认证</span><button type="button" className="secondary" disabled={busy} onClick={onClose}>{bindingId ? '关闭' : '取消'}</button>{bindingId ? <button type="button" className="primary" disabled={busy || credentialLoading || selectedCredentialIds.length === 0} onClick={() => credentialSync.mutate()}><RefreshCw size={14}/>{credentialSync.isPending ? '正在同步…' : '同步认证'}</button> : <button type="button" className="primary" disabled={busy || credentialLoading} onClick={() => { if (configurationPreset && onSaveConfiguration) void save.mutate(); else { if (configurationPreset) onCreateEnhancedConversation?.(selectedIds); if (credentialSelectionInitialized.current) onDraftCredentialIdsChange?.(selectedCredentialIds); onClose(); } }}>保存认证配置</button>}</footer>
+        <footer><button type="button" className="secondary" disabled={busy} onClick={onClose}>{bindingId ? '关闭' : '取消'}</button>{bindingId ? <button type="button" className="primary" disabled={busy || credentialLoading || selectedCredentialIds.length === 0} onClick={() => credentialSync.mutate()}><RefreshCw size={14}/>{credentialSync.isPending ? '正在同步…' : '同步认证'}</button> : <button type="button" className="primary" disabled={busy || credentialLoading} onClick={() => { if (configurationPreset && onSaveConfiguration) void save.mutate(); else { if (configurationPreset) onCreateEnhancedConversation?.(selectedIds); if (credentialSelectionInitialized.current) onDraftCredentialIdsChange?.(selectedCredentialIds); onClose(); } }}>保存认证配置</button>}</footer>
       </div> : <>
-      <div className="agent-capability-controls">
-        <div className="agent-capability-toolbar-actions">
-          {!readonlyCreationOnly && <button type="button" className="agent-capability-select-visible" aria-pressed={allVisibleSelected} aria-label={allVisibleSelected ? '取消选择筛选结果' : `选择筛选结果（${selectableVisibleIds.length}）`} title={allVisibleSelected ? '取消选择筛选结果' : `选择筛选结果（${selectableVisibleIds.length}）`} disabled={!selectableVisibleIds.length} onClick={toggleVisible}>{allVisibleSelected ? <SquareCheck size={16}/> : <Square size={16}/>}</button>}
-          <button type="button" className={`agent-capability-show-selected${showSelectedOnly ? ' active' : ''}`} aria-label={showSelectedOnly ? '显示全部能力' : '只看已选'} title={showSelectedOnly ? '显示全部能力' : '只看已选'} aria-pressed={showSelectedOnly} onClick={() => setShowSelectedOnly(current => !current)}>{showSelectedOnly ? <Eye size={16}/> : <EyeOff size={16}/>}</button>
-          {collectionsQuery.data?.length ? <button type="button" className={`agent-capability-collection-trigger${collectionsOpen ? ' active' : ''}`} aria-expanded={collectionsOpen} aria-controls="agent-capability-collections" onClick={() => setCollectionsOpen(current => !current)}><Layers3 size={15}/><span>Skill 组合{selectedCollectionIds.length ? ` · ${selectedCollectionIds.length}` : ''}</span><ChevronDown size={14}/></button> : null}
-          <label className="agent-capability-search"><Search size={15}/><input value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索名称、说明或文件…"/></label>
-        </div>
-        {collectionsOpen && collectionsQuery.data?.length ? <section id="agent-capability-collections" className="agent-capability-collection-filters" aria-label="Skill 组合筛选"><header><span><b>按 Skill 组合筛选</b><small>可同时选择多个组合</small></span>{selectedCollectionIds.length > 0 && <button type="button" onClick={() => setSelectedCollectionIds([])}>清除筛选</button>}</header><div>{collectionsQuery.data.map(collection => { const selected = selectedCollectionIds.includes(collection.id); return <button type="button" key={collection.id} className={selected ? 'selected' : ''} aria-pressed={selected} onClick={() => toggleCollectionFilter(collection.id)}><i aria-hidden="true">{selected && <Check size={12}/>}</i><span>{collection.name}</span></button>; })}</div></section> : null}
+      <div className="agent-capability-typebar"><nav className="agent-capability-tabs" aria-label="能力类型">{capabilityTypeFilters.map(([value, label]) => <button type="button" key={value} className={kind === value ? 'active' : ''} aria-pressed={kind === value} onClick={() => setKind(value)}>{label}</button>)}</nav></div>
+      <div className="agent-capability-toolbar" role="toolbar" aria-label="能力列表操作">
+        {!readonlyCreationOnly && <button type="button" className="agent-capability-select-visible" aria-pressed={allVisibleSelected} aria-label={allVisibleSelected ? '取消选择筛选结果' : `选择筛选结果（${selectableVisibleIds.length}）`} title={allVisibleSelected ? '取消选择筛选结果' : `选择筛选结果（${selectableVisibleIds.length}）`} disabled={!selectableVisibleIds.length} onClick={toggleVisible}>{allVisibleSelected ? <SquareCheck size={16}/> : <Square size={16}/>}</button>}
+        <button type="button" className={`agent-capability-show-selected${showSelectedOnly ? ' active' : ''}`} aria-label={showSelectedOnly ? '显示全部能力' : '只看已选'} title={showSelectedOnly ? '显示全部能力' : '只看已选'} aria-pressed={showSelectedOnly} onClick={() => setShowSelectedOnly(current => !current)}>{showSelectedOnly ? <Eye size={16}/> : <EyeOff size={16}/>}</button>
+        {(kind === 'ALL' || kind === 'SKILL') && Boolean(collectionsQuery.data?.length) && <CapabilityCollectionFilter collections={collectionsQuery.data ?? []} selectedIds={selectedCollectionIds} onChange={setSelectedCollectionIds}/>}
+        <label className="agent-capability-search"><Search size={15}/><input aria-label="搜索能力" value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索名称、说明或文件…"/></label>
       </div>
-      <div className="agent-capability-toolbar"><div className="agent-capability-tabs">{([['ALL', 'all'], ['PLUGIN', 'plugin'], ['MCP', 'MCP'], ['SKILL', 'skill'], ['CONTEXT', 'context'], ['AGENT_DEFINITION', 'agent'], ['HOOK', 'hook']] as const).map(([value, label]) => <button type="button" key={value} className={kind === value ? 'active' : ''} onClick={() => setKind(value)}>{label}</button>)}</div></div>
-      {(readonlyCreationOnly || !bindingId) && <div className="agent-capability-summary">{readonlyCreationOnly ? <span>已装配 <b>{kind === 'CONTEXT' ? frozenContextCount : kind === 'HOOK' ? frozenHookCount : frozenAgentCount}</b> 个 {kind === 'CONTEXT' ? 'Context' : kind === 'HOOK' ? 'Hook' : 'Agent'}</span> : <span>{configurationPreset ? '预设能力用于后续运行会话，可自由添加或取消。' : '选择只作用于本次新会话，不会改变工作区或其他会话。'}</span>}</div>}
       <div className="agent-capability-list">{catalogQuery.isLoading ? <p>正在读取能力仓库…</p> : visible.length === 0 ? <p>{readonlyCreationOnly ? `此会话创建时没有装配 ${kind === 'CONTEXT' ? 'Context' : kind === 'HOOK' ? 'Hook' : 'Agent'}。` : '没有匹配的已发布能力。'}</p> : visible.map(item => { const checked = selectedIds.includes(item.id);
         const isFrozenCreationOnly = Boolean(bindingId && ['CONTEXT', 'AGENT_DEFINITION', 'HOOK'].includes(item.capability_type) && frozenCreationOnlyIds.has(item.id));
         const registeredSkill = item.capability_type === 'SKILL' ? registeredSkills.get(item.capability_key) : undefined;
@@ -1630,24 +1578,20 @@ export function CapabilityManager({ workspaceId, bindingId, conversationCapabili
         const readiness = mcpReadiness[item.id];
         const checking = isMcp && checkingMcpIds.has(item.id);
         const readinessLabel = item.capability_type === 'CONTEXT' ? '系统上下文' : item.capability_type === 'AGENT_DEFINITION' ? 'Agent' : item.capability_type === 'HOOK' ? 'Hook' : !isMcp ? (item.capability_type === 'SKILL' ? '技能' : item.capability_type) : configurationPreset ? '运行时连接' : !checked ? 'MCP' : checking ? '检测中' : readiness?.state === 'READY' ? '已连接' : readiness?.error_kind === 'timeout' ? '连接超时' : readiness?.error_kind === 'connection' ? '连接失败' : '不可用';
-        const detail = isMcp && checked && !configurationPreset && readiness?.state === 'UNAVAILABLE' ? `MCP ${readinessLabel}；请检测连接后保存。` : item.description || item.filename;
-        const skillVersionLabel = registeredSkill && item.revision_number ? ` · v${item.revision_number}` : '';
-        const selectedVersionLabel = item.capability_type === 'CONTEXT' && !item.is_latest && !bindingId && item.revision_number
-          ? `v${item.revision_number}`
-          : undefined;
+        const detail = isMcp && checked && !configurationPreset && readiness?.state === 'UNAVAILABLE' ? `MCP ${readinessLabel}；请检测连接后保存。` : isMcp && readiness?.state === 'READY' && readiness.tools?.length ? `${readiness.tools.length} 个工具 · ${readiness.tools.join('、')}` : item.description || item.filename;
+        const versionLabel = registeredSkill ? (item.revision_number ? ` · v${item.revision_number}` : '') : !item.is_latest && !bindingId ? ` · 已选版本 v${item.revision_number}` : '';
         const lockedLabel = isFrozenCreationOnly ? `${item.capability_key}（已装配）` : `${item.capability_key}（已注册）`;
         const Icon = capabilityTypeIcons[item.capability_type as AgentCapabilityType];
         const showMcpStatus = isMcp && checked && !configurationPreset;
         const choice = <button type="button" key={item.id} className={`${checked ? 'selected' : ''}${locked ? ' locked' : ''}`} disabled={locked || busy} aria-pressed={checked} aria-label={locked ? lockedLabel : undefined} onClick={() => toggle(item)}>
           <i className="agent-selection-checkbox" aria-hidden="true">{checked ? <Check size={12}/> : null}</i>
           <span className={`agent-capability-icon ${item.capability_type.toLowerCase()}`} aria-hidden="true" title={capabilityTypeLabels[item.capability_type as AgentCapabilityType]}><Icon size={16}/></span>
-          <span className="agent-capability-copy"><span className="agent-capability-name"><b title={`${item.capability_key}${skillVersionLabel}`}>{item.capability_key}{skillVersionLabel}</b>{selectedVersionLabel && <em className="agent-capability-version-badge">{selectedVersionLabel}</em>}{showMcpStatus && <em className={`mcp-status ${readiness?.state === 'READY' ? 'ready' : readiness?.state === 'UNAVAILABLE' ? 'unavailable' : 'checking'}`}>{readinessLabel}</em>}</span><small title={detail}>{detail || '暂无说明'}</small></span>
+          <span className="agent-capability-copy"><span className="agent-capability-name"><b title={`${item.capability_key}${versionLabel}`}>{item.capability_key}{versionLabel}</b>{showMcpStatus && <em className={`mcp-status ${readiness?.state === 'READY' ? 'ready' : readiness?.state === 'UNAVAILABLE' ? 'unavailable' : 'checking'}`}>{readinessLabel}</em>}</span><small title={detail}>{detail || '暂无说明'}</small></span>
         </button>;
         return registeredSkill ? <div key={`SKILL:${item.capability_key}`} className={`agent-capability-skill-row${checked ? ' selected' : ''}${update ? ' has-update' : ''}`} data-capability-key={item.capability_key}>{choice}{update && <div className="agent-capability-skill-update"><span className={pendingUpdate ? 'pending' : ''}>{pendingUpdate ? '待保存' : '有新版本'}</span><button type="button" className="agent-capability-sync" disabled={busy || pendingUpdate} aria-label={`同步 ${item.capability_key} 到 v${update.revision_number}`} onClick={() => synchronizeSkill(update)}><RefreshCw size={12}/>{pendingUpdate ? '已同步' : '同步'}</button></div>}</div> : choice; })}</div>
       {(save.error || registrationFailure) && <div className="agent-capability-error"><p>{registrationFailure ?? save.error?.message}</p>{save.error instanceof ApiError && save.error.code === 'AGENT_CONVERSATION_MARKETPLACE_UNAVAILABLE' && onCreateEnhancedConversation && <div className="agent-capability-migration"><span>这条历史会话未在创建时注册原生能力市场。可新建一个空能力会话后，再按需选择要挂载的能力；此会话的历史内容会保留不变。</span><button type="button" className="secondary" disabled={save.isPending} onClick={() => onCreateEnhancedConversation([])}><Plus size={13}/>新建可使用能力的会话</button></div>}</div>}
-      <footer>{!configurationPreset && !readonlyCreationOnly && selectedMcpIds.length > 0 && <button type="button" className="secondary" disabled={save.isPending || checkingMcpIds.size > 0} onClick={() => void checkMcpReadiness(selectedMcpIds)}>重新检测 MCP</button>}<button type="button" className="secondary" disabled={save.isPending} onClick={onClose}>{readonlyCreationOnly ? '关闭' : '取消'}</button>{!readonlyCreationOnly && <button type="button" className="primary" disabled={save.isPending || checkingMcpIds.size > 0 || Boolean(configurationPreset && credentialCatalogQuery.isLoading)} onClick={() => save.mutate()}>{save.isPending ? '正在保存…' : bindingId ? '保存' : configurationPreset ? '保存会话配置' : '用于新建会话'}</button>}</footer></>}
-        </main>
-      </div>
+      <footer>{!configurationPreset && !readonlyCreationOnly && selectedMcpIds.length > 0 && <button type="button" className="secondary" disabled={save.isPending || checkingMcpIds.size > 0} onClick={() => void checkMcpReadiness(selectedMcpIds)}>重新检测 MCP</button>}<button type="button" className="secondary" disabled={save.isPending} onClick={onClose}>{readonlyCreationOnly ? '关闭' : '取消'}</button>{!readonlyCreationOnly && <button type="button" className="primary" disabled={save.isPending || checkingMcpIds.size > 0 || Boolean(configurationPreset && credentialCatalogQuery.isLoading)} onClick={() => save.mutate()}>{save.isPending ? '正在保存…' : bindingId ? '保存' : capabilitiesOnly ? '完成' : configurationPreset ? '保存会话配置' : '用于新建会话'}</button>}</footer></>}
+      </div></div>
     </section>
   </div>;
 }
@@ -2047,12 +1991,6 @@ function latestUnfinishedUserEventId(events: OpenHandsConversationEvent[]): stri
   const userEvents = events.filter(event => event.event_type === 'MESSAGE'
     && ['user', 'human'].includes(String(event.payload.source ?? '').toLowerCase()));
   return [...userEvents].reverse().find(event => !hasFinishedTurn(events, event.id))?.id;
-}
-
-function latestFormalTurnIsFinished(events: OpenHandsConversationEvent[]): boolean {
-  const latestUserEvent = [...events].reverse().find(event => event.event_type === 'MESSAGE'
-    && ['user', 'human'].includes(String(event.payload.source ?? '').toLowerCase()));
-  return Boolean(latestUserEvent && hasFinishedTurn(events, latestUserEvent.id));
 }
 
 function eventBranchIdsFromRoots(events: OpenHandsConversationEvent[], rootEventIds: Iterable<string>): Set<string> {
@@ -3044,14 +2982,13 @@ function WorkDirectoryCreator({ workspaceId, onClose, onCreated }: {
     const open = ancestors[depth]?.path === node.path;
     const checked = selectedPaths.includes(relativePath);
     const children = ancestors[depth + 1] ? [ancestors[depth + 1]] : visibleDirectories;
-    const hasChildren = !open || directoryLoading || children.length > 0;
-    return <div key={node.path} role="treeitem" aria-expanded={hasChildren ? open : undefined} aria-level={depth + 1}>
+    return <div key={node.path} role="treeitem" aria-expanded={open} aria-level={depth + 1}>
       <div className="agent-work-directory-row" style={{ '--directory-depth': depth } as CSSProperties}>
-        {hasChildren && <button type="button" aria-label={(open ? '收起目录 ' : '展开目录 ') + relativePath} onClick={() => browseDirectory(node.path, open)}>{open ? <ChevronDown size={13}/> : <ChevronRight size={13}/>}</button>}
+        <button type="button" aria-label={(open ? '收起目录 ' : '展开目录 ') + relativePath} onClick={() => browseDirectory(node.path, open)}>{open ? <ChevronDown size={13}/> : <ChevronRight size={13}/>}</button>
         <input type="checkbox" aria-label={relativePath} checked={checked} disabled={!checked && selectedPaths.length >= 20} onChange={() => togglePath(relativePath)}/>
         <button type="button" className="agent-work-directory-browse" aria-label={`浏览目录 ${relativePath}`} title={relativePath} onClick={() => browseDirectory(node.path, open)}>{open ? <FolderOpen size={14}/> : <Folder size={14}/>}<span>{node.path.split('/').pop()}</span></button>
       </div>
-      {hasChildren && open && <div role="group">{renderDirectories(children, depth + 1)}</div>}
+      {open && <div role="group">{renderDirectories(children, depth + 1)}</div>}
     </div>;
   });
   const canSubmit = Boolean(displayName.trim() && selectedPaths.length && !create.isPending);
@@ -3064,7 +3001,7 @@ function WorkDirectoryCreator({ workspaceId, onClose, onCreated }: {
         <div>
           {directoryLoading && <p>正在读取项目目录…</p>}
           {directoryError && <p className="error">{directoryError.message || '项目目录读取失败，请稍后重试。'}</p>}
-          {!directoryLoading && !directoryError && !visibleDirectories.length && (!directorySearch || !directorySearch.endsWith('/') || !validAncestors) && <p>{!directorySearch ? '项目根目录中还没有可选择的子目录。' : '没有匹配的目录。'}</p>}
+          {!directoryLoading && !directoryError && !visibleDirectories.length && <p>{!directorySearch ? '项目根目录中还没有可选择的子目录。' : directorySearch.endsWith('/') && validAncestors ? '此目录没有子目录。' : '没有匹配的目录。'}</p>}
           {details && (ancestors.length > 0 || visibleDirectories.length > 0) && <div role="tree" aria-label="项目目录树">{renderDirectories(ancestors.length ? [ancestors[0]] : visibleDirectories)}</div>}
         </div>
       </section>
@@ -3258,7 +3195,7 @@ type WorkspaceToolTab =
   | { id: 'sidebar-chat'; kind: 'sidebar-chat' }
   | { id: string; kind: 'terminal'; terminalInstanceId: string };
 type WorkspaceToolScopeState = { tabs: WorkspaceToolTab[]; activeTabId?: string; selectedFile?: string; selectedChangeId?: string; selectedGitFile?: string; selectedGitCommit?: string; selectedGitRepositoryPath?: string; gitMode?: 'history' | 'changes'; selectedRuntimeTaskId?: string };
-type MarkdownFileRequest = { key: string; scopeKey: string; path: string; line?: number };
+type MarkdownFileRequest = { key: string; path: string; line?: number };
 
 type ChangedFileTreeNode<T> = { name: string; path: string; value?: T; children: ChangedFileTreeNode<T>[] };
 type CollapsibleTreeNode = { name: string; path: string; children: CollapsibleTreeNode[] };
@@ -3597,7 +3534,7 @@ function WorkspaceGitWorkingDiffReview({ tab, onOpenSource, onSelectFile }: {
     {tab.loading ? <div className="agent-changes-empty"><span>正在读取文件 Diff…</span></div> : tab.error ? <div className="agent-changes-empty"><b>文件 Diff 读取失败</b><span>{tab.error}</span></div> : tab.diff ? <WorkspaceGitFileDiffReview details={details} diff={tab.diff} onOpenSource={onOpenSource}/> : <div className="agent-changes-empty"><span>选择一个文件查看 Diff。</span></div>}
   </section>;
 }
-type CandidateFilePreviewRequest = { key: string; scopeKey: string; filename: string; url: string };
+type CandidateFilePreviewRequest = { key: string; filename: string; url: string };
 type WorkspaceUpload = { id: string; file: File; progress: number; state: 'uploading' | 'failed' };
 
 function SshAccessGuide({
@@ -3650,10 +3587,10 @@ function clampConversationRailWidth(value: number): number {
 
 
 type ConversationFilePreviewRequest =
-  | { key: string; scopeKey: string; kind: 'workspace'; path: string; filename: string; mimeType?: string; imageDataUrl?: string | null; attachment?: AgentAttachment; previewBindingId?: string; draftAttachmentOwnerId?: string }
-  | { key: string; scopeKey: string; kind: 'directory'; path: string; filename: string }
-  | { key: string; scopeKey: string; kind: 'candidate'; filename: string; url: string; fieldKey: string; relativePath: string }
-  | { key: string; scopeKey: string; kind: 'image'; filename: string; url: string };
+  | { key: string; kind: 'workspace'; path: string; filename: string; mimeType?: string; imageDataUrl?: string | null; attachment?: AgentAttachment; previewBindingId?: string; draftAttachmentOwnerId?: string }
+  | { key: string; kind: 'directory'; path: string; filename: string }
+  | { key: string; kind: 'candidate'; filename: string; url: string; fieldKey: string; relativePath: string }
+  | { key: string; kind: 'image'; filename: string; url: string };
 
 function ConversationFilePreviewDialog({ request, workspaceId, bindingId, workDirectoryId, onClose, onOpenInTab, onOpenWorkspaceFile }: {
   request: ConversationFilePreviewRequest;
@@ -3671,7 +3608,6 @@ function ConversationFilePreviewDialog({ request, workspaceId, bindingId, workDi
   const [imageOffset, setImageOffset] = useState({ x: 0, y: 0 });
   const [previewState, setPreviewState] = useState<{ path: string; content: string; totalBytes: number; nextOffset?: number }>();
   const [previewMoreLoading, setPreviewMoreLoading] = useState(false);
-  const [copyState, setCopyState] = useState<'idle' | 'copying' | 'copied' | 'failed'>('idle');
   const titleRef = useRef<HTMLHeadingElement>(null);
   const imageDragRef = useRef<{ pointerId: number; x: number; y: number; offsetX: number; offsetY: number } | undefined>(undefined);
   const resetImageViewport = () => {
@@ -3682,7 +3618,6 @@ function ConversationFilePreviewDialog({ request, workspaceId, bindingId, workDi
   useEffect(() => {
     setFullScreen(false);
     resetImageViewport();
-    setCopyState('idle');
     titleRef.current?.focus();
   }, [request.key]);
 
@@ -3755,41 +3690,12 @@ function ConversationFilePreviewDialog({ request, workspaceId, bindingId, workDi
     : undefined, [canPreviewHtml, fileOptions, fileUrl, previewState, workspaceId, workspaceRequest]);
   const lightweightPreview = Boolean(previewState && (previewState.totalBytes > 128 * 1024 || previewState.content.length > 128 * 1024));
   const imagePreviewable = request.kind === 'image' || canPreviewImage;
-  const copyImage = async () => {
-    setCopyState('copying');
-    try {
-      await copyImageToClipboard(sourceUrl);
-      setCopyState('copied');
-    } catch {
-      setCopyState('failed');
-    }
-  };
-  const changeImageScale = (factor: number) => {
-    const nextScale = Math.min(4, Math.max(1, imageScale * factor));
+  const handleImageWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
+    if (!event.metaKey) return;
+    event.preventDefault();
+    const nextScale = Math.min(4, Math.max(1, imageScale * (event.deltaY < 0 ? 1.12 : 1 / 1.12)));
     setImageScale(nextScale);
     if (nextScale === 1) setImageOffset({ x: 0, y: 0 });
-  };
-  const handleImageWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
-    if (!(event.metaKey || event.ctrlKey)) return;
-    event.preventDefault();
-    changeImageScale(event.deltaY < 0 ? 1.12 : 1 / 1.12);
-  };
-  const handleImageKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (event.altKey && !event.metaKey && !event.ctrlKey) {
-      const pan = {
-        ArrowUp: { x: 0, y: -40 },
-        ArrowDown: { x: 0, y: 40 },
-        ArrowLeft: { x: -40, y: 0 },
-        ArrowRight: { x: 40, y: 0 },
-      }[event.key];
-      if (!pan) return;
-      event.preventDefault();
-      setImageOffset(current => ({ x: current.x + pan.x, y: current.y + pan.y }));
-      return;
-    }
-    if (!(event.metaKey || event.ctrlKey) || event.altKey || !['ArrowUp', 'ArrowDown'].includes(event.key)) return;
-    event.preventDefault();
-    changeImageScale(event.key === 'ArrowUp' ? 1.12 : 1 / 1.12);
   };
   const startImageDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (imageScale === 1 || event.button !== 0) return;
@@ -3808,11 +3714,7 @@ function ConversationFilePreviewDialog({ request, workspaceId, bindingId, workDi
   };
   const imagePreview = imagePreviewable && <div
     className={`agent-image-preview-viewport${imageScale > 1 ? ' zoomed' : ''}`}
-    tabIndex={0}
-    role="application"
-    aria-label="图片预览：按住 Command 或 Ctrl 加上下方向键缩放；按住 Option 或 Alt 加方向键移动；双击复位"
     onWheel={handleImageWheel}
-    onKeyDown={handleImageKeyDown}
     onDoubleClick={resetImageViewport}
     onPointerDown={startImageDrag}
     onPointerMove={moveImageDrag}
@@ -3831,7 +3733,6 @@ function ConversationFilePreviewDialog({ request, workspaceId, bindingId, workDi
       <header>
         <div><span className="eyebrow">FILE PREVIEW</span><h2 ref={titleRef} tabIndex={-1} title={path}>{request.filename}</h2><small title={path}>{path}</small></div>
         <div className="agent-file-preview-dialog-actions">
-          {imagePreviewable && <button type="button" aria-label="复制图片" title={copyState === 'failed' ? '复制失败，请检查浏览器剪贴板权限' : '复制图片到系统剪贴板'} disabled={copyState === 'copying'} onClick={() => void copyImage()}><Copy size={14}/>{copyState === 'copying' ? '复制中' : copyState === 'copied' ? '已复制' : copyState === 'failed' ? '复制失败' : '复制'}</button>}
           {downloadUrl && <a href={downloadUrl}><Download size={14}/>下载</a>}
           <button type="button" aria-label={fullScreen ? '退出全屏预览' : '全屏预览'} title={fullScreen ? '退出全屏' : '全屏'} onClick={() => setFullScreen(current => !current)}>{fullScreen ? <Minimize2 size={16}/> : <Maximize2 size={16}/>}</button>
           <button type="button" aria-label="关闭文件预览" title="关闭" onClick={onClose}><X size={17}/></button>
@@ -3948,44 +3849,10 @@ function WorkspaceBrowser({ tab, workspaceId, bindingId, workDirectoryId, browse
 }
 
 
-type GoalStatus = NonNullable<OpenHandsConversationEvent['payload']['goal_status']>;
-
-function ConversationGoalMode({ goalStatus, enabled, canEnable, pending, onToggle, onControl, onLocate }: {
-  goalStatus?: GoalStatus;
-  enabled: boolean;
-  canEnable: boolean;
-  pending: boolean;
-  onToggle: () => void;
-  onControl: (action: 'STOP' | 'RESUME') => void;
-  onLocate: () => void;
-}) {
-  const active = goalStatus?.active === true;
-  const resumable = goalStatus?.status === 'interrupted';
-  if (!goalStatus) return <button type="button" className={`conversation-goal-mode-toggle${enabled ? ' active' : ''}`} aria-pressed={enabled} disabled={!canEnable} title={enabled ? '已开启目标模式：发送消息将启动目标循环' : '开启目标模式'} onClick={onToggle}>
-    <Target size={14}/><span>目标模式</span>
-  </button>;
-  const label = active
-    ? `目标运行中 · 第 ${goalStatus.iteration} / ${goalStatus.max_iterations} 轮`
-    : goalStatus.status === 'complete'
-      ? '目标已验收通过'
-      : goalStatus.status === 'capped'
-        ? `目标达到 ${goalStatus.max_iterations} 轮上限`
-        : '目标已中断';
-  return <section className={`conversation-goal-status ${goalStatus.status}`} tabIndex={0} role="group" aria-label={label}>
-    <button type="button" className="conversation-goal-status-summary" onClick={onLocate} title="定位目标消息">
-      <Target size={14}/><span><b>{label}</b></span>
-    </button>
-    {(active || resumable) && <button type="button" className="conversation-goal-status-control" disabled={pending} aria-label={active ? '停止目标' : '恢复目标'} title={active ? '停止目标' : '恢复目标'} onClick={() => onControl(active ? 'STOP' : 'RESUME')}>
-      {active ? <Square size={11} fill="currentColor"/> : <Play size={12} fill="currentColor"/>}
-    </button>}
-    <aside className="conversation-goal-status-preview" role="tooltip"><header><Target size={13}/><b>{label}</b></header><p>{goalStatus.objective}</p>{goalStatus.verdict?.missing && <small>{`Judge：${goalStatus.verdict.missing}`}</small>}</aside>
-  </section>;
-}
-
 function WorkspaceDrawer({
   open, onOpen, onClose, onFullScreenConversationActiveChange, onAnnotateFileSelection, highlightedFileSelection, workspaceId, scopeKey, migrateFromScopeKey, bindingId, workDirectoryId, conversation, conversationCumulativeTokens, conversationSearch, attachments, sources, attachmentRequest, candidatePreviewRequest, markdownFileRequest, browserRequest, onBrowserRequestHandled, htmlPreviewRequest, reviewChanges = [], reviewRequestId, sessionChanges = [], onReviewChanges, runtimeAvailable, runtimeTasks, agentDefinitions, sessionStopped, sidebarQuestion, onSidebarBindingCreated, onOpenSidebarQuestion, onCloseSidebarQuestion, onOpenConversationReference, onPreviewAttachment,
 }: {
-  open: boolean; onOpen: () => void; onClose: () => void; onFullScreenConversationActiveChange: (active: boolean) => void; onAnnotateFileSelection?: (path: string, selection: FileSelection, quote: string) => void; highlightedFileSelection?: { path: string; selection: FileSelection }; workspaceId: string; scopeKey: string; migrateFromScopeKey?: string; bindingId?: string; workDirectoryId?: string; conversation?: AgentConversation; conversationCumulativeTokens?: number | null; conversationSearch?: ReactNode; attachments: AgentAttachment[]; sources: ConversationSource[]; attachmentRequest?: { key: string; attachment?: AgentAttachment }; candidatePreviewRequest?: CandidateFilePreviewRequest; markdownFileRequest?: MarkdownFileRequest; browserRequest?: { key: string; scopeKey: string; url: string }; onBrowserRequestHandled: (key: string) => void; htmlPreviewRequest?: { key: string; filename: string; document?: string; sourceUrl?: string }; reviewChanges?: WorkspaceFileChange[]; reviewRequestId?: string; sessionChanges?: WorkspaceFileChange[]; onReviewChanges?: (changes: WorkspaceFileChange[]) => void; runtimeAvailable: boolean; runtimeTasks: RuntimeTaskProjection[]; agentDefinitions: CapabilityAsset[]; sessionStopped: boolean; sidebarQuestion?: { sourceBindingId: string; sidebarBindingId?: string; reference?: AgentConversationReference }; onSidebarBindingCreated: (sourceBindingId: string, sidebarBindingId: string) => void; onOpenSidebarQuestion?: () => void; onCloseSidebarQuestion: () => void; onOpenConversationReference: (reference: AgentConversationReference) => void; onPreviewAttachment: (attachment: AgentAttachment, previewBindingId?: string) => void;
+  open: boolean; onOpen: () => void; onClose: () => void; onFullScreenConversationActiveChange: (active: boolean) => void; onAnnotateFileSelection?: (path: string, selection: FileSelection, quote: string) => void; highlightedFileSelection?: { path: string; selection: FileSelection }; workspaceId: string; scopeKey: string; migrateFromScopeKey?: string; bindingId?: string; workDirectoryId?: string; conversation?: AgentConversation; conversationCumulativeTokens?: number | null; conversationSearch?: ReactNode; attachments: AgentAttachment[]; sources: ConversationSource[]; attachmentRequest?: { key: string; attachment?: AgentAttachment }; candidatePreviewRequest?: CandidateFilePreviewRequest; markdownFileRequest?: MarkdownFileRequest; browserRequest?: { key: string; scopeKey: string; url: string }; onBrowserRequestHandled: (key: string) => void; htmlPreviewRequest?: { key: string; filename: string; document?: string; sourceUrl?: string }; reviewChanges?: WorkspaceFileChange[]; reviewRequestId?: string; sessionChanges?: WorkspaceFileChange[]; onReviewChanges?: (changes: WorkspaceFileChange[]) => void; runtimeAvailable: boolean; runtimeTasks: RuntimeTaskProjection[]; agentDefinitions: CapabilityAsset[]; sessionStopped: boolean; sidebarQuestion?: { requestKey: string; sourceBindingId: string; sidebarBindingId?: string; reference?: AgentConversationReference }; onSidebarBindingCreated: (sourceBindingId: string, sidebarBindingId: string) => void; onOpenSidebarQuestion?: () => void; onCloseSidebarQuestion: () => void; onOpenConversationReference: (reference: AgentConversationReference) => void; onPreviewAttachment: (attachment: AgentAttachment, previewBindingId?: string) => void;
 }) {
   const { api, browserUrl, fileUrl } = useAgentSessionGateway();
   const host = useAgentSessionHost();
@@ -4049,6 +3916,7 @@ function WorkspaceDrawer({
   const handledBrowserRequestKey = useRef<string | undefined>(undefined);
   const handledHtmlPreviewRequestKey = useRef<string | undefined>(undefined);
   const handledReviewRequestId = useRef<string | undefined>(undefined);
+  const handledSidebarRequests = useRef(new Map<string, string>());
   const [candidatePreview, setCandidatePreview] = useState<CandidateFilePreviewRequest>();
   const [sourceFileNavigation, setSourceFileNavigation] = useState<{ path: string; line: number }>();
   const [pendingSourceNavigation, setPendingSourceNavigation] = useState<{ path: string; line: number; directories: string[] }>();
@@ -4533,16 +4401,14 @@ function WorkspaceDrawer({
     if (!attachmentRequest || handledAttachmentRequestKey.current === attachmentRequest.key) return;
     handledAttachmentRequestKey.current = attachmentRequest.key;
     setCandidatePreview(undefined);
-    if (attachmentRequest.attachment?.path.includes('/.uploads/')) setShowHiddenFiles(true);
     openFiles(attachmentRequest.attachment?.path);
   }, [attachmentRequest, openFiles]);
   useEffect(() => {
     if (!candidatePreviewRequest || handledCandidatePreviewRequestKey.current === candidatePreviewRequest.key) return;
     handledCandidatePreviewRequestKey.current = candidatePreviewRequest.key;
-    if (candidatePreviewRequest.scopeKey !== scopeKey) return;
     setCandidatePreview(candidatePreviewRequest);
     openFiles();
-  }, [candidatePreviewRequest, openFiles, scopeKey]);
+  }, [candidatePreviewRequest, openFiles]);
   const openTerminal = useCallback(() => {
     if (!runtimeAvailable) return;
     const terminalInstanceId = randomId();
@@ -4566,6 +4432,8 @@ function WorkspaceDrawer({
       });
       return;
     }
+    if (handledSidebarRequests.current.get(scopeKey) === sidebarQuestion.requestKey) return;
+    handledSidebarRequests.current.set(scopeKey, sidebarQuestion.requestKey);
     updateScope(current => {
       const hasTab = current.tabs.some(tab => tab.kind === 'sidebar-chat');
       if (hasTab && current.activeTabId === 'sidebar-chat') return current;
@@ -4576,7 +4444,7 @@ function WorkspaceDrawer({
       };
     });
     onOpen();
-  }, [onOpen, sidebarQuestion, updateScope]);
+  }, [onOpen, scopeKey, sidebarQuestion, updateScope]);
   const selectFile = (path?: string) => {
     setCandidatePreview(undefined);
     setGitContextPath(path);
@@ -4622,9 +4490,8 @@ function WorkspaceDrawer({
   useEffect(() => {
     if (!markdownFileRequest || handledMarkdownFileRequestKey.current === markdownFileRequest.key) return;
     handledMarkdownFileRequestKey.current = markdownFileRequest.key;
-    if (markdownFileRequest.scopeKey !== scopeKey) return;
     openSourcePath(markdownFileRequest.path, markdownFileRequest.line ?? 1);
-  }, [markdownFileRequest, openSourcePath, scopeKey]);
+  }, [markdownFileRequest, openSourcePath]);
   const selectedEntryRoots = useMemo(() => [...selectedEntryPaths].filter(path => ![...selectedEntryPaths].some(other => other !== path && path.startsWith(`${other}/`))), [selectedEntryPaths]);
   const removeEntries = async (items: Array<{ path: string; kind: 'file' | 'directory' }>) => {
     if (!api.deleteFile || !items.length) return;
@@ -4738,18 +4605,9 @@ function WorkspaceDrawer({
     }
     void closeTab(tab);
   };
-  const closeWorkspaceTools = async () => {
-    const sidebarTab = scopeState.tabs.find(tab => tab.kind === 'sidebar-chat');
-    if (sidebarTab && sidebarQuestion?.sidebarBindingId) {
-      setPanelError('');
-      try {
-        await agentWorkspaceApi.deleteAgentSidebarConversation(workspaceId, sidebarQuestion.sidebarBindingId);
-      } catch (error) {
-        setPanelError(error instanceof Error ? error.message : '侧边聊天关闭失败，请稍后重试。');
-        return;
-      }
-    }
-    if (sidebarTab) onCloseSidebarQuestion();
+  const hideWorkspaceTools = () => {
+    // Hiding the tool pane preserves every tab and its native resource.
+    // Explicit tab-close actions own terminal/sidebar conversation deletion.
     setFullScreen(false);
     onClose();
   };
@@ -4887,6 +4745,7 @@ function WorkspaceDrawer({
   const canPreviewImage = Boolean(selectedFile && (selectedMimeType.startsWith('image/') || /\.(?:avif|gif|jpe?g|png|svg|webp)$/i.test(selectedFile)));
   const canPreviewPdf = Boolean(selectedFile && (selectedMimeType === 'application/pdf' || /\.pdf$/i.test(selectedFile)));
   const filesTabIsActive = scopeState.activeTabId === 'files';
+  const browserTabIsActive = scopeState.tabs.some(tab => (tab.kind === 'launcher' || tab.kind === 'browser') && tab.id === scopeState.activeTabId);
   useEffect(() => {
     if (!fullScreen || !filesTabIsActive || !details?.working_directory || gitSidebarRequested || gitContextPath) return;
     setGitContextPath(details.working_directory);
@@ -4995,16 +4854,17 @@ function WorkspaceDrawer({
     </section>}
     {workspaceDetailsLoaded && (!drawerFullScreen || fullScreenConversationActive) && <div className="agent-workbench-top-actions" aria-label="工作台操作">
       <button type="button" aria-label={environmentOpen ? '隐藏悬浮信息卡' : '显示悬浮信息卡'} title={environmentOpen ? '隐藏悬浮信息卡' : '显示悬浮信息卡'} aria-pressed={environmentOpen} onClick={toggleEnvironment}>{environmentOpen ? <MonitorOff size={15}/> : <MonitorCog size={15}/>}</button>
-      {!open && <button type="button" className={`agent-workspace-new-tab-trigger${scopeState.tabs.length ? ' has-tabs' : ''}`} aria-label={scopeState.tabs.length ? `打开工作区工具（${scopeState.tabs.length} 个页签）` : '新建工作区页签'} title={scopeState.tabs.length ? `打开工作区工具（${scopeState.tabs.length} 个页签）` : '新建工作区页签'} onClick={() => { if (!scopeState.tabs.length) ensureLauncherTab(); onOpen(); }}>{scopeState.tabs.length ? <><Square size={15}/><span aria-hidden="true">{scopeState.tabs.length > 9 ? '9+' : scopeState.tabs.length}</span></> : <SquarePlus size={16}/>}</button>}
+      {!open && scopeState.tabs.length > 0 && <button type="button" aria-label="显示工作区工具" title="显示工作区工具，恢复之前的页签" onClick={() => { setFullScreenView('tool'); onOpen(); }}><PanelRightOpen size={16}/></button>}
+      {!open && <button type="button" className="agent-workspace-new-tab-trigger" aria-label="新建工作区页签" title="新建工作区页签" onClick={() => { ensureLauncherTab(); onOpen(); }}><SquarePlus size={16}/></button>}
       {fullScreenConversationActive && <button type="button" aria-label="退出全屏" title="退出全屏（Esc）" onClick={() => setFullScreen(false)}><Minimize size={16} strokeWidth={1.7}/></button>}
     </div>}
     <section className={`agent-workspace-tool-shell ${drawerToolsOpen ? '' : 'panel-hidden'}`}>
-              <header><nav className="agent-workspace-tabs" aria-label="工作区页签">{fullScreen && <div className={fullScreenView === 'conversation' ? 'active fixed' : 'fixed'}><button type="button" className="agent-workspace-tab-select" title={conversationTabLabel} onClick={() => setFullScreenView('conversation')} onDoubleClick={() => setFullScreen(false)}><span>{conversationTabLabel}</span></button></div>}{scopeState.tabs.map(tab => <div key={tab.id} className={scopeState.activeTabId === tab.id && (!fullScreen || fullScreenView === 'tool') ? 'active' : ''}><button type="button" className="agent-workspace-tab-select" onClick={() => { setFullScreenView('tool'); updateScope(current => ({ ...current, activeTabId: tab.id })); }} onDoubleClick={() => setFullScreen(current => !current)}><i className="agent-workspace-tab-icon">{workspaceTabIcon(tab)}</i><span>{workspaceTabLabel(tab)}</span></button><button type="button" className="agent-workspace-tab-close" aria-label={`关闭${workspaceTabLabel(tab)}页签`} disabled={tab.kind === 'terminal' && closingTerminalId === tab.terminalInstanceId} onClick={() => { if (tab.kind !== 'terminal' || closingTerminalId !== tab.terminalInstanceId) requestCloseTab(tab); }}><X size={12}/></button></div>)}<button type="button" className="agent-workspace-new-tab" aria-label="新建工作区页签" title="新建页签" onClick={openLauncher}><Plus size={15}/></button></nav><div className="agent-workspace-tool-actions">{fullScreen ? <><button type="button" aria-label={environmentOpen ? '隐藏悬浮信息卡' : '显示悬浮信息卡'} title={environmentOpen ? '隐藏悬浮信息卡' : '显示悬浮信息卡'} aria-pressed={environmentOpen} onClick={toggleEnvironment}>{environmentOpen ? <MonitorOff size={15}/> : <MonitorCog size={15}/>}</button><button type="button" aria-label="退出全屏" title="退出全屏（Esc）" onClick={() => setFullScreen(false)}><Minimize size={16} strokeWidth={1.7}/></button><button type="button" aria-label="关闭工作区工具" title="关闭工作区工具并返回会话" onClick={() => void closeWorkspaceTools()}><PanelRight size={16} strokeWidth={1.7}/></button></> : <><button type="button" aria-label="全屏查看工作区工具" title="全屏查看" onClick={() => { setFullScreenView('tool'); setFullScreen(true); }}><Maximize size={16} strokeWidth={1.7}/></button><button type="button" aria-label="关闭工作区工具" onClick={() => void closeWorkspaceTools()}><PanelRight size={16} strokeWidth={1.7}/></button></>}</div></header>
+              <header><nav className="agent-workspace-tabs" aria-label="工作区页签">{fullScreen && <div className={fullScreenView === 'conversation' ? 'active fixed' : 'fixed'}><button type="button" className="agent-workspace-tab-select" title={conversationTabLabel} onClick={() => setFullScreenView('conversation')} onDoubleClick={() => setFullScreen(false)}><span>{conversationTabLabel}</span></button></div>}{scopeState.tabs.map(tab => <div key={tab.id} className={scopeState.activeTabId === tab.id && (!fullScreen || fullScreenView === 'tool') ? 'active' : ''}><button type="button" className="agent-workspace-tab-select" onClick={() => { setFullScreenView('tool'); updateScope(current => ({ ...current, activeTabId: tab.id })); }} onDoubleClick={() => setFullScreen(current => !current)}><i className="agent-workspace-tab-icon">{workspaceTabIcon(tab)}</i><span>{workspaceTabLabel(tab)}</span></button><button type="button" className="agent-workspace-tab-close" aria-label={`关闭${workspaceTabLabel(tab)}页签`} disabled={tab.kind === 'terminal' && closingTerminalId === tab.terminalInstanceId} onClick={() => { if (tab.kind !== 'terminal' || closingTerminalId !== tab.terminalInstanceId) requestCloseTab(tab); }}><X size={12}/></button></div>)}<button type="button" className="agent-workspace-new-tab" aria-label="新建工作区页签" title="新建页签" onClick={openLauncher}><Plus size={15}/></button></nav><div className="agent-workspace-tool-actions">{fullScreen ? <><button type="button" aria-label={environmentOpen ? '隐藏悬浮信息卡' : '显示悬浮信息卡'} title={environmentOpen ? '隐藏悬浮信息卡' : '显示悬浮信息卡'} aria-pressed={environmentOpen} onClick={toggleEnvironment}>{environmentOpen ? <MonitorOff size={15}/> : <MonitorCog size={15}/>}</button><button type="button" aria-label="退出全屏" title="退出全屏（Esc）" onClick={() => setFullScreen(false)}><Minimize size={16} strokeWidth={1.7}/></button><button type="button" aria-label="隐藏工作区工具" title="隐藏工作区工具并返回会话，保留所有页签" onClick={hideWorkspaceTools}><PanelRight size={16} strokeWidth={1.7}/></button></> : <><button type="button" aria-label="全屏查看工作区工具" title="全屏查看" onClick={() => { setFullScreenView('tool'); setFullScreen(true); }}><Maximize size={16} strokeWidth={1.7}/></button><button type="button" aria-label="隐藏工作区工具" title="隐藏工作区工具，保留所有页签" onClick={hideWorkspaceTools}><PanelRight size={16} strokeWidth={1.7}/></button></>}</div></header>
       <div className="agent-workspace-tool-body">
         {panelError && <p className="agent-workspace-panel-error" role="alert"><span>{panelError}</span><button type="button" aria-label="关闭错误提示" onClick={() => setPanelError('')}><X size={13}/></button></p>}
         {scopeState.tabs.filter((tab): tab is Extract<WorkspaceToolTab, { kind: 'launcher' }> => tab.kind === 'launcher').map(tab => <section key={tab.id} className={`agent-workspace-tab-launcher ${scopeState.activeTabId === tab.id ? 'active' : ''}`}><WorkspaceBrowser tab={{ url: tab.url ?? '', title: tab.title }} workspaceId={workspaceId} bindingId={bindingId} workDirectoryId={workDirectoryId} browserUrl={browserUrl} onUrlChange={(url, title) => navigateLauncherBrowser(tab.id, url, title)} startPage={<div className="agent-workspace-tab-launcher-cards"><p>工具</p><button type="button" onClick={() => chooseLauncherTool(tab.id, () => openFiles())}><FileCode2 size={16}/>文件</button><button type="button" disabled={!runtimeAvailable} onClick={() => chooseLauncherTool(tab.id, openTerminal)}><SquareTerminal size={16}/>终端</button>{onOpenSidebarQuestion && <button type="button" onClick={() => chooseLauncherTool(tab.id, onOpenSidebarQuestion)}><PanelRightOpen size={16}/>侧边聊天</button>}<button type="button" onClick={() => chooseLauncherTool(tab.id, openGitHistory)}><GitBranch size={16}/>Git 历史</button>{reviewChanges.length > 0 && <button type="button" onClick={() => chooseLauncherTool(tab.id, () => openChanges())}><FileText size={16}/>审查改动</button>}{sources.length > 0 && <button type="button" onClick={() => chooseLauncherTool(tab.id, () => openSources)}><Link2 size={16}/>来源</button>}{runtimeTasks.length > 0 && <button type="button" onClick={() => chooseLauncherTool(tab.id, () => openRuntimeTasks())}><Bot size={16}/>子智能体</button>}</div>}/></section>)}
         {scopeState.tabs.filter((tab): tab is Extract<WorkspaceToolTab, { kind: 'browser' }> => tab.kind === 'browser').map(tab => <div key={tab.id} className={`agent-workspace-browser-tab-panel ${scopeState.activeTabId === tab.id ? 'active' : ''}`}><WorkspaceBrowser tab={tab} workspaceId={workspaceId} bindingId={bindingId} workDirectoryId={workDirectoryId} browserUrl={browserUrl} onUrlChange={(url, title) => updateScope(current => ({ ...current, tabs: current.tabs.map(candidate => candidate.id === tab.id && candidate.kind === 'browser' ? { ...candidate, url, address: url, title, document: undefined } : candidate) }))}/></div>)}
-        {loadingOrError || (scopeState.tabs.some(tab => (tab.kind === 'launcher' || tab.kind === 'browser') && tab.id === scopeState.activeTabId) ? null : !scopeState.tabs.filter(tab => tab.kind !== 'launcher').length ? <div className="agent-drawer-empty"><b>选择工作区工具</b><span>点击顶部“新建页签”，再选择文件、终端或其他工具。</span></div> : details && <div className={`agent-workspace-tool-content${gitSidebarVisible ? ' fullscreen-git-layout' : ''}`}>
+        {loadingOrError || (!scopeState.tabs.filter(tab => tab.kind !== 'launcher').length ? !browserTabIsActive && <div className="agent-drawer-empty"><b>选择工作区工具</b><span>点击顶部“新建页签”，再选择文件、终端或其他工具。</span></div> : details && <div className={`agent-workspace-tool-content${gitSidebarVisible ? ' fullscreen-git-layout' : ''}`} style={browserTabIsActive ? { display: 'none' } : undefined}>
           {scopeState.tabs.some(tab => tab.kind === 'files') && <section className={`agent-workspace-files ${scopeState.activeTabId === 'files' ? 'active' : ''}${gitSidebarVisible ? ' fullscreen-git' : ''}${fileTreeCollapsed ? ' file-tree-collapsed' : ''}`} style={{ '--file-tree-width': `${fileTreeWidth}px` } as CSSProperties}>
             <div className="agent-file-tree-pane">
               <header className="agent-file-tree-toolbar"><span>{selectedEntryPaths.size ? `已选 ${selectedEntryPaths.size} 项` : '文件'}</span><div className="agent-file-tree-actions"><input ref={workspaceUploadInput} type="file" multiple hidden onChange={event => { Array.from(event.target.files ?? []).forEach(file => startWorkspaceUpload(file)); event.currentTarget.value = ''; }}/><button type="button" title="上传文件" aria-label="上传文件" disabled={!api.uploadWorkspaceFile} onClick={() => workspaceUploadInput.current?.click()}><ArrowUp size={13}/></button><button type="button" title="新建文件" aria-label="新建文件" onClick={() => createAtActiveDirectory('FILE')}><FileCode2 size={13}/></button><button type="button" title="新建目录" aria-label="新建目录" onClick={() => createAtActiveDirectory('DIRECTORY')}><FolderPlus size={13}/></button><button type="button" className={`agent-file-tree-hidden-toggle${showHiddenFiles ? ' active' : ''}`} title={showHiddenFiles ? '隐藏以 . 开头的文件和目录' : '显示以 . 开头的文件和目录'} aria-label={showHiddenFiles ? '隐藏隐藏文件和目录' : '显示隐藏文件和目录'} aria-pressed={showHiddenFiles} onClick={() => setShowHiddenFiles(current => !current)}>{showHiddenFiles ? <EyeOff size={13}/> : <Eye size={13}/>}</button><button type="button" className={`agent-file-tree-expand-toggle${expandAllFileDirectories ? ' expanded' : ''}`} title={expandAllFileDirectories ? '全部收起' : '全部展开'} aria-label={expandAllFileDirectories ? '全部收起目录' : '全部展开目录'} disabled={!fileDirectoryPaths.length} onClick={toggleAllFileDirectories}>{expandAllFileDirectories ? <ChevronRight size={13}/> : <ChevronDown size={13}/>}</button><button type="button" className="danger" title="删除选中项" aria-label="删除选中项" disabled={!selectedEntryRoots.length} onClick={() => void removeEntries(selectedEntryRoots.map(path => ({ path, kind: visibleFiles.find(item => item.path === path)?.kind ?? 'directory' })))}><Trash2 size={13}/></button></div></header>
@@ -5083,7 +4943,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const conversationDraftsByScope = useRef(new Map<string, ConversationDraftPersistence>());
   const composerRef = useRef<ComposerHandle>(null);
   const [composerHasText, setComposerHasText] = useState(() => Boolean(initialComposerDraft.trim()));
-  const [goalModeEnabled, setGoalModeEnabled] = useState(false);
   const [streamStatus, setStreamStatus] = useState<StreamStatus>('disabled');
   const [modelRetryStatus, setModelRetryStatus] = useState<ModelRetryStatus>();
   const [scopedLiveEvents, setScopedLiveEvents] = useState<ScopedConversationEvent[]>([]);
@@ -5097,12 +4956,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [escPauseConfirmation, setEscPauseConfirmation] = useState(false);
   const escPauseConfirmationTimer = useRef<number | undefined>(undefined);
   const confirmPauseOnEscapeRef = useRef<((event: KeyboardEvent) => void) | undefined>(undefined);
-  const [flowWeaveReconnect, setFlowWeaveReconnect] = useState<FlowWeaveReconnect>();
-  const [suppressedRecoveryErrorIds, setSuppressedRecoveryErrorIds] = useState<Set<string>>(() => new Set());
-  const [exhaustedRecoveryErrorIds, setExhaustedRecoveryErrorIds] = useState<Set<string>>(() => new Set());
   const [turnState, setTurnState] = useState<TurnState>('idle');
   const [activeTurnEventId, setActiveTurnEventId] = useState<string>();
-  const [streamCompletedBindingId, setStreamCompletedBindingId] = useState<string>();
   const [expiredTerminalSyncTurnKey, setExpiredTerminalSyncTurnKey] = useState<string>();
   const [requestStartedAt, setRequestStartedAt] = useState<number>();
   const [pendingSubmissionConfirmation, setPendingSubmissionConfirmation] = useState<PendingSubmissionConfirmation>();
@@ -5139,6 +4994,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [sidebarScrollTop, setSidebarScrollTop] = useState<number>();
   const [agentWorkspaceView, setAgentWorkspaceView] = useState<'home' | 'schedules' | 'management' | 'settings'>(() => withoutDeploymentBase(window.location.pathname).startsWith('/agent/schedules') ? 'schedules' : 'home');
   const [conversationRailCollapsed, setConversationRailCollapsed] = useState(false);
+  const homeRailCollapsed = agentWorkspaceView === 'home' && conversationRailCollapsed;
   const viewBeforeSettings = useRef<'home' | 'schedules' | 'management'>('home');
   const workspaceSidebarScrollTop = useRef<number | undefined>(undefined);
   const workspaceSidebarScrollTopBeforeActivity = useRef<number | undefined>(undefined);
@@ -5172,11 +5028,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [filePreviewRequest, setFilePreviewRequest] = useState<ConversationFilePreviewRequest>();
   const [browserRequest, setBrowserRequest] = useState<{ key: string; scopeKey: string; url: string }>();
   const [htmlPreviewRequest, setHtmlPreviewRequest] = useState<{ key: string; filename: string; document?: string; sourceUrl?: string }>();
-  const [attachmentRequest, setAttachmentRequest] = useState<{ key: string; scopeKey: string; attachment?: AgentAttachment }>();
+  const [attachmentRequest, setAttachmentRequest] = useState<{ key: string; attachment?: AgentAttachment }>();
   const [fileSelectionReference, setFileSelectionReference] = useState<{ path: string; selection: FileSelection }>();
   const [candidatePreviewRequest, setCandidatePreviewRequest] = useState<CandidateFilePreviewRequest>();
   const [sourceLocationRequest, setSourceLocationRequest] = useState<MarkdownFileRequest>();
-  const [sidebarQuestions, setSidebarQuestions] = useState<Record<string, { sourceBindingId: string; sidebarBindingId?: string; reference?: AgentConversationReference }>>({});
+  const [sidebarQuestions, setSidebarQuestions] = useState<Record<string, { requestKey: string; sourceBindingId: string; sidebarBindingId?: string; reference?: AgentConversationReference }>>({});
   const [conversationRailWidth, setConversationRailWidth] = useState(() => {
     const stored = Number(localStorage.getItem('flowweave:conversation-rail-width'));
     return clampConversationRailWidth(Number.isFinite(stored) ? stored : 240);
@@ -5276,6 +5132,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const queuedMessagesStorageKeyRef = useRef<string | undefined>(undefined);
   const queuedMessagesRef = useRef<QueuedMessage[]>([]);
   const sendingMessageIds = useRef(new Set<string>());
+  const outgoingSubmissions = useRef(new Map<string, BoundQueuedMessage>());
+  const restoredSubmissionIds = useRef(new Set<string>());
+  const [cancellingSubmission, setCancellingSubmission] = useState<{ bindingId: string; submissionId: string }>();
   const backgroundQueueDispatches = useRef(new Set<string>());
   const localMessageProjections = useRef(new Map<string, LocalMessageProjection>());
   useEffect(() => () => {
@@ -5315,23 +5174,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const automaticSidebarRoute = useRef<string | undefined>(undefined);
   const manualSidebarRoute = useRef<string | undefined>(undefined);
   const [sidebarReveal, setSidebarReveal] = useState<{ bindingId?: string; expandCollapsed: boolean; conversation?: AgentConversation }>({ bindingId: routeBindingId, expandCollapsed: false });
-  const [restoredConversationCounts, setRestoredConversationCounts] = useState<Record<string, number>>({});
   const setSidebarRevealBindingId = useCallback((bindingId: string | undefined) => {
     setSidebarReveal({ bindingId, expandCollapsed: true });
-  }, []);
-  const revealRestoredConversation = useCallback((conversation: AgentConversation) => {
-    setSidebarReveal({ bindingId: conversation.id, expandCollapsed: true, conversation });
-    if (conversation.pinned) return;
-    const groupId = conversation.work_directory_id ?? 'root';
-    setRestoredConversationCounts(current => ({ ...current, [groupId]: (current[groupId] ?? 0) + 1 }));
-  }, []);
-  const markRestoredConversationsVisible = useCallback((groupId: string) => {
-    setRestoredConversationCounts(current => {
-      if (!current[groupId]) return current;
-      const next = { ...current };
-      delete next[groupId];
-      return next;
-    });
   }, []);
   useEffect(() => {
     if (previousSidebarRoute.current === routeBindingId) return;
@@ -5586,7 +5430,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, [workDirectoryOrderStorageKey]);
   const workDirectories = useMemo(() => {
     const items = (workDirectoriesQuery.data?.items ?? []).filter(item => (
-      scopeWorkDirectoryId === undefined || item.id === scopeWorkDirectoryId
+      !archivedDirectoryIds.has(item.id) && (scopeWorkDirectoryId === undefined || item.id === scopeWorkDirectoryId)
     ));
     const byId = new Map(items.map(item => [item.id, item]));
     const ordered = workDirectoryOrder.flatMap(id => {
@@ -5595,7 +5439,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     });
     const known = new Set(ordered.map(item => item.id));
     return [...ordered, ...items.filter(item => !known.has(item.id))];
-  }, [scopeWorkDirectoryId, workDirectoriesQuery.data?.items, workDirectoryOrder]);
+  }, [archivedDirectoryIds, scopeWorkDirectoryId, workDirectoriesQuery.data?.items, workDirectoryOrder]);
   const persistWorkDirectoryOrder = useCallback((orderedIds: string[]) => {
     setWorkDirectoryOrder(orderedIds);
     if (!workDirectoryOrderStorageKey) return;
@@ -7310,19 +7154,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     };
     const visibleFormalEvents = currentFormalEvents.filter(event => (
       !belongsToHiddenBranch(event)
-      && !suppressedRecoveryErrorIds.has(event.id)
       && !deferredRewriteUserEventIds.has(event.id)
     ));
     return projectLocalMessages(visibleFormalEvents, activeLocalMessageProjections);
-  }, [activeLocalMessageProjections, currentFormalEvents, deferredRewriteUserEventIds, hiddenEventIds, suppressedRecoveryErrorIds]);
-  const latestGoalEvent = useMemo(() => {
-    for (const event of [...currentFormalEvents].reverse()) {
-      if (event.payload.goal_status) return event;
-    }
-    return undefined;
-  }, [currentFormalEvents]);
-  const latestGoalStatus = latestGoalEvent?.payload.goal_status;
-  useEffect(() => setGoalModeEnabled(false), [selected?.id]);
+  }, [activeLocalMessageProjections, currentFormalEvents, deferredRewriteUserEventIds, hiddenEventIds]);
   const rewriteAwaitingFormalEvent = activeLocalMessageProjections.some(projection => (
     Boolean(projection.replacedEventId)
     && (!projection.canonicalEventId || !currentFormalEvents.some(event => event.id === projection.canonicalEventId))
@@ -7400,8 +7235,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   // failure/restart. Historical activity is not evidence that it still runs.
   // Preserve only the current POST-to-formal-event handoff and ignore a failed
   // readiness snapshot that predates this browser's new submission.
-  const reconnectingCurrentConversation = flowWeaveReconnect?.bindingId === selected?.id;
-  const nativeFailureSettled = !reconnectingCurrentConversation && nativeTurnFailed && !foregroundDeliveryPending
+  const nativeFailureSettled = nativeTurnFailed && !foregroundDeliveryPending
     && (!foregroundTurnPending || (readinessSynchronization.current.scope === selected?.id
       && (readinessSynchronization.current.lastObservedRequestAt ?? 0) > currentForegroundTurn!.submittedAt));
   const foregroundSubmissionAwaitingFormalEvent = !nativeFailureSettled
@@ -7458,13 +7292,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     conversationDraft
     && pendingBootstrap?.draft.id !== conversationDraft.id,
   );
-  const streamCompletionAcknowledged = streamCompletedBindingId === selected?.id;
-  const effectiveTurnState: TurnState = idleUncreatedConversationDraft || nativeFailureSettled || streamCompletionAcknowledged
+  const effectiveTurnState: TurnState = idleUncreatedConversationDraft || nativeFailureSettled
     ? 'idle'
-    : reconnectingCurrentConversation
-      ? 'reconnecting'
-      : turnState === 'pausing' || turnState === 'resuming'
-        ? turnState
+    : turnState === 'pausing' || turnState === 'resuming'
+      ? turnState
       : currentFormalTurnFinished
         ? 'idle'
         : pausedStateConflictsWithRunningEvidence
@@ -7488,7 +7319,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   // The browser queue contains only messages that have not started delivery.
   // Once a request starts, the optimistic conversation event owns its display.
   const visibleQueuedMessages = queuedMessages.filter(message => message.scope === selected?.id);
-  const isGenerating = effectiveTurnState === 'running' || effectiveTurnState === 'pausing' || effectiveTurnState === 'resuming' || effectiveTurnState === 'reconnecting';
+  const isGenerating = effectiveTurnState === 'running' || effectiveTurnState === 'pausing' || effectiveTurnState === 'resuming';
   const streamEnabled = Boolean(
     selected
     && (runtime?.write_available || selected.write_available)
@@ -7626,9 +7457,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     ? { state: 'idle' as const, active: false }
     : {
         state: selectedCondensing ? 'running' as const : effectiveTurnState,
-        active: selectedCondensing || effectiveTurnState === 'running' || effectiveTurnState === 'pausing' || effectiveTurnState === 'resuming' || effectiveTurnState === 'reconnecting',
+        active: selectedCondensing || effectiveTurnState === 'running' || effectiveTurnState === 'pausing' || effectiveTurnState === 'resuming',
       }, [effectiveTurnState, selectedCondensing, uncreatedConversationDraft]);
-  const conversationVisuallyActive = !uncreatedConversationDraft && !nativeFailureSettled && !streamCompletionAcknowledged && (
+  const conversationVisuallyActive = !uncreatedConversationDraft && !nativeFailureSettled && (
     conversationActivity.active
     || (
       effectiveTurnState !== 'paused'
@@ -7645,14 +7476,13 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   );
   // Keep an unfinished task plan mounted through native terminal-event
   // reconciliation so the composer dock cannot collapse during that handoff.
-  const taskPlanLayoutActive = !uncreatedConversationDraft && !nativeFailureSettled && !streamCompletionAcknowledged && (conversationVisuallyActive || (
+  const taskPlanLayoutActive = !uncreatedConversationDraft && !nativeFailureSettled && (conversationVisuallyActive || (
     hasUnfinishedFormalTurn
     && (!nativeTurnTerminal || terminalEventReconciliationActive)
   ));
   const latestDisplayedEvent = displayedEvents.at(-1);
   useEffect(() => {
     setModelRetryStatus(undefined);
-    setStreamCompletedBindingId(undefined);
   }, [selected?.id]);
   const emptyResponseRecoveryActive = conversationActivity.state === 'running'
     && Boolean(latestDisplayedEvent && isOpenHandsEmptyResponseRecovery(latestDisplayedEvent));
@@ -7690,9 +7520,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     setDrawerOpen(true);
   }, [setDrawerOpen]);
   const openSourceLocation = useCallback((path: string, line: number) => {
-    setSourceLocationRequest({ key: randomId(), scopeKey: workspaceToolScopeKey, path, line });
+    setSourceLocationRequest({ key: randomId(), path, line });
     setDrawerOpen(true);
-  }, [setDrawerOpen, workspaceToolScopeKey]);
+  }, [setDrawerOpen]);
   const runtimeTasks = useMemo(
     () => runtimeTasksFromEvents(displayedEvents, eventsQuery.data?.task_usage ?? [], eventsQuery.data?.task_control ?? [])
       .map(task => nativeFailureSettled && task.status === 'RUNNING'
@@ -7731,7 +7561,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const previewAttachment = useCallback((attachment: AgentAttachment, previewBindingId?: string) => {
     setFilePreviewRequest({
       key: randomId(),
-      scopeKey: workspaceToolScopeKey,
       kind: 'workspace',
       path: attachment.path,
       filename: attachment.filename,
@@ -7741,7 +7570,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       previewBindingId,
       draftAttachmentOwnerId: previewBindingId ? undefined : conversationDraft?.id,
     });
-  }, [conversationDraft?.id, workspaceToolScopeKey]);
+  }, [conversationDraft?.id]);
   const composerAttachmentImageUrl = useCallback((attachment: AgentAttachment) => {
     if (attachment.image_data_url) return attachment.image_data_url;
     if (!workspace) return undefined;
@@ -7765,40 +7594,38 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const previewWorkspaceReference = useCallback((reference: AgentWorkspaceReference) => {
     setFilePreviewRequest({
       key: randomId(),
-      scopeKey: workspaceToolScopeKey,
       kind: 'workspace',
       path: reference.path,
       filename: reference.display_name || reference.path.split('/').filter(Boolean).at(-1) || reference.path,
     });
-  }, [workspaceToolScopeKey]);
+  }, []);
   const previewCandidateFile = useCallback((fieldKey: string, relativePath: string) => {
     if (!workspace || !candidateOutputUrl) return;
     setFilePreviewRequest({
       key: randomId(),
-      scopeKey: workspaceToolScopeKey,
       kind: 'candidate',
       filename: relativePath.split('/').at(-1) || relativePath,
       url: candidateOutputUrl(workspace.id, fieldKey, relativePath),
       fieldKey,
       relativePath,
     });
-  }, [candidateOutputUrl, workspace, workspaceToolScopeKey]);
+  }, [candidateOutputUrl, workspace]);
   const openPreviewInTab = useCallback((request: ConversationFilePreviewRequest, htmlDocument?: string, sourceUrl?: string) => {
-    if (request.kind === 'image' || request.scopeKey !== workspaceToolScopeKey) return;
+    if (request.kind === 'image') return;
     setFilePreviewRequest(undefined);
     if (request.kind === 'workspace' && isHtmlPreviewable(request.path, request.mimeType) && htmlDocument) {
       setHtmlPreviewRequest({ key: randomId(), filename: request.filename, document: htmlDocument, sourceUrl });
     } else if (request.kind === 'candidate') {
-      setCandidatePreviewRequest({ key: randomId(), scopeKey: request.scopeKey, filename: request.filename, url: request.url });
+      setCandidatePreviewRequest({ key: randomId(), filename: request.filename, url: request.url });
     } else if (request.kind === 'directory') {
-      setAttachmentRequest({ key: randomId(), scopeKey: request.scopeKey });
+      setAttachmentRequest({ key: randomId() });
     } else {
       setAttachmentRequest(request.attachment
-        ? { key: randomId(), scopeKey: request.scopeKey, attachment: request.attachment }
-        : { key: randomId(), scopeKey: request.scopeKey, attachment: { filename: request.filename, mime_type: request.mimeType ?? '', byte_size: 0, path: request.path } });
+        ? { key: randomId(), attachment: request.attachment }
+        : { key: randomId(), attachment: { filename: request.filename, mime_type: request.mimeType ?? '', byte_size: 0, path: request.path } });
     }
     setDrawerOpen(true);
-  }, [setDrawerOpen, workspaceToolScopeKey]);
+  }, [setDrawerOpen]);
   const reconcileMissingConversation = useCallback((bindingId: string) => {
     if (!workspace || reconciledMissingConversationIds.current.has(bindingId)) return;
     reconciledMissingConversationIds.current.add(bindingId);
@@ -7948,56 +7775,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const canCondense = Boolean(selected && canWrite && !selectedCondensing
     && inputReadinessQuery.data?.ready === true
     && (effectiveTurnState === 'idle' || effectiveTurnState === 'paused'));
-  const goalControl = useMutation({
-    mutationFn: (request: { action: 'START' | 'STOP' | 'RESUME'; objective?: string }) => api.controlGoal(
-      workspace!.id,
-      selected!.id,
-      request.action,
-      request.objective,
-      3,
-    ),
-    onSuccess: () => {
-      if (selected?.id === activeComposerScope.current) void synchronizeConversationEvents(true, 'goal_control');
-      void queryClient.invalidateQueries({ queryKey: inputReadinessQueryKey });
-      void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-activity', workspace?.id) });
-    },
-    onError: error => reportOperationError(selected?.id, error),
-  });
-  const canStartGoal = Boolean(
-    selected
-    && canWrite
-    && !goalControl.isPending
-    && !latestGoalStatus?.active
-    && inputReadinessQuery.data?.ready === true
-    && (effectiveTurnState === 'idle' || effectiveTurnState === 'paused'),
-  );
-  const startGoalFromComposer = useCallback((content: string) => {
-    const objective = content.trim();
-    if (!objective || !selected || !canStartGoal) return;
-    if (attachments.length || references.length || workspaceReferences.length || composerAnnotations.length) {
-      setOperationError(new Error('目标模式暂不支持附件、引用或批注；请先移除这些内容后启动。'));
-      return;
-    }
-    setOperationError(undefined);
-    goalControl.mutate({ action: 'START', objective });
-    setGoalModeEnabled(false);
-    replaceComposerDraft('');
-    if (composerScope) composerDraftsByScope.current.set(composerScope, { content: '', attachments: [], references: [], workspaceReferences: [], annotations: [] });
-    if (workspace && composerScope) clearConversationComposerDraft(host.id, workspace.id, composerScope);
-  }, [attachments.length, canStartGoal, composerAnnotations.length, composerScope, goalControl, host.id, references.length, replaceComposerDraft, selected, workspace, workspaceReferences.length]);
-  const locateGoalMessage = useCallback(() => {
-    if (!latestGoalStatus) return;
-    const objective = latestGoalStatus.objective.trim();
-    const goalMessage = currentFormalEvents.find(event => (
-      event.event_type === 'MESSAGE'
-      && ['user', 'human'].includes(String(event.payload.source ?? '').toLowerCase())
-      && String(event.payload.content ?? '').trim() === objective
-    ));
-    const eventId = goalMessage?.id ?? latestGoalEvent?.id;
-    if (!eventId) return;
-    setConversationSearchTargetEventId(eventId);
-    void revealHistoryThrough(eventId);
-  }, [currentFormalEvents, latestGoalEvent?.id, latestGoalStatus, revealHistoryThrough]);
   const visibleComposerSuggestions = useMemo<ComposerSuggestion[]>(() => {
     if (!selected) return composerSuggestions;
     return [{
@@ -8118,19 +7895,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     // Final replies render only from their durable MESSAGE event. Transient text
     // deltas are deliberately ignored to avoid partial content being replaced.
     if (event.type === 'stream_closed') void synchronizeConversationEvents(true, 'stream_closed');
-    if (event.type === 'message_complete') {
-      setStreamCompletedBindingId(scope);
-      setForegroundTurn(undefined);
-      setPendingSubmissionConfirmation(undefined);
-      setActiveTurnEventId(undefined);
-      setRequestStartedAt(undefined);
-      setTurnState(current => current === 'running' || current === 'resuming' ? 'idle' : current);
-      void synchronizeConversationEvents(true, 'foreground');
-      if (workspace) void queryClient.invalidateQueries({
-        queryKey: sessionQueryKey(host, 'conversation-input-readiness', workspace.id, scope),
-        exact: true,
-      });
-    }
     if (event.type === 'model_retry' && event.attempt && event.max_attempts && event.failure_kind && typeof event.final === 'boolean' && event.model_role) {
       setModelRetryStatus({
         attempt: event.attempt,
@@ -8142,10 +7906,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }
     if (event.type === 'event' && event.event) {
       const formalEvent = event.event;
-      if (formalEvent.event_type === 'MESSAGE' && ['user', 'human'].includes(String(formalEvent.payload.source ?? '').toLowerCase())) {
-        setModelRetryStatus(undefined);
-        setStreamCompletedBindingId(current => current === scope ? undefined : current);
-      }
+      if (formalEvent.event_type === 'MESSAGE' && ['user', 'human'].includes(String(formalEvent.payload.source ?? '').toLowerCase())) setModelRetryStatus(undefined);
       appendLiveEvent(scope, formalEvent);
       const terminal = isOpenHandsConversationTerminalError(formalEvent)
         || (formalEvent.event_type === 'COMPLETED' && formalEvent.payload.event_name === 'FinishAction')
@@ -8196,7 +7957,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       bootstrapTransitionScope.current = undefined;
       return;
     }
-    setEditing(false); setQueuedMessageMenuId(undefined); pendingLiveEvents.current = []; if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current); liveEventsFrame.current = undefined; setScopedLiveEvents(current => current.filter(item => item.scope === composerScope)); setLocalMessageProjectionRevision(current => current + 1); setHiddenEventIds(new Set()); setSuppressedRecoveryErrorIds(new Set()); setExhaustedRecoveryErrorIds(new Set()); setFlowWeaveReconnect(undefined); setDeferredRewriteUserEventIds(new Set()); setActiveTurnEventId(undefined); setForegroundTurn(undefined); setExpiredTerminalSyncTurnKey(undefined); setRequestStartedAt(undefined); setConfirmationReason(''); setTurnState('idle'); queuedMessagesRef.current = []; setQueuedMessages([]); setPendingRewrite(undefined);
+    setEditing(false); setQueuedMessageMenuId(undefined); pendingLiveEvents.current = []; if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current); liveEventsFrame.current = undefined; setScopedLiveEvents(current => current.filter(item => item.scope === composerScope)); setLocalMessageProjectionRevision(current => current + 1); setHiddenEventIds(new Set()); setDeferredRewriteUserEventIds(new Set()); setActiveTurnEventId(undefined); setForegroundTurn(undefined); setExpiredTerminalSyncTurnKey(undefined); setRequestStartedAt(undefined); setConfirmationReason(''); setTurnState('idle'); queuedMessagesRef.current = []; setQueuedMessages([]); setPendingRewrite(undefined);
     if (recoveredComposer && composerScope) {
       composerDraftsByScope.current.set(composerScope, recoveredComposer);
       replaceComposerDraft(recoveredComposer.content, composerScope);
@@ -8548,7 +8309,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       title: `删除${kind}“${name}”？`,
       message: kind === '会话'
         ? '会永久删除该会话及其附件和事件记录，无法恢复。'
-        : '会永久删除该工作区、其中的会话、附件和冻结目录版本，无法恢复。',
+        : '会永久删除该工作区所有版本目录中的文件、其中的会话和上传附件，无法恢复。',
       confirmLabel: '确认删除',
       tone: 'danger',
     });
@@ -8658,6 +8419,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         .map(([scope, page]) => [scope, { ...page, items: page.items.filter(item => !matches(item)) }])));
       setUnreadConversationIds(current => new Set([...current].filter(id => !bindingIds.has(id))));
       if (archiveSelectionRef.current.bindingId && bindingIds.has(archiveSelectionRef.current.bindingId)) {
+        homeRouteBeforeInternalNavigation.current = host.rootPath;
         setDrawerOpen(false);
         setActivityPreviewBindingId(undefined);
         onNavigate(scheduleRoute ? '/agent/schedules' : host.rootPath, true);
@@ -8788,9 +8550,44 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }));
     return renderKey;
   }, [snapshotFormalEventIds, updateLocalMessageProjections]);
+  const restoreCancelledSubmission = useCallback((message: BoundQueuedMessage) => {
+    if (restoredSubmissionIds.current.has(message.id)) return;
+    restoredSubmissionIds.current.add(message.id);
+    outgoingSubmissions.current.delete(message.id);
+    sendingMessageIds.current.delete(message.id);
+    removeLocalMessageProjection(message.id, message.bindingId);
+    const current = composerDraftsByScope.current.get(message.bindingId);
+    const snapshot = {
+      content: [message.content, current?.content].filter(Boolean).join('\n\n'),
+      attachments: [...message.items, ...(current?.attachments ?? [])].filter((item, index, all) => all.findIndex(other => other.path === item.path) === index),
+      references: [...message.references, ...(current?.references ?? [])],
+      workspaceReferences: [...(message.workspaceReferences ?? []), ...(current?.workspaceReferences ?? [])],
+      annotations: [...message.annotations, ...(current?.annotations ?? [])],
+    };
+    composerDraftsByScope.current.set(message.bindingId, snapshot);
+    if (activeComposerScope.current === message.bindingId) {
+      replaceComposerDraft(snapshot.content, message.bindingId);
+      setAttachments(snapshot.attachments); setReferences(snapshot.references);
+      setWorkspaceReferences(snapshot.workspaceReferences); setComposerAnnotations(snapshot.annotations);
+      if (!message.nativeGuidance) {
+        setForegroundTurn(current => current?.submissionId === message.id ? undefined : current);
+        setPendingSubmissionConfirmation(current => current?.submissionId === message.id ? undefined : current);
+        setActiveTurnEventId(undefined); setRequestStartedAt(undefined); setTurnState('idle');
+      }
+      setOperationError(undefined);
+      requestAnimationFrame(() => {
+        if (activeComposerScope.current === message.bindingId) composerRef.current?.focus();
+      });
+    }
+    persistComposerDraft(message.bindingId);
+  }, [persistComposerDraft, removeLocalMessageProjection, replaceComposerDraft]);
   const send = useMutation({
-    mutationFn: (message: BoundQueuedMessage) => api.sendMessage(workspace!.id, message.bindingId, message.content, message.items, message.references.map(item => ({ event_id: item.eventId, content: item.content, source_binding_id: item.sourceBindingId, ...(item.compactStart !== undefined && item.compactEnd !== undefined ? { selection: { compact_start: item.compactStart, compact_end: item.compactEnd } } : {}) })), message.workspaceReferences ?? [], messageAnnotations(message.annotations, message.references), message.id),
+    mutationFn: (message: BoundQueuedMessage) => {
+      if (restoredSubmissionIds.current.has(message.id)) throw new ApiError('消息已取消', 'AGENT_MESSAGE_CANCELLED', {}, 409);
+      return api.sendMessage(workspace!.id, message.bindingId, message.content, message.items, message.references.map(item => ({ event_id: item.eventId, content: item.content, source_binding_id: item.sourceBindingId, ...(item.compactStart !== undefined && item.compactEnd !== undefined ? { selection: { compact_start: item.compactStart, compact_end: item.compactEnd } } : {}) })), message.workspaceReferences ?? [], messageAnnotations(message.annotations, message.references), message.id);
+    },
     onMutate: message => {
+      if (restoredSubmissionIds.current.has(message.id)) return { optimisticEventId: undefined, nativeGuidance: true };
       // The cached hydration describes the preceding turn. Preserve its screen
       // while ensuring a hot revisit reconciles this new turn, including after
       // the POST confirmation window expires or the workbench remounts.
@@ -8807,7 +8604,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       };
     },
     onSuccess: (value, message, context) => {
+      outgoingSubmissions.current.delete(message.id);
       sendingMessageIds.current.delete(message.id);
+      if (restoredSubmissionIds.current.has(message.id)) return;
       const cursor = value.cursor;
       if (!context?.nativeGuidance && activeComposerScope.current === message.bindingId) {
         setForegroundTurn(current => current?.submissionId === message.id
@@ -8849,7 +8648,13 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       refresh(message.bindingId);
     },
     onError: (error, message, context) => {
+      outgoingSubmissions.current.delete(message.id);
       sendingMessageIds.current.delete(message.id);
+      if (error instanceof ApiError && error.code === 'AGENT_MESSAGE_CANCELLED') {
+        restoreCancelledSubmission(message);
+        return;
+      }
+      if (restoredSubmissionIds.current.has(message.id)) return;
       setForegroundTurn(current => current?.submissionId === message.id ? undefined : current);
       if (error instanceof ApiError && error.code === 'AGENT_MESSAGE_DELIVERY_AMBIGUOUS') {
         updateLocalMessageProjections(current => {
@@ -8953,8 +8758,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const dispatchMessage = useCallback((message: BoundQueuedMessage, immediate = false) => {
     if (sendingMessageIds.current.has(message.id)) return;
     sendingMessageIds.current.add(message.id);
+    outgoingSubmissions.current.set(message.id, message);
     const showLocalMessage = () => {
-      setStreamCompletedBindingId(current => current === message.bindingId ? undefined : current);
       if (!message.nativeGuidance) {
         setForegroundTurn({ submissionId: message.id, bindingId: message.bindingId, submittedAt: Date.now() });
       }
@@ -8987,8 +8792,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     try {
       const readiness = await api.inputReadiness(workspace.id, bindingId);
       if (!readiness.ready || !conversationHasReachedTerminalState(readiness.execution_status)) return;
-      const events = await api.conversationEvents(workspace.id, bindingId);
-      if (!latestFormalTurnIsFinished(events.events)) return;
       const currentQueue = readQueuedMessages(storageKey);
       if (currentQueue[0]?.id !== queueHead.id) return;
       writeQueuedMessages(storageKey, currentQueue.filter(message => message.id !== queueHead.id));
@@ -9214,11 +9017,28 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       reportOperationError(request.bindingId, error);
     },
   });
+  const cancelSubmission = useMutation({
+    mutationFn: (request: { workspaceId: string; message: BoundQueuedMessage }) =>
+      api.cancelMessageSubmission(request.workspaceId, request.message.bindingId, request.message.id),
+    onMutate: ({ message }) => setCancellingSubmission({ bindingId: message.bindingId, submissionId: message.id }),
+    onSuccess: (result, { workspaceId, message }) => {
+      if (result.cancelled) restoreCancelledSubmission(message);
+      else interrupt.mutate({ workspaceId, bindingId: message.bindingId });
+    },
+    onError: (error, { message }) => reportOperationError(message.bindingId, error),
+    onSettled: (_value, _error, { message }) => setCancellingSubmission(current => current?.submissionId === message.id ? undefined : current),
+  });
   const requestInterrupt = useCallback(() => {
-    if (!workspace || !selected || interrupt.isPending && interrupt.variables?.bindingId === selected.id) return;
-    // Explicit control must reach OpenHands even while formal reads are busy.
+    if (!workspace || !selected || cancellingSubmission?.bindingId === selected.id
+      || interrupt.isPending && interrupt.variables?.bindingId === selected.id) return;
+    const message = [...outgoingSubmissions.current.values()].reverse().find(item => item.bindingId === selected.id);
+    if (message) {
+      cancelSubmission.mutate({ workspaceId: workspace.id, message });
+      return;
+    }
+    // Accepted native messages use the existing formal interrupt action.
     interrupt.mutate({ workspaceId: workspace.id, bindingId: selected.id });
-  }, [interrupt, selected, workspace]);
+  }, [cancelSubmission, cancellingSubmission?.bindingId, interrupt, selected, workspace]);
   const resume = useMutation({
     mutationFn: (request: { workspaceId: string; bindingId: string }) => api.resumeConversation(request.workspaceId, request.bindingId),
     onMutate: request => {
@@ -9259,79 +9079,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       reportOperationError(request.bindingId, error);
     },
   });
-  const latestRecoverableGatewayError = useMemo(() => {
-    const events = orderOpenHandsConversationEvents(currentFormalEvents);
-    for (let index = events.length - 1; index >= 0; index -= 1) {
-      const candidate = events[index];
-      if (!isRecoverableGatewayFailure(candidate)) continue;
-      return events.slice(index + 1).some(event => event.id !== candidate.id)
-        ? undefined
-        : candidate;
-    }
-    return undefined;
-  }, [currentFormalEvents]);
-  useEffect(() => {
-    if (!selected || !latestRecoverableGatewayError
-      || exhaustedRecoveryErrorIds.has(latestRecoverableGatewayError.id)) return;
-    if (flowWeaveReconnect?.bindingId === selected.id) {
-      setSuppressedRecoveryErrorIds(current => new Set([...current, latestRecoverableGatewayError.id]));
-      return;
-    }
-    setSuppressedRecoveryErrorIds(current => new Set([...current, latestRecoverableGatewayError.id]));
-    setFlowWeaveReconnect({
-      bindingId: selected.id,
-      errorEventId: latestRecoverableGatewayError.id,
-      attempt: 1,
-      baselineEventIds: new Set(currentFormalEvents.map(event => event.id)),
-      resumeIssued: false,
-    });
-    setTurnState('reconnecting');
-  }, [currentFormalEvents, exhaustedRecoveryErrorIds, flowWeaveReconnect, latestRecoverableGatewayError, selected]);
-  useEffect(() => {
-    if (!workspace || !selected || !flowWeaveReconnect
-      || flowWeaveReconnect.bindingId !== selected.id) return;
-    const progressed = currentFormalEvents.some(event => (
-      !flowWeaveReconnect.baselineEventIds.has(event.id)
-      && !isOpenHandsConversationTerminalError(event)
-    ));
-    if (progressed) {
-      setFlowWeaveReconnect(undefined);
-      setTurnState('running');
-      reconcileConversationProjection('flowweave_reconnect_progress');
-      return;
-    }
-    if (!flowWeaveReconnect.resumeIssued) {
-      if (flowWeaveReconnect.attempt >= FLOWWEAVE_RECONNECT_MAX_ATTEMPTS) {
-        setSuppressedRecoveryErrorIds(current => {
-          const next = new Set(current);
-          next.delete(flowWeaveReconnect.errorEventId);
-          return next;
-        });
-        setExhaustedRecoveryErrorIds(current => new Set([...current, flowWeaveReconnect.errorEventId]));
-        setFlowWeaveReconnect(undefined);
-        setTurnState('idle');
-        return;
-      }
-      setFlowWeaveReconnect(current => current
-        && current.bindingId === selected.id
-        && current.errorEventId === flowWeaveReconnect.errorEventId
-        ? { ...current, resumeIssued: true }
-        : current);
-      void api.resumeConversation(workspace.id, selected.id)
-        .then(() => reconcileConversationProjection('flowweave_reconnect_resume'))
-        .catch(() => reconcileConversationProjection('flowweave_reconnect_error'));
-      return;
-    }
-    const timer = window.setTimeout(() => {
-      setFlowWeaveReconnect(current => current
-        && current.bindingId === selected.id
-        && current.errorEventId === flowWeaveReconnect.errorEventId
-        ? { ...current, attempt: current.attempt + 1, resumeIssued: false }
-        : current);
-    }, FLOWWEAVE_RECONNECT_OBSERVATION_MS);
-    return () => window.clearTimeout(timer);
-  }, [api, currentFormalEvents, flowWeaveReconnect, reconcileConversationProjection, selected, workspace]);
-
   const decideConfirmation = useMutation({
     mutationFn: (accept: boolean) => api.decideConfirmation(workspace!.id, selected!.id, pendingConfirmation!.pending_actions_digest!, accept, confirmationReason.trim()),
     onSuccess: value => {
@@ -9466,7 +9213,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (effectiveTurnState === 'idle' || effectiveTurnState === 'paused') rewrite.mutate(request);
   }, [displayedEvents, effectiveTurnState, interrupt, rewrite, selected, workspace]);
   const currentConversationSubmitting = (
-    send.isPending && send.variables?.bindingId === selected?.id
+    send.isPending && send.variables?.bindingId === selected?.id && !restoredSubmissionIds.current.has(send.variables.id)
   ) || (
     rewrite.isPending && rewrite.variables?.bindingId === selected?.id
   ) || (
@@ -9589,7 +9336,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       return;
     }
     const content = draftContent.trim();
-    if ((!content && !attachments.length && !references.length && !workspaceReferences.length && !composerAnnotations.length) || migrateStreaming.isPending || pendingMigratedSend || effectiveTurnState === 'pausing' || effectiveTurnState === 'resuming' || effectiveTurnState === 'reconnecting'
+    if ((!content && !attachments.length && !references.length && !workspaceReferences.length && !composerAnnotations.length) || migrateStreaming.isPending || pendingMigratedSend || effectiveTurnState === 'pausing' || effectiveTurnState === 'resuming'
       || (!queueModeEnabled && effectiveTurnState === 'running')) return;
     replaceComposerDraft('');
     setOperationError(undefined);
@@ -9760,7 +9507,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       void revealHistoryThrough(conversationReferenceTarget.event_id);
     }
   }, [conversationInitialLoading, conversationReferenceTarget, displayedEvents, historyCacheRevision, revealHistoryThrough, selected?.id]);
-  const currentSessionControlState: TurnState = effectiveTurnState === 'pausing' || effectiveTurnState === 'paused' || effectiveTurnState === 'resuming' || effectiveTurnState === 'reconnecting'
+  const currentSessionControlState: TurnState = effectiveTurnState === 'pausing' || effectiveTurnState === 'paused' || effectiveTurnState === 'resuming'
     ? effectiveTurnState
     : foregroundSubmissionAwaitingFormalEvent
       ? 'running'
@@ -9790,9 +9537,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
                   ? 'paused'
                   : currentSessionControlState === 'resuming'
                     ? 'resuming'
-                    : currentSessionControlState === 'reconnecting'
-                      ? 'reconnecting'
-                      : 'idle';
+                    : 'idle';
   const queueDispatchReady = composerControlMode === 'idle' && !nativeTurnFailed;
   useEffect(() => {
     if (!selected || !queueModeEnabled || !queueDispatchReady) return;
@@ -9904,6 +9649,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const visibleError = operationError ?? hydrationError ?? confirmationQuery.error ?? eventsQuery.error;
   const composerActionSends = composerHasContent && !pendingConfirmation;
   const composerControl = (() => {
+    if (selected && cancellingSubmission?.bindingId === selected.id) return { label: '正在取消发送', disabled: true, editable: true, action: 'none' as const };
     const actionBlocked = Boolean(pendingConfirmation)
       || bootstrap.isPending
       || migrateStreaming.isPending
@@ -9921,8 +9667,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         return { label: '暂停请求已发送', disabled: true, editable: false, action: 'none' as const };
       case 'resuming':
         return { label: '正在继续 Agent', disabled: true, editable: false, action: 'none' as const };
-      case 'reconnecting':
-        return { label: `正在尝试重连（${flowWeaveReconnect?.attempt ?? 1}/${FLOWWEAVE_RECONNECT_MAX_ATTEMPTS}）`, disabled: true, editable: false, action: 'none' as const };
       case 'rewriting':
         return { label: '正在重新思考', disabled: true, editable: false, action: 'none' as const };
       case 'reconciling':
@@ -9946,7 +9690,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     ? (conversationDraft && !newConversationModelName ? '请选择模型' : undefined)
     : bootstrapRecovery
       ? '正在安全核对首条消息'
-      : conversationDraft && !newConversationModelName ? '请选择模型' : persistModel.isPending ? '正在保存模型设置' : pendingConfirmation ? '等待工具确认' : finalReplyAwaitingNativeCompletion ? '回复已生成，正在收尾' : composerControlMode === 'reconnecting' ? `正在尝试重连（${flowWeaveReconnect?.attempt ?? 1}/${FLOWWEAVE_RECONNECT_MAX_ATTEMPTS}）` : streamStatus === 'recovering' ? '连接恢复中' : composerControlMode === 'rewriting' ? '正在重新思考' : composerControlMode === 'reconciling' ? '正在同步 Agent 状态' : composerControlMode === 'read-only' ? '当前会话不可编辑' : composerControlMode === 'condensing' ? '正在压缩上下文' : composerControlMode === 'pausing' ? '正在暂停' : composerControlMode === 'paused' ? '已暂停' : composerControlMode === 'resuming' ? '正在继续' : undefined;
+      : conversationDraft && !newConversationModelName ? '请选择模型' : persistModel.isPending ? '正在保存模型设置' : pendingConfirmation ? '等待工具确认' : finalReplyAwaitingNativeCompletion ? '回复已生成，正在收尾' : streamStatus === 'recovering' ? '连接恢复中' : composerControlMode === 'rewriting' ? '正在重新思考' : composerControlMode === 'reconciling' ? '正在同步 Agent 状态' : composerControlMode === 'read-only' ? '当前会话不可编辑' : composerControlMode === 'condensing' ? '正在压缩上下文' : composerControlMode === 'pausing' ? '正在暂停' : composerControlMode === 'paused' ? '已暂停' : composerControlMode === 'resuming' ? '正在继续' : undefined;
   const runComposerAction = () => {
     if (composerControl.action === 'send') enqueueDraft();
     else if (composerControl.action === 'interrupt') void requestInterrupt();
@@ -9995,7 +9739,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }
     setFilePreviewRequest({
       key: randomId(),
-      scopeKey: workspaceToolScopeKey,
       // Agent replies are free-form Markdown: its visible label is not a
       // trustworthy file identity.  A bare relative link (for example `.`)
       // resolves to the authorized working directory, which must be treated
@@ -10016,9 +9759,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const previewMarkdownImage = (src: string, alt?: string) => {
     const path = workspaceMarkdownImagePath(src, activeWorkspaceRoot);
     setFilePreviewRequest(path ? {
-      key: randomId(), scopeKey: workspaceToolScopeKey, kind: 'workspace', path, filename: alt || path.split('/').filter(Boolean).at(-1) || '图片', mimeType: 'image/*',
+      key: randomId(), kind: 'workspace', path, filename: alt || path.split('/').filter(Boolean).at(-1) || '图片', mimeType: 'image/*',
     } : {
-      key: randomId(), scopeKey: workspaceToolScopeKey, kind: 'image', filename: alt || '会话图片', url: src,
+      key: randomId(), kind: 'image', filename: alt || '会话图片', url: src,
     });
   };
   const workspaceMarkdownImageUrl = (href: string) => {
@@ -10259,7 +10002,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     // hydration readiness must never keep only the selected row spinning after
     // the shared snapshot has observed completion.
     const selectedHasFinalFormalReply = item.id === selected?.id
-      && (selectedFormalTurnFinished || nativeFailureSettled || streamCompletionAcknowledged);
+      && (selectedFormalTurnFinished || nativeFailureSettled);
     const selectedLocalTransition = item.id === selected?.id
       && !selectedHasFinalFormalReply
       && conversationActivity.active;
@@ -10453,9 +10196,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (!api.deleteWorkDirectory || !await confirmDeletion('工作区', directory.display_name)) return;
     setOperationError(undefined);
     try {
-      await api.deleteWorkDirectory(workspace!.id, directory.id);
-      if (conversationDraft?.workDirectoryId === directory.id) setConversationDraft(undefined);
-      await queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'work-directories', workspace!.id) });
+      const workspaceId = workspace!.id;
+      await api.deleteWorkDirectory(workspaceId, directory.id);
+      await queryClient.cancelQueries({ queryKey: sessionQueryKey(host, 'work-directories', workspaceId) });
+      queryClient.setQueryData<typeof workDirectoriesQuery.data>(sessionQueryKey(host, 'work-directories', workspaceId), current => current && ({ ...current, items: current.items.filter(item => item.id !== directory.id) }));
+      reconcileArchivedConversations(workspaceId, new Set(), directory.id);
+      if (archiveSelectionRef.current.workspaceId === workspaceId && archiveSelectionRef.current.draftDirectoryId === directory.id) setConversationDraft(undefined);
+      await queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'work-directories', workspaceId) });
+      void queryClient.invalidateQueries({ queryKey: ['agent-work-directories', workspaceId] });
       setOperationError(undefined);
     } catch (reason) { reportOperationError('work-directory-delete', reason instanceof Error ? reason : new Error('删除工作区失败')); }
   };
@@ -10489,8 +10237,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     window.addEventListener('pointerup', stop, { once: true });
     window.addEventListener('pointercancel', stop, { once: true });
   };
-  return <main className={`agent-workbench-page${!onReturnToSource ? ' agent-workbench-app-shell' : ''}${conversationRailCollapsed ? ' conversation-rail-collapsed' : ''}`} style={{ '--conversation-rail-width': `${conversationRailWidth}px` } as CSSProperties}>
-    {!onReturnToSource && <nav className="agent-workbench-app-nav" aria-label="Agent 工作区导航"><button type="button" className={agentWorkspaceView === 'home' ? 'active' : ''} aria-current={agentWorkspaceView === 'home' ? 'page' : undefined} aria-label="主页" aria-pressed={conversationRailCollapsed} title={conversationRailCollapsed ? '展开会话侧栏' : '收起会话侧栏'} onClick={returnToHome}><Home size={17}/></button><button type="button" className={agentWorkspaceView === 'schedules' ? 'active' : ''} aria-current={agentWorkspaceView === 'schedules' ? 'page' : undefined} aria-label="定时任务" title="定时任务" onClick={() => { rememberHomeRoute(); setAgentWorkspaceView('schedules'); onNavigate('/agent/schedules'); }}><CalendarClock size={17}/></button><button type="button" className={agentWorkspaceView === 'management' ? 'active' : ''} aria-current={agentWorkspaceView === 'management' ? 'page' : undefined} aria-label="会话管理" title="会话管理" onClick={() => { rememberHomeRoute(); setAgentWorkspaceView('management'); }}><MessageSquareText size={17}/></button><button type="button" className={`agent-workbench-settings-trigger${agentWorkspaceView === 'settings' ? ' active' : ''}`} aria-current={agentWorkspaceView === 'settings' ? 'page' : undefined} aria-label="工作区设置" title="设置" onClick={toggleSettings}><Settings size={17}/></button></nav>}
+  return <main className={`agent-workbench-page${!onReturnToSource ? ' agent-workbench-app-shell' : ''}${homeRailCollapsed ? ' conversation-rail-collapsed' : ''}`} style={{ '--conversation-rail-width': `${conversationRailWidth}px` } as CSSProperties}>
+    {!onReturnToSource && <nav className="agent-workbench-app-nav" aria-label="Agent 工作区导航"><button type="button" className={agentWorkspaceView === 'home' ? 'active' : ''} aria-current={agentWorkspaceView === 'home' ? 'page' : undefined} aria-label="主页" aria-pressed={homeRailCollapsed} title={homeRailCollapsed ? '展开会话侧栏' : '收起会话侧栏'} onClick={returnToHome}><Home size={17}/></button><button type="button" className={agentWorkspaceView === 'schedules' ? 'active' : ''} aria-current={agentWorkspaceView === 'schedules' ? 'page' : undefined} aria-label="定时任务" title="定时任务" onClick={() => { rememberHomeRoute(); setAgentWorkspaceView('schedules'); onNavigate('/agent/schedules'); }}><CalendarClock size={17}/></button><button type="button" className={agentWorkspaceView === 'management' ? 'active' : ''} aria-current={agentWorkspaceView === 'management' ? 'page' : undefined} aria-label="会话管理" title="会话管理" onClick={() => { rememberHomeRoute(); setAgentWorkspaceView('management'); }}><MessageSquareText size={17}/></button><button type="button" className={`agent-workbench-settings-trigger${agentWorkspaceView === 'settings' ? ' active' : ''}`} aria-current={agentWorkspaceView === 'settings' ? 'page' : undefined} aria-label="工作区设置" title="设置" onClick={toggleSettings}><Settings size={17}/></button></nav>}
     {agentWorkspaceView === 'settings' && <AgentWorkspaceSettings workspaceId={workspace.id}/>}
     {agentWorkspaceView === 'schedules' && workspace && <AgentConversationSchedulesPanel workspaceId={workspace.id} activeBindingId={selected?.id} activeConversationCapabilities={selected?.capabilities} embedded showDetail={!routeBindingId && !activityPreviewBindingId} renderConversation={occurrence => {
       const item = occurrence.conversation ?? { id: occurrence.binding_id, display_title: occurrence.conversation_title, lifecycle: 'ACTIVE', streaming_callback_ready: true, created_at: occurrence.created_at, updated_at: occurrence.created_at };
@@ -10500,12 +10248,19 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       const latest = activity && Date.parse(activity.updated_at) >= Date.parse(item.updated_at) ? { ...item, ...activity } : item;
       return conversationRow({ ...latest, ...current, ...(pendingUnread ? { unread: pendingUnread.unread, unread_origin: pendingUnread.unreadOrigin } : {}) }, [], { allowDrag: false });
     }} onSelectSchedule={() => { setActivityPreviewBindingId(undefined); onNavigate('/agent/schedules'); }}/>}
-    {agentWorkspaceView === 'management' && <section className="agent-conversation-management-page" aria-label="会话管理"><ConversationManagementPage onOpenConversation={bindingId => { setAgentWorkspaceView('home'); selectConversation(bindingId); }} onRestored={({ conversation, bindingId, workDirectoryId }) => {
+    {agentWorkspaceView === 'management' && <section className="agent-conversation-management-page" aria-label="会话管理"><ConversationManagementPage onDeleted={({ workspaceId, bindingIds }) => reconcileArchivedConversations(workspaceId, new Set(bindingIds))} onDirectoryDeleted={({ workspaceId, workDirectoryId, bindingIds }) => {
+      reconcileArchivedConversations(workspaceId, new Set(bindingIds), workDirectoryId);
+      if (archiveSelectionRef.current.draftDirectoryId === workDirectoryId) setConversationDraft(undefined);
+    }} onArchived={({ workspaceId, workDirectoryId, bindingIds }) => {
+      reconcileArchivedConversations(workspaceId, new Set(bindingIds));
+      if (archiveSelectionRef.current.workspaceId === workspaceId) {
+        for (const bindingId of bindingIds) archivedConversationDirectoryIds.current.set(bindingId, workDirectoryId);
+      }
+    }} onRestored={({ bindingId, workDirectoryId }) => {
       const restoredIds = new Set(bindingId ? [bindingId] : [...archivedConversationDirectoryIds.current].filter(([, directoryId]) => directoryId === workDirectoryId).map(([id]) => id));
       setOptimisticallyRemovedConversationIds(current => new Set([...current].filter(id => !restoredIds.has(id))));
       for (const id of restoredIds) archivedConversationDirectoryIds.current.delete(id);
       if (workDirectoryId) setArchivedDirectoryIds(current => new Set([...current].filter(id => id !== workDirectoryId)));
-      if (conversation) revealRestoredConversation(conversation);
     }}/></section>}
     {selected && <ConversationStreamObserver workspaceId={workspace.id} bindingId={selected.id} enabled={streamEnabled} onEvent={onStreamEvent} onStatus={updateStreamStatus} onReconnect={onStreamReconnect}/>}
     {workspace && queuedMessageBindings(host, workspace.id).filter(bindingId => bindingId !== selected?.id).map(bindingId => (
@@ -10559,10 +10314,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         {sidebarListMode === 'activity'
           ? <section className="agent-workspace-activity" aria-label="活动会话"><header><div><span className="eyebrow">ACTIVITY</span><b>活动</b></div><button type="button" aria-label="返回工作区列表" title="返回工作区列表" onClick={() => { setActivityPreviewBindingId(undefined); setSidebarListMode('workspaces'); }}><ArrowLeft size={15}/></button></header>{activityConversations.length ? activityConversations.map(item => conversationRow(item, [], { allowDrag: false, workspaceName: activityWorkspaceName(item), onSelect: () => previewActivityConversation(item.id), onDoubleClick: () => openActivityConversation(item.id), onMarkRead: () => markConversationRead(item.id) })) : <p>没有正在运行或未读的会话。</p>}</section>
           : <>{pinnedConversations.length > 0 && <section className={`agent-workspace-pinned${pinnedConversationsCollapsed ? ' collapsed' : ''}`} aria-label="置顶会话"><header><button type="button" aria-label={`${pinnedConversationsCollapsed ? '展开' : '收起'}置顶会话`} aria-expanded={!pinnedConversationsCollapsed} aria-controls="agent-workspace-pinned-content" onClick={() => setPinnedConversationsCollapsed(!pinnedConversationsCollapsed)}><Pin size={13}/><span>置顶</span></button></header><div id="agent-workspace-pinned-content" hidden={pinnedConversationsCollapsed}>{pinnedConversations.map(item => conversationRow(item, pinnedConversations))}</div></section>}
-            <WorkspaceConversationGroup groupId="root" label="根工作区" conversationCount={rootConversations.length} hasMore={Boolean(conversationPagesByScope.__root__?.next_cursor)} loadingMore={loadingConversationScope === '__root__'} onLoadMore={() => loadMoreConversations('__root__')} collapsed={collapsedConversationGroups.has('root')} onCollapsedChange={collapsed => setConversationGroupCollapsed('root', collapsed)} restoredConversationCount={restoredConversationCounts.root} onRestoredConversationsVisible={() => markRestoredConversationsVisible('root')} revealConversationIndex={routedRootConversationIndex >= 0 ? routedRootConversationIndex : undefined} onRevealConversation={completeSidebarReveal} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ displayName: '根工作区' }, { restoreRecovery: true, selectStandaloneRoot: true })} onConfigureSession={runtimeWritable ? () => { setWorkspaceSessionConfigurationScope(null); setWorkspaceSessionConfigurationOpen(true); } : undefined}>
+            <WorkspaceConversationGroup groupId="root" label="根工作区" conversationCount={rootConversations.length} hasMore={Boolean(conversationPagesByScope.__root__?.next_cursor)} loadingMore={loadingConversationScope === '__root__'} onLoadMore={() => loadMoreConversations('__root__')} collapsed={collapsedConversationGroups.has('root')} onCollapsedChange={collapsed => setConversationGroupCollapsed('root', collapsed)} revealConversationIndex={routedRootConversationIndex >= 0 ? routedRootConversationIndex : undefined} onRevealConversation={completeSidebarReveal} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ displayName: '根工作区' }, { restoreRecovery: true, selectStandaloneRoot: true })} onConfigureSession={runtimeWritable ? () => { setWorkspaceSessionConfigurationScope(null); setWorkspaceSessionConfigurationOpen(true); } : undefined}>
               {visibleCount => <>{pendingBootstrapItem && !pendingBootstrap?.draft.workDirectoryId ? pendingBootstrapItem : recoverableDraftItem(undefined, '根工作区')}{rootConversations.slice(0, visibleCount).map(item => conversationRow(item, rootConversations))}</>}
             </WorkspaceConversationGroup>
-            {features.workDirectories && workDirectories.map(directory => { const group = conversationsForDirectory(directory.id); const routeIndex = sidebarReveal.expandCollapsed || !collapsedConversationGroups.has(directory.id) ? group.findIndex(item => item.id === pendingSidebarRevealBindingId) : -1; return <WorkspaceConversationGroup key={directory.id} groupId={directory.id} label={directory.display_name} conversationCount={group.length} hasMore={Boolean(conversationPagesByScope[directory.id]?.next_cursor)} loadingMore={loadingConversationScope === directory.id} onLoadMore={() => loadMoreConversations(directory.id)} draggable dragging={draggedWorkDirectoryId === directory.id} dropPosition={workDirectoryDropTarget?.id === directory.id ? (workDirectoryDropTarget.after ? 'after' : 'before') : undefined} onPointerDragStart={event => startPointerWorkDirectoryDrag(event, directory.id)} collapsed={collapsedConversationGroups.has(directory.id)} onCollapsedChange={collapsed => setConversationGroupCollapsed(directory.id, collapsed)} restoredConversationCount={restoredConversationCounts[directory.id]} onRestoredConversationsVisible={() => markRestoredConversationsVisible(directory.id)} revealConversationIndex={routeIndex >= 0 ? routeIndex : undefined} onRevealConversation={completeSidebarReveal} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ workDirectoryId: directory.id, displayName: directory.display_name }, { restoreRecovery: true })} onConfigureSession={runtimeWritable ? () => { setWorkspaceSessionConfigurationScope(directory.id); setWorkspaceSessionConfigurationOpen(true); } : undefined} onEdit={api.updateWorkDirectory && runtimeWritable ? () => setWorkDirectoryEditor(directory) : undefined} onArchive={api.archiveWorkDirectory && runtimeWritable ? () => void archiveWorkDirectory(directory) : undefined} onDelete={api.deleteWorkDirectory && runtimeWritable ? () => void removeWorkDirectory(directory) : undefined}>
+            {features.workDirectories && workDirectories.map(directory => { const group = conversationsForDirectory(directory.id); const routeIndex = sidebarReveal.expandCollapsed || !collapsedConversationGroups.has(directory.id) ? group.findIndex(item => item.id === pendingSidebarRevealBindingId) : -1; return <WorkspaceConversationGroup key={directory.id} groupId={directory.id} label={directory.display_name} conversationCount={group.length} hasMore={Boolean(conversationPagesByScope[directory.id]?.next_cursor)} loadingMore={loadingConversationScope === directory.id} onLoadMore={() => loadMoreConversations(directory.id)} draggable dragging={draggedWorkDirectoryId === directory.id} dropPosition={workDirectoryDropTarget?.id === directory.id ? (workDirectoryDropTarget.after ? 'after' : 'before') : undefined} onPointerDragStart={event => startPointerWorkDirectoryDrag(event, directory.id)} collapsed={collapsedConversationGroups.has(directory.id)} onCollapsedChange={collapsed => setConversationGroupCollapsed(directory.id, collapsed)} revealConversationIndex={routeIndex >= 0 ? routeIndex : undefined} onRevealConversation={completeSidebarReveal} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ workDirectoryId: directory.id, displayName: directory.display_name }, { restoreRecovery: true })} onConfigureSession={runtimeWritable ? () => { setWorkspaceSessionConfigurationScope(directory.id); setWorkspaceSessionConfigurationOpen(true); } : undefined} onEdit={api.updateWorkDirectory && runtimeWritable ? () => setWorkDirectoryEditor(directory) : undefined} onArchive={api.archiveWorkDirectory && runtimeWritable ? () => void archiveWorkDirectory(directory) : undefined} onDelete={api.deleteWorkDirectory && runtimeWritable ? () => void removeWorkDirectory(directory) : undefined}>
               {visibleCount => <>{pendingBootstrapItem && pendingBootstrap?.draft.workDirectoryId === directory.id ? pendingBootstrapItem : recoverableDraftItem(directory.id, directory.display_name)}{group.slice(0, visibleCount).map(item => conversationRow(item, group))}</>}
             </WorkspaceConversationGroup>; })}<div ref={workspaceGroupAnchorSpacer} aria-hidden="true"/></>}
       </div>
@@ -10585,14 +10340,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       <div className="agent-workbench-content">
       {runtime?.state === 'RECOVERING' && <section className="agent-runtime-recover"><LoaderCircle size={18}/><div><b>运行环境正在恢复</b><span>{runtime.message || '历史会话和工作区文件仍可查看；恢复完成后可继续发送消息和使用终端。'}</span></div></section>}
       {conversationSnapshotUnavailable ? <div className="conversation-surface-empty"><b>会话暂时无法加载</b></div> : conversationInitialLoading ? <div className="conversation-surface-empty" role="status"><LoaderCircle className="conversation-activity-spin" size={16}/><b>正在加载会话</b><span>正在读取最新消息与会话状态…</span></div> : selected || conversationDraft ? <ConversationSurface
-        key={selected?.id ?? conversationDraft?.id}
+        key={`transcript:${selected?.id ?? conversationDraft?.id}`}
         events={displayedEvents}
         isGenerating={conversationVisuallyActive}
         isPaused={conversationActivity.state === 'paused'}
         isFailed={nativeFailureSettled}
         pausing={conversationActivity.state === 'pausing'}
-        reconnectingAttempt={reconnectingCurrentConversation ? flowWeaveReconnect?.attempt : undefined}
-        reconnectingMaxAttempts={FLOWWEAVE_RECONNECT_MAX_ATTEMPTS}
         emptyResponseRecoveryActive={emptyResponseRecoveryActive}
         modelRetryStatus={modelRetryStatus}
         historyPending={Boolean(selected && historyLoadingBindingId === selected.id)}
@@ -10635,6 +10388,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         onSidebarQuestion={selected ? reference => setSidebarQuestions(current => ({
           ...current,
           [selected.id]: {
+            requestKey: randomId(),
             sourceBindingId: selected.id,
             reference: {
               source_binding_id: reference.sourceBindingId,
@@ -10651,7 +10405,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         monitoring={eventsQuery.data?.monitoring}
         connectionState={inputReadinessQuery.isError ? 'unavailable' : streamStatus === 'recovering' ? 'recovering' : streamStatus === 'connecting' ? 'checking' : inputReadinessQuery.isFetching && !inputReadinessQuery.data ? 'checking' : 'connected'}
       /> : <div className="agent-workbench-empty"><Bot size={32}/><b>新建会话开始协作</b><span>{features.workDirectories ? '每个会话共享同一工作区，但保留独立的对话与事件记录。' : '会话固定在当前节点 Attempt 的隔离工作目录。'}</span><button className="primary" disabled={!canOpenConversation} onClick={() => openConversationDraft({ displayName: features.workDirectories ? '根工作区' : '节点工作目录' }, { selectStandaloneRoot: features.workDirectories })}><Plus size={15}/>新建会话</button></div>}
-      {visibleError && <ConversationErrorNotice key={composerScope} error={visibleError} onDismiss={dismissOperationError} transient={visibleError === operationError} onRetry={visibleError === hydrationError ? retryConversationHydration : undefined}/>}
+      {visibleError && <ConversationErrorNotice key={`error:${composerScope}`} error={visibleError} onDismiss={dismissOperationError} transient={visibleError === operationError} onRetry={visibleError === hydrationError ? retryConversationHydration : undefined}/>}
       </div>
       {(selected || conversationDraft) && runtime?.state !== 'RECOVERING' && !conversationInitialLoading && !conversationSnapshotUnavailable && <div className="agent-composer-dock">
         <div className={`agent-composer ${conversationVisuallyActive || pendingConfirmation ? 'busy' : ''}`}>
@@ -10663,6 +10417,16 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
             const removable = true;
             return <article
               key={message.id}
+              draggable={editable && queueModeEnabled}
+              onDragStart={event => {
+                if (!editable || !queueModeEnabled || !(event.target instanceof Element) || !event.target.closest('.queue-drag-handle')) {
+                  event.preventDefault();
+                  return;
+                }
+                event.dataTransfer.effectAllowed = 'move';
+                event.dataTransfer.setData('text/plain', message.id);
+                setDraggedQueuedMessageId(message.id);
+              }}
               onDragOver={event => {
                 if (editable && queueModeEnabled && draggedQueuedMessageId && draggedQueuedMessageId !== message.id) event.preventDefault();
               }}
@@ -10672,13 +10436,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
                 if (sourceId && editable && queueModeEnabled) moveQueuedMessage(sourceId, message.id);
                 setDraggedQueuedMessageId(undefined);
               }}
+              onDragEnd={() => setDraggedQueuedMessageId(undefined)}
               className={draggedQueuedMessageId === message.id ? 'dragging' : undefined}
             >
-              <button type="button" draggable={editable && queueModeEnabled} className="queue-drag-handle" aria-label={`拖动排队消息 ${index + 1} 以调整顺序`} title="拖动调整顺序" disabled={!editable || !queueModeEnabled} tabIndex={-1} onDragStart={event => {
-                event.dataTransfer.effectAllowed = 'move';
-                event.dataTransfer.setData('text/plain', message.id);
-                setDraggedQueuedMessageId(message.id);
-              }} onDragEnd={() => setDraggedQueuedMessageId(undefined)}><GripVertical size={14}/></button>
+              <button type="button" className="queue-drag-handle" aria-label={`拖动排队消息 ${index + 1} 以调整顺序`} title="拖动调整顺序" disabled={!editable || !queueModeEnabled} tabIndex={-1}><GripVertical size={14}/></button>
               <small>{index + 1}</small>
               <p>{message.content || (message.references.length ? `会话引用 ${message.references.length} 条` : message.workspaceReferences?.length ? `工作区引用 ${message.workspaceReferences.length} 条` : '图片附件')}</p>
               <span>{['等待发送', message.items.length ? `${message.items.length} 个附件` : '', message.references.length ? `${message.references.length} 条会话引用` : '', message.workspaceReferences?.length ? `${message.workspaceReferences.length} 条工作区引用` : ''].filter(Boolean).join(' · ')}</span>
@@ -10694,9 +10455,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
             </article>;
           })}
         </section>}
-                  <AgentComposerInput key={composerScope ?? 'composer'} ref={composerRef} initialDraft={composerDraftRef.current} scope={composerScope} suggestions={visibleComposerSuggestions} placeholder={goalModeEnabled ? '输入验收目标，发送后将启动目标循环…' : pendingConfirmation ? '请先处理上方工具确认…' : composerControlMode === 'condensing' ? '可继续输入，发送后将排队…' : composerControlMode === 'reconciling' ? '正在同步 Agent 状态…' : composerControlMode === 'read-only' ? '当前会话不可编辑…' : '给 Agent 发消息…'} disabled={!composerControl.editable} onDraftChange={setComposerDraft} onContentPresenceChange={onComposerContentPresenceChange} onDraftPersist={persistComposerDraft} onPaste={event => { if (!features.attachments) return; const files = transferredFiles(event.clipboardData); if (!files.length) return; event.preventDefault(); files.forEach(startAttachmentUpload); }} onSubmit={content => goalModeEnabled ? startGoalFromComposer(content) : enqueueDraft(content)} onDirectSubmit={content => goalModeEnabled ? startGoalFromComposer(content) : sendDraftDirectly(content)} onManageCapabilities={features.capabilities && (selected || features.draftCapabilitySelection) ? () => setCapabilityManagerOpen(true) : undefined} onNativeAction={action => { if (action === 'CONDENSE' && canCondense && !condense.isPending && workspace && selected) condense.mutate({ workspaceId: workspace.id, bindingId: selected.id }); }} onWorkspaceReferenceSelected={() => { setWorkspaceReferenceQuery(''); setWorkspaceReferencePickerOpen(true); }}/>
+                  <AgentComposerInput key={composerScope ?? 'composer'} ref={composerRef} initialDraft={composerDraftRef.current} scope={composerScope} suggestions={visibleComposerSuggestions} placeholder={pendingConfirmation ? '请先处理上方工具确认…' : composerControlMode === 'condensing' ? '可继续输入，发送后将排队…' : composerControlMode === 'reconciling' ? '正在同步 Agent 状态…' : composerControlMode === 'read-only' ? '当前会话不可编辑…' : '给 Agent 发消息…'} disabled={!composerControl.editable} onDraftChange={setComposerDraft} onContentPresenceChange={onComposerContentPresenceChange} onDraftPersist={persistComposerDraft} onPaste={event => { if (!features.attachments) return; const files = transferredFiles(event.clipboardData); if (!files.length) return; event.preventDefault(); files.forEach(startAttachmentUpload); }} onSubmit={enqueueDraft} onDirectSubmit={sendDraftDirectly} onManageCapabilities={features.capabilities && (selected || features.draftCapabilitySelection) ? () => setCapabilityManagerOpen(true) : undefined} onNativeAction={action => { if (action === 'CONDENSE' && canCondense && !condense.isPending && workspace && selected) condense.mutate({ workspaceId: workspace.id, bindingId: selected.id }); }} onWorkspaceReferenceSelected={() => { setWorkspaceReferenceQuery(''); setWorkspaceReferencePickerOpen(true); }}/>
         <div className="agent-composer-attachments">
-        {(features.attachments && (attachments.length > 0 || pendingAttachments.some(item => item.scope === composerScope)) || references.length > 0 || workspaceReferences.length > 0 || composerAnnotations.length > 0) && <div className="agent-attachments" aria-label="已添加的附件、会话引用和工作区引用">{features.attachments && <>{attachments.map((item, index) => <span key={item.path}><button type="button" className="agent-attachment-open" title={`预览附件：${item.filename}`} onClick={() => previewAttachment(item)}>{composerAttachmentImageUrl(item) ? <img src={composerAttachmentImageUrl(item)} alt=""/> : <FileTypeIcon filename={item.filename} mimeType={item.mime_type} size={16}/>}<em>{item.filename}</em></button><button type="button" className="agent-attachment-alias" aria-label={`引用附件 ${index + 1}`} title={`插入 @附件${index + 1}`} onClick={() => insertAttachmentAlias(item)}>@</button><button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => {
+        {(features.attachments && (attachments.length > 0 || pendingAttachments.some(item => item.scope === composerScope)) || references.length > 0 || composerAnnotations.length > 0) && <div className="agent-attachments" aria-label="已添加的附件和会话引用">{features.attachments && <>{attachments.map((item, index) => <span key={item.path}><button type="button" className="agent-attachment-open" title={`预览附件：${item.filename}`} onClick={() => previewAttachment(item)}>{composerAttachmentImageUrl(item) ? <img src={composerAttachmentImageUrl(item)} alt=""/> : <FileTypeIcon filename={item.filename} mimeType={item.mime_type} size={16}/>}<em>{item.filename}</em></button><button type="button" className="agent-attachment-alias" aria-label={`引用附件 ${index + 1}`} title={`插入 @附件${index + 1}`} onClick={() => insertAttachmentAlias(item)}>@</button><button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => {
   const remove = () => setAttachments(all => all.filter(candidate => candidate.path !== item.path));
   if (selected && workspace) {
     void api.deletePendingAttachment(workspace.id, selected.id, item.path).then(remove).catch(error => reportOperationError(selected.id, error));
@@ -10704,7 +10465,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     remove();
     if (conversationDraft && workspace) void api.deleteDraftAttachments(workspace.id, conversationDraft.id, item.path).catch(() => undefined);
   }
-}}>×</button></span>)}{pendingAttachments.filter(item => item.scope === composerScope).map(item => <span key={item.id} className={`agent-pending-attachment ${item.state}`} title={item.state === 'failed' ? '附件上传失败，请重试或删除。' : `正在上传 ${item.progress}%`}><span className="agent-attachment-open">{item.previewUrl ? <img src={item.previewUrl} alt=""/> : <FileTypeIcon filename={item.filename} mimeType={item.mimeType} size={16}/>}<em>{item.filename}</em>{item.state === 'uploading' && <small>{item.progress}%</small>}{item.state === 'failed' && <span className="agent-attachment-retry-overlay"><button type="button" onClick={() => retryPendingAttachment(item.id)}>重试</button></span>}</span>{item.state === 'uploading' && <i className="agent-attachment-progress" style={{ '--upload-progress': `${item.progress}%` } as CSSProperties}/>}<button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => removePendingAttachment(item.id)}>×</button></span>)}</>}<ComposerConversationReferenceList references={references} onOpen={reference => selectConversation(reference.sourceBindingId, { revealSidebar: true })} onRemove={reference => setReferences(current => current.filter(item => item !== reference))}/>{workspaceReferences.map((reference, index) => <span key={workspaceReferenceKey(reference)} title={reference.path}><button type="button" className="agent-attachment-open" title={`预览本地引用：${reference.display_name}`} onClick={() => previewWorkspaceReference(reference)}>{reference.kind === 'directory' ? <Folder size={16}/> : <FileTypeIcon filename={reference.display_name} mimeType="text/plain" size={16}/>}<em>{reference.display_name}</em></button><button type="button" className="agent-attachment-alias" aria-label={`引用本地文件 ${index + 1}`} title={`插入 @本地文件${index + 1}`} onClick={() => insertWorkspaceReferenceAlias(reference)}>@</button><button type="button" className="agent-attachment-remove" aria-label={'移除工作区引用 ' + reference.display_name} onClick={() => setWorkspaceReferences(current => current.filter(item => workspaceReferenceKey(item) !== workspaceReferenceKey(reference)))}>×</button></span>)}{(selected || conversationDraft) && <ComposerAnnotationList annotations={composerAnnotations} currentBindingId={selected?.id ?? conversationDraft?.id} onLocate={locateAnnotation} onRemove={annotation => setComposerAnnotations(current => current.filter(item => item.id !== annotation.id))} onUpdate={(annotation, comment) => void updateAnnotation(annotation, comment)}/>}</div>}
+}}>×</button></span>)}{pendingAttachments.filter(item => item.scope === composerScope).map(item => <span key={item.id} className={`agent-pending-attachment ${item.state}`} title={item.state === 'failed' ? '附件上传失败，请重试或删除。' : `正在上传 ${item.progress}%`}><span className="agent-attachment-open">{item.previewUrl ? <img src={item.previewUrl} alt=""/> : <FileTypeIcon filename={item.filename} mimeType={item.mimeType} size={16}/>}<em>{item.filename}</em>{item.state === 'uploading' && <small>{item.progress}%</small>}{item.state === 'failed' && <span className="agent-attachment-retry-overlay"><button type="button" onClick={() => retryPendingAttachment(item.id)}>重试</button></span>}</span>{item.state === 'uploading' && <i className="agent-attachment-progress" style={{ '--upload-progress': `${item.progress}%` } as CSSProperties}/>}<button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => removePendingAttachment(item.id)}>×</button></span>)}</>}<ComposerConversationReferenceList references={references} onOpen={reference => selectConversation(reference.sourceBindingId, { revealSidebar: true })} onRemove={reference => setReferences(current => current.filter(item => item !== reference))}/>{(selected || conversationDraft) && <ComposerAnnotationList annotations={composerAnnotations} currentBindingId={selected?.id ?? conversationDraft?.id} onLocate={locateAnnotation} onRemove={annotation => setComposerAnnotations(current => current.filter(item => item.id !== annotation.id))} onUpdate={(annotation, comment) => void updateAnnotation(annotation, comment)}/>}</div>}
+        {workspaceReferences.length > 0 && <div className="agent-attachments agent-workspace-references" aria-label="已添加的工作区引用">{workspaceReferences.map((reference, index) => <span key={workspaceReferenceKey(reference)} title={reference.path}><button type="button" className="agent-attachment-open" title={`预览本地引用：${reference.display_name}`} onClick={() => previewWorkspaceReference(reference)}>{reference.kind === 'directory' ? <Folder size={16}/> : <FileTypeIcon filename={reference.display_name} mimeType="text/plain" size={16}/>}<em>{reference.display_name}</em></button><button type="button" className="agent-attachment-alias" aria-label={`引用本地文件 ${index + 1}`} title={`插入 @本地文件${index + 1}`} onClick={() => insertWorkspaceReferenceAlias(reference)}>@</button><button type="button" className="agent-attachment-remove" aria-label={'移除工作区引用 ' + reference.display_name} onClick={() => setWorkspaceReferences(current => current.filter(item => workspaceReferenceKey(item) !== workspaceReferenceKey(reference)))}>×</button></span>)}</div>}
         </div>
         <footer>
           <div className="agent-composer-context">
@@ -10725,7 +10487,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
             <Folder size={16}/><span>{currentWorkspaceName}</span>{workspacePathCopied && <small aria-live="polite">已复制</small>}
           </button>
           <ConversationTaskPlan events={displayedEvents} isGenerating={taskPlanLayoutActive} conversationScope={selected?.id ?? conversationDraft?.id}/>
-          {selected && <ConversationGoalMode goalStatus={latestGoalStatus} enabled={goalModeEnabled} canEnable={canStartGoal} pending={goalControl.isPending} onToggle={() => setGoalModeEnabled(current => !current)} onControl={action => goalControl.mutate({ action })} onLocate={locateGoalMessage}/>}
         </div>
       </div>}
       {conversationDropActive && <div className="agent-workbench-drop-overlay" role="status" aria-live="polite"><div><Plus size={22}/><b>松开以添加到当前会话</b><span>支持附件、工作区文件和会话引用</span></div></div>}
@@ -10736,15 +10497,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       onFullScreenConversationActiveChange={setFullScreenConversationActive}
       onClose={() => {
         setFileSelectionReference(undefined);
-        const sidebarBindingId = sidebarQuestions[workspaceToolScopeKey]?.sidebarBindingId;
-        setSidebarQuestions(current => {
-          if (!current[workspaceToolScopeKey]) return current;
-          const next = { ...current };
-          delete next[workspaceToolScopeKey];
-          return next;
-        });
         setDrawerOpen(false);
-        if (sidebarBindingId) void agentWorkspaceApi.deleteAgentSidebarConversation(workspace.id, sidebarBindingId).catch(error => setOperationError(error instanceof Error ? error : new Error('侧边聊天关闭失败，请稍后重试。')));
       }}
       onAnnotateFileSelection={(selected && canWrite) || conversationDraft ? (path, selection, quote) => void createAnnotation('WORKSPACE_FILE_RANGE', { path, selection, quote }) : undefined}
       highlightedFileSelection={fileSelectionReference}
@@ -10774,7 +10527,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       sessionStopped={sessionStopped}
       sidebarQuestion={sidebarQuestions[workspaceToolScopeKey]}
       onSidebarBindingCreated={(sourceBindingId, sidebarBindingId) => setSidebarQuestions(current => current[sourceBindingId] ? { ...current, [sourceBindingId]: { ...current[sourceBindingId], sidebarBindingId } } : current)}
-      onOpenSidebarQuestion={selected ? () => setSidebarQuestions(current => ({ ...current, [selected.id]: { sourceBindingId: selected.id } })) : undefined}
+      onOpenSidebarQuestion={selected ? () => setSidebarQuestions(current => ({ ...current, [selected.id]: { ...current[selected.id], requestKey: randomId(), sourceBindingId: selected.id } })) : undefined}
       onPreviewAttachment={previewAttachment}
       onOpenConversationReference={openConversationReference}
       onCloseSidebarQuestion={() => {

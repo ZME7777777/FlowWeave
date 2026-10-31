@@ -399,7 +399,7 @@ test('case detail saves materials workspace ordered run cards and model capabili
   for (const count of [1, 0]) {
     await page.getByRole('button', { name: '配置会话', exact: true }).click();
     const credentialDialog = page.getByRole('dialog', { name: '会话配置', exact: true });
-    await credentialDialog.getByRole('button', { name: '认证', exact: true }).click();
+    await credentialDialog.getByRole('tab', { name: '认证', exact: true }).click();
     await expect(credentialDialog.getByRole('button', { name: /场景认证 1/ })).toHaveAttribute('aria-pressed', 'true');
     await expect(credentialDialog.getByRole('button', { name: /场景认证 2/ })).toHaveAttribute('aria-pressed', count === 1 ? 'true' : 'false');
     await credentialDialog.getByRole('button', { name: count === 1 ? /场景认证 2/ : /场景认证 1/ }).click();
@@ -411,7 +411,7 @@ test('case detail saves materials workspace ordered run cards and model capabili
     await openCasePanel(page, 'Agent 配置');
   }
   await page.getByRole('button', { name: '配置会话', exact: true }).click();
-  await page.getByRole('dialog', { name: '会话配置', exact: true }).getByRole('button', { name: '认证', exact: true }).click();
+  await page.getByRole('dialog', { name: '会话配置', exact: true }).getByRole('tab', { name: '认证', exact: true }).click();
   await expect(page.getByRole('button', { name: /场景认证 1/ })).toHaveAttribute('aria-pressed', 'false');
   await expect(page.getByRole('button', { name: /场景认证 2/ })).toHaveAttribute('aria-pressed', 'false');
   await page.getByRole('button', { name: '关闭会话配置', exact: true }).click();
@@ -1198,17 +1198,13 @@ for (const width of [1440, 1024]) {
     await main.locator('.agent-workbench-header').dispatchEvent('dragenter', { dataTransfer: files });
     await expect(overlay).toBeVisible();
     await main.locator('.agent-workbench-header').dispatchEvent('drop', { dataTransfer: files });
-    const composerReferences = main.getByLabel('已添加的附件、会话引用和工作区引用');
-    await expect(composerReferences).toContainText('main.ts');
-    await expect(main.getByLabel('已添加的工作区引用')).toHaveCount(0);
-    await expect(composerReferences.getByText('工作区文件 · 本地路径引用')).toHaveCount(0);
-    const localReference = composerReferences.getByTitle('预览本地引用：main.ts', { exact: true }).locator('..');
-    await expect(localReference).toHaveCSS('max-width', '230px');
-    await expect(localReference).toHaveCSS('white-space', 'nowrap');
-    await composerReferences.getByRole('button', { name: '引用本地文件 1', exact: true }).click();
+    const workspaceReferences = main.getByLabel('已添加的工作区引用');
+    await expect(workspaceReferences).toContainText('main.ts');
+    await expect(workspaceReferences.getByText('工作区文件 · 本地路径引用')).toHaveCount(0);
+    await workspaceReferences.getByRole('button', { name: '引用本地文件 1', exact: true }).click();
     await expect(input).toHaveValue('拖放时保留草稿@本地文件1');
-    await composerReferences.getByRole('button', { name: '移除工作区引用 main.ts', exact: true }).click();
-    await expect(composerReferences.getByRole('button', { name: '移除工作区引用 main.ts', exact: true })).toHaveCount(0);
+    await workspaceReferences.getByRole('button', { name: '移除工作区引用 main.ts', exact: true }).click();
+    await expect(workspaceReferences).toHaveCount(0);
     await expect(main.getByRole('button', { name: '移除附件 main.ts', exact: true })).toHaveCount(0);
     await input.dispatchEvent('dragenter', { dataTransfer: transfer });
     await main.dispatchEvent('dragleave', { dataTransfer: transfer });
@@ -1550,8 +1546,7 @@ test('workspace directory search browses one level at a time independently of ch
   await creator.screenshot({ path: test.info().outputPath('directory-path-browsing.png') });
   await browse('frontend/src/nested').click();
   await expect(search).toHaveValue('frontend/src/nested/');
-  await expect(creator.getByText('此目录没有子目录。')).toHaveCount(0);
-  await expect(creator.getByRole('button', { name: '收起目录 frontend/src/nested', exact: true })).toHaveCount(0);
+  await expect(creator.getByText('此目录没有子目录。')).toBeVisible();
   await browse('frontend/src/nested').click();
   await expect(search).toHaveValue('frontend/src/');
   await checkbox('frontend/src').uncheck();
@@ -1768,19 +1763,23 @@ test('scheduled session shows session configuration and expands additional runs'
 });
 
 for (const mode of ['draft', 'existing', 'preset'] as const) {
-  test(`platform-managed history MCP stays hidden in ${mode} configuration`, async ({ page }) => {
+  test(`builtin history MCP stays selected and locked in ${mode} configuration`, async ({ page }) => {
     await openWorkspace(page);
-    await page.route('**/api/v1/user-configurable-capabilities', route => json(route, [
+    // The published server is represented once by its built-in row, even
+    // when a frozen version and a newer catalog version are both present.
+    await page.route('**/api/v1/capabilities', route => json(route, [
+      { id: 'history-v2', capability_key: 'flowweave-reference-history', capability_type: 'MCP', is_latest: true },
       { id: 'optional-skill', capability_key: '可选技能', capability_type: 'SKILL', is_latest: true },
     ]));
+    await page.route('**/api/v1/capability-collections', route => json(route, [{ id: 'builtin-filter-collection', name: '测试技能组合', members: [{ id: 'optional-skill', capability_key: '可选技能', capability_type: 'SKILL' }] }]));
     let registrations = 0;
     await page.route('**/capabilities/batch', route => { registrations += 1; return json(route, {}); });
-    await page.route('**/mcp-readiness', () => { throw new Error('Hidden MCP must not use generic credential-free probing'); });
+    await page.route('**/mcp-readiness', () => { throw new Error('Built-in MCP must not use generic credential-free probing'); });
     if (mode === 'existing') {
       await page.route('**/api/v1/agent-workspaces/schedule-workspace/conversations/scheduled-conversation', route => json(route, {
         id: 'scheduled-conversation', lifecycle: 'ACTIVE', display_title: '日报会话',
         streaming_callback_ready: true, write_available: true, created_at: now, updated_at: now,
-        capabilities: [],
+        capabilities: [{ id: 'history-v1', capability_type: 'MCP', capability_key: 'flowweave-reference-history', digest: 'frozen-digest' }],
       }));
       await page.goto('/agent/conversations/scheduled-conversation');
       await page.getByRole('button', { name: '会话配置', exact: true }).click();
@@ -1792,15 +1791,42 @@ for (const mode of ['draft', 'existing', 'preset'] as const) {
       await page.getByRole('button', { name: '新会话配置', exact: true }).click();
     }
     const dialog = page.getByRole('dialog', { name: '会话配置', exact: true });
-    await expect(dialog.getByText('会话历史查询', { exact: true })).toHaveCount(0);
-    await expect(dialog.getByText('flowweave-reference-history', { exact: true })).toHaveCount(0);
-    await dialog.getByRole('button', { name: 'MCP', exact: true }).click();
-    await expect(dialog.getByText('没有匹配的已发布能力。', { exact: true })).toBeVisible();
-    await dialog.getByPlaceholder('搜索名称、说明或文件…').fill('history');
-    await expect(dialog.getByText('没有匹配的已发布能力。', { exact: true })).toBeVisible();
-    await dialog.getByPlaceholder('搜索名称、说明或文件…').fill('');
+    const builtin = dialog.getByRole('button', { name: '会话历史查询', exact: true });
+    await expect(builtin).toHaveCount(1);
+    await expect(builtin).toBeDisabled();
+    await expect(builtin).toHaveAttribute('aria-pressed', 'true');
+    await expect(builtin.locator('em')).toHaveText('内置');
+    await expect(builtin.locator('small')).toHaveText('工具：read_referenced_conversation · 按授权检索引用会话的历史内容');
+    await expect(builtin.locator('i svg')).toHaveCount(1);
+    await expect(dialog.locator('.agent-capability-list > button').last()).toHaveAccessibleName('会话历史查询');
+    await dialog.getByRole('button', { name: /^Skill 组合筛选/ }).click();
+    await page.getByRole('checkbox', { name: '测试技能组合', exact: true }).click();
+    await page.keyboard.press('Escape');
+    await expect(builtin).toHaveCount(0);
+    for (const name of ['skill', 'plugin', 'context', 'agent', 'hook']) {
+      await dialog.getByRole('button', { name, exact: true }).click();
+      await expect(builtin).toHaveCount(0);
+    }
     await dialog.getByRole('button', { name: 'all', exact: true }).click();
-    await expect(dialog.getByText('可选技能', { exact: true })).toBeVisible();
+    await expect(builtin).toHaveCount(0);
+    await dialog.getByRole('button', { name: /^Skill 组合筛选/ }).click();
+    await page.getByRole('checkbox', { name: '测试技能组合', exact: true }).click();
+    await page.keyboard.press('Escape');
+    await expect(builtin).toBeVisible();
+    await dialog.getByRole('button', { name: '选择筛选结果（1）', exact: true }).click();
+    await dialog.getByRole('button', { name: '取消选择筛选结果', exact: true }).click();
+    await dialog.getByRole('button', { name: '只看已选', exact: true }).click();
+    await expect(builtin).toBeVisible();
+    await expect(dialog.locator('.agent-capability-list > button')).toHaveCount(1);
+    await dialog.getByRole('button', { name: 'MCP', exact: true }).click();
+    await expect(builtin).toBeVisible();
+    await dialog.getByPlaceholder('搜索名称、说明或文件…').fill('history');
+    await expect(builtin).toBeVisible();
+    await dialog.getByPlaceholder('搜索名称、说明或文件…').fill('不存在的能力');
+    await expect(builtin).toHaveCount(0);
+    await dialog.getByPlaceholder('搜索名称、说明或文件…').fill('');
+    await expect(builtin).toBeVisible();
+    await dialog.screenshot({ path: `../../.tmp/fr656-${mode}.png` });
     await dialog.getByRole('button', { name: mode === 'existing' ? '保存' : mode === 'preset' ? '保存会话配置' : '用于新建会话', exact: true }).click();
     await expect(dialog).toHaveCount(0);
     expect(registrations).toBe(0);
@@ -1817,8 +1843,8 @@ test('capability configuration toggles visible selections and filters to selecte
   const selectVisible = dialog.getByRole('button', { name: '选择筛选结果（2）', exact: true });
   await expect(selectVisible).toHaveAttribute('aria-pressed','false');
   await expect(selectVisible.locator('svg')).toHaveClass(/lucide-square$/);
-  await expect(dialog.getByText(/已选择 \d+ 项/, { exact: true })).toHaveCount(0);
   await selectVisible.click();
+  await expect(dialog.locator('.agent-capability-list > button.selected')).toHaveCount(3);
   await expect(dialog.getByRole('button', { name: '取消选择筛选结果', exact: true })).toBeVisible();
   await expect(dialog.getByRole('button', { name: '取消选择筛选结果', exact: true })).toHaveAttribute('aria-pressed','true');
   await expect(dialog.getByRole('button', { name: '取消选择筛选结果', exact: true }).locator('svg')).toHaveClass(/lucide-square-check/);
@@ -1830,7 +1856,8 @@ test('capability configuration toggles visible selections and filters to selecte
 
   await dialog.getByRole('button', { name: '取消选择筛选结果', exact: true }).click();
   await expect(dialog.getByRole('button', { name: '会话历史查询', exact: true })).toBeDisabled();
-  await expect(dialog.getByText(/已选择 \d+ 项/, { exact: true })).toHaveCount(0);
+  await expect(dialog.getByRole('button', { name: '会话历史查询', exact: true })).toContainText('read_referenced_conversation');
+  await expect(dialog.locator('.agent-capability-list > button.selected')).toHaveCount(1);
   await expect(dialog.locator('.agent-capability-select-visible')).toHaveAttribute('aria-pressed','false');
   await expect(dialog.locator('.agent-capability-select-visible svg')).toHaveClass(/lucide-square$/);
   await expect(dialog.getByRole('button', { name: '显示全部能力', exact: true })).toBeVisible();
@@ -1859,43 +1886,23 @@ for (const mode of ['create', 'edit'] as const) {
     }
     await page.getByRole('button', { name: /配置会话/ }).click();
     const dialog = page.getByRole('dialog', { name: '会话配置', exact: true });
-    const configNavigation = dialog.getByRole('navigation', { name: '会话配置分类' });
-    await expect(configNavigation.getByRole('button', { name: '能力', exact: true })).toHaveAttribute('aria-current', 'page');
-    const collectionTrigger = dialog.getByRole('button', { name: 'Skill 组合', exact: true });
-    await expect(dialog.getByRole('region', { name: 'Skill 组合筛选' })).toHaveCount(0);
-    await collectionTrigger.click();
-    await expect(dialog.getByRole('region', { name: 'Skill 组合筛选' })).toBeVisible();
     await dialog.getByRole('button', { name: '技能组合', exact: true }).click();
-    await dialog.getByRole('button', { name: '清除筛选', exact: true }).click();
-    await collectionTrigger.click();
-    await expect(dialog.getByRole('region', { name: 'Skill 组合筛选' })).toHaveCount(0);
     for (const [type, tab] of types.map((type, index) => [type, ['MCP', 'context', 'plugin', 'skill', 'agent', 'hook'][index]])) {
       await dialog.getByRole('button', { name: tab, exact: true }).click();
       if (mode === 'edit' && ['MCP', 'CONTEXT'].includes(type)) {
-        const matchingRows = dialog.locator('.agent-capability-list > button').filter({ has: page.locator('b', { hasText: new RegExp(`^预设${type}$`) }) });
-        const old = type === 'CONTEXT'
-          ? matchingRows.filter({ has: page.locator('.agent-capability-version-badge') })
-          : matchingRows.filter({ has: page.locator('.agent-selection-checkbox svg') });
-        if (type === 'MCP') await expect(matchingRows).toHaveCount(2);
+        const old = dialog.getByRole('button', { name: new RegExp(`预设${type} · 已选版本 v1`) });
         await expect(old).toHaveClass(/selected/);
         await expect(old).toBeEnabled();
-        if (type === 'CONTEXT') {
-          await expect(dialog.locator('.agent-capability-list > button')).toHaveCount(1);
-          await expect(old.locator('.agent-capability-version-badge')).toHaveText('v1');
-          await expect(old.locator('.agent-capability-sync')).toHaveCount(0);
-        }
         await old.click();
-        if (type === 'CONTEXT') await expect(matchingRows.filter({ has: page.locator('.agent-capability-version-badge') })).toHaveCount(0);
+        await expect(old).not.toHaveClass(/selected/);
       }
-      const current = dialog.locator('.agent-capability-list > button').filter({ has: page.locator('b', { hasText: new RegExp(`^预设${type}$`) }) });
-      await current.first().click();
+      await dialog.locator('.agent-capability-list > button').filter({ has: page.locator('b', { hasText: new RegExp(`^预设${type}$`) }) }).click();
     }
-    await dialog.getByRole('button', { name: '认证', exact: true }).click();
-    await expect(configNavigation.getByRole('button', { name: '认证', exact: true })).toHaveAttribute('aria-current', 'page');
+    await dialog.getByRole('tab', { name: '认证', exact: true }).click();
     if (mode === 'edit') await dialog.getByRole('button', { name: '全选认证', exact: true }).click();
-    await expect(dialog.getByText('已选择 2 项认证', { exact: true })).toBeVisible();
+    await expect(dialog.locator('.agent-capability-list > button.selected')).toHaveCount(2);
     await dialog.getByRole('button', { name: '取消全选认证', exact: true }).click();
-    await expect(dialog.getByText('已选择 0 项认证', { exact: true })).toBeVisible();
+    await expect(dialog.locator('.agent-capability-list > button.selected')).toHaveCount(0);
     await dialog.getByRole('button', { name: /认证1/ }).click();
     const credentialMark = dialog.locator('.agent-capability-list > button i').first();
     expect(await credentialMark.evaluate(element => { const s = getComputedStyle(element); return [s.width, s.height, s.borderRadius]; })).toEqual(['16px', '16px', '4px']);
@@ -1918,8 +1925,8 @@ for (const mode of ['create', 'edit'] as const) {
     await page.getByRole('button', { name: '编辑', exact: true }).click();
     await page.getByRole('button', { name: /配置会话/ }).click();
     await expect(dialog.locator('.agent-capability-list > button.selected')).toHaveCount(7);
-    await dialog.getByRole('button', { name: '认证', exact: true }).click();
-    await expect(dialog.getByText('已选择 1 项认证', { exact: true })).toBeVisible();
+    await dialog.getByRole('tab', { name: '认证', exact: true }).click();
+    await expect(dialog.locator('.agent-capability-list > button.selected')).toHaveCount(1);
   });
 }
 
@@ -1937,17 +1944,13 @@ test('credential select all excludes synced credentials and disables itself when
   await page.goto('/agent/conversations/scheduled-conversation');
   await page.getByRole('button', { name: '会话配置', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: '会话配置' });
-  await dialog.getByRole('button', { name: '认证', exact: true }).click();
-  const credentialHeading = dialog.locator('.agent-credential-sync-heading');
-  const selectAllCredentials = dialog.getByRole('button', { name: '全选认证', exact: true });
-  expect(await credentialHeading.evaluate(element => getComputedStyle(element).fontSize)).toBe('11px');
-  expect(await selectAllCredentials.evaluate(element => { const style = getComputedStyle(element); return [style.width, style.height]; })).toEqual(['22px', '22px']);
+  await dialog.getByRole('tab', { name: '认证', exact: true }).click();
   await expect(dialog.getByRole('button', { name: '同步认证0（已同步）', exact: true })).toBeDisabled();
-  await expect(dialog.getByText('已选择 2 项认证', { exact: true })).toBeVisible();
+  await expect(dialog.locator('.agent-capability-list > button.selected')).toHaveCount(2);
   await dialog.getByRole('button', { name: '全选认证', exact: true }).click();
-  await expect(dialog.getByText('已选择 3 项认证', { exact: true })).toBeVisible();
+  await expect(dialog.locator('.agent-capability-list > button.selected')).toHaveCount(3);
   await dialog.getByRole('button', { name: '取消全选认证', exact: true }).click();
-  await expect(dialog.getByText('已选择 0 项认证', { exact: true })).toBeVisible();
+  await expect(dialog.locator('.agent-capability-list > button.selected')).toHaveCount(0);
   await dialog.getByRole('button', { name: '全选认证', exact: true }).click();
   await dialog.getByRole('button', { name: '同步认证', exact: true }).click();
   await expect(dialog.getByRole('button', { name: '全选认证', exact: true })).toBeDisabled();
@@ -1963,7 +1966,7 @@ test('capability filtering keeps dialog and footer geometry stable', async ({ pa
   const dialog=page.getByRole('dialog',{name:'会话配置'});
   const geometry=()=>dialog.evaluate(element=>{
     const box=element.getBoundingClientRect();
-    const footer=element.querySelector('.agent-session-config-panel > footer')!.getBoundingClientRect();
+    const footer=element.querySelector('.agent-session-configuration-content > footer')!.getBoundingClientRect();
     return {top:box.top,height:box.height,footer:footer.top};
   });
   for(const height of [1000,600]){
@@ -2005,27 +2008,29 @@ for (const mode of ['existing', 'draft'] as const) {
       await page.getByRole('button', { name: /配置会话/ }).click();
     }
     const dialog = page.getByRole('dialog', { name: '会话配置' });
-    const collectionTrigger = dialog.locator('.agent-capability-collection-trigger');
-    await expect(collectionTrigger).toHaveAccessibleName('Skill 组合');
-    await expect(collectionTrigger).toBeVisible();
-    await expect(dialog.getByRole('button', { name: '常用技能组合', exact: true })).toHaveCount(0);
+    await expect(dialog.getByRole('button', { name: /^Skill 组合筛选/ })).toBeVisible();
     const assertLayout = async () => {
       const layout = await dialog.evaluate(element => {
         const bounds = (selector: string) => element.querySelector<HTMLElement>(selector)!.getBoundingClientRect();
-        const list = bounds('.agent-session-config-panel > .agent-capability-list');
+        const summary = bounds('.agent-capability-toolbar');
+        const list = bounds('.agent-session-configuration-content > .agent-capability-list');
         const first = bounds('.agent-capability-list > button');
-        const footer = bounds('.agent-session-config-panel > footer');
+        const footer = bounds('.agent-session-configuration-content > footer');
+        const summaryText = element.querySelector('.agent-capability-toolbar > label')!.getBoundingClientRect();
         const firstButton = element.querySelector('.agent-capability-list > button')!;
         const hit = document.elementFromPoint(first.x + first.width / 2, first.y + first.height / 2);
-        return { listTop: list.top, firstTop: first.top, listBottom: list.bottom, footerTop: footer.top,
+        return { summaryBottom: summary.bottom, summaryTextBottom: summaryText.bottom, listTop: list.top,
+          firstTop: first.top, listBottom: list.bottom, footerTop: footer.top,
           firstClickable: hit !== null && firstButton.contains(hit),
           scrollable: element.querySelector('.agent-capability-list')!.scrollHeight > list.height };
       });
-      expect(layout.listTop).toBeLessThanOrEqual(layout.firstTop);
+      expect(layout.summaryTextBottom).toBeLessThanOrEqual(layout.summaryBottom + 1);
+      expect(layout.summaryBottom).toBeLessThanOrEqual(layout.listTop + 1);
+      expect(layout.summaryTextBottom).toBeLessThanOrEqual(layout.firstTop);
       expect(layout.listBottom).toBeLessThanOrEqual(layout.footerTop + 1);
       expect(layout.firstClickable).toBe(true);
       expect(layout.scrollable).toBe(true);
-      await expect(dialog.locator('.agent-session-config-panel > footer')).toBeInViewport();
+      await expect(dialog.locator('.agent-session-configuration-content > footer')).toBeInViewport();
     };
     for (const viewport of [{ width: 1440, height: 1000 }, { width: 1440, height: 600 }, { width: 640, height: 640 }]) {
       await page.setViewportSize(viewport);
@@ -2035,9 +2040,9 @@ for (const mode of ['existing', 'draft'] as const) {
       await dialog.getByRole('button', { name: 'all', exact: true }).click();
       await assertLayout();
     }
-    await collectionTrigger.click();
-    await dialog.getByRole('button', { name: '常用技能组合', exact: true }).click();
-    await expect(collectionTrigger).toHaveAccessibleName('Skill 组合 · 1');
+    await dialog.getByRole('button', { name: /^Skill 组合筛选/ }).click();
+    await page.getByRole('checkbox', { name: '常用技能组合', exact: true }).click();
+    await page.keyboard.press('Escape');
     const optional = dialog.getByRole('button', { name: /布局技能 0/ });
     await optional.click();
     await expect(optional).toHaveClass(/selected/);
@@ -2335,7 +2340,7 @@ for (const initiallyOpen of [true, false]) {
         await page.getByRole('button', { name: '关闭新标签页页签', exact: true }).click();
       } else {
         if (close === 'fullscreen') await page.getByRole('button', { name: '全屏查看工作区工具', exact: true }).click();
-        await page.getByRole('button', { name: '关闭工作区工具', exact: true }).click();
+        await page.getByRole('button', { name: '隐藏工作区工具', exact: true }).click();
       }
       await expect(page.locator('.agent-workspace-drawer')).toHaveClass(/summary-open/);
       await expectRestored();
@@ -2372,7 +2377,7 @@ for (const initiallyOpen of [true, false]) {
         await page.getByRole('button', { name: '关闭新标签页页签', exact: true }).click();
       } else {
         if (close === 'fullscreen') await page.getByRole('button', { name: '全屏查看工作区工具', exact: true }).click();
-        await page.getByRole('button', { name: '关闭工作区工具', exact: true }).click();
+        await page.getByRole('button', { name: '隐藏工作区工具', exact: true }).click();
       }
       await expect(page.locator('.agent-workspace-drawer')).toHaveClass(/summary-open/);
       await expectCard(initiallyOpen);
@@ -2655,7 +2660,7 @@ test('fullscreen tools occupy the entire workbench region and restore the conver
   await expect(controls.getByRole('button')).toHaveCount(3);
   await expect(controls.getByRole('button',{name:/^(显示|隐藏)悬浮信息卡$/})).toBeVisible();
   await expect(controls.getByRole('button',{name:'退出全屏',exact:true})).toBeVisible();
-  await expect(controls.getByRole('button',{name:'关闭工作区工具',exact:true})).toBeVisible();
+  await expect(controls.getByRole('button',{name:'隐藏工作区工具',exact:true})).toBeVisible();
   await expect(page.locator('.agent-workspace-tab-launcher.active')).toBeVisible();
   const bounds=() => page.evaluate(() => {
     const root=document.querySelector('.agent-workbench-page')!.getBoundingClientRect();
@@ -2680,12 +2685,12 @@ test('fullscreen tools occupy the entire workbench region and restore the conver
   await page.getByRole('button',{name:'显示悬浮信息卡',exact:true}).click();
   await expect(page.locator('.agent-workspace-summary')).toBeVisible();
   expect(await page.locator('.agent-workbench-content').evaluate(element=>element.getBoundingClientRect().width)).toBe(contentWidth);
-  await expect(page.locator('.agent-workspace-summary').getByText('IDEA / Gateway')).toBeInViewport();
+  await expect(page.locator('.agent-workspace-summary').getByText('来源', { exact: true })).toBeInViewport();
   await expect(page.locator('.agent-workspace-tab-launcher.active')).toBeHidden();
   await tabs.getByRole('button',{name:'新标签页',exact:true}).click();
   await expect(main).toBeHidden();
   await expect.poll(bounds).toBeLessThanOrEqual(1);
-  await controls.getByRole('button',{name:'关闭工作区工具',exact:true}).click();
+  await controls.getByRole('button',{name:'隐藏工作区工具',exact:true}).click();
   await expect(main).toBeVisible();
   await expect(page.locator('.agent-workspace-summary')).toBeVisible();
   await expect(composer).toHaveValue('全屏切换时保留草稿');
@@ -2870,6 +2875,7 @@ test('new workspace tabs embed a compact browser without a duplicate browser car
   await expect(launcher.getByRole('textbox', { name: '网页地址', exact: true })).toBeVisible();
   await expect(launcher.getByRole('button', { name: '浏览器', exact: true })).toHaveCount(0);
   await expect(launcher.getByRole('button', { name: '文件', exact: true })).toBeVisible();
+  await expect(page.locator('.agent-workspace-tool-body > .agent-drawer-empty')).toHaveCount(0);
   await expect.poll(() => launcher.locator('.agent-workspace-browser-toolbar').evaluate(element => element.getBoundingClientRect().height)).toBeLessThanOrEqual(48);
 });
 
@@ -3610,18 +3616,18 @@ for (const config of ['untouched', 'capabilities', 'deselect'] as const) {
     if (config !== 'untouched') {
       await page.getByRole('button', { name: /配置会话/ }).click();
       const dialog = page.getByRole('dialog', { name: '会话配置', exact: true });
-      await expect(dialog.getByText('已选择 1 项', { exact: true })).toBeVisible();
+      await expect(dialog.locator('.agent-capability-list > button.selected')).toHaveCount(1);
       if (config === 'capabilities') {
         await dialog.getByRole('button', { name: /日报技能/ }).click();
         await dialog.getByRole('button', { name: '保存会话配置', exact: true }).click();
       } else {
-        await dialog.getByRole('button', { name: '认证', exact: true }).click();
-        await expect(dialog.getByText('已选择 2 项认证', { exact: true })).toBeVisible();
+        await dialog.getByRole('tab', { name: '认证', exact: true }).click();
+        await expect(dialog.locator('.agent-capability-list > button.selected')).toHaveCount(2);
         await dialog.getByRole('button', { name: '取消全选认证', exact: true }).click();
         await dialog.getByRole('button', { name: '保存认证配置', exact: true }).click();
         await page.getByRole('button', { name: /配置会话/ }).click();
-        await dialog.getByRole('button', { name: '认证', exact: true }).click();
-        await expect(dialog.getByText('已选择 0 项认证', { exact: true })).toBeVisible();
+        await dialog.getByRole('tab', { name: '认证', exact: true }).click();
+        await expect(dialog.locator('.agent-capability-list > button.selected')).toHaveCount(0);
         await dialog.getByRole('button', { name: '保存认证配置', exact: true }).click();
       }
     }
@@ -3632,7 +3638,7 @@ for (const config of ['untouched', 'capabilities', 'deselect'] as const) {
     await page.getByRole('button', { name: '编辑', exact: true }).click();
     await page.getByRole('button', { name: /配置会话/ }).click();
     const dialog = page.getByRole('dialog', { name: '会话配置', exact: true });
-    await dialog.getByRole('button', { name: '认证', exact: true }).click();
+    await dialog.getByRole('tab', { name: '认证', exact: true }).click();
     await expect(dialog.getByText(`已选择 ${config === 'deselect' ? 0 : 2} 项认证`, { exact: true })).toBeVisible();
   });
 }
@@ -3934,6 +3940,43 @@ test('workspace sidebar toggle and inline capability trigger preserve the active
   await expect(input).toHaveValue('请使用  后续内容');
 });
 
+for (const width of [1440, 1024]) {
+  test(`collapsing the home rail leaves scheduled conversation navigation visible (${width})`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 800 });
+    await openWorkspace(page);
+    const navigation = page.getByRole('navigation', { name: 'Agent 工作区导航' });
+    const home = navigation.getByRole('button', { name: '主页', exact: true });
+    const shell = page.locator('.agent-workbench-app-shell');
+    await home.click();
+    await expect(shell).toHaveClass(/conversation-rail-collapsed/);
+    await expect(page.locator('.agent-workbench-rail')).toBeHidden();
+    await navigation.getByRole('button', { name: '定时任务', exact: true }).click();
+    const tasks = page.getByRole('region', { name: '会话定时任务' });
+    await tasks.locator('.agent-schedule-tree-select').first().click();
+    await tasks.locator('.agent-schedule-tree-toggle').first().click();
+    await tasks.locator('.agent-schedule-run').first().click();
+    await expect(page).toHaveURL(/\/agent\/schedules\/conversations\/scheduled-run-1$/);
+    await expect(shell).not.toHaveClass(/conversation-rail-collapsed/);
+    await expect(home).toHaveAttribute('aria-pressed', 'false');
+    await expect(tasks.locator('.agent-schedule-tree-select').first()).toBeInViewport();
+    await expect(tasks.locator('.agent-schedule-run').first()).toBeInViewport();
+    expect((await tasks.boundingBox())!.width).toBeGreaterThan(180);
+    await expect(page.getByRole('textbox', { name: '发送 Agent 消息', exact: true })).toBeVisible();
+    await page.screenshot({ path: test.info().outputPath(`scheduled-rail-after-home-collapse-${width}.png`) });
+    await tasks.locator('.agent-schedule-tree-select').filter({ hasText: '每周复核' }).click();
+    await expect(page).toHaveURL(/\/agent\/schedules$/);
+    await expect(page.getByRole('heading', { name: '每周复核', exact: true })).toBeVisible();
+    await expect(tasks.locator('.agent-schedule-tree-select').first()).toBeInViewport();
+    await home.click();
+    await expect(page.locator('.agent-workbench-rail')).toBeVisible();
+    await home.click();
+    await expect(shell).toHaveClass(/conversation-rail-collapsed/);
+    await navigation.getByRole('button', { name: '定时任务', exact: true }).click();
+    await expect(shell).not.toHaveClass(/conversation-rail-collapsed/);
+    await expect(tasks.locator('.agent-schedule-tree-select').first()).toBeInViewport();
+  });
+}
+
 test('workspace action menu defaults to all credentials and persists session configuration', async ({ page }) => {
   await openWorkspace(page);
   const root = page.locator('[data-workspace-group-id="root"]');
@@ -3945,7 +3988,7 @@ test('workspace action menu defaults to all credentials and persists session con
 
   const dialog = page.getByRole('dialog', { name: '会话配置', exact: true });
   await dialog.getByRole('button', { name: /日报技能/, exact: false }).click();
-  await dialog.getByRole('button', { name: '认证', exact: true }).click();
+  await dialog.getByRole('tab', { name: '认证', exact: true }).click();
   await expect(dialog.getByRole('button', { name: /测试认证/, exact: false })).toHaveAttribute('aria-pressed', 'true');
   await dialog.getByRole('button', { name: '保存认证配置', exact: true }).click();
   await expect(dialog).toHaveCount(0);
@@ -3956,7 +3999,7 @@ test('workspace action menu defaults to all credentials and persists session con
   await page.getByRole('button', { name: '新会话配置', exact: true }).click();
   const inherited = page.getByRole('dialog', { name: '会话配置', exact: true });
   await expect(inherited.getByRole('button', { name: /日报技能/, exact: false })).toHaveClass(/selected/);
-  await inherited.getByRole('button', { name: '认证', exact: true }).click();
+  await inherited.getByRole('tab', { name: '认证', exact: true }).click();
   await expect(inherited.getByRole('button', { name: /测试认证/, exact: false })).toHaveAttribute('aria-pressed', 'true');
   await inherited.getByRole('button', { name: '取消全选认证', exact: true }).click();
   await expect(inherited.getByText('已选择 0 项认证', { exact: true })).toBeVisible();
@@ -3975,7 +4018,7 @@ test('named workspaces keep session configuration separate from root defaults', 
   const configuration = page.getByRole('dialog', { name: '会话配置', exact: true });
   await expect(configuration.getByRole('button', { name: /日报技能/, exact: false })).not.toHaveClass(/selected/);
   await configuration.getByRole('button', { name: /周报技能/, exact: false }).click();
-  await configuration.getByRole('button', { name: '认证', exact: true }).click();
+  await configuration.getByRole('tab', { name: '认证', exact: true }).click();
   await configuration.getByRole('button', { name: /测试认证/, exact: false }).click();
   await configuration.getByRole('button', { name: '保存认证配置', exact: true }).click();
 
@@ -3985,7 +4028,7 @@ test('named workspaces keep session configuration separate from root defaults', 
   const inherited = page.getByRole('dialog', { name: '会话配置', exact: true });
   await expect(inherited.getByRole('button', { name: /日报技能/, exact: false })).not.toHaveClass(/selected/);
   await expect(inherited.getByRole('button', { name: /周报技能/, exact: false })).toHaveClass(/selected/);
-  await inherited.getByRole('button', { name: '认证', exact: true }).click();
+  await inherited.getByRole('tab', { name: '认证', exact: true }).click();
   await expect(inherited.getByRole('button', { name: /测试认证/, exact: false })).toHaveAttribute('aria-pressed', 'true');
   await inherited.getByRole('button', { name: /测试认证/, exact: false }).click();
   await inherited.getByRole('button', { name: '保存认证配置', exact: true }).click();
@@ -3993,7 +4036,7 @@ test('named workspaces keep session configuration separate from root defaults', 
   await page.getByRole('button', { name: '新会话配置', exact: true }).click();
   const customized = page.getByRole('dialog', { name: '会话配置', exact: true });
   await expect(customized.getByRole('button', { name: /周报技能/, exact: false })).toHaveClass(/selected/);
-  await customized.getByRole('button', { name: '认证', exact: true }).click();
+  await customized.getByRole('tab', { name: '认证', exact: true }).click();
   await expect(customized.getByRole('button', { name: /测试认证/, exact: false })).toHaveAttribute('aria-pressed', 'false');
   await customized.getByRole('button', { name: '关闭会话配置', exact: true }).click();
 
@@ -4002,7 +4045,7 @@ test('named workspaces keep session configuration separate from root defaults', 
   await directory.getByRole('button', { name: '在已有项目目录中新建会话', exact: true }).click({ force: true });
   await page.getByRole('button', { name: '新会话配置', exact: true }).click();
   const fresh = page.getByRole('dialog', { name: '会话配置', exact: true });
-  await fresh.getByRole('button', { name: '认证', exact: true }).click();
+  await fresh.getByRole('tab', { name: '认证', exact: true }).click();
   await expect(fresh.getByRole('button', { name: /测试认证/, exact: false })).toHaveAttribute('aria-pressed', 'true');
 });
 
@@ -4248,7 +4291,7 @@ test('conversation search shares the floating card visibility width and separate
   await page.getByRole('button', { name: '日报会话', exact: true }).last().click();
   await expectGeometry();
   await page.getByRole('button', { name: '退出全屏', exact: true }).first().click();
-  await page.getByRole('button', { name: '关闭工作区工具', exact: true }).click();
+  await page.getByRole('button', { name: '隐藏工作区工具', exact: true }).click();
   await page.setViewportSize({ width: 1440, height: 1000 });
   await expectGeometry();
   await group.screenshot({ path: '../../.tmp/search-card-corrected.png' });
@@ -4287,34 +4330,19 @@ test('case path fills the workspace with compact stages and on-demand context an
     }
     return json(route, path.endsWith('/cases') ? [item] : item);
   });
-  await page.goto('/?view=cases');
+  await page.getByRole('button', { name: '场景空间', exact: true }).click();
   await expect(page.locator('.case-config-panel')).toHaveCount(0);
   await expect(page.locator('.scenario-path ol li')).toHaveCount(12);
   const current = page.getByRole('article', { name: '路径卡片 迁移执行 2', exact: true });
   await expect(current).toContainText('已停止'); await expect(current).not.toContainText('运行中');
   await expect(current.getByRole('button', { name: '查看执行记录' })).toBeVisible();
-  const flowInfo = page.getByRole('complementary', { name: '流程信息', exact: true });
-  await expect(flowInfo).toContainText('迁移执行 2');
-  await expect(flowInfo).toContainText('2 / 12');
-  const recordEntry = flowInfo.getByRole('button', { name: /查看流程记录/ });
-  await expect(recordEntry).toBeVisible();
-  await page.getByRole('article', { name: '路径卡片 质量验证 3', exact: true }).click();
-  await expect(flowInfo).toContainText('质量验证 3');
-  await expect(flowInfo).toContainText('启动后可从这里进入对应的流程记录');
-  await current.click();
-  await recordEntry.click();
-  await expect(page).toHaveURL(/\/flow-runs\/execution-1$/);
-  await page.goto('/?view=cases');
-  await expect(flowInfo).toBeVisible();
   await expect(page.getByRole('button', { name: '保存基础信息' })).toHaveCount(0);
   for (const width of [1440, 1024]) {
     await page.setViewportSize({ width, height: 768 });
     const bounds = await page.locator('.case-path-panel').evaluate(element => ({ width: element.clientWidth, scroll: element.scrollHeight, height: element.clientHeight, main: element.closest('.scenario-workspace')!.clientWidth }));
     expect(bounds.width).toBeGreaterThan(bounds.main * 0.9);
     const path = await page.locator('.case-connected-path').boundingBox();
-    const info = await flowInfo.boundingBox();
-    expect(path!.width).toBeGreaterThan(bounds.width - info!.width - 100);
-    expect(info!.width).toBeGreaterThan(230);
+    expect(path!.width).toBeGreaterThan(bounds.width - 50);
     expect(bounds.scroll).toBeGreaterThan(bounds.height);
     expect((await page.locator('.case-workspace-toolbar').boundingBox())!.height).toBeLessThanOrEqual(56);
     await page.locator('.case-path-panel').hover(); await page.mouse.wheel(0, 600);
@@ -4461,54 +4489,6 @@ test('case coordination rounds wait for background delivery retry and retain his
   await expect(page.getByText('该会话不属于当前事项')).toHaveCount(0);
 });
 
-
-test('case workspace presents review, feedback and governed takeover actions', async ({ page }) => {
-  await openWorkspace(page);
-  let item = {
-    id: 'takeover-case', name: '交付复核', objective: '确认结果并交付', state: 'ACTIVE', row_version: 8,
-    control_conversation_binding_id: 'case-agent-binding', materials: [], decision_proposals: [], tasks: [],
-    feedback_deliveries: [{ id: 'delivery-1', round_id: 'round', binding_id: 'case-agent-binding', source_kind: 'EXECUTION', execution_event_id: 'event-1', state: 'FAILED', batch_id: null, message_event_id: null, error_code: 'CASE_FEEDBACK_RETRIES_EXHAUSTED' }],
-    control_plans: [{ id: 'failed-plan', case_id: 'takeover-case', stage_id: 'stage', source_binding_id: 'case-agent-binding', execution_flow_run_id: 'execution', action: 'ADVANCE_CASE_STAGE', state: 'FAILED', idempotency_key: 'failed-plan', reason: '结果符合目标，进入下一阶段', input_snapshot: {}, result: {}, error_code: 'CASE_FLOW_VERSION_CONFLICT', created_at: now, validated_at: now, executed_at: now }],
-    stages: [{ id: 'stage', case_id: 'takeover-case', stage_key: 'review', name: '质量复核', objective: '核对正式交付物', position: 0, flow_run_id: 'template', current_execution_flow_run_id: 'execution', execution_mode: 'CONTINUOUS', state: 'REVIEW_PENDING', execution: { flow_run_id: 'execution', state: 'COMPLETED', progress: { accepted: 2, terminal: 2, active: 0 }, active_node: null, ready_node_keys: [], automatic_block: null, finished_at: now }, created_at: now, updated_at: now }],
-    control_rounds: [{ id: 'round', binding_id: 'case-agent-binding', state: 'STARTED', is_current: true, error_code: null, created_at: now, started_at: now }],
-    session_config: { model_provider_id: 'provider-1', model_name: 'model-1', reasoning_effort: 'high', capability_version_ids: [], credential_ids: [] }, created_at: now, updated_at: now,
-  };
-  const coordinationStates: string[] = [];
-  let retried = 0;
-  await page.route('**/api/v1/cases**', route => {
-    const request = route.request();
-    const pathname = new URL(request.url()).pathname;
-    if (pathname.endsWith('/coordination-state') && request.method() === 'PUT') {
-      const payload = request.postDataJSON(); coordinationStates.push(payload.state);
-      item = { ...item, state: payload.state, row_version: item.row_version + 1 };
-      return json(route, item);
-    }
-    if (pathname.endsWith('/control-plans/failed-plan/retry') && request.method() === 'POST') {
-      retried += 1;
-      item = { ...item, row_version: item.row_version + 1, control_plans: [{ ...item.control_plans[0], id: 'retry-plan', state: 'PENDING', retry_of_plan_id: 'failed-plan', error_code: null }] };
-      return json(route, item.control_plans[0], 201);
-    }
-    if (pathname.endsWith('/artifact-materials')) return json(route, { items: [{ id: 'material-1', kind: 'ARTIFACT', artifact_version_id: 'artifact-1', stage_key: 'review', execution_flow_run_id: 'execution', node_key: 'deliver', node_run_id: 'node', node_attempt_id: 'attempt', completion_event_id: 'completion', field_key: 'report', version_no: 2, artifact_type: 'URL', name: '交付报告', mime_type: null, byte_size: null, content_hash: null, state: 'ACCEPTED', candidate_status: 'GATE_PASSED', uri: 'https://example.test/report', content_url: null, registered_at: now, content_access: 'EXTERNAL_URI' }], next_offset: null });
-    return json(route, pathname.endsWith('/cases') ? [item] : item);
-  });
-  await page.goto('/?view=cases');
-  const stage = page.getByRole('article', { name: '路径卡片 质量复核' });
-  await expect(stage).toContainText('等待 Agent 复核');
-  await expect(stage).toContainText('正式产物 1');
-  await expect(page.getByRole('status', { name: '场景协调状态' })).toContainText('结果已就绪，等待 Agent 判断');
-  await expect(page.getByRole('alert')).toContainText('CASE_FEEDBACK_RETRIES_EXHAUSTED');
-  await page.getByRole('button', { name: '暂停协调', exact: true }).click();
-  await expect(page.getByRole('button', { name: '继续协调', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: '继续协调', exact: true }).click();
-  expect(coordinationStates).toEqual(['PAUSED', 'ACTIVE']);
-  await page.getByRole('button', { name: '查看异常与接管', exact: true }).click();
-  const takeover = page.getByRole('dialog', { name: '异常与接管', exact: true });
-  await expect(takeover).toContainText('结果符合目标，进入下一阶段');
-  await takeover.getByRole('button', { name: '重试失败动作', exact: true }).click();
-  expect(retried).toBe(1);
-  await expect(takeover).toContainText('待处理');
-});
-
 test('manual Case stage retry retains its execution copy after a start failure', async ({ page }) => {
   await openWorkspace(page);
   let launches = 0, starts = 0;
@@ -4651,7 +4631,7 @@ for (const mode of ['success', 'failure', 'missing-old-catalog'] as const) {
 }
 
 
-test('session configuration keeps compact capability rows and one-line credential summaries', async ({ page }) => {
+test('session configuration keeps compact two-line rows and leading square selections', async ({ page }) => {
   await openWorkspace(page);
   const types = ['SKILL', 'PLUGIN', 'MCP', 'CONTEXT', 'AGENT_DEFINITION', 'HOOK'];
   const catalog = types.map(type => ({ id: `compact-${type}`, capability_type: type,
@@ -4699,20 +4679,9 @@ test('session configuration keeps compact capability rows and one-line credentia
   await skill.focus();
   await page.keyboard.press('Space');
   await expect(skill).toHaveAttribute('aria-pressed', 'false');
-  await dialog.getByRole('button', { name: '认证', exact: true }).click();
+  await dialog.getByRole('tab', { name: '认证', exact: true }).click();
   const credential = dialog.locator('.agent-credential-sync .agent-capability-list > button').first();
-  const credentialLayout = await credential.evaluate(element => {
-    const title = element.querySelector<HTMLElement>('.agent-credential-copy b')!;
-    const summary = element.querySelector<HTMLElement>('.agent-credential-copy small')!;
-    const icon = element.querySelector('.agent-capability-icon svg')!.getAttribute('class');
-    const row = element.getBoundingClientRect();
-    const titleBox = title.getBoundingClientRect(), summaryBox = summary.getBoundingClientRect();
-    return { height: row.height, aligned: Math.abs(titleBox.top - summaryBox.top) < 1, summaryWrap: getComputedStyle(summary).whiteSpace, icon };
-  });
-  expect(credentialLayout.height).toBeLessThanOrEqual(46);
-  expect(credentialLayout.aligned).toBe(true);
-  expect(credentialLayout.summaryWrap).toBe('nowrap');
-  expect(credentialLayout.icon).toContain('lucide-key-round');
+  await assertRow(credential);
   await expect(credential).toHaveAttribute('aria-pressed', 'true');
   await credential.locator('.agent-selection-checkbox').click();
   await expect(credential).toHaveAttribute('aria-pressed', 'false');
@@ -4801,7 +4770,6 @@ test('conversation context menu measures all actions at each viewport corner', a
     await row.click({ button: 'right', position: corner === 'bottom-right' ? { x: 178, y: 30 } : { x: 1, y: 1 } });
     await expectInsideViewport(page, menu);
     await expect(menu.getByRole('menuitem', { name: '标记为未读', exact: true })).toBeVisible();
-    await expect(menu.getByRole('menuitem', { name: '删除', exact: true })).toHaveCSS('justify-content', 'flex-start');
     if (corner === 'bottom-right') {
       const box = (await menu.boundingBox())!; const viewport = page.viewportSize()!;
       expect(box.y + box.height).toBeLessThanOrEqual(viewport.height - 2);
@@ -4907,7 +4875,7 @@ test('terminal action popover measures its full command list at the bottom right
   await expect(menu).toHaveCount(0);
 });
 
-for (const archiveTarget of ['conversation', 'directory', 'rejected-directory'] as const) {
+for (const archiveTarget of ['conversation', 'directory', 'rejected-directory', 'management-selection'] as const) {
   test(`workspace archive immediately reconciles loaded pages pinned and activity lists (${archiveTarget})`, async ({ page }) => {
     await openWorkspace(page);
     const removedIds = new Set<string>();
@@ -4924,6 +4892,12 @@ for (const archiveTarget of ['conversation', 'directory', 'rejected-directory'] 
     await page.route('**/api/v1/agent-workspaces/schedule-workspace/**', async route => {
       const request = route.request(); const url = new URL(request.url()); const path = url.pathname;
       if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: directoryArchived && url.searchParams.get('include_archived') !== 'true' ? [] : [{ id: 'existing-directory', display_name: '已有项目目录', state: directoryArchived ? 'ARCHIVED' : 'ACTIVE', current_version: { id: 'archive-version', working_directory: '/runtime/workspace/project/existing-directory' } }] });
+      if (path.endsWith('/conversation-management/archive')) {
+        archiveWrites += 1;
+        const ids = request.postDataJSON().binding_ids as string[];
+        ids.forEach(id => removedIds.add(id));
+        return json(route, { archived: ids.map(id => ({ id, archived_at: now })), skipped: [] });
+      }
       if (path.endsWith('/work-directories/existing-directory/restore')) {
         directoryArchived = false; removedIds.clear();
         return json(route, { id: 'existing-directory', display_name: '已有项目目录', state: 'ACTIVE' });
@@ -4932,7 +4906,7 @@ for (const archiveTarget of ['conversation', 'directory', 'rejected-directory'] 
         directoryArchived = false; removedIds.delete('archive-child-5');
         return json(route, { ...items[5], archived_at: null });
       }
-      if (path.endsWith('/conversation-management')) return json(route, { items: url.searchParams.get('work_directory_id') === 'existing-directory' ? items.filter(item => removedIds.has(item.id) === (url.searchParams.get('archived') === 'true')).map(item => ({ ...item, archived_at: removedIds.has(item.id) ? now : null })) : [], truncated: false });
+      if (path.endsWith('/conversation-management')) return json(route, { items: url.searchParams.get('work_directory_id') === 'existing-directory' ? items.filter(item => !url.searchParams.has('archived') || removedIds.has(item.id) === (url.searchParams.get('archived') === 'true')).map(item => ({ ...item, archived_at: removedIds.has(item.id) ? now : null })) : [], truncated: false });
       if (path.endsWith('/pinned-conversations')) return json(route, live().filter(item => item.pinned));
       if (path.endsWith('/conversation-activity')) return json(route, { running_binding_ids: [], unread_binding_ids: live().map(item => item.id), conversations: live() });
       if (path.endsWith('/conversations') && request.method() === 'GET') {
@@ -4965,7 +4939,19 @@ for (const archiveTarget of ['conversation', 'directory', 'rejected-directory'] 
     await page.getByRole('button', { name: /查看活动会话/ }).click();
     await expect(page.getByRole('button', { name: '归档验证会话 0', exact: true })).toBeVisible();
     await page.getByRole('button', { name: '返回工作区列表', exact: true }).click();
-    if (archiveTarget === 'conversation') {
+    if (archiveTarget === 'management-selection') {
+      await page.getByRole('button', { name: '会话管理', exact: true }).click();
+      await page.getByRole('button', { name: '已有项目目录', exact: true }).click();
+      await page.getByRole('checkbox', { name: '包含置顶', exact: true }).check();
+      await page.getByRole('checkbox', { name: '包含未读', exact: true }).check();
+      for (const index of [0, 5]) await page.getByRole('checkbox', { name: `选择会话 归档验证会话 ${index}`, exact: true }).check();
+      await page.getByRole('button', { name: '归档已选会话', exact: true }).click();
+      await page.getByRole('alertdialog').getByRole('button', { name: '确认归档', exact: true }).click();
+      await expect(page.getByRole('status')).toContainText('已归档 2 个会话');
+      expect(directoryArchived).toBe(false);
+      await page.getByRole('button', { name: '主页', exact: true }).click();
+      await expect(group).toBeVisible();
+    } else if (archiveTarget === 'conversation') {
       await page.locator('[data-conversation-binding-id="archive-child-5"]').hover();
       await page.getByRole('button', { name: '归档会话 归档验证会话 5', exact: true }).click();
       await expect(page.locator('[data-conversation-binding-id="archive-child-5"]')).toHaveCount(0);
@@ -4997,9 +4983,11 @@ for (const archiveTarget of ['conversation', 'directory', 'rejected-directory'] 
       // Management lives inside the same mounted workbench: a restore must
       // clear successful-archive exclusions as well as refetch server lists.
       await page.getByRole('button', { name: '会话管理', exact: true }).click();
-      await page.getByRole('button', { name: '已有项目目录（已归档）', exact: true }).click();
+      await expect(page.getByRole('button', { name: '已有项目目录', exact: true })).toHaveAccessibleDescription('已归档工作区');
+      await page.getByRole('button', { name: '已有项目目录', exact: true }).click();
       await page.getByRole('button', { name: '恢复工作区 已有项目目录', exact: true }).click();
       await page.getByRole('alertdialog').getByRole('button', { name: '确认恢复', exact: true }).click();
+      await expect(page.getByRole('button', { name: '恢复工作区 已有项目目录', exact: true })).toHaveCount(0);
       await expect(page.getByRole('button', { name: '已有项目目录', exact: true })).toBeVisible();
       await page.getByRole('button', { name: '主页', exact: true }).click();
       await expect(group).toBeVisible();
@@ -5009,9 +4997,11 @@ for (const archiveTarget of ['conversation', 'directory', 'rejected-directory'] 
       await page.getByRole('menuitem', { name: '归档', exact: true }).click();
       await expect(group).toHaveCount(0);
       await page.getByRole('button', { name: '会话管理', exact: true }).click();
-      await page.getByRole('button', { name: '已有项目目录（已归档）', exact: true }).click();
+      await expect(page.getByRole('button', { name: '已有项目目录', exact: true })).toHaveAccessibleDescription('已归档工作区');
+      await page.getByRole('button', { name: '已有项目目录', exact: true }).click();
       await page.getByRole('checkbox', { name: '包含未读', exact: true }).check();
       await page.getByRole('button', { name: '恢复会话 归档验证会话 5', exact: true }).click();
+      await expect(page.getByRole('button', { name: '恢复工作区 已有项目目录', exact: true })).toHaveCount(0);
       await expect(page.getByRole('button', { name: '已有项目目录', exact: true })).toBeVisible();
       await page.getByRole('button', { name: '主页', exact: true }).click();
       await expect(group.getByRole('button', { name: '归档验证会话 5', exact: true })).toBeVisible();
@@ -5020,3 +5010,76 @@ for (const archiveTarget of ['conversation', 'directory', 'rejected-directory'] 
 
   });
 }
+
+test('invalid Mermaid stays inside its message and draft reference retries keep one empty state', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  page.on('console', message => { if (message.type() === 'error' && /same key|unique.*key/i.test(message.text())) errors.push(message.text()); });
+  const events = [
+    { id: 'diagram-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '查看图表', timestamp: now } },
+    { id: 'diagram-answer', event_type: 'MESSAGE', payload: { source: 'assistant', parent_id: 'diagram-user', content: '```mermaid\nflowchart LR\nA[开始] --> B[结束]\n```\n\n```mermaid\nflowchart LR\nA[unclosed\n```', timestamp: now } },
+  ];
+  await openWorkspace(page, events);
+  await page.goto('/agent/conversations/scheduled-conversation');
+  const diagrams = page.locator('.conversation-mermaid');
+  await expect(diagrams).toHaveCount(2);
+  await expect(diagrams.nth(0).getByRole('img', { name: 'Mermaid 图表' })).toBeVisible();
+  await expect(diagrams.nth(1).getByText(/图片生成失败/)).toBeVisible();
+  await expect(page.locator('body > [data-mermaid-render-container]')).toHaveCount(0);
+  await expect(page.locator('body > [id^="dflowweave-mermaid"]')).toHaveCount(0);
+  expect(await page.evaluate(() => document.documentElement.scrollHeight <= window.innerHeight)).toBe(true);
+  await diagrams.nth(1).getByRole('button', { name: '文本', exact: true }).click();
+  await expect(diagrams.nth(1).locator('code')).toContainText('A[unclosed');
+  await diagrams.nth(0).getByRole('button', { name: '全屏放大' }).click();
+  await expect(page.getByRole('dialog', { name: 'Mermaid 图表全屏预览' })).toBeVisible();
+  await page.getByRole('button', { name: '关闭', exact: true }).click();
+
+  await page.getByRole('button', { name: '收起工作区 根工作区' }).hover();
+  await page.getByRole('button', { name: '在根工作区中新建会话' }).click();
+  await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeVisible();
+  const input = page.getByRole('textbox', { name: '发送 Agent 消息', exact: true });
+  await input.fill('总结一下这个会话的内容。');
+  const transfer = await page.evaluateHandle(() => {
+    const data = new DataTransfer();
+    data.setData('application/x-flowweave-conversation-reference', JSON.stringify({ bindingId: 'scheduled-conversation', eventId: '', title: '日报会话' }));
+    return data;
+  });
+  await input.dispatchEvent('drop', { dataTransfer: transfer });
+  await expect(page.getByRole('button', { name: '移除会话 日报会话', exact: true })).toBeVisible();
+  await expect(input).toHaveValue('总结一下这个会话的内容。');
+  let attempts = 0;
+  await page.route('**/api/v1/agent-workspaces/*/conversations', async route => {
+    if (route.request().method() !== 'POST') return route.fallback();
+    attempts += 1;
+    expect(route.request().postDataJSON().content).toBe('总结一下这个会话的内容。');
+    expect(route.request().postDataJSON().references).toEqual([{ source_binding_id: 'scheduled-conversation' }]);
+    return json(route, { error: { code: 'AGENT_HISTORY_CAPABILITY_UNAVAILABLE', message: '会话历史查询能力不可用，请检查平台配置后重试；引用和草稿已保留' } }, 409);
+  });
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    await page.getByRole('button', { name: '发送消息', exact: true }).click();
+    await expect.poll(() => attempts).toBe(attempt);
+    await expect(page.getByText('会话历史查询能力不可用，请检查平台配置后重试；引用和草稿已保留', { exact: true })).toBeVisible();
+    await expect(page.getByText('会话已就绪', { exact: true })).toHaveCount(1);
+    await expect(input).toHaveValue('总结一下这个会话的内容。');
+    await expect(page.getByRole('button', { name: '移除会话 日报会话', exact: true })).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollHeight <= window.innerHeight)).toBe(true);
+  }
+  await page.screenshot({ path: '../../.tmp/ops71/reference-error.png' });
+  expect(errors).toEqual([]);
+});
+
+
+test('leaving an invalid Mermaid while its render is queued leaves no temporary page content', async ({ page }) => {
+  await openWorkspace(page, [
+    { id: 'queued-diagram-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '查看图表', timestamp: now } },
+    { id: 'queued-diagram-answer', event_type: 'MESSAGE', payload: { source: 'assistant', parent_id: 'queued-diagram-user', content: '```mermaid\nflowchart LR\nA[unclosed\n```', timestamp: now } },
+  ]);
+  await page.goto('/agent/conversations/scheduled-conversation');
+  await expect(page.locator('.conversation-mermaid')).toHaveCount(1);
+  await page.getByRole('button', { name: '收起工作区 根工作区' }).hover();
+  await page.getByRole('button', { name: '在根工作区中新建会话' }).click();
+  await expect(page.getByText('会话已就绪', { exact: true })).toHaveCount(1);
+  await expect(page.locator('body > [data-mermaid-render-container]')).toHaveCount(0);
+  await expect(page.locator('body > [id^="dflowweave-mermaid"]')).toHaveCount(0);
+  expect(await page.evaluate(() => document.documentElement.scrollHeight <= window.innerHeight)).toBe(true);
+});

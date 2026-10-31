@@ -55,6 +55,22 @@ class PublishedCapability:
         }
 
 
+def is_builtin_capability(capability_type: str, capability_key: str) -> bool:
+    return (capability_type == "MCP" and capability_key == "flowweave-reference-history") or (
+        (capability_type, capability_key)
+        in {
+            ("CONTEXT_POLICY", DEFAULT_CONTEXT_POLICY_KEY),
+            ("MEMORY_POLICY", DEFAULT_MEMORY_POLICY_KEY),
+            ("CRITIC_POLICY", DEFAULT_CRITIC_POLICY_KEY),
+        }
+    )
+
+
+def require_user_managed(package: CapabilityPackage) -> None:
+    if is_builtin_capability(package.capability_type, package.capability_key):
+        raise DomainError("BUILTIN_CAPABILITY", "系统内置能力由平台维护，不能编辑或替换", 403)
+
+
 def _builtin_id(kind: str, value: str) -> str:
     return str(uuid5(NAMESPACE_URL, f"flowweave:{kind}:{value}"))
 
@@ -588,7 +604,7 @@ def list_versions(db: Session, package_ids: list[str] | None = None) -> list[dic
     result: list[dict[str, Any]] = []
     for version, package, blob in rows:
         normalized = cast(dict[str, Any], version.normalized_config_json or {})
-        is_builtin = is_platform_managed_capability(package.capability_type, package.capability_key)
+        is_builtin = is_builtin_capability(package.capability_type, package.capability_key)
         result.append(
             {
                 "id": version.id,

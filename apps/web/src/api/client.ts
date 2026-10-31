@@ -1,3 +1,4 @@
+import { writableAgentPreset, writableGates } from '../utils/agentPresetWrite';
 import type { MarketSources, MarketSkillSearch, MarketSkill, CapabilityPackageFiles, CapabilityPackageFile, CapabilityPackageComparison, CapabilityPackageFileDiff, CapabilityAssetType, CapabilityDirectoryPage, CapabilityCollectionSort, CapabilitySort, RepositoryPage } from '../types';
 import type {
   AuthUser, LdapDirectory, LdapUser, PlatformUser,
@@ -304,31 +305,8 @@ const automaticRecord = (run: AutomaticRunResponse): FlowRunAutomaticRecord => {
 const automaticNodePlansWrite = (nodePlans: FlowRunAutomaticRecordUpdate['node_plans']): FlowRunAutomaticRecordUpdate['node_plans'] =>
   Object.fromEntries(Object.entries(nodePlans).map(([nodeKey, plan]) => [nodeKey, {
     startup_prompt: plan.startup_prompt,
-    agent_preset: {
-      capability_version_ids: plan.agent_preset.capability_version_ids,
-      model_provider_id: plan.agent_preset.model_provider_id,
-      model_name: plan.agent_preset.model_name,
-      reasoning_effort: plan.agent_preset.reasoning_effort,
-      // This is an editable part of the launch preset. Keep it when projecting
-      // a frozen response back to the strict write shape; otherwise a later
-      // draft save silently replaces the configured quota fallbacks with [].
-      fallback_models: plan.agent_preset.fallback_models ?? [],
-      node_context_enabled: plan.agent_preset.node_context_enabled,
-      node_context_prompt: plan.agent_preset.node_context_prompt,
-    },
-    gates: plan.gates.map(gate => ({
-      stage: gate.stage,
-      position: gate.position,
-      gate_type: gate.gate_type,
-      enabled: gate.enabled,
-      timeout_seconds: gate.timeout_seconds,
-      config: gate.config,
-      agent_preset: {
-        model_provider_id: gate.agent_preset?.model_provider_id,
-        model_name: gate.agent_preset?.model_name,
-        reasoning_effort: gate.agent_preset?.reasoning_effort,
-      },
-    })),
+    agent_preset: writableAgentPreset(plan.agent_preset),
+    gates: writableGates(plan.gates),
     artifact_ids: plan.artifact_ids,
     input_urls: plan.input_urls,
   }]));
@@ -378,8 +356,8 @@ export const api = {
     const query = workDirectoryId ? `?work_directory_id=${encodeURIComponent(workDirectoryId)}` : '';
     return request<import('../types').AgentWorkspaceSessionConfiguration>(`/agent-workspaces/${encodeURIComponent(id)}/session-configuration${query}`, json('PUT', configuration));
   },
-  agentWorkspaceMcpReadiness: (id: string, capabilityVersionId: string) =>
-    request<AgentWorkspaceMcpReadiness>(`/agent-workspaces/${encodeURIComponent(id)}/capabilities/${encodeURIComponent(capabilityVersionId)}/mcp-readiness`, json('POST')),
+  agentWorkspaceMcpReadiness: (id: string, capabilityVersionId: string, signal?: AbortSignal, read_only_tool_call?: { name: string; arguments: Record<string, unknown> }) =>
+    request<AgentWorkspaceMcpReadiness>(`/agent-workspaces/${encodeURIComponent(id)}/capabilities/${encodeURIComponent(capabilityVersionId)}/mcp-readiness`, { ...json('POST', read_only_tool_call ? { read_only_tool_call } : undefined), signal, timeoutMs: 25_000 }),
   agentWorkspaceRuntime: (id: string) => request<AgentWorkspaceRuntime>(`/agent-workspaces/${encodeURIComponent(id)}/runtime`),
   agentGitIdentity: (id: string) => request<AgentGitIdentity>(`/agent-workspaces/${encodeURIComponent(id)}/settings/git`),
   saveAgentGitIdentity: (id: string, identity: { author: string; email: string }) => request<AgentGitIdentity>(`/agent-workspaces/${encodeURIComponent(id)}/settings/git`, { method: 'PUT', body: JSON.stringify(identity) }),
@@ -502,9 +480,19 @@ export const api = {
     if (archived !== undefined) query.set('archived', String(archived));
     return request<import('../types').AgentConversationManagementPage>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-management${query.size ? `?${query}` : ''}`);
   },
+  archiveManagedAgentConversations: (workspaceId: string, binding_ids: string[], workDirectoryId?: string) => {
+    const query = workDirectoryId ? `?work_directory_id=${encodeURIComponent(workDirectoryId)}` : '';
+    return request<import('../types').AgentConversationManagementArchiveResult>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-management/archive${query}`, { ...json('POST', { binding_ids }), timeoutMs: 60_000 });
+  },
   deleteManagedAgentConversations: (workspaceId: string, binding_ids: string[], workDirectoryId?: string) => {
     const query = workDirectoryId ? `?work_directory_id=${encodeURIComponent(workDirectoryId)}` : '';
     return request<import('../types').AgentConversationManagementDeleteResult>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-management/delete${query}`, json('POST', { binding_ids }, crypto.randomUUID()));
+  },
+  agentConversationDeletionJobs: (workspaceId: string, signal?: AbortSignal) =>
+    request<{ items: import('../types').AgentConversationDeletionJob[] }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-management/deletion-jobs`, { signal }),
+  startAgentConversationDeletion: (workspaceId: string, binding_ids: string[], workDirectoryId: string | undefined, idempotencyKey: string) => {
+    const query = workDirectoryId ? `?work_directory_id=${encodeURIComponent(workDirectoryId)}` : '';
+    return request<import('../types').AgentConversationDeletionJob>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-management/deletion-jobs${query}`, json('POST', { binding_ids }, idempotencyKey));
   },
   agentConversationSchedules: (workspaceId: string) =>
     request<AgentConversationSchedule[]>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-schedules`),
@@ -587,6 +575,8 @@ export const api = {
     request<AgentPendingConfirmation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/pending-confirmation`),
   decideAgentConfirmation: (workspaceId: string, bindingId: string, expected_pending_digest: string, accept: boolean, reason: string) =>
     request<{ accepted: boolean; cursor?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/pending-confirmation/decision`, json('POST', { expected_pending_digest, accept, reason })),
+  cancelAgentMessageSubmission: (workspaceId: string, bindingId: string, submissionId: string) =>
+    request<{ cancelled: boolean }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/messages/${encodeURIComponent(submissionId)}/cancel`, json('POST', {})),
   sendAgentMessage: (workspaceId: string, bindingId: string, content: string, attachments: AgentAttachment[] = [], references: AgentConversationReference[] = [], workspace_references: AgentWorkspaceReference[] = [], annotations: AgentConversationAnnotation[] = [], idempotencyKey?: string) =>
     request<{ accepted: boolean; cursor?: string | null; compacted?: boolean; queued_during_turn?: boolean }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/messages`, json('POST', { content, attachments: attachmentReferences(attachments), references: conversationReferencePayload(references), workspace_references: workspaceReferencePayload(workspace_references), annotations }, idempotencyKey)),
   uploadAgentAttachment: (workspaceId: string, bindingId: string, file: File, onProgress?: UploadProgressHandler): Promise<AgentAttachment> =>
@@ -688,7 +678,7 @@ export const api = {
       };
       content_hash: string;
     }>('/capability-imports/validate', json('POST', body)),
-  commitCapability: (import_token: string) => request<CapabilityImportResult>('/capability-imports', json('POST', { import_token })),
+  commitCapability: (import_token: string, mcp_authentication?: import('../types').McpAuthenticationWrite) => request<CapabilityImportResult>('/capability-imports', json('POST', { import_token, ...(mcp_authentication ? { mcp_authentication } : {}) })),
   createPluginSourceResolution: (body: { source_url: string; commit: string; repo_path?: string | null }) =>
     request<PluginSourceResolution>('/plugin-source-resolutions', json('POST', body)),
   previewMarketplaceCatalog: (body: { marketplace_source_url: string; marketplace_commit: string; marketplace_repo_path?: string | null }) =>
@@ -715,9 +705,11 @@ export const api = {
   probeMcpCapability: (id: string, environment_version_id: string, timeout = 15) =>
     request<import('../types').CapabilityValidationResult>(`/capabilities/${encodeURIComponent(id)}/mcp-probes`, json('POST', { environment_version_id, timeout })),
   capabilityCollections: () => request<CapabilityCollection[]>('/capability-collections'),
+  mcpAuthentication: (id: string, signal?: AbortSignal) => request<import('../types').McpAuthentication>(`/capabilities/${encodeURIComponent(id)}/mcp-authentication`, { signal }),
+  saveMcpAuthentication: (id: string, value: import('../types').McpAuthenticationWrite) => request<import('../types').McpAuthentication>(`/capabilities/${encodeURIComponent(id)}/mcp-authentication`, json('PUT', value)),
   mcpSource: (id: string) => request<McpSource>(`/capabilities/${encodeURIComponent(id)}/mcp-source`),
-  updateMcpSource: (id: string, content: string, mcp_scripts: Array<{ server: string; filename: string; content_base64: string }>) =>
-    request<CapabilityAsset>(`/capabilities/${encodeURIComponent(id)}/mcp-source`, json('PUT', { content, mcp_scripts })),
+  updateMcpSource: (id: string, content: string, mcp_scripts: Array<{ server: string; filename: string; content_base64: string }>, mcp_authentication?: import('../types').McpAuthenticationWrite) =>
+    request<CapabilityAsset>(`/capabilities/${encodeURIComponent(id)}/mcp-source`, json('PUT', { content, mcp_scripts, ...(mcp_authentication ? { mcp_authentication } : {}) })),
   createCapabilityCollection: (body: CapabilityCollectionWrite) =>
     request<CapabilityCollection>('/capability-collections', json('POST', body)),
   updateCapabilityCollection: (id: string, body: CapabilityCollectionWrite) =>
@@ -813,7 +805,7 @@ export const api = {
     request<FlowRunStepwiseRecord[]>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-runs/config-imports`, json('POST', document)),
   deleteStepwiseRecord: (runId: string, recordId: string) => request<void>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-runs/${encodeURIComponent(recordId)}`, json('DELETE')),
   saveStepwiseNodeDraft: (runId: string, nodeKey: string, body: { expected_row_version: number; startup_mode: 'PROMPT'; startup_prompt?: string; artifact_ids: Record<string, string>; input_urls: Record<string, string>; gates: GatePolicy[]; agent_preset: import('../types').AgentPreset }) =>
-    request<StepwiseNodeDraft>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-node-drafts/${encodeURIComponent(nodeKey)}`, json('PUT', body)),
+    request<StepwiseNodeDraft>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-node-drafts/${encodeURIComponent(nodeKey)}`, json('PUT', { ...body, agent_preset: writableAgentPreset(body.agent_preset), gates: writableGates(body.gates) })),
   saveStepwiseRuntimePorts: (runId: string, body: StepwiseRuntimePortsWrite) =>
     request<FlowRunStepwiseRecord>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-runtime-ports`, json('PUT', body)),
   startStepwiseNodeDraft: (runId: string, nodeKey: string, expected_row_version: number) =>
@@ -1235,6 +1227,8 @@ export const nodeSessionApi = {
     request<{ model_provider_id: string; model_name?: string | null; reasoning_effort?: string | null }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/model`, json('POST', { model_provider_id, model_name, reasoning_effort })),
   remove: (flowRunId: string, attemptId: string, bindingId: string) =>
     request<void>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}`, json('DELETE', undefined, true)),
+  cancelMessageSubmission: (flowRunId: string, attemptId: string, bindingId: string, submissionId: string) =>
+    request<{ cancelled: boolean }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/messages/${encodeURIComponent(submissionId)}/cancel`, json('POST', {})),
   message: (flowRunId: string, attemptId: string, bindingId: string, content: string, attachments: AgentAttachment[] = [], references: AgentConversationReference[] = [], workspace_references: AgentWorkspaceReference[] = [], idempotencyKey = randomId(), annotations: AgentConversationAnnotation[] = []) =>
     request<{ accepted: boolean; cursor?: string | null; compacted?: boolean; queued_during_turn?: boolean }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/messages`, json('POST', { content, attachments: attachmentReferences(attachments), references: conversationReferencePayload(references), workspace_references: workspaceReferencePayload(workspace_references), annotations }, idempotencyKey)),
   pendingConfirmation: (flowRunId: string, attemptId: string, bindingId: string) =>

@@ -79,7 +79,7 @@ export function SkillMarketDialog({ onClose, onPublished }: { onClose: () => voi
       if (failures.length) setError(failures.join('；'));
     } finally { if (current()) setBusy(false); }
   };
-  return <div className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><section className="modal plugin-import-dialog" role="dialog" aria-modal="true" aria-label="Skill 市场">
+  return <div className="modal-backdrop"><section className="modal plugin-import-dialog" role="dialog" aria-modal="true" aria-label="Skill 市场">
     <header className="plugin-import-header"><h2>Skill 市场</h2><button className="ghost" aria-label="关闭 Skill 市场" onClick={onClose}><X size={18}/></button></header>
     <div className="plugin-import-body"><section className="plugin-import-market" aria-label="Skill 市场">
       <MarketSourcePicker market={market} disabled={busy}/>

@@ -19,6 +19,7 @@ from flowweave.modules.agent_sessions.application import (
 )
 from flowweave.modules.agent_sessions.infrastructure.models import (
     AgentConversationCapability,
+    AgentConversationCredentialSync,
     AgentHistorySession,
 )
 from flowweave.modules.catalog.application.platform_capabilities import (
@@ -51,6 +52,7 @@ def setup(graph, monkeypatch, tmp_path):
     g = graph
     for model in (
         AgentConversationCapability,
+        AgentConversationCredentialSync,
         CapabilityBlob,
         CapabilityPackage,
         CapabilityVersion,
@@ -159,10 +161,12 @@ def setup(graph, monkeypatch, tmp_path):
     return g
 
 
-def test_whole_reference_is_metadata_and_does_not_read_runtime(setup, monkeypatch):
+def test_whole_reference_uses_platform_history_reader(setup, monkeypatch):
     g = setup
     monkeypatch.setattr(
-        conversations, "get_runtime", lambda: pytest.fail("No history read for metadata")
+        conversations,
+        "read_visible_conversation_context",
+        lambda *_args: "user: 来源内容",
     )
     refs = conversations._resolve_message_references(
         g.db, g.workspace, g.target, ({"source_binding_id": g.first.id},)
@@ -174,12 +178,13 @@ def test_whole_reference_is_metadata_and_does_not_read_runtime(setup, monkeypatc
         "title": "来源会话",
         "source_binding_id": g.first.id,
         "source_conversation_id": g.first.openhands_conversation_id,
-        "history_tool": "read_referenced_conversation",
+        "history_tool": "platform_conversation_history",
+        "resolved_content": "user: 来源内容",
     }
     prompt, _ = conversations.message_payload("继续当前任务", (), refs)
     visible, projected, *_ = conversations.project_conversation_references(prompt)
     assert visible == "继续当前任务" and projected == refs
-    assert len(prompt) < 1500
+    assert "来源内容" in prompt
 
 
 def test_native_registration_freezes_provenance_and_reuses_credential(setup):
@@ -364,7 +369,11 @@ def test_native_config_probe_uses_official_state_and_returns_no_secrets(monkeypa
         runtime.conversation_mcp_configured(handle, integration.SERVER_NAME, "http://other")
         is False
     )
-    config["headers"] = {}
+    config.pop("headers")  # Public ConversationInfo strips masked SecretStr mappings.
+    assert (
+        runtime.conversation_mcp_configured(handle, integration.SERVER_NAME, config["url"]) is True
+    )
+    config["enabled"] = False
     assert (
         runtime.conversation_mcp_configured(handle, integration.SERVER_NAME, config["url"]) is False
     )
@@ -539,3 +548,35 @@ def test_builtin_import_exception_never_permits_plaintext_or_other_secrets(setup
             )
         )
     assert caught.value.code == "IMPORT_REJECTED"
+
+
+@pytest.mark.parametrize("kind", ["timeout", "connection", "unknown"])
+def test_failed_probe_reports_safe_reason(setup, monkeypatch, kind):
+    g = setup
+    monkeypatch.setattr(
+        g.runtime, "probe_mcp", lambda _request: RuntimeMCPProbeResult(ok=False, error_kind=kind)
+    )
+    with pytest.raises(DomainError) as caught:
+        integration.probe(
+            RuntimeHandle(job_id="test", conversation_id="native"),
+            integration.configured_capability(g.db),
+            "not-logged",
+        )
+    assert caught.value.details["reason"] == "MCP_" + kind.upper()
+    assert "not-logged" not in str(caught.value)
+
+
+def test_probe_detects_missing_history_tool(setup, monkeypatch):
+    g = setup
+    monkeypatch.setattr(
+        g.runtime,
+        "probe_mcp",
+        lambda _request: RuntimeMCPProbeResult(ok=True, tools=("another_tool",)),
+    )
+    with pytest.raises(DomainError) as caught:
+        integration.probe(
+            RuntimeHandle(job_id="test", conversation_id="native"),
+            integration.configured_capability(g.db),
+            "not-logged",
+        )
+    assert caught.value.details["reason"] == "TOOLS_MISSING"

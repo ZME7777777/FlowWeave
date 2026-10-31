@@ -4,9 +4,10 @@ import { flowRunLocationFromState, flowRunPath, flowRunTabId, flowRunTabLabel, p
 export type SettingsView = 'environments' | 'credentials' | 'models' | 'ldap-users';
 export type FlowRunTab = { id: string; label: string; path: string; state: unknown };
 export type ContextTab = { kind: 'settings'; view: SettingsView } | { kind: 'flow-run'; id: string };
+export const contextTabKey = (tab: ContextTab) => tab.kind === 'settings' ? `settings:${tab.view}` : `flow-run:${tab.id}`;
 type ContextTabsSnapshot = { settings: SettingsView[]; runs: FlowRunTab[]; order: ContextTab[] };
 
-const storageKey = (userId: string) => `flowweave.context-tabs.v1:${userId}`;
+const storageKey = (userId: string) => `flowweave.context-tabs.v2:${userId}`;
 const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object'
   ? value as Record<string, unknown>
   : {};
@@ -31,10 +32,11 @@ function navigationState(value: unknown) {
 export function readContextTabs(user: AuthUser): ContextTabsSnapshot {
   const snapshot: ContextTabsSnapshot = { settings: [], runs: [], order: [] };
   try {
-    const saved: unknown = JSON.parse(sessionStorage.getItem(storageKey(user.id)) ?? 'null');
+    const current = sessionStorage.getItem(storageKey(user.id));
+    const saved: unknown = JSON.parse(current ?? sessionStorage.getItem(`flowweave.context-tabs.v1:${user.id}`) ?? 'null');
     if (!Array.isArray(saved)) return snapshot;
     const seen = new Set<string>();
-    for (const value of saved) {
+    for (const value of current === null ? [...saved].reverse() : saved) {
       const tab = record(value);
       if (tab.kind === 'settings') {
         const view = tab.view;
@@ -84,5 +86,5 @@ export function saveContextTabs(userId: string, order: ContextTab[], runs: FlowR
 }
 
 export function clearContextTabs(userId: string) {
-  try { sessionStorage.removeItem(storageKey(userId)); } catch { /* storage is unavailable */ }
+  try { sessionStorage.removeItem(storageKey(userId)); sessionStorage.removeItem(`flowweave.context-tabs.v1:${userId}`); } catch { /* storage is unavailable */ }
 }

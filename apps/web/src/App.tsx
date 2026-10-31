@@ -1,9 +1,12 @@
+import type { NodeDraftState } from './components/NodeEditor';
+import { TopbarTabs, type TemporaryTab } from './components/TopbarTabs';
+import { RetainedPages } from './components/RetainedPages';
 import { ViewportPopover } from './components/ViewportPopover';
-import { AudioLines, Box, BrainCircuit, CalendarClock, ChevronDown, Component, GitFork, Hexagon, KeyRound, Library, LogOut, MessagesSquare, MoreHorizontal, PlayCircle, Settings, TerminalSquare, UsersRound, X } from 'lucide-react';
+import { AudioLines, Box, BrainCircuit, CalendarClock, ChevronDown, Component, GitFork, Hexagon, KeyRound, Library, LogOut, MessagesSquare, PlayCircle, Settings, TerminalSquare, UsersRound } from 'lucide-react';
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useWorkbenchStore } from './store/workbench';
-import { clearContextTabs, readContextTabs, saveContextTabs, type ContextTab, type FlowRunTab, type SettingsView } from './store/context-tabs';
+import { clearContextTabs, readContextTabs, saveContextTabs, contextTabKey, type ContextTab, type FlowRunTab, type SettingsView } from './store/context-tabs';
 import { withDeploymentBase, withoutDeploymentBase } from './deploymentPath';
 import { api } from './api/client';
 import { flowRunLocationFromState, flowRunPath, flowRunTabId, flowRunTabLabel, parseFlowRunPath, type FlowRunLocation } from './flowRunNavigation';
@@ -91,20 +94,24 @@ function clearAgentIdentityStorage() {
 export function App() {
   const queryClient = useQueryClient();
   const { view, selectedRunId, setView } = useWorkbenchStore();
+  const nodeDraftState = useRef<NodeDraftState>({ dirty: false, saving: false });
+  const onNodeDraftStateChange = useCallback((state: NodeDraftState) => { nodeDraftState.current = state; }, []);
   const nodeLeaveGuard = useRef<(() => Promise<boolean>) | undefined>(undefined);
-  const registerNodeLeaveGuard = useCallback((guard: (() => Promise<boolean>) | undefined) => { nodeLeaveGuard.current = guard; }, []);
+  const registerNodeLeaveGuard = useCallback((guard: (() => Promise<boolean>) | undefined) => { if (guard) nodeLeaveGuard.current = guard; }, []);
   const [contentReloadVersion, setContentReloadVersion] = useState(0);
   const [, setRouteVersion] = useState(0);
   const [user, setUser] = useState<AuthUser | null>();
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [contextTabsCollapsed, setContextTabsCollapsed] = useState(false);
-  const [contextTabsMenuOpen, setContextTabsMenuOpen] = useState(false);
   const [openSettingsViews, setOpenSettingsViews] = useState<SettingsView[]>([]);
   const [openFlowRunTabs, setOpenFlowRunTabs] = useState<FlowRunTab[]>([]);
   const [openContextTabs, setOpenContextTabs] = useState<ContextTab[]>([]);
+  const promoteContextTab = useCallback((id: string) => {
+    setOpenContextTabs(tabs => {
+      const index = tabs.findIndex(tab => contextTabKey(tab) === id);
+      return index > 0 ? [tabs[index], ...tabs.slice(0, index), ...tabs.slice(index + 1)] : tabs;
+    });
+  }, []);
   const tabsUser = useRef<AuthUser | null>(null);
-  const contextTabsMenu = useRef<HTMLDivElement>(null);
-  const contextTabsPopover = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (new URLSearchParams(window.location.search).get('view') === 'cases') setView('cases');
   }, [setView]);
@@ -148,6 +155,8 @@ export function App() {
     // Agent Workspace ID is shared, so retaining its query key would reuse
     // the previous account's conversation projection for up to staleTime.
     setUser(undefined);
+    nodeLeaveGuard.current = undefined;
+    nodeDraftState.current = { dirty: false, saving: false };
     setSettingsOpen(false);
     if (tabsUser.current) clearContextTabs(tabsUser.current.id);
     tabsUser.current = null;
@@ -170,25 +179,32 @@ export function App() {
     }
     setUser(nextUser);
   }, [queryClient, restoreContextTabs, setView]);
+  useEffect(() => {
+    const warn = (event: BeforeUnloadEvent) => {
+      if (!nodeDraftState.current.dirty && !nodeDraftState.current.saving) return;
+      event.preventDefault(); event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, []);
   useEscapeClose(() => setSettingsOpen(false), settingsOpen);
-  useEscapeClose(() => setContextTabsMenuOpen(false), contextTabsMenuOpen);
   const reloadCurrentContent = useCallback(async () => {
     if (nodeLeaveGuard.current && !await nodeLeaveGuard.current()) return;
     setSettingsOpen(false);
     await queryClient.cancelQueries();
     queryClient.clear();
+    nodeLeaveGuard.current = undefined;
+    nodeDraftState.current = { dirty: false, saving: false };
     setContentReloadVersion(current => current + 1);
   }, [queryClient]);
   useEffect(() => {
-    if (!settingsOpen && !contextTabsMenuOpen) return;
+    if (!settingsOpen) return;
     const closeOutside = (event: PointerEvent) => {
-      const target = event.target as Node;
-      if (settingsOpen && !settingsMenu.current?.contains(target) && !settingsPopover.current?.contains(target)) setSettingsOpen(false);
-      if (contextTabsMenuOpen && !contextTabsMenu.current?.contains(target) && !contextTabsPopover.current?.contains(target)) setContextTabsMenuOpen(false);
+      if (!settingsMenu.current?.contains(event.target as Node) && !settingsPopover.current?.contains(event.target as Node)) setSettingsOpen(false);
     };
     document.addEventListener('pointerdown', closeOutside);
     return () => document.removeEventListener('pointerdown', closeOutside);
-  }, [contextTabsMenuOpen, settingsOpen]);
+  }, [settingsOpen]);
   useEffect(() => {
     let active = true;
     void api.authMe().then(value => {
@@ -309,7 +325,7 @@ export function App() {
     const state = window.history.state ?? {};
     setOpenContextTabs(tabs => tabs.some(tab => tab.kind === 'flow-run' && tab.id === activeFlowRunTabId)
       ? tabs
-      : [...tabs, { kind: 'flow-run', id: activeFlowRunTabId }]);
+      : [{ kind: 'flow-run', id: activeFlowRunTabId }, ...tabs]);
     setOpenFlowRunTabs(current => {
       const existing = current.find(tab => tab.id === activeFlowRunTabId);
       if (!existing) return [...current, { id: activeFlowRunTabId, label: '正在打开运行…', path, state }];
@@ -376,10 +392,9 @@ export function App() {
     setOpenSettingsViews(current => current.includes(settingsView) ? current : [...current, settingsView]);
     setOpenContextTabs(tabs => tabs.some(tab => tab.kind === 'settings' && tab.view === settingsView)
       ? tabs
-      : [...tabs, { kind: 'settings', view: settingsView }]);
+      : [{ kind: 'settings', view: settingsView }, ...tabs]);
   }, [flowRunRouteId, isAgentRoute, setView, user, view]);
   const selectView = async (next: typeof view) => {
-    if (next !== 'nodes' && nodeLeaveGuard.current && !await nodeLeaveGuard.current()) return false;
     setSettingsOpen(false);
     if (next === 'agent-workbench') {
       if (user?.can_use_agent_sessions === false) {
@@ -402,20 +417,28 @@ export function App() {
     setOpenSettingsViews(current => current.includes(next) ? current : [...current, next]);
     setOpenContextTabs(tabs => tabs.some(tab => tab.kind === 'settings' && tab.view === next)
       ? tabs
-      : [...tabs, { kind: 'settings', view: next }]);
+      : [{ kind: 'settings', view: next }, ...tabs]);
   };
-  const closeSettingsView = (closingView: SettingsView) => {
-    const closingIndex = openSettingsViews.indexOf(closingView);
-    const next = openSettingsViews.filter(item => item !== closingView);
-    setOpenSettingsViews(next);
-    setOpenContextTabs(tabs => tabs.filter(tab => tab.kind !== 'settings' || tab.view !== closingView));
-    if (renderedView !== closingView) return;
-    const replacement = next[closingIndex] ?? next[closingIndex - 1];
-    if (replacement) selectView(replacement);
-    else selectView('nodes');
+  const closeContextTab = (closing: ContextTab) => {
+    const index = openContextTabs.findIndex(tab => contextTabKey(tab) === contextTabKey(closing));
+    const next = openContextTabs.filter(tab => contextTabKey(tab) !== contextTabKey(closing));
+    setOpenContextTabs(next);
+    if (closing.kind === 'settings') setOpenSettingsViews(current => current.filter(view => view !== closing.view));
+    else setOpenFlowRunTabs(current => current.filter(tab => tab.id !== closing.id));
+    const active = closing.kind === 'settings'
+      ? renderedView === closing.view && !isAgentRoute && !flowRunRouteId
+      : activeFlowRunTabId === closing.id;
+    if (!active) return;
+    const replacement = next[index] ?? next[index - 1];
+    if (replacement?.kind === 'settings') void selectSettingsView(replacement.view);
+    else if (replacement?.kind === 'flow-run') void selectFlowRunTab(replacement.id);
+    else if (closing.kind === 'settings') void selectView('nodes');
+    else {
+      useWorkbenchStore.setState({ view: 'runs', selectedRunId: undefined, selectedNodeRunId: undefined, selectedAttemptId: undefined });
+      navigate('/', true);
+    }
   };
   const selectFlowRunTab = async (runId: string) => {
-    if (nodeLeaveGuard.current && !await nodeLeaveGuard.current()) return;
     const tab = openFlowRunTabs.find(item => item.id === runId);
     if (!tab) {
       navigate(`/flow-runs/${encodeURIComponent(runId)}`);
@@ -425,19 +448,6 @@ export function App() {
     // Restore the saved Attempt/record selection through the same path as Back.
     // After a refresh it is no longer present in the in-memory workbench store.
     window.dispatchEvent(new PopStateEvent('popstate', { state: tab.state }));
-  };
-  const closeFlowRunTab = (runId: string) => {
-    const closingIndex = openFlowRunTabs.findIndex(tab => tab.id === runId);
-    const next = openFlowRunTabs.filter(tab => tab.id !== runId);
-    setOpenFlowRunTabs(next);
-    setOpenContextTabs(tabs => tabs.filter(tab => tab.kind !== 'flow-run' || tab.id !== runId));
-    if (activeFlowRunTabId !== runId) return;
-    const replacement = next[closingIndex] ?? next[closingIndex - 1];
-    if (replacement) selectFlowRunTab(replacement.id);
-    else {
-      useWorkbenchStore.setState({ view: 'runs', selectedRunId: undefined, selectedNodeRunId: undefined, selectedAttemptId: undefined });
-      navigate('/', true);
-    }
   };
   const terminalParams = new URLSearchParams(window.location.search);
   const terminalRunId = terminalParams.get('terminalRun');
@@ -458,27 +468,25 @@ export function App() {
   const activeSettingsItem = !isAgentRoute ? accountSettingsNav.find(item => item.view === renderedView) : undefined;
   const settingsActive = Boolean(activeSettingsItem);
   const visibleNav = nav.filter(item => item.view !== 'agent-workbench' || user.can_use_agent_sessions !== false);
-  const contextTabItems = openContextTabs.flatMap(contextTab => {
+  const temporaryTabs: TemporaryTab[] = openContextTabs.flatMap(contextTab => {
     if (contextTab.kind === 'settings') {
       const item = accountSettingsNav.find(candidate => candidate.view === contextTab.view);
-      if (!item) return [];
-      return [{
-        id: `settings-${item.view}`, label: item.label, icon: item.icon,
+      return item ? [{ id: contextTabKey(contextTab), label: item.label, icon: item.icon,
         active: renderedView === item.view && !isAgentRoute && !flowRunRouteId,
-        select: () => { setContextTabsMenuOpen(false); void selectSettingsView(item.view); },
-        close: () => closeSettingsView(item.view),
-      }];
+        onSelect: () => { void selectSettingsView(item.view); }, onClose: () => closeContextTab(contextTab) }] : [];
     }
     const tab = openFlowRunTabs.find(candidate => candidate.id === contextTab.id);
-    if (!tab) return [];
-    return [{
-      id: `flow-run-${tab.id}`, label: tab.label, icon: PlayCircle, active: activeFlowRunTabId === tab.id,
-      select: () => { setContextTabsMenuOpen(false); void selectFlowRunTab(tab.id); },
-      close: () => closeFlowRunTab(tab.id),
-    }];
+    return tab ? [{ id: contextTabKey(contextTab), label: tab.label, icon: PlayCircle,
+      title: `${tab.label} · ${tab.path}`, active: activeFlowRunTabId === tab.id,
+      onSelect: () => { void selectFlowRunTab(tab.id); }, onClose: () => closeContextTab(contextTab) }] : [];
   });
-  const hasContextTabs = contextTabItems.length > 0;
-  return <div className={`app-shell${isAgentRoute ? ' agent-workbench-shell' : ''}`}><header className="topbar" onDoubleClick={toggleFullscreenFromTopbar}><button type="button" className="brand" aria-label="重新加载当前页面数据" title="重新加载当前页面数据（保持全屏）" onClick={() => void reloadCurrentContent()}><span className="brand-mark"><Hexagon size={22} fill="currentColor"/></span><span>FlowWeave</span></button><nav aria-label="主导航">{visibleNav.map(item => <button key={item.view} className={(!activeFlowRunTabId && (isAgentRoute ? item.view === 'agent-workbench' : renderedView === item.view)) ? 'active' : ''} onClick={() => selectView(item.view)}><item.icon size={15}/>{item.label}</button>)}</nav>{hasContextTabs && <div className={`context-tabs${contextTabsCollapsed ? ' collapsed' : ''}`} aria-label="临时管理标签"><div className="context-tabs-divider"><button type="button" className="context-tabs-toggle" aria-label={contextTabsCollapsed ? '展开临时标签' : '收起临时标签'} title={contextTabsCollapsed ? '展开临时标签' : '收起临时标签'} onClick={() => { setContextTabsCollapsed(value => !value); setContextTabsMenuOpen(false); }}><span aria-hidden="true">|</span><span aria-hidden="true">{contextTabsCollapsed ? '»' : '«'}</span></button></div>{!contextTabsCollapsed && <div className="context-tabs-list">{contextTabItems.map(item => <div className={`context-tab${item.active ? ' active' : ''}`} key={item.id}><button type="button" className="context-tab-select" aria-current={item.active ? 'page' : undefined} title={item.label} onClick={item.select}><item.icon size={14}/><span>{item.label}</span></button><button type="button" className="context-tab-close" aria-label={`关闭${item.label}`} title={`关闭${item.label}`} onClick={item.close}><X size={12}/></button></div>)}</div>}{contextTabsCollapsed && <div className="context-tabs-menu" ref={contextTabsMenu}><button type="button" className="context-tabs-more" aria-label={`其他临时标签（${contextTabItems.length}）`} aria-haspopup="menu" aria-expanded={contextTabsMenuOpen} title={`其他临时标签（${contextTabItems.length}）`} onClick={() => setContextTabsMenuOpen(open => !open)}><MoreHorizontal size={16}/></button>{contextTabsMenuOpen && <ViewportPopover ref={contextTabsPopover} anchor={() => contextTabsMenu.current} align="end" className="settings-popover context-tabs-popover" role="menu" aria-label="其他临时标签">{contextTabItems.map(item => <button type="button" role="menuitem" className={item.active ? 'active' : ''} key={item.id} onClick={item.select}><span className="settings-item-icon"><item.icon size={15}/></span><b>{item.label}</b></button>)}</ViewportPopover>}</div>}</div>}<div className="topbar-actions"><div className="account-menu" ref={settingsMenu}><button type="button" className={`account-trigger${settingsActive ? ' active' : ''}`} aria-label="账户与设置" aria-haspopup="menu" aria-expanded={settingsOpen} onClick={() => setSettingsOpen(open => !open)}><span className="account-avatar" aria-hidden="true">{user.username.slice(0, 1).toUpperCase()}</span><span className="account-identity"><b>{user.username}</b><small>{user.is_super_admin ? '超级管理员' : '普通用户'}</small></span><ChevronDown size={13} className={settingsOpen ? 'rotated' : ''}/></button>{settingsOpen && <ViewportPopover ref={settingsPopover} anchor={() => settingsMenu.current} align="end" matchAnchorWidth className="settings-popover account-popover" role="menu" aria-label="账户与设置"><div className="account-popover-heading"><Settings size={14}/><b>平台设置</b></div>{accountSettingsNav.map(item => <button type="button" role="menuitem" title={item.description} key={item.view} className={renderedView === item.view && !isAgentRoute && !flowRunRouteId ? 'active' : ''} onClick={() => selectSettingsView(item.view)}><span className="settings-item-icon"><item.icon size={15}/></span><b>{item.label}</b></button>)}<button type="button" role="menuitem" title="结束当前平台会话" className="account-logout" onClick={() => void logout()}><span className="settings-item-icon"><LogOut size={15}/></span><b>退出登录</b></button></ViewportPopover>}</div></div></header>
-    <Suspense fallback={<PageLoading/>}><div key={contentReloadVersion}>{isAgentRoute ? nodeSessionRoute ? <FlowNodeSessionPage flowRunId={decodeURIComponent(nodeSessionRoute[1])} nodeRunId={decodeURIComponent(nodeSessionRoute[2])} attemptId={decodeURIComponent(nodeSessionRoute[3])} onNavigate={navigate}/> : caseSessionRoute ? <CaseSessionPage caseId={decodeURIComponent(caseSessionRoute[1])} bindingId={decodeURIComponent(caseSessionRoute[2])} onNavigate={navigate} onReturn={() => { setView('cases'); navigate('/', true); }}/> : <AgentWorkbenchPage onNavigate={navigate}/> : <>{renderedView === 'nodes' && <NodesPage onRegisterLeaveGuard={registerNodeLeaveGuard}/>}{renderedView === 'capabilities' && <CapabilitiesPage/>}{renderedView === 'environments' && <TerminalEnvironmentsPage/>}{renderedView === 'credentials' && <CredentialsPage/>}{renderedView === 'ldap-users' && user.is_super_admin && <LdapUsersPage/>}{renderedView === 'flows' && <FlowsPage/>}{renderedView === 'runs' && <RunsPage/>}{renderedView === 'cases' && <CasesPage onNavigate={navigate}/>}{renderedView === 'schedules' && <SchedulesPage/>}{renderedView === 'models' && <ModelsPage/>}{renderedView === 'workbench' && <WorkbenchPage key={activeFlowRunTabId ?? selectedRunId} location={activeFlowRunLocation}/>}</>}</div></Suspense>
+  const pageGroup = activeFlowRunTabId ? `run:${activeFlowRunTabId}` : isAgentRoute ? 'agent-workbench' : renderedView;
+  const pageKey = nodeSessionRoute ? `node-session:${nodeSessionRoute.slice(1).join(':')}`
+    : caseSessionRoute ? `case-session:${caseSessionRoute.slice(1).join(':')}`
+    : directAgentRoute && canUseAgentSessions ? 'agent-workbench'
+    : renderedView === 'workbench' ? `workbench:${activeFlowRunTabId ?? selectedRunId}` : renderedView;
+  const retainedGroups = [...visibleNav.map(item => item.view), ...openSettingsViews, ...openFlowRunTabs.map(tab => `run:${tab.id}`)];
+  return <div className={`app-shell${isAgentRoute ? ' agent-workbench-shell' : ''}`}><header className="topbar" onDoubleClick={toggleFullscreenFromTopbar}><button type="button" className="brand" aria-label="重新加载当前页面数据" title="重新加载当前页面数据（保持全屏）" onClick={() => void reloadCurrentContent()}><span className="brand-mark"><Hexagon size={22} fill="currentColor"/></span><span>FlowWeave</span></button><TopbarTabs key={user.id} userId={user.id} fixedTabs={visibleNav.map(item => ({ id: item.view, label: item.label, icon: item.icon, active: !activeFlowRunTabId && (isAgentRoute ? item.view === 'agent-workbench' : renderedView === item.view), onSelect: () => { void selectView(item.view); } }))} temporaryTabs={temporaryTabs} onPromote={promoteContextTab}/><div className="topbar-actions"><div className="account-menu" ref={settingsMenu}><button type="button" className={`account-trigger${settingsActive ? ' active' : ''}`} aria-label="账户与设置" aria-haspopup="menu" aria-expanded={settingsOpen} onClick={() => setSettingsOpen(open => !open)}><span className="account-avatar" aria-hidden="true">{user.username.slice(0, 1).toUpperCase()}</span><span className="account-identity"><b>{user.username}</b><small>{user.is_super_admin ? '超级管理员' : '普通用户'}</small></span><ChevronDown size={13} className={settingsOpen ? 'rotated' : ''}/></button>{settingsOpen && <ViewportPopover ref={settingsPopover} anchor={() => settingsMenu.current} align="end" matchAnchorWidth className="settings-popover account-popover" role="menu" aria-label="账户与设置"><div className="account-popover-heading"><Settings size={14}/><b>平台设置</b></div>{accountSettingsNav.map(item => <button type="button" role="menuitem" title={item.description} key={item.view} className={renderedView === item.view && !isAgentRoute && !flowRunRouteId ? 'active' : ''} onClick={() => selectSettingsView(item.view)}><span className="settings-item-icon"><item.icon size={15}/></span><b>{item.label}</b></button>)}<button type="button" role="menuitem" title="结束当前平台会话" className="account-logout" onClick={() => void logout()}><span className="settings-item-icon"><LogOut size={15}/></span><b>退出登录</b></button></ViewportPopover>}</div></div></header>
+    <RetainedPages key={`${user.id}:${contentReloadVersion}`} activeKey={pageKey} group={pageGroup} retainedGroups={retainedGroups} fallback={<PageLoading/>}>{isAgentRoute ? nodeSessionRoute ? <FlowNodeSessionPage flowRunId={decodeURIComponent(nodeSessionRoute[1])} nodeRunId={decodeURIComponent(nodeSessionRoute[2])} attemptId={decodeURIComponent(nodeSessionRoute[3])} onNavigate={navigate}/> : caseSessionRoute ? <CaseSessionPage caseId={decodeURIComponent(caseSessionRoute[1])} bindingId={decodeURIComponent(caseSessionRoute[2])} onNavigate={navigate} onReturn={() => { setView('cases'); navigate('/', true); }}/> : <AgentWorkbenchPage onNavigate={navigate}/> : <>{renderedView === 'nodes' && <NodesPage onRegisterLeaveGuard={registerNodeLeaveGuard} onDraftStateChange={onNodeDraftStateChange}/>}{renderedView === 'capabilities' && <CapabilitiesPage/>}{renderedView === 'environments' && <TerminalEnvironmentsPage/>}{renderedView === 'credentials' && <CredentialsPage/>}{renderedView === 'ldap-users' && user.is_super_admin && <LdapUsersPage/>}{renderedView === 'flows' && <FlowsPage/>}{renderedView === 'runs' && <RunsPage/>}{renderedView === 'cases' && <CasesPage onNavigate={navigate}/>}{renderedView === 'schedules' && <SchedulesPage/>}{renderedView === 'models' && <ModelsPage/>}{renderedView === 'workbench' && <WorkbenchPage key={activeFlowRunTabId ?? selectedRunId} location={activeFlowRunLocation}/>}</>}</RetainedPages>
   </div>;
 }

@@ -1996,6 +1996,7 @@ def test_agent_workspace_selected_plugin_and_mcp_are_mounted(
     runtime = CapturingRuntime()
     with (
         settings_context(settings),
+        tenant_user(FLOWWEAVE_USER_ID),
         artifact_store_context(container.artifact_store),
         db_session_factory() as db,
         runtime_context(runtime),
@@ -2011,6 +2012,8 @@ def test_agent_workspace_selected_plugin_and_mcp_are_mounted(
         )
         assert readiness["state"] == "READY"
         assert readiness["error_kind"] is None
+        assert readiness["tools"] == ["mock_read"]
+        assert readiness["reason"] is None
         assert runtime.mcp_probe_request is not None
         assert runtime.mcp_probe_request.server.name == "agent-local"
         assert runtime.mcp_probe_request.runtime_resource_name == (
@@ -3426,15 +3429,18 @@ def test_agent_workspace_terminal_session_names_are_safe_and_instance_scoped():
     )
 
 
+@pytest.mark.parametrize("failure_stage", ["message", "history"])
 def test_agent_workspace_bootstrap_explicit_failure_cleans_up_hidden_conversation(
-    settings, db_session_factory, monkeypatch
+    settings, db_session_factory, monkeypatch, failure_stage
 ):
     class FailingBootstrapRuntime(MockRuntime):
         deleted = 0
+        fail_send = True
 
         def send_message(self, handle, content, image_urls=()):
-            del handle, content, image_urls
-            raise DomainError("AGENT_INPUT_REJECTED", "invalid first input", 422)
+            if self.fail_send:
+                raise DomainError("AGENT_INPUT_REJECTED", "invalid first input", 422)
+            return super().send_message(handle, content, image_urls)
 
         def delete_conversation(self, handle):
             del handle
@@ -3451,13 +3457,42 @@ def test_agent_workspace_bootstrap_explicit_failure_cleans_up_hidden_conversatio
         ),
     )
     runtime = FailingBootstrapRuntime()
-    with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
+    with (
+        settings_context(settings),
+        tenant_user(FLOWWEAVE_USER_ID),
+        db_session_factory() as db,
+        runtime_context(runtime),
+    ):
+        from flowweave.modules.agent_sessions.infrastructure.models import (
+            AgentConversationCredentialSync,
+        )
+        from flowweave.modules.credentials.infrastructure.models import WebsiteCredential
+
         workspace = _ready_workspace_for_conversation(db)
-        with pytest.raises(DomainError, match="invalid first input"):
+        credential = WebsiteCredential(
+            name="bootstrap-fixture", target_host="example.test", auth_type="TOKEN",
+            encrypted_secret=encrypt_secret("fixture-secret"),
+        )
+        db.add(credential)
+        db.commit()
+        if failure_stage == "history":
+            def reject_history(db, _workspace, binding, _references):
+                assert db.scalar(select(AgentConversationCredentialSync).where(
+                    AgentConversationCredentialSync.binding_id == binding.id
+                )) is not None
+                raise DomainError(
+                    "AGENT_HISTORY_CAPABILITY_UNAVAILABLE", "history unavailable", 409
+                )
+
+            monkeypatch.setattr(conversations, "_ensure_history_references", reject_history)
+        draft_id = str(uuid4())
+        expected = "history unavailable" if failure_stage == "history" else "invalid first input"
+        with pytest.raises(DomainError, match=expected):
             conversations.bootstrap_conversation(
                 db,
                 workspace.id,
                 work_directory_id=None,
+                conversation_id=draft_id,
                 model_provider_id=workspace.default_model_provider_id,
                 content="会失败",
                 idempotency_key="draft-known-failure",
@@ -3465,7 +3500,24 @@ def test_agent_workspace_bootstrap_explicit_failure_cleans_up_hidden_conversatio
         assert db.scalar(select(AgentConversationBinding)) is None
         assert db.scalar(select(AgentConversationCommand)) is None
         assert runtime.deleted == 1
+        assert db.scalar(select(AgentConversationCredentialSync)) is None
+        assert db.get(WebsiteCredential, credential.id) is not None
         assert conversations.list_conversations(db, workspace.id) == []
+
+        runtime.fail_send = False
+        monkeypatch.setattr(conversations, "_ensure_history_references", lambda *_args: True)
+        result = conversations.bootstrap_conversation(
+            db,
+            workspace.id,
+            work_directory_id=None,
+            conversation_id=draft_id,
+            model_provider_id=workspace.default_model_provider_id,
+            content="重试原草稿",
+            idempotency_key="draft-known-failure",
+        )
+        assert result["conversation"]["id"] == draft_id
+        assert result["accepted"] is True
+        assert len(list(db.scalars(select(AgentConversationCredentialSync)))) == 1
 
 
 def test_agent_workspace_bootstrap_rejects_reuse_of_deleted_draft_id(

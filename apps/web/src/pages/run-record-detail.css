@@ -120,3 +120,51 @@
 .record-context-preview h2{font-size:15px}
 .record-context-preview p{margin:12px 0;color:var(--muted);font-size:11px}
 .flow-run-record-workspace .startup-prompt-summary p{-webkit-line-clamp:1}
+
+/* Configuration tabs own independent content; keep row labels and actions aligned. */
+.flow-run-record-workspace .node-console-subtabs{gap:6px}
+.flow-run-record-workspace .node-console-subtabs [role=tab]{position:relative;min-height:40px;padding:10px 8px;color:#75877c}
+.flow-run-record-workspace .node-console-subtabs [aria-selected=true]{color:#12644b;font-weight:600;border-bottom:2px solid #12644b;background:#f5faf7}
+.flow-run-record-workspace .node-console-subtabs [role=tab]:focus-visible{outline:2px solid #4f9b7b;outline-offset:-3px;border-radius:4px}
+.flow-run-record-workspace .node-configuration-sections>section[hidden]{display:none}
+.flow-run-record-workspace .agent-preset-editor{gap:4px;border:0;background:transparent;padding:2px 0}
+.flow-run-record-workspace .agent-preset-editor>header{padding:0 2px;margin-bottom:6px}
+.flow-run-record-workspace .agent-preset-editor .agent-preset-modules{grid-template-columns:minmax(0,1fr);gap:0;border:1px solid #e1e8e3;border-radius:7px;overflow:hidden;background:#fff}
+.flow-run-record-workspace .agent-preset-editor .agent-preset-module{grid-template-columns:28px minmax(0,1fr) auto;min-height:64px;gap:10px;border:0;border-bottom:1px solid #edf1ee;border-radius:0;padding:12px;text-align:left}
+.flow-run-record-workspace .agent-preset-editor .agent-preset-module:last-child{border-bottom:0}
+.flow-run-record-workspace .agent-preset-module-icon{width:28px;height:28px;border-radius:6px}
+.flow-run-record-workspace .agent-preset-module b{font-size:11px}
+.flow-run-record-workspace .agent-preset-module small{font-size:10px;line-height:1.5}
+.flow-run-record-workspace .agent-preset-module em{display:block;font-size:10px;color:#39735b}
+.flow-run-record-workspace .node-context-preset{padding:0;overflow:hidden}
+.flow-run-record-workspace .node-context-preset .context-module{grid-template-columns:28px minmax(0,1fr) auto;gap:8px;margin:0;border:0;min-height:64px;padding:10px}
+.flow-run-record-workspace .node-context-preset .context-module button{min-height:26px;padding:4px 7px;font-size:10px}
+.flow-run-record-workspace .gate-draft-editor{grid-template-columns:minmax(0,1fr);gap:18px;padding:12px}
+.flow-run-record-workspace .gate-draft-stage>header{margin-bottom:8px}
+.flow-run-record-workspace .gate-draft-stage h4{font-size:11px}
+.flow-run-record-workspace .gate-draft-stage button{font-size:10px}
+.flow-run-record-workspace .node-execution-history{padding:12px}
+.flow-run-record-workspace .node-execution-history h4{font-size:11px}
+
+/* Four stable configuration tabs define the inspector width. */
+.workbench-page.flow-run-record-workspace{grid-template-columns:350px minmax(0,1fr)}
+.flow-run-record-workspace .node-console-header-actions{display:flex;align-items:center;flex:0 0 auto;gap:5px}
+.flow-run-record-workspace .node-console-header-actions>.primary{display:inline-flex;align-items:center;justify-content:center;height:28px;min-height:28px;margin:0;padding:5px 9px;line-height:1;white-space:nowrap}
+.flow-run-record-workspace .node-console-header-actions>.primary:disabled{opacity:.4;cursor:not-allowed;background:#6d7f75;border-color:#6d7f75;color:#fff}
+.flow-run-record-workspace .node-console-header-actions>.primary svg{flex-shrink:0}
+.flow-run-record-workspace .node-console-subtabs{gap:0;padding-inline:5px}
+.flow-run-record-workspace .node-console-subtabs [role=tab]{flex:1;padding-inline:8px;font-size:11px}
+.node-configuration-field{min-width:0}
+.node-configuration-field.invalid{border-radius:6px;outline:1px solid #d49d8b;background:#fffaf7}
+.node-configuration-field.invalid:focus{outline:2px solid #b96e51;outline-offset:2px}
+.configuration-field-error{margin:0;padding:5px 8px 8px;color:#a45037;font-size:11px;line-height:1.5}
+.node-input-control[aria-invalid=true]>input,.node-input-control[aria-invalid=true]>.platform-file-upload{border-color:#b96e51;box-shadow:0 0 0 2px #b96e5115}
+.flow-run-record-workspace .agent-preset-editor .agent-preset-module{width:100%;background:transparent}
+.flow-run-record-workspace .agent-preset-editor .node-configuration-field:not(:last-child){border-bottom:1px solid #edf1ee}
+.flow-run-record-workspace .agent-preset-editor .agent-preset-module{border-bottom:0}
+.flow-run-record-workspace .run-graph-node.inactive:not(.flow-active-target){border-color:#d2dcd6;background:#f7f9f7;color:#8a9890}
+.flow-run-record-workspace .run-graph-node.inactive:not(.flow-active-target) .flow-node-kind{background:#edf0ed;color:#87978c}
+.flow-run-record-workspace .run-graph-node.inactive.snapshot-selected:not(.flow-active-target){outline:2px solid #9baba1;box-shadow:0 0 0 4px #e8eee9}
+.flow-run-record-workspace .run-graph-node.inactive.snapshot-selected:not(.flow-active-target){border-color:#98a99e!important;background:#f7f9f7!important;box-shadow:0 0 0 4px #e8eee9!important;outline:2px solid #9baba1}
+.flow-run-record-workspace .run-graph-node.inactive.flow-active-target{border-color:#4b8e6b!important;background:#f3faf5!important}
+.flow-run-record-workspace .run-graph-node.inactive.flow-active-target>strong{color:#36664b}

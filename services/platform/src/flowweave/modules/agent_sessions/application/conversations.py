@@ -20,7 +20,7 @@ from sqlalchemy import Numeric, and_, cast, delete, func, or_, select, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from flowweave.modules.agent_sessions.application import resumable_attachments
+from flowweave.modules.agent_sessions.application import message_submissions, resumable_attachments
 from flowweave.modules.agent_sessions.application import usage as usage_projection
 from flowweave.modules.agent_sessions.application.activity_reconciliation import (
     read_activity_completion,
@@ -71,6 +71,7 @@ from flowweave.modules.agent_sessions.infrastructure.models import (
     AgentConversationBinding,
     AgentConversationCapability,
     AgentConversationCommand,
+    AgentConversationCredentialSync,
     AgentConversationMessageAttachment,
     AgentSidebarConversation,
 )
@@ -79,6 +80,7 @@ from flowweave.modules.agent_workspaces.application.git_settings import (
     apply_profile_identity,
     profile_identity,
 )
+from flowweave.modules.catalog.application import mcp_authentication
 from flowweave.modules.catalog.application.platform_capabilities import (
     require_user_configurable_capability,
 )
@@ -734,7 +736,7 @@ def _binding_mcp_keys(db: Session, binding: AgentConversationBinding) -> tuple[s
 
 
 def probe_workspace_mcp_readiness(
-    db: Session, workspace_id: str, capability_version_id: str
+    db: Session, workspace_id: str, capability_version_id: str, *, read_only_tool_call=None
 ) -> dict[str, Any]:
     """Probe one published MCP from the active Agent Workspace Runtime.
 
@@ -744,6 +746,14 @@ def probe_workspace_mcp_readiness(
     conversations.
     """
 
+    def unavailable_result(reason: str) -> dict[str, Any]:
+        return {
+            "state": "UNAVAILABLE", "error_kind": "unknown", "reason": reason,
+            "tools": [], "checked_at": now().isoformat(),
+        }
+
+    from flowweave.modules.agent_sessions.application import history_integration, history_probe
+
     workspace = _workspace(db, workspace_id)
     published = resolve_version(db, capability_version_id)
     if published.package.capability_type != "MCP":
@@ -752,7 +762,7 @@ def probe_workspace_mcp_readiness(
         select(AgentWorkspaceRuntime).where(AgentWorkspaceRuntime.workspace_id == workspace.id)
     )
     if runtime is None or runtime.status != "ACTIVE" or runtime.active_generation is None:
-        return {"state": "UNAVAILABLE", "error_kind": "unknown", "checked_at": now().isoformat()}
+        return unavailable_result("RUNTIME_NOT_READY")
     sandbox = db.scalar(
         select(ManagedSandbox).where(
             ManagedSandbox.owner_type == "AGENT_WORKSPACE",
@@ -762,7 +772,7 @@ def probe_workspace_mcp_readiness(
         )
     )
     if sandbox is None or not sandbox.backend_resource_name:
-        return {"state": "UNAVAILABLE", "error_kind": "unknown", "checked_at": now().isoformat()}
+        return unavailable_result("RUNTIME_NOT_READY")
     allocation = agent_workspace_host.runtime_allocation_for_agent_workspace(db, workspace.id)
     probe_id = str(uuid4())
     host_root = (
@@ -778,24 +788,71 @@ def probe_workspace_mcp_readiness(
         _, _, servers = materialize_agent_workspace_capabilities(
             (capability,), host_root=host_root, runtime_root=runtime_root
         )
+        server = servers[0]
+        builtin_history = published.package.capability_key == history_integration.SERVER_NAME
+        if builtin_history:
+            configured = history_integration.configured_capability(db)
+            if configured.version.id != published.version.id:
+                raise DomainError(
+                    "AGENT_HISTORY_VERSION_NOT_CURRENT",
+                    "请检测系统当前发布的历史查询版本", 409,
+                )
+            token = history_probe.issue(current_user_id(), published.version.id)
+            server = replace(
+                server, config={**server.config, "headers": {"Authorization": f"Bearer {token}"}}
+            )
+        if not builtin_history:
+            server, _ = mcp_authentication.prepare_server(db, server, probe=True)
+        from flowweave.runtime.base import RuntimeMCPToolCall
+
+        call = (
+            RuntimeMCPToolCall(
+                name=read_only_tool_call.name, arguments=read_only_tool_call.arguments
+            )
+            if read_only_tool_call is not None
+            else None
+        )
+        if builtin_history and call is not None:
+            raise DomainError("MCP_PROBE_READ_ONLY", "内置能力仅支持工具目录检测", 422)
         result = get_runtime().probe_mcp(
             RuntimeMCPProbeRequest(
-                server=servers[0],
+                server=server,
+                read_only_tool_call=call,
                 base_url=f"http://{sandbox.backend_resource_name}:8000",
                 runtime_resource_name=sandbox.backend_resource_name,
             )
         )
-    except DomainError:
-        return {"state": "UNAVAILABLE", "error_kind": "unknown", "checked_at": now().isoformat()}
+        if builtin_history and result.ok and "read_referenced_conversation" not in result.tools:
+            return unavailable_result("TOOLS_MISSING")
+    except DomainError as exc:
+        return unavailable_result(exc.code)
     finally:
         # The MCP test endpoint has consumed the materialized configuration
         # synchronously.  The temporary immutable probe directory is never a
         # Conversation capability and must not accumulate in the allocation.
         shutil.rmtree(host_root, ignore_errors=True)
+    invocation = None
+    if read_only_tool_call is not None:
+        business_code = None
+        try:
+            body = json.loads(result.tool_call_text or "")
+            value = body.get("code") if isinstance(body, dict) else None
+            if isinstance(value, int) and not isinstance(value, bool):
+                business_code = value
+        except (ValueError, TypeError):
+            pass
+        invocation = {
+            "name": read_only_tool_call.name,
+            "is_error": result.tool_call_is_error,
+            "business_code": business_code,
+        }
     return {
         "state": "READY" if result.ok else "UNAVAILABLE",
         "error_kind": None if result.ok else (result.error_kind or "unknown"),
+        "reason": None if result.ok else f"MCP_{(result.error_kind or 'unknown').upper()}",
+        "tools": list(result.tools) if result.ok else [],
         "checked_at": now().isoformat(),
+        **({"read_only_tool_call": invocation} if invocation is not None else {}),
     }
 
 
@@ -1235,14 +1292,57 @@ def list_management_conversations(
     }
 
 
-def archive_conversation(db: Session, workspace_id: str, binding_id: str) -> dict[str, Any]:
+def _archive_binding(db: Session, workspace_id: str, binding_id: str) -> AgentConversationBinding:
     item = _binding(db, workspace_id, binding_id, lock=True)
-    assert_conversation_stopped(db, workspace_id, binding_id, lock=False)
     if item.archived_at is None:
+        assert_conversation_stopped(db, workspace_id, binding_id, lock=False)
         item.archived_at = now()
         item.updated_at = item.archived_at
         db.flush()
-    return _dict(db, item)
+    return item
+
+
+def archive_conversation(db: Session, workspace_id: str, binding_id: str) -> dict[str, Any]:
+    return _dict(db, _archive_binding(db, workspace_id, binding_id))
+
+
+def archive_management_conversations(
+    db: Session,
+    workspace_id: str,
+    binding_ids: tuple[str, ...],
+    *,
+    work_directory_id: str | None = None,
+) -> dict[str, Any]:
+    """Archive selected direct conversations without archiving their workspace."""
+    _workspace(db, workspace_id)
+    eligible = set(
+        db.scalars(
+            select(AgentConversationBinding.id).where(
+                AgentConversationBinding.workspace_id == workspace_id,
+                AgentConversationBinding.lifecycle == "ACTIVE",
+                ~AgentConversationBinding.id.in_(
+                    select(AgentSidebarConversation.sidebar_binding_id)
+                ),
+                _management_conversation_scope(workspace_id, work_directory_id),
+                AgentConversationBinding.id.in_(binding_ids),
+            )
+        )
+    )
+    archived: list[dict[str, str]] = []
+    skipped: list[dict[str, str]] = []
+    # Stable lock order also makes overlapping batch requests safe to retry.
+    for binding_id in sorted(set(binding_ids)):
+        if binding_id not in eligible:
+            skipped.append({"id": binding_id, "code": "AGENT_CONVERSATION_SCOPE_MISMATCH"})
+            continue
+        try:
+            with db.begin_nested():
+                item = _archive_binding(db, workspace_id, binding_id)
+                assert item.archived_at is not None
+                archived.append({"id": item.id, "archived_at": item.archived_at.isoformat()})
+        except DomainError as exc:
+            skipped.append({"id": binding_id, "code": exc.code})
+    return {"archived": archived, "skipped": skipped}
 
 
 def restore_conversation(db: Session, workspace_id: str, binding_id: str) -> dict[str, Any]:
@@ -1751,6 +1851,7 @@ def _create_native_conversation(
         runtime_base_url=f"http://{handle.runtime_resource_name}:8000",
         conversation_secrets=conversation_secrets,
     )
+    request = mcp_authentication.prepare_request(db, request, f"conversation:{binding.id}")
     created = get_runtime().create_conversation(request)
     if created.conversation_id != binding.openhands_conversation_id:
         raise DomainError("AGENT_CONVERSATION_IDENTITY_DRIFT", "会话身份校验失败", 409)
@@ -1921,8 +2022,15 @@ def register_conversation_capabilities(
     for published, capability_type in pending:
         version_id = published.version.id
         try:
-            plugin_name = materialize_agent_workspace_capability_marketplace(
+            material, auth_secrets = mcp_authentication.prepare_material(
+                db,
                 _frozen_runtime_capability(db, published, capability_type),
+                f"conversation:{binding.id}",
+            )
+            if auth_secrets:
+                runtime.update_conversation_secrets(handle, auth_secrets)
+            plugin_name = materialize_agent_workspace_capability_marketplace(
+                material,
                 host_root=host_root,
                 runtime_root=runtime_root,
                 marketplace_name=marketplace_name,
@@ -2162,7 +2270,7 @@ def _record_bootstrap_failure(
     failure must leave no Binding or command row behind.
     """
 
-    del error
+    _logger.warning("Agent bootstrap rejected: code=%s status=%s", error.code, error.status)
     # Draft attachments are already private to this reserved binding ID.  A
     # definitively failed first message must release those files too, even
     # though no attachment projection has been committed yet.
@@ -2171,6 +2279,14 @@ def _record_bootstrap_failure(
     from flowweave.modules.agent_sessions.application import history_sessions
 
     history_sessions.delete_binding_access(db, binding.id)
+    # Native creation records selected credentials before first-message delivery.
+    # Remove that dependent projection before deleting a failed reservation so
+    # its FK cannot mask the original Runtime/history error.
+    db.execute(
+        delete(AgentConversationCredentialSync).where(
+            AgentConversationCredentialSync.binding_id == binding.id,
+        )
+    )
     db.execute(
         delete(AgentConversationCapability).where(
             AgentConversationCapability.binding_id == binding.id,
@@ -2558,7 +2674,7 @@ def delete_conversation(
         if existing.state == "SUCCEEDED":
             return
         raise DomainError("AGENT_CONVERSATION_DELETE_PENDING", "会话删除仍在处理中", 409)
-    assert_conversation_stopped(db, workspace_id, binding_id, lock=False)
+    assert_conversation_stopped(db, workspace_id, binding_id, lock=False, allow_missing=True)
     item.lifecycle = "DELETE_PENDING"
     command = AgentConversationCommand(
         workspace_id=workspace.id,
@@ -2595,13 +2711,19 @@ def delete_conversation(
 
 
 def assert_conversation_stopped(
-    db: Session, workspace_id: str, binding_id: str, *, lock: bool = True
+    db: Session, workspace_id: str, binding_id: str, *,
+    lock: bool = True, allow_missing: bool = False,
 ) -> None:
     """Reject destructive operations while OpenHands is executing a turn."""
 
     workspace = _workspace(db, workspace_id)
     binding = _binding(db, workspace_id, binding_id, lock=lock)
-    readiness = get_runtime().input_readiness(_handle(db, workspace, binding))
+    try:
+        readiness = get_runtime().input_readiness(_handle(db, workspace, binding))
+    except DomainError as exc:
+        if allow_missing and exc.code == "RUNTIME_CONVERSATION_MISSING":
+            return
+        raise
     if readiness.execution_status.strip().lower() in {
         "starting",
         "running",
@@ -3031,6 +3153,13 @@ def terminal_container_details(db: Session, workspace_id: str) -> tuple[str, str
     return sandbox.backend_resource_name, sandbox.id, sandbox.backend_resource_id
 
 
+def authorize_message_submission(db: Session, workspace_id: str, binding_id: str) -> None:
+    _workspace(db, workspace_id)
+    binding = _binding(db, workspace_id, binding_id)
+    if binding.owner_user_id != current_user_id() or binding.host_kind != "AGENT_WORKSPACE":
+        raise DomainError("AGENT_CONVERSATION_NOT_FOUND", "会话不存在或已删除", 404)
+
+
 def prepare_running_message(
     db: Session,
     workspace_id: str,
@@ -3119,7 +3248,7 @@ def dispatch_running_message(prepared: PreparedRunningMessage) -> RuntimeResult 
     if prepared.git_profile is not None:
         runtime.workspace_git_identity(prepared.handle, profile=prepared.git_profile)
     try:
-        return runtime.send_message(prepared.handle, prompt, image_urls)
+        return message_submissions.dispatch(runtime, prepared.handle, prompt, image_urls)
     except DomainError as exc:
         if exc.status >= 500:
             raise DomainError(
@@ -3249,7 +3378,7 @@ def message(
             diagnostic(handle, operation="agent_running_direct", readiness=readiness)
         try:
             _ensure_history_references(db, workspace, binding, references)
-            result = runtime.send_message(handle, prompt, image_urls)
+            result = message_submissions.dispatch(runtime, handle, prompt, image_urls)
         except DomainError as exc:
             if exc.status >= 500:
                 raise DomainError(
@@ -3368,7 +3497,7 @@ def message(
         )
     try:
         _ensure_history_references(db, workspace, binding, references)
-        result = runtime.send_message(handle, prompt, image_urls)
+        result = message_submissions.dispatch(runtime, handle, prompt, image_urls)
     except DomainError as exc:
         if exc.status >= 500:
             raise DomainError(
@@ -3527,6 +3656,7 @@ def _validated_conversation_references(
             source_id = item.get("source_binding_id")
             native_id = item.get("source_conversation_id")
             title = item.get("title")
+            resolved_content = item.get("resolved_content")
             identity = f"conversation:{source_id}"
             if (
                 not isinstance(source_id, str)
@@ -3535,29 +3665,42 @@ def _validated_conversation_references(
                 or not 1 <= len(native_id) <= 100
                 or not isinstance(title, str)
                 or not 1 <= len(title) <= 240
+                or resolved_content is not None
+                and (
+                    not isinstance(resolved_content, str)
+                    or not resolved_content.strip()
+                    or len(resolved_content) > _MAX_CONVERSATION_REFERENCE_CHARS
+                )
                 or identity in seen
             ):
                 raise DomainError(
                     "AGENT_CONVERSATION_REFERENCE_INVALID", "会话引用无效，请重新选择", 422
                 )
             total_chars += len(title)
+            if isinstance(resolved_content, str):
+                total_chars += len(resolved_content)
             if total_chars > _MAX_CONVERSATION_REFERENCE_CHARS:
                 raise DomainError(
                     "AGENT_CONVERSATION_REFERENCE_TOO_LARGE",
                     "引用内容过长，请缩小引用范围后重试",
                     422,
                 )
-            normalized.append(
-                {
-                    "kind": "conversation",
-                    "event_id": "",
-                    "content": title,
-                    "title": title,
-                    "source_binding_id": source_id,
-                    "source_conversation_id": native_id,
-                    "history_tool": "read_referenced_conversation",
-                }
-            )
+            value = {
+                "kind": "conversation",
+                "event_id": "",
+                "content": title,
+                "title": title,
+                "source_binding_id": source_id,
+                "source_conversation_id": native_id,
+                "history_tool": (
+                    "platform_conversation_history"
+                    if isinstance(resolved_content, str)
+                    else "read_referenced_conversation"
+                ),
+            }
+            if isinstance(resolved_content, str):
+                value["resolved_content"] = resolved_content.strip()
+            normalized.append(value)
             seen.add(identity)
             continue
         if (
@@ -3614,7 +3757,10 @@ def _ensure_history_references(
     *,
     allow_install: bool = True,
 ) -> bool:
-    if not any(item.get("kind") == "conversation" for item in references):
+    if not any(
+        item.get("kind") == "conversation" and not item.get("resolved_content")
+        for item in references
+    ):
         return True
     from flowweave.modules.agent_sessions.application import history_integration
 
@@ -3700,6 +3846,68 @@ def _selected_reference_text(content: str, selection: dict[str, Any] | None) -> 
     return content[start_offset:end_offset].strip()
 
 
+def read_visible_conversation_context(
+    db: Session, workspace: AgentWorkspace, source: AgentConversationBinding
+) -> str:
+    """Read the same bounded, user-visible source history for every host.
+
+    This is the platform-owned source reader used by dragged references and
+    temporary sidebar conversations. It deliberately excludes tool calls,
+    results, and internal events before the text reaches another conversation.
+    """
+
+    title = (source.display_title or "未命名会话").strip()[:240] or "未命名会话"
+    runtime = get_runtime()
+    source_handle = _handle(db, workspace, source)
+    try:
+        runtime.reload_conversation(source_handle)
+        batch = runtime.read_active_events(source_handle)
+        pages = [batch]
+        history_cursor = batch.history_cursor
+        seen_cursors: set[str] = set()
+        while history_cursor and history_cursor not in seen_cursors and len(pages) < 32:
+            seen_cursors.add(history_cursor)
+            older = runtime.read_active_events(
+                replace(
+                    source_handle,
+                    history_cursor=history_cursor,
+                    active_branch_leaf_event_id=batch.cursor,
+                )
+            )
+            pages.insert(0, older)
+            history_cursor = older.history_cursor
+    except Exception as exc:
+        _logger.warning("Native conversation reference read failed: %s", type(exc).__name__)
+        raise DomainError(
+            "AGENT_CONVERSATION_REFERENCE_UNAVAILABLE",
+            "来源会话暂时不可读取，请稍后重试",
+            409,
+        ) from exc
+    parts: list[str] = []
+    remaining = _MAX_CONVERSATION_REFERENCE_CHARS
+    for page in pages:
+        for event in page.events:
+            if event.event_type != "MESSAGE":
+                continue
+            source_name = str(event.payload.get("source") or "").strip().lower()
+            if source_name not in {"user", "human", "agent", "assistant"}:
+                continue
+            raw = event.payload.get("content")
+            if not isinstance(raw, str):
+                continue
+            visible = _project_conversation_references(raw)[0].strip()
+            if not visible:
+                continue
+            excerpt = visible[:remaining]
+            parts.append(f"{source_name}: {excerpt}")
+            remaining -= len(excerpt)
+            if remaining <= 0:
+                break
+        if remaining <= 0:
+            break
+    return "\n\n".join(parts).strip() or title
+
+
 def _resolve_source_conversation_reference(
     db: Session,
     workspace: AgentWorkspace,
@@ -3718,6 +3926,24 @@ def _resolve_source_conversation_reference(
                 "AGENT_CONVERSATION_REFERENCE_UNAVAILABLE", "来源会话暂时不可引用", 409
             )
         title = (source.display_title or "未命名会话").strip()[:240] or "未命名会话"
+        try:
+            resolved_content = read_visible_conversation_context(db, workspace, source)
+        except RuntimeError as exc:
+            # A few control-plane reconciliation paths run before a Runtime
+            # context is bound. Preserve the legacy metadata-only reference in
+            # that narrow case; normal message delivery always has a Runtime
+            # and uses the platform reader above.
+            if "Runtime is not bound" not in str(exc):
+                raise
+            return {
+                "kind": "conversation",
+                "event_id": "",
+                "content": title,
+                "title": title,
+                "source_binding_id": source.id,
+                "source_conversation_id": source.openhands_conversation_id,
+                "history_tool": "read_referenced_conversation",
+            }
         return {
             "kind": "conversation",
             "event_id": "",
@@ -3725,7 +3951,8 @@ def _resolve_source_conversation_reference(
             "title": title,
             "source_binding_id": source.id,
             "source_conversation_id": source.openhands_conversation_id,
-            "history_tool": "read_referenced_conversation",
+            "history_tool": "platform_conversation_history",
+            "resolved_content": resolved_content,
         }
     runtime = get_runtime()
     source_handle = _handle(db, workspace, source)

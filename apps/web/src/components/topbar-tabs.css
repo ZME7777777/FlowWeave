@@ -1,0 +1,32 @@
+.topbar-tabs{display:flex;flex:1;min-width:0;height:100%;align-items:stretch;--temporary-tab-width:168px;--temporary-tab-gap:2px;--temporary-overflow-width:28px}
+.topbar-fixed-region{position:relative;flex:0 0 auto;width:var(--fixed-nav-width);max-width:100%;min-width:0;overflow:hidden;transition:width .28s cubic-bezier(.22,.7,.25,1)}
+.topbar-tabs.has-context-tabs .topbar-fixed-region{max-width:calc(100% - 214px)}
+.topbar-tabs.fixed-collapsed .topbar-fixed-region{width:132px}
+.topbar-fixed-scroll{height:100%;overflow-x:auto;overflow-y:hidden;scrollbar-width:none;opacity:1;transition:opacity .16s ease}.topbar-fixed-scroll::-webkit-scrollbar{display:none}
+.topbar-tabs .topbar-fixed-scroll>nav{width:max-content;min-width:max-content;height:100%;margin-left:0}
+.fixed-collapsed .topbar-fixed-scroll{opacity:0;pointer-events:none}
+.topbar-nav-boundary{position:relative;display:flex;width:18px;flex:0 0 18px;height:100%;align-items:center;justify-content:center;border:0;background:transparent;padding:0;color:#b1c0b6;opacity:.5;transition:opacity .15s}
+.has-context-tabs .topbar-nav-boundary::before{content:'';position:absolute;top:23px;bottom:23px;left:8px;width:1px;background:#ffffff24}
+.topbar-nav-boundary svg{z-index:1;background:var(--dark);border-radius:2px}.topbar-nav-boundary:hover,.topbar-nav-boundary:focus-visible{opacity:1;color:var(--lime)}
+.topbar-context-region{display:flex;min-width:196px;flex:1;height:100%;align-items:stretch;overflow:hidden}
+.topbar-tabs .context-tabs{flex:1;min-width:0;flex-basis:0;height:100%;gap:var(--temporary-tab-gap);mask-image:none;overflow:hidden;margin:0;padding:0;scrollbar-width:none}
+.topbar-tabs .context-tabs::before{display:none}
+.topbar-tabs .context-tab{width:var(--temporary-tab-width);min-width:var(--temporary-tab-width);max-width:var(--temporary-tab-width);flex:0 0 var(--temporary-tab-width)}
+.topbar-tabs .context-tab-select{justify-content:flex-start;padding-left:10px;gap:7px}.topbar-tabs .context-tab-select>span{display:block;white-space:nowrap}.topbar-tabs .context-tab-close{display:grid;width:20px;flex-basis:20px}
+.topbar-tab-menu{display:flex;flex:0 0 auto;min-width:0;height:100%;align-items:stretch}
+.topbar-tab-menu-trigger{display:flex;min-width:0;align-items:center;justify-content:center;gap:7px;border:0;border-bottom:2px solid transparent;background:transparent;padding:0 9px;color:#aebcb5;font-size:13px}
+.topbar-tab-menu-trigger:hover,.topbar-tab-menu-trigger[aria-expanded=true]{color:#fff;background:#ffffff06}
+.topbar-tab-menu-trigger>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.topbar-tab-menu-trigger>svg{flex-shrink:0}
+.topbar-fixed-menu{position:absolute;inset:0}.topbar-fixed-menu>button{width:100%;justify-content:flex-start;animation:topbar-menu-appear .18s ease both}.topbar-fixed-menu>button>svg:last-child{margin-left:auto}
+.topbar-context-overflow{width:var(--temporary-overflow-width)}.topbar-context-overflow>button{width:100%;padding:0;color:#91a198}
+.topbar-tab-popover{width:240px;border:1px solid #ccd7cf;border-radius:7px;background:#fff;padding:4px;box-shadow:0 12px 32px #08150f38}
+.topbar-tab-popover>button{display:flex;width:100%;min-width:0;align-items:center;gap:9px;border:0;border-radius:4px;background:transparent;padding:9px 10px;color:#425b4d;font-size:12px;text-align:left}
+.topbar-tab-popover>button>span{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.topbar-tab-popover>button>svg{flex-shrink:0}
+.topbar-tab-popover>button:hover,.topbar-tab-popover>button:focus-visible,.topbar-tab-popover>button[aria-current=page]{outline:0;background:#eaf2ec;color:#246345}
+.topbar-tab-menu-trigger:focus-visible,.topbar-nav-boundary:focus-visible{outline:1px solid var(--lime);outline-offset:-3px}
+@keyframes topbar-menu-appear{from{opacity:0}to{opacity:1}}
+@media(prefers-reduced-motion:reduce){.topbar-fixed-region,.topbar-fixed-scroll{transition:none}.topbar-fixed-menu>button{animation:none}}
+
+.topbar-fixed-menu.active>.topbar-tab-menu-trigger{border-bottom-color:var(--lime);color:#fff}
+
+.topbar-tabs .topbar-fixed-scroll>nav button{font-size:13px}

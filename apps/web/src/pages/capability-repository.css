@@ -64,3 +64,5 @@
 .capability-repository .sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap}
 @media(max-width:1250px){.capabilities-page.capability-repository{grid-template-columns:172px minmax(0,1fr)}.capability-table{min-width:1000px}.capability-repository .capability-bulk-tools{padding:10px 16px}.capability-repository-heading,.capability-repository-footer{padding-left:16px;padding-right:16px}}
 .capability-collection-table th:first-child{width:34%;padding-left:22px}.capability-collection-table td:first-child{padding-left:22px}.capability-collection-table th:nth-child(2){width:15%}.capability-collection-table th:nth-child(3){width:11%}.capability-collection-table th:nth-child(4),.capability-collection-table th:nth-child(5){width:18%}.capability-collection-table th:last-child{width:52px}
+
+.capability-repository .capability-notice-layer{pointer-events:none}.capability-repository .capability-notice>button{pointer-events:auto}

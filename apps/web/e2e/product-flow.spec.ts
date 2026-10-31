@@ -1284,7 +1284,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await fullscreenWorkspace.getByRole('button', { name: '文件', exact: true }).click();
   await expect(page.locator('.agent-workbench-main')).not.toHaveClass(/fullscreen-conversation-active/);
   await page.getByLabel('退出全屏').click();
-  await page.getByLabel('关闭工作区工具').click();
+  await page.getByLabel('隐藏工作区工具').click();
   await page.getByRole('button', { name: '文件', exact: true }).click();
   await expect(page.getByText('README.md', { exact: true })).toBeVisible();
   await expect(page.locator('.agent-file-tree input[type=checkbox]')).toHaveCount(0);
@@ -1707,7 +1707,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     '/runtime/workspace/project/src',
   ]);
   await expect(page.locator('.agent-file-line-highlight')).toHaveCount(0, { timeout: 3_000 });
-  await page.getByRole('button', { name: '关闭工作区工具' }).click();
+  await page.getByRole('button', { name: '隐藏工作区工具' }).click();
   await expect(nextProgressGroup.getByText('已创建 工作区/README.md')).toBeVisible();
   await expect(nextProgressGroup.locator('.tool-skill')).toHaveCount(0);
   await expect(nextProgressGroup.getByText('子智能体 reviewer · 检查子任务边界')).toHaveCount(0);
@@ -3641,7 +3641,7 @@ test('Agent new session keeps full capabilities and can create an explicit works
   await page.getByRole('menu').getByRole('menuitem', { name: '文件', exact: true }).click();
   await expect(workspaceDrawer).toHaveClass(/tools-open/);
   await expect.poll(() => workspaceDrawer.evaluate(drawer => drawer.getBoundingClientRect().width)).toBe(summaryWidth);
-  await page.locator('.agent-workspace-tool-actions').getByLabel('关闭工作区工具').click();
+  await page.locator('.agent-workspace-tool-actions').getByLabel('隐藏工作区工具').click();
   await expect(page.getByText('环境信息', { exact: true })).toBeVisible();
   await expect.poll(() => workspaceDrawer.evaluate(drawer => drawer.getBoundingClientRect().width)).toBe(summaryWidth);
   await expect(environmentSummary.getByRole('button', { name: '新终端', exact: true })).toBeVisible();
@@ -3685,7 +3685,7 @@ test('Agent new session keeps full capabilities and can create an explicit works
   await expect(page.getByRole('button', { name: '2fae71c74c89', exact: true })).toHaveCount(2);
   expect(new Set(terminalInstanceIds)).toEqual(new Set(initialTerminalIds));
 
-  await page.locator('.agent-workspace-tool-actions').getByLabel('关闭工作区工具').click();
+  await page.locator('.agent-workspace-tool-actions').getByLabel('隐藏工作区工具').click();
   await expect(page.getByText('环境信息', { exact: true })).toBeVisible();
   expect(destroyedTerminalIds).toHaveLength(0);
   await page.getByRole('button', { name: '节点中心', exact: true }).click();

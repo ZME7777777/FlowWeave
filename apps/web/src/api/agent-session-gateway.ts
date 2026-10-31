@@ -157,6 +157,7 @@ export interface AgentSessionApi {
    * edge. It is not an exactly-once promise: OpenHands 1.47 has no formal
    * event idempotency field, so callers must not retry ambiguous delivery.
    */
+  readonly cancelMessageSubmission: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, submissionId: string) => Promise<{ cancelled: boolean }>;
   readonly sendMessage: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, content: string, attachments?: AgentAttachment[], references?: AgentConversationReference[], workspaceReferences?: AgentWorkspaceReference[], annotations?: AgentConversationAnnotation[], clientMessageId?: string) => Promise<{ accepted: boolean; cursor?: string | null; compacted?: boolean; queued_during_turn?: boolean }>;
   readonly migrateStreamingConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, modelProviderId: string, modelName?: string | null, reasoningEffort?: string | null) => Promise<AgentConversation>;
   readonly uploadConversationAttachment: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, file: File, onProgress?: UploadProgressHandler) => Promise<AgentAttachment>;
@@ -251,6 +252,7 @@ export const agentWorkspaceSessionGateway: AgentSessionGateway = {
     synchronizeCredentials: api.synchronizeAgentConversationCredentials,
     pendingConfirmation: api.agentPendingConfirmation,
     sendMessage: api.sendAgentMessage,
+    cancelMessageSubmission: api.cancelAgentMessageSubmission,
     migrateStreamingConversation: api.migrateAgentStreamingConversation,
     uploadConversationAttachment: api.uploadAgentAttachment,
     uploadDraftAttachment: api.uploadAgentWorkspaceAttachment,
@@ -373,6 +375,8 @@ export function flowNodeSessionGateway(
       synchronizeCredentials: (_hostId, bindingId, credentialIds) =>
         nodeSessionApi.synchronizeCredentials(flowRunId, attemptId, bindingId, credentialIds),
       pendingConfirmation: (_hostId, bindingId) => nodeSessionApi.pendingConfirmation(flowRunId, attemptId, bindingId),
+      cancelMessageSubmission: (_hostId, bindingId, submissionId) =>
+        nodeSessionApi.cancelMessageSubmission(flowRunId, attemptId, bindingId, submissionId),
       sendMessage: (_hostId, bindingId, content, attachments = [], references = [], workspaceReferences = [], annotations = [], clientMessageId) =>
         nodeSessionApi.message(flowRunId, attemptId, bindingId, content, attachments, references, workspaceReferences, clientMessageId, annotations),
       migrateStreamingConversation: (_hostId, bindingId, providerId, modelName, reasoningEffort) =>

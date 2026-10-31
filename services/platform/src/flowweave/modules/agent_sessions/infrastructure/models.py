@@ -17,6 +17,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
+    ForeignKey,
     Integer,
     LargeBinary,
     Numeric,
@@ -576,7 +577,31 @@ __all__ = (
     "AgentSidebarConversation",
     "AgentConversationCapability",
     "AgentConversationCommand",
+    "AgentMessageSubmission",
     "AgentConversationMessageAttachment",
     "AgentConversationSearch",
     "AgentConversationSearchHit",
 )
+
+
+class AgentMessageSubmission(Base):
+    """Cancellation fence for one HTTP submission; contains no message/event data."""
+
+    __tablename__ = "agent_message_submissions"
+    __table_args__ = (
+        UniqueConstraint(
+            "owner_user_id", "binding_id", "submission_id", name="uq_agent_submission"
+        ),
+        CheckConstraint(
+            "phase IN ('PREPARING', 'DISPATCHING', 'CANCELLED')", name="ck_agent_submission_phase"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    binding_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("agent_conversation_bindings.id", ondelete="CASCADE"), index=True
+    )
+    submission_id: Mapped[str] = mapped_column(String(200))
+    phase: Mapped[str] = mapped_column(String(20), default="PREPARING")
+    pause_requested: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)

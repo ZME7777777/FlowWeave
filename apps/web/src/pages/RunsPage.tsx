@@ -47,6 +47,10 @@ export function RunsPage() {
   const openStepwiseRecord = useWorkbenchStore(state => state.openStepwiseRecord);
   const runDirectory = useWorkbenchStore(state => state.runDirectory);
   const updateRunDirectory = useWorkbenchStore(state => state.updateRunDirectory);
+  const pendingFocusId = useWorkbenchStore(state => state.pendingRunDirectoryFocusId);
+  const clearRunDirectoryFocus = useWorkbenchStore(state => state.clearRunDirectoryFocus);
+  const [focusedRunId, setFocusedRunId] = useState<string>();
+  const runRowRefs = useRef(new Map<string, HTMLButtonElement>());
   const [creatingRecordRunId, setCreatingRecordRunId] = useState<string>();
   const [terminalRun, setTerminalRun] = useState<{ id: string; name: string }>();
   const [starting, setStarting] = useState<FlowDefinition>();
@@ -96,7 +100,11 @@ export function RunsPage() {
     staleTime: 10_000,
     retry: false,
   });
+  const recordScrollScope = useRef<string | undefined>(undefined);
   useEffect(() => {
+    const scope = JSON.stringify([selectedRunId, recordFilter, recordSearchTerm]);
+    if (recordScrollScope.current === scope) return;
+    recordScrollScope.current = scope;
     if (recordListRef.current) recordListRef.current.scrollTop = 0;
     if (runInfoRef.current) runInfoRef.current.open = false;
   }, [selectedRunId, recordFilter, recordSearchTerm]);
@@ -141,6 +149,21 @@ export function RunsPage() {
       return [{ id: flowId, name: flow?.name ?? runs.find(run => run.flow_definition_id === flowId)?.flow_name ?? '历史流程快照', description: flow?.description ?? '', runs: flowRuns }];
     });
   }, [flows, runs, search]);
+  useEffect(() => {
+    if (!pendingFocusId) return;
+    if (search) { setSearch(''); return; }
+    const row = runRowRefs.current.get(pendingFocusId);
+    if (!row) return;
+    row.scrollIntoView({ block: 'center' });
+    row.focus({ preventScroll: true });
+    setFocusedRunId(pendingFocusId);
+    clearRunDirectoryFocus(pendingFocusId);
+  }, [pendingFocusId, runDirectories, expandedFlowIds, search, clearRunDirectoryFocus]);
+  useEffect(() => {
+    if (!focusedRunId) return;
+    const timer = window.setTimeout(() => setFocusedRunId(undefined), 1800);
+    return () => window.clearTimeout(timer);
+  }, [focusedRunId]);
   const selectFlow = (flowId: string) => {
     const nextExpanded = new Set(expandedFlowIds);
     if (nextExpanded.has(flowId)) nextExpanded.delete(flowId); else nextExpanded.add(flowId);
@@ -296,7 +319,7 @@ export function RunsPage() {
   };
   return <section className="page runs-page run-directory-page">
     <div className="run-directory-layout">
-      <aside className="flow-run-directory"><header><div><b>流程编排</b><small>{runDirectories.length} 个流程</small></div><button className="agent-schedule-new" disabled={!selectedFlow || !isStartableFlow(selectedFlow)} title={!selectedFlow ? '请先选择一个流程编排' : isStartableFlow(selectedFlow) ? undefined : '该流程未配置启动节点'} onClick={() => selectedFlow && setStarting(selectedFlow)}><Plus size={14}/>新建</button></header><label className="run-directory-search"><Search size={14}/><input aria-label="搜索流程或运行" value={search} placeholder="搜索流程或运行" onChange={event => setSearch(event.target.value)}/></label><div className="flow-run-directory-list">{runDirectories.map(flow => { const expanded = expandedFlowIds.has(flow.id); const selected = selectedFlowId === flow.id; return <section className={`flow-run-tree-group${selected ? ' selected' : ''}`} key={flow.id}><div className="flow-run-tree-flow"><button type="button" className="flow-run-tree-select" aria-current={selected ? 'true' : undefined} aria-expanded={expanded} onClick={() => selectFlow(flow.id)}><FolderClosed size={14}/><span><b>{flow.name}</b><small>{flow.runs.length} 个 FlowRun</small></span></button></div>{expanded && <div className="flow-run-tree-runs">{flow.runs.length ? flow.runs.map(run => <button type="button" className={`flow-run-tree-run${selectedRunId === run.id ? ' active' : ''}`} key={run.id} onClick={() => selectRun(flow.id, run.id)}><i/><span><b>Run #{run.run_no} · {run.name}</b><small>快照 v{run.active_snapshot_version ?? '—'} · {environmentLabel(run)}</small><em className={`run-runtime-badge ${run.runtime_write_available ? 'available' : run.runtime_status === 'STOPPED' ? 'paused' : 'pending'}`}>{runtimeLabel(run)}</em></span></button>) : <p>该流程尚未创建 FlowRun。</p>}</div>}</section>; })}{!runDirectories.length && <p>没有匹配的流程或 FlowRun。</p>}</div></aside>
+      <aside className="flow-run-directory"><header><div><b>流程编排</b><small>{runDirectories.length} 个流程</small></div><button className="agent-schedule-new" disabled={!selectedFlow || !isStartableFlow(selectedFlow)} title={!selectedFlow ? '请先选择一个流程编排' : isStartableFlow(selectedFlow) ? undefined : '该流程未配置启动节点'} onClick={() => selectedFlow && setStarting(selectedFlow)}><Plus size={14}/>新建</button></header><label className="run-directory-search"><Search size={14}/><input aria-label="搜索流程或运行" value={search} placeholder="搜索流程或运行" onChange={event => setSearch(event.target.value)}/></label><div className="flow-run-directory-list">{runDirectories.map(flow => { const expanded = expandedFlowIds.has(flow.id); const selected = selectedFlowId === flow.id; return <section className={`flow-run-tree-group${selected ? ' selected' : ''}`} key={flow.id}><div className="flow-run-tree-flow"><button type="button" className="flow-run-tree-select" aria-current={selected ? 'true' : undefined} aria-expanded={expanded} onClick={() => selectFlow(flow.id)}><FolderClosed size={14}/><span><b>{flow.name}</b><small>{flow.runs.length} 个 FlowRun</small></span></button></div>{expanded && <div className="flow-run-tree-runs">{flow.runs.length ? flow.runs.map(run => <button type="button" className={`flow-run-tree-run${selectedRunId === run.id ? ' active' : ''}${focusedRunId === run.id ? ' located' : ''}`} key={run.id} ref={element => { if (element) runRowRefs.current.set(run.id, element); else runRowRefs.current.delete(run.id); }} onClick={() => selectRun(flow.id, run.id)}><i/><span><b>Run #{run.run_no} · {run.name}</b><small>快照 v{run.active_snapshot_version ?? '—'} · {environmentLabel(run)}</small><em className={`run-runtime-badge ${run.runtime_write_available ? 'available' : run.runtime_status === 'STOPPED' ? 'paused' : 'pending'}`}>{runtimeLabel(run)}</em></span></button>) : <p>该流程尚未创建 FlowRun。</p>}</div>}</section>; })}{!runDirectories.length && <p>没有匹配的流程或 FlowRun。</p>}</div></aside>
       <main className="flow-run-directory-detail">{selectedRun ? <section className="flow-run-record-directory">
         <header className="run-record-directory-header">
           <h3 title={selectedRun.name}>{selectedRun.name}</h3>

@@ -177,7 +177,7 @@ export function PluginMarketDialog({ onClose, onPublished }: Props) {
     finally { if (request === generation.current) { setBusy(false); setStatus(''); } }
   };
 
-  return <div className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><section className="modal plugin-import-dialog" role="dialog" aria-modal="true" aria-label="插件市场">
+  return <div className="modal-backdrop"><section className="modal plugin-import-dialog" role="dialog" aria-modal="true" aria-label="插件市场">
     <header className="plugin-import-header"><h2>插件市场</h2><button className="ghost" aria-label="关闭" onClick={onClose}><X size={16}/></button></header>
     <div className="plugin-import-sources" role="tablist" aria-label="导入来源">
       <button role="tab" aria-selected={source === 'marketplace'} disabled={busy} onClick={() => { reset(); setSource('marketplace'); }}><Store size={14}/>插件市场</button>

@@ -23,7 +23,7 @@ export interface CapabilityRef {
 export interface CapabilityAsset {
   id: string; lineage_id: string; revision_number: number; is_latest: boolean;
   capability_type: CapabilityAssetType; capability_key: string;
-  description: string; version: string; filename: string; content_hash: string;
+  description: string; version: string; filename: string; content_hash: string; digest?: string;
   byte_size: number; import_id: string; created_at: string; reference_count: number;
   is_builtin: boolean; document: Record<string, unknown>;
   dependencies: Record<string, Record<string, string>>;
@@ -83,6 +83,13 @@ export interface CapabilityPackageComparison {
 }
 export interface CapabilityPackageFileDiff {
   path: string; diff: string; preview_unavailable: boolean; previous_id: string; current_id: string;
+}
+export interface McpAuthenticationWrite {
+  strategy: 'none' | 'bearer'; credential_id: string | null; expected_row_version: number;
+}
+export interface McpAuthentication {
+  capability_version_id: string; strategy: 'none' | 'bearer'; credential_id: string | null;
+  credential_name: string | null; row_version: number; editable: boolean; valid: boolean;
 }
 export interface McpSource {
   id: string; capability_key: string; filename: string; content: string;
@@ -145,12 +152,12 @@ export interface EnvironmentVersion {
   base_image_reference: string; base_image_digest: string;
   runtime_capabilities: string[];
   manifest: { commands?: Record<string, string>; [key: string]: unknown };
-  error_detail?: string | null; run_reference_count: number;
+  error_detail?: string | null; run_reference_count: number; flow_run_reference_count?: number;
   reference_count: number; created_at: string;
 }
 export interface EnvironmentVersionRunPage {
   items: Array<{
-    id: string; name: string; run_no: number; run_mode: 'MANUAL' | 'AUTOMATIC';
+    id: string; name: string; flow_definition_id: string; run_no: number; run_mode: 'MANUAL' | 'AUTOMATIC';
     parent_flow_run_id: string | null; state: string; started_at: string; finished_at: string | null;
   }>;
   total: number; page: number; page_size: number;
@@ -912,9 +919,12 @@ export interface AgentConversationCapabilityRegistration {
 }
 
 export interface AgentSessionMcpReadiness {
+  read_only_tool_call?: { name: string; is_error: boolean | null; business_code: number | null };
   state: 'READY' | 'UNAVAILABLE';
   error_kind: 'timeout' | 'connection' | 'unknown' | null;
   checked_at: string;
+  tools?: string[];
+  reason?: string | null;
 }
 export type AgentWorkspaceMcpReadiness = AgentSessionMcpReadiness;
 
@@ -1061,9 +1071,26 @@ export interface AgentConversationManagementPage {
   items: ManagedAgentConversation[];
   truncated: boolean;
 }
+export interface AgentConversationManagementArchiveResult {
+  archived: Array<{ id: string; archived_at: string }>;
+  skipped: Array<{ id: string; code: string }>;
+}
 export interface AgentConversationManagementDeleteResult {
   deleted_ids: string[];
   skipped: Array<{ id: string; code: string }>;
+}
+export interface AgentConversationDeletionJob extends AgentConversationManagementDeleteResult {
+  id: string;
+  workspace_id: string;
+  work_directory_id: string | null;
+  workspace_label: string;
+  state: 'PENDING' | 'RUNNING' | 'RETRY' | 'SUCCEEDED' | 'DEAD';
+  total: number;
+  processed: number;
+  binding_ids: string[];
+  remaining_ids: string[];
+  created_at: string;
+  updated_at: string;
 }
 export interface AgentConversationActivity {
   /** Complete summaries for every binding that belongs in the activity panel. */

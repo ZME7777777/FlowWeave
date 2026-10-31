@@ -177,6 +177,7 @@ class RuntimeMCP:
     name: str
     config: dict[str, Any]
     workspace_path: str = ""
+    capability_version_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

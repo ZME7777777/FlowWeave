@@ -1,0 +1,41 @@
+.agent-capability-manager .agent-session-configuration-layout{display:flex;flex:1 1 auto;min-height:0;min-width:0;overflow:hidden}
+.agent-session-configuration-layout>.agent-session-config-tabs{display:flex;flex:0 0 100px;flex-direction:column;align-items:stretch;gap:4px;margin:0;border:0;border-right:1px solid #e1e8e3;background:#f6f9f6;padding:12px 8px}
+.agent-session-configuration-layout>.agent-session-config-tabs>[role=tab]{display:flex;align-items:center;gap:8px;min-height:38px;border:0;border-radius:6px;background:transparent;padding:8px 10px;color:#63766a;font-size:12px;text-align:left}
+.agent-session-configuration-layout>.agent-session-config-tabs>[aria-selected=true]{background:#e4efe7;color:#176249;font-weight:650}
+.agent-session-config-tabs>[role=tab]:focus-visible{outline:2px solid #75a887;outline-offset:-2px}
+.agent-session-configuration-content{display:flex;flex:1;min-width:0;min-height:0;flex-direction:column;overflow:hidden}
+.agent-session-configuration-content>.agent-capability-typebar{flex-shrink:0;border-bottom:1px solid #e7ede9;padding:9px 14px 6px}
+.agent-capability-typebar>.agent-capability-tabs{display:flex;gap:4px;overflow-x:auto;scrollbar-width:none}
+.agent-session-configuration-content>.agent-capability-toolbar{flex-shrink:0;justify-content:flex-start;gap:7px;padding:8px 14px;border-bottom:1px solid #e3eae5;background:#fafcfb}
+.agent-session-configuration-content .agent-capability-search{min-width:80px;flex:1;width:auto;margin-left:auto}
+.agent-session-configuration-content>.agent-capability-list{flex:1 1 auto;min-height:0;overflow:auto;padding:8px 12px}
+.agent-session-configuration-content>.agent-capability-error{flex-shrink:0}
+.agent-session-configuration-content>footer,.agent-session-configuration-content .agent-credential-sync>footer{display:flex;flex-shrink:0;align-items:center;justify-content:flex-end;gap:8px;min-height:54px;border-top:1px solid #e1e9e3;background:#fff;padding:10px 14px}
+.agent-session-configuration-content>footer>button{min-height:30px;border-radius:6px;padding:6px 10px;font-size:11px}
+.agent-session-configuration-content .agent-credential-sync{flex:1 1 auto;overflow:hidden}
+.agent-session-configuration-content .agent-credential-sync-content{padding:12px 12px 0}
+.agent-session-configuration-content .agent-credential-sync-heading{min-height:42px;grid-template-columns:18px 26px minmax(0,1fr) 64px;gap:9px;border-radius:6px;padding:7px 9px;color:#4c6354;font-size:12px;font-weight:600;line-height:18px}
+.agent-session-configuration-content .agent-credential-sync-heading>.agent-capability-select-visible{width:30px;height:30px;justify-self:start;margin-left:-7px;border:1px solid #c7d9ce;border-radius:6px;background:#fff}
+.agent-session-configuration-content .agent-credential-sync-heading>.agent-capability-select-visible>svg{width:18px;height:18px}
+.agent-session-configuration-content .agent-credential-sync>footer>button{min-width:72px;height:30px;font-size:11px}
+.session-collection-filter{display:flex;flex-shrink:0;align-items:center;gap:5px;min-height:31px;border:1px solid #cbdacf;border-radius:6px;background:#fff;padding:0 8px;color:#4a6554;font-size:11px;white-space:nowrap}
+.session-collection-filter.active{border-color:#8eb39c;background:#e8f2eb;color:#176249}
+.session-collection-filter>b{display:grid;width:16px;height:16px;place-items:center;border-radius:4px;background:#367453;color:#fff;font-size:10px}
+.session-collection-filter:focus-visible{outline:2px solid #75a887;outline-offset:2px}
+.session-collection-popover{width:260px;border:1px solid #cddbd1;border-radius:8px;background:#fff;padding:6px;box-shadow:0 12px 32px #18332430;color:#395240}
+.session-collection-search{display:flex;align-items:center;gap:7px;border:1px solid #d2ded6;border-radius:5px;padding:7px 8px}
+.session-collection-search input{min-width:0;width:100%;border:0;background:transparent;outline:0;font-size:12px}
+.session-collection-options{padding:5px 0}
+.session-collection-options>button{display:flex;align-items:center;gap:9px;width:100%;border:0;border-radius:5px;background:transparent;padding:9px 8px;text-align:left;font-size:12px;color:inherit}
+.session-collection-options>button:hover,.session-collection-options>button:focus-visible{outline:0;background:#eef5f0}
+.session-collection-options i{display:grid;width:16px;height:16px;flex-shrink:0;place-items:center;border:1px solid #b4cbbb;border-radius:4px;color:#fff}
+.session-collection-options i.selected{border-color:#327552;background:#327552}
+.session-collection-options>button>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.session-collection-options>p{margin:8px;color:#7a8b80;font-size:12px}
+.session-collection-popover>footer{display:flex;justify-content:space-between;border-top:1px solid #e4ece7;padding:6px 2px 0}
+.session-collection-popover>footer>button{border:0;border-radius:4px;background:transparent;padding:5px 8px;color:#276a49;font-size:11px}
+.session-collection-popover>footer>button:disabled{color:#9caaa0;cursor:default}
+@media(max-width:680px){.agent-session-configuration-layout>.agent-session-config-tabs{flex-basis:80px;padding:8px 5px}.agent-session-configuration-layout>.agent-session-config-tabs>[role=tab]{gap:5px;padding:8px 7px;font-size:11px}.agent-session-configuration-content>.agent-capability-typebar{padding:7px 8px 5px}.agent-session-configuration-content>.agent-capability-toolbar{padding:7px 8px;flex-wrap:wrap}.agent-session-configuration-content .agent-capability-search{flex-basis:130px}.agent-session-configuration-content .agent-capability-select-visible,.agent-session-configuration-content .agent-capability-show-selected{width:31px;flex-basis:31px}.agent-session-configuration-content .agent-credential-sync-heading,.agent-session-configuration-content .agent-credential-sync .agent-capability-list>button{grid-template-columns:18px 26px minmax(0,1fr) 48px;gap:7px}.agent-session-configuration-content .agent-credential-sync-content{padding-inline:8px}.agent-session-configuration-content .agent-credential-sync-heading{font-size:11px}.agent-session-configuration-content .agent-credential-sync-state{width:46px}}
+.agent-capability-manager.session-configuration-editor{display:flex;flex-direction:column;height:min(720px,calc(100dvh - 40px));max-height:min(720px,calc(100dvh - 40px));min-height:0}
+.agent-capability-manager.session-configuration-editor>header{flex-shrink:0}
+.agent-capability-manager.session-configuration-editor>.agent-session-configuration-layout{flex:1 1 auto;min-height:0}

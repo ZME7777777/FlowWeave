@@ -23,7 +23,7 @@ function directoryDescendantIds(id: string, directories: NodeDirectory[]): strin
   return [id, ...children.flatMap(child => directoryDescendantIds(child.id, directories))];
 }
 
-export function NodesPage({ onRegisterLeaveGuard }: { onRegisterLeaveGuard?: (guard: (() => Promise<boolean>) | undefined) => void }) {
+export function NodesPage({ onRegisterLeaveGuard, onDraftStateChange: onPageDraftStateChange }: { onRegisterLeaveGuard?: (guard: (() => Promise<boolean>) | undefined) => void; onDraftStateChange?: (state: NodeDraftState) => void }) {
   const dialog = useProductDialog();
   const queryClient = useQueryClient();
   const setView = useWorkbenchStore(state => state.setView);
@@ -74,7 +74,7 @@ export function NodesPage({ onRegisterLeaveGuard }: { onRegisterLeaveGuard?: (gu
     try {
       await api.deleteDirectory(directory.id);
       if (closesEditor && currentEditorSession.current === deletionEditorSession) {
-        setSelectedNodeId(undefined); setCreatingInDirectory(undefined); draftState.current = { dirty: false, saving: false };
+        setSelectedNodeId(undefined); setCreatingInDirectory(undefined); onDraftStateChange({ dirty: false, saving: false });
       }
       await refreshAssets();
     } catch (reason) { setError(reason instanceof Error ? reason.message : '删除目录失败'); }
@@ -87,7 +87,7 @@ export function NodesPage({ onRegisterLeaveGuard }: { onRegisterLeaveGuard?: (gu
     try {
       const result = await api.deleteNodes([node.id]);
       setBlockedAssets(result.blocked);
-      if (result.deleted_ids.includes(node.id)) { if (selectedNodeId === node.id && currentEditorSession.current === deletionEditorSession) { setSelectedNodeId(undefined); draftState.current = { dirty: false, saving: false }; } setNotice('节点已删除。'); }
+      if (result.deleted_ids.includes(node.id)) { if (selectedNodeId === node.id && currentEditorSession.current === deletionEditorSession) { setSelectedNodeId(undefined); onDraftStateChange({ dirty: false, saving: false }); } setNotice('节点已删除。'); }
       if (result.blocked.length) setError('该节点仍绑定有效流程，暂时无法删除。');
       await queryClient.invalidateQueries({ queryKey: ['nodes'] });
     } catch (reason) {
@@ -104,7 +104,7 @@ export function NodesPage({ onRegisterLeaveGuard }: { onRegisterLeaveGuard?: (gu
   };
   const draftState = useRef<NodeDraftState>({ dirty: false, saving: false });
   const confirmingLeave = useRef(false);
-  const onDraftStateChange = useCallback((state: NodeDraftState) => { draftState.current = state; }, []);
+  const onDraftStateChange = useCallback((state: NodeDraftState) => { draftState.current = state; onPageDraftStateChange?.(state); }, [onPageDraftStateChange]);
   const confirmLeave = async () => {
     if (draftState.current.saving || confirmingLeave.current) return false;
     if (!draftState.current.dirty) return true;
@@ -120,7 +120,7 @@ export function NodesPage({ onRegisterLeaveGuard }: { onRegisterLeaveGuard?: (gu
   }, [onRegisterLeaveGuard]);
   const changeEditor = async (change: () => void) => {
     if (!await confirmLeave()) return;
-    draftState.current = { dirty: false, saving: false };
+    onDraftStateChange({ dirty: false, saving: false });
     change();
   };
   const renderNode = (node: NodeAsset) => <div className={`node-tree-record${selectedNodeId === node.id ? ' selected' : ''}`} key={node.id}>

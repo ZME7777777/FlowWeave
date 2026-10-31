@@ -26,6 +26,9 @@ interface WorkbenchState {
   selectedAutomaticRecordId?: string;
   selectedStepwiseRecordId?: string;
   runDirectory: RunDirectoryState;
+  pendingRunDirectoryFocusId?: string;
+  focusRunDirectory: (flowId: string, runId: string) => void;
+  clearRunDirectoryFocus: (runId: string) => void;
   setView: (view: ViewName) => void;
   updateRunDirectory: (updates: Partial<RunDirectoryState>) => void;
   openRun: (runId: string, nodeRunId?: string) => void;
@@ -84,6 +87,13 @@ export const useWorkbenchStore = create<WorkbenchState>()(
         recordSearch: '',
         selectedRecordKeys: [],
       },
+      focusRunDirectory: (flowId, runId) => set(state => ({
+        view: 'runs', pendingRunDirectoryFocusId: runId,
+        runDirectory: { ...state.runDirectory, selectedFlowId: flowId, selectedRunId: runId,
+          expandedFlowIds: [...new Set([...state.runDirectory.expandedFlowIds, flowId])],
+          recordFilter: 'ALL', recordSearch: '', selectedRecordKeys: [] },
+      })),
+      clearRunDirectoryFocus: runId => set(state => state.pendingRunDirectoryFocusId === runId ? { pendingRunDirectoryFocusId: undefined } : {}),
       setView: view => set({ view }),
       updateRunDirectory: updates => set(state => ({
         runDirectory: { ...state.runDirectory, ...updates },
