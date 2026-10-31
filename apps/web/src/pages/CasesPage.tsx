@@ -98,7 +98,7 @@ function AddMaterialDialog({ onImport, onDiscard, onApply, onClose }: {
     onClose();
   });
   useEscapeClose(cancel);
-  return createPortal(<div className="modal-backdrop"><form className="modal case-add-material-dialog" role="dialog" aria-modal="true" aria-label="添加资料" aria-busy={busy} onKeyDown={event => {
+  return createPortal(<div className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget && !busy) cancel(); }}><form className="modal case-add-material-dialog" role="dialog" aria-modal="true" aria-label="添加资料" aria-busy={busy} onKeyDown={event => {
     if (event.key !== 'Tab') return;
     const controls = [...event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled):not([hidden])')].filter(element => !element.closest('fieldset:disabled'));
     const first = controls[0], last = controls.at(-1);

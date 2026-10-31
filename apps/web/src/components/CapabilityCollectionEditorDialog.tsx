@@ -56,7 +56,7 @@ export function CapabilityCollectionEditorDialog({ collection, capabilities, bus
     return next;
   });
 
-  return <div className="modal-backdrop"><form className="modal capability-collection-editor" onSubmit={event => {
+  return <div className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><form className="modal capability-collection-editor" onSubmit={event => {
     event.preventDefault();
     onSave({
       name: name.trim(), category: collection?.category ?? '', description: description.trim(),

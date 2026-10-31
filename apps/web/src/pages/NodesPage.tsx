@@ -10,7 +10,7 @@ import type { BlockedNodeDelete, NodeAsset, NodeDirectory } from '../types';
 type BlockedAsset = BlockedNodeDelete;
 
 function DeleteBlockedDialog({ assets, onClose, onOpenFlows }: { assets: BlockedAsset[]; onClose: () => void; onOpenFlows: () => void }) {
-  return <div className="modal-backdrop"><section className="modal node-delete-blocked" role="dialog" aria-modal="true" aria-label="节点正在被流程引用">
+  return <div className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><section className="modal node-delete-blocked" role="dialog" aria-modal="true" aria-label="节点正在被流程引用">
     <header><div><span className="eyebrow">DELETE BLOCKED</span><h2>无法删除节点</h2></div><button className="ghost" onClick={onClose}>关闭</button></header>
     <p>以下节点仍被有效流程引用。请先在流程编排中移除或替换节点，再重新删除。</p>
     <div className="node-reference-list">{assets.map(asset => <section key={asset.id}><b>{asset.name}</b>{asset.flows.map(flow => <div key={flow.id}><span>{flow.name}</span><small>引用 {flow.reference_count} 次</small></div>)}</section>)}</div>

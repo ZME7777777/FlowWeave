@@ -662,7 +662,7 @@
 .agent-capability-manager .agent-capability-icon.context{background:#e6f1f4;color:#327285}
 .agent-capability-manager .agent-capability-icon.agent_definition{background:#f0eafb;color:#77509b}
 .agent-capability-manager .agent-capability-icon.hook{background:#fbeaec;color:#a0586a}
-.agent-capability-manager .agent-capability-icon.credential{background:#fff0df;color:#92551f}
+.agent-capability-manager .agent-capability-icon.credential{background:#e8f1eb;color:#286140}
 .agent-capability-manager .agent-selection-checkbox{box-sizing:border-box;width:16px;height:16px;flex-shrink:0;border:1px solid #bacbc0;border-radius:4px;background:#fff;color:#fff}
 .agent-capability-manager .selected .agent-selection-checkbox{border-color:#327552;background:#327552;color:#fff}
 .agent-capability-manager .agent-capability-copy{display:grid;min-width:0;gap:3px}
@@ -722,6 +722,11 @@
 .agent-credential-sync-heading{min-height:36px;border:1px solid #e2e8e4;background:#f4f7f5;color:#53655a;font-size:11px;letter-spacing:.01em}
 .agent-credential-sync-heading>.agent-capability-select-visible{width:22px;height:22px;border:1px solid #b8cbbf;border-radius:5px;background:#fff;color:#286140}
 .agent-credential-sync-heading>.agent-capability-select-visible svg{width:18px;height:18px}
+/* Credentials are identifiers, not alerts: keep their metadata on one dense line. */
+.agent-credential-sync .agent-capability-list>button{min-height:44px}
+.agent-credential-sync .agent-credential-copy{display:flex;min-width:0;align-items:center;gap:7px;overflow:hidden;white-space:nowrap}
+.agent-credential-sync .agent-credential-copy b{flex:0 1 auto;min-width:0;overflow:hidden;font-size:11px;line-height:16px;text-overflow:ellipsis}
+.agent-credential-sync .agent-credential-copy small{min-width:0;overflow:hidden;color:#7b8981;font-size:10px;line-height:16px;text-overflow:ellipsis}
 @media(max-width:680px){
   .agent-capability-manager,.agent-capability-manager.credentials-tab{height:min(680px,calc(100dvh - 20px));max-height:min(680px,calc(100dvh - 20px))}
   .agent-session-config-body{grid-template-columns:72px minmax(0,1fr)}

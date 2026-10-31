@@ -4665,7 +4665,7 @@ for (const mode of ['success', 'failure', 'missing-old-catalog'] as const) {
 }
 
 
-test('session configuration keeps compact two-line rows and leading square selections', async ({ page }) => {
+test('session configuration keeps compact capability rows and one-line credential summaries', async ({ page }) => {
   await openWorkspace(page);
   const types = ['SKILL', 'PLUGIN', 'MCP', 'CONTEXT', 'AGENT_DEFINITION', 'HOOK'];
   const catalog = types.map(type => ({ id: `compact-${type}`, capability_type: type,
@@ -4715,7 +4715,18 @@ test('session configuration keeps compact two-line rows and leading square selec
   await expect(skill).toHaveAttribute('aria-pressed', 'false');
   await dialog.getByRole('button', { name: '认证', exact: true }).click();
   const credential = dialog.locator('.agent-credential-sync .agent-capability-list > button').first();
-  await assertRow(credential);
+  const credentialLayout = await credential.evaluate(element => {
+    const title = element.querySelector<HTMLElement>('.agent-credential-copy b')!;
+    const summary = element.querySelector<HTMLElement>('.agent-credential-copy small')!;
+    const icon = element.querySelector('.agent-capability-icon svg')!.getAttribute('class');
+    const row = element.getBoundingClientRect();
+    const titleBox = title.getBoundingClientRect(), summaryBox = summary.getBoundingClientRect();
+    return { height: row.height, aligned: Math.abs(titleBox.top - summaryBox.top) < 1, summaryWrap: getComputedStyle(summary).whiteSpace, icon };
+  });
+  expect(credentialLayout.height).toBeLessThanOrEqual(46);
+  expect(credentialLayout.aligned).toBe(true);
+  expect(credentialLayout.summaryWrap).toBe('nowrap');
+  expect(credentialLayout.icon).toContain('lucide-key-round');
   await expect(credential).toHaveAttribute('aria-pressed', 'true');
   await credential.locator('.agent-selection-checkbox').click();
   await expect(credential).toHaveAttribute('aria-pressed', 'false');

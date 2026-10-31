@@ -1,8 +1,9 @@
 import { Boxes, CalendarClock, Check, ChevronDown, ChevronRight, Clock3, Filter, Pause, Play, Plus, Send, Trash2, X } from 'lucide-react';
 import { useInfiniteQuery, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { api } from '../../api/client';
+import { ViewportPopover } from '../ViewportPopover';
 import { useEscapeClose } from '../useEscapeClose';
 import { useProductDialog } from '../ProductDialogContext';
 import { CapabilityManager } from './AgentSessionWorkbench';
@@ -21,18 +22,32 @@ function ScheduleChoice({ label, value, options, onChange }: {
   options: ScheduleChoiceOption[];
   onChange: (value: string) => void;
 }) {
-  const host = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
+  const listId = useId();
+  const trigger = useRef<HTMLButtonElement>(null);
+  const popover = useRef<HTMLDivElement>(null);
   const selected = options.find(option => option.value === value);
+  const close = () => { setOpen(false); trigger.current?.focus(); };
+  useEscapeClose(close, open);
   useEffect(() => {
-    const close = (event: MouseEvent) => {
-      if (!host.current?.contains(event.target as Node)) setOpen(false);
+    if (open) (popover.current?.querySelector<HTMLButtonElement>('[aria-selected="true"]') ?? popover.current?.querySelector<HTMLButtonElement>('[role="option"]'))?.focus();
+  }, [open]);
+  useEffect(() => {
+    if (!open) return;
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      if (event.target instanceof Node && !trigger.current?.contains(event.target) && !popover.current?.contains(event.target)) setOpen(false);
     };
-    document.addEventListener('mousedown', close);
-    return () => document.removeEventListener('mousedown', close);
-  }, []);
-  const choose = (next: string) => { onChange(next); setOpen(false); };
-  return <div ref={host} className="agent-schedule-choice"><button type="button" aria-label={label} aria-haspopup="listbox" aria-expanded={open} onClick={() => setOpen(current => !current)} onKeyDown={event => { if (event.key === 'Escape') setOpen(false); }}><span><b>{selected?.label || `请选择${label}`}</b>{selected?.detail && <small>{selected.detail}</small>}</span><ChevronDown size={15} aria-hidden="true"/></button>{open && <div className="agent-schedule-choice-options" role="listbox" aria-label={label}>{options.length ? options.map(option => <button type="button" role="option" aria-selected={option.value === value} disabled={option.disabled} key={option.value} onClick={() => choose(option.value)}><span><b>{option.label}</b>{option.detail && <small>{option.detail}</small>}</span>{option.value === value && <Check size={14}/>}</button>) : <p>暂无可用选项</p>}</div>}</div>;
+    document.addEventListener('pointerdown', closeOnOutsidePointer);
+    return () => document.removeEventListener('pointerdown', closeOnOutsidePointer);
+  }, [open]);
+  const choose = (next: string) => { onChange(next); close(); };
+  return <div className="agent-schedule-choice"><button ref={trigger} type="button" aria-label={label} aria-haspopup="listbox" aria-controls={open ? listId : undefined} aria-expanded={open} onClick={() => setOpen(current => !current)} onKeyDown={event => { if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setOpen(true); } }}><span><b>{selected?.label || `请选择${label}`}</b>{selected?.detail && <small>{selected.detail}</small>}</span><ChevronDown size={15} aria-hidden="true"/></button>{open && <ViewportPopover ref={popover} anchor={() => trigger.current} matchAnchorWidth heightLimit={220} id={listId} className="agent-schedule-choice-options" role="listbox" aria-label={label} onKeyDown={event => {
+    const buttons = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="option"]')];
+    const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : event.key === 'ArrowDown' ? (index + 1) % buttons.length : event.key === 'ArrowUp' ? (index - 1 + buttons.length) % buttons.length : undefined;
+    if (next !== undefined) { event.preventDefault(); buttons[next]?.focus(); }
+    if (event.key === 'Tab') setOpen(false);
+  }}>{options.length ? options.map(option => <button type="button" role="option" aria-selected={option.value === value} disabled={option.disabled} key={option.value} onClick={() => choose(option.value)}><span><b>{option.label}</b>{option.detail && <small>{option.detail}</small>}</span>{option.value === value && <Check size={14}/>}</button>) : <p>暂无可用选项</p>}</ViewportPopover>}</div>;
 }
 
 type ConversationMode = 'NEW' | 'CONTINUE';

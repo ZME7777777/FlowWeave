@@ -22,7 +22,7 @@ export function StartRunDialog({ flow, environments, onStart, onClose }: Props) 
   const [environmentVersionId, setEnvironmentVersionId] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  return <div className="modal-backdrop"><form className="modal start-run-modal" onSubmit={async event => {
+  return <div className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><form className="modal start-run-modal" onSubmit={async event => {
     event.preventDefault();
     setBusy(true); setError('');
     try {

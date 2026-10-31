@@ -30,7 +30,7 @@ export function AgentProfileHistoryDialog({ packageId, capabilityKey, onClose }:
     return [...keys].sort().filter(key => JSON.stringify(previous?.document[key]) !== JSON.stringify(selected.document[key]));
   }, [previous, selected]);
 
-  return <div className="modal-backdrop"><section className="modal agent-profile-history" role="dialog" aria-modal="true" aria-label={`Agent Profile ${capabilityKey} 版本治理`}>
+  return <div className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><section className="modal agent-profile-history" role="dialog" aria-modal="true" aria-label={`Agent Profile ${capabilityKey} 版本治理`}>
     <header><div><span className="eyebrow">IMMUTABLE AGENT PROFILE</span><h2>{capabilityKey}</h2></div><button className="ghost" onClick={onClose}><X size={14}/>关闭</button></header>
     <p>每个版本由固定 digest 标识。激活只允许通过新 Run Snapshot 与新 Attempt；既有执行不会热改。</p>
     {versions.isLoading ? <div className="empty compact">加载 Profile 版本…</div> : versions.error ? <p className="error">{versions.error.message}</p> : <div className="agent-profile-history-layout">
