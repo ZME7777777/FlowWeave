@@ -39,6 +39,16 @@ flowweave case material-file <case-id> --value <资料引用> [--download]
 
 `session.json` 含 `expected_row_version`、`model_provider_id`、`model_name`、可选 `reasoning_effort`、`capability_version_ids`、`credential_ids`；模型供应商先按 `flowweave-model-providers` 确认可用，认证只能是当前用户的。路径中的 FlowRun 必须是完整配置的逐步/连续记录。
 
+## 平台内置 MCP 的发布（运维）
+
+协调会话依赖三个平台内置 MCP：`flowweave-case-context`、`flowweave-case-flows`、`flowweave-case-materials`。缺失时 `case start` 的轮次以 `CASE_TOOL_CAPABILITY_UNAVAILABLE` 失败。仅超级管理员可发布，且必须经受管路径：
+
+```bash
+flowweave capability import --type MCP --file ./flowweave-case-context.json --platform-managed
+```
+
+配置只含 `url`（以对应 `/api/v1/case-tools-mcp`、`/case-flow-tools-mcp`、`/case-material-tools-mcp` 结尾）、`transport=streamable-http` 和占位符头 `Bearer ${FLOWWEAVE_CASE_ACCESS}` / `${FLOWWEAVE_CASE_FLOW_ACCESS}` / `${FLOWWEAVE_CASE_MATERIAL_ACCESS}`。发布后把版本 ID 与 URL 写入服务器私有环境的 `CASE_TOOLS_MCP_*`、`CASE_FLOW_TOOLS_MCP_*`、`CASE_MATERIAL_TOOLS_MCP_*` 并重建 api/stream-api/worker。
+
 ## 启动协调 Agent
 
 启动会创建新的原生会话并占用模型额度，**只在用户明确要求时执行**。必须带 `Idempotency-Key`，超时重试复用同一个 key，避免重复建会话。

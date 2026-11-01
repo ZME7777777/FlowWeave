@@ -22,6 +22,7 @@ from flowweave.modules.catalog.application import (
     service,
     skill_market,
 )
+from flowweave.modules.users.application.security import current_principal
 from flowweave.runtime.base import RuntimeMCPOAuthCallbackRequest
 from flowweave.shared.errors import DomainError
 from flowweave.shared.http import Db, get_container, run_sync
@@ -279,9 +280,18 @@ async def delete_assets(payload: NodeAssetBulkDeleteWrite, db: Db) -> dict[str, 
 
 
 @router.post("/capability-imports/validate")
-async def validate_capability(payload: CapabilityValidateWrite, db: Db) -> dict[str, Any]:
+async def validate_capability(
+    payload: CapabilityValidateWrite, db: Db, platform_managed: bool = False
+) -> dict[str, Any]:
     await db.rollback()
-    prepared = await asyncio.to_thread(capability_imports.prepare_validation, payload)
+    if platform_managed:
+        # Governed publication of built-in MCP versions is an operator action.
+        principal = current_principal()
+        if principal is None or not principal.is_super_admin:
+            raise DomainError("AUTHORIZATION_REQUIRED", "只有超级管理员可以发布平台内置能力", 403)
+    prepared = await asyncio.to_thread(
+        capability_imports.prepare_validation, payload, allow_platform_managed=platform_managed
+    )
     stored = await asyncio.to_thread(capability_imports.store_validation_source, prepared)
     try:
         return await run_sync(

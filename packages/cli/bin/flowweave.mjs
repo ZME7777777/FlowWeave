@@ -418,7 +418,10 @@ async function capability(args) {
         hook_mode: mode,
       });
     }
-    const validated = await request('POST', '/capability-imports/validate', args, { body });
+    if (flag(args, '--platform-managed') && type !== 'MCP') throw new CliError('--platform-managed 仅适用于 MCP');
+    const validated = await request('POST', '/capability-imports/validate', args, {
+      body, query: flag(args, '--platform-managed') ? [['platform_managed', 'true']] : [],
+    });
     if (action === 'validate' || flag(args, '--dry-run')) return validated;
     return request('POST', '/capability-imports', args, { body: { import_token: validated.import_token } });
   }
