@@ -6,7 +6,10 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from flowweave.modules.catalog.application.capability_collections import collection_projection
-from flowweave.modules.catalog.application.capability_repository import list_versions
+from flowweave.modules.catalog.application.capability_repository import (
+    builtin_capability_filter,
+    list_versions,
+)
 from flowweave.shared.models import (
     CapabilityBlob,
     CapabilityCollection,
@@ -29,6 +32,7 @@ def list_directory(
     page_size: int = 20,
     sort: CapabilitySort = "created_at",
     direction: SortDirection = "desc",
+    include_builtin: bool = True,
 ) -> dict[str, Any]:
     latest = (
         select(
@@ -55,6 +59,11 @@ def list_directory(
         .join(CapabilityBlob, CapabilityBlob.id == CapabilityVersion.blob_id)
         .where(CapabilityPackage.capability_type == capability_type)
     )
+    # Platform built-ins are listed after every user capability, whatever the sort,
+    # and can be hidden entirely; both must happen before paging.
+    builtin = builtin_capability_filter(CapabilityPackage)
+    if not include_builtin:
+        query = query.where(~builtin)
     if q.strip():
         needle = f"%{q.strip().replace('/', '//').replace('%', '/%').replace('_', '/_')}%"
         query = query.where(
@@ -74,7 +83,9 @@ def list_directory(
     ids = list(
         db.scalars(
             query.order_by(
-                order.asc() if direction == "asc" else order.desc(), CapabilityPackage.id.asc()
+                builtin.asc(),
+                order.asc() if direction == "asc" else order.desc(),
+                CapabilityPackage.id.asc(),
             )
             .offset((page - 1) * page_size)
             .limit(page_size)

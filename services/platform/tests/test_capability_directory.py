@@ -194,3 +194,114 @@ def test_directory_rejects_invalid_page_and_order(client, params):
         "/api/v1/capability-directory", params={"capability_type": "SKILL", **params}
     )
     assert response.status_code == 422
+
+
+@pytest.fixture
+def mcp_records(client, db_session_factory):
+    owner = client.get("/api/v1/auth/me").json()["id"]
+    start = datetime(2026, 2, 1, tzinfo=UTC)
+    # Built-ins are deliberately the NEWEST and alphabetically FIRST, so any ordering
+    # that merely follows the sort column would put them at the top.
+    names = [
+        ("aaa-builtin-first", "flowweave-case-context"),
+        ("user-b", "user-b"),
+        ("user-a", "user-a"),
+        ("user-c", "user-c"),
+        ("history", "flowweave-reference-history"),
+    ]
+    with db_session_factory() as db:
+        for index, (label, key) in enumerate(names):
+            package = CapabilityPackage(
+                owner_user_id=owner, capability_type="MCP", capability_key=key, display_name=label
+            )
+            blob = CapabilityBlob(
+                content_hash=uuid4().hex * 2, storage_key=f"test://{uuid4()}", byte_size=10 + index
+            )
+            db.add_all([package, blob])
+            db.flush()
+            db.add(
+                CapabilityVersion(
+                    owner_user_id=owner,
+                    package_id=package.id,
+                    blob_id=blob.id,
+                    version_no=1,
+                    digest=uuid4().hex * 2,
+                    source_filename=f"{key}.json",
+                    created_at=start
+                    + timedelta(days=10 - index if key.startswith("flowweave") else index),
+                    normalized_config_json={},
+                    state="PUBLISHED",
+                )
+            )
+        db.commit()
+
+
+def _keys(page):
+    return [item["latest"]["capability_key"] for item in page["items"]]
+
+
+@pytest.mark.parametrize(
+    ("sort", "direction"),
+    [("created_at", "desc"), ("created_at", "asc"), ("name", "asc"), ("name", "desc")],
+)
+def test_builtin_capabilities_are_listed_after_every_user_capability(
+    client, mcp_records, sort, direction
+):
+    page = client.get(
+        "/api/v1/capability-directory",
+        params={"capability_type": "MCP", "sort": sort, "direction": direction},
+    ).json()
+    keys = _keys(page)
+    builtin = [key for key in keys if key.startswith("flowweave-")]
+    assert len(builtin) == 2
+    assert keys[-2:] == builtin or set(keys[-2:]) == set(builtin)
+    assert all(not key.startswith("flowweave-") for key in keys[:-2])
+
+
+def test_builtin_ordering_applies_before_pagination(client, mcp_records):
+    first = client.get(
+        "/api/v1/capability-directory",
+        params={"capability_type": "MCP", "page_size": 2, "sort": "name", "direction": "asc"},
+    ).json()
+    second = client.get(
+        "/api/v1/capability-directory",
+        params={
+            "capability_type": "MCP",
+            "page": 2,
+            "page_size": 2,
+            "sort": "name",
+            "direction": "asc",
+        },
+    ).json()
+    third = client.get(
+        "/api/v1/capability-directory",
+        params={
+            "capability_type": "MCP",
+            "page": 3,
+            "page_size": 2,
+            "sort": "name",
+            "direction": "asc",
+        },
+    ).json()
+    assert _keys(first) == ["user-a", "user-b"]
+    assert _keys(second)[0] == "user-c"
+    assert all(key.startswith("flowweave-") for key in _keys(second)[1:] + _keys(third))
+
+
+def test_builtin_capabilities_can_be_hidden_and_the_total_follows(client, mcp_records):
+    shown = client.get("/api/v1/capability-directory", params={"capability_type": "MCP"}).json()
+    hidden = client.get(
+        "/api/v1/capability-directory",
+        params={"capability_type": "MCP", "include_builtin": "false"},
+    ).json()
+    assert shown["total"] == 5 and hidden["total"] == 3
+    assert sorted(_keys(hidden)) == ["user-a", "user-b", "user-c"]
+    assert all(not item["latest"]["is_builtin"] for item in hidden["items"])
+
+
+def test_hiding_builtin_applies_to_search_too(client, mcp_records):
+    found = client.get(
+        "/api/v1/capability-directory",
+        params={"capability_type": "MCP", "q": "flowweave", "include_builtin": "false"},
+    ).json()
+    assert found["total"] == 0 and found["items"] == []

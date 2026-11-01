@@ -385,11 +385,12 @@ async def capability_directory_page(
     page_size: int = Query(default=20, ge=1, le=100),
     sort: capability_directory.CapabilitySort = "created_at",
     direction: capability_directory.SortDirection = "desc",
+    include_builtin: bool = True,
 ) -> dict[str, Any]:
     return await run_sync(
         db,
         lambda session: capability_directory.list_directory(
-            session, capability_type, q, page, page_size, sort, direction
+            session, capability_type, q, page, page_size, sort, direction, include_builtin
         ),
     )
 

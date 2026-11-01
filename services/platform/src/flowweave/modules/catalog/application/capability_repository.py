@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from flowweave.modules.catalog.application.memory_sources import register_policy_references
 from flowweave.modules.catalog.application.platform_capabilities import (
+    PLATFORM_MANAGED_CAPABILITY_KEYS,
     is_platform_managed_capability,
 )
 from flowweave.shared.domain.capability_digest import capability_version_digest
@@ -63,6 +64,26 @@ def is_builtin_capability(capability_type: str, capability_key: str) -> bool:
             ("MEMORY_POLICY", DEFAULT_MEMORY_POLICY_KEY),
             ("CRITIC_POLICY", DEFAULT_CRITIC_POLICY_KEY),
         }
+    )
+
+
+def builtin_capability_filter(package: Any) -> Any:
+    """SQL twin of ``is_builtin_capability`` for ordering and filtering a listing."""
+
+    from sqlalchemy import and_, or_, tuple_
+
+    return or_(
+        and_(
+            package.capability_type == "MCP",
+            package.capability_key.in_(sorted(PLATFORM_MANAGED_CAPABILITY_KEYS)),
+        ),
+        tuple_(package.capability_type, package.capability_key).in_(
+            [
+                ("CONTEXT_POLICY", DEFAULT_CONTEXT_POLICY_KEY),
+                ("MEMORY_POLICY", DEFAULT_MEMORY_POLICY_KEY),
+                ("CRITIC_POLICY", DEFAULT_CRITIC_POLICY_KEY),
+            ]
+        ),
     )
 
 
