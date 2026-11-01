@@ -620,8 +620,21 @@ def validate_action_preconditions(
                 "CASE_FLOW_VERSION_CONFLICT", "待重跑节点身份已变化，请重新读取后再决定", 409
             )
     if plan.action in review_actions:
-        if stage.execution_mode != "CONTINUOUS" or run.run_mode != "AUTOMATIC":
-            raise conflict("cross-stage review requires a continuous execution")
+        if plan.action == "COPY_CONTINUOUS_EXECUTION":
+            # Copying a draft only exists for continuous (AUTOMATIC) executions.
+            if stage.execution_mode != "CONTINUOUS" or run.run_mode != "AUTOMATIC":
+                raise conflict("copying requires a continuous execution")
+        else:
+            # A completed stepwise record reaches REVIEW_PENDING exactly like a
+            # continuous one, so both may be closed by an explicit Agent review.
+            continuous = stage.execution_mode == "CONTINUOUS" and run.run_mode == "AUTOMATIC"
+            stepwise = (
+                stage.execution_mode == "STEPWISE"
+                and run.run_mode == "MANUAL"
+                and run.parent_flow_run_id is not None
+            )
+            if not (continuous or stepwise):
+                raise conflict("stage review requires a continuous or stepwise execution")
         if run.state != "COMPLETED":
             raise conflict("only a completed execution can be reviewed", state=run.state)
         if plan.action == "ADVANCE_CASE_STAGE":

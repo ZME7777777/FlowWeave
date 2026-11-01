@@ -1243,3 +1243,82 @@ def test_advancing_the_last_stage_names_complete_case_as_the_required_action(flo
     result = projection(rpc(g, "manage_case_flow", action(g, "ADVANCE_CASE_STAGE")))
     assert result["state"] == "FAILED"
     assert result["error_code"] == "CASE_FINAL_STAGE_REQUIRES_COMPLETION"
+
+
+def test_stepwise_final_stage_is_completed_by_the_agent_with_accepted_artifact_evidence(flow_case):
+    g = flow_case
+    stepwise(g)
+    for later in g.db.scalars(
+        select(CaseStage).where(CaseStage.case_id == g.item.id, CaseStage.id != g.stage.id)
+    ).all():
+        g.db.delete(later)
+    g.node = NodeRun(
+        flow_run_id=g.execution.id,
+        flow_node_snapshot_key="first",
+        sequence_no=1,
+        state="ACCEPTED",
+        created_from="STEPWISE_DRAFT_START",
+    )
+    g.db.add(g.node)
+    g.db.flush()
+    g.attempt = NodeAttempt(
+        node_run_id=g.node.id,
+        attempt_no=1,
+        snapshot_id=g.execution.active_snapshot_id,
+        state="ACCEPTED",
+    )
+    g.db.add(g.attempt)
+    g.db.flush()
+    g.node.accepted_attempt_id = g.attempt.id
+    artifact = ArtifactVersion(
+        flow_run_id=g.execution.id,
+        producer_attempt_id=g.attempt.id,
+        field_key="report",
+        version_no=1,
+        artifact_type="URL",
+        uri="https://example.test/result",
+        source="RUNTIME",
+        content_hash="0" * 64,
+        byte_size=1,
+    )
+    g.db.add(artifact)
+    g.db.flush()
+    artifact_id = artifact.id
+    g.db.add(
+        CaseArtifactReference(
+            case_id=g.item.id,
+            stage_id=g.stage.id,
+            stage_key=g.stage.stage_key,
+            execution_flow_run_id=g.execution.id,
+            node_run_id=g.node.id,
+            node_key="first",
+            node_attempt_id=g.attempt.id,
+            artifact_version_id=artifact_id,
+        )
+    )
+    g.execution.state = "COMPLETED"
+    g.db.commit()
+    mark_continuous_review_pending(g)
+
+    # Evidence that is not a formally accepted artifact of this execution is refused.
+    stale = projection(
+        rpc(
+            g,
+            "manage_case_flow",
+            action(g, "COMPLETE_CASE", evidence_artifact_version_ids=[str(uuid4())]),
+        )
+    )
+    assert stale["state"] == "FAILED"
+    assert stale["error_code"] == "CASE_COMPLETION_EVIDENCE_INVALID"
+    refresh(g)
+    result = projection(
+        rpc(
+            g,
+            "manage_case_flow",
+            action(g, "COMPLETE_CASE", evidence_artifact_version_ids=[artifact_id]),
+        )
+    )
+    assert result["state"] == "SUCCEEDED", result
+    refresh(g)
+    assert g.stage.state == "COMPLETED"
+    assert g.item.state == "COMPLETED"
