@@ -8122,7 +8122,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         void synchronizeConversationEvents(true, 'foreground');
       }
     }
-  }, [appendLiveEvent, synchronizeConversationEvents]);
+  }, [appendLiveEvent, host, queryClient, synchronizeConversationEvents, workspace]);
   const onStreamReconnect = useCallback((scope: string) => {
     // A WebSocket is a live projection only. Events written while the browser
     // was disconnected are recovered from the authoritative REST feed after
