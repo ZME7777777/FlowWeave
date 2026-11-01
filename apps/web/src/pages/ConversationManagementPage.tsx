@@ -6,7 +6,7 @@ import { useProductDialog } from '../components/ProductDialogContext';
 import { Pagination } from '../components/Pagination';
 import './conversation-management.css';
 import { api } from '../api/client';
-import type { AgentConversationManagementArchiveResult, AgentConversationDeletionJob, AgentConversationManagementPage, ManagedAgentConversation } from '../types';
+import type { AgentConversation, AgentConversationManagementArchiveResult, AgentConversationDeletionJob, AgentConversationManagementPage, ManagedAgentConversation } from '../types';
 
 const DAY = 24 * 60 * 60 * 1000;
 const PAGE_SIZE = 20;
@@ -39,7 +39,7 @@ function formatTime(value: string) {
   return new Date(value).toLocaleString('zh-CN', { dateStyle: 'medium', timeStyle: 'short' });
 }
 
-export function ConversationManagementPage({ onRestored, onArchived, onDeleted, onDirectoryDeleted }: { onRestored?: (selection: { bindingId?: string; workDirectoryId?: string }) => void; onArchived?: (selection: { workspaceId: string; workDirectoryId?: string; bindingIds: string[] }) => void; onDeleted?: (selection: { workspaceId: string; bindingIds: string[] }) => void; onDirectoryDeleted?: (selection: { workspaceId: string; workDirectoryId: string; bindingIds: string[] }) => void } = {}) {
+export function ConversationManagementPage({ onRestored, onArchived, onDeleted, onDirectoryDeleted }: { onRestored?: (selection: { bindingId?: string; workDirectoryId?: string; conversation?: AgentConversation }) => void; onArchived?: (selection: { workspaceId: string; workDirectoryId?: string; bindingIds: string[] }) => void; onDeleted?: (selection: { workspaceId: string; bindingIds: string[] }) => void; onDirectoryDeleted?: (selection: { workspaceId: string; workDirectoryId: string; bindingIds: string[] }) => void } = {}) {
   const client = useQueryClient();
   const dialog = useProductDialog();
   const [query, setQuery] = useState('');
@@ -201,7 +201,7 @@ export function ConversationManagementPage({ onRestored, onArchived, onDeleted, 
   const restore = useMutation({
     mutationFn: (bindingId: string) => api.restoreAgentConversation(workspace.data!.id, bindingId),
     onSuccess: async (conversation, bindingId) => {
-      onRestored?.({ bindingId, workDirectoryId: conversation.work_directory_id ?? selectedWorkDirectoryId });
+      onRestored?.({ bindingId, workDirectoryId: conversation.work_directory_id ?? selectedWorkDirectoryId, conversation });
       await Promise.all([
         client.invalidateQueries({ queryKey: ['agent-conversation-management', workspace.data?.id] }),
         client.invalidateQueries({ queryKey: ['agent-work-directories', workspace.data?.id] }),
