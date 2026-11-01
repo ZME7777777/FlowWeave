@@ -1349,7 +1349,7 @@ body:has(.login-page){min-width:0}
 .flow-run-record-selection{display:flex;align-self:stretch;align-items:center;justify-content:center;margin:0;cursor:pointer}
 .flow-run-record-selection .flow-run-record-select{width:14px;height:14px;margin:0;padding:0;accent-color:var(--green);cursor:pointer}
 .flow-run-record-content{display:grid;width:100%;min-width:0;min-height:46px;grid-template-columns:minmax(100px,1fr) 36px 48px minmax(64px,110px) 126px;align-items:center;gap:12px;border:0;background:transparent;padding:9px 12px 9px 0;color:var(--ink);text-align:left;cursor:pointer}
-.flow-run-record-content .flow-run-record-name{min-width:0;margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;font-weight:600}
+.flow-run-record-content .flow-run-record-name{min-width:0;margin:0;border:0;background:transparent;padding:0;color:inherit;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:inherit;font-size:11px;font-weight:600;text-align:left;cursor:pointer}
 .flow-run-record-kind{justify-self:start;border-radius:4px;background:#edf3ef;padding:2px 5px;color:#64806d;font-size:9px;white-space:nowrap}
 .flow-run-record-state{color:#78877e;font-size:10px;white-space:nowrap}
 .flow-run-record-state[data-state=ACTIVE],.flow-run-record-state[data-state=COMPLETED]{color:#2b7651}
