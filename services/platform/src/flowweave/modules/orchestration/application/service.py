@@ -10731,6 +10731,23 @@ def reject_attempt(
     return attempt_detail(db, next_attempt.id)
 
 
+def _stepwise_gate_failure_event(db: Session, attempt: NodeAttempt) -> RunEvent | None:
+    """Return the latest delivery failure when it came from the END gate task."""
+
+    event = db.scalar(
+        select(RunEvent)
+        .where(RunEvent.attempt_id == attempt.id, RunEvent.event_type == "RUNTIME_DELIVERY_FAILED")
+        .order_by(RunEvent.cursor.desc())
+        .limit(1)
+    )
+    payload = event.payload_json if event is not None else {}
+    return (
+        event
+        if isinstance(payload, dict) and payload.get("task_type") == "RUN_GATE_POLICY"
+        else None
+    )
+
+
 def retry_gates(db: Session, attempt_id: str, payload: AttemptVersionWrite) -> dict[str, Any]:
     current = _attempt(db, attempt_id)
     if current.error_code == "AUTOMATIC_RUNTIME_DELIVERY_FAILED":
@@ -10814,6 +10831,14 @@ def retry_gates(db: Session, attempt_id: str, payload: AttemptVersionWrite) -> d
         task.max_attempts = max(task.max_attempts, 10)
         finish(db)
         return attempt_detail(db, attempt.id)
+    # A stepwise gate task that exhausted its delivery retries is projected as
+    # RUNTIME_DELIVERY_FAILED. Gates are deterministic and idempotent, so the
+    # blocked stage can be run again once the transient cause is gone.
+    stepwise_gate_delivery_failure = (
+        current.error_code == "RUNTIME_DELIVERY_FAILED"
+        and current.state == AttemptState.END_BLOCKED
+        and _stepwise_gate_failure_event(db, current) is not None
+    )
     retryable_error_codes = {
         None,
         "GATE_CONFIG_INVALID",
@@ -10823,7 +10848,7 @@ def retry_gates(db: Session, attempt_id: str, payload: AttemptVersionWrite) -> d
         "AUTOMATIC_TRANSITION_DELIVERY_FAILED",
         "AUTOMATIC_TRANSITION_INVALID",
     }
-    if current.error_code not in retryable_error_codes:
+    if current.error_code not in retryable_error_codes and not stepwise_gate_delivery_failure:
         raise illegal(
             "attempt failure cannot be recovered by rerunning gates",
             state=current.state,
@@ -10842,6 +10867,19 @@ def retry_gates(db: Session, attempt_id: str, payload: AttemptVersionWrite) -> d
         {current.state},
         next_state=next_state,
     )
+    if stepwise_gate_delivery_failure:
+        attempt.error_code = None
+        attempt.error_detail = None
+        attempt.runtime_phase = "COMPLETED"
+        node_run = _node_run(db, attempt.node_run_id)
+        _event(
+            db,
+            node_run.flow_run_id,
+            "GATE_DELIVERY_RETRY_SCHEDULED",
+            {"stage": stage},
+            node_run.id,
+            attempt.id,
+        )
     _dispatch_gates(db, attempt, stage)
     finish(db)
     return attempt_detail(db, attempt.id)

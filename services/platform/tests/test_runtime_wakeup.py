@@ -1557,3 +1557,82 @@ def test_duplicate_runtime_artifact_audit_is_read_only_and_reports_references(mo
     assert item["cleanup"]["plan_reference_artifact_ids"] == ["a-2"]
     assert "storage_key" not in item["artifacts"][0]
     assert "inline_content" not in item["artifacts"][0]
+
+
+def _blocked_stepwise_gate_attempt(monkeypatch, *, failed_task: str):
+    """An END_BLOCKED stepwise Attempt whose latest delivery failure came from `failed_task`."""
+
+    attempt = SimpleNamespace(
+        id="attempt-1",
+        node_run_id="node-run-1",
+        state=AttemptState.END_BLOCKED,
+        runtime_phase="FAILED",
+        error_code="RUNTIME_DELIVERY_FAILED",
+        error_detail="A user principal is required for this operation",
+        state_version=5,
+    )
+    node_run = SimpleNamespace(id="node-run-1", flow_run_id="run-1")
+    events: list[tuple[str, dict[str, object]]] = []
+    dispatched: list[tuple[str, str]] = []
+
+    def claim(_db, _attempt_id, expected, allowed, *, next_state=None, **_values):
+        assert expected == 5 and attempt.state in allowed
+        attempt.state = next_state
+        attempt.state_version += 1
+        return attempt
+
+    monkeypatch.setattr(orchestration_service, "_attempt", lambda *_args: attempt)
+    monkeypatch.setattr(orchestration_service, "_node_run", lambda *_args: node_run)
+    monkeypatch.setattr(orchestration_service, "_claim_attempt_version", claim)
+    monkeypatch.setattr(
+        orchestration_service,
+        "_stepwise_gate_failure_event",
+        lambda *_args: SimpleNamespace() if failed_task == "RUN_GATE_POLICY" else None,
+    )
+    monkeypatch.setattr(
+        orchestration_service,
+        "_event",
+        lambda _db, _run_id, event_type, payload, *_args: events.append((event_type, payload)),
+    )
+    monkeypatch.setattr(
+        orchestration_service,
+        "_dispatch_gates",
+        lambda _db, item, stage: dispatched.append((item.state, stage)),
+    )
+    monkeypatch.setattr(orchestration_service, "finish", lambda *_args: None)
+    monkeypatch.setattr(orchestration_service, "attempt_detail", lambda *_args: {"id": attempt.id})
+    return attempt, events, dispatched
+
+
+def test_stepwise_end_gate_delivery_failure_can_rerun_the_gate_stage(monkeypatch):
+    from flowweave.shared.schemas import AttemptVersionWrite
+
+    attempt, events, dispatched = _blocked_stepwise_gate_attempt(
+        monkeypatch, failed_task="RUN_GATE_POLICY"
+    )
+    orchestration_service.retry_gates(
+        None, "attempt-1", AttemptVersionWrite(expected_state_version=5)
+    )
+
+    assert attempt.state == AttemptState.END_GATES
+    assert attempt.error_code is None and attempt.error_detail is None
+    assert dispatched == [(AttemptState.END_GATES, "END")]
+    assert [name for name, _ in events] == ["GATE_DELIVERY_RETRY_SCHEDULED"]
+
+
+def test_other_runtime_delivery_failures_still_cannot_rerun_gates(monkeypatch):
+    from flowweave.shared.schemas import AttemptVersionWrite
+
+    attempt, events, dispatched = _blocked_stepwise_gate_attempt(
+        monkeypatch, failed_task="POLL_RUNTIME"
+    )
+    with pytest.raises(DomainError) as refused:
+        orchestration_service.retry_gates(
+            None, "attempt-1", AttemptVersionWrite(expected_state_version=5)
+        )
+    assert refused.value.code == "ILLEGAL_STATE_TRANSITION"
+    assert (
+        attempt.state == AttemptState.END_BLOCKED
+        and attempt.error_code == "RUNTIME_DELIVERY_FAILED"
+    )
+    assert dispatched == [] and events == []
