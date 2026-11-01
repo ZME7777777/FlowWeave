@@ -6,6 +6,11 @@ import { AgentSessionWorkbench } from '../components/agent-session/AgentSessionW
 import { caseSessionHost } from '../components/agent-session/session-host';
 import type { Case } from '../types';
 
+/**
+ * A Case coordination conversation is an ordinary Agent conversation scoped to
+ * the Case work directory. It renders inside the Case workspace; this component
+ * only supplies the Case host/gateway and never owns conversation UI.
+ */
 export function CaseSessionPage({
   caseId,
   bindingId,
@@ -37,12 +42,12 @@ export function CaseSessionPage({
       },
     },
   }), [bindingId, caseId, item.data?.control_conversation_binding_id, queryClient]);
-  if (item.isLoading) return <main className="auth-loading" role="status"><span>正在加载事项协调会话…</span></main>;
-  if (item.error) return <main className="empty"><b>无法打开事项协调会话</b><span>{item.error.message}</span><button className="secondary" onClick={onReturn}>返回事项</button></main>;
+  if (item.isLoading) return <section className="auth-loading" role="status"><span>正在加载 Case Agent 会话…</span></section>;
+  if (item.error) return <section className="empty"><b>无法打开 Case Agent 会话</b><span>{item.error.message}</span><button className="secondary" onClick={onReturn}>返回场景</button></section>;
   const belongsToCase = item.data?.control_conversation_binding_id === bindingId
     || item.data?.control_rounds?.some(round => round.state === 'STARTED' && round.binding_id === bindingId);
   if (!belongsToCase || !item.data?.control_work_directory_id) {
-    return <main className="empty"><b>该会话不属于当前事项</b><span>请从事项工作区进入其协调会话。</span><button className="secondary" onClick={onReturn}>返回事项</button></main>;
+    return <section className="empty"><b>该会话不属于当前场景</b><span>请从场景工作区进入其 Case Agent 会话。</span><button className="secondary" onClick={onReturn}>返回场景</button></section>;
   }
   return <AgentSessionWorkbench
     gateway={gateway}
@@ -50,5 +55,7 @@ export function CaseSessionPage({
     onNavigate={onNavigate}
     onReturnToSource={onReturn}
     scopeWorkDirectoryId={item.data.control_work_directory_id}
+    embedded
+    onHostStateChanged={() => { void queryClient.invalidateQueries({ queryKey: ['cases'] }); void queryClient.invalidateQueries({ queryKey: ['case', caseId] }); }}
   />;
 }

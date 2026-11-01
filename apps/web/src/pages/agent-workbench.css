@@ -745,3 +745,11 @@
   .agent-credential-sync-content{padding-inline:10px}
   .agent-credential-sync>footer{padding-inline:10px}
 }
+
+/* Embedded in a product page (Case): the host owns the conversation list. */
+.agent-workbench-page.agent-workbench-embedded{height:100%;min-height:0;grid-template-columns:minmax(0,1fr) auto;grid-template-rows:minmax(0,1fr)}
+.agent-workbench-page.agent-workbench-embedded>.agent-workbench-main{grid-column:1}
+.agent-workbench-page.agent-workbench-embedded>.agent-workspace-drawer{grid-column:2}
+.agent-workbench-page.agent-workbench-embedded>.agent-workspace-drawer.fullscreen{grid-column:1 / -1}
+.agent-workbench-page.agent-workbench-embedded.conversation-rail-collapsed{grid-template-columns:minmax(0,1fr) auto}
+.agent-workbench-shell .agent-workbench-page.agent-workbench-embedded{height:100%}

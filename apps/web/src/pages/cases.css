@@ -377,3 +377,13 @@ html:has(.scenario-space){overscroll-behavior:none}
 @media(max-width:1050px){.case-path-workspace{grid-template-columns:minmax(0,1fr) 244px;gap:14px}.case-stage-info{padding:13px}}
 @media(max-width:820px){.case-path-workspace{grid-template-columns:1fr}.case-stage-info{position:static;grid-row:1}.case-stage-info dl{grid-template-columns:repeat(2,minmax(0,1fr));column-gap:18px}.case-stage-info-actions{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:520px){.case-stage-info dl,.case-stage-info-actions{grid-template-columns:1fr}}
+
+/* Case Agent conversation entry: the Agent-generated title only. */
+.scenario-space .scenario-session{display:block;grid-template-columns:none;padding:6px 8px 6px 12px;border-radius:0 6px 6px 0}
+.scenario-space .scenario-session>span{display:block}
+.scenario-space .scenario-session b{display:block;font-weight:600;color:#35574a}
+.scenario-space .scenario-session.active{background:#e6eee9}
+.scenario-space .scenario-session.active b{color:#087a57}
+/* The conversation is the Agent workbench itself, embedded in the main area. */
+.scenario-space>.scenario-conversation{min-width:0;min-height:0;display:block;overflow:hidden;padding:0;background:#fff}
+.scenario-space>.scenario-conversation>.agent-workbench-page{height:100%}

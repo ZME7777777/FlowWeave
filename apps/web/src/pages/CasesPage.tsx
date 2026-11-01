@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { AlertTriangle, ArrowDown, Bot, Check, ChevronRight, CirclePause, CirclePlay, ClipboardList, Clock3, ExternalLink, FileText, GitBranch, GripVertical, Info, Link2, ListChecks, MessageSquareCode, Pencil, Play, Plus, Search, Settings2, Trash2, Upload, X } from 'lucide-react';
+import { AlertTriangle, ArrowDown, Bot, Check, ChevronRight, CirclePause, CirclePlay, ClipboardList, Clock3, ExternalLink, FileText, GitBranch, GripVertical, Info, Link2, ListChecks, Pencil, Play, Plus, Search, Settings2, Trash2, Upload, X } from 'lucide-react';
 import { api, caseMaterialFileUrl } from '../api/client';
 import type { Case, CaseBasics, CaseMaterial, CaseSessionConfig, CaseStage } from '../types';
 import { CapabilityManager } from '../components/agent-session/AgentSessionWorkbench';
+import { CaseSessionPage } from './CaseSessionPage';
 import { useEscapeClose } from '../components/useEscapeClose';
 import { useProductDialog } from '../components/ProductDialogContext';
 import { CaseChoice } from './CaseChoice';
@@ -499,14 +500,14 @@ function ScenarioWorkspace({ item, workspaceId, onUpdated, onDelete, onOpenConve
   </div></main>;
 }
 
-export function CasesPage({ onNavigate }: { onNavigate: (path: string) => void }) {
+export function CasesPage({ onNavigate, sessionRoute }: { onNavigate: (path: string, replace?: boolean) => void; sessionRoute?: { caseId: string; bindingId: string } }) {
   const qc = useQueryClient();
   const cases = useQuery({ queryKey: ['cases'], queryFn: api.cases });
   const workspace = useQuery({ queryKey: ['default-agent-workspace'], queryFn: () => api.defaultAgentWorkspace() });
   const [selectedId, setSelectedId] = useState<string>();
   const [creating, setCreating] = useState(false);
   const [query, setQuery] = useState('');
-  const selected = useMemo(() => cases.data?.find(item => item.id === selectedId) ?? cases.data?.[0], [cases.data, selectedId]);
+  const selected = useMemo(() => cases.data?.find(item => item.id === (sessionRoute?.caseId ?? selectedId)) ?? cases.data?.[0], [cases.data, selectedId, sessionRoute?.caseId]);
   const replace = useCallback((item: Case) => { qc.setQueryData<Case[]>(['cases'], current => current?.some(candidate => candidate.id === item.id) ? current.map(candidate => candidate.id === item.id && candidate.row_version <= item.row_version ? item : candidate) : [item, ...(current ?? [])]); }, [qc]);
   const remove = (id: string) => { qc.setQueryData<Case[]>(['cases'], current => current?.filter(candidate => candidate.id !== id) ?? []); qc.removeQueries({ queryKey: ['case-live', id] }); setSelectedId(current => current === id ? undefined : current); };
   return <main className="scenario-space"><aside><header className="scenario-side-head"><b>场景列表</b><button className="primary" aria-label="新建场景" onClick={() => setCreating(true)}><Plus size={14}/><span>新建</span></button></header>
@@ -514,9 +515,15 @@ export function CasesPage({ onNavigate }: { onNavigate: (path: string) => void }
     {cases.isLoading ? <p className="scenario-empty">正在加载场景…</p> : cases.error ? <p className="error">{cases.error.message}</p> : cases.data?.length ? <div className="scenario-tree">{cases.data.filter(item => !query.trim() || `${item.name} ${item.objective} ${item.description ?? ''}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())).map(item => {
       const isSelected = !creating && selected?.id === item.id;
       const completed = item.stages.filter(stage => stage.state === 'COMPLETED').length;
-      return <section className="scenario-case-wrap" key={item.id}><button className={`scenario-case-head ${isSelected ? 'active' : ''}`} onClick={() => { setSelectedId(item.id); setCreating(false); }}><i className={item.control_conversation_binding_id || item.stages.some(stage => stage.current_execution_flow_run_id) ? item.state.toLowerCase() : 'draft'}/><span><b>{item.name}</b><small>{item.control_conversation_binding_id || item.stages.some(stage => stage.current_execution_flow_run_id) || item.state === 'COMPLETED' || item.state === 'ARCHIVED' ? CASE_STATE[item.state] : '待启动'} · {completed}/{item.stages.length} 阶段</small></span><ChevronRight size={15}/></button>{isSelected && item.control_conversation_binding_id && <button className="scenario-session" onClick={() => onNavigate(`/cases/${encodeURIComponent(item.id)}/conversations/${encodeURIComponent(item.control_conversation_binding_id!)}`)}><MessageSquareCode size={13}/><span><b>Case Agent</b></span><em>打开</em></button>}</section>;
+      return <section className="scenario-case-wrap" key={item.id}><button className={`scenario-case-head ${isSelected ? 'active' : ''}`} onClick={() => { setSelectedId(item.id); setCreating(false); if (sessionRoute) onNavigate('/', true); }}><i className={item.control_conversation_binding_id || item.stages.some(stage => stage.current_execution_flow_run_id) ? item.state.toLowerCase() : 'draft'}/><span><b>{item.name}</b><small>{item.control_conversation_binding_id || item.stages.some(stage => stage.current_execution_flow_run_id) || item.state === 'COMPLETED' || item.state === 'ARCHIVED' ? CASE_STATE[item.state] : '待启动'} · {completed}/{item.stages.length} 阶段</small></span><ChevronRight size={15}/></button>{isSelected && item.control_conversation_binding_id && (() => {
+        const round = item.control_rounds?.find(candidate => candidate.binding_id === item.control_conversation_binding_id);
+        const title = round?.display_title || 'Case Agent';
+        const active = sessionRoute?.caseId === item.id && sessionRoute.bindingId === item.control_conversation_binding_id;
+        return <button className={`scenario-session${active ? ' active' : ''}`} title={title} aria-current={active ? 'page' : undefined} onClick={() => onNavigate(`/cases/${encodeURIComponent(item.id)}/conversations/${encodeURIComponent(item.control_conversation_binding_id!)}`)}><span><b>{title}</b></span></button>;
+      })()}</section>;
     })}</div> : <div className="scenario-empty"><ClipboardList size={21}/><b>暂无场景</b></div>}</aside>
-    {creating ? <main className="scenario-workspace case-basics-workspace"><div className="scenario-workspace-inner"><header className="scenario-casebar"><h1>新建 Case</h1></header><div className="scenario-workspace-content">{workspace.error && <p className="error">{errorMessage(workspace.error)}</p>}<BasicsForm key="new-case" workspaceId={workspace.data?.id ?? ''} onCancel={() => { setCreating(false); void cases.refetch(); }} onSaved={item => { replace(item); setSelectedId(item.id); setCreating(false); }}/></div></div></main>
+    {sessionRoute && selected?.id === sessionRoute.caseId && !creating ? <main className="scenario-workspace scenario-conversation"><CaseSessionPage key={`${sessionRoute.caseId}:${sessionRoute.bindingId}`} caseId={sessionRoute.caseId} bindingId={sessionRoute.bindingId} onNavigate={onNavigate} onReturn={() => onNavigate('/', true)}/></main>
+      : creating ? <main className="scenario-workspace case-basics-workspace"><div className="scenario-workspace-inner"><header className="scenario-casebar"><h1>新建 Case</h1></header><div className="scenario-workspace-content">{workspace.error && <p className="error">{errorMessage(workspace.error)}</p>}<BasicsForm key="new-case" workspaceId={workspace.data?.id ?? ''} onCancel={() => { setCreating(false); void cases.refetch(); }} onSaved={item => { replace(item); setSelectedId(item.id); setCreating(false); }}/></div></div></main>
       : selected ? <ScenarioWorkspace key={selected.id} item={selected} workspaceId={workspace.data?.id ?? ''} onUpdated={replace} onDelete={() => remove(selected.id)} onOpenConversation={bindingId => onNavigate(`/cases/${encodeURIComponent(selected.id)}/conversations/${encodeURIComponent(bindingId)}`)} onOpenRun={id => onNavigate(`/flow-runs/${encodeURIComponent(id)}`)} onOpenRecord={stage => onNavigate(`/flow-runs/${encodeURIComponent(stage.current_execution_flow_run_id!)}`)}/>
         : <section className="scenario-workspace scenario-workspace-empty"><ClipboardList size={28}/><h2>选择或创建一个场景</h2></section>}
   </main>;

@@ -30,7 +30,6 @@ const LdapUsersPage = lazy(() => import('./pages/LdapUsersPage').then(module => 
 const StandaloneAgentTerminal = lazy(() => import('./components/AgentRuntimeSidebar').then(module => ({ default: module.StandaloneAgentTerminal })));
 const AgentWorkbenchPage = lazy(() => import('./pages/AgentWorkbenchPage').then(module => ({ default: module.AgentWorkbenchPage })));
 const FlowNodeSessionPage = lazy(() => import('./pages/FlowNodeSessionPage').then(module => ({ default: module.FlowNodeSessionPage })));
-const CaseSessionPage = lazy(() => import('./pages/CaseSessionPage').then(module => ({ default: module.CaseSessionPage })));
 const WorkspaceFileViewerPage = lazy(() => import('./pages/WorkspaceFileViewerPage').then(module => ({ default: module.WorkspaceFileViewerPage })));
 
 function PageLoading() {
@@ -113,7 +112,8 @@ export function App() {
   }, []);
   const tabsUser = useRef<AuthUser | null>(null);
   useEffect(() => {
-    if (new URLSearchParams(window.location.search).get('view') === 'cases') setView('cases');
+    const onCaseRoute = /^\/cases\/[^/]+\/conversations\/[^/]+$/.test(withoutDeploymentBase(window.location.pathname));
+    if (onCaseRoute || new URLSearchParams(window.location.search).get('view') === 'cases') setView('cases');
   }, [setView]);
   const restoreContextTabs = useCallback((nextUser: AuthUser) => {
     const saved = readContextTabs(nextUser);
@@ -356,7 +356,7 @@ export function App() {
   }, [flowRunRouteId, nodeSessionRoute, selectedRunId, view]);
   const directAgentRoute = routePathname === '/agent' || routePathname === '/agent/schedules' || routePathname.startsWith('/agent/conversations/') || routePathname.startsWith('/agent/schedules/conversations/');
   const canUseAgentSessions = user?.can_use_agent_sessions !== false;
-  const isAgentRoute = (directAgentRoute && canUseAgentSessions) || Boolean(nodeSessionRoute) || Boolean(caseSessionRoute);
+  const isAgentRoute = (directAgentRoute && canUseAgentSessions) || Boolean(nodeSessionRoute);
   useLayoutEffect(() => {
     if (directAgentRoute) rememberStandaloneAgentConversation(routePathname);
   }, [directAgentRoute, rememberStandaloneAgentConversation, routePathname]);
@@ -368,11 +368,6 @@ export function App() {
   }, [directAgentRoute, setView, user?.can_use_agent_sessions]);
   const leaveAgentRoute = () => {
     if (!isAgentRoute) return;
-    if (caseSessionRoute) {
-      setView('cases');
-      navigate('/', true);
-      return;
-    }
     navigate('/', true);
   };
   const leaveFlowRunRoute = () => {
@@ -482,11 +477,10 @@ export function App() {
   });
   const pageGroup = activeFlowRunTabId ? `run:${activeFlowRunTabId}` : isAgentRoute ? 'agent-workbench' : renderedView;
   const pageKey = nodeSessionRoute ? `node-session:${nodeSessionRoute.slice(1).join(':')}`
-    : caseSessionRoute ? `case-session:${caseSessionRoute.slice(1).join(':')}`
     : directAgentRoute && canUseAgentSessions ? 'agent-workbench'
     : renderedView === 'workbench' ? `workbench:${activeFlowRunTabId ?? selectedRunId}` : renderedView;
   const retainedGroups = [...visibleNav.map(item => item.view), ...openSettingsViews, ...openFlowRunTabs.map(tab => `run:${tab.id}`)];
   return <div className={`app-shell${isAgentRoute ? ' agent-workbench-shell' : ''}`}><header className="topbar" onDoubleClick={toggleFullscreenFromTopbar}><button type="button" className="brand" aria-label="重新加载当前页面数据" title="重新加载当前页面数据（保持全屏）" onClick={() => void reloadCurrentContent()}><span className="brand-mark"><Hexagon size={22} fill="currentColor"/></span><span>FlowWeave</span></button><TopbarTabs key={user.id} userId={user.id} fixedTabs={visibleNav.map(item => ({ id: item.view, label: item.label, icon: item.icon, active: !activeFlowRunTabId && (isAgentRoute ? item.view === 'agent-workbench' : renderedView === item.view), onSelect: () => { void selectView(item.view); } }))} temporaryTabs={temporaryTabs} onPromote={promoteContextTab}/><div className="topbar-actions"><div className="account-menu" ref={settingsMenu}><button type="button" className={`account-trigger${settingsActive ? ' active' : ''}`} aria-label="账户与设置" aria-haspopup="menu" aria-expanded={settingsOpen} onClick={() => setSettingsOpen(open => !open)}><span className="account-avatar" aria-hidden="true">{user.username.slice(0, 1).toUpperCase()}</span><span className="account-identity"><b>{user.username}</b><small>{user.is_super_admin ? '超级管理员' : '普通用户'}</small></span><ChevronDown size={13} className={settingsOpen ? 'rotated' : ''}/></button>{settingsOpen && <ViewportPopover ref={settingsPopover} anchor={() => settingsMenu.current} align="end" matchAnchorWidth className="settings-popover account-popover" role="menu" aria-label="账户与设置"><div className="account-popover-heading"><Settings size={14}/><b>平台设置</b></div>{accountSettingsNav.map(item => <button type="button" role="menuitem" title={item.description} key={item.view} className={renderedView === item.view && !isAgentRoute && !flowRunRouteId ? 'active' : ''} onClick={() => selectSettingsView(item.view)}><span className="settings-item-icon"><item.icon size={15}/></span><b>{item.label}</b></button>)}<button type="button" role="menuitem" title="结束当前平台会话" className="account-logout" onClick={() => void logout()}><span className="settings-item-icon"><LogOut size={15}/></span><b>退出登录</b></button></ViewportPopover>}</div></div></header>
-    <RetainedPages key={`${user.id}:${contentReloadVersion}`} activeKey={pageKey} group={pageGroup} retainedGroups={retainedGroups} fallback={<PageLoading/>}>{isAgentRoute ? nodeSessionRoute ? <FlowNodeSessionPage flowRunId={decodeURIComponent(nodeSessionRoute[1])} nodeRunId={decodeURIComponent(nodeSessionRoute[2])} attemptId={decodeURIComponent(nodeSessionRoute[3])} onNavigate={navigate}/> : caseSessionRoute ? <CaseSessionPage caseId={decodeURIComponent(caseSessionRoute[1])} bindingId={decodeURIComponent(caseSessionRoute[2])} onNavigate={navigate} onReturn={() => { setView('cases'); navigate('/', true); }}/> : <AgentWorkbenchPage onNavigate={navigate}/> : <>{renderedView === 'nodes' && <NodesPage onRegisterLeaveGuard={registerNodeLeaveGuard} onDraftStateChange={onNodeDraftStateChange}/>}{renderedView === 'capabilities' && <CapabilitiesPage/>}{renderedView === 'environments' && <TerminalEnvironmentsPage/>}{renderedView === 'credentials' && <CredentialsPage/>}{renderedView === 'ldap-users' && user.is_super_admin && <LdapUsersPage/>}{renderedView === 'flows' && <FlowsPage/>}{renderedView === 'runs' && <RunsPage/>}{renderedView === 'cases' && <CasesPage onNavigate={navigate}/>}{renderedView === 'schedules' && <SchedulesPage/>}{renderedView === 'models' && <ModelsPage/>}{renderedView === 'workbench' && <WorkbenchPage key={activeFlowRunTabId ?? selectedRunId} location={activeFlowRunLocation}/>}</>}</RetainedPages>
+    <RetainedPages key={`${user.id}:${contentReloadVersion}`} activeKey={pageKey} group={pageGroup} retainedGroups={retainedGroups} fallback={<PageLoading/>}>{isAgentRoute ? nodeSessionRoute ? <FlowNodeSessionPage flowRunId={decodeURIComponent(nodeSessionRoute[1])} nodeRunId={decodeURIComponent(nodeSessionRoute[2])} attemptId={decodeURIComponent(nodeSessionRoute[3])} onNavigate={navigate}/> : <AgentWorkbenchPage onNavigate={navigate}/> : <>{renderedView === 'nodes' && <NodesPage onRegisterLeaveGuard={registerNodeLeaveGuard} onDraftStateChange={onNodeDraftStateChange}/>}{renderedView === 'capabilities' && <CapabilitiesPage/>}{renderedView === 'environments' && <TerminalEnvironmentsPage/>}{renderedView === 'credentials' && <CredentialsPage/>}{renderedView === 'ldap-users' && user.is_super_admin && <LdapUsersPage/>}{renderedView === 'flows' && <FlowsPage/>}{renderedView === 'runs' && <RunsPage/>}{renderedView === 'cases' && <CasesPage onNavigate={navigate} sessionRoute={caseSessionRoute ? { caseId: decodeURIComponent(caseSessionRoute[1]), bindingId: decodeURIComponent(caseSessionRoute[2]) } : undefined}/>}{renderedView === 'schedules' && <SchedulesPage/>}{renderedView === 'models' && <ModelsPage/>}{renderedView === 'workbench' && <WorkbenchPage key={activeFlowRunTabId ?? selectedRunId} location={activeFlowRunLocation}/>}</>}</RetainedPages>
   </div>;
 }

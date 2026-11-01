@@ -4943,6 +4943,12 @@ export interface AgentSessionWorkbenchProps {
   hideDraftTitle?: boolean;
   /** Restrict the workbench to one server-authorized logical work directory. */
   scopeWorkDirectoryId?: string;
+  /**
+   * Render only the conversation surface inside a product page that already owns
+   * the conversation list (for example the Case workspace). The page, state and
+   * transport are the same as the standalone workbench.
+   */
+  embedded?: boolean;
   gateway?: AgentSessionGateway;
   host?: AgentSessionHost;
 }
@@ -4963,7 +4969,7 @@ export function AgentSessionWorkbench({
   </AgentSessionGatewayContext.Provider>;
 }
 
-function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStateChanged, autoOpenDraft = false, scopeWorkDirectoryId }: Omit<AgentSessionWorkbenchProps, 'gateway' | 'host'>) {
+function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStateChanged, autoOpenDraft = false, scopeWorkDirectoryId, embedded = false }: Omit<AgentSessionWorkbenchProps, 'gateway' | 'host'>) {
   const { api, features, candidateOutputUrl, fileUrl } = useAgentSessionGateway();
   const dialog = useProductDialog();
   const host = useAgentSessionHost();
@@ -10268,8 +10274,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     window.addEventListener('pointerup', stop, { once: true });
     window.addEventListener('pointercancel', stop, { once: true });
   };
-  return <main className={`agent-workbench-page${!onReturnToSource ? ' agent-workbench-app-shell' : ''}${homeRailCollapsed ? ' conversation-rail-collapsed' : ''}`} style={{ '--conversation-rail-width': `${conversationRailWidth}px` } as CSSProperties}>
-    {!onReturnToSource && <nav className="agent-workbench-app-nav" aria-label="Agent 工作区导航"><button type="button" className={agentWorkspaceView === 'home' ? 'active' : ''} aria-current={agentWorkspaceView === 'home' ? 'page' : undefined} aria-label="主页" aria-pressed={homeRailCollapsed} title={homeRailCollapsed ? '展开会话侧栏' : '收起会话侧栏'} onClick={returnToHome}><Home size={17}/></button><button type="button" className={agentWorkspaceView === 'schedules' ? 'active' : ''} aria-current={agentWorkspaceView === 'schedules' ? 'page' : undefined} aria-label="定时任务" title="定时任务" onClick={() => { rememberHomeRoute(); setAgentWorkspaceView('schedules'); onNavigate('/agent/schedules'); }}><CalendarClock size={17}/></button><button type="button" className={agentWorkspaceView === 'management' ? 'active' : ''} aria-current={agentWorkspaceView === 'management' ? 'page' : undefined} aria-label="会话管理" title="会话管理" onClick={() => { rememberHomeRoute(); setAgentWorkspaceView('management'); }}><MessageSquareText size={17}/></button><button type="button" className={`agent-workbench-settings-trigger${agentWorkspaceView === 'settings' ? ' active' : ''}`} aria-current={agentWorkspaceView === 'settings' ? 'page' : undefined} aria-label="工作区设置" title="设置" onClick={toggleSettings}><Settings size={17}/></button></nav>}
+  return <main className={`agent-workbench-page${!onReturnToSource && !embedded ? ' agent-workbench-app-shell' : ''}${embedded ? ' agent-workbench-embedded' : ''}${homeRailCollapsed ? ' conversation-rail-collapsed' : ''}`} style={{ '--conversation-rail-width': `${conversationRailWidth}px` } as CSSProperties}>
+    {!onReturnToSource && !embedded && <nav className="agent-workbench-app-nav" aria-label="Agent 工作区导航"><button type="button" className={agentWorkspaceView === 'home' ? 'active' : ''} aria-current={agentWorkspaceView === 'home' ? 'page' : undefined} aria-label="主页" aria-pressed={homeRailCollapsed} title={homeRailCollapsed ? '展开会话侧栏' : '收起会话侧栏'} onClick={returnToHome}><Home size={17}/></button><button type="button" className={agentWorkspaceView === 'schedules' ? 'active' : ''} aria-current={agentWorkspaceView === 'schedules' ? 'page' : undefined} aria-label="定时任务" title="定时任务" onClick={() => { rememberHomeRoute(); setAgentWorkspaceView('schedules'); onNavigate('/agent/schedules'); }}><CalendarClock size={17}/></button><button type="button" className={agentWorkspaceView === 'management' ? 'active' : ''} aria-current={agentWorkspaceView === 'management' ? 'page' : undefined} aria-label="会话管理" title="会话管理" onClick={() => { rememberHomeRoute(); setAgentWorkspaceView('management'); }}><MessageSquareText size={17}/></button><button type="button" className={`agent-workbench-settings-trigger${agentWorkspaceView === 'settings' ? ' active' : ''}`} aria-current={agentWorkspaceView === 'settings' ? 'page' : undefined} aria-label="工作区设置" title="设置" onClick={toggleSettings}><Settings size={17}/></button></nav>}
     {agentWorkspaceView === 'settings' && <AgentWorkspaceSettings workspaceId={workspace.id}/>}
     {agentWorkspaceView === 'schedules' && workspace && <AgentConversationSchedulesPanel workspaceId={workspace.id} activeBindingId={selected?.id} activeConversationCapabilities={selected?.capabilities} embedded showDetail={!routeBindingId && !activityPreviewBindingId} renderConversation={occurrence => {
       const item = occurrence.conversation ?? { id: occurrence.binding_id, display_title: occurrence.conversation_title, lifecycle: 'ACTIVE', streaming_callback_ready: true, created_at: occurrence.created_at, updated_at: occurrence.created_at };
@@ -10315,7 +10321,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       onOpenInTab={openPreviewInTab}
       onOpenWorkspaceFile={openWorkspaceFileLink}
     />}
-    {agentWorkspaceView === 'home' && <aside className="agent-workbench-rail">
+    {agentWorkspaceView === 'home' && !embedded && <aside className="agent-workbench-rail">
       <div className="agent-conversation-rail-resizer" role="separator" aria-label="调整会话列表宽度" aria-orientation="vertical" onPointerDown={startConversationRailResize}/>
       <header className={!onReturnToSource && features.workDirectories ? 'agent-workbench-rail-actions-only' : undefined}>{onReturnToSource && <button type="button" className="agent-session-return" aria-label="返回来源" title="返回来源" onClick={onReturnToSource}><ArrowLeft size={16}/></button>}{(onReturnToSource || !features.workDirectories) && <div className="agent-session-host-heading"><span className="eyebrow">{scopeWorkDirectoryId ? 'CASE CONTROL CONVERSATION' : onReturnToSource ? 'FLOWRUN NODE WORKSPACE' : 'FLOWRUN NODE'}</span><h1>{scopeWorkDirectoryId ? '事项协调会话' : onReturnToSource ? workspace?.display_name || '节点会话' : '节点会话'}</h1></div>}<div className="agent-workbench-create-actions"><button type="button" className={`agent-workbench-activity-trigger${sidebarListMode === 'activity' ? ' active' : ''}`} aria-label={`查看活动会话${activityConversations.length ? `（${activityConversations.length}）` : ''}`} title="查看活动会话" onClick={toggleSidebarListMode}><Bell size={15}/>{activityConversations.length > 0 && <span aria-hidden="true">{activityConversations.length > 99 ? '99+' : activityConversations.length}</span>}</button>{scopeWorkDirectoryId === undefined && <button className="primary" disabled={!conversationSearchSupported} onClick={() => setConversationSearchOpen(true)}>{conversationSearchQuery.data?.state === 'PENDING' || conversationSearchQuery.data?.state === 'RUNNING' ? <LoaderCircle className="conversation-activity-spin" size={15}/> : conversationSearchQuery.data?.state === 'SUCCEEDED' ? <Check size={15}/> : <Search size={15}/>}{conversationSearchQuery.data?.state === 'SUCCEEDED' ? '搜索完成' : '搜索会话'}</button>}{features.workDirectories && scopeWorkDirectoryId === undefined && <button type="button" className="secondary" aria-label="新增工作区" disabled={!runtimeWritable} onClick={() => setWorkDirectoryCreatorOpen(true)}><FolderPlus size={14}/>新增工作区</button>}</div></header>
       <div ref={sidebarListRef} className="agent-workbench-list" onDragOver={event => {

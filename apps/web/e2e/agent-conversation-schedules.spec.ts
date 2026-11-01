@@ -4466,7 +4466,36 @@ test('case coordination rounds wait for background delivery retry and retain his
   await expect(history).toContainText('当前轮次');
   await history.getByRole('button', { name: '打开会话', exact: true }).click();
   await expect(page).toHaveURL(/\/cases\/round-case\/conversations\/round-1-binding$/);
-  await expect(page.getByText('该会话不属于当前事项')).toHaveCount(0);
+  await expect(page.getByText('该会话不属于当前场景')).toHaveCount(0);
+});
+
+test('Case Agent conversation is embedded in the Case workspace and listed by its generated title only', async ({ page }) => {
+  await openWorkspace(page);
+  const round = { id: 'round-1', state: 'STARTED', binding_id: 'round-1-binding', display_title: '异常清理逐步运行协调', is_current: true, error_code: null, created_at: now, started_at: now };
+  const item = { id: 'embed-case', name: '内嵌场景', objective: '交付', description: '', row_version: 3, state: 'ACTIVE', materials: [], tasks: [], control_plans: [], decision_proposals: [], feedback_deliveries: [], flow_run_ids: [],
+    session_config: { model_provider_id: 'provider-1', model_name: 'model-1', reasoning_effort: null, capability_version_ids: [], credential_ids: [] },
+    control_work_directory_id: 'case-directory', current_control_round_id: 'round-1', control_conversation_binding_id: 'round-1-binding', control_rounds: [round],
+    stages: [{ id: 'stage', name: '交付阶段', flow_run_id: 'template', position: 0, state: 'ACTIVE', execution_mode: 'STEPWISE', current_execution_flow_run_id: null, execution: null }], created_at: now, updated_at: now };
+  await page.route('**/api/v1/cases**', route => json(route, new URL(route.request().url()).pathname.endsWith('/cases') ? [item] : item));
+  await page.getByRole('button', { name: '场景空间', exact: true }).click();
+  const entry = page.locator('.scenario-space .scenario-session');
+  await expect(entry).toHaveText('异常清理逐步运行协调');
+  await expect(entry.locator('svg')).toHaveCount(0);
+  await expect(entry.locator('em')).toHaveCount(0);
+  await entry.click();
+  await expect(page).toHaveURL(/\/cases\/embed-case\/conversations\/round-1-binding$/);
+  // The Case list stays visible; the main area is the shared Agent conversation surface.
+  await expect(page.locator('.scenario-space>aside')).toBeVisible();
+  await expect(page.locator('.scenario-space .agent-workbench-page.agent-workbench-embedded')).toBeVisible();
+  await expect(page.locator('.scenario-space .agent-workbench-rail')).toHaveCount(0);
+  await expect(page.locator('.scenario-space .agent-workbench-app-nav')).toHaveCount(0);
+  await expect(entry).toHaveAttribute('aria-current', 'page');
+  await page.reload();
+  await expect(page).toHaveURL(/\/cases\/embed-case\/conversations\/round-1-binding$/);
+  await expect(page.locator('.scenario-space .agent-workbench-page.agent-workbench-embedded')).toBeVisible();
+  await page.locator('.scenario-case-head').click();
+  await expect(page).not.toHaveURL(/\/conversations\//);
+  await expect(page.locator('.agent-workbench-page')).toHaveCount(0);
 });
 
 test('manual Case stage retry retains its execution copy after a start failure', async ({ page }) => {

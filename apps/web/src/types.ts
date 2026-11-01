@@ -629,7 +629,7 @@ export interface Case {
 }
 
 export interface CaseControlRound {
-  id: string; binding_id: string | null; state: 'PENDING' | 'STARTED' | 'FAILED' | 'DELETED';
+  id: string; binding_id: string | null; display_title?: string | null; state: 'PENDING' | 'STARTED' | 'FAILED' | 'DELETED';
   is_current: boolean; error_code: string | null; created_at: string; started_at: string | null;
 }
 

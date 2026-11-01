@@ -413,6 +413,21 @@ def _case_dict(db: Session, item: Case) -> dict[str, Any]:
         .where(CaseControlPlan.case_id == item.id)
         .order_by(CaseControlPlan.created_at.desc())
     ).all()
+    rounds = db.scalars(
+        select(CaseControlRound)
+        .where(CaseControlRound.case_id == item.id)
+        .order_by(CaseControlRound.created_at.desc(), CaseControlRound.id)
+    ).all()
+    # The Agent-generated title is the conversation's own projection; Case never
+    # invents or stores a second name for it.
+    titles = {
+        binding_id: title
+        for binding_id, title in db.execute(
+            select(AgentConversationBinding.id, AgentConversationBinding.display_title).where(
+                AgentConversationBinding.id.in_([x.binding_id for x in rounds if x.binding_id])
+            )
+        )
+    }
     return {
         "id": item.id,
         "name": item.name,
@@ -433,17 +448,14 @@ def _case_dict(db: Session, item: Case) -> dict[str, Any]:
             {
                 "id": entry.id,
                 "binding_id": entry.binding_id if entry.state == "STARTED" else None,
+                "display_title": titles.get(entry.binding_id or "") or None,
                 "state": entry.state,
                 "is_current": entry.id == item.current_control_round_id,
                 "error_code": entry.error_code,
                 "created_at": entry.created_at.isoformat(),
                 "started_at": entry.started_at.isoformat() if entry.started_at else None,
             }
-            for entry in db.scalars(
-                select(CaseControlRound)
-                .where(CaseControlRound.case_id == item.id)
-                .order_by(CaseControlRound.created_at.desc(), CaseControlRound.id)
-            )
+            for entry in rounds
         ],
         "row_version": item.row_version,
         "stages": [_stage_dict(db, stage) for stage in stages],
