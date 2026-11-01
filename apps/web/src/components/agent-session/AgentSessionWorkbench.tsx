@@ -136,6 +136,8 @@ interface QueuedMessage {
   references: ConversationReference[];
   workspaceReferences?: AgentWorkspaceReference[];
   annotations: AgentConversationAnnotation[];
+  /** The initial bootstrap starts OpenHands' native Goal Loop with this objective. */
+  goalObjective?: string;
   /** Browser-local intent only; OpenHands events remain the delivery fact. */
   deliveryState?: QueueDeliveryState;
   /** A formal user event may be appended while the current turn is running. */
@@ -5072,6 +5074,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [turnState, setTurnState] = useState<TurnState>('idle');
   const [activeTurnEventId, setActiveTurnEventId] = useState<string>();
   const [goalModeEnabled, setGoalModeEnabled] = useState(false);
+  const [readinessRefreshRequested, setReadinessRefreshRequested] = useState(false);
   const [streamCompletedBindingId, setStreamCompletedBindingId] = useState<string>();
   const [expiredTerminalSyncTurnKey, setExpiredTerminalSyncTurnKey] = useState<string>();
   const [requestStartedAt, setRequestStartedAt] = useState<number>();
@@ -6863,7 +6866,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       workspace
       && selected
       && hydrationFallbackAllowed
-      && (trustedHydration?.running !== false || runningConversationIds.has(selected.id) || selectedSubmissionNeedsReadiness),
+      && (trustedHydration?.running !== false || runningConversationIds.has(selected.id) || selectedSubmissionNeedsReadiness || readinessRefreshRequested),
     ),
     initialData: hydrationData?.readiness,
     initialDataUpdatedAt: hydrationData ? hydrationDataUpdatedAt : undefined,
@@ -7288,7 +7291,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     return undefined;
   }, [currentFormalEvents]);
   const latestGoalStatus = latestGoalEvent?.payload.goal_status;
-  useEffect(() => setGoalModeEnabled(false), [selected?.id]);
+  useEffect(() => {
+    setGoalModeEnabled(false);
+    setReadinessRefreshRequested(false);
+  }, [selected?.id]);
   const rewriteAwaitingFormalEvent = activeLocalMessageProjections.some(projection => (
     Boolean(projection.replacedEventId)
     && (!projection.canonicalEventId || !currentFormalEvents.some(event => event.id === projection.canonicalEventId))
@@ -7927,27 +7933,48 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     onError: error => reportOperationError(selected?.id, error),
   });
   const canStartGoal = Boolean(
-    selected
-    && canWrite
-    && !goalControl.isPending
+    !goalControl.isPending
     && !latestGoalStatus?.active
-    && inputReadinessQuery.data?.ready === true
-    && (effectiveTurnState === 'idle' || effectiveTurnState === 'paused'),
+    && (
+      (selected
+        && canWrite
+        && inputReadinessQuery.data?.ready === true
+        && (effectiveTurnState === 'idle' || effectiveTurnState === 'paused'))
+      || (conversationDraft && canBootstrap)
+    ),
   );
   const startGoalFromComposer = useCallback((content: string) => {
     const objective = content.trim();
-    if (!objective || !selected || !canStartGoal) return;
+    if (!objective || !canStartGoal) return;
     if (attachments.length || references.length || workspaceReferences.length || composerAnnotations.length) {
       setOperationError(new Error('目标模式暂不支持附件、引用或批注；请先移除这些内容后启动。'));
       return;
     }
     setOperationError(undefined);
-    goalControl.mutate({ action: 'START', objective });
+    if (conversationDraft) {
+      const message: QueuedMessage = {
+        id: randomId(),
+        scope: conversationDraft.id,
+        content: objective,
+        items: [],
+        references: [],
+        workspaceReferences: [],
+        annotations: [],
+        goalObjective: objective,
+      };
+      replaceComposerDraft('');
+      composerDraftsByScope.current.set(conversationDraft.id, { content: '', attachments: [], references: [], workspaceReferences: [], annotations: [] });
+      if (workspace) clearConversationComposerDraft(host.id, workspace.id, conversationDraft.id);
+      setPendingBootstrap({ draft: conversationDraft, message });
+      setRequestStartedAt(Date.now());
+      setTurnState('running');
+      bootstrap.mutate(message);
+    } else goalControl.mutate({ action: 'START', objective });
     setGoalModeEnabled(false);
     replaceComposerDraft('');
     if (composerScope) composerDraftsByScope.current.set(composerScope, { content: '', attachments: [], references: [], workspaceReferences: [], annotations: [] });
     if (workspace && composerScope) clearConversationComposerDraft(host.id, workspace.id, composerScope);
-  }, [attachments.length, canStartGoal, composerAnnotations.length, composerScope, goalControl, host.id, references.length, replaceComposerDraft, selected, workspace, workspaceReferences.length]);
+  }, [attachments.length, canStartGoal, composerAnnotations.length, composerScope, conversationDraft, goalControl, host.id, references.length, replaceComposerDraft, selected, workspace, workspaceReferences.length]);
   const locateGoalMessage = useCallback(() => {
     if (!latestGoalStatus) return;
     const objective = latestGoalStatus.objective.trim();
@@ -8089,6 +8116,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       setRequestStartedAt(undefined);
       setTurnState(current => current === 'running' || current === 'resuming' ? 'idle' : current);
       void synchronizeConversationEvents(true, 'foreground');
+      forceReadinessRefresh.current = true;
+      setReadinessRefreshRequested(true);
       if (workspace) void queryClient.invalidateQueries({
         queryKey: sessionQueryKey(host, 'conversation-input-readiness', workspace.id, scope),
         exact: true,
@@ -8268,6 +8297,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     };
   }, [synchronizeConversationEvents, terminalEventReconciliationActive, terminalSyncTurnKey]);
   useEffect(() => {
+    if (!selected || !latestFormalTurnFinished || inputReadinessQuery.data?.ready === true) return;
+    forceReadinessRefresh.current = true;
+    void queryClient.invalidateQueries({ queryKey: inputReadinessQueryKey, exact: true });
+  }, [inputReadinessQuery.data?.ready, inputReadinessQueryKey, latestFormalTurnFinished, queryClient, selected]);
+  useEffect(() => {
     if (!selected || (!latestFormalTurnFinished && !nativeFailureSettled)) return;
 
     // A formal terminal event or native failure closes this turn even when
@@ -8322,6 +8356,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     conversationDraft?.credentialIds,
     conversationDraft!.id,
     messageAnnotations(message.annotations, message.references),
+    message.goalObjective,
   ), onSuccess: (value, message) => {
     if (!workspace) return;
     const conversation = value.conversation;
@@ -9976,7 +10011,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       ? '正在安全核对首条消息'
       : conversationDraft && !newConversationModelName ? '请选择模型' : persistModel.isPending ? '正在保存模型设置' : pendingConfirmation ? '等待工具确认' : finalReplyAwaitingNativeCompletion ? '回复已生成，正在收尾' : composerControlMode === 'reconnecting' ? `正在尝试重连（${flowWeaveReconnect?.attempt ?? 1}/${FLOWWEAVE_RECONNECT_MAX_ATTEMPTS}）` : streamStatus === 'recovering' ? '连接恢复中' : composerControlMode === 'rewriting' ? '正在重新思考' : composerControlMode === 'reconciling' ? '正在同步 Agent 状态' : composerControlMode === 'read-only' ? '当前会话不可编辑' : composerControlMode === 'condensing' ? '正在压缩上下文' : composerControlMode === 'pausing' ? '正在暂停' : composerControlMode === 'paused' ? '已暂停' : composerControlMode === 'resuming' ? '正在继续' : undefined;
   const runComposerAction = () => {
-    if (composerControl.action === 'send') enqueueDraft();
+    if (composerControl.action === 'send') {
+      if (goalModeEnabled) startGoalFromComposer(composerDraftRef.current);
+      else enqueueDraft();
+    }
     else if (composerControl.action === 'interrupt') void requestInterrupt();
     else if (composerControl.action === 'resume' && workspace && selected) resume.mutate({ workspaceId: workspace.id, bindingId: selected.id });
   };
@@ -10774,7 +10812,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
             <Folder size={16}/><span>{currentWorkspaceName}</span>{workspacePathCopied && <small aria-live="polite">已复制</small>}
           </button>
           <ConversationTaskPlan events={displayedEvents} isGenerating={taskPlanLayoutActive} conversationScope={selected?.id ?? conversationDraft?.id}/>
-          {selected && <ConversationGoalMode goalStatus={latestGoalStatus} enabled={goalModeEnabled} canEnable={canStartGoal} pending={goalControl.isPending} onToggle={() => setGoalModeEnabled(current => !current)} onControl={action => goalControl.mutate({ action })} onLocate={locateGoalMessage}/>}
+          {(selected || conversationDraft) && <ConversationGoalMode goalStatus={latestGoalStatus} enabled={goalModeEnabled} canEnable={canStartGoal} pending={goalControl.isPending || bootstrap.isPending} onToggle={() => setGoalModeEnabled(current => !current)} onControl={action => goalControl.mutate({ action })} onLocate={locateGoalMessage}/>}
         </div>
       </div>}
       {conversationDropActive && <div className="agent-workbench-drop-overlay" role="status" aria-live="polite"><div><Plus size={22}/><b>松开以添加到当前会话</b><span>支持附件、工作区文件和会话引用</span></div></div>}

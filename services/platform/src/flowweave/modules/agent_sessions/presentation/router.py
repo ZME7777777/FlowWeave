@@ -123,6 +123,7 @@ class NodeSessionBootstrapFullWrite(_Write):
         list[NodeWorkspaceReference], Field(default_factory=list, max_length=20)
     )
     annotations: list[dict[str, Any]] = Field(default_factory=list, max_length=20)
+    goal_objective: str | None = Field(default=None, min_length=1, max_length=20_000)
 
 
 class NodeSessionMessageWrite(_Write):
@@ -524,6 +525,7 @@ async def bootstrap_node_session(
             references=tuple(item.model_dump() for item in payload.references),
             workspace_references=tuple(item.model_dump() for item in payload.workspace_references),
             annotations=tuple(payload.annotations),
+            goal_objective=payload.goal_objective,
             legacy_image_urls=tuple(legacy_image_urls),
             conversation_id=payload.conversation_id,
             work_directory_id=payload.work_directory_id,

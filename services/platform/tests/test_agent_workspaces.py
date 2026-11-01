@@ -2957,6 +2957,61 @@ def test_agent_workspace_bootstrap_creates_only_on_first_message_and_freezes_dir
         assert len(conversations.list_conversations(db, workspace.id)) == 1
 
 
+
+def test_agent_workspace_bootstrap_starts_native_goal_without_plain_first_message(
+    settings, db_session_factory, monkeypatch
+):
+    class GoalBootstrapRuntime(MockRuntime):
+        goals: list[tuple[str, int]] = []
+        messages: list[str] = []
+
+        def start_goal(self, _handle, objective, max_iterations):
+            self.goals.append((objective, max_iterations))
+
+        def send_message(self, _handle, content, image_urls=()):
+            del image_urls
+            self.messages.append(content)
+            return super().send_message(_handle, content)
+
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=kwargs.get("model_name") or "test-model",
+            api_key="x",
+            reasoning_effort=kwargs.get("reasoning_effort"),
+        ),
+    )
+    runtime = GoalBootstrapRuntime()
+    objective = "实现接口并通过定向测试"
+    with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
+        workspace = _ready_workspace_for_conversation(db)
+        created = conversations.bootstrap_conversation(
+            db,
+            workspace.id,
+            work_directory_id=None,
+            model_provider_id=workspace.default_model_provider_id,
+            content=objective,
+            goal_objective=objective,
+            idempotency_key="goal-draft-001",
+        )
+
+        assert runtime.goals == [(objective, 3)]
+        assert runtime.messages == []
+        assert created["cursor"] is None
+        assert created["conversation"]["display_title"] == objective
+        assert created["conversation"]["title_state"] == "PENDING"
+        title_task = db.scalar(
+            select(BackgroundTask).where(
+                BackgroundTask.task_type == "GENERATE_AGENT_CONVERSATION_TITLE"
+            )
+        )
+        assert title_task is not None
+        assert title_task.payload_json["first_message"] == objective
+
+
 def test_sidebar_conversation_inherits_source_configuration_and_appends_context(
     settings, db_session_factory, monkeypatch
 ):

@@ -1738,7 +1738,7 @@ def _activate_node_bootstrap(
     *,
     binding: AgentConversationBinding,
     command: AgentConversationCommand,
-    initial_event_id: str,
+    initial_event_id: str | None,
     content: str,
     attachments: tuple[dict[str, str | int], ...],
 ) -> dict[str, Any]:
@@ -1752,7 +1752,8 @@ def _activate_node_bootstrap(
     binding.updated_at = activated_at
     command.state = "SUCCEEDED"
     command.updated_at = binding.updated_at
-    record_message_attachments(db, binding, initial_event_id, content, attachments)
+    if initial_event_id is not None:
+        record_message_attachments(db, binding, initial_event_id, content, attachments)
     enqueue_title_task(db, binding, content)
     db.add(
         HumanAction(
@@ -1931,6 +1932,7 @@ def bootstrap_node_conversation(
     references: tuple[dict[str, str], ...] = (),
     workspace_references: tuple[dict[str, str], ...] = (),
     annotations: tuple[dict[str, Any], ...] = (),
+    goal_objective: str | None = None,
     legacy_image_urls: tuple[str, ...] = (),
     conversation_id: str | None,
     work_directory_id: str | None,
@@ -1940,6 +1942,17 @@ def bootstrap_node_conversation(
     """Lazily create a node Conversation and durably reconcile its first event."""
 
     text = content.strip()
+    normalized_goal_objective = goal_objective.strip() if goal_objective else None
+    if normalized_goal_objective and (
+        attachments or references or workspace_references or annotations or legacy_image_urls
+    ):
+        raise DomainError(
+            "AGENT_GOAL_CONTEXT_UNSUPPORTED",
+            "目标模式暂不支持附件、引用或批注；请先移除这些内容后启动",
+            422,
+        )
+    if normalized_goal_objective and text != normalized_goal_objective:
+        raise DomainError("AGENT_GOAL_OBJECTIVE_MISMATCH", "目标内容必须与首条消息一致", 422)
     if references:
         raise DomainError(
             "AGENT_CONVERSATION_REFERENCE_UNAVAILABLE",
@@ -1987,7 +2000,9 @@ def bootstrap_node_conversation(
         idempotency_key=idempotency_key,
     )
     if binding is not None and command is not None:
-        if binding.lifecycle == "ACTIVE" and binding.initial_user_event_id is not None:
+        if binding.lifecycle == "ACTIVE" and (
+            binding.initial_user_event_id is not None or normalized_goal_objective is not None
+        ):
             return {
                 "conversation": _node_session_dict(db, binding),
                 "accepted": True,
@@ -2099,6 +2114,35 @@ def bootstrap_node_conversation(
         raise
 
     runtime = get_runtime()
+    if normalized_goal_objective:
+        try:
+            runtime.start_goal(handle, normalized_goal_objective, 3)
+        except DomainError:
+            try:
+                context = sandboxes.node_attempt_workspace_context(
+                    db, flow_run_id=flow_run_id, node_attempt_id=attempt_id
+                )
+                delete_owned_attachment_files(
+                    context.host_working_directory,
+                    str(context.runtime_working_directory),
+                    binding.id,
+                )
+            except DomainError:
+                pass
+            try:
+                runtime.delete_conversation(handle)
+            except DomainError:
+                pass
+            _delete_node_bootstrap_reservation(db, binding, command)
+            raise
+        return _activate_node_bootstrap(
+            db,
+            binding=binding,
+            command=command,
+            initial_event_id=None,
+            content=normalized_goal_objective,
+            attachments=(),
+        )
     try:
         delivered = runtime.send_message(handle, prompt, image_urls)
     except DomainError as exc:

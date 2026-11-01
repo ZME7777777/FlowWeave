@@ -239,3 +239,60 @@ test('goal mode starts a native goal from plain text and exposes stop and resume
   await expect.poll(() => controls.length).toBe(3);
   expect(controls[2]).toEqual({ action: 'RESUME' });
 });
+
+
+test('goal mode is available in a new workspace conversation and bootstraps a native goal', async ({ page }) => {
+  const timestamp = '2026-11-01T03:00:00Z';
+  const user = { id: 'new-goal-user', username: 'new-goal-user', role: 'USER', is_super_admin: false };
+  const workspace = { id: 'new-goal-workspace', display_name: '新建目标工作区', desired_state: 'RUNNING', updated_at: timestamp };
+  const conversation = { id: 'new-goal-conversation', display_title: '完成新建会话目标', title_state: 'PENDING', lifecycle: 'ACTIVE', streaming_callback_ready: true, write_available: true, created_at: timestamp, updated_at: timestamp, execution_status: 'running', model_provider_id: 'new-goal-provider', model_name: 'test-model', capabilities: [] };
+  const objective = '完成新建会话目标';
+  let authenticated = false;
+  let bootstrapPayload: Record<string, unknown> | undefined;
+  const goalEvent = { id: 'new-goal-state', event_type: 'STATE', payload: { source: 'environment', parent_id: '__root__', timestamp, goal_status: {
+    active: true, status: 'running', iteration: 1, max_iterations: 3, objective, verdict: null,
+  } } };
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const json = (body: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
+    if (path.endsWith('/auth/me')) return authenticated ? json(user) : json({ error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login')) { authenticated = true; return json(user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(workspace);
+    if (path.endsWith('/runtime')) return json({ state: 'ACTIVE', write_available: true, updated_at: timestamp });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json({ items: bootstrapPayload ? [conversation] : [], next_cursor: null });
+    if (path.endsWith('/conversations') && request.method() === 'POST') {
+      bootstrapPayload = request.postDataJSON() as Record<string, unknown>;
+      return json({ conversation, accepted: true, cursor: null }, 201);
+    }
+    if (path.endsWith('/conversation-activity')) return json({ running_binding_ids: bootstrapPayload ? [conversation.id] : [], items: [] });
+    if (path.endsWith('/hydration')) return json({ events: { events: bootstrapPayload ? [goalEvent] : [], next_cursor: bootstrapPayload ? goalEvent.id : null, history_cursor: null, result: { status: bootstrapPayload ? 'RUNNING' : 'COMPLETED' } }, context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 100, usage_current: true }, readiness: { ready: !bootstrapPayload, execution_status: bootstrapPayload ? 'running' : 'idle' } });
+    if (path.endsWith('/events')) return json({ events: bootstrapPayload ? [goalEvent] : [], next_cursor: bootstrapPayload ? goalEvent.id : null, history_cursor: null, result: { status: bootstrapPayload ? 'RUNNING' : 'COMPLETED' } });
+    if (path.endsWith('/input-readiness')) return json({ ready: !bootstrapPayload, execution_status: bootstrapPayload ? 'running' : 'idle' });
+    if (path.endsWith('/pending-confirmation')) return json({ pending: false });
+    if (path.endsWith('/context')) return json({ model_name: 'test-model', window_tokens: 128_000, used_tokens: 100, usage_current: true });
+    if (path.endsWith('/work-directories')) return json({ root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
+    if (path.endsWith('/workspace')) return json({ root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [], runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } } });
+    if (path.endsWith('/model-providers')) return json([{ id: 'new-goal-provider', name: '测试模型', connection_state: 'CONNECTED', models: [{ model_name: 'test-model', enabled: true, is_default: true }] }]);
+    if (path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json([]);
+    if (path.includes(`/conversations/${conversation.id}`) && request.method() === 'GET') return json(conversation);
+    return json({ error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+
+  await page.goto('/');
+  await page.getByLabel('账号').fill(user.username);
+  await page.getByLabel('密码').fill('test-password');
+  await page.getByRole('button', { name: '进入工作空间' }).click();
+  await page.goto('/agent');
+  await page.getByRole('button', { name: '在根工作区中新建会话' }).click({ force: true });
+
+  const toggle = page.getByRole('button', { name: '目标模式', exact: true });
+  await expect(toggle).toBeEnabled();
+  await toggle.click();
+  await page.getByLabel('发送 Agent 消息').fill(objective);
+  await page.getByLabel('发送 Agent 消息').press('Enter');
+  await expect.poll(() => bootstrapPayload).toBeDefined();
+  expect(bootstrapPayload).toMatchObject({ content: objective, goal_objective: objective });
+  await expect(page.getByRole('group', { name: '目标运行中 · 第 1 / 3 轮' })).toBeVisible();
+});

@@ -283,6 +283,7 @@ class AgentConversationBootstrapWrite(_Write):
     )
     workspace_references: list[AgentWorkspaceReference] = Field(default_factory=list, max_length=20)
     annotations: list[dict[str, Any]] = Field(default_factory=list, max_length=20)
+    goal_objective: str | None = Field(default=None, min_length=1, max_length=20_000)
     capability_version_ids: list[str] | None = Field(default=None, max_length=100)
     credential_ids: list[str] | None = Field(default=None, max_length=100)
 
@@ -1393,6 +1394,7 @@ async def create_agent_conversation(
             references=tuple(item.model_dump(exclude_none=True) for item in payload.references),
             workspace_references=tuple(item.model_dump() for item in payload.workspace_references),
             annotations=tuple(payload.annotations),
+            goal_objective=payload.goal_objective,
             capability_version_ids=(
                 tuple(payload.capability_version_ids)
                 if payload.capability_version_ids is not None

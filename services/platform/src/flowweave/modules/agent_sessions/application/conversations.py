@@ -2250,6 +2250,25 @@ def _activate_bootstrapped_conversation(
     return _bootstrap_result(db, binding)
 
 
+def _activate_bootstrapped_goal(
+    db: Session,
+    binding: AgentConversationBinding,
+    command: AgentConversationCommand,
+    objective: str,
+) -> dict[str, Any]:
+    binding.display_title = normalized_first_sentence(objective)
+    binding.title_state = "PENDING"
+    binding.lifecycle = "ACTIVE"
+    activated_at = now()
+    binding.last_message_at = activated_at
+    binding.updated_at = activated_at
+    command.state = "SUCCEEDED"
+    command.updated_at = activated_at
+    _enqueue_title_task(db, binding, objective)
+    db.commit()
+    return _bootstrap_result(db, binding)
+
+
 def _bootstrap_command(
     db: Session, workspace_id: str, idempotency_key: str
 ) -> tuple[AgentConversationBinding | None, AgentConversationCommand | None]:
@@ -2330,6 +2349,7 @@ def bootstrap_conversation(
     references: tuple[dict[str, str], ...] = (),
     workspace_references: tuple[dict[str, str], ...] = (),
     annotations: tuple[dict[str, Any], ...] = (),
+    goal_objective: str | None = None,
     capability_version_ids: tuple[str, ...] | None = None,
     credential_ids: tuple[str, ...] | None = None,
     idempotency_key: str,
@@ -2346,6 +2366,15 @@ def bootstrap_conversation(
     """
 
     message_text = content.strip()
+    normalized_goal_objective = goal_objective.strip() if goal_objective else None
+    if normalized_goal_objective and (attachments or references or workspace_references or annotations):
+        raise DomainError(
+            "AGENT_GOAL_CONTEXT_UNSUPPORTED",
+            "目标模式暂不支持附件、引用或批注；请先移除这些内容后启动",
+            422,
+        )
+    if normalized_goal_objective and message_text != normalized_goal_objective:
+        raise DomainError("AGENT_GOAL_OBJECTIVE_MISMATCH", "目标内容必须与首条消息一致", 422)
     if references and any(
         not isinstance(item.get("source_binding_id"), str) for item in references
     ):
@@ -2366,7 +2395,9 @@ def bootstrap_conversation(
     workspace = _workspace(db, workspace_id)
     binding, command = _bootstrap_command(db, workspace.id, idempotency_key)
     if binding is not None and command is not None:
-        if binding.lifecycle == "ACTIVE" and binding.initial_user_event_id is not None:
+        if binding.lifecycle == "ACTIVE" and (
+            binding.initial_user_event_id is not None or normalized_goal_objective is not None
+        ):
             return _bootstrap_result(db, binding)
         if command.state == "AMBIGUOUS":
             reconciled = _initial_user_event_id(
@@ -2552,6 +2583,17 @@ def bootstrap_conversation(
             ) from exc
         _record_bootstrap_failure(db, binding, command, exc)
         raise
+    if normalized_goal_objective:
+        try:
+            get_runtime().start_goal(handle, normalized_goal_objective, 3)
+        except DomainError as exc:
+            try:
+                get_runtime().delete_conversation(handle)
+            except DomainError:
+                pass
+            _record_bootstrap_failure(db, binding, command, exc)
+            raise
+        return _activate_bootstrapped_goal(db, binding, command, normalized_goal_objective)
     try:
         _ensure_history_references(db, workspace, binding, source_references)
         delivered = get_runtime().send_message(handle, prompt, image_urls)
