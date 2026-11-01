@@ -1191,3 +1191,40 @@ def test_case_cannot_cancel_attempts_outside_runtime_delivery_failure(flow_case,
     assert refused["state"] == "FAILED"
     refresh(g)
     assert g.attempt.state == state
+
+
+def test_case_files_use_the_case_owner_when_written_without_a_request_principal(
+    native_case,  # noqa: F811
+    monkeypatch,
+):
+    """A Worker gate task has no ambient user; Case files must still go to the Case owner."""
+
+    from types import SimpleNamespace
+
+    from flowweave.modules.cases.application import service as case_service
+    from flowweave.modules.users.application import security
+    from flowweave.modules.users.application.security import current_user_id
+
+    g = native_case
+    seen: list[str] = []
+    monkeypatch.setattr(
+        case_service.agent_workspaces,
+        "ensure_default_agent_workspace",
+        lambda _db: SimpleNamespace(id="workspace"),
+    )
+    monkeypatch.setattr(
+        case_service.agent_workspaces,
+        "write_case_files",
+        lambda *_args, **_kwargs: seen.append(current_user_id()),
+    )
+    g.item.control_work_directory_id = g.item.control_work_directory_id or "directory"
+    owner = g.item.owner_user_id
+    # Drop the fixture's ambient user exactly like a bypass-tenant Worker task.
+    token = security._tenant_user_id.set(None)
+    try:
+        with pytest.raises(RuntimeError):
+            current_user_id()
+        case_service.write_case_files(g.db, g.item)
+    finally:
+        security._tenant_user_id.reset(token)
+    assert seen == [owner]

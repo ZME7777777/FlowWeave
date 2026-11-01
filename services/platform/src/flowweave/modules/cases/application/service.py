@@ -31,6 +31,7 @@ from flowweave.modules.runs.infrastructure.models import (
     NodeAttempt,
     NodeRun,
 )
+from flowweave.modules.users.application.security import tenant_user
 from flowweave.shared.application.transactions import finish, savepoint
 from flowweave.shared.database import now
 from flowweave.shared.errors import DomainError, conflict, illegal, not_found
@@ -347,6 +348,15 @@ def _case_flow_runs(db: Session, case_id: str) -> list[str]:
 def write_case_files(db: Session, item: Case) -> None:
     if not item.control_work_directory_id:
         return
+    # Case facts can be projected from a Worker task that runs without a user
+    # (for example the gate task that completes the last node). The Case's own
+    # owner defines the workspace, so bind it explicitly instead of relying on
+    # the caller's ambient principal.
+    with tenant_user(item.owner_user_id):
+        _write_case_files(db, item)
+
+
+def _write_case_files(db: Session, item: Case) -> None:
     workspace = agent_workspaces.ensure_default_agent_workspace(db)
     stages = tuple(
         {
