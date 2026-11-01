@@ -209,10 +209,11 @@ def test_failed_schedule_occurrence_without_conversation_can_be_deleted(
         )
         db.add(occurrence)
         db.flush()
+        occurrence_id = occurrence.id
 
-        schedules.delete_failed_occurrence(db, workspace.id, created["id"], occurrence.id)
+        schedules.delete_failed_occurrence(db, workspace.id, created["id"], occurrence_id)
 
-        assert db.get(AgentConversationScheduleOccurrence, occurrence.id) is None
+        assert db.get(AgentConversationScheduleOccurrence, occurrence_id) is None
 
 
 def test_failed_schedule_occurrence_with_conversation_is_not_deleted(settings, db_session_factory):

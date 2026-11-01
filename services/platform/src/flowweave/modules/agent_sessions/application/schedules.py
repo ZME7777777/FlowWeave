@@ -509,7 +509,10 @@ def delete_failed_occurrence(
 ) -> None:
     occurrence = db.scalar(
         select(AgentConversationScheduleOccurrence)
-        .join(AgentConversationSchedule)
+        .join(
+            AgentConversationSchedule,
+            AgentConversationSchedule.id == AgentConversationScheduleOccurrence.schedule_id,
+        )
         .where(
             AgentConversationScheduleOccurrence.id == occurrence_id,
             AgentConversationScheduleOccurrence.schedule_id == schedule_id,
