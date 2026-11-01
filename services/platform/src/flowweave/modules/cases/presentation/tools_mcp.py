@@ -9,8 +9,14 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
-from flowweave.modules.cases.application import context_tools, flow_tools, materials, native_tools
-from flowweave.modules.users.application.security import Principal
+from flowweave.modules.cases.application import (
+    context_tools,
+    flow_tools,
+    materials,
+    native_probe,
+    native_tools,
+)
+from flowweave.modules.users.application.security import Principal, tenant_user
 from flowweave.modules.users.application.service import agent_session_principal
 from flowweave.shared.errors import DomainError
 from flowweave.shared.http import get_container, run_blocking_history, run_blocking_mutation
@@ -49,13 +55,23 @@ async def case_material_tools_mcp(request: Request) -> Response:
 
 async def handle_mcp(request: Request, contract: native_tools.ToolContract) -> Response:
     header = request.headers.get("authorization", "")
-    if not header.startswith("Bearer ") or len(header) > 256:
+    if not header.startswith("Bearer ") or len(header) > 1024:
         raise native_tools.denied()
     token = header[7:]
-    owner, _ = native_tools.token_identity(token, contract=contract)
+    catalog_only = token.startswith(native_probe.PREFIX)
+    owner, credential_id = (
+        native_probe.identity(token, contract)
+        if catalog_only
+        else native_tools.token_identity(token, contract=contract)
+    )
     container = get_container(request)
 
     def authorize(db: Session) -> Principal | None:
+        if catalog_only:
+            with tenant_user(owner):
+                if native_tools.configured_version_id(db, contract) != credential_id:
+                    raise native_tools.denied()
+            return agent_session_principal(db, owner)
         native_tools.authenticate(db, token, contract=contract)
         return agent_session_principal(db, owner)
 
@@ -118,6 +134,8 @@ async def handle_mcp(request: Request, contract: native_tools.ToolContract) -> R
         )
     if method != "tools/call":
         return error(identity, -32601, "Method not found")
+    if catalog_only:
+        raise native_tools.denied()
     tool_name = params.get("name")
     flow_read = contract == native_tools.FLOWS and tool_name == "read_case_flow"
     flow_write = contract == native_tools.FLOWS and tool_name == "manage_case_flow"

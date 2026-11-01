@@ -639,3 +639,49 @@ def test_native_recovery_rejects_grantless_or_mismatched_existing_tools(
         assert caught.value.details["outcome_unknown"] is True
         assert g.db.get(AgentConversationBinding, g.binding.id) is not None
     assert checked == [(native_tools.SERVER_NAME, g.version.normalized_config_json["url"])]
+
+
+@pytest.mark.parametrize("method", ["initialize", "tools/list", "ping", "tools/call"])
+def test_case_catalog_probe_lists_tools_but_never_authorizes_a_read(native_case, method):
+    from flowweave.modules.cases.application import native_probe
+
+    g = native_case
+    token = native_probe.issue(native_tools.CONTEXT, g.owner, g.version.id)
+    response = rpc(g, method, {"name": "read_case_context"}, token=token)
+    if method == "tools/call":
+        assert response.status_code == 401
+    else:
+        assert response.status_code == 200
+        if method == "tools/list":
+            assert [t["name"] for t in response.json()["result"]["tools"]] == ["read_case_context"]
+    assert token not in response.text
+
+
+def test_case_catalog_probe_is_bound_to_one_server_user_and_time(native_case, monkeypatch):
+    from flowweave.modules.cases.application import native_probe
+
+    g = native_case
+    token = native_probe.issue(native_tools.CONTEXT, g.owner, g.version.id)
+    assert native_probe.identity(token, native_tools.CONTEXT) == (g.owner, g.version.id)
+    with pytest.raises(DomainError):
+        native_probe.identity(token, native_tools.FLOWS)
+    with pytest.raises(DomainError):
+        native_probe.identity(token[:-10] + "tampered00", native_tools.CONTEXT)
+    # A credential for another configured version is rejected by the endpoint.
+    stale = native_probe.issue(native_tools.CONTEXT, g.owner, str(uuid4()))
+    assert rpc(g, "tools/list", token=stale).status_code == 401
+    real = native_probe.time.time()
+    monkeypatch.setattr(native_probe.time, "time", lambda: real + 3600)
+    with pytest.raises(DomainError):
+        native_probe.identity(token, native_tools.CONTEXT)
+    assert native_probe.contract_for("flowweave-case-flows") is native_tools.FLOWS
+    assert native_probe.contract_for("flowweave-reference-history") is None
+
+
+def test_case_mcp_servers_are_builtin_and_never_user_configurable():
+    from flowweave.modules.catalog.application.capability_repository import is_builtin_capability
+
+    for contract in (native_tools.CONTEXT, native_tools.FLOWS, native_tools.MATERIALS):
+        assert is_builtin_capability("MCP", contract.server_name)
+    assert is_builtin_capability("MCP", "flowweave-reference-history")
+    assert not is_builtin_capability("MCP", "localCode")

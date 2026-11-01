@@ -748,11 +748,15 @@ def probe_workspace_mcp_readiness(
 
     def unavailable_result(reason: str) -> dict[str, Any]:
         return {
-            "state": "UNAVAILABLE", "error_kind": "unknown", "reason": reason,
-            "tools": [], "checked_at": now().isoformat(),
+            "state": "UNAVAILABLE",
+            "error_kind": "unknown",
+            "reason": reason,
+            "tools": [],
+            "checked_at": now().isoformat(),
         }
 
     from flowweave.modules.agent_sessions.application import history_integration, history_probe
+    from flowweave.modules.cases.application import native_probe, native_tools
 
     workspace = _workspace(db, workspace_id)
     published = resolve_version(db, capability_version_id)
@@ -789,19 +793,32 @@ def probe_workspace_mcp_readiness(
             (capability,), host_root=host_root, runtime_root=runtime_root
         )
         server = servers[0]
+        case_contract = native_probe.contract_for(published.package.capability_key)
+        if case_contract is not None:
+            if native_tools.configured_version_id(db, case_contract) != published.version.id:
+                raise DomainError(
+                    "CASE_TOOL_VERSION_NOT_CURRENT",
+                    "请检测系统当前发布的场景工具版本",
+                    409,
+                )
+            token = native_probe.issue(case_contract, current_user_id(), published.version.id)
+            server = replace(
+                server, config={**server.config, "headers": {"Authorization": f"Bearer {token}"}}
+            )
         builtin_history = published.package.capability_key == history_integration.SERVER_NAME
         if builtin_history:
             configured = history_integration.configured_capability(db)
             if configured.version.id != published.version.id:
                 raise DomainError(
                     "AGENT_HISTORY_VERSION_NOT_CURRENT",
-                    "请检测系统当前发布的历史查询版本", 409,
+                    "请检测系统当前发布的历史查询版本",
+                    409,
                 )
             token = history_probe.issue(current_user_id(), published.version.id)
             server = replace(
                 server, config={**server.config, "headers": {"Authorization": f"Bearer {token}"}}
             )
-        if not builtin_history:
+        if not builtin_history and case_contract is None:
             server, _ = mcp_authentication.prepare_server(db, server, probe=True)
         from flowweave.runtime.base import RuntimeMCPToolCall
 
@@ -812,7 +829,7 @@ def probe_workspace_mcp_readiness(
             if read_only_tool_call is not None
             else None
         )
-        if builtin_history and call is not None:
+        if (builtin_history or case_contract is not None) and call is not None:
             raise DomainError("MCP_PROBE_READ_ONLY", "内置能力仅支持工具目录检测", 422)
         result = get_runtime().probe_mcp(
             RuntimeMCPProbeRequest(
@@ -2711,8 +2728,12 @@ def delete_conversation(
 
 
 def assert_conversation_stopped(
-    db: Session, workspace_id: str, binding_id: str, *,
-    lock: bool = True, allow_missing: bool = False,
+    db: Session,
+    workspace_id: str,
+    binding_id: str,
+    *,
+    lock: bool = True,
+    allow_missing: bool = False,
 ) -> None:
     """Reject destructive operations while OpenHands is executing a turn."""
 

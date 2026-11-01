@@ -210,6 +210,11 @@ def _published(
         raise unavailable() from None
 
 
+def configured_version_id(db: Session, contract: ToolContract) -> str:
+    """Return the system-configured, validated version for one built-in server."""
+    return _published(db, contract=contract).version.id
+
+
 def frozen_endpoint(db: Session, version_id: str, *, contract: ToolContract) -> str:
     """Return only the URL from a validated immutable native capability."""
     return str(_published(db, version_id, contract=contract).version.normalized_config_json["url"])

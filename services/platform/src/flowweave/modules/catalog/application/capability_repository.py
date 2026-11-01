@@ -56,7 +56,7 @@ class PublishedCapability:
 
 
 def is_builtin_capability(capability_type: str, capability_key: str) -> bool:
-    return (capability_type == "MCP" and capability_key == "flowweave-reference-history") or (
+    return is_platform_managed_capability(capability_type, capability_key) or (
         (capability_type, capability_key)
         in {
             ("CONTEXT_POLICY", DEFAULT_CONTEXT_POLICY_KEY),
