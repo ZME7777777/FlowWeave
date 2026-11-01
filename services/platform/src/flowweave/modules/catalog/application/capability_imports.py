@@ -32,6 +32,7 @@ from flowweave.modules.catalog.application.capability_repository import (
     resolve_version,
 )
 from flowweave.modules.catalog.application.platform_capabilities import (
+    PLATFORM_MCP_SECRET_REFERENCES,
     is_platform_managed_capability,
     require_user_configurable_capability,
 )
@@ -248,12 +249,14 @@ def _reject_sensitive(
             if str(key).lower() in SENSITIVE:
                 if (
                     mcp_secret_references
-                    and path == "$.mcpServers.flowweave-reference-history.headers"
                     and key == "Authorization"
-                    and child == "Bearer ${FLOWWEAVE_HISTORY_ACCESS}"
+                    and any(
+                        path == f"$.mcpServers.{name}.headers" and child == reference
+                        for name, reference in PLATFORM_MCP_SECRET_REFERENCES.items()
+                    )
                 ):
-                    # This exact built-in reference contains no credential.
-                    # OpenHands expands it from the target's Secret Registry.
+                    # These exact built-in references contain no credential.
+                    # OpenHands expands them from the target's Secret Registry.
                     continue
                 raise _reject("Capability config contains a secret field", path=f"{path}.{key}")
             _reject_sensitive(child, f"{path}.{key}", mcp_secret_references=mcp_secret_references)

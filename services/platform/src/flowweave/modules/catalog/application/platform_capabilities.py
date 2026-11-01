@@ -13,6 +13,15 @@ PLATFORM_MANAGED_CAPABILITY_KEYS = frozenset(
     }
 )
 
+# Exact Authorization references that platform MCP servers may carry. They are
+# Secret Registry placeholders, never credentials.
+PLATFORM_MCP_SECRET_REFERENCES = {
+    "flowweave-reference-history": "Bearer ${FLOWWEAVE_HISTORY_ACCESS}",
+    "flowweave-case-context": "Bearer ${FLOWWEAVE_CASE_ACCESS}",
+    "flowweave-case-flows": "Bearer ${FLOWWEAVE_CASE_FLOW_ACCESS}",
+    "flowweave-case-materials": "Bearer ${FLOWWEAVE_CASE_MATERIAL_ACCESS}",
+}
+
 
 def is_platform_managed_capability(capability_type: str, capability_key: str) -> bool:
     return capability_type == "MCP" and capability_key in PLATFORM_MANAGED_CAPABILITY_KEYS
