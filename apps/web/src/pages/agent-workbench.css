@@ -746,10 +746,13 @@
   .agent-credential-sync>footer{padding-inline:10px}
 }
 
-/* Embedded in a product page (Case): the host owns the conversation list. */
-.agent-workbench-page.agent-workbench-embedded{height:100%;min-height:0;grid-template-columns:minmax(0,1fr) auto;grid-template-rows:minmax(0,1fr)}
-.agent-workbench-page.agent-workbench-embedded>.agent-workbench-main{grid-column:1}
-.agent-workbench-page.agent-workbench-embedded>.agent-workspace-drawer{grid-column:2}
-.agent-workbench-page.agent-workbench-embedded>.agent-workspace-drawer.fullscreen{grid-column:1 / -1}
-.agent-workbench-page.agent-workbench-embedded.conversation-rail-collapsed{grid-template-columns:minmax(0,1fr) auto}
-.agent-workbench-shell .agent-workbench-page.agent-workbench-embedded{height:100%}
+/* Embedded in a product page (Case): the host owns the conversation list.
+   The selectors are deliberately more specific than the standalone workbench's
+   :has(> .agent-workspace-drawer ...) column rules, which reserve a rail column. */
+.scenario-space .agent-workbench-page.agent-workbench-embedded,
+.scenario-space .agent-workbench-page.agent-workbench-embedded:has(>.agent-workspace-drawer),
+.scenario-space .agent-workbench-page.agent-workbench-embedded.conversation-rail-collapsed{height:100%;min-height:0;grid-template-columns:minmax(0,1fr) auto;grid-template-rows:minmax(0,1fr)}
+.scenario-space .agent-workbench-page.agent-workbench-embedded:has(>.agent-workspace-drawer.fullscreen){grid-template-columns:minmax(0,1fr)}
+.scenario-space .agent-workbench-page.agent-workbench-embedded>.agent-workbench-main{grid-column:1;grid-row:1;min-width:0}
+.scenario-space .agent-workbench-page.agent-workbench-embedded>.agent-workspace-drawer{grid-column:2;grid-row:1}
+.scenario-space .agent-workbench-page.agent-workbench-embedded>.agent-workspace-drawer.fullscreen{grid-column:1 / -1}

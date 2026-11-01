@@ -386,4 +386,5 @@ html:has(.scenario-space){overscroll-behavior:none}
 .scenario-space .scenario-session.active b{color:#087a57}
 /* The conversation is the Agent workbench itself, embedded in the main area. */
 .scenario-space>.scenario-conversation{min-width:0;min-height:0;display:block;overflow:hidden;padding:0;background:#fff}
-.scenario-space>.scenario-conversation>.agent-workbench-page{height:100%}
+.scenario-space>.scenario-conversation{height:100%}
+.scenario-space>.scenario-conversation>.agent-workbench-page{height:100%;width:100%}
