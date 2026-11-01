@@ -135,3 +135,73 @@ def test_startup_installation_is_idempotent_and_skipped_without_a_base_url(
         lambda: settings.model_copy(update={"platform_mcp_base_url": ""}),
     )
     assert native_tools.ensure_installed(db) == []
+
+
+def test_install_adopts_a_package_that_was_imported_by_hand_earlier(install_env):
+    """Environments set up before auto-install already hold the package under a random id."""
+
+    db = install_env
+    existing = CapabilityPackage(
+        capability_type="MCP",
+        capability_key=native_tools.CONTEXT.server_name,
+        display_name="imported by hand",
+    )
+    db.add(existing)
+    db.commit()
+    published = native_tools._published(db, contract=native_tools.CONTEXT)
+    assert published.package.id == existing.id
+    packages = db.scalars(
+        select(CapabilityPackage).where(
+            CapabilityPackage.capability_key == native_tools.CONTEXT.server_name
+        )
+    ).all()
+    assert len(packages) == 1
+    assert native_tools._published(db, contract=native_tools.CONTEXT).version.id == (
+        published.version.id
+    )
+
+
+def test_install_reuses_an_identical_version_imported_by_hand(install_env, container):
+    """The same URL imported manually before must not collide on the owner-unique digest."""
+
+    import hashlib
+    import json
+
+    from flowweave.shared.domain.capability_digest import capability_version_digest
+    from flowweave.shared.models import CapabilityBlob
+
+    db = install_env
+    contract = native_tools.CONTEXT
+    config = {
+        "url": "http://platform.test/fw" + contract.path,
+        "transport": "streamable-http",
+        "headers": {"Authorization": contract.auth_header},
+    }
+    content = json.dumps({"mcpServers": {contract.server_name: config}}, sort_keys=True).encode()
+    content_hash = hashlib.sha256(content).hexdigest()
+    package = CapabilityPackage(
+        capability_type="MCP", capability_key=contract.server_name, display_name="manual"
+    )
+    key = f"manual/{content_hash}.json"
+    container.artifact_store.put(key, content)
+    blob = CapabilityBlob(
+        content_hash=content_hash,
+        storage_key=key,
+        byte_size=len(content),
+        media_type="application/json",
+    )
+    db.add_all([package, blob])
+    db.flush()
+    manual = CapabilityVersion(
+        package_id=package.id,
+        blob_id=blob.id,
+        version_no=1,
+        digest=capability_version_digest("MCP", contract.server_name, content_hash, config),
+        normalized_config_json=config,
+        source_filename="manual.json",
+        state="PUBLISHED",
+    )
+    db.add(manual)
+    db.commit()
+    installed = native_tools._published(db, contract=contract)
+    assert installed.version.id == manual.id

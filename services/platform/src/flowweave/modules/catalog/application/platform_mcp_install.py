@@ -84,11 +84,17 @@ def ensure_platform_mcp(db: Session, mcp: PlatformMcp, url: str) -> PublishedCap
     content_hash = hashlib.sha256(content).hexdigest()
     digest = capability_version_digest("MCP", mcp.server_name, content_hash, config)
 
-    package_id = _stable_id("package", mcp.server_name)
-    package = db.get(CapabilityPackage, package_id)
+    # Adopt a package that already carries this identity (an earlier manual
+    # import, or a prior install) instead of creating a competing one.
+    package = db.scalar(
+        select(CapabilityPackage).where(
+            CapabilityPackage.capability_type == "MCP",
+            CapabilityPackage.capability_key == mcp.server_name,
+        )
+    )
     if package is None:
         package = CapabilityPackage(
-            id=package_id,
+            id=_stable_id("package", mcp.server_name),
             capability_type="MCP",
             capability_key=mcp.server_name,
             display_name=mcp.display_name,
@@ -97,6 +103,8 @@ def ensure_platform_mcp(db: Session, mcp: PlatformMcp, url: str) -> PublishedCap
         db.add(package)
         db.flush()
 
+    # The digest is unique per owner, so an identical version imported earlier
+    # (same URL and header) is the version to use, whichever package id it has.
     version = db.scalar(
         select(CapabilityVersion).where(
             CapabilityVersion.package_id == package.id, CapabilityVersion.digest == digest
