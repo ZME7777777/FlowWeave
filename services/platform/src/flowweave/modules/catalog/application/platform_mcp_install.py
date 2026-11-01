@@ -103,12 +103,23 @@ def ensure_platform_mcp(db: Session, mcp: PlatformMcp, url: str) -> PublishedCap
         db.add(package)
         db.flush()
 
-    # The digest is unique per owner, so an identical version imported earlier
-    # (same URL and header) is the version to use, whichever package id it has.
-    version = db.scalar(
-        select(CapabilityVersion).where(
-            CapabilityVersion.package_id == package.id, CapabilityVersion.digest == digest
-        )
+    # Reuse a published version with the same frozen config. Matching on the
+    # config (not on stored bytes) keeps a version imported by hand earlier, whose
+    # file differs only in key order or whitespace, from being duplicated.
+    version = next(
+        (
+            candidate
+            for candidate in db.scalars(
+                select(CapabilityVersion)
+                .where(
+                    CapabilityVersion.package_id == package.id,
+                    CapabilityVersion.state == "PUBLISHED",
+                )
+                .order_by(CapabilityVersion.version_no.desc())
+            )
+            if candidate.normalized_config_json == config
+        ),
+        None,
     )
     if version is None:
         storage_key = f"platform-mcp/{mcp.server_name}/{content_hash}.json"

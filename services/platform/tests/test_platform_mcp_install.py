@@ -177,7 +177,19 @@ def test_install_reuses_an_identical_version_imported_by_hand(install_env, conta
         "transport": "streamable-http",
         "headers": {"Authorization": contract.auth_header},
     }
-    content = json.dumps({"mcpServers": {contract.server_name: config}}, sort_keys=True).encode()
+    # A hand-written file: different key order and spacing than the installer's bytes.
+    content = json.dumps(
+        {
+            "mcpServers": {
+                contract.server_name: {
+                    "url": config["url"],
+                    "transport": config["transport"],
+                    "headers": config["headers"],
+                }
+            }
+        },
+        indent=2,
+    ).encode()
     content_hash = hashlib.sha256(content).hexdigest()
     package = CapabilityPackage(
         capability_type="MCP", capability_key=contract.server_name, display_name="manual"
@@ -205,3 +217,11 @@ def test_install_reuses_an_identical_version_imported_by_hand(install_env, conta
     db.commit()
     installed = native_tools._published(db, contract=contract)
     assert installed.version.id == manual.id
+    assert (
+        db.scalar(
+            select(func.count())
+            .select_from(CapabilityVersion)
+            .where(CapabilityVersion.package_id == package.id)
+        )
+        == 1
+    )
