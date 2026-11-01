@@ -658,3 +658,39 @@ Case协调会话仍只由服务端bootstrap按私有配置的固定version id解
 binding、原生conversation、Runtime Session和目录版本范围的独立授权／Secret。目录隐藏不改变
 `resolve_version`及Case恢复校验，也不把这三项转换为提示词、私有协议或未治理代码；普通用户不负责
 导入、选择、编辑或删除它们，发布和升级由平台部署流程管理。
+
+## 逐步运行闭环验收记录（2026-11-01，远端受管内部服务器）
+
+本次补做原CASE-09未执行的真实路径验收：场景 `E2E-场景闭环-异常清理逐步运行`，阶段模板为已完成的
+逐步记录（`collect`→`investigate`→`repair`，隔离验收提示，不访问外部系统），协调 Agent 使用
+`hst / gpt-5.6-sol`，节点预设沿用模板。全程由协调 Agent 通过三个内置 MCP 驱动，人工只做了
+暂停／恢复、新建协调轮次和门禁重跑这三类接管。
+
+**结果**：三个节点均由 Agent 正式接受，六项产物为 `ACCEPTED / GATE_PASSED`，当前执行 `COMPLETED`，
+阶段 `REVIEW_PENDING` 后由 Agent 提交 `COMPLETE_CASE`（计划 `SUCCEEDED`），场景与阶段均 `COMPLETED`。
+完成证据为上述六项产物的版本 ID，经平台按 stage／execution／正式接受关系核对。
+
+**验收发现并修复的缺陷**（均有修复前失败、修复后通过的回归测试）：
+
+- 内置 Case MCP 目录检测：新增 60 秒、绑定服务器／用户／版本的目录检测凭据，只能列工具，不能调用；
+  同时恢复被后续合并丢失的历史 MCP 同类分支。三个 Case MCP 纳入内置保护，不进入用户可配置候选。
+- 通用能力导入对四个内置 MCP 只放行各自精确的 `Authorization` 占位符；发布走 `--platform-managed`
+  受管路径，仅超级管理员可用。
+- FlowRun 输入上传到冻结记录根：`working_directory` 为空时回退到记录根，修复 `investigate`
+  反复 `RUNTIME_WORKSPACE_INVALID`。
+- Case 文件写入改用 Case 所属用户：Worker 的门禁任务无请求主体，修复 `repair` 结束门禁报
+  `A user principal is required`。
+- 逐步运行结束门禁投递失败后可经 `retry-gates` 重跑（仅限来源为 `RUN_GATE_POLICY` 的失败）。
+- 新增 `CANCEL_STEPWISE_ATTEMPT`（迁移 0191）：协调 Agent 可取消运行时投递失败的节点尝试后从原草稿重启。
+- 逐步运行的阶段也可由 Agent 经 `ADVANCE_CASE_STAGE`／`COMPLETE_CASE` 收口；最后一阶段推进时返回
+  `CASE_FINAL_STAGE_REQUIRES_COMPLETION` 并在工具说明中点明改用 `COMPLETE_CASE`。
+- Case Agent 会话内嵌到场景工作区，列表项仅显示 Agent 生成的会话标题。
+
+**未验证／仍待做**：
+
+- 本次只验证了单阶段逐步运行；多阶段推进、连续运行副本修订、故障恢复全链路未做。
+- Agent 曾因 `fastmcp` 客户端在一次 HTTP 500 后卡在 `nesting counter should be 0` 而使流程工具整轮不可用，
+  靠新建协调轮次恢复；根因在 Runtime 镜像内的 `fastmcp 3.4.5`，未在本仓库处理。
+- 三个 Case MCP 仍由运维导入并在服务器环境配置版本 ID／URL，尚未做成平台启动时自动安装。
+- 前端 e2e 用例 `Case Agent conversation is embedded…` 已写入，但该套件在本机环境下基线用例同样失败，
+  未能运行通过；内嵌布局仅以线上截图做了人工核对。
