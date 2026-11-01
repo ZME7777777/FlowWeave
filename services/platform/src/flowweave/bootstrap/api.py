@@ -27,6 +27,7 @@ from flowweave.modules.agent_sessions.presentation.history_mcp import (
 )
 from flowweave.modules.agent_sessions.presentation.router import router as agent_sessions_router
 from flowweave.modules.agent_workspaces.presentation.router import router as agent_workspaces_router
+from flowweave.modules.cases.application import native_tools
 from flowweave.modules.cases.application.materials import is_native_artifact_request
 from flowweave.modules.cases.application.native_tools import FLOWS as CASE_FLOW_TOOL_CONTRACT
 from flowweave.modules.cases.application.native_tools import (
@@ -49,8 +50,10 @@ from flowweave.modules.runs.presentation.router import router as runs_router
 from flowweave.modules.users.application import service as users
 from flowweave.modules.users.application.audit import AuditRecord
 from flowweave.modules.users.application.security import (
+    FLOWWEAVE_USER_ID,
     bind_principal,
     reset_principal,
+    tenant_user,
 )
 from flowweave.modules.users.presentation.router import router as users_router
 from flowweave.runtime.dependencies import bind_runtime, reset_runtime
@@ -159,6 +162,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     if not any(isinstance(item, SecretRedactionFilter) for item in access_logger.filters):
         access_logger.addFilter(SecretRedactionFilter())
 
+    async def _install_platform_mcps(container: Container, configured: Settings) -> None:
+        """Publish the platform-managed Case MCP versions; never block startup on failure."""
+
+        if not configured.platform_mcp_base_url:
+            return
+        settings_token = bind_settings(container.settings)
+        store_token = bind_artifact_store(container.artifact_store)
+        try:
+            with tenant_user(FLOWWEAVE_USER_ID):
+                async with container.database.session() as session:
+                    await session.run_sync(native_tools.ensure_installed)
+                    await session.commit()
+        except Exception:  # noqa: BLE001 - a bad base URL must not take the API down
+            logging.getLogger(__name__).exception("Platform MCP installation failed")
+        finally:
+            reset_artifact_store(store_token)
+            reset_settings(settings_token)
+
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.container = container
@@ -172,6 +193,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
             )
             await session.commit()
+        await _install_platform_mcps(container, configured)
         container.audit_writer.start()
         try:
             yield

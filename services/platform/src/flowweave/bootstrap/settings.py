@@ -24,12 +24,10 @@ class Settings(BaseSettings):
     # Explicitly pinned catalog version and trusted endpoint, configured together.
     agent_history_mcp_capability_version_id: str = ""
     agent_history_mcp_url: str = ""
-    case_tools_mcp_capability_version_id: str = ""
-    case_tools_mcp_url: str = ""
-    case_flow_tools_mcp_capability_version_id: str = ""
-    case_flow_tools_mcp_url: str = ""
-    case_material_tools_mcp_capability_version_id: str = ""
-    case_material_tools_mcp_url: str = ""
+    # Runtime-reachable origin plus deployment prefix of this platform (for example
+    # "http://platform.internal:3000/flowweave"). The platform-managed Case MCP
+    # versions are installed from it, so no version id is configured by hand.
+    platform_mcp_base_url: str = ""
 
     database_url: str = "postgresql+psycopg://flowweave:flowweave_dev@localhost:55432/flowweave"
     pool_size: int = Field(default=10, ge=1, le=100)

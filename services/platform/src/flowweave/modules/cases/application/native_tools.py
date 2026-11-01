@@ -24,7 +24,13 @@ from flowweave.modules.cases.infrastructure.models import (
     CaseMaterialToolGrant,
     CaseToolGrant,
 )
-from flowweave.modules.catalog.public import PublishedCapability, resolve_version
+from flowweave.modules.catalog.public import (
+    PlatformMcp,
+    PublishedCapability,
+    ensure_platform_mcp,
+    resolve_version,
+    validated_url,
+)
 from flowweave.modules.users.application.security import current_user_id, tenant_user
 from flowweave.modules.users.application.service import agent_session_principal
 from flowweave.runtime.base import RuntimeHandle
@@ -47,22 +53,22 @@ class ToolContract:
     secret_name: str
     path: str
     prefix: str
-    setting_prefix: str
     grant_model: type[CaseToolGrant] | type[CaseFlowToolGrant] | type[CaseMaterialToolGrant]
+    display_name: str
 
     @property
     def auth_header(self) -> str:
         return "Bearer ${" + self.secret_name + "}"
 
 
-CONTEXT = ToolContract(SERVER_NAME, SECRET_NAME, MCP_PATH, "fwc1", "case_tools_mcp", CaseToolGrant)
+CONTEXT = ToolContract(SERVER_NAME, SECRET_NAME, MCP_PATH, "fwc1", CaseToolGrant, "Case context")
 FLOWS = ToolContract(
     "flowweave-case-flows",
     "FLOWWEAVE_CASE_FLOW_ACCESS",
     "/api/v1/case-flow-tools-mcp",
     "fwcf1",
-    "case_flow_tools_mcp",
     CaseFlowToolGrant,
+    "Case flows",
 )
 
 
@@ -71,8 +77,8 @@ MATERIALS = ToolContract(
     "FLOWWEAVE_CASE_MATERIAL_ACCESS",
     "/api/v1/case-material-tools-mcp",
     "fwcm1",
-    "case_material_tools_mcp",
     CaseMaterialToolGrant,
+    "Case materials",
 )
 
 
@@ -166,46 +172,62 @@ def authenticate(
         return grant, item
 
 
+def _validate_published(
+    published: PublishedCapability, *, contract: ToolContract, expected_url: str | None
+) -> PublishedCapability:
+    config = published.version.normalized_config_json
+    url = config.get("url", "")
+    if not isinstance(url, str):
+        raise unavailable()
+    parsed = urlsplit(url)
+    if (
+        published.package.capability_type != "MCP"
+        or published.package.capability_key != contract.server_name
+        or parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+        or not parsed.path.endswith(contract.path)
+        or (expected_url is not None and url != expected_url)
+        or config.get("transport") != "streamable-http"
+        or config.get("headers") != {"Authorization": contract.auth_header}
+        or set(config) - {"url", "transport", "headers"}
+        or published.version.digest
+        != capability_version_digest(
+            "MCP", contract.server_name, published.blob.content_hash, config
+        )
+    ):
+        raise unavailable()
+    content = get_artifact_store().read(published.blob.storage_key)
+    if hashlib.sha256(content).hexdigest() != published.blob.content_hash:
+        raise unavailable()
+    return published
+
+
 def _published(
     db: Session, version_id: str | None = None, *, contract: ToolContract = CONTEXT
 ) -> PublishedCapability:
-    settings = get_settings()
-    configured_id = version_id or getattr(
-        settings, contract.setting_prefix + "_capability_version_id"
-    )
+    """Resolve a frozen version, or install the current one from the platform base URL."""
+
     try:
-        if not configured_id:
-            raise unavailable()
-        published = resolve_version(db, configured_id)
-        config = published.version.normalized_config_json
-        url = config.get("url", "")
-        if not isinstance(url, str):
-            raise unavailable()
-        parsed = urlsplit(url)
-        if (
-            published.package.capability_type != "MCP"
-            or published.package.capability_key != contract.server_name
-            or parsed.scheme not in {"http", "https"}
-            or not parsed.hostname
-            or parsed.username
-            or parsed.password
-            or parsed.query
-            or parsed.fragment
-            or not parsed.path.endswith(contract.path)
-            or (version_id is None and url != getattr(settings, contract.setting_prefix + "_url"))
-            or config.get("transport") != "streamable-http"
-            or config.get("headers") != {"Authorization": contract.auth_header}
-            or set(config) - {"url", "transport", "headers"}
-            or published.version.digest
-            != capability_version_digest(
-                "MCP", contract.server_name, published.blob.content_hash, config
+        if version_id:
+            return _validate_published(
+                resolve_version(db, version_id), contract=contract, expected_url=None
             )
-        ):
+        base_url = get_settings().platform_mcp_base_url
+        if not base_url:
             raise unavailable()
-        content = get_artifact_store().read(published.blob.storage_key)
-        if hashlib.sha256(content).hexdigest() != published.blob.content_hash:
-            raise unavailable()
-        return published
+        url = validated_url(base_url, contract.path)
+        installed = ensure_platform_mcp(
+            db,
+            PlatformMcp(
+                contract.server_name, contract.path, contract.auth_header, contract.display_name
+            ),
+            url,
+        )
+        return _validate_published(installed, contract=contract, expected_url=url)
     except (DomainError, OSError, ValueError, TypeError):
         raise unavailable() from None
 
@@ -363,3 +385,17 @@ def coordinator_tool_endpoints(db: Session, binding_id: str) -> tuple[tuple[str,
             )
         )
     return tuple(endpoints)
+
+
+def ensure_installed(db: Session) -> list[str]:
+    """Install the current version of every Case MCP from the platform base URL.
+
+    Idempotent and safe on every start: an unchanged URL resolves to the same
+    immutable version, a changed one publishes the next. Returns the installed
+    version ids. Without a base URL nothing is installed and Case coordination
+    stays unavailable, which is reported when a coordinator is started.
+    """
+
+    if not get_settings().platform_mcp_base_url:
+        return []
+    return [_published(db, contract=item).version.id for item in (CONTEXT, FLOWS, MATERIALS)]

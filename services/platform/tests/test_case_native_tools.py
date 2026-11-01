@@ -1,6 +1,5 @@
 """Real PostgreSQL, governed capability artifacts and HTTP tool authorization."""
 
-import hashlib
 import json
 import socket
 from importlib.util import module_from_spec, spec_from_file_location
@@ -11,7 +10,7 @@ from uuid import uuid4
 import pytest
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
-from sqlalchemy import func, select, text
+from sqlalchemy import select, text
 
 from flowweave.modules.agent_sessions.application import conversations
 from flowweave.modules.agent_sessions.infrastructure.models import (
@@ -29,14 +28,11 @@ from flowweave.modules.cases.infrastructure.models import (
 from flowweave.modules.catalog.application import capability_imports
 from flowweave.modules.catalog.infrastructure.models import (
     CapabilityBlob,
-    CapabilityPackage,
-    CapabilityVersion,
 )
 from flowweave.modules.users.application.security import tenant_user
 from flowweave.modules.users.infrastructure.models import User
 from flowweave.shared.artifact_store import artifact_store_context
 from flowweave.shared.credentials_crypto import decrypt_secret
-from flowweave.shared.domain.capability_digest import capability_version_digest
 from flowweave.shared.errors import DomainError
 from flowweave.shared.settings import settings_context
 
@@ -44,77 +40,20 @@ from flowweave.shared.settings import settings_context
 def publish_case_tools(
     db, settings, store, monkeypatch, url=None, *, contract=native_tools.CONTEXT
 ):
-    config = {
-        "url": url or "http://case-tools.example.test/api/v1/case-tools-mcp",
-        "transport": "streamable-http",
-        "headers": {"Authorization": contract.auth_header},
-    }
-    content = json.dumps({"mcpServers": {contract.server_name: config}}).encode()
-    content_hash = hashlib.sha256(content).hexdigest()
-    package = db.scalar(
-        select(CapabilityPackage).where(
-            CapabilityPackage.capability_type == "MCP",
-            CapabilityPackage.capability_key == contract.server_name,
-        )
-    )
-    if package is None:
-        package = CapabilityPackage(
-            capability_type="MCP", capability_key=contract.server_name, display_name="Case context"
-        )
-    blob = CapabilityBlob(
-        content_hash=content_hash,
-        storage_key=contract.server_name + "/" + content_hash + ".json",
-        byte_size=len(content),
-        media_type="application/json",
-    )
-    store.put(blob.storage_key, content)
-    db.add_all([package, blob])
-    db.flush()
-    version = CapabilityVersion(
-        package_id=package.id,
-        blob_id=blob.id,
-        version_no=(
-            db.scalar(
-                select(func.max(CapabilityVersion.version_no)).where(
-                    CapabilityVersion.package_id == package.id
-                )
-            )
-            or 0
-        )
-        + 1,
-        digest=capability_version_digest("MCP", contract.server_name, content_hash, config),
-        normalized_config_json=config,
-        source_filename=contract.server_name + ".json",
-        state="PUBLISHED",
-    )
-    db.add(version)
-    db.commit()
-    configured = settings.model_copy(
-        update={
-            contract.setting_prefix + "_url": config["url"],
-            contract.setting_prefix + "_capability_version_id": version.id,
-        }
-    )
+    """Configure the platform base URL; the platform installs its own MCP versions."""
+
+    base = (url or "http://case-tools.example.test").removesuffix(contract.path)
+    configured = settings.model_copy(update={"platform_mcp_base_url": base})
     monkeypatch.setattr(native_tools, "get_settings", lambda: configured)
-    if contract == native_tools.CONTEXT:
-        publish_case_tools(
-            db,
-            configured,
-            store,
-            monkeypatch,
-            config["url"].removesuffix(native_tools.MCP_PATH) + native_tools.FLOWS.path,
-            contract=native_tools.FLOWS,
-        )
-    if contract == native_tools.FLOWS:
-        publish_case_tools(
-            db,
-            configured,
-            store,
-            monkeypatch,
-            config["url"].removesuffix(native_tools.FLOWS.path) + native_tools.MATERIALS.path,
-            contract=native_tools.MATERIALS,
-        )
-    return version
+    with artifact_store_context(store):
+        installed = [
+            native_tools._published(db, contract=item)
+            for item in (native_tools.CONTEXT, native_tools.FLOWS, native_tools.MATERIALS)
+        ]
+    db.commit()
+    return next(
+        item.version for item in installed if item.package.capability_key == contract.server_name
+    )
 
 
 def test_case_mcp_versions_are_governance_visible_but_rejected_by_generic_sessions(
@@ -298,12 +237,7 @@ def test_retry_reuses_credential_and_frozen_version_after_default_change(
     native_case, monkeypatch, settings
 ):
     g = native_case
-    changed = settings.model_copy(
-        update={
-            "case_tools_mcp_capability_version_id": str(uuid4()),
-            "case_tools_mcp_url": "https://changed.example.test/",
-        }
-    )
+    changed = settings.model_copy(update={"platform_mcp_base_url": "https://changed.example.test"})
     monkeypatch.setattr(native_tools, "get_settings", lambda: changed)
     assert (
         native_tools.prepare_creation(g.db, g.entry.id, g.binding)[native_tools.SECRET_NAME]
