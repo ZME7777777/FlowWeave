@@ -338,7 +338,8 @@ class CaseControlPlan(Base):
         UniqueConstraint("case_id", "idempotency_key", name="uq_case_control_plan_key"),
         CheckConstraint(
             "action IN ('CREATE_EXECUTION_COPY', 'START_EXECUTION', 'START_STEPWISE_NODE', "
-            "'ACCEPT_STEPWISE_ATTEMPT', 'REJECT_STEPWISE_ATTEMPT', 'STOP_EXECUTION', "
+            "'ACCEPT_STEPWISE_ATTEMPT', 'REJECT_STEPWISE_ATTEMPT', 'CANCEL_STEPWISE_ATTEMPT', "
+            "'STOP_EXECUTION', "
             "'RERUN_STEPWISE_NODE', 'COPY_CONTINUOUS_EXECUTION', 'ADVANCE_CASE_STAGE', "
             "'COMPLETE_CASE', 'REVISE_UNSTARTED_RUNTIME', 'CONFIGURE_EXECUTION')",
             name="ck_case_control_plan_action",

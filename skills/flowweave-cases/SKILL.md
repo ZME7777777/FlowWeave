@@ -71,7 +71,7 @@ flowweave case plan-retry   <case-id> <plan-id>
 flowweave case proposal-create|proposal-execute ...
 ```
 
-控制计划 `action` 白名单：`CREATE_EXECUTION_COPY`、`CONFIGURE_EXECUTION`、`START_EXECUTION`、`START_STEPWISE_NODE`、`ACCEPT_STEPWISE_ATTEMPT`、`REJECT_STEPWISE_ATTEMPT`、`STOP_EXECUTION`、`RERUN_STEPWISE_NODE`、`COPY_CONTINUOUS_EXECUTION`、`ADVANCE_CASE_STAGE`、`COMPLETE_CASE`。`idempotency_key` 须匹配 `^[a-z][a-z0-9._:-]{0,139}$`。正常情况下这些动作由协调 Agent 经原生 MCP 工具发起；人工通过 CLI 调用属于接管，需用户授权，且只作用于活动 `current_execution_flow_run_id`，不可作用于模板、历史副本或其他阶段。
+控制计划 `action` 白名单：`CREATE_EXECUTION_COPY`、`CONFIGURE_EXECUTION`、`START_EXECUTION`、`START_STEPWISE_NODE`、`ACCEPT_STEPWISE_ATTEMPT`、`REJECT_STEPWISE_ATTEMPT`、`CANCEL_STEPWISE_ATTEMPT`、`STOP_EXECUTION`、`RERUN_STEPWISE_NODE`、`COPY_CONTINUOUS_EXECUTION`、`ADVANCE_CASE_STAGE`、`COMPLETE_CASE`。`idempotency_key` 须匹配 `^[a-z][a-z0-9._:-]{0,139}$`。正常情况下这些动作由协调 Agent 经原生 MCP 工具发起；人工通过 CLI 调用属于接管，需用户授权，且只作用于活动 `current_execution_flow_run_id`，不可作用于模板、历史副本或其他阶段。
 
 执行结果以持久记录为准：看计划/提案的状态、失败码，并复读对应 FlowRun；不要把"HTTP 返回了"当作"已启动"。
 

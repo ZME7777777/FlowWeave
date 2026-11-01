@@ -1427,6 +1427,24 @@ def execute_case_control_plan(db: Session, case_id: str, plan_id: str) -> dict[s
                         f"case-plan-reject:{plan.id}",
                     )
                 }
+        elif plan.action == "CANCEL_STEPWISE_ATTEMPT":
+            requested = plan.input_snapshot_json.get("requested", {})
+            attempt_id = str(requested.get("node_attempt_id") or "")
+            expected_version = requested.get("expected_attempt_state_version")
+            if (
+                not attempt_id
+                or not isinstance(expected_version, int)
+                or plan.node_attempt_id != attempt_id
+            ):
+                raise conflict("stepwise cancel lacks a frozen Attempt reference", plan_id=plan.id)
+            result = {
+                "attempt": orchestration.cancel_attempt(
+                    db,
+                    attempt_id,
+                    AttemptVersionWrite(expected_state_version=expected_version),
+                    f"case-plan-cancel:{plan.id}",
+                )
+            }
         elif plan.action == "RERUN_STEPWISE_NODE":
             if not stage.current_execution_flow_run_id or not plan.node_run_id:
                 raise conflict("Case rerun lacks an execution or node reference", plan_id=plan.id)

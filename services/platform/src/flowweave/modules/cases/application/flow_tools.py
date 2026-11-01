@@ -47,12 +47,20 @@ class FlowActionArguments(BaseModel):
         "START_STEPWISE_NODE",
         "ACCEPT_STEPWISE_ATTEMPT",
         "REJECT_STEPWISE_ATTEMPT",
+        "CANCEL_STEPWISE_ATTEMPT",
         "RERUN_STEPWISE_NODE",
         "COPY_CONTINUOUS_EXECUTION",
         "ADVANCE_CASE_STAGE",
         "COMPLETE_CASE",
     ]
-    idempotency_key: str = Field(pattern=r"^[a-z][a-z0-9._:-]{0,119}$")
+    idempotency_key: str = Field(
+        pattern=r"^[a-z][a-z0-9._:-]{0,119}$",
+        description=(
+            "Lowercase letters, digits and . _ : - only, starting with a letter "
+            "(for example 'rerun-collect-1'). A bare UUID is rejected because it may "
+            "start with a digit."
+        ),
+    )
     reason: str = Field(min_length=1, max_length=2_000)
     expected_case_row_version: int = Field(ge=1)
     expected_stage_key: str = Field(min_length=1, max_length=100)
@@ -84,6 +92,7 @@ class FlowActionArguments(BaseModel):
             "START_STEPWISE_NODE",
             "ACCEPT_STEPWISE_ATTEMPT",
             "REJECT_STEPWISE_ATTEMPT",
+            "CANCEL_STEPWISE_ATTEMPT",
             "RERUN_STEPWISE_NODE",
         }
         node_action = self.stepwise_draft is not None or self.action in node_actions
@@ -91,7 +100,11 @@ class FlowActionArguments(BaseModel):
             raise ValueError("flow_node_key is required only for a stepwise node action")
         if (self.action == "START_STEPWISE_NODE") != (self.draft_row_version is not None):
             raise ValueError("draft_row_version is required only for START_STEPWISE_NODE")
-        review_actions = {"ACCEPT_STEPWISE_ATTEMPT", "REJECT_STEPWISE_ATTEMPT"}
+        review_actions = {
+            "ACCEPT_STEPWISE_ATTEMPT",
+            "REJECT_STEPWISE_ATTEMPT",
+            "CANCEL_STEPWISE_ATTEMPT",
+        }
         if (self.action in review_actions) != (
             self.node_run_id is not None
             and self.node_attempt_id is not None
@@ -155,7 +168,9 @@ TOOLS = [
     ),
     _tool(
         "manage_case_flow",
-        "Create or configure the current stage copy, review/rerun stepwise work, copy a completed "
+        "Create or configure the current stage copy, review/rerun stepwise work, cancel a stepwise "
+        "Attempt blocked by RUNTIME_DELIVERY_FAILED and start the node again from its unchanged "
+        "draft, copy a completed "
         "continuous execution into a new current draft, explicitly advance a reviewed stage, or "
         "complete the final reviewed stage with formal Artifact evidence. Targets derive from this "
         "coordinator. Read fresh versions first. Old executions, templates, conversations, and "
@@ -554,11 +569,16 @@ def validate_action_preconditions(
         "START_STEPWISE_NODE",
         "ACCEPT_STEPWISE_ATTEMPT",
         "REJECT_STEPWISE_ATTEMPT",
+        "CANCEL_STEPWISE_ATTEMPT",
         "RERUN_STEPWISE_NODE",
     }
     if plan.action in stepwise_actions and stage.execution_mode != "STEPWISE":
         raise conflict("node action requires stepwise mode")
-    if plan.action in {"ACCEPT_STEPWISE_ATTEMPT", "REJECT_STEPWISE_ATTEMPT"}:
+    if plan.action in {
+        "ACCEPT_STEPWISE_ATTEMPT",
+        "REJECT_STEPWISE_ATTEMPT",
+        "CANCEL_STEPWISE_ATTEMPT",
+    }:
         if not args.node_run_id or not args.node_attempt_id:
             raise conflict("review action lacks frozen execution identities")
         node_run = db.get(NodeRun, args.node_run_id)
@@ -574,6 +594,16 @@ def validate_action_preconditions(
         ):
             raise DomainError(
                 "CASE_FLOW_VERSION_CONFLICT", "待复核节点身份已变化，请重新读取后再决定", 409
+            )
+        if plan.action == "CANCEL_STEPWISE_ATTEMPT" and not (
+            attempt.state in {"START_BLOCKED", "END_BLOCKED"}
+            and attempt.error_code == "RUNTIME_DELIVERY_FAILED"
+            and attempt.state_version == args.expected_attempt_state_version
+        ):
+            raise conflict(
+                "only an Attempt blocked by runtime delivery failure can be cancelled",
+                state=attempt.state,
+                error_code=attempt.error_code,
             )
     elif plan.action == "RERUN_STEPWISE_NODE":
         if not args.node_run_id:

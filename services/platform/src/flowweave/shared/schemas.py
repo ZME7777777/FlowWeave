@@ -947,6 +947,7 @@ class CaseControlPlanWrite(ApiModel):
         "START_STEPWISE_NODE",
         "ACCEPT_STEPWISE_ATTEMPT",
         "REJECT_STEPWISE_ATTEMPT",
+        "CANCEL_STEPWISE_ATTEMPT",
         "STOP_EXECUTION",
         "RERUN_STEPWISE_NODE",
         "COPY_CONTINUOUS_EXECUTION",

@@ -1119,3 +1119,75 @@ def test_flow_tool_body_and_projection_bounds(flow_case):
             "items"
         ][0]["startup_prompt"]
     )
+
+
+def blocked_attempt(g, *, error_code="RUNTIME_DELIVERY_FAILED", state="START_BLOCKED"):
+    stepwise(g)
+    g.node = NodeRun(
+        flow_run_id=g.execution.id,
+        flow_node_snapshot_key="first",
+        sequence_no=1,
+        state="ACTIVE",
+        created_from="STEPWISE_DRAFT_START",
+    )
+    g.db.add(g.node)
+    g.db.flush()
+    g.attempt = NodeAttempt(
+        node_run_id=g.node.id,
+        attempt_no=1,
+        snapshot_id=g.execution.active_snapshot_id,
+        state=state,
+        state_version=3,
+        runtime_phase="FAILED",
+        error_code=error_code,
+        error_detail="EXECUTOR_UNAVAILABLE",
+        startup_prompt="stepwise",
+        agent_preset_json=g.preset,
+        gate_policies_json=[],
+    )
+    g.db.add(g.attempt)
+    g.db.commit()
+
+
+def cancel_args(g, **overrides):
+    return action(
+        g,
+        "CANCEL_STEPWISE_ATTEMPT",
+        flow_node_key="first",
+        node_run_id=g.node.id,
+        node_attempt_id=g.attempt.id,
+        expected_attempt_state_version=3,
+        **overrides,
+    )
+
+
+def test_case_can_cancel_runtime_delivery_blocked_attempt_then_start_again(flow_case):
+    g = flow_case
+    blocked_attempt(g)
+    cancelled = projection(rpc(g, "manage_case_flow", cancel_args(g)))
+    assert cancelled["state"] == "SUCCEEDED", cancelled
+    refresh(g)
+    assert g.attempt.state == "CANCELLED"
+    assert g.node.state == "CANCELLED"
+    assert g.execution.state == "ACTIVE"
+    # The draft is untouched and the cancelled history is preserved, so the
+    # node can be started again as a new NodeRun/Attempt.
+    drafts = projection(rpc(g, "read_case_flow", {"section": "drafts"}))["items"]
+    assert [item["flow_node_key"] for item in drafts] == ["first"]
+
+
+@pytest.mark.parametrize(
+    ("error_code", "state"),
+    [
+        ("RUNTIME_OUTPUT_PROJECTION_FAILED", "END_BLOCKED"),
+        (None, "START_BLOCKED"),
+        ("RUNTIME_DELIVERY_FAILED", "WAITING_ACCEPTANCE"),
+    ],
+)
+def test_case_cannot_cancel_attempts_outside_runtime_delivery_failure(flow_case, error_code, state):
+    g = flow_case
+    blocked_attempt(g, error_code=error_code, state=state)
+    refused = projection(rpc(g, "manage_case_flow", cancel_args(g)))
+    assert refused["state"] == "FAILED"
+    refresh(g)
+    assert g.attempt.state == state
