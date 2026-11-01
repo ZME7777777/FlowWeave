@@ -1228,3 +1228,18 @@ def test_case_files_use_the_case_owner_when_written_without_a_request_principal(
     finally:
         security._tenant_user_id.reset(token)
     assert seen == [owner]
+
+
+def test_advancing_the_last_stage_names_complete_case_as_the_required_action(flow_case):
+    """The Agent must be told which action ends the final stage, not a generic conflict."""
+
+    g = flow_case
+    for later in g.db.scalars(
+        select(CaseStage).where(CaseStage.case_id == g.item.id, CaseStage.id != g.stage.id)
+    ).all():
+        g.db.delete(later)
+    g.db.commit()
+    mark_continuous_review_pending(g)
+    result = projection(rpc(g, "manage_case_flow", action(g, "ADVANCE_CASE_STAGE")))
+    assert result["state"] == "FAILED"
+    assert result["error_code"] == "CASE_FINAL_STAGE_REQUIRES_COMPLETION"

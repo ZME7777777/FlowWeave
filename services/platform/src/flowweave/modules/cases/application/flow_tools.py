@@ -176,7 +176,8 @@ TOOLS = [
         "coordinator. Read fresh versions first. Old executions, templates, conversations, and "
         "Artifacts remain immutable. Reuse one idempotency_key after timeouts. Failed actions "
         "require retry_of_plan_id and a new key. Stage advancement never starts the next "
-        "execution.",
+        "execution. The LAST stage cannot be advanced: finish it with COMPLETE_CASE and "
+        "evidence_artifact_version_ids of its accepted Artifacts.",
         FlowActionArguments,
         False,
     ),
@@ -631,7 +632,12 @@ def validate_action_preconditions(
                 .limit(1)
             )
             if next_stage is None:
-                raise conflict("final stage must complete the Case with formal evidence")
+                raise DomainError(
+                    "CASE_FINAL_STAGE_REQUIRES_COMPLETION",
+                    "这是最后一个阶段，不能推进；请改用 COMPLETE_CASE 并提供正式产物证据",
+                    409,
+                    {"required_action": "COMPLETE_CASE"},
+                )
         elif plan.action == "COMPLETE_CASE":
             next_stage_id = db.scalar(
                 select(CaseStage.id)

@@ -1511,7 +1511,12 @@ def execute_case_control_plan(db: Session, case_id: str, plan_id: str) -> dict[s
                 .limit(1)
             )
             if next_stage is None:
-                raise conflict("final stage must complete the Case with formal evidence")
+                raise DomainError(
+                    "CASE_FINAL_STAGE_REQUIRES_COMPLETION",
+                    "这是最后一个阶段，不能推进；请改用 COMPLETE_CASE 并提供正式产物证据",
+                    409,
+                    {"required_action": "COMPLETE_CASE"},
+                )
             stage.state = "COMPLETED"
             next_stage.state = "ACTIVE"
             item.row_version += 1
