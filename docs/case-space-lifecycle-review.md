@@ -686,11 +686,54 @@ binding、原生conversation、Runtime Session和目录版本范围的独立授�
   `CASE_FINAL_STAGE_REQUIRES_COMPLETION` 并在工具说明中点明改用 `COMPLETE_CASE`。
 - Case Agent 会话内嵌到场景工作区，列表项仅显示 Agent 生成的会话标题。
 
-**未验证／仍待做**：
+**本节写作时未验证的项目，后续已处理或仍待做**（以下两节为准）：
 
-- 本次只验证了单阶段逐步运行；多阶段推进、连续运行副本修订、故障恢复全链路未做。
+- 多阶段推进与故障恢复已在下一节验证；连续运行副本修订（`COPY_CONTINUOUS_EXECUTION`）仍未触发。
 - Agent 曾因 `fastmcp` 客户端在一次 HTTP 500 后卡在 `nesting counter should be 0` 而使流程工具整轮不可用，
   靠新建协调轮次恢复；根因在 Runtime 镜像内的 `fastmcp 3.4.5`，未在本仓库处理。
-- 三个 Case MCP 仍由运维导入并在服务器环境配置版本 ID／URL，尚未做成平台启动时自动安装。
+- 三个 Case MCP 的手工导入已改为平台启动自动安装，见下一节。
 - 前端 e2e 用例 `Case Agent conversation is embedded…` 已写入，但该套件在本机环境下基线用例同样失败，
   未能运行通过；内嵌布局仅以线上截图做了人工核对。
+
+## 多阶段、自动安装与故障恢复验收记录（2026-11-01，远端受管内部服务器）
+
+### 内置 Case MCP 自动安装
+
+运维只配置一项 `PLATFORM_MCP_BASE_URL`（Runtime 可访问的平台地址加部署前缀）。API 启动时幂等安装
+三个 Case MCP：地址不变沿用同一不可变版本，地址变化发布下一版本，已冻结的旧引用不变。安装沿用
+已存在的同名包，并复用配置等价的已发布版本（以冻结配置而非存储字节比较，手工导入的文件仅键序或空白
+不同也不会重复）。启动安装失败只记日志，不阻止 API 启动；此时协调会话启动返回
+`CASE_TOOL_CAPABILITY_UNAVAILABLE`。服务器已删除六项旧的版本 ID／URL 配置，之后新建的协调会话在没有任何
+手工版本配置的情况下正常装配三个 MCP。历史轮次仍冻结在版本 1，不受影响。
+
+### 多阶段（逐步 → 连续）
+
+场景含两个阶段：逐步模板、连续模板，均为隔离验收。协调 Agent 自行完成：复制并启动阶段一，逐节点启动并
+接受，`ADVANCE_CASE_STAGE` 进入阶段二，复制并启动连续模板，连续执行自动完成，`COMPLETE_CASE` 带阶段二当前
+执行的六项已接受产物作为证据。计划链八项全部 `SUCCEEDED`，无失败重试，全程无人工接管。验证了证据
+属于阶段二当前执行，不含阶段一或旧副本产物。
+
+### 故障恢复
+
+每类使用独立新建的场景与模板副本，不触碰既有 E2E 数据。
+
+| 故障 | 做法 | 结果 |
+|---|---|---|
+| 暂停再恢复 | `collect` 已启动后暂停场景，约 2 分钟后恢复 | 暂停期间 Agent 启动 `investigate` 被平台以 `CASE_PAUSED` 拒绝，已启动的 `collect` 不受影响并被接受；恢复后 Agent 继续完成场景。每节点各 1 个 NodeRun、1 次 Attempt，无重复 |
+| 同一动作重放 | 相同幂等键三次提交同一 `CREATE_EXECUTION_COPY`，计划执行三次 | 三次返回同一计划，副本始终 1 份；换新键再建同一动作，创建成功但执行被拒（阶段已有当前执行副本），副本数不变 |
+| Worker 重启 | `collect` 处于 `EXECUTING` 且队列有运行中的 `POLL_RUNTIME` 时，仅重建 `worker` | 场景完成；每节点 1 个 NodeRun、1 次 Attempt、1 个会话；最近一小时 `DEAD` 任务为 0；重启时运行中的轮询没有丢失 |
+
+Worker 重启场景有一个 `START_STEPWISE_NODE` 计划以 `VERSION_CONFLICT` 失败：其携带的
+`expected_run_row_version` 为 2，而运行记录版本已被节点接受推进。失败是被拒绝而非重复执行，Agent 重新读取后
+以新版本提交成功，没有产生第二个 NodeRun。该冲突与重启是否相关无法从现有证据判断。重启后出现过 5 个
+`DELIVER_CASE_FEEDBACK` 处于 `RETRY`（协调 Agent 非空闲、投递串行），最终全部结束且无 `DEAD`。重启场景的
+投递行最终全部为 `AUDIT_ONLY`，没有 `DELIVERED`；未取得足够证据解释，故不据此下结论。
+
+### 仍未验证
+
+- 结果不确定（`AMBIGUOUS`）：需要在 Runtime 一侧注入“原生消息提交成功但无法确认”的故障，不在线上构造；
+  目前只有代码与单元测试保证。
+- API、Runtime Provider 重启：本次只重启了 `worker`。
+- 在恢复场景中叠加多阶段、连续运行副本修订（`COPY_CONTINUOUS_EXECUTION`）、过期决策与跨场景越权的线上验证。
+- 真实业务模板（Flow A 的日志收集、分析、修复）：两个验收均使用隔离验收模板。
+- 线上留有三个故障验证场景及三份 `RECOVERY-模板-*` 复制记录，未清理。
