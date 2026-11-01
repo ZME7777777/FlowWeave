@@ -388,3 +388,12 @@ html:has(.scenario-space){overscroll-behavior:none}
 .scenario-space>.scenario-conversation{min-width:0;min-height:0;display:block;overflow:hidden;padding:0;background:#fff}
 .scenario-space>.scenario-conversation{height:100%}
 .scenario-space>.scenario-conversation>.agent-workbench-page{height:100%;width:100%}
+
+/* Independent expansion per Case, like the workspace groups of the Agent sidebar. */
+.scenario-space .scenario-case-row{display:grid;grid-template-columns:minmax(0,1fr) 26px;align-items:center;border-radius:6px}
+.scenario-space .scenario-case-row.active{background:#e5eee8}
+.scenario-space .scenario-case-row .scenario-case-head{grid-template-columns:8px minmax(0,1fr);background:transparent}
+.scenario-space .scenario-case-toggle{display:grid;width:26px;height:26px;place-items:center;border:0;border-radius:6px;background:transparent;color:#728078;cursor:pointer;padding:0}
+.scenario-space .scenario-case-toggle:hover{background:#dbe7df;color:#35574a}
+.scenario-space .scenario-case-toggle svg{transition:transform .15s ease}
+.scenario-space .scenario-case-toggle.expanded svg{transform:rotate(90deg)}
