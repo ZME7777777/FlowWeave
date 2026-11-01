@@ -39,6 +39,7 @@ function usage() {
   flow <list|get|create|update|validate|delete> ...
   run <list|get|start|delete|runtime|replace|pause|resume|cancel|complete|events|node|node-copy|node-delete|pin|unpin|stepwise-draft|stepwise-start|workspace-details|workspace-directory|workspace-git-repositories|workspace-git-log|workspace-git-commit|workspace-git-diff|workspace-entry-create|workspace-delete|work-directory-delete|hydration|head|automatic-config-export|automatic-config-import|reconcile-runtime-completion> ...
   schedule <list|templates|occurrences|create|pause|resume|trigger|delete> ...
+  case <list|get|create|update|delete|path|session-config|pause|resume|stage-templates|artifact-materials|material-upload|material-file|stage-state|stage-bind|attach-flow-run|stage-launch|stage-start|observe|proposal-create|proposal-execute|plan-create|plan-execute|plan-retry|start|round|round-retry|conversation-delete> ...
   model <list|create|update|delete|discover|usage|test|oauth-start|oauth-poll|oauth-status|oauth-revoke> ...
   agent <default|workspace|runtime|runtime-replace|conversations|pinned-conversations|conversation-management|conversation-management-delete|schedules|schedule-create|schedule-update|schedule-pause|schedule-resume|schedule-trigger|schedule-delete|schedule-occurrences|conversation|create|send|interrupt|resume|pin|unpin|sidebar-create|sidebar|sidebar-close|work-directories|work-directory-create|work-directory-delete|workspace-details|workspace-directory|workspace-git-repositories|workspace-git-log|workspace-git-commit|workspace-git-diff|workspace-entry-create|file-delete|history|hydration|head> ...
 
@@ -894,6 +895,81 @@ async function websocket(args) {
   return { status: 'closed', messages: maxMessages || undefined };
 }
 
+async function caseSpace(args) {
+  const [action, id, sub] = positional(args);
+  const base = '/cases';
+  const need = (value, what) => { if (!value) throw new CliError(`case ${action} 需要${what}`); return value; };
+  const version = (name) => {
+    const value = Number(option(args, name));
+    if (!Number.isSafeInteger(value) || value < 1) throw new CliError(`case ${action} 需要正整数 ${name}`);
+    return value;
+  };
+  if (action === 'list') return request('GET', base, args);
+  if (action === 'create') return request('POST', base, args);
+  need(id, '场景 ID');
+  const c = `${base}/${id}`;
+  if (action === 'get') return request('GET', c, args);
+  if (action === 'update') return request('PUT', c, args);
+  if (action === 'delete') return request('DELETE', c, args);
+  if (action === 'path') return request('PUT', `${c}/path`, args);
+  if (action === 'session-config') return request('PUT', `${c}/session-config`, args);
+  if (action === 'pause' || action === 'resume') {
+    return request('PUT', `${c}/coordination-state`, args, {
+      body: { expected_row_version: version('--expected-row-version'), state: action === 'pause' ? 'PAUSED' : 'ACTIVE' },
+    });
+  }
+  if (action === 'stage-templates') return request('GET', `${c}/stage-templates`, args);
+  if (action === 'artifact-materials') {
+    const query = [];
+    for (const [flagName, name] of [['--offset', 'offset'], ['--limit', 'limit']]) {
+      const value = option(args, flagName);
+      if (value !== undefined) {
+        const n = Number(value);
+        if (!Number.isSafeInteger(n) || n < 0 || (name === 'limit' && (n < 1 || n > 50))) throw new CliError(`case artifact-materials 的 ${flagName} 不合法（offset≥0，limit 1–50）`);
+        query.push([name, String(n)]);
+      }
+    }
+    return request('GET', `${c}/artifact-materials`, args, { query });
+  }
+  if (action === 'material-upload') {
+    const file = need(option(args, '--file'), ' --file <本地文件>');
+    const expected = version('--expected-row-version');
+    const summary = { path: resolve(file), filename: basename(file) };
+    if (flag(args, '--dry-run')) return request('POST', `${c}/materials`, args, { body: summary, query: [['expected_row_version', String(expected)]] });
+    const form = new FormData();
+    form.append('file', new Blob([await readFile(resolve(file))]), basename(file));
+    return request('POST', `${c}/materials`, args, { form, query: [['expected_row_version', String(expected)]] });
+  }
+  if (action === 'material-file') {
+    return request('GET', `${c}/materials/file`, args, {
+      raw: false, query: [['value', need(option(args, '--value'), ' --value <资料引用>')], ...(flag(args, '--download') ? [['download', 'true']] : [])],
+    });
+  }
+  if (action === 'attach-flow-run') return request('POST', `${c}/flow-runs`, args);
+  if (action === 'observe') return request('POST', `${c}/observation-projection`, args, { body: {} });
+  if (action === 'proposal-create') return request('POST', `${c}/decision-proposals`, args);
+  if (action === 'plan-create') return request('POST', `${c}/control-plans`, args);
+  if (action === 'start') {
+    requireIdempotencyKey(args, 'case start');
+    return request('POST', `${c}/control-conversation`, args);
+  }
+  if (action === 'conversation-delete') {
+    const binding = option(args, '--binding-id');
+    return request('DELETE', `${c}/control-conversation`, args, { query: binding ? [['binding_id', binding]] : [] });
+  }
+  if (['stage-state', 'stage-bind', 'stage-launch', 'stage-start'].includes(action)) {
+    need(sub, '阶段 ID（case ' + action + ' <case-id> <stage-id>）');
+    const route = { 'stage-state': ['PUT', 'state'], 'stage-bind': ['PUT', 'flow-run'], 'stage-launch': ['POST', 'launch'], 'stage-start': ['POST', 'execution/start'] }[action];
+    return request(route[0], `${c}/stages/${sub}/${route[1]}`, args);
+  }
+  if (action === 'proposal-execute') return request('POST', `${c}/decision-proposals/${need(sub, '提案 ID')}/execute`, args, { body: {} });
+  if (action === 'plan-execute') return request('POST', `${c}/control-plans/${need(sub, '计划 ID')}/execute`, args, { body: {} });
+  if (action === 'plan-retry') return request('POST', `${c}/control-plans/${need(sub, '计划 ID')}/retry`, args, { body: {} });
+  if (action === 'round') return request('GET', `${c}/control-rounds/${need(sub, '轮次 ID')}`, args);
+  if (action === 'round-retry') return request('POST', `${c}/control-rounds/${need(sub, '轮次 ID')}/retry`, args, { body: {} });
+  throw new CliError('case 支持 list|get|create|update|delete|path|session-config|pause|resume|stage-templates|artifact-materials|material-upload|material-file|stage-state|stage-bind|attach-flow-run|stage-launch|stage-start|observe|proposal-create|proposal-execute|plan-create|plan-execute|plan-retry|start|round|round-retry|conversation-delete');
+}
+
 async function main(argv) {
   const [command, ...args] = argv;
   if (!command || flag(args, '--help') || command === '--help') { process.stdout.write(`${usage()}\n`); return; }
@@ -918,6 +994,7 @@ async function main(argv) {
   else if (command === 'flow') result = flow(args);
   else if (command === 'run') result = run(args);
   else if (command === 'schedule') result = schedule(args);
+  else if (command === 'case') result = caseSpace(args);
   else if (command === 'model') result = model(args);
   else if (command === 'agent') result = agent(args);
   else throw new CliError(`未知命令：${command}`);

@@ -512,3 +512,27 @@ test('会话管理、置顶与 Skill 下载快捷命令映射最新公开接口'
   assert.equal(invoke(config, 'capability', 'download', 'capability-1', '--dry-run').status, 2);
   assert.equal(invoke(config, 'run', 'pin', 'run-1', '--attempt', 'attempt-1', '--dry-run').status, 2);
 });
+
+test('场景空间快捷命令保持路径、CAS、阶段动作与协调会话契约', async () => {
+  const config = await configured();
+  invoke(config, 'config', 'init', '--base-url', 'https://example.test/flowweave');
+  const dry = (...argv) => { const r = invoke(config, 'case', ...argv, '--dry-run'); assert.equal(r.status, 0, r.stderr); return JSON.parse(r.stdout); };
+  const api = 'https://example.test/flowweave/api/v1/cases';
+  assert.equal(dry('list').url, api);
+  assert.equal(dry('get', 'c1').url, `${api}/c1`);
+  assert.deepEqual(dry('pause', 'c1', '--expected-row-version', '5'), {
+    method: 'PUT', payload: { expected_row_version: 5, state: 'PAUSED' }, url: `${api}/c1/coordination-state`,
+  });
+  assert.equal(dry('resume', 'c1', '--expected-row-version', '6').payload.state, 'ACTIVE');
+  assert.equal(dry('stage-start', 'c1', 's1', '--data', '{"reason":"x"}').url, `${api}/c1/stages/s1/execution/start`);
+  assert.equal(dry('stage-launch', 'c1', 's1').method, 'POST');
+  assert.equal(dry('plan-retry', 'c1', 'p1').url, `${api}/c1/control-plans/p1/retry`);
+  assert.equal(dry('round', 'c1', 'r1').url, `${api}/c1/control-rounds/r1`);
+  assert.equal(dry('artifact-materials', 'c1', '--offset', '20', '--limit', '10').url, `${api}/c1/artifact-materials?offset=20&limit=10`);
+  assert.equal(dry('conversation-delete', 'c1', '--binding-id', 'b1').url, `${api}/c1/control-conversation?binding_id=b1`);
+  assert.equal(invoke(config, 'case', 'pause', 'c1', '--dry-run').status, 2);
+  assert.equal(invoke(config, 'case', 'stage-start', 'c1', '--dry-run').status, 2);
+  assert.equal(invoke(config, 'case', 'start', 'c1', '--data', '{}', '--dry-run').status, 2);
+  assert.equal(dry('start', 'c1', '--data', '{"model_provider_id":"m","model_name":"n"}', '-H', 'Idempotency-Key: k1').method, 'POST');
+  assert.equal(invoke(config, 'case', 'artifact-materials', 'c1', '--limit', '51', '--dry-run').status, 2);
+});

@@ -11,7 +11,7 @@ flowweave health --ready
 
 配置只保存基础 URL 到 `~/.config/flowweave/config.json`（可由 `FLOWWEAVE_CONFIG_PATH` 覆盖）。登录会话单独保存到同目录的 `auth.json`（可由 `FLOWWEAVE_AUTH_PATH` 覆盖），文件权限为 `0600`，并且只会发送给登录时的同一平台地址。使用 `flowweave auth status` 检查当前身份，使用 `flowweave auth logout` 撤销服务端会话并删除本地文件。默认登录会隐藏密码输入；非交互环境使用 `--password-stdin`，不要把密码写进命令参数、脚本或日志。
 
-页面域命令包括 `node`、`node-directory`、`capability`、`event-trigger`、`environment`、`credential`、`flow`、`run`、`schedule`、`model` 和 `agent`。它们分别覆盖节点资产、能力仓库、运行事件触发器、终端环境、网站认证条目、流程编排、FlowRun、FlowRun 周期调度、大模型配置与 Agent 工作台的常用原子操作。`credential` 管理网站凭据，不等于 `auth` 用户登录；Agent 会话定时任务通过 `agent schedules` 与 `agent schedule-*` 管理，不能与顶层 `schedule` 混用。每个命令的 JSON 请求体与在线 OpenAPI 一致；运行 `flowweave <域> --help` 查看映射。
+页面域命令包括 `node`、`node-directory`、`capability`、`event-trigger`、`environment`、`credential`、`flow`、`run`、`schedule`、`case`、`model` 和 `agent`。它们分别覆盖节点资产、能力仓库、运行事件触发器、终端环境、网站认证条目、流程编排、FlowRun、FlowRun 周期调度、大模型配置与 Agent 工作台的常用原子操作。`credential` 管理网站凭据，不等于 `auth` 用户登录；Agent 会话定时任务通过 `agent schedules` 与 `agent schedule-*` 管理，不能与顶层 `schedule` 混用。每个命令的 JSON 请求体与在线 OpenAPI 一致；运行 `flowweave <域> --help` 查看映射。
 
 工作区浏览支持按需详情、增量目录、受授权的 Git 历史/提交/Diff 与创建普通文件或目录：使用 `agent workspace-details [--full-index]|workspace-directory|workspace-git-repositories|workspace-git-log|workspace-git-commit|workspace-git-diff|workspace-entry-create` 处理顶层 Agent Workspace；在 FlowRun 节点范围内使用对应的 `run workspace-* <run-id> --attempt <attempt-id>`。`--full-index` 只在用户确实需要完整索引时使用，默认优先按目录读取。Git 操作只接受由工作区 API 返回的 `repository_path`、commit 和文件路径，不能从本地或显示名称猜测。`agent hydration|head` 与 `run hydration|head` 读取会话原生状态；它们不修改 Conversation。
 
@@ -24,6 +24,8 @@ flowweave health --ready
 节点目录批量删除、Agent Workspace 文件树删除和 FlowRun 节点工作区删除都使用 JSON 数组请求体。重复传入 `--id` 或 `--path` 即可批量选择；先读取真实资源与路径，并用 `--dry-run` 核对 DELETE URL、范围 query 和请求体。FlowRun 工作目录删除使用 `flowweave run work-directory-delete <run-id> --attempt <attempt-id> --work-directory <directory-id>`。
 
 读取 FlowRun 中的记录使用 `flowweave run node <run-id> --node <node-run-id>`；只有用户明确要求时才能执行 `node-copy` 或 `node-delete`。暂停或恢复 Runtime 前，必须先读取 `run runtime`，将返回的 `generation` 与 session `row_version` 写入 `expected_generation`、`expected_session_row_version` 后传给 `run pause` 或 `run resume`。供应商上游余额/用量使用 `flowweave model usage <provider-id>`，它可能依赖该供应商的有效 API 凭据。
+
+场景空间使用 `case list|get|create|update|path|session-config|material-upload|stage-launch|stage-start|plan-create|plan-execute|start|round|pause|resume|delete` 等（完整列表见 `flowweave --help`）。暂停/恢复须传 `--expected-row-version`；`case start` 会新建协调 Agent 会话并要求 `-H 'Idempotency-Key: <uuid>'`；阶段模板只复制不直接启动。
 
 周期任务使用 `schedule list/templates/occurrences/create/pause/resume/trigger/delete`。先用 `schedule templates` 读取可作为冻结母版的已就绪连续运行记录；创建请求必须使用在线 `FlowRunScheduleWrite` schema：只提交任务名称、母版 `source_flow_run_id` 和五段 `cron_expression`，节点、环境、输入和启动提示词均来自该记录的冻结母版。`schedule occurrences <schedule-id> --page 1 --page-size 10` 按需读取该调度的执行历史及其 FlowRun/NodeRun，而不预加载所有记录。暂停或恢复前从 `schedule list` 读取当前 `row_version`，再传入 `--expected-row-version`。手动触发会新增一次 occurrence，不会改写既有运行；删除生成的 FlowRun 不会删除调度，而有生成记录的调度删除会被平台拒绝。环境发布现在会返回 `202`：发布后读取对应 Environment，等待新版本进入 `READY`，不要重复提交同一 Setup Session。
 
