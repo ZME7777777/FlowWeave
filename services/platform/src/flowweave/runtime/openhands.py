@@ -5370,11 +5370,14 @@ class OpenHandsRuntime:
         # identify ordinary files (notably PDFs) without trusting a caller
         # supplied path.
         workspace_root = self._validated_workspace_root(handle.workspace_root)
-        working_directory = PurePosixPath(handle.working_directory or workspace_root)
+        # A FlowRun input upload has no separate working directory: its frozen
+        # record root is the directory. Compare canonical strings on both sides.
+        expected_directory = handle.working_directory or workspace_root.as_posix()
+        working_directory = PurePosixPath(expected_directory)
         if (
             not working_directory.is_absolute()
-            or not working_directory.is_relative_to(PurePosixPath(workspace_root))
-            or working_directory.as_posix() != (handle.working_directory or workspace_root)
+            or not working_directory.is_relative_to(workspace_root)
+            or working_directory.as_posix() != expected_directory
             or any(part in {"", ".", ".."} for part in working_directory.parts)
         ):
             raise DomainError(

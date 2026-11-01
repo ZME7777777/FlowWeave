@@ -759,9 +759,7 @@ def _handle(
     )
 
 
-def test_openhands_uploads_attachment_to_frozen_working_directory(
-    openhands_settings, monkeypatch
-):
+def test_openhands_uploads_attachment_to_frozen_working_directory(openhands_settings, monkeypatch):
     runtime = OpenHandsRuntime(openhands_settings)
     calls: list[dict[str, object]] = []
 
@@ -5178,7 +5176,6 @@ def test_openhands_run_does_not_retrigger_running_conversation(openhands_setting
     assert requests == [("GET", "/api/conversations/10000000-0000-4000-8000-000000000002")]
 
 
-
 def test_openhands_run_continues_error_conversation(openhands_settings, monkeypatch):
     runtime = OpenHandsRuntime(openhands_settings)
     requests: list[tuple[str, str, object]] = []
@@ -7581,3 +7578,41 @@ def test_case_append_preflight_failure_is_known_not_submitted(openhands_settings
         runtime.append_message(_handle("unused"), "facts")
     assert failure.value.details == {"native_append_started": False}
     assert calls == ["GET"]
+
+
+@pytest.mark.parametrize(
+    "workspace_root",
+    [
+        "/runtime/workspace/10000000-0000-4000-8000-000000000001",
+        "/runtime/workspace/project/10000000-0000-4000-8000-000000000001",
+        "/runtime/workspace/project/users/10000000-0000-4000-8000-000000000001",
+    ],
+)
+def test_openhands_uploads_flow_input_to_record_root_without_working_directory(
+    openhands_settings, monkeypatch, workspace_root
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    calls: list[dict[str, object]] = []
+
+    class Response:
+        def raise_for_status(self) -> None:
+            return None
+
+    class Client:
+        def post(self, url: str, **kwargs: object) -> Response:
+            calls.append({"url": url, **kwargs})
+            return Response()
+
+    monkeypatch.setattr(runtime, "_transport", lambda: SimpleNamespace(regular=Client()))
+    monkeypatch.setattr(runtime, "_base_url_for_handle", lambda _handle: "http://runtime:8000")
+    monkeypatch.setattr(runtime, "_session_key_for_handle", lambda _handle: "session-key")
+    handle = replace(_handle(), workspace_root=workspace_root, working_directory="")
+    path = runtime.upload_workspace_file(
+        handle,
+        filename="input.md",
+        content_type="text/markdown",
+        content=b"x",
+        attachment_owner_id="10000000-0000-4000-8000-000000000003",
+    )
+    assert path.startswith(f"{workspace_root}/.uploads/10000000-0000-4000-8000-000000000003-")
+    assert len(calls) == 1
