@@ -1,5 +1,5 @@
 /* Dense record details share one header and keep the canvas and inspector independently scrollable. */
-.flow-run-workbench-header.run-detail-header{display:flex;height:44px;min-height:44px;gap:10px;justify-content:flex-start;overflow:hidden;background:#fff;padding:7px 16px;border-bottom:1px solid #dce5df}
+.flow-run-workbench-header.run-detail-header{display:grid;grid-template-columns:clamp(400px,38vw,580px) minmax(0,1fr);height:44px;min-height:44px;align-items:center;gap:0;overflow:hidden;background:#fff;padding:0;border-bottom:1px solid #dce5df}
 .run-detail-header>.back{flex-shrink:0;display:inline-flex;align-items:center;gap:5px;margin:0;border:0;border-right:1px solid #e1e8e3;border-radius:0;background:transparent;padding:3px 13px 3px 0;color:#547360;font-size:10px;white-space:nowrap}
 .run-detail-header>.run-workbench-record-summary{position:static;min-width:0;max-width:none;flex:1;padding:0;text-align:left;transform:none}
 .run-detail-header .run-workbench-record-summary h1{max-width:100%;margin:0;font-size:13px;font-weight:600;text-align:left;line-height:1.4}
@@ -168,3 +168,24 @@
 .flow-run-record-workspace .run-graph-node.inactive.snapshot-selected:not(.flow-active-target){border-color:#98a99e!important;background:#f7f9f7!important;box-shadow:0 0 0 4px #e8eee9!important;outline:2px solid #9baba1}
 .flow-run-record-workspace .run-graph-node.inactive.flow-active-target{border-color:#4b8e6b!important;background:#f3faf5!important}
 .flow-run-record-workspace .run-graph-node.inactive.flow-active-target>strong{color:#36664b}
+
+/* 顶栏：左格与侧栏同宽（返回 + 状态），标题在画布区居中 */
+.run-detail-header>.run-detail-side{display:flex;height:100%;min-width:0;align-items:center;gap:10px;padding:0 16px;border-right:1px solid #e1e8e3;background:#f5f7f4}
+.run-detail-header>.run-detail-side>.back{margin:0;padding:6px 10px;border:1px solid #d3ddd6;border-radius:7px;background:#fff;color:#3f6a52;font-size:11px;font-weight:600}
+.run-detail-header>.run-detail-side>.back:hover{border-color:#a9c4b4;background:#f1f7f3}
+.run-detail-header>.run-detail-side>.run-detail-kind{margin-left:auto}
+.run-detail-header>.run-workbench-record-summary{display:grid;min-width:0;place-items:center;padding:0 24px;text-align:center}
+.run-detail-header .run-workbench-record-summary h1{max-width:100%;overflow:hidden;font-size:14px;font-weight:650;text-align:center;text-overflow:ellipsis;white-space:nowrap}
+/* 流程配置更新：一行提示 + 小按钮，详情放在悬停说明里 */
+.flow-run-record-workspace .snapshot-sync{display:flex;align-items:center;gap:10px;padding:5px 14px;border:0;border-bottom:1px solid #d6e6ee;border-radius:0;background:#f1f8fb;font-size:11px}
+.flow-run-record-workspace .snapshot-sync>span{display:flex;align-items:baseline;gap:8px}
+.flow-run-record-workspace .snapshot-sync b{font-size:11px;font-weight:600}
+.flow-run-record-workspace .snapshot-sync small{color:#5f8396;font-size:10px}
+.flow-run-record-workspace .snapshot-sync .secondary{margin-left:auto;padding:4px 9px;font-size:10px}
+/* 阻塞/报错说明：限制高度，长文本内部滚动，不再撑开面板 */
+.flow-run-record-workspace .terminal-run-panel{margin-top:8px;padding:10px 12px;border-radius:8px}
+.flow-run-record-workspace .terminal-run-panel h4{margin:0 0 4px;font-size:12px}
+.flow-run-record-workspace .terminal-run-panel p{max-height:96px;margin:0 0 8px;overflow:auto;font-size:11px;line-height:1.55;overflow-wrap:anywhere}
+.flow-run-record-workspace .terminal-run-panel small{display:block;max-height:64px;overflow:auto;color:#85948b}
+@media(max-width:1180px){.flow-run-workbench-header.run-detail-header{grid-template-columns:410px minmax(0,1fr)}}
+@media(max-width:1000px){.flow-run-workbench-header.run-detail-header{grid-template-columns:350px minmax(0,1fr)}}
