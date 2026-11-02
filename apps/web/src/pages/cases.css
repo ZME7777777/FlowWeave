@@ -424,16 +424,17 @@ html:has(.scenario-space){overscroll-behavior:none}
 /* 单一启动入口：主按钮 + 会话方式菜单 */
 .case-start-split{position:relative;display:inline-flex;align-items:stretch}
 .case-start-split>.primary:first-child:not(:last-child){border-top-right-radius:0;border-bottom-right-radius:0}
-.case-start-split>.case-start-more{margin-left:1px;border-top-left-radius:0;border-bottom-left-radius:0;padding:6px 7px}
+.case-start-split>.case-start-more{margin-left:0;border-top-left-radius:0;border-bottom-left-radius:0}
 .case-start-menu{position:absolute;z-index:30;top:calc(100% + 4px);right:0;display:grid;min-width:190px;border:1px solid #cfdcd3;border-radius:9px;background:#fff;padding:4px;box-shadow:0 14px 30px #0a1a1038}
 .case-start-menu>button{display:grid;gap:1px;border:0;border-radius:6px;background:transparent;padding:8px 10px;color:#2f4b3a;font-size:11px;text-align:left}
 .case-start-menu>button small{color:#8a9a8f;font-size:9px}
 .case-start-menu>button:hover,.case-start-menu>button:focus-visible{outline:0;background:#eaf2ec}
 
-/* 场景工具栏：纯图标按钮，状态与说明放在悬停提示里 */
-.scenario-case-actions .icon-only{display:inline-grid;width:32px;height:32px;min-height:32px;padding:0;place-items:center}
-.scenario-case-actions .case-start-split .icon-only{width:34px}
-.scenario-case-actions .case-start-more{width:22px;padding:0}
+/* 场景工具栏：图标 + 简短文字，启动为带下拉的分体按钮 */
+.case-workspace-toolbar .scenario-case-actions .case-start-split>button.case-start-more{flex:0 0 30px;width:30px;min-width:30px;padding:0;justify-content:center}
+.case-workspace-toolbar .scenario-case-actions .case-start-more svg{flex:none}
+.case-workspace-toolbar .scenario-case-actions .case-start-split>button.case-start-main{flex:0 0 auto;padding:6px 12px;font-weight:600}
+.case-start-split>.case-start-more{border-left:1px solid #ffffff3d}
 .case-issue-chip{display:inline-flex;align-items:center;gap:4px;border:1px solid #ecd9ae;border-radius:999px;background:#fff8e8;padding:2px 9px;color:#8a6420;font-size:10px}
 .case-issue-chip:hover{background:#fff1d3}
 .spin{animation:case-spin 1s linear infinite}
