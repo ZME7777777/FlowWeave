@@ -550,6 +550,7 @@ export interface CaseStageExecution {
   progress?: { accepted: number; terminal: number; active: number };
   active_node?: { node_key: string; node_name: string; state: AttemptState; error_code?: string | null } | null;
   nodes?: Array<{ node_key: string; node_name: string; state: string; active: boolean }>;
+  edges?: Array<{ source: string; target: string }>;
   ready_node_keys?: string[];
   automatic_block?: FlowRun['automatic_block'];
   finished_at?: string | null;

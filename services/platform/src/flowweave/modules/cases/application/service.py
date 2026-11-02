@@ -194,6 +194,14 @@ def _stage_execution_summary(db: Session, stage: CaseStage) -> dict[str, Any] | 
                 "active": bool(active and active["node_key"] == key),
             }
         )
+    edges = [
+        {
+            "source": str(edge.get("source_instance_key") or ""),
+            "target": str(edge.get("target_instance_key") or ""),
+        }
+        for edge in (active_snapshot or {}).get("definition", {}).get("edges", [])
+        if edge.get("source_instance_key") and edge.get("target_instance_key")
+    ]
     return {
         "flow_run_id": run.id,
         "parent_flow_run_id": run.parent_flow_run_id,
@@ -202,6 +210,7 @@ def _stage_execution_summary(db: Session, stage: CaseStage) -> dict[str, Any] | 
         "progress": detail["progress"],
         "active_node": active,
         "nodes": node_statuses,
+        "edges": edges,
         "ready_node_keys": sorted(ready_node_keys),
         "automatic_block": detail["automatic_block"],
         "finished_at": detail.get("finished_at"),
@@ -1689,6 +1698,61 @@ def advance_case_stepwise_execution(db: Session, flow_run_id: str) -> None:
     # durable execution fact into a business decision. CASE coordinators must read
     # the fresh draft and submit START_STEPWISE_NODE themselves.
     return None
+
+
+def rerun_case_stage(db: Session, case_id: str, stage_id: str) -> dict[str, Any]:
+    """Detach a finished execution so the stage can launch a fresh copy of its template.
+
+    The previous FlowRun, its CaseFlowRun link, sessions and Artifacts stay untouched; only the
+    stage pointer moves. A completed Case or a still-running execution cannot be rerun.
+    """
+
+    item = _case(db, case_id, lock=True)
+    if item.state == "ARCHIVED":
+        raise illegal("archived Case cannot rerun a stage", state=item.state)
+    if item.state == "PAUSED":
+        require_case_action(item, "CREATE_EXECUTION_COPY")
+    stage = _stage(db, item, stage_id)
+    if not stage.current_execution_flow_run_id:
+        raise conflict("Case stage has no execution to rerun", stage_id=stage.id)
+    if not stage.flow_run_id:
+        raise conflict("Case stage has no configured FlowRun template", stage_id=stage.id)
+    run = db.get(FlowRun, stage.current_execution_flow_run_id)
+    if run is not None and run.state not in {"COMPLETED", "FAILED", "CANCELLED"}:
+        raise DomainError(
+            "CASE_STAGE_EXECUTION_RUNNING",
+            "当前执行仍未结束，请先停止后再重新运行",
+            409,
+            {"stage_id": stage.id, "flow_run_id": run.id, "state": run.state},
+        )
+    if _case_has_unresolved_control_plan(db, item.id):
+        raise DomainError(
+            "CASE_CONTROL_PLAN_UNRESOLVED", "仍有未完成的受控动作，请稍后再试", 409
+        )
+    later = [
+        other
+        for other in db.scalars(select(CaseStage).where(CaseStage.case_id == item.id))
+        if other.position > stage.position and other.current_execution_flow_run_id
+    ]
+    if later:
+        raise conflict("后续阶段已经开始执行，不能重新运行前面的阶段", stage_id=stage.id)
+    db.execute(
+        CaseStage.__table__.update()
+        .where(
+            CaseStage.case_id == item.id,
+            CaseStage.id != stage.id,
+            CaseStage.state.in_(("ACTIVE", "REVIEW_PENDING")),
+        )
+        .values(state="PENDING")
+    )
+    stage.state = "ACTIVE"
+    stage.current_execution_flow_run_id = None
+    if item.state == "COMPLETED":
+        item.state = "ACTIVE"
+    item.row_version += 1
+    write_case_files(db, item)
+    finish(db)
+    return _case_dict(db, item)
 
 
 def start_case_stage_execution(

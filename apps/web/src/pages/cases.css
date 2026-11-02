@@ -398,3 +398,25 @@ html:has(.scenario-space){overscroll-behavior:none}
 .scenario-space .scenario-case-toggle:hover{background:#dbe7df;color:#35574a}
 .scenario-space .scenario-case-toggle svg{transition:transform .15s ease}
 .scenario-space .scenario-case-toggle.expanded svg{transform:rotate(90deg)}
+
+/* —— 场景空间调整 —— */
+.case-count-badge{margin-left:2px;border-radius:8px;background:#e5efe8;padding:0 5px;color:#2f6b49;font-size:9px;line-height:15px}
+.case-drawer-backdrop{justify-content:flex-end;align-items:stretch;padding:0;background:#0a1a1055}
+.case-inspector.case-drawer{width:min(440px,94vw);height:100vh;max-height:none;margin:0;border-radius:12px 0 0 12px;animation:case-drawer-in .18s ease-out}
+@keyframes case-drawer-in{from{transform:translateX(24px);opacity:0}to{transform:none;opacity:1}}
+@media(prefers-reduced-motion:reduce){.case-inspector.case-drawer{animation:none}}
+/* 阶段卡片内的有向无环图 */
+.case-stage-graph{margin-top:10px;overflow-x:auto;padding:4px 2px 6px}
+.case-stage-graph-canvas{position:relative}
+.case-stage-graph-canvas svg{position:absolute;inset:0;overflow:visible}
+.case-flow-node{position:absolute;box-sizing:border-box;display:flex;min-width:0;align-items:center;gap:5px;overflow:hidden;border:1px solid #dbe6de;border-radius:7px;background:#fff;padding:0 8px;color:#3f5a48;font-size:10px}
+.case-flow-node>i{width:6px;height:6px;flex:0 0 6px;border-radius:50%;background:#b8c6bc}
+.case-flow-node>b{min-width:0;flex:1;overflow:hidden;font-weight:600;text-overflow:ellipsis;white-space:nowrap}
+.case-flow-node>small{flex:0 0 auto;color:#8a9a8f;font-size:9px}
+.case-flow-node.accepted{border-color:#bddac8;background:#f2f9f4}.case-flow-node.accepted>i{background:#2f8f5a}
+.case-flow-node.active,.case-flow-node.executing{border-color:#2f8f5a;box-shadow:0 0 0 2px #dff0e5}.case-flow-node.active>i,.case-flow-node.executing>i{background:#2f8f5a}
+.case-flow-node.failed,.case-flow-node.start_blocked,.case-flow-node.end_blocked{border-color:#e4b9b3;background:#fff6f5}.case-flow-node.failed>i,.case-flow-node.start_blocked>i,.case-flow-node.end_blocked>i{background:#c0584c}
+/* 右侧信息栏：与 FlowWeave 配色一致，去掉黑色大按钮 */
+.case-stage-info-actions .case-record-link{border:1px solid #bcd7c7;background:#eef6f0;color:#215f41;font-weight:600}
+.case-stage-info-actions .case-record-link:hover{background:#e2f0e7}
+.case-stage-info-actions .case-rerun{border:1px dashed #c6d6cb;color:#4d755f}

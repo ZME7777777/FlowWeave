@@ -208,6 +208,11 @@ async def launch_stage(
     )
 
 
+@router.post("/cases/{case_id}/stages/{stage_id}/rerun")
+async def rerun_stage(case_id: str, stage_id: str, db: Db) -> dict[str, Any]:
+    return await run_sync(db, lambda session: service.rerun_case_stage(session, case_id, stage_id))
+
+
 @router.post("/cases/{case_id}/observation-projection")
 async def project_observations(case_id: str, db: Db) -> dict[str, Any]:
     return await run_sync(db, lambda session: service.project_case_observations(session, case_id))

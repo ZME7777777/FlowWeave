@@ -653,6 +653,8 @@ export const api = {
     request<Case>(`/cases/${encodeURIComponent(caseId)}/stages/${encodeURIComponent(stageId)}/flow-run`, json('PUT', { flow_run_id, execution_mode })),
   launchCaseStage: (caseId: string, stageId: string, name?: string) =>
     request<Case>(`/cases/${encodeURIComponent(caseId)}/stages/${encodeURIComponent(stageId)}/launch`, json('POST', { name })),
+  rerunCaseStage: (caseId: string, stageId: string) =>
+    request<Case>(`/cases/${encodeURIComponent(caseId)}/stages/${encodeURIComponent(stageId)}/rerun`, json('POST')),
   startCaseStageExecution: (caseId: string, stageId: string, reason = '启动当前事项阶段执行副本') =>
     request<import('../types').CaseDecisionProposal>(`/cases/${encodeURIComponent(caseId)}/stages/${encodeURIComponent(stageId)}/execution/start`, json('POST', { reason })),
   executeCaseControlPlan: (caseId: string, planId: string) =>
