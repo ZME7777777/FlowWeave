@@ -335,8 +335,14 @@ def test_case_stage_launch_copies_configured_continuous_template(client, skill_c
     assert case_detail.status_code == 200, case_detail.text
     summary = case_detail.json()["stages"][0]["execution"]
     assert summary["flow_run_id"] == launched_stage["current_execution_flow_run_id"]
+    assert summary["parent_flow_run_id"] == template.json()["parent_flow_run_id"]
+    assert summary["run_mode"] == "AUTOMATIC"
     assert summary["state"] == "ACTIVE"
     assert summary["progress"]["accepted"] == 0
+    assert [node["node_key"] for node in summary["nodes"]] == [
+        node["instance_key"] for node in flow["nodes"]
+    ]
+    assert all(node["state"] == "PENDING" for node in summary["nodes"])
 
 
 def test_node_asset_can_be_saved_without_skill(client):

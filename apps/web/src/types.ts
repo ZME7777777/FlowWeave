@@ -546,9 +546,10 @@ export interface RunSnapshot {
   created_at: string;
 }
 export interface CaseStageExecution {
-  flow_run_id?: string; state: string; message?: string;
+  flow_run_id?: string; parent_flow_run_id?: string | null; run_mode?: 'MANUAL' | 'AUTOMATIC'; state: string; message?: string;
   progress?: { accepted: number; terminal: number; active: number };
   active_node?: { node_key: string; node_name: string; state: AttemptState; error_code?: string | null } | null;
+  nodes?: Array<{ node_key: string; node_name: string; state: string; active: boolean }>;
   ready_node_keys?: string[];
   automatic_block?: FlowRun['automatic_block'];
   finished_at?: string | null;

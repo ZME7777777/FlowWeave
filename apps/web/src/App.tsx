@@ -276,7 +276,7 @@ export function App() {
         const path = withoutDeploymentBase(window.location.pathname);
         if (path === '/') {
           useWorkbenchStore.setState({
-            view: 'runs', selectedRunId: undefined, selectedNodeRunId: undefined, selectedAttemptId: undefined,
+            view: event.state?.flowweaveReturn?.view === 'cases' ? 'cases' : 'runs', selectedRunId: undefined, selectedNodeRunId: undefined, selectedAttemptId: undefined,
             selectedWorkbenchMode: undefined, selectedAutomaticRecordId: undefined, selectedStepwiseRecordId: undefined,
           });
         }
@@ -287,7 +287,7 @@ export function App() {
     window.addEventListener('popstate', update);
     return () => window.removeEventListener('popstate', update);
   }, [restoreStandaloneAgentPath]);
-  const navigate = (path: string, replace = false, options?: { standaloneAgentReturnTarget?: 'root' }) => {
+  const navigate = (path: string, replace = false, options?: { standaloneAgentReturnTarget?: 'root'; flowRunReturn?: boolean }) => {
     if (options?.standaloneAgentReturnTarget === 'root' && path === '/agent') selectStandaloneAgentRootDraft();
     else rememberStandaloneAgentConversation(path);
     const deployedPath = withDeploymentBase(path);
@@ -295,7 +295,10 @@ export function App() {
     // selection on those entries so an explicit return works after switching
     // between conversations, not only from the initial session route.
     const source = nodeSessionRoute ? window.history.state?.flowweaveFlowRun : undefined;
-    const state = source ? { flowweaveFlowRun: source } : {};
+    const state: Record<string, unknown> = source ? { flowweaveFlowRun: source } : {};
+    const flowRunReturn = options?.flowRunReturn ? { path: `${routePathname}${window.location.search}${window.location.hash}`, view }
+      : window.history.state?.flowweavePendingReturn;
+    if (flowRunReturn) state.flowweaveReturn = flowRunReturn;
     if (replace) window.history.replaceState(state, '', deployedPath);
     else window.history.pushState(state, '', deployedPath);
     setRouteVersion(value => value + 1);

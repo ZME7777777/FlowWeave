@@ -1944,6 +1944,14 @@ export function WorkbenchPage({ location }: { location?: FlowRunLocation }) {
     window.dispatchEvent(new PopStateEvent('popstate', { state }));
   }, [mode, selectedAutomaticId, selectedRunId, selectedStepwiseId]);
   const returnToRuns = () => {
+    const source = window.history.state?.flowweaveReturn as { path?: unknown; view?: unknown } | undefined;
+    if (typeof source?.path === 'string' && source.path.startsWith('/') && source.view === 'cases') {
+      const state = { flowweaveReturn: source };
+      useWorkbenchStore.setState({ view: 'cases', selectedRunId: undefined, selectedNodeRunId: undefined, selectedAttemptId: undefined });
+      window.history.pushState(state, '', withDeploymentBase(source.path));
+      window.dispatchEvent(new PopStateEvent('popstate', { state }));
+      return;
+    }
     const directory = useWorkbenchStore.getState().runDirectory;
     if (!directory.selectedRunId && query.data) useWorkbenchStore.getState().updateRunDirectory({ selectedFlowId: query.data.flow_definition_id, selectedRunId: query.data.id, expandedFlowIds: [...new Set([...directory.expandedFlowIds, query.data.flow_definition_id])] });
     useWorkbenchStore.setState({ view: 'runs', selectedRunId: undefined, selectedNodeRunId: undefined, selectedAttemptId: undefined });

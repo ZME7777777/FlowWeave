@@ -964,6 +964,32 @@ test('workspace file tree copies selected names and relative paths with shortcut
 });
 
 
+test('workspace file tree locates the current file after its directory is collapsed', async ({ page }) => {
+  await openWorkspace(page);
+  const root = '/runtime/workspace/project';
+  await page.route('**/api/v1/agent-workspaces/*/workspace/directory**', route => {
+    const parentPath = new URL(route.request().url()).searchParams.get('parent_path') ?? root;
+    const entries = parentPath === root
+      ? [{ path: `${root}/src`, kind: 'directory', size: 0 }]
+      : parentPath === `${root}/src`
+        ? [{ path: `${root}/src/config.ts`, kind: 'file', size: 42 }]
+        : [];
+    return json(route, { parent_path: parentPath, entries, next_cursor: null });
+  });
+  await page.goto('/agent/conversations/scheduled-conversation');
+  await page.getByRole('button', { name: '新建工作区页签', exact: true }).first().click();
+  await page.locator('.agent-workspace-tab-launcher.active').getByRole('button', { name: '文件', exact: true }).click();
+  await page.getByRole('button', { name: 'src', exact: true }).click();
+  const config = page.getByRole('button', { name: 'config.ts', exact: true });
+  await config.click();
+  await expect(config).toHaveClass(/active/);
+  await page.getByRole('button', { name: 'src', exact: true }).click();
+  await expect(config).toHaveCount(0);
+  await page.getByRole('button', { name: '在文件栏中定位当前文件', exact: true }).click();
+  await expect(config).toBeVisible();
+  await expect(config).toHaveClass(/active/);
+});
+
 test('workspace file tree reloads dotfiles when hidden entries are enabled', async ({ page }) => {
   await openWorkspace(page);
   const root = '/runtime/workspace/project';
@@ -4298,7 +4324,7 @@ test('case path fills the workspace with compact stages and on-demand context an
     state: 'ACTIVE', row_version: 1, materials: [], flow_run_ids: [], created_at: now, updated_at: now,
     session_config: { model_provider_id: 'provider-1', model_name: 'model-1', reasoning_effort: 'high', capability_version_ids: [], credential_ids: [] },
     tasks: [], decision_proposals: [], control_plans: [{ id: 'plan', case_id: 'path-case', stage_id: 'stage-1', action: 'START_EXECUTION', state: 'FAILED', reason: '等待环境恢复后重试', error_code: 'ENVIRONMENT_NOT_READY', created_at: now }],
-    stages: Array.from({ length: 12 }, (_, index) => ({ id: `stage-${index}`, case_id: 'path-case', stage_key: `stage-${index}`, name: ['资料准备', '迁移执行', '质量验证', '结果交付'][index % 4] + ` ${index + 1}`, objective: '', flow_run_id: `template-${index}`, position: index, execution_mode: index % 2 ? 'CONTINUOUS' : 'STEPWISE', state: index === 0 ? 'COMPLETED' : index === 1 ? 'ACTIVE' : 'PENDING', current_execution_flow_run_id: index < 2 ? `execution-${index}` : null, execution: index < 2 ? { state: index === 0 ? 'COMPLETED' : 'CANCELLED', progress: { accepted: index === 0 ? 4 : 2, terminal: 4, active: 0 }, active_node: null } : null })),
+    stages: Array.from({ length: 12 }, (_, index) => ({ id: `stage-${index}`, case_id: 'path-case', stage_key: `stage-${index}`, name: ['资料准备', '迁移执行', '质量验证', '结果交付'][index % 4] + ` ${index + 1}`, objective: '', flow_run_id: `template-${index}`, position: index, execution_mode: index % 2 ? 'CONTINUOUS' : 'STEPWISE', state: index === 0 ? 'COMPLETED' : index === 1 ? 'ACTIVE' : 'PENDING', current_execution_flow_run_id: index < 2 ? `execution-${index}` : null, execution: index < 2 ? { state: index === 0 ? 'COMPLETED' : 'CANCELLED', progress: { accepted: index === 0 ? 4 : 2, terminal: 4, active: 0 }, active_node: null, nodes: index === 1 ? [{ node_key: 'extract', node_name: '提取数据', state: 'ACCEPTED', active: false }, { node_key: 'validate', node_name: '验证数据', state: 'END_BLOCKED', active: true }] : [] } : null })),
   };
   await page.route('**/api/v1/cases**', route => {
     const path = new URL(route.request().url()).pathname;
@@ -4316,6 +4342,7 @@ test('case path fills the workspace with compact stages and on-demand context an
   const current = page.getByRole('article', { name: '路径卡片 迁移执行 2', exact: true });
   await expect(current).toContainText('已停止'); await expect(current).not.toContainText('运行中');
   await expect(current.getByRole('button', { name: '查看执行记录' })).toBeVisible();
+  await expect(current.getByLabel('迁移执行 2 节点进度')).toContainText('提取数据已完成验证数据完成受阻');
   await expect(page.getByRole('button', { name: '保存基础信息' })).toHaveCount(0);
   for (const width of [1440, 1024]) {
     await page.setViewportSize({ width, height: 768 });

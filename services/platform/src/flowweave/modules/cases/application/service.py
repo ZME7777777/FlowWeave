@@ -174,11 +174,34 @@ def _stage_execution_summary(db: Session, stage: CaseStage) -> dict[str, Any] | 
             }
             if predecessors.issubset(accepted_keys):
                 ready_node_keys.append(node_key)
+    node_statuses = []
+    node_runs_by_key: dict[str, dict[str, Any]] = {}
+    for node_run in node_runs:
+        key = str(node_run["flow_node_snapshot_key"])
+        node_runs_by_key[key] = node_run
+    for key, node in nodes.items():
+        node_run = node_runs_by_key.get(key)
+        latest_attempt = node_run["attempts"][-1] if node_run and node_run["attempts"] else None
+        node_statuses.append(
+            {
+                "node_key": key,
+                "node_name": str(node.get("alias") or node.get("instance_key") or key),
+                "state": (
+                    latest_attempt["state"]
+                    if latest_attempt is not None
+                    else node_run["state"] if node_run is not None else "PENDING"
+                ),
+                "active": bool(active and active["node_key"] == key),
+            }
+        )
     return {
         "flow_run_id": run.id,
+        "parent_flow_run_id": run.parent_flow_run_id,
+        "run_mode": run.run_mode,
         "state": detail["state"],
         "progress": detail["progress"],
         "active_node": active,
+        "nodes": node_statuses,
         "ready_node_keys": sorted(ready_node_keys),
         "automatic_block": detail["automatic_block"],
         "finished_at": detail.get("finished_at"),
