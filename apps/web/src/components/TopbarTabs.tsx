@@ -1,4 +1,4 @@
-import { Check, ChevronDown, ChevronLeft, ChevronRight, ChevronsRight, X, type LucideIcon } from 'lucide-react';
+import { Check, ChevronDown, ChevronsLeft, ChevronsRight, X, type LucideIcon } from 'lucide-react';
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type CSSProperties } from 'react';
 import { ViewportPopover } from './ViewportPopover';
 import { useEscapeClose } from './useEscapeClose';
@@ -43,13 +43,13 @@ function TabMenu({ label, items, children, hover = false, className = '', onSele
     <button ref={trigger} type="button" className="topbar-tab-menu-trigger" aria-label={label} title={label} aria-haspopup="menu" aria-expanded={open} onKeyDown={event => {
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); cancelClose(); focusMenu.current = true; setOpen(true); if (open) { (popover.current?.querySelector<HTMLButtonElement>('[aria-current="page"]') ?? popover.current?.querySelector<HTMLButtonElement>('[role="menuitem"]'))?.focus(); focusMenu.current = false; } }
     }} onClick={event => { focusMenu.current = event.detail === 0; if (hover) { setOpen(true); if (open && focusMenu.current) popover.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus(); } else setOpen(current => !current); }}>{children}</button>
-    {open && <ViewportPopover ref={popover} anchor={() => trigger.current} align={hover ? 'end' : 'start'} gap={4} heightLimit={360} className="topbar-tab-popover" role="menu" aria-label={label} onMouseEnter={cancelClose} onMouseLeave={leave} onKeyDown={event => {
+    {open && <ViewportPopover ref={popover} anchor={() => trigger.current} align={hover ? 'end' : 'start'} gap={4} heightLimit={360} className={`topbar-tab-popover${className.includes('topbar-context-overflow') ? ' topbar-context-overflow-popover' : ''}`} role="menu" aria-label={label} onMouseEnter={cancelClose} onMouseLeave={leave} onKeyDown={event => {
       const buttons = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')];
       const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
       const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : event.key === 'ArrowDown' ? (index + 1) % buttons.length : event.key === 'ArrowUp' ? (index - 1 + buttons.length) % buttons.length : undefined;
       if (next !== undefined) { event.preventDefault(); buttons[next]?.focus(); }
       if (event.key === 'Tab') close();
-    }}>{items.map(item => <button type="button" role="menuitem" key={item.id} aria-current={item.active ? 'page' : undefined} title={item.title ?? item.label} onClick={() => { close(); trigger.current?.focus(); if (onSelect) onSelect(item); else item.onSelect(); }}><item.icon size={14}/><span>{item.label}</span>{item.active && <Check size={12}/>}</button>)}</ViewportPopover>}
+    }}>{items.map(item => <button type="button" role="menuitem" key={item.id} aria-current={item.active ? 'page' : undefined} title={item.title ?? item.label} onClick={() => { close(); trigger.current?.focus(); if (onSelect) onSelect(item); else item.onSelect(); }}><i className="topbar-tab-icon"><item.icon size={14}/></i><span>{item.label}</span>{item.active && <Check size={12}/>}</button>)}</ViewportPopover>}
   </div>;
 }
 
@@ -57,7 +57,7 @@ export function TopbarTabs({ userId, fixedTabs, temporaryTabs, onPromote }: {
   userId: string; fixedTabs: Tab[]; temporaryTabs: TemporaryTab[]; onPromote: (id: string) => void;
 }) {
   const [collapsed, setCollapsed] = useState(() => {
-    try { return sessionStorage.getItem(preferenceKey(userId)) === 'true'; } catch { return false; }
+    try { return localStorage.getItem(preferenceKey(userId)) === 'true'; } catch { return false; }
   });
   const [fixedWidth, setFixedWidth] = useState(760);
   const [availableWidth, setAvailableWidth] = useState(0);
@@ -71,7 +71,7 @@ export function TopbarTabs({ userId, fixedTabs, temporaryTabs, onPromote }: {
   const fixedSelection = activeFixed ?? fixedTabs.find(tab => tab.id === lastFixed.current) ?? fixedTabs[0];
   useEffect(() => { if (activeFixed) lastFixed.current = activeFixed.id; }, [activeFixed]);
   useEffect(() => {
-    try { sessionStorage.setItem(preferenceKey(userId), String(collapsed)); } catch { /* presentation preference only */ }
+    try { localStorage.setItem(preferenceKey(userId), String(collapsed)); } catch { /* presentation preference only */ }
   }, [collapsed, userId]);
   useLayoutEffect(() => {
     const nav = fixedNav.current;
@@ -106,7 +106,7 @@ export function TopbarTabs({ userId, fixedTabs, temporaryTabs, onPromote }: {
       <div className="topbar-fixed-scroll" inert={collapsed} aria-hidden={collapsed}><nav ref={fixedNav} aria-label="主导航">{fixedTabs.map(item => <button type="button" key={item.id} className={item.active ? 'active' : ''} aria-current={item.active ? 'page' : undefined} onClick={item.onSelect}><item.icon size={15}/>{item.label}</button>)}</nav></div>
       {collapsed && <TabMenu className={`topbar-fixed-menu${activeFixed ? ' active' : ''}`} label="选择固定页面" items={fixedTabs}>{fixedSelection && <><fixedSelection.icon size={15}/><span>{fixedSelection.label}</span></>}<ChevronDown size={11}/></TabMenu>}
     </div>
-    {(hasTemporary || collapsed) && <button type="button" className="topbar-nav-boundary" aria-label={collapsed ? '展开固定导航' : '收起固定导航'} title={collapsed ? '展开固定导航' : '收起固定导航'} aria-expanded={!collapsed} onClick={() => setCollapsed(current => !current)}>{collapsed ? <ChevronRight size={10}/> : <ChevronLeft size={10}/>}</button>}
+    {(hasTemporary || collapsed) && <button type="button" className="topbar-nav-boundary" aria-label={collapsed ? '展开固定导航' : '收起固定导航'} title={collapsed ? '展开固定导航' : '收起固定导航'} aria-expanded={!collapsed} onClick={() => setCollapsed(current => !current)}>{collapsed ? <ChevronsRight size={12}/> : <ChevronsLeft size={12}/>}</button>}
     {hasTemporary && <div className="topbar-context-region" ref={contextRegion}>
       <div className="context-tabs" aria-label="临时管理标签">{visible.map(tab => <div className={`context-tab${tab.active ? ' active' : ''}`} key={tab.id} data-tab-id={tab.id}>
         <button ref={element => { if (element) tabButtons.current.set(tab.id, element); else tabButtons.current.delete(tab.id); }} type="button" className="context-tab-select" aria-current={tab.active ? 'page' : undefined} title={tab.title ?? tab.label} onClick={tab.onSelect}><tab.icon size={14}/><span>{tab.label}</span></button>

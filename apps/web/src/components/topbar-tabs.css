@@ -30,3 +30,20 @@
 .topbar-fixed-menu.active>.topbar-tab-menu-trigger{border-bottom-color:var(--lime);color:#fff}
 
 .topbar-tabs .topbar-fixed-scroll>nav button{font-size:13px}
+
+/* 固定导航收起/展开按钮：带边框的双箭头，分隔线居中穿过 */
+.topbar-nav-boundary{width:30px;flex-basis:30px;opacity:1;color:#9fb1a6}
+.has-context-tabs .topbar-nav-boundary::before{left:14px;top:18px;bottom:18px}
+.topbar-nav-boundary svg{box-sizing:content-box;width:12px;height:12px;padding:4px;border:1px solid #ffffff2e;border-radius:7px;background:var(--dark);transition:border-color .15s,background .15s,color .15s}
+.topbar-nav-boundary:hover svg,.topbar-nav-boundary:focus-visible svg{border-color:var(--lime);background:#ffffff10;color:var(--lime)}
+/* 收起后的固定页面下拉，参照平台设置菜单 */
+.topbar-tab-popover{width:240px;max-width:calc(100vw - 24px);box-sizing:border-box;overflow:hidden;border-color:#cfd9d2;border-radius:9px;padding:5px;box-shadow:0 18px 38px #08150f38}
+.topbar-tab-popover>button{gap:9px;padding:6px;border-radius:7px;font-size:13px;color:#2f4b3a}
+.topbar-tab-popover>button>span{font-weight:550}
+.topbar-tab-icon{display:grid;width:28px;height:28px;flex:0 0 28px;place-items:center;border-radius:6px;background:#e8f0ea;color:#3d6a50;font-style:normal}
+.topbar-tab-popover>button[aria-current=page]{background:#e5f0e8;color:#1f5b3c}
+.topbar-tab-popover>button[aria-current=page] .topbar-tab-icon{background:#0f4a33;color:#fff}
+.topbar-tab-popover>button>svg:last-child{color:#2c7a52}
+/* 临时标签"更多"菜单：宽度随内容但有上下限，过长标题省略 */
+.topbar-context-overflow-popover{width:max-content;min-width:180px;max-width:min(280px,calc(100vw - 24px))}
+.topbar-context-overflow-popover>button>span{max-width:100%}

@@ -131,3 +131,16 @@ test('new tabs win space and hidden pages stay available through keyboard and ac
   await expect(page.getByRole('button', { name: '选择固定页面' })).toBeVisible();
   await expect(page.locator('.context-tab.active')).toContainText('认证管理');
 });
+
+test('fixed navigation collapsed preference persists in localStorage across reloads', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await setup(page);
+  await page.getByRole('button', { name: '收起固定导航' }).click();
+  await expect.poll(() => page.evaluate(id => localStorage.getItem(`flowweave.topbar.fixed-collapsed.v1:${id}`), user.id)).toBe('true');
+  await page.reload();
+  await expect(page.getByRole('button', { name: '展开固定导航' })).toBeVisible();
+  await page.getByRole('button', { name: '展开固定导航' }).click();
+  await expect.poll(() => page.evaluate(id => localStorage.getItem(`flowweave.topbar.fixed-collapsed.v1:${id}`), user.id)).toBe('false');
+  await page.reload();
+  await expect(page.getByRole('button', { name: '收起固定导航' })).toBeVisible();
+});
