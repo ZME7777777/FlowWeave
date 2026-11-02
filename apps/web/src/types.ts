@@ -894,6 +894,7 @@ export interface AgentSessionCapability {
   id: string;
   capability_type: 'SKILL' | 'MCP' | 'PLUGIN' | 'CONTEXT' | 'AGENT_DEFINITION' | 'HOOK';
   capability_key: string;
+  revision_number?: number;
   digest: string;
 }
 export type AgentWorkspaceCapability = AgentSessionCapability;

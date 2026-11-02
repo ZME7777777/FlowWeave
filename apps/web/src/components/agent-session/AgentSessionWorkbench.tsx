@@ -7,7 +7,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { Terminal as XTerm } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import { type InfiniteData, useQueries, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Archive, ArrowLeft, ArrowRight, ArrowUp, Bell, Bot, Boxes, CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, CircleDot, Copy, CornerDownRight, Download, Ellipsis, Eye, EyeOff, FileCode2, FileText, Folder, FolderOpen, FolderPlus, Gauge, GitBranch, Globe2, GripVertical, Home, ImageIcon, Link2, ListRestart, LoaderCircle, LocateFixed, Maximize, Maximize2, Minimize, Minimize2, MessageSquareText, MonitorCog, MonitorOff, PanelRight, PanelRightOpen, Pencil, Pin, PinOff, Play, Plug, Plus, Quote, RefreshCw, Search, Send, Settings, ShieldAlert, Square, SquareCheck, SquarePlus, SquareTerminal, Trash2, X, Target } from 'lucide-react';
+import { Archive, ArrowLeft, ArrowRight, ArrowUp, Bell, Bot, Boxes, CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, CircleDot, Copy, CornerDownRight, Download, Ellipsis, Eye, EyeOff, FileCode2, FileText, Folder, FolderOpen, FolderPlus, Gauge, GitBranch, Globe2, GripVertical, Home, ImageIcon, Link2, ListRestart, LoaderCircle, LockKeyhole, LocateFixed, Maximize, Maximize2, Minimize, Minimize2, MessageSquareText, MonitorCog, MonitorOff, PanelRight, PanelRightOpen, Pencil, Pin, PinOff, Play, Plug, Plus, Quote, RefreshCw, Search, Send, Settings, ShieldAlert, Square, SquareCheck, SquarePlus, SquareTerminal, Trash2, X, Target } from 'lucide-react';
 import { createContext, isValidElement, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type WheelEvent as ReactWheelEvent } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
@@ -1329,6 +1329,11 @@ function isHydrationRequestTimeout(error: unknown): boolean {
 
 type CapabilityChoice = Pick<CapabilityAsset, 'id' | 'capability_type' | 'capability_key'> & Partial<CapabilityAsset>;
 
+function capabilityLineageIdentity(item: CapabilityChoice): string {
+  // Frozen conversation entries only retain type and key; imports keep this
+  // identity stable while publishing immutable versions.
+  return `${item.capability_type}:${item.capability_key}`;
+}
 
 function stringValues(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0) : [];
@@ -1415,7 +1420,9 @@ export function CapabilityManager({ workspaceId, bindingId, conversationCapabili
   const allCapabilities = useMemo(() => {
     const entries = new Map<string, CapabilityChoice>((catalogQuery.data ?? []).map(item => [item.id, item]));
     for (const item of conversationCapabilities ?? []) {
-      if (!entries.has(item.id)) entries.set(item.id, item);
+      // The frozen record supplies session state while the catalog retains
+      // immutable presentation metadata such as its published revision.
+      entries.set(item.id, { ...entries.get(item.id), ...item });
     }
     return entries;
   }, [catalogQuery.data, conversationCapabilities]);
@@ -1450,18 +1457,30 @@ export function CapabilityManager({ workspaceId, bindingId, conversationCapabili
     }
     return updates;
   }, [allCapabilities, catalogQuery.data, registeredSkills]);
-  const capabilities = useMemo(() => [...allCapabilities.values()].filter(item => {
-    if (!['SKILL', 'MCP', 'PLUGIN', 'CONTEXT', 'AGENT_DEFINITION', 'HOOK'].includes(item.capability_type)
-      || item.is_builtin) return false;
-    const registeredSkill = registeredSkills.get(item.capability_key);
-    if (item.capability_type === 'SKILL' && registeredSkill) {
-      const chosen = chosenIds.find(id => allCapabilities.get(id)?.capability_type === 'SKILL'
-        && allCapabilities.get(id)?.capability_key === item.capability_key) ?? registeredSkill.id;
-      return item.id === chosen;
+  const capabilities = useMemo(() => {
+    const selectedByLineage = new Map<string, string>();
+    for (const id of chosenIds) {
+      const item = allCapabilities.get(id);
+      if (item) selectedByLineage.set(capabilityLineageIdentity(item), id);
     }
-    return (item.is_latest || frozenCreationOnlyIds.has(item.id) || (!bindingId && (draftCapabilityIds ?? []).includes(item.id)))
-      && (!bindingId || !['CONTEXT', 'AGENT_DEFINITION', 'HOOK'].includes(item.capability_type) || frozenCreationOnlyIds.has(item.id));
-  }), [allCapabilities, bindingId, chosenIds, draftCapabilityIds, frozenCreationOnlyIds, registeredSkills]);
+    const visibleByLineage = new Map<string, CapabilityChoice>();
+    for (const item of allCapabilities.values()) {
+      if (!['SKILL', 'MCP', 'PLUGIN', 'CONTEXT', 'AGENT_DEFINITION', 'HOOK'].includes(item.capability_type)
+        || item.is_builtin) continue;
+      const lineage = capabilityLineageIdentity(item);
+      const selectedId = selectedByLineage.get(lineage);
+      const registeredSkill = registeredSkills.get(item.capability_key);
+      const frozenCreationOnly = frozenCreationOnlyIds.has(item.id);
+      const shown = item.capability_type === 'SKILL' && registeredSkill
+        ? item.id === (selectedId ?? registeredSkill.id)
+        : selectedId ? item.id === selectedId
+          : item.is_latest || frozenCreationOnly;
+      if (!shown || (bindingId && ['CONTEXT', 'AGENT_DEFINITION', 'HOOK'].includes(item.capability_type) && !frozenCreationOnly)) continue;
+      const existing = visibleByLineage.get(lineage);
+      if (!existing || item.is_latest || selectedId === item.id) visibleByLineage.set(lineage, item);
+    }
+    return [...visibleByLineage.values()];
+  }, [allCapabilities, bindingId, chosenIds, frozenCreationOnlyIds, registeredSkills]);
   const byId = allCapabilities;
   const selectedCollectionMemberIds = useMemo(() => new Set(
     (collectionsQuery.data ?? [])
@@ -1638,14 +1657,14 @@ export function CapabilityManager({ workspaceId, bindingId, conversationCapabili
         const checking = isMcp && checkingMcpIds.has(item.id);
         const readinessLabel = item.capability_type === 'CONTEXT' ? '系统上下文' : item.capability_type === 'AGENT_DEFINITION' ? 'Agent' : item.capability_type === 'HOOK' ? 'Hook' : !isMcp ? (item.capability_type === 'SKILL' ? '技能' : item.capability_type) : configurationPreset ? '运行时连接' : !checked ? 'MCP' : checking ? '检测中' : readiness?.state === 'READY' ? '已连接' : readiness?.error_kind === 'timeout' ? '连接超时' : readiness?.error_kind === 'connection' ? '连接失败' : '不可用';
         const detail = isMcp && checked && !configurationPreset && readiness?.state === 'UNAVAILABLE' ? `MCP ${readinessLabel}；请检测连接后保存。` : isMcp && readiness?.state === 'READY' && readiness.tools?.length ? `${readiness.tools.length} 个工具 · ${readiness.tools.join('、')}` : item.description || item.filename;
-        const versionLabel = registeredSkill ? (item.revision_number ? ` · v${item.revision_number}` : '') : !item.is_latest && !bindingId ? ` · 已选版本 v${item.revision_number}` : '';
+        const version = item.revision_number ? `v${item.revision_number}` : item.version ? item.version : '版本未知';
         const lockedLabel = isFrozenCreationOnly ? `${item.capability_key}（已装配）` : `${item.capability_key}（已注册）`;
         const Icon = capabilityTypeIcons[item.capability_type as AgentCapabilityType];
         const showMcpStatus = isMcp && checked && !configurationPreset;
         const choice = <button type="button" key={item.id} className={`${checked ? 'selected' : ''}${locked ? ' locked' : ''}`} disabled={locked || busy} aria-pressed={checked} aria-label={locked ? lockedLabel : undefined} onClick={() => toggle(item)}>
           <i className="agent-selection-checkbox" aria-hidden="true">{checked ? <Check size={12}/> : null}</i>
           <span className={`agent-capability-icon ${item.capability_type.toLowerCase()}`} aria-hidden="true" title={capabilityTypeLabels[item.capability_type as AgentCapabilityType]}><Icon size={16}/></span>
-          <span className="agent-capability-copy"><span className="agent-capability-name"><b title={`${item.capability_key}${versionLabel}`}>{item.capability_key}{versionLabel}</b>{showMcpStatus && <em className={`mcp-status ${readiness?.state === 'READY' ? 'ready' : readiness?.state === 'UNAVAILABLE' ? 'unavailable' : 'checking'}`}>{readinessLabel}</em>}</span><small title={detail}>{detail || '暂无说明'}</small></span>
+          <span className="agent-capability-copy"><span className="agent-capability-name"><b title={item.capability_key}>{item.capability_key}</b><span className="agent-capability-version-badge" title={`能力版本 ${version}`}>{version}</span>{isFrozenCreationOnly && <span className="agent-capability-frozen-badge" title="此版本已随会话冻结，不能改为最新版本"><LockKeyhole size={10}/>已冻结</span>}{showMcpStatus && <em className={`mcp-status ${readiness?.state === 'READY' ? 'ready' : readiness?.state === 'UNAVAILABLE' ? 'unavailable' : 'checking'}`}>{readinessLabel}</em>}</span><small title={detail}>{detail || '暂无说明'}</small></span>
         </button>;
         return registeredSkill ? <div key={`SKILL:${item.capability_key}`} className={`agent-capability-skill-row${checked ? ' selected' : ''}${update ? ' has-update' : ''}`} data-capability-key={item.capability_key}>{choice}{update && <div className="agent-capability-skill-update"><span className={pendingUpdate ? 'pending' : ''}>{pendingUpdate ? '待保存' : '有新版本'}</span><button type="button" className="agent-capability-sync" disabled={busy || pendingUpdate} aria-label={`同步 ${item.capability_key} 到 v${update.revision_number}`} onClick={() => synchronizeSkill(update)}><RefreshCw size={12}/>{pendingUpdate ? '已同步' : '同步'}</button></div>}</div> : choice; })}</div>
       {(save.error || registrationFailure) && <div className="agent-capability-error"><p>{registrationFailure ?? save.error?.message}</p>{save.error instanceof ApiError && save.error.code === 'AGENT_CONVERSATION_MARKETPLACE_UNAVAILABLE' && onCreateEnhancedConversation && <div className="agent-capability-migration"><span>这条历史会话未在创建时注册原生能力市场。可新建一个空能力会话后，再按需选择要挂载的能力；此会话的历史内容会保留不变。</span><button type="button" className="secondary" disabled={save.isPending} onClick={() => onCreateEnhancedConversation([])}><Plus size={13}/>新建可使用能力的会话</button></div>}</div>}

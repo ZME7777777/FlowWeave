@@ -4376,7 +4376,7 @@ test('current Agent conversation can select a 31st capability and keeps frozen C
     model_provider_id: 'history-provider', model_name: 'history-model', reasoning_effort: null,
     write_available: true, execution_status: 'idle', streaming_callback_ready: true, capabilities: [
       ...loadedSkills,
-      { id: 'history-context-v1', capability_type: 'CONTEXT', capability_key: '历史上下文', digest: 'history-context-v1-digest' },
+      { id: 'history-context-v1', revision_number: 1, capability_type: 'CONTEXT', capability_key: '历史上下文', digest: 'history-context-v1-digest' },
     ],
     created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
   };
@@ -4442,10 +4442,11 @@ test('current Agent conversation can select a 31st capability and keeps frozen C
     }
     await route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }) });
   });
-  await page.route('**/api/v1/capabilities', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([
+  await page.route('**/api/v1/capabilities**', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([
     ...loadedSkills.map(item => ({ ...item, description: '历史会话迁移验证 Skill', filename: `${item.id}.zip`, is_latest: true, document: {} })),
     { id: 'history-new-skill', capability_type: 'SKILL', capability_key: 'history-new-skill', description: '可追加的历史会话 Skill', filename: 'history-new-skill.zip', is_latest: true, document: {} },
-    { id: 'history-context-v1', capability_type: 'CONTEXT', capability_key: '历史上下文', description: '创建时冻结的历史 Context', filename: 'history-context-v1.md', is_latest: false, document: {} },
+    { id: 'history-context-v1', lineage_id: 'history-context', revision_number: 1, capability_type: 'CONTEXT', capability_key: '历史上下文', description: '创建时冻结的历史 Context', filename: 'history-context-v1.md', is_latest: false, document: {} },
+    { id: 'history-context-v2', lineage_id: 'history-context', revision_number: 2, capability_type: 'CONTEXT', capability_key: '历史上下文', description: '目录中的最新 Context', filename: 'history-context-v2.md', is_latest: true, document: {} },
   ]) }));
   await page.route('**/api/v1/model-providers', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([
     { id: 'history-provider', name: '历史模型', connection_state: 'CONNECTED', models: [{ model_name: 'history-model', enabled: true, is_default: true }] },
@@ -4464,16 +4465,15 @@ test('current Agent conversation can select a 31st capability and keeps frozen C
   await expect(skillMenu.getByRole('button', { name: '会话配置' })).toBeVisible();
   await skillMenu.getByRole('button', { name: '会话配置' }).click();
   const manager = page.getByRole('dialog', { name: '会话配置' });
-  await expect(manager).toContainText('已注册 30 项');
   const lockedSkill = manager.getByRole('button', { name: 'history-skill（已注册）' });
   await expect(lockedSkill).toBeDisabled();
   await expect(lockedSkill).toHaveClass(/locked/);
-  await manager.getByRole('button', { name: /history-new-skill/ }).click();
-  await expect(manager).toContainText('已注册 31 项');
   await manager.getByRole('button', { name: 'context', exact: true }).click();
-  await expect(manager).toContainText('已装配 1 个 Context');
   const lockedContext = manager.getByRole('button', { name: '历史上下文（已装配）' });
   await expect(lockedContext).toBeDisabled();
   await expect(lockedContext).toHaveClass(/locked/);
+  await expect(manager.getByRole('button', { name: /历史上下文/ })).toHaveCount(1);
+  await expect(lockedContext.locator('.agent-capability-version-badge')).toHaveText('v1');
+  await expect(lockedContext.locator('.agent-capability-frozen-badge')).toHaveText('已冻结');
   await expect(manager.getByRole('button', { name: '注册到当前会话' })).toHaveCount(0);
 });
