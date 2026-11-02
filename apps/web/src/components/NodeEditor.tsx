@@ -1,4 +1,4 @@
-import { Maximize2, Plus, Trash2, X } from 'lucide-react';
+import { ArrowDownToLine, ArrowUpFromLine, FileText, Maximize2, Plus, TerminalSquare, Trash2, X } from 'lucide-react';
 import { useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { randomId } from '../api/client';
@@ -72,6 +72,7 @@ interface Props {
 export function NodeEditor({ node, initialDirectoryId = null, embedded = false, onSave, onDraftStateChange }: Props) {
   const [form, setForm] = useState(() => initialDraft(node, initialDirectoryId));
   const [baseline, setBaseline] = useState(() => structuredClone(form));
+  const [fieldTab, setFieldTab] = useState<Direction>('inputs');
   const [previews, setPreviews] = useState<Record<PromptKey, boolean>>({ startup_prompt: false, context_prompt: false });
   const [isCreated, setIsCreated] = useState(Boolean(node));
   const [expandedPrompt, setExpandedPrompt] = useState<PromptKey>();
@@ -120,7 +121,7 @@ export function NodeEditor({ node, initialDirectoryId = null, embedded = false, 
   };
   const fieldList = (direction: Direction) => {
     const label = direction === 'inputs' ? '输入' : '输出';
-    return <section className="node-draft-fields" data-field-direction={direction} aria-label={`${label}字段`}><header><small>{form[direction].length} 项</small><button type="button" className="secondary" disabled={saving} onClick={() => setForm(current => ({ ...current, [direction]: [...current[direction], { draftId: randomId(), field_key: '', display_name: '', data_type: 'URL', description: '' }] }))}><Plus size={13}/>新增{label}</button></header>
+    return <section className="node-draft-fields" data-field-direction={direction} aria-label={`${label}字段`}>
       {form[direction].length ? <div className="node-draft-field-list"><div className="node-draft-field-head" aria-hidden="true"><span>名称</span><span>类型</span><span>说明</span><span/></div>{form[direction].map((field, index) => <div className="node-draft-field-row" key={field.draftId}><input data-field-name={index} aria-label={`${label}名称 ${index + 1}`} value={field.display_name} maxLength={160} disabled={saving} placeholder="字段名称" onChange={event => updateField(direction, field.draftId, { display_name: event.target.value })}/><div className="node-field-type" data-type={field.data_type} role="group" aria-label={`${label}类型 ${index + 1}`}>{(['URL', 'FILE'] as const).map(type => <button key={type} type="button" aria-pressed={field.data_type === type} disabled={saving} onClick={() => updateField(direction, field.draftId, { data_type: type })}>{type === 'FILE' ? '文件' : 'URL'}</button>)}</div><input aria-label={`${label}说明 ${index + 1}`} value={field.description} title={field.description || `用途与要求，最多 ${FIELD_DESCRIPTION_LIMIT} 字`} maxLength={FIELD_DESCRIPTION_LIMIT} disabled={saving} placeholder={`用途与要求（最多 ${FIELD_DESCRIPTION_LIMIT} 字）`} onChange={event => updateField(direction, field.draftId, { description: event.target.value })}/><button type="button" className="node-draft-field-delete" aria-label={`删除${label} ${field.display_name || `第 ${index + 1} 项`}`} disabled={saving} onClick={() => setForm(current => ({ ...current, [direction]: current[direction].filter(item => item.draftId !== field.draftId) }))}><Trash2 size={14}/></button></div>)}</div> : <p className="node-draft-fields-empty">暂无字段</p>}
     </section>;
   };
@@ -131,8 +132,14 @@ export function NodeEditor({ node, initialDirectoryId = null, embedded = false, 
     {!isCreated && <label className="node-creation-description">节点说明<textarea rows={2} aria-label="节点说明" value={form.description} disabled={saving} placeholder="简述节点用途，创建后名称与说明将固定。" onChange={event => setForm(current => ({ ...current, description: event.target.value }))}/></label>}
     {error && <p className="error node-save-error" role="alert">{error}</p>}
     <div className="node-editor-body">
-      <div className="node-editor-column node-prompts-column" aria-label="提示词与上下文">{(['startup_prompt', 'context_prompt'] as const).map(key => <section key={key} className="node-prompt-section"><div className="node-prompt-toolbar"><small>{key === 'startup_prompt' ? '启动提示词' : '上下文'}</small><span>{form.executor[key].length.toLocaleString()} 字符</span><PromptMode preview={previews[key]} onChange={value => setPreviews(current => ({ ...current, [key]: value }))}/><button type="button" className="node-prompt-expand" aria-label={`放大编辑${promptLabels[key]}`} onClick={() => setExpandedPrompt(key)}><Maximize2 size={13}/><span>放大</span></button></div><PromptContent promptKey={key} value={form.executor[key]} preview={previews[key]} disabled={saving} onChange={value => updatePrompt(key, value)}/></section>)}</div>
-      <div className="node-editor-column node-fields-column" aria-label="输入与输出">{(['inputs', 'outputs'] as const).map(direction => fieldList(direction))}<p className="node-fields-draft-note">字段修改随节点统一保存。</p></div>
+      <div className="node-editor-column node-prompts-column" aria-label="提示词与上下文">{(['startup_prompt', 'context_prompt'] as const).map(key => <section key={key} className="node-card node-prompt-section"><div className="node-prompt-toolbar"><i className="node-card-icon" aria-hidden="true">{key === 'startup_prompt' ? <TerminalSquare size={15}/> : <FileText size={15}/>}</i><small>{key === 'startup_prompt' ? '启动提示词' : '上下文'}</small><span>{form.executor[key].length.toLocaleString()} 字符</span><PromptMode preview={previews[key]} onChange={value => setPreviews(current => ({ ...current, [key]: value }))}/><button type="button" className="node-prompt-expand" aria-label={`放大编辑${promptLabels[key]}`} onClick={() => setExpandedPrompt(key)}><Maximize2 size={13}/><span>放大</span></button></div><PromptContent promptKey={key} value={form.executor[key]} preview={previews[key]} disabled={saving} onChange={value => updatePrompt(key, value)}/></section>)}</div>
+      <div className="node-editor-column node-fields-column" aria-label="输入与输出"><section className="node-card node-field-card">
+        <div className="node-field-card-head"><i className="node-card-icon" aria-hidden="true"><ArrowDownToLine size={15}/></i><small>输入输出</small>
+          <div className="node-field-tabs" role="tablist" aria-label="输入或输出">{(['inputs', 'outputs'] as const).map(direction => <button key={direction} type="button" role="tab" aria-selected={fieldTab === direction} onClick={() => setFieldTab(direction)}>{direction === 'inputs' ? <ArrowDownToLine size={12}/> : <ArrowUpFromLine size={12}/>}{direction === 'inputs' ? '输入' : '输出'}<em>{form[direction].length}</em></button>)}</div>
+          <button type="button" className="secondary node-field-add" disabled={saving} onClick={() => setForm(current => ({ ...current, [fieldTab]: [...current[fieldTab], { draftId: randomId(), field_key: '', display_name: '', data_type: 'URL', description: '' }] }))}><Plus size={13}/>新增{fieldTab === 'inputs' ? '输入' : '输出'}</button>
+        </div>
+        {fieldList(fieldTab)}
+      </section></div>
     </div>
   </form>;
   return <>{embedded ? editor : <div className="modal-backdrop">{editor}</div>}{expandedPrompt && <ExpandedPrompt promptKey={expandedPrompt} value={form.executor[expandedPrompt]} disabled={saving} error={error} onCancel={cancelChanges} onChange={value => updatePrompt(expandedPrompt, value)} onSave={shortcut} onClose={() => setExpandedPrompt(undefined)}/>}</>;

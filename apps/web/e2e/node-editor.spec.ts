@@ -45,8 +45,8 @@ async function setup(page: Page, initial: NodeAsset[] = [node], directory = fals
   return { writes, reject: (value: boolean) => { reject = value; }, hold: () => { hold = true; }, release: () => { hold = false; release?.(); } };
 }
 const openNode = async (page: Page, name = node.name) => page.getByTestId('node-card').filter({ hasText: name }).click();
-const openInputs = async (_page: Page) => {};
-const openOutputs = async (_page: Page) => {};
+const openInputs = async (page: Page) => page.getByRole('tab', { name: /^输入/ }).click();
+const openOutputs = async (page: Page) => page.getByRole('tab', { name: /^输出/ }).click();
 
 async function expectSaved(page: Page) {
   await expect(page.getByRole('button', { name: '保存节点', exact: true })).toBeEnabled();
@@ -56,7 +56,7 @@ async function expectSaved(page: Page) {
 test('selecting a node opens a compact workspace with side-by-side prompts', async ({ page }) => {
   const state = await setup(page); await openNode(page);
   await expect(page.getByRole('heading', { name: node.name, exact: true })).toBeVisible();
-  await expect(page.getByRole('tab')).toHaveCount(0);
+  await expect(page.getByRole('tab')).toHaveCount(2);
   await expect(page.getByRole('textbox', { name: '启动触发提示词', exact: true })).toHaveValue(node.executor!.startup_prompt);
   await expect(page.getByRole('textbox', { name: '上下文提示词', exact: true })).toHaveValue(node.executor!.context_prompt);
   await expect(page.locator('.node-center-detail .node-detail-editor')).toBeVisible();
@@ -64,8 +64,10 @@ test('selecting a node opens a compact workspace with side-by-side prompts', asy
   await expect(page.locator('.node-center-detail')).not.toContainText('NODE FORM');
   await openInputs(page);
   await expect(page.getByRole('region', { name: '输入字段' })).toBeVisible();
+  await expect(page.getByRole('region', { name: '输出字段' })).toHaveCount(0);
   await openOutputs(page);
   await expect(page.getByRole('region', { name: '输出字段' })).toBeVisible();
+  await expect(page.getByRole('region', { name: '输入字段' })).toHaveCount(0);
   expect(state.writes).toHaveLength(0);
 });
 
