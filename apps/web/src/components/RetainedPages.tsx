@@ -1,6 +1,12 @@
-import { Suspense, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { createContext, Suspense, useContext, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 
 type PageEntry = { group: string; content: ReactNode };
+
+const RetainedPageActiveContext = createContext(true);
+
+export function useRetainedPageActive(): boolean {
+  return useContext(RetainedPageActiveContext);
+}
 
 function PageFrame({ pageKey, children }: { pageKey: string; children: ReactNode }) {
   const root = useRef<HTMLDivElement>(null);
@@ -41,5 +47,7 @@ export function RetainedPages({ activeKey, group, retainedGroups, children, fall
   }, [activeKey, children, group, retainedGroups]);
   const entries = new Map([...saved].filter(([, entry]) => retainedGroups.includes(entry.group) || entry.group === group));
   entries.set(activeKey, { group, content: children });
-  return <>{[...entries].map(([key, entry]) => <div key={key} hidden={key !== activeKey}><Suspense fallback={fallback}><PageFrame pageKey={key}>{entry.content}</PageFrame></Suspense></div>)}</>;
+  return <>{[...entries].map(([key, entry]) => <RetainedPageActiveContext.Provider key={key} value={key === activeKey}>
+    <div hidden={key !== activeKey}><Suspense fallback={fallback}><PageFrame pageKey={key}>{entry.content}</PageFrame></Suspense></div>
+  </RetainedPageActiveContext.Provider>)}</>;
 }

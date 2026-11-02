@@ -31,6 +31,7 @@ import { ConversationSurface, ConversationTaskPlan, type ConversationHistoryPrep
 import { isOpenHandsAgentReply, isOpenHandsConversationInterrupt, isOpenHandsConversationTerminalError, isOpenHandsEmptyResponseRecovery, orderOpenHandsConversationEvents, projectFlowWeaveMessageContext, projectHistoricalAgentReplies } from '../conversationEvents';
 import { useProductDialog } from '../ProductDialogContext';
 import { useEscapeClose } from '../useEscapeClose';
+import { useRetainedPageActive } from '../RetainedPages';
 import { MermaidDiagram } from '../MermaidDiagram';
 import { isMermaidDiagram, markdownCodeText } from '../markdownCodeBlock';
 import { selectCapabilityVersion, selectCapabilityVersions } from '../../utils/capabilitySelection';
@@ -5042,6 +5043,9 @@ export function AgentSessionWorkbench({
 
 function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStateChanged, autoOpenDraft = false, scopeWorkDirectoryId, embedded = false }: Omit<AgentSessionWorkbenchProps, 'gateway' | 'host'>) {
   const { api, features, candidateOutputUrl, fileUrl } = useAgentSessionGateway();
+  const pageActive = useRetainedPageActive();
+  const pageActiveRef = useRef(pageActive);
+  pageActiveRef.current = pageActive;
   const dialog = useProductDialog();
   const host = useAgentSessionHost();
   const queryClient = useQueryClient();
@@ -9627,19 +9631,21 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     setHiddenEventIds(new Set());
     setTurnState('idle');
     const path = draftRoute(recovery?.draft.workDirectoryId ?? next.workDirectoryId);
-    onNavigate(path, false, options.selectStandaloneRoot && path === host.rootPath && host.id === 'agent-workspace'
-      ? { standaloneAgentReturnTarget: 'root' }
-      : undefined);
-    requestAnimationFrame(() => composerRef.current?.focus());
+    if (pageActiveRef.current) {
+      onNavigate(path, false, options.selectStandaloneRoot && path === host.rootPath && host.id === 'agent-workspace'
+        ? { standaloneAgentReturnTarget: 'root' }
+        : undefined);
+      requestAnimationFrame(() => composerRef.current?.focus());
+    }
   }, [attachments, bootstrapRecovery, clearBootstrapRecovery, composerAnnotations, conversationDraft, host, newConversationModelName, newConversationProviderId, newConversationReasoningEffort, onNavigate, pendingBootstrap?.draft.id, persistComposerDraft, queryClient, references, replaceComposerDraft, updateLocalMessageProjections, workspace, workspaceReferences]);
   useEffect(() => {
-    if (!autoOpenDraft || scheduleRoute || !workspace || selectedBindingId || conversationDraft) return;
+    if (!pageActive || !autoOpenDraft || scheduleRoute || !workspace || selectedBindingId || conversationDraft) return;
     const directory = draftWorkDirectoryId
       ? workDirectoriesQuery.data?.items.find(item => item.id === draftWorkDirectoryId)
       : undefined;
     if (draftWorkDirectoryId && !directory) return;
     openConversationDraft({ workDirectoryId: directory?.id, displayName: directory?.display_name ?? '根工作区' }, { restoreRecovery: true });
-  }, [autoOpenDraft, conversationDraft, draftWorkDirectoryId, openConversationDraft, scheduleRoute, selectedBindingId, workDirectoriesQuery.data?.items, workspace]);
+  }, [autoOpenDraft, conversationDraft, draftWorkDirectoryId, openConversationDraft, pageActive, scheduleRoute, selectedBindingId, workDirectoriesQuery.data?.items, workspace]);
   const enqueueDraft = useCallback((draftContent = composerDraftRef.current) => {
     const scopePendingAttachments = pendingAttachments.filter(item => item.scope === composerScope);
     if (scopePendingAttachments.some(item => item.state === 'failed')) {
