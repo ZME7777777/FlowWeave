@@ -7466,11 +7466,13 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   // activity catalog or formal branch already proves this turn is still live.
   // A formal InterruptEvent is stronger evidence: it is emitted by OpenHands
   // only after it has transitioned the Conversation to PAUSED.
+  const explicitPauseTransition = turnState === 'pausing' || turnState === 'paused';
   const pausedStateConflictsWithRunningEvidence = Boolean(
     !nativeFailureSettled
     && !activeFormalTurnInterrupted
     && !currentFormalTurnFinished
-    && (turnState === 'paused' || nativeExecutionStatus?.trim().toLowerCase() === 'paused')
+    && !explicitPauseTransition
+    && nativeExecutionStatus?.trim().toLowerCase() === 'paused'
     && (activeFormalTurnHasRuntimeActivity || runningConversationIds.has(selected?.id ?? '')),
   );
   // A draft has no native Conversation until its first bootstrap request is
