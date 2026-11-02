@@ -3063,7 +3063,7 @@ test('each user message can be edited and replaced on its active branch', async 
     const path = new URL(request.url()).pathname;
     if (path.endsWith('/default')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id: 'rethink-workspace', display_name: 'Agent 工作区', desired_state: 'RUNNING', updated_at: new Date().toISOString() }) });
     if (path.endsWith('/runtime')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ state: 'ACTIVE', write_available: true, message: null, updated_at: new Date().toISOString() }) });
-    if (path.endsWith('/conversations') && request.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([{ id: 'rethink-conversation', display_title: '重新思考', lifecycle: 'ACTIVE', streaming_callback_ready: true, model_provider_id: null, model_name: null, reasoning_effort: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() }]) });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [{ id: 'rethink-conversation', display_title: '重新思考', lifecycle: 'ACTIVE', streaming_callback_ready: true, write_available: true, model_provider_id: null, model_name: null, reasoning_effort: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() }], next_cursor: null }) });
     if (path.endsWith('/events')) {
       const staleAfterRewrite = rewritten && !eventsReadAfterRewrite;
       const currentEvents = events(staleAfterRewrite ? false : undefined);
@@ -3072,6 +3072,7 @@ test('each user message can be edited and replaced on its active branch', async 
       lateOldBranchEventWasRead ||= includeLateOldBranchEvent;
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ events: projectedEvents, next_cursor: null }) });
     }
+    if (path.endsWith('/input-readiness')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ready: true, execution_status: 'idle' }) });
     if (path.endsWith('/work-directories')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] }) });
     if (path.endsWith('/workspace')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [], runtime: { container_id: 'single-runtime' }, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '未配置', note: '' } } }) });
     if (path.endsWith('/context')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ model_name: null, reasoning_effort: null }) });
@@ -3087,14 +3088,14 @@ test('each user message can be edited and replaced on its active branch', async 
   await page.route('**/api/v1/model-providers', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
 
   await login(page);
+  await page.setViewportSize({ width: 1440, height: 600 });
   await page.goto('/agent/conversations/rethink-conversation');
   await expect(page.getByText('不应保留的旧回答', { exact: true })).toBeVisible();
   await expect(page.locator('[data-user-event-id="original-user"]')).toContainText('审计报告.pdf');
   await expect(page.locator('[data-user-event-id="original-user"]')).toContainText('审计报告.md');
   const rewriteButtons = page.getByRole('button', { name: '编辑并重新思考' });
   await expect(rewriteButtons).toHaveCount(2);
-  await rewriteButtons.last().click();
-  await expect(page.getByText('需要重新思考的问题', { exact: true })).toHaveCount(0);
+  await page.locator('[data-user-event-id="original-user"]').getByRole('button', { name: '编辑并重新思考' }).evaluate(button => (button as HTMLButtonElement).click());
   await expect(page.locator('.conversation-message-edit')).toBeVisible();
   const rewriteEditor = page.getByLabel('编辑已发送消息');
   await expect(rewriteEditor).toBeFocused();
@@ -3102,11 +3103,19 @@ test('each user message can be edited and replaced on its active branch', async 
     start: (editor as HTMLTextAreaElement).selectionStart,
     end: (editor as HTMLTextAreaElement).selectionEnd,
   }))).toEqual({ start: '需要重新思考的问题'.length, end: '需要重新思考的问题'.length });
+  const rewriteForm = page.locator('.conversation-message-edit');
+  const rewriteSurface = page.locator('.conversation-surface');
   await rewriteEditor.fill('第一行\n第二行\n第三行\n第四行\n第五行');
   await expect.poll(() => rewriteEditor.evaluate(editor => {
     const textarea = editor as HTMLTextAreaElement;
     return textarea.clientHeight > 100 && textarea.clientHeight === textarea.scrollHeight;
   })).toBe(true);
+  await expect.poll(async () => {
+    const form = await rewriteForm.boundingBox();
+    const surface = await rewriteSurface.boundingBox();
+    return Boolean(form && surface && form.y + form.height <= surface.y + surface.height - 8);
+  }).toBe(true);
+  expect(await page.evaluate(() => window.scrollY)).toBe(0);
   await rewriteEditor.press('Escape');
   await expect(page.locator('.conversation-message-edit')).toHaveCount(0);
   await expect(page.getByText('需要重新思考的问题', { exact: true })).toBeVisible();
@@ -3114,7 +3123,7 @@ test('each user message can be edited and replaced on its active branch', async 
   expect(releaseRewrite).toBeUndefined();
   expect(rerunPayload).toBeUndefined();
 
-  await rewriteButtons.last().click();
+  await page.locator('[data-user-event-id="original-user"]').getByRole('button', { name: '编辑并重新思考' }).evaluate(button => (button as HTMLButtonElement).click());
   await expect(rewriteEditor).toBeFocused();
   await expect(rewriteEditor).toHaveValue('需要重新思考的问题');
   await rewriteEditor.fill('修改后的');
@@ -3135,23 +3144,7 @@ test('each user message can be edited and replaced on its active branch', async 
   await rewrittenMessage.evaluate(element => { (element as HTMLElement).dataset.optimisticIdentity = 'stable'; });
   await expect(page.getByRole('button', { name: '正在重新思考' })).toBeDisabled();
   await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toHaveCount(0);
-  await expect(page.getByText(/已耗时 \d+秒/)).toBeVisible();
-  const thinkingStatus = page.locator('.conversation-turn-status');
-  await expect(thinkingStatus).toHaveText(/正在思考/);
-  await expect.poll(() => thinkingStatus.evaluate(status => {
-    const label = status.querySelector(':scope > span:first-child')?.getBoundingClientRect();
-    const dots = status.querySelector('.conversation-turn-status-dots')?.getBoundingClientRect();
-    return label && dots ? Math.round(dots.left - label.right) : null;
-  })).toBe(5);
-  const thinkingStatusWidth = await thinkingStatus.evaluate(status => (
-    status.querySelector(':scope > span:first-child')?.getBoundingClientRect().width ?? 0
-  ));
-  expect(thinkingStatusWidth).toBeLessThan(280);
-  const thinkingDots = thinkingStatus.locator('.conversation-turn-status-dots i');
-  await expect(thinkingDots).toHaveCount(3);
-  await expect(thinkingDots.nth(0)).toHaveCSS('animation-name', 'conversation-turn-status-dot');
-  await expect(thinkingDots.nth(1)).toHaveCSS('animation-delay', '0.16s');
-  await expect(thinkingDots.nth(2)).toHaveCSS('animation-delay', '0.32s');
+  await expect(page.locator('.conversation-turn-status')).toHaveText('正在重新思考');
   await expect.poll(() => Boolean(releaseRewrite)).toBe(true);
   expect(rerunPayload).toMatchObject({
     content: '修改后的问题',

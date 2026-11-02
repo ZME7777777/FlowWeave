@@ -2110,11 +2110,26 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   const [highlightedReference, setHighlightedReference] = useState<ConversationTextHighlight>();
   const [referenceHighlightRects, setReferenceHighlightRects] = useState<ConversationHighlightRect[]>([]);
   const [searchHighlightRects, setSearchHighlightRects] = useState<Array<ConversationHighlightRect & { active: boolean; eventId: string; matchIndex: number }>>([]);
+  const keepRewriteEditorVisible = useCallback(() => {
+    const editor = rewriteEditor.current;
+    const viewport = surface.current;
+    if (!editor || !viewport) return;
+    const form = editor.closest<HTMLElement>('.conversation-message-edit');
+    if (!form) return;
+    const viewportBounds = viewport.getBoundingClientRect();
+    const formBounds = form.getBoundingClientRect();
+    const bottomOverflow = formBounds.bottom - (viewportBounds.bottom - 8);
+    const topOverflow = viewportBounds.top + 8 - formBounds.top;
+    if (bottomOverflow > 0) viewport.scrollTop += bottomOverflow;
+    else if (topOverflow > 0) viewport.scrollTop -= topOverflow;
+  }, []);
   useLayoutEffect(() => {
     if (!editingEventId) return;
     const editor = rewriteEditor.current;
     if (!editor) return;
-    editor.focus();
+    followLatest.current = false;
+    userScrolledAway.current = true;
+    editor.focus({ preventScroll: true });
     editor.setSelectionRange(editor.value.length, editor.value.length);
   }, [editingEventId]);
   useLayoutEffect(() => {
@@ -2123,7 +2138,8 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     if (!editor) return;
     editor.style.height = 'auto';
     editor.style.height = `${Math.min(editor.scrollHeight, 160)}px`;
-  }, [editingContent, editingEventId]);
+    keepRewriteEditorVisible();
+  }, [editingContent, editingEventId, keepRewriteEditorVisible]);
 
   // Pausing a tool makes OpenHands emit one synthetic AgentErrorEvent. Keep
   // it as a formal process boundary, but itemsFor() suppresses its redundant

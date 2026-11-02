@@ -109,6 +109,14 @@ for (const { transport, delivery } of ['stream-before-ack', 'rest-before-ack', '
     await expect.poll(() => submitted).toBe(true);
     const pending = page.locator('[data-user-event-id^="pending-user:"]');
     await expect(pending).toHaveCount(1);
+    if (delivery === 'direct') {
+      const composer = page.getByLabel('发送 Agent 消息');
+      await expect(composer).toBeEditable();
+      await composer.fill('等待确认时排队的消息');
+      await composer.press('Enter');
+      await expect(page.getByLabel('消息投递队列')).toContainText('等待确认时排队的消息');
+      expect(postCount).toBe(1);
+    }
     await pending.evaluate(element => { (element as HTMLElement).dataset.identityMarker = 'same-bubble'; });
     const turn = page.locator('.conversation-turn').filter({ has: page.locator('[data-identity-marker="same-bubble"]') });
     await turn.evaluate(element => { (element as HTMLElement).dataset.identityTurnMarker = 'same-turn'; });
@@ -159,7 +167,7 @@ for (const { transport, delivery } of ['stream-before-ack', 'rest-before-ack', '
     await expect(page.locator('.conversation-message.assistant')).toHaveCount(2);
     const beforeReload = await page.locator('.conversation-message.assistant').allTextContents();
     if (delivery === 'queued-guidance') await page.screenshot({ path: test.info().outputPath('queue-rendering.png') });
-    expect(postCount).toBe(1);
+    expect(postCount).toBe(delivery === 'direct' ? 2 : 1);
 
     await page.reload();
     const restored = page.locator('[data-conversation-turn="formal-user"]');
@@ -170,7 +178,7 @@ for (const { transport, delivery } of ['stream-before-ack', 'rest-before-ack', '
     await expect(page.locator('[data-event-id="formal-reply"]')).toHaveCount(1);
     await expect(page.locator('.conversation-message.assistant')).toHaveCount(2);
     expect(await page.locator('.conversation-message.assistant').allTextContents()).toEqual(beforeReload);
-    expect(postCount).toBe(1);
+    expect(postCount).toBe(delivery === 'direct' ? 2 : 1);
   });
 }
 
