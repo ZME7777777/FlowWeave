@@ -73,7 +73,7 @@ export function NodeEditor({ node, initialDirectoryId = null, embedded = false, 
   const [form, setForm] = useState(() => initialDraft(node, initialDirectoryId));
   const [baseline, setBaseline] = useState(() => structuredClone(form));
   const [fieldTab, setFieldTab] = useState<Direction>('inputs');
-  const [previews, setPreviews] = useState<Record<PromptKey, boolean>>({ startup_prompt: false, context_prompt: false });
+  const [previews, setPreviews] = useState<Record<PromptKey, boolean>>({ startup_prompt: true, context_prompt: true });
   const [isCreated, setIsCreated] = useState(Boolean(node));
   const [expandedPrompt, setExpandedPrompt] = useState<PromptKey>();
   const [error, setError] = useState('');

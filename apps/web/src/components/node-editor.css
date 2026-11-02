@@ -56,7 +56,7 @@
 .node-expanded-prompt>header{display:flex;flex:0 0 auto;align-items:center;gap:16px;border-bottom:1px solid #e2eae4;padding:12px 22px}.node-expanded-prompt>header>b{color:#345140;font-size:14px}.node-expanded-prompt>header>span{flex:1;color:#94a297;font-size:10px}.node-expanded-prompt>.node-prompt-content{margin-top:18px}
 .node-expanded-prompt>footer{display:flex;min-height:50px;flex:0 0 auto;align-items:center;justify-content:flex-end;gap:16px;border-top:1px solid #e2eae4;padding:10px 22px}.node-expanded-prompt>footer>small{margin-right:auto;color:#93a095;font-size:10px}.node-expanded-prompt>footer>button{padding:6px 14px}
 .node-edit-workspace input:disabled,.node-edit-workspace textarea:disabled{opacity:.65}.node-edit-workspace button:disabled{cursor:wait;opacity:.5}
-@media(max-width:1100px){.node-edit-workspace.node-form .asset-editor-header{padding:9px 16px}.node-edit-workspace .node-creation-description{padding:10px 16px}
+@media(max-width:1100px){.node-edit-workspace.node-form .asset-editor-header{padding:9px 16px}.node-edit-workspace .node-creation-description{padding:10px 16px}.node-edit-workspace .node-prompt-content>textarea,.node-prompt-preview{padding-left:16px;padding-right:16px}.node-fixed-metadata{gap:12px!important}.node-fixed-metadata>h2{max-width:45%;font-size:14px}.node-fixed-metadata>p{font-size:10px}.node-draft-field-head,.node-draft-field-row{gap:8px;padding:8px}.node-detail-toolbar-actions .ghost{padding:7px}.node-prompt-toolbar>small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
 @media(prefers-reduced-motion:reduce){.node-field-type::before,.node-field-type>button{transition:none}}
 
 .node-prompt-content.preview-mode{border-color:#e2e8e4;background:#fff;box-shadow:none}
@@ -76,15 +76,16 @@
 .node-card .node-prompt-toolbar>small{margin-right:auto;color:#2f4b3a;font-size:13px;font-weight:650}
 .node-card .node-prompt-content{border-color:#cfe0d5;border-radius:9px;box-shadow:none}
 .node-card .node-prompt-content:focus-within{border-color:#2c8052;box-shadow:0 0 0 2px #e5f0e8}
-.node-field-card-head{display:flex;min-height:40px;flex-wrap:wrap;align-items:center;gap:10px;padding:2px 0 8px}
+.node-field-card-head{display:flex;min-height:40px;flex-wrap:wrap;align-items:center;gap:10px;padding:2px 0 10px}
 .node-field-card-head>small{color:#2f4b3a;font-size:13px;font-weight:650}
-.node-field-tabs{display:inline-flex;align-items:stretch;gap:2px;margin-left:8px;border-bottom:1px solid transparent}
-.node-field-tabs>button{display:inline-flex;align-items:center;gap:5px;border:0;border-bottom:2px solid transparent;background:transparent;padding:6px 10px;color:#7c8b81;font-size:12px}
-.node-field-tabs>button em{border-radius:8px;background:#eef3ef;padding:0 6px;color:#8a9a8e;font-size:10px;font-style:normal;line-height:16px}
-.node-field-tabs>button:hover{color:#256f46}
-.node-field-tabs>button[aria-selected=true]{border-bottom-color:#2c8052;color:#216743;font-weight:650}
-.node-field-tabs>button[aria-selected=true] em{background:#e1efe6;color:#2d7149}
-.node-field-add{margin-left:auto;padding:5px 9px!important;font-size:11px!important}
+.node-card .node-field-tabs{display:inline-flex;align-items:center;gap:2px;margin-left:8px;border:1px solid #dde6df;border-radius:8px;background:#f5f8f6;padding:2px}
+.node-card .node-field-tabs>button{display:inline-flex;align-items:center;gap:5px;min-height:0;border:0;border-radius:6px;background:transparent;box-shadow:none;padding:4px 10px;color:#7c8b81;font-size:12px;font-weight:500;line-height:1.5}
+.node-card .node-field-tabs>button svg{flex:none;color:currentColor}
+.node-card .node-field-tabs>button em{border-radius:8px;background:#e9efea;padding:0 6px;color:#8a9a8e;font-size:10px;font-style:normal;line-height:16px}
+.node-card .node-field-tabs>button:hover{background:#ecf3ee;color:#256f46}
+.node-card .node-field-tabs>button[aria-selected=true]{background:#fff;box-shadow:0 1px 3px #193c2724;color:#216743;font-weight:650}
+.node-card .node-field-tabs>button[aria-selected=true] em{background:#e1efe6;color:#2d7149}
+.node-card .node-field-add{margin-left:auto;padding:5px 10px!important;font-size:11px!important}
 .node-field-card .node-draft-field-list{border-color:#e6eee9;border-radius:8px}
 .node-field-card .node-draft-fields{margin-bottom:0}
 .node-field-card .node-draft-fields-empty{margin-top:4px}
