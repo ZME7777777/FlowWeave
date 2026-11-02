@@ -1,5 +1,6 @@
 """Stable public facade for run orchestration."""
 
+from flowweave.modules.orchestration.application.record_directory import list_record_directory
 from flowweave.modules.orchestration.application.service import (
     ArtifactContentReference,
     PreparedArtifact,
@@ -8,6 +9,7 @@ from flowweave.modules.orchestration.application.service import (
     artifact_content_reference,
     cancel_attempt,
     cancel_run,
+    cancel_stepwise_node_rerun_edit,
     complete_run,
     confirm_start,
     copy_automatic_run_draft,
@@ -51,6 +53,7 @@ from flowweave.modules.orchestration.application.service import (
     process_advance_automatic_attempt,
     process_cancel_runtime,
     process_delete_automatic_run_record,
+    process_delete_flow_run_schedule,
     process_delete_node_run_record,
     process_flow_run_schedule_occurrence,
     process_gate_stage,
@@ -63,6 +66,7 @@ from flowweave.modules.orchestration.application.service import (
     process_start_automatic_attempt,
     process_start_automatic_run,
     process_start_runtime,
+    reactivate_stepwise_node_for_rerun,
     read_artifact_content,
     reconcile_runtime_completion,
     record_automatic_task_failure,
@@ -76,29 +80,34 @@ from flowweave.modules.orchestration.application.service import (
     retry_runtime_cancel,
     run_detail,
     save_stepwise_node_draft,
+    save_stepwise_runtime_ports,
     scan_due_flow_run_schedules,
     set_flow_run_schedule_state,
     start_automatic_run,
     start_flow,
     start_node_run,
     start_stepwise_node_draft,
+    stepwise_record_template_readiness,
     submit_manual_outputs,
     sync_snapshot,
     trigger_flow_run_schedule,
     update_automatic_run_draft,
     upgrade_legacy_automatic_run_plan,
+    validate_stepwise_record_template,
 )
 
 recover_runtime_deliveries = recover_runtime_tasks
 run_events_after = events
 
 __all__ = (
+    "list_record_directory",
     "ArtifactContentReference",
     "PreparedArtifact",
     "accept_attempt",
     "accept_gate_risk",
     "remediate_gate_failure",
     "cancel_attempt",
+    "cancel_stepwise_node_rerun_edit",
     "artifact_content_reference",
     "cancel_run",
     "copy_node_run",
@@ -136,6 +145,7 @@ __all__ = (
     "node_run_detail",
     "process_cancel_runtime",
     "process_delete_automatic_run_record",
+    "process_delete_flow_run_schedule",
     "process_delete_node_run_record",
     "process_gate_stage",
     "process_poll_runtime",
@@ -155,6 +165,7 @@ __all__ = (
     "prepare_artifact",
     "prepare_file_artifact",
     "read_artifact_content",
+    "reactivate_stepwise_node_for_rerun",
     "recover_runtime_deliveries",
     "reconcile_runtime_completion",
     "run_events_after",
@@ -175,9 +186,12 @@ __all__ = (
     "start_automatic_run",
     "start_node_run",
     "start_stepwise_node_draft",
+    "stepwise_record_template_readiness",
     "save_stepwise_node_draft",
+    "save_stepwise_runtime_ports",
     "sync_snapshot",
     "submit_manual_outputs",
     "update_automatic_run_draft",
     "upgrade_legacy_automatic_run_plan",
+    "validate_stepwise_record_template",
 )

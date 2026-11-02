@@ -7,6 +7,11 @@ from flowweave.modules.orchestration.application.service import _next_cron_at
 from flowweave.shared.schemas import FlowRunScheduleWrite
 
 
+@pytest.fixture(autouse=True)
+def database() -> None:
+    """These parser tests do not need the integration database fixture."""
+
+
 def test_schedule_write_only_accepts_a_record_master_and_cron() -> None:
     payload = FlowRunScheduleWrite(
         name=" hourly check ",
@@ -25,7 +30,7 @@ def test_schedule_write_only_accepts_a_record_master_and_cron() -> None:
         )  # type: ignore[call-arg]
 
 
-def test_schedule_cron_advances_to_the_next_utc_slot() -> None:
+def test_schedule_cron_advances_to_the_next_slot() -> None:
     after = datetime(2026, 9, 6, 10, 25, 30, tzinfo=UTC)
 
     assert _next_cron_at("0 */2 * * *", after) == datetime(2026, 9, 6, 12, 0, tzinfo=UTC)

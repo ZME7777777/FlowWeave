@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import parse_qs, quote, urlsplit
 from uuid import uuid4
 
 import pytest
@@ -32,6 +33,9 @@ from flowweave.modules.agent_sessions.application.host import (
     ACCESS_TERMINAL,
     CREATE_SESSIONS,
     READ_SESSIONS,
+)
+from flowweave.modules.agent_sessions.application.workspace_file_links import (
+    project_sandbox_file_links,
 )
 from flowweave.modules.agent_sessions.infrastructure.models import AgentConversationUsageBucket
 from flowweave.modules.agent_sessions.public import AgentConversationBinding
@@ -193,8 +197,8 @@ def test_credential_sync_state_distinguishes_new_and_modified_credentials(
         {"id": "new", "row_version": 1},
     ]
     synced = {
-        "current": SimpleNamespace(credential_row_version=1),
-        "modified": SimpleNamespace(credential_row_version=1),
+        "current": SimpleNamespace(credential_row_version=1, context_version=1),
+        "modified": SimpleNamespace(credential_row_version=1, context_version=1),
     }
     monkeypatch.setattr(credential_sync, "list_credentials", lambda _db: credentials)
     monkeypatch.setattr(credential_sync, "_sync_rows", lambda _db, _binding_id: synced)
@@ -321,6 +325,62 @@ def test_plain_message_bypasses_context_envelope() -> None:
     assert workspace_references == ()
 
 
+@pytest.mark.parametrize("host", ["workspace", "flow-node"])
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "2026-10-23_美股估值增量任务受影响证券摘要.txt",
+        "中文目录/报告📄.txt",
+        "图表/收益变化.svg",
+        "报告(最终版).txt",
+    ],
+)
+@pytest.mark.parametrize("encoded", [False, True])
+def test_sandbox_file_links_preserve_unicode_paths_and_binding(
+    host: str, filename: str, encoded: bool
+) -> None:
+    root = (
+        "/runtime/workspace/project/users/00000000-0000-0000-0000-000000000001"
+        "/.flowweave/automations/00000000-0000-0000-0000-000000000002"
+    )
+    path = f"{root}/{filename}"
+    target = quote(path) if encoded else path
+    content = f"[下载受影响证券文本摘要](sandbox:{target})"
+    if host == "workspace":
+        projected = session_conversations.project_sandbox_images(
+            content, workspace_id="workspace-1", binding_id="binding-1", working_directory=root
+        )
+        route = "/api/v1/agent-workspaces/workspace-1/workspace/file"
+    else:
+        projected = flow_node_conversations.project_sandbox_images(
+            content,
+            flow_run_id="flow-run-1",
+            attempt_id="attempt-1",
+            binding_id="binding-1",
+            working_directory=root,
+        )
+        route = "/api/v1/flow-runs/flow-run-1/node-attempts/attempt-1/agent-sessions/workspace/file"
+
+    href = projected.removeprefix("[下载受影响证券文本摘要](").removesuffix(")")
+    url = urlsplit(href)
+    assert url.path == route
+    assert parse_qs(url.query) == {"path": [path], "binding_id": ["binding-1"]}
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "/etc/passwd",
+        "/runtime/state/conversations/secret.json",
+        "/runtime/workspace/project-other/report.txt",
+        "/runtime/workspace/project/report%FF.txt",
+    ],
+)
+def test_sandbox_file_links_leave_unsupported_destinations_intact(target: str) -> None:
+    content = f"[文件](sandbox:{target})"
+    assert project_sandbox_file_links(content, lambda path: f"/file?{path}") == content
+
+
 def test_workspace_generated_images_project_svg_and_preserve_untrusted_paths() -> None:
     workspace_id = "workspace-1"
     binding_id = "binding-1"
@@ -361,6 +421,60 @@ def test_workspace_generated_images_project_svg_and_preserve_untrusted_paths() -
     )
 
 
+@pytest.mark.parametrize("host", ["workspace", "flow-node"])
+@pytest.mark.parametrize(
+    "root",
+    [
+        "/runtime/workspace/project/users/00000000-0000-0000-0000-000000000001/my-project",
+        "/runtime/workspace/project/users/00000000-0000-0000-0000-000000000002/other-project",
+        "/runtime/workspace/project/00000000-0000-0000-0000-000000000003/record-project",
+    ],
+)
+def test_browser_images_resolve_from_the_bound_workspace(host: str, root: str) -> None:
+    relative = "artifacts/browser/native-conversation/browser_screenshot_12345678.png"
+    content = f"![截图]({relative})"
+    if host == "workspace":
+        projected = session_conversations.project_sandbox_images(
+            content, workspace_id="workspace", binding_id="binding", working_directory=root
+        )
+    else:
+        projected = flow_node_conversations.project_sandbox_images(
+            content,
+            flow_run_id="run",
+            attempt_id="attempt",
+            binding_id="binding",
+            working_directory=root,
+        )
+    href = projected.removeprefix("![截图](").removesuffix(")")
+    assert parse_qs(urlsplit(href).query) == {
+        "path": [f"{root}/{relative}"],
+        "binding_id": ["binding"],
+    }
+
+
+@pytest.mark.parametrize("host", ["workspace", "flow-node"])
+@pytest.mark.parametrize(
+    "root", ["", "/tmp", "/runtime/workspace/project/../other", "/runtime/workspace/project//a"]
+)
+def test_browser_image_projection_does_not_fallback_from_invalid_workspace(
+    host: str, root: str
+) -> None:
+    content = "![截图](artifacts/browser/screenshot.png)"
+    if host == "workspace":
+        result = session_conversations.project_sandbox_images(
+            content, workspace_id="workspace", binding_id="binding", working_directory=root
+        )
+    else:
+        result = flow_node_conversations.project_sandbox_images(
+            content,
+            flow_run_id="run",
+            attempt_id="attempt",
+            binding_id="binding",
+            working_directory=root,
+        )
+    assert result == content
+
+
 def test_node_workspace_generated_images_project_svg_and_preserve_untrusted_paths() -> None:
     content = "\n".join(
         (
@@ -376,6 +490,7 @@ def test_node_workspace_generated_images_project_svg_and_preserve_untrusted_path
         flow_run_id="flow-run-1",
         attempt_id="attempt-1",
         binding_id="binding-1",
+        working_directory="/runtime/workspace/project",
     )
 
     file_url = (
@@ -414,6 +529,42 @@ def test_attachment_aliases_are_hidden_from_message_body() -> None:
     assert references == ()
     assert workspace_references == ()
     assert annotations == ()
+
+
+def test_workspace_reference_aliases_are_distinct_from_attachment_aliases() -> None:
+    attachment_path = (
+        "/runtime/workspace/project/uploads/"
+        "00000000-0000-0000-0000-000000000001-0123456789abcdef0123456789abcdef--notes.txt"
+    )
+    workspace_reference = {
+        "path": "/runtime/workspace/project/src/main.ts",
+        "kind": "file",
+        "display_name": "main.ts",
+    }
+
+    prompt, _image_urls = session_conversations.message_payload(
+        "请比较 @附件1 与 @本地文件1",
+        ({"path": attachment_path, "filename": "notes.txt"},),
+        (),
+        (workspace_reference,),
+    )
+
+    payload = json.loads(prompt.rpartition(session_conversations._MESSAGE_CONTEXT_V5_MARKER)[2])
+    assert payload["attachment_aliases"] == [
+        {"alias": "@附件1", "filename": "notes.txt", "path": attachment_path}
+    ]
+    assert payload["workspace_reference_aliases"] == [
+        {
+            "alias": "@本地文件1",
+            "filename": "main.ts",
+            "path": "/runtime/workspace/project/src/main.ts",
+        }
+    ]
+    display_content, _references, workspace_references, _annotations = (
+        session_conversations.project_conversation_references(prompt)
+    )
+    assert display_content == "请比较 @附件1 与 @本地文件1"
+    assert workspace_references == (workspace_reference,)
 
 
 def test_conversation_references_are_resolved_by_formal_native_event_id() -> None:
@@ -2863,8 +3014,17 @@ def test_node_session_activity_maps_native_unready_ids(
     assert runtime.calls == 1
 
 
+@pytest.mark.parametrize(
+    "completion_failure",
+    [
+        None,
+        ("RUNTIME_READ_PER_RUNTIME_SATURATED", 503),
+        ("RUNTIME_BUSINESS_READ_TIMEOUT", 504),
+        ("EXECUTOR_UNAVAILABLE", 503),
+    ],
+)
 def test_node_session_activity_marks_unread_after_missing_terminal_snapshot(
-    db_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+    db_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch, completion_failure
 ) -> None:
     with db_session_factory() as db:
         flow_run_id, runtime_session_id, attempt_id = _node_session_context(db)
@@ -2906,6 +3066,7 @@ def test_node_session_activity_marks_unread_after_missing_terminal_snapshot(
         class ActivityRuntime:
             visible = True
             final_result: RuntimeResult | None = None
+            failure: DomainError | None = None
 
             def conversation_activity_snapshot(self, _handle):
                 if not self.visible:
@@ -2919,6 +3080,8 @@ def test_node_session_activity_marks_unread_after_missing_terminal_snapshot(
                 }
 
             def read_active_events(self, _handle):
+                if self.failure is not None:
+                    raise self.failure
                 return RuntimeEventBatch(result=self.final_result)
 
         runtime = ActivityRuntime()
@@ -2935,6 +3098,21 @@ def test_node_session_activity_marks_unread_after_missing_terminal_snapshot(
         )
         assert binding.terminal_reconciliation_pending is True
         assert binding.unread is False
+
+        if completion_failure:
+            code, status = completion_failure
+            runtime.failure = DomainError(code, "temporary completion read failure", status)
+            activity = flow_node_conversations.node_session_activity(
+                db, flow_run_id=flow_run_id, attempt_id=attempt_id
+            )
+            assert activity["running_binding_ids"] == []
+            assert binding.terminal_reconciliation_pending is True
+            assert binding.unread is False
+            assert binding.last_notified_completion_event_id is None
+            db.commit()
+            db.refresh(binding)
+            assert binding.terminal_reconciliation_pending is True
+            runtime.failure = None
 
         runtime.final_result = RuntimeResult(
             status="COMPLETED",

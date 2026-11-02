@@ -131,48 +131,15 @@ test('shared FlowRun remains visible without direct Agent access', async ({ page
   await expect(page.getByRole('navigation').getByRole('button', { name: 'Agent 会话' })).toHaveCount(0);
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
 
-  await expect(page.getByText('1 个流程 · 1 个运行', { exact: true })).toBeVisible();
-  const sharedFlow = page.locator('.run-group').filter({ hasText: definition.name });
-  await expect(sharedFlow).toBeVisible();
-  await expect(sharedFlow).toContainText('1 个运行');
-  await expect(sharedFlow).toContainText(`Run #${run.run_no} · ${run.name}`);
-  await expect(sharedFlow.getByRole('button', { name: '启动', exact: true })).toBeEnabled();
+  const directory = page.locator('.flow-run-directory');
+  await expect(directory).toContainText('流程编排1 个流程');
+  await directory.getByRole('button', { name: `${definition.name} 1 个 FlowRun` }).click();
+  await expect(page.locator('.flow-run-directory-detail')).toContainText(definition.name);
+  await directory.getByRole('button', { name: `展开 ${definition.name} 的 FlowRun` }).click();
+  await directory.getByRole('button', { name: `Run #${run.run_no} · ${run.name} 运行中` }).click();
+  await expect(page.locator('.flow-run-directory-detail')).toContainText(`Run #${run.run_no}`);
+  await expect(page.getByRole('button', { name: '管理运行记录', exact: true })).toBeEnabled();
 });
-
-test('FlowRun list opens the shared terminal as an in-page dialog', async ({ page }) => {
-  let terminalConnections = 0;
-  const popups: string[] = [];
-  page.on('popup', popup => popups.push(popup.url()));
-  await page.routeWebSocket('**/api/v1/flow-runs/run-1/terminal**', socket => {
-    terminalConnections += 1;
-    socket.send('connected\r\n$ ');
-  });
-  await page.route('**/api/v1/**', async route => {
-    const request = route.request();
-    const path = new URL(request.url()).pathname;
-    const respond = (body: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
-    if (path.endsWith('/auth/me')) return respond(authenticatedUser);
-    if (path === '/api/v1/flow-runs' && request.method() === 'GET') return respond([run]);
-    if (path === '/api/v1/flows' && request.method() === 'GET') return respond([definition]);
-    if (path === '/api/v1/terminal-environments') return respond([]);
-    if (path === '/api/v1/flow-runs/run-1/runtime/resource') return respond({ resource: null });
-    return respond({ error: { code: 'RESOURCE_NOT_FOUND', message: path, details: {} } }, 404);
-  });
-
-  await page.goto('/');
-  await page.getByRole('button', { name: '流程运行', exact: true }).click();
-  await page.getByRole('button', { name: '打开运行 测试运行 的终端' }).click();
-
-  const dialog = page.getByRole('dialog', { name: '测试运行 终端' });
-  await expect(dialog).toBeVisible();
-  await expect(dialog).toContainText('FlowRun 全局终端');
-  await expect.poll(() => terminalConnections).toBeGreaterThan(0);
-  expect(popups).toEqual([]);
-
-  await page.keyboard.press('Escape');
-  await expect(dialog).toBeHidden();
-});
-
 
 test('FlowRun detail has a restorable route and temporary topbar tab', async ({ page }) => {
   await page.route('**/api/v1/**', async route => {
@@ -192,27 +159,40 @@ test('FlowRun detail has a restorable route and temporary topbar tab', async ({ 
 
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
-  await page.locator('.run-open').click();
+  await page.getByRole('button', { name: `展开 ${definition.name} 的 FlowRun` }).click();
+  await page.getByRole('button', { name: `Run #${run.run_no} · ${run.name} 运行中` }).click();
+  await page.getByRole('button', { name: '管理运行记录', exact: true }).click();
+  await page.getByRole('tab', { name: '逐步', exact: true }).click();
   await expect(page).toHaveURL(`/flow-runs/${run.id}`);
   await expect(page.getByLabel('临时管理标签')).toBeVisible();
   await expect(page.getByRole('button', { name: `Run #${run.run_no}`, exact: true })).toBeVisible();
 
   await page.reload();
   await expect(page).toHaveURL(`/flow-runs/${run.id}`);
-  await expect(page.getByRole('button', { name: '返回运行列表', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '返回运行记录', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: `Run #${run.run_no}`, exact: true })).toBeVisible();
 
   await page.getByRole('button', { name: '账户与设置' }).click();
   await page.getByRole('menuitem', { name: '终端环境', exact: true }).click();
   await expect(page.locator('.context-tab')).toHaveText([`Run #${run.run_no}`, '终端环境']);
+  await page.reload();
+  await expect(page).toHaveURL('/');
+  await expect(page.locator('.context-tab')).toHaveText([`Run #${run.run_no}`, '终端环境']);
+  await expect(page.locator('.context-tab.active')).toHaveText('终端环境');
 
   await page.getByRole('button', { name: `Run #${run.run_no}`, exact: true }).click();
+  await expect(page).toHaveURL(`/flow-runs/${run.id}`);
+  await page.reload();
+  await expect(page.locator('.context-tab')).toHaveText([`Run #${run.run_no}`, '终端环境']);
+  await expect(page.locator('.context-tab.active')).toHaveText(`Run #${run.run_no}`);
   await page.getByRole('button', { name: `关闭Run #${run.run_no}`, exact: true }).click();
   await expect(page).toHaveURL('/');
-  await expect(page.getByText('1 个流程 · 1 个运行', { exact: true })).toBeVisible();
+  await expect(page.locator('.flow-run-directory')).toContainText('流程编排1 个流程');
+  await page.reload();
+  await expect(page.locator('.context-tab')).toHaveText(['终端环境']);
 });
 
-test('step configuration is saved before start and only continuous and stepwise tabs exist', async ({ page }) => {
+test('step configuration is saved before start with all continuous and stepwise filters', async ({ page }) => {
   const noInputAsset = { ...asset, inputs: [] };
   const stepDefinition = {
     ...definition,
@@ -245,8 +225,10 @@ test('step configuration is saved before start and only continuous and stepwise 
       contentType: 'application/json',
       body: JSON.stringify(body),
     });
+    if (path.endsWith('/auth/profile')) return respond({ display_name: null, email: null });
     if (path === '/api/v1/flow-runs' && request.method() === 'GET') return respond([currentRun]);
     if (path === '/api/v1/flows' && request.method() === 'GET') return respond([stepDefinition]);
+    if (path === '/api/v1/model-providers') return respond([{ id: 'provider-1', name: 'Test', available_for_nodes: true, models: [{ id: 'model-1', model_name: 'test-model', enabled: true, is_default: true }], is_default: true }]);
     if (path === '/api/v1/terminal-environments' || path === '/api/v1/capabilities'
       || path === '/api/v1/capability-collections' || path === '/api/v1/model-providers') return respond([]);
     if (path === `/api/v1/flow-runs/${run.id}` && request.method() === 'GET') return respond(currentRun);
@@ -274,7 +256,7 @@ test('step configuration is saved before start and only continuous and stepwise 
             row_version: 1,
             startup_mode: 'PROMPT',
             startup_prompt: '导入的逐步启动提示词',
-            agent_preset: { capability_version_ids: [], node_context_enabled: false },
+            agent_preset: { model_provider_id: 'provider-1', model_name: 'test-model', capability_version_ids: [], node_context_enabled: false },
             gates: [],
             context_ids: [],
             input_bindings: [],
@@ -315,10 +297,13 @@ test('step configuration is saved before start and only continuous and stepwise 
 
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
-  await page.locator('.run-open').click();
-  await expect(page.getByRole('tab', { name: '逐步运行' })).toHaveAttribute('aria-selected', 'true');
-  await expect(page.getByRole('tab', { name: '连续运行' })).toBeVisible();
-  await expect(page.getByRole('tab')).toHaveCount(2);
+  await page.getByRole('button', { name: `展开 ${definition.name} 的 FlowRun` }).click();
+  await page.getByRole('button', { name: `Run #${run.run_no} · ${run.name} 运行中` }).click();
+  await page.getByRole('button', { name: '管理运行记录', exact: true }).click();
+  await page.getByRole('tab', { name: '逐步', exact: true }).click();
+  await expect(page.getByRole('tab', { name: '逐步', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('tab', { name: '连续', exact: true })).toBeVisible();
+  await expect(page.getByRole('tab')).toHaveCount(3);
   await expect(page.getByRole('tab', { name: '直接启动' })).toHaveCount(0);
   const stepwiseToolbar = page.locator('.manual-record-toolbar');
   await expect(stepwiseToolbar.locator(':scope > button')).toHaveCount(3);
@@ -327,7 +312,7 @@ test('step configuration is saved before start and only continuous and stepwise 
     return buttons.every(button => button.getBoundingClientRect().top === top);
   })).toBe(true);
 
-  await page.getByRole('button', { name: '新增' }).click();
+  await page.getByRole('button', { name: '新增', exact: true }).click();
   const stepwiseDialog = page.getByRole('dialog', { name: '新增逐步运行记录' });
   await expect(stepwiseDialog.getByRole('button', { name: '导入 / 粘贴' })).toBeVisible();
   await stepwiseDialog.getByRole('button', { name: '导入 / 粘贴' }).click();
@@ -337,7 +322,7 @@ test('step configuration is saved before start and only continuous and stepwise 
     version: 1,
     records: [{ name: '导入逐步记录', start_node_key: 'second', initial_configuration: {
       startup_prompt: '导入的逐步启动提示词',
-      agent_preset: { capability_version_ids: [], node_context_enabled: false },
+      agent_preset: { model_provider_id: 'provider-1', model_name: 'test-model', capability_version_ids: [], node_context_enabled: false },
       gates: [], input_urls: {},
     } }],
   }));
@@ -353,7 +338,7 @@ test('step configuration is saved before start and only continuous and stepwise 
   await expect(page.locator('.node-record-list > article.active')).toContainText('导入逐步记录');
   await expect(page.locator('.node-record-list > article.active').getByRole('button', { name: '启动逐步运行 导入逐步记录' })).toBeVisible();
   await expect(page.locator('.run-side-panel').getByRole('button', { name: '启动', exact: true })).toHaveCount(0);
-  await page.getByRole('button', { name: '新增' }).click();
+  await page.getByRole('button', { name: '新增', exact: true }).click();
   const stepwiseDialogAfterImport = page.getByRole('dialog', { name: '新增逐步运行记录' });
   await stepwiseDialogAfterImport.getByRole('textbox', { name: '逐步运行记录名称' }).fill('测试逐步记录');
   await stepwiseDialogAfterImport.getByRole('button', { name: '逐步运行起始节点' }).click();
@@ -380,6 +365,13 @@ test('step configuration is saved before start and only continuous and stepwise 
   await expect(consolePanel).toContainText('取消选中后仍应保留的前端草稿');
   expect(savedBody).toBeUndefined();
   await expect(page.getByRole('button', { name: '启动逐步运行 测试逐步记录' })).toHaveCount(0);
+  await consolePanel.getByRole('tab', { name: 'Agent 配置', exact: true }).click();
+  await consolePanel.getByRole('button', { name: /大模型.*配置/ }).click();
+  const modelDialog = page.getByRole('dialog', { name: '配置大模型', exact: true });
+  await modelDialog.getByRole('button', { name: '首会话模型供应商', exact: true }).click();
+  await modelDialog.getByRole('option', { name: 'Test', exact: true }).click();
+  await modelDialog.getByRole('button', { name: '完成', exact: true }).click();
+  await expect(consolePanel.getByRole('button', { name: '保存配置' })).toBeEnabled();
   await consolePanel.getByRole('button', { name: '保存配置' }).click();
   await expect.poll(() => savedBody).toBeTruthy();
   expect(savedBody).toEqual(expect.objectContaining({
@@ -423,6 +415,7 @@ test('stepwise record copy reuses the record selection and first-node configurat
     node_run_id: 'source-stepwise-node',
     state: 'WAITING_START_CONFIRMATION',
     startup_prompt: '复制首节点的初始配置',
+    agent_preset: { ...attempt.agent_preset, model_provider_id: 'provider-1', model_name: 'test-model' },
   };
   const sourceNode = {
     ...nodeRun,
@@ -508,7 +501,10 @@ test('stepwise record copy reuses the record selection and first-node configurat
 
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
-  await page.locator('.run-open').click();
+  await page.getByRole('button', { name: `展开 ${definition.name} 的 FlowRun` }).click();
+  await page.getByRole('button', { name: `Run #${run.run_no} · ${run.name} 运行中` }).click();
+  await page.getByRole('button', { name: '管理运行记录', exact: true }).click();
+  await page.getByRole('tab', { name: '逐步', exact: true }).click();
   const sourceSelect = page.locator('.node-record-list .automatic-record-select').filter({ hasText: sourceRecord.name });
   await sourceSelect.click();
   await expect(page.locator('.run-side-panel')).toBeVisible();
@@ -567,7 +563,10 @@ test('created attempts keep their inputs read-only after a start gate blocks the
 
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
-  await page.locator('.run-open').click();
+  await page.getByRole('button', { name: `展开 ${definition.name} 的 FlowRun` }).click();
+  await page.getByRole('button', { name: `Run #${run.run_no} · ${run.name} 运行中` }).click();
+  await page.getByRole('button', { name: '管理运行记录', exact: true }).click();
+  await page.getByRole('tab', { name: '逐步', exact: true }).click();
   await page.locator('.node-record-list .automatic-record-select').filter({ hasText: blockedRun.name }).click();
   await page.locator('.run-graph-node').filter({ hasText: '测试节点' }).filter({ hasNotText: '测试节点2' }).click();
   await expect(page.getByTestId('attempt-state')).toHaveText('START_BLOCKED');
@@ -691,8 +690,11 @@ test('continuous records never ask users to manually start an auto-ready success
 
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
-  await page.locator('.run-open').click();
-  await page.getByRole('tab', { name: '连续运行' }).click();
+  await page.getByRole('button', { name: `展开 ${definition.name} 的 FlowRun` }).click();
+  await page.getByRole('button', { name: `Run #${run.run_no} · ${run.name} 运行中` }).click();
+  await page.getByRole('button', { name: '管理运行记录', exact: true }).click();
+  await page.getByRole('tab', { name: '逐步', exact: true }).click();
+  await page.getByRole('tab', { name: '连续', exact: true }).click();
   await page.locator('.automatic-record-select').filter({ hasText: '自动记录 1' }).click();
 
   const panel = page.locator('.attempt-control');
@@ -751,7 +753,7 @@ test('a stepwise record keeps completed nodes readable while the next node is co
     stepwise_node_drafts: {
       second: {
         row_version: 2, startup_mode: 'PROMPT', startup_prompt: asset.executor.startup_prompt,
-        agent_preset: { capability_version_ids: [], node_context_enabled: false }, gates: [], context_ids: [],
+        agent_preset: { model_provider_id: 'provider-1', model_name: 'test-model', capability_version_ids: [], node_context_enabled: false }, gates: [], context_ids: [],
         input_bindings: [{ input_field_key: 'input_1', artifact_version_id: mappedArtifact.id, binding_source: 'PORT_MAPPING' }],
       },
     },
@@ -767,6 +769,7 @@ test('a stepwise record keeps completed nodes readable while the next node is co
     if (path.endsWith('/auth/me')) return respond(authenticatedUser);
     if (path === '/api/v1/flow-runs' && request.method() === 'GET') return respond([parentRun]);
     if (path === '/api/v1/flows' && request.method() === 'GET') return respond([transitionDefinition]);
+    if (path === '/api/v1/model-providers') return respond([{ id: 'provider-1', name: 'Test', available_for_nodes: true, models: [{ model_name: 'test-model', enabled: true, is_default: true }] }]);
     if (path === '/api/v1/terminal-environments' || path === '/api/v1/capabilities'
       || path === '/api/v1/capability-collections' || path === '/api/v1/model-providers') return respond([]);
     if (path === `/api/v1/flow-runs/${run.id}` && request.method() === 'GET') return respond(parentRun);
@@ -792,8 +795,11 @@ test('a stepwise record keeps completed nodes readable while the next node is co
 
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
-  await page.locator('.run-open').click();
-  await page.getByRole('tab', { name: '逐步运行' }).click();
+  await page.getByRole('button', { name: `展开 ${definition.name} 的 FlowRun` }).click();
+  await page.getByRole('button', { name: `Run #${run.run_no} · ${run.name} 运行中` }).click();
+  await page.getByRole('button', { name: '管理运行记录', exact: true }).click();
+  await page.getByRole('tab', { name: '逐步', exact: true }).click();
+  await page.getByRole('tab', { name: '逐步', exact: true }).click();
   await page.locator('.node-record-list .automatic-record-select').filter({ hasText: '批次异常收集' }).click();
   await expect(page.locator('.run-workbench-record-summary')).toContainText('批次异常收集');
   await expect(page.locator('.run-graph-node').filter({ hasText: '测试节点2' })).toContainText('当前流转节点');
@@ -863,7 +869,10 @@ test('accepting a stepwise node focuses its reached successor and allows returni
 
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
-  await page.locator('.run-open').click();
+  await page.getByRole('button', { name: `展开 ${definition.name} 的 FlowRun` }).click();
+  await page.getByRole('button', { name: `Run #${run.run_no} · ${run.name} 运行中` }).click();
+  await page.getByRole('button', { name: '管理运行记录', exact: true }).click();
+  await page.getByRole('tab', { name: '逐步', exact: true }).click();
   await page.locator('.node-record-list .automatic-record-select').filter({ hasText: record.name }).click();
   await page.getByRole('button', { name: '完成节点并流转' }).click();
 
@@ -918,7 +927,10 @@ test('selecting a stepwise record focuses its reached downstream draft like a co
 
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
-  await page.locator('.run-open').click();
+  await page.getByRole('button', { name: `展开 ${definition.name} 的 FlowRun` }).click();
+  await page.getByRole('button', { name: `Run #${run.run_no} · ${run.name} 运行中` }).click();
+  await page.getByRole('button', { name: '管理运行记录', exact: true }).click();
+  await page.getByRole('tab', { name: '逐步', exact: true }).click();
   await page.locator('.node-record-list .automatic-record-select').filter({ hasText: record.name }).click();
 
   const second = page.locator('.run-graph-node').filter({ hasText: '测试节点2' });
@@ -991,7 +1003,10 @@ test('an accepted legacy step remains readable before configuring its missing do
 
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
-  await page.locator('.run-open').click();
+  await page.getByRole('button', { name: `展开 ${definition.name} 的 FlowRun` }).click();
+  await page.getByRole('button', { name: `Run #${run.run_no} · ${run.name} 运行中` }).click();
+  await page.getByRole('button', { name: '管理运行记录', exact: true }).click();
+  await page.getByRole('tab', { name: '逐步', exact: true }).click();
   await page.locator('.node-record-list .automatic-record-select').filter({ hasText: currentRun.name }).click();
   await expect(page.locator('.run-workbench-record-summary')).toContainText(currentRun.name);
   await page.locator('.run-graph-node').filter({ hasText: '测试节点' }).filter({ hasNotText: '测试节点2' }).click();
@@ -1008,8 +1023,8 @@ test('an accepted legacy step remains readable before configuring its missing do
   await expect(page.getByRole('button', { name: '启动逐步运行 历史逐步记录' })).toBeVisible();
 });
 
-test('run rail keeps its controls fixed and pages records five at a time', async ({ page }) => {
-  const pagedStepwiseRecords = Array.from({ length: 6 }, (_, index) => ({
+test('run rail keeps its controls fixed and pages records ten at a time', async ({ page }) => {
+  const pagedStepwiseRecords = Array.from({ length: 16 }, (_, index) => ({
     ...run,
     id: `paged-stepwise-record-${index + 1}`,
     name: `分页记录 ${index + 1}`,
@@ -1041,23 +1056,26 @@ test('run rail keeps its controls fixed and pages records five at a time', async
 
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
-  await page.locator('.run-open').click();
+  await page.getByRole('button', { name: `展开 ${definition.name} 的 FlowRun` }).click();
+  await page.getByRole('button', { name: `Run #${run.run_no} · ${run.name} 运行中` }).click();
+  await page.getByRole('button', { name: '管理运行记录', exact: true }).click();
+  await page.getByRole('tab', { name: '逐步', exact: true }).click();
 
   const rail = page.locator('.flow-run-inner-rail');
   const fixed = rail.locator('.run-rail-fixed');
   const history = rail.locator('.run-history-scroll');
   await expect(history).toHaveCSS('overflow-y', 'auto');
-  await expect(rail.locator('.node-record-list > article')).toHaveCount(5);
-  await expect(rail).toContainText('共 6 项，第 1 / 2 页');
-  await expect(rail.getByText('分页记录 6', { exact: true })).toHaveCount(0);
+  await expect(rail.locator('.node-record-list > article')).toHaveCount(10);
+  await expect(rail).toContainText('共 16 项，第 1 / 2 页');
+  await expect(rail.getByText('分页记录 16', { exact: true })).toHaveCount(0);
   const fixedBox = await fixed.boundingBox();
   await history.evaluate(element => { element.scrollTop = 100; });
   expect(await fixed.boundingBox()).toEqual(fixedBox);
 
   await rail.getByRole('button', { name: '下一页' }).click();
-  await expect(rail.locator('.node-record-list > article')).toHaveCount(1);
-  await expect(rail.getByText('分页记录 6', { exact: true })).toBeVisible();
-  await expect(rail).toContainText('共 6 项，第 2 / 2 页');
+  await expect(rail.locator('.node-record-list > article')).toHaveCount(6);
+  await expect(rail.getByText('分页记录 16', { exact: true })).toBeVisible();
+  await expect(rail).toContainText('共 16 项，第 2 / 2 页');
 });
 
 test('run projection stays neutral until record selection and automatic save reports its result', async ({ page }) => {
@@ -1210,7 +1228,7 @@ test('run projection stays neutral until record selection and automatic save rep
   await expect(page.locator('.run-side-panel')).toHaveCount(0);
   await expect(graph.getByText('正在执行', { exact: true })).toHaveCount(0);
 
-  await page.getByRole('tab', { name: '连续运行' }).click();
+  await page.getByRole('tab', { name: '连续', exact: true }).click();
   await expect(graph).toContainText('未选择连续运行记录，当前显示中性流程定义；请点击左侧“新增”。');
   await page.locator('.run-graph-node').filter({ hasText: '测试节点' }).first().click();
   await expect(page.locator('.run-side-panel')).toHaveCount(0);
@@ -1221,7 +1239,7 @@ test('run projection stays neutral until record selection and automatic save rep
   await expect(automaticEditor).toBeVisible();
   await expect(automaticEditor).toHaveAttribute('data-testid', 'node-configuration-panel');
   await expect(automaticEditor.locator('.node-console-mode-summary')).toContainText('连续运行');
-  await expect(automaticEditor.getByRole('navigation', { name: '提示词执行配置' })).toContainText('输入与上下文Agent 配置门禁配置执行记录');
+  await expect(automaticEditor.getByRole('tablist', { name: '提示词执行配置' })).toContainText('输入与上下文Agent 配置门禁配置执行记录');
   await expect(automaticEditor.getByRole('heading', { name: '输入' })).toBeVisible();
   await expect(automaticEditor.getByRole('link', { name: 'https://example.com/default-input' })).toBeVisible();
   await expect(automaticEditor.getByRole('heading', { name: '启动提示词' })).toBeVisible();
@@ -1246,9 +1264,9 @@ test('run projection stays neutral until record selection and automatic save rep
   await expect(automaticEditor.getByRole('link', { name: 'https://example.com/input' })).toBeVisible();
   await expect(automaticEditor.getByRole('link', { name: 'example.md' })).toBeVisible();
 
-  await automaticEditor.getByRole('button', { name: 'Agent 配置' }).click();
+  await automaticEditor.getByRole('tab', { name: 'Agent 配置' }).click();
   await expect(automaticEditor.getByRole('heading', { name: '首会话 Agent 配置' })).toBeVisible();
-  await automaticEditor.locator('.agent-preset-module').first().click();
+  await automaticEditor.getByRole('button', { name: /^能力/ }).click();
   const capabilityDialog = page.getByRole('dialog', { name: '配置能力' });
   const capabilityOptions = capabilityDialog.locator('.agent-capability-list > button');
   await expect(capabilityOptions).toHaveCount(31);
@@ -1263,7 +1281,7 @@ test('run projection stays neutral until record selection and automatic save rep
   expect(agentHintBox).not.toBeNull();
   expect(firstAgentModuleBox).not.toBeNull();
   expect(firstAgentModuleBox!.y - (agentHintBox!.y + agentHintBox!.height)).toBeLessThan(40);
-  await automaticEditor.getByRole('button', { name: '门禁配置' }).click();
+  await automaticEditor.getByRole('tab', { name: '门禁配置' }).click();
   await expect(automaticEditor).toContainText('门禁只应用于即将创建的这一次执行');
   const [gateHintBox, firstGateStageBox] = await Promise.all([
     automaticEditor.locator('.gate-draft-editor > .field-hint').boundingBox(),
@@ -1272,7 +1290,7 @@ test('run projection stays neutral until record selection and automatic save rep
   expect(gateHintBox).not.toBeNull();
   expect(firstGateStageBox).not.toBeNull();
   expect(firstGateStageBox!.y - (gateHintBox!.y + gateHintBox!.height)).toBeLessThan(40);
-  await automaticEditor.getByRole('button', { name: '输入与上下文' }).click();
+  await automaticEditor.getByRole('tab', { name: '输入与上下文' }).click();
   await automaticRecord.click();
   await expect(page.locator('.automatic-record-list > article.active')).toHaveCount(0);
   await expect(page.locator('.run-side-panel')).toHaveCount(0);
@@ -1356,9 +1374,12 @@ test('FR-130 running automatic records show execution facts', async ({ page }) =
 
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
-  await page.locator('.run-open').click();
+  await page.getByRole('button', { name: `展开 ${definition.name} 的 FlowRun` }).click();
+  await page.getByRole('button', { name: `Run #${run.run_no} · ${run.name} 运行中` }).click();
+  await page.getByRole('button', { name: '管理运行记录', exact: true }).click();
+  await page.getByRole('tab', { name: '逐步', exact: true }).click();
 
-  await page.getByRole('tab', { name: '连续运行' }).click();
+  await page.getByRole('tab', { name: '连续', exact: true }).click();
   await page.locator('.automatic-record-select').filter({ hasText: '自动记录 1' }).click();
   await expect(page.locator('.automatic-record-editor')).toHaveCount(0);
   await expect(page.getByTestId('attempt-state')).toHaveText('END_BLOCKED');
@@ -1428,8 +1449,11 @@ test('continuous record defaults to its final flowed node even after that node f
 
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
-  await page.locator('.run-open').click();
-  await page.getByRole('tab', { name: '连续运行' }).click();
+  await page.getByRole('button', { name: `展开 ${definition.name} 的 FlowRun` }).click();
+  await page.getByRole('button', { name: `Run #${run.run_no} · ${run.name} 运行中` }).click();
+  await page.getByRole('button', { name: '管理运行记录', exact: true }).click();
+  await page.getByRole('tab', { name: '逐步', exact: true }).click();
+  await page.getByRole('tab', { name: '连续', exact: true }).click();
   await page.locator('.automatic-record-select').filter({ hasText: '第三节点失败记录' }).click();
 
   const graph = page.locator('.run-graph');
@@ -1507,33 +1531,39 @@ test('returning from an automatic node session preserves the selected automatic 
 
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
-  await page.locator('.run-open').click();
-  await page.getByRole('tab', { name: '连续运行' }).click();
+  await page.getByRole('button', { name: `展开 ${definition.name} 的 FlowRun` }).click();
+  await page.getByRole('button', { name: `Run #${run.run_no} · ${run.name} 运行中` }).click();
+  await page.getByRole('button', { name: '管理运行记录', exact: true }).click();
+  await page.getByRole('tab', { name: '逐步', exact: true }).click();
+  await page.getByRole('tab', { name: '连续', exact: true }).click();
   await page.locator('.automatic-record-select').filter({ hasText: '自动记录 1' }).click();
   await expect(page).toHaveURL(new RegExp(`/flow-runs/${run.id}$`));
-  await page.getByRole('button', { name: '节点资产', exact: true }).click();
+  await page.getByRole('button', { name: '节点中心', exact: true }).click();
   await page.getByRole('button', { name: 'Run #1', exact: true }).click();
   await expect(page).toHaveURL(new RegExp(`/flow-runs/${run.id}$`));
-  await page.getByRole('tab', { name: '连续运行' }).click();
-  await page.locator('.automatic-record-select').filter({ hasText: '自动记录 1' }).click();
+  await expect(page.getByRole('tab', { name: '全部', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await page.locator('.unified-run-record').filter({ hasText: '自动记录 1' }).getByRole('button').click();
   const attemptPanel = page.locator('.attempt-control');
   await expect(attemptPanel).toContainText('END_BLOCKED');
   await expect(page.locator('.context-tab.active')).toContainText('Run #1');
   await attemptPanel.getByRole('button', { name: '进入节点会话' }).click();
-  await expect(page.getByRole('button', { name: '返回节点执行' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '返回来源', exact: true })).toBeVisible();
   await expect(page.locator('.context-tab.active')).toContainText('Run #1');
 
   // This pushes a nested node-session URL. Its history state must retain the
   // parent FlowRun and automatic-record identity for the explicit return.
   await page.getByRole('button', { name: /自动运行会话/ }).click();
   await expect(page).toHaveURL(new RegExp(`/agent-sessions/${conversation.id}$`));
-  await page.getByRole('button', { name: '节点资产', exact: true }).click();
+  await page.getByRole('button', { name: '节点中心', exact: true }).click();
+  await page.reload();
+  await expect(page.locator('.context-tab')).toHaveText(['Run #1']);
+  await expect(page.locator('.context-tab.active')).toHaveCount(0);
   await page.getByRole('button', { name: 'Run #1', exact: true }).click();
   await expect(page).toHaveURL(new RegExp(`/agent-sessions/${conversation.id}$`));
-  await page.getByRole('button', { name: '返回节点执行' }).click();
+  await page.getByRole('button', { name: '返回来源', exact: true }).click();
 
-  await expect(page.getByRole('tab', { name: '连续运行' })).toHaveAttribute('aria-selected', 'true');
-  await expect(page.locator('.automatic-record-list > article.active')).toContainText('自动记录 1');
+  await expect(page.getByRole('tab', { name: '全部', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.locator('.unified-run-record.active')).toContainText('自动记录 1');
   await expect(page.locator('.attempt-control')).toContainText('END_BLOCKED');
 });
 
@@ -1604,15 +1634,18 @@ test('node session entry opens the attempt formal conversation instead of a blan
 
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
-  await page.locator('.run-open').click();
-  await page.getByRole('tab', { name: '连续运行' }).click();
+  await page.getByRole('button', { name: `展开 ${definition.name} 的 FlowRun` }).click();
+  await page.getByRole('button', { name: `Run #${run.run_no} · ${run.name} 运行中` }).click();
+  await page.getByRole('button', { name: '管理运行记录', exact: true }).click();
+  await page.getByRole('tab', { name: '逐步', exact: true }).click();
+  await page.getByRole('tab', { name: '连续', exact: true }).click();
   await page.locator('.automatic-record-select').filter({ hasText: '自动记录 1' }).click();
   const attemptPanel = page.locator('.attempt-control');
   await expect(attemptPanel).toContainText('END_BLOCKED');
   await attemptPanel.getByRole('button', { name: '进入节点会话' }).click();
   await expect(page).toHaveURL(new RegExp(`/agent-sessions/${conversation.id}$`));
   await expect(page.getByText('会话已就绪')).toHaveCount(0);
-  await page.getByRole('button', { name: '返回节点执行' }).click();
+  await page.getByRole('button', { name: '返回来源', exact: true }).click();
   await expect(page.locator('.automatic-record-list > article.active')).toContainText('自动记录 1');
 });
 
@@ -1688,8 +1721,11 @@ test('continuous output registration failures read like the stepwise run', async
 
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
-  await page.locator('.run-open').click();
-  await page.getByRole('tab', { name: '连续运行' }).click();
+  await page.getByRole('button', { name: `展开 ${definition.name} 的 FlowRun` }).click();
+  await page.getByRole('button', { name: `Run #${run.run_no} · ${run.name} 运行中` }).click();
+  await page.getByRole('button', { name: '管理运行记录', exact: true }).click();
+  await page.getByRole('tab', { name: '逐步', exact: true }).click();
+  await page.getByRole('tab', { name: '连续', exact: true }).click();
   await page.locator('.automatic-record-select').filter({ hasText: '自动记录 1' }).click();
   const attemptPanel = page.locator('.attempt-control');
   await expect(attemptPanel).toContainText('节点产物登记失败');
@@ -1763,8 +1799,11 @@ test('manual and automatic records remain hidden after accepted deletion', async
 
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
-  await page.locator('.run-open').click();
-  await page.getByRole('tab', { name: '逐步运行' }).click();
+  await page.getByRole('button', { name: `展开 ${definition.name} 的 FlowRun` }).click();
+  await page.getByRole('button', { name: `Run #${run.run_no} · ${run.name} 运行中` }).click();
+  await page.getByRole('button', { name: '管理运行记录', exact: true }).click();
+  await page.getByRole('tab', { name: '逐步', exact: true }).click();
+  await page.getByRole('tab', { name: '逐步', exact: true }).click();
 
   const manualFirst = page.locator('.node-record-list .automatic-record-select').filter({ hasText: '逐步记录 1' });
   const manualSecond = page.locator('.node-record-list .automatic-record-select').filter({ hasText: '逐步记录 2' });
@@ -1785,7 +1824,7 @@ test('manual and automatic records remain hidden after accepted deletion', async
   await expect.poll(() => deletedStepwiseIds).toEqual(['stepwise-record-1', 'stepwise-record-2']);
   await expect(page.locator('.node-record-list .automatic-record-select')).toHaveCount(0);
 
-  await page.getByRole('tab', { name: '连续运行' }).click();
+  await page.getByRole('tab', { name: '连续', exact: true }).click();
   const scheduleDirectory = page.locator('.automatic-schedule-directory');
   await expect(scheduleDirectory.getByRole('button', { name: /每小时检查/ })).toHaveAttribute('aria-expanded', 'true');
   await expect(scheduleDirectory.getByRole('button', { name: /删除/ })).toHaveCount(0);
@@ -1859,9 +1898,12 @@ test('stepwise records reuse continuous selection, current-node detail, and grap
 
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
-  await page.locator('.run-open').click();
+  await page.getByRole('button', { name: `展开 ${definition.name} 的 FlowRun` }).click();
+  await page.getByRole('button', { name: `Run #${run.run_no} · ${run.name} 运行中` }).click();
+  await page.getByRole('button', { name: '管理运行记录', exact: true }).click();
+  await page.getByRole('tab', { name: '逐步', exact: true }).click();
 
-  await page.getByRole('tab', { name: '连续运行' }).click();
+  await page.getByRole('tab', { name: '连续', exact: true }).click();
   const automaticSelect = page.locator('.automatic-record-select').filter({ hasText: automaticRecord.name });
   await automaticSelect.click();
   await expect(page.locator('.automatic-record-list > article.active')).toHaveCount(1);
@@ -1877,7 +1919,7 @@ test('stepwise records reuse continuous selection, current-node detail, and grap
   await automaticSelect.click();
   await expect(page.getByTestId('attempt-state')).toHaveText('EXECUTING');
 
-  await page.getByRole('tab', { name: '逐步运行' }).click();
+  await page.getByRole('tab', { name: '逐步', exact: true }).click();
   const stepwiseSelect = page.locator('.node-record-list .automatic-record-select').filter({ hasText: stepwiseRecord.name });
   await stepwiseSelect.click();
   await expect(page.locator('.node-record-list > article.active')).toHaveCount(1);
@@ -1901,7 +1943,7 @@ test('stepwise records reuse continuous selection, current-node detail, and grap
   await expect(page.locator('.run-side-panel')).toHaveCount(0);
   await expect(page.locator('.run-graph')).toContainText('未选择逐步运行记录，当前显示中性流程定义');
 
-  await page.getByRole('tab', { name: '连续运行' }).click();
+  await page.getByRole('tab', { name: '连续', exact: true }).click();
   await automaticSelect.click();
   await expect(page.locator('.automatic-record-list > article.active')).toHaveCount(1);
   await expect(page.locator('.run-side-panel')).toBeVisible();
@@ -1941,7 +1983,10 @@ test('the step graph keeps the full persisted path while selecting node details'
 
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
-  await page.locator('.run-open').click();
+  await page.getByRole('button', { name: `展开 ${definition.name} 的 FlowRun` }).click();
+  await page.getByRole('button', { name: `Run #${run.run_no} · ${run.name} 运行中` }).click();
+  await page.getByRole('button', { name: '管理运行记录', exact: true }).click();
+  await page.getByRole('tab', { name: '逐步', exact: true }).click();
   await page.locator('.node-record-list .automatic-record-select').filter({ hasText: stepwiseRecord.name }).click();
 
   const graphNodes = page.locator('.run-graph-node');
@@ -2007,7 +2052,10 @@ test('selecting a historical attempt renders its own frozen graph snapshot', asy
 
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
-  await page.locator('.run-open').click();
+  await page.getByRole('button', { name: `展开 ${definition.name} 的 FlowRun` }).click();
+  await page.getByRole('button', { name: `Run #${run.run_no} · ${run.name} 运行中` }).click();
+  await page.getByRole('button', { name: '管理运行记录', exact: true }).click();
+  await page.getByRole('tab', { name: '逐步', exact: true }).click();
   await page.locator('.node-record-list .automatic-record-select').filter({ hasText: stepwiseRecord.name }).click();
   const graph = page.locator('.run-graph');
   await expect(graph).toContainText('历史冻结首节点');
@@ -2066,8 +2114,11 @@ test('completed continuous attempts load frozen input and candidate output metad
 
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
-  await page.locator('.run-open').click();
-  await page.getByRole('tab', { name: '连续运行' }).click();
+  await page.getByRole('button', { name: `展开 ${definition.name} 的 FlowRun` }).click();
+  await page.getByRole('button', { name: `Run #${run.run_no} · ${run.name} 运行中` }).click();
+  await page.getByRole('button', { name: '管理运行记录', exact: true }).click();
+  await page.getByRole('tab', { name: '逐步', exact: true }).click();
+  await page.getByRole('tab', { name: '连续', exact: true }).click();
   await page.locator('.automatic-record-select').filter({ hasText: completedRecord.name }).click();
 
   const panel = page.locator('.attempt-control');
@@ -2158,8 +2209,11 @@ test('gate review conversation stays compact and remediation enters the created 
 
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
-  await page.locator('.run-open').click();
-  await page.getByRole('tab', { name: '连续运行' }).click();
+  await page.getByRole('button', { name: `展开 ${definition.name} 的 FlowRun` }).click();
+  await page.getByRole('button', { name: `Run #${run.run_no} · ${run.name} 运行中` }).click();
+  await page.getByRole('button', { name: '管理运行记录', exact: true }).click();
+  await page.getByRole('tab', { name: '逐步', exact: true }).click();
+  await page.getByRole('tab', { name: '连续', exact: true }).click();
   await page.locator('.automatic-record-select').filter({ hasText: '测试节点' }).click();
   const attemptPanel = page.locator('.attempt-control');
   await attemptPanel.getByRole('button', { name: '门禁结果', exact: true }).click();
@@ -2216,6 +2270,8 @@ test('workspace Markdown links open the referenced node-session file without nav
   const sourcePath = `${root}/filtered_business_exceptions.md`;
   const reportDirectory = `${root}/filtered_business_exception_reports`;
   const targetPath = `${reportDirectory}/hq-admin.md`;
+  const htmlPath = `${reportDirectory}/daily.html`;
+  const htmlImagePath = `${reportDirectory}/chart.svg`;
   const imagePath = `${root}/.tmp/panel-top-preview.png`;
   const sessionBase = `/api/v1/flow-runs/${flowRunId}/node-attempts/${attemptId}/agent-sessions`;
   const sessionPath = `/flow-runs/${flowRunId}/nodes/${nodeRunId}/attempts/${attemptId}/agent-sessions/${conversation.id}`;
@@ -2261,19 +2317,28 @@ test('workspace Markdown links open the referenced node-session file without nav
         previewPaths.push(requestedPath);
         const content = requestedPath === sourcePath
           ? '# 筛选后业务异常日志汇总\n\n```mermaid\nflowchart LR\n  A[开始] --> B[结束]\n```\n\n[越界路径](../../outside.md)\n\n| 文档 |\n| --- |\n| [hq-admin](filtered_business_exception_reports/hq-admin.md) |'
-          : requestedPath === targetPath ? '# HQ Admin report\n\n已正确打开目标文件。' : 'unexpected file';
+          : requestedPath === targetPath ? '# HQ Admin report\n\n已正确打开目标文件。'
+            : requestedPath === htmlPath ? '<!doctype html><html><head><style>.report{color:rgb(12, 94, 56)}</style></head><body><h1 class="report">HTML 日报已渲染</h1><img src="chart.svg" alt="日报图表"><form><input name="unsafe"><button>不应显示</button></form><script>document.body.dataset.scriptRan = "true"</script></body></html>'
+              : 'unexpected file';
         return route.fulfill({
           status: 200,
-          contentType: 'text/markdown',
+          contentType: requestedPath === htmlPath ? 'text/html' : 'text/markdown',
           headers: { 'X-Preview-Total-Bytes': String(content.length) },
           body: content,
+        });
+      }
+      if (requestedPath === htmlImagePath) {
+        return route.fulfill({
+          status: 200,
+          contentType: 'image/svg+xml',
+          body: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><rect width="16" height="16" fill="#0c5e38"/></svg>',
         });
       }
     }
     if (path === `${sessionBase}/${conversation.id}/events`) return respond({
       events: [
         { id: 'markdown-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '查看异常报告', timestamp: now } },
-        { id: 'markdown-agent', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'markdown-user', content: '[打开汇总](filtered_business_exceptions.md) · [打开工作目录](.)\n\n![会话图片](/api/v1/flow-runs/markdown-link-run/node-attempts/markdown-link-attempt/agent-sessions/workspace/file?path=%2Fruntime%2Fworkspace%2Fproject%2F.tmp%2Fpanel-top-preview.png&binding_id=markdown-link-conversation)', timestamp: now } },
+        { id: 'markdown-agent', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'markdown-user', content: '[打开汇总](filtered_business_exceptions.md) · [打开 HTML 日报](filtered_business_exception_reports/daily.html) · [打开工作目录](.)\n\n![会话图片](/api/v1/flow-runs/markdown-link-run/node-attempts/markdown-link-attempt/agent-sessions/workspace/file?path=%2Fruntime%2Fworkspace%2Fproject%2F.tmp%2Fpanel-top-preview.png&binding_id=markdown-link-conversation)', timestamp: now } },
       ],
       next_cursor: 'markdown-agent', history_cursor: null, result: { status: 'COMPLETED' },
     });
@@ -2286,7 +2351,7 @@ test('workspace Markdown links open the referenced node-session file without nav
   await page.goto(sessionPath);
   const conversationImage = page.getByRole('button', { name: '预览图片：会话图片' });
   await expect(conversationImage.locator('img')).toBeVisible();
-  await conversationImage.click();
+  await conversationImage.evaluate(button => button.click());
   await expect(page.getByRole('dialog', { name: '文件预览' })).toContainText('会话图片');
   await page.getByRole('dialog', { name: '文件预览' }).getByRole('button', { name: '关闭', exact: true }).click();
   await page.getByRole('link', { name: '打开汇总' }).click();
@@ -2317,10 +2382,32 @@ test('workspace Markdown links open the referenced node-session file without nav
   await expect(page).toHaveURL(new RegExp(`${sessionPath}$`));
 
   await page.getByRole('dialog', { name: '文件预览' }).getByRole('button', { name: '关闭', exact: true }).click();
+  await page.getByRole('link', { name: '打开 HTML 日报' }).click();
+  const htmlPreview = page.getByTitle('daily.html HTML 预览');
+  await expect(htmlPreview).toBeVisible();
+  const htmlFrame = htmlPreview.contentFrame();
+  await expect(htmlFrame.getByRole('heading', { name: 'HTML 日报已渲染' })).toBeVisible();
+  await expect(htmlFrame.getByRole('img', { name: '日报图表' })).toBeVisible();
+  await expect(htmlFrame.getByRole('button', { name: '不应显示' })).toHaveCount(0);
+  await expect(htmlFrame.locator('body')).not.toHaveAttribute('data-script-ran', 'true');
+  await expect(page).toHaveURL(new RegExp(`${sessionPath}$`));
+  await page.getByRole('dialog', { name: '文件预览' }).getByRole('button', { name: '在新标签页打开', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: '文件预览' })).toHaveCount(0);
+  const browserPanel = page.locator('.agent-workspace-browser-tab-panel.active');
+  await expect(browserPanel.getByRole('textbox', { name: '网页地址', exact: true })).toHaveValue(/daily\.html/);
+  await expect(browserPanel.getByTitle('daily.html')).toBeVisible();
+  await expect.poll(() => browserPanel.evaluate(element => element.getBoundingClientRect().height)).toBeGreaterThan(300);
+  await expect(browserPanel.locator('.agent-workspace-browser-toolbar input')).toHaveCSS('text-align', 'left');
+  const htmlTab = page.locator('.agent-workspace-browser-tab-panel.active iframe');
+  await expect(htmlTab).toHaveAttribute('sandbox', 'allow-popups allow-popups-to-escape-sandbox');
+  await expect(htmlTab.contentFrame().getByRole('heading', { name: 'HTML 日报已渲染' })).toBeVisible();
+  await expect(htmlTab.contentFrame().getByRole('img', { name: '日报图表' })).toBeVisible();
+  await expect(htmlTab.contentFrame().locator('body')).not.toHaveAttribute('data-script-ran', 'true');
+  await expect(page).toHaveURL(new RegExp(`${sessionPath}$`));
   await page.getByRole('link', { name: '打开工作目录' }).click();
   const directoryPreview = page.getByRole('dialog', { name: '文件预览' });
   await expect(directoryPreview).toContainText('此链接指向工作目录，不是文件，因此无法预览。');
-  await directoryPreview.getByRole('button', { name: '在文件栏查看目录' }).click();
+  await directoryPreview.getByRole('button', { name: '在文件标签页查看目录' }).click();
   await expect(page.locator('.agent-workspace-drawer')).toHaveClass(/tools-open/);
   expect(previewPaths).toContain(sourcePath);
   expect(previewPaths).toContain(targetPath);
@@ -2483,3 +2570,88 @@ test('node sessions keep terminal reconciliation non-blocking when the formal re
   await expect(page.locator('.conversation-message.user').filter({ hasText: '节点同步期间不得自动发送' })).toHaveCount(0);
   await expect.poll(() => messagePosts).toBe(0);
 });
+
+for (const kind of ['stepwise', 'automatic'] as const) {
+  test(`${kind} creation uses compact header, freezes editable Git identity, and confines scrolling to panes`, async ({ page }) => {
+    const endpoint = kind === 'stepwise' ? 'stepwise-runs' : 'automatic-runs';
+    const title = kind === 'stepwise' ? '新增逐步运行记录' : '新增连续运行';
+    const longDefinition = { ...definition, nodes: definition.nodes.map(node => ({ ...node, asset: { ...node.asset, inputs: Array.from({ length: 24 }, (_, index) => ({ field_key: `field_${index}`, display_name: `输入 ${index}`, data_type: 'URL', description: '用于验证详情区内部滚动' })) } })) };
+    const parent = { ...run, snapshots: [{ ...snapshot, definition: longDefinition }], node_runs: [] };
+    let created: Record<string, unknown> | undefined;
+    let submitted: Record<string, unknown> | undefined;
+    await page.route('**/api/v1/**', async route => {
+      const request = route.request();
+      const path = new URL(request.url()).pathname;
+      const respond = (body: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
+      if (path.endsWith('/auth/me')) return respond(authenticatedUser);
+      if (path.endsWith('/auth/profile')) return respond({ display_name: '当前用户姓名', email: 'current@example.test' });
+      if (path === '/api/v1/flow-runs') return respond([parent]);
+      if (path === '/api/v1/flows') return respond([longDefinition]);
+      if (path === `/api/v1/flows/${definition.id}`) return respond(longDefinition);
+      if (path === `/api/v1/flow-runs/${run.id}`) return respond(parent);
+      if (path === `/api/v1/flow-runs/${run.id}/${endpoint}` && request.method() === 'POST') {
+        submitted = request.postDataJSON();
+        created = { ...(kind === 'automatic' ? automaticBase : parent), snapshots: parent.snapshots,
+          id: 'created-record', name: '新的运行记录', parent_flow_run_id: run.id,
+          state: 'DRAFT', git_identity: submitted!.git_identity, start_node_key: 'first',
+          reachable_node_keys: ['first', 'second'], node_plans: {}, readiness: { ready: false, issues: [] },
+          stepwise_node_drafts: {}, node_runs: [], artifacts: [], progress: { accepted: 0, terminal: 0, active: 0 },
+        };
+        return respond(created, 201);
+      }
+      if (path === `/api/v1/flow-runs/${run.id}/${endpoint}/created-record`) return respond(created);
+      if (path === `/api/v1/flow-runs/${run.id}/stepwise-runs`) return respond(kind === 'stepwise' && created ? [created] : []);
+      if (path === `/api/v1/flow-runs/${run.id}/automatic-runs/summaries`) return respond(kind === 'automatic' && created ? [{ ...created, plan: { start_node_key: 'first', reachable_node_count: 2, configured_node_count: 0, readiness: { ready: false, issue_count: 0 } } }] : []);
+      if (['/node-assets', '/node-directories', '/capabilities', '/capability-collections', '/model-providers', '/terminal-environments'].some(suffix => path.endsWith(suffix))) return respond([]);
+      return respond({ error: { code: 'NOT_FOUND', message: path } }, 404);
+    });
+    await page.goto(`/flow-runs/${run.id}`);
+    await page.getByRole('tab', { name: kind === 'automatic' ? '连续运行' : '逐步运行', exact: true }).click();
+    await page.getByRole('button', { name: '新增', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: title, exact: true });
+    await expect(dialog.getByRole('textbox', { name: 'Git 用户', exact: true })).toHaveValue('当前用户姓名');
+    await expect(dialog.getByRole('textbox', { name: 'Git 邮箱', exact: true })).toHaveValue('current@example.test');
+    await expect(dialog.locator(':scope > header p, :scope > header .eyebrow')).toHaveCount(0);
+    const header = await dialog.locator(':scope > header').boundingBox();
+    const close = await dialog.getByRole('button', { name: `关闭${title}`, exact: true }).boundingBox();
+    expect(header!.height).toBeLessThanOrEqual(36);
+    expect(close!.x + close!.width).toBeGreaterThan(header!.x + header!.width - 2);
+    await dialog.getByRole('textbox', { name: 'Git 用户', exact: true }).fill('本记录作者');
+    await dialog.getByRole('textbox', { name: 'Git 邮箱', exact: true }).fill('record@example.test');
+    await page.screenshot({ path: `../../.tmp/fr625-${kind}-dialog.png` });
+    await dialog.getByRole('button', { name: kind === 'automatic' ? '创建草稿' : '创建记录', exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    expect(submitted?.git_identity).toEqual({ author: '本记录作者', email: 'record@example.test' });
+    await expect(page.locator('.run-record-git-identity')).toHaveText('Git · 本记录作者 · record@example.test');
+    await page.reload();
+    await page.getByRole('tab', { name: kind === 'automatic' ? '连续运行' : '逐步运行', exact: true }).click();
+    await page.locator('.automatic-record-select').filter({ hasText: '新的运行记录' }).click();
+    await expect(page.locator('.run-record-git-identity')).toContainText('record@example.test');
+    for (const size of [{ width: 1440, height: 900 }, { width: 1280, height: 640 }]) {
+      await page.setViewportSize(size);
+      await expect.poll(() => page.evaluate(() => document.documentElement.scrollHeight - window.innerHeight)).toBeLessThanOrEqual(1);
+      const pane = page.locator('.run-side-panel .action-content');
+      await expect(pane).toBeVisible();
+      await expect.poll(() => pane.evaluate(element => element.scrollHeight - element.clientHeight)).toBeGreaterThan(50);
+      await pane.hover();
+      await page.mouse.wheel(0, 600);
+      await expect.poll(() => pane.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+      expect(await page.evaluate(() => window.scrollY)).toBe(0);
+      const canvas = await page.locator('.run-graph-canvas').boundingBox();
+      expect(canvas!.y + canvas!.height).toBeLessThanOrEqual(size.height + 1);
+      await page.screenshot({ path: `../../.tmp/fr625-${kind}-${size.width}.png` });
+    }
+    created = { ...created, state: 'COMPLETED', node_runs: [{ ...nodeRun, flow_run_id: 'created-record', state: 'ACCEPTED', attempts: [{ ...attempt, state: 'ACCEPTED' }] }] };
+    await page.reload();
+    await page.getByRole('tab', { name: kind === 'automatic' ? '连续运行' : '逐步运行', exact: true }).click();
+    await page.locator('.automatic-record-select').filter({ hasText: '新的运行记录' }).click();
+    const detail = page.locator('.run-side-panel .attempt-control .action-content');
+    await expect(detail).toBeVisible();
+    await detail.hover();
+    await page.mouse.wheel(0, 600);
+    await expect.poll(() => detail.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+    expect(await page.evaluate(() => document.documentElement.scrollHeight - window.innerHeight)).toBeLessThanOrEqual(1);
+    expect(await page.evaluate(() => window.scrollY)).toBe(0);
+    await page.screenshot({ path: `../../.tmp/fr625-${kind}-completed.png` });
+  });
+}

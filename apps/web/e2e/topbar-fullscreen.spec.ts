@@ -22,7 +22,7 @@ test('double-clicking topbar whitespace toggles fullscreen without affecting nav
   await topbar.dblclick({ position: { x: 8, y: 32 } });
   await expect.poll(() => page.evaluate(() => document.fullscreenElement === null)).toBe(true);
 
-  await page.getByRole('button', { name: '节点资产', exact: true }).dblclick();
+  await page.getByRole('button', { name: '节点中心', exact: true }).dblclick();
   await expect.poll(() => page.evaluate(() => document.fullscreenElement === null)).toBe(true);
 });
 
@@ -41,7 +41,7 @@ test('brand control reloads current data without navigating or exiting fullscree
     return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
   });
   await page.goto('/');
-  await expect(page.getByRole('button', { name: '节点资产', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '节点中心', exact: true })).toBeVisible();
   const topbar = page.locator('.topbar');
   await topbar.dblclick({ position: { x: 8, y: 32 } });
   await expect.poll(() => page.evaluate(() => document.fullscreenElement === document.documentElement)).toBe(true);

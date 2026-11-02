@@ -3,6 +3,7 @@ import pytest
 from flowweave.modules.agent_workspaces.presentation.router import (
     AgentConversationBootstrapWrite,
     AgentWorkspaceCapabilitiesWrite,
+    _browser_target_unavailable_response,
 )
 from flowweave.modules.flows.domain.rules import validate_flow
 from flowweave.modules.runs.domain.readiness import (
@@ -35,6 +36,16 @@ def test_agent_capability_request_models_have_no_flowweave_count_limit():
     assert ExecutorWrite(context_capability_ids=capability_ids).context_capability_ids == (
         capability_ids
     )
+
+
+def test_browser_target_unavailable_response_explains_local_preview_scope():
+    response = _browser_target_unavailable_response()
+
+    assert response.status_code == 502
+    assert response.media_type == "text/html"
+    assert response.headers["cache-control"] == "no-store"
+    assert "内置浏览器说明" in response.body.decode()
+    assert "仅支持访问当前服务内部的文件和网站。" in response.body.decode()
 
 
 def test_readiness_is_explicit_typed_and_version_frozen():

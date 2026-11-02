@@ -183,6 +183,7 @@ services:
       DOCKER_CONTROLLER_API_KEY: ${DOCKER_CONTROLLER_API_KEY:?set a random API controller key with at least 32 characters}
       DOCKER_CONTROLLER_WORKER_API_KEY: ${DOCKER_CONTROLLER_WORKER_API_KEY:?set a different random Worker controller key with at least 32 characters}
       ADMIN_RUNTIME_OBSERVER_KEY: ${ADMIN_RUNTIME_OBSERVER_KEY:?set a third random observer key with at least 32 characters}
+      ADMIN_RUNTIME_CONTROLLER_KEY: ${ADMIN_RUNTIME_CONTROLLER_KEY:?set a dedicated Admin Runtime control key with at least 32 characters}
       SANDBOX_BACKEND: docker
       SANDBOX_IMAGE_PYTHON: flowweave-sandbox-python:1
       SANDBOX_IMAGE_JAVASCRIPT: flowweave-sandbox-javascript:1
@@ -367,6 +368,8 @@ services:
       PLATFORM_API_URL: http://api:8080
       PLATFORM_STREAM_API_URL: http://stream-api:8080
       RUNTIME_PROVIDER_URL: http://runtime-provider:8090
+      SANDBOX_MANAGER_SCOPE: ${SANDBOX_MANAGER_SCOPE:-flowweave-local}
+      ADMIN_RUNTIME_CONTROLLER_KEY: ${ADMIN_RUNTIME_CONTROLLER_KEY:?set a dedicated Admin Runtime control key with at least 32 characters}
       ADMIN_RUNTIME_OBSERVER_KEY: ${ADMIN_RUNTIME_OBSERVER_KEY:?set a third random observer key with at least 32 characters}
       ADMIN_CONTROL_API_KEY: ${ADMIN_CONTROL_API_KEY:?set a dedicated Admin API control key with at least 32 characters}
       ADMIN_DATABASE_POOL_SIZE: ${ADMIN_DATABASE_POOL_SIZE:-2}
@@ -404,6 +407,10 @@ services:
       - /tmp:rw,noexec,nosuid,nodev,size=16m
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-flowweave}:${POSTGRES_PASSWORD:-flowweave_dev}@postgres:5432/${POSTGRES_DB:-flowweave}
+      SANDBOX_MANAGER_SCOPE: ${SANDBOX_MANAGER_SCOPE:-flowweave-local}
+      ADMIN_RUNTIME_CONTROLLER_KEY: ${ADMIN_RUNTIME_CONTROLLER_KEY:?set a dedicated Admin Runtime control key with at least 32 characters}
+      ADMIN_TEMPORARY_SERVICE_CLEANUP_INTERVAL_SECONDS: ${ADMIN_TEMPORARY_SERVICE_CLEANUP_INTERVAL_SECONDS:-3600}
+      ADMIN_TEMPORARY_SERVICE_MAX_AGE_SECONDS: ${ADMIN_TEMPORARY_SERVICE_MAX_AGE_SECONDS:-86400}
       RUNTIME_PROVIDER_URL: http://runtime-provider:8090
       ADMIN_RUNTIME_OBSERVER_KEY: ${ADMIN_RUNTIME_OBSERVER_KEY:?set a third random observer key with at least 32 characters}
       ADMIN_METRICS_SAMPLE_INTERVAL_SECONDS: ${ADMIN_METRICS_SAMPLE_INTERVAL_SECONDS:-30}

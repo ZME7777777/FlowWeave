@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from urllib.parse import quote
 from uuid import uuid4
 
@@ -42,14 +42,17 @@ from flowweave.shared.schemas import (
     RuntimeReplacementWrite,
     StepwiseNodeDraftStartWrite,
     StepwiseNodeDraftWrite,
+    StepwiseNodeRerunEditWrite,
     StepwiseRecordConfigExportWrite,
     StepwiseRecordConfigImportWrite,
     StepwiseRunRecordCopyWrite,
     StepwiseRunRecordWrite,
+    StepwiseRuntimePortsWrite,
     SyncSnapshotWrite,
 )
 
 router = APIRouter()
+artifact_content_router = APIRouter()
 
 
 def _key(value: str | None, action: str, identifier: str) -> str:
@@ -129,6 +132,23 @@ async def nested_automatic_runs(parent_run_id: str, db: Db) -> list[dict[str, An
     )
 
 
+@router.get("/flow-runs/{parent_run_id}/records")
+async def record_directory(
+    parent_run_id: str,
+    db: Db,
+    kind: Literal["ALL", "MANUAL", "AUTOMATIC"] = "ALL",
+    cursor: str | None = Query(default=None, max_length=2048),
+    limit: int = Query(default=30, ge=1, le=100),
+    q: str = Query(default="", max_length=220),
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: service.list_record_directory(
+            session, parent_run_id, kind=kind, cursor=cursor, limit=limit, q=q
+        ),
+    )
+
+
 @router.get("/flow-runs/{parent_run_id}/stepwise-runs")
 async def nested_stepwise_runs(parent_run_id: str, db: Db) -> list[dict[str, Any]]:
     return await run_sync(
@@ -158,6 +178,13 @@ async def copy_nested_stepwise_run(
     )
 
 
+@router.get("/flow-runs/{run_id}/stepwise-template-readiness")
+async def stepwise_template_readiness(run_id: str, db: Db) -> dict[str, Any]:
+    return await run_sync(
+        db, lambda session: service.stepwise_record_template_readiness(session, run_id)
+    )
+
+
 @router.put("/flow-runs/{run_id}/stepwise-node-drafts/{flow_node_key}")
 async def save_stepwise_node_draft(
     run_id: str,
@@ -168,6 +195,40 @@ async def save_stepwise_node_draft(
     return await run_sync(
         db,
         lambda session: service.save_stepwise_node_draft(session, run_id, flow_node_key, payload),
+    )
+
+
+@router.put("/flow-runs/{run_id}/stepwise-runtime-ports")
+async def save_stepwise_runtime_ports(
+    run_id: str, payload: StepwiseRuntimePortsWrite, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db, lambda session: service.save_stepwise_runtime_ports(session, run_id, payload)
+    )
+
+
+@router.post("/flow-runs/{run_id}/stepwise-node-drafts/{flow_node_key}/rerun-edit")
+async def reactivate_stepwise_node_for_rerun(
+    run_id: str,
+    flow_node_key: str,
+    payload: StepwiseNodeRerunEditWrite,
+    db: Db,
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: service.reactivate_stepwise_node_for_rerun(
+            session, run_id, flow_node_key, payload.node_run_id
+        ),
+    )
+
+
+@router.delete("/flow-runs/{run_id}/stepwise-node-drafts/{flow_node_key}/rerun-edit")
+async def cancel_stepwise_node_rerun_edit(
+    run_id: str, flow_node_key: str, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: service.cancel_stepwise_node_rerun_edit(session, run_id, flow_node_key),
     )
 
 
@@ -647,12 +708,28 @@ async def delete_artifact(run_id: str, artifact_id: str, db: Db) -> Response:
     return Response(status_code=204)
 
 
-@router.get("/artifact-versions/{artifact_id}/content")
-async def artifact_content(artifact_id: str, db: Db, download: bool = False) -> Response:
-    reference = await run_sync(
-        db, lambda session: service.artifact_content_reference(session, artifact_id)
-    )
-    content, mime_type, filename = await asyncio.to_thread(service.read_artifact_content, reference)
+@artifact_content_router.get("/artifact-versions/{artifact_id}/content")
+async def artifact_content(
+    artifact_id: str, request: Request, db: Db, download: bool = False
+) -> Response:
+    header = request.headers.get("authorization", "")
+    if header:
+        from flowweave.modules.cases.application.materials import (
+            authorized_content_reference,
+            read_material_content,
+        )
+
+        prepared = await run_sync(
+            db, lambda session: authorized_content_reference(session, header, artifact_id)
+        )
+        content, mime_type, filename = await asyncio.to_thread(read_material_content, prepared)
+    else:
+        reference = await run_sync(
+            db, lambda session: service.artifact_content_reference(session, artifact_id)
+        )
+        content, mime_type, filename = await asyncio.to_thread(
+            service.read_artifact_content, reference
+        )
     disposition = "attachment" if download else "inline"
     return Response(
         content=content,
@@ -660,6 +737,7 @@ async def artifact_content(artifact_id: str, db: Db, download: bool = False) -> 
         headers={
             "Content-Disposition": f"{disposition}; filename*=UTF-8''{quote(filename)}",
             "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "no-store",
         },
     )
 

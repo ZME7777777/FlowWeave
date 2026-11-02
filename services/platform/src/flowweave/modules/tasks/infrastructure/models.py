@@ -45,7 +45,7 @@ class BackgroundTask(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     owner_user_id: Mapped[str] = mapped_column(String(36), index=True)
     task_type: Mapped[str] = mapped_column(String(60), index=True)
-    aggregate_type: Mapped[str] = mapped_column(String(30))
+    aggregate_type: Mapped[str] = mapped_column(String(64))
     aggregate_id: Mapped[str] = mapped_column(String(36), index=True)
     idempotency_key: Mapped[str] = mapped_column(String(180))
     payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)

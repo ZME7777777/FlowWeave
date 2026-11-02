@@ -177,6 +177,7 @@ class RuntimeMCP:
     name: str
     config: dict[str, Any]
     workspace_path: str = ""
+    capability_version_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -426,6 +427,7 @@ class StartAttemptRequest:
     workspace_root: str = ""
     # Private Runtime parser state for relative FILE candidates. It never
     # enters the Agent-visible output contract.
+    git_identity: tuple[str, str] | None = None
     output_workspace_root: str = ""
     interaction_mode: Literal["EXECUTION", "COLLABORATION"] = "EXECUTION"
     startup_prompt: str | None = None
@@ -481,6 +483,9 @@ class RuntimeHandle:
     # Carries the Agent Spec's immutable LLM policy through later native
     # switch/fork operations without inventing platform-side timeout states.
     llm_timeout_policy: RuntimeLLMTimeoutPolicy | None = None
+    # Frozen conversation directory inside the workspace. Attachment uploads
+    # live here so they share the selected work directory's lifecycle.
+    working_directory: str = ""
 
     def __post_init__(self) -> None:
         if self.llm_timeout_policy is None and self.protocol_profile == "OH_FW_V2":
@@ -764,7 +769,11 @@ class RuntimePort(Protocol):
     def create_conversation(self, request: StartAttemptRequest) -> RuntimeHandle: ...
 
     def update_conversation_secrets(
-        self, handle: RuntimeHandle, secrets: dict[str, str]
+        self,
+        handle: RuntimeHandle,
+        secrets: dict[str, str],
+        *,
+        descriptions: dict[str, str] | None = None,
     ) -> None: ...
 
     def conversation_title(self, handle: RuntimeHandle) -> str | None: ...
@@ -812,6 +821,10 @@ class RuntimePort(Protocol):
     def switch_model(self, handle: RuntimeHandle, provider: RuntimeProvider) -> None: ...
 
     def load_plugin(self, handle: RuntimeHandle, plugin_ref: str) -> None: ...
+
+    def conversation_mcp_configured(
+        self, handle: RuntimeHandle, server_name: str, url: str
+    ) -> bool: ...
 
     def interrupt(self, handle: RuntimeHandle) -> None: ...
 
@@ -880,6 +893,14 @@ class RuntimePort(Protocol):
         self, handle: RuntimeHandle, content: str, image_urls: tuple[str, ...] = ()
     ) -> RuntimeResult: ...
 
+    def append_message(self, handle: RuntimeHandle, content: str) -> RuntimeResult:
+        """Persist a native user message without running the conversation."""
+        ...
+
+    def run_pending_message(self, handle: RuntimeHandle, event_id: str) -> RuntimeResult:
+        """Run an acknowledged current-branch message, preserving native pauses."""
+        ...
+
     def upload_workspace_file(
         self,
         handle: RuntimeHandle,
@@ -891,6 +912,14 @@ class RuntimePort(Protocol):
     ) -> str: ...
 
     def workspace_snapshot(self, handle: RuntimeHandle, path: str) -> RuntimeWorkspaceSnapshot: ...
+
+    def workspace_git_identity(
+        self,
+        handle: RuntimeHandle,
+        *,
+        identity: tuple[str, str] | None = None,
+        profile: tuple[str, str] | None = None,
+    ) -> dict[str, str | bool]: ...
 
     def download_workspace_file(self, handle: RuntimeHandle, path: str) -> RuntimeWorkspaceFile: ...
 

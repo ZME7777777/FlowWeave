@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
+from pydantic import BaseModel, ConfigDict, Field
 
 from flowweave_admin.alerts import apply_lifecycle, realtime_alerts
 from flowweave_admin.auth import require_super_admin
@@ -19,7 +20,9 @@ from flowweave_admin.control import (
     RuntimeDiagnosticCommand,
     cleanup_expired_tasks,
     diagnose_runtime,
+    list_runtime_services,
     request_runtime_control,
+    stop_runtime_service,
     update_alert_lifecycle,
 )
 from flowweave_admin.database import connect
@@ -68,6 +71,26 @@ def _usage_by_resource(observations: dict[str, Any]) -> dict[str, object]:
         if resource_id not in usage_by_resource or usage is not None:
             usage_by_resource[resource_id] = usage
     return usage_by_resource
+
+
+class RuntimeTemporaryServiceStopCommand(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    pid: int = Field(ge=2)
+    started_ticks: str = Field(min_length=1, max_length=40, pattern=r"^[0-9]+$")
+    process_group_id: int | None = Field(default=None, ge=1)
+
+
+def _runtime_service_target(detail: dict[str, Any]) -> tuple[str, str] | None:
+    runtime = detail.get("runtime")
+    if not isinstance(runtime, dict):
+        return None
+    resource_id = runtime.get("managed_sandbox_id")
+    resource_name = runtime.get("container_name")
+    if not isinstance(resource_id, str) or not isinstance(resource_name, str):
+        return None
+    return resource_name, resource_id
+
 
 
 def create_app() -> FastAPI:
@@ -257,7 +280,61 @@ def create_app() -> FastAPI:
             usage_by_resource.get(str(sandbox_id)) if sandbox_id is not None else None
         )
         detail["container_observability_available"] = observations.get("available", False)
+        target = _runtime_service_target(detail)
+        if target is None:
+            detail["temporary_services_available"] = False
+            detail["temporary_services"] = []
+        else:
+            try:
+                detail["temporary_services"] = await list_runtime_services(
+                    active_settings, resource_name=target[0], resource_id=target[1]
+                )
+                detail["temporary_services_available"] = True
+            except AdminControlError:
+                detail["temporary_services_available"] = False
+                detail["temporary_services"] = []
         return detail
+
+    @app.post(
+        "/v1/admin/runtimes/{runtime_session_id}/temporary-services/stop", response_model=None
+    )
+    async def admin_runtime_temporary_service_stop(
+        runtime_session_id: str,
+        payload: RuntimeTemporaryServiceStopCommand,
+        request: Request,
+    ) -> dict[str, bool] | JSONResponse:
+        if len(runtime_session_id) != 36:
+            return JSONResponse(
+                status_code=400, content={"error": {"message": "Invalid Runtime Session"}}
+            )
+        active_settings: Settings = request.app.state.settings
+        with connect(active_settings) as connection:
+            detail = runtime_detail(connection, runtime_session_id=runtime_session_id)
+        if detail is None:
+            return JSONResponse(
+                status_code=404, content={"error": {"message": "Runtime was not found"}}
+            )
+        target = _runtime_service_target(detail)
+        if target is None:
+            return JSONResponse(
+                status_code=409,
+                content={"error": {"message": "The Runtime has no active managed container"}},
+            )
+        try:
+            stopped = await stop_runtime_service(
+                active_settings,
+                resource_name=target[0],
+                resource_id=target[1],
+                pid=payload.pid,
+                started_ticks=payload.started_ticks,
+                process_group_id=payload.process_group_id,
+            )
+        except AdminControlError as exc:
+            return JSONResponse(
+                status_code=exc.status,
+                content={"error": {"code": exc.code, "message": str(exc)}},
+            )
+        return {"stopped": stopped}
 
     @app.get("/v1/admin/background-tasks")
     async def admin_background_tasks(request: Request, limit: int = 500) -> dict[str, Any]:

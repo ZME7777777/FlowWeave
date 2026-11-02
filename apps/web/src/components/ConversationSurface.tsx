@@ -1,4 +1,5 @@
-import { BookOpen, Check, ChevronDown, ChevronRight, CircleAlert, ClipboardList, Copy, ExternalLink, Eye, FileCode2, FileCog, FileJson, FilePenLine, FilePlus2, FileText, FileType2, GitFork, Link, LoaderCircle, PanelRightOpen, PanelTop, Pencil, PlugZap, Quote, Search, ShieldCheck, Sparkles, SquareTerminal, Workflow, Wrench } from 'lucide-react';
+import { ViewportPopover } from './ViewportPopover';
+import { BookOpen, Check, ChevronDown, ChevronRight, CircleAlert, ClipboardList, Copy, ExternalLink, Eye, FileCode2, FileCog, FileJson, FilePenLine, FilePlus2, FileText, FileType2, GitFork, Link, LoaderCircle, PanelRightOpen, PanelTop, Pencil, PlugZap, Quote, Search, ShieldCheck, Sparkles, SquareTerminal, Target, Workflow, Wrench } from 'lucide-react';
 import { Fragment, lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from 'react';
 import type { AgentActivitySummary, AgentAttachment, AgentConversationAnnotation, AgentConversationReference, AgentWorkspaceReference, OpenHandsConversationEvent, RuntimeTaskControlSnapshot } from '../types';
 import { SubagentAvatar } from './SubagentAvatar';
@@ -8,9 +9,10 @@ import { useEscapeClose } from './useEscapeClose';
 import { subagentAvatarSlotForEvent, subagentAvatarSlots, type SubagentAvatarSlot } from '../utils/subagentAvatar';
 import { workspaceFileChanges, workspaceRelativePath, type WorkspaceFileChange } from './agent-session/fileChanges';
 import { isFlowWeaveInternalProtocolMessage, isFlowWeaveMessageContext, isOpenHandsAgentReply, isOpenHandsConversationTerminalError, isOpenHandsEmptyResponseRecovery, orderOpenHandsConversationEvents, parseOpenHandsEventTime, projectFlowWeaveMessageContext } from './conversationEvents';
+import { conversationSearchPattern } from './conversationSearch';
 import './conversation-surface.css';
 
-type ItemKind = 'user' | 'assistant' | 'thought' | 'tool' | 'error' | 'condensation' | 'security';
+type ItemKind = 'user' | 'assistant' | 'thought' | 'tool' | 'error' | 'condensation' | 'goal' | 'security';
 
 interface Item {
   event: OpenHandsConversationEvent;
@@ -55,6 +57,7 @@ interface UserMessageNavigationItem {
 
 const HISTORY_REVEAL_WINDOW_MIN_PX = 360;
 const HISTORY_REVEAL_WINDOW_VIEWPORT_RATIO = 0.75;
+const EMPTY_EVENT_IDS: ReadonlySet<string> = new Set();
 
 export interface ConversationReference {
   eventId: string;
@@ -76,9 +79,19 @@ interface ConversationAnnotationReference extends ConversationReference {
 }
 
 interface ConversationTextHighlight {
+  fallbackToEvent?: boolean;
   eventId: string;
   quote: string;
   compactStart?: number;
+}
+
+export interface ConversationSearchLocation {
+  bindingId: string;
+  eventId: string;
+  query: string;
+  matchIndex: number;
+  eventIds: string[];
+  navigationId: number;
 }
 
 interface ConversationHighlightRect {
@@ -325,7 +338,7 @@ function MessageAttachments({ attachments, references = [], workspaceReferences 
       <MessageAttachmentThumbnail attachment={attachment} imageUrl={imageUrl?.(attachment)}/><span><b>{attachment.filename}</b><small>{attachment.mime_type || '文件'}{attachmentSize(attachment.byte_size) ? ` · ${attachmentSize(attachment.byte_size)}` : ''}</small></span><Eye size={13}/>
     </button>)}
     {references.map((reference, index) => {
-      const title = conversationName?.(reference.source_binding_id) ?? `会话引用 ${index + 1}`;
+      const title = conversationName?.(reference.source_binding_id) ?? reference.title ?? `会话引用 ${index + 1}`;
       return <button type="button" key={`${reference.event_id}:${reference.content}`} className="conversation-message-attachment conversation-message-reference" aria-label={`打开会话 ${title}`} title={`打开会话：${title}`} onClick={() => onOpenReference?.(reference)}>
         <Quote size={16}/><span><b>{title}</b><small>已添加到本条消息</small></span>
         <PanelRightOpen size={13}/>
@@ -362,8 +375,8 @@ function ConversationReferencePreview({ reference, title, onClose, onLocate }: {
 
 const ConversationMarkdown = lazy(() => import('./ConversationMarkdown').then(module => ({ default: module.ConversationMarkdown })));
 
-function MessageMarkdown({ children, reveal = false, onOpenWorkspaceFile, onOpenImage, workspaceImageUrl }: { children: string; reveal?: boolean; onOpenWorkspaceFile?: (href: string) => boolean; onOpenImage?: (src: string, alt?: string) => void; workspaceImageUrl?: (href: string) => string | undefined }) {
-  return <Suspense fallback={<div className="conversation-markdown-loading">正在渲染消息…</div>}><ConversationMarkdown reveal={reveal} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl}>{children}</ConversationMarkdown></Suspense>;
+function MessageMarkdown({ children, reveal = false, onOpenWorkspaceFile, onOpenBrowser, onOpenImage, workspaceImageUrl }: { children: string; reveal?: boolean; onOpenWorkspaceFile?: (href: string) => boolean; onOpenBrowser?: (href: string) => boolean; onOpenImage?: (src: string, alt?: string) => void; workspaceImageUrl?: (href: string) => string | undefined }) {
+  return <Suspense fallback={<div className="conversation-markdown-loading">正在渲染消息…</div>}><ConversationMarkdown reveal={reveal} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenBrowser={onOpenBrowser} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl}>{children}</ConversationMarkdown></Suspense>;
 }
 
 interface CandidateOutput { fieldKey: string; artifactType: 'URL' | 'FILE'; value: string }
@@ -481,6 +494,7 @@ function itemsFor(event: OpenHandsConversationEvent, taskRetryError = false): It
   }
   if (event.event_type === 'CONDENSATION_REQUESTED') return [{ event, kind: 'condensation', title: '开始压缩上下文', content: '' }];
   if (event.event_type === 'CONDENSATION_COMPLETED') return [{ event, kind: 'condensation', title: '压缩完成', content: '' }];
+  if (event.payload.goal_status) return [];
   if (event.event_type === 'SECURITY_ANALYSIS') return [{ event, kind: 'security', title: '安全分析', content: '' }];
   if (event.event_type === 'TOOL_CALL') return [{ event, kind: 'tool', title: eventName, content: thought || content }];
   // Its native observation only confirms that text was logged, so rendering it
@@ -545,6 +559,39 @@ function itemUserAncestorId(
   return action ? userAncestorId(action, byId) : undefined;
 }
 
+function unresolvedParentId(
+  event: OpenHandsConversationEvent,
+  byId: Map<string, OpenHandsConversationEvent>,
+): string | undefined {
+  const visited = new Set<string>();
+  let current: OpenHandsConversationEvent | undefined = event;
+  while (current && !visited.has(current.id)) {
+    visited.add(current.id);
+    const parentId = current.payload.parent_id;
+    if (!parentId || parentId === '__root__') return undefined;
+    const parent = byId.get(parentId);
+    if (!parent) return parentId;
+    current = parent;
+  }
+  return undefined;
+}
+
+function orphanTurnKey(
+  event: OpenHandsConversationEvent,
+  byId: Map<string, OpenHandsConversationEvent>,
+  actionsById: Map<string, OpenHandsConversationEvent>,
+  actionsByToolCallId: Map<string, OpenHandsConversationEvent>,
+): string {
+  const directParent = unresolvedParentId(event, byId);
+  if (directParent) return `missing-parent:${directParent}`;
+  const actionId = event.payload.action_id;
+  const toolCallId = event.payload.tool_call_id;
+  const action = (typeof actionId === 'string' ? actionsById.get(actionId) : undefined)
+    ?? (typeof toolCallId === 'string' ? actionsByToolCallId.get(toolCallId) : undefined);
+  const actionParent = action ? unresolvedParentId(action, byId) : undefined;
+  return actionParent ? `missing-parent:${actionParent}` : `orphan:${event.id}`;
+}
+
 function isHistoricalAutoTitleError(
   event: OpenHandsConversationEvent,
   events: OpenHandsConversationEvent[],
@@ -577,7 +624,7 @@ function isHistoricalAutoTitleError(
 function turnsFor(events: OpenHandsConversationEvent[]): Turn[] {
   const turns: Turn[] = [];
   const turnsByUserId = new Map<string, { turn: Turn; messageIndex: number }>();
-  const orphanTurnsByEventId = new Map<string, Turn>();
+  const orphanTurnsByKey = new Map<string, Turn>();
   const ordered = orderOpenHandsConversationEvents(events);
   const byId = new Map(ordered.map(event => [event.id, event]));
   const actionEvents = ordered.filter(event => event.event_type === 'TOOL_CALL');
@@ -627,17 +674,22 @@ function turnsFor(events: OpenHandsConversationEvent[]): Turn[] {
       // event rendered, so a late process event cannot move under an older turn.
       const ownerUserId = itemUserAncestorId(item.event, byId, actionsById, actionsByToolCallId);
       const owner = ownerUserId ? turnsByUserId.get(ownerUserId) : undefined;
-      const turn = owner?.turn ?? orphanTurnsByEventId.get(item.event.id) ?? (() => {
+      const unresolvedKey = orphanTurnKey(item.event, byId, actionsById, actionsByToolCallId);
+      const turn = owner?.turn ?? orphanTurnsByKey.get(unresolvedKey) ?? (() => {
         const orphan: Turn = {
           id: item.event.id,
-          renderKey: item.event.id,
+          renderKey: unresolvedKey,
           processSegments: [{ items: [], messageIndex: 0, startedBy: item }],
           activity: [],
         };
         turns.push(orphan);
-        orphanTurnsByEventId.set(item.event.id, orphan);
+        orphanTurnsByKey.set(unresolvedKey, orphan);
         return orphan;
       })();
+      const currentSegment = turn.processSegments.at(-1);
+      if (currentSegment?.interruptedBy && item.kind !== 'assistant' && item.kind !== 'error') {
+        turn.processSegments.push({ items: [], messageIndex: owner?.messageIndex ?? 0, startedBy: item });
+      }
       if (item.kind === 'assistant') turn.assistant = item;
       else {
         turn.activity.push(item);
@@ -678,17 +730,31 @@ function detailContent(value: unknown): string {
   return typeof value === 'string' ? value.trim().slice(0, 12_000) : '';
 }
 
-function fileLineLocation(details: Record<string, unknown>, resultDetails: Record<string, unknown>): string | undefined {
+interface FileLineRange { start: number; end: number; }
+
+function fileLineRange(details: Record<string, unknown>, resultDetails: Record<string, unknown>): FileLineRange | undefined {
   const viewRange = details.view_range ?? resultDetails.view_range;
   if (Array.isArray(viewRange) && viewRange.length === 2 && viewRange.every(value => typeof value === 'number' && Number.isInteger(value) && value > 0)) {
     const [start, end] = viewRange;
-    return start === end ? `第 ${start} 行` : `第 ${start}–${end} 行`;
+    return { start, end };
   }
   const insertLine = details.insert_line ?? resultDetails.insert_line;
-  return typeof insertLine === 'number' && Number.isInteger(insertLine) && insertLine > 0 ? `第 ${insertLine} 行` : undefined;
+  return typeof insertLine === 'number' && Number.isInteger(insertLine) && insertLine > 0
+    ? { start: insertLine, end: insertLine }
+    : undefined;
 }
 
-function eventRevealSignature(event: OpenHandsConversationEvent): string {
+function fileLineLocation(details: Record<string, unknown>, resultDetails: Record<string, unknown>): string | undefined {
+  const range = fileLineRange(details, resultDetails);
+  return range ? range.start === range.end ? `第 ${range.start} 行` : `第 ${range.start}–${range.end} 行` : undefined;
+}
+
+function fileLocationLabel(path: string, range: FileLineRange): string {
+  const filename = path.split('/').filter(Boolean).at(-1) || path;
+  return `${filename}:${range.start}${range.end === range.start ? '' : `-${range.end}`}`;
+}
+
+function eventContentSignature(event: OpenHandsConversationEvent): string {
   const { content, thought, summary, event_name: eventName, tool_name: toolName, details, runtime_skill: runtimeSkill, runtime_task: runtimeTask } = event.payload;
   return JSON.stringify({ content, thought, summary, eventName, toolName, details, runtimeSkill, runtimeTask });
 }
@@ -857,6 +923,8 @@ interface ActivityPresentation {
   thought?: string;
   command?: string;
   path?: string;
+  sourcePath?: string;
+  sourceRange?: FileLineRange;
   operation?: string;
   fileOperation?: FileOperationKind;
   fileKind?: FileKind;
@@ -939,6 +1007,11 @@ function activityPresentation(entry: ActivityEntry, active: boolean, workspaceRo
   const summary = detailText(entry.action?.event.payload.summary);
   const actionTitle = (fallback: string) => summary || fallback;
   const exitCode = typeof resultDetails.exit_code === 'number' ? String(resultDetails.exit_code) : undefined;
+  if (parentFailed && !completed && eventName !== 'TaskAction') return {
+    title: command ? `结果未返回 ${compactCommand(command, workspaceRoot)}` : `${actionTitle('工具调用')} · 结果未返回`,
+    status: '主会话异常结束，结果未返回',
+    command: workspaceRelativeText(command, workspaceRoot) || undefined, thought, actionDetails: details, resultDetails,
+  };
   if (eventName === 'TerminalAction' || eventName === 'TerminalObservation' || resultName === 'TerminalObservation') {
     const verb = failed ? '运行失败' : completed ? '已运行' : '正在运行';
     return {
@@ -957,11 +1030,13 @@ function activityPresentation(entry: ActivityEntry, active: boolean, workspaceRo
           : ['str_replace', 'insert', 'append'].includes(operation) ? (failed ? '编辑失败' : completed ? '已编辑' : '正在编辑')
             : failed ? '文件操作失败' : completed ? '已完成文件操作' : '正在处理文件';
     const displayPath = path ? workspacePath(path, workspaceRoot) : '';
+    const sourceRange = fileLineRange(details, resultDetails);
     const lineLocation = fileLineLocation(details, resultDetails);
     return {
       title: displayPath ? `${verb} ${displayPath}${lineLocation ? ` · ${lineLocation}` : ''}` : actionTitle(verb),
       status: failed ? '文件编辑器 · 失败' : completed ? '文件编辑器 · 已完成' : '文件编辑器',
-      path: displayPath || undefined, operation: workspaceRelativeText(command, workspaceRoot) || undefined, fileOperation, fileKind, thought, actionDetails: details, resultDetails,
+      path: displayPath || undefined, sourcePath: path || undefined, sourceRange,
+      operation: workspaceRelativeText(command, workspaceRoot) || undefined, fileOperation, fileKind, thought, actionDetails: details, resultDetails,
     };
   }
   if (eventName === 'TaskTrackerAction') {
@@ -1010,7 +1085,7 @@ function displayDetails(details: Record<string, unknown>, workspaceRoot?: string
   return Object.keys(visible).length ? workspaceRelativeText(JSON.stringify(visible, null, 2), workspaceRoot).slice(0, 12_000) : '';
 }
 
-function ToolDetailPanel({ presentation, eventName, toolName, toolVisual, results, reveal = false, workspaceRoot }: {
+function ToolDetailPanel({ presentation, eventName, toolName, toolVisual, results, reveal = false, workspaceRoot, onOpenSourceLocation }: {
   presentation: ActivityPresentation;
   eventName: string;
   toolName?: string;
@@ -1018,6 +1093,7 @@ function ToolDetailPanel({ presentation, eventName, toolName, toolVisual, result
   results: Item[];
   reveal?: boolean;
   workspaceRoot?: string | null;
+  onOpenSourceLocation?: (path: string, line: number) => void;
 }) {
   const details = presentation.actionDetails ?? {};
   const resultDetails = presentation.resultDetails ?? {};
@@ -1042,10 +1118,11 @@ function ToolDetailPanel({ presentation, eventName, toolName, toolVisual, result
     toolName={toolName}
     reveal={reveal}
     workspaceRoot={workspaceRoot}
+    onOpenSourceLocation={onOpenSourceLocation}
   /></div>;
 }
 
-function ToolDetailContent({ details, resultDetails, results, presentation, isTerminal, isFile, isTaskTracker, eventName, toolName, reveal = false, workspaceRoot }: {
+function ToolDetailContent({ details, resultDetails, results, presentation, isTerminal, isFile, isTaskTracker, eventName, toolName, reveal = false, workspaceRoot, onOpenSourceLocation }: {
   details: Record<string, unknown>;
   resultDetails: Record<string, unknown>;
   results: Item[];
@@ -1057,6 +1134,7 @@ function ToolDetailContent({ details, resultDetails, results, presentation, isTe
   toolName?: string;
   reveal?: boolean;
   workspaceRoot?: string | null;
+  onOpenSourceLocation?: (path: string, line: number) => void;
 }) {
   const taskSnapshot = isTaskTracker ? taskListSnapshot(details, resultDetails, presentation.resultTimestamp) : undefined;
   const structured = displayDetails(details, workspaceRoot);
@@ -1082,6 +1160,7 @@ function ToolDetailContent({ details, resultDetails, results, presentation, isTe
       {isFile && <dl>
         {presentation.operation && <><dt>操作</dt><dd><ConversationTextReveal reveal={reveal}>{presentation.operation}</ConversationTextReveal></dd></>}
         {presentation.path && <><dt>路径</dt><dd><ConversationTextReveal reveal={reveal}>{presentation.path}</ConversationTextReveal></dd></>}
+        {presentation.sourcePath && presentation.sourceRange && onOpenSourceLocation && <><dt>定位</dt><dd><button type="button" className="conversation-source-location" title={`在文件标签页定位 ${fileLocationLabel(presentation.sourcePath, presentation.sourceRange)}`} onClick={() => onOpenSourceLocation(presentation.sourcePath!, presentation.sourceRange!.start)}>{fileLocationLabel(presentation.sourcePath, presentation.sourceRange)}</button></dd></>}
         {Array.isArray(details.view_range) && <><dt>行范围</dt><dd><ConversationTextReveal reveal={reveal}>{details.view_range.join(' - ')}</ConversationTextReveal></dd></>}
         {typeof details.insert_line === 'number' && <><dt>插入行</dt><dd><ConversationTextReveal reveal={reveal}>{String(details.insert_line)}</ConversationTextReveal></dd></>}
       </dl>}
@@ -1148,12 +1227,16 @@ function turnProcessBlocks(
   return [{ kind: 'activity', id: 'activity-0', items, startedAt, finishedAt, active }];
 }
 
-function processBlocksForSegment(segment: ProcessSegment, active: boolean, completedAt?: number): TurnProcessBlock[] {
+function processBlocksForTurn(segments: ProcessSegment[], active: boolean, completedAt?: number): TurnProcessBlock[] {
+  const firstSegment = segments[0];
+  const lastSegment = segments.at(-1);
+  if (!firstSegment || !lastSegment) return [];
+  const interruptedAt = parsedEventTime(lastSegment.interruptedBy?.payload.timestamp);
   return turnProcessBlocks(
-    segment.items.filter(item => item.kind !== 'error'),
-    eventTime(segment.startedBy),
-    parsedEventTime(segment.interruptedBy?.payload.timestamp) ?? completedAt,
-    active,
+    segments.flatMap(segment => segment.items).filter(item => item.kind !== 'error'),
+    eventTime(firstSegment.startedBy),
+    interruptedAt ?? completedAt,
+    active && interruptedAt === undefined,
   );
 }
 
@@ -1347,10 +1430,11 @@ function RetryStatus({ status, errorDetail }: { status: ModelRetryStatus; errorD
   </details>;
 }
 
-function CurrentTurnStatus({ items, requestSubmitting, statusOverride, modelRetryStatus, monitoring, connectionState = 'connected' }: {
+function CurrentTurnStatus({ items, requestSubmitting, statusOverride, reconnecting = false, modelRetryStatus, monitoring, connectionState = 'connected' }: {
   items: Item[];
   requestSubmitting: boolean;
   statusOverride?: string;
+  reconnecting?: boolean;
   modelRetryStatus?: ModelRetryStatus;
   monitoring?: AgentActivitySummary;
   connectionState?: ConversationConnectionState;
@@ -1361,10 +1445,13 @@ function CurrentTurnStatus({ items, requestSubmitting, statusOverride, modelRetr
   const label = statusOverride ?? (requestSubmitting
     ? activityLabel
     : staleActivityLabel(activityLabel, monitoring, connectionState));
-  const stalled = !statusOverride && !requestSubmitting && monitoring?.possibly_stuck
-    && connectionState === 'connected';
+  const stalled = reconnecting || (!statusOverride && !requestSubmitting && monitoring?.possibly_stuck
+    && connectionState === 'connected');
+  const alertLabel = reconnecting
+    ? '会话正在尝试重连'
+    : '会话正在运行但后台长时间未产生可确认进展';
   return <div className={`conversation-turn-status${stalled ? ' stalled' : ''}`} role="status" aria-label={label}>
-    {stalled && <CircleAlert className="conversation-turn-status-alert" role="img" aria-label="会话正在运行但后台长时间未产生可确认进展" size={14}/>}
+    {stalled && <CircleAlert className="conversation-turn-status-alert" role="img" aria-label={alertLabel} size={14}/>}
     <span>{label}</span>
     {!stalled && <span className="conversation-turn-status-dots" aria-hidden="true"><i/><i/><i/></span>}
   </div>;
@@ -1405,7 +1492,7 @@ function securityAnalysisPresentation(event: OpenHandsConversationEvent): {
   };
 }
 
-function ActivityEntryRow({ entry, active, reveal = false, paused = false, parentFailed = false, hideThought = false, avatarSlots, workspaceRoot }: {
+function ActivityEntryRow({ entry, active, reveal = false, paused = false, parentFailed = false, hideThought = false, avatarSlots, workspaceRoot, onOpenSourceLocation }: {
   entry: ActivityEntry;
   active: boolean;
   reveal?: boolean;
@@ -1414,6 +1501,7 @@ function ActivityEntryRow({ entry, active, reveal = false, paused = false, paren
   hideThought?: boolean;
   avatarSlots: ReadonlyMap<string, SubagentAvatarSlot>;
   workspaceRoot?: string | null;
+  onOpenSourceLocation?: (path: string, line: number) => void;
 }) {
   const item = entry.action ?? entry.item;
   const Icon = item.kind === 'error' ? CircleAlert : item.kind === 'security' ? ShieldCheck : item.kind === 'thought' || item.kind === 'condensation' ? Sparkles : Wrench;
@@ -1427,7 +1515,7 @@ function ActivityEntryRow({ entry, active, reveal = false, paused = false, paren
   const ToolIcon = toolVisual === 'terminal' ? SquareTerminal : toolVisual === 'file' ? fileToolIcon(presentation) : toolVisual === 'browser' ? PanelTop : toolVisual === 'mcp' ? PlugZap : toolVisual === 'workflow' ? Workflow : Icon;
   const taskAvatar = avatarSlot && <SubagentAvatar slot={avatarSlot} status={taskAvatarStatus(entry, item, paused, parentFailed)} size={13}/>;
   const toolDetail = item.kind === 'tool'
-    ? <ToolDetailPanel presentation={presentation} eventName={eventName} toolName={toolName || undefined} toolVisual={toolVisual} results={entry.results} reveal={reveal} workspaceRoot={workspaceRoot}/>
+    ? <ToolDetailPanel presentation={presentation} eventName={eventName} toolName={toolName || undefined} toolVisual={toolVisual} results={entry.results} reveal={reveal} workspaceRoot={workspaceRoot} onOpenSourceLocation={onOpenSourceLocation}/>
     : null;
   const condensationRunning = active && !paused && !parentFailed && item.kind === 'condensation' && item.event.event_type === 'CONDENSATION_REQUESTED' && entry.results.length === 0;
   const isNativeThink = item.event.event_type === 'THOUGHT';
@@ -1440,6 +1528,13 @@ function ActivityEntryRow({ entry, active, reveal = false, paused = false, paren
   if (item.kind === 'condensation') return <article className={`conversation-activity-row tool condensation${condensationRunning ? ' running' : ''}`} role="status" aria-label={presentation.title}>
     <Sparkles size={13}/><div><b>{presentation.title}</b></div>
   </article>;
+  if (item.kind === 'goal') {
+    const goal = item.event.payload.goal_status!;
+    const detail = item.content || (goal.status === 'complete' ? 'Judge 已确认当前目标的完成证据。' : goal.status === 'interrupted' ? '可在会话目标卡中恢复原目标。' : undefined);
+    return <article className={`conversation-activity-row goal ${goal.status}`} role="status" aria-label={item.title}>
+      <Target size={13}/><div><b>{item.title}</b><small>{`第 ${goal.iteration} / ${goal.max_iterations} 轮 · ${goal.objective}`}</small>{detail && <span>{detail}</span>}</div>
+    </article>;
+  }
   if (item.kind === 'security') {
     const security = securityAnalysisPresentation(item.event);
     return <article className="conversation-activity-row security-analysis" role="status" aria-label={security.title} data-security-analysis-event-id={item.event.id} data-security-action-ids={security.actionIds}>
@@ -1470,7 +1565,7 @@ function ActivityEntryRow({ entry, active, reveal = false, paused = false, paren
   </article>;
 }
 
-function ProgressActivity({ group, active, revealEventIds, paused, parentFailed, avatarSlots, workspaceRoot }: {
+function ProgressActivity({ group, active, revealEventIds, paused, parentFailed, avatarSlots, workspaceRoot, onOpenSourceLocation }: {
   group: ProgressActivityGroup;
   active: boolean;
   revealEventIds: ReadonlySet<string>;
@@ -1478,6 +1573,7 @@ function ProgressActivity({ group, active, revealEventIds, paused, parentFailed,
   parentFailed: boolean;
   avatarSlots: ReadonlyMap<string, SubagentAvatarSlot>;
   workspaceRoot?: string | null;
+  onOpenSourceLocation?: (path: string, line: number) => void;
 }) {
   return <section className="conversation-progress-group" data-progress-event-id={group.progress.event.id}>
     <article className="conversation-activity-row thought native-think">
@@ -1495,7 +1591,7 @@ function ProgressActivity({ group, active, revealEventIds, paused, parentFailed,
         const hideThought = entry.hideThought || isProgressAction || (group.progress.kind === 'thought'
           && group.progress.event.id !== entry.action?.event.id
           && isSameVisibleProgressText(progressText(group.progress), actionText));
-        return <ActivityEntryRow key={entry.id} entry={entry} active={active} reveal={entryHasRevealedText(entry, revealEventIds)} paused={paused} parentFailed={parentFailed} hideThought={hideThought} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>;
+        return <ActivityEntryRow key={entry.id} entry={entry} active={active} reveal={entryHasRevealedText(entry, revealEventIds)} paused={paused} parentFailed={parentFailed} hideThought={hideThought} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot} onOpenSourceLocation={onOpenSourceLocation}/>;
       })}
     </div>
   </section>;
@@ -1512,6 +1608,7 @@ interface ActivityGroupProps {
   finishedAt?: number;
   avatarSlots: ReadonlyMap<string, SubagentAvatarSlot>;
   workspaceRoot?: string | null;
+  onOpenSourceLocation?: (path: string, line: number) => void;
   display?: 'full' | 'source' | 'summary';
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
@@ -1529,7 +1626,7 @@ function entryHasRevealedText(entry: ActivityEntry, revealEventIds: ReadonlySet<
     || entry.results.some(result => revealEventIds.has(result.event.id));
 }
 
-const ActivityGroup = memo(function ActivityGroup({ items, active, revealEventIds, completionConfirmed = false, paused = false, parentFailed = false, startedAt, finishedAt, avatarSlots, workspaceRoot, display = 'full', open: controlledOpen, onOpenChange }: ActivityGroupProps) {
+const ActivityGroup = memo(function ActivityGroup({ items, active, revealEventIds, completionConfirmed = false, paused = false, parentFailed = false, startedAt, finishedAt, avatarSlots, workspaceRoot, onOpenSourceLocation, display = 'full', open: controlledOpen, onOpenChange }: ActivityGroupProps) {
   const elapsed = elapsedSeconds(startedAt, finishedAt);
   const entries = groupedActivities(items);
   const rows = activityRows(entries);
@@ -1538,18 +1635,12 @@ const ActivityGroup = memo(function ActivityGroup({ items, active, revealEventId
     const item = entry.action ?? entry.item;
     return String(item.event.payload.event_name ?? '') === 'TaskAction' && entry.results.length === 0;
   });
-  // A delayed readiness response can briefly make an active turn appear idle.
-  // Preserve the visible details through that recovery; only a formal
-  // reply/error together with a native terminal state may auto-collapse.
-  const [uncontrolledOpen, setUncontrolledOpen] = useState(active);
-  const hasBeenActive = useRef(active);
+  // A turn can contain several segments after a formal interruption. Keep
+  // every segment visible until its formal terminal reply closes the turn.
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(active || !completionConfirmed);
   useLayoutEffect(() => {
-    if (active) {
-      hasBeenActive.current = true;
-      return;
-    }
-    if (hasBeenActive.current && completionConfirmed) setUncontrolledOpen(false);
-  }, [active, completionConfirmed]);
+    if (completionConfirmed) setUncontrolledOpen(false);
+  }, [completionConfirmed]);
   const open = controlledOpen ?? uncontrolledOpen;
   const setOpen = useCallback((next: boolean) => {
     if (controlledOpen === undefined) setUncontrolledOpen(next);
@@ -1564,8 +1655,8 @@ const ActivityGroup = memo(function ActivityGroup({ items, active, revealEventId
   if (!hasDetails) return <div className={`conversation-activity-group summary-only${display === 'summary' ? ' conversation-process-summary' : ''}`}><div className="conversation-activity-summary">{summary}</div></div>;
   const activityList = <div className="conversation-activity-list">
     {rows.map(row => row.kind === 'progress-group'
-      ? <ProgressActivity key={row.group.id} group={row.group} active={active} revealEventIds={revealEventIds} paused={paused} parentFailed={parentFailed} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>
-      : <ActivityEntryRow key={row.entry.id} entry={row.entry} active={active} reveal={entryHasRevealedText(row.entry, revealEventIds)} paused={paused} parentFailed={parentFailed} hideThought={row.entry.hideThought} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>) }
+      ? <ProgressActivity key={row.group.id} group={row.group} active={active} revealEventIds={revealEventIds} paused={paused} parentFailed={parentFailed} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot} onOpenSourceLocation={onOpenSourceLocation}/>
+      : <ActivityEntryRow key={row.entry.id} entry={row.entry} active={active} reveal={entryHasRevealedText(row.entry, revealEventIds)} paused={paused} parentFailed={parentFailed} hideThought={row.entry.hideThought} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot} onOpenSourceLocation={onOpenSourceLocation}/>) }
   </div>;
   const completed = display === 'summary';
   return <details className={`${completed ? 'conversation-process-summary' : 'conversation-activity-group'}${active && !completed ? ' active' : ''}`} open={open} onToggle={event => setOpen(event.currentTarget.open)}>
@@ -1581,19 +1672,21 @@ const ActivityGroup = memo(function ActivityGroup({ items, active, revealEventId
   && previous.startedAt === next.startedAt
   && previous.finishedAt === next.finishedAt
   && previous.workspaceRoot === next.workspaceRoot
+  && previous.onOpenSourceLocation === next.onOpenSourceLocation
   && previous.display === next.display
   && previous.open === next.open
   && previous.onOpenChange === next.onOpenChange
   && sameActivityItems(previous.items, next.items)
 ));
 
-function AnnotationReplyContent({ content, reveal = false, annotations, structured = false, onLocateAnnotation, onOpenWorkspaceFile, onOpenImage, workspaceImageUrl }: {
+function AnnotationReplyContent({ content, reveal = false, annotations, structured = false, onLocateAnnotation, onOpenWorkspaceFile, onOpenBrowser, onOpenImage, workspaceImageUrl }: {
   content: string;
   reveal?: boolean;
   annotations: AgentConversationAnnotation[];
   structured?: boolean;
   onLocateAnnotation?: (annotation: AgentConversationAnnotation) => void;
   onOpenWorkspaceFile?: (href: string) => boolean;
+  onOpenBrowser?: (href: string) => boolean;
   onOpenImage?: (src: string, alt?: string) => void;
   workspaceImageUrl?: (href: string) => string | undefined;
 }) {
@@ -1610,7 +1703,7 @@ function AnnotationReplyContent({ content, reveal = false, annotations, structur
   if (structured) {
     const visibleContent = content.replace(markerLikeText, '');
     return <>
-      {visibleContent && <MessageMarkdown reveal={reveal} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl}>{visibleContent}</MessageMarkdown>}
+      {visibleContent && <MessageMarkdown reveal={reveal} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenBrowser={onOpenBrowser} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl}>{visibleContent}</MessageMarkdown>}
       {annotations.map(markerButton)}
     </>;
   }
@@ -1626,7 +1719,7 @@ function AnnotationReplyContent({ content, reveal = false, annotations, structur
   return <>
     {parts.map((part, index) => part.annotation
       ? markerButton(part.annotation, index)
-      : part.content && <MessageMarkdown key={index} reveal={reveal} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl}>{part.content}</MessageMarkdown>)}
+      : part.content && <MessageMarkdown key={index} reveal={reveal} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenBrowser={onOpenBrowser} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl}>{part.content}</MessageMarkdown>)}
   </>;
 }
 
@@ -1643,7 +1736,7 @@ function ConversationFileChanges({ changes, onReviewChanges, workspaceRoot }: {
   </section>;
 }
 
-function AgentReply({ event, content, reveal = false, changes = [], onFork, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, onOpenImage, workspaceImageUrl, workspaceRoot, annotations = [], onLocateAnnotation }: {
+function AgentReply({ event, content, reveal = false, changes = [], onFork, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, onOpenBrowser, onOpenImage, workspaceImageUrl, workspaceRoot, annotations = [], onLocateAnnotation }: {
   event: OpenHandsConversationEvent;
   content: string;
   reveal?: boolean;
@@ -1652,6 +1745,7 @@ function AgentReply({ event, content, reveal = false, changes = [], onFork, onPr
   onPreviewCandidateFile?: (fieldKey: string, relativePath: string) => void;
   onReviewChanges?: (changes: WorkspaceFileChange[]) => void;
   onOpenWorkspaceFile?: (href: string) => boolean;
+  onOpenBrowser?: (href: string) => boolean;
   onOpenImage?: (src: string, alt?: string) => void;
   workspaceImageUrl?: (href: string) => string | undefined;
   workspaceRoot?: string | null;
@@ -1669,7 +1763,7 @@ function AgentReply({ event, content, reveal = false, changes = [], onFork, onPr
   const candidateMessage = candidateOutputMessage(content);
   const structuredAnnotations = event.payload.collaboration_annotation_ids !== undefined;
   return <article className="conversation-message assistant" data-conversation-event-id={eventId} data-turn-terminal="true" data-event-id={eventId}>
-    {candidateMessage.businessConclusion ? <AnnotationReplyContent content={candidateMessage.businessConclusion} reveal={reveal} annotations={annotations} structured={structuredAnnotations} onLocateAnnotation={onLocateAnnotation} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl}/> : !candidateMessage.outputs && content ? <MessageMarkdown reveal={reveal} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl}>{content}</MessageMarkdown> : null}
+    {candidateMessage.businessConclusion ? <AnnotationReplyContent content={candidateMessage.businessConclusion} reveal={reveal} annotations={annotations} structured={structuredAnnotations} onLocateAnnotation={onLocateAnnotation} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenBrowser={onOpenBrowser} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl}/> : !candidateMessage.outputs && content ? <MessageMarkdown reveal={reveal} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenBrowser={onOpenBrowser} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl}>{content}</MessageMarkdown> : null}
     {candidateMessage.outputs && <CandidateOutputReply outputs={candidateMessage.outputs} onPreviewFile={onPreviewCandidateFile ? output => onPreviewCandidateFile(output.fieldKey, output.value) : undefined}/>}
     {!candidateMessage.businessConclusion && !candidateMessage.outputs && !content && <span className="conversation-typing"><i/><i/><i/></span>}
     <ConversationFileChanges changes={changes} onReviewChanges={onReviewChanges} workspaceRoot={workspaceRoot}/>
@@ -1727,6 +1821,41 @@ function conversationHighlightRects(range: Range, root: HTMLElement): Conversati
     }
     return merged;
   }, []);
+}
+
+function conversationSearchRanges(root: HTMLElement, query: string): Range[] {
+  if (!query) return [];
+  const nodes: Array<{ node: Text; start: number; end: number }> = [];
+  let text = '';
+  let previousBlock: Element | null | undefined;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    if (!(node instanceof Text)) {
+      if (node instanceof HTMLBRElement) text += '\n';
+      continue;
+    }
+    // Message controls and file summaries are outside the searchable message body.
+    if (node.parentElement?.closest('button, footer, .conversation-file-changes, .conversation-message-attachments, .katex, .conversation-mermaid')) continue;
+    const block = node.parentElement?.closest('p, pre, td, th, li, h1, h2, h3, h4, h5, h6');
+    if (text && block !== previousBlock) text += '\n';
+    previousBlock = block;
+    const start = text.length;
+    text += node.data;
+    nodes.push({ node, start, end: text.length });
+  }
+  // Resolve literal matches in rendered text, including Markdown/syntax spans,
+  // without inserting markup into React-owned message nodes.
+  const pattern = conversationSearchPattern(query);
+  return Array.from(text.matchAll(pattern)).flatMap(match => {
+    const start = nodes.find(entry => entry.end > match.index);
+    const endOffset = match.index + match[0].length;
+    const end = nodes.find(entry => entry.start < endOffset && entry.end >= endOffset);
+    if (!start || !end) return [];
+    const range = document.createRange();
+    range.setStart(start.node, match.index - start.start);
+    range.setEnd(end.node, endOffset - end.start);
+    return [range];
+  });
 }
 
 function conversationQuoteRange(root: HTMLElement, quote: string, compactStart?: number): Range | undefined {
@@ -1860,15 +1989,18 @@ export interface ConversationScrollSnapshot {
   savedAt: number;
 }
 
-export const ConversationSurface = memo(function ConversationSurface({ events, isGenerating, liveTextReveal = false, isPaused = false, pausing = false, emptyResponseRecoveryActive = false, modelRetryStatus, historyPending = false, cachedHistoryMarkerCount = 0, cachedHistoryUserEventIds = [], hasCachedOlderHistory = false, onRequestOlderHistory, onRevealHistoryThrough, conversationScope, initialScrollSnapshot, onScrollSnapshotChange, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationPending = false, condensationStartedAt, onRewrite, onFork, onOpenAttachment, attachmentImageUrl, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, onOpenImage, workspaceImageUrl, workspaceRoot, onCreateAnnotation, onSidebarQuestion, onLocateAnnotation, conversationName, onOpenConversationReference, taskControl = [], monitoring, connectionState }: {
+export const ConversationSurface = memo(function ConversationSurface({ events, isGenerating, isPaused = false, isFailed = false, pausing = false, reconnectingAttempt, reconnectingMaxAttempts = 3, emptyResponseRecoveryActive = false, modelRetryStatus, historyPending = false, cachedHistoryMarkerCount = 0, cachedHistoryUserEvents = [], hasCachedOlderHistory = false, onRequestOlderHistory, onRevealHistoryThrough, conversationScope, referenceLocation, searchLocation, initialScrollSnapshot, onScrollSnapshotChange, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationPending = false, condensationStartedAt, onRewrite, onFork, onOpenAttachment, attachmentImageUrl, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenSourceLocation, onOpenWorkspaceFile, onOpenBrowser, onOpenImage, workspaceImageUrl, workspaceRoot, onCreateAnnotation, onSidebarQuestion, onLocateAnnotation, conversationName, onOpenConversationReference, taskControl = [], monitoring, connectionState }: {
   events: OpenHandsConversationEvent[];
   isGenerating: boolean;
-  /** Strict native running state; unlike visual activity it never animates history reconciliation. */
-  liveTextReveal?: boolean;
   /** Formal native conversation pause state, used only to label unfinished Task actions. */
   isPaused?: boolean;
+  /** Formal native error/stuck readiness; never inferred from recoverable tool errors. */
+  isFailed?: boolean;
   /** A pause request is pending confirmation from the native Runtime. */
   pausing?: boolean;
+  /** FlowWeave is continuing the same native Conversation after a transient gateway error. */
+  reconnectingAttempt?: number;
+  reconnectingMaxAttempts?: number;
   /** Transient UI only; the persisted corrective event never enters history. */
   emptyResponseRecoveryActive?: boolean;
   /** Actual non-persistent transport retry progress for this binding only. */
@@ -1877,14 +2009,17 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   historyPending?: boolean;
   /** Lightweight ruler ticks for historical user messages held outside the rendered transcript. */
   cachedHistoryMarkerCount?: number;
-  /** Formal user-event identities for cached ruler ticks, oldest to newest. */
-  cachedHistoryUserEventIds?: readonly string[];
+  /** Cached formal user messages for ruler previews only, oldest to newest. */
+  cachedHistoryUserEvents?: OpenHandsConversationEvent[];
   hasCachedOlderHistory?: boolean;
   onRequestOlderHistory?: () => void | Promise<void>;
   /** Reveals cached pages until the requested formal user event is rendered. */
   onRevealHistoryThrough?: (eventId: string) => Promise<boolean>;
   /** Binding identity that owns this transcript viewport. */
   conversationScope?: string;
+  /** Explicit user navigation, scoped to the referenced binding and formal event. */
+  referenceLocation?: AgentConversationReference;
+  searchLocation?: ConversationSearchLocation;
   /** In-memory reading position captured before this scoped viewport unmounted. */
   initialScrollSnapshot?: ConversationScrollSnapshot;
   onScrollSnapshotChange?: (scope: string, snapshot: ConversationScrollSnapshot) => void;
@@ -1904,8 +2039,11 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   onOpenWorkspaceReference?: (reference: AgentWorkspaceReference) => void;
   onPreviewCandidateFile?: (fieldKey: string, relativePath: string) => void;
   onReviewChanges?: (changes: WorkspaceFileChange[]) => void;
+  onOpenSourceLocation?: (path: string, line: number) => void;
   /** Returns true only when a Markdown link was handled by the file preview. */
   onOpenWorkspaceFile?: (href: string) => boolean;
+  /** Returns true only when a web URL was opened in the workspace browser. */
+  onOpenBrowser?: (href: string) => boolean;
   onOpenImage?: (src: string, alt?: string) => void;
   workspaceImageUrl?: (href: string) => string | undefined;
   workspaceRoot?: string | null;
@@ -1957,6 +2095,8 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   const copyResetTimer = useRef<number | undefined>(undefined);
   const referenceHighlightTimer = useRef<number | undefined>(undefined);
   const referenceLocationPending = useRef(false);
+  const searchLocationPending = useRef(false);
+  const previousSearchTarget = useRef<string | undefined>(undefined);
   const rewriteEditor = useRef<HTMLTextAreaElement>(null);
   const [isAtLatest, setIsAtLatest] = useState(true);
   const [editingEventId, setEditingEventId] = useState<string>();
@@ -1965,15 +2105,31 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   const [condensationElapsed, setCondensationElapsed] = useState(0);
   const [expandedCompletedProcesses, setExpandedCompletedProcesses] = useState<ReadonlySet<string>>(() => new Set());
   const [messagePreview, setMessagePreview] = useState<{ id: string; content: string; index: number; top: number }>();
-  const [selectedReference, setSelectedReference] = useState<{ reference: ConversationAnnotationReference; left: number; top: number }>();
+  const [selectedReference, setSelectedReference] = useState<{ reference: ConversationAnnotationReference; range: Range }>();
   const [viewingReference, setViewingReference] = useState<AgentConversationReference>();
   const [highlightedReference, setHighlightedReference] = useState<ConversationTextHighlight>();
   const [referenceHighlightRects, setReferenceHighlightRects] = useState<ConversationHighlightRect[]>([]);
+  const [searchHighlightRects, setSearchHighlightRects] = useState<Array<ConversationHighlightRect & { active: boolean; eventId: string; matchIndex: number }>>([]);
+  const keepRewriteEditorVisible = useCallback(() => {
+    const editor = rewriteEditor.current;
+    const viewport = surface.current;
+    if (!editor || !viewport) return;
+    const form = editor.closest<HTMLElement>('.conversation-message-edit');
+    if (!form) return;
+    const viewportBounds = viewport.getBoundingClientRect();
+    const formBounds = form.getBoundingClientRect();
+    const bottomOverflow = formBounds.bottom - (viewportBounds.bottom - 8);
+    const topOverflow = viewportBounds.top + 8 - formBounds.top;
+    if (bottomOverflow > 0) viewport.scrollTop += bottomOverflow;
+    else if (topOverflow > 0) viewport.scrollTop -= topOverflow;
+  }, []);
   useLayoutEffect(() => {
     if (!editingEventId) return;
     const editor = rewriteEditor.current;
     if (!editor) return;
-    editor.focus();
+    followLatest.current = false;
+    userScrolledAway.current = true;
+    editor.focus({ preventScroll: true });
     editor.setSelectionRange(editor.value.length, editor.value.length);
   }, [editingEventId]);
   useLayoutEffect(() => {
@@ -1982,7 +2138,8 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     if (!editor) return;
     editor.style.height = 'auto';
     editor.style.height = `${Math.min(editor.scrollHeight, 160)}px`;
-  }, [editingContent, editingEventId]);
+    keepRewriteEditorVisible();
+  }, [editingContent, editingEventId, keepRewriteEditorVisible]);
 
   // Pausing a tool makes OpenHands emit one synthetic AgentErrorEvent. Keep
   // it as a formal process boundary, but itemsFor() suppresses its redundant
@@ -1991,43 +2148,29 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     () => events.map(projectFlowWeaveMessageContext),
     [events],
   );
-  const visibleEventSignature = useMemo(
-    () => visibleEvents.map(event => [event.id, eventRevealSignature(event)] as const),
+  const turns = useMemo(() => turnsFor(visibleEvents), [visibleEvents]);
+  const revealEventIds = EMPTY_EVENT_IDS;
+  const contentGrowthSignal = useMemo(
+    () => visibleEvents.map(event => [event.id, eventContentSignature(event)] as const),
     [visibleEvents],
   );
-  const revealedEventContent = useRef(new Map<string, string>());
-  const revealScope = useRef<string | undefined>(undefined);
-  const [revealEventIds, setRevealEventIds] = useState<ReadonlySet<string>>(() => new Set());
-  useLayoutEffect(() => {
-    const current = new Map(visibleEventSignature);
-    if (revealScope.current !== conversationScope || !liveTextReveal) {
-      revealScope.current = conversationScope;
-      revealedEventContent.current = current;
-      setRevealEventIds(new Set());
-      return;
-    }
-    const newlyRendered = new Set<string>();
-    for (const [id, text] of current) {
-      if (revealedEventContent.current.get(id) !== text) newlyRendered.add(id);
-    }
-    revealedEventContent.current = current;
-    setRevealEventIds(newlyRendered);
-  }, [conversationScope, liveTextReveal, visibleEventSignature]);
-  const turns = useMemo(() => turnsFor(visibleEvents), [visibleEvents]);
-  const contentGrowthSignal = visibleEventSignature;
   const avatarSlots = useMemo(() => subagentAvatarSlots(visibleEvents), [visibleEvents]);
-  const userMessageNavigation = useMemo<UserMessageNavigationItem[]>(() => [
-    ...cachedHistoryUserEventIds.map(id => ({
-      id,
-      content: '更早的历史消息',
-      cached: true,
-    })),
-    ...turns.flatMap(turn => turn.user ? [{
+  const userMessageNavigation = useMemo<UserMessageNavigationItem[]>(() => {
+    const rendered = turns.flatMap(turn => turn.user ? [{
       id: turn.user.event.id,
       content: turn.user.content,
       cached: false,
-    }] : []),
-  ], [cachedHistoryUserEventIds, turns]);
+    }] : []);
+    const renderedIds = new Set(rendered.map(message => message.id));
+    // Project only user-message previews. Older process/reply DOM stays deferred,
+    // and overlapping pages must not duplicate already-rendered formal messages.
+    const cached = orderOpenHandsConversationEvents(cachedHistoryUserEvents).flatMap(event => (
+      renderedIds.has(event.id) ? [] : itemsFor(projectFlowWeaveMessageContext(event)).flatMap(item => (
+        item.kind === 'user' ? [{ id: event.id, content: item.content, cached: true }] : []
+      ))
+    ));
+    return [...cached, ...rendered];
+  }, [cachedHistoryUserEvents, turns]);
   useLayoutEffect(() => {
     const navigation = messageNavigation.current;
     if (!navigation) return;
@@ -2120,16 +2263,16 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     const revealWindow = Math.max(HISTORY_REVEAL_WINDOW_MIN_PX, element.clientHeight * HISTORY_REVEAL_WINDOW_VIEWPORT_RATIO);
     if (element.scrollTop <= revealWindow) requestOlderHistory();
     const atLatest = element.scrollHeight - element.scrollTop - element.clientHeight <= 16;
+    // Button visibility reflects geometry independently of scroll ownership:
+    // one gesture can emit many scroll events after its capture handler ran.
+    setIsAtLatest(atLatest);
     // Scroll events also occur when layout and direct scrollTop assignments
     // settle. They do not establish reading intent. Only the capture handlers
     // below can leave or resume follow mode.
     if (atLatest && (!userScrolledAway.current || scrollInteractionTowardLatest.current)) {
       userScrolledAway.current = false;
       followLatest.current = true;
-      setIsAtLatest(true);
-      return;
     }
-    if (!followLatest.current) setIsAtLatest(false);
   }, [requestOlderHistory]);
   useEffect(() => {
     // Short transcripts may never emit a meaningful scroll event. Re-evaluate
@@ -2149,7 +2292,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     }
     userScrolledAway.current = true;
     followLatest.current = false;
-    setIsAtLatest(false);
+    if (element) setIsAtLatest(element.scrollHeight - element.scrollTop - element.clientHeight <= 16);
   }, []);
   const highlightReferenceText = useCallback((highlight: ConversationTextHighlight) => {
     if (referenceHighlightTimer.current) window.clearTimeout(referenceHighlightTimer.current);
@@ -2158,6 +2301,16 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     setReferenceHighlightRects([]);
     setHighlightedReference(highlight);
   }, []);
+  useLayoutEffect(() => {
+    if (!referenceLocation || referenceLocation.source_binding_id !== conversationScope) return;
+    stopFollowingLatest();
+    highlightReferenceText({
+      eventId: referenceLocation.event_id,
+      quote: referenceLocation.content,
+      compactStart: referenceLocation.selection?.compact_start,
+      fallbackToEvent: true,
+    });
+  }, [conversationScope, highlightReferenceText, referenceLocation, stopFollowingLatest]);
   const updateReferenceHighlight = useCallback(() => {
     const element = surface.current;
     const highlightRoot = content.current;
@@ -2166,7 +2319,13 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
       .find(item => item.dataset.conversationEventId === highlightedReference.eventId);
     if (!target) return false;
     for (let parent = target.parentElement?.closest('details'); parent; parent = parent.parentElement?.closest('details')) parent.open = true;
-    const range = conversationQuoteRange(target, highlightedReference.quote, highlightedReference.compactStart);
+    let range = conversationQuoteRange(target, highlightedReference.quote, highlightedReference.compactStart);
+    if (!range && highlightedReference.fallbackToEvent) {
+      // Whole-conversation drag references carry a title rather than a quote.
+      // Their explicit formal event ID still provides an exact navigation target.
+      range = document.createRange();
+      range.selectNodeContents(target);
+    }
     if (!range) return false;
     const rects = conversationHighlightRects(range, highlightRoot);
     if (!rects.length) return false;
@@ -2182,23 +2341,66 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     selection?.removeAllRanges();
     selection?.addRange(range);
     if (!referenceHighlightTimer.current) {
+      const selectedText = range.toString();
       referenceHighlightTimer.current = window.setTimeout(() => {
         setHighlightedReference(current => current === highlightedReference ? undefined : current);
         setReferenceHighlightRects([]);
-        if (window.getSelection()?.toString() === highlightedReference.quote) window.getSelection()?.removeAllRanges();
+        if (window.getSelection()?.toString() === selectedText) window.getSelection()?.removeAllRanges();
         referenceHighlightTimer.current = undefined;
       }, 1_500);
     }
     return true;
   }, [highlightedReference]);
+  // Search has its own persistent overlay. Quote/annotation navigation may still
+  // use the existing transient selection without clearing the other matches.
+  useLayoutEffect(() => {
+    const target = searchLocation && searchLocation.bindingId === conversationScope
+      ? JSON.stringify([conversationScope, searchLocation.query, searchLocation.eventId, searchLocation.matchIndex, searchLocation.navigationId])
+      : undefined;
+    if (target !== previousSearchTarget.current) {
+      previousSearchTarget.current = target;
+      searchLocationPending.current = Boolean(target);
+      if (target) stopFollowingLatest();
+    }
+  }, [conversationScope, searchLocation, stopFollowingLatest]);
+  const updateSearchHighlights = useCallback(() => {
+    const element = surface.current;
+    const highlightRoot = content.current;
+    if (!searchLocation || searchLocation.bindingId !== conversationScope || !element || !highlightRoot) {
+      setSearchHighlightRects(current => current.length ? [] : current);
+      return;
+    }
+    const eventIds = new Set(searchLocation.eventIds);
+    const rects: Array<ConversationHighlightRect & { active: boolean; eventId: string; matchIndex: number }> = [];
+    let activeRange: Range | undefined;
+    for (const target of element.querySelectorAll<HTMLElement>('[data-conversation-event-id]')) {
+      const eventId = target.dataset.conversationEventId!;
+      if (!eventIds.has(eventId)) continue;
+      if (eventId === searchLocation.eventId && searchLocationPending.current) {
+        for (let parent = target.parentElement?.closest('details'); parent; parent = parent.parentElement?.closest('details')) parent.open = true;
+      }
+      conversationSearchRanges(target, searchLocation.query).forEach((range, matchIndex) => {
+        const active = eventId === searchLocation.eventId && matchIndex === searchLocation.matchIndex;
+        if (active) activeRange = range;
+        rects.push(...conversationHighlightRects(range, highlightRoot).map(rect => ({ ...rect, active, eventId, matchIndex })));
+      });
+    }
+    setSearchHighlightRects(rects);
+    if (activeRange && searchLocationPending.current && activeRange.getClientRects().length) {
+      const top = activeRange.getBoundingClientRect().top - element.getBoundingClientRect().top + element.scrollTop - 28;
+      element.scrollTo({ top: Math.max(0, top), behavior: 'auto' });
+      searchLocationPending.current = false;
+    }
+  }, [conversationScope, searchLocation]);
   useEffect(() => () => {
     if (referenceHighlightTimer.current) window.clearTimeout(referenceHighlightTimer.current);
   }, []);
   useLayoutEffect(() => {
     updateReferenceHighlight();
-  }, [events, updateReferenceHighlight]);
+    updateSearchHighlights();
+  }, [events, updateReferenceHighlight, updateSearchHighlights]);
   useEffect(() => {
-    if (!highlightedReference || !content.current) return;
+    if ((!highlightedReference && !searchLocation) || !content.current) return;
     const highlightRoot = content.current;
     let updateFrame: number | undefined;
     const scheduleUpdate = () => {
@@ -2206,6 +2408,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
       updateFrame = window.requestAnimationFrame(() => {
         updateFrame = undefined;
         updateReferenceHighlight();
+        updateSearchHighlights();
       });
     };
     const mutationObserver = new MutationObserver(mutations => {
@@ -2215,13 +2418,15 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     const resizeObserver = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(scheduleUpdate);
     resizeObserver?.observe(highlightRoot);
     window.addEventListener('resize', scheduleUpdate);
+    highlightRoot.addEventListener('scroll', scheduleUpdate, true);
     return () => {
       mutationObserver.disconnect();
       resizeObserver?.disconnect();
       window.removeEventListener('resize', scheduleUpdate);
+      highlightRoot.removeEventListener('scroll', scheduleUpdate, true);
       if (updateFrame !== undefined) window.cancelAnimationFrame(updateFrame);
     };
-  }, [highlightedReference, updateReferenceHighlight]);
+  }, [highlightedReference, searchLocation, updateReferenceHighlight, updateSearchHighlights]);
   const locateTextAnnotation = useCallback((annotation: AgentConversationAnnotation) => {
     // Text anchors belong to this transcript. Resolving them here avoids the
     // FlowNode route's outer grid from becoming an accidental scroll target.
@@ -2615,8 +2820,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
       }
       setSelectedReference({
         reference,
-        left: Math.min(Math.max(12, bounds.left), Math.max(12, window.innerWidth - 172)),
-        top: Math.min(bounds.bottom + 8, Math.max(12, window.innerHeight - 44)),
+        range: currentSelection.getRangeAt(0).cloneRange(),
       });
     });
   }, [conversationScope, onCreateAnnotation]);
@@ -2626,7 +2830,6 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     setViewingReference(undefined);
     highlightReferenceText({ eventId: viewingReference.event_id, quote: viewingReference.content });
   }, [highlightReferenceText, stopFollowingLatest, viewingReference]);
-  const lastUserEventId = useMemo(() => [...turns].reverse().find(turn => turn.user)?.user?.event.id, [turns]);
   if (!turns.length && !isGenerating) return <div className="conversation-surface-empty"><b>会话已就绪</b><span>发送第一条消息，开始与 Agent 协作。</span></div>;
   const showJumpToLatest = !isAtLatest && Boolean(turns.length || isGenerating);
   return <div ref={shell} className="conversation-surface-shell">
@@ -2671,14 +2874,17 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     }} onPointerMoveCapture={event => {
       if (scrollInteractionStartY.current === null) return;
       if (event.pointerType === 'mouse') showScrollbarTemporarily();
-      if (event.clientY - scrollInteractionStartY.current > 3 && (surface.current?.scrollTop ?? 0) > 0) stopFollowingLatest();
-      else if (scrollInteractionStartY.current - event.clientY > 3) scrollInteractionTowardLatest.current = true;
+      // Dragging the native scrollbar thumb downward moves the transcript
+      // toward newer content; its pointer direction is opposite to touch.
+      if (event.clientY - scrollInteractionStartY.current > 3) scrollInteractionTowardLatest.current = true;
+      else if (scrollInteractionStartY.current - event.clientY > 3 && (surface.current?.scrollTop ?? 0) > 0) stopFollowingLatest();
     }} onPointerUp={event => { scrollInteractionStartY.current = null; offerSelectedReference(event); }} onPointerCancel={() => { scrollInteractionStartY.current = null; }} onKeyDown={event => {
       if (['ArrowUp', 'PageUp', 'Home'].includes(event.key) && (surface.current?.scrollTop ?? 0) > 0) stopFollowingLatest();
       else if (['ArrowDown', 'PageDown', 'End'].includes(event.key)) scrollInteractionTowardLatest.current = true;
     }}>
       <div ref={content} className="conversation-surface-content">
       {referenceHighlightRects.length > 0 && <div className="conversation-reference-highlights" aria-hidden="true">{referenceHighlightRects.map((rect, index) => <i key={`${rect.left}:${rect.top}:${index}`} style={rect}/>)}</div>}
+      {searchHighlightRects.length > 0 && <div className="conversation-reference-highlights conversation-search-highlights" aria-hidden="true">{searchHighlightRects.map(({ active, eventId, matchIndex, ...rect }, index) => <i key={`${eventId}:${matchIndex}:${index}`} data-search-event-id={eventId} data-search-match-index={matchIndex} className={active ? 'is-active' : undefined} style={rect}/>)}</div>}
       {historyPending && <div className="conversation-history-loading" role="status"><LoaderCircle size={14}/>正在载入更早的会话记录…</div>}
       {turns.map((turn, index) => {
         const isLatest = index === turns.length - 1;
@@ -2687,18 +2893,21 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
         const errors = turn.activity.filter(item => item.kind === 'error');
         const recoveredErrorEventIds = new Set(turn.assistant ? errors.map(item => item.event.id) : []);
         const failures = errors.filter(item => !recoveredErrorEventIds.has(item.event.id));
-        const parentFailed = failures.length > 0;
+        const parentFailed = failures.length > 0 || (isLatest && isFailed);
         const supersededAt = index < turns.length - 1 ? eventTime(turns[index + 1]?.user) : undefined;
         const finishedAt = eventTime(turn.assistant ?? failures.at(-1)) ?? supersededAt;
         const processSegments = turn.processSegments;
-        const processBlocks = processSegments.flatMap((segment, segmentIndex) => processBlocksForSegment(
-          segment,
-          isCurrent && segmentIndex === processSegments.length - 1 && !turn.assistant && !failures.length,
+        const processBlocks = processBlocksForTurn(
+          processSegments,
+          isCurrent && !turn.assistant && !failures.length,
           finishedAt,
-        ).map(block => ({ ...block, id: `activity-${segmentIndex}` })));
-        // A formal reply, terminal error, or later user message closes this
-        // process even if Runtime readiness is still reconciling globally.
-        const completionConfirmed = Boolean(turn.assistant || failures.length || supersededAt !== undefined);
+        );
+        // A continuation can add another user event before the Runtime emits
+        // the one formal reply for the whole conversation. Do not fold an
+        // earlier process merely because it was superseded; close every
+        // pending process together when that later formal reply arrives.
+        const laterTurnHasFormalReply = turns.slice(index + 1).some(candidate => Boolean(candidate.assistant));
+        const completionConfirmed = Boolean(turn.assistant || parentFailed || laterTurnHasFormalReply);
         const fileChanges = fileChangesForTurn(events, turn);
         const userMessages = turn.user ? [turn.user] : [];
         const completedProcessKey = `${conversationScope ?? 'conversation'}:${turn.renderKey}`;
@@ -2721,13 +2930,6 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
                 : typeof message.event.payload._flowweave_delivery_status === 'string'
                   ? message.event.payload._flowweave_delivery_status
                   : undefined;
-            const segmentBlocks = processSegments
-              .filter(segment => segment.messageIndex === messageIndex)
-              .flatMap(segment => processBlocksForSegment(
-                segment,
-                isCurrent && messageIndex === userMessages.length - 1 && !turn.assistant && !failures.length,
-                finishedAt,
-              ));
             return <Fragment key={turn.renderKey}>
               <div className={`conversation-user-message${isContinuation ? ' continuation' : ''}`}>{editingEventId === message.event.id
                 ? <form className="conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(message.event.id, editingContent.trim()); }}><textarea ref={rewriteEditor} aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)} onKeyDown={event => {
@@ -2742,24 +2944,25 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
                   event.preventDefault();
                   event.currentTarget.form?.requestSubmit();
                 }}/><footer><button type="button" onClick={() => setEditingEventId(undefined)}>取消</button><button type="submit" disabled={!editingContent.trim() || rewritePending}>重新思考</button></footer></form>
-                : <article data-user-event-id={message.event.id} data-conversation-event-id={message.event.id} className="conversation-message user"><MessageAttachments attachments={eventAttachments(message.event)} references={message.event.payload.conversation_references} workspaceReferences={message.event.payload.workspace_references} annotations={eventAnnotations(message.event)} onOpen={onOpenAttachment} onOpenReference={reference => { if (onOpenConversationReference) onOpenConversationReference(reference); else setViewingReference(reference); }} onOpenWorkspaceReference={onOpenWorkspaceReference} onOpenAnnotation={locateAnnotation} conversationName={conversationName} imageUrl={attachmentImageUrl}/>{message.content && <div className="conversation-message-content"><MessageMarkdown>{message.content}</MessageMarkdown></div>}<footer className="conversation-message-meta user">{messageDeliveryStatus && <small className="conversation-message-delivery-status" role="status">{messageDeliveryStatus}</small>}{messageTimestamp && <time dateTime={typeof message.event.payload.timestamp === 'string' ? message.event.payload.timestamp : undefined}>{messageTimestamp}</time>}<div className={`conversation-message-actions${lastUserEventId === message.event.id ? ' can-rewrite' : ''}`}><button type="button" className="conversation-message-copy" aria-label={copiedEventId === message.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === message.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(message.event.id, message.content)}>{copiedEventId === message.event.id ? <Check size={13}/> : <Copy size={13}/>}</button>{lastUserEventId === message.event.id && <button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(message.event.id); setEditingContent(message.content); }}><Pencil size={13}/></button>}</div></footer></article>}</div>
-              {!completionConfirmed && segmentBlocks.map(block => <ActivityGroup
-                key={`${message.event.id}:${block.id}`}
-                items={block.items}
-                active={block.active}
-                revealEventIds={revealEventIds}
-                completionConfirmed={completionConfirmed}
-                paused={isCurrentPaused && !block.active}
-                parentFailed={parentFailed && !block.active}
-                startedAt={block.startedAt}
-                finishedAt={block.finishedAt}
-                avatarSlots={avatarSlots}
-                workspaceRoot={workspaceRoot}
-              />)}
+                : <article data-user-event-id={message.event.id} data-conversation-event-id={message.event.id} className="conversation-message user"><MessageAttachments attachments={eventAttachments(message.event)} references={message.event.payload.conversation_references} workspaceReferences={message.event.payload.workspace_references} annotations={eventAnnotations(message.event)} onOpen={onOpenAttachment} onOpenReference={reference => { if (onOpenConversationReference) onOpenConversationReference(reference); else setViewingReference(reference); }} onOpenWorkspaceReference={onOpenWorkspaceReference} onOpenAnnotation={locateAnnotation} conversationName={conversationName} imageUrl={attachmentImageUrl}/>{message.content && <div className="conversation-message-content"><MessageMarkdown>{message.content}</MessageMarkdown></div>}<footer className="conversation-message-meta user">{messageDeliveryStatus && <small className="conversation-message-delivery-status" role="status">{messageDeliveryStatus}</small>}{messageTimestamp && <time dateTime={typeof message.event.payload.timestamp === 'string' ? message.event.payload.timestamp : undefined}>{messageTimestamp}</time>}<div className="conversation-message-actions can-rewrite"><button type="button" className="conversation-message-copy" aria-label={copiedEventId === message.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === message.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(message.event.id, message.content)}>{copiedEventId === message.event.id ? <Check size={13}/> : <Copy size={13}/>}</button><button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(message.event.id); setEditingContent(message.content); }}><Pencil size={13}/></button></div></footer></article>}</div>
             </Fragment>;
           })}
+          {!completionConfirmed && processBlocks.map(block => <ActivityGroup
+            key={block.id}
+            items={block.items}
+            active={block.active}
+            revealEventIds={revealEventIds}
+            completionConfirmed={completionConfirmed}
+            paused={isCurrentPaused && !block.active}
+            parentFailed={parentFailed && !block.active}
+            startedAt={block.startedAt}
+            finishedAt={block.finishedAt}
+            avatarSlots={avatarSlots}
+            workspaceRoot={workspaceRoot}
+            onOpenSourceLocation={onOpenSourceLocation}
+          />)}
           {isCurrent && !turn.assistant && !failures.length && (
-            <CurrentTurnStatus items={turn.activity} requestSubmitting={requestSubmitting} statusOverride={pausing ? '正在暂停 Agent' : rewritePending ? '正在重新思考' : emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} modelRetryStatus={modelRetryStatus} monitoring={monitoring} connectionState={connectionState}/>
+            <CurrentTurnStatus items={turn.activity} requestSubmitting={requestSubmitting} statusOverride={pausing ? '正在暂停 Agent' : reconnectingAttempt ? `正在尝试重连（${reconnectingAttempt}/${reconnectingMaxAttempts}）` : rewritePending ? '正在重新思考' : emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} reconnecting={Boolean(reconnectingAttempt)} modelRetryStatus={modelRetryStatus} monitoring={monitoring} connectionState={connectionState}/>
           )}
           {processBlocks.length > 0 && turn.assistant && <div className="conversation-process-divider" role="separator" aria-label="工作过程结束"/>}
           {completionConfirmed && processBlocks.map(block => <ActivityGroup
@@ -2774,15 +2977,16 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
             finishedAt={block.finishedAt}
             avatarSlots={avatarSlots}
             workspaceRoot={workspaceRoot}
+            onOpenSourceLocation={onOpenSourceLocation}
             display="summary"
             open={completedProcessExpanded}
             onOpenChange={setCompletedProcessExpanded}
           />)}
-          {turn.assistant && <AgentReply event={turn.assistant.event} content={turn.assistant.content} reveal={revealEventIds.has(turn.assistant.event.id)} changes={fileChanges} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile} onReviewChanges={onReviewChanges} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl} workspaceRoot={workspaceRoot} annotations={turn.assistant.event.payload.collaboration_annotation_ids !== undefined ? eventAnnotations(turn.assistant.event) : turn.user ? eventAnnotations(turn.user.event) : []} onLocateAnnotation={locateAnnotation}/>}
+          {turn.assistant && <AgentReply event={turn.assistant.event} content={turn.assistant.content} reveal={revealEventIds.has(turn.assistant.event.id)} changes={fileChanges} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile} onReviewChanges={onReviewChanges} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenBrowser={onOpenBrowser} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl} workspaceRoot={workspaceRoot} annotations={turn.assistant.event.payload.collaboration_annotation_ids !== undefined ? eventAnnotations(turn.assistant.event) : turn.user ? eventAnnotations(turn.user.event) : []} onLocateAnnotation={locateAnnotation}/>}
           {failures.map(item => <ConversationFailure key={item.event.id} item={item} taskControl={taskControl} retryStatus={isLatest ? modelRetryStatus : undefined}/>)}
         </section>;
       })}
-      {turns.length === 0 && isGenerating && !condensationPending && <><ActivityGroup items={[]} active revealEventIds={revealEventIds} startedAt={requestStartedAt} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/><CurrentTurnStatus items={[]} requestSubmitting={requestSubmitting} statusOverride={pausing ? '正在暂停 Agent' : rewritePending ? '正在重新思考' : emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} modelRetryStatus={modelRetryStatus} monitoring={monitoring} connectionState={connectionState}/></>}
+      {turns.length === 0 && isGenerating && !condensationPending && <><ActivityGroup items={[]} active revealEventIds={revealEventIds} startedAt={requestStartedAt} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot} onOpenSourceLocation={onOpenSourceLocation}/><CurrentTurnStatus items={[]} requestSubmitting={requestSubmitting} statusOverride={pausing ? '正在暂停 Agent' : reconnectingAttempt ? `正在尝试重连（${reconnectingAttempt}/${reconnectingMaxAttempts}）` : rewritePending ? '正在重新思考' : emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} reconnecting={Boolean(reconnectingAttempt)} modelRetryStatus={modelRetryStatus} monitoring={monitoring} connectionState={connectionState}/></>}
 
       {condensationPending && <article className="conversation-condensation-progress" role="status" aria-label="正在压缩上下文">
         <LoaderCircle className="conversation-activity-spin" size={16}/>
@@ -2791,10 +2995,10 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
       </div>
     </section>
     {viewingReference && <ConversationReferencePreview reference={viewingReference} onClose={() => setViewingReference(undefined)} onLocate={locateReferenceSource}/>}
-    {selectedReference && <span className="conversation-add-reference" style={{ left: selectedReference.left, top: selectedReference.top }}>
+    {selectedReference && <ViewportPopover className="conversation-add-reference" anchor={() => selectedReference.range.getBoundingClientRect()} gap={8}>
       <button type="button" onPointerDown={event => event.preventDefault()} onClick={() => { onCreateAnnotation?.({ event_id: selectedReference.reference.eventId, quote: selectedReference.reference.content, compact_start: selectedReference.reference.compactStart }); window.getSelection()?.removeAllRanges(); setSelectedReference(undefined); }}><Quote size={14}/>添加到会话</button>
       {onSidebarQuestion && <button type="button" onPointerDown={event => event.preventDefault()} onClick={() => { onSidebarQuestion(selectedReference.reference); window.getSelection()?.removeAllRanges(); setSelectedReference(undefined); }}><PanelRightOpen size={14}/>在侧边聊天提问</button>}
-    </span>}
+    </ViewportPopover>}
     {showJumpToLatest && <button
       type="button"
       className={`conversation-jump-latest${isGenerating ? ' generating' : ''}`}

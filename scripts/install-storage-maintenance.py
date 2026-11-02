@@ -8,10 +8,10 @@ import base64
 import importlib.util
 import json
 import os
-from pathlib import Path
 import shlex
 import subprocess
 import sys
+from pathlib import Path
 
 FILES = (
     "scripts/storage-maintenance.py",
@@ -43,23 +43,24 @@ def install_locked(payload):
     settings = Path("/etc/flowweave-storage-maintenance.json")
     unit_root = Path("/etc/systemd/system")
     config = {"schema": 1, "root": payload["root"], "build": payload["build"]}
+    config["images"] = payload["images"]
+    config["prune_build_cache"] = payload["prune_build_cache"]
     if base.is_symlink() or settings.is_symlink():
         raise ValueError("Symlink installation target")
     if base.exists() and not (base / ".managed-schema-1").is_file():
         raise ValueError("Unknown installation directory")
-    if settings.exists() and json.loads(settings.read_text()) != config:
-        raise ValueError("Existing settings differ; explicit migration required")
-    units = [
-        unit_root / Path(name).name
-        for name in FILES
-        if name.endswith((".service", ".timer"))
-    ]
+    previous_settings = settings.read_bytes() if settings.exists() else None
+    if previous_settings is not None:
+        previous = json.loads(previous_settings)
+        if any(previous.get(k) != config[k] for k in ("schema", "root", "build")):
+            raise ValueError("Existing settings target differs; explicit migration required")
+        if previous.get("images", config["images"]) != config["images"]:
+            raise ValueError("Existing image directory differs")
+        if set(previous) - set(config):
+            raise ValueError("Unknown existing settings")
+    units = [unit_root / Path(name).name for name in FILES if name.endswith((".service", ".timer"))]
     for path in units:
-        if (
-            path.is_symlink()
-            or path.exists()
-            and not path.read_text().startswith(OWNED)
-        ):
+        if path.is_symlink() or path.exists() and not path.read_text().startswith(OWNED):
             raise ValueError("Unknown existing systemd unit")
     # Validate the unit syntax/calendar before changing an existing schedule.
     run(["systemd-analyze", "calendar", "*-*-* 03:30:00 Asia/Shanghai"])
@@ -87,17 +88,24 @@ def install_locked(payload):
     )
     # Audit before enabling deletion. The runner shares the release lock.
     config_data = json.dumps(config, sort_keys=True).encode()
-    if not settings.exists():
-        atomic(settings, config_data, 0o600)
-    elif settings.stat().st_mode & 0o077:
+    if settings.exists() and settings.stat().st_mode & 0o077:
         raise ValueError("Existing settings have unsafe permissions")
+    # Audit against the intended config without changing the live timer's settings.
+    audit_code = (
+        "import importlib.util,json; "
+        "s=importlib.util.spec_from_file_location('maintenance',"
+        + repr(str(version / "storage-maintenance.py"))
+        + ");m=importlib.util.module_from_spec(s);s.loader.exec_module(m);"
+        + "print(json.dumps(m.maintain(json.loads("
+        + repr(config_data.decode())
+        + "))))"
+    )
     report = run(
         [
             "/usr/bin/python3",
             "-B",
-            str(version / "storage-maintenance.py"),
-            "--config",
-            str(settings),
+            "-c",
+            audit_code,
         ]
     )
     rows = [json.loads(row) for row in report.splitlines()]
@@ -105,37 +113,39 @@ def install_locked(payload):
     # Do not enable a job that could not finish its first protection inventory.
     if rows[-1]["status"] != "dry-run":
         raise ValueError("Audit was skipped; retry after active work")
-    previous_link = (
-        os.readlink(base / "current") if (base / "current").is_symlink() else None
-    )
+    previous_link = os.readlink(base / "current") if (base / "current").is_symlink() else None
     if (base / "current").exists() and previous_link is None:
         raise ValueError("Unknown current entry")
     original = {p: p.read_bytes() if p.exists() else None for p in units}
     was_enabled = (
-        subprocess.run(
-            ["systemctl", "is-enabled", units[1].name], capture_output=True
-        ).returncode
+        subprocess.run(["systemctl", "is-enabled", units[1].name], capture_output=True).returncode
         == 0
     )
     was_active = (
-        subprocess.run(
-            ["systemctl", "is-active", units[1].name], capture_output=True
-        ).returncode
+        subprocess.run(["systemctl", "is-active", units[1].name], capture_output=True).returncode
         == 0
     )
-    run(["systemctl", "stop", units[1].name]) if original[units[1]] else None
-    # Keep one rollback copy, replaced on updates, with restricted mode.
-    for path, data in original.items():
-        if data is not None:
-            atomic(base / (path.name + ".previous"), data, 0o600)
     try:
+        run(["systemctl", "stop", units[1].name]) if original[units[1]] else None
+        service_active = (
+            run(["systemctl", "show", units[0].name, "-p", "ActiveState"])
+            if original[units[0]]
+            else ""
+        )
+        if "ActiveState=active" in service_active or "ActiveState=activating" in service_active:
+            raise ValueError("Existing maintenance service is still running")
+        # Keep one rollback copy, replaced on updates, with restricted mode.
+        for path, data in original.items():
+            if data is not None:
+                atomic(base / (path.name + ".previous"), data, 0o600)
+        if previous_settings is not None:
+            atomic(base / "settings.previous", previous_settings, 0o600)
+        atomic(settings, config_data, 0o600)
         link = base / "current.new"
         link.symlink_to(version.name)
         link.replace(base / "current")
         for path in units:
-            data = next(
-                data for name, data in decoded.items() if Path(name).name == path.name
-            )
+            data = next(data for name, data in decoded.items() if Path(name).name == path.name)
             atomic(path, data, 0o644)
         run(["systemctl", "daemon-reload"])
         run(["systemctl", "start", units[0].name])
@@ -157,17 +167,12 @@ def install_locked(payload):
         # immutable version. Only audited version directories are eligible.
         keep = {version.name, previous_link}
         for directory in base.iterdir():
-            if (
-                directory.is_symlink()
-                or not directory.is_dir()
-                or directory.name in keep
-            ):
+            if directory.is_symlink() or not directory.is_dir() or directory.name in keep:
                 continue
             if (
                 len(directory.name) == 40
                 and all(c in "0123456789abcdef" for c in directory.name)
-                and {p.name for p in directory.iterdir()}
-                == {Path(n).name for n in FILES}
+                and {p.name for p in directory.iterdir()} == {Path(n).name for n in FILES}
             ):
                 import shutil
 
@@ -191,6 +196,10 @@ def install_locked(payload):
                 path.unlink(missing_ok=True)
             else:
                 atomic(path, data, 0o644)
+        if previous_settings is None:
+            settings.unlink(missing_ok=True)
+        else:
+            atomic(settings, previous_settings, 0o600)
         if previous_link is not None:
             link = base / "current.rollback"
             link.symlink_to(previous_link)
@@ -221,7 +230,8 @@ def install_server(payload):
 def server_program(source):
     program = source.rsplit('if __name__ == "__main__":', 1)[0] + (
         "\ntry:\n install_server(json.load(sys.stdin))\nexcept Exception as error:\n"
-        ' print(json.dumps({"status":"failed","error_type":type(error).__name__}), file=sys.stderr)\n'
+        ' print(json.dumps({"status":"failed","error_type":type(error).__name__}), '
+        "file=sys.stderr)\n"
         " sys.exit(1)\n"
     )
     compile(program, "<server-installer>", "exec")
@@ -232,6 +242,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--commit", required=True)
+    parser.add_argument("--prune-build-cache", action="store_true")
     args = parser.parse_args()
     commit = run(["git", "rev-parse", "--verify", args.commit + "^{commit}"]).strip()
     spec = importlib.util.spec_from_file_location(
@@ -255,6 +266,8 @@ def main():
         "commit": commit,
         "root": config["FLOWWEAVE_REMOTE_ROOT"],
         "build": config["FLOWWEAVE_REMOTE_BUILD_ROOT"],
+        "images": config["FLOWWEAVE_REMOTE_IMAGE_ROOT"],
+        "prune_build_cache": args.prune_build_cache,
         "files": {
             name: base64.b64encode(
                 subprocess.run(
@@ -298,9 +311,7 @@ def main():
         except ValueError:
             pass
     if result.returncode:
-        print(
-            "Installation failed; private diagnostic output withheld", file=sys.stderr
-        )
+        print("Installation failed; private diagnostic output withheld", file=sys.stderr)
         raise RuntimeError("Remote installation failed")
 
 

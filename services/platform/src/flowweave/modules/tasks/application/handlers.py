@@ -35,6 +35,7 @@ from flowweave.modules.orchestration import public as orchestration
 from flowweave.modules.sandboxes import public as sandboxes
 from flowweave.modules.sandboxes.application.runtime_pause import process_flow_run_runtime_pause
 from flowweave.modules.tasks.public import Lease, lease_is_current
+from flowweave.modules.users.application.security import tenant_user
 from flowweave.shared.models import BackgroundTask, TaskState
 
 Handler = Callable[[Session, str, dict[str, Any], Lease], None]
@@ -112,6 +113,22 @@ def _condense_agent_conversation(
     db: Session, aggregate_id: str, payload: dict[str, Any], lease: Lease
 ) -> None:
     process_manual_condensation(db, aggregate_id, payload, lease)
+
+
+def _cleanup_agent_work_directory(
+    db: Session, aggregate_id: str, payload: dict[str, Any], _lease: Lease
+) -> None:
+    from flowweave.modules.agent_workspaces.application.directory_deletion import cleanup
+
+    cleanup(db, aggregate_id, payload)
+
+
+def _delete_managed_agent_conversations(
+    db: Session, aggregate_id: str, _payload: dict[str, Any], lease: Lease
+) -> None:
+    from flowweave.modules.agent_sessions.application.management_deletion import process
+
+    process(db, aggregate_id, lease)
 
 
 def _cleanup_draft_attachment(
@@ -229,6 +246,12 @@ def _delete_automatic_run_record(
     )
 
 
+def _delete_flow_run_schedule(
+    db: Session, aggregate_id: str, _payload: dict[str, Any], _lease: Lease
+) -> None:
+    orchestration.process_delete_flow_run_schedule(db, aggregate_id, commit=False)
+
+
 def _cleanup_setup_container(
     db: Session, aggregate_id: str, payload: dict[str, Any], lease: Lease
 ) -> None:
@@ -297,7 +320,25 @@ def _expire_plugin_source(
     expire_plugin_source(db, aggregate_id)
 
 
+def _bootstrap_case_control_round(
+    db: Session, aggregate_id: str, _payload: dict[str, Any], _lease: Lease
+) -> None:
+    from flowweave.modules.cases.application.coordination import deliver_control_round
+
+    deliver_control_round(db, aggregate_id)
+
+
+def _deliver_case_feedback(
+    db: Session, aggregate_id: str, _payload: dict[str, Any], lease: Lease
+) -> None:
+    from flowweave.modules.cases.application.feedback import deliver_feedback
+
+    deliver_feedback(db, aggregate_id, lease)
+
+
 HANDLERS: dict[str, Handler] = {
+    "DELIVER_CASE_FEEDBACK": _deliver_case_feedback,
+    "BOOTSTRAP_CASE_CONTROL_ROUND": _bootstrap_case_control_round,
     "EVALUATE_READINESS": _readiness,
     "RUN_GATE_POLICY": _gates,
     "START_RUNTIME": _start_runtime,
@@ -310,6 +351,8 @@ HANDLERS: dict[str, Handler] = {
     "PROVISION_AGENT_WORKSPACE_RUNTIME": _provision_agent_workspace_runtime,
     "CONDENSE_AGENT_CONVERSATION": _condense_agent_conversation,
     "CLEANUP_DRAFT_ATTACHMENT": _cleanup_draft_attachment,
+    "CLEANUP_AGENT_WORK_DIRECTORY": _cleanup_agent_work_directory,
+    "DELETE_MANAGED_AGENT_CONVERSATIONS": _delete_managed_agent_conversations,
     "DELIVER_AGENT_CONVERSATION_SCHEDULE": _deliver_agent_conversation_schedule,
     "EXPIRE_AGENT_SIDEBAR_CONVERSATION": _expire_agent_sidebar_conversation,
     "GENERATE_AGENT_CONVERSATION_TITLE": _generate_agent_conversation_title,
@@ -324,6 +367,7 @@ HANDLERS: dict[str, Handler] = {
     "CANCEL_RUNTIME": _cancel_runtime,
     "DELETE_NODE_RUN_RECORD": _delete_node_run_record,
     "DELETE_AUTOMATIC_RUN_RECORD": _delete_automatic_run_record,
+    "DELETE_FLOW_RUN_SCHEDULE": _delete_flow_run_schedule,
     "PUBLISH_ENVIRONMENT_VERSION": _publish_environment_version,
     "CLEANUP_SETUP_CONTAINER": _cleanup_setup_container,
     "CLEANUP_ENVIRONMENT_IMAGE": _cleanup_environment_image,
@@ -349,6 +393,21 @@ def handle(db: Session, task: BackgroundTask, lease: Lease) -> None:
 def record_terminal_failure(db: Session, task_id: str, error: str) -> None:
     task = db.get(BackgroundTask, task_id)
     if task is None or task.state != TaskState.DEAD:
+        return
+    if task.task_type == "DELIVER_CASE_FEEDBACK":
+        from flowweave.modules.cases.application.feedback import record_feedback_failure
+
+        with tenant_user(task.owner_user_id):
+            record_feedback_failure(db, task.aggregate_id)
+        return
+    if task.task_type == "BOOTSTRAP_CASE_CONTROL_ROUND":
+        from flowweave.modules.cases.infrastructure.models import CaseControlRound
+
+        entry = db.get(CaseControlRound, task.aggregate_id)
+        expected_key = f"case-round:{entry.id}:{entry.delivery_attempt}" if entry else ""
+        if entry is not None and entry.state == "PENDING" and task.idempotency_key == expected_key:
+            entry.state = "FAILED"
+            entry.error_code = "CASE_AGENT_DELIVERY_EXHAUSTED"
         return
     if task.task_type == "GENERATE_AGENT_CONVERSATION_TITLE":
         finalize_agent_conversation_title_failure(

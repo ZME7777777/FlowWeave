@@ -7,6 +7,7 @@ from typing import Any, Literal, cast
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from flowweave.modules.catalog.application import mcp_authentication
 from flowweave.modules.credentials.application.service import credentials_for_agent
 from flowweave.modules.model_providers.application.service import (
     codex_runtime_credentials,
@@ -16,6 +17,8 @@ from flowweave.modules.model_providers.application.service import (
     provider_auth_headers,
 )
 from flowweave.modules.model_providers.infrastructure.codex_oauth import CODEX_BASE_URL
+from flowweave.modules.runs.application.git_settings import record_git_identity
+from flowweave.modules.runs.infrastructure.models import FlowRun
 from flowweave.modules.sandboxes.application.runtime_allocation import (
     capability_materialization_lock,
     node_attempt_workspace_context,
@@ -403,6 +406,9 @@ def build_runtime_request(
     # parent owns the one shared physical Runtime.  Keep those identities
     # separate: workspace validation must use the logical record, whereas
     # allocation and capability materialization must use the Runtime owner.
+    record = db.get(FlowRun, flow_run_id)
+    identity = record_git_identity(record) if record is not None else None
+    git_identity = (identity["author"], identity["email"]) if identity else None
     runtime_owner_id = runtime_owner_flow_run_id or flow_run_id
     workspace_context = (
         node_attempt_workspace_context(db, flow_run_id=flow_run_id, node_attempt_id=node_attempt_id)
@@ -441,7 +447,7 @@ def build_runtime_request(
     # used outside FlowRun; the FlowRun contributes only its Runtime and
     # workspace mount. Keep this fast path before all node materialization.
     if interaction_mode == "COLLABORATION" and agent_spec is not None:
-        return StartAttemptRequest(
+        request = StartAttemptRequest(
             attempt_id=attempt_id,
             execution_key=execution_key,
             node={},
@@ -451,6 +457,7 @@ def build_runtime_request(
             agent_spec=agent_spec,
             node_workspace_ref="",
             workspace_root=workspace_root,
+            git_identity=git_identity,
             interaction_mode="COLLABORATION",
             startup_prompt=None,
             startup_capability_key=None,
@@ -473,6 +480,7 @@ def build_runtime_request(
             runtime_base_url=runtime_base_url,
             conversation_secrets=conversation_secrets,
         )
+        return mcp_authentication.prepare_request(db, request, f"conversation:{attempt_id}")
     runtime_allocation = (
         runtime_allocation_for_node_attempt(
             db,
@@ -523,7 +531,7 @@ def build_runtime_request(
             runtime_working_dir_relative = ""
             runtime_working_directory = str(workspace_context.runtime_working_directory)
     if agent_spec is not None:
-        return StartAttemptRequest(
+        request = StartAttemptRequest(
             attempt_id=attempt_id,
             execution_key=execution_key,
             node=node,
@@ -533,6 +541,7 @@ def build_runtime_request(
             agent_spec=agent_spec,
             node_workspace_ref=node_workspace_ref,
             workspace_root=workspace_root,
+            git_identity=git_identity,
             interaction_mode=interaction_mode,
             startup_prompt=startup_prompt,
             startup_capability_key=startup_capability_key,
@@ -551,6 +560,7 @@ def build_runtime_request(
             runtime_base_url=runtime_base_url,
             conversation_secrets=conversation_secrets,
         )
+        return mcp_authentication.prepare_request(db, request, f"attempt:{attempt_id}")
     raw_agent_spec = node.get("runtime_agent_spec")
     if not isinstance(raw_agent_spec, dict):
         raise DomainError(
@@ -852,7 +862,7 @@ def build_runtime_request(
         critic=critic,
         budgets=RuntimeBudgets(max_iterations=max_iterations),
     )
-    return StartAttemptRequest(
+    request = StartAttemptRequest(
         attempt_id=attempt_id,
         execution_key=execution_key,
         node=node,
@@ -861,6 +871,7 @@ def build_runtime_request(
         agent_spec=agent_spec,
         node_workspace_ref=node_workspace_ref,
         workspace_root=workspace_root,
+        git_identity=git_identity,
         interaction_mode=interaction_mode,
         startup_prompt=startup_prompt,
         startup_capability_key=startup_capability_key,
@@ -879,3 +890,4 @@ def build_runtime_request(
         runtime_base_url=runtime_base_url,
         conversation_secrets=conversation_secrets,
     )
+    return mcp_authentication.prepare_request(db, request, f"attempt:{attempt_id}")

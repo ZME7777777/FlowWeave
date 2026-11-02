@@ -154,6 +154,35 @@ def matches_path(item: WebsiteCredential, path: str) -> bool:
     return normalized == target_path or normalized.startswith(target_path + "/")
 
 
+def credential_secret_descriptions(summaries: Iterable[dict[str, Any]]) -> dict[str, str]:
+    """Native SecretSource descriptions contain matching metadata, never values."""
+    descriptions: dict[str, str] = {}
+    for item in summaries:
+        metadata = {
+            "target_host": item["target_host"],
+            "target_path": item["target_path"],
+            "host_scope": "subdomains" if item["include_subdomains"] else "exact",
+            "auth_type": item["auth_type"],
+            "source_env": item["environment_names"],
+        }
+        description = (
+            "当前受控认证目录项（同一源变量以本说明为准）："
+            + json.dumps(metadata, ensure_ascii=False, sort_keys=True)
+            + "。仅用于匹配主机、端口和完整目录边界的 URL；最长路径优先，"
+            "父域仅在 subdomains 时允许，匹配并列须停止并询问用户。"
+            "执行命令必须显式引用上列完整源变量名，OpenHands 才会注入；"
+            "env/printenv 枚举或脚本自动发现为空不代表认证未同步。"
+            "脚本需要自定义变量时，仅在该条命令内映射，例如 "
+            'ES_QUERY_USERNAME="$完整用户名源变量" '
+            'ES_QUERY_PASSWORD="$完整密码源变量" python 脚本；'
+            "示例占位符必须替换为 source_env 中的真实变量名。Token 原样使用，"
+            "认证方案按目标服务协议构造；禁止跨主机、全局 export、输出或写入凭据值。"
+        )
+        for name in item["environment_names"].values():
+            descriptions[name] = description
+    return descriptions
+
+
 def resolve_credentials_for_agent(
     db: Session, credential_ids: Iterable[str] | None = None
 ) -> tuple[dict[str, str], str, list[dict[str, Any]]]:

@@ -1,15 +1,25 @@
+import { ViewportPopover } from '../components/ViewportPopover';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Braces, CheckSquare, ChevronDown, Download, Ellipsis, Eye, FileArchive, Layers3, LockKeyhole, Pencil, PlugZap, Trash2, Upload, X } from 'lucide-react';
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { createPortal } from 'react-dom';
+import { ArrowDown, ArrowUp, ArrowUpDown, BookOpen, Box, Code2, Search, Webhook, Braces, CheckSquare, ChevronDown, Download, Ellipsis, FileArchive, GitCompareArrows, Layers3, LockKeyhole, LockKeyholeOpen, Pencil, PlugZap, RotateCcw, Trash2, Upload, X } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { api, ApiError, capabilityPackageUrl } from '../api/client';
+import { CapabilityPackageDialog } from '../components/CapabilityPackageDialog';
 import { CapabilityCollectionEditorDialog } from '../components/CapabilityCollectionEditorDialog';
+import { McpConnectionTestDialog } from '../components/McpConnectionTestDialog';
+import { mcpConnectionLabel } from '../components/mcp-connection';
+import { McpAuthenticationFields } from '../components/McpAuthenticationFields';
+import { McpDetailsDialog } from '../components/McpDetailsDialog';
+import { LaunchOptionMenu } from '../components/LaunchOptionMenu';
 import { Pagination } from '../components/Pagination';
-import { MarketplaceCatalogDialog } from '../components/MarketplaceCatalogDialog';
+import { PluginMarketDialog } from '../components/PluginMarketDialog';
+import { SkillMarketDialog } from '../components/SkillMarketDialog';
 import { AgentProfileHistoryDialog } from '../components/AgentProfileHistoryDialog';
 import { useProductDialog } from '../components/ProductDialogContext';
+import { useDialogFocus } from '../components/useDialogFocus';
 import { useEscapeClose } from '../components/useEscapeClose';
-import type { BlockedCapabilityDelete, CapabilityAsset, CapabilityAssetType, CapabilityCollection, CapabilityCollectionWrite, ContextBundleManifest, PluginSourceResolution } from '../types';
+import type { AgentSessionMcpReadiness, BlockedCapabilityDelete, CapabilityAsset, CapabilityAssetType, CapabilityLineage, CapabilityCollection, CapabilityCollectionWrite, CapabilitySort, CapabilityCollectionSort, ContextBundleManifest, McpAuthenticationWrite } from '../types';
+
+import './capability-repository.css';
 
 const SKILL_ZIP_MAX_BYTES = 25 * 1024 * 1024;
 const MCP_JSON_MAX_BYTES = 1024 * 1024;
@@ -27,20 +37,6 @@ const MCP_JSON_EXAMPLE = JSON.stringify({
     },
   },
 }, null, 2);
-const DEPENDENCY_EXAMPLE = `dependencies:
-  python:
-    requests: 2.32.3
-  node:
-    lodash: 4.17.21
-  cli:
-    lark-cli: 1.0.84`;
-
-interface CapabilityLineage {
-  id: string;
-  latest: CapabilityAsset;
-  versions: CapabilityAsset[];
-}
-
 const CAPABILITY_MODULES: CapabilityAssetType[] = ['SKILL', 'PLUGIN', 'MCP', 'AGENT_DEFINITION', 'CONTEXT', 'HOOK'];
 const HOOK_EVENTS = [
   { value: 'pre_tool_use', label: '工具调用前', native: 'PreToolUse', description: '在 OpenHands 执行匹配工具前检查；可阻断调用。', toolScoped: true },
@@ -63,25 +59,6 @@ interface McpScriptAsset { server: string; filename: string; contentBase64: stri
 type ContextBundleDraft = Omit<ContextBundleManifest, 'documents'> & {
   documents: Array<{ path: string; title: string; content_sha256: string }>
 };
-
-type ContextPreview = {
-  item: CapabilityAsset;
-  content: string;
-  contentFormat: 'TEXT' | 'BUNDLE';
-  manifest: ContextBundleManifest | null;
-};
-
-function capabilityPageSize() {
-  const columns = window.innerWidth >= 1320 ? 4 : window.innerWidth >= 1100 ? 3 : 2;
-  const rows = window.innerHeight >= 900 ? 5 : window.innerHeight >= 760 ? 4 : 3;
-  return columns * rows;
-}
-
-function skillCollectionPageSize() {
-  const columns = window.innerWidth >= 1320 ? 4 : window.innerWidth >= 980 ? 3 : 2;
-  const rows = window.innerHeight >= 900 ? 3 : window.innerHeight >= 680 ? 2 : 1;
-  return columns * rows;
-}
 
 function parseMcpDocument(text: string): McpDocument {
   let value: unknown;
@@ -184,7 +161,7 @@ function errorMessage(reason: unknown): string {
 function blockedCapabilityMessage(blocked: BlockedCapabilityDelete[]): string {
   const unique = [...new Map(blocked.map(item => [`${item.relation}:${item.name}`, item])).values()];
   return `以下能力无法删除，已跳过：${unique.map(item => {
-    if (item.relation === 'BUILTIN_CAPABILITY') return `“${item.name}”是系统内置能力，承担节点默认运行策略，不能删除`;
+    if (item.relation === 'BUILTIN_CAPABILITY') return `“${item.name}”是系统内置能力，由平台维护，不能删除`;
     const nodes = item.nodes?.length ? `节点 ${item.nodes.map(node => `“${node.name}”`).join('、')}` : '';
     const collections = item.collections?.length ? `Skill 组合 ${item.collections.map(collection => `“${collection.name}”`).join('、')}` : '';
     const workspaces = item.workspaces?.length ? `Agent 工作区 ${item.workspaces.map(workspace => `“${workspace.name}”`).join('、')}` : '';
@@ -205,23 +182,31 @@ function groupCapabilities(capabilities: CapabilityAsset[]): CapabilityLineage[]
 export function CapabilitiesPage() {
   const dialog = useProductDialog();
   const qc = useQueryClient();
-  const { data: capabilities = [], isLoading } = useQuery({ queryKey: ['capabilities'], queryFn: api.capabilities });
-  const { data: capabilityCollections = [], isLoading: collectionsLoading } = useQuery({ queryKey: ['capability-collections'], queryFn: api.capabilityCollections });
+  const [capabilities, setCapabilities] = useState<CapabilityAsset[]>([]);
+  const [collectionsView, setCollectionsView] = useState(false);
   const [type, setType] = useState<CapabilityAssetType>('SKILL');
   const [editing, setEditing] = useState<CapabilityAsset>();
-  useEscapeClose(() => setEditing(undefined), Boolean(editing));
+  const [skillComparison, setSkillComparison] = useState<CapabilityAsset>();
   const [contextOpen, setContextOpen] = useState(false);
   const [contextTitle, setContextTitle] = useState('');
   const [contextDescription, setContextDescription] = useState('');
+  const [contextContent, setContextContent] = useState('');
   const [contextFile, setContextFile] = useState<File>();
   const [contextBundleManifest, setContextBundleManifest] = useState<ContextBundleDraft>();
-  const [viewingContext, setViewingContext] = useState<ContextPreview>();
+  const [viewingContext, setViewingContext] = useState<CapabilityAsset>();
   useEscapeClose(() => setContextOpen(false), contextOpen);
-  useEscapeClose(() => setViewingContext(undefined), Boolean(viewingContext));
   const [editingCollection, setEditingCollection] = useState<CapabilityCollection | null | undefined>();
   const [mcpOpen, setMcpOpen] = useState(false);
+  const [mcpAuthentication, setMcpAuthentication] = useState<McpAuthenticationWrite>();
+  const [mcpInitialAuthentication, setMcpInitialAuthentication] = useState<McpAuthenticationWrite>();
+  const [mcpAuthenticationVersionId, setMcpAuthenticationVersionId] = useState<string>();
   const [editingMcp, setEditingMcp] = useState<CapabilityAsset>();
-  useEscapeClose(() => setMcpOpen(false), mcpOpen);
+  const [mcpInitialSource, setMcpInitialSource] = useState('');
+  const [mcpBaseRevision, setMcpBaseRevision] = useState<number>();
+  const [viewingMcp, setViewingMcp] = useState<CapabilityLineage>();
+  const [viewingMcpTools, setViewingMcpTools] = useState(false);
+  const [mcpTestTargets, setMcpTestTargets] = useState<CapabilityAsset[]>();
+  const [mcpResults, setMcpResults] = useState<Record<string, AgentSessionMcpReadiness>>({});
   const [viewingAgentDefinition, setViewingAgentDefinition] = useState<CapabilityAsset>();
   useEscapeClose(() => setViewingAgentDefinition(undefined), Boolean(viewingAgentDefinition));
   const [hookOpen, setHookOpen] = useState(false);
@@ -232,22 +217,11 @@ export function CapabilitiesPage() {
   const [hookMode, setHookMode] = useState<HookMode>('PROMPT');
   const [hookFile, setHookFile] = useState<File>();
   useEscapeClose(() => setHookOpen(false), hookOpen);
-  const [gitPluginOpen, setGitPluginOpen] = useState(false);
-  const [marketplaceOpen, setMarketplaceOpen] = useState(false);
+  const [skillMarketOpen, setSkillMarketOpen] = useState(false);
+  const skillUpload = useRef<HTMLInputElement>(null);
+  const [pluginMarketOpen, setPluginMarketOpen] = useState(false);
+  const pluginUpload = useRef<HTMLInputElement>(null);
   const [profileHistory, setProfileHistory] = useState<CapabilityLineage>();
-  const [gitSourceUrl, setGitSourceUrl] = useState('https://github.com/');
-  const [gitCommit, setGitCommit] = useState('');
-  const [gitRepoPath, setGitRepoPath] = useState('');
-  const [gitResolution, setGitResolution] = useState<PluginSourceResolution>();
-  const [gitBusy, setGitBusy] = useState(false);
-  const gitPollGeneration = useRef(0);
-  const closeGitPlugin = () => {
-    gitPollGeneration.current += 1;
-    setGitBusy(false);
-    setGitPluginOpen(false);
-  };
-  useEscapeClose(closeGitPlugin, gitPluginOpen);
-  const [source, setSource] = useState('');
   const [mcpMode, setMcpMode] = useState<McpEditorMode>('FORM');
   const [mcpJson, setMcpJson] = useState(MCP_JSON_EXAMPLE);
   const [mcpSelectedServer, setMcpSelectedServer] = useState('remote');
@@ -258,33 +232,49 @@ export function CapabilitiesPage() {
   const [selectedLineageIds, setSelectedLineageIds] = useState<Set<string>>(new Set());
   const [repositoryQuery, setRepositoryQuery] = useState('');
   const [page, setPage] = useState(1);
-  const [collectionPage, setCollectionPage] = useState(1);
-  const [collectionPageSize, setCollectionPageSize] = useState(skillCollectionPageSize);
+  const [showBuiltin, setShowBuiltin] = useState(false);
+  const pageSize = 20;
+  const [sort, setSort] = useState<CapabilitySort>('created_at');
+  const [collectionSort, setCollectionSort] = useState<CapabilityCollectionSort>('created_at');
+  const [direction, setDirection] = useState<'asc' | 'desc'>('desc');
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
-  const lineages = useMemo(() => groupCapabilities(capabilities), [capabilities]);
-  const visible = useMemo(() => {
-    const needle = repositoryQuery.trim().toLocaleLowerCase();
-    return lineages.filter(group => group.latest.capability_type === type
-      && (!needle || `${group.latest.capability_key} ${group.latest.description} ${group.latest.filename}`.toLocaleLowerCase().includes(needle)));
-  }, [lineages, repositoryQuery, type]);
-  const selectableVisible = useMemo(() => visible.filter(group => !group.latest.is_builtin), [visible]);
-  const selectedVisible = useMemo(() => selectableVisible.filter(group => selectedLineageIds.has(group.id)), [selectableVisible, selectedLineageIds]);
-  const allVisibleSelected = selectableVisible.length > 0 && selectableVisible.every(group => selectedLineageIds.has(group.id));
-  const [pageSize, setPageSize] = useState(capabilityPageSize);
-  const pagedVisible = visible.slice((page - 1) * pageSize, page * pageSize);
-  const pagedCapabilityCollections = capabilityCollections.slice((collectionPage - 1) * collectionPageSize, collectionPage * collectionPageSize);
-  useEffect(() => setPage(1), [type, repositoryQuery]);
-  useEffect(() => { if (page > Math.max(1, Math.ceil(visible.length / pageSize))) setPage(1); }, [page, pageSize, visible.length]);
-  useEffect(() => { if (collectionPage > Math.max(1, Math.ceil(capabilityCollections.length / collectionPageSize))) setCollectionPage(1); }, [capabilityCollections.length, collectionPage, collectionPageSize]);
-  useEffect(() => {
-    const updatePageSize = () => {
-      setPageSize(capabilityPageSize());
-      setCollectionPageSize(skillCollectionPageSize());
-    };
-    window.addEventListener('resize', updatePageSize);
-    return () => window.removeEventListener('resize', updatePageSize);
-  }, []);
+  const selectedGroups = useRef(new Map<string, CapabilityLineage>());
+  const [allSelectionIds, setAllSelectionIds] = useState<string[]>([]);
+  const directoryParams = { capability_type: type, q: repositoryQuery, page, page_size: pageSize, sort, direction, include_builtin: showBuiltin };
+  const directory = useQuery({ queryKey: ['capabilities', 'directory', directoryParams], queryFn: () => api.capabilityDirectory(directoryParams), enabled: !collectionsView });
+  const collectionParams = { q: repositoryQuery, page, page_size: pageSize, sort: collectionSort, direction };
+  const collectionDirectory = useQuery({ queryKey: ['capability-collections', 'directory', collectionParams], queryFn: () => api.capabilityCollectionDirectory(collectionParams), enabled: collectionsView });
+  const [counts, setCounts] = useState<Partial<Record<CapabilityAssetType, number>>>({});
+  const [collectionTotal, setCollectionTotal] = useState<number>();
+  useEffect(() => { if (directory.data) { setCounts(Object.fromEntries(CAPABILITY_MODULES.map(item => [item, directory.data.counts[item] ?? 0]))); setCollectionTotal(directory.data.collection_total); } }, [directory.data]);
+  useEffect(() => { if (collectionsView && collectionDirectory.data && !repositoryQuery) setCollectionTotal(collectionDirectory.data.total); }, [collectionsView, collectionDirectory.data, repositoryQuery]);
+  const visible = directory.data?.items ?? [];
+  const capabilityCollections = collectionDirectory.data?.items ?? [];
+  const total = collectionsView ? collectionDirectory.data?.total ?? 0 : directory.data?.total ?? 0;
+  const isLoading = collectionsView ? collectionDirectory.isLoading : directory.isLoading;
+  const queryError = collectionsView ? collectionDirectory.error : directory.error;
+  const selectedVisible = [...selectedLineageIds].map(id => selectedGroups.current.get(id)).filter((item): item is CapabilityLineage => Boolean(item));
+  const allVisibleSelected = allSelectionIds.length > 0 && allSelectionIds.every(id => selectedLineageIds.has(id));
+  const clearSelection = () => { setSelectedLineageIds(new Set()); selectedGroups.current.clear(); setAllSelectionIds([]); };
+  const navigateModule = (next: CapabilityAssetType, collections = false) => {
+    setType(next); setCollectionsView(collections); setPage(1); setRepositoryQuery('');
+    setSort('created_at'); setCollectionSort('created_at'); setDirection('desc');
+    clearSelection(); setError(''); setNotice('');
+  };
+  const changeSort = (column: CapabilitySort | CapabilityCollectionSort) => {
+    const active = collectionsView ? collectionSort : sort;
+    if (collectionsView) setCollectionSort(column as CapabilityCollectionSort); else setSort(column as CapabilitySort);
+    setDirection(active === column && direction === 'asc' ? 'desc' : 'asc'); setPage(1);
+  };
+  useEffect(() => { if (page > Math.max(1, Math.ceil(total / pageSize)) && !isLoading && !queryError) setPage(1); }, [total, page, isLoading, queryError]);
+  const openCollectionEditor = async (collection: CapabilityCollection | null) => {
+    setBusy(true); setError('');
+    try {
+      const all = await qc.fetchQuery({ queryKey: ['capabilities'], queryFn: api.capabilities });
+      setCapabilities(all); setEditingCollection(collection);
+    } catch (reason) { setError(errorMessage(reason)); } finally { setBusy(false); }
+  };
   const parsedMcp = useMemo(() => {
     try { return { document: parseMcpDocument(mcpJson), error: '' }; }
     catch (reason) { return { document: undefined, error: reason instanceof Error ? reason.message : 'MCP JSON 无效。' }; }
@@ -295,6 +285,9 @@ export function CapabilitiesPage() {
   const activeMcpServer = parsedMcp.document?.mcpServers[activeMcpServerName] ?? {};
   const activeMcpTransport = effectiveTransport(activeMcpServer);
   const activeMcpConnectionKind = connectionKind(activeMcpServer);
+  const mcpAuthStrategy = (activeMcpServer.auth as { strategy?: string } | undefined)?.strategy;
+  const canBindMcpAuthentication = activeMcpConnectionKind === 'REMOTE' && (!mcpAuthStrategy || ['none', 'bearer'].includes(mcpAuthStrategy))
+    && !Object.keys((activeMcpServer.headers as Record<string, unknown> | undefined) ?? {}).some(key => key.toLowerCase() === 'authorization');
 
   const saveMcpDocument = (document: McpDocument, selectedServer?: string) => {
     setMcpJson(serializeMcpDocument(document));
@@ -326,6 +319,7 @@ export function CapabilitiesPage() {
       return;
     }
     setMcpScripts([]);
+    if (!mcpAuthentication) setMcpAuthentication({ strategy: 'none', credential_id: null, expected_row_version: 0 });
     const next: McpServerConfig = { ...activeMcpServer, transport: 'streamable-http', url: '' };
     ['type', 'command', 'args', 'env', 'cwd'].forEach(key => delete next[key]);
     saveMcpDocument({ mcpServers: { [activeMcpServerName]: next } }, activeMcpServerName);
@@ -362,6 +356,7 @@ export function CapabilitiesPage() {
   const importFileCapability = async (file: File, capabilityType: 'SKILL' | 'PLUGIN' | 'CONTEXT' | 'AGENT_DEFINITION') => {
     setImportingSkill(true); setError(''); setNotice('');
     try {
+      if ((capabilityType === 'SKILL' || capabilityType === 'PLUGIN') && !file.name.toLowerCase().endsWith('.zip')) throw new Error(`请选择 ${capabilityType === 'SKILL' ? 'Skill' : 'Plugin'} ZIP 文件。`);
       if (file.size > (capabilityType === 'CONTEXT' || capabilityType === 'AGENT_DEFINITION' ? MCP_JSON_MAX_BYTES : SKILL_ZIP_MAX_BYTES)) throw new Error(capabilityType === 'AGENT_DEFINITION' ? 'Agent Definition Markdown 不能超过 1 MiB。' : capabilityType === 'CONTEXT' ? 'Context 文本不能超过 1 MiB。' : `${capabilityType === 'SKILL' ? 'Skill' : 'Plugin'} ZIP 不能超过 25 MiB。`);
       const validated = await api.validateCapability({ capability_type: capabilityType, filename: file.name, content_base64: toBase64(await file.arrayBuffer()) });
       const preview = validated.preview;
@@ -375,18 +370,20 @@ export function CapabilitiesPage() {
     } catch (reason) { setError(errorMessage(reason)); } finally { setImportingSkill(false); }
   };
   const closeContextForm = () => {
-    setContextOpen(false); setContextTitle(''); setContextDescription(''); setContextFile(undefined); setContextBundleManifest(undefined);
+    setContextOpen(false); setContextTitle(''); setContextDescription(''); setContextContent(''); setContextFile(undefined); setContextBundleManifest(undefined);
   };
   const createContext = async () => {
     setImportingSkill(true); setError(''); setNotice('');
     try {
       const title = contextTitle.trim();
+      const content = contextContent.trim();
+      const sourceFile = contextFile ?? (content ? new File([content], 'context.txt', { type: 'text/plain;charset=utf-8' }) : undefined);
       if (!title) throw new Error('请填写 Context 标题。');
-      if (!contextFile) throw new Error('请选择一个 Context 文件。');
-      if (contextFile.size > MCP_JSON_MAX_BYTES) throw new Error('Context 文本或资料包 ZIP 不能超过 1 MiB。');
+      if (!sourceFile) throw new Error('请直接编写内容，或选择一个 Context 文件或资料包。');
+      if (sourceFile.size > MCP_JSON_MAX_BYTES) throw new Error('Context 文本或资料包 ZIP 不能超过 1 MiB。');
       const validated = await api.validateCapability({
-        capability_type: 'CONTEXT', filename: contextFile.name,
-        content_base64: toBase64(await contextFile.arrayBuffer()),
+        capability_type: 'CONTEXT', filename: sourceFile.name,
+        content_base64: toBase64(await sourceFile.arrayBuffer()),
         context_title: title, context_description: contextDescription.trim(),
         context_bundle_manifest: contextBundleManifest && {
           entrypoint: contextBundleManifest.entrypoint,
@@ -396,7 +393,7 @@ export function CapabilitiesPage() {
       });
       const normalized = validated.preview.capabilities?.[0]?.normalized_config;
       const suggestedManifest = normalized?.manifest as ContextBundleDraft | undefined;
-      if (contextFile.name.toLowerCase().endsWith('.zip') && !contextBundleManifest && suggestedManifest) {
+      if (sourceFile.name.toLowerCase().endsWith('.zip') && !contextBundleManifest && suggestedManifest) {
         setContextBundleManifest(suggestedManifest);
         return;
       }
@@ -426,26 +423,26 @@ export function CapabilitiesPage() {
       setNotice(`已发布 Hook“${committed.capabilities[0]?.capability_key ?? name}”。它会在新建会话时冻结并由 OpenHands 原生执行。`);
     } catch (reason) { setError(errorMessage(reason)); } finally { setImportingSkill(false); }
   };
-  const openContextSource = async (item: CapabilityAsset) => {
-    setBusy(true); setError('');
-    try {
-      const source = await api.contextSource(item.id);
-      setViewingContext({ item, content: source.content, contentFormat: source.content_format, manifest: source.manifest });
-    } catch (reason) { setError(errorMessage(reason)); } finally { setBusy(false); }
-  };
-  const openMcpEditor = async (item?: CapabilityAsset) => {
+  const openContextSource = (item: CapabilityAsset) => setViewingContext(item);
+  const openMcpEditor = async (item?: CapabilityAsset, latest = item) => {
+    if (item?.is_builtin || latest?.is_builtin) return;
     setBusy(true); setError(''); setNotice('');
     try {
       if (item) {
-        const loaded = await api.mcpSource(item.id);
+        const loaded = await qc.ensureQueryData({ queryKey: ['mcp-source', item.id], queryFn: () => api.mcpSource(item.id) });
+        const auth = await api.mcpAuthentication(item.id);
+        const selectedAuthentication = auth.editable ? { strategy: auth.strategy, credential_id: auth.credential_id, expected_row_version: auth.row_version } : undefined;
+        setMcpAuthentication(selectedAuthentication); setMcpInitialAuthentication(selectedAuthentication); setMcpAuthenticationVersionId(item.id);
         setMcpJson(loaded.content);
+        setMcpInitialSource(JSON.stringify([loaded.content, loaded.mcp_scripts.map(({ server, filename, content_base64 }) => ({ server, filename, content_base64 }))]));
         setMcpScripts(loaded.mcp_scripts.map(script => ({ ...script, contentBase64: script.content_base64, byteSize: Math.floor(script.content_base64.length * 3 / 4) })));
         setMcpSelectedServer(loaded.capability_key);
-        setEditingMcp(item);
+        setEditingMcp(latest); setMcpBaseRevision(item.revision_number);
       } else {
-        setMcpJson(MCP_JSON_EXAMPLE); setMcpScripts([]); setMcpSelectedServer('remote'); setEditingMcp(undefined);
+        setMcpAuthentication({ strategy: 'none', credential_id: null, expected_row_version: 0 }); setMcpInitialAuthentication(undefined); setMcpAuthenticationVersionId(undefined);
+        setMcpJson(MCP_JSON_EXAMPLE); setMcpScripts([]); setMcpSelectedServer('remote'); setEditingMcp(undefined); setMcpBaseRevision(undefined);
       }
-      setMcpMode('FORM'); setMcpJsonError(''); setMcpOpen(true);
+      setMcpMode('FORM'); setMcpJsonError(''); setMcpOpen(true); setViewingMcp(undefined);
     } catch (reason) { setError(errorMessage(reason)); } finally { setBusy(false); }
   };
   const createMcp = async () => {
@@ -461,72 +458,62 @@ export function CapabilitiesPage() {
         if (!server || effectiveTransport(server) !== 'stdio') throw new Error(`脚本“${script.filename}”绑定的 Server“${script.server}”不存在或已不是本地 stdio Server。`);
       }
       const scripts = mcpScripts.map(script => ({ server: script.server, filename: script.filename, content_base64: script.contentBase64 }));
-      if (editingMcp) await api.updateMcpSource(editingMcp.id, mcpJson, scripts);
+      const authentication = canBindMcpAuthentication && mcpAuthentication ? { ...mcpAuthentication, expected_row_version: 0 } : undefined;
+      const sourceUnchanged = Boolean(editingMcp && mcpInitialSource === JSON.stringify([mcpJson, scripts]));
+      if (sourceUnchanged && mcpAuthentication && mcpAuthenticationVersionId) {
+        await api.saveMcpAuthentication(mcpAuthenticationVersionId, mcpAuthentication);
+        await qc.invalidateQueries({ queryKey: ['mcp-authentication', mcpAuthenticationVersionId] });
+        setMcpResults(current => { const next = { ...current }; delete next[mcpAuthenticationVersionId]; return next; });
+      } else if (editingMcp) await api.updateMcpSource(editingMcp.id, mcpJson, scripts, authentication);
       else {
         const validated = await api.validateCapability({ capability_type: 'MCP', filename: 'mcp.json', content_base64: toBase64(bytes.buffer), mcp_scripts: scripts });
         const capabilityCount = validated.preview.capabilities?.length ?? 0;
         if (!capabilityCount) throw new Error('JSON 中没有可用的 MCP Server。');
-        await api.commitCapability(validated.import_token);
+        await api.commitCapability(validated.import_token, authentication);
       }
       setMcpOpen(false); setMcpMode('FORM'); setMcpSelectedServer('remote'); setMcpJsonError(''); setMcpJson(MCP_JSON_EXAMPLE); setMcpScripts([]);
       setEditingMcp(undefined);
-      await refresh(); setNotice(editingMcp ? `已发布 MCP“${editingMcp.capability_key}”的新版本。` : '已创建 MCP 能力。');
+      await refresh(); setNotice(sourceUnchanged ? '已保存当前账号的 MCP 认证绑定。' : editingMcp ? `已发布 MCP“${editingMcp.capability_key}”的新版本。` : '已创建 MCP 能力。');
     } catch (reason) { setError(errorMessage(reason)); } finally { setBusy(false); }
   };
-  const pollGitPlugin = async (initial: PluginSourceResolution, generation: number) => {
-    let current = initial;
-    const deadline = Date.now() + 5 * 60_000;
-    while (current.state === 'PENDING' && Date.now() < deadline && gitPollGeneration.current === generation) {
-      await new Promise(resolve => window.setTimeout(resolve, 1500));
-      if (gitPollGeneration.current !== generation) return;
-      current = await api.pluginSourceResolution(current.id);
-      setGitResolution(current);
-    }
-    if (gitPollGeneration.current !== generation) return;
-    if (current.state === 'PENDING') setError('远端 Plugin 仍在解析。可稍后关闭并用相同来源重新打开状态。');
-    else if (current.state === 'FAILED') setError(current.error_detail || '远端 Plugin 解析失败，可按相同来源重试。');
-    else if (current.state === 'EXPIRED') setError('远端 Plugin 解析已过期，可按相同来源重新提交。');
+  const toggleLineage = (group: CapabilityLineage) => {
+    if (group.latest.is_builtin && group.latest.capability_type !== 'MCP') return;
+    selectedGroups.current.set(group.id, group);
+    setSelectedLineageIds(old => { const next = new Set(old); if (next.has(group.id)) next.delete(group.id); else next.add(group.id); return next; });
   };
-  const resolveGitPlugin = async () => {
-    setGitBusy(true); setError(''); setNotice('');
-    const sourceUrl = gitSourceUrl.trim();
-    const commit = gitCommit.trim().toLowerCase();
-    const repoPath = gitRepoPath.trim();
+  const toggleVisible = async () => {
+    if (allVisibleSelected) { clearSelection(); return; }
+    setBusy(true); setError('');
     try {
-      if (!/^https:\/\/[^\s]+$/u.test(sourceUrl)) throw new Error('来源必须是允许域名上的 HTTPS Git URL。');
-      if (!/^[0-9a-f]{40}$/u.test(commit)) throw new Error('Commit 必须是完整的 40 位十六进制 SHA。');
-      if (repoPath && !/^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*$/u.test(repoPath)) throw new Error('仓库子路径格式无效。');
-      const generation = ++gitPollGeneration.current;
-      const resolution = await api.createPluginSourceResolution({ source_url: sourceUrl, commit, repo_path: repoPath || null });
-      setGitResolution(resolution);
-      await pollGitPlugin(resolution, generation);
-    } catch (reason) { setError(errorMessage(reason)); } finally { setGitBusy(false); }
+      const all = await qc.fetchQuery({ queryKey: ['capabilities'], queryFn: api.capabilities });
+      const needle = repositoryQuery.trim().toLocaleLowerCase();
+      const groups = groupCapabilities(all).filter(group => group.latest.capability_type === type && (!group.latest.is_builtin || (type === 'MCP' && showBuiltin))
+        && (!needle || `${group.latest.capability_key} ${group.latest.description} ${group.latest.filename}`.toLocaleLowerCase().includes(needle)));
+      groups.forEach(group => selectedGroups.current.set(group.id, group));
+      const ids = groups.map(group => group.id); setAllSelectionIds(ids); setSelectedLineageIds(new Set(ids));
+    } catch (reason) { setError(errorMessage(reason)); } finally { setBusy(false); }
   };
-  const publishGitPlugin = async () => {
-    if (!gitResolution || gitResolution.state !== 'READY') return;
-    setGitBusy(true); setError(''); setNotice('');
+  const testMcpConnections = async () => {
+    setBusy(true); setError('');
     try {
-      const published = await api.publishPluginSourceResolution(gitResolution.id, gitResolution.state_version);
-      setGitResolution(published);
-      await refresh();
-      setNotice(`已发布固定 commit ${published.requested_commit.slice(0, 12)} 的不可变 Plugin 版本。`);
-    } catch (reason) { setError(errorMessage(reason)); } finally { setGitBusy(false); }
+      let groups = selectedVisible;
+      if (!groups.length) {
+        const all = await api.capabilities();
+        const needle = repositoryQuery.trim().toLocaleLowerCase();
+        groups = groupCapabilities(all).filter(group => group.latest.capability_type === 'MCP'
+          && (showBuiltin || !group.latest.is_builtin)
+          && (!needle || `${group.latest.capability_key} ${group.latest.description} ${group.latest.filename}`.toLocaleLowerCase().includes(needle)));
+      }
+      if (groups.length) setMcpTestTargets(groups.map(group => group.latest));
+    } catch (reason) { setError(errorMessage(reason)); } finally { setBusy(false); }
   };
-  const toggleLineage = (lineageId: string) => setSelectedLineageIds(old => {
-    const next = new Set(old);
-    if (next.has(lineageId)) next.delete(lineageId); else next.add(lineageId);
-    return next;
-  });
-  const toggleVisible = () => setSelectedLineageIds(old => {
-    const next = new Set(old);
-    if (allVisibleSelected) selectableVisible.forEach(group => next.delete(group.id));
-    else selectableVisible.forEach(group => next.add(group.id));
-    return next;
-  });
   const remove = async (groups: CapabilityLineage[], retainBlockedSelection = false) => {
-    if (!groups.length || !await dialog.confirm({ title: `删除所选的 ${groups.length} 项能力？`, message: '将删除所选能力的全部历史版本；有关联或系统内置的版本会保留并说明原因，其余版本会直接删除。', confirmLabel: '确认删除', tone: 'danger' })) return;
+    if (!groups.length || groups.some(group => group.latest.is_builtin) || !await dialog.confirm({ title: `删除所选的 ${groups.length} 项能力？`, message: '将删除所选能力；已有会话或运行引用的冻结快照会被保留，确保历史记录仍可恢复。', confirmLabel: '确认删除', tone: 'danger' })) return;
     setBusy(true); setError(''); setNotice('');
     try {
+      const selectedIds = new Set(groups.map(group => group.id));
+      groups = groupCapabilities(await api.capabilities()).filter(group => selectedIds.has(group.id));
+      if (groups.some(group => group.latest.is_builtin)) throw new Error('所选能力包含系统内置项，仅支持测试连接，不能删除。');
       const ids = groups.flatMap(group => group.versions.map(item => item.id));
       const deletedIds: string[] = [];
       const blocked: BlockedCapabilityDelete[] = [];
@@ -560,17 +547,20 @@ export function CapabilitiesPage() {
       if (blocked.length) setError(blockedCapabilityMessage(blocked));
     } catch (reason) { setError(errorMessage(reason)); } finally { setBusy(false); }
   };
-  const openEditor = async (item: CapabilityAsset) => {
-    setBusy(true); setError('');
-    try { const loaded = await api.capabilitySource(item.id); setSource(loaded.content); setEditing(item); }
-    catch (reason) { setError(errorMessage(reason)); } finally { setBusy(false); }
-  };
-  const saveSource = async () => {
-    if (!editing) return;
+  const openEditor = (item: CapabilityAsset) => setEditing(item);
+  const compareSkillVersions = (item: CapabilityAsset) => setSkillComparison(item);
+  const rollbackSkillVersion = async (item: CapabilityAsset) => {
+    const confirmed = await dialog.confirm({
+      title: `回退 ${item.capability_key}？`,
+      message: '将移除当前版本，并恢复上一版本为当前版本。已经创建的会话和运行继续使用其冻结的能力快照。',
+      confirmLabel: '确认回退', tone: 'danger',
+    });
+    if (!confirmed) return;
     setBusy(true); setError(''); setNotice('');
     try {
-      await api.updateCapabilitySource(editing.id, source);
-      setEditing(undefined); await refresh(); setNotice(`已保存 ${editing.capability_key}，使用该能力的节点已同步更新。`);
+      await api.rollbackSkillVersion(item.id);
+      await refresh();
+      setNotice(`已回退 ${typeLabel(item.capability_type)}“${item.capability_key}”到上一版本。`);
     } catch (reason) { setError(errorMessage(reason)); } finally { setBusy(false); }
   };
   const saveCollection = async (payload: CapabilityCollectionWrite) => {
@@ -592,39 +582,48 @@ export function CapabilitiesPage() {
       setNotice(`已删除 Skill 组合“${collection.name}”，已有节点不受影响。`);
     } catch (reason) { setError(errorMessage(reason)); } finally { setBusy(false); }
   };
-  const count = (capabilityType: CapabilityAssetType) => lineages.filter(item => item.latest.capability_type === capabilityType).length;
+  const moduleIcon = (item: CapabilityAssetType) => item === 'SKILL' ? <BookOpen size={16}/> : item === 'PLUGIN' ? <Box size={16}/> : item === 'MCP' ? <PlugZap size={16}/> : item === 'HOOK' ? <Webhook size={16}/> : item === 'AGENT_DEFINITION' ? <Code2 size={16}/> : <FileArchive size={16}/>;
+  const heading = collectionsView ? 'Skill 组合' : typeLabel(type);
+  const sortHeader = (label: string, column: CapabilitySort | CapabilityCollectionSort) => {
+    const active = (collectionsView ? collectionSort : sort) === column;
+    return <th scope="col" aria-sort={active ? direction === 'asc' ? 'ascending' : 'descending' : 'none'}><button onClick={() => changeSort(column)}>{label}{active ? direction === 'asc' ? <ArrowUp size={12}/> : <ArrowDown size={12}/> : <ArrowUpDown size={12}/>}</button></th>;
+  };
+  return <section className="page capabilities-page capability-repository">
+    <nav className="capability-repository-sidebar" aria-label="能力模块"><header><Layers3 size={18}/><b>能力仓库</b></header>{CAPABILITY_MODULES.map(item => <div key={item}><button disabled={busy || importingSkill} className={!collectionsView && type === item ? 'active' : ''} aria-current={!collectionsView && type === item ? 'page' : undefined} title={capabilityModuleDescription(item)} onClick={() => navigateModule(item)}>{moduleIcon(item)}<span>{typeLabel(item)}</span><em>{counts[item] ?? '—'}</em></button>{item === 'SKILL' && <button disabled={busy || importingSkill} className={`collection-entry ${collectionsView ? 'active' : ''}`} aria-current={collectionsView ? 'page' : undefined} onClick={() => navigateModule('SKILL', true)}><Layers3 size={14}/><span>Skill 组合</span><em>{collectionTotal ?? '—'}</em></button>}</div>)}<footer>统一管理 · 按版本使用</footer></nav>
+    {skillMarketOpen && <SkillMarketDialog onClose={() => setSkillMarketOpen(false)} onPublished={async () => { await refresh(); setNotice('Skill 已导入能力仓库。'); }}/>}
+    {pluginMarketOpen && <PluginMarketDialog onClose={() => setPluginMarketOpen(false)} onPublished={async () => { await refresh(); setNotice('Plugin 已导入能力仓库。'); }}/>}
+    <div className="capability-module-scroll capability-repository-main"><header className="capability-repository-heading"><h2>{heading}</h2><span>{total} 项</span><small>{collectionsView ? '组合用于批量选择 Skill，运行时仍按实际版本使用。' : capabilityModuleDescription(type)}</small></header><div className="capability-notice-layer">{notice && <div className="notice success capability-notice" role="status"><span>{notice}</span><button type="button" aria-label="关闭成功提示" title="关闭" onClick={() => setNotice('')}><X size={15}/></button></div>}</div>{error && <div className="notice error" role="alert">{error}</div>}
+    <div className="capability-bulk-tools"><span>{repositoryQuery ? `找到 ${total} 项匹配的 ${heading}` : `共 ${total} 项 ${heading}`}{visible.some(group => group.latest.is_builtin) ? ` · ${visible.filter(group => group.latest.is_builtin).length} 项系统内置不可删除` : ''}</span><div className="capability-list-controls"><label className="capability-repository-search"><Search size={14}/><input aria-label="搜索当前能力模块" maxLength={200} disabled={busy} value={repositoryQuery} onChange={event => { setRepositoryQuery(event.target.value); setPage(1); clearSelection(); }} placeholder={`搜索 ${heading} 名称、说明或文件…`}/>{repositoryQuery && <button type="button" aria-label="清除搜索" onClick={() => { setRepositoryQuery(''); setPage(1); clearSelection(); }}>×</button>}</label>{collectionsView ? <button className="primary" disabled={busy} onClick={() => void openCollectionEditor(null)}><Layers3 size={14}/>新建 Skill 组合</button> : <>{type === 'SKILL' && <><input ref={skillUpload} aria-label="Skill ZIP 文件" type="file" hidden disabled={importingSkill || busy} accept=".zip" onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void importFileCapability(file, 'SKILL'); }}/><button className="secondary" disabled={busy || importingSkill} onClick={() => setSkillMarketOpen(true)}>Skill 市场</button><button className="primary" title="导入 Skill ZIP 文件" disabled={busy || importingSkill} onClick={() => { setError(''); setNotice(''); skillUpload.current?.click(); }}><Upload size={15}/>{importingSkill ? '上传中…' : '导入 Skill'}</button></>}{type === 'PLUGIN' && <><input ref={pluginUpload} aria-label="Plugin ZIP 文件" type="file" hidden disabled={importingSkill || busy} accept=".zip" onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void importFileCapability(file, 'PLUGIN'); }}/><button className="secondary" disabled={busy || importingSkill} onClick={() => setPluginMarketOpen(true)}>插件市场</button><button className="primary" title="导入 Plugin ZIP 文件" disabled={busy || importingSkill} onClick={() => { setError(''); setNotice(''); pluginUpload.current?.click(); }}><Upload size={14}/>{importingSkill ? '上传中…' : '导入 Plugin'}</button></>}{type === 'CONTEXT' && <button className="primary" disabled={importingSkill || busy} onClick={() => { setError(''); setNotice(''); setContextOpen(true); }}><Upload size={15}/>新增 Context</button>}{type === 'MCP' && <button className="primary" disabled={importingSkill || busy} onClick={() => void openMcpEditor()}><Braces size={15}/>新建 MCP</button>}{type === 'HOOK' && <button className="primary" disabled={importingSkill || busy} onClick={() => { setError(''); setNotice(''); setHookOpen(true); }}><Upload size={15}/>新建 Hook</button>}{type === 'AGENT_DEFINITION' && <label className="primary file-button"><Upload size={15}/>{importingSkill ? '上传中…' : '上传 Agent Definition Markdown'}<input type="file" disabled={importingSkill || busy} accept=".md,.markdown,text/markdown" onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void importFileCapability(file, 'AGENT_DEFINITION'); }}/></label>}</>}</div>{!collectionsView && <div className="bulk-actions">{type === 'MCP' && <button type="button" className="secondary" aria-pressed={showBuiltin} title={showBuiltin ? '隐藏系统内置 MCP' : '显示系统内置 MCP（默认隐藏，排在列表末尾）'} disabled={busy} onClick={() => { setShowBuiltin(value => !value); setPage(1); clearSelection(); }}>{showBuiltin ? <LockKeyholeOpen size={14}/> : <LockKeyhole size={14}/>}{showBuiltin ? '隐藏内置' : '显示内置'}</button>}{type === 'MCP' && <button type="button" className="secondary" disabled={!total || busy || Boolean(mcpTestTargets)} onClick={() => void testMcpConnections()}><PlugZap size={14}/>{selectedVisible.length ? `测试连接 (${selectedVisible.length})` : '测试全部 MCP'}</button>}<button className="secondary" disabled={!total || busy} onClick={() => void toggleVisible()}><CheckSquare size={14}/>{allVisibleSelected ? '取消全选' : '全选当前模块'}</button><button className="danger" disabled={!selectedVisible.length || busy || selectedVisible.some(group => group.latest.is_builtin)} title={selectedVisible.some(group => group.latest.is_builtin) ? '包含系统内置项，仅支持测试连接，不能删除' : undefined} onClick={() => void remove(selectedVisible, true)}><Trash2 size={14}/>{busy ? '删除中…' : `批量删除 (${selectedVisible.length})`}</button></div>}</div>
+    {queryError && <div className="notice error" role="alert">{errorMessage(queryError)}<button className="secondary" onClick={() => void (collectionsView ? collectionDirectory.refetch() : directory.refetch())}>重试</button></div>}
+    <div className="capability-table-scroll" key={`${heading}-${page}-${sort}-${collectionSort}-${direction}`} aria-busy={isLoading}>
+      <table className={`capability-table${collectionsView ? ' capability-collection-table' : ''}`}><thead><tr>{!collectionsView && <th scope="col" className="capability-check-column"><span className="sr-only">选择</span></th>}{sortHeader('名称', 'name')}{collectionsView ? <>{sortHeader('分类', 'category')}{sortHeader('Skill 数量', 'member_count')}{sortHeader('创建时间', 'created_at')}{sortHeader('更新时间', 'updated_at')}</> : <><th scope="col">来源文件</th>{sortHeader('大小', 'byte_size')}{sortHeader('版本', 'revision_number')}{sortHeader('上传时间', 'created_at')}<th scope="col">引用</th><th scope="col">{type === 'MCP' ? '连接状态 / 工具' : '依赖状态'}</th></>}<th scope="col" className="capability-actions-column">操作</th></tr></thead><tbody>
+      {!isLoading && (collectionsView ? capabilityCollections.map(collection => <tr key={collection.id}><td className="capability-name-cell"><b title={collection.name}>{collection.name}</b><small title={collection.description}>{collection.description || '暂无说明'}</small></td><td>{collection.category || '未分类'}</td><td>{collection.members.length} 项</td><td>{new Date(collection.created_at).toLocaleString()}</td><td>{new Date(collection.updated_at).toLocaleString()}</td><td><CapabilityOverflowMenu label={`Skill 组合 ${collection.name}`}>{close => <><button type="button" role="menuitem" disabled={busy} onClick={() => { void openCollectionEditor(collection); close(); }}><Pencil size={13}/>编辑</button><button type="button" className="danger" role="menuitem" onClick={() => { void removeCollection(collection); close(); }}><Trash2 size={13}/>删除</button></>}</CapabilityOverflowMenu></td></tr>) : visible.map(group => <CapabilityCard key={group.id} group={group} selected={selectedLineageIds.has(group.id)} onToggle={() => toggleLineage(group)} onEdit={() => group.latest.capability_type === 'MCP' ? void openMcpEditor(group.latest) : void openEditor(group.latest)} onCompare={() => void compareSkillVersions(group.latest)} onRollback={() => void rollbackSkillVersion(group.latest)} mcpResult={mcpResults[group.latest.id]} onViewMcp={() => { setViewingMcpTools(false); setViewingMcp(group); }} onViewMcpTools={() => { setViewingMcpTools(true); setViewingMcp(group); }} onViewContext={() => void openContextSource(group.latest)} onViewAgentDefinition={() => setViewingAgentDefinition(group.latest)} onProfileHistory={() => setProfileHistory(group)} onDelete={() => void remove([group])}/>))}
+      </tbody></table>{isLoading ? <div className="empty">加载 {heading}…</div> : !total && !queryError && <div className="empty"><FileArchive size={28}/><b>{repositoryQuery ? `没有匹配的 ${heading}` : `暂无 ${heading}`}</b><span>{repositoryQuery ? '调整搜索条件，或清除搜索查看全部能力。' : '使用列表工具栏创建或导入。'}</span></div>}
+    </div><footer className="capability-repository-footer"><span>每页 {pageSize} 项{selectedVisible.length ? ` · 已选 ${selectedVisible.length} 项` : ''}</span><Pagination page={page} pageSize={pageSize} total={total} onPageChange={setPage}/></footer></div>
 
-  return <section className="page capabilities-page">
-    <nav className="capability-module-nav" aria-label="能力模块">{CAPABILITY_MODULES.map(item => <button key={item} className={type === item ? 'active' : ''} aria-current={type === item ? 'page' : undefined} onClick={() => { setType(item); setSelectedLineageIds(new Set()); setRepositoryQuery(''); setError(''); setNotice(''); }}><span><b>{typeLabel(item)}</b><small>{capabilityModuleDescription(item)}</small></span><em>{count(item)}</em></button>)}</nav>
-    {marketplaceOpen && <MarketplaceCatalogDialog onClose={() => setMarketplaceOpen(false)} onPublished={async () => { await refresh(); setNotice('Marketplace Plugin 已发布为不可变 Capability Version。'); }}/>}
-    {gitPluginOpen && <div className="modal-backdrop"><section className="modal git-plugin-dialog" role="dialog" aria-modal="true" aria-label="从固定 Git commit 导入 Plugin">
-      <header><div><span className="eyebrow">PINNED GIT PLUGIN</span><h2>解析远端 Plugin</h2></div><button className="ghost" onClick={closeGitPlugin}>关闭</button></header>
-      <p>解析器在隔离容器中拉取固定 commit，并将通过校验的内容冻结为本地 ZIP。远端 URL 不会进入 Runtime。</p>
-      <label>HTTPS Git URL<input value={gitSourceUrl} placeholder="https://github.com/org/repository.git" onChange={event => setGitSourceUrl(event.target.value)}/></label>
-      <label>完整 commit SHA<input value={gitCommit} maxLength={40} spellCheck={false} placeholder="40 位十六进制 SHA" onChange={event => setGitCommit(event.target.value)}/></label>
-      <label>仓库子路径（可选）<input value={gitRepoPath} placeholder="plugins/my-plugin" onChange={event => setGitRepoPath(event.target.value)}/></label>
-      {gitResolution && <section className={`git-plugin-status ${gitResolution.state.toLowerCase()}`}><header><b>{gitResolution.state}</b><code>v{gitResolution.state_version}</code></header><small>{gitResolution.requested_commit}</small>{gitResolution.content_hash && <small>内容摘要：{gitResolution.content_hash}</small>}<div className="git-plugin-contributions">{Object.entries(gitResolution.preview.contributions ?? {}).map(([kind, values]) => <span key={kind}><b>{kind}</b><em>{values.length ? values.join('、') : '无'}</em></span>)}</div>{gitResolution.error_detail && <p>{gitResolution.error_detail}</p>}</section>}
-      <div className="mcp-security-note"><b>发布边界</b><span>READY 仅表示解析完成；只有点击“发布不可变版本”后才会进入能力仓库。FAILED / EXPIRED 可使用相同来源重新解析。</span></div>
-      <footer><button className="ghost" onClick={closeGitPlugin}>取消</button><button className="secondary" disabled={gitBusy} onClick={() => void resolveGitPlugin()}>{gitBusy && gitResolution?.state === 'PENDING' ? '解析中…' : gitResolution?.state === 'FAILED' || gitResolution?.state === 'EXPIRED' ? '重新解析' : '开始解析'}</button><button className="primary" disabled={gitBusy || gitResolution?.state !== 'READY'} onClick={() => void publishGitPlugin()}>{gitBusy ? '处理中…' : '发布不可变版本'}</button></footer>
-    </section></div>}
-    <div className="capability-module-scroll"><div className="capability-notice-layer">{notice && <div className="notice success capability-notice" role="status"><span>{notice}</span><button type="button" aria-label="关闭成功提示" title="关闭" onClick={() => setNotice('')}><X size={15}/></button></div>}</div>{error && <div className="notice error" role="alert">{error}</div>}
-    {type === 'SKILL' && <section className="capability-collection-section skill-collection-section"><header><div><Layers3 size={19}/><span><b>Skill 组合</b><small>用于批量选择固定 Skill 版本。</small></span></div><div className="skill-collection-header-actions"><em>{capabilityCollections.length} 个组合</em><button className="secondary" disabled={importingSkill || busy} onClick={() => { setError(''); setEditingCollection(null); }}><Layers3 size={14}/>新建 Skill 组合</button></div></header>{collectionsLoading ? <div className="empty compact">加载 Skill 组合…</div> : capabilityCollections.length ? <><div className="capability-collection-list">{pagedCapabilityCollections.map(collection => <article key={collection.id}><span>{collection.category || '未分类'}</span><b title={collection.name}>{collection.name}</b><em>{collection.members.length} 项</em><small title={collection.description}>{collection.description || '暂无说明'}</small><footer><CapabilityOverflowMenu label={`Skill 组合 ${collection.name}`}>{close => <><button type="button" role="menuitem" onClick={() => { setEditingCollection(collection); close(); }}><Pencil size={13}/>编辑</button><button type="button" className="danger" role="menuitem" onClick={() => { void removeCollection(collection); close(); }}><Trash2 size={13}/>删除</button></>}</CapabilityOverflowMenu></footer></article>)}</div><div className="skill-collection-pagination"><Pagination page={collectionPage} pageSize={collectionPageSize} total={capabilityCollections.length} onPageChange={setCollectionPage}/></div></> : <div className="capability-collection-empty"><span>还没有 Skill 组合。选择固定 Skill 版本后，可在会话中一键展开。</span><button className="secondary" onClick={() => setEditingCollection(null)}>创建第一个 Skill 组合</button></div>}</section>}
-    {!isLoading && <div className="capability-bulk-tools"><span>{repositoryQuery ? `找到 ${visible.length} 项匹配的 ${typeLabel(type)}` : `共 ${visible.length} 项 ${typeLabel(type)}`}{visible.some(group => group.latest.is_builtin) ? ` · ${visible.filter(group => group.latest.is_builtin).length} 项系统内置不可删除` : ''}</span><div className="capability-list-controls"><label className="capability-repository-search"><input aria-label="搜索当前能力模块" value={repositoryQuery} onChange={event => setRepositoryQuery(event.target.value)} placeholder={`搜索 ${typeLabel(type)} 名称、说明或文件…`}/>{repositoryQuery && <button type="button" aria-label="清除搜索" onClick={() => setRepositoryQuery('')}>×</button>}</label>{type === 'SKILL' && <label className="primary file-button"><Upload size={15}/>{importingSkill ? '上传中…' : '上传 Skill ZIP'}<input type="file" disabled={importingSkill || busy} accept=".zip" onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void importFileCapability(file, 'SKILL'); }}/></label>}{type === 'PLUGIN' && <><label className="primary file-button"><Upload size={15}/>{importingSkill ? '上传中…' : '上传 Plugin ZIP'}<input type="file" disabled={importingSkill || busy} accept=".zip" onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void importFileCapability(file, 'PLUGIN'); }}/></label><button className="secondary" disabled={busy || importingSkill} onClick={() => { setError(''); setNotice(''); setMarketplaceOpen(true); }}><PlugZap size={14}/>OpenHands Marketplace</button><button className="secondary" disabled={busy || importingSkill} onClick={() => { setError(''); setNotice(''); setGitPluginOpen(true); }}><PlugZap size={14}/>Git Plugin</button></>}{type === 'CONTEXT' && <button className="primary" disabled={importingSkill || busy} onClick={() => { setError(''); setNotice(''); setContextOpen(true); }}><Upload size={15}/>新增 Context</button>}{type === 'MCP' && <button className="primary" disabled={importingSkill || busy} onClick={() => void openMcpEditor()}><Braces size={15}/>新建 MCP</button>}{type === 'HOOK' && <button className="primary" disabled={importingSkill || busy} onClick={() => { setError(''); setNotice(''); setHookOpen(true); }}><Upload size={15}/>新建 Hook</button>}{type === 'AGENT_DEFINITION' && <label className="primary file-button"><Upload size={15}/>{importingSkill ? '上传中…' : '上传 Agent Definition Markdown'}<input type="file" disabled={importingSkill || busy} accept=".md,.markdown,text/markdown" onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void importFileCapability(file, 'AGENT_DEFINITION'); }}/></label>}</div><div className="bulk-actions"><button className="secondary" disabled={!selectableVisible.length || busy} onClick={toggleVisible}><CheckSquare size={14}/>{allVisibleSelected ? '取消全选' : '全选当前模块'}</button><button className="danger" disabled={!selectedVisible.length || busy} onClick={() => void remove(selectedVisible, true)}><Trash2 size={14}/>{busy ? '删除中…' : `批量删除 (${selectedVisible.length})`}</button></div></div>}
-    {isLoading ? <div className="empty">加载 {typeLabel(type)}…</div> : visible.length ? <><div className="capability-card-grid compact-capability-list">{pagedVisible.map(group => <CapabilityCard key={group.id} group={group} selected={selectedLineageIds.has(group.id)} onToggle={() => toggleLineage(group.id)} onEdit={() => group.latest.capability_type === 'MCP' ? void openMcpEditor(group.latest) : void openEditor(group.latest)} onViewContext={() => void openContextSource(group.latest)} onViewAgentDefinition={() => setViewingAgentDefinition(group.latest)} onProfileHistory={() => setProfileHistory(group)} onDelete={() => void remove([group])}/>)}</div><Pagination page={page} pageSize={pageSize} total={visible.length} onPageChange={setPage}/></> : <div className="empty"><FileArchive size={30}/><b>{repositoryQuery ? `没有匹配的 ${typeLabel(type)}` : `暂无 ${typeLabel(type)}`}</b><span>{repositoryQuery ? '调整搜索条件，或清除搜索查看全部能力。' : '使用本模块右上角的功能创建或导入。'}</span></div>}</div>
 
     {profileHistory && <AgentProfileHistoryDialog packageId={profileHistory.id} capabilityKey={profileHistory.latest.capability_key} onClose={() => setProfileHistory(undefined)}/>}
-    {contextOpen && <ContextDialog title={contextTitle} description={contextDescription} file={contextFile} manifest={contextBundleManifest} busy={importingSkill} onTitleChange={setContextTitle} onDescriptionChange={setContextDescription} onFileChange={file => { setContextFile(file); setContextBundleManifest(undefined); }} onManifestChange={setContextBundleManifest} onClose={closeContextForm} onSave={() => void createContext()}/>}
+    {contextOpen && <ContextDialog title={contextTitle} description={contextDescription} content={contextContent} file={contextFile} manifest={contextBundleManifest} busy={importingSkill} onTitleChange={setContextTitle} onDescriptionChange={setContextDescription} onContentChange={setContextContent} onFileChange={file => { setContextFile(file); setContextContent(''); setContextBundleManifest(undefined); }} onManifestChange={setContextBundleManifest} onClose={closeContextForm} onSave={() => void createContext()}/>}
     {hookOpen && <HookEditorDialog name={hookName} description={hookDescription} event={hookEvent} matcher={hookMatcher} mode={hookMode} file={hookFile} busy={importingSkill} onNameChange={setHookName} onDescriptionChange={setHookDescription} onEventChange={setHookEvent} onMatcherChange={setHookMatcher} onModeChange={mode => { setHookMode(mode); setHookFile(undefined); }} onFileChange={setHookFile} onClose={closeHookForm} onSave={() => void createHook()}/>}
-    {viewingContext && <div className="modal-backdrop"><section className="modal context-preview-dialog" role="dialog" aria-modal="true" aria-label={`查看 Context ${viewingContext.item.capability_key}`}><header><div><span className="eyebrow">{viewingContext.contentFormat === 'BUNDLE' ? 'FROZEN CONTEXT BUNDLE' : 'FROZEN CONTEXT'}</span><h2>{viewingContext.item.capability_key}</h2></div><button className="ghost" onClick={() => setViewingContext(undefined)}>关闭</button></header><p>{viewingContext.item.description || '暂无说明'} · {viewingContext.item.filename}</p>{viewingContext.manifest && <section className="context-bundle-preview-directory"><b>资料目录</b><small>入口：{viewingContext.manifest.entrypoint ?? '未指定'} · 全部文档均已加载</small><ol>{viewingContext.manifest.documents.map(document => <li key={document.path}><b>{document.title}</b><span>{document.path}</span></li>)}</ol></section>}<pre>{viewingContext.content}</pre><footer><button className="primary" onClick={() => setViewingContext(undefined)}>完成</button></footer></section></div>}
-    {editing && <div className="modal-backdrop capability-editor-backdrop"><section className="modal capability-source-editor" role="dialog" aria-label={`编辑 Skill ${editing.capability_key}`}><header><div><span className="eyebrow">EDIT SKILL</span><h2>编辑 {editing.capability_key}</h2></div><button className="ghost" onClick={() => setEditing(undefined)}>关闭</button></header><p>保存会发布新的不可变 Skill 版本；已有节点和 Run Snapshot 继续引用原版本，升级必须显式重新绑定。</p><textarea aria-label="Skill 源码" value={source} onChange={event => setSource(event.target.value)}/><div className="dependency-policy"><b>声明依赖（写入 SKILL.md frontmatter）</b><code>{DEPENDENCY_EXAMPLE}</code><span>所有版本必须精确固定。CLI 必须在平台白名单中；不接受终端命令。</span></div><footer><button className="ghost" onClick={() => setEditing(undefined)}>取消</button><button className="primary" disabled={busy} onClick={() => void saveSource()}>{busy ? '保存中…' : '发布新版本'}</button></footer></section></div>}
+    {viewingContext && <CapabilityPackageDialog key={viewingContext.id} item={viewingContext} onClose={() => setViewingContext(undefined)} onPublished={refresh}/>}
+    {editing && <CapabilityPackageDialog key={editing.id} item={editing} onClose={() => setEditing(undefined)} onPublished={async () => { await refresh(); setNotice(`已发布 ${editing.capability_key} 的新版本；已有会话继续使用冻结版本。`); }}/>}
+    {skillComparison && <CapabilityPackageDialog key={`compare:${skillComparison.id}`} item={skillComparison} comparison onClose={() => setSkillComparison(undefined)} onPublished={refresh}/>}
     {editingCollection !== undefined && <CapabilityCollectionEditorDialog collection={editingCollection ?? undefined} capabilities={capabilities} busy={busy} onClose={() => setEditingCollection(undefined)} onSave={payload => void saveCollection(payload)}/>}
-    {mcpOpen && <McpEditorDialog editing={Boolean(editingMcp)} mode={mcpMode} json={mcpJson} jsonError={mcpJsonError || parsedMcp.error || mcpContractError} selectedServer={activeMcpServerName} server={activeMcpServer} transport={activeMcpTransport} connectionKind={activeMcpConnectionKind} scripts={mcpScripts.filter(script => script.server === activeMcpServerName)} busy={busy} onModeChange={switchMcpMode} onJsonChange={value => { setMcpJson(value); setMcpJsonError(''); }} onConnectionKindChange={switchMcpConnectionKind} onRenameServer={renameMcpServer} onUpdateServer={updateMcpServer} onAddScripts={(server, files) => void addMcpScripts(server, files).catch(reason => setMcpJsonError(errorMessage(reason)))} onRemoveScript={removeMcpScript} onClose={() => { setMcpOpen(false); setEditingMcp(undefined); }} onSave={() => void createMcp()}/>}
+    {mcpTestTargets && <McpConnectionTestDialog targets={mcpTestTargets} onResult={(id, result) => setMcpResults(current => ({ ...current, [id]: result }))} onClose={() => setMcpTestTargets(undefined)}/>}
+    {viewingMcp && <McpDetailsDialog onAuthenticationSaved={id => { setMcpResults(current => { const next = { ...current }; delete next[id]; return next; }); }} key={viewingMcp.id} initialTab={viewingMcpTools ? 'tools' : 'config'} results={mcpResults} onResult={(id, result) => setMcpResults(current => ({ ...current, [id]: result }))} group={viewingMcp} onClose={() => setViewingMcp(undefined)} onEdit={(source, latest) => void openMcpEditor(source, latest)}/>}
+    {mcpOpen && <McpEditorDialog unchanged={Boolean(editingMcp && mcpInitialSource === JSON.stringify([mcpJson, mcpScripts.map(script => ({ server: script.server, filename: script.filename, content_base64: script.contentBase64 }))]) && JSON.stringify(mcpAuthentication) === JSON.stringify(mcpInitialAuthentication))} authenticationOnly={Boolean(editingMcp && JSON.stringify(mcpAuthentication) !== JSON.stringify(mcpInitialAuthentication) && mcpInitialSource === JSON.stringify([mcpJson, mcpScripts.map(script => ({ server: script.server, filename: script.filename, content_base64: script.contentBase64 }))]))} authentication={canBindMcpAuthentication ? mcpAuthentication : undefined} onAuthenticationChange={setMcpAuthentication} baseRevision={mcpBaseRevision} saveError={error} editing={Boolean(editingMcp)} mode={mcpMode} json={mcpJson} jsonError={mcpJsonError || parsedMcp.error || mcpContractError} selectedServer={activeMcpServerName} server={activeMcpServer} transport={activeMcpTransport} connectionKind={activeMcpConnectionKind} scripts={mcpScripts.filter(script => script.server === activeMcpServerName)} busy={busy} onModeChange={switchMcpMode} onJsonChange={value => { setMcpJson(value); setMcpJsonError(''); }} onConnectionKindChange={switchMcpConnectionKind} onRenameServer={renameMcpServer} onUpdateServer={updateMcpServer} onAddScripts={(server, files) => void addMcpScripts(server, files).catch(reason => setMcpJsonError(errorMessage(reason)))} onRemoveScript={removeMcpScript} onClose={() => { setMcpOpen(false); setEditingMcp(undefined); }} onSave={() => void createMcp()}/>}
     {viewingAgentDefinition && <AgentDefinitionDetailDialog item={viewingAgentDefinition} onClose={() => setViewingAgentDefinition(undefined)} />}
   </section>;
 }
 
 interface McpEditorDialogProps {
   editing: boolean;
+  authentication?: McpAuthenticationWrite;
+  authenticationOnly: boolean;
+  onAuthenticationChange: (value: McpAuthenticationWrite) => void;
+  baseRevision?: number;
+  saveError: string;
+  unchanged: boolean;
   mode: McpEditorMode;
   json: string;
   jsonError: string;
@@ -647,10 +646,12 @@ interface McpEditorDialogProps {
 
 function McpEditorDialog(props: McpEditorDialogProps) {
   const {
-    editing, mode, json, jsonError, selectedServer, server, transport, connectionKind, scripts, busy,
+    editing, authenticationOnly, authentication, onAuthenticationChange, baseRevision, saveError, unchanged, mode, json, jsonError, selectedServer, server, transport, connectionKind, scripts, busy,
     onModeChange, onJsonChange, onConnectionKindChange,
     onRenameServer, onUpdateServer, onAddScripts, onRemoveScript, onClose, onSave,
   } = props;
+  useEscapeClose(() => { if (!busy) onClose(); });
+  const { dialogRef, onDialogKeyDown } = useDialogFocus();
   const args = Array.isArray(server.args) ? server.args.filter((item): item is string => typeof item === 'string').join('\n') : '';
   const timeout = typeof server.timeout === 'number' ? String(server.timeout) : '';
   const stringValue = (key: string) => typeof server[key] === 'string' ? String(server[key]) : '';
@@ -663,24 +664,25 @@ function McpEditorDialog(props: McpEditorDialogProps) {
     const command = extension === 'py' ? 'python' : extension === 'sh' ? 'sh' : 'node';
     onUpdateServer({ command, args: [`scripts/${filename}`] });
   };
-  return <div className="modal-backdrop capability-editor-backdrop"><section className="modal capability-source-editor mcp-editor" role="dialog" aria-modal="true" aria-label={editing ? '编辑 MCP' : '新建 MCP'}>
-    <header><div><span className="eyebrow">{editing ? 'EDIT MCP' : 'NEW MCP'}</span><h2>{editing ? '编辑 MCP Server' : '新建 MCP Server'}</h2></div><button className="ghost" onClick={onClose}>关闭</button></header>
-    <p>{editing ? '保存会发布新的不可变 MCP 版本；Server 名称保持不变，已有会话和 Run Snapshot 继续引用原版本。' : '选择远程或本地连接形态后填写对应配置。表单和 JSON 是同一份单 Server 配置的两种视图。'}</p>
-    <div className="mcp-mode-tabs" role="tablist"><button type="button" role="tab" aria-selected={mode === 'FORM'} className={mode === 'FORM' ? 'active' : ''} onClick={() => onModeChange('FORM')}>表单配置</button><button type="button" role="tab" aria-selected={mode === 'JSON'} className={mode === 'JSON' ? 'active' : ''} onClick={() => onModeChange('JSON')}>JSON 配置</button></div>
-    {mode === 'FORM' ? <div className="mcp-form-view">
+  return <div className="modal-backdrop capability-editor-backdrop" onPointerDown={event => { if (event.target === event.currentTarget && !busy) onClose(); }}><section ref={dialogRef} onKeyDown={onDialogKeyDown} className="modal capability-source-editor mcp-editor compact-mcp-editor" role="dialog" aria-modal="true" aria-label={editing ? '编辑 MCP' : '新建 MCP'}>
+    <header><h2>{editing ? '编辑 MCP Server' : '新建 MCP Server'}</h2>{editing && <span>基于 v{baseRevision} · 发布为新版本</span>}<button className="ghost" autoFocus disabled={busy} onClick={onClose}>关闭</button></header>
+    <div className="mcp-mode-tabs" role="group" aria-label="MCP 编辑视图"><button type="button" aria-pressed={mode === 'FORM'} className={mode === 'FORM' ? 'active' : ''} onClick={() => onModeChange('FORM')}>表单配置</button><button type="button" aria-pressed={mode === 'JSON'} className={mode === 'JSON' ? 'active' : ''} onClick={() => onModeChange('JSON')}>JSON 配置</button></div>
+    <fieldset className="mcp-editor-fields" disabled={busy}>{mode === 'FORM' ? <div className="mcp-form-view">
       <aside className="mcp-server-list" aria-label="MCP 连接类型"><header><b>连接类型</b></header><button type="button" className={connectionKind === 'REMOTE' ? 'active' : ''} aria-pressed={connectionKind === 'REMOTE'} onClick={() => onConnectionKindChange('REMOTE')}><span><b>远程</b><small>通过 URL 连接 MCP 服务</small></span></button><button type="button" className={connectionKind === 'LOCAL' ? 'active' : ''} aria-pressed={connectionKind === 'LOCAL'} onClick={() => onConnectionKindChange('LOCAL')}><span><b>本地</b><small>通过 stdio 启动本地命令</small></span></button></aside>
       <div className="mcp-form"><>
         <label><span>Server 名称 *</span><input aria-label="Server 名称" value={selectedServer} placeholder={connectionKind === 'REMOTE' ? '例如 remote' : '例如 local'} disabled={editing} onChange={event => onRenameServer(event.target.value)}/><small>{editing ? '已发布 MCP 的身份不可修改。' : '作为能力名和 OpenHands mcp_config 中的唯一键。'}</small></label>
-        {connectionKind === 'REMOTE' ? <label><span>远程协议 *</span><select aria-label="远程协议" value={transport} onChange={event => updateTransport(event.target.value as McpTransport)}><option value="streamable-http">Streamable HTTP（推荐）</option><option value="http">HTTP</option><option value="sse">SSE</option></select><small>仅按 MCP 服务端实际支持的协议选择。</small></label> : <label><span>连接协议</span><input aria-label="连接协议" value="stdio" disabled/><small>本地 MCP 固定通过标准输入输出连接。</small></label>}
+        {connectionKind === 'REMOTE' ? <label><span>远程协议 *</span><LaunchOptionMenu label="远程协议" value={transport} options={[{ value: 'streamable-http', label: 'Streamable HTTP' }, { value: 'http', label: 'HTTP' }, { value: 'sse', label: 'SSE' }]} disabled={busy} onChange={value => updateTransport(value as McpTransport)}/><small>仅按 MCP 服务端实际支持的协议选择。</small></label> : <label><span>连接协议</span><input aria-label="连接协议" value="stdio" disabled/><small>本地 MCP 固定通过标准输入输出连接。</small></label>}
         {transport === 'stdio' ? <><label className="full-row"><span>CLI 命令 *</span><input aria-label="CLI 命令" value={stringValue('command')} placeholder="例如 python、node 或 mcp-tool-server" onChange={event => onUpdateServer({ command: event.target.value })}/><small>可使用终端环境内已安装的 CLI，或把下方上传的脚本设为入口。</small></label><label><span>参数</span><textarea aria-label="CLI 参数" value={args} placeholder={'每行一个参数，例如：\nscripts/server.py\n--readonly'} onChange={event => { const values = event.target.value.split('\n').map(item => item.trim()).filter(Boolean); onUpdateServer(values.length ? { args: values } : {}, values.length ? [] : ['args']); }}/></label><label><span>工作目录</span><input aria-label="工作目录" value={stringValue('cwd')} placeholder="留空则使用 MCP 工作目录" onChange={event => onUpdateServer(event.target.value ? { cwd: event.target.value } : {}, event.target.value ? [] : ['cwd'])}/></label><section className="mcp-script-panel full-row"><header><div><b>脚本资源</b><span>随当前 Server 持久化并解包到 <code>scripts/</code></span></div><label className="secondary file-button">上传脚本<input type="file" multiple accept=".py,.js,.mjs,.cjs,.sh,.json,.yaml,.yml,.toml,.txt" onChange={event => { const files = [...(event.target.files ?? [])]; event.target.value = ''; if (files.length) onAddScripts(selectedServer, files); }}/></label></header>{scripts.length ? <div className="mcp-script-list">{scripts.map(script => <article key={script.filename}><div><b>{script.filename}</b><small>{formatBytes(script.byteSize)} · scripts/{script.filename}</small></div>{isExecutableScript(script.filename) && <button type="button" className="secondary" onClick={() => setScriptAsEntry(script.filename)}>设为入口</button>}<button type="button" className="ghost" onClick={() => onRemoveScript(selectedServer, script.filename)}>移除</button></article>)}</div> : <div className="mcp-script-empty">可上传多个入口脚本和辅助配置；单文件 1 MiB，合计 10 MiB，最多 20 个。</div>}</section></> : <label className="full-row"><span>Server URL *</span><input aria-label="Server URL" type="url" value={stringValue('url')} placeholder="https://mcp.example.com/mcp" onChange={event => onUpdateServer({ url: event.target.value })}/><small>填写 Runtime 容器网络可访问的 HTTP(S) 地址。</small></label>}
+        {connectionKind === 'REMOTE' && authentication && <McpAuthenticationFields value={authentication} url={stringValue('url')} disabled={busy} onChange={onAuthenticationChange}/>}
         <label><span>超时（秒）</span><input aria-label="超时" type="number" min="1" value={timeout} onChange={event => onUpdateServer(event.target.value ? { timeout: Number(event.target.value) } : {}, event.target.value ? [] : ['timeout'])}/></label>
         <label><span>说明</span><input aria-label="MCP 说明" value={stringValue('description')} placeholder="说明该 Server 提供什么工具" onChange={event => onUpdateServer(event.target.value ? { description: event.target.value } : {}, event.target.value ? [] : ['description'])}/></label>
         <div className="mcp-form-actions full-row"><span>高级字段请切换到 JSON 编辑；字段仍受远程 / 本地连接契约限制。</span></div>
       </></div>
     </div> : <div className="mcp-json-editor"><textarea aria-label="MCP JSON" value={json} spellCheck={false} onChange={event => onJsonChange(event.target.value)}/><div className="mcp-config-help"><b>FlowWeave JSON 结构</b><span>新建 MCP 一次只接受一个具名 Server。</span><span>远程：<code>url</code> + <code>transport</code>，可使用 headers、auth、keep_alive。</span><span>本地：<code>command</code> + <code>args</code> + <code>transport: stdio</code>，可使用 env、cwd。</span><span>远程与本地字段不可混用。</span></div></div>}
-    {jsonError && <p className="error" role="alert">{jsonError}</p>}
-    <div className="mcp-security-note"><b>凭据与运行环境</b><span>配置禁止包含 token、secret、password、Authorization 等敏感字段。CLI 和依赖来自节点绑定并已发布的终端环境，不会根据配置自动安装。</span></div>
-    <footer><button className="ghost" onClick={onClose}>取消</button><button className="primary" disabled={busy || !json.trim() || Boolean(jsonError)} onClick={onSave}>{busy ? '保存中…' : editing ? '发布新版本' : '校验并保存'}</button></footer>
+    </fieldset>
+    {(jsonError || saveError) && <p className="error" role="alert">{jsonError || saveError}</p>}
+    <div className="mcp-editor-note">认证绑定仅对当前账号生效，Token 不写入 JSON；CLI 和依赖使用已发布的终端环境。</div>
+    <footer><span>连接配置发布新版本；认证绑定仅对当前账号生效</span><button className="ghost" disabled={busy} onClick={onClose}>取消</button><button className="primary" disabled={busy || unchanged || !json.trim() || Boolean(jsonError) || connectionKind === 'REMOTE' && authentication?.strategy === 'bearer' && !authentication.credential_id} onClick={onSave}>{busy ? '保存中…' : editing ? authenticationOnly ? '保存认证' : '发布新版本' : '校验并保存'}</button></footer>
   </section></div>;
 }
 
@@ -713,19 +715,27 @@ function HookEditorDialog({ name, description, event, matcher, mode, file, busy,
 interface ContextDialogProps {
   title: string;
   description: string;
+  content: string;
   file?: File;
   manifest?: ContextBundleDraft;
   busy: boolean;
   onTitleChange: (value: string) => void;
   onDescriptionChange: (value: string) => void;
+  onContentChange: (value: string) => void;
   onFileChange: (file?: File) => void;
   onManifestChange: (manifest: ContextBundleDraft) => void;
   onClose: () => void;
   onSave: () => void;
 }
 
-function ContextDialog({ title, description, file, manifest, busy, onTitleChange, onDescriptionChange, onFileChange, onManifestChange, onClose, onSave }: ContextDialogProps) {
+function ContextDialog({ title, description, content, file, manifest, busy, onTitleChange, onDescriptionChange, onContentChange, onFileChange, onManifestChange, onClose, onSave }: ContextDialogProps) {
   const [entrypointMenuOpen, setEntrypointMenuOpen] = useState(false);
+  const [draggingFile, setDraggingFile] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const selectFile = (nextFile?: File) => {
+    if (!nextFile) return;
+    onFileChange(nextFile);
+  };
   const moveDocument = (index: number, direction: -1 | 1) => {
     if (!manifest || index + direction < 0 || index + direction >= manifest.documents.length) return;
     const documents = [...manifest.documents];
@@ -738,15 +748,20 @@ function ContextDialog({ title, description, file, manifest, busy, onTitleChange
     setEntrypointMenuOpen(false);
   };
   const selectedEntrypoint = manifest?.entrypoint ?? '';
+  const hasSource = Boolean(file || content.trim());
   return <div className="modal-backdrop"><section className="modal context-dialog" role="dialog" aria-modal="true" aria-label="新增 Context">
     <header><div><span className="eyebrow">NEW CONTEXT</span><h2>新增 Context</h2></div><button className="ghost" onClick={onClose}>关闭</button></header>
-    <p>{manifest ? '资料包已安全解析。可调整阅读目录；全部文档仍会共同冻结并加载到同一个 Context。' : '填写标题和说明后上传文本或资料包。发布后内容、标题和说明都会被冻结；更新请新建 Context 并显式重新绑定。'}</p>
+    <p>{manifest ? '资料包已安全解析。可调整阅读目录；全部文档仍会共同冻结并加载到同一个 Context。' : '填写标题和说明，再直接编写、粘贴文本，或上传资料文件。发布后内容、标题和说明都会被冻结；更新请新建 Context 并显式重新绑定。'}</p>
     <label><span>标题 *</span><input aria-label="Context 标题" value={title} maxLength={200} placeholder="例如：产品发布手册" onChange={event => onTitleChange(event.target.value)}/></label>
     <label><span>说明</span><textarea aria-label="Context 说明" value={description} maxLength={2000} placeholder="说明这份背景信息适用于哪些任务" onChange={event => onDescriptionChange(event.target.value)}/></label>
-    <label className="context-file-upload"><input aria-label="Context 文件" type="file" accept=".txt,.md,.markdown,.zip,text/plain,text/markdown,application/zip" onChange={event => onFileChange(event.target.files?.[0])}/><span><b>{file ? file.name : '选择 Context 文件或资料包'}</b><small>{file ? `${formatBytes(file.size)} · ${file.type || '文件'}` : '支持 UTF-8 .txt、.md、.markdown 或只含这些文档的 ZIP，最大 1 MiB。'}</small></span><em>选择文件</em></label>
+    <section className={`context-source-input${draggingFile ? ' dragging' : ''}`} onDragEnter={event => { event.preventDefault(); setDraggingFile(true); }} onDragOver={event => event.preventDefault()} onDragLeave={event => { if (event.currentTarget === event.target) setDraggingFile(false); }} onDrop={event => { event.preventDefault(); setDraggingFile(false); selectFile(event.dataTransfer.files?.[0]); }}>
+      <header><b>Context 内容 *</b><span>直接输入或粘贴文本，也可拖入文件或 ZIP 资料包。</span></header>
+      <textarea aria-label="Context 内容" value={content} disabled={Boolean(file)} maxLength={MCP_JSON_MAX_BYTES} placeholder="点击此处直接编写或粘贴 Context 内容…" onChange={event => onContentChange(event.target.value)}/>
+      <footer><span>{file ? `${file.name} · ${formatBytes(file.size)}${manifest ? ' · 已解析资料包' : ''}` : content.trim() ? `${formatBytes(new Blob([content]).size)} · 将作为 context.txt 发布` : '支持 UTF-8 .txt、.md、.markdown 或只含这些文档的 ZIP，最大 1 MiB。'}</span>{file ? <button type="button" className="ghost" onClick={() => { onFileChange(undefined); if (fileInputRef.current) fileInputRef.current.value = ''; }}>移除文件</button> : <button type="button" className="secondary" onClick={() => fileInputRef.current?.click()}>上传文件</button>}</footer>
+      <input ref={fileInputRef} aria-label="Context 文件" type="file" accept=".txt,.md,.markdown,.zip,text/plain,text/markdown,application/zip" onChange={event => { selectFile(event.target.files?.[0]); event.target.value = ''; }}/>
+    </section>
     {manifest && <section className="context-bundle-editor"><header><div><b>资料包目录</b><small>文档顺序决定冲突覆盖顺序；后面的文档覆盖前面的文档。</small></div><span>{manifest.documents.length} 份文档</span></header><div className="context-entrypoint-menu"><span id="context-entrypoint-label">阅读入口</span><button type="button" className="context-entrypoint-trigger" aria-label="资料包入口" aria-describedby="context-entrypoint-label" aria-haspopup="listbox" aria-expanded={entrypointMenuOpen} onClick={() => setEntrypointMenuOpen(open => !open)}><span>{selectedEntrypoint || '不指定入口'}</span><ChevronDown size={14} aria-hidden="true"/></button>{entrypointMenuOpen && <div className="context-entrypoint-options" role="listbox" aria-label="资料包入口"><button type="button" role="option" aria-selected={!selectedEntrypoint} onClick={() => selectEntrypoint(null)}>不指定入口</button>{manifest.documents.map(document => <button type="button" role="option" key={document.path} aria-selected={selectedEntrypoint === document.path} onClick={() => selectEntrypoint(document.path)}>{document.path}</button>)}</div>}</div><ol>{manifest.documents.map((document, index) => <li key={document.path}><div><input aria-label={`资料标题 ${document.path}`} value={document.title} maxLength={200} onChange={event => onManifestChange({ ...manifest, documents: manifest.documents.map(item => item.path === document.path ? { ...item, title: event.target.value } : item) })}/><small>{document.path}</small></div><span><button type="button" className="ghost" aria-label={`上移 ${document.path}`} disabled={index === 0} onClick={() => moveDocument(index, -1)}>↑</button><button type="button" className="ghost" aria-label={`下移 ${document.path}`} disabled={index === manifest.documents.length - 1} onClick={() => moveDocument(index, 1)}>↓</button></span></li>)}</ol></section>}
-    <div className="mcp-security-note"><b>安全校验</b><span>只接受非空 UTF-8 文本；包含明文 API Key、Token、Secret、Password 或 Authorization 赋值的文件会被拒绝。</span></div>
-    <footer><button className="ghost" onClick={onClose}>取消</button><button className="primary" disabled={busy || !title.trim() || !file} onClick={onSave}>{busy ? '处理中…' : manifest ? '确认并发布' : file?.name.toLowerCase().endsWith('.zip') ? '解析资料包' : '校验并发布'}</button></footer>
+    <footer><button className="ghost" onClick={onClose}>取消</button><button className="primary" disabled={busy || !title.trim() || !hasSource} onClick={onSave}>{busy ? '处理中…' : manifest ? '确认并发布' : file?.name.toLowerCase().endsWith('.zip') ? '解析资料包' : '校验并发布'}</button></footer>
   </section></div>;
 }
 
@@ -758,66 +773,49 @@ function AgentDefinitionDetailDialog({ item, onClose }: { item: CapabilityAsset;
   return <div className="modal-backdrop"><section className="modal context-preview-dialog" role="dialog" aria-modal="true" aria-label={`查看 Agent Definition ${item.capability_key}`}><header><div><span className="eyebrow">OPENHANDS AGENT DEFINITION</span><h2>{item.capability_key}</h2></div><button className="ghost" onClick={onClose}>关闭</button></header><p>{description || '暂无说明'} · {item.filename}</p><dl className="agent-definition-detail"><dt>模型</dt><dd>{String(definition.model ?? 'inherit')}</dd><dt>权限模式</dt><dd>{String(definition.permission_mode ?? 'never_confirm')}</dd><dt>允许工具</dt><dd>{list('tools').join('、') || '无'}</dd><dt>适用示例</dt><dd>{list('when_to_use_examples').join('；') || '未声明'}</dd><dt>最大轮次</dt><dd>{String(definition.max_iteration_per_run ?? '默认')}</dd><dt>最大预算</dt><dd>{String(definition.max_budget_per_run ?? '未设置')}</dd></dl><section className="context-bundle-preview-directory"><b>系统提示词</b><pre>{String(definition.system_prompt ?? '')}</pre></section><footer><button className="primary" onClick={onClose}>完成</button></footer></section></div>;
 }
 
-interface CardProps { group: CapabilityLineage; selected: boolean; onToggle: () => void; onEdit: () => void; onViewContext: () => void; onViewAgentDefinition: () => void; onProfileHistory: () => void; onDelete: () => void }
+
+interface CardProps { mcpResult?: AgentSessionMcpReadiness; onViewMcpTools: () => void; group: CapabilityLineage; selected: boolean; onToggle: () => void; onEdit: () => void; onCompare: () => void; onRollback: () => void; onViewMcp: () => void; onViewContext: () => void; onViewAgentDefinition: () => void; onProfileHistory: () => void; onDelete: () => void }
 
 function CapabilityOverflowMenu({ label, children }: { label: string; children: (close: () => void) => ReactNode }) {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
-  const [position, setPosition] = useState<{ top?: number; bottom?: number; right: number }>({ right: 0 });
   useEffect(() => {
     if (!open) return;
     const closeOnOutsidePointer = (event: PointerEvent) => {
       const target = event.target as Node;
       if (!triggerRef.current?.contains(target) && !menuRef.current?.contains(target)) setOpen(false);
     };
-    const closeOnScroll = () => setOpen(false);
     document.addEventListener('pointerdown', closeOnOutsidePointer);
-    window.addEventListener('scroll', closeOnScroll, true);
-    window.addEventListener('resize', closeOnScroll);
     return () => {
       document.removeEventListener('pointerdown', closeOnOutsidePointer);
-      window.removeEventListener('scroll', closeOnScroll, true);
-      window.removeEventListener('resize', closeOnScroll);
     };
   }, [open]);
 
-  useLayoutEffect(() => {
-    if (!open || !triggerRef.current || !menuRef.current) return;
-    const bounds = triggerRef.current.getBoundingClientRect();
-    const gap = 6;
-    const right = Math.max(gap, window.innerWidth - bounds.right);
-    const menuHeight = menuRef.current.offsetHeight;
-    const next = bounds.bottom + gap + menuHeight <= window.innerHeight
-      ? { top: bounds.bottom + gap, right }
-      : { bottom: Math.max(gap, window.innerHeight - bounds.top + gap), right };
-    setPosition(current => current.top === next.top && current.bottom === next.bottom && current.right === next.right ? current : next);
-  }, [open]);
-
+  useEscapeClose(() => setOpen(false), open);
   const close = () => setOpen(false);
-  const toggle = () => {
-    if (open) return close();
-    const bounds = triggerRef.current?.getBoundingClientRect();
-    if (!bounds) return;
-    const gap = 6;
-    const estimatedMenuHeight = 112;
-    setPosition(bounds.bottom + gap + estimatedMenuHeight <= window.innerHeight
-      ? { top: bounds.bottom + gap, right: Math.max(gap, window.innerWidth - bounds.right) }
-      : { bottom: window.innerHeight - bounds.top + gap, right: Math.max(gap, window.innerWidth - bounds.right) });
-    setOpen(true);
-  };
+  const toggle = () => setOpen(current => !current);
   return <div className="capability-overflow-menu" ref={triggerRef}>
     <button type="button" className="capability-overflow-trigger" aria-label={`更多操作：${label}`} title="更多操作" aria-haspopup="menu" aria-expanded={open} onClick={toggle}><Ellipsis size={18}/></button>
-    {open && createPortal(<div ref={menuRef} className="capability-overflow-popover" role="menu" aria-label={`${label} 操作菜单`} style={position}>{children(close)}</div>, document.body)}
+    {open && <ViewportPopover anchor={() => triggerRef.current} align="end" gap={6} ref={menuRef} className="capability-overflow-popover" role="menu" aria-label={`${label} 操作菜单`} >{children(close)}</ViewportPopover>}
   </div>;
 }
 
-function CapabilityCard({ group, selected, onToggle, onEdit, onViewContext, onViewAgentDefinition, onProfileHistory, onDelete }: CardProps) {
+function CapabilityCard({ mcpResult, onViewMcpTools, group, selected, onToggle, onEdit, onCompare, onRollback, onViewMcp, onViewContext, onViewAgentDefinition, onProfileHistory, onDelete }: CardProps) {
   const item = group.latest;
   const description = item.capability_type === 'AGENT_DEFINITION'
     ? item.description.replace(/<example>[\s\S]*?<\/example>/giu, '').replace(/\s+/gu, ' ').trim()
     : item.description;
   const dependencyLabel = item.dependency_build_state === 'READY' ? '依赖可用' : item.dependency_build_state === 'PENDING' ? '依赖构建中' : item.dependency_build_state === 'FAILED' ? '依赖构建失败' : '无需额外依赖';
   const totalReferences = group.versions.reduce((total, version) => total + version.reference_count, 0);
-  return <article className={`capability-card ${item.is_builtin ? 'builtin' : ''} ${selected ? 'selected' : ''}`}><header><label className="capability-card-select resource-check" title={item.is_builtin ? '系统内置默认策略，不能选择删除' : `选择能力 ${item.capability_key}`}><input type="checkbox" aria-label={`选择能力 ${item.capability_key}`} checked={selected} disabled={item.is_builtin} onChange={onToggle}/><span className={`capability-card-icon ${item.capability_type.toLowerCase()}`}>{item.capability_type === 'SKILL' || item.capability_type === 'CONTEXT' ? <FileArchive size={18}/> : <PlugZap size={18}/>}</span></label>{item.is_builtin && <span className="builtin-badge"><LockKeyhole size={12}/>系统内置</span>}<span className="cap-type">{typeLabel(item.capability_type)}</span></header><h3 title={item.capability_key}>{item.capability_key}</h3><p>{description || '暂无能力说明'}</p><div className="capability-version"><span>rev {item.revision_number}</span><code title={item.id}>{item.id.slice(0, 8)}</code><code title={item.content_hash}>{item.content_hash.slice(0, 10)}</code></div><div className={`dependency-state ${item.dependency_build_state.toLowerCase()}`} title={item.dependency_build_error || ''}>{dependencyLabel}{item.dependency_build_error ? `：${item.dependency_build_error}` : ''}</div><dl><dt>来源文件</dt><dd>{item.filename}</dd><dt>文件大小</dt><dd>{formatBytes(item.byte_size)}</dd><dt>更新时间</dt><dd>{new Date(item.created_at).toLocaleString()}</dd><dt>节点引用</dt><dd>{totalReferences} 个</dd></dl><div className="capability-card-actions"><CapabilityOverflowMenu label={`${typeLabel(item.capability_type)} ${item.capability_key}`}>{close => <>{item.capability_type === 'CONTEXT' && <button type="button" role="menuitem" onClick={() => { onViewContext(); close(); }}><Eye size={14}/>查看内容</button>}{item.capability_type === 'AGENT_DEFINITION' && <button type="button" role="menuitem" onClick={() => { onViewAgentDefinition(); close(); }}><Eye size={14}/>查看详情</button>}{(item.capability_type === 'SKILL' || item.capability_type === 'MCP') && <button type="button" role="menuitem" onClick={() => { onEdit(); close(); }}><Pencil size={14}/>编辑</button>}{item.capability_type === 'SKILL' && <a role="menuitem" href={capabilityPackageUrl(item.id)} download aria-label={`下载 Skill ${item.capability_key}`} title="下载当前版本 ZIP，修改后可通过“上传 Skill ZIP”发布新版本" onClick={close}><Download size={14}/>下载</a>}{item.capability_type === 'AGENT_PROFILE' && <button type="button" role="menuitem" onClick={() => { onProfileHistory(); close(); }}><Layers3 size={14}/>版本与绑定</button>}{item.is_builtin ? <button type="button" role="menuitem" disabled title="系统内置默认策略，不能删除"><LockKeyhole size={14}/>不可删除</button> : <button type="button" className="danger" role="menuitem" title={totalReferences > 0 ? '有关联的记录会保留并说明绑定节点，其余记录直接删除' : '删除能力'} onClick={() => { onDelete(); close(); }}><Trash2 size={14}/>删除能力</button>}</>}</CapabilityOverflowMenu></div></article>;
+  const open = item.capability_type === 'MCP' ? onViewMcp : item.is_builtin ? undefined : item.capability_type === 'CONTEXT' ? onViewContext : item.capability_type === 'AGENT_DEFINITION' ? onViewAgentDefinition : item.capability_type === 'SKILL' ? onEdit : undefined;
+  const openLabel = item.capability_type === 'MCP' ? `查看 MCP ${item.capability_key}` : item.capability_type === 'CONTEXT' ? `查看 Context ${item.capability_key}` : item.capability_type === 'AGENT_DEFINITION' ? `查看 Agent Definition ${item.capability_key}` : item.capability_type === 'SKILL' ? `编辑 Skill ${item.capability_key}` : undefined;
+  const versioned = item.capability_type === 'SKILL' || item.capability_type === 'CONTEXT';
+  const previous = group.versions.reduce<CapabilityAsset | undefined>((latest, version) => version.revision_number < item.revision_number && (!latest || version.revision_number > latest.revision_number) ? version : latest, undefined);
+  const hasPreviousSkillVersion = versioned && Boolean(previous);
+  return <tr className={`capability-card ${selected ? 'selected' : ''}${item.is_builtin ? ' builtin' : ''}`} onClick={event => {
+    // Keep controls (including portaled menu actions) independent from row selection.
+    if ((item.is_builtin && item.capability_type !== 'MCP') || event.detail > 1 || (event.target instanceof Element && event.target.closest('button, a, input, label, [role="menu"]'))) return;
+    onToggle();
+  }}><td className="capability-check-column"><input type="checkbox" aria-label={`选择能力 ${item.capability_key}`} checked={selected} disabled={item.is_builtin && item.capability_type !== 'MCP'} onChange={onToggle}/></td><td className="capability-name-cell"><b title={item.capability_key}>{open ? <button className="capability-name-open" aria-label={openLabel} onClick={open}>{item.capability_key}</button> : item.capability_key}{item.is_builtin && <em className="capability-builtin-label"><LockKeyhole size={11}/>内置</em>}</b><small title={description}>{description || '暂无说明'}</small></td><td className="capability-file-cell" title={item.filename}>{item.filename}</td><td>{formatBytes(item.byte_size)}</td><td><span>{item.capability_type === 'MCP' ? `v${item.revision_number} · ${group.versions.length} 个版本` : versioned ? `当前 v${item.revision_number}` : `rev ${item.revision_number}${item.version ? ` · ${item.version}` : ''}`} </span>{versioned && <small>{previous ? `上一版 v${previous.revision_number}` : '暂无上一版本'}</small>}</td><td>{new Date(item.created_at).toLocaleString()}</td><td>{totalReferences}</td><td>{item.capability_type === 'MCP' ? <div className="mcp-table-connection"><span className={mcpResult?.state === 'READY' ? 'mcp-test-ready' : mcpResult ? 'mcp-test-failed' : ''} title={mcpResult ? `检测于 ${new Date(mcpResult.checked_at).toLocaleString()}` : '从工具栏测试连接后显示结果'}>{mcpConnectionLabel(mcpResult)}</span><button type="button" className="capability-name-open" aria-label={`查看 MCP ${item.capability_key} 的工具`} onClick={onViewMcpTools}>{mcpResult?.state === 'READY' ? `${mcpResult.tools?.length ?? 0} 个工具` : '查看工具'}</button></div> : <span className={`capability-dependency ${item.dependency_build_state.toLowerCase()}`} title={item.dependency_build_error || ''}>{dependencyLabel}</span>}</td><td>{item.is_builtin ? <span className="capability-managed-label" title="平台内置能力，由系统维护"><LockKeyhole size={14}/></span> : <CapabilityOverflowMenu label={`${typeLabel(item.capability_type)} ${item.capability_key}`}>{close => <>{(item.capability_type === 'SKILL' || item.capability_type === 'MCP') && <button type="button" role="menuitem" onClick={() => { onEdit(); close(); }}><Pencil size={14}/>编辑</button>}{versioned && <><a role="menuitem" href={capabilityPackageUrl(item.id)} download aria-label={`下载 ${typeLabel(item.capability_type)} ${item.capability_key}`} title="下载当前版本完整包" onClick={close}><Download size={14}/>下载</a><button type="button" role="menuitem" disabled={!hasPreviousSkillVersion} title={hasPreviousSkillVersion ? '对比上一版本和当前版本' : '暂无上一版本可对比'} onClick={() => { onCompare(); close(); }}><GitCompareArrows size={14}/>版本对比</button><button type="button" role="menuitem" disabled={!hasPreviousSkillVersion} title={hasPreviousSkillVersion ? '删除当前版本并恢复上一版本' : '暂无上一版本可回退'} onClick={() => { onRollback(); close(); }}><RotateCcw size={14}/>回退到上一版本</button></>}{item.capability_type === 'AGENT_PROFILE' && <button type="button" role="menuitem" onClick={() => { onProfileHistory(); close(); }}><Layers3 size={14}/>版本与绑定</button>}{item.is_builtin ? <button type="button" role="menuitem" disabled title="系统内置默认策略，不能删除"><LockKeyhole size={14}/>不可删除</button> : <button type="button" className="danger" role="menuitem" title={totalReferences > 0 ? '有关联的记录会保留并说明绑定节点，其余记录直接删除' : '删除能力'} onClick={() => { onDelete(); close(); }}><Trash2 size={14}/>删除能力</button>}</>}</CapabilityOverflowMenu>}</td></tr>;
 }

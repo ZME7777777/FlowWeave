@@ -1,10 +1,15 @@
-import { CalendarClock, Check, ChevronDown, Clock3, Ellipsis, Filter, Pause, Play, Plus, Send } from 'lucide-react';
-import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Boxes, CalendarClock, Check, ChevronDown, ChevronRight, Clock3, Filter, Pause, Play, Plus, Send, Trash2, X } from 'lucide-react';
+import { useInfiniteQuery, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { api } from '../../api/client';
-import type { AgentConversationSchedule, AgentConversationScheduleOccurrence, ModelProvider } from '../../types';
+import { ViewportPopover } from '../ViewportPopover';
+import { useEscapeClose } from '../useEscapeClose';
+import { useProductDialog } from '../ProductDialogContext';
+import { CapabilityManager } from './AgentSessionWorkbench';
+import type { AgentConversationSchedule, AgentConversationScheduleOccurrence, AgentSessionCapability, ModelProvider } from '../../types';
 
-const formatTime = (value?: string | null) => value ? new Date(value).toLocaleString() : '—';
+const formatTime = (value?: string | null) => value ? new Date(value).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }) : '—';
 type ScheduleFilter = 'ALL' | 'ACTIVE' | 'PAUSED' | 'COMPLETED';
 type FormMode = 'create' | 'edit' | undefined;
 type WorkspaceMode = 'AUTOMATION' | 'EXISTING';
@@ -17,24 +22,112 @@ function ScheduleChoice({ label, value, options, onChange }: {
   options: ScheduleChoiceOption[];
   onChange: (value: string) => void;
 }) {
-  const host = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
+  const listId = useId();
+  const trigger = useRef<HTMLButtonElement>(null);
+  const popover = useRef<HTMLDivElement>(null);
   const selected = options.find(option => option.value === value);
+  const close = () => { setOpen(false); trigger.current?.focus(); };
+  useEscapeClose(close, open);
   useEffect(() => {
-    const close = (event: MouseEvent) => {
-      if (!host.current?.contains(event.target as Node)) setOpen(false);
+    if (open) (popover.current?.querySelector<HTMLButtonElement>('[aria-selected="true"]') ?? popover.current?.querySelector<HTMLButtonElement>('[role="option"]'))?.focus();
+  }, [open]);
+  useEffect(() => {
+    if (!open) return;
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      if (event.target instanceof Node && !trigger.current?.contains(event.target) && !popover.current?.contains(event.target)) setOpen(false);
     };
-    document.addEventListener('mousedown', close);
-    return () => document.removeEventListener('mousedown', close);
-  }, []);
-  const choose = (next: string) => { onChange(next); setOpen(false); };
-  return <div ref={host} className="agent-schedule-choice"><button type="button" aria-label={label} aria-haspopup="listbox" aria-expanded={open} onClick={() => setOpen(current => !current)} onKeyDown={event => { if (event.key === 'Escape') setOpen(false); }}><span><b>{selected?.label || `请选择${label}`}</b>{selected?.detail && <small>{selected.detail}</small>}</span><ChevronDown size={15} aria-hidden="true"/></button>{open && <div className="agent-schedule-choice-options" role="listbox" aria-label={label}>{options.length ? options.map(option => <button type="button" role="option" aria-selected={option.value === value} disabled={option.disabled} key={option.value} onClick={() => choose(option.value)}><span><b>{option.label}</b>{option.detail && <small>{option.detail}</small>}</span>{option.value === value && <Check size={14}/>}</button>) : <p>暂无可用选项</p>}</div>}</div>;
+    document.addEventListener('pointerdown', closeOnOutsidePointer);
+    return () => document.removeEventListener('pointerdown', closeOnOutsidePointer);
+  }, [open]);
+  const choose = (next: string) => { onChange(next); close(); };
+  return <div className="agent-schedule-choice"><button ref={trigger} type="button" aria-label={label} aria-haspopup="listbox" aria-controls={open ? listId : undefined} aria-expanded={open} onClick={() => setOpen(current => !current)} onKeyDown={event => { if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setOpen(true); } }}><span><b>{selected?.label || `请选择${label}`}</b>{selected?.detail && <small>{selected.detail}</small>}</span><ChevronDown size={15} aria-hidden="true"/></button>{open && <ViewportPopover ref={popover} anchor={() => trigger.current} matchAnchorWidth heightLimit={220} id={listId} className="agent-schedule-choice-options" role="listbox" aria-label={label} onKeyDown={event => {
+    const buttons = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="option"]')];
+    const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : event.key === 'ArrowDown' ? (index + 1) % buttons.length : event.key === 'ArrowUp' ? (index - 1 + buttons.length) % buttons.length : undefined;
+    if (next !== undefined) { event.preventDefault(); buttons[next]?.focus(); }
+    if (event.key === 'Tab') setOpen(false);
+  }}>{options.length ? options.map(option => <button type="button" role="option" aria-selected={option.value === value} disabled={option.disabled} key={option.value} onClick={() => choose(option.value)}><span><b>{option.label}</b>{option.detail && <small>{option.detail}</small>}</span>{option.value === value && <Check size={14}/>}</button>) : <p>暂无可用选项</p>}</ViewportPopover>}</div>;
 }
 
 type ConversationMode = 'NEW' | 'CONTINUE';
 
+function uniqueRunConversations(items: AgentConversationScheduleOccurrence[]) {
+  const byBinding = new Map<string, AgentConversationScheduleOccurrence>();
+  for (const item of items) {
+    const previous = byBinding.get(item.binding_id);
+    // A pending delivery must not hide the existing readable conversation.
+    if (!previous || (previous.state !== 'STARTED' && item.state === 'STARTED')) byBinding.set(item.binding_id, item);
+  }
+  return [...byBinding.values()];
+}
+
 function occurrenceLabel(item: AgentConversationScheduleOccurrence) {
   return item.conversation_title || `${item.trigger_kind === 'MANUAL' ? '手动运行' : '定时运行'} · ${formatTime(item.scheduled_for || item.created_at)}`;
+}
+
+function SchedulePrompt({ prompt }: { prompt: string }) {
+  const preview = useRef<HTMLParagraphElement>(null);
+  const dialog = useRef<HTMLDialogElement>(null);
+  const [truncated, setTruncated] = useState(false);
+  useEffect(() => {
+    const element = preview.current;
+    if (!element) return;
+    const measure = () => setTruncated(element.scrollHeight > element.clientHeight + 1 || element.scrollWidth > element.clientWidth + 1);
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    measure();
+    return () => observer.disconnect();
+  }, [prompt]);
+  return <article className="agent-schedule-prompt">
+    <header><span>业务提示词</span>{truncated && <button type="button" aria-haspopup="dialog" onClick={() => dialog.current?.showModal()}>查看全文<ChevronRight size={13}/></button>}</header>
+    <p ref={preview}>{prompt}</p>
+    {createPortal(<dialog ref={dialog} className="agent-schedule-prompt-dialog" aria-label="业务提示词全文" onClick={event => { if (event.target === event.currentTarget) dialog.current?.close(); }}>
+      <section><header><h3>业务提示词</h3><button type="button" aria-label="关闭业务提示词" onClick={() => dialog.current?.close()}><X size={18}/></button></header><p>{prompt}</p></section>
+    </dialog>, document.body)}
+  </article>;
+}
+
+function ScheduleRunHistory({ workspaceId, scheduleId, renderRun }: {
+  workspaceId: string;
+  scheduleId: string;
+  renderRun: (item: AgentConversationScheduleOccurrence, history?: boolean, scheduleId?: string) => ReactNode;
+}) {
+  const listRef = useRef<HTMLDivElement>(null);
+  const sentinelRef = useRef<HTMLDivElement>(null);
+  const query = useInfiniteQuery({
+    queryKey: ['agent-schedule-run-conversations', workspaceId, scheduleId],
+    queryFn: ({ pageParam, signal }) => api.agentScheduleRunConversations(workspaceId, scheduleId, pageParam, signal),
+    initialPageParam: null as string | null,
+    getNextPageParam: page => page.next_cursor ?? undefined,
+    refetchInterval: 5_000,
+    retry: false,
+  });
+  const { fetchNextPage, hasNextPage, isFetching, isFetchNextPageError } = query;
+  useEffect(() => {
+    const root = listRef.current, target = sentinelRef.current;
+    if (!root || !target || !hasNextPage || isFetching || isFetchNextPageError) return;
+    const observer = new IntersectionObserver(entries => {
+      if (entries.some(entry => entry.isIntersecting)) void fetchNextPage({ cancelRefetch: false });
+    }, { root, rootMargin: '100px 0px' });
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [fetchNextPage, hasNextPage, isFetching, isFetchNextPageError]);
+  const occurrences = uniqueRunConversations(query.data?.pages.flatMap(page => page.items) ?? []);
+  const total = query.data?.pages[0]?.total;
+  return <section className="agent-schedule-history">
+    <header><h4>运行会话</h4><span className="agent-schedule-history-count">{total === undefined ? '正在读取' : `共 ${total} 个会话`}</span></header>
+    <div className="agent-schedule-history-columns" aria-hidden="true"><span>会话</span><span>触发</span><span>最近运行</span></div>
+    <div ref={listRef} className="agent-schedule-history-list" role="region" aria-label="运行会话列表" tabIndex={0} aria-busy={query.isFetching}>
+      {occurrences.map(item => renderRun(item, true, scheduleId))}
+      {query.isPending && <p className="agent-schedule-empty" role="status">正在加载运行会话…</p>}
+      {query.isError && !query.data && <p className="agent-schedule-page-status" role="alert">读取运行会话失败<button onClick={() => void query.refetch()}>重试</button></p>}
+      {query.isSuccess && !occurrences.length && <p className="agent-schedule-empty">尚未产生运行会话。</p>}
+      {query.hasNextPage && <div className="agent-schedule-page-sentinel" ref={sentinelRef} aria-hidden="true"/>}
+      {query.isFetchingNextPage && <p className="agent-schedule-page-status" role="status">正在加载更多…</p>}
+      {query.isFetchNextPageError && <p className="agent-schedule-page-status" role="alert">加载更多失败<button onClick={() => void query.fetchNextPage({ cancelRefetch: false })}>重试</button></p>}
+    </div>
+  </section>;
 }
 
 function defaultModel(providers: ModelProvider[]) {
@@ -44,11 +137,17 @@ function defaultModel(providers: ModelProvider[]) {
   return { providerId: provider?.id ?? '', modelName: model?.model_name ?? '', effort: model?.default_reasoning_effort ?? '' };
 }
 
-export function AgentConversationSchedulesPanel({ workspaceId, onOpenConversation }: {
+export function AgentConversationSchedulesPanel({ workspaceId, onSelectSchedule, activeBindingId, activeConversationCapabilities, renderConversation, embedded = false, showDetail = false }: {
   workspaceId: string;
-  onOpenConversation: (bindingId: string) => void;
+  renderConversation: (item: AgentConversationScheduleOccurrence) => ReactNode;
+  onSelectSchedule?: () => void;
+  activeBindingId?: string;
+  activeConversationCapabilities?: AgentSessionCapability[];
+  embedded?: boolean;
+  showDetail?: boolean;
 }) {
   const queryClient = useQueryClient();
+  const dialog = useProductDialog();
   const [formMode, setFormMode] = useState<FormMode>();
   const [name, setName] = useState('');
   const [prompt, setPrompt] = useState('');
@@ -59,12 +158,21 @@ export function AgentConversationSchedulesPanel({ workspaceId, onOpenConversatio
   const [modelProviderId, setModelProviderId] = useState('');
   const [modelName, setModelName] = useState('');
   const [reasoningEffort, setReasoningEffort] = useState('');
-  const [selectedScheduleId, setSelectedScheduleId] = useState<string>();
-  const [actionMenuId, setActionMenuId] = useState<string>();
+  const [capabilityVersionIds, setCapabilityVersionIds] = useState<string[]>([]);
+  const [credentialIds, setCredentialIds] = useState<string[]>();
+  const [sessionConfigOpen, setSessionConfigOpen] = useState(false);
+  const [activeSessionConfigOpen, setActiveSessionConfigOpen] = useState(false);
+  const [selectedScheduleId, setSelectedScheduleId] = useState<string | null>();
+  const [openScheduleIds, setOpenScheduleIds] = useState<Set<string>>(new Set());
+  const [expandedScheduleIds, setExpandedScheduleIds] = useState<Set<string>>(new Set());
+  const revealedScheduleBinding = useRef<string | undefined>(undefined);
   const [filterOpen, setFilterOpen] = useState(false);
   const [filter, setFilter] = useState<ScheduleFilter>('ALL');
   const [busyId, setBusyId] = useState<string>();
   const [error, setError] = useState('');
+  const editorInDialog = embedded && !showDetail && Boolean(formMode);
+  const closeEditor = () => { if (!busyId) setFormMode(undefined); };
+  useEscapeClose(closeEditor, editorInDialog && !sessionConfigOpen);
   const { data: schedules = [], isLoading } = useQuery({
     queryKey: ['agent-conversation-schedules', workspaceId],
     queryFn: () => api.agentConversationSchedules(workspaceId),
@@ -72,6 +180,11 @@ export function AgentConversationSchedulesPanel({ workspaceId, onOpenConversatio
   });
   const directoriesQuery = useQuery({ queryKey: ['agent-work-directories', workspaceId], queryFn: () => api.agentWorkDirectories(workspaceId) });
   const providersQuery = useQuery({ queryKey: ['model-providers'], queryFn: api.providers });
+  const credentialsQuery = useQuery({
+    queryKey: ['website-credentials'], queryFn: api.websiteCredentials,
+    enabled: formMode === 'create', refetchOnMount: 'always',
+  });
+  const selectedCredentialIds = credentialIds ?? (credentialsQuery.data ?? []).map(item => item.id);
   const providers = useMemo(() => (providersQuery.data ?? []).filter(item => item.connection_state === 'CONNECTED' && item.models.some(model => model.enabled)), [providersQuery.data]);
   const models = useMemo(() => providers.find(item => item.id === modelProviderId)?.models.filter(item => item.enabled) ?? [], [modelProviderId, providers]);
   const workspaceOptions = useMemo<ScheduleChoiceOption[]>(() => [
@@ -96,8 +209,52 @@ export function AgentConversationSchedulesPanel({ workspaceId, onOpenConversatio
       refetchInterval: 5_000,
     })),
   });
-  const occurrencesBySchedule = new Map(schedules.map((schedule, index) => [schedule.id, occurrenceQueries[index]?.data ?? []]));
-  const selectedSchedule = schedules.find(item => item.id === selectedScheduleId) ?? schedules[0];
+  const occurrencesBySchedule = new Map(schedules.map((schedule, index) => [schedule.id, uniqueRunConversations(occurrenceQueries[index]?.data ?? [])]));
+  const selectedSchedule = schedules.find(item => item.id === selectedScheduleId) ?? (!embedded && selectedScheduleId !== null ? schedules[0] : undefined);
+  useEffect(() => {
+    const closeMenus = (event: MouseEvent) => {
+      if ((event.target as Element).closest('.agent-schedule-filter, .agent-schedule-filter-menu')) return;
+      setFilterOpen(false);
+    };
+    document.addEventListener('mousedown', closeMenus);
+    return () => document.removeEventListener('mousedown', closeMenus);
+  }, []);
+  useEffect(() => {
+    if (!activeBindingId) { revealedScheduleBinding.current = undefined; return; }
+    const scope = `${workspaceId}:${activeBindingId}`;
+    if (revealedScheduleBinding.current === scope) return;
+    const scheduleIndex = schedules.findIndex((_, index) => (occurrenceQueries[index]?.data ?? []).some(occurrence => occurrence.binding_id === activeBindingId));
+    const schedule = schedules[scheduleIndex];
+    if (!schedule) return;
+    revealedScheduleBinding.current = scope;
+    setOpenScheduleIds(current => current.has(schedule.id) ? current : new Set(current).add(schedule.id));
+    setSelectedScheduleId(current => current ?? schedule.id);
+    const occurrenceIndex = (occurrenceQueries[scheduleIndex]?.data ?? []).findIndex(occurrence => occurrence.binding_id === activeBindingId);
+    if (occurrenceIndex >= 3) {
+      setExpandedScheduleIds(current => current.has(schedule.id) ? current : new Set(current).add(schedule.id));
+    }
+  }, [activeBindingId, occurrenceQueries, schedules, workspaceId]);
+  useEffect(() => {
+    if (!activeBindingId) return;
+    const target = document.querySelector<HTMLElement>(`.agent-schedule-rail .agent-schedule-run[data-binding-id="${CSS.escape(activeBindingId)}"]`);
+    target?.scrollIntoView({ block: 'nearest' });
+  }, [activeBindingId, expandedScheduleIds, occurrenceQueries]);
+  const toggleScheduleRuns = (scheduleId: string) => setExpandedScheduleIds(current => {
+    const next = new Set(current);
+    if (next.has(scheduleId)) next.delete(scheduleId); else next.add(scheduleId);
+    return next;
+  });
+  const toggleSchedule = (scheduleId: string) => setOpenScheduleIds(current => {
+    const next = new Set(current);
+    if (next.has(scheduleId)) next.delete(scheduleId); else next.add(scheduleId);
+    return next;
+  });
+  const selectSchedule = (scheduleId: string) => {
+    setSelectedScheduleId(scheduleId);
+    setFormMode(undefined);
+    setError('');
+    onSelectSchedule?.();
+  };
   const visibleSchedules = schedules.filter(schedule => {
     if (filter === 'ACTIVE') return schedule.status === 'ACTIVE';
     if (filter === 'PAUSED') return schedule.status === 'PAUSED';
@@ -106,6 +263,7 @@ export function AgentConversationSchedulesPanel({ workspaceId, onOpenConversatio
   const refresh = async () => {
     await queryClient.invalidateQueries({ queryKey: ['agent-conversation-schedules', workspaceId] });
     await queryClient.invalidateQueries({ queryKey: ['agent-conversation-schedule-occurrences', workspaceId] });
+    await queryClient.invalidateQueries({ queryKey: ['agent-schedule-run-conversations', workspaceId] });
   };
   const resetModel = () => {
     const next = defaultModel(providers);
@@ -121,10 +279,13 @@ export function AgentConversationSchedulesPanel({ workspaceId, onOpenConversatio
     setWorkspaceMode('AUTOMATION');
     setWorkDirectoryId('');
     setConversationMode('NEW');
+    setCapabilityVersionIds([]);
+    setCredentialIds(undefined);
     resetModel();
     setError('');
   };
   const openEdit = (schedule: AgentConversationSchedule) => {
+    setSelectedScheduleId(schedule.id);
     setFormMode('edit');
     setName(schedule.name);
     setPrompt(schedule.prompt);
@@ -135,7 +296,8 @@ export function AgentConversationSchedulesPanel({ workspaceId, onOpenConversatio
     setModelProviderId(schedule.model_provider_id ?? '');
     setModelName(schedule.model_name ?? '');
     setReasoningEffort(schedule.reasoning_effort ?? '');
-    setActionMenuId(undefined);
+    setCapabilityVersionIds(schedule.capability_version_ids ?? []);
+    setCredentialIds(schedule.credential_ids ?? []);
     setError('');
   };
   const save = async (event: React.FormEvent) => {
@@ -145,10 +307,15 @@ export function AgentConversationSchedulesPanel({ workspaceId, onOpenConversatio
       return;
     }
     if (formMode === 'edit' && !selectedSchedule) return;
+    if (formMode === 'create' && credentialIds === undefined && !credentialsQuery.isSuccess) {
+      setError(credentialsQuery.isError ? '读取认证配置失败，请重试后保存。' : '正在读取认证配置，请稍后保存。');
+      void credentialsQuery.refetch();
+      return;
+    }
     setBusyId(formMode === 'edit' ? selectedSchedule!.id : 'create');
     setError('');
     try {
-      const base = { name: name.trim(), prompt: prompt.trim(), cron_expression: cronExpression.trim(), conversation_mode: conversationMode, model_provider_id: modelProviderId, model_name: modelName, reasoning_effort: reasoningEffort || null };
+      const base = { name: name.trim(), prompt: prompt.trim(), cron_expression: cronExpression.trim(), conversation_mode: conversationMode, model_provider_id: modelProviderId, model_name: modelName, reasoning_effort: reasoningEffort || null, capability_version_ids: capabilityVersionIds, credential_ids: selectedCredentialIds };
       const schedule = formMode === 'edit'
         ? await api.updateAgentConversationSchedule(workspaceId, selectedSchedule!.id, { ...base, expected_row_version: selectedSchedule!.row_version })
         : await api.createAgentConversationSchedule(workspaceId, { ...base, workspace_mode: workspaceMode, work_directory_id: workspaceMode === 'EXISTING' ? workDirectoryId : undefined });
@@ -162,7 +329,7 @@ export function AgentConversationSchedulesPanel({ workspaceId, onOpenConversatio
     }
   };
   const setState = async (schedule: AgentConversationSchedule) => {
-    setBusyId(schedule.id); setActionMenuId(undefined); setError('');
+    setBusyId(schedule.id); setError('');
     try {
       await api.setAgentConversationScheduleState(workspaceId, schedule.id, schedule.row_version, schedule.status === 'ACTIVE' ? 'PAUSED' : 'ACTIVE');
       await refresh();
@@ -170,20 +337,53 @@ export function AgentConversationSchedulesPanel({ workspaceId, onOpenConversatio
     finally { setBusyId(undefined); }
   };
   const trigger = async (schedule: AgentConversationSchedule) => {
-    setBusyId(schedule.id); setActionMenuId(undefined); setError('');
+    setBusyId(schedule.id); setError('');
     try {
       await api.triggerAgentConversationSchedule(workspaceId, schedule.id);
       await refresh();
     } catch (reason) { setError(reason instanceof Error ? reason.message : '立即运行失败。'); }
     finally { setBusyId(undefined); }
   };
+  const removeSchedule = async (schedule: AgentConversationSchedule) => {
+    if (!await dialog.confirm({ title: `删除定时任务“${schedule.name}”？`, message: '将停止后续触发并移除任务配置及其投影记录；已创建的运行会话会保留，可在会话列表中单独管理。', confirmLabel: '删除任务', tone: 'danger' })) return;
+    setBusyId(schedule.id); setError('');
+    try {
+      await api.deleteAgentConversationSchedule(workspaceId, schedule.id);
+      setSelectedScheduleId(current => current === schedule.id ? undefined : current);
+      setOpenScheduleIds(current => { const next = new Set(current); next.delete(schedule.id); return next; });
+      setExpandedScheduleIds(current => { const next = new Set(current); next.delete(schedule.id); return next; });
+      await refresh();
+    } catch (reason) { setError(reason instanceof Error ? reason.message : '删除定时任务失败。'); }
+    finally { setBusyId(undefined); }
+  };
+  const removeFailedOccurrence = async (scheduleId: string, item: AgentConversationScheduleOccurrence) => {
+    if (!await dialog.confirm({ title: '删除失败运行记录？', message: '该记录未创建可管理会话，只会删除本次失败记录，无法恢复。', confirmLabel: '删除记录', tone: 'danger' })) return;
+    setBusyId(item.id); setError('');
+    try {
+      await api.deleteFailedAgentConversationScheduleOccurrence(workspaceId, scheduleId, item.id);
+      await refresh();
+    } catch (reason) { setError(reason instanceof Error ? reason.message : '删除失败运行记录失败。'); }
+    finally { setBusyId(undefined); }
+  };
+  const renderRun = (item: AgentConversationScheduleOccurrence, history = false, scheduleId?: string) => <div key={item.id} data-binding-id={item.binding_id} className={`${history ? 'agent-schedule-history-run' : 'agent-schedule-run'} ${item.state.toLowerCase()}${item.binding_id === activeBindingId ? ' active' : ''}`}>
+    <Clock3 size={history ? 14 : 13} aria-hidden="true"/>
+    <div className="agent-schedule-run-content">{item.state === 'STARTED' ? renderConversation(item) : <span><b>{occurrenceLabel(item)}</b><small>{item.error_detail || (item.state === 'FAILED' ? '运行失败' : '正在创建会话')}</small></span>}</div>
+    {history && <><span className="agent-schedule-run-trigger">{(item.latest_trigger_kind ?? item.trigger_kind) === 'MANUAL' ? '手动' : '定时'}</span><time dateTime={item.latest_run_at ?? item.scheduled_for ?? item.created_at}>{formatTime(item.latest_run_at ?? item.scheduled_for ?? item.created_at)}</time></>}
+    {item.state === 'FAILED' && !item.conversation && scheduleId && <button type="button" className="agent-schedule-run-remove" aria-label={`删除失败运行记录：${occurrenceLabel(item)}`} title="删除失败运行记录" disabled={busyId === item.id} onClick={() => void removeFailedOccurrence(scheduleId, item)}><Trash2 size={13}/></button>}
+  </div>;
   const filterLabel: Record<ScheduleFilter, string> = { ALL: '全部状态', ACTIVE: '已开启', PAUSED: '已暂停', COMPLETED: '已完成' };
-  return <section className="agent-schedule-page" role="region" aria-label="会话定时任务">
+  const editor = <form className="agent-schedule-create" onSubmit={save}><div><span className="eyebrow">{formMode === 'edit' ? 'EDIT AUTOMATION' : 'NEW AUTOMATION'}</span><h3>{formMode === 'edit' ? '编辑定时任务' : '新建定时任务'}</h3><p>只填写业务提示词；平台会自动创建配置、记忆文件与运行上下文。</p></div><label>任务名称<input autoFocus value={name} maxLength={220} onChange={event => setName(event.target.value)}/></label>{formMode === 'create' && <label>工作区模式<ScheduleChoice label="工作区模式" value={workspaceMode} options={workspaceOptions} onChange={value => setWorkspaceMode(value as WorkspaceMode)}/></label>}{formMode === 'create' && workspaceMode === 'EXISTING' && <label>已有工作区<ScheduleChoice label="已有工作区" value={workDirectoryId} options={directoryOptions} onChange={setWorkDirectoryId}/></label>}<label>运行方式<ScheduleChoice label="运行方式" value={conversationMode} options={conversationOptions} onChange={value => setConversationMode(value as ConversationMode)}/></label><label>模型供应商<ScheduleChoice label="模型供应商" value={modelProviderId} options={providerOptions} onChange={value => { const provider = providers.find(item => item.id === value); const model = provider?.models.find(item => item.enabled && item.is_default) ?? provider?.models.find(item => item.enabled); setModelProviderId(value); setModelName(model?.model_name ?? ''); setReasoningEffort(model?.default_reasoning_effort ?? ''); }}/></label><label>模型名称<ScheduleChoice label="模型名称" value={modelName} options={modelOptions} onChange={value => { const model = models.find(item => item.model_name === value); setModelName(value); setReasoningEffort(model?.default_reasoning_effort ?? ''); }}/></label><label>思考程度<ScheduleChoice label="思考程度" value={reasoningEffort} options={effortOptions} onChange={setReasoningEffort}/></label><label>会话配置<div className="agent-schedule-session-config"><small>默认加载的能力与认证</small><button type="button" className="secondary" aria-label="配置会话" onClick={() => setSessionConfigOpen(true)}><Boxes size={14}/>配置会话<span>{capabilityVersionIds.length + selectedCredentialIds.length}</span></button></div></label><label>业务提示词<textarea value={prompt} maxLength={200000} placeholder="例如：检查昨日运行结果，并总结需要我关注的异常。" onChange={event => setPrompt(event.target.value)}/><small>运行时会自动加入任务名称、任务 ID、memory.md、上次运行和工作区约束。</small></label><label>Cron 表达式<input value={cronExpression} spellCheck={false} placeholder="0 9 * * 1-5" onChange={event => setCronExpression(event.target.value)}/><small>标准五段 Cron，按北京时间执行：分 时 日 月 周。</small></label>{error && <p className="agent-schedule-error">{error}</p>}<footer><button type="button" className="secondary" onClick={() => setFormMode(undefined)}>取消</button><button className="primary" disabled={Boolean(busyId)}>{busyId ? '保存中…' : '保存任务'}</button></footer></form>;
+  return <section className={`agent-schedule-page${embedded ? ' embedded' : ''}${showDetail && (!embedded || Boolean(selectedSchedule) || Boolean(formMode)) ? ' detail-visible' : ''}`} role="region" aria-label="会话定时任务">
     <header className="agent-schedule-page-head"><h2>定时任务</h2></header>
     <div className="agent-schedule-layout">
-      <aside className="agent-schedule-rail"><div className="agent-schedule-list-head"><div><b>定时任务</b><small>{visibleSchedules.length} 个任务</small></div><div className="agent-schedule-rail-actions"><div className="agent-schedule-filter"><button type="button" aria-label="筛选定时任务" aria-expanded={filterOpen} onClick={() => setFilterOpen(value => !value)}><Filter size={14}/></button>{filterOpen && <div role="menu"><span>筛选依据</span>{(['ALL', 'ACTIVE', 'PAUSED', 'COMPLETED'] as const).map(value => <button type="button" role="menuitemradio" aria-checked={filter === value} key={value} onClick={() => { setFilter(value); setFilterOpen(false); }}>{filterLabel[value]}{filter === value && <b>✓</b>}</button>)}</div>}</div><button type="button" className="agent-schedule-new" onClick={openCreate}><Plus size={14}/>新建</button></div></div>
-        {isLoading ? <p className="agent-schedule-empty">正在加载…</p> : visibleSchedules.length ? <div className="agent-schedule-tree">{visibleSchedules.map(schedule => { const occurrences = occurrencesBySchedule.get(schedule.id) ?? []; const selected = schedule.id === selectedSchedule?.id; return <section className={`agent-schedule-tree-group${selected ? ' selected' : ''}`} key={schedule.id}><div className="agent-schedule-tree-task"><button type="button" className="agent-schedule-tree-select" onClick={() => { setSelectedScheduleId(schedule.id); setFormMode(undefined); }}><i className={schedule.status.toLowerCase()}/><span><b>{schedule.name}</b><small>{schedule.status === 'ACTIVE' ? `下次 ${formatTime(schedule.next_run_at)}` : '已暂停'}</small></span><ChevronDown size={13}/></button><div className="agent-schedule-menu"><button type="button" aria-label={`${schedule.name} 操作`} aria-expanded={actionMenuId === schedule.id} onClick={() => setActionMenuId(current => current === schedule.id ? undefined : schedule.id)}><Ellipsis size={16}/></button>{actionMenuId === schedule.id && <div role="menu"><button type="button" role="menuitem" disabled={busyId === schedule.id} onClick={() => void setState(schedule)}>{schedule.status === 'ACTIVE' ? <Pause size={14}/> : <Play size={14}/>}{schedule.status === 'ACTIVE' ? '暂停' : '恢复'}</button><button type="button" role="menuitem" disabled={busyId === schedule.id} onClick={() => void trigger(schedule)}><Send size={14}/>立即运行</button><button type="button" role="menuitem" onClick={() => openEdit(schedule)}><CalendarClock size={14}/>编辑</button></div>}</div></div><div className="agent-schedule-run-list">{occurrences.length ? occurrences.map(item => <button type="button" key={item.id} className={`agent-schedule-run ${item.state.toLowerCase()}`} disabled={item.state !== 'STARTED'} onClick={() => onOpenConversation(item.binding_id)}><Clock3 size={13}/><span><b>{occurrenceLabel(item)}</b>{item.state !== 'STARTED' && <small>{item.error_detail || (item.state === 'FAILED' ? '运行失败' : '正在创建会话')}</small>}</span><em>{item.state === 'STARTED' ? '打开' : item.state === 'FAILED' ? '失败' : '等待中'}</em></button>) : <p>尚无运行记录</p>}</div></section>; })}</div> : <p className="agent-schedule-empty"><CalendarClock size={20}/>没有符合“{filterLabel[filter]}”的任务。</p>}</aside>
-      <main>{formMode ? <form className="agent-schedule-create" onSubmit={save}><div><span className="eyebrow">{formMode === 'edit' ? 'EDIT AUTOMATION' : 'NEW AUTOMATION'}</span><h3>{formMode === 'edit' ? '编辑定时任务' : '新建定时任务'}</h3><p>只填写业务提示词；平台会自动创建配置、记忆文件与运行上下文。</p></div><label>任务名称<input autoFocus value={name} maxLength={220} onChange={event => setName(event.target.value)}/></label>{formMode === 'create' && <label>工作区模式<ScheduleChoice label="工作区模式" value={workspaceMode} options={workspaceOptions} onChange={value => setWorkspaceMode(value as WorkspaceMode)}/></label>}{formMode === 'create' && workspaceMode === 'EXISTING' && <label>已有工作区<ScheduleChoice label="已有工作区" value={workDirectoryId} options={directoryOptions} onChange={setWorkDirectoryId}/></label>}<label>运行方式<ScheduleChoice label="运行方式" value={conversationMode} options={conversationOptions} onChange={value => setConversationMode(value as ConversationMode)}/></label><label>模型供应商<ScheduleChoice label="模型供应商" value={modelProviderId} options={providerOptions} onChange={value => { const provider = providers.find(item => item.id === value); const model = provider?.models.find(item => item.enabled && item.is_default) ?? provider?.models.find(item => item.enabled); setModelProviderId(value); setModelName(model?.model_name ?? ''); setReasoningEffort(model?.default_reasoning_effort ?? ''); }}/></label><label>模型名称<ScheduleChoice label="模型名称" value={modelName} options={modelOptions} onChange={value => { const model = models.find(item => item.model_name === value); setModelName(value); setReasoningEffort(model?.default_reasoning_effort ?? ''); }}/></label><label>思考程度<ScheduleChoice label="思考程度" value={reasoningEffort} options={effortOptions} onChange={setReasoningEffort}/></label><label>业务提示词<textarea value={prompt} maxLength={200000} placeholder="例如：检查昨日运行结果，并总结需要我关注的异常。" onChange={event => setPrompt(event.target.value)}/><small>运行时会自动加入任务名称、任务 ID、memory.md、上次运行和工作区约束。</small></label><label>Cron 表达式<input value={cronExpression} spellCheck={false} placeholder="0 9 * * 1-5" onChange={event => setCronExpression(event.target.value)}/><small>标准五段 Cron，按 UTC 执行：分 时 日 月 周。</small></label>{error && <p className="agent-schedule-error">{error}</p>}<footer><button type="button" className="secondary" onClick={() => setFormMode(undefined)}>取消</button><button className="primary" disabled={Boolean(busyId)}>{busyId ? '保存中…' : '保存任务'}</button></footer></form> : selectedSchedule ? <section className="agent-schedule-detail"><header><div><span className="eyebrow">AUTOMATION DETAIL</span><h3>{selectedSchedule.name}</h3><p>{selectedSchedule.work_directory_name || '工作区不可用'} · {selectedSchedule.conversation_mode === 'CONTINUE' ? '持续会话' : '每次新会话'} · {filterLabel[selectedSchedule.status]}</p></div><div className="agent-schedule-actions"><button type="button" className="secondary" disabled={busyId === selectedSchedule.id} onClick={() => void setState(selectedSchedule)}>{selectedSchedule.status === 'ACTIVE' ? <Pause size={14}/> : <Play size={14}/>}{selectedSchedule.status === 'ACTIVE' ? '暂停' : '恢复'}</button><button type="button" className="primary" disabled={busyId === selectedSchedule.id} onClick={() => void trigger(selectedSchedule)}><Send size={14}/>{busyId === selectedSchedule.id ? '处理中…' : '立即运行'}</button><button type="button" className="secondary" disabled={busyId === selectedSchedule.id} onClick={() => openEdit(selectedSchedule)}><CalendarClock size={14}/>编辑</button></div></header>{error && <p className="agent-schedule-error">{error}</p>}<div className="agent-schedule-summary"><div><span>重复</span><b>Cron · {selectedSchedule.cron_expression}</b></div><div><span>工作区</span><b>{selectedSchedule.workspace_mode === 'AUTOMATION' ? '专属工作区' : '已有工作区'}</b></div><div><span>下次运行</span><b>{formatTime(selectedSchedule.next_run_at)}</b></div><div><span>上次运行</span><b>{formatTime(selectedSchedule.last_run_at)}</b></div></div><article className="agent-schedule-prompt"><span>业务提示词</span><p>{selectedSchedule.prompt}</p></article><section className="agent-schedule-history"><header><div><span className="eyebrow">RUN CONVERSATIONS</span><h4>运行会话</h4></div></header>{(occurrencesBySchedule.get(selectedSchedule.id) ?? []).length ? <div>{(occurrencesBySchedule.get(selectedSchedule.id) ?? []).map(item => <button className="agent-schedule-history-run" key={item.id} disabled={item.state !== 'STARTED'} onClick={() => onOpenConversation(item.binding_id)}><Clock3 size={14}/><span><b>{occurrenceLabel(item)}</b>{item.state !== 'STARTED' && <small>{item.error_detail || '正在创建会话'}</small>}</span><em className={item.state.toLowerCase()}>{item.state === 'STARTED' ? '打开会话' : item.state === 'FAILED' ? '失败' : '等待中'}</em></button>)}</div> : <p className="agent-schedule-empty">尚未产生运行会话。</p>}</section></section> : <div className="agent-schedule-empty agent-schedule-detail-empty"><CalendarClock size={30}/><b>选择或新建一个任务</b><span>每个任务都有独立的自动化配置、记忆和运行记录。</span></div>}</main>
+      <aside className="agent-schedule-rail"><div className="agent-schedule-list-head"><div><b>定时任务</b><small>{visibleSchedules.length} 个任务</small></div><div className="agent-schedule-rail-actions"><div className="agent-schedule-filter"><button type="button" aria-label="筛选定时任务" aria-expanded={filterOpen} onClick={() => setFilterOpen(value => !value)}><Filter size={14}/></button></div><button type="button" className="agent-schedule-new" onClick={openCreate}><Plus size={14}/>新建</button></div>{filterOpen && <div className="agent-schedule-filter-menu" role="menu"><span>筛选依据</span>{(['ALL', 'ACTIVE', 'PAUSED', 'COMPLETED'] as const).map(value => <button type="button" role="menuitemradio" aria-checked={filter === value} key={value} onClick={() => { setFilter(value); setFilterOpen(false); }}>{filterLabel[value]}{filter === value && <b>✓</b>}</button>)}</div>}</div>
+        {isLoading ? <p className="agent-schedule-empty">正在加载…</p> : visibleSchedules.length ? <div className="agent-schedule-tree">{visibleSchedules.map(schedule => { const occurrences = occurrencesBySchedule.get(schedule.id) ?? []; const expanded = openScheduleIds.has(schedule.id); const selected = selectedSchedule?.id === schedule.id; return <section className={`agent-schedule-tree-group${selected ? ' selected' : ''}`} key={schedule.id}><div className="agent-schedule-tree-task"><button type="button" className="agent-schedule-tree-select" aria-current={selected ? 'true' : undefined} onClick={() => selectSchedule(schedule.id)}><i className={schedule.status.toLowerCase()}/><span><b>{schedule.name}</b><small>{schedule.status === 'ACTIVE' ? `下次 ${formatTime(schedule.next_run_at)}` : '已暂停'}</small></span></button><button type="button" className="agent-schedule-tree-toggle" aria-label={`${expanded ? '收起' : '展开'} ${schedule.name} 的运行会话`} aria-expanded={expanded} onClick={() => toggleSchedule(schedule.id)}><ChevronDown size={13} aria-hidden="true"/></button></div>{expanded && <div className="agent-schedule-run-list">{occurrences.length ? <>{(expandedScheduleIds.has(schedule.id) ? occurrences : occurrences.slice(0, 3)).map(item => renderRun(item, false, schedule.id))}{occurrences.length > 3 && <button type="button" className="agent-schedule-run-toggle" aria-expanded={expandedScheduleIds.has(schedule.id)} onClick={() => toggleScheduleRuns(schedule.id)}>{expandedScheduleIds.has(schedule.id) ? '收起会话' : `展开其余 ${occurrences.length - 3} 个会话`}</button>}</> : <p>尚无运行记录</p>}</div>}</section>; })}</div> : <p className="agent-schedule-empty"><CalendarClock size={20}/>没有符合“{filterLabel[filter]}”的任务。</p>}{activeBindingId && <footer className="agent-workbench-rail-footer agent-schedule-session-footer"><button type="button" aria-label="会话配置" title="会话配置" onClick={() => setActiveSessionConfigOpen(true)}><Boxes size={13}/><span><b>会话配置</b></span><ChevronRight size={12}/></button></footer>}</aside>
+      <main className={!formMode && selectedSchedule ? 'agent-schedule-detail-main' : undefined}>{formMode ? (editorInDialog ? null : editor) : selectedSchedule ? <section className="agent-schedule-detail"><header><div><h3 title={selectedSchedule.name}>{selectedSchedule.name}</h3><span className="agent-schedule-detail-status" data-state={selectedSchedule.status}>{filterLabel[selectedSchedule.status]}</span><span className="agent-schedule-detail-mode">{selectedSchedule.conversation_mode === 'CONTINUE' ? '持续会话' : '每次新会话'}</span></div><div className="agent-schedule-actions"><button type="button" className="secondary" disabled={busyId === selectedSchedule.id} onClick={() => void setState(selectedSchedule)}>{selectedSchedule.status === 'ACTIVE' ? <Pause size={14}/> : <Play size={14}/>}{selectedSchedule.status === 'ACTIVE' ? '暂停' : '恢复'}</button><button type="button" className="primary" disabled={busyId === selectedSchedule.id} onClick={() => void trigger(selectedSchedule)}><Send size={14}/>{busyId === selectedSchedule.id ? '处理中…' : '立即运行'}</button><button type="button" className="secondary" disabled={busyId === selectedSchedule.id} onClick={() => openEdit(selectedSchedule)}><CalendarClock size={14}/>编辑</button><button type="button" className="danger" disabled={busyId === selectedSchedule.id} onClick={() => void removeSchedule(selectedSchedule)}><Trash2 size={14}/>{busyId === selectedSchedule.id ? '删除中…' : '删除'}</button></div></header>{error && <p className="agent-schedule-error">{error}</p>}<div className="agent-schedule-summary"><div><span>重复</span><b title="北京时间">{selectedSchedule.cron_expression}</b></div><div><span>工作区</span><b title={selectedSchedule.work_directory_name || '工作区不可用'}>{selectedSchedule.work_directory_name || (selectedSchedule.workspace_mode === 'AUTOMATION' ? '专属工作区' : '已有工作区')}</b></div><div><span>下次运行</span><b>{formatTime(selectedSchedule.next_run_at)}</b></div><div><span>上次运行</span><b>{formatTime(selectedSchedule.last_run_at)}</b></div></div><SchedulePrompt key={selectedSchedule.id} prompt={selectedSchedule.prompt}/><ScheduleRunHistory key={`history-${selectedSchedule.id}`} workspaceId={workspaceId} scheduleId={selectedSchedule.id} renderRun={renderRun}/></section> : <div className="agent-schedule-empty agent-schedule-detail-empty"><CalendarClock size={30}/><b>选择或新建一个任务</b><span>每个任务都有独立的自动化配置、记忆和运行记录。</span></div>}</main>
     </div>
+    {editorInDialog && createPortal(<div className="agent-schedule-editor-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) closeEditor(); }}>
+      <section className="agent-schedule-editor-dialog" role="dialog" aria-modal="true" aria-label={formMode === 'edit' ? '编辑定时任务' : '新建定时任务'}>{editor}</section>
+    </div>, document.body)}
+    {sessionConfigOpen && <CapabilityManager configurationPreset workspaceId={workspaceId} draftCapabilityIds={capabilityVersionIds} draftCredentialIds={selectedCredentialIds} onClose={() => setSessionConfigOpen(false)} onCreateEnhancedConversation={setCapabilityVersionIds} onDraftCredentialIdsChange={setCredentialIds}/>}
+    {activeSessionConfigOpen && activeBindingId && <CapabilityManager workspaceId={workspaceId} bindingId={activeBindingId} conversationCapabilities={activeConversationCapabilities} onClose={() => setActiveSessionConfigOpen(false)}/>}
   </section>;
 }

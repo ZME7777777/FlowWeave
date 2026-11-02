@@ -27,6 +27,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from flowweave.bootstrap.container import Container
 from flowweave.modules.agent_sessions import public as agent_sessions
+from flowweave.modules.agent_sessions.application import message_submissions
 from flowweave.modules.agent_sessions.application.runtime_config import resolve_session_config
 from flowweave.modules.agent_workspaces import public as agent_workspace_host
 from flowweave.modules.environments import public as environments
@@ -57,7 +58,7 @@ from flowweave.shared.http import (
     run_terminal_control,
     run_terminal_stream,
 )
-from flowweave.shared.schemas import ConversationPatchWrite
+from flowweave.shared.schemas import ConversationGoalWrite, ConversationPatchWrite
 from flowweave.shared.settings import bind_settings, reset_settings
 
 router = APIRouter()
@@ -122,6 +123,7 @@ class NodeSessionBootstrapFullWrite(_Write):
         list[NodeWorkspaceReference], Field(default_factory=list, max_length=20)
     )
     annotations: list[dict[str, Any]] = Field(default_factory=list, max_length=20)
+    goal_objective: str | None = Field(default=None, min_length=1, max_length=20_000)
 
 
 class NodeSessionMessageWrite(_Write):
@@ -151,6 +153,10 @@ class NodeForkWrite(_Write):
 
 class NodeCapabilityAddWrite(_Write):
     capability_version_id: str = Field(min_length=1, max_length=36)
+
+
+class NodeCapabilityBatchWrite(_Write):
+    capability_version_ids: list[str] = Field(min_length=1, max_length=100)
 
 
 class NodeCredentialSyncWrite(_Write):
@@ -183,7 +189,12 @@ def _key(value: str | None, action: str, identifier: str) -> str:
 
 
 def _project_stream_event(
-    event: dict[str, Any], *, flow_run_id: str, attempt_id: str, binding_id: str
+    event: dict[str, Any],
+    *,
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str,
+    working_directory: str,
 ) -> dict[str, Any]:
     if event.get("type") != "event" or not isinstance(event.get("event"), dict):
         return event
@@ -196,6 +207,7 @@ def _project_stream_event(
         flow_run_id=flow_run_id,
         attempt_id=attempt_id,
         binding_id=binding_id,
+        working_directory=working_directory,
     )
     display_content, references, workspace_references, annotations = (
         agent_sessions.flow_node_conversations.project_conversation_references(content)
@@ -252,6 +264,7 @@ async def _forward_runtime_events(
                         flow_run_id=flow_run_id,
                         attempt_id=attempt_id,
                         binding_id=binding_id,
+                        working_directory=handle.workspace_root,
                     )
                 )
                 event_task = asyncio.create_task(next_event())
@@ -335,6 +348,28 @@ async def add_node_session_capability(
             attempt_id=attempt_id,
             binding_id=binding_id,
             capability_version_id=payload.capability_version_id,
+        ),
+    )
+
+
+@router.post(f"{_BASE}/{{binding_id}}/capabilities/batch")
+async def register_node_session_capabilities(
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str,
+    payload: NodeCapabilityBatchWrite,
+    container: ContainerDep,
+) -> dict[str, Any]:
+    return await run_blocking_lifecycle(
+        container,
+        lambda session: (
+            agent_sessions.flow_node_conversations.register_node_conversation_capabilities(
+                session,
+                flow_run_id=flow_run_id,
+                attempt_id=attempt_id,
+                binding_id=binding_id,
+                capability_version_ids=tuple(payload.capability_version_ids),
+            )
         ),
     )
 
@@ -490,6 +525,7 @@ async def bootstrap_node_session(
             references=tuple(item.model_dump() for item in payload.references),
             workspace_references=tuple(item.model_dump() for item in payload.workspace_references),
             annotations=tuple(payload.annotations),
+            goal_objective=payload.goal_objective,
             legacy_image_urls=tuple(legacy_image_urls),
             conversation_id=payload.conversation_id,
             work_directory_id=payload.work_directory_id,
@@ -536,6 +572,7 @@ async def node_session_workspace_directory(
     limit: int = Query(default=100, ge=1, le=250),
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
+    include_hidden: bool = Query(default=False),
 ) -> dict[str, Any]:
     return await run_blocking_auxiliary(
         container,
@@ -548,6 +585,7 @@ async def node_session_workspace_directory(
             parent_path=parent_path,
             cursor=cursor,
             limit=limit,
+            include_hidden=include_hidden,
         ),
     )
 
@@ -586,6 +624,7 @@ async def node_session_workspace_file(
     download: bool = Query(default=False),
     preview: bool = Query(default=False),
     offset: int = Query(default=0, ge=0),
+    include_hidden: bool = Query(default=False),
 ) -> Response:
     content, content_type, filename, total_size, next_offset = await run_blocking_auxiliary(
         container,
@@ -599,6 +638,7 @@ async def node_session_workspace_file(
             draft_attachment_owner_id=draft_attachment_owner_id,
             preview=preview and not download,
             offset=offset,
+            include_hidden=include_hidden,
         ),
     )
     disposition = "attachment" if download else "inline"
@@ -1038,13 +1078,18 @@ async def node_session_events(
 
 @router.get(f"{_BASE}/{{binding_id}}/hydration")
 async def node_session_hydration(
-    flow_run_id: str, attempt_id: str, binding_id: str, container: ContainerDep
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str,
+    container: ContainerDep,
+    cursor: Annotated[str | None, Query(max_length=200)] = None,
 ) -> dict[str, Any]:
     principal = current_principal()
     if principal is None:
         raise DomainError("AUTHENTICATION_REQUIRED", "请先登录", 401)
     try:
         node_conversations = agent_sessions.flow_node_conversations
+        read_hydration = node_conversations.read_prepared_node_conversation_hydration
         async with hydration_response_budget(container.settings.hydration_read_timeout_seconds):
             prepared = await observe_hydration_phase(
                 container,
@@ -1066,9 +1111,9 @@ async def node_session_hydration(
                     "runtime_read",
                     run_hydration_runtime(
                         container,
-                        lambda: node_conversations.read_prepared_node_conversation_hydration(
-                            prepared
-                        ),
+                        lambda: read_hydration(prepared, cursor)
+                        if cursor
+                        else read_hydration(prepared),
                     ),
                 )
                 return await observe_hydration_phase(
@@ -1082,6 +1127,11 @@ async def node_session_hydration(
                     ),
                 )
 
+            if cursor:
+                result = await container.conversation_hydration_cache.read_incremental(
+                    prepared.key, cursor, load
+                )
+                return {**result, "incremental_from": cursor}
             return await container.conversation_hydration_cache.refresh(prepared.key, load)
     except DomainError as exc:
         if exc.code not in {
@@ -1229,42 +1279,99 @@ async def node_session_message(
     container: ContainerDep,
     idempotency_key: IdempotencyKey = None,
 ) -> dict[str, Any]:
-    del idempotency_key
+    node_messages = agent_sessions.flow_node_conversations
+    if idempotency_key:
+        await run_sync(
+            db,
+            lambda session: (
+                node_messages.authorize_node_message_submission(
+                    session,
+                    flow_run_id=flow_run_id,
+                    attempt_id=attempt_id,
+                    binding_id=binding_id,
+                ),
+                message_submissions.begin(session, binding_id, idempotency_key),
+            ),
+        )
+    fence = (
+        message_submissions.DispatchFence(
+            container.database.control_sessions, binding_id, idempotency_key
+        )
+        if idempotency_key
+        else None
+    )
     arguments = {
         "attachments": tuple(
             cast(dict[str, str | int], item.model_dump(exclude_none=True))
             for item in payload.attachments
         ),
         "references": tuple(item.model_dump() for item in payload.references),
-        "workspace_references": tuple(item.model_dump() for item in payload.workspace_references),
+        "workspace_references": tuple(
+            item.model_dump() for item in payload.workspace_references
+        ),
         "annotations": tuple(payload.annotations),
     }
-    prepared = await run_sync(
-        db,
-        lambda session: agent_sessions.flow_node_conversations.prepare_running_node_message(
-            session,
-            flow_run_id=flow_run_id,
-            attempt_id=attempt_id,
-            binding_id=binding_id,
-            content=payload.content,
-            **arguments,
-        ),
-    )
-    result, queued_during_turn, compacted = await run_blocking_message(
-        container,
-        lambda _session: agent_sessions.flow_node_conversations.dispatch_running_node_message(
-            prepared
-        ),
-    )
+    try:
+        with message_submissions.fenced(fence):
+            prepared = await run_sync(
+                db,
+                lambda session: node_messages.prepare_running_node_message(
+                    session,
+                    flow_run_id=flow_run_id,
+                    attempt_id=attempt_id,
+                    binding_id=binding_id,
+                    content=payload.content,
+                    **arguments,
+                ),
+            )
+            result, queued_during_turn, compacted = await run_blocking_message(
+                container,
+                lambda _session: node_messages.dispatch_running_node_message(
+                    prepared
+                ),
+            )
+            return await run_sync(
+                db,
+                lambda session: node_messages.finalize_running_node_message(
+                    session,
+                    prepared,
+                    result,
+                    queued_during_turn=queued_during_turn,
+                    compacted=compacted,
+                ),
+            )
+
+    except DomainError:
+        if idempotency_key:
+            await run_sync(
+                db,
+                lambda session: message_submissions.discard_preparation(
+                    session, binding_id, idempotency_key
+                ),
+            )
+        raise
+
+
+@router.post(f"{_BASE}/{{binding_id}}/messages/{{submission_id}}/cancel")
+async def cancel_node_message_submission(
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str,
+    submission_id: str,
+    db: Db,
+) -> dict[str, bool]:
+    node_messages = agent_sessions.flow_node_conversations
     return await run_sync(
         db,
-        lambda session: agent_sessions.flow_node_conversations.finalize_running_node_message(
-            session,
-            prepared,
-            result,
-            queued_during_turn=queued_during_turn,
-            compacted=compacted,
-        ),
+        lambda session: (
+            node_messages.authorize_node_message_submission(
+                session,
+                flow_run_id=flow_run_id,
+                attempt_id=attempt_id,
+                binding_id=binding_id,
+            ),
+            message_submissions.cancel(session, binding_id, submission_id),
+        )[1],
     )
 
 
@@ -1495,6 +1602,28 @@ async def interrupt_node_session(
             flow_run_id=flow_run_id,
             attempt_id=attempt_id,
             binding_id=binding_id,
+        ),
+    )
+
+
+@router.post(f"{_BASE}/{{binding_id}}/goal", status_code=202)
+async def control_node_session_goal(
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str,
+    payload: ConversationGoalWrite,
+    container: ContainerDep,
+) -> dict[str, bool]:
+    return await run_blocking_control(
+        container,
+        lambda session: agent_sessions.flow_node_conversations.control_goal(
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            binding_id=binding_id,
+            action=payload.action,
+            objective=payload.objective,
+            max_iterations=payload.max_iterations,
         ),
     )
 

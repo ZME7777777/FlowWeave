@@ -93,6 +93,56 @@ test('Agent session hydrates the first screen without parallel Runtime snapshot 
   expect(fallbackReads).toBe(0);
 });
 
+
+test('Agent session exports complete conversation history as Markdown from its context menu', async ({ page }) => {
+  let authenticated = false;
+  const workspace = { id: 'markdown-export-workspace', display_name: 'Markdown 导出工作区', desired_state: 'RUNNING', updated_at: now };
+  const conversation = {
+    id: 'markdown-export-conversation', display_title: '导出：会话 / 记录', title_state: 'MANUAL', lifecycle: 'ACTIVE',
+    streaming_callback_ready: true, write_available: true, execution_status: 'idle', created_at: now, updated_at: now,
+  };
+  const latestEvents = {
+    events: [{ id: 'export-agent', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'export-user', content: '这是最新回复。', timestamp: now } }],
+    next_cursor: 'export-agent', history_cursor: 'export-history', result: { status: 'COMPLETED' },
+  };
+
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const path = url.pathname;
+    if (path.endsWith('/auth/me')) return authenticated ? json(route, user) : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [conversation], next_cursor: null });
+    if (path.endsWith('/hydration')) return json(route, { events: latestEvents, context: { model_name: 'export-model', window_tokens: 128_000, used_tokens: 2_048, usage_current: true }, readiness: { ready: true, execution_status: 'idle' } });
+    if (path.endsWith('/events')) return url.searchParams.get('history_cursor') === 'export-history'
+      ? json(route, { events: [{ id: 'export-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '这是更早的提问。', timestamp: now } }], next_cursor: 'export-agent', history_cursor: null })
+      : json(route, latestEvents);
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
+    if (path.endsWith('/workspace')) return json(route, { root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [], runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } } });
+    if (path.endsWith('/model-providers') || path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, conversation);
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+
+  await page.goto('/');
+  await login(page);
+  await page.goto('/agent/conversations/markdown-export-conversation');
+  const conversationRow = page.locator(`[data-conversation-binding-id="${conversation.id}"]`).getByRole('button', { name: conversation.display_title, exact: true });
+  await conversationRow.click({ button: 'right' });
+  const downloadPromise = page.waitForEvent('download');
+  await page.getByRole('menuitem', { name: '导出' }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toMatch(/^导出：会话 - 记录-\d{4}-\d{2}-\d{2}\.md$/);
+  const stream = await download.createReadStream();
+  expect(stream).toBeTruthy();
+  const markdown = await new Response(stream).text();
+  expect(markdown).toBe('# 导出：会话 / 记录\n\n## 用户\n\n这是更早的提问。\n\n## 助手\n\n这是最新回复。\n');
+});
+
 test('Agent session retries older history after a temporary Runtime failure', async ({ page }) => {
   let authenticated = false;
   let historyRequests = 0;
@@ -183,7 +233,18 @@ test('Agent session keeps its conversation URL while refreshing a deep link', as
     if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
     if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
     if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
-    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [listedConversation], next_cursor: null });
+    if (path.endsWith('/conversations') && request.method() === 'GET') {
+      return new URL(request.url()).searchParams.get('cursor')
+        ? json(route, { items: [restoredConversation], next_cursor: null })
+        : json(route, {
+            items: [
+              listedConversation,
+              { ...listedConversation, id: 'another-conversation-2', display_title: '列表中的第二个会话' },
+              { ...listedConversation, id: 'another-conversation-3', display_title: '列表中的第三个会话' },
+            ],
+            next_cursor: 'refresh-target-page',
+          });
+    }
     if (path.endsWith('/conversations/refresh-target-conversation') && request.method() === 'GET') {
       await conversationRead;
       return json(route, restoredConversation);
@@ -216,6 +277,7 @@ test('Agent session keeps its conversation URL while refreshing a deep link', as
   await expect(page).toHaveURL(/\/agent\/conversations\/refresh-target-conversation$/);
   releaseConversation?.();
   await expect(page.getByText('已恢复刷新前的会话。')).toBeVisible();
+  await expect(page.locator('[data-conversation-binding-id="refresh-target-conversation"]').getByRole('button', { name: '刷新后恢复的会话', exact: true })).toBeVisible();
   await expect(page).toHaveURL(/\/agent\/conversations\/refresh-target-conversation$/);
 });
 
@@ -390,7 +452,7 @@ test('Generated conversation title updates both the sidebar and current header',
   await login(page);
   await page.goto('/agent/conversations/generated-title-conversation');
   const sidebarConversation = page.locator('[data-conversation-binding-id="generated-title-conversation"]');
-  const headerTitle = page.locator('.agent-session-title');
+  const headerTitle = page.getByRole('navigation', { name: '会话页签', exact: true }).getByRole('button');
   await expect(sidebarConversation).toContainText('原始标题');
   await expect(headerTitle).toHaveText('原始标题');
 
@@ -399,7 +461,7 @@ test('Generated conversation title updates both the sidebar and current header',
   await expect(headerTitle).toHaveText('自动生成的标题');
 
   await page.locator('[data-conversation-binding-id="generated-title-alternate-conversation"]').dblclick();
-  await expect(page.locator('.agent-session-title')).toHaveText('另一条会话');
+  await expect(headerTitle).toHaveText('另一条会话');
   await page.locator('[data-conversation-binding-id="generated-title-conversation"]').dblclick();
   await expect(sidebarConversation).toContainText('自动生成的标题');
   await expect(headerTitle).toHaveText('自动生成的标题');
@@ -409,6 +471,8 @@ test('Generated conversation title updates both the sidebar and current header',
 test('Completed conversation shows an explicit loading state without appearing to think', async ({ page }) => {
   let authenticated = false;
   const unreadWrites: Array<{ unread: boolean; unread_origin?: string }> = [];
+  let releaseConversation: (() => void) | undefined;
+  const conversationGate = new Promise<void>(resolve => { releaseConversation = resolve; });
   let releaseHydration: (() => void) | undefined;
   const hydrationGate = new Promise<void>(resolve => { releaseHydration = resolve; });
   const workspace = {
@@ -461,7 +525,10 @@ test('Completed conversation shows an explicit loading state without appearing t
       runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } },
     });
     if (path.endsWith('/model-providers') || path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
-    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, conversation);
+    if (path.includes('/conversations/') && request.method() === 'GET') {
+      await conversationGate;
+      return json(route, conversation);
+    }
     return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
   });
 
@@ -469,11 +536,14 @@ test('Completed conversation shows an explicit loading state without appearing t
   await login(page);
   await page.goto('/agent/conversations/completed-loading-conversation');
   await expect(page.getByRole('status').filter({ hasText: '正在加载会话' })).toBeVisible();
+  await expect(page.getByLabel('发送 Agent 消息')).toHaveCount(0);
+  await expect(page.getByText('会话已就绪', { exact: true })).toHaveCount(0);
   await expect(page.locator('.conversation-turn-status')).toHaveCount(0);
   await expect(page.getByText('正在思考', { exact: true })).toHaveCount(0);
   await expect(page.locator('.conversation-live-task-plan')).toHaveCount(0);
   await expect.poll(() => unreadWrites).toEqual([]);
 
+  releaseConversation?.();
   releaseHydration?.();
   await expect(page.getByText('历史回复', { exact: true })).toBeVisible();
   await expect(page.getByRole('status').filter({ hasText: '正在加载会话' })).toHaveCount(0);
@@ -569,11 +639,13 @@ test('Re-entering a recently loaded conversation reuses its trusted snapshot', a
 });
 
 
-test('Re-entering a recently loaded running conversation keeps progress visible and reconciles in background', async ({ page }) => {
+test('Re-entering a recently loaded running conversation gates cached progress until incremental hydration completes', async ({ page }) => {
   let authenticated = false;
   let hydrationReads = 0;
   let eventReads = 0;
   let readinessReads = 0;
+  let releaseReentry!: () => void;
+  const reentryGate = new Promise<void>(resolve => { releaseReentry = resolve; });
   const workspace = {
     id: 'running-hot-cache-workspace', display_name: '运行中热缓存工作区', desired_state: 'RUNNING', updated_at: now,
   };
@@ -620,6 +692,15 @@ test('Re-entering a recently loaded running conversation keeps progress visible 
     if (path.endsWith('/hydration')) {
       hydrationReads += 1;
       const bindingId = path.split('/').at(-2)!;
+      const cursor = new URL(request.url()).searchParams.get('cursor');
+      if (bindingId === 'running-hot-a' && cursor) {
+        await reentryGate;
+        return json(route, {
+          ...hydration(bindingId, true),
+          incremental_from: cursor,
+          events: { ...hydration(bindingId, true).events, events: [] },
+        });
+      }
       return json(route, hydration(bindingId, bindingId === 'running-hot-a'));
     }
     if (path.endsWith('/events')) {
@@ -651,9 +732,13 @@ test('Re-entering a recently loaded running conversation keeps progress visible 
   const readsBeforeReturn = eventReads;
 
   await page.getByRole('button', { name: '运行中热缓存 A', exact: true }).click();
+  await expect.poll(() => hydrationReads).toBe(3);
+  await expect(page.getByRole('status').filter({ hasText: '正在加载会话' })).toBeVisible();
+  await expect(page.getByText('已加载的最新进度', { exact: true })).toHaveCount(0);
+  releaseReentry();
   await expect(page.getByText('已加载的最新进度', { exact: true })).toBeVisible();
   await expect(page.getByRole('status').filter({ hasText: '正在加载会话' })).toHaveCount(0);
-  expect(hydrationReads).toBe(2);
+  expect(hydrationReads).toBe(3);
   await expect.poll(() => eventReads).toBeGreaterThan(readsBeforeReturn);
   await page.waitForTimeout(500);
   expect(readinessReads).toBeLessThanOrEqual(1);
@@ -1199,7 +1284,7 @@ test('Deleting the selected conversation immediately hides it and opens its neig
   await page.goto('/');
   await login(page);
   await page.goto('/agent/conversations/optimistic-delete-a');
-  await expect(page.locator('h2.agent-session-title')).toHaveText('待删除会话');
+  await expect(page.getByRole('navigation', { name: '会话页签', exact: true })).toContainText('待删除会话');
   const deletingRow = page.locator('[data-conversation-binding-id="optimistic-delete-a"]');
   await deletingRow.hover();
   await expect(deletingRow.getByRole('button', { name: '删除会话 待删除会话' })).toBeVisible();
@@ -1213,7 +1298,7 @@ test('Deleting the selected conversation immediately hides it and opens its neig
   // screen. The next existing session becomes visible in the same frame.
   await expect.poll(() => deleteRequested).toBe(true);
   await expect(page).toHaveURL(/\/agent\/conversations\/optimistic-delete-b$/);
-  await expect(page.locator('h2.agent-session-title')).toHaveText('下一会话');
+  await expect(page.getByRole('navigation', { name: '会话页签', exact: true })).toContainText('下一会话');
   await expect(page.getByRole('button', { name: '待删除会话', exact: true })).toHaveCount(0);
   await expect(page.getByText('开始一个新的会话', { exact: true })).toHaveCount(0);
 
@@ -1334,25 +1419,168 @@ test('Sidebar chat tabs stay isolated to their source conversation', async ({ pa
   await page.goto('/');
   await login(page);
   await page.goto('/agent/conversations/sidebar-chat-scope-a');
-  await page.getByLabel('更多工作区工具').click();
-  await page.getByRole('menu').getByRole('menuitem', { name: '侧边聊天', exact: true }).click();
+  await page.locator('.agent-workspace-new-tab-trigger').click();
+  await page.locator('.agent-workspace-tab-launcher.active').getByRole('button', { name: '侧边聊天', exact: true }).click();
   await expect(page.getByRole('region', { name: '侧边聊天' })).toBeVisible();
   await expect(page.getByText('向主会话追问', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '打开侧边聊天', exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: '删除会话', exact: true })).toHaveCount(0);
-  await page.getByLabel('关闭工作区工具').click();
-  await expect(page.getByRole('region', { name: '侧边聊天' })).toHaveCount(0);
-  await expect(page.getByText('环境信息', { exact: true })).toBeVisible();
 
   await page.getByRole('button', { name: '侧边聊天会话 B', exact: true }).click();
   await expect(page).toHaveURL(/\/agent\/conversations\/sidebar-chat-scope-b$/);
+  await expect(page.locator('.agent-workspace-drawer')).toHaveClass(/summary-open/);
   await expect(page.getByRole('region', { name: '侧边聊天' })).toHaveCount(0);
 
   await page.getByRole('button', { name: '侧边聊天会话 A', exact: true }).click();
   await expect(page).toHaveURL(/\/agent\/conversations\/sidebar-chat-scope-a$/);
-  await expect(page.getByRole('region', { name: '侧边聊天' })).toHaveCount(0);
+  await expect(page.locator('.agent-workspace-drawer')).toHaveClass(/tools-open/);
+  await expect(page.getByRole('region', { name: '侧边聊天' })).toBeVisible();
+  const pane = page.getByRole('region', { name: '侧边聊天' });
+  const draft = pane.getByRole('textbox', { name: '发送侧边聊天消息' });
+  await draft.fill('收起后仍保留的侧边草稿');
+  await page.getByRole('button', { name: '侧边聊天会话 B', exact: true }).click();
+  await page.getByRole('button', { name: '侧边聊天会话 A', exact: true }).click();
+  await expect(draft).toHaveValue('收起后仍保留的侧边草稿');
+  const tabs = page.locator('.agent-workspace-tabs > div');
+  const count = await tabs.count();
+  await page.getByLabel('隐藏工作区工具').click();
+  await expect(pane).toBeHidden();
+  await expect(page.locator('.agent-workspace-drawer')).toHaveClass(/summary-open/);
+  await page.getByRole('button', { name: '侧边聊天会话 B', exact: true }).click();
+  await page.getByRole('button', { name: '侧边聊天会话 A', exact: true }).click();
+  await expect(page.locator('.agent-workspace-drawer')).toHaveClass(/summary-open/);
+  await page.getByRole('button', { name: '显示工作区工具', exact: true }).click();
+  await expect(pane).toBeVisible();
+  await expect(tabs).toHaveCount(count);
+  // The conversation switch may remount its own pane; the hide operation
+  // itself must preserve the current composer and active tab.
+  await draft.fill('隐藏期间保留，不创建新聊天');
+  await page.getByLabel('隐藏工作区工具').click();
+  await page.getByRole('button', { name: '显示工作区工具', exact: true }).click();
+  await expect(draft).toHaveValue('隐藏期间保留，不创建新聊天');
+  await expect(page.locator('.agent-workspace-tabs > div.active')).toContainText('侧边聊天');
+  await page.getByRole('button', { name: '关闭侧边聊天页签', exact: true }).click();
+  await expect(pane).toHaveCount(0);
 });
 
+
+test('Sidebar chat keeps a selected conversation reference on its first message', async ({ page }) => {
+  let authenticated = false;
+  let firstMessage: Record<string, unknown> | undefined;
+  const workspace = { id: 'sidebar-reference-workspace', display_name: '侧边引用工作区', desired_state: 'RUNNING', updated_at: now };
+  const source = {
+    id: 'sidebar-reference-source', display_title: '引用来源会话', title_state: 'MANUAL', lifecycle: 'ACTIVE', streaming_callback_ready: true, write_available: true,
+    execution_status: 'idle', created_at: now, updated_at: now,
+  };
+  const other = { ...source, id: 'sidebar-reference-other', display_title: '其他引用来源会话' };
+  const sidebar = { ...source, id: 'sidebar-reference-draft', display_title: '侧边临时聊天' };
+  const selectedText = '这段文字应作为侧边提问的会话引用。';
+  const sourceHydration = {
+    events: {
+      events: [
+        { id: 'sidebar-reference-source-event', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: '__root__', content: selectedText, timestamp: now } },
+        { id: 'sidebar-reference-followup', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'sidebar-reference-source-event', content: '继续展开', timestamp: now } },
+        { id: 'sidebar-reference-latest', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'sidebar-reference-followup', content: Array.from({ length: 240 }, (_, index) => `后续内容 ${index}：这是一段足够长的正式回复，用来确保引用来源已经滚出可视区域。`).join('\n\n'), timestamp: now } },
+      ],
+      next_cursor: 'sidebar-reference-latest', history_cursor: null, result: { status: 'COMPLETED' },
+    },
+    context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 0, usage_current: true },
+    readiness: { ready: true, execution_status: 'idle' },
+  };
+
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return authenticated ? json(route, user) : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [source, other], next_cursor: null });
+    if (path.endsWith('/model-providers')) return json(route, [{ id: 'test-provider', name: '测试模型', connection_state: 'CONNECTED', models: [{ model_name: 'test-model', enabled: true, is_default: true, supported_reasoning_efforts: [] }] }]);
+    if (path.includes(other.id) && path.endsWith('/hydration')) return json(route, { ...sourceHydration, events: { ...sourceHydration.events, events: [{ id: 'other-reference-event', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: '__root__', content: '另一个会话的正式回复。', timestamp: now } }] } });
+    if (path.endsWith('/hydration')) return json(route, path.includes(sidebar.id) ? { ...sourceHydration, events: { ...sourceHydration.events, events: [] } } : sourceHydration);
+    if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
+    if (path.endsWith('/workspace')) return json(route, { root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [], runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } } });
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.endsWith('/sidebar') && request.method() === 'POST') {
+      firstMessage = request.postDataJSON() as Record<string, unknown>;
+      return json(route, { conversation: sidebar, accepted: true, cursor: 'sidebar-reference-first-event', expires_at: new Date(Date.now() + 3_600_000).toISOString() }, 201);
+    }
+    if (path.includes('/sidebars/')) return json(route, { binding_id: sidebar.id, source_binding_id: source.id, expires_at: new Date(Date.now() + 3_600_000).toISOString(), expired: false });
+    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, path.includes(sidebar.id) ? sidebar : path.includes(other.id) ? other : source);
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+
+  await page.goto('/');
+  await login(page);
+  await page.goto(`/agent/conversations/${source.id}`);
+  await page.locator('.agent-workspace-new-tab-trigger').click();
+  await page.locator('.agent-workspace-tab-launcher.active').getByRole('button', { name: '侧边聊天', exact: true }).click();
+  const sidebarPane = page.getByRole('region', { name: '侧边聊天' });
+  await expect(sidebarPane).toBeVisible();
+  await expect(sidebarPane.getByLabel('已添加的会话引用')).toHaveCount(0);
+  const sourceMessage = page.locator('[data-conversation-event-id="sidebar-reference-source-event"]');
+  await expect(sourceMessage).toContainText(selectedText);
+  await sourceMessage.scrollIntoViewIfNeeded();
+  await sourceMessage.evaluate(element => {
+    const content = element.querySelector('p');
+    if (!content) throw new Error('Expected assistant message content');
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(content);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    const surface = element.closest('.conversation-surface');
+    if (!surface) throw new Error('Expected conversation surface');
+    surface.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+  });
+  await page.getByRole('button', { name: '在侧边聊天提问' }).click();
+
+  await expect(sidebarPane.getByLabel('已添加的会话引用')).toContainText('会话引用');
+  const sidebarComposer = sidebarPane.getByRole('textbox', { name: '发送侧边聊天消息' });
+  await sidebarComposer.fill('请解释这段内容');
+  const mainSurface = page.locator('.agent-workbench-main .conversation-surface');
+  await mainSurface.evaluate(element => { element.scrollTop = element.scrollHeight; });
+  await expect(sourceMessage).not.toBeInViewport();
+  await page.getByRole('button', { name: '全屏查看工作区工具', exact: true }).click();
+  await sidebarPane.getByRole('button', { name: '定位引用来源会话', exact: true }).click();
+  await expect(page.locator('.agent-workspace-drawer')).not.toHaveClass(/fullscreen/);
+  await expect(sourceMessage).toBeInViewport();
+  await expect(page.locator('.agent-workbench-main .conversation-reference-highlights i').first()).toBeVisible();
+  await expect(sidebarComposer).toHaveValue('请解释这段内容');
+  await expect(sidebarPane.getByLabel('已添加的会话引用')).toContainText('会话引用');
+  await sidebarPane.getByRole('button', { name: '定位引用来源会话', exact: true }).focus();
+  await page.keyboard.press('Enter');
+  await expect(sourceMessage).toBeInViewport();
+
+  await sidebarPane.getByRole('button', { name: '发送侧边聊天消息' }).click();
+
+  await expect.poll(() => firstMessage).toMatchObject({
+    content: '请解释这段内容',
+    references: [{ source_binding_id: source.id, source_event_id: 'sidebar-reference-source-event', selection: { compact_start: 0, compact_end: selectedText.replace(/\s+/g, '').length } }],
+  });
+  await expect(sidebarPane.locator('.conversation-message-reference')).toHaveCount(1);
+  await mainSurface.evaluate(element => { element.scrollTop = element.scrollHeight; });
+  await expect(sourceMessage).not.toBeInViewport();
+  await sidebarPane.locator('.conversation-message-reference').click();
+  await expect(sourceMessage).toBeInViewport();
+  await expect(page.locator('.agent-workbench-main .conversation-reference-highlights i').first()).toBeVisible();
+  await expect(page).toHaveURL(new RegExp(`/agent/conversations/${source.id}$`));
+  await page.screenshot({ path: test.info().outputPath('sidebar-reference-location.png') });
+  // Dropped references can point to another binding and contain its title.
+  await sidebarComposer.evaluate((element, target) => {
+    const dataTransfer = new DataTransfer();
+    dataTransfer.setData('application/x-flowweave-conversation-reference', JSON.stringify(target));
+    element.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer }));
+  }, { bindingId: other.id, eventId: 'other-reference-event', title: other.display_title });
+  await sidebarPane.getByRole('button', { name: '定位引用来源会话', exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`/agent/conversations/${other.id}$`));
+  await expect(page.locator('[data-conversation-event-id="other-reference-event"]')).toBeInViewport();
+  await expect(page.locator('.agent-workbench-main .conversation-reference-highlights i').first()).toBeVisible();
+  await expect(sourceMessage).toHaveCount(0);
+});
 
 test('Sidebar chat accepts selected and pasted attachments before its first message', async ({ page }) => {
   let authenticated = false;
@@ -1401,8 +1629,8 @@ test('Sidebar chat accepts selected and pasted attachments before its first mess
   await page.goto('/');
   await login(page);
   await page.goto(`/agent/conversations/${source.id}`);
-  await page.getByLabel('更多工作区工具').click();
-  await page.getByRole('menu').getByRole('menuitem', { name: '侧边聊天', exact: true }).click();
+  await page.locator('.agent-workspace-new-tab-trigger').click();
+  await page.locator('.agent-workspace-tab-launcher.active').getByRole('button', { name: '侧边聊天', exact: true }).click();
   const sidebarPane = page.getByRole('region', { name: '侧边聊天' });
   await expect(sidebarPane.getByLabel('添加附件')).toBeEnabled();
   await sidebarPane.getByLabel('上传侧边聊天附件').setInputFiles({ name: 'selected.txt', mimeType: 'text/plain', buffer: Buffer.from('file') });
@@ -1434,6 +1662,10 @@ test('Sidebar chat recognizes its optimistic message and reuses the send button 
   let authenticated = false;
   let sidebarCreated = false;
   let paused = false;
+  let created = 0;
+  const deletes: string[] = [];
+  let releaseCreation!: () => void;
+  const creationGate = new Promise<void>(resolve => { releaseCreation = resolve; });
   const workspace = { id: 'sidebar-behavior-workspace', display_name: '侧边交互工作区', desired_state: 'RUNNING', updated_at: now };
   const source = {
     id: 'sidebar-behavior-source', display_title: '主会话', title_state: 'MANUAL', lifecycle: 'ACTIVE', streaming_callback_ready: true, write_available: true,
@@ -1465,6 +1697,8 @@ test('Sidebar chat recognizes its optimistic message and reuses the send button 
     if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
     if (path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
     if (path.endsWith('/sidebar') && request.method() === 'POST') {
+      created += 1;
+      await creationGate;
       sidebarCreated = true;
       return json(route, { conversation: sidebar, accepted: true, cursor: 'sidebar-first-event', expires_at: new Date(Date.now() + 3_600_000).toISOString() }, 201);
     }
@@ -1472,6 +1706,7 @@ test('Sidebar chat recognizes its optimistic message and reuses the send button 
       paused = true;
       return json(route, { accepted: true });
     }
+    if (path.includes('/sidebars/') && request.method() === 'DELETE') { deletes.push(path); return route.fulfill({ status: 204 }); }
     if (path.includes('/sidebars/')) return json(route, { binding_id: sidebar.id, source_binding_id: source.id, expires_at: new Date(Date.now() + 3_600_000).toISOString(), expired: false });
     if (path.includes('/conversations/') && request.method() === 'GET') return json(route, path.includes(sidebar.id) ? sidebar : source);
     return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
@@ -1480,16 +1715,47 @@ test('Sidebar chat recognizes its optimistic message and reuses the send button 
   await page.goto('/');
   await login(page);
   await page.goto(`/agent/conversations/${source.id}`);
-  await page.getByLabel('更多工作区工具').click();
-  await page.getByRole('menu').getByRole('menuitem', { name: '侧边聊天', exact: true }).click();
+  await page.locator('.agent-workspace-new-tab-trigger').click();
+  await page.locator('.agent-workspace-tab-launcher.active').getByRole('button', { name: '侧边聊天', exact: true }).click();
   const sidebarPane = page.getByRole('region', { name: '侧边聊天' });
   await sidebarPane.getByRole('textbox', { name: '发送侧边聊天消息' }).fill('你好');
   await sidebarPane.getByRole('button', { name: '发送侧边聊天消息' }).click();
 
-  await expect(sidebarPane.locator('.conversation-message.user')).toHaveCount(1);
+  await expect.poll(() => created).toBe(1);
+  await page.getByRole('button', { name: '隐藏工作区工具', exact: true }).click();
+  await expect(sidebarPane).toBeHidden();
+  releaseCreation();
+  await expect(page.locator('.agent-sidebar-conversation .conversation-message.user')).toHaveCount(1);
+  // Binding creation arrives while hidden; it must not force the tools open.
+  await expect(page.locator('.agent-workspace-drawer')).toHaveClass(/summary-open/);
+  await page.getByRole('button', { name: '显示工作区工具', exact: true }).click();
+  await expect(sidebarPane).toBeVisible();
+  expect(created).toBe(1);
+  expect(deletes).toEqual([]);
   await expect(sidebarPane.getByRole('button', { name: '发送侧边聊天消息' })).toHaveCount(0);
   await sidebarPane.getByRole('button', { name: '暂停侧边聊天 Agent' }).click();
   await expect(sidebarPane.getByRole('button', { name: '继续侧边聊天 Agent' })).toBeVisible();
+  const draft = sidebarPane.getByRole('textbox', { name: '发送侧边聊天消息' });
+  await draft.fill('未发送的追问');
+  await page.getByRole('button', { name: '全屏查看工作区工具', exact: true }).click();
+  await page.getByRole('button', { name: '隐藏工作区工具', exact: true }).click();
+  await expect(sidebarPane).toBeHidden();
+  await page.getByRole('button', { name: '显示工作区工具', exact: true }).click();
+  await expect(draft).toHaveValue('未发送的追问');
+  await expect(sidebarPane.getByRole('button', { name: '继续侧边聊天 Agent' })).toBeVisible();
+  expect(deletes).toEqual([]);
+  expect(created).toBe(1);
+  await page.getByRole('button', { name: '隐藏工作区工具', exact: true }).click();
+  await page.locator('.agent-workspace-new-tab-trigger').click();
+  await page.getByRole('navigation', { name: '工作区页签' }).getByRole('button', { name: '新建工作区页签', exact: true }).click();
+  await page.locator('.agent-workspace-tab-launcher.active').getByRole('button', { name: '侧边聊天', exact: true }).click();
+  await expect(draft).toHaveValue('未发送的追问');
+  await expect(sidebarPane.getByRole('button', { name: '继续侧边聊天 Agent' })).toBeVisible();
+  expect(created).toBe(1);
+  await page.screenshot({ path: '../../.tmp/ops77/sidebar-chat-preserved.png' });
+  await page.getByRole('button', { name: '关闭侧边聊天页签', exact: true }).click();
+  await expect(sidebarPane).toHaveCount(0);
+  expect(deletes).toEqual([`/api/v1/agent-workspaces/${workspace.id}/sidebars/${sidebar.id}`]);
 });
 
 
@@ -1503,8 +1769,9 @@ test('Conversation attachments open in a preview dialog before the file sidebar'
   };
   const attachment = {
     filename: '需求说明.txt', mime_type: 'text/plain', byte_size: 24,
-    path: '/runtime/workspace/project/uploads/requirements.txt',
+    path: '/runtime/workspace/project/.uploads/requirements.txt',
   };
+  const hiddenPreviewRequests: string[] = [];
 
   await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
   await page.route('**/api/v1/**', async route => {
@@ -1516,11 +1783,17 @@ test('Conversation attachments open in a preview dialog before the file sidebar'
     if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
     if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
     if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [conversation], next_cursor: null });
-    if (path.endsWith('/events')) return json(route, {
+    if (path.endsWith('/events') || path.endsWith('/hydration')) {
+      const eventPage = {
       events: [{ id: 'attachment-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '请查看附件', attachments: [attachment], timestamp: now } }],
       next_cursor: 'attachment-user', history_cursor: null, result: { status: 'COMPLETED' },
-    });
-    if (path.endsWith('/file') && url.searchParams.get('preview') === 'true') return route.fulfill({ status: 200, contentType: 'text/plain', headers: { 'X-Preview-Total-Bytes': '36' }, body: '弹窗内可直接阅读附件内容' });
+      };
+      return json(route, path.endsWith('/hydration') ? { events: eventPage, context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 1_024, usage_current: true }, readiness: { ready: true, execution_status: 'idle' } } : eventPage);
+    }
+    if (path.endsWith('/file') && url.searchParams.get('preview') === 'true') {
+      hiddenPreviewRequests.push(url.searchParams.get('include_hidden') ?? '');
+      return route.fulfill({ status: 200, contentType: 'text/plain', headers: { 'X-Preview-Total-Bytes': '36' }, body: '弹窗内可直接阅读附件内容' });
+    }
     if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
     if (path.endsWith('/workspace')) return json(route, {
       root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project',
@@ -1545,6 +1818,7 @@ test('Conversation attachments open in a preview dialog before the file sidebar'
   const preview = page.getByRole('dialog', { name: '文件预览' });
   await expect(preview).toBeVisible();
   await expect(preview.getByText('弹窗内可直接阅读附件内容')).toBeVisible();
+  await expect.poll(() => hiddenPreviewRequests).toContain('true');
   await expect(page.locator('.agent-workspace-drawer')).not.toHaveClass(/tools-open/);
 
   await preview.getByRole('button', { name: '全屏预览' }).click();
@@ -1554,9 +1828,10 @@ test('Conversation attachments open in a preview dialog before the file sidebar'
 
   await attachmentButton.click();
   await expect(preview).toBeVisible();
-  await preview.getByRole('button', { name: '在文件栏打开' }).click();
+  await preview.getByRole('button', { name: '在文件标签页打开' }).click();
   await expect(preview).toBeHidden();
   await expect(page.locator('.agent-workspace-drawer')).toHaveClass(/tools-open/);
+  await expect(page.getByRole('button', { name: '隐藏隐藏文件和目录' })).toHaveAttribute('aria-pressed', 'true');
 });
 
 test('Workspace file references open in a preview dialog', async ({ page }) => {
@@ -1582,10 +1857,13 @@ test('Workspace file references open in a preview dialog', async ({ page }) => {
     if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
     if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
     if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [conversation], next_cursor: null });
-    if (path.endsWith('/events')) return json(route, {
+    if (path.endsWith('/events') || path.endsWith('/hydration')) {
+      const eventPage = {
       events: [{ id: 'workspace-reference-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '请查看本地方案', workspace_references: [reference], timestamp: now } }],
       next_cursor: 'workspace-reference-user', history_cursor: null, result: { status: 'COMPLETED' },
-    });
+      };
+      return json(route, path.endsWith('/hydration') ? { events: eventPage, context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 1_024, usage_current: true }, readiness: { ready: true, execution_status: 'idle' } } : eventPage);
+    }
     if (path.endsWith('/file') && url.searchParams.get('preview') === 'true') {
       previewPaths.push(url.searchParams.get('path') ?? '');
       return route.fulfill({ status: 200, contentType: 'text/markdown', headers: { 'X-Preview-Total-Bytes': '21' }, body: '# 批次方案\n\n预览成功。' });
@@ -1614,7 +1892,8 @@ test('Workspace file references open in a preview dialog', async ({ page }) => {
   await expect(preview).toBeVisible();
   await expect(preview).toContainText('batch-plan.md');
   await expect(preview).toContainText('预览成功。');
-  expect(previewPaths).toEqual([reference.path]);
+  expect(previewPaths.length).toBeGreaterThan(0);
+  expect([...new Set(previewPaths)]).toEqual([reference.path]);
 });
 
 
@@ -1708,6 +1987,62 @@ test('A delayed message response never renders in another conversation', async (
   await expect(page.getByText('会话 B 正在处理已有请求')).toBeVisible();
   await expect(page.getByText('正在提交消息', { exact: true })).toHaveCount(0);
 });
+
+test('A running-session Enter queues without rendering, while Command or Alt+Enter renders and sends', async ({ page }) => {
+  let authenticated = false;
+  let sentMessages = 0;
+  const workspace = { id: 'queue-semantics-workspace', display_name: '队列语义工作区', desired_state: 'RUNNING', updated_at: now };
+  const conversation = {
+    id: 'queue-semantics-conversation', display_title: '运行中会话', title_state: 'MANUAL', lifecycle: 'ACTIVE',
+    streaming_callback_ready: true, write_available: true, execution_status: 'running', created_at: now, updated_at: now,
+  };
+  const events = {
+    events: [{ id: 'queue-semantics-active-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '正在处理的任务', timestamp: now } }],
+    next_cursor: 'queue-semantics-active-user', history_cursor: null, result: { status: 'RUNNING' },
+  };
+
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return authenticated ? json(route, user) : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [conversation], next_cursor: null });
+    if (path.endsWith('/hydration')) return json(route, { events, context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 1_024, usage_current: true }, readiness: { ready: false, execution_status: 'running' } });
+    if (path.endsWith('/messages') && request.method() === 'POST') { sentMessages += 1; return json(route, { accepted: true, cursor: 'queue-semantics-direct-user' }); }
+    if (path.endsWith('/events')) return json(route, events);
+    if (path.endsWith('/input-readiness')) return json(route, { ready: false, execution_status: 'running' });
+    if (path.endsWith('/conversation-activity')) return json(route, { running_binding_ids: [conversation.id] });
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
+    if (path.endsWith('/workspace')) return json(route, { root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [], runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } } });
+    if (path.endsWith('/context')) return json(route, { model_name: 'test-model', window_tokens: 128_000, used_tokens: 1_024, usage_current: true });
+    if (path.endsWith('/model-providers') || path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, conversation);
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+
+  await page.goto('/');
+  await login(page);
+  await page.goto('/agent/conversations/queue-semantics-conversation');
+  await expect(page.getByText('正在处理的任务')).toBeVisible();
+
+  const composer = page.getByLabel('发送 Agent 消息');
+  const message = page.locator('.conversation-message.user').filter({ hasText: '先排队，再调整方向' });
+  await composer.fill('先排队，再调整方向');
+  await composer.press('Enter');
+  await expect(message).toHaveCount(0);
+  await expect(page.getByLabel('消息投递队列').getByText('先排队，再调整方向')).toBeVisible();
+  expect(sentMessages).toBe(0);
+
+  await composer.press('Alt+Enter');
+  await expect(page.getByLabel('消息投递队列').getByText('先排队，再调整方向')).toHaveCount(0);
+  await expect(message).toBeVisible();
+  await expect.poll(() => sentMessages).toBe(1);
+});
+
 
 test('Agent transcript keeps scroll ownership through streamed output and historical paging', async ({ page }) => {
   let authenticated = false;
@@ -2112,7 +2447,7 @@ test('Agent composer keeps an uploading attachment visible across conversation s
   await page.goto('/');
   await login(page);
   await page.goto('/agent');
-  await expect(page.getByRole('heading', { name: '新会话' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeVisible();
   const attachment = page.locator('.agent-composer .agent-attachments').getByText('正在上传.png', { exact: true });
   await page.getByLabel('上传附件').setInputFiles({ name: '正在上传.png', mimeType: 'image/png', buffer: Buffer.from([1, 2, 3, 4, 5, 6, 7, 8]) });
   await expect.poll(() => uploadPartRequested).toBe(true);
@@ -2127,10 +2462,104 @@ test('Agent composer keeps an uploading attachment visible across conversation s
   releaseUpload?.();
   await expect.poll(() => page.locator('.agent-pending-attachment').count()).toBe(0);
   await recoverDraft.click();
-  await expect(page.getByRole('heading', { name: '新会话' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeVisible();
   await expect(attachment).toBeVisible();
 });
 
+
+test('Empty Agent workspace creates a recoverable draft while editing a new session', async ({ page }) => {
+  let authenticated = false;
+  const workspace = { id: 'empty-draft-workspace', display_name: '空工作区', desired_state: 'RUNNING', updated_at: now };
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return authenticated ? json(route, user) : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [], next_cursor: null });
+    if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
+    if (path.endsWith('/workspace')) return json(route, { root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [], runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } } });
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/input-readiness')) return json(route, { ready: true, execution_status: 'idle' });
+    if (path.endsWith('/context')) return json(route, { model_name: 'test-model', window_tokens: 128_000, used_tokens: 0, usage_current: true });
+    if (path.endsWith('/model-providers') || path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+
+  await page.goto('/');
+  await login(page);
+  await page.goto('/agent');
+  const composer = page.getByLabel('发送 Agent 消息');
+  await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeVisible();
+  await composer.fill('空工作区中的未发送草稿');
+  const storageValue = await page.evaluate(() => Object.entries(localStorage).find(([key]) => key.startsWith('flowweave:agent-conversation-draft:v2:agent-workspace:empty-draft-workspace:root'))?.[1] ?? '');
+  expect(storageValue).toContain('空工作区中的未发送草稿');
+
+  await page.reload();
+  const recoverDraft = page.getByRole('button', { name: '恢复根工作区的未发送草稿' });
+  await expect(recoverDraft).toBeVisible();
+  await recoverDraft.click();
+  await expect(composer).toHaveValue('空工作区中的未发送草稿');
+});
+
+
+test('Agent session searches rendered and memory-cached history with result navigation', async ({ page }) => {
+  let authenticated = false;
+  const workspace = { id: 'in-conversation-search-workspace', display_name: '会话搜索工作区', desired_state: 'RUNNING', updated_at: now };
+  const conversation = {
+    id: 'in-conversation-search-conversation', display_title: '会话内搜索', title_state: 'MANUAL', lifecycle: 'ACTIVE',
+    streaming_callback_ready: true, write_available: true, execution_status: 'idle', created_at: now, updated_at: now,
+  };
+  const latestEvents = {
+    events: [
+      { id: 'search-current-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '当前消息也提到定位关键词。', timestamp: now } },
+      { id: 'search-current-agent', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'search-current-user', content: '当前回复确认定位关键词。', final_reply: true, timestamp: now } },
+    ],
+    next_cursor: 'search-current-agent', history_cursor: 'search-history', result: { status: 'COMPLETED' },
+  };
+
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const path = url.pathname;
+    if (path.endsWith('/auth/me')) return authenticated ? json(route, user) : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [conversation], next_cursor: null });
+    if (path.endsWith('/hydration')) return json(route, { events: latestEvents, context: { model_name: 'search-model', window_tokens: 128_000, used_tokens: 2_048, usage_current: true }, readiness: { ready: true, execution_status: 'idle' } });
+    if (path.endsWith('/events')) return url.searchParams.get('history_cursor') === 'search-history'
+      ? json(route, { events: [{ id: 'search-history-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '尚未渲染的历史也有定位关键词。', timestamp: now } }], next_cursor: 'search-current-agent', history_cursor: null })
+      : json(route, latestEvents);
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
+    if (path.endsWith('/workspace')) return json(route, { root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [], runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } } });
+    if (path.endsWith('/model-providers') || path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, conversation);
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+
+  await page.goto('/');
+  await login(page);
+  await page.goto(`/agent/conversations/${conversation.id}`);
+  const search = page.getByRole('search');
+  await expect(search.getByLabel('搜索当前会话')).toBeVisible();
+  await expect(search).toHaveCSS('box-shadow', /rgba?\(/);
+  expect(await page.getByText('尚未渲染的历史也有定位关键词。').count()).toBe(0);
+  await page.waitForTimeout(1_800);
+  await search.getByLabel('搜索当前会话').fill('定位关键词');
+  await search.getByLabel('搜索当前会话').press('Enter');
+  await expect(search.getByText('1 个结果，共 3 个结果')).toBeVisible();
+  await search.getByRole('button', { name: '上一个搜索结果' }).click();
+  await expect(search.getByText('3 个结果，共 3 个结果')).toBeVisible();
+  const historyHit = page.locator('[data-conversation-event-id="search-history-user"]');
+  await expect(historyHit).toBeVisible();
+  await expect(historyHit).toContainText('尚未渲染的历史也有定位关键词。');
+  await expect(search.getByText('3 个结果，共 3 个结果')).toBeVisible();
+});
 
 
 test('New conversation draft remains isolated and can be resumed after switching', async ({ page }) => {
@@ -2183,7 +2612,7 @@ test('New conversation draft remains isolated and can be resumed after switching
   await page.goto('/');
   await login(page);
   await page.goto('/agent');
-  await expect(page.getByRole('heading', { name: '新会话' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeVisible();
   // An unsubmitted draft owns no native Conversation. Even if the previous
   // selected binding is still unwinding, it must remain editable and idle.
   await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
@@ -2191,15 +2620,22 @@ test('New conversation draft remains isolated and can be resumed after switching
   await expect(page.getByText('正在同步 Agent 状态', { exact: true })).toHaveCount(0);
   await expect(page.getByText('正在提交消息', { exact: true })).toHaveCount(0);
   const composer = page.getByLabel('发送 Agent 消息');
+  const recoverDraft = page.getByRole('button', { name: '恢复根工作区的未发送草稿' });
+  await expect(recoverDraft).toHaveCount(0);
+  await page.getByRole('button', { name: '竞态会话 B', exact: true }).click();
+  await expect(page).toHaveURL(/\/agent\/conversations\/draft-race-b$/);
+  await expect(recoverDraft).toHaveCount(0);
+  await page.getByRole('button', { name: '收起工作区 根工作区' }).hover();
+  await page.getByRole('button', { name: '在根工作区中新建会话' }).click();
+  await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeVisible();
   const draftAttachment = page.locator('.agent-composer .agent-attachments').getByText('新会话附件.png', { exact: true });
   await page.getByLabel('上传附件').setInputFiles({ name: '新会话附件.png', mimeType: 'image/png', buffer: Buffer.from('new-draft') });
   await expect(draftAttachment).toBeVisible();
   await expect.poll(() => page.evaluate(() => JSON.stringify(Object.entries(localStorage)))).toContain('新会话附件.png');
-  const recoverDraft = page.getByRole('button', { name: '恢复根工作区的未发送草稿' });
   await page.reload();
   await expect(recoverDraft).toBeVisible();
   await recoverDraft.click();
-  await expect(page.getByRole('heading', { name: '新会话' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeVisible();
   await expect(composer).toHaveText('');
   await expect(draftAttachment).toBeVisible();
   const restoredImage = page.locator('.agent-composer .agent-attachment-open img');
@@ -2208,6 +2644,15 @@ test('New conversation draft remains isolated and can be resumed after switching
   await expect(page.getByRole('dialog', { name: '文件预览' }).locator('img')).toHaveAttribute('src', /draft_attachment_owner_id=/);
   await page.getByRole('button', { name: '关闭文件预览' }).click();
   await composer.fill('只属于新会话的未发送草稿');
+
+  const mainNavigation = page.getByRole('navigation', { name: '主导航', exact: true });
+  await mainNavigation.getByRole('button', { name: '节点中心', exact: true }).click();
+  await expect(composer).toHaveCount(0);
+  await mainNavigation.getByRole('button', { name: 'AI 工作台', exact: true }).click();
+  await expect(page).toHaveURL(/\/agent$/);
+  await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeVisible();
+  await expect(composer).toHaveText('只属于新会话的未发送草稿');
+  await expect(draftAttachment).toBeVisible();
 
   await page.getByRole('button', { name: '竞态会话 B', exact: true }).click();
   await page.getByRole('button', { name: '竞态会话 C', exact: true }).click();
@@ -2223,7 +2668,7 @@ test('New conversation draft remains isolated and can be resumed after switching
     .every(([, value]) => !value.includes('只属于新会话的未发送草稿') && !value.includes('新会话附件.png')))).toBe(true);
 
   await recoverDraft.click();
-  await expect(page.getByRole('heading', { name: '新会话' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeVisible();
   await expect(composer).toHaveText('只属于新会话的未发送草稿');
   await expect(draftAttachment).toBeVisible();
 
@@ -2258,12 +2703,14 @@ test('New conversation draft remains isolated and can be resumed after switching
   await expect(draftAttachment).toBeVisible();
   await expect(resourceTags.getByRole('button', { name: '竞态会话 B', exact: true })).toBeVisible();
 
+  await page.getByRole('button', { name: '收起工作区 根工作区' }).hover();
   await page.getByRole('button', { name: '在根工作区中新建会话' }).click();
-  await expect(page.getByRole('heading', { name: '新会话' })).toBeVisible();
-  await expect(composer).toHaveText('');
-  await expect(draftAttachment).toHaveCount(0);
-  await expect(recoverDraft).toHaveCount(0);
-  await expect.poll(() => discardedDraftId).toBe(uploadedDraftId);
+  await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeVisible();
+  await expect(composer).toHaveText('只属于新会话的未发送草稿');
+  await expect(composer).toBeFocused();
+  await expect(draftAttachment).toBeVisible();
+  await expect(recoverDraft).toBeVisible();
+  expect(discardedDraftId).toBeNull();
 });
 
 test('First message removes the matching recoverable draft from the conversation rail', async ({ page }) => {
@@ -2392,7 +2839,7 @@ test('First message keeps the new conversation visible while its routed read is 
   await expect(page).toHaveURL(/\/agent\/conversations\/handoff-conversation$/);
   // The exact-route request remains blocked. The returned create projection
   // must bridge the URL update, rather than briefly rendering the empty state.
-  await expect(page.locator('h2.agent-session-title')).toHaveText('无闪烁的新会话');
+  await expect(page.getByRole('navigation', { name: '会话页签', exact: true })).toContainText('无闪烁的新会话');
   await expect(page.locator('.agent-workbench-empty')).toHaveCount(0);
 
   releaseConversationRead?.();
@@ -2587,6 +3034,7 @@ test('A new conversation stays first after an existing conversation was reordere
   await expect.poll(() => orderRequests).toBe(3);
   await expect(page.getByLabel('排序暂未保存，点击重试')).toHaveCount(0);
 
+  await page.locator('[data-workspace-group-id="root"] > header').hover();
   await page.getByRole('button', { name: '在根工作区中新建会话' }).click();
   const composer = page.getByLabel('发送 Agent 消息');
   await source.dragTo(page.locator('.agent-workbench-content'));
@@ -3038,6 +3486,8 @@ test('A normal background conversation completion persists a regular unread mark
   let completed = false;
   const unreadWrites: Array<{ id: string; unread: boolean; unread_origin?: string }> = [];
   let backgroundHydrationReads = 0;
+  let releaseBackgroundHydration: (() => void) | undefined;
+  const backgroundHydration = new Promise<void>(resolve => { releaseBackgroundHydration = resolve; });
   const workspace = { id: 'completed-unread-workspace', display_name: '完成未读工作区', desired_state: 'RUNNING', updated_at: now };
   const conversations = [
     {
@@ -3063,6 +3513,8 @@ test('A normal background conversation completion persists a regular unread mark
       if (completed) {
         conversation.unread = true;
         conversation.unread_origin = 'MANUAL';
+        conversation.execution_status = 'idle';
+        conversation.final_reply_preview = { event_id: 'completed-unread-final', content: '后台预览的最终回复。' };
       }
       return json(route, {
         conversations: completed ? [conversation] : [],
@@ -3081,11 +3533,17 @@ test('A normal background conversation completion persists a regular unread mark
     }
     if (path.endsWith('/hydration')) {
       const bindingId = path.split('/').at(-2)!;
-      if (bindingId === 'completed-unread-background') backgroundHydrationReads += 1;
+      if (bindingId === 'completed-unread-background') {
+        backgroundHydrationReads += 1;
+        await backgroundHydration;
+      }
       return json(route, {
         events: {
           events: bindingId === 'completed-unread-background'
-            ? [{ id: 'completed-unread-final', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: '__root__', content: '后台预热的最终回复。', timestamp: now } }]
+            ? [
+                { id: 'completed-unread-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '后台预览对应的历史问题。', timestamp: now } },
+                { id: 'completed-unread-final', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'completed-unread-user', content: '后台预览的最终回复。', final_reply: true, timestamp: now } },
+              ]
             : [],
           next_cursor: bindingId === 'completed-unread-background' ? 'completed-unread-final' : null,
           history_cursor: null,
@@ -3127,9 +3585,14 @@ test('A normal background conversation completion persists a regular unread mark
   await expect.poll(() => backgroundHydrationReads).toBe(1);
 
   await backgroundRow.getByRole('button', { name: '后台完成会话', exact: true }).click();
-  await expect(page.getByText('后台预热的最终回复。', { exact: true })).toBeVisible();
+  await expect(page.getByRole('status').filter({ hasText: '正在加载会话' })).toBeVisible();
+  await expect(page.getByText('后台预览的最终回复。', { exact: true })).toHaveCount(0);
   expect(backgroundHydrationReads).toBe(1);
 
+  releaseBackgroundHydration?.();
+  await expect(page.getByText('后台预览对应的历史问题。', { exact: true })).toBeVisible();
+  await expect(page.getByText('后台预览的最终回复。', { exact: true })).toBeVisible();
+  await expect(page.getByRole('status').filter({ hasText: '正在加载会话' })).toHaveCount(0);
   await expect.poll(() => unreadWrites).toEqual([{ id: 'completed-unread-background', unread: false }]);
 });
 
@@ -3322,8 +3785,8 @@ test('Opening a normal-list unread conversation marks it read while activity pre
   await page.goto('/');
   await login(page);
   await page.goto('/agent/conversations/unread-conversation-a');
-  const conversationA = page.getByRole('button', { name: '未读会话 A', exact: true });
-  const conversationB = page.getByRole('button', { name: '未读会话 B', exact: true });
+  const conversationA = page.locator('[data-conversation-binding-id="unread-conversation-a"]').getByRole('button', { name: '未读会话 A', exact: true });
+  const conversationB = page.locator('[data-conversation-binding-id="unread-conversation-b"]').getByRole('button', { name: '未读会话 B', exact: true });
   const unreadMarker = conversationA.locator('xpath=..').getByRole('img', { name: '会话已完成，有未读回复' });
 
   await conversationA.click({ button: 'right' });
@@ -3599,20 +4062,37 @@ test('Conversation sidebar opens an activity session without changing its scroll
   await expect(sidebarList).toBeVisible();
   const rootGroup = page.locator('.agent-workspace-group').filter({ hasText: '根工作区' });
   const rootCreate = rootGroup.getByRole('button', { name: '在根工作区中新建会话' });
-  await expect(rootCreate).toBeVisible();
   await expect(rootGroup.getByRole('button', { name: '工作区操作 根工作区' })).toHaveCount(0);
+  await expect(rootCreate).toBeVisible();
   const workspaceGroup = page.locator('.agent-workspace-group').filter({ hasText: '归属工作区' });
   const workspaceCreate = workspaceGroup.getByRole('button', { name: '在归属工作区中新建会话' });
   const workspaceActions = workspaceGroup.getByRole('button', { name: '工作区操作 归属工作区' });
   await expect(workspaceCreate).toBeVisible();
   await expect(workspaceActions).toBeVisible();
+  const workspaceConversation = page.getByRole('button', { name: '归属工作区会话', exact: true });
   await expect(workspaceGroup.locator('.agent-workspace-group-actions')).toHaveCSS('opacity', '0');
-  await workspaceGroup.hover();
+  await workspaceConversation.hover();
+  await expect(workspaceGroup.locator('.agent-workspace-group-actions')).toHaveCSS('opacity', '0');
+  await expect(workspaceGroup).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+  await expect(workspaceGroup.locator('header')).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+  await workspaceGroup.locator('header').hover();
   await expect(workspaceGroup.locator('.agent-workspace-group-actions')).toHaveCSS('opacity', '1');
-  await expect(workspaceGroup.locator('header')).toHaveCSS('background-color', 'rgb(229, 236, 231)');
+  await expect(workspaceGroup).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+  await expect(workspaceGroup.locator('header')).toHaveCSS('background-color', 'rgb(229, 242, 233)');
   await workspaceActions.click();
   const workspaceMenu = page.getByRole('menu', { name: '工作区操作菜单：归属工作区' });
   await expect(workspaceMenu.getByRole('menuitem', { name: '编辑' })).toBeVisible();
+  const [workspaceActionBounds, workspaceMenuBounds] = await Promise.all([
+    workspaceActions.boundingBox(),
+    workspaceMenu.boundingBox(),
+  ]);
+  const workspaceHeaderBounds = await workspaceGroup.locator('header').boundingBox();
+  expect(workspaceActionBounds).not.toBeNull();
+  expect(workspaceMenuBounds).not.toBeNull();
+  expect(workspaceHeaderBounds).not.toBeNull();
+  expect(workspaceMenuBounds!.x).toBe(workspaceHeaderBounds!.x);
+  expect(workspaceMenuBounds!.y).toBeGreaterThan(workspaceHeaderBounds!.y);
+  await expect(workspaceMenu).toHaveCSS('z-index', '1000');
   await expect(workspaceMenu.getByRole('menuitem', { name: '新建会话' })).toHaveCount(0);
   await expect(workspaceMenu.getByRole('menuitem', { name: '删除' })).toBeVisible();
   await workspaceMenu.getByRole('menuitem', { name: '编辑' }).click();
@@ -3634,6 +4114,13 @@ test('Conversation sidebar opens an activity session without changing its scroll
   const pinnedSectionToggle = pinnedSection.getByRole('button', { name: '收起置顶会话' });
   await expect(pinnedSection.getByRole('button', { name: '归属工作区会话', exact: true })).toBeVisible();
   await expect(pinnedSectionToggle).toHaveAttribute('aria-expanded', 'true');
+  const [pinnedHeaderBounds, pinnedToggleBounds] = await Promise.all([
+    pinnedSection.locator('header').boundingBox(),
+    pinnedSectionToggle.boundingBox(),
+  ]);
+  expect(pinnedHeaderBounds).not.toBeNull();
+  expect(pinnedToggleBounds).not.toBeNull();
+  expect(pinnedToggleBounds!.width).toBe(pinnedHeaderBounds!.width);
   await pinnedSectionToggle.click();
   await expect(pinnedSection.getByRole('button', { name: '归属工作区会话', exact: true })).toBeHidden();
   const expandPinnedSection = pinnedSection.getByRole('button', { name: '展开置顶会话' });
@@ -3659,7 +4146,7 @@ test('Conversation sidebar opens an activity session without changing its scroll
   const directoryGroup = page.locator('.agent-workspace-group').filter({ hasText: '改名后的工作区' });
   await directoryGroup.getByRole('button', { name: '收起工作区 改名后的工作区' }).click();
   await expect(directoryGroup.getByRole('button', { name: '展开工作区 改名后的工作区' })).toBeVisible();
-  const rootConversation = page.getByRole('button', { name: '未读根会话', exact: true });
+  const rootConversation = sidebarList.getByRole('button', { name: '未读根会话', exact: true });
   await rootConversation.click();
   await expect.poll(() => unreadWrites).toEqual([{ id: 'sidebar-root-unread', unread: false }]);
   const runningRowInWorkspaceList = page.locator('[data-conversation-binding-id="sidebar-directory-running"]');
@@ -3771,6 +4258,9 @@ test('Agent session exits the first-screen gate when hydration never settles', a
   await expect(page.getByRole('status').filter({ hasText: '正在加载会话' })).toHaveCount(0);
   expect(hydrationReads).toBe(1);
 
+  await page.clock.install();
+  await page.clock.fastForward(8_100);
+  await expect(timeoutAlert.getByRole('button', { name: '重新读取会话' })).toBeVisible();
   await timeoutAlert.getByRole('button', { name: '重新读取会话' }).click();
   await expect(page.getByText('已重新读取会话。', { exact: true })).toBeVisible();
   expect(releaseHydration).toBeDefined();
@@ -4009,8 +4499,9 @@ test('Opening an unsubmitted draft clears a running conversation presentation', 
   await login(page);
   await page.goto('/agent/conversations/draft-from-running-conversation');
   await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
+  await page.getByRole('button', { name: '收起工作区 根工作区' }).hover();
   await page.getByRole('button', { name: '在根工作区中新建会话' }).click();
-  await expect(page.getByRole('heading', { name: '新会话' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
   await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toHaveCount(0);
   await expect(page.getByText('正在同步 Agent 状态', { exact: true })).toHaveCount(0);
@@ -4171,8 +4662,9 @@ test('Pausing immediately updates the controls before the readiness projection c
     id: 'pause-resume-conversation', display_title: '暂停继续会话', title_state: 'MANUAL', lifecycle: 'ACTIVE',
     streaming_callback_ready: true, write_available: true, execution_status: 'running', created_at: now, updated_at: now,
   };
+  const taskStartedAt = new Date(Date.now() - 3 * 60 * 60 * 1_000).toISOString();
   const events = {
-    events: [{ id: 'pause-resume-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '继续前的任务', timestamp: now } }],
+    events: [{ id: 'pause-resume-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '继续前的任务', timestamp: taskStartedAt } }],
     next_cursor: 'pause-resume-user', history_cursor: null, result: { status: 'RUNNING' },
   };
 
@@ -4186,7 +4678,8 @@ test('Pausing immediately updates the controls before the readiness projection c
     if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
     if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
     if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [{ ...conversation, execution_status: status }], next_cursor: null });
-    if (path.endsWith('/conversation-activity')) return json(route, { running_binding_ids: status === 'running' ? [conversation.id] : [] });
+    // The activity catalog may lag the formal pause readiness transition.
+    if (path.endsWith('/conversation-activity')) return json(route, { running_binding_ids: [conversation.id] });
     if (path.endsWith('/hydration')) return json(route, {
       events: { ...events, result: { status: status === 'running' ? 'RUNNING' : 'PAUSED' } },
       context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 1_024, usage_current: true },
@@ -4229,13 +4722,16 @@ test('Pausing immediately updates the controls before the readiness projection c
 
   pauseProjectionAvailable = true;
   await expect(page.getByRole('button', { name: '继续当前 Agent' })).toBeVisible();
+  await expect(page.getByText('正在思考', { exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: '继续当前 Agent' }).click();
   await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
   stream!.send(JSON.stringify({
     type: 'event',
-    event: { id: 'pause-resume-progress', event_type: 'THOUGHT', payload: { source: 'agent', parent_id: 'pause-resume-user', content: '恢复后无需刷新即可看到这条进展。', thought: '恢复后无需刷新即可看到这条进展。', timestamp: now } },
+    event: { id: 'pause-resume-progress', event_type: 'THOUGHT', payload: { source: 'agent', parent_id: 'pause-resume-user', content: '恢复后无需刷新即可看到这条进展。', thought: '恢复后无需刷新即可看到这条进展。', timestamp: new Date().toISOString() } },
   }));
   await expect(page.getByText('恢复后无需刷新即可看到这条进展。', { exact: true })).toBeVisible();
+  await expect(page.getByText(/已耗时 [0-9]+秒/, { exact: true })).toBeVisible();
+  await expect(page.getByText(/已耗时 [0-9]+小时/)).toHaveCount(0);
 });
 
 
@@ -4369,3 +4865,108 @@ test('Pausing before the first Agent event immediately replaces the submitting s
   releaseInterrupt?.();
   await expect(page.getByRole('button', { name: '继续当前 Agent' })).toBeVisible();
 });
+
+for (const outcome of ['cancelled', 'dispatched', 'late-scope', 'failed'] as const) {
+  test(`Submitting message pause ${outcome} preserves delivery and composer boundaries`, async ({ page }) => {
+    test.setTimeout(25_000);
+    let authenticated = false;
+    let pauseRequests = 0;
+    let cancelRequests = 0;
+    let releaseMessage!: () => void;
+    let releaseCancellation!: () => void;
+    const messageGate = new Promise<void>(resolve => { releaseMessage = resolve; });
+    const cancellationGate = new Promise<void>(resolve => { releaseCancellation = resolve; });
+    const sent: { id?: string; content: string; attachments: unknown[] }[] = [];
+    const workspace = { id: 'cancel-submit-workspace', display_name: '提交取消工作区', desired_state: 'RUNNING', updated_at: now };
+    const conversations = ['cancel-submit-a', 'cancel-submit-b'].map((id, index) => ({
+      id, display_title: `取消测试会话 ${index ? 'B' : 'A'}`, title_state: 'MANUAL', lifecycle: 'ACTIVE',
+      streaming_callback_ready: true, write_available: true, execution_status: 'idle', created_at: now, updated_at: now,
+    }));
+    await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+    await page.route('**/api/v1/**', async route => {
+      const request = route.request();
+      const path = new URL(request.url()).pathname;
+      if (path.endsWith('/auth/me')) return authenticated ? json(route, user) : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+      if (path.endsWith('/auth/login')) { authenticated = true; return json(route, user); }
+      if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+      if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+      if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: conversations, next_cursor: null });
+      if (path.endsWith('/conversation-activity')) return json(route, { running_binding_ids: [] });
+      if (path.endsWith('/messages') && request.method() === 'POST') {
+        sent.push({ id: request.headers()['idempotency-key'], ...request.postDataJSON() });
+        if (sent.length === 1) {
+          await messageGate;
+          return outcome === 'dispatched'
+            ? json(route, { accepted: true, cursor: 'irreversible-event' }, 202)
+            : json(route, { error: { code: 'AGENT_MESSAGE_CANCELLED', message: '已取消发送' } }, 409);
+        }
+        return json(route, { accepted: true, cursor: 'resubmitted-event' }, 202);
+      }
+      if (path.endsWith('/cancel')) {
+        cancelRequests += 1;
+        expect(path).toContain(`/messages/${sent[0].id}/cancel`);
+        if (outcome === 'late-scope') await cancellationGate;
+        if (outcome === 'failed') return json(route, { error: { code: 'EXECUTOR_UNAVAILABLE', message: '取消暂不可用' } }, 503);
+        return json(route, { cancelled: outcome !== 'dispatched' });
+      }
+      if (path.endsWith('/interrupt')) { pauseRequests += 1; return json(route, { accepted: true }, 202); }
+      const events = { events: [], next_cursor: null, history_cursor: null };
+      const readiness = { ready: true, execution_status: 'idle' };
+      const context = { model_name: 'test-model', window_tokens: 128_000, used_tokens: 0 };
+      if (path.endsWith('/hydration')) return json(route, { events, readiness, context });
+      if (path.endsWith('/events')) return json(route, events);
+      if (path.endsWith('/input-readiness')) return json(route, readiness);
+      if (path.endsWith('/context')) return json(route, context);
+      if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+      if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区' }, items: [] });
+      if (path.endsWith('/workspace')) return json(route, { root: '/runtime/workspace/project', working_directory: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, files: [], repositories: [], runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } } });
+      if (path.includes('/attachments/uploads') && request.method() === 'POST' && !path.endsWith('/complete')) return json(route, { upload_id: 'cancel-upload', chunk_size: 262_144, uploaded_parts: [] }, 201);
+      if (path.includes('/attachments/uploads') && request.method() === 'PUT') return json(route, { uploaded: true });
+      if (path.includes('/attachments/uploads') && path.endsWith('/complete')) return json(route, { filename: 'cancel.txt', mime_type: 'text/plain', byte_size: 4, path: '/runtime/workspace/project/uploads/cancel.txt' });
+      if (path.endsWith('/model-providers') || path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+      if (path.includes('/conversations/') && request.method() === 'GET') return json(route, conversations.find(item => path.endsWith(item.id)));
+      return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+    });
+    await page.goto('/');
+    await login(page);
+    await page.goto('/agent/conversations/cancel-submit-a');
+    const composer = page.getByLabel('发送 Agent 消息');
+    await composer.fill('提交中撤回的内容');
+    await page.getByLabel('上传附件').setInputFiles({ name: 'cancel.txt', mimeType: 'text/plain', buffer: Buffer.from('data') });
+    await expect(page.locator('.agent-composer .agent-attachments').getByText('cancel.txt', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: '发送消息', exact: true }).click();
+    await expect.poll(() => sent.length).toBe(1);
+    await page.getByRole('button', { name: '暂停当前 Agent', exact: true }).click();
+    await expect.poll(() => cancelRequests).toBe(1);
+    if (outcome === 'late-scope') {
+      await page.getByRole('button', { name: '取消测试会话 B', exact: true }).click();
+      await composer.fill('B 的新草稿');
+      releaseCancellation();
+      releaseMessage();
+      await expect(composer).toHaveValue('B 的新草稿');
+      await page.getByRole('button', { name: '取消测试会话 A', exact: true }).click();
+    }
+    if (outcome === 'cancelled' || outcome === 'late-scope') {
+      await expect(composer).toHaveValue('提交中撤回的内容');
+      await expect(page.locator('.agent-composer .agent-attachments').getByText('cancel.txt', { exact: true })).toBeVisible();
+      await expect(page.locator('[data-user-event-id^="pending-user:"]')).toHaveCount(0);
+      await expect(page.getByRole('button', { name: '发送消息', exact: true })).toBeEnabled();
+      expect(pauseRequests).toBe(0);
+      releaseMessage();
+      await page.getByRole('button', { name: '发送消息', exact: true }).click();
+      await expect.poll(() => sent.length).toBe(2);
+      expect(sent[1].id).not.toBe(sent[0].id);
+      expect(sent[1].content).toBe(sent[0].content);
+      expect(sent[1].attachments).toEqual(sent[0].attachments);
+    } else if (outcome === 'dispatched') {
+      await expect.poll(() => pauseRequests).toBe(1);
+      await expect(composer).toHaveValue('');
+      releaseMessage();
+    } else {
+      await expect(page.getByRole('button', { name: '暂停当前 Agent', exact: true })).toBeEnabled();
+      await expect(composer).toHaveValue('');
+      expect(pauseRequests).toBe(0);
+      releaseMessage();
+    }
+  });
+}

@@ -4,6 +4,7 @@ from alembic import context
 from sqlalchemy import engine_from_config, inspect, pool, text
 
 from flowweave.bootstrap.settings import Settings
+from flowweave.modules.cases.infrastructure import models as case_models  # noqa: F401
 from flowweave.modules.catalog.infrastructure import models as catalog_models  # noqa: F401
 from flowweave.modules.conversations.infrastructure import (
     models as conversation_models,  # noqa: F401

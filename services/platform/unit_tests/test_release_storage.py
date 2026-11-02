@@ -22,7 +22,7 @@ release = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(release)
 
 
-def context(build, number, *, scope="platform", state="succeeded", age=0):
+def context(build, number, *, scope="platform", state="succeeded", age=100000):
     sha = f"{number:040x}"
     directory = build / release.release_id(sha, scope)
     directory.mkdir()
@@ -37,33 +37,35 @@ def context(build, number, *, scope="platform", state="succeeded", age=0):
             "finished_at": number,
         },
     )
+    import os
+
+    for p in (directory / release.MARKER, directory):
+        os.utime(p, (1, 1))
     return directory
 
 
-def test_retention_preserves_each_scope_and_all_references(tmp_path):
-    build = tmp_path
-    old = context(build, 1)
-    protected = context(build, 2)
-    mounted = context(build, 3)
-    opened = context(build, 4)
-    newest = [context(build, n) for n in (5, 6, 7)]
-    web = [context(build, n, scope="web") for n in (8, 9, 10, 11)]
-    result = release.select_cleanup(
-        build,
-        {f"{2:040x}"},
-        [mounted / "src", opened / "build.log"],
-        keep=3,
-        now=1_000_000,
-    )
-    assert result == sorted([old, web[0]])
-    assert all(p not in result for p in [protected, mounted, opened, *newest, *web[1:]])
-    assert release.select_cleanup(build, set(), [build], keep=3, now=1_000_000) == []
+def test_contexts_expire_after_one_day_independently_of_image_revision(tmp_path):
+    now = 1_000_000
+    old = context(tmp_path, 1, age=86401)
+    fresh = context(tmp_path, 2, age=86399)
+    failed = context(tmp_path, 3, state="failed", age=86401)
+    mounted = context(tmp_path, 4, age=86401)
+    for p in (old, fresh, failed, mounted):
+        import os
+
+        os.utime(p / release.MARKER, (1, 1))
+        os.utime(p, (1, 1))
+    assert release.select_cleanup(tmp_path, [mounted / "src"], now=now) == sorted([old, failed])
+    assert release.select_cleanup(tmp_path, [tmp_path], now=now) == []
 
 
-def test_unknown_symlink_and_incomplete_contexts_are_protected(tmp_path):
-    context(tmp_path, 1)
-    fresh = context(tmp_path, 2, state="building", age=3600)
-    stale = context(tmp_path, 3, state="failed", age=8 * 86400)
+def test_unknown_symlink_recent_descendant_and_invalid_markers_are_protected(tmp_path):
+    import os
+
+    old = context(tmp_path, 1, age=86401)
+    for p in (old, old / release.MARKER):
+        os.utime(p, (1, 1))
+    (old / "recent-build-output").write_text("recent")
     unknown = tmp_path / "legacy-release"
     unknown.mkdir()
     malformed = tmp_path / release.release_id(f"{4:040x}", "platform")
@@ -71,15 +73,7 @@ def test_unknown_symlink_and_incomplete_contexts_are_protected(tmp_path):
     (malformed / release.MARKER).write_text("{}")
     link = tmp_path / release.release_id(f"{5:040x}", "platform")
     link.symlink_to(unknown, target_is_directory=True)
-    result = release.select_cleanup(tmp_path, set(), [], keep=3, now=1_000_000)
-    assert result == [stale]
-    assert fresh.exists() and unknown.exists() and link.is_symlink()
-    assert (
-        release.select_cleanup(tmp_path, {release.UNKNOWN_PROVENANCE}, [], keep=3, now=1_000_000)
-        == []
-    )
-    with pytest.raises(ValueError):
-        release.select_cleanup(tmp_path, set(), [], keep=0, now=1_000_000)
+    assert release.select_cleanup(tmp_path, [], now=1_000_000) == []
 
 
 def test_context_streaming_and_traversal_rejection(tmp_path, monkeypatch, capsys):
@@ -160,7 +154,7 @@ def test_late_reference_prevents_directory_removal(tmp_path, monkeypatch):
     def references(*_args):
         nonlocal calls
         calls += 1
-        return ({f"{1:040x}"} if calls > 1 else set()), []
+        return set(), ([old / "source-file"] if calls > 1 else [])
 
     monkeypatch.setattr(release, "docker_protection", references)
     with pytest.raises(ValueError, match="changed after dry-run"):
@@ -234,15 +228,12 @@ def test_process_ancestor_cwd_does_not_protect_all_contexts(tmp_path):
     (pid / "cwd").symlink_to("/")
     (pid / "fd/1").symlink_to(build)
     assert release.process_references(proc, build) == []
-    assert release.select_cleanup(
-        build, set(), release.process_references(proc, build), keep=3, now=1_000_000
-    ) == [old]
+    assert old in release.select_cleanup(
+        build, release.process_references(proc, build), now=1_000_000
+    )
     (pid / "fd/2").symlink_to(old / "source-file")
-    assert (
-        release.select_cleanup(
-            build, set(), release.process_references(proc, build), keep=3, now=1_000_000
-        )
-        == []
+    assert old not in release.select_cleanup(
+        build, release.process_references(proc, build), now=1_000_000
     )
     # A container mounting an ancestor still references its descendant tree.
-    assert release.select_cleanup(build, set(), [tmp_path], keep=3, now=1_000_000) == []
+    assert release.select_cleanup(build, [tmp_path], now=1_000_000) == []

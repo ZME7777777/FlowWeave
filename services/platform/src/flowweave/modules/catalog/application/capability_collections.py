@@ -82,7 +82,22 @@ def _collection_dict(db: Session, item: CapabilityCollection) -> dict[str, Any]:
         .where(CapabilityCollectionItem.collection_id == item.id)
         .order_by(CapabilityCollectionItem.position, CapabilityCollectionItem.id)
     ).all()
-    capabilities = {value["id"]: value for value in list_versions(db)}
+    package_ids = list(
+        db.scalars(
+            select(CapabilityVersion.package_id).where(
+                CapabilityVersion.id.in_([member.capability_version_id for member in members])
+            )
+        )
+    )
+    capabilities = {value["id"]: value for value in list_versions(db, package_ids)}
+    return collection_projection(item, list(members), capabilities)
+
+
+def collection_projection(
+    item: CapabilityCollection,
+    members: list[CapabilityCollectionItem],
+    capabilities: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
     resolved_members: list[dict[str, Any]] = []
     for member in members:
         capability_id = member.capability_version_id

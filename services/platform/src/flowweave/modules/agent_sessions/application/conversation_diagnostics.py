@@ -12,7 +12,14 @@ from flowweave.runtime.base import RuntimeEventBatch, RuntimeInputReadiness, Run
 _logger = logging.getLogger("flowweave.agent_conversation_diagnostics")
 _HEARTBEAT_SECONDS = 60.0
 _MAX_TRACKED_SNAPSHOTS = 2048
-_ALLOWED_TRIGGERS = frozenset({"scheduled", "foreground", "stream_closed", "stream_reconnect"})
+_ALLOWED_TRIGGERS = frozenset({
+    "scheduled",
+    "foreground",
+    "stream_closed",
+    "stream_reconnect",
+    "pause_preflight",
+    "pause_post_action",
+})
 _snapshot_lock = threading.Lock()
 _snapshots: OrderedDict[tuple[str, str, str, str | None], tuple[str, float]] = OrderedDict()
 

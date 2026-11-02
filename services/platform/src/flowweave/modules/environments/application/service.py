@@ -50,6 +50,7 @@ def _version_dict(
     item: EnvironmentVersion,
     *,
     run_reference_count: int = 0,
+    flow_run_reference_count: int = 0,
     flow_reference_count: int = 0,
     snapshot_reference_count: int = 0,
 ) -> dict[str, Any]:
@@ -69,6 +70,7 @@ def _version_dict(
         "manifest": item.manifest_json or {},
         "error_detail": item.error_detail,
         "run_reference_count": run_reference_count,
+        "flow_run_reference_count": flow_run_reference_count,
         "flow_reference_count": flow_reference_count,
         "snapshot_reference_count": snapshot_reference_count,
         "reference_count": (run_reference_count + flow_reference_count + snapshot_reference_count),
@@ -615,17 +617,21 @@ def environment_dict(db: Session, item: TerminalEnvironment) -> dict[str, Any]:
     )
     version_ids = [version.id for version in versions]
     run_references: dict[str, int] = {}
+    flow_run_references: dict[str, int] = {}
     snapshot_references: dict[str, int] = {}
     if version_ids:
-        run_references = {
-            version_id: int(count)
-            for version_id, count in db.execute(
-                select(FlowRun.environment_version_id, func.count(FlowRun.id))
-                .where(FlowRun.environment_version_id.in_(version_ids))
-                .group_by(FlowRun.environment_version_id)
+        for version_id, record_count, root_count in db.execute(
+            select(
+                FlowRun.environment_version_id,
+                func.count(FlowRun.id),
+                func.count(FlowRun.id).filter(FlowRun.parent_flow_run_id.is_(None)),
             )
-            if version_id is not None
-        }
+            .where(FlowRun.environment_version_id.in_(version_ids))
+            .group_by(FlowRun.environment_version_id)
+        ):
+            if version_id is not None:
+                run_references[version_id] = int(record_count)
+                flow_run_references[version_id] = int(root_count)
         snapshot_references = {
             version_id: int(count)
             for version_id, count in db.execute(
@@ -644,6 +650,7 @@ def environment_dict(db: Session, item: TerminalEnvironment) -> dict[str, Any]:
             _version_dict(
                 version,
                 run_reference_count=run_references.get(version.id, 0),
+                flow_run_reference_count=flow_run_references.get(version.id, 0),
                 flow_reference_count=0,
                 snapshot_reference_count=snapshot_references.get(version.id, 0),
             )
@@ -703,11 +710,90 @@ def lock_referenceable_version(db: Session, version_id: str) -> EnvironmentVersi
     return version
 
 
+def read_referenced_version(
+    db: Session,
+    *,
+    flow_run_id: str,
+    version_id: str,
+    image_digest: str,
+    protocol_profile: str,
+) -> EnvironmentVersion | None:
+    """Read an existing immutable reference without acquiring a creation lock.
+
+    FlowRun creation holds the parent/version locks when adding this durable
+    reference. Environment deletion checks it under those same locks. Native
+    observation adds no reference and must not serialize readers behind them.
+    Runtime provisioning retains its own owner lock and generation CAS.
+    """
+
+    version = db.scalar(
+        select(EnvironmentVersion)
+        .join(TerminalEnvironment, TerminalEnvironment.id == EnvironmentVersion.environment_id)
+        .join(FlowRun, FlowRun.environment_version_id == EnvironmentVersion.id)
+        .where(
+            FlowRun.id == flow_run_id,
+            EnvironmentVersion.id == version_id,
+            EnvironmentVersion.state == "READY",
+            EnvironmentVersion.image_digest == image_digest,
+            EnvironmentVersion.runtime_protocol_profile == protocol_profile,
+        )
+    )
+    if version is not None:
+        require_flow_run_protocol_profile(version.runtime_protocol_profile)
+    return version
+
+
 def read_environment(db: Session, environment_id: str) -> dict[str, Any]:
     item = _environment(db, environment_id)
     if _expire_setup_sessions(db, environment_id):
         finish(db)
     return environment_dict(db, item)
+
+
+def list_version_runs(
+    db: Session, environment_id: str, version_id: str, *, page: int, page_size: int
+) -> dict[str, Any]:
+    _environment(db, environment_id)
+    version = db.scalar(
+        select(EnvironmentVersion).where(
+            EnvironmentVersion.id == version_id,
+            EnvironmentVersion.environment_id == environment_id,
+        )
+    )
+    if version is None:
+        raise not_found("environment_version", version_id)
+    # Physical Runtime belongs to the top-level FlowRun. Execution records
+    # share that container and must not appear as separate environment users.
+    condition = (FlowRun.environment_version_id == version_id) & FlowRun.parent_flow_run_id.is_(
+        None
+    )
+    total = db.scalar(select(func.count()).select_from(FlowRun).where(condition)) or 0
+    runs = db.scalars(
+        select(FlowRun)
+        .where(condition)
+        .order_by(FlowRun.started_at.desc(), FlowRun.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
+    return {
+        "items": [
+            {
+                "id": run.id,
+                "name": run.name,
+                "flow_definition_id": run.flow_definition_id,
+                "run_no": run.run_no,
+                "run_mode": run.run_mode,
+                "parent_flow_run_id": run.parent_flow_run_id,
+                "state": run.state,
+                "started_at": _time(run.started_at),
+                "finished_at": _time(run.finished_at),
+            }
+            for run in runs
+        ],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
 
 
 def save_environment(

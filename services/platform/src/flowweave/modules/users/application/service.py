@@ -88,6 +88,13 @@ def _principal(db: Session, user: User) -> Principal:
     )
 
 
+def user_profile(db: Session, user_id: str) -> dict[str, str | None]:
+    user = db.get(User, user_id)
+    if user is None:
+        raise DomainError("AUTHENTICATION_REQUIRED", "请先登录", 401)
+    return {"display_name": user.display_name, "email": user.email}
+
+
 def _create_session(db: Session, user: User) -> LoginResult:
     token = secrets.token_urlsafe(48)
     db.add(
@@ -183,8 +190,14 @@ def _sync_ldap_organization_ids(db: Session, identities: list[LdapIdentity]) -> 
         if identity is None:
             continue
         organization_ids = list(identity.organization_ids)
-        if user.ldap_organization_ids != organization_ids:
+        if (
+            user.ldap_organization_ids != organization_ids
+            or user.display_name != identity.display_name
+            or user.email != identity.email
+        ):
             user.ldap_organization_ids = organization_ids
+            user.display_name = identity.display_name
+            user.email = identity.email
             user.updated_at = datetime.now(UTC)
 
 
@@ -219,7 +232,42 @@ def ldap_directory(db: Session, snapshot: LdapDirectorySnapshot) -> dict[str, ob
             for item in snapshot.organizations
         ],
         "users": list_ldap_users(db, snapshot.users),
+        "platform_users": list_platform_users(db),
     }
+
+
+def _platform_user_dict(db: Session, user: User) -> dict[str, object]:
+    return {
+        "id": user.id,
+        "username": user.username,
+        "display_name": user.display_name,
+        "email": user.email,
+        "role": user.role,
+        "enabled": user.is_active,
+        "agent_session_access": _can_use_agent_sessions(db, user),
+    }
+
+
+def list_platform_users(db: Session) -> list[dict[str, object]]:
+    return [
+        _platform_user_dict(db, user)
+        for user in db.scalars(
+            select(User).where(User.auth_source != "LDAP").order_by(User.username)
+        )
+    ]
+
+
+def update_platform_user_profile(
+    db: Session, user_id: str, *, display_name: str, email: str
+) -> dict[str, object]:
+    user = db.get(User, user_id)
+    if user is None or user.auth_source == "LDAP":
+        raise DomainError("PLATFORM_USER_NOT_FOUND", "平台账户不存在", 404)
+    user.display_name = display_name.strip()
+    user.email = email.strip()
+    user.updated_at = datetime.now(UTC)
+    db.flush()
+    return _platform_user_dict(db, user)
 
 
 def set_ldap_user_enabled(
@@ -354,15 +402,31 @@ def login(db: Session, username: str, password: str) -> LoginResult:
     return login_local(db, username, password)
 
 
+def agent_session_principal(db: Session, user_id: str) -> Principal | None:
+    """Revalidate the owner of an independently scoped Agent read credential."""
+
+    user = db.get(User, user_id)
+    if user is None or not user.is_active:
+        return None
+    principal = _principal(db, user)
+    return principal if principal.can_use_agent_sessions else None
+
+
 def authenticate(db: Session, token: str | None) -> Principal | None:
     if not token:
         return None
+    return authenticate_session_digest(db, digest_session_token(token))
+
+
+def authenticate_session_digest(db: Session, session_digest: str) -> Principal | None:
+    """Revalidate a scoped preview against the original, revocable login session."""
+
     now = datetime.now(UTC)
     row = db.execute(
         select(UserSession, User)
         .join(User, User.id == UserSession.user_id)
         .where(
-            UserSession.token_digest == digest_session_token(token),
+            UserSession.token_digest == session_digest,
             UserSession.expires_at > now,
             User.is_active.is_(True),
         )
@@ -396,6 +460,7 @@ __all__ = (
     "SESSION_TTL",
     "LoginResult",
     "authenticate",
+    "agent_session_principal",
     "ensure_builtin_users",
     "login",
     "logout",

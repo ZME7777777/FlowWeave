@@ -27,6 +27,7 @@ from flowweave.shared.application.transactions import (
     run_rollback_actions,
 )
 from flowweave.shared.errors import DomainError
+from flowweave.shared.read_diagnostics import log_read_failure
 
 logger = logging.getLogger(__name__)
 
@@ -252,15 +253,13 @@ async def run_hydration_runtime(container: Container, operation: Callable[[], T]
         outcome = "ok"
     except TimeoutError as exc:
         hydration_time_left()
-        logger.warning(
-            "hydration Runtime executor saturated active_limit=%d",
-            container.hydration_capacity or container.blocking_capacity,
-        )
-        raise DomainError(
+        failure = DomainError(
             "RUNTIME_READ_SATURATED",
             "Agent Runtime first-screen reads are busy; retry shortly",
             503,
-        ) from exc
+        )
+        log_read_failure(failure, lane="hydration_runtime", phase="admission")
+        raise failure from exc
     finally:
         if metrics is not None:
             metrics.observe_operation(
@@ -286,6 +285,9 @@ async def run_hydration_runtime(container: Container, operation: Callable[[], T]
             hydration_time_left()
             outcome = "ok"
             return result
+        except Exception as error:
+            log_read_failure(error, lane="hydration_runtime", phase="execution")
+            raise
         finally:
             if metrics is not None:
                 metrics.observe_operation(
@@ -621,16 +623,9 @@ async def _run_blocking_operation(
         if admitted and admission_slots is not None:
             admission_slots.release()
         hydration_time_left()
-        logger.warning(
-            "blocking Runtime %s pool saturated active_limit=%d",
-            lane_name,
-            active_limit,
-        )
-        raise DomainError(
-            saturation_code,
-            saturation_message,
-            503,
-        ) from exc
+        failure = DomainError(saturation_code, saturation_message, 503)
+        log_read_failure(failure, lane=lane_name, phase="admission")
+        raise failure from exc
     except BaseException:
         if admitted and admission_slots is not None:
             admission_slots.release()
@@ -658,6 +653,9 @@ async def _run_blocking_operation(
             hydration_time_left()
             outcome = "ok"
             return result
+        except Exception as error:
+            log_read_failure(error, lane=lane_name, phase="execution")
+            raise
         finally:
             if metrics is not None:
                 metrics.observe_operation(

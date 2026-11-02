@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
@@ -17,6 +18,10 @@ from flowweave.modules.agent_sessions.infrastructure.models import (
 )
 from flowweave.modules.agent_workspaces.application import work_directories
 from flowweave.modules.agent_workspaces.infrastructure.models import AgentWorkDirectory
+from flowweave.modules.credentials.application.service import (
+    list_credentials,
+    resolve_credentials_for_agent,
+)
 from flowweave.modules.tasks.application.service import enqueue
 from flowweave.modules.tasks.infrastructure.models import BackgroundTask
 from flowweave.modules.users.application.security import tenant_user
@@ -66,14 +71,16 @@ def _next_cron_at(expression: str, after: datetime) -> datetime:
     minute, hour, day, month, weekday = tuple(
         _cron_values(field, *bounds) for field, bounds in zip(fields, _CRON_BOUNDS, strict=True)
     )
-    candidate = after.astimezone(UTC).replace(second=0, microsecond=0) + timedelta(minutes=1)
+    candidate = after.astimezone(ZoneInfo("Asia/Shanghai")).replace(
+        second=0, microsecond=0
+    ) + timedelta(minutes=1)
     for _ in range(366 * 24 * 60):
         cron_weekday = (candidate.weekday() + 1) % 7
         day_matches = candidate.day in day
         weekday_matches = cron_weekday in weekday
         calendar_matches = (
             day_matches and weekday_matches
-            if len(day) != 31 and len(weekday) != 7
+            if len(day) == 31 or len(weekday) == 7
             else day_matches or weekday_matches
         )
         if (
@@ -82,7 +89,7 @@ def _next_cron_at(expression: str, after: datetime) -> datetime:
             and candidate.month in month
             and calendar_matches
         ):
-            return candidate
+            return candidate.astimezone(UTC)
         candidate += timedelta(minutes=1)
     raise ValueError("cron has no matching time in the next year")
 
@@ -91,6 +98,28 @@ def _schedule_binding(
     db: Session, schedule: AgentConversationSchedule
 ) -> AgentConversationBinding | None:
     return db.get(AgentConversationBinding, schedule.binding_id) if schedule.binding_id else None
+
+
+def _latest_run_binding_id(db: Session, schedule: AgentConversationSchedule) -> str | None:
+    """Reuse an explicitly recorded run, never an unrelated workspace conversation."""
+    return db.scalar(
+        select(AgentConversationBinding.id)
+        .join(
+            AgentConversationScheduleOccurrence,
+            AgentConversationScheduleOccurrence.binding_id == AgentConversationBinding.id,
+        )
+        .where(
+            AgentConversationScheduleOccurrence.schedule_id == schedule.id,
+            AgentConversationScheduleOccurrence.state == "STARTED",
+            AgentConversationBinding.workspace_id == schedule.workspace_id,
+            AgentConversationBinding.lifecycle == "ACTIVE",
+        )
+        .order_by(
+            AgentConversationScheduleOccurrence.created_at.desc(),
+            AgentConversationScheduleOccurrence.id.desc(),
+        )
+        .limit(1)
+    )
 
 
 def _work_directory(db: Session, workspace_id: str, work_directory_id: str) -> AgentWorkDirectory:
@@ -103,6 +132,29 @@ def _work_directory(db: Session, workspace_id: str, work_directory_id: str) -> A
     if item is None:
         raise DomainError("AGENT_SCHEDULE_WORKSPACE_INVALID", "请选择可用的工作区", 409)
     return item
+
+
+def _normalized_ids(values: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(value for value in values if value))
+
+
+def validate_template_configuration(
+    db: Session, capability_version_ids: tuple[str, ...], credential_ids: tuple[str, ...]
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    capabilities = _normalized_ids(capability_version_ids)
+    # Resolve through the same creation contract used by native conversations.
+    conversations._validated_capabilities(
+        db, capabilities, allowed_types=conversations._CREATION_CAPABILITY_TYPES
+    )
+    credentials = _normalized_ids(credential_ids)
+    resolve_credentials_for_agent(db, credentials)
+    return capabilities, credentials
+
+
+def _schedule_credential_ids(db: Session, schedule: AgentConversationSchedule) -> tuple[str, ...]:
+    if schedule.credentials_configured:
+        return tuple(schedule.credential_ids_json or [])
+    return tuple(str(credential["id"]) for credential in list_credentials(db))
 
 
 def _schedule_dict(db: Session, schedule: AgentConversationSchedule) -> dict[str, Any]:
@@ -124,6 +176,8 @@ def _schedule_dict(db: Session, schedule: AgentConversationSchedule) -> dict[str
         "model_provider_id": schedule.model_provider_id,
         "model_name": schedule.model_name,
         "reasoning_effort": schedule.reasoning_effort,
+        "capability_version_ids": list(schedule.capability_version_ids_json or []),
+        "credential_ids": list(_schedule_credential_ids(db, schedule)),
         "name": schedule.name,
         "prompt": schedule.prompt,
         "cron_expression": schedule.cron_expression,
@@ -136,8 +190,17 @@ def _schedule_dict(db: Session, schedule: AgentConversationSchedule) -> dict[str
     }
 
 
-def _occurrence_dict(db: Session, item: AgentConversationScheduleOccurrence) -> dict[str, Any]:
-    binding = db.get(AgentConversationBinding, item.binding_id)
+def occurrence_dict(
+    db: Session,
+    item: AgentConversationScheduleOccurrence,
+    *,
+    bindings: dict[str, AgentConversationBinding] | None = None,
+) -> dict[str, Any]:
+    binding = (
+        bindings.get(item.binding_id)
+        if bindings is not None
+        else db.get(AgentConversationBinding, item.binding_id)
+    )
     return {
         "id": item.id,
         "scheduled_for": item.scheduled_for.isoformat() if item.scheduled_for else None,
@@ -146,6 +209,18 @@ def _occurrence_dict(db: Session, item: AgentConversationScheduleOccurrence) -> 
         "binding_id": item.binding_id,
         "conversation_title": binding.display_title if binding else None,
         "message_cursor": item.message_cursor,
+        "conversation": {
+            "id": binding.id,
+            "display_title": binding.display_title,
+            "lifecycle": binding.lifecycle,
+            "streaming_callback_ready": binding.streaming_callback_ready,
+            "unread": binding.unread,
+            "unread_origin": binding.unread_origin,
+            "created_at": binding.created_at.isoformat(),
+            "updated_at": binding.updated_at.isoformat(),
+        }
+        if binding
+        else None,
         "error_detail": item.error_detail,
         "created_at": item.created_at.isoformat(),
     }
@@ -198,6 +273,8 @@ def _write_automation_files(db: Session, schedule: AgentConversationSchedule) ->
         model_provider_id=schedule.model_provider_id,
         model_name=schedule.model_name,
         reasoning_effort=schedule.reasoning_effort,
+        capability_version_ids=tuple(schedule.capability_version_ids_json or []),
+        credential_ids=_schedule_credential_ids(db, schedule),
     )
 
 
@@ -214,7 +291,12 @@ def create_schedule(
     model_provider_id: str,
     model_name: str,
     reasoning_effort: str | None,
+    capability_version_ids: tuple[str, ...],
+    credential_ids: tuple[str, ...],
 ) -> dict[str, Any]:
+    capabilities, credentials = validate_template_configuration(
+        db, capability_version_ids, credential_ids
+    )
     try:
         next_run_at = _next_cron_at(cron_expression, now())
     except ValueError as exc:
@@ -235,6 +317,9 @@ def create_schedule(
         model_provider_id=model_provider_id,
         model_name=model_name,
         reasoning_effort=reasoning_effort,
+        capability_version_ids_json=list(capabilities),
+        credential_ids_json=list(credentials),
+        credentials_configured=True,
         name=name,
         prompt=prompt,
         cron_expression=cron_expression,
@@ -265,7 +350,12 @@ def update_schedule(
     model_provider_id: str,
     model_name: str,
     reasoning_effort: str | None,
+    capability_version_ids: tuple[str, ...],
+    credential_ids: tuple[str, ...],
 ) -> dict[str, Any]:
+    capabilities, credentials = validate_template_configuration(
+        db, capability_version_ids, credential_ids
+    )
     schedule = db.scalar(
         select(AgentConversationSchedule)
         .where(
@@ -293,8 +383,13 @@ def update_schedule(
     schedule.model_provider_id = model_provider_id
     schedule.model_name = model_name
     schedule.reasoning_effort = reasoning_effort
+    schedule.capability_version_ids_json = list(capabilities)
+    schedule.credential_ids_json = list(credentials)
+    schedule.credentials_configured = True
     if conversation_mode == "NEW":
         schedule.binding_id = None
+    elif not schedule.binding_id:
+        schedule.binding_id = _latest_run_binding_id(db, schedule)
     schedule.row_version += 1
     if schedule.status == "ACTIVE":
         schedule.next_run_at = next_run_at
@@ -341,9 +436,12 @@ def _enqueue_occurrence(
     trigger_kind: str,
     scheduled_for: datetime | None,
 ) -> AgentConversationScheduleOccurrence:
+    if schedule.conversation_mode == "CONTINUE" and not schedule.binding_id:
+        schedule.binding_id = _latest_run_binding_id(db, schedule)
     occurrence = AgentConversationScheduleOccurrence(
         schedule_id=schedule.id,
-        binding_id=str(uuid4()),
+        binding_id=(schedule.binding_id if schedule.conversation_mode == "CONTINUE" else None)
+        or str(uuid4()),
         scheduled_for=scheduled_for,
         trigger_kind=trigger_kind,
         state="PENDING",
@@ -405,6 +503,43 @@ def delete_schedule(db: Session, workspace_id: str, schedule_id: str) -> None:
     finish(db)
 
 
+
+def delete_failed_occurrence(
+    db: Session, workspace_id: str, schedule_id: str, occurrence_id: str
+) -> None:
+    occurrence = db.scalar(
+        select(AgentConversationScheduleOccurrence)
+        .join(
+            AgentConversationSchedule,
+            AgentConversationSchedule.id == AgentConversationScheduleOccurrence.schedule_id,
+        )
+        .where(
+            AgentConversationScheduleOccurrence.id == occurrence_id,
+            AgentConversationScheduleOccurrence.schedule_id == schedule_id,
+            AgentConversationSchedule.workspace_id == workspace_id,
+        )
+        .with_for_update()
+    )
+    if occurrence is None:
+        raise not_found("agent_conversation_schedule_occurrence", occurrence_id)
+    if occurrence.state != "FAILED":
+        raise DomainError("AGENT_SCHEDULE_OCCURRENCE_DELETE_INVALID", "只能删除失败的运行记录", 409)
+    if db.get(AgentConversationBinding, occurrence.binding_id) is not None:
+        raise DomainError(
+            "AGENT_SCHEDULE_OCCURRENCE_CONVERSATION_EXISTS",
+            "该失败记录已有可管理会话，请在会话列表中删除",
+            409,
+        )
+    db.execute(
+        delete(BackgroundTask).where(
+            BackgroundTask.aggregate_type == "AGENT_CONVERSATION_SCHEDULE_OCCURRENCE",
+            BackgroundTask.aggregate_id == occurrence.id,
+        )
+    )
+    db.delete(occurrence)
+    finish(db)
+
+
 def list_occurrences(db: Session, workspace_id: str, schedule_id: str) -> list[dict[str, Any]]:
     schedule = db.scalar(
         select(AgentConversationSchedule).where(
@@ -415,7 +550,7 @@ def list_occurrences(db: Session, workspace_id: str, schedule_id: str) -> list[d
     if schedule is None:
         raise not_found("agent_conversation_schedule", schedule_id)
     return [
-        _occurrence_dict(db, item)
+        occurrence_dict(db, item)
         for item in db.scalars(
             select(AgentConversationScheduleOccurrence)
             .where(AgentConversationScheduleOccurrence.schedule_id == schedule.id)
@@ -473,6 +608,8 @@ def _bootstrap_run(
         model_name=schedule.model_name,
         reasoning_effort=schedule.reasoning_effort,
         content=_automation_prompt(schedule),
+        capability_version_ids=tuple(schedule.capability_version_ids_json or []),
+        credential_ids=_schedule_credential_ids(db, schedule),
         conversation_id=occurrence.binding_id,
         idempotency_key=_run_binding_id(schedule, occurrence),
     )
@@ -493,6 +630,9 @@ def deliver_occurrence(db: Session, occurrence_id: str) -> None:
         db.flush()
         return
     try:
+        # Also reconcile templates saved by older clients before the mode-switch fix.
+        if schedule.conversation_mode == "CONTINUE" and not schedule.binding_id:
+            schedule.binding_id = _latest_run_binding_id(db, schedule)
         if schedule.conversation_mode == "CONTINUE" and schedule.binding_id:
             delivered = conversations.message(
                 db, schedule.workspace_id, schedule.binding_id, _automation_prompt(schedule)

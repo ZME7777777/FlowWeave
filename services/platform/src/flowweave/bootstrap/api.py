@@ -13,13 +13,29 @@ from fastapi import Depends, FastAPI, Request, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, PlainTextResponse
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DataError, IntegrityError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from flowweave.bootstrap.container import Container, build_container
 from flowweave.bootstrap.settings import Settings
 from flowweave.modules.admin_control.router import router as admin_control_router
+from flowweave.modules.agent_sessions.presentation.history_mcp import (
+    MCP_PATH,
+)
+from flowweave.modules.agent_sessions.presentation.history_mcp import (
+    router as history_mcp_router,
+)
 from flowweave.modules.agent_sessions.presentation.router import router as agent_sessions_router
 from flowweave.modules.agent_workspaces.presentation.router import router as agent_workspaces_router
+from flowweave.modules.cases.application import native_tools
+from flowweave.modules.cases.application.materials import is_native_artifact_request
+from flowweave.modules.cases.application.native_tools import FLOWS as CASE_FLOW_TOOL_CONTRACT
+from flowweave.modules.cases.application.native_tools import (
+    MATERIALS as CASE_MATERIAL_TOOL_CONTRACT,
+)
+from flowweave.modules.cases.presentation.router import router as cases_router
+from flowweave.modules.cases.presentation.tools_mcp import MCP_PATH as CASE_MCP_PATH
+from flowweave.modules.cases.presentation.tools_mcp import router as case_tools_mcp_router
 from flowweave.modules.catalog.presentation.router import router as catalog_router
 from flowweave.modules.conversations.presentation.router import router as conversations_router
 from flowweave.modules.credentials.presentation.router import router as credentials_router
@@ -29,21 +45,32 @@ from flowweave.modules.event_automations.presentation.router import (
 )
 from flowweave.modules.flows.presentation.router import router as flows_router
 from flowweave.modules.model_providers.presentation.router import router as providers_router
+from flowweave.modules.runs.presentation.router import artifact_content_router
 from flowweave.modules.runs.presentation.router import router as runs_router
 from flowweave.modules.users.application import service as users
 from flowweave.modules.users.application.audit import AuditRecord
 from flowweave.modules.users.application.security import (
+    FLOWWEAVE_USER_ID,
     bind_principal,
     reset_principal,
+    tenant_user,
 )
 from flowweave.modules.users.presentation.router import router as users_router
 from flowweave.runtime.dependencies import bind_runtime, reset_runtime
 from flowweave.shared.artifact_store import bind_artifact_store, reset_artifact_store
+from flowweave.shared.browser_preview import PREVIEW_PATH, PREVIEW_RESPONSE_HEADERS, read_preview
 from flowweave.shared.errors import DomainError
 from flowweave.shared.http import require_agent_session_access, require_authenticated_connection
 from flowweave.shared.observability import bind_metrics, reset_metrics
 from flowweave.shared.plugin_resolver import bind_plugin_resolver, reset_plugin_resolver
+from flowweave.shared.read_diagnostics import (
+    bind_read_request_id,
+    canonical_request_id,
+    failure_code,
+    reset_read_request_id,
+)
 from flowweave.shared.sandbox import bind_sandbox, reset_sandbox
+from flowweave.shared.secret_redaction import SecretRedactionFilter, redact_secret_text
 from flowweave.shared.settings import bind_settings, reset_settings
 
 logger = logging.getLogger(__name__)
@@ -81,9 +108,7 @@ class RateLimitPolicy:
     error_message: str
 
 
-def _rate_limit_policy(
-    method: str, path: str, user_id: str, settings: Settings
-) -> RateLimitPolicy:
+def _rate_limit_policy(method: str, path: str, user_id: str, settings: Settings) -> RateLimitPolicy:
     message_match = _MESSAGE_BINDING_PATH.match(path)
     if message_match is not None:
         return RateLimitPolicy(
@@ -133,6 +158,27 @@ def _metric_route(request: Request) -> str:
 def create_app(settings: Settings | None = None) -> FastAPI:
     configured = settings or Settings()
     container = build_container(configured, role="api")
+    access_logger = logging.getLogger("uvicorn.access")
+    if not any(isinstance(item, SecretRedactionFilter) for item in access_logger.filters):
+        access_logger.addFilter(SecretRedactionFilter())
+
+    async def _install_platform_mcps(container: Container, configured: Settings) -> None:
+        """Publish the platform-managed Case MCP versions; never block startup on failure."""
+
+        if not configured.platform_mcp_base_url:
+            return
+        settings_token = bind_settings(container.settings)
+        store_token = bind_artifact_store(container.artifact_store)
+        try:
+            with tenant_user(FLOWWEAVE_USER_ID):
+                async with container.database.session() as session:
+                    await session.run_sync(native_tools.ensure_installed)
+                    await session.commit()
+        except Exception:  # noqa: BLE001 - a bad base URL must not take the API down
+            logging.getLogger(__name__).exception("Platform MCP installation failed")
+        finally:
+            reset_artifact_store(store_token)
+            reset_settings(settings_token)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -147,6 +193,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
             )
             await session.commit()
+        await _install_platform_mcps(container, configured)
         container.audit_writer.start()
         try:
             yield
@@ -159,22 +206,66 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def request_context(
         request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
-        request_id = request.headers.get("X-Request-ID") or str(uuid4())
+        request_id = _request_id(request)
         request.state.request_id = request_id
         started_at = monotonic()
         principal = None
-        if request.url.path.startswith("/api/v1/"):
+        preview = None
+        if PREVIEW_PATH.match(request.url.path):
+            try:
+                preview_settings_token = bind_settings(configured)
+                try:
+                    preview = read_preview(request.url.path)
+                finally:
+                    reset_settings(preview_settings_token)
+                if request.method not in {"GET", "OPTIONS"}:
+                    raise DomainError("AGENT_BROWSER_PREVIEW_READ_ONLY", "预览仅支持读取", 405)
+            except DomainError as exc:
+                return JSONResponse(
+                    status_code=exc.status,
+                    content=error_body(exc.code, exc.message, request_id),
+                )
+        case_artifact_request = is_native_artifact_request(
+            request.url.path, request.method, request.headers.get("authorization", "")
+        )
+        if (
+            not case_artifact_request
+            and request.url.path.startswith("/api/v1/")
+            and request.url.path
+            not in {
+                MCP_PATH,
+                CASE_MCP_PATH,
+                CASE_FLOW_TOOL_CONTRACT.path,
+                CASE_MATERIAL_TOOL_CONTRACT.path,
+            }
+        ):
             async with container.database.session() as auth_session:
                 principal = await auth_session.run_sync(
-                    lambda db: users.authenticate(db, request.cookies.get(users.SESSION_COOKIE))
+                    lambda db: (
+                        users.authenticate_session_digest(db, preview.session_digest)
+                        if preview is not None
+                        else users.authenticate(db, request.cookies.get(users.SESSION_COOKIE))
+                    )
                 )
+                if preview is not None and principal is not None:
+                    if preview.user_id != principal.user_id:
+                        principal = None
                 if principal is not None:
                     await auth_session.commit()
                 else:
                     await auth_session.rollback()
+        request.state.browser_preview = preview
         is_public = (
             request.url.path.startswith("/health")
             or request.url.path.startswith("/internal/admin-control/")
+            or case_artifact_request
+            or request.url.path
+            in {
+                MCP_PATH,
+                CASE_MCP_PATH,
+                CASE_FLOW_TOOL_CONTRACT.path,
+                CASE_MATERIAL_TOOL_CONTRACT.path,
+            }
             or request.url.path
             in {
                 "/api/v1/auth/login",
@@ -222,6 +313,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     mutation_binding_id,
                 )
             response = await call_next(request)
+            if preview is not None:
+                # Authorized opaque-origin previews must also be able to read
+                # errors such as a bounded transport's 413 response.
+                response.headers.update(PREVIEW_RESPONSE_HEADERS)
             response.headers["X-Request-ID"] = request_id
             audit_principal = principal or getattr(request.state, "audit_principal", None)
             if audit_principal is not None and request.url.path.startswith("/api/v1/"):
@@ -233,7 +328,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         request_id=request_id,
                         method=request.method,
                         route=(
-                            matched_route.path if matched_route is not None else request.url.path
+                            matched_route.path
+                            if matched_route is not None
+                            else redact_secret_text(request.url.path)
                         ),
                         status_code=response.status_code,
                         duration_ms=max(0, int((monotonic() - started_at) * 1000)),
@@ -253,6 +350,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def domain_error(request: Request, exc: Exception) -> Response:
         if not isinstance(exc, DomainError):
             raise exc
+        if exc.status >= 500:
+            code, category = failure_code(exc)
+            logger.warning(
+                "API request failed request_id=%s route=%s status=%d error_code=%s category=%s",
+                _request_id(request),
+                _metric_route(request),
+                exc.status,
+                code,
+                category,
+            )
         return JSONResponse(
             status_code=exc.status,
             content=error_body(exc.code, exc.message, _request_id(request), exc.details),
@@ -290,11 +397,72 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             message = "提交的数据与现有记录冲突，请检查是否存在重名或重复关联。"
         return JSONResponse(
             status_code=409,
+            content=error_body(code, message, _request_id(request)),
+        )
+
+    async def data_error(request: Request, exc: Exception) -> Response:
+        if not isinstance(exc, DataError):
+            raise exc
+        request_id = _request_id(request)
+        logger.warning(
+            "database data error method=%s path=%s request_id=%s",
+            request.method,
+            redact_secret_text(request.url.path),
+            request_id,
+            exc_info=exc,
+        )
+        return JSONResponse(
+            status_code=422,
             content=error_body(
-                code,
-                message,
-                _request_id(request),
+                "DATA_INVALID",
+                "提交的数据格式、长度或取值无效，请检查后重试。",
+                request_id,
             ),
+            headers={"X-Request-ID": request_id},
+        )
+
+    async def http_error(request: Request, exc: Exception) -> Response:
+        if not isinstance(exc, StarletteHTTPException):
+            raise exc
+        request_id = _request_id(request)
+        if exc.status_code == 404:
+            code = "ROUTE_NOT_FOUND"
+            message = "请求的接口不存在。"
+        elif exc.status_code == 405:
+            code = "METHOD_NOT_ALLOWED"
+            message = "当前接口不支持该请求方法。"
+        else:
+            code = "HTTP_ERROR"
+            message = "请求无法处理。"
+        headers = dict(exc.headers or {})
+        headers["X-Request-ID"] = request_id
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=error_body(code, message, request_id, {"status": exc.status_code}),
+            headers=headers,
+        )
+
+    async def unhandled_error(request: Request, exc: Exception) -> Response:
+        request_id = _request_id(request)
+        code, category = failure_code(exc)
+        logger.error(
+            "unhandled API exception method=%s route=%s request_id=%s error_code=%s category=%s",
+            request.method,
+            _metric_route(request),
+            request_id,
+            code,
+            category,
+            # Exception strings/tracebacks can include private URLs, SQL or parameters.
+            # Correlate the safe code with the read lane instead of formatting them.
+        )
+        return JSONResponse(
+            status_code=500,
+            content=error_body(
+                "INTERNAL_SERVER_ERROR",
+                "服务器处理请求时发生异常，请使用请求标识联系管理员。",
+                request_id,
+            ),
+            headers={"X-Request-ID": request_id},
         )
 
     async def liveness() -> dict[str, str]:
@@ -323,6 +491,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def slow_request_logging(
         request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
+        request.state.request_id = canonical_request_id(request.headers.get("X-Request-ID"))
+        diagnostic_token = bind_read_request_id(request.state.request_id)
         started_at = monotonic()
         status_code = 500
         try:
@@ -344,8 +514,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 duration,
             )
             if duration >= _SLOW_REQUEST_SECONDS:
-                route = request.scope.get("route")
-                route_path = route.path if route is not None else request.url.path
+                route_path = _metric_route(request)
                 logger.warning(
                     "slow API request method=%s route=%s status=%d duration_ms=%d request_id=%s",
                     request.method,
@@ -354,18 +523,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     int(duration * 1000),
                     _request_id(request),
                 )
+            reset_read_request_id(diagnostic_token)
 
     app.middleware("http")(request_context)
     app.middleware("http")(slow_request_logging)
     app.add_exception_handler(DomainError, domain_error)
     app.add_exception_handler(RequestValidationError, validation_error)
     app.add_exception_handler(IntegrityError, integrity_error)
+    app.add_exception_handler(DataError, data_error)
+    app.add_exception_handler(StarletteHTTPException, http_error)
+    app.add_exception_handler(Exception, unhandled_error)
     app.add_api_route("/health/live", liveness, methods=["GET"])
     app.add_api_route("/health/ready", readiness, methods=["GET"])
     app.add_api_route("/health", health, methods=["GET"])
     app.add_api_route("/metrics", metrics, methods=["GET"])
     app.include_router(users_router, prefix="/api/v1")
     app.include_router(admin_control_router)
+    app.include_router(history_mcp_router)
+    app.include_router(case_tools_mcp_router)
+    app.include_router(artifact_content_router, prefix="/api/v1")
 
     app.include_router(
         agent_workspaces_router,
@@ -379,6 +555,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     for router in (
         agent_sessions_router,
         catalog_router,
+        cases_router,
         environments_router,
         event_automations_router,
         providers_router,

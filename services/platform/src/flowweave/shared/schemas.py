@@ -126,7 +126,7 @@ class DirectoryWrite(ApiModel):
 
 
 class IOFieldWrite(ApiModel):
-    field_key: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9_]{0,99}$")
+    field_key: str = Field(default="", pattern=r"^(?:[A-Za-z][A-Za-z0-9_]{0,99})?$")
     display_name: str = Field(default="", max_length=160)
     data_type: Literal["URL", "FILE"] = "URL"
     description: str = ""
@@ -300,6 +300,11 @@ class CapabilityBulkDeleteWrite(ApiModel):
 
 class CapabilitySkillRevisionWrite(ApiModel):
     content: str = Field(min_length=1, max_length=1_048_576)
+
+
+class CapabilityPackageRevisionWrite(ApiModel):
+    expected_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    files: dict[str, str] = Field(min_length=1, max_length=1000)
 
 
 class AgentProfileRevisionWrite(ApiModel):
@@ -576,7 +581,9 @@ class FlowWrite(ApiModel):
     environment_version_id: str | None = Field(default=None, min_length=1, max_length=36)
     default_entry_key: str | None = None
     row_version: int | None = None
-    nodes: list[FlowNodeWrite] = Field(min_length=1)
+    # Definitions may be saved as drafts before the first node is composed.
+    # Runtime launch validates that a draft contains an executable start node.
+    nodes: list[FlowNodeWrite] = Field(default_factory=list)
     edges: list[FlowEdgeWrite] = Field(default_factory=_empty_edges)
     port_mappings: list[PortMappingWrite] = Field(default_factory=_empty_port_mappings)
 
@@ -625,6 +632,22 @@ class RunStart(ApiModel):
     flow_node_key: str | None = None
     artifacts: list[ArtifactWrite] = Field(default_factory=_empty_artifacts)
     input_bindings: dict[str, str] = Field(default_factory=_empty_str_dict)
+
+
+class GitIdentityWrite(ApiModel):
+    author: str = Field(min_length=1, max_length=200, pattern=r"^[^\x00-\x1f\x7f<>]+$")
+    email: str = Field(
+        min_length=3,
+        max_length=320,
+        pattern=r"^[^\x00-\x1f\x7f\s@<>]+@[^\x00-\x1f\x7f\s@<>]+$",
+    )
+
+    @model_validator(mode="after")
+    def normalize_identity(self) -> GitIdentityWrite:
+        self.author = self.author.strip()
+        if not self.author:
+            raise ValueError("请填写 Git 用户")
+        return self
 
 
 class StepwiseRunRecordWrite(ApiModel):
@@ -724,6 +747,21 @@ class AutomaticRecordConfigImportWrite(ApiModel):
     source: dict[str, str] | None = None
     records: list[AutomaticRecordConfigWrite] = Field(min_length=1, max_length=100)
 
+    @model_validator(mode="before")
+    @classmethod
+    def drop_legacy_git_identity(cls, value: object) -> object:
+        if not isinstance(value, dict) or not isinstance(value.get("records"), list):
+            return value
+        return {
+            **value,
+            "records": [
+                {key: item for key, item in record.items() if key != "git_identity"}
+                if isinstance(record, dict)
+                else record
+                for record in value["records"]
+            ],
+        }
+
 
 class StepwiseRecordConfigExportWrite(ApiModel):
     """Export initial configuration from one or more stepwise records."""
@@ -771,11 +809,30 @@ class StepwiseRecordConfigImportWrite(ApiModel):
     source: dict[str, str] | None = None
     records: list[StepwiseRecordConfigWrite] = Field(min_length=1, max_length=100)
 
+    @model_validator(mode="before")
+    @classmethod
+    def drop_legacy_git_identity(cls, value: object) -> object:
+        if not isinstance(value, dict) or not isinstance(value.get("records"), list):
+            return value
+        return {
+            **value,
+            "records": [
+                {key: item for key, item in record.items() if key != "git_identity"}
+                if isinstance(record, dict)
+                else record
+                for record in value["records"]
+            ],
+        }
+
 
 class NodeRunCopyWrite(ApiModel):
     """Create a fresh manual record from a prior record's launch configuration."""
 
     name: str | None = Field(default=None, max_length=220)
+    source_version: Literal["TEMPLATE", "RUNTIME"] = "RUNTIME"
+    artifact_mode: Literal["RULES_ONLY", "CANDIDATE_BINDINGS", "REUSE_BINDINGS"] = (
+        "CANDIDATE_BINDINGS"
+    )
 
 
 class NodeRunStart(ApiModel):
@@ -797,6 +854,160 @@ class NodeRunStart(ApiModel):
         return self
 
 
+class CaseStageWrite(ApiModel):
+    stage_key: str = Field(pattern=r"^[a-z][a-z0-9._-]{0,99}$")
+    name: str = Field(min_length=1, max_length=220)
+    objective: str = Field(default="", max_length=10_000)
+
+
+class CaseMaterialWrite(ApiModel):
+    kind: Literal["LINK", "FILE"]
+    name: str = Field(min_length=1, max_length=220)
+    value: str = Field(min_length=1, max_length=2000)
+
+
+class CaseBasicsWrite(ApiModel):
+    name: str = Field(min_length=1, max_length=220)
+    description: str = Field(default="", max_length=20_000)
+    objective: str = Field(default="", max_length=20_000)
+    work_directory_id: str | None = Field(default=None, min_length=1, max_length=36)
+    materials: list[CaseMaterialWrite] = Field(
+        default_factory=lambda: list[CaseMaterialWrite](), max_length=100
+    )
+
+    @model_validator(mode="after")
+    def validate_name(self) -> CaseBasicsWrite:
+        if not self.name.strip():
+            raise ValueError("名称不能为空")
+        return self
+
+
+class CaseUpdateWrite(CaseBasicsWrite):
+    expected_row_version: int = Field(ge=1)
+
+
+class CaseCreateWrite(CaseBasicsWrite):
+    name: str = Field(min_length=1, max_length=220)
+    objective: str = Field(default="", max_length=20_000)
+    stages: list[CaseStageWrite] = Field(default_factory=list, max_length=50)
+
+    @model_validator(mode="after")
+    def validate_stages(self) -> CaseCreateWrite:
+        keys = [stage.stage_key for stage in self.stages]
+        if len(keys) != len(set(keys)):
+            raise ValueError("case stage keys must be unique")
+        return self
+
+
+class CasePathCardWrite(ApiModel):
+    id: str | None = Field(default=None, min_length=1, max_length=36)
+    flow_run_id: str | None = Field(default=None, min_length=1, max_length=36)
+
+    @model_validator(mode="after")
+    def validate_source(self) -> CasePathCardWrite:
+        if bool(self.id) == bool(self.flow_run_id):
+            raise ValueError("请选择已有卡片或流程运行记录")
+        return self
+
+
+class CasePathWrite(ApiModel):
+    expected_row_version: int = Field(ge=1)
+    cards: list[CasePathCardWrite] = Field(max_length=50)
+
+
+class CaseCoordinationStateWrite(ApiModel):
+    expected_row_version: int = Field(ge=1)
+    state: Literal["ACTIVE", "PAUSED"]
+
+
+class CaseStageStateWrite(ApiModel):
+    expected_case_row_version: int = Field(ge=1)
+    state: Literal["PENDING", "ACTIVE", "COMPLETED", "SKIPPED"]
+
+
+class CaseStageFlowRunWrite(ApiModel):
+    flow_run_id: str = Field(min_length=1, max_length=36)
+    execution_mode: Literal["STEPWISE", "CONTINUOUS"]
+
+
+class CaseStageLaunchWrite(ApiModel):
+    name: str | None = Field(default=None, max_length=220)
+
+
+class CaseStageExecutionStartWrite(ApiModel):
+    reason: str = Field(default="启动当前事项阶段执行副本", min_length=1, max_length=2_000)
+
+
+class CaseControlPlanWrite(ApiModel):
+    stage_id: str = Field(min_length=1, max_length=36)
+    action: Literal[
+        "CREATE_EXECUTION_COPY",
+        "CONFIGURE_EXECUTION",
+        "START_EXECUTION",
+        "START_STEPWISE_NODE",
+        "ACCEPT_STEPWISE_ATTEMPT",
+        "REJECT_STEPWISE_ATTEMPT",
+        "CANCEL_STEPWISE_ATTEMPT",
+        "STOP_EXECUTION",
+        "RERUN_STEPWISE_NODE",
+        "COPY_CONTINUOUS_EXECUTION",
+        "ADVANCE_CASE_STAGE",
+        "COMPLETE_CASE",
+    ]
+    idempotency_key: str = Field(pattern=r"^[a-z][a-z0-9._:-]{0,139}$")
+    reason: str = Field(min_length=1, max_length=2_000)
+    node_run_id: str | None = Field(default=None, min_length=1, max_length=36)
+    node_attempt_id: str | None = Field(default=None, min_length=1, max_length=36)
+    input_snapshot: dict[str, Any] = Field(default_factory=_empty_any_dict)
+
+
+class CaseControlConversationWrite(ApiModel):
+    model_provider_id: str = Field(min_length=1, max_length=36)
+    model_name: str = Field(min_length=1, max_length=240)
+    reasoning_effort: str | None = Field(default=None, max_length=30)
+    capability_version_ids: list[str] = Field(default_factory=list, max_length=100)
+    credential_ids: list[str] = Field(default_factory=list, max_length=100)
+
+
+class CaseSessionConfigWrite(CaseControlConversationWrite):
+    expected_row_version: int = Field(ge=1)
+
+
+class CaseFlowRunWrite(ApiModel):
+    flow_run_id: str = Field(min_length=1, max_length=36)
+
+
+class CaseControlSuggestionWrite(ApiModel):
+    suggestion_key: str = Field(pattern=r"^[a-z][a-z0-9._:-]{0,119}$")
+    action: Literal[
+        "CREATE_EXECUTION_COPY",
+        "START_EXECUTION",
+        "START_STEPWISE_NODE",
+        "STOP_EXECUTION",
+        "RERUN_STEPWISE_NODE",
+    ]
+    reason: str = Field(min_length=1, max_length=2_000)
+    node_run_id: str | None = Field(default=None, min_length=1, max_length=36)
+    node_attempt_id: str | None = Field(default=None, min_length=1, max_length=36)
+    evidence: dict[str, Any] = Field(default_factory=_empty_any_dict)
+
+
+class CaseDecisionProposalWrite(ApiModel):
+    flow_run_id: str = Field(min_length=1, max_length=36)
+    proposal_key: str = Field(pattern=r"^[a-z][a-z0-9._-]{0,119}$")
+    action: Literal[
+        "CONTINUE_STEPWISE",
+        "STOP_FLOW_RUN",
+        "RERUN_STEPWISE_NODE",
+        "COPY_AUTOMATIC_RUN",
+    ]
+    reason: str = Field(min_length=1, max_length=2_000)
+    node_run_id: str | None = Field(default=None, min_length=1, max_length=36)
+    node_attempt_id: str | None = Field(default=None, min_length=1, max_length=36)
+    source_task_id: str | None = Field(default=None, min_length=1, max_length=36)
+    payload: dict[str, Any] = Field(default_factory=_empty_any_dict)
+
+
 class StepwiseNodeDraftWrite(NodeRunStart):
     """Editable node configuration for one stepwise record.
 
@@ -807,10 +1018,29 @@ class StepwiseNodeDraftWrite(NodeRunStart):
     expected_row_version: int = Field(ge=1)
 
 
+class StepwiseRuntimePortMappingWrite(ApiModel):
+    source_instance_key: str = Field(min_length=1, max_length=100)
+    source_output_key: str = Field(min_length=1, max_length=100)
+    target_instance_key: str = Field(min_length=1, max_length=100)
+    target_input_key: str = Field(min_length=1, max_length=100)
+
+
+class StepwiseRuntimePortsWrite(ApiModel):
+    expected_active_snapshot_version: int = Field(ge=1)
+    node_ports: dict[str, dict[str, list[IOFieldWrite]]] = Field(default_factory=dict)
+    port_mappings: list[StepwiseRuntimePortMappingWrite] = Field(
+        default_factory=list, max_length=500
+    )
+
+
 class StepwiseNodeDraftStartWrite(ApiModel):
     """Optimistic-lock one draft before materialising its first Attempt."""
 
     expected_row_version: int = Field(ge=1)
+
+
+class StepwiseNodeRerunEditWrite(ApiModel):
+    node_run_id: str = Field(min_length=1, max_length=36)
 
 
 class FlowRunScheduleWrite(ApiModel):
@@ -939,7 +1169,20 @@ def _empty_mcp_scripts() -> list[MCPScriptWrite]:
     return []
 
 
+class MCPAuthenticationWrite(ApiModel):
+    strategy: Literal["none", "bearer"] = "none"
+    credential_id: str | None = None
+    expected_row_version: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def validate_binding(self) -> MCPAuthenticationWrite:
+        if (self.strategy == "bearer") != bool(self.credential_id):
+            raise ValueError("Bearer authentication requires exactly one credential")
+        return self
+
+
 class CapabilityMcpRevisionWrite(CapabilitySkillRevisionWrite):
+    mcp_authentication: MCPAuthenticationWrite | None = None
     mcp_scripts: list[MCPScriptWrite] = Field(default_factory=_empty_mcp_scripts, max_length=20)
 
 
@@ -1007,11 +1250,16 @@ class CapabilityValidateWrite(ApiModel):
 
 class CapabilityCommitWrite(ApiModel):
     import_token: str
+    mcp_authentication: MCPAuthenticationWrite | None = None
 
 
 class MCPReadOnlyToolCallWrite(ApiModel):
     name: str = Field(min_length=1, max_length=200)
     arguments: dict[str, Any] = Field(default_factory=_empty_any_dict)
+
+
+class MCPWorkspaceProbeWrite(ApiModel):
+    read_only_tool_call: MCPReadOnlyToolCallWrite | None = None
 
 
 class MCPProbeWrite(ApiModel):

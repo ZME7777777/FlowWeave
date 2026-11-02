@@ -1,3 +1,4 @@
+import { ChevronRight, Boxes } from 'lucide-react';
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { CONVERSATION_REFERENCE_TRANSFER_TYPE, WORKSPACE_FILE_TRANSFER_TYPE, transferredConversationReference, transferredFiles, transferredWorkspacePaths, type ComposerHandle } from './agentComposerInputUtils';
 
@@ -16,10 +17,11 @@ export interface ComposerSuggestion {
   nativeAction?: NativeComposerAction;
 }
 
-function composerTrigger(value: string): { sigil: '$' | '/' | '@'; query: string; start: number } | undefined {
-  const match = /(?:^|\s)([$/@])([^\s]*)$/.exec(value);
+function composerTrigger(value: string, cursor: number): { sigil: '$' | '/' | '@'; query: string; start: number; end: number } | undefined {
+  const match = /(?:^| )([$/@])([^\s]*)$/.exec(value.slice(0, cursor));
   if (!match) return undefined;
-  return { sigil: match[1] as '$' | '/' | '@', query: match[2], start: value.length - match[0].length + (match[0].startsWith(' ') ? 1 : 0) };
+  const start = match.index + match[0].indexOf(match[1]);
+  return { sigil: match[1] as '$' | '/' | '@', query: match[2], start, end: cursor };
 }
 
 function isImeComposition(event: ReactKeyboardEvent<HTMLTextAreaElement>): boolean {
@@ -57,6 +59,7 @@ export const AgentComposerInput = forwardRef<ComposerHandle, {
   const [activeIndex, setActiveIndex] = useState(0);
   const [fileDragActive, setFileDragActive] = useState(false);
   const [inputOverflowing, setInputOverflowing] = useState(false);
+  const [selectionStart, setSelectionStart] = useState(() => initialDraft.length);
   const replaceDraft = useCallback((value: string) => {
     draftRef.current = value;
     setDraft(current => current === value ? current : value);
@@ -75,6 +78,7 @@ export const AgentComposerInput = forwardRef<ComposerHandle, {
     requestAnimationFrame(() => {
       textarea?.focus();
       const cursor = start + value.length;
+      setSelectionStart(cursor);
       textarea?.setSelectionRange(cursor, cursor);
     });
   }, [updateDraft]);
@@ -88,6 +92,7 @@ export const AgentComposerInput = forwardRef<ComposerHandle, {
     if (previousScope.current === scope) return;
     previousScope.current = scope;
     replaceDraft(initialDraft);
+    setSelectionStart(initialDraft.length);
   }, [initialDraft, replaceDraft, scope]);
   const hasText = Boolean(draft.trim());
   useEffect(() => { onContentPresenceChange(hasText); }, [hasText, onContentPresenceChange]);
@@ -103,16 +108,18 @@ export const AgentComposerInput = forwardRef<ComposerHandle, {
     const styles = window.getComputedStyle(textarea);
     const lineHeight = Number.parseFloat(styles.lineHeight);
     const verticalPadding = Number.parseFloat(styles.paddingTop) + Number.parseFloat(styles.paddingBottom);
+    const horizontalPadding = Number.parseFloat(styles.paddingLeft) + Number.parseFloat(styles.paddingRight);
     const minHeight = Math.max(Number.parseFloat(styles.minHeight), lineHeight + verticalPadding);
     const maxHeight = lineHeight * 10 + verticalPadding;
     const measurement = document.createElement('div');
-    measurement.textContent = textarea.value || ' ';
+    // A div drops its trailing empty line; the textarea still needs room for its caret.
+    measurement.textContent = `${textarea.value}\u200b`;
     measurement.setAttribute('aria-hidden', 'true');
     measurement.style.setProperty('position', 'fixed', 'important');
     measurement.style.setProperty('visibility', 'hidden', 'important');
     measurement.style.setProperty('pointer-events', 'none', 'important');
     measurement.style.setProperty('box-sizing', 'content-box', 'important');
-    measurement.style.setProperty('width', `${Math.max(0, textarea.clientWidth - verticalPadding)}px`, 'important');
+    measurement.style.setProperty('width', `${Math.max(0, textarea.clientWidth - horizontalPadding)}px`, 'important');
     measurement.style.setProperty('margin', '0', 'important');
     measurement.style.setProperty('padding', '0', 'important');
     measurement.style.setProperty('border', '0', 'important');
@@ -124,12 +131,14 @@ export const AgentComposerInput = forwardRef<ComposerHandle, {
     measurement.style.setProperty('overflow-wrap', 'anywhere', 'important');
     measurement.style.setProperty('word-break', 'break-word', 'important');
     document.body.append(measurement);
-    const contentHeight = measurement.getBoundingClientRect().height + verticalPadding;
+    const measuredContentHeight = measurement.getBoundingClientRect().height;
     measurement.remove();
+    const contentHeight = measuredContentHeight + verticalPadding;
     const height = Math.min(Math.max(contentHeight, minHeight), maxHeight);
     textarea.style.height = `${height}px`;
     textarea.style.setProperty('overflow-y', contentHeight > maxHeight + 1 ? 'auto' : 'hidden', 'important');
     const overflowing = contentHeight > maxHeight + 1;
+    if (!overflowing && textarea.scrollTop !== 0) textarea.scrollTop = 0;
     setInputOverflowing(current => current === overflowing ? current : overflowing);
   }, []);
   useLayoutEffect(() => { resizeInput(); }, [draft, resizeInput]);
@@ -144,7 +153,7 @@ export const AgentComposerInput = forwardRef<ComposerHandle, {
       cancelAnimationFrame(layoutFrame);
     };
   }, [resizeInput]);
-  const trigger = composerTrigger(draft);
+  const trigger = composerTrigger(draft, selectionStart);
   const visible = (() => {
     if (!trigger) return [];
     const needle = trigger.query.toLocaleLowerCase();
@@ -167,17 +176,25 @@ export const AgentComposerInput = forwardRef<ComposerHandle, {
   const select = (item: ComposerSuggestion) => {
     if (!trigger || item.available === false) return;
     if (item.kind === 'NATIVE' && item.nativeAction) {
-      updateDraft(`${draft.slice(0, trigger.start)}${draft.slice(trigger.start + trigger.query.length + 1)}`);
+      updateDraft(`${draft.slice(0, trigger.start)}${draft.slice(trigger.end)}`);
+      setSelectionStart(trigger.start);
       onNativeAction?.(item.nativeAction);
       return;
     }
     if (item.kind === 'REFERENCE') {
-      updateDraft(`${draft.slice(0, trigger.start)}${draft.slice(trigger.start + trigger.query.length + 1)}`);
+      updateDraft(`${draft.slice(0, trigger.start)}${draft.slice(trigger.end)}`);
+      setSelectionStart(trigger.start);
       onWorkspaceReferenceSelected?.();
       return;
     }
-    updateDraft(`${draft.slice(0, trigger.start)}${item.token} ${draft.slice(trigger.start + trigger.query.length + 1)}`);
-    requestAnimationFrame(() => input.current?.focus());
+    const replacement = `${item.token} `;
+    updateDraft(`${draft.slice(0, trigger.start)}${replacement}${draft.slice(trigger.end)}`);
+    requestAnimationFrame(() => {
+      const cursor = trigger.start + replacement.length;
+      setSelectionStart(cursor);
+      input.current?.focus();
+      input.current?.setSelectionRange(cursor, cursor);
+    });
   };
   const hasSuggestions = visible.length > 0;
   const showCapabilityManager = Boolean(trigger && trigger.sigil !== '@' && onManageCapabilities);
@@ -214,10 +231,10 @@ export const AgentComposerInput = forwardRef<ComposerHandle, {
     if (workspacePaths.length) onDropWorkspaceFiles?.(workspacePaths);
     if (files.length) onDropFiles?.(files);
   }}>
-    <textarea ref={input} data-overflowing={inputOverflowing || undefined} aria-label={ariaLabel} aria-autocomplete="list" aria-controls={hasMenu ? 'agent-composer-capabilities' : undefined} aria-expanded={hasMenu} value={draft} maxLength={200_000} placeholder={placeholder} disabled={disabled} onChange={event => updateDraft(event.target.value)} onPaste={onPaste} onKeyDown={event => {
+    <textarea ref={input} data-overflowing={inputOverflowing || undefined} aria-label={ariaLabel} aria-autocomplete="list" aria-controls={hasMenu ? 'agent-composer-capabilities' : undefined} aria-expanded={hasMenu} value={draft} maxLength={200_000} placeholder={placeholder} disabled={disabled} onChange={event => { setSelectionStart(event.target.selectionStart); updateDraft(event.target.value); }} onSelect={event => setSelectionStart(event.currentTarget.selectionStart)} onPaste={onPaste} onKeyDown={event => {
       if (isImeComposition(event)) return;
-      if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.shiftKey) { event.preventDefault(); onDirectSubmit?.(draftRef.current); return; }
-      if (hasMenu && event.key === 'Escape') { updateDraft(draft.slice(0, -trigger!.query.length - 1)); return; }
+      if (event.key === 'Enter' && (event.metaKey || event.ctrlKey || event.altKey) && !event.shiftKey) { event.preventDefault(); onDirectSubmit?.(draftRef.current); return; }
+      if (hasMenu && event.key === 'Escape') { updateDraft(`${draft.slice(0, trigger!.start)}${draft.slice(trigger!.end)}`); setSelectionStart(trigger!.start); return; }
       if (hasSuggestions && ['ArrowDown', 'ArrowUp', 'Enter', 'Tab'].includes(event.key)) {
         event.preventDefault();
         if (event.key === 'ArrowDown') { setActiveIndex(index => (index + 1) % visible.length); return; }
@@ -229,6 +246,6 @@ export const AgentComposerInput = forwardRef<ComposerHandle, {
       if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); onSubmit(draftRef.current); }
     }}/>
     {fileDragActive && <div className="agent-composer-file-drop" aria-live="polite">{dragKind === 'conversation' ? '松开以添加会话' : '松开以添加附件'}</div>}
-    {hasMenu && <div id="agent-composer-capabilities" className="agent-composer-capability-menu" role="listbox" aria-label={trigger!.sigil === '$' ? '选择技能' : trigger!.sigil === '@' ? '选择引用类型' : hasNativeSuggestions ? '选择 OpenHands 原生能力、命令或 MCP' : '选择命令或 MCP'}>{hasSuggestions ? <>{visible.map((item, index) => <div className="agent-composer-capability-option" key={item.id}>{trigger!.sigil === '@' && index === 0 && <div className="agent-composer-capability-section">引用类型</div>}{trigger!.sigil === '/' && item.kind === 'NATIVE' && (index === 0 || visible[index - 1]?.kind !== 'NATIVE') && <div className="agent-composer-capability-section">OpenHands 原生能力</div>}{trigger!.sigil === '/' && item.kind !== 'NATIVE' && (index === 0 || visible[index - 1]?.kind === 'NATIVE') && <div className="agent-composer-capability-section">MCP 与命令</div>}<button type="button" role="option" aria-selected={index === activeIndex} aria-disabled={item.available === false || undefined} disabled={item.available === false} className={`${index === activeIndex ? 'active' : ''}${item.available === false ? ' unavailable' : ''}`} onMouseDown={event => event.preventDefault()} onMouseEnter={() => setActiveIndex(index)} onClick={() => select(item)}><code>{item.token}</code><span><b>{item.label}</b><small>{item.detail}</small></span><em>{item.kind === 'SKILL' ? '技能' : item.kind === 'COMMAND' ? '命令' : item.kind === 'NATIVE' ? '原生' : item.kind === 'REFERENCE' ? '引用' : 'MCP'}</em></button></div>)}</> : <div className="agent-composer-capability-empty"><span><b>{trigger!.sigil === '@' ? '当前没有匹配的引用类型' : !suggestions.length ? trigger!.sigil === '$' ? '当前会话还没有加载 Skill' : '当前会话还没有加载命令或 MCP' : '当前会话没有匹配的能力'}</b><small>{trigger!.sigil === '@' ? '调整输入关键词以筛选引用类型。' : !suggestions.length ? `先为此会话加载能力，随后可在这里用 ${trigger!.sigil} 选择并插入。` : '调整输入关键词，或管理当前会话能力。'}</small></span></div>}{showCapabilityManager && <div className="agent-composer-capability-manage"><span>管理当前会话能力</span><button type="button" onMouseDown={event => event.preventDefault()} onClick={onManageCapabilities}>管理</button></div>}</div>}
+    {hasMenu && <div id="agent-composer-capabilities" className="agent-composer-capability-menu" role="listbox" aria-label={trigger!.sigil === '$' ? '选择技能' : trigger!.sigil === '@' ? '选择引用类型' : hasNativeSuggestions ? '选择 OpenHands 原生能力、命令或 MCP' : '选择命令或 MCP'}>{hasSuggestions ? <>{visible.map((item, index) => <div className="agent-composer-capability-option" key={item.id}>{trigger!.sigil === '@' && index === 0 && <div className="agent-composer-capability-section">引用类型</div>}{trigger!.sigil === '/' && item.kind === 'NATIVE' && (index === 0 || visible[index - 1]?.kind !== 'NATIVE') && <div className="agent-composer-capability-section">OpenHands 原生能力</div>}{trigger!.sigil === '/' && item.kind !== 'NATIVE' && (index === 0 || visible[index - 1]?.kind === 'NATIVE') && <div className="agent-composer-capability-section">MCP 与命令</div>}<button type="button" role="option" aria-selected={index === activeIndex} aria-disabled={item.available === false || undefined} disabled={item.available === false} className={`${index === activeIndex ? 'active' : ''}${item.available === false ? ' unavailable' : ''}`} onMouseDown={event => event.preventDefault()} onMouseEnter={() => setActiveIndex(index)} onClick={() => select(item)}><code>{item.token}</code><span><b>{item.label}</b><small>{item.detail}</small></span><em>{item.kind === 'SKILL' ? '技能' : item.kind === 'COMMAND' ? '命令' : item.kind === 'NATIVE' ? '原生' : item.kind === 'REFERENCE' ? '引用' : 'MCP'}</em></button></div>)}</> : <div className="agent-composer-capability-empty"><span><b>{trigger!.sigil === '@' ? '当前没有匹配的引用类型' : !suggestions.length ? trigger!.sigil === '$' ? '当前会话还没有加载 Skill' : '当前会话还没有加载命令或 MCP' : '当前会话没有匹配的能力'}</b><small>{trigger!.sigil === '@' ? '调整输入关键词以筛选引用类型。' : !suggestions.length ? `先为此会话加载能力，随后可在这里用 ${trigger!.sigil} 选择并插入。` : '调整输入关键词，或前往会话配置。'}</small></span></div>}{showCapabilityManager && <button type="button" className="agent-composer-capability-manage" aria-label="会话配置" onMouseDown={event => event.preventDefault()} onClick={onManageCapabilities}><Boxes size={16}/><b>会话配置</b><ChevronRight size={16}/></button>}</div>}
   </div>;
 });

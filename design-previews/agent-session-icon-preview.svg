@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="520" height="220" viewBox="0 0 520 220" role="img" aria-labelledby="title description">
+  <title id="title">Agent 会话导航图标预览</title>
+  <desc id="description">深色导航栏中的代码对话框图标与 Agent 会话标签</desc>
+  <rect width="520" height="220" rx="20" fill="#050d09"/>
+  <text x="42" y="48" fill="#8fa39b" font-family="Arial, 'Noto Sans SC', sans-serif" font-size="16" letter-spacing="2">AGENT SESSION · NAVIGATION ICON</text>
+  <rect x="34" y="76" width="452" height="92" rx="12" fill="#0b1610" stroke="#a3e635" stroke-opacity="0.62"/>
+  <path d="M204 111.25 198.5 118l5.5 6.75M219 111.25l5.5 6.75-5.5 6.75M237 132a5.4 5.4 0 0 1-5.4 5.4h-32.4l-10.8 10.8V99.1a5.4 5.4 0 0 1 5.4-5.4h37.8a5.4 5.4 0 0 1 5.4 5.4Z" fill="none" stroke="#eaf7d3" stroke-width="2.7" stroke-linecap="round" stroke-linejoin="round" transform="translate(0 2)"/>
+  <text x="255" y="125" fill="#f5f7f3" font-family="Arial, 'Noto Sans SC', sans-serif" font-size="22" font-weight="700">Agent 会话</text>
+  <rect x="38" y="167" width="444" height="2" rx="1" fill="#a3e635"/>
+  <text x="42" y="198" fill="#8fa39b" font-family="Arial, 'Noto Sans SC', sans-serif" font-size="14">MessageSquareCode · 对话协作 / 代码任务</text>
+</svg>

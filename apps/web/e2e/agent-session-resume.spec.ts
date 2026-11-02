@@ -148,7 +148,7 @@ test('Agent navigation restores the last standalone conversation after leaving t
   await expect(page).toHaveURL(/\/agent\/conversations\/navigation-restore-conversation$/);
   await expect(page.getByText('切换页面后仍应看到这条回复。')).toBeVisible();
 
-  await page.getByRole('button', { name: '节点资产', exact: true }).click();
+  await page.getByRole('button', { name: '节点中心', exact: true }).click();
   await expect(page).toHaveURL(/\/$/);
   await page.getByRole('button', { name: 'Agent 会话', exact: true }).click();
   await expect(page).toHaveURL(/\/agent\/conversations\/navigation-restore-conversation$/);
@@ -157,7 +157,58 @@ test('Agent navigation restores the last standalone conversation after leaving t
   await page.getByRole('button', { name: '在根工作区中新建会话' }).click({ force: true });
   await expect(page).toHaveURL(/\/agent$/);
   await expect(page.locator('h2.agent-session-title')).toHaveText('新会话');
-  await page.getByRole('button', { name: '节点资产', exact: true }).click();
+  await page.getByRole('button', { name: '节点中心', exact: true }).click();
   await page.getByRole('button', { name: 'Agent 会话', exact: true }).click();
   await expect(page).toHaveURL(/\/agent$/);
+});
+
+
+test('A delayed standalone draft initialization does not reclaim the route after switching tabs', async ({ page }) => {
+  let authenticated = false;
+  let releaseConfiguration: (() => void) | undefined;
+  let configurationRequested: (() => void) | undefined;
+  const configurationPending = new Promise<void>(resolve => { releaseConfiguration = resolve; });
+  const configurationRequestStarted = new Promise<void>(resolve => { configurationRequested = resolve; });
+  const workspace = { id: 'hidden-draft-workspace', display_name: '后台草稿工作区', desired_state: 'RUNNING', updated_at: now };
+
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return authenticated
+      ? json(route, { id: 'hidden-draft-user', username: 'hidden-draft-user', role: 'USER', can_use_agent_sessions: true })
+      : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login')) {
+      authenticated = true;
+      return json(route, { id: 'hidden-draft-user', username: 'hidden-draft-user', role: 'USER', can_use_agent_sessions: true });
+    }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [], next_cursor: null });
+    if (path.endsWith('/conversation-activity')) return json(route, { running_binding_ids: [], items: [] });
+    if (path.endsWith('/session-configuration')) {
+      configurationRequested?.();
+      await configurationPending;
+      return json(route, { capability_version_ids: [], credential_ids: [] });
+    }
+    if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
+    if (path.endsWith('/model-providers') || path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.endsWith('/node-directories') || path.endsWith('/node-assets')) return json(route, []);
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+
+  await page.goto('/');
+  await page.getByLabel('账号').fill('hidden-draft-user');
+  await page.getByLabel('密码').fill('test-password');
+  await page.getByRole('button', { name: '进入工作空间' }).click();
+  await page.getByRole('button', { name: 'AI 工作台', exact: true }).click();
+  await configurationRequestStarted;
+
+  await page.getByRole('button', { name: '节点中心', exact: true }).click();
+  await expect(page).toHaveURL(/\/$/);
+  releaseConfiguration!();
+
+  await expect(page.getByRole('button', { name: 'AI 工作台', exact: true })).toBeVisible();
+  await page.waitForTimeout(250);
+  await expect(page).toHaveURL(/\/$/);
 });

@@ -24,6 +24,7 @@ from flowweave.modules.agent_workspaces.infrastructure.models import (
     AgentWorkspace,
     AgentWorkspaceCapability,
     AgentWorkspaceRuntime,
+    AgentWorkspaceSessionConfiguration,
 )
 
 process_agent_conversation_title = agent_sessions.process_agent_conversation_title
@@ -50,6 +51,37 @@ def frozen_conversation_work_directory_context(
     from flowweave.modules.agent_workspaces.application import work_directories
 
     return work_directories.frozen_conversation_context(db, workspace_id, version_id)
+
+
+def create_case_work_directory(
+    db: Session, workspace_id: str, case_id: str, display_name: str
+) -> dict[str, Any]:
+    """Create one Case-specific directory below the current user's project root."""
+
+    from flowweave.modules.agent_workspaces.application import work_directories
+
+    return work_directories.create_case_work_directory(db, workspace_id, case_id, display_name)
+
+
+def write_case_files(
+    db: Session,
+    workspace_id: str,
+    work_directory_id: str,
+    **kwargs: Any,
+) -> None:
+    from flowweave.modules.agent_workspaces.application import work_directories
+
+    work_directories.write_case_files(db, workspace_id, work_directory_id, **kwargs)
+
+
+def delete_case_work_directory(
+    db: Session, workspace_id: str, case_id: str, work_directory_id: str
+) -> None:
+    """Delete a Case-specific directory after its binding graph is gone."""
+
+    from flowweave.modules.agent_workspaces.application import work_directories
+
+    work_directories.delete_case_work_directory(db, workspace_id, case_id, work_directory_id)
 
 
 def list_flow_run_work_directories(
@@ -123,6 +155,18 @@ def delete_session_attachment_files(db: Session, workspace_id: str, binding_id: 
     from flowweave.modules.agent_workspaces.application import workspace
 
     workspace.delete_bound_attachment_files(db, workspace_id, binding_id)
+
+
+def ensure_private_upload_directory_ignored(
+    project_root: Path, runtime_root: str, working_directory: str
+) -> None:
+    """Exclude the platform-owned attachment directory from an enclosing Git repo."""
+
+    from flowweave.modules.agent_workspaces.application import workspace
+
+    workspace.ensure_private_upload_directory_ignored(
+        project_root, runtime_root, working_directory
+    )
 
 
 def validate_message_workspace_references(
@@ -293,7 +337,21 @@ def git_working_file_diff(
     )
 
 
+def write_case_material_file(db: Session, workspace_id: str, case_id: str, content: bytes) -> str:
+    from flowweave.modules.agent_workspaces.application import work_directories
+
+    return work_directories.write_case_material_file(db, workspace_id, case_id, content)
+
+
+def read_case_material_file(db: Session, workspace_id: str, case_id: str, value: str) -> bytes:
+    from flowweave.modules.agent_workspaces.application import work_directories
+
+    return work_directories.read_case_material_file(db, workspace_id, case_id, value)
+
+
 __all__ = (
+    "write_case_material_file",
+    "read_case_material_file",
     "agent_workspace_owner_is_active",
     "agent_workspace_record_path",
     "AgentWorkDirectory",
@@ -301,8 +359,10 @@ __all__ = (
     "AgentWorkDirectoryVersion",
     "AgentWorkspace",
     "AgentWorkspaceCapability",
+    "AgentWorkspaceSessionConfiguration",
     "AgentWorkspaceRuntime",
     "conversation_work_directory_context",
+    "create_case_work_directory",
     "create_flow_run_work_directory",
     "delete_flow_run_work_directory",
     "delete_session_attachment_files",
@@ -329,4 +389,5 @@ __all__ = (
     "runtime_allocation_for_agent_workspace",
     "validate_flow_run_workspace_references",
     "validate_message_workspace_references",
+    "write_case_files",
 )

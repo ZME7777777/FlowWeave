@@ -9,8 +9,8 @@ readonly CONFIRM_TOKEN='DELETE_UNREFERENCED_FLOWWEAVE_IMAGES'
 
 apply=false
 prune_build_cache=false
-keep_rollback_images=3
-cache_until='168h'
+keep_rollback_images=1
+cache_until='24h'
 max_delete=500
 confirmation=''
 config=''
@@ -23,12 +23,12 @@ Default mode is read-only: it inventories the configured FlowWeave production ho
 and prints image IDs that are safe candidates under the retention policy.
 
 Options:
-  --apply                         Delete only the printed, unreferenced image IDs.
+  --apply                         Delete only the printed, unreferenced platform/web image tags.
   --confirm TOKEN                 Required with --apply; exact token is
                                   DELETE_UNREFERENCED_FLOWWEAVE_IMAGES.
   --keep-rollback-images COUNT   Keep the newest COUNT rollback image IDs for
                                   each of flowweave-platform and flowweave-web
-                                  (default: 3). The deployed remote-amd64 image
+                                  (default: 1). The deployed remote-amd64 image
                                   and every image referenced by any container
                                   are always protected.
   --max-delete COUNT              Refuse an apply plan above COUNT image IDs
@@ -37,7 +37,7 @@ Options:
                                   'docker builder prune --filter until=…'. It
                                   never prunes images, containers, volumes,
                                   networks, or workspaces.
-  --cache-until DURATION          Build cache age filter (default: 168h).
+  --cache-until DURATION          Build cache age filter (default: 24h).
   -h, --help                      Show this help.
 
 The target comes from a private local config file. Do not commit it. Review
@@ -112,6 +112,7 @@ set -euo pipefail
 
 readonly repos=(flowweave-platform flowweave-web)
 declare -A protected=()
+declare -A current_ids=()
 declare -A known_flowweave_ids=()
 declare -A candidate_ids=()
 declare -A candidate_tags=()
@@ -139,6 +140,7 @@ done < <(docker ps -aq)
 
 for repo in "${repos[@]}"; do
   current_id=$(docker image inspect --format '{{.Id}}' "$repo:remote-amd64")
+  current_ids[$repo]=$current_id
   if [[ -z ${protected[$current_id]:-} ]]; then
     protected[$current_id]=current-tag
     ((current_protected += 1))
@@ -161,6 +163,7 @@ for repo in "${repos[@]}"; do
   kept=0
   while IFS='|' read -r _ _ _ image_id; do
     [[ -n ${seen_rollback_ids[$repo:$image_id]:-} ]] && continue
+    [[ "$image_id" == "${current_ids[$repo]}" ]] && continue
     seen_rollback_ids[$repo:$image_id]=1
     if [[ -z ${protected[$image_id]:-} ]]; then
       protected[$image_id]=rollback-retention
@@ -175,26 +178,23 @@ rm -f /tmp/flowweave-rollback-images.$$.txt
 for image_id in "${!known_flowweave_ids[@]}"; do
   [[ -n ${protected[$image_id]:-} ]] && continue
 
-  # Only delete historical rollback image IDs whose complete tag set belongs
-  # to the two governed FlowWeave repositories. This retains named build and
-  # candidate images for a separate, explicitly reviewed policy and protects
+  # Only delete historical image IDs whose complete tag set belongs
+  # to the two governed FlowWeave repositories; this protects
   # an image shared with another host workload.
   mapfile -t tags < <(docker image inspect --format '{{range .RepoTags}}{{println .}}{{end}}' "$image_id")
   ((${#tags[@]})) || continue
   foreign_tag=false
-  non_rollback_tag=false
   governed_tag_count=0
   for tag in "${tags[@]}"; do
     [[ -z $tag ]] && continue
     if [[ $tag == flowweave-platform:* || $tag == flowweave-web:* ]]; then
       ((governed_tag_count += 1))
-      [[ $tag == *rollback* ]] || non_rollback_tag=true
       continue
     fi
     foreign_tag=true
     break
   done
-  if [[ $foreign_tag == true || $non_rollback_tag == true || $governed_tag_count == 0 ]]; then
+  if [[ $foreign_tag == true || $governed_tag_count == 0 ]]; then
     ((foreign_tag_protected += 1))
     continue
   fi
@@ -229,14 +229,14 @@ if [[ $APPLY == true ]]; then
     fi
 
     # Docker refuses `image rm <id>` when one image carries several tags. The
-    # policy already proved every non-empty tag is a governed rollback tag, so
+    # policy already proved every non-empty tag is a governed platform/web tag, so
     # remove those exact tags one at a time. The final untag deletes the image
     # naturally; no force removal is ever used.
     mapfile -t current_tags < <(docker image inspect --format '{{range .RepoTags}}{{println .}}{{end}}' "$image_id")
     for tag in "${current_tags[@]}"; do
       [[ -z $tag ]] && continue
-      if [[ $tag != flowweave-platform:* && $tag != flowweave-web:* ]] || [[ $tag != *rollback* ]]; then
-        echo "refusing to untag image with a changed non-rollback or external tag: $image_id ($tag)" >&2
+      if [[ $tag != flowweave-platform:* && $tag != flowweave-web:* ]]; then
+        echo "refusing to untag image with a changed external tag: $image_id ($tag)" >&2
         exit 1
       fi
       docker image rm "$tag"

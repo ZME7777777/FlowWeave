@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import base64
+import difflib
 import hashlib
 import io
 import json
 import re
 import zipfile
-from copy import deepcopy
+from copy import copy, deepcopy
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
@@ -21,10 +22,19 @@ from flowweave.modules.catalog.application.capability_collections import (
     refresh_skill_collection_members,
 )
 from flowweave.modules.catalog.application.capability_repository import (
+    PublishedCapability,
+    is_builtin_capability,
+    list_user_configurable_versions,
     list_versions,
     publish_dependency_build,
     publish_import,
+    require_user_managed,
     resolve_version,
+)
+from flowweave.modules.catalog.application.platform_capabilities import (
+    PLATFORM_MCP_SECRET_REFERENCES,
+    is_platform_managed_capability,
+    require_user_configurable_capability,
 )
 from flowweave.modules.tasks.public import enqueue
 from flowweave.shared.application.transactions import (
@@ -48,6 +58,8 @@ from flowweave.shared.errors import DomainError
 from flowweave.shared.models import (
     AgentConversationBinding,
     AgentConversationCapability,
+    AgentConversationSchedule,
+    AgentWorkDirectory,
     AgentWorkspace,
     AgentWorkspaceCapability,
     CapabilityBlob,
@@ -229,17 +241,32 @@ def _reject(message: str, **details: Any) -> DomainError:
     return DomainError("IMPORT_REJECTED", message, 422, details)
 
 
-def _reject_sensitive(value: object, path: str = "$") -> None:
+def _reject_sensitive(
+    value: object, path: str = "$", *, mcp_secret_references: bool = False
+) -> None:
     if isinstance(value, dict):
         mapping = cast(dict[object, object], value)
         for key, child in mapping.items():
             if str(key).lower() in SENSITIVE:
+                if (
+                    mcp_secret_references
+                    and key == "Authorization"
+                    and any(
+                        path == f"$.mcpServers.{name}.headers" and child == reference
+                        for name, reference in PLATFORM_MCP_SECRET_REFERENCES.items()
+                    )
+                ):
+                    # These exact built-in references contain no credential.
+                    # OpenHands expands them from the target's Secret Registry.
+                    continue
                 raise _reject("Capability config contains a secret field", path=f"{path}.{key}")
-            _reject_sensitive(child, f"{path}.{key}")
+            _reject_sensitive(child, f"{path}.{key}", mcp_secret_references=mcp_secret_references)
     elif isinstance(value, list):
         sequence = cast(list[object], value)
         for index, child in enumerate(sequence):
-            _reject_sensitive(child, f"{path}[{index}]")
+            _reject_sensitive(
+                child, f"{path}[{index}]", mcp_secret_references=mcp_secret_references
+            )
 
 
 def _context_capability(
@@ -1766,7 +1793,7 @@ def _decode_and_validate(payload: CapabilityValidateWrite) -> tuple[bytes, dict[
     if not isinstance(parsed_object, dict):
         raise _reject("Config root must be an object")
     parsed = cast(dict[str, Any], parsed_object)
-    _reject_sensitive(parsed)
+    _reject_sensitive(parsed, mcp_secret_references=payload.capability_type == "MCP")
     if payload.capability_type == "MCP":
         capabilities = _mcp_capabilities(parsed)
     elif payload.capability_type == "HOOK":
@@ -1836,12 +1863,26 @@ class PreparedSkillUpdate:
     prepared: PreparedCapabilityImport
 
 
-def prepare_validation(payload: CapabilityValidateWrite) -> PreparedCapabilityImport:
+def _require_user_importable_entries(prepared: PreparedCapabilityImport) -> None:
+    for entry in prepared.preview.get("capabilities", []):
+        if is_platform_managed_capability(
+            prepared.capability_type, str(entry.get("capability_key") or "")
+        ):
+            raise DomainError(
+                "CAPABILITY_PLATFORM_MANAGED",
+                "平台内置能力只能由受管发布流程更新",
+                422,
+            )
+
+
+def prepare_validation(
+    payload: CapabilityValidateWrite, *, allow_platform_managed: bool = False
+) -> PreparedCapabilityImport:
     """Validate and freeze an import before object-store or database work."""
 
     content, preview = _decode_and_validate(payload)
     token = token_urlsafe(32)
-    return PreparedCapabilityImport(
+    prepared = PreparedCapabilityImport(
         token=token,
         token_digest=hashlib.sha256(token.encode()).hexdigest(),
         capability_type=payload.capability_type,
@@ -1852,6 +1893,9 @@ def prepare_validation(payload: CapabilityValidateWrite) -> PreparedCapabilityIm
         expires_at=datetime.now(UTC)
         + timedelta(seconds=get_settings().capability_import_ttl_seconds),
     )
+    if not allow_platform_managed:
+        _require_user_importable_entries(prepared)
+    return prepared
 
 
 def store_validation_source(prepared: PreparedCapabilityImport) -> PreparedCapabilityImport:
@@ -1984,7 +2028,9 @@ def finalize_commit_source(plan: CapabilityCommitPlan) -> str:
         ) from exc
 
 
-def confirm_commit(db: Session, plan: CapabilityCommitPlan, final_key: str) -> dict[str, Any]:
+def confirm_commit(
+    db: Session, plan: CapabilityCommitPlan, final_key: str, authentication=None
+) -> dict[str, Any]:
     """CAS-confirm the finalized object reference and consume the one-time token."""
 
     consumed_at = datetime.now(UTC)
@@ -2017,8 +2063,28 @@ def confirm_commit(db: Session, plan: CapabilityCommitPlan, final_key: str) -> d
     item = db.get(CapabilityImport, plan.import_id)
     if item is None:
         raise _reject("Import token is invalid, expired, or already consumed")
+    for entry in item.preview_json.get("capabilities", []):
+        key = str(entry.get("capability_key") or "")
+        if is_builtin_capability(item.capability_type, key):
+            installed = db.scalar(
+                select(CapabilityPackage)
+                .where(
+                    CapabilityPackage.capability_type == item.capability_type,
+                    CapabilityPackage.capability_key == key,
+                )
+                .with_for_update()
+            )
+            if installed is not None:
+                require_user_managed(installed)
     published = publish_import(db, item)
+    if authentication is not None:
+        from flowweave.modules.catalog.application import mcp_authentication
+
+        if len(published) != 1 or item.capability_type != "MCP":
+            raise _reject("Authentication binding requires exactly one MCP")
+        mcp_authentication.save(db, published[0].version.id, authentication)
     refresh_skill_collection_members(db, published)
+    _keep_two_published_skills(db, published)
     if published:
         canonical_storage_key = published[0].blob.storage_key
         if canonical_storage_key != final_key:
@@ -2059,10 +2125,195 @@ def confirm_commit(db: Session, plan: CapabilityCommitPlan, final_key: str) -> d
     }
 
 
+def _skill_versions(db: Session, package_id: str) -> list[CapabilityVersion]:
+    return list(
+        db.scalars(
+            select(CapabilityVersion)
+            .where(CapabilityVersion.package_id == package_id)
+            .order_by(CapabilityVersion.version_no.desc())
+        )
+    )
+
+
+def _replace_skill_selection_references(
+    db: Session, package_id: str, current_version_id: str
+) -> None:
+    stale_ids = [
+        version.id
+        for version in _skill_versions(db, package_id)
+        if version.id != current_version_id
+    ]
+    if not stale_ids:
+        return
+    for reference in db.scalars(
+        select(AgentWorkspaceCapability).where(
+            AgentWorkspaceCapability.capability_version_id.in_(stale_ids)
+        )
+    ):
+        reference.capability_version_id = current_version_id
+        current = db.get(CapabilityVersion, current_version_id)
+        if current is not None:
+            reference.digest = current.digest
+    for schedule in db.scalars(select(AgentConversationSchedule)):
+        configured = list(schedule.capability_version_ids_json or [])
+        if not any(version_id in stale_ids for version_id in configured):
+            continue
+        schedule.capability_version_ids_json = [
+            current_version_id if version_id in stale_ids else version_id
+            for version_id in configured
+        ]
+    for directory in db.scalars(select(AgentWorkDirectory)):
+        configured = list(directory.session_capability_ids_json or [])
+        if not any(version_id in stale_ids for version_id in configured):
+            continue
+        directory.session_capability_ids_json = [
+            current_version_id if version_id in stale_ids else version_id
+            for version_id in configured
+        ]
+
+
+def _frozen_version_references(db: Session, version_id: str) -> bool:
+    return bool(
+        _node_context_references(db, version_id)
+        or _conversation_references(db, version_id)
+        or _automatic_run_references(db, version_id)
+        or _governance_references(db, version_id)
+    )
+
+
+def _discard_version(db: Session, version: CapabilityVersion) -> None:
+    package_id = version.package_id
+    blob_id = version.blob_id
+    db.delete(version)
+    db.flush()
+    if not db.scalar(
+        select(func.count(CapabilityVersion.id)).where(CapabilityVersion.package_id == package_id)
+    ):
+        package = db.get(CapabilityPackage, package_id)
+        if package is not None:
+            db.delete(package)
+    if db.scalar(
+        select(func.count(CapabilityVersion.id)).where(CapabilityVersion.blob_id == blob_id)
+    ):
+        return
+    blob = db.get(CapabilityBlob, blob_id)
+    if blob is None:
+        return
+    import_uses_blob = db.scalar(
+        select(CapabilityImport.id).where(CapabilityImport.storage_key == blob.storage_key).limit(1)
+    )
+    if import_uses_blob is not None:
+        return
+    storage_key = blob.storage_key
+    db.delete(blob)
+    if not storage_key.startswith("builtin://"):
+        register_commit_action(db, lambda key=storage_key: get_artifact_store().delete(key))
+
+
+def _keep_two_skill_versions(db: Session, package_id: str) -> None:
+    versions = _skill_versions(db, package_id)
+    if not versions:
+        return
+    current = next((version for version in versions if version.state == "PUBLISHED"), None)
+    if current is None:
+        return
+    _replace_skill_selection_references(db, package_id, current.id)
+    visible = [version for version in versions if version.state == "PUBLISHED"]
+    for obsolete in visible[2:]:
+        if _frozen_version_references(db, obsolete.id):
+            obsolete.state = "RETIRED"
+        else:
+            _discard_version(db, obsolete)
+
+
+def _keep_two_published_skills(db: Session, published: list[Any]) -> None:
+    package_ids = {
+        item.package.id
+        for item in published
+        if item.package.capability_type in {"SKILL", "CONTEXT"}
+    }
+    for package_id in package_ids:
+        _keep_two_skill_versions(db, package_id)
+
+
+def compare_skill_versions(db: Session, capability_id: str) -> dict[str, Any]:
+    current = resolve_version(db, capability_id)
+    if current.package.capability_type != "SKILL":
+        raise DomainError("CAPABILITY_NOT_SKILL", "Only Skill versions can be compared", 422)
+    previous = db.scalar(
+        select(CapabilityVersion)
+        .where(
+            CapabilityVersion.package_id == current.package.id,
+            CapabilityVersion.version_no < current.version.version_no,
+            CapabilityVersion.state == "PUBLISHED",
+        )
+        .order_by(CapabilityVersion.version_no.desc())
+        .limit(1)
+    )
+    if previous is None:
+        raise DomainError(
+            "SKILL_PREVIOUS_VERSION_UNAVAILABLE", "Skill has no previous version", 409
+        )
+    previous_source = read_skill_source(db, previous.id)
+    current_source = read_skill_source(db, current.version.id)
+    return {
+        "previous": previous_source,
+        "current": current_source,
+        "diff": "".join(
+            difflib.unified_diff(
+                previous_source["content"].splitlines(keepends=True),
+                current_source["content"].splitlines(keepends=True),
+                fromfile="previous/SKILL.md",
+                tofile="current/SKILL.md",
+            )
+        ),
+    }
+
+
+def rollback_skill_version(db: Session, capability_id: str) -> dict[str, Any]:
+    current = resolve_version(db, capability_id)
+    if current.package.capability_type not in {"SKILL", "CONTEXT"}:
+        raise DomainError(
+            "CAPABILITY_NOT_VERSIONED", "Only Skill and Context can be rolled back", 422
+        )
+    db.scalar(
+        select(CapabilityPackage)
+        .where(CapabilityPackage.id == current.package.id)
+        .with_for_update()
+    )
+    versions = [
+        version
+        for version in _skill_versions(db, current.package.id)
+        if version.state == "PUBLISHED"
+    ]
+    if not versions or versions[0].id != current.version.id:
+        raise DomainError(
+            "SKILL_ROLLBACK_CONFLICT",
+            "只能回退当前版本。",
+            409,
+        )
+    previous = next((version for version in versions[1:] if version.state == "PUBLISHED"), None)
+    if previous is None:
+        raise DomainError("SKILL_PREVIOUS_VERSION_UNAVAILABLE", "暂无上一版本可回退。", 409)
+    _replace_skill_selection_references(db, current.package.id, previous.id)
+    if _frozen_version_references(db, current.version.id):
+        current.version.state = "RETIRED"
+    else:
+        _discard_version(db, current.version)
+    finish(db)
+    return next(item for item in list_versions(db) if item["id"] == previous.id)
+
+
 def list_capabilities(db: Session) -> list[dict[str, Any]]:
     """List immutable repository versions; imports are source audit only."""
 
     return list_versions(db)
+
+
+def list_user_configurable_capabilities(db: Session) -> list[dict[str, Any]]:
+    """List only capabilities accepted by user-authored configurations."""
+
+    return list_user_configurable_versions(db)
 
 
 def read_skill_source(db: Session, capability_id: str) -> dict[str, Any]:
@@ -2098,9 +2349,22 @@ def read_skill_package(db: Session, capability_id: str) -> tuple[str, bytes]:
     """
 
     published = resolve_version(db, capability_id)
+    if published.package.capability_type == "CONTEXT":
+        filename = published.version.source_filename
+        suffix = PurePosixPath(filename).suffix or ".txt"
+        try:
+            content = get_artifact_store().read(published.blob.storage_key)
+        except FileNotFoundError as exc:
+            raise DomainError(
+                "CAPABILITY_SOURCE_UNAVAILABLE", "Context package is unavailable", 422
+            ) from exc
+        return (
+            f"{published.package.capability_key}-v{published.version.version_no}{suffix}",
+            content,
+        )
     if published.package.capability_type != "SKILL":
         raise DomainError(
-            "CAPABILITY_NOT_DOWNLOADABLE", "Only Skill packages can be downloaded", 422
+            "CAPABILITY_NOT_DOWNLOADABLE", "Only Skill and Context can be downloaded", 422
         )
     normalized = published.version.normalized_config_json or {}
     entry = PurePosixPath(str(normalized.get("entry") or ""))
@@ -2122,7 +2386,9 @@ def read_skill_package(db: Session, capability_id: str) -> tuple[str, bytes]:
                 ):
                     continue
                 relative = PurePosixPath(*member.parts[len(skill_root.parts) :])
-                exported.writestr(str(PurePosixPath(folder) / relative), archive.read(info))
+                exported_info = copy(info)
+                exported_info.filename = str(PurePosixPath(folder) / relative)
+                exported.writestr(exported_info, archive.read(info))
     except (FileNotFoundError, KeyError, zipfile.BadZipFile) as exc:
         raise DomainError(
             "CAPABILITY_SOURCE_UNAVAILABLE", "Skill package is unavailable", 422
@@ -2220,32 +2486,57 @@ def read_mcp_source(db: Session, capability_id: str) -> dict[str, Any]:
 
 def prepare_skill_update(db: Session, capability_id: str, content: str) -> PreparedSkillUpdate:
     published = resolve_version(db, capability_id)
+    return prepare_skill_files_update(
+        db, capability_id, {"SKILL.md": content}, published.version.digest
+    )
+
+
+def prepare_skill_files_update(
+    db: Session, capability_id: str, files: dict[str, str], expected_digest: str
+) -> PreparedSkillUpdate:
+    from flowweave.modules.catalog.application.capability_files import (
+        PREVIEW_MAX_BYTES,
+        package_files,
+    )
+
+    published, members = package_files(db, capability_id)
     if published.package.capability_type != "SKILL":
         raise DomainError("CAPABILITY_NOT_EDITABLE", "Only Skill source can be edited", 422)
+    if expected_digest != published.version.digest:
+        raise DomainError("CAPABILITY_SOURCE_CONFLICT", "能力包已更新，请重新打开后编辑。", 409)
     normalized = published.version.normalized_config_json or {}
     skill_file = str(normalized.get("entry") or "")
+    root = PurePosixPath(skill_file).parent
+    replacements: dict[str, bytes] = {}
+    for path, text in files.items():
+        if path not in members:
+            raise DomainError("CAPABILITY_FILE_NOT_FOUND", "能力包中没有这个文件。", 404)
+        data = members[path]
+        try:
+            if len(data) > PREVIEW_MAX_BYTES or b"\x00" in data:
+                raise ValueError("File is not editable")
+            data.decode("utf-8")
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise DomainError(
+                "CAPABILITY_FILE_NOT_EDITABLE", "该文件仅支持下载查看。", 422
+            ) from exc
+        if len(text.encode("utf-8")) > PREVIEW_MAX_BYTES:
+            raise DomainError("CAPABILITY_FILE_TOO_LARGE", "编辑后的文本不能超过 1 MiB。", 422)
+        if data != text.encode("utf-8"):
+            replacements[str(root / path)] = text.encode("utf-8")
+    if not replacements:
+        raise DomainError("CAPABILITY_SOURCE_UNCHANGED", "Capability source has not changed", 422)
     try:
         source = get_artifact_store().read(published.blob.storage_key)
         output = io.BytesIO()
-        replaced = False
         with (
             zipfile.ZipFile(io.BytesIO(source)) as archive,
             zipfile.ZipFile(output, "w") as revised,
         ):
             for info in archive.infolist():
-                data = archive.read(info.filename) if not info.is_dir() else b""
-                if info.filename.replace("\\", "/") == skill_file:
-                    if data.decode("utf-8") == content:
-                        raise DomainError(
-                            "CAPABILITY_SOURCE_UNCHANGED",
-                            "Capability source has not changed",
-                            422,
-                        )
-                    data = content.encode("utf-8")
-                    replaced = True
+                data = archive.read(info) if not info.is_dir() else b""
+                data = replacements.get(info.filename.replace("\\", "/"), data)
                 revised.writestr(info, data)
-        if not replaced:
-            raise KeyError(skill_file)
     except (FileNotFoundError, KeyError, OSError, zipfile.BadZipFile) as exc:
         raise DomainError(
             "CAPABILITY_SOURCE_UNAVAILABLE", "Skill source is unavailable", 422
@@ -2285,14 +2576,36 @@ def prepare_skill_update(db: Session, capability_id: str, content: str) -> Prepa
     )
 
 
+def _require_current_mcp(
+    db: Session, published: PublishedCapability, *, lock: bool = False
+) -> None:
+    require_user_managed(published.package)
+    if lock:
+        db.scalar(
+            select(CapabilityPackage)
+            .where(CapabilityPackage.id == published.package.id)
+            .with_for_update()
+        )
+    latest = db.scalar(
+        select(func.max(CapabilityVersion.version_no)).where(
+            CapabilityVersion.package_id == published.package.id,
+            CapabilityVersion.state == "PUBLISHED",
+        )
+    )
+    if latest != published.version.version_no:
+        raise DomainError("CAPABILITY_SOURCE_CONFLICT", "MCP 已有新版本，请重新打开后再编辑", 409)
+
+
 def prepare_mcp_update(
     db: Session, capability_id: str, content: str, scripts: list[MCPScriptWrite]
 ) -> PreparedSkillUpdate:
     """Validate a revised single-server MCP and keep its immutable identity."""
 
     published = resolve_version(db, capability_id)
+    require_user_configurable_capability(published)
     if published.package.capability_type != "MCP":
         raise DomainError("CAPABILITY_NOT_EDITABLE", "Only MCP source can be edited", 422)
+    _require_current_mcp(db, published)
     payload = CapabilityValidateWrite(
         capability_type="MCP",
         filename=published.version.source_filename,
@@ -2353,10 +2666,20 @@ def confirm_skill_update(
     """Publish a new immutable Skill version without rebinding consumers."""
 
     register_rollback_action(db, lambda: get_artifact_store().delete(final_key))
+    package_id = db.scalar(
+        select(CapabilityVersion.package_id).where(
+            CapabilityVersion.id == update_plan.capability_id
+        )
+    )
+    if package_id is not None:
+        db.scalar(
+            select(CapabilityPackage).where(CapabilityPackage.id == package_id).with_for_update()
+        )
     baseline = db.scalar(
         select(CapabilityVersion)
         .where(CapabilityVersion.id == update_plan.capability_id)
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
     if (
         baseline is None
@@ -2368,6 +2691,17 @@ def confirm_skill_update(
             "Capability source changed while it was being edited",
             409,
         )
+    latest = db.scalar(
+        select(CapabilityVersion)
+        .where(
+            CapabilityVersion.package_id == baseline.package_id,
+            CapabilityVersion.state == "PUBLISHED",
+        )
+        .order_by(CapabilityVersion.version_no.desc())
+        .limit(1)
+    )
+    if latest is None or latest.id != baseline.id:
+        raise DomainError("CAPABILITY_SOURCE_CONFLICT", "能力包已有新版本，请重新打开后编辑。", 409)
     now = datetime.now(UTC)
     imported = CapabilityImport(
         token_digest=update_plan.prepared.token_digest,
@@ -2385,6 +2719,7 @@ def confirm_skill_update(
     db.flush()
     published = publish_import(db, imported)
     refresh_skill_collection_members(db, published)
+    _keep_two_published_skills(db, published)
     if len(published) != 1:
         raise DomainError("CAPABILITY_SOURCE_INVALID", "Capability source is invalid", 422)
     revised = published[0]
@@ -2410,11 +2745,12 @@ def confirm_skill_update(
 
 
 def confirm_mcp_update(
-    db: Session, update_plan: PreparedSkillUpdate, final_key: str
+    db: Session, update_plan: PreparedSkillUpdate, final_key: str, authentication=None
 ) -> dict[str, Any]:
     """Publish one revised MCP version without rebinding existing consumers."""
 
     register_rollback_action(db, lambda: get_artifact_store().delete(final_key))
+    _require_current_mcp(db, resolve_version(db, update_plan.capability_id), lock=True)
     baseline = db.scalar(
         select(CapabilityVersion)
         .where(CapabilityVersion.id == update_plan.capability_id)
@@ -2449,7 +2785,15 @@ def confirm_mcp_update(
         raise DomainError(
             "CAPABILITY_IDENTITY_CHANGED", "Editing an MCP cannot change its identity", 422
         )
+    if published[0].version.version_no <= baseline.version_no:
+        raise DomainError(
+            "CAPABILITY_SOURCE_UNCHANGED", "配置已存在于历史版本，请修改后再发布", 422
+        )
     revised_id = published[0].version.id
+    if authentication is not None:
+        from flowweave.modules.catalog.application import mcp_authentication
+
+        mcp_authentication.save(db, revised_id, authentication)
     finish(db)
     return next(item for item in list_versions(db) if item["id"] == revised_id)
 
@@ -2662,6 +3006,17 @@ def delete_capabilities(db: Session, capability_ids: list[str]) -> dict[str, Any
     deletable: list[CapabilityVersion] = []
     for capability_id in unique_ids:
         published = resolve_version(db, capability_id)
+        if is_builtin_capability(
+            published.package.capability_type, published.package.capability_key
+        ):
+            blocked.append(
+                {
+                    "id": capability_id,
+                    "name": published.package.capability_key,
+                    "relation": "BUILTIN_CAPABILITY",
+                }
+            )
+            continue
         workspaces = _workspace_references(db, capability_id)
         nodes = _node_context_references(db, capability_id)
         conversations = _conversation_references(db, capability_id)

@@ -7,6 +7,7 @@ import json
 import logging
 import math
 import re
+import shlex
 import tarfile
 import threading
 import time
@@ -65,6 +66,7 @@ from flowweave.runtime.base import (
     StartAttemptRequest,
 )
 from flowweave.runtime.contract import OPTIONAL_HTTP_OPERATIONS
+from flowweave.runtime.git_identity import GIT_IDENTITY_SCRIPT
 from flowweave.runtime.model_catalog import declared_context_window
 from flowweave.runtime.read_budget import formal_read_budget, hydration_time_left
 from flowweave.shared.errors import DomainError
@@ -259,7 +261,7 @@ class _TransientStreamProjection:
                 attempt is None
                 or maximum is None
                 or attempt > maximum
-                or maximum > 5
+                or maximum > 3
                 or failure_kind not in allowed_kinds
                 or not isinstance(final, bool)
                 or model_role not in {"primary", "fallback"}
@@ -1465,9 +1467,9 @@ class OpenHandsRuntime:
             # Workspace conversations, LLM switches, and condensers.
             # OpenHands interprets this as the total number of transport
             # attempts, including the initial call. Keep the product
-            # contract at five attempts so live progress can truthfully reach
-            # 5/5 without a frontend timer or a second send.
-            "num_retries": 5,
+            # contract at three attempts so live progress can truthfully reach
+            # 3/3 without a frontend timer or a second send.
+            "num_retries": 3,
             "retry_multiplier": 2.0,
             "retry_min_wait": 1,
             "retry_max_wait": 4,
@@ -2238,6 +2240,17 @@ class OpenHandsRuntime:
             }
         target_base_url = request.runtime_base_url
         target_session_key = self._session_key_for_resource(request.runtime_resource_name)
+        if request.git_identity is not None:
+            self.workspace_git_identity(
+                RuntimeHandle(
+                    job_id=f"env-exec:{request.runtime_resource_name}",
+                    conversation_id="",
+                    runtime_resource_id=request.runtime_sandbox_id,
+                    runtime_resource_name=request.runtime_resource_name,
+                    workspace_root=request.workspace_root,
+                ),
+                identity=request.git_identity,
+            )
         self._negotiate_runtime_contract(
             spec.runtime_contract,
             required_tools=(
@@ -2304,9 +2317,28 @@ class OpenHandsRuntime:
     def create_conversation(self, request: StartAttemptRequest) -> RuntimeHandle:
         return self._create(request, run=False)
 
-    def update_conversation_secrets(self, handle: RuntimeHandle, secrets: dict[str, str]) -> None:
+    def update_conversation_secrets(
+        self,
+        handle: RuntimeHandle,
+        secrets: dict[str, str],
+        *,
+        descriptions: dict[str, str] | None = None,
+    ) -> None:
         """Use OpenHands' additive secret update endpoint without persisting values."""
 
+        if descriptions:
+            info = self._request(
+                "GET",
+                "/server_info",
+                base_url=self._base_url_for_handle(handle),
+                session_api_key=self._session_key_for_handle(handle),
+            )
+            if "conversation_dynamic_context_v1" not in info.get("capabilities", []):
+                raise DomainError(
+                    "AGENT_CREDENTIAL_CONTEXT_UNSUPPORTED",
+                    "当前运行环境尚不支持认证目录同步，请升级运行环境后重试；认证同步状态未更新。",
+                    409,
+                )
         self._request(
             "POST",
             f"/api/conversations/{handle.conversation_id}/secrets",
@@ -2314,7 +2346,15 @@ class OpenHandsRuntime:
             session_api_key=self._session_key_for_handle(handle),
             json={
                 "secrets": {
-                    name: {"kind": "StaticSecret", "value": value}
+                    name: {
+                        "kind": "StaticSecret",
+                        "value": value,
+                        **(
+                            {"description": descriptions[name]}
+                            if descriptions and name in descriptions
+                            else {}
+                        ),
+                    }
                     for name, value in secrets.items()
                 }
             },
@@ -3586,6 +3626,10 @@ class OpenHandsRuntime:
 
         anchor = self._formal_identity(cursor, field="cursor", required=True)
         assert anchor is not None
+        if leaf_event_id == anchor:
+            # Native state already proves this exact cached leaf is current.
+            # No event search is needed when there are no descendants.
+            return []
         page_id = leaf_event_id
         pages_seen: set[str] = set()
         by_id: dict[str, dict[str, Any]] = {}
@@ -4111,6 +4155,11 @@ class OpenHandsRuntime:
                 # projection and permanently strands the FlowRun Attempt.
                 if self._is_explicit_pause_interruption(item):
                     continue
+                # Tool-call validation errors are formal, retryable Agent outcomes.
+                # OpenHands feeds them back to the model so it can correct the call;
+                # they are not terminal Runtime failures.
+                if self._is_retryable_agent_tool_error(item):
+                    continue
                 # OpenHands 1.42/1.44 can publish an asynchronous native
                 # auto-title provider failure as a generic ConversationErrorEvent
                 # after the real assistant message.  The title is auxiliary
@@ -4158,6 +4207,20 @@ class OpenHandsRuntime:
             str(item.get("kind") or "") == "AgentErrorEvent"
             and str(item.get("error") or "")
             == "Tool call interrupted before completion. The conversation was paused."
+        )
+
+    @staticmethod
+    def _is_retryable_agent_tool_error(item: dict[str, Any]) -> bool:
+        if str(item.get("kind") or "") != "AgentErrorEvent":
+            return False
+        if not str(item.get("tool_name") or "") or not str(item.get("tool_call_id") or ""):
+            return False
+        classification = item.get("classification")
+        return (
+            isinstance(classification, dict)
+            and classification.get("kind") == "agent_action"
+            and classification.get("retryable") is True
+            and classification.get("user_action") == "retry"
         )
 
     @staticmethod
@@ -5061,14 +5124,98 @@ class OpenHandsRuntime:
             )
         return RuntimeResult(status="RUNNING", cursor=cursor)
 
+    def _message_user_event_ids(self, handle: RuntimeHandle) -> frozenset[str]:
+        """Read a bounded native identity window, without inspecting message text."""
+
+        page = self._request(
+            "GET",
+            f"/api/conversations/{handle.conversation_id}/events/search",
+            base_url=self._base_url_for_handle(handle),
+            session_api_key=self._session_key_for_handle(handle),
+            params={
+                # EventService's query filter uses the Python class identity;
+                # the short JSON discriminator below is only a response type.
+                "kind": "openhands.sdk.event.llm_convertible.message.MessageEvent",
+                "source": "user",
+                "sort_order": "TIMESTAMP_DESC",
+                "limit": 100,
+            },
+        )
+        items = page.get("items")
+        if not isinstance(items, list):
+            raise DomainError(
+                "RUNTIME_MESSAGE_IDENTITY_UNAVAILABLE",
+                "OpenHands did not return a formal user event identity window",
+                502,
+            )
+        identities: set[str] = set()
+        for item in items:
+            if (
+                not isinstance(item, dict)
+                or item.get("kind") != "MessageEvent"
+                or item.get("source") != "user"
+            ):
+                raise DomainError(
+                    "RUNTIME_MESSAGE_IDENTITY_UNAVAILABLE",
+                    "OpenHands returned an invalid formal user event identity",
+                    502,
+                )
+            identity = self._formal_identity(item.get("id"), field="id", required=True)
+            assert identity is not None
+            identities.add(identity)
+        return frozenset(identities)
+
+    def _appended_user_event_id(self, handle: RuntimeHandle, before: frozenset[str]) -> str:
+        # A running native step can defer base_state.json autosave even though
+        # the MessageEvent is already durable. Never claim an old state/handle
+        # cursor. Set membership is independent of page order and content. If
+        # concurrent writers add several events, preserve uncertainty instead
+        # of assigning another request's event to this message.
+        try:
+            added = self._message_user_event_ids(handle) - before
+        except DomainError as exc:
+            raise DomainError(
+                "AGENT_MESSAGE_DELIVERY_AMBIGUOUS",
+                "The message was accepted but its formal identity could not be read",
+                504,
+                {"outcome_unknown": True},
+            ) from exc
+        if len(added) != 1:
+            raise DomainError(
+                "AGENT_MESSAGE_DELIVERY_AMBIGUOUS",
+                "The message was accepted but its formal identity is not unique",
+                504,
+                {"outcome_unknown": True},
+            )
+        return next(iter(added))
+
     def send_message(
         self, handle: RuntimeHandle, content: str, image_urls: tuple[str, ...] = ()
+    ) -> RuntimeResult:
+        return self._submit_user_message(handle, content, image_urls, run=True)
+
+    def append_message(self, handle: RuntimeHandle, content: str) -> RuntimeResult:
+        return self._submit_user_message(handle, content, (), run=False)
+
+    def _submit_user_message(
+        self, handle: RuntimeHandle, content: str, image_urls: tuple[str, ...], *, run: bool
     ) -> RuntimeResult:
         parts: list[dict[str, Any]] = []
         if content:
             parts.append({"type": "text", "text": content})
         if image_urls:
             parts.append({"type": "image", "image_urls": list(image_urls)})
+        try:
+            before = self._message_user_event_ids(handle)
+        except DomainError as exc:
+            if run:
+                raise
+            raise DomainError(
+                "RUNTIME_MESSAGE_NOT_SUBMITTED",
+                "Native message preflight unavailable",
+                503,
+                {"native_append_started": False},
+            ) from exc
         try:
             created = self._request(
                 "POST",
@@ -5079,16 +5226,18 @@ class OpenHandsRuntime:
                 # current LLM/tool step finishes. This formal event append must
                 # wait for that boundary rather than timing out at the ordinary
                 # short control-request limit and inviting a duplicate retry.
-                timeout=3600,
+                timeout=3600 if run else 30,
                 json={
                     "role": "user",
                     "content": parts,
-                    "run": True,
+                    "run": run,
                 },
             )
         except DomainError as exc:
-            if self._is_v2_run_slot_rejection(handle, exc):
-                return self._retry_v2_persisted_user_event_run(handle)
+            if run and self._is_v2_run_slot_rejection(handle, exc):
+                return self._retry_v2_persisted_user_event_run(
+                    handle, self._appended_user_event_id(handle, before)
+                )
             error_code = self._safe_diagnostic_token(exc.code)
             logger.warning(
                 "native_user_event_append_failed conversation=%s runtime=%s "
@@ -5108,15 +5257,16 @@ class OpenHandsRuntime:
             raise
         cursor_value: object | None = None
         cursor_source = "missing"
-        for field in ("id", "event_id", "last_user_message_id", "leaf_event_id"):
+        # Newer native responses can provide the exact appended event ID.
+        # Success-only responses require formal EventLog identity reconciliation.
+        for field in ("event_id", "id"):
             if created.get(field):
                 cursor_value = created[field]
                 cursor_source = field
                 break
         if not cursor_value:
-            state = self._conversation_state(handle)
-            cursor_value = state.get("last_user_message_id") or handle.cursor
-            cursor_source = "state_last_user" if state.get("last_user_message_id") else "handle"
+            cursor_value = self._appended_user_event_id(handle, before)
+            cursor_source = "formal_event_identity_delta"
         cursor = str(cursor_value) if cursor_value else None
         logger.warning(
             "native_user_event_append_accepted conversation=%s runtime=%s cursor=%s "
@@ -5130,7 +5280,7 @@ class OpenHandsRuntime:
             len(content),
             len(image_urls),
         )
-        return RuntimeResult(status="RUNNING", cursor=cursor)
+        return RuntimeResult(status="RUNNING" if run else "IDLE", cursor=cursor)
 
     @staticmethod
     def _is_v2_run_slot_rejection(handle: RuntimeHandle, error: DomainError) -> bool:
@@ -5143,16 +5293,11 @@ class OpenHandsRuntime:
             and error.details.get("outcome_unknown") is False
         )
 
-    def _retry_v2_persisted_user_event_run(self, handle: RuntimeHandle) -> RuntimeResult:
+    def _retry_v2_persisted_user_event_run(
+        self, handle: RuntimeHandle, cursor: str
+    ) -> RuntimeResult:
         """Confirm the persisted native event, then retry only `/run` once."""
 
-        state = self._conversation_state(handle)
-        cursor = self._formal_identity(
-            state.get("last_user_message_id"),
-            field="last_user_message_id",
-            required=True,
-        )
-        assert cursor is not None
         try:
             self.run(replace(handle, cursor=cursor))
         except DomainError as run_error:
@@ -5225,7 +5370,22 @@ class OpenHandsRuntime:
         # identify ordinary files (notably PDFs) without trusting a caller
         # supplied path.
         workspace_root = self._validated_workspace_root(handle.workspace_root)
-        target = f"{workspace_root}/uploads/{owner_id}-{uuid4().hex}--{safe_name}"
+        # A FlowRun input upload has no separate working directory: its frozen
+        # record root is the directory. Compare canonical strings on both sides.
+        expected_directory = handle.working_directory or workspace_root.as_posix()
+        working_directory = PurePosixPath(expected_directory)
+        if (
+            not working_directory.is_absolute()
+            or not working_directory.is_relative_to(workspace_root)
+            or working_directory.as_posix() != expected_directory
+            or any(part in {"", ".", ".."} for part in working_directory.parts)
+        ):
+            raise DomainError(
+                "RUNTIME_WORKSPACE_INVALID",
+                "The Agent Workspace working directory is invalid",
+                422,
+            )
+        target = f"{working_directory}/.uploads/{owner_id}-{uuid4().hex}--{safe_name}"
         try:
             response = self._transport().regular.post(
                 f"{self._base_url_for_handle(handle)}/api/file/upload",
@@ -5247,6 +5407,62 @@ class OpenHandsRuntime:
                 "EXECUTOR_UNAVAILABLE", "OpenHands 工作区文件上传不可用", 503
             ) from exc
         return target
+
+    def workspace_git_identity(
+        self,
+        handle: RuntimeHandle,
+        *,
+        identity: tuple[str, str] | None = None,
+        profile: tuple[str, str] | None = None,
+    ) -> dict[str, str | bool]:
+        values: dict[str, object] = {"root": handle.workspace_root}
+        if profile is not None:
+            values["profile"] = list(profile)
+        if identity is not None:
+            values.update(author=identity[0], email=identity[1])
+        result = self._request(
+            "POST",
+            "/api/bash/execute_bash_command",
+            base_url=self._base_url_for_handle(handle),
+            session_api_key=self._session_key_for_handle(handle),
+            json={
+                "command": "python3 -c "
+                + shlex.quote(GIT_IDENTITY_SCRIPT)
+                + " "
+                + shlex.quote(json.dumps(values)),
+                "timeout": 12,
+            },
+            timeout=15,
+        )
+        try:
+            if result.get("exit_code") != 0:
+                raise ValueError("Git operation failed")
+            raw = json.loads(str(result.get("stdout") or ""))
+            if not isinstance(raw, dict):
+                raise ValueError("Invalid Git configuration response")
+            data = cast(dict[str, object], raw)
+            author, email, configured = (
+                data.get("author"),
+                data.get("email"),
+                data.get("configured"),
+            )
+            if (
+                not isinstance(author, str)
+                or not isinstance(email, str)
+                or not isinstance(configured, bool)
+            ):
+                raise ValueError("Invalid Git identity")
+            if identity is not None and (not configured or (author, email) != identity):
+                raise ValueError("Git write was not confirmed")
+            return {
+                "author": author if configured else "",
+                "email": email if configured else "",
+                "configured": configured,
+            }
+        except (ValueError, TypeError) as exc:
+            raise DomainError(
+                "AGENT_GIT_CONFIG_UNAVAILABLE", "无法确认工作区 Git 配置，请稍后重试", 503
+            ) from exc
 
     def workspace_snapshot(self, handle: RuntimeHandle, path: str) -> RuntimeWorkspaceSnapshot:
         base_url = self._base_url_for_handle(handle)
@@ -5568,6 +5784,30 @@ class OpenHandsRuntime:
             json={"plugin_ref": plugin_ref},
         )
 
+    def conversation_mcp_configured(
+        self, handle: RuntimeHandle, server_name: str, url: str
+    ) -> bool:
+        """Read persisted native configuration, including after an uncertain loader response.
+
+        This proves configuration acknowledgement, not live tool availability.
+        Secret values are deliberately neither returned nor compared by the platform.
+        """
+        agent = self._conversation_state(handle).get("agent")
+        servers = agent.get("mcp_config") if isinstance(agent, dict) else None
+        server = servers.get(server_name) if isinstance(servers, dict) else None
+        if not isinstance(server, dict):
+            return False
+        # ConversationInfo reconstructs the Agent from a redacted model dump.
+        # MCP secret-map validation then drops masked header values, so public
+        # state cannot prove whether Authorization is installed. Authentication
+        # is exercised by the native MCP probe; this read acknowledges only
+        # the exact non-secret configuration and its enabled state.
+        return (
+            server.get("url") == url
+            and server.get("transport") == "streamable-http"
+            and server.get("enabled") is not False
+        )
+
     def interrupt(self, handle: RuntimeHandle) -> None:
         self._request(
             "POST",
@@ -5713,11 +5953,11 @@ class OpenHandsRuntime:
         session_api_key = self._session_key_for_handle(handle)
         state = self._conversation_state(handle)
         status = str(state.get("execution_status") or "").lower()
-        # Only IDLE/PAUSED are resumable. A worker may crash after a rejected
-        # batch has already resumed and completed but before FlowWeave commits
-        # its CAS; re-triggering FINISHED here would execute the turn twice.
-        # RUNNING and terminal states are reconciled by the normal poll path.
-        if status in {"idle", "paused"}:
+        # A FlowWeave recovery may continue the same formal Conversation after
+        # OpenHands ended a transient model call in ``error``. Never restart a
+        # finished turn: that could execute it twice. Running states remain
+        # owned by the normal event-reconciliation path.
+        if status in {"idle", "paused", "error"}:
             self._request(
                 "POST",
                 f"/api/conversations/{handle.conversation_id}/run",
@@ -5727,6 +5967,62 @@ class OpenHandsRuntime:
             )
         cursor = str(state.get("leaf_event_id") or handle.cursor or "") or None
         return RuntimeResult(status="RUNNING", cursor=cursor)
+
+    def run_pending_message(self, handle: RuntimeHandle, event_id: str) -> RuntimeResult:
+        """Resume only an acknowledged native user event on the current branch.
+
+        Persisted append and run are separate operations. Retrying this method
+        never appends a message and never deliberately resumes a native pause.
+        Formal parent ids fence navigation; message text is never inspected.
+        """
+        identity = self._formal_identity(event_id, field="id", required=True)
+        deadline = time.monotonic() + 8
+        state = self._conversation_state(handle, timeout=5)
+        cursor = self._formal_identity(
+            state.get("leaf_event_id"), field="leaf_event_id", required=False
+        )
+        leaf = cursor
+        found = False
+        for _ in range(200):
+            remaining = deadline - time.monotonic()
+            if cursor is None or remaining <= 0:
+                break
+            event = self._request(
+                "GET",
+                f"/api/conversations/{handle.conversation_id}/events/{cursor}",
+                base_url=self._base_url_for_handle(handle),
+                session_api_key=self._session_key_for_handle(handle),
+                timeout=min(remaining, 3),
+            )
+            if event.get("id") != cursor:
+                raise DomainError("RUNTIME_MESSAGE_IDENTITY_UNAVAILABLE", "Native event drift", 409)
+            if cursor == identity:
+                found = event.get("kind") == "MessageEvent" and event.get("source") == "user"
+                break
+            cursor = self._formal_identity(
+                event.get("parent_id"), field="parent_id", required=False
+            )
+        if not found:
+            raise DomainError(
+                "RUNTIME_MESSAGE_BRANCH_UNVERIFIED",
+                "The acknowledged user event is not in the bounded current native branch",
+                409,
+            )
+        status = str(state.get("execution_status") or "unknown").lower()
+        if status == "idle" and leaf == identity:
+            self._request(
+                "POST",
+                f"/api/conversations/{handle.conversation_id}/run",
+                base_url=self._base_url_for_handle(handle),
+                session_api_key=self._session_key_for_handle(handle),
+                json={},
+            )
+            return RuntimeResult(status="RUNNING", cursor=identity)
+        if status in {"running", "executing", "starting"}:
+            return RuntimeResult(status="RUNNING", cursor=identity)
+        if status in {"finished", "stuck", "error"} and leaf != identity:
+            return RuntimeResult(status="COMPLETED", cursor=identity)
+        return RuntimeResult(status="WAITING", cursor=identity)
 
     def condense(self, handle: RuntimeHandle) -> RuntimeResult:
         """Request native condensation; completion is observed via event cursor."""

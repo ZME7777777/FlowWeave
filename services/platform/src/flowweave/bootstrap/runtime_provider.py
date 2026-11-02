@@ -28,6 +28,8 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, m
 from flowweave.bootstrap.settings import Settings
 from flowweave.modules.environments.infrastructure import docker as environments_docker
 from flowweave.modules.sandboxes.infrastructure.docker import (
+    _LIST_LISTENING_PROCESSES,
+    _STOP_LISTENING_PROCESS,
     DockerSandboxProvider,
     backend_name,
 )
@@ -38,6 +40,7 @@ from flowweave.shared.application.plugin_resolver import (
     PluginResolveRequest,
 )
 from flowweave.shared.errors import DomainError
+from flowweave.shared.infrastructure.browser_proxy import BrowserFetchPool
 from flowweave.shared.infrastructure.dependency_builder import DockerDependencyBuilder
 from flowweave.shared.infrastructure.docker_control import (
     DockerControlError,
@@ -298,6 +301,17 @@ class ResolveContainerWrite(SandboxDeleteWrite):
     environment_id: UUID
 
 
+
+
+class RuntimeServiceScanWrite(SandboxDeleteWrite):
+    pass
+
+
+class RuntimeServiceStopWrite(RuntimeServiceScanWrite):
+    pid: int = Field(ge=2)
+    started_ticks: str = Field(min_length=1, max_length=40, pattern=r"^[0-9]+$")
+    process_group_id: int | None = Field(default=None, ge=1)
+
 class LegacyRemoveWrite(ScopedRequest):
     resource_name: str = Field(
         min_length=1,
@@ -401,6 +415,19 @@ class MarketplacePluginResolveWrite(PluginResolveWrite):
 
 class MarketplaceCatalogWrite(PluginResolveWrite):
     pass
+
+
+class BrowserFetchWrite(SandboxDeleteWrite):
+    scheme: Literal["http", "https"]
+    port: int = Field(ge=1, le=65_535)
+    path: str = Field(default="/", min_length=1, max_length=2_000)
+    query: str = Field(default="", max_length=4_000)
+
+    @model_validator(mode="after")
+    def validate_target(self) -> BrowserFetchWrite:
+        if not self.path.startswith("/") or "\\" in self.path or "//" in self.path:
+            raise ValueError("browser path must be a normalized absolute path")
+        return self
 
 
 class TerminalStartWrite(SandboxDeleteWrite):
@@ -1706,12 +1733,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         hard_ttl_seconds=configured.docker_controller_terminal_hard_ttl_seconds,
     )
     relay_hubs = _RuntimeEventRelayHubs(configured)
+    browser_pool = BrowserFetchPool(configured.docker_binary)
     metrics = Metrics()
     # Docker control, image/dependency builds and best-effort observation have
     # materially different latency and failure modes. Never run them through
     # asyncio's shared default executor.
     control_executor = ThreadPoolExecutor(
         max_workers=2, thread_name_prefix="flowweave-runtime-provider-control"
+    )
+    browser_executor = ThreadPoolExecutor(
+        max_workers=4, thread_name_prefix="flowweave-runtime-provider-browser"
     )
     build_executor = ThreadPoolExecutor(
         max_workers=1, thread_name_prefix="flowweave-runtime-provider-build"
@@ -1747,6 +1778,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             while True:
                 await asyncio.sleep(30)
                 await run_control(terminals.reap)
+                await run_in_lane(browser_executor, browser_pool.reap)
 
         async def restore_runtime_client_networks() -> None:
             while True:
@@ -1772,6 +1804,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await asyncio.gather(reaper_task, network_task, return_exceptions=True)
             await relay_hubs.close()
             await asyncio.to_thread(terminals.close_all)
+            await asyncio.to_thread(browser_executor.shutdown, wait=True, cancel_futures=True)
+            await asyncio.to_thread(browser_pool.close)
             await asyncio.to_thread(control_executor.shutdown, wait=True, cancel_futures=True)
             await asyncio.to_thread(build_executor.shutdown, wait=True, cancel_futures=True)
             await asyncio.to_thread(observe_executor.shutdown, wait=True, cancel_futures=True)
@@ -1811,6 +1845,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "/v1/runtime-networks/delete": frozenset({"api", "worker"}),
                 "/v1/sandboxes/list": frozenset({"worker"}),
                 "/v1/admin/observability": frozenset({"admin_observer"}),
+                "/v1/runtimes/services/list": frozenset({"admin_observer", "admin_controller"}),
+                "/v1/runtimes/services/stop": frozenset({"admin_controller"}),
                 "/v1/environments/remove-image": frozenset({"worker"}),
                 # Worker resolves the platform-owned Agent Workspace image at
                 # bootstrap; both roles still receive only digest provenance.
@@ -1836,6 +1872,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 # Runtime ownership before it reaches a container.
                 "/v1/runtimes/events": frozenset({"api", "worker"}),
                 "/v1/runtimes/validate-plugin": frozenset({"api"}),
+                "/v1/browser/fetch": frozenset({"api"}),
                 "/v1/terminals/start": frozenset({"api"}),
                 "/v1/terminals/read": frozenset({"api"}),
                 "/v1/terminals/write": frozenset({"api"}),
@@ -2011,6 +2048,75 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             str(payload.resource_id),
         )
         return {"graceful": result.graceful, "stopped": result.stopped}
+
+
+
+    @app.post("/v1/runtimes/services/list")
+    async def list_runtime_services(payload: RuntimeServiceScanWrite) -> dict[str, Any]:
+        check_scope(payload.manager_scope)
+        provider = DockerSandboxProvider(configured)
+        observation = await run_observe(provider.inspect, payload.resource_name)
+        if observation is None:
+            return {"services": []}
+        provider._verify_owner(
+            observation, str(payload.resource_id), configured.sandbox_manager_scope
+        )
+        raw = await run_observe(
+            provider._run,
+            [
+                configured.docker_binary,
+                "exec",
+                observation.resource_identifier,
+                "/runtime/.venv/bin/python",
+                "-c",
+                _LIST_LISTENING_PROCESSES,
+            ],
+            timeout=15,
+        )
+        try:
+            services = json.loads(raw)
+        except ValueError as exc:
+            raise DomainError(
+                "SANDBOX_DOCKER_PROTOCOL_ERROR", "Invalid service scan data", 502
+            ) from exc
+        if not isinstance(services, list):
+            raise DomainError("SANDBOX_DOCKER_PROTOCOL_ERROR", "Invalid service scan data", 502)
+        return {"services": services}
+
+    @app.post("/v1/runtimes/services/stop")
+    async def stop_runtime_service(payload: RuntimeServiceStopWrite) -> dict[str, bool]:
+        check_scope(payload.manager_scope)
+        provider = DockerSandboxProvider(configured)
+        observation = await run_observe(provider.inspect, payload.resource_name)
+        if observation is None:
+            return {"stopped": False}
+        provider._verify_owner(
+            observation, str(payload.resource_id), configured.sandbox_manager_scope
+        )
+        raw = await run_control(
+            provider._run,
+            [
+                configured.docker_binary,
+                "exec",
+                observation.resource_identifier,
+                "/runtime/.venv/bin/python",
+                "-c",
+                _STOP_LISTENING_PROCESS,
+                str(payload.pid),
+                payload.started_ticks,
+                "" if payload.process_group_id is None else str(payload.process_group_id),
+            ],
+            timeout=20,
+        )
+        try:
+            result = json.loads(raw)
+        except ValueError as exc:
+            raise DomainError(
+                "SANDBOX_DOCKER_PROTOCOL_ERROR", "Invalid service stop data", 502
+            ) from exc
+        if not isinstance(result, dict) or not isinstance(result.get("stopped"), bool):
+            raise DomainError("SANDBOX_DOCKER_PROTOCOL_ERROR", "Invalid service stop data", 502)
+        return {"stopped": result["stopped"]}
 
     @app.post("/v1/sandboxes/list")
     async def list_sandboxes(payload: ScopedRequest) -> dict[str, Any]:
@@ -2292,6 +2398,48 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             plugin_path=payload.plugin_path,
         )
 
+    @app.post("/v1/browser/fetch")
+    async def browser_fetch(payload: BrowserFetchWrite) -> dict[str, Any]:
+        check_scope(payload.manager_scope)
+
+        def fetch() -> dict[str, Any]:
+            try:
+                container_id = inspect_owned_container(
+                    configured.docker_binary,
+                    payload.resource_name,
+                    str(payload.resource_id),
+                    expected_manager_scope=configured.sandbox_manager_scope,
+                    expected_kind="agent-runtime",
+                    timeout=30,
+                )
+            except DockerOwnershipError as exc:
+                raise DomainError(
+                    "AGENT_BROWSER_OWNERSHIP_MISMATCH",
+                    "The Agent Runtime container is owned by another resource",
+                    409,
+                ) from exc
+            except DockerControlError as exc:
+                raise DomainError(
+                    "AGENT_BROWSER_BACKEND_UNAVAILABLE",
+                    "The Agent Runtime container could not be verified",
+                    503,
+                ) from exc
+            if container_id is None:
+                raise DomainError(
+                    "AGENT_BROWSER_UNAVAILABLE",
+                    "The Agent Runtime container no longer exists",
+                    409,
+                )
+            return browser_pool.fetch(
+                container_id,
+                scheme=payload.scheme,
+                port=payload.port,
+                path=payload.path,
+                query=payload.query,
+            )
+
+        return await run_in_lane(browser_executor, fetch)
+
     @app.post("/v1/terminals/start")
     async def terminal_start(payload: TerminalStartWrite) -> dict[str, str]:
         check_scope(payload.manager_scope)
@@ -2459,6 +2607,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         health,
         ensure,
         inspect,
+        browser_fetch,
         delete,
         _drain,
         list_sandboxes,

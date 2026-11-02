@@ -168,9 +168,9 @@ from openhands.tools.terminal.terminal.tmux_terminal import _new_owned_session
 
 EXPECTED_VERSION = "1.54.0"
 EXPECTED_UPSTREAM_BASE = "f0206428306db687ac9c8d833ece4fb82b015eba"
-EXPECTED_SOURCE_COMMIT = "ae178d86f4e0e268cf31f8f9c5deda892f4ebf12"
+EXPECTED_SOURCE_COMMIT = "73e3cd8e4d74ff30c9ed794baf72d977800509d7"
 EXPECTED_SOURCE_ARCHIVE_SHA256 = (
-    "cb6e47a264d2704c0ab56b89277a6665de25050e9d4bc113a0237f8918fc99d3"
+    "5fcd3fc5e628572a7e223c954e8fd792b78d768f1d8eba9419a4d88d6490308a"
 )
 PACKAGES = (
     "openhands-agent-server",
@@ -640,6 +640,41 @@ def _assert_memory_launch_contract() -> None:
     assert "Failed to load memory; continuing without it" in conversation_source
 
 
+def _assert_credential_dynamic_context_contract() -> None:
+    """Late native secrets refresh model context without rewriting event history."""
+    from openhands.sdk.secret import StaticSecret
+
+    with TemporaryDirectory(prefix="credential-context-contract-") as temporary:
+        conversation = LocalConversation(
+            agent=Agent(llm=LLM(model="test-model", usage_id="contract"), tools=[]),
+            workspace=temporary,
+            profile_store_dir=Path(temporary) / "profiles",
+            visualizer=None,
+        )
+        try:
+            conversation.send_message("initialize")
+            startup = conversation.state.view.events[0].model_dump_json()
+            conversation.update_secrets(
+                {
+                    "CONTRACT_USERNAME": StaticSecret(
+                        value=SecretStr("contract-private-user"),
+                        description="Only for example.test/admin; reference CONTRACT_USERNAME",
+                    )
+                }
+            )
+            view = conversation.agent._current_prompt_view(conversation.state)
+            text = view.events[0].model_dump_json()
+            assert "CONTRACT_USERNAME" in text and "example.test/admin" in text
+            assert "contract-private-user" not in text
+            assert conversation.state.view.events[0].model_dump_json() == startup
+            env = conversation.state.secret_registry.get_secrets_as_env_vars(
+                'TARGET_USERNAME="$CONTRACT_USERNAME" python script.py'
+            )
+            assert env == {"CONTRACT_USERNAME": "contract-private-user"}
+        finally:
+            conversation.close()
+
+
 def _assert_profile_provider_secret_and_condenser_behavior() -> None:
     child_environment = sanitized_env(
         {
@@ -849,6 +884,8 @@ def main() -> None:
     assert {"file_editor", "task_tracker", "terminal"} <= set(server_info.usable_tools)
     assert len(server_info.capabilities) == len(set(server_info.capabilities))
     assert "conversation_runtime_routes_v1" in server_info.capabilities
+    assert "conversation_dynamic_context_v1" in server_info.capabilities
+    _assert_credential_dynamic_context_contract()
     _assert_memory_launch_contract()
     event_socket_source = getsource(events_socket)
     bash_socket_source = getsource(bash_events_socket)

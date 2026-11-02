@@ -1,8 +1,10 @@
+import { writableAgentPreset, writableGates } from '../utils/agentPresetWrite';
+import type { MarketSources, MarketSkillSearch, MarketSkill, CapabilityPackageFiles, CapabilityPackageFile, CapabilityPackageComparison, CapabilityPackageFileDiff, CapabilityAssetType, CapabilityDirectoryPage, CapabilityCollectionSort, CapabilitySort, RepositoryPage } from '../types';
 import type {
-  AuthUser, LdapDirectory, LdapUser,
-  AgentProfileVersion, ArtifactInput, ArtifactVersion, ArtifactVersionPage, RuntimeArtifactAuditPage, CapabilityAsset, CapabilityImportResult, FlowDefinition, FlowRun, FlowRunAutomaticRecord, FlowRunAutomaticRecordUpdate, FlowRunAutomaticRecordWrite, FlowRunConversation, FlowRunRuntimeOverview, FlowRunRuntimeResource, FlowRunSummary, FlowWrite, MessageAttachmentInput, OpenHandsConversationEventBatch, McpSource, SkillSource,
+  AuthUser, LdapDirectory, LdapUser, PlatformUser,
+  AgentProfileVersion, ArtifactInput, ArtifactVersion, ArtifactVersionPage, RuntimeArtifactAuditPage, CapabilityAsset, CapabilityImportResult, FlowDefinition, FlowRun, FlowRunAutomaticRecord, FlowRunAutomaticRecordUpdate, FlowRunAutomaticRecordWrite, FlowRunConversation, FlowRunRuntimeOverview, FlowRunRuntimeResource, FlowRunSummary, FlowWrite, MessageAttachmentInput, OpenHandsConversationEventBatch, McpSource, SkillSource, SkillVersionComparison,
   BlockedNodeDelete, BulkDeleteResult, CapabilityBulkDeleteResult, CodexDeviceAuthorization, CodexOAuthStatus, GateRemediationResult, ModelProvider, ModelProviderDiscoveryWrite, ModelProviderUsage, ModelProviderWrite, NodeAsset, NodeAssetWrite, NodeAttempt, FlowRunAutomaticRecordSummary, ProviderBulkDeleteResult,
-  AgentAttachment, AgentConversation, AgentConversationAnnotation, AgentConversationContext, AgentConversationHead, AgentConversationInputReadiness, AgentConversationReference, AgentConversationSchedule, AgentConversationScheduleOccurrence, AgentPendingConfirmation, AgentWorkDirectory, AgentWorkDirectoryList, AgentWorkspace, AgentWorkspaceCapability, AgentWorkspaceDetails, AgentWorkspaceMcpReadiness, AgentWorkspaceReference, AgentWorkspaceRuntime, AutomaticRecordConfigDocument, CapabilityCollection, CapabilityCollectionWrite, ContextBundleManifest, MarketplaceCatalog, NodeDirectory, NodeRun, OpenHandsConversationEvent, PluginSourceResolution, RunEvent, RuntimeConfirmationBatch, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, GatePolicy, WebsiteCredential, WebsiteCredentialWrite, FlowRunSchedule, FlowRunScheduleOccurrencePage, FlowRunScheduleWrite, FlowRunScheduleTemplate, FlowRunStepwiseRecord, FlowRunStepwiseRecordWrite, StepwiseNodeDraft, StepwiseRecordConfigDocument,
+  AgentAttachment, AgentConversation, AgentConversationAnnotation, AgentConversationContext, AgentConversationHead, AgentConversationInputReadiness, AgentConversationReference, AgentConversationSchedule, AgentConversationScheduleOccurrence, AgentPendingConfirmation, AgentWorkDirectory, AgentWorkDirectoryList, AgentWorkspace, AgentWorkspaceCapability, AgentWorkspaceDetails, AgentWorkspaceMcpReadiness, AgentWorkspaceReference, AgentWorkspaceRuntime, AutomaticRecordConfigDocument, CapabilityCollection, CapabilityCollectionWrite, Case, ContextBundleManifest, MarketplaceCatalog, NodeDirectory, NodeRun, OpenHandsConversationEvent, PluginSourceResolution, RunEvent, RuntimeConfirmationBatch, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, GatePolicy, WebsiteCredential, WebsiteCredentialWrite, FlowRunSchedule, FlowRunScheduleOccurrencePage, FlowRunScheduleWrite, FlowRunScheduleTemplate, FlowRunStepwiseRecord, FlowRunStepwiseRecordWrite, StepwiseNodeDraft, StepwiseRecordConfigDocument, StepwiseRuntimePortsWrite,
 } from '../types';
 import { deploymentBasePath } from '../deploymentPath';
 
@@ -13,6 +15,7 @@ import { deploymentBasePath } from '../deploymentPath';
 const API_BASE = import.meta.env.VITE_API_BASE_URL || deploymentBasePath;
 const ROOT = '/api/v1';
 const INTERACTIVE_REQUEST_TIMEOUT_MS = 15_000;
+export type AgentGitIdentity = { author: string; email: string; configured: boolean };
 const absoluteApiUrl = (path: string) => new URL(`${API_BASE}${ROOT}${path}`, window.location.origin);
 const notifyAuthenticationRequired = () => window.dispatchEvent(new Event('flowweave:auth-required'));
 export const randomId = () => {
@@ -43,7 +46,7 @@ async function responseError(response: Response): Promise<ApiError> {
   const backendMessage = typeof body?.error?.message === 'string' ? body.error.message : '';
   const chineseMessages: Record<string, string> = {
     FLOW_NAME_CONFLICT: '流程名称已存在，请使用其他名称。',
-    NODE_ASSET_NAME_CONFLICT: '当前目录已存在同名节点资产，请使用其他名称。',
+    NODE_ASSET_NAME_CONFLICT: '当前目录已存在同名节点中心，请使用其他名称。',
     FLOW_IN_USE: '该流程仍有关联运行，请先删除关联运行后再永久删除流程。',
     NODE_ASSET_IN_USE: '该节点仍被流程引用，请先从相关流程中移除节点。',
     CAPABILITY_IN_USE: '该能力仍被节点引用，请先解除引用后再删除。',
@@ -54,6 +57,7 @@ async function responseError(response: Response): Promise<ApiError> {
     DATA_CONFLICT: '提交的数据与现有记录冲突，请检查是否存在重名或重复关联。',
     INVALID_COMMAND: '提交的数据不符合要求，请检查必填项和输入格式。',
     FLOW_GRAPH_INVALID: '流程配置无效，请检查节点、连线、端口映射和门禁设置。',
+    FLOW_START_NODE_MISSING: '未找到一个启动节点。请为流程添加节点，并保留一个没有上游连线的起始节点。',
     RUN_STATE_INVALID: '该逐步运行记录还没有可复制或导出的起始节点配置。请先选中起始节点并保存配置。',
     RUN_ENVIRONMENT_REQUIRED: '当前运行还没有绑定运行环境，暂时不能执行此操作。',
     RUN_ENVIRONMENT_VERSION_INVALID: '当前运行绑定的环境版本不可用，请刷新后重试。',
@@ -301,31 +305,8 @@ const automaticRecord = (run: AutomaticRunResponse): FlowRunAutomaticRecord => {
 const automaticNodePlansWrite = (nodePlans: FlowRunAutomaticRecordUpdate['node_plans']): FlowRunAutomaticRecordUpdate['node_plans'] =>
   Object.fromEntries(Object.entries(nodePlans).map(([nodeKey, plan]) => [nodeKey, {
     startup_prompt: plan.startup_prompt,
-    agent_preset: {
-      capability_version_ids: plan.agent_preset.capability_version_ids,
-      model_provider_id: plan.agent_preset.model_provider_id,
-      model_name: plan.agent_preset.model_name,
-      reasoning_effort: plan.agent_preset.reasoning_effort,
-      // This is an editable part of the launch preset. Keep it when projecting
-      // a frozen response back to the strict write shape; otherwise a later
-      // draft save silently replaces the configured quota fallbacks with [].
-      fallback_models: plan.agent_preset.fallback_models ?? [],
-      node_context_enabled: plan.agent_preset.node_context_enabled,
-      node_context_prompt: plan.agent_preset.node_context_prompt,
-    },
-    gates: plan.gates.map(gate => ({
-      stage: gate.stage,
-      position: gate.position,
-      gate_type: gate.gate_type,
-      enabled: gate.enabled,
-      timeout_seconds: gate.timeout_seconds,
-      config: gate.config,
-      agent_preset: {
-        model_provider_id: gate.agent_preset?.model_provider_id,
-        model_name: gate.agent_preset?.model_name,
-        reasoning_effort: gate.agent_preset?.reasoning_effort,
-      },
-    })),
+    agent_preset: writableAgentPreset(plan.agent_preset),
+    gates: writableGates(plan.gates),
     artifact_ids: plan.artifact_ids,
     input_urls: plan.input_urls,
   }]));
@@ -348,10 +329,13 @@ const conversationReferencePayload = (references: AgentConversationReference[]) 
 });
 export const api = {
   authMe: () => request<AuthUser>('/auth/me'),
+  currentUserProfile: () => request<{ display_name: string | null; email: string | null }>('/auth/profile'),
   login: (username: string, password: string) =>
     request<AuthUser>('/auth/login', json('POST', { username, password })),
   logout: () => request<void>('/auth/logout', json('POST')),
   ldapDirectory: () => request<LdapDirectory>('/auth/ldap-users'),
+  updatePlatformUserProfile: (id: string, profile: { display_name: string; email: string }) =>
+    request<PlatformUser>(`/auth/platform-users/${encodeURIComponent(id)}/profile`, json('PUT', profile)),
   setLdapUserEnabled: (external_subject: string, enabled: boolean) =>
     request<LdapUser>('/auth/ldap-users/enabled', json('PUT', { external_subject, enabled })),
   setLdapUserAgentSessionAccess: (external_subject: string, enabled: boolean) =>
@@ -364,16 +348,31 @@ export const api = {
     request<AgentWorkspaceCapability[]>(`/agent-workspaces/${encodeURIComponent(id)}/capabilities`),
   replaceAgentWorkspaceCapabilities: (id: string, capability_version_ids: string[]) =>
     request<AgentWorkspaceCapability[]>(`/agent-workspaces/${encodeURIComponent(id)}/capabilities`, json('PUT', { capability_version_ids })),
-  agentWorkspaceMcpReadiness: (id: string, capabilityVersionId: string) =>
-    request<AgentWorkspaceMcpReadiness>(`/agent-workspaces/${encodeURIComponent(id)}/capabilities/${encodeURIComponent(capabilityVersionId)}/mcp-readiness`, json('POST')),
+  agentWorkspaceSessionConfiguration: (id: string, workDirectoryId?: string) => {
+    const query = workDirectoryId ? `?work_directory_id=${encodeURIComponent(workDirectoryId)}` : '';
+    return request<import('../types').AgentWorkspaceSessionConfiguration>(`/agent-workspaces/${encodeURIComponent(id)}/session-configuration${query}`);
+  },
+  replaceAgentWorkspaceSessionConfiguration: (id: string, configuration: import('../types').AgentWorkspaceSessionConfiguration, workDirectoryId?: string) => {
+    const query = workDirectoryId ? `?work_directory_id=${encodeURIComponent(workDirectoryId)}` : '';
+    return request<import('../types').AgentWorkspaceSessionConfiguration>(`/agent-workspaces/${encodeURIComponent(id)}/session-configuration${query}`, json('PUT', configuration));
+  },
+  agentWorkspaceMcpReadiness: (id: string, capabilityVersionId: string, signal?: AbortSignal, read_only_tool_call?: { name: string; arguments: Record<string, unknown> }) =>
+    request<AgentWorkspaceMcpReadiness>(`/agent-workspaces/${encodeURIComponent(id)}/capabilities/${encodeURIComponent(capabilityVersionId)}/mcp-readiness`, { ...json('POST', read_only_tool_call ? { read_only_tool_call } : undefined), signal, timeoutMs: 25_000 }),
   agentWorkspaceRuntime: (id: string) => request<AgentWorkspaceRuntime>(`/agent-workspaces/${encodeURIComponent(id)}/runtime`),
-  agentWorkDirectories: (id: string) => request<AgentWorkDirectoryList>(`/agent-workspaces/${encodeURIComponent(id)}/work-directories`),
+  agentGitIdentity: (id: string) => request<AgentGitIdentity>(`/agent-workspaces/${encodeURIComponent(id)}/settings/git`),
+  synchronizeAgentGitIdentity: (id: string) => request<AgentGitIdentity>(`/agent-workspaces/${encodeURIComponent(id)}/settings/git/synchronize`, json('POST')),
+  agentWorkDirectories: (id: string, includeArchived = false) =>
+    request<AgentWorkDirectoryList>(`/agent-workspaces/${encodeURIComponent(id)}/work-directories${includeArchived ? '?include_archived=true' : ''}`),
   createAgentWorkDirectory: (id: string, display_name: string, selected_paths: string[]) =>
     request<AgentWorkDirectory>(`/agent-workspaces/${encodeURIComponent(id)}/work-directories`, json('POST', { display_name, selected_paths })),
   updateAgentWorkDirectory: (id: string, directoryId: string, display_name: string) =>
     request<AgentWorkDirectory>(`/agent-workspaces/${encodeURIComponent(id)}/work-directories/${encodeURIComponent(directoryId)}`, json('PATCH', { display_name })),
-  deleteAgentWorkDirectory: (id: string, directoryId: string) =>
-    request<void>(`/agent-workspaces/${encodeURIComponent(id)}/work-directories/${encodeURIComponent(directoryId)}`, json('DELETE')),
+  deleteAgentWorkDirectory: (id: string, directoryId: string, options: { keepFiles?: boolean } = {}) =>
+    request<void>(`/agent-workspaces/${encodeURIComponent(id)}/work-directories/${encodeURIComponent(directoryId)}${options.keepFiles ? '?delete_files=false' : ''}`, json('DELETE')),
+  archiveAgentWorkDirectory: (id: string, directoryId: string) =>
+    request<AgentWorkDirectory>(`/agent-workspaces/${encodeURIComponent(id)}/work-directories/${encodeURIComponent(directoryId)}/archive`, json('POST')),
+  restoreAgentWorkDirectory: (id: string, directoryId: string) =>
+    request<AgentWorkDirectory>(`/agent-workspaces/${encodeURIComponent(id)}/work-directories/${encodeURIComponent(directoryId)}/restore`, json('POST')),
   agentWorkspaceDetails: (id: string, options: { bindingId?: string; workDirectoryId?: string; fullIndex?: boolean } = {}) => {
     const query = new URLSearchParams();
     if (options.bindingId) query.set('binding_id', options.bindingId);
@@ -381,12 +380,13 @@ export const api = {
     if (options.fullIndex) query.set('full_index', 'true');
     return request<AgentWorkspaceDetails>(`/agent-workspaces/${encodeURIComponent(id)}/workspace${query.size ? `?${query}` : ''}`);
   },
-  agentWorkspaceDirectory: (id: string, options: { bindingId?: string; workDirectoryId?: string; parentPath?: string; cursor?: string } = {}) => {
+  agentWorkspaceDirectory: (id: string, options: { bindingId?: string; workDirectoryId?: string; parentPath?: string; cursor?: string; includeHidden?: boolean } = {}) => {
     const query = new URLSearchParams();
     if (options.bindingId) query.set('binding_id', options.bindingId);
     if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
     if (options.parentPath) query.set('parent_path', options.parentPath);
     if (options.cursor) query.set('cursor', options.cursor);
+    if (options.includeHidden) query.set('include_hidden', 'true');
     return request<import('../types').AgentSessionWorkspaceDirectory>(`/agent-workspaces/${encodeURIComponent(id)}/workspace/directory${query.size ? `?${query}` : ''}`);
   },
   agentWorkspaceGitRepositories: (id: string, options: { bindingId?: string; workDirectoryId?: string } = {}) => {
@@ -431,11 +431,12 @@ export const api = {
     if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
     return request<import('../types').WorkspaceGitFileDiff>(`/agent-workspaces/${encodeURIComponent(id)}/workspace/git/diff?${query}`);
   },
-  agentWorkspaceFilePreview: async (id: string, path: string, options: { bindingId?: string; workDirectoryId?: string; draftAttachmentOwnerId?: string } = {}, offset = 0, signal?: AbortSignal) => {
+  agentWorkspaceFilePreview: async (id: string, path: string, options: { bindingId?: string; workDirectoryId?: string; draftAttachmentOwnerId?: string; includeHidden?: boolean } = {}, offset = 0, signal?: AbortSignal) => {
     const query = new URLSearchParams({ path });
     if (options.bindingId) query.set('binding_id', options.bindingId);
     if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
     if (options.draftAttachmentOwnerId) query.set('draft_attachment_owner_id', options.draftAttachmentOwnerId);
+    if (options.includeHidden) query.set('include_hidden', 'true');
     query.set('preview', 'true');
     query.set('offset', String(offset));
     let response: Response;
@@ -473,19 +474,33 @@ export const api = {
     if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
     return request<void>(`/agent-workspaces/${encodeURIComponent(id)}/terminals/${encodeURIComponent(terminalInstanceId)}${query.size ? `?${query}` : ''}`, json('DELETE'));
   },
-  agentConversationManagement: (workspaceId: string, workDirectoryId?: string) => {
+  agentConversationManagementWorkspaces: (workspaceId: string) =>
+    request<import('../types').AgentConversationManagementWorkspaceList>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-management/workspaces`),
+  agentConversationManagement: (workspaceId: string, workDirectoryId?: string, archived?: boolean) => {
+    const query = new URLSearchParams();
+    if (workDirectoryId) query.set('work_directory_id', workDirectoryId);
+    if (archived !== undefined) query.set('archived', String(archived));
+    return request<import('../types').AgentConversationManagementPage>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-management${query.size ? `?${query}` : ''}`);
+  },
+  archiveManagedAgentConversations: (workspaceId: string, binding_ids: string[], workDirectoryId?: string) => {
     const query = workDirectoryId ? `?work_directory_id=${encodeURIComponent(workDirectoryId)}` : '';
-    return request<import('../types').AgentConversationManagementPage>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-management${query}`);
+    return request<import('../types').AgentConversationManagementArchiveResult>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-management/archive${query}`, { ...json('POST', { binding_ids }), timeoutMs: 60_000 });
   },
   deleteManagedAgentConversations: (workspaceId: string, binding_ids: string[], workDirectoryId?: string) => {
     const query = workDirectoryId ? `?work_directory_id=${encodeURIComponent(workDirectoryId)}` : '';
     return request<import('../types').AgentConversationManagementDeleteResult>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-management/delete${query}`, json('POST', { binding_ids }, crypto.randomUUID()));
   },
+  agentConversationDeletionJobs: (workspaceId: string, signal?: AbortSignal) =>
+    request<{ items: import('../types').AgentConversationDeletionJob[] }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-management/deletion-jobs`, { signal }),
+  startAgentConversationDeletion: (workspaceId: string, binding_ids: string[], workDirectoryId: string | undefined, idempotencyKey: string) => {
+    const query = workDirectoryId ? `?work_directory_id=${encodeURIComponent(workDirectoryId)}` : '';
+    return request<import('../types').AgentConversationDeletionJob>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-management/deletion-jobs${query}`, json('POST', { binding_ids }, idempotencyKey));
+  },
   agentConversationSchedules: (workspaceId: string) =>
     request<AgentConversationSchedule[]>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-schedules`),
-  createAgentConversationSchedule: (workspaceId: string, body: { name: string; prompt: string; cron_expression: string; workspace_mode: 'AUTOMATION' | 'EXISTING'; work_directory_id?: string; conversation_mode: 'NEW' | 'CONTINUE'; model_provider_id: string; model_name: string; reasoning_effort?: string | null }) =>
+  createAgentConversationSchedule: (workspaceId: string, body: { name: string; prompt: string; cron_expression: string; workspace_mode: 'AUTOMATION' | 'EXISTING'; work_directory_id?: string; conversation_mode: 'NEW' | 'CONTINUE'; model_provider_id: string; model_name: string; reasoning_effort?: string | null; capability_version_ids: string[]; credential_ids: string[] }) =>
     request<AgentConversationSchedule>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-schedules`, json('POST', body)),
-  updateAgentConversationSchedule: (workspaceId: string, scheduleId: string, body: { expected_row_version: number; name: string; prompt: string; cron_expression: string; conversation_mode: 'NEW' | 'CONTINUE'; model_provider_id: string; model_name: string; reasoning_effort?: string | null }) =>
+  updateAgentConversationSchedule: (workspaceId: string, scheduleId: string, body: { expected_row_version: number; name: string; prompt: string; cron_expression: string; conversation_mode: 'NEW' | 'CONTINUE'; model_provider_id: string; model_name: string; reasoning_effort?: string | null; capability_version_ids: string[]; credential_ids: string[] }) =>
     request<AgentConversationSchedule>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-schedules/${encodeURIComponent(scheduleId)}`, json('PUT', body)),
   setAgentConversationScheduleState: (workspaceId: string, scheduleId: string, expected_row_version: number, status: 'ACTIVE' | 'PAUSED') =>
     request<AgentConversationSchedule>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-schedules/${encodeURIComponent(scheduleId)}/state`, json('PUT', { expected_row_version, status })),
@@ -493,8 +508,15 @@ export const api = {
     request<AgentConversationSchedule>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-schedules/${encodeURIComponent(scheduleId)}/trigger`, json('POST')),
   deleteAgentConversationSchedule: (workspaceId: string, scheduleId: string) =>
     request<void>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-schedules/${encodeURIComponent(scheduleId)}`, json('DELETE')),
+  deleteFailedAgentConversationScheduleOccurrence: (workspaceId: string, scheduleId: string, occurrenceId: string) =>
+    request<void>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-schedules/${encodeURIComponent(scheduleId)}/occurrences/${encodeURIComponent(occurrenceId)}`, json('DELETE')),
   agentConversationScheduleOccurrences: (workspaceId: string, scheduleId: string) =>
     request<AgentConversationScheduleOccurrence[]>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-schedules/${encodeURIComponent(scheduleId)}/occurrences`),
+  agentScheduleRunConversations: (workspaceId: string, scheduleId: string, cursor: string | null, signal?: AbortSignal) => {
+    const params = new URLSearchParams({ limit: '20' });
+    if (cursor) params.set('cursor', cursor);
+    return request<import('../types').AgentScheduleRunConversationPage>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-schedules/${encodeURIComponent(scheduleId)}/run-conversations?${params}`, { signal });
+  },
   agentConversations: (workspaceId: string, cursor?: string, limit = 3, workDirectoryId?: string) => {
     const query = new URLSearchParams({ limit: String(limit) });
     if (cursor) query.set('cursor', cursor);
@@ -516,8 +538,10 @@ export const api = {
   },
   addAgentConversationCapability: (workspaceId: string, bindingId: string, capability_version_id: string) =>
     request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/capabilities`, json('POST', { capability_version_id })),
-  bootstrapAgentConversation: (workspaceId: string, conversation_id: string, model_provider_id: string, model_name: string, reasoning_effort: string | null, content: string, attachments: AgentAttachment[] = [], references: AgentConversationReference[] = [], workspace_references: AgentWorkspaceReference[] = [], work_directory_id?: string, capability_version_ids: string[] = [], idempotencyKey = conversation_id, annotations: AgentConversationAnnotation[] = []) =>
-    request<{ conversation: AgentConversation; accepted: boolean; cursor?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations`, json('POST', { conversation_id, model_provider_id, model_name, reasoning_effort, content, attachments: attachmentReferences(attachments), references: conversationReferencePayload(references), workspace_references: workspaceReferencePayload(workspace_references), work_directory_id, capability_version_ids, annotations }, idempotencyKey)),
+  registerAgentConversationCapabilities: (workspaceId: string, bindingId: string, capability_version_ids: string[]) =>
+    request<import('../types').AgentConversationCapabilityRegistration>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/capabilities/batch`, json('POST', { capability_version_ids })),
+  bootstrapAgentConversation: (workspaceId: string, conversation_id: string, model_provider_id: string, model_name: string, reasoning_effort: string | null, content: string, attachments: AgentAttachment[] = [], references: AgentConversationReference[] = [], workspace_references: AgentWorkspaceReference[] = [], work_directory_id?: string, capability_version_ids?: string[], credential_ids?: string[], idempotencyKey = conversation_id, annotations: AgentConversationAnnotation[] = [], goal_objective?: string) =>
+    request<{ conversation: AgentConversation; accepted: boolean; cursor?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations`, json('POST', { conversation_id, model_provider_id, model_name, reasoning_effort, content, attachments: attachmentReferences(attachments), references: conversationReferencePayload(references), workspace_references: workspaceReferencePayload(workspace_references), work_directory_id, capability_version_ids, credential_ids, annotations, goal_objective }, idempotencyKey)),
   createAgentSidebarConversation: (workspaceId: string, sourceBindingId: string, conversation_id: string, content: string, attachments: AgentAttachment[] = [], references: AgentConversationReference[] = []) =>
     request<{ conversation: AgentConversation; accepted: boolean; cursor?: string | null; expires_at: string }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(sourceBindingId)}/sidebar`, json('POST', { conversation_id, content, attachments: attachmentReferences(attachments), references: conversationReferencePayload(references) }, conversation_id)),
   agentSidebarConversation: (workspaceId: string, bindingId: string) =>
@@ -534,6 +558,10 @@ export const api = {
     request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/unread`, json('PUT', { unread, unread_origin })),
   reorderAgentConversation: (workspaceId: string, bindingId: string, ordered_binding_ids: string[]) =>
     request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/order`, json('POST', { ordered_binding_ids })),
+  archiveAgentConversation: (workspaceId: string, bindingId: string) =>
+    request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/archive`, json('POST')),
+  restoreAgentConversation: (workspaceId: string, bindingId: string) =>
+    request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/restore`, json('POST')),
   deleteAgentConversation: (workspaceId: string, bindingId: string) =>
     request<void>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}`, json('DELETE', undefined, true)),
   agentConversationEvents: (workspaceId: string, bindingId: string, cursor?: string, historyCursor?: string, diagnosticTrigger?: string, signal?: AbortSignal) => {
@@ -543,14 +571,16 @@ export const api = {
     if (diagnosticTrigger) query.set('diagnostic_trigger', diagnosticTrigger);
     return request<OpenHandsConversationEventBatch>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/events${query.size ? `?${query}` : ''}`, { signal, timeoutMs: INTERACTIVE_REQUEST_TIMEOUT_MS });
   },
-  agentConversationHydration: (workspaceId: string, bindingId: string, signal?: AbortSignal) =>
-    request<import('../types').AgentConversationHydration>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/hydration`, { signal, timeoutMs: INTERACTIVE_REQUEST_TIMEOUT_MS }),
+  agentConversationHydration: (workspaceId: string, bindingId: string, signal?: AbortSignal, cursor?: string) =>
+    request<import('../types').AgentConversationHydration>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/hydration${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`, { signal, timeoutMs: INTERACTIVE_REQUEST_TIMEOUT_MS }),
   agentConversationHead: (workspaceId: string, bindingId: string) =>
     request<AgentConversationHead>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/head`),
   agentPendingConfirmation: (workspaceId: string, bindingId: string) =>
     request<AgentPendingConfirmation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/pending-confirmation`),
   decideAgentConfirmation: (workspaceId: string, bindingId: string, expected_pending_digest: string, accept: boolean, reason: string) =>
     request<{ accepted: boolean; cursor?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/pending-confirmation/decision`, json('POST', { expected_pending_digest, accept, reason })),
+  cancelAgentMessageSubmission: (workspaceId: string, bindingId: string, submissionId: string) =>
+    request<{ cancelled: boolean }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/messages/${encodeURIComponent(submissionId)}/cancel`, json('POST', {})),
   sendAgentMessage: (workspaceId: string, bindingId: string, content: string, attachments: AgentAttachment[] = [], references: AgentConversationReference[] = [], workspace_references: AgentWorkspaceReference[] = [], annotations: AgentConversationAnnotation[] = [], idempotencyKey?: string) =>
     request<{ accepted: boolean; cursor?: string | null; compacted?: boolean; queued_during_turn?: boolean }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/messages`, json('POST', { content, attachments: attachmentReferences(attachments), references: conversationReferencePayload(references), workspace_references: workspaceReferencePayload(workspace_references), annotations }, idempotencyKey)),
   uploadAgentAttachment: (workspaceId: string, bindingId: string, file: File, onProgress?: UploadProgressHandler): Promise<AgentAttachment> =>
@@ -578,6 +608,8 @@ export const api = {
     request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/streaming-migration`, json('POST', { model_provider_id, model_name, reasoning_effort }, true)),
   condenseAgentConversation: (workspaceId: string, bindingId: string) =>
     request<{ accepted: boolean; task_id?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/condense`, json('POST', undefined, true)),
+  controlAgentConversationGoal: (workspaceId: string, bindingId: string, action: 'START' | 'STOP' | 'RESUME', objective?: string, max_iterations?: number) =>
+    request<{ accepted: boolean }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/goal`, json('POST', { action, ...(action === 'START' ? { objective, max_iterations } : {}) })),
   forkAgentConversation: (workspaceId: string, bindingId: string, event_id: string) =>
     request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/fork`, json('POST', { event_id }, true)),
   rerunAgentMessage: (workspaceId: string, bindingId: string, eventId: string, content: string, attachments: AgentAttachment[] = [], references: AgentConversationReference[] = [], workspace_references: AgentWorkspaceReference[] = [], annotations: AgentConversationAnnotation[] = []) =>
@@ -592,6 +624,48 @@ export const api = {
   createDirectory: (body: { name: string; parent_id?: string | null; position?: number }) =>
     request<NodeDirectory>('/node-directories', json('POST', body)),
   deleteDirectory: (id: string) => request<void>(`/node-directories/${encodeURIComponent(id)}`, json('DELETE')),
+  cases: () => request<Case[]>('/cases'),
+  createCase: (body: import('../types').CaseBasics) => request<Case>('/cases', json('POST', body)),
+  updateCase: (id: string, body: import('../types').CaseBasics & { expected_row_version: number }) =>
+    request<Case>(`/cases/${encodeURIComponent(id)}`, json('PUT', body)),
+  uploadCaseMaterial: async (id: string, expectedRowVersion: number, file: File): Promise<Case> => {
+    const body = new FormData(); body.append('file', file);
+    const response = await fetch(`${API_BASE}${ROOT}/cases/${encodeURIComponent(id)}/materials?expected_row_version=${expectedRowVersion}`, { method: 'POST', body, credentials: 'include' });
+    if (!response.ok) throw await responseError(response);
+    return response.json() as Promise<Case>;
+  },
+  caseMaterialPreview: (id: string, value: string) => requestText(`/cases/${encodeURIComponent(id)}/materials/file?${new URLSearchParams({ value })}`),
+  saveCasePath: (id: string, expected_row_version: number, cards: Array<{ id: string } | { flow_run_id: string }>) =>
+    request<Case>(`/cases/${encodeURIComponent(id)}/path`, json('PUT', { expected_row_version, cards })),
+  saveCaseSessionConfig: (id: string, expected_row_version: number, config: import('../types').CaseSessionConfig) =>
+    request<Case>(`/cases/${encodeURIComponent(id)}/session-config`, json('PUT', { expected_row_version, ...config })),
+  deleteCase: (id: string) => request<void>(`/cases/${encodeURIComponent(id)}`, json('DELETE', undefined, true)),
+  deleteCaseControlConversation: (id: string, bindingId?: string) => request<void>(`/cases/${encodeURIComponent(id)}/control-conversation${bindingId ? `?binding_id=${encodeURIComponent(bindingId)}` : ''}`, json('DELETE', undefined, true)),
+  case: (id: string) => request<Case>(`/cases/${encodeURIComponent(id)}`),
+  caseArtifactMaterials: (id: string, offset = 0, limit = 50) =>
+    request<{ items: import('../types').CaseArtifactMaterial[]; next_offset: number | null }>(`/cases/${encodeURIComponent(id)}/artifact-materials?${new URLSearchParams({ offset: String(offset), limit: String(limit) })}`),
+  setCaseCoordinationState: (id: string, expected_row_version: number, state: 'ACTIVE' | 'PAUSED') =>
+    request<Case>(`/cases/${encodeURIComponent(id)}/coordination-state`, json('PUT', { expected_row_version, state })),
+  caseStageTemplates: (caseId: string) => request<import('../types').CaseStageTemplate[]>(`/cases/${encodeURIComponent(caseId)}/stage-templates`),
+  setCaseStageState: (caseId: string, stageId: string, expected_case_row_version: number, state: import('../types').CaseStage['state']) =>
+    request<Case>(`/cases/${encodeURIComponent(caseId)}/stages/${encodeURIComponent(stageId)}/state`, json('PUT', { expected_case_row_version, state })),
+  bindCaseStageFlowRun: (caseId: string, stageId: string, flow_run_id: string, execution_mode: 'STEPWISE' | 'CONTINUOUS') =>
+    request<Case>(`/cases/${encodeURIComponent(caseId)}/stages/${encodeURIComponent(stageId)}/flow-run`, json('PUT', { flow_run_id, execution_mode })),
+  launchCaseStage: (caseId: string, stageId: string, name?: string) =>
+    request<Case>(`/cases/${encodeURIComponent(caseId)}/stages/${encodeURIComponent(stageId)}/launch`, json('POST', { name })),
+  rerunCaseStage: (caseId: string, stageId: string) =>
+    request<Case>(`/cases/${encodeURIComponent(caseId)}/stages/${encodeURIComponent(stageId)}/rerun`, json('POST')),
+  startCaseStageExecution: (caseId: string, stageId: string, reason = '启动当前事项阶段执行副本') =>
+    request<import('../types').CaseDecisionProposal>(`/cases/${encodeURIComponent(caseId)}/stages/${encodeURIComponent(stageId)}/execution/start`, json('POST', { reason })),
+  executeCaseControlPlan: (caseId: string, planId: string) =>
+    request<import('../types').CaseControlPlan>(`/cases/${encodeURIComponent(caseId)}/control-plans/${encodeURIComponent(planId)}/execute`, json('POST')),
+  retryCaseControlPlan: (caseId: string, planId: string) =>
+    request<import('../types').CaseControlPlan>(`/cases/${encodeURIComponent(caseId)}/control-plans/${encodeURIComponent(planId)}/retry`, json('POST')),
+  createCaseControlConversation: (caseId: string, body: { model_provider_id: string; model_name: string; reasoning_effort?: string | null; capability_version_ids?: string[]; credential_ids?: string[] }, idempotencyKey = randomId()) =>
+    request<Case>(`/cases/${encodeURIComponent(caseId)}/control-conversation`, json('POST', body, idempotencyKey)),
+  retryCaseControlRound: (caseId: string, roundId: string) =>
+    request<Case>(`/cases/${encodeURIComponent(caseId)}/control-rounds/${encodeURIComponent(roundId)}/retry`, json('POST')),
+
   nodes: (directoryId?: string) => request<NodeAsset[]>(`/node-assets${directoryId ? `?directory_id=${directoryId}` : ''}`),
   node: (id: string) => request<NodeAsset>(`/node-assets/${id}`),
   createNode: (body: NodeAssetWrite) => request<NodeAsset>('/node-assets', json('POST', body)),
@@ -610,31 +684,52 @@ export const api = {
       };
       content_hash: string;
     }>('/capability-imports/validate', json('POST', body)),
-  commitCapability: (import_token: string) => request<CapabilityImportResult>('/capability-imports', json('POST', { import_token })),
+  commitCapability: (import_token: string, mcp_authentication?: import('../types').McpAuthenticationWrite) => request<CapabilityImportResult>('/capability-imports', json('POST', { import_token, ...(mcp_authentication ? { mcp_authentication } : {}) })),
   createPluginSourceResolution: (body: { source_url: string; commit: string; repo_path?: string | null }) =>
     request<PluginSourceResolution>('/plugin-source-resolutions', json('POST', body)),
   previewMarketplaceCatalog: (body: { marketplace_source_url: string; marketplace_commit: string; marketplace_repo_path?: string | null }) =>
     request<MarketplaceCatalog>('/plugin-marketplace-catalogs/preview', json('POST', body)),
-  openhandsMarketplaceCatalog: () =>
-    request<MarketplaceCatalog>('/plugin-marketplace-catalogs/openhands'),
+  marketSources: (signal?: AbortSignal) => request<MarketSources>('/market-sources', { signal }),
+  saveMarketSources: (body: MarketSources) => request<MarketSources>('/market-sources', json('PUT', body)),
+  marketPluginCatalog: (sourceId: string, query: string, page: number, commit: string | undefined, signal?: AbortSignal) => request<MarketplaceCatalog>(`/market-sources/${encodeURIComponent(sourceId)}/plugins?${new URLSearchParams({ q: query, page: String(page), page_size: '10', ...(commit ? { commit } : {}) })}`, { signal, timeoutMs: 90_000 }),
+  marketSkills: (sourceId: string, query: string, signal?: AbortSignal) => request<MarketSkillSearch>(`/market-sources/${encodeURIComponent(sourceId)}/skills?q=${encodeURIComponent(query)}`, { signal, timeoutMs: 90_000 }),
+  validateMarketSkill: (sourceId: string, skill: MarketSkill) => request<{ import_token: string; content_hash: string; preview: Record<string, unknown> }>('/market-skill-imports/validate', { ...json('POST', { source_id: sourceId, repository: skill.repository, skill_id: skill.skill_id, commit: skill.commit ?? null, path: skill.path ?? null }), timeoutMs: 120_000 }),
+  openhandsMarketplaceCatalog: (signal?: AbortSignal) =>
+    request<MarketplaceCatalog>('/plugin-marketplace-catalogs/openhands', { signal, timeoutMs: 330_000 }),
   createMarketplacePluginResolution: (body: { marketplace_source_url: string; marketplace_commit: string; marketplace_repo_path?: string | null; plugin_name: string }) =>
     request<PluginSourceResolution>('/plugin-source-resolutions/marketplace', json('POST', body)),
   pluginSourceResolution: (id: string) =>
     request<PluginSourceResolution>(`/plugin-source-resolutions/${encodeURIComponent(id)}`),
   publishPluginSourceResolution: (id: string, expectedStateVersion: number) =>
     request<PluginSourceResolution>(`/plugin-source-resolutions/${encodeURIComponent(id)}/publish`, json('POST', { expected_state_version: expectedStateVersion })),
+  capabilityDirectory: (params: { capability_type: CapabilityAssetType; q: string; page: number; page_size: number; sort: CapabilitySort; direction: 'asc' | 'desc'; include_builtin?: boolean }) =>
+    request<CapabilityDirectoryPage>(`/capability-directory?${new URLSearchParams(Object.entries(params).map(([key, value]) => [key, String(value)]))}`),
+  capabilityCollectionDirectory: (params: { q: string; page: number; page_size: number; sort: CapabilityCollectionSort; direction: 'asc' | 'desc' }) =>
+    request<RepositoryPage<CapabilityCollection>>(`/capability-collection-directory?${new URLSearchParams(Object.entries(params).map(([key, value]) => [key, String(value)]))}`),
   capabilities: () => request<CapabilityAsset[]>('/capabilities'),
+  userConfigurableCapabilities: () => request<CapabilityAsset[]>('/user-configurable-capabilities'),
+  probeMcpCapability: (id: string, environment_version_id: string, timeout = 15) =>
+    request<import('../types').CapabilityValidationResult>(`/capabilities/${encodeURIComponent(id)}/mcp-probes`, json('POST', { environment_version_id, timeout })),
   capabilityCollections: () => request<CapabilityCollection[]>('/capability-collections'),
+  mcpAuthentication: (id: string, signal?: AbortSignal) => request<import('../types').McpAuthentication>(`/capabilities/${encodeURIComponent(id)}/mcp-authentication`, { signal }),
+  saveMcpAuthentication: (id: string, value: import('../types').McpAuthenticationWrite) => request<import('../types').McpAuthentication>(`/capabilities/${encodeURIComponent(id)}/mcp-authentication`, json('PUT', value)),
   mcpSource: (id: string) => request<McpSource>(`/capabilities/${encodeURIComponent(id)}/mcp-source`),
-  updateMcpSource: (id: string, content: string, mcp_scripts: Array<{ server: string; filename: string; content_base64: string }>) =>
-    request<CapabilityAsset>(`/capabilities/${encodeURIComponent(id)}/mcp-source`, json('PUT', { content, mcp_scripts })),
+  updateMcpSource: (id: string, content: string, mcp_scripts: Array<{ server: string; filename: string; content_base64: string }>, mcp_authentication?: import('../types').McpAuthenticationWrite) =>
+    request<CapabilityAsset>(`/capabilities/${encodeURIComponent(id)}/mcp-source`, json('PUT', { content, mcp_scripts, ...(mcp_authentication ? { mcp_authentication } : {}) })),
   createCapabilityCollection: (body: CapabilityCollectionWrite) =>
     request<CapabilityCollection>('/capability-collections', json('POST', body)),
   updateCapabilityCollection: (id: string, body: CapabilityCollectionWrite) =>
     request<CapabilityCollection>(`/capability-collections/${id}`, json('PUT', body)),
   deleteCapabilityCollection: (id: string) =>
     request<void>(`/capability-collections/${id}`, json('DELETE')),
+  capabilityFiles: (id: string, signal?: AbortSignal) => request<CapabilityPackageFiles>(`/capabilities/${encodeURIComponent(id)}/files`, { signal }),
+  capabilityFile: (id: string, path: string, signal?: AbortSignal) => request<CapabilityPackageFile>(`/capabilities/${encodeURIComponent(id)}/file?${new URLSearchParams({ path })}`, { signal }),
+  capabilityComparison: (id: string, signal?: AbortSignal) => request<CapabilityPackageComparison>(`/capabilities/${encodeURIComponent(id)}/version-comparison`, { signal }),
+  capabilityFileDiff: (id: string, path: string, signal?: AbortSignal) => request<CapabilityPackageFileDiff>(`/capabilities/${encodeURIComponent(id)}/file-diff?${new URLSearchParams({ path })}`, { signal }),
+  updateCapabilityFiles: (id: string, expected_digest: string, files: Record<string, string>) => request<CapabilityAsset>(`/capabilities/${encodeURIComponent(id)}/files`, json('PUT', { expected_digest, files })),
   capabilitySource: (id: string) => request<SkillSource>(`/capabilities/${encodeURIComponent(id)}/source`),
+  skillVersionComparison: (id: string) => request<SkillVersionComparison>(`/capabilities/${encodeURIComponent(id)}/skill-version-comparison`),
+  rollbackSkillVersion: (id: string) => request<CapabilityAsset>(`/capabilities/${encodeURIComponent(id)}/rollback`, json('POST')),
   contextSource: (id: string) => request<{ id: string; capability_key: string; filename: string; description: string; content_format: 'TEXT' | 'BUNDLE'; manifest: ContextBundleManifest | null; content: string }>(`/capabilities/${encodeURIComponent(id)}/context-source`),
   updateCapabilitySource: (id: string, content: string) =>
     request<CapabilityAsset>(`/capabilities/${encodeURIComponent(id)}/source`, json('PUT', { content })),
@@ -650,6 +745,8 @@ export const api = {
   deleteTerminalEnvironment: (id: string) => request<void>(`/terminal-environments/${id}`, json('DELETE')),
   deleteEnvironmentVersion: (environmentId: string, versionId: string) =>
     request<void>(`/terminal-environments/${environmentId}/versions/${versionId}`, json('DELETE')),
+  environmentVersionRuns: (environmentId: string, versionId: string, page: number, signal?: AbortSignal) =>
+    request<import('../types').EnvironmentVersionRunPage>(`/terminal-environments/${encodeURIComponent(environmentId)}/versions/${encodeURIComponent(versionId)}/runs?page=${page}&page_size=20`, { signal }),
   createEnvironmentSetup: (id: string, base_version_id?: string) =>
     request<EnvironmentSetupSession>(`/terminal-environments/${id}/setup-sessions`, json('POST', { base_version_id: base_version_id || null })),
   publishEnvironmentSetup: (id: string, description = '', runtime_capabilities: string[] = []) =>
@@ -697,8 +794,15 @@ export const api = {
   triggerFlowRunSchedule: (id: string) => request<FlowRunSchedule>(`/flow-run-schedules/${encodeURIComponent(id)}/trigger`, json('POST')),
   deleteFlowRunSchedule: (id: string) => request<void>(`/flow-run-schedules/${encodeURIComponent(id)}`, json('DELETE')),
   flowRun: (id: string) => request<FlowRun>(`/flow-runs/${id}`),
+  recordDirectory: (runId: string, kind: 'ALL' | 'MANUAL' | 'AUTOMATIC', cursor: string | null, signal?: AbortSignal, search = '') => {
+    const query = new URLSearchParams({ kind, limit: '30' });
+    if (cursor) query.set('cursor', cursor);
+    if (search.trim()) query.set('q', search.trim());
+    return request<import('../types').FlowRunDirectoryPage>(`/flow-runs/${encodeURIComponent(runId)}/records?${query}`, { signal });
+  },
   stepwiseRecords: (runId: string) => request<FlowRunStepwiseRecord[]>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-runs`),
   stepwiseRecord: (runId: string, recordId: string) => request<FlowRunStepwiseRecord>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-runs/${encodeURIComponent(recordId)}`),
+  stepwiseTemplateReadiness: (runId: string) => request<import('../types').StepwiseTemplateReadiness>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-template-readiness`),
   createStepwiseRecord: (runId: string, body: FlowRunStepwiseRecordWrite) => request<FlowRunStepwiseRecord>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-runs`, json('POST', body)),
   copyStepwiseRecord: (runId: string, recordId: string, name: string) => request<FlowRunStepwiseRecord>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-runs/${encodeURIComponent(recordId)}/copy`, json('POST', { name })),
   exportStepwiseRecordConfigs: (runId: string, recordIds: string[]) =>
@@ -707,9 +811,15 @@ export const api = {
     request<FlowRunStepwiseRecord[]>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-runs/config-imports`, json('POST', document)),
   deleteStepwiseRecord: (runId: string, recordId: string) => request<void>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-runs/${encodeURIComponent(recordId)}`, json('DELETE')),
   saveStepwiseNodeDraft: (runId: string, nodeKey: string, body: { expected_row_version: number; startup_mode: 'PROMPT'; startup_prompt?: string; artifact_ids: Record<string, string>; input_urls: Record<string, string>; gates: GatePolicy[]; agent_preset: import('../types').AgentPreset }) =>
-    request<StepwiseNodeDraft>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-node-drafts/${encodeURIComponent(nodeKey)}`, json('PUT', body)),
+    request<StepwiseNodeDraft>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-node-drafts/${encodeURIComponent(nodeKey)}`, json('PUT', { ...body, agent_preset: writableAgentPreset(body.agent_preset), gates: writableGates(body.gates) })),
+  saveStepwiseRuntimePorts: (runId: string, body: StepwiseRuntimePortsWrite) =>
+    request<FlowRunStepwiseRecord>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-runtime-ports`, json('PUT', body)),
   startStepwiseNodeDraft: (runId: string, nodeKey: string, expected_row_version: number) =>
     request<NodeAttempt>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-node-drafts/${encodeURIComponent(nodeKey)}/start`, json('POST', { expected_row_version }, true)),
+  reactivateStepwiseNodeForRerun: (runId: string, nodeKey: string, node_run_id: string) =>
+    request<StepwiseNodeDraft>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-node-drafts/${encodeURIComponent(nodeKey)}/rerun-edit`, json('POST', { node_run_id })),
+  cancelStepwiseNodeRerunEdit: (runId: string, nodeKey: string) =>
+    request<FlowRunStepwiseRecord>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-node-drafts/${encodeURIComponent(nodeKey)}/rerun-edit`, json('DELETE')),
   automaticRecords: async (runId: string) =>
     (await request<AutomaticRunResponse[]>(`/flow-runs/${encodeURIComponent(runId)}/automatic-runs`)).map(automaticRecord),
   automaticRecordSummaries: (runId: string) =>
@@ -747,8 +857,8 @@ export const api = {
   nodeRun: (runId: string, nodeRunId: string) => request<NodeRun>(`/flow-runs/${runId}/nodes/${nodeRunId}`),
   deleteNodeRun: (runId: string, nodeRunId: string) =>
     request<void>(`/flow-runs/${encodeURIComponent(runId)}/nodes/${encodeURIComponent(nodeRunId)}`, json('DELETE')),
-  copyNodeRun: (runId: string, nodeRunId: string, name: string) =>
-    request<NodeRun>(`/flow-runs/${encodeURIComponent(runId)}/nodes/${encodeURIComponent(nodeRunId)}/copy`, json('POST', { name })),
+  copyNodeRun: (runId: string, nodeRunId: string, name: string, source_version: 'TEMPLATE' | 'RUNTIME' = 'RUNTIME', artifact_mode: 'RULES_ONLY' | 'CANDIDATE_BINDINGS' | 'REUSE_BINDINGS' = 'CANDIDATE_BINDINGS') =>
+    request<NodeRun>(`/flow-runs/${encodeURIComponent(runId)}/nodes/${encodeURIComponent(nodeRunId)}/copy`, json('POST', { name, source_version, artifact_mode })),
   addArtifact: (runId: string, body: ArtifactInput) => request<ArtifactVersion>(`/flow-runs/${runId}/artifacts`, json('POST', body)),
   addNodeInputArtifact: (runId: string, nodeKey: string, body: ArtifactInput) =>
     request<ArtifactVersion>(`/flow-runs/${encodeURIComponent(runId)}/nodes/${encodeURIComponent(nodeKey)}/input-artifacts`, json('POST', body)),
@@ -864,7 +974,7 @@ export function flowRunTerminalUrl(runId: string, rows = 24, columns = 80): stri
 }
 
 export interface AgentStreamEvent {
-  type: 'delta' | 'event' | 'stream_reset' | 'stream_closed' | 'durable_cursor' | 'model_retry';
+  type: 'delta' | 'event' | 'message_complete' | 'stream_reset' | 'stream_closed' | 'durable_cursor' | 'model_retry';
   content?: string;
   item_id?: string;
   event?: OpenHandsConversationEvent;
@@ -931,6 +1041,8 @@ export function subscribeToConversationStream(
           const seq = event.seq as number;
           afterSeq = afterSeq === undefined ? seq : Math.max(afterSeq, seq);
           onEvent({ type: 'durable_cursor', seq: afterSeq });
+        } else if (event.type === 'message_complete') {
+          onEvent({ type: 'message_complete' });
         } else {
           const retryEvent = modelRetryEvent(event);
           if (retryEvent) onEvent(retryEvent);
@@ -974,13 +1086,35 @@ export function agentWorkspaceTerminalUrl(workspaceId: string, rows = 24, column
   return url.toString();
 }
 
-export function agentWorkspaceFileUrl(workspaceId: string, path: string, options: { bindingId?: string; workDirectoryId?: string; draftAttachmentOwnerId?: string; download?: boolean } = {}): string {
+export function agentWorkspaceFileUrl(workspaceId: string, path: string, options: { bindingId?: string; workDirectoryId?: string; draftAttachmentOwnerId?: string; includeHidden?: boolean; download?: boolean } = {}): string {
   const url = absoluteApiUrl(`/agent-workspaces/${encodeURIComponent(workspaceId)}/workspace/file`);
   url.searchParams.set('path', path);
   if (options.bindingId) url.searchParams.set('binding_id', options.bindingId);
   if (options.workDirectoryId) url.searchParams.set('work_directory_id', options.workDirectoryId);
   if (options.draftAttachmentOwnerId) url.searchParams.set('draft_attachment_owner_id', options.draftAttachmentOwnerId);
+  if (options.includeHidden) url.searchParams.set('include_hidden', 'true');
   if (options.download ?? true) url.searchParams.set('download', 'true');
+  return url.toString();
+}
+
+export function agentWorkspaceFileViewerUrl(workspaceId: string, path: string, options: { bindingId?: string; workDirectoryId?: string; draftAttachmentOwnerId?: string } = {}): string {
+  const url = new URL(`${deploymentBasePath}/workspace-files/view`, window.location.origin);
+  url.searchParams.set('workspace_id', workspaceId);
+  url.searchParams.set('path', path);
+  if (options.bindingId) url.searchParams.set('binding_id', options.bindingId);
+  if (options.workDirectoryId) url.searchParams.set('work_directory_id', options.workDirectoryId);
+  if (options.draftAttachmentOwnerId) url.searchParams.set('draft_attachment_owner_id', options.draftAttachmentOwnerId);
+  return url.toString();
+}
+
+export function agentWorkspaceBrowserUrl(workspaceId: string, target: string, options: { bindingId?: string; workDirectoryId?: string } = {}): string {
+  const parsed = new URL(target);
+  const port = parsed.port || (parsed.protocol === 'https:' ? '443' : '80');
+  const url = absoluteApiUrl(`/agent-workspaces/${encodeURIComponent(workspaceId)}/browser/${parsed.protocol.slice(0, -1)}/${port}${parsed.pathname}`);
+  url.search = parsed.search;
+  if (options.bindingId) url.searchParams.set('binding_id', options.bindingId);
+  if (options.workDirectoryId) url.searchParams.set('work_directory_id', options.workDirectoryId);
+  url.searchParams.set('deployment_base_path', deploymentBasePath);
   return url.toString();
 }
 
@@ -1019,6 +1153,7 @@ export function subscribeToAgentWorkspaceStream(
           afterSeq = afterSeq === undefined ? seq : Math.max(afterSeq, seq);
           onEvent({ type: 'durable_cursor', seq: afterSeq });
         }
+        else if (event.type === 'message_complete') onEvent({ type: 'message_complete' });
         else {
           const retryEvent = modelRetryEvent(event);
           if (retryEvent) onEvent(retryEvent);
@@ -1066,8 +1201,8 @@ export const nodeSessionApi = {
   },
   create: (flowRunId: string, attemptId: string, title: string | undefined, model_provider_id: string, model_name: string, reasoning_effort: string | null, idempotencyKey = randomId(), work_directory_id?: string) =>
     request<import('../types').AgentConversation>(nodeSessionBase(flowRunId, attemptId), json('POST', { title, model_provider_id, model_name, reasoning_effort, work_directory_id }, idempotencyKey)),
-  bootstrap: (flowRunId: string, attemptId: string, content: string, model_provider_id: string, model_name: string, reasoning_effort: string | null, attachments: AgentAttachment[] = [], references: AgentConversationReference[] = [], workspace_references: AgentWorkspaceReference[] = [], work_directory_id?: string, idempotencyKey = randomId(), annotations: AgentConversationAnnotation[] = []) =>
-    request<{ conversation: import('../types').AgentConversation; accepted: boolean; cursor?: string | null }>(`${nodeSessionBase(flowRunId, attemptId)}/bootstrap`, json('POST', { conversation_id: idempotencyKey, content, attachments: attachmentReferences(attachments), references: conversationReferencePayload(references), workspace_references: workspaceReferencePayload(workspace_references), model_provider_id, model_name, reasoning_effort, work_directory_id, annotations }, idempotencyKey)),
+  bootstrap: (flowRunId: string, attemptId: string, content: string, model_provider_id: string, model_name: string, reasoning_effort: string | null, attachments: AgentAttachment[] = [], references: AgentConversationReference[] = [], workspace_references: AgentWorkspaceReference[] = [], work_directory_id?: string, idempotencyKey = randomId(), annotations: AgentConversationAnnotation[] = [], goal_objective?: string) =>
+    request<{ conversation: import('../types').AgentConversation; accepted: boolean; cursor?: string | null }>(`${nodeSessionBase(flowRunId, attemptId)}/bootstrap`, json('POST', { conversation_id: idempotencyKey, content, attachments: attachmentReferences(attachments), references: conversationReferencePayload(references), workspace_references: workspaceReferencePayload(workspace_references), model_provider_id, model_name, reasoning_effort, work_directory_id, annotations, goal_objective }, idempotencyKey)),
   get: (flowRunId: string, attemptId: string, bindingId: string) =>
     request<import('../types').AgentConversation>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}`),
   update: (flowRunId: string, attemptId: string, bindingId: string, title: string) =>
@@ -1083,8 +1218,8 @@ export const nodeSessionApi = {
     if (diagnosticTrigger) query.set('diagnostic_trigger', diagnosticTrigger);
     return request<import('../types').OpenHandsConversationEventBatch>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/events${query.size ? `?${query}` : ''}`, { signal, timeoutMs: INTERACTIVE_REQUEST_TIMEOUT_MS });
   },
-  hydration: (flowRunId: string, attemptId: string, bindingId: string, signal?: AbortSignal) =>
-    request<import('../types').AgentConversationHydration>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/hydration`, { signal, timeoutMs: INTERACTIVE_REQUEST_TIMEOUT_MS }),
+  hydration: (flowRunId: string, attemptId: string, bindingId: string, signal?: AbortSignal, cursor?: string) =>
+    request<import('../types').AgentConversationHydration>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/hydration${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`, { signal, timeoutMs: INTERACTIVE_REQUEST_TIMEOUT_MS }),
   head: (flowRunId: string, attemptId: string, bindingId: string) =>
     request<AgentConversationHead>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/head`),
   inputReadiness: (flowRunId: string, attemptId: string, bindingId: string) =>
@@ -1099,6 +1234,8 @@ export const nodeSessionApi = {
     request<{ model_provider_id: string; model_name?: string | null; reasoning_effort?: string | null }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/model`, json('POST', { model_provider_id, model_name, reasoning_effort })),
   remove: (flowRunId: string, attemptId: string, bindingId: string) =>
     request<void>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}`, json('DELETE', undefined, true)),
+  cancelMessageSubmission: (flowRunId: string, attemptId: string, bindingId: string, submissionId: string) =>
+    request<{ cancelled: boolean }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/messages/${encodeURIComponent(submissionId)}/cancel`, json('POST', {})),
   message: (flowRunId: string, attemptId: string, bindingId: string, content: string, attachments: AgentAttachment[] = [], references: AgentConversationReference[] = [], workspace_references: AgentWorkspaceReference[] = [], idempotencyKey = randomId(), annotations: AgentConversationAnnotation[] = []) =>
     request<{ accepted: boolean; cursor?: string | null; compacted?: boolean; queued_during_turn?: boolean }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/messages`, json('POST', { content, attachments: attachmentReferences(attachments), references: conversationReferencePayload(references), workspace_references: workspaceReferencePayload(workspace_references), annotations }, idempotencyKey)),
   pendingConfirmation: (flowRunId: string, attemptId: string, bindingId: string) =>
@@ -1118,6 +1255,8 @@ export const nodeSessionApi = {
   },
   condense: (flowRunId: string, attemptId: string, bindingId: string) =>
     request<{ accepted: boolean; task_id?: string | null }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/condense`, json('POST', undefined, true)),
+  controlGoal: (flowRunId: string, attemptId: string, bindingId: string, action: 'START' | 'STOP' | 'RESUME', objective?: string, max_iterations?: number) =>
+    request<{ accepted: boolean }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/goal`, json('POST', { action, ...(action === 'START' ? { objective, max_iterations } : {}) })),
   interrupt: (flowRunId: string, attemptId: string, bindingId: string) =>
     request<{ accepted: boolean }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/interrupt`, json('POST')),
   resume: (flowRunId: string, attemptId: string, bindingId: string) =>
@@ -1130,6 +1269,7 @@ export const nodeSessionApi = {
     request<{ accepted: boolean; cursor?: string | null }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/messages/${encodeURIComponent(eventId)}/rerun`, json('POST', { content, attachments: attachmentReferences(attachments), references: conversationReferencePayload(references), workspace_references: workspaceReferencePayload(workspace_references), annotations })),
   mcpReadiness: (flowRunId: string, attemptId: string, capabilityVersionId: string) => request<import('../types').AgentSessionMcpReadiness>(`${nodeSessionBase(flowRunId, attemptId)}/capabilities/${encodeURIComponent(capabilityVersionId)}/mcp-readiness`, json('POST')),
   addCapability: (flowRunId: string, attemptId: string, bindingId: string, capability_version_id: string) => request<import('../types').AgentConversation>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/capabilities`, json('POST', { capability_version_id })),
+  registerCapabilities: (flowRunId: string, attemptId: string, bindingId: string, capability_version_ids: string[]) => request<import('../types').AgentConversationCapabilityRegistration>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/capabilities/batch`, json('POST', { capability_version_ids })),
   workDirectories: (flowRunId: string, attemptId: string) =>
     request<import('../types').AgentSessionWorkDirectoryList>(`${nodeSessionBase(flowRunId, attemptId)}/work-directories`),
   createWorkDirectory: (flowRunId: string, attemptId: string, display_name: string, selected_paths: string[]) =>
@@ -1141,12 +1281,13 @@ export const nodeSessionApi = {
     if (fullIndex) query.set('full_index', 'true');
     return request<import('../types').AgentSessionWorkspaceDetails>(`${nodeSessionBase(flowRunId, attemptId)}/workspace${query.size ? `?${query}` : ''}`);
   },
-  workspaceDirectory: (flowRunId: string, attemptId: string, bindingId?: string, workDirectoryId?: string, parentPath?: string, cursor?: string) => {
+  workspaceDirectory: (flowRunId: string, attemptId: string, bindingId?: string, workDirectoryId?: string, parentPath?: string, cursor?: string, includeHidden = false) => {
     const query = new URLSearchParams();
     if (bindingId) query.set('binding_id', bindingId);
     if (workDirectoryId) query.set('work_directory_id', workDirectoryId);
     if (parentPath) query.set('parent_path', parentPath);
     if (cursor) query.set('cursor', cursor);
+    if (includeHidden) query.set('include_hidden', 'true');
     return request<import('../types').AgentSessionWorkspaceDirectory>(`${nodeSessionBase(flowRunId, attemptId)}/workspace/directory${query.size ? `?${query}` : ''}`);
   },
   gitRepositories: (flowRunId: string, attemptId: string, bindingId?: string, workDirectoryId?: string) => {
@@ -1203,11 +1344,12 @@ export const nodeSessionApi = {
     if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
     return request<void>(`${nodeSessionBase(flowRunId, attemptId)}/workspace/entries${query.size ? `?${query}` : ''}`, json('POST', { parent_path, name, kind }));
   },
-  file: (flowRunId: string, attemptId: string, path: string, bindingId?: string, workDirectoryId?: string, draftAttachmentOwnerId?: string, download = false, preview = false, offset = 0) => {
+  file: (flowRunId: string, attemptId: string, path: string, bindingId?: string, workDirectoryId?: string, draftAttachmentOwnerId?: string, download = false, preview = false, offset = 0, includeHidden = false) => {
     const query = new URLSearchParams({ path });
     if (bindingId) query.set('binding_id', bindingId);
     if (workDirectoryId) query.set('work_directory_id', workDirectoryId);
     if (draftAttachmentOwnerId) query.set('draft_attachment_owner_id', draftAttachmentOwnerId);
+    if (includeHidden) query.set('include_hidden', 'true');
     if (download) query.set('download', 'true');
     if (preview) {
       query.set('preview', 'true');
@@ -1254,6 +1396,7 @@ export function subscribeToNodeSessionStream(
         afterSeq = afterSeq === undefined ? seq : Math.max(afterSeq, seq);
         onEvent({ type: 'durable_cursor', seq: afterSeq });
       }
+      else if (event.type === 'message_complete') onEvent({ type: 'message_complete' });
       else {
         const retryEvent = modelRetryEvent(event);
         if (retryEvent) onEvent(retryEvent);
@@ -1273,4 +1416,11 @@ export function subscribeToRun(runId: string, onEvent: () => void): () => void {
   source.onmessage = onEvent;
   ['ATTEMPT_CREATED', 'HUMAN_CONFIRM_REQUIRED', 'ARTIFACT_VERSION_CREATED', 'NODE_RUN_ACCEPTED', 'SNAPSHOT_SYNCED', 'FLOW_RUN_COMPLETED'].forEach(type => source.addEventListener(type, onEvent));
   return () => source.close();
+}
+
+export function caseMaterialFileUrl(caseId: string, value: string, download = false): string {
+  const url = absoluteApiUrl(`/cases/${encodeURIComponent(caseId)}/materials/file`);
+  url.searchParams.set('value', value);
+  if (download) url.searchParams.set('download', 'true');
+  return url.toString();
 }

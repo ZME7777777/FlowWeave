@@ -1,3 +1,4 @@
+import { ViewportPopover } from '../components/ViewportPopover';
 import {
   Background,
   Controls,
@@ -16,12 +17,13 @@ import {
   type ReactFlowInstance,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { CheckSquare, ChevronDown, ChevronRight, Folder, GitBranch, LayoutDashboard, Plus, Save, Search, Trash2 } from 'lucide-react';
+import { ArrowLeft, Box, CheckCircle2, ChevronDown, ChevronRight, CircleAlert, Copy, Folder, GitBranch, LayoutDashboard, MoreHorizontal, Pencil, Plus, Save, Search, Trash2, X } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type DragEvent, type FormEvent } from 'react';
 import { api, randomId } from '../api/client';
 import { flowMappingEdgeTypes, withMappingLabelOffsets } from '../components/flowMappingEdgeLayout';
 import { useProductDialog } from '../components/ProductDialogContext';
+import { useEscapeClose } from '../components/useEscapeClose';
 import type {
   FlowDefinition,
   FlowEdge,
@@ -57,13 +59,22 @@ function ioFields(value: unknown): NodeAsset['inputs'] {
   );
 }
 
-function portLabel(field: NodeAsset['inputs'][number] | undefined, fallback = ''): string {
-  return field?.display_name?.trim() || field?.field_key || fallback;
+function portLabel(field: NodeAsset['inputs'][number] | undefined, fallback = '未命名字段'): string {
+  return field?.display_name?.trim() || fallback;
 }
 
 function flowSaveError(reason: Error): string {
   return reason.message;
 }
+
+function flowReadiness(flow: Pick<FlowDefinition, 'nodes' | 'edges'>): { ready: boolean; label: string; detail: string } {
+  const nodes = asArray<FlowDefinition['nodes'][number]>(flow.nodes).filter(node => node && typeof node.instance_key === 'string');
+  if (!nodes.length) return { ready: false, label: '未找到一个启动节点', detail: '添加至少一个节点后，流程才能启动。' };
+  const targets = new Set(asArray<FlowDefinition['edges'][number]>(flow.edges).map(edge => edge?.target_instance_key).filter((key): key is string => typeof key === 'string'));
+  if (!nodes.some(node => !targets.has(node.instance_key))) return { ready: false, label: '未找到一个启动节点', detail: '请保留一个没有上游连线的起始节点。' };
+  return { ready: true, label: '可启动', detail: `${nodes.length} 个节点，可从起始节点运行。` };
+}
+
 
 function FlowAssetNode({ id, data, selected }: NodeProps<Node<FlowNodeData>>) {
   const inputs = ioFields(data.inputs);
@@ -72,7 +83,7 @@ function FlowAssetNode({ id, data, selected }: NodeProps<Node<FlowNodeData>>) {
     <Handle id="flow-target" className="flow-direction-handle" type="target" position={Position.Left} isConnectable={data.linkMode === 'flow'}/>
     <div className="flow-node-head"><span className="flow-node-kind">AGENT</span><button type="button" className="flow-node-delete nodrag nopan" aria-label={`删除节点 ${data.label}`} title="删除节点" onClick={event => { event.stopPropagation(); data.onDelete?.(id); }}><Trash2 size={13}/></button></div>
     <strong>{data.label}</strong>
-    <small>标准端口来自节点资产</small>
+    <small>标准端口来自节点中心</small>
     <div className="flow-port-groups"><section><span>INPUTS</span>{inputs.map(field => <div className="flow-port-row flow-port-input" key={`input-${field.field_key}`}><Handle id={`input:${field.field_key}`} className="data-port-handle" type="target" position={Position.Left} isConnectable={data.linkMode === 'data'}/><b>{portLabel(field)}</b><small>{field.data_type}</small></div>)}</section><section><span>OUTPUTS</span>{outputs.map(field => <div className="flow-port-row flow-port-output" key={`output-${field.field_key}`}><b>{portLabel(field)}</b><small>{field.data_type}</small><Handle id={`output:${field.field_key}`} className="data-port-handle" type="source" position={Position.Right} isConnectable={data.linkMode === 'data'}/></div>)}</section></div>
     <Handle id="flow-source" className="flow-direction-handle" type="source" position={Position.Right} isConnectable={data.linkMode === 'flow'}/>
   </article>;
@@ -167,6 +178,20 @@ function directoryLabel(directoryId: string | null | undefined, directories: Nod
   return names.length ? names.join(' / ') : '未分类';
 }
 
+function FlowCanvasPreview({ flow, assets, onEdit }: { flow: FlowDefinition; assets: NodeAsset[]; onEdit: () => void }) {
+  const [canvasNodes, directionEdges, portMappings] = useMemo(() => toCanvas(flow, assets), [flow, assets]);
+  const [nodes, setNodes, onNodesChange] = useNodesState<Node<FlowNodeData>>([]);
+  useEffect(() => setNodes(canvasNodes), [canvasNodes, setNodes]);
+  const displayEdges = useMemo(() => [
+    ...directionEdges.map(edge => ({ ...edge, selectable: false })),
+    ...withMappingLabelOffsets(portMappings).map(edge => ({ ...edge, selectable: false })),
+  ], [directionEdges, portMappings]);
+  return <section className="flow-canvas-preview" aria-label={`${flow.name} 的流程画布`}>
+    <header><div><span>流程预览</span><b>{flow.name}</b></div><div><span className="flow-preview-count">{nodes.length} 个节点 · {directionEdges.length} 条连线</span><button type="button" className="primary" onClick={onEdit}><Pencil size={14}/>进入编排</button></div></header>
+    {nodes.length ? <ReactFlow nodeTypes={nodeTypes} edgeTypes={flowMappingEdgeTypes} nodes={nodes} edges={displayEdges} onNodesChange={onNodesChange} fitView fitViewOptions={{ padding: 0.24 }} nodesConnectable={false} elementsSelectable={false} panOnDrag zoomOnScroll><Background/><Controls showInteractive={false}/></ReactFlow> : <div className="flow-preview-empty"><Box size={26}/><b>暂未添加节点</b><span>进入编排后添加节点并配置流程连线。</span><button type="button" className="primary" onClick={onEdit}><Pencil size={14}/>进入编排</button></div>}
+  </section>;
+}
+
 function autoLayout(nodes: Node<FlowNodeData>[], edges: Edge[]): Node<FlowNodeData>[] {
   const incoming = new Map(nodes.map(node => [node.id, 0]));
   const outgoing = new Map(nodes.map(node => [node.id, [] as string[]]));
@@ -204,6 +229,9 @@ export function FlowsPage() {
   const { data: flows = emptyFlows } = useQuery({ queryKey: ['flows'], queryFn: api.flows });
   const [selected, setSelected] = useState<FlowDefinition>();
   const [isNew, setIsNew] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [newName, setNewName] = useState('');
+  const [newDescription, setNewDescription] = useState('');
   const [selectedNode, setSelectedNode] = useState<string>();
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
@@ -212,9 +240,23 @@ export function FlowsPage() {
   const [assetSearch, setAssetSearch] = useState('');
   const [collapsedAssetGroups, setCollapsedAssetGroups] = useState<Set<string>>(new Set());
   const [flowSearch, setFlowSearch] = useState('');
-  const [linkMode, setLinkMode] = useState<'flow' | 'data'>('flow');
+  const [previewedFlowId, setPreviewedFlowId] = useState<string>();
+  const [openFlowMenuId, setOpenFlowMenuId] = useState<string>();
+  const openFlowMenuRef = useRef<HTMLSpanElement>(null);
+  const flowMenuPopover = useRef<HTMLDivElement>(null);
+  useEscapeClose(() => setOpenFlowMenuId(undefined), Boolean(openFlowMenuId));
+  useEffect(() => {
+    if (!openFlowMenuId) return;
+    const closeOutside = (event: PointerEvent) => {
+      if (event.target instanceof window.Node && (openFlowMenuRef.current?.contains(event.target) || flowMenuPopover.current?.contains(event.target))) return;
+      setOpenFlowMenuId(undefined);
+    };
+    document.addEventListener('pointerdown', closeOutside, true);
+    return () => document.removeEventListener('pointerdown', closeOutside, true);
+  }, [openFlowMenuId]);
   const [selectedFlowIds, setSelectedFlowIds] = useState<Set<string>>(new Set());
   const [deletingFlows, setDeletingFlows] = useState(false);
+  const [linkMode, setLinkMode] = useState<'flow' | 'data'>('flow');
   const [flowInstance, setFlowInstance] = useState<ReactFlowInstance<Node<FlowNodeData>, Edge>>();
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<FlowNodeData>>([]);
   const nodesRef = useRef(nodes);
@@ -222,7 +264,10 @@ export function FlowsPage() {
   const [directionEdges, setDirectionEdges] = useEdgesState<Edge>([]);
   const [portMappings, setPortMappings] = useEdgesState<Edge>([]);
 
+  const initializedCanvas = useRef<{ selected: typeof selected; assets: typeof assets } | undefined>(undefined);
   useEffect(() => {
+    if (initializedCanvas.current && initializedCanvas.current.selected === selected && initializedCanvas.current.assets === assets) return;
+    initializedCanvas.current = { selected, assets };
     const [canvasNodes, canvasEdges, canvasMappings] = toCanvas(selected, assets);
     setNodes(canvasNodes);
     setDirectionEdges(canvasEdges);
@@ -267,7 +312,18 @@ export function FlowsPage() {
       setSelected(flow);
       setIsNew(false);
       setError('');
-      setNotice('流程已保存');
+      setNotice('编排已保存。');
+      void qc.invalidateQueries({ queryKey: ['flows'] });
+    },
+    onError: reason => setError(flowSaveError(reason)),
+  });
+  const create = useMutation({
+    mutationFn: () => api.createFlow({
+      name: newName.trim(), description: newDescription.trim(), default_entry_key: null,
+      nodes: [], edges: [], port_mappings: [],
+    }),
+    onSuccess: flow => {
+      setSelected(flow); setIsNew(false); setCreating(false); setNewName(''); setNewDescription('');
       void qc.invalidateQueries({ queryKey: ['flows'] });
     },
     onError: reason => setError(flowSaveError(reason)),
@@ -365,40 +421,47 @@ export function FlowsPage() {
     const term = flowSearch.trim().toLowerCase();
     return flows.filter(flow => !term || `${flow.name} ${flow.description}`.toLowerCase().includes(term));
   }, [flows, flowSearch]);
-  const visibleFlowIds = filteredFlows.map(flow => flow.id);
-  const allVisibleFlowsSelected = visibleFlowIds.length > 0 && visibleFlowIds.every(id => selectedFlowIds.has(id));
+  const previewedFlow = filteredFlows.find(flow => flow.id === previewedFlowId) ?? filteredFlows[0];
+  const copyFlow = async (flow: FlowDefinition) => {
+    setError('');
+    try {
+      const copied = await api.createFlow({
+        name: `${flow.name} · 副本`, description: flow.description, default_entry_key: null,
+        nodes: flow.nodes.map(node => ({
+          instance_key: node.instance_key, node_asset_id: node.node_asset_id, alias: node.alias,
+          position_x: node.position_x, position_y: node.position_y,
+          config_override: node.config_override, gates: [],
+        })),
+        edges: flow.edges.map(edge => ({
+          source_instance_key: edge.source_instance_key, target_instance_key: edge.target_instance_key,
+          position: edge.position,
+        })),
+        port_mappings: flow.port_mappings.map(mapping => ({
+          source_instance_key: mapping.source_instance_key, source_output_key: mapping.source_output_key,
+          target_instance_key: mapping.target_instance_key, target_input_key: mapping.target_input_key,
+        })),
+      });
+      void qc.invalidateQueries({ queryKey: ['flows'] });
+      setSelected(copied);
+      setIsNew(false);
+      setNotice(`已创建流程副本“${copied.name}”。`);
+    } catch (reason) { setError(reason instanceof Error ? flowSaveError(reason) : '复制流程失败，请稍后重试。'); }
+  };
   const toggleFlow = (id: string) => setSelectedFlowIds(old => {
     const next = new Set(old);
     if (next.has(id)) next.delete(id); else next.add(id);
     return next;
   });
-  const toggleVisibleFlows = () => setSelectedFlowIds(old => {
-    const next = new Set(old);
-    if (allVisibleFlowsSelected) visibleFlowIds.forEach(id => next.delete(id));
-    else visibleFlowIds.forEach(id => next.add(id));
-    return next;
-  });
-  const startNewFlow = () => {
-    setSelected(undefined);
-    setIsNew(true);
-    setNodes([]);
-    setDirectionEdges([]);
-    setPortMappings([]);
-    setSelectedNode(undefined);
-    setName('新流程');
-    setDescription('');
-    setError('');
-    setNotice('');
-  };
   const removeFlows = async (ids: string[], label: string) => {
     if (!ids.length || !await dialog.confirm({ title: `永久删除${label}？`, message: '流程定义将从数据库永久删除且不可恢复；如仍有关联运行，系统会阻止删除并提示先清理运行记录。', confirmLabel: '永久删除', tone: 'danger' })) return;
     setDeletingFlows(true);
     setError('');
     setNotice('');
     const results = await Promise.allSettled(ids.map(id => api.deleteFlow(id)));
+    setSelectedFlowIds(new Set(ids.filter((_, index) => results[index].status === 'rejected')));
+    setDeletingFlows(false);
     const failed = ids.filter((_, index) => results[index].status === 'rejected');
     const succeeded = ids.length - failed.length;
-    setSelectedFlowIds(new Set(failed));
     if (selected && ids.includes(selected.id) && !failed.includes(selected.id)) {
       setSelected(undefined);
       setIsNew(false);
@@ -413,7 +476,6 @@ export function FlowsPage() {
       qc.invalidateQueries({ queryKey: ['flows'] }),
       qc.invalidateQueries({ queryKey: ['runs'] }),
     ]);
-    setDeletingFlows(false);
   };
   const filteredAssets = useMemo(() => assets.filter(asset => `${asset.name ?? ''} ${asset.description ?? ''}`.toLowerCase().includes(assetSearch.toLowerCase())), [assets, assetSearch]);
   const groupedAssets = useMemo(() => {
@@ -430,13 +492,26 @@ export function FlowsPage() {
     return next;
   });
 
-  return <section className="page flow-page">
-    <div className="flow-product-layout inspector-free" style={{ gridTemplateColumns: '230px minmax(0, 1fr)' }}>
-      <aside className="flow-library" data-testid="flow-library"><h3>流程</h3><label className="flow-library-search"><Search size={13}/><input aria-label="搜索流程" placeholder="搜索流程" value={flowSearch} onChange={event => setFlowSearch(event.target.value)}/></label><div className="flow-list-actions"><button type="button" className="secondary" disabled={!filteredFlows.length || deletingFlows} onClick={toggleVisibleFlows}><CheckSquare size={13}/>{allVisibleFlowsSelected ? '取消全选' : '全选'}</button><button type="button" className="danger" disabled={!selectedFlowIds.size || deletingFlows} onClick={() => void removeFlows([...selectedFlowIds], `选中的 ${selectedFlowIds.size} 个流程`)}><Trash2 size={13}/>{deletingFlows ? '删除中' : `删除 (${selectedFlowIds.size})`}</button><button type="button" className="flow-create-action" aria-label="新建流程" onClick={startNewFlow}><Plus size={13}/>新建</button></div><div className="flow-definition-list">{filteredFlows.map(flow => <div className={`flow-definition-row ${selected?.id === flow.id ? 'active' : ''}`} key={flow.id}><label className="resource-check"><input type="checkbox" aria-label={`选择流程 ${flow.name}`} checked={selectedFlowIds.has(flow.id)} onChange={() => toggleFlow(flow.id)}/></label><button className="flow-select" onClick={() => { setSelected(flow); setIsNew(false); }}>{flow.name}</button><button type="button" className="flow-definition-delete" aria-label={`删除流程 ${flow.name}`} title="删除流程" onClick={() => void removeFlows([flow.id], `流程“${flow.name}”`)}><Trash2 size={13}/></button></div>)}</div>{!filteredFlows.length && <div className="flow-list-empty">没有匹配流程</div>}<h3>节点资产目录</h3><label className="flow-library-search"><Search size={13}/><input aria-label="搜索节点资产" placeholder="搜索当前资产库" value={assetSearch} onChange={event => setAssetSearch(event.target.value)}/></label>{groupedAssets.map(([directory, items]) => { const collapsed = collapsedAssetGroups.has(directory); return <section className={`flow-asset-group${collapsed ? ' collapsed' : ''}`} key={directory}><button type="button" className="flow-asset-group-toggle" aria-expanded={!collapsed} onClick={() => toggleAssetGroup(directory)}><span className="flow-asset-group-title">{collapsed ? <ChevronRight size={13}/> : <ChevronDown size={13}/>}<Folder size={13}/><b>{directory}</b></span><small>{items.length}</small></button>{!collapsed && <div className="flow-asset-group-items">{items.map(asset => <button draggable key={asset.id} aria-label={asset.name} title="拖入画布或点击添加" onDragStart={event => { event.dataTransfer.effectAllowed = 'copy'; event.dataTransfer.setData('application/flowweave-node-asset', asset.id); }} onClick={() => addAsset(asset)}><span className="flow-library-icon">{(asset.icon_value || 'AG').slice(0, 2).toUpperCase()}</span><span><b>{asset.name}</b><small>{ioFields(asset.inputs).length} 输入 · {ioFields(asset.outputs).length} 输出</small></span></button>)}</div>}</section>; })}</aside>
+
+  const submitCreate = (event: FormEvent) => { event.preventDefault(); setError(''); create.mutate(); };
+  if (!selected) return <section className="page flow-page flow-overview-page flow-library-list-page">
+    {error && <div className="notice error" role="alert">{error}</div>}
+    <div className="flow-library-workspace"><aside className="flow-library-list-panel" aria-label="流程列表"><div className="flow-library-list-tools"><label><Search size={15}/><input aria-label="搜索流程" placeholder="搜索流程" value={flowSearch} onChange={event => setFlowSearch(event.target.value)}/></label><button className="primary" onClick={() => setCreating(true)}><Plus size={15}/>新建</button><button className="danger" disabled={!selectedFlowIds.size || deletingFlows} onClick={() => void removeFlows([...selectedFlowIds], `选中的 ${selectedFlowIds.size} 个流程`)}><Trash2 size={14}/>{deletingFlows ? '删除中…' : `删除 (${selectedFlowIds.size})`}</button></div><div className="flow-library-table"><div className="flow-library-table-head"><span/><span>流程</span><span>状态</span><span>操作</span></div>{filteredFlows.map(flow => { const readiness = flowReadiness(flow); const menuOpen = openFlowMenuId === flow.id; const openEditor = () => { setSelected(flow); setIsNew(false); setOpenFlowMenuId(undefined); }; return <div className={`flow-library-row${previewedFlow?.id === flow.id ? ' active' : ''}`} key={flow.id} onClick={event => { if (!(event.target instanceof Element) || event.target.closest('button, input, label')) return; toggleFlow(flow.id); }}><label onClick={event => event.stopPropagation()}><input type="checkbox" aria-label={`选择流程 ${flow.name}`} checked={selectedFlowIds.has(flow.id)} onChange={() => toggleFlow(flow.id)}/></label><button className="flow-library-open" aria-label={`打开流程 ${flow.name}`} onClick={openEditor}><b>{flow.name}</b></button><span className={`flow-readiness ${readiness.ready ? 'ready' : 'draft'}`} title={readiness.label}>{readiness.ready ? <CheckCircle2 size={13}/> : <CircleAlert size={13}/>}<span>{readiness.label}</span></span><span className="flow-library-row-actions" ref={menuOpen ? openFlowMenuRef : undefined} onClick={event => event.stopPropagation()}><button className="ghost" aria-label={`操作流程 ${flow.name}`} aria-expanded={menuOpen} onClick={() => setOpenFlowMenuId(current => current === flow.id ? undefined : flow.id)}><MoreHorizontal size={17}/></button>{menuOpen && <ViewportPopover ref={flowMenuPopover} anchor={() => openFlowMenuRef.current?.querySelector('button')} align="end" className="flow-row-menu" role="menu" aria-label={`流程操作菜单：${flow.name}`}><button type="button" onClick={openEditor}><Pencil size={14}/>进入编排</button><button type="button" onClick={() => { void copyFlow(flow); setOpenFlowMenuId(undefined); }}><Copy size={14}/>复制流程</button><button type="button" className="danger" onClick={() => { void removeFlows([flow.id], `流程“${flow.name}”`); setOpenFlowMenuId(undefined); }}><Trash2 size={14}/>删除流程</button></ViewportPopover>}</span></div>; })}</div></aside>{previewedFlow && <FlowCanvasPreview flow={previewedFlow} assets={assets} onEdit={() => { setSelected(previewedFlow); setIsNew(false); }}/>}{!previewedFlow && <div className="flow-overview-empty"><Box size={30}/><b>{flows.length ? '没有匹配的流程' : '还没有流程'}</b><span>{flows.length ? '调整搜索关键词，或新建一个流程。' : '先填写名称和说明保存流程，再进入节点编排。'}</span></div>}</div>
+    {creating && <div className="modal-backdrop"><form className="modal flow-create-dialog" onSubmit={submitCreate}><header><div><span className="eyebrow">NEW FLOW</span><h2>新建流程</h2><p>先保存流程基本信息；保存后即可拖拽节点开始编排。</p></div><button type="button" className="ghost" aria-label="关闭新建流程弹窗" onClick={() => setCreating(false)}><X size={18}/></button></header><label>流程名称<input autoFocus required aria-label="新流程名称" value={newName} placeholder="例如：异常收集与修复" onChange={event => setNewName(event.target.value)}/></label><label>说明<textarea aria-label="新流程说明" value={newDescription} placeholder="说明这条流程要解决的问题和预期产出" onChange={event => setNewDescription(event.target.value)}/></label><footer><button type="button" className="ghost" onClick={() => setCreating(false)}>取消</button><button className="primary" disabled={create.isPending || !newName.trim()}>{create.isPending ? '正在保存…' : '保存并开始编排'}</button></footer></form></div>}
+  </section>;
+
+  const readiness = flowReadiness({
+    nodes: nodes.map(item => ({ instance_key: item.id } as FlowDefinition['nodes'][number])),
+    edges: directionEdges.map(edge => ({ target_instance_key: edge.target } as FlowDefinition['edges'][number])),
+  });
+
+  return <section className="page flow-page flow-editor-page flow-library-list-page">
+    <div className="flow-library-workspace flow-editor-workspace">
+      <aside className="flow-library-list-panel flow-library" data-testid="flow-library"><div className="flow-editor-head flow-editor-list-tools"><button className="ghost flow-back" aria-label="返回全部流程" onClick={() => setSelected(undefined)}><ArrowLeft size={18}/></button><span><b>节点中心目录</b><small>编排流程</small></span><span className={`flow-readiness ${readiness.ready ? 'ready' : 'draft'}`}>{readiness.ready ? <CheckCircle2 size={13}/> : <CircleAlert size={13}/>} {readiness.label}</span></div><p className="flow-library-hint">点击或拖入画布添加节点。</p><label className="flow-library-search"><Search size={13}/><input aria-label="搜索节点中心" placeholder="搜索当前资产库" value={assetSearch} onChange={event => setAssetSearch(event.target.value)}/></label>{groupedAssets.map(([directory, items]) => { const collapsed = collapsedAssetGroups.has(directory); return <section className={`flow-asset-group${collapsed ? ' collapsed' : ''}`} key={directory}><button type="button" className="flow-asset-group-toggle" aria-expanded={!collapsed} onClick={() => toggleAssetGroup(directory)}><span className="flow-asset-group-title">{collapsed ? <ChevronRight size={13}/> : <ChevronDown size={13}/>}<Folder size={13}/><b>{directory}</b></span><small>{items.length}</small></button>{!collapsed && <div className="flow-asset-group-items">{items.map(asset => <button draggable key={asset.id} aria-label={asset.name} title="拖入画布或点击添加" onDragStart={event => { event.dataTransfer.effectAllowed = 'copy'; event.dataTransfer.setData('application/flowweave-node-asset', asset.id); }} onClick={() => addAsset(asset)}><span><b>{asset.name}</b></span></button>)}</div>}</section>; })}</aside>
       <main className="flow-designer" data-testid="flow-designer" data-link-mode={linkMode} onDragOver={event => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; }} onDrop={dropAsset}>
-        <div className="designer-toolbar"><input aria-label="流程名称" value={name} placeholder="流程名称" onChange={event => setName(event.target.value)}/><input aria-label="流程说明" value={description} placeholder="说明" onChange={event => setDescription(event.target.value)}/><div className="flow-link-mode" aria-label="连线模式"><button type="button" className={linkMode === 'flow' ? 'active' : ''} aria-pressed={linkMode === 'flow'} onClick={() => setLinkMode('flow')}>流程走向</button><button type="button" className={linkMode === 'data' ? 'active' : ''} aria-pressed={linkMode === 'data'} onClick={() => setLinkMode('data')}>产物流转</button></div><button className="secondary" aria-label="自动布局" onClick={() => { setNodes(old => autoLayout(old, directionEdges)); window.setTimeout(() => void flowInstance?.fitView({ padding: 0.2 }), 0); }}><LayoutDashboard size={14}/>自动布局</button><button className="primary" onClick={() => save.mutate()} disabled={!name.trim() || !nodes.length}><Save size={14}/>保存流程</button></div>
-        {error && <div className="canvas-error">{error}</div>}{notice && <div className="canvas-notice" role="status">{notice}</div>}
-        <ReactFlow nodeTypes={nodeTypes} edgeTypes={flowMappingEdgeTypes} nodes={nodes.map(item => ({ ...item, selected: item.id === selectedNode, data: { ...item.data, linkMode, onDelete: removeNode },  }))} edges={displayEdges} onInit={setFlowInstance} onNodesChange={onNodesChange} onEdgesChange={changeEdges} onConnect={connect} onNodeClick={(_, node) => setSelectedNode(node.id)} fitView><Background/><Controls/></ReactFlow>
+        <div className="designer-toolbar"><div className="flow-editor-title"><span>流程编排</span><b>{name}</b></div><div className="flow-link-mode" aria-label="连线模式"><button type="button" className={linkMode === 'flow' ? 'active' : ''} aria-pressed={linkMode === 'flow'} onClick={() => setLinkMode('flow')}>流程走向</button><button type="button" className={linkMode === 'data' ? 'active' : ''} aria-pressed={linkMode === 'data'} onClick={() => setLinkMode('data')}>产物流转</button></div><button className="secondary" aria-label="自动布局" onClick={() => { setNodes(old => autoLayout(old, directionEdges)); window.setTimeout(() => void flowInstance?.fitView({ padding: 0.2 }), 0); }}><LayoutDashboard size={14}/>自动布局</button><button className="primary" onClick={() => save.mutate()} disabled={!name.trim() || save.isPending}><Save size={14}/>{save.isPending ? '保存中…' : '保存编排'}</button></div>
+        {error && <div className="canvas-error">{error}</div>}{notice && <div className="canvas-notice" role="status">{notice}</div>}{!readiness.ready && <div className="flow-editor-draft-note"><CircleAlert size={15}/><span><b>未找到一个启动节点</b>{readiness.detail}</span></div>}
+        <ReactFlow nodeTypes={nodeTypes} edgeTypes={flowMappingEdgeTypes} nodes={nodes.map(item => ({ ...item, selected: item.id === selectedNode, data: { ...item.data, linkMode, onDelete: removeNode },  }))} edges={displayEdges} onInit={setFlowInstance} onNodesChange={onNodesChange} onEdgesChange={changeEdges} onConnect={connect} onNodeClick={(_, node) => setSelectedNode(node.id)} fitView fitViewOptions={{ padding: 0.24 }}><Background/><Controls/></ReactFlow>
         <small className="canvas-help"><GitBranch size={12}/>{linkMode === 'flow' ? '流程走向模式：流程连线高亮；端口映射弱化显示。' : '产物流转模式：端口映射高亮；流程走向弱化显示。'}</small>
       </main>
     </div>

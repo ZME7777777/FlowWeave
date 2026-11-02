@@ -45,18 +45,18 @@ function safeStorage(): Storage | undefined {
   try { return window.sessionStorage; } catch { return undefined; }
 }
 
-function identity(): string | undefined {
+export function getAgentSessionCacheIdentity(): string | undefined {
   return safeStorage()?.getItem(CACHE_IDENTITY_KEY) ?? undefined;
 }
 
 function snapshotKey(hostId: string, workspaceId: string, bindingId: string): string | undefined {
-  const userIdentity = identity();
+  const userIdentity = getAgentSessionCacheIdentity();
   if (!userIdentity) return undefined;
   return `${SNAPSHOT_KEY_PREFIX}${encodeURIComponent(userIdentity)}:${encodeURIComponent(hostId)}:${encodeURIComponent(workspaceId)}:${encodeURIComponent(bindingId)}`;
 }
 
 function contextKey(hostId: string, workspaceId: string, bindingId: string): string | undefined {
-  const userIdentity = identity();
+  const userIdentity = getAgentSessionCacheIdentity();
   if (!userIdentity) return undefined;
   return `${CONTEXT_KEY_PREFIX}${encodeURIComponent(userIdentity)}:${encodeURIComponent(hostId)}:${encodeURIComponent(workspaceId)}:${encodeURIComponent(bindingId)}`;
 }

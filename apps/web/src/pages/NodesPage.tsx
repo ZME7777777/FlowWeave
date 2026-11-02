@@ -1,19 +1,16 @@
-import { CheckSquare, ChevronDown, ChevronRight, Copy, Folder, FolderOpen, Pencil, Plus, Search, Trash2, X } from 'lucide-react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useMemo, useState, type MouseEvent } from 'react';
-import { api, ApiError } from '../api/client';
-import { NodeEditor } from '../components/NodeEditor';
-import { Pagination } from '../components/Pagination';
+import { ChevronDown, ChevronRight, Folder, FolderOpen, Plus, Search, Trash2 } from 'lucide-react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { api, ApiError, randomId } from '../api/client';
+import { NodeEditor, type NodeDraftState } from '../components/NodeEditor';
 import { useProductDialog } from '../components/ProductDialogContext';
-import { useEscapeClose } from '../components/useEscapeClose';
-import type { BlockedNodeDelete, NodeAsset, NodeAssetWrite, NodeDirectory } from '../types';
 import { useWorkbenchStore } from '../store/workbench';
+import type { BlockedNodeDelete, NodeAsset, NodeDirectory } from '../types';
 
 type BlockedAsset = BlockedNodeDelete;
 
 function DeleteBlockedDialog({ assets, onClose, onOpenFlows }: { assets: BlockedAsset[]; onClose: () => void; onOpenFlows: () => void }) {
-  useEscapeClose(onClose);
-  return <div className="modal-backdrop"><section className="modal node-delete-blocked" role="dialog" aria-modal="true" aria-label="节点正在被流程引用">
+  return <div className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><section className="modal node-delete-blocked" role="dialog" aria-modal="true" aria-label="节点正在被流程引用">
     <header><div><span className="eyebrow">DELETE BLOCKED</span><h2>无法删除节点</h2></div><button className="ghost" onClick={onClose}>关闭</button></header>
     <p>以下节点仍被有效流程引用。请先在流程编排中移除或替换节点，再重新删除。</p>
     <div className="node-reference-list">{assets.map(asset => <section key={asset.id}><b>{asset.name}</b>{asset.flows.map(flow => <div key={flow.id}><span>{flow.name}</span><small>引用 {flow.reference_count} 次</small></div>)}</section>)}</div>
@@ -21,144 +18,143 @@ function DeleteBlockedDialog({ assets, onClose, onOpenFlows }: { assets: Blocked
   </section></div>;
 }
 
-interface FolderRowProps {
-  item: NodeDirectory;
-  directories: NodeDirectory[];
-  nodes: NodeAsset[];
-  selected: string;
-  depth: number;
-  onSelect: (id: string) => void;
-  selectedIds: Set<string>;
-  onToggle: (id: string) => void;
-  expandedIds: Set<string>;
-  onExpand: (id: string) => void;
-}
-
-function descendantIds(id: string, directories: NodeDirectory[]): string[] {
+function directoryDescendantIds(id: string, directories: NodeDirectory[]): string[] {
   const children = directories.filter(item => item.parent_id === id);
-  return [id, ...children.flatMap(child => descendantIds(child.id, directories))];
+  return [id, ...children.flatMap(child => directoryDescendantIds(child.id, directories))];
 }
 
-function FolderRow({ item, directories, nodes, selected, depth, onSelect, selectedIds, onToggle, expandedIds, onExpand }: FolderRowProps) {
-  const children = directories.filter(child => child.parent_id === item.id);
-  const ids = descendantIds(item.id, directories);
-  const count = nodes.filter(node => node.directory_id && ids.includes(node.directory_id)).length;
-  const expanded = expandedIds.has(item.id);
-  return <>
-    <div className={`folder-row ${children.length ? 'has-children' : 'leaf'} ${selected === item.id ? 'active' : ''}`} style={{ '--folder-depth': depth } as React.CSSProperties}>
-    <label className="resource-check" onClick={event => event.stopPropagation()}><input type="checkbox" aria-label={`选择目录 ${item.name}`} checked={selectedIds.has(item.id)} onChange={() => onToggle(item.id)}/></label>
-    {children.length ? <button type="button" className="folder-expand" aria-label={`${expanded ? '收起' : '展开'}目录 ${item.name}`} aria-expanded={expanded} onClick={() => onExpand(item.id)}>{expanded ? <ChevronDown size={13}/> : <ChevronRight size={13}/>}</button> : null}
-    <button type="button" className="folder-select" onClick={() => onSelect(item.id)}>
-      {expanded ? <FolderOpen size={14}/> : <Folder size={14}/>}<span>{item.name}</span><small>{count}</small>
-    </button></div>
-    {expanded && children.map(child => <FolderRow key={child.id} item={child} directories={directories} nodes={nodes} selected={selected} depth={depth + 1} onSelect={onSelect} selectedIds={selectedIds} onToggle={onToggle} expandedIds={expandedIds} onExpand={onExpand}/>)}
-  </>;
-}
-
-function NodeDetail({ node, directories, onClose, onEdit }: { node: NodeAsset; directories: NodeDirectory[]; onClose: () => void; onEdit: () => void }) {
-  useEscapeClose(onClose);
-  return <div className="detail-drawer-backdrop" onClick={onClose}><aside className="node-detail-drawer" role="dialog" aria-modal="true" aria-label={`节点详情 ${node.name}`} onClick={event => event.stopPropagation()}>
-    <header><span className="node-icon">{node.icon_value.slice(0, 2).toUpperCase()}</span><div><h2>{node.name}</h2><small>节点资产 · AGENT</small></div><button className="ghost" aria-label="关闭节点详情" onClick={onClose}><X size={17}/></button></header>
-    <section><h3>资产摘要</h3><p>{node.description || '暂无说明'}</p><dl><dt>分类</dt><dd>{directories.find(item => item.id === node.directory_id)?.name || '未分类'}</dd><dt>最近更新</dt><dd>{new Date(node.updated_at).toLocaleString()}</dd></dl></section>
-    <section><h3>运行方式</h3><dl><dt>Agent 配置</dt><dd>使用默认 Agent 工作区配置</dd><dt>宿主工作区</dt><dd>{node.workspace_ref ? `var/workspaces/${node.workspace_ref}` : '创建后生成'}</dd></dl></section>
-    <section><h3>提示词上下文</h3><p><b>启动入口：</b>{node.executor?.startup_prompt || '未配置'}</p><p><b>上下文：</b>{node.executor?.context_prompt || '未配置'}</p></section>
-    <section><h3>输入输出定义</h3><div className="detail-capability"><b>输入定义</b><span>{node.inputs.length} 项</span><small>{node.inputs.map(item => `${item.field_key} · ${item.data_type}`).join('、') || '无'}</small></div><div className="detail-capability"><b>输出定义</b><span>{node.outputs.length} 项</span><small>{node.outputs.map(item => `${item.field_key} · ${item.data_type}`).join('、') || '无'}</small></div></section>
-    <footer><button className="secondary" onClick={onClose}>关闭</button><button className="primary" onClick={onEdit}><Pencil size={14}/>编辑节点</button></footer>
-  </aside></div>;
-}
-
-export function NodesPage() {
+export function NodesPage({ onRegisterLeaveGuard, onDraftStateChange: onPageDraftStateChange }: { onRegisterLeaveGuard?: (guard: (() => Promise<boolean>) | undefined) => void; onDraftStateChange?: (state: NodeDraftState) => void }) {
   const dialog = useProductDialog();
-  const qc = useQueryClient();
+  const queryClient = useQueryClient();
   const setView = useWorkbenchStore(state => state.setView);
   const { data: directories = [] } = useQuery({ queryKey: ['directories'], queryFn: api.directories });
   const { data: nodes = [], isLoading } = useQuery({ queryKey: ['nodes'], queryFn: () => api.nodes() });
-  const [directory, setDirectory] = useState('all');
+  const [selectedNodeId, setSelectedNodeId] = useState<string>();
+  const [editorSession, setEditorSession] = useState<string>();
+  const currentEditorSession = useRef(editorSession);
+  currentEditorSession.current = editorSession;
+  const [creatingInDirectory, setCreatingInDirectory] = useState<string | null>();
+  const [expandedDirectoryIds, setExpandedDirectoryIds] = useState<Set<string>>(() => new Set());
   const [search, setSearch] = useState('');
-  const [editing, setEditing] = useState<NodeAsset | null | undefined>();
-  const [detail, setDetail] = useState<NodeAsset>();
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [selectedDirectoryIds, setSelectedDirectoryIds] = useState<Set<string>>(new Set());
-  const [expandedDirectoryIds, setExpandedDirectoryIds] = useState<Set<string>>(new Set());
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
-  const [deleting, setDeleting] = useState(false);
+  const [deletingNodeId, setDeletingNodeId] = useState<string>();
   const [blockedAssets, setBlockedAssets] = useState<BlockedAsset[]>([]);
-  const [page, setPage] = useState(1);
-  const visible = useMemo(() => nodes.filter(item => (directory === 'all' || item.directory_id === directory) && (!search || `${item.name} ${item.description}`.toLowerCase().includes(search.toLowerCase()))), [nodes, directory, search]);
-  const visibleIds = visible.map(item => item.id);
-  const allVisibleSelected = visibleIds.length > 0 && visibleIds.every(id => selectedIds.has(id));
-  // The compact grid has five columns at the desktop breakpoint. Keep a full
-  // five-by-five grid together instead of moving the last visible card to a
-  // second page.
-  const pageSize = 25;
-  const pagedVisible = visible.slice((page - 1) * pageSize, page * pageSize);
-  useEffect(() => setPage(1), [directory, search]);
-  useEffect(() => { if (page > Math.max(1, Math.ceil(visible.length / pageSize))) setPage(1); }, [page, visible.length]);
+  const selectedNode = nodes.find(node => node.id === selectedNodeId);
+  const normalizedSearch = search.trim().toLowerCase();
+  const visibleNodes = useMemo(() => normalizedSearch ? nodes.filter(node => `${node.name} ${node.description}`.toLowerCase().includes(normalizedSearch)) : nodes, [nodes, normalizedSearch]);
+  const roots = directories.filter(directory => !directory.parent_id);
 
-  const save = useMutation({
-    mutationFn: ({ node, data }: { node?: NodeAsset; data: NodeAssetWrite }) => node ? api.updateNode(node.id, data) : api.createNode(data),
-    onSuccess: () => { void qc.invalidateQueries({ queryKey: ['nodes'] }); setEditing(undefined); setDetail(undefined); },
-  });
-  const action = (event: MouseEvent, callback: () => void) => { event.stopPropagation(); callback(); };
-  const toggle = (id: string) => setSelectedIds(old => { const next = new Set(old); if (next.has(id)) next.delete(id); else next.add(id); return next; });
-  const toggleVisible = () => setSelectedIds(old => {
-    const next = new Set(old);
-    if (allVisibleSelected) visibleIds.forEach(id => next.delete(id));
-    else visibleIds.forEach(id => next.add(id));
+  const refreshAssets = async () => {
+    await Promise.all([queryClient.invalidateQueries({ queryKey: ['nodes'] }), queryClient.invalidateQueries({ queryKey: ['directories'] })]);
+  };
+  const toggleDirectory = (directoryId: string) => setExpandedDirectoryIds(current => {
+    const next = new Set(current);
+    if (next.has(directoryId)) next.delete(directoryId); else next.add(directoryId);
     return next;
   });
-  const removeMany = async (ids: string[], label: string) => {
-    if (!ids.length || !await dialog.confirm({ title: `删除${label}？`, message: '删除后将不再出现在资产目录中。', confirmLabel: '确认删除', tone: 'danger' })) return;
-    setDeleting(true); setError(''); setNotice('');
-    try {
-      const result = await api.deleteNodes(ids);
-      setSelectedIds(new Set(result.blocked.map(item => item.id)));
-      setBlockedAssets(result.blocked);
-      if (detail && result.deleted_ids.includes(detail.id)) setDetail(undefined);
-      if (result.deleted_ids.length) setNotice(`已删除 ${result.deleted_ids.length} 个节点资产。`);
-      if (result.blocked.length) setError(`有 ${result.blocked.length} 个节点仍绑定有效流程，已跳过；其他节点已正常删除。`);
-      await qc.invalidateQueries({ queryKey: ['nodes'] });
-    } catch (reason) {
-      if (reason instanceof ApiError && reason.code === 'NODE_ASSET_IN_USE') {
-        const assets = reason.details.assets;
-        if (Array.isArray(assets)) setBlockedAssets(assets as BlockedAsset[]);
-      } else {
-        setError(reason instanceof Error ? reason.message : '删除节点失败');
-      }
-    } finally {
-      setDeleting(false);
-    }
-  };
-  const createDirectory = async () => {
-    const directoryName = await dialog.prompt({ title: '新建节点目录', message: '创建一个用于整理节点资产的目录。', inputLabel: '目录名称', placeholder: '例如：产品研发', confirmLabel: '创建目录' }); if (!directoryName) return;
-    try { await api.createDirectory({ name: directoryName, parent_id: directory === 'all' ? null : directory, position: directories.length }); await qc.invalidateQueries({ queryKey: ['directories'] }); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : '创建目录失败'); }
-  };
-  const toggleDirectory = (id: string) => setSelectedDirectoryIds(current => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; });
-  const toggleExpandedDirectory = (id: string) => setExpandedDirectoryIds(current => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; });
-  const removeSelectedDirectories = async () => {
-    const selected = directories.filter(item => selectedDirectoryIds.has(item.id));
-    const rootsOnly = selected.filter(item => !selected.some(candidate => candidate.id !== item.id && descendantIds(candidate.id, directories).includes(item.id)));
-    if (!rootsOnly.length || !await dialog.confirm({ title: `删除选中的 ${rootsOnly.length} 个目录？`, message: '目录中的节点与直接子目录会提升至上级目录；同名冲突会拒绝对应删除。', confirmLabel: '确认删除', tone: 'danger' })) return;
+  const createDirectory = async (parentId: string | null) => {
+    const directoryName = await dialog.prompt({ title: parentId ? '新建子目录' : '新建节点目录', message: '创建一个用于整理节点中心的目录。', inputLabel: '目录名称', placeholder: '例如：产品研发', confirmLabel: '创建目录' });
+    if (!directoryName) return;
     setError('');
     try {
-      for (const item of rootsOnly) await api.deleteDirectory(item.id);
-      if (rootsOnly.some(item => item.id === directory)) setDirectory('all');
-      setSelectedDirectoryIds(new Set());
-      await Promise.all([qc.invalidateQueries({ queryKey: ['directories'] }), qc.invalidateQueries({ queryKey: ['nodes'] })]);
+      await api.createDirectory({ name: directoryName, parent_id: parentId, position: directories.filter(item => item.parent_id === parentId).length });
+      await refreshAssets();
+      if (parentId) setExpandedDirectoryIds(current => new Set(current).add(parentId));
+    } catch (reason) { setError(reason instanceof Error ? reason.message : '创建目录失败'); }
+  };
+  const removeDirectory = async (directory: NodeDirectory) => {
+    const deletedIds = new Set(directoryDescendantIds(directory.id, directories));
+    const editingDirectory = selectedNode?.directory_id ?? creatingInDirectory;
+    const closesEditor = Boolean(editingDirectory && deletedIds.has(editingDirectory));
+    const deletionEditorSession = editorSession;
+    if (closesEditor && !await confirmLeave()) return;
+    if (!await dialog.confirm({ title: `删除目录“${directory.name}”？`, message: '目录中的节点与直接子目录会提升至上级目录；同名冲突会拒绝删除。', confirmLabel: '确认删除', tone: 'danger' })) return;
+    setError('');
+    try {
+      await api.deleteDirectory(directory.id);
+      if (closesEditor && currentEditorSession.current === deletionEditorSession) {
+        setSelectedNodeId(undefined); setCreatingInDirectory(undefined); onDraftStateChange({ dirty: false, saving: false });
+      }
+      await refreshAssets();
     } catch (reason) { setError(reason instanceof Error ? reason.message : '删除目录失败'); }
   };
-  const currentDirectory = directories.find(item => item.id === directory)?.name ?? '全部节点';
-  const roots = directories.filter(item => !item.parent_id);
+  const removeNode = async (node: NodeAsset) => {
+    if (selectedNodeId === node.id && !await confirmLeave()) return;
+    if (!await dialog.confirm({ title: `删除节点“${node.name}”？`, message: '删除后将不再出现在节点目录中。', confirmLabel: '确认删除', tone: 'danger' })) return;
+    const deletionEditorSession = editorSession;
+    setDeletingNodeId(node.id); setError(''); setNotice('');
+    try {
+      const result = await api.deleteNodes([node.id]);
+      setBlockedAssets(result.blocked);
+      if (result.deleted_ids.includes(node.id)) { if (selectedNodeId === node.id && currentEditorSession.current === deletionEditorSession) { setSelectedNodeId(undefined); onDraftStateChange({ dirty: false, saving: false }); } setNotice('节点已删除。'); }
+      if (result.blocked.length) setError('该节点仍绑定有效流程，暂时无法删除。');
+      await queryClient.invalidateQueries({ queryKey: ['nodes'] });
+    } catch (reason) {
+      if (reason instanceof ApiError && reason.code === 'NODE_ASSET_IN_USE' && Array.isArray(reason.details.assets)) setBlockedAssets(reason.details.assets as BlockedAsset[]);
+      else setError(reason instanceof Error ? reason.message : '删除节点失败');
+    } finally { setDeletingNodeId(undefined); }
+  };
+  const saveNode = async (data: Parameters<typeof api.createNode>[0]) => {
+    const saved = selectedNode ? await api.updateNode(selectedNode.id, data) : await api.createNode(data);
+    queryClient.setQueryData<NodeAsset[]>(['nodes'], current => current?.some(item => item.id === saved.id) ? current.map(item => item.id === saved.id ? saved : item) : [...(current ?? []), saved]);
+    if (currentEditorSession.current === editorSession) { setSelectedNodeId(saved.id); setCreatingInDirectory(undefined); }
+    await queryClient.invalidateQueries({ queryKey: ['nodes'] });
+    return saved;
+  };
+  const draftState = useRef<NodeDraftState>({ dirty: false, saving: false });
+  const confirmingLeave = useRef(false);
+  const onDraftStateChange = useCallback((state: NodeDraftState) => { draftState.current = state; onPageDraftStateChange?.(state); }, [onPageDraftStateChange]);
+  const confirmLeave = async () => {
+    if (draftState.current.saving || confirmingLeave.current) return false;
+    if (!draftState.current.dirty) return true;
+    confirmingLeave.current = true;
+    try { return await dialog.confirm({ title: '放弃未保存的节点修改？', message: '当前节点的说明、提示词或输入输出有未保存修改。', confirmLabel: '放弃修改', cancelLabel: '继续编辑', tone: 'danger' }); }
+    finally { confirmingLeave.current = false; }
+  };
+  const currentLeaveGuard = useRef(confirmLeave);
+  currentLeaveGuard.current = confirmLeave;
+  useLayoutEffect(() => {
+    onRegisterLeaveGuard?.(() => currentLeaveGuard.current());
+    return () => { onRegisterLeaveGuard?.(undefined); };
+  }, [onRegisterLeaveGuard]);
+  const changeEditor = async (change: () => void) => {
+    if (!await confirmLeave()) return;
+    onDraftStateChange({ dirty: false, saving: false });
+    change();
+  };
+  const renderNode = (node: NodeAsset) => <div className={`node-tree-record${selectedNodeId === node.id ? ' selected' : ''}`} key={node.id}>
+    <button type="button" className="node-tree-select" data-testid="node-card" aria-current={selectedNodeId === node.id ? 'true' : undefined} onClick={() => { if (selectedNodeId !== node.id) void changeEditor(() => { setEditorSession(node.id); setSelectedNodeId(node.id); setCreatingInDirectory(undefined); }); }}><span><b>{node.name}</b></span></button>
+    <div className="node-record-actions"><button type="button" className="node-action-delete" title="删除节点" aria-label={`删除节点 ${node.name}`} disabled={deletingNodeId === node.id} onClick={() => void removeNode(node)}><Trash2 size={14}/></button></div>
+  </div>;
+  const renderDirectory = (directory: NodeDirectory, depth: number): React.ReactNode => {
+    const children = directories.filter(item => item.parent_id === directory.id);
+    const directoryNodes = visibleNodes.filter(node => node.directory_id === directory.id);
+    const hasVisibleDescendant = directoryDescendantIds(directory.id, directories).some(id => visibleNodes.some(node => node.directory_id === id));
+    if (normalizedSearch && !hasVisibleDescendant) return null;
+    const expanded = Boolean(normalizedSearch || expandedDirectoryIds.has(directory.id));
+    return <section className="node-directory-group" key={directory.id} style={{ '--node-depth': depth } as React.CSSProperties}>
+      <div className="node-directory-row">
+        <button type="button" className="node-directory-toggle" aria-label={`${expanded ? '收起' : '展开'}目录 ${directory.name}`} aria-expanded={expanded} disabled={Boolean(normalizedSearch)} onClick={() => toggleDirectory(directory.id)}>{children.length || directoryNodes.length ? (expanded ? <ChevronDown size={14}/> : <ChevronRight size={14}/>) : <span/>}</button>
+        <button type="button" className="node-directory-select" onClick={() => toggleDirectory(directory.id)}>{expanded ? <FolderOpen size={15}/> : <Folder size={15}/>}<span><b>{directory.name}</b><small>{directoryNodes.length} 个节点</small></span></button>
+        <div className="node-record-actions"><button type="button" className="node-action-add" title="在此目录新建节点" aria-label={`在 ${directory.name} 新建节点`} onClick={() => void changeEditor(() => { setEditorSession(randomId()); setSelectedNodeId(undefined); setCreatingInDirectory(directory.id); })}><Plus size={14}/></button><button type="button" className="node-action-delete" title="删除目录" aria-label={`删除目录 ${directory.name}`} onClick={() => void removeDirectory(directory)}><Trash2 size={14}/></button></div>
+      </div>
+      {expanded && <div className="node-tree-children">{children.map(child => renderDirectory(child, depth + 1))}{directoryNodes.map(renderNode)}</div>}
+    </section>;
+  };
+  const uncategorizedNodes = visibleNodes.filter(node => !node.directory_id);
+  const isCreating = creatingInDirectory !== undefined;
 
-  return <section className="page node-assets-page"><div className="page-action-row"><button className="primary" onClick={() => setEditing(null)}><Plus size={16}/>新建节点</button></div>
+  return <section className="page node-assets-page">
     {error && <div className="notice error" role="alert">{error}</div>}{notice && <div className="notice success" role="status">{notice}</div>}
-    <div className="asset-layout"><aside className="directory-panel"><header><b>节点目录</b><div><button title="删除选中目录" className="danger" disabled={!selectedDirectoryIds.size} onClick={() => void removeSelectedDirectories()}><Trash2 size={14}/></button><button title="新建目录" onClick={() => void createDirectory()}><Plus size={14}/></button></div></header><button className={`folder-row all ${directory === 'all' ? 'active' : ''}`} onClick={() => setDirectory('all')}><span/><Folder size={14}/><span>全部节点</span><small>{nodes.length}</small></button>{roots.map(item => <FolderRow key={item.id} item={item} directories={directories} nodes={nodes} selected={directory} depth={0} onSelect={setDirectory} selectedIds={selectedDirectoryIds} onToggle={toggleDirectory} expandedIds={expandedDirectoryIds} onExpand={toggleExpandedDirectory}/>)}</aside>
-      <main className="asset-content"><div className="asset-tools"><div><span>节点资产</span><strong>{currentDirectory}</strong><small>{visible.length} 个节点</small></div><div className="bulk-actions"><button className="secondary" disabled={!visible.length || deleting} onClick={toggleVisible}><CheckSquare size={14}/>{allVisibleSelected ? '取消全选' : '全选当前结果'}</button><button className="danger" disabled={!selectedIds.size || deleting} onClick={() => void removeMany([...selectedIds], `选中的 ${selectedIds.size} 个节点`)}><Trash2 size={14}/>{deleting ? '删除中…' : `批量删除 (${selectedIds.size})`}</button></div><label><Search size={14}/><input aria-label="搜索节点" value={search} placeholder={`搜索 ${currentDirectory}`} onChange={event => setSearch(event.target.value)}/></label></div>
-        {isLoading ? <div className="empty">加载中…</div> : <><div className="card-grid compact-node-list">{pagedVisible.map(node => <article tabIndex={0} className={`node-card product-card ${selectedIds.has(node.id) ? 'selected' : ''}`} data-testid="node-card" key={node.id} onClick={() => setDetail(node)} onKeyDown={event => { if (event.key === 'Enter') setDetail(node); }}><div className="node-card-head"><label className="resource-check" onClick={event => event.stopPropagation()}><input type="checkbox" aria-label={`选择节点 ${node.name}`} checked={selectedIds.has(node.id)} onChange={() => toggle(node.id)}/><span className="node-icon">{node.icon_value.slice(0, 2).toUpperCase()}</span></label><div className="card-actions"><button title="复制" onClick={event => action(event, () => setEditing({ ...node, id: '', name: `${node.name} 副本`, row_version: 1 }))}><Copy size={15}/></button><button title="编辑" onClick={event => action(event, () => setEditing(node))}><Pencil size={15}/></button></div></div><div className="node-list-summary"><h3>{node.name}</h3><p>{node.description || '暂无说明'}</p></div></article>)}</div><Pagination page={page} pageSize={pageSize} total={visible.length} onPageChange={setPage}/></>}
-        {!isLoading && !visible.length && <div className="empty">当前目录没有匹配节点。</div>}
-      </main></div>
-    {blockedAssets.length > 0 && <DeleteBlockedDialog assets={blockedAssets} onClose={() => setBlockedAssets([])} onOpenFlows={() => { setBlockedAssets([]); setView('flows'); }}/>}
-    {detail && <NodeDetail node={detail} directories={directories} onClose={() => setDetail(undefined)} onEdit={() => { setEditing(detail); setDetail(undefined); }}/>} {editing !== undefined && <NodeEditor node={editing?.id ? editing : undefined} onClose={() => setEditing(undefined)} onSave={data => save.mutateAsync({ node: editing?.id ? editing : undefined, data }).then(() => undefined)}/>} </section>;
+    <div className="node-center-layout">
+      <aside className="node-center-rail" aria-label="节点目录">
+        <header className="node-center-list-head"><div><span className="eyebrow">NODE CENTER</span><b>节点目录</b><small>{nodes.length} 个节点</small></div><button type="button" className="secondary" onClick={() => void createDirectory(null)}><Plus size={14}/>新建目录</button></header>
+        <label className="node-center-search"><Search size={14}/><input aria-label="搜索节点" value={search} placeholder="搜索节点" onChange={event => setSearch(event.target.value)}/></label>
+        <div className="node-center-tree">{isLoading ? <p className="node-center-empty">正在加载…</p> : <>{roots.map(directory => renderDirectory(directory, 0))}<section className="node-directory-group node-uncategorized-group"><div className="node-directory-row"><span className="node-directory-toggle"><Folder size={14}/></span><span className="node-directory-select"><span><b>未分类</b><small>{uncategorizedNodes.length} 个节点</small></span></span><div className="node-record-actions"><button type="button" className="node-action-add" title="新建未分类节点" aria-label="新建未分类节点" onClick={() => void changeEditor(() => { setEditorSession(randomId()); setSelectedNodeId(undefined); setCreatingInDirectory(null); })}><Plus size={14}/></button></div></div><div className="node-tree-children">{uncategorizedNodes.map(renderNode)}</div></section>{!visibleNodes.length && <p className="node-center-empty">没有匹配的节点。</p>}</>}</div>
+      </aside>
+      <main className="node-center-detail">{selectedNode || isCreating ? <NodeEditor key={editorSession ?? selectedNode?.id ?? `new-${creatingInDirectory ?? 'uncategorized'}`} embedded node={selectedNode} initialDirectoryId={creatingInDirectory} onDraftStateChange={onDraftStateChange} onSave={saveNode}/> : <div className="node-center-detail-empty"><Folder size={32}/><b>选择或新建一个节点</b></div>}</main>
+    </div>
+    {blockedAssets.length > 0 && <DeleteBlockedDialog assets={blockedAssets} onClose={() => setBlockedAssets([])} onOpenFlows={() => { setBlockedAssets([]); void changeEditor(() => setView('flows')); }}/>}
+  </section>;
 }

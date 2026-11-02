@@ -1,4 +1,4 @@
-export type ViewName = 'nodes' | 'capabilities' | 'environments' | 'credentials' | 'models' | 'ldap-users' | 'conversation-management' | 'flows' | 'runs' | 'schedules' | 'workbench' | 'agent-workbench';
+export type ViewName = 'nodes' | 'capabilities' | 'environments' | 'credentials' | 'models' | 'ldap-users' | 'conversation-management' | 'flows' | 'runs' | 'cases' | 'schedules' | 'workbench' | 'agent-workbench';
 
 export interface NodeDirectory {
   id: string; parent_id?: string | null; name: string; position: number; row_version: number;
@@ -6,7 +6,8 @@ export interface NodeDirectory {
 export type ArtifactDataType = 'URL' | 'FILE';
 export interface IOField {
   id?: string; field_key: string; display_name: string; data_type: ArtifactDataType;
-  description: string; position?: number;
+  description: string; position?: number; required?: boolean;
+  runtime_port?: boolean; output_scope?: 'FLOW' | 'OBSERVATION' | 'CASE';
 }
 export interface ExecutorConfig {
   startup_prompt: string; context_prompt: string; context_capability_ids: string[];
@@ -22,13 +23,32 @@ export interface CapabilityRef {
 export interface CapabilityAsset {
   id: string; lineage_id: string; revision_number: number; is_latest: boolean;
   capability_type: CapabilityAssetType; capability_key: string;
-  description: string; version: string; filename: string; content_hash: string;
+  description: string; version: string; filename: string; content_hash: string; digest?: string;
   byte_size: number; import_id: string; created_at: string; reference_count: number;
   is_builtin: boolean; document: Record<string, unknown>;
   dependencies: Record<string, Record<string, string>>;
   dependency_build_state: 'NOT_REQUIRED' | 'PENDING' | 'READY' | 'FAILED';
   dependency_build_error?: string | null;
 }
+export interface CapabilityLineage {
+  id: string; latest: CapabilityAsset; versions: CapabilityAsset[];
+}
+export type CapabilitySort = 'created_at' | 'name' | 'byte_size' | 'revision_number';
+export type CapabilityCollectionSort = 'created_at' | 'name' | 'category' | 'member_count' | 'updated_at';
+export interface RepositoryPage<T> { items: T[]; total: number; page: number; page_size: number }
+export interface CapabilityDirectoryPage extends RepositoryPage<CapabilityLineage> {
+  counts: Partial<Record<CapabilityAssetType, number>>; collection_total: number;
+}
+export interface CapabilityValidationResult {
+  id: string; capability_version_id: string; environment_version_id: string | null;
+  validator: string; status: 'RUNNING' | 'PASSED' | 'FAILED';
+  report: {
+    connection_ok?: boolean; error_kind?: string | null; error_code?: string;
+    tool_catalog?: Array<{ name: string }>;
+  };
+  created_at: string; completed_at?: string | null;
+}
+
 export interface ContextBundleDocument { path: string; title: string; content_sha256: string }
 export interface ContextBundleManifest { entrypoint: string | null; documents: ContextBundleDocument[]; conflict_policy: 'ORDERED_DOCUMENTS_LATER_WINS' }
 export interface CapabilityCollection {
@@ -41,6 +61,35 @@ export interface CapabilityCollectionWrite {
 }
 export interface SkillSource {
   id: string; capability_key: string; filename: string; entry: string; content: string;
+}
+export interface SkillVersionComparison {
+  previous: SkillSource; current: SkillSource; diff: string;
+}
+export interface CapabilityPackageMetadata {
+  id: string; capability_key: string; capability_type: 'SKILL' | 'CONTEXT';
+  filename: string; digest: string; version_no: number;
+}
+export interface CapabilityPackageFiles extends CapabilityPackageMetadata {
+  entry: string; compiled_content: string | null; manifest: ContextBundleManifest | null;
+  files: Array<{ path: string; title: string; byte_size: number; sha256: string; editable: boolean }>;
+}
+export interface CapabilityPackageFile {
+  path: string; content: string | null; byte_size: number; editable: boolean;
+  preview_unavailable: boolean; image: string | null;
+}
+export interface CapabilityPackageComparison {
+  previous: CapabilityPackageMetadata; current: CapabilityPackageMetadata;
+  files: Array<{ path: string; status: 'added' | 'deleted' | 'modified' | 'unchanged'; before_size: number; after_size: number }>;
+}
+export interface CapabilityPackageFileDiff {
+  path: string; diff: string; preview_unavailable: boolean; previous_id: string; current_id: string;
+}
+export interface McpAuthenticationWrite {
+  strategy: 'none' | 'bearer'; credential_id: string | null; expected_row_version: number;
+}
+export interface McpAuthentication {
+  capability_version_id: string; strategy: 'none' | 'bearer'; credential_id: string | null;
+  credential_name: string | null; row_version: number; editable: boolean; valid: boolean;
 }
 export interface McpSource {
   id: string; capability_key: string; filename: string; content: string;
@@ -64,6 +113,7 @@ export interface PluginSourceResolution {
   expires_at: string; resolved_at?: string | null; published_at?: string | null;
 }
 export interface MarketplaceCatalog {
+  total?: number; page?: number; page_size?: number; query?: string;
   schema_version: 1; source: string; commit: string; repo_path?: string | null;
   marketplace_name: string; description?: string | null; version?: string | null; owner: string;
   plugins: Array<{ name: string; description?: string | null; version?: string | null; category?: string | null; author?: string | null }>;
@@ -102,8 +152,15 @@ export interface EnvironmentVersion {
   base_image_reference: string; base_image_digest: string;
   runtime_capabilities: string[];
   manifest: { commands?: Record<string, string>; [key: string]: unknown };
-  error_detail?: string | null; run_reference_count: number;
+  error_detail?: string | null; run_reference_count: number; flow_run_reference_count?: number;
   reference_count: number; created_at: string;
+}
+export interface EnvironmentVersionRunPage {
+  items: Array<{
+    id: string; name: string; flow_definition_id: string; run_no: number; run_mode: 'MANUAL' | 'AUTOMATIC';
+    parent_flow_run_id: string | null; state: string; started_at: string; finished_at: string | null;
+  }>;
+  total: number; page: number; page_size: number;
 }
 export interface EnvironmentSetupSession {
   id: string; environment_id: string; base_version_id?: string | null;
@@ -226,6 +283,7 @@ export interface FlowEdge {
 export interface FlowPortMapping {
   id?: string; source_instance_key: string; source_output_key: string;
   target_instance_key: string; target_input_key: string;
+  runtime_port?: boolean;
 }
 export interface FlowDefinition {
   id: string; name: string; description: string; default_entry_key?: string | null;
@@ -384,8 +442,21 @@ export interface FlowRunAutomaticRecord extends FlowRun {
   node_plans: Record<string, AutomaticNodePlan>;
   readiness: { ready: boolean; issues: Array<{ code: string; node_key: string; message: string }> };
 }
+export interface StepwiseRuntimePortMapping {
+  source_instance_key: string; source_output_key: string;
+  target_instance_key: string; target_input_key: string;
+}
+export interface StepwiseRuntimePortFieldWrite {
+  field_key: string; display_name: string; data_type: ArtifactDataType; description: string;
+}
+export interface StepwiseRuntimePortsWrite {
+  expected_active_snapshot_version: number;
+  node_ports: Record<string, { inputs: StepwiseRuntimePortFieldWrite[]; outputs: StepwiseRuntimePortFieldWrite[] }>;
+  port_mappings: StepwiseRuntimePortMapping[];
+}
 export interface StepwiseNodeDraft {
   row_version: number;
+  rerun_source_node_run_id?: string | null;
   startup_mode: 'PROMPT';
   startup_prompt?: string | null;
   agent_preset?: AgentPreset | null;
@@ -401,11 +472,24 @@ export interface FlowRunStepwiseRecord extends FlowRun {
   /** Editable node configuration; an Attempt exists only after explicit start. */
   stepwise_node_drafts?: Record<string, StepwiseNodeDraft>;
 }
+
+export interface StepwiseTemplateNodeReadiness {
+  node_key: string; node_name: string; status: 'READY' | 'INCOMPLETE' | 'MISSING_DRAFT';
+  missing_fields: string[]; has_prompt: boolean; has_agent: boolean; gate_count: number;
+  mapped_input_fields: string[];
+}
+export interface StepwiseTemplateReadiness {
+  ready: boolean; start_node_key: string; reachable_node_keys: string[];
+  missing_node_keys: string[]; incomplete: Record<string, string[]>;
+  nodes: StepwiseTemplateNodeReadiness[];
+}
+
 export interface FlowRunStepwiseRecordWrite {
   name?: string;
   start_node_key: string;
 }
 export interface FlowRunAutomaticRecordSummary {
+  git_identity?: GitIdentity | null;
   id: string; flow_run_id?: string | null; run_no: number; name: string; state: FlowRun['state'];
   row_version: number; schedule_id?: string | null; schedule_name?: string | null;
   schedule_occurrence_id?: string | null; started_at: string; finished_at?: string | null;
@@ -448,7 +532,10 @@ export interface StepwiseRecordConfigDocument {
   records: StepwiseRecordConfig[];
 }
 export type RecordConfigDocument = AutomaticRecordConfigDocument | StepwiseRecordConfigDocument;
-export interface SnapshotFlowNode extends FlowNode { asset: NodeAsset }
+export interface SnapshotFlowNode extends FlowNode {
+  asset: NodeAsset;
+  runtime_port_overrides?: { inputs?: IOField[]; outputs?: IOField[] };
+}
 export interface SnapshotDefinition extends Omit<FlowDefinition, 'nodes'> {
   nodes: SnapshotFlowNode[];
 }
@@ -458,6 +545,96 @@ export interface RunSnapshot {
   definition: SnapshotDefinition;
   created_at: string;
 }
+export interface CaseStageExecution {
+  flow_run_id?: string; parent_flow_run_id?: string | null; run_mode?: 'MANUAL' | 'AUTOMATIC'; state: string; message?: string;
+  progress?: { accepted: number; terminal: number; active: number };
+  active_node?: { node_key: string; node_name: string; state: AttemptState; error_code?: string | null } | null;
+  nodes?: Array<{ node_key: string; node_name: string; state: string; active: boolean }>;
+  edges?: Array<{ source: string; target: string }>;
+  ready_node_keys?: string[];
+  automatic_block?: FlowRun['automatic_block'];
+  finished_at?: string | null;
+}
+export interface CaseStage {
+  id: string; case_id: string; stage_key: string; name: string; objective: string;
+  position: number; flow_run_id?: string | null; current_execution_flow_run_id?: string | null; execution_mode: 'STEPWISE' | 'CONTINUOUS';
+  state: 'PENDING' | 'ACTIVE' | 'REVIEW_PENDING' | 'COMPLETED' | 'SKIPPED'; execution?: CaseStageExecution | null;
+  created_at: string; updated_at: string;
+}
+export interface CaseStageTemplate {
+  id: string; name: string; execution_mode: 'STEPWISE' | 'CONTINUOUS'; state: string;
+  parent_flow_run_id?: string | null; start_node_key: string; reachable_node_keys: string[];
+}
+export interface CaseAgentTask {
+  id: string; case_id: string; stage_id?: string | null; task_key: string;
+  task_type: 'OBSERVE' | 'PROPOSE_REVISION' | 'REVIEW';
+  state: 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED';
+  flow_run_id?: string | null; node_attempt_id?: string | null;
+  input_context: Record<string, unknown>; result: Record<string, unknown>;
+  created_at: string; updated_at: string;
+}
+export interface CaseControlPlan {
+  id: string; case_id: string; stage_id: string; source_binding_id?: string | null;
+  execution_flow_run_id?: string | null; node_run_id?: string | null; node_attempt_id?: string | null;
+  action: 'CREATE_EXECUTION_COPY' | 'CONFIGURE_EXECUTION' | 'START_EXECUTION' | 'START_STEPWISE_NODE' | 'ACCEPT_STEPWISE_ATTEMPT' | 'REJECT_STEPWISE_ATTEMPT' | 'CANCEL_STEPWISE_ATTEMPT' | 'STOP_EXECUTION' | 'RERUN_STEPWISE_NODE' | 'COPY_CONTINUOUS_EXECUTION' | 'ADVANCE_CASE_STAGE' | 'COMPLETE_CASE';
+  state: 'PENDING' | 'VALIDATED' | 'EXECUTING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED';
+  idempotency_key: string; retry_of_plan_id?: string | null; reason: string; input_snapshot: Record<string, unknown>; result: Record<string, unknown>;
+  error_code?: string | null; created_at: string; validated_at?: string | null; executed_at?: string | null;
+}
+export interface CaseFeedbackDelivery {
+  id: string; round_id: string; binding_id: string; source_kind: 'EXECUTION' | 'CASE_CHANGE';
+  execution_event_id?: string | null;
+  state: 'PENDING' | 'HELD' | 'LEASED' | 'SUBMITTING' | 'ACKNOWLEDGED' | 'RUN_REQUESTED' | 'DELIVERED' | 'FAILED' | 'AMBIGUOUS' | 'AUDIT_ONLY';
+  batch_id?: string | null; message_event_id?: string | null; error_code?: string | null;
+}
+
+export interface CaseDecisionProposal {
+  id: string; case_id: string; flow_run_id: string; node_run_id?: string | null;
+  node_attempt_id?: string | null; proposal_key: string;
+  action: 'START_STAGE_EXECUTION' | 'CONTINUE_STEPWISE' | 'STOP_FLOW_RUN' | 'RERUN_STEPWISE_NODE' | 'COPY_AUTOMATIC_RUN';
+  state: 'PROPOSED' | 'EXECUTED' | 'FAILED' | 'SUPERSEDED'; reason: string;
+  payload: Record<string, unknown>; result: Record<string, unknown>; created_at: string; executed_at?: string | null;
+}
+export interface CaseArtifactMaterial {
+  id: string; kind: 'ARTIFACT'; artifact_version_id: string; stage_key: string;
+  execution_flow_run_id: string; node_key: string; node_run_id: string; node_attempt_id: string;
+  completion_event_id?: string | null; field_key: string; version_no: number;
+  artifact_type: 'URL' | 'FILE'; name: string; mime_type?: string | null; byte_size?: number | null;
+  content_hash?: string | null; state: 'CANDIDATE' | 'ACCEPTED' | 'REJECTED' | 'CANCELLED' | 'SUPERSEDED';
+  candidate_status?: string | null; uri?: string | null; content_url?: string | null;
+  registered_at: string; content_access: 'EXTERNAL_URI' | 'PLATFORM_ARTIFACT';
+}
+export interface CaseMaterial {
+  kind: 'LINK' | 'FILE'; name: string; value: string;
+}
+export interface CaseBasics {
+  name: string; description: string; objective: string;
+  materials: CaseMaterial[]; work_directory_id: string | null;
+}
+export interface CaseSessionConfig {
+  model_provider_id: string; model_name: string; reasoning_effort: string | null;
+  capability_version_ids: string[]; credential_ids: string[];
+}
+export interface Case {
+  id: string; name: string; objective: string;
+  description?: string; materials?: CaseMaterial[]; work_directory_id?: string | null;
+  session_config?: CaseSessionConfig;
+  state: 'DRAFT' | 'ACTIVE' | 'PAUSED' | 'COMPLETED' | 'ARCHIVED';
+  control_conversation_binding_id?: string | null;
+  control_work_directory_id?: string | null;
+  current_control_round_id?: string | null;
+  control_rounds?: CaseControlRound[];
+  row_version: number; stages: CaseStage[]; flow_run_ids: string[]; tasks: CaseAgentTask[];
+  control_plans: CaseControlPlan[]; decision_proposals: CaseDecisionProposal[];
+  feedback_deliveries?: CaseFeedbackDelivery[];
+  created_at: string; updated_at: string;
+}
+
+export interface CaseControlRound {
+  id: string; binding_id: string | null; display_title?: string | null; state: 'PENDING' | 'STARTED' | 'FAILED' | 'DELETED';
+  is_current: boolean; error_code: string | null; created_at: string; started_at: string | null;
+}
+
 export interface FlowRunSummary {
   id: string; flow_definition_id: string; flow_name?: string | null;
   flow_row_version?: number | null; run_no: number; name: string; state: string;
@@ -469,7 +646,9 @@ export interface FlowRunSummary {
   usage?: TokenUsageSummary;
   started_at: string; updated_at: string; finished_at?: string | null;
 }
+export interface GitIdentity { author: string; email: string }
 export interface FlowRun extends FlowRunSummary {
+  git_identity?: GitIdentity | null;
   row_version: number; active_snapshot_id: string; active_snapshot_version: number;
   parent_flow_run_id?: string | null;
   schedule_id?: string | null; schedule_name?: string | null;
@@ -504,6 +683,7 @@ export interface FlowRunScheduleWrite {
 }
 export interface FlowRunScheduleTemplate {
   id: string; name: string; flow_definition_id: string; flow_name?: string | null;
+  parent_flow_run_id: string; parent_flow_run_name?: string | null; parent_flow_run_no?: number | null;
   state: string; run_no: number;
 }
 export interface RunEvent {
@@ -556,6 +736,15 @@ export interface OpenHandsConversationEvent {
         security_risk: 'UNKNOWN' | 'LOW' | 'MEDIUM' | 'HIGH';
       }>;
     };
+    /** OpenHands-owned Goal Loop lifecycle state from ConversationStateUpdateEvent(key="goal"). */
+    goal_status?: {
+      active: boolean;
+      status: 'running' | 'complete' | 'capped' | 'interrupted';
+      iteration: number;
+      max_iterations: number;
+      objective: string;
+      verdict?: { score: number; complete: boolean; missing: string } | null;
+    };
     /** Server-confirmed terminal delivery for this assistant MessageEvent. */
     final_reply?: boolean;
     /** Safe projection of the formal OpenHands TaskAction/TaskObservation lifecycle. */
@@ -601,6 +790,8 @@ export interface OpenHandsConversationEventBatch {
   monitoring?: AgentActivitySummary;
 }
 export interface AgentConversationHydration {
+  /** Native ancestry-validated continuation; omitted on a full recovery. */
+  incremental_from?: string;
   events: OpenHandsConversationEventBatch;
   context: AgentConversationContext;
   readiness: AgentConversationInputReadiness;
@@ -704,14 +895,35 @@ export interface AgentSessionCapability {
   id: string;
   capability_type: 'SKILL' | 'MCP' | 'PLUGIN' | 'CONTEXT' | 'AGENT_DEFINITION' | 'HOOK';
   capability_key: string;
+  revision_number?: number;
   digest: string;
 }
 export type AgentWorkspaceCapability = AgentSessionCapability;
 
+export interface AgentWorkspaceSessionConfiguration {
+  capability_version_ids: string[];
+  credential_ids: string[];
+}
+
+export interface AgentConversationCapabilityRegistration {
+  conversation: AgentConversation;
+  completed: boolean;
+  loaded_capability_version_ids: string[];
+  already_loaded_capability_version_ids: string[];
+  failure?: {
+    capability_version_id: string;
+    code: string;
+    message: string;
+  } | null;
+}
+
 export interface AgentSessionMcpReadiness {
+  read_only_tool_call?: { name: string; is_error: boolean | null; business_code: number | null };
   state: 'READY' | 'UNAVAILABLE';
   error_kind: 'timeout' | 'connection' | 'unknown' | null;
   checked_at: string;
+  tools?: string[];
+  reason?: string | null;
 }
 export type AgentWorkspaceMcpReadiness = AgentSessionMcpReadiness;
 
@@ -741,6 +953,10 @@ export interface AgentWorkspaceReference {
   relative_path?: string;
 }
 export interface AgentConversationReference {
+  kind?: 'conversation';
+  title?: string;
+  source_conversation_id?: string;
+  history_tool?: string;
   event_id: string;
   content: string;
   /** Server-authorized FlowWeave binding; required for new requests, absent only in legacy history. */
@@ -779,7 +995,10 @@ export interface AgentConversation {
   execution_status?: string | null;
   pinned?: boolean;
   unread?: boolean;
+  archived_at?: string | null;
   unread_origin?: 'MANUAL' | 'SYSTEM' | null;
+  /** Server-confirmed terminal assistant MESSAGE for a newly unread conversation. */
+  final_reply_preview?: { event_id: string; content: string } | null;
   lifecycle: 'PROVISIONING' | 'ACTIVE' | 'DELETE_PENDING' | 'FAILED';
   created_at: string;
   updated_at: string;
@@ -801,6 +1020,8 @@ export interface AgentConversationSchedule {
   model_provider_id?: string | null;
   model_name?: string | null;
   reasoning_effort?: string | null;
+  capability_version_ids: string[];
+  credential_ids: string[];
   name: string;
   prompt: string;
   cron_expression: string;
@@ -812,12 +1033,15 @@ export interface AgentConversationSchedule {
   updated_at: string;
 }
 export interface AgentConversationScheduleOccurrence {
+  latest_run_at?: string;
+  latest_trigger_kind?: 'SCHEDULED' | 'MANUAL';
   id: string;
   scheduled_for?: string | null;
   trigger_kind: 'SCHEDULED' | 'MANUAL';
   state: 'PENDING' | 'STARTED' | 'FAILED';
   binding_id: string;
   conversation_title?: string | null;
+  conversation?: AgentConversation | null;
   message_cursor?: string | null;
   error_detail?: string | null;
   created_at: string;
@@ -827,11 +1051,17 @@ export interface AgentConversationPage {
   items: AgentConversation[];
   next_cursor?: string | null;
 }
+export interface AgentScheduleRunConversationPage {
+  items: AgentConversationScheduleOccurrence[];
+  next_cursor: string | null;
+  total: number;
+}
 export interface ManagedAgentConversation {
   id: string;
   display_title?: string | null;
   pinned: boolean;
   unread: boolean;
+  archived_at?: string | null;
   created_at: string;
   updated_at: string;
   last_message_at?: string | null;
@@ -840,9 +1070,26 @@ export interface AgentConversationManagementPage {
   items: ManagedAgentConversation[];
   truncated: boolean;
 }
+export interface AgentConversationManagementArchiveResult {
+  archived: Array<{ id: string; archived_at: string }>;
+  skipped: Array<{ id: string; code: string }>;
+}
 export interface AgentConversationManagementDeleteResult {
   deleted_ids: string[];
   skipped: Array<{ id: string; code: string }>;
+}
+export interface AgentConversationDeletionJob extends AgentConversationManagementDeleteResult {
+  id: string;
+  workspace_id: string;
+  work_directory_id: string | null;
+  workspace_label: string;
+  state: 'PENDING' | 'RUNNING' | 'RETRY' | 'SUCCEEDED' | 'DEAD';
+  total: number;
+  processed: number;
+  binding_ids: string[];
+  remaining_ids: string[];
+  created_at: string;
+  updated_at: string;
 }
 export interface AgentConversationActivity {
   /** Complete summaries for every binding that belongs in the activity panel. */
@@ -889,7 +1136,8 @@ export interface AgentConversationSearch {
 export interface AgentSessionWorkDirectory {
   id: string;
   display_name: string;
-  state: 'ACTIVE';
+  state: 'ACTIVE' | 'ARCHIVED';
+  archived_at?: string | null;
   current_version: {
     id: string;
     version: number;
@@ -904,6 +1152,16 @@ export interface AgentSessionWorkDirectoryList {
   items: AgentSessionWorkDirectory[];
 }
 export type AgentWorkDirectoryList = AgentSessionWorkDirectoryList;
+
+export type AgentConversationManagementWorkspaceKind = 'AGENT' | 'AGENT_SCHEDULE' | 'CASE';
+export interface AgentConversationManagementWorkspace extends AgentSessionWorkDirectory {
+  workspace_kind: AgentConversationManagementWorkspaceKind;
+  source_id?: string | null;
+}
+export interface AgentConversationManagementWorkspaceList {
+  root: AgentSessionWorkDirectoryList['root'] & { workspace_kind: 'AGENT' };
+  items: AgentConversationManagementWorkspace[];
+}
 
 export interface AgentSessionWorkspaceDetails {
   root: string;
@@ -1039,4 +1297,33 @@ export interface LdapOrganization {
 export interface LdapDirectory {
   organizations: LdapOrganization[];
   users: LdapUser[];
+  platform_users?: PlatformUser[];
+  ldap_warning?: string;
 }
+
+export interface PlatformUser {
+  id: string;
+  username: string;
+  display_name: string | null;
+  email: string | null;
+  role: 'SUPER_ADMIN' | 'USER';
+  enabled: boolean;
+  agent_session_access: boolean;
+}
+
+export interface FlowRunDirectoryRecord {
+  id: string; name: string; kind: 'MANUAL' | 'AUTOMATIC'; state: FlowRun['state'];
+  started_at: string; detail: string; schedule_id?: string | null; schedule_name?: string | null;
+}
+export interface FlowRunDirectoryPage { items: FlowRunDirectoryRecord[]; next_cursor: string | null }
+
+export interface MarketSource {
+  id: string; name: string; kind: 'PLUGIN_GIT' | 'SKILL_GIT' | 'SKILLS_SH'; url: string;
+  ref: string; repo_path: string; enabled: boolean; builtin: boolean;
+}
+export interface MarketSources { revision: string; sources: MarketSource[] }
+export interface MarketSkill {
+  id: string; repository: string; skill_id: string; name: string; description: string;
+  installs?: number | null; commit?: string | null; path?: string | null;
+}
+export interface MarketSkillSearch { mode?: 'popular'; skills: MarketSkill[]; query: string; search_required: boolean; commit?: string }

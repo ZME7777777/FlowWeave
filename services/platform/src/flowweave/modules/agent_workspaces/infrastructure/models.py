@@ -4,6 +4,8 @@ from datetime import datetime
 from typing import ClassVar
 
 from sqlalchemy import (
+    JSON,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -187,6 +189,9 @@ class AgentWorkDirectory(Base):
     display_name: Mapped[str] = mapped_column(String(160))
     current_version: Mapped[int] = mapped_column(Integer, default=1)
     row_version: Mapped[int] = mapped_column(Integer, default=1)
+    session_capability_ids_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    session_credential_ids_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
@@ -231,6 +236,21 @@ class AgentWorkDirectoryPath(Base):
     position: Mapped[int] = mapped_column(Integer)
 
 
+class AgentWorkspaceSessionConfiguration(Base):
+    """Current user's defaults on the shared Agent Workspace host."""
+
+    __tablename__ = "agent_workspace_session_configurations"
+    __table_args__ = (
+        UniqueConstraint("owner_user_id", "workspace_id", name="uq_agent_workspace_session_owner"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    workspace_id: Mapped[str] = mapped_column(String(36), index=True)
+    credential_ids_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    credentials_configured: Mapped[bool] = mapped_column(Boolean, default=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
 class AgentWorkspaceCapability(Base):
     """A governed capability enabled for new Agent Workspace conversations."""
 
@@ -249,7 +269,7 @@ class AgentWorkspaceCapability(Base):
             name="uq_agent_workspace_capability_owner_position",
         ),
         CheckConstraint(
-            "capability_type IN ('SKILL', 'MCP', 'PLUGIN')",
+            "capability_type IN ('SKILL', 'MCP', 'PLUGIN', 'CONTEXT', 'AGENT_DEFINITION', 'HOOK')",
             name="ck_agent_workspace_capability_type",
         ),
         CheckConstraint("position >= 0", name="ck_agent_workspace_capability_position"),
@@ -270,6 +290,7 @@ __all__ = (
     "AgentConversationBinding",
     "AgentConversationCapability",
     "AgentWorkspaceCapability",
+    "AgentWorkspaceSessionConfiguration",
     "AgentConversationMessageAttachment",
     "AgentConversationCommand",
     "AgentWorkDirectory",

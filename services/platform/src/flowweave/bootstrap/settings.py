@@ -21,6 +21,13 @@ class Settings(BaseSettings):
     app_env: str = "development"
     log_level: str = "INFO"
     public_base_url: str = "http://localhost:5173"
+    # Explicitly pinned catalog version and trusted endpoint, configured together.
+    agent_history_mcp_capability_version_id: str = ""
+    agent_history_mcp_url: str = ""
+    # Runtime-reachable origin plus deployment prefix of this platform (for example
+    # "http://platform.internal:3000/flowweave"). The platform-managed Case MCP
+    # versions are installed from it, so no version id is configured by hand.
+    platform_mcp_base_url: str = ""
 
     database_url: str = "postgresql+psycopg://flowweave:flowweave_dev@localhost:55432/flowweave"
     pool_size: int = Field(default=10, ge=1, le=100)
@@ -227,6 +234,7 @@ class Settings(BaseSettings):
     docker_controller_api_key: str = ""
     docker_controller_worker_api_key: str = ""
     admin_runtime_observer_key: str = ""
+    admin_runtime_controller_key: str = ""
     admin_control_api_key: str = ""
     docker_controller_terminal_idle_seconds: int = Field(default=1800, ge=60, le=86_400)
     docker_controller_terminal_hard_ttl_seconds: int = Field(default=28_800, ge=300, le=604_800)
@@ -311,10 +319,21 @@ class Settings(BaseSettings):
             self.docker_controller_worker_api_key,
         }:
             raise ValueError("ADMIN_RUNTIME_OBSERVER_KEY must differ from Docker controller keys")
+        if self.admin_runtime_controller_key and len(self.admin_runtime_controller_key) < 32:
+            raise ValueError("ADMIN_RUNTIME_CONTROLLER_KEY must contain at least 32 characters")
+        if self.admin_runtime_controller_key and self.admin_runtime_controller_key in {
+            self.admin_runtime_observer_key,
+            self.docker_controller_api_key,
+            self.docker_controller_worker_api_key,
+        }:
+            raise ValueError(
+                "ADMIN_RUNTIME_CONTROLLER_KEY must be dedicated to Admin Runtime controls"
+            )
         if self.admin_control_api_key and len(self.admin_control_api_key) < 32:
             raise ValueError("ADMIN_CONTROL_API_KEY must contain at least 32 characters")
         if self.admin_control_api_key and self.admin_control_api_key in {
             self.admin_runtime_observer_key,
+            self.admin_runtime_controller_key,
             self.docker_controller_api_key,
             self.docker_controller_worker_api_key,
         }:

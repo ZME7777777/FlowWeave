@@ -45,9 +45,33 @@ class MockRuntime:
         self._events: dict[str, list[RuntimeEvent]] = {}
         self._conversation_condensers: dict[str, RuntimeCondenser] = {}
         self._conversation_secrets: dict[str, dict[str, str]] = {}
+        self._conversation_secret_descriptions: dict[str, dict[str, str]] = {}
+        self._git_identities: dict[str, tuple[str, str]] = {}
+        self._profile_git_roots: set[str] = set()
+        self._loaded_plugins: dict[str, set[str]] = {}
+
+    def workspace_git_identity(
+        self,
+        handle: RuntimeHandle,
+        *,
+        identity: tuple[str, str] | None = None,
+        profile: tuple[str, str] | None = None,
+    ) -> dict[str, str | bool]:
+        if profile is not None and (
+            handle.workspace_root not in self._git_identities
+            or handle.workspace_root in self._profile_git_roots
+        ):
+            self._git_identities[handle.workspace_root] = profile
+            self._profile_git_roots.add(handle.workspace_root)
+        if identity is not None:
+            self._git_identities[handle.workspace_root] = identity
+            self._profile_git_roots.discard(handle.workspace_root)
+        author, email = self._git_identities.get(handle.workspace_root, ("", ""))
+        return {"author": author, "email": email, "configured": bool(author and email)}
 
     def probe_mcp(self, request: RuntimeMCPProbeRequest) -> RuntimeMCPProbeResult:
-        del request
+        if request.server.name == "flowweave-reference-history":
+            return RuntimeMCPProbeResult(ok=True, tools=("read_referenced_conversation",))
         return RuntimeMCPProbeResult(ok=True, tools=("mock_read",))
 
     def validate_plugin(
@@ -98,13 +122,24 @@ class MockRuntime:
             cursor="1",
             workspace_root=request.workspace_root,
         )
+        if request.git_identity is not None:
+            self.workspace_git_identity(handle, identity=request.git_identity)
         self._results[handle.job_id] = RuntimeResult(status="RUNNING", cursor="1")
         self._events[handle.job_id] = []
         self._conversation_secrets[handle.job_id] = dict(request.conversation_secrets)
         return handle
 
-    def update_conversation_secrets(self, handle: RuntimeHandle, secrets: dict[str, str]) -> None:
+    def update_conversation_secrets(
+        self,
+        handle: RuntimeHandle,
+        secrets: dict[str, str],
+        *,
+        descriptions: dict[str, str] | None = None,
+    ) -> None:
         self._conversation_secrets.setdefault(handle.job_id, {}).update(secrets)
+        self._conversation_secret_descriptions.setdefault(handle.job_id, {}).update(
+            descriptions or {}
+        )
 
     def conversation_title(self, handle: RuntimeHandle) -> str | None:
         del handle
@@ -125,6 +160,8 @@ class MockRuntime:
             cursor="1",
             workspace_root=request.workspace_root,
         )
+        if request.git_identity is not None:
+            self.workspace_git_identity(handle, identity=request.git_identity)
         if request.node.get("config_override", {}).get("mock_human_required"):
             result = RuntimeResult(
                 status="HUMAN_INPUT_REQUIRED",
@@ -244,7 +281,16 @@ class MockRuntime:
         del handle, provider
 
     def load_plugin(self, handle: RuntimeHandle, plugin_ref: str) -> None:
-        del handle, plugin_ref
+        self._loaded_plugins.setdefault(handle.conversation_id or "", set()).add(plugin_ref)
+
+    def conversation_mcp_configured(
+        self, handle: RuntimeHandle, server_name: str, url: str
+    ) -> bool:
+        del url
+        return any(
+            server_name in plugin
+            for plugin in self._loaded_plugins.get(handle.conversation_id or "", set())
+        )
 
     def upload_workspace_file(
         self,
@@ -266,7 +312,8 @@ class MockRuntime:
             ).strip("._-")[:181]
             or "attachment"
         )
-        return f"{handle.workspace_root}/uploads/{owner}-{uuid4().hex}--{safe_name}"
+        working_directory = handle.working_directory or handle.workspace_root
+        return f"{working_directory}/.uploads/{owner}-{uuid4().hex}--{safe_name}"
 
     def workspace_snapshot(self, handle: RuntimeHandle, path: str) -> RuntimeWorkspaceSnapshot:
         del handle
@@ -451,6 +498,17 @@ class MockRuntime:
             leaf_event_id=fork_handle.cursor,
             reset_metrics=reset_metrics,
         )
+
+    def append_message(self, handle: RuntimeHandle, content: str) -> RuntimeResult:
+        events = self._events.setdefault(handle.job_id, [])
+        cursor = str(len(events) + 2)
+        events.append(RuntimeEvent(cursor, "MESSAGE", {"source": "user", "content": content}))
+        return RuntimeResult(status="IDLE", cursor=cursor)
+
+    def run_pending_message(self, handle: RuntimeHandle, event_id: str) -> RuntimeResult:
+        if not any(event.cursor == event_id for event in self._events.get(handle.job_id, [])):
+            raise DomainError("RUNTIME_MESSAGE_IDENTITY_UNAVAILABLE", "Message not found", 409)
+        return self.run(handle)
 
     def send_message(
         self, handle: RuntimeHandle, content: str, image_urls: tuple[str, ...] = ()

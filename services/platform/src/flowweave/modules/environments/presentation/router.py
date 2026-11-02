@@ -4,7 +4,7 @@ import asyncio
 import json
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Response, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, Query, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 
 from flowweave.bootstrap.container import Container
@@ -60,6 +60,22 @@ async def delete_environment_version(environment_id: str, version_id: str, db: D
         lambda session: service.delete_environment_version(session, environment_id, version_id),
     )
     return Response(status_code=204)
+
+
+@router.get("/terminal-environments/{environment_id}/versions/{version_id}/runs")
+async def environment_version_runs(
+    environment_id: str,
+    version_id: str,
+    db: Db,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: service.list_version_runs(
+            session, environment_id, version_id, page=page, page_size=page_size
+        ),
+    )
 
 
 @router.post("/terminal-environments/{environment_id}/setup-sessions", status_code=201)

@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
 from uuid import UUID, uuid4
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.orm import Session
@@ -34,6 +35,7 @@ from flowweave.modules.catalog.public import (
 )
 from flowweave.modules.environments.public import (
     lock_referenceable_version,
+    read_referenced_version,
     runtime_server_identity,
     validate_runtime_manifest,
 )
@@ -43,6 +45,10 @@ from flowweave.modules.gates.public import (
     GateExecutionPlan,
     GateResult,
     execute_gate_plan,
+)
+from flowweave.modules.runs.application.git_settings import (
+    default_git_identity,
+    record_git_identity,
 )
 from flowweave.modules.runs.public import (
     Artifact,
@@ -92,6 +98,8 @@ from flowweave.shared.models import (
     BackgroundTask,
     CandidateOutputSet,
     EnvironmentVersion,
+    FlowEdge,
+    FlowNode,
     FlowRun,
     FlowRunRuntime,
     FlowRunSchedule,
@@ -141,6 +149,7 @@ from flowweave.shared.schemas import (
     StepwiseRecordConfigImportWrite,
     StepwiseRunRecordCopyWrite,
     StepwiseRunRecordWrite,
+    StepwiseRuntimePortsWrite,
     SyncSnapshotWrite,
 )
 from flowweave.shared.settings import get_settings
@@ -217,6 +226,26 @@ def _event(
     db.add(event)
     db.flush()
     enqueue_matching_deliveries(db, event)
+    from flowweave.modules.cases.public import record_case_execution_event
+
+    record_case_execution_event(db, event)
+    if event_type in {
+        "NODE_RUN_COMPLETED",
+        "RUNTIME_FAILED",
+        "FLOW_RUN_COMPLETED",
+        "FLOW_RUN_CANCELLED",
+    }:
+        from flowweave.modules.cases.public import project_flow_run_event
+
+        project_flow_run_event(
+            db,
+            run_id,
+            event_type,
+            node_run_id=node_run_id,
+            node_attempt_id=attempt_id,
+            payload=event.payload_json,
+            run_event_cursor=event.cursor,
+        )
 
 
 def _action(
@@ -452,6 +481,7 @@ def _freeze_automatic_plan(
                 }
             )
     return {
+        "git_identity": record_git_identity(run),
         "status": "DRAFT",
         "start_node_key": start_node_key,
         "reachable_node_keys": reachable,
@@ -814,6 +844,14 @@ def _register_artifact(
         {"artifact_id": item.id, "field_key": item.field_key, "version_no": version},
         attempt_id=attempt_id,
     )
+    if attempt_id is not None:
+        from flowweave.modules.cases.public import project_flow_run_artifacts
+
+        project_flow_run_artifacts(db, run_id, artifact_id=item.id)
+    if source == "RUNTIME" and attempt_id is not None:
+        from flowweave.modules.cases.public import project_flow_run_observations
+
+        project_flow_run_observations(db, run_id)
     return item
 
 
@@ -1345,8 +1383,153 @@ def read_artifact_content(reference: ArtifactContentReference) -> tuple[bytes, s
     return content, reference.mime_type, reference.filename
 
 
+def _runtime_input_fields(node: dict[str, Any]) -> list[dict[str, Any]]:
+    asset = cast(dict[str, Any], node.get("asset") or {})
+    fields = [
+        dict(field)
+        for field in cast(list[object], asset.get("inputs") or [])
+        if isinstance(field, dict)
+    ]
+    extensions = node.get("runtime_port_overrides")
+    if not isinstance(extensions, dict):
+        return fields
+    for raw in extensions.get("inputs", []):
+        if not isinstance(raw, dict):
+            continue
+        field_key = str(raw.get("field_key") or "")
+        data_type = str(raw.get("data_type") or "")
+        if not field_key or data_type not in {"URL", "FILE"}:
+            continue
+        fields = [field for field in fields if str(field.get("field_key") or "") != field_key]
+        fields.append(
+            {
+                "field_key": field_key,
+                "display_name": str(raw.get("display_name") or field_key),
+                "data_type": data_type,
+                "description": str(raw.get("description") or ""),
+                "required": bool(raw.get("required", False)),
+                "runtime_port": True,
+            }
+        )
+    return fields
+
+
 def _input_fields(node: dict[str, Any]) -> tuple[InputField, ...]:
-    return tuple(InputField(x["field_key"], x["data_type"]) for x in node["asset"]["inputs"])
+    return tuple(
+        InputField(
+            str(field["field_key"]),
+            str(field["data_type"]),
+            bool(field.get("required", True)),
+        )
+        for field in _runtime_input_fields(node)
+    )
+
+
+def _effective_input_fields(snapshot: RunSnapshot, node: dict[str, Any]) -> tuple[InputField, ...]:
+    node_key = str(node.get("instance_key") or "")
+    mapped_inputs = {
+        str(mapping.get("target_input_key") or "")
+        for mapping in snapshot.definition_json.get("port_mappings", [])
+        if isinstance(mapping, dict) and str(mapping.get("target_instance_key") or "") == node_key
+    }
+    return tuple(
+        InputField(
+            str(field["field_key"]),
+            str(field["data_type"]),
+            bool(field.get("required", False))
+            or str(field.get("field_key") or "") in mapped_inputs,
+        )
+        for field in _runtime_input_fields(node)
+    )
+
+
+def _runtime_output_fields(node: dict[str, Any]) -> list[dict[str, Any]]:
+    asset = cast(dict[str, Any], node.get("asset") or {})
+    fields = [
+        dict(field)
+        for field in cast(list[object], asset.get("outputs") or [])
+        if isinstance(field, dict)
+    ]
+    extensions = node.get("runtime_port_overrides")
+    if not isinstance(extensions, dict):
+        return fields
+    for raw in extensions.get("outputs", []):
+        if not isinstance(raw, dict):
+            continue
+        field_key = str(raw.get("field_key") or "")
+        data_type = str(raw.get("data_type") or "")
+        if not field_key or data_type not in {"URL", "FILE"}:
+            continue
+        fields = [field for field in fields if str(field.get("field_key") or "") != field_key]
+        fields.append(
+            {
+                "field_key": field_key,
+                "display_name": str(raw.get("display_name") or field_key),
+                "data_type": data_type,
+                "description": str(raw.get("description") or ""),
+                "output_scope": str(raw.get("output_scope") or "FLOW"),
+                "runtime_port": True,
+            }
+        )
+    return fields
+
+
+def _validate_runtime_definition_ports(definition: dict[str, Any]) -> None:
+    nodes = {
+        str(node.get("instance_key") or ""): node
+        for node in definition.get("nodes", [])
+        if isinstance(node, dict) and str(node.get("instance_key") or "")
+    }
+    targets: set[tuple[str, str]] = set()
+    for mapping in definition.get("port_mappings", []):
+        if not isinstance(mapping, dict):
+            continue
+        source_key = str(mapping.get("source_instance_key") or "")
+        target_key = str(mapping.get("target_instance_key") or "")
+        source_output = str(mapping.get("source_output_key") or "")
+        target_input = str(mapping.get("target_input_key") or "")
+        source = nodes.get(source_key)
+        target = nodes.get(target_key)
+        source_types = {
+            str(field.get("field_key") or ""): str(field.get("data_type") or "")
+            for field in _runtime_output_fields(source or {})
+        }
+        target_types = {
+            str(field.get("field_key") or ""): str(field.get("data_type") or "")
+            for field in _runtime_input_fields(target or {})
+        }
+        if not source_output or source_types.get(source_output) is None:
+            raise DomainError("RUN_REVISION_INVALID", "runtime source output is invalid", 422)
+        if not target_input or target_types.get(target_input) is None:
+            raise DomainError("RUN_REVISION_INVALID", "runtime target input is invalid", 422)
+        if source_types[source_output] != target_types[target_input]:
+            raise DomainError("RUN_REVISION_INVALID", "runtime port types are incompatible", 422)
+        identity = (target_key, target_input)
+        if identity in targets:
+            raise DomainError(
+                "RUN_REVISION_INVALID", "runtime target input has multiple mappings", 422
+            )
+        targets.add(identity)
+    for node in nodes.values():
+        overrides = node.get("runtime_port_overrides")
+        if not isinstance(overrides, dict):
+            continue
+        for direction, fields in (
+            ("inputs", _runtime_input_fields(node)),
+            ("outputs", _runtime_output_fields(node)),
+        ):
+            keys = [str(field.get("field_key") or "") for field in fields]
+            if not all(keys) or len(keys) != len(set(keys)):
+                raise DomainError(
+                    "RUN_REVISION_INVALID",
+                    f"runtime {direction} must have unique field keys",
+                    422,
+                )
+        for field in overrides.get("outputs", []):
+            if not isinstance(field, dict):
+                continue
+            if str(field.get("output_scope") or "FLOW") not in {"FLOW", "OBSERVATION", "CASE"}:
+                raise DomainError("RUN_REVISION_INVALID", "runtime output scope is invalid", 422)
 
 
 def _validate_input_bindings(
@@ -1394,6 +1577,38 @@ def _validate_input_bindings(
                 422,
                 {"id": artifact_id, "field": field_key},
             )
+
+
+def _validate_runtime_direction_graph(definition: dict[str, Any]) -> None:
+    nodes = {
+        str(node.get("instance_key") or "")
+        for node in definition.get("nodes", [])
+        if isinstance(node, dict) and str(node.get("instance_key") or "")
+    }
+    adjacency: dict[str, set[str]] = {node: set() for node in nodes}
+    for edge in definition.get("edges", []):
+        if not isinstance(edge, dict):
+            continue
+        source = str(edge.get("source_instance_key") or "")
+        target = str(edge.get("target_instance_key") or "")
+        if source in adjacency and target in adjacency:
+            adjacency[source].add(target)
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(node: str) -> None:
+        if node in visiting:
+            raise DomainError("RUN_REVISION_INVALID", "runtime graph cannot contain cycles", 422)
+        if node in visited:
+            return
+        visiting.add(node)
+        for target in adjacency[node]:
+            visit(target)
+        visiting.remove(node)
+        visited.add(node)
+
+    for node in nodes:
+        visit(node)
 
 
 _MANUAL_NODE_CONTEXT_ID = "__node_context_prompt__"
@@ -1853,7 +2068,7 @@ def _evaluate_readiness(db: Session, attempt: NodeAttempt) -> None:
         for x in db.scalars(select(ArtifactVersion).where(ArtifactVersion.id.in_(ids)))
     }
     result = evaluate_readiness(
-        _input_fields(node),
+        _effective_input_fields(snapshot, node),
         tuple(Binding(x.input_field_key, x.artifact_version_id) for x in rows),
         artifacts,
     )
@@ -3084,7 +3299,9 @@ def _parse_cron(expression: str) -> tuple[set[int], set[int], set[int], set[int]
 
 def _next_cron_at(expression: str, after: datetime) -> datetime:
     minute, hour, day, month, weekday = _parse_cron(expression)
-    candidate = after.astimezone(UTC).replace(second=0, microsecond=0) + timedelta(minutes=1)
+    candidate = after.astimezone(ZoneInfo("Asia/Shanghai")).replace(
+        second=0, microsecond=0
+    ) + timedelta(minutes=1)
     # A one-year bound prevents a malformed but syntactically valid expression
     # from turning a Worker scan into an unbounded loop.
     for _ in range(366 * 24 * 60):
@@ -3104,7 +3321,7 @@ def _next_cron_at(expression: str, after: datetime) -> datetime:
             and candidate.month in month
             and calendar_matches
         ):
-            return candidate
+            return candidate.astimezone(UTC)
         candidate += timedelta(minutes=1)
     raise ValueError("cron has no matching time in the next year")
 
@@ -3142,6 +3359,9 @@ def list_flow_run_schedule_templates(db: Session) -> list[dict[str, Any]]:
                 "name": run.name,
                 "flow_definition_id": run.flow_definition_id,
                 "flow_name": _active_snapshot(db, run).definition_json.get("name"),
+                "parent_flow_run_id": parent.id,
+                "parent_flow_run_name": parent.name,
+                "parent_flow_run_no": parent.run_no,
                 "state": run.state,
                 "run_no": run.run_no,
             }
@@ -3234,6 +3454,7 @@ def create_flow_run_schedule(db: Session, payload: FlowRunScheduleWrite) -> dict
     source = _run(db, payload.source_flow_run_id)
     parent = db.get(FlowRun, source.parent_flow_run_id) if source.parent_flow_run_id else None
     plan = copy.deepcopy(dict(source.automation_plan_json or {}))
+    plan["git_identity"] = default_git_identity(db)
     readiness = cast(dict[str, Any], plan.get("readiness") or {})
     if (
         source.run_mode != "AUTOMATIC"
@@ -3350,40 +3571,44 @@ def trigger_flow_run_schedule(db: Session, schedule_id: str) -> dict[str, Any]:
 
 
 def delete_flow_run_schedule(db: Session, schedule_id: str) -> None:
-    """Delete an empty schedule directory.
-
-    Existing execution records must follow the FlowRun deletion contract so
-    Runtime cleanup and the final-record rule remain atomic.
-    """
+    """Stop a schedule and remove its generated records through their cleanup contract."""
 
     schedule = db.scalar(
         select(FlowRunSchedule).where(FlowRunSchedule.id == schedule_id).with_for_update()
     )
     if schedule is None:
         raise not_found("flow_run_schedule", schedule_id)
-    records = db.scalar(select(func.count(FlowRun.id)).where(FlowRun.schedule_id == schedule.id))
-    if records:
-        raise DomainError(
-            "SCHEDULE_HAS_RUNS",
-            "Delete the schedule FlowRun records before deleting this schedule",
-            409,
-            {"flow_run_count": records},
+    schedule.status = "PAUSED"
+    schedule.next_run_at = None
+    schedule.row_version += 1
+    runs = list(
+        db.scalars(
+            select(FlowRun)
+            .where(FlowRun.schedule_id == schedule.id)
+            .order_by(FlowRun.started_at, FlowRun.id)
         )
+    )
+    for run in runs:
+        if run.parent_flow_run_id:
+            delete_nested_automatic_run_record(db, run.parent_flow_run_id, run.id)
+        else:
+            _delete_run_records(db, run.id, allow_schedule_record=True)
     occurrence_ids = select(FlowRunScheduleOccurrence.id).where(
         FlowRunScheduleOccurrence.schedule_id == schedule.id
     )
     db.execute(
         delete(BackgroundTask).where(
-            BackgroundTask.aggregate_type == "FLOW_RUN_SCHEDULE_OCCURRENCE",
+            BackgroundTask.task_type == "MATERIALIZE_FLOW_RUN_SCHEDULE",
             BackgroundTask.aggregate_id.in_(occurrence_ids),
         )
     )
-    db.execute(
-        delete(FlowRunScheduleOccurrence).where(
-            FlowRunScheduleOccurrence.schedule_id == schedule.id
-        )
+    _enqueue_record_delete(
+        db,
+        task_type="DELETE_FLOW_RUN_SCHEDULE",
+        aggregate_type="FLOW_RUN_SCHEDULE",
+        aggregate_id=schedule.id,
+        payload={},
     )
-    db.delete(schedule)
     finish(db)
 
 
@@ -3852,11 +4077,13 @@ def _create_node_run(
     startup_prompt: str | None = None,
     allow_existing: bool = False,
     awaiting_start_confirmation: bool = False,
+    frozen_snapshot: RunSnapshot | None = None,
+    reuse_workspace_ref: str | None = None,
 ) -> tuple[NodeRun, NodeAttempt]:
     startup_prompt = _startup_prompt_with_business_result_contract(
         startup_prompt, gate_policies or []
     )
-    snapshot = _active_snapshot(db, run)
+    snapshot = frozen_snapshot or _active_snapshot(db, run)
     node = _node(snapshot, instance_key)
     asset = cast(dict[str, Any], node.get("asset") or {})
     asset_id = str(asset.get("id") or "")
@@ -3973,7 +4200,7 @@ def _create_node_run(
     )
     db.add(attempt)
     db.flush()
-    attempt.workspace_ref = str(
+    attempt.workspace_ref = reuse_workspace_ref or str(
         ensure_node_attempt_workspace(
             db,
             flow_run_id=run.id,
@@ -4023,11 +4250,13 @@ def _copy_initial_node_configuration(
     target_run: FlowRun,
     source_node: NodeRun,
     initial: NodeAttempt,
+    *,
+    copy_input_bindings: bool = True,
 ) -> tuple[NodeRun, NodeAttempt, int]:
     """Copy one first-node configuration without execution state or outputs."""
 
     artifact_ids: dict[str, str] = {}
-    if initial.startup_mode == "PROMPT":
+    if copy_input_bindings and initial.startup_mode == "PROMPT":
         for binding in _bindings(db, initial.id):
             artifact = db.get(ArtifactVersion, binding.artifact_version_id)
             if (
@@ -4057,6 +4286,7 @@ def _copy_initial_node_configuration(
         agent_preset=copy.deepcopy(initial.agent_preset_json),
         allow_existing=True,
         awaiting_start_confirmation=initial.startup_mode == "PROMPT",
+        reuse_workspace_ref=initial.workspace_ref if source_run.id == target_run.id else None,
     )
     copied_attempt.startup_mode = initial.startup_mode
     copied_attempt.startup_prompt = initial.startup_prompt
@@ -4102,9 +4332,78 @@ def copy_node_run(
     if initial is None:
         raise DomainError("RUN_STATE_INVALID", "node record has no initial attempt", 409)
 
-    copied, copied_attempt, copied_input_count = _copy_initial_node_configuration(
-        db, run, run, source, initial
-    )
+    if payload.source_version == "TEMPLATE":
+        environment = lock_referenceable_version(db, run.environment_version_id or "")
+        if environment is None:
+            raise DomainError(
+                "RUN_ENVIRONMENT_VERSION_INVALID",
+                "The FlowRun Environment Version is unavailable",
+                409,
+                {"environment_version_id": run.environment_version_id},
+            )
+        definition = _snapshot_definition(
+            db, run.flow_definition_id, environment_version_id=run.environment_version_id
+        )
+        if not any(
+            node.get("instance_key") == source.flow_node_snapshot_key
+            for node in definition["nodes"]
+        ):
+            raise not_found("flow_node", source.flow_node_snapshot_key)
+        identity = runtime_server_identity(
+            environment.manifest_json,
+            environment_version_id=environment.id,
+            runtime_protocol_profile=environment.runtime_protocol_profile,
+        )
+        snapshot = RunSnapshot(
+            flow_run_id=run.id,
+            version=(
+                (
+                    db.scalar(
+                        select(func.max(RunSnapshot.version)).where(
+                            RunSnapshot.flow_run_id == run.id
+                        )
+                    )
+                    or 0
+                )
+                + 1
+            ),
+            schema_version=3,
+            definition_json=definition,
+            definition_hash=_hash(definition),
+            runtime_manifest_json=_compile_runtime_manifest(definition, server_identity=identity),
+            runtime_manifest_hash="",
+            environment_version_id=run.environment_version_id,
+        )
+        snapshot.runtime_manifest_hash = _runtime_manifest_hash(snapshot.runtime_manifest_json)
+        db.add(snapshot)
+        db.flush()
+        hold_snapshot_memory_references(
+            db, snapshot_id=snapshot.id, runtime_manifest=snapshot.runtime_manifest_json
+        )
+        copied, copied_attempt = _create_node_run(
+            db,
+            run,
+            source.flow_node_snapshot_key,
+            {},
+            "RECORD_COPY_TEMPLATE",
+            [],
+            context_ids=[],
+            agent_preset=None,
+            startup_prompt=None,
+            allow_existing=True,
+            awaiting_start_confirmation=True,
+            frozen_snapshot=snapshot,
+        )
+        copied_input_count = 0
+    else:
+        copied, copied_attempt, copied_input_count = _copy_initial_node_configuration(
+            db,
+            run,
+            run,
+            source,
+            initial,
+            copy_input_bindings=payload.artifact_mode != "RULES_ONLY",
+        )
     copied.name = (payload.name or "").strip() or None
     _event(
         db,
@@ -4113,6 +4412,8 @@ def copy_node_run(
         {
             "source_node_run_id": source.id,
             "source_attempt_id": initial.id,
+            "source_version": payload.source_version,
+            "artifact_mode": payload.artifact_mode,
             "name": copied.name,
             "copied_input_count": copied_input_count,
         },
@@ -4122,12 +4423,32 @@ def copy_node_run(
     return node_run_detail(db, copied.id)
 
 
+def _require_startable_flow(db: Session, flow_id: str) -> None:
+    nodes = db.scalars(select(FlowNode).where(FlowNode.flow_id == flow_id)).all()
+    if not nodes:
+        raise DomainError(
+            "FLOW_START_NODE_MISSING",
+            "Flow has no start node. Add at least one node before starting it.",
+            422,
+        )
+    target_ids = set(
+        db.scalars(select(FlowEdge.target_flow_node_id).where(FlowEdge.flow_id == flow_id))
+    )
+    if not any(node.id not in target_ids for node in nodes):
+        raise DomainError(
+            "FLOW_START_NODE_MISSING",
+            "Flow has no start node. Keep at least one node without an incoming flow edge.",
+            422,
+        )
+
+
 def start_flow(
     db: Session,
     flow_id: str,
     payload: RunStart,
 ) -> dict[str, Any]:
     flow = load_flow(db, flow_id)
+    _require_startable_flow(db, flow_id)
     environment = lock_referenceable_version(db, payload.environment_version_id)
     if environment is None:
         raise DomainError(
@@ -4166,6 +4487,7 @@ def start_flow(
         runtime_manifest_hash=_runtime_manifest_hash(runtime_manifest),
         environment_version_id=environment.id,
     )
+    run.automation_plan_json = {"git_identity": default_git_identity(db)}
     db.add(snapshot)
     db.flush()
     sandboxes.allocate_flow_run_runtime(db, run.id)
@@ -4320,7 +4642,10 @@ def _create_nested_stepwise_run_record(
     db.flush()
     _node(snapshot, payload.start_node_key)
     record.active_snapshot_id = snapshot.id
-    record.automation_plan_json = {"start_node_key": payload.start_node_key}
+    record.automation_plan_json = {
+        "start_node_key": payload.start_node_key,
+        "git_identity": default_git_identity(db),
+    }
     hold_snapshot_memory_references(
         db, snapshot_id=snapshot.id, runtime_manifest=snapshot.runtime_manifest_json
     )
@@ -4484,6 +4809,7 @@ def _stepwise_draft_projection(draft: dict[str, Any]) -> dict[str, Any]:
     bindings = _stepwise_draft_bindings(draft)
     return {
         "row_version": int(draft.get("row_version") or 1),
+        "rerun_source_node_run_id": draft.get("rerun_source_node_run_id"),
         "startup_mode": str(draft.get("startup_mode") or "PROMPT"),
         "startup_prompt": draft.get("startup_prompt"),
         "agent_preset": draft.get("agent_preset"),
@@ -4500,7 +4826,9 @@ def _stepwise_draft_projection(draft: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _stepwise_draft_ready(node: dict[str, Any], draft: dict[str, Any]) -> bool:
+def _stepwise_draft_ready(
+    snapshot: RunSnapshot, node: dict[str, Any], draft: dict[str, Any]
+) -> bool:
     if str(draft.get("startup_mode") or "PROMPT") != "PROMPT":
         return False
     preset = draft.get("agent_preset")
@@ -4512,11 +4840,117 @@ def _stepwise_draft_ready(node: dict[str, Any], draft: dict[str, Any]) -> bool:
     ):
         return False
     bindings = _stepwise_draft_bindings(draft)
-    return all(str(field.get("field_key") or "") in bindings for field in node["asset"]["inputs"])
+    return all(
+        not field.required or field.key in bindings
+        for field in _effective_input_fields(snapshot, node)
+    )
 
 
 def _stepwise_node_draft(record: FlowRun, node_key: str) -> dict[str, Any] | None:
     return _stepwise_node_drafts(record).get(node_key)
+
+
+def stepwise_record_template_readiness(db: Session, run_id: str) -> dict[str, Any]:
+    """Project complete Case-template readiness without changing the stepwise record."""
+
+    record = _run(db, run_id)
+    if record.run_mode != "MANUAL" or record.parent_flow_run_id is None:
+        raise illegal("stepwise templates must be configured stepwise records", state=record.state)
+    snapshot = _active_snapshot(db, record)
+    start_node_key, _source_node = _stepwise_initial_node(db, record)
+    reachable = _reachable_node_keys(snapshot.definition_json, start_node_key)
+    drafts = _stepwise_node_drafts(record)
+    mappings_by_target: dict[str, set[str]] = {}
+    for mapping in snapshot.definition_json.get("port_mappings", []):
+        source = str(mapping.get("source_instance_key") or "")
+        target = str(mapping.get("target_instance_key") or "")
+        field = str(mapping.get("target_input_key") or "")
+        if source in reachable and target in reachable and field:
+            mappings_by_target.setdefault(target, set()).add(field)
+    node_readiness: list[dict[str, Any]] = []
+    missing: list[str] = []
+    incomplete: dict[str, list[str]] = {}
+    for node_key in reachable:
+        node = _node(snapshot, node_key)
+        draft = drafts.get(node_key)
+        if draft is None:
+            missing.append(node_key)
+            node_readiness.append(
+                {
+                    "node_key": node_key,
+                    "node_name": str(node.get("alias") or node_key),
+                    "status": "MISSING_DRAFT",
+                    "missing_fields": [],
+                    "has_prompt": False,
+                    "has_agent": False,
+                    "gate_count": 0,
+                    "mapped_input_fields": sorted(mappings_by_target.get(node_key, set())),
+                }
+            )
+            continue
+        missing_fields = [
+            field.key
+            for field in _input_fields(node)
+            if field.required
+            and field.key not in _stepwise_draft_bindings(draft)
+            and field.key not in mappings_by_target.get(node_key, set())
+        ]
+        preset = draft.get("agent_preset")
+        has_prompt = bool(str(draft.get("startup_prompt") or "").strip())
+        has_agent = bool(
+            isinstance(preset, dict)
+            and str(preset.get("model_provider_id") or "").strip()
+            and str(preset.get("model_name") or "").strip()
+        )
+        complete = (
+            str(draft.get("startup_mode") or "") == "PROMPT"
+            and has_prompt
+            and has_agent
+            and not missing_fields
+        )
+        if not complete:
+            incomplete[node_key] = missing_fields
+        node_readiness.append(
+            {
+                "node_key": node_key,
+                "node_name": str(node.get("alias") or node_key),
+                "status": "READY" if complete else "INCOMPLETE",
+                "missing_fields": missing_fields,
+                "has_prompt": has_prompt,
+                "has_agent": has_agent,
+                "gate_count": len(list(draft.get("gates") or [])),
+                "mapped_input_fields": sorted(mappings_by_target.get(node_key, set())),
+            }
+        )
+    return {
+        "ready": not missing and not incomplete,
+        "start_node_key": start_node_key,
+        "reachable_node_keys": reachable,
+        "missing_node_keys": missing,
+        "incomplete": incomplete,
+        "nodes": node_readiness,
+    }
+
+
+def validate_stepwise_record_template(db: Session, run_id: str) -> dict[str, Any]:
+    """Require every reachable node to have a reusable stepwise configuration."""
+
+    readiness = stepwise_record_template_readiness(db, run_id)
+    if not readiness["ready"]:
+        raise DomainError(
+            "STEPWISE_TEMPLATE_INCOMPLETE",
+            "every reachable stepwise node must be configured before Case launch",
+            422,
+            {
+                "start_node_key": readiness["start_node_key"],
+                "missing_node_keys": readiness["missing_node_keys"],
+                "incomplete": readiness["incomplete"],
+            },
+        )
+    return {
+        "start_node_key": readiness["start_node_key"],
+        "reachable_node_keys": readiness["reachable_node_keys"],
+    }
 
 
 def _copy_stepwise_draft_from_attempt(
@@ -4711,6 +5145,17 @@ def save_stepwise_node_draft(
         )
         artifact_ids[field_key] = artifact.id
     _validate_input_bindings(db, run, node, artifact_ids)
+    required_inputs = {
+        field.key for field in _effective_input_fields(snapshot, node) if field.required
+    }
+    missing_inputs = sorted(required_inputs - set(artifact_ids))
+    if missing_inputs:
+        raise DomainError(
+            "STEPWISE_DRAFT_INPUTS_INCOMPLETE",
+            "required node inputs must be configured before saving the stepwise draft",
+            422,
+            {"fields": missing_inputs},
+        )
     executor = cast(dict[str, Any], node.get("asset", {}).get("executor") or {})
     effective_context_prompt = (
         str(preset["node_context_prompt"])
@@ -4719,6 +5164,8 @@ def save_stepwise_node_draft(
     )
     drafts[instance_key] = {
         "row_version": existing_version + 1,
+        "rerun_source_node_run_id": (existing or {}).get("rerun_source_node_run_id"),
+        "rerun_workspace_ref": (existing or {}).get("rerun_workspace_ref"),
         "startup_mode": "PROMPT",
         "startup_prompt": payload.startup_prompt,
         "agent_preset": preset,
@@ -4753,6 +5200,251 @@ def save_stepwise_node_draft(
     return _stepwise_draft_projection(drafts[instance_key])
 
 
+def save_stepwise_runtime_ports(
+    db: Session, run_id: str, payload: StepwiseRuntimePortsWrite
+) -> dict[str, Any]:
+    """Freeze run-level ports for unstarted nodes in one stepwise record."""
+
+    run = _locked_run(db, run_id)
+    if run.run_mode != "MANUAL" or run.parent_flow_run_id is None:
+        raise illegal("only a stepwise record can change runtime ports", state=run.state)
+    if run.state in {FlowRunState.COMPLETED, FlowRunState.CANCELLED}:
+        raise illegal("terminal stepwise record cannot change runtime ports", state=run.state)
+    active = _active_snapshot(db, run)
+    if active.version != payload.expected_active_snapshot_version:
+        raise conflict(
+            "stepwise runtime ports were modified",
+            expected=payload.expected_active_snapshot_version,
+            actual=active.version,
+        )
+    definition = copy.deepcopy(active.definition_json)
+    nodes = {
+        str(node.get("instance_key") or ""): node
+        for node in definition.get("nodes", [])
+        if isinstance(node, dict) and str(node.get("instance_key") or "")
+    }
+    unknown_nodes = sorted(set(payload.node_ports) - set(nodes))
+    if unknown_nodes:
+        raise DomainError(
+            "RUN_PORTS_INVALID",
+            "runtime ports reference an unknown node",
+            422,
+            {"nodes": unknown_nodes},
+        )
+    started_nodes = {
+        str(key)
+        for key in db.scalars(
+            select(NodeRun.flow_node_snapshot_key).where(NodeRun.flow_run_id == run.id)
+        )
+    }
+    changed_started = sorted(set(payload.node_ports) & started_nodes)
+    if changed_started:
+        raise DomainError(
+            "RUN_PORTS_STARTED_NODE_IMMUTABLE",
+            "runtime ports cannot change nodes that already have execution records",
+            409,
+            {"node_keys": changed_started},
+        )
+    for node_key, ports in payload.node_ports.items():
+        inputs = [field.model_dump() for field in ports.get("inputs", [])]
+        outputs = [field.model_dump() for field in ports.get("outputs", [])]
+        for field in inputs:
+            field.update(required=False, runtime_port=True)
+            field.pop("template_url", None)
+        for field in outputs:
+            field["runtime_port"] = True
+            field.pop("template_url", None)
+        nodes[node_key]["runtime_port_overrides"] = {"inputs": inputs, "outputs": outputs}
+
+    runtime_mappings: list[dict[str, Any]] = []
+    if payload.port_mappings:
+        configured_nodes = set(payload.node_ports)
+        runtime_mappings = [
+            {**item.model_dump(), "runtime_port": True} for item in payload.port_mappings
+        ]
+        mapping_nodes = {item["source_instance_key"] for item in runtime_mappings} | {
+            item["target_instance_key"] for item in runtime_mappings
+        }
+        unknown_mapping_nodes = sorted(mapping_nodes - set(nodes))
+        if unknown_mapping_nodes:
+            raise DomainError(
+                "RUN_PORTS_INVALID",
+                "runtime mappings reference an unknown node",
+                422,
+                {"nodes": unknown_mapping_nodes},
+            )
+        changed_mapping_nodes = sorted(mapping_nodes & started_nodes)
+        if changed_mapping_nodes:
+            raise DomainError(
+                "RUN_PORTS_STARTED_NODE_IMMUTABLE",
+                "runtime mappings cannot change nodes that already have execution records",
+                409,
+                {"node_keys": changed_mapping_nodes},
+            )
+        definition["port_mappings"] = [
+            item
+            for item in definition.get("port_mappings", [])
+            if isinstance(item, dict)
+            and (
+                not item.get("runtime_port")
+                or (
+                    str(item.get("source_instance_key") or "") not in configured_nodes
+                    and str(item.get("target_instance_key") or "") not in configured_nodes
+                )
+            )
+        ] + runtime_mappings
+    _validate_runtime_definition_ports(definition)
+    environment = lock_referenceable_version(db, run.environment_version_id or "")
+    if environment is None:
+        raise DomainError(
+            "RUN_ENVIRONMENT_VERSION_INVALID",
+            "The FlowRun Environment Version is unavailable",
+            409,
+            {"environment_version_id": run.environment_version_id},
+        )
+    identity = runtime_server_identity(
+        environment.manifest_json,
+        environment_version_id=environment.id,
+        runtime_protocol_profile=environment.runtime_protocol_profile,
+    )
+    manifest = _compile_runtime_manifest(definition, server_identity=identity)
+    snapshot = RunSnapshot(
+        flow_run_id=run.id,
+        version=active.version + 1,
+        schema_version=active.schema_version,
+        definition_json=definition,
+        definition_hash=_hash(definition),
+        runtime_manifest_json=manifest,
+        runtime_manifest_hash=_runtime_manifest_hash(manifest),
+        environment_version_id=run.environment_version_id,
+    )
+    db.add(snapshot)
+    db.flush()
+    hold_snapshot_memory_references(db, snapshot_id=snapshot.id, runtime_manifest=manifest)
+    run.active_snapshot_id = snapshot.id
+    run.row_version += 1
+    _event(
+        db,
+        run.id,
+        "STEPWISE_RUNTIME_PORTS_SAVED",
+        {
+            "snapshot_version": snapshot.version,
+            "node_keys": sorted(payload.node_ports),
+            "mapping_count": len(runtime_mappings),
+        },
+    )
+    finish(db)
+    return run_detail(db, run.id)
+
+
+def reactivate_stepwise_node_for_rerun(
+    db: Session,
+    run_id: str,
+    instance_key: str,
+    source_node_run_id: str,
+) -> dict[str, Any]:
+    """Reopen one accepted predecessor while its direct successor is still unstarted."""
+
+    run = _locked_run(db, run_id)
+    if run.run_mode != "MANUAL" or run.parent_flow_run_id is None:
+        raise illegal("only a stepwise record can rerun a node", state=run.state)
+    if run.state in {FlowRunState.COMPLETED, FlowRunState.CANCELLED}:
+        raise illegal("terminal stepwise record cannot rerun a node", state=run.state)
+    source = _node_run(db, source_node_run_id)
+    if source.flow_run_id != run.id or source.flow_node_snapshot_key != instance_key:
+        raise not_found("node_run", source_node_run_id)
+    if source.state != NodeRunState.ACCEPTED or source.accepted_attempt_id is None:
+        raise illegal("only an accepted node can be rerun", state=source.state)
+    snapshot = _active_snapshot(db, run)
+    successors = _successor_keys(snapshot, instance_key)
+    if not successors:
+        raise conflict("final node cannot be rerun", flow_node_key=instance_key)
+    drafts = _stepwise_node_drafts(run)
+    unstarted_successors = [
+        key
+        for key in successors
+        if key in drafts
+        and db.scalar(
+            select(NodeRun.id).where(
+                NodeRun.flow_run_id == run.id,
+                NodeRun.flow_node_snapshot_key == key,
+            )
+        )
+        is None
+    ]
+    if len(unstarted_successors) != len(successors):
+        raise conflict(
+            "node can rerun only before its next node starts", flow_node_key=instance_key
+        )
+    attempt = _attempt(db, source.accepted_attempt_id)
+    draft = {
+        "row_version": 1,
+        "startup_mode": "PROMPT",
+        "startup_prompt": attempt.startup_prompt,
+        "agent_preset": copy.deepcopy(attempt.agent_preset_json),
+        "gates": copy.deepcopy(attempt.gate_policies_json or []),
+        "context_ids": copy.deepcopy(attempt.context_ids_json or []),
+        "input_bindings": {
+            binding.input_field_key: {
+                "artifact_version_id": binding.artifact_version_id,
+                "binding_source": binding.binding_source,
+            }
+            for binding in _bindings(db, attempt.id)
+        },
+        "rerun_source_node_run_id": source.id,
+        "rerun_workspace_ref": attempt.workspace_ref,
+    }
+    for successor_key in successors:
+        drafts.pop(successor_key, None)
+    drafts[instance_key] = draft
+    _save_stepwise_node_drafts(run, drafts)
+    run.row_version += 1
+    _event(
+        db,
+        run.id,
+        "STEPWISE_NODE_RERUN_EDITABLE",
+        {
+            "flow_node_key": instance_key,
+            "source_node_run_id": source.id,
+            "unstarted_successor_keys": unstarted_successors,
+        },
+        source.id,
+        attempt.id,
+    )
+    finish(db)
+    return _stepwise_draft_projection(draft)
+
+
+def cancel_stepwise_node_rerun_edit(db: Session, run_id: str, instance_key: str) -> dict[str, Any]:
+    """Discard an unstarted rerun edit without altering its accepted history."""
+
+    run = _locked_run(db, run_id)
+    if run.run_mode != "MANUAL" or run.parent_flow_run_id is None:
+        raise illegal("only a stepwise record can cancel a rerun edit", state=run.state)
+    drafts = _stepwise_node_drafts(run)
+    draft = drafts.get(instance_key)
+    if draft is None or not draft.get("rerun_source_node_run_id"):
+        raise DomainError("STEPWISE_RERUN_EDIT_MISSING", "node has no active rerun edit", 409)
+    source = _node_run(db, str(draft["rerun_source_node_run_id"]))
+    if source.flow_run_id != run.id or source.flow_node_snapshot_key != instance_key:
+        raise DomainError(
+            "STEPWISE_RERUN_EDIT_INVALID", "rerun edit no longer matches its source node", 409
+        )
+    drafts.pop(instance_key)
+    _save_stepwise_node_drafts(run, drafts)
+    run.row_version += 1
+    _event(
+        db,
+        run.id,
+        "STEPWISE_NODE_RERUN_EDIT_CANCELLED",
+        {"flow_node_key": instance_key, "source_node_run_id": source.id},
+        source.id,
+        source.accepted_attempt_id,
+    )
+    finish(db)
+    return run_detail(db, run.id)
+
+
 def start_stepwise_node_draft(
     db: Session,
     run_id: str,
@@ -4781,13 +5473,36 @@ def start_stepwise_node_draft(
             expected=payload.expected_row_version,
             actual=draft_version,
         )
-    if not _stepwise_draft_ready(node, draft):
+    if not _stepwise_draft_ready(snapshot, node, draft):
         raise DomainError(
             "STEPWISE_DRAFT_NOT_READY",
             "stepwise node configuration is incomplete",
             422,
             {"flow_node_key": instance_key},
         )
+    start_node_key, _initial_node = _stepwise_initial_node(db, run)
+    if instance_key != start_node_key:
+        predecessors = {
+            str(edge.get("source_instance_key") or "")
+            for edge in snapshot.definition_json.get("edges", [])
+            if str(edge.get("target_instance_key") or "") == instance_key
+        }
+        accepted_predecessors = {
+            node_run.flow_node_snapshot_key
+            for node_run in db.scalars(select(NodeRun).where(NodeRun.flow_run_id == run.id))
+            if node_run.state == NodeRunState.ACCEPTED
+        }
+        if not predecessors.issubset(accepted_predecessors):
+            raise DomainError(
+                "STEPWISE_NODE_NOT_READY",
+                "all direct predecessor nodes must be accepted before this node starts",
+                409,
+                {
+                    "flow_node_key": instance_key,
+                    "waiting_predecessor_keys": sorted(predecessors - accepted_predecessors),
+                },
+            )
+
     action = db.scalar(select(HumanAction).where(HumanAction.idempotency_key == idempotency_key))
     if action is not None:
         if action.action_type != "START_STEPWISE_NODE_DRAFT" or not action.attempt_id:
@@ -4818,6 +5533,9 @@ def start_stepwise_node_draft(
         agent_preset=copy.deepcopy(cast(dict[str, Any], draft["agent_preset"])),
         startup_prompt=str(draft["startup_prompt"]),
         awaiting_start_confirmation=True,
+        reuse_workspace_ref=(
+            str(draft["rerun_workspace_ref"]) if draft.get("rerun_workspace_ref") else None
+        ),
     )
     for binding in _bindings(db, attempt.id):
         binding.binding_source = bindings[binding.input_field_key]["binding_source"]
@@ -4826,7 +5544,11 @@ def start_stepwise_node_draft(
         run.id,
         "START_STEPWISE_NODE_DRAFT",
         idempotency_key,
-        {"flow_node_key": instance_key, "draft_row_version": draft_version},
+        {
+            "flow_node_key": instance_key,
+            "draft_row_version": draft_version,
+            "rerun_source_node_run_id": draft.get("rerun_source_node_run_id"),
+        },
         node_run.id,
         attempt.id,
     )
@@ -4834,7 +5556,11 @@ def start_stepwise_node_draft(
         db,
         run.id,
         "STEPWISE_NODE_DRAFT_STARTED",
-        {"flow_node_key": instance_key, "draft_row_version": draft_version},
+        {
+            "flow_node_key": instance_key,
+            "draft_row_version": draft_version,
+            "rerun_source_node_run_id": draft.get("rerun_source_node_run_id"),
+        },
         node_run.id,
         attempt.id,
     )
@@ -4875,19 +5601,20 @@ def copy_nested_stepwise_run_record(
     copied_record = _create_nested_stepwise_run_record(
         db,
         parent.id,
-        StepwiseRunRecordWrite(
-            name=payload.name,
-            start_node_key=source_start_node_key,
-        ),
+        StepwiseRunRecordWrite(name=payload.name, start_node_key=source_start_node_key),
     )
-    source_draft = _stepwise_node_draft(source, source_start_node_key)
+    source_drafts = _stepwise_node_drafts(source)
     copied_input_count = 0
     source_attempt_id: str | None = None
     source_node_id: str | None = None
-    if source_draft is not None:
-        copied_draft, copied_input_count = _copy_stepwise_draft(
-            db, source, copied_record, source_start_node_key, source_draft
-        )
+    copied_drafts: dict[str, dict[str, Any]] = {}
+    if source_drafts:
+        for node_key, source_draft in source_drafts.items():
+            copied_draft, copied_inputs = _copy_stepwise_draft(
+                db, source, copied_record, node_key, source_draft
+            )
+            copied_drafts[node_key] = copied_draft
+            copied_input_count += copied_inputs
     elif source_node is not None:
         initial = db.scalar(
             select(NodeAttempt)
@@ -4902,17 +5629,17 @@ def copy_nested_stepwise_run_record(
         copied_draft, copied_input_count = _copy_stepwise_draft_from_attempt(
             db, source, copied_record, source_node, initial
         )
+        copied_drafts[source_start_node_key] = copied_draft
         source_node_id = source_node.id
         source_attempt_id = initial.id
-    else:
-        copied_draft = None
-    if copied_draft is not None:
-        _save_stepwise_node_drafts(copied_record, {source_start_node_key: copied_draft})
+    if copied_drafts:
+        _save_stepwise_node_drafts(copied_record, copied_drafts)
     event_payload = {
         "source_record_id": source.id,
         "source_node_run_id": source_node_id,
         "source_attempt_id": source_attempt_id,
         "copied_input_count": copied_input_count,
+        "copied_node_draft_keys": sorted(copied_drafts),
     }
     _event(db, copied_record.id, "STEPWISE_RUN_RECORD_COPIED", event_payload)
     _event(db, parent.id, "STEPWISE_RUN_RECORD_COPIED", event_payload)
@@ -4952,6 +5679,7 @@ def create_automatic_run_draft(
     parent_flow_run_id: str | None = None,
 ) -> dict[str, Any]:
     flow = load_flow(db, flow_id)
+    _require_startable_flow(db, flow_id)
     environment = lock_referenceable_version(db, payload.environment_version_id)
     if environment is None:
         raise DomainError(
@@ -4978,13 +5706,15 @@ def create_automatic_run_draft(
     )
     db.add(run)
     db.flush()
-    run.automation_plan_json = _freeze_automatic_plan(
+    plan = _freeze_automatic_plan(
         db,
         run,
         definition,
         start_node_key=payload.start_node_key,
         node_plans=payload.node_plans,
     )
+    plan["git_identity"] = default_git_identity(db)
+    run.automation_plan_json = plan
     runtime_manifest = _compile_runtime_manifest(definition, server_identity=server_identity)
     snapshot = RunSnapshot(
         flow_run_id=run.id,
@@ -5076,6 +5806,7 @@ def _automatic_run_summary(
         "flow_run_id": run.parent_flow_run_id,
         "run_no": run.run_no,
         "name": run.name,
+        "git_identity": record_git_identity(run),
         "state": run.state,
         "row_version": run.row_version,
         "schedule_id": run.schedule_id,
@@ -5256,6 +5987,7 @@ def copy_automatic_run_draft(
         plan["artifact_ids"] = copied_ids
         node_plans[str(node_key)] = plan
     source_plan["node_plans"] = node_plans
+    source_plan["git_identity"] = default_git_identity(db)
     upgraded_gate_ids = _upgrade_legacy_automatic_plan_gate_ids(source_plan)
     source_plan["status"] = "DRAFT"
     copied.automation_plan_json = source_plan
@@ -6263,15 +6995,12 @@ def _create_output_targets(
     del db, attempt
 
     asset = cast(dict[str, Any], node.get("asset") or {})
-    raw_outputs = cast(list[object], asset.get("outputs") or [])
+    raw_outputs = _runtime_output_fields(node)
     if not raw_outputs:
         return {}
     targets: dict[str, dict[str, str]] = {}
     node_name = str(node.get("alias") or asset.get("name") or "Node")
-    for raw in raw_outputs:
-        if not isinstance(raw, dict):
-            continue
-        output = cast(dict[str, Any], raw)
+    for output in raw_outputs:
         field_key = str(output.get("field_key") or "")
         if not field_key:
             continue
@@ -6283,6 +7012,7 @@ def _create_output_targets(
             "display_name": display_name,
             "description": str(output.get("description") or ""),
             "artifact_type": str(output.get("data_type") or "URL"),
+            "output_scope": str(output.get("output_scope") or "FLOW"),
         }
     return targets
 
@@ -6950,7 +7680,13 @@ def _ensure_attempt_runtime_for_native_observation(db: Session, attempt: NodeAtt
             409,
             {"attempt_id": attempt.id},
         )
-    environment = lock_referenceable_version(db, session.environment_version_id)
+    environment = read_referenced_version(
+        db,
+        flow_run_id=session.flow_run_id,
+        version_id=session.environment_version_id,
+        image_digest=session.runtime_image_digest,
+        protocol_profile=session.protocol_profile,
+    )
     if environment is None:
         raise DomainError(
             "RUN_ENVIRONMENT_VERSION_INVALID",
@@ -7444,18 +8180,33 @@ def _prepare_runtime_outputs(
 ) -> list[PreparedArtifact]:
     if result.status != "COMPLETED":
         return []
-    missing = sorted(set(output_targets) - set(result.outputs))
+    required_outputs = {
+        field_key
+        for field_key, target in output_targets.items()
+        if str(cast(dict[str, Any], target).get("output_scope") or "FLOW") == "FLOW"
+    }
+    missing = sorted(required_outputs - set(result.outputs))
     if missing:
         raise DomainError(
             "RUNTIME_OUTPUT_MISSING",
-            "The Agent completed without returning every required output",
+            "The Agent completed without returning every required flow output",
             422,
             {"fields": missing},
         )
     prepared: list[PreparedArtifact] = []
     try:
-        for field_key in output_targets:
-            artifact_type, content = result.outputs[field_key]
+        for field_key, target in output_targets.items():
+            raw_output = result.outputs.get(field_key)
+            if raw_output is None:
+                if str(cast(dict[str, Any], target).get("output_scope") or "FLOW") != "FLOW":
+                    continue
+                raise DomainError(
+                    "RUNTIME_OUTPUT_MISSING",
+                    "The Agent completed without returning a required flow output",
+                    422,
+                    {"fields": [field_key]},
+                )
+            artifact_type, content = raw_output
             expected_type = str(
                 cast(dict[str, Any], output_targets.get(field_key) or {}).get("artifact_type")
                 or "URL"
@@ -9512,6 +10263,9 @@ def accept_attempt(
         _create_configurable_targets(db, run, node_run)
     _recompute_run(db, run)
     finish(db)
+    from flowweave.modules.cases.public import advance_case_stepwise_execution
+
+    advance_case_stepwise_execution(db, run.id)
     return run_detail(db, run.id)
 
 
@@ -9904,7 +10658,7 @@ def reject_attempt(
     )
     node_run = _node_run(db, attempt.node_run_id)
     run = _run(db, node_run.flow_run_id)
-    _action(
+    rejection = _action(
         db,
         run.id,
         "REJECT_ATTEMPT",
@@ -9964,9 +10718,34 @@ def reject_attempt(
         node_run.id,
         next_attempt.id,
     )
+    _event(
+        db,
+        run.id,
+        "ATTEMPT_REJECTED",
+        {"action_id": rejection.id, "replacement_attempt_id": next_attempt.id},
+        node_run.id,
+        attempt.id,
+    )
     _dispatch_readiness(db, next_attempt)
     finish(db)
     return attempt_detail(db, next_attempt.id)
+
+
+def _stepwise_gate_failure_event(db: Session, attempt: NodeAttempt) -> RunEvent | None:
+    """Return the latest delivery failure when it came from the END gate task."""
+
+    event = db.scalar(
+        select(RunEvent)
+        .where(RunEvent.attempt_id == attempt.id, RunEvent.event_type == "RUNTIME_DELIVERY_FAILED")
+        .order_by(RunEvent.cursor.desc())
+        .limit(1)
+    )
+    payload = event.payload_json if event is not None else {}
+    return (
+        event
+        if isinstance(payload, dict) and payload.get("task_type") == "RUN_GATE_POLICY"
+        else None
+    )
 
 
 def retry_gates(db: Session, attempt_id: str, payload: AttemptVersionWrite) -> dict[str, Any]:
@@ -10052,6 +10831,14 @@ def retry_gates(db: Session, attempt_id: str, payload: AttemptVersionWrite) -> d
         task.max_attempts = max(task.max_attempts, 10)
         finish(db)
         return attempt_detail(db, attempt.id)
+    # A stepwise gate task that exhausted its delivery retries is projected as
+    # RUNTIME_DELIVERY_FAILED. Gates are deterministic and idempotent, so the
+    # blocked stage can be run again once the transient cause is gone.
+    stepwise_gate_delivery_failure = (
+        current.error_code == "RUNTIME_DELIVERY_FAILED"
+        and current.state == AttemptState.END_BLOCKED
+        and _stepwise_gate_failure_event(db, current) is not None
+    )
     retryable_error_codes = {
         None,
         "GATE_CONFIG_INVALID",
@@ -10061,7 +10848,7 @@ def retry_gates(db: Session, attempt_id: str, payload: AttemptVersionWrite) -> d
         "AUTOMATIC_TRANSITION_DELIVERY_FAILED",
         "AUTOMATIC_TRANSITION_INVALID",
     }
-    if current.error_code not in retryable_error_codes:
+    if current.error_code not in retryable_error_codes and not stepwise_gate_delivery_failure:
         raise illegal(
             "attempt failure cannot be recovered by rerunning gates",
             state=current.state,
@@ -10080,6 +10867,19 @@ def retry_gates(db: Session, attempt_id: str, payload: AttemptVersionWrite) -> d
         {current.state},
         next_state=next_state,
     )
+    if stepwise_gate_delivery_failure:
+        attempt.error_code = None
+        attempt.error_detail = None
+        attempt.runtime_phase = "COMPLETED"
+        node_run = _node_run(db, attempt.node_run_id)
+        _event(
+            db,
+            node_run.flow_run_id,
+            "GATE_DELIVERY_RETRY_SCHEDULED",
+            {"stage": stage},
+            node_run.id,
+            attempt.id,
+        )
     _dispatch_gates(db, attempt, stage)
     finish(db)
     return attempt_detail(db, attempt.id)
@@ -10351,6 +11151,9 @@ def cancel_run(db: Session, run_id: str, idempotency_key: str) -> dict[str, Any]
 
 
 def _assert_run_not_schedule_template(db: Session, run_id: str) -> None:
+    from flowweave.modules.cases.public import assert_no_case_artifact_references
+
+    assert_no_case_artifact_references(db, run_id)
     template_schedule_ids = list(
         db.scalars(select(FlowRunSchedule.id).where(FlowRunSchedule.source_flow_run_id == run_id))
     )
@@ -10413,6 +11216,36 @@ def delete_nested_automatic_run_record(db: Session, parent_run_id: str, run_id: 
     finish(db)
 
 
+def process_delete_flow_run_schedule(db: Session, schedule_id: str, *, commit: bool = True) -> None:
+    schedule = db.scalar(
+        select(FlowRunSchedule).where(FlowRunSchedule.id == schedule_id).with_for_update()
+    )
+    if schedule is None:
+        _finish_transaction(db, commit)
+        return
+    remaining_runs = db.scalar(
+        select(func.count(FlowRun.id)).where(FlowRun.schedule_id == schedule.id)
+    )
+    if remaining_runs:
+        raise RuntimeError("schedule record cleanup is not confirmed")
+    occurrence_ids = select(FlowRunScheduleOccurrence.id).where(
+        FlowRunScheduleOccurrence.schedule_id == schedule.id
+    )
+    db.execute(
+        delete(BackgroundTask).where(
+            BackgroundTask.aggregate_type == "FLOW_RUN_SCHEDULE_OCCURRENCE",
+            BackgroundTask.aggregate_id.in_(occurrence_ids),
+        )
+    )
+    db.execute(
+        delete(FlowRunScheduleOccurrence).where(
+            FlowRunScheduleOccurrence.schedule_id == schedule.id
+        )
+    )
+    db.delete(schedule)
+    _finish_transaction(db, commit)
+
+
 def process_delete_automatic_run_record(
     db: Session, run_id: str, parent_flow_run_id: str, *, commit: bool = True
 ) -> None:
@@ -10439,11 +11272,11 @@ def process_delete_automatic_run_record(
         for attempt in attempts
     ):
         raise RuntimeError("record Runtime cancellation is not confirmed")
-    _delete_run_records(db, run.id)
+    _delete_run_records(db, run.id, allow_schedule_record=True)
     _finish_transaction(db, commit)
 
 
-def _delete_run_records(db: Session, run_id: str) -> None:
+def _delete_run_records(db: Session, run_id: str, *, allow_schedule_record: bool = False) -> None:
     """Permanently remove a run and all durable execution data it owns.
 
     The Runtime Provider owns physical cleanup. The application explicitly
@@ -10451,6 +11284,13 @@ def _delete_run_records(db: Session, run_id: str) -> None:
     """
 
     run = _run(db, run_id)
+    if run.schedule_id and not allow_schedule_record:
+        raise DomainError(
+            "SCHEDULE_RUN_DELETE_REQUIRES_SCHEDULE",
+            "Delete scheduled runs through their schedule so all records are removed together",
+            409,
+            {"schedule_id": run.schedule_id},
+        )
     _assert_run_not_schedule_template(db, run.id)
     child_run_ids = list(
         db.scalars(
@@ -11199,6 +12039,7 @@ def run_detail(db: Session, run_id: str, *, include_artifacts: bool = True) -> d
         "name": run.name,
         "run_mode": run.run_mode,
         "automation_plan": run.automation_plan_json,
+        "git_identity": record_git_identity(run),
         "stepwise_node_drafts": stepwise_node_drafts,
         "start_node_key": start_node_key if isinstance(start_node_key, str) else None,
         "parent_flow_run_id": run.parent_flow_run_id,
@@ -11300,6 +12141,7 @@ def list_runs(db: Session) -> list[dict[str, Any]]:
                 "name": run.name,
                 "run_mode": run.run_mode,
                 "automation_plan": run.automation_plan_json,
+                "git_identity": record_git_identity(run),
                 "state": run.state,
                 "completion_mode": run.completion_mode,
                 "environment_version_id": run.environment_version_id,

@@ -86,6 +86,265 @@ def create_asset(client, skill, name="方案生成"):
     return response.json()
 
 
+def test_case_control_plane_creates_stages_and_changes_stage_state(client):
+    created = client.post(
+        "/api/v1/cases",
+        json={
+            "name": "客户迁移事项",
+            "objective": "协调迁移准备与复盘。",
+            "stages": [
+                {"stage_key": "discover", "name": "发现", "objective": "确认现状"},
+                {"stage_key": "execute", "name": "执行", "objective": "完成迁移"},
+            ],
+        },
+    )
+    assert created.status_code == 201, created.text
+    item = created.json()
+    assert item["state"] == "ACTIVE"
+    assert [stage["state"] for stage in item["stages"]] == ["ACTIVE", "PENDING"]
+    assert item["tasks"] == []
+
+    listed = client.get("/api/v1/cases")
+    assert listed.status_code == 200, listed.text
+    assert [case["id"] for case in listed.json()] == [item["id"]]
+
+    updated = client.put(
+        f"/api/v1/cases/{item['id']}/stages/{item['stages'][1]['id']}/state",
+        json={"expected_case_row_version": item["row_version"], "state": "ACTIVE"},
+    )
+    assert updated.status_code == 200, updated.text
+    assert [stage["state"] for stage in updated.json()["stages"]] == ["PENDING", "ACTIVE"]
+
+    stale = client.put(
+        f"/api/v1/cases/{item['id']}/stages/{item['stages'][0]['id']}/state",
+        json={"expected_case_row_version": item["row_version"], "state": "COMPLETED"},
+    )
+    assert stale.status_code == 409, stale.text
+    assert stale.json()["error"]["code"] == "VERSION_CONFLICT"
+
+
+def test_case_delete_removes_control_plane_but_preserves_linked_flow_run(client, skill_capability):
+    asset = create_asset(client, skill_capability, "事项删除节点")
+    flow = create_flow(client, asset["id"])
+    run = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    )
+    assert run.status_code == 201, run.text
+    case = client.post("/api/v1/cases", json={"name": "待删除事项"})
+    assert case.status_code == 201, case.text
+    attached = client.post(
+        f"/api/v1/cases/{case.json()['id']}/flow-runs",
+        json={"flow_run_id": run.json()["id"]},
+    )
+    assert attached.status_code == 200, attached.text
+
+    deleted = client.delete(f"/api/v1/cases/{case.json()['id']}")
+    assert deleted.status_code == 204, deleted.text
+    assert client.get(f"/api/v1/cases/{case.json()['id']}").status_code == 404
+    preserved = client.get(f"/api/v1/flow-runs/{run.json()['id']}")
+    assert preserved.status_code == 200, preserved.text
+
+
+def test_case_delete_rejects_active_execution(client, skill_capability, db_session_factory):
+    from flowweave.modules.cases.infrastructure.models import CaseStage
+
+    asset = create_asset(client, skill_capability, "事项执行保护节点")
+    flow = create_flow(client, asset["id"])
+    run = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    )
+    assert run.status_code == 201, run.text
+    case = client.post(
+        "/api/v1/cases",
+        json={"name": "执行中事项", "stages": [{"stage_key": "run", "name": "执行"}]},
+    )
+    assert case.status_code == 201, case.text
+    stage = case.json()["stages"][0]
+    with db_session_factory() as db:
+        current_stage = db.get(CaseStage, stage["id"])
+        assert current_stage is not None
+        current_stage.current_execution_flow_run_id = run.json()["id"]
+        execution = db.get(FlowRun, run.json()["id"])
+        assert execution is not None
+        execution.state = "ACTIVE"
+        db.commit()
+
+    rejected = client.delete(f"/api/v1/cases/{case.json()['id']}")
+    assert rejected.status_code == 409, rejected.text
+    assert rejected.json()["error"]["code"] == "CASE_EXECUTION_RUNNING"
+
+
+def test_case_attaches_top_level_flow_run_and_projects_idempotently(client, skill_capability):
+    asset = create_asset(client, skill_capability, "事项观察节点")
+    flow = create_flow(client, asset["id"])
+    run = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    )
+    assert run.status_code == 201, run.text
+    case = client.post("/api/v1/cases", json={"name": "事项观察"})
+    assert case.status_code == 201, case.text
+
+    attached = client.post(
+        f"/api/v1/cases/{case.json()['id']}/flow-runs",
+        json={"flow_run_id": run.json()["id"]},
+    )
+    assert attached.status_code == 200, attached.text
+    assert attached.json()["flow_run_ids"] == [run.json()["id"]]
+    assert attached.json()["tasks"] == []
+
+    replayed = client.post(f"/api/v1/cases/{case.json()['id']}/observation-projection")
+    assert replayed.status_code == 200, replayed.text
+    assert replayed.json()["flow_run_ids"] == [run.json()["id"]]
+    assert replayed.json()["tasks"] == []
+
+
+def test_case_stage_rejects_top_level_stepwise_run_as_template(client, skill_capability):
+    asset = create_asset(client, skill_capability, "阶段流程节点")
+    flow = create_flow(client, asset["id"])
+    run = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    )
+    assert run.status_code == 201, run.text
+    case = client.post(
+        "/api/v1/cases",
+        json={
+            "name": "阶段路径事项",
+            "stages": [{"stage_key": "discover", "name": "梳理"}],
+        },
+    )
+    assert case.status_code == 201, case.text
+    stage = case.json()["stages"][0]
+
+    bound = client.put(
+        f"/api/v1/cases/{case.json()['id']}/stages/{stage['id']}/flow-run",
+        json={"flow_run_id": run.json()["id"], "execution_mode": "STEPWISE"},
+    )
+    assert bound.status_code == 409, bound.text
+    assert bound.json()["error"]["code"] == "VERSION_CONFLICT"
+
+
+def test_stepwise_template_readiness_reports_every_reachable_node(client, skill_capability):
+    asset = create_asset(client, skill_capability, "逐步模板诊断节点")
+    flow = create_flow(client, asset["id"])
+    parent = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    )
+    assert parent.status_code == 201, parent.text
+    record = client.post(
+        f"/api/v1/flow-runs/{parent.json()['id']}/stepwise-runs",
+        json={"start_node_key": flow["nodes"][0]["instance_key"]},
+    )
+    assert record.status_code == 201, record.text
+
+    readiness = client.get(f"/api/v1/flow-runs/{record.json()['id']}/stepwise-template-readiness")
+    assert readiness.status_code == 200, readiness.text
+    result = readiness.json()
+    assert result["ready"] is False
+    assert result["missing_node_keys"] == [node["instance_key"] for node in flow["nodes"]]
+    assert [node["node_key"] for node in result["nodes"]] == [
+        node["instance_key"] for node in flow["nodes"]
+    ]
+    assert all(node["status"] == "MISSING_DRAFT" for node in result["nodes"])
+
+
+def test_case_stage_launch_copies_configured_continuous_template(client, skill_capability):
+    asset = create_asset(client, skill_capability, "连续模板节点")
+    flow = create_flow(client, asset["id"])
+    provider = client.post(
+        "/api/v1/model-providers",
+        json={
+            "name": "Case 连续模板模型",
+            "base_url": "https://models.example.test/v1",
+            "api_key": "case-template-secret",
+            "models": [{"model_name": "case-template", "enabled": True, "is_default": True}],
+        },
+    )
+    assert provider.status_code == 201, provider.text
+    preset = {"model_provider_id": provider.json()["id"], "model_name": "case-template"}
+    template = client.post(
+        f"/api/v1/flows/{flow['id']}/automatic-runs",
+        json={
+            "environment_version_id": client.environment_version_id,
+            "start_node_key": flow["nodes"][0]["instance_key"],
+            "node_plans": {
+                flow["nodes"][0]["instance_key"]: {
+                    "startup_prompt": "执行连续模板首节点",
+                    "agent_preset": preset,
+                    "input_urls": {"prd": "https://example.test/case-input"},
+                },
+                flow["nodes"][1]["instance_key"]: {
+                    "startup_prompt": "执行连续模板复核节点",
+                    "agent_preset": preset,
+                },
+            },
+        },
+    )
+    assert template.status_code == 201, template.text
+    case = client.post(
+        "/api/v1/cases",
+        json={"name": "连续模板事项", "stages": [{"stage_key": "run", "name": "执行"}]},
+    )
+    assert case.status_code == 201, case.text
+    stage = case.json()["stages"][0]
+    bound = client.put(
+        f"/api/v1/cases/{case.json()['id']}/stages/{stage['id']}/flow-run",
+        json={"flow_run_id": template.json()["id"], "execution_mode": "CONTINUOUS"},
+    )
+    assert bound.status_code == 200, bound.text
+
+    launched = client.post(
+        f"/api/v1/cases/{case.json()['id']}/stages/{stage['id']}/launch", json={}
+    )
+    assert launched.status_code == 201, launched.text
+    launched_stage = launched.json()["stages"][0]
+    assert launched_stage["flow_run_id"] == template.json()["id"]
+    assert launched_stage["current_execution_flow_run_id"] not in {None, template.json()["id"]}
+    execution = client.get(f"/api/v1/flow-runs/{launched_stage['current_execution_flow_run_id']}")
+    assert execution.status_code == 200, execution.text
+    execution_plan = execution.json()["automation_plan"]
+    template_plan = template.json()["automation_plan"]
+    assert execution.json()["state"] == "DRAFT"
+    assert execution_plan["start_node_key"] == template_plan["start_node_key"]
+    assert set(execution_plan["node_plans"]) == set(template_plan["node_plans"])
+    first_node_key = flow["nodes"][0]["instance_key"]
+    # URL inputs remain declarative until the execution starts; copying a
+    # template must preserve them without manufacturing artifact records.
+    assert execution_plan["node_plans"][first_node_key]["input_urls"] == {
+        "prd": "https://example.test/case-input"
+    }
+    assert execution_plan["node_plans"][first_node_key]["artifact_ids"] == {}
+
+    started = client.post(
+        f"/api/v1/cases/{case.json()['id']}/stages/{stage['id']}/execution/start",
+        json={"reason": "开始事项连续执行。"},
+    )
+    assert started.status_code == 201, started.text
+    assert started.json()["action"] == "START_STAGE_EXECUTION"
+    assert started.json()["state"] == "EXECUTED"
+    assert (
+        started.json()["result"]["flow_run"]["id"]
+        == launched_stage["current_execution_flow_run_id"]
+    )
+    assert started.json()["result"]["flow_run"]["state"] == "ACTIVE"
+    case_detail = client.get(f"/api/v1/cases/{case.json()['id']}")
+    assert case_detail.status_code == 200, case_detail.text
+    summary = case_detail.json()["stages"][0]["execution"]
+    assert summary["flow_run_id"] == launched_stage["current_execution_flow_run_id"]
+    assert summary["parent_flow_run_id"] == template.json()["parent_flow_run_id"]
+    assert summary["run_mode"] == "AUTOMATIC"
+    assert summary["state"] == "ACTIVE"
+    assert summary["progress"]["accepted"] == 0
+    assert [node["node_key"] for node in summary["nodes"]] == [
+        node["instance_key"] for node in flow["nodes"]
+    ]
+    assert all(node["state"] == "PENDING" for node in summary["nodes"])
+
+
 def test_node_asset_can_be_saved_without_skill(client):
     response = client.post("/api/v1/node-assets", json=asset_payload("无 Skill 节点"))
     assert response.status_code == 201, response.text
@@ -95,6 +354,66 @@ def test_node_asset_can_be_saved_without_skill(client):
         "context_capability_ids": [],
     }
     assert "capabilities" not in response.json()
+
+
+def test_stepwise_rerun_edit_rejects_final_node(client, skill_capability):
+    asset = create_asset(client, skill_capability, "重跑边界节点")
+    flow = create_flow(client, asset["id"])
+    parent = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    )
+    assert parent.status_code == 201, parent.text
+    record = client.post(
+        f"/api/v1/flow-runs/{parent.json()['id']}/stepwise-runs",
+        json={"start_node_key": flow["nodes"][0]["instance_key"]},
+    )
+    assert record.status_code == 201, record.text
+    activated = client.post(
+        f"/api/v1/flow-runs/{record.json()['id']}/nodes/{flow['nodes'][0]['instance_key']}/runs",
+        json={"startup_mode": "CHAT"},
+    )
+    assert activated.status_code == 201, activated.text
+
+    rejected = client.post(
+        f"/api/v1/flow-runs/{record.json()['id']}/stepwise-node-drafts/{flow['nodes'][0]['instance_key']}/rerun-edit",
+        json={"node_run_id": activated.json()["id"]},
+    )
+    assert rejected.status_code == 409, rejected.text
+
+
+def test_case_rejects_stopping_a_linked_template(client, skill_capability):
+    asset = create_asset(client, skill_capability, "事项自动停止节点")
+    flow = create_flow(client, asset["id"])
+    run = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    )
+    assert run.status_code == 201, run.text
+    case = client.post("/api/v1/cases", json={"name": "自主纠偏事项"})
+    assert case.status_code == 201, case.text
+    attached = client.post(
+        f"/api/v1/cases/{case.json()['id']}/flow-runs",
+        json={"flow_run_id": run.json()["id"]},
+    )
+    assert attached.status_code == 200, attached.text
+
+    decision = client.post(
+        f"/api/v1/cases/{case.json()['id']}/decision-proposals",
+        json={
+            "flow_run_id": run.json()["id"],
+            "proposal_key": "stop-after-risk",
+            "action": "STOP_FLOW_RUN",
+            "reason": "事项风险已满足停止条件。",
+        },
+    )
+    assert decision.status_code == 409, decision.text
+    assert decision.json()["error"]["code"] == "VERSION_CONFLICT"
+    assert client.get(f"/api/v1/flow-runs/{run.json()['id']}").json()["state"] != "CANCELLED"
+
+    case_detail = client.get(f"/api/v1/cases/{case.json()['id']}")
+    assert case_detail.status_code == 200, case_detail.text
+    assert case_detail.json()["decision_proposals"] == []
 
 
 def test_confirm_start_rejects_attempt_model_override(client):
@@ -108,6 +427,336 @@ def test_confirm_start_rejects_attempt_model_override(client):
     )
 
     assert rejected.status_code == 422, rejected.text
+
+
+def test_case_control_plan_persists_scoped_input_snapshot(client):
+    case = client.post(
+        "/api/v1/cases",
+        json={"name": "计划事项", "stages": [{"stage_key": "prepare", "name": "准备"}]},
+    )
+    assert case.status_code == 201, case.text
+    stage = case.json()["stages"][0]
+
+    created = client.post(
+        f"/api/v1/cases/{case.json()['id']}/control-plans",
+        json={
+            "stage_id": stage["id"],
+            "action": "CREATE_EXECUTION_COPY",
+            "idempotency_key": "prepare-copy-v1",
+            "reason": "为事项准备隔离执行副本。",
+            "input_snapshot": {"source": "case-control"},
+        },
+    )
+    assert created.status_code == 201, created.text
+    plan = created.json()
+    assert plan["state"] == "PENDING"
+    assert plan["stage_id"] == stage["id"]
+    assert plan["execution_flow_run_id"] is None
+    assert plan["input_snapshot"]["requested"] == {"source": "case-control"}
+
+    replayed = client.post(
+        f"/api/v1/cases/{case.json()['id']}/control-plans",
+        json={
+            "stage_id": stage["id"],
+            "action": "CREATE_EXECUTION_COPY",
+            "idempotency_key": "prepare-copy-v1",
+            "reason": "不同的重放文字不会创建第二份计划。",
+        },
+    )
+    assert replayed.status_code == 201, replayed.text
+    assert replayed.json()["id"] == plan["id"]
+
+    detail = client.get(f"/api/v1/cases/{case.json()['id']}")
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["control_plans"][0]["id"] == plan["id"]
+
+    rejected = client.delete(f"/api/v1/cases/{case.json()['id']}")
+    assert rejected.status_code == 409, rejected.text
+    assert rejected.json()["error"]["code"] == "CASE_CONTROL_PLAN_PENDING"
+    assert client.get(f"/api/v1/cases/{case.json()['id']}").status_code == 200
+
+
+def test_case_control_plan_dispatches_copy_and_start_actions(client, skill_capability):
+    asset = create_asset(client, skill_capability, "计划调度节点")
+    flow = create_flow(client, asset["id"])
+    provider = client.post(
+        "/api/v1/model-providers",
+        json={
+            "name": "计划调度模型",
+            "base_url": "https://models.example.test/v1",
+            "api_key": "plan-dispatch-secret",
+            "models": [{"model_name": "plan-dispatch", "enabled": True, "is_default": True}],
+        },
+    )
+    assert provider.status_code == 201, provider.text
+    template = client.post(
+        f"/api/v1/flows/{flow['id']}/automatic-runs",
+        json={
+            "environment_version_id": client.environment_version_id,
+            "start_node_key": flow["nodes"][0]["instance_key"],
+            "node_plans": {
+                node["instance_key"]: {
+                    "startup_prompt": f"执行 {node['instance_key']}",
+                    "agent_preset": {
+                        "model_provider_id": provider.json()["id"],
+                        "model_name": "plan-dispatch",
+                    },
+                    **({"input_urls": {"prd": "https://example.test/plan"}} if index == 0 else {}),
+                }
+                for index, node in enumerate(flow["nodes"])
+            },
+        },
+    )
+    assert template.status_code == 201, template.text
+    case = client.post(
+        "/api/v1/cases",
+        json={"name": "计划调度事项", "stages": [{"stage_key": "run", "name": "执行"}]},
+    )
+    assert case.status_code == 201, case.text
+    stage = case.json()["stages"][0]
+    bound = client.put(
+        f"/api/v1/cases/{case.json()['id']}/stages/{stage['id']}/flow-run",
+        json={"flow_run_id": template.json()["id"], "execution_mode": "CONTINUOUS"},
+    )
+    assert bound.status_code == 200, bound.text
+
+    copy = client.post(
+        f"/api/v1/cases/{case.json()['id']}/control-plans",
+        json={
+            "stage_id": stage["id"],
+            "action": "CREATE_EXECUTION_COPY",
+            "idempotency_key": "dispatch-copy",
+            "reason": "创建隔离副本。",
+        },
+    )
+    assert copy.status_code == 201, copy.text
+    copied = client.post(
+        f"/api/v1/cases/{case.json()['id']}/control-plans/{copy.json()['id']}/execute"
+    )
+    assert copied.status_code == 200, copied.text
+    assert copied.json()["state"] == "SUCCEEDED"
+
+    current = client.get(f"/api/v1/cases/{case.json()['id']}").json()["stages"][0]
+    start = client.post(
+        f"/api/v1/cases/{case.json()['id']}/control-plans",
+        json={
+            "stage_id": stage["id"],
+            "action": "START_EXECUTION",
+            "idempotency_key": "dispatch-start",
+            "reason": "启动隔离副本。",
+        },
+    )
+    assert start.status_code == 201, start.text
+    started = client.post(
+        f"/api/v1/cases/{case.json()['id']}/control-plans/{start.json()['id']}/execute"
+    )
+    assert started.status_code == 200, started.text
+    assert started.json()["state"] == "SUCCEEDED"
+    assert (
+        client.get(f"/api/v1/flow-runs/{current['current_execution_flow_run_id']}").json()["state"]
+        == "ACTIVE"
+    )
+
+
+@pytest.mark.parametrize("fail_first_native", [False, True])
+def test_control_binding_plan_is_limited_to_its_active_case_stage(
+    client, monkeypatch, settings, db_session_factory, fail_first_native
+):
+    provider = client.post(
+        "/api/v1/model-providers",
+        json={
+            "name": "事项控制模型",
+            "base_url": "https://models.example.test/v1",
+            "api_key": "case-control-secret",
+            "models": [{"model_name": "case-control", "enabled": True, "is_default": True}],
+        },
+    )
+    assert provider.status_code == 201, provider.text
+    from flowweave.modules.model_providers.presentation import router as provider_router
+
+    async def discover(*_args):
+        return ["case-control"]
+
+    monkeypatch.setattr(provider_router, "_discover", discover)
+    tested = client.post(f"/api/v1/model-providers/{provider.json()['id']}/test")
+    assert tested.status_code == 200, tested.text
+    from test_agent_workspaces import _ready_workspace_for_conversation
+
+    with settings_context(settings), db_session_factory() as db:
+        _ready_workspace_for_conversation(db)
+        db.commit()
+    first = client.post(
+        "/api/v1/cases",
+        json={"name": "控制范围一", "stages": [{"stage_key": "one", "name": "阶段一"}]},
+    )
+    second = client.post(
+        "/api/v1/cases",
+        json={"name": "控制范围二", "stages": [{"stage_key": "two", "name": "阶段二"}]},
+    )
+    assert first.status_code == 201 and second.status_code == 201
+    first_stage = first.json()["stages"][0]
+    second_stage = second.json()["stages"][0]
+    # The binding authorization assertions must run beyond current bootstrap
+    # readiness, using an actual reusable template and saved Agent configuration.
+    from flowweave.modules.cases.infrastructure.models import CaseStage
+    from flowweave.modules.users.application.security import tenant_user
+
+    owner = client.get("/api/v1/auth/me").json()["id"]
+    with tenant_user(owner), db_session_factory() as db:
+        definition = FlowDefinition(name="控制范围模板")
+        db.add(definition)
+        db.flush()
+        template = FlowRun(
+            flow_definition_id=definition.id,
+            run_no=1,
+            name="控制范围模板记录",
+            run_mode="AUTOMATIC",
+            state="DRAFT",
+            environment_version_id=client.environment_version_id,
+            automation_plan_json={"start_node_key": "first", "readiness": {"ready": True}},
+        )
+        db.add(template)
+        db.flush()
+        db.get(CaseStage, first_stage["id"]).flow_run_id = template.id
+        db.get(CaseStage, first_stage["id"]).execution_mode = "CONTINUOUS"
+        db.commit()
+    configured = client.put(
+        f"/api/v1/cases/{first.json()['id']}/session-config",
+        json={
+            "expected_row_version": first.json()["row_version"],
+            "model_provider_id": provider.json()["id"],
+            "model_name": "case-control",
+        },
+    )
+    assert configured.status_code == 200, configured.text
+    from dataclasses import replace
+
+    from test_case_native_tools import publish_case_tools
+
+    from flowweave.modules.cases.application import native_tools
+    from flowweave.shared.artifact_store import artifact_store_context
+
+    with settings_context(settings), db_session_factory() as db:
+        publish_case_tools(db, settings, client.app.state.container.artifact_store, monkeypatch)
+    working_directories = {}
+    native_calls = []
+    create_runtime = MockRuntime.create_conversation
+    reload_runtime = MockRuntime.reload_conversation
+
+    def create_in_directory(runtime, request):
+        native_calls.append(request.conversation_id)
+        working_directories[request.conversation_id] = request.workspace_ref
+        mcp = next(
+            server
+            for server in request.agent_spec.mcp_servers
+            if server.name == native_tools.SERVER_NAME
+        )
+        assert mcp.config["headers"] == {"Authorization": native_tools.AUTH_HEADER}
+        assert request.conversation_secrets[native_tools.SECRET_NAME].startswith("fwc1.")
+        assert "fwc1." not in request.agent_spec.agent_context.system_message_suffix
+        flows = next(
+            server
+            for server in request.agent_spec.mcp_servers
+            if server.name == native_tools.FLOWS.server_name
+        )
+        assert flows.config["headers"] == {"Authorization": native_tools.FLOWS.auth_header}
+        assert request.conversation_secrets[native_tools.FLOWS.secret_name].startswith("fwcf1.")
+        assert "fwcf1." not in request.agent_spec.agent_context.system_message_suffix
+        material = next(
+            server
+            for server in request.agent_spec.mcp_servers
+            if server.name == native_tools.MATERIALS.server_name
+        )
+        assert material.config["headers"] == {"Authorization": native_tools.MATERIALS.auth_header}
+        assert request.conversation_secrets[native_tools.MATERIALS.secret_name].startswith("fwcm1.")
+        assert "fwcm1." not in request.agent_spec.agent_context.system_message_suffix
+        if fail_first_native and len(native_calls) == 1:
+            from flowweave.shared.errors import DomainError
+
+            raise DomainError("CASE_NATIVE_TEST_FAILURE", "controlled creation failure", 503)
+        return create_runtime(runtime, request)
+
+    def reload_in_directory(runtime, handle, **kwargs):
+        return replace(
+            reload_runtime(runtime, handle, **kwargs),
+            workspace_working_dir=working_directories[handle.conversation_id],
+        )
+
+    monkeypatch.setattr(MockRuntime, "create_conversation", create_in_directory)
+    monkeypatch.setattr(MockRuntime, "reload_conversation", reload_in_directory)
+    conversation = client.post(
+        f"/api/v1/cases/{first.json()['id']}/control-conversation",
+        json={"model_provider_id": provider.json()["id"], "model_name": "case-control"},
+        headers={"Idempotency-Key": "case-control-binding-one"},
+    )
+    assert conversation.status_code == 201, conversation.text
+    from flowweave.modules.cases.application.coordination import deliver_control_round
+    from flowweave.modules.users.application.security import tenant_user
+
+    owner_id = client.get("/api/v1/auth/me").json()["id"]
+    with (
+        settings_context(settings),
+        tenant_user(owner_id),
+        db_session_factory() as db,
+        runtime_context(MockRuntime()),
+        artifact_store_context(client.app.state.container.artifact_store),
+    ):
+        round_id = conversation.json()["current_control_round_id"]
+        deliver_control_round(db, round_id)
+        db.commit()
+        if fail_first_native:
+            from sqlalchemy import select
+
+            from flowweave.modules.agent_sessions.infrastructure.models import (
+                AgentConversationCapability,
+            )
+            from flowweave.modules.cases.application.coordination import retry_control_round
+            from flowweave.modules.cases.infrastructure.models import (
+                CaseControlRound,
+                CaseToolGrant,
+            )
+
+            entry = db.get(CaseControlRound, round_id)
+            assert entry.state == "FAILED"
+            assert db.scalar(select(CaseToolGrant.id)) is None
+            assert (
+                db.scalar(
+                    select(AgentConversationCapability.id).where(
+                        AgentConversationCapability.binding_id == entry.binding_id
+                    )
+                )
+                is None
+            )
+            retry_control_round(db, first.json()["id"], round_id)
+            deliver_control_round(db, round_id)
+            db.commit()
+    conversation = client.get(f"/api/v1/cases/{first.json()['id']}")
+    assert conversation.json()["control_rounds"][0]["state"] == "STARTED", conversation.text
+    assert list(working_directories.values())[0].endswith(f"/.flowweave/cases/{first.json()['id']}")
+    binding_id = conversation.json()["control_conversation_binding_id"]
+
+    accepted = client.post(
+        f"/api/v1/case-control-bindings/{binding_id}/plans",
+        json={
+            "stage_id": first_stage["id"],
+            "action": "CREATE_EXECUTION_COPY",
+            "idempotency_key": "binding-one-copy",
+            "reason": "由当前控制会话提出。",
+        },
+    )
+    assert accepted.status_code == 201, accepted.text
+    assert accepted.json()["source_binding_id"] == binding_id
+
+    rejected = client.post(
+        f"/api/v1/case-control-bindings/{binding_id}/plans",
+        json={
+            "stage_id": second_stage["id"],
+            "action": "CREATE_EXECUTION_COPY",
+            "idempotency_key": "binding-cross-case",
+            "reason": "不应跨事项创建计划。",
+        },
+    )
+    assert rejected.status_code == 409, rejected.text
 
 
 def test_platform_owned_lark_oauth_endpoints_are_removed(client):

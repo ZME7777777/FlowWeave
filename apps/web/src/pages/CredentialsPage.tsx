@@ -1,19 +1,14 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { CheckSquare, ChevronDown, Globe2, KeyRound, Pencil, Plus, ShieldCheck, Trash2, UserRound } from 'lucide-react';
+import { CheckSquare, ChevronDown, KeyRound, Pencil, Plus, Trash2 } from 'lucide-react';
 import { FormEvent, KeyboardEvent, useEffect, useId, useRef, useState } from 'react';
 import { api } from '../api/client';
+import { SettingsManagementLayout, SettingsResourceRow } from '../components/SettingsManagementLayout';
 import { Pagination } from '../components/Pagination';
 import { useProductDialog } from '../components/ProductDialogContext';
 import { useEscapeClose } from '../components/useEscapeClose';
 import type { WebsiteCredential, WebsiteCredentialWrite } from '../types';
 
 const empty = (): WebsiteCredentialWrite => ({ name: '', target_host: '', target_path: '/', include_subdomains: false, auth_type: 'USERNAME_PASSWORD', username: '', secret: '' });
-
-function credentialPageSize() {
-  const columns = window.innerWidth >= 1720 ? 4 : window.innerWidth >= 1280 ? 3 : window.innerWidth >= 760 ? 2 : 1;
-  const rows = window.innerHeight >= 920 ? 4 : 3;
-  return columns * rows;
-}
 
 const authTypeOptions = [
   { value: 'USERNAME_PASSWORD', label: '用户名与密码' },
@@ -112,18 +107,18 @@ function CredentialEditor({ credential, onClose }: { credential?: WebsiteCredent
 
 export function CredentialsPage() {
   const dialog = useProductDialog(); const client = useQueryClient();
-  const { data: credentials = [], isLoading } = useQuery({ queryKey: ['website-credentials'], queryFn: api.websiteCredentials });
+  const { data: credentials = [], isLoading, error: loadError, refetch } = useQuery({ queryKey: ['website-credentials'], queryFn: api.websiteCredentials });
   const [editing, setEditing] = useState<WebsiteCredential | null | undefined>(); const [error, setError] = useState('');
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(credentialPageSize);
+  const pageSize = 20;
+  const [query, setQuery] = useState('');
+  const [activeId, setActiveId] = useState<string>();
+  const filteredCredentials = credentials.filter(item => !query.trim() || `${item.name} ${item.target_host} ${item.target_path}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()));
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const pagedCredentials = credentials.slice((page - 1) * pageSize, page * pageSize);
-  useEffect(() => { if (page > Math.max(1, Math.ceil(credentials.length / pageSize))) setPage(1); }, [credentials.length, page, pageSize]);
-  useEffect(() => {
-    const updatePageSize = () => setPageSize(credentialPageSize());
-    window.addEventListener('resize', updatePageSize);
-    return () => window.removeEventListener('resize', updatePageSize);
-  }, []);
+  const pagedCredentials = filteredCredentials.slice((page - 1) * pageSize, page * pageSize);
+  useEffect(() => { if (page > Math.max(1, Math.ceil(filteredCredentials.length / pageSize))) setPage(1); }, [filteredCredentials.length, page, pageSize]);
+  const active = pagedCredentials.find(item => item.id === activeId) ?? pagedCredentials[0];
+  useEffect(() => { setSelectedIds(current => { const next = new Set([...current].filter(id => credentials.some(item => item.id === id))); return next.size === current.size ? current : next; }); }, [credentials]);
   const remove = async (credential: WebsiteCredential) => {
     if (!await dialog.confirm({ title: `删除“${credential.name}”？`, message: '加密保存的认证信息会被永久删除；之后新建会话将无法使用它。', confirmLabel: '确认删除', tone: 'danger' })) return;
     try { await api.deleteWebsiteCredential(credential.id); await client.invalidateQueries({ queryKey: ['website-credentials'] }); } catch (reason) { setError(reason instanceof Error ? reason.message : '删除失败'); }
@@ -135,25 +130,16 @@ export function CredentialsPage() {
     if (!ids.length || !await dialog.confirm({ title: `删除选中的 ${ids.length} 个认证？`, message: '加密保存的认证信息会被永久删除；之后新建会话将无法使用它们。', confirmLabel: '确认删除', tone: 'danger' })) return;
     try { await api.deleteWebsiteCredentials(ids); setSelectedIds(new Set()); await client.invalidateQueries({ queryKey: ['website-credentials'] }); } catch (reason) { setError(reason instanceof Error ? reason.message : '批量删除失败'); }
   };
-  return <section className="page credentials-page">
-    <div className="credential-fixed-tools">
-      <div><span className="eyebrow">AUTHENTICATION MANAGEMENT</span><b>认证管理</b><small>网站认证仅在新建 Agent 会话时以 Secret 注入。</small></div>
-      <div><span>共 {credentials.length} 个认证</span><button className="secondary" disabled={!pagedCredentials.length} onClick={() => setSelectedIds(current => allCurrentSelected ? new Set([...current].filter(id => !pagedCredentials.some(item => item.id === id))) : new Set([...current, ...pagedCredentials.map(item => item.id)]))}><CheckSquare size={15}/>{allCurrentSelected ? '取消全选' : '全选当前页'}</button><button className="danger" disabled={!selectedIds.size} onClick={() => void removeSelected()}><Trash2 size={15}/>批量删除 ({selectedIds.size})</button><button className="primary" onClick={() => setEditing(null)}><Plus size={16}/>新增认证</button></div>
-    </div>
-    <div className="credentials-page-scroll">
-      <div className="credential-policy"><ShieldCheck size={17}/><span>先选最长匹配路径；没有路径范围时才逐级回退域名。父域匹配必须显式开启。Secret 不会返回浏览器或写入镜像。</span></div>
-      {error && <p className="notice error">{error}</p>}
-      {isLoading ? <div className="empty">加载中…</div> : credentials.length === 0 ? <div className="empty credential-empty"><KeyRound size={26}/><b>尚未保存认证信息</b><span>添加站点认证后，新创建的 Agent 会话可在匹配的站点访问中使用它。</span></div> : <>
-        <div className="credential-grid compact-credential-list">{pagedCredentials.map(credential => <article className={`credential-card${selectedIds.has(credential.id) ? ' selected' : ''}`} key={credential.id}>
-          <label className="resource-check"><input type="checkbox" aria-label={`选择 ${credential.name}`} checked={selectedIds.has(credential.id)} onChange={() => toggle(credential.id)}/></label>
-          <span className="credential-icon">{credential.auth_type === 'USERNAME_PASSWORD' ? <UserRound size={17}/> : <KeyRound size={17}/>}</span>
-          <div className="credential-summary"><h3>{credential.name}</h3><small><Globe2 size={11}/>{credential.target_host}{credential.target_path}{credential.include_subdomains ? ' · 包含子域' : ' · 仅此地址'}</small></div>
-          <span className="credential-type">{credential.auth_type === 'USERNAME_PASSWORD' ? '用户名与密码' : credential.auth_type === 'PASSWORD' ? '仅密码' : 'Token'}</span>
-          <div className="card-actions"><button title="编辑" aria-label={`编辑 ${credential.name}`} onClick={() => setEditing(credential)}><Pencil size={16}/></button><button className="danger" title="删除" aria-label={`删除 ${credential.name}`} onClick={() => void remove(credential)}><Trash2 size={16}/></button></div>
-        </article>)}</div>
-        <Pagination page={page} pageSize={pageSize} total={credentials.length} onPageChange={setPage}/>
-      </>}
-    </div>
-    {editing !== undefined && <CredentialEditor credential={editing ?? undefined} onClose={() => setEditing(undefined)}/>}
-  </section>;
+  return <SettingsManagementLayout title="认证管理" count={credentials.length} query={query} onQueryChange={value => { setQuery(value); setPage(1); }} className="credentials-page"
+    actions={<button className="primary" onClick={() => setEditing(null)}><Plus size={14}/>新增认证</button>}
+    selection={<><button className="ghost" disabled={!pagedCredentials.length} onClick={() => setSelectedIds(current => allCurrentSelected ? new Set([...current].filter(id => !pagedCredentials.some(item => item.id === id))) : new Set([...current, ...pagedCredentials.map(item => item.id)]))}><CheckSquare size={13}/>{allCurrentSelected ? '取消全选' : '全选当前页'}</button><button className="danger" disabled={!selectedIds.size} onClick={() => void removeSelected()}><Trash2 size={13}/>批量删除 ({selectedIds.size})</button></>}
+    listKey={`${query}-${page}`}
+    list={isLoading ? <div className="empty compact">加载中…</div> : loadError ? <div className="empty compact error"><span>{loadError.message}</span><button className="secondary" onClick={() => void refetch()}>重试</button></div> : pagedCredentials.length ? pagedCredentials.map(item => <SettingsResourceRow key={item.id} name={item.name} description={`${item.target_host}${item.target_path}`} meta={<><em>{authTypeOptions.find(type => type.value === item.auth_type)?.label}</em><span>{item.include_subdomains ? '包含子域' : '仅此地址'}</span></>} active={active?.id === item.id} onSelect={() => setActiveId(item.id)} checked={selectedIds.has(item.id)} onToggle={() => toggle(item.id)}/>) : <div className="empty compact">{query ? '没有匹配的认证' : '尚未保存认证信息'}</div>}
+    pagination={<Pagination page={page} pageSize={pageSize} total={filteredCredentials.length} onPageChange={setPage}/>}
+    overlays={editing !== undefined && <CredentialEditor credential={editing ?? undefined} onClose={() => setEditing(undefined)}/>}>
+    {error && <p className="notice error" role="alert">{error}</p>}
+    {active ? <><header className="settings-detail-header"><div><h2>{active.name}</h2><small>{active.target_host}{active.target_path}</small></div><div className="settings-detail-actions"><button className="secondary" aria-label={`编辑 ${active.name}`} onClick={() => setEditing(active)}><Pencil size={14}/>编辑</button><button className="danger" aria-label={`删除 ${active.name}`} onClick={() => void remove(active)}><Trash2 size={14}/>删除</button></div></header>
+      <details className="settings-info"><summary>匹配规则与认证保护</summary><p>先选最长匹配路径；没有路径范围时才逐级回退域名。父域匹配必须显式开启。网站认证仅在新建 Agent 会话时以 Secret 注入，不会返回浏览器或写入镜像。</p></details>
+      <div className="settings-detail-body" key={active.id}><dl className="settings-detail-facts"><dt>认证方式</dt><dd>{authTypeOptions.find(item => item.value === active.auth_type)?.label}</dd><dt>目标地址</dt><dd>{active.target_host}</dd><dt>目标路径</dt><dd>{active.target_path}</dd><dt>子域名匹配</dt><dd>{active.include_subdomains ? '包含子域名' : '仅匹配此地址'}</dd>{active.auth_type === 'USERNAME_PASSWORD' && <><dt>用户名</dt><dd>{active.has_username ? '已配置' : '未配置'}</dd></>}<dt>{active.auth_type === 'TOKEN' ? 'Token' : '密码'}</dt><dd>{active.has_secret ? `已加密保存${active.secret_hint ? ` · ••••${active.secret_hint}` : ''}` : '未配置'}</dd><dt>创建时间</dt><dd>{new Date(active.created_at).toLocaleString()}</dd><dt>更新时间</dt><dd>{new Date(active.updated_at).toLocaleString()}</dd></dl></div></> : <div className="empty"><KeyRound size={26}/><b>{query ? '没有匹配的认证' : '尚未保存认证信息'}</b><span>在左侧新增或选择认证，查看匹配范围与配置。</span></div>}
+  </SettingsManagementLayout>;
 }

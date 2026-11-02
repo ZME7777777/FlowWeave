@@ -19,6 +19,11 @@ from flowweave.modules.catalog.application.memory_sources import (
     register_snapshot_references,
     resolve_snapshot_material,
 )
+from flowweave.modules.catalog.application.platform_mcp_install import (
+    PlatformMcp,
+    ensure_platform_mcp,
+    validated_url,
+)
 from flowweave.modules.catalog.application.plugin_sources import (
     expire_resolution,
     process_resolution,
@@ -140,7 +145,10 @@ __all__ = (
     "hold_snapshot_memory_references",
     "hold_session_memory_references",
     "mcp_oauth_authorization_owner_is_active",
+    "PlatformMcp",
     "PublishedCapability",
+    "ensure_platform_mcp",
+    "validated_url",
     "resolve_plugin_source",
     "resolve_version",
     "resolve_snapshot_memory",

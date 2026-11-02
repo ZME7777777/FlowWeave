@@ -1,6 +1,7 @@
 import {
   type AgentStreamEvent,
   type UploadProgressHandler,
+  agentWorkspaceBrowserUrl,
   agentWorkspaceFileUrl,
   agentWorkspaceTerminalUrl,
   api,
@@ -13,6 +14,7 @@ import type {
   AgentConversationAnnotation,
   AgentConversation,
   AgentConversationActivity,
+  AgentConversationCapabilityRegistration,
   AgentConversationHead,
   AgentConversationHydration,
   AgentConversationPage,
@@ -51,6 +53,7 @@ export type AgentSessionFileOptions = {
   workDirectoryId?: AgentSessionWorkDirectoryId;
   /** UUID of an uncreated draft that owns a private attachment. */
   draftAttachmentOwnerId?: string;
+  includeHidden?: boolean;
   download?: boolean;
 };
 export type AgentSessionFilePreview = {
@@ -64,10 +67,12 @@ export type AgentSessionWorkspaceOptions = Omit<AgentSessionFileOptions, 'downlo
 export type AgentSessionDirectoryOptions = Omit<AgentSessionFileOptions, 'download'> & {
   parentPath?: string;
   cursor?: string;
+  includeHidden?: boolean;
 };
 export type AgentSessionTerminalOptions = Omit<AgentSessionFileOptions, 'download'> & {
   terminalInstanceId: string;
 };
+export type AgentSessionBrowserOptions = Omit<AgentSessionFileOptions, 'download'>;
 export type AgentSessionStreamStatus = 'connecting' | 'live' | 'recovering' | 'disabled';
 
 /** Product capabilities deliberately supplied by each session host. */
@@ -114,6 +119,7 @@ export interface AgentSessionApi {
   readonly mcpReadiness: (hostId: AgentSessionHostId, capabilityVersionId: string) => Promise<AgentSessionMcpReadiness>;
   readonly replaceHostCapabilities: (hostId: AgentSessionHostId, capabilityVersionIds: string[]) => Promise<AgentSessionCapability[]>;
   readonly addConversationCapability: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, capabilityVersionId: string) => Promise<AgentConversation>;
+  readonly registerConversationCapabilities: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, capabilityVersionIds: string[]) => Promise<AgentConversationCapabilityRegistration>;
   readonly workspaceDetails: (hostId: AgentSessionHostId, options?: AgentSessionWorkspaceOptions) => Promise<AgentSessionWorkspaceDetails>;
   readonly workspaceDirectory: (hostId: AgentSessionHostId, options?: AgentSessionDirectoryOptions) => Promise<AgentSessionWorkspaceDirectory>;
   readonly gitRepositories: (hostId: AgentSessionHostId, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<AgentSessionWorkspaceGitRepositories>;
@@ -125,20 +131,22 @@ export interface AgentSessionApi {
   readonly gitDiff: (hostId: AgentSessionHostId, repositoryPath: string, commit: string, path: string, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<WorkspaceGitFileDiff>;
   readonly createWorkDirectory: (hostId: AgentSessionHostId, displayName: string, selectedPaths: string[]) => Promise<AgentSessionWorkDirectory>;
   readonly updateWorkDirectory?: (hostId: AgentSessionHostId, workDirectoryId: AgentSessionWorkDirectoryId, displayName: string) => Promise<AgentSessionWorkDirectory>;
-  readonly deleteWorkDirectory?: (hostId: AgentSessionHostId, workDirectoryId: AgentSessionWorkDirectoryId) => Promise<void>;
+  readonly archiveWorkDirectory?: (hostId: AgentSessionHostId, workDirectoryId: AgentSessionWorkDirectoryId) => Promise<AgentSessionWorkDirectory>;
+  readonly deleteWorkDirectory?: (hostId: AgentSessionHostId, workDirectoryId: AgentSessionWorkDirectoryId, options?: { keepFiles?: boolean }) => Promise<void>;
   readonly filePreview: (hostId: AgentSessionHostId, path: string, options?: Omit<AgentSessionFileOptions, 'download'>, offset?: number, signal?: AbortSignal) => Promise<AgentSessionFilePreview>;
   readonly deleteFile?: (hostId: AgentSessionHostId, path: string, options?: Omit<AgentSessionFileOptions, 'download'> & { recursive?: boolean }) => Promise<void>;
   readonly createFile?: (hostId: AgentSessionHostId, parentPath: string, name: string, kind: 'FILE' | 'DIRECTORY', options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<void>;
   readonly closeTerminal: (hostId: AgentSessionHostId, terminalInstanceId: string, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<void>;
-  readonly bootstrapConversation: (hostId: AgentSessionHostId, conversationId: string, modelProviderId: string, modelName: string, reasoningEffort: string | null, content: string, attachments?: AgentAttachment[], references?: AgentConversationReference[], workspaceReferences?: AgentWorkspaceReference[], workDirectoryId?: AgentSessionWorkDirectoryId, capabilityVersionIds?: string[], idempotencyKey?: string, annotations?: AgentConversationAnnotation[]) => Promise<{ conversation: AgentConversation; accepted: boolean; cursor?: string | null }>;
+  readonly bootstrapConversation: (hostId: AgentSessionHostId, conversationId: string, modelProviderId: string, modelName: string, reasoningEffort: string | null, content: string, attachments?: AgentAttachment[], references?: AgentConversationReference[], workspaceReferences?: AgentWorkspaceReference[], workDirectoryId?: AgentSessionWorkDirectoryId, capabilityVersionIds?: string[], credentialIds?: string[], idempotencyKey?: string, annotations?: AgentConversationAnnotation[], goalObjective?: string) => Promise<{ conversation: AgentConversation; accepted: boolean; cursor?: string | null }>;
   readonly updateConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, title: string) => Promise<AgentConversation>;
   readonly setConversationPinned: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, pinned: boolean) => Promise<AgentConversation>;
   readonly setConversationUnread: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, unread: boolean, unreadOrigin?: 'MANUAL' | 'SYSTEM') => Promise<AgentConversation>;
   /** Node-session hosts intentionally omit this workspace-local presentation control. */
   readonly reorderConversation?: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, orderedBindingIds: AgentSessionBindingId[]) => Promise<AgentConversation>;
+  readonly archiveConversation?: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<AgentConversation>;
   readonly deleteConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<void>;
   readonly conversationEvents: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, cursor?: string, historyCursor?: string, diagnosticTrigger?: string, signal?: AbortSignal) => Promise<OpenHandsConversationEventBatch>;
-  readonly conversationHydration: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, signal?: AbortSignal) => Promise<AgentConversationHydration>;
+  readonly conversationHydration: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, signal?: AbortSignal, cursor?: string) => Promise<AgentConversationHydration>;
   /** Bounded native HEAD check before reusing an in-memory complete branch. */
   readonly conversationHead: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<AgentConversationHead>;
   readonly inputReadiness: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<AgentConversationInputReadiness>;
@@ -151,6 +159,7 @@ export interface AgentSessionApi {
    * edge. It is not an exactly-once promise: OpenHands 1.47 has no formal
    * event idempotency field, so callers must not retry ambiguous delivery.
    */
+  readonly cancelMessageSubmission: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, submissionId: string) => Promise<{ cancelled: boolean }>;
   readonly sendMessage: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, content: string, attachments?: AgentAttachment[], references?: AgentConversationReference[], workspaceReferences?: AgentWorkspaceReference[], annotations?: AgentConversationAnnotation[], clientMessageId?: string) => Promise<{ accepted: boolean; cursor?: string | null; compacted?: boolean; queued_during_turn?: boolean }>;
   readonly migrateStreamingConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, modelProviderId: string, modelName?: string | null, reasoningEffort?: string | null) => Promise<AgentConversation>;
   readonly uploadConversationAttachment: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, file: File, onProgress?: UploadProgressHandler) => Promise<AgentAttachment>;
@@ -161,6 +170,8 @@ export interface AgentSessionApi {
   readonly forkConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, eventId: string) => Promise<AgentConversation>;
   /** Requests native context condensation without appending a user message. */
   readonly condenseConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<{ accepted: boolean; task_id?: string | null }>;
+  /** Controls the OpenHands-owned Goal Loop for one existing Conversation. */
+  readonly controlGoal: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, action: 'START' | 'STOP' | 'RESUME', objective?: string, maxIterations?: number) => Promise<{ accepted: boolean }>;
   readonly interruptConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<{ accepted: boolean }>;
   readonly resumeConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<{ accepted: boolean; cursor?: string | null }>;
   readonly decideConfirmation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, expectedPendingDigest: string, accept: boolean, reason: string) => Promise<{ accepted: boolean; cursor?: string | null }>;
@@ -178,6 +189,7 @@ export interface AgentSessionGateway {
   readonly features: AgentSessionFeatures;
   readonly api: AgentSessionApi;
   readonly terminalUrl: (hostId: AgentSessionHostId, rows: number | undefined, columns: number | undefined, options: AgentSessionTerminalOptions) => string;
+  readonly browserUrl: (hostId: AgentSessionHostId, target: string, options?: AgentSessionBrowserOptions) => string;
   readonly fileUrl: (hostId: AgentSessionHostId, path: string, options?: AgentSessionFileOptions) => string;
   /** A host-authorized inline URL for one unaccepted execution FILE output. */
   readonly candidateOutputUrl?: (hostId: AgentSessionHostId, fieldKey: string, relativePath: string) => string;
@@ -203,12 +215,13 @@ export const agentWorkspaceSessionGateway: AgentSessionGateway = {
       api.setAgentConversationUnread(_hostId, bindingId, unread, unreadOrigin),
     workDirectories: api.agentWorkDirectories,
     providers: api.providers,
-    capabilities: api.capabilities,
+    capabilities: api.userConfigurableCapabilities,
     capabilityCollections: api.capabilityCollections,
     hostCapabilities: api.agentWorkspaceCapabilities,
     mcpReadiness: api.agentWorkspaceMcpReadiness,
     replaceHostCapabilities: api.replaceAgentWorkspaceCapabilities,
     addConversationCapability: api.addAgentConversationCapability,
+    registerConversationCapabilities: api.registerAgentConversationCapabilities,
     workspaceDetails: api.agentWorkspaceDetails,
     workspaceDirectory: api.agentWorkspaceDirectory,
     gitRepositories: api.agentWorkspaceGitRepositories,
@@ -220,6 +233,7 @@ export const agentWorkspaceSessionGateway: AgentSessionGateway = {
     gitDiff: api.agentWorkspaceGitDiff,
     createWorkDirectory: api.createAgentWorkDirectory,
     updateWorkDirectory: api.updateAgentWorkDirectory,
+    archiveWorkDirectory: api.archiveAgentWorkDirectory,
     deleteWorkDirectory: api.deleteAgentWorkDirectory,
     filePreview: api.agentWorkspaceFilePreview,
     deleteFile: api.deleteAgentWorkspaceFile,
@@ -228,6 +242,7 @@ export const agentWorkspaceSessionGateway: AgentSessionGateway = {
     bootstrapConversation: api.bootstrapAgentConversation,
     updateConversation: api.updateAgentConversation,
     reorderConversation: api.reorderAgentConversation,
+    archiveConversation: api.archiveAgentConversation,
     deleteConversation: api.deleteAgentConversation,
     conversationEvents: (workspaceId, bindingId, cursor, historyCursor, diagnosticTrigger, signal) =>
       api.agentConversationEvents(workspaceId, bindingId, cursor, historyCursor, diagnosticTrigger, signal),
@@ -239,6 +254,7 @@ export const agentWorkspaceSessionGateway: AgentSessionGateway = {
     synchronizeCredentials: api.synchronizeAgentConversationCredentials,
     pendingConfirmation: api.agentPendingConfirmation,
     sendMessage: api.sendAgentMessage,
+    cancelMessageSubmission: api.cancelAgentMessageSubmission,
     migrateStreamingConversation: api.migrateAgentStreamingConversation,
     uploadConversationAttachment: api.uploadAgentAttachment,
     uploadDraftAttachment: api.uploadAgentWorkspaceAttachment,
@@ -247,6 +263,7 @@ export const agentWorkspaceSessionGateway: AgentSessionGateway = {
     deleteDraftAttachments: api.deleteAgentWorkspaceDraftAttachments,
     forkConversation: api.forkAgentConversation,
     condenseConversation: api.condenseAgentConversation,
+    controlGoal: api.controlAgentConversationGoal,
     interruptConversation: api.interruptAgentConversation,
     resumeConversation: api.resumeAgentConversation,
     decideConfirmation: api.decideAgentConfirmation,
@@ -254,6 +271,7 @@ export const agentWorkspaceSessionGateway: AgentSessionGateway = {
     switchConversationModel: api.switchAgentConversationModel,
   },
   terminalUrl: agentWorkspaceTerminalUrl,
+  browserUrl: agentWorkspaceBrowserUrl,
   fileUrl: agentWorkspaceFileUrl,
   subscribe: subscribeToAgentWorkspaceStream,
 };
@@ -280,7 +298,7 @@ export function flowNodeSessionGateway(
       conversation: (_hostId, bindingId) => nodeSessionApi.get(flowRunId, attemptId, bindingId),
       workDirectories: () => nodeSessionApi.workDirectories(flowRunId, attemptId),
       providers: api.providers,
-      capabilities: api.capabilities,
+      capabilities: api.userConfigurableCapabilities,
       capabilityCollections: api.capabilityCollections,
       // A node is only a route scope. It has no capability configuration of
       // its own: new conversations inherit the ordinary Agent default, and
@@ -289,10 +307,19 @@ export function flowNodeSessionGateway(
       mcpReadiness: (_hostId, capabilityVersionId) => nodeSessionApi.mcpReadiness(flowRunId, attemptId, capabilityVersionId),
       replaceHostCapabilities: () => Promise.resolve([]),
       addConversationCapability: (_hostId, bindingId, capabilityVersionId) => nodeSessionApi.addCapability(flowRunId, attemptId, bindingId, capabilityVersionId),
+      registerConversationCapabilities: (_hostId, bindingId, capabilityVersionIds) => nodeSessionApi.registerCapabilities(flowRunId, attemptId, bindingId, capabilityVersionIds),
       workspaceDetails: (_hostId, options) =>
         nodeSessionApi.workspace(flowRunId, attemptId, options?.bindingId, options?.workDirectoryId, options?.fullIndex),
       workspaceDirectory: (_hostId, options) =>
-        nodeSessionApi.workspaceDirectory(flowRunId, attemptId, options?.bindingId, options?.workDirectoryId, options?.parentPath, options?.cursor),
+        nodeSessionApi.workspaceDirectory(
+          flowRunId,
+          attemptId,
+          options?.bindingId,
+          options?.workDirectoryId,
+          options?.parentPath,
+          options?.cursor,
+          options?.includeHidden,
+        ),
       gitRepositories: (_hostId, options) =>
         nodeSessionApi.gitRepositories(flowRunId, attemptId, options?.bindingId, options?.workDirectoryId),
       syncGitRepository: async (_hostId, repositoryPath, options) => {
@@ -318,7 +345,16 @@ export function flowNodeSessionGateway(
         nodeSessionApi.createWorkDirectory(flowRunId, attemptId, displayName, selectedPaths),
       filePreview: async (_hostId, path, options, offset = 0, signal) => {
         const response = await fetch(nodeSessionApi.file(
-          flowRunId, attemptId, path, options?.bindingId, options?.workDirectoryId, options?.draftAttachmentOwnerId, false, true, offset,
+          flowRunId,
+          attemptId,
+          path,
+          options?.bindingId,
+          options?.workDirectoryId,
+          options?.draftAttachmentOwnerId,
+          false,
+          true,
+          offset,
+          options?.includeHidden,
         ), { signal });
         if (!response.ok) throw new Error('Node workspace file preview is unavailable');
         const nextOffset = response.headers.get('X-Preview-Next-Offset');
@@ -331,11 +367,10 @@ export function flowNodeSessionGateway(
       // Node terminals are browser-owned websocket instances. Closing a tab
       // closes its socket; there is no persistent Workspace terminal record.
       closeTerminal: async () => undefined,
-      bootstrapConversation: async (_hostId, conversationId, providerId, modelName, reasoningEffort, content, attachments, references, workspaceReferences, workDirectoryId, _capabilityVersionIds, idempotencyKey, annotations) => {
-        return nodeSessionApi.bootstrap(
-          flowRunId, attemptId, content, providerId, modelName, reasoningEffort, attachments, references, workspaceReferences, workDirectoryId, idempotencyKey ?? conversationId, annotations,
-        );
-      },
+      bootstrapConversation: (_hostId, conversationId, providerId, modelName, reasoningEffort, content, attachments, references, workspaceReferences, workDirectoryId, _capabilityVersionIds, _credentialIds, idempotencyKey, annotations, goalObjective) =>
+        nodeSessionApi.bootstrap(
+          flowRunId, attemptId, content, providerId, modelName, reasoningEffort, attachments, references, workspaceReferences, workDirectoryId, idempotencyKey ?? conversationId, annotations, goalObjective,
+        ),
       updateConversation: (_hostId, bindingId, title) =>
         nodeSessionApi.update(flowRunId, attemptId, bindingId, title),
       setConversationPinned: (_hostId, bindingId, pinned) =>
@@ -345,8 +380,8 @@ export function flowNodeSessionGateway(
       deleteConversation: (_hostId, bindingId) => nodeSessionApi.remove(flowRunId, attemptId, bindingId),
       conversationEvents: (_hostId, bindingId, cursor, historyCursor, diagnosticTrigger, signal) =>
         nodeSessionApi.events(flowRunId, attemptId, bindingId, cursor, historyCursor, diagnosticTrigger, signal),
-      conversationHydration: (_hostId, bindingId, signal) =>
-        nodeSessionApi.hydration(flowRunId, attemptId, bindingId, signal),
+      conversationHydration: (_hostId, bindingId, signal, cursor) =>
+        nodeSessionApi.hydration(flowRunId, attemptId, bindingId, signal, cursor),
       conversationHead: (_hostId, bindingId) =>
         nodeSessionApi.head(flowRunId, attemptId, bindingId),
       inputReadiness: (_hostId, bindingId) =>
@@ -358,6 +393,8 @@ export function flowNodeSessionGateway(
       synchronizeCredentials: (_hostId, bindingId, credentialIds) =>
         nodeSessionApi.synchronizeCredentials(flowRunId, attemptId, bindingId, credentialIds),
       pendingConfirmation: (_hostId, bindingId) => nodeSessionApi.pendingConfirmation(flowRunId, attemptId, bindingId),
+      cancelMessageSubmission: (_hostId, bindingId, submissionId) =>
+        nodeSessionApi.cancelMessageSubmission(flowRunId, attemptId, bindingId, submissionId),
       sendMessage: (_hostId, bindingId, content, attachments = [], references = [], workspaceReferences = [], annotations = [], clientMessageId) =>
         nodeSessionApi.message(flowRunId, attemptId, bindingId, content, attachments, references, workspaceReferences, clientMessageId, annotations),
       migrateStreamingConversation: (_hostId, bindingId, providerId, modelName, reasoningEffort) =>
@@ -373,6 +410,8 @@ export function flowNodeSessionGateway(
       forkConversation: (_hostId, bindingId, eventId) => nodeSessionApi.fork(flowRunId, attemptId, bindingId, eventId),
       condenseConversation: (_hostId, bindingId) =>
         nodeSessionApi.condense(flowRunId, attemptId, bindingId),
+      controlGoal: (_hostId, bindingId, action, objective, maxIterations) =>
+        nodeSessionApi.controlGoal(flowRunId, attemptId, bindingId, action, objective, maxIterations),
       interruptConversation: (_hostId, bindingId) =>
         nodeSessionApi.interrupt(flowRunId, attemptId, bindingId),
       resumeConversation: (_hostId, bindingId) =>
@@ -388,8 +427,20 @@ export function flowNodeSessionGateway(
     terminalUrl: (_hostId, rows, columns, options) => {
       return nodeSessionApi.terminal(flowRunId, attemptId, options.bindingId, rows, columns);
     },
+    browserUrl: (_hostId, target) => target,
     fileUrl: (_hostId, path, options) =>
-      nodeSessionApi.file(flowRunId, attemptId, path, options?.bindingId, options?.workDirectoryId, options?.draftAttachmentOwnerId, options?.download),
+      nodeSessionApi.file(
+        flowRunId,
+        attemptId,
+        path,
+        options?.bindingId,
+        options?.workDirectoryId,
+        options?.draftAttachmentOwnerId,
+        options?.download,
+        false,
+        0,
+        options?.includeHidden,
+      ),
     candidateOutputUrl: (_hostId, fieldKey, relativePath) =>
       nodeSessionApi.candidateOutputFile(flowRunId, attemptId, fieldKey, relativePath),
     subscribe: (_hostId, bindingId, onEvent, onStatus) =>

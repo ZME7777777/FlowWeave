@@ -61,6 +61,72 @@ def test_terminal_hydration_is_refreshed_for_each_request() -> None:
     asyncio.run(scenario())
 
 
+def test_incremental_reads_coalesce_without_becoming_a_full_history_cache() -> None:
+    async def scenario() -> None:
+        cache = ConversationHydrationCache()
+        started = asyncio.Event()
+        release = asyncio.Event()
+        calls = 0
+
+        async def load() -> dict[str, object]:
+            nonlocal calls
+            calls += 1
+            started.set()
+            await release.wait()
+            return hydration(leaf="new-event")
+
+        first = asyncio.create_task(cache.read_incremental(key(), "old-event", load))
+        await started.wait()
+        second = asyncio.create_task(cache.read_incremental(key(), "old-event", load))
+        await asyncio.sleep(0)
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        release.set()
+        assert await second == hydration(leaf="new-event")
+        assert calls == 1
+        assert await cache.get(key()) is None
+        assert not cache._events and not cache._branches and not cache._incremental_inflight
+        await cache.read_incremental(key(), "old-event", load)
+        assert calls == 2
+        await cache.close()
+
+    asyncio.run(scenario())
+
+
+def test_incremental_reads_do_not_reuse_pre_command_work_or_another_user() -> None:
+    async def scenario() -> None:
+        cache = ConversationHydrationCache()
+        started = asyncio.Event()
+        release = asyncio.Event()
+        calls = 0
+
+        async def old() -> dict[str, object]:
+            started.set()
+            await release.wait()
+            return hydration(leaf="old-head")
+
+        async def fresh() -> dict[str, object]:
+            nonlocal calls
+            calls += 1
+            return hydration(leaf="fresh-head")
+
+        pending = asyncio.create_task(cache.read_incremental(key(), "same-cursor", old))
+        await started.wait()
+        assert await cache.read_incremental(key(user_id="other"), "same-cursor", fresh)
+        await cache.invalidate_binding("user", "binding")
+        assert await cache.read_incremental(key(), "same-cursor", fresh) == hydration(
+            leaf="fresh-head"
+        )
+        release.set()
+        assert await pending == hydration(leaf="old-head")
+        assert calls == 2
+        assert await cache.get(key()) is None
+        await cache.close()
+
+    asyncio.run(scenario())
+
+
 def test_concurrent_refreshes_are_coalesced() -> None:
     async def scenario() -> None:
         cache = ConversationHydrationCache()

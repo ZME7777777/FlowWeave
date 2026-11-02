@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1120" viewBox="0 0 1600 1120">
+  <defs>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%"><feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#173022" flood-opacity=".13"/></filter>
+    <style>
+      .canvas{fill:#edf2ef}.frame{fill:#fff;stroke:#cfdcd4}.top{fill:#f7faf8;stroke:#dfe8e2}.line{stroke:#e5ece7}.muted{fill:#79877f}.green{fill:#24734a}.tab{fill:#fff;stroke:#dde7e0}.bubble{fill:#e8f4ff}.card{fill:#fff;stroke:#dfe9e2}.side{fill:#fafcfb}.title{font:700 18px Arial,sans-serif;fill:#1f3027}.label{font:600 12px Arial,sans-serif;fill:#44574b}.text{font:12px Arial,sans-serif;fill:#506157}.small{font:10px Arial,sans-serif;fill:#77867d}.mono{font:10px monospace;fill:#64766b}.caption{font:700 15px Arial,sans-serif;fill:#2e4437}
+    </style>
+  </defs>
+  <rect class="canvas" width="1600" height="1120"/>
+  <text x="56" y="48" class="title" font-size="24">FlowWeave · Agent 工作台 UI 状态稿</text>
+  <text x="56" y="72" class="text">标题即主 Tab · 环境信息悬浮 · 右侧工具默认分页 · 合并后统一 Tab 工作区</text>
+
+  <g transform="translate(56 108)">
+    <text class="caption" x="0" y="-16">A · 默认会话 + 环境悬浮卡</text>
+    <rect class="frame" width="720" height="430" rx="12"/><rect class="top" width="720" height="48" rx="12"/><path d="M0 48h720" class="line"/>
+    <rect class="tab" x="14" y="8" width="270" height="32" rx="7"/><circle cx="31" cy="24" r="6" fill="#337855"/><text x="45" y="28" class="label">拉取代码并部署服务器</text>
+    <rect x="650" y="12" width="24" height="24" rx="6" fill="#e8f0eb"/><text x="657" y="29" class="green">⌄</text><rect x="682" y="12" width="24" height="24" rx="6" fill="#e8f0eb"/><text x="688" y="29" class="green">▯</text>
+    <rect x="0" y="48" width="720" height="382" fill="#fff"/><rect class="bubble" x="230" y="86" width="320" height="58" rx="14"/><text x="248" y="110" class="label">把登录环境未通过的那项测试也处理好，</text><text x="248" y="128" class="label">再重新验证。</text>
+    <text x="155" y="190" class="muted" font-size="11">用时 8 分钟 21 秒　›</text><path d="M155 201h375" class="line"/><text x="155" y="230" class="title" font-size="15">已完成拉取和部署。</text><text x="160" y="255" class="text">•　分支快进至 195dc903，没有合并冲突。</text><text x="160" y="277" class="text">•　本次服务改动和 Web 已部署并完成发布收尾。</text><text x="160" y="299" class="text">•　类型检查、Lint、构建、侧栏验证均通过。</text>
+    <rect x="150" y="347" width="410" height="64" rx="15" fill="#fff" stroke="#dfe7e1" filter="url(#shadow)"/><text x="168" y="370" class="muted">给 Agent 发消息…</text><text x="170" y="396" class="green">＋　◉ 完全访问</text><text x="405" y="396" class="text">hst / gpt-5.6-terra / 高　⌄</text><circle cx="536" cy="392" r="13" fill="#266f4b"/><text x="532" y="397" fill="#fff" font-family="Arial" font-size="12">↑</text>
+    <g filter="url(#shadow)"><rect class="card" x="478" y="61" width="224" height="75" rx="14"/><text x="495" y="84" class="muted">FlowWeave　⌄</text><text x="495" y="113" class="label">▣　变更</text><text x="646" y="113" class="green">+36</text><text x="677" y="113" fill="#c7473f" font-size="12">-30</text></g>
+  </g>
+
+  <g transform="translate(824 108)">
+    <text class="caption" x="0" y="-16">B · 打开工具侧栏（默认文件分页）</text>
+    <rect class="frame" width="720" height="430" rx="12"/><rect class="top" width="720" height="48" rx="12"/><path d="M0 48h720" class="line"/>
+    <rect class="tab" x="14" y="8" width="270" height="32" rx="7"/><circle cx="31" cy="24" r="6" fill="#337855"/><text x="45" y="28" class="label">拉取代码并部署服务器</text><rect x="650" y="12" width="24" height="24" rx="6" fill="#e8f0eb"/><text x="657" y="29" class="green">⌄</text><rect x="682" y="12" width="24" height="24" rx="6" fill="#dcebe1"/><text x="688" y="29" class="green">▯</text>
+    <rect x="0" y="48" width="490" height="382" fill="#fff"/><rect x="490" y="48" width="230" height="382" class="side"/><path d="M490 48v382" class="line"/>
+    <text x="95" y="180" class="muted">用时 8 分钟 21 秒　›</text><path d="M95 191h280" class="line"/><text x="95" y="220" class="title" font-size="15">已完成拉取和部署。</text><text x="100" y="247" class="text">•　分支快进至 195dc903，没有合并冲突。</text><text x="100" y="269" class="text">•　Web 已部署并完成发布收尾。</text>
+    <rect x="91" y="347" width="320" height="64" rx="15" fill="#fff" stroke="#dfe7e1"/><text x="108" y="370" class="muted">给 Agent 发消息…</text><text x="109" y="396" class="green">＋　◉ 完全访问</text><text x="247" y="396" class="text">hst / gpt-5.6-terra / 高</text>
+    <rect class="top" x="490" y="48" width="230" height="44"/><rect x="501" y="57" width="72" height="27" rx="6" fill="#fff" stroke="#bcd6c4"/><text x="519" y="75" class="label">▣ 文件</text><rect x="681" y="58" width="25" height="25" rx="6" fill="#e8f0eb"/><text x="688" y="75" class="green">×</text>
+    <text x="510" y="118" class="caption" font-size="12">文件</text><path d="M507 128h195" class="line"/><text x="514" y="152" class="text">⌄　src</text><text x="532" y="174" class="text">⌄　components</text><text x="550" y="196" class="green">▣　AgentSessionWorkbench.tsx</text><text x="514" y="228" class="text">▣　README.md</text><rect x="510" y="257" width="192" height="142" rx="8" fill="#fff" stroke="#dfe7e1"/><text x="524" y="282" class="mono">AgentSessionWorkbench.tsx</text><path d="M524 295h150M524 307h125M524 319h140M524 331h110" class="line"/>
+  </g>
+
+  <g transform="translate(56 642)">
+    <text class="caption" x="0" y="-16">C · 环境悬浮卡隐藏，顶部保持纯 Tab + 操作区</text>
+    <rect class="frame" width="720" height="410" rx="12"/><rect class="top" width="720" height="48" rx="12"/><path d="M0 48h720" class="line"/><rect class="tab" x="14" y="8" width="270" height="32" rx="7"/><circle cx="31" cy="24" r="6" fill="#337855"/><text x="45" y="28" class="label">拉取代码并部署服务器</text><rect x="650" y="12" width="24" height="24" rx="6" fill="#dcebe1"/><text x="657" y="29" class="green">▣</text><rect x="682" y="12" width="24" height="24" rx="6" fill="#e8f0eb"/><text x="688" y="29" class="green">▯</text>
+    <text x="170" y="160" class="muted">用时 8 分钟 21 秒　›</text><path d="M170 171h370" class="line"/><text x="170" y="202" class="title" font-size="15">已完成拉取和部署。</text><text x="175" y="229" class="text">•　类型检查、Lint、构建、侧栏验证均通过。</text><text x="175" y="251" class="text">•　上线页面、资源、路由和健康检查正常。</text>
+    <rect x="165" y="328" width="410" height="64" rx="15" fill="#fff" stroke="#dfe7e1" filter="url(#shadow)"/><text x="182" y="351" class="muted">给 Agent 发消息…</text><text x="182" y="377" class="green">＋　◉ 完全访问</text><text x="418" y="377" class="text">hst / gpt-5.6-terra / 高　⌄</text>
+  </g>
+
+  <g transform="translate(824 642)">
+    <text class="caption" x="0" y="-16">D · 合并工作区 Tab（全屏或拖拽到边界）</text>
+    <rect class="frame" width="720" height="410" rx="12"/><rect class="top" width="720" height="48" rx="12"/><path d="M0 48h720" class="line"/><rect x="14" y="8" width="190" height="32" rx="7" fill="#fff" stroke="#bcd6c4"/><text x="32" y="29" class="label">● 拉取代码并部署服务器</text><rect x="208" y="8" width="74" height="32" rx="7" fill="#eaf5ed"/><text x="227" y="29" class="green">▣ 文件</text><rect x="286" y="8" width="77" height="32" rx="7" fill="#fff" stroke="#dde7e0"/><text x="306" y="29" class="label">⌘ 终端</text><rect x="367" y="8" width="86" height="32" rx="7" fill="#fff" stroke="#dde7e0"/><text x="387" y="29" class="label">▣ 审查</text><rect x="650" y="12" width="24" height="24" rx="6" fill="#e8f0eb"/><text x="657" y="29" class="green">↙</text>
+    <rect x="14" y="62" width="205" height="330" rx="8" fill="#fafcfb" stroke="#dfe7e1"/><text x="30" y="88" class="caption" font-size="12">文件</text><text x="32" y="118" class="text">⌄　src</text><text x="49" y="140" class="text">⌄　components</text><text x="66" y="162" class="green">▣　AgentSessionWorkbench.tsx</text><text x="32" y="194" class="text">▣　README.md</text>
+    <rect x="231" y="62" width="475" height="330" rx="8" fill="#fff" stroke="#dfe7e1"/><text x="250" y="91" class="mono">AgentSessionWorkbench.tsx</text><path d="M250 108h350M250 122h315M250 136h372M250 150h300M250 164h340M250 178h285M250 192h361M250 206h310M250 220h335" class="line"/><rect x="250" y="250" width="295" height="92" rx="8" fill="#f7faf8"/><text x="267" y="278" class="small">拖动右侧栏边界至最左端</text><text x="267" y="300" class="small">或点击全屏，即合并为统一 Tab 工作区</text>
+  </g>
+</svg>

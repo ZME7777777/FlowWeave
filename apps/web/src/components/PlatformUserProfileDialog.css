@@ -1,0 +1,6 @@
+.platform-user-profile>header{grid-template-columns:minmax(0,1fr) 32px;align-items:center}
+.platform-user-profile form{display:grid;gap:16px;padding:14px 22px 20px}
+.platform-user-profile form label{display:grid;gap:6px;font-size:12px;font-weight:600}
+.platform-user-profile input{height:36px;width:100%;min-width:0;border:1px solid #cbd9d0;border-radius:7px;padding:7px 10px;font-size:13px;font-weight:400}
+.platform-user-profile form footer{display:flex;justify-content:flex-end;gap:8px;margin-top:4px}
+.platform-user-profile [role=alert]{margin:0;color:#a3443d;font-size:12px}

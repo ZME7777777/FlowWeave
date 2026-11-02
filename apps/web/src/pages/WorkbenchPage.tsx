@@ -1,19 +1,27 @@
-import { Background, Controls, Handle, Position, ReactFlow, useNodesState, type Edge, type Node, type NodeProps } from '@xyflow/react';
+import { Background, Controls, Handle, Position, ReactFlow, useNodesState, type Connection, type Edge, type Node, type NodeProps } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { AlertTriangle, ArrowLeft, Bot, Boxes, Check, ChevronDown, ChevronRight, Copy, Download, ExternalLink, Eye, FileText, FolderClosed, GripVertical, Layers3, Play, Plus, RefreshCw, Send, StopCircle, Trash2, Upload, X } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, Bot, Boxes, Check, ChevronDown, ChevronRight, Copy, Download, ExternalLink, Eye, FileText, FolderClosed, GripVertical, Info, Play, Plus, RefreshCw, Send, StopCircle, Trash2, Upload, X } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
+import { Fragment, Suspense, createContext, lazy, useContext, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
 import { ApiError, api, artifactContentUrl, subscribeToRun } from '../api/client';
 import { flowMappingEdgeTypes, withMappingLabelOffsets } from '../components/flowMappingEdgeLayout';
 import { isOpenHandsAgentReply } from '../components/conversationEvents';
+import { LaunchOptionMenu } from '../components/LaunchOptionMenu';
 import { Pagination } from '../components/Pagination';
 import { useProductDialog } from '../components/ProductDialogContext';
 import { RuntimeConfirmationPanel } from '../components/RuntimeConfirmationPanel';
 import { useEscapeClose } from '../components/useEscapeClose';
 import { useWorkbenchStore } from '../store/workbench';
-import type { AgentPreset, ArtifactVersion, AttemptState, AutomaticNodePlan, AutomaticRecordConfigDocument, CapabilityAsset, CapabilityCollection, FlowRun, FlowRunAutomaticRecord, FlowRunAutomaticRecordSummary, FlowRunStepwiseRecord, GateAgentPreset, GateEvaluation, GatePolicy, GateRemediationResult, NodeAttempt, NodeRun, OpenHandsConversationEvent, OpenHandsConversationEventBatch, RecordConfigDocument, SnapshotFlowNode, StepwiseNodeDraft, TokenUsageSummary } from '../types';
-import { withDeploymentBase } from '../deploymentPath';
-import { selectCapabilityVersion, selectCapabilityVersions } from '../utils/capabilitySelection';
+import type { AgentPreset, ArtifactVersion, AttemptState, AutomaticNodePlan, AutomaticRecordConfigDocument, FlowRun, FlowRunAutomaticRecord, FlowRunAutomaticRecordSummary, FlowRunStepwiseRecord, GateAgentPreset, GateEvaluation, GatePolicy, GateRemediationResult, IOField, NodeAttempt, NodeRun, OpenHandsConversationEvent, OpenHandsConversationEventBatch, RecordConfigDocument, SnapshotDefinition, SnapshotFlowNode, StepwiseNodeDraft, StepwiseRuntimePortMapping, TokenUsageSummary } from '../types';
+import { withDeploymentBase, withoutDeploymentBase } from '../deploymentPath';
+import { ReadOnlySessionConfiguration, type FrozenSessionConfigurationItem } from '../components/agent-session/ReadOnlySessionConfiguration';
+import { configurationIssues, configurationErrorIssues, configurationTab, type ConfigurationIssue, type ConfigurationField as ConfigurationFieldName } from '../utils/nodeConfiguration';
+import { writableAgentPreset, writableGates } from '../utils/agentPresetWrite';
+import './run-record-detail.css';
+import { flowRunPath, parseFlowRunPath, type FlowRunLocation } from '../flowRunNavigation';
+
+const SessionCapabilityManager = lazy(() => import('../components/agent-session/AgentSessionWorkbench').then(module => ({ default: module.CapabilityManager })));
 
 const attemptState = (run: NodeRun) => run.attempts.at(-1)?.state ?? run.state;
 const RUN_RAIL_PAGE_SIZE = 10;
@@ -40,7 +48,21 @@ const usageLabel = (usage?: TokenUsageSummary) => `累计 ${(usage?.total_tokens
 // Bump this whenever graph rendering changes. It also guarantees that a web
 // deployment produces a new content-hashed bundle instead of reusing an
 // immutable asset cached by an earlier graph renderer.
-const GRAPH_RENDER_REVISION = '2026-09-09.1';
+const GRAPH_RENDER_REVISION = '2026-10-28.1';
+
+const fieldName = (field: Pick<IOField, 'display_name'> | undefined, fallback = '未命名字段') => field?.display_name?.trim() || fallback;
+
+const runtimeNodeInputs = (node: SnapshotFlowNode): IOField[] => {
+  const overrides = node.runtime_port_overrides?.inputs ?? [];
+  const overridden = new Set(overrides.map(field => field.field_key));
+  return [...node.asset.inputs.filter(field => !overridden.has(field.field_key)), ...overrides];
+};
+
+const runtimeNodeOutputs = (node: SnapshotFlowNode): IOField[] => {
+  const overrides = node.runtime_port_overrides?.outputs ?? [];
+  const overridden = new Set(overrides.map(field => field.field_key));
+  return [...node.asset.outputs.filter(field => !overridden.has(field.field_key)), ...overrides];
+};
 
 const nodeForRun = (run: FlowRun, nodeRun: NodeRun) => {
   const snapshotId = nodeRun.attempts.at(-1)?.snapshot_id;
@@ -102,6 +124,7 @@ function openNodeSession(
 }
 
 type WorkbenchMode = 'MANUAL' | 'AUTOMATIC';
+type RecordListFilter = 'ALL' | WorkbenchMode;
 
 type CopyTarget =
   | { mode: 'STEPWISE'; record: FlowRunStepwiseRecord }
@@ -177,9 +200,18 @@ const activeFlowNodeRun = (records: NodeRun[]): NodeRun | undefined => records.r
  * exactly as an auto-created successor is for a continuous record.
  */
 const pendingStepwiseDraftKey = (record: FlowRun): string | undefined => {
-  const drafts = (record as FlowRunStepwiseRecord).stepwise_node_drafts;
-  if (!drafts) return undefined;
-  return Object.keys(drafts).reverse().find(key => !record.node_runs.some(item => item.flow_node_snapshot_key === key));
+  if (!(record as FlowRunStepwiseRecord).stepwise_node_drafts) return undefined;
+  const current = activeFlowNodeRun(record.node_runs);
+  if (!current) return initialFlowNodeKey(record);
+  if (attemptState(current) !== 'ACCEPTED') return undefined;
+  const definition = (record.snapshots.find(item => item.id === record.active_snapshot_id) ?? record.snapshots.at(-1))?.definition;
+  const candidates = (definition?.edges ?? []).filter(edge => edge.source_instance_key === current.flow_node_snapshot_key)
+    .map(edge => edge.target_instance_key).filter(key => !record.node_runs.some(item => item.flow_node_snapshot_key === key)
+      && (definition?.edges ?? []).filter(edge => edge.target_instance_key === key).every(edge => {
+        const latest = [...record.node_runs].reverse().find(item => item.flow_node_snapshot_key === edge.source_instance_key);
+        return latest && attemptState(latest) === 'ACCEPTED';
+      }));
+  return candidates[0];
 };
 
 function initialFlowNodeKey(record: FlowRun): string | undefined {
@@ -207,29 +239,33 @@ function selectedRecordNodeRun(record: FlowRun | undefined, selectedNodeRunId?: 
   return selectedById ?? (!selectedNodeRunId ? active : undefined);
 }
 
-function RunRail({ mode, manualRecords, automaticRecords, automaticError, selected, selectedStepwiseId, canCopyManualRecord, canDeleteManualRecords, stepwiseSelectedIds, automaticSelectedIds, manualBusyId, selectedAutomaticId, automaticBusyId, stepwiseLaunch, onModeChange, onSelectManualRecord, onCreateManualRecord, onCopyManual, onExportManual, onDeleteManualRecord, onSelectAutomatic, onClearSelection, onCreateAutomatic, onDeleteAutomatic, onCopyAutomatic, onExportAutomatic, onStartAutomatic }: {
-  mode: WorkbenchMode; manualRecords: FlowRunStepwiseRecord[]; automaticRecords: FlowRunAutomaticRecordSummary[]; selected?: string; selectedStepwiseId?: string; canCopyManualRecord: boolean; canDeleteManualRecords: boolean;
+function RunRail({ mode, listFilter, manualRecords, automaticRecords, automaticError, selected, selectedStepwiseId, canCopyManualRecord, canDeleteManualRecords, stepwiseSelectedIds, automaticSelectedIds, manualBusyId, selectedAutomaticId, automaticBusyId, stepwiseLaunch, onListFilterChange, onCreateRecord, onSelectManualRecord, onCreateManualRecord, onCopyManual, onExportManual, onDeleteManualRecord, onSelectAutomatic, onClearSelection, onDeleteAutomatic, onCopyAutomatic, onExportAutomatic, onStartAutomatic }: {
+  mode: WorkbenchMode; listFilter: RecordListFilter; manualRecords: FlowRunStepwiseRecord[]; automaticRecords: FlowRunAutomaticRecordSummary[]; selected?: string; selectedStepwiseId?: string; canCopyManualRecord: boolean; canDeleteManualRecords: boolean;
   automaticError?: string; stepwiseSelectedIds: Set<string>; automaticSelectedIds: Set<string>;
   manualBusyId?: string;
-  selectedAutomaticId?: string; automaticBusyId?: string; stepwiseLaunch?: { recordId: string; ready: boolean; busy: boolean; onStart: () => void }; onModeChange: (mode: WorkbenchMode) => void;
-  onSelectManualRecord: (id: string, modifiers: SelectionModifiers) => void; onCreateManualRecord: () => void; onCopyManual: () => void; onExportManual: () => void; onDeleteManualRecord: () => void; onSelectAutomatic: (id: string, modifiers: SelectionModifiers) => void; onCreateAutomatic: () => void;
-  onClearSelection: () => void; onDeleteAutomatic: () => void; onCopyAutomatic: () => void; onExportAutomatic: () => void; onStartAutomatic: (record: FlowRunAutomaticRecordSummary) => void;
+  selectedAutomaticId?: string; automaticBusyId?: string; stepwiseLaunch?: { recordId: string; ready: boolean; busy: boolean; rerun?: boolean; onStart: () => void }; onListFilterChange: (filter: RecordListFilter) => void; onCreateRecord: () => void;
+  onSelectManualRecord: (id: string, modifiers: SelectionModifiers) => void; onCreateManualRecord: () => void; onCopyManual: () => void; onExportManual: () => void; onDeleteManualRecord: () => void; onSelectAutomatic: (id: string, modifiers: SelectionModifiers) => void; onClearSelection: () => void;
+  onDeleteAutomatic: () => void; onCopyAutomatic: () => void; onExportAutomatic: () => void; onStartAutomatic: (record: FlowRunAutomaticRecordSummary) => void;
 }) {
   const stepwiseCount = stepwiseSelectedIds.size;
   const automaticCount = automaticSelectedIds.size;
   const modifiers = (event: ReactMouseEvent): SelectionModifiers => ({ extend: event.metaKey || event.ctrlKey, range: event.shiftKey });
   const [collapsedScheduleIds, setCollapsedScheduleIds] = useState<Set<string>>(new Set());
   const [recordPage, setRecordPage] = useState(1);
-  const records = mode === 'AUTOMATIC' ? automaticRecords : manualRecords;
+  const records = listFilter === 'AUTOMATIC' ? automaticRecords : listFilter === 'MANUAL' ? manualRecords : [
+    ...manualRecords.map(record => ({ kind: 'MANUAL' as const, record, startedAt: record.started_at })),
+    ...automaticRecords.map(record => ({ kind: 'AUTOMATIC' as const, record, startedAt: record.started_at })),
+  ].sort((left, right) => right.startedAt.localeCompare(left.startedAt));
   const pageCount = Math.max(1, Math.ceil(records.length / RUN_RAIL_PAGE_SIZE));
   const visibleRecords = records.slice((recordPage - 1) * RUN_RAIL_PAGE_SIZE, recordPage * RUN_RAIL_PAGE_SIZE);
-  const visibleManualRecords = mode === 'MANUAL' ? visibleRecords as FlowRunStepwiseRecord[] : [];
-  const visibleAutomaticRecords = mode === 'AUTOMATIC' ? visibleRecords as FlowRunAutomaticRecordSummary[] : [];
+  const visibleManualRecords = listFilter === 'MANUAL' ? visibleRecords as FlowRunStepwiseRecord[] : [];
+  const visibleAutomaticRecords = listFilter === 'AUTOMATIC' ? visibleRecords as FlowRunAutomaticRecordSummary[] : [];
+  const visibleAllRecords = listFilter === 'ALL' ? visibleRecords as Array<{ kind: WorkbenchMode; record: FlowRunStepwiseRecord | FlowRunAutomaticRecordSummary; startedAt: string }> : [];
   const selectedRecordId = mode === 'AUTOMATIC' ? selectedAutomaticId : mode === 'MANUAL' ? selectedStepwiseId : selected;
-  const selectedRecordIndex = selectedRecordId ? records.findIndex(record => record.id === selectedRecordId) : -1;
+  const selectedRecordIndex = selectedRecordId ? records.findIndex(record => ('record' in record ? record.record.id : record.id) === selectedRecordId) : -1;
   useEffect(() => {
     setRecordPage(1);
-  }, [mode]);
+  }, [listFilter]);
   useEffect(() => {
     setRecordPage(current => Math.min(current, pageCount));
   }, [pageCount]);
@@ -238,6 +274,10 @@ function RunRail({ mode, manualRecords, automaticRecords, automaticError, select
   }, [selectedRecordIndex]);
   const scheduledRecords = visibleAutomaticRecords.filter(record => record.schedule_id);
   const standaloneAutomaticRecords = visibleAutomaticRecords.filter(record => !record.schedule_id);
+  const selectAllRecord = (item: { kind: WorkbenchMode; record: FlowRunStepwiseRecord | FlowRunAutomaticRecordSummary }) => {
+    if (item.kind === 'AUTOMATIC') onSelectAutomatic(item.record.id, { extend: false, range: false });
+    else onSelectManualRecord(item.record.id, { extend: false, range: false });
+  };
   const scheduleGroups = [...new Set(scheduledRecords.map(record => record.schedule_id!))].map(scheduleId => ({
     id: scheduleId,
     name: scheduledRecords.find(record => record.schedule_id === scheduleId)?.schedule_name || '定时连续运行',
@@ -255,18 +295,28 @@ function RunRail({ mode, manualRecords, automaticRecords, automaticError, select
     const launch = stepwiseLaunch?.recordId === record.id ? stepwiseLaunch : undefined;
     return <article key={record.id} className={stepwiseSelectedIds.has(record.id) ? 'active' : ''} data-record-state={record.state.toLowerCase()}>
       <button type="button" className="automatic-record-select" aria-pressed={stepwiseSelectedIds.has(record.id)} onClick={event => onSelectManualRecord(record.id, modifiers(event))}><i title={stateLabel} aria-label={stateLabel}/><span><b>{record.name}</b></span></button>
-      {launch && <button type="button" className="automatic-record-start" aria-label={`启动逐步运行 ${record.name}`} disabled={!launch.ready || launch.busy} onClick={launch.onStart}><Play size={12}/>{launch.busy ? '启动中…' : '启动'}</button>}
+      {launch && <button type="button" className="automatic-record-start" aria-label={`${launch.rerun ? '重跑' : '启动'}逐步运行 ${record.name}`} disabled={!launch.ready || launch.busy} onClick={launch.onStart}><Play size={12}/>{launch.busy ? `${launch.rerun ? '重跑' : '启动'}中…` : launch.rerun ? '重跑' : '启动'}</button>}
     </article>;
   };
+  const allRecordItem = (item: { kind: WorkbenchMode; record: FlowRunStepwiseRecord | FlowRunAutomaticRecordSummary; startedAt: string }) => {
+    const active = item.kind === 'AUTOMATIC' ? automaticSelectedIds.has(item.record.id) : stepwiseSelectedIds.has(item.record.id);
+    const state = item.record.state === 'DRAFT' ? '草稿' : FLOW_STATE_LABELS[item.record.state] ?? item.record.state;
+    const detail = item.kind === 'AUTOMATIC'
+      ? `${(item.record as FlowRunAutomaticRecordSummary).progress.accepted}/${(item.record as FlowRunAutomaticRecordSummary).plan.reachable_node_count} 节点完成`
+      : (item.record as FlowRunStepwiseRecord).start_node_key ? '从已选起始节点逐步执行' : '等待配置起始节点';
+    return <article key={`${item.kind}:${item.record.id}`} className={`unified-run-record ${active ? 'active' : ''}`}><button type="button" aria-pressed={active} onClick={() => selectAllRecord(item)}><i/><span><small>{item.kind === 'AUTOMATIC' ? '连续运行' : '逐步运行'} · {state}</small><b>{item.record.name}</b><em>{detail}</em></span><time>{new Date(item.startedAt).toLocaleString()}</time></button></article>;
+  };
+  const currentCount = listFilter === 'AUTOMATIC' ? automaticCount : listFilter === 'MANUAL' ? stepwiseCount : automaticCount + stepwiseCount;
   return <aside className="run-rail flow-run-inner-rail" onClick={event => { if (!isInteractiveClick(event.target)) onClearSelection(); }}>
     <div className="run-rail-fixed">
-      <nav className="inner-run-mode-tabs" role="tablist" aria-label="当前流程运行方式"><button type="button" role="tab" aria-selected={mode === 'AUTOMATIC'} className={mode === 'AUTOMATIC' ? 'active' : ''} onClick={() => onModeChange('AUTOMATIC')}>连续运行</button><button type="button" role="tab" aria-selected={mode === 'MANUAL'} className={mode === 'MANUAL' ? 'active' : ''} onClick={() => onModeChange('MANUAL')}>逐步运行</button></nav>
-      {mode !== 'AUTOMATIC' ? manualToolbar : <div className="automatic-record-toolbar"><button type="button" className="secondary" disabled={automaticCount > 1 ? Boolean(automaticBusyId) : !selectedAutomaticId || Boolean(automaticBusyId)} onClick={automaticCount > 1 ? onExportAutomatic : onCopyAutomatic}><Copy size={13}/>{automaticBusyId ? '处理中…' : automaticCount > 1 ? `导出 (${automaticCount})` : '拷贝'}</button><button type="button" className="danger" disabled={!automaticCount || Boolean(automaticBusyId)} onClick={onDeleteAutomatic}><Trash2 size={13}/>{automaticCount > 1 ? `删除 (${automaticCount})` : '删除'}</button><button type="button" className="primary" disabled={Boolean(automaticBusyId)} onClick={onCreateAutomatic}><Plus size={13}/>新增</button></div>}
+      <header className="unified-run-rail-head"><span><b>运行记录</b><small>选择记录后在右侧查看与操作</small></span><button type="button" className="primary" onClick={onCreateRecord}><Plus size={13}/>新建运行</button></header>
+      <nav className="inner-run-mode-tabs unified-run-filter" role="tablist" aria-label="运行记录类型"><button type="button" role="tab" aria-selected={listFilter === 'ALL'} className={listFilter === 'ALL' ? 'active' : ''} onClick={() => onListFilterChange('ALL')}>全部</button><button type="button" role="tab" aria-selected={listFilter === 'MANUAL'} className={listFilter === 'MANUAL' ? 'active' : ''} onClick={() => onListFilterChange('MANUAL')}>逐步</button><button type="button" role="tab" aria-selected={listFilter === 'AUTOMATIC'} className={listFilter === 'AUTOMATIC' ? 'active' : ''} onClick={() => onListFilterChange('AUTOMATIC')}>连续</button></nav>
+      {listFilter === 'MANUAL' ? manualToolbar : listFilter === 'AUTOMATIC' ? <div className="automatic-record-toolbar"><button type="button" className="secondary" disabled={automaticCount > 1 ? Boolean(automaticBusyId) : !selectedAutomaticId || Boolean(automaticBusyId)} onClick={automaticCount > 1 ? onExportAutomatic : onCopyAutomatic}><Copy size={13}/>{automaticBusyId ? '处理中…' : automaticCount > 1 ? `导出 (${automaticCount})` : '拷贝'}</button><button type="button" className="danger" disabled={!automaticCount || Boolean(automaticBusyId)} onClick={onDeleteAutomatic}><Trash2 size={13}/>{automaticCount > 1 ? `删除 (${automaticCount})` : '删除'}</button></div> : <div className="unified-run-selection-note">已选择 {currentCount} 条记录；切换类型后可执行对应导出、拷贝或删除。</div>}
     </div>
-    <section className="run-history-panel" aria-label={`${mode === 'AUTOMATIC' ? '连续运行' : nodeRecordLabel}记录`}>
-      <div className="run-history-title"><b>{mode === 'AUTOMATIC' ? '连续运行记录' : nodeRecordLabel}</b></div>
+    <section className="run-history-panel" aria-label="运行记录">
+      <div className="run-history-title"><b>{listFilter === 'ALL' ? '全部运行记录' : listFilter === 'AUTOMATIC' ? '连续运行记录' : nodeRecordLabel}</b></div>
       <div className="run-history-scroll">
-        {mode === 'MANUAL' ? <div className="automatic-record-list node-record-list">{visibleManualRecords.map(manualRecordItem)}{!manualRecords.length && <p>暂无逐步运行记录，请点击“新增”创建。</p>}</div> : <div className="automatic-record-list">{standaloneAutomaticRecords.map(automaticRecordItem)}{scheduleGroups.map(group => { const open = !collapsedScheduleIds.has(group.id); return <section className="automatic-schedule-directory" key={group.id}><button type="button" className="automatic-schedule-directory-toggle" aria-expanded={open} onClick={() => setCollapsedScheduleIds(current => { const next = new Set(current); if (next.has(group.id)) next.delete(group.id); else next.add(group.id); return next; })}>{open ? <ChevronDown size={13}/> : <ChevronRight size={13}/>}<FolderClosed size={13}/><span><b>{group.name}</b><small>{group.records.length} 条定时连续运行记录</small></span></button>{open && <div className="automatic-schedule-directory-records">{group.records.map(automaticRecordItem)}</div>}</section>; })}{automaticError ? <p className="error">连续运行记录加载失败：{automaticError}</p> : !automaticRecords.length && <p>暂无连续运行记录。</p>}</div>}
+        {listFilter === 'ALL' ? <div className="automatic-record-list unified-run-record-list">{visibleAllRecords.map(allRecordItem)}{!records.length && <p>暂无运行记录，点击“新建运行”创建。</p>}</div> : listFilter === 'MANUAL' ? <div className="automatic-record-list node-record-list">{visibleManualRecords.map(manualRecordItem)}{!manualRecords.length && <p>暂无逐步运行记录，点击“新建运行”创建。</p>}</div> : <div className="automatic-record-list">{standaloneAutomaticRecords.map(automaticRecordItem)}{scheduleGroups.map(group => { const open = !collapsedScheduleIds.has(group.id); return <section className="automatic-schedule-directory" key={group.id}><button type="button" className="automatic-schedule-directory-toggle" aria-expanded={open} onClick={() => setCollapsedScheduleIds(current => { const next = new Set(current); if (next.has(group.id)) next.delete(group.id); else next.add(group.id); return next; })}>{open ? <ChevronDown size={13}/> : <ChevronRight size={13}/>}<FolderClosed size={13}/><span><b>{group.name}</b><small>{group.records.length} 条定时连续运行记录</small></span></button>{open && <div className="automatic-schedule-directory-records">{group.records.map(automaticRecordItem)}</div>}</section>; })}{automaticError ? <p className="error">连续运行记录加载失败：{automaticError}</p> : !automaticRecords.length && <p>暂无连续运行记录。</p>}</div>}
       </div>
       <Pagination page={recordPage} pageSize={RUN_RAIL_PAGE_SIZE} total={records.length} onPageChange={setRecordPage} variant="arrows"/>
     </section>
@@ -283,24 +333,31 @@ function isFlowInternalClick(target: EventTarget | null): boolean {
   ));
 }
 
+type RuntimePortDirection = 'INPUT' | 'OUTPUT';
 type SnapshotGraphNodeData = {
   label: string;
   status: string;
   stateLabel?: string;
   activeFlowTarget: boolean;
   visits: number;
-  inputs: SnapshotFlowNode['asset']['inputs'];
-  outputs: SnapshotFlowNode['asset']['outputs'];
+  inputs: IOField[];
+  outputs: IOField[];
+  onAddRuntimePort?: (direction: RuntimePortDirection) => void;
+  canConfigureRuntimePorts: boolean;
 };
 
 function SnapshotGraphNode({ data, selected }: NodeProps<Node<SnapshotGraphNodeData>>) {
   const execution = data.stateLabel || (data.visits ? `运行 ${data.visits} 次` : '');
+  const addPort = (event: ReactMouseEvent, direction: RuntimePortDirection) => {
+    event.stopPropagation();
+    data.onAddRuntimePort?.(direction);
+  };
   return <article className={`flow-asset-node run-graph-node ${data.status}${data.activeFlowTarget ? ' flow-active-target' : ''}${selected ? ' snapshot-selected' : ''}`} data-selected={selected || undefined} data-active-flow-target={data.activeFlowTarget || undefined}>
     <Handle id="flow-target" className="flow-direction-handle run-flow-handle" type="target" position={Position.Left} isConnectable={false}/>
-    <div className="flow-node-head"><span className="flow-node-kind">AGENT</span>{data.activeFlowTarget && <span className="flow-active-target-marker">当前流转节点</span>}<span className="snapshot-selected-marker" aria-hidden={!selected}>已选中</span>{execution && <small className="run-node-execution">{execution}{data.stateLabel && data.visits ? ` · 运行 ${data.visits} 次` : ''}</small>}</div>
+    <div className="flow-node-head"><span className="flow-node-kind">AGENT</span>{data.activeFlowTarget && <span className="flow-active-target-marker">当前流转节点</span>}{execution && <small className="run-node-execution">{execution}{data.stateLabel && data.visits ? ` · 运行 ${data.visits} 次` : ''}</small>}</div>
     <strong>{data.label}</strong>
-    <small>标准端口来自节点资产</small>
-    <div className="flow-port-groups"><section aria-label="输入端口"><span>INPUTS</span>{data.inputs.length ? data.inputs.map(field => <div className="flow-port-row flow-port-input" key={field.field_key}><Handle id={`input:${field.field_key}`} className="data-port-handle run-data-handle input" type="target" position={Position.Left} isConnectable={false}/><b>{field.display_name || field.field_key}</b><small>{field.data_type}</small></div>) : <div className="flow-port-row flow-port-input"><em>无输入</em></div>}</section><section aria-label="输出端口"><span>OUTPUTS</span>{data.outputs.length ? data.outputs.map(field => <div className="flow-port-row flow-port-output" key={field.field_key}><b>{field.display_name || field.field_key}</b><small>{field.data_type}</small><Handle id={`output:${field.field_key}`} className="data-port-handle run-data-handle output" type="source" position={Position.Right} isConnectable={false}/></div>) : <div className="flow-port-row flow-port-output"><em>无输出</em></div>}</section></div>
+    {[...data.inputs, ...data.outputs].some(field => field.runtime_port) && <small>含运行端口</small>}
+    <div className="flow-port-groups"><section aria-label="输入端口"><span>输入</span>{data.inputs.length ? data.inputs.map(field => <div className={`flow-port-row flow-port-input${field.runtime_port ? ' runtime-port' : ''}`} key={field.field_key}><Handle id={`input:${field.field_key}`} className="data-port-handle run-data-handle input" type="target" position={Position.Left} isConnectable={Boolean(data.canConfigureRuntimePorts && field.runtime_port)}/><b>{fieldName(field)}</b><small>{field.data_type}{field.runtime_port ? ' · 本次运行' : ''}</small></div>) : <div className="flow-port-row flow-port-input"><em>无输入</em></div>}{data.onAddRuntimePort && <button type="button" className="run-port-add" onClick={event => addPort(event, 'INPUT')}><Plus size={12}/>新增输入</button>}</section><section aria-label="输出端口"><span>输出</span>{data.outputs.length ? data.outputs.map(field => <div className={`flow-port-row flow-port-output${field.runtime_port ? ' runtime-port' : ''}`} key={field.field_key}><b>{fieldName(field)}</b><small>{field.data_type}{field.output_scope && field.output_scope !== 'FLOW' ? ` · ${field.output_scope === 'CASE' ? 'Case' : '观察'}` : ''}{field.runtime_port ? ' · 本次运行' : ''}</small><Handle id={`output:${field.field_key}`} className="data-port-handle run-data-handle output" type="source" position={Position.Right} isConnectable={Boolean(data.canConfigureRuntimePorts && field.runtime_port)}/></div>) : <div className="flow-port-row flow-port-output"><em>无输出</em></div>}{data.onAddRuntimePort && <button type="button" className="run-port-add" onClick={event => addPort(event, 'OUTPUT')}><Plus size={12}/>新增输出</button>}</section></div>
     <Handle id="flow-source" className="flow-direction-handle run-flow-handle" type="source" position={Position.Right} isConnectable={false}/>
   </article>;
 }
@@ -358,14 +415,13 @@ function readyAutomaticPlanKeys(record?: FlowRunAutomaticRecord): Set<string> {
   return new Set(Object.keys(record.node_plans).filter(key => !incomplete.has(key)));
 }
 
-function SnapshotGraph({ run, snapshotId, selectedKey, activeNodeRunId, activeNodeKey, onSelect, onClearSelection, reachableKeys, selectableKeys, configuredPlanKeys, executionRun, missingPlanKeys, showExecutionState = true, neutralHelp, neutralView = false }: { run: FlowRun; snapshotId?: string; selectedKey?: string; activeNodeRunId?: string; activeNodeKey?: string; onSelect: (key: string) => void; onClearSelection?: () => void; reachableKeys?: Iterable<string>; selectableKeys?: Iterable<string>; configuredPlanKeys?: Iterable<string>; executionRun?: FlowRun; missingPlanKeys?: Iterable<string>; showExecutionState?: boolean; neutralHelp?: string; neutralView?: boolean }) {
+function SnapshotGraph({ run, snapshotId, draftDefinition, selectedKey, activeNodeRunId, activeNodeKey, onSelect, onDoubleSelect, onClearSelection, onAddRuntimePort, onConnectRuntimePorts, reachableKeys, selectableKeys, configuredPlanKeys, executionRun, missingPlanKeys, showExecutionState = true, neutralHelp, neutralView = false }: { run: FlowRun; snapshotId?: string; draftDefinition?: SnapshotDefinition; selectedKey?: string; activeNodeRunId?: string; activeNodeKey?: string; onSelect: (key: string) => void; onDoubleSelect?: (key: string) => void; onClearSelection?: () => void; onAddRuntimePort?: (nodeKey: string, direction: RuntimePortDirection) => void; onConnectRuntimePorts?: (connection: Connection) => void; reachableKeys?: Iterable<string>; selectableKeys?: Iterable<string>; configuredPlanKeys?: Iterable<string>; executionRun?: FlowRun; missingPlanKeys?: Iterable<string>; showExecutionState?: boolean; neutralHelp?: string; neutralView?: boolean }) {
   const [linkMode, setLinkMode] = useState<'flow' | 'data'>('flow');
-  // A NodeAttempt executes against its immutable snapshot.  Its facts and the
-  // graph shown beside them must therefore come from the same definition; the
-  // active snapshot is only the neutral/new-configuration fallback.
-  const snapshot = (snapshotId ? run.snapshots.find(item => item.id === snapshotId) : undefined)
+  // A NodeAttempt executes against its immutable snapshot. A runtime draft is
+  // previewed separately and is never substituted for an Attempt's history.
+  const snapshot = useMemo(() => draftDefinition ? { id: 'runtime-revision-draft', definition: draftDefinition, definition_hash: 'draft' } : (snapshotId ? run.snapshots.find(item => item.id === snapshotId) : undefined)
     ?? run.snapshots.find(item => item.id === run.active_snapshot_id)
-    ?? run.snapshots.at(-1);
+    ?? run.snapshots.at(-1), [draftDefinition, run.active_snapshot_id, run.snapshots, snapshotId]);
   const reachable = useMemo(() => new Set(reachableKeys ?? (snapshot?.definition.nodes ?? []).map(node => node.instance_key)), [reachableKeys, snapshot]);
   const selectable = useMemo(() => new Set(selectableKeys ?? reachable), [reachable, selectableKeys]);
   const configuredPlans = useMemo(() => new Set(configuredPlanKeys), [configuredPlanKeys]);
@@ -375,7 +431,7 @@ function SnapshotGraph({ run, snapshotId, selectedKey, activeNodeRunId, activeNo
       const visits = (executionRun?.node_runs ?? []).filter(nodeRun => nodeRun.flow_node_snapshot_key === item.instance_key);
       const latest = visits.at(-1);
       const latestAttempt = latest?.attempts.at(-1);
-      const activeFlowTarget = latest?.id === activeNodeRunId || item.instance_key === activeNodeKey;
+      const activeFlowTarget = Boolean(activeNodeRunId && latest?.id === activeNodeRunId || activeNodeKey && item.instance_key === activeNodeKey);
       const blocked = latestAttempt?.state === 'START_BLOCKED' || latestAttempt?.state === 'END_BLOCKED';
       const waiting = latestAttempt?.state === 'WAITING_HUMAN'
         || latestAttempt?.state === 'WAITING_CONFIRMATION'
@@ -395,7 +451,7 @@ function SnapshotGraph({ run, snapshotId, selectedKey, activeNodeRunId, activeNo
           : status === 'waiting' || status === 'failed' ? (latestAttempt ? ATTEMPT_STATE_LABELS[latestAttempt.state] : undefined)
             : status === 'accepted' ? '已完成' : status === 'cancelled' ? '已取消' : undefined
         : undefined;
-      return { id: item.instance_key, type: 'snapshotNode', selected: item.instance_key === selectedKey, selectable: selectable.has(item.instance_key), position: { x: item.position_x, y: item.position_y }, data: { label: item.alias || item.asset.name, status, stateLabel, activeFlowTarget, visits: showExecutionState ? visits.length : 0, inputs: item.asset.inputs, outputs: item.asset.outputs } };
+              return { id: item.instance_key, type: 'snapshotNode', selected: item.instance_key === selectedKey, selectable: selectable.has(item.instance_key), position: { x: item.position_x, y: item.position_y }, data: { label: item.alias || item.asset.name, status, stateLabel, activeFlowTarget, visits: showExecutionState ? visits.length : 0, inputs: runtimeNodeInputs(item), outputs: runtimeNodeOutputs(item), onAddRuntimePort: onAddRuntimePort && !visits.length ? (direction: RuntimePortDirection) => onAddRuntimePort(item.instance_key, direction) : undefined, canConfigureRuntimePorts: Boolean(onAddRuntimePort) && !visits.length } };
     });
     const directionEdges: Edge[] = (snapshot?.definition.edges ?? []).map((item, index) => ({ id: `flow-${item.id ?? index}`, source: item.source_instance_key, sourceHandle: 'flow-source', target: item.target_instance_key, targetHandle: 'flow-target', type: 'bezier', className: 'flow-direction-edge' }));
     const mappingEdges = withMappingLabelOffsets((snapshot?.definition.port_mappings ?? []).map((item, index) => ({
@@ -406,14 +462,14 @@ function SnapshotGraph({ run, snapshotId, selectedKey, activeNodeRunId, activeNo
       targetHandle: `input:${item.target_input_key}`,
       type: 'bezier',
       className: 'flow-mapping-edge',
-      label: `${item.source_output_key} → ${item.target_input_key}`,
+      label: `${fieldName(snapshot?.definition.nodes.find(node => node.instance_key === item.source_instance_key)?.asset.outputs.find(field => field.field_key === item.source_output_key))} → ${fieldName(snapshot?.definition.nodes.find(node => node.instance_key === item.target_instance_key)?.asset.inputs.find(field => field.field_key === item.target_input_key))}`,
     })));
     const graphEdges = [
       ...directionEdges.map(edge => ({ ...edge, selectable: false, style: { opacity: linkMode === 'flow' ? 1 : 0.16 } })),
       ...mappingEdges.map(edge => ({ ...edge, selectable: false, style: { opacity: linkMode === 'data' ? 1 : 0.16 } })),
     ];
     return [graphNodes, graphEdges] as const;
-  }, [activeNodeKey, activeNodeRunId, configuredPlans, executionRun?.node_runs, linkMode, missingPlans, neutralView, reachable, selectable, selectedKey, showExecutionState, snapshot]);
+  }, [activeNodeKey, activeNodeRunId, configuredPlans, executionRun?.node_runs, linkMode, missingPlans, neutralView, onAddRuntimePort, reachable, selectable, selectedKey, showExecutionState, snapshot]);
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<SnapshotGraphNodeData>>([]);
   useEffect(() => {
     setNodes(current => graphNodes.map(node => ({
@@ -424,9 +480,43 @@ function SnapshotGraph({ run, snapshotId, selectedKey, activeNodeRunId, activeNo
     })));
   }, [graphNodes, setNodes]);
   const graphKey = `${GRAPH_RENDER_REVISION}:${snapshot?.id ?? 'snapshot'}:${snapshot?.definition_hash ?? ''}`;
+  const canvasRef = useRef<HTMLDivElement>(null);
+  const fitGraph = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    let width = canvas.clientWidth, height = canvas.clientHeight;
+    let frame = 0;
+    const observer = new ResizeObserver(() => {
+      if (canvas.clientWidth === width && canvas.clientHeight === height) return;
+      width = canvas.clientWidth; height = canvas.clientHeight;
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => { if (width && height) fitGraph.current?.(); });
+    });
+    observer.observe(canvas);
+    return () => { observer.disconnect(); cancelAnimationFrame(frame); };
+  }, [graphKey]);
+
   const help = neutralView ? neutralHelp ?? '选择一条运行记录后查看执行状态。' : selectable.size < reachable.size ? '灰色节点需先完成上游配置；红色节点仍需补齐当前配置。' : missingPlans.size ? '红色节点尚未完成连续运行配置；点击节点可单独配置。' : showExecutionState ? '灰色节点尚未激活；实线表示流程走向，蓝线表示产物映射。可拖拽节点调整当前视图。' : `${neutralHelp ?? '选择一条运行记录后查看执行状态。'} 可拖拽节点调整当前视图。`;
-  return <section className="run-graph" data-graph-render-revision={GRAPH_RENDER_REVISION}><header><div><small>{help}</small></div><div className="flow-link-mode run-link-mode" aria-label="运行图连线模式"><button type="button" className={linkMode === 'flow' ? 'active' : ''} aria-pressed={linkMode === 'flow'} onClick={() => setLinkMode('flow')}>流程走向</button><button type="button" className={linkMode === 'data' ? 'active' : ''} aria-pressed={linkMode === 'data'} onClick={() => setLinkMode('data')}>产物流转</button></div><span>定义 Hash {snapshot?.definition_hash.slice(0, 8)}</span></header><div className="run-graph-canvas"><ReactFlow key={graphKey} nodeTypes={runSnapshotNodeTypes} edgeTypes={flowMappingEdgeTypes} nodes={nodes} edges={edges} onNodesChange={onNodesChange} nodesConnectable={false} fitView onPaneClick={onClearSelection} onNodeClick={(_, node) => { if (selectable.has(node.id)) onSelect(node.id); }}><Background/><Controls showInteractive={false}/></ReactFlow></div></section>;
+  return <section className="run-graph" data-graph-render-revision={GRAPH_RENDER_REVISION}><header><b>流程图</b><span className="run-graph-help" title={help} aria-label={help}><Info size={13}/></span><div className="flow-link-mode run-link-mode" aria-label="运行图连线模式"><button type="button" className={linkMode === 'flow' ? 'active' : ''} aria-pressed={linkMode === 'flow'} onClick={() => setLinkMode('flow')}>流程走向</button><button type="button" className={linkMode === 'data' ? 'active' : ''} aria-pressed={linkMode === 'data'} onClick={() => setLinkMode('data')}>产物流转</button></div><code title={`定义 Hash ${snapshot?.definition_hash ?? ''}`}>{snapshot?.definition_hash.slice(0, 8)}</code></header><div className="run-graph-canvas" ref={canvasRef}><ReactFlow key={graphKey} onInit={instance => { fitGraph.current = () => { void instance.fitView({ padding: 0.16, duration: 0 }); }; }} nodeTypes={runSnapshotNodeTypes} edgeTypes={flowMappingEdgeTypes} nodes={nodes} edges={edges} onNodesChange={onNodesChange} nodesConnectable={Boolean(onConnectRuntimePorts)} fitView onConnect={connection => onConnectRuntimePorts?.(connection)} onPaneClick={onClearSelection} onNodeClick={(_, node) => { if (selectable.has(node.id)) onSelect(node.id); }} onNodeDoubleClick={(_, node) => { if (selectable.has(node.id)) onDoubleSelect?.(node.id); }}><Background/><Controls showInteractive={false}/></ReactFlow></div></section>;
 }
+
+function RuntimePortDialog({ node, direction, onClose, onSave }: { node: SnapshotFlowNode; direction: RuntimePortDirection; onClose: () => void; onSave: (field: IOField) => void }) {
+  const fields = direction === 'INPUT' ? runtimeNodeInputs(node) : runtimeNodeOutputs(node);
+  const prefix = direction === 'INPUT' ? 'runtime_input' : 'runtime_output';
+  const [displayName, setDisplayName] = useState('');
+  const [dataType, setDataType] = useState<IOField['data_type']>('URL');
+  const [description, setDescription] = useState('');
+  const name = displayName.trim();
+  const save = () => {
+    let suffix = fields.filter(field => field.runtime_port).length + 1;
+    let fieldKey = `${prefix}_${suffix}`;
+    while (fields.some(field => field.field_key === fieldKey)) fieldKey = `${prefix}_${++suffix}`;
+    onSave({ field_key: fieldKey, display_name: name, data_type: dataType, description: description.trim(), required: false, runtime_port: true, ...(direction === 'OUTPUT' ? { output_scope: 'FLOW' } : {}) });
+  };
+  return <div className="modal-backdrop"><section className="modal runtime-port-dialog" role="dialog" aria-modal="true" aria-label="新增运行端口"><header><div><span className="eyebrow">RUN PORT</span><h2>新增本次运行{direction === 'INPUT' ? '输入' : '输出'}</h2><p>{direction === 'INPUT' ? '未连线的新增输入为可选项，可留空后启动节点。' : '输出可按需连接到其他未启动节点的本次运行输入。'}</p></div><button type="button" className="ghost" onClick={onClose}><X size={17}/></button></header><label>名称<input autoFocus value={displayName} onChange={event => setDisplayName(event.target.value)}/></label><label>数据类型<LaunchOptionMenu label="运行端口数据类型" value={dataType} options={[{ value: 'URL', label: 'URL' }, { value: 'FILE', label: 'FILE' }]} onChange={value => setDataType(value as IOField['data_type'])}/></label><label>说明<textarea value={description} onChange={event => setDescription(event.target.value)}/></label><footer><button type="button" className="ghost" onClick={onClose}>取消</button><button type="button" className="primary" disabled={!name} onClick={save}>保存端口</button></footer></section></div>;
+}
+
 type GateHistoryGroup = {
   key: string;
   title: string;
@@ -623,13 +713,14 @@ function GateDetailDialog({ attemptId, attemptStateVersion, evaluation, policy, 
 
 function ArtifactList({ artifacts, expectedFields = [] }: { artifacts: ArtifactVersion[]; expectedFields?: SnapshotFlowNode['asset']['outputs'] }) {
   const latestByField = new Map<string, ArtifactVersion>();
+  const fieldByKey = new Map(expectedFields.map(field => [field.field_key, field]));
   for (const artifact of artifacts) {
     const current = latestByField.get(artifact.field_key);
     if (!current || artifact.version_no > current.version_no) latestByField.set(artifact.field_key, artifact);
   }
-  const visibleArtifacts = [...latestByField.values()].sort((left, right) => left.field_key.localeCompare(right.field_key));
+  const visibleArtifacts = [...latestByField.values()].sort((left, right) => fieldName(fieldByKey.get(left.field_key), artifactLabel(left)).localeCompare(fieldName(fieldByKey.get(right.field_key), artifactLabel(right)), 'zh-CN'));
   const pendingFields = expectedFields.filter(field => !artifacts.some(artifact => artifact.field_key === field.field_key));
-  return <section className="artifacts" aria-label="节点输出"><h3>节点输出</h3>{visibleArtifacts.map(item => <article key={item.id}><span className="artifact-version">v{item.version_no}</span><div><b>{item.field_key} · {item.artifact_type === 'FILE' ? '文件' : 'URL'}</b><small>{item.content_hash.slice(0, 10)} · {item.mime_type} · {item.byte_size} B</small><p>{item.uri || String(item.metadata?.filename || '')}</p><div className="artifact-actions">{item.uri ? <a className="ghost" href={item.uri} target="_blank" rel="noreferrer"><ExternalLink size={13}/>打开链接</a> : <><a className="ghost" href={artifactContentUrl(item.id)} target="_blank" rel="noreferrer"><FileText size={13}/>预览</a><a className="ghost" href={artifactContentUrl(item.id, true)}><Download size={13}/>下载</a></>}</div></div></article>)}{pendingFields.map(field => <article className="artifact-pending" key={field.field_key}><span className="artifact-version">—</span><div><b>{field.display_name || field.field_key} · {field.data_type}</b><small>{field.description || '节点定义的输出字段'}</small><p>等待本轮执行产出。</p></div></article>)}{!visibleArtifacts.length && !pendingFields.length && <div className="empty compact">该节点没有定义输出。</div>}</section>;
+  return <section className="artifacts" aria-label="节点输出"><h3>节点输出</h3>{visibleArtifacts.map(item => <article key={item.id}><span className="artifact-version">v{item.version_no}</span><div><b>{fieldName(fieldByKey.get(item.field_key), artifactLabel(item))} · {item.artifact_type === 'FILE' ? '文件' : 'URL'}</b><small>{item.content_hash.slice(0, 10)} · {item.mime_type} · {item.byte_size} B</small><p>{item.uri || String(item.metadata?.filename || '')}</p><div className="artifact-actions">{item.uri ? <a className="ghost" href={item.uri} target="_blank" rel="noreferrer"><ExternalLink size={13}/>打开链接</a> : <><a className="ghost" href={artifactContentUrl(item.id)} target="_blank" rel="noreferrer"><FileText size={13}/>预览</a><a className="ghost" href={artifactContentUrl(item.id, true)}><Download size={13}/>下载</a></>}</div></div></article>)}{pendingFields.map(field => <article className="artifact-pending" key={field.field_key}><span className="artifact-version">—</span><div><b>{fieldName(field)} · {field.data_type}</b><small>{field.description || '节点定义的输出字段'}</small><p>等待本轮执行产出。</p></div></article>)}{!visibleArtifacts.length && !pendingFields.length && <div className="empty compact">该节点没有定义输出。</div>}</section>;
 }
 
 function artifactLabel(item: ArtifactVersion) {
@@ -645,11 +736,39 @@ function artifactHref(item: ArtifactVersion, download = false) {
 
 type InputContract = SnapshotFlowNode['asset']['inputs'][number];
 
-function InputSummary({ fields, bindings, artifacts, inputUrls = {} }: { fields: InputContract[]; bindings: Record<string, string>; artifacts: ArtifactVersion[]; inputUrls?: Record<string, string> }) {
+function RecordDetailsDialog({ title, children, onClose }: { title: string; children: ReactNode; onClose: () => void }) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  useEscapeClose(onClose);
+  useEffect(() => {
+    const element = dialog.current;
+    const previous = document.activeElement;
+    element?.showModal();
+    return () => { element?.close(); if (previous instanceof HTMLElement && previous.isConnected) previous.focus({ preventScroll: true }); };
+  }, []);
+  return createPortal(<dialog ref={dialog} className="modal record-details-dialog" aria-label={title} onKeyDown={event => {
+    if (event.key !== 'Tab') return;
+    const controls = [...event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), a[href], input:not(:disabled), textarea:not(:disabled), [tabindex="0"]')];
+    const first = controls[0], last = controls.at(-1);
+    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+  }} onCancel={event => { event.preventDefault(); onClose(); }} onClick={event => { if (event.target === event.currentTarget) { const rect = event.currentTarget.getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) onClose(); } }}><header><h2>{title}</h2><button type="button" className="ghost" aria-label={`关闭${title}`} onClick={onClose}><X size={17}/></button></header><div className="record-details-dialog-body">{children}</div></dialog>, document.body);
+}
+
+function RecordDetailSummary({ title, summary, children, onEdit, actionLabel }: { title: string; summary: string; children?: ReactNode; onEdit?: () => void; actionLabel?: string }) {
+  const [open, setOpen] = useState(false);
+  return <section className="record-detail-summary" aria-label={title}><h4>{title}</h4><span title={summary}>{summary}</span><button type="button" className="ghost" aria-haspopup="dialog" aria-label={actionLabel ?? `查看${title}`} onClick={onEdit ?? (() => setOpen(true))}>{onEdit ? '配置' : '查看'}<ChevronRight size={13}/></button>{open && <RecordDetailsDialog title={title} onClose={() => setOpen(false)}>{children}</RecordDetailsDialog>}</section>;
+}
+
+function InputSummary({ fields, bindings, artifacts, inputUrls = {}, onEdit }: { fields: InputContract[]; bindings: Record<string, string>; artifacts: ArtifactVersion[]; inputUrls?: Record<string, string>; onEdit?: () => void }) {
+  const configured = fields.filter(field => bindings[field.field_key] || inputUrls[field.field_key]).length;
+  return <RecordDetailSummary title="节点输入" summary={fields.length ? `${configured}/${fields.length} 项已配置` : '无需输入'} onEdit={fields.length ? onEdit : undefined} actionLabel={onEdit && fields.length ? '填写节点输入' : '查看节点输入'}><InputDetails fields={fields} bindings={bindings} artifacts={artifacts} inputUrls={inputUrls}/></RecordDetailSummary>;
+}
+
+function InputDetails({ fields, bindings, artifacts, inputUrls = {} }: { fields: InputContract[]; bindings: Record<string, string>; artifacts: ArtifactVersion[]; inputUrls?: Record<string, string> }) {
   return <section className="input-summary" aria-label="节点输入"><h4>输入</h4>{fields.length ? fields.map(field => {
     const artifact = artifacts.find(item => item.id === bindings[field.field_key]);
     const inputUrl = inputUrls[field.field_key];
-    return <article key={field.field_key}><header><span><b>{field.display_name || field.field_key}</b><small>{field.description || '未填写字段说明'}</small></span><code>{field.field_key} · {field.data_type}</code></header>{artifact ? <><strong>{artifactLabel(artifact)}</strong><a href={artifactHref(artifact)} target="_blank" rel="noreferrer">{artifact.uri || String(artifact.metadata?.filename || '查看文件')}</a></> : inputUrl ? <><strong>已配置 URL</strong><a href={inputUrl} target="_blank" rel="noreferrer">{inputUrl}</a></> : <span className="input-summary-empty">尚未填写</span>}</article>;
+    return <article key={field.field_key}><header><span><b>{fieldName(field)}</b>{field.description && <small>{field.description}</small>}</span><small>{field.data_type}</small></header>{artifact ? <><strong>{artifactLabel(artifact)}</strong><a href={artifactHref(artifact)} target="_blank" rel="noreferrer">{artifact.uri || String(artifact.metadata?.filename || '查看文件')}</a></> : inputUrl ? <><strong>已配置 URL</strong><a href={inputUrl} target="_blank" rel="noreferrer">{inputUrl}</a></> : <span className="input-summary-empty">尚未填写</span>}</article>;
   }) : <div className="empty compact">该节点无需输入。</div>}</section>;
 }
 
@@ -662,28 +781,50 @@ function mergeArtifacts(current: ArtifactVersion[], incoming: ArtifactVersion[])
 
 function NodeInputDialog({ run, node, initialBindings = {}, initialUrls = {}, onClose, onSubmit }: { run: FlowRun; node: SnapshotFlowNode; initialBindings?: Record<string, string>; initialUrls?: Record<string, string>; onClose: () => void; onSubmit: (result: NodeInputResult) => void }) {
   useEscapeClose(onClose);
-  const fields = node.asset.inputs;
+  const fields = runtimeNodeInputs(node);
   const [urls, setUrls] = useState<Record<string, string>>(() => Object.fromEntries(fields.filter(field => field.data_type === 'URL').map(field => {
     const artifact = run.artifacts.find(item => item.id === initialBindings[field.field_key]);
     return [field.field_key, artifact?.uri ?? initialUrls[field.field_key] ?? ''];
   })));
   const [files, setFiles] = useState<Record<string, File | undefined>>({});
   const [error, setError] = useState('');
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const inputElements = useRef(new Map<string, HTMLInputElement>());
+  const submittingField = useRef<string | undefined>(undefined);
+  const clearFieldError = (key: string) => setFieldErrors(current => { const next = { ...current }; delete next[key]; return next; });
+  const submit = () => {
+    const next: Record<string, string> = {};
+    for (const field of fields) {
+      const retained = initialBindings[field.field_key];
+      const value = urls[field.field_key]?.trim();
+      if (field.data_type === 'URL') {
+        if (!value && !retained && field.required !== false) next[field.field_key] = `请填写${fieldName(field)}。`;
+        else if (value) { try { const url = new URL(value); if (!['http:', 'https:'].includes(url.protocol) || !url.hostname) throw new Error(); } catch { next[field.field_key] = '请填写完整的 HTTP 或 HTTPS 地址。'; } }
+      } else if (!files[field.field_key] && !retained && field.required !== false) next[field.field_key] = `请上传${fieldName(field)}。`;
+      else if ((files[field.field_key]?.size ?? 0) > 25 * 1024 * 1024) next[field.field_key] = '文件不能超过 25 MiB。';
+    }
+    setFieldErrors(next); setError('');
+    const first = Object.keys(next)[0];
+    if (first) { inputElements.current.get(first)?.focus(); inputElements.current.get(first)?.scrollIntoView({ block: 'nearest' }); return; }
+    mutation.mutate();
+  };
   const mutation = useMutation({
     mutationFn: async () => {
       const bindings: Record<string, string> = {};
       const artifacts: ArtifactVersion[] = [];
       for (const field of fields) {
+        submittingField.current = field.field_key;
         const retained = initialBindings[field.field_key];
         if (field.data_type === 'URL') {
           const value = urls[field.field_key]?.trim();
           const current = run.artifacts.find(item => item.id === retained);
           if (retained && current?.uri === value) { bindings[field.field_key] = retained; continue; }
           if (!value && retained) { bindings[field.field_key] = retained; continue; }
-          if (!value) throw new Error(`请填写“${field.display_name || field.field_key}”。`);
+          if (!value && field.required === false) continue;
+          if (!value) throw new Error(`请填写“${fieldName(field)}”。`);
           const artifact = await api.addNodeInputArtifact(run.id, node.instance_key, {
             field_key: field.field_key, artifact_type: 'URL', uri: value, mime_type: 'text/uri-list',
-            metadata: { display_name: field.display_name || field.field_key },
+            metadata: { display_name: fieldName(field) },
           });
           bindings[field.field_key] = artifact.id;
           artifacts.push(artifact);
@@ -691,25 +832,20 @@ function NodeInputDialog({ run, node, initialBindings = {}, initialUrls = {}, on
         }
         const file = files[field.field_key];
         if (!file && retained) { bindings[field.field_key] = retained; continue; }
-        if (!file) throw new Error(`请上传“${field.display_name || field.field_key}”。`);
-        const artifact = await api.uploadNodeInputArtifact(run.id, node.instance_key, field.field_key, field.display_name || field.field_key, file);
+        if (!file && field.required === false) continue;
+        if (!file) throw new Error(`请上传“${fieldName(field)}”。`);
+        const artifact = await api.uploadNodeInputArtifact(run.id, node.instance_key, field.field_key, fieldName(field), file);
         bindings[field.field_key] = artifact.id;
         artifacts.push(artifact);
       }
       return { bindings, artifacts };
     },
     onSuccess: onSubmit,
-    onError: reason => setError(reason instanceof Error ? reason.message : '保存输入失败'),
+    onError: reason => { const key = submittingField.current; if (reason instanceof ApiError && reason.status === 422 && key) { setFieldErrors({ [key]: '请检查此项的格式、文件类型与大小。' }); inputElements.current.get(key)?.focus(); } else setError(reason instanceof Error ? reason.message : '保存输入失败'); },
   });
   return <div className="modal-backdrop"><section className="modal node-input-dialog" role="dialog" aria-modal="true" aria-label="填写节点输入"><header><div><span className="eyebrow">NODE INPUTS</span><h2>填写 {node.alias || node.asset.name} 的输入</h2><p>字段由节点定义冻结生成；每个值只绑定当前节点，不会进入可复用产物池。</p></div><button type="button" className="ghost" aria-label="关闭输入表单" onClick={onClose}><X size={17}/></button></header><div className="node-input-dialog-body">{fields.map(field => {
     const current = run.artifacts.find(item => item.id === initialBindings[field.field_key]);
-    return <label className="node-input-control" key={field.field_key}><span><b>{field.display_name || field.field_key}</b><code>{field.field_key} · {field.data_type}</code><small>{field.description || '请按节点定义填写此字段。'}</small></span>{field.data_type === 'URL' ? <input aria-label={`填写输入 ${field.field_key}`} type="url" value={urls[field.field_key] ?? ''} onChange={event => setUrls(old => ({ ...old, [field.field_key]: event.target.value }))} placeholder="https://example.com/resource"/> : <span className="platform-file-upload"><Upload size={16}/><span><b>{files[field.field_key]?.name || (typeof current?.metadata?.filename === 'string' ? current.metadata.filename : '选择文件')}</b><small>{files[field.field_key] ? `${files[field.field_key]?.size} B` : '图片、PDF、文档、压缩包等，最大 25 MiB'}</small></span><input aria-label={`上传输入文件 ${field.field_key}`} type="file" onChange={event => setFiles(old => ({ ...old, [field.field_key]: event.target.files?.[0] }))}/></span>}{current && <a className="current-input" href={artifactHref(current)} target="_blank" rel="noreferrer">当前绑定：{artifactLabel(current)}</a>}</label>; })}{!fields.length && <div className="empty compact">该节点没有定义输入，可直接创建执行。</div>}</div>{error && <p className="error">{error}</p>}<footer><button type="button" className="ghost" onClick={onClose}>取消</button><button className="primary" disabled={mutation.isPending} onClick={() => mutation.mutate()}>{mutation.isPending ? '保存输入中…' : '保存输入并继续'}</button></footer></section></div>;
-}
-
-function TerminalRunDelete({ run, onDeleted }: { run: FlowRun; onDeleted: () => void }) {
-  const dialog = useProductDialog();
-  const mutation = useMutation({ mutationFn: () => api.deleteRun(run.id), onSuccess: onDeleted });
-  return <div className="flow-run-management" aria-label="流程运行态管理"><button className="danger" disabled={mutation.isPending} onClick={() => void dialog.confirm({ title: '永久删除这个流程运行？', message: '相关记录都会被清理且不可恢复。', confirmLabel: '永久删除', tone: 'danger' }).then(ok => ok && mutation.mutate())}><Trash2 size={14}/>{mutation.isPending ? '删除中…' : '永久删除此运行'}</button>{mutation.error && <p className="error">{mutation.error.message}</p>}</div>;
+    return <label className="node-input-control" key={field.field_key} aria-invalid={Boolean(fieldErrors[field.field_key])}><span><b>{fieldName(field)}</b><small>{field.data_type}{field.description ? ` · ${field.description}` : ''}</small></span>{field.data_type === 'URL' ? <input aria-label={`填写输入 ${fieldName(field)}`} ref={element => { if (element) inputElements.current.set(field.field_key, element); else inputElements.current.delete(field.field_key); }} aria-invalid={Boolean(fieldErrors[field.field_key])} type="url" value={urls[field.field_key] ?? ''} onChange={event => { clearFieldError(field.field_key); setUrls(old => ({ ...old, [field.field_key]: event.target.value })); }} placeholder="https://example.com/resource"/> : <span className="platform-file-upload"><Upload size={16}/><span><b>{files[field.field_key]?.name || (typeof current?.metadata?.filename === 'string' ? current.metadata.filename : '选择文件')}</b><small>{files[field.field_key] ? `${files[field.field_key]?.size} B` : '图片、PDF、文档、压缩包等，最大 25 MiB'}</small></span><input aria-label={`上传输入文件 ${fieldName(field)}`} type="file" ref={element => { if (element) inputElements.current.set(field.field_key, element); else inputElements.current.delete(field.field_key); }} aria-invalid={Boolean(fieldErrors[field.field_key])} onChange={event => { clearFieldError(field.field_key); setFiles(old => ({ ...old, [field.field_key]: event.target.files?.[0] })); }}/></span>}{fieldErrors[field.field_key] && <small className="configuration-field-error" role="alert">{fieldErrors[field.field_key]}</small>}{current && <a className="current-input" href={artifactHref(current)} target="_blank" rel="noreferrer">当前绑定：{artifactLabel(current)}</a>}</label>; })}{!fields.length && <div className="empty compact">该节点没有定义输入，可直接创建执行。</div>}</div>{error && <p className="error">{error}</p>}<footer><button type="button" className="ghost" onClick={onClose}>取消</button><button className="primary" disabled={mutation.isPending} onClick={submit}>{mutation.isPending ? '保存输入中…' : '保存输入并继续'}</button></footer></section></div>;
 }
 
 type GateDraftDialog = { index?: number; gate: GatePolicy; readOnly: boolean };
@@ -717,23 +853,6 @@ type GateDraftDialog = { index?: number; gate: GatePolicy; readOnly: boolean };
 const gateText = (gate: GatePolicy) => String(gate.config.prompt || gate.config.code || '');
 const emptyGateAgentPreset = (): GateAgentPreset => ({});
 
-type LaunchMenuOption = { value: string; label: string };
-
-function LaunchOptionMenu({ label, value, options, disabled = false, onChange }: { label: string; value: string; options: LaunchMenuOption[]; disabled?: boolean; onChange: (value: string) => void }) {
-  const [open, setOpen] = useState(false);
-  const host = useRef<HTMLDivElement>(null);
-  useEscapeClose(() => setOpen(false), open);
-  useEffect(() => {
-    if (!open) return;
-    const close = (event: PointerEvent) => { if (event.target instanceof Node && !host.current?.contains(event.target)) setOpen(false); };
-    document.addEventListener('pointerdown', close);
-    return () => document.removeEventListener('pointerdown', close);
-  }, [open]);
-  // Empty is not a valid choice. Showing the first provider for an empty value
-  // made the fallback dialog look configured although no provider was selected.
-  const selected = options.find(item => item.value === value)?.label ?? '未选择';
-  return <div ref={host} className="launch-option-menu"><button type="button" aria-label={label} aria-expanded={open} disabled={disabled} onClick={() => setOpen(current => !current)}><span>{selected}</span><ChevronDown size={15}/></button>{open && <div className="launch-option-popover" role="listbox" aria-label={label}>{options.map(item => <button type="button" role="option" aria-selected={item.value === value} key={item.value} onClick={() => { onChange(item.value); setOpen(false); }}><span>{item.label}</span>{item.value === value && <Check size={14}/>}</button>)}</div>}</div>;
-}
 
 function ModelPresetFields({ preset, onChange, readOnly = false, label = 'Agent', showReasoningEffort = true }: { preset: GateAgentPreset; onChange: (preset: GateAgentPreset) => void; readOnly?: boolean; label?: string; showReasoningEffort?: boolean }) {
   const providers = useQuery({ queryKey: ['model-providers'], queryFn: api.providers });
@@ -830,7 +949,7 @@ function GateDraftEditor({ gates, onChange }: { gates: GatePolicy[]; onChange: (
     setDialog(undefined);
   };
   const remove = (index: number) => onChange(renumber(gates.filter((_, itemIndex) => itemIndex !== index)));
-  return <section className="attempt-side-section gate-draft-editor"><p className="field-hint">门禁只应用于即将创建的这一次执行；创建后将冻结为本轮的门禁结果依据。</p>{(['START', 'END'] as const).map(stage => <section key={stage} className="gate-draft-stage"><header><h4>{stage === 'START' ? '开始门禁' : '结束门禁'}</h4><button type="button" className="secondary" onClick={() => openNew(stage)}><Plus size={13}/>添加门禁</button></header><div className="gate-draft-list">{gates.filter(gate => gate.stage === stage).map(gate => {
+  return <section className="attempt-side-section gate-draft-editor">{(['START', 'END'] as const).map(stage => <section key={stage} className="gate-draft-stage"><header><h4>{stage === 'START' ? '开始门禁' : '结束门禁'}</h4><button type="button" className="secondary" onClick={() => openNew(stage)}><Plus size={13}/>添加门禁</button></header><div className="gate-draft-list">{gates.filter(gate => gate.stage === stage).map(gate => {
     const index = gates.indexOf(gate); const content = gateText(gate).trim();
     return <article key={`${stage}-${gate.position}`}><button type="button" className="gate-draft-open" onClick={() => setDialog({ index, gate, readOnly: true })}><span><b>门禁判定</b><small>{content ? content.replace(/\s+/g, ' ').slice(0, 72) : '尚未填写判定提示词'}</small></span><Eye size={14}/></button><div><button type="button" className="ghost" onClick={() => setDialog({ index, gate: gate.agent_preset ? gate : { ...gate, agent_preset: emptyGateAgentPreset() }, readOnly: false })}>编辑</button><button type="button" className="ghost gate-delete" onClick={() => remove(index)}><Trash2 size={14}/>删除</button></div></article>;
   })}</div></section>)}{dialog && <GateDraftDialog key={`${dialog.index ?? 'new'}-${dialog.gate.stage}-${dialog.readOnly}`} draft={dialog} onClose={() => setDialog(undefined)} onSave={save}/>}</section>;
@@ -838,7 +957,7 @@ function GateDraftEditor({ gates, onChange }: { gates: GatePolicy[]; onChange: (
 
 const MANUAL_NODE_CONTEXT_ID = '__node_context_prompt__';
 
-type NodeContextItem = { id: string; title: string; meta: string; text: string; source: 'NODE' | 'REPOSITORY' | 'SESSION'; applied: boolean };
+type NodeContextItem = { id: string; title: string; meta: string; digest?: string; text: string; source: 'NODE' | 'REPOSITORY' | 'SESSION'; applied: boolean };
 
 function nodeContextItems(node: SnapshotFlowNode, contextIds: string[] | null, frozenSessionContexts: NonNullable<NodeAttempt['frozen_session_contexts']> = [], agentPreset?: AgentPreset | null): NodeContextItem[] {
   const selected = contextIds === null ? null : new Set(contextIds);
@@ -850,6 +969,7 @@ function nodeContextItems(node: SnapshotFlowNode, contextIds: string[] | null, f
       id: item.id,
       title: item.capability_key,
       meta: `节点 Context 能力 · ${item.digest.slice(0, 12)}`,
+      digest: item.digest,
       text: item.text,
       source: 'REPOSITORY' as const,
       applied: selected === null || selected.has(item.id),
@@ -861,12 +981,14 @@ function nodeContextItems(node: SnapshotFlowNode, contextIds: string[] | null, f
     if (existing) {
       existing.applied = true;
       existing.text = item.text;
+      existing.digest = item.digest;
       return;
     }
     byId.set(item.id, {
       id: item.id,
       title: item.capability_key,
       meta: `本轮 Context 能力 · ${item.digest.slice(0, 12)}`,
+      digest: item.digest,
       text: item.text,
       source: 'SESSION',
       applied: true,
@@ -875,61 +997,32 @@ function nodeContextItems(node: SnapshotFlowNode, contextIds: string[] | null, f
   return [...byId.values()];
 }
 
-function NodeContextSummary({ node, contextIds, frozenSessionContexts = [], frozenAgentCapabilities = [], agentPreset, editable = false, onChange, mode }: {
-  node: SnapshotFlowNode; contextIds: string[] | null; editable?: boolean;
+function NodeContextSummary({ node, contextIds, frozenSessionContexts = [], frozenAgentCapabilities = [], agentPreset }: {
+  node: SnapshotFlowNode; contextIds: string[] | null;
   frozenSessionContexts?: NonNullable<NodeAttempt['frozen_session_contexts']>;
   frozenAgentCapabilities?: NonNullable<NodeAttempt['frozen_agent_capabilities']>;
-  agentPreset?: AgentPreset | null;
-  onChange?: (ids: string[]) => void; mode?: 'PROMPT' | 'CHAT';
+  agentPreset?: AgentPreset | null; mode?: 'PROMPT' | 'CHAT';
 }) {
-  const [viewing, setViewing] = useState<NodeContextItem>();
-  useEscapeClose(() => setViewing(undefined), Boolean(viewing));
-  const items = nodeContextItems(node, contextIds, frozenSessionContexts, agentPreset);
-  const selected = contextIds === null ? new Set(items.map(item => item.id)) : new Set(contextIds);
-  const visible = items;
-  const configuredCapabilities = frozenAgentCapabilities.filter(item => item.capability_type !== 'CONTEXT');
-  const capabilitySignature = configuredCapabilities.map(item => item.id).join(':');
-  const [capabilitiesOpen, setCapabilitiesOpen] = useState(configuredCapabilities.length <= 8);
-  useEffect(() => setCapabilitiesOpen(configuredCapabilities.length <= 8), [capabilitySignature, configuredCapabilities.length]);
-  const toggle = (id: string) => {
-    if (!onChange) return;
-    onChange(selected.has(id) ? [...selected].filter(item => item !== id) : [...selected, id]);
-  };
-  const empty = mode === 'CHAT' && frozenSessionContexts.length === 0 && configuredCapabilities.length === 0
-    ? '仅创建会话不会应用节点上下文；进入会话后由你自行决定是否补充上下文。'
-    : items.length === 0
-      ? '该节点没有配置自定义上下文或能力。'
-      : '本轮未应用节点文本 Context。';
-  return <section className="attempt-side-section node-context-summary"><header><div><h4>节点上下文</h4><small>{editable ? '可多选；创建后会冻结为本次运行上下文。' : '同时展示节点自定义内容、本轮是否应用，以及冻结的 Agent 能力装配。'}</small></div>{editable && <span className="context-selection-count">已选 {selected.size}</span>}</header>{visible.length ? <div className="node-context-list">{visible.map(item => <article key={item.id} className={`${item.source === 'NODE' ? 'node-context-owned' : 'node-context-repository'}${item.applied ? ' selected' : ' not-applied'}`}>{editable ? <button type="button" className="node-context-toggle" aria-pressed={selected.has(item.id)} onClick={() => toggle(item.id)}><i className="context-checkbox" aria-hidden="true">{selected.has(item.id) ? '✓' : ''}</i><span><b>{item.title}</b><small>{item.meta}</small></span></button> : <span className="node-context-label"><b>{item.title}</b><small>{item.meta}</small></span>}<span className={`context-application-state ${item.applied ? 'applied' : ''}`}>{item.applied ? '本轮已应用' : '本轮未应用'}</span><button type="button" className="ghost context-detail-button" aria-label={`查看 ${item.title}`} onClick={() => setViewing(item)}><Eye size={14}/>查看</button></article>)}</div> : <p className="field-hint">{empty}</p>}{!editable && configuredCapabilities.length > 0 && <details className="node-capability-context" open={capabilitiesOpen} onToggle={event => setCapabilitiesOpen(event.currentTarget.open)}><summary><span>本轮装配能力</span><b>{configuredCapabilities.length} 项</b></summary><div>{configuredCapabilities.map(item => <article key={item.id}><span><b>{item.capability_key}</b><small>{item.capability_type} · {item.digest.slice(0, 12)}</small></span><em>已冻结</em></article>)}</div></details>}{viewing && <div className="modal-backdrop"><section className="modal context-preview-dialog" role="dialog" aria-modal="true" aria-label={`查看 Context ${viewing.title}`}><header><div><span className="eyebrow">FROZEN CONTEXT</span><h2>{viewing.title}</h2></div><button className="ghost" onClick={() => setViewing(undefined)}><X size={15}/>关闭</button></header><p>{viewing.meta} · {viewing.applied ? '本轮已应用' : '本轮未应用'}</p><pre>{viewing.text}</pre><footer><button className="primary" onClick={() => setViewing(undefined)}>完成</button></footer></section></div>}</section>;
+  const [open, setOpen] = useState(false);
+  const contexts = nodeContextItems(node, contextIds, frozenSessionContexts, agentPreset);
+  const contextById = new Map(contexts.map(item => [item.id, item]));
+  const items = new Map<string, FrozenSessionConfigurationItem>(contexts.map(item => [item.id, {
+    id: item.id, capability_key: item.title, capability_type: 'CONTEXT', digest: item.digest,
+    text: item.text, source: item.meta, applied: item.applied,
+  }]));
+  for (const item of frozenAgentCapabilities) {
+    const context = contextById.get(item.id);
+    items.set(item.id, {
+      ...item, text: item.text ?? context?.text, source: '本轮冻结能力', applied: true,
+    });
+  }
+  const capabilities = frozenAgentCapabilities.filter(item => item.capability_type !== 'CONTEXT');
+  const displayedContexts = [...items.values()].filter(item => item.capability_type === 'CONTEXT');
+  return <section className="record-detail-summary" aria-label="上下文与能力"><h4>上下文与能力</h4><span>{displayedContexts.filter(item => item.applied).length}/{displayedContexts.length} 项上下文 · {capabilities.length} 项能力</span><button type="button" className="ghost" aria-haspopup="dialog" aria-label="查看上下文与能力" onClick={() => setOpen(true)}>查看<ChevronRight size={13}/></button>{open && <ReadOnlySessionConfiguration items={[...items.values()]} onClose={() => setOpen(false)}/>}</section>;
 }
 
 function CapabilityPresetDialog({ selectedIds, onClose, onChange }: { selectedIds: string[]; onClose: () => void; onChange: (ids: string[]) => void }) {
-  const catalog = useQuery({ queryKey: ['capabilities'], queryFn: api.capabilities });
-  const collections = useQuery({ queryKey: ['capability-collections'], queryFn: api.capabilityCollections });
-  const [query, setQuery] = useState('');
-  const [kind, setKind] = useState<'ALL' | CapabilityAsset['capability_type']>('ALL');
-  const [draft, setDraft] = useState(selectedIds);
-  useEscapeClose(onClose);
-  const capabilities = useMemo(() => (catalog.data ?? []).filter(item => ['SKILL', 'MCP', 'PLUGIN', 'CONTEXT', 'AGENT_DEFINITION', 'HOOK'].includes(item.capability_type) && item.is_latest), [catalog.data]);
-  const capabilitiesById = useMemo(() => new Map(capabilities.map(item => [item.id, item])), [capabilities]);
-  const visible = useMemo(() => {
-    const needle = query.trim().toLocaleLowerCase();
-    return capabilities.filter(item => (kind === 'ALL' || item.capability_type === kind) && (!needle || `${item.capability_key} ${item.description} ${item.filename}`.toLocaleLowerCase().includes(needle)));
-  }, [capabilities, kind, query]);
-  const updateDraft = (next: string[]) => {
-    setDraft(next);
-    onChange(next);
-  };
-  const toggle = (item: CapabilityAsset) => updateDraft(
-    draft.includes(item.id) ? draft.filter(id => id !== item.id) : selectCapabilityVersion(draft, item, capabilitiesById),
-  );
-  const toggleCollection = (collection: CapabilityCollection) => {
-    const members = collection.members.filter(item => capabilities.some(candidate => candidate.id === item.id));
-    const ids = members.map(item => item.id);
-    if (!ids.length) return;
-    updateDraft(ids.every(id => draft.includes(id)) ? draft.filter(id => !ids.includes(id)) : selectCapabilityVersions(draft, members, capabilitiesById));
-  };
-  return <div className="modal-backdrop"><section className="modal agent-preset-capability-dialog" role="dialog" aria-modal="true" aria-label="配置能力"><header><div><span className="eyebrow">LAUNCH CAPABILITIES</span><h2>配置能力</h2><p>选择这次自动启动首个会话可用的能力；取消或关闭会保留当前节点的前端草稿，点击“保存配置”后才会提交。</p></div><button type="button" className="ghost" onClick={onClose}><X size={17}/></button></header><div className="agent-capability-toolbar"><nav className="agent-capability-tabs" aria-label="能力类型">{(['ALL', 'SKILL', 'MCP', 'PLUGIN', 'CONTEXT', 'AGENT_DEFINITION', 'HOOK'] as const).map(value => <button type="button" key={value} className={kind === value ? 'active' : ''} onClick={() => setKind(value)}>{value === 'ALL' ? 'all' : value === 'SKILL' ? 'skill' : value === 'MCP' ? 'MCP' : value === 'PLUGIN' ? 'plugin' : value === 'CONTEXT' ? 'context' : value === 'AGENT_DEFINITION' ? 'agent' : 'hook'}</button>)}</nav><label className="agent-capability-search"><input aria-label="搜索能力" value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索能力"/></label></div>{(kind === 'ALL' || kind === 'SKILL') && collections.data?.length ? <section className="agent-capability-collections"><span>Skill 组合</span><div>{collections.data.map(collection => { const ids = collection.members.map(item => item.id).filter(id => capabilities.some(item => item.id === id)); const selected = ids.length > 0 && ids.every(id => draft.includes(id)); return <button type="button" key={collection.id} className={selected ? 'selected' : ''} onClick={() => toggleCollection(collection)}><Layers3 size={13}/><b>{collection.name}</b><em>{ids.length}</em>{selected && <Check size={13}/>}</button>; })}</div></section> : null}<div className="agent-capability-summary"><span>已选 <b>{draft.length}</b> 项</span><span>仅加载已发布的最新版本</span></div><div className="agent-capability-list">{catalog.isLoading ? <p>正在读取能力目录…</p> : visible.length ? visible.map(item => <button type="button" key={item.id} className={draft.includes(item.id) ? 'selected' : ''} aria-pressed={draft.includes(item.id)} onClick={() => toggle(item)}><span className={`agent-capability-icon ${item.capability_type.toLowerCase()}`}>{item.capability_type.slice(0, 1)}</span><span><b>{item.capability_key}</b><small>{item.description || item.filename || '未填写说明'}</small><em>{item.capability_type === 'AGENT_DEFINITION' ? 'Agent' : item.capability_type}</em></span><i aria-hidden="true">{draft.includes(item.id) ? '✓' : ''}</i></button>) : <p>没有匹配的能力。</p>}</div><footer><button type="button" className="ghost" onClick={onClose}>取消</button><button type="button" className="primary" onClick={onClose}>保存能力</button></footer></section></div>;
+  return createPortal(<Suspense fallback={<div className="modal-backdrop"><div className="modal" role="status">正在加载会话配置…</div></div>}><SessionCapabilityManager workspaceId="node-configuration" configurationPreset capabilitiesOnly draftCapabilityIds={selectedIds} draftCredentialIds={[]} onDraftCapabilityIdsChange={onChange} onSaveConfiguration={({ capabilityVersionIds }) => onChange(capabilityVersionIds)} onClose={onClose}/></Suspense>, document.body);
 }
 
 function FallbackModelDialog({ initial, primary, onClose, onSave }: { initial: NonNullable<AgentPreset['fallback_models']>; primary: GateAgentPreset; onClose: () => void; onSave: (models: NonNullable<AgentPreset['fallback_models']>) => void }) {
@@ -957,30 +1050,50 @@ function FallbackModelDialog({ initial, primary, onClose, onSave }: { initial: N
   return <div className="modal-backdrop"><section className="modal agent-preset-model-dialog agent-fallback-dialog" role="dialog" aria-modal="true" aria-label="配置额度失败 fallback 模型"><header><div><span className="eyebrow">QUOTA FALLBACK</span><h2>硬额度失败时的备用模型</h2><p>仅在主模型返回不可恢复的额度／用量限制时，由 OpenHands 按以下顺序尝试。未配置即快速失败，不会静默换模。</p></div><button type="button" className="ghost" onClick={onClose}><X size={17}/></button></header>{models.length < 3 && <section className="agent-fallback-add" aria-labelledby="fallback-add-title"><div className="agent-fallback-section-heading"><span>1</span><div><h3 id="fallback-add-title">添加备用模型</h3><p>选择供应商、模型和思考程度后添加到下方优先级列表。</p></div></div><div className="agent-fallback-add-row"><ModelPresetFields label="备用" preset={candidate} onChange={setCandidate}/><button type="button" className="secondary agent-fallback-add-button" disabled={!candidate.model_provider_id || !candidate.model_name || sameAsPrimary} onClick={add}><Plus size={14}/>添加备用模型</button></div>{sameAsPrimary && <p className="field-hint">备用模型必须不同于主模型 {providerName(primary.model_provider_id ?? '')} · {primary.model_name}。</p>}</section>}<section className="agent-fallback-priority" aria-labelledby="fallback-priority-title"><div className="agent-fallback-section-heading"><span>2</span><div><h3 id="fallback-priority-title">备用模型优先级</h3><p>额度失败时从上到下依次尝试；拖动左侧把手调整顺序。</p></div></div>{models.length ? <ol className="agent-fallback-list">{models.map((item, index) => <li key={`${item.model_provider_id}:${item.model_name}:${item.reasoning_effort ?? ''}`} draggable onDragStart={event => { if (!(event.target instanceof Element) || !event.target.closest('.agent-fallback-drag-handle')) { event.preventDefault(); return; } event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', String(index)); setDraggedModelIndex(index); }} onDragOver={event => { if (draggedModelIndex !== undefined && draggedModelIndex !== index) event.preventDefault(); }} onDrop={event => { event.preventDefault(); const sourceIndex = Number(event.dataTransfer.getData('text/plain')); if (Number.isInteger(sourceIndex)) move(sourceIndex, index); setDraggedModelIndex(undefined); }} onDragEnd={() => setDraggedModelIndex(undefined)} className={draggedModelIndex === index ? 'dragging' : undefined}><button type="button" className="agent-fallback-drag-handle" aria-label={`拖动备用模型 ${index + 1} 以调整顺序`} title="拖动调整顺序" tabIndex={-1}><GripVertical size={16}/></button><span className="agent-fallback-order">{index + 1}</span><span className="agent-fallback-model"><b>{providerName(item.model_provider_id)} · {item.model_name}</b><small>{item.reasoning_effort ? `思考程度：${item.reasoning_effort}` : '默认思考程度'}</small></span><div className="agent-fallback-actions"><button type="button" className="ghost gate-delete" aria-label={`移除备用模型 ${index + 1}`} onClick={() => setModels(current => current.filter((_, position) => position !== index))}><Trash2 size={14}/><span>移除</span></button></div></li>)}</ol> : <p className="agent-fallback-empty">还没有备用模型。添加后会按这里的优先级，在主模型额度失败时依次尝试。</p>}</section><footer><button type="button" className="ghost" onClick={onClose}>取消</button><button type="button" className="primary" onClick={() => onSave(models)}>保存</button></footer></section></div>;
 }
 
-function AgentPresetEditor({ preset, nodeContext, onChange }: { preset: AgentPreset; nodeContext: string; onChange: (preset: AgentPreset) => void }) {
+function AgentPresetEditor({ preset, onChange }: { preset: AgentPreset; onChange: (preset: AgentPreset) => void }) {
   const catalog = useQuery({ queryKey: ['capabilities'], queryFn: api.capabilities });
   const providers = useQuery({ queryKey: ['model-providers'], queryFn: api.providers });
-  const [dialog, setDialog] = useState<'capabilities' | 'model' | 'fallback' | 'context'>();
+  const [dialog, setDialog] = useState<'capabilities' | 'model' | 'fallback'>();
   useEscapeClose(() => setDialog(undefined), Boolean(dialog));
   const selectedCapabilities = (catalog.data ?? []).filter(item => preset.capability_version_ids.includes(item.id));
   const provider = providers.data?.find(item => item.id === preset.model_provider_id);
   const modelSummary = provider && preset.model_name ? `${provider.name} · ${preset.model_name}` : '未选择模型';
   const modelPreset: GateAgentPreset = { model_provider_id: preset.model_provider_id, model_name: preset.model_name, reasoning_effort: preset.reasoning_effort };
   const updateModel = (next: GateAgentPreset) => onChange({ ...preset, ...next });
-  const contextText = preset.node_context_prompt ?? nodeContext;
   const fallbackModels = preset.fallback_models ?? [];
-  return <section className="attempt-side-section agent-preset-editor"><header><div><h4>首会话 Agent 配置</h4><small>关闭或取消子配置会保留当前节点的前端草稿；点击“保存配置”后才会提交。</small></div></header><div className="agent-preset-modules"><button type="button" className="agent-preset-module" onClick={() => setDialog('capabilities')}><span className="agent-preset-module-icon"><Boxes size={17}/></span><span><b>能力</b><small>{selectedCapabilities.length ? `已选 ${selectedCapabilities.length} 项 · ${selectedCapabilities.slice(0, 2).map(item => item.capability_key).join('、')}${selectedCapabilities.length > 2 ? '…' : ''}` : '未配置额外能力'}</small></span><em>配置</em></button><button type="button" className="agent-preset-module" onClick={() => setDialog('model')}><span className="agent-preset-module-icon"><Bot size={17}/></span><span><b>大模型</b><small>{modelSummary}{preset.reasoning_effort ? ` · ${preset.reasoning_effort}` : ''}</small></span><em>配置</em></button><button type="button" className="agent-preset-module" onClick={() => setDialog('fallback')}><span className="agent-preset-module-icon"><RefreshCw size={17}/></span><span><b>额度失败备用模型</b><small>{fallbackModels.length ? `已冻结 ${fallbackModels.length} 个备用模型` : '未配置：额度失败不会自动换模'}</small></span><em>配置</em></button><article className="agent-preset-module context-module"><span className="agent-preset-module-icon context"><FileText size={17}/></span><span><b>大模型专属上下文</b><small>{preset.node_context_enabled ? (contextText.trim() ? '已启用，可在本次运行中临时修改' : '已启用，但尚未填写内容') : '未启用'}</small></span><div><button type="button" className="secondary" onClick={() => setDialog('context')}>配置</button><button type="button" className={preset.node_context_enabled ? 'ghost' : 'primary'} onClick={() => onChange({ ...preset, node_context_enabled: !preset.node_context_enabled })}>{preset.node_context_enabled ? '停用' : '启用'}</button></div></article></div>{dialog === 'capabilities' && <CapabilityPresetDialog selectedIds={preset.capability_version_ids} onClose={() => setDialog(undefined)} onChange={capability_version_ids => onChange({ ...preset, capability_version_ids })}/>} {dialog === 'model' && <div className="modal-backdrop"><section className="modal agent-preset-model-dialog" role="dialog" aria-modal="true" aria-label="配置大模型"><header><div><span className="eyebrow">LAUNCH MODEL</span><h2>配置大模型</h2><p>用于本次自动启动的首个主 Agent 会话。</p></div><button type="button" className="ghost" onClick={() => setDialog(undefined)}><X size={17}/></button></header><ModelPresetFields label="首会话" preset={modelPreset} onChange={updateModel}/><footer><button type="button" className="primary" onClick={() => setDialog(undefined)}>完成</button></footer></section></div>} {dialog === 'fallback' && <FallbackModelDialog initial={fallbackModels} primary={modelPreset} onClose={() => setDialog(undefined)} onSave={fallback_models => { onChange({ ...preset, fallback_models }); setDialog(undefined); }}/>} {dialog === 'context' && <div className="modal-backdrop"><section className="modal agent-preset-context-dialog" role="dialog" aria-modal="true" aria-label="配置大模型专属上下文"><header><div><span className="eyebrow">NODE CONTEXT</span><h2>配置大模型专属上下文</h2><p>仅修改本次启动预设，不会改动节点定义。</p></div><button type="button" className="ghost" onClick={() => setDialog(undefined)}><X size={17}/></button></header><pre className="agent-context-preview">{contextText.trim() || '尚未填写专属上下文。'}</pre><label className="agent-context-editor">专属上下文<textarea aria-label="大模型专属上下文" value={contextText} onChange={event => onChange({ ...preset, node_context_prompt: event.target.value })} placeholder="输入本次运行的专属上下文"/></label><footer><button type="button" className="primary" onClick={() => setDialog(undefined)}>保存</button></footer></section></div>}</section>;
+  return <section className="attempt-side-section agent-preset-editor"><header><div><h4>Agent 配置</h4></div></header><div className="agent-preset-modules"><ConfigurationField field="model"><button type="button" className="agent-preset-module" onClick={() => setDialog('model')}><span className="agent-preset-module-icon"><Bot size={17}/></span><span><b>大模型</b><small>{modelSummary}{preset.reasoning_effort ? ` · ${preset.reasoning_effort}` : ''}</small></span><em>配置</em></button></ConfigurationField><ConfigurationField field="fallback"><button type="button" className="agent-preset-module" onClick={() => setDialog('fallback')}><span className="agent-preset-module-icon"><RefreshCw size={17}/></span><span><b>额度失败备用模型</b><small>{fallbackModels.length ? `已冻结 ${fallbackModels.length} 个备用模型` : '未配置：额度失败不会自动换模'}</small></span><em>配置</em></button></ConfigurationField><ConfigurationField field="capabilities"><button type="button" className="agent-preset-module" onClick={() => setDialog('capabilities')}><span className="agent-preset-module-icon"><Boxes size={17}/></span><span><b>能力</b><small>{selectedCapabilities.length ? `已选 ${selectedCapabilities.length} 项 · ${selectedCapabilities.slice(0, 2).map(item => item.capability_key).join('、')}${selectedCapabilities.length > 2 ? '…' : ''}` : '未配置额外能力'}</small></span><em>配置</em></button></ConfigurationField></div>{dialog === 'capabilities' && <CapabilityPresetDialog selectedIds={preset.capability_version_ids} onClose={() => setDialog(undefined)} onChange={capability_version_ids => onChange({ ...preset, capability_version_ids })}/>} {dialog === 'model' && <div className="modal-backdrop"><section className="modal agent-preset-model-dialog" role="dialog" aria-modal="true" aria-label="配置大模型"><header><div><span className="eyebrow">LAUNCH MODEL</span><h2>配置大模型</h2><p>用于本次自动启动的首个主 Agent 会话。</p></div><button type="button" className="ghost" onClick={() => setDialog(undefined)}><X size={17}/></button></header><ModelPresetFields label="首会话" preset={modelPreset} onChange={updateModel}/><footer><button type="button" className="primary" onClick={() => setDialog(undefined)}>完成</button></footer></section></div>} {dialog === 'fallback' && <FallbackModelDialog initial={fallbackModels} primary={modelPreset} onClose={() => setDialog(undefined)} onSave={fallback_models => { onChange({ ...preset, fallback_models }); setDialog(undefined); }}/>} </section>;
+}
+
+function NodeContextPresetEditor({ preset, nodeContext, onChange, editable = true }: { preset: AgentPreset; nodeContext: string; onChange: (preset: AgentPreset) => void; editable?: boolean }) {
+  const [dialog, setDialog] = useState<'context'>();
+  useEscapeClose(() => setDialog(undefined), Boolean(dialog));
+  const contextText = preset.node_context_prompt ?? nodeContext;
+  return <section className="attempt-side-section node-context-preset"><article className="agent-preset-module context-module"><span className="agent-preset-module-icon context"><FileText size={17}/></span><span><b>大模型专属上下文</b><small>{preset.node_context_enabled ? (contextText.trim() ? '已启用 · 用于本节点执行' : '已启用，但尚未填写内容') : '未启用'}</small></span><div><button type="button" className="secondary" onClick={() => setDialog('context')}>{editable ? '配置' : '查看'}</button><button type="button" role="switch" aria-label="启用大模型专属上下文" aria-checked={preset.node_context_enabled} disabled={!editable} className={preset.node_context_enabled ? 'ghost' : 'primary'} onClick={() => onChange({ ...preset, node_context_enabled: !preset.node_context_enabled })}>{preset.node_context_enabled ? '停用' : '启用'}</button></div></article> {dialog === 'context' && <div className="modal-backdrop"><section className="modal agent-preset-context-dialog" role="dialog" aria-modal="true" aria-label="配置大模型专属上下文"><header><div><span className="eyebrow">NODE CONTEXT</span><h2>配置大模型专属上下文</h2><p>{editable ? '仅用于本次运行，点击保存配置后生效。' : '本次运行冻结的专属上下文。'}</p></div><button type="button" className="ghost" onClick={() => setDialog(undefined)}><X size={17}/></button></header><label className="agent-context-editor">专属上下文<textarea aria-label="大模型专属上下文" readOnly={!editable} value={contextText} onChange={event => onChange({ ...preset, node_context_prompt: event.target.value })} placeholder="输入本次运行的专属上下文"/></label><footer><button type="button" className="primary" onClick={() => setDialog(undefined)}>{editable ? '完成' : '关闭'}</button></footer></section></div>}</section>;
 }
 
 type PromptConfigurationTab = 'inputs' | 'agent' | 'gates' | 'history';
 
-function PromptConfigurationTabs({ active, onChange }: { active: PromptConfigurationTab; onChange: (tab: PromptConfigurationTab) => void }) {
-  return <nav className="attempt-detail-tabs node-console-subtabs" aria-label="提示词执行配置"><button className={active === 'inputs' ? 'active' : ''} onClick={() => onChange('inputs')}>输入与上下文</button><button className={active === 'agent' ? 'active' : ''} onClick={() => onChange('agent')}>Agent 配置</button><button className={active === 'gates' ? 'active' : ''} onClick={() => onChange('gates')}>门禁配置</button><button className={active === 'history' ? 'active' : ''} onClick={() => onChange('history')}>执行记录</button></nav>;
+const PROMPT_CONFIGURATION_TABS = [
+  { key: 'inputs', label: '输入与上下文' },
+  { key: 'agent', label: 'Agent 配置' },
+  { key: 'gates', label: '门禁配置' },
+  { key: 'history', label: '执行记录' },
+] as const;
+
+function PromptConfigurationTabs({ active, onChange, id }: { active: PromptConfigurationTab; onChange: (tab: PromptConfigurationTab) => void; id: string }) {
+  return <nav className="attempt-detail-tabs node-console-subtabs" role="tablist" aria-label="提示词执行配置" onKeyDown={event => {
+    const index = PROMPT_CONFIGURATION_TABS.findIndex(tab => tab.key === active);
+    const next = event.key === 'ArrowRight' ? (index + 1) % 4 : event.key === 'ArrowLeft' ? (index + 3) % 4 : event.key === 'Home' ? 0 : event.key === 'End' ? 3 : undefined;
+    if (next === undefined) return;
+    event.preventDefault();
+    onChange(PROMPT_CONFIGURATION_TABS[next].key);
+    event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus();
+  }}>{PROMPT_CONFIGURATION_TABS.map(tab => <button type="button" key={tab.key} id={`${id}-tab-${tab.key}`} role="tab" aria-selected={active === tab.key} aria-controls={`${id}-panel-${tab.key}`} tabIndex={active === tab.key ? 0 : -1} className={active === tab.key ? 'active' : ''} onClick={() => onChange(tab.key)}>{tab.label}</button>)}</nav>;
 }
 
 function StartupPromptSummary({ prompt, freezeHint, editable = true, onEdit }: { prompt?: string | null; freezeHint: string; editable?: boolean; onEdit: () => void }) {
   const text = typeof prompt === 'string' ? prompt.trim() : '';
-  return <section className="attempt-side-section startup-prompt-summary"><header><div><h4>启动提示词</h4><small>{freezeHint}</small></div></header><p title={text || undefined}>{text || '尚未填写启动提示词。'}</p>{editable && <footer><button type="button" className="secondary" onClick={onEdit}>编辑</button></footer>}</section>;
+  return <section className="attempt-side-section startup-prompt-summary"><header><div><h4 title={freezeHint}>启动提示词</h4></div></header><p title={text || undefined}>{text || '尚未填写启动提示词。'}</p>{editable && <footer><button type="button" className="secondary" onClick={onEdit}>编辑</button></footer>}</section>;
 }
 
 function StartupPromptDialog({ prompt, label = '节点启动提示词', onChange, onClose }: { prompt: string; label?: string; onChange: (prompt: string) => void; onClose: () => void }) {
@@ -990,10 +1103,36 @@ function StartupPromptDialog({ prompt, label = '节点启动提示词', onChange
 
 function NodeExecutionHistory({ run, node, onSelectExecution }: { run: FlowRun; node: SnapshotFlowNode; onSelectExecution?: (nodeRun: NodeRun) => void }) {
   const nodeRuns = run.node_runs.filter(item => item.flow_node_snapshot_key === node.instance_key);
-  return <section className="node-execution-history"><header><h4>执行记录</h4><small>可随时查看，且不影响再次配置</small></header>{nodeRuns.length ? nodeRuns.map(item => <button type="button" key={item.id} disabled={!onSelectExecution} onClick={() => onSelectExecution?.(item)}><span><b>第 {nodeVisitNumber(run, item)} 次执行</b><small>{item.attempts.length} 个轮次 · {attemptStateLabel(item)}</small></span><ExternalLink size={13}/></button>) : <p className="field-hint">还没有执行记录。</p>}</section>;
+  return <section className="node-execution-history"><header><h4>执行记录</h4></header>{nodeRuns.length ? nodeRuns.map(item => <button type="button" key={item.id} disabled={!onSelectExecution} onClick={() => onSelectExecution?.(item)}><span><b>第 {nodeVisitNumber(run, item)} 次执行</b><small>{item.attempts.length} 个轮次 · {attemptStateLabel(item)}</small></span><ExternalLink size={13}/></button>) : <p className="field-hint">还没有执行记录。</p>}</section>;
+}
+
+const ConfigurationIssuesContext = createContext<ConfigurationIssue[]>([]);
+function ConfigurationField({ field, children }: { field: ConfigurationFieldName; children: ReactNode }) {
+  const issue = useContext(ConfigurationIssuesContext).find(item => item.field === field);
+  const id = useId();
+  return <div className={`node-configuration-field${issue ? ' invalid' : ''}`} data-configuration-field={field} tabIndex={issue ? -1 : undefined} aria-invalid={issue ? true : undefined} aria-describedby={issue ? id : undefined}>{children}{issue && <p id={id} className="configuration-field-error" role="alert">{issue.message}</p>}</div>;
+}
+function useConfigurationValidation(prompt: string, preset: AgentPreset, gates: GatePolicy[]) {
+  const [attempted, setAttempted] = useState(false);
+  const [serverIssues, setServerIssues] = useState<ConfigurationIssue[]>([]);
+  const [focusVersion, setFocusVersion] = useState(0);
+  const signature = JSON.stringify([prompt, preset, gates]);
+  const previousSignature = useRef(signature);
+  useEffect(() => { if (previousSignature.current !== signature) { previousSignature.current = signature; setServerIssues([]); } }, [signature]);
+  const issues = [...(attempted ? configurationIssues(prompt, preset, gates) : []), ...serverIssues];
+  return { issues, focusVersion, validate: () => {
+    setAttempted(true); setServerIssues([]);
+    if (!configurationIssues(prompt, preset, gates).length) return true;
+    setFocusVersion(value => value + 1); return false;
+  }, onError: (error: unknown) => {
+    const next = configurationErrorIssues(error);
+    setServerIssues(next); if (next.length) setFocusVersion(value => value + 1);
+  } };
 }
 
 type NodeConfigurationPanelProps = {
+  issues?: ConfigurationIssue[];
+  focusVersion?: number;
   title: string;
   subtitle: string;
   mode: 'PROMPT' | 'CHAT';
@@ -1006,11 +1145,14 @@ type NodeConfigurationPanelProps = {
   historyContent: ReactNode;
   chatContent: ReactNode;
   action?: ReactNode;
+  headerActions?: ReactNode;
   recordControl?: ReactNode;
   feedback?: ReactNode;
   belowContent?: ReactNode;
   chatEnabled?: boolean;
   fixedModeLabel?: string;
+  compactToolbar?: boolean;
+  hideHeaderTitle?: boolean;
   className?: string;
 };
 
@@ -1020,6 +1162,7 @@ type NodeConfigurationPanelProps = {
  * navigation, hierarchy, and scrolling contract must never drift apart.
  */
 function NodeConfigurationPanel({
+  issues = [], focusVersion = 0,
   title,
   subtitle,
   mode,
@@ -1032,16 +1175,44 @@ function NodeConfigurationPanel({
   historyContent,
   chatContent,
   action,
+  headerActions,
   recordControl,
   feedback,
   belowContent,
   chatEnabled = true,
   fixedModeLabel,
+  compactToolbar = false,
+  hideHeaderTitle = false,
   className,
 }: NodeConfigurationPanelProps) {
-  const panelClassName = ['action-panel', 'node-console', className].filter(Boolean).join(' ');
+  const contentRef = useRef<HTMLDivElement>(null);
+  const panelClassName = ['action-panel', 'node-console', compactToolbar && 'node-console-compact-toolbar', hideHeaderTitle && 'node-console-actions-only', className].filter(Boolean).join(' ');
   const chatDisabledTitle = chatEnabled ? undefined : '连续运行记录只支持提示词执行';
-  return <aside className={panelClassName} data-testid="node-configuration-panel"><header><div><b>{title}</b><small>{subtitle}</small></div></header>{recordControl}{feedback}<div className="node-console-mode-bar">{fixedModeLabel ? <div className="node-console-mode-summary"><b>{fixedModeLabel}</b><small>{mode === 'CHAT' ? '人工直接进入节点会话' : '保存配置后从左侧记录启动'}</small></div> : <nav className="node-console-mode-tabs" aria-label="启动方式"><button className={mode === 'PROMPT' ? 'active' : ''} aria-pressed={mode === 'PROMPT'} onClick={() => onModeChange('PROMPT')}><span>提示词执行</span><small>按节点配置自动执行</small></button><button className={mode === 'CHAT' ? 'active' : ''} aria-pressed={mode === 'CHAT'} disabled={!chatEnabled} title={chatDisabledTitle} onClick={() => onModeChange('CHAT')}><span>会话启动</span><small>人工进入会话引导</small></button></nav>}{action}</div>{mode === 'PROMPT' && <PromptConfigurationTabs active={promptTab} onChange={onPromptTabChange}/>}<div className="action-content">{mode === 'PROMPT' ? <>{promptTab === 'inputs' && promptContent}{promptTab === 'agent' && agentContent}{promptTab === 'gates' && gateContent}{promptTab === 'history' && historyContent}</> : chatContent}{belowContent}</div></aside>;
+  const id = useId();
+  const tabScroll = useRef<Partial<Record<PromptConfigurationTab, number>>>({});
+  const navigateSection = (next: PromptConfigurationTab) => {
+    if (next === promptTab) return;
+    tabScroll.current[promptTab] = contentRef.current?.scrollTop ?? 0;
+    onPromptTabChange(next);
+    requestAnimationFrame(() => {
+      if (contentRef.current) contentRef.current.scrollTop = tabScroll.current[next] ?? 0;
+    });
+  };
+  useLayoutEffect(() => {
+    if (!focusVersion || !issues.length) return;
+    const issue = issues[0];
+    onPromptTabChange(configurationTab(issue.field));
+    const frame = requestAnimationFrame(() => {
+      const target = contentRef.current?.querySelector<HTMLElement>(`[data-configuration-field="${issue.field}"]`);
+      target?.focus({ preventScroll: true }); target?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    });
+    return () => cancelAnimationFrame(frame);
+    // Validation attempts, not polling or typing, own focus.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusVersion]);
+  const panels = { inputs: promptContent, agent: agentContent, gates: gateContent, history: historyContent };
+  return <aside className={panelClassName} data-testid="node-configuration-panel"><header>{!hideHeaderTitle && <div><b title={title}>{title}</b><small>{fixedModeLabel ?? subtitle}</small></div>}{headerActions && <div className="node-console-header-actions">{headerActions}</div>}</header>{recordControl}{feedback}{!fixedModeLabel && <div className="node-console-mode-bar"><nav className="node-console-mode-tabs" aria-label="启动方式"><button className={mode === 'PROMPT' ? 'active' : ''} aria-pressed={mode === 'PROMPT'} onClick={() => onModeChange('PROMPT')}><span>提示词执行</span></button><button className={mode === 'CHAT' ? 'active' : ''} aria-pressed={mode === 'CHAT'} disabled={!chatEnabled} title={chatDisabledTitle} onClick={() => onModeChange('CHAT')}><span>会话启动</span></button></nav>{action}</div>}{mode === 'PROMPT' && <PromptConfigurationTabs id={id} active={promptTab} onChange={navigateSection}/>}<div className="action-content" ref={contentRef}>{mode === 'PROMPT' ? <div className="node-configuration-sections">{PROMPT_CONFIGURATION_TABS.map(tab => <section key={tab.key} id={`${id}-panel-${tab.key}`} role="tabpanel" aria-labelledby={`${id}-tab-${tab.key}`} data-config-section={tab.key} hidden={promptTab !== tab.key} style={promptTab !== tab.key ? { display: 'none' } : undefined}><ConfigurationIssuesContext.Provider value={issues}>{panels[tab.key]}</ConfigurationIssuesContext.Provider></section>)}</div> : chatContent}{belowContent}</div></aside>;
+
 }
 
 type NodeConsoleDraft = {
@@ -1052,7 +1223,7 @@ type NodeConsoleDraft = {
   prompt: string;
 };
 
-function NodeConsole({ run, node, startupMode, stepwiseDraft, initialBindings, localDraft, recordControl, refresh, onActivated, onDraftSaved, onDraftChange, onSelectExecution }: { run: FlowRun; node: SnapshotFlowNode; startupMode: 'PROMPT' | 'CHAT'; stepwiseDraft?: StepwiseNodeDraft; initialBindings?: Record<string, string>; localDraft?: NodeConsoleDraft; recordControl?: ReactNode; refresh: () => void; onActivated: (nodeRun: NodeRun) => void; onDraftSaved?: (draft: StepwiseNodeDraft) => void; onDraftChange?: (draft: NodeConsoleDraft) => void; onSelectExecution: (nodeRun: NodeRun) => void }) {
+function NodeConsole({ run, node, startupMode, stepwiseDraft, initialBindings, localDraft, headerActions, refresh, onActivated, onDraftSaved, onDraftChange, onSelectExecution }: { run: FlowRun; node: SnapshotFlowNode; startupMode: 'PROMPT' | 'CHAT'; stepwiseDraft?: StepwiseNodeDraft; initialBindings?: Record<string, string>; localDraft?: NodeConsoleDraft; headerActions?: ReactNode; refresh: () => void; onActivated: (nodeRun: NodeRun) => void; onDraftSaved?: (draft: StepwiseNodeDraft) => void; onDraftChange?: (draft: NodeConsoleDraft) => void; onSelectExecution: (nodeRun: NodeRun) => void }) {
   const terminal = run.state === 'COMPLETED' || run.state === 'CANCELLED';
   const draftBindings = Object.fromEntries((stepwiseDraft?.input_bindings ?? []).map(item => [item.input_field_key, item.artifact_version_id]));
   const inheritedBindingsJson = JSON.stringify(initialBindings ?? draftBindings);
@@ -1090,7 +1261,9 @@ function NodeConsole({ run, node, startupMode, stepwiseDraft, initialBindings, l
     }
     onDraftChangeRef.current?.({ bindings, inputArtifacts, gates, agentPreset, prompt });
   }, [agentPreset, bindings, gates, inputArtifacts, prompt]);
+  const validation = useConfigurationValidation(prompt, agentPreset, gates);
   const mutation = useMutation({
+    onError: (error: Error) => validation.onError(error),
     mutationFn: async (nextBindings: Record<string, string>) => {
       if (stepwiseDraft && startupMode === 'PROMPT') return { draft: await api.saveStepwiseNodeDraft(run.id, node.instance_key, { expected_row_version: stepwiseDraft.row_version, startup_mode: 'PROMPT', startup_prompt: prompt, artifact_ids: nextBindings, input_urls: {}, gates, agent_preset: agentPreset }) };
       const sessionOnly = startupMode === 'CHAT';
@@ -1102,14 +1275,13 @@ function NodeConsole({ run, node, startupMode, stepwiseDraft, initialBindings, l
   const invalidMode = startupMode === 'PROMPT' && !prompt.trim();
   const invalidModel = startupMode === 'PROMPT' && (!agentPreset.model_provider_id || !agentPreset.model_name);
   const invalidGates = startupMode === 'PROMPT' && gates.some(gate => !String(gate.config.prompt || '').trim());
-  const missingInputs = node.asset.inputs.some(field => !bindings[field.field_key]);
   const nodeRuns = run.node_runs.filter(item => item.flow_node_snapshot_key === node.instance_key && isDirectNodeRun(item) === (startupMode === 'CHAT'));
   const visits = nodeRuns.length;
-  const saveDisabled = terminal || invalidMode || invalidModel || invalidGates || mutation.isPending;
-  const runAction = <button className="primary node-run-button" disabled={saveDisabled} onClick={() => startupMode === 'PROMPT' && missingInputs ? setPromptTab('inputs') : mutation.mutate(bindings)}><Play size={15}/>{mutation.isPending ? '保存中…' : startupMode === 'PROMPT' && missingInputs ? '请先填写节点输入' : startupMode === 'CHAT' ? '启动节点会话' : '保存配置'}</button>;
+  const saveDisabled = terminal || mutation.isPending;
+  const runAction = <button className="primary node-run-button" disabled={saveDisabled} title={invalidModel ? '请在 Agent 配置中选择模型' : invalidMode ? '请在输入与上下文中填写启动提示词' : invalidGates ? '请在门禁配置中填写判定提示词' : undefined} onClick={() => { if (startupMode === 'CHAT' || validation.validate()) mutation.mutate(bindings); }}>{startupMode === 'PROMPT' ? <Check size={14}/> : <Play size={14}/>}{mutation.isPending ? '保存中…' : startupMode === 'PROMPT' ? '保存' : '启动节点会话'}</button>;
   const historyRun = { ...run, node_runs: run.node_runs.filter(item => isDirectNodeRun(item) === (startupMode === 'CHAT')) };
   const history = <NodeExecutionHistory run={historyRun} node={node} onSelectExecution={onSelectExecution}/>;
-  return <><NodeConfigurationPanel className={startupMode === 'PROMPT' ? 'automatic-record-editor' : undefined} title={node.alias || node.asset.name} subtitle={`节点控制台 · 已执行 ${visits} 次`} mode={startupMode} fixedModeLabel={startupMode === 'CHAT' ? '直接启动' : '逐步运行'} onModeChange={() => undefined} recordControl={recordControl} promptTab={promptTab} onPromptTabChange={setPromptTab} action={runAction} promptContent={<>{(stepwiseDraft || Object.keys(initialBindings ?? {}).length > 0) && <p className="field-hint">上游节点的映射产物已自动填入当前节点输入；保存后仍可继续编辑，点击启动时才冻结为本轮 Attempt。</p>}<InputSummary fields={node.asset.inputs} bindings={bindings} artifacts={inputArtifacts}/>{node.asset.inputs.length > 0 && <button className="secondary full" onClick={() => setInputDialogOpen(true)}><Upload size={14}/>填写节点输入</button>}<StartupPromptSummary prompt={prompt} freezeHint="点击启动时才会随 Attempt 冻结。" onEdit={() => setPromptDialogOpen(true)}/></>} agentContent={<AgentPresetEditor preset={agentPreset} nodeContext={node.asset.executor?.context_prompt ?? ''} onChange={setAgentPreset}/>} gateContent={<GateDraftEditor gates={gates} onChange={setGates}/>} historyContent={history} chatContent={history} belowContent={<>{invalidModel && <p className="error">请选择 Agent 模型供应商和模型后再保存配置。</p>}{invalidGates && <p className="error">每个门禁都需要填写判定提示词。</p>}{terminal && <p className="field-hint">流程已结束，不能创建新的节点执行。</p>}{mutation.error && <p className="error"><AlertTriangle size={14}/>{mutation.error.message}</p>}</>}/>{inputDialogOpen && <NodeInputDialog run={{ ...run, artifacts: inputArtifacts }} node={node} initialBindings={bindings} onClose={() => setInputDialogOpen(false)} onSubmit={({ bindings: nextBindings, artifacts }) => { setBindings(nextBindings); setInputArtifacts(current => mergeArtifacts(current, artifacts)); setInputDialogOpen(false); }}/>} {promptDialogOpen && <StartupPromptDialog prompt={prompt} onChange={setPrompt} onClose={() => setPromptDialogOpen(false)}/>}</>;
+  return <><NodeConfigurationPanel issues={validation.issues} focusVersion={validation.focusVersion} className={startupMode === 'PROMPT' ? 'automatic-record-editor' : undefined} title={node.alias || node.asset.name} subtitle={`节点控制台 · 已执行 ${visits} 次`} mode={startupMode} fixedModeLabel={startupMode === 'CHAT' ? '直接启动' : '逐步运行'} onModeChange={() => undefined} compactToolbar headerActions={<>{headerActions}{runAction}</>} promptTab={promptTab} onPromptTabChange={setPromptTab} promptContent={<>{(stepwiseDraft || Object.keys(initialBindings ?? {}).length > 0) && <p className="field-hint">已填入上游映射输入</p>}<ConfigurationField field="inputs"><InputSummary fields={runtimeNodeInputs(node)} bindings={bindings} artifacts={inputArtifacts} onEdit={() => setInputDialogOpen(true)}/></ConfigurationField><ConfigurationField field="prompt"><StartupPromptSummary prompt={prompt} freezeHint="点击启动时才会随 Attempt 冻结。" onEdit={() => setPromptDialogOpen(true)}/></ConfigurationField><ConfigurationField field="context"><NodeContextPresetEditor preset={agentPreset} nodeContext={node.asset.executor?.context_prompt ?? ''} onChange={setAgentPreset}/></ConfigurationField></>} agentContent={<AgentPresetEditor preset={agentPreset} onChange={setAgentPreset}/>} gateContent={<ConfigurationField field="gates"><GateDraftEditor gates={gates} onChange={setGates}/></ConfigurationField>} historyContent={history} chatContent={history} belowContent={<>{terminal && <p className="field-hint">流程已结束，不能创建新的节点执行。</p>}{mutation.error && !configurationErrorIssues(mutation.error).length && <p className="error"><AlertTriangle size={14}/>{mutation.error.message}</p>}</>}/>{inputDialogOpen && <NodeInputDialog run={{ ...run, artifacts: inputArtifacts }} node={node} initialBindings={bindings} onClose={() => setInputDialogOpen(false)} onSubmit={({ bindings: nextBindings, artifacts }) => { setBindings(nextBindings); setInputArtifacts(current => mergeArtifacts(current, artifacts)); setInputDialogOpen(false); }}/>} {promptDialogOpen && <StartupPromptDialog prompt={prompt} onChange={setPrompt} onClose={() => setPromptDialogOpen(false)}/>}</>;
 }
 
 const AUTOMATIC_STAGE_ORDER = ['INPUT_READINESS', 'START_GATES', 'START_HANDOFF', 'RUNTIME_START', 'AGENT_RUNNING', 'END_GATES', 'FLOW_ADVANCE'];
@@ -1133,7 +1305,17 @@ function AutomaticProgressPanel({ progress }: { progress: NonNullable<NodeAttemp
   return <section className={`automatic-progress-panel${progress.needs_attention || progress.task_state === 'DEAD' ? ' attention' : ''}`} data-testid="automatic-progress"><header><span><b>{title}</b><small>{progress.task_state ? TASK_STATE_LABELS[progress.task_state] ?? progress.task_state : '状态已持久化'}</small></span>{currentIndex >= 0 && <em>第 {currentIndex + 1}/{AUTOMATIC_STAGE_ORDER.length} 步</em>}</header>{currentIndex >= 0 && <ol>{AUTOMATIC_STAGE_ORDER.map((stage, index) => <li key={stage} className={index < currentIndex ? 'done' : index === currentIndex ? 'current' : ''}><i aria-hidden="true"/><span>{AUTOMATIC_STAGE_LABELS[stage]}</span></li>)}</ol>}<dl>{hasRuntimeTaskDetails ? runtimeTasks.map(([label, task]) => task && <Fragment key={label}><dt>{label}</dt><dd>{task.attempts} 次 / 上限 {task.max_attempts} · {TASK_STATE_LABELS[task.task_state] ?? task.task_state}</dd></Fragment>) : <>{progress.attempts > 0 && <><dt>后台尝试</dt><dd>{progress.attempts} 次{progress.max_attempts ? ` / 上限 ${progress.max_attempts}` : ''}</dd></>}{processedAt && <><dt>最近处理</dt><dd>{processedAt}</dd></>}{retryAt && <><dt>下次重试</dt><dd>{retryAt}</dd></>}</>}</dl>{progress.task_error && <p role="alert">{progress.task_error}</p>}{progress.needs_attention && <p role="status">任务已被领取但业务状态没有前进；平台会按持久记录自动重新计算并继续，不需要反复刷新或重新创建运行。</p>}</section>;
 }
 
-function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, sessionReturnContext, automaticArtifactScope }: { run: FlowRun; nodeRun: NodeRun; attempt: NodeAttempt; refresh: () => void; navigate: (result: unknown, kind: string) => void; sessionReturnContext?: { runId: string; mode: WorkbenchMode; automaticRecordId?: string; stepwiseRecordId?: string }; automaticArtifactScope?: { parentRunId: string; recordId: string } }) {
+function FrozenExecutionConfiguration({ attempt }: { attempt: NodeAttempt }) {
+  const preset = attempt.agent_preset;
+  return <RecordDetailSummary title="执行配置" summary={`${preset?.model_name || '未记录模型'} · ${preset?.reasoning_effort || '默认'} · 已冻结`}>
+    <section className="frozen-execution-configuration" aria-label="本轮冻结配置">
+      <dl><dt>启动方式</dt><dd>{attempt.startup_mode === 'CHAT' ? '直接会话' : attempt.startup_mode === 'SKILL' ? 'Skill 执行' : '提示词执行'}</dd><dt>模型</dt><dd title={preset?.model_provider_id ?? undefined}>{preset?.model_name || '未记录'}</dd><dt>思考程度</dt><dd>{preset?.reasoning_effort || '默认'}</dd>{Boolean(preset?.fallback_models?.length) && <><dt>备用模型</dt><dd>{preset!.fallback_models!.map(model => model.model_name).join('、')}</dd></>}</dl>
+      {attempt.startup_prompt && <section className="record-frozen-prompt"><h4>启动提示词</h4><pre>{attempt.startup_prompt}</pre></section>}
+    </section>
+  </RecordDetailSummary>;
+}
+
+function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, sessionReturnContext, automaticArtifactScope, headerAction }: { run: FlowRun; nodeRun: NodeRun; attempt: NodeAttempt; refresh: () => void; navigate: (result: unknown, kind: string) => void; sessionReturnContext?: { runId: string; mode: WorkbenchMode; automaticRecordId?: string; stepwiseRecordId?: string }; automaticArtifactScope?: { parentRunId: string; recordId: string }; headerAction?: ReactNode }) {
   const dialog = useProductDialog();
   const [text, setText] = useState('');
   const [inputArtifacts, setInputArtifacts] = useState<ArtifactVersion[]>(run.artifacts);
@@ -1210,7 +1392,7 @@ function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, sessionReturnC
   const act = (kind: string, body?: unknown) => mutation.mutate({ kind, body });
   const remediationPending = mutation.isPending && mutation.variables?.kind === 'remediate-gate-failure';
   const attemptTerminal = attempt.state === 'ACCEPTED' || attempt.state === 'REJECTED' || attempt.state === 'CANCELLED';
-  const nodeInputBindings = Object.fromEntries((attemptNode?.asset.inputs ?? []).map(field => [field.field_key, currentBinding(field.field_key)]).filter(([, value]) => value));
+  const nodeInputBindings = Object.fromEntries((attemptNode ? runtimeNodeInputs(attemptNode) : []).map(field => [field.field_key, currentBinding(field.field_key)]).filter(([, value]) => value));
   // Attempts created before runtime gate freezing retain their legacy gates in
   // the immutable snapshot. Prefer the frozen Attempt contract, but render the
   // snapshot contract as a read-only historical fallback so users still see
@@ -1300,18 +1482,18 @@ function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, sessionReturnC
     : automaticRemediationDeliveryFailed
       ? '完成门禁已记录未通过，但平台未能创建输出修订会话。请恢复服务后重试当前阶段，或进入节点会话人工处理。'
       : undefined;
-  return <aside className="action-panel attempt-control"><header><div><b>{nodeRunName(run, nodeRun)}</b><small>第 {nodeVisitNumber(run, nodeRun)} 次执行 / 第 {attempt.attempt_no} 轮</small></div><small className="attempt-token-usage">{usageLabel(attempt.usage)}</small></header><nav className="attempt-detail-tabs" aria-label="执行详情"><button className={tab === 'overview' ? 'active' : ''} onClick={() => setTab('overview')}>概览</button><button className={tab === 'gates' ? 'active' : ''} onClick={() => setTab('gates')}>门禁结果</button><button className={tab === 'outputs' ? 'active' : ''} onClick={() => setTab('outputs')}>输出</button>{automaticArtifactScope && <button className={tab === 'audit' ? 'active' : ''} onClick={() => setTab('audit')}>历史审计</button>}</nav><div className="action-content">{tab === 'overview' && <><div className="state-banner"><span>当前轮次状态</span><b>{runtimeFailed ? '节点执行失败' : ATTEMPT_STATE_LABELS[attempt.state] ?? attempt.state}</b><small><span data-testid="attempt-state">{attempt.state}</span> · 状态版本 {attempt.state_version}</small></div>{automaticAttempt && attempt.automatic_progress && <AutomaticProgressPanel progress={attempt.automatic_progress}/>} {attemptNode && <NodeContextSummary node={attemptNode} contextIds={attempt.context_ids ?? null} frozenSessionContexts={attempt.frozen_session_contexts} frozenAgentCapabilities={attempt.frozen_agent_capabilities} agentPreset={attempt.agent_preset} mode={attempt.startup_mode === 'CHAT' ? 'CHAT' : 'PROMPT'}/>}<InputSummary fields={attemptNode?.asset.inputs ?? []} bindings={nodeInputBindings} artifacts={resolvedInputArtifacts}/>{automaticArtifactScope && automaticInputArtifacts.isError && <p className="error">读取本轮输入失败：{automaticInputArtifacts.error.message}</p>}<p className="field-hint">输入已随本轮创建冻结，仅供查看。</p>
-    {attempt.runtime_phase === 'CANCEL_FAILED' && <section className="terminal-run-panel"><h4>Agent 停止状态未确认</h4><p>{attempt.error_detail || '运行时停止失败，需要重新对账。FlowRun Runtime 的健康、替换和诊断入口位于会话工作台。'}</p>{attempt.runtime_cancel_recovery_modes.includes('RECONCILE_PARENT') && <button className="secondary full" disabled={mutation.isPending} onClick={() => act('retry-cancel')}>重新对账并重试停止</button>}</section>}
-    {terminal ? <button className="secondary full node-session-entry" onClick={() => openNodeSession(run.id, nodeRun.id, attempt.id, attempt.binding_id ?? undefined, sessionReturnContext)}><Send size={15}/>查看节点会话（只读）</button> : (attempt.startup_mode === 'PROMPT' && attempt.state === 'WAITING_START_CONFIRMATION' ? automaticAttempt ? !attempt.automatic_progress && <section className="terminal-run-panel"><h4>正在自动启动</h4><p>连续运行已通过启动条件；平台正在启动当前节点，并会在完成后自动流转至后继节点。</p></section> : <section className="terminal-run-panel"><h4>配置已保存</h4><p>请在左侧当前逐步运行记录上启动该节点；完成后会停在下一个节点。</p></section> : <button className="secondary full node-session-entry" onClick={() => openNodeSession(run.id, nodeRun.id, attempt.id, attempt.binding_id ?? undefined, sessionReturnContext)}><Send size={15}/>进入节点会话</button>)}
+  return <aside className={`action-panel attempt-control${headerAction ? ' attempt-control-actions-only' : ''}`}><header>{!headerAction && <><div><b>{nodeRunName(run, nodeRun)}</b><small>第 {nodeVisitNumber(run, nodeRun)} 次执行 / 第 {attempt.attempt_no} 轮</small></div><small className="attempt-token-usage">{usageLabel(attempt.usage)}</small></>}{headerAction && <div className="attempt-header-actions">{headerAction}</div>}</header><nav className="attempt-detail-tabs" aria-label="执行详情"><button className={tab === 'overview' ? 'active' : ''} onClick={() => setTab('overview')}>概览</button><button className={tab === 'gates' ? 'active' : ''} onClick={() => setTab('gates')}>门禁结果</button><button className={tab === 'outputs' ? 'active' : ''} onClick={() => setTab('outputs')}>输出</button>{automaticArtifactScope && <button className={tab === 'audit' ? 'active' : ''} onClick={() => setTab('audit')}>历史审计</button>}</nav><div className="action-content">{tab === 'overview' && <><div className="state-banner"><span>状态</span><b>{runtimeFailed ? '节点执行失败' : ATTEMPT_STATE_LABELS[attempt.state] ?? attempt.state}</b><small><span data-testid="attempt-state" title={`状态版本 ${attempt.state_version}`}>{attempt.state}</span></small></div>{automaticAttempt && attempt.automatic_progress && (attempt.automatic_progress.stage !== 'FINISHED' || attempt.automatic_progress.needs_attention || attempt.automatic_progress.task_error || attempt.automatic_progress.task_state === 'DEAD') && <AutomaticProgressPanel progress={attempt.automatic_progress}/>}    {attempt.runtime_phase === 'CANCEL_FAILED' && <section className="terminal-run-panel"><h4>Agent 停止状态未确认</h4><p>{attempt.error_detail || '运行时停止失败，需要重新对账。FlowRun Runtime 的健康、替换和诊断入口位于会话工作台。'}</p>{attempt.runtime_cancel_recovery_modes.includes('RECONCILE_PARENT') && <button className="secondary full" disabled={mutation.isPending} onClick={() => act('retry-cancel')}>重新对账并重试停止</button>}</section>}
+    {terminal ? <button className="secondary full node-session-entry" onClick={() => openNodeSession(run.id, nodeRun.id, attempt.id, attempt.binding_id ?? undefined, sessionReturnContext)}><Send size={15}/>查看节点会话</button> : (attempt.startup_mode === 'PROMPT' && attempt.state === 'WAITING_START_CONFIRMATION' ? automaticAttempt ? !attempt.automatic_progress && <section className="terminal-run-panel"><h4>正在自动启动</h4><p>连续运行已通过启动条件；平台正在启动当前节点，并会在完成后自动流转至后继节点。</p></section> : <section className="terminal-run-panel"><h4>配置已保存</h4><p>请在左侧当前逐步运行记录上启动该节点；完成后会停在下一个节点。</p></section> : <button className="secondary full node-session-entry" onClick={() => openNodeSession(run.id, nodeRun.id, attempt.id, attempt.binding_id ?? undefined, sessionReturnContext)}><Send size={15}/>进入节点会话</button>)}
     {nodeRun.attempts.length > 1 && <section className="attempt-switcher"><h4>修订轮次</h4><div>{nodeRun.attempts.map(item => <button key={item.id} className={item.id === attempt.id ? 'active' : ''} onClick={() => useWorkbenchStore.getState().selectAttempt(item.id)}>第 {item.attempt_no} 轮</button>)}</div></section>}
-      {terminal ? <section className="terminal-run-panel"><h4>{run.state === 'CANCELLED' ? '流程已取消' : '流程已完成'}</h4><p>会话历史已只读保留；可通过上方入口查看会话，并继续在右侧文件与终端中操作工作区。流程级操作位于上方“流程运行态管理”。</p></section> : <>
+      {terminal ? <section className="terminal-run-panel terminal-run-summary"><span>{run.state === 'CANCELLED' ? '流程已取消' : '流程已完成'} · 会话只读</span></section> : <>
       {(attempt.startup_mode === 'CHAT' && attempt.state === 'WAITING_START_CONFIRMATION' || automaticOutputOverrideRequired) && <section className="manual-session-outputs"><h4>{automaticOutputOverrideRequired ? '选择已有输出并强制流转' : '提交会话产出'}</h4><p>{automaticOutputOverrideRequired ? '请选择本节点已经生成的输出文件，平台会直接复用所选产物并记录人工降级决定；无需填写运行时路径。' : '会话回复不会自动成为节点输出。请按冻结输出合同填写 URL 或共享工作区文件路径，平台校验并复制为候选产物后再运行完成门禁。'}</p>{automaticOutputOverrideRequired && automaticArtifacts.isLoading && <p className="field-hint">正在读取当前节点输出…</p>}{automaticOutputOverrideRequired && automaticArtifacts.isError && <p className="error">读取当前节点输出失败：{automaticArtifacts.error.message}</p>}{manualOutputFields.map(field => <label key={field.field_key}>{field.display_name || field.field_key} · {field.data_type}{automaticOutputOverrideRequired ? <LaunchOptionMenu label={`选择输出 ${field.display_name || field.field_key}`} value={manualOutputs[field.field_key] ?? ''} options={[{ value: '', label: '请选择节点输出' }, ...(manualOutputCandidates.get(field.field_key) ?? []).map(item => ({ value: item.id, label: `${item.metadata?.filename ? String(item.metadata.filename) : `${item.field_key} · v${item.version_no}`} · ${item.byte_size} B` }))]} disabled={automaticArtifacts.isLoading || (manualOutputCandidates.get(field.field_key) ?? []).length === 0} onChange={value => setManualOutputs(current => ({ ...current, [field.field_key]: value }))}/> : <input aria-label={`提交输出 ${field.display_name || field.field_key}`} value={manualOutputs[field.field_key] ?? ''} onChange={event => setManualOutputs(current => ({ ...current, [field.field_key]: event.target.value }))} placeholder={field.data_type === 'FILE' ? '/runtime/workspace/project/...' : 'https://...'}/>}</label>)}<button className="danger full" disabled={!manualOutputsReady || mutation.isPending || automaticArtifacts.isLoading || automaticArtifacts.isError} onClick={() => automaticOutputOverrideRequired ? void dialog.confirm({ title: '确认降级并强制流转？', message: '平台将复用你选择的节点输出，跳过后续门禁并记录人工降级决定。', confirmLabel: '确认强制流转', tone: 'danger' }).then(ok => ok && act('force-manual-outputs', manualOutputsPayload)) : act('manual-outputs', manualOutputsPayload)}>{mutation.isPending ? '提交中…' : automaticOutputOverrideRequired ? '确认降级并强制流转' : '提交候选输出并运行完成门禁'}</button></section>}
       {attempt.state === 'WAITING_HUMAN' && <><label>人工输入<textarea value={text} onChange={event => setText(event.target.value)}/></label><button className="primary full" disabled={!text} onClick={() => act('human', { content: text })}>提交并继续</button></>}
       {attempt.state === 'WAITING_CONFIRMATION' && <RuntimeConfirmationPanel attempt={attempt} onResolved={refresh}/>}
       {attempt.state === 'WAITING_ACCEPTANCE' && (automaticAttempt ? <section className="terminal-run-panel"><h4>等待平台自动流转</h4><p>完成门禁已通过。平台正在按冻结拓扑和端口映射验收产物并选择后继节点，无需进入会话推动。</p></section> : <><label>验收意见<textarea value={text} onChange={event => setText(event.target.value)} placeholder="退回时填写修改要求"/></label><button className="primary full" onClick={() => act('accept')}>完成节点并流转</button><button className="secondary full" disabled={!text} onClick={() => act('reject', { reason: text })}>退回修改</button></>)}
       {(attempt.state === 'START_BLOCKED' || attempt.state === 'END_BLOCKED') && <section className="terminal-run-panel"><h4>{automaticBlockedTitle}</h4><p>{automaticBlockedDescription || attemptErrorText(attempt) || (runtimeFailed ? '模型或运行时执行失败，尚未生成正式输出。可进入节点会话继续处理；OpenHands 接受继续或新消息后，后续正式事件会重新驱动本节点。' : '请查看门禁结果：可直接重新执行门禁，或根据门禁结论调整交付物后重试。只有人工明确接受风险时才会继续流转。')}</p>{completionReconciliationAvailable && <><small>平台会重新验证当前 OpenHands 活跃分支的正式完成回复、冻结输出合同和受管工作区文件；不会接受手工指定的事件 ID、路径或产物。</small><button className="primary full" disabled={mutation.isPending} onClick={() => void dialog.confirm({ title: '确认从 OpenHands 对账并补登？', message: '平台将依据正式完成事件 ID 幂等登记候选产物，并重新执行完成门禁。', confirmLabel: '确认对账并补登' }).then(ok => ok && act('reconcile-runtime-completion'))}>从 OpenHands 对账并补登</button></>}{runtimeFailed && <small>失败发生在 Runtime 执行阶段，不是完成门禁拒绝；当前没有可流转的正式 Artifact。会话可继续时，新的原生回合会恢复节点事件投影。</small>}{(!automaticAttempt || retryableAutomaticFailure) && !runtimeFailed && !completionReconciliationAvailable && <button className="secondary full" onClick={() => act('retry')}>重新执行门禁</button>}{attempt.state === 'END_BLOCKED' && !attempt.error_code && <><button className="primary full" disabled={mutation.isPending} onClick={() => void dialog.confirm({ title: '根据门禁结果调整并重试？', message: '平台会创建一条新的原生调整会话，发送本次门禁结论，并在创建成功后直接带你进入该会话。修订并完成后，平台会重新执行完成门禁。', confirmLabel: '创建并进入调整会话' }).then(ok => ok && act('remediate-gate-failure'))}>{remediationPending ? <><RefreshCw className="spin" size={14}/>正在创建并进入调整会话…</> : '根据门禁结果调整并重试'}</button>{remediationPending && <small role="status">正在从本轮完成边界创建调整分支并发送门禁结论，请稍候…</small>}<label>人工接受风险理由<textarea value={text} maxLength={4000} onChange={event => setText(event.target.value)} placeholder="说明为何在保留校验失败结论的情况下仍可验收和流转"/></label><button className="danger full" disabled={!text.trim() || mutation.isPending} onClick={() => void dialog.confirm({ title: '接受门禁风险并继续？', message: '校验 Agent 的 FAIL 结论会原样保留；本次操作会作为独立人工决定写入审计，并继续验收和流转。', confirmLabel: '接受风险并继续', tone: 'danger' }).then(ok => ok && act('accept-gate-risk', { reason: text.trim() }))}>接受风险并继续流转</button></>}</section>}
       {!attemptTerminal && <button className="danger full cancel-attempt-button" disabled={mutation.isPending} onClick={() => void dialog.confirm({ title: '取消当前节点的本轮执行？', message: '只会取消这个节点的当前轮次，其他节点执行和整个流程不会被取消。', confirmLabel: '取消本轮执行', tone: 'danger' }).then(ok => ok && act('cancel'))}><StopCircle size={15}/>取消本轮节点执行</button>}
-    </>}</>}{tab === 'gates' && <section className="attempt-side-section"><h4>门禁结果</h4><GateList evaluations={attempt.gate_evaluations} policies={gatePolicies} onViewDetails={setGateConversation}/></section>}{tab === 'outputs' && <section className="attempt-side-section attempt-side-artifacts">{automaticArtifactScope && automaticArtifacts.isLoading ? <div className="empty compact">正在读取节点输出…</div> : automaticArtifactScope && automaticArtifacts.isError ? <p className="error">{automaticArtifacts.error.message}</p> : <><ArtifactList artifacts={automaticArtifactScope ? automaticArtifacts.data?.items ?? [] : attempt.artifacts} expectedFields={attemptNode?.asset.outputs ?? []}/>{automaticArtifactScope && automaticArtifacts.data && <Pagination page={automaticArtifacts.data.page} pageSize={automaticArtifacts.data.page_size} total={automaticArtifacts.data.total} onPageChange={setArtifactPage}/>}</>}</section>}{tab === 'audit' && automaticArtifactScope && <section className="attempt-side-section artifact-audit-panel"><h4>历史重复产物审计</h4><p className="field-hint">仅报告候选项与引用关系；本版本不会删除产物、工作区、Attempt 或运行记录。</p>{automaticArtifactAudit.isLoading ? <div className="empty compact">正在读取只读审计…</div> : automaticArtifactAudit.isError ? <p className="error">{automaticArtifactAudit.error.message}</p> : automaticArtifactAudit.data?.items.length ? <><div>{automaticArtifactAudit.data.items.map(item => <article key={`${item.producer_attempt_id}:${item.field_key}:${item.content_hash}`}><b>{item.field_key} · {item.artifacts.length} 个候选版本</b><small>{item.evidence.kind === 'FORMAL_COMPLETION_ID_REPLAY' ? '共享正式完成身份' : '仅内容哈希相同'} · 输入引用 {item.artifacts.reduce((total, artifact) => total + artifact.input_references.length, 0)} 个</small><small>工作区引用：{item.workspace_impact.workspace_ref_recorded ? '已记录' : '未记录'}；工作目录：{item.workspace_impact.work_directory_count}</small><ul>{item.cleanup.reasons.map(reason => <li key={reason}>{reason}</li>)}</ul></article>)}</div><Pagination page={automaticArtifactAudit.data.page} pageSize={automaticArtifactAudit.data.page_size} total={automaticArtifactAudit.data.total} onPageChange={setAuditPage}/></> : <div className="empty compact">未发现需要审阅的历史重复候选。</div>}</section>}{mutation.error && <p className="error">{mutation.error.message}</p>}</div>{gateConversation && <GateDetailDialog attemptId={attempt.id} attemptStateVersion={attempt.state_version} evaluation={gateConversation} policy={gatePolicies.find(policy => policy.id === gateConversation.policy_snapshot_key)} canRetryWithProvider={gateConversation.decision === 'ERROR' && ((attempt.state === 'START_BLOCKED' && gateConversation.stage === 'START') || (attempt.state === 'END_BLOCKED' && gateConversation.stage === 'END'))} onClose={() => setGateConversation(undefined)} onRetried={result => { setGateConversation(undefined); navigate(result, 'retry-with-provider'); refresh(); }}/>}</aside>;
+    </>}<FrozenExecutionConfiguration attempt={attempt}/><InputSummary fields={attemptNode ? runtimeNodeInputs(attemptNode) : []} bindings={nodeInputBindings} artifacts={resolvedInputArtifacts}/> {attemptNode && <NodeContextSummary node={attemptNode} contextIds={attempt.context_ids ?? null} frozenSessionContexts={attempt.frozen_session_contexts} frozenAgentCapabilities={attempt.frozen_agent_capabilities} agentPreset={attempt.agent_preset} mode={attempt.startup_mode === 'CHAT' ? 'CHAT' : 'PROMPT'}/>}{automaticArtifactScope && automaticInputArtifacts.isError && <p className="error">读取本轮输入失败：{automaticInputArtifacts.error.message}</p>}
+</>}{tab === 'gates' && <section className="attempt-side-section"><h4>门禁结果</h4><GateList evaluations={attempt.gate_evaluations} policies={gatePolicies} onViewDetails={setGateConversation}/></section>}{tab === 'outputs' && <section className="attempt-side-section attempt-side-artifacts">{automaticArtifactScope && automaticArtifacts.isLoading ? <div className="empty compact">正在读取节点输出…</div> : automaticArtifactScope && automaticArtifacts.isError ? <p className="error">{automaticArtifacts.error.message}</p> : <><ArtifactList artifacts={automaticArtifactScope ? automaticArtifacts.data?.items ?? [] : attempt.artifacts} expectedFields={attemptNode?.asset.outputs ?? []}/>{automaticArtifactScope && automaticArtifacts.data && <Pagination page={automaticArtifacts.data.page} pageSize={automaticArtifacts.data.page_size} total={automaticArtifacts.data.total} onPageChange={setArtifactPage}/>}</>}</section>}{tab === 'audit' && automaticArtifactScope && <section className="attempt-side-section artifact-audit-panel"><h4>历史重复产物审计</h4><p className="field-hint">只读审计</p>{automaticArtifactAudit.isLoading ? <div className="empty compact">正在读取只读审计…</div> : automaticArtifactAudit.isError ? <p className="error">{automaticArtifactAudit.error.message}</p> : automaticArtifactAudit.data?.items.length ? <><div>{automaticArtifactAudit.data.items.map(item => <article key={`${item.producer_attempt_id}:${item.field_key}:${item.content_hash}`}><b>{item.field_key} · {item.artifacts.length} 个候选版本</b><small>{item.evidence.kind === 'FORMAL_COMPLETION_ID_REPLAY' ? '共享正式完成身份' : '仅内容哈希相同'} · 输入引用 {item.artifacts.reduce((total, artifact) => total + artifact.input_references.length, 0)} 个</small><small>工作区引用：{item.workspace_impact.workspace_ref_recorded ? '已记录' : '未记录'}；工作目录：{item.workspace_impact.work_directory_count}</small><ul>{item.cleanup.reasons.map(reason => <li key={reason}>{reason}</li>)}</ul></article>)}</div><Pagination page={automaticArtifactAudit.data.page} pageSize={automaticArtifactAudit.data.page_size} total={automaticArtifactAudit.data.total} onPageChange={setAuditPage}/></> : <div className="empty compact">未发现需要审阅的历史重复候选。</div>}</section>}{mutation.error && <p className="error">{mutation.error.message}</p>}</div>{gateConversation && <GateDetailDialog attemptId={attempt.id} attemptStateVersion={attempt.state_version} evaluation={gateConversation} policy={gatePolicies.find(policy => policy.id === gateConversation.policy_snapshot_key)} canRetryWithProvider={gateConversation.decision === 'ERROR' && ((attempt.state === 'START_BLOCKED' && gateConversation.stage === 'START') || (attempt.state === 'END_BLOCKED' && gateConversation.stage === 'END'))} onClose={() => setGateConversation(undefined)} onRetried={result => { setGateConversation(undefined); navigate(result, 'retry-with-provider'); refresh(); }}/>}</aside>;
 }
 
 function SnapshotSync({ run, currentVersion, onSynced }: { run: FlowRun; currentVersion?: number; onSynced: (run: FlowRun) => void }) {
@@ -1332,7 +1514,7 @@ const emptyAutomaticNodePlan = (node: SnapshotFlowNode): AutomaticNodePlan => ({
   gates: [], artifact_ids: {}, input_urls: {},
 });
 
-function AutomaticRecordDialog({ run, onClose, onCreated, onImport }: { run: FlowRun; onClose: () => void; onCreated: (record: FlowRunAutomaticRecord) => void; onImport: () => void }) {
+export function AutomaticRecordDialog({ run, onClose, onCreated, onImport }: { run: FlowRun; onClose: () => void; onCreated: (record: FlowRunAutomaticRecord) => void; onImport: () => void }) {
   const snapshot = run.snapshots.find(item => item.id === run.active_snapshot_id) ?? run.snapshots.at(-1);
   const nodes = snapshot?.definition.nodes ?? [];
   const [name, setName] = useState('');
@@ -1349,10 +1531,10 @@ function AutomaticRecordDialog({ run, onClose, onCreated, onImport }: { run: Flo
     onSuccess: onCreated,
   });
   useEscapeClose(onClose);
-  return <div className="modal-backdrop"><section className="modal automatic-record-dialog" role="dialog" aria-modal="true" aria-label="新增连续运行"><header><div><span className="eyebrow">AUTOMATIC RUN</span><h2>新增连续运行</h2><p>记录归属于当前流程运行，并使用当前冻结快照与运行环境。</p></div><button type="button" className="ghost" aria-label="关闭新增连续运行" onClick={onClose}><X size={17}/></button></header><label>名称<input aria-label="连续运行名称" value={name} onChange={event => setName(event.target.value)} placeholder={`${run.name} · 连续运行`}/></label><label>起始节点<select aria-label="连续运行起始节点" value={startNodeKey} onChange={event => setStartNodeKey(event.target.value)}>{nodes.map(node => <option key={node.instance_key} value={node.instance_key}>{node.alias || node.asset.name}</option>)}</select></label>{mutation.error && <p className="error">{mutation.error.message}</p>}<footer><button type="button" className="ghost" onClick={onClose}>取消</button><button type="button" className="secondary" disabled={mutation.isPending} onClick={onImport}><Upload size={13}/>导入 / 粘贴</button><button type="button" className="primary" disabled={!startNodeKey || mutation.isPending} onClick={() => mutation.mutate()}>{mutation.isPending ? '创建中…' : '创建草稿'}</button></footer></section></div>;
+  return <div className="modal-backdrop"><section className="modal automatic-record-dialog record-create-dialog" role="dialog" aria-modal="true" aria-label="新增连续运行"><header><h2>新增连续运行</h2><button type="button" className="ghost" aria-label="关闭新增连续运行" onClick={onClose}><X size={16}/></button></header><label>名称<input aria-label="连续运行名称" value={name} onChange={event => setName(event.target.value)} placeholder={`${run.name} · 连续运行`}/></label><label>起始节点<LaunchOptionMenu label="连续运行起始节点" value={startNodeKey} options={nodes.map(node => ({ value: node.instance_key, label: node.alias || node.asset.name }))} disabled={!nodes.length} onChange={setStartNodeKey}/></label><p className="record-git-notice">Git 身份将自动冻结为当前用户身份。</p>{mutation.error && <p className="error">{mutation.error.message}</p>}<footer><button type="button" className="ghost" onClick={onClose}>取消</button><button type="button" className="secondary" disabled={mutation.isPending} onClick={onImport}><Upload size={13}/>导入 / 粘贴</button><button type="button" className="primary" disabled={!startNodeKey || mutation.isPending} onClick={() => mutation.mutate()}>{mutation.isPending ? '创建中…' : '创建草稿'}</button></footer></section></div>;
 }
 
-function StepwiseRecordDialog({ run, onClose, onCreated, onImport }: { run: FlowRun; onClose: () => void; onCreated: (record: FlowRunStepwiseRecord) => void; onImport: () => void }) {
+export function StepwiseRecordDialog({ run, onClose, onCreated, onImport }: { run: FlowRun; onClose: () => void; onCreated: (record: FlowRunStepwiseRecord) => void; onImport: () => void }) {
   const snapshot = run.snapshots.find(item => item.id === run.active_snapshot_id) ?? run.snapshots.at(-1);
   const nodes = snapshot?.definition.nodes ?? [];
   const [name, setName] = useState('');
@@ -1365,7 +1547,7 @@ function StepwiseRecordDialog({ run, onClose, onCreated, onImport }: { run: Flow
     onSuccess: onCreated,
   });
   useEscapeClose(onClose);
-  return <div className="modal-backdrop"><section className="modal automatic-record-dialog" role="dialog" aria-modal="true" aria-label="新增逐步运行记录"><header><div><span className="eyebrow">STEPWISE RUN</span><h2>新增逐步运行记录</h2><p>选择起始节点后保存记录。节点仍需先保存配置，再由你显式启动；完成后停在下一个节点。</p></div><button type="button" className="ghost" aria-label="关闭新增逐步运行记录" onClick={onClose}><X size={17}/></button></header><label>记录名称<input aria-label="逐步运行记录名称" value={name} maxLength={220} autoFocus placeholder={`${run.name} · 批次执行`} onChange={event => setName(event.target.value)}/></label><label>起始节点<LaunchOptionMenu label="逐步运行起始节点" value={startNodeKey} options={nodes.map(node => ({ value: node.instance_key, label: node.alias || node.asset.name }))} disabled={!nodes.length} onChange={setStartNodeKey}/></label>{mutation.error && <p className="error">创建失败：{mutation.error.message}</p>}<footer><button type="button" className="ghost" disabled={mutation.isPending} onClick={onClose}>取消</button><button type="button" className="secondary" disabled={mutation.isPending} onClick={onImport}><Upload size={13}/>导入 / 粘贴</button><button type="button" className="primary" disabled={!startNodeKey || mutation.isPending} onClick={() => mutation.mutate()}>{mutation.isPending ? '创建中…' : '创建记录'}</button></footer></section></div>;
+  return <div className="modal-backdrop"><section className="modal automatic-record-dialog record-create-dialog" role="dialog" aria-modal="true" aria-label="新增逐步运行记录"><header><h2>新增逐步运行记录</h2><button type="button" className="ghost" aria-label="关闭新增逐步运行记录" onClick={onClose}><X size={16}/></button></header><label>记录名称<input aria-label="逐步运行记录名称" value={name} maxLength={220} autoFocus placeholder={`${run.name} · 批次执行`} onChange={event => setName(event.target.value)}/></label><label>起始节点<LaunchOptionMenu label="逐步运行起始节点" value={startNodeKey} options={nodes.map(node => ({ value: node.instance_key, label: node.alias || node.asset.name }))} disabled={!nodes.length} onChange={setStartNodeKey}/></label><p className="record-git-notice">Git 身份将自动冻结为当前用户身份。</p>{mutation.error && <p className="error">创建失败：{mutation.error.message}</p>}<footer><button type="button" className="ghost" disabled={mutation.isPending} onClick={onClose}>取消</button><button type="button" className="secondary" disabled={mutation.isPending} onClick={onImport}><Upload size={13}/>导入 / 粘贴</button><button type="button" className="primary" disabled={!startNodeKey || mutation.isPending} onClick={() => mutation.mutate()}>{mutation.isPending ? '创建中…' : '创建记录'}</button></footer></section></div>;
 }
 
 function CopyRecordDialog({ mode, sourceName, onClose, onCopy, onExport }: { mode: CopyTarget['mode']; sourceName: string; onClose: () => void; onCopy: (name: string) => Promise<void>; onExport?: (target: ExportTarget) => Promise<void> }) {
@@ -1381,7 +1563,7 @@ function CopyRecordDialog({ mode, sourceName, onClose, onCopy, onExport }: { mod
   return <div className="modal-backdrop"><section className="modal automatic-record-dialog" role="dialog" aria-modal="true" aria-label={`拷贝${recordLabel}`}><header><div><span className="eyebrow">COPY RECORD</span><h2>拷贝{recordLabel}</h2><p>请为副本命名。确认后只复制初始配置与人工输入，不包含会话、输出或运行过程。</p></div><button type="button" className="ghost" aria-label={`关闭拷贝${recordLabel}`} onClick={onClose}><X size={17}/></button></header><label>副本名称<input aria-label="副本名称" value={name} maxLength={220} autoFocus onChange={event => setName(event.target.value)} /></label>{mutation.error && <p className="error">拷贝失败：{mutation.error.message}</p>}{exportMutation.error && <p className="error">导出失败：{exportMutation.error.message}</p>}{exportFeedback && <p className="field-hint" role="status">{exportFeedback === 'clipboard' ? '已复制到剪贴板。' : '已开始下载配置文件。'}</p>}<footer><button type="button" className="ghost" disabled={mutation.isPending || exportMutation.isPending} onClick={onClose}>取消</button>{onExport && <><button type="button" className="secondary" disabled={mutation.isPending || exportMutation.isPending} onClick={() => exportMutation.mutate('download')}><Download size={13}/>{exportMutation.isPending && exportMutation.variables === 'download' ? '下载中…' : exportFeedback === 'download' ? '已开始下载' : '下载'}</button><button type="button" className="secondary" disabled={mutation.isPending || exportMutation.isPending} onClick={() => exportMutation.mutate('clipboard')}><Copy size={13}/>{exportMutation.isPending && exportMutation.variables === 'clipboard' ? '复制中…' : exportFeedback === 'clipboard' ? '已复制到剪贴板' : '复制'}</button></>}<button type="button" className="primary" disabled={!name.trim() || mutation.isPending || exportMutation.isPending} onClick={() => mutation.mutate()}>{mutation.isPending ? '拷贝中…' : '确认拷贝'}</button></footer></section></div>;
 }
 
-function RecordConfigImportDialog({ mode, onClose, onImport }: { mode: 'AUTOMATIC' | 'STEPWISE'; onClose: () => void; onImport: (config: RecordConfigDocument) => Promise<void> }) {
+export function RecordConfigImportDialog({ mode, onClose, onImport }: { mode: 'AUTOMATIC' | 'STEPWISE'; onClose: () => void; onImport: (config: RecordConfigDocument) => Promise<void> }) {
   const label = mode === 'AUTOMATIC' ? '连续运行' : '逐步运行';
   const [text, setText] = useState('');
   const [fileName, setFileName] = useState<string>();
@@ -1420,14 +1602,17 @@ function stepwiseDraftReady(node?: SnapshotFlowNode, draft?: StepwiseNodeDraft):
     node
     && draft
     && draft.startup_prompt?.trim()
+    && !configurationIssues(draft.startup_prompt ?? '', draft.agent_preset ?? { capability_version_ids: [], node_context_enabled: false }, draft.gates).length
     && draft.agent_preset
     && draft.agent_preset.model_provider_id
     && draft.agent_preset.model_name
-    && node.asset.inputs.every(field => draft.input_bindings.some(binding => binding.input_field_key === field.field_key)),
+    && runtimeNodeInputs(node)
+      .filter(field => field.required !== false)
+      .every(field => draft.input_bindings.some(binding => binding.input_field_key === field.field_key)),
   );
 }
 
-function AutomaticRecordEditor({ parent, record, selectedKey, onDraft, onSaved }: { parent: FlowRun; record: FlowRunAutomaticRecord; selectedKey?: string; onDraft: (record: FlowRunAutomaticRecord) => void; onSaved: (record: FlowRunAutomaticRecord) => void }) {
+function AutomaticRecordEditor({ parent, record, selectedKey, launchAction, onDraft, onSaved }: { parent: FlowRun; record: FlowRunAutomaticRecord; selectedKey?: string; launchAction?: ReactNode; onDraft: (record: FlowRunAutomaticRecord) => void; onSaved: (record: FlowRunAutomaticRecord) => void }) {
   // A continuous record owns its own frozen FlowRun snapshot.  The parent can
   // later sync to a newer definition, which must not alter this draft's plan.
   const snapshot = record.snapshots.find(item => item.id === record.active_snapshot_id) ?? record.snapshots.at(-1);
@@ -1442,7 +1627,8 @@ function AutomaticRecordEditor({ parent, record, selectedKey, onDraft, onSaved }
   // replace them with an older server projection. Mirror that effective record
   // whenever the overlay or a successful save changes it.
   useEffect(() => { setName(record.name); setPlans(record.node_plans); setInputArtifacts(record.artifacts); }, [record.artifacts, record.name, record.node_plans]);
-  useEffect(() => { setPromptTab('inputs'); setInputDialogOpen(false); setPromptDialogOpen(false); setSaveFeedback(''); }, [record.id, selectedKey]);
+  const editorScope = useRef<string | undefined>(undefined);
+  useEffect(() => { const scope = `${record.id}:${selectedKey}`; if (editorScope.current === scope) return; editorScope.current = scope; setPromptTab('inputs'); setInputDialogOpen(false); setPromptDialogOpen(false); setSaveFeedback(''); }, [record.id, selectedKey]);
   const activeKey = selectedKey;
   const node = snapshot?.definition.nodes.find(item => item.instance_key === activeKey);
   const plan = node && activeKey ? plans[activeKey] ?? emptyAutomaticNodePlan(node) : undefined;
@@ -1462,7 +1648,9 @@ function AutomaticRecordEditor({ parent, record, selectedKey, onDraft, onSaved }
     setPlans(nextPlans);
     onDraft({ ...record, node_plans: nextPlans, artifacts: inputArtifacts });
   };
+  const validation = useConfigurationValidation(plan?.startup_prompt ?? '', plan?.agent_preset ?? { capability_version_ids: [], node_context_enabled: false }, plan?.gates ?? []);
   const save = useMutation({
+    onError: (error: Error) => validation.onError(error),
     mutationFn: async () => {
       const nodePlans = activeKey && plan ? { ...plans, [activeKey]: plan } : plans;
       const payload = {
@@ -1494,9 +1682,9 @@ function AutomaticRecordEditor({ parent, record, selectedKey, onDraft, onSaved }
     },
   });
   if (!node || !plan) return <aside className="action-panel automatic-record-editor"><div className="action-content automatic-empty">请在流程图中选择一个可配置节点。</div></aside>;
-  const feedback = save.error ? `保存失败：${save.error.message}` : saveFeedback;
+  const feedback = save.error ? configurationErrorIssues(save.error).length ? '' : `保存失败：${save.error.message}` : saveFeedback;
   const history = <NodeExecutionHistory run={record} node={node}/>;
-  return <><NodeConfigurationPanel className="automatic-record-editor" title={node.alias || node.asset.name} subtitle={`${record.name} · ${editable ? '连续运行草稿配置' : '连续运行配置（只读）'}`} mode="PROMPT" fixedModeLabel="连续运行" onModeChange={() => undefined} chatEnabled={false} promptTab={promptTab} onPromptTabChange={setPromptTab} feedback={feedback && <div className={`automatic-save-feedback-banner ${save.error ? 'error' : 'success'}`} role={save.error ? 'alert' : 'status'}><b>{save.error ? '保存失败' : '已保存'}</b><span>{feedback}</span></div>} action={editable && <button className="primary node-run-button" disabled={save.isPending} onClick={() => save.mutate()}>{save.isPending ? '保存中…' : '保存配置'}</button>} promptContent={<><InputSummary fields={node.asset.inputs} bindings={plan.artifact_ids} artifacts={inputArtifacts} inputUrls={plan.input_urls}/>{boundArtifacts.isLoading && <p className="field-hint">正在读取已绑定输入…</p>}{boundArtifacts.isError && <p className="error">读取已绑定输入失败：{boundArtifacts.error.message}</p>}{editable && node.asset.inputs.length > 0 && <button className="secondary full" onClick={() => setInputDialogOpen(true)}><Upload size={14}/>填写节点输入</button>}<StartupPromptSummary prompt={plan.startup_prompt} freezeHint="连续运行启动时会随记录冻结。" editable={editable} onEdit={() => setPromptDialogOpen(true)}/></>} agentContent={editable ? <AgentPresetEditor preset={plan.agent_preset} nodeContext={node.asset.executor?.context_prompt ?? ''} onChange={agent_preset => patch({ agent_preset })}/> : <section className="attempt-side-section"><h4>首会话 Agent 配置</h4><p>{plan.agent_preset.model_name || '未选择模型'} · {plan.agent_preset.capability_version_ids.length} 项能力</p></section>} gateContent={editable ? <GateDraftEditor gates={plan.gates} onChange={gates => patch({ gates })}/> : <GateList evaluations={[]} policies={plan.gates}/>} historyContent={history} chatContent={history}/>{inputDialogOpen && <NodeInputDialog run={{ ...record, artifacts: inputArtifacts }} node={node} initialBindings={plan.artifact_ids} initialUrls={plan.input_urls} onClose={() => setInputDialogOpen(false)} onSubmit={({ bindings: artifact_ids, artifacts }) => {
+  return <><NodeConfigurationPanel issues={validation.issues} focusVersion={validation.focusVersion} className="automatic-record-editor" title={node.alias || node.asset.name} subtitle={`${record.name} · ${editable ? '连续运行草稿配置' : '连续运行配置（只读）'}`} mode="PROMPT" fixedModeLabel="连续运行" onModeChange={() => undefined} chatEnabled={false} compactToolbar promptTab={promptTab} onPromptTabChange={setPromptTab} feedback={feedback && <div className={`automatic-save-feedback-banner ${save.error ? 'error' : 'success'}`} role={save.error ? 'alert' : 'status'}><b>{save.error ? '保存失败' : '已保存'}</b><span>{feedback}</span></div>} headerActions={<>{editable && <button className="primary node-run-button" disabled={save.isPending} onClick={() => { if (validation.validate()) save.mutate(); }}>{save.isPending ? '保存中…' : '保存'}</button>}{launchAction}</>} promptContent={<><ConfigurationField field="inputs"><InputSummary fields={node.asset.inputs} bindings={plan.artifact_ids} artifacts={inputArtifacts} inputUrls={plan.input_urls} onEdit={editable ? () => setInputDialogOpen(true) : undefined}/></ConfigurationField>{boundArtifacts.isLoading && <p className="field-hint">正在读取已绑定输入…</p>}{boundArtifacts.isError && <p className="error">读取已绑定输入失败：{boundArtifacts.error.message}</p>}<ConfigurationField field="prompt"><StartupPromptSummary prompt={plan.startup_prompt} freezeHint="连续运行启动时会随记录冻结。" editable={editable} onEdit={() => setPromptDialogOpen(true)}/></ConfigurationField><ConfigurationField field="context"><NodeContextPresetEditor preset={plan.agent_preset} nodeContext={node.asset.executor?.context_prompt ?? ''} onChange={agent_preset => patch({ agent_preset })} editable={editable}/></ConfigurationField></>} agentContent={editable ? <AgentPresetEditor preset={plan.agent_preset} onChange={agent_preset => patch({ agent_preset })}/> : <section className="attempt-side-section"><h4>首会话 Agent 配置</h4><p>{plan.agent_preset.model_name || '未选择模型'} · {plan.agent_preset.capability_version_ids.length} 项能力</p></section>} gateContent={editable ? <ConfigurationField field="gates"><GateDraftEditor gates={plan.gates} onChange={gates => patch({ gates })}/></ConfigurationField> : <GateList evaluations={[]} policies={plan.gates}/>} historyContent={history} chatContent={history}/>{inputDialogOpen && <NodeInputDialog run={{ ...record, artifacts: inputArtifacts }} node={node} initialBindings={plan.artifact_ids} initialUrls={plan.input_urls} onClose={() => setInputDialogOpen(false)} onSubmit={({ bindings: artifact_ids, artifacts }) => {
     const nextArtifacts = mergeArtifacts(inputArtifacts, artifacts);
     const input_urls = Object.fromEntries(Object.entries(plan.input_urls).filter(([fieldKey]) => !artifact_ids[fieldKey]));
     const nextPlans = { ...plans, [node.instance_key]: { ...plan, artifact_ids, input_urls } };
@@ -1518,15 +1706,38 @@ function AutomaticLegacyPlanRecoveryPanel({ parentRunId, record, onRecovered }: 
   return <aside className="action-panel"><div className="action-content automatic-empty"><span className="eyebrow">CONTINUOUS RUN BLOCKED</span><h3>连续运行计划需要升级</h3><p>{gateLocations.length ? `${gateLocations.join('、')}来自旧版本，缺少稳定标识；平台尚未创建任何节点执行。` : '旧版本门禁缺少稳定标识；平台尚未创建任何节点执行。'}</p><p className="field-hint">升级只会为这条未执行的历史计划补齐门禁标识，并重新提交原有连续运行启动任务，不会改写已存在的会话、产物或执行记录。</p>{mutation.error && <p className="error">升级失败：{mutation.error.message}</p>}<button className="primary" disabled={mutation.isPending} onClick={() => void dialog.confirm({ title: '升级计划并重新启动？', message: '系统将补齐旧计划缺失的门禁标识，并重新提交连续运行启动任务。该操作仅适用于尚未创建节点执行的历史阻断记录。', confirmLabel: '升级并重新启动' }).then(confirmed => { if (confirmed) mutation.mutate(); })}>{mutation.isPending ? '升级并启动中…' : '升级计划并重新启动'}</button></div></aside>;
 }
 
-export function WorkbenchPage() {
+export function WorkbenchPage({ location }: { location?: FlowRunLocation }) {
   const dialog = useProductDialog();
   const qc = useQueryClient();
-  const { selectedRunId, selectedNodeRunId, selectedAttemptId, selectedWorkbenchMode, selectedAutomaticRecordId, selectedStepwiseRecordId, selectAttempt, selectExecution } = useWorkbenchStore();
+  const selection = useWorkbenchStore();
+  // Each retained record owns its execution selection; another tab must not
+  // overwrite it via the shell's transient navigation store.
+  const [executionSelection, setExecutionSelection] = useState(() => ({ nodeRunId: selection.selectedNodeRunId, attemptId: selection.selectedAttemptId }));
+  const selectedNodeRunId = executionSelection.nodeRunId;
+  const selectedAttemptId = executionSelection.attemptId;
+  const selectExecution = useCallback((nodeRunId?: string, attemptId?: string) => {
+    setExecutionSelection(current => current.nodeRunId === nodeRunId && current.attemptId === attemptId ? current : { nodeRunId, attemptId });
+    useWorkbenchStore.setState({ selectedNodeRunId: nodeRunId, selectedAttemptId: attemptId });
+  }, []);
+  const selectAttempt = useCallback((attemptId: string) => {
+    setExecutionSelection(current => ({ ...current, attemptId }));
+    useWorkbenchStore.setState({ selectedAttemptId: attemptId });
+  }, []);
+  const selectedRunId = location?.runId ?? selection.selectedRunId;
+  const selectedWorkbenchMode = location?.mode ?? selection.selectedWorkbenchMode;
+  const selectedAutomaticRecordId = location?.recordId ? (location.mode === 'AUTOMATIC' ? location.recordId : undefined) : selection.selectedAutomaticRecordId;
+  const selectedStepwiseRecordId = location?.recordId ? (location.mode === 'MANUAL' ? location.recordId : undefined) : selection.selectedStepwiseRecordId;
   const [selectedNodeKey, setSelectedNodeKey] = useState<string>();
   const [mode, setMode] = useState<WorkbenchMode>(selectedWorkbenchMode ?? 'MANUAL');
+  const [recordListFilter, setRecordListFilter] = useState<RecordListFilter>('ALL');
+  const [newRecordMode, setNewRecordMode] = useState<WorkbenchMode>();
+  const automaticEntrySelection = useRef<string | undefined>(undefined);
   const [selectedAutomaticId, setSelectedAutomaticId] = useState<string | undefined>(selectedAutomaticRecordId);
   const [selectedStepwiseId, setSelectedStepwiseId] = useState<string | undefined>(selectedStepwiseRecordId);
+  const stepwiseEntrySelection = useRef({ runId: selectedRunId, recordId: selectedStepwiseRecordId });
+  const initializedRunId = useRef<string | undefined | null>(null);
   const [stepwiseSelectedIds, setStepwiseSelectedIds] = useState<Set<string>>(new Set());
+  const [runtimePortDialog, setRuntimePortDialog] = useState<{ nodeKey: string; direction: RuntimePortDirection }>();
   const [automaticSelectedIds, setAutomaticSelectedIds] = useState<Set<string>>(new Set());
   // Delete APIs return after durable cancellation/cleanup has been queued. A
   // worker performs physical deletion later, so keep accepted deletes out of
@@ -1540,21 +1751,24 @@ export function WorkbenchPage() {
   const [stepwiseDialogOpen, setStepwiseDialogOpen] = useState(false);
   const [automaticImportDialogOpen, setAutomaticImportDialogOpen] = useState(false);
   const [stepwiseImportDialogOpen, setStepwiseImportDialogOpen] = useState(false);
+
   const [automaticExportRecordIds, setAutomaticExportRecordIds] = useState<string[]>();
   const [stepwiseExportRecordIds, setStepwiseExportRecordIds] = useState<string[]>();
   const [copyTarget, setCopyTarget] = useState<CopyTarget>();
+
   const [automaticBusyId, setAutomaticBusyId] = useState<string>();
   const [manualBusyId, setManualBusyId] = useState<string>();
-  const [railWidth, setRailWidth] = useState(250);
-  const [sidePanelWidth, setSidePanelWidth] = useState(390);
   const query = useQuery({ queryKey: ['flow-run', selectedRunId], queryFn: () => api.flowRun(selectedRunId!), enabled: Boolean(selectedRunId), refetchInterval: 5000 });
+
   const flowId = query.data?.flow_definition_id;
   const flow = useQuery({ queryKey: ['flow', flowId], queryFn: () => api.flow(flowId!), enabled: Boolean(flowId), refetchInterval: 5000 });
   const automatic = useQuery({ queryKey: ['flow-run-automatic-records', selectedRunId], queryFn: () => api.automaticRecordSummaries(selectedRunId!), enabled: Boolean(selectedRunId), refetchInterval: selectedAutomaticId ? false : 5000 });
   const automaticDetail = useQuery({ queryKey: ['flow-run-automatic-record', selectedRunId, selectedAutomaticId], queryFn: () => api.automaticRecord(selectedRunId!, selectedAutomaticId!), enabled: Boolean(selectedRunId && selectedAutomaticId), refetchInterval: 5000 });
   const stepwise = useQuery({ queryKey: ['flow-run-stepwise-records', selectedRunId], queryFn: () => api.stepwiseRecords(selectedRunId!), enabled: Boolean(selectedRunId), refetchInterval: selectedStepwiseId ? false : 5000 });
   const stepwiseDetail = useQuery({ queryKey: ['flow-run-stepwise-record', selectedRunId, selectedStepwiseId], queryFn: () => api.stepwiseRecord(selectedRunId!, selectedStepwiseId!), enabled: Boolean(selectedRunId && selectedStepwiseId && selectedStepwiseId !== selectedRunId), refetchInterval: 5000 });
+  const stepwiseTemplateReadiness = useQuery({ queryKey: ['stepwise-template-readiness', selectedStepwiseId], queryFn: () => api.stepwiseTemplateReadiness(selectedStepwiseId!), enabled: Boolean(selectedStepwiseId && selectedStepwiseId !== selectedRunId), refetchInterval: selectedStepwiseId ? 5000 : false });
   // The stepwise rail endpoint already returns the complete frozen execution
+
   // record. Reuse it as the immediate detail projection while the independently
   // polled detail request is in flight, just as continuous execution resolves
   // its current node from the selected record rather than from request timing.
@@ -1571,8 +1785,17 @@ export function WorkbenchPage() {
     void qc.invalidateQueries({ queryKey: ['runs'] });
   }, [flowId, qc, selectedRunId, selectedStepwiseId]);
   useEffect(() => {
+    if (initializedRunId.current === selectedRunId) return;
+    initializedRunId.current = selectedRunId;
+    automaticEntrySelection.current = undefined;
     setSelectedNodeKey(undefined);
-    setSelectedStepwiseId(undefined);
+    // The directory supplies a one-shot record selection before this mount.
+    // Preserve it while resetting the previous Run's local editing state.
+    const restored = useWorkbenchStore.getState();
+    if (stepwiseEntrySelection.current.runId !== selectedRunId) {
+      stepwiseEntrySelection.current = { runId: selectedRunId, recordId: restored.selectedRunId === selectedRunId ? restored.selectedStepwiseRecordId : undefined };
+    }
+    setSelectedStepwiseId(stepwiseEntrySelection.current.recordId);
     setStepwiseDialogOpen(false);
     setNodeConfigurationDrafts({});
     setAutomaticDrafts({});
@@ -1591,13 +1814,13 @@ export function WorkbenchPage() {
     if ((mode === 'AUTOMATIC' && selectedAutomaticId) || (mode === 'MANUAL' && selectedStepwiseId)) return;
     const selectedNode = run.node_runs.find(item => item.id === selectedNodeRunId);
     if (selectedNodeRunId && !selectedNode) {
-      useWorkbenchStore.setState({ selectedNodeRunId: undefined, selectedAttemptId: undefined });
+      selectExecution();
       return;
     }
     // Direct-launch is no longer an entry mode; historical direct sessions
     // stay reachable from the Agent workspace and are not restored here.
     if (selectedNode && isDirectNodeRun(selectedNode)) {
-      useWorkbenchStore.setState({ selectedNodeRunId: undefined, selectedAttemptId: undefined });
+      selectExecution();
       return;
     }
     if (selectedNode) {
@@ -1609,7 +1832,7 @@ export function WorkbenchPage() {
       if (latestAttempt) selectAttempt(latestAttempt.id);
       return;
     }
-  }, [mode, query.data, selectAttempt, selectedAttemptId, selectedAutomaticId, selectedNodeRunId, selectedStepwiseId]);
+  }, [mode, query.data, selectAttempt, selectExecution, selectedAttemptId, selectedAutomaticId, selectedNodeRunId, selectedStepwiseId]);
   useEffect(() => {
     const legacyRun = query.data;
     if (
@@ -1630,7 +1853,15 @@ export function WorkbenchPage() {
   }, [mode, query.data, selectedNodeRunId, selectedStepwiseId]);
   useEffect(() => {
     const record = automaticDetail.data;
-    if (!record || record.state === 'DRAFT' || !selectedAutomaticId) return;
+    if (!record || !selectedAutomaticId) return;
+    if (record.state === 'DRAFT') {
+      const entry = `${selectedRunId}:${selectedAutomaticId}`;
+      if (automaticEntrySelection.current !== entry) {
+        automaticEntrySelection.current = entry;
+        setSelectedNodeKey(current => current ?? record.start_node_key);
+      }
+      return;
+    }
     // A history return may name an exact NodeRun. Otherwise the detail always
     // opens at the final durable flow position, including failed and completed
     // nodes. NodeRun state is an outcome, not the current-position pointer.
@@ -1643,7 +1874,7 @@ export function WorkbenchPage() {
         selectExecution(restored.id, restored.attempts.at(-1)?.id);
       }
     }
-  }, [automaticDetail.data, selectExecution, selectedAttemptId, selectedAutomaticId, selectedNodeRunId]);
+  }, [automaticDetail.data, selectExecution, selectedAttemptId, selectedAutomaticId, selectedNodeRunId, selectedRunId]);
   useEffect(() => {
     const record = selectedStepwiseProjection;
     if (!record || !selectedStepwiseId) return;
@@ -1672,20 +1903,21 @@ export function WorkbenchPage() {
         // Attempt detail. Preserve the graph selection but leave its Attempt
         // unselected so the NodeConsole can collect configuration before the
         // explicit start action becomes available.
-        useWorkbenchStore.setState({ selectedNodeRunId: undefined, selectedAttemptId: undefined });
+        selectExecution();
       } else if (restored.id !== selectedNodeRunId || !selectedAttemptId) {
         selectExecution(restored.id, restored.attempts.at(-1)?.id);
       }
     } else if (!selectedNodeKey) {
       setSelectedNodeKey(initialFlowNodeKey(record));
-      useWorkbenchStore.setState({ selectedNodeRunId: undefined, selectedAttemptId: undefined });
+      selectExecution();
     }
   }, [selectedAttemptId, selectedNodeKey, selectedNodeRunId, selectedStepwiseId, selectedStepwiseProjection, selectExecution]);
   useEffect(() => {
     // The mode and automatic-record ID are a one-shot browser-history restore
     // hint. Workbench owns the live selection after it mounts, so do not let
     // this transient context affect a later Run opened from the list.
-    if (selectedWorkbenchMode || selectedAutomaticRecordId || selectedStepwiseRecordId) {
+    const hint = useWorkbenchStore.getState();
+    if (hint.selectedWorkbenchMode || hint.selectedAutomaticRecordId || hint.selectedStepwiseRecordId) {
       useWorkbenchStore.setState({
         selectedWorkbenchMode: undefined,
         selectedAutomaticRecordId: undefined,
@@ -1693,7 +1925,35 @@ export function WorkbenchPage() {
       });
     }
   }, [selectedAutomaticRecordId, selectedStepwiseRecordId, selectedWorkbenchMode]);
+  useEffect(() => {
+    const recordId = mode === 'AUTOMATIC' ? selectedAutomaticId : selectedStepwiseId;
+    if (!selectedRunId || !recordId) return;
+    const path = withDeploymentBase(flowRunPath({ runId: selectedRunId, mode, recordId }));
+    if (window.location.pathname === path) return;
+    const selection = useWorkbenchStore.getState();
+    const state = { flowweaveFlowRun: {
+      runId: selectedRunId, mode,
+      automaticRecordId: mode === 'AUTOMATIC' ? recordId : undefined,
+      stepwiseRecordId: mode === 'MANUAL' ? recordId : undefined,
+      nodeRunId: selection.selectedNodeRunId, attemptId: selection.selectedAttemptId,
+    } };
+    // Upgrade legacy parent-only links in place. A record selected from within
+    // an existing record is a new history entry and a separate temporary tab.
+    if (parseFlowRunPath(withoutDeploymentBase(window.location.pathname))?.recordId) window.history.pushState(state, '', path);
+    else window.history.replaceState(state, '', path);
+    window.dispatchEvent(new PopStateEvent('popstate', { state }));
+  }, [mode, selectedAutomaticId, selectedRunId, selectedStepwiseId]);
   const returnToRuns = () => {
+    const source = window.history.state?.flowweaveReturn as { path?: unknown; view?: unknown } | undefined;
+    if (typeof source?.path === 'string' && source.path.startsWith('/') && source.view === 'cases') {
+      const state = { flowweaveReturn: source };
+      useWorkbenchStore.setState({ view: 'cases', selectedRunId: undefined, selectedNodeRunId: undefined, selectedAttemptId: undefined });
+      window.history.pushState(state, '', withDeploymentBase(source.path));
+      window.dispatchEvent(new PopStateEvent('popstate', { state }));
+      return;
+    }
+    const directory = useWorkbenchStore.getState().runDirectory;
+    if (!directory.selectedRunId && query.data) useWorkbenchStore.getState().updateRunDirectory({ selectedFlowId: query.data.flow_definition_id, selectedRunId: query.data.id, expandedFlowIds: [...new Set([...directory.expandedFlowIds, query.data.flow_definition_id])] });
     useWorkbenchStore.setState({ view: 'runs', selectedRunId: undefined, selectedNodeRunId: undefined, selectedAttemptId: undefined });
     window.history.pushState({}, '', withDeploymentBase('/'));
     window.dispatchEvent(new PopStateEvent('popstate'));
@@ -1744,6 +2004,43 @@ export function WorkbenchPage() {
   const selectedStepwiseRecord = mode === 'MANUAL' && selectedStepwise && selectedStepwise.parent_flow_run_id
     ? selectedStepwise as FlowRunStepwiseRecord
     : undefined;
+  const saveRuntimePorts = async (
+    nodePorts: Record<string, { inputs: IOField[]; outputs: IOField[] }>,
+    mappings: StepwiseRuntimePortMapping[],
+  ) => {
+    if (!selectedStepwiseRecord || !snapshot) return;
+    const updated = await api.saveStepwiseRuntimePorts(selectedStepwiseRecord.id, {
+      expected_active_snapshot_version: snapshot.version,
+      node_ports: nodePorts,
+      port_mappings: mappings,
+    });
+    updateCurrentRun(() => updated);
+    void stepwiseDetail.refetch();
+  };
+  const saveRuntimePort = async (node: SnapshotFlowNode, direction: RuntimePortDirection, field: IOField) => {
+    const ports = {
+      inputs: node.runtime_port_overrides?.inputs ?? [],
+      outputs: node.runtime_port_overrides?.outputs ?? [],
+    };
+    const key = direction === 'INPUT' ? 'inputs' : 'outputs';
+    await saveRuntimePorts({ [node.instance_key]: { ...ports, [key]: [...ports[key], field] } }, []);
+  };
+  const connectRuntimePorts = (connection: Connection) => {
+    if (!snapshot || !connection.source || !connection.target || !connection.sourceHandle?.startsWith('output:') || !connection.targetHandle?.startsWith('input:')) return;
+    const source = snapshot.definition.nodes.find(node => node.instance_key === connection.source);
+    const target = snapshot.definition.nodes.find(node => node.instance_key === connection.target);
+    const sourceOutputKey = connection.sourceHandle.slice('output:'.length);
+    const targetInputKey = connection.targetHandle.slice('input:'.length);
+    const output = source && runtimeNodeOutputs(source).find(field => field.field_key === sourceOutputKey);
+    const input = target && runtimeNodeInputs(target).find(field => field.field_key === targetInputKey);
+    if (!source || !target || !output?.runtime_port || !input?.runtime_port || output.data_type !== input.data_type) return;
+    const existing = snapshot.definition.port_mappings.filter(mapping => mapping.runtime_port).map(mapping => ({ source_instance_key: mapping.source_instance_key, source_output_key: mapping.source_output_key, target_instance_key: mapping.target_instance_key, target_input_key: mapping.target_input_key }));
+    if (existing.some(mapping => mapping.target_instance_key === target.instance_key && mapping.target_input_key === targetInputKey)) return;
+    void saveRuntimePorts({
+      [source.instance_key]: { inputs: source.runtime_port_overrides?.inputs ?? [], outputs: source.runtime_port_overrides?.outputs ?? [] },
+      [target.instance_key]: { inputs: target.runtime_port_overrides?.inputs ?? [], outputs: target.runtime_port_overrides?.outputs ?? [] },
+    }, [...existing, { source_instance_key: source.instance_key, source_output_key: sourceOutputKey, target_instance_key: target.instance_key, target_input_key: targetInputKey }]);
+  };
   const savedStepwiseDraft = mode === 'MANUAL' && selectedStepwiseRecord && selectedNodeKey
     ? selectedStepwiseRecord.stepwise_node_drafts?.[selectedNodeKey]
     : undefined;
@@ -1805,11 +2102,7 @@ export function WorkbenchPage() {
     : mode === 'MANUAL'
       ? activeFlowNodeRun(nodeRecords)
       : undefined;
-  const activeStepwiseDraftKey = mode === 'MANUAL' && selectedStepwiseRecord
-    ? [...(selectedStepwiseRecord.stepwise_node_drafts ? Object.keys(selectedStepwiseRecord.stepwise_node_drafts) : [])]
-      .reverse()
-      .find(key => !selectedStepwiseRecord.node_runs.some(nodeRun => nodeRun.flow_node_snapshot_key === key))
-    : undefined;
+  const activeStepwiseDraftKey = mode === 'MANUAL' && selectedStepwiseRecord ? pendingStepwiseDraftKey(selectedStepwiseRecord) : undefined;
   const selectedStepwiseNodeRun = mode === 'MANUAL'
     ? selectedRecordNodeRun(selectedStepwise, selectedNodeRunId, selectedNodeKey)
     : undefined;
@@ -1838,13 +2131,17 @@ export function WorkbenchPage() {
       return next;
     });
   };
+  const clearNodeSelection = () => {
+    setSelectedNodeKey(undefined);
+    selectExecution();
+  };
   const clearSelection = () => {
     setSelectedNodeKey(undefined);
     setSelectedAutomaticId(undefined);
     setSelectedStepwiseId(undefined);
     setStepwiseSelectedIds(new Set());
     setAutomaticSelectedIds(new Set());
-    useWorkbenchStore.setState({ selectedNodeRunId: undefined, selectedAttemptId: undefined });
+    selectExecution();
   };
   const navigate = (result: unknown, kind: string) => {
     if (kind === 'delete') {
@@ -1898,11 +2195,11 @@ export function WorkbenchPage() {
         : undefined;
       if (nextDraftKey) {
         setSelectedNodeKey(nextDraftKey);
-        useWorkbenchStore.setState({ selectedNodeRunId: undefined, selectedAttemptId: undefined });
+        selectExecution();
       } else if (next) {
         setSelectedNodeKey(next.flow_node_snapshot_key);
         if (mode === 'MANUAL' && isUnconfiguredStepRecord(next)) {
-          useWorkbenchStore.setState({ selectedNodeRunId: undefined, selectedAttemptId: undefined });
+          selectExecution();
         } else {
           selectExecution(next.id, next.attempts.at(-1)?.id);
         }
@@ -1925,8 +2222,8 @@ export function WorkbenchPage() {
   const selectedExecutionSnapshotId = selectedExecutionAttempt?.snapshot_id ?? attempt?.snapshot_id;
   const graphSnapshotId = selectedExecutionSnapshotId;
   const graphReachableKeys = mode === 'AUTOMATIC' && selectedAutomatic
-      ? selectedAutomatic.reachable_node_keys
-      : reachableNodeKeys(graphRun, undefined, graphSnapshotId);
+    ? selectedAutomatic.reachable_node_keys
+    : reachableNodeKeys(graphRun, undefined, graphSnapshotId);
   // A new manual run still begins from the graph. Once an execution is selected,
   // however, clicking a never-run node must not discard that selection.
   const graphSelectableKeys = mode === 'AUTOMATIC'
@@ -1956,7 +2253,7 @@ export function WorkbenchPage() {
       : selectedAutomatic
         ? '当前显示该连续运行记录的持久执行状态；灰色节点尚未激活。'
       : '未选择连续运行记录，当前显示中性流程定义；请点击左侧“新增”。';
-  const hasPanel = Boolean((mode === 'AUTOMATIC' && selectedAutomaticId) || (mode === 'MANUAL' && selectedStepwiseId) || (selectedExecutionNodeRun && selectedExecutionAttempt) || (nodeRun && attempt) || selectedNode);
+
   const recordSummary = mode === 'AUTOMATIC'
     ? (selectedAutomatic?.name ?? automaticRecords.find(record => record.id === selectedAutomaticId)?.name
       ? { name: selectedAutomatic?.name ?? automaticRecords.find(record => record.id === selectedAutomaticId)?.name ?? '', label: '当前连续运行记录', state: selectedAutomatic?.state ?? automaticRecords.find(record => record.id === selectedAutomaticId)?.state }
@@ -1966,6 +2263,55 @@ export function WorkbenchPage() {
       : nodeRun
       ? { name: nodeRunName(run, nodeRun), label: '当前逐步运行记录', state: attemptStateLabel(nodeRun) }
       : undefined;
+  const recordGitIdentity = (mode === 'AUTOMATIC' ? selectedAutomatic : selectedStepwise)?.git_identity;
+  const activeRecord = mode === 'AUTOMATIC' ? selectedAutomatic : selectedStepwise;
+  const selectedRecordType = mode === 'AUTOMATIC' ? '连续运行' : '逐步运行';
+  const activeRecordStartNodeKey = mode === 'AUTOMATIC'
+    ? selectedAutomatic?.start_node_key
+    : selectedStepwiseRecord?.start_node_key;
+
+  const reactivatePredecessorForRerun = (key: string) => {
+    if (mode !== 'MANUAL' || !selectedStepwiseRecord) return;
+    const existingRerun = selectedStepwiseRecord.stepwise_node_drafts?.[key];
+    if (existingRerun?.rerun_source_node_run_id) {
+      setManualBusyId(existingRerun.rerun_source_node_run_id);
+      void api.cancelStepwiseNodeRerunEdit(selectedStepwiseRecord.id, key).then(updated => {
+        qc.setQueryData(['flow-run-stepwise-record', parentRun.id, selectedStepwiseRecord.id], updated);
+        setSelectedNodeKey(key);
+        selectExecution(existingRerun.rerun_source_node_run_id ?? undefined);
+      }).catch(reason => window.alert(reason instanceof Error ? reason.message : '无法取消节点重跑编辑。')).finally(() => {
+        setManualBusyId(undefined);
+        void stepwiseDetail.refetch();
+      });
+      return;
+    }
+    const source = [...nodeRecords].reverse().find(item =>
+      item.flow_node_snapshot_key === key && item.state === 'ACCEPTED',
+    );
+    if (!source) return;
+    const successors = (snapshot?.definition.edges ?? [])
+      .filter(edge => edge.source_instance_key === key)
+      .map(edge => edge.target_instance_key);
+    const hasOnlyUnstartedSuccessors = successors.length > 0 && successors.every(successorKey =>
+      Boolean(selectedStepwiseRecord.stepwise_node_drafts?.[successorKey])
+      && !nodeRecords.some(item => item.flow_node_snapshot_key === successorKey),
+    );
+    if (!hasOnlyUnstartedSuccessors) return;
+    setManualBusyId(source.id);
+    void api.reactivateStepwiseNodeForRerun(selectedStepwiseRecord.id, key, source.id).then(draft => {
+      qc.setQueryData<FlowRunStepwiseRecord>(['flow-run-stepwise-record', parentRun.id, selectedStepwiseRecord.id], current => current ? {
+        ...current,
+        stepwise_node_drafts: { ...(current.stepwise_node_drafts ?? {}), [key]: draft },
+      } : current);
+      setSelectedNodeKey(key);
+      selectExecution();
+    }).catch(reason => {
+      window.alert(reason instanceof Error ? reason.message : '无法重新激活该节点。');
+    }).finally(() => {
+      setManualBusyId(undefined);
+      void stepwiseDetail.refetch();
+    });
+  };
   const selectGraphNode = (key: string) => {
     if (mode === 'AUTOMATIC' && selectedAutomatic) {
       setSelectedNodeKey(key);
@@ -1973,7 +2319,7 @@ export function WorkbenchPage() {
         .reverse()
         .find(item => item.flow_node_snapshot_key === key);
       if (selected) selectExecution(selected.id, selected.attempts.at(-1)?.id);
-      else useWorkbenchStore.setState({ selectedNodeRunId: undefined, selectedAttemptId: undefined });
+      else selectExecution();
       return;
     }
     if (mode === 'MANUAL' && requiresStepwiseRecord) return;
@@ -1982,7 +2328,7 @@ export function WorkbenchPage() {
       if (latest) {
         setSelectedNodeKey(key);
         if (mode === 'MANUAL' && isUnconfiguredStepRecord(latest)) {
-          useWorkbenchStore.setState({ selectedNodeRunId: undefined, selectedAttemptId: undefined });
+          selectExecution();
         } else {
           selectExecution(latest.id, latest.attempts.at(-1)?.id);
         }
@@ -1994,16 +2340,16 @@ export function WorkbenchPage() {
         // configuration surface. Do not turn N2 into an Attempt until its
         // configuration has been saved and explicitly started.
         setSelectedNodeKey(key);
-        useWorkbenchStore.setState({ selectedNodeRunId: undefined, selectedAttemptId: undefined });
+        selectExecution();
         return;
       }
       // Preserve an existing execution selection when an unrelated, never-run
       // node is clicked. With no selection, retain the initial graph-to-console
       // flow used to create the first execution.
-      if (nodeRun || selectedNodeRunId) return;
+      if ((nodeRun || selectedNodeRunId) && !(mode === 'MANUAL' && selectedStepwiseRecord)) return;
     }
     setSelectedNodeKey(key);
-    useWorkbenchStore.setState({ selectedNodeRunId: undefined, selectedAttemptId: undefined });
+    selectExecution();
   };
   const selectAutomaticHistory = (id: string, modifiers: SelectionModifiers) => {
     const isOnlySelected = automaticSelectedIds.size === 1 && automaticSelectedIds.has(id);
@@ -2033,37 +2379,8 @@ export function WorkbenchPage() {
       // Detail data is loaded after the rail summary. Clear a prior manual or
       // automatic selection so the detail effect can select this record's own
       // final flow position.
-      useWorkbenchStore.setState({ selectedNodeRunId: undefined, selectedAttemptId: undefined });
+      selectExecution();
     }
-  };
-  const beginSideResize = (event: ReactPointerEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    event.stopPropagation();
-    const workbench = event.currentTarget.closest<HTMLElement>('.flow-run-inner-workbench');
-    const move = (moveEvent: PointerEvent) => {
-      const right = workbench?.getBoundingClientRect().right ?? window.innerWidth;
-      setSidePanelWidth(Math.max(320, Math.min(680, right - moveEvent.clientX)));
-    };
-    const stop = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', stop); };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', stop);
-  };
-  const beginRailResize = (event: ReactPointerEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    event.stopPropagation();
-    const workbench = event.currentTarget.closest<HTMLElement>('.flow-run-inner-workbench');
-    const move = (moveEvent: PointerEvent) => {
-      const left = workbench?.getBoundingClientRect().left ?? 0;
-      setRailWidth(Math.max(220, Math.min(420, moveEvent.clientX - left)));
-    };
-    const stop = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', stop); };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', stop);
-  };
-  const resizeRailByKeyboard = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
-    event.preventDefault();
-    setRailWidth(width => Math.max(220, Math.min(420, width + (event.key === 'ArrowRight' ? 16 : -16))));
   };
   const retainAutomaticDraft = (record: FlowRunAutomaticRecord) => setAutomaticDrafts(current => ({ ...current, [record.id]: record }));
   const replaceAutomatic = (record: FlowRunAutomaticRecord) => {
@@ -2132,13 +2449,13 @@ export function WorkbenchPage() {
     const reachedDraftKey = record ? pendingStepwiseDraftKey(record) : undefined;
     if (reachedDraftKey) {
       setSelectedNodeKey(reachedDraftKey);
-      useWorkbenchStore.setState({ selectedNodeRunId: undefined, selectedAttemptId: undefined });
+      selectExecution();
     } else if (current && !isUnconfiguredStepRecord(current)) {
       setSelectedNodeKey(current.flow_node_snapshot_key);
       selectExecution(current.id, current.attempts.at(-1)?.id);
     } else {
       setSelectedNodeKey(current?.flow_node_snapshot_key ?? (record ? initialFlowNodeKey(record) : undefined));
-      useWorkbenchStore.setState({ selectedNodeRunId: undefined, selectedAttemptId: undefined });
+      selectExecution();
     }
   };
   const selectCreatedStepwiseRecord = (record: FlowRunStepwiseRecord) => {
@@ -2252,14 +2569,37 @@ export function WorkbenchPage() {
     }
     void stepwiseDetail.refetch();
   };
+  const templateReadinessPanel = mode === 'MANUAL' && selectedStepwiseRecord && !selectedNodeKey && stepwiseTemplateReadiness.data
+    ? <aside className="action-panel"><div className="action-content"><div className="panel-heading"><div><span className="eyebrow">CASE TEMPLATE</span><h3>{stepwiseTemplateReadiness.data.ready ? '可作为 Case 逐步模板' : '逐步模板尚未完整配置'}</h3><p>Case 会复制全部节点草稿；请为从起点可达的每个节点保存配置。</p></div></div><ul className="case-template-readiness">{stepwiseTemplateReadiness.data.nodes.map(node => <li className={node.status.toLowerCase()} key={node.node_key}><b>{node.node_name}</b><small>{node.status === 'READY' ? `已配置 · ${node.gate_count} 个 Gate${node.mapped_input_fields.length ? ` · 映射输入：${node.mapped_input_fields.join('、')}` : ''}` : node.status === 'MISSING_DRAFT' ? '尚未保存节点草稿' : [!node.has_prompt ? '缺少 Prompt' : '', !node.has_agent ? '缺少 Agent' : '', node.missing_fields.length ? `缺少输入：${node.missing_fields.join('、')}` : ''].filter(Boolean).join(' · ')}</small></li>)}</ul></div></aside>
+    : undefined;
+  const stepwiseDraftDirty = Boolean(savedStepwiseDraft && nodeConfigurationDraftKey && nodeConfigurationDrafts[nodeConfigurationDraftKey] && (() => {
+    const draft = nodeConfigurationDrafts[nodeConfigurationDraftKey];
+    const savedBindings = Object.fromEntries(savedStepwiseDraft.input_bindings.map(item => [item.input_field_key, item.artifact_version_id]));
+    const canonical = (value: unknown): string => JSON.stringify(value, (_key, item) => item && typeof item === 'object' && !Array.isArray(item) ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item);
+    return canonical([draft.prompt, writableAgentPreset(draft.agentPreset), writableGates(draft.gates), draft.bindings]) !== canonical([savedStepwiseDraft.startup_prompt, writableAgentPreset(savedStepwiseDraft.agent_preset ?? { capability_version_ids: [], node_context_enabled: false }), writableGates(savedStepwiseDraft.gates), savedBindings]);
+  })());
+  const canStartSelectedStepwise = Boolean(selectedStepwise && selectedNodeKey && parentRun.runtime_write_available && parentRun.environment_version_id && !['COMPLETED', 'CANCELLED'].includes(selectedStepwise.state)
+    && (!selectedExecutionNodeRun || isUnconfiguredStepRecord(selectedExecutionNodeRun) || savedStepwiseDraft?.rerun_source_node_run_id || selectedExecutionAttempt?.state === 'WAITING_START_CONFIRMATION') && !stepwiseDraftDirty && (selectedNodeKey === initialFlowNodeKey(selectedStepwise) || (snapshot?.definition.edges ?? []).filter(edge => edge.target_instance_key === selectedNodeKey).every(edge => {
+      const latest = [...selectedStepwise.node_runs].reverse().find(item => item.flow_node_snapshot_key === edge.source_instance_key);
+      return latest && attemptState(latest) === 'ACCEPTED';
+    })));
   const stepwiseLaunch = mode === 'MANUAL' && selectedStepwise
     ? selectedExecutionNodeRun && selectedExecutionAttempt?.state === 'WAITING_START_CONFIRMATION'
       ? { recordId: selectedStepwise.id, ready: true, busy: manualBusyId === selectedExecutionNodeRun.id, onStart: () => startStepwiseNode(selectedExecutionNodeRun) }
       : selectedNode && selectedNodeKey && savedStepwiseDraft && stepwiseDraftReady(selectedNode, savedStepwiseDraft)
-        ? { recordId: selectedStepwise.id, ready: true, busy: manualBusyId === selectedNodeKey, onStart: () => startStepwiseDraft(selectedNodeKey, savedStepwiseDraft) }
+        ? { recordId: selectedStepwise.id, ready: true, busy: manualBusyId === selectedNodeKey, rerun: Boolean(savedStepwiseDraft.rerun_source_node_run_id), onStart: () => startStepwiseDraft(selectedNodeKey, savedStepwiseDraft) }
         : undefined
     : undefined;
-  const executionDetailPanel = selectedExecutionRecord && selectedExecutionNodeRun && selectedExecutionAttempt
+  const recordLaunchAction = mode === 'AUTOMATIC' && selectedAutomatic?.state === 'DRAFT'
+    ? <button type="button" className="primary" aria-label={`启动连续运行 ${selectedAutomatic.name}`} disabled={Boolean(automaticBusyId) || !selectedAutomatic.readiness.ready || !parentRun.runtime_write_available || Boolean(automaticDrafts[selectedAutomatic.id])} title={!selectedAutomatic.readiness.ready ? '请先补齐并保存所有节点配置' : undefined} onClick={() => { setAutomaticBusyId(selectedAutomatic.id); void api.startAutomaticRecord(parentRun.id, selectedAutomatic.id, selectedAutomatic.row_version).then(replaceAutomatic).catch(reason => window.alert(reason instanceof Error ? reason.message : '启动连续运行失败')).finally(() => setAutomaticBusyId(undefined)); }}><Play size={13}/>{automaticBusyId ? '启动中…' : '启动'}</button>
+    : mode === 'MANUAL' && selectedNode && selectedStepwise && !['COMPLETED', 'CANCELLED'].includes(selectedStepwise.state)
+      ? <button type="button" className="primary" aria-label={stepwiseLaunch?.rerun ? '重跑逐步节点' : '启动逐步节点'} disabled={!stepwiseLaunch?.ready || !canStartSelectedStepwise || Boolean(manualBusyId)} title={!canStartSelectedStepwise || !stepwiseLaunch?.ready ? '请先保存完整配置，并等待前驱节点完成及运行环境就绪' : undefined} onClick={stepwiseLaunch?.onStart}><Play size={13}/>{stepwiseLaunch?.busy ? '启动中…' : stepwiseLaunch?.rerun ? '重跑' : '启动'}</button>
+      : undefined;
+  const executionDetailPanel = !(
+    mode === 'MANUAL'
+    && savedStepwiseDraft?.rerun_source_node_run_id
+    && selectedNodeKey === selectedExecutionNodeRun?.flow_node_snapshot_key
+  ) && selectedExecutionRecord && selectedExecutionNodeRun && selectedExecutionAttempt
     ? <AttemptPanel
         run={selectedExecutionRecord}
         nodeRun={selectedExecutionNodeRun}
@@ -2268,10 +2608,11 @@ export function WorkbenchPage() {
         navigate={mode === 'AUTOMATIC' ? refreshExecutionRecord : navigate}
         sessionReturnContext={selectedExecutionSessionReturn}
         automaticArtifactScope={mode === 'AUTOMATIC' ? { parentRunId: parentRun.id, recordId: selectedExecutionRecord.id } : undefined}
+        headerAction={recordLaunchAction}
       />
     : undefined;
   const nodeConfigurationPanel = selectedNode
-    ? <NodeConsole run={categorizedRun} node={selectedNode} startupMode="PROMPT" stepwiseDraft={mode === 'MANUAL' ? selectedStepwiseDraft : undefined} initialBindings={inheritedTransitionBindings} localDraft={nodeConfigurationDraftKey ? nodeConfigurationDrafts[nodeConfigurationDraftKey] : undefined} refresh={() => { void stepwiseDetail.refetch(); }} onActivated={created => { discardNodeConfigurationDraft(nodeConfigurationDraftKey); setSelectedNodeKey(undefined); navigate(created, 'activate'); }} onDraftSaved={draft => { discardNodeConfigurationDraft(nodeConfigurationDraftKey); if (!selectedStepwise || !selectedNodeKey) return; qc.setQueryData<FlowRunStepwiseRecord>(['flow-run-stepwise-record', parentRun.id, selectedStepwise.id], current => current ? { ...current, stepwise_node_drafts: { ...(current.stepwise_node_drafts ?? {}), [selectedNodeKey]: draft } } : current); }} onDraftChange={draft => { if (nodeConfigurationDraftKey) retainNodeConfigurationDraft(nodeConfigurationDraftKey, draft); }} onSelectExecution={item => { setSelectedNodeKey(item.flow_node_snapshot_key); selectExecution(item.id, item.attempts.at(-1)?.id); }}/>
+    ? <NodeConsole run={categorizedRun} node={selectedNode} startupMode="PROMPT" headerActions={recordLaunchAction} stepwiseDraft={mode === 'MANUAL' ? selectedStepwiseDraft : undefined} initialBindings={inheritedTransitionBindings} localDraft={nodeConfigurationDraftKey ? nodeConfigurationDrafts[nodeConfigurationDraftKey] : undefined} refresh={() => { void stepwiseDetail.refetch(); }} onActivated={created => { discardNodeConfigurationDraft(nodeConfigurationDraftKey); setSelectedNodeKey(undefined); navigate(created, 'activate'); }} onDraftSaved={draft => { discardNodeConfigurationDraft(nodeConfigurationDraftKey); if (!selectedStepwise || !selectedNodeKey) return; qc.setQueryData<FlowRunStepwiseRecord>(['flow-run-stepwise-record', parentRun.id, selectedStepwise.id], current => current ? { ...current, stepwise_node_drafts: { ...(current.stepwise_node_drafts ?? {}), [selectedNodeKey]: draft } } : current); }} onDraftChange={draft => { if (nodeConfigurationDraftKey) retainNodeConfigurationDraft(nodeConfigurationDraftKey, draft); }} onSelectExecution={item => { setSelectedNodeKey(item.flow_node_snapshot_key); selectExecution(item.id, item.attempts.at(-1)?.id); }}/>
     : undefined;
   const stepwiseRecordPanel = executionDetailPanel
     ?? nodeConfigurationPanel
@@ -2282,6 +2623,7 @@ export function WorkbenchPage() {
         : <aside className="action-panel"><div className="action-content automatic-empty">加载逐步运行详情…</div></aside>);
   const rail = <RunRail
     mode={mode}
+    listFilter={recordListFilter}
     manualRecords={manualRecords}
     automaticRecords={automaticRecords}
     selected={mode !== 'AUTOMATIC' ? nodeRun?.id : undefined}
@@ -2294,8 +2636,9 @@ export function WorkbenchPage() {
     selectedAutomaticId={selectedAutomaticId}
     automaticBusyId={automaticBusyId}
     stepwiseLaunch={stepwiseLaunch}
-    onModeChange={next => { setMode(next); clearSelection(); }}
-    onSelectManualRecord={selectStepwiseRecord}
+    onListFilterChange={setRecordListFilter}
+    onCreateRecord={() => setNewRecordMode(mode)}
+    onSelectManualRecord={(id, modifiers) => { setMode('MANUAL'); selectStepwiseRecord(id, modifiers); }}
     onCreateManualRecord={() => setStepwiseDialogOpen(true)}
     onCopyManual={() => {
       if (selectedStepwiseRecords.length === 1) {
@@ -2306,9 +2649,8 @@ export function WorkbenchPage() {
       if (selectedStepwiseRecords.length > 1) setStepwiseExportRecordIds(selectedStepwiseRecords.map(record => record.id));
     }}
     onDeleteManualRecord={deleteStepwiseRecord}
-    onSelectAutomatic={selectAutomaticHistory}
+    onSelectAutomatic={id => { setMode('AUTOMATIC'); selectAutomaticHistory(id, { extend: false, range: false }); }}
     onClearSelection={clearSelection}
-    onCreateAutomatic={() => setAutomaticDialogOpen(true)}
     onDeleteAutomatic={() => {
       const recordIds = selectedAutomaticRecords.map(record => record.id);
       if (!recordIds.length) return;
@@ -2362,24 +2704,16 @@ export function WorkbenchPage() {
     onExportAutomatic={() => { if (selectedAutomaticRecords.length) setAutomaticExportRecordIds(selectedAutomaticRecords.map(record => record.id)); }}
     onStartAutomatic={record => { setAutomaticBusyId(record.id); void api.startAutomaticRecord(parentRun.id, record.id, record.row_version).then(replaceAutomatic).finally(() => setAutomaticBusyId(undefined)); }}
   />;
+  const selectionPanel = mode === 'AUTOMATIC' && selectedAutomaticId ? selectedAutomatic ? selectedAutomatic.state === 'DRAFT' ? <AutomaticRecordEditor key={selectedAutomatic.id} parent={parentRun} record={selectedAutomatic} selectedKey={selectedNodeKey} launchAction={recordLaunchAction} onDraft={retainAutomaticDraft} onSaved={replaceAutomatic}/> : selectedAutomatic.automatic_block?.code === 'AUTOMATIC_PLAN_GATE_ID_MISSING' ? <AutomaticLegacyPlanRecoveryPanel parentRunId={parentRun.id} record={selectedAutomatic} onRecovered={updated => { replaceAutomatic(updated); void automaticDetail.refetch(); void automatic.refetch(); }}/> : executionDetailPanel ?? <aside className="action-panel"><div className="action-content automatic-empty">该节点尚未激活。连续调度到达后会在这里显示执行、门禁和人工处理入口。</div></aside> : automaticDetail.isError ? <aside className="action-panel"><div className="action-content error">连续运行详情加载失败：{automaticDetail.error.message}</div></aside> : <aside className="action-panel"><div className="action-content automatic-empty">加载连续运行详情…</div></aside> : mode === 'MANUAL' ? (templateReadinessPanel ?? stepwiseRecordPanel) : executionDetailPanel ?? (nodeRun && attempt ? <AttemptPanel run={categorizedRun} nodeRun={nodeRun} attempt={attempt} refresh={() => { void stepwiseDetail.refetch(); }} navigate={navigate} sessionReturnContext={{ runId: parentRun.id, mode }} /> : selectedNode ? <NodeConsole run={categorizedRun} node={selectedNode} startupMode="CHAT" initialBindings={inheritedTransitionBindings} localDraft={nodeConfigurationDraftKey ? nodeConfigurationDrafts[nodeConfigurationDraftKey] : undefined} refresh={() => { void stepwiseDetail.refetch(); }} onActivated={created => { discardNodeConfigurationDraft(nodeConfigurationDraftKey); setSelectedNodeKey(undefined); navigate(created, 'activate'); }} onDraftChange={draft => { if (nodeConfigurationDraftKey) retainNodeConfigurationDraft(nodeConfigurationDraftKey, draft); }} onSelectExecution={item => { setSelectedNodeKey(item.flow_node_snapshot_key); selectExecution(item.id, item.attempts.at(-1)?.id); }}/> : null);
+  void rail;
+
   return <>
-    <header className="flow-run-workbench-header"><h1 title={run.name}>{run.name}</h1></header>
-    <section className="workbench-page flow-run-inner-workbench" style={hasPanel ? { gridTemplateColumns: `${railWidth}px minmax(500px, 1fr) ${sidePanelWidth}px` } : { gridTemplateColumns: `${railWidth}px minmax(500px, 1fr)` }} onClick={event => { if (!isFlowInternalClick(event.target)) clearSelection(); }}>
-      <div className="flow-run-rail-slot">{rail}<div className="run-rail-resizer" role="separator" tabIndex={0} aria-label="调整左侧记录栏宽度" aria-orientation="vertical" onPointerDown={beginRailResize} onKeyDown={resizeRailByKeyboard}/></div>
-      <main className="run-main">
-        <div className="run-workbench-toolbar">
-          <button className="back" onClick={returnToRuns}><ArrowLeft size={14}/>返回运行列表</button>
-          {recordSummary && <div className="run-workbench-record-summary" title={recordSummary.name}><small>{recordSummary.label}{recordSummary.state ? ` · ${FLOW_STATE_LABELS[recordSummary.state] ?? recordSummary.state}` : ''}</small><b>{recordSummary.name}</b></div>}
-          <button type="button" className="run-workbench-toolbar-clear" aria-label="取消当前选择" onClick={clearSelection}/>
-          {(run.state === 'COMPLETED' || run.state === 'CANCELLED') && <TerminalRunDelete run={run} onDeleted={() => navigate(undefined, 'delete')}/>}
-        </div>
-        {mode !== 'AUTOMATIC' && run.state !== 'COMPLETED' && run.state !== 'CANCELLED' && <SnapshotSync run={run} currentVersion={flow.data?.row_version} onSynced={updated => navigate(updated, 'sync')}/>}
-        <SnapshotGraph run={graphRun} snapshotId={graphSnapshotId} selectedKey={graphSelectedKey} activeNodeRunId={activeStepwiseDraftKey ? undefined : activeExecutionNodeRun?.id} activeNodeKey={activeStepwiseDraftKey} reachableKeys={graphReachableKeys} selectableKeys={graphSelectableKeys} configuredPlanKeys={configuredAutomaticPlanKeys} executionRun={selectedExecutionRecord ?? directExecutionRun} missingPlanKeys={missingAutomaticPlanKeys} showExecutionState={showExecutionState} neutralHelp={neutralGraphHelp} neutralView={automaticNeutralView} onClearSelection={clearSelection} onSelect={selectGraphNode}/>
+    <header className="flow-run-workbench-header run-detail-header"><button className="back" onClick={returnToRuns}><ArrowLeft size={14}/>返回运行记录</button><div className="run-workbench-record-summary"><h1 title={activeRecord?.name ?? parentRun.name}>{activeRecord?.name ?? parentRun.name}</h1></div>{activeRecord && <><span className="run-detail-kind">{selectedRecordType}</span><span className="run-detail-state">{recordSummary?.state ? FLOW_STATE_LABELS[recordSummary.state] ?? recordSummary.state : '等待执行'}</span></>}</header>
+    <section className="workbench-page flow-run-record-workspace" onClick={event => { if (!isFlowInternalClick(event.target)) clearNodeSelection(); }}>
+      <main className="run-main run-record-main">
+        {activeRecord ? <><div className="run-record-info-strip"><span><b>起点</b>{activeRecordStartNodeKey ?? '—'}</span>{recordGitIdentity && <span><b>Git</b>{recordGitIdentity.author}</span>}<span><b>创建</b>{new Date(activeRecord.started_at).toLocaleString()}</span></div>{mode !== 'AUTOMATIC' && run.state !== 'COMPLETED' && run.state !== 'CANCELLED' && <SnapshotSync run={run} currentVersion={flow.data?.row_version} onSynced={updated => navigate(updated, 'sync')}/>}<SnapshotGraph run={graphRun} snapshotId={graphSnapshotId} onAddRuntimePort={selectedStepwiseRecord ? (nodeKey, direction) => setRuntimePortDialog({ nodeKey, direction }) : undefined} onConnectRuntimePorts={selectedStepwiseRecord ? connectRuntimePorts : undefined} selectedKey={graphSelectedKey} activeNodeRunId={activeStepwiseDraftKey ? undefined : activeExecutionNodeRun?.id} activeNodeKey={activeStepwiseDraftKey ?? (mode === 'MANUAL' && !activeExecutionNodeRun && selectedStepwise ? initialFlowNodeKey(selectedStepwise) : undefined)} reachableKeys={graphReachableKeys} selectableKeys={graphSelectableKeys} configuredPlanKeys={configuredAutomaticPlanKeys} executionRun={selectedExecutionRecord ?? directExecutionRun} missingPlanKeys={missingAutomaticPlanKeys} showExecutionState={showExecutionState} neutralHelp={neutralGraphHelp} neutralView={automaticNeutralView} onClearSelection={clearNodeSelection} onSelect={selectGraphNode} onDoubleSelect={reactivatePredecessorForRerun}/></> : <div className="run-record-workspace-empty"><Boxes size={30}/><b>选择一条运行记录</b><span>返回运行记录列表并选择记录，查看节点执行状态。</span></div>}
       </main>
-      {hasPanel && <aside className="run-side-panel">
-        <div className="run-side-resizer" role="separator" aria-label="调整右侧栏宽度" aria-orientation="vertical" onPointerDown={beginSideResize}/>
-        {mode === 'AUTOMATIC' && selectedAutomaticId ? selectedAutomatic ? selectedAutomatic.state === 'DRAFT' ? <AutomaticRecordEditor key={selectedAutomatic.id} parent={parentRun} record={selectedAutomatic} selectedKey={selectedNodeKey} onDraft={retainAutomaticDraft} onSaved={replaceAutomatic}/> : selectedAutomatic.automatic_block?.code === 'AUTOMATIC_PLAN_GATE_ID_MISSING' ? <AutomaticLegacyPlanRecoveryPanel parentRunId={parentRun.id} record={selectedAutomatic} onRecovered={updated => { replaceAutomatic(updated); void automaticDetail.refetch(); void automatic.refetch(); }}/> : executionDetailPanel ?? <aside className="action-panel"><div className="action-content automatic-empty">该节点尚未激活。连续调度到达后会在这里显示执行、门禁和人工处理入口。</div></aside> : automaticDetail.isError ? <aside className="action-panel"><div className="action-content error">连续运行详情加载失败：{automaticDetail.error.message}</div></aside> : <aside className="action-panel"><div className="action-content automatic-empty">加载连续运行详情…</div></aside> : mode === 'MANUAL' ? stepwiseRecordPanel : executionDetailPanel ?? (nodeRun && attempt ? <AttemptPanel run={categorizedRun} nodeRun={nodeRun} attempt={attempt} refresh={() => { void stepwiseDetail.refetch(); }} navigate={navigate} sessionReturnContext={{ runId: parentRun.id, mode }} /> : selectedNode ? <NodeConsole run={categorizedRun} node={selectedNode} startupMode="CHAT" initialBindings={inheritedTransitionBindings} localDraft={nodeConfigurationDraftKey ? nodeConfigurationDrafts[nodeConfigurationDraftKey] : undefined} refresh={() => { void stepwiseDetail.refetch(); }} onActivated={created => { discardNodeConfigurationDraft(nodeConfigurationDraftKey); setSelectedNodeKey(undefined); navigate(created, 'activate'); }} onDraftChange={draft => { if (nodeConfigurationDraftKey) retainNodeConfigurationDraft(nodeConfigurationDraftKey, draft); }} onSelectExecution={item => { setSelectedNodeKey(item.flow_node_snapshot_key); selectExecution(item.id, item.attempts.at(-1)?.id); }}/> : null)}
-      </aside>}
+      <aside className="run-side-panel run-record-detail-panel">{selectionPanel ?? <div className="run-record-workspace-empty"><Boxes size={26}/><b>未选择节点</b><span>在画布中选择节点，查看当前记录的节点详情。</span></div>}</aside>
     </section>
     {copyTarget && <CopyRecordDialog mode={copyTarget.mode} sourceName={copyTarget.record.name} onClose={() => setCopyTarget(undefined)} onExport={copyTarget.mode === 'AUTOMATIC' ? target => exportAutomaticRecords([copyTarget.record.id], target) : copyTarget.mode === 'STEPWISE' ? target => exportStepwiseRecords([copyTarget.record.id], target) : undefined} onCopy={async name => {
       if (copyTarget.mode === 'STEPWISE') {
@@ -2420,5 +2754,11 @@ export function WorkbenchPage() {
     {stepwiseImportDialogOpen && <RecordConfigImportDialog mode="STEPWISE" onClose={() => setStepwiseImportDialogOpen(false)} onImport={importStepwiseRecords}/>} 
     {automaticExportRecordIds && <RecordConfigExportDialog mode="AUTOMATIC" count={automaticExportRecordIds.length} onClose={() => setAutomaticExportRecordIds(undefined)} onExport={target => exportAutomaticRecords(automaticExportRecordIds, target)}/>}
     {stepwiseExportRecordIds && <RecordConfigExportDialog mode="STEPWISE" count={stepwiseExportRecordIds.length} onClose={() => setStepwiseExportRecordIds(undefined)} onExport={target => exportStepwiseRecords(stepwiseExportRecordIds, target)}/>}
+    {runtimePortDialog && snapshot && selectedStepwiseRecord && (() => {
+      const node = snapshot.definition.nodes.find(item => item.instance_key === runtimePortDialog.nodeKey);
+      return node ? <RuntimePortDialog node={node} direction={runtimePortDialog.direction} onClose={() => setRuntimePortDialog(undefined)} onSave={field => { void saveRuntimePort(node, runtimePortDialog.direction, field).then(() => setRuntimePortDialog(undefined)); }}/>: null;
+    })()}
+    {newRecordMode && <div className="modal-backdrop"><section className="modal record-mode-dialog" role="dialog" aria-modal="true" aria-label="选择运行类型"><header><div><span className="eyebrow">NEW RUN RECORD</span><h2>新建运行记录</h2><p>选择运行方式后，保留原有的名称、起始节点、Git 身份和导入配置能力。</p></div><button type="button" className="ghost" onClick={() => setNewRecordMode(undefined)}><X size={17}/></button></header><div className="record-mode-options"><button type="button" className={newRecordMode === 'MANUAL' ? 'active' : ''} onClick={() => setNewRecordMode('MANUAL')}><span><b>逐步运行</b><small>按节点配置、确认和启动，适合需要人工介入的执行。</small></span></button><button type="button" className={newRecordMode === 'AUTOMATIC' ? 'active' : ''} onClick={() => setNewRecordMode('AUTOMATIC')}><span><b>连续运行</b><small>预先补齐节点计划后，按流程自动推进。</small></span></button></div><footer><button type="button" className="ghost" onClick={() => setNewRecordMode(undefined)}>取消</button><button type="button" className="primary" onClick={() => { if (newRecordMode === 'AUTOMATIC') setAutomaticDialogOpen(true); else setStepwiseDialogOpen(true); setNewRecordMode(undefined); }}>继续创建</button></footer></section></div>}
+
   </>;
 }

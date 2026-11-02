@@ -10,6 +10,10 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from flowweave.modules.catalog.application.memory_sources import register_policy_references
+from flowweave.modules.catalog.application.platform_capabilities import (
+    PLATFORM_MANAGED_CAPABILITY_KEYS,
+    is_platform_managed_capability,
+)
 from flowweave.shared.domain.capability_digest import capability_version_digest
 from flowweave.shared.domain.runtime_policy import (
     DEFAULT_CONTEXT_POLICY_CONFIG,
@@ -50,6 +54,42 @@ class PublishedCapability:
             "content_hash": self.blob.content_hash,
             "storage_key": self.blob.storage_key,
         }
+
+
+def is_builtin_capability(capability_type: str, capability_key: str) -> bool:
+    return is_platform_managed_capability(capability_type, capability_key) or (
+        (capability_type, capability_key)
+        in {
+            ("CONTEXT_POLICY", DEFAULT_CONTEXT_POLICY_KEY),
+            ("MEMORY_POLICY", DEFAULT_MEMORY_POLICY_KEY),
+            ("CRITIC_POLICY", DEFAULT_CRITIC_POLICY_KEY),
+        }
+    )
+
+
+def builtin_capability_filter(package: Any) -> Any:
+    """SQL twin of ``is_builtin_capability`` for ordering and filtering a listing."""
+
+    from sqlalchemy import and_, or_, tuple_
+
+    return or_(
+        and_(
+            package.capability_type == "MCP",
+            package.capability_key.in_(sorted(PLATFORM_MANAGED_CAPABILITY_KEYS)),
+        ),
+        tuple_(package.capability_type, package.capability_key).in_(
+            [
+                ("CONTEXT_POLICY", DEFAULT_CONTEXT_POLICY_KEY),
+                ("MEMORY_POLICY", DEFAULT_MEMORY_POLICY_KEY),
+                ("CRITIC_POLICY", DEFAULT_CRITIC_POLICY_KEY),
+            ]
+        ),
+    )
+
+
+def require_user_managed(package: CapabilityPackage) -> None:
+    if is_builtin_capability(package.capability_type, package.capability_key):
+        raise DomainError("BUILTIN_CAPABILITY", "系统内置能力由平台维护，不能编辑或替换", 403)
 
 
 def _builtin_id(kind: str, value: str) -> str:
@@ -548,17 +588,20 @@ def resolve_version(
     return PublishedCapability(package, version, blob)
 
 
-def list_versions(db: Session) -> list[dict[str, Any]]:
+def list_versions(db: Session, package_ids: list[str] | None = None) -> list[dict[str, Any]]:
+    version_ids = select(CapabilityVersion.id)
+    if package_ids is not None:
+        version_ids = version_ids.where(CapabilityVersion.package_id.in_(package_ids))
     reference_rows = db.execute(
-        select(AgentWorkspaceCapability.capability_version_id, func.count()).group_by(
-            AgentWorkspaceCapability.capability_version_id
-        )
+        select(AgentWorkspaceCapability.capability_version_id, func.count())
+        .where(AgentWorkspaceCapability.capability_version_id.in_(version_ids))
+        .group_by(AgentWorkspaceCapability.capability_version_id)
     ).all()
     references: dict[str, int] = {version_id: int(count) for version_id, count in reference_rows}
     context_reference_rows = db.execute(
-        select(NodeContextCapability.capability_version_id, func.count()).group_by(
-            NodeContextCapability.capability_version_id
-        )
+        select(NodeContextCapability.capability_version_id, func.count())
+        .where(NodeContextCapability.capability_version_id.in_(version_ids))
+        .group_by(NodeContextCapability.capability_version_id)
     ).all()
     for version_id, count in context_reference_rows:
         references[version_id] = references.get(version_id, 0) + int(count)
@@ -566,12 +609,12 @@ def list_versions(db: Session) -> list[dict[str, Any]]:
         select(CapabilityVersion, CapabilityPackage, CapabilityBlob)
         .join(CapabilityPackage, CapabilityPackage.id == CapabilityVersion.package_id)
         .join(CapabilityBlob, CapabilityBlob.id == CapabilityVersion.blob_id)
-        .where(CapabilityVersion.state == "PUBLISHED")
+        .where(CapabilityVersion.state == "PUBLISHED", CapabilityVersion.id.in_(version_ids))
         .order_by(CapabilityVersion.created_at.desc(), CapabilityVersion.id.desc())
     ).all()
     latest_rows = db.execute(
         select(CapabilityVersion.package_id, func.max(CapabilityVersion.version_no))
-        .where(CapabilityVersion.state == "PUBLISHED")
+        .where(CapabilityVersion.state == "PUBLISHED", CapabilityVersion.id.in_(version_ids))
         .group_by(CapabilityVersion.package_id)
     ).all()
     latest: dict[str, int] = {
@@ -582,7 +625,7 @@ def list_versions(db: Session) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     for version, package, blob in rows:
         normalized = cast(dict[str, Any], version.normalized_config_json or {})
-        is_builtin = False
+        is_builtin = is_builtin_capability(package.capability_type, package.capability_key)
         result.append(
             {
                 "id": version.id,
@@ -608,3 +651,9 @@ def list_versions(db: Session) -> list[dict[str, Any]]:
             }
         )
     return result
+
+
+def list_user_configurable_versions(db: Session) -> list[dict[str, Any]]:
+    """Return published capabilities that may enter user-authored configuration."""
+
+    return [item for item in list_versions(db) if not item["is_builtin"]]

@@ -42,6 +42,37 @@ docker compose --env-file .env -f infra/compose.yaml \
 
 更新 `infra/openhands/**` 后，新镜像只会影响之后创建或正式 replacement 的 Runtime；已运行 Runtime 不会原地变更。发布新的 Environment Version 或通过正式 Runtime 生命周期替换 generation。
 
+### 独立 Agent Runtime 基线同步
+
+每次推进或发布 FlowWeave 受治理的 OpenHands baseline，都必须将独立 Agent Workspace Runtime
+同步到本次 source lock；不能以 SDK 已提交、镜像已构建或平台服务已更新代替运行容器升级。
+这项要求覆盖已有会话使用的活跃 generation，不能只验证新建会话。浮动 baseline HEAD
+尚未进入本次 source lock 的后续开发不自动成为发布输入。
+
+1. 固定已提交的 FlowWeave 版本，核对 `infra/openhands/source.lock.json`、SDK 不可变源码归档、
+   四包版本、Dockerfile 和 provenance 一致；执行正式 `runtime` 远端预检。
+2. 从同一 commit 的最小构建输入构建 `linux/amd64` Runtime 镜像，执行
+   `infra/openhands/contract_check.py`，核对实际镜像 digest、源码 commit、归档 SHA-256 和所需
+   capability。切换前保留旧镜像的精确 rollback tag、原配置及服务日志。
+3. 通过平台正式 Runtime 连接读取目标 Agent Workspace 的全部 OpenHands 原生活动状态，
+   `running`／`starting`／`executing`／`stopping` 任一存在时不得切换；等待安全窗口后再次检查。
+   保存原 binding／conversation 身份、持久挂载和恢复验证锚点，并在服务器侧保护原生持久状态备份。
+4. 确认平台配置的 Agent Runtime 镜像引用已经解析到目标 digest 后，使用平台正式 replacement：
+   `flowweave agent runtime-replace <workspace-id> -H 'Idempotency-Key: <本次唯一值>'`。
+   先 `--dry-run` 核对请求；异步受理后轮询既有 Runtime，不重复提交，也不手工删除容器、
+   清空目录或修改数据库 generation。沿用原 Workspace、原生 Conversation 持久状态和 Secret Reference。
+5. 验收新的 active generation：实际容器 image digest、四包版本、`/server_info.build_git_sha`、
+   provenance 必须与本次 source lock 一致；所需 capability 必须存在。以原 conversation ID
+   读取原正式事件，核对 binding 身份及 Workspace／持久挂载保持，验证 readiness 和平台健康。
+   认证目录动态同步变更还必须验证 `conversation_dynamic_context_v1` 及原生 late-secret context 契约。
+   失败时保留日志，只按原镜像与受保护状态备份恢复受影响 Runtime，不清理业务数据。
+6. 在进度文档记录代码 commit、source commit、镜像 digest、generation 和实际验证结果。
+   若活跃会话或恢复验证阻止升级，明确记录未完成，不能把本次 baseline 发布记为同步完成。
+
+此流程不改写已发布 Environment Version 或既有 FlowRun 的冻结镜像；这些资源仍按各自版本与
+Runtime 生命周期发布。仅升级独立 Agent Runtime 镜像和 generation 时，不无故重启 Provider
+或平台服务；确需更新 Provider／协议时，仍执行 `runtime` 范围的同步发布与全部受影响 Runtime 门禁。
+
 ### 部署后验证
 
 ```bash
@@ -117,13 +148,13 @@ make remote-release-finish COMMIT=<同一已提交 SHA> SCOPE=<web|platform>
 
 该命令显式授权本次受管发布资产回收：先复核相关服务均运行同一 commit 的 linux/amd64 镜像，
 api／stream-api 的 health、readiness 和 Web 容器 HTTP 入口通过后才标记发布成功。然后打印候选并
-回收超过每个 scope 最近三份成功上下文的旧目录；当前镜像、任何运行或退出容器和最近三个 rollback
-镜像的 revision，以及被挂载／进程 cwd／打开文件引用的目录始终保留。每次删除前重新读取引用并核对
-目录身份；未知、无 marker、旧版目录和符号链接不自动删除。失败／未完成上下文至少保留七天，仍被
-引用的上下文不删除；保护集合中存在缺少 revision 的旧镜像时，所有失败／未完成上下文继续保留。
-成功上下文必须已通过 finish 的镜像身份门禁，其相关镜像必有 revision，不受旧无标签镜像影响。
-最后用现有镜像保留脚本执行只读候选核验和精确 rollback tag 回收，不清理共享
-BuildKit 缓存、容器、卷或 Workspace。单次超过 100 个目录会在删除前拒绝。
+回收超过 24 小时且全目录无近期写入的受管上下文，包括失败／未完成上下文。源码目录不因镜像
+revision 而保留；回滚依靠已构建镜像。被挂载／进程 cwd／打开文件引用的目录始终保留，删除前
+重读引用并核对目录身份。普通发布不自动删除未知、无 marker、旧版目录或符号链接。
+平台／Web 各保留当前镜像和一个不同 image ID 的最新 rollback 镜像，以及所有容器引用和带其他
+仓库 tag 的镜像；其余平台／Web 历史 tag 精确回收，不使用 force。单次超过 100 个目录会拒绝。
+发布收尾不清理共享 BuildKit、容器、卷或 Workspace；每日任务按单独显式启用的配置维护缓存和
+已核验的历史构建资产，见 storage-maintenance.md。
 
 只读审计使用 `make remote-release-audit COMMIT=<SHA> SCOPE=<web|platform>`。
 Runtime 镜像／Provider 发布继续走独立 `runtime` 预检与活跃会话门禁；本工具不将其降级为普通发布。
@@ -246,8 +277,8 @@ scripts/maintain-remote-docker-retention.sh --config .local/remote-deploy.env
 
 需要持续回收受管发布上下文与精确 rollback tags 时，使用[定时维护说明](storage-maintenance.md)
 安装固定提交的 systemd 服务／timer；安装先预检、审计并实际运行一次，再启用每日北京时间 03:30
-任务。它与发布收尾共用锁，保留当前／容器引用及最近三个回滚版本，不清理共享 BuildKit、HOME、
-卷、Workspace 或备份，不重启生产服务。
+任务。它与发布收尾共用锁，保留当前／容器引用及最近一个回滚版本、最近 24 小时的构建资产；
+显式开启后清理超过 24 小时未使用的构建缓存，保留 HOME、卷、Workspace 和备份，不重启生产服务。
 
 ### 环境 HOME 缓存边界
 

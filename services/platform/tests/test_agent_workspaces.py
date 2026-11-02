@@ -18,6 +18,7 @@ from sqlalchemy import select
 
 from flowweave.bootstrap.runtime_provider import RuntimeProviderResourceWrite
 from flowweave.modules.agent_sessions.application import (
+    history_integration,
     resumable_attachments,
     sidebar_conversations,
 )
@@ -346,6 +347,8 @@ def test_git_working_changes_separate_staged_unstaged_and_untracked_files(tmp_pa
     git("add", "staged.txt")
     (repository / "unstaged.txt").write_text("unstaged change\n")
     (repository / "untracked.txt").write_text("new file\n")
+    (repository / ".uploads").mkdir()
+    (repository / ".uploads" / "private.png").write_bytes(b"private")
 
     changes = workspace.git_working_changes(
         repository,
@@ -359,6 +362,7 @@ def test_git_working_changes_separate_staged_unstaged_and_untracked_files(tmp_pa
         {"path": "unstaged.txt", "status": "M"},
         {"path": "untracked.txt", "status": "?"},
     ]
+    assert all(not item["path"].startswith(".uploads/") for item in changes["unstaged"])
 
     staged_diff = workspace.git_working_file_diff(
         repository,
@@ -571,6 +575,102 @@ def test_agent_work_directory_root_is_implicit_and_versions_are_immutable(
         assert db.get(AgentWorkDirectory, directory_id) is None
         assert db.get(AgentWorkDirectoryVersion, first_version_id) is None
         assert db.get(AgentWorkDirectoryVersion, second_version_id) is None
+
+
+def test_case_directory_create_rollback_removes_only_uncommitted_directory(
+    settings, db_session_factory
+):
+    from flowweave.shared.application.transactions import run_rollback_actions
+
+    with settings_context(settings), tenant_user(FLOWWEAVE_USER_ID), db_session_factory() as db:
+        workspace = ensure_default_agent_workspace(db)
+        root = _agent_project_root(settings, db, workspace) / "users" / FLOWWEAVE_USER_ID
+        case_id = str(uuid4())
+        work_directories.create_case_work_directory(db, workspace.id, case_id, "Case")
+        target = root / ".flowweave/cases" / case_id
+        assert target.is_dir()
+        db.rollback()
+        run_rollback_actions(db)
+        assert not target.exists()
+
+
+def test_case_directory_delete_waits_for_commit_and_preserves_other_files(
+    settings, db_session_factory
+):
+    from flowweave.shared.application.transactions import finish
+
+    with settings_context(settings), tenant_user(FLOWWEAVE_USER_ID), db_session_factory() as db:
+        workspace = ensure_default_agent_workspace(db)
+        root = _agent_project_root(settings, db, workspace) / "users" / FLOWWEAVE_USER_ID
+        case_id = str(uuid4())
+        item = work_directories.create_case_work_directory(db, workspace.id, case_id, "Case")
+        target = root / ".flowweave/cases" / case_id
+        (target / "evidence.txt").write_text("case evidence")
+        other = target.parent / "other-case"
+        other.mkdir()
+        (other / "keep.txt").write_text("preserve")
+        db.commit()
+
+        work_directories.delete_case_work_directory(db, workspace.id, case_id, item["id"])
+        assert target.is_dir()
+        db.rollback()
+        from flowweave.shared.application.transactions import run_rollback_actions
+
+        run_rollback_actions(db)
+        assert target.is_dir()
+        assert db.get(AgentWorkDirectory, item["id"]) is not None
+        work_directories.delete_case_work_directory(db, workspace.id, case_id, item["id"])
+        finish(db)
+        assert not target.exists()
+        assert (other / "keep.txt").read_text() == "preserve"
+
+
+@pytest.mark.parametrize("component", [".flowweave", ".flowweave/cases", "leaf"])
+def test_case_directory_delete_rejects_symlink_ancestors(
+    settings, db_session_factory, tmp_path, component
+):
+    with settings_context(settings), tenant_user(FLOWWEAVE_USER_ID), db_session_factory() as db:
+        workspace = ensure_default_agent_workspace(db)
+        root = _agent_project_root(settings, db, workspace) / "users" / FLOWWEAVE_USER_ID
+        case_id = str(uuid4())
+        item = work_directories.create_case_work_directory(db, workspace.id, case_id, "Case")
+        relative = Path(".flowweave/cases") / case_id
+        changed = root / relative if component == "leaf" else root / component
+        changed.rename(changed.with_name(changed.name + "-original"))
+        external = tmp_path / "external"
+        external.mkdir()
+        changed.symlink_to(external, target_is_directory=True)
+        sentinel = external / "keep.txt"
+        sentinel.write_text("preserve")
+        with pytest.raises(DomainError) as raised:
+            work_directories.delete_case_work_directory(db, workspace.id, case_id, item["id"])
+        assert raised.value.code == "CASE_WORKSPACE_DELETE_UNSAFE"
+        assert sentinel.read_text() == "preserve"
+        assert db.get(AgentWorkDirectory, item["id"]) is not None
+
+
+def test_case_directory_delete_revalidates_path_after_database_commit(
+    settings, db_session_factory, tmp_path
+):
+    from flowweave.shared.application.transactions import finish
+
+    with settings_context(settings), tenant_user(FLOWWEAVE_USER_ID), db_session_factory() as db:
+        workspace = ensure_default_agent_workspace(db)
+        root = _agent_project_root(settings, db, workspace) / "users" / FLOWWEAVE_USER_ID
+        case_id = str(uuid4())
+        item = work_directories.create_case_work_directory(db, workspace.id, case_id, "Case")
+        target = root / ".flowweave/cases" / case_id
+        db.commit()
+        work_directories.delete_case_work_directory(db, workspace.id, case_id, item["id"])
+        target.rename(target.with_name(case_id + "-original"))
+        external = tmp_path / "external"
+        external.mkdir()
+        (external / "keep.txt").write_text("preserve")
+        target.symlink_to(external, target_is_directory=True)
+        with pytest.raises(DomainError) as raised:
+            finish(db)
+        assert raised.value.code == "CASE_WORKSPACE_DELETE_UNSAFE"
+        assert (external / "keep.txt").read_text() == "preserve"
 
 
 @pytest.mark.parametrize(
@@ -1581,6 +1681,91 @@ def test_agent_workspace_selected_skill_is_frozen_and_mounted(
         assert frozen == selected
 
 
+
+@pytest.mark.parametrize("named_directory", [False, True])
+def test_agent_workspace_session_configuration_is_inherited_by_bootstrap(
+    settings, container, db_session_factory, monkeypatch, skill_capability, named_directory
+):
+    """New bootstrap conversations freeze the workspace's saved defaults."""
+
+    class CapturingRuntime(MockRuntime):
+        request = None
+
+        def create_conversation(self, request):
+            self.request = request
+            return super().create_conversation(request)
+
+        def reload_conversation(self, handle, *, expected=None):
+            del expected
+            assert self.request is not None
+            identity = super().reload_conversation(handle)
+            return RuntimeConversationIdentity(
+                conversation_id=identity.conversation_id,
+                workspace_working_dir=self.request.workspace_ref,
+                persistence_dir=identity.persistence_dir,
+                event_id=identity.event_id,
+                parent_id=identity.parent_id,
+                action_id=identity.action_id,
+                tool_call_id=identity.tool_call_id,
+            )
+
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=kwargs.get("model_name") or "test-model",
+            api_key="x",
+            reasoning_effort=kwargs.get("reasoning_effort"),
+        ),
+    )
+    runtime = CapturingRuntime()
+    with (
+        settings_context(settings),
+        tenant_user(FLOWWEAVE_USER_ID),
+        artifact_store_context(container.artifact_store),
+        db_session_factory() as db,
+        runtime_context(runtime),
+    ):
+        workspace = _ready_workspace_for_conversation(db)
+        directory_id = None
+        if named_directory:
+            project_root = _agent_project_root(settings, db, workspace) / "users" / FLOWWEAVE_USER_ID
+            (project_root / "backend").mkdir(parents=True, exist_ok=True)
+            directory_id = work_directories.create_work_directory(
+                db, workspace.id, "backend", ("backend",)
+            )["id"]
+        saved = conversations.replace_workspace_session_configuration(
+            db, workspace.id, (skill_capability["capability_id"],), (), directory_id
+        )
+
+        assert saved == {
+            "capability_version_ids": [skill_capability["capability_id"]],
+            "credential_ids": [],
+        }
+
+        created = conversations.bootstrap_conversation(
+            db,
+            workspace.id,
+            work_directory_id=directory_id,
+            model_provider_id=workspace.default_model_provider_id,
+            model_name="test-model",
+            reasoning_effort=None,
+            content="请使用默认会话配置。",
+            idempotency_key="workspace-session-defaults",
+        )
+
+        frozen = created["conversation"]["capabilities"]
+        assert len(frozen) == 1
+        assert frozen[0]["id"] == skill_capability["capability_id"]
+        assert frozen[0]["capability_type"] == "SKILL"
+        assert frozen[0]["capability_key"] == "test-skill"
+        assert frozen[0]["digest"]
+        assert runtime.request is not None
+        assert [skill.name for skill in runtime.request.agent_spec.skills] == ["test-skill"]
+
+
 def test_agent_workspace_loads_capability_through_native_marketplace(
     settings, container, db_session_factory, monkeypatch, skill_capability
 ):
@@ -1619,6 +1804,7 @@ def test_agent_workspace_loads_capability_through_native_marketplace(
     )
     runtime = CapturingRuntime()
     with (
+        tenant_user(FLOWWEAVE_USER_ID),
         settings_context(settings),
         artifact_store_context(container.artifact_store),
         db_session_factory() as db,
@@ -1643,6 +1829,89 @@ def test_agent_workspace_loads_capability_through_native_marketplace(
         ]
         assert len(runtime.plugin_refs) == 1
         assert runtime.plugin_refs[0].endswith(f"@flowweave-{created['id']}")
+
+
+
+def test_agent_workspace_registers_capabilities_as_one_ordered_batch(
+    settings, client, container, db_session_factory, monkeypatch, skill_capability
+):
+    """A batch preserves selection order and commits acknowledged native loads."""
+
+    class CapturingRuntime(MockRuntime):
+        plugin_refs: list[str]
+
+        def __init__(self):
+            super().__init__()
+            self.plugin_refs = []
+
+        def can_accept_input(self, handle):
+            del handle
+            return True
+
+        def load_plugin(self, handle, plugin_ref):
+            del handle
+            self.plugin_refs.append(plugin_ref)
+            if len(self.plugin_refs) == 2:
+                raise DomainError("PLUGIN_LOAD_FAILED", "第二项能力加载失败", 502)
+
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as package:
+        package.writestr("second-skill/SKILL.md", "# Second Skill\n")
+    validated = client.post(
+        "/api/v1/capability-imports/validate",
+        json={
+            "capability_type": "SKILL",
+            "filename": "second-skill.zip",
+            "content_base64": base64.b64encode(archive.getvalue()).decode(),
+        },
+    )
+    assert validated.status_code == 200, validated.text
+    committed = client.post(
+        "/api/v1/capability-imports", json={"import_token": validated.json()["import_token"]}
+    )
+    assert committed.status_code == 201, committed.text
+    second_skill = committed.json()["capabilities"][0]["capability_id"]
+
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=kwargs.get("model_name") or "test-model",
+            api_key="x",
+        ),
+    )
+    runtime = CapturingRuntime()
+    with (
+        tenant_user(FLOWWEAVE_USER_ID),
+        settings_context(settings),
+        artifact_store_context(container.artifact_store),
+        db_session_factory() as db,
+        runtime_context(runtime),
+    ):
+        workspace = _ready_workspace_for_conversation(db)
+        created = conversations.create_conversation(
+            db, workspace.id, "批量 Skill", workspace.default_model_provider_id, "batch-skill-key"
+        )
+        result = conversations.register_conversation_capabilities(
+            db,
+            workspace.id,
+            created["id"],
+            (skill_capability["capability_id"], second_skill),
+        )
+
+        assert result["completed"] is False
+        assert result["loaded_capability_version_ids"] == [skill_capability["capability_id"]]
+        assert result["failure"] == {
+            "capability_version_id": second_skill,
+            "code": "PLUGIN_LOAD_FAILED",
+            "message": "第二项能力加载失败",
+        }
+        assert [item["id"] for item in result["conversation"]["capabilities"]] == [
+            skill_capability["capability_id"]
+        ]
+        assert len(runtime.plugin_refs) == 2
 
 
 def test_agent_workspace_selected_plugin_and_mcp_are_mounted(
@@ -1727,6 +1996,7 @@ def test_agent_workspace_selected_plugin_and_mcp_are_mounted(
     runtime = CapturingRuntime()
     with (
         settings_context(settings),
+        tenant_user(FLOWWEAVE_USER_ID),
         artifact_store_context(container.artifact_store),
         db_session_factory() as db,
         runtime_context(runtime),
@@ -1742,6 +2012,8 @@ def test_agent_workspace_selected_plugin_and_mcp_are_mounted(
         )
         assert readiness["state"] == "READY"
         assert readiness["error_kind"] is None
+        assert readiness["tools"] == ["mock_read"]
+        assert readiness["reason"] is None
         assert runtime.mcp_probe_request is not None
         assert runtime.mcp_probe_request.server.name == "agent-local"
         assert runtime.mcp_probe_request.runtime_resource_name == (
@@ -1870,6 +2142,46 @@ def test_agent_workspace_text_preview_is_paged_and_download_remains_complete(
         assert downloaded.next_offset is None
 
 
+
+def test_automation_workspace_files_are_readable_only_inside_its_frozen_scope(
+    settings, db_session_factory
+):
+    with settings_context(settings), db_session_factory() as db, runtime_context(MockRuntime()):
+        item = _ready_workspace_for_conversation(db)
+        directory = work_directories.create_automation_work_directory(
+            db, item.id, "11111111-1111-4111-8111-111111111111", "自动化日报"
+        )
+        project_root = _agent_project_root(settings, db, item)
+        automation_id = "11111111-1111-4111-8111-111111111111"
+        automation_relative_path = f".flowweave/automations/{automation_id}"
+        automation_root = project_root / automation_relative_path
+        report = automation_root / "reports" / "daily.html"
+        report.parent.mkdir()
+        report.write_text("<!doctype html><h1>日报</h1>", encoding="utf-8")
+        (project_root / ".flowweave" / "private.txt").write_text("private", encoding="utf-8")
+
+        runtime_root = user_runtime_project_root(item.id)
+        report_path = f"{runtime_root}/{automation_relative_path}/reports/daily.html"
+        directory_path = f"{runtime_root}/{automation_relative_path}/reports"
+        listing = workspace.list_directory(
+            db, item.id, parent_path=directory_path, work_directory_id=directory["id"]
+        )
+        assert listing["entries"] == [
+            {"path": report_path, "kind": "file", "size": len(report.read_bytes())}
+        ]
+        assert workspace.download(
+            db, item.id, report_path, work_directory_id=directory["id"], preview=True
+        ).content == report.read_bytes()
+
+        with pytest.raises(DomainError, match="当前工作目录范围"):
+            workspace.download(
+                db,
+                item.id,
+                f"{runtime_root}/.flowweave/private.txt",
+                work_directory_id=directory["id"],
+            )
+
+
 def test_agent_workspace_creates_entries_at_the_authorized_root_and_subdirectory(
     settings, db_session_factory
 ):
@@ -1952,7 +2264,10 @@ def test_agent_workspace_allows_only_bound_conversation_attachments_outside_scop
         ):
             del handle, filename, content_type, content
             assert attachment_owner_id is not None
-            return f"/runtime/workspace/project/uploads/{attachment_owner_id}-{uuid4().hex}"
+            return (
+                "/runtime/workspace/project/service/.uploads/"
+                f"{attachment_owner_id}-{uuid4().hex}"
+            )
 
     monkeypatch.setattr(
         conversations,
@@ -1978,7 +2293,7 @@ def test_agent_workspace_allows_only_bound_conversation_attachments_outside_scop
             db, item.id, None, item.default_model_provider_id, "attachment-other"
         )
         # The work-directory is frozen on the binding.  Make both test
-        # conversations use the restricted scope so `uploads/` is genuinely
+        # conversations use the restricted scope so unrelated files remain
         # outside their normal readable tree.
         for binding_id in (owner["id"], other["id"]):
             binding = db.get(AgentConversationBinding, binding_id)
@@ -1994,7 +2309,15 @@ def test_agent_workspace_allows_only_bound_conversation_attachments_outside_scop
             content_type="application/pdf",
             content=b"%PDF-1.7",
         )
-        upload_path = project_root / "uploads" / str(attachment["path"]).rsplit("/", 1)[-1]
+        assert str(attachment["path"]).startswith(
+            "/runtime/workspace/project/service/.uploads/"
+        )
+        upload_path = (
+            project_root
+            / "service"
+            / ".uploads"
+            / str(attachment["path"]).rsplit("/", 1)[-1]
+        )
         upload_path.parent.mkdir()
         upload_path.write_bytes(b"%PDF-1.7")
         # A bound upload is previewable from the right-hand panel before it is
@@ -2634,15 +2957,75 @@ def test_agent_workspace_bootstrap_creates_only_on_first_message_and_freezes_dir
         assert len(conversations.list_conversations(db, workspace.id)) == 1
 
 
+
+def test_agent_workspace_bootstrap_starts_native_goal_without_plain_first_message(
+    settings, db_session_factory, monkeypatch
+):
+    class GoalBootstrapRuntime(MockRuntime):
+        goals: list[tuple[str, int]] = []
+        messages: list[str] = []
+
+        def start_goal(self, _handle, objective, max_iterations):
+            self.goals.append((objective, max_iterations))
+
+        def send_message(self, _handle, content, image_urls=()):
+            del image_urls
+            self.messages.append(content)
+            return super().send_message(_handle, content)
+
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=kwargs.get("model_name") or "test-model",
+            api_key="x",
+            reasoning_effort=kwargs.get("reasoning_effort"),
+        ),
+    )
+    runtime = GoalBootstrapRuntime()
+    objective = "实现接口并通过定向测试"
+    with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
+        workspace = _ready_workspace_for_conversation(db)
+        created = conversations.bootstrap_conversation(
+            db,
+            workspace.id,
+            work_directory_id=None,
+            model_provider_id=workspace.default_model_provider_id,
+            content=objective,
+            goal_objective=objective,
+            idempotency_key="goal-draft-001",
+        )
+
+        assert runtime.goals == [(objective, 3)]
+        assert runtime.messages == []
+        assert created["cursor"] is None
+        assert created["conversation"]["display_title"] == objective
+        assert created["conversation"]["title_state"] == "PENDING"
+        title_task = db.scalar(
+            select(BackgroundTask).where(
+                BackgroundTask.task_type == "GENERATE_AGENT_CONVERSATION_TITLE"
+            )
+        )
+        assert title_task is not None
+        assert title_task.payload_json["first_message"] == objective
+
+
 def test_sidebar_conversation_inherits_source_configuration_and_appends_context(
     settings, db_session_factory, monkeypatch
 ):
     class CapturingRuntime(MockRuntime):
         requests = []
+        messages = []
 
         def create_conversation(self, request):
             self.requests.append(request)
             return super().create_conversation(request)
+
+        def send_message(self, handle, content, image_urls=()):
+            self.messages.append(content)
+            return super().send_message(handle, content, image_urls)
 
     monkeypatch.setattr(
         conversations,
@@ -2656,6 +3039,14 @@ def test_sidebar_conversation_inherits_source_configuration_and_appends_context(
         ),
     )
     runtime = CapturingRuntime()
+    prepared_history: list[tuple[str, str, tuple[dict[str, str], ...]]] = []
+    monkeypatch.setattr(
+        history_integration,
+        "prepare_creation",
+        lambda _db, workspace, target, references: prepared_history.append(
+            (workspace.id, target.id, references)
+        ),
+    )
     with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
         workspace = _ready_workspace_for_conversation(db)
         source = conversations.bootstrap_conversation(
@@ -2701,8 +3092,19 @@ def test_sidebar_conversation_inherits_source_configuration_and_appends_context(
         ]
         assert child.working_directory == source["working_directory"]
         assert len(runtime.requests) == 2
+        assert runtime.messages[-1] == "侧边追问"
+        assert prepared_history[0][2] == ()
+        assert prepared_history[1][0:2] == (workspace.id, child.id)
+        implicit_reference = prepared_history[1][2][0]
+        assert implicit_reference["kind"] == "conversation"
+        assert implicit_reference["source_binding_id"] == source["id"]
+        assert (
+            implicit_reference["source_conversation_id"] == source["openhands_conversation_id"]
+        )
         suffix = runtime.requests[-1].agent_spec.agent_context.system_message_suffix
-        assert "这是一个临时侧边聊天会话" in suffix
+        assert "已隐式授权按需读取此主会话" in suffix
+        assert "不要在当前任务不需要时查询" in suffix
+        assert "max_content_chars 必须是 1 到 10000 的整数" in suffix
         assert f"主会话绑定标识：{source['id']}" in suffix
 
 
@@ -3082,15 +3484,18 @@ def test_agent_workspace_terminal_session_names_are_safe_and_instance_scoped():
     )
 
 
+@pytest.mark.parametrize("failure_stage", ["message", "history"])
 def test_agent_workspace_bootstrap_explicit_failure_cleans_up_hidden_conversation(
-    settings, db_session_factory, monkeypatch
+    settings, db_session_factory, monkeypatch, failure_stage
 ):
     class FailingBootstrapRuntime(MockRuntime):
         deleted = 0
+        fail_send = True
 
         def send_message(self, handle, content, image_urls=()):
-            del handle, content, image_urls
-            raise DomainError("AGENT_INPUT_REJECTED", "invalid first input", 422)
+            if self.fail_send:
+                raise DomainError("AGENT_INPUT_REJECTED", "invalid first input", 422)
+            return super().send_message(handle, content, image_urls)
 
         def delete_conversation(self, handle):
             del handle
@@ -3107,13 +3512,42 @@ def test_agent_workspace_bootstrap_explicit_failure_cleans_up_hidden_conversatio
         ),
     )
     runtime = FailingBootstrapRuntime()
-    with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
+    with (
+        settings_context(settings),
+        tenant_user(FLOWWEAVE_USER_ID),
+        db_session_factory() as db,
+        runtime_context(runtime),
+    ):
+        from flowweave.modules.agent_sessions.infrastructure.models import (
+            AgentConversationCredentialSync,
+        )
+        from flowweave.modules.credentials.infrastructure.models import WebsiteCredential
+
         workspace = _ready_workspace_for_conversation(db)
-        with pytest.raises(DomainError, match="invalid first input"):
+        credential = WebsiteCredential(
+            name="bootstrap-fixture", target_host="example.test", auth_type="TOKEN",
+            encrypted_secret=encrypt_secret("fixture-secret"),
+        )
+        db.add(credential)
+        db.commit()
+        if failure_stage == "history":
+            def reject_history(db, _workspace, binding, _references):
+                assert db.scalar(select(AgentConversationCredentialSync).where(
+                    AgentConversationCredentialSync.binding_id == binding.id
+                )) is not None
+                raise DomainError(
+                    "AGENT_HISTORY_CAPABILITY_UNAVAILABLE", "history unavailable", 409
+                )
+
+            monkeypatch.setattr(conversations, "_ensure_history_references", reject_history)
+        draft_id = str(uuid4())
+        expected = "history unavailable" if failure_stage == "history" else "invalid first input"
+        with pytest.raises(DomainError, match=expected):
             conversations.bootstrap_conversation(
                 db,
                 workspace.id,
                 work_directory_id=None,
+                conversation_id=draft_id,
                 model_provider_id=workspace.default_model_provider_id,
                 content="会失败",
                 idempotency_key="draft-known-failure",
@@ -3121,7 +3555,24 @@ def test_agent_workspace_bootstrap_explicit_failure_cleans_up_hidden_conversatio
         assert db.scalar(select(AgentConversationBinding)) is None
         assert db.scalar(select(AgentConversationCommand)) is None
         assert runtime.deleted == 1
+        assert db.scalar(select(AgentConversationCredentialSync)) is None
+        assert db.get(WebsiteCredential, credential.id) is not None
         assert conversations.list_conversations(db, workspace.id) == []
+
+        runtime.fail_send = False
+        monkeypatch.setattr(conversations, "_ensure_history_references", lambda *_args: True)
+        result = conversations.bootstrap_conversation(
+            db,
+            workspace.id,
+            work_directory_id=None,
+            conversation_id=draft_id,
+            model_provider_id=workspace.default_model_provider_id,
+            content="重试原草稿",
+            idempotency_key="draft-known-failure",
+        )
+        assert result["conversation"]["id"] == draft_id
+        assert result["accepted"] is True
+        assert len(list(db.scalars(select(AgentConversationCredentialSync)))) == 1
 
 
 def test_agent_workspace_bootstrap_rejects_reuse_of_deleted_draft_id(
@@ -3197,7 +3648,12 @@ def test_agent_workspace_bootstrap_explicit_openhands_500_is_not_ambiguous(
         ),
     )
     runtime = RejectedBootstrapRuntime()
-    with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
+    with (
+        tenant_user(FLOWWEAVE_USER_ID),
+        settings_context(settings),
+        db_session_factory() as db,
+        runtime_context(runtime),
+    ):
         workspace = _ready_workspace_for_conversation(db)
         with pytest.raises(DomainError) as raised:
             conversations.bootstrap_conversation(
@@ -3239,6 +3695,7 @@ def test_agent_workspace_bootstrap_mcp_initialization_failure_is_not_ambiguous(
         ),
     )
     with (
+        tenant_user(FLOWWEAVE_USER_ID),
         settings_context(settings),
         db_session_factory() as db,
         runtime_context(FailingMcpInitializationRuntime()),
@@ -3287,7 +3744,12 @@ def test_agent_workspace_bootstrap_ambiguous_delivery_never_resends(
         ),
     )
     runtime = AmbiguousBootstrapRuntime()
-    with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
+    with (
+        tenant_user(FLOWWEAVE_USER_ID),
+        settings_context(settings),
+        db_session_factory() as db,
+        runtime_context(runtime),
+    ):
         workspace = _ready_workspace_for_conversation(db)
         for content in ("首条消息", "不得重发"):
             with pytest.raises(DomainError) as raised:
@@ -3306,8 +3768,9 @@ def test_agent_workspace_bootstrap_ambiguous_delivery_never_resends(
         assert conversations.list_conversations(db, workspace.id) == []
 
 
+@pytest.mark.parametrize("lazy_system_prompt", [False, True])
 def test_agent_workspace_bootstrap_reconciles_ambiguous_delivery_by_native_event_identity(
-    settings, db_session_factory, monkeypatch
+    settings, db_session_factory, monkeypatch, lazy_system_prompt
 ):
     class ReconciledBootstrapRuntime(MockRuntime):
         sent = 0
@@ -3326,10 +3789,26 @@ def test_agent_workspace_bootstrap_reconciles_ambiguous_delivery_by_native_event
             del handle
             return RuntimeEventBatch(
                 events=(
+                    *(
+                        (
+                            RuntimeEvent(
+                                cursor="native-system-prompt",
+                                event_type="STATE",
+                                payload={"source_type": "SystemPromptEvent", "parent_id": None},
+                            ),
+                        )
+                        if lazy_system_prompt
+                        else ()
+                    ),
                     RuntimeEvent(
                         cursor="native-first-user",
                         event_type="MESSAGE",
-                        payload={"source": "user", "parent_id": "__root__"},
+                        payload={
+                            "source": "user",
+                            "parent_id": "native-system-prompt"
+                            if lazy_system_prompt
+                            else "__root__",
+                        },
                     ),
                 )
             )
@@ -3345,7 +3824,12 @@ def test_agent_workspace_bootstrap_reconciles_ambiguous_delivery_by_native_event
         ),
     )
     runtime = ReconciledBootstrapRuntime()
-    with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
+    with (
+        tenant_user(FLOWWEAVE_USER_ID),
+        settings_context(settings),
+        db_session_factory() as db,
+        runtime_context(runtime),
+    ):
         workspace = _ready_workspace_for_conversation(db)
         result = conversations.bootstrap_conversation(
             db,
@@ -3576,6 +4060,229 @@ def test_agent_workspace_management_lists_selected_conversations_and_skips_runni
         assert result["skipped"] == [{"id": running["id"], "code": "AGENT_CONVERSATION_RUNNING"}]
         assert db.get(AgentConversationBinding, completed["id"]) is None
         assert db.get(AgentConversationBinding, running["id"]) is not None
+
+
+
+@pytest.mark.parametrize("archive_mode", ["normal", "legacy", "running"])
+def test_agent_workspace_archives_and_restores_directories_and_conversations(
+    settings, db_session_factory, monkeypatch, archive_mode
+):
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=kwargs.get("model_name") or "test-model",
+            api_key="x",
+            reasoning_effort=kwargs.get("reasoning_effort"),
+        ),
+    )
+    with (
+        settings_context(settings),
+        tenant_user(FLOWWEAVE_USER_ID),
+        db_session_factory() as db,
+        runtime_context(MockRuntime()),
+    ):
+        workspace = _ready_workspace_for_conversation(db)
+        project_root = _agent_project_root(settings, db, workspace) / "users" / FLOWWEAVE_USER_ID
+        project_root.mkdir(mode=0o700, exist_ok=True)
+        (project_root / "archive-target").mkdir()
+        directory = work_directories.create_work_directory(
+            db, workspace.id, "待归档工作区", ("archive-target",)
+        )
+        archived_directory = work_directories.archive_work_directory(
+            db, workspace.id, directory["id"]
+        )
+        assert archived_directory["state"] == "ARCHIVED"
+        assert [
+            item["id"] for item in work_directories.list_work_directories(db, workspace.id)["items"]
+        ] == []
+        assert [
+            item["id"]
+            for item in work_directories.list_work_directories(
+                db, workspace.id, include_archived=True
+            )["items"]
+        ] == [directory["id"]]
+        assert (
+            work_directories.restore_work_directory(db, workspace.id, directory["id"])["state"]
+            == "ACTIVE"
+        )
+
+        conversation = conversations.create_conversation(
+            db,
+            workspace.id,
+            "待归档会话",
+            workspace.default_model_provider_id,
+            "archive-conversation",
+        )
+        archived_conversation = conversations.archive_conversation(
+            db, workspace.id, conversation["id"]
+        )
+        assert archived_conversation["archived_at"] is not None
+        assert conversations.list_conversations(db, workspace.id) == []
+        assert (
+            conversations.list_management_conversations(db, workspace.id, archived=False)["items"]
+            == []
+        )
+        managed = conversations.list_management_conversations(db, workspace.id, archived=True)[
+            "items"
+        ]
+        assert [item["id"] for item in managed] == [conversation["id"]]
+        assert managed[0]["archived_at"] is not None
+        restored_conversation = conversations.restore_conversation(
+            db, workspace.id, conversation["id"]
+        )
+        assert restored_conversation["archived_at"] is None
+        assert [item["id"] for item in conversations.list_conversations(db, workspace.id)] == [
+            conversation["id"]
+        ]
+
+        # Include a child frozen against an older directory version and an
+        # unrelated root conversation. Batch operations must cover all versions.
+        children = []
+        for index in range(2):
+            created = conversations.create_conversation(
+                db,
+                workspace.id,
+                f"目录会话 {index}",
+                workspace.default_model_provider_id,
+                f"directory-child-{index}",
+            )
+            child = db.get(AgentConversationBinding, created["id"])
+            child.work_directory_version_id = directory["current_version"]["id"]
+            child.working_directory = directory["current_version"]["working_directory"]
+            children.append(child)
+            if index == 0:
+                (project_root / "archive-target-v2").mkdir()
+                directory = work_directories.update_work_directory(
+                    db,
+                    workspace.id,
+                    directory["id"],
+                    display_name=None,
+                    selected_paths=("archive-target-v2",),
+                )
+        db.flush()
+        assert children[0].work_directory_version_id != children[1].work_directory_version_id
+        if archive_mode == "running":
+            original = conversations.assert_conversation_stopped
+
+            def reject_running(_db, _workspace_id, binding_id, **kwargs):
+                if binding_id == children[1].id:
+                    raise DomainError("AGENT_CONVERSATION_RUNNING", "会话正在运行", 409)
+
+            monkeypatch.setattr(conversations, "assert_conversation_stopped", reject_running)
+            with pytest.raises(DomainError, match="会话正在运行"):
+                work_directories.archive_work_directory(db, workspace.id, directory["id"])
+            assert (
+                work_directories.get_work_directory(db, workspace.id, directory["id"])["state"]
+                == "ACTIVE"
+            )
+            assert all(child.archived_at is None for child in children)
+            monkeypatch.setattr(conversations, "assert_conversation_stopped", original)
+        if archive_mode == "legacy":
+            from importlib.util import module_from_spec, spec_from_file_location
+
+            from alembic.migration import MigrationContext
+            from alembic.operations import Operations
+
+            from flowweave.modules.agent_workspaces.infrastructure.models import AgentWorkDirectory
+
+            archived_directory = db.get(AgentWorkDirectory, directory["id"])
+            archived_directory.archived_at = datetime.now(UTC)
+            db.flush()
+            path = (
+                Path(__file__).parents[1] / "migrations/versions/0184_cascade_directory_archives.py"
+            )
+            spec = spec_from_file_location("cascade_directory_archives", path)
+            migration = module_from_spec(spec)
+            spec.loader.exec_module(migration)
+            with Operations.context(MigrationContext.configure(db.connection())):
+                migration.upgrade()
+                migration.upgrade()  # Idempotent data repair.
+            db.refresh(children[0])
+            db.refresh(children[1])
+        else:
+            work_directories.archive_work_directory(db, workspace.id, directory["id"])
+        assert all(child.archived_at is not None for child in children)
+        timestamps = [child.archived_at for child in children]
+        work_directories.archive_work_directory(db, workspace.id, directory["id"])
+        assert [child.archived_at for child in children] == timestamps
+        assert (
+            conversations.list_management_conversations(
+                db,
+                workspace.id,
+                work_directory_id=directory["id"],
+                archived=False,
+            )["items"]
+            == []
+        )
+        assert {
+            item["id"]
+            for item in conversations.list_management_conversations(
+                db,
+                workspace.id,
+                work_directory_id=directory["id"],
+                archived=True,
+            )["items"]
+        } == {child.id for child in children}
+        assert db.get(AgentConversationBinding, conversation["id"]).archived_at is None
+        assert (
+            conversations.restore_conversation(db, workspace.id, children[0].id)["archived_at"]
+            is None
+        )
+        assert (
+            work_directories.get_work_directory(db, workspace.id, directory["id"])["state"]
+            == "ACTIVE"
+        )
+        assert children[1].archived_at is not None
+        work_directories.archive_work_directory(db, workspace.id, directory["id"])
+        work_directories.restore_work_directory(db, workspace.id, directory["id"])
+        assert all(child.archived_at is None for child in children)
+
+
+
+def test_agent_workspace_management_lists_case_workspaces_by_case_name(
+    settings, db_session_factory
+):
+    from flowweave.modules.cases.infrastructure.models import Case
+
+    with settings_context(settings), tenant_user(FLOWWEAVE_USER_ID), db_session_factory() as db:
+        workspace = _ready_workspace_for_conversation(db)
+        project_root = (
+            _agent_project_root(settings, db, workspace) / "users" / FLOWWEAVE_USER_ID
+        )
+        project_root.mkdir(mode=0o700, exist_ok=True)
+        case_path = project_root / ".flowweave" / "cases" / "case-management"
+        case_path.mkdir(parents=True)
+        directory = work_directories.create_work_directory(
+            db,
+            workspace.id,
+            "Case · 旧目录名称 · 12345678",
+            (".flowweave/cases/case-management",),
+        )
+        item = Case(
+            id="case-management",
+            name="跨部门迁移场景",
+            description="",
+            objective="完成迁移",
+            control_work_directory_id=directory["id"],
+        )
+        db.add(item)
+        db.flush()
+
+        assert work_directories.list_work_directories(db, workspace.id)["items"] == []
+        managed = work_directories.list_management_workspaces(db, workspace.id)["items"]
+        identity = [
+            (
+                entry["id"],
+                entry["display_name"],
+                entry["workspace_kind"],
+                entry["source_id"],
+            )
+            for entry in managed
+        ]
+        assert identity == [(directory["id"], "跨部门迁移场景", "CASE", item.id)]
 
 
 def test_agent_workspace_management_scopes_to_the_selected_work_directory(
@@ -4331,8 +5038,17 @@ def test_agent_workspace_conversation_activity_maps_native_unready_ids(
     assert runtime.calls == 1
 
 
+@pytest.mark.parametrize(
+    "completion_failure",
+    [
+        None,
+        ("RUNTIME_READ_PER_RUNTIME_SATURATED", 503),
+        ("RUNTIME_BUSINESS_READ_TIMEOUT", 504),
+        ("EXECUTOR_UNAVAILABLE", 503),
+    ],
+)
 def test_agent_workspace_activity_marks_background_unread_only_after_formal_final_reply(
-    settings, db_session_factory, monkeypatch
+    settings, db_session_factory, monkeypatch, completion_failure
 ):
     monkeypatch.setattr(
         conversations,
@@ -4348,26 +5064,38 @@ def test_agent_workspace_activity_marks_background_unread_only_after_formal_fina
 
     class ActivityRuntime(MockRuntime):
         conversation_id = ""
+        active_id = ""
         visible = True
         status = "running"
         final_result: RuntimeResult | None = None
+        failure: DomainError | None = None
 
         def conversation_activity_snapshot(self, _handle):
-            if not self.visible:
-                return {}
+            identities = ([self.conversation_id] if self.visible else []) + (
+                [self.active_id] if self.active_id else []
+            )
             return {
-                self.conversation_id: RuntimeConversationActivity(
-                    conversation_id=self.conversation_id,
-                    execution_status=self.status,
+                identity: RuntimeConversationActivity(
+                    conversation_id=identity,
+                    execution_status="running"
+                    if identity == self.active_id
+                    else self.status,
                     updated_at="2999-01-01T00:00:00+00:00",
                 )
+                for identity in identities
             }
 
         def read_active_events(self, _handle):
+            if self.failure is not None:
+                raise self.failure
             return RuntimeEventBatch(result=self.final_result)
 
     runtime = ActivityRuntime()
-    with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
+    with (
+        settings_context(settings),
+        db_session_factory() as db,
+        runtime_context(runtime),
+    ):
         workspace = _ready_workspace_for_conversation(db)
         created = conversations.create_conversation(
             db,
@@ -4388,22 +5116,58 @@ def test_agent_workspace_activity_marks_background_unread_only_after_formal_fina
         assert binding.unread is False
         assert binding.terminal_reconciliation_pending is True
 
+        if completion_failure:
+            other = conversations.create_conversation(
+                db,
+                workspace.id,
+                "仍在运行的会话",
+                workspace.default_model_provider_id,
+                "other-running",
+            )
+            runtime.active_id = db.get(
+                AgentConversationBinding, other["id"]
+            ).openhands_conversation_id
+            code, status = completion_failure
+            runtime.failure = DomainError(
+                code, "temporary completion read failure", status
+            )
+            activity = conversations.conversation_activity(db, workspace.id)
+            assert activity["running_binding_ids"] == [other["id"]]
+            assert binding.terminal_reconciliation_pending is True
+            assert binding.unread is False
+            assert binding.last_notified_completion_event_id is None
+            db.commit()
+            db.refresh(binding)
+            assert binding.terminal_reconciliation_pending is True
+            runtime.failure = None
+
         runtime.final_result = RuntimeResult(
             status="COMPLETED",
             final_message="正式最终回复",
             completion_event_id="assistant-final",
             completion_event_kind="ASSISTANT_MESSAGE",
         )
-        conversations.conversation_activity(db, workspace.id)
+        activity = conversations.conversation_activity(db, workspace.id)
         assert binding.unread is True
         assert binding.unread_origin == "MANUAL"
         assert binding.terminal_reconciliation_pending is False
         assert binding.last_notified_completion_event_id == "assistant-final"
+        assert len(activity["conversations"]) == (2 if completion_failure else 1)
+        completed = next(
+            item for item in activity["conversations"] if item["id"] == binding.id
+        )
+        assert completed["final_reply_preview"] == {
+            "event_id": "assistant-final",
+            "content": "正式最终回复",
+        }
 
-        conversations.set_conversation_unread(db, workspace.id, binding.id, unread=False)
+        conversations.set_conversation_unread(
+            db, workspace.id, binding.id, unread=False
+        )
+        assert binding.final_reply_preview_event_id is None
+        assert binding.final_reply_preview_content is None
         conversations.conversation_activity(db, workspace.id)
         assert binding.unread is False
-
 
 def test_agent_workspace_activity_ignores_missing_snapshot_for_running_conversation(
     settings, db_session_factory, monkeypatch
@@ -6147,3 +6911,57 @@ def test_agent_workspace_rewrite_reads_old_user_event_by_native_id(
 
     assert result["accepted"] is True
     assert runtime.calls == [("navigate", "root-event"), ("send", "after")]
+
+
+
+def test_agent_workspace_goal_control_delegates_to_native_runtime(settings, db_session_factory):
+    class GoalRuntime(MockRuntime):
+        calls: list[tuple[str, str | None, int | None]] = []
+
+        def start_goal(self, _handle, objective, max_iterations):
+            self.calls.append(("START", objective, max_iterations))
+
+        def stop_goal(self, _handle):
+            self.calls.append(("STOP", None, None))
+
+        def resume_goal(self, _handle):
+            self.calls.append(("RESUME", None, None))
+
+    runtime = GoalRuntime()
+    with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
+        workspace = _ready_workspace_for_conversation(db)
+        created = conversations.create_conversation(
+            db, workspace.id, None, workspace.default_model_provider_id, "goal-control"
+        )
+
+        started = conversations.control_goal(
+            db,
+            workspace.id,
+            created["id"],
+            action="START",
+            objective="Run the focused test suite until it passes.",
+            max_iterations=3,
+        )
+        stopped = conversations.control_goal(
+            db,
+            workspace.id,
+            created["id"],
+            action="STOP",
+            objective=None,
+            max_iterations=10,
+        )
+        resumed = conversations.control_goal(
+            db,
+            workspace.id,
+            created["id"],
+            action="RESUME",
+            objective=None,
+            max_iterations=10,
+        )
+
+    assert started == stopped == resumed == {"accepted": True}
+    assert runtime.calls == [
+        ("START", "Run the focused test suite until it passes.", 3),
+        ("STOP", None, None),
+        ("RESUME", None, None),
+    ]

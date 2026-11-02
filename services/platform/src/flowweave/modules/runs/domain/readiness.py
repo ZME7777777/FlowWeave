@@ -5,6 +5,7 @@ from dataclasses import dataclass
 class InputField:
     key: str
     data_type: str
+    required: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,7 +38,8 @@ def evaluate_readiness(
     for field in input_fields:
         binding = by_field.get(field.key)
         if not binding or binding.artifact_id not in artifacts:
-            missing.append(field.key)
+            if field.required:
+                missing.append(field.key)
         elif artifacts[binding.artifact_id].artifact_type != field.data_type:
             incompatible.append(field.key)
     return ReadinessResult(not missing and not incompatible, tuple(missing), tuple(incompatible))

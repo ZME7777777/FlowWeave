@@ -12,10 +12,48 @@ import { ComposerModelMenu } from './ComposerModelMenu';
 interface SidebarConversationPaneProps {
   workspaceId: string;
   sourceBindingId: string;
-  initialReference?: AgentConversationReference;
   sidebarBindingId?: string;
+  initialReference?: AgentConversationReference;
+  draft?: SidebarConversationDraft;
+  onDraftChange: (draft: SidebarConversationDraft) => void;
   onBindingCreated: (bindingId: string) => void;
+  onOpenConversationReference: (reference: AgentConversationReference) => void;
   onPreviewAttachment: (attachment: AgentAttachment, bindingId?: string) => void;
+}
+
+export interface SidebarConversationDraft {
+  content: string;
+  reference?: AgentConversationReference;
+}
+
+function sidebarDraftStorageKey(workspaceId: string, sourceBindingId: string): string {
+  return `flowweave:agent-sidebar-draft:v1:${workspaceId}:${sourceBindingId}`;
+}
+
+function readSidebarDraft(workspaceId: string, sourceBindingId: string): SidebarConversationDraft | undefined {
+  try {
+    const value = JSON.parse(localStorage.getItem(sidebarDraftStorageKey(workspaceId, sourceBindingId)) ?? 'null') as Partial<SidebarConversationDraft> | null;
+    if (!value || typeof value.content !== 'string' || value.content.length > 200_000) return undefined;
+    const reference = value.reference;
+    if (reference !== undefined && (
+      typeof reference.event_id !== 'string'
+      || typeof reference.content !== 'string'
+      || typeof reference.source_binding_id !== 'string'
+    )) return undefined;
+    return { content: value.content, ...(reference ? { reference } : {}) };
+  } catch {
+    return undefined;
+  }
+}
+
+function writeSidebarDraft(workspaceId: string, sourceBindingId: string, draft: SidebarConversationDraft): void {
+  try {
+    const key = sidebarDraftStorageKey(workspaceId, sourceBindingId);
+    if (draft.content || draft.reference) localStorage.setItem(key, JSON.stringify(draft));
+    else localStorage.removeItem(key);
+  } catch {
+    // Draft recovery must not block normal side-chat interaction.
+  }
 }
 
 interface PendingSidebarAttachment {
@@ -71,16 +109,23 @@ function sidebarComposerSuggestions(capabilities: AgentSessionCapability[] | und
   });
 }
 
-export function SidebarConversationPane({ workspaceId, sourceBindingId, initialReference, sidebarBindingId, onBindingCreated, onPreviewAttachment }: SidebarConversationPaneProps) {
+export function SidebarConversationPane({ workspaceId, sourceBindingId, sidebarBindingId, initialReference, draft, onDraftChange, onBindingCreated, onOpenConversationReference, onPreviewAttachment }: SidebarConversationPaneProps) {
   const queryClient = useQueryClient();
+  const onDraftChangeRef = useRef(onDraftChange);
+  onDraftChangeRef.current = onDraftChange;
   const attachmentInput = useRef<HTMLInputElement>(null);
   const composerInput = useRef<ComposerHandle>(null);
   const removedPendingAttachmentIds = useRef(new Set<string>());
   const [bindingId, setBindingId] = useState<string | undefined>(sidebarBindingId);
   const bindingIdRef = useRef(bindingId);
   const [draftConversationId] = useState(randomId);
-  const [reference, setReference] = useState<AgentConversationReference | undefined>(initialReference);
-  const [content, setContent] = useState('');
+  const recoveredDraft = useState(() => draft ?? readSidebarDraft(workspaceId, sourceBindingId))[0];
+  const [reference, setReference] = useState<AgentConversationReference | undefined>(() => recoveredDraft?.reference ?? initialReference);
+  const [content, setContent] = useState(() => recoveredDraft?.content ?? '');
+  const referenceRef = useRef(reference);
+  referenceRef.current = reference;
+  const contentRef = useRef(content);
+  contentRef.current = content;
   const [attachments, setAttachments] = useState<AgentAttachment[]>([]);
   const [pendingAttachments, setPendingAttachments] = useState<PendingSidebarAttachment[]>([]);
   const [error, setError] = useState<string>();
@@ -88,12 +133,24 @@ export function SidebarConversationPane({ workspaceId, sourceBindingId, initialR
   const [condensing, setCondensing] = useState(false);
   const [optimisticMessage, setOptimisticMessage] = useState<OpenHandsConversationEvent>();
   const [selectedModelKey, setSelectedModelKey] = useState<string>();
+  const persistDraft = useCallback((next: SidebarConversationDraft) => {
+    onDraftChangeRef.current(next);
+    writeSidebarDraft(workspaceId, sourceBindingId, next);
+  }, [sourceBindingId, workspaceId]);
+  useEffect(() => {
+    if (!initialReference) return;
+    setReference(initialReference);
+    persistDraft({ content: composerInput.current?.value() ?? contentRef.current, reference: initialReference });
+  }, [initialReference, persistDraft]);
+  useEffect(() => () => {
+    persistDraft({ content: composerInput.current?.value() ?? contentRef.current, reference: referenceRef.current });
+  }, [persistDraft]);
   const sourceQuery = useQuery({
     queryKey: ['agent-session', 'sidebar-source', workspaceId, sourceBindingId],
     queryFn: () => api.agentConversation(workspaceId, sourceBindingId),
   });
   const providersQuery = useQuery({ queryKey: ['model-providers'], queryFn: api.providers });
-  const capabilitiesQuery = useQuery({ queryKey: ['capabilities'], queryFn: api.capabilities });
+  const capabilitiesQuery = useQuery({ queryKey: ['user-configurable-capabilities'], queryFn: api.userConfigurableCapabilities });
   const models = useMemo(() => (providersQuery.data ?? []).flatMap(provider => provider.connection_state === 'CONNECTED'
     ? provider.models.filter(model => model.enabled).map(model => ({ providerId: provider.id, modelName: model.model_name, reasoningEffort: model.default_reasoning_effort ?? null, label: `${provider.name} · ${model.model_name}` }))
     : []), [providersQuery.data]);
@@ -175,6 +232,7 @@ export function SidebarConversationPane({ workspaceId, sourceBindingId, initialR
         composerInput.current?.replace('');
         setAttachments([]);
         setReference(undefined);
+        persistDraft({ content: '' });
         queryClient.setQueryData(['agent-session', 'sidebar', workspaceId, result.conversation.id], {
           binding_id: result.conversation.id, source_binding_id: sourceBindingId, expires_at: result.expires_at, expired: false,
         });
@@ -185,6 +243,7 @@ export function SidebarConversationPane({ workspaceId, sourceBindingId, initialR
         setContent('');
         composerInput.current?.replace('');
         setAttachments([]);
+        persistDraft({ content: '', reference });
         await invalidate(bindingId);
       }
     } catch (reason) {
@@ -277,7 +336,6 @@ export function SidebarConversationPane({ workspaceId, sourceBindingId, initialR
       setError(reason instanceof Error ? reason.message : '保存模型设置失败');
     }
   };
-  useEffect(() => setReference(initialReference), [initialReference]);
   useEffect(() => () => {
     if (!bindingIdRef.current) void api.deleteAgentWorkspaceDraftAttachments(workspaceId, draftConversationId).catch(() => undefined);
   }, [draftConversationId, workspaceId]);
@@ -297,13 +355,28 @@ export function SidebarConversationPane({ workspaceId, sourceBindingId, initialR
   const composerControl = bindingId && (running || paused)
     ? { label: running ? '暂停侧边聊天 Agent' : '继续侧边聊天 Agent', action: running ? 'interrupt' as const : 'resume' as const }
     : undefined;
-  const updateDraft = useCallback((_scope: string | undefined, value: string) => setContent(value), []);
+  const updateDraft = useCallback((_scope: string | undefined, value: string) => {
+    setContent(value);
+    persistDraft({ content: value, reference: referenceRef.current });
+  }, [persistDraft]);
   const updateContentPresence = useCallback(() => undefined, []);
-  const persistDraft = useCallback(() => undefined, []);
+  const persistComposerDraft = useCallback(() => {
+    persistDraft({ content: composerInput.current?.value() ?? contentRef.current, reference: referenceRef.current });
+  }, [persistDraft]);
+  const addConversationReference = useCallback(({ bindingId: sourceBindingId, eventId, title }: { bindingId: string; eventId: string; title: string }) => {
+    if (!eventId) return;
+    setReference(current => {
+      const next = current?.source_binding_id === sourceBindingId && current.event_id === eventId
+        ? current
+        : { source_binding_id: sourceBindingId, event_id: eventId, content: title };
+      persistDraft({ content: composerInput.current?.value() ?? contentRef.current, reference: next });
+      return next;
+    });
+  }, [persistDraft]);
   return <section className="agent-sidebar-conversation" aria-label="侧边聊天">
     <div className="agent-sidebar-chat-content">
       {hydrationQuery.isLoading && bindingId ? <div className="conversation-surface-empty"><LoaderCircle className="conversation-activity-spin" size={16}/><b>正在加载会话</b></div>
-        : bindingId ? <ConversationSurface events={events} isGenerating={running || sending} liveTextReveal={running} isPaused={paused} conversationScope={bindingId} requestSubmitting={sending} condensationPending={condensing} onOpenAttachment={attachment => onPreviewAttachment(attachment, bindingId)} taskControl={hydrationQuery.data?.events.task_control} monitoring={hydrationQuery.data?.events.monitoring} connectionState={hydrationQuery.isError ? 'unavailable' : hydrationQuery.isFetching && !hydrationQuery.data ? 'checking' : 'connected'}/>
+        : bindingId ? <ConversationSurface events={events} isGenerating={running || sending} isPaused={paused} conversationScope={bindingId} requestSubmitting={sending} condensationPending={condensing} onOpenAttachment={attachment => onPreviewAttachment(attachment, bindingId)} onOpenConversationReference={onOpenConversationReference} taskControl={hydrationQuery.data?.events.task_control} monitoring={hydrationQuery.data?.events.monitoring} connectionState={hydrationQuery.isError ? 'unavailable' : hydrationQuery.isFetching && !hydrationQuery.data ? 'checking' : 'connected'}/>
           : <div className="agent-workbench-empty"><MessageSquarePlus size={28}/><b>向主会话追问</b><span>这是临时聊天：关闭后会删除，最长保留一小时。</span></div>}
       {expired && <section className="agent-sidebar-expired" role="status"><Clock3 size={16}/><span>侧边聊天会话已过期。已显示的内容仍可阅读，但不能继续发送消息。</span></section>}
       {error && <section className="agent-workbench-error" role="alert"><CircleAlert size={17}/><div><b>操作未完成</b><span>{error}</span></div></section>}
@@ -311,15 +384,15 @@ export function SidebarConversationPane({ workspaceId, sourceBindingId, initialR
     <div className="agent-sidebar-chat-composer">
       <div className="agent-composer agent-sidebar-composer">
         <div className="agent-composer-attachments">
-          {reference && <div className="agent-attachments agent-conversation-references" aria-label="已添加的会话引用"><span><span className="agent-attachment-open" title={reference.content}><Quote size={14}/><em>会话引用</em></span><button type="button" className="agent-attachment-remove" onClick={() => setReference(undefined)} aria-label="移除引用">×</button></span></div>}
+          {reference && <div className="agent-attachments agent-conversation-references" aria-label="已添加的会话引用"><span><button type="button" className="agent-attachment-open" aria-label="定位引用来源会话" title={reference.content} onClick={() => onOpenConversationReference(reference)}><Quote size={14}/><em>会话引用</em></button><button type="button" className="agent-attachment-remove" onClick={() => { setReference(undefined); persistDraft({ content: composerInput.current?.value() ?? contentRef.current }); }} aria-label="移除引用">×</button></span></div>}
           {(attachments.length > 0 || pendingAttachments.length > 0) && <div className="agent-attachments" aria-label="已添加的附件">{attachments.map(item => <span key={item.path}><button type="button" className="agent-attachment-open" title={`预览附件：${item.filename}`} onClick={() => onPreviewAttachment(item, bindingId)}>{item.image_data_url ? <img src={item.image_data_url} alt=""/> : <FileTypeIcon filename={item.filename} mimeType={item.mime_type} size={16}/>}<em>{item.filename}</em></button><button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => setAttachments(current => current.filter(candidate => candidate.path !== item.path))}>×</button></span>)}{pendingAttachments.map(item => <span key={item.id} className={`agent-pending-attachment ${item.state}`} title={item.state === 'failed' ? '附件上传失败，请重试或删除。' : `正在上传 ${item.progress}%`}><span className="agent-attachment-open">{item.previewUrl ? <img src={item.previewUrl} alt=""/> : <FileTypeIcon filename={item.file.name} mimeType={item.file.type} size={16}/>}<em>{item.file.name}</em>{item.state === 'uploading' && <small>{item.progress}%</small>}{item.state === 'failed' && <span className="agent-attachment-retry-overlay"><button type="button" onClick={() => retryPendingAttachment(item.id)}>重试</button></span>}</span>{item.state === 'uploading' && <i className="agent-attachment-progress" style={{ '--upload-progress': `${item.progress}%` } as CSSProperties}/>}<button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.file.name}`} onClick={() => removePendingAttachment(item.id)}>×</button></span>)}</div>}
         </div>
-        <AgentComposerInput ref={composerInput} ariaLabel="发送侧边聊天消息" initialDraft={content} scope={bindingId ?? draftConversationId} suggestions={composerSuggestions} disabled={composerDisabled} placeholder={expired ? '侧边聊天会话已过期' : running ? '当前回复完成后可继续发送' : '给 Agent 发消息…'} onDraftChange={updateDraft} onContentPresenceChange={updateContentPresence} onDraftPersist={persistDraft} onPaste={event => {
+        <AgentComposerInput ref={composerInput} ariaLabel="发送侧边聊天消息" initialDraft={content} scope={bindingId ?? draftConversationId} suggestions={composerSuggestions} disabled={composerDisabled} placeholder={expired ? '侧边聊天会话已过期' : running ? '当前回复完成后可继续发送' : '给 Agent 发消息…'} onDraftChange={updateDraft} onContentPresenceChange={updateContentPresence} onDraftPersist={persistComposerDraft} onPaste={event => {
           const files = transferredFiles(event.clipboardData);
           if (!files.length) return;
           event.preventDefault();
           files.forEach(startAttachmentUpload);
-        }} onDropFiles={files => files.forEach(startAttachmentUpload)} onSubmit={() => void send()} onDirectSubmit={() => void send()} onNativeAction={action => { if (action === 'CONDENSE') void condense(); }}/>
+        }} onDropFiles={files => files.forEach(startAttachmentUpload)} onDropConversationReference={transfer => addConversationReference(transfer)} onSubmit={() => void send()} onDirectSubmit={() => void send()} onNativeAction={action => { if (action === 'CONDENSE') void condense(); }}/>
         <footer><div className="agent-composer-context"><input ref={attachmentInput} aria-label="上传侧边聊天附件" type="file" multiple hidden onChange={event => { Array.from(event.currentTarget.files ?? []).forEach(startAttachmentUpload); event.currentTarget.value = ''; }}/><button type="button" aria-label="添加附件" disabled={composerDisabled} onClick={() => attachmentInput.current?.click()}><Plus size={17}/></button></div><div className="agent-composer-actions"><ComposerModelMenu providers={connectedProviders} providerId={currentModel?.providerId ?? ''} modelName={currentModel?.modelName ?? ''} models={availableModels} efforts={efforts} effort={currentModel?.reasoningEffort ?? ''} disabled={composerDisabled || pendingAttachments.length > 0} onProviderChange={providerId => { const nextProvider = connectedProviders.find(item => item.id === providerId); const nextModel = nextProvider?.models.find(item => item.enabled && item.is_default) ?? nextProvider?.models.find(item => item.enabled); if (nextModel) { if (bindingId) void updateModel(providerId, nextModel.model_name, nextModel.default_reasoning_effort ?? null); else setSelectedModelKey(`${providerId}:${nextModel.model_name}`); } }} onModelChange={modelName => { const model = availableModels.find(item => item.model_name === modelName); if (bindingId && currentModel) void updateModel(currentModel.providerId, modelName, model?.default_reasoning_effort ?? null); else if (currentModel) setSelectedModelKey(`${currentModel.providerId}:${modelName}`); }} onEffortChange={effort => { if (bindingId && currentModel) void updateModel(currentModel.providerId, currentModel.modelName, effort || null); }}/><button type="button" className={`agent-send${composerControl?.action === 'resume' ? ' resume' : ''}`} aria-label={composerControl?.label ?? '发送侧边聊天消息'} disabled={composerControl ? sending || expired : (!content.trim() && !attachments.length) || composerDisabled || pendingAttachments.length > 0} onClick={() => { if (composerControl) void control(); else void send(); }}>{composerControl?.action === 'interrupt' ? <Square size={10} fill="currentColor"/> : composerControl?.action === 'resume' ? <Play size={12} fill="currentColor"/> : sending ? <LoaderCircle className="conversation-activity-spin" size={15}/> : <Send size={16}/>}</button></div></footer>
       </div>
       <div className="agent-sidebar-composer-bottom" aria-hidden="true"/>

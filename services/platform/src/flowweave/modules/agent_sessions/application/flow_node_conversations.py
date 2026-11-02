@@ -16,8 +16,15 @@ from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions import public as agent_sessions
-from flowweave.modules.agent_sessions.application import resumable_attachments
+from flowweave.modules.agent_sessions.application import message_submissions, resumable_attachments
 from flowweave.modules.agent_sessions.application import usage as usage_projection
+from flowweave.modules.agent_sessions.application.activity_reconciliation import (
+    read_activity_completion,
+)
+from flowweave.modules.agent_sessions.application.capability_versions import (
+    current_capabilities,
+    validate_skill_upgrade,
+)
 from flowweave.modules.agent_sessions.application.condensation import (
     condensation_task_failure_reason,
     enqueue_manual_condensation,
@@ -29,6 +36,7 @@ from flowweave.modules.agent_sessions.application.conversation_diagnostics impor
 from flowweave.modules.agent_sessions.application.conversations import (
     ATTACHMENT_PATH,
     enqueue_title_task,
+    final_reply_preview,
     frozen_runtime_capability,
     hydration_context_snapshot,
     initial_user_event_id,
@@ -52,8 +60,10 @@ from flowweave.modules.agent_sessions.application.draft_attachments import (
     assert_attachment_owner_unbound,
     delete_draft_attachment_cleanup_tasks,
     delete_owned_attachment_files,
-    delete_pending_attachment as delete_pending_attachment_file,
     enqueue_draft_attachment_cleanup,
+)
+from flowweave.modules.agent_sessions.application.draft_attachments import (
+    delete_pending_attachment as delete_pending_attachment_file,
 )
 from flowweave.modules.agent_sessions.application.event_branch import (
     complete_active_branch,
@@ -73,6 +83,10 @@ from flowweave.modules.agent_sessions.application.runtime_config import (
     provider_for_config,
     reserve_flow_node_binding,
 )
+from flowweave.modules.agent_sessions.application.workspace_file_links import (
+    is_runtime_workspace_directory,
+    project_sandbox_file_links,
+)
 from flowweave.modules.agent_sessions.public import (
     AgentConversationBinding,
     AgentConversationCapability,
@@ -80,6 +94,10 @@ from flowweave.modules.agent_sessions.public import (
     AgentConversationMessageAttachment,
 )
 from flowweave.modules.agent_workspaces import public as agent_workspace_host
+from flowweave.modules.catalog.application import mcp_authentication
+from flowweave.modules.catalog.application.platform_capabilities import (
+    require_user_configurable_capability,
+)
 from flowweave.modules.catalog.public import resolve_version
 from flowweave.modules.credentials.application.service import credentials_for_agent
 from flowweave.modules.environments.public import (
@@ -89,7 +107,7 @@ from flowweave.modules.environments.public import (
 from flowweave.modules.model_providers.public import has_connected_default_model
 from flowweave.modules.sandboxes import public as sandboxes
 from flowweave.modules.tasks.public import enqueue
-from flowweave.modules.users.application.security import current_principal
+from flowweave.modules.users.application.security import current_principal, current_user_id
 from flowweave.runtime.base import (
     RuntimeEventBatch,
     RuntimeHandle,
@@ -313,9 +331,6 @@ _UNREADY_EXECUTION_STATUSES = (
 )
 _RUNTIME_PROJECT = PurePosixPath("/runtime/workspace/project")
 _RUNTIME_WORKSPACE_PATH = r"/runtime/workspace/(?:project(?:/users/[0-9a-f-]{36})?|[0-9a-f-]{36})"
-_SANDBOX_PROJECT_IMAGE = re.compile(
-    rf"sandbox:({_RUNTIME_WORKSPACE_PATH}/[A-Za-z0-9][A-Za-z0-9._/-]*)"
-)
 _RELATIVE_MARKDOWN_IMAGE = re.compile(
     r"(!\[[^\]\r\n]*\]\()([A-Za-z0-9][A-Za-z0-9._/-]*\.(?:avif|gif|jpe?g|png|svg|webp))(\))",
     re.IGNORECASE,
@@ -327,9 +342,14 @@ _ABSOLUTE_WORKSPACE_MARKDOWN_IMAGE = re.compile(
 
 
 def project_sandbox_images(
-    content: str, *, flow_run_id: str, attempt_id: str, binding_id: str
+    content: str,
+    *,
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str,
+    working_directory: str,
 ) -> str:
-    """Map Runtime-local and safe relative images to the scoped FlowRun file endpoint.
+    """Map Runtime-local files and safe relative images to the scoped FlowRun endpoint.
 
     Only node-workspace paths are projected. The endpoint still validates the
     FlowRun, Attempt and Conversation before returning the inline image.
@@ -342,20 +362,19 @@ def project_sandbox_images(
             f"/agent-sessions/workspace/file?{query}"
         )
 
-    def replace_sandbox_url(match: re.Match[str]) -> str:
-        return file_url(match.group(1))
-
     def replace_relative_url(match: re.Match[str]) -> str:
         relative_path = match.group(2)
         parts = relative_path.split("/")
         if any(part in {"", ".", ".."} or part.startswith(".") for part in parts):
             return match.group(0)
-        return f"{match.group(1)}{file_url(f'{_RUNTIME_PROJECT}/{relative_path}')}{match.group(3)}"
+        if not is_runtime_workspace_directory(working_directory):
+            return match.group(0)
+        return f"{match.group(1)}{file_url(f'{working_directory}/{relative_path}')}{match.group(3)}"
 
     def replace_absolute_workspace_url(match: re.Match[str]) -> str:
         return f"{match.group(1)}{file_url(match.group(2))}{match.group(3)}"
 
-    projected = _SANDBOX_PROJECT_IMAGE.sub(replace_sandbox_url, content)
+    projected = project_sandbox_file_links(content, file_url)
     projected = _ABSOLUTE_WORKSPACE_MARKDOWN_IMAGE.sub(replace_absolute_workspace_url, projected)
     return _RELATIVE_MARKDOWN_IMAGE.sub(replace_relative_url, projected)
 
@@ -536,6 +555,16 @@ def _binding_for_attempt(
     return item
 
 
+def authorize_node_message_submission(
+    db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str,
+) -> None:
+    binding = _binding_for_attempt(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id,
+    )
+    if binding.owner_user_id != current_user_id():
+        raise not_found("flow_run_conversation_binding", binding_id)
+
+
 def node_conversation_binding(
     db: Session,
     *,
@@ -599,10 +628,12 @@ def _node_session_dict(db: Session, item: AgentConversationBinding) -> dict[str,
                 "capability_key": capability.capability_key,
                 "digest": capability.digest,
             }
-            for capability in db.scalars(
-                select(AgentConversationCapability)
-                .where(AgentConversationCapability.binding_id == item.id)
-                .order_by(AgentConversationCapability.position)
+            for capability in current_capabilities(
+                db.scalars(
+                    select(AgentConversationCapability)
+                    .where(AgentConversationCapability.binding_id == item.id)
+                    .order_by(AgentConversationCapability.position)
+                )
             )
         ],
         "streaming_callback_ready": item.streaming_callback_ready,
@@ -613,6 +644,7 @@ def _node_session_dict(db: Session, item: AgentConversationBinding) -> dict[str,
         "pinned": item.pinned,
         "unread": item.unread,
         "unread_origin": item.unread_origin,
+        "final_reply_preview": final_reply_preview(item),
         "lifecycle": item.lifecycle,
         "created_at": item.created_at.isoformat(),
         "updated_at": item.updated_at.isoformat(),
@@ -706,7 +738,7 @@ def _node_session_page_dicts(
                 AgentConversationCapability.position,
             )
         )
-        for capability in capabilities:
+        for capability in current_capabilities(capabilities):
             capabilities_by_binding[capability.binding_id].append(
                 {
                     "id": capability.capability_version_id,
@@ -973,7 +1005,7 @@ def node_session_activity(
             else:
                 item.activity_was_running = False
         if item.terminal_reconciliation_pending and is_background and not is_running:
-            result = runtime.read_active_events(_handle(db, item)).result
+            result = read_activity_completion(runtime, _handle(db, item))
             if (
                 result is not None
                 and result.status == "COMPLETED"
@@ -987,6 +1019,8 @@ def node_session_activity(
                     item.unread = True
                     item.unread_origin = "MANUAL"
                     item.last_notified_completion_event_id = result.completion_event_id
+                    item.final_reply_preview_event_id = result.completion_event_id
+                    item.final_reply_preview_content = result.final_message
             elif result is not None and result.status in {"COMPLETED", "FAILED", "PAUSED"}:
                 item.terminal_reconciliation_pending = False
                 item.activity_was_running = False
@@ -1174,7 +1208,13 @@ def set_node_session_unread(
     db.execute(
         update(AgentConversationBinding)
         .where(AgentConversationBinding.id == item.id)
-        .values(unread=unread, unread_origin=origin, updated_at=item.updated_at)
+        .values(
+            unread=unread,
+            unread_origin=origin,
+            final_reply_preview_event_id=None,
+            final_reply_preview_content=None,
+            updated_at=item.updated_at,
+        )
     )
     db.refresh(item)
     return _node_session_dict(db, item)
@@ -1471,7 +1511,7 @@ def _create_native_conversation(
         runtime_sandbox_id=connection.managed_runtime_id,
         runtime_resource_name=connection.resource_name,
         runtime_base_url=f"http://{connection.resource_name}:8000",
-        conversation_secrets=conversation_secrets,
+        conversation_secrets={**request.conversation_secrets, **conversation_secrets},
     )
     handle = get_runtime().create_conversation(request)
     if handle.conversation_id != item.openhands_conversation_id:
@@ -1698,7 +1738,7 @@ def _activate_node_bootstrap(
     *,
     binding: AgentConversationBinding,
     command: AgentConversationCommand,
-    initial_event_id: str,
+    initial_event_id: str | None,
     content: str,
     attachments: tuple[dict[str, str | int], ...],
 ) -> dict[str, Any]:
@@ -1712,7 +1752,8 @@ def _activate_node_bootstrap(
     binding.updated_at = activated_at
     command.state = "SUCCEEDED"
     command.updated_at = binding.updated_at
-    record_message_attachments(db, binding, initial_event_id, content, attachments)
+    if initial_event_id is not None:
+        record_message_attachments(db, binding, initial_event_id, content, attachments)
     enqueue_title_task(db, binding, content)
     db.add(
         HumanAction(
@@ -1871,7 +1912,7 @@ def _create_or_reload_node_bootstrap(
         runtime_sandbox_id=connection.managed_runtime_id,
         runtime_resource_name=connection.resource_name,
         runtime_base_url=f"http://{connection.resource_name}:8000",
-        conversation_secrets=conversation_secrets,
+        conversation_secrets={**request.conversation_secrets, **conversation_secrets},
     )
     created = runtime.create_conversation(request)
     if created.conversation_id != binding.openhands_conversation_id:
@@ -1891,6 +1932,7 @@ def bootstrap_node_conversation(
     references: tuple[dict[str, str], ...] = (),
     workspace_references: tuple[dict[str, str], ...] = (),
     annotations: tuple[dict[str, Any], ...] = (),
+    goal_objective: str | None = None,
     legacy_image_urls: tuple[str, ...] = (),
     conversation_id: str | None,
     work_directory_id: str | None,
@@ -1900,6 +1942,17 @@ def bootstrap_node_conversation(
     """Lazily create a node Conversation and durably reconcile its first event."""
 
     text = content.strip()
+    normalized_goal_objective = goal_objective.strip() if goal_objective else None
+    if normalized_goal_objective and (
+        attachments or references or workspace_references or annotations or legacy_image_urls
+    ):
+        raise DomainError(
+            "AGENT_GOAL_CONTEXT_UNSUPPORTED",
+            "目标模式暂不支持附件、引用或批注；请先移除这些内容后启动",
+            422,
+        )
+    if normalized_goal_objective and text != normalized_goal_objective:
+        raise DomainError("AGENT_GOAL_OBJECTIVE_MISMATCH", "目标内容必须与首条消息一致", 422)
     if references:
         raise DomainError(
             "AGENT_CONVERSATION_REFERENCE_UNAVAILABLE",
@@ -1947,7 +2000,9 @@ def bootstrap_node_conversation(
         idempotency_key=idempotency_key,
     )
     if binding is not None and command is not None:
-        if binding.lifecycle == "ACTIVE" and binding.initial_user_event_id is not None:
+        if binding.lifecycle == "ACTIVE" and (
+            binding.initial_user_event_id is not None or normalized_goal_objective is not None
+        ):
             return {
                 "conversation": _node_session_dict(db, binding),
                 "accepted": True,
@@ -2059,6 +2114,35 @@ def bootstrap_node_conversation(
         raise
 
     runtime = get_runtime()
+    if normalized_goal_objective:
+        try:
+            runtime.start_goal(handle, normalized_goal_objective, 3)
+        except DomainError:
+            try:
+                context = sandboxes.node_attempt_workspace_context(
+                    db, flow_run_id=flow_run_id, node_attempt_id=attempt_id
+                )
+                delete_owned_attachment_files(
+                    context.host_working_directory,
+                    str(context.runtime_working_directory),
+                    binding.id,
+                )
+            except DomainError:
+                pass
+            try:
+                runtime.delete_conversation(handle)
+            except DomainError:
+                pass
+            _delete_node_bootstrap_reservation(db, binding, command)
+            raise
+        return _activate_node_bootstrap(
+            db,
+            binding=binding,
+            command=command,
+            initial_event_id=None,
+            content=normalized_goal_objective,
+            attachments=(),
+        )
     try:
         delivered = runtime.send_message(handle, prompt, image_urls)
     except DomainError as exc:
@@ -2572,12 +2656,17 @@ def _assert_prepared_node_conversation_hydration_current(
 
 def read_prepared_node_conversation_hydration(
     prepared: PreparedNodeConversationHydration,
+    cursor: str | None = None,
 ) -> tuple[RuntimeEventBatch, dict[str, int | float | str | bool | None], dict[str, bool | str]]:
     """Read the node OpenHands event window without holding a DB session."""
 
     runtime = get_runtime()
     try:
-        batch = complete_latest_user_turn(runtime.read_active_events, prepared.handle)
+        batch = (
+            runtime.read_active_events(replace(prepared.handle, cursor=cursor))
+            if cursor
+            else complete_latest_user_turn(runtime.read_active_events, prepared.handle)
+        )
         context = hydration_context_snapshot(batch.context)
         readiness = (
             batch.readiness.as_dict()
@@ -2771,6 +2860,7 @@ def _event_batch_dict(
                 flow_run_id=node_run.flow_run_id,
                 attempt_id=attempt.id,
                 binding_id=binding.id,
+                working_directory=binding.working_directory or "",
             )
         display_content, references, workspace_references, annotations = (
             project_conversation_references(str(payload.get("content") or ""))
@@ -2836,6 +2926,7 @@ def _event_batch_dict(
             batch.events,
             conversation_completed=bool(batch.result and batch.result.status == "COMPLETED"),
             terminal_event_missing=terminal_event_missing,
+            execution_status=execution_status,
         ),
     }
 
@@ -3070,7 +3161,7 @@ def dispatch_running_node_message(
         )
     try:
         return (
-            runtime.send_message(prepared.handle, prompt, image_urls),
+            message_submissions.dispatch(runtime, prepared.handle, prompt, image_urls),
             queued_during_turn,
             compacted,
         )
@@ -3349,7 +3440,6 @@ def delete_pending_node_attachment(
     )
 
 
-
 def upload_node_attachment(
     db: Session,
     *,
@@ -3577,15 +3667,15 @@ def cancel_resumable_node_attachment_upload(
     resumable_attachments.close_upload(db, upload, status="CANCELLED")
 
 
-def add_node_conversation_capability(
+def register_node_conversation_capabilities(
     db: Session,
     *,
     flow_run_id: str,
     attempt_id: str,
     binding_id: str,
-    capability_version_id: str,
+    capability_version_ids: tuple[str, ...],
 ) -> dict[str, Any]:
-    """Load a governed capability through the same native marketplace lifecycle."""
+    """Register node-session capabilities in one ordered native lifecycle operation."""
 
     _assert_node_session_writable(
         db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
@@ -3595,29 +3685,62 @@ def add_node_conversation_capability(
     )
     if binding.lifecycle != "ACTIVE" or not binding.working_directory:
         raise DomainError("AGENT_CONVERSATION_NOT_READY", "会话当前无法加载能力", 409)
-    existing = db.scalar(
-        select(AgentConversationCapability).where(
-            AgentConversationCapability.binding_id == binding.id,
-            AgentConversationCapability.capability_version_id == capability_version_id,
+
+    seen_versions: set[str] = set()
+    seen_names: set[tuple[str, str]] = set()
+    selected: list[tuple[Any, str]] = []
+    for version_id in capability_version_ids:
+        if version_id in seen_versions:
+            raise DomainError("AGENT_CONVERSATION_CAPABILITY_DUPLICATE", "能力不能重复选择", 422)
+        published = resolve_version(db, version_id)
+        require_user_configurable_capability(published)
+        capability_type = published.package.capability_type
+        if capability_type not in {"SKILL", "MCP", "PLUGIN"}:
+            raise DomainError("AGENT_CAPABILITY_INVALID", "该能力不能加载到 Agent 会话", 422)
+        identity = (capability_type, published.package.capability_key)
+        if identity in seen_names:
+            raise DomainError(
+                "AGENT_CONVERSATION_CAPABILITY_CONFLICT", "同类型同名称能力只能选择一个版本", 422
+            )
+        seen_versions.add(version_id)
+        seen_names.add(identity)
+        selected.append((published, capability_type))
+
+    existing = tuple(
+        db.scalars(
+            select(AgentConversationCapability).where(
+                AgentConversationCapability.binding_id == binding.id
+            )
         )
     )
-    if existing is not None:
-        return _node_session_dict(db, binding)
-    published = resolve_version(db, capability_version_id)
-    capability_type = published.package.capability_type
-    if capability_type not in {"SKILL", "MCP", "PLUGIN"}:
-        raise DomainError("AGENT_CAPABILITY_INVALID", "该能力不能加载到 Agent 会话", 422)
-    same_name = db.scalar(
-        select(AgentConversationCapability).where(
-            AgentConversationCapability.binding_id == binding.id,
-            AgentConversationCapability.capability_type == capability_type,
-            AgentConversationCapability.capability_key == published.package.capability_key,
-        )
-    )
-    if same_name is not None:
-        raise DomainError(
-            "AGENT_CONVERSATION_CAPABILITY_CONFLICT", "同类型同名称能力已加载其他版本", 409
-        )
+    existing_versions = {
+        reference.capability_version_id for reference in current_capabilities(existing)
+    }
+    existing_by_name = {
+        (reference.capability_type, reference.capability_key): reference
+        for reference in current_capabilities(existing)
+    }
+    pending: list[tuple[Any, str]] = []
+    already_loaded: list[str] = []
+    for published, capability_type in selected:
+        version_id = published.version.id
+        if version_id in existing_versions:
+            already_loaded.append(version_id)
+            continue
+        previous = existing_by_name.get((capability_type, published.package.capability_key))
+        if previous is not None:
+            validate_skill_upgrade(db, previous, published)
+        pending.append((published, capability_type))
+
+    if not pending:
+        return {
+            "conversation": _node_session_dict(db, binding),
+            "completed": True,
+            "loaded_capability_version_ids": [],
+            "already_loaded_capability_version_ids": already_loaded,
+            "failure": None,
+        }
+
     handle = _node_handle(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id)
     runtime = get_runtime()
     if not runtime.can_accept_input(handle):
@@ -3637,34 +3760,77 @@ def add_node_conversation_capability(
         )
     )
     marketplace_name = agent_workspace_capability_marketplace_name(binding.id)
-    plugin_name = materialize_agent_workspace_capability_marketplace(
-        frozen_runtime_capability(db, published, capability_type),
-        host_root=host_root,
-        runtime_root=runtime_root,
-        marketplace_name=marketplace_name,
-    )
-    if plugin_name is None:
-        raise DomainError("RUNTIME_CAPABILITY_UNAVAILABLE", "能力插件物化失败", 409)
-    runtime.load_plugin(handle, f"{plugin_name}@{marketplace_name}")
-    position = db.scalar(
-        select(AgentConversationCapability.position)
-        .where(AgentConversationCapability.binding_id == binding.id)
-        .order_by(AgentConversationCapability.position.desc())
-        .limit(1)
-    )
-    db.add(
-        AgentConversationCapability(
-            binding_id=binding.id,
-            capability_version_id=published.version.id,
-            capability_type=capability_type,
-            capability_key=published.package.capability_key,
-            digest=published.version.digest,
-            position=(position + 1) if position is not None else 0,
+    position = max((reference.position for reference in existing), default=-1)
+    loaded: list[str] = []
+    failure: dict[str, str] | None = None
+    for published, capability_type in pending:
+        version_id = published.version.id
+        try:
+            material, auth_secrets = mcp_authentication.prepare_material(
+                db,
+                frozen_runtime_capability(db, published, capability_type),
+                f"conversation:{binding.id}",
+            )
+            if auth_secrets:
+                runtime.update_conversation_secrets(handle, auth_secrets)
+            plugin_name = materialize_agent_workspace_capability_marketplace(
+                material,
+                host_root=host_root,
+                runtime_root=runtime_root,
+                marketplace_name=marketplace_name,
+            )
+            if plugin_name is None:
+                raise DomainError("RUNTIME_CAPABILITY_UNAVAILABLE", "能力插件物化失败", 409)
+            runtime.load_plugin(handle, f"{plugin_name}@{marketplace_name}")
+        except DomainError as exc:
+            failure = {
+                "capability_version_id": version_id,
+                "code": exc.code,
+                "message": exc.message,
+            }
+            break
+        position += 1
+        db.add(
+            AgentConversationCapability(
+                binding_id=binding.id,
+                capability_version_id=version_id,
+                capability_type=capability_type,
+                capability_key=published.package.capability_key,
+                digest=published.version.digest,
+                position=position,
+            )
         )
-    )
-    binding.updated_at = now()
+        loaded.append(version_id)
+
+    if loaded:
+        binding.updated_at = now()
     db.flush()
-    return _node_session_dict(db, binding)
+    return {
+        "conversation": _node_session_dict(db, binding),
+        "completed": failure is None,
+        "loaded_capability_version_ids": loaded,
+        "already_loaded_capability_version_ids": already_loaded,
+        "failure": failure,
+    }
+
+
+def add_node_conversation_capability(
+    db: Session,
+    *,
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str,
+    capability_version_id: str,
+) -> dict[str, Any]:
+    """Compatibility wrapper for the original single-capability endpoint."""
+
+    return register_node_conversation_capabilities(
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        binding_id=binding_id,
+        capability_version_ids=(capability_version_id,),
+    )["conversation"]
 
 
 def node_pending_confirmation(
@@ -4473,14 +4639,28 @@ def resume_node_conversation(
 
 def control_goal(
     db: Session,
-    binding_id: str,
     *,
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str,
     action: str,
     objective: str | None,
     max_iterations: int,
-) -> dict[str, Any]:
+) -> dict[str, bool]:
+    _assert_node_session_writable(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
+    )
+    _binding_for_attempt(
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        binding_id=binding_id,
+        lock=True,
+    )
     runtime = get_runtime()
-    handle = _handle(db, binding_id)
+    handle = _node_handle(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
+    )
     if action == "START":
         runtime.start_goal(handle, objective or "", max_iterations)
     elif action == "STOP":

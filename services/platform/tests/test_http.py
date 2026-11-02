@@ -385,21 +385,26 @@ async def test_history_reads_do_not_saturate_interactive_runtime_lane() -> None:
         assert await history_task == "history"
 
 
-def test_api_slow_request_log_excludes_query_values(anonymous_client, monkeypatch, caplog) -> None:
+def test_api_slow_request_log_excludes_query_values(
+    container, anonymous_client, monkeypatch, caplog
+) -> None:
+    # This one HTTP test starts the lifespan; request its migrated DB explicitly.
+    # Migration fixtures use fileConfig, which disables existing application loggers.
+    monkeypatch.setattr(api_module.logger, "disabled", False)
     ticks = iter((0.0, 0.0, 2.0))
     monkeypatch.setattr(api_module, "monotonic", lambda: next(ticks))
     caplog.set_level(logging.WARNING, logger=api_module.__name__)
 
     response = anonymous_client.get(
         "/health?credential=must-not-appear",
-        headers={"X-Request-ID": "slow-request-1"},
+        headers={"X-Request-ID": "a54f8216-d35c-4d48-b311-ec60c7593c77"},
     )
 
     assert response.status_code == 200
     record = next(item for item in caplog.records if item.message.startswith("slow API request"))
     assert "route=/health" in record.message
     assert "duration_ms=2000" in record.message
-    assert "request_id=slow-request-1" in record.message
+    assert "request_id=a54f8216-d35c-4d48-b311-ec60c7593c77" in record.message
     assert "must-not-appear" not in record.message
 
 
@@ -720,8 +725,10 @@ def test_audited_lifecycle_routes_keep_confirmation_and_message_lanes_separate()
         "agent_workspaces": {
             "patch_agent_conversation",
             "add_agent_conversation_capability",
+            "register_agent_conversation_capabilities",
             "synchronize_agent_conversation_credentials",
             "delete_agent_conversation",
+            "delete_agent_management_conversations",
             "agent_conversation_model",
             "agent_streaming_migration",
             "agent_fork_conversation",
@@ -729,6 +736,7 @@ def test_audited_lifecycle_routes_keep_confirmation_and_message_lanes_separate()
         "agent_sessions": {
             "node_session_host",
             "add_node_session_capability",
+            "register_node_session_capabilities",
             "synchronize_node_session_credentials",
             "create_node_session",
             "delete_node_session",

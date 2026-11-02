@@ -32,6 +32,7 @@ from flowweave.modules.users.application.ldap import (
     LdapOrganization,
 )
 from flowweave.modules.users.application.security import FLOWWEAVE_USER_ID, tenant_user
+from flowweave.shared.errors import DomainError
 from flowweave.shared.models import (
     FlowDefinition,
     FlowRun,
@@ -594,3 +595,233 @@ def test_admin_manages_agent_access_by_ldap_user_and_organization(isolated_http,
     assert directory.status_code == 200, directory.text
     assert directory.json()["organizations"][0]["agent_session_direct_access"] is True
     assert directory.json()["users"][0]["agent_session_access"] is True
+
+
+def test_platform_users_are_listed_and_only_profile_fields_are_editable(isolated_http, monkeypatch):
+    client, engine, employee_id = isolated_http
+    login(client, "flowweave")
+    snapshot = LdapDirectorySnapshot(
+        users=[LdapIdentity("directory-subject", "employee", "目录姓名", "directory@example.test")],
+        organizations=[],
+    )
+    monkeypatch.setattr(
+        "flowweave.modules.users.presentation.router._ldap_directory",
+        lambda _: SimpleNamespace(
+            directory_snapshot=lambda: snapshot, authenticate=lambda *_args: snapshot.users[0]
+        ),
+    )
+    directory = client.get("/api/v1/auth/ldap-users")
+    assert directory.status_code == 200
+    assert (
+        directory.json()["organizations"] == []
+    )  # virtual directory never becomes an LDAP organization
+    [local] = directory.json()["platform_users"]
+    assert local["id"] == FLOWWEAVE_USER_ID
+    assert local["enabled"] and local["agent_session_access"]
+    assert directory.json()["users"][0]["display_name"] == "目录姓名"
+    with Session(engine) as db:
+        assert db.get(User, employee_id).email == "directory@example.test"
+    response = client.put(
+        f"/api/v1/auth/platform-users/{FLOWWEAVE_USER_ID}/profile",
+        json={"display_name": "平台姓名", "email": "platform@example.test"},
+    )
+    assert response.status_code == 200, response.text
+    assert client.get("/api/v1/auth/profile").json() == {
+        "display_name": "平台姓名", "email": "platform@example.test"
+    }
+    assert response.json()["display_name"] == "平台姓名"
+    assert response.json()["email"] == "platform@example.test"
+    assert response.json()["agent_session_access"]
+    assert client.get("/api/v1/auth/me").json()["is_super_admin"]
+    for payload in [
+        {"display_name": "Name", "email": "bad email"},
+        {"display_name": "Name", "email": "a@example.test", "role": "USER"},
+    ]:
+        assert (
+            client.put(
+                f"/api/v1/auth/platform-users/{FLOWWEAVE_USER_ID}/profile", json=payload
+            ).status_code
+            == 422
+        )
+    assert (
+        client.put(
+            f"/api/v1/auth/platform-users/{employee_id}/profile",
+            json={"display_name": "Not LDAP", "email": "a@example.test"},
+        ).status_code
+        == 404
+    )
+    # A new local account is included automatically; its existing permissions remain intact.
+    with Session(engine) as db:
+        db.add(
+            User(
+                id="custom",
+                username="custom",
+                display_name="Custom",
+                auth_source="LOCAL",
+                role="USER",
+            )
+        )
+        db.commit()
+    assert len(client.get("/api/v1/auth/ldap-users").json()["platform_users"]) == 2
+    client.post("/api/v1/auth/logout")
+    login(client, "employee")
+    assert (
+        client.put(
+            f"/api/v1/auth/platform-users/{FLOWWEAVE_USER_ID}/profile",
+            json={"display_name": "Forbidden", "email": "a@example.test"},
+        ).status_code
+        == 403
+    )
+
+
+def test_platform_directory_works_without_ldap_and_during_directory_outage(
+    isolated_http, monkeypatch
+):
+    client, _, _ = isolated_http
+    login(client, "flowweave")
+
+    def unavailable():
+        raise DomainError("LDAP_UNAVAILABLE", "目录不可用", 503)
+
+    monkeypatch.setattr(
+        "flowweave.modules.users.presentation.router._ldap_directory",
+        lambda _: SimpleNamespace(directory_snapshot=unavailable),
+    )
+    result = client.get("/api/v1/auth/ldap-users")
+    assert result.status_code == 200
+    assert result.json()["platform_users"][0]["username"] == "flowweave"
+    assert result.json()["ldap_warning"]
+    client.app.state.container.settings = client.app.state.container.settings.model_copy(
+        update={"auth_provider": "local"}
+    )
+    result = client.get("/api/v1/auth/ldap-users")
+    assert result.status_code == 200
+    assert "ldap_warning" not in result.json()
+    assert result.json()["users"] == []
+    assert result.json()["platform_users"][0]["username"] == "flowweave"
+
+
+def test_preview_uses_revocable_session_and_cannot_authenticate_platform_api(
+    isolated_http, monkeypatch
+):
+    import base64
+    import re
+    from dataclasses import replace
+    from time import time
+
+    from flowweave.modules.agent_workspaces.presentation import router as browser
+    from flowweave.modules.users.application.security import digest_session_token
+    from flowweave.shared.browser_preview import BrowserPreview
+    from flowweave.shared.settings import settings_context
+
+    client, engine, _ = isolated_http
+    login(client, "flowweave")
+    session_cookie = client.cookies.get(users.SESSION_COOKIE)
+    preview = BrowserPreview(
+        FLOWWEAVE_USER_ID,
+        digest_session_token(session_cookie),
+        "workspace",
+        "http",
+        5186,
+        "binding",
+        "directory",
+        "/flowweave",
+        int(time()) + 60,
+    )
+    scopes = []
+    fetches = []
+
+    async def auxiliary(_container, operation):
+        return operation(None)
+
+    async def control(_container, operation):
+        return operation()
+
+    def authorize(_db, workspace_id, **scope):
+        scopes.append((workspace_id, scope))
+        return "runtime", "resource"
+
+    def fetch(**kwargs):
+        fetches.append(kwargs)
+        return {
+            "status": 200,
+            "headers": {"Content-Type": "text/javascript"},
+            "content_base64": base64.b64encode(b'export default "ok"').decode(),
+        }
+
+    monkeypatch.setattr(browser, "run_blocking_auxiliary", auxiliary)
+    monkeypatch.setattr(browser, "run_terminal_control", control)
+    monkeypatch.setattr(browser.workspace, "browser_resource_details", authorize)
+    monkeypatch.setattr(
+        browser, "DockerControllerClient", lambda _: SimpleNamespace(browser_fetch=fetch)
+    )
+    with settings_context(client.app.state.container.settings):
+        token = preview.encode()
+        expired_token = replace(preview, expires_at=int(time()) - 1).encode()
+    path = f"/api/v1/agent-workspaces/workspace/browser/http/5186/_preview/{token}/app.js"
+    client.cookies.clear()
+    result = client.get(path + "?binding_id=other&work_directory_id=other&v=1")
+    assert result.status_code == 200
+    assert result.headers["access-control-allow-origin"] == "*"
+    assert "allow-same-origin" not in result.headers["content-security-policy"]
+    assert scopes == [("workspace", {"binding_id": "binding", "work_directory_id": "directory"})]
+    assert fetches[0]["query"] == "v=1"
+    assert fetches[0]["path"] == "/app.js"
+    assert client.get("/api/v1/auth/me?preview_token=" + token).json().get("id") is None
+    assert client.get("/api/v1/model-providers?preview_token=" + token).status_code == 401
+    assert client.get(path.replace("/5186/", "/3000/")).status_code == 401
+    assert client.get(path.replace(token, expired_token)).status_code == 401
+    assert client.post(path).status_code == 405
+    assert (
+        client.options(
+            path, headers={"Origin": "null", "Access-Control-Request-Headers": "content-type"}
+        ).status_code
+        == 204
+    )
+    assert len(fetches) == 1
+    assert "access-control-allow-origin" not in client.get("/api/v1/model-providers").headers
+    for error, status, code in [
+        (
+            DomainError("AGENT_BROWSER_RESPONSE_TOO_LARGE", "Response too large", 413),
+            413,
+            "AGENT_BROWSER_RESPONSE_TOO_LARGE",
+        ),
+        (
+            browser.DockerControllerError("backend unavailable"),
+            503,
+            "AGENT_BROWSER_BACKEND_UNAVAILABLE",
+        ),
+        (
+            DomainError("AGENT_BROWSER_TARGET_UNAVAILABLE", "Target unavailable", 502),
+            502,
+            None,
+        ),
+    ]:
+
+        def failed_fetch(_error=error, **_kwargs):
+            raise _error
+
+        monkeypatch.setattr(
+            browser,
+            "DockerControllerClient",
+            lambda _, fetch=failed_fetch: SimpleNamespace(browser_fetch=fetch),
+        )
+        result = client.get(path, headers={"Origin": "null"})
+        assert result.status_code == status
+        if code is not None:
+            assert result.json()["error"]["code"] == code
+        assert result.headers["access-control-allow-origin"] == "*"
+        assert result.headers["cache-control"] == "no-store"
+        assert "allow-same-origin" not in result.headers["content-security-policy"]
+        assert "access-control-allow-credentials" not in result.headers
+        assert "set-cookie" not in result.headers
+    with Session(engine) as db:
+        db.execute(
+            delete(UserSession).where(
+                UserSession.token_digest == digest_session_token(session_cookie)
+            )
+        )
+        db.commit()
+    assert client.get(path).status_code == 401
+    assert len(fetches) == 1
+    assert not re.search(r"fwpreview_", result.text)

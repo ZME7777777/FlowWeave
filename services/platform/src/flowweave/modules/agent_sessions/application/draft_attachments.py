@@ -24,7 +24,7 @@ _RUNTIME_WORKSPACE_PATH = (
     r"/runtime/workspace/(?:project/(?:users/)?[0-9a-f-]{36}|project|[0-9a-f-]{36})"
 )
 ATTACHMENT_PATH = re.compile(
-    rf"^(?P<workspace_root>{_RUNTIME_WORKSPACE_PATH})/uploads/"
+    rf"^(?P<workspace_root>{_RUNTIME_WORKSPACE_PATH})(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/(?:\.uploads|uploads)/"
     r"(?P<owner>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-"
     r"(?P<object>[0-9a-f]{32})(?:--(?P<filename>[A-Za-z0-9][A-Za-z0-9._-]{0,180}))?$"
 )
@@ -174,18 +174,25 @@ def delete_owned_attachment_files(
         relative = PurePosixPath(path).relative_to(PurePosixPath(runtime_root))
         candidates = [host_root.joinpath(*relative.parts)]
     else:
-        uploads = host_root / "uploads"
         try:
-            candidates = list(uploads.glob(f"{owner}-*"))
+            candidates = list(host_root.rglob(f"{owner}-*"))
         except OSError:
             return 0
 
     deleted = 0
     resolved_root = host_root.resolve()
     for candidate in candidates:
-        runtime_path = str(PurePosixPath(runtime_root) / "uploads" / candidate.name)
+        try:
+            relative = candidate.relative_to(host_root).as_posix()
+        except ValueError:
+            continue
+        runtime_path = str(PurePosixPath(runtime_root) / relative)
         matched = ATTACHMENT_PATH.fullmatch(runtime_path)
-        if matched is None or matched.group("owner") != owner:
+        if (
+            matched is None
+            or matched.group("owner") != owner
+            or not PurePosixPath(runtime_path).is_relative_to(PurePosixPath(runtime_root))
+        ):
             continue
         try:
             metadata = candidate.lstat()
