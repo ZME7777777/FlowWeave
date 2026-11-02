@@ -7445,7 +7445,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const activeFormalTurnHasRuntimeActivity = Boolean(
     activeFormalTurnId && hasNonTerminalRuntimeActivityForTurn(currentFormalEvents, activeFormalTurnId),
   );
+  const nativeTurnIdle = nativeExecutionStatus?.trim().toLowerCase() === 'idle';
   const terminalSyncTurnKey = selected && nativeTurnTerminal && activeFormalTurnUnfinished && activeFormalTurnId
+    && (!nativeTurnIdle || runningConversationIds.has(selected.id))
     ? `${selected.id}:${activeFormalTurnId}`
     : undefined;
   const terminalEventReconciliationActive = Boolean(terminalSyncTurnKey && terminalSyncTurnKey !== expiredTerminalSyncTurnKey);
@@ -7453,10 +7455,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   // current branch. A formal process event or the server activity projection
   // is stronger evidence that this turn still runs, while the bounded
   // reconciliation window protects the no-event handoff without hiding a
-  // genuine terminal state indefinitely.
+  // genuine terminal state indefinitely. A newly forked native Conversation
+  // starts idle, so its copied process events require catalog evidence before
+  // they can reopen the copied turn.
   const foregroundTurnStillRunning = foregroundSubmissionAwaitingFormalEvent
     || (activeFormalTurnUnfinished && (
-      activeFormalTurnHasRuntimeActivity
+      (!nativeTurnTerminal && activeFormalTurnHasRuntimeActivity)
       || runningConversationIds.has(selected?.id ?? '')
       || terminalEventReconciliationActive
     ));
@@ -10787,7 +10791,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         })) : undefined}
         onLocateAnnotation={locateAnnotation}
         taskControl={eventsQuery.data?.task_control ?? EMPTY_TASK_CONTROL}
-        monitoring={eventsQuery.data?.monitoring}
+        monitoring={conversationVisuallyActive ? eventsQuery.data?.monitoring : undefined}
         connectionState={inputReadinessQuery.isError ? 'unavailable' : streamStatus === 'recovering' ? 'recovering' : streamStatus === 'connecting' ? 'checking' : inputReadinessQuery.isFetching && !inputReadinessQuery.data ? 'checking' : 'connected'}
       /> : <div className="agent-workbench-empty"><Bot size={32}/><b>新建会话开始协作</b><span>{features.workDirectories ? '每个会话共享同一工作区，但保留独立的对话与事件记录。' : '会话固定在当前节点 Attempt 的隔离工作目录。'}</span><button className="primary" disabled={!canOpenConversation} onClick={() => openConversationDraft({ displayName: features.workDirectories ? '根工作区' : '节点工作目录' }, { selectStandaloneRoot: features.workDirectories })}><Plus size={15}/>新建会话</button></div>}
       {visibleError && <ConversationErrorNotice key={`error:${composerScope}`} error={visibleError} onDismiss={dismissOperationError} transient={visibleError === operationError} onRetry={visibleError === hydrationError ? retryConversationHydration : undefined}/>}

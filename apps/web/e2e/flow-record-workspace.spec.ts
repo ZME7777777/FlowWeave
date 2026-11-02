@@ -294,7 +294,7 @@ test('flow library saves an empty draft before opening its node editor', async (
 });
 
 
-test('flow library scrolls all rows with sidebar actions and a full width editor', async ({ page }) => {
+test('flow library preserves its workspace frame when opening the editor', async ({ page }) => {
   let flows = Array.from({ length: 11 }, (_, i) => ({ ...definition, id: `flow-${i}`, name: `验收流程 ${i}` }));
   let copied: Record<string, unknown> | undefined;
   await page.route('**/api/v1/**', async route => {
@@ -348,9 +348,9 @@ test('flow library scrolls all rows with sidebar actions and a full width editor
   await preview.getByRole('button', { name: 'Fit View', exact: true }).click();
   await expect.poll(() => preview.locator('.react-flow__viewport').getAttribute('style')).not.toBe(draggedTransform);
   await page.screenshot({ path: '../../.tmp/ops36/preview-controls.png' });
-  for (const [width, railWidth] of [[1440, 320], [1024, 280]]) {
+  for (const width of [1440, 1024]) {
     await page.setViewportSize({ width, height: 900 });
-    await expect.poll(() => page.getByLabel('流程列表', { exact: true }).evaluate(element => element.getBoundingClientRect().width)).toBe(railWidth);
+    await expect(page.getByLabel('流程列表', { exact: true })).toBeVisible();
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(1);
     const controls = await page.locator('.flow-library-list-tools').locator('label, button').evaluateAll(elements => elements.map(element => element.getBoundingClientRect().toJSON()));
     expect(controls).toHaveLength(3);
@@ -367,15 +367,22 @@ test('flow library scrolls all rows with sidebar actions and a full width editor
   await page.getByRole('button', { name: '永久删除', exact: true }).click();
   await page.getByLabel('搜索流程', { exact: true }).fill('');
   await expect(page.locator('.flow-library-row')).toHaveCount(10);
+  const previewWorkspace = await page.locator('.flow-library-workspace').boundingBox();
+  expect(previewWorkspace).not.toBeNull();
   await page.getByRole('button', { name: '操作流程 验收流程 0', exact: true }).click();
   await page.getByRole('button', { name: '复制流程', exact: true }).click();
   await expect(page.getByTestId('flow-designer')).toBeVisible();
   await expect.poll(() => page.locator('.flow-editor-page').evaluate(element => element.getBoundingClientRect().height)).toBeGreaterThan(800);
   for (const width of [1440, 1024]) {
     await page.setViewportSize({ width, height: 900 });
-    const layout = await page.locator('.flow-product-layout').boundingBox();
-    expect(layout!.x).toBe(0);
-    expect(layout!.width).toBe(width);
+    const workspace = await page.locator('.flow-editor-workspace').boundingBox();
+    expect(workspace!.x).toBeGreaterThan(0);
+    expect(workspace!.width).toBeLessThan(width);
+    expect(Math.round(workspace!.x)).toBe(Math.round((width - workspace!.width) / 2));
+    if (width === 1440) {
+      expect(Math.round(workspace!.x)).toBe(Math.round(previewWorkspace!.x));
+      expect(Math.round(workspace!.width)).toBe(Math.round(previewWorkspace!.width));
+    }
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(1);
     await page.screenshot({ path: `../../.tmp/ui-696/editor-${width}.png` });
   }

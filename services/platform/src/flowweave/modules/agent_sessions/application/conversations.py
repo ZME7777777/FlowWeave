@@ -3094,6 +3094,7 @@ def _project_conversation_events(
             batch.events,
             conversation_completed=bool(batch.result and batch.result.status == "COMPLETED"),
             terminal_event_missing=terminal_event_missing,
+            execution_status=execution_status,
         ),
     }
 

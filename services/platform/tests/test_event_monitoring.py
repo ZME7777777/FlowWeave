@@ -29,7 +29,12 @@ def test_monitor_flags_stale_agent_and_active_subagent_without_mutating_events()
         )
     ]
 
-    result = build_activity_summary(events, now=observed_at, stale_after_seconds=60)
+    result = build_activity_summary(
+        events,
+        execution_status="running",
+        now=observed_at,
+        stale_after_seconds=60,
+    )
 
     assert result["possibly_stuck"] is True
     assert result["last_event_id"] == "action-1"
@@ -47,6 +52,19 @@ def test_monitor_flags_stale_agent_and_active_subagent_without_mutating_events()
             "possibly_stuck": True,
         }
     ]
+
+
+def test_monitor_does_not_flag_stale_copied_events_on_an_idle_fork():
+    observed_at = datetime(2026, 9, 8, 12, 0, tzinfo=UTC)
+
+    result = build_activity_summary(
+        [_event("copied-tool", "TOOL_CALL", observed_at - timedelta(seconds=90))],
+        execution_status="idle",
+        now=observed_at,
+        stale_after_seconds=60,
+    )
+
+    assert result["possibly_stuck"] is False
 
 
 def test_monitor_marks_completed_task_and_terminal_conversation_not_stuck():

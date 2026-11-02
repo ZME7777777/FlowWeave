@@ -2926,6 +2926,7 @@ def _event_batch_dict(
             batch.events,
             conversation_completed=bool(batch.result and batch.result.status == "COMPLETED"),
             terminal_event_missing=terminal_event_missing,
+            execution_status=execution_status,
         ),
     }
 

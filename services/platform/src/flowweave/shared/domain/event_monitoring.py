@@ -102,12 +102,22 @@ def build_activity_summary(
     *,
     conversation_completed: bool = False,
     terminal_event_missing: bool = False,
+    execution_status: str | None = None,
     now: datetime | None = None,
     stale_after_seconds: int = 60,
 ) -> dict[str, Any]:
     """Return a bounded, identity-based activity projection for the UI."""
 
     observed_at = (now or datetime.now(UTC)).astimezone(UTC)
+    running = str(execution_status or "").strip().lower() in {
+        "starting",
+        "running",
+        "executing",
+        "stopping",
+        "waiting_for_confirmation",
+        "pausing",
+        "resuming",
+    }
     latest = max(
         ((event, _event_at(event)) for event in events),
         key=lambda item: item[1] or datetime.min.replace(tzinfo=UTC),
@@ -177,7 +187,7 @@ def build_activity_summary(
         "seconds_since_event": latest_age,
         "stale_after_seconds": stale_after_seconds,
         "possibly_stuck": bool(
-            not terminal and latest_age is not None and latest_age >= stale_after_seconds
+            running and not terminal and latest_age is not None and latest_age >= stale_after_seconds
         ),
         "terminal_event_missing": terminal_event_missing,
         "active_subagents": active,
