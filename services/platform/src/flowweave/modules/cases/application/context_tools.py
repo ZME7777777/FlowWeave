@@ -51,6 +51,9 @@ def read_context(db: Session, token: str, args: ContextArguments) -> dict[str, A
                 "objective": item.objective,
                 "state": item.state,
                 "tool_access": "READ_ONLY",
+                "tool_access_scope": (
+                    "仅指本读取工具；流程动作请用 manage_case_flow，它不受此限制。"
+                ),
                 "next_offset": None,
             }
         if args.section == "materials":
