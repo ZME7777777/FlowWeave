@@ -9,7 +9,8 @@
 .topbar-nav-boundary::before{content:'';position:absolute;top:23px;bottom:23px;left:8px;width:1px;background:#ffffff24}
 .topbar-nav-boundary svg{z-index:1;background:var(--dark);border-radius:2px}.topbar-nav-boundary:hover,.topbar-nav-boundary:focus-visible{opacity:1;color:var(--lime)}
 .topbar-context-region{display:flex;min-width:196px;flex:1;height:100%;align-items:stretch;overflow:hidden}
-.topbar-tabs .context-tabs{flex:1;min-width:0;flex-basis:0;height:100%;gap:var(--temporary-tab-gap);mask-image:none;overflow:hidden;margin:0;padding:0;scrollbar-width:none}
+.topbar-context-content{display:flex;max-width:100%;height:100%;align-items:stretch;overflow:hidden}
+.topbar-tabs .context-tabs{min-width:0;flex:0 1 auto;height:100%;gap:var(--temporary-tab-gap);mask-image:none;overflow:hidden;margin:0;padding:0;scrollbar-width:none}
 .topbar-tabs .context-tabs::before{display:none}
 .topbar-tabs .context-tab{min-width:0;max-width:var(--temporary-tab-width);flex:0 0 auto;box-sizing:border-box}
 .topbar-tabs .context-tab-select{justify-content:flex-start;padding-left:10px;gap:7px}.topbar-tabs .context-tab-select>span{display:block;white-space:nowrap}.topbar-tabs .context-tab-close{display:grid;width:20px;flex-basis:20px}
@@ -25,17 +26,29 @@
 .topbar-tab-popover>button:hover,.topbar-tab-popover>button:focus-visible,.topbar-tab-popover>button[aria-current=page]{outline:0;background:#eaf2ec;color:#246345}
 .topbar-tab-menu-trigger:focus-visible,.topbar-nav-boundary:focus-visible{outline:1px solid var(--lime);outline-offset:-3px}
 @keyframes topbar-menu-appear{from{opacity:0}to{opacity:1}}
+/* 下拉与标签出现：由触发边向下展开，而不是一闪而出 */
+@keyframes topbar-dropdown-open{from{opacity:.4;clip-path:inset(0 0 100% 0);transform:translateY(-6px)}to{opacity:1;clip-path:inset(0 0 0 0);transform:none}}
+@keyframes topbar-dropdown-item{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
+@keyframes topbar-tab-in{from{opacity:0;transform:translateY(-8px);clip-path:inset(0 0 100% 0)}to{opacity:1;transform:none;clip-path:inset(0 0 0 0)}}
+.topbar-tab-popover{animation:topbar-dropdown-open .24s cubic-bezier(.2,.8,.2,1) both}
+.topbar-tab-popover>button{animation:topbar-dropdown-item .22s cubic-bezier(.2,.8,.2,1) both}
+.topbar-tab-popover>button:nth-child(2){animation-delay:.03s}.topbar-tab-popover>button:nth-child(3){animation-delay:.06s}
+.topbar-tab-popover>button:nth-child(4){animation-delay:.09s}.topbar-tab-popover>button:nth-child(5){animation-delay:.12s}
+.topbar-tab-popover>button:nth-child(n+6){animation-delay:.15s}
+.topbar-tabs .context-tab{animation:topbar-tab-in .26s cubic-bezier(.2,.8,.2,1) both}
+@media(prefers-reduced-motion:reduce){.topbar-tab-popover,.topbar-tab-popover>button,.topbar-tabs .context-tab{animation:none}}
 @media(prefers-reduced-motion:reduce){.topbar-fixed-region,.topbar-fixed-scroll{transition:none}.topbar-fixed-menu>button{animation:none}}
 
 .topbar-fixed-menu.active>.topbar-tab-menu-trigger{border-bottom-color:var(--lime);color:#fff}
 
 .topbar-tabs .topbar-fixed-scroll>nav button{font-size:13px}
 
-/* 固定导航收起/展开按钮：带边框的双箭头，分隔线居中穿过 */
-.topbar-nav-boundary{width:30px;flex-basis:30px;opacity:1;color:#9fb1a6}
-.has-context-tabs .topbar-nav-boundary::before{left:14px;top:18px;bottom:18px}
-.topbar-nav-boundary svg{box-sizing:content-box;width:12px;height:12px;padding:4px;border:1px solid #ffffff2e;border-radius:7px;background:var(--dark);transition:border-color .15s,background .15s,color .15s}
-.topbar-nav-boundary:hover svg,.topbar-nav-boundary:focus-visible svg{border-color:var(--lime);background:#ffffff10;color:var(--lime)}
+/* 分隔线穿过收起控件的留白，明确区分导航分组与收起操作。 */
+.topbar-nav-boundary{width:34px;flex-basis:34px;height:100%;align-self:stretch;margin-left:10px;border:0;background:transparent;color:#9fb1a6;opacity:1;transition:color .15s}
+.topbar-nav-boundary::before{display:block;top:16px;bottom:16px;left:17px;width:1px;background:#ffffff2b}
+.topbar-nav-boundary svg{z-index:1;box-sizing:content-box;width:12px;height:12px;padding:4px;border:1px solid #ffffff2e;border-radius:999px;background:var(--dark);transition:border-color .15s,background .15s,color .15s}
+.topbar-nav-boundary:hover,.topbar-nav-boundary:focus-visible{background:transparent;color:#fff}
+.topbar-nav-boundary:hover svg,.topbar-nav-boundary:focus-visible svg{border-color:#ffffff56;background:#20332a;color:var(--lime)}
 /* 收起后的固定页面下拉，参照平台设置菜单 */
 .topbar-tab-popover{width:240px;max-width:calc(100vw - 24px);box-sizing:border-box;overflow:hidden;border-color:#cfd9d2;border-radius:9px;padding:5px;box-shadow:0 18px 38px #08150f38}
 .topbar-tab-popover>button{gap:9px;padding:6px;border-radius:7px;font-size:13px;color:#2f4b3a}
