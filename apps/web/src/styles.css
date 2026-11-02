@@ -698,7 +698,6 @@ section.modal.hook-editor>header{padding:30px 24px 10px!important}
   padding:5px;
   box-shadow:0 18px 38px #08150f52;
   transform-origin:top right;
-  animation:account-popover-open .14s ease-out;
 }
 .account-popover .account-popover-heading{
   min-height:24px;
@@ -719,22 +718,14 @@ section.modal.hook-editor>header{padding:30px 24px 10px!important}
 .account-popover.settings-popover>.account-logout{border-top-color:#ffffff18;color:#e8a5a5}
 .account-popover.settings-popover>.account-logout:hover{background:#ffffff10;color:#ffd0d0}
 .account-popover .account-logout .settings-item-icon{background:#a744441f;color:#efb0b0}
-/* Dropdown: the panel is revealed downward from the trigger edge, then its rows fade in. */
+/* Account menu: revealed downward from the trigger edge; no opacity change, so it never flashes. */
 @keyframes account-popover-open{
-  from{opacity:.4;clip-path:inset(0 0 100% 0);transform:translateY(-6px)}
-  to{opacity:1;clip-path:inset(0 0 0 0);transform:none}
+  from{clip-path:inset(0 0 100% 0)}
+  to{clip-path:inset(0 0 0 0)}
 }
-@keyframes dropdown-item-in{
-  from{opacity:0;transform:translateY(-4px)}
-  to{opacity:1;transform:none}
-}
-.account-popover{animation-duration:.24s;animation-timing-function:cubic-bezier(.2,.8,.2,1)}
-.account-popover>*{animation:dropdown-item-in .22s cubic-bezier(.2,.8,.2,1) both}
-.account-popover>*:nth-child(2){animation-delay:.03s}.account-popover>*:nth-child(3){animation-delay:.06s}
-.account-popover>*:nth-child(4){animation-delay:.09s}.account-popover>*:nth-child(5){animation-delay:.12s}
-.account-popover>*:nth-child(n+6){animation-delay:.15s}
+.account-popover{animation:account-popover-open .2s cubic-bezier(.22,.8,.3,1) both}
 @media(prefers-reduced-motion:reduce){
-  .account-popover,.account-popover>*{animation:none}
+  .account-popover{animation:none}
 }
 
 /* Login experience: a quiet product introduction paired with one focused task.

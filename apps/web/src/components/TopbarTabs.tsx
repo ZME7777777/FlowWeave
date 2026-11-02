@@ -29,7 +29,9 @@ function TabMenu({ label, items, children, hover = false, overflow = false, clas
   const closeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const cancelClose = () => { clearTimeout(closeTimer.current); };
   const close = () => { cancelClose(); setOpen(false); };
-  const leave = () => { if (hover) { cancelClose(); closeTimer.current = setTimeout(() => setOpen(false), 180); } };
+  // Grace period long enough to cross the trigger-to-menu gap; entering either surface cancels it.
+  const enter = () => { cancelClose(); if (hover) setOpen(true); };
+  const leave = () => { if (hover) { cancelClose(); closeTimer.current = setTimeout(() => setOpen(false), 280); } };
   useEffect(() => () => clearTimeout(closeTimer.current), []);
   useEscapeClose(() => { close(); trigger.current?.focus(); }, open);
   useLayoutEffect(() => {
@@ -46,11 +48,11 @@ function TabMenu({ label, items, children, hover = false, overflow = false, clas
     document.addEventListener('pointerdown', outside);
     return () => document.removeEventListener('pointerdown', outside);
   }, [open]);
-  return <div className={`topbar-tab-menu ${className}`} onMouseEnter={() => { cancelClose(); if (hover) setOpen(true); }} onMouseLeave={leave}>
-    <button ref={trigger} type="button" className="topbar-tab-menu-trigger" aria-label={label} title={label} aria-haspopup="menu" aria-expanded={open} onKeyDown={event => {
+  return <div className={`topbar-tab-menu ${className}`}>
+    <button ref={trigger} type="button" className="topbar-tab-menu-trigger" onPointerEnter={enter} onPointerLeave={leave} aria-label={label} title={label} aria-haspopup="menu" aria-expanded={open} onKeyDown={event => {
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); cancelClose(); focusMenu.current = true; setOpen(true); if (open) { (popover.current?.querySelector<HTMLButtonElement>('[aria-current="page"]') ?? popover.current?.querySelector<HTMLButtonElement>('[role="menuitem"]'))?.focus(); focusMenu.current = false; } }
-    }} onClick={event => { focusMenu.current = event.detail === 0; if (hover) { setOpen(true); if (open && focusMenu.current) popover.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus(); } else setOpen(current => !current); }}>{children}</button>
-    {open && <ViewportPopover ref={popover} anchor={() => trigger.current} align={overflow ? 'end' : 'start'} gap={overflow ? 4 : 0} matchAnchorWidth={!overflow} heightLimit={360} className={`topbar-tab-popover${overflow ? ' topbar-context-overflow-popover' : ' topbar-fixed-popover'}`} role="menu" aria-label={label} onMouseEnter={cancelClose} onMouseLeave={leave} onKeyDown={event => {
+    }} onClick={event => { focusMenu.current = event.detail === 0; cancelClose(); if (hover && !open) setOpen(true); else if (event.detail === 0 && open && hover) popover.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus(); else setOpen(current => !current); }}>{children}</button>
+    {open && <ViewportPopover ref={popover} anchor={() => trigger.current} align={overflow ? 'end' : 'start'} gap={overflow ? 4 : 0} matchAnchorWidth={!overflow} heightLimit={360} className={`topbar-tab-popover${overflow ? ' topbar-context-overflow-popover' : ' topbar-fixed-popover'}`} role="menu" aria-label={label} onPointerEnter={enter} onPointerLeave={leave} onKeyDown={event => {
       const buttons = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')];
       const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
       const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : event.key === 'ArrowDown' ? (index + 1) % buttons.length : event.key === 'ArrowUp' ? (index - 1 + buttons.length) % buttons.length : undefined;

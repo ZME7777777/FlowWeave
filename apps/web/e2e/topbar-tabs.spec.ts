@@ -15,6 +15,7 @@ async function setup(page: Page, seed = true) {
   });
   await page.goto('/');
   await expect(page.getByRole('button', { name: '账户与设置' })).toBeVisible();
+  await page.mouse.move(700, 600);
 }
 const visibleNames = (page: Page) => page.locator('.context-tab-select>span').allTextContents();
 const overflowButton = (page: Page) => page.getByRole('button', { name: /^其他临时标签/ });
@@ -160,10 +161,12 @@ test('toggle stays visible without temporary tabs, tab widths follow titles and 
   const trigger = page.getByRole('button', { name: '选择固定页面' });
   await trigger.click();
   const menu = page.getByRole('menu', { name: '选择固定页面' });
-  await expect.poll(() => menu.evaluate(node => node.getAnimations().every(animation => animation.playState !== 'running'))).toBe(true);
-  const t = (await trigger.boundingBox())!; const m = (await menu.boundingBox())!;
-  expect(Math.abs(m.width - t.width)).toBeLessThanOrEqual(1);
-  expect(Math.abs(m.y - (t.y + t.height))).toBeLessThanOrEqual(2);
+  // The popover positions itself after mount and reveals with a clip-path animation, so assert the
+  // final geometry with retries instead of sampling once.
+  await expect.poll(async () => {
+    const [t, m] = await Promise.all([trigger.boundingBox(), menu.boundingBox()]);
+    return t && m ? [Math.round(Math.abs(m.width - t.width)), Math.round(Math.abs(m.y - (t.y + t.height)))] : [99, 99];
+  }, { timeout: 5000 }).toEqual([0, 0]);
   await page.keyboard.press('Escape');
   await openSetting(page, '认证管理'); await openSetting(page, '终端环境');
   const widths = await page.locator('.context-tab').evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().width));
@@ -183,4 +186,22 @@ test('account settings menu preserves the topbar dark surface when opened', asyn
   const [triggerBox, menuBox] = await Promise.all([trigger.boundingBox(), menu.boundingBox()]);
   expect(Math.abs(menuBox!.y - (triggerBox!.y + triggerBox!.height))).toBeLessThanOrEqual(1);
   await expect(menu.getByRole('menuitem', { name: '认证管理', exact: true })).toHaveCSS('color', 'rgb(207, 224, 213)');
+});
+
+test('hover menu stays open while the pointer crosses between tab and list, and closes after leaving', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.route('**/api/v1/**', r => r.fulfill({ json: new URL(r.request().url()).pathname.endsWith('/auth/me') ? user : [] }));
+  await page.goto('/');
+  await page.getByRole('button', { name: '收起固定导航' }).click();
+  await page.mouse.move(700, 600);
+  const trigger = page.getByRole('button', { name: '选择固定页面' });
+  const menu = page.getByRole('menu', { name: '选择固定页面' });
+  await trigger.hover(); await expect(menu).toBeVisible();
+  const t = (await trigger.boundingBox())!; const m = (await menu.boundingBox())!;
+  await page.mouse.move(t.x + t.width / 2, t.y + t.height - 2, { steps: 4 });
+  await page.mouse.move(m.x + m.width / 2, m.y + 40, { steps: 12 });
+  await expect(menu).toBeVisible();
+  await page.mouse.move(t.x + t.width / 2, t.y + t.height / 2, { steps: 8 });
+  await page.waitForTimeout(700); await expect(menu).toBeVisible();
+  await page.mouse.move(700, 600, { steps: 6 }); await expect(menu).toHaveCount(0);
 });

@@ -27,16 +27,6 @@
 .topbar-tab-menu-trigger:focus-visible,.topbar-nav-boundary:focus-visible{outline:1px solid var(--lime);outline-offset:-3px}
 @keyframes topbar-menu-appear{from{opacity:0}to{opacity:1}}
 /* 下拉与标签出现：由触发边向下展开，而不是一闪而出 */
-@keyframes topbar-dropdown-open{from{opacity:.4;clip-path:inset(0 0 100% 0);transform:translateY(-6px)}to{opacity:1;clip-path:inset(0 0 0 0);transform:none}}
-@keyframes topbar-dropdown-item{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
-@keyframes topbar-tab-in{from{opacity:0;transform:translateY(-8px);clip-path:inset(0 0 100% 0)}to{opacity:1;transform:none;clip-path:inset(0 0 0 0)}}
-.topbar-tab-popover{animation:topbar-dropdown-open .24s cubic-bezier(.2,.8,.2,1) both}
-.topbar-tab-popover>button{animation:topbar-dropdown-item .22s cubic-bezier(.2,.8,.2,1) both}
-.topbar-tab-popover>button:nth-child(2){animation-delay:.03s}.topbar-tab-popover>button:nth-child(3){animation-delay:.06s}
-.topbar-tab-popover>button:nth-child(4){animation-delay:.09s}.topbar-tab-popover>button:nth-child(5){animation-delay:.12s}
-.topbar-tab-popover>button:nth-child(n+6){animation-delay:.15s}
-.topbar-tabs .context-tab{animation:topbar-tab-in .26s cubic-bezier(.2,.8,.2,1) both}
-@media(prefers-reduced-motion:reduce){.topbar-tab-popover,.topbar-tab-popover>button,.topbar-tabs .context-tab{animation:none}}
 @media(prefers-reduced-motion:reduce){.topbar-fixed-region,.topbar-fixed-scroll{transition:none}.topbar-fixed-menu>button{animation:none}}
 
 .topbar-fixed-menu.active>.topbar-tab-menu-trigger{border-bottom-color:var(--lime);color:#fff}
@@ -70,3 +60,12 @@
 .topbar-fixed-popover>button[aria-current=page] .topbar-tab-icon{background:var(--lime);color:#10281c}
 .topbar-fixed-popover>button>svg:last-child{color:var(--lime)}
 .topbar-fixed-menu>.topbar-tab-menu-trigger[aria-expanded=true]{background:var(--dark);color:#fff}
+
+/* 下拉：从触发边平滑向下展开（不改透明度、不先隐藏），离开时原路收回 */
+@keyframes topbar-menu-reveal{from{clip-path:inset(0 0 100% 0)}to{clip-path:inset(0 0 0 0)}}
+.topbar-tab-popover{will-change:clip-path}
+.topbar-tab-popover{animation:topbar-menu-reveal .2s cubic-bezier(.22,.8,.3,1) both}
+/* 临时标签新增：只做轻微向下展开，不闪烁 */
+@keyframes topbar-tab-in{from{clip-path:inset(0 0 100% 0)}to{clip-path:inset(0 0 0 0)}}
+.topbar-tabs .context-tab{animation:topbar-tab-in .2s cubic-bezier(.22,.8,.3,1) both}
+@media(prefers-reduced-motion:reduce){.topbar-tab-popover,.topbar-tabs .context-tab{animation:none}}
