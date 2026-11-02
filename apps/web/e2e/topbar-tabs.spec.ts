@@ -205,3 +205,16 @@ test('hover menu stays open while the pointer crosses between tab and list, and 
   await page.waitForTimeout(700); await expect(menu).toBeVisible();
   await page.mouse.move(700, 600, { steps: 6 }); await expect(menu).toHaveCount(0);
 });
+
+test('hover menu closes right away once the pointer leaves, with no lingering delay', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await setup(page, false);
+  await page.getByRole('button', { name: '收起固定导航' }).click();
+  const trigger = page.getByRole('button', { name: '选择固定页面' });
+  const menu = page.getByRole('menu', { name: '选择固定页面' });
+  await trigger.hover(); await expect(menu).toBeVisible();
+  const started = Date.now();
+  await page.mouse.move(700, 600);
+  await expect(menu).toHaveCount(0, { timeout: 400 });
+  expect(Date.now() - started).toBeLessThan(400);
+});

@@ -29,9 +29,16 @@ function TabMenu({ label, items, children, hover = false, overflow = false, clas
   const closeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const cancelClose = () => { clearTimeout(closeTimer.current); };
   const close = () => { cancelClose(); setOpen(false); };
-  // Grace period long enough to cross the trigger-to-menu gap; entering either surface cancels it.
+  // The fixed-page menu sits flush under its trigger (gap 0), so the pointer never crosses a dead zone
+  // and it can close the instant the pointer leaves both surfaces. Only the overflow menu keeps a
+  // 4px gap, bridged by a very short grace period so leaving feels immediate rather than laggy.
   const enter = () => { cancelClose(); if (hover) setOpen(true); };
-  const leave = () => { if (hover) { cancelClose(); closeTimer.current = setTimeout(() => setOpen(false), 280); } };
+  const leave = () => {
+    if (!hover) return;
+    cancelClose();
+    if (overflow) closeTimer.current = setTimeout(() => setOpen(false), 60);
+    else setOpen(false);
+  };
   useEffect(() => () => clearTimeout(closeTimer.current), []);
   useEscapeClose(() => { close(); trigger.current?.focus(); }, open);
   useLayoutEffect(() => {
