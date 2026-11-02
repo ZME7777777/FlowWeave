@@ -39,6 +39,19 @@ TOOL = {
 }
 
 
+def _node_preset_default(config: dict[str, Any] | None) -> dict[str, Any]:
+    """The provider/model the Case was saved with, reusable as a node ``agent_preset``."""
+
+    saved = config or {}
+    return {
+        "model_provider_id": saved.get("model_provider_id"),
+        "model_name": saved.get("model_name"),
+        "reasoning_effort": saved.get("reasoning_effort"),
+        "capability_version_ids": list(saved.get("capability_version_ids") or []),
+        "usage": "配置节点 agent_preset 时使用这里的供应商与模型，不要自行猜测其他模型。",
+    }
+
+
 def read_context(db: Session, token: str, args: ContextArguments) -> dict[str, Any]:
     grant, item = native_tools.authenticate(db, token)
     with tenant_user(grant.owner_user_id):
@@ -54,6 +67,9 @@ def read_context(db: Session, token: str, args: ContextArguments) -> dict[str, A
                 "tool_access_scope": (
                     "仅指本读取工具；流程动作请用 manage_case_flow，它不受此限制。"
                 ),
+                # The node agent_preset must name a provider and model that exist. Expose the
+                # ones this Case was configured with so the coordinator never has to guess.
+                "node_agent_preset_default": _node_preset_default(item.session_config_json),
                 "next_offset": None,
             }
         if args.section == "materials":
