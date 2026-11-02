@@ -1430,10 +1430,11 @@ function RetryStatus({ status, errorDetail }: { status: ModelRetryStatus; errorD
   </details>;
 }
 
-function CurrentTurnStatus({ items, requestSubmitting, statusOverride, modelRetryStatus, monitoring, connectionState = 'connected' }: {
+function CurrentTurnStatus({ items, requestSubmitting, statusOverride, reconnecting = false, modelRetryStatus, monitoring, connectionState = 'connected' }: {
   items: Item[];
   requestSubmitting: boolean;
   statusOverride?: string;
+  reconnecting?: boolean;
   modelRetryStatus?: ModelRetryStatus;
   monitoring?: AgentActivitySummary;
   connectionState?: ConversationConnectionState;
@@ -1444,10 +1445,13 @@ function CurrentTurnStatus({ items, requestSubmitting, statusOverride, modelRetr
   const label = statusOverride ?? (requestSubmitting
     ? activityLabel
     : staleActivityLabel(activityLabel, monitoring, connectionState));
-  const stalled = !statusOverride && !requestSubmitting && monitoring?.possibly_stuck
-    && connectionState === 'connected';
+  const stalled = reconnecting || (!statusOverride && !requestSubmitting && monitoring?.possibly_stuck
+    && connectionState === 'connected');
+  const alertLabel = reconnecting
+    ? '会话正在尝试重连'
+    : '会话正在运行但后台长时间未产生可确认进展';
   return <div className={`conversation-turn-status${stalled ? ' stalled' : ''}`} role="status" aria-label={label}>
-    {stalled && <CircleAlert className="conversation-turn-status-alert" role="img" aria-label="会话正在运行但后台长时间未产生可确认进展" size={14}/>}
+    {stalled && <CircleAlert className="conversation-turn-status-alert" role="img" aria-label={alertLabel} size={14}/>}
     <span>{label}</span>
     {!stalled && <span className="conversation-turn-status-dots" aria-hidden="true"><i/><i/><i/></span>}
   </div>;
@@ -2942,7 +2946,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
             onOpenSourceLocation={onOpenSourceLocation}
           />)}
           {isCurrent && !turn.assistant && !failures.length && (
-            <CurrentTurnStatus items={turn.activity} requestSubmitting={requestSubmitting} statusOverride={pausing ? '正在暂停 Agent' : reconnectingAttempt ? `正在尝试重连（${reconnectingAttempt}/${reconnectingMaxAttempts}）` : rewritePending ? '正在重新思考' : emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} modelRetryStatus={modelRetryStatus} monitoring={monitoring} connectionState={connectionState}/>
+            <CurrentTurnStatus items={turn.activity} requestSubmitting={requestSubmitting} statusOverride={pausing ? '正在暂停 Agent' : reconnectingAttempt ? `正在尝试重连（${reconnectingAttempt}/${reconnectingMaxAttempts}）` : rewritePending ? '正在重新思考' : emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} reconnecting={Boolean(reconnectingAttempt)} modelRetryStatus={modelRetryStatus} monitoring={monitoring} connectionState={connectionState}/>
           )}
           {processBlocks.length > 0 && turn.assistant && <div className="conversation-process-divider" role="separator" aria-label="工作过程结束"/>}
           {completionConfirmed && processBlocks.map(block => <ActivityGroup
@@ -2966,7 +2970,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
           {failures.map(item => <ConversationFailure key={item.event.id} item={item} taskControl={taskControl} retryStatus={isLatest ? modelRetryStatus : undefined}/>)}
         </section>;
       })}
-      {turns.length === 0 && isGenerating && !condensationPending && <><ActivityGroup items={[]} active revealEventIds={revealEventIds} startedAt={requestStartedAt} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot} onOpenSourceLocation={onOpenSourceLocation}/><CurrentTurnStatus items={[]} requestSubmitting={requestSubmitting} statusOverride={pausing ? '正在暂停 Agent' : reconnectingAttempt ? `正在尝试重连（${reconnectingAttempt}/${reconnectingMaxAttempts}）` : rewritePending ? '正在重新思考' : emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} modelRetryStatus={modelRetryStatus} monitoring={monitoring} connectionState={connectionState}/></>}
+      {turns.length === 0 && isGenerating && !condensationPending && <><ActivityGroup items={[]} active revealEventIds={revealEventIds} startedAt={requestStartedAt} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot} onOpenSourceLocation={onOpenSourceLocation}/><CurrentTurnStatus items={[]} requestSubmitting={requestSubmitting} statusOverride={pausing ? '正在暂停 Agent' : reconnectingAttempt ? `正在尝试重连（${reconnectingAttempt}/${reconnectingMaxAttempts}）` : rewritePending ? '正在重新思考' : emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} reconnecting={Boolean(reconnectingAttempt)} modelRetryStatus={modelRetryStatus} monitoring={monitoring} connectionState={connectionState}/></>}
 
       {condensationPending && <article className="conversation-condensation-progress" role="status" aria-label="正在压缩上下文">
         <LoaderCircle className="conversation-activity-spin" size={16}/>

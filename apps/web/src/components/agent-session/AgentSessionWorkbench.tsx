@@ -7273,6 +7273,23 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       && trustedHydration.hydratedAt >= immediateFinalReplyPreview.selectedAt;
     if (selectedHydrationPhase === 'ready' && (replyRestored || freshlyHydrated)) setImmediateFinalReplyPreview(undefined);
   }, [eventsQuery.data, immediateFinalReplyPreview, selected?.id, selectedHydrationPhase, trustedHydration]);
+  const latestRecoverableGatewayError = useMemo(() => {
+    const events = orderOpenHandsConversationEvents(currentFormalEvents);
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const candidate = events[index];
+      if (!isRecoverableGatewayFailure(candidate)) continue;
+      return events.slice(index + 1).some(event => event.id !== candidate.id)
+        ? undefined
+        : candidate;
+    }
+    return undefined;
+  }, [currentFormalEvents]);
+  const recoverableGatewayErrorIds = useMemo(() => new Set(
+    currentFormalEvents
+      .filter(isRecoverableGatewayFailure)
+      .map(event => event.id)
+      .filter(id => !exhaustedRecoveryErrorIds.has(id)),
+  ), [currentFormalEvents, exhaustedRecoveryErrorIds]);
   const displayedEvents = useMemo(() => {
     const hiddenBranchIds = eventBranchIdsFromRoots(currentFormalEvents, hiddenEventIds);
     const eventsById = new Map(currentFormalEvents.map(event => [event.id, event]));
@@ -7289,11 +7306,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     };
     const visibleFormalEvents = currentFormalEvents.filter(event => (
       !belongsToHiddenBranch(event)
+      && !recoverableGatewayErrorIds.has(event.id)
       && !suppressedRecoveryErrorIds.has(event.id)
       && !deferredRewriteUserEventIds.has(event.id)
     ));
     return projectLocalMessages(visibleFormalEvents, activeLocalMessageProjections);
-  }, [activeLocalMessageProjections, currentFormalEvents, deferredRewriteUserEventIds, hiddenEventIds, suppressedRecoveryErrorIds]);
+  }, [activeLocalMessageProjections, currentFormalEvents, deferredRewriteUserEventIds, hiddenEventIds, recoverableGatewayErrorIds, suppressedRecoveryErrorIds]);
   const latestGoalEvent = useMemo(() => {
     for (const event of [...currentFormalEvents].reverse()) {
       if (event.payload.goal_status) return event;
@@ -9283,6 +9301,16 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const requestInterrupt = useCallback(() => {
     if (!workspace || !selected || cancellingSubmission?.bindingId === selected.id
       || interrupt.isPending && interrupt.variables?.bindingId === selected.id) return;
+    const reconnect = flowWeaveReconnect?.bindingId === selected.id ? flowWeaveReconnect : undefined;
+    if (reconnect) {
+      setFlowWeaveReconnect(undefined);
+      setSuppressedRecoveryErrorIds(current => {
+        const next = new Set(current);
+        next.delete(reconnect.errorEventId);
+        return next;
+      });
+      setExhaustedRecoveryErrorIds(current => new Set([...current, reconnect.errorEventId]));
+    }
     const message = [...outgoingSubmissions.current.values()].reverse().find(item => item.bindingId === selected.id);
     if (message) {
       cancelSubmission.mutate({ workspaceId: workspace.id, message });
@@ -9290,7 +9318,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }
     // Accepted native messages use the existing formal interrupt action.
     interrupt.mutate({ workspaceId: workspace.id, bindingId: selected.id });
-  }, [cancelSubmission, cancellingSubmission?.bindingId, interrupt, selected, workspace]);
+  }, [cancelSubmission, cancellingSubmission?.bindingId, flowWeaveReconnect, interrupt, selected, workspace]);
   const resume = useMutation({
     mutationFn: (request: { workspaceId: string; bindingId: string }) => api.resumeConversation(request.workspaceId, request.bindingId),
     onMutate: request => {
@@ -9331,17 +9359,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       reportOperationError(request.bindingId, error);
     },
   });
-  const latestRecoverableGatewayError = useMemo(() => {
-    const events = orderOpenHandsConversationEvents(currentFormalEvents);
-    for (let index = events.length - 1; index >= 0; index -= 1) {
-      const candidate = events[index];
-      if (!isRecoverableGatewayFailure(candidate)) continue;
-      return events.slice(index + 1).some(event => event.id !== candidate.id)
-        ? undefined
-        : candidate;
-    }
-    return undefined;
-  }, [currentFormalEvents]);
   useEffect(() => {
     if (!selected || !latestRecoverableGatewayError
       || exhaustedRecoveryErrorIds.has(latestRecoverableGatewayError.id)) return;
@@ -9997,7 +10014,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       case 'resuming':
         return { label: '正在继续 Agent', disabled: true, editable: false, action: 'none' as const };
       case 'reconnecting':
-        return { label: `正在尝试重连（${flowWeaveReconnect?.attempt ?? 1}/${FLOWWEAVE_RECONNECT_MAX_ATTEMPTS}）`, disabled: true, editable: false, action: 'none' as const };
+        return { label: '暂停当前 Agent', disabled: actionBlocked || !canInterrupt, editable: canWrite && !actionBlocked, action: 'interrupt' as const };
       case 'rewriting':
         return { label: '正在重新思考', disabled: true, editable: false, action: 'none' as const };
       case 'reconciling':

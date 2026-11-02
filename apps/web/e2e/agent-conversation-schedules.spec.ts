@@ -156,6 +156,52 @@ async function openWorkspace(page: Page, events: unknown[] = [], includeSecondCo
   return writes;
 }
 
+
+test('a reconnecting conversation can be paused manually', async ({ page }) => {
+  const transientFailure = {
+    id: 'transient-gateway-error', event_type: 'ERROR', payload: {
+      source_type: 'ConversationErrorEvent', parent_id: 'turn-1', content: '上游网关暂不可用',
+      classification: { kind: 'transient', retryable: true }, timestamp: now,
+    },
+  };
+  await openWorkspace(page, [
+    { id: 'turn-1', event_type: 'MESSAGE', payload: { source: 'user', content: '请继续处理', timestamp: now } },
+    transientFailure,
+  ]);
+  let interrupts = 0;
+  await page.route('**/api/v1/agent-workspaces/schedule-workspace/conversations/scheduled-conversation/interrupt', async route => {
+    interrupts += 1;
+    return json(route, { accepted: true });
+  });
+  await page.getByRole('button', { name: '日报会话', exact: true }).click();
+  const reconnectStatus = page.locator('.agent-composer-status', { hasText: '正在尝试重连（1/3）' });
+  await expect(reconnectStatus).toBeVisible();
+  await expect(page.getByRole('img', { name: '会话正在尝试重连', exact: true })).toBeVisible();
+  await expect(page.getByText('模型服务暂不可用', { exact: true })).toHaveCount(0);
+  const pause = page.getByRole('button', { name: '暂停当前 Agent', exact: true });
+  await expect(pause).toBeEnabled();
+  await pause.click();
+  await expect.poll(() => interrupts).toBe(1);
+  await expect(reconnectStatus).toBeHidden();
+});
+
+
+test('a recovered conversation does not render its transient gateway error', async ({ page }) => {
+  await openWorkspace(page, [
+    { id: 'turn-1', event_type: 'MESSAGE', payload: { source: 'user', content: '请继续处理', timestamp: now } },
+    {
+      id: 'transient-gateway-error', event_type: 'ERROR', payload: {
+        source_type: 'ConversationErrorEvent', parent_id: 'turn-1', content: '上游网关暂不可用',
+        classification: { kind: 'transient', retryable: true }, timestamp: now,
+      },
+    },
+    { id: 'recovered-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'turn-1', content: '重连成功，已继续处理。', final_reply: true, timestamp: now } },
+  ]);
+  await page.getByRole('button', { name: '日报会话', exact: true }).click();
+  await expect(page.getByText('重连成功，已继续处理。', { exact: true })).toBeVisible();
+  await expect(page.getByText('模型服务暂不可用', { exact: true })).toHaveCount(0);
+});
+
 test('fresh navigation opens case space and creates a scenario after the branch merge', async ({ page }) => {
   await openWorkspace(page);
   const cases: Record<string, unknown>[] = [];
