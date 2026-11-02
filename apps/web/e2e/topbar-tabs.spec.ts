@@ -54,7 +54,7 @@ test('overflow keeps full tab widths, promotes a hidden item left and backfills 
   await expect(overflowButton(page)).toBeVisible();
   const initial = await visibleNames(page);
   expect(initial[0]).toBe('用户管理');
-  for (const tab of await page.locator('.context-tab').all()) expect((await tab.boundingBox())!.width).toBe(168);
+  for (const tab of await page.locator('.context-tab').all()) expect((await tab.boundingBox())!.width).toBeGreaterThanOrEqual(92);
   await overflowButton(page).hover();
   let menu = page.getByRole('menu', { name: /^其他临时标签/ });
   await expect(menu.getByRole('menuitem', { name: '终端环境', exact: true })).toBeVisible();
@@ -106,7 +106,7 @@ test('narrow menus stay within the viewport and closing tabs drains the hidden l
     }
   }
   await expect(page.locator('.context-tabs')).toHaveCount(0);
-  await expect(page.locator('.topbar-nav-boundary')).toHaveCount(0);
+  await expect(page.locator('.topbar-nav-boundary')).toHaveCount(1);
 });
 
 test('new tabs win space and hidden pages stay available through keyboard and account menu', async ({ page }) => {
@@ -124,7 +124,7 @@ test('new tabs win space and hidden pages stay available through keyboard and ac
   await page.reload();
   await expect(page.locator('.context-tab.active')).toContainText('认证管理');
   await page.getByRole('button', { name: '收起固定导航' }).click();
-  await expect.poll(() => visibleNames(page)).toHaveLength(3);
+  await expect.poll(async () => (await visibleNames(page)).length).toBeGreaterThanOrEqual(3);
   await page.setViewportSize({ width: 1440, height: 850 });
   await expect(overflowButton(page)).toHaveCount(0);
   await page.reload();
@@ -143,4 +143,23 @@ test('fixed navigation collapsed preference persists in localStorage across relo
   await expect.poll(() => page.evaluate(id => localStorage.getItem(`flowweave.topbar.fixed-collapsed.v1:${id}`), user.id)).toBe('false');
   await page.reload();
   await expect(page.getByRole('button', { name: '收起固定导航' })).toBeVisible();
+});
+
+test('toggle stays visible without temporary tabs, tab widths follow titles and the fixed menu opens flush under its tab', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await setup(page, false);
+  await expect(page.locator('.context-tabs')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '收起固定导航' })).toBeVisible();
+  await page.getByRole('button', { name: '收起固定导航' }).click();
+  const trigger = page.getByRole('button', { name: '选择固定页面' });
+  await trigger.click();
+  const menu = page.getByRole('menu', { name: '选择固定页面' });
+  const t = (await trigger.boundingBox())!; const m = (await menu.boundingBox())!;
+  expect(Math.abs(m.width - t.width)).toBeLessThanOrEqual(1);
+  expect(Math.abs(m.y - (t.y + t.height))).toBeLessThanOrEqual(2);
+  await page.keyboard.press('Escape');
+  await openSetting(page, '认证管理'); await openSetting(page, '终端环境');
+  const widths = await page.locator('.context-tab').evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().width));
+  expect(widths.length).toBe(2);
+  for (const width of widths) expect(width).toBeLessThan(168);
 });
