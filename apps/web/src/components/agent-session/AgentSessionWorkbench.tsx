@@ -5310,6 +5310,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     return () => window.removeEventListener('resize', clamp);
   }, []);
   const bootstrapTransitionScope = useRef<string | undefined>(undefined);
+  const bootstrapPresentationScopes = useRef(new Map<string, string>());
   const pathname = withoutDeploymentBase(window.location.pathname);
   const routeSearch = new URLSearchParams(window.location.search);
   const draftWorkDirectoryId = routeSearch.get('draft_work_directory_id') ?? undefined;
@@ -7440,6 +7441,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const currentFormalTurnFinished = !foregroundSubmissionAwaitingFormalEvent && (activeFormalTurnId
     ? activeFormalTurnFinished
     : selectedFormalTurnFinished);
+  const bootstrapPresentationScope = selected?.id
+    ? bootstrapPresentationScopes.current.get(selected.id)
+    : undefined;
   const activeFormalTurnHasRuntimeActivity = Boolean(
     activeFormalTurnId && hasNonTerminalRuntimeActivityForTurn(currentFormalEvents, activeFormalTurnId),
   );
@@ -8459,6 +8463,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     setWorkspaceScopeMigration(message.scope);
     setPendingCreatedId(conversation.id);
     bootstrapTransitionScope.current = conversation.id;
+    bootstrapPresentationScopes.current.set(conversation.id, message.scope);
     composerDraftsByScope.current.delete(message.scope);
     conversationDraftsByScope.current.delete(message.scope);
     composerDraftsByScope.current.set(conversation.id, { content: '', attachments: [], references: [], workspaceReferences: [], annotations: [] });
@@ -9866,9 +9871,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     routedConversationResolving
     || (selected && (selectedHydrationPhase === 'loading' || fallbackHydrationPending)),
   );
-  // A final-reply preview is only a compact sidebar projection. Keep it behind
-  // the same gate as every other transcript until formal hydration is complete.
-  const conversationInitialLoading = hydrationInteractionPending;
+  // Bootstrap already owns a submitted local turn and receives an authoritative
+  // binding projection. Keep that surface mounted while formal hydration catches
+  // up instead of replacing it with a transient loading screen.
+  const conversationInitialLoading = hydrationInteractionPending && !bootstrapPresentationScope;
   const conversationSnapshotUnavailable = Boolean(selected && selectedHydrationPhase === 'unavailable');
   useEffect(() => {
     if (!conversationReferenceTarget || conversationReferenceTarget.source_binding_id !== selected?.id || conversationInitialLoading) return;
@@ -9892,23 +9898,23 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         ? 'rewriting'
       : !selected && !conversationDraft
         ? 'read-only'
-        : hydrationInteractionPending || conversationSnapshotUnavailable
-        ? 'reconciling'
-        : currentSessionControlState === 'pausing'
-          ? 'pausing'
-          : interruptableActiveTurn
-            ? 'running'
-            : selected && !canWrite
-              ? 'read-only'
-              : currentSessionControlState === 'running'
-                ? 'reconciling'
-                : currentSessionControlState === 'paused'
-                  ? 'paused'
-                  : currentSessionControlState === 'resuming'
-                    ? 'resuming'
-                    : currentSessionControlState === 'reconnecting'
-                      ? 'reconnecting'
-                      : 'idle';
+        : (hydrationInteractionPending && !bootstrapPresentationScope) || conversationSnapshotUnavailable
+          ? 'reconciling'
+          : currentSessionControlState === 'pausing'
+            ? 'pausing'
+            : interruptableActiveTurn
+              ? 'running'
+              : selected && !canWrite
+                ? 'read-only'
+                : currentSessionControlState === 'running'
+                  ? 'running'
+                  : currentSessionControlState === 'paused'
+                    ? 'paused'
+                    : currentSessionControlState === 'resuming'
+                      ? 'resuming'
+                      : currentSessionControlState === 'reconnecting'
+                        ? 'reconnecting'
+                        : 'idle';
   const queueDispatchReady = composerControlMode === 'idle' && !nativeTurnFailed;
   useEffect(() => {
     if (!selected || !queueModeEnabled || !queueDispatchReady) return;
@@ -10016,6 +10022,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const composerNote = visibleQueuedMessages.length > 0
     ? queueModeEnabled ? `已排队 ${visibleQueuedMessages.length} 条` : `队列已关闭 · 保留 ${visibleQueuedMessages.length} 条`
     : '';
+  const conversationPresentationScope = bootstrapPresentationScope ?? selected?.id ?? conversationDraft?.id;
   const hydrationError = selectedHydrationPhase === 'unavailable' ? hydrationPhase?.error : undefined;
   const visibleError = operationError ?? hydrationError ?? confirmationQuery.error ?? eventsQuery.error;
   const composerActionSends = composerHasContent && !pendingConfirmation;
@@ -10717,7 +10724,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       <div className="agent-workbench-content">
       {runtime?.state === 'RECOVERING' && <section className="agent-runtime-recover"><LoaderCircle size={18}/><div><b>运行环境正在恢复</b><span>{runtime.message || '历史会话和工作区文件仍可查看；恢复完成后可继续发送消息和使用终端。'}</span></div></section>}
       {conversationSnapshotUnavailable ? <div className="conversation-surface-empty"><b>会话暂时无法加载</b></div> : conversationInitialLoading ? <div className="conversation-surface-empty" role="status"><LoaderCircle className="conversation-activity-spin" size={16}/><b>正在加载会话</b><span>正在读取最新消息与会话状态…</span></div> : selected || conversationDraft ? <ConversationSurface
-        key={`transcript:${selected?.id ?? conversationDraft?.id}`}
+        key={`transcript:${conversationPresentationScope ?? 'conversation'}`}
         events={displayedEvents}
         isGenerating={conversationVisuallyActive}
         isPaused={conversationActivity.state === 'paused'}
@@ -10835,7 +10842,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
             </article>;
           })}
         </section>}
-                  <AgentComposerInput key={composerScope ?? 'composer'} ref={composerRef} initialDraft={composerDraftRef.current} scope={composerScope} suggestions={visibleComposerSuggestions} placeholder={goalModeEnabled ? '输入验收目标，发送后将启动目标循环…' : pendingConfirmation ? '请先处理上方工具确认…' : composerControlMode === 'condensing' ? '可继续输入，发送后将排队…' : composerControlMode === 'reconciling' ? '正在同步 Agent 状态…' : composerControlMode === 'read-only' ? '当前会话不可编辑…' : '给 Agent 发消息…'} disabled={!composerControl.editable} onDraftChange={setComposerDraft} onContentPresenceChange={onComposerContentPresenceChange} onDraftPersist={persistComposerDraft} onPaste={event => { if (!features.attachments) return; const files = transferredFiles(event.clipboardData); if (!files.length) return; event.preventDefault(); files.forEach(startAttachmentUpload); }} onSubmit={content => goalModeEnabled ? startGoalFromComposer(content) : enqueueDraft(content)} onDirectSubmit={content => goalModeEnabled ? startGoalFromComposer(content) : sendDraftDirectly(content)} onManageCapabilities={features.capabilities && (selected || features.draftCapabilitySelection) ? () => setCapabilityManagerOpen(true) : undefined} onNativeAction={action => { if (action === 'CONDENSE' && canCondense && !condense.isPending && workspace && selected) condense.mutate({ workspaceId: workspace.id, bindingId: selected.id }); }} onWorkspaceReferenceSelected={() => { setWorkspaceReferenceQuery(''); setWorkspaceReferencePickerOpen(true); }}/>
+                  <AgentComposerInput key={bootstrapPresentationScope ?? composerScope ?? 'composer'} ref={composerRef} initialDraft={composerDraftRef.current} scope={composerScope} suggestions={visibleComposerSuggestions} placeholder={goalModeEnabled ? '输入验收目标，发送后将启动目标循环…' : pendingConfirmation ? '请先处理上方工具确认…' : composerControlMode === 'condensing' ? '可继续输入，发送后将排队…' : composerControlMode === 'reconciling' ? '正在同步 Agent 状态…' : composerControlMode === 'read-only' ? '当前会话不可编辑…' : '给 Agent 发消息…'} disabled={!composerControl.editable} onDraftChange={setComposerDraft} onContentPresenceChange={onComposerContentPresenceChange} onDraftPersist={persistComposerDraft} onPaste={event => { if (!features.attachments) return; const files = transferredFiles(event.clipboardData); if (!files.length) return; event.preventDefault(); files.forEach(startAttachmentUpload); }} onSubmit={content => goalModeEnabled ? startGoalFromComposer(content) : enqueueDraft(content)} onDirectSubmit={content => goalModeEnabled ? startGoalFromComposer(content) : sendDraftDirectly(content)} onManageCapabilities={features.capabilities && (selected || features.draftCapabilitySelection) ? () => setCapabilityManagerOpen(true) : undefined} onNativeAction={action => { if (action === 'CONDENSE' && canCondense && !condense.isPending && workspace && selected) condense.mutate({ workspaceId: workspace.id, bindingId: selected.id }); }} onWorkspaceReferenceSelected={() => { setWorkspaceReferenceQuery(''); setWorkspaceReferencePickerOpen(true); }}/>
         <div className="agent-composer-attachments">
         {(features.attachments && (attachments.length > 0 || pendingAttachments.some(item => item.scope === composerScope)) || references.length > 0 || composerAnnotations.length > 0) && <div className="agent-attachments" aria-label="已添加的附件和会话引用">{features.attachments && <>{attachments.map((item, index) => <span key={item.path}><button type="button" className="agent-attachment-open" title={`预览附件：${item.filename}`} onClick={() => previewAttachment(item)}>{composerAttachmentImageUrl(item) ? <img src={composerAttachmentImageUrl(item)} alt=""/> : <FileTypeIcon filename={item.filename} mimeType={item.mime_type} size={16}/>}<em>{item.filename}</em></button><button type="button" className="agent-attachment-alias" aria-label={`引用附件 ${index + 1}`} title={`插入 @附件${index + 1}`} onClick={() => insertAttachmentAlias(item)}>@</button><button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => {
   const remove = () => setAttachments(all => all.filter(candidate => candidate.path !== item.path));
