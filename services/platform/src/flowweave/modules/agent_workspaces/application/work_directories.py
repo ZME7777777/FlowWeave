@@ -11,7 +11,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, false, func, select, true
 from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions.infrastructure.models import (
@@ -871,7 +871,15 @@ def update_work_directory(
     return _dict(db, item)
 
 
-def delete_work_directory(db: Session, workspace_id: str, work_directory_id: str) -> None:
+def delete_work_directory(
+    db: Session, workspace_id: str, work_directory_id: str, *, delete_files: bool = True
+) -> None:
+    """Delete a work directory and its conversations.
+
+    With ``delete_files=False`` only the FlowWeave records and the native
+    OpenHands conversations are removed; every file on disk is left in place.
+    """
+
     from flowweave.modules.agent_sessions.application import conversations
     from flowweave.modules.agent_sessions.application.draft_attachments import (
         ATTACHMENT_PATH,
@@ -917,7 +925,7 @@ def delete_work_directory(db: Session, workspace_id: str, work_directory_id: str
         for version in versions
         if version.working_path != "."
     )
-    if any(path.parts[0] in {"uploads", ".flowweave"} for path in paths):
+    if delete_files and any(path.parts[0] in {"uploads", ".flowweave"} for path in paths):
         raise DomainError("AGENT_WORK_DIRECTORY_DELETE_UNSAFE", "不能删除平台保留目录", 409)
     bindings = list(
         db.scalars(
@@ -997,7 +1005,7 @@ def delete_work_directory(db: Session, workspace_id: str, work_directory_id: str
     def overlaps(path: PurePosixPath) -> bool:
         return any(path.is_relative_to(target) or target.is_relative_to(path) for target in paths)
 
-    if any(overlaps(_canonical_relative_path(path)) for path in other_paths):
+    if delete_files and any(overlaps(_canonical_relative_path(path)) for path in other_paths):
         raise DomainError(
             "AGENT_WORK_DIRECTORY_SHARED_PATH",
             "目录仍被其他工作区使用，无法连同文件删除",
@@ -1008,6 +1016,8 @@ def delete_work_directory(db: Session, workspace_id: str, work_directory_id: str
             AgentConversationBinding.workspace_id == workspace_id,
             ~AgentConversationBinding.id.in_(binding_ids),
         )
+        if delete_files
+        else select(AgentConversationBinding).where(false())
     ):
         cwd = PurePosixPath(binding.working_directory or "/")
         if (
@@ -1029,6 +1039,7 @@ def delete_work_directory(db: Session, workspace_id: str, work_directory_id: str
         .where(
             AgentConversationBinding.workspace_id == workspace_id,
             ~AgentConversationBinding.id.in_(binding_ids),
+            true() if delete_files else false(),
         )
     ):
         candidate = PurePosixPath(path)
@@ -1060,7 +1071,7 @@ def delete_work_directory(db: Session, workspace_id: str, work_directory_id: str
     draft_owners = {upload.attachment_owner_id for upload in uploads if upload.attachment_owner_id}
     owners = binding_ids | draft_owners
     with directory_deletion.parent_fd(root, PurePosixPath("uploads/entry")) as uploads:
-        if uploads is not None:
+        if delete_files and uploads is not None:
             for name in os.listdir(uploads):
                 matched = ATTACHMENT_PATH.fullmatch(str(runtime_root / "uploads" / name))
                 if matched and matched.group("owner") in owners:
@@ -1078,15 +1089,18 @@ def delete_work_directory(db: Session, workspace_id: str, work_directory_id: str
                             409,
                         )
                     paths.add(PurePosixPath("uploads") / name)
-    for path in paths:
-        directory_deletion.metadata(root, path)
-    directory_deletion.stage(db, workspace_id, root, tuple(paths))
+    if delete_files:
+        for path in paths:
+            directory_deletion.metadata(root, path)
+        directory_deletion.stage(db, workspace_id, root, tuple(paths))
+    action = "delete" if delete_files else "detach"
     for binding_id in binding_ids:
         conversations.delete_conversation(
             db,
             workspace_id,
             binding_id,
-            f"delete-work-directory:{work_directory_id}:{binding_id}",
+            f"{action}-work-directory:{work_directory_id}:{binding_id}",
+            keep_attachment_files=not delete_files,
         )
     db.execute(
         delete(AgentAttachmentUploadPart).where(AgentAttachmentUploadPart.upload_id.in_(upload_ids))

@@ -132,7 +132,7 @@ export interface AgentSessionApi {
   readonly createWorkDirectory: (hostId: AgentSessionHostId, displayName: string, selectedPaths: string[]) => Promise<AgentSessionWorkDirectory>;
   readonly updateWorkDirectory?: (hostId: AgentSessionHostId, workDirectoryId: AgentSessionWorkDirectoryId, displayName: string) => Promise<AgentSessionWorkDirectory>;
   readonly archiveWorkDirectory?: (hostId: AgentSessionHostId, workDirectoryId: AgentSessionWorkDirectoryId) => Promise<AgentSessionWorkDirectory>;
-  readonly deleteWorkDirectory?: (hostId: AgentSessionHostId, workDirectoryId: AgentSessionWorkDirectoryId) => Promise<void>;
+  readonly deleteWorkDirectory?: (hostId: AgentSessionHostId, workDirectoryId: AgentSessionWorkDirectoryId, options?: { keepFiles?: boolean }) => Promise<void>;
   readonly filePreview: (hostId: AgentSessionHostId, path: string, options?: Omit<AgentSessionFileOptions, 'download'>, offset?: number, signal?: AbortSignal) => Promise<AgentSessionFilePreview>;
   readonly deleteFile?: (hostId: AgentSessionHostId, path: string, options?: Omit<AgentSessionFileOptions, 'download'> & { recursive?: boolean }) => Promise<void>;
   readonly createFile?: (hostId: AgentSessionHostId, parentPath: string, name: string, kind: 'FILE' | 'DIRECTORY', options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<void>;

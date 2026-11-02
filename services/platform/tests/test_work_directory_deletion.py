@@ -439,3 +439,38 @@ def test_workspace_file_upload_chunks_are_removed_with_directory(graph):
             )
         )
     )
+
+
+def test_detach_directory_removes_records_but_keeps_every_file(graph, client):
+    g = graph
+    directory = g.directory("project")
+    other = g.directory("project-sub", ["project/sub"])  # overlaps: delete would be refused
+    binding = g.binding(directory, archived=False)
+    binding_id = binding.id
+    path, runtime_path = g.attachment(binding.id)
+    g.db.add(
+        AgentConversationMessageAttachment(
+            binding_id=binding.id,
+            event_id="event",
+            path=runtime_path,
+            filename="note.txt",
+            mime_type="text/plain",
+            byte_size=7,
+        )
+    )
+    finish(g.db)
+    response = client.delete(
+        f"/api/v1/agent-workspaces/{g.host.id}/work-directories/{directory['id']}"
+        "?delete_files=false"
+    )
+    assert response.status_code == 204, response.text
+    assert (g.root / "project/result.txt").read_text() == "project"
+    assert (g.root / "project/sub/result.txt").read_text() == "project-sub"
+    assert path.read_text() == "private"
+    g.db.expire_all()
+    assert g.db.get(AgentConversationBinding, binding_id) is None
+    assert g.db.get(AgentWorkDirectory, directory["id"]) is None
+    assert g.db.get(AgentWorkDirectory, other["id"]) is not None
+    assert not (g.root / ".flowweave/deleted-workspaces").exists() or not list(
+        (g.root / ".flowweave/deleted-workspaces").iterdir()
+    )

@@ -1037,12 +1037,17 @@ async def patch_agent_work_directory(
     response_class=Response,
 )
 async def delete_agent_work_directory(
-    workspace_id: str, work_directory_id: str, container: ContainerDep
+    workspace_id: str,
+    work_directory_id: str,
+    container: ContainerDep,
+    delete_files: bool = True,
 ) -> Response:
+    """Delete a work directory; ``delete_files=false`` only removes it from FlowWeave."""
+
     await run_blocking_auxiliary(
         container,
         lambda session: work_directories.delete_work_directory(
-            session, workspace_id, work_directory_id
+            session, workspace_id, work_directory_id, delete_files=delete_files
         ),
     )
     return Response(status_code=204)

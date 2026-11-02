@@ -2718,7 +2718,12 @@ def set_conversation_unread(
 
 
 def delete_conversation(
-    db: Session, workspace_id: str, binding_id: str, idempotency_key: str
+    db: Session,
+    workspace_id: str,
+    binding_id: str,
+    idempotency_key: str,
+    *,
+    keep_attachment_files: bool = False,
 ) -> None:
     workspace = _workspace(db, workspace_id)
     item = _binding(db, workspace_id, binding_id, lock=True)
@@ -2764,7 +2769,8 @@ def delete_conversation(
     # The native conversation is now gone, so its private attachment objects
     # must not outlive it.  The helper only unlinks files bearing this binding's
     # opaque owner UUID and never traverses arbitrary workspace paths.
-    agent_workspace_host.delete_session_attachment_files(db, workspace.id, item.id)
+    if not keep_attachment_files:
+        agent_workspace_host.delete_session_attachment_files(db, workspace.id, item.id)
     delete_binding_records(db, item.id)
     db.flush()
 

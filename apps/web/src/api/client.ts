@@ -367,8 +367,8 @@ export const api = {
     request<AgentWorkDirectory>(`/agent-workspaces/${encodeURIComponent(id)}/work-directories`, json('POST', { display_name, selected_paths })),
   updateAgentWorkDirectory: (id: string, directoryId: string, display_name: string) =>
     request<AgentWorkDirectory>(`/agent-workspaces/${encodeURIComponent(id)}/work-directories/${encodeURIComponent(directoryId)}`, json('PATCH', { display_name })),
-  deleteAgentWorkDirectory: (id: string, directoryId: string) =>
-    request<void>(`/agent-workspaces/${encodeURIComponent(id)}/work-directories/${encodeURIComponent(directoryId)}`, json('DELETE')),
+  deleteAgentWorkDirectory: (id: string, directoryId: string, options: { keepFiles?: boolean } = {}) =>
+    request<void>(`/agent-workspaces/${encodeURIComponent(id)}/work-directories/${encodeURIComponent(directoryId)}${options.keepFiles ? '?delete_files=false' : ''}`, json('DELETE')),
   archiveAgentWorkDirectory: (id: string, directoryId: string) =>
     request<AgentWorkDirectory>(`/agent-workspaces/${encodeURIComponent(id)}/work-directories/${encodeURIComponent(directoryId)}/archive`, json('POST')),
   restoreAgentWorkDirectory: (id: string, directoryId: string) =>

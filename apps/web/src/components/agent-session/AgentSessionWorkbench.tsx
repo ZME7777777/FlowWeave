@@ -7,7 +7,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { Terminal as XTerm } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import { type InfiniteData, useQueries, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Archive, ArrowLeft, ArrowRight, ArrowUp, Bell, Bot, Boxes, CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, CircleDot, Copy, CornerDownRight, Download, Ellipsis, Eye, EyeOff, FileCode2, FileText, Folder, FolderOpen, FolderPlus, Gauge, GitBranch, Globe2, GripVertical, Home, ImageIcon, Link2, ListRestart, LoaderCircle, LockKeyhole, LocateFixed, Maximize, Maximize2, Minimize, Minimize2, MessageSquareText, MonitorCog, MonitorOff, PanelRight, PanelRightOpen, Pencil, Pin, PinOff, Play, Plug, Plus, Quote, RefreshCw, Search, Send, Settings, ShieldAlert, Square, SquareCheck, SquarePlus, SquareTerminal, Trash2, X, Target } from 'lucide-react';
+import { Archive, Unlink, ArrowLeft, ArrowRight, ArrowUp, Bell, Bot, Boxes, CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, CircleDot, Copy, CornerDownRight, Download, Ellipsis, Eye, EyeOff, FileCode2, FileText, Folder, FolderOpen, FolderPlus, Gauge, GitBranch, Globe2, GripVertical, Home, ImageIcon, Link2, ListRestart, LoaderCircle, LockKeyhole, LocateFixed, Maximize, Maximize2, Minimize, Minimize2, MessageSquareText, MonitorCog, MonitorOff, PanelRight, PanelRightOpen, Pencil, Pin, PinOff, Play, Plug, Plus, Quote, RefreshCw, Search, Send, Settings, ShieldAlert, Square, SquareCheck, SquarePlus, SquareTerminal, Trash2, X, Target } from 'lucide-react';
 import { createContext, isValidElement, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type WheelEvent as ReactWheelEvent } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
@@ -647,6 +647,7 @@ interface WorkspaceConversationGroupProps {
   onConfigureSession?: () => void;
   onEdit?: () => void;
   onArchive?: () => void;
+  onDetach?: () => void;
   onDelete?: () => void;
   restoredConversationCount?: number;
   onRestoredConversationsVisible?: () => void;
@@ -724,7 +725,7 @@ function readSidebarCollapsePreferences(storageKey: string | undefined): Sidebar
   }
 }
 
-function WorkspaceConversationGroup({ groupId, label, children, conversationCount, hasMore = false, loadingMore = false, onLoadMore, draggable = false, dragging = false, dropPosition, onPointerDragStart, collapsed = false, onCollapsedChange, canCreateConversation = false, onCreateConversation, onConfigureSession, onEdit, onArchive, onDelete, restoredConversationCount = 0, onRestoredConversationsVisible, revealConversationIndex, onRevealConversation }: WorkspaceConversationGroupProps & { revealConversationIndex?: number; onRevealConversation?: () => void }) {
+function WorkspaceConversationGroup({ groupId, label, children, conversationCount, hasMore = false, loadingMore = false, onLoadMore, draggable = false, dragging = false, dropPosition, onPointerDragStart, collapsed = false, onCollapsedChange, canCreateConversation = false, onCreateConversation, onConfigureSession, onEdit, onArchive, onDetach, onDelete, restoredConversationCount = 0, onRestoredConversationsVisible, revealConversationIndex, onRevealConversation }: WorkspaceConversationGroupProps & { revealConversationIndex?: number; onRevealConversation?: () => void }) {
   const [visibleCount, setVisibleCount] = useState(3);
   const [actionsOpen, setActionsOpen] = useState(false);
   const actionsRef = useRef<HTMLDivElement>(null);
@@ -781,11 +782,12 @@ function WorkspaceConversationGroup({ groupId, label, children, conversationCoun
     onCollapsedChange?.(!collapsed);
   };
   const toggleLabel = `${collapsed ? '展开' : '收起'}工作区 ${label}`;
-  const hasOverflowActions = Boolean(onConfigureSession || onEdit || onArchive || onDelete);
+  const hasOverflowActions = Boolean(onConfigureSession || onEdit || onArchive || onDetach || onDelete);
   const menu = actionsOpen && <ViewportPopover anchor={() => actionsTriggerRef.current} gap={3} ref={actionsMenuRef} role="menu" className="agent-workspace-group-actions-menu" aria-label={`工作区操作菜单：${label}`} onPointerDown={event => event.stopPropagation()}>
     {onConfigureSession && <button type="button" role="menuitem" onClick={() => { onConfigureSession(); setActionsOpen(false); }}><Boxes size={13}/>会话配置</button>}
     {onArchive && <button type="button" role="menuitem" onClick={() => { onArchive(); setActionsOpen(false); }}><Archive size={13}/>归档</button>}
     {onEdit && <button type="button" role="menuitem" onClick={() => { onEdit(); setActionsOpen(false); }}><Settings size={13}/>编辑</button>}
+    {onDetach && <button type="button" role="menuitem" onClick={() => { onDetach(); setActionsOpen(false); }}><Unlink size={13}/>移除</button>}
     {onDelete && <button type="button" className="danger" role="menuitem" onClick={() => { onDelete(); setActionsOpen(false); }}><Trash2 size={13}/>删除</button>}
   </ViewportPopover>;
   return <section data-workspace-group-id={groupId} data-work-directory-id={draggable ? groupId : undefined} className={`agent-workspace-group${collapsed ? ' collapsed' : ''}${dragging ? ' dragging' : ''}${dropPosition ? ` drop-${dropPosition}` : ''}`}>
@@ -10562,12 +10564,21 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       if (archiveSelectionRef.current.workspaceId === workspaceId && activeComposerScope.current === operationScope) setOperationError(reason instanceof Error ? reason : new Error('归档工作区失败'));
     }
   };
-  const removeWorkDirectory = async (directory: AgentSessionWorkDirectory) => {
-    if (!api.deleteWorkDirectory || !await confirmDeletion('工作区', directory.display_name)) return;
+  const removeWorkDirectory = async (directory: AgentSessionWorkDirectory, keepFiles = false) => {
+    if (!api.deleteWorkDirectory) return;
+    if (keepFiles) {
+      const confirmed = await dialog.confirm({
+        title: `移除工作区“${directory.display_name}”？`,
+        message: '会删除其中的 OpenHands 会话，并从列表中移除该工作区；工作区绑定的目录和会话涉及的文件会保留，不会被删除。',
+        confirmLabel: '确认移除',
+        tone: 'danger',
+      });
+      if (!confirmed) return;
+    } else if (!await confirmDeletion('工作区', directory.display_name)) return;
     setOperationError(undefined);
     try {
       const workspaceId = workspace!.id;
-      await api.deleteWorkDirectory(workspaceId, directory.id);
+      await api.deleteWorkDirectory(workspaceId, directory.id, keepFiles ? { keepFiles: true } : undefined);
       await queryClient.cancelQueries({ queryKey: sessionQueryKey(host, 'work-directories', workspaceId) });
       queryClient.setQueryData<typeof workDirectoriesQuery.data>(sessionQueryKey(host, 'work-directories', workspaceId), current => current && ({ ...current, items: current.items.filter(item => item.id !== directory.id) }));
       reconcileArchivedConversations(workspaceId, new Set(), directory.id);
@@ -10575,7 +10586,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       await queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'work-directories', workspaceId) });
       void queryClient.invalidateQueries({ queryKey: ['agent-work-directories', workspaceId] });
       setOperationError(undefined);
-    } catch (reason) { reportOperationError('work-directory-delete', reason instanceof Error ? reason : new Error('删除工作区失败')); }
+    } catch (reason) { reportOperationError('work-directory-delete', reason instanceof Error ? reason : new Error(keepFiles ? '移除工作区失败' : '删除工作区失败')); }
   };
   const startConversationRailResize = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (window.innerWidth <= 1100) return;
@@ -10688,7 +10699,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
             <WorkspaceConversationGroup groupId="root" label="根工作区" conversationCount={rootConversations.length} hasMore={Boolean(conversationPagesByScope.__root__?.next_cursor)} loadingMore={loadingConversationScope === '__root__'} onLoadMore={() => loadMoreConversations('__root__')} collapsed={collapsedConversationGroups.has('root')} onCollapsedChange={collapsed => setConversationGroupCollapsed('root', collapsed)} revealConversationIndex={routedRootConversationIndex >= 0 ? routedRootConversationIndex : undefined} onRevealConversation={completeSidebarReveal} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ displayName: '根工作区' }, { restoreRecovery: true, selectStandaloneRoot: true })} onConfigureSession={runtimeWritable ? () => { setWorkspaceSessionConfigurationScope(null); setWorkspaceSessionConfigurationOpen(true); } : undefined} restoredConversationCount={restoredConversationCounts.root ?? 0} onRestoredConversationsVisible={() => markRestoredConversationsVisible('root')}>
               {visibleCount => <>{pendingBootstrapItem && !pendingBootstrap?.draft.workDirectoryId ? pendingBootstrapItem : recoverableDraftItem(undefined, '根工作区')}{rootConversations.slice(0, visibleCount).map(item => conversationRow(item, rootConversations))}</>}
             </WorkspaceConversationGroup>
-            {features.workDirectories && workDirectories.map(directory => { const group = conversationsForDirectory(directory.id); const routeIndex = sidebarReveal.expandCollapsed || !collapsedConversationGroups.has(directory.id) ? group.findIndex(item => item.id === pendingSidebarRevealBindingId) : -1; return <WorkspaceConversationGroup key={directory.id} groupId={directory.id} label={directory.display_name} conversationCount={group.length} hasMore={Boolean(conversationPagesByScope[directory.id]?.next_cursor)} loadingMore={loadingConversationScope === directory.id} onLoadMore={() => loadMoreConversations(directory.id)} draggable dragging={draggedWorkDirectoryId === directory.id} dropPosition={workDirectoryDropTarget?.id === directory.id ? (workDirectoryDropTarget.after ? 'after' : 'before') : undefined} onPointerDragStart={event => startPointerWorkDirectoryDrag(event, directory.id)} collapsed={collapsedConversationGroups.has(directory.id)} onCollapsedChange={collapsed => setConversationGroupCollapsed(directory.id, collapsed)} revealConversationIndex={routeIndex >= 0 ? routeIndex : undefined} onRevealConversation={completeSidebarReveal} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ workDirectoryId: directory.id, displayName: directory.display_name }, { restoreRecovery: true })} onConfigureSession={runtimeWritable ? () => { setWorkspaceSessionConfigurationScope(directory.id); setWorkspaceSessionConfigurationOpen(true); } : undefined} onEdit={api.updateWorkDirectory && runtimeWritable ? () => setWorkDirectoryEditor(directory) : undefined} onArchive={api.archiveWorkDirectory && runtimeWritable ? () => void archiveWorkDirectory(directory) : undefined} onDelete={api.deleteWorkDirectory && runtimeWritable ? () => void removeWorkDirectory(directory) : undefined} restoredConversationCount={restoredConversationCounts[directory.id] ?? 0} onRestoredConversationsVisible={() => markRestoredConversationsVisible(directory.id)}>
+            {features.workDirectories && workDirectories.map(directory => { const group = conversationsForDirectory(directory.id); const routeIndex = sidebarReveal.expandCollapsed || !collapsedConversationGroups.has(directory.id) ? group.findIndex(item => item.id === pendingSidebarRevealBindingId) : -1; return <WorkspaceConversationGroup key={directory.id} groupId={directory.id} label={directory.display_name} conversationCount={group.length} hasMore={Boolean(conversationPagesByScope[directory.id]?.next_cursor)} loadingMore={loadingConversationScope === directory.id} onLoadMore={() => loadMoreConversations(directory.id)} draggable dragging={draggedWorkDirectoryId === directory.id} dropPosition={workDirectoryDropTarget?.id === directory.id ? (workDirectoryDropTarget.after ? 'after' : 'before') : undefined} onPointerDragStart={event => startPointerWorkDirectoryDrag(event, directory.id)} collapsed={collapsedConversationGroups.has(directory.id)} onCollapsedChange={collapsed => setConversationGroupCollapsed(directory.id, collapsed)} revealConversationIndex={routeIndex >= 0 ? routeIndex : undefined} onRevealConversation={completeSidebarReveal} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ workDirectoryId: directory.id, displayName: directory.display_name }, { restoreRecovery: true })} onConfigureSession={runtimeWritable ? () => { setWorkspaceSessionConfigurationScope(directory.id); setWorkspaceSessionConfigurationOpen(true); } : undefined} onEdit={api.updateWorkDirectory && runtimeWritable ? () => setWorkDirectoryEditor(directory) : undefined} onArchive={api.archiveWorkDirectory && runtimeWritable ? () => void archiveWorkDirectory(directory) : undefined} onDetach={api.deleteWorkDirectory && runtimeWritable ? () => void removeWorkDirectory(directory, true) : undefined} onDelete={api.deleteWorkDirectory && runtimeWritable ? () => void removeWorkDirectory(directory) : undefined} restoredConversationCount={restoredConversationCounts[directory.id] ?? 0} onRestoredConversationsVisible={() => markRestoredConversationsVisible(directory.id)}>
               {visibleCount => <>{pendingBootstrapItem && pendingBootstrap?.draft.workDirectoryId === directory.id ? pendingBootstrapItem : recoverableDraftItem(directory.id, directory.display_name)}{group.slice(0, visibleCount).map(item => conversationRow(item, group))}</>}
             </WorkspaceConversationGroup>; })}<div ref={workspaceGroupAnchorSpacer} aria-hidden="true"/></>}
       </div>
