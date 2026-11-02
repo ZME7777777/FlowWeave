@@ -653,6 +653,8 @@ export const api = {
     request<Case>(`/cases/${encodeURIComponent(caseId)}/stages/${encodeURIComponent(stageId)}/flow-run`, json('PUT', { flow_run_id, execution_mode })),
   startCase: (caseId: string, body: { session: 'CURRENT' | 'NEW'; note?: string; expected_row_version: number }, idempotencyKey: string) =>
     request<Case>(`/cases/${encodeURIComponent(caseId)}/start`, json('POST', body, idempotencyKey)),
+  rerunCaseStage: (caseId: string, stageId: string) =>
+    request<Case>(`/cases/${encodeURIComponent(caseId)}/stages/${encodeURIComponent(stageId)}/rerun`, json('POST')),
   executeCaseControlPlan: (caseId: string, planId: string) =>
     request<import('../types').CaseControlPlan>(`/cases/${encodeURIComponent(caseId)}/control-plans/${encodeURIComponent(planId)}/execute`, json('POST')),
   retryCaseControlPlan: (caseId: string, planId: string) =>
