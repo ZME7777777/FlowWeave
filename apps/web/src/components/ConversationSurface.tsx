@@ -1227,11 +1227,14 @@ function turnProcessBlocks(
   return [{ kind: 'activity', id: 'activity-0', items, startedAt, finishedAt, active }];
 }
 
-function processBlocksForSegment(segment: ProcessSegment, active: boolean, completedAt?: number): TurnProcessBlock[] {
-  const interruptedAt = parsedEventTime(segment.interruptedBy?.payload.timestamp);
+function processBlocksForTurn(segments: ProcessSegment[], active: boolean, completedAt?: number): TurnProcessBlock[] {
+  const firstSegment = segments[0];
+  const lastSegment = segments.at(-1);
+  if (!firstSegment || !lastSegment) return [];
+  const interruptedAt = parsedEventTime(lastSegment.interruptedBy?.payload.timestamp);
   return turnProcessBlocks(
-    segment.items.filter(item => item.kind !== 'error'),
-    eventTime(segment.startedBy),
+    segments.flatMap(segment => segment.items).filter(item => item.kind !== 'error'),
+    eventTime(firstSegment.startedBy),
     interruptedAt ?? completedAt,
     active && interruptedAt === undefined,
   );
@@ -2874,11 +2877,11 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
         const supersededAt = index < turns.length - 1 ? eventTime(turns[index + 1]?.user) : undefined;
         const finishedAt = eventTime(turn.assistant ?? failures.at(-1)) ?? supersededAt;
         const processSegments = turn.processSegments;
-        const processBlocks = processSegments.flatMap((segment, segmentIndex) => processBlocksForSegment(
-          segment,
-          isCurrent && segmentIndex === processSegments.length - 1 && !turn.assistant && !failures.length,
+        const processBlocks = processBlocksForTurn(
+          processSegments,
+          isCurrent && !turn.assistant && !failures.length,
           finishedAt,
-        ).map(block => ({ ...block, id: `activity-${segmentIndex}` })));
+        );
         // A continuation can add another user event before the Runtime emits
         // the one formal reply for the whole conversation. Do not fold an
         // earlier process merely because it was superseded; close every
@@ -2907,13 +2910,6 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
                 : typeof message.event.payload._flowweave_delivery_status === 'string'
                   ? message.event.payload._flowweave_delivery_status
                   : undefined;
-            const segmentBlocks = processSegments
-              .filter(segment => segment.messageIndex === messageIndex)
-              .flatMap(segment => processBlocksForSegment(
-                segment,
-                isCurrent && messageIndex === userMessages.length - 1 && !turn.assistant && !failures.length,
-                finishedAt,
-              ));
             return <Fragment key={turn.renderKey}>
               <div className={`conversation-user-message${isContinuation ? ' continuation' : ''}`}>{editingEventId === message.event.id
                 ? <form className="conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(message.event.id, editingContent.trim()); }}><textarea ref={rewriteEditor} aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)} onKeyDown={event => {
@@ -2929,22 +2925,22 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
                   event.currentTarget.form?.requestSubmit();
                 }}/><footer><button type="button" onClick={() => setEditingEventId(undefined)}>取消</button><button type="submit" disabled={!editingContent.trim() || rewritePending}>重新思考</button></footer></form>
                 : <article data-user-event-id={message.event.id} data-conversation-event-id={message.event.id} className="conversation-message user"><MessageAttachments attachments={eventAttachments(message.event)} references={message.event.payload.conversation_references} workspaceReferences={message.event.payload.workspace_references} annotations={eventAnnotations(message.event)} onOpen={onOpenAttachment} onOpenReference={reference => { if (onOpenConversationReference) onOpenConversationReference(reference); else setViewingReference(reference); }} onOpenWorkspaceReference={onOpenWorkspaceReference} onOpenAnnotation={locateAnnotation} conversationName={conversationName} imageUrl={attachmentImageUrl}/>{message.content && <div className="conversation-message-content"><MessageMarkdown>{message.content}</MessageMarkdown></div>}<footer className="conversation-message-meta user">{messageDeliveryStatus && <small className="conversation-message-delivery-status" role="status">{messageDeliveryStatus}</small>}{messageTimestamp && <time dateTime={typeof message.event.payload.timestamp === 'string' ? message.event.payload.timestamp : undefined}>{messageTimestamp}</time>}<div className="conversation-message-actions can-rewrite"><button type="button" className="conversation-message-copy" aria-label={copiedEventId === message.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === message.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(message.event.id, message.content)}>{copiedEventId === message.event.id ? <Check size={13}/> : <Copy size={13}/>}</button><button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(message.event.id); setEditingContent(message.content); }}><Pencil size={13}/></button></div></footer></article>}</div>
-              {!completionConfirmed && segmentBlocks.map(block => <ActivityGroup
-                key={`${message.event.id}:${block.id}`}
-                items={block.items}
-                active={block.active}
-                revealEventIds={revealEventIds}
-                completionConfirmed={completionConfirmed}
-                paused={isCurrentPaused && !block.active}
-                parentFailed={parentFailed && !block.active}
-                startedAt={block.startedAt}
-                finishedAt={block.finishedAt}
-                avatarSlots={avatarSlots}
-                workspaceRoot={workspaceRoot}
-                onOpenSourceLocation={onOpenSourceLocation}
-              />)}
             </Fragment>;
           })}
+          {!completionConfirmed && processBlocks.map(block => <ActivityGroup
+            key={block.id}
+            items={block.items}
+            active={block.active}
+            revealEventIds={revealEventIds}
+            completionConfirmed={completionConfirmed}
+            paused={isCurrentPaused && !block.active}
+            parentFailed={parentFailed && !block.active}
+            startedAt={block.startedAt}
+            finishedAt={block.finishedAt}
+            avatarSlots={avatarSlots}
+            workspaceRoot={workspaceRoot}
+            onOpenSourceLocation={onOpenSourceLocation}
+          />)}
           {isCurrent && !turn.assistant && !failures.length && (
             <CurrentTurnStatus items={turn.activity} requestSubmitting={requestSubmitting} statusOverride={pausing ? '正在暂停 Agent' : reconnectingAttempt ? `正在尝试重连（${reconnectingAttempt}/${reconnectingMaxAttempts}）` : rewritePending ? '正在重新思考' : emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} modelRetryStatus={modelRetryStatus} monitoring={monitoring} connectionState={connectionState}/>
           )}

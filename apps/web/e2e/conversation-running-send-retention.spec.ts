@@ -131,7 +131,7 @@ for (const timing of ['stream-ahead', 'ack-ahead', 'overlapping-ack', 'reversed-
 }
 
 
-test('Paused process segments stay expanded until their formal reply arrives', async ({ page }) => {
+test('Paused and resumed work stays in one expanded process until its formal reply arrives', async ({ page }) => {
   const timestamp = '2026-10-22T11:00:00Z';
   const user = { id: 'pause-process-user', username: 'pause-process-user', role: 'USER', is_super_admin: false };
   const workspace = { id: 'pause-process-workspace', display_name: '暂停过程回归', desired_state: 'RUNNING', updated_at: timestamp };
@@ -178,11 +178,13 @@ test('Paused process segments stay expanded until their formal reply arrives', a
   const turn = page.locator(`[data-conversation-turn="${userEvent.id}"]`);
   await expect(turn.getByText(initialThought.payload.content, { exact: true })).toBeVisible();
   await expect(turn.getByText(resumedThought.payload.content, { exact: true })).toBeVisible();
-  await expect(turn.locator('details.conversation-activity-group')).toHaveCount(2);
-  await expect(turn.locator('details.conversation-activity-group[open]')).toHaveCount(2);
+  const process = turn.locator('details.conversation-activity-group');
+  await expect(process).toHaveCount(1);
+  await expect(process).toHaveAttribute('open', '');
+  await expect(process.locator(':scope > summary')).toContainText('2 项');
 
   socket!.send(JSON.stringify({ type: 'event', event: finalReply }));
   await expect(turn.getByText(finalReply.payload.content, { exact: true })).toBeVisible();
-  await expect(turn.locator('details.conversation-process-summary')).toHaveCount(2);
+  await expect(turn.locator('details.conversation-process-summary')).toHaveCount(1);
   await expect(turn.locator('details.conversation-process-summary[open]')).toHaveCount(0);
 });
