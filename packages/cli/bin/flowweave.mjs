@@ -39,7 +39,7 @@ function usage() {
   flow <list|get|create|update|validate|delete> ...
   run <list|get|start|delete|runtime|replace|pause|resume|cancel|complete|events|node|node-copy|node-delete|pin|unpin|stepwise-draft|stepwise-start|workspace-details|workspace-directory|workspace-git-repositories|workspace-git-log|workspace-git-commit|workspace-git-diff|workspace-entry-create|workspace-delete|work-directory-delete|hydration|head|automatic-config-export|automatic-config-import|reconcile-runtime-completion> ...
   schedule <list|templates|occurrences|create|pause|resume|trigger|delete> ...
-  case <list|get|create|update|delete|path|session-config|pause|resume|stage-templates|artifact-materials|material-upload|material-file|stage-state|stage-bind|attach-flow-run|stage-launch|stage-start|observe|proposal-create|proposal-execute|plan-create|plan-execute|plan-retry|start|round|round-retry|conversation-delete> ...
+  case <list|get|create|update|delete|path|session-config|pause|resume|stage-templates|artifact-materials|material-upload|material-file|stage-state|stage-bind|attach-flow-run|stage-rerun|observe|proposal-create|proposal-execute|plan-create|plan-execute|plan-retry|start|round|round-retry|conversation-delete> ...
   model <list|create|update|delete|discover|usage|test|oauth-start|oauth-poll|oauth-status|oauth-revoke> ...
   agent <default|workspace|runtime|runtime-replace|conversations|pinned-conversations|conversation-management|conversation-management-delete|schedules|schedule-create|schedule-update|schedule-pause|schedule-resume|schedule-trigger|schedule-delete|schedule-occurrences|conversation|create|send|interrupt|resume|pin|unpin|sidebar-create|sidebar|sidebar-close|work-directories|work-directory-create|work-directory-delete|workspace-details|workspace-directory|workspace-git-repositories|workspace-git-log|workspace-git-commit|workspace-git-diff|workspace-entry-create|file-delete|history|hydration|head> ...
 
@@ -954,15 +954,16 @@ async function caseSpace(args) {
   if (action === 'plan-create') return request('POST', `${c}/control-plans`, args);
   if (action === 'start') {
     requireIdempotencyKey(args, 'case start');
-    return request('POST', `${c}/control-conversation`, args);
+    // The single start entry: raises the Case start event for the coordinator Agent.
+    return request('POST', `${c}/start`, args);
   }
   if (action === 'conversation-delete') {
     const binding = option(args, '--binding-id');
     return request('DELETE', `${c}/control-conversation`, args, { query: binding ? [['binding_id', binding]] : [] });
   }
-  if (['stage-state', 'stage-bind', 'stage-launch', 'stage-start'].includes(action)) {
+  if (['stage-state', 'stage-bind', 'stage-rerun'].includes(action)) {
     need(sub, '阶段 ID（case ' + action + ' <case-id> <stage-id>）');
-    const route = { 'stage-state': ['PUT', 'state'], 'stage-bind': ['PUT', 'flow-run'], 'stage-launch': ['POST', 'launch'], 'stage-start': ['POST', 'execution/start'] }[action];
+    const route = { 'stage-state': ['PUT', 'state'], 'stage-bind': ['PUT', 'flow-run'], 'stage-rerun': ['POST', 'rerun'] }[action];
     return request(route[0], `${c}/stages/${sub}/${route[1]}`, args);
   }
   if (action === 'proposal-execute') return request('POST', `${c}/decision-proposals/${need(sub, '提案 ID')}/execute`, args, { body: {} });
@@ -970,7 +971,7 @@ async function caseSpace(args) {
   if (action === 'plan-retry') return request('POST', `${c}/control-plans/${need(sub, '计划 ID')}/retry`, args, { body: {} });
   if (action === 'round') return request('GET', `${c}/control-rounds/${need(sub, '轮次 ID')}`, args);
   if (action === 'round-retry') return request('POST', `${c}/control-rounds/${need(sub, '轮次 ID')}/retry`, args, { body: {} });
-  throw new CliError('case 支持 list|get|create|update|delete|path|session-config|pause|resume|stage-templates|artifact-materials|material-upload|material-file|stage-state|stage-bind|attach-flow-run|stage-launch|stage-start|observe|proposal-create|proposal-execute|plan-create|plan-execute|plan-retry|start|round|round-retry|conversation-delete');
+  throw new CliError('case 支持 list|get|create|update|delete|path|session-config|pause|resume|stage-templates|artifact-materials|material-upload|material-file|stage-state|stage-bind|attach-flow-run|stage-rerun|observe|proposal-create|proposal-execute|plan-create|plan-execute|plan-retry|start|round|round-retry|conversation-delete');
 }
 
 async function main(argv) {

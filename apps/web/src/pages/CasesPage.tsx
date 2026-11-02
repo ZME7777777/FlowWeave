@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { AlertTriangle, ArrowDown, Bot, Check, ChevronRight, CirclePause, CirclePlay, ClipboardList, Clock3, ExternalLink, FileText, GitBranch, GripVertical, Info, Link2, ListChecks, Pencil, Play, Plus, RotateCcw, Search, Settings2, Trash2, Upload, X } from 'lucide-react';
+import { AlertTriangle, ArrowDown, Bot, Check, ChevronDown, ChevronRight, CirclePause, CirclePlay, ClipboardList, Clock3, ExternalLink, FileText, GitBranch, GripVertical, Info, Link2, ListChecks, Pencil, Play, Plus, RotateCcw, Search, Settings2, Trash2, Upload, X } from 'lucide-react';
 import { api, caseMaterialFileUrl } from '../api/client';
 import type { Case, CaseBasics, CaseMaterial, CaseSessionConfig, CaseStage, CaseStageExecution } from '../types';
 import { CapabilityManager } from '../components/agent-session/AgentSessionWorkbench';
@@ -367,18 +367,9 @@ function PathTab({ item, artifactCounts, onUpdated, onOpenRun, onOpenRecord }: {
       if (adding) void templates.refetch();
     },
   });
-  const execute = useMutation({
-    mutationFn: async (stage: CaseStage) => {
-      if (!stage.current_execution_flow_run_id) await api.launchCaseStage(item.id, stage.id);
-      await api.startCaseStageExecution(item.id, stage.id);
-      return api.case(item.id);
-    },
-    onError: () => { void api.case(item.id).then(onUpdated).catch(() => undefined); },
-    onSuccess: result => { onUpdated(result); setStatus('已创建并启动独立执行记录'); },
-  });
   const rerun = useMutation({
     mutationFn: (stage: CaseStage) => api.rerunCaseStage(item.id, stage.id),
-    onSuccess: result => { onUpdated(result); setStatus('已重置阶段：请手动启动，或由 Agent 重新准备并启动。'); },
+    onSuccess: result => { onUpdated(result); setStatus('已重置阶段。点击工具栏“再次启动”，由 Agent 重新准备并启动。'); },
   });
   const reorder = (source: string, target: string, after: boolean) => {
     const from = item.stages.findIndex(stage => stage.id === source);
@@ -411,21 +402,21 @@ function PathTab({ item, artifactCounts, onUpdated, onOpenRun, onOpenRecord }: {
         endDrag();
       }}>
       <div className="scenario-path-rail"><span>{index + 1}</span><i><ArrowDown size={12}/></i></div>
-      <article draggable={!pathLocked && !update.isPending && !adding && !execute.isPending} aria-label={`路径卡片 ${stage.name}`} aria-current={selectedStage?.id === stage.id ? 'true' : undefined} tabIndex={0}
+      <article draggable={!pathLocked && !update.isPending && !adding} aria-label={`路径卡片 ${stage.name}`} aria-current={selectedStage?.id === stage.id ? 'true' : undefined} tabIndex={0}
         onClick={() => setSelectedStageId(stage.id)} onFocus={() => setSelectedStageId(stage.id)}
         onKeyDown={event => { if ((event.key === 'Enter' || event.key === ' ') && event.target === event.currentTarget) { event.preventDefault(); setSelectedStageId(stage.id); } }}
         onDragStart={event => { event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('application/x-flowweave-case-stage', stage.id); setDraggingId(stage.id); setStatus(''); }} onDragEnd={endDrag}>
         <header><div className="case-card-title"><span className={`case-stage-state ${stage.current_execution_flow_run_id ? 'executing' : stage.state.toLowerCase()}`}>{stageExecutionLabel(stage)}</span><span>{stage.execution_mode === 'STEPWISE' ? '逐步运行' : '连续运行'}</span><h3>{stage.name}</h3></div>
-          <div className="scenario-card-actions"><button className="ghost case-drag-handle" aria-label={`调整顺序 ${stage.name}`} title="拖拽调整顺序，也可聚焦后按上下方向键" disabled={pathLocked || update.isPending || adding || execute.isPending} onKeyDown={event => {
+          <div className="scenario-card-actions"><button className="ghost case-drag-handle" aria-label={`调整顺序 ${stage.name}`} title="拖拽调整顺序，也可聚焦后按上下方向键" disabled={pathLocked || update.isPending || adding} onKeyDown={event => {
             if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
             event.preventDefault(); const to = index + (event.key === 'ArrowDown' ? 1 : -1);
             if (item.stages[to]) reorder(stage.id, item.stages[to].id, to > index);
-          }}><GripVertical size={17}/></button><button className="ghost" aria-label={`删除卡片 ${stage.name}`} disabled={pathLocked || Boolean(stage.current_execution_flow_run_id) || update.isPending || execute.isPending} onClick={() => { setStatus(''); update.mutate(item.stages.filter(candidate => candidate.id !== stage.id).map(candidate => ({ id: candidate.id }))); }}><Trash2 size={15}/></button></div>
+          }}><GripVertical size={17}/></button><button className="ghost" aria-label={`删除卡片 ${stage.name}`} disabled={pathLocked || Boolean(stage.current_execution_flow_run_id) || update.isPending} onClick={() => { setStatus(''); update.mutate(item.stages.filter(candidate => candidate.id !== stage.id).map(candidate => ({ id: candidate.id }))); }}><Trash2 size={15}/></button></div>
         </header>
         {stage.objective && <p className="case-stage-objective">{stage.objective}</p>}
         <div className="case-stage-progress">{stage.execution?.active_node && <span>当前节点 <b>{stage.execution.active_node.node_name}</b></span>}{stage.execution?.progress && <span>已接受 {stage.execution.progress.accepted} · 活动 {stage.execution.progress.active}</span>}{Boolean(artifactCounts[stage.stage_key]) && <span><FileText size={11}/>正式产物 <b>{artifactCounts[stage.stage_key]}</b></span>}{stage.execution?.automatic_block && <span className="error">待补全 {stage.execution.automatic_block.gates.length} 项门禁配置</span>}</div>
         <StageFlowGraph stage={stage}/>
-        <footer>{!pathLocked && stage.state === 'ACTIVE' && (!stage.current_execution_flow_run_id || stage.execution?.state === 'DRAFT') && <button className="ghost case-manual-launch" disabled={execute.isPending} onClick={() => { setStatus(''); execute.mutate(stage); }}>{execute.isPending ? '启动中…' : '手动启动'}</button>}</footer>
+
 
       </article>
     </li>)}</ol>
@@ -441,7 +432,7 @@ function PathTab({ item, artifactCounts, onUpdated, onOpenRun, onOpenRecord }: {
       </form> : <button className="scenario-add-path-card" disabled={pathLocked || update.isPending || item.stages.length >= 50} onClick={() => { setAdding(true); update.reset(); setStatus(''); }}><span className="case-add-icon"><Plus size={20}/></span><span><b>{item.stages.length ? '添加下一流程' : '添加首个流程'}</b></span></button>}
     </div>
     <p className="case-path-status" role="status">{update.error ? '' : status}</p>
-    {(update.error || execute.error || rerun.error) && <p className="error" role="alert">{errorMessage(update.error || execute.error || rerun.error)}</p>}
+    {(update.error || rerun.error) && <p className="error" role="alert">{errorMessage(update.error || rerun.error)}</p>}
     </section>
     {selectedStage && <aside className="case-stage-info" aria-label="流程信息">
       <header><span className="case-stage-info-icon"><GitBranch size={17}/></span><span><small>流程信息</small><h2 title={selectedStage.name}>{selectedStage.name}</h2></span></header>
@@ -502,19 +493,29 @@ function ScenarioWorkspace({ item, workspaceId, onUpdated, onDelete, onOpenConve
 
   useEffect(() => { if (live.data) onUpdated(live.data); }, [live.data, onUpdated]);
   const startKey = useRef<string | undefined>(undefined);
+  const [startMenuOpen, setStartMenuOpen] = useState(false);
+  const startSplit = useRef<HTMLDivElement>(null);
+  useEscapeClose(() => setStartMenuOpen(false), startMenuOpen);
+  useEffect(() => {
+    if (!startMenuOpen) return;
+    const outside = (event: PointerEvent) => { if (!startSplit.current?.contains(event.target as Node)) setStartMenuOpen(false); };
+    document.addEventListener('pointerdown', outside);
+    return () => document.removeEventListener('pointerdown', outside);
+  }, [startMenuOpen]);
   const start = useMutation({
-    mutationFn: (newRound: boolean) => {
-      if (!newRound && currentRound?.state === 'FAILED') return api.retryCaseControlRound(item.id, currentRound.id);
+    mutationFn: (session: 'CURRENT' | 'NEW') => {
+      if (session === 'CURRENT' && currentRound?.state === 'FAILED') return api.retryCaseControlRound(item.id, currentRound.id);
       startKey.current ??= crypto.randomUUID();
-      return api.createCaseControlConversation(item.id, item.session_config as CaseSessionConfig, startKey.current);
+      return api.startCase(item.id, { session, expected_row_version: item.row_version }, startKey.current);
     },
     onSuccess: result => {
       startKey.current = undefined;
+      setStartMenuOpen(false);
       onUpdated(result);
       const round = result.control_rounds?.find(entry => entry.id === result.current_control_round_id);
       if (round?.state === 'PENDING') setOpeningRound({ id: round.id, rowVersion: result.row_version });
-      else if (result.control_conversation_binding_id) onOpenConversation(result.control_conversation_binding_id);
     },
+    onError: () => { startKey.current = undefined; },
   });
   useEffect(() => {
     if (!openingRound || item.row_version < openingRound.rowVersion) return;
@@ -537,20 +538,16 @@ function ScenarioWorkspace({ item, workspaceId, onUpdated, onDelete, onOpenConve
   ];
   const newRoundBlock = terminal ? '场景已结束' : item.state === 'PAUSED' ? '场景已暂停' : !workspaceId ? '正在读取工作区' : missing.length ? `请先${missing.join('、')}` : '';
   const pendingRound = currentRound?.state === 'PENDING';
-  const startBlock = pendingRound ? '协调会话正在创建' : item.control_conversation_binding_id ? '' : terminal ? '场景已结束' : item.state === 'PAUSED' ? '场景已暂停' : !workspaceId ? '正在读取工作区' : missing.length ? `请先${missing.join('、')}` : '';
+  const startBlock = pendingRound ? '协调会话正在创建' : terminal ? '场景已结束' : item.state === 'PAUSED' ? '场景已暂停' : !workspaceId ? '正在读取工作区' : missing.length ? `请先${missing.join('、')}` : '';
+  const hasRun = item.stages.some(stage => stage.current_execution_flow_run_id);
   const activityCount = item.control_plans.length + item.decision_proposals.length + item.tasks.length;
-  const openOrStart = () => {
-    if (item.control_conversation_binding_id) { onOpenConversation(item.control_conversation_binding_id); return; }
-    if (startBlock || start.isPending) return;
-    setError(''); start.mutate(false);
-  };
   const active = item.stages.find(stage => stage.state === 'ACTIVE' || stage.state === 'REVIEW_PENDING');
   const completed = item.stages.filter(stage => stage.state === 'COMPLETED').length;
   const stateLabel = item.control_conversation_binding_id || item.stages.some(stage => stage.current_execution_flow_run_id) ? CASE_STATE[item.state] : terminal ? CASE_STATE[item.state] : '待启动';
   const agentStatus = item.state === 'PAUSED' ? '协调已暂停，后台不会执行新的自主动作' : active?.state === 'REVIEW_PENDING' ? '结果已就绪，等待 Agent 判断' : active?.execution?.active_node ? `Agent 正在跟进：${active.execution.active_node.node_name}` : failedPlans.length || failedDeliveries.length ? `有 ${failedPlans.length + failedDeliveries.length} 项 Agent 动作未成功，需要重试或人工处理` : item.control_conversation_binding_id ? 'Agent 正在监控当前场景' : '启动 Agent 后将持续协调此路径';
   const panelTitle = panel === 'basics' ? '场景信息' : panel === 'agent' ? 'Agent 配置' : panel === 'rounds' ? '协调会话' : panel === 'takeover' ? '未解决的问题' : '操作记录';
   return <main className="scenario-workspace case-single-workspace"><div className="scenario-workspace-inner">
-    <header className="case-workspace-toolbar"><div className="case-workspace-title"><h1 title={item.name}>{item.name}</h1><span className={`case-workspace-state ${item.state.toLowerCase()}`}>{stateLabel}</span><small>{completed}/{item.stages.length} 阶段</small>{active && <small className="case-current-stage" title={`当前阶段：${active.name}`}>{active.name}</small>}</div><div className="scenario-case-actions"><button className="ghost" aria-pressed={panel === 'basics'} onClick={() => setPanel('basics')}><Info size={14}/>场景信息</button><button className="ghost" aria-pressed={panel === 'agent'} onClick={() => setPanel('agent')}><Settings2 size={14}/>Agent 配置</button>{item.control_conversation_binding_id && !terminal && <button className="ghost" disabled={coordination.isPending} onClick={() => coordination.mutate(item.state === 'PAUSED' ? 'ACTIVE' : 'PAUSED')}>{item.state === 'PAUSED' ? <CirclePlay size={14}/> : <CirclePause size={14}/>}{item.state === 'PAUSED' ? '继续协调' : '暂停协调'}</button>}{!item.control_conversation_binding_id && <button className="primary" disabled={start.isPending || Boolean(startBlock)} title={startBlock || undefined} aria-description={startBlock || undefined} onClick={openOrStart}><Play size={13}/> {start.isPending || pendingRound ? '创建会话中…' : currentRound?.state === 'FAILED' ? '重试启动' : '启动 Agent'}</button>}<button className="ghost" aria-pressed={panel === 'activity'} title="平台自动动作、Agent 受控动作与手动操作的结果" onClick={() => setPanel('activity')}><Clock3 size={14}/>操作记录{activityCount > 0 && <small className="case-count-badge">{activityCount}</small>}</button>{Boolean(item.control_rounds?.length) && <button className="ghost" onClick={() => setPanel('rounds')}><Bot size={14}/>协调会话</button>}<button className="ghost case-delete-action" type="button" aria-label="删除场景" title="删除场景" disabled={deleting} onClick={() => void deleteCase()}><Trash2 size={14}/></button></div></header>
+    <header className="case-workspace-toolbar"><div className="case-workspace-title"><h1 title={item.name}>{item.name}</h1><span className={`case-workspace-state ${item.state.toLowerCase()}`}>{stateLabel}</span><small>{completed}/{item.stages.length} 阶段</small>{active && <small className="case-current-stage" title={`当前阶段：${active.name}`}>{active.name}</small>}</div><div className="scenario-case-actions"><button className="ghost" aria-pressed={panel === 'basics'} onClick={() => setPanel('basics')}><Info size={14}/>场景信息</button><button className="ghost" aria-pressed={panel === 'agent'} onClick={() => setPanel('agent')}><Settings2 size={14}/>Agent 配置</button>{item.control_conversation_binding_id && !terminal && <button className="ghost" disabled={coordination.isPending} onClick={() => coordination.mutate(item.state === 'PAUSED' ? 'ACTIVE' : 'PAUSED')}>{item.state === 'PAUSED' ? <CirclePlay size={14}/> : <CirclePause size={14}/>}{item.state === 'PAUSED' ? '继续协调' : '暂停协调'}</button>}<div ref={startSplit} className="case-start-split"><button className="primary" disabled={start.isPending || Boolean(startBlock)} title={startBlock || '向协调 Agent 发送启动事件，由 Agent 判断并启动流程'} onClick={() => { setError(''); start.mutate('CURRENT'); }}><Play size={13}/> {start.isPending || pendingRound ? '提交中…' : currentRound?.state === 'FAILED' ? '重试启动' : hasRun ? '再次启动' : '启动'}</button>{item.control_conversation_binding_id && <button className="primary case-start-more" aria-label="选择启动方式" aria-haspopup="menu" aria-expanded={startMenuOpen} disabled={start.isPending || Boolean(startBlock)} onClick={() => setStartMenuOpen(open => !open)}><ChevronDown size={13}/></button>}{startMenuOpen && <div className="case-start-menu" role="menu"><button role="menuitem" onClick={() => start.mutate('CURRENT')}>基于当前会话启动<small>在原对话里继续</small></button><button role="menuitem" onClick={() => start.mutate('NEW')}>新建会话启动<small>历史会话保留</small></button></div>}</div>{item.control_conversation_binding_id && <button className="ghost" onClick={() => onOpenConversation(item.control_conversation_binding_id!)}><Bot size={14}/>Agent 会话</button>}<button className="ghost" aria-pressed={panel === 'activity'} title="平台自动动作、Agent 受控动作与手动操作的结果" onClick={() => setPanel('activity')}><Clock3 size={14}/>操作记录{activityCount > 0 && <small className="case-count-badge">{activityCount}</small>}</button>{Boolean(item.control_rounds?.length) && <button className="ghost" onClick={() => setPanel('rounds')}><Bot size={14}/>协调会话</button>}<button className="ghost case-delete-action" type="button" aria-label="删除场景" title="删除场景" disabled={deleting} onClick={() => void deleteCase()}><Trash2 size={14}/></button></div></header>
     {(error || start.error || live.error || coordination.error || retryPlan.error || materials.error) && <p className="error scenario-delete-error" role="alert">{error || errorMessage(start.error || live.error || coordination.error || retryPlan.error || materials.error)}</p>}
 
     {currentRound?.state === 'FAILED' && <p className="error scenario-delete-error" role="alert">协调会话创建失败：{currentRound.error_code}。重试会复用本轮配置和会话身份。</p>}
@@ -563,7 +560,7 @@ function ScenarioWorkspace({ item, workspaceId, onUpdated, onDelete, onOpenConve
       const first = controls[0], last = controls.at(-1);
       if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
       else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
-    }}><header className="case-inspector-heading"><h2>{panelTitle}</h2><button className="ghost" autoFocus aria-label="关闭场景面板" onClick={() => setPanel(undefined)}><X size={17}/></button></header><div className="case-inspector-body" key={panel}>{panel === 'basics' ? <><BasicsForm item={item} workspaceId={workspaceId} onSaved={onUpdated}/></> : panel === 'agent' ? <ConversationTab item={item} workspaceId={workspaceId} onUpdated={onUpdated}/> : panel === 'rounds' ? <section className="case-round-list"><p>协调会话是 Agent 的对话轮次，不是流程的重跑。需要换模型或重新开始对话时才新建；重跑流程请在流程信息里操作。历史会话保留。</p><button className="secondary" disabled={Boolean(newRoundBlock) || pendingRound || start.isPending} title={newRoundBlock || undefined} onClick={() => { startKey.current = undefined; setPanel(undefined); start.mutate(true); }}>新建协调轮次</button>{item.control_rounds?.map(round => <article key={round.id}><div><b>{round.is_current ? '当前轮次' : '历史轮次'}</b><small>{new Date(round.created_at).toLocaleString()}</small></div><span>{{ PENDING: '创建中', STARTED: '已创建', FAILED: '创建失败', DELETED: '已删除' }[round.state]}</span>{round.binding_id && <button className="ghost" onClick={() => onOpenConversation(round.binding_id!)}>打开会话<ExternalLink size={13}/></button>}</article>)}</section> : panel === 'takeover' ? <section className="case-takeover"><p>这些动作没有成功，也没有被后续重试补上。可以重试，或打开 Agent 会话人工判断。</p>{failedDeliveries.map(delivery => <article key={delivery.id}><b>Agent 回访异常</b><small>{delivery.error_code ?? delivery.state}</small></article>)}<CaseActivity item={{ ...item, decision_proposals: [], tasks: [], control_plans: takeoverPlans }} onOpenRun={onOpenRun} onRetry={planId => retryPlan.mutate(planId)}/>
+    }}><header className="case-inspector-heading"><h2>{panelTitle}</h2><button className="ghost" autoFocus aria-label="关闭场景面板" onClick={() => setPanel(undefined)}><X size={17}/></button></header><div className="case-inspector-body" key={panel}>{panel === 'basics' ? <><BasicsForm item={item} workspaceId={workspaceId} onSaved={onUpdated}/></> : panel === 'agent' ? <ConversationTab item={item} workspaceId={workspaceId} onUpdated={onUpdated}/> : panel === 'rounds' ? <section className="case-round-list"><p>协调会话是 Agent 的对话轮次，不是流程的重跑。需要换模型或重新开始对话时才新建；重跑流程请在流程信息里操作。历史会话保留。</p><button className="secondary" disabled={Boolean(newRoundBlock) || pendingRound || start.isPending} title={newRoundBlock || undefined} onClick={() => { startKey.current = undefined; setPanel(undefined); start.mutate('NEW'); }}>新建协调轮次</button>{item.control_rounds?.map(round => <article key={round.id}><div><b>{round.is_current ? '当前轮次' : '历史轮次'}</b><small>{new Date(round.created_at).toLocaleString()}</small></div><span>{{ PENDING: '创建中', STARTED: '已创建', FAILED: '创建失败', DELETED: '已删除' }[round.state]}</span>{round.binding_id && <button className="ghost" onClick={() => onOpenConversation(round.binding_id!)}>打开会话<ExternalLink size={13}/></button>}</article>)}</section> : panel === 'takeover' ? <section className="case-takeover"><p>这些动作没有成功，也没有被后续重试补上。可以重试，或打开 Agent 会话人工判断。</p>{failedDeliveries.map(delivery => <article key={delivery.id}><b>Agent 回访异常</b><small>{delivery.error_code ?? delivery.state}</small></article>)}<CaseActivity item={{ ...item, decision_proposals: [], tasks: [], control_plans: takeoverPlans }} onOpenRun={onOpenRun} onRetry={planId => retryPlan.mutate(planId)}/>
 {item.control_conversation_binding_id && <button className="primary" onClick={() => onOpenConversation(item.control_conversation_binding_id!)}><Bot size={14}/>打开 Agent 会话</button>}</section> : <CaseActivity item={item} onOpenRun={onOpenRun}/>}</div></section></div>, document.body)}
   </div></main>;
 }

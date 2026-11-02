@@ -252,7 +252,9 @@ def test_stepwise_template_readiness_reports_every_reachable_node(client, skill_
     assert all(node["status"] == "MISSING_DRAFT" for node in result["nodes"])
 
 
-def test_case_stage_launch_copies_configured_continuous_template(client, skill_capability):
+def test_case_stage_launch_copies_configured_continuous_template(
+    client, skill_capability, db_session_factory
+):
     asset = create_asset(client, skill_capability, "连续模板节点")
     flow = create_flow(client, asset["id"])
     provider = client.post(
@@ -297,13 +299,22 @@ def test_case_stage_launch_copies_configured_continuous_template(client, skill_c
     )
     assert bound.status_code == 200, bound.text
 
-    launched = client.post(
-        f"/api/v1/cases/{case.json()['id']}/stages/{stage['id']}/launch", json={}
-    )
-    assert launched.status_code == 201, launched.text
-    launched_stage = launched.json()["stages"][0]
-    assert launched_stage["flow_run_id"] == template.json()["id"]
-    assert launched_stage["current_execution_flow_run_id"] not in {None, template.json()["id"]}
+    case_id = case.json()["id"]
+    # The platform exposes no direct launch/start endpoint: the coordinator Agent drives both
+    # through control plans, which call these same service functions.
+    for removed in ("launch", "execution/start"):
+        gone = client.post(f"/api/v1/cases/{case_id}/stages/{stage['id']}/{removed}", json={})
+        assert gone.status_code in {404, 405}, gone.text
+    from flowweave.modules.cases.application import service as case_service
+    from flowweave.modules.users.application.security import tenant_user
+    from flowweave.shared.schemas import CaseStageLaunchWrite
+
+    owner = client.get("/api/v1/auth/me").json()["id"]
+    with tenant_user(owner), db_session_factory() as db:
+        launched_body = case_service.launch_case_stage(
+            db, case_id, stage["id"], CaseStageLaunchWrite()
+        )
+    launched_stage = launched_body["stages"][0]
     execution = client.get(f"/api/v1/flow-runs/{launched_stage['current_execution_flow_run_id']}")
     assert execution.status_code == 200, execution.text
     execution_plan = execution.json()["automation_plan"]
@@ -319,18 +330,16 @@ def test_case_stage_launch_copies_configured_continuous_template(client, skill_c
     }
     assert execution_plan["node_plans"][first_node_key]["artifact_ids"] == {}
 
-    started = client.post(
-        f"/api/v1/cases/{case.json()['id']}/stages/{stage['id']}/execution/start",
-        json={"reason": "开始事项连续执行。"},
-    )
-    assert started.status_code == 201, started.text
-    assert started.json()["action"] == "START_STAGE_EXECUTION"
-    assert started.json()["state"] == "EXECUTED"
-    assert (
-        started.json()["result"]["flow_run"]["id"]
-        == launched_stage["current_execution_flow_run_id"]
-    )
-    assert started.json()["result"]["flow_run"]["state"] == "ACTIVE"
+    from flowweave.shared.schemas import CaseStageExecutionStartWrite
+
+    with tenant_user(owner), db_session_factory() as db:
+        started = case_service.start_case_stage_execution(
+            db, case_id, stage["id"], CaseStageExecutionStartWrite(reason="开始事项连续执行。")
+        )
+    assert started["action"] == "START_STAGE_EXECUTION"
+    assert started["state"] == "EXECUTED"
+    assert started["result"]["flow_run"]["id"] == launched_stage["current_execution_flow_run_id"]
+    assert started["result"]["flow_run"]["state"] == "ACTIVE"
     case_detail = client.get(f"/api/v1/cases/{case.json()['id']}")
     assert case_detail.status_code == 200, case_detail.text
     summary = case_detail.json()["stages"][0]["execution"]

@@ -20,10 +20,9 @@ from flowweave.shared.schemas import (
     CaseFlowRunWrite,
     CasePathWrite,
     CaseSessionConfigWrite,
-    CaseStageExecutionStartWrite,
     CaseStageFlowRunWrite,
-    CaseStageLaunchWrite,
     CaseStageStateWrite,
+    CaseStartWrite,
     CaseUpdateWrite,
 )
 
@@ -199,15 +198,6 @@ async def attach_flow_run(case_id: str, payload: CaseFlowRunWrite, db: Db) -> di
     )
 
 
-@router.post("/cases/{case_id}/stages/{stage_id}/launch", status_code=201)
-async def launch_stage(
-    case_id: str, stage_id: str, payload: CaseStageLaunchWrite, db: Db
-) -> dict[str, Any]:
-    return await run_sync(
-        db, lambda session: service.launch_case_stage(session, case_id, stage_id, payload)
-    )
-
-
 @router.post("/cases/{case_id}/stages/{stage_id}/rerun")
 async def rerun_stage(case_id: str, stage_id: str, db: Db) -> dict[str, Any]:
     return await run_sync(db, lambda session: service.rerun_case_stage(session, case_id, stage_id))
@@ -216,16 +206,6 @@ async def rerun_stage(case_id: str, stage_id: str, db: Db) -> dict[str, Any]:
 @router.post("/cases/{case_id}/observation-projection")
 async def project_observations(case_id: str, db: Db) -> dict[str, Any]:
     return await run_sync(db, lambda session: service.project_case_observations(session, case_id))
-
-
-@router.post("/cases/{case_id}/stages/{stage_id}/execution/start", status_code=201)
-async def start_stage_execution(
-    case_id: str, stage_id: str, payload: CaseStageExecutionStartWrite, db: Db
-) -> dict[str, Any]:
-    return await _run_case_action(
-        db,
-        lambda session: service.start_case_stage_execution(session, case_id, stage_id, payload),
-    )
 
 
 @router.post("/cases/{case_id}/decision-proposals", status_code=201)
@@ -284,6 +264,21 @@ async def create_control_conversation(
     return await run_sync(
         db,
         lambda session: service.create_case_control_conversation(session, case_id, payload, key),
+    )
+
+
+@router.post("/cases/{case_id}/start", status_code=202)
+async def request_start(
+    case_id: str,
+    payload: CaseStartWrite,
+    db: Db,
+    idempotency_key: IdempotencyKey = None,
+) -> dict[str, Any]:
+    key = command_key(
+        idempotency_key, fallback=f"case-start:{case_id}:{payload.expected_row_version}"
+    )
+    return await run_sync(
+        db, lambda session: service.request_case_start(session, case_id, payload, key)
     )
 
 

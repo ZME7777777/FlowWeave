@@ -420,3 +420,12 @@ html:has(.scenario-space){overscroll-behavior:none}
 .case-stage-info-actions .case-record-link{border:1px solid #bcd7c7;background:#eef6f0;color:#215f41;font-weight:600}
 .case-stage-info-actions .case-record-link:hover{background:#e2f0e7}
 .case-stage-info-actions .case-rerun{border:1px dashed #c6d6cb;color:#4d755f}
+
+/* 单一启动入口：主按钮 + 会话方式菜单 */
+.case-start-split{position:relative;display:inline-flex;align-items:stretch}
+.case-start-split>.primary:first-child:not(:last-child){border-top-right-radius:0;border-bottom-right-radius:0}
+.case-start-split>.case-start-more{margin-left:1px;border-top-left-radius:0;border-bottom-left-radius:0;padding:6px 7px}
+.case-start-menu{position:absolute;z-index:30;top:calc(100% + 4px);right:0;display:grid;min-width:190px;border:1px solid #cfdcd3;border-radius:9px;background:#fff;padding:4px;box-shadow:0 14px 30px #0a1a1038}
+.case-start-menu>button{display:grid;gap:1px;border:0;border-radius:6px;background:transparent;padding:8px 10px;color:#2f4b3a;font-size:11px;text-align:left}
+.case-start-menu>button small{color:#8a9a8f;font-size:9px}
+.case-start-menu>button:hover,.case-start-menu>button:focus-visible{outline:0;background:#eaf2ec}

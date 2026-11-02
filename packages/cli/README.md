@@ -25,7 +25,7 @@ flowweave health --ready
 
 读取 FlowRun 中的记录使用 `flowweave run node <run-id> --node <node-run-id>`；只有用户明确要求时才能执行 `node-copy` 或 `node-delete`。暂停或恢复 Runtime 前，必须先读取 `run runtime`，将返回的 `generation` 与 session `row_version` 写入 `expected_generation`、`expected_session_row_version` 后传给 `run pause` 或 `run resume`。供应商上游余额/用量使用 `flowweave model usage <provider-id>`，它可能依赖该供应商的有效 API 凭据。
 
-场景空间使用 `case list|get|create|update|path|session-config|material-upload|stage-launch|stage-start|plan-create|plan-execute|start|round|pause|resume|delete` 等（完整列表见 `flowweave --help`）。暂停/恢复须传 `--expected-row-version`；`case start` 会新建协调 Agent 会话并要求 `-H 'Idempotency-Key: <uuid>'`；阶段模板只复制不直接启动。
+场景空间使用 `case list|get|create|update|path|session-config|material-upload|stage-rerun|plan-create|plan-execute|start|round|pause|resume|delete` 等（完整列表见 `flowweave --help`）。暂停/恢复须传 `--expected-row-version`；`case start` 会新建协调 Agent 会话并要求 `-H 'Idempotency-Key: <uuid>'`；阶段模板只复制不直接启动。
 
 周期任务使用 `schedule list/templates/occurrences/create/pause/resume/trigger/delete`。先用 `schedule templates` 读取可作为冻结母版的已就绪连续运行记录；创建请求必须使用在线 `FlowRunScheduleWrite` schema：只提交任务名称、母版 `source_flow_run_id` 和五段 `cron_expression`，节点、环境、输入和启动提示词均来自该记录的冻结母版。`schedule occurrences <schedule-id> --page 1 --page-size 10` 按需读取该调度的执行历史及其 FlowRun/NodeRun，而不预加载所有记录。暂停或恢复前从 `schedule list` 读取当前 `row_version`，再传入 `--expected-row-version`。手动触发会新增一次 occurrence，不会改写既有运行；删除生成的 FlowRun 不会删除调度，而有生成记录的调度删除会被平台拒绝。环境发布现在会返回 `202`：发布后读取对应 Environment，等待新版本进入 `READY`，不要重复提交同一 Setup Session。
 

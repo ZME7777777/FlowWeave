@@ -50,6 +50,7 @@ class FlowActionArguments(BaseModel):
         "CANCEL_STEPWISE_ATTEMPT",
         "RERUN_STEPWISE_NODE",
         "COPY_CONTINUOUS_EXECUTION",
+        "COPY_STEPWISE_EXECUTION",
         "ADVANCE_CASE_STAGE",
         "COMPLETE_CASE",
     ]
@@ -117,8 +118,11 @@ class FlowActionArguments(BaseModel):
             raise ValueError("rerun requires only the accepted node_run_id")
         if self.action != "REJECT_STEPWISE_ATTEMPT" and self.copy_input_bindings is not None:
             raise ValueError("copy_input_bindings is available only when rejecting an Attempt")
-        if self.action != "COPY_CONTINUOUS_EXECUTION" and self.copy_name is not None:
-            raise ValueError("copy_name is available only when copying a continuous execution")
+        if (
+            self.action not in {"COPY_CONTINUOUS_EXECUTION", "COPY_STEPWISE_EXECUTION"}
+            and self.copy_name is not None
+        ):
+            raise ValueError("copy_name is available only when copying an execution")
         if self.action == "COMPLETE_CASE":
             if not self.evidence_artifact_version_ids:
                 raise ValueError("Case completion requires formal artifact evidence")
@@ -170,8 +174,10 @@ TOOLS = [
         "manage_case_flow",
         "Create or configure the current stage copy, review/rerun stepwise work, cancel a stepwise "
         "Attempt blocked by RUNTIME_DELIVERY_FAILED and start the node again from its unchanged "
-        "draft, copy a completed "
-        "continuous execution into a new current draft, explicitly advance a reviewed stage, or "
+        "draft, copy a completed continuous execution (COPY_CONTINUOUS_EXECUTION) or a completed "
+        "stepwise record (COPY_STEPWISE_EXECUTION) into a new current draft that keeps every "
+        "node configuration so inputs, prompts, capabilities or gates can be adjusted and rerun, "
+        "explicitly advance a reviewed stage, or "
         "complete the final reviewed stage with formal Artifact evidence. Targets derive from this "
         "coordinator. Read fresh versions first. Old executions, templates, conversations, and "
         "Artifacts remain immutable. Reuse one idempotency_key after timeouts. Failed actions "
@@ -549,7 +555,12 @@ def validate_action_preconditions(
         or snapshot.version != args.expected_snapshot_version
     ):
         raise DomainError("CASE_FLOW_VERSION_CONFLICT", "流程版本已变化，请重新读取后再决定", 409)
-    review_actions = {"COPY_CONTINUOUS_EXECUTION", "ADVANCE_CASE_STAGE", "COMPLETE_CASE"}
+    review_actions = {
+        "COPY_CONTINUOUS_EXECUTION",
+        "COPY_STEPWISE_EXECUTION",
+        "ADVANCE_CASE_STAGE",
+        "COMPLETE_CASE",
+    }
     expected_stage_state = "REVIEW_PENDING" if plan.action in review_actions else "ACTIVE"
     if plan.action != "CREATE_EXECUTION_COPY":
         if stage.state != expected_stage_state or stage.current_execution_flow_run_id != run.id:
@@ -624,6 +635,13 @@ def validate_action_preconditions(
             # Copying a draft only exists for continuous (AUTOMATIC) executions.
             if stage.execution_mode != "CONTINUOUS" or run.run_mode != "AUTOMATIC":
                 raise conflict("copying requires a continuous execution")
+        elif plan.action == "COPY_STEPWISE_EXECUTION":
+            if (
+                stage.execution_mode != "STEPWISE"
+                or run.run_mode != "MANUAL"
+                or run.parent_flow_run_id is None
+            ):
+                raise conflict("copying requires a stepwise execution record")
         else:
             # A completed stepwise record reaches REVIEW_PENDING exactly like a
             # continuous one, so both may be closed by an explicit Agent review.
