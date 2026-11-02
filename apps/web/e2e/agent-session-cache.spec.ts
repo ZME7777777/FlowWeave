@@ -1762,8 +1762,9 @@ test('Conversation attachments open in a preview dialog before the file sidebar'
   };
   const attachment = {
     filename: '需求说明.txt', mime_type: 'text/plain', byte_size: 24,
-    path: '/runtime/workspace/project/uploads/requirements.txt',
+    path: '/runtime/workspace/project/.uploads/requirements.txt',
   };
+  const hiddenPreviewRequests: string[] = [];
 
   await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
   await page.route('**/api/v1/**', async route => {
@@ -1782,7 +1783,10 @@ test('Conversation attachments open in a preview dialog before the file sidebar'
       };
       return json(route, path.endsWith('/hydration') ? { events: eventPage, context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 1_024, usage_current: true }, readiness: { ready: true, execution_status: 'idle' } } : eventPage);
     }
-    if (path.endsWith('/file') && url.searchParams.get('preview') === 'true') return route.fulfill({ status: 200, contentType: 'text/plain', headers: { 'X-Preview-Total-Bytes': '36' }, body: '弹窗内可直接阅读附件内容' });
+    if (path.endsWith('/file') && url.searchParams.get('preview') === 'true') {
+      hiddenPreviewRequests.push(url.searchParams.get('include_hidden') ?? '');
+      return route.fulfill({ status: 200, contentType: 'text/plain', headers: { 'X-Preview-Total-Bytes': '36' }, body: '弹窗内可直接阅读附件内容' });
+    }
     if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
     if (path.endsWith('/workspace')) return json(route, {
       root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project',
@@ -1807,6 +1811,7 @@ test('Conversation attachments open in a preview dialog before the file sidebar'
   const preview = page.getByRole('dialog', { name: '文件预览' });
   await expect(preview).toBeVisible();
   await expect(preview.getByText('弹窗内可直接阅读附件内容')).toBeVisible();
+  await expect.poll(() => hiddenPreviewRequests).toContain('true');
   await expect(page.locator('.agent-workspace-drawer')).not.toHaveClass(/tools-open/);
 
   await preview.getByRole('button', { name: '全屏预览' }).click();
@@ -1819,6 +1824,7 @@ test('Conversation attachments open in a preview dialog before the file sidebar'
   await preview.getByRole('button', { name: '在文件标签页打开' }).click();
   await expect(preview).toBeHidden();
   await expect(page.locator('.agent-workspace-drawer')).toHaveClass(/tools-open/);
+  await expect(page.getByRole('button', { name: '隐藏隐藏文件和目录' })).toHaveAttribute('aria-pressed', 'true');
 });
 
 test('Workspace file references open in a preview dialog', async ({ page }) => {
