@@ -1438,6 +1438,9 @@ test('Sidebar chat tabs stay isolated to their source conversation', async ({ pa
   const pane = page.getByRole('region', { name: '侧边聊天' });
   const draft = pane.getByRole('textbox', { name: '发送侧边聊天消息' });
   await draft.fill('收起后仍保留的侧边草稿');
+  await page.getByRole('button', { name: '侧边聊天会话 B', exact: true }).click();
+  await page.getByRole('button', { name: '侧边聊天会话 A', exact: true }).click();
+  await expect(draft).toHaveValue('收起后仍保留的侧边草稿');
   const tabs = page.locator('.agent-workspace-tabs > div');
   const count = await tabs.count();
   await page.getByLabel('隐藏工作区工具').click();
@@ -1513,6 +1516,11 @@ test('Sidebar chat keeps a selected conversation reference on its first message'
   await page.goto('/');
   await login(page);
   await page.goto(`/agent/conversations/${source.id}`);
+  await page.locator('.agent-workspace-new-tab-trigger').click();
+  await page.locator('.agent-workspace-tab-launcher.active').getByRole('button', { name: '侧边聊天', exact: true }).click();
+  const sidebarPane = page.getByRole('region', { name: '侧边聊天' });
+  await expect(sidebarPane).toBeVisible();
+  await expect(sidebarPane.getByLabel('已添加的会话引用')).toHaveCount(0);
   const sourceMessage = page.locator('[data-conversation-event-id="sidebar-reference-source-event"]');
   await expect(sourceMessage).toContainText(selectedText);
   await sourceMessage.scrollIntoViewIfNeeded();
@@ -1530,7 +1538,6 @@ test('Sidebar chat keeps a selected conversation reference on its first message'
   });
   await page.getByRole('button', { name: '在侧边聊天提问' }).click();
 
-  const sidebarPane = page.getByRole('region', { name: '侧边聊天' });
   await expect(sidebarPane.getByLabel('已添加的会话引用')).toContainText('会话引用');
   const sidebarComposer = sidebarPane.getByRole('textbox', { name: '发送侧边聊天消息' });
   await sidebarComposer.fill('请解释这段内容');
