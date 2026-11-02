@@ -171,8 +171,14 @@ async def handle_mcp(request: Request, contract: native_tools.ToolContract) -> R
             projection = await run_blocking_history(
                 container, lambda db: context_tools.read_context(db, token, context_args)
             )
-    except ValidationError:
-        return error(identity, -32602, "Invalid tool arguments")
+    except ValidationError as exc:
+        # Return the field paths and messages (never the submitted values) so the Agent can
+        # correct its own call instead of seeing an opaque rejection.
+        reasons = "; ".join(
+            f"{'.'.join(str(part) for part in item['loc']) or 'arguments'}: {item['msg']}"
+            for item in exc.errors()[:6]
+        )
+        return error(identity, -32602, f"Invalid tool arguments: {reasons}"[:900])
     except DomainError as exc:
         if exc.status in {401, 403}:
             raise

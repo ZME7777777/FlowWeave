@@ -1322,3 +1322,45 @@ def test_stepwise_final_stage_is_completed_by_the_agent_with_accepted_artifact_e
     refresh(g)
     assert g.stage.state == "COMPLETED"
     assert g.item.state == "COMPLETED"
+
+
+def test_create_execution_copy_accepts_a_copy_name() -> None:
+    """The coordinator names the first copy it creates, exactly like later copies."""
+
+    from flowweave.modules.cases.application.flow_tools import FlowActionArguments
+
+    args = FlowActionArguments.model_validate(
+        {
+            "action": "CREATE_EXECUTION_COPY",
+            "idempotency_key": "create-collect-1",
+            "reason": "资料满足启动条件",
+            "expected_case_row_version": 6,
+            "expected_stage_key": "collect",
+            "expected_run_row_version": 1,
+            "expected_snapshot_version": 1,
+            "copy_name": "收集执行",
+        }
+    )
+    assert args.copy_name == "收集执行"
+
+
+def test_copy_name_is_still_rejected_for_unrelated_actions() -> None:
+    import pytest
+    from pydantic import ValidationError
+
+    from flowweave.modules.cases.application.flow_tools import FlowActionArguments
+
+    with pytest.raises(ValidationError, match="copy_name"):
+        FlowActionArguments.model_validate(
+            {
+                "action": "START_EXECUTION",
+                "idempotency_key": "start-1",
+                "reason": "启动",
+                "expected_case_row_version": 6,
+                "expected_stage_key": "collect",
+                "expected_execution_flow_run_id": "run-1",
+                "expected_run_row_version": 1,
+                "expected_snapshot_version": 1,
+                "copy_name": "不应出现",
+            }
+        )

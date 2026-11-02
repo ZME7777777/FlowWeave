@@ -119,10 +119,11 @@ class FlowActionArguments(BaseModel):
         if self.action != "REJECT_STEPWISE_ATTEMPT" and self.copy_input_bindings is not None:
             raise ValueError("copy_input_bindings is available only when rejecting an Attempt")
         if (
-            self.action not in {"COPY_CONTINUOUS_EXECUTION", "COPY_STEPWISE_EXECUTION"}
+            self.action
+            not in {"CREATE_EXECUTION_COPY", "COPY_CONTINUOUS_EXECUTION", "COPY_STEPWISE_EXECUTION"}
             and self.copy_name is not None
         ):
-            raise ValueError("copy_name is available only when copying an execution")
+            raise ValueError("copy_name is available only when creating or copying an execution")
         if self.action == "COMPLETE_CASE":
             if not self.evidence_artifact_version_ids:
                 raise ValueError("Case completion requires formal artifact evidence")
@@ -177,8 +178,14 @@ TOOLS = [
         "draft, copy a completed continuous execution (COPY_CONTINUOUS_EXECUTION) or a completed "
         "stepwise record (COPY_STEPWISE_EXECUTION) into a new current draft that keeps every "
         "node configuration so inputs, prompts, capabilities or gates can be adjusted and rerun, "
-        "explicitly advance a reviewed stage, or "
-        "complete the final reviewed stage with formal Artifact evidence. Targets derive from this "
+        "explicitly advance a reviewed stage, or complete the final reviewed stage with "
+        "formal Artifact evidence. TO START A FLOW: first CREATE_EXECUTION_COPY (no "
+        "expected_execution_flow_run_id, no draft), then read the copy, then CONFIGURE_EXECUTION. "
+        "A STEPWISE stage uses stepwise_draft with "
+        "flow_node_key (startup_mode, startup_prompt, input_urls/artifact_ids, agent_preset with a "
+        "model); a CONTINUOUS stage uses automatic_draft. Finally START_STEPWISE_NODE "
+        "(stepwise) or START_EXECUTION (continuous). A template may be empty: configure it from "
+        "the Case materials yourself. Targets derive from this "
         "coordinator. Read fresh versions first. Old executions, templates, conversations, and "
         "Artifacts remain immutable. Reuse one idempotency_key after timeouts. Failed actions "
         "require retry_of_plan_id and a new key. Stage advancement never starts the next "
