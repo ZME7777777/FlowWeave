@@ -835,6 +835,37 @@ def test_terminal_assistant_message_ids_keeps_current_final_and_excludes_progres
     assert terminal_assistant_message_ids(batch) == frozenset({"final"})
 
 
+def test_terminal_assistant_message_ids_marks_idle_branch_leaf_reply_after_fork() -> None:
+    """A fork stops on the copied reply: it is the leaf of a finished turn with no result."""
+
+    batch = RuntimeEventBatch(
+        events=(
+            RuntimeEvent("user", "MESSAGE", {"parent_id": "__root__", "source": "user"}),
+            RuntimeEvent("progress", "MESSAGE", {"parent_id": "user", "source": "agent"}),
+            RuntimeEvent("reply", "MESSAGE", {"parent_id": "progress", "source": "agent"}),
+        ),
+        cursor="reply",
+        result=None,
+        readiness=RuntimeInputReadiness(ready=True, execution_status="idle"),
+    )
+
+    assert terminal_assistant_message_ids(batch) == frozenset({"reply"})
+
+
+def test_terminal_assistant_message_ids_leaf_reply_not_final_while_running() -> None:
+    batch = RuntimeEventBatch(
+        events=(
+            RuntimeEvent("user", "MESSAGE", {"parent_id": "__root__", "source": "user"}),
+            RuntimeEvent("progress", "MESSAGE", {"parent_id": "user", "source": "agent"}),
+        ),
+        cursor="progress",
+        result=RuntimeResult(status="RUNNING"),
+        readiness=RuntimeInputReadiness(ready=False, execution_status="running"),
+    )
+
+    assert terminal_assistant_message_ids(batch) == frozenset()
+
+
 def test_hydration_defers_formal_current_view_metrics_until_context_refresh(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

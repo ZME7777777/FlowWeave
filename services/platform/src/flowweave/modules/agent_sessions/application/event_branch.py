@@ -166,6 +166,22 @@ def terminal_assistant_message_ids(batch: RuntimeEventBatch) -> frozenset[str]:
     ):
         terminal_ids.add(result.completion_event_id)
 
+    # An idle branch has no running turn, so its leaf assistant MESSAGE is the finished turn's
+    # reply even though no later user message points back at it. A fork stops exactly there,
+    # and ``batch.result`` is empty because nothing ran in the new conversation.
+    leaf = events_by_id.get(batch.cursor or "")
+    readiness = batch.readiness
+    if (
+        leaf is not None
+        and leaf.event_type == "MESSAGE"
+        and str(leaf.payload.get("source") or "").lower() in {"agent", "assistant"}
+        and readiness is not None
+        and readiness.ready
+        and readiness.execution_status.strip().lower() in {"idle", "finished"}
+        and (result is None or result.status != "RUNNING")
+    ):
+        terminal_ids.add(leaf.cursor)
+
     for event in batch.events:
         if event.event_type != "MESSAGE" or str(event.payload.get("source") or "").lower() not in {
             "user",
