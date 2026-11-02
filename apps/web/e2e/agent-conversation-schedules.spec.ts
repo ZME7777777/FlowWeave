@@ -2311,6 +2311,26 @@ test('many subagents stay inside the floating card without scrolling it', async 
   await expect(page.locator('.agent-subagent-record')).toContainText('卡片任务 1');
 });
 
+test('conversation errors share the transcript and composer visual center', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await openWorkspace(page);
+  await page.goto('/agent/conversations/scheduled-conversation');
+  const composer = page.getByRole('textbox', { name: '发送 Agent 消息', exact: true });
+  await composer.fill('触发发送错误');
+  await composer.press('Enter');
+  const notice = page.locator('.agent-conversation-notice');
+  await expect(notice).toBeVisible();
+  await settleWorkspaceLayout(page);
+  const centers = await page.evaluate(() => {
+    const center = (selector: string) => {
+      const rect = document.querySelector(selector)!.getBoundingClientRect();
+      return rect.left + rect.width / 2;
+    };
+    return { composer: center('.agent-composer'), notice: center('.agent-conversation-notice') };
+  });
+  expect(Math.abs(centers.notice - centers.composer)).toBeLessThanOrEqual(1);
+});
+
 test('the floating card occupies conversation whitespace without resizing it or splitting its header', async ({ page }) => {
   await openWorkspace(page);
   await page.goto('/agent/conversations/scheduled-conversation');
