@@ -10,8 +10,15 @@ from sqlalchemy import text
 
 from flowweave.modules.agent_sessions.application import conversations
 from flowweave.modules.agent_workspaces.infrastructure.models import (
+    AgentConversationBinding,
+    AgentConversationCapability,
     AgentWorkDirectory,
     AgentWorkspace,
+)
+from flowweave.modules.catalog.infrastructure.models import (
+    CapabilityBlob,
+    CapabilityPackage,
+    CapabilityVersion,
 )
 from flowweave.modules.credentials.application.service import save_credential
 from flowweave.modules.users.application.security import (
@@ -22,6 +29,93 @@ from flowweave.modules.users.application.security import (
 from flowweave.shared.errors import DomainError
 from flowweave.shared.schemas import WebsiteCredentialWrite
 from flowweave.shared.settings import settings_context
+
+
+def _versioned_capability(db, *, package: CapabilityPackage, version_no: int, state: str):
+    blob = CapabilityBlob(
+        content_hash=(str(version_no) * 64)[:64],
+        storage_key=f"builtin://tests/preset-version-{package.id}-{version_no}",
+        byte_size=version_no,
+    )
+    db.add(blob)
+    db.flush()
+    version = CapabilityVersion(
+        package_id=package.id,
+        blob_id=blob.id,
+        version_no=version_no,
+        digest=(str(version_no) * 64)[:64],
+        normalized_config_json={},
+        source_filename="SKILL.md",
+        state=state,
+    )
+    db.add(version)
+    db.flush()
+    return version
+
+
+def test_workspace_preset_upgrade_migration_updates_editable_directory_only(
+    settings, db_session_factory
+):
+    config = Config(str(Path(__file__).parents[1] / "alembic.ini"))
+    config.attributes["database_url"] = settings.database_url
+    command.downgrade(config, "0191_case_cancel_stepwise_attempt")
+    with settings_context(settings), tenant_user(FLOWWEAVE_USER_ID), db_session_factory() as db:
+        workspace = AgentWorkspace(scope_key="legacy-preset-upgrade")
+        package = CapabilityPackage(
+            capability_type="SKILL",
+            capability_key="legacy-preset-skill",
+            display_name="Legacy preset skill",
+        )
+        db.add_all((workspace, package))
+        db.flush()
+        retired = _versioned_capability(db, package=package, version_no=1, state="RETIRED")
+        current = _versioned_capability(db, package=package, version_no=2, state="PUBLISHED")
+        directory = AgentWorkDirectory(
+            workspace_id=workspace.id,
+            display_name="legacy preset",
+            session_capability_ids_json=[retired.id, "removed-version-id", retired.id],
+        )
+        binding = AgentConversationBinding(
+            runtime_session_id="legacy-preset-runtime",
+            host_kind="AGENT_WORKSPACE",
+            host_id=workspace.id,
+            conversation_scope_id="legacy-preset-scope",
+            openhands_conversation_id="legacy-preset-conversation",
+            display_title="历史会话",
+            lifecycle="ACTIVE",
+            create_idempotency_key="legacy-preset-binding",
+        )
+        db.add_all((directory, binding))
+        db.flush()
+        db.add(
+            AgentConversationCapability(
+                binding_id=binding.id,
+                capability_version_id=retired.id,
+                capability_type="SKILL",
+                capability_key=package.capability_key,
+                digest=retired.digest,
+                position=0,
+            )
+        )
+        db.commit()
+
+    command.upgrade(config, "head")
+
+    with settings_context(settings), tenant_user(FLOWWEAVE_USER_ID), db_session_factory() as db:
+        migrated = db.get(AgentWorkDirectory, directory.id)
+        frozen = db.scalar(
+            text(
+                "SELECT capability_version_id FROM agent_conversation_capabilities "
+                "WHERE binding_id = :binding_id"
+            ),
+            {"binding_id": binding.id},
+        )
+        assert migrated is not None
+        assert migrated.session_capability_ids_json == [current.id]
+        assert frozen == retired.id
+        assert conversations.workspace_session_configuration(db, workspace.id, directory.id)[
+            "capability_version_ids"
+        ] == [current.id]
 
 
 def test_shared_workspace_defaults_are_user_isolated(settings, db_session_factory):

@@ -59,6 +59,7 @@ from flowweave.shared.models import (
     AgentConversationBinding,
     AgentConversationCapability,
     AgentConversationSchedule,
+    AgentWorkDirectory,
     AgentWorkspace,
     AgentWorkspaceCapability,
     CapabilityBlob,
@@ -2158,6 +2159,14 @@ def _replace_skill_selection_references(
         if not any(version_id in stale_ids for version_id in configured):
             continue
         schedule.capability_version_ids_json = [
+            current_version_id if version_id in stale_ids else version_id
+            for version_id in configured
+        ]
+    for directory in db.scalars(select(AgentWorkDirectory)):
+        configured = list(directory.session_capability_ids_json or [])
+        if not any(version_id in stale_ids for version_id in configured):
+            continue
+        directory.session_capability_ids_json = [
             current_version_id if version_id in stale_ids else version_id
             for version_id in configured
         ]
