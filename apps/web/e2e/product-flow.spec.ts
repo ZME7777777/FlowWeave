@@ -858,6 +858,27 @@ test('top-level Agent workspace creates a direct conversation and restores its U
         }) });
         return;
       }
+      if (path.includes('/conversations/agent-conversation-fork-1/events')) {
+        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+          events: [
+            { id: 'fork-copied-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '从旧会话复制的未收口请求', timestamp: '2026-08-26T10:00:00Z' } },
+            { id: 'fork-copied-tool', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'fork-copied-user', action_id: 'fork-copied-tool', tool_call_id: 'fork-copied-call', event_name: 'TerminalAction', timestamp: '2026-08-26T10:00:01Z' } },
+          ],
+          next_cursor: null,
+          history_cursor: null,
+          monitoring: {
+            last_event_id: 'fork-copied-tool',
+            last_event_type: 'TOOL_CALL',
+            last_event_at: '2026-08-26T10:00:01Z',
+            seconds_since_event: 90,
+            stale_after_seconds: 60,
+            possibly_stuck: true,
+            subagent_count: 0,
+            active_subagents: [],
+          },
+        }) });
+        return;
+      }
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
         events: (modelIsResponding || parentTurnFailed || recoverableAgentError || recoverableTaskResumeError) ? [
           ...(!cursor ? [{ id: 'running-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'agent-reply', content: '正在处理的请求', timestamp: runningUserTimestamp } }] : []),
@@ -1020,6 +1041,10 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     if (path.endsWith('/input-readiness')) {
       if (parentTurnFailed) {
         await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ready: true, execution_status: 'error' }) });
+        return;
+      }
+      if (path.includes('/conversations/agent-conversation-fork-1/input-readiness')) {
+        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ready: true, execution_status: 'idle' }) });
         return;
       }
       if (transientIdleReadiness || readinessReportsIdle) {
@@ -2034,6 +2059,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByText('当前供应商：已测试模型')).toBeVisible();
   await expect(page.locator('.agent-context-progress.token')).toContainText('Token0 / 512,000');
   await expect(page.locator('.agent-context-progress.activity')).toContainText('事件12 / 240');
+  await expect(page.getByText('后台长时间未产生可确认进展。可暂停后继续以重新建立调用。')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toHaveCount(0);
   const forkComposer = page.getByLabel('发送 Agent 消息');
   await expect(forkComposer).toBeEnabled();
   await forkComposer.fill('分叉后可以继续输入');
