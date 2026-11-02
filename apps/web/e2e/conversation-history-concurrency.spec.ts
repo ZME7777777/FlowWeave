@@ -222,3 +222,79 @@ test('initial hydration bridges a missing parent reply before rendering later tu
     'first-user', 'later-user',
   ]);
 });
+
+
+test('latest event window groups process events behind one missing user ancestor', async ({ page }) => {
+  let authenticated = false;
+  const workspace = {
+    id: 'window-orphan-workspace', display_name: '窗口外祖先工作区', desired_state: 'RUNNING', updated_at: now,
+  };
+  const conversation = {
+    id: 'window-orphan-conversation', display_title: '窗口外祖先会话', title_state: 'MANUAL',
+    lifecycle: 'ACTIVE', streaming_callback_ready: true, write_available: true, execution_status: 'idle',
+    created_at: now, updated_at: now,
+  };
+  const process = Array.from({ length: 4 }, (_, index) => ({
+    id: `window-process-${index + 1}`,
+    event_type: 'THOUGHT',
+    payload: {
+      source: 'agent',
+      parent_id: index === 0 ? 'window-missing-reply' : `window-process-${index}`,
+      content: `窗口外过程 ${index + 1}`,
+      thought: `窗口外过程 ${index + 1}`,
+      timestamp: now,
+    },
+  }));
+  const finalReply = {
+    id: 'window-final-reply', event_type: 'MESSAGE', payload: {
+      source: 'agent', parent_id: process.at(-1)!.id, content: '窗口外过程已完成。', final_reply: true, timestamp: now,
+    },
+  };
+  const initialBatch = {
+    events: [...process, finalReply], next_cursor: finalReply.id, history_cursor: 'window-missing-reply', result: { status: 'COMPLETED' },
+  };
+
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const path = url.pathname;
+    if (path.endsWith('/auth/me')) return authenticated
+      ? json(route, user)
+      : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [conversation], next_cursor: null });
+    if (path.endsWith('/hydration')) return json(route, {
+      events: initialBatch,
+      context: { model_name: 'history-model', window_tokens: 128_000, used_tokens: 100, usage_current: true },
+      readiness: { ready: true, execution_status: 'idle' },
+    });
+    if (path.endsWith('/events')) return json(route, initialBatch);
+    if (path.endsWith('/conversation-activity')) return json(route, {
+      running_binding_ids: [], condensing_binding_ids: [], condensation_failed_binding_ids: [], possibly_stuck_binding_ids: [], failed_binding_ids: [],
+    });
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/work-directories')) return json(route, {
+      root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [],
+    });
+    if (path.endsWith('/workspace')) return json(route, {
+      root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project',
+      work_directory: null, files: [], repositories: [], runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } },
+    });
+    if (path.endsWith('/model-providers')) return json(route, [{
+      id: 'window-provider', name: '历史模型', connection_state: 'CONNECTED', models: [{ model_name: 'history-model', enabled: true, is_default: true }],
+    }]);
+    if (path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, conversation);
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+
+  await page.goto('/');
+  await login(page);
+  await page.goto(`/agent/conversations/${conversation.id}`);
+  await expect(page.getByText('窗口外过程已完成。', { exact: true })).toBeVisible();
+  await expect(page.locator('.conversation-turn')).toHaveCount(1);
+  await expect(page.locator('.conversation-process-summary')).toHaveCount(1);
+});

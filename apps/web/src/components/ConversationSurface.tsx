@@ -559,6 +559,39 @@ function itemUserAncestorId(
   return action ? userAncestorId(action, byId) : undefined;
 }
 
+function unresolvedParentId(
+  event: OpenHandsConversationEvent,
+  byId: Map<string, OpenHandsConversationEvent>,
+): string | undefined {
+  const visited = new Set<string>();
+  let current: OpenHandsConversationEvent | undefined = event;
+  while (current && !visited.has(current.id)) {
+    visited.add(current.id);
+    const parentId = current.payload.parent_id;
+    if (!parentId || parentId === '__root__') return undefined;
+    const parent = byId.get(parentId);
+    if (!parent) return parentId;
+    current = parent;
+  }
+  return undefined;
+}
+
+function orphanTurnKey(
+  event: OpenHandsConversationEvent,
+  byId: Map<string, OpenHandsConversationEvent>,
+  actionsById: Map<string, OpenHandsConversationEvent>,
+  actionsByToolCallId: Map<string, OpenHandsConversationEvent>,
+): string {
+  const directParent = unresolvedParentId(event, byId);
+  if (directParent) return `missing-parent:${directParent}`;
+  const actionId = event.payload.action_id;
+  const toolCallId = event.payload.tool_call_id;
+  const action = (typeof actionId === 'string' ? actionsById.get(actionId) : undefined)
+    ?? (typeof toolCallId === 'string' ? actionsByToolCallId.get(toolCallId) : undefined);
+  const actionParent = action ? unresolvedParentId(action, byId) : undefined;
+  return actionParent ? `missing-parent:${actionParent}` : `orphan:${event.id}`;
+}
+
 function isHistoricalAutoTitleError(
   event: OpenHandsConversationEvent,
   events: OpenHandsConversationEvent[],
@@ -591,7 +624,7 @@ function isHistoricalAutoTitleError(
 function turnsFor(events: OpenHandsConversationEvent[]): Turn[] {
   const turns: Turn[] = [];
   const turnsByUserId = new Map<string, { turn: Turn; messageIndex: number }>();
-  const orphanTurnsByEventId = new Map<string, Turn>();
+  const orphanTurnsByKey = new Map<string, Turn>();
   const ordered = orderOpenHandsConversationEvents(events);
   const byId = new Map(ordered.map(event => [event.id, event]));
   const actionEvents = ordered.filter(event => event.event_type === 'TOOL_CALL');
@@ -641,15 +674,16 @@ function turnsFor(events: OpenHandsConversationEvent[]): Turn[] {
       // event rendered, so a late process event cannot move under an older turn.
       const ownerUserId = itemUserAncestorId(item.event, byId, actionsById, actionsByToolCallId);
       const owner = ownerUserId ? turnsByUserId.get(ownerUserId) : undefined;
-      const turn = owner?.turn ?? orphanTurnsByEventId.get(item.event.id) ?? (() => {
+      const unresolvedKey = orphanTurnKey(item.event, byId, actionsById, actionsByToolCallId);
+      const turn = owner?.turn ?? orphanTurnsByKey.get(unresolvedKey) ?? (() => {
         const orphan: Turn = {
           id: item.event.id,
-          renderKey: item.event.id,
+          renderKey: unresolvedKey,
           processSegments: [{ items: [], messageIndex: 0, startedBy: item }],
           activity: [],
         };
         turns.push(orphan);
-        orphanTurnsByEventId.set(item.event.id, orphan);
+        orphanTurnsByKey.set(unresolvedKey, orphan);
         return orphan;
       })();
       const currentSegment = turn.processSegments.at(-1);
