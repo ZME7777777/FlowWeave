@@ -968,6 +968,14 @@ function fileToolIcon(presentation: ActivityPresentation) {
   return FileText;
 }
 
+function mcpServerLabel(toolName?: string): string | undefined {
+  if (!toolName) return undefined;
+  const raw = toolName.trim().replace(/^mcp[_:]+/i, '');
+  const match = /^(.+?)(?:\.|__|:)(.+)$/.exec(raw);
+  const server = match?.[1] ?? (raw !== toolName.trim() ? /^([^_]+)_.+$/.exec(raw)?.[1] : undefined);
+  return server || undefined;
+}
+
 function toolVisualPresentation(eventName: string, toolName?: string): ToolVisualKind {
   const normalizedEventName = eventName.toLowerCase();
   const normalizedToolName = toolName?.toLowerCase() ?? '';
@@ -1508,6 +1516,7 @@ function ActivityEntryRow({ entry, active, reveal = false, paused = false, paren
   const eventName = String(item.event.payload.event_name ?? '');
   const toolName = detailText(item.event.payload.tool_name);
   const toolVisual = toolVisualPresentation(eventName, toolName);
+  const mcpServer = toolVisual === 'mcp' ? mcpServerLabel(toolName) : undefined;
   const avatarSlot = eventName === 'TaskAction' || eventName === 'TaskObservation'
     ? subagentAvatarSlotForEvent(item.event, avatarSlots)
     : undefined;
@@ -1554,7 +1563,7 @@ function ActivityEntryRow({ entry, active, reveal = false, paused = false, paren
       <MessageMarkdown reveal={reveal}>{presentation.thought}</MessageMarkdown>
     </article>}
     <details className={`conversation-activity-row tool conversation-tool-detail tool-${toolVisual}${toolRunning ? ' running' : ''}`} data-tool-kind={toolVisual} data-file-operation={toolVisual === 'file' ? presentation.fileOperation : undefined} data-file-kind={toolVisual === 'file' ? presentation.fileKind : undefined}>
-      <summary aria-label={`查看执行详情：${presentation.title}`}>{taskAvatar ?? <ToolIcon size={13}/>}<div><b title={presentation.title}>{presentation.title}</b></div><ChevronRight className="conversation-expand-arrow" size={12}/></summary>
+      <summary aria-label={`查看执行详情：${presentation.title}`}>{taskAvatar ?? <ToolIcon size={13}/>}{mcpServer && <span className="conversation-mcp-server" title={`MCP：${mcpServer}`}>{mcpServer}</span>}<div><b title={presentation.title}>{presentation.title}</b></div><ChevronRight className="conversation-expand-arrow" size={12}/></summary>
       {toolDetail}
     </details>
   </div>;

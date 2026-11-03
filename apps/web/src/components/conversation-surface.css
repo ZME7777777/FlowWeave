@@ -224,3 +224,5 @@
 .conversation-message-edit{width:100%}
 .conversation-turn{margin-bottom:40px}
 }
+
+.conversation-mcp-server{flex:0 1 auto;min-width:0;max-width:11em;overflow:hidden;border-radius:4px;background:#eef0fb;padding:0 5px;color:#465ea5;font-size:.9em;line-height:1.5;text-overflow:ellipsis;white-space:nowrap}
