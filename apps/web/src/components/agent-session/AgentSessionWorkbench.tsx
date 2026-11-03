@@ -3108,7 +3108,7 @@ function WorkDirectoryEditor({ directory, workspaceId, onClose, onUpdated }: {
   return <div className="agent-work-directory-backdrop" onPointerDown={event => { if (event.target === event.currentTarget && !update.isPending) onClose(); }}>
     <section role="dialog" aria-modal="true" aria-labelledby="agent-work-directory-edit-title" className="agent-work-directory-dialog agent-work-directory-edit-dialog">
       <header><div><span className="eyebrow">AGENT WORKSPACE</span><h2 id="agent-work-directory-edit-title">编辑工作区</h2></div><button type="button" aria-label="关闭编辑工作区" disabled={update.isPending} onClick={onClose}><X size={16}/></button></header>
-      <label className="agent-work-directory-name"><span>工作区名称</span><input autoFocus value={displayName} maxLength={160} onChange={event => setDisplayName(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && canSubmit) update.mutate(); }}/></label>
+      <label className="agent-work-directory-name"><span>工作区名称</span><input autoFocus value={displayName} maxLength={160} onChange={event => setDisplayName(event.target.value)} onKeyDown={event => { if (event.nativeEvent.isComposing || event.keyCode === 229) return; if (event.key === 'Enter' && canSubmit) update.mutate(); }}/></label>
       {update.error && <p className="agent-work-directory-error">{update.error instanceof Error ? update.error.message : '工作区更新失败，请稍后重试。'}</p>}
       <footer><button type="button" className="secondary" disabled={update.isPending} onClick={onClose}>取消</button><button type="button" className="primary" disabled={!canSubmit} onClick={() => update.mutate()}>{update.isPending ? '正在保存…' : '保存'}</button></footer>
     </section>
@@ -3784,19 +3784,33 @@ function ConversationFilePreviewDialog({ request, gallery = [], onNavigate, work
     setImageScale(clamped);
     if (clamped === 1) setImageOffset({ x: 0, y: 0 });
   };
-  const handleImageWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
-    // Trackpad pinch arrives as ctrl+wheel; Command/Ctrl + wheel stays supported for a mouse.
-    if (event.metaKey || event.ctrlKey) {
-      event.preventDefault();
-      zoomTo(imageScale * Math.exp(-event.deltaY * (event.ctrlKey && !event.metaKey ? 0.01 : 0.0016) * (event.deltaMode === 1 ? 16 : 1)));
-      return;
-    }
-    // Two-finger scrolling pans a zoomed image instead of doing nothing.
-    if (imageScale > 1) {
-      event.preventDefault();
-      setImageOffset(current => ({ x: current.x - event.deltaX, y: current.y - event.deltaY }));
-    }
-  };
+  const imageScaleRef = useRef(1);
+  imageScaleRef.current = imageScale;
+  const dialogRef = useRef<HTMLElement>(null);
+  const imageMode = request.kind === 'image' || Boolean(request.kind === 'workspace' && (request.mimeType?.startsWith('image/') || /\.(?:avif|gif|jpe?g|png|svg|webp)$/i.test(request.path)));
+  useEffect(() => {
+    const element = dialogRef.current;
+    if (!element || !imageMode) return;
+    // React registers wheel handlers as passive, where preventDefault is ignored and the browser
+    // zooms the whole page together with the image. A native non-passive listener is required.
+    const onWheel = (event: WheelEvent) => {
+      if (event.ctrlKey || event.metaKey) {
+        // Trackpad pinch arrives as ctrl+wheel; Cmd/Ctrl+wheel is the mouse equivalent.
+        event.preventDefault();
+        const speed = event.ctrlKey && !event.metaKey ? 0.01 : 0.0016;
+        zoomTo(imageScaleRef.current * Math.exp(-event.deltaY * speed * (event.deltaMode === 1 ? 16 : 1)));
+        return;
+      }
+      if (imageScaleRef.current > 1) {
+        // Two-finger scrolling pans a zoomed image; containing it also stops the browser's
+        // swipe-back gesture from firing.
+        event.preventDefault();
+        setImageOffset(current => ({ x: current.x - event.deltaX, y: current.y - event.deltaY }));
+      }
+    };
+    element.addEventListener('wheel', onWheel, { passive: false });
+    return () => element.removeEventListener('wheel', onWheel);
+  }, [imageMode]);
   const galleryIndex = gallery.findIndex(item => item.key === request.key || ('url' in item && 'url' in request && item.url === request.url) || ('path' in item && 'path' in request && item.path === request.path));
   const stepGallery = (direction: -1 | 1) => {
     if (gallery.length < 2 || !onNavigate) return;
@@ -3809,6 +3823,7 @@ function ConversationFilePreviewDialog({ request, gallery = [], onNavigate, work
       const target = event.target as HTMLElement | null;
       if (target && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))) return;
       const zoomed = imageScale > 1;
+      if ((event.metaKey || event.ctrlKey) && !['+', '=', '-', '_', '0'].includes(event.key)) return;
       if (event.key === '+' || event.key === '=') { event.preventDefault(); zoomTo(imageScale * 1.25); }
       else if (event.key === '-' || event.key === '_') { event.preventDefault(); zoomTo(imageScale / 1.25); }
       else if (event.key === '0') { event.preventDefault(); resetImageViewport(); }
@@ -3844,7 +3859,6 @@ function ConversationFilePreviewDialog({ request, gallery = [], onNavigate, work
   const imagePreview = imagePreviewable && <div className="agent-image-preview-stage">
     <div
       className={`agent-image-preview-viewport${imageScale > 1 ? ' zoomed' : ''}`}
-      onWheel={handleImageWheel}
       onDoubleClick={resetImageViewport}
       onPointerDown={startImageDrag}
       onPointerMove={moveImageDrag}
@@ -3870,7 +3884,7 @@ function ConversationFilePreviewDialog({ request, gallery = [], onNavigate, work
   </div>;
 
   return createPortal(<div className="agent-file-preview-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
-    <section className={`agent-file-preview-dialog${fullScreen ? ' fullscreen' : ''}`} role="dialog" aria-modal="true" aria-label="文件预览">
+    <section ref={dialogRef} className={`agent-file-preview-dialog${fullScreen ? ' fullscreen' : ''}`} role="dialog" aria-modal="true" aria-label="文件预览">
       <header>
         <div><span className="eyebrow">FILE PREVIEW</span><h2 ref={titleRef} tabIndex={-1} title={path}>{request.filename}</h2><small title={path}>{path}</small></div>
         <div className="agent-file-preview-dialog-actions">
@@ -10804,7 +10818,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         if (event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget)) return;
         clearConversationDrop();
       }} onDrop={handleConversationDrop}>
-      <header className="agent-workbench-header"><div><nav className="agent-conversation-tabs" aria-label="会话页签"><button type="button" className="active" aria-current="page" title={selected ? conversationName(selected) : undefined} onDoubleClick={() => { if (!selected || !canWrite) return; setTitle(conversationName(selected)); setEditing(true); }}><MessageSquareText size={14}/><span>{selected ? conversationName(selected) : conversationDraft ? '新会话' : '开始一个新的会话'}</span></button></nav>{editing && <div className="agent-title-edit"><input ref={titleInput} aria-label="会话标题" value={title} onChange={event => setTitle(event.target.value)} onBlur={() => { if (!rename.isPending) { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }} onKeyDown={event => { if (event.key === 'Enter' && title.trim()) { event.preventDefault(); rename.mutate(); } if (event.key === 'Escape') { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }}/></div>}</div></header>
+      <header className="agent-workbench-header"><div><nav className="agent-conversation-tabs" aria-label="会话页签"><button type="button" className="active" aria-current="page" title={selected ? conversationName(selected) : undefined} onDoubleClick={() => { if (!selected || !canWrite) return; setTitle(conversationName(selected)); setEditing(true); }}><MessageSquareText size={14}/><span>{selected ? conversationName(selected) : conversationDraft ? '新会话' : '开始一个新的会话'}</span></button></nav>{editing && <div className="agent-title-edit"><input ref={titleInput} aria-label="会话标题" value={title} onChange={event => setTitle(event.target.value)} onBlur={() => { if (!rename.isPending) { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }} onKeyDown={event => { if (event.nativeEvent.isComposing || event.keyCode === 229) return; if (event.key === 'Enter' && title.trim()) { event.preventDefault(); rename.mutate(); } if (event.key === 'Escape') { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }}/></div>}</div></header>
       <div className="agent-workbench-content">
       {runtime?.state === 'RECOVERING' && <section className="agent-runtime-recover"><LoaderCircle size={18}/><div><b>运行环境正在恢复</b><span>{runtime.message || '历史会话和工作区文件仍可查看；恢复完成后可继续发送消息和使用终端。'}</span></div></section>}
       {conversationSnapshotUnavailable ? <div className="conversation-surface-empty"><b>会话暂时无法加载</b></div> : conversationInitialLoading ? <div className="conversation-surface-empty" role="status"><LoaderCircle className="conversation-activity-spin" size={16}/><b>正在加载会话</b><span>正在读取最新消息与会话状态…</span></div> : selected || conversationDraft ? <ConversationSurface

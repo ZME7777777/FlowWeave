@@ -97,6 +97,7 @@ function MaterialName({ name, file, onRename }: { name: string; file: boolean; o
   return editing ? <span className="case-material-rename">
     <input aria-label={`资料名称 ${name}`} autoFocus value={draft} maxLength={220 - extension.length}
       onChange={event => setDraft(event.target.value)} onKeyDown={event => {
+        if (event.nativeEvent.isComposing || event.keyCode === 229) return;
         if (event.key === 'Enter') { event.preventDefault(); apply(); }
         if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setEditing(false); }
       }}/>{extension && <small>{extension}</small>}
