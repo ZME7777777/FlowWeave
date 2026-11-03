@@ -1570,6 +1570,54 @@ test('Goal loop follow-up renders as one visible event inside the same turn, not
   await expect(surface.locator('.conversation-turn')).toHaveCount(1);
 });
 
+test('A recovered gateway error does not split the process into two blocks', async ({ page }) => {
+  let authenticated = false;
+  const workspace = { id: 'reconnect-workspace', display_name: '重连工作区', desired_state: 'RUNNING', updated_at: now };
+  const conversation = { id: 'reconnect-conversation', display_title: '重连会话', title_state: 'MANUAL', lifecycle: 'ACTIVE', streaming_callback_ready: true, write_available: true, execution_status: 'running', created_at: now, updated_at: now };
+  const action = (id: string, parent: string, command: string) => ({ id, event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: parent, action_id: id, tool_call_id: `${id}-call`, tool_name: 'terminal', event_name: 'TerminalAction', summary: command, content: command, timestamp: now } });
+  const result = (id: string, parent: string) => ({ id, event_type: 'TOOL_RESULT', payload: { source: 'environment', parent_id: parent, action_id: parent, tool_call_id: `${parent}-call`, tool_name: 'terminal', event_name: 'TerminalObservation', content: 'ok', timestamp: now } });
+  const events = [
+    { id: 'user-1', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '继续', timestamp: now } },
+    action('act-1', 'user-1', '检查凭据配置'), result('obs-1', 'act-1'),
+    // A transient gateway failure that FlowWeave recovers from by resuming.
+    { id: 'gateway-error', event_type: 'ERROR', payload: { source: 'environment', source_type: 'ConversationErrorEvent', parent_id: 'obs-1', content: 'BadGatewayError', error_code: 'BadGatewayError', classification: { kind: 'transient', retryable: true }, timestamp: now } },
+    // After the resume the new action is parented on the error event.
+    action('act-2', 'gateway-error', '重新读取仓库配置'), result('obs-2', 'act-2'),
+  ];
+  const hydration = { events: { events, next_cursor: 'obs-2', history_cursor: null, result: null }, context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 0, usage_current: true }, readiness: { ready: false, execution_status: 'running' } };
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return authenticated ? json(route, user) : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [conversation], next_cursor: null });
+    if (path.endsWith('/model-providers')) return json(route, []);
+    if (path.endsWith('/hydration')) return json(route, hydration);
+    if (path.endsWith('/resume') && request.method() === 'POST') return json(route, { accepted: true }, 202);
+    if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, conversation);
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+  await page.goto('/');
+  await login(page);
+  await page.goto(`/agent/conversations/${conversation.id}`);
+
+  const surface = page.locator('.conversation-surface');
+  await expect(surface.locator('.conversation-message.user')).toContainText('继续');
+  // Both actions belong to one continuous process, in one turn.
+  await expect(surface.locator('.conversation-turn')).toHaveCount(1);
+  await expect(surface.locator('.conversation-activity-group, .conversation-process-summary')).toHaveCount(1);
+  // Exactly one process group holds both rounds of work (not one per round).
+  const group = surface.locator('.conversation-activity-group, .conversation-process-summary');
+  await expect(group).toHaveCount(1);
+  await expect(group.locator('.conversation-activity-row.tool')).toHaveCount(2);
+});
+
 test('Sidebar chat can cancel its first message while it is being created and keeps the text', async ({ page }) => {
   let authenticated = false;
   let cancelled = 0;

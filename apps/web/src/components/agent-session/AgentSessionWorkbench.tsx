@@ -7401,12 +7401,37 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       }
       return false;
     };
-    const visibleFormalEvents = currentFormalEvents.filter(event => (
+    // A recovered gateway error is hidden, but OpenHands parents the resumed
+    // work on that event. Dropping it would cut the formal parent chain and
+    // render the continuation as a second, unrelated process, so re-point its
+    // children at the hidden event's own parent.
+    const bridgedParentIds = new Map(currentFormalEvents
+      .filter(event => recoverableGatewayErrorIds.has(event.id) || suppressedRecoveryErrorIds.has(event.id))
+      .map(event => [event.id, event.payload.parent_id] as const));
+    const resolveVisibleParent = (parentId: string | null | undefined): string | null | undefined => {
+      const visited = new Set<string>();
+      let current = parentId;
+      while (current && bridgedParentIds.has(current) && !visited.has(current)) {
+        visited.add(current);
+        current = bridgedParentIds.get(current);
+      }
+      return current;
+    };
+    const filteredFormalEvents = currentFormalEvents.filter(event => (
       !belongsToHiddenBranch(event)
       && !recoverableGatewayErrorIds.has(event.id)
       && !suppressedRecoveryErrorIds.has(event.id)
       && !deferredRewriteUserEventIds.has(event.id)
     ));
+    // Rewrite only the events that actually hang off a hidden error, so every
+    // other event keeps its object identity.
+    const visibleFormalEvents = bridgedParentIds.size === 0
+      ? filteredFormalEvents
+      : filteredFormalEvents.map(event => {
+        const parentId = event.payload.parent_id;
+        if (!parentId || !bridgedParentIds.has(parentId)) return event;
+        return { ...event, payload: { ...event.payload, parent_id: resolveVisibleParent(parentId) ?? undefined } };
+      });
     return projectLocalMessages(visibleFormalEvents, activeLocalMessageProjections);
   }, [activeLocalMessageProjections, currentFormalEvents, deferredRewriteUserEventIds, hiddenEventIds, recoverableGatewayErrorIds, suppressedRecoveryErrorIds]);
   const latestGoalEvent = useMemo(() => {
