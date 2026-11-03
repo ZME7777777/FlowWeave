@@ -138,6 +138,7 @@ export interface AgentSessionApi {
   readonly createFile?: (hostId: AgentSessionHostId, parentPath: string, name: string, kind: 'FILE' | 'DIRECTORY', options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<void>;
   readonly closeTerminal: (hostId: AgentSessionHostId, terminalInstanceId: string, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<void>;
   readonly bootstrapConversation: (hostId: AgentSessionHostId, conversationId: string, modelProviderId: string, modelName: string, reasoningEffort: string | null, content: string, attachments?: AgentAttachment[], references?: AgentConversationReference[], workspaceReferences?: AgentWorkspaceReference[], workDirectoryId?: AgentSessionWorkDirectoryId, capabilityVersionIds?: string[], credentialIds?: string[], idempotencyKey?: string, annotations?: AgentConversationAnnotation[], goalObjective?: string) => Promise<{ conversation: AgentConversation; accepted: boolean; cursor?: string | null }>;
+  readonly cancelConversationBootstrap?: (hostId: AgentSessionHostId, submissionId: string) => Promise<{ cancelled: boolean }>;
   readonly updateConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, title: string) => Promise<AgentConversation>;
   readonly setConversationPinned: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, pinned: boolean) => Promise<AgentConversation>;
   readonly setConversationUnread: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, unread: boolean, unreadOrigin?: 'MANUAL' | 'SYSTEM') => Promise<AgentConversation>;
@@ -240,6 +241,7 @@ export const agentWorkspaceSessionGateway: AgentSessionGateway = {
     createFile: api.createAgentWorkspaceEntry,
     closeTerminal: api.closeAgentWorkspaceTerminal,
     bootstrapConversation: api.bootstrapAgentConversation,
+    cancelConversationBootstrap: api.cancelAgentConversationBootstrap,
     updateConversation: api.updateAgentConversation,
     reorderConversation: api.reorderAgentConversation,
     archiveConversation: api.archiveAgentConversation,

@@ -11,7 +11,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 from typing import cast as typing_cast
 from urllib.parse import urlencode
 from uuid import UUID, uuid4, uuid5
@@ -2294,6 +2294,96 @@ def _bootstrap_command(
     return binding, command
 
 
+_BOOTSTRAP_CANCEL_REQUESTED = "AGENT_BOOTSTRAP_CANCEL_REQUESTED"
+_BOOTSTRAP_DISPATCHING = "AGENT_BOOTSTRAP_DISPATCHING"
+
+
+def _bootstrap_cancelled_error() -> DomainError:
+    return DomainError("AGENT_MESSAGE_CANCELLED", "已取消发送，消息已回到发送框", 409)
+
+
+def cancel_bootstrap(db: Session, workspace_id: str, submission_id: str) -> dict[str, bool]:
+    """Cancel a first-message creation until its user event is dispatched.
+
+    The creator claims DISPATCHING under the same row lock before the native
+    append, so exactly one side wins. After that the append is irreversible and
+    the caller must use the formal interrupt instead.
+    """
+
+    if not submission_id or len(submission_id) > 200:
+        raise DomainError("AGENT_SUBMISSION_ID_INVALID", "消息提交标识无效", 422)
+    workspace = _workspace(db, workspace_id)
+    binding, command = _bootstrap_command(db, workspace.id, submission_id)
+    if command is None:
+        # The request has not reserved a binding yet. Leave a tombstone so a
+        # late-arriving creation with this key is rejected instead of sending.
+        existing = db.scalar(
+            select(AgentConversationCommand)
+            .where(AgentConversationCommand.idempotency_key == submission_id)
+            .with_for_update()
+        )
+        if existing is None:
+            db.add(
+                AgentConversationCommand(
+                    workspace_id=workspace.id,
+                    host_kind="AGENT_WORKSPACE",
+                    host_id=workspace.id,
+                    binding_id=str(uuid4()),
+                    command_type="CREATE",
+                    idempotency_key=submission_id,
+                    state="FAILED",
+                    last_error_code=_BOOTSTRAP_CANCEL_REQUESTED,
+                    failure_summary="Cancelled before the conversation was reserved",
+                )
+            )
+            db.commit()
+        return {"cancelled": True}
+    assert binding is not None
+    if (
+        command.state != "PENDING"
+        or binding.lifecycle != "PROVISIONING"
+        or command.last_error_code == _BOOTSTRAP_DISPATCHING
+    ):
+        return {"cancelled": False}
+    command.last_error_code = _BOOTSTRAP_CANCEL_REQUESTED
+    db.commit()
+    return {"cancelled": True}
+
+
+def _abort_cancelled_bootstrap(
+    db: Session,
+    binding: AgentConversationBinding,
+    command: AgentConversationCommand,
+    handle: RuntimeHandle | None = None,
+) -> NoReturn:
+    if handle is not None:
+        try:
+            get_runtime().delete_conversation(handle)
+        except DomainError:
+            pass
+    error = _bootstrap_cancelled_error()
+    _record_bootstrap_failure(db, binding, command, error)
+    raise error
+
+
+def _claim_bootstrap_dispatch(
+    db: Session,
+    binding: AgentConversationBinding,
+    command: AgentConversationCommand,
+    handle: RuntimeHandle | None,
+    *,
+    dispatching: bool,
+) -> None:
+    """Honor a cancellation request, or atomically forbid later cancellation."""
+
+    db.refresh(command, with_for_update=True)
+    if command.last_error_code == _BOOTSTRAP_CANCEL_REQUESTED:
+        _abort_cancelled_bootstrap(db, binding, command, handle)
+    if dispatching:
+        command.last_error_code = _BOOTSTRAP_DISPATCHING
+    db.commit()
+
+
 def _record_bootstrap_failure(
     db: Session,
     binding: AgentConversationBinding,
@@ -2394,6 +2484,13 @@ def bootstrap_conversation(
     normalized_workspace_references = _validated_workspace_references(workspace_references)
     workspace = _workspace(db, workspace_id)
     binding, command = _bootstrap_command(db, workspace.id, idempotency_key)
+    if binding is None and db.scalar(
+        select(AgentConversationCommand.id).where(
+            AgentConversationCommand.idempotency_key == idempotency_key,
+            AgentConversationCommand.last_error_code == _BOOTSTRAP_CANCEL_REQUESTED,
+        )
+    ):
+        raise _bootstrap_cancelled_error()
     if binding is not None and command is not None:
         if binding.lifecycle == "ACTIVE" and (
             binding.initial_user_event_id is not None or normalized_goal_objective is not None
@@ -2540,6 +2637,7 @@ def bootstrap_conversation(
     try:
         from flowweave.modules.agent_sessions.application import history_integration
 
+        _claim_bootstrap_dispatch(db, binding, command, None, dispatching=False)
         history_integration.prepare_creation(db, workspace, binding, history_references)
         system_secrets: dict[str, str] = {}
         if case_control_round_id is not None:
@@ -2583,6 +2681,7 @@ def bootstrap_conversation(
             ) from exc
         _record_bootstrap_failure(db, binding, command, exc)
         raise
+    _claim_bootstrap_dispatch(db, binding, command, handle, dispatching=True)
     if normalized_goal_objective:
         try:
             get_runtime().start_goal(handle, normalized_goal_objective, 3)

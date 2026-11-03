@@ -8656,6 +8656,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   useEffect(() => {
     if (!bootstrapRecovery || !workspace || bootstrap.isPending
       || bootstrapRecovery.attempts >= MAX_BOOTSTRAP_RECONCILIATION_ATTEMPTS) return;
+    if (error instanceof ApiError && error.code === 'AGENT_MESSAGE_CANCELLED') {
+      setOperationError(undefined);
+      return;
+    }
     const delay = 750 * bootstrapRecovery.attempts;
     const timer = window.setTimeout(() => bootstrap.mutate(bootstrapRecovery.message), delay);
     return () => window.clearTimeout(timer);
@@ -9420,6 +9424,16 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       || interrupt.isPending && interrupt.variables?.bindingId === selected.id) return;
     const reconnect = flowWeaveReconnect?.bindingId === selected.id ? flowWeaveReconnect : undefined;
     if (reconnect) {
+  const cancelBootstrap = useMutation({
+    mutationFn: (request: { workspaceId: string; message: QueuedMessage }) =>
+      api.cancelConversationBootstrap?.(request.workspaceId, request.message.scope) ?? Promise.resolve({ cancelled: false }),
+    onMutate: ({ message }) => setCancellingSubmission({ bindingId: message.scope, submissionId: message.id }),
+    // A cancelled creation answers AGENT_MESSAGE_CANCELLED and the creation
+    // request's own onError restores the composer. A first user event that was
+    // already delivered cannot be retracted, so there is nothing to undo here.
+    onError: (error, { message }) => reportOperationError(message.scope, error),
+    onSettled: (_value, _error, { message }) => setCancellingSubmission(current => current?.submissionId === message.id ? undefined : current),
+  });
       setFlowWeaveReconnect(undefined);
       setSuppressedRecoveryErrorIds(current => {
         const next = new Set(current);
@@ -10120,6 +10134,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       || migrateStreaming.isPending
       || Boolean(pendingMigratedSend);
     switch (composerControlMode) {
+    if (bootstrap.isPending && pendingBootstrap?.draft.id === conversationDraft?.id && api.cancelConversationBootstrap) {
+      return cancellingSubmission?.bindingId === pendingBootstrap?.message.scope
+        ? { label: '正在取消发送', disabled: true, editable: true, action: 'none' as const }
+        : { label: '取消发送', disabled: false, editable: false, action: 'cancel-bootstrap' as const };
+    }
       case 'running':
         return composerActionSends
           ? { label: '发送消息', disabled: actionBlocked || !canWrite, editable: canWrite && !actionBlocked, action: 'send' as const }
@@ -10168,6 +10187,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   };
   const confirmPauseOnEscape = (event: KeyboardEvent) => {
     if (event.key !== 'Escape' || event.defaultPrevented || composerControl.action !== 'interrupt' || composerControl.disabled) return;
+    else if (composerControl.action === 'cancel-bootstrap' && workspace && pendingBootstrap) cancelBootstrap.mutate({ workspaceId: workspace.id, message: pendingBootstrap.message });
     event.preventDefault();
     if (escPauseConfirmation) {
       if (escPauseConfirmationTimer.current !== undefined) window.clearTimeout(escPauseConfirmationTimer.current);
@@ -10963,7 +10983,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
           </div>
           <div className="agent-composer-actions">
             {features.modelSelection && (selected ? <ComposerModelMenu providers={connectedProviders} providerId={conversationProviderId} modelName={activeConversationModelName} models={availableConversationModels} efforts={supportedEfforts} effort={reasoningEffort ?? selected.reasoning_effort ?? contextQuery.data?.reasoning_effort ?? conversationModel?.default_reasoning_effort ?? ''} disabled={!canWrite || conversationActivity.active || queuedMessages.length > 0 || Boolean(pendingConfirmation) || persistModel.isPending || migrateStreaming.isPending || Boolean(pendingMigratedSend)} onProviderChange={providerId => { const provider = connectedProviders.find(item => item.id === providerId); const model = provider?.models.find(item => item.enabled && item.is_default); if (!provider || !model) return; const effort = model.default_reasoning_effort ?? null; setConversationProviderId(providerId); setConversationModelName(model.model_name); setReasoningEffort(effort); persistModel.mutate({ providerId, modelName: model.model_name, effort }); }} onModelChange={modelName => { const model = availableConversationModels.find(item => item.model_name === modelName); const effort = model?.default_reasoning_effort ?? null; setConversationModelName(modelName); setReasoningEffort(effort); persistModel.mutate({ providerId: conversationProviderId, modelName, effort }); }} onEffortChange={effort => { const nextEffort = effort || null; setReasoningEffort(nextEffort); persistModel.mutate({ providerId: conversationProviderId, modelName: activeConversationModelName, effort }); }}/> : <ComposerModelMenu providers={connectedProviders} providerId={newConversationProviderId} modelName={newConversationModelName} models={availableDraftModels} efforts={supportedDraftEfforts} effort={newConversationReasoningEffort ?? draftConversationModel?.default_reasoning_effort ?? ''} disabled={!canOpenConversation || bootstrap.isPending} onProviderChange={providerId => { const provider = connectedProviders.find(item => item.id === providerId); const model = provider?.models.find(item => item.enabled && item.is_default); if (!provider || !model) return; setNewConversationProviderId(providerId); setNewConversationModelName(model.model_name); setNewConversationReasoningEffort(model.default_reasoning_effort ?? null); }} onModelChange={modelName => { const model = availableDraftModels.find(item => item.model_name === modelName); setNewConversationModelName(modelName); setNewConversationReasoningEffort(model?.default_reasoning_effort ?? null); }} onEffortChange={effort => setNewConversationReasoningEffort(effort || null)}/>) }
-            <button type="button" className={`agent-send${escPauseConfirmation && composerControl.action === 'interrupt' ? ' escape-confirmation' : ''}${composerControl.action === 'resume' || composerControlMode === 'pausing' ? ' resume' : ''}`} aria-label={escPauseConfirmation && composerControl.action === 'interrupt' ? '再次按 Esc 暂停当前 Agent' : composerControl.label} disabled={composerControl.disabled} onClick={runComposerAction}>{escPauseConfirmation && composerControl.action === 'interrupt' ? 'Esc' : pendingConfirmation ? <ShieldAlert size={14}/> : composerControl.action === 'send' ? <Send size={16}/> : composerControl.action === 'resume' || composerControlMode === 'pausing' ? <Play size={12} fill="currentColor"/> : composerControlMode === 'read-only' ? <CircleAlert size={15}/> : composerControl.action === 'interrupt' ? <Square size={10} fill="currentColor"/> : <LoaderCircle className="conversation-activity-spin" size={15}/>}</button>
+            <button type="button" className={`agent-send${escPauseConfirmation && composerControl.action === 'interrupt' ? ' escape-confirmation' : ''}${composerControl.action === 'resume' || composerControlMode === 'pausing' ? ' resume' : ''}`} aria-label={escPauseConfirmation && composerControl.action === 'interrupt' ? '再次按 Esc 暂停当前 Agent' : composerControl.label} disabled={composerControl.disabled} onClick={runComposerAction}>{escPauseConfirmation && composerControl.action === 'interrupt' ? 'Esc' : pendingConfirmation ? <ShieldAlert size={14}/> : composerControl.action === 'send' ? <Send size={16}/> : composerControl.action === 'resume' || composerControlMode === 'pausing' ? <Play size={12} fill="currentColor"/> : composerControlMode === 'read-only' ? <CircleAlert size={15}/> : composerControl.action === 'interrupt' || composerControl.action === 'cancel-bootstrap' ? <Square size={10} fill="currentColor"/> : <LoaderCircle className="conversation-activity-spin" size={15}/>}</button>
           </div>
         </footer>
         </div>

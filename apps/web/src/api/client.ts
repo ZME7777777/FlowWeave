@@ -579,6 +579,8 @@ export const api = {
     request<AgentPendingConfirmation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/pending-confirmation`),
   decideAgentConfirmation: (workspaceId: string, bindingId: string, expected_pending_digest: string, accept: boolean, reason: string) =>
     request<{ accepted: boolean; cursor?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/pending-confirmation/decision`, json('POST', { expected_pending_digest, accept, reason })),
+  cancelAgentConversationBootstrap: (workspaceId: string, submissionId: string) =>
+    request<{ cancelled: boolean }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-bootstraps/${encodeURIComponent(submissionId)}/cancel`, json('POST', {})),
   cancelAgentMessageSubmission: (workspaceId: string, bindingId: string, submissionId: string) =>
     request<{ cancelled: boolean }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/messages/${encodeURIComponent(submissionId)}/cancel`, json('POST', {})),
   sendAgentMessage: (workspaceId: string, bindingId: string, content: string, attachments: AgentAttachment[] = [], references: AgentConversationReference[] = [], workspace_references: AgentWorkspaceReference[] = [], annotations: AgentConversationAnnotation[] = [], idempotencyKey?: string) =>
