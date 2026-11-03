@@ -783,6 +783,6 @@
 .agent-file-tree-item>.agent-file-tree-branch{display:inline-flex;flex:0 1 auto;min-width:0;align-items:center;gap:3px;border-radius:999px;background:#e8f1eb;padding:0 7px;color:#286140;font-size:10px;font-weight:600;font-style:normal;line-height:16px;white-space:nowrap}
 .agent-file-tree-item>.agent-file-tree-branch svg{flex:0 0 auto}
 .agent-file-tree-item>.agent-file-tree-branch>span{min-width:0;overflow:hidden;text-overflow:ellipsis}
-.agent-workbench-app-shell:has(>.agent-workspace-drawer.fullscreen:not(.conversation-active)){grid-template-columns:0 0 minmax(0,1fr)!important}
-.agent-workbench-app-shell:has(>.agent-workspace-drawer.fullscreen:not(.conversation-active))>.agent-workbench-app-nav{display:none}
-.agent-workbench-app-shell:has(>.agent-workspace-drawer.fullscreen:not(.conversation-active))>.agent-workspace-drawer.fullscreen{grid-column:1 / -1!important}
+.agent-workbench-app-shell:has(>.agent-workspace-drawer.fullscreen:not(.conversation-active)){grid-template-columns:minmax(0,1fr)!important;grid-template-rows:minmax(0,1fr)!important}
+.agent-workbench-app-shell:has(>.agent-workspace-drawer.fullscreen:not(.conversation-active))>:is(.agent-workbench-app-nav,.agent-workbench-rail){display:none!important}
+.agent-workbench-app-shell>.agent-workspace-drawer.fullscreen:not(.conversation-active){grid-column:1 / -1!important;grid-row:1!important}
