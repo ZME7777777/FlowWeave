@@ -2260,10 +2260,15 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   const turns = useMemo(() => turnsFor(visibleEvents), [visibleEvents]);
   const latestGoalStatus = useMemo(() => [...visibleEvents].reverse().find(event => event.payload.goal_status)?.payload.goal_status, [visibleEvents]);
   const revealEventIds = EMPTY_EVENT_IDS;
-  const locatedGoalTurn = useMemo(() => {
-    if (!goalLocateEventId) return undefined;
-    return turns.find(turn => turn.activity.some(item => item.event.id === goalLocateEventId))?.renderKey;
-  }, [goalLocateEventId, turns]);
+  // Locating an event that sits inside a folded Goal process opens that process and keeps it
+  // open (the locate target itself is cleared as soon as the jump lands).
+  useEffect(() => {
+    if (!goalLocateEventId) return;
+    const owner = turns.find(turn => turn.activity.some(item => item.event.id === goalLocateEventId));
+    if (!owner) return;
+    const key = `${conversationScope ?? 'conversation'}:${owner.renderKey}`;
+    setExpandedCompletedProcesses(current => current.has(key) ? current : new Set(current).add(key));
+  }, [conversationScope, goalLocateEventId, turns]);
   const contentGrowthSignal = useMemo(
     () => visibleEvents.map(event => [event.id, eventContentSignature(event)] as const),
     [visibleEvents],
@@ -3083,7 +3088,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
               workspaceRoot={workspaceRoot}
               onOpenSourceLocation={onOpenSourceLocation}
               display={goalFinished ? 'summary' : 'full'}
-              open={goalFinished ? (completedProcessExpanded || locatedGoalTurn === turn.renderKey) : undefined}
+              open={goalFinished ? completedProcessExpanded : undefined}
               onOpenChange={goalFinished ? setCompletedProcessExpanded : undefined}
             />;
           })()}

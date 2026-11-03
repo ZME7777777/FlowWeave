@@ -1811,6 +1811,71 @@ test('Goal status bar lists the rounds and removing a stopped goal allows a new 
   await expect(page.getByRole('button', { name: '目标模式' })).toBeVisible();
 });
 
+test('Locating a round of a finished goal opens its folded process and shows that round', async ({ page }) => {
+  let authenticated = false;
+  const workspace = { id: 'goal-locate-workspace', display_name: '目标定位工作区', desired_state: 'RUNNING', updated_at: now };
+  const conversation = { id: 'goal-locate-conversation', display_title: '目标定位会话', title_state: 'MANUAL', lifecycle: 'ACTIVE', streaming_callback_ready: true, write_available: true, execution_status: 'idle', created_at: now, updated_at: now };
+  const at = (offsetSeconds: number) => new Date(Date.parse('2026-11-03T10:34:46Z') + offsetSeconds * 1000).toISOString();
+  const tool = (id: string, parent: string, command: string, offset: number) => ({ id, event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: parent, action_id: id, tool_call_id: `${id}-call`, tool_name: 'terminal', event_name: 'TerminalAction', summary: command, content: command, timestamp: at(offset) } });
+  const result = (id: string, parent: string, offset: number) => ({ id, event_type: 'TOOL_RESULT', payload: { source: 'environment', parent_id: parent, action_id: parent, tool_call_id: `${parent}-call`, tool_name: 'terminal', event_name: 'TerminalObservation', content: 'ok', timestamp: at(offset) } });
+  // A long final answer pushes the folded process far above the composer, as in real use.
+  const longAnswer = Array.from({ length: 60 }, (_, index) => `结论第 ${index + 1} 行：已核对。`).join('\n\n');
+  const events = [
+    { id: 'goal-start', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '找到测试分支', timestamp: at(0) } },
+    tool('round-1-tool', 'goal-start', '第一轮：查询构建历史', 10), result('round-1-obs', 'round-1-tool', 11),
+    { id: 'round-1-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'round-1-obs', content: '第一轮结论', final_reply: false, timestamp: at(351) } },
+    { id: 'goal-audit', event_type: 'STATE', payload: { source: 'environment', parent_id: 'round-1-reply', goal_status: { active: true, status: 'running', iteration: 1, max_iterations: 3, objective: '找到测试分支', verdict: { score: 0.8, complete: false, missing: '还缺依赖库' } }, timestamp: at(360) } },
+    { id: 'judge-followup', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'round-1-reply', content: 'Outstanding', goal_followup: { iteration: 1, max_iterations: 3, missing: '还缺依赖库' }, timestamp: at(361) } },
+    tool('round-2-tool', 'judge-followup', '第二轮：补充核验依赖库', 365), result('round-2-obs', 'round-2-tool', 366),
+    { id: 'round-2-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'round-2-obs', content: longAnswer, final_reply: true, timestamp: at(418) } },
+    { id: 'goal-done', event_type: 'STATE', payload: { source: 'environment', parent_id: 'round-2-reply', goal_status: { active: false, status: 'complete', iteration: 2, max_iterations: 3, objective: '找到测试分支', verdict: { score: 1, complete: true, missing: '' } }, timestamp: at(420) } },
+  ];
+  const hydration = { events: { events, next_cursor: 'round-2-reply', history_cursor: null, result: { status: 'COMPLETED' } }, context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 0, usage_current: true }, readiness: { ready: true, execution_status: 'idle' } };
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return authenticated ? json(route, user) : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [conversation], next_cursor: null });
+    if (path.endsWith('/model-providers')) return json(route, []);
+    if (path.endsWith('/hydration')) return json(route, hydration);
+    if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, conversation);
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+  await page.goto('/');
+  await login(page);
+  await page.goto(`/agent/conversations/${conversation.id}`);
+
+  const surface = page.locator('.conversation-surface');
+  const status = page.locator('.conversation-goal-status');
+  await expect(status).toContainText('目标已验收通过');
+  // The finished goal is folded: its rounds are not on screen until located.
+  await expect(surface.locator('[data-goal-followup-event-id="judge-followup"]')).toBeHidden();
+
+  await status.getByRole('button', { name: /目标已验收通过/ }).hover();
+  await status.getByRole('button', { name: '定位第 2 轮' }).click();
+  const followup = surface.locator('[data-goal-followup-event-id="judge-followup"]');
+  await expect(followup).toBeVisible();
+  await expect(followup).toBeInViewport();
+  // The process stays open after the jump instead of folding back.
+  await page.waitForTimeout(800);
+  await expect(followup).toBeVisible();
+
+  // The first round and the goal text locate inside the same, already open process.
+  await status.getByRole('button', { name: /目标已验收通过/ }).hover();
+  await status.getByRole('button', { name: '定位第 1 轮' }).click();
+  await expect(page.locator('[data-conversation-event-id="goal-start"]')).toBeInViewport();
+  await status.getByRole('button', { name: /目标已验收通过/ }).hover();
+  await status.getByRole('button', { name: '定位目标消息' }).click();
+  await expect(page.locator('[data-conversation-event-id="goal-start"]')).toBeInViewport();
+});
+
 test('Sidebar chat can cancel its first message while it is being created and keeps the text', async ({ page }) => {
   let authenticated = false;
   let cancelled = 0;
