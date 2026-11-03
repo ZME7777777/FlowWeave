@@ -2968,7 +2968,7 @@ function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expande
       }} onClick={event => selectEntry(node, event)} onContextMenu={event => { event.preventDefault(); if (node.kind === 'directory') onActivateDirectory(node.path); onContextMenu(node.path, node.kind, event); }}>
         {node.kind === 'directory' ? open ? <FolderOpen size={14}/> : <Folder size={14}/> : <FileCode2 size={14}/>}
         <span>{node.name}</span>
-        {node.kind === 'directory' && repositoryBranches?.get(node.path.replace(/\/+$/, '')) && <em className="agent-file-tree-branch" title={`当前分支：${repositoryBranches.get(node.path.replace(/\/+$/, ''))}`}><GitBranch size={10}/>{repositoryBranches.get(node.path.replace(/\/+$/, ''))}</em>}
+        {node.kind === 'directory' && repositoryBranches?.get(node.path.replace(/\/+$/, '')) && <em className="agent-file-tree-branch" title={`当前分支：${repositoryBranches.get(node.path.replace(/\/+$/, ''))}`}><GitBranch size={10}/><span>{repositoryBranches.get(node.path.replace(/\/+$/, ''))}</span></em>}
       </button>
       {node.kind === 'file' && <span className="agent-file-tree-file-meta"><em className="agent-file-tree-size">{formatFileSize(node.size)}</em><a className="agent-file-tree-download" href={fileDownloadUrl(node.path)} aria-label={`下载 ${node.name}`} title={`下载 ${node.name}`}><Download size={12}/></a></span>}
       </div>
