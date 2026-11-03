@@ -7759,8 +7759,17 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         state: selectedCondensing ? 'running' as const : effectiveTurnState,
         active: selectedCondensing || effectiveTurnState === 'running' || effectiveTurnState === 'pausing' || effectiveTurnState === 'resuming' || effectiveTurnState === 'reconnecting',
       }, [effectiveTurnState, selectedCondensing, uncreatedConversationDraft]);
-  const conversationVisuallyActive = !uncreatedConversationDraft && !nativeFailureSettled && !streamCompletionAcknowledged && (
-    conversationActivity.active
+  // OpenHands writes the Judge's verdict (goal active, verdict incomplete) when a
+  // round ends and before the next one starts, so the loop is known to continue
+  // while the run itself already reads finished. Keep the conversation active
+  // for that gap instead of settling into a final state and jumping back.
+  const goalLoopContinues = latestGoalStatus?.active === true
+    && effectiveTurnState !== 'paused'
+    && effectiveTurnState !== 'pausing'
+    && !activeFormalTurnInterrupted;
+  const conversationVisuallyActive = !uncreatedConversationDraft && !nativeFailureSettled && (goalLoopContinues || !streamCompletionAcknowledged) && (
+    goalLoopContinues
+    || conversationActivity.active
     || (
       effectiveTurnState !== 'paused'
       && !nativeTurnTerminal

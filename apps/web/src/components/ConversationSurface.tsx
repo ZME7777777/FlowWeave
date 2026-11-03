@@ -722,16 +722,64 @@ function turnsFor(events: OpenHandsConversationEvent[]): Turn[] {
     .map(({ turn }) => turn);
 }
 
-/** Earlier Goal rounds in time order: each reply, then the follow-up that started the next round. */
-function goalRoundTimeline(turn: Turn): Array<{ kind: 'followup' | 'reply'; item: Item }> {
-  const entries = [
-    ...(turn.priorAssistants ?? []).map(item => ({ kind: 'reply' as const, item })),
-    ...turn.activity.filter(item => item.event.payload.goal_followup).map(item => ({ kind: 'followup' as const, item })),
-  ];
-  return entries
-    .map((entry, index) => ({ entry, index, time: eventTime(entry.item) }))
-    .sort((left, right) => (left.time === undefined || right.time === undefined || left.time === right.time) ? left.index - right.index : left.time - right.time)
-    .map(({ entry }) => entry);
+interface GoalRound {
+  /** The follow-up that opened this round; absent for the first round. */
+  followup?: Item;
+  process: Item[];
+  reply?: Item;
+}
+
+/**
+ * A Goal turn is one user turn made of rounds: process, reply, then the Judge
+ * follow-up that starts the next round. Ownership follows OpenHands' formal
+ * parent chain (never timestamps): an event belongs to the round opened by the
+ * nearest follow-up among its ancestors, or to the first round if it has none.
+ */
+function goalRounds(turn: Turn, events: OpenHandsConversationEvent[]): GoalRound[] | undefined {
+  const byId = new Map(events.map(event => [event.id, event]));
+  const userId = turn.user?.event.id;
+  // A Judge verdict is written when a round ends, before the next round starts.
+  const audits = events.filter(event => event.payload.goal_status?.verdict && userId && userAncestorId(event, byId) === userId);
+  const followups = turn.activity.filter(item => item.event.payload.goal_followup);
+  if (!followups.length && !audits.length) return undefined;
+  const followupIndex = new Map(followups.map((item, index) => [item.event.id, index + 1]));
+  const actionsById = new Map(events.flatMap(event => typeof event.payload.action_id === 'string' && event.event_type === 'TOOL_CALL' ? [[event.payload.action_id, event] as const] : []));
+  const roundOf = (event: OpenHandsConversationEvent): number => {
+    const visited = new Set<string>();
+    let current: OpenHandsConversationEvent | undefined = event;
+    while (current && !visited.has(current.id)) {
+      visited.add(current.id);
+      const index = followupIndex.get(current.id);
+      if (index !== undefined) return index;
+      const parentId: string | null | undefined = current.payload.parent_id;
+      const actionId: unknown = current.payload.action_id;
+      current = parentId ? byId.get(parentId)
+        : typeof actionId === 'string' ? actionsById.get(actionId) : undefined;
+    }
+    return 0;
+  };
+  const rounds: GoalRound[] = [{ process: [] }, ...followups.map(item => ({ followup: item, process: [] as Item[] }))];
+  for (const item of turn.activity) {
+    if (item.event.payload.goal_followup || item.kind === 'error') continue;
+    rounds[roundOf(item.event)].process.push(item);
+  }
+  for (const reply of [...(turn.priorAssistants ?? []), ...(turn.assistant ? [turn.assistant] : [])]) {
+    const round = rounds[roundOf(reply.event)];
+    // The latest reply is the round's conclusion; earlier ones are progress.
+    if (round.reply) round.process.push(round.reply);
+    round.reply = reply;
+  }
+  // A round the Judge has already audited is finished even though OpenHands does
+  // not mark its closing message as final while the loop continues: show that
+  // message as the round's reply instead of folding it into the process.
+  const auditedRounds = new Set(audits.map(event => roundOf(event)));
+  rounds.forEach((round, index) => {
+    if (round.reply || !auditedRounds.has(index)) return;
+    const position = round.process.map(item => item.event.event_type === 'MESSAGE'
+      && ['agent', 'assistant'].includes(String(item.event.payload.source ?? '').toLowerCase())).lastIndexOf(true);
+    if (position >= 0) round.reply = { ...round.process.splice(position, 1)[0], kind: 'assistant' };
+  });
+  return rounds;
 }
 
 function fileChangesForTurn(
@@ -1563,15 +1611,11 @@ function ActivityEntryRow({ entry, active, reveal = false, paused = false, paren
     <Sparkles size={13}/><div><b>{presentation.title}</b></div>
   </article>;
   if (item.kind === 'goal' && item.event.payload.goal_followup) {
-    const followup = item.event.payload.goal_followup;
-    return <article className="conversation-activity-row goal-followup" role="status" aria-label={item.title} data-goal-followup-event-id={item.event.id}>
-      <Target size={14}/>
-      <div>
-        <b>{item.title}</b>
-        <small>Judge 判定尚有未满足的要求，Agent 将继续核实并补充证据</small>
-        {item.content && <p>{item.content}</p>}
-      </div>
-    </article>;
+    // A round boundary, drawn like a task-list entry: no card, no explanation.
+    return <details className="conversation-goal-round" data-goal-followup-event-id={item.event.id}>
+      <summary aria-label={item.title}><span className="conversation-task-status-icon in_progress" aria-hidden="true"><i/></span><b>{item.title}</b>{item.content && <ChevronRight className="conversation-expand-arrow" size={12}/>}</summary>
+      {item.content && <p>{item.content}</p>}
+    </details>;
   }
   if (item.kind === 'goal') {
     const goal = item.event.payload.goal_status!;
@@ -2194,6 +2238,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     [events],
   );
   const turns = useMemo(() => turnsFor(visibleEvents), [visibleEvents]);
+  const latestGoalStatus = useMemo(() => [...visibleEvents].reverse().find(event => event.payload.goal_status)?.payload.goal_status, [visibleEvents]);
   const revealEventIds = EMPTY_EVENT_IDS;
   const contentGrowthSignal = useMemo(
     () => visibleEvents.map(event => [event.id, eventContentSignature(event)] as const),
@@ -2954,6 +2999,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
         const laterTurnHasFormalReply = turns.slice(index + 1).some(candidate => Boolean(candidate.assistant));
         const completionConfirmed = Boolean(turn.assistant || parentFailed || laterTurnHasFormalReply);
         const fileChanges = fileChangesForTurn(events, turn);
+        const rounds = goalRounds(turn, events);
         const userMessages = turn.user ? [turn.user] : [];
         const completedProcessKey = `${conversationScope ?? 'conversation'}:${turn.renderKey}`;
         const completedProcessExpanded = expandedCompletedProcesses.has(completedProcessKey);
@@ -2992,7 +3038,30 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
                 : <article data-user-event-id={message.event.id} data-conversation-event-id={message.event.id} className="conversation-message user"><MessageAttachments attachments={eventAttachments(message.event)} references={message.event.payload.conversation_references} workspaceReferences={message.event.payload.workspace_references} annotations={eventAnnotations(message.event)} onOpen={onOpenAttachment} onOpenReference={reference => { if (onOpenConversationReference) onOpenConversationReference(reference); else setViewingReference(reference); }} onOpenWorkspaceReference={onOpenWorkspaceReference} onOpenAnnotation={locateAnnotation} conversationName={conversationName} imageUrl={attachmentImageUrl}/>{message.content && <div className="conversation-message-content"><MessageMarkdown>{message.content}</MessageMarkdown></div>}<footer className="conversation-message-meta user">{messageDeliveryStatus && <small className="conversation-message-delivery-status" role="status">{messageDeliveryStatus}</small>}{messageTimestamp && <time dateTime={typeof message.event.payload.timestamp === 'string' ? message.event.payload.timestamp : undefined}>{messageTimestamp}</time>}<div className="conversation-message-actions can-rewrite"><button type="button" className="conversation-message-copy" aria-label={copiedEventId === message.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === message.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(message.event.id, message.content)}>{copiedEventId === message.event.id ? <Check size={13}/> : <Copy size={13}/>}</button><button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(message.event.id); setEditingContent(message.content); }}><Pencil size={13}/></button></div></footer></article>}</div>
             </Fragment>;
           })}
-          {!completionConfirmed && processBlocks.map(block => <ActivityGroup
+          {rounds?.map((round, roundPosition) => {
+            const isLastRound = roundPosition === rounds.length - 1;
+            // A finished round is a closed step; only the last one can still be running.
+            const roundActive = isLastRound && isCurrent && !round.reply && !failures.length;
+            const roundTimes = round.process.map(item => eventTime(item)).filter((time): time is number => time !== undefined);
+            return <Fragment key={round.followup?.event.id ?? 'round-0'}>
+              {round.followup && <ActivityEntryRow entry={{ id: round.followup.event.id, action: round.followup, item: round.followup, results: [] }} active={false} reveal={false} paused={false} parentFailed={false} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot} onOpenSourceLocation={onOpenSourceLocation}/>}
+              {round.process.length > 0 && <ActivityGroup
+                items={round.process}
+                active={roundActive}
+                revealEventIds={revealEventIds}
+                completionConfirmed={Boolean(round.reply)}
+                paused={isCurrentPaused && roundActive}
+                parentFailed={parentFailed && isLastRound}
+                startedAt={roundTimes.length ? Math.min(...roundTimes) : undefined}
+                finishedAt={round.reply ? eventTime(round.reply) : undefined}
+                avatarSlots={avatarSlots}
+                workspaceRoot={workspaceRoot}
+                onOpenSourceLocation={onOpenSourceLocation}
+              />}
+              {round.reply && <AgentReply event={round.reply.event} content={round.reply.content} reveal={revealEventIds.has(round.reply.event.id)} changes={isLastRound ? fileChanges : []} onFork={isLastRound && !isGenerating ? () => onFork?.(round.reply!.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile} onReviewChanges={onReviewChanges} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenBrowser={onOpenBrowser} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl} workspaceRoot={workspaceRoot} annotations={[]} onLocateAnnotation={locateAnnotation}/>}
+            </Fragment>;
+          })}
+          {!rounds && !completionConfirmed && processBlocks.map(block => <ActivityGroup
             key={block.id}
             items={block.items}
             active={block.active}
@@ -3006,11 +3075,14 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
             workspaceRoot={workspaceRoot}
             onOpenSourceLocation={onOpenSourceLocation}
           />)}
+          {rounds && isCurrent && !failures.length && rounds[rounds.length - 1].reply && latestGoalStatus?.active && (
+            <CurrentTurnStatus items={[]} requestSubmitting={false} statusOverride={`目标进行中 · 第 ${Math.min(latestGoalStatus.iteration + 1, latestGoalStatus.max_iterations)} / ${latestGoalStatus.max_iterations} 轮，正在核对`}/>
+          )}
           {isCurrent && !turn.assistant && !failures.length && (
             <CurrentTurnStatus items={turn.activity} requestSubmitting={requestSubmitting} statusOverride={pausing ? '正在暂停 Agent' : reconnectingAttempt ? `正在尝试重连（${reconnectingAttempt}/${reconnectingMaxAttempts}）` : rewritePending ? '正在重新思考' : emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} reconnecting={Boolean(reconnectingAttempt)} modelRetryStatus={modelRetryStatus} monitoring={monitoring} connectionState={connectionState}/>
           )}
           {processBlocks.length > 0 && turn.assistant && <div className="conversation-process-divider" role="separator" aria-label="工作过程结束"/>}
-          {completionConfirmed && processBlocks.map(block => <ActivityGroup
+          {!rounds && completionConfirmed && processBlocks.map(block => <ActivityGroup
             key={`${block.id}:summary`}
             items={block.items}
             active={false}
@@ -3027,10 +3099,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
             open={completedProcessExpanded}
             onOpenChange={setCompletedProcessExpanded}
           />)}
-          {(turn.priorAssistants?.length || turn.activity.some(item => item.event.payload.goal_followup)) && goalRoundTimeline(turn).map(entry => entry.kind === 'followup'
-            ? <ActivityEntryRow key={entry.item.event.id} entry={{ id: entry.item.event.id, action: entry.item, item: entry.item, results: [] }} active={false} reveal={false} paused={false} parentFailed={false} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot} onOpenSourceLocation={onOpenSourceLocation}/>
-            : <AgentReply key={entry.item.event.id} event={entry.item.event} content={entry.item.content} reveal={revealEventIds.has(entry.item.event.id)} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenBrowser={onOpenBrowser} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl} workspaceRoot={workspaceRoot}/>)}
-          {turn.assistant && <AgentReply event={turn.assistant.event} content={turn.assistant.content} reveal={revealEventIds.has(turn.assistant.event.id)} changes={fileChanges} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile} onReviewChanges={onReviewChanges} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenBrowser={onOpenBrowser} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl} workspaceRoot={workspaceRoot} annotations={turn.assistant.event.payload.collaboration_annotation_ids !== undefined ? eventAnnotations(turn.assistant.event) : turn.user ? eventAnnotations(turn.user.event) : []} onLocateAnnotation={locateAnnotation}/>}
+          {!rounds && turn.assistant && <AgentReply event={turn.assistant.event} content={turn.assistant.content} reveal={revealEventIds.has(turn.assistant.event.id)} changes={fileChanges} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile} onReviewChanges={onReviewChanges} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenBrowser={onOpenBrowser} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl} workspaceRoot={workspaceRoot} annotations={turn.assistant.event.payload.collaboration_annotation_ids !== undefined ? eventAnnotations(turn.assistant.event) : turn.user ? eventAnnotations(turn.user.event) : []} onLocateAnnotation={locateAnnotation}/>}
           {failures.map(item => <ConversationFailure key={item.event.id} item={item} taskControl={taskControl} retryStatus={isLatest ? modelRetryStatus : undefined}/>)}
         </section>;
       })}

@@ -158,8 +158,17 @@ def terminal_assistant_message_ids(batch: RuntimeEventBatch) -> frozenset[str]:
     events_by_id = {event.cursor: event for event in batch.events}
     terminal_ids: set[str] = set()
     result = batch.result
+    # While an OpenHands Goal loop is still active, a finished run is only one
+    # round: the Judge may send another follow-up. Nothing is final until the
+    # loop itself reports complete, capped or interrupted.
+    goal_active = False
+    for event in batch.events:
+        goal_status = event.payload.get("goal_status")
+        if isinstance(goal_status, dict):
+            goal_active = goal_status.get("active") is True
     if (
-        result is not None
+        not goal_active
+        and result is not None
         and result.status == "COMPLETED"
         and result.completion_event_kind == "ASSISTANT_MESSAGE"
         and result.completion_event_id in events_by_id
@@ -172,7 +181,8 @@ def terminal_assistant_message_ids(batch: RuntimeEventBatch) -> frozenset[str]:
     leaf = events_by_id.get(batch.cursor or "")
     readiness = batch.readiness
     if (
-        leaf is not None
+        not goal_active
+        and leaf is not None
         and leaf.event_type == "MESSAGE"
         and str(leaf.payload.get("source") or "").lower() in {"agent", "assistant"}
         and readiness is not None
@@ -187,6 +197,10 @@ def terminal_assistant_message_ids(batch: RuntimeEventBatch) -> frozenset[str]:
             "user",
             "human",
         }:
+            continue
+        if event.payload.get("goal_followup"):
+            # The Goal loop's own follow-up after a failed audit: the reply it
+            # answers was a round, not the turn's final reply.
             continue
         parent_id = event.payload.get("parent_id")
         visited: set[str] = set()

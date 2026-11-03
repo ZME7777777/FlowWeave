@@ -835,6 +835,53 @@ def test_terminal_assistant_message_ids_keeps_current_final_and_excludes_progres
     assert terminal_assistant_message_ids(batch) == frozenset({"final"})
 
 
+def _goal_batch(*, active: bool, status: str) -> RuntimeEventBatch:
+    return RuntimeEventBatch(
+        events=(
+            RuntimeEvent("goal-user", "MESSAGE", {"parent_id": "__root__", "source": "user"}),
+            RuntimeEvent("round-1", "MESSAGE", {"parent_id": "goal-user", "source": "agent"}),
+            RuntimeEvent(
+                "judge-followup",
+                "MESSAGE",
+                {
+                    "parent_id": "round-1",
+                    "source": "user",
+                    "goal_followup": {"iteration": 1, "missing": "x"},
+                },
+            ),
+            RuntimeEvent("round-2", "MESSAGE", {"parent_id": "judge-followup", "source": "agent"}),
+            RuntimeEvent(
+                "goal-state",
+                "STATE",
+                {
+                    "parent_id": "round-2",
+                    "goal_status": {"active": active, "status": status, "iteration": 2},
+                },
+            ),
+        ),
+        cursor="round-2",
+        result=RuntimeResult(
+            status="COMPLETED",
+            completion_event_id="round-2",
+            completion_event_kind="ASSISTANT_MESSAGE",
+        ),
+    )
+
+
+def test_terminal_assistant_message_ids_treats_goal_rounds_as_progress_until_the_goal_ends() -> None:
+    # The Judge follow-up is a loop control input, not a new user turn, so the
+    # round it answers is never a final reply.
+    running = terminal_assistant_message_ids(_goal_batch(active=True, status="running"))
+    assert "round-1" not in running
+    # While the loop is still active even the latest finished run is only a round.
+    assert running == frozenset()
+
+
+def test_terminal_assistant_message_ids_keeps_only_the_last_goal_round_as_final() -> None:
+    done = terminal_assistant_message_ids(_goal_batch(active=False, status="complete"))
+    assert done == frozenset({"round-2"})
+
+
 def test_terminal_assistant_message_ids_marks_idle_branch_leaf_reply_after_fork() -> None:
     """A fork stops on the copied reply: it is the leaf of a finished turn with no result."""
 
