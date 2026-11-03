@@ -225,7 +225,12 @@
 .conversation-turn{margin-bottom:40px}
 }
 
-.conversation-mcp-server{flex:0 1 auto;min-width:0;max-width:11em;overflow:hidden;border-radius:4px;background:#eef0fb;padding:0 5px;color:#465ea5;font-size:.9em;line-height:1.5;text-overflow:ellipsis;white-space:nowrap}
+/* The MCP icon and its server name are one unit in the tool accent colour, and the name is
+   never truncated: the title beside it is what gives way when the row is narrow. */
+.conversation-mcp-badge{display:inline-flex;flex:0 0 auto;align-items:center;gap:5px;max-width:100%;color:var(--conversation-tool-accent)}
+.conversation-mcp-badge>svg{flex:0 0 auto}
+.conversation-mcp-badge>span{flex:0 0 auto;color:inherit;font-size:13px;font-weight:600;line-height:1.5;white-space:nowrap}
+.conversation-mcp-badge::after{content:"";align-self:stretch;width:1px;margin-left:3px;background:currentColor;opacity:.22}
 .conversation-goal-round{display:block;margin:10px 0 4px;color:#6f7a73}
 .conversation-goal-round>summary{display:flex;align-items:center;gap:8px;width:max-content;max-width:100%;min-height:26px;cursor:pointer;list-style:none;font-size:13px;line-height:1.5;color:#5f6d65}
 .conversation-goal-round>summary::-webkit-details-marker{display:none}

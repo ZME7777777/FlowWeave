@@ -1900,6 +1900,60 @@ test('Locating a round of a finished goal opens its folded process and shows tha
   await expectLanded('[data-goal-followup-event-id="judge-followup"]');
 });
 
+test('MCP event row shows its server name in full, joined to the icon', async ({ page }) => {
+  let authenticated = false;
+  const workspace = { id: 'mcp-name-workspace', display_name: 'MCP 名称工作区', desired_state: 'RUNNING', updated_at: now };
+  const conversation = { id: 'mcp-name-conversation', display_title: 'MCP 名称会话', title_state: 'MANUAL', lifecycle: 'ACTIVE', streaming_callback_ready: true, write_available: true, execution_status: 'idle', created_at: now, updated_at: now };
+  // A long server name: it must not be cut with an ellipsis (the old 11em cap did).
+  const toolName = 'flowweave-reference-history_read_referenced_conversation';
+  const events = [
+    { id: 'user-1', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '读取会话', timestamp: now } },
+    { id: 'mcp-action', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'user-1', action_id: 'mcp-action', tool_call_id: 'mcp-call', tool_name: toolName, event_name: 'MCPToolAction', summary: '读取授权会话中的分支映射尝试', content: '读取', timestamp: now } },
+    { id: 'mcp-result', event_type: 'TOOL_RESULT', payload: { source: 'environment', parent_id: 'mcp-action', action_id: 'mcp-action', tool_call_id: 'mcp-call', tool_name: toolName, event_name: 'MCPToolObservation', content: 'ok', timestamp: now } },
+    { id: 'reply-1', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'mcp-result', content: '已读取', final_reply: false, timestamp: now } },
+  ];
+  const hydration = { events: { events, next_cursor: 'reply-1', history_cursor: null, result: { status: 'RUNNING' } }, context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 0, usage_current: true }, readiness: { ready: false, execution_status: 'running' } };
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return authenticated ? json(route, user) : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [conversation], next_cursor: null });
+    if (path.endsWith('/model-providers')) return json(route, []);
+    if (path.endsWith('/hydration')) return json(route, hydration);
+    if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, conversation);
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+  await page.goto('/');
+  await login(page);
+  await page.goto(`/agent/conversations/${conversation.id}`);
+
+  const row = page.locator('.conversation-tool-detail[data-tool-kind="mcp"]');
+  await expect(row).toBeVisible();
+  const badge = row.locator(':scope > summary > .conversation-mcp-badge');
+  // Icon and name are one unit; the name is complete (not clipped) and uses the tool accent.
+  await expect(badge.locator('svg')).toBeVisible();
+  const name = badge.locator(':scope > span');
+  await expect(name).toHaveText('flowweave-reference-history');
+  expect(await name.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+  expect(await name.evaluate(element => getComputedStyle(element).textOverflow)).not.toBe('ellipsis');
+  const colors = await badge.evaluate(element => ({
+    badge: getComputedStyle(element).color,
+    icon: getComputedStyle(element.querySelector('svg')!).color,
+    name: getComputedStyle(element.querySelector(':scope > span')!).color,
+  }));
+  expect(colors.icon).toBe(colors.badge);
+  expect(colors.name).toBe(colors.badge);
+  // No separate tinted capsule around the name.
+  expect(await name.evaluate(element => getComputedStyle(element).backgroundColor)).toBe('rgba(0, 0, 0, 0)');
+});
+
 test('Sidebar chat can cancel its first message while it is being created and keeps the text', async ({ page }) => {
   let authenticated = false;
   let cancelled = 0;
