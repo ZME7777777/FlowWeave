@@ -3318,6 +3318,59 @@ def test_openhands_does_not_mark_a_user_message_without_a_failed_audit(
     assert "goal_followup" not in typed.payload
 
 
+def test_openhands_active_window_keeps_a_goal_update_written_after_the_leaf(
+    openhands_settings, monkeypatch
+):
+    """The terminal goal update is appended after the last real event, so it sits past the leaf."""
+
+    runtime = OpenHandsRuntime(openhands_settings)
+    complete = _goal_update("goal-complete", "final-reply", status="complete")
+    value = complete["value"]
+    assert isinstance(value, dict)
+    value.update({"iteration": 2, "verdict": {"score": 0.99, "complete": True, "missing": ""}})
+    calls: list[dict[str, object] | None] = []
+    responses = {
+        # The window anchored at the leaf walks backwards and never sees the update.
+        "leaf": {
+            "items": [
+                {
+                    "kind": "MessageEvent",
+                    "id": "final-reply",
+                    "parent_id": "goal-start",
+                    "source": "agent",
+                    "llm_message": {"role": "assistant", "content": "完成"},
+                },
+                {
+                    "kind": "MessageEvent",
+                    "id": "goal-start",
+                    "parent_id": "__root__",
+                    "source": "user",
+                    "llm_message": {"role": "user", "content": "目标"},
+                },
+            ],
+            "next_page_id": None,
+        },
+        # The newest events of the log, newest first, include the update past the leaf.
+        "tail": {"items": [complete], "next_page_id": "final-reply"},
+    }
+
+    def fake_request(_method: str, path: str, **kwargs: object) -> dict[str, object]:
+        params = kwargs.get("params") if isinstance(kwargs.get("params"), dict) else None
+        calls.append(params)
+        if path.endswith("/events/search"):
+            assert params is not None
+            return responses["leaf" if params.get("page_id") == "final-reply" else "tail"]
+        return _state(leaf_event_id="final-reply", execution_status="finished")
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+
+    batch = runtime.read_active_events(_handle())
+
+    assert [event.cursor for event in batch.events] == ["goal-start", "final-reply", "goal-complete"]
+    assert batch.events[-1].payload["goal_status"]["status"] == "complete"
+    assert batch.events[-1].payload["goal_status"]["active"] is False
+
+
 def test_openhands_cursor_reconciliation_keeps_goal_status_updates(
     openhands_settings, monkeypatch
 ):

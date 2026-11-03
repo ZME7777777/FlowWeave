@@ -3584,6 +3584,50 @@ class OpenHandsRuntime:
             result.append(item)
         return result
 
+    def _goal_updates_after_leaf(
+        self,
+        conversation_id: str,
+        leaf_event_id: str,
+        *,
+        base_url: str,
+        session_api_key: str,
+    ) -> list[dict[str, Any]]:
+        """Read the Goal status updates OpenHands appended after the active leaf.
+
+        A state update never becomes the leaf, so the final ``goal`` verdict
+        (complete, capped or interrupted) is written after the last real event
+        and lies past the leaf. A window anchored at the leaf walks backwards and
+        cannot see it. Read only the newest events of the log, which is where
+        such updates are, and keep the Goal ones whose parent is the leaf.
+        """
+
+        try:
+            data = self._request(
+                "GET",
+                f"/api/conversations/{conversation_id}/events/search",
+                base_url=base_url,
+                session_api_key=session_api_key,
+                params={"limit": 20, "sort_order": "TIMESTAMP_DESC"},
+                timeout=_INTERACTIVE_READ_TIMEOUT_SECONDS,
+            )
+        except DomainError:
+            # The Goal verdict only refines the presentation. A failed side read
+            # must never fail the read of the conversation itself.
+            return []
+        raw_items = data.get("items", [])
+        if not isinstance(raw_items, list):
+            return []
+        found: list[dict[str, Any]] = []
+        for raw in cast(list[object], raw_items):
+            if not isinstance(raw, dict):
+                continue
+            item = cast(dict[str, Any], raw)
+            if self._event_identity(item)[0] == leaf_event_id:
+                break
+            if item.get("kind") == "ConversationStateUpdateEvent" and item.get("key") == "goal":
+                found.append(item)
+        return found
+
     def _with_goal_status_events(
         self,
         branch: list[dict[str, Any]],
@@ -4514,6 +4558,26 @@ class OpenHandsRuntime:
                 item for item in active_items if not self._is_legacy_autotitle_protocol_error(item)
             ]
             cursor = leaf_event_id
+            if (
+                state is not None
+                and leaf_event_id
+                and not handle.history_cursor
+                and str(state.get("execution_status") or "").lower()
+                in {"finished", "idle", "error", "stuck", "paused"}
+            ):
+                # The Goal loop's final verdict (complete, capped or interrupted)
+                # is appended after the last real event, past the leaf, so a
+                # window anchored at the leaf cannot see it. Only a run that has
+                # ended can have one, so the extra read is limited to that case.
+                active_items = self._with_goal_status_events(
+                    active_items,
+                    self._goal_updates_after_leaf(
+                        handle.conversation_id,
+                        leaf_event_id,
+                        base_url=base_url,
+                        session_api_key=session_api_key,
+                    ),
+                )
         events = tuple(
             RuntimeEvent(
                 cursor=self._event_identity(item)[0],
