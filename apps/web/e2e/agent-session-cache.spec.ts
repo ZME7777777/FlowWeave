@@ -1449,20 +1449,67 @@ test('Sidebar chat tabs stay isolated to their source conversation', async ({ pa
   await page.getByRole('button', { name: '侧边聊天会话 B', exact: true }).click();
   await page.getByRole('button', { name: '侧边聊天会话 A', exact: true }).click();
   await expect(page.locator('.agent-workspace-drawer')).toHaveClass(/summary-open/);
-  await page.getByRole('button', { name: '显示工作区工具', exact: true }).click();
+  await page.locator('.agent-workspace-new-tab-trigger.has-tabs').click();
   await expect(pane).toBeVisible();
   await expect(tabs).toHaveCount(count);
   // The conversation switch may remount its own pane; the hide operation
   // itself must preserve the current composer and active tab.
   await draft.fill('隐藏期间保留，不创建新聊天');
   await page.getByLabel('隐藏工作区工具').click();
-  await page.getByRole('button', { name: '显示工作区工具', exact: true }).click();
+  await page.locator('.agent-workspace-new-tab-trigger.has-tabs').click();
   await expect(draft).toHaveValue('隐藏期间保留，不创建新聊天');
   await expect(page.locator('.agent-workspace-tabs > div.active')).toContainText('侧边聊天');
   await page.getByRole('button', { name: '关闭侧边聊天页签', exact: true }).click();
   await expect(pane).toHaveCount(0);
 });
 
+
+test('Workspace top bar shows one button that is "+" without tabs and the tab count with tabs', async ({ page }) => {
+  let authenticated = false;
+  const workspace = { id: 'tab-count-workspace', display_name: '页签计数工作区', desired_state: 'RUNNING', updated_at: now };
+  const conversation = { id: 'tab-count-conversation', display_title: '页签计数会话', title_state: 'MANUAL', lifecycle: 'ACTIVE', streaming_callback_ready: true, write_available: true, execution_status: 'idle', created_at: now, updated_at: now };
+  const hydration = { events: { events: [], next_cursor: null, history_cursor: null, result: { status: 'COMPLETED' } }, context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 0, usage_current: true }, readiness: { ready: true, execution_status: 'idle' } };
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return authenticated ? json(route, user) : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [conversation], next_cursor: null });
+    if (path.endsWith('/model-providers')) return json(route, [{ id: 'test-provider', name: '测试模型', connection_state: 'CONNECTED', models: [{ model_name: 'test-model', enabled: true, is_default: true }] }]);
+    if (path.endsWith('/hydration')) return json(route, hydration);
+    if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
+    if (path.endsWith('/workspace')) return json(route, {
+      root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project',
+      work_directory: null, files: [], repositories: [], runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } },
+    });
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, conversation);
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+  await page.goto('/');
+  await login(page);
+  await page.goto(`/agent/conversations/${conversation.id}`);
+  const actions = page.getByLabel('工作台操作');
+  const trigger = actions.locator('.agent-workspace-new-tab-trigger');
+  await expect(trigger).toHaveCount(1);
+  await expect(trigger).toHaveAccessibleName('新建工作区页签');
+  await expect(trigger.locator('svg')).toHaveCount(1);
+  // The separate "restore tools" button no longer exists.
+  await expect(actions.getByRole('button', { name: '显示工作区工具' })).toHaveCount(0);
+
+  await trigger.click();
+  await page.getByLabel('隐藏工作区工具').click();
+  await expect(trigger).toHaveClass(/has-tabs/);
+  await expect(trigger).toHaveText('1');
+  await expect(trigger).toHaveAccessibleName('打开工作区工具（1 个页签）');
+  await expect(actions.locator('button')).toHaveCount(2);
+  await trigger.click();
+  await expect(page.locator('.agent-workspace-drawer')).not.toHaveClass(/summary-open/);
+});
 
 test('Sidebar chat can cancel its first message while it is being created and keeps the text', async ({ page }) => {
   let authenticated = false;
@@ -1802,7 +1849,7 @@ test('Sidebar chat recognizes its optimistic message and reuses the send button 
   await expect(page.locator('.agent-sidebar-conversation .conversation-message.user')).toHaveCount(1);
   // Binding creation arrives while hidden; it must not force the tools open.
   await expect(page.locator('.agent-workspace-drawer')).toHaveClass(/summary-open/);
-  await page.getByRole('button', { name: '显示工作区工具', exact: true }).click();
+  await page.locator('.agent-workspace-new-tab-trigger.has-tabs').click();
   await expect(sidebarPane).toBeVisible();
   expect(created).toBe(1);
   expect(deletes).toEqual([]);
@@ -1814,7 +1861,7 @@ test('Sidebar chat recognizes its optimistic message and reuses the send button 
   await page.getByRole('button', { name: '全屏查看工作区工具', exact: true }).click();
   await page.getByRole('button', { name: '隐藏工作区工具', exact: true }).click();
   await expect(sidebarPane).toBeHidden();
-  await page.getByRole('button', { name: '显示工作区工具', exact: true }).click();
+  await page.locator('.agent-workspace-new-tab-trigger.has-tabs').click();
   await expect(draft).toHaveValue('未发送的追问');
   await expect(sidebarPane.getByRole('button', { name: '继续侧边聊天 Agent' })).toBeVisible();
   expect(deletes).toEqual([]);

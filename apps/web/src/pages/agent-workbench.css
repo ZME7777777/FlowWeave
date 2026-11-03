@@ -491,7 +491,7 @@
 .agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-tool-actions>button:hover{background:#d9e6de!important;color:#245f3c!important}
 .agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-tool-actions>button:focus-visible{outline:2px solid #83aa92;outline-offset:2px}
 
-.agent-workbench-top-actions .agent-workspace-new-tab-trigger{width:26px;min-width:26px;height:26px;min-height:26px;flex:0 0 26px;padding:0}.agent-workbench-top-actions .agent-workspace-new-tab-trigger.has-tabs{position:relative}.agent-workbench-top-actions .agent-workspace-new-tab-trigger.has-tabs>span{position:absolute;right:-4px;bottom:-4px;min-width:13px;height:13px;border:1px solid #d1ddd5;border-radius:3px;background:#fff;padding:0 2px;color:#2e5a40;font:700 8px/13px 'DM Mono',ui-monospace,monospace;text-align:center}
+.agent-workbench-top-actions .agent-workspace-new-tab-trigger{width:26px;min-width:26px;height:26px;min-height:26px;flex:0 0 26px;padding:0}.agent-workbench-top-actions .agent-workspace-new-tab-trigger.has-tabs>b{font:700 12px/1 'DM Mono',ui-monospace,monospace;letter-spacing:-.02em}
 
 
 /* Title editing shares the header's right-side action clearance. */

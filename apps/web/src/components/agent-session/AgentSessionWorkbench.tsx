@@ -5058,8 +5058,13 @@ function WorkspaceDrawer({
     </section>}
     {workspaceDetailsLoaded && (!drawerFullScreen || fullScreenConversationActive) && <div className="agent-workbench-top-actions" aria-label="工作台操作">
       <button type="button" aria-label={environmentOpen ? '隐藏悬浮信息卡' : '显示悬浮信息卡'} title={environmentOpen ? '隐藏悬浮信息卡' : '显示悬浮信息卡'} aria-pressed={environmentOpen} onClick={toggleEnvironment}>{environmentOpen ? <MonitorOff size={15}/> : <MonitorCog size={15}/>}</button>
-      {!open && scopeState.tabs.length > 0 && <button type="button" aria-label="显示工作区工具" title="显示工作区工具，恢复之前的页签" onClick={() => { setFullScreenView('tool'); onOpen(); }}><PanelRightOpen size={16}/></button>}
-      {!open && <button type="button" className="agent-workspace-new-tab-trigger" aria-label="新建工作区页签" title="新建工作区页签" onClick={() => { ensureLauncherTab(); onOpen(); }}><SquarePlus size={16}/></button>}
+      {!open && (() => {
+        // One entry point: "+" opens a new launcher tab; once tabs exist the same
+        // button shows their count and restores the previous tabs.
+        const tabCount = scopeState.tabs.length;
+        const label = tabCount ? `打开工作区工具（${tabCount} 个页签）` : '新建工作区页签';
+        return <button type="button" className={`agent-workspace-new-tab-trigger${tabCount ? ' has-tabs' : ''}`} aria-label={label} title={label} onClick={() => { if (!tabCount) ensureLauncherTab(); else setFullScreenView('tool'); onOpen(); }}>{tabCount ? <b aria-hidden="true">{tabCount > 9 ? '9+' : tabCount}</b> : <SquarePlus size={16}/>}</button>;
+      })()}
       {fullScreenConversationActive && <button type="button" aria-label="退出全屏" title="退出全屏（Esc）" onClick={() => setFullScreen(false)}><Minimize size={16} strokeWidth={1.7}/></button>}
     </div>}
     <section className={`agent-workspace-tool-shell ${drawerToolsOpen ? '' : 'panel-hidden'}`}>
@@ -8651,15 +8656,15 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       setReferences(message.references);
     }
     clearBootstrapRecovery();
+    if (error instanceof ApiError && error.code === 'AGENT_MESSAGE_CANCELLED') {
+      setOperationError(undefined);
+      return;
+    }
     reportOperationError(message.scope, error);
   } });
   useEffect(() => {
     if (!bootstrapRecovery || !workspace || bootstrap.isPending
       || bootstrapRecovery.attempts >= MAX_BOOTSTRAP_RECONCILIATION_ATTEMPTS) return;
-    if (error instanceof ApiError && error.code === 'AGENT_MESSAGE_CANCELLED') {
-      setOperationError(undefined);
-      return;
-    }
     const delay = 750 * bootstrapRecovery.attempts;
     const timer = window.setTimeout(() => bootstrap.mutate(bootstrapRecovery.message), delay);
     return () => window.clearTimeout(timer);
@@ -9419,11 +9424,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     onError: (error, { message }) => reportOperationError(message.bindingId, error),
     onSettled: (_value, _error, { message }) => setCancellingSubmission(current => current?.submissionId === message.id ? undefined : current),
   });
-  const requestInterrupt = useCallback(() => {
-    if (!workspace || !selected || cancellingSubmission?.bindingId === selected.id
-      || interrupt.isPending && interrupt.variables?.bindingId === selected.id) return;
-    const reconnect = flowWeaveReconnect?.bindingId === selected.id ? flowWeaveReconnect : undefined;
-    if (reconnect) {
   const cancelBootstrap = useMutation({
     mutationFn: (request: { workspaceId: string; message: QueuedMessage }) =>
       api.cancelConversationBootstrap?.(request.workspaceId, request.message.scope) ?? Promise.resolve({ cancelled: false }),
@@ -9434,6 +9434,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     onError: (error, { message }) => reportOperationError(message.scope, error),
     onSettled: (_value, _error, { message }) => setCancellingSubmission(current => current?.submissionId === message.id ? undefined : current),
   });
+  const requestInterrupt = useCallback(() => {
+    if (!workspace || !selected || cancellingSubmission?.bindingId === selected.id
+      || interrupt.isPending && interrupt.variables?.bindingId === selected.id) return;
+    const reconnect = flowWeaveReconnect?.bindingId === selected.id ? flowWeaveReconnect : undefined;
+    if (reconnect) {
       setFlowWeaveReconnect(undefined);
       setSuppressedRecoveryErrorIds(current => {
         const next = new Set(current);
@@ -10129,16 +10134,16 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const composerActionSends = composerHasContent && !pendingConfirmation;
   const composerControl = (() => {
     if (selected && cancellingSubmission?.bindingId === selected.id) return { label: '正在取消发送', disabled: true, editable: true, action: 'none' as const };
-    const actionBlocked = Boolean(pendingConfirmation)
-      || bootstrap.isPending
-      || migrateStreaming.isPending
-      || Boolean(pendingMigratedSend);
-    switch (composerControlMode) {
     if (bootstrap.isPending && pendingBootstrap?.draft.id === conversationDraft?.id && api.cancelConversationBootstrap) {
       return cancellingSubmission?.bindingId === pendingBootstrap?.message.scope
         ? { label: '正在取消发送', disabled: true, editable: true, action: 'none' as const }
         : { label: '取消发送', disabled: false, editable: false, action: 'cancel-bootstrap' as const };
     }
+    const actionBlocked = Boolean(pendingConfirmation)
+      || bootstrap.isPending
+      || migrateStreaming.isPending
+      || Boolean(pendingMigratedSend);
+    switch (composerControlMode) {
       case 'running':
         return composerActionSends
           ? { label: '发送消息', disabled: actionBlocked || !canWrite, editable: canWrite && !actionBlocked, action: 'send' as const }
@@ -10182,12 +10187,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       if (goalModeEnabled) startGoalFromComposer(composerDraftRef.current);
       else enqueueDraft();
     }
+    else if (composerControl.action === 'cancel-bootstrap' && workspace && pendingBootstrap) cancelBootstrap.mutate({ workspaceId: workspace.id, message: pendingBootstrap.message });
     else if (composerControl.action === 'interrupt') void requestInterrupt();
     else if (composerControl.action === 'resume' && workspace && selected) resume.mutate({ workspaceId: workspace.id, bindingId: selected.id });
   };
   const confirmPauseOnEscape = (event: KeyboardEvent) => {
     if (event.key !== 'Escape' || event.defaultPrevented || composerControl.action !== 'interrupt' || composerControl.disabled) return;
-    else if (composerControl.action === 'cancel-bootstrap' && workspace && pendingBootstrap) cancelBootstrap.mutate({ workspaceId: workspace.id, message: pendingBootstrap.message });
     event.preventDefault();
     if (escPauseConfirmation) {
       if (escPauseConfirmationTimer.current !== undefined) window.clearTimeout(escPauseConfirmationTimer.current);
