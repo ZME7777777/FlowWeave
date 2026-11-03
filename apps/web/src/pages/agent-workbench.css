@@ -786,3 +786,5 @@
 .agent-workbench-app-shell:has(>.agent-workspace-drawer.fullscreen:not(.conversation-active)){grid-template-columns:minmax(0,1fr)!important;grid-template-rows:minmax(0,1fr)!important}
 .agent-workbench-app-shell:has(>.agent-workspace-drawer.fullscreen:not(.conversation-active))>:is(.agent-workbench-app-nav,.agent-workbench-rail){display:none!important}
 .agent-workbench-app-shell>.agent-workspace-drawer.fullscreen:not(.conversation-active){grid-column:1 / -1!important;grid-row:1!important}
+.agent-workspace-drawer.fullscreen .agent-workspace-files.fullscreen-git.file-tree-collapsed{grid-template-columns:0 8px minmax(0,1fr)}
+@media(max-width:960px){.agent-workspace-drawer.fullscreen .agent-workspace-files.fullscreen-git.file-tree-collapsed{grid-template-columns:0 8px minmax(0,1fr)}}
