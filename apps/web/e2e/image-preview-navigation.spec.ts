@@ -40,7 +40,10 @@ async function open(page: import('@playwright/test').Page) {
     return fulfill({ error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
   });
   await page.goto('/');
-  await page.getByLabel('用户名').fill('flowweave').catch(() => undefined);
+  await page.getByLabel('账号').fill(user.username);
+  await page.getByLabel('密码').fill('test-password');
+  await page.getByRole('button', { name: '进入工作空间' }).click();
+  await expect(page.getByRole('button', { name: '账户与设置' })).toContainText(user.username);
   await page.goto(`/agent/conversations/${conversation.id}`);
 }
 

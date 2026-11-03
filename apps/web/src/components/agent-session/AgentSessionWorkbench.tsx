@@ -7,7 +7,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { Terminal as XTerm } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import { type InfiniteData, useQueries, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Archive, Unlink, ArrowLeft, ArrowRight, ArrowUp, Bell, Bot, Boxes, CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, CircleDot, Copy, CornerDownRight, Download, Ellipsis, Eye, EyeOff, FileCode2, FileText, Folder, FolderOpen, FolderPlus, Gauge, GitBranch, Globe2, GripVertical, Home, ImageIcon, Link2, ListRestart, LoaderCircle, LockKeyhole, LocateFixed, Maximize, Maximize2, Minimize, Minimize2, MessageSquareText, MonitorCog, MonitorOff, PanelRight, PanelRightOpen, Pencil, Pin, PinOff, Play, Plug, Plus, Quote, RefreshCw, Search, Send, Settings, ShieldAlert, Square, SquareCheck, SquarePlus, SquareTerminal, Trash2, X, Target } from 'lucide-react';
+import { Archive, Unlink, ArrowLeft, ChevronLeft, Minus, ArrowRight, ArrowUp, Bell, Bot, Boxes, CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, CircleDot, Copy, CornerDownRight, Download, Ellipsis, Eye, EyeOff, FileCode2, FileText, Folder, FolderOpen, FolderPlus, Gauge, GitBranch, Globe2, GripVertical, Home, ImageIcon, Link2, ListRestart, LoaderCircle, LockKeyhole, LocateFixed, Maximize, Maximize2, Minimize, Minimize2, MessageSquareText, MonitorCog, MonitorOff, PanelRight, PanelRightOpen, Pencil, Pin, PinOff, Play, Plug, Plus, Quote, RefreshCw, Search, Send, Settings, ShieldAlert, Square, SquareCheck, SquarePlus, SquareTerminal, Trash2, X, Target } from 'lucide-react';
 import { createContext, isValidElement, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type WheelEvent as ReactWheelEvent } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
@@ -3672,8 +3672,11 @@ type ConversationFilePreviewRequest =
   | { key: string; kind: 'candidate'; filename: string; url: string; fieldKey: string; relativePath: string }
   | { key: string; kind: 'image'; filename: string; url: string };
 
-function ConversationFilePreviewDialog({ request, workspaceId, bindingId, workDirectoryId, onClose, onOpenInTab, onOpenWorkspaceFile }: {
+function ConversationFilePreviewDialog({ request, gallery = [], onNavigate, workspaceId, bindingId, workDirectoryId, onClose, onOpenInTab, onOpenWorkspaceFile }: {
   request: ConversationFilePreviewRequest;
+  /** Images of the same conversation in display order; enables previous/next navigation. */
+  gallery?: ConversationFilePreviewRequest[];
+  onNavigate?: (request: ConversationFilePreviewRequest) => void;
   workspaceId: string;
   bindingId?: string;
   workDirectoryId?: string;
@@ -3775,13 +3778,54 @@ function ConversationFilePreviewDialog({ request, workspaceId, bindingId, workDi
     : undefined, [canPreviewHtml, fileOptions, fileUrl, previewState, workspaceId, workspaceRequest]);
   const lightweightPreview = Boolean(previewState && (previewState.totalBytes > 128 * 1024 || previewState.content.length > 128 * 1024));
   const imagePreviewable = request.kind === 'image' || canPreviewImage;
-  const handleImageWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
-    if (!event.metaKey) return;
-    event.preventDefault();
-    const nextScale = Math.min(4, Math.max(1, imageScale * (event.deltaY < 0 ? 1.12 : 1 / 1.12)));
-    setImageScale(nextScale);
-    if (nextScale === 1) setImageOffset({ x: 0, y: 0 });
+  const MAX_SCALE = 8;
+  const zoomTo = (next: number) => {
+    const clamped = Math.min(MAX_SCALE, Math.max(1, next));
+    setImageScale(clamped);
+    if (clamped === 1) setImageOffset({ x: 0, y: 0 });
   };
+  const handleImageWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
+    // Trackpad pinch arrives as ctrl+wheel; Command/Ctrl + wheel stays supported for a mouse.
+    if (event.metaKey || event.ctrlKey) {
+      event.preventDefault();
+      zoomTo(imageScale * Math.exp(-event.deltaY * (event.ctrlKey && !event.metaKey ? 0.01 : 0.0016) * (event.deltaMode === 1 ? 16 : 1)));
+      return;
+    }
+    // Two-finger scrolling pans a zoomed image instead of doing nothing.
+    if (imageScale > 1) {
+      event.preventDefault();
+      setImageOffset(current => ({ x: current.x - event.deltaX, y: current.y - event.deltaY }));
+    }
+  };
+  const galleryIndex = gallery.findIndex(item => item.key === request.key || ('url' in item && 'url' in request && item.url === request.url) || ('path' in item && 'path' in request && item.path === request.path));
+  const stepGallery = (direction: -1 | 1) => {
+    if (gallery.length < 2 || !onNavigate) return;
+    const next = gallery[(Math.max(galleryIndex, 0) + direction + gallery.length) % gallery.length];
+    if (next) onNavigate(next);
+  };
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing || event.altKey) return;
+      const target = event.target as HTMLElement | null;
+      if (target && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))) return;
+      const zoomed = imageScale > 1;
+      if (event.key === '+' || event.key === '=') { event.preventDefault(); zoomTo(imageScale * 1.25); }
+      else if (event.key === '-' || event.key === '_') { event.preventDefault(); zoomTo(imageScale / 1.25); }
+      else if (event.key === '0') { event.preventDefault(); resetImageViewport(); }
+      else if (event.key === 'ArrowLeft' || event.key === 'ArrowRight' || event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+        const left = event.key === 'ArrowLeft', right = event.key === 'ArrowRight';
+        if (zoomed) {
+          event.preventDefault();
+          const step = event.shiftKey ? 160 : 60;
+          setImageOffset(current => ({ x: current.x + (left ? step : right ? -step : 0), y: current.y + (event.key === 'ArrowUp' ? step : event.key === 'ArrowDown' ? -step : 0) }));
+        } else if (left || right || event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+          if (gallery.length > 1) { event.preventDefault(); stepGallery(left || event.key === 'ArrowUp' ? -1 : 1); }
+        }
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  });
   const startImageDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (imageScale === 1 || event.button !== 0) return;
     imageDragRef.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, offsetX: imageOffset.x, offsetY: imageOffset.y };
@@ -3797,21 +3841,33 @@ function ConversationFilePreviewDialog({ request, workspaceId, bindingId, workDi
     imageDragRef.current = undefined;
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
   };
-  const imagePreview = imagePreviewable && <div
-    className={`agent-image-preview-viewport${imageScale > 1 ? ' zoomed' : ''}`}
-    onWheel={handleImageWheel}
-    onDoubleClick={resetImageViewport}
-    onPointerDown={startImageDrag}
-    onPointerMove={moveImageDrag}
-    onPointerUp={endImageDrag}
-    onPointerCancel={endImageDrag}
-  ><img
-    className="agent-file-media-preview"
-    src={sourceUrl}
-    alt={request.filename}
-    draggable={false}
-    style={{ transform: `translate(${imageOffset.x}px, ${imageOffset.y}px) scale(${imageScale})` }}
-  /></div>;
+  const imagePreview = imagePreviewable && <div className="agent-image-preview-stage">
+    <div
+      className={`agent-image-preview-viewport${imageScale > 1 ? ' zoomed' : ''}`}
+      onWheel={handleImageWheel}
+      onDoubleClick={resetImageViewport}
+      onPointerDown={startImageDrag}
+      onPointerMove={moveImageDrag}
+      onPointerUp={endImageDrag}
+      onPointerCancel={endImageDrag}
+    ><img
+      className="agent-file-media-preview"
+      src={sourceUrl}
+      alt={request.filename}
+      draggable={false}
+      style={{ transform: `translate(${imageOffset.x}px, ${imageOffset.y}px) scale(${imageScale})` }}
+    /></div>
+    {gallery.length > 1 && <>
+      <button type="button" className="agent-image-nav prev" aria-label="上一张图片" title="上一张（←）" onClick={() => stepGallery(-1)}><ChevronLeft size={20}/></button>
+      <button type="button" className="agent-image-nav next" aria-label="下一张图片" title="下一张（→）" onClick={() => stepGallery(1)}><ChevronRight size={20}/></button>
+    </>}
+    <div className="agent-image-toolbar" role="toolbar" aria-label="图片查看">
+      <button type="button" aria-label="缩小" title="缩小（-）" disabled={imageScale <= 1} onClick={() => zoomTo(imageScale / 1.25)}><Minus size={14}/></button>
+      <button type="button" className="scale" aria-label="还原大小" title="还原（0 或双击）" onClick={resetImageViewport}>{Math.round(imageScale * 100)}%</button>
+      <button type="button" aria-label="放大" title="放大（+）" disabled={imageScale >= MAX_SCALE} onClick={() => zoomTo(imageScale * 1.25)}><Plus size={14}/></button>
+      {gallery.length > 1 && <span className="count" aria-live="polite">{Math.max(galleryIndex, 0) + 1} / {gallery.length}</span>}
+    </div>
+  </div>;
 
   return createPortal(<div className="agent-file-preview-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
     <section className={`agent-file-preview-dialog${fullScreen ? ' fullscreen' : ''}`} role="dialog" aria-modal="true" aria-label="文件预览">
@@ -7759,6 +7815,21 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }
     return [...byId.values()];
   }, [attachments, displayedEvents]);
+  // Every image already shown in this conversation, in order, so the preview can step through them.
+  const previewGallery = useMemo<ConversationFilePreviewRequest[]>(() => {
+    const items: ConversationFilePreviewRequest[] = [];
+    const seen = new Set<string>();
+    for (const attachment of sessionAttachments) {
+      if (!attachment.mime_type.startsWith('image/') || seen.has(attachment.path)) continue;
+      seen.add(attachment.path);
+      items.push({
+        key: `gallery:${attachment.path}`, kind: 'workspace', path: attachment.path, filename: attachment.filename,
+        mimeType: attachment.mime_type, imageDataUrl: attachment.image_data_url, attachment,
+        previewBindingId: selected?.id,
+      });
+    }
+    return items;
+  }, [selected?.id, sessionAttachments]);
   const previewAttachment = useCallback((attachment: AgentAttachment, previewBindingId?: string) => {
     setFilePreviewRequest({
       key: randomId(),
@@ -10672,6 +10743,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     {filePreviewRequest && <ConversationFilePreviewDialog
       key={filePreviewRequest.key}
       request={filePreviewRequest}
+      gallery={previewGallery}
+      onNavigate={setFilePreviewRequest}
       workspaceId={workspace.id}
       bindingId={selected?.id}
       workDirectoryId={selected ? undefined : conversationDraft?.workDirectoryId}
