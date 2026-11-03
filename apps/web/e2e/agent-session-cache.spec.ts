@@ -1780,13 +1780,16 @@ test('Goal status bar lists the rounds and removing a stopped goal allows a new 
   await status.getByRole('button', { name: /目标已暂停/ }).hover();
   await expect(detail).toBeVisible();
   await expect(detail).toContainText('找到测试分支');
+  // The goal message is round 1 and the goal text already jumps to it, so only the
+  // follow-ups are rows: a number, then the Judge's Outstanding cut with an ellipsis.
   const rounds = detail.getByRole('listitem');
-  await expect(rounds).toHaveCount(2);
-  // Per-round time is kept even though the goal is one process with a single total.
-  await expect(rounds.nth(0)).toContainText('第 1 轮');
-  await expect(rounds.nth(0)).toContainText('5分51秒');
-  await expect(rounds.nth(1)).toContainText('第 2 轮');
-  await expect(rounds.nth(1)).toContainText('57秒');
+  await expect(rounds).toHaveCount(1);
+  await expect(rounds.nth(0).locator('.conversation-goal-round-number')).toHaveText('1');
+  await expect(rounds.nth(0).locator('.conversation-goal-round-text')).toHaveText('还缺依赖库');
+  await expect(rounds.nth(0)).not.toContainText('第 1 轮');
+  await expect(rounds.nth(0)).toContainText('57秒');
+  // The first round's time stays, next to the goal text, without a row of its own.
+  await expect(detail.locator('.conversation-goal-detail-objective')).toContainText('首轮 5分51秒');
   await expect(page.getByRole('dialog', { name: '目标轮次' })).toHaveCount(0);
 
   // The goal text jumps to the goal message; a round jumps to where that round starts.
@@ -1794,7 +1797,7 @@ test('Goal status bar lists the rounds and removing a stopped goal allows a new 
   await detail.getByRole('button', { name: '定位目标消息' }).click();
   await expect(goalMessage).toHaveClass(/conversation-search-target/);
   await status.getByRole('button', { name: /目标已暂停/ }).hover();
-  await detail.getByRole('button', { name: '定位第 2 轮' }).click();
+  await detail.getByRole('button', { name: '定位第 1 轮追问' }).click();
   await expect(page.locator('[data-conversation-event-id="judge-followup"]')).toHaveClass(/conversation-search-target/);
 
   // Each control icon is centred inside its square background.
@@ -1884,16 +1887,16 @@ test('Locating a round of a finished goal opens its folded process and shows tha
     await expect(target).toHaveClass(/conversation-search-target/);
   };
 
-  await locate('定位第 1 轮');
+  await locate('定位目标消息');
   await expectLanded('[data-conversation-event-id="goal-start"]');
-  await locate('定位第 2 轮');
+  await locate('定位第 1 轮追问');
   await expectLanded('[data-goal-followup-event-id="judge-followup"]');
-  await locate('定位第 1 轮');
+  await locate('定位目标消息');
   await expectLanded('[data-conversation-event-id="goal-start"]');
   await locate('定位目标消息');
   await expectLanded('[data-conversation-event-id="goal-start"]');
   // A later jump to a round still works once the process is open.
-  await locate('定位第 2 轮');
+  await locate('定位第 1 轮追问');
   await expectLanded('[data-goal-followup-event-id="judge-followup"]');
 });
 

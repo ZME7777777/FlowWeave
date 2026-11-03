@@ -4012,13 +4012,15 @@ function formatGoalRoundDuration(totalSeconds: number): string {
   return minutes ? `${minutes}分${seconds % 60 ? `${seconds % 60}秒` : ''}` : `${seconds}秒`;
 }
 
-function ConversationGoalMode({ goalStatus, enabled, canEnable, pending, rounds, onToggle, onControl, onLocate, onLocateRound }: {
+function ConversationGoalMode({ goalStatus, enabled, canEnable, pending, rounds, firstRoundSeconds, onToggle, onControl, onLocate, onLocateRound }: {
   goalStatus?: GoalStatus;
   enabled: boolean;
   canEnable: boolean;
   pending: boolean;
   /** Where each round starts, for jumping to it from the status bar. */
-  rounds: Array<{ eventId: string; label: string; seconds?: number; current?: boolean }>;
+  rounds: Array<{ eventId: string; label: string; number: number; text?: string; seconds?: number; current?: boolean }>;
+  /** How long the goal's own first round took; it is the goal message, so it has no row. */
+  firstRoundSeconds?: number;
   onToggle: () => void;
   onControl: (action: 'STOP' | 'RESUME' | 'RESTART' | 'DISMISS') => void;
   onLocate: () => void;
@@ -4056,14 +4058,14 @@ function ConversationGoalMode({ goalStatus, enabled, canEnable, pending, rounds,
     {!active && <button type="button" className="conversation-goal-status-control dismiss" disabled={pending} aria-label="移除目标" title="移除目标，之后可以设定新目标" onClick={() => onControl('DISMISS')}><X size={11}/></button>}
     <aside id="conversation-goal-status-detail" className="conversation-goal-status-preview" role="group" aria-label="目标详情">
       <button type="button" className="conversation-goal-detail-objective" onClick={onLocate} aria-label="定位目标消息" title="定位目标消息">
-        <header><Target size={13}/><b>{label}</b></header>
+        <header><Target size={13}/><b>{label}</b>{firstRoundSeconds !== undefined && <em>{`首轮 ${formatGoalRoundDuration(firstRoundSeconds)}`}</em>}</header>
         <p>{goalStatus.objective}</p>
       </button>
       {rounds.length > 0 && <ol className="conversation-goal-detail-rounds" aria-label="目标轮次">
         {rounds.map(round => <li key={round.eventId}>
           <button type="button" onClick={() => onLocateRound(round.eventId)} aria-label={`定位${round.label}`} title={`定位${round.label}`}>
-            <span className={`conversation-task-status-icon ${round.current && active ? 'in_progress' : 'done'}`} aria-hidden="true">{round.current && active ? <i/> : <Check size={10}/>}</span>
-            <span><b>{round.label}</b></span>
+            <i className={`conversation-goal-round-number${round.current && active ? ' running' : ''}`} aria-hidden="true">{round.number}</i>
+            <span className="conversation-goal-round-text" title={round.text}>{round.text ?? round.label}</span>
             <em>{round.seconds !== undefined ? formatGoalRoundDuration(round.seconds) : round.current && active ? '进行中' : ''}</em>
           </button>
         </li>)}
@@ -8194,8 +8196,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     else goalControl.mutate({ action });
   }, [dismissGoal, goalControl, latestGoalEvent, latestGoalStatus, selected]);
   // Round starts for the status bar: the goal the person typed, then each Judge follow-up.
-  const goalRoundStarts = useMemo(() => {
-    if (!latestGoalStatus) return [];
+  const goalRoundInfo = useMemo(() => {
+    if (!latestGoalStatus) return { firstRoundSeconds: undefined, rounds: [] };
     const objective = latestGoalStatus.objective.trim();
     const goalMessage = displayedEvents.find(event => event.event_type === 'MESSAGE'
       && ['user', 'human'].includes(String(event.payload.source ?? '').toLowerCase())
@@ -8214,12 +8216,21 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       && ['agent', 'assistant'].includes(String(event.payload.source ?? '').toLowerCase()));
     const closes = replies.map(event => at(event)).filter((time): time is number => time !== undefined);
     const durations = goalRoundDurations(starts, closes);
-    return starts.map((start, index) => ({
-      eventId: start.id,
-      label: start.label,
-      seconds: durations.get(start.id),
-      current: index === starts.length - 1,
-    }));
+    // The goal message is the first round and the goal text already jumps to it, so only the
+    // follow-ups are listed, named as in the transcript ("第 N 轮追问").
+    const followupStarts = starts.filter(start => start.id !== goalMessage?.id);
+    return {
+      firstRoundSeconds: goalMessage ? durations.get(goalMessage.id) : undefined,
+      rounds: followupStarts.map((start, index) => ({
+        eventId: start.id,
+        label: `第 ${index + 1} 轮追问`,
+        number: index + 1,
+        // The Judge's Outstanding, never the fixed English template around it.
+        text: String(displayedEvents.find(event => event.id === start.id)?.payload.goal_followup?.missing ?? '').replace(/\s+/g, ' ').trim() || undefined,
+        seconds: durations.get(start.id),
+        current: index === followupStarts.length - 1,
+      })),
+    };
   }, [displayedEvents, latestGoalStatus]);
   const locateGoalRound = useCallback((eventId: string) => {
     setConversationSearchTargetEventId(eventId);
@@ -11146,7 +11157,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
             <Folder size={16}/><span>{currentWorkspaceName}</span>{workspacePathCopied && <small aria-live="polite">已复制</small>}
           </button>
           <ConversationTaskPlan events={displayedEvents} isGenerating={taskPlanLayoutActive} conversationScope={selected?.id ?? conversationDraft?.id}/>
-          {(selected || conversationDraft) && <ConversationGoalMode goalStatus={latestGoalStatus} enabled={goalModeEnabled} canEnable={canStartGoal} pending={goalControl.isPending || bootstrap.isPending} onToggle={() => setGoalModeEnabled(current => !current)} rounds={goalRoundStarts} onControl={handleGoalControl} onLocate={locateGoalMessage} onLocateRound={locateGoalRound}/>}
+          {(selected || conversationDraft) && <ConversationGoalMode goalStatus={latestGoalStatus} enabled={goalModeEnabled} canEnable={canStartGoal} pending={goalControl.isPending || bootstrap.isPending} onToggle={() => setGoalModeEnabled(current => !current)} rounds={goalRoundInfo.rounds} firstRoundSeconds={goalRoundInfo.firstRoundSeconds} onControl={handleGoalControl} onLocate={locateGoalMessage} onLocateRound={locateGoalRound}/>}
         </div>
       </div>}
       {conversationDropActive && <div className="agent-workbench-drop-overlay" role="status" aria-live="polite"><div><Plus size={22}/><b>松开以添加到当前会话</b><span>支持附件、工作区文件和会话引用</span></div></div>}

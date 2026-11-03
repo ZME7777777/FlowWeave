@@ -249,13 +249,15 @@
 .conversation-goal-detail-objective{display:grid;gap:4px;width:100%;border:0;border-radius:6px;background:transparent;padding:4px;color:inherit;text-align:left;cursor:pointer}
 .conversation-goal-detail-objective:hover,.conversation-goal-detail-objective:focus-visible{background:#f0f5f1;outline:0}
 .conversation-goal-detail-objective>header{display:flex;align-items:center;gap:5px}
+.conversation-goal-detail-objective>header>em{margin-left:auto;color:#849087;font-size:11px;font-style:normal;font-variant-numeric:tabular-nums}
 .conversation-goal-detail-objective>p{margin:0;color:#435148;font-size:12px;line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere}
 .conversation-goal-detail-rounds{display:grid;gap:1px;margin:0;padding:6px 0 0;border-top:1px solid #e8eee9;list-style:none}
-.conversation-goal-detail-rounds>li>button{display:grid;grid-template-columns:15px minmax(0,1fr) auto;align-items:center;gap:8px;width:100%;min-height:28px;border:0;border-radius:6px;background:transparent;padding:0 4px;color:#435148;font-size:12px;text-align:left;cursor:pointer}
+.conversation-goal-detail-rounds>li>button{display:grid;grid-template-columns:18px minmax(0,1fr) auto;align-items:center;gap:8px;width:100%;min-height:28px;border:0;border-radius:6px;background:transparent;padding:0 4px;color:#435148;font-size:12px;text-align:left;cursor:pointer}
 .conversation-goal-detail-rounds>li>button:hover,.conversation-goal-detail-rounds>li>button:focus-visible{background:#f0f5f1;outline:0}
-.conversation-goal-detail-rounds>li>button b{font-weight:500}
+.conversation-goal-round-number{display:grid;width:16px;height:16px;place-items:center;border-radius:4px;background:#eef3ef;color:#6b7a71;font-size:10px;font-style:normal;font-weight:600;font-variant-numeric:tabular-nums}
+.conversation-goal-round-number.running{background:#e4efe7;color:#2f7a52}
+.conversation-goal-round-text{overflow:hidden;color:#435148;text-overflow:ellipsis;white-space:nowrap}
 .conversation-goal-detail-rounds>li>button em{color:#849087;font-size:11px;font-style:normal;font-variant-numeric:tabular-nums}
-.conversation-goal-detail-rounds .conversation-task-status-icon>svg{width:10px;height:10px}
 .conversation-goal-status-preview>small{margin:2px 4px 0;color:#8a6a2c}
 
 /* A round divider tells how long the round before it took. */
