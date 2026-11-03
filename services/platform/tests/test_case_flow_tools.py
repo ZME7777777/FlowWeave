@@ -1364,3 +1364,19 @@ def test_copy_name_is_still_rejected_for_unrelated_actions() -> None:
                 "copy_name": "不应出现",
             }
         )
+
+
+def test_completing_before_the_execution_finishes_reports_the_real_reason(flow_case):
+    """A stage that is not ready is a precondition failure, never a VERSION_CONFLICT."""
+
+    g = flow_case
+    assert g.stage.state == "ACTIVE"
+    result = projection(
+        rpc(
+            g,
+            "manage_case_flow",
+            action(g, "COMPLETE_CASE", evidence_artifact_version_ids=[str(uuid4())]),
+        )
+    )
+    assert result["error_code"] == "CASE_STAGE_STATE_NOT_READY"
+    assert result["error_code"] != "VERSION_CONFLICT"

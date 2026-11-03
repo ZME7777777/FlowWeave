@@ -1395,7 +1395,16 @@ def execute_case_control_plan(db: Session, case_id: str, plan_id: str) -> dict[s
         else "ACTIVE"
     )
     if stage.state != allowed_stage_state:
-        raise conflict("Case plan does not match the current stage state", state=stage.state)
+        # Versions can match here, so this is a precondition failure, not a concurrent edit.
+        # Report it as such, otherwise the coordinator keeps re-reading and waiting for a version
+        # change that can never make the stage ready.
+        raise DomainError(
+            "CASE_STAGE_STATE_NOT_READY",
+            f"{plan.action} 需要阶段处于 {allowed_stage_state}，当前为 {stage.state}；"
+            "这不是并发冲突，重新读取不会改变结果。请先让流程跑到可评审状态。",
+            409,
+            {"required_stage_state": allowed_stage_state, "stage_state": stage.state},
+        )
     db.refresh(item, with_for_update=True)
     db.refresh(stage)
     require_case_action(item, plan.action)

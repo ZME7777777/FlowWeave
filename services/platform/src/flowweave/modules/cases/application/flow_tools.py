@@ -571,8 +571,19 @@ def validate_action_preconditions(
     }
     expected_stage_state = "REVIEW_PENDING" if plan.action in review_actions else "ACTIVE"
     if plan.action != "CREATE_EXECUTION_COPY":
-        if stage.state != expected_stage_state or stage.current_execution_flow_run_id != run.id:
+        if stage.current_execution_flow_run_id != run.id:
             raise conflict("action is outside the current stage execution", state=stage.state)
+        if stage.state != expected_stage_state:
+            # Versions matched, so this is a precondition failure, not a concurrent edit. Say so,
+            # otherwise the coordinator waits for a version change that can never come.
+            raise DomainError(
+                "CASE_STAGE_STATE_NOT_READY",
+                f"{plan.action} 需要阶段处于 {expected_stage_state}，当前为 {stage.state}；"
+                "这不是并发冲突，重新读取不会改变结果。请先让流程跑到可评审状态。",
+                409,
+                {"required_stage_state": expected_stage_state, "stage_state": stage.state,
+                 "execution_state": run.state},
+            )
     if plan.action == "CONFIGURE_EXECUTION" and stage.execution_mode == "STEPWISE":
         if not args.stepwise_draft or not args.flow_node_key:
             raise conflict("stepwise configuration requires a node draft")
@@ -662,7 +673,14 @@ def validate_action_preconditions(
             if not (continuous or stepwise):
                 raise conflict("stage review requires a continuous or stepwise execution")
         if run.state != "COMPLETED":
-            raise conflict("only a completed execution can be reviewed", state=run.state)
+            raise DomainError(
+                "CASE_EXECUTION_NOT_COMPLETED",
+                f"{plan.action} 需要当前执行已完成（COMPLETED），当前为 {run.state}；"
+                "这不是并发冲突。若后续节点尚未启动，请继续启动它们，或确认是否需要它们。",
+                409,
+                {"required_execution_state": "COMPLETED", "execution_state": run.state,
+                 "stage_state": stage.state},
+            )
         if plan.action == "ADVANCE_CASE_STAGE":
             next_stage = db.scalar(
                 select(CaseStage)
