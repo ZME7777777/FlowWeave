@@ -968,11 +968,14 @@ function fileToolIcon(presentation: ActivityPresentation) {
   return FileText;
 }
 
+// OpenHands exposes MCP tools as "<server>_<tool>" (for example
+// "localCode_get_outline"); "mcp_", "server.tool", "server__tool" and
+// "server:tool" are accepted too. A server name that itself contains "_" is
+// shortened to its first segment because the event carries no separate field.
 function mcpServerLabel(toolName?: string): string | undefined {
-  if (!toolName) return undefined;
-  const raw = toolName.trim().replace(/^mcp[_:]+/i, '');
-  const match = /^(.+?)(?:\.|__|:)(.+)$/.exec(raw);
-  const server = match?.[1] ?? (raw !== toolName.trim() ? /^([^_]+)_.+$/.exec(raw)?.[1] : undefined);
+  const raw = toolName?.trim().replace(/^mcp[_:]+/i, '');
+  if (!raw) return undefined;
+  const server = /^([^._:]+?)(?:__|[._:]|_)(?=.)/.exec(raw)?.[1];
   return server || undefined;
 }
 
