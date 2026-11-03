@@ -27,7 +27,7 @@ import { deploymentBasePath, withoutDeploymentBase } from '../../deploymentPath'
 import { agentWorkspaceSessionHost, type AgentSessionHost } from './session-host';
 import { SidebarConversationPane, type SidebarConversationDraft } from './SidebarConversationPane';
 import { clearConversationSnapshots, getAgentSessionCacheIdentity, readConversationContextSnapshot, writeConversationContextSnapshot } from './conversation-cache';
-import { ConversationSurface, ConversationTaskPlan, type ConversationHistoryPrepend, type ConversationReference, type ConversationScrollSnapshot, type ConversationSearchLocation, type ModelRetryStatus } from '../ConversationSurface';
+import { ConversationSurface, ConversationTaskPlan, goalRoundDurations, type ConversationHistoryPrepend, type ConversationReference, type ConversationScrollSnapshot, type ConversationSearchLocation, type ModelRetryStatus } from '../ConversationSurface';
 import { isOpenHandsAgentReply, isOpenHandsConversationInterrupt, isOpenHandsConversationTerminalError, isOpenHandsEmptyResponseRecovery, orderOpenHandsConversationEvents, projectFlowWeaveMessageContext, projectHistoricalAgentReplies } from '../conversationEvents';
 import { useProductDialog } from '../ProductDialogContext';
 import { useEscapeClose } from '../useEscapeClose';
@@ -4006,13 +4006,19 @@ function WorkspaceBrowser({ tab, workspaceId, bindingId, workDirectoryId, browse
 
 type GoalStatus = NonNullable<OpenHandsConversationEvent['payload']['goal_status']>;
 
+function formatGoalRoundDuration(totalSeconds: number): string {
+  const seconds = Math.max(0, Math.floor(totalSeconds));
+  const minutes = Math.floor(seconds / 60);
+  return minutes ? `${minutes}分${seconds % 60 ? `${seconds % 60}秒` : ''}` : `${seconds}秒`;
+}
+
 function ConversationGoalMode({ goalStatus, enabled, canEnable, pending, rounds, onToggle, onControl, onLocate, onLocateRound }: {
   goalStatus?: GoalStatus;
   enabled: boolean;
   canEnable: boolean;
   pending: boolean;
   /** Where each round starts, for jumping to it from the status bar. */
-  rounds: Array<{ eventId: string; label: string }>;
+  rounds: Array<{ eventId: string; label: string; seconds?: number; current?: boolean }>;
   onToggle: () => void;
   onControl: (action: 'STOP' | 'RESUME' | 'RESTART' | 'DISMISS') => void;
   onLocate: () => void;
@@ -4023,11 +4029,14 @@ function ConversationGoalMode({ goalStatus, enabled, canEnable, pending, rounds,
   // resumed natively, so "continue" starts the same objective again.
   const continuable = goalStatus?.status === 'interrupted' || goalStatus?.status === 'capped';
   const [roundsOpen, setRoundsOpen] = useState(false);
+  const summaryRef = useRef<HTMLButtonElement>(null);
+  const roundsRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!roundsOpen) return;
     const close = (event: Event) => {
-      if (event instanceof KeyboardEvent && event.key !== 'Escape') return;
-      if (event instanceof MouseEvent && event.target instanceof Element && event.target.closest('.conversation-goal-status')) return;
+      if (event instanceof KeyboardEvent) { if (event.key === 'Escape') setRoundsOpen(false); return; }
+      const target = event.target;
+      if (target instanceof Node && (roundsRef.current?.contains(target) || summaryRef.current?.contains(target))) return;
       setRoundsOpen(false);
     };
     document.addEventListener('keydown', close);
@@ -4045,15 +4054,24 @@ function ConversationGoalMode({ goalStatus, enabled, canEnable, pending, rounds,
         ? `目标达到 ${goalStatus.max_iterations} 轮上限`
         : '目标已暂停';
   return <section className={`conversation-goal-status ${goalStatus.status}`} tabIndex={0} role="group" aria-label={label}>
-    <button type="button" className="conversation-goal-status-summary" onClick={() => (rounds.length > 1 ? setRoundsOpen(open => !open) : onLocate())} aria-expanded={rounds.length > 1 ? roundsOpen : undefined} title={rounds.length > 1 ? '查看各轮次' : '定位目标消息'}>
+    <button type="button" ref={summaryRef} className="conversation-goal-status-summary" onClick={() => (rounds.length > 1 ? setRoundsOpen(open => !open) : onLocate())} aria-expanded={rounds.length > 1 ? roundsOpen : undefined} title={rounds.length > 1 ? '查看各轮次' : '定位目标消息'}>
       <Target size={14}/><span><b>{label}</b></span>{rounds.length > 1 && <ChevronDown size={11} className="conversation-goal-rounds-arrow"/>}
     </button>
     {active && <button type="button" className="conversation-goal-status-control" disabled={pending} aria-label="暂停目标" title="暂停目标，之后可继续" onClick={() => onControl('STOP')}><Pause size={11} fill="currentColor"/></button>}
     {continuable && <button type="button" className="conversation-goal-status-control" disabled={pending} aria-label="继续目标" title={goalStatus.status === 'capped' ? '以同一目标重新开始，轮次重新计数' : '继续目标'} onClick={() => onControl(goalStatus.status === 'capped' ? 'RESTART' : 'RESUME')}><Play size={12} fill="currentColor"/></button>}
     {!active && <button type="button" className="conversation-goal-status-control dismiss" disabled={pending} aria-label="移除目标" title="移除目标，之后可以设定新目标" onClick={() => onControl('DISMISS')}><X size={11}/></button>}
-    {roundsOpen && <div className="conversation-goal-rounds" role="menu" aria-label="目标轮次">
-      {rounds.map(round => <button type="button" role="menuitem" key={round.eventId} onClick={() => { setRoundsOpen(false); onLocateRound(round.eventId); }}>{round.label}</button>)}
-    </div>}
+    {roundsOpen && <ViewportPopover anchor={() => summaryRef.current} placement="top" gap={8} ref={roundsRef} className="conversation-goal-rounds" role="dialog" aria-label="目标轮次">
+      <header><b>目标轮次</b><small>{`${rounds.length} 轮`}</small></header>
+      <ol>
+        {rounds.map(round => <li key={round.eventId}>
+          <button type="button" onClick={() => { setRoundsOpen(false); onLocateRound(round.eventId); }}>
+            <span className={`conversation-task-status-icon ${round.current && active ? 'in_progress' : 'done'}`} aria-hidden="true">{round.current && active ? <i/> : <Check size={10}/>}</span>
+            <span><b>{round.label}</b></span>
+            <em>{round.seconds !== undefined ? formatGoalRoundDuration(round.seconds) : round.current && active ? '进行中' : ''}</em>
+          </button>
+        </li>)}
+      </ol>
+    </ViewportPopover>}
     <aside className="conversation-goal-status-preview" role="tooltip"><header><Target size={13}/><b>{label}</b></header><p>{goalStatus.objective}</p>{goalStatus.verdict?.missing && <small>{`Judge：${goalStatus.verdict.missing}`}</small>}</aside>
   </section>;
 }
@@ -8168,10 +8186,25 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       && ['user', 'human'].includes(String(event.payload.source ?? '').toLowerCase())
       && String(event.payload.content ?? '').trim() === objective);
     const followups = displayedEvents.filter(event => event.payload.goal_followup);
-    return [
-      ...(goalMessage ? [{ eventId: goalMessage.id, label: '第 1 轮' }] : []),
-      ...followups.map((event, index) => ({ eventId: event.id, label: `第 ${index + 2} 轮` })),
+    const at = (event?: OpenHandsConversationEvent) => {
+      const time = event ? Date.parse(String(event.payload.timestamp ?? '')) : Number.NaN;
+      return Number.isNaN(time) ? undefined : time;
+    };
+    const starts = [
+      ...(goalMessage ? [{ id: goalMessage.id, label: '第 1 轮', at: at(goalMessage) }] : []),
+      ...followups.map((event, index) => ({ id: event.id, label: `第 ${index + 2} 轮`, at: at(event) })),
     ];
+    // Replies close rounds. While the loop runs the latest reply is only a round's closing message.
+    const replies = displayedEvents.filter(event => event.event_type === 'MESSAGE'
+      && ['agent', 'assistant'].includes(String(event.payload.source ?? '').toLowerCase()));
+    const closes = replies.map(event => at(event)).filter((time): time is number => time !== undefined);
+    const durations = goalRoundDurations(starts, closes);
+    return starts.map((start, index) => ({
+      eventId: start.id,
+      label: start.label,
+      seconds: durations.get(start.id),
+      current: index === starts.length - 1,
+    }));
   }, [displayedEvents, latestGoalStatus]);
   const locateGoalRound = useCallback((eventId: string) => {
     setConversationSearchTargetEventId(eventId);

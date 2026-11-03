@@ -735,6 +735,29 @@ interface GoalTurn {
   finalReply?: Item;
   /** Start of each round: the first one is the typed goal, then each follow-up. */
   roundStarts: Array<{ eventId: string; label: string }>;
+  /** Seconds each round took, keyed by the event that opened it (goal message or follow-up). */
+  roundSeconds: Map<string, number>;
+}
+
+/**
+ * How long each round of a Goal took, keyed by the event that opens it (the typed goal,
+ * then each Judge follow-up). A round ends at the reply that closes it, or where the
+ * next round opens when it was cut short; the last one ends at `lastEnd`.
+ */
+export function goalRoundDurations(
+  opens: Array<{ id: string; at: number | undefined }>,
+  closes: number[],
+  lastEnd?: number,
+): Map<string, number> {
+  const seconds = new Map<string, number>();
+  opens.forEach((open, index) => {
+    if (open.at === undefined) return;
+    const next = opens[index + 1]?.at;
+    const closing = closes.filter(time => time >= open.at! && (next === undefined || time <= next)).at(-1);
+    const end = closing ?? next ?? lastEnd;
+    if (end !== undefined && end >= open.at) seconds.set(open.id, (end - open.at) / 1000);
+  });
+  return seconds;
 }
 
 function goalTurn(turn: Turn, events: OpenHandsConversationEvent[], goalActive: boolean): GoalTurn | undefined {
@@ -746,19 +769,35 @@ function goalTurn(turn: Turn, events: OpenHandsConversationEvent[], goalActive: 
   const replies = turn.replies ?? [];
   // While the loop goes on no reply is final, including the latest one.
   const finalReply = goalActive ? undefined : replies.at(-1);
+
+  // A round runs from the event that opens it (the typed goal, then each follow-up)
+  // to the reply that closes it, or to the next opening when it was cut short.
+  const opens = [
+    ...(turn.user ? [{ id: turn.user.event.id, label: '第 1 轮', at: eventTime(turn.user) }] : []),
+    ...followups.map((item, index) => ({ id: item.event.id, label: `第 ${index + 2} 轮`, at: eventTime(item) })),
+  ];
+  const closes = replies.map(reply => eventTime(reply)).filter((time): time is number => time !== undefined);
+  const roundSeconds = goalRoundDurations(opens, closes, finalReply ? eventTime(finalReply) : undefined);
+
+  // Each divider reports how long the round it opens took, so per-round time survives
+  // although the goal is shown as one process with a single total.
+  const stamped = (item: Item): Item => {
+    // A divider opens round N+1, so it reports the round that just ended: the one opened before it.
+    const position = opens.findIndex(open => open.id === item.event.id);
+    const seconds = position > 0 ? roundSeconds.get(opens[position - 1].id) : undefined;
+    return seconds === undefined ? item : { ...item, event: { ...item.event, payload: { ...item.event.payload, _flowweave_round_seconds: seconds } } };
+  };
   const folded = new Set<Item>([...followups, ...replies.filter(reply => reply !== finalReply)]);
   const process = [
-    ...turn.activity.filter(item => item.kind !== 'error' && !followups.includes(item) && !folded.has(item)),
+    ...turn.activity.filter(item => item.kind !== 'error' && !folded.has(item)),
     ...folded,
   ]
     .map((item, index) => ({ item, index, time: eventTime(item) }))
     .sort((left, right) => (left.time === undefined || right.time === undefined || left.time === right.time) ? left.index - right.index : left.time - right.time)
-    .map(({ item }) => ({ ...item, kind: item.event.event_type === 'MESSAGE' && !item.event.payload.goal_followup ? 'thought' as const : item.kind }));
-  const roundStarts = [
-    ...(turn.user ? [{ eventId: turn.user.event.id, label: '第 1 轮' }] : []),
-    ...followups.map((item, index) => ({ eventId: item.event.id, label: `第 ${index + 2} 轮` })),
-  ];
-  return { process, finalReply, roundStarts };
+    .map(({ item }) => item.event.payload.goal_followup
+      ? stamped(item)
+      : item.event.event_type === 'MESSAGE' ? { ...item, kind: 'thought' as const } : item);
+  return { process, finalReply, roundStarts: opens.map(({ id, label }) => ({ eventId: id, label })), roundSeconds };
 }
 
 function fileChangesForTurn(
@@ -1592,7 +1631,7 @@ function ActivityEntryRow({ entry, active, reveal = false, paused = false, paren
   if (item.kind === 'goal' && item.event.payload.goal_followup) {
     // A round boundary, drawn like a task-list entry: no card, no explanation.
     return <details className="conversation-goal-round" data-goal-followup-event-id={item.event.id} data-conversation-event-id={item.event.id}>
-      <summary aria-label={item.title}><span className="conversation-task-status-icon in_progress" aria-hidden="true"><i/></span><b>{item.title}</b>{item.content && <ChevronRight className="conversation-expand-arrow" size={12}/>}</summary>
+      <summary aria-label={item.title}><span className="conversation-task-status-icon in_progress" aria-hidden="true"><i/></span><b>{item.title}</b>{typeof item.event.payload._flowweave_round_seconds === 'number' && <small>{`上一轮 ${formatDuration(item.event.payload._flowweave_round_seconds)}`}</small>}{item.content && <ChevronRight className="conversation-expand-arrow" size={12}/>}</summary>
       {item.content && <p>{item.content}</p>}
     </details>;
   }
@@ -3027,7 +3066,8 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
             </Fragment>;
           })}
           {goal && goal.process.length > 0 && (() => {
-            const times = goal.process.map(item => eventTime(item)).filter((time): time is number => time !== undefined);
+            // The goal's total time starts when the person sent it, not at its first tool call.
+            const times = [turn.user, ...goal.process].map(item => eventTime(item)).filter((time): time is number => time !== undefined);
             const goalRunning = isCurrent && !failures.length && (goalActive || !goal.finalReply);
             const goalFinished = Boolean(goal.finalReply) && !goalActive;
             return <ActivityGroup

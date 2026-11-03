@@ -1519,19 +1519,23 @@ test('Goal loop follow-up renders as one visible event inside the same turn, not
   const template = 'The goal is NOT yet complete (audit iteration 1).\nOutstanding: ' + missing + '\n\nInspect the real current state of the workspace.';
   const message = (id: string, source: string, parent: string, content: string, extra: Record<string, unknown> = {}) =>
     ({ id, event_type: 'MESSAGE', payload: { source, parent_id: parent, content, timestamp: now, ...extra } });
-  const tool = (id: string, parent: string, command: string) => ({ id, event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: parent, action_id: id, tool_call_id: `${id}-call`, tool_name: 'terminal', event_name: 'TerminalAction', summary: command, content: command, timestamp: now } });
-  const toolResult = (id: string, parent: string) => ({ id, event_type: 'TOOL_RESULT', payload: { source: 'environment', parent_id: parent, action_id: parent, tool_call_id: `${parent}-call`, tool_name: 'terminal', event_name: 'TerminalObservation', content: 'ok', timestamp: now } });
+  const stampFor: Record<string, string> = {};
+  const tool = (id: string, parent: string, command: string) => ({ id, event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: parent, action_id: id, tool_call_id: `${id}-call`, tool_name: 'terminal', event_name: 'TerminalAction', summary: command, content: command, timestamp: stampFor[id] ?? now } });
+  const toolResult = (id: string, parent: string) => ({ id, event_type: 'TOOL_RESULT', payload: { source: 'environment', parent_id: parent, action_id: parent, tool_call_id: `${parent}-call`, tool_name: 'terminal', event_name: 'TerminalObservation', content: 'ok', timestamp: stampFor[id] ?? now } });
   const goalState = { id: 'goal-state', event_type: 'STATE', payload: { source: 'environment', parent_id: 'round-1-reply', goal_status: { active: true, status: 'running', iteration: 1, max_iterations: 3, objective: '找到应用对应的测试分支', verdict: { score: 0.8, complete: false, missing } }, timestamp: now } };
+  // Round 1: 0s-351s, the Judge follow-up lands at 361s, round 2 ends at 418s (6m58s in total).
+  const stamp = (offset: number) => new Date(Date.parse('2026-11-03T10:34:46Z') + offset * 1000).toISOString();
+  stampFor['round-1-tool'] = stamp(10); stampFor['round-1-obs'] = stamp(11); stampFor['round-2-tool'] = stamp(365); stampFor['round-2-obs'] = stamp(366);
   const events = [
-    message('goal-start', 'user', '__root__', '找到应用对应的测试分支'),
+    message('goal-start', 'user', '__root__', '找到应用对应的测试分支', { timestamp: stamp(0) }),
     tool('round-1-tool', 'goal-start', '第一轮：查询构建历史'), toolResult('round-1-obs', 'round-1-tool'),
     // Not final: the Judge sends another round, so this reply is only progress.
-    message('round-1-reply', 'agent', 'round-1-obs', '第一轮结论：已验证五个应用。', { final_reply: false }),
+    message('round-1-reply', 'agent', 'round-1-obs', '第一轮结论：已验证五个应用。', { final_reply: false, timestamp: stamp(351) }),
     goalState,
     // Written by OpenHands' Goal loop after a failed audit; the platform marks it.
-    message('judge-followup', 'user', 'round-1-reply', template, { goal_followup: { iteration: 1, max_iterations: 3, missing } }),
+    message('judge-followup', 'user', 'round-1-reply', template, { timestamp: stamp(361), goal_followup: { iteration: 1, max_iterations: 3, missing } }),
     tool('round-2-tool', 'judge-followup', '第二轮：补充核验依赖库'), toolResult('round-2-obs', 'round-2-tool'),
-    message('round-2-reply', 'agent', 'round-2-obs', '第二轮：已补充 hq-support 的构建记录证据。', { final_reply: true }),
+    message('round-2-reply', 'agent', 'round-2-obs', '第二轮：已补充 hq-support 的构建记录证据。', { final_reply: true, timestamp: stamp(418) }),
     { id: 'goal-done', event_type: 'STATE', payload: { source: 'environment', parent_id: 'round-2-reply', goal_status: { active: false, status: 'complete', iteration: 2, max_iterations: 3, objective: '找到应用对应的测试分支', verdict: { score: 1, complete: true, missing: '' } }, timestamp: now } },
   ];
   const hydration = {
@@ -1570,10 +1574,14 @@ test('Goal loop follow-up renders as one visible event inside the same turn, not
   // The whole goal is one process, so open it first: rounds are events inside it.
   const groups = surface.locator('.conversation-activity-group, .conversation-process-summary');
   await expect(groups).toHaveCount(1);
+  // The header is the goal's total time, first event to the final reply.
+  await expect(groups.first().locator('summary').first()).toContainText('6分钟58秒');
   if (!(await groups.first().evaluate(element => (element as HTMLDetailsElement).open))) await groups.first().locator('summary').first().click();
   const followup = groups.locator('.conversation-goal-round[data-goal-followup-event-id="judge-followup"]');
   await expect(followup).toBeVisible();
   await expect(followup.locator('summary')).toContainText('目标未达成 · 第 1 轮追问');
+  // The round that just ended keeps its own time on the divider.
+  await expect(followup.locator('summary')).toContainText('上一轮 5分钟51秒');
   await expect(followup).not.toHaveAttribute('open', '');
   await expect(surface.getByText('Judge 判定')).toHaveCount(0);
   await followup.locator('summary').click();
@@ -1733,12 +1741,14 @@ test('Goal status bar lists the rounds and removing a stopped goal allows a new 
   let authenticated = false;
   const workspace = { id: 'goal-rounds-workspace', display_name: '目标轮次工作区', desired_state: 'RUNNING', updated_at: now };
   const conversation = { id: 'goal-rounds-conversation', display_title: '目标轮次会话', title_state: 'MANUAL', lifecycle: 'ACTIVE', streaming_callback_ready: true, write_available: true, execution_status: 'idle', created_at: now, updated_at: now };
+  // Round 1 took 5m51s, the Judge needed 10s, round 2 took 57s.
+  const at = (offsetSeconds: number) => new Date(Date.parse('2026-11-03T10:34:46Z') + offsetSeconds * 1000).toISOString();
   const events = [
-    { id: 'goal-start', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '找到测试分支', timestamp: now } },
-    { id: 'round-1-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'goal-start', content: '第一轮结论', final_reply: false, timestamp: now } },
-    { id: 'goal-state', event_type: 'STATE', payload: { source: 'environment', parent_id: 'round-1-reply', goal_status: { active: false, status: 'interrupted', iteration: 1, max_iterations: 3, objective: '找到测试分支', verdict: { score: 0.8, complete: false, missing: '还缺依赖库' } }, timestamp: now } },
-    { id: 'judge-followup', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'round-1-reply', content: 'Outstanding', goal_followup: { iteration: 1, max_iterations: 3, missing: '还缺依赖库' }, timestamp: now } },
-    { id: 'round-2-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'judge-followup', content: '第二轮结论', final_reply: true, timestamp: now } },
+    { id: 'goal-start', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '找到测试分支', timestamp: at(0) } },
+    { id: 'round-1-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'goal-start', content: '第一轮结论', final_reply: false, timestamp: at(351) } },
+    { id: 'goal-state', event_type: 'STATE', payload: { source: 'environment', parent_id: 'round-1-reply', goal_status: { active: false, status: 'interrupted', iteration: 1, max_iterations: 3, objective: '找到测试分支', verdict: { score: 0.8, complete: false, missing: '还缺依赖库' } }, timestamp: at(360) } },
+    { id: 'judge-followup', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'round-1-reply', content: 'Outstanding', goal_followup: { iteration: 1, max_iterations: 3, missing: '还缺依赖库' }, timestamp: at(361) } },
+    { id: 'round-2-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'judge-followup', content: '第二轮结论', final_reply: true, timestamp: at(418) } },
   ];
   const hydration = { events: { events, next_cursor: 'round-2-reply', history_cursor: null, result: { status: 'COMPLETED' } }, context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 0, usage_current: true }, readiness: { ready: true, execution_status: 'idle' } };
   await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
@@ -1765,10 +1775,30 @@ test('Goal status bar lists the rounds and removing a stopped goal allows a new 
   const status = page.locator('.conversation-goal-status');
   await expect(status).toContainText('目标已暂停');
   await status.getByRole('button', { name: /目标/ }).first().click();
-  const rounds = page.getByRole('menu', { name: '目标轮次' });
-  await expect(rounds.getByRole('menuitem')).toHaveText(['第 1 轮', '第 2 轮']);
+  // The rounds open as a small popover that reads like the task list, not native buttons.
+  const rounds = page.getByRole('dialog', { name: '目标轮次' });
+  await expect(rounds).toBeVisible();
+  await expect(rounds.getByRole('listitem')).toHaveCount(2);
+  // Per-round time is kept even though the goal is one process with a single total.
+  await expect(rounds.getByRole('listitem').nth(0)).toContainText('第 1 轮');
+  await expect(rounds.getByRole('listitem').nth(0)).toContainText('5分51秒');
+  await expect(rounds.getByRole('listitem').nth(1)).toContainText('第 2 轮');
+  await expect(rounds.getByRole('listitem').nth(1)).toContainText('57秒');
+  await page.screenshot({ path: '/tmp/goal-rounds-popover.png' });
   await page.keyboard.press('Escape');
   await expect(rounds).toHaveCount(0);
+  await status.getByRole('button', { name: /目标/ }).first().click();
+  await expect(rounds).toBeVisible();
+  await page.mouse.click(5, 5);
+  await expect(rounds).toHaveCount(0);
+
+  // Each control icon is centred inside its square background.
+  const control = status.getByRole('button', { name: '移除目标' });
+  const box = await control.boundingBox();
+  const icon = await control.locator('svg').boundingBox();
+  expect(box && icon).toBeTruthy();
+  expect(Math.abs((icon!.x + icon!.width / 2) - (box!.x + box!.width / 2))).toBeLessThan(0.75);
+  expect(Math.abs((icon!.y + icon!.height / 2) - (box!.y + box!.height / 2))).toBeLessThan(0.75);
 
   // Removing the stopped goal returns the bar to "set a new goal".
   await status.getByRole('button', { name: '移除目标' }).click();
