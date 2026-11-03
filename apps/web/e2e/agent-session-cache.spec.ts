@@ -1820,14 +1820,21 @@ test('Locating a round of a finished goal opens its folded process and shows tha
   const result = (id: string, parent: string, offset: number) => ({ id, event_type: 'TOOL_RESULT', payload: { source: 'environment', parent_id: parent, action_id: parent, tool_call_id: `${parent}-call`, tool_name: 'terminal', event_name: 'TerminalObservation', content: 'ok', timestamp: at(offset) } });
   // A long final answer pushes the folded process far above the composer, as in real use.
   const longAnswer = Array.from({ length: 60 }, (_, index) => `结论第 ${index + 1} 行：已核对。`).join('\n\n');
+  // Like a real goal: many tool calls in each round (43 process items in all), so the
+  // process is tall once opened and the page height changes when it unfolds.
+  const manyTools = (round: number, parent: string, from: number) => Array.from({ length: 20 }, (_, index) => {
+    const id = `r${round}-tool-${index}`;
+    const before: string = index === 0 ? parent : `r${round}-obs-${index - 1}`;
+    return [tool(id, before, `第${round}轮：命令 ${index + 1}`, from + index * 2), result(`r${round}-obs-${index}`, id, from + index * 2 + 1)];
+  }).flat();
   const events = [
     { id: 'goal-start', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '找到测试分支', timestamp: at(0) } },
-    tool('round-1-tool', 'goal-start', '第一轮：查询构建历史', 10), result('round-1-obs', 'round-1-tool', 11),
-    { id: 'round-1-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'round-1-obs', content: '第一轮结论', final_reply: false, timestamp: at(351) } },
+    ...manyTools(1, 'goal-start', 10),
+    { id: 'round-1-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'r1-obs-19', content: '第一轮结论', final_reply: false, timestamp: at(351) } },
     { id: 'goal-audit', event_type: 'STATE', payload: { source: 'environment', parent_id: 'round-1-reply', goal_status: { active: true, status: 'running', iteration: 1, max_iterations: 3, objective: '找到测试分支', verdict: { score: 0.8, complete: false, missing: '还缺依赖库' } }, timestamp: at(360) } },
     { id: 'judge-followup', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'round-1-reply', content: 'Outstanding', goal_followup: { iteration: 1, max_iterations: 3, missing: '还缺依赖库' }, timestamp: at(361) } },
-    tool('round-2-tool', 'judge-followup', '第二轮：补充核验依赖库', 365), result('round-2-obs', 'round-2-tool', 366),
-    { id: 'round-2-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'round-2-obs', content: longAnswer, final_reply: true, timestamp: at(418) } },
+    ...manyTools(2, 'judge-followup', 365),
+    { id: 'round-2-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'r2-obs-19', content: longAnswer, final_reply: true, timestamp: at(418) } },
     { id: 'goal-done', event_type: 'STATE', payload: { source: 'environment', parent_id: 'round-2-reply', goal_status: { active: false, status: 'complete', iteration: 2, max_iterations: 3, objective: '找到测试分支', verdict: { score: 1, complete: true, missing: '' } }, timestamp: at(420) } },
   ];
   const hydration = { events: { events, next_cursor: 'round-2-reply', history_cursor: null, result: { status: 'COMPLETED' } }, context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 0, usage_current: true }, readiness: { ready: true, execution_status: 'idle' } };
@@ -1858,22 +1865,36 @@ test('Locating a round of a finished goal opens its folded process and shows tha
   // The finished goal is folded: its rounds are not on screen until located.
   await expect(surface.locator('[data-goal-followup-event-id="judge-followup"]')).toBeHidden();
 
-  await status.getByRole('button', { name: /目标已验收通过/ }).hover();
-  await status.getByRole('button', { name: '定位第 2 轮' }).click();
-  const followup = surface.locator('[data-goal-followup-event-id="judge-followup"]');
-  await expect(followup).toBeVisible();
-  await expect(followup).toBeInViewport();
-  // The process stays open after the jump instead of folding back.
-  await page.waitForTimeout(800);
-  await expect(followup).toBeVisible();
+  const detail = status.getByRole('group', { name: '目标详情' });
+  const locate = async (name: string) => {
+    await status.getByRole('button', { name: /目标已验收通过/ }).hover();
+    await expect(detail).toBeVisible();
+    await status.getByRole('button', { name }).click();
+    // A jump closes the card at once, and it stays closed after the pointer leaves.
+    await expect(detail).toBeHidden();
+    await page.mouse.move(5, 300);
+    await expect(detail).toBeHidden();
+  };
+  // The same sequence a person tries: round 1, round 2, round 1 again, then the goal text.
+  // Every jump must land on its target, open the folded process and highlight it.
+  const expectLanded = async (selector: string) => {
+    const target = page.locator(selector);
+    await expect(target).toBeVisible();
+    await expect(target).toBeInViewport();
+    await expect(target).toHaveClass(/conversation-search-target/);
+  };
 
-  // The first round and the goal text locate inside the same, already open process.
-  await status.getByRole('button', { name: /目标已验收通过/ }).hover();
-  await status.getByRole('button', { name: '定位第 1 轮' }).click();
-  await expect(page.locator('[data-conversation-event-id="goal-start"]')).toBeInViewport();
-  await status.getByRole('button', { name: /目标已验收通过/ }).hover();
-  await status.getByRole('button', { name: '定位目标消息' }).click();
-  await expect(page.locator('[data-conversation-event-id="goal-start"]')).toBeInViewport();
+  await locate('定位第 1 轮');
+  await expectLanded('[data-conversation-event-id="goal-start"]');
+  await locate('定位第 2 轮');
+  await expectLanded('[data-goal-followup-event-id="judge-followup"]');
+  await locate('定位第 1 轮');
+  await expectLanded('[data-conversation-event-id="goal-start"]');
+  await locate('定位目标消息');
+  await expectLanded('[data-conversation-event-id="goal-start"]');
+  // A later jump to a round still works once the process is open.
+  await locate('定位第 2 轮');
+  await expectLanded('[data-goal-followup-event-id="judge-followup"]');
 });
 
 test('Sidebar chat can cancel its first message while it is being created and keeps the text', async ({ page }) => {

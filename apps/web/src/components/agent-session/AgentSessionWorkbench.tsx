@@ -4028,6 +4028,7 @@ function ConversationGoalMode({ goalStatus, enabled, canEnable, pending, rounds,
   // A paused goal resumes with its rounds kept; a goal that hit the round cap cannot be
   // resumed natively, so "continue" starts the same objective again.
   const continuable = goalStatus?.status === 'interrupted' || goalStatus?.status === 'capped';
+  const [detailDismissed, setDetailDismissed] = useState(false);
   if (!goalStatus) return <button type="button" className={`conversation-goal-mode-toggle${enabled ? ' active' : ''}`} aria-pressed={enabled} disabled={!canEnable} title={enabled ? '已开启目标模式：发送消息将启动目标循环' : '开启目标模式'} onClick={onToggle}>
     <Target size={14}/><span>目标模式</span>
   </button>;
@@ -4038,7 +4039,15 @@ function ConversationGoalMode({ goalStatus, enabled, canEnable, pending, rounds,
       : goalStatus.status === 'capped'
         ? `目标达到 ${goalStatus.max_iterations} 轮上限`
         : '目标已暂停';
-  return <section className={`conversation-goal-status ${goalStatus.status}`} tabIndex={0} role="group" aria-label={label}>
+  return <section className={`conversation-goal-status ${goalStatus.status}`} tabIndex={0} role="group" aria-label={label}
+    data-dismissed={detailDismissed || undefined} onMouseLeave={() => setDetailDismissed(false)}
+    onClickCapture={event => {
+      // A jump closes the card at once: drop focus too, since focus alone keeps it open.
+      if (event.target instanceof Element && event.target.closest('.conversation-goal-status-preview button, .conversation-goal-status-summary')) {
+        setDetailDismissed(true);
+        (document.activeElement as HTMLElement | null)?.blur();
+      }
+    }}>
     <button type="button" className="conversation-goal-status-summary" onClick={onLocate} aria-describedby="conversation-goal-status-detail">
       <Target size={14}/><span><b>{label}</b></span>
     </button>
@@ -5317,6 +5326,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [conversationSearchCursor, setConversationSearchCursor] = useState<string>();
   const [conversationSearchHits, setConversationSearchHits] = useState<NonNullable<AgentConversationSearch['hits']>>([]);
   const [conversationSearchTargetEventId, setConversationSearchTargetEventId] = useState<string>();
+  const [searchTargetRetry, setSearchTargetRetry] = useState(0);
   const [inConversationSearchLocation, setInConversationSearchLocation] = useState<ConversationSearchLocation>();
   const [conversationReferenceTarget, setConversationReferenceTarget] = useState<AgentConversationReference>();
   const [sidebarListMode, setSidebarListMode] = useState<'workspaces' | 'activity'>('workspaces');
@@ -7759,8 +7769,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-activity', workspace?.id) });
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-context', workspace?.id, selected.id) });
   }, [condensationStatus, condensationTasks, host, latestNativeCondensationEvent, queryClient, reportOperationError, selected?.id, workspace?.id]);
+  const searchTargetAttempts = useRef(0);
   useEffect(() => {
-    if (!conversationSearchTargetEventId || !selected) return;
+    if (!conversationSearchTargetEventId || !selected) { searchTargetAttempts.current = 0; return; }
     const targetEventId = conversationSearchTargetEventId;
     const target = Array.from(document.querySelectorAll<HTMLElement>('[data-conversation-event-id]')).find(
       item => item.dataset.conversationEventId === targetEventId,
@@ -7768,15 +7779,31 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     const surface = target?.closest<HTMLElement>('.conversation-surface');
     if (!target || !surface) {
       void revealHistoryThrough(targetEventId);
-      return;
+      // The target can be inside a folded process that opens a render later, which changes
+      // no event data, so nothing would call this effect again. Look again shortly, bounded.
+      if (searchTargetAttempts.current >= 20) { searchTargetAttempts.current = 0; setConversationSearchTargetEventId(undefined); return; }
+      searchTargetAttempts.current += 1;
+      const retry = window.setTimeout(() => setSearchTargetRetry(count => count + 1), 50);
+      return () => window.clearTimeout(retry);
     }
-    const top = target.getBoundingClientRect().top - surface.getBoundingClientRect().top + surface.scrollTop - 28;
-    surface.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
-    target.classList.add('conversation-search-target');
-    const timer = window.setTimeout(() => target.classList.remove('conversation-search-target'), 2_600);
+    searchTargetAttempts.current = 0;
     setConversationSearchTargetEventId(undefined);
-    return () => window.clearTimeout(timer);
-  }, [conversationSearchTargetEventId, displayedEvents, historyCacheRevision, revealHistoryThrough, selected]);
+    // Unfolding a process changes the page height, so the position measured now can be stale
+    // a frame later. Measure after layout settles and correct once more if it moved.
+    const scrollToTarget = (behavior: ScrollBehavior) => {
+      const top = target.getBoundingClientRect().top - surface.getBoundingClientRect().top + surface.scrollTop - 28;
+      surface.scrollTo({ top: Math.max(0, top), behavior });
+    };
+    // Restart the highlight even when the same element was highlighted a moment ago.
+    target.classList.remove('conversation-search-target');
+    void target.offsetWidth;
+    target.classList.add('conversation-search-target');
+    window.setTimeout(() => target.classList.remove('conversation-search-target'), 2_600);
+    requestAnimationFrame(() => {
+      scrollToTarget('auto');
+      requestAnimationFrame(() => scrollToTarget('smooth'));
+    });
+  }, [conversationSearchTargetEventId, displayedEvents, historyCacheRevision, revealHistoryThrough, searchTargetRetry, selected]);
   // A draft has no OpenHands Conversation or event branch yet. It must never
   // inherit execution/readiness state from the previously selected binding.
   // The sole exception is its own first-message bootstrap, which explicitly

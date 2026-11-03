@@ -2264,6 +2264,11 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   // open (the locate target itself is cleared as soon as the jump lands).
   useEffect(() => {
     if (!goalLocateEventId) return;
+    // A jump is the reader leaving the bottom on purpose: stop following the latest content,
+    // otherwise the alignment that runs when the process unfolds drags the page back down.
+    followLatest.current = false;
+    userScrolledAway.current = true;
+    setIsAtLatest(false);
     const owner = turns.find(turn => turn.activity.some(item => item.event.id === goalLocateEventId));
     if (!owner) return;
     const key = `${conversationScope ?? 'conversation'}:${owner.renderKey}`;
