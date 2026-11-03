@@ -35,6 +35,8 @@ interface Turn {
   /** Wall-clock periods split only after a formal interruption. */
   processSegments: ProcessSegment[];
   assistant?: Item;
+  /** Replies before the last one, when a Goal loop answers once per round. */
+  priorAssistants?: Item[];
   activity: Item[];
 }
 
@@ -480,6 +482,10 @@ function itemsFor(event: OpenHandsConversationEvent, taskRetryError = false): It
       ? event.payload.display_content
       : isFlowWeaveMessageContext(content) ? '' : content;
     if (isUser && isFlowWeaveInternalProtocolMessage(content)) return [];
+    // The Goal loop's own follow-up after a failed audit is loop control input,
+    // not something the person typed: keep it inside the running turn.
+    const goalFollowup = event.payload.goal_followup;
+    if (isUser && goalFollowup) return [{ event, kind: 'goal', title: `目标未达成 · 第 ${goalFollowup.iteration} 轮追问`, content: goalFollowup.missing }];
     if (isUser) return [{ event, kind: 'user', title: '', content: displayContent }];
     if (isOpenHandsAgentReply(event)) return [{ event, kind: 'assistant', title: '', content }];
     if (isOpenHandsEmptyResponseRecovery(event)) return [];
@@ -537,6 +543,8 @@ function userAncestorId(
       current.event_type === 'MESSAGE'
       && (source === 'user' || source === 'human')
       && !isFlowWeaveInternalProtocolMessage(content)
+      // A Goal-loop follow-up is control input inside the running turn, not a boundary.
+      && !current.payload.goal_followup
     ) return current.id;
     const parentId: string | null | undefined = current.payload.parent_id;
     current = parentId ? byId.get(parentId) : undefined;
@@ -690,8 +698,10 @@ function turnsFor(events: OpenHandsConversationEvent[]): Turn[] {
       if (currentSegment?.interruptedBy && item.kind !== 'assistant' && item.kind !== 'error') {
         turn.processSegments.push({ items: [], messageIndex: owner?.messageIndex ?? 0, startedBy: item });
       }
-      if (item.kind === 'assistant') turn.assistant = item;
-      else {
+      if (item.kind === 'assistant') {
+        if (turn.assistant) (turn.priorAssistants ??= []).push(turn.assistant);
+        turn.assistant = item;
+      } else {
         turn.activity.push(item);
         turn.processSegments.at(-1)?.items.push(item);
       }
@@ -710,6 +720,18 @@ function turnsFor(events: OpenHandsConversationEvent[]): Turn[] {
       return left.timestamp - right.timestamp;
     })
     .map(({ turn }) => turn);
+}
+
+/** Earlier Goal rounds in time order: each reply, then the follow-up that started the next round. */
+function goalRoundTimeline(turn: Turn): Array<{ kind: 'followup' | 'reply'; item: Item }> {
+  const entries = [
+    ...(turn.priorAssistants ?? []).map(item => ({ kind: 'reply' as const, item })),
+    ...turn.activity.filter(item => item.event.payload.goal_followup).map(item => ({ kind: 'followup' as const, item })),
+  ];
+  return entries
+    .map((entry, index) => ({ entry, index, time: eventTime(entry.item) }))
+    .sort((left, right) => (left.time === undefined || right.time === undefined || left.time === right.time) ? left.index - right.index : left.time - right.time)
+    .map(({ entry }) => entry);
 }
 
 function fileChangesForTurn(
@@ -1244,7 +1266,7 @@ function processBlocksForTurn(segments: ProcessSegment[], active: boolean, compl
   if (!firstSegment || !lastSegment) return [];
   const interruptedAt = parsedEventTime(lastSegment.interruptedBy?.payload.timestamp);
   return turnProcessBlocks(
-    segments.flatMap(segment => segment.items).filter(item => item.kind !== 'error'),
+    segments.flatMap(segment => segment.items).filter(item => item.kind !== 'error' && !item.event.payload.goal_followup),
     eventTime(firstSegment.startedBy),
     interruptedAt ?? completedAt,
     active && interruptedAt === undefined,
@@ -1540,6 +1562,17 @@ function ActivityEntryRow({ entry, active, reveal = false, paused = false, paren
   if (item.kind === 'condensation') return <article className={`conversation-activity-row tool condensation${condensationRunning ? ' running' : ''}`} role="status" aria-label={presentation.title}>
     <Sparkles size={13}/><div><b>{presentation.title}</b></div>
   </article>;
+  if (item.kind === 'goal' && item.event.payload.goal_followup) {
+    const followup = item.event.payload.goal_followup;
+    return <article className="conversation-activity-row goal-followup" role="status" aria-label={item.title} data-goal-followup-event-id={item.event.id}>
+      <Target size={14}/>
+      <div>
+        <b>{item.title}</b>
+        <small>Judge 判定尚有未满足的要求，Agent 将继续核实并补充证据</small>
+        {item.content && <p>{item.content}</p>}
+      </div>
+    </article>;
+  }
   if (item.kind === 'goal') {
     const goal = item.event.payload.goal_status!;
     const detail = item.content || (goal.status === 'complete' ? 'Judge 已确认当前目标的完成证据。' : goal.status === 'interrupted' ? '可在会话目标卡中恢复原目标。' : undefined);
@@ -2994,6 +3027,9 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
             open={completedProcessExpanded}
             onOpenChange={setCompletedProcessExpanded}
           />)}
+          {(turn.priorAssistants?.length || turn.activity.some(item => item.event.payload.goal_followup)) && goalRoundTimeline(turn).map(entry => entry.kind === 'followup'
+            ? <ActivityEntryRow key={entry.item.event.id} entry={{ id: entry.item.event.id, action: entry.item, item: entry.item, results: [] }} active={false} reveal={false} paused={false} parentFailed={false} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot} onOpenSourceLocation={onOpenSourceLocation}/>
+            : <AgentReply key={entry.item.event.id} event={entry.item.event} content={entry.item.content} reveal={revealEventIds.has(entry.item.event.id)} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenBrowser={onOpenBrowser} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl} workspaceRoot={workspaceRoot}/>)}
           {turn.assistant && <AgentReply event={turn.assistant.event} content={turn.assistant.content} reveal={revealEventIds.has(turn.assistant.event.id)} changes={fileChanges} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile} onReviewChanges={onReviewChanges} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenBrowser={onOpenBrowser} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl} workspaceRoot={workspaceRoot} annotations={turn.assistant.event.payload.collaboration_annotation_ids !== undefined ? eventAnnotations(turn.assistant.event) : turn.user ? eventAnnotations(turn.user.event) : []} onLocateAnnotation={locateAnnotation}/>}
           {failures.map(item => <ConversationFailure key={item.event.id} item={item} taskControl={taskControl} retryStatus={isLatest ? modelRetryStatus : undefined}/>)}
         </section>;

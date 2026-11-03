@@ -3143,6 +3143,219 @@ def test_openhands_reads_a_bounded_active_window_and_explicit_older_history(
     ]
 
 
+def _goal_update(event_id: str, parent_id: str, *, status: str = "running") -> dict[str, object]:
+    return {
+        "kind": "ConversationStateUpdateEvent",
+        "id": event_id,
+        "parent_id": parent_id,
+        "source": "environment",
+        "timestamp": "2026-11-03T10:34:46",
+        "key": "goal",
+        "value": {
+            "active": status == "running",
+            "status": status,
+            "iteration": 0,
+            "max_iterations": 3,
+            "objective": "找到测试分支",
+            "verdict": None,
+        },
+    }
+
+
+def test_openhands_active_window_keeps_goal_status_updates_off_the_parent_chain(
+    openhands_settings, monkeypatch
+):
+    """Goal updates are state artifacts that never become HEAD, so the parent walk skips them."""
+
+    runtime = OpenHandsRuntime(openhands_settings)
+    responses = iter(
+        [
+            _state(leaf_event_id="user-1"),
+            {
+                "items": [
+                    {
+                        "kind": "MessageEvent",
+                        "id": "user-1",
+                        "parent_id": "agent-1",
+                        "source": "user",
+                        "llm_message": {"role": "user", "content": "继续"},
+                    },
+                    _goal_update("goal-1", "agent-1"),
+                    # Hangs off an event that is not on the active branch.
+                    _goal_update("goal-detached", "detached-event"),
+                    {
+                        "kind": "MessageEvent",
+                        "id": "agent-1",
+                        "parent_id": "__root__",
+                        "source": "agent",
+                        "llm_message": {"role": "assistant", "content": "好的"},
+                    },
+                ],
+                "next_page_id": None,
+            },
+        ]
+    )
+    monkeypatch.setattr(runtime, "_request", lambda *_a, **_k: next(responses))
+
+    batch = runtime.read_active_events(_handle())
+
+    assert [event.cursor for event in batch.events] == ["agent-1", "goal-1", "user-1"]
+    goal = batch.events[1]
+    assert goal.payload["goal_status"]["status"] == "running"
+    assert goal.payload["goal_status"]["active"] is True
+
+
+def _goal_audit(event_id: str, parent_id: str, *, iteration: int, missing: str) -> dict[str, object]:
+    item = _goal_update(event_id, parent_id)
+    cast_value = item["value"]
+    assert isinstance(cast_value, dict)
+    cast_value.update(
+        {
+            "iteration": iteration,
+            "verdict": {"score": 0.88, "complete": False, "missing": missing},
+        }
+    )
+    return item
+
+
+def test_openhands_marks_the_goal_loop_followup_from_formal_structure(
+    openhands_settings, monkeypatch
+):
+    """The Judge follow-up is a loop control input: identify it structurally, never by its text."""
+
+    runtime = OpenHandsRuntime(openhands_settings)
+    responses = iter(
+        [
+            _state(leaf_event_id="followup-1"),
+            {
+                "items": [
+                    {
+                        "kind": "MessageEvent",
+                        "id": "followup-1",
+                        "parent_id": "agent-final",
+                        "source": "user",
+                        # Deliberately not the OpenHands template: text is not parsed.
+                        "llm_message": {"role": "user", "content": "任意内容"},
+                    },
+                    _goal_audit("goal-audit", "agent-final", iteration=1, missing="hq-support 未验证"),
+                    {
+                        "kind": "MessageEvent",
+                        "id": "agent-final",
+                        "parent_id": "goal-start",
+                        "source": "agent",
+                        "llm_message": {"role": "assistant", "content": "完成一轮"},
+                    },
+                    {
+                        "kind": "MessageEvent",
+                        "id": "goal-start",
+                        "parent_id": "__root__",
+                        "source": "user",
+                        "llm_message": {"role": "user", "content": "找到测试分支"},
+                    },
+                ],
+                "next_page_id": None,
+            },
+        ]
+    )
+    monkeypatch.setattr(runtime, "_request", lambda *_a, **_k: next(responses))
+
+    batch = runtime.read_active_events(_handle())
+    by_id = {event.cursor: event for event in batch.events}
+
+    assert [event.cursor for event in batch.events] == [
+        "goal-start",
+        "agent-final",
+        "goal-audit",
+        "followup-1",
+    ]
+    assert by_id["followup-1"].payload["goal_followup"] == {
+        "iteration": 1,
+        "max_iterations": 3,
+        "missing": "hq-support 未验证",
+    }
+    # The message the person typed to start the goal is never marked.
+    assert "goal_followup" not in by_id["goal-start"].payload
+
+
+def test_openhands_does_not_mark_a_user_message_without_a_failed_audit(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    complete = _goal_update("goal-done", "agent-final", status="complete")
+    value = complete["value"]
+    assert isinstance(value, dict)
+    value["verdict"] = {"score": 0.99, "complete": True, "missing": ""}
+    responses = iter(
+        [
+            _state(leaf_event_id="typed-later"),
+            {
+                "items": [
+                    {
+                        "kind": "MessageEvent",
+                        "id": "typed-later",
+                        "parent_id": "agent-final",
+                        "source": "user",
+                        "llm_message": {"role": "user", "content": "好的，谢谢"},
+                    },
+                    complete,
+                    {
+                        "kind": "MessageEvent",
+                        "id": "agent-final",
+                        "parent_id": "__root__",
+                        "source": "agent",
+                        "llm_message": {"role": "assistant", "content": "目标完成"},
+                    },
+                ],
+                "next_page_id": None,
+            },
+        ]
+    )
+    monkeypatch.setattr(runtime, "_request", lambda *_a, **_k: next(responses))
+
+    batch = runtime.read_active_events(_handle())
+
+    typed = next(event for event in batch.events if event.cursor == "typed-later")
+    assert "goal_followup" not in typed.payload
+
+
+def test_openhands_cursor_reconciliation_keeps_goal_status_updates(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    responses = iter(
+        [
+            _state(leaf_event_id="user-1"),
+            {
+                "items": [
+                    {
+                        "kind": "MessageEvent",
+                        "id": "user-1",
+                        "parent_id": "anchor",
+                        "source": "user",
+                        "llm_message": {"role": "user", "content": "继续"},
+                    },
+                    # Parented on the cursor itself: it must follow the anchor.
+                    _goal_update("goal-after-anchor", "anchor", status="complete"),
+                    {
+                        "kind": "MessageEvent",
+                        "id": "anchor",
+                        "parent_id": "__root__",
+                        "source": "agent",
+                        "llm_message": {"role": "assistant", "content": "好的"},
+                    },
+                ],
+                "next_page_id": None,
+            },
+        ]
+    )
+    monkeypatch.setattr(runtime, "_request", lambda *_a, **_k: next(responses))
+
+    batch = runtime.read_active_events(replace(_handle(), cursor="anchor"))
+
+    assert [event.cursor for event in batch.events] == ["goal-after-anchor", "user-1"]
+    assert batch.events[0].payload["goal_status"]["status"] == "complete"
+
+
 def test_openhands_active_cursor_reconciliation_excludes_detached_branch_events(
     openhands_settings, monkeypatch
 ):

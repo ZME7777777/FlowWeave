@@ -12,7 +12,7 @@ import tarfile
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
@@ -3333,6 +3333,9 @@ class OpenHandsRuntime:
         goal_status = cls._goal_status(item)
         if goal_status is not None:
             payload["goal_status"] = goal_status
+        goal_followup = item.get("_flowweave_goal_followup")
+        if isinstance(goal_followup, dict):
+            payload["goal_followup"] = goal_followup
         if kind == "CondensationRequest":
             payload["event_name"] = kind
         elif kind == "Condensation":
@@ -3528,6 +3531,99 @@ class OpenHandsRuntime:
         next_cursor = str(items[-1].get("id")) if items and items[-1].get("id") else cursor
         return items, next_cursor
 
+    @classmethod
+    def _annotate_goal_followups(cls, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Mark the user message OpenHands' Goal loop sends after a failed audit.
+
+        ``_run_goal_loop`` first persists ``goal`` status (active, with the
+        Judge verdict) and then sends the follow-up as a ``source=user``
+        MessageEvent under the same parent. That message is a loop control
+        input, not something the person typed, so identify it by this formal
+        structure and take ``missing`` from the structured verdict. Message
+        text is never parsed, and no persisted data is rewritten, so
+        conversations created before this change are recognised too.
+        """
+
+        pending: dict[str, dict[str, Any]] = {}
+        result: list[dict[str, Any]] = []
+        for item in items:
+            kind = item.get("kind")
+            parent_id = item.get("parent_id")
+            parent = parent_id if isinstance(parent_id, str) else None
+            if kind == "ConversationStateUpdateEvent" and item.get("key") == "goal":
+                value = item.get("value")
+                if isinstance(value, dict) and parent is not None:
+                    status = cast(dict[str, Any], value)
+                    verdict = status.get("verdict")
+                    if (
+                        status.get("active") is True
+                        and status.get("status") == "running"
+                        and isinstance(verdict, dict)
+                        and cast(dict[str, Any], verdict).get("complete") is False
+                    ):
+                        pending[parent] = {
+                            "iteration": status.get("iteration"),
+                            "max_iterations": status.get("max_iterations"),
+                            "missing": str(cast(dict[str, Any], verdict).get("missing") or "")[
+                                :4000
+                            ],
+                        }
+                result.append(item)
+                continue
+            if (
+                kind == "MessageEvent"
+                and str(item.get("source") or "").lower() == "user"
+                and parent is not None
+                and parent in pending
+            ):
+                followup = pending.pop(parent)
+                if isinstance(followup.get("iteration"), int) and not isinstance(
+                    followup.get("iteration"), bool
+                ):
+                    item = {**item, "_flowweave_goal_followup": followup}
+            result.append(item)
+        return result
+
+    def _with_goal_status_events(
+        self,
+        branch: list[dict[str, Any]],
+        candidates: Iterable[dict[str, Any]],
+        *,
+        extra_parent_ids: frozenset[str] = frozenset(),
+    ) -> list[dict[str, Any]]:
+        """Re-attach OpenHands Goal status updates to a parent-walked branch.
+
+        A ``ConversationStateUpdateEvent`` is a state-sync artifact, not a tree
+        node: it hangs off the active leaf but never becomes the leaf, so the
+        parent walk skips it. The Goal chip is derived from exactly these
+        events, so keep each one whose formal ``parent_id`` is on the branch,
+        placed right after that parent (chronological order is preserved).
+        """
+
+        parents = {self._event_identity(item)[0] for item in branch} | extra_parent_ids
+        by_parent: dict[str, list[dict[str, Any]]] = {}
+        for item in candidates:
+            if item.get("kind") != "ConversationStateUpdateEvent" or item.get("key") != "goal":
+                continue
+            parent_id = self._formal_identity(
+                item.get("parent_id"), field="parent_id", required=False
+            )
+            if parent_id in parents:
+                by_parent.setdefault(parent_id, []).append(item)
+        if not by_parent:
+            return branch
+
+        def ordered(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            return sorted(items, key=lambda value: str(value.get("timestamp") or ""))
+
+        result: list[dict[str, Any]] = []
+        for parent_id in sorted(extra_parent_ids):
+            result.extend(ordered(by_parent.pop(parent_id, [])))
+        for item in branch:
+            result.append(item)
+            result.extend(ordered(by_parent.pop(self._event_identity(item)[0], [])))
+        return result
+
     def _active_event_window(
         self,
         conversation_id: str,
@@ -3602,7 +3698,12 @@ class OpenHandsRuntime:
         # ``chain`` is newest-to-oldest.  The returned transcript stays in
         # chronological order, while the missing parent remains the official
         # continuation token for a user-triggered older-history read.
-        return list(reversed(chain)), current_event_id
+        return (
+            self._annotate_goal_followups(
+                self._with_goal_status_events(list(reversed(chain)), page_items)
+            ),
+            current_event_id,
+        )
 
     def _active_events_after_cursor(
         self,
@@ -3698,7 +3799,13 @@ class OpenHandsRuntime:
             current_event_id: str | None = leaf_event_id
             while current_event_id is not None:
                 if current_event_id == anchor:
-                    return list(reversed(chain))
+                    return self._annotate_goal_followups(
+                        self._with_goal_status_events(
+                            list(reversed(chain)),
+                            by_id.values(),
+                            extra_parent_ids=frozenset({anchor}),
+                        )
+                    )
                 item = by_id.get(current_event_id)
                 if item is None:
                     break
