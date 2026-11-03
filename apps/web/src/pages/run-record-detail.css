@@ -189,3 +189,16 @@
 .flow-run-record-workspace .terminal-run-panel small{display:block;max-height:64px;overflow:auto;color:#85948b}
 @media(max-width:1180px){.flow-run-workbench-header.run-detail-header{grid-template-columns:410px minmax(0,1fr)}}
 @media(max-width:1000px){.flow-run-workbench-header.run-detail-header{grid-template-columns:350px minmax(0,1fr)}}
+
+/* 详情面板操作区：状态一行，会话入口与取消并排，说明文字不再把按钮挤开 */
+.run-detail-header>.run-detail-side>.run-detail-launch{display:flex;align-items:center;margin-left:6px}
+.run-detail-header>.run-detail-side>.run-detail-launch .primary{display:inline-flex;align-items:center;gap:6px;min-height:30px;padding:5px 14px;border:1px solid #2c8052;border-radius:7px;background:#2c8052;color:#fff;font-size:12px;font-weight:600;box-shadow:none}
+.run-detail-header>.run-detail-side>.run-detail-launch .primary:hover:not(:disabled){background:#236c43}
+.run-detail-header>.run-detail-side>.run-detail-launch .primary:disabled{border-color:#cfd9d2;background:#eef2ef;color:#97a59c}
+.flow-run-record-workspace .attempt-control>header:empty{display:none}
+.flow-run-record-workspace .action-content{display:flex;flex-direction:column;gap:8px}
+.flow-run-record-workspace .action-content>.state-banner{margin:0}
+.flow-run-record-workspace .action-content>.node-session-entry,.flow-run-record-workspace .action-content>.cancel-attempt-button{align-self:flex-start;margin:0}
+.flow-run-record-workspace .action-content>.node-session-entry{min-height:32px;padding:6px 12px;font-size:11px;font-weight:600}
+.flow-run-record-workspace .action-content>.cancel-attempt-button{min-height:32px;padding:6px 12px;font-size:11px}
+.flow-run-record-workspace .terminal-run-panel{margin:0}
