@@ -7,7 +7,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { Terminal as XTerm } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import { type InfiniteData, useQueries, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Archive, Unlink, ArrowLeft, ChevronLeft, Minus, ArrowRight, ArrowUp, Bell, Bot, Boxes, CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, CircleDot, Copy, CornerDownRight, Download, Ellipsis, Eye, EyeOff, FileCode2, FileText, Folder, FolderOpen, FolderPlus, Gauge, GitBranch, Globe2, GripVertical, Home, ImageIcon, Link2, ListRestart, LoaderCircle, LockKeyhole, LocateFixed, Maximize, Maximize2, Minimize, Minimize2, MessageSquareText, MonitorCog, MonitorOff, PanelRight, PanelRightOpen, Pencil, Pin, PinOff, Play, Plug, Plus, Quote, RefreshCw, Search, Send, Settings, ShieldAlert, Square, SquareCheck, SquarePlus, SquareTerminal, Trash2, X, Target } from 'lucide-react';
+import { Archive, Unlink, Pause, ArrowLeft, ChevronLeft, Minus, ArrowRight, ArrowUp, Bell, Bot, Boxes, CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, CircleDot, Copy, CornerDownRight, Download, Ellipsis, Eye, EyeOff, FileCode2, FileText, Folder, FolderOpen, FolderPlus, Gauge, GitBranch, Globe2, GripVertical, Home, ImageIcon, Link2, ListRestart, LoaderCircle, LockKeyhole, LocateFixed, Maximize, Maximize2, Minimize, Minimize2, MessageSquareText, MonitorCog, MonitorOff, PanelRight, PanelRightOpen, Pencil, Pin, PinOff, Play, Plug, Plus, Quote, RefreshCw, Search, Send, Settings, ShieldAlert, Square, SquareCheck, SquarePlus, SquareTerminal, Trash2, X, Target } from 'lucide-react';
 import { createContext, isValidElement, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type WheelEvent as ReactWheelEvent } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
@@ -4006,34 +4006,54 @@ function WorkspaceBrowser({ tab, workspaceId, bindingId, workDirectoryId, browse
 
 type GoalStatus = NonNullable<OpenHandsConversationEvent['payload']['goal_status']>;
 
-function ConversationGoalMode({ goalStatus, enabled, canEnable, pending, onToggle, onControl, onLocate }: {
+function ConversationGoalMode({ goalStatus, enabled, canEnable, pending, rounds, onToggle, onControl, onLocate, onLocateRound }: {
   goalStatus?: GoalStatus;
   enabled: boolean;
   canEnable: boolean;
   pending: boolean;
+  /** Where each round starts, for jumping to it from the status bar. */
+  rounds: Array<{ eventId: string; label: string }>;
   onToggle: () => void;
-  onControl: (action: 'STOP' | 'RESUME') => void;
+  onControl: (action: 'STOP' | 'RESUME' | 'RESTART' | 'DISMISS') => void;
   onLocate: () => void;
+  onLocateRound: (eventId: string) => void;
 }) {
   const active = goalStatus?.active === true;
-  const resumable = goalStatus?.status === 'interrupted';
+  // A paused goal resumes with its rounds kept; a goal that hit the round cap cannot be
+  // resumed natively, so "continue" starts the same objective again.
+  const continuable = goalStatus?.status === 'interrupted' || goalStatus?.status === 'capped';
+  const [roundsOpen, setRoundsOpen] = useState(false);
+  useEffect(() => {
+    if (!roundsOpen) return;
+    const close = (event: Event) => {
+      if (event instanceof KeyboardEvent && event.key !== 'Escape') return;
+      if (event instanceof MouseEvent && event.target instanceof Element && event.target.closest('.conversation-goal-status')) return;
+      setRoundsOpen(false);
+    };
+    document.addEventListener('keydown', close);
+    document.addEventListener('mousedown', close);
+    return () => { document.removeEventListener('keydown', close); document.removeEventListener('mousedown', close); };
+  }, [roundsOpen]);
   if (!goalStatus) return <button type="button" className={`conversation-goal-mode-toggle${enabled ? ' active' : ''}`} aria-pressed={enabled} disabled={!canEnable} title={enabled ? '已开启目标模式：发送消息将启动目标循环' : '开启目标模式'} onClick={onToggle}>
     <Target size={14}/><span>目标模式</span>
   </button>;
   const label = active
-    ? `目标运行中 · 第 ${goalStatus.iteration} / ${goalStatus.max_iterations} 轮`
+    ? `目标运行中 · 第 ${Math.max(goalStatus.iteration, 1)} / ${goalStatus.max_iterations} 轮`
     : goalStatus.status === 'complete'
       ? '目标已验收通过'
       : goalStatus.status === 'capped'
         ? `目标达到 ${goalStatus.max_iterations} 轮上限`
-        : '目标已中断';
+        : '目标已暂停';
   return <section className={`conversation-goal-status ${goalStatus.status}`} tabIndex={0} role="group" aria-label={label}>
-    <button type="button" className="conversation-goal-status-summary" onClick={onLocate} title="定位目标消息">
-      <Target size={14}/><span><b>{label}</b></span>
+    <button type="button" className="conversation-goal-status-summary" onClick={() => (rounds.length > 1 ? setRoundsOpen(open => !open) : onLocate())} aria-expanded={rounds.length > 1 ? roundsOpen : undefined} title={rounds.length > 1 ? '查看各轮次' : '定位目标消息'}>
+      <Target size={14}/><span><b>{label}</b></span>{rounds.length > 1 && <ChevronDown size={11} className="conversation-goal-rounds-arrow"/>}
     </button>
-    {(active || resumable) && <button type="button" className="conversation-goal-status-control" disabled={pending} aria-label={active ? '停止目标' : '恢复目标'} title={active ? '停止目标' : '恢复目标'} onClick={() => onControl(active ? 'STOP' : 'RESUME')}>
-      {active ? <Square size={11} fill="currentColor"/> : <Play size={12} fill="currentColor"/>}
-    </button>}
+    {active && <button type="button" className="conversation-goal-status-control" disabled={pending} aria-label="暂停目标" title="暂停目标，之后可继续" onClick={() => onControl('STOP')}><Pause size={11} fill="currentColor"/></button>}
+    {continuable && <button type="button" className="conversation-goal-status-control" disabled={pending} aria-label="继续目标" title={goalStatus.status === 'capped' ? '以同一目标重新开始，轮次重新计数' : '继续目标'} onClick={() => onControl(goalStatus.status === 'capped' ? 'RESTART' : 'RESUME')}><Play size={12} fill="currentColor"/></button>}
+    {!active && <button type="button" className="conversation-goal-status-control dismiss" disabled={pending} aria-label="移除目标" title="移除目标，之后可以设定新目标" onClick={() => onControl('DISMISS')}><X size={11}/></button>}
+    {roundsOpen && <div className="conversation-goal-rounds" role="menu" aria-label="目标轮次">
+      {rounds.map(round => <button type="button" role="menuitem" key={round.eventId} onClick={() => { setRoundsOpen(false); onLocateRound(round.eventId); }}>{round.label}</button>)}
+    </div>}
     <aside className="conversation-goal-status-preview" role="tooltip"><header><Target size={13}/><b>{label}</b></header><p>{goalStatus.objective}</p>{goalStatus.verdict?.missing && <small>{`Judge：${goalStatus.verdict.missing}`}</small>}</aside>
   </section>;
 }
@@ -7440,7 +7460,21 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }
     return undefined;
   }, [currentFormalEvents]);
-  const latestGoalStatus = latestGoalEvent?.payload.goal_status;
+  // "Remove goal" only hides a finished/paused goal's status in this browser so a new
+  // one can be set; OpenHands keeps its own goal events, so remember which one is hidden.
+  const [dismissedGoalEvents, setDismissedGoalEvents] = useState<Record<string, string>>(() => {
+    try { return JSON.parse(localStorage.getItem('flowweave.dismissedGoals') ?? '{}') as Record<string, string>; } catch { return {}; }
+  });
+  const dismissGoal = useCallback((bindingId: string, eventId: string) => {
+    setDismissedGoalEvents(current => {
+      const next = { ...current, [bindingId]: eventId };
+      try { localStorage.setItem('flowweave.dismissedGoals', JSON.stringify(next)); } catch { /* per-viewer convenience only */ }
+      return next;
+    });
+  }, []);
+  const latestGoalStatus = selected && latestGoalEvent && dismissedGoalEvents[selected.id] === latestGoalEvent.id
+    ? undefined
+    : latestGoalEvent?.payload.goal_status;
   useEffect(() => {
     setGoalModeEnabled(false);
     setReadinessRefreshRequested(false);
@@ -8115,6 +8149,34 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     },
     onError: error => reportOperationError(selected?.id, error),
   });
+  const handleGoalControl = useCallback((action: 'STOP' | 'RESUME' | 'RESTART' | 'DISMISS') => {
+    if (!selected || !latestGoalStatus) return;
+    if (action === 'DISMISS') {
+      // Hide this goal so a new one can be set; a paused goal is stopped for good first.
+      if (latestGoalEvent) dismissGoal(selected.id, latestGoalEvent.id);
+      return;
+    }
+    // A goal that hit its round cap cannot be resumed natively: start the same objective again.
+    if (action === 'RESTART') goalControl.mutate({ action: 'START', objective: latestGoalStatus.objective });
+    else goalControl.mutate({ action });
+  }, [dismissGoal, goalControl, latestGoalEvent, latestGoalStatus, selected]);
+  // Round starts for the status bar: the goal the person typed, then each Judge follow-up.
+  const goalRoundStarts = useMemo(() => {
+    if (!latestGoalStatus) return [];
+    const objective = latestGoalStatus.objective.trim();
+    const goalMessage = displayedEvents.find(event => event.event_type === 'MESSAGE'
+      && ['user', 'human'].includes(String(event.payload.source ?? '').toLowerCase())
+      && String(event.payload.content ?? '').trim() === objective);
+    const followups = displayedEvents.filter(event => event.payload.goal_followup);
+    return [
+      ...(goalMessage ? [{ eventId: goalMessage.id, label: '第 1 轮' }] : []),
+      ...followups.map((event, index) => ({ eventId: event.id, label: `第 ${index + 2} 轮` })),
+    ];
+  }, [displayedEvents, latestGoalStatus]);
+  const locateGoalRound = useCallback((eventId: string) => {
+    setConversationSearchTargetEventId(eventId);
+    void revealHistoryThrough(eventId);
+  }, [revealHistoryThrough]);
   const canStartGoal = Boolean(
     !goalControl.isPending
     && !latestGoalStatus?.active
@@ -10026,9 +10088,13 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     ? effectiveTurnState
     : foregroundSubmissionAwaitingFormalEvent
       ? 'running'
-      : currentFormalTurnFinished
-        ? 'idle'
-        : effectiveTurnState;
+      : goalLoopContinues
+        // Between two Goal rounds the run reads finished although the loop goes on:
+        // keep the pause control available instead of reading idle.
+        ? 'running'
+        : currentFormalTurnFinished
+          ? 'idle'
+          : effectiveTurnState;
   const interruptableActiveTurn = canInterrupt && currentSessionControlState === 'running';
   const composerControlMode: ComposerControlMode = uncreatedConversationDraft
     ? 'idle'
@@ -10883,6 +10949,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       {conversationSnapshotUnavailable ? <div className="conversation-surface-empty"><b>会话暂时无法加载</b></div> : conversationInitialLoading ? <div className="conversation-surface-empty" role="status"><LoaderCircle className="conversation-activity-spin" size={16}/><b>正在加载会话</b><span>正在读取最新消息与会话状态…</span></div> : selected || conversationDraft ? <ConversationSurface
         key={`transcript:${conversationPresentationScope ?? 'conversation'}`}
         events={displayedEvents}
+        goalLocateEventId={conversationSearchTargetEventId}
         isGenerating={conversationVisuallyActive}
         isPaused={conversationActivity.state === 'paused'}
         isFailed={nativeFailureSettled}
@@ -11031,7 +11098,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
             <Folder size={16}/><span>{currentWorkspaceName}</span>{workspacePathCopied && <small aria-live="polite">已复制</small>}
           </button>
           <ConversationTaskPlan events={displayedEvents} isGenerating={taskPlanLayoutActive} conversationScope={selected?.id ?? conversationDraft?.id}/>
-          {(selected || conversationDraft) && <ConversationGoalMode goalStatus={latestGoalStatus} enabled={goalModeEnabled} canEnable={canStartGoal} pending={goalControl.isPending || bootstrap.isPending} onToggle={() => setGoalModeEnabled(current => !current)} onControl={action => goalControl.mutate({ action })} onLocate={locateGoalMessage}/>}
+          {(selected || conversationDraft) && <ConversationGoalMode goalStatus={latestGoalStatus} enabled={goalModeEnabled} canEnable={canStartGoal} pending={goalControl.isPending || bootstrap.isPending} onToggle={() => setGoalModeEnabled(current => !current)} rounds={goalRoundStarts} onControl={handleGoalControl} onLocate={locateGoalMessage} onLocateRound={locateGoalRound}/>}
         </div>
       </div>}
       {conversationDropActive && <div className="agent-workbench-drop-overlay" role="status" aria-live="polite"><div><Plus size={22}/><b>松开以添加到当前会话</b><span>支持附件、工作区文件和会话引用</span></div></div>}

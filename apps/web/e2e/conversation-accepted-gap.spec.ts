@@ -229,13 +229,13 @@ test('goal mode starts a native goal from plain text and exposes stop and resume
 
   const running = page.getByRole('group', { name: '目标运行中 · 第 1 / 3 轮' });
   await expect(running).toBeVisible();
-  await running.getByRole('button', { name: '停止目标' }).click();
+  await running.getByRole('button', { name: '暂停目标' }).click();
   await expect.poll(() => controls.length).toBe(2);
   expect(controls[1]).toEqual({ action: 'STOP' });
 
-  const interrupted = page.getByRole('group', { name: '目标已中断' });
+  const interrupted = page.getByRole('group', { name: '目标已暂停' });
   await expect(interrupted).toBeVisible();
-  await interrupted.getByRole('button', { name: '恢复目标' }).click();
+  await interrupted.getByRole('button', { name: '继续目标' }).click();
   await expect.poll(() => controls.length).toBe(3);
   expect(controls[2]).toEqual({ action: 'RESUME' });
 });
