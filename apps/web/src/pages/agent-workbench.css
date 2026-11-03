@@ -771,3 +771,8 @@
 .agent-image-toolbar .scale{min-width:46px;font-variant-numeric:tabular-nums}
 .agent-image-toolbar .count{padding:0 10px 0 8px;border-left:1px solid #e1e8e3;margin-left:2px;color:#6b7b71;font-size:11px;font-variant-numeric:tabular-nums}
 @media(prefers-reduced-motion:reduce){.agent-image-nav{transition:none}}
+
+/* 预览期间手势只作用于预览：不把滚动或两指横滑传给页面（避免触发浏览器后退/页面缩放） */
+.agent-file-preview-backdrop,.agent-file-preview-dialog{overscroll-behavior:contain;touch-action:none}
+.agent-file-preview-dialog-content{touch-action:auto}
+.agent-image-preview-viewport{overscroll-behavior:contain}

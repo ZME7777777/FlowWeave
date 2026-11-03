@@ -92,3 +92,44 @@ test('images of one conversation can be stepped with buttons and arrow keys, and
   await dialog.getByRole('button', { name: '还原大小' }).click();
   await expect.poll(scale).toBeCloseTo(1, 2);
 });
+
+test('pinch (ctrl+wheel) and browser zoom shortcuts are consumed by the preview instead of zooming the page', async ({ page }) => {
+  await open(page);
+  await page.getByRole('button', { name: /图片一\.png/ }).first().click();
+  const dialog = page.getByRole('dialog', { name: '文件预览' });
+  await expect(dialog.getByRole('heading', { name: '图片一.png' })).toBeVisible();
+  const image = dialog.locator('.agent-image-preview-viewport img');
+  const scale = async () => (await image.evaluate(node => new DOMMatrix(getComputedStyle(node).transform).a));
+
+  // A passive observer on window runs after the preview's handler: if the preview did not call
+  // preventDefault, the browser would zoom the whole page together with the image.
+  await page.evaluate(() => {
+    (window as unknown as { __wheel: boolean[] }).__wheel = [];
+    window.addEventListener('wheel', event => { if (event.ctrlKey || event.metaKey) (window as unknown as { __wheel: boolean[] }).__wheel.push(event.defaultPrevented); }, { passive: true });
+  });
+  await image.hover();
+  await page.keyboard.down('Control');
+  await page.mouse.wheel(0, -120);
+  await page.keyboard.up('Control');
+  await expect.poll(scale).toBeGreaterThan(1.05);
+  expect(await page.evaluate(() => (window as unknown as { __wheel: boolean[] }).__wheel)).toEqual([true]);
+
+  // Pinching over the header / toolbar (outside the image) must not zoom the page either.
+  await dialog.getByRole('heading', { name: '图片一.png' }).hover();
+  await page.keyboard.down('Control');
+  await page.mouse.wheel(0, -120);
+  await page.keyboard.up('Control');
+  expect(await page.evaluate(() => (window as unknown as { __wheel: boolean[] }).__wheel)).toEqual([true, true]);
+
+  // Cmd/Ctrl + = / - / 0 zoom the image, not the page.
+  const before = await scale();
+  const defaults: boolean[] = [];
+  await page.exposeFunction('recordKey', (prevented: boolean) => defaults.push(prevented));
+  await page.evaluate(() => window.addEventListener('keydown', event => { if ((event.metaKey || event.ctrlKey) && ['=', '+', '-', '0'].includes(event.key)) (window as unknown as { recordKey: (v: boolean) => void }).recordKey(event.defaultPrevented); }));
+  await page.keyboard.press('Control+=');
+  await expect.poll(scale).toBeGreaterThan(before);
+  await page.keyboard.press('Control+-');
+  await page.keyboard.press('Control+0');
+  await expect.poll(scale).toBeCloseTo(1, 2);
+  expect(defaults).toEqual([true, true, true]);
+});
