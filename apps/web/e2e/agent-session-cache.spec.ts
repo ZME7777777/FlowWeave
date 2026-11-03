@@ -1774,23 +1774,28 @@ test('Goal status bar lists the rounds and removing a stopped goal allows a new 
 
   const status = page.locator('.conversation-goal-status');
   await expect(status).toContainText('目标已暂停');
-  await status.getByRole('button', { name: /目标/ }).first().click();
-  // The rounds open as a small popover that reads like the task list, not native buttons.
-  const rounds = page.getByRole('dialog', { name: '目标轮次' });
-  await expect(rounds).toBeVisible();
-  await expect(rounds.getByRole('listitem')).toHaveCount(2);
+  // Nothing opens on click: the details appear on hover, as the goal text plus every round.
+  const detail = status.getByRole('group', { name: '目标详情' });
+  await expect(detail).toBeHidden();
+  await status.getByRole('button', { name: /目标已暂停/ }).hover();
+  await expect(detail).toBeVisible();
+  await expect(detail).toContainText('找到测试分支');
+  const rounds = detail.getByRole('listitem');
+  await expect(rounds).toHaveCount(2);
   // Per-round time is kept even though the goal is one process with a single total.
-  await expect(rounds.getByRole('listitem').nth(0)).toContainText('第 1 轮');
-  await expect(rounds.getByRole('listitem').nth(0)).toContainText('5分51秒');
-  await expect(rounds.getByRole('listitem').nth(1)).toContainText('第 2 轮');
-  await expect(rounds.getByRole('listitem').nth(1)).toContainText('57秒');
-  await page.screenshot({ path: '/tmp/goal-rounds-popover.png' });
-  await page.keyboard.press('Escape');
-  await expect(rounds).toHaveCount(0);
-  await status.getByRole('button', { name: /目标/ }).first().click();
-  await expect(rounds).toBeVisible();
-  await page.mouse.click(5, 5);
-  await expect(rounds).toHaveCount(0);
+  await expect(rounds.nth(0)).toContainText('第 1 轮');
+  await expect(rounds.nth(0)).toContainText('5分51秒');
+  await expect(rounds.nth(1)).toContainText('第 2 轮');
+  await expect(rounds.nth(1)).toContainText('57秒');
+  await expect(page.getByRole('dialog', { name: '目标轮次' })).toHaveCount(0);
+
+  // The goal text jumps to the goal message; a round jumps to where that round starts.
+  const goalMessage = page.locator('[data-conversation-event-id="goal-start"]');
+  await detail.getByRole('button', { name: '定位目标消息' }).click();
+  await expect(goalMessage).toHaveClass(/conversation-search-target/);
+  await status.getByRole('button', { name: /目标已暂停/ }).hover();
+  await detail.getByRole('button', { name: '定位第 2 轮' }).click();
+  await expect(page.locator('[data-conversation-event-id="judge-followup"]')).toHaveClass(/conversation-search-target/);
 
   // Each control icon is centred inside its square background.
   const control = status.getByRole('button', { name: '移除目标' });

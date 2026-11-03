@@ -4028,21 +4028,6 @@ function ConversationGoalMode({ goalStatus, enabled, canEnable, pending, rounds,
   // A paused goal resumes with its rounds kept; a goal that hit the round cap cannot be
   // resumed natively, so "continue" starts the same objective again.
   const continuable = goalStatus?.status === 'interrupted' || goalStatus?.status === 'capped';
-  const [roundsOpen, setRoundsOpen] = useState(false);
-  const summaryRef = useRef<HTMLButtonElement>(null);
-  const roundsRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!roundsOpen) return;
-    const close = (event: Event) => {
-      if (event instanceof KeyboardEvent) { if (event.key === 'Escape') setRoundsOpen(false); return; }
-      const target = event.target;
-      if (target instanceof Node && (roundsRef.current?.contains(target) || summaryRef.current?.contains(target))) return;
-      setRoundsOpen(false);
-    };
-    document.addEventListener('keydown', close);
-    document.addEventListener('mousedown', close);
-    return () => { document.removeEventListener('keydown', close); document.removeEventListener('mousedown', close); };
-  }, [roundsOpen]);
   if (!goalStatus) return <button type="button" className={`conversation-goal-mode-toggle${enabled ? ' active' : ''}`} aria-pressed={enabled} disabled={!canEnable} title={enabled ? '已开启目标模式：发送消息将启动目标循环' : '开启目标模式'} onClick={onToggle}>
     <Target size={14}/><span>目标模式</span>
   </button>;
@@ -4054,25 +4039,28 @@ function ConversationGoalMode({ goalStatus, enabled, canEnable, pending, rounds,
         ? `目标达到 ${goalStatus.max_iterations} 轮上限`
         : '目标已暂停';
   return <section className={`conversation-goal-status ${goalStatus.status}`} tabIndex={0} role="group" aria-label={label}>
-    <button type="button" ref={summaryRef} className="conversation-goal-status-summary" onClick={() => (rounds.length > 1 ? setRoundsOpen(open => !open) : onLocate())} aria-expanded={rounds.length > 1 ? roundsOpen : undefined} title={rounds.length > 1 ? '查看各轮次' : '定位目标消息'}>
-      <Target size={14}/><span><b>{label}</b></span>{rounds.length > 1 && <ChevronDown size={11} className="conversation-goal-rounds-arrow"/>}
+    <button type="button" className="conversation-goal-status-summary" onClick={onLocate} aria-describedby="conversation-goal-status-detail">
+      <Target size={14}/><span><b>{label}</b></span>
     </button>
     {active && <button type="button" className="conversation-goal-status-control" disabled={pending} aria-label="暂停目标" title="暂停目标，之后可继续" onClick={() => onControl('STOP')}><Pause size={11} fill="currentColor"/></button>}
     {continuable && <button type="button" className="conversation-goal-status-control" disabled={pending} aria-label="继续目标" title={goalStatus.status === 'capped' ? '以同一目标重新开始，轮次重新计数' : '继续目标'} onClick={() => onControl(goalStatus.status === 'capped' ? 'RESTART' : 'RESUME')}><Play size={12} fill="currentColor"/></button>}
     {!active && <button type="button" className="conversation-goal-status-control dismiss" disabled={pending} aria-label="移除目标" title="移除目标，之后可以设定新目标" onClick={() => onControl('DISMISS')}><X size={11}/></button>}
-    {roundsOpen && <ViewportPopover anchor={() => summaryRef.current} placement="top" gap={8} ref={roundsRef} className="conversation-goal-rounds" role="dialog" aria-label="目标轮次">
-      <header><b>目标轮次</b><small>{`${rounds.length} 轮`}</small></header>
-      <ol>
+    <aside id="conversation-goal-status-detail" className="conversation-goal-status-preview" role="group" aria-label="目标详情">
+      <button type="button" className="conversation-goal-detail-objective" onClick={onLocate} aria-label="定位目标消息" title="定位目标消息">
+        <header><Target size={13}/><b>{label}</b></header>
+        <p>{goalStatus.objective}</p>
+      </button>
+      {rounds.length > 0 && <ol className="conversation-goal-detail-rounds" aria-label="目标轮次">
         {rounds.map(round => <li key={round.eventId}>
-          <button type="button" onClick={() => { setRoundsOpen(false); onLocateRound(round.eventId); }}>
+          <button type="button" onClick={() => onLocateRound(round.eventId)} aria-label={`定位${round.label}`} title={`定位${round.label}`}>
             <span className={`conversation-task-status-icon ${round.current && active ? 'in_progress' : 'done'}`} aria-hidden="true">{round.current && active ? <i/> : <Check size={10}/>}</span>
             <span><b>{round.label}</b></span>
             <em>{round.seconds !== undefined ? formatGoalRoundDuration(round.seconds) : round.current && active ? '进行中' : ''}</em>
           </button>
         </li>)}
-      </ol>
-    </ViewportPopover>}
-    <aside className="conversation-goal-status-preview" role="tooltip"><header><Target size={13}/><b>{label}</b></header><p>{goalStatus.objective}</p>{goalStatus.verdict?.missing && <small>{`Judge：${goalStatus.verdict.missing}`}</small>}</aside>
+      </ol>}
+      {goalStatus.verdict?.missing && !goalStatus.verdict.complete && <small>{`尚未满足：${goalStatus.verdict.missing}`}</small>}
+    </aside>
   </section>;
 }
 
