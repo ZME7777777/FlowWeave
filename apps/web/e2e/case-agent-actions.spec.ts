@@ -32,7 +32,8 @@ test('case workspace lists every Agent action and surfaces a pending question', 
   const dialog = page.getByRole('dialog', { name: 'Agent 动作' });
   await expect(dialog).toContainText('向人工提问');
   await expect(dialog).toContainText('接受节点结果');
-  await expect(dialog).toContainText('结果可信，接受');
+  await expect(dialog).not.toContainText('结果可信，接受');
+  await expect(dialog.getByRole('button', { name: '在会话中查看' }).first()).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(dialog).toBeHidden();
   await question.getByRole('button', { name: '已回答，继续' }).click();
