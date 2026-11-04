@@ -5006,9 +5006,13 @@ function WorkspaceDrawer({
   const workspaceGitRepositoriesQuery = useQuery({
     queryKey: sessionQueryKey(host, 'workspace-git-summary-repositories', workspaceId, bindingId, workDirectoryId),
     queryFn: () => api.gitRepositories(workspaceId, gitOptions),
-    enabled: Boolean(details?.working_directory),
-    staleTime: Infinity,
-    refetchOnWindowFocus: false,
+    // Branch badges are relevant only while the file tree is visible. Recheck
+    // that small read periodically and on focus, rather than polling hidden tools.
+    enabled: Boolean(open && filesTabIsActive && details?.working_directory),
+    staleTime: 15_000,
+    refetchInterval: 30_000,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: 'always',
     retry: (count, error) => !(error instanceof ApiError && (error.status < 500 || error.status === 503)) && count < 2,
   });
   const workspaceRepositoryBranches = useMemo(() => new Map((workspaceGitRepositoriesQuery.data?.repositories ?? []).filter(item => item.branch).map(item => [item.path.replace(/\/+$/, ''), item.branch as string])), [workspaceGitRepositoriesQuery.data?.repositories]);
@@ -5026,6 +5030,19 @@ function WorkspaceDrawer({
   });
   const [gitSummaryRefreshError, setGitSummaryRefreshError] = useState('');
   const [gitSummaryRefreshing, setGitSummaryRefreshing] = useState(false);
+  const [gitBranchRefreshing, setGitBranchRefreshing] = useState(false);
+  const refreshGitBranches = async () => {
+    if (gitBranchRefreshing) return;
+    setGitBranchRefreshing(true);
+    try {
+      await Promise.all([
+        workspaceGitRepositoriesQuery.refetch(),
+        ...(gitSidebarVisible ? [gitRepositoriesQuery.refetch()] : []),
+      ]);
+    } finally {
+      setGitBranchRefreshing(false);
+    }
+  };
   const refreshGitSummary = async () => {
     if (!workspaceGitRepository || gitSummaryRefreshing) return;
     setGitSummaryRefreshError('');
@@ -5121,7 +5138,7 @@ function WorkspaceDrawer({
               setGitContextPath(details.working_directory);
               setGitSidebarRequested(fullScreen);
             }}>
-              <header className="agent-file-tree-toolbar"><span>{selectedEntryPaths.size ? `已选 ${selectedEntryPaths.size} 项` : '文件'}</span><div className="agent-file-tree-actions"><button type="button" title="在文件栏中定位当前文件" aria-label="在文件栏中定位当前文件" disabled={!selectedFile} onClick={() => { if (selectedFile) openSourcePath(selectedFile, sourceFileNavigation?.path === selectedFile ? sourceFileNavigation.line : 1); }}><LocateFixed size={13}/></button><input ref={workspaceUploadInput} type="file" multiple hidden onChange={event => { Array.from(event.target.files ?? []).forEach(file => startWorkspaceUpload(file)); event.currentTarget.value = ''; }}/><button type="button" title="上传文件" aria-label="上传文件" disabled={!api.uploadWorkspaceFile} onClick={() => workspaceUploadInput.current?.click()}><ArrowUp size={13}/></button><button type="button" title="新建文件" aria-label="新建文件" onClick={() => createAtActiveDirectory('FILE')}><FileCode2 size={13}/></button><button type="button" title="新建目录" aria-label="新建目录" onClick={() => createAtActiveDirectory('DIRECTORY')}><FolderPlus size={13}/></button><button type="button" className={`agent-file-tree-hidden-toggle${showHiddenFiles ? ' active' : ''}`} title={showHiddenFiles ? '隐藏以 . 开头的文件和目录' : '显示以 . 开头的文件和目录'} aria-label={showHiddenFiles ? '隐藏隐藏文件和目录' : '显示隐藏文件和目录'} aria-pressed={showHiddenFiles} onClick={() => setShowHiddenFiles(current => !current)}>{showHiddenFiles ? <Eye size={13}/> : <EyeOff size={13}/>}</button><button type="button" className={`agent-file-tree-expand-toggle${expandAllFileDirectories ? ' expanded' : ''}`} title={expandAllFileDirectories ? '全部收起' : '全部展开'} aria-label={expandAllFileDirectories ? '全部收起目录' : '全部展开目录'} disabled={!fileDirectoryPaths.length} onClick={toggleAllFileDirectories}>{expandAllFileDirectories ? <ChevronRight size={13}/> : <ChevronDown size={13}/>}</button><button type="button" className="danger" title="删除选中项" aria-label="删除选中项" disabled={!selectedEntryRoots.length} onClick={() => void removeEntries(selectedEntryRoots.map(path => ({ path, kind: visibleFiles.find(item => item.path === path)?.kind ?? 'directory' })))}><Trash2 size={13}/></button></div></header>
+              <header className="agent-file-tree-toolbar"><span>{selectedEntryPaths.size ? `已选 ${selectedEntryPaths.size} 项` : '文件'}</span><div className="agent-file-tree-actions"><button type="button" title="在文件栏中定位当前文件" aria-label="在文件栏中定位当前文件" disabled={!selectedFile} onClick={() => { if (selectedFile) openSourcePath(selectedFile, sourceFileNavigation?.path === selectedFile ? sourceFileNavigation.line : 1); }}><LocateFixed size={13}/></button><input ref={workspaceUploadInput} type="file" multiple hidden onChange={event => { Array.from(event.target.files ?? []).forEach(file => startWorkspaceUpload(file)); event.currentTarget.value = ''; }}/><button type="button" title="上传文件" aria-label="上传文件" disabled={!api.uploadWorkspaceFile} onClick={() => workspaceUploadInput.current?.click()}><ArrowUp size={13}/></button><button type="button" title="新建文件" aria-label="新建文件" onClick={() => createAtActiveDirectory('FILE')}><FileCode2 size={13}/></button><button type="button" title="新建目录" aria-label="新建目录" onClick={() => createAtActiveDirectory('DIRECTORY')}><FolderPlus size={13}/></button><button type="button" className={`agent-file-tree-hidden-toggle${showHiddenFiles ? ' active' : ''}`} title={showHiddenFiles ? '隐藏以 . 开头的文件和目录' : '显示以 . 开头的文件和目录'} aria-label={showHiddenFiles ? '隐藏隐藏文件和目录' : '显示隐藏文件和目录'} aria-pressed={showHiddenFiles} onClick={() => setShowHiddenFiles(current => !current)}>{showHiddenFiles ? <Eye size={13}/> : <EyeOff size={13}/>}</button><button type="button" className={`agent-file-tree-expand-toggle${expandAllFileDirectories ? ' expanded' : ''}`} title={expandAllFileDirectories ? '全部收起' : '全部展开'} aria-label={expandAllFileDirectories ? '全部收起目录' : '全部展开目录'} disabled={!fileDirectoryPaths.length} onClick={toggleAllFileDirectories}>{expandAllFileDirectories ? <ChevronRight size={13}/> : <ChevronDown size={13}/>}</button><button type="button" title="刷新 Git 分支信息" aria-label="刷新 Git 分支信息" disabled={gitBranchRefreshing} onClick={() => void refreshGitBranches()}><RefreshCw className={gitBranchRefreshing ? 'spin' : undefined} size={13}/></button><button type="button" className="danger" title="删除选中项" aria-label="删除选中项" disabled={!selectedEntryRoots.length} onClick={() => void removeEntries(selectedEntryRoots.map(path => ({ path, kind: visibleFiles.find(item => item.path === path)?.kind ?? 'directory' })))}><Trash2 size={13}/></button></div></header>
               {workspaceUploads.length > 0 && <div className="agent-workspace-upload-list" aria-label="工作区上传">{workspaceUploads.map(item => <article key={item.id} className={item.state}><span>{item.file.name}</span><small>{item.state === 'uploading' ? `${item.progress}%` : '上传失败'}</small>{item.state === 'uploading' ? <i style={{ '--upload-progress': `${item.progress}%` } as CSSProperties}/> : <button type="button" onClick={() => retryWorkspaceUpload(item.id)}>重试</button>}</article>)}</div>}
               <WorkspaceFileTree repositoryBranches={workspaceRepositoryBranches} entries={visibleFiles} root={details.working_directory} selectedFile={selectedFile} selectedPaths={selectedEntryPaths} expanded={expandedFilePaths} pagination={new Map([...directoryPages].map(([path, page]) => [path, page.nextCursor]))} loadingDirectories={loadingDirectoryPaths} onExpandedChange={updateExpandedFilePaths} onLoadMore={parentPath => { void loadDirectory(parentPath); }} onSelect={path => { setActiveDirectory(undefined); selectFile(path); }} onSelectionChange={setSelectedEntryPaths} onActivateDirectory={path => { setActiveDirectory(path); setGitContextPath(path); setGitSidebarRequested(Boolean(path)); }} onContextMenu={(path, kind, event) => { setEntryMenu({ path, kind, x: event.clientX, y: event.clientY }); }} fileDownloadUrl={path => fileUrl(workspaceId, path, { bindingId, workDirectoryId, includeHidden: showHiddenFiles, download: true })}/>
             </div>

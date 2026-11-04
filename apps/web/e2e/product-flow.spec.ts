@@ -486,6 +486,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   let upstreamGateAuditEventPersisted = false;
   let gitSyncRequests = 0;
   let gitSynchronizesToRemote = false;
+  let backendGitBranch = 'main';
   // Early workspace reads run before the synchronization gate is installed.
   // eslint-disable-next-line prefer-const
   let gitSyncGate: Promise<void> | undefined;
@@ -614,7 +615,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
         repositories: [
           { path: '/runtime/workspace/project', remote: 'https://example.test/repo.git', branch: 'main', head: '1234567890ab', upstream: 'origin/main', ahead: gitSynchronizesToRemote ? 0 : 2, behind: gitSynchronizesToRemote ? 0 : 1 },
-          { path: '/runtime/workspace/project/backend', remote: 'https://example.test/backend.git', branch: 'main', head: '1234567890ab' },
+          { path: '/runtime/workspace/project/backend', remote: 'https://example.test/backend.git', branch: backendGitBranch, head: '1234567890ab' },
         ],
       }) });
       return;
@@ -1313,6 +1314,11 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await page.getByRole('button', { name: '文件', exact: true }).click();
   await expect(page.getByText('README.md', { exact: true })).toBeVisible();
   await expect(page.locator('.agent-file-tree input[type=checkbox]')).toHaveCount(0);
+  const backendRow = page.locator('.agent-file-tree-row').filter({ hasText: 'backend' });
+  await expect(backendRow.getByText('main', { exact: true })).toBeVisible();
+  backendGitBranch = 'feature/refresh-branch';
+  await page.getByLabel('刷新 Git 分支信息').click();
+  await expect(backendRow.getByText('feature/refresh-branch', { exact: true })).toBeVisible();
   await page.getByLabel('全屏查看工作区工具').click();
   const gitSidebar = page.getByRole('complementary', { name: 'Git' });
   await expect(gitSidebar).toBeVisible();
