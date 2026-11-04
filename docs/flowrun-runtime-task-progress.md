@@ -92,6 +92,47 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 
 ## 6. 任务清单
 
+### FR-704 Fork 后摘要模型凭据持久化与实际压缩回归 — DONE
+
+依赖 FR-585、OPS-12 DONE。固定线上源码 `73e3cd8e` 的故障为原生 Fork
+创建临时 LocalConversation 时遗漏 cipher，模型凭据落盘被脱敏；重新加载后
+主模型切换恢复自身凭据，而摘要器与主模型的 stream／stream_idle_timeout
+差异阻止摘要模型跟随更新。实现已在同一固定源码上完成最小修复：本地
+Fork 继承原 cipher，Agent Server 显式传入目标会话 cipher；默认摘要模型
+跟随切换时忽略两项传输差异，并重新校验摘要器以正确应用流式要求。
+独立摘要模型的模型与认证配置继续参与身份比较。
+
+不可变修复提交为 `9bf1678d86ca51b334c51f3f97677585e5b1064e`，已通过
+`842fefa` 合入 SDK baseline；本次 source lock 固定该纯修复提交，避免携带
+baseline 中其他后续变更。四包保持 `1.54.0`。源码归档 SHA-256 为
+`4481e401c09c23b88402807b99d46bbda8f7e998524d858ee1d35deb5c3a0ab9`。
+同步更新 Dockerfile 构建身份、平台固定身份、provenance 和架构断言。
+
+固定修复源码的 SDK／原生服务定向回归共 60 项通过。新增真实 TCP HTTP
+回归覆盖事件边界 Fork、持久状态重载、模型切换、原生 condense、正式
+Condensation 事件、再次重载、历史保留及继续回复；服务级共用 cipher 与
+每会话独立 cipher 两种方式均通过。相同 HTTP 回归在旧固定源码上于
+condense 复现失败。baseline 合入后的 54 项定向回归通过。
+模型响应使用确定性替身，此结果不代表线上真实模型验收。
+
+不可变归档校验／提取、五项无数据库 source supply／架构检查、Python
+语法检查、目标 Ruff、SDK pre-commit、diff 检查通过。baseline 的动态
+属性扫描改用全部 Git 跟踪 SDK 源文件，以排除原有 build/lib 副本的扫描
+干扰，其余 pre-commit 检查通过。新增镜像探针在固定源码下独立执行通过，
+要求 Fork 重载和切换后确实生成摘要且正式历史保留。完整固定镜像构建、
+镜像内完整契约和实际独立 Agent Runtime 同步尚待 OPS-85。
+当前 Alembic 唯一 head 保持 `0193_case_copy_stepwise_execution`。
+
+### OPS-85 Fork 压缩修复 Runtime 发布与线上验收 — READY
+
+依赖 FR-704 DONE。按正式 runtime 预检和独立 Agent Runtime 基线同步流程，
+从已提交 FlowWeave 版本构建固定镜像并执行完整镜像契约，再核实活跃会话
+门禁并通过正式 replacement 更新既有 generation。核对实际 digest、四包、
+build_git_sha、provenance、source lock 和原会话恢复，以线上新 Fork 的真实
+摘要调用、正式完成事件及继续对话作为验收。既有受损 Fork 已丢失的摘要
+模型凭据还需通过受治理的正式配置恢复途径处理，升级镜像本身不恢复该值。
+发布及线上验收完成前，不宣称线上 Fork 压缩问题已修复。
+
 ### OPS-12 独立 Agent Runtime baseline 同步升级 — DONE
 
 用户明确授权将独立 Agent Runtime 同步到受治理 baseline，并要求后续每次 baseline
