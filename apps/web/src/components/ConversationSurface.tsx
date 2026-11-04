@@ -1679,7 +1679,7 @@ function ActivityEntryRow({ entry, active, reveal = false, paused = false, paren
     {!hideThought && presentation.thought && <article {...thoughtAttributes} className={`conversation-activity-row thought tool-thought tool-${toolVisual}`}><MessageMarkdown reveal={reveal}>{presentation.thought}</MessageMarkdown></article>}
     <SkillLoadRow entry={entry} reveal={reveal} running={toolRunning}/>
   </div>;
-  if (item.kind === 'tool' && toolDetail) return <div className={`conversation-tool-entry tool-${toolVisual}`}>
+  if (item.kind === 'tool' && toolDetail) return <div className={`conversation-tool-entry tool-${toolVisual}`} data-tool-call-id={typeof item.event.payload.tool_call_id === 'string' ? item.event.payload.tool_call_id : undefined}>
     {!hideThought && presentation.thought && <article {...thoughtAttributes} className={`conversation-activity-row thought tool-thought tool-${toolVisual}`}>
       <MessageMarkdown reveal={reveal}>{presentation.thought}</MessageMarkdown>
     </article>}

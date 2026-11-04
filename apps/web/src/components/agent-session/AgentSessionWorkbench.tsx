@@ -5191,6 +5191,8 @@ export interface AgentSessionWorkbenchProps {
   /** Refresh the parent product projection after a native session state change. */
   onHostStateChanged?: () => void;
   autoOpenDraft?: boolean;
+  /** Scroll to and highlight the tool call whose result carries this Case control plan id. */
+  locatePlanId?: string;
   hideDraftTitle?: boolean;
   /** Restrict the workbench to one server-authorized logical work directory. */
   scopeWorkDirectoryId?: string;
@@ -5220,7 +5222,7 @@ export function AgentSessionWorkbench({
   </AgentSessionGatewayContext.Provider>;
 }
 
-function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStateChanged, autoOpenDraft = false, scopeWorkDirectoryId, embedded = false }: Omit<AgentSessionWorkbenchProps, 'gateway' | 'host'>) {
+function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStateChanged, autoOpenDraft = false, locatePlanId, scopeWorkDirectoryId, embedded = false }: Omit<AgentSessionWorkbenchProps, 'gateway' | 'host'>) {
   const { api, features, candidateOutputUrl, fileUrl } = useAgentSessionGateway();
   const pageActive = useRetainedPageActive();
   const pageActiveRef = useRef(pageActive);
@@ -7848,6 +7850,31 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       requestAnimationFrame(() => scrollToTarget('smooth'));
     });
   }, [conversationSearchTargetEventId, displayedEvents, historyCacheRevision, revealHistoryThrough, searchTargetRetry, selected]);
+  const locatePlanAttempts = useRef(0);
+  const [locatePlanTick, setLocatePlanTick] = useState(0);
+  useEffect(() => {
+    if (!locatePlanId || !selected) return;
+    const result = displayedEvents.find(event => event.event_type === 'TOOL_RESULT' && typeof event.payload.tool_call_id === 'string' && String(event.payload.content ?? '').includes(locatePlanId));
+    const callId = result?.payload.tool_call_id as string | undefined;
+    const target = callId ? Array.from(document.querySelectorAll<HTMLElement>('[data-tool-call-id]')).find(item => item.dataset.toolCallId === callId) : undefined;
+    const surface = target?.closest<HTMLElement>('.conversation-surface');
+    if (!target || !surface) {
+      if (locatePlanAttempts.current >= 40) return;
+      locatePlanAttempts.current += 1;
+      const retry = window.setTimeout(() => setLocatePlanTick(count => count + 1), 150);
+      return () => window.clearTimeout(retry);
+    }
+    locatePlanAttempts.current = 0;
+    for (let node: HTMLElement | null = target.parentElement; node; node = node.parentElement) if (node instanceof HTMLDetailsElement) node.open = true;
+    target.classList.remove('conversation-search-target');
+    void target.offsetWidth;
+    target.classList.add('conversation-search-target');
+    window.setTimeout(() => target.classList.remove('conversation-search-target'), 2_600);
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const top = target.getBoundingClientRect().top - surface.getBoundingClientRect().top + surface.scrollTop - 28;
+      surface.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+    }));
+  }, [displayedEvents, locatePlanId, locatePlanTick, selected]);
   // A draft has no OpenHands Conversation or event branch yet. It must never
   // inherit execution/readiness state from the previously selected binding.
   // The sole exception is its own first-message bootstrap, which explicitly
