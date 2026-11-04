@@ -7,7 +7,7 @@ test('wide model configuration lists twelve services and shows one selected deta
     auth_type: 'API_KEY', api_protocol: 'CHAT_COMPLETIONS', has_api_key: true, api_key_hint: '••••key',
     oauth_connected: false, oauth_device_pending: false, connection_state: 'CONNECTED',
     reference_node_count: 0, available_for_nodes: true, available_for_prompt_gates: true, row_version: 1,
-    models: [{ id: `model-${index}`, model_name: 'gpt-test', enabled: true, is_default: true }],
+    models: [{ id: `model-${index}`, model_name: 'gpt-test', enabled: true, is_default: true, supported_reasoning_efforts: ['low', 'medium', 'high'], default_reasoning_effort: 'medium', context_window: 200000 }],
     created_at: '2026-08-31T00:00:00Z', updated_at: '2026-08-31T00:00:00Z',
   }));
   await page.route('**/api/v1/auth/me', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id: 'model-manager', username: 'manager', role: 'USER' }) }));
@@ -19,4 +19,24 @@ test('wide model configuration lists twelve services and shows one selected deta
   await expect(page.locator('.settings-model-detail')).toHaveCount(1);
   await expect(page.getByRole('heading', { name: '模型服务 1', exact: true })).toBeVisible();
   await expect(page.getByRole('navigation', { name: '列表分页' })).toHaveCount(0);
+  const detail = page.getByRole('main', { name: '大模型配置详情' });
+  await expect(detail.locator('.settings-detail-header').getByRole('button', { name: '测试连接', exact: true })).toBeVisible();
+  await expect(detail.getByText('Chat Completions', { exact: true })).toBeVisible();
+  await expect(detail.getByRole('cell', { name: '200,000 tokens', exact: true })).toBeVisible();
+  await expect(detail.getByRole('cell', { name: /low \/ medium \/ high/ })).toBeVisible();
+  for (const width of [1920, 1440, 1024]) {
+    await page.setViewportSize({ width, height: 1080 });
+    const row = page.locator('.settings-resource-row').first();
+    const bounds = await row.evaluate(element => {
+      const name = element.querySelector('.settings-resource-name')!.getBoundingClientRect();
+      const state = element.querySelector('.settings-resource-meta')!.getBoundingClientRect();
+      return { height: element.getBoundingClientRect().height, nameTop: name.top, stateTop: state.top };
+    });
+    expect(bounds.height).toBeLessThanOrEqual(40);
+    expect(Math.abs(bounds.nameTop - bounds.stateTop)).toBeLessThan(6);
+    const layout = await detail.evaluate(element => ({ scroll: element.scrollWidth, client: element.clientWidth }));
+    expect(layout.scroll).toBeLessThanOrEqual(layout.client);
+    await expect(detail.locator('.settings-detail-header').getByRole('button', { name: '测试连接', exact: true })).toBeInViewport();
+    await page.screenshot({ path: test.info().outputPath(`model-layout-${width}.png`) });
+  }
 });
