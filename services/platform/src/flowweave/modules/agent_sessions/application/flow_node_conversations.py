@@ -284,6 +284,8 @@ def _assert_node_session_writable(
             attempt_id=attempt_id,
             binding_id=binding_id,
         )
+        if binding.lifecycle == "DELETE_PENDING":
+            raise DomainError("AGENT_CONVERSATION_DELETE_PENDING", "会话正在删除，无法交互", 409)
         if binding.node_attempt_id is None:
             attempt = _attempt(db, attempt_id)
             run = db.get(FlowRun, flow_run_id)
@@ -601,6 +603,8 @@ def _node_session_dict(db: Session, item: AgentConversationBinding) -> dict[str,
     session model merely because its host lineage differs.
     """
 
+    from flowweave.modules.agent_sessions.application import child_deletion
+
     work_directory_id = (
         db.scalar(
             select(AgentWorkDirectoryVersion.work_directory_id).where(
@@ -612,6 +616,7 @@ def _node_session_dict(db: Session, item: AgentConversationBinding) -> dict[str,
     )
     return {
         "id": item.id,
+        "deletion": child_deletion.projection(db, item.id),
         "child_summary": child_activity.summaries(db, [item])[item.id],
         "display_title": item.display_title,
         "title_state": item.title_state,
@@ -638,7 +643,7 @@ def _node_session_dict(db: Session, item: AgentConversationBinding) -> dict[str,
         # This is deliberately per-conversation: a terminal node source is
         # read-only while its detached native Fork is a normal writable
         # conversation.
-        "write_available": _node_session_write_available(db, item),
+        "write_available": item.lifecycle == "ACTIVE" and _node_session_write_available(db, item),
         "pinned": item.pinned,
         "unread": item.unread,
         "unread_origin": item.unread_origin,
@@ -705,6 +710,8 @@ def _node_session_page_dicts(
     loads.  The selected Conversation obtains its exact readiness from the
     isolated Runtime-read endpoint; other rows remain explicitly unknown.
     """
+    from flowweave.modules.agent_sessions.application import child_deletion
+
     usage_by_binding = usage_projection.for_scope(
         db, field="binding_id", ids=(item.id for item in items)
     )
@@ -749,6 +756,7 @@ def _node_session_page_dicts(
     return [
         {
             "id": item.id,
+            "deletion": child_deletion.projection(db, item.id),
             "child_summary": child_summaries[item.id],
             "display_title": item.display_title,
             "title_state": item.title_state,
@@ -763,7 +771,8 @@ def _node_session_page_dicts(
             # The sidebar uses this bounded DTO, rather than the selected
             # session detail. Keep the detached Fork's independent write and
             # delete permission visible there as well.
-            "write_available": _node_session_write_available(db, item),
+            "write_available": item.lifecycle == "ACTIVE"
+            and _node_session_write_available(db, item),
             "execution_status": "unknown",
             "pinned": item.pinned,
             "unread": item.unread,
@@ -888,7 +897,7 @@ def list_node_session_views(
                     AgentConversationBinding.conversation_scope_id == attempt_id,
                 ),
             ),
-            AgentConversationBinding.lifecycle == "ACTIVE",
+            AgentConversationBinding.lifecycle.in_(("ACTIVE", "DELETE_PENDING")),
             ordinary_conversation_clause(),
             ~AgentConversationBinding.create_idempotency_key.like("gate-sidecar:%"),
         )
@@ -929,15 +938,18 @@ def node_session_activity(
                         AgentConversationBinding.conversation_scope_id == attempt_id,
                     ),
                 ),
-                AgentConversationBinding.lifecycle == "ACTIVE",
+                AgentConversationBinding.lifecycle.in_(("ACTIVE", "DELETE_PENDING")),
                 ordinary_conversation_clause(),
                 ~AgentConversationBinding.create_idempotency_key.like("gate-sidecar:%"),
             )
         )
     )
+    deleting = [item for item in bindings if item.lifecycle == "DELETE_PENDING"]
+    bindings = [item for item in bindings if item.lifecycle == "ACTIVE"]
     if not bindings:
         return {
-            "conversations": [],
+            "conversations": [_node_session_dict(db, item) for item in deleting],
+            "deleting_binding_ids": [item.id for item in deleting],
             "child_activity_parent_binding_ids": [],
             "child_activity": [],
             "running_binding_ids": [],
@@ -1072,12 +1084,14 @@ def node_session_activity(
     )
     activity_bindings = [
         item for item in bindings if item.id in activity_binding_ids or item.unread
-    ]
+    ] + deleting
+    child_summaries.update(child_activity.summaries(db, deleting))
     return {
         "conversations": [
             {**_node_session_dict(db, item), "child_summary": child_summaries[item.id]}
             for item in activity_bindings
         ],
+        "deleting_binding_ids": [item.id for item in deleting],
         "child_activity_parent_binding_ids": sorted(child_activity_parent_ids),
         "child_activity": child_states,
         "running_binding_ids": [item.id for item in running_bindings],
@@ -1128,7 +1142,7 @@ def list_node_session_page(
                 AgentConversationBinding.conversation_scope_id == attempt_id,
             ),
         ),
-        AgentConversationBinding.lifecycle == "ACTIVE",
+        AgentConversationBinding.lifecycle.in_(("ACTIVE", "DELETE_PENDING")),
         ordinary_conversation_clause(),
         ~AgentConversationBinding.create_idempotency_key.like("gate-sidecar:%"),
     )
@@ -1262,7 +1276,7 @@ def list_conversations(db: Session, attempt_id: str) -> list[dict[str, Any]]:
         .where(
             AgentConversationBinding.host_kind == _FLOW_NODE,
             AgentConversationBinding.flow_run_id == run.id,
-            AgentConversationBinding.lifecycle == "ACTIVE",
+            AgentConversationBinding.lifecycle.in_(("ACTIVE", "DELETE_PENDING")),
             ordinary_conversation_clause(),
             ~AgentConversationBinding.create_idempotency_key.like("gate-sidecar:%"),
         )
@@ -1291,7 +1305,7 @@ def list_node_conversations(
         .where(
             AgentConversationBinding.host_kind == _FLOW_NODE,
             AgentConversationBinding.flow_run_id == flow_run_id,
-            AgentConversationBinding.lifecycle == "ACTIVE",
+            AgentConversationBinding.lifecycle.in_(("ACTIVE", "DELETE_PENDING")),
             ordinary_conversation_clause(),
             ~AgentConversationBinding.create_idempotency_key.like("gate-sidecar:%"),
         )
@@ -1343,7 +1357,7 @@ def list_flow_run_conversations(db: Session, flow_run_id: str) -> list[dict[str,
         .where(
             AgentConversationBinding.host_kind == _FLOW_NODE,
             AgentConversationBinding.flow_run_id == flow_run_id,
-            AgentConversationBinding.lifecycle == "ACTIVE",
+            AgentConversationBinding.lifecycle.in_(("ACTIVE", "DELETE_PENDING")),
             ordinary_conversation_clause(),
             ~AgentConversationBinding.create_idempotency_key.like("gate-sidecar:%"),
         )
@@ -3951,14 +3965,18 @@ def decide_node_confirmation(
 
 def delete_node_conversation(
     db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str
-) -> None:
-    _assert_node_session_writable(
-        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
-    )
+) -> dict[str, Any] | None:
     binding = _binding_for_attempt(
         db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id, lock=True
     )
-    require_unlinked_deletion(db, binding.id)
+    from flowweave.modules.agent_sessions.application import child_deletion
+
+    child_deletion.family(db, binding)
+    if binding.lifecycle == "DELETE_PENDING":
+        return child_deletion.request(db, binding)
+    _assert_node_session_writable(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
+    )
     handle = _node_handle(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id)
     readiness = get_runtime().input_readiness(handle)
     if readiness.execution_status.strip().lower() in {
@@ -3975,6 +3993,10 @@ def delete_node_conversation(
             "会话正在运行，请先停止当前回复后再删除",
             409,
         )
+    deletion = child_deletion.request(db, binding)
+    if deletion is not None:
+        return deletion
+    require_unlinked_deletion(db, binding.id)
     get_runtime().delete_conversation(handle)
     context = sandboxes.node_attempt_workspace_context(
         db, flow_run_id=flow_run_id, node_attempt_id=attempt_id
@@ -4011,9 +4033,15 @@ def delete_flow_node_conversation_for_record_cleanup(
         lock=True,
         allow_gate_sidecar=True,
     )
-    require_unlinked_deletion(db, binding.id)
     if expected_node_run_id is not None and binding.node_run_id != expected_node_run_id:
         raise not_found("flow_run_conversation_binding", binding_id)
+    from flowweave.modules.agent_sessions.application import child_deletion
+
+    if child_deletion.cleanup_record_family(
+        db, binding, allow_inactive_runtime=allow_inactive_runtime
+    ):
+        return
+    require_unlinked_deletion(db, binding.id)
     try:
         get_runtime().delete_conversation(_handle(db, binding.id))
     except DomainError as exc:

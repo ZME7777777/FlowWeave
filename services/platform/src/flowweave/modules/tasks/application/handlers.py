@@ -126,6 +126,24 @@ def _deliver_agent_conversation_schedule(
     deliver_occurrence(db, aggregate_id)
 
 
+def _delete_agent_conversation_family(
+    db: Session, _aggregate_id: str, _payload: dict[str, Any], lease: Lease
+) -> None:
+    from flowweave.modules.agent_sessions.application.child_deletion import process
+
+    process(db, lease)
+
+
+def _cleanup_deleted_conversation_attachments(
+    db: Session, _aggregate_id: str, payload: dict[str, Any], _lease: Lease
+) -> None:
+    from flowweave.modules.agent_sessions.application.child_deletion import (
+        sweep_deleted_attachments,
+    )
+
+    sweep_deleted_attachments(db, payload)
+
+
 def _expire_agent_sidebar_conversation(
     db: Session, aggregate_id: str, _payload: dict[str, Any], _lease: Lease
 ) -> None:
@@ -304,6 +322,8 @@ def _expire_plugin_source(
 
 
 HANDLERS: dict[str, Handler] = {
+    "DELETE_AGENT_CONVERSATION_FAMILY": _delete_agent_conversation_family,
+    "CLEANUP_DELETED_CONVERSATION_ATTACHMENTS": _cleanup_deleted_conversation_attachments,
     "EVALUATE_READINESS": _readiness,
     "RUN_GATE_POLICY": _gates,
     "START_RUNTIME": _start_runtime,

@@ -11336,11 +11336,16 @@ def _delete_run_records(db: Session, run_id: str, *, allow_schedule_record: bool
         if attempt_ids
         else []
     )
+    from flowweave.modules.agent_sessions.application.child_relations import (
+        ordinary_conversation_clause,
+    )
+
     conversations = list(
         db.scalars(
             select(AgentConversationBinding).where(
                 AgentConversationBinding.host_kind == "FLOW_NODE",
                 AgentConversationBinding.flow_run_id == run.id,
+                ordinary_conversation_clause(),
             )
         )
     )

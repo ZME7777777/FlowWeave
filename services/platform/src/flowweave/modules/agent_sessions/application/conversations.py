@@ -312,6 +312,8 @@ def _dict(
     *,
     write_available: bool | None = None,
 ) -> dict[str, Any]:
+    from flowweave.modules.agent_sessions.application import child_deletion
+
     work_directory_id = _work_directory_id(db, item)
     if write_available is None:
         write_available = (
@@ -321,6 +323,7 @@ def _dict(
         )
     return {
         "id": item.id,
+        "deletion": child_deletion.projection(db, item.id),
         "child_summary": child_activity.summaries(db, [item])[item.id],
         "display_title": item.display_title,
         "title_state": item.title_state,
@@ -344,7 +347,7 @@ def _dict(
             )
         ],
         "streaming_callback_ready": item.streaming_callback_ready,
-        "write_available": write_available,
+        "write_available": write_available and item.lifecycle == "ACTIVE",
         "pinned": item.pinned,
         "unread": item.unread,
         "unread_origin": item.unread_origin,
@@ -426,6 +429,8 @@ def _page_dicts(
     Runtime-read lane; unselected rows deliberately report ``unknown``.
     """
 
+    from flowweave.modules.agent_sessions.application import child_deletion
+
     usage_by_binding = usage_projection.for_scope(
         db, field="binding_id", ids=(item.id for item in items)
     )
@@ -470,6 +475,7 @@ def _page_dicts(
     return [
         {
             "id": item.id,
+            "deletion": child_deletion.projection(db, item.id),
             "child_summary": child_summaries[item.id],
             "display_title": item.display_title,
             "title_state": item.title_state,
@@ -481,7 +487,7 @@ def _page_dicts(
             "working_directory": item.working_directory,
             "capabilities": capabilities_by_binding[item.id],
             "streaming_callback_ready": item.streaming_callback_ready,
-            "write_available": write_available,
+            "write_available": write_available and item.lifecycle == "ACTIVE",
             "execution_status": "unknown",
             "pinned": item.pinned,
             "unread": item.unread,
@@ -845,8 +851,14 @@ def request_runtime_replacement(db: Session, workspace_id: str) -> dict[str, Any
 
 
 def _handle(
-    db: Session, workspace: AgentWorkspace, binding: AgentConversationBinding
+    db: Session,
+    workspace: AgentWorkspace,
+    binding: AgentConversationBinding,
+    *,
+    allow_delete_pending: bool = False,
 ) -> RuntimeHandle:
+    if binding.lifecycle == "DELETE_PENDING" and not allow_delete_pending:
+        raise DomainError("AGENT_CONVERSATION_DELETE_PENDING", "会话正在删除，无法交互", 409)
     runtime = db.scalar(
         select(AgentWorkspaceRuntime).where(AgentWorkspaceRuntime.workspace_id == workspace.id)
     )
@@ -877,6 +889,11 @@ def _handle(
         workspace_root=user_runtime_project_root(workspace.id),
         protocol_profile=parent_protocol_profile(binding),
     )
+
+
+def deletion_runtime_handle(db: Session, binding: AgentConversationBinding) -> RuntimeHandle:
+    """Resolve the native cleanup route while ordinary interaction is fenced."""
+    return _handle(db, _workspace(db, binding.host_id), binding, allow_delete_pending=True)
 
 
 def usage_reconciliation_handle(db: Session, binding: AgentConversationBinding) -> RuntimeHandle:
@@ -932,7 +949,7 @@ def list_conversations(db: Session, workspace_id: str) -> list[dict[str, Any]]:
             select(AgentConversationBinding)
             .where(
                 AgentConversationBinding.workspace_id == workspace_id,
-                AgentConversationBinding.lifecycle == "ACTIVE",
+                AgentConversationBinding.lifecycle.in_(("ACTIVE", "DELETE_PENDING")),
                 ordinary_conversation_clause(),
                 ~AgentConversationBinding.id.in_(
                     select(AgentSidebarConversation.sidebar_binding_id)
@@ -957,7 +974,7 @@ def list_pinned_conversations(
             select(AgentConversationBinding)
             .where(
                 AgentConversationBinding.workspace_id == workspace_id,
-                AgentConversationBinding.lifecycle == "ACTIVE",
+                AgentConversationBinding.lifecycle.in_(("ACTIVE", "DELETE_PENDING")),
                 ordinary_conversation_clause(),
                 AgentConversationBinding.pinned.is_(True),
                 ~AgentConversationBinding.id.in_(
@@ -992,7 +1009,7 @@ def conversation_activity(
         db.scalars(
             select(AgentConversationBinding).where(
                 AgentConversationBinding.workspace_id == workspace_id,
-                AgentConversationBinding.lifecycle == "ACTIVE",
+                AgentConversationBinding.lifecycle.in_(("ACTIVE", "DELETE_PENDING")),
                 ordinary_conversation_clause(),
                 ~AgentConversationBinding.id.in_(
                     select(AgentSidebarConversation.sidebar_binding_id)
@@ -1000,9 +1017,12 @@ def conversation_activity(
             )
         )
     )
+    deleting = [item for item in bindings if item.lifecycle == "DELETE_PENDING"]
+    bindings = [item for item in bindings if item.lifecycle == "ACTIVE"]
     if not bindings:
         return {
-            "conversations": [],
+            "conversations": _page_dicts(db, deleting, write_available=False),
+            "deleting_binding_ids": [item.id for item in deleting],
             "child_activity_parent_binding_ids": [],
             "child_activity": [],
             "running_binding_ids": [],
@@ -1132,7 +1152,8 @@ def conversation_activity(
     )
     activity_bindings = [
         item for item in bindings if item.id in activity_binding_ids or item.unread
-    ]
+    ] + deleting
+    child_summaries.update(child_activity.summaries(db, deleting))
     return {
         "conversations": [
             {**item, "child_summary": child_summaries[item["id"]]}
@@ -1140,6 +1161,7 @@ def conversation_activity(
                 db, activity_bindings, write_available=_workspace_write_available(db, workspace)
             )
         ],
+        "deleting_binding_ids": [item.id for item in deleting],
         "child_activity_parent_binding_ids": sorted(child_activity_parent_ids),
         "child_activity": child_states,
         "running_binding_ids": [item.id for item in running_bindings],
@@ -1187,7 +1209,7 @@ def list_management_conversations(
             select(AgentConversationBinding)
             .where(
                 AgentConversationBinding.workspace_id == workspace_id,
-                AgentConversationBinding.lifecycle == "ACTIVE",
+                AgentConversationBinding.lifecycle.in_(("ACTIVE", "DELETE_PENDING")),
                 ordinary_conversation_clause(),
                 ~AgentConversationBinding.id.in_(
                     select(AgentSidebarConversation.sidebar_binding_id)
@@ -1242,7 +1264,7 @@ def delete_management_conversations(
         db.scalars(
             select(AgentConversationBinding.id).where(
                 AgentConversationBinding.workspace_id == workspace_id,
-                AgentConversationBinding.lifecycle == "ACTIVE",
+                AgentConversationBinding.lifecycle.in_(("ACTIVE", "DELETE_PENDING")),
                 ordinary_conversation_clause(),
                 ~AgentConversationBinding.id.in_(
                     select(AgentSidebarConversation.sidebar_binding_id)
@@ -1253,6 +1275,7 @@ def delete_management_conversations(
         )
     )
     deleted_ids: list[str] = []
+    pending_ids: list[str] = []
     skipped: list[dict[str, str]] = []
     seen: set[str] = set()
     for binding_id in binding_ids:
@@ -1263,7 +1286,7 @@ def delete_management_conversations(
             skipped.append({"id": binding_id, "code": "AGENT_CONVERSATION_SCOPE_MISMATCH"})
             continue
         try:
-            delete_conversation(
+            deletion = delete_conversation(
                 db,
                 workspace_id,
                 binding_id,
@@ -1272,8 +1295,11 @@ def delete_management_conversations(
         except DomainError as exc:
             skipped.append({"id": binding_id, "code": exc.code})
         else:
-            deleted_ids.append(binding_id)
-    return {"deleted_ids": deleted_ids, "skipped": skipped}
+            if deletion is not None:
+                pending_ids.append(binding_id)
+            else:
+                deleted_ids.append(binding_id)
+    return {"deleted_ids": deleted_ids, "pending_ids": pending_ids, "skipped": skipped}
 
 
 def list_conversation_page(
@@ -1289,7 +1315,7 @@ def list_conversation_page(
     workspace = _workspace(db, workspace_id)
     query = select(AgentConversationBinding).where(
         AgentConversationBinding.workspace_id == workspace_id,
-        AgentConversationBinding.lifecycle == "ACTIVE",
+        AgentConversationBinding.lifecycle.in_(("ACTIVE", "DELETE_PENDING")),
         ordinary_conversation_clause(),
         ~AgentConversationBinding.id.in_(select(AgentSidebarConversation.sidebar_binding_id)),
     )
@@ -2531,9 +2557,16 @@ def set_conversation_unread(
 
 def delete_conversation(
     db: Session, workspace_id: str, binding_id: str, idempotency_key: str
-) -> None:
+) -> dict[str, Any] | None:
     workspace = _workspace(db, workspace_id)
     item = _binding(db, workspace_id, binding_id, lock=True)
+    from flowweave.modules.agent_sessions.application import child_deletion
+
+    members = child_deletion.family(db, item)
+    if members or child_deletion.projection(db, item.id) is not None:
+        if item.lifecycle != "DELETE_PENDING":
+            assert_conversation_stopped(db, workspace_id, binding_id, lock=False)
+        return child_deletion.request(db, item)
     require_unlinked_deletion(db, item.id)
     existing = db.scalar(
         select(AgentConversationCommand).where(
@@ -2559,7 +2592,7 @@ def delete_conversation(
     )
     db.add(command)
     try:
-        get_runtime().delete_conversation(_handle(db, workspace, item))
+        get_runtime().delete_conversation(_handle(db, workspace, item, allow_delete_pending=True))
     except DomainError as exc:
         # A durable binding can outlive a failed bootstrap or a crashed Runtime
         # generation.  Once OpenHands authoritatively reports that the native

@@ -1470,7 +1470,7 @@ async def delete_agent_conversation(
     container: ContainerDep,
     idempotency_key: IdempotencyKey = None,
 ) -> Response:
-    await run_blocking_lifecycle(
+    deletion = await run_blocking_lifecycle(
         container,
         lambda session: conversations.delete_conversation(
             session,
@@ -1479,7 +1479,7 @@ async def delete_agent_conversation(
             _key(idempotency_key, "delete-agent-conversation", binding_id),
         ),
     )
-    return Response(status_code=204)
+    return JSONResponse(deletion, status_code=202) if deletion else Response(status_code=204)
 
 
 class HistoryGrantWrite(_Write):

@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`CHILD CONVERSATIONS IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-724`
+> 下一可执行切片：`FR-725`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 > 子会话设计：`docs/agent-child-conversations-design.md`
@@ -890,12 +890,44 @@ SYSTEM 异常、手工普通未读、系统已读确认沿用既有规则；行�
 replacement 的实现／故障验证分别由 FR-724／725 承担，前端由 FR-714–716 承担。
 用户已授权完成全部切片，按片独立验证与提交后继续；全部完成后由用户决定集成与发布。
 
-### FR-724 父删除围栏与逐子恢复清理 — READY
+### FR-724 父删除围栏与逐子恢复清理 — DONE
 
 依赖：FR-713 DONE。父删除围栏新增创建，逐子持久清理与故障重试，保留删除中父入口；
 两宿主直接删除与 FlowRun 记录清理共用，原生删除缺失幂等，绝不删除共享工作目录。
 
-### FR-725 父子原身份 Runtime 替换恢复 — PENDING
+实现（2026-11-05）：含已治理子会话的父删除转为持久后台任务，返回 202／原任务 ID 和
+原子冻结的 child binding 清单；父行锁与 FR-723 预留共用创建围栏，父／子 DELETE_PENDING
+关闭普通交互。两宿主普通／分页／活动列表保留父入口与安全任务投影，可继续查看子关联、
+重试同一失败任务；无子关联删除维持同步 204，批量管理将 pending 与 deleted 分开。
+
+任务在原生 I/O 前后使用短事务和 lease／generation／原父子定位复核；每子先删除、再以
+原生父删除等待在途准备／释放完成、最后逐子复核清理关系、附件与绑定。原生明确 404
+可重复收口，超时不丢定位，部分成功逐步提交；任务审计独立于 binding，并在父仍删除中时
+排除终态任务回收。固定 b9f976b2 的 `_governed_child_operation` 与 `delete_conversation`
+共用父生命周期锁，是第二次子清理覆盖已受理在途 prepare 的源码依据，未修改 SDK。
+
+FlowRun 记录删除仅遍历普通父记录，复用相同原生围栏并保留现有外层事务，不提前提交
+NodeRun／Attempt 清理；仅完整 Runtime owner 记录允许沿用已授权 inactive 清理路径，
+借用 Runtime 不得因不可达丢弃子定位。私有附件立即精确清理并登记独立十分钟兜底回收，
+覆盖 Runtime 级文件 API 的晚到上传；已存在正式 binding 时不清理，保护共享工程、其他
+UUID 的附件和持久 Workspace。新任务均进入正常维护队列；新任务和两种记录清理任务
+在 Worker 恢复任务 owner 后执行。
+
+验收：新增隔离 PostgreSQL／真实文件定向 37 passed，三个 Workspace 参数因仅适用
+FlowRun 记录删除而跳过；覆盖两宿主创建／写入围栏、可见删除中入口、先子后父再复核、
+原生调用前／成功后超时、原任务重试、租约丢失、附件部分失败、晚到文件与既有 binding
+保护、借用 Runtime fail-closed、记录事务回滚及正常 Worker 执行器／用户恢复。现有子会话、
+关联、活动和任务回归 152 passed／6 failed；Worker lane 回归 8 passed／2 failed。
+HEAD 隔离副本的任务／lane cohort 得到同样八个失败，涉及旧模型／Runtime 夹具、临时聊天
+未注册 lane 及单 Worker 配置夹具校验，未计为通过。本片共 197 个不同用例通过，受控
+Runtime 响应不代表真实镜像或模型验收；原生 TCP 全链路继续由 FR-717 承担。
+
+新删除模块 Pyright 零错误，九个旧模块的 314 条诊断与 HEAD 按文件／规则／消息一致。
+受影响 Ruff 与定向格式、diff／状态／依赖检查通过；node router 保留原有 13 条 E501。
+Alembic 保持唯一 head 0179，未新增迁移、修改 SDK／source lock／镜像或前端。下一片
+FR-725 处理原父子身份替换恢复；按用户指示继续逐片完成。
+
+### FR-725 父子原身份 Runtime 替换恢复 — READY
 
 依赖：FR-724 DONE。replacement 核对原父子会话及正式事件身份，用户恢复路由与冻结
 父工具授权分开，过期 generation 不得重获权限。

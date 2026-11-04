@@ -23,6 +23,7 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from flowweave.bootstrap.container import Container
@@ -1019,13 +1020,13 @@ async def set_node_session_unread(
 async def delete_node_session(
     flow_run_id: str, attempt_id: str, binding_id: str, container: ContainerDep
 ) -> Response:
-    await run_blocking_lifecycle(
+    deletion = await run_blocking_lifecycle(
         container,
         lambda session: agent_sessions.flow_node_conversations.delete_node_conversation(
             session, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
         ),
     )
-    return Response(status_code=204)
+    return JSONResponse(deletion, status_code=202) if deletion else Response(status_code=204)
 
 
 @router.get(f"{_BASE}/{{binding_id}}/events")
