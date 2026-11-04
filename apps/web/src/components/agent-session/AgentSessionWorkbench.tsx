@@ -7861,7 +7861,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (!target || !surface) {
       if (locatePlanAttempts.current >= 40) return;
       locatePlanAttempts.current += 1;
-      const retry = window.setTimeout(() => setLocatePlanTick(count => count + 1), 150);
+      // Completed work is folded and its rows are not mounted; open them one at a time until found.
+      if (result) document.querySelector<HTMLElement>('details.conversation-process-summary:not([open]) > summary')?.click();
+      const retry = window.setTimeout(() => setLocatePlanTick(count => count + 1), 250);
       return () => window.clearTimeout(retry);
     }
     locatePlanAttempts.current = 0;
