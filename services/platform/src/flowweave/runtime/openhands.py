@@ -4503,6 +4503,7 @@ class OpenHandsRuntime:
             result=self._result_from_events(handle, items, cursor),
             task_usage=self._task_usage_snapshots(state, source_cursor=state_cursor),
             usage=self._usage_snapshots(state),
+            stored_event_count=self._stored_event_count(state),
             context=self._conversation_context_from_state(state),
             readiness=self._input_readiness_from_state(state),
         )
@@ -4621,6 +4622,7 @@ class OpenHandsRuntime:
                 else ()
             ),
             usage=self._usage_snapshots(state) if state is not None else (),
+            stored_event_count=self._stored_event_count(state),
             context=self._conversation_context_from_state(state) if state is not None else None,
             readiness=self._input_readiness_from_state(state) if state is not None else None,
         )
@@ -5718,6 +5720,19 @@ class OpenHandsRuntime:
             content_type=response.headers.get("content-type", "application/octet-stream"),
             content=response.content,
         )
+
+    @staticmethod
+    def _stored_event_count(state: dict[str, Any] | None) -> int | None:
+        value = (state or {}).get("stored_event_count")
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise DomainError(
+                "RUNTIME_EVENT_COUNT_INVALID",
+                "OpenHands returned an invalid stored event count",
+                502,
+            )
+        return value
 
     @classmethod
     def _conversation_context_from_state(cls, state: dict[str, Any]) -> dict[str, int | str | None]:

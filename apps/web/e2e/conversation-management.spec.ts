@@ -592,3 +592,61 @@ test('archived workspace actions stay together on a short viewport', async ({ pa
   expect(await page.evaluate(() => document.documentElement.scrollHeight <= innerHeight + 1)).toBe(true);
   await page.screenshot({ path: '../../.tmp/ops74/archived-workspace-delete.png' });
 });
+
+
+test('management shows event counts and cumulative tokens with unknown values last in both sort directions', async ({ page }) => {
+  const now = new Date().toISOString();
+  const items = Array.from({ length: 25 }, (_, index) => ({
+    id: `size-${index}`, display_title: `规模会话 ${index}`, pinned: false, unread: false,
+    archived_at: index === 24 ? now : null, created_at: now, updated_at: now,
+    stored_event_count: index === 0 ? null : index === 1 ? 0 : index === 24 ? 12000 : index,
+    total_tokens: index === 0 ? null : index === 1 ? 0 : index === 24 ? 86245124 : index * 1000,
+  }));
+  const paths: string[] = [];
+  await page.route('**/api/v1/**', route => {
+    const path = new URL(route.request().url()).pathname;
+    paths.push(path);
+    if (path.endsWith('/auth/me')) return respond(route, { id: 'size-user', username: 'size-user', role: 'USER', can_use_agent_sessions: true });
+    if (path.endsWith('/agent-workspaces/default')) return respond(route, { id: 'size-workspace', display_name: '默认工作区', desired_state: 'RUNNING', updated_at: now });
+    if (path.endsWith('/work-directories')) return respond(route, { root: { display_name: '根工作区' }, items: [] });
+    if (path.endsWith('/conversation-management')) return respond(route, { items, truncated: false });
+    if (path.endsWith('/deletion-jobs')) return respond(route, { items: [] });
+    return respond(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'AI 工作台', exact: true }).click();
+  await page.getByRole('button', { name: '会话管理', exact: true }).click();
+  const table = page.locator('.conversation-management-table');
+  const rows = table.locator('tbody tr');
+  await expect(rows).toHaveCount(20);
+  await expect(rows.first().getByLabel('事件数待统计')).toHaveText('—');
+  await expect(rows.nth(1).locator('td').nth(2)).toHaveText('0');
+  await page.getByRole('button', { name: '下一页', exact: true }).click();
+  await expect(rows).toHaveCount(5);
+  await page.getByRole('button', { name: '按事件数排序', exact: true }).click();
+  await expect(page.getByText('共 25 项，第 1 / 2 页')).toBeVisible();
+  await expect(rows.first()).toContainText('规模会话 24');
+  await expect(rows.first().locator('td').nth(2)).toHaveText('12,000');
+  await expect(rows.first().locator('td').nth(3)).toHaveText('86,245,124');
+  await expect(table.locator('th[aria-sort="descending"]')).toContainText('事件数');
+  await rows.first().locator('td').nth(2).click();
+  await expect(page.getByRole('checkbox', { name: '选择会话 规模会话 24', exact: true })).toBeChecked();
+  await page.getByRole('button', { name: '按事件数排序', exact: true }).click();
+  await expect(rows.first()).toContainText('规模会话 1');
+  await page.getByRole('button', { name: '下一页', exact: true }).click();
+  await expect(rows.last()).toContainText('规模会话 0');
+  await expect(rows.last().getByLabel('事件数待统计')).toBeVisible();
+  await page.getByRole('button', { name: '按累计 Token排序', exact: true }).click();
+  await expect(rows.first()).toContainText('规模会话 24');
+  await page.getByRole('button', { name: '下一页', exact: true }).click();
+  await expect(rows.last()).toContainText('规模会话 0');
+  await page.getByRole('button', { name: '按累计 Token排序', exact: true }).click();
+  await expect(rows.first()).toContainText('规模会话 1');
+  await expect(page.getByText('已选 1 / 25 个会话', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '重置', exact: true }).click();
+  await expect(rows.first()).toContainText('规模会话 0');
+  expect(paths.some(path => /\/(events|hydration|context|history)$/.test(path))).toBe(false);
+  await page.setViewportSize({ width: 1024, height: 800 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: '../../.tmp/conversation-size/management-1024.png' });
+});

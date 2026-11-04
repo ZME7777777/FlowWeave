@@ -128,6 +128,7 @@ class AgentConversationBinding(Base):
             name="ck_agent_conversation_title_state",
         ),
         CheckConstraint("title_generation >= 1", name="ck_agent_conversation_title_generation"),
+        CheckConstraint("stored_event_count >= 0", name="ck_agent_conversation_event_count"),
         CheckConstraint(
             "unread_origin IS NULL OR unread_origin IN ('MANUAL', 'SYSTEM')",
             name="ck_agent_conversation_unread_origin",
@@ -190,6 +191,7 @@ class AgentConversationBinding(Base):
     # unread, title and Runtime lifecycle changes.
     last_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     last_connected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    stored_event_count: Mapped[int | None] = mapped_column(BigInteger)
     # A Worker-owned scheduling projection. It is intentionally separate from
     # the authoritative OpenHands usage counters and is only used to throttle
     # best-effort, read-only reconciliation.

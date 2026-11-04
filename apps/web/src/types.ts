@@ -1065,6 +1065,8 @@ export interface AgentScheduleRunConversationPage {
 export interface ManagedAgentConversation {
   id: string;
   display_title?: string | null;
+  stored_event_count?: number | null;
+  total_tokens?: number | null;
   pinned: boolean;
   unread: boolean;
   archived_at?: string | null;

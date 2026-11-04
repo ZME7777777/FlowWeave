@@ -1289,11 +1289,20 @@ def list_management_conversations(
         )
     )
     truncated = len(items) > limit
+    totals = usage_projection.for_scope(
+        db, field="binding_id", ids=(item.id for item in items[:limit])
+    )
     return {
         "items": [
             {
                 "id": item.id,
                 "display_title": item.display_title,
+                "stored_event_count": item.stored_event_count,
+                "total_tokens": (
+                    totals[item.id]["total_tokens"]
+                    if item.usage_reconciled_at or totals[item.id]["observed_at"]
+                    else None
+                ),
                 "pinned": item.pinned,
                 "unread": item.unread,
                 "archived_at": item.archived_at.isoformat() if item.archived_at else None,
@@ -1659,7 +1668,9 @@ def get_conversation(db: Session, workspace_id: str, binding_id: str) -> dict[st
     item = _binding(db, workspace_id, binding_id)
     try:
         batch = get_runtime().read_active_events(_handle(db, workspace, item))
-        usage_projection.capture(db, item, batch.usage)
+        usage_projection.capture(
+            db, item, batch.usage, stored_event_count=batch.stored_event_count
+        )
     except Exception:
         # Runtime availability must not make the read-only Conversation
         # locator unavailable. A later event read retries the formal usage

@@ -92,6 +92,29 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 
 ## 6. 任务清单
 
+### OPS-87 会话管理事件数与累计 Token — DONE
+
+依赖 OPS-86 DONE。用户明确选择同时展示完整历史事件数与累计 Token，并支持
+按统计值排序。OpenHands 正式 ConversationInfo 暴露事件日志计数，复用后台
+用量同步写入用户隔离投影，管理列表一次批量读取。验证旧数据未知态、零值、
+归档／工作区／用户隔离、排序与分页。未知统计显示 —，零值保留，
+升降序均将未知置后，筛选后先排序再分页。后台计数以原生累积日志为准，
+使用条件 UPDATE 防止迟到快照回退，不读取或保存完整历史正文。
+
+SDK 固定来源 366cd8ecf0f833705f6b92957621905af5b85d8a 已合入 baseline。
+四包仍为 1.54.0，新增 conversation_stored_event_count_v1；新快照持久化计数，
+旧快照只由原生 EventLog 文件名索引补齐，保留压缩与分支历史。源码归档
+SHA-256 为 af2a07ff01b94117fd5bf2e43dbf3acc47ef9f2a9b203cdb3c096e033c42c8f6。
+固定源码 65 项及合并 baseline 67 项定向测试通过，SDK 变更文件 hooks、
+TypeScript lint／build／coverage／format 检查通过。baseline 动态属性全量
+hook 命中既有 build/lib 生成目录，改对本片两个 SDK 源文件检查通过。
+
+独立 PostgreSQL 实跑完整迁移链及 7 项定向测试通过，覆盖归档与用户隔离、
+零值／未知、跨连接迟到快照、0194 downgrade／upgrade 保留原记录及源码锁。
+Alembic 唯一 head 为 0194_conversation_event_count。会话管理 Playwright
+14 项通过，Web typecheck、受影响 ESLint、production build 与 diff 检查
+通过。窄屏布局检查通过。发布验证待下述正式 release 结果补记。
+
 ### FR-706 最终回复后的新消息直接发送 — DONE
 
 依赖 OPS-86 DONE。未完成轮次恢复只检查最新用户轮次，正式结束判断统一

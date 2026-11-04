@@ -6,7 +6,7 @@ from collections import defaultdict
 from collections.abc import Iterable
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions.infrastructure.models import (
@@ -108,7 +108,11 @@ def _summary(items: Iterable[AgentConversationUsageBucket]) -> dict[str, int | f
 
 
 def capture(
-    db: Session, binding: AgentConversationBinding, snapshots: Iterable[RuntimeUsageSnapshot]
+    db: Session,
+    binding: AgentConversationBinding,
+    snapshots: Iterable[RuntimeUsageSnapshot],
+    *,
+    stored_event_count: int | None = None,
 ) -> dict[str, int | float | str | None]:
     """Store only monotonic source snapshots and return this session's total.
 
@@ -119,6 +123,23 @@ def capture(
     second time.
     """
 
+    if stored_event_count is not None:
+        if isinstance(stored_event_count, bool) or stored_event_count < 0:
+            raise ValueError("Stored event count must be nonnegative")
+        # The native log is append-only. An older concurrent observation must
+        # not overwrite the count from a newer accepted snapshot.
+        db.execute(
+            update(AgentConversationBinding)
+            .where(
+                AgentConversationBinding.id == binding.id,
+                or_(
+                    AgentConversationBinding.stored_event_count.is_(None),
+                    AgentConversationBinding.stored_event_count < stored_event_count,
+                ),
+            )
+            .values(stored_event_count=stored_event_count)
+            .execution_options(synchronize_session="fetch")
+        )
     existing = {
         item.usage_id: item
         for item in db.scalars(

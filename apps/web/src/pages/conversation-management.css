@@ -34,13 +34,13 @@
 .compact-conversation-management .conversation-management-delete:disabled{border-color:transparent;background:transparent;color:#bdc4be}
 .compact-conversation-management .conversation-management-notice{align-items:center;gap:7px;margin:0;border:0;border-bottom:1px solid #eee4c9;border-radius:0;padding:7px 18px;font-size:10px}
 .compact-conversation-management .conversation-management-table-wrap{min-width:0;overflow:auto;scrollbar-gutter:stable}
-.compact-conversation-management .conversation-management-table{table-layout:fixed;border-collapse:separate;border-spacing:0;min-width:700px}
+.compact-conversation-management .conversation-management-table{table-layout:fixed;border-collapse:separate;border-spacing:0;min-width:920px}
 .compact-conversation-management .conversation-management-table th{height:34px;border-bottom:1px solid #e3eae4;background:#f7f9f7;padding:7px 12px;color:#88978d;font-size:10px;font-weight:500}
 .compact-conversation-management .conversation-management-table td{height:44px;overflow:hidden;border-top:0;border-bottom:1px solid #edf1ed;padding:7px 12px;text-overflow:ellipsis;white-space:nowrap;color:#7b897f;font-size:10px}
 .compact-conversation-management .conversation-management-table th:first-child,.compact-conversation-management .conversation-management-table td:first-child{width:42px}
 .compact-conversation-management .conversation-management-table th:nth-child(2){width:auto}
-.compact-conversation-management .conversation-management-table th:nth-child(3),.compact-conversation-management .conversation-management-table th:nth-child(4){width:172px}
-.compact-conversation-management .conversation-management-table th:nth-child(5){width:72px}
+.compact-conversation-management .conversation-management-table th:nth-child(5),.compact-conversation-management .conversation-management-table th:nth-child(6){width:172px}
+.compact-conversation-management .conversation-management-table th:nth-child(7){width:72px}
 .compact-conversation-management .conversation-management-table th:last-child{width:80px}
 .compact-conversation-management .conversation-management-table td b{color:#34483b;font-size:12px;font-weight:550}
 .conversation-management-name{max-width:100%;border:0;background:transparent;padding:0;color:inherit;font:inherit;text-align:left}.conversation-management-name:hover,.conversation-management-name:focus-visible{text-decoration:underline;color:#216749}
@@ -63,3 +63,9 @@
 .compact-conversation-management .conversation-management-actions>.conversation-management-archive{min-height:31px;border-color:#dbe4dd;background:#fafcfb;padding:5px 9px;color:#526f5c;font-size:10px;white-space:nowrap}.compact-conversation-management .conversation-management-actions>.conversation-management-archive:disabled{border-color:transparent;background:transparent;color:#bdc4be}
 
 .conversation-management-deletion-job{display:flex;flex:0 0 auto;flex-wrap:wrap;background:#f3f8f4;color:#526e5a}.conversation-management-deletion-job>span{min-width:0;flex:1}.conversation-management-deletion-job button{padding:3px 7px;font-size:10px;flex-shrink:0}
+
+.compact-conversation-management .conversation-management-table th.conversation-management-metric{width:110px;text-align:right}
+.compact-conversation-management .conversation-management-table td.conversation-management-metric{text-align:right;font-variant-numeric:tabular-nums}
+.conversation-management-metric>button{display:inline-flex;align-items:center;gap:5px;border:0;background:transparent;padding:0;color:inherit;font:inherit;cursor:pointer}
+.conversation-management-metric>button:hover{color:#38684a}.conversation-management-metric>button:focus-visible{outline:2px solid #8ab99a;outline-offset:4px;border-radius:2px}
+.conversation-management-metric[aria-sort]:not([aria-sort=none])>button{color:#38684a}

@@ -683,6 +683,7 @@ class RuntimeEventBatch:
     cursor_anchor_found: bool = True
     task_usage: tuple[RuntimeTaskUsageSnapshot, ...] = field(default_factory=_empty_task_usage)
     usage: tuple[RuntimeUsageSnapshot, ...] = field(default_factory=_empty_usage)
+    stored_event_count: int | None = None
     # When an adapter has already read the authoritative native Conversation
     # state for this batch, expose the derived projections so hydration does
     # not immediately issue duplicate state reads. Incremental callers may

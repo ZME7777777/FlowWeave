@@ -812,8 +812,12 @@ async def _assert_fork_condensation_credentials() -> None:
                     Message(role="user", content=[TextContent(text=f"Fact {index}")])
                 )
             source_ids = {event.id for event in source.get_conversation().state.events}
+            source_info = await service.get_conversation(info.id)
+            assert source_info is not None
+            assert source_info.stored_event_count == len(source_ids)
             fork = await service.fork_conversation(info.id)
             assert fork is not None
+            assert fork.stored_event_count == len(source_ids)
             await service._evict_idle_conversations(0.0)
             fork_service = await service.get_event_service(fork.id)
             assert fork_service is not None
@@ -1022,6 +1026,7 @@ def main() -> None:
         EventService._get_view_context_sync
     )
     server_info = ServerInfo(uptime=0, idle_time=0)
+    assert "conversation_stored_event_count_v1" in server_info.capabilities
     assert server_info.version == EXPECTED_VERSION
     assert server_info.sdk_version == EXPECTED_VERSION
     assert server_info.tools_version == EXPECTED_VERSION
@@ -1990,6 +1995,7 @@ def main() -> None:
                 "subscription_condenser_dispatch": True,
                 "fork_condensation_credentials_survive_reload_and_switch": True,
                 "condenser_credentials_restored_after_reload": True,
+                "stored_event_count_survives_reload_and_fork": True,
                 "mcp_oauth_refreshable_fastmcp": True,
                 "subscription_preflight_credentials_restored": True,
                 "runtime_capability_build_arg_validated": True,
