@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`UPSTREAM BASELINE ADOPTION COMPLETE`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`CASE-05`
+> 下一可执行切片：`FR-705`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -120,18 +120,60 @@ condense 复现失败。baseline 合入后的 54 项定向回归通过。
 属性扫描改用全部 Git 跟踪 SDK 源文件，以排除原有 build/lib 副本的扫描
 干扰，其余 pre-commit 检查通过。新增镜像探针在固定源码下独立执行通过，
 要求 Fork 重载和切换后确实生成摘要且正式历史保留。完整固定镜像构建、
-镜像内完整契约和实际独立 Agent Runtime 同步尚待 OPS-85。
+镜像内完整契约和实际独立 Agent Runtime 同步由 OPS-85 验收。
 当前 Alembic 唯一 head 保持 `0193_case_copy_stepwise_execution`。
 
-### OPS-85 Fork 压缩修复 Runtime 发布与线上验收 — READY
+### OPS-85 Fork 压缩修复 Runtime 发布与线上验收 — DONE
 
-依赖 FR-704 DONE。按正式 runtime 预检和独立 Agent Runtime 基线同步流程，
-从已提交 FlowWeave 版本构建固定镜像并执行完整镜像契约，再核实活跃会话
-门禁并通过正式 replacement 更新既有 generation。核对实际 digest、四包、
-build_git_sha、provenance、source lock 和原会话恢复，以线上新 Fork 的真实
-摘要调用、正式完成事件及继续对话作为验收。既有受损 Fork 已丢失的摘要
-模型凭据还需通过受治理的正式配置恢复途径处理，升级镜像本身不恢复该值。
-发布及线上验收完成前，不宣称线上 Fork 压缩问题已修复。
+依赖 FR-704 DONE。用户明确要求开始发布切片，并验证已有受损会话是否恢复。
+2026-11-04 以提交 `ffd567cc04dfe809afcd4245c09ad734ed545178` 通过正式
+runtime 预检，从 commit 归档的最小输入构建 linux/amd64 Runtime 镜像。
+构建内完整契约及独立、无网络、无业务挂载的镜像契约均通过，包含 Fork
+凭据重载、模型切换和实际生成原生摘要的探针。实际 Runtime image ID 为
+`sha256:8042dd4cbb1e367fd4cf61003174d7cf67fa1871c542bece76567a213614c459`。
+四包均为 `1.54.0`，实际 `/server_info.build_git_sha`、provenance 和 source
+lock 一致固定 `9bf1678d86ca51b334c51f3f97677585e5b1064e`。
+
+用户同时询问后续终端环境能否采用新 Runtime。本片同步构建平台镜像
+`sha256:64872c1633cd422e406269ee8a504b0eed9887bc49c71a69bf4bcbbf954f5ef5`，
+由受管 platform 最小上下文构建并冻结完整 revision。API、stream-api、Worker
+和 Runtime Provider 全部同步至同一提交及源码身份。终端创建 seed、OpenHands
+原生 Runtime builder 和独立 Agent Runtime 的实际配置均解析到上述 Runtime
+digest，终端入口验收覆盖配置与构建身份。后续发布的新环境版本按此固定
+源码执行正式打包，既有环境版本及 FlowRun 仍由各自冻结快照决定。
+
+首次活跃会话门禁发现运行项，等待结束后再次检查全部受影响 Runtime，确认
+无 running／starting／executing／stopping 才继续。服务器侧完成受保护的
+原生状态备份与回滚镜像保留，Compose／env 哈希验收通过。正式 migration
+退出码为 0，唯一 head 为 `0193_case_copy_stepwise_execution`。受影响常驻
+服务定向更新后健康检查通过，再通过平台正式 replacement 将独立 Agent
+Runtime generation 51 更新为 52，恢复 ACTIVE／可写。322 个原生持久化
+目录、既有 Binding 的原 native ID 和全部持久挂载验收通过，33 个保护
+容器的镜像及启动时间核验通过。
+
+线上新建 Fork 使用真实模型完成压缩，已读取正式 CONDENSATION_REQUESTED
+和 CONDENSATION_COMPLETED 事件。原生当前 View 从 49 个事件降至 24 个，
+可信 token 指标从 100926 降至 67211；源会话正式事件保留。压缩后发送
+独立验收消息，收到正式 assistant 最终回复并恢复 COMPLETED。原受损 Fork
+也经正式接口重试，Worker 任务最终为 DEAD，受保护 Runtime 日志继续报告
+`Summarization LLM call failed`／`Missing credentials`，其摘要器 api_key
+仍为空，而主模型凭据和父会话摘要器凭据仍有加密值。该已有会话尚未恢复
+压缩，后续由 FR-705 处理认证恢复。
+
+受管 `remote-release-finish` 完成，随后 API／stream-api 的 health、readiness、
+Worker、Provider、Runtime 实际身份及配置哈希再次验收通过。保留服务器侧
+受保护状态备份、失败日志、24 小时内受管上下文和受管回滚镜像。临时资料
+仅保存在忽略目录及服务器受保护发布上下文。本片只补记实际发布与验证结果，
+文档 diff 及 CURRENT 唯一性检查通过。
+
+### FR-705 已有受损 Fork 摘要模型认证的正式恢复 — READY
+
+依赖 OPS-85 DONE。已有 Fork 的摘要器凭据已经脱敏丢失，镜像升级和当前
+switch_llm 同步逻辑不能恢复该值。需通过受治理的 OpenHands 正式配置／
+控制接口恢复认证，同时保留独立摘要模型语义和认证归属校验。禁止直接
+改写在线 base_state、绕过原生 lease 创建第二个 writer，或以发送摘要提示词
+模拟压缩。完成条件为原受损 Binding、原 native ID、历史和工作区保留，
+原会话使用真实模型生成正式压缩完成事件，并能继续对话。
 
 ### OPS-12 独立 Agent Runtime baseline 同步升级 — DONE
 
