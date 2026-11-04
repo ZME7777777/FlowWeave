@@ -92,7 +92,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 
 ## 6. 任务清单
 
-### OPS-87 会话管理事件数与累计 Token — DONE
+### OPS-87-CS 会话管理事件数与累计 Token — DONE
 
 依赖 OPS-86 DONE。用户明确选择同时展示完整历史事件数与累计 Token，并支持
 按统计值排序。OpenHands 正式 ConversationInfo 暴露事件日志计数，复用后台
@@ -115,7 +115,7 @@ Alembic 唯一 head 为 0194_conversation_event_count。会话管理 Playwright
 14 项通过，Web typecheck、受影响 ESLint、production build 与 diff 检查
 通过。窄屏布局检查通过。正式发布验收如下。
 
-#### OPS-87 正式发布验收
+#### OPS-87-CS 正式发布验收
 
 2026-11-04 正式 runtime 预检与 Web／platform commit-bound 最小上下文通过。
 发布提交 b07b8e680fab8cd845f09f6fdb9f39b4919e84e8，包含实现提交 f1e0b36d
@@ -152,6 +152,13 @@ Web 与 platform 的 remote-release-finish 成功，上下文回收候选均为�
 精确回收三个旧镜像的历史 tags，保留 24 小时受管上下文、实际引用和每仓库
 一个回滚镜像。收尾后再次验证版本、健康、资源哈希、generation、来源、
 原会话读取、配置与保护容器通过。
+
+本片在隔离分支 codex/conversation-size 实施与发布。收尾时主分支已并发
+提交 7801771b 的大模型配置 OPS-87，因此本片跟踪标识补为 OPS-87-CS；
+既有提交与发布资产中的 OPS-87 指向本会话统计切片。主工作区另外存在
+未提交的 0194_model_provider_usage_query 迁移，后续合入时必须将它衔接于
+线上已应用的 0194_conversation_event_count 之后，避免双 head。当前代码与
+验收记录保留在隔离分支，后续主分支平台发布前需完成该集成。
 
 ### FR-706 最终回复后的新消息直接发送 — DONE
 
