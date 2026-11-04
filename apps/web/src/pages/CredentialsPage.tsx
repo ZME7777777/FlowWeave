@@ -7,6 +7,7 @@ import { Pagination } from '../components/Pagination';
 import { useProductDialog } from '../components/ProductDialogContext';
 import { useEscapeClose } from '../components/useEscapeClose';
 import type { WebsiteCredential, WebsiteCredentialWrite } from '../types';
+import { Toast } from '../components/Toast';
 
 const empty = (): WebsiteCredentialWrite => ({ name: '', target_host: '', target_path: '/', include_subdomains: false, auth_type: 'USERNAME_PASSWORD', username: '', secret: '' });
 
@@ -137,7 +138,7 @@ export function CredentialsPage() {
     list={isLoading ? <div className="empty compact">加载中…</div> : loadError ? <div className="empty compact error"><span>{loadError.message}</span><button className="secondary" onClick={() => void refetch()}>重试</button></div> : pagedCredentials.length ? pagedCredentials.map(item => <SettingsResourceRow key={item.id} name={item.name} description={`${item.target_host}${item.target_path}`} meta={<><em>{authTypeOptions.find(type => type.value === item.auth_type)?.label}</em><span>{item.include_subdomains ? '包含子域' : '仅此地址'}</span></>} active={active?.id === item.id} onSelect={() => setActiveId(item.id)} checked={selectedIds.has(item.id)} onToggle={() => toggle(item.id)}/>) : <div className="empty compact">{query ? '没有匹配的认证' : '尚未保存认证信息'}</div>}
     pagination={<Pagination page={page} pageSize={pageSize} total={filteredCredentials.length} onPageChange={setPage}/>}
     overlays={editing !== undefined && <CredentialEditor credential={editing ?? undefined} onClose={() => setEditing(undefined)}/>}>
-    {error && <p className="notice error" role="alert">{error}</p>}
+    <Toast kind="error" message={error} onDismiss={() => setError('')}/>
     {active ? <><header className="settings-detail-header"><div><h2>{active.name}</h2><small>{active.target_host}{active.target_path}</small></div><div className="settings-detail-actions"><button className="secondary" aria-label={`编辑 ${active.name}`} onClick={() => setEditing(active)}><Pencil size={14}/>编辑</button><button className="danger" aria-label={`删除 ${active.name}`} onClick={() => void remove(active)}><Trash2 size={14}/>删除</button></div></header>
       <details className="settings-info"><summary>匹配规则与认证保护</summary><p>先选最长匹配路径；没有路径范围时才逐级回退域名。父域匹配必须显式开启。网站认证仅在新建 Agent 会话时以 Secret 注入，不会返回浏览器或写入镜像。</p></details>
       <div className="settings-detail-body" key={active.id}><dl className="settings-detail-facts"><dt>认证方式</dt><dd>{authTypeOptions.find(item => item.value === active.auth_type)?.label}</dd><dt>目标地址</dt><dd>{active.target_host}</dd><dt>目标路径</dt><dd>{active.target_path}</dd><dt>子域名匹配</dt><dd>{active.include_subdomains ? '包含子域名' : '仅匹配此地址'}</dd>{active.auth_type === 'USERNAME_PASSWORD' && <><dt>用户名</dt><dd>{active.has_username ? '已配置' : '未配置'}</dd></>}<dt>{active.auth_type === 'TOKEN' ? 'Token' : '密码'}</dt><dd>{active.has_secret ? `已加密保存${active.secret_hint ? ` · ••••${active.secret_hint}` : ''}` : '未配置'}</dd><dt>创建时间</dt><dd>{new Date(active.created_at).toLocaleString()}</dd><dt>更新时间</dt><dd>{new Date(active.updated_at).toLocaleString()}</dd></dl></div></> : <div className="empty"><KeyRound size={26}/><b>{query ? '没有匹配的认证' : '尚未保存认证信息'}</b><span>在左侧新增或选择认证，查看匹配范围与配置。</span></div>}
