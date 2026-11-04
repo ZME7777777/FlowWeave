@@ -11,6 +11,7 @@ from flowweave.modules.cases import public as service
 from flowweave.shared.errors import DomainError
 from flowweave.shared.http import Db, IdempotencyKey, command_key, run_sync
 from flowweave.shared.schemas import (
+    CaseConclusionDecisionWrite,
     CaseControlConversationWrite,
     CaseControlPlanWrite,
     CaseControlSuggestionWrite,
@@ -77,6 +78,30 @@ async def coordination_state(
             case_id,
             payload.expected_row_version,
             payload.state,
+        ),
+    )
+
+
+@router.post("/cases/{case_id}/conclusion/confirm")
+async def confirm_conclusion(
+    case_id: str, payload: CaseConclusionDecisionWrite, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: service.confirm_case_conclusion(
+            session, case_id, payload.expected_row_version
+        ),
+    )
+
+
+@router.post("/cases/{case_id}/conclusion/reject")
+async def reject_conclusion(
+    case_id: str, payload: CaseConclusionDecisionWrite, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: service.reject_case_conclusion(
+            session, case_id, payload.expected_row_version, payload.note
         ),
     )
 

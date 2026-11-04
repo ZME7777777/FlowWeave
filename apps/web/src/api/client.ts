@@ -648,6 +648,10 @@ export const api = {
     request<{ items: import('../types').CaseArtifactMaterial[]; next_offset: number | null }>(`/cases/${encodeURIComponent(id)}/artifact-materials?${new URLSearchParams({ offset: String(offset), limit: String(limit) })}`),
   setCaseCoordinationState: (id: string, expected_row_version: number, state: 'ACTIVE' | 'PAUSED') =>
     request<Case>(`/cases/${encodeURIComponent(id)}/coordination-state`, json('PUT', { expected_row_version, state })),
+  confirmCaseConclusion: (id: string, expected_row_version: number) =>
+    request<Case>(`/cases/${encodeURIComponent(id)}/conclusion/confirm`, json('POST', { expected_row_version })),
+  rejectCaseConclusion: (id: string, expected_row_version: number, note?: string) =>
+    request<Case>(`/cases/${encodeURIComponent(id)}/conclusion/reject`, json('POST', { expected_row_version, ...(note?.trim() ? { note: note.trim() } : {}) })),
   caseStageTemplates: (caseId: string) => request<import('../types').CaseStageTemplate[]>(`/cases/${encodeURIComponent(caseId)}/stage-templates`),
   setCaseStageState: (caseId: string, stageId: string, expected_case_row_version: number, state: import('../types').CaseStage['state']) =>
     request<Case>(`/cases/${encodeURIComponent(caseId)}/stages/${encodeURIComponent(stageId)}/state`, json('PUT', { expected_case_row_version, state })),

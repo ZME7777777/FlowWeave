@@ -96,6 +96,23 @@ def require_case_action(item: Case, action: str) -> None:
         )
 
 
+def _pause_case(item: Case, reason: str, note: str | None = None) -> None:
+    """Single place that parks a Case, so the UI and coordinator never infer why."""
+
+    item.state = "PAUSED"
+    item.pause_reason = reason
+    item.pause_note = note
+    item.row_version += 1
+
+
+def _resume_case(item: Case, note: str | None) -> None:
+    item.state = "ACTIVE"
+    item.pause_reason = None
+    item.pause_note = None
+    item.resume_note = note
+    item.row_version += 1
+
+
 def _stage_start_result(proposal: CaseDecisionProposal) -> dict[str, Any]:
     if proposal.state == "EXECUTED":
         return _proposal_dict(proposal)
@@ -489,6 +506,8 @@ def _case_dict(db: Session, item: Case, *, summary: bool = False) -> dict[str, A
         "work_directory_id": item.work_directory_id,
         "session_config": item.session_config_json or {},
         "state": item.state,
+        "pause_reason": (item.pause_reason or "MANUAL") if item.state == "PAUSED" else None,
+        "pause_note": item.pause_note if item.state == "PAUSED" else None,
         "control_conversation_binding_id": (
             item.control_conversation_binding_id
             if current_round is None or current_round.state == "STARTED"
@@ -722,13 +741,112 @@ def set_case_coordination_state(
     if state not in {"ACTIVE", "PAUSED"} or item.state not in {"ACTIVE", "PAUSED"}:
         raise DomainError("CASE_STATE_TRANSITION_INVALID", "当前场景不可暂停或恢复", 409)
     if item.state != state:
-        item.state = state
-        item.row_version += 1
-        if state == "ACTIVE":
-            from flowweave.modules.cases.application.feedback import record_case_change
+        if state == "PAUSED":
+            _pause_case(item, "MANUAL")
+        else:
+            if item.pause_reason == "CONCLUSION_PROPOSED":
+                raise DomainError(
+                    "CASE_CONCLUSION_DECISION_REQUIRED",
+                    "Agent 提议结束场景，请选择“确认结束”或“继续”",
+                    409,
+                )
+            # A plain resume of a question the human has not answered in the conversation is
+            # still allowed (the Agent re-reads state); the note tells it what happened.
+            note = (
+                "用户已回应你的提问并恢复场景；请先阅读会话中的最新回答，再重新读取状态后行动。"
+                if item.pause_reason == "WAITING_HUMAN"
+                else None
+            )
+            _resume_case(item, note)
+        from flowweave.modules.cases.application.feedback import record_case_change
 
+        if state == "ACTIVE":
             record_case_change(db, item, "CASE_RESUMED")
         write_case_files(db, item)
+    finish(db)
+    return _case_dict(db, item)
+
+
+def _finish_conclusion(db: Session, item: Case, plan: CaseControlPlan) -> dict[str, Any]:
+    """The irreversible tail of an early conclusion; only a human confirmation reaches it."""
+
+    stage = db.get(CaseStage, plan.stage_id)
+    if stage is None or stage.case_id != item.id:
+        raise conflict("Case stage is not part of this Case", stage_id=plan.stage_id)
+    running = stage.current_execution_flow_run_id
+    cancelled = False
+    run = db.get(FlowRun, running) if running else None
+    if run is not None and run.state not in {"COMPLETED", "FAILED", "CANCELLED"}:
+        orchestration.cancel_run(db, run.id, f"case-plan-conclude:{plan.id}")
+        cancelled = True
+    skipped: list[str] = []
+    for later in db.scalars(
+        select(CaseStage).where(CaseStage.case_id == item.id, CaseStage.position > stage.position)
+    ):
+        if later.state not in {"COMPLETED", "SKIPPED"}:
+            later.state = "SKIPPED"
+            skipped.append(later.stage_key)
+    stage.state = "COMPLETED"
+    item.state = "COMPLETED"
+    item.pause_reason = None
+    item.pause_note = None
+    item.row_version += 1
+    return {
+        "concluded_stage_key": stage.stage_key,
+        "skipped_stage_keys": skipped,
+        "execution_cancelled": cancelled,
+        "conclusion": plan.reason,
+    }
+
+
+def _pending_conclusion(db: Session, item: Case) -> CaseControlPlan:
+    if item.state != "PAUSED" or item.pause_reason != "CONCLUSION_PROPOSED":
+        raise DomainError("CASE_NO_CONCLUSION_PROPOSED", "当前没有待确认的结束提议", 409)
+    plan = db.scalar(
+        select(CaseControlPlan)
+        .where(
+            CaseControlPlan.case_id == item.id,
+            CaseControlPlan.action == "CONCLUDE_CASE",
+            CaseControlPlan.state == "SUCCEEDED",
+        )
+        .order_by(CaseControlPlan.created_at.desc())
+        .limit(1)
+    )
+    if plan is None or plan.result_json.get("resolution"):
+        raise DomainError("CASE_NO_CONCLUSION_PROPOSED", "当前没有待确认的结束提议", 409)
+    return plan
+
+
+def confirm_case_conclusion(db: Session, case_id: str, expected_row_version: int) -> dict[str, Any]:
+    """Human accepts the coordinator's proposal: the Case really ends."""
+
+    item = _editable_case(db, case_id, expected_row_version)
+    plan = _pending_conclusion(db, item)
+    outcome = _finish_conclusion(db, item, plan)
+    plan.result_json = {**plan.result_json, **outcome, "resolution": "CONFIRMED"}
+    write_case_files(db, item)
+    finish(db)
+    return _case_dict(db, item)
+
+
+def reject_case_conclusion(
+    db: Session, case_id: str, expected_row_version: int, note: str | None = None
+) -> dict[str, Any]:
+    """Human declines: the Case resumes untouched and the coordinator is told why."""
+
+    item = _editable_case(db, case_id, expected_row_version)
+    plan = _pending_conclusion(db, item)
+    plan.result_json = {**plan.result_json, "resolution": "REJECTED"}
+    detail = (note or "").strip()
+    _resume_case(
+        item,
+        "用户否决了你提出的提前结束，场景与执行保持原样，请继续推进。"
+        + (f"用户补充：{detail}" if detail else ""),
+    )
+    from flowweave.modules.cases.application.feedback import record_case_change
+
+    record_case_change(db, item, "CASE_RESUMED")
+    write_case_files(db, item)
     finish(db)
     return _case_dict(db, item)
 
@@ -1226,10 +1344,12 @@ def reconcile_case_execution_state(db: Session, flow_run_id: str) -> None:
             stage.state = "REVIEW_PENDING"
             changed = True
         elif run.state == "CANCELLED" and stage.state == "ACTIVE":
-            item.state = "PAUSED"
+            if item.state != "PAUSED":
+                _pause_case(item, "EXECUTION_CANCELLED", "当前执行已被取消")
             changed = True
         if changed:
-            item.row_version += 1
+            if item.state != "PAUSED" or item.pause_reason != "EXECUTION_CANCELLED":
+                item.row_version += 1
             write_case_files(db, item)
     db.flush()
 
@@ -1648,33 +1768,17 @@ def execute_case_control_plan(db: Session, case_id: str, plan_id: str) -> dict[s
                 ),
             }
         elif plan.action == "CONCLUDE_CASE":
-            running = stage.current_execution_flow_run_id
-            cancelled = False
-            run = db.get(FlowRun, running) if running else None
-            if run is not None and run.state not in {"COMPLETED", "FAILED", "CANCELLED"}:
-                orchestration.cancel_run(db, run.id, f"case-plan-conclude:{plan.id}")
-                cancelled = True
-            skipped: list[str] = []
-            for later in db.scalars(
-                select(CaseStage).where(
-                    CaseStage.case_id == item.id, CaseStage.position > stage.position
-                )
-            ):
-                if later.state not in {"COMPLETED", "SKIPPED"}:
-                    later.state = "SKIPPED"
-                    skipped.append(later.stage_key)
-            stage.state = "COMPLETED"
-            item.state = "COMPLETED"
-            item.row_version += 1
+            # The coordinator may only PROPOSE. Nothing is cancelled or skipped until a human
+            # confirms; a rejection resumes the Case exactly as it was.
+            _pause_case(item, "CONCLUSION_PROPOSED", plan.reason)
             result = {
-                "concluded_stage_key": stage.stage_key,
-                "skipped_stage_keys": skipped,
-                "execution_cancelled": cancelled,
-                "conclusion": plan.reason,
+                "proposal": plan.reason,
+                "case_state": "PAUSED",
+                "next": "已提交结束提议并暂停场景，执行与阶段保持不变；由用户决定“确认结束”或"
+                "“继续”。被否决时你会收到通知，需重新读取最新状态后继续推进。",
             }
         elif plan.action == "ASK_HUMAN":
-            item.state = "PAUSED"
-            item.row_version += 1
+            _pause_case(item, "WAITING_HUMAN", plan.reason)
             result = {
                 "question": plan.reason,
                 "case_state": "PAUSED",

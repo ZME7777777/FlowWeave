@@ -454,6 +454,7 @@ html:has(.scenario-space){overscroll-behavior:none}
 .case-single-workspace .case-question{display:flex;flex:0 0 auto;align-items:center;justify-content:space-between;gap:16px;border-bottom:1px solid #ecd9ae;background:#fff8e8;padding:10px 20px}
 .case-question>div:first-child{min-width:0}.case-question b{color:#8a6420;font-size:12px}
 .case-question p{display:-webkit-box;max-height:4.8em;margin:4px 0 0;overflow:hidden;color:#80662f;font-size:11px;line-height:1.6;overflow-wrap:anywhere;-webkit-box-orient:vertical;-webkit-line-clamp:3;white-space:pre-wrap}
+.case-conclusion-note{box-sizing:border-box;width:min(100%,420px);margin-top:6px;font-size:11px}
 .case-question-actions{display:flex;flex:0 0 auto;align-items:center;gap:7px}.case-question-actions button{display:inline-flex;align-items:center;gap:5px;font-size:11px}
 .case-inspector.case-inspector-actions{width:min(640px,calc(100vw - 48px))}
 @media (max-width:640px){.case-single-workspace .case-question{flex-direction:column;align-items:stretch}.case-question-actions{justify-content:flex-end}}

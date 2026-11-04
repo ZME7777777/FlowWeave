@@ -1265,12 +1265,65 @@ def test_agent_can_conclude_the_case_early_without_a_completed_run(flow_case):
     )
     assert result["state"] == "SUCCEEDED", result
     refresh(g)
-    assert g.item.state == "COMPLETED"
-    assert g.stage.state == "COMPLETED"
+    # A proposal only: nothing is cancelled or skipped and the Case is not terminal.
+    assert g.item.state == "PAUSED" and g.item.pause_reason == "CONCLUSION_PROPOSED"
+    assert g.item.pause_note == "first node proved the premise invalid"
+    assert g.stage.state in {"ACTIVE", "REVIEW_PENDING"}
+    assert g.execution.state == "RUNNING"
+    assert all(
+        stage.state != "SKIPPED"
+        for stage in g.db.scalars(select(CaseStage).where(CaseStage.case_id == g.item.id))
+    )
+    # A plain resume cannot dodge the human's decision.
+    with pytest.raises(DomainError) as blocked:
+        service.set_case_coordination_state(g.db, g.item.id, g.item.row_version, "ACTIVE")
+    assert blocked.value.code == "CASE_CONCLUSION_DECISION_REQUIRED"
+
+
+def _propose_conclusion(g):
+    g.execution.state = "RUNNING"
+    g.db.commit()
+    result = projection(
+        rpc(g, "manage_case_flow", action(g, "CONCLUDE_CASE", reason="goal already answered"))
+    )
+    assert result["state"] == "SUCCEEDED", result
+    refresh(g)
+
+
+def test_human_confirmation_really_ends_the_case(flow_case, monkeypatch):
+    g = flow_case
+    cancelled = []
+    monkeypatch.setattr(
+        service.orchestration, "cancel_run", lambda db, run_id, key: cancelled.append(run_id)
+    )
+    _propose_conclusion(g)
+    service.confirm_case_conclusion(g.db, g.item.id, g.item.row_version)
+    refresh(g)
+    assert g.item.state == "COMPLETED" and g.item.pause_reason is None
+    assert g.stage.state == "COMPLETED" and cancelled == [g.execution.id]
     later = g.db.scalars(
         select(CaseStage).where(CaseStage.case_id == g.item.id, CaseStage.id != g.stage.id)
     ).all()
     assert all(stage.state == "SKIPPED" for stage in later if stage.position > g.stage.position)
+    with pytest.raises(DomainError) as again:
+        service.confirm_case_conclusion(g.db, g.item.id, g.item.row_version)
+    assert again.value.code == "CASE_NO_CONCLUSION_PROPOSED"
+
+
+def test_human_rejection_resumes_untouched_and_tells_the_coordinator(flow_case, monkeypatch):
+    g = flow_case
+    monkeypatch.setattr(
+        service.orchestration, "cancel_run", lambda *a: pytest.fail("rejection must not cancel")
+    )
+    _propose_conclusion(g)
+    service.reject_case_conclusion(g.db, g.item.id, g.item.row_version, "still need region B")
+    refresh(g)
+    assert g.item.state == "ACTIVE" and g.item.pause_reason is None
+    assert "否决" in g.item.resume_note and "region B" in g.item.resume_note
+    assert g.stage.state in {"ACTIVE", "REVIEW_PENDING"} and g.execution.state == "RUNNING"
+    with pytest.raises(DomainError) as again:
+        service.reject_case_conclusion(g.db, g.item.id, g.item.row_version)
+    assert again.value.code == "CASE_NO_CONCLUSION_PROPOSED"
 
 
 def test_agent_can_ask_the_human_which_pauses_the_case(flow_case):
@@ -1286,8 +1339,12 @@ def test_agent_can_ask_the_human_which_pauses_the_case(flow_case):
     )
     assert result["state"] == "SUCCEEDED", result
     refresh(g)
-    assert g.item.state == "PAUSED"
+    assert g.item.state == "PAUSED" and g.item.pause_reason == "WAITING_HUMAN"
     assert g.stage.state in {"ACTIVE", "REVIEW_PENDING"}
+    service.set_case_coordination_state(g.db, g.item.id, g.item.row_version, "ACTIVE")
+    refresh(g)
+    assert g.item.state == "ACTIVE" and g.item.pause_reason is None
+    assert "回应" in g.item.resume_note
 
 
 def test_stepwise_final_stage_is_completed_by_the_agent_with_accepted_artifact_evidence(flow_case):

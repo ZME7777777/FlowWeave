@@ -6,7 +6,7 @@ const base = { id: 'c1', name: '提问场景', objective: '目标', description:
 
 test('case workspace lists every Agent action and surfaces a pending question', async ({ page }) => {
   let item: Record<string, unknown> = {
-    ...base, state: 'PAUSED',
+    ...base, state: 'PAUSED', pause_reason: 'WAITING_HUMAN',
     control_plans: [
       plan('p1', 'ACCEPT_STEPWISE_ATTEMPT', '结果可信，接受', '2026-01-02T00:00:00Z'),
       plan('p2', 'ASK_HUMAN', '空结果：确实没有，还是范围找错了？推荐方案 A', '2026-01-03T00:00:00Z'),
@@ -18,7 +18,7 @@ test('case workspace lists every Agent action and surfaces a pending question', 
     const path = new URL(req.url()).pathname.replace(/^.*\/api\/v1/, '');
     if (path === '/auth/me') return route.fulfill({ json: user });
     if (path === '/cases' && req.method() === 'GET') return route.fulfill({ json: [item] });
-    if (path === '/cases/c1/coordination' || path.startsWith('/cases/c1/coordination')) { resumed += 1; item = { ...item, state: 'ACTIVE', row_version: 4 }; return route.fulfill({ json: item }); }
+    if (path === '/cases/c1/coordination' || path.startsWith('/cases/c1/coordination')) { resumed += 1; item = { ...item, state: 'ACTIVE', pause_reason: null, row_version: 4 }; return route.fulfill({ json: item }); }
     if (path === '/cases/c1') return route.fulfill({ json: item });
     if (path.includes('default-agent-workspace')) return route.fulfill({ json: { id: 'ws' } });
     return route.fulfill({ json: [] });
@@ -39,4 +39,34 @@ test('case workspace lists every Agent action and surfaces a pending question', 
   await question.getByRole('button', { name: '已回答，继续' }).click();
   await expect.poll(() => resumed).toBe(1);
   await expect(question).toBeHidden();
+});
+
+test('an Agent conclusion proposal needs a human decision and cannot be bypassed by resuming', async ({ page }) => {
+  let item: Record<string, unknown> = {
+    ...base, state: 'PAUSED', pause_reason: 'CONCLUSION_PROPOSED', pause_note: '目标已回答，后续阶段没有必要',
+    control_plans: [plan('p1', 'CONCLUDE_CASE', '目标已回答，后续阶段没有必要', '2026-01-03T00:00:00Z')],
+  };
+  const calls: Array<{ path: string; body: unknown }> = [];
+  await page.route('**/api/v1/**', route => {
+    const req = route.request();
+    const path = new URL(req.url()).pathname.replace(/^.*\/api\/v1/, '');
+    if (path === '/auth/me') return route.fulfill({ json: user });
+    if (path === '/cases' && req.method() === 'GET') return route.fulfill({ json: [item] });
+    if (path === '/cases/c1/conclusion/reject') { calls.push({ path, body: req.postDataJSON() }); item = { ...item, state: 'ACTIVE', pause_reason: null, pause_note: null, row_version: 4 }; return route.fulfill({ json: item }); }
+    if (path === '/cases/c1/conclusion/confirm') { calls.push({ path, body: req.postDataJSON() }); item = { ...item, state: 'COMPLETED', pause_reason: null, row_version: 4 }; return route.fulfill({ json: item }); }
+    if (path === '/cases/c1') return route.fulfill({ json: item });
+    if (path.includes('default-agent-workspace')) return route.fulfill({ json: { id: 'ws' } });
+    return route.fulfill({ json: [] });
+  });
+  await page.goto('/');
+  await page.getByRole('navigation', { name: '主导航' }).getByRole('button', { name: '场景空间' }).click();
+  await page.locator('.scenario-tree').getByText('提问场景').click();
+  const proposal = page.getByRole('status', { name: 'Agent 提议结束场景' });
+  await expect(proposal).toContainText('目标已回答');
+  await expect(page.getByRole('button', { name: '继续协调' })).toBeDisabled();
+  await proposal.getByLabel('继续的原因（可选）').fill('还需要 B 区域');
+  await proposal.getByRole('button', { name: '继续' }).click();
+  await expect.poll(() => calls.length).toBe(1);
+  expect(calls[0]).toEqual({ path: '/cases/c1/conclusion/reject', body: { expected_row_version: 3, note: '还需要 B 区域' } });
+  await expect(proposal).toBeHidden();
 });

@@ -629,6 +629,8 @@ export interface Case {
   description?: string; materials?: CaseMaterial[]; work_directory_id?: string | null;
   session_config?: CaseSessionConfig;
   state: 'DRAFT' | 'ACTIVE' | 'PAUSED' | 'COMPLETED' | 'ARCHIVED';
+  pause_reason?: 'MANUAL' | 'WAITING_HUMAN' | 'CONCLUSION_PROPOSED' | 'EXECUTION_CANCELLED' | null;
+  pause_note?: string | null;
   control_conversation_binding_id?: string | null;
   control_work_directory_id?: string | null;
   current_control_round_id?: string | null;

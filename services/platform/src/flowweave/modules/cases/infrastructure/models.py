@@ -28,6 +28,11 @@ class Case(Base):
             name="ck_case_state",
         ),
         CheckConstraint("row_version >= 1", name="ck_case_row_version"),
+        CheckConstraint(
+            "pause_reason IS NULL OR (state = 'PAUSED' AND pause_reason IN "
+            "('MANUAL', 'WAITING_HUMAN', 'CONCLUSION_PROPOSED', 'EXECUTION_CANCELLED'))",
+            name="ck_case_pause_reason",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
@@ -41,6 +46,12 @@ class Case(Base):
     control_conversation_binding_id: Mapped[str | None] = mapped_column(String(36), unique=True)
     control_work_directory_id: Mapped[str | None] = mapped_column(String(36), unique=True)
     current_control_round_id: Mapped[str | None] = mapped_column(String(36), unique=True)
+    # Why the Case is PAUSED (NULL on a PAUSED row means a plain manual pause). The UI and the
+    # coordinator read this instead of inferring intent from the latest control plan.
+    pause_reason: Mapped[str | None] = mapped_column(String(30))
+    pause_note: Mapped[str | None] = mapped_column(Text)
+    # How the latest resume happened, delivered to the coordinator with CASE_RESUMED.
+    resume_note: Mapped[str | None] = mapped_column(Text)
     row_version: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)

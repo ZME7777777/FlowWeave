@@ -929,6 +929,11 @@ class CaseCoordinationStateWrite(ApiModel):
     state: Literal["ACTIVE", "PAUSED"]
 
 
+class CaseConclusionDecisionWrite(ApiModel):
+    expected_row_version: int = Field(ge=1)
+    note: str | None = Field(default=None, max_length=2000)
+
+
 class CaseStageStateWrite(ApiModel):
     expected_case_row_version: int = Field(ge=1)
     state: Literal["PENDING", "ACTIVE", "COMPLETED", "SKIPPED"]
