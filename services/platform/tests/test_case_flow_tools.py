@@ -1245,6 +1245,46 @@ def test_advancing_the_last_stage_names_complete_case_as_the_required_action(flo
     assert result["error_code"] == "CASE_FINAL_STAGE_REQUIRES_COMPLETION"
 
 
+def test_agent_can_conclude_the_case_early_without_a_completed_run(flow_case):
+    """Stopping is a judgment the Agent may make on a running, unfinished execution."""
+
+    g = flow_case
+    g.execution.state = "RUNNING"
+    g.db.commit()
+    result = projection(
+        rpc(
+            g,
+            "manage_case_flow",
+            action(g, "CONCLUDE_CASE", reason="first node proved the premise invalid"),
+        )
+    )
+    assert result["state"] == "SUCCEEDED", result
+    refresh(g)
+    assert g.item.state == "COMPLETED"
+    assert g.stage.state == "COMPLETED"
+    later = g.db.scalars(
+        select(CaseStage).where(CaseStage.case_id == g.item.id, CaseStage.id != g.stage.id)
+    ).all()
+    assert all(stage.state == "SKIPPED" for stage in later if stage.position > g.stage.position)
+
+
+def test_agent_can_ask_the_human_which_pauses_the_case(flow_case):
+    g = flow_case
+    result = projection(
+        rpc(
+            g,
+            "manage_case_flow",
+            action(
+                g, "ASK_HUMAN", reason="Empty result: genuinely none, or wrong scope? Options A/B."
+            ),
+        )
+    )
+    assert result["state"] == "SUCCEEDED", result
+    refresh(g)
+    assert g.item.state == "PAUSED"
+    assert g.stage.state in {"ACTIVE", "REVIEW_PENDING"}
+
+
 def test_stepwise_final_stage_is_completed_by_the_agent_with_accepted_artifact_evidence(flow_case):
     g = flow_case
     stepwise(g)
@@ -1380,7 +1420,6 @@ def test_completing_before_the_execution_finishes_reports_the_real_reason(flow_c
     )
     assert result["error_code"] == "CASE_STAGE_STATE_NOT_READY"
     assert result["error_code"] != "VERSION_CONFLICT"
-
 
 
 def test_plan_survives_a_session_rollback_so_a_failure_can_still_be_recorded(flow_case):

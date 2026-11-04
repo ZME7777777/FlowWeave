@@ -53,6 +53,8 @@ class FlowActionArguments(BaseModel):
         "COPY_STEPWISE_EXECUTION",
         "ADVANCE_CASE_STAGE",
         "COMPLETE_CASE",
+        "CONCLUDE_CASE",
+        "ASK_HUMAN",
     ]
     idempotency_key: str = Field(
         pattern=r"^[a-z][a-z0-9._:-]{0,119}$",
@@ -179,7 +181,15 @@ TOOLS = [
         "stepwise record (COPY_STEPWISE_EXECUTION) into a new current draft that keeps every "
         "node configuration so inputs, prompts, capabilities or gates can be adjusted and rerun, "
         "explicitly advance a reviewed stage, or complete the final reviewed stage with "
-        "formal Artifact evidence. TO START A FLOW: first CREATE_EXECUTION_COPY (no "
+        "formal Artifact evidence. Two judgment actions need no completed run: "
+        "CONCLUDE_CASE ends the whole Case early when continuing is unnecessary or pointless "
+        "(goal answered, premise invalid, upstream result makes later stages moot) - it stops any "
+        "running execution, skips the remaining stages, and `reason` must state the conclusion "
+        "and the evidence it rests on; ASK_HUMAN pauses the Case and puts `reason` (your "
+        "question, with the options and your recommendation) in front of the human, who answers "
+        "in this conversation and resumes the Case - use it when the decision is genuinely theirs "
+        "or the evidence cannot distinguish a correct empty result from a wrong execution. "
+        "TO START A FLOW: first CREATE_EXECUTION_COPY (no "
         "expected_execution_flow_run_id, no draft), then read the copy, then CONFIGURE_EXECUTION. "
         "A STEPWISE stage uses stepwise_draft with "
         "flow_node_key (startup_mode, startup_prompt, input_urls/artifact_ids, agent_preset with a "
@@ -575,10 +585,18 @@ def validate_action_preconditions(
         "COMPLETE_CASE",
     }
     expected_stage_state = "REVIEW_PENDING" if plan.action in review_actions else "ACTIVE"
+    judgment_action = plan.action in {"CONCLUDE_CASE", "ASK_HUMAN"}
     if plan.action != "CREATE_EXECUTION_COPY":
         if stage.current_execution_flow_run_id != run.id:
             raise conflict("action is outside the current stage execution", state=stage.state)
-        if stage.state != expected_stage_state:
+        if judgment_action and stage.state not in {"ACTIVE", "REVIEW_PENDING"}:
+            raise DomainError(
+                "CASE_STAGE_STATE_NOT_READY",
+                f"{plan.action} 需要阶段处于 ACTIVE 或 REVIEW_PENDING，当前为 {stage.state}",
+                409,
+                {"stage_state": stage.state},
+            )
+        if not judgment_action and stage.state != expected_stage_state:
             # Versions matched, so this is a precondition failure, not a concurrent edit. Say so,
             # otherwise the coordinator waits for a version change that can never come.
             raise DomainError(
@@ -586,8 +604,11 @@ def validate_action_preconditions(
                 f"{plan.action} 需要阶段处于 {expected_stage_state}，当前为 {stage.state}；"
                 "这不是并发冲突，重新读取不会改变结果。请先让流程跑到可评审状态。",
                 409,
-                {"required_stage_state": expected_stage_state, "stage_state": stage.state,
-                 "execution_state": run.state},
+                {
+                    "required_stage_state": expected_stage_state,
+                    "stage_state": stage.state,
+                    "execution_state": run.state,
+                },
             )
     if plan.action == "CONFIGURE_EXECUTION" and stage.execution_mode == "STEPWISE":
         if not args.stepwise_draft or not args.flow_node_key:
@@ -683,8 +704,11 @@ def validate_action_preconditions(
                 f"{plan.action} 需要当前执行已完成（COMPLETED），当前为 {run.state}；"
                 "这不是并发冲突。若后续节点尚未启动，请继续启动它们，或确认是否需要它们。",
                 409,
-                {"required_execution_state": "COMPLETED", "execution_state": run.state,
-                 "stage_state": stage.state},
+                {
+                    "required_execution_state": "COMPLETED",
+                    "execution_state": run.state,
+                    "stage_state": stage.state,
+                },
             )
         if plan.action == "ADVANCE_CASE_STAGE":
             next_stage = db.scalar(

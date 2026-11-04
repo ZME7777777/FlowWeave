@@ -342,7 +342,8 @@ class CaseControlPlan(Base):
             "'STOP_EXECUTION', "
             "'RERUN_STEPWISE_NODE', 'COPY_CONTINUOUS_EXECUTION', 'COPY_STEPWISE_EXECUTION', "
             "'ADVANCE_CASE_STAGE', "
-            "'COMPLETE_CASE', 'REVISE_UNSTARTED_RUNTIME', 'CONFIGURE_EXECUTION')",
+            "'COMPLETE_CASE', 'REVISE_UNSTARTED_RUNTIME', 'CONFIGURE_EXECUTION', "
+            "'CONCLUDE_CASE', 'ASK_HUMAN')",
             name="ck_case_control_plan_action",
         ),
         CheckConstraint(

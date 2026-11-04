@@ -191,7 +191,9 @@ def _stage_execution_summary(db: Session, stage: CaseStage) -> dict[str, Any] | 
                 "state": (
                     latest_attempt["state"]
                     if latest_attempt is not None
-                    else node_run["state"] if node_run is not None else "PENDING"
+                    else node_run["state"]
+                    if node_run is not None
+                    else "PENDING"
                 ),
                 "active": bool(active and active["node_key"] == key),
             }
@@ -1428,6 +1430,11 @@ def execute_case_control_plan(db: Session, case_id: str, plan_id: str) -> dict[s
         }
         else "ACTIVE"
     )
+    if plan.action in {"CONCLUDE_CASE", "ASK_HUMAN"} and stage.state in {
+        "ACTIVE",
+        "REVIEW_PENDING",
+    }:
+        allowed_stage_state = stage.state
     if stage.state != allowed_stage_state:
         # Versions can match here, so this is a precondition failure, not a concurrent edit.
         # Report it as such, otherwise the coordinator keeps re-reading and waiting for a version
@@ -1640,6 +1647,39 @@ def execute_case_control_plan(db: Session, case_id: str, plan_id: str) -> dict[s
                     requested.get("evidence_artifact_version_ids") or []
                 ),
             }
+        elif plan.action == "CONCLUDE_CASE":
+            running = stage.current_execution_flow_run_id
+            cancelled = False
+            run = db.get(FlowRun, running) if running else None
+            if run is not None and run.state not in {"COMPLETED", "FAILED", "CANCELLED"}:
+                orchestration.cancel_run(db, run.id, f"case-plan-conclude:{plan.id}")
+                cancelled = True
+            skipped: list[str] = []
+            for later in db.scalars(
+                select(CaseStage).where(
+                    CaseStage.case_id == item.id, CaseStage.position > stage.position
+                )
+            ):
+                if later.state not in {"COMPLETED", "SKIPPED"}:
+                    later.state = "SKIPPED"
+                    skipped.append(later.stage_key)
+            stage.state = "COMPLETED"
+            item.state = "COMPLETED"
+            item.row_version += 1
+            result = {
+                "concluded_stage_key": stage.stage_key,
+                "skipped_stage_keys": skipped,
+                "execution_cancelled": cancelled,
+                "conclusion": plan.reason,
+            }
+        elif plan.action == "ASK_HUMAN":
+            item.state = "PAUSED"
+            item.row_version += 1
+            result = {
+                "question": plan.reason,
+                "case_state": "PAUSED",
+                "next": "场景已暂停等待人工回答；恢复后你会收到通知，再读取最新上下文继续。",
+            }
         elif plan.action == "STOP_EXECUTION":
             if not stage.current_execution_flow_run_id:
                 raise conflict("Case stage has no execution copy", stage_id=stage.id)
@@ -1804,9 +1844,7 @@ def rerun_case_stage(db: Session, case_id: str, stage_id: str) -> dict[str, Any]
             {"stage_id": stage.id, "flow_run_id": run.id, "state": run.state},
         )
     if _case_has_unresolved_control_plan(db, item.id):
-        raise DomainError(
-            "CASE_CONTROL_PLAN_UNRESOLVED", "仍有未完成的受控动作，请稍后再试", 409
-        )
+        raise DomainError("CASE_CONTROL_PLAN_UNRESOLVED", "仍有未完成的受控动作，请稍后再试", 409)
     later = [
         other
         for other in db.scalars(select(CaseStage).where(CaseStage.case_id == item.id))
