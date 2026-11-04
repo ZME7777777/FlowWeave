@@ -788,3 +788,8 @@
 .agent-workbench-app-shell>.agent-workspace-drawer.fullscreen:not(.conversation-active){grid-column:1 / -1!important;grid-row:1!important}
 .agent-workspace-drawer.fullscreen .agent-workspace-files.fullscreen-git.file-tree-collapsed{grid-template-columns:0 8px minmax(0,1fr)}
 @media(max-width:960px){.agent-workspace-drawer.fullscreen .agent-workspace-files.fullscreen-git.file-tree-collapsed{grid-template-columns:0 8px minmax(0,1fr)}}
+
+/* Dragging the file-tree divider must track the pointer 1:1; the easing
+   transitions are only for click/keyboard collapse and expand. */
+.agent-workspace-files.file-tree-resizing,.agent-workspace-files.file-tree-resizing>.agent-file-tree-pane{transition:none!important}
+.agent-workspace-files.file-tree-resizing iframe{pointer-events:none}

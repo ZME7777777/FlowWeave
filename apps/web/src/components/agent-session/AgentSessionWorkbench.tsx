@@ -4952,7 +4952,16 @@ function WorkspaceDrawer({
     const startCollapsed = fileTreeCollapsed;
     const startWidth = startCollapsed ? 0 : fileTreeWidth;
     const maximum = () => Math.min(520, Math.max(fileTreeMinimumWidth, window.innerWidth * 0.55));
+    const section = (event.currentTarget as HTMLElement).closest('.agent-workspace-files');
+    section?.classList.add('file-tree-resizing');
+    let frame = 0;
+    let latest: PointerEvent | undefined;
     const move = (moveEvent: PointerEvent) => {
+      latest = moveEvent;
+      if (frame) return;
+      frame = requestAnimationFrame(() => { frame = 0; if (latest) apply(latest); });
+    };
+    const apply = (moveEvent: PointerEvent) => {
       const distance = moveEvent.clientX - startX;
       if (startCollapsed) {
         if (distance < fileTreeCollapseThreshold) return;
@@ -4971,6 +4980,10 @@ function WorkspaceDrawer({
     const stop = () => {
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', stop);
+      window.removeEventListener('pointercancel', stop);
+      if (frame) cancelAnimationFrame(frame);
+      if (latest) apply(latest);
+      section?.classList.remove('file-tree-resizing');
       document.body.style.removeProperty('cursor');
       document.body.style.removeProperty('user-select');
     };
@@ -4978,6 +4991,7 @@ function WorkspaceDrawer({
     document.body.style.userSelect = 'none';
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', stop, { once: true });
+    window.addEventListener('pointercancel', stop, { once: true });
   };
   const loadingOrError = detailsQuery.isError
     ? <div className="agent-drawer-empty"><b>工作区读取失败</b><span>{detailsQuery.error instanceof Error ? detailsQuery.error.message : '暂时无法读取工作区，请稍后重试。'}</span><button type="button" className="secondary" onClick={() => void detailsQuery.refetch()}>重试</button></div>
