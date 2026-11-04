@@ -2068,9 +2068,11 @@ function hasNonTerminalRuntimeActivityForTurn(events: OpenHandsConversationEvent
 }
 
 function latestUnfinishedUserEventId(events: OpenHandsConversationEvent[]): string | undefined {
-  const userEvents = events.filter(event => event.event_type === 'MESSAGE'
+  const latestUserEvent = [...events].reverse().find(event => event.event_type === 'MESSAGE'
     && ['user', 'human'].includes(String(event.payload.source ?? '').toLowerCase()));
-  return [...userEvents].reverse().find(event => !hasFinishedTurn(events, event.id))?.id;
+  // Recovery belongs to the latest user turn. An older unfinished branch must
+  // not reopen the conversation after the latest turn has formally completed.
+  return latestUserEvent && !hasFinishedTurn(events, latestUserEvent.id) ? latestUserEvent.id : undefined;
 }
 
 function eventBranchIdsFromRoots(events: OpenHandsConversationEvent[], rootEventIds: Iterable<string>): Set<string> {
@@ -7606,9 +7608,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       && (readinessSynchronization.current.lastObservedRequestAt ?? 0) > currentForegroundTurn!.submittedAt));
   const foregroundSubmissionAwaitingFormalEvent = !nativeFailureSettled
     && (foregroundTurnPending || foregroundDeliveryPending);
-  const activeFormalTurnId = activeTurnEventId && currentFormalEvents.some(event => event.id === activeTurnEventId)
-    ? activeTurnEventId
-    : latestFormalUserEventId;
+  // A recovered local pointer may still name an older branch. Resolve formal
+  // completion from the latest user turn; the submission bridge above owns
+  // new messages until their acknowledged formal event becomes readable.
+  const activeFormalTurnId = latestFormalUserEventId;
   const activeFormalTurnFinished = Boolean(
     activeFormalTurnId && hasFinishedTurn(currentFormalEvents, activeFormalTurnId),
   );
