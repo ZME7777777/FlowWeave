@@ -7437,6 +7437,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     const hiddenBranchIds = eventBranchIdsFromRoots(currentFormalEvents, hiddenEventIds);
     const eventsById = new Map(currentFormalEvents.map(event => [event.id, event]));
     const belongsToHiddenBranch = (event: OpenHandsConversationEvent): boolean => {
+      if (hiddenEventIds.size === 0) return false;
       if (hiddenEventIds.has(event.id) || hiddenBranchIds.has(event.id)) return true;
       const visited = new Set<string>();
       let parentId = event.payload.parent_id;

@@ -76,11 +76,16 @@ export function orderOpenHandsConversationEvents(events: OpenHandsConversationEv
   }
   const output: OpenHandsConversationEvent[] = [];
   const seen = new Set<string>();
-  const visit = (event: OpenHandsConversationEvent) => {
-    if (seen.has(event.id)) return;
-    seen.add(event.id);
-    output.push(event);
-    for (const child of children.get(event.id) ?? []) visit(child);
+  const visit = (root: OpenHandsConversationEvent) => {
+    const pending = [root];
+    while (pending.length) {
+      const event = pending.pop()!;
+      if (seen.has(event.id)) continue;
+      seen.add(event.id);
+      output.push(event);
+      const descendants = children.get(event.id) ?? [];
+      for (let index = descendants.length - 1; index >= 0; index -= 1) pending.push(descendants[index]);
+    }
   };
   for (const event of roots) visit(event);
   for (const event of events) visit(event);

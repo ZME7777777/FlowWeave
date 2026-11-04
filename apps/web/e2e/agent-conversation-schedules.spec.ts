@@ -4,7 +4,8 @@ import { createServer } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect, test, type Page, type Route } from '@playwright/test';
-import type { CaseBasics, CaseSessionConfig, CaseStage } from '../src/types';
+import type { CaseBasics, CaseSessionConfig, CaseStage, OpenHandsConversationEvent } from '../src/types';
+import { orderOpenHandsConversationEvents } from '../src/components/conversationEvents';
 
 const now = '2026-10-19T00:00:00Z';
 
@@ -5192,4 +5193,106 @@ test('leaving an invalid Mermaid while its render is queued leaves no temporary 
   await expect(page.locator('body > [data-mermaid-render-container]')).toHaveCount(0);
   await expect(page.locator('body > [id^="dflowweave-mermaid"]')).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.scrollHeight <= window.innerHeight)).toBe(true);
+});
+
+function longConversationTurns(count: number) {
+  return Array.from({ length: count }, (_, index) => {
+    const timestamp = new Date(Date.parse(now) + index * 60_000).toISOString();
+    return [
+      { id: `window-user-${index}`, event_type: 'MESSAGE', payload: { source: 'user', parent_id: index ? `window-reply-${index - 1}` : '__root__', content: `历史问题 ${index}`, timestamp } },
+      { id: `window-thought-${index}`, event_type: 'THOUGHT', payload: { parent_id: `window-user-${index}`, content: `正在核对第 ${index} 项`, timestamp } },
+      { id: `window-reply-${index}`, event_type: 'MESSAGE', payload: { source: 'agent', parent_id: `window-thought-${index}`, content: `历史答复 ${index}\n\n${'这是一段包含 **格式** 与 `代码` 的历史内容。\n\n'.repeat(6)}\n\n|字段|结果|\n|---|---|\n|序号|${index}|`, final_reply: true, timestamp } },
+    ];
+  });
+}
+
+test('long conversation windows every revealed history page and restores search and reading anchors', async ({ page }, testInfo) => {
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  const turns = longConversationTurns(180);
+  const pageSize = 15;
+  const latest = { events: turns.slice(-pageSize).flat(), next_cursor: 'window-reply-179', history_cursor: 'older-165', result: { status: 'COMPLETED' } };
+  await openWorkspace(page, [], true);
+  const historyReads: string[] = [];
+  await page.route('**/conversations/*/hydration*', route => json(route, {
+    events: latest, context: { used_tokens: 1000, window_tokens: 128000 }, readiness: { ready: true, execution_status: 'idle' },
+  }));
+  await page.route('**/conversations/*/events*', route => {
+    const cursor = new URL(route.request().url()).searchParams.get('history_cursor');
+    if (!cursor) return json(route, latest);
+    historyReads.push(cursor);
+    const end = Number(cursor.replace('older-', ''));
+    const start = Math.max(0, end - pageSize);
+    return json(route, { events: turns.slice(start, end).flat(), next_cursor: null, history_cursor: start ? `older-${start}` : null });
+  });
+  await page.goto('/agent/conversations/scheduled-conversation');
+  const surface = page.locator('.agent-workbench-main .conversation-surface');
+  await expect(surface.locator('[data-conversation-event-id="window-reply-179"]')).toBeVisible();
+  await expect.poll(() => historyReads.length, { timeout: 30000 }).toBe(11);
+  await surface.hover();
+  await page.mouse.wheel(0, -300);
+  for (let pageNumber = 0; pageNumber < 11; pageNumber += 1) {
+    const before = await surface.locator('[data-conversation-turn]').count();
+    if (before === 180) break;
+    await surface.evaluate(element => { element.scrollTop = 0; element.dispatchEvent(new Event('scroll')); });
+    await expect.poll(() => surface.locator('[data-conversation-turn]').count()).toBeGreaterThan(before);
+  }
+  await expect(surface.locator('[data-conversation-turn]')).toHaveCount(180);
+  await expect.poll(() => surface.locator('[data-virtualized="true"]').count()).toBeGreaterThan(160);
+  const before = await surface.evaluate(element => ({ nodes: element.querySelectorAll('*').length, height: element.scrollHeight }));
+  await surface.evaluate(element => { element.scrollTop = element.scrollHeight * 0.4; });
+  await expect.poll(() => surface.locator('[data-virtualized="true"]').count()).toBeGreaterThan(160);
+  await page.waitForTimeout(300);
+  const anchor = await surface.evaluate(element => {
+    const top = element.getBoundingClientRect().top;
+    const row = [...element.querySelectorAll<HTMLElement>('[data-conversation-event-id]')].find(item => item.getBoundingClientRect().bottom > top);
+    return { id: row?.dataset.conversationEventId, offset: row ? row.getBoundingClientRect().top - top : 0, scrollTop: element.scrollTop };
+  });
+  await page.waitForTimeout(500);
+  expect(Math.abs(await surface.evaluate(element => element.scrollTop) - anchor.scrollTop)).toBeLessThan(2);
+  const input = page.getByLabel('搜索当前会话');
+  await input.fill('历史答复 120');
+  await input.press('Enter');
+  await expect(surface.locator('[data-conversation-event-id="window-reply-120"]')).toBeInViewport();
+  await expect(page.locator('.conversation-search-highlights i.is-active')).toHaveCount(1);
+  await input.press('Escape');
+  const process = surface.locator('[data-conversation-turn="window-user-120"]');
+  await process.getByLabel('展开工作过程', { exact: true }).click();
+  await expect(process.locator('[data-conversation-event-id="window-thought-120"]')).toBeVisible();
+  await page.getByRole('button', { name: '跳转到最新回复', exact: true }).click();
+  await expect(surface.locator('[data-conversation-event-id="window-reply-179"]')).toBeInViewport();
+  await expect.poll(() => process.getAttribute('data-virtualized')).toBe('true');
+  await input.fill('历史答复 120');
+  await input.press('Enter');
+  await expect(process.locator('[data-conversation-event-id="window-thought-120"]')).toBeVisible();
+  await input.press('Escape');
+  await page.waitForTimeout(300);
+  const position = await surface.evaluate(element => element.scrollTop);
+  await page.getByRole('button', { name: '周报会话', exact: true }).click();
+  await page.getByRole('button', { name: '日报会话', exact: true }).click();
+  await expect.poll(async () => Math.abs(await surface.evaluate(element => element.scrollTop) - position)).toBeLessThan(3);
+  await expect(process.locator('[data-conversation-event-id="window-thought-120"]')).toBeVisible();
+  await page.setViewportSize({ width: 1024, height: 800 });
+  await input.fill('历史答复 120');
+  await input.press('Enter');
+  await expect(surface.locator('[data-conversation-event-id="window-reply-120"]')).toBeInViewport();
+  const metrics = await surface.evaluate(element => ({ nodes: element.querySelectorAll('*').length, height: element.scrollHeight, mountedTurns: element.querySelectorAll('[data-conversation-turn]:not([data-virtualized])').length }));
+  await testInfo.attach('long-conversation-metrics', { body: JSON.stringify({ turns: 180, events: 540, historyPages: historyReads.length, before, after: metrics }), contentType: 'application/json' });
+  console.log('Long conversation metrics', JSON.stringify(metrics));
+  expect(metrics.nodes).toBeLessThan(2000);
+  expect(metrics.mountedTurns).toBeLessThan(20);
+  expect(errors).toEqual([]);
+  await page.screenshot({ path: '../../.tmp/long-conversation/history-window.png' });
+});
+
+
+test('long formal event chains keep parent order without exhausting the browser stack', () => {
+  const events: OpenHandsConversationEvent[] = Array.from({ length: 12000 }, (_, index) => ({
+    id: `deep-${index}`, event_type: 'THOUGHT',
+    payload: { parent_id: index ? `deep-${index - 1}` : '__root__', content: '正式事件' },
+  }));
+  const ordered = orderOpenHandsConversationEvents([...events].reverse());
+  expect(ordered.map(event => event.id)).toEqual(events.map(event => event.id));
+  const cycle = events.slice(0, 3).map((event, index) => ({ ...event, payload: { ...event.payload, parent_id: `deep-${(index + 1) % 3}` } }));
+  expect(new Set(orderOpenHandsConversationEvents(cycle).map(event => event.id)).size).toBe(3);
 });

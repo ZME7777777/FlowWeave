@@ -10,6 +10,8 @@ import { subagentAvatarSlotForEvent, subagentAvatarSlots, type SubagentAvatarSlo
 import { workspaceFileChanges, workspaceRelativePath, type WorkspaceFileChange } from './agent-session/fileChanges';
 import { isFlowWeaveInternalProtocolMessage, isFlowWeaveMessageContext, isOpenHandsAgentReply, isOpenHandsConversationTerminalError, isOpenHandsEmptyResponseRecovery, orderOpenHandsConversationEvents, parseOpenHandsEventTime, projectFlowWeaveMessageContext } from './conversationEvents';
 import { conversationSearchPattern } from './conversationSearch';
+import { ConversationTurnWindow } from './ConversationTurnWindow';
+import { useConversationTurnWindow, type ConversationTurnLayouts } from './useConversationTurnWindow';
 import './conversation-surface.css';
 
 type ItemKind = 'user' | 'assistant' | 'thought' | 'tool' | 'error' | 'condensation' | 'goal' | 'security';
@@ -529,13 +531,23 @@ function itemsFor(event: OpenHandsConversationEvent, taskRetryError = false): It
   return content ? [{ event, kind: 'thought', title: eventName, content }] : [];
 }
 
+const userAncestorCache = new WeakMap<Map<string, OpenHandsConversationEvent>, Map<string, string | undefined>>();
+
 function userAncestorId(
   event: OpenHandsConversationEvent,
   byId: Map<string, OpenHandsConversationEvent>,
 ): string | undefined {
+  const cached = userAncestorCache.get(byId) ?? new Map<string, string | undefined>();
+  userAncestorCache.set(byId, cached);
+  if (cached.has(event.id)) return cached.get(event.id);
   const visited = new Set<string>();
+  let owner: string | undefined;
   let current: OpenHandsConversationEvent | undefined = event;
   while (current && !visited.has(current.id)) {
+    if (cached.has(current.id)) {
+      owner = cached.get(current.id);
+      break;
+    }
     visited.add(current.id);
     const source = String(current.payload.source ?? '').toLowerCase();
     const content = typeof current.payload.content === 'string' ? current.payload.content : '';
@@ -545,11 +557,15 @@ function userAncestorId(
       && !isFlowWeaveInternalProtocolMessage(content)
       // A Goal-loop follow-up is control input inside the running turn, not a boundary.
       && !current.payload.goal_followup
-    ) return current.id;
+    ) {
+      owner = current.id;
+      break;
+    }
     const parentId: string | null | undefined = current.payload.parent_id;
     current = parentId ? byId.get(parentId) : undefined;
   }
-  return undefined;
+  for (const id of visited) cached.set(id, owner);
+  return owner;
 }
 
 function itemUserAncestorId(
@@ -682,7 +698,7 @@ function turnsFor(events: OpenHandsConversationEvent[]): Turn[] {
       // event rendered, so a late process event cannot move under an older turn.
       const ownerUserId = itemUserAncestorId(item.event, byId, actionsById, actionsByToolCallId);
       const owner = ownerUserId ? turnsByUserId.get(ownerUserId) : undefined;
-      const unresolvedKey = orphanTurnKey(item.event, byId, actionsById, actionsByToolCallId);
+      const unresolvedKey = owner ? owner.turn.renderKey : orphanTurnKey(item.event, byId, actionsById, actionsByToolCallId);
       const turn = owner?.turn ?? orphanTurnsByKey.get(unresolvedKey) ?? (() => {
         const orphan: Turn = {
           id: item.event.id,
@@ -760,10 +776,7 @@ export function goalRoundDurations(
   return seconds;
 }
 
-function goalTurn(turn: Turn, events: OpenHandsConversationEvent[], goalActive: boolean): GoalTurn | undefined {
-  const byId = new Map(events.map(event => [event.id, event]));
-  const userId = turn.user?.event.id;
-  const hasAudit = Boolean(userId && events.some(event => event.payload.goal_status?.verdict && userAncestorId(event, byId) === userId));
+function goalTurn(turn: Turn, hasAudit: boolean, goalActive: boolean): GoalTurn | undefined {
   const followups = turn.activity.filter(item => item.event.payload.goal_followup);
   if (!followups.length && !hasAudit) return undefined;
   const replies = turn.replies ?? [];
@@ -800,14 +813,24 @@ function goalTurn(turn: Turn, events: OpenHandsConversationEvent[], goalActive: 
   return { process, finalReply, roundStarts: opens.map(({ id, label }) => ({ eventId: id, label })), roundSeconds };
 }
 
-function fileChangesForTurn(
-  events: OpenHandsConversationEvent[],
-  turn: Turn,
-): WorkspaceFileChange[] {
-  if (!turn.user) return workspaceFileChanges(turn.activity.map(item => item.event));
+function turnEventIndex(events: OpenHandsConversationEvent[]) {
   const byId = new Map(events.map(event => [event.id, event]));
-  const ownedEvents = events.filter(event => userAncestorId(event, byId) === turn.user!.event.id);
-  return workspaceFileChanges(ownedEvents.length ? ownedEvents : turn.activity.map(item => item.event));
+  const eventsByUser = new Map<string, OpenHandsConversationEvent[]>();
+  const goalAuditUsers = new Set<string>();
+  for (const event of events) {
+    const owner = userAncestorId(event, byId);
+    if (!owner) continue;
+    const owned = eventsByUser.get(owner);
+    if (owned) owned.push(event);
+    else eventsByUser.set(owner, [event]);
+    if (event.payload.goal_status?.verdict) goalAuditUsers.add(owner);
+  }
+  return { eventsByUser, goalAuditUsers };
+}
+
+function fileChangesForTurn(index: ReturnType<typeof turnEventIndex>, turn: Turn): WorkspaceFileChange[] {
+  const ownedEvents = turn.user && index.eventsByUser.get(turn.user.event.id);
+  return workspaceFileChanges(ownedEvents || turn.activity.map(item => item.event));
 }
 
 function detailText(value: unknown): string {
@@ -1749,6 +1772,10 @@ const ActivityGroup = memo(function ActivityGroup({ items, active, revealEventId
     if (completionConfirmed) setUncontrolledOpen(false);
   }, [completionConfirmed]);
   const open = controlledOpen ?? uncontrolledOpen;
+  const [detailsMounted, setDetailsMounted] = useState(open);
+  useEffect(() => {
+    if (open) setDetailsMounted(true);
+  }, [open]);
   const setOpen = useCallback((next: boolean) => {
     if (controlledOpen === undefined) setUncontrolledOpen(next);
     onOpenChange?.(next);
@@ -1760,11 +1787,11 @@ const ActivityGroup = memo(function ActivityGroup({ items, active, revealEventId
   const summary = <><ChevronRight size={14}/><span className="conversation-activity-meta"><span className="conversation-activity-status"><span>{active && startedAt !== undefined ? <LiveElapsed startedAt={startedAt}/> : active ? '处理中' : label}</span><span className={`conversation-activity-spinner-slot${active ? ' active' : ''}`} aria-hidden="true"><LoaderCircle className="conversation-activity-spin" size={13}/></span></span>{itemCount > 0 && <small>{itemCount} 项</small>}</span></>;
   const hasDetails = itemCount > 0;
   if (!hasDetails) return <div className={`conversation-activity-group summary-only${display === 'summary' ? ' conversation-process-summary' : ''}`}><div className="conversation-activity-summary">{summary}</div></div>;
-  const activityList = <div className="conversation-activity-list">
+  const activityList = open || detailsMounted ? <div className="conversation-activity-list">
     {rows.map(row => row.kind === 'progress-group'
       ? <ProgressActivity key={row.group.id} group={row.group} active={active} revealEventIds={revealEventIds} paused={paused} parentFailed={parentFailed} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot} onOpenSourceLocation={onOpenSourceLocation}/>
       : <ActivityEntryRow key={row.entry.id} entry={row.entry} active={active} reveal={entryHasRevealedText(row.entry, revealEventIds)} paused={paused} parentFailed={parentFailed} hideThought={row.entry.hideThought} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot} onOpenSourceLocation={onOpenSourceLocation}/>) }
-  </div>;
+  </div> : null;
   const completed = display === 'summary';
   return <details className={`${completed ? 'conversation-process-summary' : 'conversation-activity-group'}${active && !completed ? ' active' : ''}`} open={open} onToggle={event => setOpen(event.currentTarget.open)}>
     <summary aria-label={completed ? `${open ? '收起' : '展开'}工作过程` : undefined}>{summary}</summary>
@@ -2094,6 +2121,8 @@ export interface ConversationScrollSnapshot {
   bottomOffset: number;
   followLatest: boolean;
   savedAt: number;
+  turnLayouts?: ConversationTurnLayouts;
+  expandedProcesses?: ReadonlySet<string>;
 }
 
 export const ConversationSurface = memo(function ConversationSurface({ events, isGenerating, isPaused = false, isFailed = false, pausing = false, reconnectingAttempt, reconnectingMaxAttempts = 3, emptyResponseRecoveryActive = false, modelRetryStatus, historyPending = false, cachedHistoryMarkerCount = 0, cachedHistoryUserEvents = [], hasCachedOlderHistory = false, onRequestOlderHistory, onRevealHistoryThrough, conversationScope, referenceLocation, searchLocation, initialScrollSnapshot, onScrollSnapshotChange, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationPending = false, condensationStartedAt, onRewrite, onFork, onOpenAttachment, attachmentImageUrl, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenSourceLocation, onOpenWorkspaceFile, onOpenBrowser, onOpenImage, workspaceImageUrl, workspaceRoot, onCreateAnnotation, onSidebarQuestion, goalLocateEventId, onLocateAnnotation, conversationName, onOpenConversationReference, taskControl = [], monitoring, connectionState }: {
@@ -2166,6 +2195,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   connectionState?: ConversationConnectionState;
 }) {
   const surface = useRef<HTMLElement>(null);
+  const turnWindow = useConversationTurnWindow(surface, initialScrollSnapshot?.turnLayouts);
   const content = useRef<HTMLDivElement>(null);
   const shell = useRef<HTMLDivElement>(null);
   const initialPositioned = useRef(false);
@@ -2211,8 +2241,9 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   const [editingEventId, setEditingEventId] = useState<string>();
   const [editingContent, setEditingContent] = useState('');
   const [copiedEventId, setCopiedEventId] = useState<string>();
+  const [userNavigationTarget, setUserNavigationTarget] = useState<{ eventId: string; behavior: ScrollBehavior; located?: boolean }>();
   const [condensationElapsed, setCondensationElapsed] = useState(0);
-  const [expandedCompletedProcesses, setExpandedCompletedProcesses] = useState<ReadonlySet<string>>(() => new Set());
+  const [expandedCompletedProcesses, setExpandedCompletedProcesses] = useState<ReadonlySet<string>>(() => initialScrollSnapshot?.expandedProcesses ?? new Set());
   const [messagePreview, setMessagePreview] = useState<{ id: string; content: string; index: number; top: number }>();
   const [selectedReference, setSelectedReference] = useState<{ reference: ConversationAnnotationReference; range: Range }>();
   const [viewingReference, setViewingReference] = useState<AgentConversationReference>();
@@ -2258,22 +2289,33 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     [events],
   );
   const turns = useMemo(() => turnsFor(visibleEvents), [visibleEvents]);
+  const eventIndex = useMemo(() => turnEventIndex(events), [events]);
+  const lastReplyTurnIndex = useMemo(() => turns.reduce((last, turn, index) => turn.assistant ? index : last, -1), [turns]);
+  const pinnedEventIds = new Set([
+    editingEventId, goalLocateEventId, highlightedReference?.eventId, userNavigationTarget?.eventId,
+    referenceLocation && referenceLocation.source_binding_id === conversationScope ? referenceLocation.event_id : undefined,
+    searchLocation && searchLocation.bindingId === conversationScope ? searchLocation.eventId : undefined,
+  ].filter((id): id is string => Boolean(id)));
+  const pinnedTurnIds = new Set(turns.filter(turn => pinnedEventIds.has(turn.id)
+    || turn.activity.some(item => pinnedEventIds.has(item.event.id))
+    || turn.replies?.some(item => pinnedEventIds.has(item.event.id))).map(turn => turn.id));
   const latestGoalStatus = useMemo(() => [...visibleEvents].reverse().find(event => event.payload.goal_status)?.payload.goal_status, [visibleEvents]);
   const revealEventIds = EMPTY_EVENT_IDS;
   // Locating an event that sits inside a folded Goal process opens that process and keeps it
   // open (the locate target itself is cleared as soon as the jump lands).
   useEffect(() => {
-    if (!goalLocateEventId) return;
+    const locateEventId = goalLocateEventId ?? highlightedReference?.eventId;
+    if (!locateEventId) return;
     // A jump is the reader leaving the bottom on purpose: stop following the latest content,
     // otherwise the alignment that runs when the process unfolds drags the page back down.
     followLatest.current = false;
     userScrolledAway.current = true;
     setIsAtLatest(false);
-    const owner = turns.find(turn => turn.activity.some(item => item.event.id === goalLocateEventId));
+    const owner = turns.find(turn => turn.activity.some(item => item.event.id === locateEventId));
     if (!owner) return;
     const key = `${conversationScope ?? 'conversation'}:${owner.renderKey}`;
     setExpandedCompletedProcesses(current => current.has(key) ? current : new Set(current).add(key));
-  }, [conversationScope, goalLocateEventId, turns]);
+  }, [conversationScope, goalLocateEventId, highlightedReference?.eventId, turns]);
   const contentGrowthSignal = useMemo(
     () => visibleEvents.map(event => [event.id, eventContentSignature(event)] as const),
     [visibleEvents],
@@ -2351,13 +2393,24 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     const element = surface.current;
     const target = element?.querySelectorAll<HTMLElement>('[data-user-event-id]');
     const message = Array.from(target ?? []).find(item => item.dataset.userEventId === eventId);
-    if (!element || !message) return false;
+    if (!element) return false;
+    if (!message) {
+      if (!turns.some(turn => turn.user?.event.id === eventId)) return false;
+      setUserNavigationTarget(current => current?.eventId === eventId ? current : { eventId, behavior });
+      return true;
+    }
     const top = message.getBoundingClientRect().top - element.getBoundingClientRect().top + element.scrollTop - 18;
     userScrolledAway.current = true;
     followLatest.current = false;
     element.scrollTo({ top: Math.max(0, top), behavior });
     return true;
-  }, []);
+  }, [turns]);
+  useLayoutEffect(() => {
+    if (!userNavigationTarget || userNavigationTarget.located) return;
+    if (locateUserMessage(userNavigationTarget.eventId, userNavigationTarget.behavior)) {
+      setUserNavigationTarget(current => current ? { ...current, located: true } : current);
+    }
+  }, [locateUserMessage, userNavigationTarget]);
   const requestOlderHistory = useCallback((eventId?: string) => {
     if (eventId) queuedHistoryTargetEventId.current = eventId;
     if (historyRequestPending.current) return;
@@ -2755,8 +2808,10 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
       bottomOffset: element.scrollHeight - element.scrollTop,
       followLatest: followLatest.current && !userScrolledAway.current,
       savedAt: Date.now(),
+      turnLayouts: turnWindow.layouts,
+      expandedProcesses: expandedCompletedProcesses,
     });
-  }, [conversationScope, onScrollSnapshotChange]);
+  }, [conversationScope, expandedCompletedProcesses, onScrollSnapshotChange, turnWindow.layouts]);
   const scheduleScrollSnapshot = useCallback(() => {
     if (!conversationScope || !onScrollSnapshotChange || scrollSnapshotFrame.current !== undefined) return;
     scrollSnapshotFrame.current = window.requestAnimationFrame(() => {
@@ -3010,7 +3065,9 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
       {referenceHighlightRects.length > 0 && <div className="conversation-reference-highlights" aria-hidden="true">{referenceHighlightRects.map((rect, index) => <i key={`${rect.left}:${rect.top}:${index}`} style={rect}/>)}</div>}
       {searchHighlightRects.length > 0 && <div className="conversation-reference-highlights conversation-search-highlights" aria-hidden="true">{searchHighlightRects.map(({ active, eventId, matchIndex, ...rect }, index) => <i key={`${eventId}:${matchIndex}:${index}`} data-search-event-id={eventId} data-search-match-index={matchIndex} className={active ? 'is-active' : undefined} style={rect}/>)}</div>}
       {historyPending && <div className="conversation-history-loading" role="status"><LoaderCircle size={14}/>正在载入更早的会话记录…</div>}
-      {turns.map((turn, index) => {
+      {turns.map((turn, index) => <ConversationTurnWindow key={turn.renderKey} turnId={turn.id} layoutKey={turn.renderKey}
+        layouts={turnWindow.layouts} observe={turnWindow.observe} viewport={surface}
+        pinned={index === turns.length - 1 || pinnedTurnIds.has(turn.id)}>{() => {
         const isLatest = index === turns.length - 1;
         const isCurrent = isLatest && isGenerating;
         const isCurrentPaused = isLatest && isPaused;
@@ -3030,11 +3087,11 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
         // the one formal reply for the whole conversation. Do not fold an
         // earlier process merely because it was superseded; close every
         // pending process together when that later formal reply arrives.
-        const laterTurnHasFormalReply = turns.slice(index + 1).some(candidate => Boolean(candidate.assistant));
+        const laterTurnHasFormalReply = index < lastReplyTurnIndex;
         const completionConfirmed = Boolean(turn.assistant || parentFailed || laterTurnHasFormalReply);
-        const fileChanges = fileChangesForTurn(events, turn);
+        const fileChanges = fileChangesForTurn(eventIndex, turn);
         const goalActive = latestGoalStatus?.active === true && isLatest;
-        const goal = goalTurn(turn, events, goalActive);
+        const goal = goalTurn(turn, eventIndex.goalAuditUsers.has(turn.id), goalActive);
         // A Goal turn keeps only its real final reply outside the process.
         const reply = goal ? goal.finalReply : turn.assistant;
         const userMessages = turn.user ? [turn.user] : [];
@@ -3046,7 +3103,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
           else next.delete(completedProcessKey);
           return next;
         });
-        return <section className="conversation-turn" key={turn.renderKey} data-conversation-turn={turn.id}>
+        return <>
           {userMessages.map((message, messageIndex) => {
             const isContinuation = messageIndex > 0;
             const messageTimestamp = formatMessageTime(message.event.payload.timestamp);
@@ -3137,8 +3194,8 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
           />)}
           {reply && <AgentReply event={reply.event} content={reply.content} reveal={revealEventIds.has(reply.event.id)} changes={fileChanges} onFork={!isGenerating ? () => onFork?.(reply.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile} onReviewChanges={onReviewChanges} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenBrowser={onOpenBrowser} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl} workspaceRoot={workspaceRoot} annotations={reply.event.payload.collaboration_annotation_ids !== undefined ? eventAnnotations(reply.event) : turn.user ? eventAnnotations(turn.user.event) : []} onLocateAnnotation={locateAnnotation}/>}
           {failures.map(item => <ConversationFailure key={item.event.id} item={item} taskControl={taskControl} retryStatus={isLatest ? modelRetryStatus : undefined}/>)}
-        </section>;
-      })}
+        </>;
+      }}</ConversationTurnWindow>)}
       {turns.length === 0 && isGenerating && !condensationPending && <><ActivityGroup items={[]} active revealEventIds={revealEventIds} startedAt={requestStartedAt} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot} onOpenSourceLocation={onOpenSourceLocation}/><CurrentTurnStatus items={[]} requestSubmitting={requestSubmitting} statusOverride={pausing ? '正在暂停 Agent' : reconnectingAttempt ? `正在尝试重连（${reconnectingAttempt}/${reconnectingMaxAttempts}）` : rewritePending ? '正在重新思考' : emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} reconnecting={Boolean(reconnectingAttempt)} modelRetryStatus={modelRetryStatus} monitoring={monitoring} connectionState={connectionState}/></>}
 
       {condensationPending && <article className="conversation-condensation-progress" role="status" aria-label="正在压缩上下文">
