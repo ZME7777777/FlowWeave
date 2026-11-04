@@ -108,7 +108,31 @@ REST 恢复。原实现先于“最终回复后暂停按钮消失”的断言复
 断言复现。其中两项为旧会话返回后的正式回复可见性，两项为子任务摘要
 旧文案断言。Web typecheck、新增测试 ESLint、diff 检查和 CURRENT 唯一性
 通过；唯一 Alembic head 保持 0193_case_copy_stepwise_execution。
-本片验收为本地前端与受控 API 行为，线上生效待正式 Web 发布。
+本片实现验收为本地前端与受控 API 行为，正式 Web 发布验收如下。
+
+#### FR-706 Web 发布验收
+
+2026-11-04 按用户授权完成正式 Web 预检、commit-bound 最小上下文构建、
+定向服务更新与受管发布收尾。发布提交为
+36df3b290166ccd43cce740d1b918be0b2f6d5f6，源码归档 SHA-256 为
+e439250c2fb04a48c35a54c8bdfdb60ec82c21b6cfc9def3da27543ff7e9443d。
+实际 linux/amd64 Web image ID 为
+sha256:153860b6968692767e19fe5fbca9d6eafaad25575cd2234fdb1f739cc2a20b5f。
+
+服务器侧保留旧 Web 镜像回滚 tag 与服务／构建日志，仅定向 recreate Web。
+实际镜像 revision、Web HTTP、API／stream-api health 与 readiness、Worker
+和 Provider 健康通过；47 个保护容器的镜像及启动时间、服务器配置哈希
+核验通过。公网首页与 Agent 深链返回相同 HTML，入口 JS／CSS 和工作台
+模块 SHA-256 与运行镜像一致，前缀 API 未认证入口为 401，根登录页可读。
+
+通过本机只读静态资源代理加载实际已发布资源，受控 API 的五项浏览器回归
+通过，覆盖两类宿主的首屏／REST 恢复与 message_complete 后再次发送。
+另两项全新浏览器上下文验证首页／会话深链登录入口、前缀 API 请求和
+无 JavaScript 错误。浏览器行为验收使用隔离模拟身份与响应。
+
+remote-release-finish 成功，受管上下文回收候选为零，精确回收一个旧
+Web 历史 rollback tag，保留 24 小时上下文与每仓库一个回滚镜像。收尾后
+再次核验正式版本、资源哈希、服务健康、47 个保护容器和配置哈希通过。
 
 ### OPS-86 长会话历史渲染与事件索引优化 — DONE
 
