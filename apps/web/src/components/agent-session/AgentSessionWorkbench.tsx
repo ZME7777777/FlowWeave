@@ -4103,7 +4103,6 @@ function WorkspaceDrawer({
     return clampWorkspaceToolWidth(Number.isFinite(stored) ? stored : 400);
   });
   const fileTreeMinimumWidth = 180;
-  const fileTreeCollapseThreshold = 28;
   const [fileTreeWidth, setFileTreeWidth] = useState(() => {
     const stored = Number(localStorage.getItem('flowweave:workspace-file-tree-width'));
     return Math.min(520, Math.max(fileTreeMinimumWidth, Number.isFinite(stored) ? stored : 300));
@@ -4952,7 +4951,7 @@ function WorkspaceDrawer({
     const startCollapsed = fileTreeCollapsed;
     const startWidth = startCollapsed ? 0 : fileTreeWidth;
     const maximum = () => Math.min(520, Math.max(fileTreeMinimumWidth, window.innerWidth * 0.55));
-    const section = (event.currentTarget as HTMLElement).closest('.agent-workspace-files');
+    const section = (event.currentTarget as HTMLElement).closest<HTMLElement>('.agent-workspace-files');
     section?.classList.add('file-tree-resizing');
     let frame = 0;
     let latest: PointerEvent | undefined;
@@ -4961,21 +4960,16 @@ function WorkspaceDrawer({
       if (frame) return;
       frame = requestAnimationFrame(() => { frame = 0; if (latest) apply(latest); });
     };
+    // Follow the pointer freely while dragging (down to 0) and only decide
+    // between snapping to the minimum width and collapsing on release, as
+    // VS Code and react-resizable-panels do. No abrupt mid-drag collapse.
+    const snapBelow = fileTreeMinimumWidth / 2;
+    let liveWidth = startWidth;
+    let liveExpanded = !startCollapsed;
     const apply = (moveEvent: PointerEvent) => {
-      const distance = moveEvent.clientX - startX;
-      if (startCollapsed) {
-        if (distance < fileTreeCollapseThreshold) return;
-        setFileTreeCollapsed(false);
-        setFileTreeWidth(Math.min(maximum(), fileTreeMinimumWidth + distance - fileTreeCollapseThreshold));
-        return;
-      }
-      const width = startWidth + distance;
-      if (width <= fileTreeMinimumWidth) {
-        setFileTreeCollapsed(true);
-        return;
-      }
-      setFileTreeCollapsed(false);
-      setFileTreeWidth(Math.min(maximum(), width));
+      liveWidth = Math.max(0, Math.min(maximum(), startWidth + moveEvent.clientX - startX));
+      if (!liveExpanded && liveWidth > 0) { liveExpanded = true; setFileTreeCollapsed(false); }
+      section?.style.setProperty('--file-tree-width', `${liveWidth}px`);
     };
     const stop = () => {
       window.removeEventListener('pointermove', move);
@@ -4983,6 +4977,11 @@ function WorkspaceDrawer({
       window.removeEventListener('pointercancel', stop);
       if (frame) cancelAnimationFrame(frame);
       if (latest) apply(latest);
+      const collapse = liveWidth < snapBelow;
+      const finalWidth = collapse ? fileTreeWidth : Math.max(fileTreeMinimumWidth, liveWidth);
+      section?.style.setProperty('--file-tree-width', `${finalWidth}px`);
+      setFileTreeWidth(finalWidth);
+      setFileTreeCollapsed(collapse);
       section?.classList.remove('file-tree-resizing');
       document.body.style.removeProperty('cursor');
       document.body.style.removeProperty('user-select');
