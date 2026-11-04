@@ -108,6 +108,75 @@ for (const node of [false, true]) {
 }
 
 
+for (const node of [false, true]) {
+  for (const timing of ['hydration', 'recovery'] as const) {
+    test(`${node ? 'Flow Node' : 'Workspace'}: final reply overrides an older unfinished branch during ${timing}`, async ({ page }) => {
+      const timestamp = '2026-11-04T09:00:00Z';
+      const workspace = { id: 'final-branch-workspace', display_name: '轮次恢复工作区', desired_state: 'RUNNING', updated_at: timestamp };
+      const conversation = { id: 'final-branch-conversation', display_title: '轮次恢复会话', title_state: 'MANUAL', lifecycle: 'ACTIVE', streaming_callback_ready: true, write_available: true, created_at: timestamp, updated_at: timestamp };
+      const base = node ? '/api/v1/flow-runs/branch-run/node-attempts/branch-attempt/agent-sessions' : `/api/v1/agent-workspaces/${workspace.id}/conversations`;
+      const path = node ? `/flow-runs/branch-run/nodes/branch-node/attempts/branch-attempt/agent-sessions/${conversation.id}` : `/agent/conversations/${conversation.id}`;
+      const oldUser = { id: 'old-unfinished-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '旧分支未完成的问题', timestamp } };
+      const currentUser = { id: 'current-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '最新的问题', timestamp } };
+      const finalReply = { id: 'current-reply', event_type: 'MESSAGE', payload: { source: 'assistant', parent_id: currentUser.id, content: '最新轮次的正式最终回复', final_reply: true, timestamp } };
+      const context = { model_name: 'test-model', window_tokens: 128_000, used_tokens: 100, usage_current: true };
+      let completed = timing === 'hydration';
+      let posts = 0;
+      const batch = () => ({
+        events: completed ? [oldUser, currentUser, finalReply] : [oldUser],
+        next_cursor: completed ? finalReply.id : oldUser.id,
+        history_cursor: null,
+        result: { status: 'RUNNING' },
+      });
+      await page.routeWebSocket('**/stream', () => undefined);
+      await page.route('**/api/v1/**', async route => {
+        const request = route.request();
+        const pathname = new URL(request.url()).pathname;
+        const json = (body: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
+        if (pathname.endsWith('/auth/me')) return json({ id: 'branch-user', username: 'branch-user', role: 'USER', is_super_admin: false });
+        if (pathname.endsWith('/agent-workspaces/default') || pathname === `${base}/host`) return json(workspace);
+        if (pathname.endsWith('/runtime')) return json({ state: 'ACTIVE', write_available: true, updated_at: timestamp });
+        if (pathname === base) return json({ items: [conversation], next_cursor: null });
+        if (pathname.endsWith('/conversation-activity') || pathname.endsWith('/activity')) return json({ running_binding_ids: [conversation.id], items: [] });
+        if (pathname.endsWith('/hydration')) return json({ events: batch(), context, readiness: { ready: false, execution_status: 'running' } });
+        if (pathname.endsWith('/events')) return json(batch());
+        if (pathname.endsWith('/input-readiness')) return json({ ready: false, execution_status: 'running' });
+        if (pathname.endsWith('/messages') && request.method() === 'POST') {
+          posts += 1;
+          return json({ accepted: true, cursor: 'next-user' }, 202);
+        }
+        if (pathname.endsWith('/pending-confirmation')) return json({ pending: false });
+        if (pathname.endsWith('/context')) return json(context);
+        if (pathname.endsWith('/work-directories')) return json({ root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
+        if (pathname.endsWith('/workspace')) return json({ root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [], runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } } });
+        if (pathname.endsWith('/model-providers')) return json([{ id: 'branch-provider', name: '测试模型', connection_state: 'CONNECTED', models: [{ model_name: 'test-model', enabled: true, is_default: true }] }]);
+        if (pathname.endsWith('/capabilities') || pathname.endsWith('/capability-collections') || pathname.endsWith('/nodes') || pathname.endsWith('/flows')) return json([]);
+        if (pathname.startsWith(`${base}/`) && request.method() === 'GET') return json(conversation);
+        return json({ error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+      });
+      await page.goto(path);
+      if (timing === 'recovery') {
+        await expect(page.getByRole('button', { name: '暂停当前 Agent', exact: true })).toBeVisible();
+        completed = true;
+        await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+      }
+      await expect(page.getByText(finalReply.payload.content, { exact: true })).toBeVisible();
+      const composer = page.getByLabel('发送 Agent 消息');
+      await composer.fill('最终回复后的新消息');
+      // Return to an empty composer after recovery effects have observed the draft.
+      await expect(page.getByRole('button', { name: '发送消息', exact: true })).toBeEnabled();
+      await composer.fill('');
+      await expect(page.getByRole('button', { name: '暂停当前 Agent', exact: true })).toHaveCount(0);
+      await composer.fill('最终回复后的新消息');
+      await composer.press('Enter');
+      await expect.poll(() => posts).toBe(1);
+      await expect(page.getByLabel('消息投递队列')).toHaveCount(0);
+      await expect(page.locator('.conversation-message.user').filter({ hasText: '最终回复后的新消息' })).toHaveCount(1);
+      await expect(page.getByRole('button', { name: '暂停当前 Agent', exact: true })).toBeVisible();
+    });
+  }
+}
+
 test('message completion unlocks the current composer before terminal REST hydration', async ({ page }) => {
   const timestamp = '2026-10-31T02:00:00Z';
   const user = { id: 'message-complete-user', username: 'message-complete-user', role: 'USER', is_super_admin: false };
