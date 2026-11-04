@@ -70,6 +70,7 @@ from flowweave.shared.infrastructure.docker_controller import (
     DockerControllerClient,
     DockerControllerError,
 )
+from flowweave.shared.runtime_stream import forward_runtime_stream
 from flowweave.shared.settings import bind_settings, reset_settings
 
 router = APIRouter()
@@ -386,50 +387,17 @@ async def _forward_runtime_events(
     WebSocket also closes the upstream async generator and its Provider relay.
     """
 
-    stream = runtime.stream_events(handle, after_seq=after_seq)
-    event_task: asyncio.Task[Any] | None = None
-    receive_task: asyncio.Task[Any] | None = None
-
-    async def next_event() -> dict[str, Any]:
-        return await anext(stream)
-
-    try:
-        event_task = asyncio.create_task(next_event())
-        receive_task = asyncio.create_task(websocket.receive())
-        while True:
-            done, _ = await asyncio.wait(
-                (event_task, receive_task), return_when=asyncio.FIRST_COMPLETED
-            )
-            if receive_task in done:
-                message = receive_task.result()
-                if message.get("type") == "websocket.disconnect":
-                    return
-                receive_task = asyncio.create_task(websocket.receive())
-            if event_task in done:
-                try:
-                    event = event_task.result()
-                except StopAsyncIteration:
-                    return
-                await websocket.send_json(
-                    _project_stream_event(
-                        event,
-                        workspace_id=workspace_id,
-                        binding_id=binding_id,
-                        working_directory=working_directory,
-                    )
-                )
-                event_task = asyncio.create_task(next_event())
-    finally:
-        for task in (event_task, receive_task):
-            if task is not None:
-                task.cancel()
-        await asyncio.gather(
-            *(task for task in (event_task, receive_task) if task is not None),
-            return_exceptions=True,
+    async def project(event: dict[str, Any]) -> dict[str, Any]:
+        return _project_stream_event(
+            event,
+            workspace_id=workspace_id,
+            binding_id=binding_id,
+            working_directory=working_directory,
         )
-        close = getattr(stream, "aclose", None)
-        if close is not None:
-            await close()
+
+    await forward_runtime_stream(
+        websocket, runtime.stream_events(handle, after_seq=after_seq), project
+    )
 
 
 @router.get("/agent-workspaces/default")

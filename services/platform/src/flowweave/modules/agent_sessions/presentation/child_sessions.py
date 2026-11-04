@@ -2,10 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Annotated, Any, Literal
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, File, Query, Response, UploadFile
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Query,
+    Response,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -20,8 +30,9 @@ from flowweave.modules.credentials.application.service import (
 )
 from flowweave.modules.model_providers.public import has_connected_default_model
 from flowweave.runtime.base import RuntimeEventBatch, RuntimeProvider
-from flowweave.runtime.dependencies import get_runtime
+from flowweave.runtime.dependencies import get_runtime, runtime_context
 from flowweave.runtime.request import runtime_provider
+from flowweave.runtime.routing import runtime_for
 from flowweave.shared.errors import DomainError
 from flowweave.shared.http import (
     IdempotencyKey,
@@ -31,6 +42,8 @@ from flowweave.shared.http import (
     run_blocking_mutation,
     run_formal_events,
 )
+from flowweave.shared.runtime_stream import forward_runtime_stream
+from flowweave.shared.settings import bind_settings, reset_settings
 
 router = APIRouter(prefix="/agent-session-children/{parent_id}")
 child_router = APIRouter(prefix="/{child_id}")
@@ -143,16 +156,64 @@ async def hydration(
             "events": events,
             "context": batch.context or {},
             "readiness": batch.readiness.as_dict() if batch.readiness else None,
-            **({"incremental_from": cursor} if cursor else {}),
+            **({"incremental_from": cursor} if cursor and batch.cursor_anchor_found else {}),
         }
 
     return await run_formal_events(
         container,
         lambda db: children.resolve(db, parent_id, child_id),
-        lambda loc: children.read(loc, cursor),
+        lambda loc: children.read_hydration(loc, cursor),
         project,
         history=False,
     )
+
+
+@child_router.websocket("/stream")
+async def stream(
+    websocket: WebSocket,
+    parent_id: str,
+    child_id: str,
+    container: ContainerDep,
+    after_seq: int | None = Query(default=None, ge=-1, le=9_007_199_254_740_991),
+) -> None:
+    token = bind_settings(container.settings)
+    accepted = False
+    try:
+        with runtime_context(container.runtime):
+            locator = await run_formal_events(
+                container,
+                lambda db: children.resolve(db, parent_id, child_id),
+                lambda loc: children.verify_native(loc),
+                lambda db, loc, _: (children.revalidate(db, loc), loc)[1],
+                history=False,
+            )
+
+            async def revalidate() -> None:
+                await run_blocking_history(container, lambda db: children.revalidate(db, locator))
+
+            async def project(event: dict[str, Any]) -> dict[str, Any] | None:
+                if event.get("type") == "delta":
+                    return None
+                await revalidate()
+                return event
+
+            runtime = runtime_for("openhands", locator.handle)
+            await websocket.accept()
+            accepted = True
+            await forward_runtime_stream(
+                websocket,
+                runtime.stream_events(locator.handle, after_seq=after_seq),
+                project,
+                revalidate,
+            )
+    except (WebSocketDisconnect, asyncio.CancelledError):
+        pass
+    except DomainError:
+        await websocket.close(code=4409, reason="子会话连接已失效")
+    except Exception:
+        await websocket.close(code=1011 if accepted else 4409, reason="子会话连接暂不可用")
+    finally:
+        reset_settings(token)
 
 
 @child_router.get("/input-readiness")

@@ -271,6 +271,17 @@ def read(
     )
 
 
+def read_hydration(locator: ChildLocator, cursor: str | None) -> RuntimeEventBatch:
+    try:
+        return read(locator, cursor)
+    except DomainError as exc:
+        if not cursor or exc.code != "RUNTIME_EVENT_IDENTITY_MISMATCH":
+            raise
+    # A native navigate may detach the browser's leaf. Read the actual latest
+    # branch within the same response budget, retaining no obsolete descendants.
+    return replace(read(locator), cursor_anchor_found=False)
+
+
 def file_url(locator: ChildLocator, path: str) -> str:
     from urllib.parse import quote
 

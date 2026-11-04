@@ -1015,9 +1015,32 @@ DELETE_FLOW_RUN_SCHEDULE 未注册造成的全集检查失败；single-worker �
 格式与 diff 检查通过，Alembic 唯一 0180。浏览器使用受控 API／WebSocket，原生全链路
 继续由 FR-717 承担；本片仅抽取复用边界，下一片接入父悬浮卡和子标题标签。
 
+### FR-727 子会话正式流代理与游标失效恢复 — DONE
+
+依赖：FR-726 DONE、FR-714 DONE。增加两宿主统一的父作用域原生 WebSocket 授权代理，
+关闭浏览器时释放上游；按原 locator 复核并拒绝删除／generation 漂移。修复 child hydration
+在游标不属于当前分支时的正式全窗口回退，不能把失效游标响应标成增量。
+
+实现（2026-11-05）：新增 `/agent-session-children/{parent_id}/{child_id}/stream`，先以
+同一正式 locator 执行原生身份校验、释放 SQL、再次授权后连接 OpenHands 原生 stream；
+原 after_seq 原样传递。每个可见帧之前及空闲时每 15 秒复核用户／父子／generation，
+失效关闭连接；文本 delta 不转发，不创建平台事件。原两宿主常规流保留各自内容投影，
+三条入口共用断开观察与上游关闭原语；ASGI 同时取消时用最长五秒 shield 完成清理。
+子 hydration 仅对正式游标不属于当前分支的错误回退最新窗口，在同一读取预算内重新
+取得同批事件／readiness／context；其他错误仍返回原错误，不把无效游标标成 incremental。
+
+验收：25 个不同用例通过，包含两宿主 cookie／非直属／跨用户拒绝、原 seq 续接、
+文本 delta 拒绝、浏览器断开关闭空闲上游、父／子删除和 Session 围栏时拒绝迟到帧、
+模拟时间的空闲授权复核，以及正式增量／脱离分支／显式 anchor 失效／超时保持。
+包含原 Workspace 流关闭回归。初次测试暴露 WebSocket 路径未绑定 Runtime 上下文与
+TestClient 同时取消导致的清理异常，修复后全部通过。三个新增／受影响模块 Pyright
+零错误，两种旧宿主 router 的 18 条历史诊断与提交前按文件／规则／消息一致；Ruff／
+格式和 diff 检查通过，Node router 保留旧 E501。无迁移，唯一 head 仍为 0180。
+本片使用隔离 PostgreSQL 与受控原生适配器，真实镜像／TCP／浏览器继续在 FR-717 验收。
+
 ### FR-715 悬浮卡子列表与标题多标签 — READY
 
-依赖：FR-726 DONE、FR-714 DONE。新增不撑开悬浮卡的子摘要／选择浮层，每个 child
+依赖：FR-727 DONE、FR-714 DONE。新增不撑开悬浮卡的子摘要／选择浮层，每个 child
 一个右侧标题标签；入口只来自父卡，不新建主标签、独立路由或弹出窗口。
 
 ### FR-716 子标签续聊草稿快捷键与引用 — PENDING
