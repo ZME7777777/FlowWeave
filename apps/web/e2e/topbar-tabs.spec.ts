@@ -218,3 +218,16 @@ test('hover menu closes right away once the pointer leaves, with no lingering de
   await expect(menu).toHaveCount(0, { timeout: 400 });
   expect(Date.now() - started).toBeLessThan(400);
 });
+
+test('closing a temporary tab returns to the previously active tab instead of a default page', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await setup(page, false);
+  await page.getByRole('navigation', { name: '主导航' }).getByRole('button', { name: '能力仓库' }).click();
+  await expect(page.getByRole('textbox', { name: '搜索当前能力模块' })).toBeVisible();
+  await openSetting(page, '大模型配置');
+  await openSetting(page, '认证管理');
+  await page.locator('.context-tab', { hasText: '认证管理' }).getByRole('button', { name: /关闭/ }).click();
+  await expect(page.locator('.context-tab.active, .context-tab[aria-current="page"]')).toContainText('大模型配置');
+  await page.locator('.context-tab', { hasText: '大模型配置' }).getByRole('button', { name: /关闭/ }).click();
+  await expect(page.getByRole('textbox', { name: '搜索当前能力模块' })).toBeVisible();
+});
