@@ -2323,7 +2323,9 @@ def _capture_binding_usage(db: Session, binding: AgentConversationBinding) -> No
 
     try:
         batch = get_runtime().read_active_events(_handle(db, binding.id))
-        usage_projection.capture(db, binding, batch.usage)
+        usage_projection.capture(
+            db, binding, batch.usage, stored_event_count=batch.stored_event_count
+        )
     except Exception:
         # Runtime replacement or a transient transport failure must not make
         # a read-only locator unavailable. The next event read retries it.

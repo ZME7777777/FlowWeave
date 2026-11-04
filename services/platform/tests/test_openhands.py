@@ -3084,7 +3084,7 @@ def test_openhands_reads_a_bounded_active_window_and_explicit_older_history(
     requests: list[dict[str, object] | None] = []
     responses = iter(
         [
-            _state(leaf_event_id="event-3"),
+            _state(leaf_event_id="event-3", stored_event_count=12345),
             {
                 "items": [
                     {
@@ -3104,7 +3104,7 @@ def test_openhands_reads_a_bounded_active_window_and_explicit_older_history(
                 ],
                 "next_page_id": "old-branch-event",
             },
-            _state(leaf_event_id="event-3"),
+            _state(leaf_event_id="event-3", stored_event_count=12345),
             {
                 "items": [
                     {
@@ -3130,6 +3130,8 @@ def test_openhands_reads_a_bounded_active_window_and_explicit_older_history(
     older = runtime.read_active_events(replace(_handle(), history_cursor="event-1"))
 
     assert [event.cursor for event in current.events] == ["event-2", "event-3"]
+    assert current.stored_event_count == 12345
+    assert older.stored_event_count == 12345
     assert current.cursor == "event-3"
     assert current.history_cursor == "event-1"
     assert [event.cursor for event in older.events] == ["event-1"]
@@ -5989,6 +5991,7 @@ def test_openhands_read_events_projects_only_native_task_cumulative_usage(
             {"items": [], "next_page_id": None},
             _state(
                 leaf_event_id="task-observation-1",
+                stored_event_count=7654,
                 stats={
                     "usage_to_metrics": {
                         "flowweave:provider-1": {"accumulated_cost": 9.0},
@@ -6014,6 +6017,7 @@ def test_openhands_read_events_projects_only_native_task_cumulative_usage(
 
     batch = runtime.read_events(_handle())
 
+    assert batch.stored_event_count == 7654
     assert len(batch.task_usage) == 1
     usage = batch.task_usage[0]
     assert usage.task_id == "task_00000001"

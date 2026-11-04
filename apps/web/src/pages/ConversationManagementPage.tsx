@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Archive, ArchiveRestore, ArchiveX, Clock3, Folder, RefreshCw, Search, Trash2, X } from 'lucide-react';
+import { ArrowDown, ArrowUp, ArrowUpDown, Archive, ArchiveRestore, ArchiveX, Clock3, Folder, RefreshCw, Search, Trash2, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { LaunchOptionMenu } from '../components/LaunchOptionMenu';
 import { useProductDialog } from '../components/ProductDialogContext';
@@ -20,6 +20,11 @@ interface ConversationSelection {
 
 type InactivePeriod = 'all' | '7' | '30';
 type ArchiveFilter = 'all' | 'active' | 'archived';
+type MetricField = 'stored_event_count' | 'total_tokens';
+const METRIC_COLUMNS = [
+  { field: 'stored_event_count', label: '事件数', description: '完整会话日志的事件数，包含消息、思考、工具执行及保留的历史分支' },
+  { field: 'total_tokens', label: '累计 Token', description: '累计模型用量，包含缓存 Token' },
+] as const;
 
 const PERIOD_OPTIONS: { value: InactivePeriod; label: string }[] = [
   { value: 'all', label: '全部时间' },
@@ -45,6 +50,7 @@ export function ConversationManagementPage({ onRestored, onArchived, onDeleted, 
   const [query, setQuery] = useState('');
   const [period, setPeriod] = useState<InactivePeriod>('all');
   const [archiveFilter, setArchiveFilter] = useState<ArchiveFilter>('all');
+  const [metricSort, setMetricSort] = useState<{ field: MetricField; descending: boolean }>();
   const [includePinned, setIncludePinned] = useState(false);
   const [includeUnread, setIncludeUnread] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -118,22 +124,30 @@ export function ConversationManagementPage({ onRestored, onArchived, onDeleted, 
   const visible = useMemo(() => {
     const cutoff = period === 'all' ? undefined : Date.now() - Number(period) * DAY;
     const term = query.trim().toLocaleLowerCase();
-    return (conversations.data?.items ?? []).filter(item => {
+    const filtered = (conversations.data?.items ?? []).filter(item => {
       if (deletedJobIds.has(item.id)) return false;
       if (!includePinned && item.pinned) return false;
       if (!includeUnread && item.unread) return false;
       if (cutoff && new Date(activityTime(item)).getTime() > cutoff) return false;
       return !term || conversationTitle(item).toLocaleLowerCase().includes(term);
     });
-  }, [conversations.data?.items, deletedJobIds, includePinned, includeUnread, period, query]);
+    if (!metricSort) return filtered;
+    return filtered.sort((left, right) => {
+      const a = left[metricSort.field];
+      const b = right[metricSort.field];
+      if (a == null) return b == null ? 0 : 1;
+      if (b == null) return -1;
+      return metricSort.descending ? b - a : a - b;
+    });
+  }, [conversations.data?.items, deletedJobIds, includePinned, includeUnread, period, query, metricSort]);
 
   // Reset page when filters change
-  useEffect(() => { setPage(1); }, [query, period, archiveFilter, includePinned, includeUnread]);
+  useEffect(() => { setPage(1); }, [query, period, archiveFilter, includePinned, includeUnread, metricSort]);
 
   const currentPage = Math.min(page, Math.max(1, Math.ceil(visible.length / PAGE_SIZE)));
   const paged = useMemo(() => visible.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE), [visible, currentPage]);
 
-  useEffect(() => { if (tableRef.current) tableRef.current.scrollTop = 0; }, [currentPage, selectedWorkDirectoryId, query, period, archiveFilter, includePinned, includeUnread]);
+  useEffect(() => { if (tableRef.current) tableRef.current.scrollTop = 0; }, [currentPage, selectedWorkDirectoryId, query, period, archiveFilter, includePinned, includeUnread, metricSort]);
 
   const visibleIds = useMemo(() => new Set(visible.map(item => item.id)), [visible]);
   const selectedVisible = visible.filter(item => selectedIds.has(item.id) && !pendingDeletionIds.has(item.id));
@@ -281,7 +295,7 @@ export function ConversationManagementPage({ onRestored, onArchived, onDeleted, 
     return next;
   });
 
-  const filtersActive = Boolean(query || period !== 'all' || archiveFilter !== 'all' || includePinned || includeUnread);
+  const filtersActive = Boolean(query || period !== 'all' || archiveFilter !== 'all' || includePinned || includeUnread || metricSort);
   const loading = conversations.isLoading || workspace.isLoading || workDirectories.isLoading;
   const readError = conversations.error ?? workspace.error ?? workDirectories.error;
 
@@ -311,7 +325,7 @@ export function ConversationManagementPage({ onRestored, onArchived, onDeleted, 
           <LaunchOptionMenu disabled={operationBusy} label="最后活动时间" value={period} options={PERIOD_OPTIONS} onChange={value => setPeriod(value as InactivePeriod)}/>
           <label className="conversation-management-check"><input type="checkbox" disabled={operationBusy} checked={includePinned} onChange={event => setIncludePinned(event.target.checked)}/><span>包含置顶</span></label>
           <label className="conversation-management-check"><input type="checkbox" disabled={operationBusy} checked={includeUnread} onChange={event => setIncludeUnread(event.target.checked)}/><span>包含未读</span></label>
-          {filtersActive && <button className="ghost conversation-management-reset" disabled={operationBusy} onClick={() => { setQuery(''); setPeriod('all'); setArchiveFilter('all'); setIncludePinned(false); setIncludeUnread(false); }}>重置</button>}
+          {filtersActive && <button className="ghost conversation-management-reset" disabled={operationBusy} onClick={() => { setQuery(''); setPeriod('all'); setArchiveFilter('all'); setIncludePinned(false); setIncludeUnread(false); setMetricSort(undefined); }}>重置</button>}
           <div className="conversation-management-actions" role="group" aria-label="工作区与会话操作">
             {selectedDirectory?.state === 'ARCHIVED' && <button type="button" className="secondary conversation-management-restore" aria-label={`恢复工作区 ${selectedDirectory.display_name}`} disabled={operationBusy} onClick={async () => {
               const directory = selectedDirectory;
@@ -335,7 +349,13 @@ export function ConversationManagementPage({ onRestored, onArchived, onDeleted, 
         {conversations.data?.truncated && <div className="conversation-management-notice warning"><Clock3 size={14}/><span>当前仅显示最近 500 个会话。请先完成本次清理，再继续管理更早的会话。</span></div>}
         {(restore.isError || restoreDirectory.isError) && <div className="conversation-management-notice warning" role="alert">{restore.error?.message ?? restoreDirectory.error?.message}</div>}
         {loading ? <div className="empty">正在读取会话…</div> : readError ? <div className="empty error" role="alert"><span>{readError.message}</span><button className="secondary" onClick={() => void Promise.all([workspace.refetch(), workDirectories.refetch(), conversations.refetch()])}>重试</button></div> : <>
-          <div className="conversation-management-table-wrap" ref={tableRef}><table className="conversation-management-table"><thead><tr><th scope="col"><input type="checkbox" aria-label="选择当前筛选结果中的全部会话" title="选择全部匹配结果（含其他页）" checked={selectAllVisible} disabled={!selectable.length || operationBusy} ref={input => { if (input) input.indeterminate = !selectAllVisible && selectedVisible.length > 0; }} onChange={toggleVisible}/></th><th scope="col">会话名称</th><th scope="col">最后活动</th><th scope="col">创建时间</th><th scope="col">状态</th><th scope="col">操作</th></tr></thead><tbody>{paged.map(item => <tr key={item.id} className={selectedIds.has(item.id) ? 'selected' : ''} onClick={event => { if (!operationBusy && !pendingDeletionIds.has(item.id) && !(event.target as HTMLElement).closest('button, input, label, a')) toggle(item.id); }}><td><input type="checkbox" aria-label={`选择会话 ${conversationTitle(item)}`} checked={selectedIds.has(item.id) && !pendingDeletionIds.has(item.id)} disabled={operationBusy || pendingDeletionIds.has(item.id)} onChange={() => toggle(item.id)}/></td><td><b title={conversationTitle(item)}>{conversationTitle(item)}</b></td><td>{formatTime(activityTime(item))}</td><td>{formatTime(item.created_at)}</td><td><span className="conversation-management-status">{pendingDeletionIds.has(item.id) ? '待删除' : item.archived_at ? '已归档' : item.pinned ? '置顶' : item.unread ? '未读' : '普通'}</span></td><td>{item.archived_at && <button type="button" className="secondary" aria-label={`恢复会话 ${conversationTitle(item)}`} disabled={operationBusy || pendingDeletionIds.has(item.id)} onClick={() => restore.mutate(item.id)}><ArchiveRestore size={14}/>恢复</button>}</td></tr>)}</tbody></table>{visible.length === 0 && <div className="empty compact"><ArchiveX size={25}/><b>没有符合当前条件的会话</b><span>调整筛选条件，或等待正在运行的会话完成。</span></div>}</div>
+          <div className="conversation-management-table-wrap" ref={tableRef}><table className="conversation-management-table"><thead><tr><th scope="col"><input type="checkbox" aria-label="选择当前筛选结果中的全部会话" title="选择全部匹配结果（含其他页）" checked={selectAllVisible} disabled={!selectable.length || operationBusy} ref={input => { if (input) input.indeterminate = !selectAllVisible && selectedVisible.length > 0; }} onChange={toggleVisible}/></th><th scope="col">会话名称</th>{METRIC_COLUMNS.map(column => <th key={column.field} scope="col" className="conversation-management-metric" aria-sort={metricSort?.field === column.field ? metricSort.descending ? 'descending' : 'ascending' : 'none'}>
+            <button type="button" aria-label={`按${column.label}排序`} title={column.description} disabled={operationBusy} onClick={() => setMetricSort(current => current?.field !== column.field ? { field: column.field, descending: true } : current.descending ? { ...current, descending: false } : undefined)}>
+              {column.label}{metricSort?.field === column.field ? metricSort.descending ? <ArrowDown size={12}/> : <ArrowUp size={12}/> : <ArrowUpDown size={12}/>}
+            </button>
+          </th>)}<th scope="col">最后活动</th><th scope="col">创建时间</th><th scope="col">状态</th><th scope="col">操作</th></tr></thead><tbody>{paged.map(item => <tr key={item.id} className={selectedIds.has(item.id) ? 'selected' : ''} onClick={event => { if (!operationBusy && !pendingDeletionIds.has(item.id) && !(event.target as HTMLElement).closest('button, input, label, a')) toggle(item.id); }}><td><input type="checkbox" aria-label={`选择会话 ${conversationTitle(item)}`} checked={selectedIds.has(item.id) && !pendingDeletionIds.has(item.id)} disabled={operationBusy || pendingDeletionIds.has(item.id)} onChange={() => toggle(item.id)}/></td><td><b title={conversationTitle(item)}>{conversationTitle(item)}</b></td>{METRIC_COLUMNS.map(column => <td key={column.field} className="conversation-management-metric" title={item[column.field] == null ? '等待后台统计' : `${column.description} · ${item[column.field]!.toLocaleString('zh-CN')}`}>
+            {item[column.field] == null ? <span aria-label={`${column.label}待统计`}>—</span> : item[column.field]!.toLocaleString('zh-CN')}
+          </td>)}<td>{formatTime(activityTime(item))}</td><td>{formatTime(item.created_at)}</td><td><span className="conversation-management-status">{pendingDeletionIds.has(item.id) ? '待删除' : item.archived_at ? '已归档' : item.pinned ? '置顶' : item.unread ? '未读' : '普通'}</span></td><td>{item.archived_at && <button type="button" className="secondary" aria-label={`恢复会话 ${conversationTitle(item)}`} disabled={operationBusy || pendingDeletionIds.has(item.id)} onClick={() => restore.mutate(item.id)}><ArchiveRestore size={14}/>恢复</button>}</td></tr>)}</tbody></table>{visible.length === 0 && <div className="empty compact"><ArchiveX size={25}/><b>没有符合当前条件的会话</b><span>调整筛选条件，或等待正在运行的会话完成。</span></div>}</div>
           <footer className="conversation-management-footer"><span aria-live="polite">已选 {selectedVisible.length} / {visible.length} 个会话</span><Pagination page={currentPage} pageSize={PAGE_SIZE} total={visible.length} onPageChange={setPage}/></footer>
         </>}
       </section>

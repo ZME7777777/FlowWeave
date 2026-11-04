@@ -92,6 +92,74 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 
 ## 6. 任务清单
 
+### OPS-87-CS 会话管理事件数与累计 Token — DONE
+
+依赖 OPS-86 DONE。用户明确选择同时展示完整历史事件数与累计 Token，并支持
+按统计值排序。OpenHands 正式 ConversationInfo 暴露事件日志计数，复用后台
+用量同步写入用户隔离投影，管理列表一次批量读取。验证旧数据未知态、零值、
+归档／工作区／用户隔离、排序与分页。未知统计显示 —，零值保留，
+升降序均将未知置后，筛选后先排序再分页。后台计数以原生累积日志为准，
+使用条件 UPDATE 防止迟到快照回退，不读取或保存完整历史正文。
+
+SDK 固定来源 366cd8ecf0f833705f6b92957621905af5b85d8a 已合入 baseline。
+四包仍为 1.54.0，新增 conversation_stored_event_count_v1；新快照持久化计数，
+旧快照只由原生 EventLog 文件名索引补齐，保留压缩与分支历史。源码归档
+SHA-256 为 af2a07ff01b94117fd5bf2e43dbf3acc47ef9f2a9b203cdb3c096e033c42c8f6。
+固定源码 65 项及合并 baseline 67 项定向测试通过，SDK 变更文件 hooks、
+TypeScript lint／build／coverage／format 检查通过。baseline 动态属性全量
+hook 命中既有 build/lib 生成目录，改对本片两个 SDK 源文件检查通过。
+
+独立 PostgreSQL 实跑完整迁移链及 7 项定向测试通过，覆盖归档与用户隔离、
+零值／未知、跨连接迟到快照、0194 downgrade／upgrade 保留原记录及源码锁。
+Alembic 唯一 head 为 0194_conversation_event_count。会话管理 Playwright
+14 项通过，Web typecheck、受影响 ESLint、production build 与 diff 检查
+通过。窄屏布局检查通过。正式发布验收如下。
+
+#### OPS-87-CS 正式发布验收
+
+2026-11-04 正式 runtime 预检与 Web／platform commit-bound 最小上下文通过。
+发布提交 b07b8e680fab8cd845f09f6fdb9f39b4919e84e8，包含实现提交 f1e0b36d
+及探针来源常量修正。首次镜像构建由来源一致性断言拒绝旧探针常量，
+修正后重新从已提交版本构建，完整契约及独立 network=none 探针通过，
+含事件数在 fork／恢复后的契约验证。
+
+实际 linux/amd64 镜像如下。
+
+- Runtime sha256:6939d9a0afe593f5cf4eb945e4d8f22fe38c833d0d89221982d801c23c12647f
+- Platform sha256:555165b4bdb28174803d08ff95f59b9b8744991d6b8bea2b9b10f24a08e45817
+- Web sha256:d81d74506c7cb07b57b2362de98a1c7ce7caa2ce2c280f12ec03758ca0cf501f
+
+迁移退出码 0，唯一 head 为 0194_conversation_event_count；API、stream-api、
+Worker 和 Web 同步更新并通过健康验证。Runtime 原生活动门禁为空闲，
+服务器侧保留原状态备份与回滚镜像，通过正式 replacement 恢复至 generation 54。
+实际运行 digest、四包 1.54.0、server_info.build_git_sha、provenance、归档 SHA
+及 conversation_stored_event_count_v1 一致。326 个原生会话 ID 与持久挂载
+保留，原会话恢复后正式计数 411。33 个保护容器的镜像和启动时间、配置
+哈希核验通过。
+
+通过用户认证的正式只读接口核验两个新字段，当前根组 102 条记录中
+100 条已有累计 Token。实际读取样本回填 113 个事件及 3979914 累计 Token，
+后台同步亦已回填其他会话；其余未知统计继续由后台渐进补齐。
+
+公开首页、Agent 深链、根登录页、鉴权边界及四个静态资源哈希验证通过。
+本机直连公开静态代理返回 502，改用 SSH 只读取得运行镜像的同版资源，
+并以已验证的公开资源哈希确认一致。隔离模拟用户／API 的已发布前端
+浏览器专项通过，覆盖两列升降序、未知置后、跨页排序、选择不串扰、重置、
+1024 布局、全部 API 使用部署前缀与无 JavaScript 错误。远端 Chromium CLI
+直连 smoke 超时，已停止本片自建探针容器；该额外检查不记为通过。
+
+Web 与 platform 的 remote-release-finish 成功，上下文回收候选均为零，
+精确回收三个旧镜像的历史 tags，保留 24 小时受管上下文、实际引用和每仓库
+一个回滚镜像。收尾后再次验证版本、健康、资源哈希、generation、来源、
+原会话读取、配置与保护容器通过。
+
+本片在隔离分支 codex/conversation-size 实施与发布。收尾时主分支已并发
+提交 7801771b 的大模型配置 OPS-87，因此本片跟踪标识补为 OPS-87-CS；
+既有提交与发布资产中的 OPS-87 指向本会话统计切片。主工作区另外存在
+未提交的 0194_model_provider_usage_query 迁移，后续合入时必须将它衔接于
+线上已应用的 0194_conversation_event_count 之后，避免双 head。当前代码与
+验收记录保留在隔离分支，后续主分支平台发布前需完成该集成。
+
 ### OPS-87 大模型配置单行列表与详情信息布局 — DONE
 
 2026-11-04 按用户请求完成。服务列表将名称与连接状态收为单行，保留名称打开
@@ -106,7 +174,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 Web typecheck、受影响 TS／E2E ESLint、diff 检查通过。模型布局及设置管理
 定向 Playwright 共 8 项通过，含 1920／1440／1024 宽度单行布局、右上角操作、
 服务切换反馈隔离、预算查询、模型配置、Codex 登录／断开与批量删除。
-Alembic 唯一 head 为 `0193_case_copy_stepwise_execution`，无迁移变更。
+该切片验收时 Alembic head 为 `0193_case_copy_stepwise_execution`，无迁移变更。
 验收使用受控 API 响应与本地 Chromium 页面。
 
 ### FR-706 最终回复后的新消息直接发送 — DONE

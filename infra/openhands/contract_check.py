@@ -170,9 +170,9 @@ from openhands.tools.terminal.terminal.tmux_terminal import _new_owned_session
 
 EXPECTED_VERSION = "1.54.0"
 EXPECTED_UPSTREAM_BASE = "f0206428306db687ac9c8d833ece4fb82b015eba"
-EXPECTED_SOURCE_COMMIT = "4c563c0f96700b6b331c4a70cd244b287749e980"
+EXPECTED_SOURCE_COMMIT = "366cd8ecf0f833705f6b92957621905af5b85d8a"
 EXPECTED_SOURCE_ARCHIVE_SHA256 = (
-    "08039bd770dcaf6b5fbb289a862577b0eb1776d49106177575643c03ae5138ff"
+    "af2a07ff01b94117fd5bf2e43dbf3acc47ef9f2a9b203cdb3c096e033c42c8f6"
 )
 PACKAGES = (
     "openhands-agent-server",
@@ -812,8 +812,12 @@ async def _assert_fork_condensation_credentials() -> None:
                     Message(role="user", content=[TextContent(text=f"Fact {index}")])
                 )
             source_ids = {event.id for event in source.get_conversation().state.events}
+            source_info = await service.get_conversation(info.id)
+            assert source_info is not None
+            assert source_info.stored_event_count == len(source_ids)
             fork = await service.fork_conversation(info.id)
             assert fork is not None
+            assert fork.stored_event_count == len(source_ids)
             await service._evict_idle_conversations(0.0)
             fork_service = await service.get_event_service(fork.id)
             assert fork_service is not None
@@ -1022,6 +1026,7 @@ def main() -> None:
         EventService._get_view_context_sync
     )
     server_info = ServerInfo(uptime=0, idle_time=0)
+    assert "conversation_stored_event_count_v1" in server_info.capabilities
     assert server_info.version == EXPECTED_VERSION
     assert server_info.sdk_version == EXPECTED_VERSION
     assert server_info.tools_version == EXPECTED_VERSION
@@ -1990,6 +1995,7 @@ def main() -> None:
                 "subscription_condenser_dispatch": True,
                 "fork_condensation_credentials_survive_reload_and_switch": True,
                 "condenser_credentials_restored_after_reload": True,
+                "stored_event_count_survives_reload_and_fork": True,
                 "mcp_oauth_refreshable_fastmcp": True,
                 "subscription_preflight_credentials_restored": True,
                 "runtime_capability_build_arg_validated": True,

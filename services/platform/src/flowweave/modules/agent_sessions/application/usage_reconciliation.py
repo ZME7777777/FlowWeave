@@ -97,7 +97,7 @@ def record_success(db: Session, binding_id: str, batch: RuntimeEventBatch) -> bo
     binding = db.get(AgentConversationBinding, binding_id)
     if binding is None or binding.lifecycle != "ACTIVE":
         return False
-    usage_projection.capture(db, binding, batch.usage)
+    usage_projection.capture(db, binding, batch.usage, stored_event_count=batch.stored_event_count)
     binding.usage_reconciled_at = now()
     db.flush()
     return True
