@@ -280,6 +280,11 @@ class MockRuntime:
     def switch_model(self, handle: RuntimeHandle, provider: RuntimeProvider) -> None:
         del handle, provider
 
+    def restore_condenser_credentials(
+        self, handle: RuntimeHandle, provider: RuntimeProvider
+    ) -> None:
+        del handle, provider
+
     def load_plugin(self, handle: RuntimeHandle, plugin_ref: str) -> None:
         self._loaded_plugins.setdefault(handle.conversation_id or "", set()).add(plugin_ref)
 

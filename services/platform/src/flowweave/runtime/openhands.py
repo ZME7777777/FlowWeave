@@ -5944,6 +5944,44 @@ class OpenHandsRuntime:
                 },
             )
 
+    def restore_condenser_credentials(
+        self, handle: RuntimeHandle, provider: RuntimeProvider
+    ) -> None:
+        base_url = self._base_url_for_handle(handle)
+        session_api_key = self._session_key_for_handle(handle)
+        info = self._request(
+            "GET", "/server_info", base_url=base_url, session_api_key=session_api_key
+        )
+        if "conversation_condenser_credentials_restore_v1" not in info.get("capabilities", []):
+            raise DomainError(
+                "RUNTIME_CONDENSER_RESTORE_UNSUPPORTED", "当前 Runtime 不支持摘要器认证恢复", 409
+            )
+        expected = self._llm_payload(provider, timeout_policy=handle.llm_timeout_policy)
+        result = self._request(
+            "POST",
+            f"/api/conversations/{handle.conversation_id}/switch_llm",
+            base_url=base_url,
+            session_api_key=session_api_key,
+            json={"llm": expected, "restore_missing_condenser_credentials": True},
+        )
+        state = self._conversation_state(handle)
+        agent_value = state.get("agent")
+        agent = cast(dict[str, Any], agent_value) if isinstance(agent_value, dict) else {}
+        condenser_value = agent.get("condenser")
+        condenser = cast(dict[str, Any], condenser_value) if isinstance(condenser_value, dict) else {}
+        llm_value = condenser.get("llm")
+        actual = cast(dict[str, Any], llm_value) if isinstance(llm_value, dict) else {}
+        if not (
+            result.get("condenser_credentials_present") is True
+            and actual.get("model") == expected["model"]
+            and str(actual.get("base_url") or "").rstrip("/")
+            == str(expected["base_url"]).rstrip("/")
+            and self._llm_diagnostic_matches(expected, actual)["reasoning"]
+        ):
+            raise DomainError(
+                "RUNTIME_CONDENSER_RESTORE_FAILED", "OpenHands 未确认摘要器认证恢复", 409
+            )
+
     def load_plugin(self, handle: RuntimeHandle, plugin_ref: str) -> None:
         """Use OpenHands' formal conversation-level dynamic Plugin loader."""
 

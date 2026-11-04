@@ -142,7 +142,7 @@ def test_openhands_runtime_uses_digest_locked_source_build() -> None:
     assert "COPY --from=openhands_sdk" not in dockerfile
     assert source_lock["source_kind"] == "flowweave_fork"
     assert source_lock["upstream_base_commit"] == ("f0206428306db687ac9c8d833ece4fb82b015eba")
-    assert source_lock["source_commit"] == "9bf1678d86ca51b334c51f3f97677585e5b1064e"
+    assert source_lock["source_commit"] == "4c563c0f96700b6b331c4a70cd244b287749e980"
     assert source_lock["fork_commit"] == source_lock["source_commit"]
     assert len(source_lock["source_commit"]) == 40
     assert len(source_lock["archive_sha256"]) == 64

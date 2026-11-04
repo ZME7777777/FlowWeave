@@ -7882,3 +7882,56 @@ def test_openhands_uploads_flow_input_to_record_root_without_working_directory(
     )
     assert path.startswith(f"{workspace_root}/.uploads/10000000-0000-4000-8000-000000000003-")
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize("supported,present", [(False, False), (True, False), (True, True)])
+def test_openhands_restores_condenser_with_native_confirmation(
+    openhands_settings, monkeypatch, supported, present
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    posts = []
+
+    def request(method, path, **kwargs):
+        if path == "/server_info":
+            return {
+                "capabilities": ["conversation_condenser_credentials_restore_v1"]
+                if supported
+                else []
+            }
+        if method == "POST":
+            posts.append(kwargs["json"])
+            return {"success": True, "condenser_credentials_present": present}
+        return _state(
+            agent={
+                "condenser": {
+                    "llm": {
+                        "model": "openai/gpt-4o-mini",
+                        "base_url": "https://model.invalid",
+                        "reasoning_effort": "high",
+                    }
+                }
+            }
+        )
+
+    monkeypatch.setattr(runtime, "_request", request)
+    provider = RuntimeProvider(
+        provider_id="provider-1",
+        model="gpt-4o-mini",
+        base_url="https://model.invalid",
+        api_key="only-at-call-boundary",
+        auth_type="OPENAI_API_KEY",
+    )
+    if supported and present:
+        runtime.restore_condenser_credentials(_handle("cursor-1"), provider)
+    else:
+        with pytest.raises(DomainError) as error:
+            runtime.restore_condenser_credentials(_handle("cursor-1"), provider)
+        assert error.value.code == (
+            "RUNTIME_CONDENSER_RESTORE_FAILED"
+            if supported
+            else "RUNTIME_CONDENSER_RESTORE_UNSUPPORTED"
+        )
+    assert len(posts) == int(supported)
+    if posts:
+        assert posts[0]["restore_missing_condenser_credentials"] is True
+        assert posts[0]["llm"]["api_key"] == provider.api_key
