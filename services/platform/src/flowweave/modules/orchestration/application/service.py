@@ -42,6 +42,7 @@ from flowweave.modules.environments.public import (
 from flowweave.modules.event_automations.application.service import enqueue_matching_deliveries
 from flowweave.modules.flows.public import describe_flow, load_flow
 from flowweave.modules.gates.public import (
+    resolve_failure_policy,
     GateExecutionPlan,
     GateResult,
     execute_gate_plan,
@@ -2791,17 +2792,43 @@ def _record_gate_results(
             _dispatch_automatic_advance(db, attempt)
             return
         # A business FAIL is a valid Gate judgement. It is not authorization
-        # for FlowWeave to create, fork, or direct an author Conversation.
-        # Keep the blocked Attempt until an operator explicitly acts.
-        run.state = FlowRunState.WAITING_HUMAN
-        _event(
-            db,
-            run.id,
-            "AUTOMATIC_GATE_REVIEW_REQUIRED",
-            {"stage": stage, "state": next_state, "decision": "FAIL"},
-            node_run.id,
-            attempt.id,
+        # for FlowWeave to create, fork, or direct an author Conversation (FR-241).
+        # Keep the blocked Attempt until an operator explicitly acts, unless the
+        # flow designer declared on the failing gate that the execution must end.
+        failed_policy_ids = [
+            str(prepared.policy.get("id"))
+            for prepared, result in evaluations
+            if result.decision == "FAIL"
+        ]
+        declared = (
+            resolve_failure_policy(
+                cast(list[dict[str, Any]], getattr(attempt, "gate_policies_json", None) or []),
+                failed_policy_ids,
+            )
+            if failed_policy_ids
+            else None
         )
+        if declared is not None and declared.action == "STOP" and stage == "END":
+            _event(
+                db,
+                run.id,
+                "AUTOMATIC_GATE_STOPPED",
+                {
+                    "stage": stage,
+                    "state": next_state,
+                    "decision": "FAIL",
+                    "failure_policy": declared.as_dict(),
+                },
+                node_run.id,
+                attempt.id,
+            )
+            cancel_run(db, run.id, f"gate-policy-stop:{attempt.id}:{stage}")
+            return
+        run.state = FlowRunState.WAITING_HUMAN
+        payload: dict[str, Any] = {"stage": stage, "state": next_state, "decision": "FAIL"}
+        if declared is not None:
+            payload["failure_policy"] = declared.as_dict()
+        _event(db, run.id, "AUTOMATIC_GATE_REVIEW_REQUIRED", payload, node_run.id, attempt.id)
         return
     if next_state == AttemptState.WAITING_START_CONFIRMATION and run.schedule_id is not None:
         # Scheduled step records have a frozen launch configuration.  They

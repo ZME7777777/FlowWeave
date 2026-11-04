@@ -7,6 +7,7 @@ from flowweave.modules.gates.application.executor import (
     execute_gate_plan,
     prepare_gate,
 )
+from flowweave.modules.gates.application.failure_policy import resolve as resolve_failure_policy
 
 __all__ = (
     "GateExecutionPlan",
@@ -14,4 +15,5 @@ __all__ = (
     "execute_gate",
     "execute_gate_plan",
     "prepare_gate",
+    "resolve_failure_policy",
 )

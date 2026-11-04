@@ -509,6 +509,14 @@ class GateWrite(ApiModel):
                 not isinstance(filename, str) or not filename.endswith(".py")
             ):
                 raise ValueError("Python gate script_filename must end in .py")
+        if "on_fail" in self.config:
+            from flowweave.shared.domain.gate_failure_policy import validate_on_fail
+
+            if self.stage != "END":
+                raise ValueError("on_fail is only valid for END gates")
+            problem = validate_on_fail(self.config["on_fail"])
+            if problem:
+                raise ValueError(problem)
         contract = self.config.get("business_result_contract")
         if contract is not None:
             if self.stage != "END" or not isinstance(contract, dict):

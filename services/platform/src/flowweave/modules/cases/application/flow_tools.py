@@ -11,13 +11,15 @@ from sqlalchemy.orm import Session
 
 from flowweave.modules.cases.application import native_tools, service
 from flowweave.modules.cases.application.gate_view import (
+    enforce_failure_policy,
+    failure_policy_state,
+    latest_gate_evaluations,
+)
+from flowweave.modules.cases.application.gate_view import (
     gate_detail as _gate_detail,
 )
 from flowweave.modules.cases.application.gate_view import (
     gate_summary as _gate_summary,
-)
-from flowweave.modules.cases.application.gate_view import (
-    latest_gate_evaluations,
 )
 from flowweave.modules.cases.infrastructure.models import (
     Case,
@@ -371,6 +373,7 @@ def read_flow(db: Session, token: str, args: FlowReadArguments) -> dict[str, Any
                         "gate_decisions": [
                             _gate_summary(row) for row in latest_gate_evaluations(db, attempt.id)
                         ],
+                        "author_failure_policy": failure_policy_state(db, execution.id),
                     }
                     if attempt is not None
                     else None
@@ -434,6 +437,7 @@ def read_flow(db: Session, token: str, args: FlowReadArguments) -> dict[str, Any
                         **_gate_detail(
                             attempt, latest_gate_evaluations(db, attempt.id), history=counts
                         ),
+                        "author_failure_policy": failure_policy_state(db, execution.id),
                     }
                 )
         elif args.section == "edges":
@@ -710,6 +714,9 @@ def validate_action_preconditions(
             raise DomainError(
                 "CASE_FLOW_VERSION_CONFLICT", "待复核节点身份已变化，请重新读取后再决定", 409
             )
+        if plan.action == "REJECT_STEPWISE_ATTEMPT":
+            # Rejecting a gate-failed Attempt leads to a rerun: honour what the designer declared.
+            enforce_failure_policy(db, node_run.id, plan.action)
         if plan.action == "CANCEL_STEPWISE_ATTEMPT" and not (
             attempt.state in {"START_BLOCKED", "END_BLOCKED"}
             and attempt.error_code == "RUNTIME_DELIVERY_FAILED"
@@ -733,6 +740,7 @@ def validate_action_preconditions(
             raise DomainError(
                 "CASE_FLOW_VERSION_CONFLICT", "待重跑节点身份已变化，请重新读取后再决定", 409
             )
+        enforce_failure_policy(db, node_run.id, plan.action)
     if plan.action in review_actions:
         if plan.action == "COPY_CONTINUOUS_EXECUTION":
             # Copying a draft only exists for continuous (AUTOMATIC) executions.

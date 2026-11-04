@@ -1585,3 +1585,111 @@ def test_gates_section_exposes_platform_and_author_gates_with_untrusted_text_bou
     nodes = projection(rpc(g, "read_case_flow", {"section": "nodes"}))["items"]
     decisions = nodes[0]["execution"]["latest_attempt"]["gate_decisions"]
     assert {item["decision"] for item in decisions} == {"PASS", "FAIL"}
+
+
+def _author_gate_failure(g, on_fail, *, attempts=1):
+    """Give node ``first`` a failed END gate whose author declared ``on_fail``."""
+
+    review_ready(g)
+    config = {"prompt": "check"}
+    if on_fail is not None:
+        config["on_fail"] = on_fail
+    g.attempt.gate_policies_json = [
+        {
+            "id": "author-gate",
+            "stage": "END",
+            "position": 1,
+            "gate_type": "PROMPT",
+            "config": config,
+        }
+    ]
+    latest = g.attempt
+    for number in range(2, attempts + 1):
+        latest = NodeAttempt(
+            node_run_id=g.node.id,
+            attempt_no=number,
+            snapshot_id=g.execution.active_snapshot_id,
+            state="END_BLOCKED",
+            startup_prompt="again",
+            agent_preset_json=g.preset,
+            gate_policies_json=g.attempt.gate_policies_json,
+        )
+        g.db.add(latest)
+        g.db.flush()
+    g.db.add(
+        GateEvaluation(
+            attempt_id=latest.id,
+            policy_snapshot_key="author-gate",
+            stage="END",
+            policy_position=1,
+            evaluation_attempt=1,
+            state="FINISHED",
+            decision="FAIL",
+            input_hash="e" * 64,
+            result_json={"summary": "no evidence", "reasons": ["missing"]},
+        )
+    )
+    g.attempt.state = "ACCEPTED"
+    g.node.state = "ACCEPTED"
+    g.node.accepted_attempt_id = g.attempt.id
+    g.execution.automation_plan_json = {
+        "start_node_key": "first",
+        "node_drafts": {
+            "second": {
+                "row_version": 2,
+                "startup_mode": "PROMPT",
+                "startup_prompt": "successor",
+                "agent_preset": g.preset,
+                "input_bindings": {},
+                "gates": [],
+            }
+        },
+    }
+    g.db.commit()
+
+
+def _rerun(g):
+    return projection(
+        rpc(
+            g,
+            "manage_case_flow",
+            action(g, "RERUN_STEPWISE_NODE", flow_node_key="first", node_run_id=g.node.id),
+        )
+    )
+
+
+def test_author_rerun_policy_allows_reruns_until_the_declared_rounds_are_used(flow_case):
+    g = flow_case
+    _author_gate_failure(g, {"action": "RERUN", "max_rounds": 2}, attempts=1)
+    read = projection(rpc(g, "read_case_flow", {"section": "nodes"}))["items"][0]
+    state = read["execution"]["latest_attempt"]["author_failure_policy"]
+    assert state["action"] == "RERUN" and state["rounds_remaining"] == 2
+    got = _rerun(g)
+    assert got["state"] == "SUCCEEDED", got
+
+
+def test_author_rerun_policy_blocks_once_rounds_are_exhausted(flow_case):
+    g = flow_case
+    _author_gate_failure(g, {"action": "RERUN", "max_rounds": 1}, attempts=2)
+    state = projection(rpc(g, "read_case_flow", {"section": "gates"}))["items"][0][
+        "author_failure_policy"
+    ]
+    assert state["exhausted"] is True and "ASK_HUMAN" in state["instruction"]
+    blocked = _rerun(g)
+    assert blocked["state"] == "FAILED"
+    assert blocked["error_code"] == "CASE_GATE_POLICY_RERUN_EXHAUSTED"
+
+
+def test_author_stop_policy_forbids_rerun(flow_case):
+    g = flow_case
+    _author_gate_failure(g, {"action": "STOP"})
+    blocked = _rerun(g)
+    assert blocked["state"] == "FAILED" and blocked["error_code"] == "CASE_GATE_POLICY_STOP"
+
+
+def test_undeclared_gate_failure_leaves_the_coordinator_free_to_rerun(flow_case):
+    g = flow_case
+    _author_gate_failure(g, None, attempts=3)
+    nodes = projection(rpc(g, "read_case_flow", {"section": "nodes"}))["items"][0]
+    assert nodes["execution"]["latest_attempt"]["author_failure_policy"] is None
+    assert _rerun(g)["state"] == "SUCCEEDED"

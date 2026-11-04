@@ -124,3 +124,73 @@ def gate_detail(
         "attempt_error_code": attempt.error_code,
         "gates": gates,
     }
+
+
+def failure_policy_state(db: Session, node_run_id: str) -> dict[str, Any] | None:
+    """Author-declared handling for the node's latest END-gate failure, with rounds used.
+
+    ``None`` means nothing was declared (or nothing failed): the historical behaviour applies.
+    A rerun creates a new Attempt, so rounds used is the number of Attempts after the first.
+    """
+
+    from flowweave.shared.domain.gate_failure_policy import resolve
+
+    attempts = list(
+        db.scalars(
+            select(NodeAttempt)
+            .where(NodeAttempt.node_run_id == node_run_id)
+            .order_by(NodeAttempt.attempt_no)
+        )
+    )
+    if not attempts:
+        return None
+    latest = attempts[-1]
+    failed = [
+        row.policy_snapshot_key
+        for row in latest_gate_evaluations(db, latest.id)
+        if row.stage == "END" and row.decision == "FAIL"
+    ]
+    if not failed:
+        return None
+    declared = resolve(cast(list[dict[str, Any]], latest.gate_policies_json or []), failed)
+    if declared is None:
+        return None
+    used = len(attempts) - 1
+    state = declared.as_dict()
+    state["rounds_used"] = used
+    if declared.action == "RERUN":
+        remaining = max(declared.max_rounds - used, 0)
+        state["rounds_remaining"] = remaining
+        state["exhausted"] = remaining == 0
+        state["instruction"] = (
+            "流程作者声明：此门禁失败时应重跑该节点"
+            f"（最多 {declared.max_rounds} 轮，已用 {used} 轮）。"
+            + ("重跑次数已用尽，请改用 ASK_HUMAN 交由用户决定。" if remaining == 0 else "")
+        )
+    elif declared.action == "STOP":
+        state["instruction"] = "流程作者声明：此门禁失败时应终止本次执行，不得重跑。"
+    return state
+
+
+def enforce_failure_policy(db: Session, node_run_id: str, action: str) -> None:
+    """Reject a rerun the flow designer did not allow (or has no rounds left for)."""
+
+    from flowweave.shared.errors import DomainError
+
+    state = failure_policy_state(db, node_run_id)
+    if state is None:
+        return
+    if state["action"] == "STOP":
+        raise DomainError(
+            "CASE_GATE_POLICY_STOP",
+            "流程作者声明此门禁失败应终止执行，不允许重跑；请停止执行或改用 ASK_HUMAN",
+            409,
+            {"policy": state},
+        )
+    if state["action"] == "RERUN" and state["exhausted"]:
+        raise DomainError(
+            "CASE_GATE_POLICY_RERUN_EXHAUSTED",
+            "作者声明的重跑次数已用尽，请改用 ASK_HUMAN 交由用户决定",
+            409,
+            {"policy": state},
+        )
