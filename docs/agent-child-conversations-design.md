@@ -786,6 +786,15 @@ binding 解析；shared 只表示工作目录相同，不表示附件 owner／�
   已受理的 Runtime 文件上传晚到或响应丢失。回收凭据仅在受保护任务载荷保存服务端已授权
   的物理根，不出现在浏览器投影；回收仅删除该 UUID 的普通附件文件，已有正式 binding 时拒绝清理。
 - Runtime replacement 使用原 Session、冻结镜像和原父／子 Conversation ID，核对正式事件身份。
+  FlowRun 共享和历史 Attempt 独占两种 Session 均走同一持久替换任务；独占入口在恢复期间只登记
+  幂等任务并返回待恢复，不能从普通 provisioning 路径直接激活。Provider 必须确认旧 writer 停止。
+- 替换前后按原父创建 action ID／tool_call_id、直属 parent ID、创建 receipt／governance ID、
+  请求摘要、共享目录和 persistence 核对；已 started 的子必须保有正式事件。原生尚未物化的
+  预留或 prepared 状态原样保留，不在读取探针中创建空会话或重新投递首轮。
+- Agent Workspace 存在 V4 冻结父能力时沿用原 image digest，恢复不重新选当前平台镜像；
+  FlowRun 继续使用原有冻结镜像。新 generation 在全部身份校验通过并激活后恢复用户侧读取、
+  续聊和用量对账。旧 locator 的迟到回调失败，旧 generation 的父工具策略继续拒绝，不自动
+  重签冻结父工具；需要新父工具授权时由新父会话建立新 generation 的原生能力。
 - Worker／API 在创建或删除步骤间崩溃后按既有审计及幂等身份恢复，不生成空会话冒充成功。
 
 ## 9. 冻结协议与验证门禁
@@ -828,8 +837,9 @@ FR-702 仅做文档契约、依赖／状态、固定源码事实和迁移 head �
 | FR-713 | 子活动／独立未读聚合与直属子列表 | FR-712 |
 | FR-724 | 父删除围栏与逐子恢复清理 | FR-713 |
 | FR-725 | 原父子身份 Runtime 替换恢复 | FR-724 |
+| FR-726 | 快速完成与恢复首轮的子未读对账 | FR-725 |
 | FR-714 | 通用侧边会话交互边界，保留临时聊天语义 | FR-712 |
-| FR-715 | 悬浮卡子列表与按标题多标签 | FR-713、FR-714 |
+| FR-715 | 悬浮卡子列表与按标题多标签 | FR-726、FR-714 |
 | FR-716 | 子标签独立输入、模型、草稿、快捷键与引用 | FR-715 |
 | FR-717 | 固定 Runtime／数据库／故障／两宿主端到端验收 | FR-725、FR-716 |
 

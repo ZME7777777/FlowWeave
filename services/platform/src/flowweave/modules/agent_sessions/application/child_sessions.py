@@ -32,6 +32,7 @@ from flowweave.modules.agent_sessions.infrastructure.models import (
 from flowweave.modules.agent_workspaces.infrastructure.models import (
     AgentWorkspace,
     AgentWorkspaceRuntime,
+    AgentWorkspaceRuntimeGeneration,
 )
 from flowweave.modules.sandboxes import public as sandboxes
 from flowweave.modules.users.application.security import current_user_id
@@ -46,7 +47,14 @@ from flowweave.runtime.child_governance import NativeGovernedChildPreparation
 from flowweave.runtime.dependencies import get_runtime
 from flowweave.shared.database import now
 from flowweave.shared.errors import DomainError
-from flowweave.shared.models import FlowRun, FlowRunRuntime, ManagedSandbox, NodeAttempt, NodeRun
+from flowweave.shared.models import (
+    FlowRun,
+    FlowRunRuntime,
+    ManagedSandbox,
+    NodeAttempt,
+    NodeRun,
+    RuntimeGeneration,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +72,10 @@ class ChildLocator:
     host_id: str
     scope_id: str
     runtime_session_id: str
+    accepted_generation: int
+    action_id: str
+    tool_call_id: str
+    request_digest: str
     native_parent: bool = False
 
 
@@ -128,17 +140,37 @@ def resolve(
         session = db.get(FlowRunRuntime, parent.runtime_session_id)
         if (
             connection.runtime_session_id != parent.runtime_session_id
-            or connection.generation != frozen.policy.generation
+            or session is None
+            or connection.generation != session.active_generation
         ):
             raise unavailable()
     if (
         session is None
         or session.status != "ACTIVE"
-        or session.active_generation != frozen.policy.generation
+        or session.active_generation is None
+        or session.active_generation < frozen.policy.generation
+        or (native_parent and session.active_generation != frozen.policy.generation)
         or session.runtime_image_digest != frozen.runtime_image_digest
         or handle.protocol_profile != "OH_FW_V4"
     ):
         raise unavailable()
+    if session.active_generation > frozen.policy.generation:
+        generation_type = (
+            AgentWorkspaceRuntimeGeneration
+            if parent.host_kind == "AGENT_WORKSPACE"
+            else RuntimeGeneration
+        )
+        verified_generation = db.scalar(
+            select(generation_type).where(
+                generation_type.runtime_session_id == parent.runtime_session_id,
+                generation_type.generation == session.active_generation,
+                generation_type.managed_runtime_id == handle.runtime_resource_id,
+                generation_type.state == "READY",
+                generation_type.runtime_image_digest == frozen.runtime_image_digest,
+            )
+        )
+        if verified_generation is None:
+            raise unavailable()
     host = AgentSessionHostContext.create(
         host_kind=parent.host_kind,
         host_id=parent.host_id,
@@ -157,25 +189,30 @@ def resolve(
         relation.creation_policy_version != POLICY_VERSION
         or child.lifecycle != "ACTIVE"
         or not relation.expected_persistence_dir
+        or not relation.request_digest
         or relation.accepted_generation != frozen.policy.generation
         or relation.manifest_digest != frozen.policy.manifest_digest
     ):
         raise unavailable()
     return ChildLocator(
-        owner,
-        parent.id,
-        child.id,
-        replace(handle, conversation_id=child.openhands_conversation_id),
-        handle,
-        frozen.policy.generation,
-        UUID(relation.creation_id),
-        relation.expected_persistence_dir,
-        frozen.working_directory,
-        parent.host_kind,
-        parent.host_id,
-        parent.conversation_scope_id,
-        parent.runtime_session_id,
-        native_parent,
+        owner_id=owner,
+        parent_id=parent.id,
+        binding_id=child.id,
+        handle=replace(handle, conversation_id=child.openhands_conversation_id),
+        parent_handle=handle,
+        generation=session.active_generation,
+        creation_id=UUID(relation.creation_id),
+        persistence_dir=relation.expected_persistence_dir,
+        working_directory=frozen.working_directory,
+        host_kind=parent.host_kind,
+        host_id=parent.host_id,
+        scope_id=parent.conversation_scope_id,
+        runtime_session_id=parent.runtime_session_id,
+        accepted_generation=relation.accepted_generation,
+        action_id=relation.action_id,
+        tool_call_id=relation.tool_call_id,
+        request_digest=relation.request_digest,
+        native_parent=native_parent,
     )
 
 
@@ -205,6 +242,7 @@ def verify_native(locator: ChildLocator) -> None:
         or str(prepared.receipt.identity.parent_conversation_id)
         != locator.parent_handle.conversation_id
         or prepared.receipt.identity.creation_id != locator.creation_id
+        or prepared.receipt.request_digest != locator.request_digest
         or prepared.workspace != locator.working_directory
         or str(configuration.id) != locator.handle.conversation_id
         or str(configuration.parent_conversation_id) != locator.parent_handle.conversation_id
@@ -212,6 +250,16 @@ def verify_native(locator: ChildLocator) -> None:
         or configuration.persistence_dir != locator.persistence_dir
     ):
         raise unavailable()
+    if locator.generation != locator.accepted_generation:
+        action = runtime.read_event(locator.parent_handle, locator.action_id)
+        if (
+            action is None
+            or action.cursor != locator.action_id
+            or action.event_type != "TOOL_CALL"
+            or action.payload.get("action_id") != locator.action_id
+            or action.payload.get("tool_call_id") != locator.tool_call_id
+        ):
+            raise unavailable()
 
 
 def read(

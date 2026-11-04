@@ -286,6 +286,11 @@ def _replace_flow_run_runtime(
         int(payload["failed_generation"]),
         lease,
         commit=False,
+        **(
+            {"node_attempt_id": payload["node_attempt_id"]}
+            if payload.get("node_attempt_id")
+            else {}
+        ),
     )
 
 
@@ -412,6 +417,11 @@ def record_terminal_failure(db: Session, task_id: str, error: str) -> None:
             task.aggregate_id,
             error,
             replacement_task_id=task.id,
+            **(
+                {"node_attempt_id": task.payload_json["node_attempt_id"]}
+                if (task.payload_json or {}).get("node_attempt_id")
+                else {}
+            ),
         )
     elif task.task_type == "RESOLVE_PLUGIN_SOURCE":
         fail_plugin_source_resolution(db, task.aggregate_id, error)

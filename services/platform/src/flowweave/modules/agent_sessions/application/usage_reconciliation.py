@@ -14,7 +14,10 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions.application import usage as usage_projection
-from flowweave.modules.agent_sessions.infrastructure.models import AgentConversationBinding
+from flowweave.modules.agent_sessions.infrastructure.models import (
+    AgentChildConversation,
+    AgentConversationBinding,
+)
 from flowweave.modules.users.application.security import tenant_user
 from flowweave.runtime.base import RuntimeEventBatch, RuntimeHandle
 from flowweave.shared.database import now
@@ -70,6 +73,17 @@ def resolve_handle(db: Session, binding_id: str) -> RuntimeHandle:
             "The Conversation is no longer active for usage reconciliation",
             409,
         )
+    relation = db.scalar(
+        select(AgentChildConversation).where(
+            AgentChildConversation.child_binding_id == binding.id,
+            AgentChildConversation.owner_user_id == binding.owner_user_id,
+        )
+    )
+    if relation is not None:
+        from flowweave.modules.agent_sessions.application import child_sessions
+
+        with tenant_user(binding.owner_user_id):
+            return child_sessions.resolve(db, relation.parent_binding_id, binding.id).handle
     if binding.host_kind == _AGENT_WORKSPACE:
         # Keep host-specific Runtime routing inside its existing application
         # module; this reconciler never guesses containers or endpoints.

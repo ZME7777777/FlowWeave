@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`CHILD CONVERSATIONS IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-725`
+> 下一可执行切片：`FR-726`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 > 子会话设计：`docs/agent-child-conversations-design.md`
@@ -927,10 +927,53 @@ Runtime 响应不代表真实镜像或模型验收；原生 TCP 全链路继续�
 Alembic 保持唯一 head 0179，未新增迁移、修改 SDK／source lock／镜像或前端。下一片
 FR-725 处理原父子身份替换恢复；按用户指示继续逐片完成。
 
-### FR-725 父子原身份 Runtime 替换恢复 — READY
+### FR-725 父子原身份 Runtime 替换恢复 — DONE
 
 依赖：FR-724 DONE。replacement 核对原父子会话及正式事件身份，用户恢复路由与冻结
 父工具授权分开，过期 generation 不得重获权限。
+
+实现（2026-11-05）：新增宿主通用的只读恢复证据，收集不可变父／子治理定位，按正式
+parent ID、创建 action ID／tool_call_id、receipt／请求摘要／governance ID、共享目录及
+persistence 对账。source 可读时保留临时正式事件身份，在 target 重读同一事件；source
+不可达时仍校验已审计创建事件及 started 子的非空正式事件。允许保留未物化预留与尚未
+首轮释放的原生准备态，探针不 create、send、run 或重放任务，不保存消息／HEAD 副本。
+
+FlowRun 共享与 Attempt 独占 Session 共用持久替换任务、原 allocation／secret 和冻结镜像；
+独占 ensure／健康入口围栏并登记同一任务，普通 provisioning 不得绕过恢复直接激活。
+原生停止未确认时保留同一 N+1 重试，任务租约检查后释放 SQL 再进行等待／原生 I/O。
+FlowRun 在 drain 后重新取得完整关联并验证所有子，CAS 激活前再次核对恢复集合；明确
+删除中的父由独立清理任务接续，不能阻塞其余会话替换。Workspace 的 V4 父冻结契约阻止
+恢复时选择当前配置镜像，沿用原 digest，并增加父子 reload、优雅 drain 与非正常停止
+45 秒租约接管校验；失败保留同一 N+1 重试，不跳过身份校验激活。两宿主的 ACTIVE＋READY
+新 generation 可以沿原 ID 恢复用户读取／续聊，旧 locator 迟到响应被拒绝；旧 generation
+父工具策略仍 fail-closed，没有重签其冻结授权。用量 Worker 改为从所属父解析 child 的
+V4 handle，避免把 child 当普通会话路由或错误使用默认协议。
+
+验收：新增两宿主恢复与用户 HTTP 45 passed／4 个不适用宿主的参数跳过，覆盖原始
+创建事件和父子身份漂移、空事件拒绝、预留与 prepared 过渡、两宿主
+真实控制面激活顺序／失败重试同一 N+1、模拟时钟的 45 秒租约等待且不占 SQL、READY
+门禁、原回复与续聊／用量恢复、旧父工具拒绝及 Workspace 默认镜像冻结。既有子接口、
+活动、删除、关系及 FlowRun replacement 回归 178 passed／3 个仅 FlowRun 的 Workspace
+参数跳过；压缩回归 8 passed，既有日志夹具失败一项排除。Workspace Runtime 历史
+cohort 为 9 passed／1 failed，HEAD 隔离副本同为 9／1，失败仍为旧 RECOVERING 展示
+预期，不计通过。Attempt／provisioning 历史 cohort 为 3 passed／2 failed，HEAD 隔离
+副本同为 3／2，失败涉及旧 owner 模式与已存在的资源清理夹具。新增验证真实任务 claim／
+handler、Attempt 身份、ensure 幂等准入、连续健康失败、未确认停止与过期 task lease，
+恢复后经实际 active Attempt connection 读取和续聊。本片共 243 个不同用例通过；
+受控 Runtime／Provider 和模拟时间不代表实际 Runtime 镜像、真实租约等待或真实模型验收，全链路继续由 FR-717 承担。
+
+八个受影响模块 Pyright 仅 runtime_sessions 保留四条历史诊断，与 HEAD 按文件／规则／
+消息一致，其余七个零错误；受影响 Ruff、格式、diff、状态／依赖核对通过。Alembic
+保持唯一 0179，无迁移或 SDK／镜像变更；source.lock 与归档 SHA-256 仍固定 b9f976b2／
+4f53a194。只读检查发现共享 SDK 工作树 HEAD 已推进到后续 600fe6a88，本片始终取固定
+b9f976b2 及其归档作证，未从浮动 HEAD 构建。复核发现首轮／续聊若早于首次活动轮询完成
+会漏未读，新增独立 FR-726 收口该窗口，再继续前端切片。
+
+### FR-726 快速完成与恢复首轮的子未读对账 — READY
+
+依赖：FR-725 DONE。以原生 started／正式发送受理证据登记终态补读，覆盖首轮和续聊
+在第一次活动目录轮询前已完成、创建回执丢失后恢复等窗口；仅正式 assistant 完成事件
+生成未读，不伪造运行状态或重复提醒。
 
 ### FR-714 通用侧边会话交互边界 — PENDING
 
@@ -939,7 +982,7 @@ FR-725 处理原父子身份替换恢复；按用户指示继续逐片完成。
 
 ### FR-715 悬浮卡子列表与标题多标签 — PENDING
 
-依赖：FR-713 DONE、FR-714 DONE。新增不撑开悬浮卡的子摘要／选择浮层，每个 child
+依赖：FR-726 DONE、FR-714 DONE。新增不撑开悬浮卡的子摘要／选择浮层，每个 child
 一个右侧标题标签；入口只来自父卡，不新建主标签、独立路由或弹出窗口。
 
 ### FR-716 子标签续聊草稿快捷键与引用 — PENDING
