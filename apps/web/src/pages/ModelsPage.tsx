@@ -121,7 +121,7 @@ function ProviderEditor({ provider, onClose }: { provider?: ModelProvider; onClo
         row_version: synchronized.row_version,
         models: synchronized.models.map(({ model_name, enabled, is_default }) => ({ model_name, enabled, is_default })),
       }));
-      qc.setQueryData<ModelProvider[]>(['providers'], current => current?.map(item => item.id === synchronized.id ? synchronized : item));
+      qc.setQueryData<ModelProvider[]>(['model-providers'], current => current?.map(item => item.id === synchronized.id ? synchronized : item));
       return;
     }
     setForm(old => {
@@ -149,12 +149,12 @@ function ProviderEditor({ provider, onClose }: { provider?: ModelProvider; onClo
     event.preventDefault(); setBusy(true); setError('');
     try {
       const saved = provider ? await api.updateProvider(provider.id, form) : await api.createProvider(form);
-      qc.setQueryData<ModelProvider[]>(['providers'], current => {
+      qc.setQueryData<ModelProvider[]>(['model-providers'], current => {
         const providers = current ?? [];
         const exists = providers.some(item => item.id === saved.id);
         return exists ? providers.map(item => item.id === saved.id ? saved : item) : [saved, ...providers];
       });
-      void qc.invalidateQueries({ queryKey: ['providers'] });
+      void qc.invalidateQueries({ queryKey: ['model-providers'] });
       onClose();
     }
     catch (reason) { setError(reason instanceof Error ? reason.message : '保存失败'); }
@@ -241,7 +241,7 @@ function CodexLoginDialog({ provider, authorization, onClose, onConnected }: { p
 export function ModelsPage() {
   const dialog = useProductDialog();
   const qc = useQueryClient();
-  const { data: providers = [], isLoading, error: loadError, refetch } = useQuery({ queryKey: ['providers'], queryFn: api.providers });
+  const { data: providers = [], isLoading, error: loadError, refetch } = useQuery({ queryKey: ['model-providers'], queryFn: api.providers });
   const [editing, setEditing] = useState<ModelProvider | null | undefined>();
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [error, setError] = useState('');
@@ -272,7 +272,7 @@ export function ModelsPage() {
       const message = reason instanceof Error ? reason.message : '连接请求失败';
       setTestFeedback(old => ({ ...old, [providerId]: { state: 'error', message: `连接失败：${message}` } }));
     },
-    onSettled: () => void qc.invalidateQueries({ queryKey: ['providers'] }),
+    onSettled: () => void qc.invalidateQueries({ queryKey: ['model-providers'] }),
   });
   const readUsage = useMutation({
     mutationFn: api.providerUsage,
@@ -287,12 +287,12 @@ export function ModelsPage() {
       const authorization = await api.startCodexOAuth(provider.id);
       setCodexLogin({ provider, authorization });
       window.open(authorization.verification_url, '_blank', 'noopener,noreferrer');
-      await qc.invalidateQueries({ queryKey: ['providers'] });
+      await qc.invalidateQueries({ queryKey: ['model-providers'] });
     } catch (reason) { setError(reason instanceof Error ? reason.message : '无法启动 Codex 登录'); }
   };
   const disconnectCodex = async (provider: ModelProvider) => {
     if (!await dialog.confirm({ title: `断开“${provider.name}”？`, message: '加密保存的 Codex OAuth token 将被永久删除，节点将无法继续使用该服务。', confirmLabel: '断开连接', tone: 'danger' })) return;
-    try { await api.disconnectCodexOAuth(provider.id); await qc.invalidateQueries({ queryKey: ['providers'] }); }
+    try { await api.disconnectCodexOAuth(provider.id); await qc.invalidateQueries({ queryKey: ['model-providers'] }); }
     catch (reason) { setError(reason instanceof Error ? reason.message : '断开失败'); }
   };
   const removeMany = async (ids: string[], label: string) => {
@@ -307,7 +307,7 @@ export function ModelsPage() {
       if (result.automatic_reconfigured) outcomes.push(`${result.automatic_reconfigured} 个自动运行已改用其他已连接服务的默认模型。`);
       if (result.automatic_needs_model_configuration) outcomes.push(`${result.automatic_needs_model_configuration} 个自动运行没有可用替代服务，需要重新配置模型。`);
       if (result.deleted_ids.length) setNotice(outcomes.join(' '));
-      await qc.invalidateQueries({ queryKey: ['providers'] });
+      await qc.invalidateQueries({ queryKey: ['model-providers'] });
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '删除失败');
     } finally {
@@ -321,7 +321,7 @@ export function ModelsPage() {
     list={isLoading ? <div className="empty compact">加载中…</div> : loadError ? <div className="empty compact error"><span>{loadError.message}</span><button className="secondary" onClick={() => void refetch()}>重试</button></div> : pagedProviders.length ? pagedProviders.map(provider => <SettingsResourceRow key={provider.id} name={provider.name} description={provider.models.find(item => item.is_default && item.enabled)?.model_name ?? '未设置默认模型'} meta={<><em className={provider.connection_state === 'FAILED' ? 'failed' : ''}>{CONNECTION_STATE_LABELS[provider.connection_state] ?? provider.connection_state}</em><span>{provider.auth_type === 'CODEX_OAUTH' ? 'Codex OAuth' : provider.auth_type === 'ANTHROPIC_API_KEY' ? 'Anthropic' : 'API Key'}</span></>} active={activeProvider?.id === provider.id} onSelect={() => setActiveId(provider.id)} checked={selectedIds.has(provider.id)} onToggle={() => toggle(provider.id)}/>) : <div className="empty compact">{query ? '没有匹配的模型服务' : '还没有模型服务'}</div>}
     pagination={<Pagination page={page} pageSize={pageSize} total={filteredProviders.length} onPageChange={setPage}/>}
     overlays={<>    {editing !== undefined && <ProviderEditor provider={editing ?? undefined} onClose={() => setEditing(undefined)}/>}
-    {codexLogin && <CodexLoginDialog provider={codexLogin.provider} authorization={codexLogin.authorization} onClose={() => setCodexLogin(undefined)} onConnected={status => { setCodexLogin(undefined); if (status.model_sync_error) setError(`Codex 登录成功，但模型同步失败：${status.model_sync_error}`); else setNotice(`Codex 登录成功，已自动同步 ${status.model_count ?? 0} 个模型。`); void qc.invalidateQueries({ queryKey: ['providers'] }); }}/>}
+    {codexLogin && <CodexLoginDialog provider={codexLogin.provider} authorization={codexLogin.authorization} onClose={() => setCodexLogin(undefined)} onConnected={status => { setCodexLogin(undefined); if (status.model_sync_error) setError(`Codex 登录成功，但模型同步失败：${status.model_sync_error}`); else setNotice(`Codex 登录成功，已自动同步 ${status.model_count ?? 0} 个模型。`); void qc.invalidateQueries({ queryKey: ['model-providers'] }); }}/>}
 </>}>
     {error && <div className="notice error" role="alert">{error}</div>}{notice && <div className="notice success" role="status">{notice}</div>}
     {activeProvider ? [activeProvider].map(provider => { const feedback = testFeedback[provider.id]; const testing = feedback?.state === 'testing'; const oauth = provider.auth_type === 'CODEX_OAUTH'; const readingUsage = readUsage.isPending && readUsage.variables === provider.id; return <div className="settings-selected-provider" key={provider.id}><header className="settings-detail-header"><div><h2>{provider.name}</h2><small>{oauth ? 'Codex OAuth · ChatGPT 订阅' : provider.base_url}</small></div><div className="settings-detail-actions"><button className="secondary" aria-label={`编辑模型服务 ${provider.name}`} onClick={() => setEditing(provider)}><Pencil size={14}/>编辑</button><button className="danger" disabled={deleting} aria-label={`删除模型服务 ${provider.name}`} onClick={() => void removeMany([provider.id], `模型服务“${provider.name}”`)}><Trash2 size={14}/>删除</button></div></header><div className="settings-detail-body"><article className="model-config-card settings-model-detail"><div className="model-provider-state"><span className={provider.available_for_nodes ? 'available' : 'unavailable'}>{provider.available_for_nodes ? <ShieldCheck size={13}/> : <ShieldX size={13}/>} {provider.available_for_nodes ? '可用于节点' : oauth ? (provider.oauth_connected ? '暂无可用默认模型' : '需要登录 Codex') : '暂无可用默认模型'}</span><span><Link2 size={12}/>{provider.reference_node_count} 个引用节点</span></div><div className="model-provider-meta"><span>连接状态</span><b className={provider.connection_state === 'CONNECTED' ? 'good' : provider.connection_state === 'FAILED' ? 'bad' : ''}>{CONNECTION_STATE_LABELS[provider.connection_state] ?? provider.connection_state}</b><span>{oauth ? 'Codex 账号' : 'API Key'}</span><b><KeyRound size={12}/>{oauth ? (provider.oauth_connected ? provider.oauth_account_email ?? '已登录' : '未登录') : (provider.has_api_key ? `已配置 ${provider.api_key_hint ?? ''}` : '未配置')}</b><span>默认模型</span><b>{provider.models.find(item => item.is_default && item.enabled)?.model_name ?? '未设置'}</b><span>启用模型</span><b>{provider.models.filter(item => item.enabled).length} 个</b></div><ProviderUsagePanel provider={provider} value={usage[provider.id]} loading={readingUsage} onRefresh={() => readUsage.mutate(provider.id)}/><h3>模型列表（{provider.models.length}）</h3><table className="settings-data-table"><thead><tr><th>模型名称</th><th>启用状态</th><th>默认模型</th></tr></thead><tbody>{provider.models.map(item => <tr key={item.id ?? item.model_name}><td><b>{item.model_name}</b>{Boolean(item.supported_reasoning_efforts?.length) && <small>推理：{item.supported_reasoning_efforts?.join(' / ')}</small>}</td><td>{item.enabled ? '已启用' : '已停用'}</td><td>{item.is_default && item.enabled ? '默认' : '—'}</td></tr>)}</tbody></table><div className="settings-model-actions">{oauth && !provider.oauth_connected ? <button className="secondary" onClick={() => void startCodexLogin(provider)}><LogIn size={14}/> {provider.oauth_device_pending ? '重新开始登录' : '登录 Codex'}</button> : <button className="secondary" disabled={deleting || test.isPending} onClick={() => test.mutate(provider.id)}>{testing ? <LoaderCircle className="spin" size={14}/> : <CheckCircle2 size={14}/>} {testing ? '测试中…' : '测试连接'}</button>}{oauth && provider.oauth_connected && <button className="ghost" onClick={() => void disconnectCodex(provider)}><LogOut size={14}/>断开 Codex</button>}</div>{feedback && <p className={`model-test-result ${feedback.state}`} role={feedback.state === 'error' ? 'alert' : 'status'}>{feedback.message}</p>}</article></div></div>; }) : <div className="empty"><Server size={28}/><b>{query ? '没有匹配的模型服务' : '还没有模型服务'}</b><span>在左侧新增或选择服务，查看连接与模型配置。</span></div>}
