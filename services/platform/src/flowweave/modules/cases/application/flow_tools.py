@@ -495,12 +495,17 @@ def manage_flow(db: Session, token: str, args: FlowActionArguments) -> dict[str,
             )
             plan = db.get(CaseControlPlan, saved["id"])
             assert plan is not None
+        plan_id = plan.id
         try:
-            service.execute_case_control_plan(db, item.id, plan.id)
+            service.execute_case_control_plan(db, item.id, plan_id)
         except service.CaseActionFailure:
             # The MCP transport commits this failed result before returning isError.
             pass
-        return action_result(plan)
+        # A rollback inside the command can replace the ORM row, so describe the plan from the
+        # session's current copy instead of the object created before dispatch.
+        current = db.get(CaseControlPlan, plan_id)
+        assert current is not None
+        return action_result(current)
 
 
 def validate_action_preconditions(

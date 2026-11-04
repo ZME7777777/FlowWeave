@@ -1408,3 +1408,16 @@ def test_plan_survives_a_session_rollback_so_a_failure_can_still_be_recorded(flo
     stored = g.db.get(service.CaseControlPlan, snapshot["id"])
     assert stored is not None and stored.state == "FAILED"
     assert stored.idempotency_key == "rollback-probe-1"
+
+
+def test_tool_result_describes_the_plan_after_the_session_replaced_its_row(flow_case):
+    """manage_flow must read the plan back after dispatch instead of trusting the stale ORM row."""
+
+    import inspect
+
+    from flowweave.modules.cases.application import flow_tools
+
+    source = inspect.getsource(flow_tools.manage_flow)
+    assert "db.get(CaseControlPlan, plan_id)" in source
+    assert "return action_result(plan)" not in source
+
