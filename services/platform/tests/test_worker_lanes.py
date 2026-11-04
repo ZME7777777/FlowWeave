@@ -202,3 +202,15 @@ async def test_stalled_poll_executor_does_not_block_runtime_control_executor() -
         )
         release_poll.set()
         assert await asyncio.wait_for(blocked, timeout=1) == "poll-released"
+
+
+def test_temporary_sidebar_expiration_uses_maintenance_lane_and_restores_owner() -> None:
+    from flowweave.modules.users.application.security import current_user_id
+
+    task = SimpleNamespace(
+        task_type="EXPIRE_AGENT_SIDEBAR_CONVERSATION", owner_user_id="sidebar-owner"
+    )
+    assert task.task_type in _MAINTENANCE_TASK_TYPES
+    assert task.task_type in HANDLERS
+    with TaskWorker._task_tenant_context(task):
+        assert current_user_id() == "sidebar-owner"

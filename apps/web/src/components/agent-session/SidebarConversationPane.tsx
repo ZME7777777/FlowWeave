@@ -1,10 +1,12 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { CircleAlert, Clock3, LoaderCircle, MessageSquarePlus, Play, Plus, Quote, Send, Square } from 'lucide-react';
+import { Clock3, LoaderCircle, MessageSquarePlus, Play, Plus, Quote, Send, Square } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { api, ApiError, randomId, subscribeToAgentWorkspaceStream } from '../../api/client';
-import { ConversationSurface } from '../ConversationSurface';
+import { SideConversationSurface } from './SideConversationSurface';
+import { useSideConversationHydration } from './useSideConversationHydration';
+import { useSideConversationSubmission } from './useSideConversationSubmission';
 import { FileTypeIcon } from '../FileTypeIcon';
-import type { AgentAttachment, AgentConversationReference, AgentSessionCapability, CapabilityAsset, ModelProvider, OpenHandsConversationEvent } from '../../types';
+import type { AgentAttachment, AgentConversationReference, AgentSessionCapability, CapabilityAsset, ModelProvider } from '../../types';
 import { AgentComposerInput, type ComposerSuggestion } from './AgentComposerInput';
 import { transferredFiles, type ComposerHandle } from './agentComposerInputUtils';
 import { ComposerModelMenu } from './ComposerModelMenu';
@@ -79,6 +81,11 @@ export function SidebarConversationPane({ workspaceId, sourceBindingId, sidebarB
   const removedPendingAttachmentIds = useRef(new Set<string>());
   const [bindingId, setBindingId] = useState<string | undefined>(sidebarBindingId);
   const bindingIdRef = useRef(bindingId);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
   const [draftConversationId] = useState(randomId);
   const [reference, setReference] = useState<AgentConversationReference | undefined>(initialReference);
   const [content, setContent] = useState('');
@@ -87,7 +94,6 @@ export function SidebarConversationPane({ workspaceId, sourceBindingId, sidebarB
   const [error, setError] = useState<string>();
   const [sending, setSending] = useState(false);
   const [condensing, setCondensing] = useState(false);
-  const [optimisticMessage, setOptimisticMessage] = useState<OpenHandsConversationEvent>();
   const [selectedModelKey, setSelectedModelKey] = useState<string>();
   const sourceQuery = useQuery({
     queryKey: ['agent-session', 'sidebar-source', workspaceId, sourceBindingId],
@@ -115,30 +121,22 @@ export function SidebarConversationPane({ workspaceId, sourceBindingId, sidebarB
     enabled: Boolean(bindingId),
   });
   const expired = sidebarQuery.data?.expired === true;
-  const hydrationQuery = useQuery({
-    queryKey: ['agent-session', 'sidebar-hydration', workspaceId, bindingId],
-    queryFn: () => api.agentConversationHydration(workspaceId, bindingId!),
-    enabled: Boolean(bindingId),
-    refetchInterval: expired ? false : 2_000,
-  });
-  const events = useMemo<OpenHandsConversationEvent[]>(() => {
-    const formal = hydrationQuery.data?.events.events ?? [];
-    if (!optimisticMessage || formal.some(event => event.id === optimisticMessage.id || event.payload._flowweave_submission_id === optimisticMessage.id)) return formal;
-    return [...formal, optimisticMessage];
-  }, [hydrationQuery.data?.events.events, optimisticMessage]);
-  useEffect(() => {
-    if (!optimisticMessage) return;
-    const formal = hydrationQuery.data?.events.events ?? [];
-    if (formal.some(event => event.id === optimisticMessage.id || event.payload._flowweave_submission_id === optimisticMessage.id)) setOptimisticMessage(undefined);
-  }, [hydrationQuery.data?.events.events, optimisticMessage]);
-  useEffect(() => {
-    if (!bindingId || expired) return;
-    return subscribeToAgentWorkspaceStream(workspaceId, bindingId, event => {
-      if (event.type === 'event') {
-        void queryClient.invalidateQueries({ queryKey: ['agent-session', 'sidebar-hydration', workspaceId, bindingId] });
-      }
-    });
-  }, [bindingId, expired, queryClient, workspaceId]);
+  const reader = useMemo(() => bindingId ? {
+    hydration: (signal: AbortSignal, cursor?: string) => api.agentConversationHydration(workspaceId, bindingId, signal, cursor),
+    history: (cursor: string, signal: AbortSignal) => api.agentConversationEvents(workspaceId, bindingId, undefined, cursor, undefined, signal),
+    subscribe: (onEvent: Parameters<typeof subscribeToAgentWorkspaceStream>[2], onReconnect: () => void) => {
+      let connected = false;
+      return subscribeToAgentWorkspaceStream(workspaceId, bindingId, onEvent, status => {
+        if (status === 'live' && connected) onReconnect();
+        if (status === 'live') connected = true;
+      });
+    },
+  } : undefined, [bindingId, workspaceId]);
+  const hydrationQuery = useSideConversationHydration(reader && bindingId
+    ? { scope: `temporary:${workspaceId}:${sourceBindingId}:${bindingId}`, reader } : undefined, !expired);
+  const submissionScope = `temporary:${workspaceId}:${sourceBindingId}:${draftConversationId}`;
+  const submission = useSideConversationSubmission(submissionScope, hydrationQuery.data?.events.events ?? []);
+  const events = submission.events;
   const currentModel = conversationQuery.data
     ? defaultModel(providersQuery.data ?? [], conversationQuery.data.model_provider_id, conversationQuery.data.model_name, conversationQuery.data.reasoning_effort)
     : selectedModel;
@@ -147,28 +145,23 @@ export function SidebarConversationPane({ workspaceId, sourceBindingId, sidebarB
   const paused = readiness?.execution_status === 'paused';
   const canCondense = Boolean(bindingId && !expired && !sending && readiness?.ready && (readiness.execution_status === 'idle' || paused));
   const invalidate = async (id: string) => {
-    await queryClient.invalidateQueries({ queryKey: ['agent-session', 'sidebar-hydration', workspaceId, id] });
+    if (id === bindingIdRef.current) await hydrationQuery.refresh();
   };
   const markExpired = () => queryClient.setQueryData(['agent-session', 'sidebar', workspaceId, bindingId], (current: Record<string, unknown> | undefined) => ({ ...current, expired: true }));
-  const acknowledgeOptimisticMessage = (submissionId: string, cursor?: string | null) => {
-    if (!cursor) return;
-    setOptimisticMessage(current => current?.id === submissionId
-      ? { ...current, id: cursor }
-      : current);
-  };
   const send = async () => {
     const message = composerInput.current?.value().trim() ?? content.trim();
-    if ((!message && !attachments.length) || sending || pendingAttachments.length > 0 || !selectedModel || expired || running) return;
+    if ((!message && !attachments.length) || sending || pendingAttachments.length > 0 || !selectedModel || expired || running || Boolean(bindingId && (hydrationQuery.loading || !hydrationQuery.data))) return;
     const submissionId = randomId();
     setSending(true);
     setError(undefined);
-    setOptimisticMessage({ id: submissionId, event_type: 'MESSAGE', payload: { source: 'user', content: message, attachments, conversation_references: reference ? [reference] : [], _flowweave_submission_id: submissionId, _flowweave_projection_state: 'submitting' } });
+    submission.begin(submissionScope, submissionId, { id: submissionId, event_type: 'MESSAGE', payload: { source: 'user', content: message, attachments, conversation_references: reference ? [reference] : [], _flowweave_submission_id: submissionId, _flowweave_projection_state: 'submitting' } });
     try {
       if (!bindingId) {
         const result = await api.createAgentSidebarConversation(
           workspaceId, sourceBindingId, draftConversationId, message, attachments, reference ? [reference] : [],
         );
-        acknowledgeOptimisticMessage(submissionId, result.cursor);
+        if (!mounted.current) return;
+        submission.acknowledge(submissionScope, submissionId, result.cursor);
         bindingIdRef.current = result.conversation.id;
         setBindingId(result.conversation.id);
         onBindingCreated(result.conversation.id);
@@ -182,18 +175,20 @@ export function SidebarConversationPane({ workspaceId, sourceBindingId, sidebarB
         await invalidate(result.conversation.id);
       } else {
         const result = await api.sendAgentMessage(workspaceId, bindingId, message, attachments, reference ? [reference] : [], [], [], submissionId);
-        acknowledgeOptimisticMessage(submissionId, result.cursor);
+        if (!mounted.current || bindingIdRef.current !== bindingId) return;
+        submission.acknowledge(submissionScope, submissionId, result.cursor);
         setContent('');
         composerInput.current?.replace('');
         setAttachments([]);
         await invalidate(bindingId);
       }
     } catch (reason) {
-      setOptimisticMessage(undefined);
+      if (!mounted.current) return;
+      submission.discard(submissionScope, submissionId);
       if (reason instanceof ApiError && reason.code === 'AGENT_SIDEBAR_CONVERSATION_EXPIRED') markExpired();
       setError(reason instanceof Error ? reason.message : '侧边聊天暂时不可用');
     } finally {
-      setSending(false);
+      if (mounted.current) setSending(false);
     }
   };
   const condense = async () => {
@@ -211,7 +206,7 @@ export function SidebarConversationPane({ workspaceId, sourceBindingId, sidebarB
     }
   };
   const control = async () => {
-    if (!bindingId || expired || sending) return;
+    if (!bindingId || expired || sending || hydrationQuery.loading || !hydrationQuery.data) return;
     setSending(true);
     setError(undefined);
     try {
@@ -293,7 +288,7 @@ export function SidebarConversationPane({ workspaceId, sourceBindingId, sidebarB
     }] : []),
     ...sidebarComposerSuggestions(sourceQuery.data?.capabilities, capabilitiesQuery.data ?? []),
   ], [bindingId, canCondense, capabilitiesQuery.data, sourceQuery.data?.capabilities]);
-  const composerDisabled = expired || sending || condensing || !currentModel || running;
+  const composerDisabled = expired || sending || condensing || !currentModel || running || Boolean(bindingId && (hydrationQuery.loading || !hydrationQuery.data));
   const composerControl = bindingId && (running || paused)
     ? { label: running ? '暂停侧边聊天 Agent' : '继续侧边聊天 Agent', action: running ? 'interrupt' as const : 'resume' as const }
     : undefined;
@@ -306,14 +301,19 @@ export function SidebarConversationPane({ workspaceId, sourceBindingId, sidebarB
       ? current
       : { source_binding_id: sourceBindingId, event_id: eventId, content: title });
   }, []);
-  return <section className="agent-sidebar-conversation" aria-label="侧边聊天">
-    <div className="agent-sidebar-chat-content">
-      {hydrationQuery.isLoading && bindingId ? <div className="conversation-surface-empty"><LoaderCircle className="conversation-activity-spin" size={16}/><b>正在加载会话</b></div>
-        : bindingId ? <ConversationSurface events={events} isGenerating={running || sending} isPaused={paused} conversationScope={bindingId} requestSubmitting={sending} condensationPending={condensing} onOpenAttachment={attachment => onPreviewAttachment(attachment, bindingId)} onOpenConversationReference={onOpenConversationReference} taskControl={hydrationQuery.data?.events.task_control} monitoring={hydrationQuery.data?.events.monitoring} connectionState={hydrationQuery.isError ? 'unavailable' : hydrationQuery.isFetching && !hydrationQuery.data ? 'checking' : 'connected'}/>
-          : <div className="agent-workbench-empty"><MessageSquarePlus size={28}/><b>向主会话追问</b><span>这是临时聊天：关闭后会删除，最长保留一小时。</span></div>}
-      {expired && <section className="agent-sidebar-expired" role="status"><Clock3 size={16}/><span>侧边聊天会话已过期。已显示的内容仍可阅读，但不能继续发送消息。</span></section>}
-      {error && <section className="agent-workbench-error" role="alert"><CircleAlert size={17}/><div><b>操作未完成</b><span>{error}</span></div></section>}
-    </div>
+  return <SideConversationSurface label="侧边聊天" loading={Boolean(bindingId && hydrationQuery.loading)}
+    conversation={bindingId ? {
+      events, isGenerating: running || sending, isPaused: paused, conversationScope: bindingId,
+      requestSubmitting: sending, condensationPending: condensing,
+      onOpenAttachment: attachment => onPreviewAttachment(attachment, bindingId),
+      onOpenConversationReference, taskControl: hydrationQuery.data?.events.task_control,
+      monitoring: hydrationQuery.data?.events.monitoring,
+      connectionState: hydrationQuery.error ? 'unavailable' : 'connected',
+    } : undefined}
+    empty={<div className="agent-workbench-empty"><MessageSquarePlus size={28}/><b>向主会话追问</b><span>这是临时聊天：关闭后会删除，最长保留一小时。</span></div>}
+    notice={expired && <section className="agent-sidebar-expired" role="status"><Clock3 size={16}/><span>侧边聊天会话已过期。已显示的内容仍可阅读，但不能继续发送消息。</span></section>}
+    error={error ?? hydrationQuery.error}
+    composer={
     <div className="agent-sidebar-chat-composer">
       <div className="agent-composer agent-sidebar-composer">
         <div className="agent-composer-attachments">
@@ -329,6 +329,6 @@ export function SidebarConversationPane({ workspaceId, sourceBindingId, sidebarB
         <footer><div className="agent-composer-context"><input ref={attachmentInput} aria-label="上传侧边聊天附件" type="file" multiple hidden onChange={event => { Array.from(event.currentTarget.files ?? []).forEach(startAttachmentUpload); event.currentTarget.value = ''; }}/><button type="button" aria-label="添加附件" disabled={composerDisabled} onClick={() => attachmentInput.current?.click()}><Plus size={17}/></button></div><div className="agent-composer-actions"><ComposerModelMenu providers={connectedProviders} providerId={currentModel?.providerId ?? ''} modelName={currentModel?.modelName ?? ''} models={availableModels} efforts={efforts} effort={currentModel?.reasoningEffort ?? ''} disabled={composerDisabled || pendingAttachments.length > 0} onProviderChange={providerId => { const nextProvider = connectedProviders.find(item => item.id === providerId); const nextModel = nextProvider?.models.find(item => item.enabled && item.is_default) ?? nextProvider?.models.find(item => item.enabled); if (nextModel) { if (bindingId) void updateModel(providerId, nextModel.model_name, nextModel.default_reasoning_effort ?? null); else setSelectedModelKey(`${providerId}:${nextModel.model_name}`); } }} onModelChange={modelName => { const model = availableModels.find(item => item.model_name === modelName); if (bindingId && currentModel) void updateModel(currentModel.providerId, modelName, model?.default_reasoning_effort ?? null); else if (currentModel) setSelectedModelKey(`${currentModel.providerId}:${modelName}`); }} onEffortChange={effort => { if (bindingId && currentModel) void updateModel(currentModel.providerId, currentModel.modelName, effort || null); }}/><button type="button" className={`agent-send${composerControl?.action === 'resume' ? ' resume' : ''}`} aria-label={composerControl?.label ?? '发送侧边聊天消息'} disabled={composerControl ? sending || expired : (!content.trim() && !attachments.length) || composerDisabled || pendingAttachments.length > 0} onClick={() => { if (composerControl) void control(); else void send(); }}>{composerControl?.action === 'interrupt' ? <Square size={10} fill="currentColor"/> : composerControl?.action === 'resume' ? <Play size={12} fill="currentColor"/> : sending ? <LoaderCircle className="conversation-activity-spin" size={15}/> : <Send size={16}/>}</button></div></footer>
       </div>
       <div className="agent-sidebar-composer-bottom" aria-hidden="true"/>
-    </div>
-  </section>;
+    </div>}
+  />;
 }

@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`CHILD CONVERSATIONS IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-714`
+> 下一可执行切片：`FR-715`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 > 子会话设计：`docs/agent-child-conversations-design.md`
@@ -990,12 +990,32 @@ Ruff／格式及 diff 检查通过，唯一 Alembic head 0180。既有创建／�
 与三个宿主不适用的删除参数，本片共 340 个不同用例通过。
 本片受控 Runtime 响应不替代 FR-717 的真实 TCP／镜像／浏览器验收。
 
-### FR-714 通用侧边会话交互边界 — READY
+### FR-714 通用侧边会话交互边界 — DONE
 
 依赖：FR-712 DONE。最小抽取两宿主通用展示与 binding 隔离的 hydration／输入逻辑；
 临时侧边聊天保留现有一小时 TTL／关闭删除，子会话不能复用这套生命周期。
 
-### FR-715 悬浮卡子列表与标题多标签 — PENDING
+实现（2026-11-05）：抽取共用侧边 ConversationSurface 布局、按真实 scope 隔离的正式
+hydration／历史读取协调器和用户气泡认领。两宿主主工作台继续使用原来的事件合并实现，
+将其移入共享模块供侧边读取复用；仅正式 parent ID 保留祖先，分支切换移除旧后代。
+侧边首屏取得同批 events／readiness／context 后再展示，120ms 合并选择，单飞读取、
+最新窗口信号排队、history 低优先级及耗尽游标记忆、前台恢复和重连补读、卸载 Abort。
+暂存快照仅存当前组件内存，选择恢复仍取得正式最新窗口；StreamContext 正文不参与展示。
+用户气泡保留稳定 renderKey，POST 返回正式 event ID 后认领原气泡；异步完成按 scope
+校验。临时聊天继续独立创建／一小时过期／关闭删除，补齐正常 Worker maintenance lane
+和任务 owner 恢复，防止过期任务留在队列；未增加子会话的临时生命周期或主路由。
+
+验收：13 项不同 Chromium 定向通过，包含五项侧边聊天、慢响应加载／发送门禁及焦点
+信号合并／并发峰值一、附件／引用／气泡／暂停，以及主会话 hydration、历史重试、发送
+去重、快速选择和两宿主子入口路由拒绝。新增慢用例最初错误断言 contenteditable，
+改为实际 textarea 的 disabled 后通过；协调器门禁完善后定向复验再次通过。Worker
+正常 lane 与 TTL owner 定向 3 passed，既有 lane cohort 8 passed／1 failed，保留原有
+DELETE_FLOW_RUN_SCHEDULE 未注册造成的全集检查失败；single-worker 旧配置夹具未运行。
+共 22 个不同用例通过。Web typecheck、受影响 ESLint、Worker Pyright 零错误、Ruff／
+格式与 diff 检查通过，Alembic 唯一 0180。浏览器使用受控 API／WebSocket，原生全链路
+继续由 FR-717 承担；本片仅抽取复用边界，下一片接入父悬浮卡和子标题标签。
+
+### FR-715 悬浮卡子列表与标题多标签 — READY
 
 依赖：FR-726 DONE、FR-714 DONE。新增不撑开悬浮卡的子摘要／选择浮层，每个 child
 一个右侧标题标签；入口只来自父卡，不新建主标签、独立路由或弹出窗口。

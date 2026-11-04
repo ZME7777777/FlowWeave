@@ -1631,10 +1631,14 @@ test('Sidebar chat accepts selected and pasted attachments before its first mess
 });
 
 
-test('Sidebar chat recognizes its optimistic message and reuses the send button for controls', async ({ page }) => {
+for (const delayed of [false, true]) test(`Sidebar chat recognizes its optimistic message and reuses the send button for controls (${delayed ? 'delayed hydration' : 'immediate hydration'})`, async ({ page }) => {
   let authenticated = false;
   let sidebarCreated = false;
   let paused = false;
+  let releaseHydration: (() => void) | undefined;
+  let sidebarReads = 0;
+  let peakReads = 0;
+  let shouldDelay = delayed;
   const workspace = { id: 'sidebar-behavior-workspace', display_name: '侧边交互工作区', desired_state: 'RUNNING', updated_at: now };
   const source = {
     id: 'sidebar-behavior-source', display_title: '主会话', title_state: 'MANUAL', lifecycle: 'ACTIVE', streaming_callback_ready: true, write_available: true,
@@ -1660,6 +1664,17 @@ test('Sidebar chat recognizes its optimistic message and reuses the send button 
     if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
     if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [source], next_cursor: null });
     if (path.endsWith('/model-providers')) return json(route, [{ id: 'test-provider', name: '测试模型', connection_state: 'CONNECTED', models: [{ model_name: 'test-model', enabled: true, is_default: true, supported_reasoning_efforts: [] }] }]);
+    if (path.endsWith('/hydration') && path.includes(sidebar.id)) {
+      sidebarReads += 1;
+      peakReads = Math.max(peakReads, sidebarReads);
+      if (shouldDelay) {
+        shouldDelay = false;
+        await new Promise<void>(resolve => { releaseHydration = resolve; });
+      }
+      await json(route, sidebarHydration());
+      sidebarReads -= 1;
+      return;
+    }
     if (path.endsWith('/hydration')) return json(route, path.includes(sidebar.id) ? sidebarHydration() : { events: { events: [], next_cursor: null, history_cursor: null, result: { status: 'COMPLETED' } }, context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 0, usage_current: true }, readiness: { ready: true, execution_status: 'idle' } });
     if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
     if (path.endsWith('/workspace')) return json(route, { root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [], runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } } });
@@ -1687,10 +1702,18 @@ test('Sidebar chat recognizes its optimistic message and reuses the send button 
   await sidebarPane.getByRole('textbox', { name: '发送侧边聊天消息' }).fill('你好');
   await sidebarPane.getByRole('button', { name: '发送侧边聊天消息' }).click();
 
+  if (delayed) {
+    await expect(sidebarPane.getByRole('status').filter({ hasText: '正在加载会话' })).toBeVisible();
+    await expect(sidebarPane.getByRole('textbox', { name: '发送侧边聊天消息' })).toBeDisabled();
+    await page.evaluate(() => { window.dispatchEvent(new Event('focus')); document.dispatchEvent(new Event('visibilitychange')); });
+    await expect.poll(() => Boolean(releaseHydration)).toBe(true);
+    releaseHydration!();
+  }
   await expect(sidebarPane.locator('.conversation-message.user')).toHaveCount(1);
   await expect(sidebarPane.getByRole('button', { name: '发送侧边聊天消息' })).toHaveCount(0);
   await sidebarPane.getByRole('button', { name: '暂停侧边聊天 Agent' }).click();
   await expect(sidebarPane.getByRole('button', { name: '继续侧边聊天 Agent' })).toBeVisible();
+  expect(peakReads).toBe(1);
 });
 
 
