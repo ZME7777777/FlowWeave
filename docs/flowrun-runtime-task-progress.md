@@ -115,7 +115,32 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 Web typecheck、新模块／事件排序／测试 ESLint、production build、diff 检查
 通过。两个既有大组件原有 3 条 ESLint 诊断与 baseline 对比一致，构建仍有
 既有 topbar CSS 语法及大 chunk 提示。唯一 Alembic head 保持
-0193_case_copy_stepwise_execution。用户已授权 Web 部署，发布验收待补记。
+0193_case_copy_stepwise_execution。Web 发布验收如下。
+
+#### OPS-86 Web 发布验收
+
+2026-11-04 正式 Web 预检、commit-bound 受管最小上下文与收尾通过。
+发布提交 `4981e7d8649c1f7fc3377d03c41fbd93eb03e7c8`，源归档 SHA-256 为
+`05db914dd9fe57e7c5f461952df18764de14b10dffb1267eb98195b81c792ddd`。
+实际 linux/amd64 Web image ID 为
+`sha256:7595a8e8ea8539de20af8daaf639688ee8fbbbc65e1d504d4e3ea4ceef22d817`。
+保存旧镜像回滚 tag 和服务日志，定向 recreate Web；实际 revision、HTTP、
+API／stream-api health 与 readiness 通过，37 个保护容器的镜像和启动时间、
+服务器配置哈希核验通过。
+
+公网 HTML 与 Agent 深层路由一致，两个入口资源及工作台模块的 SHA-256
+与运行镜像一致，模块含本次窗口化实现，两项 API 鉴权边界为 401。
+三个全新 Chromium 登录／深层路由／根登录页检查通过。
+
+经本机只读静态资源代理加载实际已发布 Web，以独立模拟账号及受控 API
+重跑完整长会话专项，全部 180 轮历史展开后挂载 8 轮正文、729 个页面节点。
+搜索、高亮、历史阅读锚点、工作过程展开／恢复、会话往返、1024 布局均通过，
+无页面 JavaScript 错误；39 项 API 请求使用部署前缀，根 API 请求为 0。
+该结果验证已发布前端与浏览器交互，真实用户历史和模型未参与负载验收。
+
+remote-release-finish 已回收两个过期且无引用的受管上下文及一个精确旧 Web
+历史 tag，保留 24 小时上下文、实际引用和每仓库一个回滚镜像。收尾后再次
+核验版本、健康、资源哈希、服务器配置和 37 个保护容器通过。无后续实现切片。
 
 ### FR-704 Fork 后摘要模型凭据持久化与实际压缩回归 — DONE
 
