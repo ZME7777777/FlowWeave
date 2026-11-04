@@ -1,3 +1,4 @@
+import { activeRerunSource } from '../stepwiseRerun';
 import { Background, Controls, Handle, Position, ReactFlow, useNodesState, type Connection, type Edge, type Node, type NodeProps } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { AlertTriangle, ArrowLeft, Bot, Boxes, Check, ChevronDown, ChevronRight, Copy, Download, ExternalLink, Eye, FileText, FolderClosed, GripVertical, Info, Play, Plus, RefreshCw, Send, StopCircle, Trash2, Upload, X } from 'lucide-react';
@@ -2045,6 +2046,10 @@ export function WorkbenchPage({ location }: { location?: FlowRunLocation }) {
   const savedStepwiseDraft = mode === 'MANUAL' && selectedStepwiseRecord && selectedNodeKey
     ? selectedStepwiseRecord.stepwise_node_drafts?.[selectedNodeKey]
     : undefined;
+  const activeRerunSourceId = activeRerunSource(
+    savedStepwiseDraft?.rerun_source_node_run_id,
+    selectedNodeKey ? nodeRecords.filter(item => item.flow_node_snapshot_key === selectedNodeKey) : [],
+  );
   const selectedStepwiseDraft = savedStepwiseDraft
     ?? (mode === 'MANUAL' && selectedStepwiseRecord && selectedNodeKey
       ? { row_version: 1, startup_mode: 'PROMPT' as const, gates: [], input_bindings: [] }
@@ -2580,7 +2585,7 @@ export function WorkbenchPage({ location }: { location?: FlowRunLocation }) {
     return canonical([draft.prompt, writableAgentPreset(draft.agentPreset), writableGates(draft.gates), draft.bindings]) !== canonical([savedStepwiseDraft.startup_prompt, writableAgentPreset(savedStepwiseDraft.agent_preset ?? { capability_version_ids: [], node_context_enabled: false }), writableGates(savedStepwiseDraft.gates), savedBindings]);
   })());
   const canStartSelectedStepwise = Boolean(selectedStepwise && selectedNodeKey && parentRun.runtime_write_available && parentRun.environment_version_id && !['COMPLETED', 'CANCELLED'].includes(selectedStepwise.state)
-    && (!selectedExecutionNodeRun || isUnconfiguredStepRecord(selectedExecutionNodeRun) || savedStepwiseDraft?.rerun_source_node_run_id || selectedExecutionAttempt?.state === 'WAITING_START_CONFIRMATION') && !stepwiseDraftDirty && (selectedNodeKey === initialFlowNodeKey(selectedStepwise) || (snapshot?.definition.edges ?? []).filter(edge => edge.target_instance_key === selectedNodeKey).every(edge => {
+    && (!selectedExecutionNodeRun || isUnconfiguredStepRecord(selectedExecutionNodeRun) || activeRerunSourceId || selectedExecutionAttempt?.state === 'WAITING_START_CONFIRMATION') && !stepwiseDraftDirty && (selectedNodeKey === initialFlowNodeKey(selectedStepwise) || (snapshot?.definition.edges ?? []).filter(edge => edge.target_instance_key === selectedNodeKey).every(edge => {
       const latest = [...selectedStepwise.node_runs].reverse().find(item => item.flow_node_snapshot_key === edge.source_instance_key);
       return latest && attemptState(latest) === 'ACCEPTED';
     })));
@@ -2588,7 +2593,7 @@ export function WorkbenchPage({ location }: { location?: FlowRunLocation }) {
     ? selectedExecutionNodeRun && selectedExecutionAttempt?.state === 'WAITING_START_CONFIRMATION'
       ? { recordId: selectedStepwise.id, ready: true, busy: manualBusyId === selectedExecutionNodeRun.id, onStart: () => startStepwiseNode(selectedExecutionNodeRun) }
       : selectedNode && selectedNodeKey && savedStepwiseDraft && stepwiseDraftReady(selectedNode, savedStepwiseDraft)
-        ? { recordId: selectedStepwise.id, ready: true, busy: manualBusyId === selectedNodeKey, rerun: Boolean(savedStepwiseDraft.rerun_source_node_run_id), onStart: () => startStepwiseDraft(selectedNodeKey, savedStepwiseDraft) }
+        ? { recordId: selectedStepwise.id, ready: true, busy: manualBusyId === selectedNodeKey, rerun: Boolean(activeRerunSourceId), onStart: () => startStepwiseDraft(selectedNodeKey, savedStepwiseDraft) }
         : undefined
     : undefined;
   const recordLaunchControl = mode === 'AUTOMATIC' && selectedAutomatic?.state === 'DRAFT'
@@ -2598,7 +2603,7 @@ export function WorkbenchPage({ location }: { location?: FlowRunLocation }) {
       : undefined;
   const executionDetailPanel = !(
     mode === 'MANUAL'
-    && savedStepwiseDraft?.rerun_source_node_run_id
+    && activeRerunSourceId
     && selectedNodeKey === selectedExecutionNodeRun?.flow_node_snapshot_key
   ) && selectedExecutionRecord && selectedExecutionNodeRun && selectedExecutionAttempt
     ? <AttemptPanel

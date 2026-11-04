@@ -79,11 +79,10 @@ export function FlowNodeSessionPage({
       selectedAutomaticRecordId: automatic ? source.automaticRecordId : undefined,
       selectedStepwiseRecordId: stepwise ? source.stepwiseRecordId : undefined,
     });
-    try {
-      await refreshFlowRunProjection();
-    } finally {
-      onNavigate(flowRunPath(location), true);
-    }
+    // Navigate first: the destination renders from cached data, so returning
+    // must not wait on the projection refresh round trips.
+    onNavigate(flowRunPath(location), true);
+    void refreshFlowRunProjection().catch(() => undefined);
   };
   return <AgentSessionWorkbench
     gateway={gateway}

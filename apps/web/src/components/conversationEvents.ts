@@ -11,12 +11,21 @@ export function isFlowWeaveInternalProtocolMessage(value: string): boolean {
   return INTERNAL_PROTOCOL_MARKER.test(value.trimStart());
 }
 
+const APPENDED_PROTOCOL_MARKER = /\n\s*\[FLOWWEAVE_[A-Z0-9_]+\](?:\r?\n|$)/;
+
 export function projectFlowWeaveMessageContext(event: OpenHandsConversationEvent): OpenHandsConversationEvent {
   const content = event.payload.content;
   if (event.event_type !== 'MESSAGE' || typeof content !== 'string') return event;
+  // Startup requests append platform gate/result contracts after the real prompt;
+  // show only the prompt and keep the raw event untouched.
+  const source = String(event.payload.source ?? '').toLowerCase();
+  const appended = APPENDED_PROTOCOL_MARKER.exec(content);
+  if ((source === 'user' || source === 'human') && appended && appended.index > 0 && typeof event.payload.display_content !== 'string') {
+    const visible = content.slice(0, appended.index).trim();
+    if (visible) return { ...event, payload: { ...event.payload, display_content: visible } };
+  }
   const marker = MESSAGE_CONTEXT_MARKER.exec(content);
   if (!marker) return event;
-  const source = String(event.payload.source ?? '').toLowerCase();
   const displayContent = event.payload.display_content;
   if (
     (source !== 'user' && source !== 'human')
