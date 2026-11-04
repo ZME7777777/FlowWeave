@@ -589,7 +589,7 @@ export function CasesPage({ onNavigate, sessionRoute }: { onNavigate: (path: str
   const checkedCases = visibleCases.filter(item => checkedIds.has(item.id));
   const toggleChecked = useCallback((id: string) => setCheckedIds(current => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; }), []);
   const exitBatch = useCallback(() => { setBatchMode(false); setCheckedIds(new Set()); setBatchNotice(''); }, []);
-  useEscapeClose(batchMode, exitBatch);
+  useEscapeClose(exitBatch, batchMode);
   const runBatch = async (label: string, work: (item: Case) => Promise<void>) => {
     setBatchBusy(true); setBatchNotice('');
     const failures: string[] = [];
