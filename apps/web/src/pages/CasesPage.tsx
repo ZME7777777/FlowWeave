@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { AlertTriangle, ArrowDown, Bot, Check, ChevronDown, ChevronRight, CirclePause, CirclePlay, ClipboardList, Clock3, ExternalLink, FileText, GitBranch, GripVertical, Info, Link2, ListChecks, LoaderCircle, Pencil, Play, Plus, RotateCcw, Search, Settings2, Trash2, Upload, X } from 'lucide-react';
+import { AlertTriangle, ArrowDown, Bot, Check, ChevronDown, ChevronRight, CirclePause, CirclePlay, ClipboardList, Clock3, ExternalLink, FileText, GitBranch, GripVertical, Copy, Download, Info, Link2, ListChecks, LoaderCircle, Pencil, Play, Plus, RotateCcw, Search, Settings2, Trash2, Upload, X } from 'lucide-react';
 import { api, caseMaterialFileUrl } from '../api/client';
 import type { Case, CaseBasics, CaseMaterial, CaseStage, CaseStageExecution } from '../types';
 import { CapabilityManager } from '../components/agent-session/AgentSessionWorkbench';
@@ -572,18 +572,60 @@ export function CasesPage({ onNavigate, sessionRoute }: { onNavigate: (path: str
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
   const toggleExpanded = useCallback((id: string) => setExpandedIds(current => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; }), []);
   const [query, setQuery] = useState('');
-  const selected = useMemo(() => cases.data?.find(item => item.id === (sessionRoute?.caseId ?? selectedId)) ?? cases.data?.[0], [cases.data, selectedId, sessionRoute?.caseId]);
-  const replace = useCallback((item: Case) => { qc.setQueryData<Case[]>(['cases'], current => current?.some(candidate => candidate.id === item.id) ? current.map(candidate => candidate.id === item.id && candidate.row_version <= item.row_version ? item : candidate) : [item, ...(current ?? [])]); }, [qc]);
+  const summary = useMemo(() => cases.data?.find(item => item.id === (sessionRoute?.caseId ?? selectedId)) ?? cases.data?.[0], [cases.data, selectedId, sessionRoute?.caseId]);
+  // The list endpoint returns lightweight summaries; the open case loads its full history separately.
+  const detail = useQuery({ queryKey: ['case-detail', summary?.id], queryFn: () => api.case(summary!.id), enabled: Boolean(summary), staleTime: 5000 });
+  const selected = useMemo(() => summary && detail.data?.id === summary.id && detail.data.row_version >= summary.row_version ? detail.data : summary, [summary, detail.data]);
+  const replace = useCallback((item: Case) => { qc.setQueryData<Case>(['case-detail', item.id], current => current && current.row_version > item.row_version ? current : item); qc.setQueryData<Case[]>(['cases'], current => current?.some(candidate => candidate.id === item.id) ? current.map(candidate => candidate.id === item.id && candidate.row_version <= item.row_version ? item : candidate) : [item, ...(current ?? [])]); }, [qc]);
   const routedCaseId = sessionRoute?.caseId;
   useEffect(() => { if (routedCaseId) setExpandedIds(current => current.has(routedCaseId) ? current : new Set(current).add(routedCaseId)); }, [routedCaseId]);
   const remove = (id: string) => { qc.setQueryData<Case[]>(['cases'], current => current?.filter(candidate => candidate.id !== id) ?? []); qc.removeQueries({ queryKey: ['case-live', id] }); setSelectedId(current => current === id ? undefined : current); };
+  const [batchMode, setBatchMode] = useState(false);
+  const [checkedIds, setCheckedIds] = useState<Set<string>>(() => new Set());
+  const [batchBusy, setBatchBusy] = useState(false);
+  const [batchNotice, setBatchNotice] = useState('');
+  const batchDialog = useProductDialog();
+  const visibleCases = useMemo(() => (cases.data ?? []).filter(item => !query.trim() || `${item.name} ${item.objective} ${item.description ?? ''}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())), [cases.data, query]);
+  const checkedCases = visibleCases.filter(item => checkedIds.has(item.id));
+  const toggleChecked = useCallback((id: string) => setCheckedIds(current => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; }), []);
+  const exitBatch = useCallback(() => { setBatchMode(false); setCheckedIds(new Set()); setBatchNotice(''); }, []);
+  useEscapeClose(batchMode, exitBatch);
+  const runBatch = async (label: string, work: (item: Case) => Promise<void>) => {
+    setBatchBusy(true); setBatchNotice('');
+    const failures: string[] = [];
+    for (const item of checkedCases) { try { await work(item); } catch (error) { failures.push(`${item.name}：${error instanceof Error ? error.message : String(error)}`); } }
+    setBatchBusy(false);
+    await qc.invalidateQueries({ queryKey: ['cases'] });
+    if (failures.length) setBatchNotice(`${label}：${checkedCases.length - failures.length} 成功，${failures.length} 失败 — ${failures.join('；')}`);
+    else exitBatch();
+  };
+  const batchCopy = () => runBatch('批量复制', async item => {
+    const full = await api.case(item.id);
+    const created = await api.createCase({ name: `${full.name} 副本`.slice(0, 220), description: full.description ?? '', objective: full.objective, work_directory_id: full.work_directory_id ?? null, materials: (full.materials ?? []).filter(material => material.kind === 'LINK'), stages: full.stages.map(stage => ({ stage_key: stage.stage_key, name: stage.name, objective: stage.objective })) } as never);
+    replace(created);
+  });
+  const batchExport = async () => {
+    setBatchBusy(true); setBatchNotice('');
+    try {
+      const full = await Promise.all(checkedCases.map(item => api.case(item.id)));
+      const payload = full.map(item => ({ name: item.name, description: item.description ?? '', objective: item.objective, state: item.state, materials: item.materials ?? [], stages: item.stages.map(stage => ({ stage_key: stage.stage_key, name: stage.name, objective: stage.objective, state: stage.state, execution_mode: stage.execution_mode })), exported_at: new Date().toISOString() }));
+      const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' }));
+      const link = document.createElement('a'); link.href = url; link.download = `cases-${payload.length}.json`; link.click(); URL.revokeObjectURL(url);
+    } catch (error) { setBatchNotice(`批量导出失败：${error instanceof Error ? error.message : String(error)}`); }
+    finally { setBatchBusy(false); }
+  };
+  const batchDelete = async () => {
+    if (!checkedCases.length || !await batchDialog.confirm({ title: `删除 ${checkedCases.length} 个场景？`, message: '会永久删除所选 Case、阶段控制元数据、协调会话及专属工作目录，无法恢复。关联 FlowRun 历史会保留。进行中的执行、运行中会话或未完成受控计划会阻止对应场景删除。', confirmLabel: '批量删除', tone: 'danger' })) return;
+    await runBatch('批量删除', async item => { await api.deleteCase(item.id); remove(item.id); });
+  };
   return <main className="scenario-space"><aside><header className="scenario-side-head"><b>场景列表</b><button className="primary" aria-label="新建场景" onClick={() => setCreating(true)}><Plus size={14}/><span>新建</span></button></header>
     <label className="case-sidebar-search"><Search size={13}/><input aria-label="搜索场景" placeholder="搜索场景…" value={query} onChange={event => setQuery(event.target.value)}/></label>
-    {cases.isLoading ? <p className="scenario-empty">正在加载场景…</p> : cases.error ? <p className="error">{cases.error.message}</p> : cases.data?.length ? <div className="scenario-tree">{cases.data.filter(item => !query.trim() || `${item.name} ${item.objective} ${item.description ?? ''}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())).map(item => {
+    <div className="case-batch-bar">{batchMode ? <><label className="case-batch-all"><input type="checkbox" aria-label="全选场景" checked={visibleCases.length > 0 && checkedCases.length === visibleCases.length} onChange={event => setCheckedIds(event.target.checked ? new Set(visibleCases.map(item => item.id)) : new Set())}/><span>已选 {checkedCases.length}</span></label><button type="button" aria-label="批量复制" title="批量复制" disabled={!checkedCases.length || batchBusy} onClick={batchCopy}><Copy size={13}/></button><button type="button" aria-label="批量导出" title="批量导出" disabled={!checkedCases.length || batchBusy} onClick={batchExport}><Download size={13}/></button><button type="button" className="danger" aria-label="批量删除" title="批量删除" disabled={!checkedCases.length || batchBusy} onClick={batchDelete}><Trash2 size={13}/></button><button type="button" aria-label="退出批量管理" title="退出批量管理" onClick={exitBatch}><X size={13}/></button></> : <button type="button" className="case-batch-enter" aria-label="批量管理" disabled={!cases.data?.length} onClick={() => setBatchMode(true)}><ListChecks size={13}/><span>批量管理</span></button>}</div>{batchNotice && <p className="error case-batch-notice">{batchNotice}</p>}
+    {cases.isLoading ? <p className="scenario-empty">正在加载场景…</p> : cases.error ? <p className="error">{cases.error.message}</p> : cases.data?.length ? <div className="scenario-tree">{visibleCases.map(item => {
       const isSelected = !creating && selected?.id === item.id;
       const completed = item.stages.filter(stage => stage.state === 'COMPLETED').length;
       const expanded = expandedIds.has(item.id);
-      return <section className="scenario-case-wrap" key={item.id}><div className={`scenario-case-row${isSelected ? ' active' : ''}`}><button className={`scenario-case-head ${isSelected ? 'active' : ''}`} onClick={() => { setSelectedId(item.id); setCreating(false); if (sessionRoute) onNavigate('/', true); }}><i className={item.control_conversation_binding_id || item.stages.some(stage => stage.current_execution_flow_run_id) ? item.state.toLowerCase() : 'draft'}/><span><b>{item.name}</b><small>{item.control_conversation_binding_id || item.stages.some(stage => stage.current_execution_flow_run_id) || item.state === 'COMPLETED' || item.state === 'ARCHIVED' ? CASE_STATE[item.state] : '待启动'} · {completed}/{item.stages.length} 阶段</small></span></button><button type="button" className={`scenario-case-toggle${expanded ? ' expanded' : ''}`} aria-label={`${expanded ? '收起' : '展开'}场景 ${item.name}`} aria-expanded={expanded} onClick={() => toggleExpanded(item.id)}><ChevronRight size={15}/></button></div>{expanded && item.control_conversation_binding_id && (() => {
+      return <section className="scenario-case-wrap" key={item.id}><div className={`scenario-case-row${isSelected ? ' active' : ''}`}>{batchMode && <input type="checkbox" className="scenario-case-check" aria-label={`选择场景 ${item.name}`} checked={checkedIds.has(item.id)} onChange={() => toggleChecked(item.id)}/>}<button className={`scenario-case-head ${isSelected ? 'active' : ''}`} onClick={() => { if (batchMode) { toggleChecked(item.id); return; } setSelectedId(item.id); setCreating(false); if (sessionRoute) onNavigate('/', true); }}><i className={item.control_conversation_binding_id || item.stages.some(stage => stage.current_execution_flow_run_id) ? item.state.toLowerCase() : 'draft'}/><span><b>{item.name}</b><small>{item.control_conversation_binding_id || item.stages.some(stage => stage.current_execution_flow_run_id) || item.state === 'COMPLETED' || item.state === 'ARCHIVED' ? CASE_STATE[item.state] : '待启动'} · {completed}/{item.stages.length} 阶段</small></span></button><button type="button" className={`scenario-case-toggle${expanded ? ' expanded' : ''}`} aria-label={`${expanded ? '收起' : '展开'}场景 ${item.name}`} aria-expanded={expanded} onClick={() => toggleExpanded(item.id)}><ChevronRight size={15}/></button></div>{expanded && item.control_conversation_binding_id && (() => {
         const round = item.control_rounds?.find(candidate => candidate.binding_id === item.control_conversation_binding_id);
         const title = round?.display_title || 'Case Agent';
         const active = sessionRoute?.caseId === item.id && sessionRoute.bindingId === item.control_conversation_binding_id;

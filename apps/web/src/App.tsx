@@ -392,6 +392,21 @@ export function App() {
       ? tabs
       : [{ kind: 'settings', view: settingsView }, ...tabs]);
   }, [flowRunRouteId, isAgentRoute, setView, user, view]);
+  // Activation history: closing the active temporary tab returns to the tab the user
+  // came from, whether that was a fixed page, another temporary tab or an Agent route.
+  const activationKey = activeFlowRunTabId ? `flow-run:${activeFlowRunTabId}`
+    : isAgentRoute ? 'view:agent-workbench'
+      : (['environments', 'credentials', 'models', 'ldap-users'] as string[]).includes(view) ? `settings:${view}`
+        : `view:${view === 'agent-workbench' ? 'nodes' : view}`;
+  const activationHistory = useRef<string[]>([]);
+  useEffect(() => {
+    activationHistory.current = [...activationHistory.current.filter(key => key !== activationKey), activationKey].slice(-30);
+  }, [activationKey]);
+  const activateKey = (key: string) => {
+    if (key.startsWith('settings:')) return selectSettingsView(key.slice(9) as SettingsView);
+    if (key.startsWith('flow-run:')) return selectFlowRunTab(key.slice(9));
+    return selectView(key.slice(5) as typeof view);
+  };
   const selectView = async (next: typeof view) => {
     setSettingsOpen(false);
     if (next === 'agent-workbench') {
@@ -427,6 +442,11 @@ export function App() {
       ? renderedView === closing.view && !isAgentRoute && !flowRunRouteId
       : activeFlowRunTabId === closing.id;
     if (!active) return;
+    const closingKey = contextTabKey(closing);
+    const openKeys = new Set(next.map(contextTabKey));
+    const previous = [...activationHistory.current].reverse().find(key => key !== closingKey && (key.startsWith('view:') || openKeys.has(key)));
+    activationHistory.current = activationHistory.current.filter(key => key !== closingKey);
+    if (previous) { void activateKey(previous); return; }
     const replacement = next[index] ?? next[index - 1];
     if (replacement?.kind === 'settings') void selectSettingsView(replacement.view);
     else if (replacement?.kind === 'flow-run') void selectFlowRunTab(replacement.id);
