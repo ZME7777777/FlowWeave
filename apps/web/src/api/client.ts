@@ -514,8 +514,21 @@ export const api = {
   },
   pinnedAgentConversations: (workspaceId: string) =>
     request<import('../types').AgentConversation[]>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/pinned-conversations`),
-  agentConversationActivity: (workspaceId: string, activeBindingId?: string) => {
-    const query = activeBindingId ? `?active_binding_id=${encodeURIComponent(activeBindingId)}` : '';
+  agentChildConversations: (parentId: string, signal?: AbortSignal) =>
+    request<import('../types').AgentChildConversation[]>(`/agent-session-children/${encodeURIComponent(parentId)}`, { signal }),
+  agentChildConversation: (parentId: string, childId: string, signal?: AbortSignal) =>
+    request<AgentConversation>(`${childSessionBase(parentId, childId)}`, { signal, timeoutMs: INTERACTIVE_REQUEST_TIMEOUT_MS }),
+  agentChildHydration: (parentId: string, childId: string, signal?: AbortSignal, cursor?: string) =>
+    request<import('../types').AgentConversationHydration>(`${childSessionBase(parentId, childId)}/hydration${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`, { signal, timeoutMs: INTERACTIVE_REQUEST_TIMEOUT_MS }),
+  agentChildEvents: (parentId: string, childId: string, historyCursor: string, signal?: AbortSignal) =>
+    request<OpenHandsConversationEventBatch>(`${childSessionBase(parentId, childId)}/events?history_cursor=${encodeURIComponent(historyCursor)}`, { signal, timeoutMs: INTERACTIVE_REQUEST_TIMEOUT_MS }),
+  setAgentChildUnread: (parentId: string, childId: string, unread: boolean) =>
+    request<{ id: string; unread: boolean; unread_origin?: 'MANUAL' | 'SYSTEM' | null }>(`${childSessionBase(parentId, childId)}/unread`, json('PUT', { unread })),
+  agentConversationActivity: (workspaceId: string, activeBindingId?: string, activeChildId?: string) => {
+    const params = new URLSearchParams();
+    if (activeBindingId) params.set('active_binding_id', activeBindingId);
+    if (activeChildId) params.set('active_child_id', activeChildId);
+    const query = params.size ? `?${params}` : '';
     return request<import('../types').AgentConversationActivity>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-activity${query}`);
   },
   startAgentConversationSearch: (workspaceId: string, query: string, workDirectoryIds?: string[], includeRoot = true) =>
@@ -1072,6 +1085,31 @@ export function subscribeToAgentWorkspaceStream(
   onEvent: (event: AgentStreamEvent) => void,
   onStatus?: (status: 'connecting' | 'live' | 'recovering' | 'disabled') => void,
 ): () => void {
+  return subscribeToSessionStream(afterSeq => agentWorkspaceStreamUrl(workspaceId, bindingId, afterSeq), onEvent, onStatus);
+}
+
+function childSessionBase(parentId: string, childId: string) {
+  return `/agent-session-children/${encodeURIComponent(parentId)}/${encodeURIComponent(childId)}`;
+}
+
+export function subscribeToChildSessionStream(
+  parentId: string, childId: string,
+  onEvent: (event: AgentStreamEvent) => void,
+  onStatus?: (status: 'connecting' | 'live' | 'recovering' | 'disabled') => void,
+): () => void {
+  return subscribeToSessionStream(afterSeq => {
+    const url = absoluteApiUrl(`${childSessionBase(parentId, childId)}/stream`);
+    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+    if (afterSeq !== undefined) url.searchParams.set('after_seq', String(afterSeq));
+    return url.toString();
+  }, onEvent, onStatus);
+}
+
+function subscribeToSessionStream(
+  streamUrl: (afterSeq?: number) => string,
+  onEvent: (event: AgentStreamEvent) => void,
+  onStatus?: (status: 'connecting' | 'live' | 'recovering' | 'disabled') => void,
+): () => void {
   let disposed = false;
   let socket: WebSocket | undefined;
   let reconnectTimer: number | undefined;
@@ -1082,7 +1120,7 @@ export function subscribeToAgentWorkspaceStream(
   const connect = () => {
     if (disposed) return;
     onStatus?.(reconnectAttempt ? 'recovering' : 'connecting');
-    socket = new WebSocket(agentWorkspaceStreamUrl(workspaceId, bindingId, afterSeq));
+    socket = new WebSocket(streamUrl(afterSeq));
     socket.onopen = () => { reconnectAttempt = 0; onStatus?.('live'); };
     socket.onmessage = message => {
       try {
@@ -1135,8 +1173,11 @@ export const nodeSessionApi = {
     if (workDirectoryId) query.set('work_directory_id', workDirectoryId);
     return request<import('../types').AgentConversationPage>(`${nodeSessionBase(flowRunId, attemptId)}?${query}`);
   },
-  activity: (flowRunId: string, attemptId: string, activeBindingId?: string) => {
-    const query = activeBindingId ? `?active_binding_id=${encodeURIComponent(activeBindingId)}` : '';
+  activity: (flowRunId: string, attemptId: string, activeBindingId?: string, activeChildId?: string) => {
+    const params = new URLSearchParams();
+    if (activeBindingId) params.set('active_binding_id', activeBindingId);
+    if (activeChildId) params.set('active_child_id', activeChildId);
+    const query = params.size ? `?${params}` : '';
     return request<import('../types').AgentConversationActivity>(`${nodeSessionBase(flowRunId, attemptId)}/activity${query}`);
   },
   create: (flowRunId: string, attemptId: string, title: string | undefined, model_provider_id: string, model_name: string, reasoning_effort: string | null, idempotencyKey = randomId(), work_directory_id?: string) =>

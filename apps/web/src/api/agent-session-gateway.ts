@@ -105,7 +105,7 @@ export interface AgentSessionApi {
   readonly conversations: (hostId: AgentSessionHostId, cursor?: string, limit?: number, workDirectoryId?: string) => Promise<AgentConversationPage>;
   /** Workspace-wide pinned summaries independent of each group's cursor pages. */
   readonly pinnedConversations?: (hostId: AgentSessionHostId) => Promise<AgentConversation[]>;
-  readonly conversationActivity: (hostId: AgentSessionHostId, activeBindingId?: AgentSessionBindingId) => Promise<AgentConversationActivity>;
+  readonly conversationActivity: (hostId: AgentSessionHostId, activeBindingId?: AgentSessionBindingId, activeChildId?: AgentSessionBindingId) => Promise<AgentConversationActivity>;
   readonly startConversationSearch?: (hostId: AgentSessionHostId, query: string, workDirectoryIds?: string[], includeRoot?: boolean) => Promise<AgentConversationSearch>;
   readonly conversationSearch?: (hostId: AgentSessionHostId, searchId: string, cursor?: string) => Promise<AgentConversationSearch>;
   readonly conversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<AgentConversation>;
@@ -283,7 +283,7 @@ export function flowNodeSessionGateway(
       defaultHost: signal => nodeSessionApi.host(flowRunId, attemptId, signal),
       runtime: () => nodeSessionApi.runtime(flowRunId, attemptId),
       conversations: (_hostId, cursor, limit, workDirectoryId) => nodeSessionApi.conversations(flowRunId, attemptId, cursor, limit, workDirectoryId),
-      conversationActivity: (_hostId, activeBindingId) => nodeSessionApi.activity(flowRunId, attemptId, activeBindingId),
+      conversationActivity: (_hostId, activeBindingId, activeChildId) => nodeSessionApi.activity(flowRunId, attemptId, activeBindingId, activeChildId),
       conversation: (_hostId, bindingId) => nodeSessionApi.get(flowRunId, attemptId, bindingId),
       workDirectories: () => nodeSessionApi.workDirectories(flowRunId, attemptId),
       providers: api.providers,

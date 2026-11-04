@@ -106,7 +106,7 @@ export function useSideConversationHydration(selection: Selection | undefined, e
   const loading = Boolean(enabled && scope && (snapshot.scope !== scope || snapshot.loading));
   useEffect(() => {
     if (!enabled || !scope || loading) return;
-    const running = ['running', 'starting', 'executing', 'stopping'].includes(data?.readiness.execution_status ?? '');
+    const running = ['running', 'starting', 'executing', 'stopping'].includes(data?.readiness?.execution_status ?? '');
     const timer = window.setTimeout(() => {
       void run(Date.now() - lastLatest.current >= 30_000 ? 'latest' : 'incremental');
     }, running ? 4_000 : 15_000);

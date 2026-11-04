@@ -911,6 +911,7 @@ export interface AgentConversation {
   /** Server-owned effective ordering key. Untouched conversations use creation time. */
   sort_key?: string;
   usage?: TokenUsageSummary;
+  child_summary?: AgentChildSummary;
 }
 
 export interface AgentConversationSchedule {
@@ -971,7 +972,39 @@ export interface AgentConversationManagementDeleteResult {
   deleted_ids: string[];
   skipped: Array<{ id: string; code: string }>;
 }
+export interface AgentChildSummary {
+  total: number;
+  unread: number;
+  running: number | null;
+  attention: number | null;
+  condensing: number | null;
+  unknown: number | null;
+  pending: number | null;
+}
+export interface AgentChildConversation {
+  id: string;
+  parent_binding_id: string;
+  display_title?: string | null;
+  lifecycle: AgentConversation['lifecycle'];
+  unread: boolean;
+  unread_origin?: 'MANUAL' | 'SYSTEM' | null;
+  final_reply_preview?: { event_id: string; content: string } | null;
+  created_at: string;
+}
+export interface AgentChildActivity {
+  id: string;
+  parent_binding_id: string;
+  execution_status: string;
+  possibly_stuck: boolean;
+  failed: boolean;
+  condensing: boolean;
+  sync_pending: boolean;
+  unread: boolean;
+  unread_origin?: 'MANUAL' | 'SYSTEM' | null;
+}
 export interface AgentConversationActivity {
+  child_activity?: AgentChildActivity[];
+  child_activity_parent_binding_ids?: string[];
   /** Complete summaries for every binding that belongs in the activity panel. */
   conversations?: AgentConversation[];
   running_binding_ids: string[];
