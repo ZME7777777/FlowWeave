@@ -1420,4 +1420,3 @@ def test_tool_result_describes_the_plan_after_the_session_replaced_its_row(flow_
     source = inspect.getsource(flow_tools.manage_flow)
     assert "db.get(CaseControlPlan, plan_id)" in source
     assert "return action_result(plan)" not in source
-
