@@ -161,13 +161,8 @@ def setup(graph, monkeypatch, tmp_path):
     return g
 
 
-def test_whole_reference_uses_platform_history_reader(setup, monkeypatch):
+def test_whole_reference_carries_metadata_only(setup):
     g = setup
-    monkeypatch.setattr(
-        conversations,
-        "read_visible_conversation_context",
-        lambda *_args: "user: 来源内容",
-    )
     refs = conversations._resolve_message_references(
         g.db, g.workspace, g.target, ({"source_binding_id": g.first.id},)
     )
@@ -178,13 +173,12 @@ def test_whole_reference_uses_platform_history_reader(setup, monkeypatch):
         "title": "来源会话",
         "source_binding_id": g.first.id,
         "source_conversation_id": g.first.openhands_conversation_id,
-        "history_tool": "platform_conversation_history",
-        "resolved_content": "user: 来源内容",
+        "history_tool": "read_referenced_conversation",
     }
     prompt, _ = conversations.message_payload("继续当前任务", (), refs)
     visible, projected, *_ = conversations.project_conversation_references(prompt)
     assert visible == "继续当前任务" and projected == refs
-    assert "来源内容" in prompt
+    assert "来源内容" not in prompt
 
 
 def test_native_registration_freezes_provenance_and_reuses_credential(setup):

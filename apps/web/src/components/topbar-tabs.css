@@ -5,11 +5,9 @@
 .topbar-fixed-scroll{height:100%;overflow-x:auto;overflow-y:hidden;scrollbar-width:none;opacity:1;transition:opacity .16s ease}.topbar-fixed-scroll::-webkit-scrollbar{display:none}
 .topbar-tabs .topbar-fixed-scroll>nav{width:max-content;min-width:max-content;height:100%;margin-left:0}
 .fixed-collapsed .topbar-fixed-scroll{opacity:0;pointer-events:none}
-.topbar-nav-boundary{position:relative;display:flex;width:18px;flex:0 0 18px;height:100%;align-items:center;justify-content:center;border:0;background:transparent;padding:0;color:#b1c0b6;opacity:.5;transition:opacity .15s}
-.topbar-nav-boundary::before{content:'';position:absolute;top:23px;bottom:23px;left:8px;width:1px;background:#ffffff24}
-.topbar-nav-boundary svg{z-index:1;background:var(--dark);border-radius:2px}.topbar-nav-boundary:hover,.topbar-nav-boundary:focus-visible{opacity:1;color:var(--lime)}
 .topbar-context-region{display:flex;min-width:196px;flex:1;height:100%;align-items:stretch;overflow:hidden}
-.topbar-tabs .context-tabs{flex:1;min-width:0;flex-basis:0;height:100%;gap:var(--temporary-tab-gap);mask-image:none;overflow:hidden;margin:0;padding:0;scrollbar-width:none}
+.topbar-context-content{display:flex;max-width:100%;height:100%;align-items:stretch;overflow:hidden}
+.topbar-tabs .context-tabs{min-width:0;flex:0 1 auto;height:100%;gap:var(--temporary-tab-gap);mask-image:none;overflow:hidden;margin:0;padding:0;scrollbar-width:none}
 .topbar-tabs .context-tabs::before{display:none}
 .topbar-tabs .context-tab{min-width:0;max-width:var(--temporary-tab-width);flex:0 0 auto;box-sizing:border-box}
 .topbar-tabs .context-tab-select{justify-content:flex-start;padding-left:10px;gap:7px}.topbar-tabs .context-tab-select>span{display:block;white-space:nowrap}.topbar-tabs .context-tab-close{display:grid;width:20px;flex-basis:20px}
@@ -23,19 +21,15 @@
 .topbar-tab-popover>button{display:flex;width:100%;min-width:0;align-items:center;gap:9px;border:0;border-radius:4px;background:transparent;padding:9px 10px;color:#425b4d;font-size:12px;text-align:left}
 .topbar-tab-popover>button>span{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.topbar-tab-popover>button>svg{flex-shrink:0}
 .topbar-tab-popover>button:hover,.topbar-tab-popover>button:focus-visible,.topbar-tab-popover>button[aria-current=page]{outline:0;background:#eaf2ec;color:#246345}
-.topbar-tab-menu-trigger:focus-visible,.topbar-nav-boundary:focus-visible{outline:1px solid var(--lime);outline-offset:-3px}
-@keyframes topbar-menu-appear{from{opacity:0}to{opacity:1}}
+.topbar-tab-menu-trigger:focus-visible,@keyframes topbar-menu-appear{from{opacity:0}to{opacity:1}}
+/* 下拉与标签出现：由触发边向下展开，而不是一闪而出 */
 @media(prefers-reduced-motion:reduce){.topbar-fixed-region,.topbar-fixed-scroll{transition:none}.topbar-fixed-menu>button{animation:none}}
 
 .topbar-fixed-menu.active>.topbar-tab-menu-trigger{border-bottom-color:var(--lime);color:#fff}
 
 .topbar-tabs .topbar-fixed-scroll>nav button{font-size:13px}
 
-/* 固定导航收起/展开按钮：带边框的双箭头，分隔线居中穿过 */
-.topbar-nav-boundary{width:30px;flex-basis:30px;opacity:1;color:#9fb1a6}
-.has-context-tabs .topbar-nav-boundary::before{left:14px;top:18px;bottom:18px}
-.topbar-nav-boundary svg{box-sizing:content-box;width:12px;height:12px;padding:4px;border:1px solid #ffffff2e;border-radius:7px;background:var(--dark);transition:border-color .15s,background .15s,color .15s}
-.topbar-nav-boundary:hover svg,.topbar-nav-boundary:focus-visible svg{border-color:var(--lime);background:#ffffff10;color:var(--lime)}
+/* 分隔线穿过收起控件的留白，明确区分导航分组与收起操作。 */
 /* 收起后的固定页面下拉，参照平台设置菜单 */
 .topbar-tab-popover{width:240px;max-width:calc(100vw - 24px);box-sizing:border-box;overflow:hidden;border-color:#cfd9d2;border-radius:9px;padding:5px;box-shadow:0 18px 38px #08150f38}
 .topbar-tab-popover>button{gap:9px;padding:6px;border-radius:7px;font-size:13px;color:#2f4b3a}
@@ -57,3 +51,20 @@
 .topbar-fixed-popover>button[aria-current=page] .topbar-tab-icon{background:var(--lime);color:#10281c}
 .topbar-fixed-popover>button>svg:last-child{color:var(--lime)}
 .topbar-fixed-menu>.topbar-tab-menu-trigger[aria-expanded=true]{background:var(--dark);color:#fff}
+
+/* 下拉：从触发边平滑向下展开（不改透明度、不先隐藏），离开时原路收回 */
+@keyframes topbar-menu-reveal{from{clip-path:inset(0 0 100% 0)}to{clip-path:inset(0 0 0 0)}}
+.topbar-tab-popover{will-change:clip-path}
+.topbar-tab-popover{animation:topbar-menu-reveal .2s cubic-bezier(.22,.8,.3,1) both}
+/* 临时标签新增：只做轻微向下展开，不闪烁 */
+@keyframes topbar-tab-in{from{clip-path:inset(0 0 100% 0)}to{clip-path:inset(0 0 0 0)}}
+.topbar-tabs .context-tab{animation:topbar-tab-in .2s cubic-bezier(.22,.8,.3,1) both}
+@media(prefers-reduced-motion:reduce){.topbar-tab-popover,.topbar-tabs .context-tab{animation:none}}
+
+/* 分隔/收起控件：竖立的扁平长条，本身即按钮；高度接近标签栏，悬停只变底色 */
+.topbar-nav-boundary{position:relative;display:grid;width:14px;flex:0 0 14px;height:38px;align-self:center;place-items:center;margin:0 12px;border:0;border-radius:4px;background:#ffffff12;padding:0;color:#8fa398;transition:background .15s,color .15s}
+.topbar-nav-boundary svg{width:12px;height:12px}
+.topbar-nav-boundary:hover{background:#ffffff24;color:#fff}
+.topbar-nav-boundary:active{background:#ffffff30}
+.topbar-nav-boundary:focus-visible{background:#ffffff24;color:var(--lime);outline:1px solid var(--lime);outline-offset:1px}
+@media(prefers-reduced-motion:reduce){.topbar-nav-boundary{transition:none}}

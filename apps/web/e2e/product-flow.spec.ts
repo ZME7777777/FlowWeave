@@ -1817,7 +1817,10 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   const mcpDetail = completedProcess.locator('.conversation-tool-detail[data-tool-kind="mcp"]');
   await expect(mcpDetail).toHaveCount(1);
   await expect(mcpDetail.locator(':scope > summary .conversation-tool-kind')).toHaveCount(0);
-  await expect(mcpDetail.locator(':scope > summary > svg.lucide-plug-zap')).toBeVisible();
+  // The MCP icon and the server name are one unit (market-data comes from market-data.get-kline).
+  const mcpBadge = mcpDetail.locator(':scope > summary > .conversation-mcp-badge');
+  await expect(mcpBadge.locator('svg.lucide-plug-zap')).toBeVisible();
+  await expect(mcpBadge).toContainText('market-data');
   await expect(completedProcess.locator('.conversation-activity-row.thought.tool-thought.tool-mcp')).toContainText('我先通过行情 MCP 获取日线数据。');
   await mcpDetail.locator(':scope > summary').click();
   await expect(mcpDetail.getByText('事件类型', { exact: true })).toBeVisible();

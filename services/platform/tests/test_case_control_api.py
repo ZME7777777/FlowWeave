@@ -126,12 +126,21 @@ def test_direct_stage_start_failure_is_persisted_and_never_replayed_as_success(
         raise RuntimeError("private failure details")
 
     monkeypatch.setattr(service.orchestration, "start_automatic_run", start)
-    path = f"/api/v1/cases/{fixture['case']}/stages/{fixture['stage']}/execution/start"
-    first = client.post(path, json={})
-    assert first.status_code == (422 if error_kind == "domain" else 500)
-    assert "private failure details" not in first.text
-    second = client.post(path, json={})
-    assert second.status_code == 409
+    # The platform no longer exposes a direct start endpoint; the same function still backs the
+    # coordinator's START_EXECUTION plan, so its failure persistence is exercised directly.
+    from flowweave.shared.schemas import CaseStageExecutionStartWrite
+
+    request = CaseStageExecutionStartWrite()
+    expected = DomainError if error_kind == "domain" else Exception
+    with tenant_user(fixture["owner"]), db_session_factory() as db:
+        with pytest.raises(expected) as first:
+            service.start_case_stage_execution(db, fixture["case"], fixture["stage"], request)
+    assert "private failure details" not in str(first.value)
+    # A second attempt must not be replayed as a success.
+    with tenant_user(fixture["owner"]), db_session_factory() as db:
+        with pytest.raises(Exception) as second:
+            service.start_case_stage_execution(db, fixture["case"], fixture["stage"], request)
+    assert getattr(second.value, "status", None) == 409
     assert calls == ["start"]
     with tenant_user(fixture["owner"]), db_session_factory() as db:
         rows = list(db.scalars(select(CaseDecisionProposal)))
@@ -186,8 +195,13 @@ def test_control_actions_are_not_visible_to_another_user(
     for action in ("execute", "retry"):
         response = user_client.post(f"{path}/control-plans/{plan['id']}/{action}")
         assert response.status_code == 404, response.text
-    response = user_client.post(f"{path}/stages/{fixture['stage']}/execution/start", json={})
+    response = user_client.post(
+        f"{path}/start", json={"session": "CURRENT", "expected_row_version": 1}
+    )
     assert response.status_code == 404, response.text
+    for removed in ("execution/start", "launch"):
+        gone = user_client.post(f"{path}/stages/{fixture['stage']}/{removed}", json={})
+        assert gone.status_code in {404, 405}, gone.text
     with tenant_user(fixture["owner"]), db_session_factory() as db:
         assert db.get(CaseControlPlan, plan["id"]).state == "PENDING"
         assert list(db.scalars(select(CaseDecisionProposal))) == []

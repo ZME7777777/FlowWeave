@@ -105,9 +105,25 @@ def record_execution_feedback(db: Session, event_id: str) -> None:
         )
 
 
-def record_case_change(db: Session, item: Case, kind: str) -> None:
-    if kind not in {"MATERIALS_CHANGED", "SESSION_CONFIG_CHANGED", "CASE_RESUMED"}:
+def record_case_change(
+    db: Session, item: Case, kind: str, *, request_key: str | None = None
+) -> bool:
+    """Record one Case-level fact for the current coordinator.
+
+    ``CASE_START_REQUESTED`` is the single start event: it carries an explicit request key so
+    every user request is its own delivery and can never be merged away by the row version.
+    Returns whether a delivery was recorded.
+    """
+
+    if kind not in {
+        "MATERIALS_CHANGED",
+        "SESSION_CONFIG_CHANGED",
+        "CASE_RESUMED",
+        "CASE_START_REQUESTED",
+    }:
         raise ValueError("Unsupported Case feedback source")
+    if (kind == "CASE_START_REQUESTED") != (request_key is not None):
+        raise ValueError("A start request needs exactly one request key")
     entry = (
         db.get(CaseControlRound, item.current_control_round_id)
         if item.current_control_round_id
@@ -125,9 +141,11 @@ def record_case_change(db: Session, item: Case, kind: str) -> None:
             item=item,
             round_id=entry.id,
             binding_id=entry.binding_id,
-            source_key=f"{kind}:{item.row_version}",
+            source_key=f"{kind}:{request_key or item.row_version}",
             source_kind=kind,
         )
+        return True
+    return False
 
 
 def recover_feedback(db: Session) -> int:
@@ -233,6 +251,12 @@ def _facts(db: Session, batch: list[CaseFeedbackDelivery], item: Case) -> str:
                         "native_completion_event_id",
                     )
                 }
+            )
+        if entry.source_kind == "CASE_START_REQUESTED":
+            fact["instruction"] = (
+                "用户请求启动本场景。请先读取场景目标、资料与各阶段流程，判断资料是否满足"
+                "当前活动阶段的启动条件；满足则复制并配置执行副本后启动，不满足则明确说明"
+                "缺少什么并等待补充。不得假设平台已经启动任何流程。"
             )
         facts.append(fact)
     return (

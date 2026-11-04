@@ -745,6 +745,12 @@ export interface OpenHandsConversationEvent {
       objective: string;
       verdict?: { score: number; complete: boolean; missing: string } | null;
     };
+    /**
+     * Set on the `source=user` MessageEvent that OpenHands' Goal loop sends after
+     * the Judge finds the objective incomplete. It is loop control input, not
+     * something the person typed; `missing` is the Judge's structured verdict.
+     */
+    goal_followup?: { iteration: number; max_iterations?: number; missing: string };
     /** Server-confirmed terminal delivery for this assistant MessageEvent. */
     final_reply?: boolean;
     /** Safe projection of the formal OpenHands TaskAction/TaskObservation lifecycle. */

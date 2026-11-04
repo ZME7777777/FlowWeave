@@ -35,6 +35,8 @@ interface Turn {
   /** Wall-clock periods split only after a formal interruption. */
   processSegments: ProcessSegment[];
   assistant?: Item;
+  /** Every assistant reply of the turn in order; a Goal loop answers once per round. */
+  replies?: Item[];
   activity: Item[];
 }
 
@@ -480,6 +482,10 @@ function itemsFor(event: OpenHandsConversationEvent, taskRetryError = false): It
       ? event.payload.display_content
       : isFlowWeaveMessageContext(content) ? '' : content;
     if (isUser && isFlowWeaveInternalProtocolMessage(content)) return [];
+    // The Goal loop's own follow-up after a failed audit is loop control input,
+    // not something the person typed: keep it inside the running turn.
+    const goalFollowup = event.payload.goal_followup;
+    if (isUser && goalFollowup) return [{ event, kind: 'goal', title: `目标未达成 · 第 ${goalFollowup.iteration} 轮追问`, content: goalFollowup.missing }];
     if (isUser) return [{ event, kind: 'user', title: '', content: displayContent }];
     if (isOpenHandsAgentReply(event)) return [{ event, kind: 'assistant', title: '', content }];
     if (isOpenHandsEmptyResponseRecovery(event)) return [];
@@ -537,6 +543,8 @@ function userAncestorId(
       current.event_type === 'MESSAGE'
       && (source === 'user' || source === 'human')
       && !isFlowWeaveInternalProtocolMessage(content)
+      // A Goal-loop follow-up is control input inside the running turn, not a boundary.
+      && !current.payload.goal_followup
     ) return current.id;
     const parentId: string | null | undefined = current.payload.parent_id;
     current = parentId ? byId.get(parentId) : undefined;
@@ -690,8 +698,10 @@ function turnsFor(events: OpenHandsConversationEvent[]): Turn[] {
       if (currentSegment?.interruptedBy && item.kind !== 'assistant' && item.kind !== 'error') {
         turn.processSegments.push({ items: [], messageIndex: owner?.messageIndex ?? 0, startedBy: item });
       }
-      if (item.kind === 'assistant') turn.assistant = item;
-      else {
+      if (item.kind === 'assistant') {
+        (turn.replies ??= []).push(item);
+        turn.assistant = item;
+      } else {
         turn.activity.push(item);
         turn.processSegments.at(-1)?.items.push(item);
       }
@@ -710,6 +720,84 @@ function turnsFor(events: OpenHandsConversationEvent[]): Turn[] {
       return left.timestamp - right.timestamp;
     })
     .map(({ turn }) => turn);
+}
+
+/**
+ * A Goal turn is one process. Its rounds are not separate blocks: every earlier
+ * round's reply and each Judge follow-up are events inside that process, in the
+ * order they happened, and only the last reply stays outside as the turn's reply.
+ * `rounds` lists where each round starts, for navigation.
+ */
+interface GoalTurn {
+  /** Process items with earlier replies and follow-ups folded in, in order. */
+  process: Item[];
+  /** The reply shown outside the process, once the loop has really ended. */
+  finalReply?: Item;
+  /** Start of each round: the first one is the typed goal, then each follow-up. */
+  roundStarts: Array<{ eventId: string; label: string }>;
+  /** Seconds each round took, keyed by the event that opened it (goal message or follow-up). */
+  roundSeconds: Map<string, number>;
+}
+
+/**
+ * How long each round of a Goal took, keyed by the event that opens it (the typed goal,
+ * then each Judge follow-up). A round ends at the reply that closes it, or where the
+ * next round opens when it was cut short; the last one ends at `lastEnd`.
+ */
+export function goalRoundDurations(
+  opens: Array<{ id: string; at: number | undefined }>,
+  closes: number[],
+  lastEnd?: number,
+): Map<string, number> {
+  const seconds = new Map<string, number>();
+  opens.forEach((open, index) => {
+    if (open.at === undefined) return;
+    const next = opens[index + 1]?.at;
+    const closing = closes.filter(time => time >= open.at! && (next === undefined || time <= next)).at(-1);
+    const end = closing ?? next ?? lastEnd;
+    if (end !== undefined && end >= open.at) seconds.set(open.id, (end - open.at) / 1000);
+  });
+  return seconds;
+}
+
+function goalTurn(turn: Turn, events: OpenHandsConversationEvent[], goalActive: boolean): GoalTurn | undefined {
+  const byId = new Map(events.map(event => [event.id, event]));
+  const userId = turn.user?.event.id;
+  const hasAudit = Boolean(userId && events.some(event => event.payload.goal_status?.verdict && userAncestorId(event, byId) === userId));
+  const followups = turn.activity.filter(item => item.event.payload.goal_followup);
+  if (!followups.length && !hasAudit) return undefined;
+  const replies = turn.replies ?? [];
+  // While the loop goes on no reply is final, including the latest one.
+  const finalReply = goalActive ? undefined : replies.at(-1);
+
+  // A round runs from the event that opens it (the typed goal, then each follow-up)
+  // to the reply that closes it, or to the next opening when it was cut short.
+  const opens = [
+    ...(turn.user ? [{ id: turn.user.event.id, label: '第 1 轮', at: eventTime(turn.user) }] : []),
+    ...followups.map((item, index) => ({ id: item.event.id, label: `第 ${index + 2} 轮`, at: eventTime(item) })),
+  ];
+  const closes = replies.map(reply => eventTime(reply)).filter((time): time is number => time !== undefined);
+  const roundSeconds = goalRoundDurations(opens, closes, finalReply ? eventTime(finalReply) : undefined);
+
+  // Each divider reports how long the round it opens took, so per-round time survives
+  // although the goal is shown as one process with a single total.
+  const stamped = (item: Item): Item => {
+    // A divider opens round N+1, so it reports the round that just ended: the one opened before it.
+    const position = opens.findIndex(open => open.id === item.event.id);
+    const seconds = position > 0 ? roundSeconds.get(opens[position - 1].id) : undefined;
+    return seconds === undefined ? item : { ...item, event: { ...item.event, payload: { ...item.event.payload, _flowweave_round_seconds: seconds } } };
+  };
+  const folded = new Set<Item>([...followups, ...replies.filter(reply => reply !== finalReply)]);
+  const process = [
+    ...turn.activity.filter(item => item.kind !== 'error' && !folded.has(item)),
+    ...folded,
+  ]
+    .map((item, index) => ({ item, index, time: eventTime(item) }))
+    .sort((left, right) => (left.time === undefined || right.time === undefined || left.time === right.time) ? left.index - right.index : left.time - right.time)
+    .map(({ item }) => item.event.payload.goal_followup
+      ? stamped(item)
+      : item.event.event_type === 'MESSAGE' ? { ...item, kind: 'thought' as const } : item);
+  return { process, finalReply, roundStarts: opens.map(({ id, label }) => ({ eventId: id, label })), roundSeconds };
 }
 
 function fileChangesForTurn(
@@ -966,6 +1054,17 @@ function fileToolIcon(presentation: ActivityPresentation) {
   if (presentation.fileKind === 'markdown') return FileType2;
   if (presentation.fileOperation === 'read') return Search;
   return FileText;
+}
+
+// OpenHands exposes MCP tools as "<server>_<tool>" (for example
+// "localCode_get_outline"); "mcp_", "server.tool", "server__tool" and
+// "server:tool" are accepted too. A server name that itself contains "_" is
+// shortened to its first segment because the event carries no separate field.
+function mcpServerLabel(toolName?: string): string | undefined {
+  const raw = toolName?.trim().replace(/^mcp[_:]+/i, '');
+  if (!raw) return undefined;
+  const server = /^([^._:]+?)(?:__|[._:]|_)(?=.)/.exec(raw)?.[1];
+  return server || undefined;
 }
 
 function toolVisualPresentation(eventName: string, toolName?: string): ToolVisualKind {
@@ -1233,7 +1332,7 @@ function processBlocksForTurn(segments: ProcessSegment[], active: boolean, compl
   if (!firstSegment || !lastSegment) return [];
   const interruptedAt = parsedEventTime(lastSegment.interruptedBy?.payload.timestamp);
   return turnProcessBlocks(
-    segments.flatMap(segment => segment.items).filter(item => item.kind !== 'error'),
+    segments.flatMap(segment => segment.items).filter(item => item.kind !== 'error' && !item.event.payload.goal_followup),
     eventTime(firstSegment.startedBy),
     interruptedAt ?? completedAt,
     active && interruptedAt === undefined,
@@ -1508,6 +1607,7 @@ function ActivityEntryRow({ entry, active, reveal = false, paused = false, paren
   const eventName = String(item.event.payload.event_name ?? '');
   const toolName = detailText(item.event.payload.tool_name);
   const toolVisual = toolVisualPresentation(eventName, toolName);
+  const mcpServer = toolVisual === 'mcp' ? mcpServerLabel(toolName) : undefined;
   const avatarSlot = eventName === 'TaskAction' || eventName === 'TaskObservation'
     ? subagentAvatarSlotForEvent(item.event, avatarSlots)
     : undefined;
@@ -1528,6 +1628,13 @@ function ActivityEntryRow({ entry, active, reveal = false, paused = false, paren
   if (item.kind === 'condensation') return <article className={`conversation-activity-row tool condensation${condensationRunning ? ' running' : ''}`} role="status" aria-label={presentation.title}>
     <Sparkles size={13}/><div><b>{presentation.title}</b></div>
   </article>;
+  if (item.kind === 'goal' && item.event.payload.goal_followup) {
+    // A round boundary, drawn like a task-list entry: no card, no explanation.
+    return <details className="conversation-goal-round" data-goal-followup-event-id={item.event.id} data-conversation-event-id={item.event.id}>
+      <summary aria-label={item.title}><span className="conversation-task-status-icon in_progress" aria-hidden="true"><i/></span><b>{item.title}</b>{typeof item.event.payload._flowweave_round_seconds === 'number' && <small>{`上一轮 ${formatDuration(item.event.payload._flowweave_round_seconds)}`}</small>}{item.content && <ChevronRight className="conversation-expand-arrow" size={12}/>}</summary>
+      {item.content && <p>{item.content}</p>}
+    </details>;
+  }
   if (item.kind === 'goal') {
     const goal = item.event.payload.goal_status!;
     const detail = item.content || (goal.status === 'complete' ? 'Judge 已确认当前目标的完成证据。' : goal.status === 'interrupted' ? '可在会话目标卡中恢复原目标。' : undefined);
@@ -1554,7 +1661,7 @@ function ActivityEntryRow({ entry, active, reveal = false, paused = false, paren
       <MessageMarkdown reveal={reveal}>{presentation.thought}</MessageMarkdown>
     </article>}
     <details className={`conversation-activity-row tool conversation-tool-detail tool-${toolVisual}${toolRunning ? ' running' : ''}`} data-tool-kind={toolVisual} data-file-operation={toolVisual === 'file' ? presentation.fileOperation : undefined} data-file-kind={toolVisual === 'file' ? presentation.fileKind : undefined}>
-      <summary aria-label={`查看执行详情：${presentation.title}`}>{taskAvatar ?? <ToolIcon size={13}/>}<div><b title={presentation.title}>{presentation.title}</b></div><ChevronRight className="conversation-expand-arrow" size={12}/></summary>
+      <summary aria-label={`查看执行详情：${presentation.title}`}>{mcpServer ? <span className="conversation-mcp-badge" title={`MCP：${mcpServer}`}>{taskAvatar ?? <ToolIcon size={13}/>}<span>{mcpServer}</span></span> : taskAvatar ?? <ToolIcon size={13}/>}<div><b title={presentation.title}>{presentation.title}</b></div><ChevronRight className="conversation-expand-arrow" size={12}/></summary>
       {toolDetail}
     </details>
   </div>;
@@ -1989,7 +2096,7 @@ export interface ConversationScrollSnapshot {
   savedAt: number;
 }
 
-export const ConversationSurface = memo(function ConversationSurface({ events, isGenerating, isPaused = false, isFailed = false, pausing = false, reconnectingAttempt, reconnectingMaxAttempts = 3, emptyResponseRecoveryActive = false, modelRetryStatus, historyPending = false, cachedHistoryMarkerCount = 0, cachedHistoryUserEvents = [], hasCachedOlderHistory = false, onRequestOlderHistory, onRevealHistoryThrough, conversationScope, referenceLocation, searchLocation, initialScrollSnapshot, onScrollSnapshotChange, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationPending = false, condensationStartedAt, onRewrite, onFork, onOpenAttachment, attachmentImageUrl, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenSourceLocation, onOpenWorkspaceFile, onOpenBrowser, onOpenImage, workspaceImageUrl, workspaceRoot, onCreateAnnotation, onSidebarQuestion, onLocateAnnotation, conversationName, onOpenConversationReference, taskControl = [], monitoring, connectionState }: {
+export const ConversationSurface = memo(function ConversationSurface({ events, isGenerating, isPaused = false, isFailed = false, pausing = false, reconnectingAttempt, reconnectingMaxAttempts = 3, emptyResponseRecoveryActive = false, modelRetryStatus, historyPending = false, cachedHistoryMarkerCount = 0, cachedHistoryUserEvents = [], hasCachedOlderHistory = false, onRequestOlderHistory, onRevealHistoryThrough, conversationScope, referenceLocation, searchLocation, initialScrollSnapshot, onScrollSnapshotChange, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationPending = false, condensationStartedAt, onRewrite, onFork, onOpenAttachment, attachmentImageUrl, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenSourceLocation, onOpenWorkspaceFile, onOpenBrowser, onOpenImage, workspaceImageUrl, workspaceRoot, onCreateAnnotation, onSidebarQuestion, goalLocateEventId, onLocateAnnotation, conversationName, onOpenConversationReference, taskControl = [], monitoring, connectionState }: {
   events: OpenHandsConversationEvent[];
   isGenerating: boolean;
   /** Formal native conversation pause state, used only to label unfinished Task actions. */
@@ -2049,6 +2156,8 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   workspaceRoot?: string | null;
   onCreateAnnotation?: (anchor: { event_id: string; quote: string; compact_start: number }) => void;
   onSidebarQuestion?: (reference: ConversationReference) => void;
+  /** Event the person asked to jump to; a folded Goal process opens when it holds that event. */
+  goalLocateEventId?: string;
   onLocateAnnotation?: (annotation: AgentConversationAnnotation) => void;
   conversationName?: (bindingId: string | undefined) => string | undefined;
   onOpenConversationReference?: (reference: AgentConversationReference) => void;
@@ -2149,7 +2258,22 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     [events],
   );
   const turns = useMemo(() => turnsFor(visibleEvents), [visibleEvents]);
+  const latestGoalStatus = useMemo(() => [...visibleEvents].reverse().find(event => event.payload.goal_status)?.payload.goal_status, [visibleEvents]);
   const revealEventIds = EMPTY_EVENT_IDS;
+  // Locating an event that sits inside a folded Goal process opens that process and keeps it
+  // open (the locate target itself is cleared as soon as the jump lands).
+  useEffect(() => {
+    if (!goalLocateEventId) return;
+    // A jump is the reader leaving the bottom on purpose: stop following the latest content,
+    // otherwise the alignment that runs when the process unfolds drags the page back down.
+    followLatest.current = false;
+    userScrolledAway.current = true;
+    setIsAtLatest(false);
+    const owner = turns.find(turn => turn.activity.some(item => item.event.id === goalLocateEventId));
+    if (!owner) return;
+    const key = `${conversationScope ?? 'conversation'}:${owner.renderKey}`;
+    setExpandedCompletedProcesses(current => current.has(key) ? current : new Set(current).add(key));
+  }, [conversationScope, goalLocateEventId, turns]);
   const contentGrowthSignal = useMemo(
     () => visibleEvents.map(event => [event.id, eventContentSignature(event)] as const),
     [visibleEvents],
@@ -2909,6 +3033,10 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
         const laterTurnHasFormalReply = turns.slice(index + 1).some(candidate => Boolean(candidate.assistant));
         const completionConfirmed = Boolean(turn.assistant || parentFailed || laterTurnHasFormalReply);
         const fileChanges = fileChangesForTurn(events, turn);
+        const goalActive = latestGoalStatus?.active === true && isLatest;
+        const goal = goalTurn(turn, events, goalActive);
+        // A Goal turn keeps only its real final reply outside the process.
+        const reply = goal ? goal.finalReply : turn.assistant;
         const userMessages = turn.user ? [turn.user] : [];
         const completedProcessKey = `${conversationScope ?? 'conversation'}:${turn.renderKey}`;
         const completedProcessExpanded = expandedCompletedProcesses.has(completedProcessKey);
@@ -2947,7 +3075,29 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
                 : <article data-user-event-id={message.event.id} data-conversation-event-id={message.event.id} className="conversation-message user"><MessageAttachments attachments={eventAttachments(message.event)} references={message.event.payload.conversation_references} workspaceReferences={message.event.payload.workspace_references} annotations={eventAnnotations(message.event)} onOpen={onOpenAttachment} onOpenReference={reference => { if (onOpenConversationReference) onOpenConversationReference(reference); else setViewingReference(reference); }} onOpenWorkspaceReference={onOpenWorkspaceReference} onOpenAnnotation={locateAnnotation} conversationName={conversationName} imageUrl={attachmentImageUrl}/>{message.content && <div className="conversation-message-content"><MessageMarkdown>{message.content}</MessageMarkdown></div>}<footer className="conversation-message-meta user">{messageDeliveryStatus && <small className="conversation-message-delivery-status" role="status">{messageDeliveryStatus}</small>}{messageTimestamp && <time dateTime={typeof message.event.payload.timestamp === 'string' ? message.event.payload.timestamp : undefined}>{messageTimestamp}</time>}<div className="conversation-message-actions can-rewrite"><button type="button" className="conversation-message-copy" aria-label={copiedEventId === message.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === message.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(message.event.id, message.content)}>{copiedEventId === message.event.id ? <Check size={13}/> : <Copy size={13}/>}</button><button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(message.event.id); setEditingContent(message.content); }}><Pencil size={13}/></button></div></footer></article>}</div>
             </Fragment>;
           })}
-          {!completionConfirmed && processBlocks.map(block => <ActivityGroup
+          {goal && goal.process.length > 0 && (() => {
+            // The goal's total time starts when the person sent it, not at its first tool call.
+            const times = [turn.user, ...goal.process].map(item => eventTime(item)).filter((time): time is number => time !== undefined);
+            const goalRunning = isCurrent && !failures.length && (goalActive || !goal.finalReply);
+            const goalFinished = Boolean(goal.finalReply) && !goalActive;
+            return <ActivityGroup
+              items={goal.process}
+              active={goalRunning}
+              revealEventIds={revealEventIds}
+              completionConfirmed={goalFinished}
+              paused={isCurrentPaused && goalRunning}
+              parentFailed={parentFailed}
+              startedAt={times.length ? Math.min(...times) : undefined}
+              finishedAt={goal.finalReply ? eventTime(goal.finalReply) : undefined}
+              avatarSlots={avatarSlots}
+              workspaceRoot={workspaceRoot}
+              onOpenSourceLocation={onOpenSourceLocation}
+              display={goalFinished ? 'summary' : 'full'}
+              open={goalFinished ? completedProcessExpanded : undefined}
+              onOpenChange={goalFinished ? setCompletedProcessExpanded : undefined}
+            />;
+          })()}
+          {!goal && !completionConfirmed && processBlocks.map(block => <ActivityGroup
             key={block.id}
             items={block.items}
             active={block.active}
@@ -2961,11 +3111,14 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
             workspaceRoot={workspaceRoot}
             onOpenSourceLocation={onOpenSourceLocation}
           />)}
+          {goal && isCurrent && !failures.length && goalActive && latestGoalStatus && (
+            <CurrentTurnStatus items={[]} requestSubmitting={false} statusOverride={`目标进行中 · 第 ${Math.min(latestGoalStatus.iteration + 1, latestGoalStatus.max_iterations)} / ${latestGoalStatus.max_iterations} 轮，正在核对`}/>
+          )}
           {isCurrent && !turn.assistant && !failures.length && (
             <CurrentTurnStatus items={turn.activity} requestSubmitting={requestSubmitting} statusOverride={pausing ? '正在暂停 Agent' : reconnectingAttempt ? `正在尝试重连（${reconnectingAttempt}/${reconnectingMaxAttempts}）` : rewritePending ? '正在重新思考' : emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} reconnecting={Boolean(reconnectingAttempt)} modelRetryStatus={modelRetryStatus} monitoring={monitoring} connectionState={connectionState}/>
           )}
           {processBlocks.length > 0 && turn.assistant && <div className="conversation-process-divider" role="separator" aria-label="工作过程结束"/>}
-          {completionConfirmed && processBlocks.map(block => <ActivityGroup
+          {!goal && completionConfirmed && processBlocks.map(block => <ActivityGroup
             key={`${block.id}:summary`}
             items={block.items}
             active={false}
@@ -2982,7 +3135,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
             open={completedProcessExpanded}
             onOpenChange={setCompletedProcessExpanded}
           />)}
-          {turn.assistant && <AgentReply event={turn.assistant.event} content={turn.assistant.content} reveal={revealEventIds.has(turn.assistant.event.id)} changes={fileChanges} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile} onReviewChanges={onReviewChanges} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenBrowser={onOpenBrowser} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl} workspaceRoot={workspaceRoot} annotations={turn.assistant.event.payload.collaboration_annotation_ids !== undefined ? eventAnnotations(turn.assistant.event) : turn.user ? eventAnnotations(turn.user.event) : []} onLocateAnnotation={locateAnnotation}/>}
+          {reply && <AgentReply event={reply.event} content={reply.content} reveal={revealEventIds.has(reply.event.id)} changes={fileChanges} onFork={!isGenerating ? () => onFork?.(reply.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile} onReviewChanges={onReviewChanges} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenBrowser={onOpenBrowser} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl} workspaceRoot={workspaceRoot} annotations={reply.event.payload.collaboration_annotation_ids !== undefined ? eventAnnotations(reply.event) : turn.user ? eventAnnotations(turn.user.event) : []} onLocateAnnotation={locateAnnotation}/>}
           {failures.map(item => <ConversationFailure key={item.event.id} item={item} taskControl={taskControl} retryStatus={isLatest ? modelRetryStatus : undefined}/>)}
         </section>;
       })}

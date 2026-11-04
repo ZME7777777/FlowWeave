@@ -491,7 +491,7 @@
 .agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-tool-actions>button:hover{background:#d9e6de!important;color:#245f3c!important}
 .agent-workspace-drawer.tools-open:not(.fullscreen) .agent-workspace-tool-actions>button:focus-visible{outline:2px solid #83aa92;outline-offset:2px}
 
-.agent-workbench-top-actions .agent-workspace-new-tab-trigger{width:26px;min-width:26px;height:26px;min-height:26px;flex:0 0 26px;padding:0}.agent-workbench-top-actions .agent-workspace-new-tab-trigger.has-tabs{position:relative}.agent-workbench-top-actions .agent-workspace-new-tab-trigger.has-tabs>span{position:absolute;right:-4px;bottom:-4px;min-width:13px;height:13px;border:1px solid #d1ddd5;border-radius:3px;background:#fff;padding:0 2px;color:#2e5a40;font:700 8px/13px 'DM Mono',ui-monospace,monospace;text-align:center}
+.agent-workbench-top-actions .agent-workspace-new-tab-trigger{width:26px;min-width:26px;height:26px;min-height:26px;flex:0 0 26px;padding:0}.agent-workbench-top-actions .agent-workspace-new-tab-trigger.has-tabs>b{font:700 12px/1 'DM Mono',ui-monospace,monospace;letter-spacing:-.02em}
 
 
 /* Title editing shares the header's right-side action clearance. */
@@ -756,3 +756,35 @@
 .scenario-space .agent-workbench-page.agent-workbench-embedded>.agent-workbench-main{grid-column:1;grid-row:1;min-width:0}
 .scenario-space .agent-workbench-page.agent-workbench-embedded>.agent-workspace-drawer{grid-column:2;grid-row:1}
 .scenario-space .agent-workbench-page.agent-workbench-embedded>.agent-workspace-drawer.fullscreen{grid-column:1 / -1}
+
+/* 图片预览：舞台容器承载左右切换与底部工具条，视口本身仍负责缩放/拖动 */
+.agent-image-preview-stage{position:relative;display:grid;min-width:0;min-height:0}
+.agent-image-preview-stage>.agent-image-preview-viewport{min-height:0}
+.agent-image-nav{position:absolute;top:50%;z-index:2;display:grid;width:38px;height:38px;place-items:center;border:1px solid #d3ddd6;border-radius:50%;background:#ffffffee;color:#3d6a50;box-shadow:0 4px 14px #10201926;transform:translateY(-50%);transition:background .15s,color .15s,box-shadow .15s}
+.agent-image-nav.prev{left:14px}.agent-image-nav.next{right:14px}
+.agent-image-nav:hover{background:#fff;color:#216743;box-shadow:0 6px 18px #10201933}
+.agent-image-nav:focus-visible{outline:2px solid #78a98e;outline-offset:2px}
+.agent-image-toolbar{position:absolute;bottom:14px;left:50%;z-index:2;display:inline-flex;align-items:center;gap:2px;border:1px solid #d3ddd6;border-radius:999px;background:#ffffffee;padding:3px;box-shadow:0 4px 14px #10201926;transform:translateX(-50%)}
+.agent-image-toolbar button{display:grid;min-width:28px;height:28px;place-items:center;border:0;border-radius:999px;background:transparent;padding:0 6px;color:#3d6a50;font-size:11px}
+.agent-image-toolbar button:hover:not(:disabled){background:#eaf2ec}
+.agent-image-toolbar button:disabled{color:#b3c0b7;cursor:default}
+.agent-image-toolbar .scale{min-width:46px;font-variant-numeric:tabular-nums}
+.agent-image-toolbar .count{padding:0 10px 0 8px;border-left:1px solid #e1e8e3;margin-left:2px;color:#6b7b71;font-size:11px;font-variant-numeric:tabular-nums}
+@media(prefers-reduced-motion:reduce){.agent-image-nav{transition:none}}
+
+/* 预览期间手势只作用于预览：不把滚动或两指横滑传给页面（避免触发浏览器后退/页面缩放） */
+.agent-file-preview-backdrop,.agent-file-preview-dialog{overscroll-behavior:contain;touch-action:none}
+.agent-file-preview-dialog-content{touch-action:auto}
+.agent-image-preview-viewport{overscroll-behavior:contain}
+.agent-workbench-app-shell.conversation-rail-collapsed:has(>.agent-workspace-drawer.fullscreen){grid-template-columns:52px 0 minmax(0,1fr)}
+.agent-file-tree-item.directory:has(>.agent-file-tree-branch){display:flex!important;align-items:center}
+.agent-file-tree-item.directory:has(>.agent-file-tree-branch)>svg:first-child{flex:0 0 auto}
+.agent-file-tree-item.directory:has(>.agent-file-tree-branch)>span{flex:0 1 auto;min-width:24px}
+.agent-file-tree-item>.agent-file-tree-branch{display:inline-flex;flex:0 1 auto;min-width:0;align-items:center;gap:3px;border-radius:999px;background:#e8f1eb;padding:0 7px;color:#286140;font-size:10px;font-weight:600;font-style:normal;line-height:16px;white-space:nowrap}
+.agent-file-tree-item>.agent-file-tree-branch svg{flex:0 0 auto}
+.agent-file-tree-item>.agent-file-tree-branch>span{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.agent-workbench-app-shell:has(>.agent-workspace-drawer.fullscreen:not(.conversation-active)){grid-template-columns:minmax(0,1fr)!important;grid-template-rows:minmax(0,1fr)!important}
+.agent-workbench-app-shell:has(>.agent-workspace-drawer.fullscreen:not(.conversation-active))>:is(.agent-workbench-app-nav,.agent-workbench-rail){display:none!important}
+.agent-workbench-app-shell>.agent-workspace-drawer.fullscreen:not(.conversation-active){grid-column:1 / -1!important;grid-row:1!important}
+.agent-workspace-drawer.fullscreen .agent-workspace-files.fullscreen-git.file-tree-collapsed{grid-template-columns:0 8px minmax(0,1fr)}
+@media(max-width:960px){.agent-workspace-drawer.fullscreen .agent-workspace-files.fullscreen-git.file-tree-collapsed{grid-template-columns:0 8px minmax(0,1fr)}}

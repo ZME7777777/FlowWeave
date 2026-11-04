@@ -951,6 +951,7 @@ class CaseControlPlanWrite(ApiModel):
         "STOP_EXECUTION",
         "RERUN_STEPWISE_NODE",
         "COPY_CONTINUOUS_EXECUTION",
+        "COPY_STEPWISE_EXECUTION",
         "ADVANCE_CASE_STAGE",
         "COMPLETE_CASE",
     ]
@@ -967,6 +968,18 @@ class CaseControlConversationWrite(ApiModel):
     reasoning_effort: str | None = Field(default=None, max_length=30)
     capability_version_ids: list[str] = Field(default_factory=list, max_length=100)
     credential_ids: list[str] = Field(default_factory=list, max_length=100)
+
+
+class CaseStartWrite(ApiModel):
+    """The single Case start request: wake the coordinator with a start event.
+
+    ``session`` decides whether the request is appended to the current coordinator conversation
+    or opens a fresh coordination round. The platform never launches a stage itself.
+    """
+
+    session: Literal["CURRENT", "NEW"] = "CURRENT"
+    note: str = Field(default="", max_length=2_000)
+    expected_row_version: int = Field(ge=1)
 
 
 class CaseSessionConfigWrite(CaseControlConversationWrite):

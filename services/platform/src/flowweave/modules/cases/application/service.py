@@ -52,6 +52,7 @@ from flowweave.shared.schemas import (
     CaseStageFlowRunWrite,
     CaseStageLaunchWrite,
     CaseStageStateWrite,
+    CaseStartWrite,
     CaseUpdateWrite,
     NodeRunCopyWrite,
     RejectWrite,
@@ -952,7 +953,7 @@ def list_case_stage_templates(db: Session, case_id: str) -> list[dict[str, Any]]
             if run.parent_flow_run_id is None:
                 continue
             try:
-                readiness = orchestration.validate_stepwise_record_template(db, run.id)
+                readiness = _validate_stepwise_template_structure(db, run.id)
             except DomainError:
                 continue
             templates.append(
@@ -1003,7 +1004,7 @@ def bind_case_stage_flow_run(
     if payload.execution_mode == "STEPWISE":
         if run.parent_flow_run_id is None:
             raise conflict("Case stepwise templates must be existing stepwise run records")
-        orchestration.validate_stepwise_record_template(db, run.id)
+        _validate_stepwise_template_structure(db, run.id)
     if stage.flow_run_id and stage.flow_run_id != run.id:
         raise conflict("Case stage is already bound to a FlowRun", flow_run_id=stage.flow_run_id)
     stage.flow_run_id = run.id
@@ -1039,7 +1040,7 @@ def launch_case_stage(
             raise conflict(
                 "Case stepwise template is not a stepwise record", flow_run_id=template.id
             )
-        orchestration.validate_stepwise_record_template(db, template.id)
+        _validate_stepwise_template_structure(db, template.id)
         execution = orchestration.copy_nested_stepwise_run_record(
             db,
             template.parent_flow_run_id,
@@ -1362,6 +1363,33 @@ def _create_case_control_plan(
     return _control_plan_dict(plan)
 
 
+def _plan_snapshot(plan: CaseControlPlan) -> dict[str, Any]:
+    """Plain copy of a plan row, usable after a rollback expires or removes the ORM object."""
+
+    columns = CaseControlPlan.__table__.columns.keys()
+    return {name: getattr(plan, name) for name in columns}
+
+
+def _restore_plan_after_rollback(
+    db: Session, plan: CaseControlPlan, snapshot: dict[str, Any]
+) -> CaseControlPlan:
+    """Return a live plan row, re-inserting it when the session rollback removed it."""
+
+    try:
+        db.refresh(plan)
+        return plan
+    except Exception:
+        # ObjectDeletedError / InvalidRequestError: the row did not survive the rollback.
+        try:
+            db.expunge(plan)
+        except Exception:  # noqa: BLE001 - already detached
+            pass
+        restored = CaseControlPlan(**snapshot)
+        db.add(restored)
+        db.flush()
+        return restored
+
+
 def execute_case_control_plan(db: Session, case_id: str, plan_id: str) -> dict[str, Any]:
     """Validate and dispatch one Case plan through established orchestration services."""
 
@@ -1381,14 +1409,30 @@ def execute_case_control_plan(db: Session, case_id: str, plan_id: str) -> dict[s
     if plan.state == "EXECUTING":
         raise conflict("Case control plan is already executing", plan_id=plan.id)
     require_case_action(item, plan.action)
+    plan_snapshot = _plan_snapshot(plan)
     stage = _stage(db, item, plan.stage_id)
     allowed_stage_state = (
         "REVIEW_PENDING"
-        if plan.action in {"COPY_CONTINUOUS_EXECUTION", "ADVANCE_CASE_STAGE", "COMPLETE_CASE"}
+        if plan.action
+        in {
+            "COPY_CONTINUOUS_EXECUTION",
+            "COPY_STEPWISE_EXECUTION",
+            "ADVANCE_CASE_STAGE",
+            "COMPLETE_CASE",
+        }
         else "ACTIVE"
     )
     if stage.state != allowed_stage_state:
-        raise conflict("Case plan does not match the current stage state", state=stage.state)
+        # Versions can match here, so this is a precondition failure, not a concurrent edit.
+        # Report it as such, otherwise the coordinator keeps re-reading and waiting for a version
+        # change that can never make the stage ready.
+        raise DomainError(
+            "CASE_STAGE_STATE_NOT_READY",
+            f"{plan.action} 需要阶段处于 {allowed_stage_state}，当前为 {stage.state}；"
+            "这不是并发冲突，重新读取不会改变结果。请先让流程跑到可评审状态。",
+            409,
+            {"required_stage_state": allowed_stage_state, "stage_state": stage.state},
+        )
     db.refresh(item, with_for_update=True)
     db.refresh(stage)
     require_case_action(item, plan.action)
@@ -1535,6 +1579,29 @@ def execute_case_control_plan(db: Session, case_id: str, plan_id: str) -> dict[s
                     "source_execution_flow_run_id": source_run_id,
                     "execution_flow_run_id": copied_id,
                 }
+        elif plan.action == "COPY_STEPWISE_EXECUTION":
+            source_run_id = stage.current_execution_flow_run_id
+            source_run = db.get(FlowRun, source_run_id) if source_run_id else None
+            if source_run is None or source_run.parent_flow_run_id is None:
+                raise conflict("Case stage has no stepwise execution record", stage_id=stage.id)
+            requested = plan.input_snapshot_json.get("requested", {})
+            with savepoint(db):
+                copied = orchestration.copy_nested_stepwise_run_record(
+                    db,
+                    source_run.parent_flow_run_id,
+                    source_run.id,
+                    StepwiseRunRecordCopyWrite(name=requested.get("copy_name")),
+                )
+                copied_id = str(copied["id"])
+                stage.current_execution_flow_run_id = copied_id
+                stage.state = "ACTIVE"
+                db.add(CaseFlowRun(case_id=item.id, flow_run_id=copied_id))
+                item.row_version += 1
+                db.flush()
+                result = {
+                    "source_execution_flow_run_id": source_run.id,
+                    "execution_flow_run_id": copied_id,
+                }
         elif plan.action == "ADVANCE_CASE_STAGE":
             next_stage = db.scalar(
                 select(CaseStage)
@@ -1578,6 +1645,10 @@ def execute_case_control_plan(db: Session, case_id: str, plan_id: str) -> dict[s
         else:
             raise illegal("Case control plan action is not yet dispatchable", action=plan.action)
     except Exception as exc:
+        # An orchestration command may roll the session back to report a stale version. That also
+        # discards a plan row created in the same transaction, so restore it before recording the
+        # failure; otherwise the handler itself crashes (ObjectDeletedError) and hides the cause.
+        plan = _restore_plan_after_rollback(db, plan, plan_snapshot)
         plan.state = "FAILED"
         plan.error_code = str(getattr(exc, "code", "CASE_CONTROL_PLAN_FAILED"))
         plan.result_json = {"code": plan.error_code}
@@ -1637,6 +1708,7 @@ def retry_case_control_plan(db: Session, case_id: str, plan_id: str) -> dict[str
         "START_STEPWISE_NODE",
         "STOP_EXECUTION",
         "COPY_CONTINUOUS_EXECUTION",
+        "COPY_STEPWISE_EXECUTION",
         "ADVANCE_CASE_STAGE",
         "COMPLETE_CASE",
     }:
@@ -2035,6 +2107,67 @@ def execute_case_decision_proposal(db: Session, case_id: str, proposal_id: str) 
     return _proposal_dict(proposal)
 
 
+def request_case_start(
+    db: Session, case_id: str, payload: CaseStartWrite, idempotency_key: str
+) -> dict[str, Any]:
+    """Raise the one start event for a Case; the coordinator Agent decides everything else.
+
+    The platform neither copies nor launches a stage. A replayed key returns the same Case.
+    """
+
+    from flowweave.modules.cases.application.coordination import reserve_control_round
+    from flowweave.modules.cases.application.feedback import record_case_change
+
+    if not idempotency_key.strip() or len(idempotency_key) > 120:
+        raise DomainError("CASE_START_KEY_INVALID", "启动请求标识长度应为 1–120", 422)
+    item = _case(db, case_id, lock=True)
+    if item.row_version != payload.expected_row_version:
+        raise conflict(
+            "case was modified", expected=payload.expected_row_version, actual=item.row_version
+        )
+    require_case_action(item, "START_AGENT")
+    saved = item.session_config_json or {}
+    if not saved.get("model_provider_id") or not saved.get("model_name"):
+        raise DomainError("CASE_AGENT_CONFIG_REQUIRED", "请先保存 Agent 配置", 409)
+    stages = list(
+        db.scalars(
+            select(CaseStage)
+            .where(CaseStage.case_id == item.id)
+            .order_by(CaseStage.position, CaseStage.id)
+        )
+    )
+    validate_case_start_path(db, stages)
+    has_session = bool(item.control_conversation_binding_id)
+    if payload.session == "NEW" or not has_session:
+        # A fresh round freezes the current Case snapshot, including this start request, in its
+        # first message, so it is itself the start event.
+        return reserve_control_round(
+            db, case_id, CaseControlConversationWrite.model_validate(saved), idempotency_key
+        )
+    recorded = record_case_change(
+        db, item, "CASE_START_REQUESTED", request_key=f"{idempotency_key}:{payload.note[:40]}"
+    )
+    if not recorded:
+        raise DomainError("CASE_AGENT_NOT_READY", "协调会话尚未就绪，请稍后再试", 409)
+    item.row_version += 1
+    finish(db)
+    return _case_dict(db, item)
+
+
+def _validate_stepwise_template_structure(db: Session, run_id: str) -> dict[str, Any]:
+    """A stage template only has to be a valid stepwise record with a resolvable start node.
+
+    Node drafts are intentionally not required: the coordinator Agent configures them on the
+    execution copy from the Case materials before it starts anything.
+    """
+
+    readiness = orchestration.stepwise_record_template_readiness(db, run_id)
+    return {
+        "start_node_key": readiness["start_node_key"],
+        "reachable_node_keys": readiness["reachable_node_keys"],
+    }
+
+
 def validate_case_start_path(db: Session, stages: list[CaseStage]) -> None:
     if not stages or any(not stage.flow_run_id for stage in stages):
         raise DomainError("CASE_PATH_INCOMPLETE", "请先配置完整的 Case 路径", 409)
@@ -2045,7 +2178,7 @@ def validate_case_start_path(db: Session, stages: list[CaseStage]) -> None:
         if stage.execution_mode == "STEPWISE":
             if template.run_mode != "MANUAL" or not template.parent_flow_run_id:
                 raise DomainError("CASE_TEMPLATE_UNAVAILABLE", "逐步流程模板不可用", 409)
-            orchestration.validate_stepwise_record_template(db, template.id)
+            _validate_stepwise_template_structure(db, template.id)
         else:
             plan = template.automation_plan_json or {}
             if (

@@ -140,8 +140,8 @@ def test_reference_metadata_cannot_disclose_another_users_conversation(persisted
         g.db, workspace, g.first.id, None, None
     )
     assert own["source_binding_id"] == g.first.id
-    assert own["history_tool"] == "platform_conversation_history"
-    assert own["resolved_content"] == "user: 来源内容"
+    assert own["history_tool"] == "read_referenced_conversation"
+    assert "resolved_content" not in own
     with pytest.raises(DomainError) as caught:
         conversations._resolve_source_conversation_reference(
             g.db, workspace, g.other_source.id, None, None

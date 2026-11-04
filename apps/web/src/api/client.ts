@@ -579,6 +579,8 @@ export const api = {
     request<AgentPendingConfirmation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/pending-confirmation`),
   decideAgentConfirmation: (workspaceId: string, bindingId: string, expected_pending_digest: string, accept: boolean, reason: string) =>
     request<{ accepted: boolean; cursor?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/pending-confirmation/decision`, json('POST', { expected_pending_digest, accept, reason })),
+  cancelAgentConversationBootstrap: (workspaceId: string, submissionId: string) =>
+    request<{ cancelled: boolean }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-bootstraps/${encodeURIComponent(submissionId)}/cancel`, json('POST', {})),
   cancelAgentMessageSubmission: (workspaceId: string, bindingId: string, submissionId: string) =>
     request<{ cancelled: boolean }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/messages/${encodeURIComponent(submissionId)}/cancel`, json('POST', {})),
   sendAgentMessage: (workspaceId: string, bindingId: string, content: string, attachments: AgentAttachment[] = [], references: AgentConversationReference[] = [], workspace_references: AgentWorkspaceReference[] = [], annotations: AgentConversationAnnotation[] = [], idempotencyKey?: string) =>
@@ -651,12 +653,10 @@ export const api = {
     request<Case>(`/cases/${encodeURIComponent(caseId)}/stages/${encodeURIComponent(stageId)}/state`, json('PUT', { expected_case_row_version, state })),
   bindCaseStageFlowRun: (caseId: string, stageId: string, flow_run_id: string, execution_mode: 'STEPWISE' | 'CONTINUOUS') =>
     request<Case>(`/cases/${encodeURIComponent(caseId)}/stages/${encodeURIComponent(stageId)}/flow-run`, json('PUT', { flow_run_id, execution_mode })),
-  launchCaseStage: (caseId: string, stageId: string, name?: string) =>
-    request<Case>(`/cases/${encodeURIComponent(caseId)}/stages/${encodeURIComponent(stageId)}/launch`, json('POST', { name })),
+  startCase: (caseId: string, body: { session: 'CURRENT' | 'NEW'; note?: string; expected_row_version: number }, idempotencyKey: string) =>
+    request<Case>(`/cases/${encodeURIComponent(caseId)}/start`, json('POST', body, idempotencyKey)),
   rerunCaseStage: (caseId: string, stageId: string) =>
     request<Case>(`/cases/${encodeURIComponent(caseId)}/stages/${encodeURIComponent(stageId)}/rerun`, json('POST')),
-  startCaseStageExecution: (caseId: string, stageId: string, reason = '启动当前事项阶段执行副本') =>
-    request<import('../types').CaseDecisionProposal>(`/cases/${encodeURIComponent(caseId)}/stages/${encodeURIComponent(stageId)}/execution/start`, json('POST', { reason })),
   executeCaseControlPlan: (caseId: string, planId: string) =>
     request<import('../types').CaseControlPlan>(`/cases/${encodeURIComponent(caseId)}/control-plans/${encodeURIComponent(planId)}/execute`, json('POST')),
   retryCaseControlPlan: (caseId: string, planId: string) =>

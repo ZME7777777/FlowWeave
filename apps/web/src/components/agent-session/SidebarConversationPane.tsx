@@ -130,6 +130,9 @@ export function SidebarConversationPane({ workspaceId, sourceBindingId, sidebarB
   const [pendingAttachments, setPendingAttachments] = useState<PendingSidebarAttachment[]>([]);
   const [error, setError] = useState<string>();
   const [sending, setSending] = useState(false);
+  // The message being submitted: kept so a cancelled send can return to the composer.
+  const submission = useRef<{ id: string; bindingId?: string; message: string; attachments: AgentAttachment[]; reference?: AgentConversationReference; cancelled: boolean } | undefined>(undefined);
+  const [cancelling, setCancelling] = useState(false);
   const [condensing, setCondensing] = useState(false);
   const [optimisticMessage, setOptimisticMessage] = useState<OpenHandsConversationEvent>();
   const [selectedModelKey, setSelectedModelKey] = useState<string>();
@@ -216,6 +219,7 @@ export function SidebarConversationPane({ workspaceId, sourceBindingId, sidebarB
     const message = composerInput.current?.value().trim() ?? content.trim();
     if ((!message && !attachments.length) || sending || pendingAttachments.length > 0 || !selectedModel || expired || running) return;
     const submissionId = randomId();
+    submission.current = { id: submissionId, bindingId, message, attachments, reference, cancelled: false };
     setSending(true);
     setError(undefined);
     setOptimisticMessage({ id: submissionId, event_type: 'MESSAGE', payload: { source: 'user', content: message, attachments, conversation_references: reference ? [reference] : [], _flowweave_submission_id: submissionId, _flowweave_projection_state: 'submitting' } });
@@ -248,11 +252,42 @@ export function SidebarConversationPane({ workspaceId, sourceBindingId, sidebarB
       }
     } catch (reason) {
       setOptimisticMessage(undefined);
+      if (reason instanceof ApiError && reason.code === 'AGENT_MESSAGE_CANCELLED') {
+        // Same restore as the main conversation: the text, attachments and the
+        // quoted reference go back to the composer instead of being lost.
+        const restored = submission.current;
+        if (restored) {
+          setContent(restored.message);
+          composerInput.current?.replace(restored.message);
+          setAttachments(restored.attachments);
+          setReference(restored.reference);
+          persistDraft({ content: restored.message, reference: restored.reference });
+        }
+        return;
+      }
       if (reason instanceof ApiError && reason.code === 'AGENT_SIDEBAR_CONVERSATION_EXPIRED') markExpired();
       setError(reason instanceof Error ? reason.message : '侧边聊天暂时不可用');
     } finally {
+      submission.current = undefined;
+      setCancelling(false);
       setSending(false);
     }
+  };
+  const cancelSend = async () => {
+    const current = submission.current;
+    if (!current || cancelling) return;
+    setCancelling(true);
+    try {
+      const result = current.bindingId
+        ? await api.cancelAgentMessageSubmission(workspaceId, current.bindingId, current.id)
+        : await api.cancelAgentConversationBootstrap(workspaceId, draftConversationId);
+      current.cancelled = result.cancelled;
+      // A send already delivered cannot be retracted: fall back to a formal pause.
+      if (!result.cancelled && current.bindingId) await api.interruptAgentConversation(workspaceId, current.bindingId);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '取消发送失败');
+    }
+    setCancelling(false);
   };
   const condense = async () => {
     if (!bindingId || !canCondense) return;
@@ -375,8 +410,8 @@ export function SidebarConversationPane({ workspaceId, sourceBindingId, sidebarB
   }, [persistDraft]);
   return <section className="agent-sidebar-conversation" aria-label="侧边聊天">
     <div className="agent-sidebar-chat-content">
-      {hydrationQuery.isLoading && bindingId ? <div className="conversation-surface-empty"><LoaderCircle className="conversation-activity-spin" size={16}/><b>正在加载会话</b></div>
-        : bindingId ? <ConversationSurface events={events} isGenerating={running || sending} isPaused={paused} conversationScope={bindingId} requestSubmitting={sending} condensationPending={condensing} onOpenAttachment={attachment => onPreviewAttachment(attachment, bindingId)} onOpenConversationReference={onOpenConversationReference} taskControl={hydrationQuery.data?.events.task_control} monitoring={hydrationQuery.data?.events.monitoring} connectionState={hydrationQuery.isError ? 'unavailable' : hydrationQuery.isFetching && !hydrationQuery.data ? 'checking' : 'connected'}/>
+      {hydrationQuery.isLoading && bindingId && !optimisticMessage ? <div className="conversation-surface-empty"><LoaderCircle className="conversation-activity-spin" size={16}/><b>正在加载会话</b></div>
+        : bindingId || optimisticMessage ? <ConversationSurface events={events} isGenerating={running || sending} isPaused={paused} conversationScope={bindingId ?? draftConversationId} requestSubmitting={sending} condensationPending={condensing} onOpenAttachment={attachment => onPreviewAttachment(attachment, bindingId)} onOpenConversationReference={onOpenConversationReference} taskControl={hydrationQuery.data?.events.task_control} monitoring={hydrationQuery.data?.events.monitoring} connectionState={hydrationQuery.isError ? 'unavailable' : hydrationQuery.isFetching && !hydrationQuery.data ? 'checking' : 'connected'}/>
           : <div className="agent-workbench-empty"><MessageSquarePlus size={28}/><b>向主会话追问</b><span>这是临时聊天：关闭后会删除，最长保留一小时。</span></div>}
       {expired && <section className="agent-sidebar-expired" role="status"><Clock3 size={16}/><span>侧边聊天会话已过期。已显示的内容仍可阅读，但不能继续发送消息。</span></section>}
       {error && <section className="agent-workbench-error" role="alert"><CircleAlert size={17}/><div><b>操作未完成</b><span>{error}</span></div></section>}
@@ -393,7 +428,7 @@ export function SidebarConversationPane({ workspaceId, sourceBindingId, sidebarB
           event.preventDefault();
           files.forEach(startAttachmentUpload);
         }} onDropFiles={files => files.forEach(startAttachmentUpload)} onDropConversationReference={transfer => addConversationReference(transfer)} onSubmit={() => void send()} onDirectSubmit={() => void send()} onNativeAction={action => { if (action === 'CONDENSE') void condense(); }}/>
-        <footer><div className="agent-composer-context"><input ref={attachmentInput} aria-label="上传侧边聊天附件" type="file" multiple hidden onChange={event => { Array.from(event.currentTarget.files ?? []).forEach(startAttachmentUpload); event.currentTarget.value = ''; }}/><button type="button" aria-label="添加附件" disabled={composerDisabled} onClick={() => attachmentInput.current?.click()}><Plus size={17}/></button></div><div className="agent-composer-actions"><ComposerModelMenu providers={connectedProviders} providerId={currentModel?.providerId ?? ''} modelName={currentModel?.modelName ?? ''} models={availableModels} efforts={efforts} effort={currentModel?.reasoningEffort ?? ''} disabled={composerDisabled || pendingAttachments.length > 0} onProviderChange={providerId => { const nextProvider = connectedProviders.find(item => item.id === providerId); const nextModel = nextProvider?.models.find(item => item.enabled && item.is_default) ?? nextProvider?.models.find(item => item.enabled); if (nextModel) { if (bindingId) void updateModel(providerId, nextModel.model_name, nextModel.default_reasoning_effort ?? null); else setSelectedModelKey(`${providerId}:${nextModel.model_name}`); } }} onModelChange={modelName => { const model = availableModels.find(item => item.model_name === modelName); if (bindingId && currentModel) void updateModel(currentModel.providerId, modelName, model?.default_reasoning_effort ?? null); else if (currentModel) setSelectedModelKey(`${currentModel.providerId}:${modelName}`); }} onEffortChange={effort => { if (bindingId && currentModel) void updateModel(currentModel.providerId, currentModel.modelName, effort || null); }}/><button type="button" className={`agent-send${composerControl?.action === 'resume' ? ' resume' : ''}`} aria-label={composerControl?.label ?? '发送侧边聊天消息'} disabled={composerControl ? sending || expired : (!content.trim() && !attachments.length) || composerDisabled || pendingAttachments.length > 0} onClick={() => { if (composerControl) void control(); else void send(); }}>{composerControl?.action === 'interrupt' ? <Square size={10} fill="currentColor"/> : composerControl?.action === 'resume' ? <Play size={12} fill="currentColor"/> : sending ? <LoaderCircle className="conversation-activity-spin" size={15}/> : <Send size={16}/>}</button></div></footer>
+        <footer><div className="agent-composer-context"><input ref={attachmentInput} aria-label="上传侧边聊天附件" type="file" multiple hidden onChange={event => { Array.from(event.currentTarget.files ?? []).forEach(startAttachmentUpload); event.currentTarget.value = ''; }}/><button type="button" aria-label="添加附件" disabled={composerDisabled} onClick={() => attachmentInput.current?.click()}><Plus size={17}/></button></div><div className="agent-composer-actions"><ComposerModelMenu providers={connectedProviders} providerId={currentModel?.providerId ?? ''} modelName={currentModel?.modelName ?? ''} models={availableModels} efforts={efforts} effort={currentModel?.reasoningEffort ?? ''} disabled={composerDisabled || pendingAttachments.length > 0} onProviderChange={providerId => { const nextProvider = connectedProviders.find(item => item.id === providerId); const nextModel = nextProvider?.models.find(item => item.enabled && item.is_default) ?? nextProvider?.models.find(item => item.enabled); if (nextModel) { if (bindingId) void updateModel(providerId, nextModel.model_name, nextModel.default_reasoning_effort ?? null); else setSelectedModelKey(`${providerId}:${nextModel.model_name}`); } }} onModelChange={modelName => { const model = availableModels.find(item => item.model_name === modelName); if (bindingId && currentModel) void updateModel(currentModel.providerId, modelName, model?.default_reasoning_effort ?? null); else if (currentModel) setSelectedModelKey(`${currentModel.providerId}:${modelName}`); }} onEffortChange={effort => { if (bindingId && currentModel) void updateModel(currentModel.providerId, currentModel.modelName, effort || null); }}/><button type="button" className={`agent-send${composerControl?.action === 'resume' ? ' resume' : ''}`} aria-label={sending ? (cancelling ? '正在取消发送' : '取消发送') : composerControl?.label ?? '发送侧边聊天消息'} disabled={sending ? cancelling || expired : composerControl ? expired : (!content.trim() && !attachments.length) || composerDisabled || pendingAttachments.length > 0} onClick={() => { if (sending) void cancelSend(); else if (composerControl) void control(); else void send(); }}>{sending || composerControl?.action === 'interrupt' ? <Square size={10} fill="currentColor"/> : composerControl?.action === 'resume' ? <Play size={12} fill="currentColor"/> : <Send size={16}/>}</button></div></footer>
       </div>
       <div className="agent-sidebar-composer-bottom" aria-hidden="true"/>
     </div>

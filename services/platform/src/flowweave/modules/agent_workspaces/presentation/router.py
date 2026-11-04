@@ -1444,6 +1444,16 @@ async def create_agent_sidebar_conversation(
     )
 
 
+@router.post("/agent-workspaces/{workspace_id}/conversation-bootstraps/{submission_id}/cancel")
+async def cancel_agent_conversation_bootstrap(
+    workspace_id: str, submission_id: str, db: Db
+) -> dict[str, bool]:
+    return await run_sync(
+        db,
+        lambda session: conversations.cancel_bootstrap(session, workspace_id, submission_id),
+    )
+
+
 @router.get("/agent-workspaces/{workspace_id}/sidebars/{binding_id}")
 async def get_agent_sidebar_conversation(
     workspace_id: str, binding_id: str, db: Db

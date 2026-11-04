@@ -675,49 +675,55 @@ section.modal.hook-editor>header{padding:30px 24px 10px!important}
   .login-panel .login-security{margin-top:26px;font-size:10px}
 }
 
-/* Treat the account trigger and its menu as one continuous dropdown. */
+/* Keep account identity and platform settings in the topbar's dark surface. */
 .account-menu>.account-trigger[aria-expanded=true]{
   position:relative;
   z-index:2;
-  border-color:transparent;
-  border-bottom-color:#e5ebe7;
+  border-color:#ffffff2a;
+  border-bottom-color:transparent;
   border-radius:8px 8px 0 0;
-  background:#fff;
-  background-clip:padding-box;
-  color:var(--ink);
+  background:#ffffff0d;
+  color:#fff;
   box-shadow:none;
 }
-.account-menu>.account-trigger[aria-expanded=true] .account-avatar{background:#e7efe9;color:var(--green)}
-.account-menu>.account-trigger[aria-expanded=true] .account-identity small{color:var(--muted)}
-.account-menu>.account-trigger[aria-expanded=true]>svg{color:var(--green)}
+.account-menu>.account-trigger[aria-expanded=true] .account-avatar{background:#d8f25618;color:var(--lime)}
+.account-menu>.account-trigger[aria-expanded=true] .account-identity small{color:#91a099}
+.account-menu>.account-trigger[aria-expanded=true]>svg{color:#cfe0d5}
 .account-popover{
   z-index:1;
-  top:calc(50% - 20px);
   overflow:hidden;
-  border-color:#cfd9d2;
-  border-radius:9px;
-  background:#fff;
+  border-color:#ffffff2a;
+  border-radius:0 0 9px 9px;
+  background:var(--dark);
   padding:5px;
-  box-shadow:0 18px 38px #08150f38;
+  box-shadow:0 18px 38px #08150f52;
   transform-origin:top right;
-  animation:account-popover-open .14s ease-out;
 }
 .account-popover .account-popover-heading{
   min-height:24px;
   display:flex;
   align-items:center;
   margin:0 3px 4px;
-  border-bottom:1px solid #e5ebe7;
+  border-bottom:1px solid #ffffff18;
   background:transparent;
   padding:2px 6px 6px;
-  color:#7b8981;
+  color:#91a099;
 }
 .account-popover .account-popover-heading>svg{display:none}
 .account-popover .account-popover-heading b{font-size:8px;letter-spacing:.9px}
+.account-popover.settings-popover>button{color:#cfe0d5}
+.account-popover.settings-popover>button:hover,.account-popover.settings-popover>button.active{background:#ffffff10;color:#fff}
+.account-popover .settings-item-icon{background:#ffffff12;color:#cfe0d5}
+.account-popover.settings-popover>button.active .settings-item-icon{background:var(--lime);color:#10281c}
+.account-popover.settings-popover>.account-logout{border-top-color:#ffffff18;color:#e8a5a5}
+.account-popover.settings-popover>.account-logout:hover{background:#ffffff10;color:#ffd0d0}
+.account-popover .account-logout .settings-item-icon{background:#a744441f;color:#efb0b0}
+/* Account menu: revealed downward from the trigger edge; no opacity change, so it never flashes. */
 @keyframes account-popover-open{
-  from{opacity:0}
-  to{opacity:1}
+  from{clip-path:inset(0 0 100% 0)}
+  to{clip-path:inset(0 0 0 0)}
 }
+.account-popover{animation:account-popover-open .2s cubic-bezier(.22,.8,.3,1) both}
 @media(prefers-reduced-motion:reduce){
   .account-popover{animation:none}
 }

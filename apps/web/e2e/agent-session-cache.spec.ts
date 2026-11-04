@@ -1449,20 +1449,584 @@ test('Sidebar chat tabs stay isolated to their source conversation', async ({ pa
   await page.getByRole('button', { name: '侧边聊天会话 B', exact: true }).click();
   await page.getByRole('button', { name: '侧边聊天会话 A', exact: true }).click();
   await expect(page.locator('.agent-workspace-drawer')).toHaveClass(/summary-open/);
-  await page.getByRole('button', { name: '显示工作区工具', exact: true }).click();
+  await page.locator('.agent-workspace-new-tab-trigger.has-tabs').click();
   await expect(pane).toBeVisible();
   await expect(tabs).toHaveCount(count);
   // The conversation switch may remount its own pane; the hide operation
   // itself must preserve the current composer and active tab.
   await draft.fill('隐藏期间保留，不创建新聊天');
   await page.getByLabel('隐藏工作区工具').click();
-  await page.getByRole('button', { name: '显示工作区工具', exact: true }).click();
+  await page.locator('.agent-workspace-new-tab-trigger.has-tabs').click();
   await expect(draft).toHaveValue('隐藏期间保留，不创建新聊天');
   await expect(page.locator('.agent-workspace-tabs > div.active')).toContainText('侧边聊天');
   await page.getByRole('button', { name: '关闭侧边聊天页签', exact: true }).click();
   await expect(pane).toHaveCount(0);
 });
 
+
+test('Workspace top bar shows one button that is "+" without tabs and the tab count with tabs', async ({ page }) => {
+  let authenticated = false;
+  const workspace = { id: 'tab-count-workspace', display_name: '页签计数工作区', desired_state: 'RUNNING', updated_at: now };
+  const conversation = { id: 'tab-count-conversation', display_title: '页签计数会话', title_state: 'MANUAL', lifecycle: 'ACTIVE', streaming_callback_ready: true, write_available: true, execution_status: 'idle', created_at: now, updated_at: now };
+  const hydration = { events: { events: [], next_cursor: null, history_cursor: null, result: { status: 'COMPLETED' } }, context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 0, usage_current: true }, readiness: { ready: true, execution_status: 'idle' } };
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return authenticated ? json(route, user) : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [conversation], next_cursor: null });
+    if (path.endsWith('/model-providers')) return json(route, [{ id: 'test-provider', name: '测试模型', connection_state: 'CONNECTED', models: [{ model_name: 'test-model', enabled: true, is_default: true }] }]);
+    if (path.endsWith('/hydration')) return json(route, hydration);
+    if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
+    if (path.endsWith('/workspace')) return json(route, {
+      root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project',
+      work_directory: null, files: [], repositories: [], runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } },
+    });
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, conversation);
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+  await page.goto('/');
+  await login(page);
+  await page.goto(`/agent/conversations/${conversation.id}`);
+  const actions = page.getByLabel('工作台操作');
+  const trigger = actions.locator('.agent-workspace-new-tab-trigger');
+  await expect(trigger).toHaveCount(1);
+  await expect(trigger).toHaveAccessibleName('新建工作区页签');
+  await expect(trigger.locator('svg')).toHaveCount(1);
+  // The separate "restore tools" button no longer exists.
+  await expect(actions.getByRole('button', { name: '显示工作区工具' })).toHaveCount(0);
+
+  await trigger.click();
+  await page.getByLabel('隐藏工作区工具').click();
+  await expect(trigger).toHaveClass(/has-tabs/);
+  await expect(trigger).toHaveText('1');
+  await expect(trigger).toHaveAccessibleName('打开工作区工具（1 个页签）');
+  await expect(actions.locator('button')).toHaveCount(2);
+  await trigger.click();
+  await expect(page.locator('.agent-workspace-drawer')).not.toHaveClass(/summary-open/);
+});
+
+test('Goal loop follow-up renders as one visible event inside the same turn, not as a user bubble', async ({ page }) => {
+  let authenticated = false;
+  const workspace = { id: 'goal-followup-workspace', display_name: '目标追问工作区', desired_state: 'RUNNING', updated_at: now };
+  const conversation = { id: 'goal-followup-conversation', display_title: '目标追问会话', title_state: 'MANUAL', lifecycle: 'ACTIVE', streaming_callback_ready: true, write_available: true, execution_status: 'running', created_at: now, updated_at: now };
+  const missing = '已找到应用级构建历史接口；但 hq-support 的分支仅来自用户说明，未经构建记录验证。';
+  const template = 'The goal is NOT yet complete (audit iteration 1).\nOutstanding: ' + missing + '\n\nInspect the real current state of the workspace.';
+  const message = (id: string, source: string, parent: string, content: string, extra: Record<string, unknown> = {}) =>
+    ({ id, event_type: 'MESSAGE', payload: { source, parent_id: parent, content, timestamp: now, ...extra } });
+  const stampFor: Record<string, string> = {};
+  const tool = (id: string, parent: string, command: string) => ({ id, event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: parent, action_id: id, tool_call_id: `${id}-call`, tool_name: 'terminal', event_name: 'TerminalAction', summary: command, content: command, timestamp: stampFor[id] ?? now } });
+  const toolResult = (id: string, parent: string) => ({ id, event_type: 'TOOL_RESULT', payload: { source: 'environment', parent_id: parent, action_id: parent, tool_call_id: `${parent}-call`, tool_name: 'terminal', event_name: 'TerminalObservation', content: 'ok', timestamp: stampFor[id] ?? now } });
+  const goalState = { id: 'goal-state', event_type: 'STATE', payload: { source: 'environment', parent_id: 'round-1-reply', goal_status: { active: true, status: 'running', iteration: 1, max_iterations: 3, objective: '找到应用对应的测试分支', verdict: { score: 0.8, complete: false, missing } }, timestamp: now } };
+  // Round 1: 0s-351s, the Judge follow-up lands at 361s, round 2 ends at 418s (6m58s in total).
+  const stamp = (offset: number) => new Date(Date.parse('2026-11-03T10:34:46Z') + offset * 1000).toISOString();
+  stampFor['round-1-tool'] = stamp(10); stampFor['round-1-obs'] = stamp(11); stampFor['round-2-tool'] = stamp(365); stampFor['round-2-obs'] = stamp(366);
+  const events = [
+    message('goal-start', 'user', '__root__', '找到应用对应的测试分支', { timestamp: stamp(0) }),
+    tool('round-1-tool', 'goal-start', '第一轮：查询构建历史'), toolResult('round-1-obs', 'round-1-tool'),
+    // Not final: the Judge sends another round, so this reply is only progress.
+    message('round-1-reply', 'agent', 'round-1-obs', '第一轮结论：已验证五个应用。', { final_reply: false, timestamp: stamp(351) }),
+    goalState,
+    // Written by OpenHands' Goal loop after a failed audit; the platform marks it.
+    message('judge-followup', 'user', 'round-1-reply', template, { timestamp: stamp(361), goal_followup: { iteration: 1, max_iterations: 3, missing } }),
+    tool('round-2-tool', 'judge-followup', '第二轮：补充核验依赖库'), toolResult('round-2-obs', 'round-2-tool'),
+    message('round-2-reply', 'agent', 'round-2-obs', '第二轮：已补充 hq-support 的构建记录证据。', { final_reply: true, timestamp: stamp(418) }),
+    { id: 'goal-done', event_type: 'STATE', payload: { source: 'environment', parent_id: 'round-2-reply', goal_status: { active: false, status: 'complete', iteration: 2, max_iterations: 3, objective: '找到应用对应的测试分支', verdict: { score: 1, complete: true, missing: '' } }, timestamp: now } },
+  ];
+  const hydration = {
+    events: { events, next_cursor: 'round-2-reply', history_cursor: null, result: { status: 'COMPLETED' } },
+    context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 0, usage_current: true },
+    readiness: { ready: true, execution_status: 'idle' },
+  };
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return authenticated ? json(route, user) : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [conversation], next_cursor: null });
+    if (path.endsWith('/model-providers')) return json(route, []);
+    if (path.endsWith('/hydration')) return json(route, hydration);
+    if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, conversation);
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+  await page.goto('/');
+  await login(page);
+  await page.goto(`/agent/conversations/${conversation.id}`);
+
+  const surface = page.locator('.conversation-surface');
+  // Only the goal the person typed is a user bubble; the Judge follow-up is not.
+  await expect(surface.locator('.conversation-message.user')).toHaveCount(1);
+  await expect(surface.locator('.conversation-message.user')).toContainText('找到应用对应的测试分支');
+  await expect(surface.getByText('The goal is NOT yet complete')).toHaveCount(0);
+
+  // One light line like a task-list entry (no card); the Outstanding stays folded until opened.
+  // The whole goal is one process, so open it first: rounds are events inside it.
+  const groups = surface.locator('.conversation-activity-group, .conversation-process-summary');
+  await expect(groups).toHaveCount(1);
+  // The header is the goal's total time, first event to the final reply.
+  await expect(groups.first().locator('summary').first()).toContainText('6分钟58秒');
+  if (!(await groups.first().evaluate(element => (element as HTMLDetailsElement).open))) await groups.first().locator('summary').first().click();
+  const followup = groups.locator('.conversation-goal-round[data-goal-followup-event-id="judge-followup"]');
+  await expect(followup).toBeVisible();
+  await expect(followup.locator('summary')).toContainText('目标未达成 · 第 1 轮追问');
+  // The round that just ended keeps its own time on the divider.
+  await expect(followup.locator('summary')).toContainText('上一轮 5分钟51秒');
+  await expect(followup).not.toHaveAttribute('open', '');
+  await expect(surface.getByText('Judge 判定')).toHaveCount(0);
+  await followup.locator('summary').click();
+  await expect(followup.locator('p')).toContainText(missing);
+  await expect(followup).not.toContainText('Inspect the real current state');
+
+  // Rounds are inside the one process; only the final reply stays outside it.
+  await expect(surface.locator('.conversation-turn')).toHaveCount(1);
+  await expect(groups.getByText('第一轮结论：已验证五个应用。')).toBeVisible();
+  await expect(groups.getByText('第一轮：查询构建历史').first()).toBeVisible();
+  await expect(groups.getByText('第二轮：补充核验依赖库').first()).toBeVisible();
+  await expect(surface.locator('.conversation-message.assistant')).toHaveCount(1);
+  await expect(surface.locator('.conversation-message.assistant')).toContainText('第二轮：已补充 hq-support 的构建记录证据。');
+});
+
+test('A recovered gateway error does not split the process into two blocks', async ({ page }) => {
+  let authenticated = false;
+  const workspace = { id: 'reconnect-workspace', display_name: '重连工作区', desired_state: 'RUNNING', updated_at: now };
+  const conversation = { id: 'reconnect-conversation', display_title: '重连会话', title_state: 'MANUAL', lifecycle: 'ACTIVE', streaming_callback_ready: true, write_available: true, execution_status: 'running', created_at: now, updated_at: now };
+  const action = (id: string, parent: string, command: string) => ({ id, event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: parent, action_id: id, tool_call_id: `${id}-call`, tool_name: 'terminal', event_name: 'TerminalAction', summary: command, content: command, timestamp: now } });
+  const result = (id: string, parent: string) => ({ id, event_type: 'TOOL_RESULT', payload: { source: 'environment', parent_id: parent, action_id: parent, tool_call_id: `${parent}-call`, tool_name: 'terminal', event_name: 'TerminalObservation', content: 'ok', timestamp: now } });
+  const events = [
+    { id: 'user-1', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '继续', timestamp: now } },
+    action('act-1', 'user-1', '检查凭据配置'), result('obs-1', 'act-1'),
+    // A transient gateway failure that FlowWeave recovers from by resuming.
+    { id: 'gateway-error', event_type: 'ERROR', payload: { source: 'environment', source_type: 'ConversationErrorEvent', parent_id: 'obs-1', content: 'BadGatewayError', error_code: 'BadGatewayError', classification: { kind: 'transient', retryable: true }, timestamp: now } },
+    // After the resume the new action is parented on the error event.
+    action('act-2', 'gateway-error', '重新读取仓库配置'), result('obs-2', 'act-2'),
+  ];
+  const hydration = { events: { events, next_cursor: 'obs-2', history_cursor: null, result: null }, context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 0, usage_current: true }, readiness: { ready: false, execution_status: 'running' } };
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return authenticated ? json(route, user) : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [conversation], next_cursor: null });
+    if (path.endsWith('/model-providers')) return json(route, []);
+    if (path.endsWith('/hydration')) return json(route, hydration);
+    if (path.endsWith('/resume') && request.method() === 'POST') return json(route, { accepted: true }, 202);
+    if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, conversation);
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+  await page.goto('/');
+  await login(page);
+  await page.goto(`/agent/conversations/${conversation.id}`);
+
+  const surface = page.locator('.conversation-surface');
+  await expect(surface.locator('.conversation-message.user')).toContainText('继续');
+  // Both actions belong to one continuous process, in one turn.
+  await expect(surface.locator('.conversation-turn')).toHaveCount(1);
+  await expect(surface.locator('.conversation-activity-group, .conversation-process-summary')).toHaveCount(1);
+  // Exactly one process group holds both rounds of work (not one per round).
+  const group = surface.locator('.conversation-activity-group, .conversation-process-summary');
+  await expect(group).toHaveCount(1);
+  await expect(group.locator('.conversation-activity-row.tool')).toHaveCount(2);
+});
+
+test('Goal loop keeps showing progress between rounds instead of settling into a final state', async ({ page }) => {
+  let authenticated = false;
+  const workspace = { id: 'goal-gap-workspace', display_name: '目标回合间隙工作区', desired_state: 'RUNNING', updated_at: now };
+  const conversation = { id: 'goal-gap-conversation', display_title: '目标回合间隙会话', title_state: 'MANUAL', lifecycle: 'ACTIVE', streaming_callback_ready: true, write_available: true, execution_status: 'idle', created_at: now, updated_at: now };
+  const missing = '尚未验证依赖库分支';
+  // Round 1 is over and the Judge's verdict is already written, but the run reads
+  // finished/idle and the follow-up has not been sent yet.
+  const events = [
+    { id: 'goal-start', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '找到测试分支', timestamp: now } },
+    { id: 'round-1-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'goal-start', content: '第一轮结论', final_reply: false, timestamp: now } },
+    { id: 'goal-audit', event_type: 'STATE', payload: { source: 'environment', parent_id: 'round-1-reply', goal_status: { active: true, status: 'running', iteration: 1, max_iterations: 3, objective: '找到测试分支', verdict: { score: 0.8, complete: false, missing } }, timestamp: now } },
+  ];
+  const hydration = { events: { events, next_cursor: 'round-1-reply', history_cursor: null, result: { status: 'COMPLETED' } }, context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 0, usage_current: true }, readiness: { ready: true, execution_status: 'idle' } };
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return authenticated ? json(route, user) : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [conversation], next_cursor: null });
+    if (path.endsWith('/model-providers')) return json(route, []);
+    if (path.endsWith('/hydration')) return json(route, hydration);
+    if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, conversation);
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+  await page.goto('/');
+  await login(page);
+  await page.goto(`/agent/conversations/${conversation.id}`);
+
+  const surface = page.locator('.conversation-surface');
+  // The round's reply is shown, but it is not a final reply and the goal is still going.
+  await expect(surface.getByText('第一轮结论')).toBeVisible();
+  await expect(surface.locator('.conversation-process-divider')).toHaveCount(0);
+  await expect(surface.getByRole('status', { name: /目标进行中 · 第 2 \/ 3 轮/ })).toBeVisible();
+});
+
+for (const scenario of [
+  { name: 'running', status: 'running', active: true, button: '暂停目标', action: 'STOP' },
+  { name: 'paused', status: 'interrupted', active: false, button: '继续目标', action: 'RESUME' },
+  // OpenHands cannot resume a goal that hit its round cap, so continuing starts the same objective again.
+  { name: 'capped', status: 'capped', active: false, button: '继续目标', action: 'START' },
+] as const) {
+  test(`Goal status bar offers the right control when the goal is ${scenario.name}`, async ({ page }) => {
+    let authenticated = false;
+    let control: Record<string, unknown> | undefined;
+    const workspace = { id: 'goal-control-workspace', display_name: '目标控制工作区', desired_state: 'RUNNING', updated_at: now };
+    const conversation = { id: 'goal-control-conversation', display_title: '目标控制会话', title_state: 'MANUAL', lifecycle: 'ACTIVE', streaming_callback_ready: true, write_available: true, execution_status: 'idle', created_at: now, updated_at: now };
+    const events = [
+      { id: 'goal-start', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '找到测试分支', timestamp: now } },
+      { id: 'round-1-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'goal-start', content: '第一轮结论', final_reply: false, timestamp: now } },
+      { id: 'goal-state', event_type: 'STATE', payload: { source: 'environment', parent_id: 'round-1-reply', goal_status: { active: scenario.active, status: scenario.status, iteration: 1, max_iterations: 3, objective: '找到测试分支', verdict: { score: 0.8, complete: false, missing: '还缺依赖库' } }, timestamp: now } },
+      { id: 'judge-followup', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'round-1-reply', content: 'Outstanding: 还缺依赖库', goal_followup: { iteration: 1, max_iterations: 3, missing: '还缺依赖库' }, timestamp: now } },
+      { id: 'round-2-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'judge-followup', content: '第二轮结论', final_reply: !scenario.active, timestamp: now } },
+    ];
+    const hydration = { events: { events, next_cursor: 'round-2-reply', history_cursor: null, result: { status: scenario.active ? 'RUNNING' : 'COMPLETED' } }, context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 0, usage_current: true }, readiness: { ready: !scenario.active, execution_status: scenario.active ? 'running' : 'idle' } };
+    await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+    await page.route('**/api/v1/**', async route => {
+      const request = route.request();
+      const path = new URL(request.url()).pathname;
+      if (path.endsWith('/auth/me')) return authenticated ? json(route, user) : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+      if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+      if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+      if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+      if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [conversation], next_cursor: null });
+      if (path.endsWith('/model-providers')) return json(route, []);
+      if (path.endsWith('/hydration')) return json(route, hydration);
+      if (path.endsWith('/goal') && request.method() === 'POST') { control = request.postDataJSON() as Record<string, unknown>; return json(route, { accepted: true }, 202); }
+      if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
+      if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+      if (path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+      if (path.includes('/conversations/') && request.method() === 'GET') return json(route, conversation);
+      return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+    });
+    await page.goto('/');
+    await login(page);
+    await page.goto(`/agent/conversations/${conversation.id}`);
+
+    const status = page.locator('.conversation-goal-status');
+    await expect(status).toBeVisible();
+    await status.getByRole('button', { name: scenario.button }).click();
+    await expect.poll(() => control?.action).toBe(scenario.action);
+    if (scenario.action === 'START') expect(control?.objective).toBe('找到测试分支');
+    // A running goal can only be paused; a stopped one can also be removed.
+    await expect(status.getByRole('button', { name: '移除目标' })).toHaveCount(scenario.active ? 0 : 1);
+  });
+}
+
+test('Goal status bar lists the rounds and removing a stopped goal allows a new one', async ({ page }) => {
+  let authenticated = false;
+  const workspace = { id: 'goal-rounds-workspace', display_name: '目标轮次工作区', desired_state: 'RUNNING', updated_at: now };
+  const conversation = { id: 'goal-rounds-conversation', display_title: '目标轮次会话', title_state: 'MANUAL', lifecycle: 'ACTIVE', streaming_callback_ready: true, write_available: true, execution_status: 'idle', created_at: now, updated_at: now };
+  // Round 1 took 5m51s, the Judge needed 10s, round 2 took 57s.
+  const at = (offsetSeconds: number) => new Date(Date.parse('2026-11-03T10:34:46Z') + offsetSeconds * 1000).toISOString();
+  const events = [
+    { id: 'goal-start', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '找到测试分支', timestamp: at(0) } },
+    { id: 'round-1-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'goal-start', content: '第一轮结论', final_reply: false, timestamp: at(351) } },
+    { id: 'goal-state', event_type: 'STATE', payload: { source: 'environment', parent_id: 'round-1-reply', goal_status: { active: false, status: 'interrupted', iteration: 1, max_iterations: 3, objective: '找到测试分支', verdict: { score: 0.8, complete: false, missing: '还缺依赖库' } }, timestamp: at(360) } },
+    { id: 'judge-followup', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'round-1-reply', content: 'Outstanding', goal_followup: { iteration: 1, max_iterations: 3, missing: '还缺依赖库' }, timestamp: at(361) } },
+    { id: 'round-2-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'judge-followup', content: '第二轮结论', final_reply: true, timestamp: at(418) } },
+  ];
+  const hydration = { events: { events, next_cursor: 'round-2-reply', history_cursor: null, result: { status: 'COMPLETED' } }, context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 0, usage_current: true }, readiness: { ready: true, execution_status: 'idle' } };
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return authenticated ? json(route, user) : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [conversation], next_cursor: null });
+    if (path.endsWith('/model-providers')) return json(route, []);
+    if (path.endsWith('/hydration')) return json(route, hydration);
+    if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, conversation);
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+  await page.goto('/');
+  await login(page);
+  await page.goto(`/agent/conversations/${conversation.id}`);
+
+  const status = page.locator('.conversation-goal-status');
+  await expect(status).toContainText('目标已暂停');
+  // Nothing opens on click: the details appear on hover, as the goal text plus every round.
+  const detail = status.getByRole('group', { name: '目标详情' });
+  await expect(detail).toBeHidden();
+  await status.getByRole('button', { name: /目标已暂停/ }).hover();
+  await expect(detail).toBeVisible();
+  await expect(detail).toContainText('找到测试分支');
+  // The goal message is round 1 and the goal text already jumps to it, so only the
+  // follow-ups are rows: a number, then the Judge's Outstanding cut with an ellipsis.
+  const rounds = detail.getByRole('listitem');
+  await expect(rounds).toHaveCount(1);
+  await expect(rounds.nth(0).locator('.conversation-goal-round-number')).toHaveText('1');
+  await expect(rounds.nth(0).locator('.conversation-goal-round-text')).toHaveText('还缺依赖库');
+  await expect(rounds.nth(0)).not.toContainText('第 1 轮');
+  await expect(rounds.nth(0)).toContainText('57秒');
+  // The first round's time stays, next to the goal text, without a row of its own.
+  await expect(detail.locator('.conversation-goal-detail-objective')).toContainText('首轮 5分51秒');
+  await expect(page.getByRole('dialog', { name: '目标轮次' })).toHaveCount(0);
+
+  // The goal text jumps to the goal message; a round jumps to where that round starts.
+  const goalMessage = page.locator('[data-conversation-event-id="goal-start"]');
+  await detail.getByRole('button', { name: '定位目标消息' }).click();
+  await expect(goalMessage).toHaveClass(/conversation-search-target/);
+  await status.getByRole('button', { name: /目标已暂停/ }).hover();
+  await detail.getByRole('button', { name: '定位第 1 轮追问' }).click();
+  await expect(page.locator('[data-conversation-event-id="judge-followup"]')).toHaveClass(/conversation-search-target/);
+
+  // Each control icon is centred inside its square background.
+  const control = status.getByRole('button', { name: '移除目标' });
+  const box = await control.boundingBox();
+  const icon = await control.locator('svg').boundingBox();
+  expect(box && icon).toBeTruthy();
+  expect(Math.abs((icon!.x + icon!.width / 2) - (box!.x + box!.width / 2))).toBeLessThan(0.75);
+  expect(Math.abs((icon!.y + icon!.height / 2) - (box!.y + box!.height / 2))).toBeLessThan(0.75);
+
+  // Removing the stopped goal returns the bar to "set a new goal".
+  await status.getByRole('button', { name: '移除目标' }).click();
+  await expect(page.locator('.conversation-goal-status')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '目标模式' })).toBeVisible();
+});
+
+test('Locating a round of a finished goal opens its folded process and shows that round', async ({ page }) => {
+  let authenticated = false;
+  const workspace = { id: 'goal-locate-workspace', display_name: '目标定位工作区', desired_state: 'RUNNING', updated_at: now };
+  const conversation = { id: 'goal-locate-conversation', display_title: '目标定位会话', title_state: 'MANUAL', lifecycle: 'ACTIVE', streaming_callback_ready: true, write_available: true, execution_status: 'idle', created_at: now, updated_at: now };
+  const at = (offsetSeconds: number) => new Date(Date.parse('2026-11-03T10:34:46Z') + offsetSeconds * 1000).toISOString();
+  const tool = (id: string, parent: string, command: string, offset: number) => ({ id, event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: parent, action_id: id, tool_call_id: `${id}-call`, tool_name: 'terminal', event_name: 'TerminalAction', summary: command, content: command, timestamp: at(offset) } });
+  const result = (id: string, parent: string, offset: number) => ({ id, event_type: 'TOOL_RESULT', payload: { source: 'environment', parent_id: parent, action_id: parent, tool_call_id: `${parent}-call`, tool_name: 'terminal', event_name: 'TerminalObservation', content: 'ok', timestamp: at(offset) } });
+  // A long final answer pushes the folded process far above the composer, as in real use.
+  const longAnswer = Array.from({ length: 60 }, (_, index) => `结论第 ${index + 1} 行：已核对。`).join('\n\n');
+  // Like a real goal: many tool calls in each round (43 process items in all), so the
+  // process is tall once opened and the page height changes when it unfolds.
+  const manyTools = (round: number, parent: string, from: number) => Array.from({ length: 20 }, (_, index) => {
+    const id = `r${round}-tool-${index}`;
+    const before: string = index === 0 ? parent : `r${round}-obs-${index - 1}`;
+    return [tool(id, before, `第${round}轮：命令 ${index + 1}`, from + index * 2), result(`r${round}-obs-${index}`, id, from + index * 2 + 1)];
+  }).flat();
+  const events = [
+    { id: 'goal-start', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '找到测试分支', timestamp: at(0) } },
+    ...manyTools(1, 'goal-start', 10),
+    { id: 'round-1-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'r1-obs-19', content: '第一轮结论', final_reply: false, timestamp: at(351) } },
+    { id: 'goal-audit', event_type: 'STATE', payload: { source: 'environment', parent_id: 'round-1-reply', goal_status: { active: true, status: 'running', iteration: 1, max_iterations: 3, objective: '找到测试分支', verdict: { score: 0.8, complete: false, missing: '还缺依赖库' } }, timestamp: at(360) } },
+    { id: 'judge-followup', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'round-1-reply', content: 'Outstanding', goal_followup: { iteration: 1, max_iterations: 3, missing: '还缺依赖库' }, timestamp: at(361) } },
+    ...manyTools(2, 'judge-followup', 365),
+    { id: 'round-2-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'r2-obs-19', content: longAnswer, final_reply: true, timestamp: at(418) } },
+    { id: 'goal-done', event_type: 'STATE', payload: { source: 'environment', parent_id: 'round-2-reply', goal_status: { active: false, status: 'complete', iteration: 2, max_iterations: 3, objective: '找到测试分支', verdict: { score: 1, complete: true, missing: '' } }, timestamp: at(420) } },
+  ];
+  const hydration = { events: { events, next_cursor: 'round-2-reply', history_cursor: null, result: { status: 'COMPLETED' } }, context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 0, usage_current: true }, readiness: { ready: true, execution_status: 'idle' } };
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return authenticated ? json(route, user) : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [conversation], next_cursor: null });
+    if (path.endsWith('/model-providers')) return json(route, []);
+    if (path.endsWith('/hydration')) return json(route, hydration);
+    if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, conversation);
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+  await page.goto('/');
+  await login(page);
+  await page.goto(`/agent/conversations/${conversation.id}`);
+
+  const surface = page.locator('.conversation-surface');
+  const status = page.locator('.conversation-goal-status');
+  await expect(status).toContainText('目标已验收通过');
+  // The finished goal is folded: its rounds are not on screen until located.
+  await expect(surface.locator('[data-goal-followup-event-id="judge-followup"]')).toBeHidden();
+
+  const detail = status.getByRole('group', { name: '目标详情' });
+  const locate = async (name: string) => {
+    await status.getByRole('button', { name: /目标已验收通过/ }).hover();
+    await expect(detail).toBeVisible();
+    await status.getByRole('button', { name }).click();
+    // A jump closes the card at once, and it stays closed after the pointer leaves.
+    await expect(detail).toBeHidden();
+    await page.mouse.move(5, 300);
+    await expect(detail).toBeHidden();
+  };
+  // The same sequence a person tries: round 1, round 2, round 1 again, then the goal text.
+  // Every jump must land on its target, open the folded process and highlight it.
+  const expectLanded = async (selector: string) => {
+    const target = page.locator(selector);
+    await expect(target).toBeVisible();
+    await expect(target).toBeInViewport();
+    await expect(target).toHaveClass(/conversation-search-target/);
+  };
+
+  await locate('定位目标消息');
+  await expectLanded('[data-conversation-event-id="goal-start"]');
+  await locate('定位第 1 轮追问');
+  await expectLanded('[data-goal-followup-event-id="judge-followup"]');
+  await locate('定位目标消息');
+  await expectLanded('[data-conversation-event-id="goal-start"]');
+  await locate('定位目标消息');
+  await expectLanded('[data-conversation-event-id="goal-start"]');
+  // A later jump to a round still works once the process is open.
+  await locate('定位第 1 轮追问');
+  await expectLanded('[data-goal-followup-event-id="judge-followup"]');
+});
+
+test('MCP event row shows its server name in full, joined to the icon', async ({ page }) => {
+  let authenticated = false;
+  const workspace = { id: 'mcp-name-workspace', display_name: 'MCP 名称工作区', desired_state: 'RUNNING', updated_at: now };
+  const conversation = { id: 'mcp-name-conversation', display_title: 'MCP 名称会话', title_state: 'MANUAL', lifecycle: 'ACTIVE', streaming_callback_ready: true, write_available: true, execution_status: 'idle', created_at: now, updated_at: now };
+  // A long server name: it must not be cut with an ellipsis (the old 11em cap did).
+  const toolName = 'flowweave-reference-history_read_referenced_conversation';
+  const events = [
+    { id: 'user-1', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '读取会话', timestamp: now } },
+    { id: 'mcp-action', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'user-1', action_id: 'mcp-action', tool_call_id: 'mcp-call', tool_name: toolName, event_name: 'MCPToolAction', summary: '读取授权会话中的分支映射尝试', content: '读取', timestamp: now } },
+    { id: 'mcp-result', event_type: 'TOOL_RESULT', payload: { source: 'environment', parent_id: 'mcp-action', action_id: 'mcp-action', tool_call_id: 'mcp-call', tool_name: toolName, event_name: 'MCPToolObservation', content: 'ok', timestamp: now } },
+    { id: 'reply-1', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'mcp-result', content: '已读取', final_reply: false, timestamp: now } },
+  ];
+  const hydration = { events: { events, next_cursor: 'reply-1', history_cursor: null, result: { status: 'RUNNING' } }, context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 0, usage_current: true }, readiness: { ready: false, execution_status: 'running' } };
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return authenticated ? json(route, user) : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [conversation], next_cursor: null });
+    if (path.endsWith('/model-providers')) return json(route, []);
+    if (path.endsWith('/hydration')) return json(route, hydration);
+    if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, conversation);
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+  await page.goto('/');
+  await login(page);
+  await page.goto(`/agent/conversations/${conversation.id}`);
+
+  const row = page.locator('.conversation-tool-detail[data-tool-kind="mcp"]');
+  await expect(row).toBeVisible();
+  const badge = row.locator(':scope > summary > .conversation-mcp-badge');
+  // Icon and name are one unit; the name is complete (not clipped) and uses the tool accent.
+  await expect(badge.locator('svg')).toBeVisible();
+  const name = badge.locator(':scope > span');
+  await expect(name).toHaveText('flowweave-reference-history');
+  expect(await name.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+  expect(await name.evaluate(element => getComputedStyle(element).textOverflow)).not.toBe('ellipsis');
+  const colors = await badge.evaluate(element => ({
+    badge: getComputedStyle(element).color,
+    icon: getComputedStyle(element.querySelector('svg')!).color,
+    name: getComputedStyle(element.querySelector(':scope > span')!).color,
+  }));
+  expect(colors.icon).toBe(colors.badge);
+  expect(colors.name).toBe(colors.badge);
+  // No separate tinted capsule around the name.
+  expect(await name.evaluate(element => getComputedStyle(element).backgroundColor)).toBe('rgba(0, 0, 0, 0)');
+});
+
+test('Sidebar chat can cancel its first message while it is being created and keeps the text', async ({ page }) => {
+  let authenticated = false;
+  let cancelled = 0;
+  let releaseCreate: (() => void) | undefined;
+  const createHeld = new Promise<void>(resolve => { releaseCreate = resolve; });
+  const workspace = { id: 'sidebar-reference-workspace', display_name: '侧边引用工作区', desired_state: 'RUNNING', updated_at: now };
+  const source = {
+    id: 'sidebar-reference-source', display_title: '引用来源会话', title_state: 'MANUAL', lifecycle: 'ACTIVE', streaming_callback_ready: true, write_available: true,
+    execution_status: 'idle', created_at: now, updated_at: now,
+  };
+  const other = { ...source, id: 'sidebar-reference-other', display_title: '其他引用来源会话' };
+  const sidebar = { ...source, id: 'sidebar-reference-draft', display_title: '侧边临时聊天' };
+  const selectedText = '这段文字应作为侧边提问的会话引用。';
+  const sourceHydration = {
+    events: {
+      events: [
+        { id: 'sidebar-reference-source-event', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: '__root__', content: selectedText, timestamp: now } },
+        { id: 'sidebar-reference-followup', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'sidebar-reference-source-event', content: '继续展开', timestamp: now } },
+        { id: 'sidebar-reference-latest', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'sidebar-reference-followup', content: Array.from({ length: 240 }, (_, index) => `后续内容 ${index}：这是一段足够长的正式回复，用来确保引用来源已经滚出可视区域。`).join('\n\n'), timestamp: now } },
+      ],
+      next_cursor: 'sidebar-reference-latest', history_cursor: null, result: { status: 'COMPLETED' },
+    },
+    context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 0, usage_current: true },
+    readiness: { ready: true, execution_status: 'idle' },
+  };
+
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return authenticated ? json(route, user) : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [source, other], next_cursor: null });
+    if (path.endsWith('/model-providers')) return json(route, [{ id: 'test-provider', name: '测试模型', connection_state: 'CONNECTED', models: [{ model_name: 'test-model', enabled: true, is_default: true, supported_reasoning_efforts: [] }] }]);
+    if (path.includes(other.id) && path.endsWith('/hydration')) return json(route, { ...sourceHydration, events: { ...sourceHydration.events, events: [{ id: 'other-reference-event', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: '__root__', content: '另一个会话的正式回复。', timestamp: now } }] } });
+    if (path.endsWith('/hydration')) return json(route, path.includes(sidebar.id) ? { ...sourceHydration, events: { ...sourceHydration.events, events: [] } } : sourceHydration);
+    if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
+    if (path.endsWith('/workspace')) return json(route, { root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [], runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } } });
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.includes('/conversation-bootstraps/') && path.endsWith('/cancel')) { cancelled += 1; releaseCreate?.(); return json(route, { cancelled: true }); }
+    if (path.endsWith('/sidebar') && request.method() === 'POST') {
+      await createHeld;
+      return json(route, { error: { code: 'AGENT_MESSAGE_CANCELLED', message: '已取消发送，消息已回到发送框' } }, 409);
+    }
+    if (path.includes('/sidebars/')) return json(route, { binding_id: sidebar.id, source_binding_id: source.id, expires_at: new Date(Date.now() + 3_600_000).toISOString(), expired: false });
+    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, path.includes(sidebar.id) ? sidebar : path.includes(other.id) ? other : source);
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+
+  await page.goto('/');
+  await login(page);
+  await page.goto(`/agent/conversations/${source.id}`);
+  await page.locator('.agent-workspace-new-tab-trigger').click();
+  await page.locator('.agent-workspace-tab-launcher.active').getByRole('button', { name: '侧边聊天', exact: true }).click();
+  const sidebarPane = page.getByRole('region', { name: '侧边聊天' });
+  const composer = sidebarPane.getByRole('textbox', { name: '发送侧边聊天消息' });
+  await composer.fill('请先别发出去');
+  await sidebarPane.getByRole('button', { name: '发送侧边聊天消息' }).click();
+
+  // The user's message and the submitting state show immediately, with a cancel control.
+  await expect(sidebarPane.locator('.conversation-surface').getByText('请先别发出去')).toBeVisible();
+  await expect(sidebarPane.getByText('正在提交消息')).toBeVisible();
+  await sidebarPane.getByRole('button', { name: '取消发送' }).click();
+
+  await expect.poll(() => cancelled).toBe(1);
+  await expect(composer).toHaveValue('请先别发出去');
+  await expect(sidebarPane.getByText('正在提交消息')).toHaveCount(0);
+  await expect(sidebarPane.getByRole('alert')).toHaveCount(0);
+  await expect(sidebarPane.getByRole('button', { name: '发送侧边聊天消息' })).toBeEnabled();
+});
 
 test('Sidebar chat keeps a selected conversation reference on its first message', async ({ page }) => {
   let authenticated = false;
@@ -1728,7 +2292,7 @@ test('Sidebar chat recognizes its optimistic message and reuses the send button 
   await expect(page.locator('.agent-sidebar-conversation .conversation-message.user')).toHaveCount(1);
   // Binding creation arrives while hidden; it must not force the tools open.
   await expect(page.locator('.agent-workspace-drawer')).toHaveClass(/summary-open/);
-  await page.getByRole('button', { name: '显示工作区工具', exact: true }).click();
+  await page.locator('.agent-workspace-new-tab-trigger.has-tabs').click();
   await expect(sidebarPane).toBeVisible();
   expect(created).toBe(1);
   expect(deletes).toEqual([]);
@@ -1740,7 +2304,7 @@ test('Sidebar chat recognizes its optimistic message and reuses the send button 
   await page.getByRole('button', { name: '全屏查看工作区工具', exact: true }).click();
   await page.getByRole('button', { name: '隐藏工作区工具', exact: true }).click();
   await expect(sidebarPane).toBeHidden();
-  await page.getByRole('button', { name: '显示工作区工具', exact: true }).click();
+  await page.locator('.agent-workspace-new-tab-trigger.has-tabs').click();
   await expect(draft).toHaveValue('未发送的追问');
   await expect(sidebarPane.getByRole('button', { name: '继续侧边聊天 Agent' })).toBeVisible();
   expect(deletes).toEqual([]);

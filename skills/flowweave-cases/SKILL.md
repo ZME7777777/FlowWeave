@@ -10,7 +10,7 @@ description: 创建、配置、启动和监控 FlowWeave 场景空间（Case）�
 ## 核心事实
 
 - 名称、工作区、说明、目标创建后固定；资料、路径、会话配置可继续管理。
-- 阶段的 `flow_run_id` 是**模板**，场景永不直接启动它；`current_execution_flow_run_id` 才是由模板复制的当前独立执行。逐步模板必须是子逐步记录，且起点可达的所有节点草稿完整。
+- 阶段的 `flow_run_id` 是**模板**，场景永不直接启动它；`current_execution_flow_run_id` 才是由模板复制的当前独立执行。逐步模板必须是子逐步记录且流程结构有效；节点草稿不必预先配齐，由协调 Agent 在执行副本上按场景资料补配。
 - 所有写入使用 `row_version` 乐观锁（`expected_row_version`）；写前重新读取场景，写后复读。
 - 单个 FlowRun 完成不等于阶段业务完成，需协调 Agent 复核后推进。
 
@@ -49,21 +49,21 @@ flowweave capability import --type MCP --file ./flowweave-case-context.json --pl
 
 配置只含 `url`（以对应 `/api/v1/case-tools-mcp`、`/case-flow-tools-mcp`、`/case-material-tools-mcp` 结尾）、`transport=streamable-http` 和占位符头 `Bearer ${FLOWWEAVE_CASE_ACCESS}` / `${FLOWWEAVE_CASE_FLOW_ACCESS}` / `${FLOWWEAVE_CASE_MATERIAL_ACCESS}`。发布后把版本 ID 与 URL 写入服务器私有环境的 `CASE_TOOLS_MCP_*`、`CASE_FLOW_TOOLS_MCP_*`、`CASE_MATERIAL_TOOLS_MCP_*` 并重建 api/stream-api/worker。
 
-## 启动协调 Agent
+## 启动场景（唯一入口）
 
-启动会创建新的原生会话并占用模型额度，**只在用户明确要求时执行**。必须带 `Idempotency-Key`，超时重试复用同一个 key，避免重复建会话。
+平台不直接启动任何流程。`case start` 只向协调 Agent 发出一次**场景启动事件**，由 Agent 读取目标与资料、判断是否满足启动条件，再通过受控动作复制模板、配置执行副本并启动。它可能创建新的原生会话并占用模型额度，**只在用户明确要求时执行**。必须带 `Idempotency-Key`，超时重试复用同一个 key。
 
 ```bash
-flowweave case start <case-id> --data-file ./.tmp/session.json -H 'Idempotency-Key: <uuid>' --dry-run
+# session=CURRENT 在现有协调会话里投递启动事件（无会话时自动新建）；session=NEW 新建会话，历史会话保留
+flowweave case start <case-id> --data '{"session":"CURRENT","expected_row_version":<row_version>}' -H 'Idempotency-Key: <uuid>' --dry-run
 ```
 
-返回后轮询 `case get`/`case round`，等 `current_control_round_id` 对应轮次进入就绪并出现 `control_conversation_binding_id`；再用 `flowweave agent conversation` / `agent hydration` 读取会话，不要重复 start。轮次失败用 `case round-retry`（复用原身份）。已有会话再次 start 会新开轮次，旧轮次保留。
+返回后轮询 `case get`/`case round`，等出现 `control_conversation_binding_id`；再用 `flowweave agent conversation` / `agent hydration` 读取会话。轮次失败用 `case round-retry`（复用原身份）。
 
 ## 阶段与受控动作
 
 ```bash
-flowweave case stage-launch <case-id> <stage-id>        # 复制模板为独立执行副本（可带 {"name":...}）
-flowweave case stage-start  <case-id> <stage-id> --data '{"reason":"..."}'   # 启动当前执行副本
+flowweave case stage-rerun  <case-id> <stage-id>        # 重置已结束阶段的执行指针；之后再 case start 由 Agent 重新复制并启动
 flowweave case stage-bind   <case-id> <stage-id> --data '{"flow_run_id":"...","execution_mode":"STEPWISE"}'
 flowweave case plan-create  <case-id> --data-file ./.tmp/plan.json   # action、idempotency_key、reason、node_run_id、node_attempt_id、input_snapshot
 flowweave case plan-execute <case-id> <plan-id>

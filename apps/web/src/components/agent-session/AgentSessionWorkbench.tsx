@@ -7,7 +7,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { Terminal as XTerm } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import { type InfiniteData, useQueries, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Archive, Unlink, ArrowLeft, ArrowRight, ArrowUp, Bell, Bot, Boxes, CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, CircleDot, Copy, CornerDownRight, Download, Ellipsis, Eye, EyeOff, FileCode2, FileText, Folder, FolderOpen, FolderPlus, Gauge, GitBranch, Globe2, GripVertical, Home, ImageIcon, Link2, ListRestart, LoaderCircle, LockKeyhole, LocateFixed, Maximize, Maximize2, Minimize, Minimize2, MessageSquareText, MonitorCog, MonitorOff, PanelRight, PanelRightOpen, Pencil, Pin, PinOff, Play, Plug, Plus, Quote, RefreshCw, Search, Send, Settings, ShieldAlert, Square, SquareCheck, SquarePlus, SquareTerminal, Trash2, X, Target } from 'lucide-react';
+import { Archive, Unlink, Pause, ArrowLeft, ChevronLeft, Minus, ArrowRight, ArrowUp, Bell, Bot, Boxes, CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, CircleDot, Copy, CornerDownRight, Download, Ellipsis, Eye, EyeOff, FileCode2, FileText, Folder, FolderOpen, FolderPlus, Gauge, GitBranch, Globe2, GripVertical, Home, ImageIcon, Link2, ListRestart, LoaderCircle, LockKeyhole, LocateFixed, Maximize, Maximize2, Minimize, Minimize2, MessageSquareText, MonitorCog, MonitorOff, PanelRight, PanelRightOpen, Pencil, Pin, PinOff, Play, Plug, Plus, Quote, RefreshCw, Search, Send, Settings, ShieldAlert, Square, SquareCheck, SquarePlus, SquareTerminal, Trash2, X, Target } from 'lucide-react';
 import { createContext, isValidElement, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type WheelEvent as ReactWheelEvent } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
@@ -27,7 +27,7 @@ import { deploymentBasePath, withoutDeploymentBase } from '../../deploymentPath'
 import { agentWorkspaceSessionHost, type AgentSessionHost } from './session-host';
 import { SidebarConversationPane, type SidebarConversationDraft } from './SidebarConversationPane';
 import { clearConversationSnapshots, getAgentSessionCacheIdentity, readConversationContextSnapshot, writeConversationContextSnapshot } from './conversation-cache';
-import { ConversationSurface, ConversationTaskPlan, type ConversationHistoryPrepend, type ConversationReference, type ConversationScrollSnapshot, type ConversationSearchLocation, type ModelRetryStatus } from '../ConversationSurface';
+import { ConversationSurface, ConversationTaskPlan, goalRoundDurations, type ConversationHistoryPrepend, type ConversationReference, type ConversationScrollSnapshot, type ConversationSearchLocation, type ModelRetryStatus } from '../ConversationSurface';
 import { isOpenHandsAgentReply, isOpenHandsConversationInterrupt, isOpenHandsConversationTerminalError, isOpenHandsEmptyResponseRecovery, orderOpenHandsConversationEvents, projectFlowWeaveMessageContext, projectHistoricalAgentReplies } from '../conversationEvents';
 import { useProductDialog } from '../ProductDialogContext';
 import { useEscapeClose } from '../useEscapeClose';
@@ -2875,7 +2875,7 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0)} MB`;
 }
 
-function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expanded, pagination, loadingDirectories, onExpandedChange, onLoadMore, onSelect, onSelectionChange, onActivateDirectory, onContextMenu, fileDownloadUrl }: { entries: WorkspaceEntry[]; root: string; selectedFile?: string; selectedPaths: Set<string>; expanded: Set<string>; pagination: Map<string, string | undefined>; loadingDirectories: Set<string>; onExpandedChange: (updater: (current: Set<string>) => Set<string>) => void; onLoadMore: (parentPath?: string) => void; onSelect: (path?: string) => void; onSelectionChange: (paths: Set<string>) => void; onActivateDirectory: (path?: string) => void; onContextMenu: (path: string, kind: 'file' | 'directory', event: ReactMouseEvent<HTMLButtonElement>) => void; fileDownloadUrl: (path: string) => string }) {
+function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expanded, pagination, loadingDirectories, onExpandedChange, onLoadMore, onSelect, onSelectionChange, onActivateDirectory, onContextMenu, fileDownloadUrl, repositoryBranches }: { repositoryBranches?: Map<string, string>; entries: WorkspaceEntry[]; root: string; selectedFile?: string; selectedPaths: Set<string>; expanded: Set<string>; pagination: Map<string, string | undefined>; loadingDirectories: Set<string>; onExpandedChange: (updater: (current: Set<string>) => Set<string>) => void; onLoadMore: (parentPath?: string) => void; onSelect: (path?: string) => void; onSelectionChange: (paths: Set<string>) => void; onActivateDirectory: (path?: string) => void; onContextMenu: (path: string, kind: 'file' | 'directory', event: ReactMouseEvent<HTMLButtonElement>) => void; fileDownloadUrl: (path: string) => string }) {
   const nodes = useMemo(() => workspaceTree(entries, root), [entries, root]);
   const selectionAnchor = useRef<string | undefined>(undefined);
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
@@ -2968,6 +2968,7 @@ function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expande
       }} onClick={event => selectEntry(node, event)} onContextMenu={event => { event.preventDefault(); if (node.kind === 'directory') onActivateDirectory(node.path); onContextMenu(node.path, node.kind, event); }}>
         {node.kind === 'directory' ? open ? <FolderOpen size={14}/> : <Folder size={14}/> : <FileCode2 size={14}/>}
         <span>{node.name}</span>
+        {node.kind === 'directory' && repositoryBranches?.get(node.path.replace(/\/+$/, '')) && <em className="agent-file-tree-branch" title={`当前分支：${repositoryBranches.get(node.path.replace(/\/+$/, ''))}`}><GitBranch size={10}/><span>{repositoryBranches.get(node.path.replace(/\/+$/, ''))}</span></em>}
       </button>
       {node.kind === 'file' && <span className="agent-file-tree-file-meta"><em className="agent-file-tree-size">{formatFileSize(node.size)}</em><a className="agent-file-tree-download" href={fileDownloadUrl(node.path)} aria-label={`下载 ${node.name}`} title={`下载 ${node.name}`}><Download size={12}/></a></span>}
       </div>
@@ -3108,7 +3109,7 @@ function WorkDirectoryEditor({ directory, workspaceId, onClose, onUpdated }: {
   return <div className="agent-work-directory-backdrop" onPointerDown={event => { if (event.target === event.currentTarget && !update.isPending) onClose(); }}>
     <section role="dialog" aria-modal="true" aria-labelledby="agent-work-directory-edit-title" className="agent-work-directory-dialog agent-work-directory-edit-dialog">
       <header><div><span className="eyebrow">AGENT WORKSPACE</span><h2 id="agent-work-directory-edit-title">编辑工作区</h2></div><button type="button" aria-label="关闭编辑工作区" disabled={update.isPending} onClick={onClose}><X size={16}/></button></header>
-      <label className="agent-work-directory-name"><span>工作区名称</span><input autoFocus value={displayName} maxLength={160} onChange={event => setDisplayName(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && canSubmit) update.mutate(); }}/></label>
+      <label className="agent-work-directory-name"><span>工作区名称</span><input autoFocus value={displayName} maxLength={160} onChange={event => setDisplayName(event.target.value)} onKeyDown={event => { if (event.nativeEvent.isComposing || event.keyCode === 229) return; if (event.key === 'Enter' && canSubmit) update.mutate(); }}/></label>
       {update.error && <p className="agent-work-directory-error">{update.error instanceof Error ? update.error.message : '工作区更新失败，请稍后重试。'}</p>}
       <footer><button type="button" className="secondary" disabled={update.isPending} onClick={onClose}>取消</button><button type="button" className="primary" disabled={!canSubmit} onClick={() => update.mutate()}>{update.isPending ? '正在保存…' : '保存'}</button></footer>
     </section>
@@ -3672,8 +3673,11 @@ type ConversationFilePreviewRequest =
   | { key: string; kind: 'candidate'; filename: string; url: string; fieldKey: string; relativePath: string }
   | { key: string; kind: 'image'; filename: string; url: string };
 
-function ConversationFilePreviewDialog({ request, workspaceId, bindingId, workDirectoryId, onClose, onOpenInTab, onOpenWorkspaceFile }: {
+function ConversationFilePreviewDialog({ request, gallery = [], onNavigate, workspaceId, bindingId, workDirectoryId, onClose, onOpenInTab, onOpenWorkspaceFile }: {
   request: ConversationFilePreviewRequest;
+  /** Images of the same conversation in display order; enables previous/next navigation. */
+  gallery?: ConversationFilePreviewRequest[];
+  onNavigate?: (request: ConversationFilePreviewRequest) => void;
   workspaceId: string;
   bindingId?: string;
   workDirectoryId?: string;
@@ -3775,13 +3779,69 @@ function ConversationFilePreviewDialog({ request, workspaceId, bindingId, workDi
     : undefined, [canPreviewHtml, fileOptions, fileUrl, previewState, workspaceId, workspaceRequest]);
   const lightweightPreview = Boolean(previewState && (previewState.totalBytes > 128 * 1024 || previewState.content.length > 128 * 1024));
   const imagePreviewable = request.kind === 'image' || canPreviewImage;
-  const handleImageWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
-    if (!event.metaKey) return;
-    event.preventDefault();
-    const nextScale = Math.min(4, Math.max(1, imageScale * (event.deltaY < 0 ? 1.12 : 1 / 1.12)));
-    setImageScale(nextScale);
-    if (nextScale === 1) setImageOffset({ x: 0, y: 0 });
+  const MAX_SCALE = 8;
+  const zoomTo = (next: number) => {
+    const clamped = Math.min(MAX_SCALE, Math.max(1, next));
+    setImageScale(clamped);
+    if (clamped === 1) setImageOffset({ x: 0, y: 0 });
   };
+  const imageScaleRef = useRef(1);
+  imageScaleRef.current = imageScale;
+  const dialogRef = useRef<HTMLElement>(null);
+  const imageMode = request.kind === 'image' || Boolean(request.kind === 'workspace' && (request.mimeType?.startsWith('image/') || /\.(?:avif|gif|jpe?g|png|svg|webp)$/i.test(request.path)));
+  useEffect(() => {
+    const element = dialogRef.current;
+    if (!element || !imageMode) return;
+    // React registers wheel handlers as passive, where preventDefault is ignored and the browser
+    // zooms the whole page together with the image. A native non-passive listener is required.
+    const onWheel = (event: WheelEvent) => {
+      if (event.ctrlKey || event.metaKey) {
+        // Trackpad pinch arrives as ctrl+wheel; Cmd/Ctrl+wheel is the mouse equivalent.
+        event.preventDefault();
+        const speed = event.ctrlKey && !event.metaKey ? 0.01 : 0.0016;
+        zoomTo(imageScaleRef.current * Math.exp(-event.deltaY * speed * (event.deltaMode === 1 ? 16 : 1)));
+        return;
+      }
+      if (imageScaleRef.current > 1) {
+        // Two-finger scrolling pans a zoomed image; containing it also stops the browser's
+        // swipe-back gesture from firing.
+        event.preventDefault();
+        setImageOffset(current => ({ x: current.x - event.deltaX, y: current.y - event.deltaY }));
+      }
+    };
+    element.addEventListener('wheel', onWheel, { passive: false });
+    return () => element.removeEventListener('wheel', onWheel);
+  }, [imageMode]);
+  const galleryIndex = gallery.findIndex(item => item.key === request.key || ('url' in item && 'url' in request && item.url === request.url) || ('path' in item && 'path' in request && item.path === request.path));
+  const stepGallery = (direction: -1 | 1) => {
+    if (gallery.length < 2 || !onNavigate) return;
+    const next = gallery[(Math.max(galleryIndex, 0) + direction + gallery.length) % gallery.length];
+    if (next) onNavigate(next);
+  };
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing || event.altKey) return;
+      const target = event.target as HTMLElement | null;
+      if (target && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))) return;
+      const zoomed = imageScale > 1;
+      if ((event.metaKey || event.ctrlKey) && !['+', '=', '-', '_', '0'].includes(event.key)) return;
+      if (event.key === '+' || event.key === '=') { event.preventDefault(); zoomTo(imageScale * 1.25); }
+      else if (event.key === '-' || event.key === '_') { event.preventDefault(); zoomTo(imageScale / 1.25); }
+      else if (event.key === '0') { event.preventDefault(); resetImageViewport(); }
+      else if (event.key === 'ArrowLeft' || event.key === 'ArrowRight' || event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+        const left = event.key === 'ArrowLeft', right = event.key === 'ArrowRight';
+        if (zoomed) {
+          event.preventDefault();
+          const step = event.shiftKey ? 160 : 60;
+          setImageOffset(current => ({ x: current.x + (left ? step : right ? -step : 0), y: current.y + (event.key === 'ArrowUp' ? step : event.key === 'ArrowDown' ? -step : 0) }));
+        } else if (left || right || event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+          if (gallery.length > 1) { event.preventDefault(); stepGallery(left || event.key === 'ArrowUp' ? -1 : 1); }
+        }
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  });
   const startImageDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (imageScale === 1 || event.button !== 0) return;
     imageDragRef.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, offsetX: imageOffset.x, offsetY: imageOffset.y };
@@ -3797,24 +3857,35 @@ function ConversationFilePreviewDialog({ request, workspaceId, bindingId, workDi
     imageDragRef.current = undefined;
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
   };
-  const imagePreview = imagePreviewable && <div
-    className={`agent-image-preview-viewport${imageScale > 1 ? ' zoomed' : ''}`}
-    onWheel={handleImageWheel}
-    onDoubleClick={resetImageViewport}
-    onPointerDown={startImageDrag}
-    onPointerMove={moveImageDrag}
-    onPointerUp={endImageDrag}
-    onPointerCancel={endImageDrag}
-  ><img
-    className="agent-file-media-preview"
-    src={sourceUrl}
-    alt={request.filename}
-    draggable={false}
-    style={{ transform: `translate(${imageOffset.x}px, ${imageOffset.y}px) scale(${imageScale})` }}
-  /></div>;
+  const imagePreview = imagePreviewable && <div className="agent-image-preview-stage">
+    <div
+      className={`agent-image-preview-viewport${imageScale > 1 ? ' zoomed' : ''}`}
+      onDoubleClick={resetImageViewport}
+      onPointerDown={startImageDrag}
+      onPointerMove={moveImageDrag}
+      onPointerUp={endImageDrag}
+      onPointerCancel={endImageDrag}
+    ><img
+      className="agent-file-media-preview"
+      src={sourceUrl}
+      alt={request.filename}
+      draggable={false}
+      style={{ transform: `translate(${imageOffset.x}px, ${imageOffset.y}px) scale(${imageScale})` }}
+    /></div>
+    {gallery.length > 1 && <>
+      <button type="button" className="agent-image-nav prev" aria-label="上一张图片" title="上一张（←）" onClick={() => stepGallery(-1)}><ChevronLeft size={20}/></button>
+      <button type="button" className="agent-image-nav next" aria-label="下一张图片" title="下一张（→）" onClick={() => stepGallery(1)}><ChevronRight size={20}/></button>
+    </>}
+    <div className="agent-image-toolbar" role="toolbar" aria-label="图片查看">
+      <button type="button" aria-label="缩小" title="缩小（-）" disabled={imageScale <= 1} onClick={() => zoomTo(imageScale / 1.25)}><Minus size={14}/></button>
+      <button type="button" className="scale" aria-label="还原大小" title="还原（0 或双击）" onClick={resetImageViewport}>{Math.round(imageScale * 100)}%</button>
+      <button type="button" aria-label="放大" title="放大（+）" disabled={imageScale >= MAX_SCALE} onClick={() => zoomTo(imageScale * 1.25)}><Plus size={14}/></button>
+      {gallery.length > 1 && <span className="count" aria-live="polite">{Math.max(galleryIndex, 0) + 1} / {gallery.length}</span>}
+    </div>
+  </div>;
 
   return createPortal(<div className="agent-file-preview-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
-    <section className={`agent-file-preview-dialog${fullScreen ? ' fullscreen' : ''}`} role="dialog" aria-modal="true" aria-label="文件预览">
+    <section ref={dialogRef} className={`agent-file-preview-dialog${fullScreen ? ' fullscreen' : ''}`} role="dialog" aria-modal="true" aria-label="文件预览">
       <header>
         <div><span className="eyebrow">FILE PREVIEW</span><h2 ref={titleRef} tabIndex={-1} title={path}>{request.filename}</h2><small title={path}>{path}</small></div>
         <div className="agent-file-preview-dialog-actions">
@@ -3936,35 +4007,72 @@ function WorkspaceBrowser({ tab, workspaceId, bindingId, workDirectoryId, browse
 
 type GoalStatus = NonNullable<OpenHandsConversationEvent['payload']['goal_status']>;
 
-function ConversationGoalMode({ goalStatus, enabled, canEnable, pending, onToggle, onControl, onLocate }: {
+function formatGoalRoundDuration(totalSeconds: number): string {
+  const seconds = Math.max(0, Math.floor(totalSeconds));
+  const minutes = Math.floor(seconds / 60);
+  return minutes ? `${minutes}分${seconds % 60 ? `${seconds % 60}秒` : ''}` : `${seconds}秒`;
+}
+
+function ConversationGoalMode({ goalStatus, enabled, canEnable, pending, rounds, firstRoundSeconds, onToggle, onControl, onLocate, onLocateRound }: {
   goalStatus?: GoalStatus;
   enabled: boolean;
   canEnable: boolean;
   pending: boolean;
+  /** Where each round starts, for jumping to it from the status bar. */
+  rounds: Array<{ eventId: string; label: string; number: number; text?: string; seconds?: number; current?: boolean }>;
+  /** How long the goal's own first round took; it is the goal message, so it has no row. */
+  firstRoundSeconds?: number;
   onToggle: () => void;
-  onControl: (action: 'STOP' | 'RESUME') => void;
+  onControl: (action: 'STOP' | 'RESUME' | 'RESTART' | 'DISMISS') => void;
   onLocate: () => void;
+  onLocateRound: (eventId: string) => void;
 }) {
   const active = goalStatus?.active === true;
-  const resumable = goalStatus?.status === 'interrupted';
+  // A paused goal resumes with its rounds kept; a goal that hit the round cap cannot be
+  // resumed natively, so "continue" starts the same objective again.
+  const continuable = goalStatus?.status === 'interrupted' || goalStatus?.status === 'capped';
+  const [detailDismissed, setDetailDismissed] = useState(false);
   if (!goalStatus) return <button type="button" className={`conversation-goal-mode-toggle${enabled ? ' active' : ''}`} aria-pressed={enabled} disabled={!canEnable} title={enabled ? '已开启目标模式：发送消息将启动目标循环' : '开启目标模式'} onClick={onToggle}>
     <Target size={14}/><span>目标模式</span>
   </button>;
   const label = active
-    ? `目标运行中 · 第 ${goalStatus.iteration} / ${goalStatus.max_iterations} 轮`
+    ? `目标运行中 · 第 ${Math.max(goalStatus.iteration, 1)} / ${goalStatus.max_iterations} 轮`
     : goalStatus.status === 'complete'
       ? '目标已验收通过'
       : goalStatus.status === 'capped'
         ? `目标达到 ${goalStatus.max_iterations} 轮上限`
-        : '目标已中断';
-  return <section className={`conversation-goal-status ${goalStatus.status}`} tabIndex={0} role="group" aria-label={label}>
-    <button type="button" className="conversation-goal-status-summary" onClick={onLocate} title="定位目标消息">
+        : '目标已暂停';
+  return <section className={`conversation-goal-status ${goalStatus.status}`} tabIndex={0} role="group" aria-label={label}
+    data-dismissed={detailDismissed || undefined} onMouseLeave={() => setDetailDismissed(false)}
+    onClickCapture={event => {
+      // A jump closes the card at once: drop focus too, since focus alone keeps it open.
+      if (event.target instanceof Element && event.target.closest('.conversation-goal-status-preview button, .conversation-goal-status-summary')) {
+        setDetailDismissed(true);
+        (document.activeElement as HTMLElement | null)?.blur();
+      }
+    }}>
+    <button type="button" className="conversation-goal-status-summary" onClick={onLocate} aria-describedby="conversation-goal-status-detail">
       <Target size={14}/><span><b>{label}</b></span>
     </button>
-    {(active || resumable) && <button type="button" className="conversation-goal-status-control" disabled={pending} aria-label={active ? '停止目标' : '恢复目标'} title={active ? '停止目标' : '恢复目标'} onClick={() => onControl(active ? 'STOP' : 'RESUME')}>
-      {active ? <Square size={11} fill="currentColor"/> : <Play size={12} fill="currentColor"/>}
-    </button>}
-    <aside className="conversation-goal-status-preview" role="tooltip"><header><Target size={13}/><b>{label}</b></header><p>{goalStatus.objective}</p>{goalStatus.verdict?.missing && <small>{`Judge：${goalStatus.verdict.missing}`}</small>}</aside>
+    {active && <button type="button" className="conversation-goal-status-control" disabled={pending} aria-label="暂停目标" title="暂停目标，之后可继续" onClick={() => onControl('STOP')}><Pause size={11} fill="currentColor"/></button>}
+    {continuable && <button type="button" className="conversation-goal-status-control" disabled={pending} aria-label="继续目标" title={goalStatus.status === 'capped' ? '以同一目标重新开始，轮次重新计数' : '继续目标'} onClick={() => onControl(goalStatus.status === 'capped' ? 'RESTART' : 'RESUME')}><Play size={12} fill="currentColor"/></button>}
+    {!active && <button type="button" className="conversation-goal-status-control dismiss" disabled={pending} aria-label="移除目标" title="移除目标，之后可以设定新目标" onClick={() => onControl('DISMISS')}><X size={11}/></button>}
+    <aside id="conversation-goal-status-detail" className="conversation-goal-status-preview" role="group" aria-label="目标详情">
+      <button type="button" className="conversation-goal-detail-objective" onClick={onLocate} aria-label="定位目标消息" title="定位目标消息">
+        <header><Target size={13}/><b>{label}</b>{firstRoundSeconds !== undefined && <em>{`首轮 ${formatGoalRoundDuration(firstRoundSeconds)}`}</em>}</header>
+        <p>{goalStatus.objective}</p>
+      </button>
+      {rounds.length > 0 && <ol className="conversation-goal-detail-rounds" aria-label="目标轮次">
+        {rounds.map(round => <li key={round.eventId}>
+          <button type="button" onClick={() => onLocateRound(round.eventId)} aria-label={`定位${round.label}`} title={`定位${round.label}`}>
+            <i className={`conversation-goal-round-number${round.current && active ? ' running' : ''}`} aria-hidden="true">{round.number}</i>
+            <span className="conversation-goal-round-text" title={round.text}>{round.text ?? round.label}</span>
+            <em>{round.seconds !== undefined ? formatGoalRoundDuration(round.seconds) : round.current && active ? '进行中' : ''}</em>
+          </button>
+        </li>)}
+      </ol>}
+      {goalStatus.verdict?.missing && !goalStatus.verdict.complete && <small>{`尚未满足：${goalStatus.verdict.missing}`}</small>}
+    </aside>
   </section>;
 }
 
@@ -4903,6 +5011,7 @@ function WorkspaceDrawer({
     refetchOnWindowFocus: false,
     retry: (count, error) => !(error instanceof ApiError && (error.status < 500 || error.status === 503)) && count < 2,
   });
+  const workspaceRepositoryBranches = useMemo(() => new Map((workspaceGitRepositoriesQuery.data?.repositories ?? []).filter(item => item.branch).map(item => [item.path.replace(/\/+$/, ''), item.branch as string])), [workspaceGitRepositoriesQuery.data?.repositories]);
   const workspaceGitRepository = useMemo(
     () => workspaceRootGitRepository(workspaceGitRepositoriesQuery.data?.repositories ?? [], details?.working_directory),
     [details?.working_directory, workspaceGitRepositoriesQuery.data?.repositories],
@@ -4988,8 +5097,13 @@ function WorkspaceDrawer({
     </section>}
     {workspaceDetailsLoaded && (!drawerFullScreen || fullScreenConversationActive) && <div className="agent-workbench-top-actions" aria-label="工作台操作">
       <button type="button" aria-label={environmentOpen ? '隐藏悬浮信息卡' : '显示悬浮信息卡'} title={environmentOpen ? '隐藏悬浮信息卡' : '显示悬浮信息卡'} aria-pressed={environmentOpen} onClick={toggleEnvironment}>{environmentOpen ? <MonitorOff size={15}/> : <MonitorCog size={15}/>}</button>
-      {!open && scopeState.tabs.length > 0 && <button type="button" aria-label="显示工作区工具" title="显示工作区工具，恢复之前的页签" onClick={() => { setFullScreenView('tool'); onOpen(); }}><PanelRightOpen size={16}/></button>}
-      {!open && <button type="button" className="agent-workspace-new-tab-trigger" aria-label="新建工作区页签" title="新建工作区页签" onClick={() => { ensureLauncherTab(); onOpen(); }}><SquarePlus size={16}/></button>}
+      {!open && (() => {
+        // One entry point: "+" opens a new launcher tab; once tabs exist the same
+        // button shows their count and restores the previous tabs.
+        const tabCount = scopeState.tabs.length;
+        const label = tabCount ? `打开工作区工具（${tabCount} 个页签）` : '新建工作区页签';
+        return <button type="button" className={`agent-workspace-new-tab-trigger${tabCount ? ' has-tabs' : ''}`} aria-label={label} title={label} onClick={() => { if (!tabCount) ensureLauncherTab(); else setFullScreenView('tool'); onOpen(); }}>{tabCount ? <b aria-hidden="true">{tabCount > 9 ? '9+' : tabCount}</b> : <SquarePlus size={16}/>}</button>;
+      })()}
       {fullScreenConversationActive && <button type="button" aria-label="退出全屏" title="退出全屏（Esc）" onClick={() => setFullScreen(false)}><Minimize size={16} strokeWidth={1.7}/></button>}
     </div>}
     <section className={`agent-workspace-tool-shell ${drawerToolsOpen ? '' : 'panel-hidden'}`}>
@@ -5000,10 +5114,16 @@ function WorkspaceDrawer({
         {scopeState.tabs.filter((tab): tab is Extract<WorkspaceToolTab, { kind: 'browser' }> => tab.kind === 'browser').map(tab => <div key={tab.id} className={`agent-workspace-browser-tab-panel ${scopeState.activeTabId === tab.id ? 'active' : ''}`}><WorkspaceBrowser tab={tab} workspaceId={workspaceId} bindingId={bindingId} workDirectoryId={workDirectoryId} browserUrl={browserUrl} onUrlChange={(url, title) => updateScope(current => ({ ...current, tabs: current.tabs.map(candidate => candidate.id === tab.id && candidate.kind === 'browser' ? { ...candidate, url, address: url, title, document: undefined } : candidate) }))}/></div>)}
         {loadingOrError || (!scopeState.tabs.filter(tab => tab.kind !== 'launcher').length ? !browserTabIsActive && <div className="agent-drawer-empty"><b>选择工作区工具</b><span>点击顶部“新建页签”，再选择文件、终端或其他工具。</span></div> : details && <div className={`agent-workspace-tool-content${gitSidebarVisible ? ' fullscreen-git-layout' : ''}`} style={browserTabIsActive ? { display: 'none' } : undefined}>
           {scopeState.tabs.some(tab => tab.kind === 'files') && <section className={`agent-workspace-files ${scopeState.activeTabId === 'files' ? 'active' : ''}${gitSidebarVisible ? ' fullscreen-git' : ''}${fileTreeCollapsed ? ' file-tree-collapsed' : ''}`} style={{ '--file-tree-width': `${fileTreeWidth}px` } as CSSProperties}>
-            <div className="agent-file-tree-pane">
+            <div className="agent-file-tree-pane" onClick={event => {
+              if ((event.target as HTMLElement).closest('button, a, input, [role=treeitem], .agent-workspace-upload-list')) return;
+              setSelectedEntryPaths(new Set());
+              setActiveDirectory(undefined);
+              setGitContextPath(details.working_directory);
+              setGitSidebarRequested(fullScreen);
+            }}>
               <header className="agent-file-tree-toolbar"><span>{selectedEntryPaths.size ? `已选 ${selectedEntryPaths.size} 项` : '文件'}</span><div className="agent-file-tree-actions"><button type="button" title="在文件栏中定位当前文件" aria-label="在文件栏中定位当前文件" disabled={!selectedFile} onClick={() => { if (selectedFile) openSourcePath(selectedFile, sourceFileNavigation?.path === selectedFile ? sourceFileNavigation.line : 1); }}><LocateFixed size={13}/></button><input ref={workspaceUploadInput} type="file" multiple hidden onChange={event => { Array.from(event.target.files ?? []).forEach(file => startWorkspaceUpload(file)); event.currentTarget.value = ''; }}/><button type="button" title="上传文件" aria-label="上传文件" disabled={!api.uploadWorkspaceFile} onClick={() => workspaceUploadInput.current?.click()}><ArrowUp size={13}/></button><button type="button" title="新建文件" aria-label="新建文件" onClick={() => createAtActiveDirectory('FILE')}><FileCode2 size={13}/></button><button type="button" title="新建目录" aria-label="新建目录" onClick={() => createAtActiveDirectory('DIRECTORY')}><FolderPlus size={13}/></button><button type="button" className={`agent-file-tree-hidden-toggle${showHiddenFiles ? ' active' : ''}`} title={showHiddenFiles ? '隐藏以 . 开头的文件和目录' : '显示以 . 开头的文件和目录'} aria-label={showHiddenFiles ? '隐藏隐藏文件和目录' : '显示隐藏文件和目录'} aria-pressed={showHiddenFiles} onClick={() => setShowHiddenFiles(current => !current)}>{showHiddenFiles ? <Eye size={13}/> : <EyeOff size={13}/>}</button><button type="button" className={`agent-file-tree-expand-toggle${expandAllFileDirectories ? ' expanded' : ''}`} title={expandAllFileDirectories ? '全部收起' : '全部展开'} aria-label={expandAllFileDirectories ? '全部收起目录' : '全部展开目录'} disabled={!fileDirectoryPaths.length} onClick={toggleAllFileDirectories}>{expandAllFileDirectories ? <ChevronRight size={13}/> : <ChevronDown size={13}/>}</button><button type="button" className="danger" title="删除选中项" aria-label="删除选中项" disabled={!selectedEntryRoots.length} onClick={() => void removeEntries(selectedEntryRoots.map(path => ({ path, kind: visibleFiles.find(item => item.path === path)?.kind ?? 'directory' })))}><Trash2 size={13}/></button></div></header>
               {workspaceUploads.length > 0 && <div className="agent-workspace-upload-list" aria-label="工作区上传">{workspaceUploads.map(item => <article key={item.id} className={item.state}><span>{item.file.name}</span><small>{item.state === 'uploading' ? `${item.progress}%` : '上传失败'}</small>{item.state === 'uploading' ? <i style={{ '--upload-progress': `${item.progress}%` } as CSSProperties}/> : <button type="button" onClick={() => retryWorkspaceUpload(item.id)}>重试</button>}</article>)}</div>}
-              <WorkspaceFileTree entries={visibleFiles} root={details.working_directory} selectedFile={selectedFile} selectedPaths={selectedEntryPaths} expanded={expandedFilePaths} pagination={new Map([...directoryPages].map(([path, page]) => [path, page.nextCursor]))} loadingDirectories={loadingDirectoryPaths} onExpandedChange={updateExpandedFilePaths} onLoadMore={parentPath => { void loadDirectory(parentPath); }} onSelect={path => { setActiveDirectory(undefined); selectFile(path); }} onSelectionChange={setSelectedEntryPaths} onActivateDirectory={path => { setActiveDirectory(path); setGitContextPath(path); setGitSidebarRequested(Boolean(path)); }} onContextMenu={(path, kind, event) => { setEntryMenu({ path, kind, x: event.clientX, y: event.clientY }); }} fileDownloadUrl={path => fileUrl(workspaceId, path, { bindingId, workDirectoryId, includeHidden: showHiddenFiles, download: true })}/>
+              <WorkspaceFileTree repositoryBranches={workspaceRepositoryBranches} entries={visibleFiles} root={details.working_directory} selectedFile={selectedFile} selectedPaths={selectedEntryPaths} expanded={expandedFilePaths} pagination={new Map([...directoryPages].map(([path, page]) => [path, page.nextCursor]))} loadingDirectories={loadingDirectoryPaths} onExpandedChange={updateExpandedFilePaths} onLoadMore={parentPath => { void loadDirectory(parentPath); }} onSelect={path => { setActiveDirectory(undefined); selectFile(path); }} onSelectionChange={setSelectedEntryPaths} onActivateDirectory={path => { setActiveDirectory(path); setGitContextPath(path); setGitSidebarRequested(Boolean(path)); }} onContextMenu={(path, kind, event) => { setEntryMenu({ path, kind, x: event.clientX, y: event.clientY }); }} fileDownloadUrl={path => fileUrl(workspaceId, path, { bindingId, workDirectoryId, includeHidden: showHiddenFiles, download: true })}/>
             </div>
             <div className="agent-file-tree-resizer" role="separator" tabIndex={0} aria-label={fileTreeCollapsed ? '展开文件目录' : '调整文件目录宽度'} aria-orientation="vertical" title={fileTreeCollapsed ? '双击展开文件目录' : '拖动调整文件目录宽度'} onPointerDown={startFileTreeResize} onDoubleClick={expandFileTree} onKeyDown={event => { if (fileTreeCollapsed && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); expandFileTree(); } }}/>
             <div className="agent-file-preview">{candidatePreview ? <>
@@ -5216,6 +5336,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [conversationSearchCursor, setConversationSearchCursor] = useState<string>();
   const [conversationSearchHits, setConversationSearchHits] = useState<NonNullable<AgentConversationSearch['hits']>>([]);
   const [conversationSearchTargetEventId, setConversationSearchTargetEventId] = useState<string>();
+  const [searchTargetRetry, setSearchTargetRetry] = useState(0);
   const [inConversationSearchLocation, setInConversationSearchLocation] = useState<ConversationSearchLocation>();
   const [conversationReferenceTarget, setConversationReferenceTarget] = useState<AgentConversationReference>();
   const [sidebarListMode, setSidebarListMode] = useState<'workspaces' | 'activity'>('workspaces');
@@ -7326,12 +7447,37 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       }
       return false;
     };
-    const visibleFormalEvents = currentFormalEvents.filter(event => (
+    // A recovered gateway error is hidden, but OpenHands parents the resumed
+    // work on that event. Dropping it would cut the formal parent chain and
+    // render the continuation as a second, unrelated process, so re-point its
+    // children at the hidden event's own parent.
+    const bridgedParentIds = new Map(currentFormalEvents
+      .filter(event => recoverableGatewayErrorIds.has(event.id) || suppressedRecoveryErrorIds.has(event.id))
+      .map(event => [event.id, event.payload.parent_id] as const));
+    const resolveVisibleParent = (parentId: string | null | undefined): string | null | undefined => {
+      const visited = new Set<string>();
+      let current = parentId;
+      while (current && bridgedParentIds.has(current) && !visited.has(current)) {
+        visited.add(current);
+        current = bridgedParentIds.get(current);
+      }
+      return current;
+    };
+    const filteredFormalEvents = currentFormalEvents.filter(event => (
       !belongsToHiddenBranch(event)
       && !recoverableGatewayErrorIds.has(event.id)
       && !suppressedRecoveryErrorIds.has(event.id)
       && !deferredRewriteUserEventIds.has(event.id)
     ));
+    // Rewrite only the events that actually hang off a hidden error, so every
+    // other event keeps its object identity.
+    const visibleFormalEvents = bridgedParentIds.size === 0
+      ? filteredFormalEvents
+      : filteredFormalEvents.map(event => {
+        const parentId = event.payload.parent_id;
+        if (!parentId || !bridgedParentIds.has(parentId)) return event;
+        return { ...event, payload: { ...event.payload, parent_id: resolveVisibleParent(parentId) ?? undefined } };
+      });
     return projectLocalMessages(visibleFormalEvents, activeLocalMessageProjections);
   }, [activeLocalMessageProjections, currentFormalEvents, deferredRewriteUserEventIds, hiddenEventIds, recoverableGatewayErrorIds, suppressedRecoveryErrorIds]);
   const latestGoalEvent = useMemo(() => {
@@ -7340,7 +7486,21 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }
     return undefined;
   }, [currentFormalEvents]);
-  const latestGoalStatus = latestGoalEvent?.payload.goal_status;
+  // "Remove goal" only hides a finished/paused goal's status in this browser so a new
+  // one can be set; OpenHands keeps its own goal events, so remember which one is hidden.
+  const [dismissedGoalEvents, setDismissedGoalEvents] = useState<Record<string, string>>(() => {
+    try { return JSON.parse(localStorage.getItem('flowweave.dismissedGoals') ?? '{}') as Record<string, string>; } catch { return {}; }
+  });
+  const dismissGoal = useCallback((bindingId: string, eventId: string) => {
+    setDismissedGoalEvents(current => {
+      const next = { ...current, [bindingId]: eventId };
+      try { localStorage.setItem('flowweave.dismissedGoals', JSON.stringify(next)); } catch { /* per-viewer convenience only */ }
+      return next;
+    });
+  }, []);
+  const latestGoalStatus = selected && latestGoalEvent && dismissedGoalEvents[selected.id] === latestGoalEvent.id
+    ? undefined
+    : latestGoalEvent?.payload.goal_status;
   useEffect(() => {
     setGoalModeEnabled(false);
     setReadinessRefreshRequested(false);
@@ -7619,8 +7779,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-activity', workspace?.id) });
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-context', workspace?.id, selected.id) });
   }, [condensationStatus, condensationTasks, host, latestNativeCondensationEvent, queryClient, reportOperationError, selected?.id, workspace?.id]);
+  const searchTargetAttempts = useRef(0);
   useEffect(() => {
-    if (!conversationSearchTargetEventId || !selected) return;
+    if (!conversationSearchTargetEventId || !selected) { searchTargetAttempts.current = 0; return; }
     const targetEventId = conversationSearchTargetEventId;
     const target = Array.from(document.querySelectorAll<HTMLElement>('[data-conversation-event-id]')).find(
       item => item.dataset.conversationEventId === targetEventId,
@@ -7628,15 +7789,31 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     const surface = target?.closest<HTMLElement>('.conversation-surface');
     if (!target || !surface) {
       void revealHistoryThrough(targetEventId);
-      return;
+      // The target can be inside a folded process that opens a render later, which changes
+      // no event data, so nothing would call this effect again. Look again shortly, bounded.
+      if (searchTargetAttempts.current >= 20) { searchTargetAttempts.current = 0; setConversationSearchTargetEventId(undefined); return; }
+      searchTargetAttempts.current += 1;
+      const retry = window.setTimeout(() => setSearchTargetRetry(count => count + 1), 50);
+      return () => window.clearTimeout(retry);
     }
-    const top = target.getBoundingClientRect().top - surface.getBoundingClientRect().top + surface.scrollTop - 28;
-    surface.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
-    target.classList.add('conversation-search-target');
-    const timer = window.setTimeout(() => target.classList.remove('conversation-search-target'), 2_600);
+    searchTargetAttempts.current = 0;
     setConversationSearchTargetEventId(undefined);
-    return () => window.clearTimeout(timer);
-  }, [conversationSearchTargetEventId, displayedEvents, historyCacheRevision, revealHistoryThrough, selected]);
+    // Unfolding a process changes the page height, so the position measured now can be stale
+    // a frame later. Measure after layout settles and correct once more if it moved.
+    const scrollToTarget = (behavior: ScrollBehavior) => {
+      const top = target.getBoundingClientRect().top - surface.getBoundingClientRect().top + surface.scrollTop - 28;
+      surface.scrollTo({ top: Math.max(0, top), behavior });
+    };
+    // Restart the highlight even when the same element was highlighted a moment ago.
+    target.classList.remove('conversation-search-target');
+    void target.offsetWidth;
+    target.classList.add('conversation-search-target');
+    window.setTimeout(() => target.classList.remove('conversation-search-target'), 2_600);
+    requestAnimationFrame(() => {
+      scrollToTarget('auto');
+      requestAnimationFrame(() => scrollToTarget('smooth'));
+    });
+  }, [conversationSearchTargetEventId, displayedEvents, historyCacheRevision, revealHistoryThrough, searchTargetRetry, selected]);
   // A draft has no OpenHands Conversation or event branch yet. It must never
   // inherit execution/readiness state from the previously selected binding.
   // The sole exception is its own first-message bootstrap, which explicitly
@@ -7659,8 +7836,17 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         state: selectedCondensing ? 'running' as const : effectiveTurnState,
         active: selectedCondensing || effectiveTurnState === 'running' || effectiveTurnState === 'pausing' || effectiveTurnState === 'resuming' || effectiveTurnState === 'reconnecting',
       }, [effectiveTurnState, selectedCondensing, uncreatedConversationDraft]);
-  const conversationVisuallyActive = !uncreatedConversationDraft && !nativeFailureSettled && !streamCompletionAcknowledged && (
-    conversationActivity.active
+  // OpenHands writes the Judge's verdict (goal active, verdict incomplete) when a
+  // round ends and before the next one starts, so the loop is known to continue
+  // while the run itself already reads finished. Keep the conversation active
+  // for that gap instead of settling into a final state and jumping back.
+  const goalLoopContinues = latestGoalStatus?.active === true
+    && effectiveTurnState !== 'paused'
+    && effectiveTurnState !== 'pausing'
+    && !activeFormalTurnInterrupted;
+  const conversationVisuallyActive = !uncreatedConversationDraft && !nativeFailureSettled && (goalLoopContinues || !streamCompletionAcknowledged) && (
+    goalLoopContinues
+    || conversationActivity.active
     || (
       effectiveTurnState !== 'paused'
       && !nativeTurnTerminal
@@ -7759,6 +7945,21 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }
     return [...byId.values()];
   }, [attachments, displayedEvents]);
+  // Every image already shown in this conversation, in order, so the preview can step through them.
+  const previewGallery = useMemo<ConversationFilePreviewRequest[]>(() => {
+    const items: ConversationFilePreviewRequest[] = [];
+    const seen = new Set<string>();
+    for (const attachment of sessionAttachments) {
+      if (!attachment.mime_type.startsWith('image/') || seen.has(attachment.path)) continue;
+      seen.add(attachment.path);
+      items.push({
+        key: `gallery:${attachment.path}`, kind: 'workspace', path: attachment.path, filename: attachment.filename,
+        mimeType: attachment.mime_type, imageDataUrl: attachment.image_data_url, attachment,
+        previewBindingId: selected?.id,
+      });
+    }
+    return items;
+  }, [selected?.id, sessionAttachments]);
   const previewAttachment = useCallback((attachment: AgentAttachment, previewBindingId?: string) => {
     setFilePreviewRequest({
       key: randomId(),
@@ -7991,6 +8192,58 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     },
     onError: error => reportOperationError(selected?.id, error),
   });
+  const handleGoalControl = useCallback((action: 'STOP' | 'RESUME' | 'RESTART' | 'DISMISS') => {
+    if (!selected || !latestGoalStatus) return;
+    if (action === 'DISMISS') {
+      // Hide this goal so a new one can be set; a paused goal is stopped for good first.
+      if (latestGoalEvent) dismissGoal(selected.id, latestGoalEvent.id);
+      return;
+    }
+    // A goal that hit its round cap cannot be resumed natively: start the same objective again.
+    if (action === 'RESTART') goalControl.mutate({ action: 'START', objective: latestGoalStatus.objective });
+    else goalControl.mutate({ action });
+  }, [dismissGoal, goalControl, latestGoalEvent, latestGoalStatus, selected]);
+  // Round starts for the status bar: the goal the person typed, then each Judge follow-up.
+  const goalRoundInfo = useMemo(() => {
+    if (!latestGoalStatus) return { firstRoundSeconds: undefined, rounds: [] };
+    const objective = latestGoalStatus.objective.trim();
+    const goalMessage = displayedEvents.find(event => event.event_type === 'MESSAGE'
+      && ['user', 'human'].includes(String(event.payload.source ?? '').toLowerCase())
+      && String(event.payload.content ?? '').trim() === objective);
+    const followups = displayedEvents.filter(event => event.payload.goal_followup);
+    const at = (event?: OpenHandsConversationEvent) => {
+      const time = event ? Date.parse(String(event.payload.timestamp ?? '')) : Number.NaN;
+      return Number.isNaN(time) ? undefined : time;
+    };
+    const starts = [
+      ...(goalMessage ? [{ id: goalMessage.id, label: '第 1 轮', at: at(goalMessage) }] : []),
+      ...followups.map((event, index) => ({ id: event.id, label: `第 ${index + 2} 轮`, at: at(event) })),
+    ];
+    // Replies close rounds. While the loop runs the latest reply is only a round's closing message.
+    const replies = displayedEvents.filter(event => event.event_type === 'MESSAGE'
+      && ['agent', 'assistant'].includes(String(event.payload.source ?? '').toLowerCase()));
+    const closes = replies.map(event => at(event)).filter((time): time is number => time !== undefined);
+    const durations = goalRoundDurations(starts, closes);
+    // The goal message is the first round and the goal text already jumps to it, so only the
+    // follow-ups are listed, named as in the transcript ("第 N 轮追问").
+    const followupStarts = starts.filter(start => start.id !== goalMessage?.id);
+    return {
+      firstRoundSeconds: goalMessage ? durations.get(goalMessage.id) : undefined,
+      rounds: followupStarts.map((start, index) => ({
+        eventId: start.id,
+        label: `第 ${index + 1} 轮追问`,
+        number: index + 1,
+        // The Judge's Outstanding, never the fixed English template around it.
+        text: String(displayedEvents.find(event => event.id === start.id)?.payload.goal_followup?.missing ?? '').replace(/\s+/g, ' ').trim() || undefined,
+        seconds: durations.get(start.id),
+        current: index === followupStarts.length - 1,
+      })),
+    };
+  }, [displayedEvents, latestGoalStatus]);
+  const locateGoalRound = useCallback((eventId: string) => {
+    setConversationSearchTargetEventId(eventId);
+    void revealHistoryThrough(eventId);
+  }, [revealHistoryThrough]);
   const canStartGoal = Boolean(
     !goalControl.isPending
     && !latestGoalStatus?.active
@@ -8566,6 +8819,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       setReferences(message.references);
     }
     clearBootstrapRecovery();
+    if (error instanceof ApiError && error.code === 'AGENT_MESSAGE_CANCELLED') {
+      setOperationError(undefined);
+      return;
+    }
     reportOperationError(message.scope, error);
   } });
   useEffect(() => {
@@ -9330,6 +9587,16 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     onError: (error, { message }) => reportOperationError(message.bindingId, error),
     onSettled: (_value, _error, { message }) => setCancellingSubmission(current => current?.submissionId === message.id ? undefined : current),
   });
+  const cancelBootstrap = useMutation({
+    mutationFn: (request: { workspaceId: string; message: QueuedMessage }) =>
+      api.cancelConversationBootstrap?.(request.workspaceId, request.message.scope) ?? Promise.resolve({ cancelled: false }),
+    onMutate: ({ message }) => setCancellingSubmission({ bindingId: message.scope, submissionId: message.id }),
+    // A cancelled creation answers AGENT_MESSAGE_CANCELLED and the creation
+    // request's own onError restores the composer. A first user event that was
+    // already delivered cannot be retracted, so there is nothing to undo here.
+    onError: (error, { message }) => reportOperationError(message.scope, error),
+    onSettled: (_value, _error, { message }) => setCancellingSubmission(current => current?.submissionId === message.id ? undefined : current),
+  });
   const requestInterrupt = useCallback(() => {
     if (!workspace || !selected || cancellingSubmission?.bindingId === selected.id
       || interrupt.isPending && interrupt.variables?.bindingId === selected.id) return;
@@ -9888,9 +10155,13 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     ? effectiveTurnState
     : foregroundSubmissionAwaitingFormalEvent
       ? 'running'
-      : currentFormalTurnFinished
-        ? 'idle'
-        : effectiveTurnState;
+      : goalLoopContinues
+        // Between two Goal rounds the run reads finished although the loop goes on:
+        // keep the pause control available instead of reading idle.
+        ? 'running'
+        : currentFormalTurnFinished
+          ? 'idle'
+          : effectiveTurnState;
   const interruptableActiveTurn = canInterrupt && currentSessionControlState === 'running';
   const composerControlMode: ComposerControlMode = uncreatedConversationDraft
     ? 'idle'
@@ -10030,6 +10301,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const composerActionSends = composerHasContent && !pendingConfirmation;
   const composerControl = (() => {
     if (selected && cancellingSubmission?.bindingId === selected.id) return { label: '正在取消发送', disabled: true, editable: true, action: 'none' as const };
+    if (bootstrap.isPending && pendingBootstrap?.draft.id === conversationDraft?.id && api.cancelConversationBootstrap) {
+      return cancellingSubmission?.bindingId === pendingBootstrap?.message.scope
+        ? { label: '正在取消发送', disabled: true, editable: true, action: 'none' as const }
+        : { label: '取消发送', disabled: false, editable: false, action: 'cancel-bootstrap' as const };
+    }
     const actionBlocked = Boolean(pendingConfirmation)
       || bootstrap.isPending
       || migrateStreaming.isPending
@@ -10078,6 +10354,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       if (goalModeEnabled) startGoalFromComposer(composerDraftRef.current);
       else enqueueDraft();
     }
+    else if (composerControl.action === 'cancel-bootstrap' && workspace && pendingBootstrap) cancelBootstrap.mutate({ workspaceId: workspace.id, message: pendingBootstrap.message });
     else if (composerControl.action === 'interrupt') void requestInterrupt();
     else if (composerControl.action === 'resume' && workspace && selected) resume.mutate({ workspaceId: workspace.id, bindingId: selected.id });
   };
@@ -10672,6 +10949,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     {filePreviewRequest && <ConversationFilePreviewDialog
       key={filePreviewRequest.key}
       request={filePreviewRequest}
+      gallery={previewGallery}
+      onNavigate={setFilePreviewRequest}
       workspaceId={workspace.id}
       bindingId={selected?.id}
       workDirectoryId={selected ? undefined : conversationDraft?.workDirectoryId}
@@ -10731,12 +11010,13 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         if (event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget)) return;
         clearConversationDrop();
       }} onDrop={handleConversationDrop}>
-      <header className="agent-workbench-header"><div><nav className="agent-conversation-tabs" aria-label="会话页签"><button type="button" className="active" aria-current="page" title={selected ? conversationName(selected) : undefined} onDoubleClick={() => { if (!selected || !canWrite) return; setTitle(conversationName(selected)); setEditing(true); }}><MessageSquareText size={14}/><span>{selected ? conversationName(selected) : conversationDraft ? '新会话' : '开始一个新的会话'}</span></button></nav>{editing && <div className="agent-title-edit"><input ref={titleInput} aria-label="会话标题" value={title} onChange={event => setTitle(event.target.value)} onBlur={() => { if (!rename.isPending) { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }} onKeyDown={event => { if (event.key === 'Enter' && title.trim()) { event.preventDefault(); rename.mutate(); } if (event.key === 'Escape') { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }}/></div>}</div></header>
+      <header className="agent-workbench-header"><div><nav className="agent-conversation-tabs" aria-label="会话页签"><button type="button" className="active" aria-current="page" title={selected ? conversationName(selected) : undefined} onDoubleClick={() => { if (!selected || !canWrite) return; setTitle(conversationName(selected)); setEditing(true); }}><MessageSquareText size={14}/><span>{selected ? conversationName(selected) : conversationDraft ? '新会话' : '开始一个新的会话'}</span></button></nav>{editing && <div className="agent-title-edit"><input ref={titleInput} aria-label="会话标题" value={title} onChange={event => setTitle(event.target.value)} onBlur={() => { if (!rename.isPending) { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }} onKeyDown={event => { if (event.nativeEvent.isComposing || event.keyCode === 229) return; if (event.key === 'Enter' && title.trim()) { event.preventDefault(); rename.mutate(); } if (event.key === 'Escape') { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }}/></div>}</div></header>
       <div className="agent-workbench-content">
       {runtime?.state === 'RECOVERING' && <section className="agent-runtime-recover"><LoaderCircle size={18}/><div><b>运行环境正在恢复</b><span>{runtime.message || '历史会话和工作区文件仍可查看；恢复完成后可继续发送消息和使用终端。'}</span></div></section>}
       {conversationSnapshotUnavailable ? <div className="conversation-surface-empty"><b>会话暂时无法加载</b></div> : conversationInitialLoading ? <div className="conversation-surface-empty" role="status"><LoaderCircle className="conversation-activity-spin" size={16}/><b>正在加载会话</b><span>正在读取最新消息与会话状态…</span></div> : selected || conversationDraft ? <ConversationSurface
         key={`transcript:${conversationPresentationScope ?? 'conversation'}`}
         events={displayedEvents}
+        goalLocateEventId={conversationSearchTargetEventId}
         isGenerating={conversationVisuallyActive}
         isPaused={conversationActivity.state === 'paused'}
         isFailed={nativeFailureSettled}
@@ -10876,7 +11156,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
           </div>
           <div className="agent-composer-actions">
             {features.modelSelection && (selected ? <ComposerModelMenu providers={connectedProviders} providerId={conversationProviderId} modelName={activeConversationModelName} models={availableConversationModels} efforts={supportedEfforts} effort={reasoningEffort ?? selected.reasoning_effort ?? contextQuery.data?.reasoning_effort ?? conversationModel?.default_reasoning_effort ?? ''} disabled={!canWrite || conversationActivity.active || queuedMessages.length > 0 || Boolean(pendingConfirmation) || persistModel.isPending || migrateStreaming.isPending || Boolean(pendingMigratedSend)} onProviderChange={providerId => { const provider = connectedProviders.find(item => item.id === providerId); const model = provider?.models.find(item => item.enabled && item.is_default); if (!provider || !model) return; const effort = model.default_reasoning_effort ?? null; setConversationProviderId(providerId); setConversationModelName(model.model_name); setReasoningEffort(effort); persistModel.mutate({ providerId, modelName: model.model_name, effort }); }} onModelChange={modelName => { const model = availableConversationModels.find(item => item.model_name === modelName); const effort = model?.default_reasoning_effort ?? null; setConversationModelName(modelName); setReasoningEffort(effort); persistModel.mutate({ providerId: conversationProviderId, modelName, effort }); }} onEffortChange={effort => { const nextEffort = effort || null; setReasoningEffort(nextEffort); persistModel.mutate({ providerId: conversationProviderId, modelName: activeConversationModelName, effort }); }}/> : <ComposerModelMenu providers={connectedProviders} providerId={newConversationProviderId} modelName={newConversationModelName} models={availableDraftModels} efforts={supportedDraftEfforts} effort={newConversationReasoningEffort ?? draftConversationModel?.default_reasoning_effort ?? ''} disabled={!canOpenConversation || bootstrap.isPending} onProviderChange={providerId => { const provider = connectedProviders.find(item => item.id === providerId); const model = provider?.models.find(item => item.enabled && item.is_default); if (!provider || !model) return; setNewConversationProviderId(providerId); setNewConversationModelName(model.model_name); setNewConversationReasoningEffort(model.default_reasoning_effort ?? null); }} onModelChange={modelName => { const model = availableDraftModels.find(item => item.model_name === modelName); setNewConversationModelName(modelName); setNewConversationReasoningEffort(model?.default_reasoning_effort ?? null); }} onEffortChange={effort => setNewConversationReasoningEffort(effort || null)}/>) }
-            <button type="button" className={`agent-send${escPauseConfirmation && composerControl.action === 'interrupt' ? ' escape-confirmation' : ''}${composerControl.action === 'resume' || composerControlMode === 'pausing' ? ' resume' : ''}`} aria-label={escPauseConfirmation && composerControl.action === 'interrupt' ? '再次按 Esc 暂停当前 Agent' : composerControl.label} disabled={composerControl.disabled} onClick={runComposerAction}>{escPauseConfirmation && composerControl.action === 'interrupt' ? 'Esc' : pendingConfirmation ? <ShieldAlert size={14}/> : composerControl.action === 'send' ? <Send size={16}/> : composerControl.action === 'resume' || composerControlMode === 'pausing' ? <Play size={12} fill="currentColor"/> : composerControlMode === 'read-only' ? <CircleAlert size={15}/> : composerControl.action === 'interrupt' ? <Square size={10} fill="currentColor"/> : <LoaderCircle className="conversation-activity-spin" size={15}/>}</button>
+            <button type="button" className={`agent-send${escPauseConfirmation && composerControl.action === 'interrupt' ? ' escape-confirmation' : ''}${composerControl.action === 'resume' || composerControlMode === 'pausing' ? ' resume' : ''}`} aria-label={escPauseConfirmation && composerControl.action === 'interrupt' ? '再次按 Esc 暂停当前 Agent' : composerControl.label} disabled={composerControl.disabled} onClick={runComposerAction}>{escPauseConfirmation && composerControl.action === 'interrupt' ? 'Esc' : pendingConfirmation ? <ShieldAlert size={14}/> : composerControl.action === 'send' ? <Send size={16}/> : composerControl.action === 'resume' || composerControlMode === 'pausing' ? <Play size={12} fill="currentColor"/> : composerControlMode === 'read-only' ? <CircleAlert size={15}/> : composerControl.action === 'interrupt' || composerControl.action === 'cancel-bootstrap' ? <Square size={10} fill="currentColor"/> : <LoaderCircle className="conversation-activity-spin" size={15}/>}</button>
           </div>
         </footer>
         </div>
@@ -10885,7 +11165,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
             <Folder size={16}/><span>{currentWorkspaceName}</span>{workspacePathCopied && <small aria-live="polite">已复制</small>}
           </button>
           <ConversationTaskPlan events={displayedEvents} isGenerating={taskPlanLayoutActive} conversationScope={selected?.id ?? conversationDraft?.id}/>
-          {(selected || conversationDraft) && <ConversationGoalMode goalStatus={latestGoalStatus} enabled={goalModeEnabled} canEnable={canStartGoal} pending={goalControl.isPending || bootstrap.isPending} onToggle={() => setGoalModeEnabled(current => !current)} onControl={action => goalControl.mutate({ action })} onLocate={locateGoalMessage}/>}
+          {(selected || conversationDraft) && <ConversationGoalMode goalStatus={latestGoalStatus} enabled={goalModeEnabled} canEnable={canStartGoal} pending={goalControl.isPending || bootstrap.isPending} onToggle={() => setGoalModeEnabled(current => !current)} rounds={goalRoundInfo.rounds} firstRoundSeconds={goalRoundInfo.firstRoundSeconds} onControl={handleGoalControl} onLocate={locateGoalMessage} onLocateRound={locateGoalRound}/>}
         </div>
       </div>}
       {conversationDropActive && <div className="agent-workbench-drop-overlay" role="status" aria-live="polite"><div><Plus size={22}/><b>松开以添加到当前会话</b><span>支持附件、工作区文件和会话引用</span></div></div>}

@@ -3575,6 +3575,99 @@ def test_agent_workspace_bootstrap_explicit_failure_cleans_up_hidden_conversatio
         assert len(list(db.scalars(select(AgentConversationCredentialSync)))) == 1
 
 
+@pytest.mark.parametrize("cancel_stage", ["before_reserve", "before_native_create", "before_send", "after_send"])
+def test_agent_workspace_bootstrap_cancel_until_first_message_is_dispatched(
+    settings, db_session_factory, monkeypatch, cancel_stage
+):
+    class CancelRuntime(MockRuntime):
+        deleted = 0
+        created = 0
+        sent: list[str] = []
+
+        def create_conversation(self, request):
+            self.created += 1
+            return super().create_conversation(request)
+
+        def send_message(self, handle, content, image_urls=()):
+            self.sent.append(content)
+            return super().send_message(handle, content, image_urls)
+
+        def delete_conversation(self, handle):
+            del handle
+            self.deleted += 1
+
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=kwargs.get("model_name") or "test-model",
+            api_key="x",
+        ),
+    )
+    runtime = CancelRuntime()
+    key = "draft-cancel"
+    with (
+        settings_context(settings),
+        tenant_user(FLOWWEAVE_USER_ID),
+        db_session_factory() as db,
+        runtime_context(runtime),
+    ):
+        workspace = _ready_workspace_for_conversation(db)
+        draft_id = str(uuid4())
+
+        def start():
+            return conversations.bootstrap_conversation(
+                db,
+                workspace.id,
+                work_directory_id=None,
+                conversation_id=draft_id,
+                model_provider_id=workspace.default_model_provider_id,
+                content="撤回我",
+                idempotency_key=key,
+            )
+
+        if cancel_stage == "before_reserve":
+            assert conversations.cancel_bootstrap(db, workspace.id, key) == {"cancelled": True}
+            with pytest.raises(DomainError) as caught:
+                start()
+            assert caught.value.code == "AGENT_MESSAGE_CANCELLED"
+            assert runtime.created == 0 and runtime.sent == []
+            return
+
+        original = {
+            "before_native_create": "_create_native_conversation",
+            "before_send": "_claim_bootstrap_dispatch",
+            "after_send": "_activate_bootstrapped_conversation",
+        }[cancel_stage]
+        real = getattr(conversations, original)
+
+        def cancel_then_continue(*args, **kwargs):
+            if cancel_stage == "before_send" and not kwargs.get("dispatching"):
+                return real(*args, **kwargs)
+            result = conversations.cancel_bootstrap(db, workspace.id, key)
+            cancel_then_continue.result = result
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(conversations, original, cancel_then_continue)
+        if cancel_stage == "after_send":
+            # The first user event is already native: it cannot be retracted.
+            result = start()
+            assert cancel_then_continue.result == {"cancelled": False}
+            assert result["accepted"] is True and runtime.sent == ["撤回我"]
+            assert db.get(AgentConversationBinding, draft_id) is not None
+            return
+        with pytest.raises(DomainError) as caught:
+            start()
+        assert caught.value.code == "AGENT_MESSAGE_CANCELLED"
+        assert cancel_then_continue.result == {"cancelled": True}
+        assert runtime.sent == []
+        assert db.scalar(select(AgentConversationBinding)) is None
+        assert db.scalar(select(AgentConversationCommand)) is None
+        assert conversations.list_conversations(db, workspace.id) == []
+
+
 def test_agent_workspace_bootstrap_rejects_reuse_of_deleted_draft_id(
     settings, db_session_factory, monkeypatch
 ):

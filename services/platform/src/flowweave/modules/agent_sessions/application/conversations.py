@@ -11,7 +11,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 from typing import cast as typing_cast
 from urllib.parse import urlencode
 from uuid import UUID, uuid4, uuid5
@@ -2294,6 +2294,96 @@ def _bootstrap_command(
     return binding, command
 
 
+_BOOTSTRAP_CANCEL_REQUESTED = "AGENT_BOOTSTRAP_CANCEL_REQUESTED"
+_BOOTSTRAP_DISPATCHING = "AGENT_BOOTSTRAP_DISPATCHING"
+
+
+def _bootstrap_cancelled_error() -> DomainError:
+    return DomainError("AGENT_MESSAGE_CANCELLED", "已取消发送，消息已回到发送框", 409)
+
+
+def cancel_bootstrap(db: Session, workspace_id: str, submission_id: str) -> dict[str, bool]:
+    """Cancel a first-message creation until its user event is dispatched.
+
+    The creator claims DISPATCHING under the same row lock before the native
+    append, so exactly one side wins. After that the append is irreversible and
+    the caller must use the formal interrupt instead.
+    """
+
+    if not submission_id or len(submission_id) > 200:
+        raise DomainError("AGENT_SUBMISSION_ID_INVALID", "消息提交标识无效", 422)
+    workspace = _workspace(db, workspace_id)
+    binding, command = _bootstrap_command(db, workspace.id, submission_id)
+    if command is None:
+        # The request has not reserved a binding yet. Leave a tombstone so a
+        # late-arriving creation with this key is rejected instead of sending.
+        existing = db.scalar(
+            select(AgentConversationCommand)
+            .where(AgentConversationCommand.idempotency_key == submission_id)
+            .with_for_update()
+        )
+        if existing is None:
+            db.add(
+                AgentConversationCommand(
+                    workspace_id=workspace.id,
+                    host_kind="AGENT_WORKSPACE",
+                    host_id=workspace.id,
+                    binding_id=str(uuid4()),
+                    command_type="CREATE",
+                    idempotency_key=submission_id,
+                    state="FAILED",
+                    last_error_code=_BOOTSTRAP_CANCEL_REQUESTED,
+                    failure_summary="Cancelled before the conversation was reserved",
+                )
+            )
+            db.commit()
+        return {"cancelled": True}
+    assert binding is not None
+    if (
+        command.state != "PENDING"
+        or binding.lifecycle != "PROVISIONING"
+        or command.last_error_code == _BOOTSTRAP_DISPATCHING
+    ):
+        return {"cancelled": False}
+    command.last_error_code = _BOOTSTRAP_CANCEL_REQUESTED
+    db.commit()
+    return {"cancelled": True}
+
+
+def _abort_cancelled_bootstrap(
+    db: Session,
+    binding: AgentConversationBinding,
+    command: AgentConversationCommand,
+    handle: RuntimeHandle | None = None,
+) -> NoReturn:
+    if handle is not None:
+        try:
+            get_runtime().delete_conversation(handle)
+        except DomainError:
+            pass
+    error = _bootstrap_cancelled_error()
+    _record_bootstrap_failure(db, binding, command, error)
+    raise error
+
+
+def _claim_bootstrap_dispatch(
+    db: Session,
+    binding: AgentConversationBinding,
+    command: AgentConversationCommand,
+    handle: RuntimeHandle | None,
+    *,
+    dispatching: bool,
+) -> None:
+    """Honor a cancellation request, or atomically forbid later cancellation."""
+
+    db.refresh(command, with_for_update=True)
+    if command.last_error_code == _BOOTSTRAP_CANCEL_REQUESTED:
+        _abort_cancelled_bootstrap(db, binding, command, handle)
+    if dispatching:
+        command.last_error_code = _BOOTSTRAP_DISPATCHING
+    db.commit()
+
+
 def _record_bootstrap_failure(
     db: Session,
     binding: AgentConversationBinding,
@@ -2394,6 +2484,13 @@ def bootstrap_conversation(
     normalized_workspace_references = _validated_workspace_references(workspace_references)
     workspace = _workspace(db, workspace_id)
     binding, command = _bootstrap_command(db, workspace.id, idempotency_key)
+    if binding is None and db.scalar(
+        select(AgentConversationCommand.id).where(
+            AgentConversationCommand.idempotency_key == idempotency_key,
+            AgentConversationCommand.last_error_code == _BOOTSTRAP_CANCEL_REQUESTED,
+        )
+    ):
+        raise _bootstrap_cancelled_error()
     if binding is not None and command is not None:
         if binding.lifecycle == "ACTIVE" and (
             binding.initial_user_event_id is not None or normalized_goal_objective is not None
@@ -2540,6 +2637,7 @@ def bootstrap_conversation(
     try:
         from flowweave.modules.agent_sessions.application import history_integration
 
+        _claim_bootstrap_dispatch(db, binding, command, None, dispatching=False)
         history_integration.prepare_creation(db, workspace, binding, history_references)
         system_secrets: dict[str, str] = {}
         if case_control_round_id is not None:
@@ -2583,6 +2681,7 @@ def bootstrap_conversation(
             ) from exc
         _record_bootstrap_failure(db, binding, command, exc)
         raise
+    _claim_bootstrap_dispatch(db, binding, command, handle, dispatching=True)
     if normalized_goal_objective:
         try:
             get_runtime().start_goal(handle, normalized_goal_objective, 3)
@@ -3916,68 +4015,6 @@ def _selected_reference_text(content: str, selection: dict[str, Any] | None) -> 
     return content[start_offset:end_offset].strip()
 
 
-def read_visible_conversation_context(
-    db: Session, workspace: AgentWorkspace, source: AgentConversationBinding
-) -> str:
-    """Read the same bounded, user-visible source history for every host.
-
-    This is the platform-owned source reader used by dragged references and
-    temporary sidebar conversations. It deliberately excludes tool calls,
-    results, and internal events before the text reaches another conversation.
-    """
-
-    title = (source.display_title or "未命名会话").strip()[:240] or "未命名会话"
-    runtime = get_runtime()
-    source_handle = _handle(db, workspace, source)
-    try:
-        runtime.reload_conversation(source_handle)
-        batch = runtime.read_active_events(source_handle)
-        pages = [batch]
-        history_cursor = batch.history_cursor
-        seen_cursors: set[str] = set()
-        while history_cursor and history_cursor not in seen_cursors and len(pages) < 32:
-            seen_cursors.add(history_cursor)
-            older = runtime.read_active_events(
-                replace(
-                    source_handle,
-                    history_cursor=history_cursor,
-                    active_branch_leaf_event_id=batch.cursor,
-                )
-            )
-            pages.insert(0, older)
-            history_cursor = older.history_cursor
-    except Exception as exc:
-        _logger.warning("Native conversation reference read failed: %s", type(exc).__name__)
-        raise DomainError(
-            "AGENT_CONVERSATION_REFERENCE_UNAVAILABLE",
-            "来源会话暂时不可读取，请稍后重试",
-            409,
-        ) from exc
-    parts: list[str] = []
-    remaining = _MAX_CONVERSATION_REFERENCE_CHARS
-    for page in pages:
-        for event in page.events:
-            if event.event_type != "MESSAGE":
-                continue
-            source_name = str(event.payload.get("source") or "").strip().lower()
-            if source_name not in {"user", "human", "agent", "assistant"}:
-                continue
-            raw = event.payload.get("content")
-            if not isinstance(raw, str):
-                continue
-            visible = _project_conversation_references(raw)[0].strip()
-            if not visible:
-                continue
-            excerpt = visible[:remaining]
-            parts.append(f"{source_name}: {excerpt}")
-            remaining -= len(excerpt)
-            if remaining <= 0:
-                break
-        if remaining <= 0:
-            break
-    return "\n\n".join(parts).strip() or title
-
-
 def _resolve_source_conversation_reference(
     db: Session,
     workspace: AgentWorkspace,
@@ -3996,24 +4033,8 @@ def _resolve_source_conversation_reference(
                 "AGENT_CONVERSATION_REFERENCE_UNAVAILABLE", "来源会话暂时不可引用", 409
             )
         title = (source.display_title or "未命名会话").strip()[:240] or "未命名会话"
-        try:
-            resolved_content = read_visible_conversation_context(db, workspace, source)
-        except RuntimeError as exc:
-            # A few control-plane reconciliation paths run before a Runtime
-            # context is bound. Preserve the legacy metadata-only reference in
-            # that narrow case; normal message delivery always has a Runtime
-            # and uses the platform reader above.
-            if "Runtime is not bound" not in str(exc):
-                raise
-            return {
-                "kind": "conversation",
-                "event_id": "",
-                "content": title,
-                "title": title,
-                "source_binding_id": source.id,
-                "source_conversation_id": source.openhands_conversation_id,
-                "history_tool": "read_referenced_conversation",
-            }
+        # Whole-conversation references carry metadata only. The Agent reads the
+        # history on demand through the governed read_referenced_conversation MCP.
         return {
             "kind": "conversation",
             "event_id": "",
@@ -4021,8 +4042,7 @@ def _resolve_source_conversation_reference(
             "title": title,
             "source_binding_id": source.id,
             "source_conversation_id": source.openhands_conversation_id,
-            "history_tool": "platform_conversation_history",
-            "resolved_content": resolved_content,
+            "history_tool": "read_referenced_conversation",
         }
     runtime = get_runtime()
     source_handle = _handle(db, workspace, source)

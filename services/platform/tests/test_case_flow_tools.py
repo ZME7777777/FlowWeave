@@ -1322,3 +1322,101 @@ def test_stepwise_final_stage_is_completed_by_the_agent_with_accepted_artifact_e
     refresh(g)
     assert g.stage.state == "COMPLETED"
     assert g.item.state == "COMPLETED"
+
+
+def test_create_execution_copy_accepts_a_copy_name() -> None:
+    """The coordinator names the first copy it creates, exactly like later copies."""
+
+    from flowweave.modules.cases.application.flow_tools import FlowActionArguments
+
+    args = FlowActionArguments.model_validate(
+        {
+            "action": "CREATE_EXECUTION_COPY",
+            "idempotency_key": "create-collect-1",
+            "reason": "资料满足启动条件",
+            "expected_case_row_version": 6,
+            "expected_stage_key": "collect",
+            "expected_run_row_version": 1,
+            "expected_snapshot_version": 1,
+            "copy_name": "收集执行",
+        }
+    )
+    assert args.copy_name == "收集执行"
+
+
+def test_copy_name_is_still_rejected_for_unrelated_actions() -> None:
+    import pytest
+    from pydantic import ValidationError
+
+    from flowweave.modules.cases.application.flow_tools import FlowActionArguments
+
+    with pytest.raises(ValidationError, match="copy_name"):
+        FlowActionArguments.model_validate(
+            {
+                "action": "START_EXECUTION",
+                "idempotency_key": "start-1",
+                "reason": "启动",
+                "expected_case_row_version": 6,
+                "expected_stage_key": "collect",
+                "expected_execution_flow_run_id": "run-1",
+                "expected_run_row_version": 1,
+                "expected_snapshot_version": 1,
+                "copy_name": "不应出现",
+            }
+        )
+
+
+def test_completing_before_the_execution_finishes_reports_the_real_reason(flow_case):
+    """A stage that is not ready is a precondition failure, never a VERSION_CONFLICT."""
+
+    g = flow_case
+    assert g.stage.state == "ACTIVE"
+    result = projection(
+        rpc(
+            g,
+            "manage_case_flow",
+            action(g, "COMPLETE_CASE", evidence_artifact_version_ids=[str(uuid4())]),
+        )
+    )
+    assert result["error_code"] == "CASE_STAGE_STATE_NOT_READY"
+    assert result["error_code"] != "VERSION_CONFLICT"
+
+
+
+def test_plan_survives_a_session_rollback_so_a_failure_can_still_be_recorded(flow_case):
+    """The failure handler must not crash when a rollback removed the just-created plan row."""
+
+    g = flow_case
+    plan = service.CaseControlPlan(
+        case_id=g.item.id,
+        stage_id=g.stage.id,
+        action="START_EXECUTION",
+        idempotency_key="rollback-probe-1",
+        reason="probe",
+        input_snapshot_json={"requested": {}},
+    )
+    g.db.add(plan)
+    g.db.flush()
+    snapshot = service._plan_snapshot(plan)
+    assert snapshot["idempotency_key"] == "rollback-probe-1"
+    g.db.rollback()  # discards the uncommitted plan, exactly like a stale-version claim does
+
+    restored = service._restore_plan_after_rollback(g.db, plan, snapshot)
+    restored.state = "FAILED"
+    restored.error_code = "ANY_ERROR"
+    g.db.commit()
+    stored = g.db.get(service.CaseControlPlan, snapshot["id"])
+    assert stored is not None and stored.state == "FAILED"
+    assert stored.idempotency_key == "rollback-probe-1"
+
+
+def test_tool_result_describes_the_plan_after_the_session_replaced_its_row(flow_case):
+    """manage_flow must read the plan back after dispatch instead of trusting the stale ORM row."""
+
+    import inspect
+
+    from flowweave.modules.cases.application import flow_tools
+
+    source = inspect.getsource(flow_tools.manage_flow)
+    assert "db.get(CaseControlPlan, plan_id)" in source
+    assert "return action_result(plan)" not in source

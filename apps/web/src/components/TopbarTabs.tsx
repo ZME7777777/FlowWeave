@@ -18,8 +18,8 @@ const TAB_GAP = 2;
 const OVERFLOW_WIDTH = 28;
 const preferenceKey = (userId: string) => `flowweave.topbar.fixed-collapsed.v1:${userId}`;
 
-function TabMenu({ label, items, children, hover = false, className = '', onSelect }: {
-  label: string; items: Tab[]; children: ReactNode; hover?: boolean; className?: string;
+function TabMenu({ label, items, children, hover = false, overflow = false, className = '', onSelect }: {
+  label: string; items: Tab[]; children: ReactNode; hover?: boolean; overflow?: boolean; className?: string;
   onSelect?: (item: Tab) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -29,7 +29,16 @@ function TabMenu({ label, items, children, hover = false, className = '', onSele
   const closeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const cancelClose = () => { clearTimeout(closeTimer.current); };
   const close = () => { cancelClose(); setOpen(false); };
-  const leave = () => { if (hover) { cancelClose(); closeTimer.current = setTimeout(() => setOpen(false), 180); } };
+  // The fixed-page menu sits flush under its trigger (gap 0), so the pointer never crosses a dead zone
+  // and it can close the instant the pointer leaves both surfaces. Only the overflow menu keeps a
+  // 4px gap, bridged by a very short grace period so leaving feels immediate rather than laggy.
+  const enter = () => { cancelClose(); if (hover) setOpen(true); };
+  const leave = () => {
+    if (!hover) return;
+    cancelClose();
+    if (overflow) closeTimer.current = setTimeout(() => setOpen(false), 60);
+    else setOpen(false);
+  };
   useEffect(() => () => clearTimeout(closeTimer.current), []);
   useEscapeClose(() => { close(); trigger.current?.focus(); }, open);
   useLayoutEffect(() => {
@@ -46,11 +55,11 @@ function TabMenu({ label, items, children, hover = false, className = '', onSele
     document.addEventListener('pointerdown', outside);
     return () => document.removeEventListener('pointerdown', outside);
   }, [open]);
-  return <div className={`topbar-tab-menu ${className}`} onMouseEnter={() => { cancelClose(); if (hover) setOpen(true); }} onMouseLeave={leave}>
-    <button ref={trigger} type="button" className="topbar-tab-menu-trigger" aria-label={label} title={label} aria-haspopup="menu" aria-expanded={open} onKeyDown={event => {
+  return <div className={`topbar-tab-menu ${className}`}>
+    <button ref={trigger} type="button" className="topbar-tab-menu-trigger" onPointerEnter={enter} onPointerLeave={leave} aria-label={label} title={label} aria-haspopup="menu" aria-expanded={open} onKeyDown={event => {
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); cancelClose(); focusMenu.current = true; setOpen(true); if (open) { (popover.current?.querySelector<HTMLButtonElement>('[aria-current="page"]') ?? popover.current?.querySelector<HTMLButtonElement>('[role="menuitem"]'))?.focus(); focusMenu.current = false; } }
-    }} onClick={event => { focusMenu.current = event.detail === 0; if (hover) { setOpen(true); if (open && focusMenu.current) popover.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus(); } else setOpen(current => !current); }}>{children}</button>
-    {open && <ViewportPopover ref={popover} anchor={() => trigger.current} align={hover ? 'end' : 'start'} gap={hover ? 4 : 0} matchAnchorWidth={!hover} heightLimit={360} className={`topbar-tab-popover${hover ? ' topbar-context-overflow-popover' : ' topbar-fixed-popover'}`} role="menu" aria-label={label} onMouseEnter={cancelClose} onMouseLeave={leave} onKeyDown={event => {
+    }} onClick={event => { focusMenu.current = event.detail === 0; cancelClose(); if (hover && !open) setOpen(true); else if (event.detail === 0 && open && hover) popover.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus(); else setOpen(current => !current); }}>{children}</button>
+    {open && <ViewportPopover ref={popover} anchor={() => trigger.current} align={overflow ? 'end' : 'start'} gap={overflow ? 4 : 0} matchAnchorWidth={!overflow} heightLimit={360} className={`topbar-tab-popover${overflow ? ' topbar-context-overflow-popover' : ' topbar-fixed-popover'}`} role="menu" aria-label={label} onPointerEnter={enter} onPointerLeave={leave} onKeyDown={event => {
       const buttons = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')];
       const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
       const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : event.key === 'ArrowDown' ? (index + 1) % buttons.length : event.key === 'ArrowUp' ? (index - 1 + buttons.length) % buttons.length : undefined;
@@ -109,6 +118,7 @@ export function TopbarTabs({ userId, fixedTabs, temporaryTabs, onPromote }: {
   const overflow = temporaryTabs.length > fit(availableWidth);
   const capacity = overflow ? fit(availableWidth - OVERFLOW_WIDTH) : temporaryTabs.length;
   const visible = temporaryTabs.slice(0, capacity);
+  const visibleWidth = visible.reduce((width, tab, index) => width + tabWidth(tab.label) + (index ? TAB_GAP : 0), 0);
   const hidden = temporaryTabs.slice(capacity);
   const activeTemporaryId = temporaryTabs.find(tab => tab.active)?.id;
   useLayoutEffect(() => {
@@ -119,11 +129,12 @@ export function TopbarTabs({ userId, fixedTabs, temporaryTabs, onPromote }: {
   return <div ref={root} className={`topbar-tabs${hasTemporary ? ' has-context-tabs' : ''}${collapsed ? ' fixed-collapsed' : ''}`} style={{ '--fixed-nav-width': `${fixedWidth}px` } as CSSProperties}>
     <div className="topbar-fixed-region">
       <div className="topbar-fixed-scroll" inert={collapsed} aria-hidden={collapsed}><nav ref={fixedNav} aria-label="主导航">{fixedTabs.map(item => <button type="button" key={item.id} className={item.active ? 'active' : ''} aria-current={item.active ? 'page' : undefined} onClick={item.onSelect}><item.icon size={15}/>{item.label}</button>)}</nav></div>
-      {collapsed && <TabMenu className={`topbar-fixed-menu${activeFixed ? ' active' : ''}`} label="选择固定页面" items={fixedTabs}>{fixedSelection && <><fixedSelection.icon size={15}/><span>{fixedSelection.label}</span></>}<ChevronDown size={11}/></TabMenu>}
+      {collapsed && <TabMenu className={`topbar-fixed-menu${activeFixed ? ' active' : ''}`} hover label="选择固定页面" items={fixedTabs}>{fixedSelection && <><fixedSelection.icon size={15}/><span>{fixedSelection.label}</span></>}<ChevronDown size={11}/></TabMenu>}
     </div>
     <button type="button" className="topbar-nav-boundary" aria-label={collapsed ? '展开固定导航' : '收起固定导航'} title={collapsed ? '展开固定导航' : '收起固定导航'} aria-expanded={!collapsed} onClick={() => setCollapsed(current => !current)}>{collapsed ? <ChevronsRight size={12}/> : <ChevronsLeft size={12}/>}</button>
     {hasTemporary && <div className="topbar-context-region" ref={contextRegion}>
-      <div className="context-tabs" aria-label="临时管理标签">{visible.map(tab => <div className={`context-tab${tab.active ? ' active' : ''}`} key={tab.id} data-tab-id={tab.id} style={{ width: tabWidth(tab.label) }}>
+      <div className="topbar-context-content" style={{ width: hidden.length ? visibleWidth + OVERFLOW_WIDTH : visibleWidth }}>
+        <div className="context-tabs" aria-label="临时管理标签">{visible.map(tab => <div className={`context-tab${tab.active ? ' active' : ''}`} key={tab.id} data-tab-id={tab.id} style={{ width: tabWidth(tab.label) }}>
         <button ref={element => { if (element) tabButtons.current.set(tab.id, element); else tabButtons.current.delete(tab.id); }} type="button" className="context-tab-select" aria-current={tab.active ? 'page' : undefined} title={tab.title ?? tab.label} onClick={tab.onSelect}><tab.icon size={14}/><span>{tab.label}</span></button>
         <button type="button" className="context-tab-close" aria-label={`关闭${tab.label}`} title={`关闭${tab.label}`} onClick={event => {
           if (event.detail === 0) {
@@ -133,8 +144,9 @@ export function TopbarTabs({ userId, fixedTabs, temporaryTabs, onPromote }: {
           }
           tab.onClose();
         }}><X size={12}/></button>
-      </div>)}</div>
-      {hidden.length > 0 && <TabMenu className="topbar-context-overflow" hover label={`其他临时标签（${hidden.length}）`} items={hidden} onSelect={item => { focusTab.current = item.id; onPromote(item.id); item.onSelect(); }}><ChevronsRight size={13}/></TabMenu>}
+        </div>)}</div>
+        {hidden.length > 0 && <TabMenu className="topbar-context-overflow" hover overflow label={`其他临时标签（${hidden.length}）`} items={hidden} onSelect={item => { focusTab.current = item.id; onPromote(item.id); item.onSelect(); }}><ChevronsRight size={13}/></TabMenu>}
+      </div>
     </div>}
   </div>;
 }
