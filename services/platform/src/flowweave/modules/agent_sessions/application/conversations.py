@@ -4969,6 +4969,40 @@ def hydrate_conversation(db: Session, workspace_id: str, binding_id: str) -> dic
             )
 
 
+def restore_condenser_credentials(
+    db: Session, workspace_id: str, binding_id: str
+) -> dict[str, bool]:
+    workspace = _workspace(db, workspace_id)
+    binding = _binding(db, workspace_id, binding_id, lock=True)
+    active = db.scalar(
+        select(BackgroundTask.id).where(
+            BackgroundTask.task_type == "CONDENSE_AGENT_CONVERSATION",
+            BackgroundTask.aggregate_id == binding.id,
+            BackgroundTask.state.in_([TaskState.PENDING, TaskState.RUNNING]),
+        )
+    )
+    handle = _handle(db, workspace, binding)
+    runtime = get_runtime()
+    if active is not None or not runtime.can_accept_input(handle):
+        raise DomainError("AGENT_CONVERSATION_BUSY", "请在当前回复或压缩完成后恢复摘要器认证", 409)
+    provider = runtime_provider(
+        db,
+        {"asset": {"executor": {"model_provider_id": binding.model_provider_id}}},
+        model_name=binding.model_name,
+        reasoning_effort=binding.reasoning_effort,
+    )
+    runtime.restore_condenser_credentials(handle, provider)
+    log_conversation_diagnostic(
+        operation="condenser_credentials_restored",
+        host_kind="agent_workspace",
+        binding_id=binding.id,
+        workspace_id=workspace.id,
+        outcome="success",
+        force=True,
+    )
+    return {"restored": True}
+
+
 def switch_conversation_model(
     db: Session,
     workspace_id: str,

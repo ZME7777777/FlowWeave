@@ -2,7 +2,7 @@
 
 > 创建日期：2026-08-21
 > 状态：`UPSTREAM BASELINE ADOPTION COMPLETE`
-> 当前执行切片：`NONE`
+> 当前执行切片：`FR-705`
 > 下一可执行切片：`FR-705`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
@@ -166,7 +166,7 @@ Worker、Provider、Runtime 实际身份及配置哈希再次验收通过。保�
 仅保存在忽略目录及服务器受保护发布上下文。本片只补记实际发布与验证结果，
 文档 diff 及 CURRENT 唯一性检查通过。
 
-### FR-705 已有受损 Fork 摘要模型认证的正式恢复 — READY
+### FR-705 已有受损 Fork 摘要模型认证的正式恢复 — CURRENT
 
 依赖 OPS-85 DONE。已有 Fork 的摘要器凭据已经脱敏丢失，镜像升级和当前
 switch_llm 同步逻辑不能恢复该值。需通过受治理的 OpenHands 正式配置／
@@ -174,6 +174,14 @@ switch_llm 同步逻辑不能恢复该值。需通过受治理的 OpenHands 正�
 改写在线 base_state、绕过原生 lease 创建第二个 writer，或以发送摘要提示词
 模拟压缩。完成条件为原受损 Binding、原 native ID、历史和工作区保留，
 原会话使用真实模型生成正式压缩完成事件，并能继续对话。
+
+实施中：原生恢复接口与能力标记、平台当前用户供应商解析和忙碌门禁已实现。
+固定修复源码为 `4c563c0f96700b6b331c4a70cd244b287749e980`，四包保持
+`1.54.0`。定向原生回归 59 项、平台适配器回归 4 项、源码供应链／架构
+6 项通过。新增镜像探针在固定源码下验证缺失认证恢复、持久重载与实际
+摘要生成通过。SDK per-file pre-commit 通过，平台受影响源码有既有静态
+类型／行长问题，新增恢复方法已定向复核。实际镜像构建、发布、原会话恢复
+和真实模型验收仍在执行，当前切片尚未完成。
 
 ### OPS-12 独立 Agent Runtime baseline 同步升级 — DONE
 
@@ -15997,7 +16005,9 @@ SHA-256一致，API鉴权边界及全新Chromium三种登录／深链入口通�
 核验Web健康／版本、配置和47个保护容器通过，未push。
 
 
-### OPS-84 会话配置侧栏与列表操作简化 — CURRENT
+### OPS-84 会话配置侧栏与列表操作简化 — READY
+
+协调说明：用户指定先实施 FR-705，OPS-84 待后续继续。
 
 依赖 OPS-83 DONE。能力／认证改左侧导航，类型筛选与列表操作分行，
 Skill组合收进多选筛选弹层并显示激活数量，移除选择统计行；认证表头

@@ -820,6 +820,10 @@ class RuntimePort(Protocol):
 
     def switch_model(self, handle: RuntimeHandle, provider: RuntimeProvider) -> None: ...
 
+    def restore_condenser_credentials(
+        self, handle: RuntimeHandle, provider: RuntimeProvider
+    ) -> None: ...
+
     def load_plugin(self, handle: RuntimeHandle, plugin_ref: str) -> None: ...
 
     def conversation_mcp_configured(

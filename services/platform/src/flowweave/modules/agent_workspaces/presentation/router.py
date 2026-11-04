@@ -2321,6 +2321,20 @@ async def agent_context(
     )
 
 
+@router.post(
+    "/agent-workspaces/{workspace_id}/conversations/{binding_id}/condenser-credentials/restore"
+)
+async def agent_restore_condenser_credentials(
+    workspace_id: str, binding_id: str, container: ContainerDep
+) -> dict[str, bool]:
+    return await run_blocking_lifecycle(
+        container,
+        lambda session: conversations.restore_condenser_credentials(
+            session, workspace_id, binding_id
+        ),
+    )
+
+
 @router.post("/agent-workspaces/{workspace_id}/conversations/{binding_id}/model")
 async def agent_conversation_model(
     workspace_id: str,
