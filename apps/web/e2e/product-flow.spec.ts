@@ -3545,17 +3545,25 @@ test('Agent new session keeps full capabilities and can create an explicit works
     ]),
   }));
 
-  await page.route('**/api/v1/model-providers', route => route.fulfill({
-    status: 200,
-    contentType: 'application/json',
-    body: JSON.stringify([{
-      id: 'provider-default', name: '默认供应商', connection_state: 'CONNECTED',
-      models: [{ model_name: 'gpt-default', enabled: true, is_default: true }],
-    }, {
-      id: 'provider-pro', name: '专业供应商', connection_state: 'CONNECTED',
-      models: [{ model_name: 'gpt-pro', enabled: true, is_default: true, default_reasoning_effort: 'high', supported_reasoning_efforts: ['low', 'high'] }],
-    }]),
-  }));
+  const providers = [{
+    id: 'provider-default', name: '默认供应商', connection_state: 'CONNECTED',
+    models: [{ model_name: 'gpt-default', enabled: true, is_default: true }],
+  }, {
+    id: 'provider-pro', name: '专业供应商', connection_state: 'CONNECTED',
+    models: [{ model_name: 'gpt-pro', enabled: true, is_default: true, default_reasoning_effort: 'high', supported_reasoning_efforts: ['low', 'high'] }],
+  }];
+  await page.route('**/api/v1/model-providers', async route => {
+    if (route.request().method() === 'POST') {
+      const created = {
+        id: 'provider-new', connection_state: 'CONNECTED',
+        ...route.request().postDataJSON(),
+      };
+      providers.unshift(created);
+      await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify(created) });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(providers) });
+  });
 
   await login(page);
   await page.getByRole('button', { name: 'Agent 会话' }).click();
@@ -3635,13 +3643,31 @@ test('Agent new session keeps full capabilities and can create an explicit works
   expect(attachmentUploads).toBe(2);
 
   await composer.fill('切换页面后仍应保留的首条草稿');
+  await page.getByRole('button', { name: '账户与设置' }).click();
+  await page.getByRole('menuitem', { name: '大模型配置', exact: true }).click();
+  await page.getByRole('button', { name: '新增模型服务', exact: true }).click();
+  const providerEditor = page.locator('form.model-editor');
+  await providerEditor.getByLabel('服务名称', { exact: true }).fill('即时可用供应商');
+  await providerEditor.getByLabel('Base URL', { exact: true }).fill('https://models.example.test/v1');
+  await providerEditor.getByLabel('API Key', { exact: true }).fill('fixture-key');
+  await providerEditor.getByLabel('模型 1', { exact: true }).fill('gpt-new');
+  await providerEditor.getByRole('button', { name: '保存模型服务', exact: true }).click();
+  await page.getByRole('button', { name: 'Agent 会话', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '新会话' })).toBeVisible();
+  await page.getByLabel('打开模型与推理设置').click();
+  await page.getByRole('button', { name: '供应商 专业供应商' }).click();
+  await expect(page.getByLabel('选择供应商').getByRole('button', { name: '即时可用供应商', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '返回模型设置', exact: true }).click();
+  await page.getByRole('button', { name: '供应商 专业供应商' }).click();
+  await page.getByLabel('选择供应商').getByRole('button', { name: '即时可用供应商', exact: true }).click();
+  await expect(page.getByLabel('打开模型与推理设置')).toContainText('即时可用供应商 gpt-new');
   await page.getByRole('button', { name: '节点中心', exact: true }).click();
   await page.getByRole('button', { name: 'Agent 会话', exact: true }).click();
   await expect(page.getByRole('heading', { name: '新会话' })).toBeVisible();
   await expect(page.getByLabel('发送 Agent 消息')).toHaveValue('切换页面后仍应保留的首条草稿');
   await expect(page.locator('.agent-attachments').getByText('需求.png', { exact: true })).toBeVisible();
   await expect(page.locator('.agent-attachments').getByText('需求说明.md', { exact: true })).toBeVisible();
-  await expect(page.getByText('当前供应商：专业供应商 · 前端工作区', { exact: true })).toBeVisible();
+  await expect(page.getByText('当前供应商：即时可用供应商 · 前端工作区', { exact: true })).toBeVisible();
   expect(conversations).toHaveLength(0);
   expect(bootstrapPayload).toBeNull();
 
@@ -3696,7 +3722,7 @@ test('Agent new session keeps full capabilities and can create an explicit works
   await page.getByRole('button', { name: '发送消息' }).click();
   await expect(page).toHaveURL(/\/agent\/conversations\/fr58-conversation$/);
   expect(bootstrapPayload).toMatchObject({
-    model_provider_id: 'provider-pro', model_name: 'gpt-pro', reasoning_effort: 'low',
+    model_provider_id: 'provider-new', model_name: 'gpt-new', reasoning_effort: null,
     work_directory_id: 'fr58-frontend', content: '实现前端工作区',
     attachments: [
       { path: '/runtime/workspace/project/uploads/0123456789abcdef0123456789abcdef-需求.png', image_data_url: 'data:image/png;base64,iVBORw==' },
