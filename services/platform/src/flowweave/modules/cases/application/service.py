@@ -1363,6 +1363,33 @@ def _create_case_control_plan(
     return _control_plan_dict(plan)
 
 
+def _plan_snapshot(plan: CaseControlPlan) -> dict[str, Any]:
+    """Plain copy of a plan row, usable after a rollback expires or removes the ORM object."""
+
+    columns = CaseControlPlan.__table__.columns.keys()
+    return {name: getattr(plan, name) for name in columns}
+
+
+def _restore_plan_after_rollback(
+    db: Session, plan: CaseControlPlan, snapshot: dict[str, Any]
+) -> CaseControlPlan:
+    """Return a live plan row, re-inserting it when the session rollback removed it."""
+
+    try:
+        db.refresh(plan)
+        return plan
+    except Exception:
+        # ObjectDeletedError / InvalidRequestError: the row did not survive the rollback.
+        try:
+            db.expunge(plan)
+        except Exception:  # noqa: BLE001 - already detached
+            pass
+        restored = CaseControlPlan(**snapshot)
+        db.add(restored)
+        db.flush()
+        return restored
+
+
 def execute_case_control_plan(db: Session, case_id: str, plan_id: str) -> dict[str, Any]:
     """Validate and dispatch one Case plan through established orchestration services."""
 
@@ -1382,6 +1409,7 @@ def execute_case_control_plan(db: Session, case_id: str, plan_id: str) -> dict[s
     if plan.state == "EXECUTING":
         raise conflict("Case control plan is already executing", plan_id=plan.id)
     require_case_action(item, plan.action)
+    plan_snapshot = _plan_snapshot(plan)
     stage = _stage(db, item, plan.stage_id)
     allowed_stage_state = (
         "REVIEW_PENDING"
@@ -1617,6 +1645,10 @@ def execute_case_control_plan(db: Session, case_id: str, plan_id: str) -> dict[s
         else:
             raise illegal("Case control plan action is not yet dispatchable", action=plan.action)
     except Exception as exc:
+        # An orchestration command may roll the session back to report a stale version. That also
+        # discards a plan row created in the same transaction, so restore it before recording the
+        # failure; otherwise the handler itself crashes (ObjectDeletedError) and hides the cause.
+        plan = _restore_plan_after_rollback(db, plan, plan_snapshot)
         plan.state = "FAILED"
         plan.error_code = str(getattr(exc, "code", "CASE_CONTROL_PLAN_FAILED"))
         plan.result_json = {"code": plan.error_code}

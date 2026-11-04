@@ -1380,3 +1380,31 @@ def test_completing_before_the_execution_finishes_reports_the_real_reason(flow_c
     )
     assert result["error_code"] == "CASE_STAGE_STATE_NOT_READY"
     assert result["error_code"] != "VERSION_CONFLICT"
+
+
+
+def test_plan_survives_a_session_rollback_so_a_failure_can_still_be_recorded(flow_case):
+    """The failure handler must not crash when a rollback removed the just-created plan row."""
+
+    g = flow_case
+    plan = service.CaseControlPlan(
+        case_id=g.item.id,
+        stage_id=g.stage.id,
+        action="START_EXECUTION",
+        idempotency_key="rollback-probe-1",
+        reason="probe",
+        input_snapshot_json={"requested": {}},
+    )
+    g.db.add(plan)
+    g.db.flush()
+    snapshot = service._plan_snapshot(plan)
+    assert snapshot["idempotency_key"] == "rollback-probe-1"
+    g.db.rollback()  # discards the uncommitted plan, exactly like a stale-version claim does
+
+    restored = service._restore_plan_after_rollback(g.db, plan, snapshot)
+    restored.state = "FAILED"
+    restored.error_code = "ANY_ERROR"
+    g.db.commit()
+    stored = g.db.get(service.CaseControlPlan, snapshot["id"])
+    assert stored is not None and stored.state == "FAILED"
+    assert stored.idempotency_key == "rollback-probe-1"
