@@ -6067,6 +6067,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const unpinnedConversations = conversations.filter(
     item => !(pendingPinnedUpdates.current.get(item.id)?.pinned ?? item.pinned),
   );
+  const activityLimitedToCatalog = scopeWorkDirectoryId === undefined && features.workDirectories && Boolean(workDirectoriesQuery.data);
+  const activityCatalogDirectoryIds = useMemo(() => new Set(workDirectories.map(item => item.id)), [workDirectories]);
   const activityConversations = useMemo(() => {
     const byId = new Map<string, AgentConversation>();
     for (const item of conversations) byId.set(item.id, item);
@@ -6074,13 +6076,16 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     return [...byId.values()]
       .filter(item => !optimisticallyRemovedConversationIds.has(item.id) && !archivedDirectoryIds.has(item.work_directory_id ?? ''))
       .filter(item => scopeWorkDirectoryId === undefined || item.work_directory_id === scopeWorkDirectoryId)
+      // Activity lists only this Agent workspace's own sessions; schedule/Case/other-host
+      // directories are absent from the work-directory catalog and must not leak in.
+      .filter(item => !activityLimitedToCatalog || !item.work_directory_id || activityCatalogDirectoryIds.has(item.work_directory_id))
       .filter(item => runningConversationIds.has(item.id) || condensingConversationIds.has(item.id) || conversationIsRunning(item.execution_status) || unreadConversationIds.has(item.id) || Boolean(item.unread))
       .sort((left, right) => {
         const leftUpdatedAt = Date.parse(left.updated_at) || Date.parse(left.created_at) || 0;
         const rightUpdatedAt = Date.parse(right.updated_at) || Date.parse(right.created_at) || 0;
         return rightUpdatedAt - leftUpdatedAt || right.id.localeCompare(left.id);
       });
-  }, [activitySnapshot?.conversations, archivedDirectoryIds, condensingConversationIds, conversations, optimisticallyRemovedConversationIds, runningConversationIds, scopeWorkDirectoryId, unreadConversationIds]);
+  }, [activityCatalogDirectoryIds, activityLimitedToCatalog, activitySnapshot?.conversations, archivedDirectoryIds, condensingConversationIds, conversations, optimisticallyRemovedConversationIds, runningConversationIds, scopeWorkDirectoryId, unreadConversationIds]);
   const selectedConversationQuery = useQuery({
     queryKey: sessionQueryKey(host, 'conversation', workspace?.id, selectedBindingId),
     queryFn: () => api.conversation(workspace!.id, selectedBindingId!),
