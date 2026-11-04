@@ -22,7 +22,6 @@ test('case list supports batch copy, export and delete', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('navigation', { name: '主导航' }).getByRole('button', { name: '场景空间' }).click();
   await expect(page.locator('.scenario-tree').getByText('场景甲')).toBeVisible();
-  await page.getByRole('button', { name: '批量管理' }).click();
   await page.getByRole('checkbox', { name: '选择场景 场景甲' }).check();
   await page.getByRole('checkbox', { name: '选择场景 场景乙' }).check();
   await expect(page.getByText('已选 2')).toBeVisible();
@@ -32,7 +31,6 @@ test('case list supports batch copy, export and delete', async ({ page }) => {
   await page.getByRole('button', { name: '批量复制' }).click();
   await expect(page.locator('.scenario-tree').getByText('场景甲 副本')).toBeVisible();
   expect(created).toBe(2);
-  await page.getByRole('button', { name: '批量管理' }).click();
   await page.getByRole('checkbox', { name: '选择场景 场景丙' }).check();
   await page.getByRole('button', { name: '批量删除' }).click();
   await page.getByRole('button', { name: '批量删除' }).last().click();

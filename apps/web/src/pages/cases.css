@@ -457,3 +457,11 @@ html:has(.scenario-space){overscroll-behavior:none}
 .case-question-actions{display:flex;flex:0 0 auto;align-items:center;gap:7px}.case-question-actions button{display:inline-flex;align-items:center;gap:5px;font-size:11px}
 .case-inspector.case-inspector-actions{width:min(640px,calc(100vw - 48px))}
 @media (max-width:640px){.case-single-workspace .case-question{flex-direction:column;align-items:stretch}.case-question-actions{justify-content:flex-end}}
+
+.scenario-space>aside>.scenario-side-head{gap:8px}.scenario-side-head .case-sidebar-search{flex:1;min-width:0;margin:0}
+.case-batch-bar{flex-wrap:nowrap;gap:3px}.case-batch-bar button{padding:4px 6px}.case-batch-all{margin-right:auto;white-space:nowrap}
+.case-activity-list>article{display:flex;align-items:center;gap:10px;margin-bottom:6px;padding:8px 12px}
+.case-activity-list>article>b{flex:none}.case-activity-list>article>small{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.case-activity-list>article>em{font-style:normal;font-size:10px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.case-activity-list article>footer{margin:0;gap:4px;flex:none}.case-activity-list article>footer button{display:inline-flex;align-items:center;gap:3px;padding:3px 6px}
+.case-batch-bar button>span{display:none}.case-batch-bar{overflow:hidden}.case-batch-bar button{padding:5px 8px}
