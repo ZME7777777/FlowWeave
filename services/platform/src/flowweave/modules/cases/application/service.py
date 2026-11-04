@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import mimetypes
+from collections.abc import Sequence
 from pathlib import PurePosixPath
 from typing import Any
 from uuid import uuid4
@@ -218,7 +219,7 @@ def _stage_execution_summary(db: Session, stage: CaseStage) -> dict[str, Any] | 
     }
 
 
-def _stage_dict(db: Session, item: CaseStage) -> dict[str, Any]:
+def _stage_dict(db: Session, item: CaseStage, *, summary: bool = False) -> dict[str, Any]:
     return {
         "id": item.id,
         "case_id": item.case_id,
@@ -230,7 +231,7 @@ def _stage_dict(db: Session, item: CaseStage) -> dict[str, Any]:
         "current_execution_flow_run_id": item.current_execution_flow_run_id,
         "execution_mode": item.execution_mode,
         "state": item.state,
-        "execution": _stage_execution_summary(db, item),
+        "execution": None if summary else _stage_execution_summary(db, item),
         "created_at": item.created_at.isoformat(),
         "updated_at": item.updated_at.isoformat(),
     }
@@ -430,7 +431,9 @@ def _write_case_files(db: Session, item: Case) -> None:
     )
 
 
-def _case_dict(db: Session, item: Case) -> dict[str, Any]:
+def _case_dict(db: Session, item: Case, *, summary: bool = False) -> dict[str, Any]:
+    """Project a Case; ``summary`` omits the heavy per-case history for list views."""
+
     from flowweave.modules.cases.application.feedback import delivery_status
 
     current_round = (
@@ -441,21 +444,25 @@ def _case_dict(db: Session, item: Case) -> dict[str, Any]:
     stages = db.scalars(
         select(CaseStage).where(CaseStage.case_id == item.id).order_by(CaseStage.position)
     ).all()
-    tasks = db.scalars(
-        select(CaseAgentTask)
-        .where(CaseAgentTask.case_id == item.id)
-        .order_by(CaseAgentTask.created_at.desc())
-    ).all()
-    proposals = db.scalars(
-        select(CaseDecisionProposal)
-        .where(CaseDecisionProposal.case_id == item.id)
-        .order_by(CaseDecisionProposal.created_at.desc())
-    ).all()
-    control_plans = db.scalars(
-        select(CaseControlPlan)
-        .where(CaseControlPlan.case_id == item.id)
-        .order_by(CaseControlPlan.created_at.desc())
-    ).all()
+    tasks: Sequence[CaseAgentTask] = ()
+    proposals: Sequence[CaseDecisionProposal] = ()
+    control_plans: Sequence[CaseControlPlan] = ()
+    if not summary:
+        tasks = db.scalars(
+            select(CaseAgentTask)
+            .where(CaseAgentTask.case_id == item.id)
+            .order_by(CaseAgentTask.created_at.desc())
+        ).all()
+        proposals = db.scalars(
+            select(CaseDecisionProposal)
+            .where(CaseDecisionProposal.case_id == item.id)
+            .order_by(CaseDecisionProposal.created_at.desc())
+        ).all()
+        control_plans = db.scalars(
+            select(CaseControlPlan)
+            .where(CaseControlPlan.case_id == item.id)
+            .order_by(CaseControlPlan.created_at.desc())
+        ).all()
     rounds = db.scalars(
         select(CaseControlRound)
         .where(CaseControlRound.case_id == item.id)
@@ -501,11 +508,11 @@ def _case_dict(db: Session, item: Case) -> dict[str, Any]:
             for entry in rounds
         ],
         "row_version": item.row_version,
-        "stages": [_stage_dict(db, stage) for stage in stages],
+        "stages": [_stage_dict(db, stage, summary=summary) for stage in stages],
         "flow_run_ids": _case_flow_runs(db, item.id),
         "tasks": [_task_dict(task) for task in tasks],
         "decision_proposals": [_proposal_dict(proposal) for proposal in proposals],
-        "feedback_deliveries": delivery_status(db, item.id),
+        "feedback_deliveries": [] if summary else delivery_status(db, item.id),
         "control_plans": [_control_plan_dict(plan) for plan in control_plans],
         "created_at": item.created_at.isoformat(),
         "updated_at": item.updated_at.isoformat(),
@@ -513,9 +520,8 @@ def _case_dict(db: Session, item: Case) -> dict[str, Any]:
 
 
 def list_cases(db: Session) -> list[dict[str, Any]]:
-    return [
-        _case_dict(db, item) for item in db.scalars(select(Case).order_by(Case.updated_at.desc()))
-    ]
+    cases = db.scalars(select(Case).order_by(Case.updated_at.desc()))
+    return [_case_dict(db, item, summary=True) for item in cases]
 
 
 def get_case(db: Session, case_id: str) -> dict[str, Any]:

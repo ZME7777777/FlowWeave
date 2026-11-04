@@ -440,3 +440,12 @@ html:has(.scenario-space){overscroll-behavior:none}
 .spin{animation:case-spin 1s linear infinite}
 @keyframes case-spin{to{transform:rotate(360deg)}}
 @media(prefers-reduced-motion:reduce){.spin{animation:none}}
+
+.case-batch-bar{display:flex;flex:none;align-items:center;gap:4px;margin:6px 12px 2px;min-height:26px}
+.case-batch-bar button{display:inline-flex;align-items:center;gap:4px;border:1px solid #dce5df;border-radius:6px;background:#fff;padding:4px 7px;font-size:11px;color:#51635a;cursor:pointer}
+.case-batch-bar button:disabled{opacity:.45;cursor:not-allowed}
+.case-batch-bar button.danger{color:#b4372d}
+.case-batch-all{display:inline-flex;align-items:center;gap:5px;margin-right:auto;font-size:11px;color:#51635a}
+.case-batch-notice{margin:4px 12px;font-size:11px;word-break:break-word}
+.scenario-space .scenario-case-row:has(.scenario-case-check){grid-template-columns:22px minmax(0,1fr) 26px}
+.scenario-case-check{margin:0 0 0 8px}
