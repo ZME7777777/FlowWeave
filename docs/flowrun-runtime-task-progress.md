@@ -2,8 +2,8 @@
 
 > 创建日期：2026-08-21
 > 状态：`UPSTREAM BASELINE ADOPTION COMPLETE`
-> 当前执行切片：`FR-705`
-> 下一可执行切片：`FR-705`
+> 当前执行切片：`NONE`
+> 下一可执行切片：`OPS-84`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -166,22 +166,69 @@ Worker、Provider、Runtime 实际身份及配置哈希再次验收通过。保�
 仅保存在忽略目录及服务器受保护发布上下文。本片只补记实际发布与验证结果，
 文档 diff 及 CURRENT 唯一性检查通过。
 
-### FR-705 已有受损 Fork 摘要模型认证的正式恢复 — CURRENT
+### FR-705 已有受损 Fork 摘要模型认证的正式恢复 — DONE
 
-依赖 OPS-85 DONE。已有 Fork 的摘要器凭据已经脱敏丢失，镜像升级和当前
-switch_llm 同步逻辑不能恢复该值。需通过受治理的 OpenHands 正式配置／
-控制接口恢复认证，同时保留独立摘要模型语义和认证归属校验。禁止直接
-改写在线 base_state、绕过原生 lease 创建第二个 writer，或以发送摘要提示词
-模拟压缩。完成条件为原受损 Binding、原 native ID、历史和工作区保留，
-原会话使用真实模型生成正式压缩完成事件，并能继续对话。
+依赖 OPS-85 DONE。2026-11-04 完成原受损 Binding
+`b3a07bbd-eb2b-4f24-ab80-76d71528e3f4` 的认证恢复、真实压缩和继续对话验收。
+原生 `switch_llm` 正式接口增加显式、可发现的缺失摘要器认证恢复选项。
+LocalConversation 在原生状态锁内核对摘要模型完整配置，仅允许 API Key
+缺失时补齐，保留摘要策略和既有用量，拒绝配置不匹配及运行中恢复。
+EventService 在线程生命周期边界执行恢复，响应返回安全的认证存在标记。
+平台公开恢复动作只解析当前用户 Binding 的供应商与模型，不接受调用方
+提供的认证或模型配置，并拒绝活动压缩任务及忙碌会话。
 
-实施中：原生恢复接口与能力标记、平台当前用户供应商解析和忙碌门禁已实现。
-固定修复源码为 `4c563c0f96700b6b331c4a70cd244b287749e980`，四包保持
-`1.54.0`。定向原生回归 59 项、平台适配器回归 4 项、源码供应链／架构
-6 项通过。新增镜像探针在固定源码下验证缺失认证恢复、持久重载与实际
-摘要生成通过。SDK per-file pre-commit 通过，平台受影响源码有既有静态
-类型／行长问题，新增恢复方法已定向复核。实际镜像构建、发布、原会话恢复
-和真实模型验收仍在执行，当前切片尚未完成。
+纯修复源码固定为 `4c563c0f96700b6b331c4a70cd244b287749e980`，经
+`8a7cafb69` 合入 SDK baseline；`46ba1f9` 适配 baseline 后续测试夹具。
+Runtime 归档 SHA-256 为
+`08039bd770dcaf6b5fbb289a862577b0eb1776d49106177575643c03ae5138ff`，
+四包保持 `1.54.0`。固定修复源码定向回归 59 项、合入后的 baseline 定向
+回归 63 项、平台适配器回归 4 项、源码供应链／架构检查 6 项通过。
+新增真实 TCP HTTP 回归覆盖恢复拒绝、重复恢复、持久重载、实际摘要生成、
+原历史保留及继续回复。镜像探针覆盖缺失认证恢复后持久重载和实际生成摘要。
+SDK 定向 pre-commit 通过；baseline 原有 build/lib 副本干扰动态属性扫描，
+改以全部 Git 跟踪 SDK Python 文件验证通过。平台 adapter 类型检查仍有
+42 条既有诊断，与改动前逐条消息一致，无新增诊断；四条既有行长问题
+保持原范围，受影响文件其余 Ruff、Python 语法及 diff 检查通过。
+
+发布输入绑定 FlowWeave 提交 `c9d9627ddbd65df2ad4c042c06bad8f34b1f7cbd`。
+正式 runtime 预检、受管 platform 最小上下文、linux/amd64 镜像构建、构建内
+及独立无网络完整镜像契约均通过。Runtime 实际 image ID 为
+`sha256:130a14ec283d8faf704b8d1a155f82afa659f2218a4a36cedbc9cad99e6dc33c`，
+平台 image ID 为
+`sha256:86bf0e5f90f5b27640ff708c23e19906bcbb9c1bab049c195b90026309dc6f16`。
+API、stream-api、Worker、Provider 全部使用同一发布提交；终端 seed、原生
+Runtime builder 和独立 Agent 镜像引用均解析为本次 Runtime digest。
+
+全部受影响 Runtime 的正式活动分页门禁无运行项后，服务器侧完成 323 个
+原生会话目录备份和回滚镜像保留；迁移退出码 0，唯一 Alembic head 为
+`0193_case_copy_stepwise_execution`。通过平台正式 replacement 单次受理，
+独立 Agent Runtime generation 52 更新为 53，恢复 ACTIVE／可写。
+实际容器 digest、四包版本、build_git_sha、provenance 和恢复 capability
+与 source lock 一致；原 Binding、原 native ID、工作区、持久挂载及全部
+323 个会话目录保留，33 个保护容器的镜像和启动时间核验通过。
+
+在原 Binding 通过平台正式恢复动作补齐认证，随后正式压缩任务
+`996ce01a-9087-40e2-9ad5-0f118ae1fef3` 为 SUCCEEDED。读取到正式请求事件
+`a2f75afa-178b-4bc4-bda7-038850391420` 和完成事件
+`5f9a3c44-e0bd-4bb8-9c06-27fc2e53bbf1`。真实模型生成摘要后，当前 View
+从 318 个事件降至 159 个，可信 token 从 409661 降至 193095。
+压缩后读取到的原有 320 个正式事件逐项一致。
+
+继续在同一原会话发送一条仅文字验收消息，正式用户事件为
+`167c3e66-2c9d-4a92-a18b-6f854f20de12`，assistant 最终回复事件为
+`b5a86d21-06d3-416e-8320-b67426aa625c`，正文为“FR-705 原会话恢复验证通过”。
+正式结果为 COMPLETED，最终 hydration 为 ready／finished，当前 View 为
+161 个事件、193160 tokens。最终分页包含 324 个正式事件；原事件 ID 与
+正文保持，仅上一条最终回复的展示投影 final_reply 随新轮次正常更新。
+服务器侧对照备份核验 377 个原生正式事件文件，全部内容哈希一致。
+摘要器 Key 已加密持久化；恢复操作本身保留主模型和摘要配置。正常续聊入口
+按既有逻辑更新 primary usage_id 和摘要器 stream_idle_timeout，模型、
+供应商、摘要策略及工作区身份核验一致。
+
+受管 remote-release-finish 完成，收尾后 API／stream-api health 与 readiness、
+Worker、Provider、Runtime 实际身份及服务器配置哈希再次验收通过。
+保留受保护备份和回滚镜像，临时证据只在忽略目录及服务器受保护发布上下文。
+CURRENT 唯一性核验通过；本片完成后停止，下一可执行切片为 OPS-84。
 
 ### OPS-12 独立 Agent Runtime baseline 同步升级 — DONE
 
