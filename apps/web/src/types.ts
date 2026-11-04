@@ -214,9 +214,13 @@ export interface ProviderModel {
   default_reasoning_effort?: string | null; supported_reasoning_efforts?: string[];
   context_window?: number | null;
 }
+export interface ProviderUsageQuery {
+  url: string; method: 'GET' | 'POST'; expression: string; headers: Record<string, string>;
+}
 export interface ModelProvider {
   id: string; name: string; base_url: string; auth_type: 'API_KEY' | 'ANTHROPIC_API_KEY' | 'CODEX_OAUTH';
   api_protocol: 'CHAT_COMPLETIONS' | 'RESPONSES';
+  usage_query?: ProviderUsageQuery | null;
   has_api_key: boolean; api_key_hint?: string | null; oauth_connected: boolean;
   oauth_account_email?: string | null; oauth_device_pending: boolean;
   connection_state: string; reference_node_count: number; available_for_nodes: boolean;
@@ -228,14 +232,19 @@ export interface ModelProviderWrite {
   name: string; auth_type: 'API_KEY' | 'ANTHROPIC_API_KEY' | 'CODEX_OAUTH'; base_url: string;
   api_protocol: 'CHAT_COMPLETIONS' | 'RESPONSES';
   api_key?: string | null; row_version?: number | null;
+  usage_query?: ProviderUsageQuery | null;
   models: ProviderModel[];
 }
 export interface ModelProviderDiscoveryWrite {
   base_url: string; api_key?: string | null; provider_id?: string | null;
 }
 export interface ModelProviderUsage {
+  metrics?: Array<{ label: string; value: number | null; currency: boolean; percentage: boolean }>;
   status: 'AVAILABLE' | 'UNLIMITED' | 'UNAVAILABLE';
   spend?: number; max_budget?: number; remaining?: number; reason?: string;
+}
+export interface ModelProviderUsagePreviewWrite extends ModelProviderDiscoveryWrite {
+  auth_type: 'API_KEY' | 'ANTHROPIC_API_KEY'; usage_query: ProviderUsageQuery | null;
 }
 export interface CodexDeviceAuthorization {
   verification_url: string; user_code: string; expires_at: string; interval: number;

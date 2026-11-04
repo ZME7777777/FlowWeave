@@ -6,7 +6,7 @@ import { useProductDialog } from '../components/ProductDialogContext';
 import { useEscapeClose } from '../components/useEscapeClose';
 import { SettingsManagementLayout, SettingsResourceRow } from '../components/SettingsManagementLayout';
 import { Pagination } from '../components/Pagination';
-import type { CodexDeviceAuthorization, CodexOAuthStatus, ModelProvider, ModelProviderUsage, ModelProviderWrite, ProviderModel } from '../types';
+import type { CodexDeviceAuthorization, CodexOAuthStatus, ModelProvider, ModelProviderUsage, ModelProviderWrite, ProviderModel, ProviderUsageQuery } from '../types';
 import { Toast } from '../components/Toast';
 
 const blank = (): ModelProviderWrite => ({ name: '', auth_type: 'API_KEY', api_protocol: 'CHAT_COMPLETIONS', base_url: '', api_key: '', models: [{ model_name: '', enabled: true, is_default: true }] });
@@ -96,16 +96,23 @@ function ProviderProtocolSelect({ value, onChange }: { value: ModelProviderWrite
 }
 
 function ProviderUsagePanel({ provider, value, loading, onRefresh }: { provider: ModelProvider; value?: ModelProviderUsage; loading: boolean; onRefresh: () => void }) {
-  if (provider.auth_type !== 'API_KEY') return <div className="provider-usage unavailable"><div><span>上游 Key 预算</span><b>该认证方式不支持查询</b></div></div>;
+  if (provider.auth_type !== 'API_KEY' && !provider.usage_query) return <div className="provider-usage unavailable"><div><span>上游 Key 预算</span><b>该认证方式不支持查询</b></div></div>;
   const detail = value?.status === 'AVAILABLE'
     ? <>已用 {budgetNumber(value.spend ?? 0)} / 上限 {budgetNumber(value.max_budget ?? 0)} <strong>剩余 {budgetNumber(value.remaining ?? 0)}</strong></>
     : value?.status === 'UNLIMITED'
       ? <>已用 {budgetNumber(value.spend ?? 0)}；上游未设置预算上限</>
       : value?.status === 'UNAVAILABLE'
         ? <>{value.reason ?? '上游未提供预算查询'}</>
-        : <>按需查询上游 API Key 的共享预算</>;
-  return <div className={`provider-usage ${value?.status?.toLowerCase() ?? ''}`}><div><span>上游 Key 预算</span><b>{detail}</b></div><button className="ghost" disabled={loading || !provider.has_api_key} onClick={onRefresh}>{loading ? '查询中…' : value ? '刷新用量' : '查询用量'}</button></div>;
+        : <>{provider.usage_query ? '按当前配置查询服务余额' : '按需查询上游 API Key 的共享预算'}</>;
+  return <div className={`provider-usage ${value?.status?.toLowerCase() ?? ''}`}><div><span>{provider.usage_query ? '自定义余额查询' : '上游 Key 预算'}</span>{value?.metrics ? <ProviderUsageMetrics metrics={value.metrics}/> : <b>{detail}</b>}</div><button className="ghost" disabled={loading || !provider.has_api_key} onClick={onRefresh}>{loading ? '查询中…' : provider.usage_query ? (value ? '刷新余额' : '查询余额') : value ? '刷新用量' : '查询用量'}</button></div>;
 }
+function ProviderUsageMetrics({ metrics }: { metrics: NonNullable<ModelProviderUsage['metrics']> }) {
+  return <div className="provider-usage-metrics" role="status">{metrics.map((metric, index) => <div className="provider-usage-metric" key={index}>
+    <span>{metric.label}</span><b>{metric.value === null ? '—' : `${metric.currency ? '$' : ''}${budgetNumber(metric.value)}${metric.percentage ? '%' : ''}`}</b>
+    {metric.percentage && metric.value !== null && <progress aria-label={metric.label} max={100} value={Math.max(0, Math.min(100, metric.value))}/>}
+  </div>)}</div>;
+}
+
 function ProviderEditor({ provider, onClose }: { provider?: ModelProvider; onClose: () => void }) {
   useEscapeClose(onClose);
   const qc = useQueryClient();
@@ -113,6 +120,38 @@ function ProviderEditor({ provider, onClose }: { provider?: ModelProvider; onClo
   const [discovered, setDiscovered] = useState<string[]>([]);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [usageHeaders, setUsageHeaders] = useState('{}');
+  const [usagePreview, setUsagePreview] = useState<ModelProviderUsage>();
+  const [usagePreviewError, setUsagePreviewError] = useState('');
+  const [previewingUsage, setPreviewingUsage] = useState(false);
+  const usageRequest = useRef<AbortController | undefined>(undefined);
+  useEffect(() => {
+    setUsagePreview(undefined); setUsagePreviewError('');
+    usageRequest.current?.abort(); setPreviewingUsage(false);
+    return () => usageRequest.current?.abort();
+  }, [form, usageHeaders]);
+  const usageQuery = (): ProviderUsageQuery | null => {
+    if (!form.usage_query || form.auth_type === 'CODEX_OAUTH') return null;
+    let headers: unknown;
+    try { headers = JSON.parse(usageHeaders); }
+    catch { throw new Error('查询请求头必须是 JSON 对象'); }
+    if (!headers || Array.isArray(headers) || typeof headers !== 'object' || Object.values(headers).some(value => typeof value !== 'string')) throw new Error('查询请求头必须是字符串键值组成的 JSON 对象');
+    return { ...form.usage_query, headers: headers as Record<string, string> };
+  };
+  const previewUsage = async () => {
+    setUsagePreview(undefined); setUsagePreviewError('');
+    const controller = new AbortController();
+    usageRequest.current?.abort(); usageRequest.current = controller;
+    try {
+      if (form.auth_type === 'CODEX_OAUTH') return;
+      const query = usageQuery();
+      setPreviewingUsage(true);
+      const result = await api.previewProviderUsage({ provider_id: provider?.id, base_url: form.base_url, api_key: form.api_key, auth_type: form.auth_type, usage_query: query }, controller.signal);
+      if (!controller.signal.aborted) setUsagePreview(result);
+    } catch (reason) {
+      if (!controller.signal.aborted) setUsagePreviewError(reason instanceof Error ? reason.message : '余额查询失败');
+    } finally { if (!controller.signal.aborted) setPreviewingUsage(false); }
+  };
   const applyDiscovery = useCallback((result: { models: string[]; provider?: ModelProvider }) => {
     setDiscovered(result.models);
     if (result.provider) {
@@ -131,7 +170,8 @@ function ProviderEditor({ provider, onClose }: { provider?: ModelProvider; onClo
     });
   }, [qc]);
   useEffect(() => {
-    setForm(provider ? { name: provider.name, auth_type: provider.auth_type, api_protocol: provider.api_protocol, base_url: provider.base_url, api_key: '', row_version: provider.row_version, models: provider.models.map(({ model_name, enabled, is_default }) => ({ model_name, enabled, is_default })) } : blank());
+    setForm(provider ? { name: provider.name, auth_type: provider.auth_type, api_protocol: provider.api_protocol, base_url: provider.base_url, api_key: '', usage_query: provider.usage_query ?? null, row_version: provider.row_version, models: provider.models.map(({ model_name, enabled, is_default }) => ({ model_name, enabled, is_default })) } : blank());
+    setUsageHeaders(JSON.stringify(provider?.usage_query?.headers ?? {}, null, 2));
     setDiscovered([]); setError('');
   }, [applyDiscovery, provider]);
   useEffect(() => {
@@ -149,7 +189,8 @@ function ProviderEditor({ provider, onClose }: { provider?: ModelProvider; onClo
   const save = async (event: FormEvent) => {
     event.preventDefault(); setBusy(true); setError('');
     try {
-      const saved = provider ? await api.updateProvider(provider.id, form) : await api.createProvider(form);
+      const payload = { ...form, usage_query: usageQuery() };
+      const saved = provider ? await api.updateProvider(provider.id, payload) : await api.createProvider(payload);
       qc.setQueryData<ModelProvider[]>(['model-providers'], current => {
         const providers = current ?? [];
         const exists = providers.some(item => item.id === saved.id);
@@ -211,11 +252,23 @@ function ProviderEditor({ provider, onClose }: { provider?: ModelProvider; onClo
     api_protocol: auth_type === 'CODEX_OAUTH' ? 'RESPONSES' : 'CHAT_COMPLETIONS',
     base_url: auth_type === 'CODEX_OAUTH' ? '' : old.base_url,
     api_key: '',
+    usage_query: auth_type === 'CODEX_OAUTH' ? null : old.usage_query,
     models: auth_type === 'CODEX_OAUTH' ? [] : old.models.length ? old.models : [{ model_name: '', enabled: true, is_default: true }],
   }));
   const isAnthropic = form.auth_type === 'ANTHROPIC_API_KEY';
-  return <div className="modal-backdrop"><form className="modal model-editor" onSubmit={save}><header><div><span className="eyebrow">MODEL PROVIDER</span><h2>{provider ? '编辑模型服务' : '新增模型服务'}</h2><p>API Key 与 Codex OAuth 凭据均加密保存且永不返回浏览器。</p></div><button type="button" className="ghost" onClick={onClose}>关闭</button></header>
+  return <div className="modal-backdrop" onClick={event => { if (event.target === event.currentTarget) onClose(); }}><form className="modal model-editor" onSubmit={save}><header><div><span className="eyebrow">MODEL PROVIDER</span><h2>{provider ? '编辑模型服务' : '新增模型服务'}</h2><p>API Key 与 Codex OAuth 凭据均加密保存且永不返回浏览器。</p></div><button type="button" className="ghost" onClick={onClose}>关闭</button></header>
     <div className="form-grid"><label>服务名称<input required value={form.name} onChange={e => setForm({ ...form, name: e.target.value })}/></label><label>认证方式<ProviderAuthSelect value={form.auth_type} onChange={changeAuthType}/></label>{form.auth_type === 'CODEX_OAUTH' ? <p className="startpoint wide">保存后在服务详情点击“登录 Codex”，使用设备码连接 ChatGPT 订阅。OAuth 服务仅用于 Agent 节点，不用于 Prompt Gate。</p> : <>{form.auth_type === 'API_KEY' ? <label>调用协议<ProviderProtocolSelect value={form.api_protocol} onChange={api_protocol => setForm({ ...form, api_protocol })}/></label> : <label>调用协议<input readOnly value="Anthropic Messages（/v1/messages）"/></label>}<label>Base URL<input required value={form.base_url} placeholder={isAnthropic ? 'https://api.anthropic.com' : 'https://api.example.com/v1'} onChange={e => setForm({ ...form, base_url: e.target.value })}/></label><label className="wide">{isAnthropic ? 'Anthropic API Key' : 'API Key'}<input type="password" value={form.api_key ?? ''} placeholder={provider?.has_api_key ? `留空保留现有密钥 ${provider.api_key_hint ?? ''}` : isAnthropic ? '输入 ANTHROPIC_API_KEY' : '输入 API Key'} onChange={e => setForm({ ...form, api_key: e.target.value })}/></label></>}</div>
+    {isApiKeyProvider(form.auth_type) && <section className="model-usage-config" aria-label="余额查询配置">
+      <div className="model-usage-config-heading"><label className="model-usage-toggle"><input type="checkbox" checked={Boolean(form.usage_query)} onChange={event => setForm(old => ({ ...old, usage_query: event.target.checked ? { method: 'GET', url: `${old.base_url.replace(/\/v1\/?$/, '').replace(/\/$/, '')}/key/info`, expression: '$info.max_budget - info.spend', headers: {} } : null }))}/>自定义余额查询</label><small>{form.usage_query ? '按接口返回的 JSON 计算余额' : '使用默认上游 Key 预算查询'}</small></div>
+      {form.usage_query && <>
+        <div className="model-usage-request"><div className="model-usage-method" role="group" aria-label="查询请求方法">{(['GET', 'POST'] as const).map(method => <button type="button" key={method} aria-pressed={form.usage_query?.method === method} onClick={() => setForm(old => ({ ...old, usage_query: { ...old.usage_query!, method } }))}>{method}</button>)}</div><label>余额查询地址<input required type="url" value={form.usage_query.url} placeholder="https://api.example.com/key/info" onChange={event => setForm(old => ({ ...old, usage_query: { ...old.usage_query!, url: event.target.value } }))}/></label></div>
+        <label>余额字段<input required value={form.usage_query.expression} placeholder="$info.max_budget - info.spend" onChange={event => setForm(old => ({ ...old, usage_query: { ...old.usage_query!, expression: event.target.value } }))}/></label>
+        <small>支持 JSON 字段路径、+ - * / 与括号。前加 $ 显示金额，后加 % 将比例显示为百分比。多个余额用分号分隔，可加标签，如「剩余: $data.balance」。</small>
+        <details className="model-usage-advanced"><summary>请求头与数组汇总</summary><label>查询请求头（JSON）<textarea className="model-usage-headers" value={usageHeaders} onChange={event => setUsageHeaders(event.target.value)} placeholder={'{"Authorization": "Bearer {key}"}'}/></label><small>默认复用服务认证，地址和请求头中的 {'{key}'} 使用当前 API Key。密钥请使用占位符。</small><small>数组可写 a.*.used、a[status=active].used，通过 sum()、min()、max() 或 count() 汇总，如「sum(a.*.used)」。取不到的余额显示 —。</small></details>
+      </>}
+      {(form.auth_type === 'API_KEY' || form.usage_query) && <div className="model-usage-preview"><button type="button" className="secondary" disabled={busy || previewingUsage || !form.base_url.trim() || (!form.api_key && !provider?.has_api_key)} onClick={() => void previewUsage()}>{previewingUsage ? <LoaderCircle className="spin" size={13}/> : <CheckCircle2 size={13}/>} {previewingUsage ? '查询中…' : '查询余额'}</button>{usagePreview && (usagePreview.metrics ? <ProviderUsageMetrics metrics={usagePreview.metrics}/> : <span role="status">{usagePreview.status === 'UNAVAILABLE' ? usagePreview.reason : usagePreview.status === 'UNLIMITED' ? `已用 ${budgetNumber(usagePreview.spend ?? 0)}，上游未设置预算上限` : `剩余 ${budgetNumber(usagePreview.remaining ?? 0)}`}</span>)}</div>}
+      {usagePreviewError && <p className="error" role="alert">{usagePreviewError}</p>}
+    </section>}
     <div className="model-discovery-head"><div><b>可用模型</b><small>{form.auth_type === 'CODEX_OAUTH' ? provider?.oauth_connected ? '已按当前登录账号自动拉取；也可手动刷新' : '登录 Codex 后可按账号自动拉取模型' : '填写连接信息后拉取模型，再选择启用项和默认模型'}</small></div>{(isApiKeyProvider(form.auth_type) || (form.auth_type === 'CODEX_OAUTH' && provider?.oauth_connected)) && <button type="button" className="secondary" disabled={busy || !form.base_url.trim() && isApiKeyProvider(form.auth_type)} onClick={() => void discover()}>{busy ? '拉取中…' : form.auth_type === 'CODEX_OAUTH' ? '刷新模型' : '拉取模型'}</button>}</div>
     {isApiKeyProvider(form.auth_type) && discovered.length > 0 && <div className="model-tags discovery-tags">{discovered.map(name => { const selected = form.models.some(item => item.model_name === name); return <button type="button" key={name} className={selected ? 'selected' : ''} aria-pressed={selected} onClick={() => toggle(name)}>{name}</button>; })}</div>}
     <div className={`provider-model-list ${form.auth_type === 'CODEX_OAUTH' ? 'oauth-model-list' : ''}`}>{form.models.map((model, index) => <div className="provider-model-row" key={model.model_name || index}>{form.auth_type === 'CODEX_OAUTH' ? <span className="synced-model-name"><b>{model.model_name}</b><small>由当前 Codex 账号同步{model.supported_reasoning_efforts?.length ? ` · 支持 ${model.supported_reasoning_efforts.join(' / ')}` : ''}</small></span> : <input aria-label={`模型 ${index + 1}`} required value={model.model_name} placeholder="模型标识" onChange={e => updateModel(index, { model_name: e.target.value })}/>}<label><input type="checkbox" checked={model.enabled} onChange={e => updateModel(index, { enabled: e.target.checked })}/>启用</label><label><input type="radio" name="default-model" checked={model.is_default} onChange={() => updateModel(index, { is_default: true, enabled: true })}/>默认</label>{isApiKeyProvider(form.auth_type) && <button type="button" className="danger model-remove-button" aria-label={`移除模型 ${model.model_name}`} onClick={() => removeModel(index)}><Trash2 size={16}/>删除</button>}</div>)}</div>
@@ -249,7 +302,7 @@ export function ModelsPage() {
   const [notice, setNotice] = useState('');
   const [deleting, setDeleting] = useState(false);
   const [testFeedback, setTestFeedback] = useState<Record<string, TestFeedback>>({});
-  const [usage, setUsage] = useState<Record<string, ModelProviderUsage>>({});
+  const [usage, setUsage] = useState<Record<string, { value: ModelProviderUsage; rowVersion: number }>>({});
   const [codexLogin, setCodexLogin] = useState<{ provider: ModelProvider; authorization: CodexDeviceAuthorization }>();
   const [page, setPage] = useState(1);
   const pageSize = 20;
@@ -276,9 +329,9 @@ export function ModelsPage() {
     onSettled: () => void qc.invalidateQueries({ queryKey: ['model-providers'] }),
   });
   const readUsage = useMutation({
-    mutationFn: api.providerUsage,
-    onSuccess: (result, providerId) => setUsage(old => ({ ...old, [providerId]: result })),
-    onError: (_reason, providerId) => setUsage(old => ({ ...old, [providerId]: { status: 'UNAVAILABLE', reason: '暂时无法读取上游用量' } })),
+    mutationFn: (provider: ModelProvider) => api.providerUsage(provider.id),
+    onSuccess: (value, provider) => setUsage(old => ({ ...old, [provider.id]: { value, rowVersion: provider.row_version } })),
+    onError: (_reason, provider) => setUsage(old => ({ ...old, [provider.id]: { value: { status: 'UNAVAILABLE', reason: '暂时无法读取上游用量' }, rowVersion: provider.row_version } })),
   });
   const toggle = (id: string) => setSelectedIds(old => { const next = new Set(old); if (next.has(id)) next.delete(id); else next.add(id); return next; });
   const toggleAll = () => setSelectedIds(allSelected ? new Set() : new Set(providers.map(provider => provider.id)));
@@ -329,7 +382,7 @@ export function ModelsPage() {
       const feedback = testFeedback[provider.id];
       const testing = feedback?.state === 'testing';
       const oauth = provider.auth_type === 'CODEX_OAUTH';
-      const readingUsage = readUsage.isPending && readUsage.variables === provider.id;
+      const readingUsage = readUsage.isPending && readUsage.variables?.id === provider.id;
       const enabledCount = provider.models.filter(item => item.enabled).length;
       const protocol = oauth ? 'Codex' : provider.auth_type === 'ANTHROPIC_API_KEY' ? 'Anthropic Messages' : provider.api_protocol === 'RESPONSES' ? 'Responses' : 'Chat Completions';
       return <div className="settings-selected-provider" key={provider.id}>
@@ -363,7 +416,7 @@ export function ModelsPage() {
                 </dl>
               </section>
               <section className="settings-model-service" aria-label="用量与服务信息">
-                <ProviderUsagePanel provider={provider} value={usage[provider.id]} loading={readingUsage} onRefresh={() => readUsage.mutate(provider.id)}/>
+                <ProviderUsagePanel provider={provider} value={usage[provider.id]?.rowVersion === provider.row_version ? usage[provider.id].value : undefined} loading={readingUsage} onRefresh={() => readUsage.mutate(provider)}/>
                 <dl className="settings-detail-facts settings-model-timestamps">
                   <dt>创建时间</dt><dd>{new Date(provider.created_at).toLocaleString('zh-CN')}</dd>
                   <dt>最近更新</dt><dd>{new Date(provider.updated_at).toLocaleString('zh-CN')}</dd>

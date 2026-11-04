@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
+from flowweave.modules.model_providers.domain.usage_query import ProviderUsageQuery
 from flowweave.runtime.protocol_profiles import (
     DEFAULT_FLOW_RUN_PROTOCOL_PROFILE,
     FlowRunProtocolProfile,
@@ -370,12 +371,18 @@ class ModelProviderDiscoveryWrite(ApiModel):
         return self
 
 
+class ModelProviderUsagePreviewWrite(ModelProviderDiscoveryWrite):
+    auth_type: Literal["API_KEY", "ANTHROPIC_API_KEY"] = "API_KEY"
+    usage_query: ProviderUsageQuery | None = None
+
+
 class ModelProviderWrite(ApiModel):
     name: str = Field(min_length=1, max_length=200)
     auth_type: Literal["API_KEY", "ANTHROPIC_API_KEY", "CODEX_OAUTH"] = "API_KEY"
     api_protocol: Literal["CHAT_COMPLETIONS", "RESPONSES"] = "CHAT_COMPLETIONS"
     base_url: str = ""
     api_key: str | None = None
+    usage_query: ProviderUsageQuery | None = None
     row_version: int | None = None
     models: list[ProviderModelWrite] = Field(default_factory=_empty_provider_models)
 
@@ -384,6 +391,8 @@ class ModelProviderWrite(ApiModel):
         self.base_url = self.base_url.strip()
         if self.auth_type == "CODEX_OAUTH":
             self.api_protocol = "RESPONSES"
+            if self.usage_query is not None:
+                raise ValueError("Codex OAuth 不支持自定义 API Key 余额查询")
         if self.auth_type in {"API_KEY", "ANTHROPIC_API_KEY"} and not self.base_url:
             raise ValueError("base_url is required for API-key providers")
         if self.auth_type in {"API_KEY", "ANTHROPIC_API_KEY"} and not self.models:

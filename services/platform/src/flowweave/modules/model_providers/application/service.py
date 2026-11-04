@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, cast
 
@@ -9,6 +9,7 @@ from cryptography.fernet import Fernet
 from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
+from flowweave.modules.model_providers.domain.usage_query import ProviderUsageQuery
 from flowweave.modules.model_providers.infrastructure.codex_oauth import (
     CODEX_BASE_URL,
     CodexModelProfile,
@@ -18,7 +19,7 @@ from flowweave.modules.model_providers.infrastructure.codex_oauth import (
 )
 from flowweave.runtime.model_catalog import declared_context_window
 from flowweave.shared.application.transactions import finish
-from flowweave.shared.errors import conflict, not_found
+from flowweave.shared.errors import DomainError, conflict, not_found
 from flowweave.shared.models import (
     AgentConversationBinding,
     FlowRun,
@@ -27,6 +28,7 @@ from flowweave.shared.models import (
 )
 from flowweave.shared.schemas import (
     ModelProviderDiscoveryWrite,
+    ModelProviderUsagePreviewWrite,
     ModelProviderWrite,
     ProviderModelWrite,
 )
@@ -151,6 +153,7 @@ def provider_dict(db: Session, item: ModelProvider) -> dict[str, Any]:
         "base_url": item.base_url,
         "auth_type": item.auth_type,
         "api_protocol": item.api_protocol,
+        "usage_query": item.usage_query_json,
         "has_api_key": item.encrypted_api_key is not None,
         "api_key_hint": item.api_key_hint,
         "connection_state": item.connection_state,
@@ -421,6 +424,15 @@ def save_provider(
         if payload.auth_type == "CODEX_OAUTH"
         else payload.base_url.strip().rstrip("/")
     )
+    if payload.auth_type == "CODEX_OAUTH":
+        item.usage_query_json = None
+    elif "usage_query" in payload.model_fields_set:
+        query = payload.usage_query
+        api_key = payload.api_key or (
+            _fernet().decrypt(item.encrypted_api_key).decode() if item.encrypted_api_key else ""
+        )
+        validate_usage_query_secret(query, api_key)
+        item.usage_query_json = query.model_dump() if query else None
     item.connection_state = (
         "CONNECTED"
         if payload.auth_type == "CODEX_OAUTH" and item.encrypted_oauth_refresh_token
@@ -526,6 +538,7 @@ class ProviderConnectionSnapshot:
     provider_id: str
     base_url: str
     headers: dict[str, str]
+    usage_query: ProviderUsageQuery | None = None
 
 
 def provider_connection_snapshot(db: Session, provider_id: str) -> ProviderConnectionSnapshot:
@@ -538,6 +551,9 @@ def provider_connection_snapshot(db: Session, provider_id: str) -> ProviderConne
         provider_id=item.id,
         base_url=item.base_url.rstrip("/"),
         headers=provider_auth_headers(item),
+        usage_query=ProviderUsageQuery.model_validate(item.usage_query_json)
+        if item.usage_query_json
+        else None,
     )
 
 
@@ -607,6 +623,43 @@ def preview_provider_connection_snapshot(
         base_url=payload.base_url,
         headers=headers,
     )
+
+
+def validate_usage_query_secret(query: ProviderUsageQuery | None, api_key: str) -> None:
+    if query and api_key and api_key in query.model_dump_json():
+        raise DomainError(
+            "MODEL_PROVIDER_USAGE_QUERY_INVALID", "查询配置中的密钥须使用 {key} 占位符", 422
+        )
+
+
+def preview_provider_usage_snapshot(
+    db: Session, payload: ModelProviderUsagePreviewWrite
+) -> ProviderConnectionSnapshot:
+    # Always authorize a referenced provider, even when a new key is supplied.
+    if payload.provider_id:
+        get_provider(db, payload.provider_id)
+    snapshot = preview_provider_connection_snapshot(db, payload)
+    api_key = snapshot.headers.get("Authorization", "").removeprefix("Bearer ")
+    if not api_key:
+        raise DomainError("MODEL_PROVIDER_USAGE_QUERY_INVALID", "请先配置 API Key", 422)
+    validate_usage_query_secret(payload.usage_query, api_key)
+    headers = dict(snapshot.headers)
+    if payload.auth_type == "ANTHROPIC_API_KEY":
+        headers.pop("Authorization", None)
+        headers["x-api-key"] = api_key
+        headers["anthropic-version"] = "2023-06-01"
+    return replace(snapshot, headers=headers, usage_query=payload.usage_query)
+
+
+def provider_usage_snapshot(db: Session, provider_id: str) -> ProviderConnectionSnapshot:
+    item = get_provider(db, provider_id)
+    snapshot = provider_connection_snapshot(db, provider_id)
+    if item.auth_type == "ANTHROPIC_API_KEY":
+        headers = dict(snapshot.headers)
+        headers["x-api-key"] = headers.pop("Authorization").removeprefix("Bearer ")
+        headers["anthropic-version"] = "2023-06-01"
+        return replace(snapshot, headers=headers)
+    return snapshot
 
 
 def mark_provider_connection_state(db: Session, provider_id: str, state: str) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import (
     JSON,
@@ -30,6 +31,7 @@ class ModelProvider(Base):
     base_url: Mapped[str] = mapped_column(Text)
     auth_type: Mapped[str] = mapped_column(String(30), default="API_KEY")
     api_protocol: Mapped[str] = mapped_column(String(30), default="CHAT_COMPLETIONS")
+    usage_query_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     encrypted_api_key: Mapped[bytes | None] = mapped_column(LargeBinary)
     api_key_hint: Mapped[str | None] = mapped_column(String(20))
     encrypted_oauth_access_token: Mapped[bytes | None] = mapped_column(LargeBinary)

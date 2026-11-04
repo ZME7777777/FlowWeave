@@ -279,3 +279,90 @@ test('bulk selection keeps the original scope across pages for credentials and m
   await expect(models.locator('.settings-resource-row')).toHaveCount(0);
   expect(deletions).toEqual([25, 25]);
 });
+
+test('custom model budget query previews unsaved settings and preserves templates when editing', async ({ page }) => {
+  let configured = { ...provider(1), usage_query: null as import('../src/types').ProviderUsageQuery | null };
+  const previews: Array<Record<string, unknown>> = [];
+  const writes: Array<Record<string, unknown>> = [];
+  const metrics = [
+    { label: '剩余', value: 200, currency: true, percentage: false },
+    { label: '使用率', value: 60, currency: false, percentage: true },
+    { label: '缺失', value: null, currency: false, percentage: false },
+  ];
+  await base(page, async (route, path) => {
+    if (path.endsWith('/preview-usage')) { previews.push(route.request().postDataJSON()); await json(route, { status: 'AVAILABLE', metrics }); return true; }
+    if (path.endsWith('/usage')) { await json(route, { status: 'AVAILABLE', metrics }); return true; }
+    if (path.endsWith('/provider-1') && route.request().method() === 'PUT') {
+      const body = route.request().postDataJSON(); writes.push(body);
+      configured = { ...configured, ...body, row_version: configured.row_version + 1 };
+      await json(route, configured); return true;
+    }
+    if (path.endsWith('/model-providers')) { await json(route, [configured]); return true; }
+    return false;
+  });
+  await openSettings(page, '大模型配置');
+  const detail = page.getByRole('main', { name: '大模型配置详情' });
+  await detail.getByRole('button', { name: '编辑模型服务 模型服务 1', exact: true }).click();
+  const editor = page.locator('form.model-editor');
+  await editor.getByRole('checkbox', { name: '自定义余额查询', exact: true }).check();
+  await editor.getByRole('group', { name: '查询请求方法' }).getByRole('button', { name: 'POST', exact: true }).click();
+  const url = 'https://budget.example.test/key/info?key={key}';
+  const expression = '剩余: $info.max_budget - info.spend; 使用率: info.spend / info.max_budget %; 缺失: data.missing';
+  await editor.getByLabel('余额查询地址', { exact: true }).fill(url);
+  await editor.getByLabel('余额字段', { exact: true }).fill(expression);
+  await editor.getByText('请求头与数组汇总', { exact: true }).click();
+  await editor.getByRole('textbox', { name: '查询请求头（JSON）', exact: true }).fill('{"X-Api-Key":"{key}"}');
+  await editor.getByRole('button', { name: '查询余额', exact: true }).click();
+  await expect(editor.getByText('$200', { exact: true })).toBeVisible();
+  await expect(editor.getByRole('progressbar', { name: '使用率' })).toHaveAttribute('value', '60');
+  await expect(editor.getByText('—', { exact: true })).toBeVisible();
+  expect(previews[0]).toMatchObject({ provider_id: 'provider-1', api_key: '', usage_query: { method: 'POST', url, expression, headers: { 'X-Api-Key': '{key}' } } });
+  expect(writes).toHaveLength(0);
+  await page.screenshot({ path: test.info().outputPath('custom-query-editor.png') });
+  await editor.getByRole('button', { name: '保存模型服务', exact: true }).click();
+  await expect(editor).toHaveCount(0);
+  expect(writes[0].usage_query).toEqual((previews[0] as { usage_query: unknown }).usage_query);
+  await detail.getByRole('button', { name: '查询余额', exact: true }).click();
+  await expect(detail.getByText('$200', { exact: true })).toBeVisible();
+  await detail.getByRole('button', { name: '编辑模型服务 模型服务 1', exact: true }).click();
+  await expect(editor.getByLabel('余额查询地址', { exact: true })).toHaveValue(url);
+  await expect(editor.getByLabel('API Key', { exact: true })).toHaveValue('');
+  await editor.getByText('请求头与数组汇总', { exact: true }).click();
+  await expect(editor.getByRole('textbox', { name: '查询请求头（JSON）', exact: true })).toHaveValue(JSON.stringify({ 'X-Api-Key': '{key}' }, null, 2));
+  await editor.getByRole('textbox', { name: '查询请求头（JSON）', exact: true }).fill('{invalid');
+  await editor.getByRole('button', { name: '保存模型服务', exact: true }).click();
+  await expect(editor.getByText('查询请求头必须是 JSON 对象', { exact: true })).toBeVisible();
+  expect(writes).toHaveLength(1);
+  await editor.getByRole('checkbox', { name: '自定义余额查询', exact: true }).uncheck();
+  await editor.getByRole('button', { name: '保存模型服务', exact: true }).click();
+  await expect(editor).toHaveCount(0);
+  expect(writes[1].usage_query).toBeNull();
+  await expect(detail.getByText('$200', { exact: true })).toHaveCount(0);
+});
+
+test('editing a query cancels an outdated balance preview and supports outside closing', async ({ page }) => {
+  let releasePreview: (() => void) | undefined;
+  let previewStarted = false;
+  await base(page, async (route, path) => {
+    if (path.endsWith('/model-providers')) { await json(route, [provider(1)]); return true; }
+    if (path.endsWith('/preview-usage')) {
+      previewStarted = true;
+      await new Promise<void>(resolve => { releasePreview = resolve; });
+      await json(route, { status: 'AVAILABLE', metrics: [{ label: '旧余额', value: 999, currency: true, percentage: false }] }).catch(() => undefined);
+      return true;
+    }
+    return false;
+  });
+  await openSettings(page, '大模型配置');
+  await page.getByRole('button', { name: '编辑模型服务 模型服务 1', exact: true }).click();
+  const editor = page.locator('form.model-editor');
+  await editor.getByRole('checkbox', { name: '自定义余额查询', exact: true }).check();
+  await editor.getByRole('button', { name: '查询余额', exact: true }).click();
+  await expect.poll(() => previewStarted).toBe(true);
+  await editor.getByLabel('余额字段', { exact: true }).fill('data.balance');
+  releasePreview?.();
+  await expect(editor.getByRole('button', { name: '查询余额', exact: true })).toBeEnabled();
+  await expect(editor.getByText('$999', { exact: true })).toHaveCount(0);
+  await page.locator('.modal-backdrop').click({ position: { x: 2, y: 2 } });
+  await expect(editor).toHaveCount(0);
+});

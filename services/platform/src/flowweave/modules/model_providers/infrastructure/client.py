@@ -1,12 +1,75 @@
 from __future__ import annotations
 
+import asyncio
+import json
+import logging
 import re
+from contextvars import ContextVar
 from typing import cast
+from urllib.parse import quote
 
 import httpx
 
 from flowweave.modules.model_providers.application.service import ProviderConnectionSnapshot
+from flowweave.modules.model_providers.domain.usage_query import evaluate_metrics
 from flowweave.shared.errors import DomainError
+
+_usage_request_logging: ContextVar[bool] = ContextVar("usage_request_logging", default=False)
+
+
+class _UsageRequestLogFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        # httpx logs the complete URL. A query URL can contain the decrypted key.
+        # Context isolation keeps unrelated requests observable during this I/O.
+        return not _usage_request_logging.get()
+
+
+logging.getLogger("httpx").addFilter(_UsageRequestLogFilter())
+
+
+async def read_custom_provider_budget(
+    client: httpx.AsyncClient, snapshot: ProviderConnectionSnapshot
+) -> dict[str, object]:
+    query = snapshot.usage_query
+    if query is None:
+        raise ValueError("a custom usage query is required")
+    api_key = snapshot.headers.get("x-api-key") or snapshot.headers.get(
+        "Authorization", ""
+    ).removeprefix("Bearer ")
+    if not api_key:
+        return {"status": "UNAVAILABLE", "reason": "尚未配置 API Key"}
+    url = query.url.replace("{key}", quote(api_key, safe=""))
+    headers = httpx.Headers(snapshot.headers)
+    for name, template in query.headers.items():
+        headers[name] = template.replace("{key}", api_key)
+    token = _usage_request_logging.set(True)
+    try:
+        async with asyncio.timeout(10):
+            async with client.stream(
+                query.method,
+                url,
+                headers=headers,
+                follow_redirects=False,
+                timeout=10,
+            ) as response:
+                if not response.is_success:
+                    return {
+                        "status": "UNAVAILABLE",
+                        "reason": f"余额查询失败（HTTP {response.status_code}）",
+                    }
+                body = bytearray()
+                async for chunk in response.aiter_bytes():
+                    body.extend(chunk)
+                    if len(body) > 1_048_576:
+                        return {"status": "UNAVAILABLE", "reason": "余额查询返回的数据过大"}
+                payload: object = json.loads(body)
+        metrics = evaluate_metrics(query.expression, payload)
+        return {"status": "AVAILABLE", "metrics": metrics}
+    except (httpx.HTTPError, TimeoutError, TypeError, ValueError, RecursionError):
+        return {"status": "UNAVAILABLE", "reason": "暂时无法读取余额，请检查查询配置与上游服务"}
+    finally:
+        _usage_request_logging.reset(token)
+
 
 _ENTITLEMENT_MARKERS = (
     "subscription",
@@ -146,6 +209,8 @@ async def read_provider_budget(
     and network-failed probes deliberately collapse to one safe UI state.
     """
 
+    if snapshot.usage_query is not None:
+        return await read_custom_provider_budget(client, snapshot)
     try:
         # Most gateways expose OpenAI-compatible inference below ``/v1`` but
         # retain LiteLLM management endpoints at the origin.  Prefer the

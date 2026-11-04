@@ -768,6 +768,7 @@ export const api = {
   deleteProvider: (id: string) => request<void>(`/model-providers/${id}`, json('DELETE')),
   deleteProviders: (ids: string[]) => request<ProviderBulkDeleteResult>('/model-providers', json('DELETE', { ids })),
   testProvider: (id: string) => request<{ connection_state: string; model_count: number }>(`/model-providers/${id}/test`, json('POST')),
+  previewProviderUsage: (body: import('../types').ModelProviderUsagePreviewWrite, signal?: AbortSignal) => request<ModelProviderUsage>('/model-providers/preview-usage', { ...json('POST', body), signal }),
   providerUsage: (id: string) => request<ModelProviderUsage>(`/model-providers/${id}/usage`),
   discoverProviderModels: (id: string) => request<{ models: string[]; provider?: ModelProvider }>(`/model-providers/${id}/discover-models`, json('POST')),
   previewProviderModels: (body: ModelProviderDiscoveryWrite) => request<{ models: string[] }>('/model-providers/discover-models', json('POST', body)),

@@ -19,6 +19,7 @@ from flowweave.shared.http import Db, get_container, run_sync
 from flowweave.shared.schemas import (
     ModelProviderBulkDeleteWrite,
     ModelProviderDiscoveryWrite,
+    ModelProviderUsagePreviewWrite,
     ModelProviderWrite,
 )
 
@@ -63,7 +64,7 @@ async def _discover(provider_id: str, db: Db, container: Container) -> list[str]
 
 async def _budget(provider_id: str, db: Db, container: Container) -> dict[str, object]:
     snapshot = await run_sync(
-        db, lambda session: service.provider_connection_snapshot(session, provider_id)
+        db, lambda session: service.provider_usage_snapshot(session, provider_id)
     )
     return await read_provider_budget(container.http, snapshot)
 
@@ -76,6 +77,18 @@ async def preview_discover_models(
         db, lambda session: service.preview_provider_connection_snapshot(session, payload)
     )
     return {"models": await discover_provider_models(container.http, snapshot)}
+
+
+@router.post("/model-providers/preview-usage")
+async def preview_provider_usage(
+    payload: ModelProviderUsagePreviewWrite, db: Db, container: ContainerDep
+) -> dict[str, object]:
+    snapshot = await run_sync(
+        db, lambda session: service.preview_provider_usage_snapshot(session, payload)
+    )
+    if payload.auth_type == "ANTHROPIC_API_KEY" and snapshot.usage_query is None:
+        return {"status": "UNAVAILABLE", "reason": "请为该服务配置自定义余额查询"}
+    return await read_provider_budget(container.http, snapshot)
 
 
 async def _discover_codex(
@@ -193,11 +206,13 @@ async def provider_usage(provider_id: str, db: Db, container: ContainerDep) -> d
         db,
         lambda session: service.provider_dict(session, service.get_provider(session, provider_id)),
     )
-    if provider["auth_type"] != "API_KEY":
+    if provider["auth_type"] == "CODEX_OAUTH":
         return {
             "status": "UNAVAILABLE",
             "reason": "该认证方式未提供可读取的 API Key 预算",
         }
+    if provider["auth_type"] == "ANTHROPIC_API_KEY" and not provider["usage_query"]:
+        return {"status": "UNAVAILABLE", "reason": "请为该服务配置自定义余额查询"}
     if not provider["has_api_key"]:
         return {
             "status": "UNAVAILABLE",
