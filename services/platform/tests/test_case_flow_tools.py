@@ -22,6 +22,7 @@ from flowweave.modules.runs.infrastructure.models import (
     ArtifactVersion,
     CandidateOutputSet,
     FlowRun,
+    GateEvaluation,
     NodeAttempt,
     NodeRun,
     RunSnapshot,
@@ -454,6 +455,8 @@ def review_ready(g):
         version_no=1,
         artifact_type="URL",
         uri="https://example.test/result",
+        content_hash="d" * 64,
+        byte_size=0,
         source="RUNTIME",
     )
     g.db.add(artifact)
@@ -768,6 +771,8 @@ def test_agent_completes_final_stage_only_with_current_accepted_artifact_evidenc
         version_no=1,
         artifact_type="URL",
         uri="https://example.test/result",
+        content_hash="d" * 64,
+        byte_size=0,
         source="RUNTIME",
     )
     g.db.add(artifact)
@@ -1459,3 +1464,67 @@ def test_tool_result_describes_the_plan_after_the_session_replaced_its_row(flow_
     source = inspect.getsource(flow_tools.manage_flow)
     assert "db.get(CaseControlPlan, plan_id)" in source
     assert "return action_result(plan)" not in source
+
+
+def test_gates_section_exposes_platform_and_author_gates_with_untrusted_text_bounded(flow_case):
+    g = flow_case
+    review_ready(g)
+    g.attempt.gate_policies_json = [
+        {
+            "id": "__platform__",
+            "stage": "END",
+            "position": -10,
+            "gate_type": "PLATFORM_OUTPUT_CONTRACT",
+            "enabled": True,
+            "config": {"system_owned": True},
+        },
+        {
+            "id": "author-1",
+            "stage": "END",
+            "position": 1,
+            "gate_type": "PROMPT",
+            "enabled": True,
+            "config": {"business_result_contract": {"node_kind": "COLLECTION"}},
+        },
+        {"id": "never-run", "stage": "START", "position": 1, "gate_type": "PYTHON"},
+    ]
+    for key, position, decision, extra in (
+        ("__platform__", -10, "PASS", {}),
+        ("author-1", 1, "FAIL", {"business_status": "NO_FINDINGS"}),
+    ):
+        for number in (1, 2):
+            g.db.add(
+                GateEvaluation(
+                    attempt_id=g.attempt.id,
+                    policy_snapshot_key=key,
+                    stage="END",
+                    policy_position=position,
+                    evaluation_attempt=number,
+                    state="FINISHED",
+                    decision="ERROR" if number == 1 else decision,
+                    input_hash="c" * 64,
+                    result_json={
+                        "summary": "x" * 5000 if number == 2 else "old",
+                        "reasons": ["missing evidence"],
+                        "evidence": [{"kind": "BUSINESS_RESULT", **extra}],
+                        "details": {},
+                    },
+                )
+            )
+    g.db.commit()
+
+    gates = projection(rpc(g, "read_case_flow", {"section": "gates"}))["items"]
+    assert [item["instance_key"] for item in gates] == ["first"]
+    by_id = {gate["policy_id"]: gate for gate in gates[0]["gates"]}
+    assert by_id["__platform__"]["origin"] == "PLATFORM"
+    assert by_id["author-1"]["origin"] == "AUTHOR"
+    latest = by_id["author-1"]["evaluation"]
+    assert latest["decision"] == "FAIL" and latest["evaluation_attempt"] == 2
+    assert latest["evaluations_total"] == 2
+    assert latest["evidence"][0]["business_status"] == "NO_FINDINGS"
+    assert len(latest["summary"]) < 1600 and latest["summary"].endswith("[truncated]")
+    assert by_id["never-run"]["evaluation"] is None
+
+    nodes = projection(rpc(g, "read_case_flow", {"section": "nodes"}))["items"]
+    decisions = nodes[0]["execution"]["latest_attempt"]["gate_decisions"]
+    assert {item["decision"] for item in decisions} == {"PASS", "FAIL"}
