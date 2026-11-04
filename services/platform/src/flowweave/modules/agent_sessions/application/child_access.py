@@ -154,4 +154,15 @@ def project(
         )
         if str(identity) != access.child.handle.conversation_id:
             raise denied()
+        if (
+            isinstance(result, NativeCommandResult)
+            and isinstance(access.claim, NativeCommandInvocation)
+            and access.claim.command.operation == result.operation == "send"
+            and result.event_id
+        ):
+            binding = child_sessions.mutation_binding(db, access.child)
+            binding.terminal_reconciliation_pending = True
+            binding.final_reply_preview_event_id = None
+            binding.final_reply_preview_content = None
+            db.flush()
         return result.model_dump(mode="json")

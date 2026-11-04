@@ -178,6 +178,9 @@ class AgentConversationBinding(Base):
     manual_sort_rank: Mapped[Decimal | None] = mapped_column(Numeric(30, 12))
     activity_was_running: Mapped[bool] = mapped_column(Boolean, default=False)
     terminal_reconciliation_pending: Mapped[bool] = mapped_column(Boolean, default=False)
+    # A read scheduling watermark only. Native timestamps never identify a
+    # message or authorize unread, which is deduplicated by formal event ID.
+    child_completion_checked_activity_at: Mapped[str | None] = mapped_column(String(100))
     last_notified_completion_event_id: Mapped[str | None] = mapped_column(String(200))
     final_reply_preview_event_id: Mapped[str | None] = mapped_column(String(200))
     final_reply_preview_content: Mapped[str | None] = mapped_column(Text)

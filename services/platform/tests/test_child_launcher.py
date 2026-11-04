@@ -1063,6 +1063,7 @@ def test_downgrade_refuses_to_discard_parent_capability(parent_graph):
     from alembic.config import Config
 
     g = parent_graph
+    original_head = g.db.scalar(text("SELECT version_num FROM alembic_version"))
     g.db.rollback()
     config = Config(str(Path(__file__).parents[1] / "alembic.ini"))
     config.attributes["database_url"] = g.config.database_url
@@ -1070,7 +1071,7 @@ def test_downgrade_refuses_to_discard_parent_capability(parent_graph):
         command.downgrade(config, "0176_agent_child_conversations")
     assert (
         g.db.scalar(text("SELECT version_num FROM alembic_version"))
-        == "0179_agent_child_creation_audit"
+        == original_head
     )
     assert child_parent.read_parent_capability(g.binding) == g.frozen
 

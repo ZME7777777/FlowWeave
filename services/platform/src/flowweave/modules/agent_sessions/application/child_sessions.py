@@ -456,6 +456,7 @@ def project_send(
     )
     binding.final_reply_preview_event_id = None
     binding.final_reply_preview_content = None
+    binding.terminal_reconciliation_pending = True
     binding.last_message_at = now()
     db.flush()
     return {"accepted": True, "cursor": event_id, "queued_during_turn": False}

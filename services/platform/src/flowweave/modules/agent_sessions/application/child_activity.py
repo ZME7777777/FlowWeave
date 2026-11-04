@@ -226,7 +226,14 @@ def reconcile(
                 child.final_reply_preview_content = None
                 child.activity_was_running = True
                 child.terminal_reconciliation_pending = False
-            elif child.activity_was_running or child.terminal_reconciliation_pending:
+            elif (
+                child.activity_was_running
+                or child.terminal_reconciliation_pending
+                or (
+                    activity is not None
+                    and child.child_completion_checked_activity_at != activity.updated_at
+                )
+            ):
                 # A missing catalog row is unknown. Only a formal native result
                 # may close the pending turn or create a completion notification.
                 child.terminal_reconciliation_pending = True
@@ -243,6 +250,8 @@ def reconcile(
                 }:
                     child.activity_was_running = False
                     child.terminal_reconciliation_pending = False
+                    if activity is not None:
+                        child.child_completion_checked_activity_at = activity.updated_at
                     if (
                         completion.status == "COMPLETED"
                         and completion.completion_event_kind == "ASSISTANT_MESSAGE"

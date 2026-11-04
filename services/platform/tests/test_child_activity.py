@@ -248,6 +248,9 @@ def test_native_finish_action_cannot_become_assistant_reply_preview(activity):
 
 def test_child_condensation_uses_owned_task_without_parent_running_state(activity):
     a = activity
+    observe(a, "finished")
+    a.completion.result = final()
+    poll(a, active_binding_id=a.x.loc.parent_id, active_child_id=a.x.loc.binding_id)
 
     def task(owner):
         return BackgroundTask(
@@ -362,3 +365,129 @@ def test_child_metadata_does_not_cross_authority(activity, operation):
     assert response.status_code == 404, response.text
     assert a.x.loc.handle.conversation_id not in response.text
     assert child(a).unread is False
+
+
+@pytest.mark.parametrize("admission", ["create", "user", "parent", "lost-first", "lost-followup"])
+def test_fast_native_completion_is_not_lost_before_first_activity_poll(activity, admission):
+    from urllib.parse import urlsplit
+
+    a = activity
+    if admission in {"user", "parent", "lost-followup"}:
+        observe(a, "finished")
+        a.completion.result = final("old-final")
+        poll(a)
+        a.x.client.put(a.x.root + "/unread", json={"unread": False})
+        if admission == "user":
+            response = a.x.client.post(
+                a.x.root + "/messages",
+                json={
+                    "submission_id": str(uuid4()),
+                    "content": "followup",
+                },
+            )
+            assert response.status_code == 202, response.text
+        elif admission == "parent":
+            response = a.x.client.post(
+                urlsplit(a.x.g.frozen.command_url).path.removeprefix("/prefix"),
+                headers={"X-Session-API-Key": a.x.g.key.get_secret_value()},
+                json={
+                    "token": "native-proof",
+                    "command": {
+                        "operation": "send",
+                        "conversation_id": a.x.loc.handle.conversation_id,
+                        "text": "parent followup",
+                    },
+                },
+            )
+            assert response.status_code == 200, response.text
+        else:
+            # Accepted native send, process died before metadata projection.
+            # The formal catalog changes even if no running sample was seen.
+            a.catalog[a.x.loc.handle.conversation_id] = RuntimeConversationActivity(
+                a.x.loc.handle.conversation_id, "finished", "2999-01-02T00:00:00+00:00"
+            )
+    elif admission == "lost-first":
+        row = child(a)
+        row.last_message_at = None
+        row.terminal_reconciliation_pending = False
+        a.x.g.db.commit()
+    if admission not in {"lost-first", "lost-followup"}:
+        assert child(a).terminal_reconciliation_pending is True
+        assert child(a).activity_was_running is False
+    if admission != "lost-followup":
+        observe(a, "finished")
+    a.completion.result = final("fast-final")
+    result = poll(a)
+    assert child(a).unread is True
+    assert child(a).last_notified_completion_event_id == "fast-final"
+    assert result["conversations"][0]["unread"] is False
+    a.x.client.put(a.x.root + "/unread", json={"unread": False})
+    calls = len(a.completion.calls)
+    poll(a)
+    assert child(a).unread is False
+    assert len(a.completion.calls) == calls
+
+
+def test_fast_completion_timeout_preserves_pending_and_retries_without_duplicate(activity):
+    a = activity
+    observe(a, "finished")
+    a.completion.failure = DomainError("RUNTIME_BUSINESS_READ_TIMEOUT", "defer", 504)
+    poll(a)
+    assert child(a).terminal_reconciliation_pending is True
+    assert child(a).unread is False
+    a.completion.failure = None
+    a.completion.result = final()
+    poll(a)
+    assert child(a).unread is True
+    assert child(a).terminal_reconciliation_pending is False
+
+
+def test_prepared_child_without_formal_completion_cannot_get_unread(activity):
+    a = activity
+    observe(a, "idle")
+    a.completion.result = None
+    poll(a)
+    assert child(a).unread is False
+    assert child(a).terminal_reconciliation_pending is True
+
+
+def test_completion_read_watermark_migration_preserves_child_and_native_locator(activity, settings):
+    from pathlib import Path
+
+    from alembic import command
+    from alembic.config import Config
+
+    a = activity
+    observe(a, "finished")
+    a.completion.result = final()
+    poll(a)
+    assert child(a).child_completion_checked_activity_at is not None
+    original = child(a).openhands_conversation_id
+    a.x.g.db.commit()
+    config = Config(str(Path(__file__).parents[1] / "alembic.ini"))
+    config.attributes["database_url"] = settings.database_url
+    command.downgrade(config, "0179_agent_child_creation_audit")
+    command.upgrade(config, "head")
+    a.x.g.db.expire_all()
+    assert child(a).openhands_conversation_id == original
+    assert child(a).unread is True
+    assert child(a).last_notified_completion_event_id == "formal-child-final"
+    assert child(a).child_completion_checked_activity_at is None
+    a.x.g.db.commit()
+    a.x.client.put(a.x.root + "/unread", json={"unread": False})
+    poll(a)
+    assert child(a).unread is False
+
+
+def test_catalog_change_only_schedules_read_and_never_correlates_completion_by_time(activity):
+    a = activity
+    observe(a, "finished")
+    a.completion.result = final()
+    poll(a)
+    a.x.client.put(a.x.root + "/unread", json={"unread": False})
+    a.catalog[a.x.loc.handle.conversation_id] = RuntimeConversationActivity(
+        a.x.loc.handle.conversation_id, "finished", "3000-01-01T00:00:00+00:00"
+    )
+    poll(a)
+    assert child(a).unread is False
+    assert child(a).last_notified_completion_event_id == "formal-child-final"

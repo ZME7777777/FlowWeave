@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`CHILD CONVERSATIONS IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-726`
+> 下一可执行切片：`FR-714`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 > 子会话设计：`docs/agent-child-conversations-design.md`
@@ -969,13 +969,28 @@ handler、Attempt 身份、ensure 幂等准入、连续健康失败、未确认�
 b9f976b2 及其归档作证，未从浮动 HEAD 构建。复核发现首轮／续聊若早于首次活动轮询完成
 会漏未读，新增独立 FR-726 收口该窗口，再继续前端切片。
 
-### FR-726 快速完成与恢复首轮的子未读对账 — READY
+### FR-726 快速完成与恢复首轮的子未读对账 — DONE
 
 依赖：FR-725 DONE。以原生 started／正式发送受理证据登记终态补读，覆盖首轮和续聊
 在第一次活动目录轮询前已完成、创建回执丢失后恢复等窗口；仅正式 assistant 完成事件
 生成未读，不伪造运行状态或重复提醒。
 
-### FR-714 通用侧边会话交互边界 — PENDING
+实现（2026-11-05）：原生 started 首次回执、用户正式发送和父 Tool send 受理均登记
+终态补读并清除旧预览，不写伪造 RUNNING。新增可空 `child_completion_checked_activity_at`
+读取节流水位，原生活动更新时间变化只触发正式事件补读，覆盖响应丢失与快速完成；
+读取失败／准备态不推进水位，正式终态后才完成对账，最终回复仍按正式 event ID 去重。
+旧数据在首次目录观察时自动补读。升级／降级仅影响读节流，不删除父子定位或通知事实。
+
+验收：新增回归先得到 14 failed，修复后活动专项 56 passed，覆盖两宿主首轮／用户续聊／
+父指令快速完成、首轮／续聊回执丢失、超时重试、prepared 不误报、同 event ID 不重报与
+真实 PostgreSQL 0180→0179→0180 往返保持原 ID／未读。五个受影响模块 Pyright 零错误，
+Ruff／格式及 diff 检查通过，唯一 Alembic head 0180。既有创建／子接口／删除回归为
+282 passed／2 failed／7 skipped；两个失败均为 capability 降级测试原来写死 0179，
+更新为记录迁移前的实际 head 后两宿主定向复验通过。七个跳过为未配置的四项原生 TCP
+与三个宿主不适用的删除参数，本片共 340 个不同用例通过。
+本片受控 Runtime 响应不替代 FR-717 的真实 TCP／镜像／浏览器验收。
+
+### FR-714 通用侧边会话交互边界 — READY
 
 依赖：FR-712 DONE。最小抽取两宿主通用展示与 binding 隔离的 hydration／输入逻辑；
 临时侧边聊天保留现有一小时 TTL／关闭删除，子会话不能复用这套生命周期。

@@ -407,6 +407,7 @@ def finish_creation(
             raise conflict()
         if binding.last_message_at is None:
             binding.last_message_at = now()
+            binding.terminal_reconciliation_pending = True
         db.flush()
         return {
             "conversation_id": str(child.resolved.identity.conversation_id),
