@@ -155,10 +155,10 @@ Web 与 platform 的 remote-release-finish 成功，上下文回收候选均为�
 
 本片在隔离分支 codex/conversation-size 实施与发布。收尾时主分支已并发
 提交 7801771b 的大模型配置 OPS-87，因此本片跟踪标识补为 OPS-87-CS；
-既有提交与发布资产中的 OPS-87 指向本会话统计切片。主工作区另外存在
-未提交的 0194_model_provider_usage_query 迁移，后续合入时必须将它衔接于
-线上已应用的 0194_conversation_event_count 之后，避免双 head。当前代码与
-验收记录保留在隔离分支，后续主分支平台发布前需完成该集成。
+既有提交与发布资产中的 OPS-87 指向本会话统计切片。后续合并时，原本未提交的
+模型 Provider 用量查询迁移已改为 0195_model_provider_usage_query，并衔接于
+线上已应用的 0194_conversation_event_count 之后，以保持唯一 Alembic head。
+会话统计代码与验收记录现已合并至 feat/refactor。
 
 ### OPS-87 大模型配置单行列表与详情信息布局 — DONE
 
@@ -16227,12 +16227,3 @@ SHA-256一致，API鉴权边界及全新Chromium三种登录／深链入口通�
 无JavaScript错误及根API请求；未写入真实用户资源。受管收尾上下文候选
 为10项；保留24小时上下文、实际引用及每仓库一个回滚镜像。收尾后再次
 核验Web健康／版本、配置和47个保护容器通过，未push。
-
-
-### OPS-84 会话配置侧栏与列表操作简化 — READY
-
-协调说明：用户指定先实施 FR-705，OPS-84 待后续继续。
-
-依赖 OPS-83 DONE。能力／认证改左侧导航，类型筛选与列表操作分行，
-Skill组合收进多选筛选弹层并显示激活数量，移除选择统计行；认证表头
-字体及全选控件与列表协调，沿用共享CapabilityManager和现有绑定语义。
