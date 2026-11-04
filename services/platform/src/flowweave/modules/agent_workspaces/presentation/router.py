@@ -1204,6 +1204,7 @@ async def agent_conversation_activity(
     workspace_id: str,
     container: ContainerDep,
     active_binding_id: str | None = Query(default=None, min_length=1, max_length=36),
+    active_child_id: str | None = Query(default=None, min_length=1, max_length=36),
 ) -> dict[str, Any]:
     # The activity projection includes `condensation_tasks`, a list of
     # structured task records. Keep its response contract open to that
@@ -1211,7 +1212,10 @@ async def agent_conversation_activity(
     return await run_blocking_history(
         container,
         lambda session: conversations.conversation_activity(
-            session, workspace_id, active_binding_id=active_binding_id
+            session,
+            workspace_id,
+            active_binding_id=active_binding_id,
+            active_child_id=active_child_id,
         ),
     )
 

@@ -406,6 +406,8 @@ def project_send(
         content,
         tuple(item for item in attachments if str(item["path"]) not in existing),
     )
+    binding.final_reply_preview_event_id = None
+    binding.final_reply_preview_content = None
     binding.last_message_at = now()
     db.flush()
     return {"accepted": True, "cursor": event_id, "queued_during_turn": False}

@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`CHILD CONVERSATIONS IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-713`
+> 下一可执行切片：`FR-724`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 > 子会话设计：`docs/agent-child-conversations-design.md`
@@ -861,10 +861,44 @@ ACTIVE 后用户通过专用 HTTP 续聊，重复 submission 只有一个事件�
 和镜像未改。无前端、部署、推送、Runtime 替换或 Worktree 产品功能。当前 NONE，下一可执行
 FR-713；提交后停止。
 
-### FR-713 子活动未读与父删除恢复 — READY
+### FR-713 子活动与独立未读聚合 — DONE
 
-依赖：FR-712 DONE。父列表聚合子运行／未读但不伪造父运行态；关闭保留，父删除
-围栏创建并恢复逐子清理失败；replacement 核对原父子会话及正式事件身份。
+依赖：FR-712 DONE。父列表聚合子运行／未读但不伪造父运行态；直属子列表与逐子已读，
+关闭保留。原范围包含三条独立故障链，拆出 FR-724 可恢复删除与 FR-725 replacement。
+
+实现（2026-11-04）：新增用户鉴权的直属子列表和逐子 unread API，运行时离线仍可读取
+已有治理记录及确认已读，关闭视图没有生命周期操作。两宿主复用单次原生活动目录，
+仅投影同用户、同宿主／scope／Session、原生身份相符的已审计直属子；父列表分页提供
+纯控制面子数量／未读摘要，活动响应附独立子状态与父入口。子运行、压缩或待终态同步
+可以保留父活动入口，父自身 running／failed／possibly_stuck ID 集合不混入子状态。
+目录缺失或路由暂不可用保持 unknown，之前观察到运行的子保持有界正式终态补读待办，
+只有 OpenHands 正式 ASSISTANT_MESSAGE 完成身份生成普通未读与最小预览，按事件 ID 去重。
+SYSTEM 异常、手工普通未读、系统已读确认沿用既有规则；行锁后重读防止旧 ORM 快照
+覆盖并发确认。选中父不会清子未读，激活具体子仅确认该子；续聊受理及原生运行观察
+清除过期最终回复预览。子压缩任务按显式 owner 过滤，不能伪造父运行态。
+
+验收：隔离 PostgreSQL 的新增两宿主 38 项通过，覆盖运行与未知状态、正式完成／非消息
+完成、超时／缺失重试、重复通知、焦点与父子／兄弟隔离、并发已读、离线元数据、普通分页、
+异常确认、压缩任务所有者及跨用户拒绝。既有子接口／关系／活动回归 96 项通过，与新增
+合计 134 个不同用例。宿主历史定向 cohort 为 5 passed／6 failed；六项均在创建夹具时
+缺少用户主体，当前 HEAD 隔离副本复跑得到同样 5／6，未计为通过。上述使用受控 Runtime
+响应，不代表实际 Runtime 镜像或真实模型验收。
+
+新聚合、子接口与子核心 Pyright 零错误；四个受影响旧模块的 66 条诊断与 HEAD 按文件／
+规则／消息相同。受影响 Ruff、定向格式、diff 检查通过；节点 router 的 13 条既有 E501
+保持原状。Alembic 唯一 head 为 0179，未新增迁移或修改 SDK／source lock。父删除与
+replacement 的实现／故障验证分别由 FR-724／725 承担，前端由 FR-714–716 承担。
+用户已授权完成全部切片，按片独立验证与提交后继续；全部完成后由用户决定集成与发布。
+
+### FR-724 父删除围栏与逐子恢复清理 — READY
+
+依赖：FR-713 DONE。父删除围栏新增创建，逐子持久清理与故障重试，保留删除中父入口；
+两宿主直接删除与 FlowRun 记录清理共用，原生删除缺失幂等，绝不删除共享工作目录。
+
+### FR-725 父子原身份 Runtime 替换恢复 — PENDING
+
+依赖：FR-724 DONE。replacement 核对原父子会话及正式事件身份，用户恢复路由与冻结
+父工具授权分开，过期 generation 不得重获权限。
 
 ### FR-714 通用侧边会话交互边界 — PENDING
 
@@ -883,7 +917,7 @@ FR-713；提交后停止。
 
 ### FR-717 原生子会话全链路故障与两宿主验收 — PENDING
 
-依赖：FR-713 DONE、FR-716 DONE。固定真实 Runtime／TCP、隔离 PostgreSQL、两宿主
+依赖：FR-725 DONE、FR-716 DONE。固定真实 Runtime／TCP、隔离 PostgreSQL、两宿主
 Chromium 验证创建、续聊、父工具、并发、RLS、未读、多标签、删除和 replacement，
 确认没有 Worktree 创建且 V1／V2 不变；不自动发布或升级已有 Runtime。
 

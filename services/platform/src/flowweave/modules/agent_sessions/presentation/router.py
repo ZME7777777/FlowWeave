@@ -436,6 +436,7 @@ async def node_session_activity(
     attempt_id: str,
     container: ContainerDep,
     active_binding_id: str | None = Query(default=None, min_length=1, max_length=36),
+    active_child_id: str | None = Query(default=None, min_length=1, max_length=36),
 ) -> dict[str, Any]:
     # The shared activity projection contains both binding-id lists and
     # structured condensation task records.
@@ -446,6 +447,7 @@ async def node_session_activity(
             flow_run_id=flow_run_id,
             attempt_id=attempt_id,
             active_binding_id=active_binding_id,
+            active_child_id=active_child_id,
         ),
     )
 

@@ -11,8 +11,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from flowweave.bootstrap.container import Container
+from flowweave.modules.agent_sessions.application import child_activity, credential_sync
 from flowweave.modules.agent_sessions.application import child_sessions as children
-from flowweave.modules.agent_sessions.application import credential_sync
 from flowweave.modules.agent_sessions.infrastructure.models import AgentConversationBinding
 from flowweave.modules.credentials.application.service import (
     credential_secret_descriptions,
@@ -27,11 +27,13 @@ from flowweave.shared.http import (
     IdempotencyKey,
     command_key,
     get_container,
+    run_blocking_history,
     run_blocking_mutation,
     run_formal_events,
 )
 
-router = APIRouter(prefix="/agent-session-children/{parent_id}/{child_id}")
+router = APIRouter(prefix="/agent-session-children/{parent_id}")
+child_router = APIRouter(prefix="/{child_id}")
 ContainerDep = Annotated[Container, Depends(get_container)]
 
 
@@ -74,7 +76,31 @@ class CredentialsWrite(Write):
     credential_ids: list[UUID] = Field(max_length=200)
 
 
+class UnreadWrite(Write):
+    unread: bool
+    unread_origin: Literal["MANUAL", "SYSTEM"] | None = None
+
+
 @router.get("")
+async def child_list(parent_id: str, container: ContainerDep) -> list[dict[str, Any]]:
+    return await run_blocking_history(
+        container, lambda db: child_activity.list_children(db, parent_id)
+    )
+
+
+@child_router.put("/unread")
+async def unread(
+    parent_id: str, child_id: str, payload: UnreadWrite, container: ContainerDep
+) -> dict[str, Any]:
+    return await run_blocking_mutation(
+        container,
+        lambda db: child_activity.set_unread(
+            db, parent_id, child_id, unread=payload.unread, origin=payload.unread_origin
+        ),
+    )
+
+
+@child_router.get("")
 async def details(parent_id: str, child_id: str, container: ContainerDep) -> dict[str, Any]:
     return await run_formal_events(
         container,
@@ -85,7 +111,7 @@ async def details(parent_id: str, child_id: str, container: ContainerDep) -> dic
     )
 
 
-@router.get("/events")
+@child_router.get("/events")
 async def events(
     parent_id: str,
     child_id: str,
@@ -102,7 +128,7 @@ async def events(
     )
 
 
-@router.get("/hydration")
+@child_router.get("/hydration")
 async def hydration(
     parent_id: str,
     child_id: str,
@@ -129,7 +155,7 @@ async def hydration(
     )
 
 
-@router.get("/input-readiness")
+@child_router.get("/input-readiness")
 async def readiness(parent_id: str, child_id: str, container: ContainerDep) -> dict[str, Any]:
     def read(loc: children.ChildLocator):
         children.verify_native(loc)
@@ -144,7 +170,7 @@ async def readiness(parent_id: str, child_id: str, container: ContainerDep) -> d
     )
 
 
-@router.get("/context")
+@child_router.get("/context")
 async def context(parent_id: str, child_id: str, container: ContainerDep) -> dict[str, Any]:
     def read(loc: children.ChildLocator):
         children.verify_native(loc)
@@ -159,7 +185,7 @@ async def context(parent_id: str, child_id: str, container: ContainerDep) -> dic
     )
 
 
-@router.post("/messages", status_code=202)
+@child_router.post("/messages", status_code=202)
 async def message(
     parent_id: str, child_id: str, payload: MessageWrite, container: ContainerDep
 ) -> dict[str, object]:
@@ -184,7 +210,7 @@ async def message(
     )
 
 
-@router.post("/control", status_code=202)
+@child_router.post("/control", status_code=202)
 async def control(
     parent_id: str,
     child_id: str,
@@ -230,7 +256,7 @@ async def control(
     )
 
 
-@router.post("/model")
+@child_router.post("/model")
 async def model(
     parent_id: str, child_id: str, payload: ModelWrite, container: ContainerDep
 ) -> dict[str, object]:
@@ -272,7 +298,7 @@ async def model(
     )
 
 
-@router.post("/attachments", status_code=201)
+@child_router.post("/attachments", status_code=201)
 async def upload(
     parent_id: str, child_id: str, container: ContainerDep, file: Annotated[UploadFile, File()]
 ) -> dict[str, Any]:
@@ -288,7 +314,7 @@ async def upload(
     )
 
 
-@router.delete("/attachments", status_code=204)
+@child_router.delete("/attachments", status_code=204)
 async def delete_attachment(
     parent_id: str, child_id: str, container: ContainerDep, path: str = Query(max_length=1000)
 ) -> Response:
@@ -301,7 +327,7 @@ async def delete_attachment(
     return Response(status_code=204)
 
 
-@router.get("/file")
+@child_router.get("/file")
 async def file(
     parent_id: str, child_id: str, container: ContainerDep, path: str = Query(max_length=1000)
 ) -> Response:
@@ -332,7 +358,7 @@ async def file(
     )
 
 
-@router.get("/result-reference/{event_id}")
+@child_router.get("/result-reference/{event_id}")
 async def reference(
     parent_id: str, child_id: str, event_id: str, container: ContainerDep
 ) -> dict[str, str]:
@@ -345,7 +371,7 @@ async def reference(
     )
 
 
-@router.get("/credentials")
+@child_router.get("/credentials")
 async def credentials(parent_id: str, child_id: str, container: ContainerDep) -> dict[str, Any]:
     def read(db: Session) -> dict[str, Any]:
         loc = children.resolve(db, parent_id, child_id)
@@ -354,7 +380,7 @@ async def credentials(parent_id: str, child_id: str, container: ContainerDep) ->
     return await run_blocking_mutation(container, read)
 
 
-@router.post("/credentials/sync")
+@child_router.post("/credentials/sync")
 async def sync_credentials(
     parent_id: str, child_id: str, payload: CredentialsWrite, container: ContainerDep
 ) -> dict[str, Any]:
@@ -391,7 +417,7 @@ class ConfirmationWrite(Write):
     reason: str = Field(min_length=1, max_length=2000)
 
 
-@router.get("/pending-confirmation")
+@child_router.get("/pending-confirmation")
 async def pending_confirmation(
     parent_id: str, child_id: str, container: ContainerDep
 ) -> dict[str, Any]:
@@ -411,7 +437,7 @@ async def pending_confirmation(
     )
 
 
-@router.post("/pending-confirmation/decision", status_code=202)
+@child_router.post("/pending-confirmation/decision", status_code=202)
 async def confirm(
     parent_id: str, child_id: str, payload: ConfirmationWrite, container: ContainerDep
 ) -> dict[str, object]:
@@ -432,3 +458,6 @@ async def confirm(
         lambda db, loc, value: (children.mutation_binding(db, loc), value)[1],
         history=False,
     )
+
+
+router.include_router(child_router)

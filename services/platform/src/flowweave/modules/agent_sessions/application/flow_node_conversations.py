@@ -16,7 +16,11 @@ from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions import public as agent_sessions
-from flowweave.modules.agent_sessions.application import child_sessions, resumable_attachments
+from flowweave.modules.agent_sessions.application import (
+    child_activity,
+    child_sessions,
+    resumable_attachments,
+)
 from flowweave.modules.agent_sessions.application import usage as usage_projection
 from flowweave.modules.agent_sessions.application.activity_reconciliation import (
     read_activity_completion,
@@ -608,6 +612,7 @@ def _node_session_dict(db: Session, item: AgentConversationBinding) -> dict[str,
     )
     return {
         "id": item.id,
+        "child_summary": child_activity.summaries(db, [item])[item.id],
         "display_title": item.display_title,
         "title_state": item.title_state,
         "model_provider_id": item.model_provider_id,
@@ -740,9 +745,11 @@ def _node_session_page_dicts(
                     "digest": capability.digest,
                 }
             )
+    child_summaries = child_activity.summaries(db, items)
     return [
         {
             "id": item.id,
+            "child_summary": child_summaries[item.id],
             "display_title": item.display_title,
             "title_state": item.title_state,
             "model_provider_id": item.model_provider_id,
@@ -900,6 +907,7 @@ def node_session_activity(
     flow_run_id: str,
     attempt_id: str,
     active_binding_id: str | None = None,
+    active_child_id: str | None = None,
 ) -> dict[str, Any]:
     """Map one native running snapshot to authorized node-session binding IDs."""
 
@@ -930,6 +938,8 @@ def node_session_activity(
     if not bindings:
         return {
             "conversations": [],
+            "child_activity_parent_binding_ids": [],
+            "child_activity": [],
             "running_binding_ids": [],
             "condensing_binding_ids": [],
             "condensation_failed_binding_ids": [],
@@ -1045,12 +1055,31 @@ def node_session_activity(
         for item in bindings
         if latest_condensation_task.get(item.id, (None, None, None))[1] == TaskState.DEAD
     ]
-    activity_binding_ids = running_binding_ids | set(condensing_binding_ids)
+    child_summaries, child_states = child_activity.reconcile(
+        db,
+        bindings,
+        native_activity,
+        active_binding_id=active_binding_id,
+        active_child_id=active_child_id,
+    )
+    child_activity_parent_ids = {
+        binding_id
+        for binding_id, summary in child_summaries.items()
+        if summary["running"] or summary["unread"] or summary["condensing"] or summary["pending"]
+    }
+    activity_binding_ids = (
+        running_binding_ids | set(condensing_binding_ids) | child_activity_parent_ids
+    )
     activity_bindings = [
         item for item in bindings if item.id in activity_binding_ids or item.unread
     ]
     return {
-        "conversations": [_node_session_dict(db, item) for item in activity_bindings],
+        "conversations": [
+            {**_node_session_dict(db, item), "child_summary": child_summaries[item.id]}
+            for item in activity_bindings
+        ],
+        "child_activity_parent_binding_ids": sorted(child_activity_parent_ids),
+        "child_activity": child_states,
         "running_binding_ids": [item.id for item in running_bindings],
         "condensing_binding_ids": condensing_binding_ids,
         "condensation_failed_binding_ids": condensation_failed_binding_ids,
