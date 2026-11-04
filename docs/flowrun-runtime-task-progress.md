@@ -113,7 +113,45 @@ hook 命中既有 build/lib 生成目录，改对本片两个 SDK 源文件检�
 零值／未知、跨连接迟到快照、0194 downgrade／upgrade 保留原记录及源码锁。
 Alembic 唯一 head 为 0194_conversation_event_count。会话管理 Playwright
 14 项通过，Web typecheck、受影响 ESLint、production build 与 diff 检查
-通过。窄屏布局检查通过。发布验证待下述正式 release 结果补记。
+通过。窄屏布局检查通过。正式发布验收如下。
+
+#### OPS-87 正式发布验收
+
+2026-11-04 正式 runtime 预检与 Web／platform commit-bound 最小上下文通过。
+发布提交 b07b8e680fab8cd845f09f6fdb9f39b4919e84e8，包含实现提交 f1e0b36d
+及探针来源常量修正。首次镜像构建由来源一致性断言拒绝旧探针常量，
+修正后重新从已提交版本构建，完整契约及独立 network=none 探针通过，
+含事件数在 fork／恢复后的契约验证。
+
+实际 linux/amd64 镜像如下。
+
+- Runtime sha256:6939d9a0afe593f5cf4eb945e4d8f22fe38c833d0d89221982d801c23c12647f
+- Platform sha256:555165b4bdb28174803d08ff95f59b9b8744991d6b8bea2b9b10f24a08e45817
+- Web sha256:d81d74506c7cb07b57b2362de98a1c7ce7caa2ce2c280f12ec03758ca0cf501f
+
+迁移退出码 0，唯一 head 为 0194_conversation_event_count；API、stream-api、
+Worker 和 Web 同步更新并通过健康验证。Runtime 原生活动门禁为空闲，
+服务器侧保留原状态备份与回滚镜像，通过正式 replacement 恢复至 generation 54。
+实际运行 digest、四包 1.54.0、server_info.build_git_sha、provenance、归档 SHA
+及 conversation_stored_event_count_v1 一致。326 个原生会话 ID 与持久挂载
+保留，原会话恢复后正式计数 411。33 个保护容器的镜像和启动时间、配置
+哈希核验通过。
+
+通过用户认证的正式只读接口核验两个新字段，当前根组 102 条记录中
+100 条已有累计 Token。实际读取样本回填 113 个事件及 3979914 累计 Token，
+后台同步亦已回填其他会话；其余未知统计继续由后台渐进补齐。
+
+公开首页、Agent 深链、根登录页、鉴权边界及四个静态资源哈希验证通过。
+本机直连公开静态代理返回 502，改用 SSH 只读取得运行镜像的同版资源，
+并以已验证的公开资源哈希确认一致。隔离模拟用户／API 的已发布前端
+浏览器专项通过，覆盖两列升降序、未知置后、跨页排序、选择不串扰、重置、
+1024 布局、全部 API 使用部署前缀与无 JavaScript 错误。远端 Chromium CLI
+直连 smoke 超时，已停止本片自建探针容器；该额外检查不记为通过。
+
+Web 与 platform 的 remote-release-finish 成功，上下文回收候选均为零，
+精确回收三个旧镜像的历史 tags，保留 24 小时受管上下文、实际引用和每仓库
+一个回滚镜像。收尾后再次验证版本、健康、资源哈希、generation、来源、
+原会话读取、配置与保护容器通过。
 
 ### FR-706 最终回复后的新消息直接发送 — DONE
 
