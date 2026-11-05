@@ -120,7 +120,31 @@ Web typecheck、production build、定向 ESLint（0 error）与 diff 检查通�
 Workbench 的 bootstrap Hook 依赖警告及构建大 chunk 提示仍存在。1024／1440 卡片
 及两宿主配置截图核验通过。唯一 Alembic head 为 0202_add_oh_fw_v5_protocol_profile，
 CURRENT 唯一性与 FR-729 依赖核对通过。本片只含 Web 与必要设计／进度文档，
-待部署；后续任务仍按原 OPS-84 记录执行。
+已完成下述 Web 发布；后续任务仍按原 OPS-84 记录执行。
+
+#### FR-730 Web 发布验收
+
+2026-11-05。发布代码 `d7fccf0fb5b61286de22c956bd502c5f9750f525`，通过正式 Web
+预检及 commit-bound 最小上下文构建。源码归档 SHA-256 为
+`2d3528a5a6db6c5ffe891ae21c7e60d2330d42b1a71dc88b61724be37d202b66`，
+linux/amd64 Web 镜像为
+`sha256:d5e87c62114f14cda5d828b88c8211e3c3ff25a4487feb95d4bbdb22d04908f0`。
+
+更新前保留旧 Web 镜像回滚标签及服务日志，仅重建 Web；revision、架构、容器
+HTTP 入口和 API／stream-api 健康／readiness 通过。服务器配置哈希及其余 37 个
+运行容器的镜像／启动时间核验通过。公网首页、Agent 深层路由为 200，未认证 API
+为 401，根应用正常；两项 HTML 及六项入口／工作台静态资源 SHA-256 与运行镜像
+一致，实际资源包含卡内子列表和共享配置弹窗。
+
+本机直连公网入口返回 502，服务器网络访问同一入口正常；改用通过服务器网络的
+全新 Chromium 完成平台登录页、Agent 深层路由、根登录页及部署前缀检查，根路径
+API 请求和 JavaScript 错误均为 0。实际线上静态资源配合隔离 API 夹具完成三项
+浏览器验收，覆盖卡片分页／长标题／显隐与两宿主冻结能力、认证同步、配置关闭；
+3 passed。该交互验收使用夹具，未改写真实用户会话。临时浏览器及网络通道已关闭。
+
+remote-release-finish 成功，按受管规则回收三份过期上下文和一个过期 Web 回滚
+标签，保留最近三份成功上下文、24 小时内及被引用资产和最新回滚镜像。收尾后
+再次核验实际 Web 版本、平台健康、服务器配置及 37 个其他容器通过。
 
 ### FR-729 feat 集成与当前分支发布 — DONE
 
