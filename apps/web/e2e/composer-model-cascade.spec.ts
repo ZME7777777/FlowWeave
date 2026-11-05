@@ -71,52 +71,46 @@ async function openConversation(page: Page, events: unknown[] = []) {
   return saved;
 }
 
-test('hovering a provider reveals its models and nothing applies until 确认', async ({ page }) => {
+test('hovering a provider reveals its models and clicking a model applies it at once', async ({ page }) => {
   const saved = await openConversation(page);
   const summary = page.locator('.agent-composer-model-summary');
   await expect(summary).toContainText('alpha-1');
   await page.getByLabel(/打开模型与推理设置/).click();
+  await expect(page.getByRole('button', { name: '确认' })).toHaveCount(0);
 
   // The current provider is shown first; disabled models are never offered.
   const models = page.getByRole('listbox', { name: '模型' });
   await expect(models.getByRole('option', { name: '模型 alpha-2' })).toBeVisible();
   await expect(models.getByRole('option', { name: '模型 alpha-off' })).toHaveCount(0);
   await expect(page.getByRole('option', { name: '供应商 供应商乙' })).toContainText('主要');
+  // The selected model has no tinted background, only a check icon.
+  const current = models.getByRole('option', { name: '模型 alpha-1' });
+  await expect(current.locator('svg')).toHaveCount(1);
+  expect(await current.evaluate(el => getComputedStyle(el).backgroundColor)).toBe('rgba(0, 0, 0, 0)');
 
   // Hover alone, with no click, swaps the model column to that provider.
   await page.getByRole('option', { name: '供应商 供应商乙' }).hover();
   await expect(models.getByRole('option', { name: '模型 beta-2' })).toBeVisible();
   await expect(models.getByRole('option', { name: '模型 alpha-2' })).toHaveCount(0);
-
-  // Picking a model only stages it.
-  await models.getByRole('option', { name: '模型 beta-2' }).click();
-  await expect(models.getByRole('option', { name: '模型 beta-2' })).toHaveAttribute('aria-selected', 'true');
   expect(saved).toHaveLength(0);
-  await expect(summary).toContainText('alpha-1');
 
-  await page.getByRole('button', { name: '确认' }).click();
+  await models.getByRole('option', { name: '模型 beta-2' }).click();
   await expect(page.locator('.agent-composer-model-popover')).toHaveCount(0);
   await expect.poll(() => saved).toHaveLength(1);
   expect(saved[0]).toMatchObject({ model_provider_id: 'provider-b', model_name: 'beta-2' });
   await expect(summary).toContainText('beta-2');
 });
 
-test('确认 stays disabled until the choice changes, and Escape or an outside click discards a staged choice', async ({ page }) => {
+test('Escape and an outside click close the menu without changing the model', async ({ page }) => {
   const saved = await openConversation(page);
   await page.getByLabel(/打开模型与推理设置/).click();
-  await expect(page.getByRole('button', { name: '确认' })).toBeDisabled();
-
   await page.getByRole('option', { name: '供应商 供应商乙' }).hover();
-  await page.getByRole('option', { name: '模型 beta-1' }).click();
-  await expect(page.getByRole('button', { name: '确认' })).toBeEnabled();
   await page.keyboard.press('Escape');
   await expect(page.locator('.agent-composer-model-popover')).toHaveCount(0);
   await expect(page.locator('.agent-composer-model-summary')).toContainText('alpha-1');
 
   await page.getByLabel(/打开模型与推理设置/).click();
-  await expect(page.getByRole('button', { name: '确认' })).toBeDisabled();
   await page.getByRole('option', { name: '供应商 供应商乙' }).hover();
-  await page.getByRole('option', { name: '模型 beta-1' }).click();
   await page.mouse.click(8, 300);
   await expect(page.locator('.agent-composer-model-popover')).toHaveCount(0);
   expect(saved).toHaveLength(0);

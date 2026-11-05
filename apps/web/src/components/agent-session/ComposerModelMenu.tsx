@@ -13,13 +13,12 @@ export function ComposerModelMenu({
 }) {
   const [open, setOpen] = useState(false);
   const [panel, setPanel] = useState<'root' | 'effort'>('root');
-  // The cascade only stages a choice; nothing is applied until "确认".
+  // Hover/focus only reveals a provider's models; clicking a model applies it at once.
   const [hoverProviderId, setHoverProviderId] = useState('');
-  const [pending, setPending] = useState<{ providerId: string; modelName: string } | null>(null);
   const menu = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const popover = useRef<HTMLDivElement>(null);
-  const reset = () => { setPanel('root'); setPending(null); setHoverProviderId(''); };
+  const reset = () => { setPanel('root'); setHoverProviderId(''); };
   const close = () => { setOpen(false); reset(); trigger.current?.focus(); };
   useEscapeClose(close, open);
   useEffect(() => {
@@ -41,14 +40,13 @@ export function ComposerModelMenu({
   const currentProvider = providers.find(provider => provider.id === providerId)?.name ?? '选择供应商';
   const choices = [effort, ...efforts].filter((value, index, all): value is string => Boolean(value) && all.indexOf(value) === index);
   const compactSummary = [currentProvider, modelName || '选择模型', effort ? reasoningEffortLabel(effort) : '默认'].join(' ');
-  const shownProviderId = hoverProviderId || pending?.providerId || providerId;
+  const shownProviderId = hoverProviderId || providerId;
   const shownProvider = providers.find(provider => provider.id === shownProviderId);
   // Models of the current provider come from the caller (they may be frozen to the session); others from the catalog.
   const shownModels = (shownProviderId === providerId && models.length ? models : shownProvider?.models ?? []).filter(model => model.enabled);
-  const target = pending ?? { providerId, modelName };
-  const changed = Boolean(pending) && (pending!.providerId !== providerId || pending!.modelName !== modelName);
-  const apply = () => {
-    if (pending && changed) onSelect(pending.providerId, pending.modelName);
+  const target = { providerId, modelName };
+  const choose = (nextProviderId: string, nextModelName: string) => {
+    if (nextProviderId !== providerId || nextModelName !== modelName) onSelect(nextProviderId, nextModelName);
     close();
   };
   const selectEffort = (value: string) => { onEffortChange(value); close(); };
@@ -69,11 +67,11 @@ export function ComposerModelMenu({
         })}{!providers.length && <p className="agent-model-picker-empty">暂无可用供应商</p>}</div>
         <div className="agent-model-cascade-models" role="listbox" aria-label="模型">{shownModels.map(model => {
           const selected = target.providerId === shownProviderId && target.modelName === model.model_name;
-          return <button type="button" role="option" key={model.model_name} aria-selected={selected} aria-label={`模型 ${model.model_name}`} className={`agent-model-picker-option${selected ? ' selected' : ''}`} onClick={() => setPending({ providerId: shownProviderId, modelName: model.model_name })}><span>{model.model_name}</span>{selected && <Check size={15}/>}</button>;
+          return <button type="button" role="option" key={model.model_name} aria-selected={selected} aria-label={`模型 ${model.model_name}`} className={`agent-model-picker-option${selected ? ' selected' : ''}`} onClick={() => choose(shownProviderId, model.model_name)}><span>{model.model_name}</span>{selected && <Check size={15}/>}</button>;
         })}{shownProvider && !shownModels.length && <p className="agent-model-picker-empty">该供应商没有可用模型</p>}</div>
       </div>
       {efforts.length > 0 && <button type="button" className="agent-model-picker-row" aria-label={`思考程度 ${effort ? reasoningEffortLabel(effort) : '默认'}`} disabled={disabled || !providerId} onClick={() => setPanel('effort')}><span>思考程度</span><em>{effort ? reasoningEffortLabel(effort) : '默认'}</em><ChevronRight size={15}/></button>}
-      <footer className="agent-model-picker-footer"><span>设置仅作用于当前会话。</span><button type="button" className="agent-model-picker-confirm" disabled={!changed} onClick={apply}>确认</button></footer>
+      <footer className="agent-model-picker-footer"><span>设置仅作用于当前会话。</span></footer>
     </> : <><header><button type="button" aria-label="返回模型设置" onClick={() => setPanel('root')}><ChevronLeft size={16}/></button><b>选择思考程度</b></header><div className="agent-model-picker-options" role="listbox" aria-label="选择思考程度">{effortOptions}</div></>}</ViewportPopover>}
   </div>;
 }
