@@ -2170,6 +2170,7 @@ def _bootstrap_result(db: Session, binding: AgentConversationBinding) -> dict[st
         "conversation": _dict(db, binding),
         "accepted": True,
         "cursor": binding.initial_user_event_id,
+        "event_id": binding.initial_user_event_id,
     }
 
 
@@ -3461,6 +3462,7 @@ def finalize_running_message(
     return {
         "accepted": True,
         "cursor": result.cursor,
+        "event_id": result.cursor,
         "compacted": False,
         "queued_during_turn": True,
     }
@@ -3575,6 +3577,7 @@ def message(
         return {
             "accepted": True,
             "cursor": result.cursor,
+            "event_id": result.cursor,
             "compacted": False,
             "queued_during_turn": True,
         }
@@ -3696,6 +3699,7 @@ def message(
     return {
         "accepted": True,
         "cursor": result.cursor,
+        "event_id": result.cursor,
         "compacted": False,
         "queued_during_turn": False,
     }
@@ -5443,7 +5447,11 @@ def rewrite_message(
     binding.last_connected_at = activity_at
     binding.updated_at = activity_at
     db.flush()
-    return {"accepted": True, "cursor": result.cursor}
+    return {
+        "accepted": True,
+        "cursor": result.cursor,
+        "event_id": result.cursor,
+    }
 
 
 def resume(db: Session, workspace_id: str, binding_id: str) -> dict[str, Any]:
