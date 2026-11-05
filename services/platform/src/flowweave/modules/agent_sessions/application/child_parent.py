@@ -21,7 +21,6 @@ from flowweave.modules.users.application.security import current_user_id
 from flowweave.runtime.base import RuntimeAgentSpec, RuntimeTool
 from flowweave.runtime.child_contract import (
     CHILD_TOOL_NAMES,
-    CHILD_USAGE_GUIDANCE,
     V3_ARCHIVE_SHA256,
     V3_SOURCE_COMMIT,
     child_capability_manifest,
@@ -273,18 +272,6 @@ def attach_parent_capability(
     return replace(
         spec,
         tools=spec.tools + tuple(RuntimeTool(entry["name"], entry["params"]) for entry in entries),
-        agent_context=replace(
-            spec.agent_context,
-            system_message_suffix="\n\n".join(
-                filter(
-                    None,
-                    (
-                        spec.agent_context.system_message_suffix,
-                        CHILD_USAGE_GUIDANCE,
-                    ),
-                )
-            ),
-        ),
     )
 
 

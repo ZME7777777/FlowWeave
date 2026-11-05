@@ -30,6 +30,8 @@ CHILD_HTTP_OPERATIONS = (
     ("POST", "/api/conversations/{conversation_id}/children/commands/verify"),
     ("POST", "/api/conversations/{conversation_id}/children/commands"),
 )
+# Historical manifest metadata preserves V3/V4/V5 digests. Parent assembly does
+# not append this guidance to the model context.
 CHILD_USAGE_GUIDANCE = (
     "简单查找自行完成。需要子任务结果后继续推理时优先使用 Task；需要独立历史、并行工作或"
     "用户后续介入时使用子会话。提供完整任务、路径、约束和交付物，不重复委派同一任务。"

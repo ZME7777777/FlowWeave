@@ -28,7 +28,6 @@ from flowweave.runtime.auth import derive_runtime_session_key
 from flowweave.runtime.base import RuntimeAgentSpec, RuntimeTool
 from flowweave.runtime.child_contract import (
     CHILD_TOOL_NAMES,
-    CHILD_USAGE_GUIDANCE,
     V3_ARCHIVE_SHA256,
     V3_SOURCE_COMMIT,
     child_capability_manifest,
@@ -362,7 +361,7 @@ def test_freeze_and_two_phase_auth_do_not_create_a_child(parent_graph):
     names = [tool.name for tool in g.bound_spec.tools]
     assert tuple(names[-6:]) == CHILD_TOOL_NAMES
     assert "start_child_conversation" not in names
-    assert CHILD_USAGE_GUIDANCE in g.bound_spec.agent_context.system_message_suffix
+    assert g.bound_spec.agent_context is g.spec.agent_context
     assert str(g.frozen.policy.scope_id) == g.binding.id
     assert "/prefix/api/v1/agent-child-launchers/" in g.frozen.launch_url
     prepared = prepare(g)
@@ -374,6 +373,30 @@ def test_freeze_and_two_phase_auth_do_not_create_a_child(parent_graph):
     assert child_launcher.project_launcher(g.db, prepared, proof(g), runtime_key=g.key) == prepared
     assert not g.db.scalar(select(AgentChildConversation.id))
     assert len(list(g.db.scalars(select(AgentConversationBinding.id)))) == 1
+
+
+@pytest.mark.parametrize("parent_profile", ["OH_FW_V3", "OH_FW_V4", "OH_FW_V5"], indirect=True)
+@pytest.mark.parametrize("system_suffix", ["", "保留原有节点与用户上下文"])
+def test_parent_tools_preserve_context_without_extra_usage_guidance(parent_graph, system_suffix):
+    g = parent_graph
+    assert g.bound_spec.agent_context is g.spec.agent_context
+    spec = replace(
+        g.spec,
+        agent_context=replace(g.spec.agent_context, system_message_suffix=system_suffix),
+    )
+    attached = child_parent.attach_parent_capability(
+        g.db,
+        g.binding,
+        spec,
+        profile=g.profile,
+        identity=g.identity,
+        generation=1,
+        runtime_image_digest=g.image,
+        runtime_manifest=g.manifest,
+    )
+    assert attached.agent_context is spec.agent_context
+    assert attached.agent_context.system_message_suffix == system_suffix
+    assert tuple(tool.name for tool in attached.tools[-6:]) == CHILD_TOOL_NAMES
 
 
 @pytest.mark.parametrize("change", ["user", "binding", "key", "root-key"])

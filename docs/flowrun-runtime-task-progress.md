@@ -115,6 +115,20 @@ production build、定向 ESLint（0 error）及 diff 检查通过；保留既�
 Hook 依赖警告与构建 chunk 提示。两宿主 1024／1440 预览、完整详情与子全屏截图
 核验通过。本片只提交 Web 和必要设计／进度文档，待部署。
 
+### FR-732 移除 FlowWeave 子会话调用指导注入 — DONE
+
+依赖 FR-730 DONE。用户要求删除与 OpenHands 工具描述重复的 FlowWeave 提示词。
+父能力装配不再追加 CHILD_USAGE_GUIDANCE，传入 AgentContext 完整保留；调用指导
+由 OpenHands 工具自身描述提供。历史 V3／V4／V5 Manifest 的 usage_guidance 仅为
+冻结摘要兼容而保留，不再从该入口进入模型系统上下文。已有 OpenHands 会话的
+持久化上下文沿用其原生命周期，新创建会话在本次代码发布后使用新装配逻辑。
+
+验证（2026-11-05）。两宿主、三种协议、空／非空原有系统后缀及父能力冻结／授权
+定向测试 32 passed，Ruff 检查与格式检查通过；三种 Manifest 的完整内容及 digest
+与修改前逐项一致。唯一 Alembic head 为 0202_add_oh_fw_v5_protocol_profile。
+本片源码、测试和验收记录独立提交，后台仍待部署。并行 FR-731 的 Web 范围
+发布不代表本片后台已经发布。
+
 ### FR-730 子会话悬浮卡列表与共享配置弹窗 — DONE
 
 依赖 FR-729 DONE。子会话直接在悬浮卡中按来源列表样式展示，标题与状态同列，
