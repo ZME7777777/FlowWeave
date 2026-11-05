@@ -15,7 +15,7 @@ export function ComposerModelMenu({
   const [panel, setPanel] = useState<'root' | 'effort'>('root');
   // Hover/focus only reveals a provider's models; clicking a model applies it at once.
   const [hoverProviderId, setHoverProviderId] = useState('');
-  const hoverTimer = useRef<number>();
+  const hoverTimer = useRef<number | undefined>(undefined);
   const menu = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const popover = useRef<HTMLDivElement>(null);
