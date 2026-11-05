@@ -16297,3 +16297,28 @@ migration 退出码 0（无新迁移）。Agent 会话容器、终端环境 setu
 
 未完成项：尚未用真实模型触发一次 ask_user 的端到端问答（未创建测试会话）；
 FR 之外既有的 32 项架构／环境测试失败为发布前即存在，未在本次处理。
+
+### OPS-BL1582b ask_user 不再暂停运行与 baseline e934488e5 Runtime 同步 — DONE
+
+2026-11-05。代码 commit `768dce932cb518a5a4bdc5bdc25bce3f45aefc65`（含 `b5c73975`），
+source commit `e934488e53a97377f8b35d1b564086a1092a6bfa`，上游锚点不变，四包 1.58.2，归档
+SHA-256 `55d2f19690ae2a3e7ec7993db697626a829f71b8ab754358549e75845026e4fd`。
+
+行为：`ask_user` 支持 `questions`（至多 3 个），调用后不改变原生执行状态；模型决定继续工作或
+以一条总结收尾。开放问题＝活动分支上最新 ask_user ActionEvent 之后无用户消息。用户回复通过
+V5 消息信封的 `answered_question` 携带被回答问题，前端以单行引用展示。
+
+镜像：服务器侧 linux/amd64 构建，Runtime `flowweave-openhands-runtime:1` 现指向
+`sha256:545557289c5761bc05dc8feb2b3595bea4aad48ac27453dce0cb2d0bc9afc243`（旧镜像保留为
+`rollback-e934488e-pre`，`ca43f7fbef50`）；平台 `sha256:66793ea87a50…`，Web
+`sha256:f2a9e0974d50…`。镜像内 `contract_check.py` status ok。
+
+门禁与切换：原生会话 336 个，error 16／finished 307／idle 2／paused 8／stuck 3，无
+running/starting/executing/stopping；服务器侧先备份 `state/`（压缩包权限 600，gzip 校验通过；
+备份期间仅一个已 finished 的历史会话目录被读到变化）。migration 退出码 0，随后重建
+runtime-provider／api／stream-api／worker，再执行 `runtime-replace`（RECOVERING→ACTIVE）。
+新 generation 容器 digest、`/server_info.build_git_sha`、四包版本与 source lock 一致，`AskUserTool`
+可解析，原生会话数量与状态分布不变。公网首页、`/agent`、`/agent/schedules` 为 200。受管收尾已执行。
+
+未完成项：尚未用真实模型触发一次“ask_user 后继续工作”的端到端问答（未创建测试会话）；
+`tests/architecture` 既有 11 项失败与发布前一致。
