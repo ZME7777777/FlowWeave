@@ -691,6 +691,7 @@ export interface OpenHandsConversationEvent {
   };
 }
 export interface OpenHandsConversationEventBatch {
+  condensation_task?: { task_id: string; state: string; failure_reason?: string | null } | null;
   events: OpenHandsConversationEvent[];
   next_cursor?: string | null;
   history_cursor?: string | null;
@@ -846,6 +847,7 @@ export interface AgentPendingConfirmation {
   actions?: AgentPendingConfirmationAction[];
 }
 export interface AgentAttachment {
+  url?: string;
   filename: string; mime_type: string; byte_size: number; path: string; image_data_url?: string | null;
 }
 /** A server-authorized local workspace entry, distinct from an uploaded attachment. */

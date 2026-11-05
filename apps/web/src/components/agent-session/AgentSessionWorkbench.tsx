@@ -16,16 +16,17 @@ import { AgentConversationSchedulesPanel } from './AgentConversationSchedulesPan
 import { ConversationManagementPage } from '../../pages/ConversationManagementPage';
 import { CONVERSATION_REFERENCE_TRANSFER_TYPE, WORKSPACE_FILE_TRANSFER_TYPE, transferredConversationReference, transferredFiles, transferredWorkspacePaths, type ComposerHandle } from './agentComposerInputUtils';
 import remarkGfm from 'remark-gfm';
-import { api as agentWorkspaceApi, agentWorkspaceFileViewerUrl, ApiError, randomId, type AgentStreamEvent } from '../../api/client';
+import { api as agentWorkspaceApi, childSessionFileUrl, agentWorkspaceFileViewerUrl, ApiError, randomId, type AgentStreamEvent } from '../../api/client';
 import { agentWorkspaceSessionGateway, type AgentSessionGateway } from '../../api/agent-session-gateway';
 import { deploymentBasePath, withoutDeploymentBase } from '../../deploymentPath';
 import { agentWorkspaceSessionHost, type AgentSessionHost } from './session-host';
 import { SidebarConversationPane } from './SidebarConversationPane';
+import { workspaceMarkdownFileHref, workspaceMarkdownLinkPath, workspaceMarkdownImagePath, workspaceFileApiPath } from './workspace-file-links';
 import { ChildConversationPane } from './ChildConversationPane';
 import { ChildConversationIndicator, ChildConversationSummary } from './ChildConversationSummary';
 import { latestHistoryCursor, mergeConversationBatch, mergeConversationEvent, mergeConversationEvents, retainConversationPresentation } from './conversation-event-cache';
 import { clearConversationSnapshots, getAgentSessionCacheIdentity, readConversationContextSnapshot, writeConversationContextSnapshot } from './conversation-cache';
-import { ConversationSurface, ConversationTaskPlan, type ConversationHistoryPrepend, type ConversationReference, type ConversationScrollSnapshot, type ModelRetryStatus } from '../ConversationSurface';
+import { ConversationSurface, ConversationTaskPlan, ConversationReferencePreview, type ConversationHistoryPrepend, type ConversationReference, type ConversationScrollSnapshot, type ModelRetryStatus } from '../ConversationSurface';
 import { isOpenHandsAgentReply, isOpenHandsConversationInterrupt, isOpenHandsConversationTerminalError, isOpenHandsEmptyResponseRecovery, orderOpenHandsConversationEvents, projectFlowWeaveMessageContext } from '../conversationEvents';
 import { useProductDialog } from '../ProductDialogContext';
 import { useEscapeClose } from '../useEscapeClose';
@@ -2597,66 +2598,6 @@ function workspaceSourcePath(path: string, workingDirectory?: string): string {
   return `${root}/${relative}`;
 }
 
-/**
- * Resolve a Markdown link only when it stays inside the currently authorized
- * workspace. Relative links in an Agent reply are file references, not web
- * routes; routing them through the drawer avoids a browser-level navigation.
- */
-function normalizedWorkspacePath(path: string): string {
-  const absolute = path.startsWith('/');
-  const parts: string[] = [];
-  for (const part of path.split('/')) {
-    if (!part || part === '.') continue;
-    if (part === '..') parts.pop();
-    else parts.push(part);
-  }
-  return `${absolute ? '/' : ''}${parts.join('/')}`;
-}
-
-function workspaceMarkdownFileHref(href: string): boolean {
-  // Existing Agent replies can contain absolute API links. Route these through
-  // the active binding's preview instead of opening an unscoped download URL.
-  if (workspaceFileApiPath(href) !== undefined) return true;
-  return Boolean(href && !/^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(href) && href.split(/[?#]/, 1)[0]);
-}
-
-function workspaceFileApiPath(href: string): string | undefined {
-  try {
-    const url = new URL(href, window.location.origin);
-    return url.origin === window.location.origin
-      && /^\/api\/v1\/(?:agent-workspaces\/[^/]+|flow-runs\/[^/]+\/(?:node-attempts|attempts)\/[^/]+\/agent-sessions)\/workspace\/file$/.test(withoutDeploymentBase(url.pathname))
-      ? url.searchParams.get('path') ?? undefined
-      : undefined;
-  } catch { return undefined; }
-}
-
-function workspaceMarkdownLinkPath(href: string, workingDirectory?: string, sourcePath?: string): string | undefined {
-  const root = workingDirectory ? normalizedWorkspacePath(workingDirectory.replace(/\\/g, '/')) : '';
-  if (!root) return undefined;
-  try {
-    const path = workspaceFileApiPath(href);
-    if (path !== undefined) {
-      return workspaceMarkdownLinkPath(path, workingDirectory, sourcePath);
-    }
-  } catch {
-    return undefined;
-  }
-  if (!workspaceMarkdownFileHref(href)) return undefined;
-  const rawPath = href.split(/[?#]/, 1)[0];
-  if (!rawPath) return undefined;
-  let path: string;
-  try { path = decodeURIComponent(rawPath).replace(/\\/g, '/'); } catch { return undefined; }
-  const normalizedSource = sourcePath ? normalizedWorkspacePath(sourcePath.replace(/\\/g, '/')) : undefined;
-  const sourceDirectory = normalizedSource && normalizedSource.startsWith(`${root}/`)
-    ? normalizedSource.slice(0, normalizedSource.lastIndexOf('/'))
-    : root;
-  const resolved = normalizedWorkspacePath(path.startsWith('/') ? path : `${sourceDirectory}/${path}`);
-  return resolved === root || resolved.startsWith(`${root}/`) ? resolved : undefined;
-}
-
-function workspaceMarkdownImagePath(src: string, workingDirectory?: string): string | undefined {
-  return workspaceMarkdownLinkPath(src.replace(/^sandbox:(?=\/)/i, ''), workingDirectory);
-}
 
 
 function sourceParentDirectories(path: string, root: string): string[] {
@@ -3583,7 +3524,7 @@ function clampConversationRailWidth(value: number): number {
 
 
 type ConversationFilePreviewRequest =
-  | { key: string; kind: 'workspace'; path: string; filename: string; mimeType?: string; imageDataUrl?: string | null; attachment?: AgentAttachment; previewBindingId?: string; draftAttachmentOwnerId?: string }
+  | { key: string; kind: 'workspace'; path: string; filename: string; mimeType?: string; imageDataUrl?: string | null; attachment?: AgentAttachment; previewBindingId?: string; childParentId?: string; previewWorkingDirectory?: string; draftAttachmentOwnerId?: string }
   | { key: string; kind: 'directory'; path: string; filename: string }
   | { key: string; kind: 'candidate'; filename: string; url: string; fieldKey: string; relativePath: string }
   | { key: string; kind: 'image'; filename: string; url: string };
@@ -3624,14 +3565,23 @@ function ConversationFilePreviewDialog({ request, workspaceId, bindingId, workDi
     () => ({ bindingId: previewBindingId, workDirectoryId, draftAttachmentOwnerId }),
     [previewBindingId, workDirectoryId, draftAttachmentOwnerId],
   );
+  const childParentId = workspaceRequest?.childParentId;
+  const previewFileUrl = useCallback((path: string, download = false) => childParentId && previewBindingId
+    ? childSessionFileUrl(childParentId, previewBindingId, path)
+    : fileUrl(workspaceId, path, { ...fileOptions, download }),
+  [childParentId, fileOptions, fileUrl, previewBindingId, workspaceId]);
+  const readPreview = useCallback((offset?: number, signal?: AbortSignal) => childParentId && previewBindingId
+    ? agentWorkspaceApi.agentChildFilePreview(childParentId, previewBindingId, workspaceRequest!.path, signal)
+    : api.filePreview(workspaceId, workspaceRequest!.path, fileOptions, offset, signal),
+  [api, childParentId, fileOptions, previewBindingId, workspaceId, workspaceRequest]);
   const textPreviewable = Boolean(workspaceRequest && isTextPreviewable(workspaceRequest.path, workspaceRequest.mimeType));
   const htmlPreviewable = Boolean(workspaceRequest && isHtmlPreviewable(workspaceRequest.path, workspaceRequest.mimeType));
   const previewQuery = useQuery({
-    queryKey: sessionQueryKey(host, 'conversation-file-preview', workspaceId, previewBindingId, draftAttachmentOwnerId, workspaceRequest?.path),
+    queryKey: sessionQueryKey(host, 'conversation-file-preview', workspaceId, previewBindingId, childParentId, draftAttachmentOwnerId, workspaceRequest?.path),
     queryFn: async ({ signal }) => {
-      let preview = await api.filePreview(workspaceId, workspaceRequest!.path, fileOptions, undefined, signal);
+      let preview = await readPreview(undefined, signal);
       while (htmlPreviewable && preview.nextOffset !== undefined) {
-        const next = await api.filePreview(workspaceId, workspaceRequest!.path, fileOptions, preview.nextOffset, signal);
+        const next = await readPreview(preview.nextOffset, signal);
         preview = {
           content: preview.content + next.content,
           totalBytes: next.totalBytes || preview.totalBytes,
@@ -3654,7 +3604,7 @@ function ConversationFilePreviewDialog({ request, workspaceId, bindingId, workDi
     if (!workspaceRequest || previewState?.nextOffset === undefined || previewMoreLoading) return;
     setPreviewMoreLoading(true);
     try {
-      const next = await api.filePreview(workspaceId, workspaceRequest.path, fileOptions, previewState.nextOffset);
+      const next = await readPreview(previewState.nextOffset);
       setPreviewState(current => current?.path === workspaceRequest.path ? {
         path: workspaceRequest.path,
         content: current.content + next.content,
@@ -3664,16 +3614,16 @@ function ConversationFilePreviewDialog({ request, workspaceId, bindingId, workDi
     } finally {
       setPreviewMoreLoading(false);
     }
-  }, [api, fileOptions, previewMoreLoading, previewState, workspaceId, workspaceRequest]);
+  }, [previewMoreLoading, previewState, readPreview, workspaceRequest]);
 
   const path = request.kind === 'workspace' || request.kind === 'directory' ? request.path : request.kind === 'candidate' ? request.relativePath : request.url;
   const sourceUrl = request.kind === 'workspace'
-    ? request.imageDataUrl || fileUrl(workspaceId, request.path, { ...fileOptions, download: false })
+    ? request.imageDataUrl || previewFileUrl(request.path)
     : request.kind === 'directory' ? '' : request.url;
-  const viewerUrl = workspaceRequest && host.id === 'agent-workspace'
+  const viewerUrl = workspaceRequest && !childParentId && host.id === 'agent-workspace'
     ? agentWorkspaceFileViewerUrl(workspaceId, workspaceRequest.path, fileOptions)
     : undefined;
-  const downloadUrl = workspaceRequest ? fileUrl(workspaceId, workspaceRequest.path, { ...fileOptions, download: true }) : undefined;
+  const downloadUrl = workspaceRequest ? previewFileUrl(workspaceRequest.path, true) : undefined;
   const canPreviewImage = Boolean(workspaceRequest && (workspaceRequest.mimeType?.startsWith('image/') || /\.(?:avif|gif|jpe?g|png|svg|webp)$/i.test(workspaceRequest.path)));
   const canPreviewPdf = Boolean(workspaceRequest && (workspaceRequest.mimeType === 'application/pdf' || /\.pdf$/i.test(workspaceRequest.path)));
   const canPreviewHtml = Boolean(workspaceRequest && isHtmlPreviewable(workspaceRequest.path, workspaceRequest.mimeType));
@@ -3681,9 +3631,9 @@ function ConversationFilePreviewDialog({ request, workspaceId, bindingId, workDi
     ? sandboxedHtmlPreviewDocument(
       previewState.content,
       workspaceRequest.path,
-      path => fileUrl(workspaceId, path, { ...fileOptions, download: false }),
+      path => previewFileUrl(path),
     )
-    : undefined, [canPreviewHtml, fileOptions, fileUrl, previewState, workspaceId, workspaceRequest]);
+    : undefined, [canPreviewHtml, previewFileUrl, previewState, workspaceRequest]);
   const lightweightPreview = Boolean(previewState && (previewState.totalBytes > 128 * 1024 || previewState.content.length > 128 * 1024));
   const imagePreviewable = request.kind === 'image' || canPreviewImage;
   const handleImageWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
@@ -3729,7 +3679,7 @@ function ConversationFilePreviewDialog({ request, workspaceId, bindingId, workDi
       <header>
         <div><span className="eyebrow">FILE PREVIEW</span><h2 ref={titleRef} tabIndex={-1} title={path}>{request.filename}</h2><small title={path}>{path}</small></div>
         <div className="agent-file-preview-dialog-actions">
-          {downloadUrl && <a href={downloadUrl}><Download size={14}/>下载</a>}
+          {downloadUrl && <a href={downloadUrl} download={childParentId ? request.filename : undefined}><Download size={14}/>下载</a>}
           <button type="button" aria-label={fullScreen ? '退出全屏预览' : '全屏预览'} title={fullScreen ? '退出全屏' : '全屏'} onClick={() => setFullScreen(current => !current)}>{fullScreen ? <Minimize2 size={16}/> : <Maximize2 size={16}/>}</button>
           <button type="button" aria-label="关闭文件预览" title="关闭" onClick={onClose}><X size={17}/></button>
         </div>
@@ -3761,7 +3711,7 @@ function ConversationFilePreviewDialog({ request, workspaceId, bindingId, workDi
                         : null
                   : <p>此文件不提供浏览器预览，请在文件标签页中查看或下载。</p>}
       </div>
-      <footer><button type="button" className="secondary" onClick={onClose}>关闭</button>{request.kind !== 'image' && <button type="button" className="primary" disabled={canPreviewHtml && !htmlPreviewDocument} onClick={() => onOpenInTab(request, htmlPreviewDocument, viewerUrl ?? sourceUrl)}>{canPreviewHtml ? <Globe2 size={14}/> : <PanelRightOpen size={14}/>}{canPreviewHtml ? '在新标签页打开' : request.kind === 'directory' ? '在文件标签页查看目录' : '在文件标签页打开'}</button>}</footer>
+      <footer><button type="button" className="secondary" onClick={onClose}>关闭</button>{request.kind !== 'image' && !(childParentId && workspaceRequest?.path.includes('/uploads/')) && <button type="button" className="primary" disabled={canPreviewHtml && !htmlPreviewDocument} onClick={() => onOpenInTab(request, htmlPreviewDocument, viewerUrl ?? sourceUrl)}>{canPreviewHtml ? <Globe2 size={14}/> : <PanelRightOpen size={14}/>}{canPreviewHtml ? '在新标签页打开' : request.kind === 'directory' ? '在文件标签页查看目录' : '在文件标签页打开'}</button>}</footer>
     </section>
   </div>, document.body);
 }
@@ -3853,9 +3803,9 @@ function WorkspaceBrowser({ tab, workspaceId, bindingId, workDirectoryId, browse
 
 
 function WorkspaceDrawer({
-  open, onOpen, onClose, onFullScreenConversationActiveChange, onAnnotateFileSelection, highlightedFileSelection, workspaceId, scopeKey, migrateFromScopeKey, bindingId, workDirectoryId, conversation, conversationCumulativeTokens, attachments, sources, attachmentRequest, candidatePreviewRequest, markdownFileRequest, browserRequest, onBrowserRequestHandled, htmlPreviewRequest, reviewChanges = [], reviewRequestId, sessionChanges = [], onReviewChanges, runtimeAvailable, runtimeTasks, agentDefinitions, sessionStopped, childActivity, onActiveChildChange, sidebarQuestion, onSidebarBindingCreated, onOpenSidebarQuestion, onCloseSidebarQuestion, onOpenConversationReference, onPreviewAttachment,
+  open, onOpen, onClose, onFullScreenConversationActiveChange, onAnnotateFileSelection, highlightedFileSelection, workspaceId, scopeKey, migrateFromScopeKey, bindingId, workDirectoryId, conversation, conversationCumulativeTokens, attachments, sources, attachmentRequest, candidatePreviewRequest, markdownFileRequest, browserRequest, onBrowserRequestHandled, htmlPreviewRequest, reviewChanges = [], reviewRequestId, sessionChanges = [], onReviewChanges, runtimeAvailable, runtimeTasks, agentDefinitions, sessionStopped, childActivity, onActiveChildChange, sidebarQuestion, onSidebarBindingCreated, onOpenSidebarQuestion, onCloseSidebarQuestion, onOpenConversationReference, onPreviewAttachment, onQuoteChildResult,
 }: {
-  open: boolean; onOpen: () => void; onClose: () => void; onFullScreenConversationActiveChange: (active: boolean) => void; onAnnotateFileSelection?: (path: string, selection: FileSelection, quote: string) => void; highlightedFileSelection?: { path: string; selection: FileSelection }; workspaceId: string; scopeKey: string; migrateFromScopeKey?: string; bindingId?: string; workDirectoryId?: string; conversation?: AgentConversation; conversationCumulativeTokens?: number | null; attachments: AgentAttachment[]; sources: ConversationSource[]; attachmentRequest?: { key: string; attachment?: AgentAttachment }; candidatePreviewRequest?: CandidateFilePreviewRequest; markdownFileRequest?: MarkdownFileRequest; browserRequest?: { key: string; scopeKey: string; url: string }; onBrowserRequestHandled: (key: string) => void; htmlPreviewRequest?: { key: string; filename: string; document?: string; sourceUrl?: string }; reviewChanges?: WorkspaceFileChange[]; reviewRequestId?: string; sessionChanges?: WorkspaceFileChange[]; onReviewChanges?: (changes: WorkspaceFileChange[]) => void; runtimeAvailable: boolean; runtimeTasks: RuntimeTaskProjection[]; agentDefinitions: CapabilityAsset[]; sessionStopped: boolean; childActivity: AgentChildActivity[]; onActiveChildChange: (value: { parentId: string; childId: string } | undefined) => void; sidebarQuestion?: { sourceBindingId: string; sidebarBindingId?: string; reference?: AgentConversationReference }; onSidebarBindingCreated: (sourceBindingId: string, sidebarBindingId: string) => void; onOpenSidebarQuestion?: () => void; onCloseSidebarQuestion: () => void; onOpenConversationReference: (reference: AgentConversationReference) => void; onPreviewAttachment: (attachment: AgentAttachment, previewBindingId?: string) => void;
+  open: boolean; onOpen: () => void; onClose: () => void; onFullScreenConversationActiveChange: (active: boolean) => void; onAnnotateFileSelection?: (path: string, selection: FileSelection, quote: string) => void; highlightedFileSelection?: { path: string; selection: FileSelection }; workspaceId: string; scopeKey: string; migrateFromScopeKey?: string; bindingId?: string; workDirectoryId?: string; conversation?: AgentConversation; conversationCumulativeTokens?: number | null; attachments: AgentAttachment[]; sources: ConversationSource[]; attachmentRequest?: { key: string; attachment?: AgentAttachment }; candidatePreviewRequest?: CandidateFilePreviewRequest; markdownFileRequest?: MarkdownFileRequest; browserRequest?: { key: string; scopeKey: string; url: string }; onBrowserRequestHandled: (key: string) => void; htmlPreviewRequest?: { key: string; filename: string; document?: string; sourceUrl?: string }; reviewChanges?: WorkspaceFileChange[]; reviewRequestId?: string; sessionChanges?: WorkspaceFileChange[]; onReviewChanges?: (changes: WorkspaceFileChange[]) => void; runtimeAvailable: boolean; runtimeTasks: RuntimeTaskProjection[]; agentDefinitions: CapabilityAsset[]; sessionStopped: boolean; childActivity: AgentChildActivity[]; onActiveChildChange: (value: { parentId: string; childId: string } | undefined) => void; sidebarQuestion?: { sourceBindingId: string; sidebarBindingId?: string; reference?: AgentConversationReference }; onSidebarBindingCreated: (sourceBindingId: string, sidebarBindingId: string) => void; onOpenSidebarQuestion?: () => void; onCloseSidebarQuestion: () => void; onOpenConversationReference: (reference: AgentConversationReference) => void; onPreviewAttachment: (attachment: AgentAttachment, previewBindingId?: string, childParentId?: string, previewWorkingDirectory?: string) => void; onQuoteChildResult: (parentId: string, reference: { source_binding_id: string; source_event_id: string; content: string }) => void;
 }) {
   const { api, browserUrl, fileUrl } = useAgentSessionGateway();
   const host = useAgentSessionHost();
@@ -3945,6 +3895,17 @@ function WorkspaceDrawer({
   const [readingChildren, setReadingChildren] = useState<Set<string>>(new Set());
   const children = useMemo(() => (childrenQuery.data ?? []).map(child => readingChildren.has(child.id)
     ? { ...child, unread: false, unread_origin: null, final_reply_preview: null } : child), [childrenQuery.data, readingChildren]);
+  const [childVisualCompletion, setChildVisualCompletion] = useState<{ parentId: string; childId: string }>();
+  const visibleChildSelection = useRef<{ parentId?: string; childId?: string }>({});
+  visibleChildSelection.current = drawerToolsOpen ? { parentId: bindingId, childId: activeChildTab?.childId } : {};
+  const onChildVisualComplete = useCallback((childId: string, complete: boolean) => {
+    if (!bindingId || visibleChildSelection.current.parentId !== bindingId || visibleChildSelection.current.childId !== childId) return;
+    setChildVisualCompletion(complete ? { parentId: bindingId, childId } : undefined);
+  }, [bindingId]);
+  useEffect(() => { setChildVisualCompletion(undefined); }, [activeChildTab?.childId, bindingId, drawerToolsOpen]);
+  const visibleChildActivity = childActivity.map(item => drawerToolsOpen && item.parent_binding_id === bindingId
+    && item.id === activeChildTab?.childId && item.id === childVisualCompletion?.childId
+    && bindingId === childVisualCompletion.parentId ? { ...item, execution_status: 'finished' } : item);
   const activeChild = children.find(child => child.id === activeChildTab?.childId);
   const markChildRead = useCallback((childId: string) => {
     if (!bindingId) return;
@@ -4850,7 +4811,7 @@ function WorkspaceDrawer({
   const sessionChangeDeletions = sessionChanges.reduce((total, change) => total + change.deletions, 0);
   const visibleSources = sources.slice(0, 3);
   const workspaceTabLabel = (tab: WorkspaceToolTab) => tab.kind === 'launcher' ? tab.title || '新标签页' : tab.kind === 'browser' ? tab.title || (() => { try { return tab.url ? new URL(tab.url).hostname : 'HTML 页面'; } catch { return '浏览器'; } })() : tab.kind === 'files' ? '文件' : tab.kind === 'changes' ? `审查${reviewChanges.length ? ` · ${reviewChanges.length}` : ''}` : tab.kind === 'sources' ? `来源${sources.length ? ` · ${sources.length}` : ''}` : tab.kind === 'git' ? `提交 · ${tab.details.commit.short_id}` : tab.kind === 'git-working' ? `${tab.changeKind === 'STAGED' ? '暂存' : '本地'} · ${tab.file.path.split('/').at(-1)}` : tab.kind === 'subagents' ? '子智能体' : tab.kind === 'sidebar-chat' ? '侧边聊天' : tab.kind === 'child' ? children.find(child => child.id === tab.childId)?.display_title || tab.title : details?.runtime.container_id || (details?.runtime.write_available ? '终端' : '连接中…');
-  const workspaceTabIcon = (tab: WorkspaceToolTab) => tab.kind === 'files' ? <FileCode2 size={13}/> : tab.kind === 'browser' || tab.kind === 'launcher' ? <Globe2 size={13}/> : tab.kind === 'terminal' ? <SquareTerminal size={13}/> : tab.kind === 'sidebar-chat' ? <PanelRightOpen size={13}/> : tab.kind === 'child' ? <ChildConversationIndicator child={children.find(child => child.id === tab.childId) ?? { id: tab.childId, parent_binding_id: bindingId!, lifecycle: 'ACTIVE', unread: false, created_at: '' }} activity={childActivity.find(child => child.id === tab.childId)}/> : tab.kind === 'sources' ? <Link2 size={13}/> : tab.kind === 'changes' ? <FileText size={13}/> : tab.kind === 'git' || tab.kind === 'git-working' ? <GitBranch size={13}/> : tab.kind === 'subagents' ? <Bot size={13}/> : <Plus size={13}/>;
+  const workspaceTabIcon = (tab: WorkspaceToolTab) => tab.kind === 'files' ? <FileCode2 size={13}/> : tab.kind === 'browser' || tab.kind === 'launcher' ? <Globe2 size={13}/> : tab.kind === 'terminal' ? <SquareTerminal size={13}/> : tab.kind === 'sidebar-chat' ? <PanelRightOpen size={13}/> : tab.kind === 'child' ? <ChildConversationIndicator child={children.find(child => child.id === tab.childId) ?? { id: tab.childId, parent_binding_id: bindingId!, lifecycle: 'ACTIVE', unread: false, created_at: '' }} activity={visibleChildActivity.find(child => child.id === tab.childId)}/> : tab.kind === 'sources' ? <Link2 size={13}/> : tab.kind === 'changes' ? <FileText size={13}/> : tab.kind === 'git' || tab.kind === 'git-working' ? <GitBranch size={13}/> : tab.kind === 'subagents' ? <Bot size={13}/> : <Plus size={13}/>;
   const conversationTabLabel = conversation ? conversationName(conversation) : '新会话';
   const openChild = (child: AgentChildConversation) => {
     const id = `child:${child.id}`;
@@ -4866,7 +4827,7 @@ function WorkspaceDrawer({
     {conversation && <article className="agent-workspace-conversation-config"><Gauge size={16}/><div><small>会话用量</small><p className="agent-workspace-usage-line"><span>{`累计 ${conversationTotalTokens.toLocaleString('zh-CN')} Token`}</span><span>{`$${(conversationUsage?.accumulated_cost ?? 0).toFixed(6)}`}</span></p></div></article>}
     {workspaceGitRepository && <article className="agent-workspace-git-summary"><GitBranch size={16}/><div><span className="agent-workspace-git-summary-title"><small>Git 信息</small><button type="button" className="agent-workspace-git-summary-refresh" aria-label="刷新 Git 信息" title="刷新本地改动、提交和远端状态" disabled={gitSummaryRefreshing} onClick={() => void refreshGitSummary()}><RefreshCw className={gitSummaryRefreshing ? 'spin' : undefined} size={12}/></button></span><button type="button" onClick={openGitSummary} title="在全屏文件标签页中查看 Git 信息"><span className="agent-workspace-git-summary-content"><b>{workspaceGitRepository.branch || '未命名分支'}</b><span className="agent-workspace-git-summary-status"><em>{workspaceGitChangesQuery.isLoading ? '正在加载本地改动…' : `改动 +${gitChangedFileCount(workspaceGitChangesQuery.data)}`}</em><span className="agent-workspace-git-sync-status">{workspaceGitRepository.upstream ? <><span>{`本地 +${workspaceGitRepository.ahead ?? 0}`}</span><span>{`远端 +${workspaceGitRepository.behind ?? 0}`}</span></> : '未设置远程跟踪分支'}</span></span></span><ChevronRight size={13}/></button>{gitSummaryRefreshError && <p className="agent-workspace-git-summary-error" role="alert">{gitSummaryRefreshError}</p>}</div></article>}
     {conversation && <article className="agent-workspace-changes"><FileText size={16}/><div><small>变更</small><button type="button" disabled={!sessionChanges.length} onClick={() => onReviewChanges?.(sessionChanges)}><span><b>{sessionChanges.length ? `${sessionChanges.length} 个文件已更改` : '暂无变更'}</b>{sessionChanges.length > 0 && <em><ins>{`+${sessionChangeAdditions}`}</ins><del>{`-${sessionChangeDeletions}`}</del></em>}</span><ChevronRight size={13}/></button></div></article>}
-    {children.length > 0 && <ChildConversationSummary key={bindingId} children={children} activity={childActivity.filter(child => child.parent_binding_id === bindingId)} onSelect={openChild}/>}
+    {children.length > 0 && <ChildConversationSummary key={bindingId} children={children} activity={visibleChildActivity.filter(child => child.parent_binding_id === bindingId)} onSelect={openChild}/>}
     {runtimeTasks.length > 0 && <article className="agent-workspace-subagents"><Bot size={16}/><div><small>子智能体</small><button type="button" onClick={() => openRuntimeTasks()}><span className="agent-workspace-subagent-summary" aria-label={`${runtimeTasks.length} 个子智能体任务`}><span className="agent-workspace-subagent-avatars">{runtimeTasks.map(task => <RuntimeTaskGlyph key={task.id} task={task} size={18} sessionStopped={sessionStopped}/>)}</span><b>{runtimeTasks.filter(task => runtimeTaskIsActive(task, sessionStopped)).length ? `${runtimeTasks.filter(task => runtimeTaskIsActive(task, sessionStopped)).length} 个运行中` : `${runtimeTasks.length} 个任务`}</b></span><ChevronRight size={13}/></button></div></article>}
     {/*
       Git 仓库概览暂时隐藏：当前仅罗列工作区中的仓库路径、分支、提交与远端地址，
@@ -4887,9 +4848,9 @@ function WorkspaceDrawer({
       {fullScreenConversationActive && <button type="button" aria-label="退出全屏" title="退出全屏（Esc）" onClick={() => setFullScreen(false)}><Minimize size={16} strokeWidth={1.7}/></button>}
     </div>}
     <section className={`agent-workspace-tool-shell ${drawerToolsOpen ? '' : 'panel-hidden'}`}>
-              <header><nav className="agent-workspace-tabs" aria-label="工作区页签">{fullScreen && <div className={fullScreenView === 'conversation' ? 'active fixed' : 'fixed'}><button type="button" className="agent-workspace-tab-select" title={conversationTabLabel} onClick={() => setFullScreenView('conversation')} onDoubleClick={() => setFullScreen(false)}><span>{conversationTabLabel}</span></button></div>}{scopeState.tabs.map(tab => <div key={tab.id} className={scopeState.activeTabId === tab.id && (!fullScreen || fullScreenView === 'tool') ? 'active' : ''}><button type="button" className="agent-workspace-tab-select" aria-label={tab.kind === 'child' ? workspaceTabLabel(tab) : undefined} onClick={() => { if (tab.kind === 'child') setFullScreen(false); setFullScreenView('tool'); updateScope(current => ({ ...current, activeTabId: tab.id })); }} onDoubleClick={() => { if (tab.kind !== 'child') setFullScreen(current => !current); }}><i className="agent-workspace-tab-icon">{workspaceTabIcon(tab)}</i><span>{workspaceTabLabel(tab)}</span></button><button type="button" className="agent-workspace-tab-close" aria-label={`关闭${workspaceTabLabel(tab)}页签`} disabled={tab.kind === 'terminal' && closingTerminalId === tab.terminalInstanceId} onClick={() => { if (tab.kind !== 'terminal' || closingTerminalId !== tab.terminalInstanceId) requestCloseTab(tab); }}><X size={12}/></button></div>)}<button type="button" className="agent-workspace-new-tab" aria-label="新建工作区页签" title="新建页签" onClick={openLauncher}><Plus size={15}/></button></nav><div className="agent-workspace-tool-actions">{fullScreen ? <><button type="button" aria-label={environmentOpen ? '隐藏悬浮信息卡' : '显示悬浮信息卡'} title={environmentOpen ? '隐藏悬浮信息卡' : '显示悬浮信息卡'} aria-pressed={environmentOpen} onClick={toggleEnvironment}>{environmentOpen ? <MonitorOff size={15}/> : <MonitorCog size={15}/>}</button><button type="button" aria-label="退出全屏" title="退出全屏（Esc）" onClick={() => setFullScreen(false)}><Minimize size={16} strokeWidth={1.7}/></button><button type="button" aria-label="关闭工作区工具" title="关闭工作区工具并返回会话" onClick={() => void closeWorkspaceTools()}><PanelRight size={16} strokeWidth={1.7}/></button></> : <><button type="button" disabled={Boolean(activeChildTab)} aria-label="全屏查看工作区工具" title="全屏查看" onClick={() => { setFullScreenView('tool'); setFullScreen(true); }}><Maximize size={16} strokeWidth={1.7}/></button><button type="button" aria-label="关闭工作区工具" onClick={() => void closeWorkspaceTools()}><PanelRight size={16} strokeWidth={1.7}/></button></>}</div></header>
+              <header><nav className="agent-workspace-tabs" aria-label="工作区页签">{fullScreen && <div className={fullScreenView === 'conversation' ? 'active fixed' : 'fixed'}><button type="button" className="agent-workspace-tab-select" title={conversationTabLabel} onClick={() => setFullScreenView('conversation')} onDoubleClick={() => setFullScreen(false)}><span>{conversationTabLabel}</span></button></div>}{scopeState.tabs.map(tab => <div key={tab.id} className={scopeState.activeTabId === tab.id && (!fullScreen || fullScreenView === 'tool') ? 'active' : ''}><button type="button" className="agent-workspace-tab-select" data-agent-child-tab={tab.kind === 'child' ? tab.childId : undefined} aria-label={tab.kind === 'child' ? workspaceTabLabel(tab) : undefined} onClick={() => { if (tab.kind === 'child') setFullScreen(false); setFullScreenView('tool'); updateScope(current => ({ ...current, activeTabId: tab.id })); }} onDoubleClick={() => { if (tab.kind !== 'child') setFullScreen(current => !current); }}><i className="agent-workspace-tab-icon">{workspaceTabIcon(tab)}</i><span>{workspaceTabLabel(tab)}</span></button><button type="button" className="agent-workspace-tab-close" aria-label={`关闭${workspaceTabLabel(tab)}页签`} disabled={tab.kind === 'terminal' && closingTerminalId === tab.terminalInstanceId} onClick={() => { if (tab.kind !== 'terminal' || closingTerminalId !== tab.terminalInstanceId) requestCloseTab(tab); }}><X size={12}/></button></div>)}<button type="button" className="agent-workspace-new-tab" aria-label="新建工作区页签" title="新建页签" onClick={openLauncher}><Plus size={15}/></button></nav><div className="agent-workspace-tool-actions">{fullScreen ? <><button type="button" aria-label={environmentOpen ? '隐藏悬浮信息卡' : '显示悬浮信息卡'} title={environmentOpen ? '隐藏悬浮信息卡' : '显示悬浮信息卡'} aria-pressed={environmentOpen} onClick={toggleEnvironment}>{environmentOpen ? <MonitorOff size={15}/> : <MonitorCog size={15}/>}</button><button type="button" aria-label="退出全屏" title="退出全屏（Esc）" onClick={() => setFullScreen(false)}><Minimize size={16} strokeWidth={1.7}/></button><button type="button" aria-label="关闭工作区工具" title="关闭工作区工具并返回会话" onClick={() => void closeWorkspaceTools()}><PanelRight size={16} strokeWidth={1.7}/></button></> : <><button type="button" disabled={Boolean(activeChildTab)} aria-label="全屏查看工作区工具" title="全屏查看" onClick={() => { setFullScreenView('tool'); setFullScreen(true); }}><Maximize size={16} strokeWidth={1.7}/></button><button type="button" aria-label="关闭工作区工具" onClick={() => void closeWorkspaceTools()}><PanelRight size={16} strokeWidth={1.7}/></button></>}</div></header>
       <div className="agent-workspace-tool-body">
-        <ChildConversationPane hostId={host.id} parentId={bindingId} child={activeChild} active={drawerToolsOpen && Boolean(activeChildTab)} onRead={markChildRead} onPreviewAttachment={onPreviewAttachment} onOpenConversationReference={onOpenConversationReference}/>
+        <ChildConversationPane hostId={host.id} parentId={bindingId} child={activeChild} active={drawerToolsOpen && Boolean(activeChildTab)} onRead={markChildRead} onQuoteParent={onQuoteChildResult} onVisualComplete={onChildVisualComplete} onPreviewAttachment={onPreviewAttachment} onOpenConversationReference={onOpenConversationReference}/>
 
         {panelError && <p className="agent-workspace-panel-error" role="alert"><span>{panelError}</span><button type="button" aria-label="关闭错误提示" onClick={() => setPanelError('')}><X size={13}/></button></p>}
         {scopeState.tabs.filter((tab): tab is Extract<WorkspaceToolTab, { kind: 'launcher' }> => tab.kind === 'launcher').map(tab => <section key={tab.id} className={`agent-workspace-tab-launcher ${scopeState.activeTabId === tab.id ? 'active' : ''}`}><WorkspaceBrowser tab={{ url: tab.url ?? '', title: tab.title }} workspaceId={workspaceId} bindingId={bindingId} workDirectoryId={workDirectoryId} browserUrl={browserUrl} onUrlChange={(url, title) => navigateLauncherBrowser(tab.id, url, title)} startPage={<div className="agent-workspace-tab-launcher-cards"><p>工具</p><button type="button" onClick={() => chooseLauncherTool(tab.id, () => openFiles())}><FileCode2 size={16}/>文件</button><button type="button" disabled={!runtimeAvailable} onClick={() => chooseLauncherTool(tab.id, openTerminal)}><SquareTerminal size={16}/>终端</button>{onOpenSidebarQuestion && <button type="button" onClick={() => chooseLauncherTool(tab.id, onOpenSidebarQuestion)}><PanelRightOpen size={16}/>侧边聊天</button>}<button type="button" onClick={() => chooseLauncherTool(tab.id, openGitHistory)}><GitBranch size={16}/>Git 历史</button>{reviewChanges.length > 0 && <button type="button" onClick={() => chooseLauncherTool(tab.id, () => openChanges())}><FileText size={16}/>审查改动</button>}{sources.length > 0 && <button type="button" onClick={() => chooseLauncherTool(tab.id, () => openSources)}><Link2 size={16}/>来源</button>}{runtimeTasks.length > 0 && <button type="button" onClick={() => chooseLauncherTool(tab.id, () => openRuntimeTasks())}><Bot size={16}/>子智能体</button>}</div>}/></section>)}
@@ -5052,6 +5013,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   );
   const [workspaceReferencePickerOpen, setWorkspaceReferencePickerOpen] = useState(false);
   const [workspaceReferenceQuery, setWorkspaceReferenceQuery] = useState('');
+  const [childResultPreview, setChildResultPreview] = useState<AgentConversationReference>();
   const [filePreviewRequest, setFilePreviewRequest] = useState<ConversationFilePreviewRequest>();
   const [browserRequest, setBrowserRequest] = useState<{ key: string; scopeKey: string; url: string }>();
   const [htmlPreviewRequest, setHtmlPreviewRequest] = useState<{ key: string; filename: string; document?: string; sourceUrl?: string }>();
@@ -7559,7 +7521,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }
     return [...byId.values()];
   }, [attachments, displayedEvents]);
-  const previewAttachment = useCallback((attachment: AgentAttachment, previewBindingId?: string) => {
+  const previewAttachment = useCallback((attachment: AgentAttachment, previewBindingId?: string, childParentId?: string, previewWorkingDirectory?: string) => {
+    if (childParentId && attachment.image_data_url && /^https?:/i.test(attachment.path)) {
+      setFilePreviewRequest({ key: randomId(), kind: 'image', filename: attachment.filename, url: attachment.image_data_url });
+      return;
+    }
     setFilePreviewRequest({
       key: randomId(),
       kind: 'workspace',
@@ -7569,9 +7535,21 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       imageDataUrl: attachment.image_data_url,
       attachment,
       previewBindingId,
+      childParentId,
+      previewWorkingDirectory,
       draftAttachmentOwnerId: previewBindingId ? undefined : conversationDraft?.id,
     });
   }, [conversationDraft?.id]);
+  const quoteChildResult = useCallback((parentId: string, result: { source_binding_id: string; source_event_id: string; content: string }) => {
+    if (!workspace) return;
+    const snapshot = composerDraftsByScope.current.get(parentId)
+      ?? readConversationComposerDraft(conversationComposerDraftStorageKey(host.id, workspace.id, parentId));
+    const reference: ConversationReference = { eventId: result.source_event_id, sourceBindingId: result.source_binding_id, content: result.content };
+    const next = { ...snapshot, references: [...snapshot.references.filter(item => item.eventId !== reference.eventId || item.sourceBindingId !== reference.sourceBindingId), reference] };
+    composerDraftsByScope.current.set(parentId, next);
+    persistComposerDraft(parentId);
+    if (activeComposerScope.current === parentId) setReferences(next.references);
+  }, [host.id, persistComposerDraft, workspace]);
   const composerAttachmentImageUrl = useCallback((attachment: AgentAttachment) => {
     if (attachment.image_data_url) return attachment.image_data_url;
     if (!workspace) return undefined;
@@ -9569,6 +9547,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   };
   const confirmPauseOnEscape = (event: KeyboardEvent) => {
     if (event.key !== 'Escape' || event.defaultPrevented || composerControl.action !== 'interrupt' || composerControl.disabled) return;
+    const target = event.target instanceof Element ? event.target : document.activeElement;
+    if (target?.closest('.agent-child-conversation-panel, [data-agent-child-tab]')) return;
     event.preventDefault();
     if (escPauseConfirmation) {
       if (escPauseConfirmationTimer.current !== undefined) window.clearTimeout(escPauseConfirmationTimer.current);
@@ -9599,6 +9579,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     ?? workDirectoriesQuery.data?.root.working_directory;
   const rootWorkspaceDirectory = workDirectoriesQuery.data?.root.working_directory;
   const openWorkspaceFileLink = (href: string, sourcePath?: string) => {
+    if (filePreviewRequest?.kind === 'workspace' && filePreviewRequest.childParentId && sourcePath) {
+      const path = workspaceMarkdownLinkPath(href, filePreviewRequest.previewWorkingDirectory, sourcePath);
+      if (!path) return false;
+      setFilePreviewRequest({ ...filePreviewRequest, key: randomId(), path, filename: path.split('/').at(-1) || path, mimeType: undefined, imageDataUrl: undefined, attachment: undefined });
+      return true;
+    }
     if (!workspaceMarkdownFileHref(href)) return false;
     const path = workspaceMarkdownLinkPath(href, activeWorkspaceRoot, sourcePath);
     if (!path) {
@@ -9984,11 +9970,30 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     onNavigate(conversationPath(bindingId));
   };
   const openConversationReference = (reference: AgentConversationReference) => {
-    if (!reference.source_binding_id) return;
-    selectConversation(reference.source_binding_id, { revealSidebar: true });
-    // A fresh identity makes repeated clicks locate the same formal event again.
-    setConversationReferenceTarget(reference.kind === 'conversation' ? undefined : { ...reference });
+    const sourceId = reference.source_binding_id;
+    if (!sourceId || !workspace) return;
+    const parentId = selected?.id;
+    const children = queryClient.getQueryData<AgentChildConversation[]>(sessionQueryKey(host, 'children', workspace.id, parentId));
+    if (children?.some(child => child.id === sourceId)) {
+      setChildResultPreview(reference);
+      return;
+    }
+    const navigate = () => {
+      selectConversation(sourceId, { revealSidebar: true });
+      setConversationReferenceTarget(reference.kind === 'conversation' ? undefined : { ...reference });
+    };
+    if (conversations.some(conversation => conversation.id === sourceId)) { navigate(); return; }
+    // An unloaded reference can name a child or a deleted conversation. Check
+    // the ordinary entry before navigating so a result cannot open a child route.
+    void api.conversation(workspace.id, sourceId).then(() => {
+      if (activeComposerScope.current === parentId) navigate();
+    }).catch(reason => {
+      if (activeComposerScope.current !== parentId) return;
+      if (reason instanceof ApiError && [403, 404, 409].includes(reason.status)) setChildResultPreview(reference);
+      else setOperationError(reason instanceof Error ? reason : new Error('引用来源暂时不可用'));
+    });
   };
+
   const toggleSidebarListMode = () => {
     if (sidebarListMode === 'activity') setActivityPreviewBindingId(undefined);
     else workspaceSidebarScrollTopBeforeActivity.current = sidebarListRef.current?.scrollTop;
@@ -10087,6 +10092,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       />
     ))}
     {conversationSearchOpen && <ConversationSearchDialog search={conversationSearchQuery.data} hits={conversationSearchHits} hasMore={Boolean(conversationSearchQuery.data?.next_cursor)} workDirectories={workDirectories} rootLabel={workDirectoriesQuery.data?.root.display_name ?? '根工作区'} onClose={() => setConversationSearchOpen(false)} onSubmit={startConversationSearch} onLoadMore={() => { if (conversationSearchQuery.data?.next_cursor) setConversationSearchCursor(conversationSearchQuery.data.next_cursor); }} submitting={conversationSearchQuery.isFetching && conversationSearchCursor === undefined} loadingMore={conversationSearchQuery.isFetching && conversationSearchCursor !== undefined} onOpenHit={openConversationSearchHit}/>}{/* Conversation search */}
+    {childResultPreview && <ConversationReferencePreview reference={childResultPreview} title="子会话结果" onClose={() => setChildResultPreview(undefined)}/>}
     {filePreviewRequest && <ConversationFilePreviewDialog
       key={filePreviewRequest.key}
       request={filePreviewRequest}
@@ -10276,7 +10282,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     remove();
     if (conversationDraft && workspace) void api.deleteDraftAttachments(workspace.id, conversationDraft.id, item.path).catch(() => undefined);
   }
-}}>×</button></span>)}{pendingAttachments.filter(item => item.scope === composerScope).map(item => <span key={item.id} className={`agent-pending-attachment ${item.state}`} title={item.state === 'failed' ? '附件上传失败，请重试或删除。' : `正在上传 ${item.progress}%`}><span className="agent-attachment-open">{item.previewUrl ? <img src={item.previewUrl} alt=""/> : <FileTypeIcon filename={item.filename} mimeType={item.mimeType} size={16}/>}<em>{item.filename}</em>{item.state === 'uploading' && <small>{item.progress}%</small>}{item.state === 'failed' && <span className="agent-attachment-retry-overlay"><button type="button" onClick={() => retryPendingAttachment(item.id)}>重试</button></span>}</span>{item.state === 'uploading' && <i className="agent-attachment-progress" style={{ '--upload-progress': `${item.progress}%` } as CSSProperties}/>}<button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => removePendingAttachment(item.id)}>×</button></span>)}</>}<ComposerConversationReferenceList references={references} onOpen={reference => selectConversation(reference.sourceBindingId, { revealSidebar: true })} onRemove={reference => setReferences(current => current.filter(item => item !== reference))}/>{(selected || conversationDraft) && <ComposerAnnotationList annotations={composerAnnotations} currentBindingId={selected?.id ?? conversationDraft?.id} onLocate={locateAnnotation} onRemove={annotation => setComposerAnnotations(current => current.filter(item => item.id !== annotation.id))} onUpdate={(annotation, comment) => void updateAnnotation(annotation, comment)}/>}</div>}
+}}>×</button></span>)}{pendingAttachments.filter(item => item.scope === composerScope).map(item => <span key={item.id} className={`agent-pending-attachment ${item.state}`} title={item.state === 'failed' ? '附件上传失败，请重试或删除。' : `正在上传 ${item.progress}%`}><span className="agent-attachment-open">{item.previewUrl ? <img src={item.previewUrl} alt=""/> : <FileTypeIcon filename={item.filename} mimeType={item.mimeType} size={16}/>}<em>{item.filename}</em>{item.state === 'uploading' && <small>{item.progress}%</small>}{item.state === 'failed' && <span className="agent-attachment-retry-overlay"><button type="button" onClick={() => retryPendingAttachment(item.id)}>重试</button></span>}</span>{item.state === 'uploading' && <i className="agent-attachment-progress" style={{ '--upload-progress': `${item.progress}%` } as CSSProperties}/>}<button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => removePendingAttachment(item.id)}>×</button></span>)}</>}<ComposerConversationReferenceList references={references} onOpen={reference => openConversationReference({ event_id: reference.eventId, source_binding_id: reference.sourceBindingId, content: reference.content })} onRemove={reference => setReferences(current => current.filter(item => item !== reference))}/>{(selected || conversationDraft) && <ComposerAnnotationList annotations={composerAnnotations} currentBindingId={selected?.id ?? conversationDraft?.id} onLocate={locateAnnotation} onRemove={annotation => setComposerAnnotations(current => current.filter(item => item.id !== annotation.id))} onUpdate={(annotation, comment) => void updateAnnotation(annotation, comment)}/>}</div>}
         {workspaceReferences.length > 0 && <div className="agent-attachments agent-workspace-references" aria-label="已添加的工作区引用">{workspaceReferences.map(reference => <span key={workspaceReferenceKey(reference)} title={reference.path}><span className="agent-attachment-open">{reference.kind === 'directory' ? <Folder size={14}/> : <FileCode2 size={14}/>}<em><b>{reference.display_name}</b><small>{workspaceReferenceLabel(reference)}</small></em></span><button type="button" className="agent-attachment-remove" aria-label={'移除工作区引用 ' + reference.display_name} onClick={() => setWorkspaceReferences(current => current.filter(item => workspaceReferenceKey(item) !== workspaceReferenceKey(reference)))}>×</button></span>)}</div>}
         </div>
         <footer>
@@ -10348,6 +10354,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       sidebarQuestion={sidebarQuestions[workspaceToolScopeKey]}
       onSidebarBindingCreated={(sourceBindingId, sidebarBindingId) => setSidebarQuestions(current => current[sourceBindingId] ? { ...current, [sourceBindingId]: { ...current[sourceBindingId], sidebarBindingId } } : current)}
       onOpenSidebarQuestion={selected ? () => setSidebarQuestions(current => ({ ...current, [selected.id]: { sourceBindingId: selected.id } })) : undefined}
+      onQuoteChildResult={quoteChildResult}
       onPreviewAttachment={previewAttachment}
       onOpenConversationReference={openConversationReference}
       onCloseSidebarQuestion={() => {

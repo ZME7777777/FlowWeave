@@ -73,6 +73,8 @@ class MessageWrite(Write):
     content: str = Field(max_length=200000)
     attachments: list[AttachmentReference] = Field(default_factory=lambda: [], max_length=10)
     references: list[EventReference] = Field(default_factory=lambda: [], max_length=10)
+    workspace_references: list[dict[str, Any]] = Field(default_factory=lambda: [], max_length=20)
+    annotations: list[dict[str, Any]] = Field(default_factory=lambda: [], max_length=20)
 
 
 class ControlWrite(Write):
@@ -254,17 +256,27 @@ async def message(
     references = tuple(
         item.model_dump(mode="json", exclude_none=True) for item in payload.references
     )
+    workspace_references = tuple(payload.workspace_references)
+    annotations = tuple(payload.annotations)
 
     def prepare(db: Session) -> children.ChildLocator:
         loc = children.resolve(db, parent_id, child_id, write=True)
-        children.validate_message(db, loc, payload.content, attachments, references)
+        children.validate_message(
+            db, loc, payload.content, attachments, references, workspace_references, annotations
+        )
         return loc
 
     return await run_formal_events(
         container,
         prepare,
         lambda loc: children.send(
-            loc, payload.submission_id, payload.content, attachments, references
+            loc,
+            payload.submission_id,
+            payload.content,
+            attachments,
+            references,
+            workspace_references,
+            annotations,
         ),
         lambda db, loc, event: children.project_send(db, loc, event, payload.content, attachments),
         history=False,

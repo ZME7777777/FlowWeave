@@ -241,7 +241,7 @@ async function request<T>(path: string, init: RequestOptions = {}): Promise<T> {
         // Runtime replacement and other control-plane state may recover without
         // changing the route. Never let the browser reuse a stale dynamic GET.
         cache: requestInit.method === undefined || requestInit.method === 'GET' ? 'no-store' : requestInit.cache,
-        headers: { 'Content-Type': 'application/json', ...requestInit.headers },
+        headers: { ...(requestInit.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }), ...requestInit.headers },
       });
       if (!response.ok) {
         const error = await responseError(response);
@@ -514,6 +514,37 @@ export const api = {
   },
   pinnedAgentConversations: (workspaceId: string) =>
     request<import('../types').AgentConversation[]>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/pinned-conversations`),
+  sendAgentChildMessage: (parentId: string, childId: string, submissionId: string, content: string, attachments: AgentAttachment[] = [], references: AgentConversationReference[] = [], workspaceReferences: AgentWorkspaceReference[] = [], annotations: AgentConversationAnnotation[] = []) =>
+    request<{ accepted: boolean; cursor?: string }>(`${childSessionBase(parentId, childId)}/messages`, json('POST', { submission_id: submissionId, content, attachments: attachmentReferences(attachments), references: references.map(reference => ({ source_binding_id: reference.source_binding_id, source_event_id: reference.event_id, ...(reference.selection ? { selection: reference.selection } : {}) })), workspace_references: workspaceReferencePayload(workspaceReferences), annotations }, submissionId)),
+  controlAgentChild: (parentId: string, childId: string, operation: 'interrupt' | 'resume' | 'condense') =>
+    request<{ accepted: boolean; task_id?: string; cursor?: string }>(`${childSessionBase(parentId, childId)}/control`, json('POST', { operation }, true)),
+  switchAgentChildModel: (parentId: string, childId: string, model_provider_id: string, model_name: string, reasoning_effort: string | null) =>
+    request<{ model_provider_id: string; model_name: string; reasoning_effort: string | null }>(`${childSessionBase(parentId, childId)}/model`, json('POST', { model_provider_id, model_name, reasoning_effort })),
+  uploadAgentChildAttachment: (parentId: string, childId: string, file: File) => {
+    const body = new FormData();
+    body.append('file', file);
+    return request<AgentAttachment>(`${childSessionBase(parentId, childId)}/attachments`, { method: 'POST', body, timeoutMs: 60_000 });
+  },
+  deleteAgentChildAttachment: (parentId: string, childId: string, path: string) =>
+    request<void>(`${childSessionBase(parentId, childId)}/attachments?path=${encodeURIComponent(path)}`, { method: 'DELETE' }),
+  agentChildResultReference: (parentId: string, childId: string, eventId: string) =>
+    request<{ source_binding_id: string; source_event_id: string; content: string }>(`${childSessionBase(parentId, childId)}/result-reference/${encodeURIComponent(eventId)}`),
+  agentChildFilePreview: async (parentId: string, childId: string, path: string, signal?: AbortSignal) => {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), INTERACTIVE_REQUEST_TIMEOUT_MS);
+    try {
+      const content = await requestText(`${childSessionBase(parentId, childId)}/file?path=${encodeURIComponent(path)}`, signal ? AbortSignal.any([signal, controller.signal]) : controller.signal);
+      return { content, totalBytes: new TextEncoder().encode(content).length, nextOffset: undefined };
+    } finally { window.clearTimeout(timer); }
+  },
+  agentChildPendingConfirmation: (parentId: string, childId: string) =>
+    request<AgentPendingConfirmation>(`${childSessionBase(parentId, childId)}/pending-confirmation`),
+  decideAgentChildConfirmation: (parentId: string, childId: string, expected_pending_digest: string, accept: boolean, reason: string) =>
+    request<{ accepted: boolean }>(`${childSessionBase(parentId, childId)}/pending-confirmation/decision`, json('POST', { expected_pending_digest, accept, reason })),
+  agentChildCredentials: (parentId: string, childId: string) =>
+    request<import('../types').AgentConversationCredentialSyncState>(`${childSessionBase(parentId, childId)}/credentials`),
+  syncAgentChildCredentials: (parentId: string, childId: string, credential_ids: string[]) =>
+    request<import('../types').AgentConversationCredentialSyncState>(`${childSessionBase(parentId, childId)}/credentials/sync`, json('POST', { credential_ids })),
   agentChildConversations: (parentId: string, signal?: AbortSignal) =>
     request<import('../types').AgentChildConversation[]>(`/agent-session-children/${encodeURIComponent(parentId)}`, { signal }),
   agentChildConversation: (parentId: string, childId: string, signal?: AbortSignal) =>
@@ -1086,6 +1117,12 @@ export function subscribeToAgentWorkspaceStream(
   onStatus?: (status: 'connecting' | 'live' | 'recovering' | 'disabled') => void,
 ): () => void {
   return subscribeToSessionStream(afterSeq => agentWorkspaceStreamUrl(workspaceId, bindingId, afterSeq), onEvent, onStatus);
+}
+
+export function childSessionFileUrl(parentId: string, childId: string, path: string): string {
+  const url = absoluteApiUrl(`${childSessionBase(parentId, childId)}/file`);
+  url.searchParams.set('path', path);
+  return url.toString();
 }
 
 function childSessionBase(parentId: string, childId: string) {

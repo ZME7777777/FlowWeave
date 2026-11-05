@@ -346,18 +346,18 @@ function MessageAttachments({ attachments, references = [], workspaceReferences 
   </div>;
 }
 
-function ConversationReferencePreview({ reference, title, onClose, onLocate }: {
+export function ConversationReferencePreview({ reference, title, onClose, onLocate }: {
   reference: AgentConversationReference;
   title?: string;
   onClose: () => void;
-  onLocate: () => void;
+  onLocate?: () => void;
 }) {
   useEscapeClose(onClose);
   return <div className="conversation-reference-preview-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
     <section className="conversation-reference-preview" role="dialog" aria-modal="true" aria-label="会话引用内容">
       <header><div><span className="eyebrow">CONVERSATION REFERENCE</span><h2>{title ?? '所选文本'}</h2></div><button type="button" className="ghost" aria-label="关闭会话引用内容" onClick={onClose}>关闭</button></header>
       <pre>{reference.content || '引用内容不可用'}</pre>
-      <footer><button type="button" className="secondary" onClick={onLocate}>{title ? '打开会话' : '定位原消息'}</button><button type="button" className="primary" onClick={onClose}>完成</button></footer>
+      <footer>{onLocate && <button type="button" className="secondary" onClick={onLocate}>{title ? '打开会话' : '定位原消息'}</button>}<button type="button" className="primary" onClick={onClose}>完成</button></footer>
     </section>
   </div>;
 }
@@ -1677,12 +1677,13 @@ function ConversationFileChanges({ changes, onReviewChanges, workspaceRoot }: {
   </section>;
 }
 
-function AgentReply({ event, content, reveal = false, changes = [], onFork, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, onOpenBrowser, onOpenImage, workspaceImageUrl, workspaceRoot, annotations = [], onLocateAnnotation }: {
+function AgentReply({ event, content, reveal = false, changes = [], onFork, onQuoteReply, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, onOpenBrowser, onOpenImage, workspaceImageUrl, workspaceRoot, annotations = [], onLocateAnnotation }: {
   event: OpenHandsConversationEvent;
   content: string;
   reveal?: boolean;
   changes?: WorkspaceFileChange[];
   onFork?: () => void;
+  onQuoteReply?: () => void;
   onPreviewCandidateFile?: (fieldKey: string, relativePath: string) => void;
   onReviewChanges?: (changes: WorkspaceFileChange[]) => void;
   onOpenWorkspaceFile?: (href: string) => boolean;
@@ -1708,8 +1709,9 @@ function AgentReply({ event, content, reveal = false, changes = [], onFork, onPr
     {candidateMessage.outputs && <CandidateOutputReply outputs={candidateMessage.outputs} onPreviewFile={onPreviewCandidateFile ? output => onPreviewCandidateFile(output.fieldKey, output.value) : undefined}/>}
     {!candidateMessage.businessConclusion && !candidateMessage.outputs && !content && <span className="conversation-typing"><i/><i/><i/></span>}
     <ConversationFileChanges changes={changes} onReviewChanges={onReviewChanges} workspaceRoot={workspaceRoot}/>
-    {(timestamp || onFork) && <footer className="conversation-message-meta assistant">
+    {(timestamp || onFork || onQuoteReply) && <footer className="conversation-message-meta assistant">
       {timestamp && <time dateTime={typeof event.payload.timestamp === 'string' ? event.payload.timestamp : undefined}>{timestamp}</time>}
+      {onQuoteReply && <button type="button" className="conversation-message-fork" onClick={onQuoteReply}><Quote size={12}/>引用到父会话</button>}
       {onFork && <button type="button" className="conversation-message-fork" onClick={onFork}><GitFork size={12}/>从此处分叉会话</button>}
     </footer>}
   </article>;
@@ -1895,7 +1897,7 @@ export interface ConversationScrollSnapshot {
   savedAt: number;
 }
 
-export const ConversationSurface = memo(function ConversationSurface({ events, isGenerating, isPaused = false, isFailed = false, pausing = false, emptyResponseRecoveryActive = false, modelRetryStatus, historyPending = false, cachedHistoryMarkerCount = 0, cachedHistoryUserEvents = [], hasCachedOlderHistory = false, onRequestOlderHistory, onRevealHistoryThrough, conversationScope, referenceLocation, initialScrollSnapshot, onScrollSnapshotChange, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationPending = false, condensationStartedAt, onRewrite, onFork, onOpenAttachment, attachmentImageUrl, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenSourceLocation, onOpenWorkspaceFile, onOpenBrowser, onOpenImage, workspaceImageUrl, workspaceRoot, onCreateAnnotation, onSidebarQuestion, onLocateAnnotation, conversationName, onOpenConversationReference, taskControl = [], monitoring, connectionState }: {
+export const ConversationSurface = memo(function ConversationSurface({ events, isGenerating, isPaused = false, isFailed = false, pausing = false, emptyResponseRecoveryActive = false, modelRetryStatus, historyPending = false, cachedHistoryMarkerCount = 0, cachedHistoryUserEvents = [], hasCachedOlderHistory = false, onRequestOlderHistory, onRevealHistoryThrough, conversationScope, referenceLocation, initialScrollSnapshot, onScrollSnapshotChange, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationPending = false, condensationStartedAt, onRewrite, onFork, onQuoteReply, onOpenAttachment, attachmentImageUrl, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenSourceLocation, onOpenWorkspaceFile, onOpenBrowser, onOpenImage, workspaceImageUrl, workspaceRoot, onCreateAnnotation, onSidebarQuestion, onLocateAnnotation, conversationName, onOpenConversationReference, taskControl = [], monitoring, connectionState }: {
   events: OpenHandsConversationEvent[];
   isGenerating: boolean;
   /** Formal native conversation pause state, used only to label unfinished Task actions. */
@@ -1936,6 +1938,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   condensationStartedAt?: number;
   onRewrite?: (eventId: string, content: string) => void;
   onFork?: (eventId: string) => void;
+  onQuoteReply?: (eventId: string) => void;
   onOpenAttachment?: (attachment: AgentAttachment) => void;
   attachmentImageUrl?: (attachment: AgentAttachment) => string | undefined;
   onOpenWorkspaceReference?: (reference: AgentWorkspaceReference) => void;
@@ -2787,7 +2790,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
                   event.preventDefault();
                   event.currentTarget.form?.requestSubmit();
                 }}/><footer><button type="button" onClick={() => setEditingEventId(undefined)}>取消</button><button type="submit" disabled={!editingContent.trim() || rewritePending}>重新思考</button></footer></form>
-                : <article data-user-event-id={message.event.id} data-conversation-event-id={message.event.id} className="conversation-message user"><MessageAttachments attachments={eventAttachments(message.event)} references={message.event.payload.conversation_references} workspaceReferences={message.event.payload.workspace_references} annotations={eventAnnotations(message.event)} onOpen={onOpenAttachment} onOpenReference={reference => { if (onOpenConversationReference) onOpenConversationReference(reference); else setViewingReference(reference); }} onOpenWorkspaceReference={onOpenWorkspaceReference} onOpenAnnotation={locateAnnotation} conversationName={conversationName} imageUrl={attachmentImageUrl}/>{message.content && <div className="conversation-message-content"><MessageMarkdown>{message.content}</MessageMarkdown></div>}<footer className="conversation-message-meta user">{messageDeliveryStatus && <small className="conversation-message-delivery-status" role="status">{messageDeliveryStatus}</small>}{messageTimestamp && <time dateTime={typeof message.event.payload.timestamp === 'string' ? message.event.payload.timestamp : undefined}>{messageTimestamp}</time>}<div className={`conversation-message-actions${lastUserEventId === message.event.id ? ' can-rewrite' : ''}`}><button type="button" className="conversation-message-copy" aria-label={copiedEventId === message.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === message.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(message.event.id, message.content)}>{copiedEventId === message.event.id ? <Check size={13}/> : <Copy size={13}/>}</button>{lastUserEventId === message.event.id && <button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(message.event.id); setEditingContent(message.content); }}><Pencil size={13}/></button>}</div></footer></article>}</div>
+                : <article data-user-event-id={message.event.id} data-conversation-event-id={message.event.id} className="conversation-message user">{Boolean(message.event.payload.parent_instruction) && <small className="conversation-parent-instruction">来自父会话的指令</small>}<MessageAttachments attachments={eventAttachments(message.event)} references={message.event.payload.conversation_references} workspaceReferences={message.event.payload.workspace_references} annotations={eventAnnotations(message.event)} onOpen={onOpenAttachment} onOpenReference={reference => { if (onOpenConversationReference) onOpenConversationReference(reference); else setViewingReference(reference); }} onOpenWorkspaceReference={onOpenWorkspaceReference} onOpenAnnotation={locateAnnotation} conversationName={conversationName} imageUrl={attachmentImageUrl}/>{message.content && <div className="conversation-message-content"><MessageMarkdown>{message.content}</MessageMarkdown></div>}<footer className="conversation-message-meta user">{messageDeliveryStatus && <small className="conversation-message-delivery-status" role="status">{messageDeliveryStatus}</small>}{messageTimestamp && <time dateTime={typeof message.event.payload.timestamp === 'string' ? message.event.payload.timestamp : undefined}>{messageTimestamp}</time>}<div className={`conversation-message-actions${onRewrite && lastUserEventId === message.event.id ? ' can-rewrite' : ''}`}><button type="button" className="conversation-message-copy" aria-label={copiedEventId === message.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === message.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(message.event.id, message.content)}>{copiedEventId === message.event.id ? <Check size={13}/> : <Copy size={13}/>}</button>{onRewrite && lastUserEventId === message.event.id && <button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(message.event.id); setEditingContent(message.content); }}><Pencil size={13}/></button>}</div></footer></article>}</div>
               {!completionConfirmed && segmentBlocks.map(block => <ActivityGroup
                 key={`${message.event.id}:${block.id}`}
                 items={block.items}
@@ -2825,7 +2828,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
             open={completedProcessExpanded}
             onOpenChange={setCompletedProcessExpanded}
           />)}
-          {turn.assistant && <AgentReply event={turn.assistant.event} content={turn.assistant.content} reveal={revealEventIds.has(turn.assistant.event.id)} changes={fileChanges} onFork={!isGenerating && onFork ? () => onFork(turn.assistant!.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile} onReviewChanges={onReviewChanges} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenBrowser={onOpenBrowser} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl} workspaceRoot={workspaceRoot} annotations={turn.assistant.event.payload.collaboration_annotation_ids !== undefined ? eventAnnotations(turn.assistant.event) : turn.user ? eventAnnotations(turn.user.event) : []} onLocateAnnotation={locateAnnotation}/>}
+          {turn.assistant && <AgentReply event={turn.assistant.event} content={turn.assistant.content} reveal={revealEventIds.has(turn.assistant.event.id)} changes={fileChanges} onFork={!isGenerating && onFork ? () => onFork(turn.assistant!.event.id) : undefined} onQuoteReply={onQuoteReply ? () => onQuoteReply(turn.assistant!.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile} onReviewChanges={onReviewChanges} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenBrowser={onOpenBrowser} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl} workspaceRoot={workspaceRoot} annotations={turn.assistant.event.payload.collaboration_annotation_ids !== undefined ? eventAnnotations(turn.assistant.event) : turn.user ? eventAnnotations(turn.user.event) : []} onLocateAnnotation={locateAnnotation}/>}
           {failures.map(item => <ConversationFailure key={item.event.id} item={item} taskControl={taskControl} retryStatus={isLatest ? modelRetryStatus : undefined}/>)}
         </section>;
       })}

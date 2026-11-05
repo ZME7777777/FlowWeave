@@ -222,3 +222,5 @@
 .conversation-message-edit{width:100%}
 .conversation-turn{margin-bottom:40px}
 }
+
+.conversation-parent-instruction { display: block; margin-bottom: 6px; color: #64748b; font-size: 11px; }

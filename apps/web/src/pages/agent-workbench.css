@@ -613,3 +613,43 @@
 .agent-child-conversation-panel > .agent-sidebar-conversation { width: 100%; }
 @media (prefers-reduced-motion: reduce) { .agent-child-indicator.running > svg { animation: none; } }
 .agent-workspace-tool-body > .agent-child-conversation-panel { grid-row: 2; }
+
+.agent-child-configuration,
+.agent-child-message-queue,
+.agent-child-conversation-panel .agent-confirmation {
+  box-sizing: border-box;
+  width: min(860px, calc(100% - 32px));
+  max-height: 180px;
+  overflow: auto;
+  margin: 8px auto;
+  padding: 10px 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #fafbfc;
+  font-size: 12px;
+}
+.agent-child-configuration header,
+.agent-child-message-queue header,
+.agent-child-message-queue article {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: space-between;
+}
+.agent-child-configuration header button,
+.agent-child-annotation > button {
+  border: 0;
+  background: transparent;
+  color: #64748b;
+}
+.agent-child-configuration > label { display: flex; align-items: center; gap: 6px; margin: 6px 0; }
+.agent-child-configuration small,
+.agent-child-message-queue article small { color: #64748b; }
+.agent-child-message-queue article { padding-top: 8px; }
+.agent-child-message-queue article > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.agent-child-message-queue article small { display: block; }
+.agent-child-message-queue button { flex-shrink: 0; }
+.agent-child-annotation { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px; padding: 6px 0; }
+.agent-child-annotation > button:first-child { overflow: hidden; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.agent-child-annotation textarea { grid-column: 1 / -1; width: 100%; box-sizing: border-box; min-height: 48px; resize: vertical; border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px; font: inherit; }
+.agent-child-conversation-panel .agent-composer-attachments { max-height: 180px; overflow: auto; }

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { AgentStreamEvent } from '../../api/client';
 import type { AgentConversationHydration, OpenHandsConversationEventBatch } from '../../types';
+import type { ConversationHistoryPrepend } from '../ConversationSurface';
 import { mergeConversationBatch, mergeConversationEvents } from './conversation-event-cache';
 
 export interface SideConversationReader {
@@ -25,6 +26,15 @@ export function useSideConversationHydration(selection: Selection | undefined, e
   const lastLatest = useRef(0);
   const needsLatest = useRef(true);
   const runRef = useRef<(kind: ReadKind) => Promise<void>>(async () => undefined);
+  const historySequence = useRef(0);
+  const historyCapture = useRef<{ id: number; resolve: () => void } | undefined>(undefined);
+  const [historyPrepend, setHistoryPrepend] = useState<ConversationHistoryPrepend>();
+  const onHistoryAnchorCaptured = useCallback((transaction: ConversationHistoryPrepend) => {
+    if (historyCapture.current?.id === transaction.id) historyCapture.current.resolve();
+  }, []);
+  const onHistoryAnchorRestored = useCallback((transaction: ConversationHistoryPrepend) => {
+    setHistoryPrepend(current => current?.id === transaction.id ? undefined : current);
+  }, []);
   const [snapshot, setSnapshot] = useState<Snapshot>({ scope: '', loading: false });
 
   const run = useCallback((kind: ReadKind): Promise<void> => {
@@ -44,10 +54,22 @@ export function useSideConversationHydration(selection: Selection | undefined, e
       || exhaustedHistory.current.get(target.scope)?.has(historyCursor))) return Promise.resolve();
     pending.current = undefined;
     const request = Promise.resolve().then(async () => {
+      let transaction: ConversationHistoryPrepend | undefined;
       try {
         let data: AgentConversationHydration;
         if (kind === 'history' && historyCursor && target.reader.history && prior) {
           const older = await target.reader.history(historyCursor, signal);
+          if (selected.current?.scope === target.scope && mounted.current && !signal.aborted) {
+            transaction = { id: ++historySequence.current, scope: target.scope, phase: 'capture' };
+            const id = transaction.id;
+            await new Promise<void>(resolve => {
+              const finish = () => { window.clearTimeout(timer); resolve(); };
+              const timer = window.setTimeout(finish, 500);
+              historyCapture.current = { id, resolve: finish };
+              setHistoryPrepend(transaction);
+            });
+            historyCapture.current = undefined;
+          }
           const checked = exhaustedHistory.current.get(target.scope) ?? new Set<string>();
           checked.add(historyCursor);
           exhaustedHistory.current.set(target.scope, checked);
@@ -64,6 +86,7 @@ export function useSideConversationHydration(selection: Selection | undefined, e
         if (selected.current?.scope === target.scope && (kind === 'latest' || !needsLatest.current)) {
           needsLatest.current = false;
           setSnapshot({ scope: target.scope, data, loading: false });
+          if (transaction) setHistoryPrepend({ ...transaction, phase: 'restore' });
         }
       } catch (reason) {
         if (!signal.aborted && mounted.current && selected.current?.scope === target.scope) {
@@ -85,12 +108,14 @@ export function useSideConversationHydration(selection: Selection | undefined, e
   useEffect(() => {
     mounted.current = true;
     controller.current = new AbortController();
-    return () => { mounted.current = false; controller.current?.abort(); pending.current = undefined; };
+    return () => { mounted.current = false; controller.current?.abort(); historyCapture.current?.resolve(); pending.current = undefined; };
   }, []);
 
   const scope = selection?.scope;
   const reader = selection?.reader;
   useLayoutEffect(() => {
+    historyCapture.current?.resolve();
+    setHistoryPrepend(undefined);
     selected.current = enabled && scope && reader ? { scope, reader } : undefined;
     pending.current = undefined;
     needsLatest.current = true;
@@ -136,5 +161,5 @@ export function useSideConversationHydration(selection: Selection | undefined, e
     document.addEventListener('visibilitychange', refresh);
     return () => { window.removeEventListener('focus', refresh); document.removeEventListener('visibilitychange', refresh); if (timer !== undefined) window.clearTimeout(timer); };
   }, [enabled, run, scope]);
-  return { data, loading, error: snapshot.scope === scope ? snapshot.error : undefined, refresh: useCallback(() => run('latest'), [run]) };
+  return { data, loading, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, error: snapshot.scope === scope ? snapshot.error : undefined, refresh: useCallback(() => run('latest'), [run]) };
 }

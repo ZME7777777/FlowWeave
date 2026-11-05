@@ -1,4 +1,4 @@
-import { expect, test, type Page, type Route } from '@playwright/test';
+import { expect, test, type Page, type Route, type WebSocketRoute } from '@playwright/test';
 
 const now = '2026-11-05T00:00:00Z';
 const parentId = 'child-product-parent';
@@ -19,16 +19,29 @@ async function openParent(page: Page, host: 'workspace' | 'node', delayFirst = f
   let peak = 0;
   let reads = 0;
   let shouldDelay = delayFirst;
+  const statuses = new Map<string, string>();
+  const nativeEvents = new Map<string, Array<{ id: string; event_type: string; payload: Record<string, unknown> }>>();
+  const messages: Array<{ childId: string; payload: Record<string, unknown> }> = [];
+  const childWrites: Array<{ childId: string; action: string; payload: Record<string, unknown> }> = [];
+  const models = new Map<string, string>();
+  const streams = new Map<string, WebSocketRoute>();
+  const held: { nextSend: boolean; release?: () => void; failSend: boolean; hideAccepted: boolean } = { nextSend: false, failSend: false, hideAccepted: false };
+  const providers = [{ id: 'child-provider', name: '测试模型', connection_state: 'CONNECTED', provider_type: 'OPENAI', models: ['child-model', 'child-model-two'].map((model_name, index) => ({ model_name, enabled: true, is_default: index === 0, supported_reasoning_efforts: ['low', 'high'], default_reasoning_effort: 'low' })) }];
   const unread = new Set(children.filter(child => child.unread).map(child => child.id));
   const root = host === 'node' ? '/flow-runs/child-run/nodes/child-node/attempts/child-attempt/agent-sessions' : '/agent/conversations';
   const workspace = { id: host === 'node' ? 'child-run' : 'children-workspace', display_name: '子会话工作区', desired_state: 'RUNNING', updated_at: now };
   const parents = [parentId, otherParentId].map((id, index) => ({ id, display_title: index ? '另一个父会话' : '父会话', title_state: 'MANUAL', lifecycle: 'ACTIVE', streaming_callback_ready: true, write_available: true, execution_status: 'finished', created_at: now, updated_at: now, child_summary: id === parentId ? { total: 8, unread: unread.size, running: 1, attention: 1, condensing: 0, unknown: 0, pending: 0 } : undefined }));
   const activity = () => children.map((child, index) => ({ id: child.id, parent_binding_id: parentId, execution_status: index === 0 ? 'running' : index === 1 ? 'error' : 'finished', possibly_stuck: false, failed: index === 1, condensing: false, sync_pending: false, unread: unread.has(child.id), unread_origin: child.unread_origin }));
+  const eventsFor = (id: string) => nativeEvents.get(id) ?? [{ id: `${id}-answer`, event_type: 'MESSAGE', payload: { source: 'agent', content: `${id} 的正式独立历史`, final_reply: true } }];
   const hydration = (id: string) => ({
-    events: { events: [{ id: `${id}-answer`, event_type: 'MESSAGE', payload: { source: 'agent', content: `${id} 的正式独立历史`, final_reply: true } }], next_cursor: `${id}-answer`, history_cursor: null },
-    context: {}, readiness: { ready: true, execution_status: 'finished' },
+    events: { events: eventsFor(id), next_cursor: eventsFor(id).at(-1)?.id, history_cursor: null },
+    context: {}, readiness: { ready: true, execution_status: statuses.get(id) ?? 'finished' },
   });
-  await page.routeWebSocket('**/stream*', () => undefined);
+  const signal = (id: string) => streams.get(id)?.send(JSON.stringify({ type: 'durable_cursor', seq: Date.now() }));
+  await page.routeWebSocket('**/stream*', socket => {
+    const match = new URL(socket.url()).pathname.match(/agent-session-children\/[^/]+\/([^/]+)\/stream/);
+    if (match) streams.set(match[1], socket);
+  });
   await page.route('**/api/v1/**', async route => {
     const request = route.request();
     const url = new URL(request.url());
@@ -42,6 +55,38 @@ async function openParent(page: Page, host: 'workspace' | 'node', delayFirst = f
       const suffix = path.split('/agent-session-children/')[1].split('/');
       const childId = suffix[1];
       if (suffix.length === 1) return json(route, suffix[0] === parentId ? children.map(child => ({ ...child, unread: unread.has(child.id) })) : []);
+      const payload = request.method() === 'POST' && suffix[2] !== 'attachments' ? request.postDataJSON() as Record<string, unknown> : {};
+      if (suffix[2] === 'messages') {
+        messages.push({ childId, payload });
+        if (held.nextSend) { held.nextSend = false; await new Promise<void>(resolve => { held.release = resolve; }); }
+        const id = `user-${payload.submission_id}`;
+        if (!held.hideAccepted && !eventsFor(childId).some(event => event.id === id)) nativeEvents.set(childId, [...eventsFor(childId), { id, event_type: 'MESSAGE', payload: { source: 'user', content: payload.content, attachments: payload.attachments, _flowweave_submission_id: payload.submission_id } }]);
+        statuses.set(childId, 'running');
+        if (held.failSend) { held.failSend = false; statuses.set(childId, 'finished'); return json(route, { error: { code: 'RUNTIME_CHILD_OUTCOME_UNKNOWN', message: '发送结果待确认' } }, 504); }
+        return json(route, { accepted: true, cursor: id }, 202);
+      }
+      if (suffix[2] === 'control') {
+        childWrites.push({ childId, action: 'control', payload });
+        if (payload.operation === 'interrupt') statuses.set(childId, 'paused');
+        if (payload.operation === 'resume') statuses.set(childId, 'running');
+        if (payload.operation === 'condense') nativeEvents.set(childId, [...eventsFor(childId), { id: `condense-${Date.now()}`, event_type: 'CONDENSATION_REQUESTED', payload: {} }]);
+        return json(route, { accepted: true, task_id: payload.operation === 'condense' ? 'child-condense-task' : undefined }, 202);
+      }
+      if (suffix[2] === 'model') { childWrites.push({ childId, action: 'model', payload }); models.set(childId, String(payload.model_name)); return json(route, payload); }
+      if (suffix[2] === 'attachments') {
+        if (request.method() === 'DELETE') return route.fulfill({ status: 204 });
+        return json(route, { filename: 'notes.txt', mime_type: 'text/plain', byte_size: 7, path: `/runtime/workspace/project/uploads/${childId}-notes.txt` }, 201);
+      }
+      if (suffix[2] === 'file') return route.fulfill({ status: 200, contentType: 'text/plain', body: `private file for ${childId}` });
+      if (suffix[2] === 'result-reference') return json(route, { source_binding_id: childId, source_event_id: suffix[3], content: String(eventsFor(childId).find(event => event.id === suffix[3])?.payload.content ?? '') });
+      if (suffix[2] === 'pending-confirmation') {
+        if (suffix[3]) { childWrites.push({ childId, action: 'confirmation', payload }); statuses.set(childId, 'running'); return json(route, { accepted: true }); }
+        return json(route, { pending: statuses.get(childId) === 'waiting_for_confirmation', pending_actions_digest: 'native-batch', actions: [{ digest: 'action', tool_name: 'terminal', summary: '执行终端命令' }] });
+      }
+      if (suffix[2] === 'credentials') {
+        if (suffix[3]) childWrites.push({ childId, action: 'credentials', payload });
+        return json(route, { credentials: [{ id: 'credential-one', name: '测试认证', sync_state: 'NEW' }] });
+      }
       if (suffix[2] === 'unread') { unread.delete(childId); return json(route, { id: childId, unread: false, unread_origin: null }); }
       if (suffix[2] === 'hydration') {
         reads += 1;
@@ -52,20 +97,21 @@ async function openParent(page: Page, host: 'workspace' | 'node', delayFirst = f
         return;
       }
       if (suffix[2] === 'events') return json(route, { events: [], next_cursor: `${childId}-answer` });
-      return json(route, { ...children.find(child => child.id === childId), write_available: true, streaming_callback_ready: true });
+      return json(route, { ...children.find(child => child.id === childId), working_directory: '/runtime/workspace/project', model_provider_id: providers[0].id, model_name: models.get(childId) ?? 'child-model', capabilities: [], write_available: true, streaming_callback_ready: true });
     }
     if (path.endsWith('/default') || path.endsWith('/agent-sessions/host')) return json(route, workspace);
     if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
     if (path.endsWith('/conversations') || path.endsWith('/agent-sessions')) return json(route, { items: parents, next_cursor: null });
     if (path.endsWith('/conversation-activity') || path.endsWith('/agent-sessions/activity')) return json(route, { conversations: [parents[0]], running_binding_ids: [], child_activity_parent_binding_ids: [parentId], child_activity: activity() });
-    if (path.endsWith('/hydration')) return json(route, { events: { events: [], next_cursor: null }, context: {}, readiness: { ready: true, execution_status: 'finished' } });
+    if (path.endsWith('/hydration')) { const id = path.split('/').at(-2)!; return json(route, { events: { events: statuses.get(id) === 'running' ? [{ id: `${id}-question`, event_type: 'MESSAGE', payload: { source: 'user', content: '父会话独立运行' } }] : [], next_cursor: null }, context: {}, readiness: { ready: true, execution_status: statuses.get(id) ?? 'finished' } }); }
     if (path.endsWith('/events')) return json(route, { events: [], next_cursor: null });
     if (path.endsWith('/input-readiness')) return json(route, { ready: true, execution_status: 'finished' });
     if (path.endsWith('/context')) return json(route, {});
     if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
     if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
     if (path.endsWith('/workspace')) return json(route, { root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', files: [], repositories: [], runtime: {}, ide: { gateway: { supported: false } } });
-    if (path.endsWith('/pinned-conversations') || path.endsWith('/model-providers') || path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.endsWith('/model-providers')) return json(route, providers);
+    if (path.endsWith('/pinned-conversations') || path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
     if (path.includes('/conversations/') || path.includes('/agent-sessions/')) return json(route, parents.find(parent => path.endsWith(parent.id)) ?? parents[0]);
     return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
   });
@@ -75,7 +121,7 @@ async function openParent(page: Page, host: 'workspace' | 'node', delayFirst = f
   await page.getByRole('button', { name: '进入工作空间' }).click();
   await page.goto(`${root}/${parentId}`);
   await expect(page.getByRole('button', { name: '查看子会话', exact: true })).toBeVisible();
-  return { writes, requests, root, unread, release: () => release?.(), hasPending: () => Boolean(release), peak: () => peak };
+  return { writes, requests, root, unread, parents, messages, childWrites, statuses, nativeEvents, eventsFor, streams, signal, held, release: () => release?.(), hasPending: () => Boolean(release), peak: () => peak };
 }
 async function chooseChild(page: Page, childId: string) {
   const showCard = page.getByRole('button', { name: '显示悬浮信息卡' });
@@ -150,4 +196,289 @@ test('child picker pages separately and the floating card never scrolls', async 
   expect(dimensions.contentWidth).toBeLessThanOrEqual(dimensions.width);
   expect(dimensions.contentHeight).toBeLessThanOrEqual(dimensions.height);
   await page.screenshot({ path: test.info().outputPath('child-card.png') });
+});
+
+for (const host of ['workspace', 'node'] as const) {
+  test(`child drafts retain text and attachments across sibling parent close and reload (${host})`, async ({ page }) => {
+    const state = await openParent(page, host);
+    await chooseChild(page, children[0].id);
+    const input = page.getByRole('textbox', { name: '发送子会话消息' });
+    await expect(input).toBeEditable();
+    await input.fill('第一个子会话的草稿');
+    await page.getByLabel('上传子会话附件', { exact: true }).setInputFiles({ name: 'notes.txt', mimeType: 'text/plain', buffer: Buffer.from('private') });
+    await expect(page.locator('[aria-label="子会话附件"]')).toContainText('notes.txt');
+    await chooseChild(page, children[1].id);
+    await expect(input).toHaveValue('');
+    await input.fill('第二个子会话的草稿');
+    const tabs = page.getByRole('navigation', { name: '工作区页签' });
+    await tabs.getByRole('button', { name: children[0].display_title, exact: true }).click();
+    await expect(input).toHaveValue('第一个子会话的草稿');
+    await page.getByRole('button', { name: 'notes.txt', exact: true }).click();
+    const preview = page.getByRole('dialog', { name: '文件预览' });
+    await expect(preview).toContainText(`private file for ${children[0].id}`);
+    await expect(preview.getByRole('button', { name: '在文件标签页打开' })).toHaveCount(0);
+    await preview.getByRole('button', { name: '关闭文件预览' }).click();
+    expect(state.requests.some(path => path.includes(`/agent-session-children/${parentId}/${children[0].id}/file?`))).toBe(true);
+    await page.locator(`[data-conversation-binding-id="${otherParentId}"] .agent-workspace-conversation-select`).click();
+    await page.locator(`[data-conversation-binding-id="${parentId}"] .agent-workspace-conversation-select`).click();
+    await expect(input).toHaveValue('第一个子会话的草稿');
+    await tabs.getByRole('button', { name: `关闭${children[0].display_title}页签` }).click();
+    await chooseChild(page, children[0].id);
+    await expect(input).toHaveValue('第一个子会话的草稿');
+    await page.reload();
+    await chooseChild(page, children[0].id);
+    await expect(input).toHaveValue('第一个子会话的草稿');
+    await expect(page.locator('[aria-label="子会话附件"]')).toContainText('notes.txt');
+    await expect(input).toBeEditable();
+    await expect(page.getByRole('region', { name: `子会话 ${children[0].display_title}` })).toContainText('正式独立历史');
+    await page.screenshot({ path: test.info().outputPath('child-composer.png') });
+    expect(state.messages).toHaveLength(0);
+  });
+
+  test(`child submission uses one bubble and holds queue until formal acknowledgement (${host})`, async ({ page }) => {
+    const state = await openParent(page, host);
+    state.held.hideAccepted = true;
+    await chooseChild(page, children[0].id);
+    const input = page.getByRole('textbox', { name: '发送子会话消息' });
+    await expect(input).toBeEditable();
+    await input.fill('第一条正式消息');
+    await input.press('Enter');
+    await expect.poll(() => state.messages.length).toBe(1);
+    await expect(page.locator('.agent-child-conversation-panel .conversation-message.user')).toHaveCount(1);
+    await input.fill('等待第一条确认后再发送');
+    await input.press('Enter');
+    await expect(page.getByRole('region', { name: '子会话消息队列' })).toContainText('等待第一条确认后再发送');
+    state.statuses.set(children[0].id, 'finished');
+    state.signal(children[0].id);
+    await expect(page.getByRole('button', { name: '暂停子会话 Agent' })).toHaveCount(0);
+    expect(state.messages).toHaveLength(1);
+    const first = state.messages[0].payload;
+    state.nativeEvents.set(children[0].id, [...state.eventsFor(children[0].id), { id: `user-${first.submission_id}`, event_type: 'MESSAGE', payload: { source: 'user', content: first.content } }, { id: 'queue-first-finished', event_type: 'MESSAGE', payload: { source: 'agent', content: '第一条处理完成', final_reply: true } }]);
+    state.held.hideAccepted = false;
+    state.signal(children[0].id);
+    await expect.poll(() => state.messages.length).toBe(2);
+    expect(state.messages[1].payload.content).toBe('等待第一条确认后再发送');
+    await expect(page.locator('.agent-child-conversation-panel .conversation-message.user')).toHaveCount(2);
+    expect(state.writes.filter(write => /conversations\/[^/]+\/messages$|agent-sessions\/[^/]+\/messages$/.test(write))).toEqual([]);
+  });
+
+  test(`child ambiguous retry preserves submission identity and late callbacks stay scoped (${host})`, async ({ page }) => {
+    const state = await openParent(page, host);
+    state.held.failSend = true;
+    state.held.nextSend = true;
+    await chooseChild(page, children[0].id);
+    const input = page.getByRole('textbox', { name: '发送子会话消息' });
+    await expect(input).toBeEditable();
+    await input.fill('原子提交的消息');
+    await input.press('Enter');
+    await expect.poll(() => Boolean(state.held.release)).toBe(true);
+    await chooseChild(page, children[1].id);
+    await expect(input).toBeEditable();
+    await input.fill('保持第二个子会话');
+    state.held.release!();
+    await expect(input).toHaveValue('保持第二个子会话');
+    await expect(page.locator('.agent-child-conversation-panel')).not.toContainText('发送结果待确认');
+    await page.getByRole('navigation', { name: '工作区页签' }).getByRole('button', { name: children[0].display_title, exact: true }).click();
+    const retry = page.getByRole('button', { name: '使用原提交身份重试子会话消息' });
+    await expect(retry).toBeEnabled();
+    await retry.click();
+    await expect.poll(() => state.messages.length).toBe(2);
+    expect(state.messages[1].payload.submission_id).toBe(state.messages[0].payload.submission_id);
+    expect(state.messages.map(message => message.childId)).toEqual([children[0].id, children[0].id]);
+    await expect(page.locator('.agent-child-conversation-panel .conversation-message.user')).toHaveCount(1);
+  });
+
+  test(`child Esc pauses only child and result quote appends to parent without sending (${host})`, async ({ page }) => {
+    const state = await openParent(page, host);
+    state.parents[0].execution_status = 'running';
+    state.statuses.set(parentId, 'running');
+    await page.reload();
+    state.statuses.set(children[0].id, 'running');
+    state.nativeEvents.set(children[0].id, [{ id: 'formal-parent-instruction', event_type: 'MESSAGE', payload: { source: 'user', content: '父会话要求核对', parent_instruction: { operation: 'send', action_id: 'parent-action', tool_call_id: 'parent-tool' } } }, ...state.eventsFor(children[0].id)]);
+    await chooseChild(page, children[0].id);
+    const input = page.getByRole('textbox', { name: '发送子会话消息' });
+    await expect(input).toBeEditable();
+    await expect(page.locator('.agent-child-conversation-panel')).toContainText('来自父会话的指令');
+    await input.focus();
+    await input.fill('/');
+    await input.press('Escape');
+    await expect(page.getByRole('button', { name: '暂停子会话 Agent' })).not.toContainText('Esc');
+    await input.press('Escape');
+    await expect(page.getByRole('button', { name: '暂停子会话 Agent' })).toContainText('Esc');
+    expect(state.childWrites).toHaveLength(0);
+    await input.press('Escape');
+    await expect(page.getByRole('button', { name: '继续子会话 Agent' })).toBeVisible();
+    expect(state.childWrites).toEqual([{ childId: children[0].id, action: 'control', payload: { operation: 'interrupt' } }]);
+    await page.getByRole('button', { name: '继续子会话 Agent' }).click();
+    await expect(page.getByRole('button', { name: '暂停子会话 Agent' })).toBeVisible();
+    const parentInput = page.getByRole('textbox', { name: '发送 Agent 消息' });
+    await parentInput.fill('父会话现有草稿');
+    await page.getByRole('button', { name: '引用到父会话' }).click();
+    await expect(parentInput).toHaveValue('父会话现有草稿');
+    await expect(page.getByRole('button', { name: `${children[0].id} 的正式独立历史`, exact: true })).toBeVisible();
+    await page.getByRole('button', { name: `${children[0].id} 的正式独立历史`, exact: true }).click();
+    await expect(page.getByRole('dialog', { name: '会话引用内容' })).toContainText(`${children[0].id} 的正式独立历史`);
+    await expect(page).toHaveURL(`${state.root}/${parentId}`);
+    await page.getByRole('button', { name: '关闭会话引用内容' }).click();
+    expect(state.messages).toHaveLength(0);
+    expect(state.writes.filter(write => !write.includes('/agent-session-children/') && /\/control$|\/messages$/.test(write))).toEqual([]);
+  });
+
+  test(`child model credentials and tool confirmation target current child (${host})`, async ({ page }) => {
+    const state = await openParent(page, host);
+    await chooseChild(page, children[0].id);
+    const pane = page.locator('.agent-child-conversation-panel');
+    await expect(page.getByRole('textbox', { name: '发送子会话消息' })).toBeEditable();
+    await pane.getByRole('button', { name: /打开模型与推理设置/ }).click();
+    await page.getByRole('button', { name: '模型 child-model', exact: true }).click();
+    await page.getByRole('button', { name: 'child-model-two', exact: true }).click();
+    await expect.poll(() => state.childWrites.filter(write => write.action === 'model').length).toBe(1);
+    expect(state.childWrites[0].payload.model_name).toBe('child-model-two');
+    await pane.getByRole('button', { name: '子会话配置', exact: true }).click();
+    const config = page.getByRole('region', { name: '子会话配置' });
+    await config.getByRole('checkbox', { name: /测试认证/ }).check();
+    await config.getByRole('button', { name: '同步认证' }).click();
+    await expect.poll(() => state.childWrites.filter(write => write.action === 'credentials').length).toBe(1);
+    expect(state.childWrites.at(-1)?.payload).toEqual({ credential_ids: ['credential-one'] });
+    await config.getByRole('button', { name: '关闭子会话配置' }).click();
+    state.statuses.set(children[0].id, 'waiting_for_confirmation');
+    state.signal(children[0].id);
+    const confirmation = page.getByRole('region', { name: '子会话工具执行确认' });
+    await expect(confirmation).toBeVisible();
+    await confirmation.getByRole('textbox', { name: '子会话工具确认理由' }).fill('仅批准当前子会话');
+    await confirmation.getByRole('button', { name: '批准整批' }).click();
+    await expect.poll(() => state.childWrites.filter(write => write.action === 'confirmation').length).toBe(1);
+    expect(state.childWrites.at(-1)?.payload).toEqual({ expected_pending_digest: 'native-batch', accept: true, reason: '仅批准当前子会话' });
+    await chooseChild(page, children[1].id);
+    await expect(page.getByRole('region', { name: '子会话工具执行确认' })).toHaveCount(0);
+    expect(state.messages).toHaveLength(0);
+    expect(state.childWrites.every(write => write.childId === children[0].id)).toBe(true);
+  });
+
+  test(`child condense keeps editable input and queues until formal completion (${host})`, async ({ page }) => {
+    const state = await openParent(page, host);
+    await chooseChild(page, children[0].id);
+    const input = page.getByRole('textbox', { name: '发送子会话消息' });
+    await expect(input).toBeEditable();
+    await input.fill('/');
+    await page.getByRole('option', { name: /压缩上下文/ }).click();
+    await expect.poll(() => state.childWrites.length).toBe(1);
+    expect(state.childWrites[0].payload).toEqual({ operation: 'condense' });
+    await expect(page.getByRole('button', { name: '暂停子会话 Agent' })).toHaveCount(0);
+    await expect(input).toBeEditable();
+    await input.fill('压缩结束再发送');
+    await input.press('Enter');
+    await expect(page.getByRole('region', { name: '子会话消息队列' })).toContainText('压缩结束再发送');
+    expect(state.messages).toHaveLength(0);
+    state.nativeEvents.set(children[0].id, [...state.eventsFor(children[0].id), { id: 'child-condensed', event_type: 'CONDENSATION_COMPLETED', payload: {} }]);
+    state.signal(children[0].id);
+    await expect.poll(() => state.messages.length).toBe(1);
+    expect(state.messages[0].payload.content).toBe('压缩结束再发送');
+    expect(state.childWrites.filter(write => write.payload.operation === 'interrupt')).toHaveLength(0);
+  });
+}
+
+for (const host of ['workspace', 'node'] as const) {
+  test(`child annotations workspace drops and direct send reuse child-scoped composer (${host})`, async ({ page }) => {
+    const state = await openParent(page, host);
+    await chooseChild(page, children[0].id);
+    const pane = page.locator('.agent-child-conversation-panel');
+    const input = pane.getByRole('textbox', { name: '发送子会话消息' });
+    await expect(input).toBeEditable();
+    await pane.locator('.conversation-message.assistant p').evaluate(element => {
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      const selection = window.getSelection()!;
+      selection.removeAllRanges();
+      selection.addRange(range);
+      document.dispatchEvent(new Event('selectionchange'));
+    });
+    await pane.locator('.conversation-surface').dispatchEvent('pointerup', { pointerType: 'mouse', button: 0 });
+    await pane.getByRole('button', { name: '添加到会话', exact: true }).click();
+    await pane.getByRole('textbox', { name: '子会话注释', exact: true }).fill('核对这个结果');
+    const transfer = await page.evaluateHandle(() => {
+      const data = new DataTransfer();
+      data.setData('application/x-flowweave-workspace-file-path', '/runtime/workspace/project/result.txt');
+      return data;
+    });
+    await pane.locator('.agent-composer-input').dispatchEvent('drop', { dataTransfer: transfer });
+    await expect(pane.getByRole('button', { name: 'result.txt', exact: true })).toBeVisible();
+    state.statuses.set(children[0].id, 'running');
+    state.signal(children[0].id);
+    await expect(pane.getByRole('button', { name: '暂停子会话 Agent' })).toBeVisible();
+    await input.fill('先处理引用');
+    await input.press('Alt+Enter');
+    await expect.poll(() => state.childWrites.filter(write => write.payload.operation === 'interrupt').length).toBe(1);
+    await expect.poll(() => state.messages.length).toBe(1);
+    const message = state.messages[0];
+    expect(message.childId).toBe(children[0].id);
+    expect(message.payload.workspace_references).toEqual([{ path: '/runtime/workspace/project/result.txt', kind: 'file', display_name: 'result.txt' }]);
+    expect(message.payload.annotations).toEqual([expect.objectContaining({ anchor_kind: 'CONVERSATION_TEXT', anchor: { source_binding_id: children[0].id, event_id: `${children[0].id}-answer`, quote: `${children[0].id} 的正式独立历史`, compact_start: 0 }, comment: '核对这个结果' })]);
+    await expect(page.getByRole('textbox', { name: '发送 Agent 消息' })).toHaveValue('');
+  });
+}
+
+test('late child quote preserves original parent draft and foreground completion clears only selected child visuals', async ({ page }) => {
+  const state = await openParent(page, 'workspace');
+  state.statuses.set(children[0].id, 'running');
+  await chooseChild(page, children[0].id);
+  const pane = page.locator('.agent-child-conversation-panel');
+  await expect(pane.getByRole('button', { name: '暂停子会话 Agent' })).toBeVisible();
+  await expect.poll(() => state.streams.has(children[0].id)).toBe(true);
+  state.streams.get(children[0].id)!.send(JSON.stringify({ type: 'stream_closed', item_id: 'completed-native-message' }));
+  await expect(pane.getByRole('button', { name: '暂停子会话 Agent' })).toHaveCount(0);
+  await expect(page.getByRole('navigation', { name: '工作区页签' }).getByRole('img', { name: '子会话正在运行' })).toHaveCount(0);
+  expect(state.statuses.get(children[0].id)).toBe('running');
+  let release: (() => void) | undefined;
+  await page.route('**/result-reference/**', async route => {
+    await new Promise<void>(resolve => { release = resolve; });
+    await json(route, { source_binding_id: children[0].id, source_event_id: `${children[0].id}-answer`, content: '原父会话的正式结果' });
+  });
+  await page.getByRole('textbox', { name: '发送 Agent 消息' }).fill('原父草稿');
+  await pane.getByRole('button', { name: '引用到父会话' }).click();
+  await expect.poll(() => release).toBeTruthy();
+  await page.locator(`[data-conversation-binding-id="${otherParentId}"] .agent-workspace-conversation-select`).click();
+  await page.getByRole('textbox', { name: '发送 Agent 消息' }).fill('另一个父草稿');
+  release!();
+  await expect(page.getByRole('button', { name: '原父会话的正式结果', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('textbox', { name: '发送 Agent 消息' })).toHaveValue('另一个父草稿');
+  await page.locator(`[data-conversation-binding-id="${parentId}"] .agent-workspace-conversation-select`).click();
+  await expect(page.getByRole('textbox', { name: '发送 Agent 消息' })).toHaveValue('原父草稿');
+  await expect(page.getByRole('button', { name: '原父会话的正式结果', exact: true })).toBeVisible();
+  expect(state.messages).toHaveLength(0);
+});
+
+test('child history prepend and sibling return preserve the independent reading position', async ({ page }) => {
+  const state = await openParent(page, 'workspace');
+  const event = (prefix: string, index: number) => ({ id: `${prefix}-${index}`, event_type: 'MESSAGE', payload: { parent_id: index > 0 ? `${prefix}-${index - 1}` : prefix === 'recent' ? 'older-19' : undefined, source: 'agent', content: `${prefix} ${index}\n\n${'较长的正式消息内容用于验证阅读位置。'.repeat(30)}`, final_reply: true } });
+  const recent = Array.from({ length: 20 }, (_, index) => event('recent', index));
+  let release: (() => void) | undefined;
+  let historyCalls = 0;
+  let latestCalls = 0;
+  await page.route(`**/agent-session-children/${parentId}/${children[0].id}/hydration*`, route => { latestCalls += 1; return json(route, { events: { events: recent, next_cursor: 'recent-19', history_cursor: 'older-page' }, context: {}, readiness: { ready: true, execution_status: 'finished' } }); });
+  await page.route(`**/agent-session-children/${parentId}/${children[0].id}/events*`, async route => {
+    historyCalls += 1;
+    await new Promise<void>(resolve => { release = resolve; });
+    await json(route, { events: Array.from({ length: 20 }, (_, index) => event('older', index)), next_cursor: 'recent-19', history_cursor: null });
+  });
+  await chooseChild(page, children[0].id);
+  const pane = page.locator('.agent-child-conversation-panel');
+  const surface = pane.locator('.conversation-surface');
+  await expect(pane.locator('[data-event-id="recent-19"]')).toBeVisible();
+  await expect.poll(() => release).toBeTruthy();
+  await surface.evaluate(element => { element.dispatchEvent(new WheelEvent('wheel', { deltaY: -50, bubbles: true })); element.scrollTop = 600; element.dispatchEvent(new Event('scroll')); });
+  const relativeTop = () => pane.locator('[data-event-id="recent-2"]').evaluate(element => element.getBoundingClientRect().top - element.closest('.conversation-surface')!.getBoundingClientRect().top);
+  const before = await relativeTop();
+  release!();
+  await expect(pane.locator('[data-event-id="older-0"]')).toHaveCount(1);
+  await expect.poll(relativeTop).toBeCloseTo(before, 0);
+  const scrollTop = await surface.evaluate(element => element.scrollTop);
+  await chooseChild(page, children[1].id);
+  await expect(page.getByRole('region', { name: `子会话 ${children[1].display_title}` })).toContainText('正式独立历史');
+  await page.getByRole('navigation', { name: '工作区页签' }).getByRole('button', { name: children[0].display_title, exact: true }).click();
+  await expect(pane.locator('[data-event-id="recent-19"]')).toHaveCount(1);
+  await expect.poll(() => surface.evaluate(element => element.scrollTop)).toBeCloseTo(scrollTop, 0);
+  state.signal(children[0].id);
+  await expect.poll(() => latestCalls).toBeGreaterThan(2);
+  expect(historyCalls).toBe(1);
 });

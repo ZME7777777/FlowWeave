@@ -679,3 +679,105 @@ def test_child_user_surface_rejects_physical_image_drift(child_http):
         x.root + "/messages", json={"submission_id": str(uuid4()), "content": "no"}
     )
     assert response.status_code == 404 and not x.submissions
+
+
+@pytest.mark.parametrize("parent_profile", ["OH_FW_V4"], indirect=True)
+def test_child_workspace_and_annotation_context_use_authorized_sources(child_http):
+    x = child_http
+    event_id = str(uuid4())
+    x.events[(x.loc.handle.conversation_id, event_id)] = RuntimeEvent(
+        event_id, "MESSAGE", {"source": "agent", "content": "**Rendered** quote 😀"}
+    )
+    annotation = {
+        "id": str(uuid4()),
+        "anchor_kind": "CONVERSATION_TEXT",
+        "anchor": {
+            "source_binding_id": x.loc.binding_id,
+            "event_id": event_id,
+            "quote": "Rendered quote 😀",
+            "compact_start": 0,
+        },
+        "comment": "review this selection",
+    }
+    workspace_reference = {
+        "path": x.loc.working_directory + "/result.txt",
+        "kind": "file",
+        "display_name": "result.txt",
+    }
+    response = x.client.post(
+        x.root + "/messages",
+        json={
+            "submission_id": str(uuid4()),
+            "content": "",
+            "workspace_references": [workspace_reference],
+            "annotations": [annotation],
+        },
+    )
+    assert response.status_code == 202, response.text
+    prompt = next(iter(x.submissions.values()))[1]
+    content, refs, workspace_refs, annotations = (
+        child_sessions.conversations.project_conversation_references(prompt)
+    )
+    assert content == "" and refs == ()
+    assert workspace_refs[0]["path"] == workspace_reference["path"]
+    assert annotations[0]["anchor"] == annotation["anchor"]
+    assert annotations[0]["comment"] == "review this selection"
+
+
+@pytest.mark.parametrize("parent_profile", ["OH_FW_V4"], indirect=True)
+@pytest.mark.parametrize(
+    "invalid",
+    ["sibling", "missing", "mismatched", "tool", "empty", "uuid", "workspace", "private-upload"],
+)
+def test_child_annotation_and_workspace_context_fail_closed(child_http, invalid):
+    x = child_http
+    event_id = str(uuid4())
+    x.events[(x.loc.handle.conversation_id, event_id)] = RuntimeEvent(
+        event_id, "MESSAGE", {"source": "agent", "content": "native quote"}
+    )
+    annotation = {
+        "id": str(uuid4()),
+        "anchor_kind": "CONVERSATION_TEXT",
+        "anchor": {
+            "source_binding_id": x.loc.binding_id,
+            "event_id": event_id,
+            "quote": "native quote",
+            "compact_start": 0,
+        },
+        "comment": "check",
+    }
+    refs = []
+    if invalid == "sibling":
+        annotation["anchor"]["source_binding_id"] = str(uuid4())
+    elif invalid == "missing":
+        annotation["anchor"]["event_id"] = str(uuid4())
+    elif invalid == "mismatched":
+        x.events[(x.loc.handle.conversation_id, event_id)] = RuntimeEvent(
+            str(uuid4()), "MESSAGE", {"content": "native quote"}
+        )
+    elif invalid == "tool":
+        x.events[(x.loc.handle.conversation_id, event_id)] = RuntimeEvent(
+            event_id, "TOOL_RESULT", {"content": "native quote"}
+        )
+    elif invalid == "empty":
+        annotation["anchor"]["quote"] = "  "
+    elif invalid == "uuid":
+        annotation["id"] = "invalid"
+    else:
+        path = (
+            "/other/result.txt"
+            if invalid == "workspace"
+            else x.loc.working_directory + "/uploads/another-owner-file.txt"
+        )
+        refs = [{"path": path, "kind": "file", "display_name": "file"}]
+    response = x.client.post(
+        x.root + "/messages",
+        json={
+            "submission_id": str(uuid4()),
+            "content": "review",
+            "annotations": [annotation],
+            "workspace_references": refs,
+        },
+    )
+    assert response.status_code in {404, 422}, response.text
+    assert not x.submissions

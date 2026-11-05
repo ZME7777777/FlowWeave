@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 from dataclasses import asdict, dataclass, replace
 from pathlib import PurePosixPath
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
@@ -396,8 +396,16 @@ def validate_message(
     content: str,
     attachments: tuple[dict[str, Any], ...],
     references: tuple[dict[str, Any], ...],
+    workspace_references: tuple[dict[str, Any], ...] = (),
+    annotations: tuple[dict[str, Any], ...] = (),
 ) -> None:
-    if not content.strip() and not attachments and not references:
+    if (
+        not content.strip()
+        and not attachments
+        and not references
+        and not annotations
+        and not workspace_references
+    ):
         raise DomainError("AGENT_MESSAGE_EMPTY", "消息不能为空", 422)
     for item in attachments:
         validate_file(db, locator, str(item.get("path") or ""), attachment_only=True)
@@ -410,6 +418,28 @@ def validate_message(
         event_id = ref.get("source_event_id")
         if not isinstance(event_id, str) or not event_id:
             raise unavailable()
+    for ref in conversations.validated_workspace_references(workspace_references):
+        validate_file(db, locator, str(ref["path"]))
+    for annotation in annotations:
+        raw_anchor = annotation.get("anchor")
+        if not isinstance(raw_anchor, dict):
+            raise unavailable()
+        anchor = cast(dict[str, Any], raw_anchor)
+        if (
+            annotation.get("anchor_kind") != "CONVERSATION_TEXT"
+            or anchor.get("source_binding_id") not in {locator.binding_id, locator.parent_id}
+            or not isinstance(anchor.get("event_id"), str)
+            or not isinstance(anchor.get("quote"), str)
+            or not str(anchor.get("quote")).strip()
+            or len(str(anchor.get("quote"))) > 10000
+            or not isinstance(annotation.get("comment"), str)
+            or len(str(annotation.get("comment"))) > 2000
+        ):
+            raise unavailable()
+        try:
+            UUID(str(annotation.get("id")))
+        except ValueError:
+            raise unavailable() from None
     # Runtime lookup is deferred into dispatch, after the DB session is closed.
 
 
@@ -419,6 +449,8 @@ def send(
     content: str,
     attachments: tuple[dict[str, Any], ...],
     references: tuple[dict[str, Any], ...],
+    workspace_references: tuple[dict[str, Any], ...] = (),
+    annotations: tuple[dict[str, Any], ...] = (),
 ) -> str:
     verify_native(locator)
     runtime = get_runtime()
@@ -428,14 +460,38 @@ def send(
         handle = locator.parent_handle if source == locator.parent_id else locator.handle
         event_id = str(reference["source_event_id"])
         event = runtime.read_event(handle, event_id)
+        if event is None or event.cursor != event_id:
+            raise unavailable()
         text = conversations.referenceable_event_text(event)
+        if text is not None and event and event.event_type == "MESSAGE":
+            text = conversations.project_conversation_references(text)[0]
         if text is None:
             raise unavailable()
         selected = conversations.selected_reference_text(text, reference.get("selection"))
         if not selected:
             raise unavailable()
         refs.append({"event_id": event_id, "content": selected, "source_binding_id": source})
-    prompt, images = conversations.message_payload(content, attachments, tuple(refs))
+    validated_annotations: list[dict[str, Any]] = []
+    for annotation in annotations:
+        anchor = annotation["anchor"]
+        handle = (
+            locator.parent_handle
+            if anchor["source_binding_id"] == locator.parent_id
+            else locator.handle
+        )
+        event = runtime.read_event(handle, anchor["event_id"])
+        if event is None or event.cursor != anchor["event_id"]:
+            raise unavailable()
+        text = conversations.referenceable_event_text(event)
+        if text is None:
+            raise unavailable()
+        # Selection offsets describe rendered Markdown. They are navigation
+        # hints, not native source offsets or an authorization fact. Preserve
+        # the bounded user annotation exactly as ordinary conversations do.
+        validated_annotations.append(annotation)
+    prompt, images = conversations.message_payload(
+        content, attachments, tuple(refs), workspace_references, tuple(validated_annotations)
+    )
     # No optimistic platform queue or busy-read/append race: native submission
     # admission serializes user input with parent Tool sends and run slots.
     return runtime.send_child_message(locator.handle, submission_id, prompt, images)
