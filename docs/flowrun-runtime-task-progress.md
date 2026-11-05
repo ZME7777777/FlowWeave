@@ -16410,6 +16410,6 @@ SDK `baseline` 提交 `89dd0d1b0c9bccdee8bbae4eb710500d12115455`：`ask_user` �
 
 未完成项：尚未用真实模型端到端验证“只答部分问题后模型回应并重新提问”；`tests/architecture` 既有 11 项失败与发布前一致。
 
-### OPS-BL1585 ask_user 先处理已答问题再重问与 baseline 805bb3fe0 同步 — CODE-DONE（待 Runtime 发布）
+### OPS-BL1585 ask_user 先处理已答问题再重问与 baseline 805bb3fe0 同步 — DONE（已部署 7c1e7604）
 
-SDK `baseline` 提交 `805bb3fe0a57cdc3e383e26019fa216a6892e608`，归档 SHA-256 `eaf4322c182d2ea80202840b43834cb72697371e479eca91aaf03dc458adb208`。线上试验（`89dd0d1b0`）发现模型在用户只答一题后立即重新调用 `ask_user`，没有先做已答问题对应的实际工作；描述改为：先依据已答内容完成实际工作并汇报，再仅对未答问题重问。Web：提问卡片出现导致会话容器变矮时，跟随最新内容的会话保持贴底，不被卡片遮挡。Runtime 发布与 replacement 尚未执行，不得声称已同步。
+SDK `baseline` 提交 `805bb3fe0a57cdc3e383e26019fa216a6892e608`，归档 SHA-256 `eaf4322c182d2ea80202840b43834cb72697371e479eca91aaf03dc458adb208`。线上试验（`89dd0d1b0`）发现模型在用户只答一题后立即重新调用 `ask_user`，没有先做已答问题对应的实际工作；描述改为：先依据已答内容完成实际工作并汇报，再仅对未答问题重问。Web：提问卡片出现导致会话容器变矮时，跟随最新内容的会话保持贴底，不被卡片遮挡。已随合并提交 `7c1e76046f5bc99e36951feb48145b9e2eb72b4b` 发布（含远程 origin 的 `1ee81f3b` 与另一会话的 Git 分支功能）：Runtime 镜像 `flowweave-openhands-runtime:1` = `bl-805bb3fe`（sha256:7ed73c05…），platform/web 镜像带 revision 标签，migration 退出码 0，runtime-provider/api/stream-api healthy，`runtime-replace` 后 `/server_info.build_git_sha=805bb3fe…`，公网 `/flowweave/`、`/agent`、`/agent/schedules` 均 200；发布前备份了 Agent 工作区 state。回退锚点：`rollback-89dd0d1b-pre` 标签。
