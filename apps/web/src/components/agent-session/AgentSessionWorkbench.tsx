@@ -3716,7 +3716,7 @@ function SshAccessGuide({
 }
 
 function workspaceToolBounds(available: number) {
-  return { minimum: available * .25, maximum: available * .75, activation: available * .045, reversal: available * .04 };
+  return { minimum: available * .25, maximum: available * .75, activation: available * .045 };
 }
 
 function clampWorkspaceToolWidth(value: number, available = window.innerWidth): number {
@@ -4179,9 +4179,8 @@ function WorkspaceDrawer({
   const [environmentPreferredOpen, setEnvironmentPreferredOpen] = useState(() => localStorage.getItem('flowweave:environment-card-open') !== 'false');
   const [environmentToolOverride, setEnvironmentToolOverride] = useState<{ scopeKey: string; open: boolean }>();
   const resizeCollapsed = useRef(false);
-  const [resizePreview, setResizePreview] = useState<'fullscreen' | 'hidden'>();
-  const drawerFullScreen = fullScreen || resizePreview === 'fullscreen';
-  const drawerToolsOpen = open && resizePreview !== 'hidden';
+  const drawerFullScreen = fullScreen;
+  const drawerToolsOpen = open;
   // While tools are open, card toggles only affect this scope. Keep the shared
   // preference for the conversation-only layout unchanged.
   const environmentOpen = drawerToolsOpen
@@ -4905,42 +4904,32 @@ function WorkspaceDrawer({
     if (window.innerWidth <= 960 || event.button !== 0 || !event.isPrimary || workspaceResizeCleanup.current) return;
     event.preventDefault();
     const handle = event.currentTarget;
+    const drawer = drawerRef.current;
     const pointerId = event.pointerId;
     const startX = event.clientX;
-    let anchorX = startX;
-    const startWidth = drawerRef.current?.getBoundingClientRect().width ?? panelWidth;
-    let anchorWidth = startWidth;
+    const startWidth = drawer?.getBoundingClientRect().width ?? panelWidth;
     const available = availableToolWidth();
-    const { minimum, maximum, activation, reversal } = workspaceToolBounds(available);
-    const clampWidth = (value: number) => Math.max(minimum, Math.min(maximum, value));
-    let extremeX = startX;
+    const { minimum, maximum, activation } = workspaceToolBounds(available);
+    // The panel follows the pointer continuously (from 0 to the full area);
+    // whether it snaps to full screen, hides or settles inside its normal
+    // range is decided once, on release. No mid-drag layout jump.
     let moved = false;
-    let preview: 'fullscreen' | 'hidden' | undefined;
+    let rawWidth = startWidth;
+    let snap: 'fullscreen' | 'hidden' | undefined;
     let frame: number | undefined;
-    let nextWidth = startWidth;
     const applyWidth = () => {
       frame = undefined;
-      setPanelWidth(clampWidth(nextWidth));
-      setResizePreview(preview);
+      drawer?.style.setProperty('--agent-workspace-tool-width', `${rawWidth}px`);
+      const next = rawWidth >= maximum + activation ? 'fullscreen' : rawWidth <= minimum - activation ? 'hidden' : undefined;
+      if (next !== snap) {
+        snap = next;
+        document.body.dataset.agentWorkspaceSnap = next ?? '';
+      }
     };
     const move = (moveEvent: PointerEvent) => {
       if (moveEvent.pointerId !== pointerId) return;
-      const x = moveEvent.clientX;
-      nextWidth = anchorWidth + anchorX - x;
-      moved ||= Math.abs(x - startX) >= available * .005;
-      if (moved && preview) {
-        extremeX = preview === 'fullscreen' ? Math.min(extremeX, x) : Math.max(extremeX, x);
-        const reversed = preview === 'fullscreen' ? x - extremeX : extremeX - x;
-        if (reversed >= reversal) {
-          nextWidth = preview === 'fullscreen' ? maximum - (reversed - reversal) : minimum + (reversed - reversal);
-          anchorWidth = nextWidth;
-          anchorX = x;
-          preview = undefined;
-        }
-      } else if (moved && (nextWidth >= maximum + activation || nextWidth <= minimum - activation)) {
-        preview = nextWidth >= maximum + activation ? 'fullscreen' : 'hidden';
-        extremeX = x;
-      }
+      rawWidth = Math.max(0, Math.min(available, startWidth + startX - moveEvent.clientX));
+      moved ||= Math.abs(moveEvent.clientX - startX) >= available * .005;
       if (frame === undefined) frame = window.requestAnimationFrame(applyWidth);
     };
     const cleanup = () => {
@@ -4953,7 +4942,7 @@ function WorkspaceDrawer({
       if (frame !== undefined) window.cancelAnimationFrame(frame);
       if (handle.hasPointerCapture(pointerId)) handle.releasePointerCapture(pointerId);
       workspaceResizeCleanup.current = undefined;
-      setResizePreview(undefined);
+      delete document.body.dataset.agentWorkspaceSnap;
       handle.style.removeProperty('--agent-workspace-resize-left');
       document.body.classList.remove('agent-workspace-resizing');
       document.body.style.removeProperty('cursor');
@@ -4961,17 +4950,17 @@ function WorkspaceDrawer({
     };
     const stop = (stopEvent: Event) => {
       if (stopEvent instanceof PointerEvent && stopEvent.pointerId !== pointerId) return;
+      const decision = moved && stopEvent.type !== 'resize' ? snap : undefined;
       cleanup();
-      const width = clampPanelWidth(nextWidth);
+      const width = decision ? clampPanelWidth(startWidth) : clampPanelWidth(rawWidth);
+      drawer?.style.setProperty('--agent-workspace-tool-width', `${width}px`);
       setPanelWidth(width);
-      if (moved && stopEvent.type !== 'resize') {
-        if (preview === 'fullscreen') {
-          setFullScreen(true);
-          setFullScreenView('tool');
-        } else if (preview === 'hidden') {
-          resizeCollapsed.current = true;
-          onClose();
-        }
+      if (decision === 'fullscreen') {
+        setFullScreen(true);
+        setFullScreenView('tool');
+      } else if (decision === 'hidden') {
+        resizeCollapsed.current = true;
+        onClose();
       }
     };
     workspaceResizeCleanup.current = cleanup;
@@ -10999,16 +10988,20 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const startConversationRailResize = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (window.innerWidth <= 1100) return;
     event.preventDefault();
+    // Write the width straight to the CSS variable while dragging so the huge
+    // workbench component is not re-rendered per frame; commit once on release.
+    const page = (event.currentTarget as HTMLElement).closest<HTMLElement>('.agent-workbench-page');
     const startX = event.clientX;
     const startWidth = conversationRailWidth;
     let frame: number | undefined;
-    let nextWidth = startWidth;
+    let latestX = startX;
+    const widthAt = () => clampConversationRailWidth(startWidth + latestX - startX);
     const applyWidth = () => {
       frame = undefined;
-      setConversationRailWidth(clampConversationRailWidth(nextWidth));
+      page?.style.setProperty('--conversation-rail-width', `${widthAt()}px`);
     };
     const move = (moveEvent: PointerEvent) => {
-      nextWidth = startWidth + moveEvent.clientX - startX;
+      latestX = moveEvent.clientX;
       if (frame === undefined) frame = window.requestAnimationFrame(applyWidth);
     };
     const stop = () => {
@@ -11016,10 +11009,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       window.removeEventListener('pointerup', stop);
       window.removeEventListener('pointercancel', stop);
       if (frame !== undefined) window.cancelAnimationFrame(frame);
-      applyWidth();
+      const width = widthAt();
+      page?.style.setProperty('--conversation-rail-width', `${width}px`);
+      setConversationRailWidth(width);
+      document.body.classList.remove('agent-rail-resizing');
       document.body.style.removeProperty('cursor');
       document.body.style.removeProperty('user-select');
     };
+    document.body.classList.add('agent-rail-resizing');
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
     window.addEventListener('pointermove', move);

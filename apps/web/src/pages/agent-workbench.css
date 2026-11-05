@@ -802,3 +802,13 @@
 .agent-file-tree-virtual-row{box-sizing:border-box;height:28px;overflow:hidden}
 .agent-file-tree-virtual-row>.agent-file-tree-load-more{height:28px;margin-top:0;margin-bottom:0}
 .agent-file-tree-virtual-row>.agent-file-tree-row{height:28px}
+
+/* Left conversation rail: dragging must track the pointer 1:1, so the
+   grid/drawer easing transitions are suspended for the duration of the drag. */
+body.agent-rail-resizing .agent-workbench-page,body.agent-rail-resizing .agent-workbench-page *{transition:none!important}
+body.agent-rail-resizing iframe{pointer-events:none}
+
+/* Right workspace panel: width follows the pointer; the snap target
+   (full screen / hide) is only announced by tinting the divider and decided on release. */
+body[data-agent-workspace-snap=fullscreen] .agent-workspace-drawer,body[data-agent-workspace-snap=hidden] .agent-workspace-drawer{border-left-color:#4d9870;box-shadow:inset 2px 0 #4d9870}
+body[data-agent-workspace-snap=hidden] .agent-workspace-drawer{opacity:.72}
