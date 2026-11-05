@@ -214,7 +214,7 @@ def test_git_history_marks_commits_ahead_of_the_upstream_branch(tmp_path):
         git("commit", "-m", f"local revision {index}")
 
     history = workspace.git_log(
-        tmp_path,
+        repository,
         "/runtime/workspace/project",
         ("/runtime/workspace/project",),
         "/runtime/workspace/project",
@@ -247,7 +247,7 @@ def test_git_history_does_not_guess_unpushed_commits_without_upstream(tmp_path):
     )
 
     history = workspace.git_log(
-        tmp_path,
+        repository,
         "/runtime/workspace/project",
         ("/runtime/workspace/project",),
         "/runtime/workspace/project",

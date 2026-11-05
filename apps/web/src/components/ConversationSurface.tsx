@@ -2262,6 +2262,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   const userScrolledAway = useRef(false);
   const scrollInteractionStartY = useRef<number | null>(null);
   const scrollSnapshotFrame = useRef<number | undefined>(undefined);
+  const lastVisibleScrollTop = useRef(initialScrollSnapshot?.scrollTop ?? 0);
   const scrollInteractionTowardLatest = useRef(false);
   const scrollbarVisibilityTimer = useRef<number | undefined>(undefined);
   const automaticScrollFrame = useRef<number | undefined>(undefined);
@@ -2421,7 +2422,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   }, []);
   const alignWithLatest = useCallback(() => {
     const element = surface.current;
-    if (!element) return;
+    if (!element?.clientHeight) return;
     const target = Math.max(0, element.scrollHeight - element.clientHeight);
     if (Math.abs(element.scrollTop - target) <= 1) return;
     // Direct assignment is immediate and does not inherit page-level smooth
@@ -2495,7 +2496,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   }, [hasCachedOlderHistory, locateUserMessage, onRequestOlderHistory, onRevealHistoryThrough]);
   const updateScrollPosition = useCallback(() => {
     const element = surface.current;
-    if (!element) return;
+    if (!element?.clientHeight) return;
     const revealWindow = Math.max(HISTORY_REVEAL_WINDOW_MIN_PX, element.clientHeight * HISTORY_REVEAL_WINDOW_VIEWPORT_RATIO);
     if (element.scrollTop <= revealWindow) requestOlderHistory();
     const atLatest = element.scrollHeight - element.scrollTop - element.clientHeight <= 16;
@@ -2861,7 +2862,8 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   }, []);
   const captureScrollSnapshot = useCallback(() => {
     const element = surface.current;
-    if (!conversationScope || !element) return;
+    if (!conversationScope || !element?.clientHeight) return;
+    lastVisibleScrollTop.current = element.scrollTop;
     onScrollSnapshotChange?.(conversationScope, {
       scrollTop: element.scrollTop,
       bottomOffset: element.scrollHeight - element.scrollTop,
@@ -2883,6 +2885,8 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     captureScrollSnapshot();
   }, [captureScrollSnapshot]);
   const handleScroll = useCallback(() => {
+    if (!surface.current?.clientHeight) return;
+    lastVisibleScrollTop.current = surface.current.scrollTop;
     updateScrollPosition();
     scrollInteractionTowardLatest.current = false;
     scheduleScrollSnapshot();
@@ -2981,6 +2985,36 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
       alignWithLatest();
     }
   }, [alignWithLatest, contentGrowthSignal, isGenerating, turns.length]);
+
+  const hasTranscript = Boolean(turns.length || isGenerating);
+  useLayoutEffect(() => {
+    const element = surface.current;
+    if (!element || !hasTranscript) return;
+    let previousWidth = element.clientWidth;
+    let wasHidden = !element.clientHeight;
+    // Observe only viewport visibility/width. Tool tabs hide this retained DOM,
+    // and returning to a wider transcript reflows Markdown without new events.
+    // Content height, elapsed labels and process animations cannot trigger this.
+    const observer = new ResizeObserver(() => {
+      if (!element.clientHeight) {
+        wasHidden = true;
+        return;
+      }
+      if (wasHidden || element.clientWidth !== previousWidth) {
+        if (followLatest.current && !userScrolledAway.current) {
+          alignWithLatest();
+        } else if (wasHidden && element.scrollTop !== lastVisibleScrollTop.current) {
+          element.scrollTop = lastVisibleScrollTop.current;
+        }
+        setIsAtLatest(element.scrollHeight - element.scrollTop - element.clientHeight <= 16);
+      }
+      wasHidden = false;
+      previousWidth = element.clientWidth;
+      lastVisibleScrollTop.current = element.scrollTop;
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [alignWithLatest, conversationScope, hasTranscript]);
 
 
   useEffect(() => () => {

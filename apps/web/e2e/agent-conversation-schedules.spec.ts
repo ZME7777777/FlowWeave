@@ -2740,6 +2740,52 @@ test('fullscreen conversation tabs cap long titles and shrink with available spa
   await expect.poll(() => tab.evaluate(element => element.getBoundingClientRect().width)).toBeLessThan(maximumWidth);
 });
 
+for (const position of ['latest', 'history'] as const) {
+  test(`fullscreen files restore the conversation reading position (${position})`, async ({ page }) => {
+    const reply = Array.from({ length: 90 }, (_, index) => `**段落 ${index + 1}** ${'会话内容用于验证全屏文件切换后的滚动恢复。'.repeat(8)}`).join('\n\n');
+    await openWorkspace(page, [
+      { id: 'fullscreen-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '查看长回复', timestamp: now } },
+      { id: 'fullscreen-agent', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'fullscreen-user', content: reply, timestamp: now } },
+    ]);
+    await page.goto('/agent/conversations/scheduled-conversation');
+    const surface = page.locator('.conversation-surface');
+    const gap = () => surface.evaluate(element => element.scrollHeight - element.scrollTop - element.clientHeight);
+    await expect(surface.locator('.conversation-message.assistant')).toContainText('段落 90');
+    await settleWorkspaceLayout(page);
+    await surface.evaluate(element => { element.scrollTop = element.scrollHeight; });
+    await expect.poll(gap).toBeLessThanOrEqual(2);
+    if (position === 'history') {
+      await surface.hover();
+      await page.mouse.wheel(0, -800);
+      await expect.poll(gap).toBeGreaterThan(600);
+    }
+    await settleWorkspaceLayout(page);
+    const readingTop = await surface.evaluate(element => element.scrollTop);
+    await page.getByRole('button', { name: '新建工作区页签', exact: true }).first().click();
+    await page.locator('.agent-workspace-tab-launcher.active').getByRole('button', { name: '文件', exact: true }).click();
+    await page.getByRole('button', { name: '全屏查看工作区工具', exact: true }).click();
+    await expect(surface).toBeHidden();
+    const tabs = page.getByRole('navigation', { name: '工作区页签' });
+    await tabs.getByRole('button', { name: '日报会话', exact: true }).click();
+    await expect(surface).toBeVisible();
+    await settleWorkspaceLayout(page);
+    if (position === 'latest') {
+      await expect.poll(gap).toBeLessThanOrEqual(2);
+      await expect(page.getByRole('button', { name: '跳转到最新回复', exact: true })).toBeHidden();
+    } else {
+      await expect.poll(() => surface.evaluate(element => element.scrollTop)).toBe(readingTop);
+    }
+    await tabs.getByRole('button', { name: '文件', exact: true }).click();
+    await expect(surface).toBeHidden();
+    await page.getByRole('button', { name: '退出全屏', exact: true }).click();
+    await expect(surface).toBeVisible();
+    await settleWorkspaceLayout(page);
+    if (position === 'latest') await expect.poll(gap).toBeLessThanOrEqual(2);
+    else await expect.poll(() => surface.evaluate(element => element.scrollTop)).toBe(readingTop);
+    await surface.screenshot({ path: test.info().outputPath(`restored-${position}.png`) });
+  });
+}
+
 test('fullscreen tools occupy the entire workbench region and restore the conversation without extra grid rows', async ({page}) => {
   await openWorkspace(page);
   await page.goto('/agent/conversations/scheduled-conversation');
@@ -2790,6 +2836,7 @@ test('fullscreen tools occupy the entire workbench region and restore the conver
   const tabs=page.getByRole('navigation',{name:'工作区页签'});
   await tabs.getByRole('button',{name:'日报会话',exact:true}).click();
   await expect(main).toBeVisible();
+  await settleWorkspaceLayout(page);
   await expect(composer).toHaveValue('全屏切换时保留草稿');
   await expect.poll(() => page.evaluate(() => {
     const main=document.querySelector('.agent-workbench-main')!.getBoundingClientRect();
@@ -2799,6 +2846,7 @@ test('fullscreen tools occupy the entire workbench region and restore the conver
   const contentWidth=await page.locator('.agent-workbench-content').evaluate(element=>element.getBoundingClientRect().width);
   await page.getByRole('button',{name:'显示悬浮信息卡',exact:true}).click();
   await expect(page.locator('.agent-workspace-summary')).toBeVisible();
+  await settleWorkspaceLayout(page);
   expect(await page.locator('.agent-workbench-content').evaluate(element=>element.getBoundingClientRect().width)).toBe(contentWidth);
   await expect(page.locator('.agent-workspace-summary').getByText('来源', { exact: true })).toBeInViewport();
   await expect(page.locator('.agent-workspace-tab-launcher.active')).toBeHidden();
