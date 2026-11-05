@@ -430,7 +430,7 @@ def _assert_merged_main_capability_contract() -> None:
     assert 'Message(role="user"' in condenser_source
 
     tmux_source = getsource(_new_owned_session)
-    assert "_socket_creation_lock()" in tmux_source
+    assert "_socket_creation_lock(" in tmux_source
     assert "TMUX_SOCKET_NAME" in tmux_source
     assert "mark_socket_owner(server)" in tmux_source
 
@@ -467,21 +467,23 @@ def _assert_tmux_terminal_isolation_contract() -> None:
     """Keep terminal cleanup isolated across simultaneous Agent Servers."""
 
     session_source = getsource(_new_owned_session)
-    assert 'socket_name=f"{TMUX_SOCKET_NAME}-{uuid.uuid4().hex}"' in session_source
-    assert "with _socket_creation_lock()" in session_source
+    assert 'socket_name = f"{TMUX_SOCKET_NAME}-{uuid.uuid4().hex}"' in session_source
+    assert "with _socket_creation_lock(" in session_source
     assert "mark_socket_owner(server)" in session_source
 
     cleanup_source = getsource(_cleanup_stale_tmux_sessions)
-    assert "with _socket_creation_lock()" in cleanup_source
+    assert "with _socket_creation_lock(" in cleanup_source
     assert "_reclaim_stale_tmux_sockets(socket_dir)" in cleanup_source
 
     reclaim_source = getsource(_reclaim_stale_tmux_sockets)
+    assert "_isolated_socket_names(socket_dir)" in reclaim_source
     assert "_socket_owner_pid(server)" in reclaim_source
     assert "_is_pid_alive(owner_pid)" in reclaim_source
     assert "Leaving tmux socket" in reclaim_source
 
     tmpdir_source = getsource(_ensure_server_tmux_tmpdir)
     assert "_default_server_tmux_tmpdir()" in tmpdir_source
+    assert "_fits_tmux_socket(" in tmpdir_source
     assert 'os.environ["TMUX_TMPDIR"] = str(tmux_tmpdir)' in tmpdir_source
 
 
@@ -711,7 +713,7 @@ def _assert_profile_provider_secret_and_condenser_behavior() -> None:
         }
     )
     assert isinstance(migrated, OpenHandsAgentProfile)
-    assert migrated.schema_version == AGENT_PROFILE_SCHEMA_VERSION == 3
+    assert migrated.schema_version == AGENT_PROFILE_SCHEMA_VERSION == 4
     assert migrated.disabled_skills == []
 
     with TemporaryDirectory() as directory:
