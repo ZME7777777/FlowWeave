@@ -1331,6 +1331,20 @@ function SkillLoadRow({ entry, reveal = false, running }: { entry: ActivityEntry
   </article>;
 }
 
+/** Pair "1. question" / "1. answer" numbered lines (or a single question/answer) so the bubble can show each answer under its question. */
+function pairAnsweredQuestions(asked: string, reply: string): Array<{ question: string; answer: string }> | undefined {
+  const lines = (text: string) => text.split('\n').map(line => line.trim()).filter(Boolean);
+  const numbered = (text: string) => lines(text).map(line => /^\d+\.\s+/.test(line) ? line.replace(/^\d+\.\s+/, '') : undefined);
+  const questions = numbered(asked);
+  if (questions.length > 1 && questions.every(Boolean)) {
+    const answers = numbered(reply);
+    if (answers.length !== questions.length || !answers.every(Boolean)) return undefined;
+    return questions.map((question, index) => ({ question: question!, answer: answers[index]! }));
+  }
+  if (!reply.trim()) return undefined;
+  return [{ question: asked.replace(/\s*\n\s*/g, ' '), answer: reply.trim() }];
+}
+
 /** The agent's ask_user call: the first question as one quiet line; several questions expand like any other tool detail. */
 function AskUserRow({ entry, reveal = false }: { entry: ActivityEntry; reveal?: boolean }) {
   const action = entry.action ?? entry.item;
@@ -3166,7 +3180,16 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
                   event.preventDefault();
                   event.currentTarget.form?.requestSubmit();
                 }}/><footer><button type="button" onClick={() => setEditingEventId(undefined)}>取消</button><button type="submit" disabled={!editingContent.trim() || rewritePending}>重新思考</button></footer></form>
-                : <article data-user-event-id={message.event.id} data-conversation-event-id={message.event.id} className="conversation-message user"><MessageAttachments attachments={eventAttachments(message.event)} references={message.event.payload.conversation_references} workspaceReferences={message.event.payload.workspace_references} annotations={eventAnnotations(message.event)} onOpen={onOpenAttachment} onOpenReference={reference => { if (onOpenConversationReference) onOpenConversationReference(reference); else setViewingReference(reference); }} onOpenWorkspaceReference={onOpenWorkspaceReference} onOpenAnnotation={locateAnnotation} conversationName={conversationName} imageUrl={attachmentImageUrl}/>{typeof message.event.payload.answered_question === 'string' && message.event.payload.answered_question.trim() && <p className="conversation-answered-question" title={message.event.payload.answered_question}>{message.event.payload.answered_question.replace(/\s*\n\s*/g, ' ')}</p>}{message.content && <div className="conversation-message-content"><MessageMarkdown>{message.content}</MessageMarkdown></div>}<footer className="conversation-message-meta user">{messageDeliveryStatus && <small className="conversation-message-delivery-status" role="status">{messageDeliveryStatus}</small>}{messageTimestamp && <time dateTime={typeof message.event.payload.timestamp === 'string' ? message.event.payload.timestamp : undefined}>{messageTimestamp}</time>}<div className="conversation-message-actions can-rewrite"><button type="button" className="conversation-message-copy" aria-label={copiedEventId === message.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === message.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(message.event.id, message.content)}>{copiedEventId === message.event.id ? <Check size={13}/> : <Copy size={13}/>}</button><button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(message.event.id); setEditingContent(message.content); }}><Pencil size={13}/></button></div></footer></article>}</div>
+                : <article data-user-event-id={message.event.id} data-conversation-event-id={message.event.id} className="conversation-message user"><MessageAttachments attachments={eventAttachments(message.event)} references={message.event.payload.conversation_references} workspaceReferences={message.event.payload.workspace_references} annotations={eventAnnotations(message.event)} onOpen={onOpenAttachment} onOpenReference={reference => { if (onOpenConversationReference) onOpenConversationReference(reference); else setViewingReference(reference); }} onOpenWorkspaceReference={onOpenWorkspaceReference} onOpenAnnotation={locateAnnotation} conversationName={conversationName} imageUrl={attachmentImageUrl}/>{(() => {
+                  const asked = typeof message.event.payload.answered_question === 'string' ? message.event.payload.answered_question.trim() : '';
+                  if (!asked) return message.content && <div className="conversation-message-content"><MessageMarkdown>{message.content}</MessageMarkdown></div>;
+                  const pairs = pairAnsweredQuestions(asked, message.content);
+                  if (!pairs) return <>
+                    <p className="conversation-answered-question" title={asked}>{asked.replace(/\s*\n\s*/g, ' ')}</p>
+                    {message.content && <div className="conversation-message-content"><MessageMarkdown>{message.content}</MessageMarkdown></div>}
+                  </>;
+                  return <dl className="conversation-answered-list">{pairs.map((pair, pairIndex) => <div key={pairIndex}><dt title={pair.question}>{pair.question}</dt><dd>{pair.answer}</dd></div>)}</dl>;
+                })()}<footer className="conversation-message-meta user">{messageDeliveryStatus && <small className="conversation-message-delivery-status" role="status">{messageDeliveryStatus}</small>}{messageTimestamp && <time dateTime={typeof message.event.payload.timestamp === 'string' ? message.event.payload.timestamp : undefined}>{messageTimestamp}</time>}<div className="conversation-message-actions can-rewrite"><button type="button" className="conversation-message-copy" aria-label={copiedEventId === message.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === message.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(message.event.id, message.content)}>{copiedEventId === message.event.id ? <Check size={13}/> : <Copy size={13}/>}</button><button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(message.event.id); setEditingContent(message.content); }}><Pencil size={13}/></button></div></footer></article>}</div>
             </Fragment>;
           })}
           {goal && goal.process.length > 0 && (() => {

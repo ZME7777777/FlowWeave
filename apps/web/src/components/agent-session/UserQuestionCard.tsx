@@ -60,6 +60,11 @@ export function UserQuestionCard({ question, busy, onAnswer, onClose }: {
     setAnswers(next);
     advance(next);
   };
+  // Picking an option moves straight to the next question; on the last one nothing happens until the user submits.
+  const choose = (option: string) => {
+    patch({ choice: option, text: '' });
+    if (!last) setIndex(current => current + 1);
+  };
   return <section className="agent-user-question" role="group" aria-label="Agent 提问" data-testid="agent-user-question">
     <header>
       <span><MessageCircleQuestion size={13}/>问题</span>
@@ -73,7 +78,7 @@ export function UserQuestionCard({ question, busy, onAnswer, onClose }: {
     <p>{step.question}</p>
     {step.options.length > 0 && <ol className="agent-user-question-options">
       {step.options.map((option, optionIndex) => <li key={option}>
-        <button type="button" disabled={busy} aria-pressed={answer.choice === option && !answer.text.trim()} className={answer.choice === option && !answer.text.trim() ? 'selected' : undefined} onClick={() => patch({ choice: option, text: '' })}>
+        <button type="button" disabled={busy} aria-pressed={answer.choice === option && !answer.text.trim()} className={answer.choice === option && !answer.text.trim() ? 'selected' : undefined} onClick={() => choose(option)}>
           <span>{optionIndex + 1}</span>{option}{step.recommendation && optionIndex === 0 ? <em>推荐</em> : null}
         </button>
       </li>)}

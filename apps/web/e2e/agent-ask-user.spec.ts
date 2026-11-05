@@ -6,7 +6,7 @@ async function json(route: Route, body: unknown, status = 200) {
   await route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
 }
 
-async function openAskedConversation(page: import('@playwright/test').Page, followUps: unknown[] = []) {
+async function openAskedConversation(page: import('@playwright/test').Page, followUps: unknown[] = [], finalReply = true) {
   let authenticated = false;
   const sent: string[] & { asked?: unknown[] } = [];
   const workspace = { id: 'ask-user-workspace', display_name: '提问工作区', desired_state: 'RUNNING', updated_at: now };
@@ -14,14 +14,15 @@ async function openAskedConversation(page: import('@playwright/test').Page, foll
     id: 'ask-user-conversation', display_title: '等待回答的会话', title_state: 'MANUAL', lifecycle: 'ACTIVE',
     streaming_callback_ready: true, write_available: true, execution_status: 'finished', created_at: now, updated_at: now,
   };
-  const events = [
+  const events: Array<Record<string, unknown>> = [
     { id: 'ask-user-first', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '部署到生产吗', timestamp: now } },
     { id: 'ask-user-action', event_type: 'TOOL_CALL', payload: { tool_name: 'ask_user', event_name: 'AskUserAction', action_id: 'ask-user-action', tool_call_id: 'call-1', parent_id: 'ask-user-first', timestamp: now, details: { question: '是否把版本 2.3 发布到生产环境？', options: ['发布', '先在灰度验证'], recommendation: '建议先灰度，回滚更便宜' } } },
     { id: 'ask-user-result', event_type: 'TOOL_RESULT', payload: { tool_name: 'ask_user', event_name: 'AskUserObservation', action_id: 'ask-user-action', tool_call_id: 'call-1', parent_id: 'ask-user-action', timestamp: now, details: { asked: true } } },
   ];
+  if (finalReply) events.push({ id: 'ask-user-final', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'ask-user-result', content: '请确认是否发布。', timestamp: now } });
   const asked: unknown[] = [];
   sent.asked = asked;
-  const batch = { events, next_cursor: 'ask-user-result', history_cursor: null, result: { status: 'COMPLETED' } };
+  const batch = { events, next_cursor: events.at(-1)!.id, history_cursor: null, result: { status: 'COMPLETED' } };
   await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
   await page.route('**/api/v1/**', async route => {
     const request = route.request();
@@ -54,7 +55,7 @@ async function openAskedConversation(page: import('@playwright/test').Page, foll
 }
 
 test('an open ask_user question shows the sidebar badge, the question card and a history row', async ({ page }) => {
-  await openAskedConversation(page);
+  await openAskedConversation(page, [], false);
   const card = page.getByTestId('agent-user-question');
   await expect(card).toBeVisible();
   await expect(card.getByText('是否把版本 2.3 发布到生产环境？')).toBeVisible();
@@ -82,10 +83,12 @@ test('Escape closes the card and a typed reply is sent as an ordinary user messa
 
 test('skipping after the final reply sends nothing and just closes the card', async ({ page }) => {
   const sent = await openAskedConversation(page);
+  await expect(page.getByPlaceholder('给 Agent 发消息…')).toBeVisible();
+  await page.waitForTimeout(1500);
   await page.getByTestId('agent-user-question').getByRole('button', { name: '跳过' }).click();
   await expect(page.getByTestId('agent-user-question')).toHaveCount(0);
   await page.waitForTimeout(500);
-  expect(sent.length).toBe(0);
+  expect([...sent]).toEqual([]);
 });
 
 test('the question card sits above the composer, not inside it', async ({ page }) => {
@@ -100,8 +103,9 @@ test('several questions are answered step by step and submitted once with the qu
   const card = page.getByTestId('agent-user-question');
   await expect(card.getByText('1 / 2')).toBeVisible();
   await card.getByRole('button', { name: /先在灰度验证/ }).click();
-  await card.getByRole('button', { name: '下一步' }).click();
+  // Choosing an option moves on to the next question by itself.
   await expect(card.getByText('回滚策略？')).toBeVisible();
+  await expect(card.getByText('2 / 2')).toBeVisible();
   await card.getByRole('button', { name: '上一题' }).click();
   await expect(card.getByText('是否把版本 2.3 发布到生产环境？')).toBeVisible();
   await card.getByRole('button', { name: '下一题' }).click();
