@@ -3523,6 +3523,7 @@ def finalize_running_message(
         _record_message_attachments(
             db, binding, result.cursor, prepared.content.strip(), prepared.attachments
         )
+        _record_model_change(db, binding, result.cursor)
     activity_at = now()
     # New messages do not change the default creation-time or manual ordering.
     binding.last_message_at = activity_at
@@ -3693,6 +3694,7 @@ def message(
         _observe_task_watchdogs_after_send(db, binding, handle)
         if result.cursor:
             _record_message_attachments(db, binding, result.cursor, content.strip(), attachments)
+            _record_model_change(db, binding, result.cursor)
         activity_at = now()
         binding.last_connected_at = activity_at
         binding.updated_at = activity_at

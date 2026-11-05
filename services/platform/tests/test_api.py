@@ -4163,3 +4163,11 @@ def test_model_change_divider_is_recorded_only_when_the_sent_model_differs(db_se
             ("event-3", "alpha-1", "beta-1")
         ]
         assert isinstance(rows[0].to_label, str) and "beta-1" in rows[0].to_label
+
+        # Switching only the model inside the same provider also produces a divider.
+        binding.model_name = "beta-2"
+        conversations.record_model_change(db, binding, "event-5")
+        rows = db.scalars(select(AgentMessageModelChange).order_by(AgentMessageModelChange.event_id)).all()
+        assert [(row.event_id, row.from_model_name, row.to_model_name) for row in rows][-1] == (
+            "event-5", "beta-1", "beta-2"
+        )

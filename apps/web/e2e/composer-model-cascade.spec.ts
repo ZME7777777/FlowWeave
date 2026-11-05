@@ -155,3 +155,19 @@ test('a user message that first used a new model shows a model-change divider ab
   await expect(page.locator('.conversation-user-message', { hasText: '换模型后的消息' }).locator('.conversation-model-change')).toHaveCount(1);
   await expect(page.locator('.conversation-user-message', { hasText: '第一条消息' }).locator('.conversation-model-change')).toHaveCount(0);
 });
+
+test('the model-change divider is centred on the conversation column like the composer', async ({ page }) => {
+  const stamp = new Date().toISOString();
+  const user = (id: string, content: string, extra: Record<string, unknown> = {}) => ({
+    id, event_type: 'MESSAGE', payload: { source: 'user', content, display_content: content, timestamp: stamp, ...extra },
+  });
+  await openConversation(page, [
+    user('u1', '第一条'),
+    user('u2', '同供应商换模型', { model_change: { from: 'alpha-1 · 供应商甲', to: 'alpha-2 · 供应商甲' } }),
+  ]);
+  const divider = page.locator('.conversation-model-change');
+  await expect(divider).toHaveCount(1);
+  const d = (await divider.boundingBox())!;
+  const c = (await page.locator('.agent-composer').boundingBox())!;
+  expect(Math.abs((d.x + d.width / 2) - (c.x + c.width / 2))).toBeLessThan(2);
+});
