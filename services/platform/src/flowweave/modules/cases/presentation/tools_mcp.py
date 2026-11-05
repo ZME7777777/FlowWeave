@@ -139,15 +139,23 @@ async def handle_mcp(request: Request, contract: native_tools.ToolContract) -> R
     tool_name = params.get("name")
     flow_read = contract == native_tools.FLOWS and tool_name == "read_case_flow"
     flow_write = contract == native_tools.FLOWS and tool_name == "manage_case_flow"
+    session_read = contract == native_tools.FLOWS and tool_name == "read_case_node_session"
     context_read = contract == native_tools.CONTEXT and tool_name == context_tools.TOOL["name"]
     material_read = contract == native_tools.MATERIALS and tool_name == materials.TOOL["name"]
-    if not (flow_read or flow_write or context_read or material_read):
+    if not (flow_read or flow_write or session_read or context_read or material_read):
         return error(identity, -32602, "Unknown tool")
     try:
         if flow_write:
             args = flow_tools.FlowActionArguments.model_validate(params.get("arguments", {}))
             projection = await run_blocking_mutation(
                 container, lambda db: flow_tools.manage_flow(db, token, args)
+            )
+        elif session_read:
+            session_args = flow_tools.NodeSessionArguments.model_validate(
+                params.get("arguments", {})
+            )
+            projection = await run_blocking_history(
+                container, lambda db: flow_tools.read_node_session(db, token, session_args)
             )
         elif material_read:
             material_args = materials.MaterialArguments.model_validate(params.get("arguments", {}))

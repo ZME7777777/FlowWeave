@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { AlertTriangle, ArrowDown, Bot, Check, ChevronDown, ChevronRight, CirclePause, CirclePlay, ClipboardList, Clock3, ExternalLink, FileText, GitBranch, GripVertical, Copy, Download, Info, Link2, ListChecks, LoaderCircle, Pencil, Play, Plus, RotateCcw, Search, Settings2, Trash2, Upload, X } from 'lucide-react';
+import { AlertTriangle, ArrowDown, Bot, Boxes, Check, ChevronDown, ChevronRight, CirclePause, CirclePlay, ClipboardList, Clock3, ExternalLink, FileText, GitBranch, GripVertical, Copy, Download, Info, Link2, ListChecks, LoaderCircle, Pencil, Play, Plus, RotateCcw, Search, Settings2, Trash2, Upload, X } from 'lucide-react';
 import { api, caseMaterialFileUrl } from '../api/client';
 import type { Case, CaseBasics, CaseMaterial, CaseStage, CaseStageExecution } from '../types';
 import { CapabilityManager } from '../components/agent-session/AgentSessionWorkbench';
@@ -580,6 +580,14 @@ export function CasesPage({ onNavigate, sessionRoute }: { onNavigate: (path: str
   const cases = useQuery({ queryKey: ['cases'], queryFn: api.cases });
   const workspace = useQuery({ queryKey: ['default-agent-workspace'], queryFn: () => api.defaultAgentWorkspace() });
   const [selectedId, setSelectedId] = useState<string>();
+  const [sessionConfigOpen, setSessionConfigOpen] = useState(false);
+  const sessionWorkspaceId = workspace.data?.id;
+  const sessionBindingId = sessionRoute?.bindingId;
+  const sessionConversation = useQuery({
+    queryKey: ['case-session-conversation', sessionWorkspaceId, sessionBindingId],
+    queryFn: () => api.agentConversation(sessionWorkspaceId!, sessionBindingId!),
+    enabled: Boolean(sessionWorkspaceId && sessionBindingId),
+  });
   const [creating, setCreating] = useState(false);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
   const toggleExpanded = useCallback((id: string) => setExpandedIds(current => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; }), []);
@@ -658,7 +666,8 @@ export function CasesPage({ onNavigate, sessionRoute }: { onNavigate: (path: str
         const active = sessionRoute?.caseId === item.id && sessionRoute.bindingId === item.control_conversation_binding_id;
         return <button className={`scenario-session${active ? ' active' : ''}`} title={title} aria-current={active ? 'page' : undefined} onClick={() => onNavigate(`/cases/${encodeURIComponent(item.id)}/conversations/${encodeURIComponent(item.control_conversation_binding_id!)}`)}><span><b>{title}</b></span></button>;
       })()}</section>;
-    })}</div> : <div className="scenario-empty"><ClipboardList size={21}/><b>暂无场景</b></div>}</aside>
+    })}</div> : <div className="scenario-empty"><ClipboardList size={21}/><b>暂无场景</b></div>}{sessionRoute && !creating && workspace.data && <footer className="agent-workbench-rail-footer scenario-session-footer"><button type="button" aria-label="会话配置" title="会话配置" onClick={() => setSessionConfigOpen(true)}><Boxes size={13}/><span><b>会话配置</b></span><ChevronRight size={12}/></button></footer>}</aside>
+    {sessionConfigOpen && sessionRoute && workspace.data && <CapabilityManager workspaceId={workspace.data.id} bindingId={sessionRoute.bindingId} conversationCapabilities={sessionConversation.data?.capabilities} onClose={() => setSessionConfigOpen(false)}/>}
     {sessionRoute && selected?.id === sessionRoute.caseId && !creating ? <main className="scenario-workspace scenario-conversation"><CaseSessionPage key={`${sessionRoute.caseId}:${sessionRoute.bindingId}`} caseId={sessionRoute.caseId} bindingId={sessionRoute.bindingId} onNavigate={onNavigate} onReturn={() => onNavigate('/', true)}/></main>
       : creating ? <main className="scenario-workspace case-basics-workspace"><div className="scenario-workspace-inner"><header className="scenario-casebar"><h1>新建 Case</h1></header><div className="scenario-workspace-content">{workspace.error && <p className="error">{errorMessage(workspace.error)}</p>}<BasicsForm key="new-case" workspaceId={workspace.data?.id ?? ''} onCancel={() => { setCreating(false); void cases.refetch(); }} onSaved={item => { replace(item); setSelectedId(item.id); setCreating(false); }}/></div></div></main>
       : selected ? <ScenarioWorkspace key={selected.id} item={selected} workspaceId={workspace.data?.id ?? ''} onUpdated={replace} onDelete={() => remove(selected.id)} onOpenConversation={(bindingId, planId) => onNavigate(`/cases/${encodeURIComponent(selected.id)}/conversations/${encodeURIComponent(bindingId)}${planId ? `?plan=${encodeURIComponent(planId)}` : ''}`)} onOpenRun={id => void api.flowRun(id).then(run => openFlowRunFromCase(run.parent_flow_run_id && run.run_mode ? `/flow-runs/${encodeURIComponent(run.parent_flow_run_id)}/records/${run.run_mode === 'AUTOMATIC' ? 'automatic' : 'stepwise'}/${encodeURIComponent(run.id)}` : `/flow-runs/${encodeURIComponent(id)}`, onNavigate)).catch(() => openFlowRunFromCase(`/flow-runs/${encodeURIComponent(id)}`, onNavigate))} onOpenRecord={stage => {

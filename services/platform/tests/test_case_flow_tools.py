@@ -197,8 +197,13 @@ def test_separate_native_contracts_and_schema_have_no_identity_overrides(flow_ca
         headers={"Authorization": "Bearer " + g.flow_token},
         json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
     ).json()["result"]["tools"]
-    assert [tool["name"] for tool in listed] == ["read_case_flow", "manage_case_flow"]
-    assert [tool["annotations"]["readOnlyHint"] for tool in listed] == [True, False]
+    assert [tool["name"] for tool in listed] == [
+        "read_case_flow",
+        "read_case_node_session",
+        "manage_case_flow",
+    ]
+    assert [tool["annotations"]["readOnlyHint"] for tool in listed] == [True, True, False]
+    assert "case_id" not in listed[2]["inputSchema"]["properties"]
     assert "case_id" not in listed[1]["inputSchema"]["properties"]
     refs = g.db.scalars(select(CaseFlowToolGrant)).all()
     assert len(refs) == 1
@@ -1693,3 +1698,39 @@ def test_undeclared_gate_failure_leaves_the_coordinator_free_to_rerun(flow_case)
     nodes = projection(rpc(g, "read_case_flow", {"section": "nodes"}))["items"][0]
     assert nodes["execution"]["latest_attempt"]["author_failure_policy"] is None
     assert _rerun(g)["state"] == "SUCCEEDED"
+
+
+def test_node_session_projection_pairs_results_by_action_id_only():
+    from flowweave.modules.cases.application.flow_tools import project_session_events
+
+    events = [
+        {"id": "u1", "event_type": "MESSAGE", "payload": {"source": "user", "content": "收集异常"}},
+        {
+            "id": "c1",
+            "event_type": "TOOL_CALL",
+            "payload": {
+                "action_id": "a1",
+                "tool_name": "terminal",
+                "summary": "查询",
+                "details": {"command": "es-query --host wrong*"},
+            },
+        },
+        {
+            "id": "c2",
+            "event_type": "TOOL_CALL",
+            "payload": {"action_id": "a2", "tool_name": "terminal", "details": {"command": "ls"}},
+        },
+        # Result order is reversed and the text mentions the other call: pairing is by id.
+        {"id": "r2", "event_type": "TOOL_RESULT", "payload": {"action_id": "a2", "content": "x"}},
+        {
+            "id": "r1",
+            "event_type": "TOOL_RESULT",
+            "payload": {"action_id": "a1", "content": "全部 0 条 " + "z" * 5000},
+        },
+        {"id": "f", "event_type": "COMPLETED", "payload": {"content": "已闭合"}},
+    ]
+    view = project_session_events(events)
+    assert view["task"] == "收集异常" and view["final_reply"] == "已闭合"
+    first, second = view["calls"]
+    assert first["command"] == "es-query --host wrong*" and first["result"].startswith("全部 0 条")
+    assert first["result"].endswith("[truncated]") and second["result"] == "x"

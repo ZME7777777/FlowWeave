@@ -298,7 +298,8 @@ def _facts(db: Session, batch: list[CaseFeedbackDelivery], item: Case) -> str:
         "输入门禁和资料，行动时重新校验版本；仅对当前活动阶段的独立副本采取受控动作。"
         "产物请用 read_case_material 查询，文件使用平台授权内容接口，不使用源容器路径。"
         "保存的会话配置变更供后续轮次使用，不表示本轮冻结配置已被替换。"
-        "节点结束、候选输出和正式接受是不同事实；请判断是否需要补充、复核或等待，"
+        "节点结束、候选输出和正式接受是不同事实；凡事实带 node_attempt_id（含 flow_node_key=node_key），"
+        "必须先用 read_case_node_session 读取该节点会话并核对其做法，再判断是否需要补充、复核或等待，"
         "不得将通知本身当作操作成功。\n"
         + json.dumps(
             {"case_id": item.id, "current_case_row_version": item.row_version, "facts": facts},

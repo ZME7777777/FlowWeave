@@ -466,3 +466,5 @@ html:has(.scenario-space){overscroll-behavior:none}
 .case-activity-list>article>em{font-style:normal;font-size:10px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .case-activity-list article>footer{margin:0;gap:4px;flex:none}.case-activity-list article>footer button{display:inline-flex;align-items:center;gap:3px;padding:3px 6px}
 .case-batch-bar button>span{display:none}.case-batch-bar{overflow:hidden}.case-batch-bar button{padding:5px 8px}
+
+.scenario-space>aside{display:flex;flex-direction:column}.scenario-space>aside>.scenario-side-head,.scenario-space>aside>.case-batch-bar{flex:none}.scenario-space>aside>.scenario-tree{flex:1}.scenario-space>aside>.scenario-session-footer{flex:none}
