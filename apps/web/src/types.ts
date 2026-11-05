@@ -956,6 +956,11 @@ export interface AgentPendingConfirmation {
   pending: boolean; pending_actions_digest?: string; cursor?: string | null;
   actions?: AgentPendingConfirmationAction[];
 }
+/** The formal ask_user ActionEvent a conversation is waiting on. */
+export interface AgentPendingQuestion {
+  pending: boolean; action_id?: string; tool_call_id?: string; question?: string;
+  options?: string[]; recommendation?: string | null; cursor?: string | null;
+}
 export interface AgentAttachment {
   filename: string; mime_type: string; byte_size: number; path: string; image_data_url?: string | null;
 }
@@ -1127,6 +1132,8 @@ export interface AgentConversationActivity {
   possibly_stuck_binding_ids?: string[];
   /** Native OpenHands execution status is `error` or `stuck`. */
   failed_binding_ids?: string[];
+  /** Native status is `waiting_for_user_input` (the agent asked via ask_user). */
+  waiting_user_input_binding_ids?: string[];
 }
 export interface AgentConversationSearchHit {
   binding_id: string;

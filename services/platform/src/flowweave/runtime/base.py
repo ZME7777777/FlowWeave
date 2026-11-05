@@ -403,6 +403,9 @@ class RuntimeAgentSpec:
     mcp_servers: tuple[RuntimeMCP, ...] = ()
     hook_config: dict[str, list[dict[str, Any]]] = field(default_factory=_empty_hook_config)
     confirmation_policy: Literal["ALWAYS", "NEVER"] = "NEVER"
+    # Opt-in native ask_user tool (OpenHands AskUserTool). Only interactive Agent
+    # sessions with a human reply surface enable it; unattended FlowRun nodes never do.
+    ask_user: bool = False
     llm_timeout_policy: RuntimeLLMTimeoutPolicy | None = None
     subagent_policy: RuntimeSubagentPolicy | None = None
     condenser: RuntimeCondenser = field(default_factory=RuntimeCondenser)
@@ -586,6 +589,18 @@ class RuntimePendingConfirmation:
 
     pending_actions_digest: str
     actions: tuple[RuntimePendingAction, ...]
+    cursor: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimePendingQuestion:
+    """One formal ask_user question awaiting the human (OpenHands ActionEvent)."""
+
+    action_id: str
+    tool_call_id: str
+    question: str
+    options: tuple[str, ...] = ()
+    recommendation: str | None = None
     cursor: str | None = None
 
 
@@ -858,6 +873,8 @@ class RuntimePort(Protocol):
     def get_pending_confirmation(
         self, handle: RuntimeHandle
     ) -> RuntimePendingConfirmation | None: ...
+
+    def get_pending_question(self, handle: RuntimeHandle) -> RuntimePendingQuestion | None: ...
 
     def respond_to_confirmation(
         self,

@@ -1953,6 +1953,16 @@ async def agent_pending_confirmation(
     )
 
 
+@router.get("/agent-workspaces/{workspace_id}/conversations/{binding_id}/pending-question")
+async def agent_pending_question(
+    workspace_id: str, binding_id: str, container: ContainerDep
+) -> dict[str, Any]:
+    return await run_blocking(
+        container,
+        lambda session: conversations.pending_question(session, workspace_id, binding_id),
+    )
+
+
 @router.post(
     "/agent-workspaces/{workspace_id}/conversations/{binding_id}/pending-confirmation/decision",
     status_code=202,

@@ -1,5 +1,5 @@
 import { ViewportPopover } from './ViewportPopover';
-import { BookOpen, Check, ChevronDown, ChevronRight, CircleAlert, ClipboardList, Copy, ExternalLink, Eye, FileCode2, FileCog, FileJson, FilePenLine, FilePlus2, FileText, FileType2, GitFork, Link, LoaderCircle, PanelRightOpen, PanelTop, Pencil, PlugZap, Quote, Search, ShieldCheck, Sparkles, SquareTerminal, Target, Workflow, Wrench } from 'lucide-react';
+import { BookOpen, Check, MessageCircleQuestion, ChevronDown, ChevronRight, CircleAlert, ClipboardList, Copy, ExternalLink, Eye, FileCode2, FileCog, FileJson, FilePenLine, FilePlus2, FileText, FileType2, GitFork, Link, LoaderCircle, PanelRightOpen, PanelTop, Pencil, PlugZap, Quote, Search, ShieldCheck, Sparkles, SquareTerminal, Target, Workflow, Wrench } from 'lucide-react';
 import { Fragment, lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from 'react';
 import type { AgentActivitySummary, AgentAttachment, AgentConversationAnnotation, AgentConversationReference, AgentWorkspaceReference, OpenHandsConversationEvent, RuntimeTaskControlSnapshot } from '../types';
 import { SubagentAvatar } from './SubagentAvatar';
@@ -1331,6 +1331,25 @@ function SkillLoadRow({ entry, reveal = false, running }: { entry: ActivityEntry
   </article>;
 }
 
+/** The agent's ask_user call: show the question itself (the reply is the next user message). */
+function AskUserRow({ entry, reveal = false }: { entry: ActivityEntry; reveal?: boolean }) {
+  const action = entry.action ?? entry.item;
+  const details = action.event.payload.details as { question?: unknown; options?: unknown; recommendation?: unknown } | undefined;
+  const question = detailText(details?.question);
+  const options = Array.isArray(details?.options) ? details.options.filter((value): value is string => typeof value === 'string') : [];
+  const recommendation = detailText(details?.recommendation);
+  const refused = entry.results.some(result => result.event.payload.details?.asked === false);
+  return <article className={`conversation-activity-row tool ask-user${refused ? ' error' : ''}${reveal ? ' conversation-text-reveal-block' : ''}`} aria-label="Agent 提问" data-ask-user-event-id={action.event.id}>
+    <MessageCircleQuestion size={13}/>
+    <div>
+      <b>{refused ? 'Agent 的提问未送达' : 'Agent 向你提问'}</b>
+      {question && <p>{question}</p>}
+      {options.length > 0 && <ol>{options.map(option => <li key={option}>{option}</li>)}</ol>}
+      {recommendation && <small>{recommendation}</small>}
+    </div>
+  </article>;
+}
+
 function eventTime(item?: Item): number | undefined {
   return parsedEventTime(item?.event.payload.timestamp);
 }
@@ -1675,6 +1694,10 @@ function ActivityEntryRow({ entry, active, reveal = false, paused = false, paren
     {!hideThought && presentation.thought && <article {...thoughtAttributes} className={`conversation-activity-row thought tool-thought tool-${toolVisual}`}><MessageMarkdown reveal={reveal}>{presentation.thought}</MessageMarkdown></article>}
     <TaskTrackerCard entry={entry} presentation={presentation} reveal={reveal} running={toolRunning}/>
   </div>;
+  if (eventName === 'AskUserAction' || eventName === 'AskUserObservation') {
+    if (eventName === 'AskUserObservation' && !entry.action) return null;
+    return <AskUserRow entry={entry} reveal={reveal}/>;
+  }
   if (eventName === 'InvokeSkillAction' || eventName === 'InvokeSkillObservation') return <div className={`conversation-tool-entry semantic tool-${toolVisual}`}>
     {!hideThought && presentation.thought && <article {...thoughtAttributes} className={`conversation-activity-row thought tool-thought tool-${toolVisual}`}><MessageMarkdown reveal={reveal}>{presentation.thought}</MessageMarkdown></article>}
     <SkillLoadRow entry={entry} reveal={reveal} running={toolRunning}/>

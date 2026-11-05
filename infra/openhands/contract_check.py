@@ -168,11 +168,11 @@ from openhands.tools.task.manager import Task, TaskManager, TaskStatus
 from openhands.tools.task_tracker import TaskTrackerTool
 from openhands.tools.terminal.terminal.tmux_terminal import _new_owned_session
 
-EXPECTED_VERSION = "1.54.0"
-EXPECTED_UPSTREAM_BASE = "f0206428306db687ac9c8d833ece4fb82b015eba"
-EXPECTED_SOURCE_COMMIT = "366cd8ecf0f833705f6b92957621905af5b85d8a"
+EXPECTED_VERSION = "1.58.2"
+EXPECTED_UPSTREAM_BASE = "ce5716a3c0a955a85bb0cc4dcfaa94d5fefcda50"
+EXPECTED_SOURCE_COMMIT = "536244f6e26617a3932ae9ac49cadc65039effd2"
 EXPECTED_SOURCE_ARCHIVE_SHA256 = (
-    "af2a07ff01b94117fd5bf2e43dbf3acc47ef9f2a9b203cdb3c096e033c42c8f6"
+    "8c32a625ee056641e270b3fc8c641aee61e702f7cf0de3a70db3e1f34aadef76"
 )
 PACKAGES = (
     "openhands-agent-server",

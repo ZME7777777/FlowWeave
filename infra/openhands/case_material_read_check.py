@@ -30,7 +30,7 @@ def check(config: dict) -> dict:
             "openhands-workspace",
         )
     }
-    assert set(versions.values()) == {"1.54.0"}
+    assert set(versions.values()) == {"1.58.2"}
     headers = {"Authorization": "Bearer " + config["token"]}
     with urlopen(
         Request(config["content_url"], headers=headers), timeout=15

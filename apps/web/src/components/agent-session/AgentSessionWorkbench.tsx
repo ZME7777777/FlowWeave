@@ -31,6 +31,7 @@ import { ConversationSurface, ConversationTaskPlan, goalRoundDurations, type Con
 import { isOpenHandsAgentReply, isOpenHandsConversationInterrupt, isOpenHandsConversationTerminalError, isOpenHandsEmptyResponseRecovery, orderOpenHandsConversationEvents, projectFlowWeaveMessageContext, projectHistoricalAgentReplies } from '../conversationEvents';
 import { useProductDialog } from '../ProductDialogContext';
 import { useEscapeClose } from '../useEscapeClose';
+import { ASK_USER_SKIP_REPLY, UserQuestionCard } from './UserQuestionCard';
 import { useRetainedPageActive } from '../RetainedPages';
 import { MermaidDiagram } from '../MermaidDiagram';
 import { isMermaidDiagram, markdownCodeText } from '../markdownCodeBlock';
@@ -947,7 +948,7 @@ function ConversationStreamObserver({
 }
 
 function WorkspaceConversationRow({
-  item, selectedBindingId, workspaceName, running, possiblyStuck, failed, unread, unreadOrigin, pinned, conversationWritable, removing, deleteDisabled, dragging, dropPosition, orderSyncState, onDragStart, onDragOver, onDrop, onDragEnd, onRetryOrder, onSelect, onDoubleClick, onTogglePin, onExport, onMarkUnread, onMarkRead, onAcknowledgeAlert, onArchive, onDelete,
+  item, selectedBindingId, workspaceName, running, possiblyStuck, failed, waitingUserInput, unread, unreadOrigin, pinned, conversationWritable, removing, deleteDisabled, dragging, dropPosition, orderSyncState, onDragStart, onDragOver, onDrop, onDragEnd, onRetryOrder, onSelect, onDoubleClick, onTogglePin, onExport, onMarkUnread, onMarkRead, onAcknowledgeAlert, onArchive, onDelete,
 }: {
   item: AgentConversation;
   selectedBindingId?: string;
@@ -955,6 +956,7 @@ function WorkspaceConversationRow({
   running: boolean;
   possiblyStuck: boolean;
   failed: boolean;
+  waitingUserInput?: boolean;
   unread: boolean;
   unreadOrigin?: AgentConversation['unread_origin'];
   pinned: boolean;
@@ -996,7 +998,7 @@ function WorkspaceConversationRow({
     setContextMenu({ x: event.clientX, y: event.clientY });
   }}>
     <button type="button" draggable={Boolean(onDragStart)} className={`agent-workspace-conversation-select${selected ? ' active' : ''}`} aria-label={conversationName(item)} title={onDragStart ? '拖入发送框以引用此会话，或拖到其他会话以调整顺序' : undefined} onDragStart={onDragStart} onDragEnd={onDragEnd} onClick={onSelect} onDoubleClick={onDoubleClick}>
-      <span><b>{conversationName(item)}</b>{workspaceName && <small title={workspaceName}><Folder size={11}/><span>{workspaceName}</span></small>}</span>
+      <span><b>{conversationName(item)}</b>{waitingUserInput && <i className="agent-workspace-conversation-needs-input">需要用户输入</i>}{workspaceName && <small title={workspaceName}><Folder size={11}/><span>{workspaceName}</span></small>}</span>
     </button>
     {orderSyncState === 'syncing' && <span className="agent-workspace-conversation-sync" role="status" aria-label="排序正在后台同步" title="排序正在后台同步"><LoaderCircle size={14}/></span>}
     {orderSyncState === 'failed' && <button type="button" className="agent-workspace-conversation-sync failed" aria-label="排序暂未保存，点击重试" title="排序暂未保存，点击重试" onClick={event => { event.stopPropagation(); onRetryOrder?.(); }}>!</button>}
@@ -6000,6 +6002,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     () => new Set(activitySnapshot?.possibly_stuck_binding_ids ?? []),
     [activitySnapshot],
   );
+  const waitingUserInputConversationIds = useMemo(
+    () => new Set(activitySnapshot?.waiting_user_input_binding_ids ?? []),
+    [activitySnapshot],
+  );
   const failedConversationIds = useMemo(
     () => new Set(activitySnapshot?.failed_binding_ids ?? []),
     [activitySnapshot],
@@ -7109,6 +7115,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   });
   const nativeExecutionStatus = inputReadinessQuery.data?.execution_status;
   const nativeTurnRunning = conversationIsRunning(nativeExecutionStatus);
+  // ask_user: the native run has stopped on a formal question. This is a ready,
+  // interactive state, not activity: running evidence from the unfinished turn
+  // must not keep the thinking indicator or the stop button alive.
+  const nativeWaitingForUserInput = nativeExecutionStatus?.trim().toLowerCase() === 'waiting_for_user_input';
   const nativeTurnFailed = inputReadinessQuery.data?.ready === true
     && ['error', 'stuck'].includes(nativeExecutionStatus?.trim().toLowerCase() ?? '');
   const nativeTurnTerminal = inputReadinessQuery.data?.ready === true
@@ -7733,7 +7743,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       ? 'reconnecting'
       : turnState === 'pausing' || turnState === 'resuming'
         ? turnState
-      : currentFormalTurnFinished
+      : currentFormalTurnFinished || nativeWaitingForUserInput
         ? 'idle'
         : pausedStateConflictsWithRunningEvidence
           ? 'running'
@@ -7948,7 +7958,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     && effectiveTurnState !== 'paused'
     && effectiveTurnState !== 'pausing'
     && !activeFormalTurnInterrupted;
-  const conversationVisuallyActive = !uncreatedConversationDraft && !nativeFailureSettled && (goalLoopContinues || !streamCompletionAcknowledged) && (
+  const conversationVisuallyActive = !uncreatedConversationDraft && !nativeFailureSettled && !nativeWaitingForUserInput && (goalLoopContinues || !streamCompletionAcknowledged) && (
     goalLoopContinues
     || conversationActivity.active
     || (
@@ -8442,6 +8452,25 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     retry: false,
   });
   const pendingConfirmation = confirmationQuery.data?.pending ? confirmationQuery.data : undefined;
+  const questionQuery = useQuery({
+    queryKey: sessionQueryKey(host, 'conversation-question', workspace?.id, selected?.id),
+    queryFn: () => api.pendingQuestion!(workspace!.id, selected!.id),
+    enabled: Boolean(
+      workspace
+      && selected
+      && pageVisible
+      && hydrationFallbackAllowed
+      && canWrite
+      && api.pendingQuestion
+      && nativeExecutionStatus?.toLowerCase() === 'waiting_for_user_input',
+    ),
+    refetchOnWindowFocus: false,
+    retry: false,
+  });
+  const [dismissedQuestionId, setDismissedQuestionId] = useState<string>();
+  const pendingQuestion = questionQuery.data?.pending && questionQuery.data.action_id !== dismissedQuestionId
+    ? questionQuery.data
+    : undefined;
   const refresh = useCallback((bindingId = selected?.id) => {
     if (!workspace) return;
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'runtime', workspace.id) });
@@ -10186,6 +10215,26 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     setReferences([]); setWorkspaceReferences([]); setComposerAnnotations([]);
     dispatchMessage({ ...message, bindingId: selected.id }, true);
   }, [attachments, canWrite, composerAnnotations, composerScope, conversationDraft, dispatchMessage, effectiveTurnState, enqueueDraft, host.id, migrateStreaming, pendingAttachments, pendingMigratedSend, queueModeEnabled, queuedMessages, references, replaceComposerDraft, selected, selectedCondensing, workspace, workspaceReferences]);
+  const answerPendingQuestion = useCallback((content: string) => {
+    if (!canWrite || conversationDraft || !selected || !pendingQuestion) return;
+    setOperationError(undefined);
+    setDismissedQuestionId(pendingQuestion.action_id);
+    // The answer is an ordinary user message; sending it is what resumes the
+    // native WAITING_FOR_USER_INPUT conversation.
+    dispatchMessage({
+      id: randomId(),
+      scope: selected.id,
+      bindingId: selected.id,
+      content,
+      items: [],
+      references: [],
+      workspaceReferences: [],
+      annotations: [],
+      nativeGuidance: false,
+      deliveryState: 'queued',
+      createdAt: Date.now(),
+    }, true);
+  }, [canWrite, conversationDraft, dispatchMessage, pendingQuestion, selected]);
   const sendQueuedMessageImmediately = useCallback((message: QueuedMessage) => {
     if (selectedCondensing || !queueModeEnabled || !canWrite || effectiveTurnState !== 'running' || !selected?.streaming_callback_ready || message.scope !== selected.id || message.deliveryState !== 'queued') return;
     dispatchMessage({ ...message, bindingId: selected.id, nativeGuidance: true });
@@ -10792,7 +10841,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     const conversationWritable = Boolean(item.write_available);
     const draggable = options.allowDrag !== false;
     const orderSync = conversationOrderSync[item.id];
-    return <WorkspaceConversationRow key={item.id} item={item} selectedBindingId={selectedBindingId} workspaceName={options.workspaceName} running={running} possiblyStuck={possiblyStuck} failed={failed} unread={unread} unreadOrigin={unreadOrigin} pinned={Boolean(item.pinned)} conversationWritable={conversationWritable} removing={remove.isPending || archive.isPending} deleteDisabled={running} dragging={draggable && draggedBindingId === item.id} dropPosition={draggable && dragTarget?.bindingId === item.id ? (dragTarget.after ? 'after' : 'before') : undefined} orderSyncState={orderSync?.state} onDragStart={draggable ? event => startConversationDrag(event, item, group) : undefined} onDragOver={draggable ? event => previewConversationDrop(event, item, group) : undefined} onDrop={draggable ? event => dropConversation(event, item, group) : undefined} onDragEnd={draggable ? endConversationDrag : undefined} onRetryOrder={orderSync?.state === 'failed' ? () => synchronizeConversationOrder(item.id, orderSync.orderedBindingIds) : undefined} onSelect={options.onSelect ?? (() => selectConversation(item.id))} onDoubleClick={options.onDoubleClick} onTogglePin={() => toggleConversationPin(item.id)} onExport={() => { void exportConversation(item); }} onMarkUnread={() => markConversationUnread(item.id)} onMarkRead={options.onMarkRead} onAcknowledgeAlert={() => markConversationRead(item.id)} onArchive={api.archiveConversation && conversationWritable ? () => archive.mutate({ workspaceId: workspace!.id, bindingId: item.id, scope: activeComposerScope.current }) : undefined} onDelete={features.conversationDeletion && conversationWritable ? () => void confirmDeletion('会话', conversationName(item)).then(ok => { if (ok) remove.mutate(item.id); }) : undefined}/>;
+    return <WorkspaceConversationRow key={item.id} item={item} selectedBindingId={selectedBindingId} workspaceName={options.workspaceName} running={running} possiblyStuck={possiblyStuck} failed={failed} waitingUserInput={waitingUserInputConversationIds.has(item.id)} unread={unread} unreadOrigin={unreadOrigin} pinned={Boolean(item.pinned)} conversationWritable={conversationWritable} removing={remove.isPending || archive.isPending} deleteDisabled={running} dragging={draggable && draggedBindingId === item.id} dropPosition={draggable && dragTarget?.bindingId === item.id ? (dragTarget.after ? 'after' : 'before') : undefined} orderSyncState={orderSync?.state} onDragStart={draggable ? event => startConversationDrag(event, item, group) : undefined} onDragOver={draggable ? event => previewConversationDrop(event, item, group) : undefined} onDrop={draggable ? event => dropConversation(event, item, group) : undefined} onDragEnd={draggable ? endConversationDrag : undefined} onRetryOrder={orderSync?.state === 'failed' ? () => synchronizeConversationOrder(item.id, orderSync.orderedBindingIds) : undefined} onSelect={options.onSelect ?? (() => selectConversation(item.id))} onDoubleClick={options.onDoubleClick} onTogglePin={() => toggleConversationPin(item.id)} onExport={() => { void exportConversation(item); }} onMarkUnread={() => markConversationUnread(item.id)} onMarkRead={options.onMarkRead} onAcknowledgeAlert={() => markConversationRead(item.id)} onArchive={api.archiveConversation && conversationWritable ? () => archive.mutate({ workspaceId: workspace!.id, bindingId: item.id, scope: activeComposerScope.current }) : undefined} onDelete={features.conversationDeletion && conversationWritable ? () => void confirmDeletion('会话', conversationName(item)).then(ok => { if (ok) remove.mutate(item.id); }) : undefined}/>;
   };
   const pendingBootstrapItem = pendingBootstrap
     ? <button className={pendingBootstrap.draft.id === conversationDraft?.id ? 'active' : ''} aria-current={pendingBootstrap.draft.id === conversationDraft?.id ? 'page' : undefined} aria-label={`${pendingConversationName(pendingBootstrap.message)}，正在创建会话`}><LoaderCircle className="conversation-activity-spin" size={13}/><span><b>{pendingConversationName(pendingBootstrap.message)}</b><small>正在创建会话</small></span><ChevronRight size={13}/></button>
@@ -11202,6 +11251,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       </div>
       {(selected || conversationDraft) && runtime?.state !== 'RECOVERING' && !conversationInitialLoading && !conversationSnapshotUnavailable && <div className="agent-composer-dock">
         <div className={`agent-composer ${conversationVisuallyActive || pendingConfirmation ? 'busy' : ''}`}>
+        {pendingQuestion && !pendingConfirmation && <UserQuestionCard question={pendingQuestion} busy={!canWrite || conversationActivity.active} onAnswer={answerPendingQuestion} onSkip={() => answerPendingQuestion(ASK_USER_SKIP_REPLY)} onClose={() => setDismissedQuestionId(pendingQuestion.action_id)}/>}
         {pendingConfirmation && <section className="agent-confirmation" aria-label="工具执行确认"><header><ShieldAlert size={17}/><div><b>工具正在等待你的确认</b><span>动作尚未执行。请核对整批内容后批准或拒绝。</span></div></header><div className="agent-confirmation-actions">{(pendingConfirmation.actions ?? []).map((action: AgentPendingConfirmationAction) => <article key={action.digest}><div><b>{action.summary || action.tool_name}</b><span>{action.security_risk || 'UNKNOWN'}</span></div>{Object.keys(action.arguments).length > 0 && <pre>{JSON.stringify(action.arguments, null, 2)}</pre>}</article>)}</div><textarea aria-label="工具确认理由" value={confirmationReason} maxLength={2000} placeholder="填写批准或拒绝理由…" onChange={event => setConfirmationReason(event.target.value)}/><footer><button type="button" className="danger" disabled={!confirmationReason.trim() || decideConfirmation.isPending} onClick={() => decideConfirmation.mutate(false)}><X size={14}/>拒绝整批</button><button type="button" className="primary" disabled={!confirmationReason.trim() || decideConfirmation.isPending} onClick={() => decideConfirmation.mutate(true)}><Check size={14}/>批准整批</button></footer></section>}
         {(visibleQueuedMessages.length > 0 || (selected && !queueModeEnabled)) && <section className="agent-queued-messages" aria-label="消息投递队列">
           <header><b>消息队列</b><span>{queueModeEnabled ? `${visibleQueuedMessages.length} 条等待发送` : `队列模式已关闭；保留 ${visibleQueuedMessages.length} 条消息`}</span>{!queueModeEnabled && visibleQueuedMessages.length === 0 && <button type="button" className="queue-mode-toggle" onClick={toggleQueueMode}><ListRestart size={12}/>启用队列模式</button>}</header>

@@ -24,6 +24,7 @@ from flowweave.runtime.base import (
     RuntimeMCPProbeResult,
     RuntimeMessageSearchResult,
     RuntimePendingConfirmation,
+    RuntimePendingQuestion,
     RuntimePluginValidationRequest,
     RuntimePluginValidationResult,
     RuntimeProvider,
@@ -402,6 +403,10 @@ class MockRuntime:
         return result
 
     def get_pending_confirmation(self, handle: RuntimeHandle) -> RuntimePendingConfirmation | None:
+        del handle
+        return None
+
+    def get_pending_question(self, handle: RuntimeHandle) -> RuntimePendingQuestion | None:
         del handle
         return None
 

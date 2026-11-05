@@ -53,6 +53,7 @@ from flowweave.runtime.base import (
     RuntimeMessageSearchResult,
     RuntimePendingAction,
     RuntimePendingConfirmation,
+    RuntimePendingQuestion,
     RuntimePluginValidationRequest,
     RuntimePluginValidationResult,
     RuntimeProvider,
@@ -2112,10 +2113,15 @@ class OpenHandsRuntime:
             "tools": configured_tools,
             "tool_concurrency_limit": spec.tool_concurrency_limit,
         }
-        if structured_finish is not None:
+        default_tools = (
+            ["ThinkTool"] if structured_finish is not None else ["FinishTool", "ThinkTool"]
+        )
+        if spec.ask_user:
+            default_tools.append("AskUserTool")
+        if structured_finish is not None or spec.ask_user:
             # FinishTool is a native default. Replacing it with an explicit
             # structured schema requires omitting the default copy.
-            agent["include_default_tools"] = ["ThinkTool"]
+            agent["include_default_tools"] = default_tools
         if spec.critic is not None:
             critic: dict[str, Any] = {
                 "kind": spec.critic.kind,
@@ -4152,6 +4158,43 @@ class OpenHandsRuntime:
         digest = self._canonical_digest([action.digest for action in actions])
         return RuntimePendingConfirmation(digest, actions, cursor or leaf)
 
+    def get_pending_question(self, handle: RuntimeHandle) -> RuntimePendingQuestion | None:
+        """Read the formal ask_user ActionEvent the conversation is waiting on."""
+
+        with self._auxiliary_read_bulkhead(handle):
+            state = self._conversation_state(handle, timeout=_INTERACTIVE_READ_TIMEOUT_SECONDS)
+            if str(state.get("execution_status") or "").lower() != "waiting_for_user_input":
+                return None
+            leaf = str(state.get("leaf_event_id") or "") or None
+            events, cursor = self._events(
+                handle.conversation_id,
+                None,
+                base_url=self._base_url_for_handle(handle),
+                session_api_key=self._session_key_for_handle(handle),
+            )
+            for event in reversed(self._active_branch(events, leaf)):
+                kind = str(event.get("kind") or "")
+                if kind == "MessageEvent" and event.get("source") == "user":
+                    return None
+                if kind != "ActionEvent" or str(event.get("tool_name") or "") != "ask_user":
+                    continue
+                action = event.get("action")
+                if not isinstance(action, dict):
+                    continue
+                options = action.get("options")
+                recommendation = action.get("recommendation")
+                return RuntimePendingQuestion(
+                    action_id=str(event.get("id") or ""),
+                    tool_call_id=str(event.get("tool_call_id") or ""),
+                    question=str(action.get("question") or ""),
+                    options=tuple(str(item) for item in options)
+                    if isinstance(options, list)
+                    else (),
+                    recommendation=str(recommendation) if recommendation else None,
+                    cursor=cursor or leaf,
+                )
+            return None
+
     def respond_to_confirmation(
         self,
         handle: RuntimeHandle,
@@ -5295,6 +5338,8 @@ class OpenHandsRuntime:
                 status="CONFIRMATION_REQUIRED",
                 cursor=cursor,
             )
+        if status == "waiting_for_user_input":
+            return RuntimeResult(status="WAITING_USER_INPUT", cursor=cursor)
         return RuntimeResult(status="RUNNING", cursor=cursor)
 
     def _message_user_event_ids(self, handle: RuntimeHandle) -> frozenset[str]:
@@ -5983,7 +6028,9 @@ class OpenHandsRuntime:
         agent_value = state.get("agent")
         agent = cast(dict[str, Any], agent_value) if isinstance(agent_value, dict) else {}
         condenser_value = agent.get("condenser")
-        condenser = cast(dict[str, Any], condenser_value) if isinstance(condenser_value, dict) else {}
+        condenser = (
+            cast(dict[str, Any], condenser_value) if isinstance(condenser_value, dict) else {}
+        )
         llm_value = condenser.get("llm")
         actual = cast(dict[str, Any], llm_value) if isinstance(llm_value, dict) else {}
         if not (

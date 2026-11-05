@@ -709,9 +709,7 @@ def _build_case_from_blueprint(
     return {**_case_dict(db, item), "copy_report": report}
 
 
-def _read_source_files(
-    db: Session, source: Case
-) -> list[tuple[str, bytes | None]]:
+def _read_source_files(db: Session, source: Case) -> list[tuple[str, bytes | None]]:
     workspace = agent_workspaces.ensure_default_agent_workspace(db)
     files: list[tuple[str, bytes | None]] = []
     for material in source.materials_json or []:
@@ -764,9 +762,7 @@ def export_cases(db: Session, case_ids: Sequence[str]) -> dict[str, Any]:
         source = _case(db, case_id)
         stages = list(
             db.scalars(
-                select(CaseStage)
-                .where(CaseStage.case_id == source.id)
-                .order_by(CaseStage.position)
+                select(CaseStage).where(CaseStage.case_id == source.id).order_by(CaseStage.position)
             )
         )
         entries.append(
@@ -1002,7 +998,8 @@ def set_case_coordination_state(
             # A plain resume of a question the human has not answered in the conversation is
             # still allowed (the Agent re-reads state); the note tells it what happened.
             note = (
-                "用户已回应你的提问并恢复场景；请先阅读会话中的最新回答，再重新读取状态后行动。"
+                "用户未在会话中回复你的提问，而是直接恢复了场景；不要假设已获得回答，"
+                "请重新读取最新状态，并在必要时用 ask_user 再次确认（不要重复相同问题）。"
                 if item.pause_reason == "WAITING_HUMAN"
                 else None
             )
@@ -1014,6 +1011,48 @@ def set_case_coordination_state(
         write_case_files(db, item)
     finish(db)
     return _case_dict(db, item)
+
+
+def note_case_control_waiting(db: Session, binding_id: str) -> bool:
+    """Mirror an open ask_user question onto the Case: it waits for the human, not the Agent.
+
+    The fact is the native conversation's formal ``waiting_for_user_input`` status; there is no
+    Case-level action the Agent must remember to call.
+    """
+
+    item = db.scalar(
+        select(Case).where(Case.control_conversation_binding_id == binding_id).with_for_update()
+    )
+    if item is None or item.state != "ACTIVE":
+        return False
+    _pause_case(item, "WAITING_HUMAN", "Agent 正在等待你在会话中的回复")
+    write_case_files(db, item)
+    return True
+
+
+def note_case_control_reply(db: Session, binding_id: str, reply_event_id: str | None) -> bool:
+    """Resume a Case waiting on ASK_HUMAN once the human replied in the control conversation.
+
+    The reply is the formal user MessageEvent that resumes the native ask_user wait; this only
+    mirrors that fact onto the Case. Returns True when a Case was resumed.
+    """
+
+    item = db.scalar(
+        select(Case).where(Case.control_conversation_binding_id == binding_id).with_for_update()
+    )
+    if item is None or item.state != "PAUSED" or item.pause_reason != "WAITING_HUMAN":
+        return False
+    reference = f"（回复事件 {reply_event_id}）" if reply_event_id else ""
+    _resume_case(
+        item,
+        f"用户已在会话中回复你的提问{reference}。请先阅读该回复；若回复是“跳过”，"
+        "则按你推荐的稳妥方案继续并说明假设；然后重新读取最新状态再行动。",
+    )
+    from flowweave.modules.cases.application.feedback import record_case_change
+
+    record_case_change(db, item, "CASE_RESUMED")
+    write_case_files(db, item)
+    return True
 
 
 def _finish_conclusion(db: Session, item: Case, plan: CaseControlPlan) -> dict[str, Any]:
@@ -1799,7 +1838,7 @@ def execute_case_control_plan(db: Session, case_id: str, plan_id: str) -> dict[s
         }
         else "ACTIVE"
     )
-    if plan.action in {"CONCLUDE_CASE", "ASK_HUMAN"} and stage.state in {
+    if plan.action == "CONCLUDE_CASE" and stage.state in {
         "ACTIVE",
         "REVIEW_PENDING",
     }:
@@ -2025,13 +2064,6 @@ def execute_case_control_plan(db: Session, case_id: str, plan_id: str) -> dict[s
                 "case_state": "PAUSED",
                 "next": "已提交结束提议并暂停场景，执行与阶段保持不变；由用户决定“确认结束”或"
                 "“继续”。被否决时你会收到通知，需重新读取最新状态后继续推进。",
-            }
-        elif plan.action == "ASK_HUMAN":
-            _pause_case(item, "WAITING_HUMAN", plan.reason)
-            result = {
-                "question": plan.reason,
-                "case_state": "PAUSED",
-                "next": "场景已暂停等待人工回答；恢复后你会收到通知，再读取最新上下文继续。",
             }
         elif plan.action == "STOP_EXECUTION":
             if not stage.current_execution_flow_run_id:

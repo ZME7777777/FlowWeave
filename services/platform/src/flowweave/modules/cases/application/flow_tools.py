@@ -84,7 +84,6 @@ class FlowActionArguments(BaseModel):
         "ADVANCE_CASE_STAGE",
         "COMPLETE_CASE",
         "CONCLUDE_CASE",
-        "ASK_HUMAN",
     ]
     idempotency_key: str = Field(
         pattern=r"^[a-z][a-z0-9._:-]{0,119}$",
@@ -230,16 +229,15 @@ TOOLS = [
         "stepwise record (COPY_STEPWISE_EXECUTION) into a new current draft that keeps every "
         "node configuration so inputs, prompts, capabilities or gates can be adjusted and rerun, "
         "explicitly advance a reviewed stage, or complete the final reviewed stage with "
-        "formal Artifact evidence. Two judgment actions need no completed run: "
+        "formal Artifact evidence. One judgment action needs no completed run: "
         "CONCLUDE_CASE PROPOSES ending the whole Case early (goal answered, premise invalid, "
         "upstream result makes later stages moot) - you cannot end a Case yourself: it pauses "
         "the Case, leaves the running execution and stages untouched, and a human confirms the "
         "end or sends it back to you (you are then notified with their reason); `reason` must "
-        "state the conclusion and the gate/artifact evidence it rests on; ASK_HUMAN pauses the "
-        "Case and puts `reason` (your question, with the options and your recommendation) in "
-        "front of the human, who answers in this conversation and resumes the Case - use it "
-        "when the decision is genuinely theirs or the evidence cannot distinguish a correct "
-        "empty result from a wrong execution. "
+        "state the conclusion, the gate/artifact evidence it rests on, and what later stages would "
+        "miss. To ask the human anything, call the ask_user tool - there is no Case action for "
+        "it; the platform pauses the Case while the question is open and resumes it when they "
+        "reply. "
         "TO START A FLOW: first CREATE_EXECUTION_COPY (no "
         "expected_execution_flow_run_id, no draft), then read the copy, then CONFIGURE_EXECUTION. "
         "A STEPWISE stage uses stepwise_draft with "
@@ -676,7 +674,7 @@ def validate_action_preconditions(
         "COMPLETE_CASE",
     }
     expected_stage_state = "REVIEW_PENDING" if plan.action in review_actions else "ACTIVE"
-    judgment_action = plan.action in {"CONCLUDE_CASE", "ASK_HUMAN"}
+    judgment_action = plan.action == "CONCLUDE_CASE"
     if plan.action != "CREATE_EXECUTION_COPY":
         if stage.current_execution_flow_run_id != run.id:
             raise conflict("action is outside the current stage execution", state=stage.state)

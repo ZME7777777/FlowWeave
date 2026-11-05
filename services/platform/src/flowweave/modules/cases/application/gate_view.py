@@ -165,7 +165,7 @@ def failure_policy_state(db: Session, node_run_id: str) -> dict[str, Any] | None
         state["instruction"] = (
             "流程作者声明：此门禁失败时应重跑该节点"
             f"（最多 {declared.max_rounds} 轮，已用 {used} 轮）。"
-            + ("重跑次数已用尽，请改用 ASK_HUMAN 交由用户决定。" if remaining == 0 else "")
+            + ("重跑次数已用尽，请用 ask_user 交由用户决定。" if remaining == 0 else "")
         )
     elif declared.action == "STOP":
         state["instruction"] = "流程作者声明：此门禁失败时应终止本次执行，不得重跑。"
@@ -183,14 +183,14 @@ def enforce_failure_policy(db: Session, node_run_id: str, action: str) -> None:
     if state["action"] == "STOP":
         raise DomainError(
             "CASE_GATE_POLICY_STOP",
-            "流程作者声明此门禁失败应终止执行，不允许重跑；请停止执行或改用 ASK_HUMAN",
+            "流程作者声明此门禁失败应终止执行，不允许重跑；请停止执行或用 ask_user 询问用户",
             409,
             {"policy": state},
         )
     if state["action"] == "RERUN" and state["exhausted"]:
         raise DomainError(
             "CASE_GATE_POLICY_RERUN_EXHAUSTED",
-            "作者声明的重跑次数已用尽，请改用 ASK_HUMAN 交由用户决定",
+            "作者声明的重跑次数已用尽，请用 ask_user 交由用户决定",
             409,
             {"policy": state},
         )

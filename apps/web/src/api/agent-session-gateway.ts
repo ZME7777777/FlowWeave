@@ -23,6 +23,7 @@ import type {
   AgentConversationInputReadiness,
   AgentConversationReference,
   AgentPendingConfirmation,
+  AgentPendingQuestion,
   AgentSessionCapability,
   AgentSessionHostDetails,
   AgentSessionMcpReadiness,
@@ -155,6 +156,8 @@ export interface AgentSessionApi {
   readonly credentialSync: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<AgentConversationCredentialSyncState>;
   readonly synchronizeCredentials: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, credentialIds: string[]) => Promise<AgentConversationCredentialSyncState>;
   readonly pendingConfirmation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<AgentPendingConfirmation>;
+  /** Formal ask_user question; hosts without the capability omit it. */
+  readonly pendingQuestion?: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<AgentPendingQuestion>;
   /**
    * `clientMessageId` keeps one browser dispatch attempt stable at the HTTP
    * edge. It is not an exactly-once promise: OpenHands 1.47 has no formal
@@ -255,6 +258,7 @@ export const agentWorkspaceSessionGateway: AgentSessionGateway = {
     credentialSync: api.agentConversationCredentialSync,
     synchronizeCredentials: api.synchronizeAgentConversationCredentials,
     pendingConfirmation: api.agentPendingConfirmation,
+    pendingQuestion: api.agentPendingQuestion,
     sendMessage: api.sendAgentMessage,
     cancelMessageSubmission: api.cancelAgentMessageSubmission,
     migrateStreamingConversation: api.migrateAgentStreamingConversation,

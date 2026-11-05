@@ -1331,25 +1331,37 @@ def test_human_rejection_resumes_untouched_and_tells_the_coordinator(flow_case, 
     assert again.value.code == "CASE_NO_CONCLUSION_PROPOSED"
 
 
-def test_agent_can_ask_the_human_which_pauses_the_case(flow_case):
+def test_open_ask_user_question_pauses_the_case_and_a_reply_resumes_it(flow_case):
     g = flow_case
-    result = projection(
-        rpc(
-            g,
-            "manage_case_flow",
-            action(
-                g, "ASK_HUMAN", reason="Empty result: genuinely none, or wrong scope? Options A/B."
-            ),
-        )
-    )
-    assert result["state"] == "SUCCEEDED", result
+    binding = g.item.control_conversation_binding_id = str(uuid4())
+    g.db.flush()
+    assert service.note_case_control_waiting(g.db, "someone-elses-binding") is False
+    assert service.note_case_control_waiting(g.db, binding) is True
+    g.db.commit()
     refresh(g)
     assert g.item.state == "PAUSED" and g.item.pause_reason == "WAITING_HUMAN"
     assert g.stage.state in {"ACTIVE", "REVIEW_PENDING"}
-    service.set_case_coordination_state(g.db, g.item.id, g.item.row_version, "ACTIVE")
+    # Re-observing the same open question is idempotent.
+    assert service.note_case_control_waiting(g.db, binding) is False
+    assert service.note_case_control_reply(g.db, binding, "evt-1") is True
+    g.db.commit()
     refresh(g)
     assert g.item.state == "ACTIVE" and g.item.pause_reason is None
-    assert "回应" in g.item.resume_note
+    assert "evt-1" in g.item.resume_note and "已在会话中回复" in g.item.resume_note
+    assert service.note_case_control_reply(g.db, binding, "evt-2") is False
+
+
+def test_plain_resume_of_a_waiting_case_does_not_claim_an_answer(flow_case):
+    g = flow_case
+    g.item.control_conversation_binding_id = str(uuid4())
+    g.db.flush()
+    assert service.note_case_control_waiting(g.db, g.item.control_conversation_binding_id)
+    g.db.commit()
+    refresh(g)
+    service.set_case_coordination_state(g.db, g.item.id, g.item.row_version, "ACTIVE")
+    g.db.commit()
+    refresh(g)
+    assert g.item.state == "ACTIVE" and "未在会话中回复" in g.item.resume_note
 
 
 def test_stepwise_final_stage_is_completed_by_the_agent_with_accepted_artifact_evidence(flow_case):
@@ -1679,7 +1691,7 @@ def test_author_rerun_policy_blocks_once_rounds_are_exhausted(flow_case):
     state = projection(rpc(g, "read_case_flow", {"section": "gates"}))["items"][0][
         "author_failure_policy"
     ]
-    assert state["exhausted"] is True and "ASK_HUMAN" in state["instruction"]
+    assert state["exhausted"] is True and "ask_user" in state["instruction"]
     blocked = _rerun(g)
     assert blocked["state"] == "FAILED"
     assert blocked["error_code"] == "CASE_GATE_POLICY_RERUN_EXHAUSTED"

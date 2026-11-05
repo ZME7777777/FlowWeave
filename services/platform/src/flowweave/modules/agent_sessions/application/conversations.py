@@ -1107,6 +1107,7 @@ def conversation_activity(
             "condensation_failed_binding_ids": [],
             "possibly_stuck_binding_ids": [],
             "failed_binding_ids": [],
+            "waiting_user_input_binding_ids": [],
         }
     binding_ids = {item.id for item in bindings}
     runtime = get_runtime()
@@ -1212,7 +1213,18 @@ def conversation_activity(
         for item in bindings
         if latest_condensation_task.get(item.id, (None, None, None))[1] == TaskState.DEAD
     ]
-    activity_binding_ids = running_binding_ids | set(condensing_binding_ids)
+    waiting_user_input_binding_ids = [
+        item.id
+        for item in bindings
+        if (activity := native_activity.get(item.openhands_conversation_id)) is not None
+        and activity.execution_status == "waiting_for_user_input"
+    ]
+    for item in bindings:
+        if item.id in waiting_user_input_binding_ids:
+            _mirror_case_control_waiting(db, item)
+    activity_binding_ids = (
+        running_binding_ids | set(condensing_binding_ids) | set(waiting_user_input_binding_ids)
+    )
     activity_bindings = [
         item for item in bindings if item.id in activity_binding_ids or item.unread
     ]
@@ -1240,6 +1252,7 @@ def conversation_activity(
         "failed_binding_ids": [
             item.id for item in bindings if item.openhands_conversation_id in failed_native_ids
         ],
+        "waiting_user_input_binding_ids": waiting_user_input_binding_ids,
     }
 
 
@@ -1668,9 +1681,7 @@ def get_conversation(db: Session, workspace_id: str, binding_id: str) -> dict[st
     item = _binding(db, workspace_id, binding_id)
     try:
         batch = get_runtime().read_active_events(_handle(db, workspace, item))
-        usage_projection.capture(
-            db, item, batch.usage, stored_event_count=batch.stored_event_count
-        )
+        usage_projection.capture(db, item, batch.usage, stored_event_count=batch.stored_event_count)
     except Exception:
         # Runtime availability must not make the read-only Conversation
         # locator unavailable. A later event read retries the formal usage
@@ -1798,6 +1809,7 @@ def _create_native_conversation(
     *,
     allow_existing: bool = False,
     system_message_suffix_append: str = "",
+    ask_user: bool = True,
     credential_ids: tuple[str, ...] | None = None,
     system_secrets: dict[str, str] | None = None,
 ) -> RuntimeHandle:
@@ -1838,6 +1850,7 @@ def _create_native_conversation(
         host_root=host_root,
         runtime_root=runtime_root,
         system_message_suffix_append=system_message_suffix_append,
+        ask_user=ask_user,
     )
     conversation_secrets, credential_context, _credential_summaries = resolve_credentials_for_agent(
         db, credential_ids
@@ -2457,8 +2470,12 @@ def bootstrap_conversation(
     system_message_suffix_append: str = "",
     implicit_history_source_ids: tuple[str, ...] = (),
     case_control_round_id: str | None = None,
+    interactive: bool = True,
 ) -> dict[str, Any]:
     """Create a native conversation only while accepting its first user event.
+
+    ``interactive=False`` (unattended automation) withholds the ask_user tool: nobody would
+    ever answer, so the conversation would wait forever.
 
     A browser draft has no database representation. The first submission first
     commits a private reservation keyed by the browser command ID, then creates
@@ -2468,7 +2485,9 @@ def bootstrap_conversation(
 
     message_text = content.strip()
     normalized_goal_objective = goal_objective.strip() if goal_objective else None
-    if normalized_goal_objective and (attachments or references or workspace_references or annotations):
+    if normalized_goal_objective and (
+        attachments or references or workspace_references or annotations
+    ):
         raise DomainError(
             "AGENT_GOAL_CONTEXT_UNSUPPORTED",
             "目标模式暂不支持附件、引用或批注；请先移除这些内容后启动",
@@ -2663,6 +2682,7 @@ def bootstrap_conversation(
             binding.working_directory,
             allow_existing=command.attempt_count > 1,
             system_message_suffix_append=system_message_suffix_append,
+            ask_user=interactive,
             credential_ids=credential_ids,
             system_secrets=system_secrets,
         )
@@ -3268,6 +3288,26 @@ def pending_confirmation(db: Session, workspace_id: str, binding_id: str) -> dic
     }
 
 
+def pending_question(db: Session, workspace_id: str, binding_id: str) -> dict[str, Any]:
+    """Return the formal ask_user question the native conversation waits on."""
+
+    workspace = _workspace(db, workspace_id)
+    question = get_runtime().get_pending_question(
+        _handle(db, workspace, _binding(db, workspace_id, binding_id))
+    )
+    if question is None:
+        return {"pending": False}
+    return {
+        "pending": True,
+        "action_id": question.action_id,
+        "tool_call_id": question.tool_call_id,
+        "question": question.question,
+        "options": list(question.options),
+        "recommendation": question.recommendation,
+        "cursor": question.cursor,
+    }
+
+
 def decide_confirmation(
     db: Session,
     workspace_id: str,
@@ -3494,6 +3534,22 @@ def _condenser_credential_failure_event_id(runtime: Any, handle: RuntimeHandle) 
     return leaf.cursor
 
 
+def _mirror_case_control_waiting(db: Session, binding: AgentConversationBinding) -> None:
+    from flowweave.modules.cases.public import note_case_control_waiting
+
+    note_case_control_waiting(db, binding.id)
+
+
+def _mirror_case_control_reply(
+    db: Session, binding: AgentConversationBinding, reply_event_id: str | None
+) -> None:
+    """A user reply in a Case control conversation also resumes an ASK_HUMAN pause."""
+
+    from flowweave.modules.cases.public import note_case_control_reply
+
+    note_case_control_reply(db, binding.id, reply_event_id)
+
+
 def message(
     db: Session,
     workspace_id: str,
@@ -3572,6 +3628,7 @@ def message(
         binding.last_connected_at = activity_at
         binding.updated_at = activity_at
         db.flush()
+        _mirror_case_control_reply(db, binding, result.cursor)
         return {
             "accepted": True,
             "cursor": result.cursor,
@@ -3693,6 +3750,7 @@ def message(
     binding.last_connected_at = activity_at
     binding.updated_at = activity_at
     db.flush()
+    _mirror_case_control_reply(db, binding, result.cursor)
     return {
         "accepted": True,
         "cursor": result.cursor,

@@ -580,6 +580,8 @@ export const api = {
     request<AgentConversationHead>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/head`),
   agentPendingConfirmation: (workspaceId: string, bindingId: string) =>
     request<AgentPendingConfirmation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/pending-confirmation`),
+  agentPendingQuestion: (workspaceId: string, bindingId: string) =>
+    request<import('../types').AgentPendingQuestion>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/pending-question`),
   decideAgentConfirmation: (workspaceId: string, bindingId: string, expected_pending_digest: string, accept: boolean, reason: string) =>
     request<{ accepted: boolean; cursor?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/pending-confirmation/decision`, json('POST', { expected_pending_digest, accept, reason })),
   cancelAgentConversationBootstrap: (workspaceId: string, submissionId: string) =>

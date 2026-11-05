@@ -781,6 +781,7 @@ def build_agent_spec(
     load_memory: bool = False,
     llm_timeout_policy: RuntimeLLMTimeoutPolicy | None = FLOWWEAVE_LLM_TIMEOUT_POLICY,
     subagent_policy: RuntimeSubagentPolicy | None = None,
+    ask_user: bool = False,
 ) -> RuntimeAgentSpec:
     materialized = tuple(
         item.materialization_config()
@@ -809,6 +810,7 @@ def build_agent_spec(
     return RuntimeAgentSpec(
         provider=provider,
         confirmation_policy="NEVER",
+        ask_user=ask_user,
         llm_timeout_policy=llm_timeout_policy,
         agent_context=RuntimeAgentContext(
             system_message_suffix="\n\n".join(
