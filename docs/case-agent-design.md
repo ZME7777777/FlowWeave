@@ -124,7 +124,7 @@ Agent 通过四条渠道获知全局，信息逐层加深：
 | `CASE_START_REQUESTED` | 用户点击启动 | 附带指令：先读目标、资料与各阶段流程，判断资料是否满足当前阶段启动条件；满足就复制配置执行副本并启动，不满足就说明缺什么并等待；不得假设平台已启动任何流程 |
 | `MATERIALS_CHANGED` | 资料变更 | 事实通知 |
 | `SESSION_CONFIG_CHANGED` | 保存会话配置 | 事实通知（供后续轮次使用，不替换本轮冻结配置） |
-| `CASE_RESUMED` | 暂停后恢复（包括人工回答 `ASK_HUMAN` 后恢复） | 事实通知，Agent 需重新读取最新状态 |
+| `CASE_RESUMED` | 暂停后恢复（包括人在协调会话里回复 `ask_user` 后恢复） | 事实通知；人是否真的回复了会如实写明，Agent 需重新读取最新状态 |
 
 每个 Case 级事件都带 `case_row_version`，过期事实会被丢弃。
 
@@ -145,7 +145,6 @@ Agent 通过四条渠道获知全局，信息逐层加深：
 | `ADVANCE_CASE_STAGE` | 评审通过后进入下一阶段（不会自动启动下一阶段） | REVIEW_PENDING + 执行 COMPLETED；最后阶段不可推进 |
 | `COMPLETE_CASE` | 最后阶段评审通过后完成场景 | 必须给出当前副本已接受的正式产物作为证据（`evidence_artifact_version_ids`） |
 | **`CONCLUDE_CASE`（新）** | 继续没有必要时提前结束整个场景 | 阶段 ACTIVE 或 REVIEW_PENDING，**不要求执行已完成** |
-| **`ASK_HUMAN`（新）** | 向人提问并暂停场景 | 同上 |
 
 平台没有向 Agent 暴露 `STOP_EXECUTION`。
 
@@ -159,13 +158,16 @@ Agent 通过四条渠道获知全局，信息逐层加深：
 
 它是“带结论的收尾”，不同于 `COMPLETE_CASE`（需要流程跑完且有产物证据）。
 
-### 5.2 `ASK_HUMAN`（向人提问）
+### 5.2 向人提问（`ask_user`）
 
-1. 动作成功后 Case 置 PAUSED，`reason` 即问题正文（背景、证据、备选、推荐）；
-2. 暂停期间，新事件路由为 `HELD`，投递任务因 `CASE_PAUSED` 延后，Agent 不会被打扰，也无法再提交普通动作（`require_case_action` 对 PAUSED 只放行停止类动作）；
-3. 人在协调会话中回答，并在界面恢复场景（`set_case_coordination_state`），平台发出 `CASE_RESUMED` 事实，Agent 收到后重新读取最新状态再行动。
+Case 不再有专用的 `ASK_HUMAN` 动作。协调 Agent 与所有 Agent 会话一样使用 OpenHands SDK 的 `ask_user` 内置工具（`AskUserTool`，`include_default_tools` 开启），提问是会话本身的正式状态，而不是 Case 的私有协议：
 
-界面：暂停且最近一条成功动作是 `ASK_HUMAN` 时，场景工作台顶部显示“Agent 在等你回答”横幅（问题原文、“去会话回答”、“已回答，继续”）；点“已回答，继续”会恢复场景并触发 `CASE_RESUMED`。
+1. Agent 调用 `ask_user(question, options, recommendation)`，OpenHands 会话进入 `waiting_for_user_input`（同一批次若调用了 `finish` 则不进入）；
+2. 平台把协调会话的该状态镜像到 Case：Case 置 PAUSED，`pause_reason` 为 `WAITING_HUMAN`，暂停期间新事件 `HELD`，Agent 不会被打扰；
+3. 人在会话输入框上方的问题卡片里回复（或跳过），回复是一条普通用户消息，OpenHands 会话回到 `idle` 并继续；平台据此把 Case 恢复为运行并发出 `CASE_RESUMED`，写明“用户已在会话中回复”；
+4. 若人没有回复而直接点击“恢复”，`CASE_RESUMED` 如实写明“用户未在会话中回复”，Agent 需重新判断而不是当作已获答复。
+
+不设置每会话提问次数上限；提示词只说明何时该问、何时不该问，若真实使用过于频繁再调整。`CONCLUDE_CASE` 仍是需要人确认的提案动作。
 
 ### 5.3 动作的执行链路
 
@@ -193,7 +195,7 @@ Agent 通过四条渠道获知全局，信息逐层加深：
 每个节点完成后先回答三个问题：
 1. **结果可信吗？** 区分“确实没有”与“执行有误”：核对节点是否用了正确的输入、范围、条件和方法，检查产物与过程证据；没有证据证明执行正确的空结果/异常结果不得当结论，应补充输入或重跑。
 2. **继续还有必要吗？** 已得到足以回答场景目标的结论，或上游结果使后续阶段失去前提，则用 `CONCLUDE_CASE` 提前结束，并在 `reason` 写明结论与依据。
-3. **这是我能定的吗？** 多种合理选择代价不同、资料矛盾、关键信息只有人有、或证据无法区分“真没有”与“找错了”，用 `ASK_HUMAN`，写清背景/证据/备选/推荐，然后等待，不要猜，也不要在等待期间继续推进。
+3. **这是我能定的吗？** 多种合理选择代价不同、资料矛盾、关键信息只有人有、或证据无法区分“真没有”与“找错了”，调用 `ask_user`，写清背景/证据/备选/推荐，然后等待，不要猜，也不要在等待期间继续推进。
 
 补充原则：能自行判断、可逆且代价低的事自己决定并记录理由；不可逆、成本高或超出授权的先问人；收到回复或恢复通知后重新读取最新状态再行动。
 
@@ -203,7 +205,7 @@ Agent 通过四条渠道获知全局，信息逐层加深：
 
 ### 6.3 工具描述（`flow_tools.py::TOOLS`）
 
-`manage_case_flow` 的描述本身就是操作手册：启动流程的顺序（`CREATE_EXECUTION_COPY` → 读取副本 → `CONFIGURE_EXECUTION` → 启动）、逐步/连续模式使用的草稿类型、节点 `agent_preset` 必须取自 `read_case_context overview.node_agent_preset_default` 而不可猜测、最后阶段只能 `COMPLETE_CASE`、`CONCLUDE_CASE` 与 `ASK_HUMAN` 的使用场景。
+`manage_case_flow` 的描述本身就是操作手册：启动流程的顺序（`CREATE_EXECUTION_COPY` → 读取副本 → `CONFIGURE_EXECUTION` → 启动）、逐步/连续模式使用的草稿类型、节点 `agent_preset` 必须取自 `read_case_context overview.node_agent_preset_default` 而不可猜测、最后阶段只能 `COMPLETE_CASE`、`CONCLUDE_CASE` 与 `ask_user` 的使用场景。
 
 ### 6.4 节点执行 Agent 的提示词附加段（平台自动追加）
 
@@ -237,13 +239,14 @@ Agent 通过四条渠道获知全局，信息逐层加深：
 2. `CASE_START_REQUESTED` 事件到达 → Agent 读取场景/流程/资料，判断是否满足启动条件；
 3. 满足：`CREATE_EXECUTION_COPY` → `read_case_flow` → `CONFIGURE_EXECUTION` → `START_*`；不满足：说明缺什么并等待资料；
 4. 节点执行 → 平台把 `NODE_EXECUTION_FINISHED/ARTIFACT_REGISTERED/GATE_EVALUATED/…` 事实推送给 Agent；
-5. Agent 读产物与节点状态，用决策准则判断：可信且需继续 → `ACCEPT` 并启动后继；不可信 → `REJECT/RERUN` 或补充输入；已无必要继续 → `CONCLUDE_CASE`；需要人拍板 → `ASK_HUMAN`；
+5. Agent 读产物与节点状态，用决策准则判断：可信且需继续 → `ACCEPT` 并启动后继；不可信 → `REJECT/RERUN` 或补充输入；已无必要继续 → `CONCLUDE_CASE`；需要人拍板 → `ask_user`；
 6. 流程跑完阶段进入 REVIEW_PENDING → `ADVANCE_CASE_STAGE`，最后阶段用 `COMPLETE_CASE` 并附正式产物证据；
 7. 全程每个动作都有控制计划留痕，可在场景工作台工具栏的“Agent 动作”面板查看全部历史（动作、状态、理由、关联执行记录）；失败且未被补上的动作另在“未解决的问题”面板提供重试。
 
 ## 9. 已知限制与后续方向
 
-- `ASK_HUMAN` 的回答目前仍在协调会话里完成，横幅只负责提醒与恢复，不内嵌回复输入框；
+- 子 Agent（delegate/task）发起 `ask_user` 时，父级目前只处理确认状态，尚未转发等待用户输入；
+- `ask_user` 未设提问频率上限，是否需要限制取决于真实使用；
 - Agent 读到的节点证据目前以执行状态、候选输出集、错误码和产物内容为主，尚未直接暴露门禁评估明细与业务结果状态（`SUCCESS`/`NO_FINDINGS` 等），后续可扩展 `read_case_flow`；
 - “真没有”与“找错了”的判断目前依赖提示词准则 + 产物/会话证据，没有平台级结构化判定；
 - 提前结束后的场景为 COMPLETED，不可再恢复；如需继续需新建场景。

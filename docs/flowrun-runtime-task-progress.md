@@ -16267,3 +16267,33 @@ SHA-256一致，API鉴权边界及全新Chromium三种登录／深链入口通�
 无JavaScript错误及根API请求；未写入真实用户资源。受管收尾上下文候选
 为10项；保留24小时上下文、实际引用及每仓库一个回滚镜像。收尾后再次
 核验Web健康／版本、配置和47个保护容器通过，未push。
+
+### OPS-BL1582 OpenHands baseline 1.58.2 Runtime 同步与 ask_user 发布 — DONE
+
+2026-11-05。代码 commit `c03c724eb2d173af92d8f1cbadf3a4e6e3363a8b`（含 `9b83efa5`），
+source commit `536244f6e26617a3932ae9ac49cadc65039effd2`，上游锚点
+`ce5716a3c0a955a85bb0cc4dcfaa94d5fefcda50`，四包 1.58.2，归档 SHA-256
+`8c32a625ee056641e270b3fc8c641aee61e702f7cf0de3a70db3e1f34aadef76`。
+
+SDK 侧在 `baseline` 追加 `AskUserTool`／`AskUserAction`／`AskUserObservation` 与
+`ConversationExecutionStatus.WAITING_FOR_USER_INPUT`（无提问次数上限）；平台新增
+`pending-question` 路由和 `WAITING_USER_INPUT`，Case 以 ask_user 取代 `ASK_HUMAN`，
+Web 新增问题卡片与侧栏“需要用户输入”标识。
+
+镜像：服务器侧 linux/amd64 构建，Runtime `flowweave-openhands-runtime:1` 现指向
+`sha256:ca43f7fbef507032ab967d49f19478b4698302b8cd25b1fe1786d7c3e2b1aa59`（旧镜像
+保留为 `rollback-bl1582-pre`，digest `6939d9a0afe5`）；平台
+`sha256:b1b29786171cb…`，Web `sha256:e0f455a82e565…`，均带 revision 标签。
+`contract_check.py` 在构建中暴露三处针对旧上游的断言并随 1.58 更新：tmux 套接字锁参数化、
+清理／tmpdir 实现、Agent Profile schema 3→4；其余契约未改。
+
+门禁：平台投影无运行会话；原生 331 个会话为 finished 302／paused 8／error 16／idle 2／
+stuck 3，无 running/starting/executing/stopping。服务器侧先备份 `state/`（2.3GB，权限 600），
+再执行 `runtime-replace`（RECOVERING→ACTIVE）。替换后容器 digest、`build_git_sha`、四包
+版本、provenance 与 source lock 一致；原生会话 331 个且状态分布不变；`AskUserTool` 可解析；
+migration 退出码 0（无新迁移）。Agent 会话容器、终端环境 setup、插件解析和环境构建均引用同一
+`:1` 镜像。公网首页、`/agent`、`/agent/schedules` 为 200，`pending-question` 路由对非等待会话返回
+`pending=false`。受管收尾已执行，未 push。
+
+未完成项：尚未用真实模型触发一次 ask_user 的端到端问答（未创建测试会话）；
+FR 之外既有的 32 项架构／环境测试失败为发布前即存在，未在本次处理。
