@@ -16369,6 +16369,8 @@ runtime-provider／api／stream-api／worker／web，再执行 `runtime-replace`
 
 未完成项：尚未用真实模型端到端触发一次 ask_user 阻塞问答（未创建测试会话）；`tests/architecture` 既有 11 项失败与发布前一致。
 
-### OPS-BL1584 ask_user 部分回答后仅重问未答问题与 baseline 89dd0d1b0 同步 — CODE-DONE（待 Runtime 发布）
+### OPS-BL1584 ask_user 部分回答后仅重问未答问题与 baseline 89dd0d1b0 同步 — DONE
 
-SDK `baseline` 提交 `89dd0d1b0c9bccdee8bbae4eb710500d12115455`：`ask_user` 描述要求模型在用户只回答部分问题时先回应已答内容，再仅对未答问题重新调用 `ask_user`。归档 SHA-256 `63b3aebec0a76e305961040a68452a7e05e99e578b6cbf83c96072b656c32b0f`。Web 端仅发送已答问题（`ec3e5a50`）。Runtime 远程发布与 replacement 尚未执行，不得声称已同步。
+SDK `baseline` 提交 `89dd0d1b0c9bccdee8bbae4eb710500d12115455`：`ask_user` 描述要求模型在用户只回答部分问题时先回应已答内容，再仅对未答问题重新调用 `ask_user`。归档 SHA-256 `63b3aebec0a76e305961040a68452a7e05e99e578b6cbf83c96072b656c32b0f`。Web 端仅发送已答问题（`ec3e5a50`）。2026-11-05 以 commit `5bf11a77d330ecd9ac36697247eb6bca18429ede` 完成 runtime 范围发布：Runtime `flowweave-openhands-runtime:1` 现为 `sha256:848f9d5f5c0a…`（旧镜像保留为 `rollback-b2131e0e-pre`，`d48c26d42c72`）；平台 `sha256:177c6ad06108…`，Web `sha256:37c2d3713bb8…`。门禁：原生会话 357 个，error 16／finished 321／idle 2／paused 15／stuck 3，无运行态；服务器侧先备份 `state/`（权限 600，gzip 校验通过；一个历史会话目录在备份期间变化）。migration 退出码 0，随后重建 runtime-provider／api／stream-api／worker／web，再执行 `runtime-replace`。新容器 digest、`build_git_sha=89dd0d1b0…`、四包 1.58.2 与 source lock 一致，`ask_user.py` 含新描述，公网首页、`/agent`、`/agent/schedules` 为 200。
+
+未完成项：尚未用真实模型端到端验证“只答部分问题后模型回应并重新提问”；`tests/architecture` 既有 11 项失败与发布前一致。
