@@ -1746,3 +1746,13 @@ def test_node_session_projection_pairs_results_by_action_id_only():
     first, second = view["calls"]
     assert first["command"] == "es-query --host wrong*" and first["result"].startswith("全部 0 条")
     assert first["result"].endswith("[truncated]") and second["result"] == "x"
+
+
+def test_answered_question_round_trips_through_the_message_envelope():
+    from flowweave.modules.agent_sessions.application import conversations as c
+
+    prompt, _ = c._message_payload("先灰度", (), answered_question="是否发布到生产？")
+    assert c.project_answered_question(prompt) == "是否发布到生产？"
+    assert c._project_conversation_references(prompt)[0] == "先灰度"
+    plain, _ = c._message_payload("先灰度", ())
+    assert plain == "先灰度" and c.project_answered_question(plain) is None

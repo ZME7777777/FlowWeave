@@ -970,6 +970,8 @@ export interface AgentPendingConfirmation {
 export interface AgentPendingQuestion {
   pending: boolean; action_id?: string; tool_call_id?: string; question?: string;
   options?: string[]; recommendation?: string | null; cursor?: string | null;
+  /** Extra questions of the same ask_user call, answered as later steps. */
+  questions?: { question: string; options?: string[]; recommendation?: string | null }[];
 }
 export interface AgentAttachment {
   filename: string; mime_type: string; byte_size: number; path: string; image_data_url?: string | null;

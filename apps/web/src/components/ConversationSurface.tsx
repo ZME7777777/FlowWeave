@@ -1331,22 +1331,15 @@ function SkillLoadRow({ entry, reveal = false, running }: { entry: ActivityEntry
   </article>;
 }
 
-/** The agent's ask_user call: show the question itself (the reply is the next user message). */
+/** The agent's ask_user call: a quiet one-line process note; the question itself lives in the composer card. */
 function AskUserRow({ entry, reveal = false }: { entry: ActivityEntry; reveal?: boolean }) {
   const action = entry.action ?? entry.item;
-  const details = action.event.payload.details as { question?: unknown; options?: unknown; recommendation?: unknown } | undefined;
-  const question = detailText(details?.question);
-  const options = Array.isArray(details?.options) ? details.options.filter((value): value is string => typeof value === 'string') : [];
-  const recommendation = detailText(details?.recommendation);
+  const details = action.event.payload.details as { question?: unknown; questions?: unknown } | undefined;
+  const count = 1 + (Array.isArray(details?.questions) ? details.questions.length : 0);
   const refused = entry.results.some(result => result.event.payload.details?.asked === false);
   return <article className={`conversation-activity-row tool ask-user${refused ? ' error' : ''}${reveal ? ' conversation-text-reveal-block' : ''}`} aria-label="Agent 提问" data-ask-user-event-id={action.event.id}>
     <MessageCircleQuestion size={13}/>
-    <div>
-      <b>{refused ? 'Agent 的提问未送达' : 'Agent 向你提问'}</b>
-      {question && <p>{question}</p>}
-      {options.length > 0 && <ol>{options.map(option => <li key={option}>{option}</li>)}</ol>}
-      {recommendation && <small>{recommendation}</small>}
-    </div>
+    <div><b>{refused ? '提问未送达' : count > 1 ? `等待你回答 ${count} 个问题` : '等待你的回答'}</b></div>
   </article>;
 }
 
@@ -3165,7 +3158,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
                   event.preventDefault();
                   event.currentTarget.form?.requestSubmit();
                 }}/><footer><button type="button" onClick={() => setEditingEventId(undefined)}>取消</button><button type="submit" disabled={!editingContent.trim() || rewritePending}>重新思考</button></footer></form>
-                : <article data-user-event-id={message.event.id} data-conversation-event-id={message.event.id} className="conversation-message user"><MessageAttachments attachments={eventAttachments(message.event)} references={message.event.payload.conversation_references} workspaceReferences={message.event.payload.workspace_references} annotations={eventAnnotations(message.event)} onOpen={onOpenAttachment} onOpenReference={reference => { if (onOpenConversationReference) onOpenConversationReference(reference); else setViewingReference(reference); }} onOpenWorkspaceReference={onOpenWorkspaceReference} onOpenAnnotation={locateAnnotation} conversationName={conversationName} imageUrl={attachmentImageUrl}/>{message.content && <div className="conversation-message-content"><MessageMarkdown>{message.content}</MessageMarkdown></div>}<footer className="conversation-message-meta user">{messageDeliveryStatus && <small className="conversation-message-delivery-status" role="status">{messageDeliveryStatus}</small>}{messageTimestamp && <time dateTime={typeof message.event.payload.timestamp === 'string' ? message.event.payload.timestamp : undefined}>{messageTimestamp}</time>}<div className="conversation-message-actions can-rewrite"><button type="button" className="conversation-message-copy" aria-label={copiedEventId === message.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === message.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(message.event.id, message.content)}>{copiedEventId === message.event.id ? <Check size={13}/> : <Copy size={13}/>}</button><button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(message.event.id); setEditingContent(message.content); }}><Pencil size={13}/></button></div></footer></article>}</div>
+                : <article data-user-event-id={message.event.id} data-conversation-event-id={message.event.id} className="conversation-message user"><MessageAttachments attachments={eventAttachments(message.event)} references={message.event.payload.conversation_references} workspaceReferences={message.event.payload.workspace_references} annotations={eventAnnotations(message.event)} onOpen={onOpenAttachment} onOpenReference={reference => { if (onOpenConversationReference) onOpenConversationReference(reference); else setViewingReference(reference); }} onOpenWorkspaceReference={onOpenWorkspaceReference} onOpenAnnotation={locateAnnotation} conversationName={conversationName} imageUrl={attachmentImageUrl}/>{typeof message.event.payload.answered_question === 'string' && message.event.payload.answered_question.trim() && <p className="conversation-answered-question" title={message.event.payload.answered_question}>{message.event.payload.answered_question.replace(/\s*\n\s*/g, ' ')}</p>}{message.content && <div className="conversation-message-content"><MessageMarkdown>{message.content}</MessageMarkdown></div>}<footer className="conversation-message-meta user">{messageDeliveryStatus && <small className="conversation-message-delivery-status" role="status">{messageDeliveryStatus}</small>}{messageTimestamp && <time dateTime={typeof message.event.payload.timestamp === 'string' ? message.event.payload.timestamp : undefined}>{messageTimestamp}</time>}<div className="conversation-message-actions can-rewrite"><button type="button" className="conversation-message-copy" aria-label={copiedEventId === message.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === message.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(message.event.id, message.content)}>{copiedEventId === message.event.id ? <Check size={13}/> : <Copy size={13}/>}</button><button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(message.event.id); setEditingContent(message.content); }}><Pencil size={13}/></button></div></footer></article>}</div>
             </Fragment>;
           })}
           {goal && goal.process.length > 0 && (() => {

@@ -4163,7 +4163,9 @@ class OpenHandsRuntime:
 
         with self._auxiliary_read_bulkhead(handle):
             state = self._conversation_state(handle, timeout=_INTERACTIVE_READ_TIMEOUT_SECONDS)
-            if str(state.get("execution_status") or "").lower() != "waiting_for_user_input":
+            # ask_user never pauses the run; the question is open until a user message
+            # follows it on the active branch, whether the model kept working or ended its turn.
+            if str(state.get("execution_status") or "").lower() in {"deleting"}:
                 return None
             leaf = str(state.get("leaf_event_id") or "") or None
             events, cursor = self._events(
@@ -5353,8 +5355,6 @@ class OpenHandsRuntime:
                 status="CONFIRMATION_REQUIRED",
                 cursor=cursor,
             )
-        if status == "waiting_for_user_input":
-            return RuntimeResult(status="WAITING_USER_INPUT", cursor=cursor)
         return RuntimeResult(status="RUNNING", cursor=cursor)
 
     def _message_user_event_ids(self, handle: RuntimeHandle) -> frozenset[str]:

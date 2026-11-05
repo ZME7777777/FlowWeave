@@ -1016,7 +1016,7 @@ def set_case_coordination_state(
 def note_case_control_waiting(db: Session, binding_id: str) -> bool:
     """Mirror an open ask_user question onto the Case: it waits for the human, not the Agent.
 
-    The fact is the native conversation's formal ``waiting_for_user_input`` status; there is no
+    The fact is the latest formal ask_user event with no later user message; there is no
     Case-level action the Agent must remember to call.
     """
 

@@ -215,6 +215,9 @@ def _project_stream_event(
     projected_payload = {**payload, "content": content}
     if str(payload.get("source") or "").lower() in {"user", "human"}:
         projected_payload["display_content"] = display_content
+    answered = agent_sessions.flow_node_conversations.project_answered_question(content)
+    if answered and str(payload.get("source") or "").lower() in {"user", "human"}:
+        projected_payload["answered_question"] = answered
     if references:
         projected_payload["conversation_references"] = list(references)
     if workspace_references:

@@ -1217,12 +1217,9 @@ def conversation_activity(
         for item in bindings
         if latest_condensation_task.get(item.id, (None, None, None))[1] == TaskState.DEAD
     ]
-    waiting_user_input_binding_ids = [
-        item.id
-        for item in bindings
-        if (activity := native_activity.get(item.openhands_conversation_id)) is not None
-        and activity.execution_status == "waiting_for_user_input"
-    ]
+    waiting_user_input_binding_ids = _open_question_binding_ids(
+        db, workspace, bindings, native_activity
+    )
     for item in bindings:
         if item.id in waiting_user_input_binding_ids:
             _mirror_case_control_waiting(db, item)
@@ -2217,6 +2214,7 @@ class PreparedRunningMessage:
     annotations: tuple[dict[str, Any], ...]
     git_profile: tuple[str, str] | None = None
     history_reference_ready: bool = True
+    answered_question: str | None = None
 
 
 def normalized_first_sentence(content: str) -> str:
@@ -3164,6 +3162,9 @@ def _project_conversation_events(
             payload["workspace_references"] = list(workspace_references)
         if annotations:
             payload["collaboration_annotations"] = list(annotations)
+        answered = project_answered_question(str(event.payload.get("content") or ""))
+        if answered and str(payload.get("source") or "").lower() in {"user", "human"}:
+            payload["answered_question"] = answered
         reply_annotations = reply_annotations_by_event.get(event.cursor, ())
         if reply_annotations:
             payload["collaboration_annotations"] = list(reply_annotations)
@@ -3328,6 +3329,10 @@ def pending_question(db: Session, workspace_id: str, binding_id: str) -> dict[st
         "options": list(question.options),
         "recommendation": question.recommendation,
         "cursor": question.cursor,
+        "questions": [
+            {"question": text, "options": list(options), "recommendation": recommendation}
+            for text, options, recommendation in question.follow_ups
+        ],
     }
 
 
@@ -3412,6 +3417,7 @@ def prepare_running_message(
     references: tuple[dict[str, str], ...] = (),
     workspace_references: tuple[dict[str, str], ...] = (),
     annotations: tuple[dict[str, Any], ...] = (),
+    answered_question: str | None = None,
 ) -> PreparedRunningMessage:
     """Finish local authorization before a possible long native append."""
 
@@ -3456,6 +3462,7 @@ def prepare_running_message(
         annotations=annotations,
         git_profile=profile_identity(db),
         history_reference_ready=history_ready,
+        answered_question=answered_question,
     )
 
 
@@ -3487,6 +3494,7 @@ def dispatch_running_message(prepared: PreparedRunningMessage) -> RuntimeResult 
         prepared.references,
         prepared.workspace_references,
         prepared.annotations,
+        prepared.answered_question,
     )
     if prepared.git_profile is not None:
         runtime.workspace_git_identity(prepared.handle, profile=prepared.git_profile)
@@ -3557,6 +3565,43 @@ def _condenser_credential_failure_event_id(runtime: Any, handle: RuntimeHandle) 
     return leaf.cursor
 
 
+_OPEN_QUESTION_PROBE_LIMIT = 8
+
+
+def _open_question_binding_ids(
+    db: Session,
+    workspace: Any,
+    bindings: list[AgentConversationBinding],
+    native_activity: dict[str, Any],
+) -> list[str]:
+    """Bindings whose latest ask_user has no user reply yet (bounded, best effort).
+
+    ask_user never changes the native execution status, so the fact is read from the formal
+    events. Only recently active, non-running conversations are probed to keep this poll cheap.
+    """
+
+    candidates = [
+        item
+        for item in bindings
+        if (activity := native_activity.get(item.openhands_conversation_id)) is not None
+        and activity.execution_status not in _UNREADY_EXECUTION_STATUSES
+        and not activity_timestamp_is_stale(activity.updated_at)
+    ]
+    candidates.sort(
+        key=lambda item: native_activity[item.openhands_conversation_id].updated_at or "",
+        reverse=True,
+    )
+    runtime = get_runtime()
+    open_ids: list[str] = []
+    for item in candidates[:_OPEN_QUESTION_PROBE_LIMIT]:
+        try:
+            if runtime.get_pending_question(_handle(db, workspace, item)) is not None:
+                open_ids.append(item.id)
+        except Exception:  # noqa: BLE001 - a probe failure must not break the activity poll
+            continue
+    return open_ids
+
+
 def _mirror_case_control_waiting(db: Session, binding: AgentConversationBinding) -> None:
     from flowweave.modules.cases.public import note_case_control_waiting
 
@@ -3582,6 +3627,7 @@ def message(
     references: tuple[dict[str, str], ...] = (),
     workspace_references: tuple[dict[str, str], ...] = (),
     annotations: tuple[dict[str, Any], ...] = (),
+    answered_question: str | None = None,
 ) -> dict[str, Any]:
     if (
         not content.strip()
@@ -3608,7 +3654,7 @@ def message(
     )
     references = _resolve_message_references(db, workspace, binding, references)
     prompt, image_urls = _message_payload(
-        content, attachments, references, workspace_references, annotations
+        content, attachments, references, workspace_references, annotations, answered_question
     )
     if not binding.streaming_callback_ready:
         raise DomainError(
@@ -3830,6 +3876,7 @@ def _message_payload(
     references: tuple[dict[str, str], ...] = (),
     workspace_references: tuple[dict[str, str], ...] = (),
     annotations: tuple[dict[str, Any], ...] = (),
+    answered_question: str | None = None,
 ) -> tuple[str, tuple[str, ...]]:
     if len(attachments) > 10:
         raise DomainError("AGENT_ATTACHMENT_INVALID", "附件引用无效，请重新上传", 422)
@@ -3881,6 +3928,7 @@ def _message_payload(
         and not normalized_references
         and not normalized_workspace_references
         and not annotations
+        and not answered_question
     ):
         return prompt, tuple(image_urls)
     prompt = (
@@ -3892,6 +3940,7 @@ def _message_payload(
                 "reference_materials": normalized_references,
                 "workspace_references": normalized_workspace_references,
                 "collaboration_annotations": annotations,
+                **({"answered_question": answered_question[:2000]} if answered_question else {}),
                 "attachment_aliases": attachment_aliases,
                 "workspace_reference_aliases": workspace_reference_aliases,
                 "current_user_request": {"content": prompt},
@@ -4300,6 +4349,20 @@ def _validated_workspace_references(
             value["selection"] = selection
         normalized.append(value)
     return tuple(normalized)
+
+
+def project_answered_question(content: str) -> str | None:
+    """The ask_user question a user reply carries in its V5 envelope, if any."""
+
+    _prefix, marker, encoded = content.rpartition(_MESSAGE_CONTEXT_V5_MARKER)
+    if not marker:
+        return None
+    try:
+        parsed = json.loads(encoded)
+    except (TypeError, ValueError):
+        return None
+    value = parsed.get("answered_question") if isinstance(parsed, dict) else None
+    return value if isinstance(value, str) and value.strip() else None
 
 
 def _project_conversation_references(

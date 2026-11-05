@@ -298,6 +298,8 @@ class AgentMessageWrite(_Write):
     )
     workspace_references: list[AgentWorkspaceReference] = Field(default_factory=list, max_length=20)
     annotations: list[dict[str, Any]] = Field(default_factory=list, max_length=20)
+    # The ask_user question this message answers; carried in the message envelope.
+    answered_question: str | None = Field(default=None, max_length=2000)
 
 
 class AgentConversationModelWrite(_Write):
@@ -366,6 +368,9 @@ def _project_stream_event(
     projected_payload = {**payload, "content": content}
     if str(payload.get("source") or "").lower() in {"user", "human"}:
         projected_payload["display_content"] = display_content
+    answered = conversations.project_answered_question(content)
+    if answered and str(payload.get("source") or "").lower() in {"user", "human"}:
+        projected_payload["answered_question"] = answered
     if references:
         projected_payload["conversation_references"] = list(references)
     if workspace_references:
@@ -2026,6 +2031,7 @@ async def agent_message(
             item.model_dump() for item in payload.workspace_references
         ),
         "annotations": tuple(payload.annotations),
+        "answered_question": payload.answered_question,
     }
     try:
         with message_submissions.fenced(fence):
