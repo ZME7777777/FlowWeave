@@ -6,7 +6,7 @@ async function json(route: Route, body: unknown, status = 200) {
   await route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
 }
 
-async function openAskedConversation(page: import('@playwright/test').Page, followUps: unknown[] = [], finalReply = true) {
+async function openAskedConversation(page: import('@playwright/test').Page, followUps: unknown[] = [], finalReply = true, answeredEvents: Array<Record<string, unknown>> = [], extraQuestions: unknown[] = []) {
   let authenticated = false;
   const sent: string[] & { asked?: unknown[] } = [];
   const workspace = { id: 'ask-user-workspace', display_name: '提问工作区', desired_state: 'RUNNING', updated_at: now };
@@ -16,9 +16,10 @@ async function openAskedConversation(page: import('@playwright/test').Page, foll
   };
   const events: Array<Record<string, unknown>> = [
     { id: 'ask-user-first', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '部署到生产吗', timestamp: now } },
-    { id: 'ask-user-action', event_type: 'TOOL_CALL', payload: { tool_name: 'ask_user', event_name: 'AskUserAction', action_id: 'ask-user-action', tool_call_id: 'call-1', parent_id: 'ask-user-first', timestamp: now, details: { question: '是否把版本 2.3 发布到生产环境？', options: ['发布', '先在灰度验证'], recommendation: '建议先灰度，回滚更便宜' } } },
+    { id: 'ask-user-action', event_type: 'TOOL_CALL', payload: { tool_name: 'ask_user', event_name: 'AskUserAction', action_id: 'ask-user-action', tool_call_id: 'call-1', parent_id: 'ask-user-first', timestamp: now, details: { question: '是否把版本 2.3 发布到生产环境？', options: ['发布', '先在灰度验证'], recommendation: '建议先灰度，回滚更便宜', questions: extraQuestions } } },
     { id: 'ask-user-result', event_type: 'TOOL_RESULT', payload: { tool_name: 'ask_user', event_name: 'AskUserObservation', action_id: 'ask-user-action', tool_call_id: 'call-1', parent_id: 'ask-user-action', timestamp: now, details: { asked: true } } },
   ];
+  events.push(...answeredEvents);
   if (finalReply) events.push({ id: 'ask-user-final', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'ask-user-result', content: '请确认是否发布。', timestamp: now } });
   const asked: unknown[] = [];
   sent.asked = asked;
@@ -134,4 +135,13 @@ test('the question card pushes the transcript up instead of covering its last li
     const [rowBox, cardBox] = await Promise.all([row.boundingBox(), card.boundingBox()]);
     return Boolean(rowBox && cardBox && rowBox.y + rowBox.height <= cardBox.y + 1);
   }).toBe(true);
+});
+
+test('a partly answered multi-question row shows 已回答 1/2 and marks each question', async ({ page }) => {
+  const answer = { id: 'ask-user-answer', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'ask-user-result', content: '先在灰度验证', answered_question: '是否把版本 2.3 发布到生产环境？', timestamp: now } };
+  await openAskedConversation(page, [], false, [answer], [{ question: '回滚策略？' }]);
+  const row = page.locator('[data-ask-user-event-id="ask-user-action"]');
+  await expect(row.getByTestId('ask-user-progress')).toHaveText('已回答 1/2');
+  await expect(row.locator('li[data-answered="true"]')).toHaveText('是否把版本 2.3 发布到生产环境？');
+  await expect(row.locator('li[data-answered="false"]')).toHaveText('回滚策略？');
 });

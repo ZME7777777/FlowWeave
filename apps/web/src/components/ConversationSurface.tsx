@@ -1,5 +1,5 @@
 import { ViewportPopover } from './ViewportPopover';
-import { BookOpen, Box, Check, MessageCircleQuestion, ChevronDown, ChevronRight, CircleAlert, ClipboardList, Copy, ExternalLink, Eye, FileCode2, FileCog, FileJson, FilePenLine, FilePlus2, FileText, FileType2, GitFork, Link, LoaderCircle, PanelRightOpen, PanelTop, Pencil, PlugZap, Quote, Search, ShieldCheck, Sparkles, SquareTerminal, Target, Workflow, Wrench } from 'lucide-react';
+import { BookOpen, Box, Check, CircleCheck, Circle, MessageCircleQuestion, ChevronDown, ChevronRight, CircleAlert, ClipboardList, Copy, ExternalLink, Eye, FileCode2, FileCog, FileJson, FilePenLine, FilePlus2, FileText, FileType2, GitFork, Link, LoaderCircle, PanelRightOpen, PanelTop, Pencil, PlugZap, Quote, Search, ShieldCheck, Sparkles, SquareTerminal, Target, Workflow, Wrench } from 'lucide-react';
 import { createContext, Fragment, lazy, useContext, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from 'react';
 import type { AgentActivitySummary, AgentAttachment, AgentConversationAnnotation, AgentConversationReference, AgentWorkspaceReference, OpenHandsConversationEvent, RuntimeTaskControlSnapshot } from '../types';
 import { SubagentAvatar } from './SubagentAvatar';
@@ -1348,7 +1348,26 @@ function pairAnsweredQuestions(asked: string, reply: string): Array<{ question: 
 /** Lets an ask_user row reopen the answer card when this action is the conversation's open question. */
 export const OpenQuestionContext = createContext<{ actionId?: string; reopen?: (actionId: string) => void }>({});
 
-/** The agent's ask_user call: the first question as one quiet line; several questions expand like any other tool detail. */
+/** Questions the user already answered, keyed by the ask_user action id (derived from later user messages that carry answered_question). */
+const AnsweredQuestionsContext = createContext<ReadonlyMap<string, ReadonlySet<string>>>(new Map());
+
+function answeredQuestionsByAction(events: Array<{ event_type?: string; id: string; payload: Record<string, unknown> }>): Map<string, Set<string>> {
+  const result = new Map<string, Set<string>>();
+  let lastAsk: string | undefined;
+  for (const event of events) {
+    if (event.event_type === 'TOOL_CALL' && event.payload.tool_name === 'ask_user') { lastAsk = event.id; continue; }
+    const asked = event.event_type === 'MESSAGE' && event.payload.source === 'user' && typeof event.payload.answered_question === 'string' ? event.payload.answered_question : '';
+    if (!asked.trim() || !lastAsk) continue;
+    const set = result.get(lastAsk) ?? new Set<string>();
+    const lines = asked.split('\n').map(line => line.trim()).filter(Boolean);
+    const numbered = lines.length > 1 && lines.every(line => /^\d+\.\s+/.test(line));
+    if (numbered) lines.forEach(line => set.add(line.replace(/^\d+\.\s+/, ''))); else set.add(lines.join(' '));
+    result.set(lastAsk, set);
+  }
+  return result;
+}
+
+/** The agent's ask_user call: a normal-sized tool row; every question shows whether it has been answered. */
 function AskUserRow({ entry, reveal = false }: { entry: ActivityEntry; reveal?: boolean }) {
   const action = entry.action ?? entry.item;
   const details = action.event.payload.details as { question?: unknown; questions?: unknown } | undefined;
@@ -1359,17 +1378,27 @@ function AskUserRow({ entry, reveal = false }: { entry: ActivityEntry; reveal?: 
   const refused = entry.results.some(result => result.event.payload.details?.asked === false);
   const first = refused ? '提问未送达' : asked[0] ?? '向你提问';
   const openQuestion = useContext(OpenQuestionContext);
+  const answeredSet = useContext(AnsweredQuestionsContext).get(action.event.id);
+  const isAnswered = (text: string) => Boolean(answeredSet?.has(text.replace(/\s*\n\s*/g, ' ').trim()));
+  const answeredCount = asked.filter(isAnswered).length;
+  const allAnswered = asked.length > 0 && answeredCount === asked.length;
   const answerable = !refused && openQuestion.actionId === action.event.id && Boolean(openQuestion.reopen);
   const answerButton = answerable
     ? <button type="button" className="ask-user-answer" onClick={event => { event.preventDefault(); event.stopPropagation(); openQuestion.reopen!(action.event.id); }}>回答问题</button>
     : null;
-  const className = `conversation-activity-row tool ask-user${refused ? ' error' : ''}${reveal ? ' conversation-text-reveal-block' : ''}`;
+  const className = `conversation-activity-row tool ask-user${refused ? ' error' : ''}${allAnswered ? ' answered' : ''}${reveal ? ' conversation-text-reveal-block' : ''}`;
+  const leading = allAnswered ? <CircleCheck size={14}/> : <MessageCircleQuestion size={14}/>;
   if (refused || asked.length < 2) return <article className={className} aria-label="Agent 提问" data-ask-user-event-id={action.event.id}>
-    <MessageCircleQuestion size={13}/><div><b title={first}>{first}</b></div>{answerButton}
+    {leading}<div><b title={first}>{first}</b></div>{allAnswered && <small className="ask-user-more">已回答</small>}{answerButton}
   </article>;
-  return <details className={`${className} conversation-tool-detail`} aria-label="Agent 提问" data-ask-user-event-id={action.event.id}>
-    <summary><MessageCircleQuestion size={13}/><div><b title={first}>{first}</b></div><small className="ask-user-more">共 {asked.length} 个问题</small>{answerButton}<ChevronRight className="conversation-expand-arrow" size={12}/></summary>
-    <ol className="ask-user-list">{asked.map((text, index) => <li key={index}>{text}</li>)}</ol>
+  return <details className={`${className} conversation-tool-detail`} aria-label="Agent 提问" data-ask-user-event-id={action.event.id} open={answeredCount > 0 && !allAnswered ? true : undefined}>
+    <summary>{leading}<div><b title={first}>{first}</b></div><small className="ask-user-more" data-testid="ask-user-progress">{`已回答 ${answeredCount}/${asked.length}`}</small>{answerButton}<ChevronRight className="conversation-expand-arrow" size={12}/></summary>
+    <ol className="ask-user-list">{asked.map((text, index) => {
+      const done = isAnswered(text);
+      return <li key={index} className={done ? 'answered' : 'pending'} data-answered={done}>
+        {done ? <CircleCheck size={13} aria-label="已回答"/> : <Circle size={13} aria-label="待回答"/>}<span>{text}</span>
+      </li>;
+    })}</ol>
   </details>;
 }
 
@@ -2349,6 +2378,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     [events],
   );
   const turns = useMemo(() => turnsFor(visibleEvents), [visibleEvents]);
+  const answeredQuestions = useMemo(() => answeredQuestionsByAction(visibleEvents as never), [visibleEvents]);
   const eventIndex = useMemo(() => turnEventIndex(events), [events]);
   const lastReplyTurnIndex = useMemo(() => turns.reduce((last, turn, index) => turn.assistant ? index : last, -1), [turns]);
   const pinnedEventIds = new Set([
@@ -3113,7 +3143,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   }, [highlightReferenceText, stopFollowingLatest, viewingReference]);
   if (!turns.length && !isGenerating) return <div className="conversation-surface-empty"><b>会话已就绪</b><span>发送第一条消息，开始与 Agent 协作。</span></div>;
   const showJumpToLatest = !isAtLatest && Boolean(turns.length || isGenerating);
-  return <div ref={shell} className="conversation-surface-shell">
+  return <AnsweredQuestionsContext.Provider value={answeredQuestions}><div ref={shell} className="conversation-surface-shell">
     {userMessageNavigation.length > 0 && <nav ref={messageNavigation} className="conversation-message-index" aria-label="用户消息导航" onScroll={handleMessageNavigationScroll} onPointerDown={handleMessageNavigationPointerDown} onPointerMove={handleMessageNavigationPointerMove} onPointerUp={finishMessageNavigationDrag} onPointerCancel={event => finishMessageNavigationDrag(event, true)} onPointerLeave={handleMessageNavigationPointerLeave}>
       <div className="conversation-message-index-list">
         {userMessageNavigation.map((message, index) => <button
@@ -3333,5 +3363,5 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
         <ChevronDown size={19}/>
       )}
     </button>}
-  </div>;
+  </div></AnsweredQuestionsContext.Provider>;
 });

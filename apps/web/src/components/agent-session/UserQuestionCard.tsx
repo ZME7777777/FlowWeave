@@ -1,4 +1,4 @@
-import { ChevronLeft, ChevronRight, MessageCircleQuestion, X } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Circle, CircleCheck, CircleSlash, MessageCircleQuestion, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { AgentPendingQuestion } from '../../types';
 import { useEscapeClose } from '../useEscapeClose';
@@ -76,6 +76,11 @@ export function UserQuestionCard({ question, busy, onAnswer, onClose }: {
       {steps.length > 1 && <nav aria-label="提问步骤">
         <button type="button" aria-label="上一题" disabled={index === 0} onClick={() => setIndex(index - 1)}><ChevronLeft size={13}/></button>
         <small>{index + 1} / {steps.length}</small>
+        <span className="agent-user-question-steps" aria-hidden="true">{steps.map((_, i) => {
+          const item = answers[i];
+          const state = item?.skipped ? 'skipped' : (item?.text.trim() || item?.choice) ? 'answered' : 'pending';
+          return <i key={i} data-state={state} className={i === index ? 'current' : undefined}>{state === 'answered' ? <CircleCheck size={11}/> : state === 'skipped' ? <CircleSlash size={11}/> : <Circle size={11}/>}</i>;
+        })}</span>
         <button type="button" aria-label="下一题" disabled={last || !(answered || answer.skipped)} onClick={() => setIndex(index + 1)}><ChevronRight size={13}/></button>
       </nav>}
       <button type="button" className="agent-user-question-close" aria-label="关闭提问，改用输入框回复" onClick={onClose}><X size={13}/></button>
