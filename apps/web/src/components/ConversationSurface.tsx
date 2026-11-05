@@ -3253,7 +3253,8 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
                   : undefined;
             return <Fragment key={turn.renderKey}>
               <div className={`conversation-user-message${isContinuation ? ' continuation' : ''}`}>{message.event.payload.model_change && <ModelChangeDivider change={message.event.payload.model_change} timestamp={message.event.payload.timestamp}/>}{editingEventId === message.event.id
-                ? <form className="conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(message.event.id, editingContent.trim()); }}><textarea ref={rewriteEditor} aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)} onKeyDown={event => {
+                ? <form className="conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(message.event.id, editingContent); }}><textarea ref={rewriteEditor} aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)} onKeyDown={event => {
+
                   if (event.nativeEvent.isComposing || event.keyCode === 229) return;
                   if (event.key === 'Escape') {
                     event.preventDefault();
