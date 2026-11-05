@@ -2919,7 +2919,10 @@ def test_model_provider_preview_discovery_uses_unsaved_connection_without_persis
     )
 
     assert response.status_code == 200, response.text
-    assert response.json() == {"models": ["gpt-alpha", "gpt-beta"]}
+    assert response.json() == {
+        "models": ["gpt-alpha", "gpt-beta"],
+        "protocols": {"gpt-alpha": "CHAT_COMPLETIONS", "gpt-beta": "CHAT_COMPLETIONS"},
+    }
     snapshot = captured["snapshot"]
     assert snapshot.base_url == "https://preview.example.test/v1"
     assert snapshot.headers["Authorization"] == "Bearer preview-secret"
@@ -4007,3 +4010,78 @@ def test_manual_runtime_output_projection_failure_becomes_visible_block(
     assert attempt["runtime_phase"] == "FAILED"
     assert attempt["error_code"] == "RUNTIME_OUTPUT_PROJECTION_FAILED"
     assert attempt["error_detail"].startswith("ARTIFACT_FILE_TOO_LARGE:")
+
+
+def test_one_api_key_provider_serves_each_model_with_its_own_protocol(
+    client, db_session_factory, settings
+):
+    provider = client.post(
+        "/api/v1/model-providers",
+        json={
+            "name": "单配置多协议",
+            "base_url": "https://gateway.example.test",
+            "api_key": "shared-key",
+            "models": [
+                {"model_name": "claude-sonnet-5-5", "enabled": True, "is_default": True},
+                {"model_name": "gpt-5.5", "enabled": True, "is_default": False},
+                {"model_name": "deepseek-chat", "enabled": True, "is_default": False},
+                {
+                    "model_name": "gpt-5-mini",
+                    "enabled": True,
+                    "is_default": False,
+                    "protocol": "CHAT_COMPLETIONS",
+                },
+            ],
+        },
+    )
+    assert provider.status_code == 201, provider.text
+    body = provider.json()
+    effective = {item["model_name"]: item["effective_protocol"] for item in body["models"]}
+    assert effective == {
+        "claude-sonnet-5-5": "ANTHROPIC",
+        "gpt-5.5": "RESPONSES",
+        "deepseek-chat": "CHAT_COMPLETIONS",
+        "gpt-5-mini": "CHAT_COMPLETIONS",
+    }
+    assert body["protocols"] == ["ANTHROPIC", "CHAT_COMPLETIONS", "RESPONSES"]
+
+    from flowweave.modules.model_providers.application import service
+    from flowweave.runtime.request import runtime_provider
+    from flowweave.shared.settings import settings_context
+
+    node = {"asset": {"executor": {"model_provider_id": body["id"]}}}
+    with settings_context(settings), db_session_factory() as db:
+        service.mark_provider_connection_state(db, body["id"], "CONNECTED")
+        claude = runtime_provider(db, node, "claude-sonnet-5-5")
+        gpt = runtime_provider(db, node, "gpt-5.5")
+        chat = runtime_provider(db, node, "deepseek-chat")
+        with pytest.raises(ValueError, match="Anthropic"):
+            service.prompt_provider_snapshot(db, body["id"], "claude-sonnet-5-5")
+        with pytest.raises(ValueError, match="Anthropic"):
+            service.title_provider_snapshot(db, body["id"], "claude-sonnet-5-5")
+        gate = service.prompt_provider_snapshot(db, body["id"], "gpt-5.5")
+
+    assert (claude.api_protocol, claude.base_url) == ("ANTHROPIC", "https://gateway.example.test")
+    assert (gpt.api_protocol, gpt.base_url) == ("RESPONSES", "https://gateway.example.test/v1")
+    assert (chat.api_protocol, chat.base_url) == (
+        "CHAT_COMPLETIONS",
+        "https://gateway.example.test/v1",
+    )
+    assert gate.protocol == "RESPONSES"
+    assert gate.base_url == "https://gateway.example.test/v1"
+
+
+def test_legacy_anthropic_provider_payload_maps_to_per_model_protocol(client):
+    created = client.post(
+        "/api/v1/model-providers",
+        json={
+            "name": "旧版 Anthropic 载荷",
+            "auth_type": "ANTHROPIC_API_KEY",
+            "base_url": "https://models.example.test",
+            "api_key": "legacy-key",
+            "models": [{"model_name": "custom-model", "enabled": True, "is_default": True}],
+        },
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["auth_type"] == "API_KEY"
+    assert created.json()["models"][0]["effective_protocol"] == "ANTHROPIC"

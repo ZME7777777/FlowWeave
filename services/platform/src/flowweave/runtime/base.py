@@ -153,11 +153,20 @@ class RuntimeProvider:
     model: str
     api_key: str = field(repr=False)
     auth_type: Literal["API_KEY", "ANTHROPIC_API_KEY", "CODEX_OAUTH"] = "API_KEY"
-    api_protocol: Literal["CHAT_COMPLETIONS", "RESPONSES"] = "CHAT_COMPLETIONS"
+    # ``ANTHROPIC`` selects the Anthropic Messages wire protocol; it is chosen
+    # per model, not per provider configuration.
+    api_protocol: Literal["CHAT_COMPLETIONS", "RESPONSES", "ANTHROPIC"] = "CHAT_COMPLETIONS"
     extra_headers: dict[str, str] = field(default_factory=_empty_headers)
     reasoning_effort: str | None = None
     # Resolved only from an immutable session policy; never ambient provider state.
     fallback_providers: tuple[RuntimeProvider, ...] = ()
+
+    def __post_init__(self) -> None:
+        # Frozen pre-multiprotocol bindings carry ``auth_type=ANTHROPIC_API_KEY``;
+        # it is now just the Anthropic wire protocol of an API-key provider.
+        if self.auth_type == "ANTHROPIC_API_KEY":
+            object.__setattr__(self, "auth_type", "API_KEY")
+            object.__setattr__(self, "api_protocol", "ANTHROPIC")
 
 
 @dataclass(frozen=True, slots=True)
@@ -602,6 +611,8 @@ class RuntimePendingQuestion:
     options: tuple[str, ...] = ()
     recommendation: str | None = None
     cursor: str | None = None
+    # Extra questions asked in the same ask_user call, as (question, options, recommendation).
+    follow_ups: tuple[tuple[str, tuple[str, ...], str | None], ...] = ()
 
 
 RuntimeEventType = Literal[

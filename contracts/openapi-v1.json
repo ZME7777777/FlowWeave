@@ -21580,13 +21580,19 @@
             "default": "API_KEY"
           },
           "api_protocol": {
-            "type": "string",
-            "enum": [
-              "CHAT_COMPLETIONS",
-              "RESPONSES"
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "CHAT_COMPLETIONS",
+                  "RESPONSES"
+                ]
+              },
+              {
+                "type": "null"
+              }
             ],
-            "title": "Api Protocol",
-            "default": "CHAT_COMPLETIONS"
+            "title": "Api Protocol"
           },
           "base_url": {
             "type": "string",
@@ -21603,6 +21609,16 @@
               }
             ],
             "title": "Api Key"
+          },
+          "usage_query": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderUsageQuery"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "row_version": {
             "anyOf": [
@@ -22451,6 +22467,22 @@
             "type": "boolean",
             "title": "Is Default",
             "default": false
+          },
+          "protocol": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "CHAT_COMPLETIONS",
+                  "RESPONSES",
+                  "ANTHROPIC"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Protocol"
           }
         },
         "additionalProperties": false,

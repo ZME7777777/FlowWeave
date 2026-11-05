@@ -3650,14 +3650,14 @@ test('Agent new session keeps full capabilities and can create an explicit works
 
   await composer.fill('切换页面后仍应保留的首条草稿');
   await page.getByRole('button', { name: '账户与设置' }).click();
-  await page.getByRole('menuitem', { name: '大模型配置', exact: true }).click();
-  await page.getByRole('button', { name: '新增模型服务', exact: true }).click();
+  await page.getByRole('menuitem', { name: '供应商配置', exact: true }).click();
+  await page.getByRole('button', { name: '新增供应商', exact: true }).click();
   const providerEditor = page.locator('form.model-editor');
   await providerEditor.getByLabel('服务名称', { exact: true }).fill('即时可用供应商');
   await providerEditor.getByLabel('Base URL', { exact: true }).fill('https://models.example.test/v1');
   await providerEditor.getByLabel('API Key', { exact: true }).fill('fixture-key');
   await providerEditor.getByLabel('模型 1', { exact: true }).fill('gpt-new');
-  await providerEditor.getByRole('button', { name: '保存模型服务', exact: true }).click();
+  await providerEditor.getByRole('button', { name: '保存供应商', exact: true }).click();
   await page.getByRole('button', { name: 'Agent 会话', exact: true }).click();
   await expect(page.getByRole('heading', { name: '新会话' })).toBeVisible();
   await page.getByLabel('打开模型与推理设置').click();

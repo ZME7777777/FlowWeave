@@ -49,7 +49,7 @@ const nav = [
 const settingsNav = [
   { view: 'environments' as const, label: '终端环境', description: '管理 Agent 运行环境', icon: TerminalSquare },
   { view: 'credentials' as const, label: '认证管理', description: '维护访问凭据与密钥', icon: KeyRound },
-  { view: 'models' as const, label: '大模型配置', description: '配置模型服务与可用模型', icon: BrainCircuit },
+  { view: 'models' as const, label: '供应商配置', description: '配置模型供应商与可用模型', icon: BrainCircuit },
 ];
 
 const superAdminSettingsNav = [

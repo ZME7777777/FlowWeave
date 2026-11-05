@@ -33,18 +33,18 @@ test('keeps account settings in unique temporary tabs and closes the active tab 
 
   await openSettings(page, '终端环境');
   await openSettings(page, '认证管理');
-  await openSettings(page, '大模型配置');
+  await openSettings(page, '供应商配置');
   await openSettings(page, '用户管理');
   await expect(page.getByLabel('临时管理标签')).toBeVisible();
   await expect(page.locator('.context-tab')).toHaveCount(4);
 
-  await openSettings(page, '大模型配置');
+  await openSettings(page, '供应商配置');
   await expect(page.locator('.context-tab')).toHaveCount(4);
-  await expect(page.locator('.context-tab.active')).toContainText('大模型配置');
+  await expect(page.locator('.context-tab.active')).toContainText('供应商配置');
 
   await page.reload();
-  await expect(page.locator('.context-tab')).toHaveText(['用户管理', '大模型配置', '认证管理', '终端环境']);
-  await expect(page.locator('.context-tab.active')).toContainText('大模型配置');
+  await expect(page.locator('.context-tab')).toHaveText(['用户管理', '供应商配置', '认证管理', '终端环境']);
+  await expect(page.locator('.context-tab.active')).toContainText('供应商配置');
 
   await openSettings(page, '用户管理');
   await expect(page.locator('.context-tab')).toHaveCount(4);
@@ -58,37 +58,27 @@ test('keeps account settings in unique temporary tabs and closes the active tab 
   await expect(temporary.locator('.context-tab-select')).toHaveCSS('font-size', await permanent.evaluate(element => getComputedStyle(element).fontSize));
   await expect(temporary).toHaveCSS('border-bottom-color', 'rgb(216, 242, 86)');
   await expect(temporary).toHaveCSS('border-top-left-radius', '0px');
-  await expect(page.getByRole('button', { name: '收起临时标签' })).toBeVisible();
-  await page.getByRole('button', { name: '收起临时标签' }).click();
-  await expect(page.getByRole('button', { name: '展开临时标签' })).toBeVisible();
-  await expect(page.getByRole('button', { name: '其他临时标签（4）' })).toBeVisible();
-  await page.getByRole('button', { name: '其他临时标签（4）' }).click();
-  const temporaryMenu = page.getByRole('menu', { name: '其他临时标签' });
-  await expect(temporaryMenu).toBeVisible();
-  await expect(temporaryMenu.getByRole('menuitem')).toHaveCount(4);
-  await expect(temporaryMenu).toHaveCSS('width', '184px');
-  await temporaryMenu.getByRole('menuitem', { name: '认证管理', exact: true }).click();
+  await expect(page.getByRole('button', { name: '其他临时标签（4）' })).toHaveCount(0);
+  await page.getByRole('button', { name: '认证管理', exact: true }).click();
   await expect(page.getByRole('heading', { name: '认证管理', exact: true })).toBeVisible();
-  await expect(temporaryMenu).toHaveCount(0);
-  await page.getByRole('button', { name: '展开临时标签' }).click();
   await expect(page.locator('.context-tab.active')).toContainText('认证管理');
-  await expect(page.getByRole('button', { name: '收起临时标签' })).toBeVisible();
 
   await page.getByRole('button', { name: '节点中心', exact: true }).click();
   await expect(page.getByLabel('临时管理标签')).toBeVisible();
   await expect(page.locator('.context-tab')).toHaveCount(4);
   await page.reload();
-  await expect(page.locator('.context-tab')).toHaveText(['用户管理', '大模型配置', '认证管理', '终端环境']);
+  await expect(page.locator('.context-tab')).toHaveText(['用户管理', '供应商配置', '认证管理', '终端环境']);
   await expect(page.locator('.context-tab.active')).toHaveCount(0);
   await expect(page.getByRole('button', { name: '节点中心', exact: true })).toHaveClass('active');
 
-  await page.getByRole('button', { name: '大模型配置', exact: true }).click();
-  await page.getByRole('button', { name: '关闭大模型配置', exact: true }).click();
+  await page.getByRole('button', { name: '供应商配置', exact: true }).click();
+  await page.getByRole('button', { name: '关闭供应商配置', exact: true }).click();
   await expect(page.locator('.context-tab')).toHaveCount(3);
-  await expect(page.locator('.context-tab.active')).toContainText('认证管理');
+  // Closing the active tab returns to the previously activated tab (the node hub here).
+  await expect(page.locator('.context-tab.active')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '节点中心', exact: true })).toHaveClass('active');
   await page.reload();
   await expect(page.locator('.context-tab')).toHaveText(['用户管理', '认证管理', '终端环境']);
-  await expect(page.locator('.context-tab.active')).toContainText('认证管理');
 
   for (const label of ['用户管理', '认证管理', '终端环境']) {
     await page.getByRole('button', { name: `关闭${label}`, exact: true }).click();
@@ -102,7 +92,7 @@ test('isolates saved tabs by account and filters settings after permission chang
   let user = { ...admin };
   await mockSettingsApi(page, () => user);
   await page.goto('/');
-  await openSettings(page, '大模型配置');
+  await openSettings(page, '供应商配置');
   await openSettings(page, '用户管理');
   await page.getByRole('button', { name: '节点中心', exact: true }).click();
 
@@ -113,11 +103,11 @@ test('isolates saved tabs by account and filters settings after permission chang
 
   user = { ...admin };
   await page.reload();
-  await expect(page.locator('.context-tab')).toHaveText(['用户管理', '大模型配置']);
+  await expect(page.locator('.context-tab')).toHaveText(['用户管理', '供应商配置']);
   await page.getByRole('button', { name: '用户管理', exact: true }).click();
   user = { ...admin, role: 'USER', is_super_admin: false };
   await page.reload();
-  await expect(page.locator('.context-tab')).toHaveText(['大模型配置']);
+  await expect(page.locator('.context-tab')).toHaveText(['供应商配置']);
   await expect(page.getByRole('button', { name: '节点中心', exact: true })).toHaveClass('active');
 });
 
@@ -125,7 +115,7 @@ test('logout clears temporary tabs before the next login', async ({ page }) => {
   await mockSettingsApi(page);
   await page.goto('/');
   await openSettings(page, '终端环境');
-  await openSettings(page, '大模型配置');
+  await openSettings(page, '供应商配置');
   await page.getByRole('button', { name: '账户与设置' }).click();
   await page.getByRole('menuitem', { name: '退出登录' }).click();
   await expect(page.getByRole('heading', { name: '登录 FlowWeave' })).toBeVisible();
@@ -159,11 +149,11 @@ for (const storage of ['corrupt', 'unavailable'] as const) {
     await page.goto('/');
     await expect(page.locator('.context-tabs')).toHaveCount(0);
     await openSettings(page, '终端环境');
-    await openSettings(page, '大模型配置');
-    await expect(page.locator('.context-tab')).toHaveText(['大模型配置', '终端环境']);
+    await openSettings(page, '供应商配置');
+    await expect(page.locator('.context-tab')).toHaveText(['供应商配置', '终端环境']);
     await page.getByRole('button', { name: '关闭终端环境' }).click();
-    await expect(page.locator('.context-tab.active')).toHaveText('大模型配置');
-    await page.getByRole('button', { name: '关闭大模型配置' }).click();
+    await expect(page.locator('.context-tab.active')).toHaveText('供应商配置');
+    await page.getByRole('button', { name: '关闭供应商配置' }).click();
     await expect(page.locator('.context-tabs')).toHaveCount(0);
   });
 }

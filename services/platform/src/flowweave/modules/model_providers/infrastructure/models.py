@@ -66,6 +66,8 @@ class ProviderModel(Base):
     model_name: Mapped[str] = mapped_column(String(240))
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     is_default: Mapped[bool] = mapped_column(Boolean, default=False)
+    # ``None`` means automatic: the protocol is derived from the model name.
+    protocol: Mapped[str | None] = mapped_column(String(30))
     default_reasoning_effort: Mapped[str | None] = mapped_column(String(30))
     supported_reasoning_efforts: Mapped[list[str]] = mapped_column(JSON, default=list)
     discovered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)

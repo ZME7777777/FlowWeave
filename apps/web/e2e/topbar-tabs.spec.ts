@@ -2,7 +2,7 @@ import { expect, test, type Page } from '@playwright/test';
 
 const user = { id: 'topbar-user', username: 'flowweave', role: 'SUPER_ADMIN', is_super_admin: true, can_use_agent_sessions: true };
 const settings = ['environments', 'credentials', 'models', 'ldap-users'];
-const labels = ['终端环境', '认证管理', '大模型配置', '用户管理'];
+const labels = ['终端环境', '认证管理', '供应商配置', '用户管理'];
 async function setup(page: Page, seed = true) {
   await page.addInitScript(({ userId, views, seed }) => {
     if (seed && !sessionStorage.getItem(`flowweave.context-tabs.v2:${userId}`)) sessionStorage.setItem(`flowweave.context-tabs.v2:${userId}`, JSON.stringify([...views].reverse().map(view => ({ kind: 'settings', view }))));
@@ -224,10 +224,10 @@ test('closing a temporary tab returns to the previously active tab instead of a 
   await setup(page, false);
   await page.getByRole('navigation', { name: '主导航' }).getByRole('button', { name: '能力仓库' }).click();
   await expect(page.getByRole('textbox', { name: '搜索当前能力模块' })).toBeVisible();
-  await openSetting(page, '大模型配置');
+  await openSetting(page, '供应商配置');
   await openSetting(page, '认证管理');
   await page.locator('.context-tab', { hasText: '认证管理' }).getByRole('button', { name: /关闭/ }).click();
-  await expect(page.locator('.context-tab.active, .context-tab[aria-current="page"]')).toContainText('大模型配置');
-  await page.locator('.context-tab', { hasText: '大模型配置' }).getByRole('button', { name: /关闭/ }).click();
+  await expect(page.locator('.context-tab.active, .context-tab[aria-current="page"]')).toContainText('供应商配置');
+  await page.locator('.context-tab', { hasText: '供应商配置' }).getByRole('button', { name: /关闭/ }).click();
   await expect(page.getByRole('textbox', { name: '搜索当前能力模块' })).toBeVisible();
 });

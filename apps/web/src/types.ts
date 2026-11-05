@@ -209,8 +209,13 @@ export interface NodeAssetWrite {
   executor: ExecutorConfig;
 }
 
+export type ModelProtocol = 'CHAT_COMPLETIONS' | 'RESPONSES' | 'ANTHROPIC';
 export interface ProviderModel {
   id?: string; model_name: string; enabled: boolean; is_default: boolean;
+  /** Manual override; null/undefined = FlowWeave derives it from the model name. */
+  protocol?: ModelProtocol | null;
+  /** Read-only: the protocol actually used for this model. */
+  effective_protocol?: ModelProtocol;
   default_reasoning_effort?: string | null; supported_reasoning_efforts?: string[];
   context_window?: number | null;
 }
@@ -218,8 +223,8 @@ export interface ProviderUsageQuery {
   url: string; method: 'GET' | 'POST'; expression: string; headers: Record<string, string>;
 }
 export interface ModelProvider {
-  id: string; name: string; base_url: string; auth_type: 'API_KEY' | 'ANTHROPIC_API_KEY' | 'CODEX_OAUTH';
-  api_protocol: 'CHAT_COMPLETIONS' | 'RESPONSES';
+  id: string; name: string; base_url: string; auth_type: 'API_KEY' | 'CODEX_OAUTH';
+  protocols: ModelProtocol[];
   usage_query?: ProviderUsageQuery | null;
   has_api_key: boolean; api_key_hint?: string | null; oauth_connected: boolean;
   oauth_account_email?: string | null; oauth_device_pending: boolean;
@@ -229,8 +234,7 @@ export interface ModelProvider {
   created_at: string; updated_at: string;
 }
 export interface ModelProviderWrite {
-  name: string; auth_type: 'API_KEY' | 'ANTHROPIC_API_KEY' | 'CODEX_OAUTH'; base_url: string;
-  api_protocol: 'CHAT_COMPLETIONS' | 'RESPONSES';
+  name: string; auth_type: 'API_KEY' | 'CODEX_OAUTH'; base_url: string;
   api_key?: string | null; row_version?: number | null;
   usage_query?: ProviderUsageQuery | null;
   models: ProviderModel[];
@@ -244,7 +248,7 @@ export interface ModelProviderUsage {
   spend?: number; max_budget?: number; remaining?: number; reason?: string;
 }
 export interface ModelProviderUsagePreviewWrite extends ModelProviderDiscoveryWrite {
-  auth_type: 'API_KEY' | 'ANTHROPIC_API_KEY'; usage_query: ProviderUsageQuery | null;
+  usage_query: ProviderUsageQuery | null;
 }
 export interface CodexDeviceAuthorization {
   verification_url: string; user_code: string; expires_at: string; interval: number;

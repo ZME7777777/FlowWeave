@@ -9,7 +9,7 @@ function credential(index: number) {
   return { id: `credential-${index}`, name: `站点认证 ${index}`, target_host: `service-${index}.example.test`, target_path: '/admin', include_subdomains: false, auth_type: 'USERNAME_PASSWORD', has_username: true, has_secret: true, secret_hint: '5678', row_version: 1, environment_names: {}, created_at: now, updated_at: now };
 }
 function provider(index: number) {
-  return { id: `provider-${index}`, name: `模型服务 ${index}`, auth_type: 'API_KEY', base_url: 'https://models.example.test/v1', api_protocol: 'CHAT_COMPLETIONS', has_api_key: true, api_key_hint: '••••key', oauth_connected: false, connection_state: 'CONNECTED', reference_node_count: 2, available_for_nodes: true, available_for_prompt_gates: true, row_version: 1, models: [{ id: `model-${index}`, model_name: `model-${index}`, enabled: true, is_default: true }], created_at: now, updated_at: now };
+  return { id: `provider-${index}`, name: `模型服务 ${index}`, auth_type: 'API_KEY', base_url: 'https://models.example.test/v1', protocols: ['CHAT_COMPLETIONS'], has_api_key: true, api_key_hint: '••••key', oauth_connected: false, connection_state: 'CONNECTED', reference_node_count: 2, available_for_nodes: true, available_for_prompt_gates: true, row_version: 1, models: [{ id: `model-${index}`, model_name: `model-${index}`, enabled: true, is_default: true }], created_at: now, updated_at: now };
 }
 function environment(index: number) {
   return { id: `environment-${index}`, name: `终端环境 ${index}`, description: `开发与验收环境 ${index}`, row_version: 1, active_sessions: [], versions: Array.from({ length: 12 }, (_, revision) => ({ id: `version-${index}-${revision}`, environment_id: `environment-${index}`, version_no: 12 - revision, state: 'READY', image_reference: 'test/runtime:v1', image_digest: 'sha256:' + 'a'.repeat(64), description: `环境版本 ${12 - revision}`, runtime_capabilities: ['browser'], manifest: { commands: { python: '3.12' } }, reference_count: revision === 0 ? 1 : 0, run_reference_count: revision === 0 ? 1 : 0, created_at: now })), created_at: now, updated_at: now };
@@ -34,7 +34,7 @@ async function base(page: Page, handler?: (route: Route, path: string) => Promis
 
 test('all three management pages share compact lists, selection, search, and fixed button pagination', async ({ page }) => {
   await base(page);
-  for (const [title, name] of [['终端环境', '终端环境'], ['认证管理', '站点认证'], ['大模型配置', '模型服务']]) {
+  for (const [title, name] of [['终端环境', '终端环境'], ['认证管理', '站点认证'], ['供应商配置', '模型服务']]) {
     await openSettings(page, title);
     const list = page.getByRole('complementary', { name: `${title}列表` });
     const detail = page.getByRole('main', { name: `${title}详情` });
@@ -141,8 +141,8 @@ test('model detail keeps test feedback and budget bound to the selected service 
     if (path.endsWith('/model-providers')) { await json(route, providers); return true; }
     return false;
   });
-  await openSettings(page, '大模型配置');
-  const detail = page.getByRole('main', { name: '大模型配置详情' });
+  await openSettings(page, '供应商配置');
+  const detail = page.getByRole('main', { name: '供应商配置详情' });
   await expect(detail.getByRole('row').filter({ hasText: 'disabled-model' })).toContainText('已停用');
   await detail.getByRole('button', { name: '测试连接', exact: true }).click();
   await expect(detail.getByRole('status')).toContainText('连接成功');
@@ -153,15 +153,15 @@ test('model detail keeps test feedback and budget bound to the selected service 
   await page.getByRole('button', { name: '查看 模型服务 2', exact: true }).click();
   await expect(detail.getByRole('status')).toHaveCount(0);
   await expect(detail.getByRole('button', { name: '查询用量' })).toBeVisible();
-  await detail.getByRole('button', { name: '编辑模型服务 模型服务 2', exact: true }).click();
+  await detail.getByRole('button', { name: '编辑供应商 模型服务 2', exact: true }).click();
   const editor = page.locator('form.model-editor');
   await expect(editor.getByLabel('API Key', { exact: true })).toHaveValue('');
   await expect(editor.getByRole('button', { name: '拉取模型', exact: true })).toBeVisible();
   await expect(editor.getByRole('button', { name: '手动添加模型', exact: true })).toBeVisible();
   await editor.getByRole('button', { name: '关闭', exact: true }).click();
-  await detail.getByRole('button', { name: '删除模型服务 模型服务 2', exact: true }).click();
+  await detail.getByRole('button', { name: '删除供应商 模型服务 2', exact: true }).click();
   await page.getByRole('alertdialog').getByRole('button', { name: '确认删除' }).click();
-  await expect(page.getByRole('status').filter({ hasText: '已删除' })).toContainText('已删除 1 个模型服务');
+  await expect(page.getByRole('status').filter({ hasText: '已删除' })).toContainText('已删除 1 个供应商');
   await expect(detail.getByRole('heading', { name: '模型服务 1', exact: true })).toBeVisible();
 });
 
@@ -188,28 +188,36 @@ test('environment version table preserves reference protection and deletes only 
   await expect(detail.getByRole('button', { name: '从 v12 创建草稿', exact: true })).toBeVisible();
 });
 
-test('model creation retains protocol choice, discovery, enabled models, and default model', async ({ page }) => {
+test('one provider derives each model protocol automatically and keeps manual overrides', async ({ page }) => {
   let saved: Record<string, unknown> | undefined;
   await base(page, async (route, path) => {
-    if (path.endsWith('/discover-models')) { await json(route, { models: ['model-a', 'model-b'] }); return true; }
+    if (path.endsWith('/discover-models')) { await json(route, { models: ['claude-sonnet-5-5', 'gpt-5.5', 'deepseek-chat'] }); return true; }
     if (path.endsWith('/model-providers') && route.request().method() === 'POST') { saved = route.request().postDataJSON(); await json(route, { ...provider(99), ...saved }, 201); return true; }
     return false;
   });
-  await openSettings(page, '大模型配置');
-  await page.getByRole('button', { name: '新增模型服务', exact: true }).click();
+  await openSettings(page, '供应商配置');
+  await page.getByRole('button', { name: '新增供应商', exact: true }).click();
   const editor = page.locator('form.model-editor');
-  await editor.getByLabel('服务名称', { exact: true }).fill('新模型服务');
-  await editor.getByRole('button', { name: '调用协议', exact: true }).click();
-  await editor.getByRole('option', { name: /Responses/ }).click();
-  await editor.getByLabel('Base URL', { exact: true }).fill('https://models.example.test/v1');
+  await expect(editor.getByRole('button', { name: '调用协议', exact: true })).toHaveCount(0);
+  await editor.getByLabel('服务名称', { exact: true }).fill('新供应商');
+  await editor.getByLabel('Base URL', { exact: true }).fill('https://models.example.test');
   await editor.getByLabel('API Key', { exact: true }).fill('fixture-key');
   await editor.getByRole('button', { name: '拉取模型', exact: true }).click();
-  await editor.getByRole('button', { name: 'model-a', exact: true }).click();
-  await editor.getByRole('button', { name: 'model-b', exact: true }).click();
+  for (const name of ['claude-sonnet-5-5', 'gpt-5.5', 'deepseek-chat']) await editor.getByRole('button', { name, exact: true }).click();
+  await expect(editor.getByRole('button', { name: '模型 claude-sonnet-5-5 协议' })).toContainText('Anthropic Messages');
+  await expect(editor.getByRole('button', { name: '模型 gpt-5.5 协议' })).toContainText('Responses');
+  await expect(editor.getByRole('button', { name: '模型 deepseek-chat 协议' })).toContainText('Chat Completions');
+  await editor.getByRole('button', { name: '模型 gpt-5.5 协议' }).click();
+  await editor.getByRole('option', { name: 'Chat Completions', exact: true }).click();
   await editor.getByRole('radio').nth(1).check();
-  await editor.getByRole('button', { name: '保存模型服务', exact: true }).click();
-  await expect.poll(() => saved?.api_protocol).toBe('RESPONSES');
-  expect(saved?.models).toEqual([{ model_name: 'model-a', enabled: true, is_default: false }, { model_name: 'model-b', enabled: true, is_default: true }]);
+  await editor.getByRole('button', { name: '保存供应商', exact: true }).click();
+  await expect.poll(() => saved?.models?.length).toBe(3);
+  expect(saved?.api_protocol).toBeUndefined();
+  expect(saved?.models).toEqual([
+    { model_name: 'claude-sonnet-5-5', enabled: true, is_default: false, protocol: null },
+    { model_name: 'gpt-5.5', enabled: true, is_default: true, protocol: 'CHAT_COMPLETIONS' },
+    { model_name: 'deepseek-chat', enabled: true, is_default: false, protocol: null },
+  ]);
 });
 
 test('Codex detail retains device login, model refresh, and disconnect', async ({ page }) => {
@@ -224,13 +232,13 @@ test('Codex detail retains device login, model refresh, and disconnect', async (
     if (path.endsWith('/oauth') && route.request().method() === 'DELETE') { disconnects += 1; codex.oauth_connected = false; await json(route, codex); return true; }
     return false;
   });
-  await openSettings(page, '大模型配置');
-  const detail = page.getByRole('main', { name: '大模型配置详情' });
+  await openSettings(page, '供应商配置');
+  const detail = page.getByRole('main', { name: '供应商配置详情' });
   await detail.getByRole('button', { name: '登录 Codex', exact: true }).click();
   await expect(page.getByText('FIXTURE-CODE', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: '我已完成授权', exact: true }).click();
   await expect(detail.getByText('fixture@example.test', { exact: true })).toBeVisible();
-  await detail.getByRole('button', { name: '编辑模型服务 模型服务 1', exact: true }).click();
+  await detail.getByRole('button', { name: '编辑供应商 模型服务 1', exact: true }).click();
   const editor = page.locator('form.model-editor');
   await expect.poll(() => discoveries).toBeGreaterThanOrEqual(1);
   await expect(editor.getByText('codex-fixture', { exact: true })).toBeVisible();
@@ -269,8 +277,8 @@ test('bulk selection keeps the original scope across pages for credentials and m
   await list.getByRole('button', { name: '批量删除 (25)' }).click();
   await page.getByRole('alertdialog').getByRole('button', { name: '确认删除' }).click();
   await expect(list.locator('.settings-resource-row')).toHaveCount(0);
-  await openSettings(page, '大模型配置');
-  const models = page.getByRole('complementary', { name: '大模型配置列表' });
+  await openSettings(page, '供应商配置');
+  const models = page.getByRole('complementary', { name: '供应商配置列表' });
   await models.getByRole('button', { name: '全选', exact: true }).click();
   await models.getByRole('button', { name: '下一页' }).click();
   await expect(models.getByRole('checkbox').first()).toBeChecked();
@@ -300,9 +308,9 @@ test('custom model budget query previews unsaved settings and preserves template
     if (path.endsWith('/model-providers')) { await json(route, [configured]); return true; }
     return false;
   });
-  await openSettings(page, '大模型配置');
-  const detail = page.getByRole('main', { name: '大模型配置详情' });
-  await detail.getByRole('button', { name: '编辑模型服务 模型服务 1', exact: true }).click();
+  await openSettings(page, '供应商配置');
+  const detail = page.getByRole('main', { name: '供应商配置详情' });
+  await detail.getByRole('button', { name: '编辑供应商 模型服务 1', exact: true }).click();
   const editor = page.locator('form.model-editor');
   await editor.getByRole('checkbox', { name: '自定义余额查询', exact: true }).check();
   await editor.getByRole('group', { name: '查询请求方法' }).getByRole('button', { name: 'POST', exact: true }).click();
@@ -319,22 +327,22 @@ test('custom model budget query previews unsaved settings and preserves template
   expect(previews[0]).toMatchObject({ provider_id: 'provider-1', api_key: '', usage_query: { method: 'POST', url, expression, headers: { 'X-Api-Key': '{key}' } } });
   expect(writes).toHaveLength(0);
   await page.screenshot({ path: test.info().outputPath('custom-query-editor.png') });
-  await editor.getByRole('button', { name: '保存模型服务', exact: true }).click();
+  await editor.getByRole('button', { name: '保存供应商', exact: true }).click();
   await expect(editor).toHaveCount(0);
   expect(writes[0].usage_query).toEqual((previews[0] as { usage_query: unknown }).usage_query);
   await detail.getByRole('button', { name: '查询余额', exact: true }).click();
   await expect(detail.getByText('$200', { exact: true })).toBeVisible();
-  await detail.getByRole('button', { name: '编辑模型服务 模型服务 1', exact: true }).click();
+  await detail.getByRole('button', { name: '编辑供应商 模型服务 1', exact: true }).click();
   await expect(editor.getByLabel('余额查询地址', { exact: true })).toHaveValue(url);
   await expect(editor.getByLabel('API Key', { exact: true })).toHaveValue('');
   await editor.getByText('请求头与数组汇总', { exact: true }).click();
   await expect(editor.getByRole('textbox', { name: '查询请求头（JSON）', exact: true })).toHaveValue(JSON.stringify({ 'X-Api-Key': '{key}' }, null, 2));
   await editor.getByRole('textbox', { name: '查询请求头（JSON）', exact: true }).fill('{invalid');
-  await editor.getByRole('button', { name: '保存模型服务', exact: true }).click();
+  await editor.getByRole('button', { name: '保存供应商', exact: true }).click();
   await expect(editor.getByText('查询请求头必须是 JSON 对象', { exact: true })).toBeVisible();
   expect(writes).toHaveLength(1);
   await editor.getByRole('checkbox', { name: '自定义余额查询', exact: true }).uncheck();
-  await editor.getByRole('button', { name: '保存模型服务', exact: true }).click();
+  await editor.getByRole('button', { name: '保存供应商', exact: true }).click();
   await expect(editor).toHaveCount(0);
   expect(writes[1].usage_query).toBeNull();
   await expect(detail.getByText('$200', { exact: true })).toHaveCount(0);
@@ -353,8 +361,8 @@ test('editing a query cancels an outdated balance preview and supports outside c
     }
     return false;
   });
-  await openSettings(page, '大模型配置');
-  await page.getByRole('button', { name: '编辑模型服务 模型服务 1', exact: true }).click();
+  await openSettings(page, '供应商配置');
+  await page.getByRole('button', { name: '编辑供应商 模型服务 1', exact: true }).click();
   const editor = page.locator('form.model-editor');
   await editor.getByRole('checkbox', { name: '自定义余额查询', exact: true }).check();
   await editor.getByRole('button', { name: '查询余额', exact: true }).click();

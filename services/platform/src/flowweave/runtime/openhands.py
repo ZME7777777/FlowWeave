@@ -1428,7 +1428,7 @@ class OpenHandsRuntime:
         model = provider.model
         if "/" in model:
             return model
-        if provider.auth_type == "ANTHROPIC_API_KEY":
+        if provider.api_protocol == "ANTHROPIC":
             return f"anthropic/{model}"
         return f"openai/{model}"
 
@@ -4183,7 +4183,22 @@ class OpenHandsRuntime:
                     continue
                 options = action.get("options")
                 recommendation = action.get("recommendation")
+                follow_ups: list[tuple[str, tuple[str, ...], str | None]] = []
+                for item in action.get("questions") or []:
+                    if not isinstance(item, dict) or not str(item.get("question") or "").strip():
+                        continue
+                    raw_options = item.get("options")
+                    follow_ups.append(
+                        (
+                            str(item["question"]),
+                            tuple(str(o) for o in raw_options)
+                            if isinstance(raw_options, list)
+                            else (),
+                            str(item["recommendation"]) if item.get("recommendation") else None,
+                        )
+                    )
                 return RuntimePendingQuestion(
+                    follow_ups=tuple(follow_ups),
                     action_id=str(event.get("id") or ""),
                     tool_call_id=str(event.get("tool_call_id") or ""),
                     question=str(action.get("question") or ""),

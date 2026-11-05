@@ -3,7 +3,7 @@ import type { MarketSources, MarketSkillSearch, MarketSkill, CapabilityPackageFi
 import type {
   AuthUser, LdapDirectory, LdapUser, PlatformUser,
   AgentProfileVersion, ArtifactInput, ArtifactVersion, ArtifactVersionPage, RuntimeArtifactAuditPage, CapabilityAsset, CapabilityImportResult, FlowDefinition, FlowRun, FlowRunAutomaticRecord, FlowRunAutomaticRecordUpdate, FlowRunAutomaticRecordWrite, FlowRunConversation, FlowRunRuntimeOverview, FlowRunRuntimeResource, FlowRunSummary, FlowWrite, MessageAttachmentInput, OpenHandsConversationEventBatch, McpSource, SkillSource, SkillVersionComparison,
-  BlockedNodeDelete, BulkDeleteResult, CapabilityBulkDeleteResult, CodexDeviceAuthorization, CodexOAuthStatus, GateRemediationResult, ModelProvider, ModelProviderDiscoveryWrite, ModelProviderUsage, ModelProviderWrite, NodeAsset, NodeAssetWrite, NodeAttempt, FlowRunAutomaticRecordSummary, ProviderBulkDeleteResult,
+  BlockedNodeDelete, BulkDeleteResult, CapabilityBulkDeleteResult, CodexDeviceAuthorization, CodexOAuthStatus, GateRemediationResult, ModelProtocol, ModelProvider, ModelProviderDiscoveryWrite, ModelProviderUsage, ModelProviderWrite, NodeAsset, NodeAssetWrite, NodeAttempt, FlowRunAutomaticRecordSummary, ProviderBulkDeleteResult,
   AgentAttachment, AgentConversation, AgentConversationAnnotation, AgentConversationContext, AgentConversationHead, AgentConversationInputReadiness, AgentConversationReference, AgentConversationSchedule, AgentConversationScheduleOccurrence, AgentPendingConfirmation, AgentWorkDirectory, AgentWorkDirectoryList, AgentWorkspace, AgentWorkspaceCapability, AgentWorkspaceDetails, AgentWorkspaceMcpReadiness, AgentWorkspaceReference, AgentWorkspaceRuntime, AutomaticRecordConfigDocument, CapabilityCollection, CapabilityCollectionWrite, Case, ContextBundleManifest, MarketplaceCatalog, NodeDirectory, NodeRun, OpenHandsConversationEvent, PluginSourceResolution, RunEvent, RuntimeConfirmationBatch, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, GatePolicy, WebsiteCredential, WebsiteCredentialWrite, FlowRunSchedule, FlowRunScheduleOccurrencePage, FlowRunScheduleWrite, FlowRunScheduleTemplate, FlowRunStepwiseRecord, FlowRunStepwiseRecordWrite, StepwiseNodeDraft, StepwiseRecordConfigDocument, StepwiseRuntimePortsWrite,
 } from '../types';
 import { deploymentBasePath } from '../deploymentPath';
@@ -782,8 +782,8 @@ export const api = {
   testProvider: (id: string) => request<{ connection_state: string; model_count: number }>(`/model-providers/${id}/test`, json('POST')),
   previewProviderUsage: (body: import('../types').ModelProviderUsagePreviewWrite, signal?: AbortSignal) => request<ModelProviderUsage>('/model-providers/preview-usage', { ...json('POST', body), signal }),
   providerUsage: (id: string) => request<ModelProviderUsage>(`/model-providers/${id}/usage`),
-  discoverProviderModels: (id: string) => request<{ models: string[]; provider?: ModelProvider }>(`/model-providers/${id}/discover-models`, json('POST')),
-  previewProviderModels: (body: ModelProviderDiscoveryWrite) => request<{ models: string[] }>('/model-providers/discover-models', json('POST', body)),
+  discoverProviderModels: (id: string) => request<{ models: string[]; protocols?: Record<string, ModelProtocol>; provider?: ModelProvider }>(`/model-providers/${id}/discover-models`, json('POST')),
+  previewProviderModels: (body: ModelProviderDiscoveryWrite) => request<{ models: string[]; protocols?: Record<string, ModelProtocol> }>('/model-providers/discover-models', json('POST', body)),
   startCodexOAuth: (id: string) => request<CodexDeviceAuthorization>(`/model-providers/${id}/oauth/device/start`, json('POST')),
   pollCodexOAuth: (id: string) => request<CodexOAuthStatus>(`/model-providers/${id}/oauth/device/poll`, json('POST')),
   codexOAuthStatus: (id: string) => request<CodexOAuthStatus>(`/model-providers/${id}/oauth/status`),

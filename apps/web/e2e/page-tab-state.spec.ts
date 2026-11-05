@@ -33,8 +33,8 @@ test('main and settings tabs restore filters and exact page DOM while closing a 
   await page.getByLabel('搜索认证管理').fill('认证 2');
   await page.getByRole('checkbox', { name: '选择 认证 20', exact: true }).check();
   await page.getByRole('button', { name: '查看 认证 20', exact: true }).click();
-  await openSettings(page, '大模型配置');
-  await page.getByLabel('搜索大模型配置').fill('保留的模型条件');
+  await openSettings(page, '供应商配置');
+  await page.getByLabel('搜索供应商配置').fill('保留的模型条件');
 
   await page.getByRole('button', { name: '流程编排', exact: true }).click();
   await expect(page.getByLabel('搜索流程', { exact: true })).toHaveValue('保留的流程条件');
@@ -46,11 +46,11 @@ test('main and settings tabs restore filters and exact page DOM while closing a 
   await expect(page.getByLabel('搜索认证管理')).toHaveValue('认证 2');
   await expect(page.getByRole('checkbox', { name: '选择 认证 20', exact: true })).toBeChecked();
   await expect(page.getByRole('main', { name: '认证管理详情' }).getByRole('heading', { name: '认证 20', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: '大模型配置', exact: true }).click();
-  await expect(page.getByLabel('搜索大模型配置')).toHaveValue('保留的模型条件');
-  await page.getByRole('button', { name: '关闭大模型配置', exact: true }).click();
-  await openSettings(page, '大模型配置');
-  await expect(page.getByLabel('搜索大模型配置')).toHaveValue('');
+  await page.getByRole('button', { name: '供应商配置', exact: true }).click();
+  await expect(page.getByLabel('搜索供应商配置')).toHaveValue('保留的模型条件');
+  await page.getByRole('button', { name: '关闭供应商配置', exact: true }).click();
+  await openSettings(page, '供应商配置');
+  await expect(page.getByLabel('搜索供应商配置')).toHaveValue('');
   expect(await page.locator('[data-page-tab]').evaluateAll(nodes => nodes.filter(node => getComputedStyle(node).display !== 'none').length)).toBe(1);
 });
 

@@ -514,13 +514,13 @@ test('mixed settings and record tabs close to their actual display neighbor', as
   await page.goto(recordPath(recordA.id));
   await expect(page.locator('.run-detail-header:visible h1')).toHaveText(recordA.name);
   await page.getByRole('button', { name: '账户与设置' }).click();
-  await page.getByRole('menuitem', { name: '大模型配置', exact: true }).click();
+  await page.getByRole('menuitem', { name: '供应商配置', exact: true }).click();
   await enterDirectoryRecord(page, recordB.name);
-  await expect(page.locator('.context-tab-select')).toHaveText(['Run #1_bbbbbbbb', '大模型配置', 'Run #1_aaaaaaaa']);
+  await expect(page.locator('.context-tab-select')).toHaveText(['Run #1_bbbbbbbb', '供应商配置', 'Run #1_aaaaaaaa']);
   await page.getByRole('button', { name: '关闭Run #1_bbbbbbbb', exact: true }).click();
-  await expect(page.locator('.context-tab.active')).toHaveText('大模型配置');
+  await expect(page.locator('.context-tab.active')).toHaveText('供应商配置');
   await expect(page).toHaveURL('/');
-  await page.getByRole('button', { name: '关闭大模型配置', exact: true }).click();
+  await page.getByRole('button', { name: '关闭供应商配置', exact: true }).click();
   await expect(page).toHaveURL(recordPath(recordA.id));
   await expect(page.locator('.run-detail-header:visible h1')).toHaveText(recordA.name);
 });

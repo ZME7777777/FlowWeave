@@ -72,11 +72,12 @@ async def _budget(provider_id: str, db: Db, container: Container) -> dict[str, o
 @router.post("/model-providers/discover-models")
 async def preview_discover_models(
     payload: ModelProviderDiscoveryWrite, db: Db, container: ContainerDep
-) -> dict[str, list[str]]:
+) -> dict[str, Any]:
     snapshot = await run_sync(
         db, lambda session: service.preview_provider_connection_snapshot(session, payload)
     )
-    return {"models": await discover_provider_models(container.http, snapshot)}
+    models = await discover_provider_models(container.http, snapshot)
+    return {"models": models, "protocols": service.infer_protocols(models)}
 
 
 @router.post("/model-providers/preview-usage")
@@ -86,8 +87,6 @@ async def preview_provider_usage(
     snapshot = await run_sync(
         db, lambda session: service.preview_provider_usage_snapshot(session, payload)
     )
-    if payload.auth_type == "ANTHROPIC_API_KEY" and snapshot.usage_query is None:
-        return {"status": "UNAVAILABLE", "reason": "请为该服务配置自定义余额查询"}
     return await read_provider_budget(container.http, snapshot)
 
 
@@ -181,10 +180,8 @@ async def test_provider(provider_id: str, db: Db, container: ContainerDep) -> di
             raise
         await run_sync(db, lambda session: service.sync_codex_models(session, provider_id, models))
         return {"connection_state": "CONNECTED", "model_count": len(models)}
-    if provider["auth_type"] == "ANTHROPIC_API_KEY":
-        if not provider["has_api_key"]:
-            raise DomainError("ANTHROPIC_API_KEY_REQUIRED", "Anthropic API key is required", 409)
-        return {"connection_state": "CONNECTED", "model_count": len(provider["models"])}
+    if not provider["has_api_key"]:
+        raise DomainError("API_KEY_REQUIRED", "API key is required", 409)
     try:
         models = await _discover(provider_id, db, container)
     except DomainError:
@@ -211,8 +208,6 @@ async def provider_usage(provider_id: str, db: Db, container: ContainerDep) -> d
             "status": "UNAVAILABLE",
             "reason": "该认证方式未提供可读取的 API Key 预算",
         }
-    if provider["auth_type"] == "ANTHROPIC_API_KEY" and not provider["usage_query"]:
-        return {"status": "UNAVAILABLE", "reason": "请为该服务配置自定义余额查询"}
     if not provider["has_api_key"]:
         return {
             "status": "UNAVAILABLE",
@@ -236,4 +231,5 @@ async def discover_models(provider_id: str, db: Db, container: ContainerDep) -> 
             "models": [profile.model_name for profile in models],
             "provider": synchronized,
         }
-    return {"models": await _discover(provider_id, db, container)}
+    models = await _discover(provider_id, db, container)
+    return {"models": models, "protocols": service.infer_protocols(models)}

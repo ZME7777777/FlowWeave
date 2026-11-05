@@ -20,6 +20,8 @@ flowweave openapi --paths
 
 创建和修改的字段以线上 schema 为准。用 JSON 文件时，文件本身不得提交进仓库；完成后按团队安全流程处理。
 
+API Key 供应商只需一个 `base_url` 和一个 Key，一个供应商即可同时提供 Claude、GPT 等多种协议：每个模型的协议由 FlowWeave 按模型名自动判断（`claude*` 走 Anthropic Messages，`gpt-5`/`o*`/`codex*` 走 Responses，其余走 Chat Completions），必要时可在模型上用 `protocol` 手动覆盖。不再需要为同一网关按协议拆成多个供应商；旧的 `auth_type=ANTHROPIC_API_KEY` 和 `api_protocol` 仅作兼容别名。
+
 ```bash
 flowweave model create --data-file ./provider-local.json --dry-run
 flowweave model create --data-file ./provider-local.json

@@ -348,6 +348,8 @@ class ProviderModelWrite(ApiModel):
     model_name: str = Field(min_length=1, max_length=240)
     enabled: bool = True
     is_default: bool = False
+    # ``None`` = automatic: FlowWeave derives the protocol from the model name.
+    protocol: Literal["CHAT_COMPLETIONS", "RESPONSES", "ANTHROPIC"] | None = None
 
 
 def _empty_provider_models() -> list[ProviderModelWrite]:
@@ -378,24 +380,39 @@ class ModelProviderUsagePreviewWrite(ModelProviderDiscoveryWrite):
 
 class ModelProviderWrite(ApiModel):
     name: str = Field(min_length=1, max_length=200)
+    # ``ANTHROPIC_API_KEY`` is a deprecated alias of ``API_KEY`` whose models
+    # default to the Anthropic protocol.
     auth_type: Literal["API_KEY", "ANTHROPIC_API_KEY", "CODEX_OAUTH"] = "API_KEY"
-    api_protocol: Literal["CHAT_COMPLETIONS", "RESPONSES"] = "CHAT_COMPLETIONS"
+    # Deprecated: the protocol is chosen per model.  Only used as the default
+    # for models that carry no protocol of their own.
+    api_protocol: Literal["CHAT_COMPLETIONS", "RESPONSES"] | None = None
     base_url: str = ""
     api_key: str | None = None
     usage_query: ProviderUsageQuery | None = None
     row_version: int | None = None
     models: list[ProviderModelWrite] = Field(default_factory=_empty_provider_models)
+    # Set only by the deprecated ``ANTHROPIC_API_KEY`` alias, whose providers
+    # were never probed because Anthropic exposes no OpenAI model list.
+    legacy_anthropic: bool = Field(default=False, exclude=True)
 
     @model_validator(mode="after")
     def validate_models(self) -> ModelProviderWrite:
         self.base_url = self.base_url.strip()
+        if self.auth_type == "ANTHROPIC_API_KEY":
+            self.auth_type = "API_KEY"
+            self.legacy_anthropic = True
+            for model in self.models:
+                model.protocol = model.protocol or "ANTHROPIC"
+        elif self.api_protocol is not None and self.auth_type == "API_KEY":
+            for model in self.models:
+                model.protocol = model.protocol or self.api_protocol
         if self.auth_type == "CODEX_OAUTH":
             self.api_protocol = "RESPONSES"
             if self.usage_query is not None:
                 raise ValueError("Codex OAuth 不支持自定义 API Key 余额查询")
-        if self.auth_type in {"API_KEY", "ANTHROPIC_API_KEY"} and not self.base_url:
+        if self.auth_type == "API_KEY" and not self.base_url:
             raise ValueError("base_url is required for API-key providers")
-        if self.auth_type in {"API_KEY", "ANTHROPIC_API_KEY"} and not self.models:
+        if self.auth_type == "API_KEY" and not self.models:
             raise ValueError("at least one model is required for this provider")
         names = [item.model_name for item in self.models]
         if len(names) != len(set(names)):

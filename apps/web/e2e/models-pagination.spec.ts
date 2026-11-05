@@ -4,7 +4,7 @@ test('wide model configuration lists twelve services and shows one selected deta
   await page.setViewportSize({ width: 1920, height: 1080 });
   const providers = Array.from({ length: 12 }, (_, index) => ({
     id: `provider-${index}`, name: `模型服务 ${index + 1}`, base_url: 'https://models.example.test/v1',
-    auth_type: 'API_KEY', api_protocol: 'CHAT_COMPLETIONS', has_api_key: true, api_key_hint: '••••key',
+    auth_type: 'API_KEY', protocols: ['CHAT_COMPLETIONS'], has_api_key: true, api_key_hint: '••••key',
     oauth_connected: false, oauth_device_pending: false, connection_state: 'CONNECTED',
     reference_node_count: 0, available_for_nodes: true, available_for_prompt_gates: true, row_version: 1,
     models: [{ id: `model-${index}`, model_name: 'gpt-test', enabled: true, is_default: true, supported_reasoning_efforts: ['low', 'medium', 'high'], default_reasoning_effort: 'medium', context_window: 200000 }],
@@ -14,14 +14,15 @@ test('wide model configuration lists twelve services and shows one selected deta
   await page.route('**/api/v1/model-providers', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(providers) }));
   await page.goto('/');
   await page.getByRole('button', { name: '账户与设置' }).click();
-  await page.getByRole('menuitem', { name: '大模型配置', exact: true }).click();
+  await page.getByRole('menuitem', { name: '供应商配置', exact: true }).click();
   await expect(page.locator('.settings-resource-row')).toHaveCount(12);
   await expect(page.locator('.settings-model-detail')).toHaveCount(1);
   await expect(page.getByRole('heading', { name: '模型服务 1', exact: true })).toBeVisible();
   await expect(page.getByRole('navigation', { name: '列表分页' })).toHaveCount(0);
-  const detail = page.getByRole('main', { name: '大模型配置详情' });
+  const detail = page.getByRole('main', { name: '供应商配置详情' });
   await expect(detail.locator('.settings-detail-header').getByRole('button', { name: '测试连接', exact: true })).toBeVisible();
-  await expect(detail.getByText('Chat Completions', { exact: true })).toBeVisible();
+  await expect(detail.getByRole('term').filter({ hasText: '支持协议' })).toBeVisible();
+  await expect(detail.getByText('Chat Completions', { exact: true }).first()).toBeVisible();
   await expect(detail.getByRole('cell', { name: '200,000 tokens', exact: true })).toBeVisible();
   await expect(detail.getByRole('cell', { name: /low \/ medium \/ high/ })).toBeVisible();
   for (const width of [1920, 1440, 1024]) {
