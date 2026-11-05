@@ -123,3 +123,5 @@
 .conversation-model-change-line>svg{flex:none}
 .conversation-model-change-line>span{flex:0 1 auto;min-width:0;overflow-wrap:anywhere;line-height:1.45;color:#6b7a70}@media(max-width:520px){.conversation-model-change-line{width:100%}.conversation-model-change-line::before,.conversation-model-change-line::after{flex-basis:8px}}
 .conversation-model-change-line b{font-weight:500;color:#4d5a52}
+
+.ask-user-answer{flex:0 0 auto;border:0;background:transparent;padding:0 4px;color:#2f6f4f;font-size:12px;font-weight:500;cursor:pointer}.ask-user-answer:hover{text-decoration:underline}

@@ -3581,7 +3581,7 @@ def _open_question_binding_ids(
 ) -> dict[str, str]:
     """Binding id -> action id of the latest ask_user with no user reply yet (bounded, best effort).
 
-    ask_user never changes the native execution status, so the fact is read from the formal
+    ask_user parks the run in waiting_for_user_input (ready for input); the fact is read from the formal
     events. Only recently active, non-running conversations are probed to keep this poll cheap.
     """
 

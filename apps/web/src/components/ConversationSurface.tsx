@@ -1,6 +1,6 @@
 import { ViewportPopover } from './ViewportPopover';
 import { BookOpen, Box, Check, MessageCircleQuestion, ChevronDown, ChevronRight, CircleAlert, ClipboardList, Copy, ExternalLink, Eye, FileCode2, FileCog, FileJson, FilePenLine, FilePlus2, FileText, FileType2, GitFork, Link, LoaderCircle, PanelRightOpen, PanelTop, Pencil, PlugZap, Quote, Search, ShieldCheck, Sparkles, SquareTerminal, Target, Workflow, Wrench } from 'lucide-react';
-import { Fragment, lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from 'react';
+import { createContext, Fragment, lazy, useContext, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from 'react';
 import type { AgentActivitySummary, AgentAttachment, AgentConversationAnnotation, AgentConversationReference, AgentWorkspaceReference, OpenHandsConversationEvent, RuntimeTaskControlSnapshot } from '../types';
 import { SubagentAvatar } from './SubagentAvatar';
 import { FileTypeIcon } from './FileTypeIcon';
@@ -1345,6 +1345,9 @@ function pairAnsweredQuestions(asked: string, reply: string): Array<{ question: 
   return [{ question: asked.replace(/\s*\n\s*/g, ' '), answer: reply.trim() }];
 }
 
+/** Lets an ask_user row reopen the answer card when this action is the conversation's open question. */
+export const OpenQuestionContext = createContext<{ actionId?: string; reopen?: (actionId: string) => void }>({});
+
 /** The agent's ask_user call: the first question as one quiet line; several questions expand like any other tool detail. */
 function AskUserRow({ entry, reveal = false }: { entry: ActivityEntry; reveal?: boolean }) {
   const action = entry.action ?? entry.item;
@@ -1355,12 +1358,17 @@ function AskUserRow({ entry, reveal = false }: { entry: ActivityEntry; reveal?: 
   ].filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
   const refused = entry.results.some(result => result.event.payload.details?.asked === false);
   const first = refused ? '提问未送达' : asked[0] ?? '向你提问';
+  const openQuestion = useContext(OpenQuestionContext);
+  const answerable = !refused && openQuestion.actionId === action.event.id && Boolean(openQuestion.reopen);
+  const answerButton = answerable
+    ? <button type="button" className="ask-user-answer" onClick={event => { event.preventDefault(); event.stopPropagation(); openQuestion.reopen!(action.event.id); }}>回答问题</button>
+    : null;
   const className = `conversation-activity-row tool ask-user${refused ? ' error' : ''}${reveal ? ' conversation-text-reveal-block' : ''}`;
   if (refused || asked.length < 2) return <article className={className} aria-label="Agent 提问" data-ask-user-event-id={action.event.id}>
-    <MessageCircleQuestion size={13}/><div><b title={first}>{first}</b></div>
+    <MessageCircleQuestion size={13}/><div><b title={first}>{first}</b></div>{answerButton}
   </article>;
   return <details className={`${className} conversation-tool-detail`} aria-label="Agent 提问" data-ask-user-event-id={action.event.id}>
-    <summary><MessageCircleQuestion size={13}/><div><b title={first}>{first}</b></div><small className="ask-user-more">共 {asked.length} 个问题</small><ChevronRight className="conversation-expand-arrow" size={12}/></summary>
+    <summary><MessageCircleQuestion size={13}/><div><b title={first}>{first}</b></div><small className="ask-user-more">共 {asked.length} 个问题</small>{answerButton}<ChevronRight className="conversation-expand-arrow" size={12}/></summary>
     <ol className="ask-user-list">{asked.map((text, index) => <li key={index}>{text}</li>)}</ol>
   </details>;
 }

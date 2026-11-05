@@ -91,6 +91,15 @@ test('skipping after the final reply sends nothing and just closes the card', as
   expect([...sent]).toEqual([]);
 });
 
+test('after skipping, the waiting conversation offers 回答问题 to reopen the card', async ({ page }) => {
+  const sent = await openAskedConversation(page, [], false);
+  await page.getByTestId('agent-user-question').getByRole('button', { name: '跳过' }).click();
+  await expect(page.getByTestId('agent-user-question')).toHaveCount(0);
+  expect([...sent]).toEqual([]);
+  await page.getByRole('button', { name: '回答问题' }).click();
+  await expect(page.getByTestId('agent-user-question')).toBeVisible();
+});
+
 test('the question card sits above the composer, not inside it', async ({ page }) => {
   await openAskedConversation(page);
   const card = await page.getByTestId('agent-user-question').boundingBox();

@@ -4163,8 +4163,8 @@ class OpenHandsRuntime:
 
         with self._auxiliary_read_bulkhead(handle):
             state = self._conversation_state(handle, timeout=_INTERACTIVE_READ_TIMEOUT_SECONDS)
-            # ask_user never pauses the run; the question is open until a user message
-            # follows it on the active branch, whether the model kept working or ended its turn.
+            # ask_user leaves the run in waiting_for_user_input; the question is open until a user message
+            # follows it on the active branch.
             if str(state.get("execution_status") or "").lower() in {"deleting"}:
                 return None
             leaf = str(state.get("leaf_event_id") or "") or None

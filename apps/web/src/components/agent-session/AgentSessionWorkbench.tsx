@@ -27,7 +27,7 @@ import { deploymentBasePath, withoutDeploymentBase } from '../../deploymentPath'
 import { agentWorkspaceSessionHost, type AgentSessionHost } from './session-host';
 import { SidebarConversationPane, type SidebarConversationDraft } from './SidebarConversationPane';
 import { clearConversationSnapshots, getAgentSessionCacheIdentity, readConversationContextSnapshot, writeConversationContextSnapshot } from './conversation-cache';
-import { ConversationSurface, ConversationTaskPlan, goalRoundDurations, type ConversationHistoryPrepend, type ConversationReference, type ConversationScrollSnapshot, type ConversationSearchLocation, type ModelRetryStatus } from '../ConversationSurface';
+import { ConversationSurface, OpenQuestionContext, ConversationTaskPlan, goalRoundDurations, type ConversationHistoryPrepend, type ConversationReference, type ConversationScrollSnapshot, type ConversationSearchLocation, type ModelRetryStatus } from '../ConversationSurface';
 import { isOpenHandsAgentReply, isOpenHandsConversationInterrupt, isOpenHandsConversationTerminalError, isOpenHandsEmptyResponseRecovery, orderOpenHandsConversationEvents, projectFlowWeaveMessageContext, projectHistoricalAgentReplies } from '../conversationEvents';
 import { useProductDialog } from '../ProductDialogContext';
 import { useEscapeClose } from '../useEscapeClose';
@@ -70,6 +70,13 @@ const dismissedQuestionListeners = new Set<() => void>();
 function dismissQuestionActionId(actionId: string) {
   if (dismissedQuestionIds.includes(actionId)) return;
   dismissedQuestionIds = [...dismissedQuestionIds, actionId].slice(-200);
+  try { localStorage.setItem(DISMISSED_QUESTIONS_KEY, JSON.stringify(dismissedQuestionIds)); } catch { /* storage is optional */ }
+  dismissedQuestionListeners.forEach(listener => listener());
+}
+/** Reopens a closed question card from the conversation ("回答问题"). */
+function reopenQuestionActionId(actionId: string) {
+  if (!dismissedQuestionIds.includes(actionId)) return;
+  dismissedQuestionIds = dismissedQuestionIds.filter(id => id !== actionId);
   try { localStorage.setItem(DISMISSED_QUESTIONS_KEY, JSON.stringify(dismissedQuestionIds)); } catch { /* storage is optional */ }
   dismissedQuestionListeners.forEach(listener => listener());
 }
@@ -694,7 +701,7 @@ function conversationHasReachedTerminalState(executionStatus: string | null | un
   // OpenHands writes a formal ConversationErrorEvent before ending a failed
   // run as `error`. Since that native state is ready for a later explicit
   // message, it must clear any earlier local sending transition too.
-  return ['idle', 'completed', 'stopped', 'finished', 'error', 'stuck'].includes(
+  return ['idle', 'completed', 'stopped', 'finished', 'error', 'stuck', 'waiting_for_user_input'].includes(
     executionStatus?.trim().toLowerCase() ?? '',
   );
 }
@@ -8497,6 +8504,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const pendingQuestion = questionQuery.data?.pending && !dismissedQuestionIds.includes(questionQuery.data.action_id ?? '')
     ? questionQuery.data
     : undefined;
+  const openQuestionValue = useMemo(
+    () => ({ actionId: questionQuery.data?.pending ? questionQuery.data.action_id : undefined, reopen: reopenQuestionActionId }),
+    [questionQuery.data],
+  );
   const dismissPendingQuestion = useCallback(() => {
     if (pendingQuestion?.action_id) dismissQuestionAction(pendingQuestion.action_id);
   }, [dismissQuestionAction, pendingQuestion]);
@@ -10250,8 +10261,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (!canWrite || conversationDraft || !selected || !pendingQuestion) return;
     setOperationError(undefined);
     if (pendingQuestion.action_id) dismissQuestionAction(pendingQuestion.action_id);
-    // Skipping after the Agent already gave its final reply has nothing to hand back: no new turn.
-    if (content === ASK_USER_SKIP_REPLY && effectiveTurnState !== 'running') return;
+    // Skipping never resumes: OpenHands keeps waiting (WAITING_FOR_USER_INPUT) and the
+    // conversation offers "回答问题" to reopen the card. Only a real answer is sent.
+    if (content === ASK_USER_SKIP_REPLY) return;
     // The answer is an ordinary user message; sending it is what resumes the
     // native WAITING_FOR_USER_INPUT conversation.
     dispatchMessage({
@@ -10264,8 +10276,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       workspaceReferences: [],
       annotations: [],
       answeredQuestion,
-      // ask_user does not stop the run: while the model is still working the reply is a
-      // native follow-up; after its final reply it is an ordinary new message.
+      // Running: native follow-up; waiting/paused/finished: an ordinary new message.
       nativeGuidance: effectiveTurnState === 'running',
       deliveryState: 'queued',
       createdAt: Date.now(),
@@ -11213,7 +11224,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       <header className="agent-workbench-header"><div><nav className="agent-conversation-tabs" aria-label="会话页签"><button type="button" className="active" aria-current="page" title={selected ? conversationName(selected) : undefined} onDoubleClick={() => { if (!selected || !canWrite) return; setTitle(conversationName(selected)); setEditing(true); }}><MessageSquareText size={14}/><span>{selected ? conversationName(selected) : conversationDraft ? '新会话' : '开始一个新的会话'}</span></button></nav>{editing && <div className="agent-title-edit"><input ref={titleInput} aria-label="会话标题" value={title} onChange={event => setTitle(event.target.value)} onBlur={() => { if (!rename.isPending) { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }} onKeyDown={event => { if (event.nativeEvent.isComposing || event.keyCode === 229) return; if (event.key === 'Enter' && title.trim()) { event.preventDefault(); rename.mutate(); } if (event.key === 'Escape') { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }}/></div>}</div></header>
       <div className="agent-workbench-content">
       {runtime?.state === 'RECOVERING' && <section className="agent-runtime-recover"><LoaderCircle size={18}/><div><b>运行环境正在恢复</b><span>{runtime.message || '历史会话和工作区文件仍可查看；恢复完成后可继续发送消息和使用终端。'}</span></div></section>}
-      {conversationSnapshotUnavailable ? <div className="conversation-surface-empty"><b>会话暂时无法加载</b></div> : conversationInitialLoading ? <div className="conversation-surface-empty" role="status"><LoaderCircle className="conversation-activity-spin" size={16}/><b>正在加载会话</b><span>正在读取最新消息与会话状态…</span></div> : selected || conversationDraft ? <ConversationSurface
+      {conversationSnapshotUnavailable ? <div className="conversation-surface-empty"><b>会话暂时无法加载</b></div> : conversationInitialLoading ? <div className="conversation-surface-empty" role="status"><LoaderCircle className="conversation-activity-spin" size={16}/><b>正在加载会话</b><span>正在读取最新消息与会话状态…</span></div> : selected || conversationDraft ? <OpenQuestionContext.Provider value={openQuestionValue}><ConversationSurface
         key={`transcript:${conversationPresentationScope ?? 'conversation'}`}
         events={displayedEvents}
         goalLocateEventId={conversationSearchTargetEventId}
@@ -11282,7 +11293,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         taskControl={eventsQuery.data?.task_control ?? EMPTY_TASK_CONTROL}
         monitoring={conversationVisuallyActive ? eventsQuery.data?.monitoring : undefined}
         connectionState={inputReadinessQuery.isError ? 'unavailable' : streamStatus === 'recovering' ? 'recovering' : streamStatus === 'connecting' ? 'checking' : inputReadinessQuery.isFetching && !inputReadinessQuery.data ? 'checking' : 'connected'}
-      /> : <div className="agent-workbench-empty"><Bot size={32}/><b>新建会话开始协作</b><span>{features.workDirectories ? '每个会话共享同一工作区，但保留独立的对话与事件记录。' : '会话固定在当前节点 Attempt 的隔离工作目录。'}</span><button className="primary" disabled={!canOpenConversation} onClick={() => openConversationDraft({ displayName: features.workDirectories ? '根工作区' : '节点工作目录' }, { selectStandaloneRoot: features.workDirectories })}><Plus size={15}/>新建会话</button></div>}
+      /></OpenQuestionContext.Provider> : <div className="agent-workbench-empty"><Bot size={32}/><b>新建会话开始协作</b><span>{features.workDirectories ? '每个会话共享同一工作区，但保留独立的对话与事件记录。' : '会话固定在当前节点 Attempt 的隔离工作目录。'}</span><button className="primary" disabled={!canOpenConversation} onClick={() => openConversationDraft({ displayName: features.workDirectories ? '根工作区' : '节点工作目录' }, { selectStandaloneRoot: features.workDirectories })}><Plus size={15}/>新建会话</button></div>}
       {visibleError && <ConversationErrorNotice key={`error:${composerScope}`} error={visibleError} onDismiss={dismissOperationError} transient={visibleError === operationError} onRetry={visibleError === hydrationError ? retryConversationHydration : undefined}/>}
       </div>
       {(selected || conversationDraft) && runtime?.state !== 'RECOVERING' && !conversationInitialLoading && !conversationSnapshotUnavailable && <div className="agent-composer-dock">
