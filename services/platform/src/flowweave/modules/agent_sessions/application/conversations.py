@@ -2271,6 +2271,8 @@ def _activate_bootstrapped_conversation(
     command.state = "SUCCEEDED"
     command.updated_at = activated_at
     _record_message_attachments(db, binding, initial_event_id, first_message, attachments)
+    # The first message seeds the sent-model baseline so a later model switch is detected.
+    _record_model_change(db, binding, initial_event_id)
     _enqueue_title_task(db, binding, first_message)
     db.commit()
     return _bootstrap_result(db, binding)
