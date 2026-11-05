@@ -93,7 +93,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 
 ## 6. 任务清单
 
-### FR-729 feat 集成与当前分支发布 — CURRENT
+### FR-729 feat 集成与当前分支发布 — DONE
 
 依赖 FR-717、FR-728 DONE。用户明确授权将 feat/refactor 的已提交内容及远端新增提交
 合入 codex/child-conversations，并从当前分支发布。feat 工作树未提交的 Case 改动不在范围内。
@@ -112,11 +112,30 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 测试 2 passed。线上现有镜像执行本次 contract_check.py 通过，四包与源码身份吻合。
 Web typecheck 和生产构建通过，受影响 Python Ruff 通过。
 
-扩展检查仍有历史失败。普通会话／架构全量检查 170 passed、112 failed，包含缺少
+扩展检查未全通过。普通会话／架构全量检查 170 passed、112 failed，包含缺少
 Node Attempt 的旧 locator 调用、直接应用测试缺少用户上下文和历史架构规则。Python
 全量严格类型检查也未通过。它们未计为本次通过门禁，原始结果位于忽略的本地验证目录。
 浏览器宽范围首轮 95 passed，失败中的旧文案、右键菜单、门户弹层和虚拟列表用例已按
-现行界面调整，续跑结果与发布验收另记。
+现行界面调整。宽范围定向续跑仍有 13 failed、2 passed，未计为通过。
+临时侧边聊天的创建前乐观消息在合并后漏显，已恢复并通过取消／即时与延迟 hydration／
+隐藏保留四项验证。子会话的最终定向结果为 23 项全部通过。
+
+发布完成。代码 commit 309aa05ae1596256a67f20dcc27f2a79a9fb647e，API／stream-api／Worker
+镜像 sha256:98ea2960cd07299a6b2ef31fe4b8dbd4e6f29c8851bcbf4b59fa6e4dff004cf0，
+Web 镜像 sha256:b269ad5857b333eb7266688181a085e1380ca1216a58ce6a89a92f463cae34d7。
+四服务 revision 与 linux/amd64 校验、health/readiness 和数据库 0202 head 通过。
+Runtime Provider 代码相对线上版本无差异，本次按 platform／web 范围发布。Agent Workspace
+继续使用已验证的 805bb 源码镜像，历史 1.54 FlowRun 按原冻结版本运行。
+
+服务端为配置创建权限保持的备份后，仅补充三服务的子入口与新普通会话 OH_FW_V5 配置。
+使用当前 CLI 已登录用户和线上 gpt-5.6-luna，经正式平台接口创建验收父会话、由模型
+原生创建一子、list/read/wait 取回正式子回复，父 FinishAction 含验收标记。用户随后向同一
+子会话续聊并取得正式 MESSAGE。仅本次创建的验收父子由正式 family 删除任务清理完成，
+两端读取均为 404。公网深层路由与登录页、部署前缀、JavaScript 无错误验证通过。
+两个发布范围均完成 remote-release-finish，保留每范围最近三份成功上下文及引用资产。
+
+feat/refactor 本地指针仍为 d3262537，远端增量固定 58b591d2。所有集成修复提交位于
+codex/child-conversations，未提交的 Case 工作树改动未纳入发布。
 
 ### FR-702 原生子会话产品与接入契约冻结 — DONE
 
