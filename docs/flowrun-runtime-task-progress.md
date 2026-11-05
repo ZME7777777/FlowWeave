@@ -16322,3 +16322,22 @@ runtime-provider／api／stream-api／worker，再执行 `runtime-replace`（REC
 
 未完成项：尚未用真实模型触发一次“ask_user 后继续工作”的端到端问答（未创建测试会话）；
 `tests/architecture` 既有 11 项失败与发布前一致。
+
+### OPS-BL1583 ask_user 真实阻塞等待与 baseline b2131e0ef Runtime 同步 — DONE
+
+2026-11-05。代码 commit `d7ee30ead23c266db03a30cc35c5a1bb81e7f624`（含 `2aa3d164`），source commit
+`b2131e0ef31a459486f6bd716e150c7e710c8a78`，上游锚点不变，四包 1.58.2，归档 SHA-256
+`a7defbd65c78ba5e1fa26b4dd5eca3f7ddc9a546a02fc5a4873f6cb3e3e12f9a`。
+
+行为：`ask_user` 调用后会话进入原生 `WAITING_FOR_USER_INPUT` 并停止（同批含 finish 除外）。跳过不发送任何消息、
+保持等待；会话区的提问行提供“回答问题”重新打开卡片。运行中提交为追加消息，等待／暂停时提交为新消息。
+下一条用户消息是否构成答复由模型判断（未回答则重新提问）。
+
+镜像：Runtime `flowweave-openhands-runtime:1` 现为 `sha256:d48c26d42c72…`（旧镜像保留为
+`rollback-e934488e-pre2`，`545557289c57`）；平台 `sha256:29de7e1786b5…`，Web `sha256:8333c017ba62…`。
+门禁：原生会话 355 个，error 16／finished 321／idle 2／paused 13／stuck 3，无运行态；服务器侧先备份 `state/`
+（权限 600，gzip 校验通过；仅一个历史 finished 会话目录在备份期间变化）。migration 退出码 0，随后重建
+runtime-provider／api／stream-api／worker／web，再执行 `runtime-replace`（RECOVERING→ACTIVE）。新容器 digest、
+`build_git_sha`、四包版本与 source lock 一致，会话数量与状态分布不变，`/flowweave/`、`/agent`、`/agent/schedules` 为 200。
+
+未完成项：尚未用真实模型端到端触发一次 ask_user 阻塞问答（未创建测试会话）；`tests/architecture` 既有 11 项失败与发布前一致。
